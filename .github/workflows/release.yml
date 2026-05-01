@@ -1,0 +1,111 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "version tag (e.g. v0.1.0)"
+        required: true
+        default: "dev"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { os: linux,  arch: amd64 }
+          - { os: linux,  arch: arm64 }
+          - { os: darwin, arch: amd64 }
+          - { os: darwin, arch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.23" }
+
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+
+      - name: build dashboard
+        run: |
+          cd www
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: build clawpatrol
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p out
+          go build -ldflags "-s -w" -trimpath -o out/clawpatrol-${{ matrix.os }}-${{ matrix.arch }} .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clawpatrol-${{ matrix.os }}-${{ matrix.arch }}
+          path: out/clawpatrol-${{ matrix.os }}-${{ matrix.arch }}
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF##*/}" >> $GITHUB_OUTPUT
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: assemble site
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          mkdir -p site/releases/${TAG}
+          cp artifacts/clawpatrol-* site/releases/${TAG}/
+          (cd site/releases/${TAG} && sha256sum clawpatrol-* > SHA256SUMS)
+          # `latest` mirror
+          cp -r site/releases/${TAG} site/releases/latest
+          cp install.sh site/install.sh
+          # Public site index — just enough so curl + browser both work.
+          cat > site/index.html <<HTML
+          <!doctype html><meta charset=utf-8><title>clawpatrol releases</title>
+          <h1>clawpatrol</h1>
+          <p>Install: <code>curl -fsSL https://denoland.github.io/clawpatrol-go/install.sh | sh</code></p>
+          <p>Latest binaries: <a href="releases/latest/">releases/latest/</a></p>
+          <p>This tag: <a href="releases/${TAG}/">releases/${TAG}/</a></p>
+          HTML
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
