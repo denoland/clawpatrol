@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	neturl "net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -490,8 +489,13 @@ func onboardViaDeviceFlow(gateway string) (bool, error) {
 	}
 	fmt.Println("\n✓ approved")
 
-	// 3a. wireguard branch — auth_key is the full client config,
-	// skip tailscale entirely (no daemon install, no `tailscale up`).
+	// 3a. wireguard branch — auth_key is the full client config.
+	// Skip tailscale entirely (no daemon, no `tailscale up`). The
+	// gateway runs an L3 forwarder that catches SYNs to ANY dst IP
+	// once we route 0.0.0.0/0 into the tunnel, so we don't pin
+	// /etc/hosts and don't need a /api/onboard/claim round-trip —
+	// the server registered our peer IP against the approver at
+	// mint time.
 	if strings.HasPrefix(loginServer, "wireguard://") {
 		iface := strings.TrimPrefix(loginServer, "wireguard://")
 		if iface == "" {
@@ -500,44 +504,7 @@ func onboardViaDeviceFlow(gateway string) (bool, error) {
 		if err := wgQuickUp(iface, authKey); err != nil {
 			return true, fmt.Errorf("wg-quick up: %w", err)
 		}
-		fmt.Printf("✓ wireguard up (%s)\n", iface)
-		// Pin known integration hostnames to the gateway's WG-side IP
-		// so agents (claude / gh / codex) resolve them locally without
-		// going to public DNS. We can't do exit-node-style routing in
-		// netstack mode, so we redirect at name resolution.
-		gwIP := wgGatewayIP(authKey)
-		if gwIP != "" {
-			if err := writeHostsOverride(gwIP); err != nil {
-				fmt.Fprintf(os.Stderr, "⚠ /etc/hosts override failed: %v\n", err)
-			} else {
-				fmt.Printf("✓ /etc/hosts pinned api.anthropic.com etc → %s\n", gwIP)
-			}
-		}
-		// Claim our WG-side IP for the approver — without this the
-		// gateway sees the peer IP but can't tie it to a user, so
-		// per-user OAuth credentials don't get injected.
-		//
-		// Hit the gateway via its WG-side IP. Default route now goes
-		// through the tunnel, so the public URL is unreachable; the
-		// gateway hostname isn't in our /etc/hosts pin set either.
-		// Reuse the dashboard port from the original gateway URL.
-		myWGIP := wgClientIP(authKey)
-		if myWGIP != "" && gwIP != "" {
-			port := gatewayPortOf(gateway)
-			claimURL := fmt.Sprintf("http://%s:%s/api/onboard/claim?device_code=%s&ip=%s",
-				gwIP, port, start.DeviceCode, myWGIP)
-			if cr, err := cli.Post(claimURL, "application/json", nil); err == nil {
-				body, _ := io.ReadAll(io.LimitReader(cr.Body, 200))
-				cr.Body.Close()
-				if cr.StatusCode == 200 {
-					fmt.Printf("✓ claimed %s for your account\n", myWGIP)
-				} else {
-					fmt.Fprintf(os.Stderr, "⚠ claim %d: %s\n", cr.StatusCode, body)
-				}
-			} else {
-				fmt.Fprintf(os.Stderr, "⚠ claim failed: %v\n", err)
-			}
-		}
+		fmt.Printf("✓ wireguard up (%s) — all traffic routed via gateway\n", iface)
 		return true, nil
 	}
 
@@ -610,112 +577,6 @@ func tryOpen(u string) {
 		return
 	}
 	_ = cmd.Start()
-}
-
-// gatewayPortOf extracts the port from a gateway URL. Defaults to
-// 80/443 by scheme. Used to point claim at the dashboard's WG-side
-// listener which inherits the operator-configured info_listen port.
-func gatewayPortOf(gateway string) string {
-	u, err := neturl.Parse(gateway)
-	if err != nil {
-		return "80"
-	}
-	if u.Port() != "" {
-		return u.Port()
-	}
-	if u.Scheme == "https" {
-		return "443"
-	}
-	return "80"
-}
-
-// wgGatewayIP digs the [Peer] AllowedIPs out of the conf — the gateway
-// is always the .1 of whatever subnet the [Interface] Address sits in.
-// Returns "" if it can't parse.
-func wgGatewayIP(conf string) string {
-	for _, line := range strings.Split(conf, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(strings.ToLower(line), "address") {
-			continue
-		}
-		_, after, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		cidr := strings.TrimSpace(after)
-		if i := strings.Index(cidr, "/"); i > 0 {
-			cidr = cidr[:i]
-		}
-		// 10.55.0.5 → 10.55.0.1
-		parts := strings.Split(cidr, ".")
-		if len(parts) != 4 {
-			return ""
-		}
-		parts[3] = "1"
-		return strings.Join(parts, ".")
-	}
-	return ""
-}
-
-// wgClientIP extracts our own WG-side IP from the [Interface]
-// Address line of the freshly-minted conf.
-func wgClientIP(conf string) string {
-	for _, line := range strings.Split(conf, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(strings.ToLower(line), "address") {
-			continue
-		}
-		_, after, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		cidr := strings.TrimSpace(after)
-		if i := strings.Index(cidr, "/"); i > 0 {
-			return cidr[:i]
-		}
-		return cidr
-	}
-	return ""
-}
-
-// writeHostsOverride pins clawall's intercepted hostnames to the
-// gateway's WG-side IP. Idempotent — looks for the marker line and
-// rewrites the block in place.
-func writeHostsOverride(gwIP string) error {
-	const marker = "# clawall: pinned to gateway"
-	hosts := []string{
-		"api.anthropic.com",
-		"api.openai.com",
-		"chatgpt.com",
-		"auth.openai.com",
-		"api.github.com",
-		"raw.githubusercontent.com",
-	}
-	b, _ := os.ReadFile("/etc/hosts")
-	// strip existing block
-	out := []string{}
-	skip := false
-	for _, ln := range strings.Split(string(b), "\n") {
-		if strings.Contains(ln, marker) {
-			skip = !skip
-			continue
-		}
-		if skip {
-			continue
-		}
-		out = append(out, ln)
-	}
-	out = append(out, marker)
-	out = append(out, gwIP+" "+strings.Join(hosts, " "))
-	out = append(out, marker)
-	tmp, err := os.CreateTemp("", "clawall-hosts-*")
-	if err != nil {
-		return err
-	}
-	tmp.WriteString(strings.Join(out, "\n"))
-	tmp.Close()
-	defer os.Remove(tmp.Name())
-	return runAsRoot("install", "-m", "0644", tmp.Name(), "/etc/hosts").Run()
 }
 
 // runAsRoot prepends "sudo" only when the caller isn't already root

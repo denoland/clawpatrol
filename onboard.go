@@ -175,7 +175,14 @@ func timeNanoTail() int64 { return time.Now().UnixNano() & 0xFFFF }
 //   - tailscaleOnboarder — Tailscale Inc OAuth
 //   - wireguardOnboarder — plain self-hosted WireGuard, no SaaS
 type Onboarder interface {
-	MintKey(ctx context.Context) (authKey, loginServer string, err error)
+	// MintKey provisions a fresh client. authKey is the secret material
+	// handed to the device (Tailscale auth-key, or a wg-quick conf for
+	// the WG path). loginServer prefixes the CLI branch select
+	// ("wireguard://…" or empty for Tailscale Inc). peerIP, when
+	// non-empty, is the IP the server allocated for this peer — the
+	// caller registers it in the onboard registry so per-user OAuth
+	// lookup works without a separate claim round-trip from the CLI.
+	MintKey(ctx context.Context) (authKey, loginServer, peerIP string, err error)
 }
 
 func newOnboarder(ts Tailscale) Onboarder {
@@ -189,9 +196,12 @@ func newOnboarder(ts Tailscale) Onboarder {
 
 type tailscaleOnboarder struct{ ts Tailscale }
 
-func (t *tailscaleOnboarder) MintKey(ctx context.Context) (string, string, error) {
+func (t *tailscaleOnboarder) MintKey(ctx context.Context) (string, string, string, error) {
 	k, err := mintTailscaleAuthKey(ctx, t.ts)
-	return k, "", err // empty login_server = use default Tailscale
+	// Tailscale assigns peer IPs from the tailnet — we don't know the
+	// new device's IP at mint time, so claim happens later via /api/
+	// onboard/claim from the CLI once `tailscale up` succeeds.
+	return k, "", "", err
 }
 
 // mintTailscaleAuthKey calls Tailscale's OAuth + auth-key API to create

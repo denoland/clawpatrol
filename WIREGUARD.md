@@ -1,69 +1,83 @@
 # clawall — WireGuard mode
 
-This branch makes WireGuard the primary control plane. No Tailscale
-account, no kernel module, no `wg-quick` lifecycle on the gateway,
-no systemd unit for the WG interface. The clawall binary IS the WG
-endpoint.
+WireGuard as the primary control plane. No Tailscale account, no
+kernel module, no `wg-quick` lifecycle on the gateway, no systemd
+unit for the WG interface, no `/etc/hosts` pinning on clients. The
+clawall binary IS the WG endpoint and the L3 forwarder.
 
-## What works (verified end-to-end)
+## How it works
 
-- Operator runs `clawall gateway -config gateway.yaml` with
-  `tailscale.control: wireguard`. Binary boots an embedded
-  wireguard-go device backed by a gVisor netstack TUN, listens on
-  UDP 51820, exposes the dashboard + MITM TLS via the WG-side IP
-  (10.55.0.1 by default).
-- Server keypair persisted at `<oauth_dir>/wg-server.key` (private
-  hex), pubkey derived via curve25519 at boot.
-- Peer registrations persisted at `<oauth_dir>/wg-peers.json` and
-  replayed on every restart so existing clients survive gateway
-  redeploys.
-- Client runs `clawall join --url http://<gw>:9080`. Single command
-  installs `wireguard-tools` if needed, generates a fresh keypair
-  server-side, allocates an IP from the configured subnet,
-  registers the peer, runs `wg-quick up`, pins
-  `api.anthropic.com` / `api.openai.com` / `chatgpt.com` / etc to
-  the gateway WG-side IP via `/etc/hosts`, claims the WG IP for
-  the operator's identity, writes the env shim into shell rc.
-- Agents (`claude`, `gh`, `codex`) run unmodified — `eval
-  "$(clawall env)"` exports the placeholder tokens + CA bundle.
-  Outbound HTTPS to `api.anthropic.com` resolves to 10.55.0.1,
-  routes through WG, gateway SNI-peeks, MITMs, injects real OAuth
-  bearer, forwards to real upstream, response comes back through
-  the tunnel.
-- No exit-node trickery — `wg-quick`'s default fwmark setup keeps
-  SSH alive on Linux clients (only non-marked traffic goes through
-  the tunnel).
+The gateway runs an embedded **wireguard-go** + a **gVisor netstack**
+in promiscuous mode — same shape as unclaw's `boringtun` + `smoltcp`
+(`set_any_ip`) setup, just in Go.
+
+1. wireguard-go decrypts UDP off the wire, hands inner packets to a
+   custom `netTun` (`wgnet.go:newNetTUN`).
+2. `netTun` injects into a gVisor stack built with **`HandleLocal:
+   false`** (the upstream `tun/netstack.CreateNetTUN` hardcodes
+   `HandleLocal: true`, which combined with promiscuous mode causes
+   the IP layer to drop every packet as "InvalidSource"). NIC has
+   `SetPromiscuousMode + SetSpoofing`, IP layer accepts ANY dst.
+3. `tcp.NewForwarder` + `udp.NewForwarder` register as the stack's
+   default transport handlers. Every TCP/UDP session to ANY dst IP
+   reaches `EnablePromiscuousForwarder`'s callback.
+4. Callback dispatches by port:
+   - `:443` → `g.handle` (SNI peek → MITM or splice)
+   - `:<info_listen>` → dashboard mux
+   - else → `wgRelay` / `relayUDP` to real upstream
+5. Clients route `0.0.0.0/0` through the tunnel. Agents resolve real
+   hostnames via public DNS (UDP/53 forwarded by the gateway), open
+   real public IPs, gateway intercepts at L3.
+
+## What works (verified end-to-end on vultr)
+
+- `clawall gateway -config gateway.yaml` boots WG endpoint on
+  UDP 51820, dashboard + MITM ride the same forwarder.
+- Server keypair persisted at `<oauth_dir>/wg-server.key`. Pubkey
+  derived via curve25519 at boot. Peer (pubkey → IP) map persisted
+  at `<oauth_dir>/wg-peers.json`, replayed on every restart so
+  existing clients survive gateway redeploys.
+- `clawall join --url <gw>` runs once: prints user-code, opens
+  dashboard URL, server mints a fresh keypair, allocates a /32 from
+  the configured subnet, registers the peer with wireguard-go,
+  hands back a `wg-quick` conf. Server **auto-claims** the peer
+  IP for the approver at mint time — no client-side claim
+  round-trip (which used to race against the new default route).
+- `wg-quick up` writes `/etc/wireguard/clawall.conf` and brings the
+  tunnel up. PostUp swaps `/etc/resolv.conf` to `1.1.1.1` (no
+  `resolvconf` dependency — backed up + restored on PostDown).
+  Default route via wg, fwmark 51820 keeps WG handshakes themselves
+  off the tunnel. SSH stays alive (fwmark 51820 + ip rule trick).
+- Agents (`claude`, `gh`, `codex`) run unmodified. `eval "$(clawall
+  env)"` exports placeholder tokens + CA bundle. Outbound HTTPS to
+  `api.anthropic.com` resolves to a real public IP, routes through
+  WG to the gateway, TCP forwarder catches the SYN, port-443
+  dispatch fires `g.handle`, SNI matches, MITM injects real OAuth,
+  forwards to real upstream, response returns through the tunnel.
 
 ## What's still rough
 
-- `clawall gateway init` subcommand doesn't exist yet — operator
-  still has to write `gateway.yaml` by hand, scp the binary, run
-  it. `scripts/deploy.sh` works but is the old hacky path.
-- Dashboard auth in WG mode is bypassed (no tailnet identity).
-  Operator should front the public dashboard port with their own
-  auth (Cloudflare Access, basic auth proxy, etc) — or only expose
-  it via the WG tunnel itself (10.55.0.1:9080 is reachable from
-  every onboarded device).
-- Multi-user identity in WG mode still relies on `admin_email` —
-  every approved device gets attributed to the same operator.
-  Real per-user auth needs an auth proxy that fills
+- `clawall gateway init` exists but is minimal. `scripts/deploy.sh`
+  is the heavier path.
+- Dashboard auth in WG mode falls back to `admin_email` for every
+  approval. Multi-user setups need an auth proxy
+  (Cloudflare Access, basic auth, etc.) that fills
   `X-Forwarded-User` / `X-Forwarded-Email` (~10 LoC to teach
   `ownerForCaller` to read those).
-- No exit-node-style packet forwarding inside netstack — that's
-  why we redirect at name resolution (`/etc/hosts`). Adding
-  arbitrary destinations means editing /etc/hosts (or running
-  `clawall env` again after adding hosts to the rule list).
+- Both endpoints behind the same NAT egress IP can't establish a
+  WG handshake (UDP hairpin drop). Same constraint as plain unclaw
+  remote mode. Use a real public-IP VPS for the gateway.
 
-## Operator setup (current)
+## Operator setup
 
 ```bash
-# on the gateway VM
+# on the gateway VM (real public IP needed)
 curl -fsSL https://littledivy.github.io/clawall/install.sh | sh
 
-cat > /etc/clawall.yaml <<EOF
+cat > /etc/clawall/gateway.yaml <<EOF
 listen: "0.0.0.0:8443"
-info_listen: "0.0.0.0:9080"
-public_url: "http://your-gw.example.com:9080"
+info_listen: "0.0.0.0:8080"
+public_url: "http://your-gw.example.com:8080"
 ca_dir: "/opt/clawall/ca"
 log_path: "/opt/clawall/gateway.log"
 oauth_dir: "/opt/clawall/oauth"
@@ -80,20 +94,19 @@ EOF
 mkdir -p /opt/clawall
 clawall init-ca /opt/clawall/ca
 
-# open ports + run
 iptables -I INPUT -p udp --dport 51820 -j ACCEPT
-iptables -I INPUT -p tcp --dport 9080 -j ACCEPT
-clawall gateway -config /etc/clawall.yaml
+iptables -I INPUT -p tcp --dport 8080 -j ACCEPT
+clawall gateway -config /etc/clawall/gateway.yaml
 ```
 
 Connect Claude / GitHub / Codex via the dashboard at
-`http://your-gw.example.com:9080`. Per-user OAuth credentials
-land in `/opt/clawall/oauth/`.
+`http://your-gw.example.com:8080`. Per-user OAuth credentials land
+in `/opt/clawall/oauth/`.
 
 ## Client setup
 
 ```bash
 curl -fsSL https://littledivy.github.io/clawall/install.sh | sh
-clawall join --url http://your-gw.example.com:9080
+clawall join --url http://your-gw.example.com:8080
 # approve at the displayed URL, done — claude/gh/codex just work
 ```

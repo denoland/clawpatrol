@@ -915,15 +915,25 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		key, loginServer, err := newOnboarder(w.ts).MintKey(ctx)
+		key, loginServer, peerIP, err := newOnboarder(w.ts).MintKey(ctx)
 		w.onboard.mu.Lock()
-		defer w.onboard.mu.Unlock()
 		if err != nil {
 			s.err = err.Error()
+			w.onboard.mu.Unlock()
 			return
 		}
 		s.authKey = key
 		s.loginServer = loginServer
+		dc := s.deviceCode
+		w.onboard.mu.Unlock()
+		// WG path: server allocated peerIP and knows the approver, so
+		// register the (ip → owner) mapping right here. Saves the CLI
+		// from making a /api/onboard/claim round-trip after wg-quick
+		// (which is racy: the default route is now the tunnel and the
+		// public gateway URL becomes unreachable).
+		if peerIP != "" {
+			w.onboard.ClaimIP(dc, peerIP)
+		}
 	}()
 	writeJSON(rw, map[string]any{"approved": true})
 }

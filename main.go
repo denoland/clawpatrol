@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -1252,49 +1253,35 @@ func runGateway(args []string) {
 
 	// Embedded userspace WireGuard server. When operator sets
 	// tailscale.control=wireguard, the clawall process becomes the
-	// WG endpoint — peers established at onboard time route TLS-443
-	// traffic into our netstack. No kernel module, no /dev/net/tun.
+	// WG endpoint — peers established at onboard time route ALL
+	// traffic into our netstack (AllowedIPs=0.0.0.0/0). The
+	// promiscuous forwarder accepts SYNs to any dst IP/port:
+	//   - 443    → MITM (g.handle does SNI peek + rule dispatch)
+	//   - dash   → dashboard mux
+	//   - else   → transparent relay to the real upstream
+	// No /etc/hosts hack needed on clients — agents resolve real
+	// hostnames via public DNS and the gateway intercepts at L3.
 	if strings.EqualFold(cfg.Tailscale.Control, "wireguard") {
 		wg, err := StartWGServer(cfg.Tailscale, oauthDir)
 		if err != nil {
 			log.Fatalf("wireguard: %v", err)
 		}
 		setWGServer(wg)
-		// MITM listener on the WG-side TLS port. We force :443 inside
-		// the netstack regardless of cfg.Listen so agents don't need
-		// HTTPS_PROXY tweaks — once /etc/hosts maps api.anthropic.com
-		// (etc) to the gateway's WG IP, the agent's plain-HTTPS call
-		// lands here and we MITM as usual.
-		go func() {
-			wln, err := wg.Listen(":443")
-			if err != nil {
-				log.Fatalf("wireguard tls listen :443: %v", err)
+		dashMux := newWebMux(g, cfg.CADir, cfg.Tailscale, cfg.PublicURL)
+		dashPort := portOf(cfg.InfoListen)
+		if err := wg.EnablePromiscuousForwarder(func(c net.Conn, dstIP string, dstPort uint16) {
+			switch {
+			case dstPort == 443:
+				g.handle(c)
+			case dashPort != 0 && int(dstPort) == dashPort:
+				_ = http.Serve(&oneShotListener{c: c}, dashMux)
+			default:
+				wgRelay(c, dstIP, int(dstPort))
 			}
-			log.Printf("wireguard tls listening on %s (netstack)", wln.Addr())
-			for {
-				c, err := wln.Accept()
-				if err != nil {
-					log.Printf("wg accept: %v", err)
-					continue
-				}
-				go g.handle(c)
-			}
-		}()
-		// Dashboard / onboard listener also exposed through the tunnel
-		// — VPN peers need to hit /info, /api/*, dashboard same as
-		// public callers do.
-		if cfg.InfoListen != "" {
-			go func() {
-				wln, err := wg.Listen(cfg.InfoListen)
-				if err != nil {
-					log.Printf("wireguard info-listen %s: %v", cfg.InfoListen, err)
-					return
-				}
-				log.Printf("wireguard dashboard listening on %s (netstack)", wln.Addr())
-				mux := newWebMux(g, cfg.CADir, cfg.Tailscale, cfg.PublicURL)
-				_ = http.Serve(wln, mux)
-			}()
+		}); err != nil {
+			log.Fatalf("wireguard forwarder: %v", err)
 		}
+		log.Printf("wireguard promiscuous forwarder ready (any dst → :443=mitm, :%d=dash, else=relay)", dashPort)
 	}
 
 	ln, err := openListener(cfg)
@@ -1311,5 +1298,77 @@ func runGateway(args []string) {
 		}
 		go g.handle(c)
 	}
+}
+
+// portOf extracts the numeric port from a "host:port" or ":port" listen
+// string. Returns 0 when the input is empty or unparseable.
+func portOf(addr string) int {
+	if addr == "" {
+		return 0
+	}
+	_, p, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(p)
+	return n
+}
+
+// oneShotListener wraps a single net.Conn so http.Serve can hand it to
+// the dashboard mux. After the first Accept, subsequent calls block
+// until Close — the netstack forwarder spawns one goroutine per conn
+// so http.Serve cleanly exits when the connection ends.
+type oneShotListener struct {
+	c    net.Conn
+	done chan struct{}
+	once bool
+}
+
+func (l *oneShotListener) Accept() (net.Conn, error) {
+	if l.once {
+		<-l.done
+		return nil, net.ErrClosed
+	}
+	l.once = true
+	if l.done == nil {
+		l.done = make(chan struct{})
+	}
+	return l.c, nil
+}
+
+func (l *oneShotListener) Close() error {
+	if l.done != nil {
+		select {
+		case <-l.done:
+		default:
+			close(l.done)
+		}
+	}
+	return nil
+}
+
+func (l *oneShotListener) Addr() net.Addr {
+	if l.c == nil {
+		return &net.TCPAddr{}
+	}
+	return l.c.LocalAddr()
+}
+
+// wgRelay is the catch-all path: WG peer wants to talk to a host we
+// don't MITM (e.g. plain HTTP, ssh, anything not on :443 or the dash
+// port). We just dial the real destination from the gateway's host
+// network and proxy bytes both ways. Lets agents reach github.com,
+// package mirrors, etc., without exempting them in routing config.
+func wgRelay(c net.Conn, dstIP string, dstPort int) {
+	defer c.Close()
+	up, err := net.DialTimeout("tcp", net.JoinHostPort(dstIP, strconv.Itoa(dstPort)), 10*time.Second)
+	if err != nil {
+		return
+	}
+	defer up.Close()
+	done := make(chan struct{}, 2)
+	go func() { io.Copy(up, c); done <- struct{}{} }()
+	go func() { io.Copy(c, up); done <- struct{}{} }()
+	<-done
 }
 

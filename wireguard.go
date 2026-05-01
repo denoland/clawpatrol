@@ -34,41 +34,42 @@ var globalWG *WGServer
 
 func setWGServer(s *WGServer) { globalWG = s }
 
-func (w *wireguardOnboarder) MintKey(ctx context.Context) (string, string, error) {
+func (w *wireguardOnboarder) MintKey(ctx context.Context) (string, string, string, error) {
 	if w.ts.WGEndpoint == "" || w.ts.WGSubnetCIDR == "" {
-		return "", "", fmt.Errorf("wireguard not configured (set tailscale.wg_endpoint, wg_subnet_cidr)")
+		return "", "", "", fmt.Errorf("wireguard not configured (set tailscale.wg_endpoint, wg_subnet_cidr)")
 	}
 	if globalWG == nil {
-		return "", "", fmt.Errorf("wireguard server not started")
+		return "", "", "", fmt.Errorf("wireguard server not started")
 	}
-	// 1. fresh keypair for the new client (server side, then handed off).
-	clientPrivB64, clientPubHex, clientPubB64, err := wgGenKeypair()
+	clientPrivB64, clientPubHex, _, err := wgGenKeypair()
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	// 2. allocate next free IP from the pool.
 	ip, err := w.allocateIP()
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	// 3. register with the embedded WG device — no shell-outs.
 	if err := globalWG.AddPeer(clientPubHex, ip); err != nil {
-		return "", "", fmt.Errorf("wg add peer: %w", err)
+		return "", "", "", fmt.Errorf("wg add peer: %w", err)
 	}
-	_ = clientPubB64
-	// 4. assemble client config — written verbatim to
-	// /etc/wireguard/clawall.conf by the CLI.
 	serverPub, err := globalWG.PublicKey()
 	if err != nil {
-		return "", "", fmt.Errorf("wg server pub: %w", err)
+		return "", "", "", fmt.Errorf("wg server pub: %w", err)
 	}
 	serverPubB64, err := hexToB64(serverPub)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
+	// PostUp/PostDown rewrite /etc/resolv.conf so libc lookups flow
+	// through the tunnel (UDP/53 → 1.1.1.1 → gateway UDP forwarder).
+	// Avoiding `DNS =` because wg-quick needs resolvconf/openresolv
+	// for that, which many minimal images lack. Backup-then-restore
+	// keeps system DNS sane after `wg-quick down`.
 	conf := fmt.Sprintf(`[Interface]
 PrivateKey = %s
 Address = %s/32
+PostUp = cp /etc/resolv.conf /etc/resolv.conf.clawall.bak 2>/dev/null; printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
+PostDown = mv /etc/resolv.conf.clawall.bak /etc/resolv.conf 2>/dev/null || true
 
 [Peer]
 PublicKey = %s
@@ -76,7 +77,7 @@ Endpoint = %s
 AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
 `, clientPrivB64, ip, serverPubB64, w.ts.WGEndpoint)
-	return conf, "wireguard://" + w.iface(), nil
+	return conf, "wireguard://" + w.iface(), ip, nil
 }
 
 func (w *wireguardOnboarder) iface() string {
