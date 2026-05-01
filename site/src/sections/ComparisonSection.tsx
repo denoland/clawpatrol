@@ -37,7 +37,7 @@ const ROWS: {
   { name: "agentgateway", checks: [false, false, true, false, true] },
   { name: "Clawvisor", checks: [true, false, false, false, true] },
   { name: "httpjail", checks: [false, true, false, false, false] },
-  { name: "Unclaw", checks: [true, true, true, true, true], highlight: true },
+  { name: "Claw Patrol", checks: [true, true, true, true, true], highlight: true },
 ];
 
 export function ComparisonSection() {
@@ -51,7 +51,7 @@ export function ComparisonSection() {
         More than a gateway, more than a sandbox
       </h3>
       <p class=" max-w-2xl mb-16 text-base leading-relaxed text-text-muted mt-8">
-        AI gateways see your model calls. Sandboxes isolate your process. Unclaw
+        AI gateways see your model calls. Sandboxes isolate your process. Claw Patrol
         does both — it sees every request and controls what credentials your
         agent can use.
       </p>

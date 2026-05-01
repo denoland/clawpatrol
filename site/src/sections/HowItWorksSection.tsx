@@ -6,7 +6,7 @@ function SecretInjectionDiagram() {
       viewBox="0 0 320 100"
       class="w-full h-auto mb-6"
       role="img"
-      aria-label="Agent request with SECRET placeholder flowing through Unclaw and emerging with a real credential"
+      aria-label="Agent request with SECRET placeholder flowing through Claw Patrol and emerging with a real credential"
     >
       <defs>
         <marker
@@ -86,9 +86,9 @@ function SecretInjectionDiagram() {
         marker-end="url(#si-arrow)"
       />
 
-      {/* Middle proxy — official Unclaw logo */}
+      {/* Middle proxy — official Claw Patrol logo */}
       <image
-        href="/unclaw-logo.svg"
+        href="/clawpatrol-logo.svg"
         x="132"
         y="40"
         width="56"

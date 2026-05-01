@@ -2,8 +2,8 @@ import { Layout } from "./Layout";
 import { SectionLabel } from "./components/SectionLabel";
 
 // tools/deploy `gh release download`s the latest binaries from
-// denoland/unclaw on each deploy and uploads them to
-// /opt/unclaw/static/dl/<TAG>/, with /dl/latest -> <TAG> as the
+// denoland/clawpatrol-go on each deploy and uploads them to
+// /opt/clawpatrol/static/dl/<TAG>/, with /dl/latest -> <TAG> as the
 // stable symlink. Caddy serves the tree at /dl/. Linking
 // /dl/latest/<asset> means each tile always resolves to the binary
 // from the most recently mirrored upstream release.
@@ -13,17 +13,17 @@ const PLATFORMS: { label: string; sub: string; asset: string }[] = [
   {
     label: "macOS",
     sub: "Apple Silicon (arm64)",
-    asset: "unclaw-darwin-arm64",
+    asset: "clawpatrol-darwin-arm64",
   },
   {
     label: "Linux",
     sub: "x86_64 (gnu)",
-    asset: "unclaw-linux-x64-gnu",
+    asset: "clawpatrol-linux-x64-gnu",
   },
   {
     label: "Linux",
     sub: "arm64 (gnu)",
-    asset: "unclaw-linux-arm64-gnu",
+    asset: "clawpatrol-linux-arm64-gnu",
   },
 ];
 
@@ -37,13 +37,13 @@ export function Download() {
             font-normal tracking-tight leading-[1.1] mb-8
             font-display text-console-dark"
         >
-          Get Unclaw
+          Get Claw Patrol
         </h1>
         <p class="max-w-xl mx-auto text-base sm:text-lg leading-relaxed mb-12 text-text-muted">
           Standalone binaries built from source on every release. No
           dependencies — drop the file on your <code class="font-mono text-sm">PATH</code> and
-          run <code class="font-mono text-sm">unclaw</code>. Prefer npm?{" "}
-          <code class="font-mono text-sm">npm install -g unclaw</code> ships
+          run <code class="font-mono text-sm">clawpatrol</code>. Prefer npm?{" "}
+          <code class="font-mono text-sm">npm install -g clawpatrol</code> ships
           the same release.
         </p>
 
@@ -53,14 +53,14 @@ export function Download() {
           </p>
           <pre class="px-5 py-4 squircle-md neu-inset bg-cream-light text-left overflow-x-auto">
             <code class="font-mono text-sm text-console-dark">
-              curl -fsSL https://unclaw.dev/install.sh | sh
+              curl -fsSL https://clawpatrol.dev/install.sh | sh
             </code>
           </pre>
           <p class="text-xs text-text-muted mt-3">
             Auto-detects your platform and installs to{" "}
-            <code class="font-mono">~/.local/bin/unclaw</code>. Override with{" "}
-            <code class="font-mono">UNCLAW_INSTALL_DIR</code> or pin a release
-            with <code class="font-mono">UNCLAW_VERSION</code>.
+            <code class="font-mono">~/.local/bin/clawpatrol</code>. Override with{" "}
+            <code class="font-mono">CLAWPATROL_INSTALL_DIR</code> or pin a release
+            with <code class="font-mono">CLAWPATROL_VERSION</code>.
           </p>
         </div>
 
@@ -98,10 +98,10 @@ export function Download() {
         <p class="text-sm text-text-muted">
           Source and release notes:{" "}
           <a
-            href="https://github.com/denoland/unclaw/releases"
+            href="https://github.com/denoland/clawpatrol-go/releases"
             class="underline underline-offset-2 transition-colors text-text"
           >
-            github.com/denoland/unclaw/releases
+            github.com/denoland/clawpatrol-go/releases
           </a>
         </p>
       </section>

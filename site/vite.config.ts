@@ -49,7 +49,7 @@ function serveDocsInDev(): Plugin {
             "/src/docs/DocsPage.tsx",
           ) as { DocsPage: any };
 
-          const docsDir = resolve(__dirname, "..", "unclaw", "doc");
+          const docsDir = resolve(__dirname, "..", "clawpatrol", "doc");
           const files = readdirSync(docsDir)
             .filter((f: string) => f.endsWith(".md"))
             .sort();
@@ -93,7 +93,7 @@ function serveDocsInDev(): Plugin {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Unclaw Docs</title>
+  <title>Claw Patrol Docs</title>
   <link rel="preload" as="font" type="font/woff2" href="/fonts/overpass-latin.woff2" crossorigin />
   <link rel="preload" as="font" type="font/woff2" href="/fonts/jetbrains-mono-latin.woff2" crossorigin />
   <link rel="stylesheet" href="/docs.css" />

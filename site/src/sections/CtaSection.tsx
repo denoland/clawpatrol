@@ -8,7 +8,7 @@ export function CtaSection() {
       <p class="max-w-lg mx-auto text-base sm:text-lg leading-relaxed mb-10 text-text-muted">
         The proxy handles your secrets — it must be auditable. MIT licensed.
         Multiple agents share secrets and endpoints, each with their own
-        policies. Self-host or use unclaw.dev.
+        policies. Self-host or use clawpatrol.dev.
       </p>
       <div class="max-w-sm md:max-w-lg mx-auto mb-16 mt-32">
         <CrtDisplay title="terminal">
@@ -19,7 +19,7 @@ export function CtaSection() {
                 "0 0 6px color-mix(in srgb, var(--color-crt) 31%, transparent), 0 0 14px color-mix(in srgb, var(--color-crt-dim) 19%, transparent)",
             }}
           >
-            npm install -g unclaw
+            npm install -g clawpatrol
           </pre>
         </CrtDisplay>
       </div>

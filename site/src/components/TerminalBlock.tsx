@@ -12,7 +12,7 @@ export function TerminalBlock() {
           }}
         >
           <div>
-            <span class="text-crt">npm install -g unclaw</span>
+            <span class="text-crt">npm install -g clawpatrol</span>
           </div>
         </div>
       </div>

@@ -18,7 +18,7 @@ export function HeroSection() {
           </h1>
           <p class="text-lg leading-relaxed mb-10 max-w-lg text-text-muted">
             Your agent can access every API key in plaintext — and you have no
-            idea what it costs or where requests go. Unclaw is a forward proxy
+            idea what it costs or where requests go. Claw Patrol is a forward proxy
             that intercepts all traffic, injects secrets without exposing them,
             and shows you everything. Works with OpenClaw, Claude Code, Codex,
             or any agent — no code changes.

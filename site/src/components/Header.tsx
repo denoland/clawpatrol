@@ -9,7 +9,7 @@ export function Header() {
           uppercase font-semibold font-display text-console-dark"
       >
         <a href="/" class="isolate">
-          <img src="/unclaw-logo.svg" alt="Unclaw Logo" class="h-8 w-auto" />
+          <img src="/clawpatrol-logo.svg" alt="Claw Patrol" class="h-8 w-auto" />
         </a>
       </div>
       <div class="flex items-center gap-4 sm:gap-8 text-sm">
@@ -26,7 +26,7 @@ export function Header() {
           Download
         </a>
         <a
-          href="https://github.com/denoland/unclaw"
+          href="https://github.com/denoland/clawpatrol-go"
           class="transition-colors font-mono text-text-muted underline underline-offset-4 hidden sm:inline"
         >
           GitHub

@@ -516,7 +516,7 @@ a.neu-raised:active {
       height: 500vh;
     }
 
-    .dia2-unclaw,
+    .dia2-clawpatrol,
     .dia2-keys,
     .dia2-oneway,
     .dia2-blocked {
@@ -524,7 +524,7 @@ a.neu-raised:active {
     }
 
     /* Nodes appear */
-    .dia2-unclaw {
+    .dia2-clawpatrol {
       animation: dia-appear linear both;
       animation-timeline: --diagram-sol;
       animation-range: cover 20% cover 26%;

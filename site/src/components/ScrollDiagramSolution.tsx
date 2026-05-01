@@ -8,11 +8,11 @@ const AGENT = `┌──────────┐
 │          │
 └──────────┘`;
 
-const UNCLAW = `┌────────────┐
-│            │
-│   UNCLAW   │
-│            │
-└────────────┘`;
+const CLAWPATROL = `┌──────────────┐
+│              │
+│  CLAWPATROL  │
+│              │
+└──────────────┘`;
 
 const APPROVED = `┌──────────────┐
 │ Enabled      │
@@ -51,24 +51,24 @@ export function ScrollDiagramSolution() {
         >
           {/* === DASHED TRACKS === */}
 
-          {/* Track: Agent → Unclaw */}
+          {/* Track: Agent → Claw Patrol */}
           <div class="absolute text-crt-faint/30 left-[10ch] top-[calc(4*1.6em)]">
             {"─ ─ ─"}
           </div>
 
-          {/* Track: Unclaw right edge → Approved */}
+          {/* Track: Claw Patrol right edge → Approved */}
           <div class="absolute text-crt-faint/30 left-[30ch] top-[calc(4*1.6em)]">
             {"─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─"}
           </div>
 
-          {/* Track: ┬ at Unclaw bottom center, then vertical drop */}
+          {/* Track: ┬ at Claw Patrol bottom center, then vertical drop */}
           <div class="absolute text-crt-faint/30 z-20 left-[22ch] top-[calc(6*1.6em)]">
             {"┬\n│\n│\n└ ─ ─ ─ ─ ─ ─ ─"}
           </div>
 
           {/* === ACTIVE LINES (typed char by char) === */}
 
-          {/* Active: Agent → Unclaw */}
+          {/* Active: Agent → Claw Patrol */}
           <div class="absolute text-crt left-[10ch] top-[calc(4*1.6em)]">
             <TypeLine
               text={"─ ─ ─"}
@@ -78,7 +78,7 @@ export function ScrollDiagramSolution() {
             />
           </div>
 
-          {/* Active: Unclaw → Secrets → Approved */}
+          {/* Active: Claw Patrol → Secrets → Approved */}
           <div class="absolute text-crt left-[30ch] top-[calc(4*1.6em)]">
             <TypeLine
               text={"─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─"}
@@ -114,8 +114,8 @@ export function ScrollDiagramSolution() {
             {AGENT}
           </div>
 
-          <div class="dia2-unclaw absolute text-accent bg-crt-bg z-10 left-[16ch] top-[calc(2*1.6em)]">
-            {UNCLAW}
+          <div class="dia2-clawpatrol absolute text-accent bg-crt-bg z-10 left-[16ch] top-[calc(2*1.6em)]">
+            {CLAWPATROL}
           </div>
 
           {/* Secrets — centered vertically on the line */}
@@ -144,7 +144,7 @@ export function ScrollDiagramSolution() {
             But the secrets live outside the agent
           </p>
           <p class="dia2-cap dia2-cap-3 absolute inset-x-0 text-center">
-            Agents send placeholders; Unclaw injects real credentials at the
+            Agents send placeholders; Claw Patrol injects real credentials at the
             edge
           </p>
           <p class="dia2-cap dia2-cap-4 absolute inset-x-0 text-center">

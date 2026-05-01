@@ -12,7 +12,7 @@ export function Footer() {
           <p>
             Open-source under the{" "}
             <a
-              href="https://github.com/denoland/unclaw/blob/main/LICENSE"
+              href="https://github.com/denoland/clawpatrol-go/blob/main/LICENSE"
               class="underline underline-offset-4 hover:text-accent"
             >
               MIT license
@@ -38,13 +38,13 @@ export function Footer() {
             Docs
           </a>
           <a
-            href="https://github.com/denoland/unclaw"
+            href="https://github.com/denoland/clawpatrol-go"
             class="underline underline-offset-4 hover:text-accent"
           >
             GitHub
           </a>
           <a
-            href="https://github.com/denoland/unclaw/blob/main/LICENSE"
+            href="https://github.com/denoland/clawpatrol-go/blob/main/LICENSE"
             class="underline underline-offset-4 hover:text-accent"
           >
             License

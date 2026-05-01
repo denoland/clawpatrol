@@ -1,29 +1,29 @@
 #!/bin/sh
-# Unclaw installer.
+# Claw Patrol installer.
 #
 # Usage:
-#   curl -fsSL https://unclaw.dev/install.sh | sh
+#   curl -fsSL https://clawpatrol.dev/install.sh | sh
 #
 # Environment overrides:
-#   UNCLAW_INSTALL_DIR  Target directory (default: $HOME/.local/bin)
-#   UNCLAW_VERSION      Release tag like v0.0.41 (default: latest)
+#   CLAWPATROL_INSTALL_DIR  Target directory (default: $HOME/.local/bin)
+#   CLAWPATROL_VERSION      Release tag like v0.0.41 (default: latest)
 #
 # Downloads the platform-appropriate binary from
-# https://unclaw.dev/dl/<version>/unclaw-<triple>, installs it to
-# $UNCLAW_INSTALL_DIR/unclaw, and prints `unclaw --version`.
+# https://clawpatrol.dev/dl/<version>/clawpatrol-<triple>, installs it to
+# $CLAWPATROL_INSTALL_DIR/clawpatrol, and prints `clawpatrol --version`.
 
 set -eu
 
-base_url="https://unclaw.dev"
-version="${UNCLAW_VERSION:-latest}"
-install_dir="${UNCLAW_INSTALL_DIR:-${HOME:-}/.local/bin}"
+base_url="https://clawpatrol.dev"
+version="${CLAWPATROL_VERSION:-latest}"
+install_dir="${CLAWPATROL_INSTALL_DIR:-${HOME:-}/.local/bin}"
 
 err() {
-  printf 'unclaw install: %s\n' "$1" >&2
+  printf 'clawpatrol install: %s\n' "$1" >&2
   exit 1
 }
 
-[ -n "$install_dir" ] || err "no install directory (set UNCLAW_INSTALL_DIR or HOME)"
+[ -n "$install_dir" ] || err "no install directory (set CLAWPATROL_INSTALL_DIR or HOME)"
 
 # Resolve platform triple from uname.
 os=$(uname -s 2>/dev/null || echo unknown)
@@ -51,7 +51,7 @@ case "$os" in
     ;;
 esac
 
-asset="unclaw-$triple"
+asset="clawpatrol-$triple"
 url="$base_url/dl/$version/$asset"
 
 command -v curl >/dev/null 2>&1 || err "curl is required"
@@ -68,7 +68,7 @@ curl -fsSL --output "$tmp" "$url" \
 [ -s "$tmp" ] || err "downloaded file is empty: $url"
 
 mkdir -p "$install_dir" || err "failed to create $install_dir"
-target="$install_dir/unclaw"
+target="$install_dir/clawpatrol"
 chmod +x "$tmp" || err "chmod failed on $tmp"
 mv -f "$tmp" "$target" || err "failed to move binary into $target"
 trap - EXIT INT HUP TERM

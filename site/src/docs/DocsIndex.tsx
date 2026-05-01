@@ -13,7 +13,7 @@ export function DocsIndex({ docs }: { docs: DocEntry[] }) {
           Documentation
         </p>
         <h1 class="text-4xl font-normal tracking-tight leading-tight mb-12 font-display text-console-dark">
-          Unclaw Docs
+          Claw Patrol Docs
         </h1>
         <nav>
           <ul class="space-y-4">

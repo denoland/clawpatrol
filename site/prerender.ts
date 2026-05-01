@@ -1,7 +1,7 @@
 // Build-time prerender script.
 // Renders the Landing component to static HTML
 // and injects it into the Vite-built index.html.
-// Also generates static docs pages from unclaw/doc/*.md.
+// Also generates static docs pages from clawpatrol/doc/*.md.
 
 import {
   readFileSync,
@@ -75,16 +75,16 @@ mkdirSync(downloadDir, { recursive: true });
 const downloadBody = renderToString(h(Download, null));
 writeFileSync(
   resolve(downloadDir, "index.html"),
-  makeShellHtml("Download — Unclaw", downloadBody),
+  makeShellHtml("Download — Claw Patrol", downloadBody),
 );
 console.log("Prerendered dist/download/index.html");
 
 // --- Docs pages ---
 
 // When esbuild bundles this, __dirname is site/dist-prerender.
-// The unclaw submodule is at the repo root.
+// The clawpatrol submodule is at the repo root.
 const repoRoot = resolve(__dirname, "..", "..");
-const docsDir = resolve(repoRoot, "unclaw", "doc");
+const docsDir = resolve(repoRoot, "clawpatrol", "doc");
 const mdFiles = readdirSync(docsDir)
   .filter((f) => f.endsWith(".md"))
   .sort();
@@ -93,7 +93,7 @@ function makeDocHtml(title: string, bodyHtml: string): string {
   return shellHtml
     .replace(
       /<title>[^<]*<\/title>/,
-      `<title>${title} — Unclaw Docs</title>`,
+      `<title>${title} — Claw Patrol Docs</title>`,
     )
     .replace(
       /<\/head>/,
