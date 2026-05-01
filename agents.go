@@ -277,31 +277,6 @@ func printDashboardURL(listen string) {
 	}
 }
 
-// seed pre-populates an agent (used by demo feed to skip whois lookup).
-func (r *AgentRegistry) seed(ip, hostname, user, os string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, ok := r.agents[ip]; ok {
-		return
-	}
-	r.agents[ip] = &Agent{IP: ip, Hostname: hostname, User: user, OS: os, FirstAt: time.Now().UTC().Add(-1 * time.Hour)}
-}
-
-// bump records traffic for an already-seeded agent, no whois.
-func (r *AgentRegistry) bump(ip, host string, in, out int64) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	a, ok := r.agents[ip]
-	if !ok {
-		return
-	}
-	a.LastAt = time.Now().UTC()
-	a.Reqs++
-	a.BytesIn += in
-	a.BytesOut += out
-	a.LastHost = host
-}
-
 func (r *AgentRegistry) snapshot() []*Agent {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -338,14 +313,6 @@ func (r *AgentRegistry) Delete(ip string) {
 	delete(r.agents, ip)
 }
 
-func (r *AgentRegistry) setIntegrations(ip string, ids []string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if a := r.agents[ip]; a != nil {
-		a.Integrations = append([]string(nil), ids...)
-	}
-}
-
 func (r *AgentRegistry) recordLLMUsage(ip, sessionType, sessionID, sessionTitle, model string, in, out int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -368,24 +335,6 @@ func (r *AgentRegistry) recordLLMUsage(ip, sessionType, sessionID, sessionTitle,
 
 func ctxMaxFor(model string) int64 {
 	return models.ctxMax(model)
-}
-
-func (r *AgentRegistry) seedSession(ip, t, model, title string, in, out int64) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	a := r.agents[ip]
-	if a == nil {
-		return
-	}
-	now := time.Now().UTC()
-	s := &Session{
-		ID: shortHash(title), Title: title, Type: t,
-		FirstAt: now.Add(-30 * time.Minute), LastAt: now,
-		Model: model, TokensIn: in, TokensOut: out,
-		CtxUsed: in + out, CtxMax: ctxMaxFor(model),
-		Reqs: in / 1000,
-	}
-	a.Sessions = append(a.Sessions, s)
 }
 
 func shortHash(s string) string {

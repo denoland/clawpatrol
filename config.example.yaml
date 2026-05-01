@@ -1,7 +1,7 @@
 listen: ":443"
-info_listen: ":8080"      # serves /ca.crt + /info for `clawall login`
+info_listen: ":8080"      # serves /ca.crt + /info for `clawpatrol login`
 ca_dir: "./ca"
-log_path: "/var/log/clawall-gateway.log"
+log_path: "/var/log/clawpatrol-gateway.log"
 
 # Built-in integrations. Each name pulls in default OAuth + rules.
 # Available: claude-max, openai, anthropic, github, openrouter, gemini, notion
@@ -42,5 +42,5 @@ integrations:
 # tailscale:
 #   authkey: ""
 #   control_url: ""    # for Headscale or custom
-#   hostname: "clawall"
+#   hostname: "clawpatrol"
 #   state_dir: "./ts-state"

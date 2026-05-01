@@ -96,7 +96,7 @@ func writeCA(dir string) error {
 	serial, _ := rand.Int(rand.Reader, big.NewInt(1<<62))
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: "clawall gateway CA"},
+		Subject:               pkix.Name{CommonName: "clawpatrol gateway CA"},
 		NotBefore:             time.Now().Add(-1 * time.Hour),
 		NotAfter:              time.Now().Add(10 * 365 * 24 * time.Hour),
 		IsCA:                  true,

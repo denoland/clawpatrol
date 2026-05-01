@@ -14,9 +14,9 @@ import (
 	"strings"
 )
 
-const ruleSystemPrompt = `You translate natural-language gateway-policy requests into clawall rule YAML.
+const ruleSystemPrompt = `You translate natural-language gateway-policy requests into clawpatrol rule YAML.
 
-A clawall rule is YAML matching this schema:
+A clawpatrol rule is YAML matching this schema:
 
   - host: example.com           # required, exact host or glob
     device: 100.64.x.y          # optional, scopes to one device IP
@@ -39,9 +39,9 @@ A clawall rule is YAML matching this schema:
     upstream: real-host.com      # optional, override upstream host
     port: 443                    # optional
     mtls:                        # optional, present a client cert at the upstream
-      ca: /etc/clawall/k8s-ca.pem
-      cert: /etc/clawall/k8s-client.crt
-      key:  /etc/clawall/k8s-client.key
+      ca: /etc/clawpatrol/k8s-ca.pem
+      cert: /etc/clawpatrol/k8s-client.crt
+      key:  /etc/clawpatrol/k8s-client.key
 
 Rules are evaluated in order; first match wins. Device-scoped rules
 take precedence over global ones.

@@ -86,7 +86,7 @@ func newWebMux(g *Gateway, caDir string, ts Tailscale, publicURL string) http.Ha
 }
 
 // tailnetGate restricts non-tailnet callers to a minimal allow-list
-// needed for `clawall join` device-flow onboarding. Dashboard, status,
+// needed for `clawpatrol join` device-flow onboarding. Dashboard, status,
 // oauth and event streams are tailnet-only.
 //
 // Public allow-list:
@@ -134,7 +134,7 @@ func (w *webMux) tailnetGate(next http.Handler) http.Handler {
 			login = r.Header.Get("Tailscale-User-Login")
 		}
 		if login == "" {
-			http.Error(rw, "tailnet access required — onboard via `clawall join --url <gateway>`", 403)
+			http.Error(rw, "tailnet access required — onboard via `clawpatrol join --url <gateway>`", 403)
 			return
 		}
 		next.ServeHTTP(rw, r)
@@ -158,7 +158,7 @@ func (w *webMux) serveCA(rw http.ResponseWriter, r *http.Request) {
 
 func (w *webMux) serveInfo(rw http.ResponseWriter, _ *http.Request) {
 	rw.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(rw, `{"clawall":true,"version":"0.1"}`+"\n")
+	fmt.Fprintf(rw, `{"clawpatrol":true,"version":"0.1"}`+"\n")
 }
 
 // callerIdentity resolves the (user, device) of the request peer via
@@ -262,7 +262,7 @@ func (w *webMux) apiAgents(rw http.ResponseWriter, _ *http.Request) {
 	writeJSON(rw, snap)
 }
 
-// apiAgentDelete drops a device from clawall's view. Removes the
+// apiAgentDelete drops a device from clawpatrol's view. Removes the
 // in-memory agent record and the onboard owner-IP override. Does NOT
 // remove the device from the tailnet — admins can do that from the
 // Tailscale admin console if they want a hard kick.

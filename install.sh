@@ -1,25 +1,25 @@
 #!/bin/sh
-# clawall installer. No prebuilt binaries — fetches the repo and builds
+# clawpatrol installer. No prebuilt binaries — fetches the repo and builds
 # from source. Installs Go on the fly if needed.
 #
 # Usage:
-#   curl -fsSL https://littledivy.github.io/clawall/install.sh | sh
+#   curl -fsSL https://littledivy.github.io/clawpatrol/install.sh | sh
 #
 # Options (env vars):
-#   CLAWALL_REPO     — defaults to https://github.com/littledivy/clawall
-#   CLAWALL_REF      — git ref to build (default: main)
-#   CLAWALL_PREFIX   — install dir (default: $HOME/.local/bin)
-#   CLAWALL_GO_VER   — go toolchain version to fetch if `go` missing (default: 1.23.4)
+#   CLAWPATROL_REPO     — defaults to https://github.com/littledivy/clawpatrol
+#   CLAWPATROL_REF      — git ref to build (default: main)
+#   CLAWPATROL_PREFIX   — install dir (default: $HOME/.local/bin)
+#   CLAWPATROL_GO_VER   — go toolchain version to fetch if `go` missing (default: 1.23.4)
 #
 # POSIX sh — `pipefail` is bash-only and dash chokes on it, so we rely
 # on `set -eu` plus explicit `|| fail` checks at every pipe.
 
 set -eu
 
-REPO="${CLAWALL_REPO:-https://github.com/littledivy/clawall}"
-REF="${CLAWALL_REF:-main}"
-PREFIX="${CLAWALL_PREFIX:-$HOME/.local/bin}"
-GO_VER="${CLAWALL_GO_VER:-1.23.4}"
+REPO="${CLAWPATROL_REPO:-https://github.com/littledivy/clawpatrol}"
+REF="${CLAWPATROL_REF:-main}"
+PREFIX="${CLAWPATROL_PREFIX:-$HOME/.local/bin}"
+GO_VER="${CLAWPATROL_GO_VER:-1.23.4}"
 
 say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 fail() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -75,7 +75,7 @@ if command -v npm >/dev/null 2>&1 && [ -d "$SRC/www" ]; then
     say "dashboard build failed (skipping — gateway still works)"
 fi
 
-# --- 4. build clawall -----------------------------------------------------
+# --- 4. build clawpatrol -----------------------------------------------------
 # go:embed in web.go points at www/dist — must exist or `go build`
 # refuses. Drop a placeholder when the npm build was skipped/failed
 # so the gateway binary still compiles (CLI subcommands don't need
@@ -84,20 +84,20 @@ mkdir -p "$SRC/www/dist"
 if [ -z "$(ls -A "$SRC/www/dist" 2>/dev/null)" ]; then
   printf '<!doctype html><html><body><pre>dashboard not built — re-run install.sh on a host with npm</pre></body></html>' > "$SRC/www/dist/index.html"
 fi
-say "building clawall"
-( cd "$SRC" && "$GO_BIN" build -ldflags "-s -w" -o clawall . ) || fail "build failed"
+say "building clawpatrol"
+( cd "$SRC" && "$GO_BIN" build -ldflags "-s -w" -o clawpatrol . ) || fail "build failed"
 
 # --- 5. install -----------------------------------------------------------
 mkdir -p "$PREFIX"
-mv "$SRC/clawall" "$PREFIX/clawall"
-chmod +x "$PREFIX/clawall"
-say "installed: $PREFIX/clawall"
+mv "$SRC/clawpatrol" "$PREFIX/clawpatrol"
+chmod +x "$PREFIX/clawpatrol"
+say "installed: $PREFIX/clawpatrol"
 
 case ":$PATH:" in
   *":$PREFIX:"*) ;;
   *) printf '\n  add to PATH:  export PATH="%s:$PATH"\n\n' "$PREFIX" ;;
 esac
 
-"$PREFIX/clawall" version 2>/dev/null || true
+"$PREFIX/clawpatrol" version 2>/dev/null || true
 echo
-echo "next: clawall join --url <gateway-url>"
+echo "next: clawpatrol join --url <gateway-url>"

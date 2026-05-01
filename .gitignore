@@ -3,7 +3,7 @@ ca/
 ts-state/
 dist/
 gateway
-clawall
+clawpatrol
 unclaw
 *.log
 www/node_modules

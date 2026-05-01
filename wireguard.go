@@ -68,8 +68,8 @@ func (w *wireguardOnboarder) MintKey(ctx context.Context) (string, string, strin
 	conf := fmt.Sprintf(`[Interface]
 PrivateKey = %s
 Address = %s/32
-PostUp = cp /etc/resolv.conf /etc/resolv.conf.clawall.bak 2>/dev/null; printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
-PostDown = mv /etc/resolv.conf.clawall.bak /etc/resolv.conf 2>/dev/null || true
+PostUp = cp /etc/resolv.conf /etc/resolv.conf.clawpatrol.bak 2>/dev/null; printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
+PostDown = mv /etc/resolv.conf.clawpatrol.bak /etc/resolv.conf 2>/dev/null || true
 
 [Peer]
 PublicKey = %s
@@ -84,7 +84,7 @@ func (w *wireguardOnboarder) iface() string {
 	if w.ts.WGInterface != "" {
 		return w.ts.WGInterface
 	}
-	return "clawall"
+	return "clawpatrol"
 }
 
 // allocateIP grabs the next free IP from WGSubnetCIDR, persisting the
@@ -113,9 +113,9 @@ func (w *wireguardOnboarder) allocFile() string {
 	if w.allocPath != "" {
 		return w.allocPath
 	}
-	dir := os.Getenv("CLAWALL_OAUTH_DIR")
+	dir := os.Getenv("CLAWPATROL_OAUTH_DIR")
 	if dir == "" {
-		dir = "/opt/clawall/oauth"
+		dir = "/opt/clawpatrol/oauth"
 	}
 	return filepath.Join(dir, "wg-allocations.json")
 }

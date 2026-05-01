@@ -49,7 +49,7 @@ type onboardRegistry struct {
 	// ownerByIP maps a tailnet IP to the human approver email. Tailscale
 	// OAuth client_credentials always mints `tag:client` keys, so whois
 	// for onboarded devices returns "tagged-devices" — useless for
-	// per-user OAuth integration scoping. After `clawall join` finishes,
+	// per-user OAuth integration scoping. After `clawpatrol join` finishes,
 	// the CLI hits /api/onboard/claim from the new tailnet IP; we record
 	// (peer-ip → approver) here and use it as a whois override. Persisted
 	// to disk so gateway restarts don't drop the mapping.

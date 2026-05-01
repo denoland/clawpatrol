@@ -17,8 +17,8 @@ fi
 
 TARGET="${TARGET:-bot0-linux@vm.littledivy.com}"
 PORT="${PORT:-8443}"
-REMOTE_DIR="${REMOTE_DIR:-/opt/clawall}"
-HOSTNAME_TAG="${HOSTNAME_TAG:-clawall}"
+REMOTE_DIR="${REMOTE_DIR:-/opt/clawpatrol}"
+HOSTNAME_TAG="${HOSTNAME_TAG:-clawpatrol}"
 
 cd "$(dirname "$0")/.."
 mkdir -p dist
@@ -134,8 +134,6 @@ integrations:
 
 ${TS_BLOCK}
 
-demo: false
-
 # No default global rules. Operators add company-wide policy here, or
 # users add per-device rules via the dashboard.
 rules: []
@@ -168,9 +166,9 @@ if ! ip link show tailscale0 >/dev/null 2>&1; then
   exit 5
 fi
 echo "  -- redirect tailscale0:tcp/443 -> 127.0.0.1:${PORT}, drop tailscale0:udp/443 (no QUIC bypass)"
-nft list table ip clawall >/dev/null 2>&1 && nft delete table ip clawall
+nft list table ip clawpatrol >/dev/null 2>&1 && nft delete table ip clawpatrol
 nft -f - <<NFT
-table ip clawall {
+table ip clawpatrol {
     chain prerouting {
         type nat hook prerouting priority dstnat; policy accept;
         iif "tailscale0" tcp dport 443 redirect to :${PORT}
@@ -182,7 +180,7 @@ table ip clawall {
 }
 NFT
 # Open dashboard/onboard port (8080) on the public iface — needed for
-# brand-new clients running \`clawall join --url ...\` since they
+# brand-new clients running \`clawpatrol join --url ...\` since they
 # aren't on the tailnet yet. The tailnetGate middleware in web.go
 # restricts non-tailnet callers to /api/onboard/* + /info anyway.
 if ! iptables -C INPUT -p tcp --dport 8080 -j ACCEPT 2>/dev/null; then
@@ -243,7 +241,7 @@ echo "  -- tailnet IP: $(tailscale ip -4 | head -1)"
 
 # Tailscale Funnel: expose port 8080 publicly via the tailnet's
 # magic DNS hostname (https://<host>.<tailnet>.ts.net). Avoids
-# distributing raw IPs in `clawall join --url` commands. Requires
+# distributing raw IPs in `clawpatrol join --url` commands. Requires
 # `nodeAttrs: [funnel]` on this node in the tailnet ACL.
 echo "  -- enabling tailscale funnel for :8080"
 tailscale funnel reset 2>/dev/null || true
@@ -252,9 +250,9 @@ tailscale funnel --bg 8080 2>&1 | sed 's/^/     /' || \
   echo "     (funnel not enabled — visit https://login.tailscale.com/admin/dns and turn on HTTPS + Funnel)"
 EOSSH
 
-cat > dist/clawall-gateway.service <<EOF
+cat > dist/clawpatrol-gateway.service <<EOF
 [Unit]
-Description=clawall gateway
+Description=clawpatrol gateway
 After=network-online.target tailscaled.service
 Wants=network-online.target
 
@@ -283,7 +281,7 @@ ship_if_changed dist/gateway.yaml "${REMOTE_DIR}/gateway.yaml"
 ship_if_changed dist/remote-modules.sh "${REMOTE_DIR}/remote-modules.sh"
 ship_if_changed dist/remote-nft.sh "${REMOTE_DIR}/remote-nft.sh"
 ship_if_changed dist/remote-up.sh "${REMOTE_DIR}/remote-up.sh"
-ship_if_changed dist/clawall-gateway.service /etc/systemd/system/clawall-gateway.service
+ship_if_changed dist/clawpatrol-gateway.service /etc/systemd/system/clawpatrol-gateway.service
 remote "chmod +x ${REMOTE_DIR}/remote-modules.sh ${REMOTE_DIR}/remote-nft.sh ${REMOTE_DIR}/remote-up.sh"
 
 # --- 5. kernel modules (must precede tailscaled — it bails w/o iptables) -
@@ -305,19 +303,19 @@ remote "
   [[ -f ${REMOTE_DIR}/secrets.env ]] || touch ${REMOTE_DIR}/secrets.env
   chmod 600 ${REMOTE_DIR}/secrets.env
   systemctl daemon-reload
-  systemctl enable clawall-gateway.service >/dev/null
-  systemctl restart clawall-gateway.service
+  systemctl enable clawpatrol-gateway.service >/dev/null
+  systemctl restart clawpatrol-gateway.service
   sleep 1
-  echo '  -- service:' \$(systemctl is-active clawall-gateway.service)
+  echo '  -- service:' \$(systemctl is-active clawpatrol-gateway.service)
 "
 
 # --- 8. report -----------------------------------------------------------
 say "status"
 remote '
   echo "  tailnet IP: $(tailscale ip -4 | head -1)"
-  echo "  gateway:    $(systemctl is-active clawall-gateway)"
+  echo "  gateway:    $(systemctl is-active clawpatrol-gateway)"
   echo "  recent log:"
-  journalctl -u clawall-gateway -n 5 --no-pager | sed "s/^/    /"
+  journalctl -u clawpatrol-gateway -n 5 --no-pager | sed "s/^/    /"
 '
 
 say "done."

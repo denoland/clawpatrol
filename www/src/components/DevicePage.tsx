@@ -44,7 +44,7 @@ export function DevicePage({
   const allForUser = integrations;
 
   async function remove() {
-    if (!confirm(`Remove ${dev.hostname || dev.ip} from clawall?\n\nThis clears the device's tracking + owner mapping. Tailscale node stays — remove from admin console if you want a hard kick.`)) return;
+    if (!confirm(`Remove ${dev.hostname || dev.ip} from clawpatrol?\n\nThis clears the device's tracking + owner mapping. Tailscale node stays — remove from admin console if you want a hard kick.`)) return;
     try {
       await deleteAgent(dev.ip);
       onBack();

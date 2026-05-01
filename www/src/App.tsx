@@ -58,7 +58,7 @@ export default function App() {
         <main className="flex-1 mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-8 space-y-8">
           <div className="flex items-center gap-4">
             <h1 className="font-serif text-[44px] sm:text-[56px] leading-none tracking-tight text-[#171717]">
-              clawall
+              clawpatrol
             </h1>
             <button
               onClick={() => setShowAddDevice(true)}

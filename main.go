@@ -37,7 +37,6 @@ type Config struct {
 	Resolver         string             `yaml:"resolver"`
 	LogPath          string             `yaml:"log_path"`
 	OAuthDir         string             `yaml:"oauth_dir"`
-	Demo             bool               `yaml:"demo"`
 	Tailscale        Tailscale          `yaml:"tailscale"`
 	IntegrationNames []string           `yaml:"integrations"`
 	OAuth            []OAuthIntegration `yaml:"oauth"`
@@ -51,11 +50,11 @@ type Tailscale struct {
 	StateDir   string `yaml:"state_dir"`
 
 	// Control is "tailscale" (default) or "headscale". Picks which
-	// onboarder mints auth-keys when new clients run `clawall join`.
+	// onboarder mints auth-keys when new clients run `clawpatrol join`.
 	Control string `yaml:"control"`
 
 	// OAuth client used to mint single-use auth-keys for new clients
-	// during `clawall login --url ...` device-flow onboarding. Create
+	// during `clawpatrol login --url ...` device-flow onboarding. Create
 	// an OAuth client at https://login.tailscale.com/admin/settings/oauth
 	// with the `auth_keys` scope.  (control=tailscale)
 	OAuthClientID     string   `yaml:"oauth_client_id"`
@@ -1138,7 +1137,7 @@ func main() {
 	case "init-ca":
 		runInitCA(os.Args[2:])
 	case "version":
-		fmt.Println("clawall 0.1")
+		fmt.Println("clawpatrol 0.1")
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -1156,21 +1155,21 @@ func peerIP(c net.Conn) string {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `clawall — secret-injection MITM proxy for AI agents
+	fmt.Fprintln(os.Stderr, `clawpatrol — secret-injection MITM proxy for AI agents
 
 usage:
-  clawall gateway [-config FILE]    run the gateway server
-  clawall login                     onboard this machine (set exit-node + install CA)
-  clawall env                       print shell exports for sourcing
-  clawall auth ID                   run browser OAuth flow, capture refresh token
-  clawall init-ca DIR               generate a new CA in DIR
-  clawall version`)
+  clawpatrol gateway [-config FILE]    run the gateway server
+  clawpatrol login                     onboard this machine (set exit-node + install CA)
+  clawpatrol env                       print shell exports for sourcing
+  clawpatrol auth ID                   run browser OAuth flow, capture refresh token
+  clawpatrol init-ca DIR               generate a new CA in DIR
+  clawpatrol version`)
 	os.Exit(2)
 }
 
 func runInitCA(args []string) {
 	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: clawall init-ca DIR")
+		fmt.Fprintln(os.Stderr, "usage: clawpatrol init-ca DIR")
 		os.Exit(2)
 	}
 	if err := writeCA(args[0]); err != nil {
@@ -1180,8 +1179,8 @@ func runInitCA(args []string) {
 }
 
 func runGateway(args []string) {
-	// `clawall gateway init` is a one-shot setup wizard, distinct from
-	// `clawall gateway -config …` which starts the long-running daemon.
+	// `clawpatrol gateway init` is a one-shot setup wizard, distinct from
+	// `clawpatrol gateway -config …` which starts the long-running daemon.
 	if len(args) > 0 && args[0] == "init" {
 		runGatewayInit(args[1:])
 		return
@@ -1246,13 +1245,10 @@ func runGateway(args []string) {
 		}()
 		printDashboardURL(cfg.InfoListen)
 	}
-	if cfg.Demo {
-		go runDemoFeed(g)
-	}
 	go g.servePorts()
 
 	// Embedded userspace WireGuard server. When operator sets
-	// tailscale.control=wireguard, the clawall process becomes the
+	// tailscale.control=wireguard, the clawpatrol process becomes the
 	// WG endpoint — peers established at onboard time route ALL
 	// traffic into our netstack (AllowedIPs=0.0.0.0/0). The
 	// promiscuous forwarder accepts SYNs to any dst IP/port:

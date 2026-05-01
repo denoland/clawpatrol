@@ -1,7 +1,7 @@
 package main
 
 // Embedded userspace WireGuard server. No kernel module, no wg-quick,
-// no /etc/wireguard, no systemd. The clawall binary IS the WG endpoint.
+// no /etc/wireguard, no systemd. The clawpatrol binary IS the WG endpoint.
 //
 // Lifecycle:
 //   - StartWGServer parses Tailscale config block (control=wireguard),
@@ -115,7 +115,7 @@ func (n *epNotify) WriteNotify() {
 }
 
 func (t *netTun) File() *os.File              { return nil }
-func (t *netTun) Name() (string, error)       { return "clawall-wg", nil }
+func (t *netTun) Name() (string, error)       { return "clawpatrol-wg", nil }
 func (t *netTun) MTU() (int, error)           { return t.mtu, nil }
 func (t *netTun) Events() <-chan wgtun.Event  { return t.events }
 func (t *netTun) BatchSize() int              { return 1 }

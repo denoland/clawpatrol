@@ -25,7 +25,7 @@ func runAuth(args []string) {
 	_ = fs.Parse(args)
 
 	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: clawall auth <integration-id> [-config FILE] [-port N] [-no-open]")
+		fmt.Fprintln(os.Stderr, "usage: clawpatrol auth <integration-id> [-config FILE] [-port N] [-no-open]")
 		os.Exit(2)
 	}
 	id := fs.Arg(0)
@@ -116,7 +116,7 @@ func runAuth(args []string) {
 			errCh <- fmt.Errorf("no code")
 			return
 		}
-		fmt.Fprint(w, "<h2>clawall: authentication received</h2><p>You can close this tab.</p>")
+		fmt.Fprint(w, "<h2>clawpatrol: authentication received</h2><p>You can close this tab.</p>")
 		codeCh <- code
 	})
 	go func() {
@@ -170,7 +170,7 @@ func exchangeAndReport(o *oauth2.Config, code, verifier, redirect, id, _envIDFal
 	fmt.Println("add to gateway secrets.env (paste this on the gateway host):")
 	fmt.Printf("  %s='%s'\n", envName, tok.RefreshToken)
 	fmt.Println()
-	fmt.Println("then restart gateway: systemctl restart clawall-gateway")
+	fmt.Println("then restart gateway: systemctl restart clawpatrol-gateway")
 }
 
 func oauthIDs(items []OAuthIntegration) []string {

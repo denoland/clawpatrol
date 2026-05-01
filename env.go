@@ -13,18 +13,18 @@ import (
 // provider's expected format closely enough to pass client-side
 // validation — but the bytes never reach the API.
 const (
-	envClaudePlaceholder = "sk-ant-oat01-clawall-placeholder-token-do-not-use-as-real-key"
-	envGitHubPlaceholder = "ghp_clawall_placeholder_token_do_not_use_as_real_key"
+	envClaudePlaceholder = "sk-ant-oat01-clawpatrol-placeholder-token-do-not-use-as-real-key"
+	envGitHubPlaceholder = "ghp_clawpatrol_placeholder_token_do_not_use_as_real_key"
 )
 
 func runEnv(args []string) {
 	fs := flag.NewFlagSet("env", flag.ExitOnError)
-	caDir := fs.String("ca-dir", defaultClawallDir(), "directory containing ca.crt")
+	caDir := fs.String("ca-dir", defaultClawpatrolDir(), "directory containing ca.crt")
 	_ = fs.Parse(args)
 
 	caPath := filepath.Join(*caDir, "ca.crt")
 	if _, err := os.Stat(caPath); err != nil {
-		fmt.Fprintf(os.Stderr, "clawall: ca not found at %s — run `clawall login` first\n", caPath)
+		fmt.Fprintf(os.Stderr, "clawpatrol: ca not found at %s — run `clawpatrol login` first\n", caPath)
 		os.Exit(2)
 	}
 	for _, k := range []string{

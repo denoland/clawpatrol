@@ -1,24 +1,24 @@
 
 ```
-curl -fsSL https://littledivy.github.io/clawall/install.sh | sh
+curl -fsSL https://littledivy.github.io/clawpatrol/install.sh | sh
 ```
 
 ```
-clawall login
+clawpatrol login
 
 Connected to divy's tailnet.
-⎿ Found exit node: clawall (100.127.135.3)
+⎿ Found exit node: clawpatrol (100.127.135.3)
 
-sh -c $(clawall env)
+sh -c $(clawpatrol env)
 
 claude
 ```
 
 ```
-clawall gateway
+clawpatrol gateway
 
 Machine connected to divy's tailnet.
 ⎿ Started exit node
 
-Dashboard: https://clawall.tailceca0.ts.net
+Dashboard: https://clawpatrol.tailceca0.ts.net
 ```

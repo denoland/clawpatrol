@@ -22,7 +22,7 @@ func openListener(cfg *Config) (net.Listener, error) {
 	}
 	hn := cfg.Tailscale.Hostname
 	if hn == "" {
-		hn = "clawall-gateway"
+		hn = "clawpatrol-gateway"
 	}
 	s := &tsnet.Server{
 		Hostname:   hn,

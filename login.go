@@ -47,12 +47,12 @@ type tsPeer struct {
 func runJoin(args []string) {
 	fs := flag.NewFlagSet("join", flag.ExitOnError)
 	gatewayURL := fs.String("url", "", "gateway URL (e.g. http://gw.example.com:8080) — required")
-	gwName := fs.String("name", "clawall", "exit-node hostname on the tailnet")
-	caOut := fs.String("ca-dir", defaultClawallDir(), "where to store the fetched CA")
+	gwName := fs.String("name", "clawpatrol", "exit-node hostname on the tailnet")
+	caOut := fs.String("ca-dir", defaultClawpatrolDir(), "where to store the fetched CA")
 	skipTrust := fs.Bool("no-trust", false, "fetch CA but skip system trust install (do it manually)")
 	_ = fs.Parse(args)
 	if *gatewayURL == "" {
-		fail("usage: clawall join --url <gateway-url>")
+		fail("usage: clawpatrol join --url <gateway-url>")
 	}
 	// Fetch CA + write shell rc BEFORE the VPN goes up. Once
 	// `wg-quick up` flips the default route through the gateway,
@@ -68,7 +68,7 @@ func runJoin(args []string) {
 		fail("join: %v", err)
 	}
 	if wgMode {
-		fmt.Printf("\n✓ joined via wireguard. start agents with:\n  eval \"$(clawall env)\"\n  claude\n")
+		fmt.Printf("\n✓ joined via wireguard. start agents with:\n  eval \"$(clawpatrol env)\"\n  claude\n")
 		return
 	}
 	// Tailscale-specific path: exit-node + whois identity.
@@ -123,8 +123,8 @@ func fetchCAHTTP(gateway, dst string) error {
 
 func runLogin(args []string) {
 	fs := flag.NewFlagSet("login", flag.ExitOnError)
-	gwName := fs.String("name", "clawall", "exit-node hostname to look for on the tailnet")
-	caOut := fs.String("ca-dir", defaultClawallDir(), "where to store the fetched CA")
+	gwName := fs.String("name", "clawpatrol", "exit-node hostname to look for on the tailnet")
+	caOut := fs.String("ca-dir", defaultClawpatrolDir(), "where to store the fetched CA")
 	skipTrust := fs.Bool("no-trust", false, "fetch CA but skip system trust install (do it manually)")
 	skipExitNode := fs.Bool("no-exit-node", false, "skip setting tailscale exit-node (run manually later)")
 	_ = fs.Parse(args)
@@ -197,15 +197,15 @@ func runLogin(args []string) {
 		return
 	}
 	if err := installShellRC(); err != nil {
-		fmt.Fprintf(os.Stderr, "⚠ couldn't auto-source clawall env in shell rc: %v\n", err)
-		fmt.Printf("\nadd to your shell rc manually:\n  eval \"$(clawall env)\"\n")
+		fmt.Fprintf(os.Stderr, "⚠ couldn't auto-source clawpatrol env in shell rc: %v\n", err)
+		fmt.Printf("\nadd to your shell rc manually:\n  eval \"$(clawpatrol env)\"\n")
 	} else {
-		fmt.Printf("\n✓ added `eval \"$(clawall env)\"` to your shell rc — start a new shell\n")
+		fmt.Printf("\n✓ added `eval \"$(clawpatrol env)\"` to your shell rc — start a new shell\n")
 	}
 	fmt.Printf("\nthen just run:\n  claude\n  gh\n")
 }
 
-// installShellRC appends `eval "$(clawall env)"` to the user's shell
+// installShellRC appends `eval "$(clawpatrol env)"` to the user's shell
 // rc file (idempotent — looks for the existing marker line). This way
 // agent CLIs (claude, gh, codex) automatically pick up the placeholder
 // tokens + CA bundle in every new shell, no manual sourcing needed.
@@ -214,9 +214,9 @@ func installShellRC() error {
 	if err != nil {
 		return err
 	}
-	const marker = "# clawall: agent env (clawall env)"
-	const block = "\n" + "# clawall: agent env (clawall env)\n" +
-		"command -v clawall >/dev/null 2>&1 && eval \"$(clawall env)\"\n"
+	const marker = "# clawpatrol: agent env (clawpatrol env)"
+	const block = "\n" + "# clawpatrol: agent env (clawpatrol env)\n" +
+		"command -v clawpatrol >/dev/null 2>&1 && eval \"$(clawpatrol env)\"\n"
 	for _, name := range []string{".zshrc", ".bashrc", ".profile"} {
 		p := filepath.Join(home, name)
 		b, err := os.ReadFile(p)
@@ -392,7 +392,7 @@ func installCATrust(caPath string) error {
 			"-k", "/Library/Keychains/System.keychain",
 			caPath).Run()
 	case "linux":
-		dst := "/usr/local/share/ca-certificates/clawall.crt"
+		dst := "/usr/local/share/ca-certificates/clawpatrol.crt"
 		if err := exec.Command("sudo", "cp", caPath, dst).Run(); err != nil {
 			return err
 		}
@@ -407,18 +407,18 @@ func manualTrustHint(caPath string) string {
 	case "darwin":
 		return fmt.Sprintf("sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain %s", caPath)
 	case "linux":
-		return fmt.Sprintf("sudo cp %s /usr/local/share/ca-certificates/clawall.crt && sudo update-ca-certificates", caPath)
+		return fmt.Sprintf("sudo cp %s /usr/local/share/ca-certificates/clawpatrol.crt && sudo update-ca-certificates", caPath)
 	}
 	return "manually add " + caPath + " to your system trust store"
 }
 
-func defaultClawallDir() string {
+func defaultClawpatrolDir() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".clawall")
+	return filepath.Join(home, ".clawpatrol")
 }
 
 func fail(format string, a ...any) {
-	fmt.Fprintf(os.Stderr, "clawall: "+format+"\n", a...)
+	fmt.Fprintf(os.Stderr, "clawpatrol: "+format+"\n", a...)
 	os.Exit(2)
 }
 
@@ -499,7 +499,7 @@ func onboardViaDeviceFlow(gateway string) (bool, error) {
 	if strings.HasPrefix(loginServer, "wireguard://") {
 		iface := strings.TrimPrefix(loginServer, "wireguard://")
 		if iface == "" {
-			iface = "clawall"
+			iface = "clawpatrol"
 		}
 		if err := wgQuickUp(iface, authKey); err != nil {
 			return true, fmt.Errorf("wg-quick up: %w", err)
@@ -609,7 +609,7 @@ func wgQuickUp(iface, conf string) error {
 		}
 	}
 	dst := filepath.Join("/etc/wireguard", iface+".conf")
-	tmp, err := os.CreateTemp("", "clawall-wg-*.conf")
+	tmp, err := os.CreateTemp("", "clawpatrol-wg-*.conf")
 	if err != nil {
 		return err
 	}
@@ -640,7 +640,7 @@ func installTailscale() error {
 		if err := c.Run(); err != nil {
 			return fmt.Errorf("brew install: %w (or download manually from tailscale.com)", err)
 		}
-		fmt.Println("  launch Tailscale.app once, then re-run clawall login")
+		fmt.Println("  launch Tailscale.app once, then re-run clawpatrol login")
 		return fmt.Errorf("manual app launch required")
 	case "linux":
 		c := exec.Command("sh", "-c", "curl -fsSL https://tailscale.com/install.sh | sh")
