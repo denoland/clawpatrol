@@ -1,0 +1,632 @@
+@import "tailwindcss";
+
+/* Self-hosted fonts — Latin subset, variable font files from Google Fonts.
+   Source: gstatic JetBrains Mono v24, Overpass v19. */
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono-latin.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Overpass";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/fonts/overpass-latin.woff2") format("woff2");
+  /* Vertical metrics (sTypo* and hhea ascender/descender/lineGap)
+     are baked into the woff2 itself — no ascent-override/
+     descent-override/line-gap-override needed, which means line-box
+     sizing is correct in older Safari too. */
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+
+@utility neu-raised {
+  --neu-bg: var(--color-cream);
+  --neu-face: var(--neu-bg);
+  --bg-shadow: color-mix(in oklch, var(--neu-bg), black 60%);
+  --bg-highlight: color-mix(in oklch, var(--neu-bg), white 60%);
+  --face-highlight: color-mix(in oklch, var(--neu-face), white 50%);
+  --face-highlight-opacity: 100%;
+  --bg-highlight-opacity: 80%;
+  --bg-shadow-opacity: 6%;
+
+  border: 1.5px solid var(--neu-face);
+  box-shadow:
+    /* Outer shadows — cast onto the background surface */
+    -8px -12px 24px
+      color-mix(
+        in oklch,
+        var(--bg-highlight) var(--bg-highlight-opacity),
+        transparent
+      ),
+    -6px -8px 16px
+      color-mix(
+        in oklch,
+        var(--bg-highlight) var(--bg-highlight-opacity),
+        transparent
+      ),
+    2px 3px 2px
+      color-mix(
+        in oklch,
+        var(--bg-shadow) var(--bg-shadow-opacity),
+        transparent
+      ),
+    4px 3px 6px 4px
+      color-mix(
+        in oklch,
+        var(--bg-shadow) var(--bg-shadow-opacity),
+        transparent
+      ),
+    10px 8px 16px
+      color-mix(
+        in oklch,
+        var(--bg-shadow) var(--bg-shadow-opacity),
+        transparent
+      ),
+    8px 6px 12px 2px
+      color-mix(
+        in oklch,
+        var(--bg-shadow) var(--bg-shadow-opacity),
+        transparent
+      ),
+    2px 3px 1px 2px color-mix(in oklch, var(--neu-face) 90%, transparent),
+    /* Inner scoop — on the element's own "face," i.e., the element's bg */
+      inset 2px 2px 3px -1px
+      color-mix(
+        in oklch,
+        var(--face-highlight) var(--face-highlight-opacity),
+        transparent
+      );
+}
+
+/* Pressed-in variant — same shadow directions, reduced distances so the button
+   sits closer to the surface (slightly squished, still raised) */
+a.neu-raised:active {
+  transform: translate(0.125rem, 0.125rem);
+  box-shadow:
+    -4px -6px 12px
+      color-mix(
+        in oklch,
+        var(--bg-highlight) var(--bg-highlight-opacity),
+        transparent
+      ),
+    -3px -4px 8px
+      color-mix(
+        in oklch,
+        var(--bg-highlight) var(--bg-highlight-opacity),
+        transparent
+      ),
+    1px 2px 1px
+      color-mix(
+        in oklch,
+        var(--bg-shadow) var(--bg-shadow-opacity),
+        transparent
+      ),
+    2px 2px 3px 2px
+      color-mix(
+        in oklch,
+        var(--bg-shadow) var(--bg-shadow-opacity),
+        transparent
+      ),
+    5px 4px 8px
+      color-mix(
+        in oklch,
+        var(--bg-shadow) var(--bg-shadow-opacity),
+        transparent
+      ),
+    4px 3px 6px 1px
+      color-mix(
+        in oklch,
+        var(--bg-shadow) var(--bg-shadow-opacity),
+        transparent
+      ),
+    1px 2px 1px 1px color-mix(in oklch, var(--neu-face) 90%, transparent),
+    inset 1px 1px 2px -1px
+      color-mix(
+        in oklch,
+        var(--face-highlight) var(--face-highlight-opacity),
+        transparent
+      );
+}
+
+@keyframes crt-refresh {
+  from {
+    top: 100%;
+  }
+  to {
+    top: -5%;
+  }
+}
+
+@keyframes crt-scale {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes crt-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@utility crt-boot {
+  animation:
+    crt-scale 0.6s cubic-bezier(0, 0.95, 0.15, 1) 0.4s both,
+    crt-fade 0.6s linear 0.4s both;
+}
+
+@utility squircle-sm {
+  corner-shape: squircle;
+  border-radius: 0.75rem;
+}
+
+@utility squircle-md {
+  corner-shape: squircle;
+  border-radius: 1.25rem;
+}
+
+@utility squircle-lg {
+  corner-shape: squircle;
+  border-radius: 2rem;
+}
+
+@utility squircle-xl {
+  corner-shape: squircle;
+  border-radius: 4.5rem;
+}
+
+@utility squircle-full {
+  corner-shape: squircle;
+  border-radius: 9999px;
+}
+
+@supports not (corner-shape: squircle) {
+  .squircle-sm {
+    border-radius: 0.375rem;
+  }
+  .squircle-md {
+    border-radius: 0.5rem;
+  }
+  .squircle-lg {
+    border-radius: 0.5rem;
+  }
+  .squircle-xl {
+    border-radius: 1.5rem;
+  }
+  .squircle-full {
+    border-radius: 0.75rem;
+  }
+}
+
+/* === Shared scroll diagram keyframes === */
+
+@keyframes dia-appear {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes line-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes line-draw-partial {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0.25;
+  }
+}
+
+@keyframes type-char {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@supports ((animation-timeline: view()) and (animation-range: 0% 100%)) {
+  :root.has-sda {
+    .dia-typed-char {
+      opacity: 0;
+      animation-name: type-char;
+      animation-timing-function: linear;
+      animation-fill-mode: both;
+      /* animation-timeline and animation-range set inline per character */
+    }
+  }
+}
+
+/* Caption: clip-path reveals left-to-right, then hides left-to-right */
+@keyframes cap-cycle {
+  0% {
+    clip-path: inset(0 100% 0 0);
+  }
+  25% {
+    clip-path: inset(0 0 0 0);
+  }
+  75% {
+    clip-path: inset(0 0 0 0);
+  }
+  100% {
+    clip-path: inset(0 0 0 100%);
+  }
+}
+
+@keyframes cap-in {
+  from {
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+  }
+}
+
+@keyframes dia-keys-travel {
+  0% {
+    left: 0ch;
+  }
+  100% {
+    left: 38ch;
+  }
+}
+
+@keyframes scale-in {
+  from {
+    transform: scale(0);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+@keyframes scale-x-in {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes scale-y-in {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes scroll-hint-in {
+  from {
+    opacity: 0;
+    transform: translateY(-18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.scroll-hint {
+  display: none;
+}
+
+@supports ((animation-timeline: view()) and (animation-range: 0% 100%)) {
+  :root.has-sda {
+    .scroll-hint {
+      display: flex;
+      opacity: 0;
+      animation-name: scroll-hint-in;
+      animation-timing-function: linear;
+      animation-fill-mode: both;
+      /* animation-timeline and animation-range set inline per instance */
+    }
+  }
+}
+
+/* Integration tiles — each slides up into place and settles partway through
+   the viewport pass. Per-tile animation-range set inline for the stagger.
+   Uses CSS `translate` so hover `scale` transforms compose cleanly. */
+@keyframes tile-slide-up {
+  from {
+    opacity: 0;
+    translate: 0 30px;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+
+@supports ((animation-timeline: view()) and (animation-range: 0% 100%)) {
+  @media (prefers-reduced-motion: no-preference) {
+    :root.has-sda {
+      .integration-tile {
+        opacity: 0;
+        animation-name: tile-slide-up;
+        animation-timeline: view();
+        animation-timing-function: ease-out;
+        animation-fill-mode: both;
+        /* animation-range set inline per tile for the staggered entrance */
+      }
+    }
+  }
+}
+
+@keyframes accent-to-red {
+  from {
+    background: var(--color-accent);
+  }
+  to {
+    background: #ef4444;
+  }
+}
+
+@keyframes blocked-flicker {
+  0% {
+    opacity: 0;
+  }
+  25% {
+    opacity: 0.8;
+  }
+  35% {
+    opacity: 0.2;
+  }
+  50% {
+    opacity: 1;
+  }
+  58% {
+    opacity: 0.6;
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+/* === Scroll diagram — problem === */
+
+.scroll-diagram {
+  view-timeline: --diagram block;
+}
+
+/* Fallback: show everything in end state for browsers without scroll-driven animations */
+.dia-cap {
+  display: none;
+}
+.dia-cap-4 {
+  display: block;
+}
+.dia-scattered {
+  display: inline;
+}
+
+@supports ((animation-timeline: view()) and (animation-range: 0% 100%)) {
+  :root.has-sda {
+    .dia-cap {
+      display: block;
+    }
+    .scroll-diagram {
+      height: 400vh;
+    }
+
+    .dia-agent,
+    .dia-keys-static,
+    .dia-internet {
+      opacity: 0;
+    }
+
+    .dia-agent {
+      animation: dia-appear linear both;
+      animation-timeline: --diagram;
+      animation-range: cover 10% cover 16%;
+    }
+
+    .dia-internet {
+      animation: dia-appear linear both;
+      animation-timeline: --diagram;
+      animation-range: cover 10% cover 16%;
+    }
+
+    .dia-keys-static {
+      animation: dia-appear linear both;
+      animation-timeline: --diagram;
+      animation-range: cover 16% cover 22%;
+    }
+
+    .dia-cap {
+      clip-path: inset(0 100% 0 0);
+    }
+
+    .dia-cap-1 {
+      animation: cap-cycle linear both;
+      animation-timeline: --diagram;
+      animation-range: cover 10% cover 26%;
+    }
+    .dia-cap-2 {
+      animation: cap-cycle linear both;
+      animation-timeline: --diagram;
+      animation-range: cover 26% cover 42%;
+    }
+    .dia-cap-3 {
+      animation: cap-cycle linear both;
+      animation-timeline: --diagram;
+      animation-range: cover 42% cover 58%;
+    }
+    .dia-cap-4 {
+      animation: cap-in linear both;
+      animation-timeline: --diagram;
+      animation-range: cover 58% cover 66%;
+    }
+  }
+}
+
+/* === Scroll diagram — solution === */
+
+.scroll-diagram-sol {
+  view-timeline: --diagram-sol block;
+}
+
+/* Fallback: show only the final caption */
+.dia2-cap {
+  display: none;
+}
+.dia2-cap-6 {
+  display: block;
+}
+
+@supports ((animation-timeline: view()) and (animation-range: 0% 100%)) {
+  :root.has-sda {
+    .dia2-cap {
+      display: block;
+    }
+    .scroll-diagram-sol {
+      height: 500vh;
+    }
+
+    .dia2-unclaw,
+    .dia2-keys,
+    .dia2-oneway,
+    .dia2-blocked {
+      opacity: 0;
+    }
+
+    /* Nodes appear */
+    .dia2-unclaw {
+      animation: dia-appear linear both;
+      animation-timeline: --diagram-sol;
+      animation-range: cover 20% cover 26%;
+    }
+
+    /* One-way label appears as line passes through Secrets */
+    .dia2-oneway {
+      animation: dia-appear linear both;
+      animation-timeline: --diagram-sol;
+      animation-range: cover 40% cover 44%;
+    }
+
+    /* Keys appear as line starts toward Approved */
+    .dia2-keys {
+      animation: dia-appear linear both;
+      animation-timeline: --diagram-sol;
+      animation-range: cover 36% cover 40%;
+    }
+
+    /* ACCESS DENIED appears after red line x */
+    .dia2-blocked {
+      animation: blocked-flicker linear both;
+      animation-timeline: --diagram-sol;
+      animation-range: cover 80% cover 86%;
+    }
+
+    .dia2-cap {
+      clip-path: inset(0 100% 0 0);
+    }
+
+    .dia2-cap-1 {
+      animation: cap-cycle linear both;
+      animation-timeline: --diagram-sol;
+      animation-range: cover 10% cover 22%;
+    }
+    .dia2-cap-2 {
+      animation: cap-cycle linear both;
+      animation-timeline: --diagram-sol;
+      animation-range: cover 22% cover 34%;
+    }
+    .dia2-cap-3 {
+      animation: cap-cycle linear both;
+      animation-timeline: --diagram-sol;
+      animation-range: cover 34% cover 46%;
+    }
+    .dia2-cap-4 {
+      animation: cap-cycle linear both;
+      animation-timeline: --diagram-sol;
+      animation-range: cover 46% cover 58%;
+    }
+    .dia2-cap-5 {
+      animation: cap-cycle linear both;
+      animation-timeline: --diagram-sol;
+      animation-range: cover 58% cover 70%;
+    }
+    .dia2-cap-6 {
+      animation: cap-in linear both;
+      animation-timeline: --diagram-sol;
+      animation-range: cover 70% cover 78%;
+    }
+  }
+}
+
+/* Docs-specific styles live in /public/docs.css and are only loaded on
+   docs pages. */
+
+@theme {
+  --color-cream-light: #faf5ed;
+  --color-cream: #f0ebe3;
+  --color-cream-dark: #e2dbd0;
+  --color-green-light: #c2d4cc;
+  --color-green-med: #5d8a72;
+  --color-green-dark: #3b5f4f;
+  --color-console: #4a5952;
+  --color-console-dark: #2a342f;
+  --color-slate-light: #7a8894;
+  --color-slate: #5e6b78;
+  --color-slate-dark: #434e58;
+  --color-crt-bg-dark: #060a08;
+  --color-crt-bg: #0c1410;
+  --color-crt-bg-light: #141e18;
+  --color-crt-border: #1a2820;
+  --color-crt-faint: #1e7a40;
+  --color-crt-dim: #2a9d54;
+  --color-crt: #4ade80;
+  --color-accent: #e8a838;
+  --color-accent-light: #f4b44c;
+  --color-text: #2a2f2c;
+  --color-text-muted: #6b7770;
+  --font-display: "Overpass", system-ui, sans-serif;
+  --font-sans: "JetBrains Mono", "SF Mono", "Menlo", monospace;
+  --font-mono: "JetBrains Mono", "SF Mono", "Menlo", monospace;
+
+  --breakpoint-xs: 32rem;
+}
+
+@layer base {
+  a {
+    text-decoration-thickness: 1px;
+  }
+
+  *:focus-visible {
+    outline: 1px dashed var(--color-green-dark--value(--breakpoint- *));
+  }
+}
