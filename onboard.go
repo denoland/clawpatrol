@@ -18,10 +18,10 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
-	mathrand "math/rand"
 	"net/http"
 	"net/url"
 	"os"
@@ -31,13 +31,23 @@ import (
 	"time"
 )
 
+// randomString returns a URL-safe base64 string of n random bytes.
+// Used for onboard device codes, OAuth state/verifier, HITL IDs.
+func randomString(nBytes int) string {
+	b := make([]byte, nBytes)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
 type onboardSession struct {
 	deviceCode  string
 	userCode    string // human-friendly, e.g. ABCD-1234
 	created     time.Time
 	approved    bool
 	authKey     string // populated once approved
-	loginServer string // empty for Tailscale Inc; Headscale URL for self-hosted
+	loginServer string // "wireguard://<iface>" for WG mode; empty for Tailscale
 	err         string
 	owner       string // who approved (for audit log)
 }
@@ -153,7 +163,6 @@ func (r *onboardRegistry) gcLocked() {
 func randomUserCode() string {
 	const letters = "ABCDEFGHJKLMNPQRSTUVWXYZ" // no I/O for legibility
 	const digits = "23456789"
-	mathrand.Seed(time.Now().UnixNano() + int64(timeNanoTail()))
 	var b [4]byte
 	rand.Read(b[:])
 	out := make([]byte, 0, 9)
@@ -167,8 +176,6 @@ func randomUserCode() string {
 	}
 	return string(out)
 }
-
-func timeNanoTail() int64 { return time.Now().UnixNano() & 0xFFFF }
 
 // Onboarder mints a single-use auth artefact + tells the client which
 // control-plane to register against. Implementations:

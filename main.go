@@ -49,7 +49,7 @@ type Tailscale struct {
 	Hostname   string `yaml:"hostname"`
 	StateDir   string `yaml:"state_dir"`
 
-	// Control is "tailscale" (default) or "headscale". Picks which
+	// Control is "tailscale" (default) or "wireguard". Picks which
 	// onboarder mints auth-keys when new clients run `clawpatrol join`.
 	Control string `yaml:"control"`
 
@@ -846,32 +846,37 @@ func (g *Gateway) splice(c net.Conn, host string) {
 		return
 	}
 	defer up.Close()
-	var bytesIn, bytesOut int64
-	defer func() {
-		g.sink.Emit(Event{Mode: "splice", Host: host, AgentIP: peerIP(c), Action: "allow", In: bytesIn, Out: bytesOut, Ms: time.Since(start).Milliseconds()})
-		if g.agents != nil {
-			g.agents.track(c.RemoteAddr().String(), host, bytesIn, bytesOut)
-		}
-	}()
+	in, out := pipe(c, up)
+	g.sink.Emit(Event{Mode: "splice", Host: host, AgentIP: peerIP(c), Action: "allow", In: in, Out: out, Ms: time.Since(start).Milliseconds()})
+	if g.agents != nil {
+		g.agents.track(c.RemoteAddr().String(), host, in, out)
+	}
+}
+
+// pipe shuttles bytes both ways between two conns. Returns (a-rx, a-tx)
+// = (bytes received from up into a, bytes sent from a to up). Sends
+// CloseWrite half-shutdown on each side after its copy finishes.
+func pipe(a, b net.Conn) (rx, tx int64) {
 	done := make(chan struct{}, 2)
 	go func() {
-		n, _ := io.Copy(up, c)
-		atomic.AddInt64(&bytesOut, n)
-		if cw, ok := up.(interface{ CloseWrite() error }); ok {
+		n, _ := io.Copy(b, a)
+		atomic.AddInt64(&tx, n)
+		if cw, ok := b.(interface{ CloseWrite() error }); ok {
 			cw.CloseWrite()
 		}
 		done <- struct{}{}
 	}()
 	go func() {
-		n, _ := io.Copy(c, up)
-		atomic.AddInt64(&bytesIn, n)
-		if cw, ok := c.(interface{ CloseWrite() error }); ok {
+		n, _ := io.Copy(a, b)
+		atomic.AddInt64(&rx, n)
+		if cw, ok := a.(interface{ CloseWrite() error }); ok {
 			cw.CloseWrite()
 		}
 		done <- struct{}{}
 	}()
 	<-done
 	<-done
+	return
 }
 
 func (g *Gateway) mitm(c net.Conn, host string, defaultRule *Rule) {
@@ -1132,8 +1137,6 @@ func main() {
 		runJoin(os.Args[2:])
 	case "env":
 		runEnv(os.Args[2:])
-	case "auth":
-		runAuth(os.Args[2:])
 	case "init-ca":
 		runInitCA(os.Args[2:])
 	case "version":
@@ -1161,7 +1164,6 @@ usage:
   clawpatrol gateway [-config FILE]    run the gateway server
   clawpatrol login                     onboard this machine (set exit-node + install CA)
   clawpatrol env                       print shell exports for sourcing
-  clawpatrol auth ID                   run browser OAuth flow, capture refresh token
   clawpatrol init-ca DIR               generate a new CA in DIR
   clawpatrol version`)
 	os.Exit(2)
@@ -1351,10 +1353,8 @@ func (l *oneShotListener) Addr() net.Addr {
 }
 
 // wgRelay is the catch-all path: WG peer wants to talk to a host we
-// don't MITM (e.g. plain HTTP, ssh, anything not on :443 or the dash
-// port). We just dial the real destination from the gateway's host
-// network and proxy bytes both ways. Lets agents reach github.com,
-// package mirrors, etc., without exempting them in routing config.
+// don't MITM (plain HTTP, ssh, anything not on :443 or the dash port).
+// Dials the real dst from the host network and pipes bytes both ways.
 func wgRelay(c net.Conn, dstIP string, dstPort int) {
 	defer c.Close()
 	up, err := net.DialTimeout("tcp", net.JoinHostPort(dstIP, strconv.Itoa(dstPort)), 10*time.Second)
@@ -1362,9 +1362,6 @@ func wgRelay(c net.Conn, dstIP string, dstPort int) {
 		return
 	}
 	defer up.Close()
-	done := make(chan struct{}, 2)
-	go func() { io.Copy(up, c); done <- struct{}{} }()
-	go func() { io.Copy(c, up); done <- struct{}{} }()
-	<-done
+	pipe(c, up)
 }
 
