@@ -1,44 +1,37 @@
 export function Header() {
   return (
     <nav
-      class="max-w-6xl mx-auto px-8 py-8 flex flex-wrap gap-y-2
-      items-center justify-between"
+      class="max-w-6xl mx-auto px-8 py-8 flex flex-wrap
+      gap-y-2 items-center justify-between"
     >
-      <div
-        class="text-xl tracking-[0.3em]
-          uppercase font-semibold font-display text-console-dark"
-      >
-        <a href="/" class="isolate">
-          <img src="/clawpatrol-logo.svg" alt="Claw Patrol" class="h-8 w-auto" />
-        </a>
-      </div>
+      <a href="/" class="flex items-center gap-3 isolate">
+        <img
+          src="/clawpatrol-logo.svg"
+          alt=""
+          class="h-7 w-auto"
+        />
+        <span
+          class="text-lg tracking-[0.25em] uppercase
+            font-semibold font-display text-console-dark"
+        >
+          Claw Patrol
+        </span>
+      </a>
       <div class="flex items-center gap-4 sm:gap-8 text-sm">
         <a
           href="/docs/"
-          class="transition-colors font-mono text-text-muted underline underline-offset-4"
+          class="transition-colors font-mono
+            text-text-muted underline underline-offset-4"
         >
           Docs
         </a>
         <a
-          href="/download/"
-          class="transition-colors font-mono text-text-muted underline underline-offset-4"
-        >
-          Download
-        </a>
-        <a
           href="https://github.com/denoland/clawpatrol-go"
-          class="transition-colors font-mono text-text-muted underline underline-offset-4 hidden sm:inline"
+          class="transition-colors font-mono
+            text-text-muted underline underline-offset-4"
         >
           GitHub
         </a>
-        {/* Removed for now */}
-        {/* <a
-          href="/auth/login"
-          class="px-5 py-2 squircle-full neu-raised [--neu-face:var(--color-accent)] [--face-highlight-opacity:50%]
-            font-semibold transition-colors bg-accent text-console-dark font-display text-sm tracking-wide hover:bg-accent-light"
-        >
-          Sign in
-        </a> */}
       </div>
     </nav>
   );

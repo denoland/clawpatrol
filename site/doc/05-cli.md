@@ -1,0 +1,135 @@
+# CLI Reference
+
+## Installation
+
+```bash
+npm install -g clawpatrol
+```
+
+The `clawpatrol` command is the unified entry point for both the
+proxy server and the client tools.
+
+## Commands
+
+### `clawpatrol onboard`
+
+Interactive setup wizard. Starts a local proxy, scans for API
+keys, and configures your system.
+
+```bash
+clawpatrol onboard [--server URL]
+```
+
+Options:
+- `--server URL` — skip the gateway selector and connect to a
+  specific server (e.g. `--server https://gateway.example.com`)
+
+### `clawpatrol run`
+
+Run a command with its traffic routed through the proxy.
+
+```bash
+clawpatrol run [--name NAME] [--profile PROFILE] [--no-expose] [--sub-user] [--fs-access PATH]... <command> [args...]
+```
+
+Options:
+- `--name NAME` — session name (defaults to the command name)
+- `--profile PROFILE` — use a specific integration profile
+- `--no-expose` — don't tunnel the wrapped command's TCP
+  listeners back to the host (Linux only; default is to
+  auto-tunnel)
+- `--sub-user` — run the wrapped command under a subordinate
+  UID for filesystem isolation (Linux only; requires an
+  `/etc/subuid` entry). By default the command runs as the
+  calling user so it can read `~/.claude`, `~/.config`, git
+  credentials, ssh keys, and other per-user state. Opt into
+  `--sub-user` when you want the command sandboxed away from
+  your home directory.
+- `--fs-access PATH` — expose a host file or directory to the
+  wrapped command at the same absolute path (Linux only).
+  Repeatable. Only meaningful with `--sub-user`; otherwise the
+  wrapped command already runs as you and has native access.
+
+Examples:
+```bash
+clawpatrol run claude
+clawpatrol run --name my-agent python agent.py
+clawpatrol run --profile production node server.js
+```
+
+The proxy injects API keys and logs all traffic for the
+duration of the command. When the command exits, the session
+ends.
+
+If you omit the `run` subcommand, clawpatrol treats the arguments
+as a wrapped command automatically:
+
+```bash
+clawpatrol claude            # equivalent to: clawpatrol run claude
+```
+
+### `clawpatrol gateway`
+
+Start the proxy server directly (without the onboard wizard).
+
+```bash
+clawpatrol gateway
+```
+
+This starts the CONNECT proxy on port 8443 and the
+dashboard/API on port 8080. Useful for running clawpatrol as a
+persistent service or in Docker.
+
+### `clawpatrol offboard`
+
+Remove clawpatrol from this machine.
+
+```bash
+clawpatrol offboard [-y] [--delete-data] [--keep-data]
+```
+
+Options:
+- `-y`, `--yes` — skip confirmation prompt
+- `--delete-data` — remove all data in `~/.clawpatrol`
+- `--keep-data` — keep data (don't ask)
+
+### `clawpatrol join`
+
+Register this device with an existing gateway (low-level,
+used internally by `onboard`).
+
+```bash
+clawpatrol join --server URL
+```
+
+### `clawpatrol --version`
+
+Print the version and exit. Also accepts `-V`.
+
+## Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `CLAWPATROL_DATA` | `~/.clawpatrol` | Data directory (database, CA certs, keys) |
+| `CLAWPATROL_HOSTNAME` | — | Public hostname for the gateway |
+| `PROXY_PORT` | `8443` | CONNECT proxy listen port |
+| `API_PORT` | `8080` | Dashboard/API listen port |
+| `API_HOST` | `127.0.0.1` | Dashboard/API bind address |
+| `DEV_AUTH_EMAIL` | — | Skip OAuth, auto-login as this email |
+| `AUTH_PROVIDER` | — | Path to auth provider module |
+| `CLAWPATROL_SESSION_SECRET` | — | Session signing key |
+| `SITE_DIR` | — | Landing site directory for unauthenticated visitors |
+| `ANALYTICS_RETENTION_DAYS` | `7` | Days to retain request logs |
+| `ALLOWED_EMAIL_DOMAIN` | — | Restrict login to a specific email domain |
+
+## Data Directory
+
+Claw Patrol stores all state in `~/.clawpatrol/` (or `$CLAWPATROL_DATA`):
+
+```
+~/.clawpatrol/
+  clients.db          SQLite database (devices, sessions, integrations)
+  ca/                 Generated CA certificate and key
+  wg/                 WireGuard server keys
+  gateway.log         Gateway stdout/stderr (when run via launchd/systemd)
+```
