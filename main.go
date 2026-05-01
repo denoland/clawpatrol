@@ -49,8 +49,16 @@ type Config struct {
 	Approvers    []Approver    `hcl:"approver,block"`
 	Integrations []Integration `hcl:"integration,block"`
 
+	// TopRules carries top-level `rule {}` blocks decoded directly
+	// from HCL — used for device-scoped overrides that don't belong
+	// to any profile (set via the dashboard's per-device editor) and
+	// for profile-less standalone overrides. expandDefaults folds
+	// these into Rules at the end of expansion.
+	TopRules []Rule `hcl:"rule,block"`
+
 	// Rules + OAuth are not decoded from HCL — populated by
-	// expandDefaults() from the configured Profiles + Rulesets.
+	// expandDefaults() from the configured Profiles + Rulesets +
+	// TopRules.
 	Rules []Rule
 	OAuth []OAuthIntegration
 }
@@ -86,13 +94,85 @@ type Ruleset struct {
 // is the next pass. Built-in OAuth integrations (claude/codex/github)
 // stay declared in code; custom integrations live in the operator's
 // HCL config.
+//
+// Type selects wire shape:
+//
+//	oauth | bearer | header | cookie | mtls   — HTTPS variants
+//	postgres                                  — TCP postgres wire MITM
+//	clickhouse                                — native (9440) + HTTPS (8443)
+//	kubernetes                                — k8s API; mtls or aws-eks-token
+//
+// Multi-credential / multi-account / private-target shapes use the
+// nested blocks: `secret "name" {}` for N credential refs (slack
+// bot+app, CH user+pass), `account "name" {}` for switchable
+// (user, password) pairs picked at request time via match.account
+// (postgres ro/rw, orb test/prod), `tunnel {}` to wrap the
+// connection in an SSH/kubectl-portforward pipe, `auth {}` to
+// runtime-mint creds (e.g. AWS STS for EKS).
 type Integration struct {
-	Name       string   `hcl:"name,label"`
-	Type       string   `hcl:"type"` // oauth | bearer | header | cookie | mtls
-	Hosts      []string `hcl:"hosts,optional"`
-	Header     string   `hcl:"header,optional"`     // type=header
-	Prefix     string   `hcl:"prefix,optional"`     // type=header / bearer
-	CookieName string   `hcl:"cookie_name,optional"` // type=cookie
+	Name           string         `hcl:"name,label"`
+	Type           string         `hcl:"type"`
+	Hosts          []string       `hcl:"hosts,optional"`
+	Header         string         `hcl:"header,optional"`     // type=header
+	Prefix         string         `hcl:"prefix,optional"`     // type=header / bearer
+	CookieName     string         `hcl:"cookie_name,optional"` // type=cookie
+	Port           int            `hcl:"port,optional"`        // default TCP port
+	Ports          map[string]int `hcl:"ports,optional"`       // named ports (e.g. clickhouse https/native)
+	Database       string         `hcl:"database,optional"`    // type=postgres
+	Description    string         `hcl:"description,optional"`
+	IdempotencyKey bool           `hcl:"idempotency_key,optional"` // auto-add Idempotency-Key on POST/PUT
+	MTLS           *MTLSConfig    `hcl:"mtls,block"`
+	Auth           *IntegrationAuth `hcl:"auth,block"`
+	Tunnel         *Tunnel        `hcl:"tunnel,block"`
+	Secrets        []NamedSecret  `hcl:"secret,block"`
+	Accounts       []NamedAccount `hcl:"account,block"`
+}
+
+// NamedSecret declares one credential ref under an integration.
+// Multi-credential integrations (slack bot+app, clickhouse user+pass)
+// use repeated `secret "name" {}` blocks. The dashboard provisions one
+// per-owner secret slot per (integration, secret-name).
+type NamedSecret struct {
+	Name        string `hcl:"name,label"`
+	Placeholder string `hcl:"placeholder,optional"`
+	Ref         string `hcl:"ref,optional"`
+}
+
+// NamedAccount declares one switchable (user, password) pair under an
+// integration. Rules pick which account to use via `match.account =
+// "name"`. Each account name binds to a distinct dashboard-managed
+// secret slot.
+type NamedAccount struct {
+	Name        string `hcl:"name,label"`
+	Placeholder string `hcl:"placeholder,optional"`
+	User        string `hcl:"user,optional"`
+	Password    string `hcl:"password,optional"`
+	Ref         string `hcl:"ref,optional"` // single-credential accounts (e.g. orb test/prod)
+}
+
+// IntegrationAuth declares a runtime-minted credential source.
+// Currently supported: type = "aws-eks-token" — mints an STS-signed
+// k8s bearer token via the AWS SDK / `aws eks get-token`, cached for
+// the token's TTL.
+type IntegrationAuth struct {
+	Type    string `hcl:"type"`
+	Cluster string `hcl:"cluster,optional"`
+	Region  string `hcl:"region,optional"`
+	Profile string `hcl:"profile,optional"`
+}
+
+// Tunnel wraps the integration's TCP connection in a transport pipe
+// before speaking the wire protocol. Used for private targets (e.g.
+// RDS in a VPC reachable only via an SSH bastion pod inside an EKS
+// cluster). Supported types:
+//
+//	kubectl-portforward-ssh — `kubectl port-forward` to a named pod,
+//	                          then SSH-forward to the upstream host.
+type Tunnel struct {
+	Type    string `hcl:"type"`
+	Cluster string `hcl:"cluster,optional"`
+	Profile string `hcl:"profile,optional"`
+	SSHPod  string `hcl:"ssh_pod,optional"`
 }
 
 // Approver is a HITL notifier. The "dashboard" name is reserved for
@@ -100,12 +180,13 @@ type Integration struct {
 // declare slack/llm/etc. via this block and reference by name in
 // `rule { approve = ["..."] }`.
 type Approver struct {
-	Name    string `hcl:"name,label"`
-	Type    string `hcl:"type"` // "dashboard" | "slack" | "llm"
-	Channel string `hcl:"channel,optional"`
-	Timeout int    `hcl:"timeout,optional"` // seconds; 0 → 60s default
-	Model   string `hcl:"model,optional"`   // type=llm
-	Policy  string `hcl:"policy,optional"`  // type=llm — judge prompt
+	Name             string `hcl:"name,label"`
+	Type             string `hcl:"type"` // "dashboard" | "slack" | "llm"
+	Channel          string `hcl:"channel,optional"`
+	Timeout          int    `hcl:"timeout,optional"` // seconds; 0 → 60s default
+	Model            string `hcl:"model,optional"`   // type=llm
+	Policy           string `hcl:"policy,optional"`  // type=llm — judge prompt
+	RequireApprovers int    `hcl:"require_approvers,optional"` // type=slack — N-of-N quorum (default 1)
 }
 
 type Tailscale struct {
@@ -237,6 +318,10 @@ func writeConfigHCL(c *Config, path string) error {
 		}
 		customByProfile[r.Profile] = append(customByProfile[r.Profile], r)
 	}
+	for _, in := range c.Integrations {
+		body.AppendNewline()
+		writeIntegrationHCL(body, in)
+	}
 	for _, a := range c.Approvers {
 		body.AppendNewline()
 		ab := body.AppendNewBlock("approver", []string{a.Name}).Body()
@@ -253,12 +338,26 @@ func writeConfigHCL(c *Config, path string) error {
 		if a.Policy != "" {
 			ab.SetAttributeValue("policy", cty.StringVal(a.Policy))
 		}
+		if a.RequireApprovers != 0 {
+			ab.SetAttributeValue("require_approvers", cty.NumberIntVal(int64(a.RequireApprovers)))
+		}
 	}
 	for _, rs := range c.Rulesets {
 		body.AppendNewline()
 		rsb := body.AppendNewBlock("ruleset", []string{rs.Name}).Body()
 		for _, r := range rs.Rules {
 			writeRuleHCL(rsb, r)
+		}
+	}
+	// Profile-less rules (Profile=="") — device-scoped overrides
+	// saved via the dashboard's per-device editor + any standalone
+	// operator rules — get emitted as top-level `rule {}` blocks.
+	// On reload they decode into Config.TopRules and fold back into
+	// cfg.Rules at the end of expandDefaults.
+	if free := customByProfile[""]; len(free) > 0 {
+		body.AppendNewline()
+		for _, r := range free {
+			writeRuleHCL(body, r)
 		}
 	}
 	for _, p := range c.Profiles {
@@ -322,6 +421,110 @@ func isDefaultRule(r Rule) bool {
 		}
 	}
 	return false
+}
+
+func writeIntegrationHCL(parent *hclwrite.Body, in Integration) {
+	ib := parent.AppendNewBlock("integration", []string{in.Name}).Body()
+	if in.Type != "" {
+		ib.SetAttributeValue("type", cty.StringVal(in.Type))
+	}
+	if len(in.Hosts) > 0 {
+		vs := make([]cty.Value, len(in.Hosts))
+		for i, h := range in.Hosts {
+			vs[i] = cty.StringVal(h)
+		}
+		ib.SetAttributeValue("hosts", cty.ListVal(vs))
+	}
+	if in.Header != "" {
+		ib.SetAttributeValue("header", cty.StringVal(in.Header))
+	}
+	if in.Prefix != "" {
+		ib.SetAttributeValue("prefix", cty.StringVal(in.Prefix))
+	}
+	if in.CookieName != "" {
+		ib.SetAttributeValue("cookie_name", cty.StringVal(in.CookieName))
+	}
+	if in.Port != 0 {
+		ib.SetAttributeValue("port", cty.NumberIntVal(int64(in.Port)))
+	}
+	if len(in.Ports) > 0 {
+		vs := map[string]cty.Value{}
+		for k, v := range in.Ports {
+			vs[k] = cty.NumberIntVal(int64(v))
+		}
+		ib.SetAttributeValue("ports", cty.ObjectVal(vs))
+	}
+	if in.Database != "" {
+		ib.SetAttributeValue("database", cty.StringVal(in.Database))
+	}
+	if in.Description != "" {
+		ib.SetAttributeValue("description", cty.StringVal(in.Description))
+	}
+	if in.IdempotencyKey {
+		ib.SetAttributeValue("idempotency_key", cty.True)
+	}
+	if in.MTLS != nil {
+		mb := ib.AppendNewBlock("mtls", nil).Body()
+		if in.MTLS.CA != "" {
+			mb.SetAttributeValue("ca", cty.StringVal(in.MTLS.CA))
+		}
+		if in.MTLS.Cert != "" {
+			mb.SetAttributeValue("cert", cty.StringVal(in.MTLS.Cert))
+		}
+		if in.MTLS.Key != "" {
+			mb.SetAttributeValue("key", cty.StringVal(in.MTLS.Key))
+		}
+	}
+	if in.Auth != nil {
+		ab := ib.AppendNewBlock("auth", nil).Body()
+		ab.SetAttributeValue("type", cty.StringVal(in.Auth.Type))
+		if in.Auth.Cluster != "" {
+			ab.SetAttributeValue("cluster", cty.StringVal(in.Auth.Cluster))
+		}
+		if in.Auth.Region != "" {
+			ab.SetAttributeValue("region", cty.StringVal(in.Auth.Region))
+		}
+		if in.Auth.Profile != "" {
+			ab.SetAttributeValue("profile", cty.StringVal(in.Auth.Profile))
+		}
+	}
+	if in.Tunnel != nil {
+		tb := ib.AppendNewBlock("tunnel", nil).Body()
+		tb.SetAttributeValue("type", cty.StringVal(in.Tunnel.Type))
+		if in.Tunnel.Cluster != "" {
+			tb.SetAttributeValue("cluster", cty.StringVal(in.Tunnel.Cluster))
+		}
+		if in.Tunnel.Profile != "" {
+			tb.SetAttributeValue("profile", cty.StringVal(in.Tunnel.Profile))
+		}
+		if in.Tunnel.SSHPod != "" {
+			tb.SetAttributeValue("ssh_pod", cty.StringVal(in.Tunnel.SSHPod))
+		}
+	}
+	for _, s := range in.Secrets {
+		sb := ib.AppendNewBlock("secret", []string{s.Name}).Body()
+		if s.Placeholder != "" {
+			sb.SetAttributeValue("placeholder", cty.StringVal(s.Placeholder))
+		}
+		if s.Ref != "" {
+			sb.SetAttributeValue("ref", cty.StringVal(s.Ref))
+		}
+	}
+	for _, ac := range in.Accounts {
+		ab := ib.AppendNewBlock("account", []string{ac.Name}).Body()
+		if ac.Placeholder != "" {
+			ab.SetAttributeValue("placeholder", cty.StringVal(ac.Placeholder))
+		}
+		if ac.User != "" {
+			ab.SetAttributeValue("user", cty.StringVal(ac.User))
+		}
+		if ac.Password != "" {
+			ab.SetAttributeValue("password", cty.StringVal(ac.Password))
+		}
+		if ac.Ref != "" {
+			ab.SetAttributeValue("ref", cty.StringVal(ac.Ref))
+		}
+	}
 }
 
 func writeRuleHCL(parent *hclwrite.Body, r Rule) {
@@ -1248,6 +1451,16 @@ func (g *Gateway) handle(raw net.Conn) {
 	g.mitm(c, host, hostRule)
 }
 
+// denyMessage formats a deny reason into the standard Clawpatrol
+// rejection text — surfaced as the HTTP 403 body and the postgres
+// ErrorResponse message so users see *who* denied them and *why*.
+func denyMessage(reason string) string {
+	if reason == "" {
+		reason = "denied by policy"
+	}
+	return "Clawpatrol - access denied - " + reason
+}
+
 func (g *Gateway) splice(c net.Conn, host string) {
 	start := time.Now()
 	up, err := g.dialer.Dial("tcp", net.JoinHostPort(host, "443"))
@@ -1397,7 +1610,8 @@ func (g *Gateway) mitm(c net.Conn, host string, defaultRule *Rule) {
 					reason = "denied by approver"
 				}
 				log.Printf("hitl-deny %s %s %s: %s (by %s)", host, req.Method, req.URL.Path, reason, d.By)
-				fmt.Fprintf(tc, "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(reason), reason)
+				body := denyMessage(reason)
+				fmt.Fprintf(tc, "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body)
 				ev.Status = 403
 				ev.Action = "hitl_deny"
 				ev.Reason = reason
@@ -1414,7 +1628,8 @@ func (g *Gateway) mitm(c net.Conn, host string, defaultRule *Rule) {
 				reason = "denied by policy"
 			}
 			log.Printf("deny %s %s %s: %s", host, req.Method, req.URL.Path, reason)
-			fmt.Fprintf(tc, "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(reason), reason)
+			body := denyMessage(reason)
+			fmt.Fprintf(tc, "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body)
 			ev.Status = 403
 			ev.Action = "deny"
 			ev.Reason = reason

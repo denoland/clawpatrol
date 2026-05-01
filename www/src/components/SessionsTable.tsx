@@ -2,7 +2,7 @@
 
 import type { Session } from "../lib/api";
 import { fmtAge, fmtTokens, shortModel } from "../lib/format";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Sparkline } from "./Sparkline";
 import { AgentTypeIcon } from "./AgentTypeIcon";
 import { CtxDonut } from "./CtxDonut";
@@ -76,17 +76,29 @@ export function SessionsTable({ sessions: all }: { sessions: Session[] }) {
 }
 
 function ModelDonut({ session: s }: { session: Session }) {
-  const [hover, setHover] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const [tip, setTip] = useState<{ top: number; left: number } | null>(null);
   const pct = s.ctx_used && s.ctx_max ? (s.ctx_used / s.ctx_max) * 100 : 0;
+  // position:fixed so the tooltip escapes the table's overflow:hidden
+  // clip — anchor it to the donut's bounding rect computed on hover.
+  function onEnter() {
+    const r = ref.current?.getBoundingClientRect();
+    if (!r) return;
+    setTip({ top: r.bottom + 6, left: r.left + r.width / 2 });
+  }
   return (
     <div
+      ref={ref}
       className="relative inline-flex"
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
+      onMouseEnter={onEnter}
+      onMouseLeave={() => setTip(null)}
     >
       <CtxDonut used={s.ctx_used} max={s.ctx_max} size={18} />
-      {hover && s.ctx_used && (
-        <div className="absolute z-10 left-1/2 -translate-x-1/2 top-full mt-1.5 px-2 py-1 bg-[#171717] text-white text-[10px] rounded shadow whitespace-nowrap tabular-nums">
+      {tip && s.ctx_used && (
+        <div
+          className="fixed z-50 -translate-x-1/2 px-2 py-1 bg-[#171717] text-white text-[10px] rounded shadow whitespace-nowrap tabular-nums pointer-events-none"
+          style={{ top: tip.top, left: tip.left }}
+        >
           {fmtTokens(s.tokens_in)} in · {fmtTokens(s.tokens_out)} out
           {s.ctx_max ? ` · ${fmtTokens(s.ctx_used)}/${fmtTokens(s.ctx_max)} (${pct.toFixed(0)}%)` : ""}
         </div>

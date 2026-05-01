@@ -179,6 +179,10 @@ var defaultIntegrations = map[string]integrationDefault{
 // Every emitted rule is tagged with Profile=<profile-name> so
 // selectHostRule can filter by peer→profile mapping.
 func expandDefaults(cfg *Config) error {
+	if err := validateIntegrations(cfg.Integrations); err != nil {
+		return err
+	}
+	topRules := cfg.TopRules
 	cfg.Rules = nil
 	haveOAuth := map[string]bool{}
 	for _, o := range cfg.OAuth {
@@ -335,6 +339,60 @@ func expandDefaults(cfg *Config) error {
 			available := append(defaultIntegrationKeys(), customIntegrationKeys(cfg.Integrations)...)
 			return fmt.Errorf("profile %q: unknown integration %q (available: %v)",
 				p.Name, name, available)
+		}
+	}
+	// Fold profile-less top-level rule blocks into the expanded rules.
+	// These are device-scoped overrides + standalone operator rules
+	// not bound to any profile. They keep their empty Profile so the
+	// writer round-trips them back to top-level on the next save.
+	cfg.Rules = append(cfg.Rules, topRules...)
+	cfg.TopRules = topRules
+	return nil
+}
+
+// validateIntegrations checks that every operator-declared integration
+// has a known type and that any nested auth / tunnel block names a
+// supported subtype. Catches typos at config-load time so a request
+// path doesn't silently fall through.
+func validateIntegrations(ins []Integration) error {
+	allowedType := map[string]bool{
+		"oauth": true, "bearer": true, "header": true, "cookie": true,
+		"mtls": true, "postgres": true, "clickhouse": true, "kubernetes": true,
+	}
+	allowedAuth := map[string]bool{"aws-eks-token": true}
+	allowedTunnel := map[string]bool{"kubectl-portforward-ssh": true}
+	seen := map[string]bool{}
+	for _, in := range ins {
+		if in.Name == "" {
+			return fmt.Errorf("integration: missing name label")
+		}
+		if seen[in.Name] {
+			return fmt.Errorf("integration %q: duplicate declaration", in.Name)
+		}
+		seen[in.Name] = true
+		if !allowedType[in.Type] {
+			return fmt.Errorf("integration %q: unknown type %q (allowed: oauth, bearer, header, cookie, mtls, postgres, clickhouse, kubernetes)",
+				in.Name, in.Type)
+		}
+		if in.Auth != nil && !allowedAuth[in.Auth.Type] {
+			return fmt.Errorf("integration %q: unknown auth.type %q (allowed: aws-eks-token)", in.Name, in.Auth.Type)
+		}
+		if in.Tunnel != nil && !allowedTunnel[in.Tunnel.Type] {
+			return fmt.Errorf("integration %q: unknown tunnel.type %q (allowed: kubectl-portforward-ssh)", in.Name, in.Tunnel.Type)
+		}
+		acctNames := map[string]bool{}
+		for _, ac := range in.Accounts {
+			if acctNames[ac.Name] {
+				return fmt.Errorf("integration %q: duplicate account %q", in.Name, ac.Name)
+			}
+			acctNames[ac.Name] = true
+		}
+		secretNames := map[string]bool{}
+		for _, s := range in.Secrets {
+			if secretNames[s.Name] {
+				return fmt.Errorf("integration %q: duplicate secret %q", in.Name, s.Name)
+			}
+			secretNames[s.Name] = true
 		}
 	}
 	return nil

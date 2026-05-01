@@ -64,11 +64,27 @@ func (g *Gateway) handlePostgres(c net.Conn, dstIP string) {
 	length := binary.BigEndian.Uint32(hdr[:4])
 	code := binary.BigEndian.Uint32(hdr[4:8])
 	if length == 8 && code == sslRequestCode {
-		// refuse SSL
+		// refuse SSL → 'N'. Client retries with a real StartupMessage
+		// (no type byte) which we forward verbatim. Skipping this read
+		// would leave StartupMessage bytes in the client→server pump,
+		// where readPgMessage misreads them as a typed message and the
+		// connection hangs (sslmode=prefer was reproducing this).
 		if _, err := c.Write([]byte{'N'}); err != nil {
 			return
 		}
-		// next bytes will be a real StartupMessage — handled below
+		startHdr := make([]byte, 8)
+		if _, err := io.ReadFull(c, startHdr); err != nil {
+			return
+		}
+		startLen := binary.BigEndian.Uint32(startHdr[:4])
+		if _, err := upstream.Write(startHdr); err != nil {
+			return
+		}
+		if startLen > 8 {
+			if _, err := io.CopyN(upstream, c, int64(startLen-8)); err != nil {
+				return
+			}
+		}
 	} else {
 		// hdr is the start of a StartupMessage — forward it before
 		// stepping into the message loop.
@@ -129,7 +145,7 @@ func (g *Gateway) handlePostgres(c net.Conn, dstIP string) {
 								}
 								log.Printf("pg-deny agent=%s verb=%s tables=%v: %s", agentAddr, info.Verb, info.Tables, reason)
 								// E (ErrorResponse): S (severity), C (code), M (message), terminator
-								errBody := []byte("SERROR\x00C42501\x00M" + reason + "\x00\x00")
+								errBody := []byte("SERROR\x00C42501\x00M" + denyMessage(reason) + "\x00\x00")
 								errMsg := append([]byte{'E'}, encUint32(uint32(len(errBody)+4))...)
 								errMsg = append(errMsg, errBody...)
 								// Z (ReadyForQuery) — 5 bytes total: 'Z' + length(5) + 'I'
