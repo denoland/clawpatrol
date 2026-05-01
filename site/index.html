@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport"
+      content="width=device-width, initial-scale=1.0" />
+    <title>Claw Patrol — The security proxy for AI agents</title>
+    <link
+      rel="preload"
+      as="font"
+      type="font/woff2"
+      href="/fonts/overpass-latin.woff2"
+      crossorigin />
+    <link
+      rel="preload"
+      as="font"
+      type="font/woff2"
+      href="/fonts/jetbrains-mono-latin.woff2"
+      crossorigin />
+    <script>
+      // Runtime feature test for scroll-driven animations.
+      // `@supports (animation-timeline: view())` is parse-only — Firefox
+      // currently matches it without actually running the animation, which
+      // leaves `.scroll-diagram` tall-but-static.
+      //
+      // Pair the parse test with a runtime-only signal: the JS `ViewTimeline`
+      // constructor is defined by the Scroll-linked Animations spec and is
+      // only exposed by engines that actually implement the feature. This
+      // auto-lights up for any browser (Firefox included) the moment they
+      // ship real support — no UA sniffing required.
+      (function () {
+        if (
+          typeof CSS !== "undefined" &&
+          CSS.supports("animation-timeline", "view()") &&
+          "ViewTimeline" in window
+        ) {
+          document.documentElement.classList.add("has-sda");
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
