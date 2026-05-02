@@ -157,7 +157,7 @@ func (r *OAuthRegistry) Revoke(id, owner string) {
 		return
 	}
 	if r.db != nil {
-		_, _ = r.db.Exec("DELETE FROM credentials WHERE id=? AND owner=?", id, owner)
+		_, _ = r.db.Exec("DELETE FROM credentials WHERE id=? AND profile=?", id, owner)
 	}
 	delete(r.states, stateKey(id, owner))
 }
@@ -310,9 +310,9 @@ func (s *oauthState) persist(t *oauth2.Token) {
 		expiryNs = t.Expiry.UnixNano()
 	}
 	_, _ = s.db.Exec(`
-		INSERT INTO credentials (id, owner, access_token, token_type, refresh_token, expiry_ns, updated_ns)
+		INSERT INTO credentials (id, profile, access_token, token_type, refresh_token, expiry_ns, updated_ns)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id, owner) DO UPDATE SET
+		ON CONFLICT(id, profile) DO UPDATE SET
 			access_token  = excluded.access_token,
 			token_type    = excluded.token_type,
 			refresh_token = excluded.refresh_token,
@@ -327,7 +327,7 @@ func (r *OAuthRegistry) loadFromDB() error {
 	if r.db == nil {
 		return nil
 	}
-	rows, err := r.db.Query("SELECT id, owner, access_token, token_type, refresh_token, expiry_ns FROM credentials")
+	rows, err := r.db.Query("SELECT id, profile, access_token, token_type, refresh_token, expiry_ns FROM credentials")
 	if err != nil {
 		return err
 	}

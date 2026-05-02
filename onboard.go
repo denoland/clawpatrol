@@ -49,6 +49,7 @@ type onboardSession struct {
 	loginServer string // "wireguard://<iface>" for WG mode; empty for Tailscale
 	err         string
 	owner       string // who approved (for audit log)
+	profile     string // profile assigned at approval time
 	hostname    string // client-supplied (os.Hostname) at /api/onboard/start
 }
 
@@ -100,7 +101,7 @@ func (r *onboardRegistry) Load(db *sql.DB) error {
 	if db == nil {
 		return nil
 	}
-	rows, err := db.Query("SELECT id, name, owner, profile FROM devices")
+	rows, err := db.Query("SELECT id, name, profile FROM devices")
 	if err != nil {
 		return err
 	}
@@ -109,13 +110,11 @@ func (r *onboardRegistry) Load(db *sql.DB) error {
 		var (
 			ip      string
 			name    sql.NullString
-			owner   string
 			profile sql.NullString
 		)
-		if err := rows.Scan(&ip, &name, &owner, &profile); err != nil {
+		if err := rows.Scan(&ip, &name, &profile); err != nil {
 			return err
 		}
-		r.ownerByIP[ip] = owner
 		if name.Valid {
 			r.hostnameByIP[ip] = name.String
 		}
@@ -127,25 +126,29 @@ func (r *onboardRegistry) Load(db *sql.DB) error {
 }
 
 // upsertLocked writes the in-memory tuple for ip into the devices row.
-// Caller holds r.mu.
+// Caller holds r.mu. Persists the row for any IP we've seen claim or
+// hostname/profile data; rows for un-claimed IPs land with NULLs and
+// fill in as the claim flow progresses.
 func (r *onboardRegistry) upsertLocked(ip string) {
 	if r.db == nil {
 		return
 	}
-	owner := r.ownerByIP[ip]
-	if owner == "" {
-		return
+	if _, seen := r.profileByIP[ip]; !seen {
+		if _, hn := r.hostnameByIP[ip]; !hn {
+			if _, owner := r.ownerByIP[ip]; !owner {
+				return
+			}
+		}
 	}
 	now := time.Now().UnixNano()
 	_, _ = r.db.Exec(`
-		INSERT INTO devices (id, name, owner, profile, created_ns, last_seen_ns)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO devices (id, name, profile, created_ns, last_seen_ns)
+		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name         = excluded.name,
-			owner        = excluded.owner,
 			profile      = excluded.profile,
 			last_seen_ns = excluded.last_seen_ns
-	`, ip, nullStr(r.hostnameByIP[ip]), owner, nullStr(r.profileByIP[ip]), now, now)
+	`, ip, nullStr(r.hostnameByIP[ip]), nullStr(r.profileByIP[ip]), now, now)
 }
 
 func nullStr(s string) any {

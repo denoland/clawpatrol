@@ -304,19 +304,26 @@ func (w *webMux) callerIdentity(r *http.Request) (user, device, displayHost stri
 	return who.UserProfile.LoginName, who.Node.StableID, who.Node.HostName
 }
 
-// ownerForCaller returns the user-scoped credential-owner key for a
-// dashboard request. In WG mode (no tailnet identity), every dashboard
-// caller resolves to the operator-configured admin_email so OAuth
-// tokens land under the same key the gateway uses to look them up at
-// MITM time (see Gateway.ownerForRequest, which also falls back to
-// admin_email for peer IPs that aren't whois-resolvable).
+// ownerForCaller returns the credential-bucket key for a dashboard
+// request. With the profile-as-tenant model, that key is the profile
+// name selected by the operator — passed via `?profile=<name>` query
+// param or the `X-Clawpatrol-Profile` header. Falls back to the first
+// declared profile in gateway.hcl, or admin_email when no profiles
+// are configured (legacy single-tenant mode).
 func (w *webMux) ownerForCaller(r *http.Request) (key, label string) {
-	user, _, host := w.callerIdentity(r)
-	wgMode := !strings.EqualFold(w.g.cfg.Gateway.Control, "tailscale") &&
-		w.g.cfg.Gateway.Control != ""
-	if wgMode && w.g.cfg.AdminEmail != "" {
+	if p := r.URL.Query().Get("profile"); p != "" {
+		return p, p
+	}
+	if p := r.Header.Get("X-Clawpatrol-Profile"); p != "" {
+		return p, p
+	}
+	if profiles := w.g.cfg.Profiles; len(profiles) > 0 {
+		return profiles[0].Name, profiles[0].Name
+	}
+	if w.g.cfg.AdminEmail != "" {
 		return w.g.cfg.AdminEmail, w.g.cfg.AdminEmail
 	}
+	user, _, host := w.callerIdentity(r)
 	if user != "" {
 		return user, user
 	}
@@ -374,21 +381,25 @@ func (w *webMux) apiAgents(rw http.ResponseWriter, _ *http.Request) {
 	// the list at first sighting (a freshly-onboarded device whose
 	// user later connects Claude wouldn't reflect the new connection).
 	for _, a := range snap {
-		// Onboarded devices show up as Tailscale's "tagged-devices"
-		// pseudo-user since OAuth client_credentials always mints
-		// tagged auth keys. Substitute the human approver who claimed
-		// this IP via /api/onboard/claim.
-		if a.User == "" || a.User == "tagged-devices" {
-			if owner := w.onboard.OwnerForIP(a.IP); owner != "" {
-				a.User = owner
+		// Per-profile credentials: the agent's Integrations list
+		// reflects what the device's bound profile has connected. Falls
+		// back to the legacy per-user lookup for tailnet-control-mode
+		// installs that still bucket creds by login.
+		profile := w.onboard.ProfileForIP(a.IP)
+		if profile == "" {
+			if a.User == "" || a.User == "tagged-devices" {
+				if owner := w.onboard.OwnerForIP(a.IP); owner != "" {
+					a.User = owner
+				}
 			}
+			profile = a.User
 		}
-		if a.User == "" {
+		if profile == "" {
 			continue
 		}
 		var ids []string
 		for _, id := range allIntegrationKeys() {
-			if conn, _ := w.g.oauth.Status(id, a.User); conn {
+			if conn, _ := w.g.oauth.Status(id, profile); conn {
 				ids = append(ids, id)
 			}
 		}
@@ -1141,6 +1152,12 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	code := r.URL.Query().Get("code")
+	// Operator picks which profile this device joins. Falls back to the
+	// first declared profile when the dashboard didn't pass one.
+	profile := r.URL.Query().Get("profile")
+	if profile == "" && len(w.g.cfg.Profiles) > 0 {
+		profile = w.g.cfg.Profiles[0].Name
+	}
 	s := w.onboard.byUserCode(code)
 	if s == nil {
 		http.Error(rw, "unknown or expired code", 404)
@@ -1154,6 +1171,7 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 	}
 	s.approved = true
 	s.owner = owner
+	s.profile = profile
 	w.onboard.mu.Unlock()
 
 	// Mint key in background so the approve click returns fast.
@@ -1178,8 +1196,8 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 		// public gateway URL becomes unreachable).
 		if peerIP != "" {
 			w.onboard.ClaimIP(dc, peerIP, "")
-			if len(w.g.cfg.Profiles) > 0 {
-				w.onboard.AssignProfile(peerIP, w.g.cfg.Profiles[0].Name)
+			if profile != "" {
+				w.onboard.AssignProfile(peerIP, profile)
 			}
 			// Seed the agents registry so the dashboard shows the
 			// device immediately, before it sends any traffic.

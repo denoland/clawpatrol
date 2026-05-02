@@ -7,7 +7,7 @@ import { OnboardPage } from "./components/OnboardPage";
 import { AddDeviceModal } from "./components/AddDeviceModal";
 import { SettingsModal } from "./components/SettingsModal";
 import { HITLBar } from "./components/HITLBar";
-import { getStatus, getAgents, getWhoami, type Integration, type Agent, type Whoami } from "./lib/api";
+import { getStatus, getAgents, getWhoami, listProfiles, activeProfile, setActiveProfile, type Integration, type Agent, type Whoami } from "./lib/api";
 
 function parseRoute(): { name: "main" } | { name: "device"; ip: string } | { name: "onboard"; code: string } {
   const h = window.location.hash;
@@ -25,11 +25,27 @@ export default function App() {
   const [showAddDevice, setShowAddDevice] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [route, setRoute] = useState(parseRoute());
+  const [profiles, setProfiles] = useState<string[]>([]);
+  const [profile, setProfileState] = useState<string>(activeProfile());
 
   useEffect(() => {
     const onHash = () => setRoute(parseRoute());
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  // Load available profiles once. Default the active profile to the
+  // first one when nothing is selected — backend does the same on
+  // unset header, but reflecting it in localStorage keeps the UI
+  // honest if the operator opens devtools.
+  useEffect(() => {
+    listProfiles().then((ps) => {
+      setProfiles(ps || []);
+      if (!profile && ps && ps.length > 0) {
+        setActiveProfile(ps[0]);
+        setProfileState(ps[0]);
+      }
+    }).catch(() => {});
   }, []);
 
   async function refresh() {
@@ -62,6 +78,23 @@ export default function App() {
             <h1 className="font-serif text-[44px] sm:text-[56px] leading-none tracking-tight text-[#171717]">
               clawpatrol
             </h1>
+            {profiles.length > 0 && (
+              <select
+                value={profile}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setActiveProfile(v);
+                  setProfileState(v);
+                  refresh();
+                }}
+                className="border border-[#e5e5e5] rounded px-2 py-1 text-sm text-[#525252] hover:border-[#171717] hover:text-[#171717] transition-colors"
+                title="active profile (credential bucket)"
+              >
+                {profiles.map((p) => (
+                  <option key={p} value={p}>{p}</option>
+                ))}
+              </select>
+            )}
             <button
               onClick={() => setShowAddDevice(true)}
               className="w-[36px] h-[36px] rounded-full border border-[#e5e5e5] text-[#525252] text-[22px] leading-none flex items-center justify-center hover:border-[#171717] hover:text-[#171717] transition-colors"

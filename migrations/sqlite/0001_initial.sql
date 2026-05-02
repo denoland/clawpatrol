@@ -1,10 +1,17 @@
 -- 0001_initial — clawpatrol persistent state.
 --
 -- Tables:
---   devices         — onboarded peer identity (WG IP → owner / hostname / profile)
+--   devices         — onboarded peer identity (WG IP → hostname / profile)
 --   wg_peers        — (pubkey, ip) registrations for the wireguard-go device
---   credentials     — per-(integration, owner) OAuth tokens (was oauth-*.json)
---   actions         — request event log (was gateway.log JSONL)
+--   credentials     — per-(integration, profile) OAuth tokens
+--   actions         — request event log
+--
+-- Profile is the tenancy unit: a profile bundles integrations + rulesets
+-- in gateway.hcl, devices are bound to a profile, credentials/secrets
+-- live per profile. The "user" / "owner" concept is intentionally absent
+-- — `clawpatrol join` records (peer ip → profile), the gateway looks up
+-- credentials by that profile at MITM time, and the dashboard scopes
+-- everything to the operator-selected profile.
 --
 -- Rules + integrations live in gateway.hcl (HCL is the source of
 -- truth for policy). This DB only persists STATE — onboarding,
@@ -14,9 +21,8 @@
 -- this file just inserts the v1 row at the end.
 
 CREATE TABLE devices (
-  id           TEXT PRIMARY KEY,         -- WG tunnel IP for now
+  id           TEXT PRIMARY KEY,         -- WG tunnel IP
   name         TEXT,                     -- hostname from `clawpatrol join`
-  owner        TEXT NOT NULL,            -- email; falls back to peer IP
   profile      TEXT,                     -- assigned profile name (gateway.hcl)
   blocked      INTEGER NOT NULL DEFAULT 0,
   created_ns   INTEGER NOT NULL,
@@ -35,13 +41,13 @@ CREATE TABLE wg_peers (
 
 CREATE TABLE credentials (
   id             TEXT NOT NULL,          -- 'claude' | 'codex' | 'github' | custom
-  owner          TEXT NOT NULL,
+  profile        TEXT NOT NULL,          -- profile that owns this credential
   access_token   TEXT,
   token_type     TEXT,
   refresh_token  TEXT,
   expiry_ns      INTEGER,
   updated_ns     INTEGER NOT NULL,
-  PRIMARY KEY (id, owner)
+  PRIMARY KEY (id, profile)
 );
 
 CREATE TABLE actions (

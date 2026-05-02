@@ -1419,13 +1419,20 @@ func truncate(s string, n int) string {
 	return s
 }
 
-// ownerForRequest returns the user-scoped credential-owner key for a
-// peer. Falls back to peer IP when whois unavailable. For tagged
-// (onboarded) devices, the override populated by /api/onboard/claim
-// resolves the IP to the human approver — without it, Tailscale OAuth
-// only reports "tagged-devices" and per-user credential lookups miss.
+// ownerForRequest returns the credential-bucket key for a peer. With
+// the profile-as-tenant model, that's the device's assigned profile
+// name (devices.profile). Falls back to the peer's onboard-mapped
+// owner email and finally peer IP for un-onboarded clients — both
+// preserve compatibility with credentials saved before the profile
+// migration. Whois lookup remains in place for tailscale-control mode
+// where the dashboard still binds creds to the human's login.
 func (g *Gateway) ownerForRequest(c net.Conn, _ *OAuthIntegration) string {
 	ip := peerIP(c)
+	if g.onboard != nil {
+		if profile := g.onboard.ProfileForIP(ip); profile != "" {
+			return profile
+		}
+	}
 	login := ""
 	if g.agents != nil && g.agents.lc != nil {
 		if who := g.agents.lookupWhois(ip); who != nil && !who.UserProfile.IsZero() {
