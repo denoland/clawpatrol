@@ -17,7 +17,7 @@ jobs:
         with:
           node-version: 22
       - run: cd www && npm ci && npm run build
-      - uses: golangci/golangci-lint-action@v7
+      - uses: golangci/golangci-lint-action@v6
         with:
           version: v1.64.8
       - run: go test ./...
