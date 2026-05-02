@@ -85,7 +85,7 @@ export function RulesPanel({ deviceIP, profile }: { deviceIP?: string; profile?:
                 )}
               </Td>
               <Td>
-                <ActionBadge action={r.action || "allow"} />
+                <ActionBadge action={(r.approve && r.approve.length > 0) ? "hitl" : (r.action || "allow")} />
               </Td>
               <Td>
                 <MatchSummary r={r} />
@@ -105,6 +105,7 @@ function ActionBadge({ action }: { action: string }) {
   const palette: Record<string, string> = {
     allow: "bg-[#f0fdf4] border-[#bbf7d0] text-[#166534]",
     deny: "bg-[#fef2f2] border-[#fecaca] text-[#991b1b]",
+    hitl: "bg-[#fef3c7] border-[#fde68a] text-[#92400e]",
   };
   const cls = palette[action] || "bg-white border-[#e5e5e5] text-[#737373]";
   return (

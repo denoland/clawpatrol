@@ -55,6 +55,7 @@ export type RuleSummary = {
   profile?: string;
   port?: number;
   action?: string;
+  approve?: string[];
   reason?: string;
   auth?: string;
   body?: boolean;
