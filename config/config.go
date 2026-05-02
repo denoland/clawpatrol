@@ -196,6 +196,14 @@ func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
 	resolveDiags := decodePolicyBlocks(gw.Policy, table, evalCtx, configDir)
 	diags = append(diags, resolveDiags...)
 
+	// Post-decode pass: substitute `<<file:NAME>>` markers in plugin
+	// body fields that opted in via FileIncludable. Runs after Build
+	// so plugins see fully-populated Bodies; the raw markers reach
+	// dump / golden-test output as a side effect, which is fine —
+	// goldens compare structural shape, not file contents.
+	includeDiags := expandFileIncludes(gw.Policy, configDir)
+	diags = append(diags, includeDiags...)
+
 	return gw, diags
 }
 

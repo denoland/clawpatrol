@@ -156,6 +156,15 @@ func (e *KubernetesEndpoint) EndpointHosts() []string {
 	}
 	return nil
 }
+
+// FileIncludeFields tells the loader to inline `<<file:NAME>>`
+// markers in ca_cert. Self-hosted clusters reference the cluster
+// CA via filename so cert material stays out of the policy file.
+func (e *KubernetesEndpoint) FileIncludeFields() []config.FileIncludeField {
+	return []config.FileIncludeField{
+		{Get: func() string { return e.CACert }, Set: func(v string) { e.CACert = v }},
+	}
+}
 func (e *KubernetesEndpoint) EndpointCredentials() []struct {
 	Placeholder string
 	Credential  string
