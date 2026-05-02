@@ -17,5 +17,5 @@ jobs:
         with:
           node-version: 22
       - run: cd www && npm ci && npm run build
-      - run: gofmt -d . | tee /dev/stderr | (! grep .)
+      - run: gofmt -l . && test -z "$(gofmt -l .)"
       - run: go test ./...
