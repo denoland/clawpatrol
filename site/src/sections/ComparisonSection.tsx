@@ -35,11 +35,11 @@ const ROWS: {
   highlight?: boolean;
 }[] = [
   { name: "Helicone", desc: "AI gateway and observability", url: "https://helicone.ai", checks: [false, false, false, true, false, true] },
-  { name: "Portkey", desc: "Production stack for gen AI", url: "https://portkey.ai", checks: [false, false, false, true, true, true] },
-  { name: "LiteLLM", desc: "Open source AI gateway", url: "https://github.com/BerriAI/litellm", checks: [false, false, false, true, true, true] },
-  { name: "agentgateway", desc: "Connectivity proxy for agents", url: "https://github.com/agentgateway/agentgateway", checks: [false, false, false, true, true, true] },
-  { name: "Clawvisor", desc: "Purpose-based agent auth", url: "https://github.com/clawvisor/clawvisor", checks: [true, false, false, false, false, true] },
-  { name: "httpjail", desc: "HTTP request filter for processes", url: "https://github.com/coder/httpjail", checks: [false, true, false, false, true, false] },
+  { name: "Portkey", desc: "AI gateway, guardrails, observability", url: "https://portkey.ai", checks: [false, false, false, true, true, true] },
+  { name: "LiteLLM", desc: "Unified API for 100+ LLMs", url: "https://github.com/BerriAI/litellm", checks: [false, false, false, true, true, true] },
+  { name: "agentgateway", desc: "Agentic proxy for AI and MCP", url: "https://github.com/agentgateway/agentgateway", checks: [false, false, false, true, true, true] },
+  { name: "Clawvisor", desc: "API gateway for agent authorization", url: "https://github.com/clawvisor/clawvisor", checks: [true, false, false, false, false, true] },
+  { name: "httpjail", desc: "HTTP request filter and sandbox", url: "https://github.com/coder/httpjail", checks: [false, true, false, false, true, false] },
   { name: "Agent Vault", desc: "Credential proxy and vault", url: "https://github.com/Infisical/agent-vault", checks: [true, true, false, false, true, false] },
   { name: "Crab Trap", desc: "LLM-as-judge agent proxy", url: "https://github.com/brexhq/CrabTrap", checks: [false, true, false, true, true, true] },
   { name: "Claw Patrol", desc: "Security proxy for AI agents", url: "https://github.com/denoland/clawpatrol", checks: [true, true, true, true, true, true], highlight: true },
