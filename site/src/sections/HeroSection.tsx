@@ -2,8 +2,8 @@ export function HeroSection() {
   return (
     <section class="max-w-6xl mx-auto px-6 sm:px-8
       pt-16 sm:pt-28 pb-16">
-      <div class="grid md:grid-cols-2 gap-10 md:gap-16
-        items-center">
+      <div class="grid md:grid-cols-[1fr,auto] gap-10
+        md:gap-16 items-center">
         <div>
           <h1
             class="text-3xl sm:text-4xl md:text-[3.5rem]
@@ -11,17 +11,19 @@ export function HeroSection() {
               leading-[1.1] mb-8 font-display
               text-console-dark"
           >
-            The security proxy for AI agents
+            The security proxy
+            <br />
+            for AI agents
           </h1>
           <p class="text-lg leading-relaxed mb-10 max-w-lg
             text-text-muted">
-            Your agent can access every API key in plaintext
-            — and you have no idea what it costs or where
-            requests go. Claw Patrol is a forward proxy that
-            intercepts all traffic, injects secrets without
-            exposing them, and shows you everything. Works
-            with OpenAI, Claude Code, Codex, or any agent
-            — no code changes.
+            Your agent can access every API key in
+            plaintext — and you have no idea what it costs
+            or where requests go. Claw Patrol is a forward
+            proxy that intercepts all traffic, injects
+            secrets without exposing them, and shows you
+            everything. Works with OpenAI, Claude Code,
+            Codex, or any agent — no code changes.
           </p>
           <a
             href="https://github.com/denoland/clawpatrol-go"
@@ -41,7 +43,8 @@ export function HeroSection() {
           <img
             src="/clawpatrol.png"
             alt="Claw Patrol mascot"
-            class="w-80 max-w-full"
+            class="w-72 md:w-96 max-w-full
+              mix-blend-multiply"
           />
         </div>
       </div>
