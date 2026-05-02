@@ -548,6 +548,13 @@ func onboardViaDeviceFlow(gateway string) (bool, error) {
 				cr.Body.Close()
 			}
 		}
+		// Always persist a user-readable copy at ~/.config/clawpatrol/
+		// wg.conf so `clawpatrol run` can spin up a per-process tunnel
+		// without sudo (root-owned /etc/wireguard/<iface>.conf is
+		// unreadable to the caller's uid).
+		if err := writeUserWGConf(authKey); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠ persist user wg conf: %v\n", err)
+		}
 		if err := wgQuickUp(iface, authKey); err != nil {
 			return true, fmt.Errorf("wg-quick up: %w", err)
 		}
@@ -641,6 +648,22 @@ func runAsRoot(cmd string, args ...string) *exec.Cmd {
 	}
 	// last resort — try without sudo, let the OS reject if it must.
 	return exec.Command(cmd, args...)
+}
+
+// writeUserWGConf drops a copy of the wg-quick conf at
+// ~/.config/clawpatrol/wg.conf (chmod 600) so `clawpatrol run` can
+// build per-process tunnels without sudo. Idempotent.
+func writeUserWGConf(conf string) error {
+	dir, err := os.UserConfigDir()
+	if err != nil || dir == "" {
+		dir = filepath.Join(os.Getenv("HOME"), ".config")
+	}
+	dir = filepath.Join(dir, "clawpatrol")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, "wg.conf")
+	return os.WriteFile(path, []byte(conf), 0o600)
 }
 
 // wgQuickUp writes the supplied wireguard config to

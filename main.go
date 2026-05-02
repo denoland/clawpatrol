@@ -1800,6 +1800,8 @@ func main() {
 		runLogin(os.Args[2:])
 	case "join":
 		runJoin(os.Args[2:])
+	case "run":
+		runRun(os.Args[2:])
 	case "env":
 		runEnv(os.Args[2:])
 	case "init-ca":
