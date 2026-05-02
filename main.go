@@ -1277,6 +1277,21 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			}
 		}
 
+		// WebSocket upgrade. http.Transport.RoundTrip mangles the
+		// 101 response and Cloudflare's WAF rejects modified frames,
+		// so we hand off to a raw byte bridge that forwards the
+		// upgrade verbatim and pumps frames untouched. The handler
+		// runs until either side closes — when it returns, the
+		// caller's request loop ends naturally.
+		if isWSUpgrade(req) {
+			log.Printf("ws-upgrade %s %s", host, req.URL.Path)
+			ev.Action = "ws"
+			ev.Ms = time.Since(start).Milliseconds()
+			g.sink.Emit(ev)
+			g.handleWSUpgrade(tc, br, req, host)
+			return
+		}
+
 		trackKind := trackKindFor(host)
 		var trackedReqBody []byte
 		if trackKind != "" && req.Body != nil {
