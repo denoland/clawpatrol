@@ -1,0 +1,50 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-vultr
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.23" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+
+      - run: cd www && npm ci --no-audit --no-fund && npm run build
+
+      - env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+        run: go build -ldflags "-s -w" -trimpath -o gateway .
+
+      - env:
+          SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_KEY }}
+          SSH_HOST: ${{ secrets.VULTR_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -t ed25519 -H "$SSH_HOST" >> ~/.ssh/known_hosts
+
+      - env:
+          SSH_HOST: ${{ secrets.VULTR_HOST }}
+        run: |
+          scp -i ~/.ssh/id_ed25519 gateway "root@$SSH_HOST:/opt/clawall/gateway.new"
+          ssh -i ~/.ssh/id_ed25519 "root@$SSH_HOST" '
+            set -e
+            mv /opt/clawall/gateway.new /opt/clawall/gateway
+            chmod +x /opt/clawall/gateway
+            systemctl restart clawall-gateway
+            sleep 2
+            systemctl is-active clawall-gateway
+          '
