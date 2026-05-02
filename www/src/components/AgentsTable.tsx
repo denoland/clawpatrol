@@ -27,7 +27,7 @@ export function AgentsTable({
       <thead>
         <tr className="border-b border-[#e5e5e5]">
           <Th>DEVICE</Th>
-          <Th className="hidden md:table-cell">USER</Th>
+          <Th className="hidden md:table-cell">PROFILE</Th>
           <Th>ACTIVITY</Th>
           <Th className="text-right">REQS</Th>
           <Th className="hidden lg:table-cell">IP</Th>
@@ -64,11 +64,11 @@ export function AgentsTable({
                   </span>
                 </div>
                 <div className="md:hidden text-[10px] text-[#a3a3a3] truncate mt-0.5">
-                  {a.user || a.ip}
+                  {a.profile || "—"}
                 </div>
               </Td>
               <Td className="hidden md:table-cell text-[11px] text-[#525252] truncate">
-                {a.user || "—"}
+                {a.profile || "—"}
               </Td>
               <Td>
                 <div className="flex items-center gap-2">

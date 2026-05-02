@@ -69,6 +69,14 @@ type Config struct {
 	// TopRules.
 	Rules []Rule
 	OAuth []OAuthIntegration
+
+	// HostIntegration maps a hostname to the integration name whose
+	// credential should be injected when the gateway MITMs that host.
+	// Populated by expandDefaults from each profile's `integrations`
+	// list. Not decoded from HCL, not surfaced in /api/rules — kept
+	// invisible to the rules table since they're not policy decisions
+	// but auth-injection wiring.
+	HostIntegration map[string]string
 }
 
 // Profile binds integrations + rulesets + inline rules. Each onboarded
@@ -1462,8 +1470,16 @@ func (g *Gateway) handle(raw net.Conn) {
 	pip := peerIP(c)
 	hostRule := selectHostRule(g.Rules(), host, pip, g.profileFor(pip))
 	if hostRule == nil {
-		g.splice(c, host)
-		return
+		// No user rule for this host. If it's an integration host,
+		// synthesize a transient Rule so MITM still injects the right
+		// credential. Otherwise pass-through (default-allow with no
+		// inspection).
+		if integ := g.cfg.HostIntegration[host]; integ != "" {
+			hostRule = &Rule{Host: host, Auth: integ}
+		} else {
+			g.splice(c, host)
+			return
+		}
 	}
 	if hostRule.Match == nil && hostRule.Action == "deny" {
 		log.Printf("deny %s: %s", host, hostRule.Reason)

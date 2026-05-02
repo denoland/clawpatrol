@@ -315,23 +315,28 @@ func expandDefaults(cfg *Config) error {
 					cfg.OAuth = append(cfg.OAuth, *def.OAuth)
 					haveOAuth[def.OAuth.ID] = true
 				}
+				// host→integration is recorded on cfg.HostIntegration
+				// instead of being expanded into visible Rules. The
+				// MITM path consults the map when no user rule matches
+				// a host, synthesizing an in-memory Rule with the
+				// right Auth field for credential injection.
 				for _, host := range def.Hosts {
-					if declared[host] {
-						continue
+					if cfg.HostIntegration == nil {
+						cfg.HostIntegration = map[string]string{}
 					}
-					if err := emit(Rule{Host: host, Auth: name}); err != nil {
-						return err
+					if _, set := cfg.HostIntegration[host]; !set {
+						cfg.HostIntegration[host] = name
 					}
 				}
 				continue
 			}
 			if in, ok := custom[name]; ok {
 				for _, host := range in.Hosts {
-					if declared[host] {
-						continue
+					if cfg.HostIntegration == nil {
+						cfg.HostIntegration = map[string]string{}
 					}
-					if err := emit(Rule{Host: host, Auth: name}); err != nil {
-						return err
+					if _, set := cfg.HostIntegration[host]; !set {
+						cfg.HostIntegration[host] = name
 					}
 				}
 				continue
