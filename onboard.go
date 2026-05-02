@@ -18,14 +18,13 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -53,15 +52,10 @@ type onboardSession struct {
 	hostname    string // client-supplied (os.Hostname) at /api/onboard/start
 }
 
-// onboardStore is the on-disk persistence shape. Per-IP owner +
-// hostname + profile assignment, keyed by peer IP. Persisted at
-// <oauth_dir>/onboarded.json.
-type onboardStore struct {
-	OwnerByIP    map[string]string `json:"owner_by_ip"`
-	HostnameByIP map[string]string `json:"hostname_by_ip,omitempty"`
-	ProfileByIP  map[string]string `json:"profile_by_ip,omitempty"`
-}
-
+// onboardRegistry persists onboarded peers in the `devices` table,
+// keyed by WG tunnel IP. The in-memory maps cache hot lookups
+// (OwnerForIP / HostnameForIP / ProfileForIP fire on every request);
+// mutations write through to SQLite.
 type onboardRegistry struct {
 	mu           sync.Mutex
 	byDevice     map[string]*onboardSession
@@ -69,7 +63,7 @@ type onboardRegistry struct {
 	ownerByIP    map[string]string
 	hostnameByIP map[string]string
 	profileByIP  map[string]string
-	storePath    string
+	db           *sql.DB
 }
 
 func newOnboardRegistry() *onboardRegistry {
@@ -89,48 +83,76 @@ func (r *onboardRegistry) ProfileForIP(ip string) string {
 }
 
 // AssignProfile records that a peer IP belongs to a named profile.
-// Persists to disk.
+// Persists to the devices row.
 func (r *onboardRegistry) AssignProfile(ip, profile string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.profileByIP[ip] = profile
-	r.saveLocked()
+	r.upsertLocked(ip)
 }
 
-// Load attaches a disk file for owner-by-ip persistence and replays
-// any existing entries. Call once after construction. Reads both the
-// new {owner_by_ip, hostname_by_ip} schema and the legacy flat
-// ip→owner map for backward compatibility.
-func (r *onboardRegistry) Load(dir string) {
+// Load attaches the SQLite-backed `devices` table and replays every
+// row into the in-memory caches. Call once after construction.
+func (r *onboardRegistry) Load(db *sql.DB) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.storePath = filepath.Join(dir, "onboarded.json")
-	b, err := os.ReadFile(r.storePath)
+	r.db = db
+	if db == nil {
+		return nil
+	}
+	rows, err := db.Query("SELECT id, name, owner, profile FROM devices")
 	if err != nil {
-		return
+		return err
 	}
-	// Try new schema first.
-	var s onboardStore
-	if err := json.Unmarshal(b, &s); err == nil && s.OwnerByIP != nil {
-		r.ownerByIP = s.OwnerByIP
-		if s.HostnameByIP != nil {
-			r.hostnameByIP = s.HostnameByIP
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			ip      string
+			name    sql.NullString
+			owner   string
+			profile sql.NullString
+		)
+		if err := rows.Scan(&ip, &name, &owner, &profile); err != nil {
+			return err
 		}
-		if s.ProfileByIP != nil {
-			r.profileByIP = s.ProfileByIP
+		r.ownerByIP[ip] = owner
+		if name.Valid {
+			r.hostnameByIP[ip] = name.String
 		}
-		return
+		if profile.Valid {
+			r.profileByIP[ip] = profile.String
+		}
 	}
-	// Fall back to legacy flat map.
-	_ = json.Unmarshal(b, &r.ownerByIP)
+	return rows.Err()
 }
 
-func (r *onboardRegistry) saveLocked() {
-	if r.storePath == "" {
+// upsertLocked writes the in-memory tuple for ip into the devices row.
+// Caller holds r.mu.
+func (r *onboardRegistry) upsertLocked(ip string) {
+	if r.db == nil {
 		return
 	}
-	b, _ := json.MarshalIndent(onboardStore{OwnerByIP: r.ownerByIP, HostnameByIP: r.hostnameByIP, ProfileByIP: r.profileByIP}, "", "  ")
-	_ = os.WriteFile(r.storePath, b, 0o600)
+	owner := r.ownerByIP[ip]
+	if owner == "" {
+		return
+	}
+	now := time.Now().UnixNano()
+	_, _ = r.db.Exec(`
+		INSERT INTO devices (id, name, owner, profile, created_ns, last_seen_ns)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			name         = excluded.name,
+			owner        = excluded.owner,
+			profile      = excluded.profile,
+			last_seen_ns = excluded.last_seen_ns
+	`, ip, nullStr(r.hostnameByIP[ip]), owner, nullStr(r.profileByIP[ip]), now, now)
+}
+
+func nullStr(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 func (r *onboardRegistry) ClaimIP(deviceCode, ip string) (string, bool) {
@@ -144,7 +166,7 @@ func (r *onboardRegistry) ClaimIP(deviceCode, ip string) (string, bool) {
 	if s.hostname != "" {
 		r.hostnameByIP[ip] = s.hostname
 	}
-	r.saveLocked()
+	r.upsertLocked(ip)
 	return s.owner, true
 }
 
@@ -166,7 +188,9 @@ func (r *onboardRegistry) ForgetIP(ip string) {
 	delete(r.ownerByIP, ip)
 	delete(r.hostnameByIP, ip)
 	delete(r.profileByIP, ip)
-	r.saveLocked()
+	if r.db != nil {
+		_, _ = r.db.Exec("DELETE FROM devices WHERE id = ?", ip)
+	}
 }
 
 func (r *onboardRegistry) start() *onboardSession {
@@ -240,7 +264,7 @@ type Onboarder interface {
 	MintKey(ctx context.Context) (authKey, loginServer, peerIP string, err error)
 }
 
-func newOnboarder(ts Tailscale) Onboarder {
+func newOnboarder(ts GatewayConfig) Onboarder {
 	switch strings.ToLower(ts.Control) {
 	case "wireguard":
 		return &wireguardOnboarder{ts: ts}
@@ -249,7 +273,7 @@ func newOnboarder(ts Tailscale) Onboarder {
 	}
 }
 
-type tailscaleOnboarder struct{ ts Tailscale }
+type tailscaleOnboarder struct{ ts GatewayConfig }
 
 func (t *tailscaleOnboarder) MintKey(ctx context.Context) (string, string, string, error) {
 	k, err := mintTailscaleAuthKey(ctx, t.ts)
@@ -262,7 +286,7 @@ func (t *tailscaleOnboarder) MintKey(ctx context.Context) (string, string, strin
 // mintTailscaleAuthKey calls Tailscale's OAuth + auth-key API to create
 // a single-use, non-ephemeral auth key the new client can use to join
 // the tailnet exactly once.
-func mintTailscaleAuthKey(ctx context.Context, ts Tailscale) (string, error) {
+func mintTailscaleAuthKey(ctx context.Context, ts GatewayConfig) (string, error) {
 	clientID := resolveTemplate(ts.OAuthClientID)
 	clientSecret := resolveTemplate(ts.OAuthClientSecret)
 	if clientID == "" || clientSecret == "" {

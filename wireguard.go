@@ -19,17 +19,17 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"net/netip"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/curve25519"
 	"golang.zx2c4.com/wireguard/conn"
@@ -175,21 +175,25 @@ type WGServer struct {
 	tun       *netTun
 	dev       *device.Device
 	serverIP  netip.Addr
-	publicKey string // hex-encoded, derived from the private key at boot
-	peerFile  string
+	publicKey string  // hex-encoded, derived from the private key at boot
+	db        *sql.DB // wg_peers row store
 }
 
-// globalWG is set at gateway boot by setWGServer. The onboarder reads
-// it to register peers without a circular dependency on the gateway
-// struct.
-var globalWG *WGServer
+// globalWG / globalDB are set at gateway boot. The onboarder reads
+// them to register peers + allocate IPs without a circular dependency
+// on the gateway struct.
+var (
+	globalWG *WGServer
+	globalDB *sql.DB
+)
 
 func setWGServer(s *WGServer) { globalWG = s }
+func setDB(d *sql.DB)         { globalDB = d }
 
 // StartWGServer brings up a userspace WG endpoint listening on
 // 0.0.0.0:<ListenPort>. Server private key is read from disk; if
 // missing, generated and persisted at <stateDir>/wg-server.key.
-func StartWGServer(ts Tailscale, stateDir string) (*WGServer, error) {
+func StartWGServer(ts GatewayConfig, stateDir string) (*WGServer, error) {
 	if ts.WGSubnetCIDR == "" {
 		return nil, fmt.Errorf("wireguard: wg_subnet_cidr required")
 	}
@@ -227,10 +231,10 @@ func StartWGServer(ts Tailscale, stateDir string) (*WGServer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("derive pub: %w", err)
 	}
-	srv := &WGServer{tun: tun, dev: dev, serverIP: serverIP, publicKey: pub, peerFile: stateDir + "/wg-peers.json"}
+	srv := &WGServer{tun: tun, dev: dev, serverIP: serverIP, publicKey: pub, db: globalDB}
 	// Replay persisted (pubkey → ip) pairs into the in-memory device
 	// so reboots don't strand existing clients.
-	for pubkey, ip := range loadPeers(srv.peerFile) {
+	for pubkey, ip := range srv.loadPeers() {
 		_ = dev.IpcSet(fmt.Sprintf(
 			"public_key=%s\nreplace_allowed_ips=true\nallowed_ip=%s/32\n",
 			pubkey, ip))
@@ -239,19 +243,27 @@ func StartWGServer(ts Tailscale, stateDir string) (*WGServer, error) {
 }
 
 // AddPeer registers a peer (after admin approval). Idempotent — same
-// pubkey overwrites previous AllowedIPs. Any prior peer registered to
-// the same WG-side IP is REVOKED (in-memory + on disk) so the
-// allowed-IPs trie never has multiple owners for one /32. Without
-// this, accumulated ghost peers from previous onboards win the trie
-// race on restart and silently drop the current client's traffic.
+// pubkey overwrites previous AllowedIPs. Any prior peer holding this
+// WG-side IP is REVOKED from the wg-go trie + the wg_peers table so
+// only one /32-owner exists. Accumulated ghost peers from previous
+// onboards otherwise win the trie race on restart and silently drop
+// the current client's traffic.
 func (s *WGServer) AddPeer(pubkeyHex, peerIP string) error {
-	peers := loadPeers(s.peerFile)
-	for oldKey, oldIP := range peers {
-		if oldIP == peerIP && oldKey != pubkeyHex {
-			// remove the stale peer from wg-go's trie so it can't claim
-			// our IP on the next handshake.
-			_ = s.dev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", oldKey))
-			delete(peers, oldKey)
+	if s.db != nil {
+		rows, err := s.db.Query("SELECT pubkey FROM wg_peers WHERE ip = ? AND pubkey != ?", peerIP, pubkeyHex)
+		if err == nil {
+			var stale []string
+			for rows.Next() {
+				var k string
+				if rows.Scan(&k) == nil {
+					stale = append(stale, k)
+				}
+			}
+			rows.Close()
+			for _, k := range stale {
+				_ = s.dev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", k))
+				_, _ = s.db.Exec("DELETE FROM wg_peers WHERE pubkey = ?", k)
+			}
 		}
 	}
 	if err := s.dev.IpcSet(fmt.Sprintf(
@@ -260,8 +272,14 @@ func (s *WGServer) AddPeer(pubkeyHex, peerIP string) error {
 	)); err != nil {
 		return err
 	}
-	peers[pubkeyHex] = peerIP
-	return savePeers(s.peerFile, peers)
+	if s.db != nil {
+		_, err := s.db.Exec(`
+			INSERT INTO wg_peers (pubkey, ip, added_ns) VALUES (?, ?, ?)
+			ON CONFLICT(pubkey) DO UPDATE SET ip = excluded.ip
+		`, pubkeyHex, peerIP, time.Now().UnixNano())
+		return err
+	}
+	return nil
 }
 
 // EnablePromiscuousForwarder turns the netstack into an L3 sink.
@@ -363,17 +381,23 @@ func relayUDP(c net.Conn, dstIP string, dstPort uint16) {
 	<-done
 }
 
-func loadPeers(path string) map[string]string {
+func (s *WGServer) loadPeers() map[string]string {
 	out := map[string]string{}
-	if b, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(b, &out)
+	if s.db == nil {
+		return out
+	}
+	rows, err := s.db.Query("SELECT pubkey, ip FROM wg_peers")
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k, ip string
+		if rows.Scan(&k, &ip) == nil {
+			out[k] = ip
+		}
 	}
 	return out
-}
-
-func savePeers(path string, peers map[string]string) error {
-	b, _ := json.MarshalIndent(peers, "", "  ")
-	return os.WriteFile(path, b, 0o600)
 }
 
 func loadOrGenWGKey(path string) (string, error) {
@@ -448,10 +472,9 @@ func hexToB64(h string) (string, error) {
 }
 
 type wireguardOnboarder struct {
-	ts        Tailscale
-	server    *WGServer // injected at gateway boot; set by setWGServer
-	mu        sync.Mutex
-	allocPath string
+	ts     GatewayConfig
+	server *WGServer // injected at gateway boot; set by setWGServer
+	mu     sync.Mutex
 }
 
 func (w *wireguardOnboarder) MintKey(ctx context.Context) (string, string, string, error) {
@@ -507,12 +530,25 @@ func (w *wireguardOnboarder) iface() string {
 	return "clawpatrol"
 }
 
-// allocateIP grabs the next free IP from WGSubnetCIDR, persisting the
-// allocation map to disk so restarts don't double-assign.
+// allocateIP grabs the next free IP from WGSubnetCIDR. The allocation
+// set is derived from wg_peers (one row per active peer); a fresh DB
+// = a fresh subnet. AddPeer commits the (pubkey, ip) row.
 func (w *wireguardOnboarder) allocateIP() (string, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	used := w.loadAllocations()
+	used := map[string]bool{}
+	if globalDB != nil {
+		rows, err := globalDB.Query("SELECT ip FROM wg_peers")
+		if err == nil {
+			for rows.Next() {
+				var ip string
+				if rows.Scan(&ip) == nil {
+					used[ip] = true
+				}
+			}
+			rows.Close()
+		}
+	}
 	_, cidr, err := net.ParseCIDR(w.ts.WGSubnetCIDR)
 	if err != nil {
 		return "", err
@@ -521,35 +557,8 @@ func (w *wireguardOnboarder) allocateIP() (string, error) {
 	for i := 2; i < 255; i++ {
 		ip := net.IPv4(first[0], first[1], first[2], byte(i)).String()
 		if !used[ip] {
-			used[ip] = true
-			w.saveAllocations(used)
 			return ip, nil
 		}
 	}
 	return "", fmt.Errorf("wireguard subnet %s exhausted", w.ts.WGSubnetCIDR)
-}
-
-func (w *wireguardOnboarder) allocFile() string {
-	if w.allocPath != "" {
-		return w.allocPath
-	}
-	dir := os.Getenv("CLAWPATROL_OAUTH_DIR")
-	if dir == "" {
-		dir = "/opt/clawpatrol/oauth"
-	}
-	return filepath.Join(dir, "wg-allocations.json")
-}
-
-func (w *wireguardOnboarder) loadAllocations() map[string]bool {
-	used := map[string]bool{}
-	b, err := os.ReadFile(w.allocFile())
-	if err == nil {
-		_ = json.Unmarshal(b, &used)
-	}
-	return used
-}
-
-func (w *wireguardOnboarder) saveAllocations(used map[string]bool) {
-	b, _ := json.MarshalIndent(used, "", "  ")
-	_ = os.WriteFile(w.allocFile(), b, 0o600)
 }

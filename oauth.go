@@ -3,14 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -47,15 +44,16 @@ type tokenStore struct {
 }
 
 // oauthState is one credential: tokens for a single (integration, owner).
+// Persisted in the credentials table; one row per (id, owner).
 type oauthState struct {
-	cfg      *oauth2.Config
-	source   oauth2.TokenSource
-	header   string
-	prefix   string
-	id       string
-	owner    string
-	storeDir string
-	mu       sync.Mutex
+	cfg    *oauth2.Config
+	source oauth2.TokenSource
+	header string
+	prefix string
+	id     string
+	owner  string
+	db     *sql.DB
+	mu     sync.Mutex
 }
 
 // OAuthRegistry holds all configured OAuth integrations and a per-owner
@@ -64,22 +62,21 @@ type OAuthRegistry struct {
 	mu           sync.RWMutex
 	integrations map[string]*OAuthIntegration
 	states       map[string]*oauthState // key: id + "|" + owner
-	storeDir     string
+	db           *sql.DB
 }
 
-func NewOAuthRegistry(items []OAuthIntegration, storeDir string) (*OAuthRegistry, error) {
-	if err := os.MkdirAll(storeDir, 0o700); err != nil {
-		return nil, err
-	}
+func NewOAuthRegistry(items []OAuthIntegration, db *sql.DB) (*OAuthRegistry, error) {
 	r := &OAuthRegistry{
 		integrations: map[string]*OAuthIntegration{},
 		states:       map[string]*oauthState{},
-		storeDir:     storeDir,
+		db:           db,
 	}
 	for i := range items {
 		r.integrations[items[i].ID] = &items[i]
 	}
-	r.loadFromDisk()
+	if err := r.loadFromDB(); err != nil {
+		return nil, err
+	}
 	return r, nil
 }
 
@@ -152,15 +149,16 @@ func (r *OAuthRegistry) Status(id, owner string) (connected bool, expiry time.Ti
 	return true, t.Expiry
 }
 
-// Revoke deletes the (id, owner) credential and on-disk token.
+// Revoke deletes the (id, owner) credential and its DB row.
 func (r *OAuthRegistry) Revoke(id, owner string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	s, ok := r.states[stateKey(id, owner)]
-	if !ok {
+	if _, ok := r.states[stateKey(id, owner)]; !ok {
 		return
 	}
-	_ = os.Remove(s.path())
+	if r.db != nil {
+		_, _ = r.db.Exec("DELETE FROM credentials WHERE id=? AND owner=?", id, owner)
+	}
 	delete(r.states, stateKey(id, owner))
 }
 
@@ -174,14 +172,14 @@ func (r *OAuthRegistry) Set(id, owner string, tok *oauth2.Token) error {
 	}
 	s := r.states[stateKey(id, owner)]
 	if s == nil {
-		s = newState(it, owner, r.storeDir)
+		s = newState(it, owner, r.db)
 		r.states[stateKey(id, owner)] = s
 	}
 	s.setToken(tok)
 	return nil
 }
 
-func newState(it *OAuthIntegration, owner, storeDir string) *oauthState {
+func newState(it *OAuthIntegration, owner string, db *sql.DB) *oauthState {
 	cfg := &oauth2.Config{
 		ClientID:     resolveTemplate(it.OAuth.ClientID),
 		ClientSecret: resolveTemplate(it.OAuth.ClientSecret),
@@ -198,12 +196,12 @@ func newState(it *OAuthIntegration, owner, storeDir string) *oauthState {
 		prefix = "Bearer "
 	}
 	return &oauthState{
-		cfg:      cfg,
-		header:   header,
-		prefix:   prefix,
-		id:       it.ID,
-		owner:    owner,
-		storeDir: storeDir,
+		cfg:    cfg,
+		header: header,
+		prefix: prefix,
+		id:     it.ID,
+		owner:  owner,
+		db:     db,
 	}
 }
 
@@ -304,65 +302,60 @@ func (p *persistingSource) Token() (*oauth2.Token, error) {
 func (s *oauthState) persist(t *oauth2.Token) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	b, _ := json.MarshalIndent(struct {
-		ID    string `json:"_id"`
-		Owner string `json:"_owner"`
-		tokenStore
-	}{
-		ID:    s.id,
-		Owner: s.owner,
-		tokenStore: tokenStore{
-			AccessToken:  t.AccessToken,
-			TokenType:    t.TokenType,
-			RefreshToken: t.RefreshToken,
-			Expiry:       t.Expiry,
-		},
-	}, "", "  ")
-	_ = os.WriteFile(s.path(), b, 0o600)
-}
-
-func (s *oauthState) path() string {
-	h := sha256.Sum256([]byte(s.owner))
-	return filepath.Join(s.storeDir, fmt.Sprintf("oauth-%s-%s.json", s.id, hex.EncodeToString(h[:6])))
-}
-
-// loadFromDisk scans store dir, restores any (id, owner) tokens whose
-// owner is recorded inline in the JSON.
-func (r *OAuthRegistry) loadFromDisk() {
-	entries, err := os.ReadDir(r.storeDir)
-	if err != nil {
+	if s.db == nil {
 		return
 	}
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
+	var expiryNs int64
+	if !t.Expiry.IsZero() {
+		expiryNs = t.Expiry.UnixNano()
+	}
+	_, _ = s.db.Exec(`
+		INSERT INTO credentials (id, owner, access_token, token_type, refresh_token, expiry_ns, updated_ns)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id, owner) DO UPDATE SET
+			access_token  = excluded.access_token,
+			token_type    = excluded.token_type,
+			refresh_token = excluded.refresh_token,
+			expiry_ns     = excluded.expiry_ns,
+			updated_ns    = excluded.updated_ns
+	`, s.id, s.owner, t.AccessToken, t.TokenType, t.RefreshToken, expiryNs, time.Now().UnixNano())
+}
+
+// loadFromDB rehydrates every (id, owner) credential row whose
+// integration is still declared in r.integrations.
+func (r *OAuthRegistry) loadFromDB() error {
+	if r.db == nil {
+		return nil
+	}
+	rows, err := r.db.Query("SELECT id, owner, access_token, token_type, refresh_token, expiry_ns FROM credentials")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			id, owner         string
+			access, typ, refr sql.NullString
+			expiryNs          sql.NullInt64
+		)
+		if err := rows.Scan(&id, &owner, &access, &typ, &refr, &expiryNs); err != nil {
+			return err
 		}
-		b, err := os.ReadFile(filepath.Join(r.storeDir, e.Name()))
-		if err != nil {
-			continue
-		}
-		var raw struct {
-			tokenStore
-			ID    string `json:"_id,omitempty"`
-			Owner string `json:"_owner,omitempty"`
-		}
-		if json.Unmarshal(b, &raw) != nil {
-			continue
-		}
-		if raw.ID == "" || raw.Owner == "" {
-			continue
-		}
-		it, ok := r.integrations[raw.ID]
+		it, ok := r.integrations[id]
 		if !ok {
 			continue
 		}
-		s := newState(it, raw.Owner, r.storeDir)
-		s.setToken(&oauth2.Token{
-			AccessToken:  raw.AccessToken,
-			TokenType:    raw.TokenType,
-			RefreshToken: raw.RefreshToken,
-			Expiry:       raw.Expiry,
-		})
-		r.states[stateKey(raw.ID, raw.Owner)] = s
+		s := newState(it, owner, r.db)
+		tok := &oauth2.Token{
+			AccessToken:  access.String,
+			TokenType:    typ.String,
+			RefreshToken: refr.String,
+		}
+		if expiryNs.Valid && expiryNs.Int64 != 0 {
+			tok.Expiry = time.Unix(0, expiryNs.Int64)
+		}
+		s.setToken(tok)
+		r.states[stateKey(id, owner)] = s
 	}
+	return rows.Err()
 }

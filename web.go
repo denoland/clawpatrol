@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
 	"embed"
 	"encoding/base64"
 	"encoding/hex"
@@ -61,14 +62,14 @@ type oauthSession struct {
 type webMux struct {
 	g         *Gateway
 	caDir     string
-	ts        Tailscale // for onboarding key minting
+	ts        GatewayConfig // for onboarding key minting
 	publicURL string
 	mu        sync.Mutex
 	sessions  map[string]*oauthSession
 	onboard   *onboardRegistry
 }
 
-func newWebMux(g *Gateway, caDir string, ts Tailscale, publicURL string) http.Handler {
+func newWebMux(g *Gateway, caDir string, ts GatewayConfig, publicURL string) http.Handler {
 	w := &webMux{g: g, caDir: caDir, ts: ts, publicURL: publicURL, sessions: map[string]*oauthSession{}, onboard: g.onboard}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/info", w.serveInfo)
@@ -224,8 +225,8 @@ func (w *webMux) tailnetGate(next http.Handler) http.Handler {
 	// In wireguard / proxy mode there is no tailnet identity to gate
 	// against. Operators put the dashboard behind their own
 	// authentication (Cloudflare Access, basic auth proxy, etc).
-	skipGate := !strings.EqualFold(w.g.cfg.Tailscale.Control, "tailscale") &&
-		w.g.cfg.Tailscale.Control != ""
+	skipGate := !strings.EqualFold(w.g.cfg.Gateway.Control, "tailscale") &&
+		w.g.cfg.Gateway.Control != ""
 
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		if publicPaths[r.URL.Path] || skipGate {
@@ -311,8 +312,8 @@ func (w *webMux) callerIdentity(r *http.Request) (user, device, displayHost stri
 // admin_email for peer IPs that aren't whois-resolvable).
 func (w *webMux) ownerForCaller(r *http.Request) (key, label string) {
 	user, _, host := w.callerIdentity(r)
-	wgMode := !strings.EqualFold(w.g.cfg.Tailscale.Control, "tailscale") &&
-		w.g.cfg.Tailscale.Control != ""
+	wgMode := !strings.EqualFold(w.g.cfg.Gateway.Control, "tailscale") &&
+		w.g.cfg.Gateway.Control != ""
 	if wgMode && w.g.cfg.AdminEmail != "" {
 		return w.g.cfg.AdminEmail, w.g.cfg.AdminEmail
 	}
@@ -1277,7 +1278,7 @@ type Event struct {
 
 type Sink struct {
 	ch        chan Event
-	file      *os.File
+	db        *sql.DB
 	drops     atomic.Uint64
 	mu        sync.Mutex
 	subs      []chan Event
@@ -1285,48 +1286,68 @@ type Sink struct {
 	recentCap int
 }
 
-func NewSink(path string, buf int) (*Sink, error) {
-	s := &Sink{ch: make(chan Event, buf), recentCap: 500}
-	if path != "" {
-		// Seed the in-memory backlog from the on-disk JSONL so a
-		// dashboard reload after a gateway restart still shows the last
-		// N events instead of an empty stream.
-		if seed, err := readTailEvents(path, s.recentCap); err == nil && len(seed) > 0 {
+func NewSink(db *sql.DB, buf int) (*Sink, error) {
+	s := &Sink{ch: make(chan Event, buf), db: db, recentCap: 500}
+	if db != nil {
+		if seed, err := readTailEvents(db, s.recentCap); err == nil && len(seed) > 0 {
 			s.recent = seed
 		}
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-		if err != nil {
-			return nil, err
-		}
-		s.file = f
 	}
 	go s.drain()
 	return s, nil
 }
 
-func readTailEvents(path string, n int) ([]Event, error) {
-	f, err := os.Open(path)
+func readTailEvents(db *sql.DB, n int) ([]Event, error) {
+	rows, err := db.Query(`
+		SELECT ts_ns, mode, agent_ip, host, method, path, status,
+		       bytes_in, bytes_out, ms, action, reason, req_sha, resp_sha
+		FROM actions ORDER BY id DESC LIMIT ?`, n)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	dec := json.NewDecoder(f)
+	defer rows.Close()
 	out := make([]Event, 0, n)
-	for {
-		var e Event
-		if err := dec.Decode(&e); err != nil {
-			if err == io.EOF {
-				break
-			}
-			break // tolerate a truncated tail
+	for rows.Next() {
+		var (
+			e       Event
+			tsNs    int64
+			mode    sql.NullString
+			agentIP sql.NullString
+			method  sql.NullString
+			path    sql.NullString
+			status  sql.NullInt64
+			in, ot  sql.NullInt64
+			ms      sql.NullInt64
+			action  sql.NullString
+			reason  sql.NullString
+			reqSha  sql.NullString
+			respSha sql.NullString
+		)
+		if err := rows.Scan(&tsNs, &mode, &agentIP, &e.Host, &method, &path, &status, &in, &ot, &ms, &action, &reason, &reqSha, &respSha); err != nil {
+			return nil, err
 		}
+		e.Ts = time.Unix(0, tsNs).UTC()
+		e.Mode = mode.String
+		e.AgentIP = agentIP.String
+		e.Method = method.String
+		e.Path = path.String
+		e.Status = int(status.Int64)
+		e.In = in.Int64
+		e.Out = ot.Int64
+		e.Ms = ms.Int64
+		e.Action = action.String
+		e.Reason = reason.String
+		e.ReqSha = reqSha.String
+		e.RespSha = respSha.String
 		out = append(out, e)
-		if len(out) > n*2 {
-			out = out[len(out)-n:]
-		}
 	}
-	if len(out) > n {
-		out = out[len(out)-n:]
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// rows are newest-first; flip to oldest-first so SSE backlog
+	// arrives in the order subscribers expect.
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
 	}
 	return out, nil
 }
@@ -1348,10 +1369,13 @@ func (s *Sink) Emit(e Event) {
 func (s *Sink) Drops() uint64 { return s.drops.Load() }
 
 func (s *Sink) drain() {
-	enc := json.NewEncoder(s.file)
 	for e := range s.ch {
-		if s.file != nil {
-			_ = enc.Encode(e)
+		if s.db != nil {
+			_, _ = s.db.Exec(`
+				INSERT INTO actions
+				 (ts_ns, mode, agent_ip, host, method, path, status, bytes_in, bytes_out, ms, action, reason, req_sha, resp_sha)
+				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			`, e.Ts.UnixNano(), e.Mode, e.AgentIP, e.Host, e.Method, e.Path, e.Status, e.In, e.Out, e.Ms, e.Action, e.Reason, e.ReqSha, e.RespSha)
 		}
 		s.mu.Lock()
 		s.recent = append(s.recent, e)

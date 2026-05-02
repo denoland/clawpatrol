@@ -6,6 +6,7 @@ import (
 	"context"
 	"compress/gzip"
 	"crypto/tls"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -49,9 +50,8 @@ type Config struct {
 	DashboardSecret string     `hcl:"dashboard_secret,optional"`
 	CADir      string     `hcl:"ca_dir,optional"`
 	Resolver   string     `hcl:"resolver,optional"`
-	LogPath    string     `hcl:"log_path,optional"`
 	OAuthDir   string     `hcl:"oauth_dir,optional"`
-	Tailscale    *Tailscale    `hcl:"tailscale,block"`
+	Gateway      *GatewayConfig `hcl:"gateway,block"`
 	Profiles     []Profile     `hcl:"profile,block"`
 	Rulesets     []Ruleset     `hcl:"ruleset,block"`
 	Approvers    []Approver    `hcl:"approver,block"`
@@ -197,7 +197,11 @@ type Approver struct {
 	RequireApprovers int    `hcl:"require_approvers,optional"` // type=slack — N-of-N quorum (default 1)
 }
 
-type Tailscale struct {
+// GatewayConfig is the operator-facing tunnel/control-plane block.
+// Decoded from `gateway { ... }` in gateway.hcl. Carries both the
+// Tailscale-control-plane fields (authkey / OAuth) and the
+// self-host WireGuard fields; `control` selects which set is active.
+type GatewayConfig struct {
 	AuthKey    string `hcl:"authkey,optional"`
 	ControlURL string `hcl:"control_url,optional"`
 	Hostname   string `hcl:"hostname,optional"`
@@ -259,8 +263,8 @@ func loadConfig(path string) (*Config, error) {
 	if err := hclsimple.DecodeFile(path, nil, &c); err != nil {
 		return nil, err
 	}
-	if c.Tailscale == nil {
-		c.Tailscale = &Tailscale{}
+	if c.Gateway == nil {
+		c.Gateway = &GatewayConfig{}
 	}
 	if c.Listen == "" {
 		c.Listen = ":443"
@@ -285,23 +289,22 @@ func writeConfigHCL(c *Config, path string) error {
 	setStr("public_url", c.PublicURL)
 	setStr("admin_email", c.AdminEmail)
 	setStr("ca_dir", c.CADir)
-	setStr("log_path", c.LogPath)
 	setStr("oauth_dir", c.OAuthDir)
 	setStr("resolver", c.Resolver)
-	if c.Tailscale != nil && (c.Tailscale.Control != "" || c.Tailscale.WGEndpoint != "") {
+	if c.Gateway != nil && (c.Gateway.Control != "" || c.Gateway.WGEndpoint != "") {
 		body.AppendNewline()
-		ts := body.AppendNewBlock("tailscale", nil).Body()
-		if c.Tailscale.Control != "" {
-			ts.SetAttributeValue("control", cty.StringVal(c.Tailscale.Control))
+		ts := body.AppendNewBlock("gateway", nil).Body()
+		if c.Gateway.Control != "" {
+			ts.SetAttributeValue("control", cty.StringVal(c.Gateway.Control))
 		}
-		if c.Tailscale.WGEndpoint != "" {
-			ts.SetAttributeValue("wg_endpoint", cty.StringVal(c.Tailscale.WGEndpoint))
+		if c.Gateway.WGEndpoint != "" {
+			ts.SetAttributeValue("wg_endpoint", cty.StringVal(c.Gateway.WGEndpoint))
 		}
-		if c.Tailscale.WGSubnetCIDR != "" {
-			ts.SetAttributeValue("wg_subnet_cidr", cty.StringVal(c.Tailscale.WGSubnetCIDR))
+		if c.Gateway.WGSubnetCIDR != "" {
+			ts.SetAttributeValue("wg_subnet_cidr", cty.StringVal(c.Gateway.WGSubnetCIDR))
 		}
-		if c.Tailscale.WGInterface != "" {
-			ts.SetAttributeValue("wg_interface", cty.StringVal(c.Tailscale.WGInterface))
+		if c.Gateway.WGInterface != "" {
+			ts.SetAttributeValue("wg_interface", cty.StringVal(c.Gateway.WGInterface))
 		}
 	}
 	// Group rules back into their profile blocks. Custom (operator-
@@ -820,6 +823,7 @@ func newUpstreamDialer(resolver string) *net.Dialer {
 type Gateway struct {
 	cfg     *Config
 	cfgPath string                 // path the HCL config was loaded from; dashboard writes back here
+	db      *sql.DB                // persistent state — credentials, devices, wg_peers, actions
 	rules   atomic.Pointer[[]Rule] // hot-swappable on config-file change
 	certs   *CertCache
 	dialer  *net.Dialer
@@ -1869,21 +1873,30 @@ func runGateway(args []string) {
 	if err != nil {
 		log.Fatalf("ca: %v", err)
 	}
-	sink, err := NewSink(cfg.LogPath, 4096)
+	stateDir := cfg.OAuthDir
+	if stateDir == "" {
+		stateDir = filepath.Join(cfg.CADir, "..", "oauth")
+	}
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		log.Fatalf("state dir: %v", err)
+	}
+	db, err := OpenDB(filepath.Join(stateDir, "clawpatrol.db"))
+	if err != nil {
+		log.Fatalf("db: %v", err)
+	}
+	setDB(db)
+	sink, err := NewSink(db, 4096)
 	if err != nil {
 		log.Fatalf("log: %v", err)
 	}
-	oauthDir := cfg.OAuthDir
-	if oauthDir == "" {
-		oauthDir = filepath.Join(cfg.CADir, "..", "oauth")
-	}
-	oauthReg, err := NewOAuthRegistry(cfg.OAuth, oauthDir)
+	oauthReg, err := NewOAuthRegistry(cfg.OAuth, db)
 	if err != nil {
 		log.Fatalf("oauth: %v", err)
 	}
 	g := &Gateway{
 		cfg:     cfg,
 		cfgPath: *cfgPath,
+		db:      db,
 		certs:   certs,
 		dialer:  newUpstreamDialer(cfg.Resolver),
 		sink:    sink,
@@ -1895,14 +1908,16 @@ func runGateway(args []string) {
 	rules := append([]Rule(nil), cfg.Rules...)
 	g.rules.Store(&rules)
 	go g.watchConfig(*cfgPath)
-	g.onboard.Load(cfg.OAuthDir)
+	if err := g.onboard.Load(db); err != nil {
+		log.Fatalf("onboard load: %v", err)
+	}
 	g.agents.onboard = g.onboard
 
 	// always-on built-in HITL notifier: fan-out to dashboard SSE.
 	g.hitl.Register(&hitlSinkNotifier{sink: g.sink})
 
 	if cfg.InfoListen != "" {
-		mux := newWebMux(g, cfg.CADir, *cfg.Tailscale, cfg.PublicURL)
+		mux := newWebMux(g, cfg.CADir, *cfg.Gateway, cfg.PublicURL)
 		go func() {
 			http.ListenAndServe(cfg.InfoListen, mux)
 		}()
@@ -1920,13 +1935,13 @@ func runGateway(args []string) {
 	//   - else   → transparent relay to the real upstream
 	// No /etc/hosts hack needed on clients — agents resolve real
 	// hostnames via public DNS and the gateway intercepts at L3.
-	if strings.EqualFold(cfg.Tailscale.Control, "wireguard") {
-		wg, err := StartWGServer(*cfg.Tailscale, oauthDir)
+	if strings.EqualFold(cfg.Gateway.Control, "wireguard") {
+		wg, err := StartWGServer(*cfg.Gateway, stateDir)
 		if err != nil {
 			log.Fatalf("wireguard: %v", err)
 		}
 		setWGServer(wg)
-		dashMux := newWebMux(g, cfg.CADir, *cfg.Tailscale, cfg.PublicURL)
+		dashMux := newWebMux(g, cfg.CADir, *cfg.Gateway, cfg.PublicURL)
 		dashPort := portOf(cfg.InfoListen)
 		if err := wg.EnablePromiscuousForwarder(func(c net.Conn, dstIP string, dstPort uint16) {
 			log.Printf("wg-fwd: %s:%d", dstIP, dstPort)

@@ -13,7 +13,7 @@ import (
 )
 
 func openListener(cfg *Config) (net.Listener, error) {
-	if cfg.Tailscale.AuthKey != "" {
+	if cfg.Gateway.AuthKey != "" {
 		return nil, fmt.Errorf(
 			"tailscale.authkey set but binary built without tsnet — " +
 				"either install tailscaled separately and drop authkey, " +

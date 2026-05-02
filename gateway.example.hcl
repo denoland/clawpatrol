@@ -22,10 +22,9 @@ info_listen = "0.0.0.0:8080"
 public_url  = "http://66.42.120.196:8080"
 admin_email = "test@example.com"
 ca_dir      = "/opt/clawpatrol/ca"
-log_path    = "/opt/clawpatrol/gateway.log"
 oauth_dir   = "/opt/clawpatrol/oauth"
 
-tailscale {
+gateway {
   control        = "wireguard"
   wg_endpoint    = "66.42.120.196:51820"
   wg_subnet_cidr = "10.55.0.0/24"

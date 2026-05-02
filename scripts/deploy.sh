@@ -84,7 +84,7 @@ CONTROL="${CONTROL:-tailscale}"
 case "$CONTROL" in
   tailscale)
     TS_BLOCK=$(cat <<HCL
-tailscale {
+gateway {
   control             = "tailscale"
   oauth_client_id     = "{{secret:TS_OAUTH_CLIENT_ID}}"
   oauth_client_secret = "{{secret:TS_OAUTH_CLIENT_SECRET}}"
@@ -107,7 +107,7 @@ HCL
             || iptables -I INPUT -p udp --dport ${WG_PORT} -j ACCEPT"
 
     TS_BLOCK=$(cat <<HCL
-tailscale {
+gateway {
   control        = "wireguard"
   wg_endpoint    = "${WG_ENDPOINT}"
   wg_subnet_cidr = "${WG_SUBNET_CIDR}"
@@ -126,7 +126,6 @@ listen       = "0.0.0.0:${PORT}"
 info_listen  = "0.0.0.0:8080"
 public_url   = "${PUBLIC_URL}"
 ca_dir       = "${REMOTE_DIR}/ca"
-log_path     = "${REMOTE_DIR}/gateway.log"
 oauth_dir    = "${REMOTE_DIR}/oauth"
 integrations = ["claude", "codex", "github"]
 
