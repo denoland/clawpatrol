@@ -42,7 +42,7 @@ const ROWS: {
   { name: "httpjail", desc: "HTTP request filter for processes", url: "https://github.com/coder/httpjail", checks: [false, true, false, false, true, false] },
   { name: "Agent Vault", desc: "Credential proxy and vault", url: "https://github.com/Infisical/agent-vault", checks: [true, true, false, false, true, false] },
   { name: "Crab Trap", desc: "LLM-as-judge agent proxy", url: "https://github.com/brexhq/CrabTrap", checks: [false, true, false, true, true, true] },
-  { name: "Claw Patrol", desc: "Security proxy for AI agents", url: "https://github.com/denoland/clawpatrol-go", checks: [true, true, true, true, true, true], highlight: true },
+  { name: "Claw Patrol", desc: "Security proxy for AI agents", url: "https://github.com/denoland/clawpatrol", checks: [true, true, true, true, true, true], highlight: true },
 ];
 
 export function ComparisonSection() {

@@ -19,7 +19,7 @@ export function Header() {
           Docs
         </a>
         <a
-          href="https://github.com/denoland/clawpatrol-go"
+          href="https://github.com/denoland/clawpatrol"
           class="transition-colors font-mono
             text-text-muted underline underline-offset-4"
         >

@@ -26,7 +26,7 @@ export function HeroSection() {
             Codex, or any agent — no code changes.
           </p>
           <a
-            href="https://github.com/denoland/clawpatrol-go"
+            href="https://github.com/denoland/clawpatrol"
             class="px-7 py-3.5 text-sm uppercase
               tracking-wider font-semibold
               transition-colors squircle-full neu-raised

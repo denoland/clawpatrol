@@ -33,7 +33,7 @@ export function IntegrationsSection() {
           {INTEGRATIONS.map(({ name, id }, i) => (
             <a
               key={id}
-              href={`https://github.com/denoland/clawpatrol-go/tree/main/src/plugins/${id}`}
+              href={`https://github.com/denoland/clawpatrol/tree/main/src/plugins/${id}`}
               target="_blank"
               rel="noopener noreferrer"
               class="integration-tile flex flex-col items-center aspect-square
