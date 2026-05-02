@@ -27,6 +27,10 @@ import (
 const (
 	envClaudePlaceholder = "sk-ant-oat01-clawpatrol-placeholder-token-do-not-use-as-real-key"
 	envGitHubPlaceholder = "ghp_clawpatrol_placeholder_token_do_not_use_as_real_key"
+	// codex CLI / OpenAI SDKs validate OPENAI_API_KEY starts with `sk-`
+	// before sending. The real OAuth bearer is swapped in at MITM time
+	// via the codex integration's Authorization header rewrite.
+	envCodexPlaceholder = "sk-clawpatrol-placeholder-token-do-not-use-as-real-key"
 )
 
 // scanReplaceBytes runs every Swap entry across b in order. Each
@@ -88,6 +92,7 @@ func runEnv(args []string) {
 	fmt.Printf("export ANTHROPIC_AUTH_TOKEN=%q\n", envClaudePlaceholder)
 	fmt.Printf("export GH_TOKEN=%q\n", envGitHubPlaceholder)
 	fmt.Printf("export GITHUB_TOKEN=%q\n", envGitHubPlaceholder)
+	fmt.Printf("export OPENAI_API_KEY=%q\n", envCodexPlaceholder)
 }
 
 // Built-in integration defaults. Operators reference by name in config:
