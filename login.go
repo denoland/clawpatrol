@@ -427,6 +427,29 @@ func fail(format string, a ...any) {
 // gateway dashboard, gets a user_code, prompts the user to approve on
 // an existing trusted device, polls for the minted Tailscale auth key,
 // installs Tailscale (if missing), and runs `tailscale up --authkey`.
+// wgAddressFromConf parses the `Address = X.Y.Z.W/32` line out of a
+// wg-quick config so the CLI can send its peer IP to the gateway
+// before bringing the tunnel up. Returns "" when the conf has no
+// Address attribute or the value is unparseable.
+func wgAddressFromConf(conf string) string {
+	for _, line := range strings.Split(conf, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "Address") {
+			continue
+		}
+		_, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		v = strings.TrimSpace(v)
+		if i := strings.Index(v, "/"); i > 0 {
+			v = v[:i]
+		}
+		return v
+	}
+	return ""
+}
+
 // onboardViaDeviceFlow drives the device-flow handshake against the
 // gateway and ends in a working VPN connection. Returns wgMode=true
 // when the gateway picked the wireguard control plane (caller skips
@@ -507,6 +530,24 @@ func onboardViaDeviceFlow(gateway string) (bool, error) {
 		if iface == "" {
 			iface = "clawpatrol"
 		}
+		// Send our hostname BEFORE wg-quick brings the tunnel up — once
+		// 0.0.0.0/0 routes through the tunnel the public gateway URL
+		// becomes unreachable. Server's /api/onboard/approve already
+		// registered the (peerIP → owner) mapping at mint time, but
+		// the hostname only landed if the CLI sent it at /start. This
+		// claim call is idempotent on owner and updates the hostname
+		// row in the devices table.
+		if hn, _ := os.Hostname(); hn != "" {
+			wgIP := wgAddressFromConf(authKey)
+			claimURL := fmt.Sprintf("%s/api/onboard/claim?device_code=%s&hostname=%s",
+				gateway, start.DeviceCode, neturl.QueryEscape(hn))
+			if wgIP != "" {
+				claimURL += "&ip=" + neturl.QueryEscape(wgIP)
+			}
+			if cr, err := cli.Post(claimURL, "application/json", nil); err == nil {
+				cr.Body.Close()
+			}
+		}
 		if err := wgQuickUp(iface, authKey); err != nil {
 			return true, fmt.Errorf("wg-quick up: %w", err)
 		}
@@ -557,6 +598,9 @@ func onboardViaDeviceFlow(gateway string) (bool, error) {
 	}
 	claimURL := fmt.Sprintf("%s/api/onboard/claim?device_code=%s&ip=%s",
 		gateway, start.DeviceCode, tailIP)
+	if hn, _ := os.Hostname(); hn != "" {
+		claimURL += "&hostname=" + neturl.QueryEscape(hn)
+	}
 	cr, err := cli.Post(claimURL, "application/json", nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "⚠ onboard claim failed: %v\n", err)

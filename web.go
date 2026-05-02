@@ -1172,7 +1172,7 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 		// (which is racy: the default route is now the tunnel and the
 		// public gateway URL becomes unreachable).
 		if peerIP != "" {
-			w.onboard.ClaimIP(dc, peerIP)
+			w.onboard.ClaimIP(dc, peerIP, "")
 			if len(w.g.cfg.Profiles) > 0 {
 				w.onboard.AssignProfile(peerIP, w.g.cfg.Profiles[0].Name)
 			}
@@ -1212,13 +1212,14 @@ func (w *webMux) apiOnboardClaim(rw http.ResponseWriter, r *http.Request) {
 			host = host[:i]
 		}
 	}
-	owner, ok := w.onboard.ClaimIP(dc, host)
+	hostname := strings.TrimSpace(r.URL.Query().Get("hostname"))
+	owner, ok := w.onboard.ClaimIP(dc, host, hostname)
 	if !ok {
 		log.Printf("onboard claim: unknown/unapproved device_code=%s ip=%s", truncate(dc, 16), host)
 		http.Error(rw, "unknown or unapproved device_code", 404)
 		return
 	}
-	log.Printf("onboard claim: %s → %s", host, owner)
+	log.Printf("onboard claim: %s → %s (hostname=%q)", host, owner, hostname)
 	writeJSON(rw, map[string]string{"owner": owner, "ip": host})
 }
 

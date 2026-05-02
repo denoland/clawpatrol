@@ -155,7 +155,10 @@ func nullStr(s string) any {
 	return s
 }
 
-func (r *onboardRegistry) ClaimIP(deviceCode, ip string) (string, bool) {
+// ClaimIP binds a peer IP to its approver. hostnameOverride wins over
+// the value captured at /api/onboard/start — older CLIs didn't send a
+// hostname at start, so the post-tunnel claim is the reliable hook.
+func (r *onboardRegistry) ClaimIP(deviceCode, ip, hostnameOverride string) (string, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s := r.byDevice[deviceCode]
@@ -163,7 +166,9 @@ func (r *onboardRegistry) ClaimIP(deviceCode, ip string) (string, bool) {
 		return "", false
 	}
 	r.ownerByIP[ip] = s.owner
-	if s.hostname != "" {
+	if hostnameOverride != "" {
+		r.hostnameByIP[ip] = hostnameOverride
+	} else if s.hostname != "" {
 		r.hostnameByIP[ip] = s.hostname
 	}
 	r.upsertLocked(ip)
