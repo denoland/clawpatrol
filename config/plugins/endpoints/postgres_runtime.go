@@ -140,12 +140,15 @@ func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.
 	_ = ctx
 }
 
-// pgEvaluate runs the SQL through the endpoint's compiled rules.
-// Returns ("deny", reason) when the matched rule denies; ("", "")
-// when no rule fires or the matched rule allows. Approve chains on
-// SQL queries aren't yet implemented — they fall through to allow
-// with a TODO, matching the pre-runtime behaviour where SQL approve
-// chains were declared in v14 but never enforced.
+// pgEvaluate runs the SQL through the endpoint's compiled rules and
+// returns the disposition for this query.
+//
+// Returns:
+//
+//	("deny", reason) — matched rule denies, or approve chain
+//	  rejected, or approve chain timed out (host applies its
+//	  configured fail mode).
+//	("", "")         — no rule fires or the matched rule allows.
 func pgEvaluate(ch *runtime.ConnHandle, sql string) (string, string) {
 	info := parseSQL(sql)
 	mreq := &match.Request{
@@ -161,26 +164,64 @@ func pgEvaluate(ch *runtime.ConnHandle, sql string) (string, string) {
 	if cr == nil {
 		return "", ""
 	}
+	summary := pgSummary(info)
+
+	// Approve chain. ConnHandle.Approve dispatches through the
+	// host's HITL machinery (same one HTTPS uses) — the postgres
+	// runtime pauses on the synchronous return, just like the HTTP
+	// path's g.hitl.Wait. nil Approve means HITL isn't wired for
+	// this conn family; we default-deny so a misconfigured host
+	// can't accidentally let approve-gated queries through.
+	if len(cr.Outcome.Approve) > 0 {
+		if ch.Approve == nil {
+			emit(ch, runtime.ConnEvent{
+				Action: "deny", Reason: "HITL not configured",
+				Verb: info.Verb, Summary: summary,
+			})
+			return "deny", "approval required but HITL is not configured"
+		}
+		v := ch.Approve(runtime.ApproveCallRequest{
+			Stages: cr.Outcome.Approve, Verb: info.Verb,
+			Summary: summary, Rule: cr,
+		})
+		if v.Decision != "allow" {
+			reason := v.Reason
+			if reason == "" {
+				reason = "denied by approver"
+			}
+			emit(ch, runtime.ConnEvent{
+				Action: "hitl_deny", Reason: reason,
+				Verb: info.Verb, Summary: summary,
+			})
+			return "deny", reason
+		}
+		emit(ch, runtime.ConnEvent{
+			Action: "hitl_allow", Verb: info.Verb, Summary: summary,
+		})
+		return "", ""
+	}
+
 	if cr.Outcome.Verdict == "deny" {
 		reason := cr.Outcome.Reason
 		if reason == "" {
 			reason = "denied by policy"
 		}
-		if ch.Emit != nil {
-			ch.Emit(runtime.ConnEvent{
-				Action: "deny", Reason: reason,
-				Verb: info.Verb, Summary: pgSummary(info),
-			})
-		}
+		emit(ch, runtime.ConnEvent{
+			Action: "deny", Reason: reason,
+			Verb: info.Verb, Summary: summary,
+		})
 		return "deny", reason
 	}
-	if ch.Emit != nil {
-		ch.Emit(runtime.ConnEvent{
-			Action: "allow", Verb: info.Verb, Summary: pgSummary(info),
-		})
-	}
-	// TODO: approve chains for SQL.
+	emit(ch, runtime.ConnEvent{
+		Action: "allow", Verb: info.Verb, Summary: summary,
+	})
 	return "", ""
+}
+
+func emit(ch *runtime.ConnHandle, ev runtime.ConnEvent) {
+	if ch.Emit != nil {
+		ch.Emit(ev)
+	}
 }
 
 func pgWriteDeny(conn net.Conn, reason string) {

@@ -290,6 +290,10 @@ type Gateway struct {
 	// at request time. Default env-var-backed; OAuth-flow credentials
 	// land via a follow-up bridge that delegates to OAuthRegistry.
 	secrets runtime.SecretStore
+	// pgIdx maps WG-forwarder dstIPs to the postgres endpoint that
+	// owns them. Rebuilt on every policy load. Lookups are O(1)
+	// after the initial DNS resolution.
+	pgIdx atomic.Pointer[pgIndex]
 }
 
 // Policy returns the current snapshot of the lowered runtime policy.
@@ -338,6 +342,7 @@ func (g *Gateway) watchConfig(path string) {
 		}
 		g.policy.Store(policy)
 		registerOAuthCredentials(g.oauth, policy)
+		g.pgIdx.Store(buildPgIndex(policy))
 		g.cfg.AdminEmail = next.AdminEmail
 		g.cfg.PublicURL = next.PublicURL
 		g.cfg.DashboardSecret = next.DashboardSecret
@@ -934,7 +939,17 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 	profile := g.profileFor(pip)
 
 	policy := g.Policy()
-	ep := firstPostgresEndpoint(policy, profile)
+	// Try the DNS-resolved IP index first — multi-postgres profiles
+	// dispatch correctly when each endpoint's hostname resolves to
+	// distinct IPs. Fall back to first-postgres-in-profile so single-
+	// database profiles work without DNS at all.
+	var ep *config.CompiledEndpoint
+	if idx := g.pgIdx.Load(); idx != nil {
+		ep = idx.lookup(dstIP)
+	}
+	if ep == nil {
+		ep = firstPostgresEndpoint(policy, profile)
+	}
 	if ep == nil {
 		// No postgres policy → relay verbatim. Closes when either
 		// side hangs up.
@@ -976,6 +991,28 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 				Method: ev.Verb, Path: ev.Summary,
 				Action: ev.Action, Reason: ev.Reason,
 			})
+		},
+		Approve: func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
+			names := make([]string, len(req.Stages))
+			for i, s := range req.Stages {
+				names[i] = s.Name
+			}
+			pending := &HITLPending{
+				AgentIP:   pip,
+				Host:      dstIP,
+				Method:    req.Verb,
+				Path:      req.Summary,
+				Reason:    "",
+				Approvers: names,
+			}
+			if req.Rule != nil {
+				pending.Reason = req.Rule.Outcome.Reason
+			}
+			d := g.hitl.Wait(context.Background(), pending, defaultHITLTimeout(g.Policy()))
+			if d.Allow {
+				return runtime.ApproveVerdict{Decision: "allow"}
+			}
+			return runtime.ApproveVerdict{Decision: "deny", Reason: d.Reason}
 		},
 	}
 	if err := connRT.HandleConn(context.Background(), ch); err != nil {
@@ -1468,6 +1505,7 @@ func runGateway(args []string) {
 	g.secrets = newGatewaySecretStore(oauthReg)
 	registerOAuthCredentials(oauthReg, policy)
 	g.policy.Store(policy)
+	g.pgIdx.Store(buildPgIndex(policy))
 	log.Printf("policy: %d endpoints across %d profiles", len(policy.Endpoints), len(policy.Profiles))
 	go g.watchConfig(*cfgPath)
 	if err := g.onboard.Load(db); err != nil {

@@ -88,6 +88,27 @@ type ConnHandle struct {
 	// events; the gateway funnels them to the dashboard SSE +
 	// JSONL log.
 	Emit func(ev ConnEvent)
+	// Approve runs an approve = [...] chain through the host's HITL
+	// infrastructure. Plugins call it when a matched rule's
+	// Outcome.Approve is non-empty; the host wraps its
+	// existing approver registry (dashboard / Slack / LLM) and
+	// returns the verdict synchronously. nil when the host doesn't
+	// support HITL for this conn family — plugins must default to
+	// deny in that case.
+	Approve func(req ApproveCallRequest) ApproveVerdict
+}
+
+// ApproveCallRequest is what a ConnEndpointRuntime hands to
+// ConnHandle.Approve when a matched rule has an approve = [...]
+// chain. Verb / Summary populate the dashboard's HITL request card;
+// Stages drives which approvers fire in which order.
+type ApproveCallRequest struct {
+	Stages  []config.ApproveStage
+	Verb    string // SQL verb / k8s verb / etc., for the dashboard
+	Summary string // one-liner the operator sees in the HITL prompt
+	// Rule is the matched compiled rule (carries Reason for the
+	// dashboard's "why is this gated" line).
+	Rule *config.CompiledRule
 }
 
 // ConnEvent is the wire-protocol-agnostic event shape conn-family
