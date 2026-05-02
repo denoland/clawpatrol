@@ -2,7 +2,7 @@ import { useState } from "react";
 
 export function AddDeviceModal({ publicURL, onClose }: { publicURL?: string; onClose: () => void }) {
   const url = publicURL || window.location.origin;
-  const installCmd = "curl -fsSL https://denoland.github.io/clawpatrol-go/install.sh | sh";
+  const installCmd = "curl -fsSL https://clawpatrol.dev/install.sh | sh";
   const joinCmd = `clawpatrol join --url ${url}`;
 
   return (
