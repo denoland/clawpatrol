@@ -705,7 +705,6 @@ func installTailscale() error {
 // writes a sane wireguard-mode gateway.hcl, opens firewall ports,
 // and prints the run command. Replaces the bash-script deploy hacks.
 
-
 func runGatewayInit(args []string) {
 	fs := flag.NewFlagSet("gateway init", flag.ExitOnError)
 	dataDir := fs.String("data-dir", "/etc/clawpatrol", "where to put gateway.hcl + CA + state")

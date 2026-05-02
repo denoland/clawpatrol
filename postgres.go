@@ -252,10 +252,11 @@ func indexByte(b []byte, c byte) int {
 }
 
 // parseSQL is a best-effort lexer for Match.checkSQL. Extracts:
-//   verb     — first non-whitespace word, lowercased.
-//   tables   — names following FROM / UPDATE / INTO / JOIN.
-//   function — first function-call identifier (best-effort).
-//   statement — original SQL (trimmed) for glob / regex match.
+//
+//	verb     — first non-whitespace word, lowercased.
+//	tables   — names following FROM / UPDATE / INTO / JOIN.
+//	function — first function-call identifier (best-effort).
+//	statement — original SQL (trimmed) for glob / regex match.
 func parseSQL(sql string) pgInfo {
 	sql = strings.TrimSpace(sql)
 	info := pgInfo{Statement: sql}

@@ -97,7 +97,7 @@ func TestGlobMatch(t *testing.T) {
 		{"*COPY*FROM PROGRAM*", "COPY data FROM PROGRAM 'wget'", true},
 		{"*COPY*FROM PROGRAM*", "SELECT 1", false},
 		{"*COPY*TO PROGRAM*", "COPY data TO PROGRAM '/bin/sh'", true},
-		{"select", "SELECT", true},  // case insensitive
+		{"select", "SELECT", true}, // case insensitive
 		{"select", "select", true},
 		{"*secret*", "read the secret value", true},
 		{"*secret*", "normal query", false},

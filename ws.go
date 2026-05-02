@@ -30,9 +30,9 @@ const (
 var deflateTrailer = []byte{0x00, 0x00, 0xff, 0xff}
 
 type wsParams struct {
-	deflate           bool
-	clientNoTakeover  bool // client_no_context_takeover
-	serverNoTakeover  bool // server_no_context_takeover
+	deflate          bool
+	clientNoTakeover bool // client_no_context_takeover
+	serverNoTakeover bool // server_no_context_takeover
 }
 
 func parseWSExtensions(headerVal string) wsParams {
@@ -321,4 +321,3 @@ func readFrameRaw(br *bufio.Reader) (raw []byte, b0 byte, op byte, compressed, m
 	raw = rawBuf.Bytes()
 	return
 }
-

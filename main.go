@@ -3,8 +3,8 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"compress/gzip"
+	"context"
 	"crypto/tls"
 	"database/sql"
 	"encoding/json"
@@ -39,7 +39,7 @@ type Config struct {
 	// AdminEmail is the dashboard caller's identity in WG mode (no
 	// tailnet whois). The dashboard auto-approves onboarding requests
 	// against it.
-	AdminEmail string     `hcl:"admin_email,optional"`
+	AdminEmail string `hcl:"admin_email,optional"`
 	// DashboardSecret gates the dashboard + JSON APIs behind a shared
 	// secret. When empty, the dashboard is open (subject to the
 	// existing tailnetGate). When set, every non-public route demands
@@ -47,15 +47,15 @@ type Config struct {
 	// `X-Clawpatrol-Secret` header, or a one-shot `?secret=` query
 	// param — the last form is exchanged at /__login for a cookie so
 	// browsers don't have to keep the secret in the URL.
-	DashboardSecret string     `hcl:"dashboard_secret,optional"`
-	CADir      string     `hcl:"ca_dir,optional"`
-	Resolver   string     `hcl:"resolver,optional"`
-	OAuthDir   string     `hcl:"oauth_dir,optional"`
-	Gateway      *GatewayConfig `hcl:"gateway,block"`
-	Profiles     []Profile     `hcl:"profile,block"`
-	Rulesets     []Ruleset     `hcl:"ruleset,block"`
-	Approvers    []Approver    `hcl:"approver,block"`
-	Integrations []Integration `hcl:"integration,block"`
+	DashboardSecret string         `hcl:"dashboard_secret,optional"`
+	CADir           string         `hcl:"ca_dir,optional"`
+	Resolver        string         `hcl:"resolver,optional"`
+	OAuthDir        string         `hcl:"oauth_dir,optional"`
+	Gateway         *GatewayConfig `hcl:"gateway,block"`
+	Profiles        []Profile      `hcl:"profile,block"`
+	Rulesets        []Ruleset      `hcl:"ruleset,block"`
+	Approvers       []Approver     `hcl:"approver,block"`
+	Integrations    []Integration  `hcl:"integration,block"`
 
 	// TopRules carries top-level `rule {}` blocks decoded directly
 	// from HCL — used for device-scoped overrides that don't belong
@@ -118,22 +118,22 @@ type Ruleset struct {
 // connection in an SSH/kubectl-portforward pipe, `auth {}` to
 // runtime-mint creds (e.g. AWS STS for EKS).
 type Integration struct {
-	Name           string         `hcl:"name,label"`
-	Type           string         `hcl:"type"`
-	Hosts          []string       `hcl:"hosts,optional"`
-	Header         string         `hcl:"header,optional"`     // type=header
-	Prefix         string         `hcl:"prefix,optional"`     // type=header / bearer
-	CookieName     string         `hcl:"cookie_name,optional"` // type=cookie
-	Port           int            `hcl:"port,optional"`        // default TCP port
-	Ports          map[string]int `hcl:"ports,optional"`       // named ports (e.g. clickhouse https/native)
-	Database       string         `hcl:"database,optional"`    // type=postgres
-	Description    string         `hcl:"description,optional"`
-	IdempotencyKey bool           `hcl:"idempotency_key,optional"` // auto-add Idempotency-Key on POST/PUT
-	MTLS           *MTLSConfig    `hcl:"mtls,block"`
+	Name           string           `hcl:"name,label"`
+	Type           string           `hcl:"type"`
+	Hosts          []string         `hcl:"hosts,optional"`
+	Header         string           `hcl:"header,optional"`      // type=header
+	Prefix         string           `hcl:"prefix,optional"`      // type=header / bearer
+	CookieName     string           `hcl:"cookie_name,optional"` // type=cookie
+	Port           int              `hcl:"port,optional"`        // default TCP port
+	Ports          map[string]int   `hcl:"ports,optional"`       // named ports (e.g. clickhouse https/native)
+	Database       string           `hcl:"database,optional"`    // type=postgres
+	Description    string           `hcl:"description,optional"`
+	IdempotencyKey bool             `hcl:"idempotency_key,optional"` // auto-add Idempotency-Key on POST/PUT
+	MTLS           *MTLSConfig      `hcl:"mtls,block"`
 	Auth           *IntegrationAuth `hcl:"auth,block"`
-	Tunnel         *Tunnel        `hcl:"tunnel,block"`
-	Secrets        []NamedSecret  `hcl:"secret,block"`
-	Accounts       []NamedAccount `hcl:"account,block"`
+	Tunnel         *Tunnel          `hcl:"tunnel,block"`
+	Secrets        []NamedSecret    `hcl:"secret,block"`
+	Accounts       []NamedAccount   `hcl:"account,block"`
 }
 
 // NamedSecret declares one credential ref under an integration.
@@ -191,9 +191,9 @@ type Approver struct {
 	Name             string `hcl:"name,label"`
 	Type             string `hcl:"type"` // "dashboard" | "slack" | "llm"
 	Channel          string `hcl:"channel,optional"`
-	Timeout          int    `hcl:"timeout,optional"` // seconds; 0 → 60s default
-	Model            string `hcl:"model,optional"`   // type=llm
-	Policy           string `hcl:"policy,optional"`  // type=llm — judge prompt
+	Timeout          int    `hcl:"timeout,optional"`           // seconds; 0 → 60s default
+	Model            string `hcl:"model,optional"`             // type=llm
+	Policy           string `hcl:"policy,optional"`            // type=llm — judge prompt
 	RequireApprovers int    `hcl:"require_approvers,optional"` // type=slack — N-of-N quorum (default 1)
 }
 
@@ -2045,4 +2045,3 @@ func wgRelay(c net.Conn, dstIP string, dstPort int) {
 	defer up.Close()
 	pipe(c, up)
 }
-

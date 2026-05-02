@@ -211,9 +211,10 @@ func renderLogin(rw http.ResponseWriter, next, errMsg string, status int) {
 // oauth and event streams are tailnet-only.
 //
 // Public allow-list:
-//   POST /api/onboard/start    — kicks off device flow
-//   POST /api/onboard/poll     — CLI polls for approval + auth key
-//   GET  /info                 — health check
+//
+//	POST /api/onboard/start    — kicks off device flow
+//	POST /api/onboard/poll     — CLI polls for approval + auth key
+//	GET  /info                 — health check
 func (w *webMux) tailnetGate(next http.Handler) http.Handler {
 	publicPaths := map[string]bool{
 		"/api/onboard/start": true,
@@ -634,7 +635,9 @@ func (w *webMux) apiConfig(rw http.ResponseWriter, r *http.Request) {
 
 // apiRulesAI translates a natural-language request into an HCL rule
 // edit using a connected LLM provider. POST body:
-//   {prompt, current_yaml, scope: "device"|"global", agent: "claude"|"codex"}
+//
+//	{prompt, current_yaml, scope: "device"|"global", agent: "claude"|"codex"}
+//
 // Returns: {yaml: <suggested>}. (Wire field names stay as
 // `current_yaml`/`yaml` for backward compat with existing dashboard
 // builds — the contents are HCL.)

@@ -59,12 +59,13 @@ type k8sMeta struct {
 // API styles. Cluster-scoped resources have empty Namespace.
 //
 // Supported shapes:
-//   /api/v1/<resource>                              — list
-//   /api/v1/<resource>/<name>                       — get/update/patch/delete
-//   /api/v1/namespaces/<ns>/<resource>              — list in ns
-//   /api/v1/namespaces/<ns>/<resource>/<name>       — single resource
-//   /api/v1/namespaces/<ns>/<resource>/<name>/<sub> — subresource (exec/portforward/etc)
-//   /apis/<group>/<v>/...                           — same shapes under groups
+//
+//	/api/v1/<resource>                              — list
+//	/api/v1/<resource>/<name>                       — get/update/patch/delete
+//	/api/v1/namespaces/<ns>/<resource>              — list in ns
+//	/api/v1/namespaces/<ns>/<resource>/<name>       — single resource
+//	/api/v1/namespaces/<ns>/<resource>/<name>/<sub> — subresource (exec/portforward/etc)
+//	/apis/<group>/<v>/...                           — same shapes under groups
 func parseK8sPath(method, p string) k8sMeta {
 	parts := strings.Split(strings.Trim(p, "/"), "/")
 	if len(parts) < 2 {
@@ -302,10 +303,10 @@ func scanHostRule(rules []Rule, host, peerIP, profile string, deviceOnly bool) *
 }
 
 // selectRequestRule precedence (highest → lowest):
-//   1. device-scoped + has Match (most specific override)
-//   2. device-scoped + no Match (per-device catch-all)
-//   3. global + has Match
-//   4. global + no Match (catch-all / integration auto-rules)
+//  1. device-scoped + has Match (most specific override)
+//  2. device-scoped + no Match (per-device catch-all)
+//  3. global + has Match
+//  4. global + no Match (catch-all / integration auto-rules)
 func selectRequestRule(rules []Rule, host, peerIP, profile string, req *http.Request, body []byte) *Rule {
 	for _, dev := range []bool{true, false} {
 		for _, mustMatch := range []bool{true, false} {
