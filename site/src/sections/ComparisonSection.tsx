@@ -18,6 +18,12 @@ const CHECK = (
 );
 const CROSS = <span class="text-lg text-text-muted/50">&#10005;</span>;
 
+function slug(text: string): string {
+  return text.toLowerCase()
+    .replace(/[^\w\s-]/g, "")
+    .replace(/\s+/g, "-");
+}
+
 const FEATURES = [
   "Secret injection",
   "All outbound traffic",
@@ -109,11 +115,18 @@ export function ComparisonSection() {
                     {row.desc}
                   </span>
                 </td>
-                {row.checks.map((ok, i) => (
-                  <td key={i} class="py-3 px-3 text-center text-lg">
-                    {ok ? CHECK : CROSS}
-                  </td>
-                ))}
+                {row.checks.map((ok, i) => {
+                  const anchor = slug(
+                    `${row.name} ${FEATURES[i]} ${ok}`,
+                  );
+                  return (
+                    <td key={i} class="py-3 px-3 text-center text-lg">
+                      <a href={`/docs/competitors/#${anchor}`}>
+                        {ok ? CHECK : CROSS}
+                      </a>
+                    </td>
+                  );
+                })}
               </tr>
             ))}
           </tbody>
