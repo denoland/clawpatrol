@@ -136,6 +136,46 @@ func (r *OAuthRegistry) Inject(id, owner string, req *http.Request) (bool, error
 	return true, nil
 }
 
+// Token returns the current access token for (id, owner) — refreshing
+// it through the underlying oauth2.TokenSource if it's stale. Empty
+// string + nil error means no token has been captured yet for this
+// owner; the caller decides between fail-closed and pass-through.
+//
+// Used by the runtime SecretStore bridge so credential plugins
+// (which know how to format Authorization / x-api-key / cookie)
+// can stamp the bytes onto the request — OAuthRegistry.Inject
+// hardcodes the header shape and predates the per-credential plugin
+// model.
+func (r *OAuthRegistry) Token(id, owner string) (string, error) {
+	if id == "" {
+		return "", nil
+	}
+	s := r.get(id, owner)
+	if s == nil || s.source == nil {
+		return "", nil
+	}
+	t, err := s.source.Token()
+	if err != nil {
+		return "", err
+	}
+	return t.AccessToken, nil
+}
+
+// Register adds an OAuth integration definition at runtime. Used at
+// gateway boot to register OAuth-flow credentials from the new
+// policy under their bare-name as the ID. Idempotent: re-registering
+// the same ID with an identical definition is a no-op; replacing one
+// with a different definition overwrites.
+func (r *OAuthRegistry) Register(id string, def OAuthIntegration) {
+	if id == "" {
+		return
+	}
+	def.ID = id
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.integrations[id] = &def
+}
+
 // Status returns connected info for a given (id, owner).
 func (r *OAuthRegistry) Status(id, owner string) (connected bool, expiry time.Time) {
 	s := r.get(id, owner)

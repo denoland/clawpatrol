@@ -337,6 +337,7 @@ func (g *Gateway) watchConfig(path string) {
 			continue
 		}
 		g.policy.Store(policy)
+		registerOAuthCredentials(g.oauth, policy)
 		g.cfg.AdminEmail = next.AdminEmail
 		g.cfg.PublicURL = next.PublicURL
 		g.cfg.DashboardSecret = next.DashboardSecret
@@ -1365,8 +1366,9 @@ func runGateway(args []string) {
 		agents:  NewAgentRegistry(),
 		hitl:    newHITLRegistry(),
 		onboard: newOnboardRegistry(),
-		secrets: runtime.EnvSecretStore{},
 	}
+	g.secrets = newGatewaySecretStore(oauthReg)
+	registerOAuthCredentials(oauthReg, policy)
 	g.policy.Store(policy)
 	log.Printf("policy: %d endpoints across %d profiles", len(policy.Endpoints), len(policy.Profiles))
 	go g.watchConfig(*cfgPath)
