@@ -39,6 +39,14 @@ type Config struct {
 	// tailnet whois). The dashboard auto-approves onboarding requests
 	// against it.
 	AdminEmail string     `hcl:"admin_email,optional"`
+	// DashboardSecret gates the dashboard + JSON APIs behind a shared
+	// secret. When empty, the dashboard is open (subject to the
+	// existing tailnetGate). When set, every non-public route demands
+	// either a `cp_dash` cookie matching this value, an
+	// `X-Clawpatrol-Secret` header, or a one-shot `?secret=` query
+	// param — the last form is exchanged at /__login for a cookie so
+	// browsers don't have to keep the secret in the URL.
+	DashboardSecret string     `hcl:"dashboard_secret,optional"`
 	CADir      string     `hcl:"ca_dir,optional"`
 	Resolver   string     `hcl:"resolver,optional"`
 	LogPath    string     `hcl:"log_path,optional"`

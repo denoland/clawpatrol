@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"embed"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"hash"
+	"html/template"
 	"io"
 	"io/fs"
 	"log"
@@ -28,6 +30,11 @@ import (
 
 //go:embed all:www/dist
 var dashboardFS embed.FS
+
+//go:embed www/login.html
+var loginHTML string
+
+var loginTpl = template.Must(template.New("login").Parse(loginHTML))
 
 type IntegrationRow struct {
 	ID       string  `json:"id"`
@@ -88,8 +95,114 @@ func newWebMux(g *Gateway, caDir string, ts Tailscale, publicURL string) http.Ha
 	mux.HandleFunc("/api/onboard/approve", w.apiOnboardApprove)
 	mux.HandleFunc("/api/onboard/lookup", w.apiOnboardLookup)
 	mux.HandleFunc("/api/onboard/claim", w.apiOnboardClaim)
+	mux.HandleFunc("/__login", w.apiDashboardLogin)
 	mux.Handle("/", w.staticHandler())
-	return w.tailnetGate(mux)
+	return w.dashboardSecretGate(w.tailnetGate(mux))
+}
+
+// dashboardSecretGate requires every non-public request to carry the
+// configured dashboard_secret (cookie / header / query). Onboarding
+// + health endpoints stay open so brand-new clients can still join.
+// When dashboard_secret is empty the gate is a no-op — installs
+// without an explicit secret keep their current open behavior.
+func (w *webMux) dashboardSecretGate(next http.Handler) http.Handler {
+	publicPaths := map[string]bool{
+		"/api/onboard/start":   true,
+		"/api/onboard/poll":    true,
+		"/api/onboard/claim":   true,
+		"/api/onboard/lookup":  true,
+		"/api/onboard/approve": true,
+		"/info":                true,
+		"/ca.crt":              true,
+		"/__login":             true,
+	}
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		secret := w.g.cfg.DashboardSecret
+		if secret == "" || publicPaths[r.URL.Path] {
+			next.ServeHTTP(rw, r)
+			return
+		}
+		if checkDashboardSecret(r, secret) {
+			next.ServeHTTP(rw, r)
+			return
+		}
+		// API callers see 401; browsers get redirected to the login form.
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			http.Error(rw, "dashboard secret required", 401)
+			return
+		}
+		http.Redirect(rw, r, "/__login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
+	})
+}
+
+func checkDashboardSecret(r *http.Request, want string) bool {
+	if c, err := r.Cookie("cp_dash"); err == nil && subtle.ConstantTimeCompare([]byte(c.Value), []byte(want)) == 1 {
+		return true
+	}
+	if h := r.Header.Get("X-Clawpatrol-Secret"); h != "" && subtle.ConstantTimeCompare([]byte(h), []byte(want)) == 1 {
+		return true
+	}
+	if q := r.URL.Query().Get("secret"); q != "" && subtle.ConstantTimeCompare([]byte(q), []byte(want)) == 1 {
+		return true
+	}
+	return false
+}
+
+// apiDashboardLogin renders a one-field form (GET) and validates +
+// sets the cp_dash cookie (POST). Plain HTML, no JS — keeps the
+// login surface small.
+func (w *webMux) apiDashboardLogin(rw http.ResponseWriter, r *http.Request) {
+	want := w.g.cfg.DashboardSecret
+	if want == "" {
+		http.Redirect(rw, r, "/", http.StatusFound)
+		return
+	}
+	next := r.URL.Query().Get("next")
+	if next == "" || !strings.HasPrefix(next, "/") {
+		next = "/"
+	}
+	if r.Method == "POST" {
+		if err := r.ParseForm(); err != nil {
+			http.Error(rw, "bad form", 400)
+			return
+		}
+		got := r.PostFormValue("secret")
+		if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
+			renderLogin(rw, next, "wrong secret", 401)
+			return
+		}
+		http.SetCookie(rw, &http.Cookie{
+			Name:     "cp_dash",
+			Value:    want,
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+			MaxAge:   30 * 24 * 3600, // 30d
+		})
+		http.Redirect(rw, r, next, http.StatusFound)
+		return
+	}
+	// GET — accept ?secret= one-shot to set the cookie automatically
+	// (so an operator can paste a single URL with the secret).
+	if q := r.URL.Query().Get("secret"); q != "" && subtle.ConstantTimeCompare([]byte(q), []byte(want)) == 1 {
+		http.SetCookie(rw, &http.Cookie{
+			Name:     "cp_dash",
+			Value:    want,
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+			MaxAge:   30 * 24 * 3600,
+		})
+		http.Redirect(rw, r, next, http.StatusFound)
+		return
+	}
+	renderLogin(rw, next, "", 200)
+}
+
+func renderLogin(rw http.ResponseWriter, next, errMsg string, status int) {
+	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
+	rw.WriteHeader(status)
+	_ = loginTpl.Execute(rw, struct{ Next, Error string }{next, errMsg})
 }
 
 // tailnetGate restricts non-tailnet callers to a minimal allow-list
