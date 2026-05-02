@@ -39,9 +39,9 @@ const ROWS: {
   { name: "LiteLLM", desc: "Open source AI gateway", url: "https://github.com/BerriAI/litellm", checks: [false, false, false, true, true, true] },
   { name: "agentgateway", desc: "Connectivity proxy for agents", url: "https://github.com/agentgateway/agentgateway", checks: [false, false, false, true, true, true] },
   { name: "Clawvisor", desc: "Purpose-based agent auth", url: "https://github.com/clawvisor/clawvisor", checks: [true, false, false, false, false, true] },
-  { name: "httpjail", desc: "HTTP request filter for processes", url: "https://github.com/coder/httpjail", checks: [false, true, true, false, true, false] },
-  { name: "Agent Vault", desc: "Credential proxy and vault", url: "https://github.com/Infisical/agent-vault", checks: [true, true, true, false, true, false] },
-  { name: "Crab Trap", desc: "LLM-as-judge agent proxy", url: "https://github.com/brexhq/CrabTrap", checks: [false, true, true, true, true, true] },
+  { name: "httpjail", desc: "HTTP request filter for processes", url: "https://github.com/coder/httpjail", checks: [false, true, false, false, true, false] },
+  { name: "Agent Vault", desc: "Credential proxy and vault", url: "https://github.com/Infisical/agent-vault", checks: [true, true, false, false, true, false] },
+  { name: "Crab Trap", desc: "LLM-as-judge agent proxy", url: "https://github.com/brexhq/CrabTrap", checks: [false, true, false, true, true, true] },
   { name: "Claw Patrol", desc: "Security proxy for AI agents", url: "https://github.com/denoland/clawpatrol-go", checks: [true, true, true, true, true, true], highlight: true },
 ];
 
@@ -69,11 +69,11 @@ export function ComparisonSection() {
         <table class="w-full text-sm font-sans">
           <thead>
             <tr class="border-b-2 border-green-light">
-              <th class="text-left py-4 pr-6 font-medium font-display text-text-muted w-40" />
+              <th class="text-left py-3 pr-4 font-medium font-display text-text-muted" />
               {FEATURES.map((f) => (
                 <th
                   key={f}
-                  class="py-4 px-4 font-medium
+                  class="py-3 px-3 font-medium
                     font-display text-text-muted
                     text-[11px] uppercase tracking-widest"
                 >
@@ -91,7 +91,8 @@ export function ComparisonSection() {
                 }`}
               >
                 <td
-                  class={`py-4 px-6 font-medium font-display ${
+                  class={`py-3 px-4 font-medium font-display
+                    whitespace-nowrap ${
                     row.highlight ? "text-text" : "text-text-muted"
                   }`}
                 >
@@ -102,13 +103,14 @@ export function ComparisonSection() {
                   >
                     {row.name}
                   </a>
-                  <span class="block text-[11px] font-sans
-                    font-normal text-text-muted mt-0.5">
+                  <span class="hidden sm:inline text-[11px]
+                    font-sans font-normal text-text-muted
+                    ml-1.5">
                     {row.desc}
                   </span>
                 </td>
                 {row.checks.map((ok, i) => (
-                  <td key={i} class="py-4 px-4 text-center text-lg">
+                  <td key={i} class="py-3 px-3 text-center text-lg">
                     {ok ? CHECK : CROSS}
                   </td>
                 ))}
