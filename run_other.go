@@ -1,11 +1,9 @@
-//go:build !linux
+//go:build !linux && !darwin
 
 package main
 
-// `clawpatrol run` is Linux-only for now. macOS lands in a follow-up
-// PR via the NetworkExtension path described in RUN.md (lifted from
-// ../unclaw/macos/UnclawExtension/).
-
 func runRun(args []string) {
-	fail("clawpatrol run is not yet supported on this platform — Linux only.\n  see RUN.md for the macOS NE roadmap.")
+	fail("clawpatrol run is not supported on this platform — linux + macOS only.")
 }
+
+func macHelperInstall(wholeMachine bool) error { return nil }

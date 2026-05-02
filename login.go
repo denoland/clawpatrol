@@ -556,8 +556,22 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool) (bool, error) {
 		if err := writeUserWGConf(authKey); err != nil {
 			fmt.Fprintf(os.Stderr, "⚠ persist user wg conf: %v\n", err)
 		}
+		// macOS: kick off the NE bootstrap right after the wg.conf is
+		// in place. Surfaces the one-time sysext approval prompt now
+		// (better than waiting until first `clawpatrol run`).
+		if runtime.GOOS == "darwin" {
+			if err := macHelperInstall(wholeMachine); err != nil {
+				fmt.Fprintf(os.Stderr, "⚠ macos NE bootstrap: %v\n", err)
+			}
+		}
 		if !wholeMachine {
 			fmt.Printf("✓ joined. machine identity persisted.\n  next: route a process through the gateway with\n    clawpatrol run -- <cmd> [args...]\n  (or rerun `clawpatrol join --whole-machine` for host-wide routing)\n")
+			return true, nil
+		}
+		if runtime.GOOS == "darwin" {
+			// On macOS, the helper handles whole-machine via the same
+			// system extension; wg-quick on the host would conflict.
+			fmt.Printf("✓ joined. all host traffic will route via the system extension.\n")
 			return true, nil
 		}
 		if err := wgQuickUp(iface, authKey); err != nil {
