@@ -51,9 +51,10 @@ func runJoin(args []string) {
 	gwName := fs.String("name", "clawpatrol", "exit-node hostname on the tailnet")
 	caOut := fs.String("ca-dir", defaultClawpatrolDir(), "where to store the fetched CA")
 	skipTrust := fs.Bool("no-trust", false, "fetch CA but skip system trust install (do it manually)")
+	wholeMachine := fs.Bool("whole-machine", false, "bring up wg-quick to route ALL host traffic through the gateway (default: persist conf only, use `clawpatrol run` for per-process routing)")
 	_ = fs.Parse(args)
 	if *gatewayURL == "" {
-		fail("usage: clawpatrol join --url <gateway-url>")
+		fail("usage: clawpatrol join --url <gateway-url> [--whole-machine]")
 	}
 	// Fetch CA + write shell rc BEFORE the VPN goes up. Once
 	// `wg-quick up` flips the default route through the gateway,
@@ -64,7 +65,7 @@ func runJoin(args []string) {
 	if err := postJoinSetup(*gatewayURL, *caOut, *skipTrust); err != nil {
 		fail("ca fetch: %v", err)
 	}
-	wgMode, err := onboardViaDeviceFlow(*gatewayURL)
+	wgMode, err := onboardViaDeviceFlow(*gatewayURL, *wholeMachine)
 	if err != nil {
 		fail("join: %v", err)
 	}
@@ -454,7 +455,7 @@ func wgAddressFromConf(conf string) string {
 // gateway and ends in a working VPN connection. Returns wgMode=true
 // when the gateway picked the wireguard control plane (caller skips
 // tailscale-specific post-setup).
-func onboardViaDeviceFlow(gateway string) (bool, error) {
+func onboardViaDeviceFlow(gateway string, wholeMachine bool) (bool, error) {
 	gateway = strings.TrimRight(gateway, "/")
 	cli := &http.Client{Timeout: 30 * time.Second}
 
@@ -555,10 +556,14 @@ func onboardViaDeviceFlow(gateway string) (bool, error) {
 		if err := writeUserWGConf(authKey); err != nil {
 			fmt.Fprintf(os.Stderr, "⚠ persist user wg conf: %v\n", err)
 		}
+		if !wholeMachine {
+			fmt.Printf("✓ joined. machine identity persisted.\n  next: route a process through the gateway with\n    clawpatrol run -- <cmd> [args...]\n  (or rerun `clawpatrol join --whole-machine` for host-wide routing)\n")
+			return true, nil
+		}
 		if err := wgQuickUp(iface, authKey); err != nil {
 			return true, fmt.Errorf("wg-quick up: %w", err)
 		}
-		fmt.Printf("✓ wireguard up (%s) — all traffic routed via gateway\n", iface)
+		fmt.Printf("✓ wireguard up (%s) — all host traffic routed via gateway\n", iface)
 		return true, nil
 	}
 
