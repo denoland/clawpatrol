@@ -658,12 +658,13 @@ func runAsRoot(cmd string, args ...string) *exec.Cmd {
 // writeUserWGConf drops a copy of the wg-quick conf at
 // ~/.config/clawpatrol/wg.conf (chmod 600) so `clawpatrol run` can
 // build per-process tunnels without sudo. Idempotent.
+//
+// Hardcoded XDG path (~/.config) instead of os.UserConfigDir() —
+// the latter returns ~/Library/Application Support on macOS, which
+// breaks the cross-platform "always look at ~/.config/clawpatrol/wg.conf"
+// contract that the macOS Clawpatrol.app's `start` subcommand expects.
 func writeUserWGConf(conf string) error {
-	dir, err := os.UserConfigDir()
-	if err != nil || dir == "" {
-		dir = filepath.Join(os.Getenv("HOME"), ".config")
-	}
-	dir = filepath.Join(dir, "clawpatrol")
+	dir := filepath.Join(os.Getenv("HOME"), ".config", "clawpatrol")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
