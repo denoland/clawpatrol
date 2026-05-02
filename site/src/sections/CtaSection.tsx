@@ -16,7 +16,7 @@ export function CtaSection() {
         <CrtDisplay title="terminal">
           <pre
             class="px-6 sm:px-8 pt-8 pb-32 text-sm
-              font-mono text-crt text-left"
+              font-mono text-crt text-left whitespace-pre-wrap break-all"
             style={{
               textShadow:
                 "0 0 6px color-mix(in srgb, "
@@ -25,12 +25,12 @@ export function CtaSection() {
                 + "var(--color-crt-dim) 19%, transparent)",
             }}
           >
-            npm install -g clawpatrol
+            curl -fsSL clawpatrol.dev/install.sh | sh
           </pre>
         </CrtDisplay>
       </div>
       <a
-        href="https://github.com/denoland/clawpatrol-go"
+        href="https://github.com/denoland/clawpatrol"
         class="inline-block px-9 py-4 text-sm
           uppercase tracking-wider font-semibold
           transition-colors squircle-full

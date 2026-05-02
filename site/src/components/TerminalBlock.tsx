@@ -11,8 +11,8 @@ export function TerminalBlock() {
               "0 0 6px color-mix(in srgb, var(--color-crt) 31%, transparent), 0 0 14px color-mix(in srgb, var(--color-crt-dim) 19%, transparent)",
           }}
         >
-          <div>
-            <span class="text-crt">npm install -g clawpatrol</span>
+          <div class="whitespace-pre-wrap break-all">
+            <span class="text-crt">curl -fsSL clawpatrol.dev/install.sh | sh</span>
           </div>
         </div>
       </div>
