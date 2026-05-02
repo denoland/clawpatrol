@@ -96,8 +96,6 @@ class TransparentProxyProvider: NETransparentProxyProvider {
         completionHandler()
     }
 
-    // MARK: - Flow handling
-
     override func handleNewFlow(_ flow: NEAppProxyFlow) -> Bool {
         if !shouldTunnel(flow) { return false }
         if let tcp = flow as? NEAppProxyTCPFlow {
@@ -243,8 +241,6 @@ class TransparentProxyProvider: NETransparentProxyProvider {
         return String(cString: outBuf)
     }
 }
-
-// MARK: - audit token / process tree
 
 private func pidFromAuditToken(_ data: Data) -> pid_t? {
     guard data.count >= MemoryLayout<audit_token_t>.size else { return nil }

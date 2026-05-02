@@ -446,8 +446,6 @@ func spliceFD(gconn io.ReadWriteCloser) C.int {
 	return C.int(swiftFD)
 }
 
-// MARK: helpers
-
 func setErr(buf *C.char, n C.int, msg string) {
 	if buf == nil || n <= 0 {
 		return

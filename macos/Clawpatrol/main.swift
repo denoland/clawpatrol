@@ -43,8 +43,6 @@ default: usage()
 
 NSApplication.shared.run()
 
-// MARK: - run wrapper
-
 // `Clawpatrol run -- <cmd>` forks + execs cmd. Stays foreground so
 // the extension's PPID walk finds Clawpatrol's signing identifier in
 // the cmd's parent chain → flows from cmd (and its descendants) get
@@ -68,8 +66,6 @@ func runWrapped() {
     waitpid(pid, &status, 0)
     exit((status >> 8) & 0xff)
 }
-
-// MARK: - System extension activation
 
 class ExtDelegate: NSObject, OSSystemExtensionRequestDelegate {
     let wholeMachine: Bool
@@ -100,8 +96,6 @@ func installSystemExtension(wholeMachine: Bool) {
     req.delegate = delegate
     OSSystemExtensionManager.shared.submitRequest(req)
 }
-
-// MARK: - Transparent proxy configuration
 
 func saveProxyProfileAndExit(wholeMachine: Bool) {
     NETransparentProxyManager.loadAllFromPreferences { managers, err in
