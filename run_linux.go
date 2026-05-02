@@ -2,6 +2,11 @@
 
 package main
 
+// macHelperInstall is darwin-only — no-op on linux. login.go calls
+// it from runJoin under `runtime.GOOS == "darwin"`, but the compiler
+// still needs the symbol on every platform.
+func macHelperInstall(wholeMachine bool) error { return nil }
+
 // `clawpatrol run -- <cmd> [args...]` — route a single process tree's
 // traffic through the gateway, leave the rest of the machine alone.
 // Same shape as ../unclaw/native/napi/src/client_linux/netns.rs and

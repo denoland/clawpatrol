@@ -35,6 +35,7 @@ if [ -z "${APPLE_ID:-}" ]; then
     -project "$PROJECT" \
     -scheme "$SCHEME" \
     -configuration Release \
+    -arch arm64 ONLY_ACTIVE_ARCH=NO \
     CODE_SIGN_IDENTITY="-" \
     CODE_SIGNING_REQUIRED=NO \
     CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION=YES \
@@ -92,11 +93,14 @@ sed -i '' \
 brew install xcodegen 2>/dev/null || true
 xcodegen --spec macos/project.yml
 
-# 6. Archive.
+# 6. Archive. arm64-only — libwgnetstack.a is built for darwin/arm64
+# (apple silicon). Universal would require a separate amd64 build of
+# the Go archive + lipo, which we skip until x86_64 macs matter.
 xcodebuild \
   -project "$PROJECT" \
   -scheme "$SCHEME" \
   -configuration Release \
+  -arch arm64 ONLY_ACTIVE_ARCH=NO \
   -archivePath "$BUILD_DIR/Clawpatrol.xcarchive" \
   OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH" \
   archive
