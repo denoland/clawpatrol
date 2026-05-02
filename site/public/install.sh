@@ -1,6 +1,6 @@
 #!/bin/sh
 # clawpatrol installer. Downloads a prebuilt binary from GitHub Pages
-# (https://denoland.github.io/clawpatrol-go) — source repo is private,
+# (https://denoland.github.io/clawpatrol) — source repo is private,
 # release artifacts are public via GH Pages. Falls back to source build
 # when CLAWPATROL_FROM_SOURCE=1 (requires `gh auth login` for the
 # private clone).
@@ -18,7 +18,7 @@
 
 set -eu
 
-BASE="https://denoland.github.io/clawpatrol-go"
+BASE="https://denoland.github.io/clawpatrol"
 VERSION="${CLAWPATROL_VERSION:-latest}"
 PREFIX="${CLAWPATROL_PREFIX:-$HOME/.local/bin}"
 
@@ -47,10 +47,10 @@ if [ "${CLAWPATROL_FROM_SOURCE:-0}" = "1" ]; then
   command -v git >/dev/null 2>&1 || fail "git required"
   SRC=$(mktemp -d)
   trap 'rm -rf "$SRC"' EXIT INT TERM
-  say "cloning denoland/clawpatrol-go@${REF}"
+  say "cloning denoland/clawpatrol@${REF}"
   if command -v gh >/dev/null 2>&1; then
-    gh repo clone denoland/clawpatrol-go "$SRC" -- --depth 1 --branch "$REF" >/dev/null 2>&1 \
-      || gh repo clone denoland/clawpatrol-go "$SRC" -- --depth 1 >/dev/null 2>&1 \
+    gh repo clone denoland/clawpatrol "$SRC" -- --depth 1 --branch "$REF" >/dev/null 2>&1 \
+      || gh repo clone denoland/clawpatrol "$SRC" -- --depth 1 >/dev/null 2>&1 \
       || fail "gh repo clone failed (run \`gh auth login\` first?)"
   else
     fail "private repo — install gh and run \`gh auth login\`, or unset CLAWPATROL_FROM_SOURCE to download a binary"
