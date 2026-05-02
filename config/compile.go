@@ -64,10 +64,16 @@ type CompiledCredential struct {
 }
 
 // CompiledRule is one priority-sorted rule attached to an endpoint.
+//
+// Match is the original source map the matcher was built from, kept
+// alongside Matcher for dashboard / diagnostic consumers that want
+// to inspect predicate fields without re-walking the rule plugin's
+// Body.
 type CompiledRule struct {
 	Name     string
 	Priority int
 	Disabled bool
+	Match    map[string]any
 	Matcher  match.Matcher
 	Outcome  Outcome
 }

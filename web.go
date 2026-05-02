@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -479,31 +480,109 @@ func (w *webMux) apiProfiles(rw http.ResponseWriter, _ *http.Request) {
 	writeJSON(rw, out)
 }
 
-// apiRules / apiDeviceRules: rule editing has been disabled while the
-// new typed-block grammar is wired up. The dashboard's editor is
-// reinstated on top of config.Emit + the plugin runtime in a follow-up
-// commit on this branch. GET returns the empty current rule set so
-// existing dashboard tabs render without errors; PUT 501s.
+// RuleSummary is the JSON shape the dashboard renders for each rule.
+// It flattens a CompiledRule plus its enclosing endpoint and profile
+// context so the table view doesn't need to walk the policy graph
+// itself.
+type RuleSummary struct {
+	Name      string                  `json:"name"`
+	Family    string                  `json:"family"` // "https" | "sql" | "k8s"
+	Endpoint  string                  `json:"endpoint"`
+	Profile   string                  `json:"profile,omitempty"`
+	Priority  int                     `json:"priority,omitempty"`
+	Disabled  bool                    `json:"disabled,omitempty"`
+	Match     map[string]any          `json:"match,omitempty"`
+	Verdict   string                  `json:"verdict,omitempty"`
+	Reason    string                  `json:"reason,omitempty"`
+	Approve   []config.ApproveStage   `json:"approve,omitempty"`
+}
+
+// apiRules returns every compiled rule across every profile, flattened
+// for the dashboard table view. Rules attached to multiple endpoints
+// emit one row per endpoint so the operator sees each attachment
+// site individually.
+//
+// Read-only. Edits go through PUT /api/config (whole-file HCL via
+// the new typed-block validator).
 func (w *webMux) apiRules(rw http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
-		writeJSON(rw, []any{})
+		writeJSON(rw, w.collectRuleSummaries(""))
 	default:
-		http.Error(rw, "rule editing temporarily disabled while the new policy grammar lands", http.StatusNotImplemented)
+		http.Error(rw, "edit rules through PUT /api/config", http.StatusNotImplemented)
 	}
 }
 
+// apiDeviceRules returns the rules that apply to one device. The
+// device's profile is read from g.profileFor(ip); rules are filtered
+// to endpoints declared in that profile.
+//
+// Read-only — same as apiRules.
 func (w *webMux) apiDeviceRules(rw http.ResponseWriter, r *http.Request) {
-	if r.URL.Query().Get("ip") == "" {
+	ip := r.URL.Query().Get("ip")
+	if ip == "" {
 		http.Error(rw, "missing ip", 400)
 		return
 	}
 	switch r.Method {
 	case "GET":
-		writeJSON(rw, []any{})
+		profile := w.g.profileFor(ip)
+		writeJSON(rw, w.collectRuleSummaries(profile))
 	default:
-		http.Error(rw, "rule editing temporarily disabled while the new policy grammar lands", http.StatusNotImplemented)
+		http.Error(rw, "edit rules through PUT /api/config", http.StatusNotImplemented)
 	}
+}
+
+// collectRuleSummaries walks the compiled policy and emits one
+// RuleSummary per (rule × endpoint × profile) triple. When profile is
+// empty, every profile contributes; otherwise only that profile.
+//
+// Sort: by profile, then endpoint, then descending priority (so the
+// dashboard mirrors first-match-wins order within each endpoint).
+func (w *webMux) collectRuleSummaries(profileFilter string) []RuleSummary {
+	policy := w.g.Policy()
+	if policy == nil {
+		return []RuleSummary{}
+	}
+	var out []RuleSummary
+	for profileName, prof := range policy.Profiles {
+		if profileFilter != "" && profileName != profileFilter {
+			continue
+		}
+		for epName, ep := range prof.Endpoints {
+			for _, r := range ep.Rules {
+				out = append(out, RuleSummary{
+					Name:     r.Name,
+					Family:   ep.Family,
+					Endpoint: epName,
+					Profile:  profileName,
+					Priority: r.Priority,
+					Disabled: r.Disabled,
+					Match:    matchSourceMap(r),
+					Verdict:  r.Outcome.Verdict,
+					Reason:   r.Outcome.Reason,
+					Approve:  r.Outcome.Approve,
+				})
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Profile != out[j].Profile {
+			return out[i].Profile < out[j].Profile
+		}
+		if out[i].Endpoint != out[j].Endpoint {
+			return out[i].Endpoint < out[j].Endpoint
+		}
+		return out[i].Priority > out[j].Priority
+	})
+	return out
+}
+
+func matchSourceMap(r *config.CompiledRule) map[string]any {
+	if r == nil {
+		return nil
+	}
+	return r.Match
 }
 
 // apiConfig serves the entire gateway.hcl for the global settings

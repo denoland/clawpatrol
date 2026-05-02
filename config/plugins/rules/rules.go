@@ -86,6 +86,7 @@ func (r *Rule) Compile() (*config.CompiledRule, []string, error) {
 		Name:     r.Name,
 		Priority: r.Priority,
 		Disabled: r.Disabled,
+		Match:    r.Match,
 		Matcher:  matcher,
 		Outcome: config.Outcome{
 			Verdict: r.Verdict,
