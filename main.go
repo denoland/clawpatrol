@@ -2046,3 +2046,4 @@ func wgRelay(c net.Conn, dstIP string, dstPort int) {
 	pipe(c, up)
 }
 
+// test
