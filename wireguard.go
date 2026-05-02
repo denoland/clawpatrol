@@ -400,6 +400,32 @@ func (s *WGServer) loadPeers() map[string]string {
 	return out
 }
 
+// RevokePeerByIP removes every peer assigned to ip from the wg-go
+// device + the wg_peers table. Called when an operator deletes a
+// device from the dashboard so the tunnel + the trie entry don't
+// linger after the (owner, hostname) row is gone.
+func (s *WGServer) RevokePeerByIP(ip string) {
+	if s == nil || s.db == nil {
+		return
+	}
+	rows, err := s.db.Query("SELECT pubkey FROM wg_peers WHERE ip = ?", ip)
+	if err != nil {
+		return
+	}
+	var keys []string
+	for rows.Next() {
+		var k string
+		if rows.Scan(&k) == nil {
+			keys = append(keys, k)
+		}
+	}
+	rows.Close()
+	for _, k := range keys {
+		_ = s.dev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", k))
+	}
+	_, _ = s.db.Exec("DELETE FROM wg_peers WHERE ip = ?", ip)
+}
+
 func loadOrGenWGKey(path string) (string, error) {
 	if b, err := os.ReadFile(path); err == nil {
 		return strings.TrimSpace(string(b)), nil

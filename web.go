@@ -400,9 +400,11 @@ func (w *webMux) apiAgents(rw http.ResponseWriter, _ *http.Request) {
 }
 
 // apiAgentDelete drops a device from clawpatrol's view. Removes the
-// in-memory agent record and the onboard owner-IP override. Does NOT
-// remove the device from the tailnet — admins can do that from the
-// Tailscale admin console if they want a hard kick.
+// in-memory agent record, the onboard owner / hostname / profile
+// row, and (in WG mode) the WireGuard peer + allowed-IP entry — so
+// traffic from the deleted device's tunnel can't keep flowing under
+// the old owner. The Tailscale node itself isn't kicked; admins do
+// that from the Tailscale admin console.
 func (w *webMux) apiAgentDelete(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(rw, "POST", 405)
@@ -418,6 +420,9 @@ func (w *webMux) apiAgentDelete(rw http.ResponseWriter, r *http.Request) {
 	}
 	if w.g.onboard != nil {
 		w.g.onboard.ForgetIP(ip)
+	}
+	if globalWG != nil {
+		globalWG.RevokePeerByIP(ip)
 	}
 	writeJSON(rw, map[string]bool{"ok": true})
 }
