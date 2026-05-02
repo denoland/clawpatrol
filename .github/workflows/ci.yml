@@ -17,5 +17,5 @@ jobs:
         with:
           node-version: 22
       - run: cd www && npm ci && npm run build
-      - run: gofmt -l . && test -z "$(gofmt -l .)"
+      - uses: golangci/golangci-lint-action@v7
       - run: go test ./...
