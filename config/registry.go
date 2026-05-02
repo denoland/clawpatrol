@@ -11,7 +11,8 @@ import (
 // built-in plugin's package so its init() runs before main().
 var registry struct {
 	sync.RWMutex
-	byKey map[regKey]*Plugin
+	byKey    map[regKey]*Plugin
+	checkers []func(*Plugin) []string
 }
 
 type regKey struct {
@@ -47,7 +48,36 @@ func Register(p *Plugin) {
 	if _, dup := registry.byKey[k]; dup {
 		panic(fmt.Sprintf("config.Register: duplicate plugin %s/%s", p.Kind, p.Type))
 	}
+	for _, check := range registry.checkers {
+		if msgs := check(p); len(msgs) > 0 {
+			panic(fmt.Sprintf("config.Register(%s/%s): %v", p.Kind, p.Type, msgs))
+		}
+	}
 	registry.byKey[k] = p
+}
+
+// AddPluginChecker installs fn as a validator that runs at every
+// future Register and retroactively against every already-registered
+// plugin. Validators that return a non-empty []string panic the
+// registration so plugin bugs surface at init time, not at first
+// request.
+//
+// Used by config/runtime to enforce that Plugin.Runtime, when set,
+// satisfies the expected interface for its Kind. Living as a callback
+// here (rather than a config-package import of runtime) avoids a
+// cycle: runtime already imports config; config doesn't depend on
+// runtime.
+func AddPluginChecker(fn func(*Plugin) []string) {
+	registry.Lock()
+	defer registry.Unlock()
+	registry.checkers = append(registry.checkers, fn)
+	// Retroactive: catch any plugin that registered before the
+	// checker was installed.
+	for _, p := range registry.byKey {
+		if msgs := fn(p); len(msgs) > 0 {
+			panic(fmt.Sprintf("AddPluginChecker(%s/%s): %v", p.Kind, p.Type, msgs))
+		}
+	}
 }
 
 // Lookup returns the plugin for (kind, type), or nil if none is

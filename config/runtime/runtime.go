@@ -94,3 +94,29 @@ type ApproveVerdict struct {
 // translates this into a clear "endpoint runtime not implemented"
 // log entry and a 503 to the agent.
 var ErrUnsupported = errors.New("plugin runtime not implemented")
+
+// PlaceholderDetector is the optional contract an endpoint plugin's
+// runtime implements so the multi-credential dispatch logic can ask
+// it: "given this incoming request and these candidate placeholders,
+// which one (if any) did the agent send?"
+//
+// The returned string must be one of `candidates` exactly, or "" if
+// no placeholder matched (the caller then falls back to the
+// no-placeholder credential entry, when one exists).
+//
+// Why an endpoint-plugin method rather than a callback handed to
+// ResolveCredential: each protocol family hides placeholders in a
+// different slot. HTTPS scans the Authorization header. Postgres
+// reads the StartupMessage password. Putting the extraction logic on
+// the endpoint plugin keeps the dispatcher protocol-agnostic.
+//
+// Endpoints with only singular `credential = X` bindings don't need
+// to implement this — ResolveCredential short-circuits before
+// calling it.
+type PlaceholderDetector interface {
+	DetectPlaceholder(req *Request, candidates []string) string
+}
+
+// Request is re-exported here so callers don't have to import
+// config/match for the placeholder-detector signature.
+type Request = match.Request

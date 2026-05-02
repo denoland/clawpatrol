@@ -23,6 +23,7 @@ import (
 	"github.com/zclconf/go-cty/cty"
 
 	"github.com/denoland/clawpatrol-go/config"
+	"github.com/denoland/clawpatrol-go/config/match"
 )
 
 // RuleBody is the shared shape across all three rule types. The
@@ -67,17 +68,30 @@ type Rule struct {
 	CredentialRef string `json:"credential_ref,omitempty"`
 }
 
-// Cross-cut accessors used by config.Compile to read rule fields
-// without coupling the compile pass to this package's concrete type.
-
-func (r *Rule) RuleFamily() string                 { return r.Family }
-func (r *Rule) RuleEndpoints() []string            { return r.Endpoints }
-func (r *Rule) RulePriority() int                  { return r.Priority }
-func (r *Rule) RuleDisabled() bool                 { return r.Disabled }
-func (r *Rule) RuleVerdict() string                { return r.Verdict }
-func (r *Rule) RuleReason() string                 { return r.Reason }
-func (r *Rule) MatchMap() map[string]any           { return r.Match }
-func (r *Rule) ApproveStages() []config.ApproveStage { return r.Approve }
+// Compile lowers a built rule into the runtime-friendly *CompiledRule
+// the request handler consumes. The match.Matcher is constructed
+// here (next to the rule's schema) instead of in a generic compile
+// pass, so per-family quirks live with the plugin that owns them.
+//
+// Returns the compiled rule plus the list of endpoint names this
+// rule attaches to.
+func (r *Rule) Compile() (*config.CompiledRule, []string, error) {
+	matcher, err := match.New(r.Family, r.Match)
+	if err != nil {
+		return nil, nil, fmt.Errorf("match: %w", err)
+	}
+	return &config.CompiledRule{
+		Name:     r.Name,
+		Priority: r.Priority,
+		Disabled: r.Disabled,
+		Matcher:  matcher,
+		Outcome: config.Outcome{
+			Verdict: r.Verdict,
+			Reason:  r.Reason,
+			Approve: r.Approve,
+		},
+	}, r.Endpoints, nil
+}
 
 // validatedFamily defines the family + endpoint family-constraint
 // for one rule type, plus any per-family match-key sanity checks.
@@ -398,6 +412,9 @@ func init() {
 			},
 			Build: func(d any, name string, ctx *config.BuildCtx) (any, hcl.Diagnostics) {
 				return build(d, name, ctx, fam)
+			},
+			CompileRule: func(body any, _ string) (*config.CompiledRule, []string, error) {
+				return body.(*Rule).Compile()
 			},
 		})
 	}

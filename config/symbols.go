@@ -33,9 +33,10 @@ func (s *Symbol) Range() hcl.Range {
 // string ("slack-avocet"); the RefSpec.Kind on the consuming field is
 // what disambiguates which sibling is meant.
 type SymbolTable struct {
-	byKey      map[symKey]*Symbol
-	byKind     map[Kind][]*Symbol
-	allNames   map[string]struct{} // for the eval context
+	byKey    map[symKey]*Symbol
+	byKind   map[Kind][]*Symbol
+	byName   map[string]*Symbol  // O(1) cross-kind lookup for diagnostics
+	allNames map[string]struct{} // for the eval context
 }
 
 type symKey struct {
@@ -54,20 +55,13 @@ func (t *SymbolTable) Get(kind Kind, name string) *Symbol {
 }
 
 // GetAny returns ANY symbol with the given name, regardless of kind.
-// Used for diagnostics that want to say "you wrote X but X is a
-// credential, not an endpoint" — pick whichever kind exists.
+// O(1) — used by diagnostics that want to disambiguate "unknown name"
+// from "name exists, wrong kind."
 func (t *SymbolTable) GetAny(name string) *Symbol {
 	if t == nil {
 		return nil
 	}
-	for _, syms := range t.byKind {
-		for _, s := range syms {
-			if s.Name == name {
-				return s
-			}
-		}
-	}
-	return nil
+	return t.byName[name]
 }
 
 // All returns every symbol of the given kind, in deterministic
@@ -116,6 +110,7 @@ func buildSymbols(blocks hcl.Blocks) (*SymbolTable, hcl.Diagnostics) {
 	table := &SymbolTable{
 		byKey:    make(map[symKey]*Symbol),
 		byKind:   make(map[Kind][]*Symbol),
+		byName:   make(map[string]*Symbol),
 		allNames: make(map[string]struct{}),
 	}
 	var diags hcl.Diagnostics
@@ -171,7 +166,7 @@ func buildSymbols(blocks hcl.Blocks) (*SymbolTable, hcl.Diagnostics) {
 		// namespace per the v14 design. Same-name-same-kind hits the
 		// branch below; same-name-different-kind hits the cross-kind
 		// branch. Both are load errors.
-		if dup := table.GetAny(name); dup != nil {
+		if dup := table.byName[name]; dup != nil {
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
 				Summary:  fmt.Sprintf("Duplicate name %q", name),
@@ -182,6 +177,7 @@ func buildSymbols(blocks hcl.Blocks) (*SymbolTable, hcl.Diagnostics) {
 		}
 		table.byKey[symKey{Kind: kind, Name: name}] = sym
 		table.byKind[kind] = append(table.byKind[kind], sym)
+		table.byName[name] = sym
 		table.allNames[name] = struct{}{}
 	}
 

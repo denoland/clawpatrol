@@ -1,6 +1,7 @@
 package runtime_test
 
 import (
+	"net/http"
 	"testing"
 
 	"github.com/denoland/clawpatrol-go/config"
@@ -102,19 +103,20 @@ func TestMatchRequest(t *testing.T) {
 }
 
 // TestResolveCredentialSingular: one credential, no placeholder →
-// always returned regardless of placeholder probe.
+// returned without consulting the endpoint plugin's detector.
 func TestResolveCredentialSingular(t *testing.T) {
 	cp := compile(t)
 	ep := cp.Endpoints["github"]
-	got := runtime.ResolveCredential(ep, nil)
+	got := runtime.ResolveCredential(ep, &match.Request{Family: "https", Headers: http.Header{}})
 	if got == nil || got.Credential.Symbol.Name != "pat" {
 		t.Errorf("singular credential resolution wrong: %+v", got)
 	}
 }
 
-// TestResolveCredentialPlaceholder: multi-credential dispatch picks
-// the matching placeholder; falls back to the no-placeholder entry
-// when none match.
+// TestResolveCredentialPlaceholder: multi-credential dispatch asks
+// the endpoint plugin's runtime to detect the agent's placeholder
+// from the actual request, then matches against the configured set.
+// The trailing no-placeholder entry is the fallback.
 func TestResolveCredentialPlaceholder(t *testing.T) {
 	src := `
 credential "bearer_token" "test"     {}
@@ -140,12 +142,24 @@ profile "default" { endpoints = [ep] }
 	}
 	ep := cp.Endpoints["ep"]
 
-	got := runtime.ResolveCredential(ep, func(ph string) bool { return ph == "PH_prod" })
-	if got == nil || got.Credential.Symbol.Name != "prod" {
-		t.Errorf("PH_prod probe should select prod, got %+v", got)
+	mkReq := func(authz string) *match.Request {
+		h := http.Header{}
+		if authz != "" {
+			h.Set("Authorization", authz)
+		}
+		return &match.Request{Family: "https", Headers: h}
 	}
-	got = runtime.ResolveCredential(ep, func(string) bool { return false })
+
+	got := runtime.ResolveCredential(ep, mkReq("Bearer PH_prod"))
+	if got == nil || got.Credential.Symbol.Name != "prod" {
+		t.Errorf("Authorization=Bearer PH_prod should select prod, got %+v", got)
+	}
+	got = runtime.ResolveCredential(ep, mkReq("Bearer something-else"))
 	if got == nil || got.Credential.Symbol.Name != "fallback" {
 		t.Errorf("no placeholder match should fall back, got %+v", got)
+	}
+	got = runtime.ResolveCredential(ep, mkReq(""))
+	if got == nil || got.Credential.Symbol.Name != "fallback" {
+		t.Errorf("missing Authorization should fall back, got %+v", got)
 	}
 }

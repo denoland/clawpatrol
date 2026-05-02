@@ -62,14 +62,20 @@ func MatchRequest(ep *config.CompiledEndpoint, req *match.Request) *config.Compi
 	return nil
 }
 
-// ResolveCredential picks the credential entry that applies to a
-// request. For singular endpoints it returns the only entry. For
-// multi-credential endpoints (placeholder dispatch) it tries each
-// placeholder against the request — caller-provided detector
-// decides which placeholder the agent sent. Returns nil when no
-// entry matches; the endpoint plugin then decides what to do
-// (default-deny vs. forward-without-injection).
-func ResolveCredential(ep *config.CompiledEndpoint, hasPlaceholder func(string) bool) *config.CompiledCredential {
+// ResolveCredential picks the credential entry that applies to req.
+//
+// Single-binding endpoints (`credential = X`) short-circuit and
+// return the only entry. Multi-credential endpoints
+// (`credentials = [...]`) ask the endpoint plugin's runtime — via
+// the PlaceholderDetector interface — which placeholder string the
+// agent embedded in the request, then match that against the
+// configured placeholders. The trailing no-placeholder entry is the
+// fallback when no agent-side placeholder matched.
+//
+// Returns nil only when an endpoint declares no credentials at all.
+// The endpoint plugin then decides what to do (default-deny vs.
+// forward-unauthenticated).
+func ResolveCredential(ep *config.CompiledEndpoint, req *match.Request) *config.CompiledCredential {
 	if ep == nil || len(ep.Credentials) == 0 {
 		return nil
 	}
@@ -77,13 +83,23 @@ func ResolveCredential(ep *config.CompiledEndpoint, hasPlaceholder func(string) 
 		return ep.Credentials[0]
 	}
 	var fallback *config.CompiledCredential
+	candidates := make([]string, 0, len(ep.Credentials))
 	for _, c := range ep.Credentials {
 		if c.Placeholder == "" {
 			fallback = c
 			continue
 		}
-		if hasPlaceholder != nil && hasPlaceholder(c.Placeholder) {
-			return c
+		candidates = append(candidates, c.Placeholder)
+	}
+	var sent string
+	if det, ok := ep.Plugin.Runtime.(PlaceholderDetector); ok && req != nil && len(candidates) > 0 {
+		sent = det.DetectPlaceholder(req, candidates)
+	}
+	if sent != "" {
+		for _, c := range ep.Credentials {
+			if c.Placeholder == sent {
+				return c
+			}
 		}
 	}
 	return fallback

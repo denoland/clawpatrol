@@ -198,6 +198,36 @@ func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
 	return gw, diags
 }
 
+// dedupGohclDiags filters out gohcl's "Unsuitable value type — value
+// must be known" follow-up that always pairs with an "Unknown
+// variable" error at the same source location. The follow-up is a
+// gohcl artifact (it's the cty conversion failing to coerce the
+// unknown sentinel), and surfacing both produces noise the user
+// can't act on. Dropping it leaves the precise "Unknown variable"
+// pointer at the typo site.
+func dedupGohclDiags(in hcl.Diagnostics) hcl.Diagnostics {
+	if len(in) == 0 {
+		return in
+	}
+	unknownAt := map[string]bool{}
+	for _, d := range in {
+		if d.Summary == "Unknown variable" && d.Subject != nil {
+			unknownAt[d.Subject.String()] = true
+		}
+	}
+	if len(unknownAt) == 0 {
+		return in
+	}
+	var out hcl.Diagnostics
+	for _, d := range in {
+		if d.Summary == "Unsuitable value type" && d.Subject != nil && unknownAt[d.Subject.String()] {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
 // extractPolicyBlocks pulls every recognized top-level block out of
 // the remainder body returned by the operational gohcl decode.
 // Defaults blocks are returned separately because they have a fixed
@@ -292,8 +322,16 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 				continue
 			}
 			target := plugin.New()
-			if d := gohcl.DecodeBody(sym.Block.Body, evalCtx, target); d.HasErrors() {
-				diags = append(diags, d...)
+			decodeDiags := dedupGohclDiags(gohcl.DecodeBody(sym.Block.Body, evalCtx, target))
+			diags = append(diags, decodeDiags...)
+			// When decode errors, the struct may be partially populated
+			// and feeding it through Validate / Build typically produces
+			// cascading "missing required" / "unknown reference" noise
+			// pointing at fields gohcl already complained about. Skip
+			// the plugin-level passes — the user has actionable errors
+			// at the precise expression range from gohcl itself.
+			if decodeDiags.HasErrors() {
+				continue
 			}
 			refs, refDiags := resolveRefs(target, sym.Name, plugin, table, sym.Block.DefRange)
 			diags = append(diags, refDiags...)

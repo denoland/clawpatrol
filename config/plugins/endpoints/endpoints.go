@@ -14,11 +14,13 @@ package endpoints
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/zclconf/go-cty/cty"
 
 	"github.com/denoland/clawpatrol-go/config"
+	"github.com/denoland/clawpatrol-go/config/runtime"
 )
 
 // CredentialEntry is one row inside an endpoint's credentials list.
@@ -204,6 +206,68 @@ func (e *ClickhouseNativeEndpoint) EndpointCredentials() []struct {
 	}{{Credential: e.Credential}}
 }
 
+// ── Endpoint runtimes ────────────────────────────────────────────────
+//
+// HTTPSEndpointRuntime / PostgresEndpointRuntime are the per-protocol
+// runtime types. For now they only implement PlaceholderDetector —
+// the request-handling loop (HandleHTTP / HandleConn) lands in a
+// follow-up commit. Wiring PlaceholderDetector early lets the
+// dispatcher resolve multi-credential endpoints correctly when the
+// handler swap arrives.
+
+// HTTPSEndpointRuntime detects placeholders in an HTTP request's
+// Authorization header. Postgres does the same via the StartupMessage
+// password (PostgresEndpointRuntime, below).
+type HTTPSEndpointRuntime struct{}
+
+// DetectPlaceholder scans the Authorization header (and the optional
+// Cookie header — some agents embed the placeholder there) for any
+// of the configured candidates. Returns the first match or "".
+//
+// Plain-substring scan rather than a strict equality check because
+// agents send placeholders embedded in `Bearer <PH>` or
+// `Basic <base64(<PH>:)>` shapes; we only need to recognize that the
+// agent picked one of our placeholders, not parse the auth scheme.
+func (HTTPSEndpointRuntime) DetectPlaceholder(req *runtime.Request, candidates []string) string {
+	if req == nil || req.Headers == nil {
+		return ""
+	}
+	hay := req.Headers.Get("Authorization") + "\x00" + req.Headers.Get("Cookie")
+	for _, c := range candidates {
+		if c != "" && strings.Contains(hay, c) {
+			return c
+		}
+	}
+	return ""
+}
+
+// PostgresEndpointRuntime detects placeholders in a postgres
+// StartupMessage. The wire-protocol front-end (lands in a follow-up
+// commit) populates Request with a SQL meta whose Statement field
+// carries the agent's submitted password verbatim before injection.
+type PostgresEndpointRuntime struct{}
+
+func (PostgresEndpointRuntime) DetectPlaceholder(req *runtime.Request, candidates []string) string {
+	if req == nil || req.SQL == nil {
+		return ""
+	}
+	hay := req.SQL.Statement
+	for _, c := range candidates {
+		if c != "" && strings.Contains(hay, c) {
+			return c
+		}
+	}
+	return ""
+}
+
+// Compile-time interface checks — keeps the registered Runtime field
+// honest at build time so a signature drift fails the build instead
+// of panicking on first request.
+var (
+	_ runtime.PlaceholderDetector = HTTPSEndpointRuntime{}
+	_ runtime.PlaceholderDetector = PostgresEndpointRuntime{}
+)
+
 // validateBinding enforces the credential-binding invariants. The
 // loader has already resolved `credential` and `credentials[*].credential`
 // into the symbol table; here we only need the structural check.
@@ -346,6 +410,7 @@ func init() {
 		New:      func() any { return &HTTPSEndpoint{} },
 		Refs:     singularRef,
 		Validate: multiCredValidate,
+		Runtime:  HTTPSEndpointRuntime{},
 		Build:    func(d any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics) { return d, nil },
 	})
 
@@ -356,6 +421,7 @@ func init() {
 		New:      func() any { return &PostgresEndpoint{} },
 		Refs:     singularRef,
 		Validate: multiCredValidate,
+		Runtime:  PostgresEndpointRuntime{},
 		Build:    func(d any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics) { return d, nil },
 	})
 

@@ -78,6 +78,14 @@ type Plugin struct {
 	// these, never from the raw decoded struct.
 	Build func(decoded any, name string, ctx *BuildCtx) (any, hcl.Diagnostics)
 
+	// CompileRule lowers a rule plugin's Build output into a
+	// *CompiledRule + the list of endpoint names it attaches to.
+	// Only set on rule plugins; nil for other kinds. Defined as a
+	// callback so the lowering logic lives next to the rule plugin's
+	// schema (rather than in a generic compile pass that needs an
+	// interface escape hatch).
+	CompileRule func(body any, name string) (*CompiledRule, []string, error)
+
 	// Runtime is type-asserted by callers based on Kind:
 	//   KindEndpoint   → runtime.EndpointRuntime
 	//   KindCredential → runtime.CredentialRuntime

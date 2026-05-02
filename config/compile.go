@@ -119,11 +119,17 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 		cp.Endpoints[name] = ce
 	}
 
-	// Compile rules and attach to each endpoint they target. Same
+	// Compile rules and attach to each endpoint they target. The
+	// rule plugin owns the lowering (its CompileRule callback) so
+	// match.Matcher construction lives next to the rule's schema,
+	// not behind a decoupling interface in the compile pass. Same
 	// rule attached to N endpoints lands as a *CompiledRule pointer
 	// in N rule slices — runtime is read-only so sharing is safe.
 	for name, ent := range p.Rules {
-		cr, targets, err := compileRule(name, ent, p)
+		if ent.Plugin.CompileRule == nil {
+			return nil, fmt.Errorf("rule %q (%s): plugin has no CompileRule hook", name, ent.Plugin.Type)
+		}
+		cr, targets, err := ent.Plugin.CompileRule(ent.Body, name)
 		if err != nil {
 			return nil, fmt.Errorf("rule %q: %w", name, err)
 		}
@@ -198,46 +204,6 @@ func compileEndpoint(name string, ent *Entity, p *Policy) (*CompiledEndpoint, er
 		})
 	}
 	return ce, nil
-}
-
-func compileRule(name string, ent *Entity, p *Policy) (*CompiledRule, []string, error) {
-	// The rules plugin produces a `*rules.Rule` value — but to avoid
-	// importing that package back into config (cycle), we read the
-	// fields we need via a small descriptor interface.
-	src, ok := ent.Body.(rulePayload)
-	if !ok {
-		return nil, nil, fmt.Errorf("unexpected rule body type %T", ent.Body)
-	}
-	matcher, err := match.New(src.RuleFamily(), src.MatchMap())
-	if err != nil {
-		return nil, nil, fmt.Errorf("match: %w", err)
-	}
-	out := Outcome{
-		Verdict: src.RuleVerdict(),
-		Reason:  src.RuleReason(),
-		Approve: src.ApproveStages(),
-	}
-	return &CompiledRule{
-		Name:     name,
-		Priority: src.RulePriority(),
-		Disabled: src.RuleDisabled(),
-		Matcher:  matcher,
-		Outcome:  out,
-	}, src.RuleEndpoints(), nil
-}
-
-// rulePayload is the decoupling interface the rules plugin's Rule
-// type satisfies. Using an interface here avoids a config →
-// plugins/rules import cycle (plugins/rules already imports config).
-type rulePayload interface {
-	RuleFamily() string
-	RuleEndpoints() []string
-	RulePriority() int
-	RuleDisabled() bool
-	RuleVerdict() string
-	RuleReason() string
-	MatchMap() map[string]any
-	ApproveStages() []ApproveStage
 }
 
 // hostExtractor / credentialExtractor are the small cross-cut readers
