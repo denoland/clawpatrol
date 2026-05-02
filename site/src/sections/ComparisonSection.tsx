@@ -38,10 +38,10 @@ const ROWS: {
   { name: "Portkey", desc: "AI gateway, guardrails, observability", url: "https://portkey.ai", checks: [false, false, false, true, true, true] },
   { name: "LiteLLM", desc: "Unified API for 100+ LLMs", url: "https://github.com/BerriAI/litellm", checks: [false, false, false, true, true, true] },
   { name: "agentgateway", desc: "Agentic proxy for AI and MCP", url: "https://github.com/agentgateway/agentgateway", checks: [false, false, false, true, true, true] },
-  { name: "Clawvisor", desc: "API gateway for agent authorization", url: "https://github.com/clawvisor/clawvisor", checks: [true, false, false, false, false, true] },
-  { name: "httpjail", desc: "HTTP request filter and sandbox", url: "https://github.com/coder/httpjail", checks: [false, true, false, false, true, false] },
-  { name: "Agent Vault", desc: "Credential proxy and vault", url: "https://github.com/Infisical/agent-vault", checks: [true, true, false, false, true, false] },
-  { name: "Crab Trap", desc: "LLM-as-judge agent proxy", url: "https://github.com/brexhq/CrabTrap", checks: [false, true, false, true, true, true] },
+  { name: "Clawvisor", desc: "API gateway for agent authorization", url: "https://github.com/clawvisor/clawvisor", checks: [true, false, false, false, true, true] },
+  { name: "httpjail", desc: "HTTP request filter and sandbox", url: "https://github.com/coder/httpjail", checks: [false, false, false, false, true, false] },
+  { name: "Agent Vault", desc: "Credential proxy and vault", url: "https://github.com/Infisical/agent-vault", checks: [true, false, false, false, true, true] },
+  { name: "Crab Trap", desc: "LLM-as-judge agent proxy", url: "https://github.com/brexhq/CrabTrap", checks: [false, false, false, false, true, true] },
   { name: "Claw Patrol", desc: "Security proxy for AI agents", url: "https://github.com/denoland/clawpatrol", checks: [true, true, true, true, true, true], highlight: true },
 ];
 
