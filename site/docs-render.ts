@@ -16,6 +16,26 @@ marked.use(markedHighlight({
   },
 }));
 
+function slugify(text: string): string {
+  return text.toLowerCase()
+    .replace(/[^\w\s-]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .trim();
+}
+
+marked.use({
+  renderer: {
+    heading({ text, depth }: { text: string; depth: number }) {
+      const id = slugify(text);
+      return `<h${depth} id="${id}">
+        <a href="#${id}" class="anchor">#</a>
+        ${text}
+      </h${depth}>`;
+    },
+  },
+});
+
 export interface Doc {
   slug: string;
   title: string;
@@ -49,6 +69,22 @@ function sidebar(docs: Doc[], current: string): string {
 }
 
 const DOCS_STYLE = `
+.docs-content h1,
+.docs-content h2,
+.docs-content h3 {
+  position: relative;
+}
+.docs-content .anchor {
+  text-decoration: none; opacity: 0;
+  font-weight: 400; margin-right: 0.3em;
+  color: var(--color-text-muted, #6b7770);
+  transition: opacity 0.15s;
+}
+.docs-content h1:hover .anchor,
+.docs-content h2:hover .anchor,
+.docs-content h3:hover .anchor {
+  opacity: 1;
+}
 .docs-content h1 {
   font-size: 2rem; font-weight: 700; margin-bottom: 1rem;
 }
