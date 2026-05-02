@@ -30,7 +30,6 @@ import Foundation
 import Network
 import NetworkExtension
 import os.log
-import Security
 
 private let log = OSLog(subsystem: "dev.clawpatrol.app.extension", category: "proxy")
 private let parentBundleID = "dev.clawpatrol.app"
@@ -114,7 +113,7 @@ class TransparentProxyProvider: NETransparentProxyProvider {
         if wholeMachine { return true }
         guard let token = flow.metaData.sourceAppAuditToken,
               let pid = pidFromAuditToken(token) else { return false }
-        return ancestorMatches(pid: pid, signingIdentifier: parentBundleID)
+        return ancestorMatches(pid: pid)
     }
 
     private func bridgeTCP(_ flow: NEAppProxyTCPFlow) {
@@ -255,37 +254,39 @@ private func pidFromAuditToken(_ data: Data) -> pid_t? {
     }
 }
 
-private func ancestorMatches(pid: pid_t, signingIdentifier: String) -> Bool {
+// Walk PPID chain looking for an ancestor whose executable path
+// lives under /Applications/Clawpatrol.app/. SecCode-based identifier
+// matching (the obvious approach) is unreliable in sysext context —
+// SecCodeCopySigningInformation works inconsistently. Path matching
+// is good enough: the only way an ancestor binary is at our app path
+// is if it's our process.
+private let parentBundlePathPrefix = "/Applications/Clawpatrol.app/"
+private let MAX_PROC_PATH = 4096
+private let bsdInfoSize = Int32(MemoryLayout<proc_bsdinfo>.size)
+
+private func ancestorMatches(pid: pid_t) -> Bool {
     var cur = pid
-    var depth = 0
-    while cur > 1 && depth < 32 {
-        if processSigningIdentifier(pid: cur) == signingIdentifier { return true }
-        cur = parentPid(of: cur)
-        depth += 1
+    var visited = Set<pid_t>()
+    while cur > 1 && !visited.contains(cur) {
+        visited.insert(cur)
+        if let path = processBinaryPath(pid: cur),
+           path.hasPrefix(parentBundlePathPrefix) {
+            return true
+        }
+        guard let ppid = parentPid(of: cur), ppid != cur else { break }
+        cur = ppid
     }
     return false
 }
 
-private func parentPid(of pid: pid_t) -> pid_t {
-    var info = proc_bsdshortinfo()
-    let size = Int32(MemoryLayout<proc_bsdshortinfo>.size)
-    let n = proc_pidinfo(pid, PROC_PIDT_SHORTBSDINFO, 0, &info, size)
-    return n == size ? pid_t(info.pbsi_ppid) : 0
+private func parentPid(of pid: pid_t) -> pid_t? {
+    var info = proc_bsdinfo()
+    let n = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, bsdInfoSize)
+    return n == bsdInfoSize ? pid_t(info.pbi_ppid) : nil
 }
 
-// PROC_PIDPATHINFO_MAXSIZE = 4 * MAXPATHLEN. Hardcoded — Swift's
-// Darwin module doesn't expose the macro from sys/proc_info.h.
-private let MAX_PROC_PATH = 4096
-
-private func processSigningIdentifier(pid: pid_t) -> String? {
+private func processBinaryPath(pid: pid_t) -> String? {
     var path = [CChar](repeating: 0, count: MAX_PROC_PATH)
     let n = proc_pidpath(pid, &path, UInt32(MAX_PROC_PATH))
-    guard n > 0, let url = URL(string: "file://" + String(cString: path)) else { return nil }
-    var staticCode: SecStaticCode?
-    guard SecStaticCodeCreateWithPath(url as CFURL, [], &staticCode) == errSecSuccess,
-          let code = staticCode else { return nil }
-    var info: CFDictionary?
-    guard SecCodeCopySigningInformation(code, [], &info) == errSecSuccess,
-          let dict = info as? [String: Any] else { return nil }
-    return dict["identifier"] as? String
+    return n > 0 ? String(cString: path) : nil
 }
