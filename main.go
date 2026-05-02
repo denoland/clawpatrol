@@ -918,6 +918,99 @@ func (g *Gateway) handle(raw net.Conn) {
 	}
 }
 
+// handlePostgresConn dispatches an inbound 5432 connection to the
+// postgres endpoint runtime. The dstIP comes from the WG forwarder —
+// agents resolve real RDS hostnames via public DNS and the gateway
+// intercepts at L3, so dstIP is the upstream RDS / postgres server
+// address. The endpoint is selected from the device's profile
+// (first postgres-family endpoint wins; multi-postgres profiles need
+// DNS-aware resolution, tracked as a follow-up).
+//
+// passthrough fallback when no endpoint applies, mirroring the
+// HTTPS handler's `unknown_host = passthrough` default.
+func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
+	defer c.Close()
+	pip := peerIP(c)
+	profile := g.profileFor(pip)
+
+	policy := g.Policy()
+	ep := firstPostgresEndpoint(policy, profile)
+	if ep == nil {
+		// No postgres policy → relay verbatim. Closes when either
+		// side hangs up.
+		log.Printf("pg %s: no postgres endpoint in profile %q; relaying", dstIP, profile)
+		wgRelay(c, dstIP, 5432)
+		return
+	}
+
+	connRT, ok := ep.Plugin.Runtime.(runtime.ConnEndpointRuntime)
+	if !ok {
+		log.Printf("pg endpoint %q plugin lacks ConnEndpointRuntime", ep.Name)
+		return
+	}
+
+	upstreamAddr := dstIP + ":5432"
+	ch := &runtime.ConnHandle{
+		Conn:     c,
+		Endpoint: ep,
+		Policy:   policy,
+		Profile:  profile,
+		PeerIP:   pip,
+		Secrets:  g.secrets,
+		DialUpstream: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			// Plugin asks for ep.Hosts[0]:port; we bypass DNS by
+			// dialing the original upstream IP the WG forwarder
+			// gave us. Plugin-supplied addr is ignored when it's
+			// the endpoint's declared host (the common case).
+			if addr == "" {
+				addr = upstreamAddr
+			}
+			return g.dialer.DialContext(ctx, network, upstreamAddr)
+		},
+		Emit: func(ev runtime.ConnEvent) {
+			if g.sink == nil {
+				return
+			}
+			g.sink.Emit(Event{
+				Mode: "pg", Host: dstIP, AgentIP: pip,
+				Method: ev.Verb, Path: ev.Summary,
+				Action: ev.Action, Reason: ev.Reason,
+			})
+		},
+	}
+	if err := connRT.HandleConn(context.Background(), ch); err != nil {
+		log.Printf("pg %s: %v", dstIP, err)
+	}
+}
+
+// firstPostgresEndpoint returns the first postgres-family endpoint in
+// the device's profile. Multi-postgres profiles need DNS-aware
+// matching against the WG forwarder's dstIP — tracked as follow-up;
+// the first-match heuristic covers the single-database common case.
+func firstPostgresEndpoint(policy *config.CompiledPolicy, profile string) *config.CompiledEndpoint {
+	if policy == nil {
+		return nil
+	}
+	prof, ok := policy.Profiles[profile]
+	if !ok {
+		// Single-tenant fallback: scan every profile.
+		for _, p := range policy.Profiles {
+			for _, ep := range p.Endpoints {
+				if ep.Plugin.Type == "postgres" {
+					return ep
+				}
+			}
+		}
+		return nil
+	}
+	for _, ep := range prof.Endpoints {
+		if ep.Plugin.Type == "postgres" {
+			return ep
+		}
+	}
+	return nil
+}
+
 func (g *Gateway) splice(c net.Conn, host string) {
 	start := time.Now()
 	up, err := g.dialer.Dial("tcp", net.JoinHostPort(host, "443"))
@@ -1430,12 +1523,14 @@ func runGateway(args []string) {
 			switch {
 			case dstPort == 443:
 				g.handle(c)
+			case dstPort == 5432:
+				g.handlePostgresConn(c, dstIP)
 			case dashPort != 0 && int(dstPort) == dashPort:
 				_ = http.Serve(&oneShotListener{c: c}, dashMux)
 			default:
-				// Postgres (5432) and other non-443 ports relay
-				// through transparently until the postgres endpoint
-				// plugin's runtime hook lands.
+				// Anything else relays transparently until its
+				// endpoint plugin's wire-protocol runtime ships
+				// (clickhouse_native, etc.).
 				wgRelay(c, dstIP, int(dstPort))
 			}
 		}); err != nil {
