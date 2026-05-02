@@ -325,11 +325,18 @@ func (w *webMux) ownerForCaller(r *http.Request) (key, label string) {
 
 func (w *webMux) apiWhoami(rw http.ResponseWriter, r *http.Request) {
 	user, device, host := w.callerIdentity(r)
+	// Read public_url straight from the live config so that an
+	// operator editing gateway.hcl sees the new value reflected
+	// without a gateway restart (mtime watcher swaps cfg).
+	pu := w.g.cfg.PublicURL
+	if pu == "" {
+		pu = w.publicURL
+	}
 	writeJSON(rw, map[string]string{
 		"user":       user,
 		"device":     device,
 		"host":       host,
-		"public_url": w.publicURL,
+		"public_url": pu,
 	})
 }
 

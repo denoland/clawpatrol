@@ -904,6 +904,8 @@ func (g *Gateway) watchConfig(path string) {
 		g.rules.Store(&newRules)
 		g.cfg.Rules = next.Rules
 		g.cfg.AdminEmail = next.AdminEmail
+		g.cfg.PublicURL = next.PublicURL
+		g.cfg.DashboardSecret = next.DashboardSecret
 		g.cfg.Profiles = next.Profiles
 		log.Printf("config reloaded: %d rules across %d profile(s)", len(newRules), len(next.Profiles))
 	}
