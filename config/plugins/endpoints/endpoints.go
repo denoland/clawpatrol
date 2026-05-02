@@ -87,6 +87,115 @@ type ClickhouseNativeEndpoint struct {
 	Credential string   `hcl:"credential,optional"`
 }
 
+// Cross-cut accessors used by config.Compile. Each endpoint type
+// exposes its hosts and the (placeholder, credential) bindings as a
+// flat list — the singular `credential = X` form collapses to one
+// entry with empty placeholder.
+
+type credBinding struct {
+	Placeholder string
+	Credential  string
+}
+
+func bindings(single string, list []CredentialEntry) []credBinding {
+	if single != "" && len(list) == 0 {
+		return []credBinding{{Credential: single}}
+	}
+	out := make([]credBinding, 0, len(list))
+	for _, e := range list {
+		out = append(out, credBinding{Placeholder: e.Placeholder, Credential: e.Credential})
+	}
+	return out
+}
+
+func (e *HTTPSEndpoint) EndpointHosts() []string { return e.Hosts }
+func (e *HTTPSEndpoint) EndpointCredentials() []struct {
+	Placeholder string
+	Credential  string
+} {
+	out := bindings(e.Credential, e.Credentials)
+	r := make([]struct {
+		Placeholder string
+		Credential  string
+	}, len(out))
+	for i, b := range out {
+		r[i] = struct {
+			Placeholder string
+			Credential  string
+		}{b.Placeholder, b.Credential}
+	}
+	return r
+}
+
+func (e *PostgresEndpoint) EndpointHosts() []string { return []string{e.Host} }
+func (e *PostgresEndpoint) EndpointCredentials() []struct {
+	Placeholder string
+	Credential  string
+} {
+	out := bindings(e.Credential, e.Credentials)
+	r := make([]struct {
+		Placeholder string
+		Credential  string
+	}, len(out))
+	for i, b := range out {
+		r[i] = struct {
+			Placeholder string
+			Credential  string
+		}{b.Placeholder, b.Credential}
+	}
+	return r
+}
+
+func (e *KubernetesEndpoint) EndpointHosts() []string {
+	if len(e.Hosts) > 0 {
+		return e.Hosts
+	}
+	if e.Server != "" {
+		return []string{e.Server}
+	}
+	return nil
+}
+func (e *KubernetesEndpoint) EndpointCredentials() []struct {
+	Placeholder string
+	Credential  string
+} {
+	if e.Credential == "" {
+		return nil
+	}
+	return []struct {
+		Placeholder string
+		Credential  string
+	}{{Credential: e.Credential}}
+}
+
+func (e *ClickhouseHTTPSEndpoint) EndpointHosts() []string { return e.Hosts }
+func (e *ClickhouseHTTPSEndpoint) EndpointCredentials() []struct {
+	Placeholder string
+	Credential  string
+} {
+	if e.Credential == "" {
+		return nil
+	}
+	return []struct {
+		Placeholder string
+		Credential  string
+	}{{Credential: e.Credential}}
+}
+
+func (e *ClickhouseNativeEndpoint) EndpointHosts() []string { return e.Hosts }
+func (e *ClickhouseNativeEndpoint) EndpointCredentials() []struct {
+	Placeholder string
+	Credential  string
+} {
+	if e.Credential == "" {
+		return nil
+	}
+	return []struct {
+		Placeholder string
+		Credential  string
+	}{{Credential: e.Credential}}
+}
+
 // validateBinding enforces the credential-binding invariants. The
 // loader has already resolved `credential` and `credentials[*].credential`
 // into the symbol table; here we only need the structural check.

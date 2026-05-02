@@ -51,15 +51,15 @@ type RuleBody struct {
 // at Build time from the raw HCL object; family-specific matchers
 // added when wiring runtime walk this shape.
 type Rule struct {
-	Name      string         `json:"name"`
-	Family    string         `json:"family"` // "https" | "sql" | "k8s"
-	Endpoints []string       `json:"endpoints"`
-	Priority  int            `json:"priority,omitempty"`
-	Disabled  bool           `json:"disabled,omitempty"`
-	Match     map[string]any `json:"match"`
-	Verdict   string         `json:"verdict,omitempty"` // "allow" | "deny" | "" (when Approve is set)
-	Reason    string         `json:"reason,omitempty"`
-	Approve   []ApproveStage `json:"approve,omitempty"`
+	Name      string                `json:"name"`
+	Family    string                `json:"family"` // "https" | "sql" | "k8s"
+	Endpoints []string              `json:"endpoints"`
+	Priority  int                   `json:"priority,omitempty"`
+	Disabled  bool                  `json:"disabled,omitempty"`
+	Match     map[string]any        `json:"match"`
+	Verdict   string                `json:"verdict,omitempty"` // "allow" | "deny" | "" (when Approve is set)
+	Reason    string                `json:"reason,omitempty"`
+	Approve   []config.ApproveStage `json:"approve,omitempty"`
 	// CredentialRef, if set, is the resolved bare-name reference from
 	// `match = { credential = X }`. The runtime treats it as an extra
 	// match predicate (request must have been dispatched against this
@@ -67,14 +67,17 @@ type Rule struct {
 	CredentialRef string `json:"credential_ref,omitempty"`
 }
 
-// ApproveStage is one node in an approve = [...] chain. Either a
-// bare-name reference (Name set, Policy empty) or a struct stage
-// with a bound LLM policy and optional cache TTL override.
-type ApproveStage struct {
-	Name     string `json:"name"`
-	Policy   string `json:"policy,omitempty"`
-	CacheTTL int    `json:"cache_ttl,omitempty"` // seconds; 0 → defaults
-}
+// Cross-cut accessors used by config.Compile to read rule fields
+// without coupling the compile pass to this package's concrete type.
+
+func (r *Rule) RuleFamily() string                 { return r.Family }
+func (r *Rule) RuleEndpoints() []string            { return r.Endpoints }
+func (r *Rule) RulePriority() int                  { return r.Priority }
+func (r *Rule) RuleDisabled() bool                 { return r.Disabled }
+func (r *Rule) RuleVerdict() string                { return r.Verdict }
+func (r *Rule) RuleReason() string                 { return r.Reason }
+func (r *Rule) MatchMap() map[string]any           { return r.Match }
+func (r *Rule) ApproveStages() []config.ApproveStage { return r.Approve }
 
 // validatedFamily defines the family + endpoint family-constraint
 // for one rule type, plus any per-family match-key sanity checks.
@@ -242,8 +245,8 @@ func build(body any, name string, ctx *config.BuildCtx, fam validatedFamily) (an
 // element is either a string (bare approver ref) or an object with
 // `name`, `policy`, `cache_ttl`. References resolve against the
 // symbol table.
-func decodeApproveChain(v cty.Value, ruleName string, ctx *config.BuildCtx) ([]ApproveStage, hcl.Diagnostics) {
-	var stages []ApproveStage
+func decodeApproveChain(v cty.Value, ruleName string, ctx *config.BuildCtx) ([]config.ApproveStage, hcl.Diagnostics) {
+	var stages []config.ApproveStage
 	var diags hcl.Diagnostics
 	if !v.Type().IsTupleType() && !v.Type().IsListType() {
 		diags = append(diags, &hcl.Diagnostic{
@@ -263,9 +266,9 @@ func decodeApproveChain(v cty.Value, ruleName string, ctx *config.BuildCtx) ([]A
 			if d := requireKind(ctx, name, config.KindApprover, ruleName, "approve stage"); d != nil {
 				diags = append(diags, d)
 			}
-			stages = append(stages, ApproveStage{Name: name})
+			stages = append(stages, config.ApproveStage{Name: name})
 		case t.IsObjectType():
-			st := ApproveStage{}
+			st := config.ApproveStage{}
 			if t.HasAttribute("name") {
 				st.Name = el.GetAttr("name").AsString()
 				if d := requireKind(ctx, st.Name, config.KindApprover, ruleName, "approve stage"); d != nil {
