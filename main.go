@@ -286,6 +286,10 @@ type Gateway struct {
 	agents  *AgentRegistry
 	hitl    *HITLRegistry
 	onboard *onboardRegistry
+	// secrets hands credential plugins the secret bytes they inject
+	// at request time. Default env-var-backed; OAuth-flow credentials
+	// land via a follow-up bridge that delegates to OAuthRegistry.
+	secrets runtime.SecretStore
 }
 
 // Policy returns the current snapshot of the lowered runtime policy.
@@ -1115,9 +1119,27 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			req.Header.Del(h)
 		}
 
-		// TODO(handler-swap): credential injection via the credential
-		// plugin's HTTPCredentialRuntime once the secret store
-		// bridges to runtime.Secret. Today: forward verbatim.
+		// Credential injection. Pick the credential entry that
+		// applies to this request (singular binding short-circuits;
+		// multi-credential dispatch asks the endpoint plugin's
+		// PlaceholderDetector which placeholder the agent sent),
+		// fetch the secret bytes from the configured store, and
+		// hand both to the credential plugin's HTTPCredentialRuntime
+		// to stamp onto the request. Schema-only credential types
+		// (slack / telegram / gemini / etc.) leave Runtime nil; we
+		// pass through verbatim and rely on policy alone.
+		if cc := runtime.ResolveCredential(ep, mreq); cc != nil {
+			if injector, ok := cc.Credential.Plugin.Runtime.(runtime.HTTPCredentialRuntime); ok {
+				sec, err := g.secrets.Get(cc.Credential.Symbol.Name, pip)
+				if err != nil {
+					log.Printf("secret %s/%s: %v — forwarding without injection", cc.Credential.Symbol.Name, pip, err)
+				} else if len(sec.Bytes) == 0 {
+					log.Printf("secret %s/%s: not configured (set CLAWPATROL_SECRET_%s)", cc.Credential.Symbol.Name, pip, secretEnvName(cc.Credential.Symbol.Name))
+				} else if err := injector.InjectHTTP(req.Context(), req, sec); err != nil {
+					log.Printf("inject %s: %v", cc.Credential.Symbol.Name, err)
+				}
+			}
+		}
 
 		trackKind := trackKindFor(host)
 		var trackedReqBody []byte
@@ -1198,6 +1220,13 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			return
 		}
 	}
+}
+
+// secretEnvName mirrors EnvSecretStore's lookup key derivation so log
+// messages can hint at the exact var name an operator should set.
+// Uppercase, hyphens → underscores.
+func secretEnvName(credName string) string {
+	return strings.ToUpper(strings.ReplaceAll(credName, "-", "_"))
 }
 
 // defaultHITLTimeout returns the configured human approver timeout
@@ -1336,6 +1365,7 @@ func runGateway(args []string) {
 		agents:  NewAgentRegistry(),
 		hitl:    newHITLRegistry(),
 		onboard: newOnboardRegistry(),
+		secrets: runtime.EnvSecretStore{},
 	}
 	g.policy.Store(policy)
 	log.Printf("policy: %d endpoints across %d profiles", len(policy.Endpoints), len(policy.Profiles))
