@@ -9,6 +9,10 @@ package credentials
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/hashicorp/hcl/v2"
@@ -138,6 +142,34 @@ func (a *AnthropicManualKey) InjectHTTP(_ context.Context, req *http.Request, se
 	return nil
 }
 
+// MTLSCredential.ConfigureUpstreamTLS adds the secret's client cert
+// (cert + key PEM in Extras) to cfg.Certificates and replaces RootCAs
+// with the secret's CA bundle when one is provided. Self-hosted
+// clusters and other mTLS-authenticated upstreams (k8s API servers,
+// internal CAs) consume this — the kubernetes endpoint plugin
+// references an mtls_credential and the dispatcher applies it
+// before the upstream TLS handshake.
+func (m *MTLSCredential) ConfigureUpstreamTLS(cfg *tls.Config, sec runtime.Secret) error {
+	certPEM := []byte(sec.Extras["cert"])
+	keyPEM := []byte(sec.Extras["key"])
+	if len(certPEM) == 0 || len(keyPEM) == 0 {
+		return errors.New("mtls credential missing cert / key (set CLAWPATROL_SECRET_<NAME>_CERT and _KEY)")
+	}
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return fmt.Errorf("mtls keypair: %w", err)
+	}
+	cfg.Certificates = append(cfg.Certificates, cert)
+	if caPEM := []byte(sec.Extras["ca"]); len(caPEM) > 0 {
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caPEM) {
+			return errors.New("mtls ca bundle: no PEM blocks parsed")
+		}
+		cfg.RootCAs = pool
+	}
+	return nil
+}
+
 // AnthropicOAuthSubscription stamps the OAuth bearer + the beta
 // header that gates Anthropic's OAuth-backed access.
 func (a *AnthropicOAuthSubscription) InjectHTTP(_ context.Context, req *http.Request, sec runtime.Secret) error {
@@ -255,7 +287,7 @@ func init() {
 		{"bearer_token", func() any { return &BearerToken{} }, (*BearerToken)(nil)},
 		{"cookie_token", func() any { return &CookieToken{} }, (*CookieToken)(nil)},
 		{"header_token", func() any { return &HeaderToken{} }, (*HeaderToken)(nil)},
-		{"mtls_credential", func() any { return &MTLSCredential{} }, nil},
+		{"mtls_credential", func() any { return &MTLSCredential{} }, (*MTLSCredential)(nil)},
 		{"postgres_credential", func() any { return &PostgresCredential{} }, nil},
 		{"anthropic_manual_key", func() any { return &AnthropicManualKey{} }, (*AnthropicManualKey)(nil)},
 		{"anthropic_oauth_subscription", func() any { return &AnthropicOAuthSubscription{} }, (*AnthropicOAuthSubscription)(nil)},
@@ -289,5 +321,6 @@ func init() {
 		_ runtime.HTTPCredentialRuntime = (*HeaderToken)(nil)
 		_ runtime.HTTPCredentialRuntime = (*AnthropicManualKey)(nil)
 		_ runtime.HTTPCredentialRuntime = (*AnthropicOAuthSubscription)(nil)
+		_ runtime.TLSCredentialRuntime  = (*MTLSCredential)(nil)
 	)
 }

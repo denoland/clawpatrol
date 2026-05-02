@@ -26,17 +26,16 @@ func checkRuntime(p *config.Plugin) []string {
 	case config.KindCredential:
 		_, http := p.Runtime.(HTTPCredentialRuntime)
 		_, pg := p.Runtime.(PostgresCredentialRuntime)
-		if !http && !pg {
-			return []string{fmt.Sprintf("Runtime %T satisfies neither HTTPCredentialRuntime nor PostgresCredentialRuntime", p.Runtime)}
+		_, tlsR := p.Runtime.(TLSCredentialRuntime)
+		if !http && !pg && !tlsR {
+			return []string{fmt.Sprintf("Runtime %T satisfies no credential runtime interface (HTTP / Postgres / TLS)", p.Runtime)}
 		}
 	case config.KindEndpoint:
-		// PlaceholderDetector is the only endpoint runtime contract
-		// defined today (request-time HandleHTTP / HandleConn land
-		// in a follow-up commit). Endpoint plugins may set Runtime
-		// to a value that doesn't implement PlaceholderDetector iff
-		// they have only singular credential bindings — no enforcement
-		// here yet because the plugin's Validate already rejects
-		// inconsistent shapes.
+		// Endpoint plugins satisfy any combination of
+		// PlaceholderDetector and ConnEndpointRuntime. Plugins with
+		// only singular credential bindings need neither; the HTTPS
+		// dispatcher walks them via the rule selectors directly.
+		// Validate has already rejected schema inconsistencies.
 	case config.KindApprover:
 		if _, ok := p.Runtime.(ApproverRuntime); !ok {
 			return []string{fmt.Sprintf("Runtime %T does not satisfy ApproverRuntime", p.Runtime)}

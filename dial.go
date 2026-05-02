@@ -12,14 +12,63 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"log"
 	"net"
 
 	utls "github.com/refraction-networking/utls"
+
+	"github.com/denoland/clawpatrol-go/config"
+	"github.com/denoland/clawpatrol-go/config/runtime"
 )
 
 // servePorts is a no-op until the postgres / clickhouse_native
 // endpoint plugins land their wire-protocol runtime hooks.
 func (g *Gateway) servePorts() {}
+
+// dialUpstream opens an upstream TLS connection for an HTTPS-family
+// endpoint. The default path runs stdlib TLS with ALPN forced to
+// http/1.1; endpoints whose credential satisfies TLSCredentialRuntime
+// (currently mtls_credential) get the plugin a chance to add client
+// certs / replace RootCAs before the handshake.
+//
+// Empty TLS credential (cert/key not configured) logs a hint and
+// falls back to plain TLS — the request still flows but the
+// upstream rejects it on cert-required endpoints. Operators see
+// the misconfiguration in the dashboard event log.
+func (g *Gateway) dialUpstream(ctx context.Context, network, addr, serverName string, ep *config.CompiledEndpoint) (net.Conn, error) {
+	cfg := &tls.Config{ServerName: serverName, NextProtos: []string{"http/1.1"}}
+
+	if ep != nil {
+		for _, cc := range ep.Credentials {
+			tlsRT, ok := cc.Credential.Plugin.Runtime.(runtime.TLSCredentialRuntime)
+			if !ok {
+				continue
+			}
+			sec, err := g.secrets.Get(cc.Credential.Symbol.Name, "")
+			if err != nil {
+				log.Printf("tls-secret %s: %v — dialing without client cert", cc.Credential.Symbol.Name, err)
+				break
+			}
+			if err := tlsRT.ConfigureUpstreamTLS(cfg, sec); err != nil {
+				log.Printf("tls-configure %s: %v — dialing without client cert", cc.Credential.Symbol.Name, err)
+				break
+			}
+			break
+		}
+	}
+
+	d := &net.Dialer{}
+	raw, err := d.DialContext(ctx, network, addr)
+	if err != nil {
+		return nil, err
+	}
+	tc := tls.Client(raw, cfg)
+	if err := tc.HandshakeContext(ctx); err != nil {
+		raw.Close()
+		return nil, err
+	}
+	return tc, nil
+}
 
 // dialUpstreamTLS opens a TCP connection and runs stdlib TLS with
 // ALPN forced to http/1.1 (our http.Transport is HTTP/1.1 only).

@@ -993,7 +993,12 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			if err != nil {
 				h = host
 			}
-			return dialUpstreamTLS(ctx, network, addr, h)
+			// mTLS-equipped endpoints (k8s API servers, internal
+			// CAs) carry a credential whose TLSCredentialRuntime
+			// configures the upstream tls.Config — adds a client
+			// cert + a custom root pool. Endpoints with no TLS
+			// credential dial via plain stdlib TLS.
+			return g.dialUpstream(ctx, network, addr, h, ep)
 		},
 		ForceAttemptHTTP2: false,
 		IdleConnTimeout:   30 * time.Second,

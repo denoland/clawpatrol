@@ -8,7 +8,9 @@ package runtime
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
+	"net"
 	"net/http"
 
 	"github.com/denoland/clawpatrol-go/config"
@@ -31,7 +33,71 @@ type HTTPCredentialRuntime interface {
 // for the real one before the upstream connect. The wire-protocol
 // front-end calls this once per session.
 type PostgresCredentialRuntime interface {
-	InjectPostgres(ctx context.Context, startup PostgresStartup, sec Secret) error
+	InjectPostgres(ctx context.Context, startup *PostgresStartup, sec Secret) error
+}
+
+// TLSCredentialRuntime customizes the upstream TLS configuration
+// before the dial. mTLS credentials use this to add a client cert
+// (Certificates) and an optional custom root pool (RootCAs); other
+// shapes — pinned-cert, ALPN-twiddling — extend via the same hook
+// without changing the call site.
+//
+// Implementations mutate cfg in place. Secret.Extras typically holds
+// "cert" / "key" / "ca" PEM blobs; the env-var store populates them
+// from CLAWPATROL_SECRET_<NAME>_{CERT,KEY,CA} (with @path/to/file
+// shorthand for reading PEM bundles off disk).
+type TLSCredentialRuntime interface {
+	ConfigureUpstreamTLS(cfg *tls.Config, sec Secret) error
+}
+
+// ConnEndpointRuntime owns request-time handling for protocols that
+// don't fit the http.Request model — postgres, clickhouse_native,
+// any future binary wire protocol. The plugin receives the agent
+// connection (post TLS termination if applicable) plus a connect
+// callback to dial the upstream, walks the compiled rule list with
+// a family-appropriate match.Request, and forwards / denies / pauses
+// for approval per the rule's Outcome.
+//
+// HandleConn returns when the session ends; errors are logged by
+// the dispatcher.
+type ConnEndpointRuntime interface {
+	HandleConn(ctx context.Context, ch *ConnHandle) error
+}
+
+// ConnHandle bundles everything a ConnEndpointRuntime needs to
+// service one inbound connection. Kept narrow so plugins don't need
+// to import the gateway package.
+type ConnHandle struct {
+	Conn     net.Conn
+	Endpoint *config.CompiledEndpoint
+	Policy   *config.CompiledPolicy
+	// Profile is the device's profile name, looked up from peer IP
+	// before dispatch.
+	Profile string
+	// PeerIP is the agent's source IP, used as the "owner" key when
+	// fetching credentials from the secret store.
+	PeerIP string
+	// Secrets is the host's SecretStore; plugins use it to fetch
+	// credential material at session-start time (postgres) or per
+	// query (rare).
+	Secrets SecretStore
+	// DialUpstream connects to the upstream host:port over plain
+	// TCP. Postgres MITM uses this for the upstream socket.
+	DialUpstream func(ctx context.Context, network, addr string) (net.Conn, error)
+	// Sink is an opaque event-sink callback. Plugins emit per-query
+	// events; the gateway funnels them to the dashboard SSE +
+	// JSONL log.
+	Emit func(ev ConnEvent)
+}
+
+// ConnEvent is the wire-protocol-agnostic event shape conn-family
+// plugins emit per request / query.
+type ConnEvent struct {
+	Action  string // "allow" | "deny" | "hitl_allow" | "hitl_deny" | "error"
+	Reason  string
+	Verb    string // SQL verb / k8s verb / etc.
+	Summary string // human-readable one-liner for the event log
+	Bytes   int64  // approximate request size for billing / quotas
 }
 
 // Secret is what credential plugins receive at injection time. The
