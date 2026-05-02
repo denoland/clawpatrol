@@ -890,13 +890,22 @@ func (w *webMux) pollDeviceFlow(rw http.ResponseWriter, sess *oauthSession) {
 		ExpiresIn        int64  `json:"expires_in"`
 		Error            string `json:"error"`
 		ErrorDescription string `json:"error_description"`
+		Interval         int    `json:"interval"`
 	}
 	if err := json.Unmarshal(body, &tr); err != nil {
 		http.Error(rw, "device poll parse: "+err.Error(), 502)
 		return
 	}
 	if tr.Error != "" {
-		writeJSON(rw, map[string]string{"error": tr.Error, "detail": tr.ErrorDescription})
+		// `slow_down` carries an updated interval (RFC 8628). Surface
+		// it to the dashboard so the polling loop respects the new
+		// cadence; otherwise the client keeps hitting at the original
+		// interval and GitHub never returns the token.
+		out := map[string]any{"error": tr.Error, "detail": tr.ErrorDescription}
+		if tr.Interval > 0 {
+			out["interval"] = tr.Interval
+		}
+		writeJSON(rw, out)
 		return
 	}
 	if tr.AccessToken == "" {

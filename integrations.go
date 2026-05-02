@@ -92,7 +92,10 @@ func runEnv(args []string) {
 	fmt.Printf("export ANTHROPIC_AUTH_TOKEN=%q\n", envClaudePlaceholder)
 	fmt.Printf("export GH_TOKEN=%q\n", envGitHubPlaceholder)
 	fmt.Printf("export GITHUB_TOKEN=%q\n", envGitHubPlaceholder)
-	fmt.Printf("export OPENAI_API_KEY=%q\n", envCodexPlaceholder)
+	// codex OPENAI_API_KEY pushes the CLI into api-key mode, which
+	// targets api.openai.com — wrong endpoint for ChatGPT OAuth.
+	// OAuth-mode codex reads strictly from ~/.codex/auth.json; once
+	// `clawpatrol run -- codex` wraps that, we emit it conditionally.
 }
 
 // Built-in integration defaults. Operators reference by name in config:

@@ -37,29 +37,37 @@ export function ConnectModal({
   useEffect(() => {
     if (!start || start.flow !== "device") return;
     let cancelled = false;
-    const interval = (start.interval || 5) * 1000;
-    const t = setInterval(async () => {
+    let timer: ReturnType<typeof setTimeout>;
+    let intervalSec = start.interval || 5;
+    // RFC 8628: client must respect the `interval` field returned on
+    // slow_down. Reschedule via setTimeout instead of fixed interval
+    // so each tick uses the latest cadence GitHub asked for.
+    const tick = async () => {
       if (cancelled) return;
       try {
         const r = await oauthDevicePoll(start.state);
         if (cancelled) return;
         if (r.connected) {
-          clearInterval(t);
           setDone(true);
           setTimeout(() => onDoneRef.current(), 800);
           return;
         }
+        if (r.interval && r.interval > intervalSec) {
+          intervalSec = r.interval;
+        }
         if (r.error && r.error !== "authorization_pending" && r.error !== "slow_down") {
-          clearInterval(t);
           setErr(`${r.error}: ${r.detail || ""}`);
+          return;
         }
       } catch (_) {
         /* transient — keep polling */
       }
-    }, interval);
+      if (!cancelled) timer = setTimeout(tick, intervalSec * 1000);
+    };
+    timer = setTimeout(tick, intervalSec * 1000);
     return () => {
       cancelled = true;
-      clearInterval(t);
+      clearTimeout(timer);
     };
   }, [start]);
 

@@ -244,7 +244,7 @@ export async function oauthStart(id: string, profile?: string): Promise<OAuthSta
   return r.json();
 }
 
-export async function oauthDevicePoll(state: string): Promise<{ connected?: boolean; owner?: string; error?: string; detail?: string }> {
+export async function oauthDevicePoll(state: string): Promise<{ connected?: boolean; owner?: string; error?: string; detail?: string; interval?: number }> {
   const r = await api(`/api/oauth/device-poll?state=${encodeURIComponent(state)}`, { method: "POST" });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
