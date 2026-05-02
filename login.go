@@ -51,9 +51,10 @@ func runJoin(args []string) {
 	gwName := fs.String("name", "clawpatrol", "exit-node hostname on the tailnet")
 	caOut := fs.String("ca-dir", defaultClawpatrolDir(), "where to store the fetched CA")
 	skipTrust := fs.Bool("no-trust", false, "fetch CA but skip system trust install (do it manually)")
+	wholeMachine := fs.Bool("whole-machine", false, "bring up wg-quick to route ALL host traffic through the gateway (default: persist conf only, use `clawpatrol run` for per-process routing)")
 	_ = fs.Parse(args)
 	if *gatewayURL == "" {
-		fail("usage: clawpatrol join --url <gateway-url>")
+		fail("usage: clawpatrol join --url <gateway-url> [--whole-machine]")
 	}
 	// Fetch CA + write shell rc BEFORE the VPN goes up. Once
 	// `wg-quick up` flips the default route through the gateway,
@@ -64,7 +65,7 @@ func runJoin(args []string) {
 	if err := postJoinSetup(*gatewayURL, *caOut, *skipTrust); err != nil {
 		fail("ca fetch: %v", err)
 	}
-	wgMode, err := onboardViaDeviceFlow(*gatewayURL)
+	wgMode, err := onboardViaDeviceFlow(*gatewayURL, *wholeMachine)
 	if err != nil {
 		fail("join: %v", err)
 	}
@@ -454,7 +455,7 @@ func wgAddressFromConf(conf string) string {
 // gateway and ends in a working VPN connection. Returns wgMode=true
 // when the gateway picked the wireguard control plane (caller skips
 // tailscale-specific post-setup).
-func onboardViaDeviceFlow(gateway string) (bool, error) {
+func onboardViaDeviceFlow(gateway string, wholeMachine bool) (bool, error) {
 	gateway = strings.TrimRight(gateway, "/")
 	cli := &http.Client{Timeout: 30 * time.Second}
 
@@ -548,10 +549,35 @@ func onboardViaDeviceFlow(gateway string) (bool, error) {
 				cr.Body.Close()
 			}
 		}
+		// Always persist a user-readable copy at ~/.config/clawpatrol/
+		// wg.conf so `clawpatrol run` can spin up a per-process tunnel
+		// without sudo (root-owned /etc/wireguard/<iface>.conf is
+		// unreadable to the caller's uid).
+		if err := writeUserWGConf(authKey); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠ persist user wg conf: %v\n", err)
+		}
+		// macOS: kick off the NE bootstrap right after the wg.conf is
+		// in place. Surfaces the one-time sysext approval prompt now
+		// (better than waiting until first `clawpatrol run`).
+		if runtime.GOOS == "darwin" {
+			if err := macHelperInstall(wholeMachine); err != nil {
+				fmt.Fprintf(os.Stderr, "⚠ macos NE bootstrap: %v\n", err)
+			}
+		}
+		if !wholeMachine {
+			fmt.Printf("✓ joined. machine identity persisted.\n  next: route a process through the gateway with\n    clawpatrol run -- <cmd> [args...]\n  (or rerun `clawpatrol join --whole-machine` for host-wide routing)\n")
+			return true, nil
+		}
+		if runtime.GOOS == "darwin" {
+			// On macOS, the helper handles whole-machine via the same
+			// system extension; wg-quick on the host would conflict.
+			fmt.Printf("✓ joined. all host traffic will route via the system extension.\n")
+			return true, nil
+		}
 		if err := wgQuickUp(iface, authKey); err != nil {
 			return true, fmt.Errorf("wg-quick up: %w", err)
 		}
-		fmt.Printf("✓ wireguard up (%s) — all traffic routed via gateway\n", iface)
+		fmt.Printf("✓ wireguard up (%s) — all host traffic routed via gateway\n", iface)
 		return true, nil
 	}
 
@@ -641,6 +667,23 @@ func runAsRoot(cmd string, args ...string) *exec.Cmd {
 	}
 	// last resort — try without sudo, let the OS reject if it must.
 	return exec.Command(cmd, args...)
+}
+
+// writeUserWGConf drops a copy of the wg-quick conf at
+// ~/.config/clawpatrol/wg.conf (chmod 600) so `clawpatrol run` can
+// build per-process tunnels without sudo. Idempotent.
+//
+// Hardcoded XDG path (~/.config) instead of os.UserConfigDir() —
+// the latter returns ~/Library/Application Support on macOS, which
+// breaks the cross-platform "always look at ~/.config/clawpatrol/wg.conf"
+// contract that the macOS Clawpatrol.app's `start` subcommand expects.
+func writeUserWGConf(conf string) error {
+	dir := filepath.Join(os.Getenv("HOME"), ".config", "clawpatrol")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, "wg.conf")
+	return os.WriteFile(path, []byte(conf), 0o600)
 }
 
 // wgQuickUp writes the supplied wireguard config to

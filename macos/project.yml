@@ -1,0 +1,135 @@
+name: Clawpatrol
+options:
+  bundleIdPrefix: dev.clawpatrol
+  deploymentTarget:
+    macOS: "13.0"
+
+# Set DEVELOPMENT_TEAM via env or hard-code:
+#   xcodegen generate
+#   xcodebuild -project Clawpatrol.xcodeproj DEVELOPMENT_TEAM=XXXXXXXXXX build
+settings:
+  base:
+    DEVELOPMENT_TEAM: "2H4KBF436B"
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "Apple Development"
+    SWIFT_VERSION: "5.9"
+    # Xcode 16's "debug dylib" hot-reload splits the executable into a
+    # main placeholder + Clawpatrol.debug.dylib. The dylib gets signed
+    # but the placeholder doesn't, so the bundle codesign fails with
+    # "code object is not signed at all" on Contents/MacOS/Clawpatrol.
+    # Disable the feature for both targets.
+    ENABLE_DEBUG_DYLIB: NO
+    ENABLE_PREVIEWS: NO
+    ENABLE_HARDENED_RUNTIME: YES
+    OTHER_CODE_SIGN_FLAGS: "--options=runtime"
+  configs:
+    Release: {}
+
+# WG transport lives in libwgnetstack.a (built from netstack/) — a Go
+# cgo c-archive that bundles wireguard-go + gVisor netstack. Same
+# stack the gateway uses (../wireguard.go), client side. The extension
+# calls into it for each NEAppProxyTCPFlow / UDPFlow that should be
+# tunneled; the .a takes care of WG handshake, encryption, gVisor
+# TCP/IP. No Swift-side TCP state machine required.
+schemes:
+  Clawpatrol:
+    build:
+      targets:
+        Clawpatrol: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+
+targets:
+  Clawpatrol:
+    type: application
+    platform: macOS
+    sources:
+      - path: Clawpatrol
+    entitlements:
+      path: Clawpatrol/Clawpatrol.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - app-proxy-provider
+        com.apple.developer.system-extension.install: true
+        com.apple.security.application-groups:
+          - group.2H4KBF436B.dev.clawpatrol.app
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.clawpatrol.app
+        INFOPLIST_FILE: Clawpatrol/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Clawpatrol/Clawpatrol.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
+        PROVISIONING_PROFILE_SPECIFIER: "Clawpatrol App Dev"
+    dependencies:
+      - target: ClawpatrolExtension
+        embed: true
+        codeSign: true
+        buildPhase:
+          copyFiles:
+            destination: plugins   # plugins → Contents/Library/SystemExtensions
+            subpath: ""
+
+  ClawpatrolExtension:
+    # NETransparentProxyProvider on macOS = system-extension only.
+    # Can't ship as app-extension (neagent refuses to launch with
+    # OSLaunchdErrorDomain Code=137). unclaw uses sysext + app-proxy-
+    # provider, which activates fine via OSSystemExtensionRequest with
+    # Apple Development cert + `systemextensionsctl developer on` —
+    # the gate that blocked our earlier packet-tunnel sysext attempts
+    # is provider-type-specific (packet-tunnel is "nonRemovable" +
+    # /Applications-only, app-proxy is "removable with auth").
+    type: system-extension
+    platform: macOS
+    sources:
+      - path: ClawpatrolExtension
+    entitlements:
+      path: ClawpatrolExtension/ClawpatrolExtension.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - app-proxy-provider
+        com.apple.security.application-groups:
+          - group.2H4KBF436B.dev.clawpatrol.app
+    settings:
+      base:
+        # PRODUCT_NAME = bundle ID. sysextd discovers embedded sysexts by
+        # listing Contents/Library/SystemExtensions/*.systemextension and
+        # matching the bundle's basename against the requested identifier.
+        # If product name != bundle ID, OSSystemExtensionRequest fails
+        # with code 4 "Extension not found in App bundle" even though the
+        # .systemextension is right there. unclaw's UnclawExtension.swift
+        # ships as `com.unclaw.app.extension.systemextension` — basename
+        # matches the bundle ID. Mirror that.
+        PRODUCT_NAME: dev.clawpatrol.app.extension
+        PRODUCT_BUNDLE_IDENTIFIER: dev.clawpatrol.app.extension
+        INFOPLIST_FILE: ClawpatrolExtension/Info.plist
+        CODE_SIGN_ENTITLEMENTS: ClawpatrolExtension/ClawpatrolExtension.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
+        PROVISIONING_PROFILE_SPECIFIER: "Clawpatrol Extension Dev"
+        SWIFT_OBJC_BRIDGING_HEADER: ClawpatrolExtension/BridgingHeader.h
+        OTHER_LDFLAGS: $(SRCROOT)/netstack/libwgnetstack.a -framework CoreFoundation -framework Security -lbsm
+        HEADER_SEARCH_PATHS: $(SRCROOT)/netstack
+    preBuildScripts:
+      - name: Build libwgnetstack.a
+        script: |
+          set -e
+          export PATH="/opt/homebrew/bin:/opt/homebrew/opt/go/bin:/usr/local/go/bin:$PATH"
+          if ! command -v go >/dev/null 2>&1; then
+            echo "error: 'go' toolchain required — install with 'brew install go'" >&2
+            exit 1
+          fi
+          cd "$SRCROOT/netstack"
+          # Skip rebuild if .a is newer than every .go in the dir.
+          # Saves ~30s per Xcode build cycle.
+          NEWEST_GO=$(/usr/bin/find . -name '*.go' -type f -exec stat -f '%m' {} \; | sort -n | tail -1)
+          AR_MTIME=$(stat -f '%m' libwgnetstack.a 2>/dev/null || echo 0)
+          if [ -f libwgnetstack.a ] && [ "$AR_MTIME" -gt "$NEWEST_GO" ]; then
+            echo "libwgnetstack.a up-to-date"
+            exit 0
+          fi
+          CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
+            go build -buildmode=c-archive -o libwgnetstack.a .
+        outputFiles:
+          - $(SRCROOT)/netstack/libwgnetstack.a
+          - $(SRCROOT)/netstack/libwgnetstack.h

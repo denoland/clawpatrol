@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>destination</key>
+    <string>export</string>
+    <key>method</key>
+    <string>developer-id</string>
+    <key>provisioningProfiles</key>
+    <dict>
+        <key>dev.clawpatrol.app</key>
+        <string>Clawpatrol App</string>
+        <key>dev.clawpatrol.app.extension</key>
+        <string>Clawpatrol Extension</string>
+    </dict>
+    <key>signingStyle</key>
+    <string>manual</string>
+    <key>teamID</key>
+    <string>2H4KBF436B</string>
+</dict>
+</plist>
