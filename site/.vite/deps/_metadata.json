@@ -1,0 +1,34 @@
+{
+  "hash": "727e4f02",
+  "configHash": "3998b24f",
+  "lockfileHash": "44b25ac0",
+  "browserHash": "300cbc8b",
+  "optimized": {
+    "preact/jsx-dev-runtime": {
+      "src": "../../node_modules/preact/jsx-runtime/dist/jsxRuntime.module.js",
+      "file": "preact_jsx-dev-runtime.js",
+      "fileHash": "92402629",
+      "needsInterop": false
+    },
+    "preact": {
+      "src": "../../node_modules/preact/dist/preact.module.js",
+      "file": "preact.js",
+      "fileHash": "1f5c3277",
+      "needsInterop": false
+    },
+    "@observablehq/plot": {
+      "src": "../../node_modules/@observablehq/plot/src/index.js",
+      "file": "@observablehq_plot.js",
+      "fileHash": "fb855783",
+      "needsInterop": false
+    }
+  },
+  "chunks": {
+    "chunk-EJ5P4D46": {
+      "file": "chunk-EJ5P4D46.js"
+    },
+    "chunk-5WRI5ZAA": {
+      "file": "chunk-5WRI5ZAA.js"
+    }
+  }
+}

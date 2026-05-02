@@ -119,13 +119,10 @@ export function renderDocPage(
 <body class="bg-cream-light text-text min-h-screen">
   <nav class="max-w-6xl mx-auto px-8 py-8 flex items-center
     justify-between">
-    <a href="/" class="flex items-center gap-3 isolate">
-      <img src="/clawpatrol-logo.svg" alt=""
-        class="h-7 w-auto" />
-      <span class="text-lg tracking-[0.25em] uppercase
-        font-semibold" style="font-family:'Overpass',sans-serif;
-        color:#2a342f;">Claw Patrol</span>
-    </a>
+    <a href="/" style="font-family:'Overpass',sans-serif;
+      color:#2a342f; font-size:1.125rem; letter-spacing:0.25em;
+      text-transform:uppercase; font-weight:600;
+      text-decoration:none;">Claw Patrol</a>
     <a href="/docs/"
       class="font-mono text-sm text-text-muted
         underline underline-offset-4">Docs</a>

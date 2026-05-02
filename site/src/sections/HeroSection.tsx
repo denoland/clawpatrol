@@ -2,7 +2,7 @@ export function HeroSection() {
   return (
     <section class="max-w-6xl mx-auto px-6 sm:px-8
       pt-16 sm:pt-28 pb-16">
-      <div class="grid md:grid-cols-[1fr,auto] gap-10
+      <div class="grid md:grid-cols-2 gap-10
         md:gap-16 items-center">
         <div>
           <h1
