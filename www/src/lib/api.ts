@@ -1,22 +1,7 @@
-// Active profile = the credential bucket the dashboard is operating
-// against. Persisted to localStorage so reloads keep context. Backend
-// reads it from the X-Clawpatrol-Profile header on every API call.
-const PROFILE_KEY = "clawpatrol.profile";
-export function activeProfile(): string {
-  return (typeof localStorage !== "undefined" && localStorage.getItem(PROFILE_KEY)) || "";
-}
-export function setActiveProfile(name: string) {
-  if (typeof localStorage === "undefined") return;
-  if (name) localStorage.setItem(PROFILE_KEY, name);
-  else localStorage.removeItem(PROFILE_KEY);
-}
-
-async function api(input: string, init: RequestInit = {}): Promise<Response> {
-  const headers = new Headers(init.headers || {});
-  const p = activeProfile();
-  if (p) headers.set("X-Clawpatrol-Profile", p);
-  return fetch(input, { ...init, headers });
-}
+// Profile is per-device, not per-dashboard. The OAuth connect flow
+// picks which profile a credential lands under via an explicit query
+// param on /api/oauth/start; everything else is single-tenant.
+const api = fetch;
 
 export type Owner = {
   owner: string;
@@ -252,8 +237,9 @@ export type OAuthStartResp =
   | { flow?: "auth_code"; auth_url: string; state: string; owner: string }
   | { flow: "device"; user_code: string; verification_uri: string; state: string; owner: string; interval: number; expires_in: number };
 
-export async function oauthStart(id: string): Promise<OAuthStartResp> {
-  const r = await api(`/api/oauth/start?id=${encodeURIComponent(id)}`, { method: "POST" });
+export async function oauthStart(id: string, profile?: string): Promise<OAuthStartResp> {
+  const qs = `id=${encodeURIComponent(id)}` + (profile ? `&profile=${encodeURIComponent(profile)}` : "");
+  const r = await api(`/api/oauth/start?${qs}`, { method: "POST" });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }

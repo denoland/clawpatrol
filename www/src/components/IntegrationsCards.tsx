@@ -12,15 +12,20 @@ const PRETTY: Record<string, string> = {
 export function IntegrationsCards({
   list,
   whoami,
+  profile,
   onConnect,
   onRefresh,
 }: {
   list: Integration[];
   whoami: Whoami | null;
+  profile?: string;
   onConnect: (id: string) => void;
   onRefresh: () => void;
 }) {
-  const youKey = whoami?.user || whoami?.host || "";
+  // Credentials are bucketed by profile. The card is "connected" if
+  // the device's profile has a token for that integration. Fall back
+  // to whoami when no profile is set (legacy single-tenant configs).
+  const youKey = profile || whoami?.user || whoami?.host || "";
   return (
     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5">
       {list.map((i) => {

@@ -110,7 +110,7 @@ export function DevicePage({
           <div className="min-w-0">
             <div className="text-[15px] font-semibold text-[#171717] truncate">{a.hostname || a.ip}</div>
             <div className="text-[11px] text-[#737373] truncate">
-              {a.user || "—"} · {a.ip}
+              {a.profile || "—"} · {a.ip}
               {a.os && <> · <span className="uppercase tracking-[.08em]">{a.os}</span></>}
             </div>
           </div>
@@ -138,6 +138,7 @@ export function DevicePage({
       <IntegrationsCards
         list={allForUser}
         whoami={whoami}
+        profile={a.profile}
         onConnect={onConnect}
         onRefresh={onRefresh}
       />
