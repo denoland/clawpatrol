@@ -31,8 +31,7 @@
             "api.github.com",
             "github.com"
           ],
-          "Credential": "github-pat",
-          "Credentials": null
+          "Credential": "github-pat"
         },
         "family": "https",
         "type": "https"

@@ -16,18 +16,20 @@ import (
 	"fmt"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/zclconf/go-cty/cty"
 
 	"github.com/denoland/clawpatrol-go/config"
 )
 
 // CredentialEntry is one row inside an endpoint's credentials list.
-// Placeholder is empty for the no-placeholder fallback entry. Tags
-// use `cty:` because gohcl decodes `credentials = [{...}, {...}]`
-// (an attribute holding a tuple of objects) via cty conversion, not
-// via block decoding.
+// Placeholder is empty for the no-placeholder fallback entry — see
+// the v14 mixing rule (a trailing entry without `placeholder` is the
+// fallback when no agent-provided placeholder matches). The list is
+// decoded from a raw cty.Value so Placeholder can legitimately be
+// absent without gocty rejecting the row.
 type CredentialEntry struct {
-	Placeholder string `cty:"placeholder" json:"placeholder,omitempty"`
-	Credential  string `cty:"credential"  json:"credential"`
+	Placeholder string `json:"placeholder,omitempty"`
+	Credential  string `json:"credential"`
 }
 
 // HTTPSEndpoint covers anything that speaks TLS-wrapped HTTP, including
@@ -35,9 +37,13 @@ type CredentialEntry struct {
 // extra metadata (server / ca_cert / description) so it's a distinct
 // endpoint type below.
 type HTTPSEndpoint struct {
-	Hosts       []string          `hcl:"hosts"`
-	Credential  string            `hcl:"credential,optional"`
-	Credentials []CredentialEntry `hcl:"credentials,optional"`
+	Hosts          []string  `hcl:"hosts"`
+	Credential     string    `hcl:"credential,optional"`
+	CredentialsRaw cty.Value `hcl:"credentials,optional" json:"-"`
+
+	// Credentials is populated by Build from CredentialsRaw. Stable
+	// JSON shape for goldens.
+	Credentials []CredentialEntry `json:"Credentials,omitempty"`
 }
 
 // PostgresEndpoint addresses a single RDS-or-equivalent server,
@@ -46,11 +52,13 @@ type HTTPSEndpoint struct {
 // without duplicating the connection state — that consolidation
 // happens in the runtime, not here.
 type PostgresEndpoint struct {
-	Host        string            `hcl:"host"`
-	Database    string            `hcl:"database"`
-	Tunnel      *PostgresTunnel   `hcl:"tunnel,optional"`
-	Credential  string            `hcl:"credential,optional"`
-	Credentials []CredentialEntry `hcl:"credentials,optional"`
+	Host           string          `hcl:"host"`
+	Database       string          `hcl:"database"`
+	Tunnel         *PostgresTunnel `hcl:"tunnel,optional"`
+	Credential     string          `hcl:"credential,optional"`
+	CredentialsRaw cty.Value       `hcl:"credentials,optional" json:"-"`
+
+	Credentials []CredentialEntry `json:"Credentials,omitempty"`
 }
 
 // PostgresTunnel describes one supported tunnel topology. Currently
@@ -201,8 +209,9 @@ func (e *ClickhouseNativeEndpoint) EndpointCredentials() []struct {
 // into the symbol table; here we only need the structural check.
 func validateBinding(decoded any, kind string, name string, blockRange hcl.Range) hcl.Diagnostics {
 	var diags hcl.Diagnostics
-	cred, list := readBinding(decoded)
-	if cred != "" && len(list) > 0 {
+	cred, raw := readBinding(decoded)
+	hasList := !raw.IsNull() && (raw.Type().IsTupleType() || raw.Type().IsListType()) && raw.LengthInt() > 0
+	if cred != "" && hasList {
 		diags = append(diags, &hcl.Diagnostic{
 			Severity: hcl.DiagError,
 			Summary:  fmt.Sprintf("Both credential and credentials set on %s %q", kind, name),
@@ -213,44 +222,141 @@ func validateBinding(decoded any, kind string, name string, blockRange hcl.Range
 	return diags
 }
 
-func readBinding(decoded any) (string, []CredentialEntry) {
+func readBinding(decoded any) (string, cty.Value) {
 	switch v := decoded.(type) {
 	case *HTTPSEndpoint:
-		return v.Credential, v.Credentials
+		return v.Credential, v.CredentialsRaw
 	case *PostgresEndpoint:
-		return v.Credential, v.Credentials
+		return v.Credential, v.CredentialsRaw
 	}
-	return "", nil
+	return "", cty.NilVal
+}
+
+// parseCredentialList walks a raw cty.Value list of objects into
+// typed CredentialEntry values. Each object must have a "credential"
+// attribute; "placeholder" is optional. Diagnostics surface malformed
+// entries pinned to the block range — gohcl already validated the
+// list shape so most errors here are about missing required fields.
+func parseCredentialList(raw cty.Value, blockRange hcl.Range) ([]CredentialEntry, hcl.Diagnostics) {
+	if raw.IsNull() {
+		return nil, nil
+	}
+	if !raw.Type().IsTupleType() && !raw.Type().IsListType() {
+		return nil, hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "credentials must be a list",
+			Detail:   fmt.Sprintf("Got %s.", raw.Type().FriendlyName()),
+			Subject:  &blockRange,
+		}}
+	}
+	var out []CredentialEntry
+	var diags hcl.Diagnostics
+	it := raw.ElementIterator()
+	for it.Next() {
+		_, el := it.Element()
+		t := el.Type()
+		if !t.IsObjectType() {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "credentials list element must be an object",
+				Detail:   fmt.Sprintf("Got %s; expected `{ placeholder = ..., credential = ... }`.", t.FriendlyName()),
+				Subject:  &blockRange,
+			})
+			continue
+		}
+		entry := CredentialEntry{}
+		if t.HasAttribute("credential") {
+			cv := el.GetAttr("credential")
+			if cv.Type() == cty.String {
+				entry.Credential = cv.AsString()
+			}
+		}
+		if entry.Credential == "" {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "credentials list element missing credential",
+				Subject:  &blockRange,
+			})
+			continue
+		}
+		if t.HasAttribute("placeholder") {
+			pv := el.GetAttr("placeholder")
+			if !pv.IsNull() && pv.Type() == cty.String {
+				entry.Placeholder = pv.AsString()
+			}
+		}
+		out = append(out, entry)
+	}
+	return out, diags
 }
 
 func init() {
-	credRefs := []config.RefSpec{
+	// Singular `credential = X` ref via the standard RefSpec path.
+	// The list-form `credentials = [...]` is a cty.Value that
+	// validateMultiCred parses + validates manually below.
+	singularRef := []config.RefSpec{
 		{Path: "Credential", Kind: config.KindCredential, Optional: true},
-		{Path: "Credentials[*].Credential", Kind: config.KindCredential, Optional: true},
+	}
+
+	multiCredValidate := func(d any, name string, ctx *config.BuildCtx) hcl.Diagnostics {
+		var diags hcl.Diagnostics
+		diags = append(diags, validateBinding(d, "endpoint", name, ctx.Block.DefRange)...)
+		_, raw := readBinding(d)
+		entries, parseDiags := parseCredentialList(raw, ctx.Block.DefRange)
+		diags = append(diags, parseDiags...)
+		// Validate each entry's credential reference against the
+		// symbol table — the standard RefSpec walker can't reach
+		// into the cty list.
+		for _, e := range entries {
+			if ctx.Symbols.Get(config.KindCredential, e.Credential) != nil {
+				continue
+			}
+			if alt := ctx.Symbols.GetAny(e.Credential); alt != nil {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  fmt.Sprintf("Wrong reference kind for %q", e.Credential),
+					Detail:   fmt.Sprintf("endpoint %q credentials list expects a credential but %q is a %s.", name, e.Credential, alt.Kind),
+					Subject:  &ctx.Block.DefRange,
+				})
+			} else {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  fmt.Sprintf("Unknown credential %q", e.Credential),
+					Detail:   fmt.Sprintf("endpoint %q credentials list references undeclared credential %q.", name, e.Credential),
+					Subject:  &ctx.Block.DefRange,
+				})
+			}
+		}
+		// Stash the parsed entries on the typed struct so Build (and
+		// the JSON dump path used by tests) can read them without
+		// re-parsing.
+		switch v := d.(type) {
+		case *HTTPSEndpoint:
+			v.Credentials = entries
+		case *PostgresEndpoint:
+			v.Credentials = entries
+		}
+		return diags
 	}
 
 	config.Register(&config.Plugin{
-		Kind:   config.KindEndpoint,
-		Type:   "https",
-		Family: "https",
-		New:    func() any { return &HTTPSEndpoint{} },
-		Refs:   credRefs,
-		Validate: func(d any, name string, ctx *config.BuildCtx) hcl.Diagnostics {
-			return validateBinding(d, "endpoint", name, ctx.Block.DefRange)
-		},
-		Build: func(d any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics) { return d, nil },
+		Kind:     config.KindEndpoint,
+		Type:     "https",
+		Family:   "https",
+		New:      func() any { return &HTTPSEndpoint{} },
+		Refs:     singularRef,
+		Validate: multiCredValidate,
+		Build:    func(d any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics) { return d, nil },
 	})
 
 	config.Register(&config.Plugin{
-		Kind:   config.KindEndpoint,
-		Type:   "postgres",
-		Family: "sql",
-		New:    func() any { return &PostgresEndpoint{} },
-		Refs:   credRefs,
-		Validate: func(d any, name string, ctx *config.BuildCtx) hcl.Diagnostics {
-			return validateBinding(d, "endpoint", name, ctx.Block.DefRange)
-		},
-		Build: func(d any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics) { return d, nil },
+		Kind:     config.KindEndpoint,
+		Type:     "postgres",
+		Family:   "sql",
+		New:      func() any { return &PostgresEndpoint{} },
+		Refs:     singularRef,
+		Validate: multiCredValidate,
+		Build:    func(d any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics) { return d, nil },
 	})
 
 	config.Register(&config.Plugin{

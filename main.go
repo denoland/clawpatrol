@@ -144,15 +144,20 @@ type Swap struct {
 	Secret      string `json:"secret"`
 }
 
-// loadConfig parses the gateway HCL via the new typed-block grammar
-// and adapts it to the legacy runtime shape. Loader diagnostics are
-// returned as a single error joining their summaries.
-func loadConfig(path string) (*Config, error) {
+// loadConfig parses the gateway HCL via the new typed-block grammar,
+// compiles it into a runtime CompiledPolicy, and adapts it to the
+// legacy runtime shape the in-tree request handler still consumes.
+// Loader / compile errors are returned as a single error.
+func loadConfig(path string) (*Config, *config.CompiledPolicy, error) {
 	gw, diags := config.Load(path)
 	if diags.HasErrors() {
-		return nil, fmt.Errorf("%s", diags.Error())
+		return nil, nil, fmt.Errorf("%s", diags.Error())
 	}
-	return adaptLegacy(gw), nil
+	cp, err := config.Compile(gw)
+	if err != nil {
+		return nil, nil, fmt.Errorf("compile: %w", err)
+	}
+	return adaptLegacy(gw), cp, nil
 }
 
 // adaptLegacy translates the new policy-aware *config.Gateway into the
@@ -395,8 +400,8 @@ func newUpstreamDialer(resolver string) *net.Dialer {
 type Gateway struct {
 	cfg     *Config
 	cfgPath string                 // path the HCL config was loaded from; dashboard writes back here
-	db      *sql.DB                // persistent state — credentials, devices, wg_peers, actions
-	rules   atomic.Pointer[[]Rule] // hot-swappable on config-file change
+	rules   atomic.Pointer[[]Rule] // legacy rule slice — empty pending runtime swap
+	policy  atomic.Pointer[config.CompiledPolicy]
 	certs   *CertCache
 	dialer  *net.Dialer
 	sink    *Sink
@@ -404,6 +409,12 @@ type Gateway struct {
 	agents  *AgentRegistry
 	hitl    *HITLRegistry
 	onboard *onboardRegistry
+}
+
+// Policy returns the current snapshot of the lowered runtime policy.
+// nil before the first successful Load. Cheap (atomic load).
+func (g *Gateway) Policy() *config.CompiledPolicy {
+	return g.policy.Load()
 }
 
 // Rules returns the current snapshot of rules. Cheap (atomic load).
@@ -463,19 +474,21 @@ func (g *Gateway) watchConfig(path string) {
 			continue
 		}
 		last = st.ModTime()
-		next, err := loadConfig(path)
+		next, policy, err := loadConfig(path)
 		if err != nil {
 			log.Printf("config reload: %v", err)
 			continue
 		}
 		newRules := append([]Rule(nil), next.Rules...)
 		g.rules.Store(&newRules)
+		g.policy.Store(policy)
 		g.cfg.Rules = next.Rules
 		g.cfg.AdminEmail = next.AdminEmail
 		g.cfg.PublicURL = next.PublicURL
 		g.cfg.DashboardSecret = next.DashboardSecret
 		g.cfg.Profiles = next.Profiles
-		log.Printf("config reloaded: %d rules across %d profile(s)", len(newRules), len(next.Profiles))
+		log.Printf("config reloaded: %d rules across %d profile(s); policy: %d endpoints, %d profiles",
+			len(newRules), len(next.Profiles), len(policy.Endpoints), len(policy.Profiles))
 	}
 }
 
@@ -1437,7 +1450,7 @@ func runGateway(args []string) {
 	_ = fs.Parse(args)
 
 	startModelRefresh()
-	cfg, err := loadConfig(*cfgPath)
+	cfg, policy, err := loadConfig(*cfgPath)
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
@@ -1479,6 +1492,8 @@ func runGateway(args []string) {
 	}
 	rules := append([]Rule(nil), cfg.Rules...)
 	g.rules.Store(&rules)
+	g.policy.Store(policy)
+	log.Printf("policy: %d endpoints across %d profiles", len(policy.Endpoints), len(policy.Profiles))
 	go g.watchConfig(*cfgPath)
 	if err := g.onboard.Load(db); err != nil {
 		log.Fatalf("onboard load: %v", err)
