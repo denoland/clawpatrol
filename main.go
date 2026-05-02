@@ -23,82 +23,42 @@ import (
 	"time"
 
 	"github.com/denoland/clawpatrol-go/config"
+	"github.com/denoland/clawpatrol-go/config/match"
 	_ "github.com/denoland/clawpatrol-go/config/plugins/all"
+	"github.com/denoland/clawpatrol-go/config/runtime"
 )
 
-// Config is the runtime view of the gateway configuration. Operational
-// fields (listen / ca_dir / tailscale / ...) are populated from the
-// new typed-block HCL grammar via config.Load; the runtime-shaped
-// Profiles / Rules / Approvers / Integrations / OAuth slices used by
-// the legacy request handler are populated by adaptLegacy and stay
-// empty until commit 4 wires the plugin runtime through.
+// Config holds the operational fields the gateway daemon reads at
+// boot. Policy decisions (approvers / credentials / endpoints / rules
+// / profiles) live on the *config.CompiledPolicy stored on Gateway,
+// not here. Profile names round-trip through this struct so device
+// onboarding (which assigns a peer to a declared profile by name)
+// keeps working without reaching into config.Policy directly.
 type Config struct {
-	Listen       string
-	InfoListen   string
-	PublicURL    string
-	AdminEmail   string
-	CADir        string
-	Resolver     string
-	LogPath      string
-	OAuthDir     string
-	Tailscale    *Tailscale
-	Profiles     []Profile
-	Rulesets     []Ruleset
-	Approvers    []Approver
-	Integrations []Integration
-
-	// Rules + OAuth describe what the request handler sees. They're
-	// derived from the loaded config.Gateway by adaptLegacy — currently
-	// empty, populated by Compile in a follow-up commit.
-	Rules []Rule
-	OAuth []OAuthIntegration
-
-	// HostIntegration maps a hostname to the integration name whose
-	// credential should be injected when the gateway MITMs that host.
-	// Populated by expandDefaults from each profile's `integrations`
-	// list. Not decoded from HCL, not surfaced in /api/rules — kept
-	// invisible to the rules table since they're not policy decisions
-	// but auth-injection wiring.
-	HostIntegration map[string]string
+	Listen     string
+	InfoListen string
+	PublicURL  string
+	AdminEmail string
+	CADir      string
+	Resolver   string
+	LogPath    string
+	OAuthDir   string
+	// DashboardSecret gates dashboard + JSON APIs behind a shared
+	// secret (cookie / header / query). Empty = open (legacy default).
+	DashboardSecret string
+	Tailscale       *Tailscale
+	Profiles        []Profile
 }
 
-// Profile binds integrations + rulesets + inline rules. Each onboarded
-// device gets a profile at approval time.
+// Profile is a name-only handle the dashboard / onboarding code uses
+// to assign devices to declared profiles. Endpoint membership lives
+// on config.Policy and is consulted by runtime.HostEndpoint at
+// dispatch time.
 type Profile struct {
-	Name             string
-	Extends          []string
-	IntegrationNames []string
-	RulesetRefs      []string
-	Rules            []Rule
+	Name string
 }
 
-// Ruleset is a named bundle of rules.
-type Ruleset struct {
-	Name  string
-	Rules []Rule
-}
-
-// Integration declares the auth shape for a set of hosts.
-type Integration struct {
-	Name       string
-	Type       string // oauth | bearer | header | cookie | mtls
-	Hosts      []string
-	Header     string
-	Prefix     string
-	CookieName string
-}
-
-// Approver is a HITL notifier. The "dashboard" name is reserved for
-// the always-available built-in.
-type Approver struct {
-	Name    string
-	Type    string // "dashboard" | "slack" | "llm"
-	Channel string
-	Timeout int
-	Model   string
-	Policy  string
-}
-
+// Tailscale mirrors the operational `tailscale {}` block.
 type Tailscale struct {
 	AuthKey           string
 	ControlURL        string
@@ -112,36 +72,6 @@ type Tailscale struct {
 	WGEndpoint        string
 	WGServerPub       string
 	WGSubnetCIDR      string
-}
-
-// Rule is the runtime-shaped rule consumed by the legacy MITM handler.
-// JSON tags drive the dashboard event log.
-type Rule struct {
-	Profile  string            `json:"profile,omitempty"`
-	Device   string            `json:"device,omitempty"`
-	Host     string            `json:"host"`
-	Port     int               `json:"port,omitempty"`
-	Action   string            `json:"action,omitempty"`
-	Reason   string            `json:"reason,omitempty"`
-	Headers  map[string]string `json:"headers,omitempty"`
-	Body     bool              `json:"body,omitempty"`
-	Upstream string            `json:"upstream,omitempty"`
-	Auth     string            `json:"auth,omitempty"`
-	Approve  []string          `json:"approve,omitempty"`
-	Match    *Match            `json:"match,omitempty"`
-	Swap     []Swap            `json:"swap,omitempty"`
-	MTLS     *MTLSConfig       `json:"mtls,omitempty"`
-}
-
-type MTLSConfig struct {
-	CA   string `json:"ca"`
-	Cert string `json:"cert"`
-	Key  string `json:"key"`
-}
-
-type Swap struct {
-	Placeholder string `json:"placeholder"`
-	Secret      string `json:"secret"`
 }
 
 // loadConfig parses the gateway HCL via the new typed-block grammar,
@@ -169,14 +99,15 @@ func loadConfig(path string) (*Config, *config.CompiledPolicy, error) {
 // dashboard tabs, and `g.profileFor` keep working.
 func adaptLegacy(gw *config.Gateway) *Config {
 	c := &Config{
-		Listen:     gw.Listen,
-		InfoListen: gw.InfoListen,
-		PublicURL:  gw.PublicURL,
-		AdminEmail: gw.AdminEmail,
-		CADir:      gw.CADir,
-		Resolver:   gw.Resolver,
-		LogPath:    gw.LogPath,
-		OAuthDir:   gw.OAuthDir,
+		Listen:          gw.Listen,
+		InfoListen:      gw.InfoListen,
+		PublicURL:       gw.PublicURL,
+		AdminEmail:      gw.AdminEmail,
+		CADir:           gw.CADir,
+		Resolver:        gw.Resolver,
+		LogPath:         gw.LogPath,
+		OAuthDir:        gw.OAuthDir,
+		DashboardSecret: gw.DashboardSecret,
 	}
 	if c.Listen == "" {
 		c.Listen = ":443"
@@ -235,16 +166,6 @@ func orderedProfileNames(p *config.Policy) []string {
 	return out
 }
 
-
-func (r *Rule) matches(host string) bool {
-	if r.Host == host {
-		return true
-	}
-	if strings.HasPrefix(r.Host, "*.") {
-		return strings.HasSuffix(host, r.Host[1:])
-	}
-	return false
-}
 
 func peekSNI(c net.Conn) (string, []byte, error) {
 	c.SetReadDeadline(time.Now().Add(10 * time.Second))
@@ -339,49 +260,6 @@ func wrapPeek(c net.Conn, prefix []byte) net.Conn {
 	return &peekConn{Conn: c, r: io.MultiReader(bytes.NewReader(prefix), c)}
 }
 
-// ensureAnthropicBeta appends `beta` to the comma-separated
-// `anthropic-beta` request header if missing. Anthropic gates
-// experimental features (including OAuth bearer-token auth) behind
-// these tokens — without `oauth-2025-04-20`, OAuth requests get
-// rejected with "OAuth authentication is currently not supported".
-func ensureAnthropicBeta(h http.Header, beta string) {
-	cur := h.Get("anthropic-beta")
-	if cur == "" {
-		h.Set("anthropic-beta", beta)
-		return
-	}
-	for _, p := range strings.Split(cur, ",") {
-		if strings.TrimSpace(p) == beta {
-			return
-		}
-	}
-	h.Set("anthropic-beta", cur+","+beta)
-}
-
-func resolveTemplate(s string) string {
-	out := s
-	for {
-		i := strings.Index(out, "{{secret:")
-		if i < 0 {
-			break
-		}
-		j := strings.Index(out[i:], "}}")
-		if j < 0 {
-			break
-		}
-		name := out[i+9 : i+j]
-		val := os.Getenv(name)
-		out = out[:i] + val + out[i+j+2:]
-	}
-	return out
-}
-
-func injectHeaders(h http.Header, rule *Rule) {
-	for name, tmpl := range rule.Headers {
-		h.Set(name, resolveTemplate(tmpl))
-	}
-}
-
 func newUpstreamDialer(resolver string) *net.Dialer {
 	d := &net.Dialer{Timeout: 10 * time.Second}
 	if resolver == "" {
@@ -399,8 +277,7 @@ func newUpstreamDialer(resolver string) *net.Dialer {
 
 type Gateway struct {
 	cfg     *Config
-	cfgPath string                 // path the HCL config was loaded from; dashboard writes back here
-	rules   atomic.Pointer[[]Rule] // legacy rule slice — empty pending runtime swap
+	cfgPath string // path the HCL config was loaded from
 	policy  atomic.Pointer[config.CompiledPolicy]
 	certs   *CertCache
 	dialer  *net.Dialer
@@ -415,30 +292,6 @@ type Gateway struct {
 // nil before the first successful Load. Cheap (atomic load).
 func (g *Gateway) Policy() *config.CompiledPolicy {
 	return g.policy.Load()
-}
-
-// Rules returns the current snapshot of rules. Cheap (atomic load).
-// Callers MUST NOT mutate the returned slice — copy first if editing.
-func (g *Gateway) Rules() []Rule {
-	if p := g.rules.Load(); p != nil {
-		return *p
-	}
-	return nil
-}
-
-// approveTimeout picks the smallest non-zero timeout from the named
-// approvers. Returns 0 (HITLRegistry will default to 60s) when no
-// approver declares one.
-func approveTimeout(approvers []Approver, names []string) time.Duration {
-	min := 0
-	for _, n := range names {
-		for _, a := range approvers {
-			if a.Name == n && a.Timeout > 0 && (min == 0 || a.Timeout < min) {
-				min = a.Timeout
-			}
-		}
-	}
-	return time.Duration(min) * time.Second
 }
 
 // profileFor returns the profile name to use when applying rules /
@@ -479,16 +332,13 @@ func (g *Gateway) watchConfig(path string) {
 			log.Printf("config reload: %v", err)
 			continue
 		}
-		newRules := append([]Rule(nil), next.Rules...)
-		g.rules.Store(&newRules)
 		g.policy.Store(policy)
-		g.cfg.Rules = next.Rules
 		g.cfg.AdminEmail = next.AdminEmail
 		g.cfg.PublicURL = next.PublicURL
 		g.cfg.DashboardSecret = next.DashboardSecret
 		g.cfg.Profiles = next.Profiles
-		log.Printf("config reloaded: %d rules across %d profile(s); policy: %d endpoints, %d profiles",
-			len(newRules), len(next.Profiles), len(policy.Endpoints), len(policy.Profiles))
+		log.Printf("config reloaded: %d endpoints across %d profile(s)",
+			len(policy.Endpoints), len(policy.Profiles))
 	}
 }
 
@@ -1041,24 +891,26 @@ func (g *Gateway) handle(raw net.Conn) {
 	c := wrapPeek(raw, prefix)
 	log.Printf("sni-peek: %s", host)
 	pip := peerIP(c)
-	hostRule := selectHostRule(g.Rules(), host, pip, g.profileFor(pip))
-	if hostRule == nil {
-		// No user rule for this host. If it's an integration host,
-		// synthesize a transient Rule so MITM still injects the right
-		// credential. Otherwise pass-through (default-allow with no
-		// inspection).
-		if integ := g.cfg.HostIntegration[host]; integ != "" {
-			hostRule = &Rule{Host: host, Auth: integ}
-		} else {
-			g.splice(c, host)
-			return
-		}
-	}
-	if hostRule.Match == nil && hostRule.Action == "deny" {
-		log.Printf("deny %s: %s", host, hostRule.Reason)
+	profile := g.profileFor(pip)
+	ep := runtime.HostEndpoint(g.Policy(), profile, host)
+	if ep == nil {
+		// Host isn't bound to this profile's endpoint set. Apply the
+		// `defaults.unknown_host` policy: passthrough today (matches
+		// the v14 default). A "deny" mode would close the conn.
+		g.splice(c, host)
 		return
 	}
-	g.mitm(c, host, hostRule)
+	switch ep.Family {
+	case "https", "k8s":
+		// k8s endpoints are HTTPS-underneath; the matcher walk
+		// populates K8sMeta from the URL path.
+		g.mitmHTTPS(c, host, ep)
+	default:
+		// postgres / clickhouse_* — wire-protocol handlers land in
+		// a follow-up commit. Until then: passthrough.
+		log.Printf("endpoint %s family %q: runtime not yet wired; passthrough", ep.Name, ep.Family)
+		g.splice(c, host)
+	}
 }
 
 func (g *Gateway) splice(c net.Conn, host string) {
@@ -1104,8 +956,16 @@ func pipe(a, b net.Conn) (rx, tx int64) {
 	return
 }
 
-func (g *Gateway) mitm(c net.Conn, host string, defaultRule *Rule) {
-	agentAddr := peerIP(c) // capture BEFORE the connection enters mid-flight states; netstack RemoteAddr can race to nil on close.
+// mitmHTTPS handles an SNI-matched TLS connection for an HTTPS-family
+// endpoint (https, kubernetes). It mints a leaf cert, terminates TLS,
+// then loops reading HTTP requests and dispatching each through the
+// compiled policy: runtime.MatchRequest picks the rule, the rule's
+// Outcome decides verdict / approve. Forwarding is plain TLS upstream
+// for now — credential injection (via the credential plugin's
+// HTTPCredentialRuntime) lands in a follow-up commit; until then
+// matched requests forward verbatim.
+func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint) {
+	agentAddr := peerIP(c)
 	cert, err := g.certs.mint(host)
 	if err != nil {
 		log.Printf("mint %s: %v", host, err)
@@ -1128,11 +988,6 @@ func (g *Gateway) mitm(c net.Conn, host string, defaultRule *Rule) {
 			if err != nil {
 				h = host
 			}
-			// Per-host mTLS for endpoints like the Kubernetes API
-			// server. Falls back to plain TLS when rule.MTLS is nil.
-			if defaultRule.MTLS != nil {
-				return dialMTLSUpstream(ctx, network, addr, h, defaultRule.MTLS)
-			}
 			return dialUpstreamTLS(ctx, network, addr, h)
 		},
 		ForceAttemptHTTP2: false,
@@ -1154,16 +1009,17 @@ func (g *Gateway) mitm(c net.Conn, host string, defaultRule *Rule) {
 
 		start := time.Now()
 		pip := peerIP(c)
-		profile := g.profileFor(pip)
-		rules := g.Rules()
-		// If any candidate rule uses body_json, pre-read the body
-		// once and re-attach so downstream consumers (Track / Swap /
-		// the upstream RoundTrip) still see it.
+
+		// Body buffering. Any rule with a `body_json` or
+		// `body_contains` match facet needs the body up-front; we
+		// don't know which yet, so for any POST/PUT/PATCH with a
+		// body we read up to 1 MiB and re-attach. Reads beyond 1 MiB
+		// stream through unbuffered (rare for agent traffic).
 		var matchBody []byte
-		if rulesNeedBody(rules, host, pip, profile) && req.Body != nil {
-			b, err := io.ReadAll(io.LimitReader(req.Body, 1<<20))
+		if req.Body != nil && (req.Method == "POST" || req.Method == "PUT" || req.Method == "PATCH") {
+			b, rdErr := io.ReadAll(io.LimitReader(req.Body, 1<<20))
 			req.Body.Close()
-			if err == nil {
+			if rdErr == nil {
 				matchBody = b
 				req.Body = io.NopCloser(bytes.NewReader(b))
 				if req.ContentLength > 0 {
@@ -1171,38 +1027,44 @@ func (g *Gateway) mitm(c net.Conn, host string, defaultRule *Rule) {
 				}
 			}
 		}
-		rule := selectRequestRule(rules, host, pip, profile, req, matchBody)
-		// If the host-level default rule has a Match that didn't fire for
-		// this request (e.g. method:[POST] and request is GET), don't
-		// fall back to it — a GET shouldn't inherit a POST-only deny.
-		// Use a stripped passthrough rule (preserves host metadata for
-		// logging but no auth/swap/track/action).
-		if rule == nil {
-			if defaultRule.Match == nil {
-				rule = defaultRule
-			} else {
-				rule = &Rule{Host: defaultRule.Host}
-			}
+
+		mreq := &match.Request{
+			Family:  ep.Family,
+			Method:  req.Method,
+			URL:     req.URL,
+			Headers: req.Header,
+			Body:    matchBody,
 		}
+		if ep.Family == "k8s" {
+			mreq.K8s = runtime.ParseK8sPath(req.Method, req.URL.RequestURI())
+		}
+
 		ev := Event{
 			Mode: "mitm", Host: host,
 			Method: req.Method, Path: req.URL.Path,
-			AgentIP: peerIP(c),
+			AgentIP: pip,
 		}
-		if len(rule.Approve) > 0 {
+
+		cr := runtime.MatchRequest(ep, mreq)
+
+		// Approve chain — translate stage names into the legacy
+		// HITL approver name list (the dashboard / Slack / LLM
+		// notifiers register themselves under those names already).
+		if cr != nil && len(cr.Outcome.Approve) > 0 {
+			names := make([]string, len(cr.Outcome.Approve))
+			for i, s := range cr.Outcome.Approve {
+				names[i] = s.Name
+			}
 			pending := &HITLPending{
-				AgentIP:   peerIP(c),
+				AgentIP:   pip,
 				Host:      host,
 				Method:    req.Method,
 				Path:      req.URL.Path,
 				UA:        req.Header.Get("User-Agent"),
-				Reason:    rule.Reason,
-				Approvers: rule.Approve,
+				Reason:    cr.Outcome.Reason,
+				Approvers: names,
 			}
-			// Per-approver timeouts: minimum of any named approver's
-			// timeout (most-restrictive wins). Dashboard contributes
-			// no timeout (always 60s default).
-			timeout := approveTimeout(g.cfg.Approvers, rule.Approve)
+			timeout := defaultHITLTimeout(g.Policy())
 			d := g.hitl.Wait(req.Context(), pending, timeout)
 			if !d.Allow {
 				reason := d.Reason
@@ -1221,12 +1083,14 @@ func (g *Gateway) mitm(c net.Conn, host string, defaultRule *Rule) {
 			log.Printf("hitl-allow %s %s %s by %s", host, req.Method, req.URL.Path, d.By)
 			ev.Action = "hitl_allow"
 		}
-		if rule.Action == "deny" {
-			reason := rule.Reason
+
+		// Verdict.
+		if cr != nil && cr.Outcome.Verdict == "deny" {
+			reason := cr.Outcome.Reason
 			if reason == "" {
 				reason = "denied by policy"
 			}
-			log.Printf("deny %s %s %s: %s", host, req.Method, req.URL.Path, reason)
+			log.Printf("deny %s %s %s: %s (rule %q)", host, req.Method, req.URL.Path, reason, cr.Name)
 			fmt.Fprintf(tc, "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(reason), reason)
 			ev.Status = 403
 			ev.Action = "deny"
@@ -1236,42 +1100,25 @@ func (g *Gateway) mitm(c net.Conn, host string, defaultRule *Rule) {
 			return
 		}
 
-		upstream := host
-		if rule.Upstream != "" {
-			upstream = rule.Upstream
-		}
+		// Forward upstream. Hop-by-hop / proxy-leak headers stripped
+		// per RFC 7230 §6.1 plus chatgpt.com / Cloudflare flagged set.
 		req.URL.Scheme = "https"
-		req.URL.Host = upstream
-		req.Host = upstream
+		req.URL.Host = host
+		req.Host = host
 		req.RequestURI = ""
-		scanReplaceHeaders(req.Header, rule.Swap)
-		if rule.Auth != "" {
-			it := g.oauth.Integration(rule.Auth)
-			if it == nil {
-				log.Printf("rule references unknown oauth integration: %s", rule.Auth)
-			} else {
-				owner := g.ownerForRequest(c, it)
-				if overrode, err := g.oauth.Inject(rule.Auth, owner, req); err != nil {
-					log.Printf("oauth %s/%s inject: %v", rule.Auth, owner, err)
-				} else if !overrode {
-					log.Printf("oauth %s/%s: no token yet — passing agent header through", rule.Auth, owner)
-				} else if rule.Auth == "claude" {
-					// Anthropic rejects OAuth tokens (sk-ant-oat01-…)
-					// without `anthropic-beta: oauth-2025-04-20` in
-					// the request — "OAuth authentication is
-					// currently not supported". Append (preserving
-					// any existing comma-separated betas the agent
-					// already set, like prompt-caching).
-					ensureAnthropicBeta(req.Header, "oauth-2025-04-20")
-					req.Header.Del("x-api-key") // OAuth flow uses Authorization, not x-api-key
-				}
-			}
+		for _, h := range []string{
+			"Connection", "Keep-Alive", "Proxy-Authenticate",
+			"Proxy-Authorization", "Te", "Trailers", "Transfer-Encoding", "Upgrade",
+			"Cf-Worker", "Cf-Ray", "Cf-Ew-Via", "Cf-Connecting-Ip", "Cdn-Loop",
+			"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Via",
+		} {
+			req.Header.Del(h)
 		}
-		injectHeaders(req.Header, rule)
-		if isWSUpgrade(req) {
-			g.handleWSUpgrade(tc, br, req, rule, upstream)
-			return
-		}
+
+		// TODO(handler-swap): credential injection via the credential
+		// plugin's HTTPCredentialRuntime once the secret store
+		// bridges to runtime.Secret. Today: forward verbatim.
+
 		trackKind := trackKindFor(host)
 		var trackedReqBody []byte
 		if trackKind != "" && req.Body != nil {
@@ -1283,31 +1130,9 @@ func (g *Gateway) mitm(c net.Conn, host string, defaultRule *Rule) {
 				req.ContentLength = int64(len(b))
 			}
 		}
-		if rule.Body && req.Body != nil && req.ContentLength > 0 && req.ContentLength < 1<<20 {
-			b, err := io.ReadAll(req.Body)
-			req.Body.Close()
-			if err == nil {
-				b = scanReplaceBytes(b, rule.Swap)
-				req.Body = io.NopCloser(bytes.NewReader(b))
-				req.ContentLength = int64(len(b))
-				req.Header.Set("Content-Length", fmt.Sprintf("%d", len(b)))
-			}
-		}
 		reqS := newSampler(4096)
 		if req.Body != nil {
 			req.Body = wrapBodySampler(req.Body, reqS)
-		}
-		for _, h := range []string{
-			// hop-by-hop (RFC 7230 §6.1)
-			"Connection", "Keep-Alive", "Proxy-Authenticate",
-			"Proxy-Authorization", "Te", "Trailers", "Transfer-Encoding", "Upgrade",
-			// proxy-leak headers — chatgpt.com / Cloudflare WAF flag these
-			// and respond with "Attack attempt detected". Strip so the
-			// upstream sees a clean client request.
-			"Cf-Worker", "Cf-Ray", "Cf-Ew-Via", "Cf-Connecting-Ip", "Cdn-Loop",
-			"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Via",
-		} {
-			req.Header.Del(h)
 		}
 
 		resp, err := transport.RoundTrip(req)
@@ -1349,8 +1174,10 @@ func (g *Gateway) mitm(c net.Conn, host string, defaultRule *Rule) {
 			g.trackLLMUsage(c, trackKind, req.URL.Path, trackedReqBody, body)
 		}
 
+		if ev.Action == "" {
+			ev.Action = "allow"
+		}
 		ev.Status = resp.StatusCode
-		ev.Action = "allow"
 		ev.In = reqS.n
 		ev.Out = respS.n
 		ev.ReqSha = reqS.sha()
@@ -1372,6 +1199,17 @@ func (g *Gateway) mitm(c net.Conn, host string, defaultRule *Rule) {
 		}
 	}
 }
+
+// defaultHITLTimeout returns the configured human approver timeout
+// (defaults.human_timeout) or the legacy 60s default when nothing
+// is configured. Per-approver timeouts overlay this in a follow-up.
+func defaultHITLTimeout(p *config.CompiledPolicy) time.Duration {
+	if p != nil && p.Defaults.HumanTimeout > 0 {
+		return time.Duration(p.Defaults.HumanTimeout) * time.Second
+	}
+	return 60 * time.Second
+}
+
 
 func main() {
 	if len(os.Args) < 2 {
@@ -1474,7 +1312,16 @@ func runGateway(args []string) {
 	if err != nil {
 		log.Fatalf("log: %v", err)
 	}
-	oauthReg, err := NewOAuthRegistry(cfg.OAuth, db)
+	oauthDir := cfg.OAuthDir
+	if oauthDir == "" {
+		oauthDir = filepath.Join(cfg.CADir, "..", "oauth")
+	}
+	// OAuthRegistry seed list is empty for now — credential plugins
+	// own credential discovery in the new policy. The registry stays
+	// in place because per-owner token persistence + refresh logic
+	// is reused by the credential-plugin runtime bridge (lands when
+	// the credential injection path is wired into mitmHTTPS).
+	oauthReg, err := NewOAuthRegistry(nil, oauthDir)
 	if err != nil {
 		log.Fatalf("oauth: %v", err)
 	}
@@ -1490,8 +1337,6 @@ func runGateway(args []string) {
 		hitl:    newHITLRegistry(),
 		onboard: newOnboardRegistry(),
 	}
-	rules := append([]Rule(nil), cfg.Rules...)
-	g.rules.Store(&rules)
 	g.policy.Store(policy)
 	log.Printf("policy: %d endpoints across %d profiles", len(policy.Endpoints), len(policy.Profiles))
 	go g.watchConfig(*cfgPath)
@@ -1548,11 +1393,12 @@ func runGateway(args []string) {
 			switch {
 			case dstPort == 443:
 				g.handle(c)
-			case dstPort == 5432:
-				g.handlePostgres(c, dstIP)
 			case dashPort != 0 && int(dstPort) == dashPort:
 				_ = http.Serve(&oneShotListener{c: c}, dashMux)
 			default:
+				// Postgres (5432) and other non-443 ports relay
+				// through transparently until the postgres endpoint
+				// plugin's runtime hook lands.
 				wgRelay(c, dstIP, int(dstPort))
 			}
 		}); err != nil {
@@ -1565,7 +1411,8 @@ func runGateway(args []string) {
 	if err != nil {
 		log.Fatalf("listen: %v", err)
 	}
-	log.Printf("gateway listening on %s, %d rules", ln.Addr(), len(g.Rules()))
+	log.Printf("gateway listening on %s, %d endpoints across %d profiles",
+		ln.Addr(), len(policy.Endpoints), len(policy.Profiles))
 
 	for {
 		c, err := ln.Accept()

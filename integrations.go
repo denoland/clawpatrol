@@ -1,12 +1,11 @@
 package main
 
-// Integrations: secret swaps in proxied bytes/headers, built-in OAuth
-// defaults for popular providers (claude/codex/github), the `clawpatrol
-// env` shell-shim, and the litellm context-window cache used to label
-// agent sessions with their model's max input window.
+// Built-in OAuth defaults for popular providers (claude / codex /
+// github), the `clawpatrol env` shell-shim, and the litellm
+// context-window cache used to label agent sessions with their
+// model's max input window.
 
 import (
-	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -20,10 +19,8 @@ import (
 )
 
 // Placeholder tokens. Agent CLIs (claude, gh, codex) refuse to start
-// without these env vars set, even though our gateway swaps in the real
-// OAuth-issued token server-side. The placeholder must match the
-// provider's expected format closely enough to pass client-side
-// validation — but the bytes never reach the API.
+// without these env vars set, even though the gateway swaps in the
+// real OAuth-issued token server-side via the credential plugin.
 const (
 	envClaudePlaceholder = "sk-ant-oat01-clawpatrol-placeholder-token-do-not-use-as-real-key"
 	envGitHubPlaceholder = "ghp_clawpatrol_placeholder_token_do_not_use_as_real_key"
@@ -33,38 +30,26 @@ const (
 	envCodexPlaceholder = "sk-clawpatrol-placeholder-token-do-not-use-as-real-key"
 )
 
-// scanReplaceBytes runs every Swap entry across b in order. Each
-// placeholder is searched verbatim and replaced with resolved secret.
-func scanReplaceBytes(b []byte, swaps []Swap) []byte {
-	for _, s := range swaps {
-		if s.Placeholder == "" {
-			continue
+// resolveTemplate expands `{{secret:NAME}}` placeholders in s by
+// looking NAME up in the process environment. Used by config-loading
+// helpers that pull provider-specific secrets at runtime instead of
+// hard-coding them in the file.
+func resolveTemplate(s string) string {
+	out := s
+	for {
+		i := strings.Index(out, "{{secret:")
+		if i < 0 {
+			break
 		}
-		b = bytes.ReplaceAll(b, []byte(s.Placeholder), []byte(resolveTemplate(s.Secret)))
-	}
-	return b
-}
-
-// scanReplaceHeaders rewrites every header value that contains a
-// placeholder. Multi-value headers handled per-value.
-func scanReplaceHeaders(h http.Header, swaps []Swap) {
-	if len(swaps) == 0 {
-		return
-	}
-	for k, vals := range h {
-		for i, v := range vals {
-			for _, s := range swaps {
-				if s.Placeholder == "" {
-					continue
-				}
-				if strings.Contains(v, s.Placeholder) {
-					v = strings.ReplaceAll(v, s.Placeholder, resolveTemplate(s.Secret))
-				}
-			}
-			vals[i] = v
+		j := strings.Index(out[i:], "}}")
+		if j < 0 {
+			break
 		}
-		h[k] = vals
+		name := out[i+9 : i+j]
+		val := os.Getenv(name)
+		out = out[:i] + val + out[i+j+2:]
 	}
+	return out
 }
 
 // runEnv is the `clawpatrol env` subcommand: prints export lines for

@@ -1,178 +1,25 @@
 package main
 
-// Outbound dialing + extra-port serving. Combines the per-rule TCP
-// listener loop (handleRaw / spliceTo for ports beyond 443) with the
-// upstream TLS dialers (stdlib for normal hosts, uTLS Chrome for
-// fingerprint-sensitive endpoints like chatgpt.com WS, mTLS for
-// client-cert-authenticated upstreams like the Kubernetes API).
+// Outbound dialing. Stdlib TLS for normal hosts; uTLS Chrome for
+// fingerprint-sensitive endpoints like chatgpt.com WS where
+// Cloudflare WAF rejects plain-Go TLS handshakes.
+//
+// Per-rule extra-port serving is gone in this transition — the v14
+// schema doesn't carry per-port listening declarations; postgres /
+// clickhouse_native sit behind their endpoint plugins' future
+// ConnEndpointRuntime, not a top-level port listener.
 
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
-	"fmt"
-	"io"
-	"log"
 	"net"
-	"os"
-	"strconv"
-	"strings"
-	"time"
 
 	utls "github.com/refraction-networking/utls"
 )
 
-func uniqueExtraPorts(rules []Rule) []int {
-	seen := map[int]bool{}
-	var out []int
-	for _, r := range rules {
-		if r.Port == 0 || r.Port == 443 {
-			continue
-		}
-		if seen[r.Port] {
-			continue
-		}
-		seen[r.Port] = true
-		out = append(out, r.Port)
-	}
-	return out
-}
-
-func ruleForPort(rules []Rule, port int) *Rule {
-	for i := range rules {
-		if rules[i].Port == port {
-			return &rules[i]
-		}
-	}
-	return nil
-}
-
-func (g *Gateway) servePorts() {
-	host := splitHost(g.cfg.Listen)
-	for _, port := range uniqueExtraPorts(g.Rules()) {
-		addr := net.JoinHostPort(host, strconv.Itoa(port))
-		ln, err := net.Listen("tcp", addr)
-		if err != nil {
-			log.Printf("listen %s: %v", addr, err)
-			continue
-		}
-		log.Printf("port %d listening (%d-host rule)", port, countRulesOnPort(g.Rules(), port))
-		go g.acceptRaw(ln, port)
-	}
-}
-
-func (g *Gateway) acceptRaw(ln net.Listener, port int) {
-	for {
-		c, err := ln.Accept()
-		if err != nil {
-			log.Printf("accept :%d: %v", port, err)
-			return
-		}
-		go g.handleRaw(c, port)
-	}
-}
-
-func (g *Gateway) handleRaw(c net.Conn, port int) {
-	defer c.Close()
-	rule := ruleForPort(g.Rules(), port)
-	if rule == nil {
-		return
-	}
-	if rule.Action == "deny" {
-		log.Printf("deny port %d host %s: %s", port, rule.Host, rule.Reason)
-		return
-	}
-	upstream := rule.Host
-	if rule.Upstream != "" {
-		upstream = rule.Upstream
-	}
-	g.spliceTo(c, upstream, port)
-}
-
-func (g *Gateway) spliceTo(c net.Conn, host string, port int) {
-	start := time.Now()
-	up, err := g.dialer.Dial("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
-	if err != nil {
-		log.Printf("dial %s:%d: %v", host, port, err)
-		g.sink.Emit(Event{Mode: "splice", Host: host, Action: "error", Reason: err.Error(), Ms: time.Since(start).Milliseconds()})
-		return
-	}
-	defer up.Close()
-	defer func() {
-		g.sink.Emit(Event{Mode: "splice", Host: host, Action: "allow", Ms: time.Since(start).Milliseconds()})
-	}()
-	done := make(chan struct{}, 2)
-	go func() {
-		io.Copy(up, c)
-		if cw, ok := up.(interface{ CloseWrite() error }); ok {
-			cw.CloseWrite()
-		}
-		done <- struct{}{}
-	}()
-	go func() {
-		io.Copy(c, up)
-		if cw, ok := c.(interface{ CloseWrite() error }); ok {
-			cw.CloseWrite()
-		}
-		done <- struct{}{}
-	}()
-	<-done
-	<-done
-}
-
-func splitHost(addr string) string {
-	if i := strings.LastIndex(addr, ":"); i > 0 {
-		return addr[:i]
-	}
-	return ""
-}
-
-func countRulesOnPort(rules []Rule, port int) int {
-	n := 0
-	for _, r := range rules {
-		if r.Port == port {
-			n++
-		}
-	}
-	return n
-}
-
-// dialMTLSUpstream dials an upstream that authenticates via client
-// certificate (e.g. Kubernetes API server). Loads the cert+key+CA
-// from the rule's MTLS config and presents them at TLS handshake.
-func dialMTLSUpstream(ctx context.Context, network, addr, serverName string, m *MTLSConfig) (net.Conn, error) {
-	cert, err := tls.LoadX509KeyPair(m.Cert, m.Key)
-	if err != nil {
-		return nil, fmt.Errorf("mtls load cert+key: %w", err)
-	}
-	cfg := &tls.Config{
-		ServerName:   serverName,
-		Certificates: []tls.Certificate{cert},
-		NextProtos:   []string{"http/1.1"},
-	}
-	if m.CA != "" {
-		caPEM, err := os.ReadFile(m.CA)
-		if err != nil {
-			return nil, fmt.Errorf("mtls read ca: %w", err)
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(caPEM) {
-			return nil, fmt.Errorf("mtls ca: no PEM blocks parsed")
-		}
-		cfg.RootCAs = pool
-	}
-	d := &net.Dialer{}
-	raw, err := d.DialContext(ctx, network, addr)
-	if err != nil {
-		return nil, err
-	}
-	tc := tls.Client(raw, cfg)
-	if err := tc.HandshakeContext(ctx); err != nil {
-		raw.Close()
-		return nil, err
-	}
-	return tc, nil
-}
+// servePorts is a no-op until the postgres / clickhouse_native
+// endpoint plugins land their wire-protocol runtime hooks.
+func (g *Gateway) servePorts() {}
 
 // dialUpstreamTLS opens a TCP connection and runs stdlib TLS with
 // ALPN forced to http/1.1 (our http.Transport is HTTP/1.1 only).

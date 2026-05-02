@@ -487,7 +487,7 @@ func (w *webMux) apiProfiles(rw http.ResponseWriter, _ *http.Request) {
 func (w *webMux) apiRules(rw http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
-		writeJSON(rw, []Rule{})
+		writeJSON(rw, []any{})
 	default:
 		http.Error(rw, "rule editing temporarily disabled while the new policy grammar lands", http.StatusNotImplemented)
 	}
@@ -500,7 +500,7 @@ func (w *webMux) apiDeviceRules(rw http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case "GET":
-		writeJSON(rw, []Rule{})
+		writeJSON(rw, []any{})
 	default:
 		http.Error(rw, "rule editing temporarily disabled while the new policy grammar lands", http.StatusNotImplemented)
 	}

@@ -18,14 +18,15 @@ import (
 // they're not pluggable. Anything below `tailscale {}` is dispatched
 // to the plugin registry.
 type Gateway struct {
-	Listen     string `hcl:"listen,optional"`
-	InfoListen string `hcl:"info_listen,optional"`
-	PublicURL  string `hcl:"public_url,optional"`
-	AdminEmail string `hcl:"admin_email,optional"`
-	CADir      string `hcl:"ca_dir,optional"`
-	Resolver   string `hcl:"resolver,optional"`
-	LogPath    string `hcl:"log_path,optional"`
-	OAuthDir   string `hcl:"oauth_dir,optional"`
+	Listen          string `hcl:"listen,optional"`
+	InfoListen      string `hcl:"info_listen,optional"`
+	PublicURL       string `hcl:"public_url,optional"`
+	AdminEmail      string `hcl:"admin_email,optional"`
+	CADir           string `hcl:"ca_dir,optional"`
+	Resolver        string `hcl:"resolver,optional"`
+	LogPath         string `hcl:"log_path,optional"`
+	OAuthDir        string `hcl:"oauth_dir,optional"`
+	DashboardSecret string `hcl:"dashboard_secret,optional"`
 
 	Tailscale *Tailscale `hcl:"tailscale,block"`
 
