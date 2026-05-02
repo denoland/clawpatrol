@@ -1,0 +1,401 @@
+// Package rules registers the three rule kinds: http_rule, sql_rule,
+// and k8s_rule. Each rule is one policy decision targeting one or more
+// endpoints of a matching protocol family.
+//
+// The match block is decoded as a raw cty.Value because its keys are
+// family-specific (http_rule has `path`/`method`, k8s_rule has
+// `resource`/`verb`/`namespace`) and each value can be either a single
+// string or a list. After gohcl decoding, Build interprets the cty
+// shape into a typed Match record per family.
+//
+// `approve` is similarly heterogeneous: a list whose elements are
+// either bare-name approver references or struct stages with
+// `name` / `policy` / `cache_ttl`.
+//
+// Rule type ↔ endpoint family compatibility is enforced via RefSpec
+// FamilyConstraint.
+package rules
+
+import (
+	"fmt"
+
+	"github.com/hashicorp/hcl/v2"
+	"github.com/zclconf/go-cty/cty"
+
+	"github.com/denoland/clawpatrol-go/config"
+)
+
+// RuleBody is the shared shape across all three rule types. The
+// match keys vary by family (interpreted in Build), but the outer
+// frame is identical: endpoint targeting, priority, outcome.
+type RuleBody struct {
+	Endpoint  string   `hcl:"endpoint,optional"`
+	Endpoints []string `hcl:"endpoints,optional"`
+	Priority  int      `hcl:"priority,optional"`
+	Disabled  bool     `hcl:"disabled,optional"`
+
+	// Match is decoded raw and interpreted per family in Build. An
+	// absent match block matches everything — the v14 catch-all
+	// pattern (`rule "..." "X-default" { priority = -100; verdict =
+	// "deny" }`) relies on this.
+	Match cty.Value `hcl:"match,optional"`
+
+	// Outcome: exactly one of verdict / approve.
+	Verdict string    `hcl:"verdict,optional"`
+	Reason  string    `hcl:"reason,optional"`
+	Approve cty.Value `hcl:"approve,optional"`
+}
+
+// Rule is the canonical, family-stamped record stored in
+// Policy.Rules[name].Body. Match is a JSON-friendly Go shape produced
+// at Build time from the raw HCL object; family-specific matchers
+// added when wiring runtime walk this shape.
+type Rule struct {
+	Name      string         `json:"name"`
+	Family    string         `json:"family"` // "https" | "sql" | "k8s"
+	Endpoints []string       `json:"endpoints"`
+	Priority  int            `json:"priority,omitempty"`
+	Disabled  bool           `json:"disabled,omitempty"`
+	Match     map[string]any `json:"match"`
+	Verdict   string         `json:"verdict,omitempty"` // "allow" | "deny" | "" (when Approve is set)
+	Reason    string         `json:"reason,omitempty"`
+	Approve   []ApproveStage `json:"approve,omitempty"`
+	// CredentialRef, if set, is the resolved bare-name reference from
+	// `match = { credential = X }`. The runtime treats it as an extra
+	// match predicate (request must have been dispatched against this
+	// credential).
+	CredentialRef string `json:"credential_ref,omitempty"`
+}
+
+// ApproveStage is one node in an approve = [...] chain. Either a
+// bare-name reference (Name set, Policy empty) or a struct stage
+// with a bound LLM policy and optional cache TTL override.
+type ApproveStage struct {
+	Name     string `json:"name"`
+	Policy   string `json:"policy,omitempty"`
+	CacheTTL int    `json:"cache_ttl,omitempty"` // seconds; 0 → defaults
+}
+
+// validatedFamily defines the family + endpoint family-constraint
+// for one rule type, plus any per-family match-key sanity checks.
+type validatedFamily struct {
+	family            string
+	endpointFamilies  []string
+	knownMatchKeys    map[string]bool
+}
+
+var families = map[string]validatedFamily{
+	"http_rule": {
+		family:           "https",
+		endpointFamilies: []string{"https"},
+		knownMatchKeys: map[string]bool{
+			"method": true, "path": true, "query": true, "headers": true,
+			"body_json": true, "body_contains": true, "credential": true,
+		},
+	},
+	"sql_rule": {
+		family:           "sql",
+		endpointFamilies: []string{"sql"},
+		knownMatchKeys: map[string]bool{
+			"verb": true, "tables": true, "function": true,
+			"statement": true, "statement_regex": true, "credential": true,
+		},
+	},
+	"k8s_rule": {
+		family:           "k8s",
+		endpointFamilies: []string{"k8s"},
+		knownMatchKeys: map[string]bool{
+			"resource": true, "verb": true, "namespace": true,
+			"name": true, "params": true, "credential": true,
+		},
+	},
+}
+
+func validate(body any, name string, ctx *config.BuildCtx, fam validatedFamily) hcl.Diagnostics {
+	rb := body.(*RuleBody)
+	var diags hcl.Diagnostics
+
+	// Exactly one of endpoint / endpoints.
+	if rb.Endpoint != "" && len(rb.Endpoints) > 0 {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Both endpoint and endpoints set on rule %q", name),
+			Detail:   "Use exactly one of `endpoint = X` or `endpoints = [X, Y]`.",
+			Subject:  &ctx.Block.DefRange,
+		})
+	}
+	if rb.Endpoint == "" && len(rb.Endpoints) == 0 {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Rule %q has no endpoints", name),
+			Detail:   "Set `endpoint = X` or `endpoints = [X, Y]`.",
+			Subject:  &ctx.Block.DefRange,
+		})
+	}
+
+	// Outcome: exactly one of verdict / approve.
+	hasVerdict := rb.Verdict != ""
+	hasApprove := !rb.Approve.IsNull() && rb.Approve.LengthInt() > 0
+	if hasVerdict && hasApprove {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Both verdict and approve set on rule %q", name),
+			Detail:   "Use exactly one of `verdict = ...` or `approve = [...]`.",
+			Subject:  &ctx.Block.DefRange,
+		})
+	}
+	if !hasVerdict && !hasApprove {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Rule %q has no outcome", name),
+			Detail:   "Set `verdict = \"allow\"`, `verdict = \"deny\"`, or `approve = [...]`.",
+			Subject:  &ctx.Block.DefRange,
+		})
+	}
+	if hasVerdict && rb.Verdict != "allow" && rb.Verdict != "deny" {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Invalid verdict %q on rule %q", rb.Verdict, name),
+			Detail:   "verdict must be \"allow\" or \"deny\".",
+			Subject:  &ctx.Block.DefRange,
+		})
+	}
+
+	// Match keys: detect typos. An absent match block (cty.NilVal)
+	// is fine — it matches every request.
+	if !rb.Match.IsNull() {
+		if !rb.Match.Type().IsObjectType() {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("Rule %q match must be an object literal", name),
+				Detail:   "Expected `match = { ... }`.",
+				Subject:  &ctx.Block.DefRange,
+			})
+		} else {
+			it := rb.Match.ElementIterator()
+			for it.Next() {
+				k, _ := it.Element()
+				key := k.AsString()
+				if !fam.knownMatchKeys[key] {
+					diags = append(diags, &hcl.Diagnostic{
+						Severity: hcl.DiagError,
+						Summary:  fmt.Sprintf("Unknown match key %q for %s", key, fam.family),
+						Detail:   fmt.Sprintf("Valid keys for this rule type: %s.", listKeys(fam.knownMatchKeys)),
+						Subject:  &ctx.Block.DefRange,
+					})
+				}
+			}
+		}
+	}
+
+	return diags
+}
+
+func build(body any, name string, ctx *config.BuildCtx, fam validatedFamily) (any, hcl.Diagnostics) {
+	rb := body.(*RuleBody)
+	var diags hcl.Diagnostics
+
+	endpoints := rb.Endpoints
+	if rb.Endpoint != "" {
+		endpoints = []string{rb.Endpoint}
+	}
+
+	matchMap := ctyObjectToMap(rb.Match)
+	if matchMap == nil {
+		matchMap = map[string]any{} // explicit empty match-all
+	}
+	r := &Rule{
+		Name:      name,
+		Family:    fam.family,
+		Endpoints: endpoints,
+		Priority:  rb.Priority,
+		Disabled:  rb.Disabled,
+		Match:     matchMap,
+		Verdict:   rb.Verdict,
+		Reason:    rb.Reason,
+	}
+
+	// Resolve `match = { credential = X }` against the symbol table —
+	// this nested ref doesn't fit the standard RefSpec.Path syntax.
+	if !rb.Match.IsNull() && rb.Match.Type().IsObjectType() && rb.Match.Type().HasAttribute("credential") {
+		credVal := rb.Match.GetAttr("credential")
+		if credVal.Type() == cty.String {
+			cred := credVal.AsString()
+			r.CredentialRef = cred
+			if d := requireKind(ctx, cred, config.KindCredential, name, "match.credential"); d != nil {
+				diags = append(diags, d)
+			}
+		}
+	}
+
+	// Approve chain.
+	if !rb.Approve.IsNull() {
+		stages, stageDiags := decodeApproveChain(rb.Approve, name, ctx)
+		diags = append(diags, stageDiags...)
+		r.Approve = stages
+	}
+
+	return r, diags
+}
+
+// decodeApproveChain walks the cty.Value approve = [...] list. Each
+// element is either a string (bare approver ref) or an object with
+// `name`, `policy`, `cache_ttl`. References resolve against the
+// symbol table.
+func decodeApproveChain(v cty.Value, ruleName string, ctx *config.BuildCtx) ([]ApproveStage, hcl.Diagnostics) {
+	var stages []ApproveStage
+	var diags hcl.Diagnostics
+	if !v.Type().IsTupleType() && !v.Type().IsListType() {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Rule %q approve must be a list", ruleName),
+			Subject:  &ctx.Block.DefRange,
+		})
+		return stages, diags
+	}
+	it := v.ElementIterator()
+	for it.Next() {
+		_, el := it.Element()
+		t := el.Type()
+		switch {
+		case t == cty.String:
+			name := el.AsString()
+			if d := requireKind(ctx, name, config.KindApprover, ruleName, "approve stage"); d != nil {
+				diags = append(diags, d)
+			}
+			stages = append(stages, ApproveStage{Name: name})
+		case t.IsObjectType():
+			st := ApproveStage{}
+			if t.HasAttribute("name") {
+				st.Name = el.GetAttr("name").AsString()
+				if d := requireKind(ctx, st.Name, config.KindApprover, ruleName, "approve stage"); d != nil {
+					diags = append(diags, d)
+				}
+			}
+			if t.HasAttribute("policy") {
+				st.Policy = el.GetAttr("policy").AsString()
+				if d := requireKind(ctx, st.Policy, config.KindPolicy, ruleName, "approve stage policy"); d != nil {
+					diags = append(diags, d)
+				}
+			}
+			if t.HasAttribute("cache_ttl") {
+				ttl := el.GetAttr("cache_ttl")
+				if ttl.Type() == cty.Number {
+					i, _ := ttl.AsBigFloat().Int64()
+					st.CacheTTL = int(i)
+				}
+			}
+			stages = append(stages, st)
+		default:
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("Rule %q approve stage has unsupported shape", ruleName),
+				Detail:   "Each stage must be a bare-name reference or an object with `name`, `policy`, optional `cache_ttl`.",
+				Subject:  &ctx.Block.DefRange,
+			})
+		}
+	}
+	return stages, diags
+}
+
+func requireKind(ctx *config.BuildCtx, name string, kind config.Kind, ruleName, what string) *hcl.Diagnostic {
+	if name == "" {
+		return nil
+	}
+	if ctx.Symbols.Get(kind, name) != nil {
+		return nil
+	}
+	if alt := ctx.Symbols.GetAny(name); alt != nil {
+		return &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Wrong reference kind for %q", name),
+			Detail:   fmt.Sprintf("Rule %q %s expects a %s but %q is a %s.", ruleName, what, kind, name, alt.Kind),
+			Subject:  &ctx.Block.DefRange,
+		}
+	}
+	return &hcl.Diagnostic{
+		Severity: hcl.DiagError,
+		Summary:  fmt.Sprintf("Unknown %s %q", kind, name),
+		Detail:   fmt.Sprintf("Rule %q %s references undeclared %s %q.", ruleName, what, kind, name),
+		Subject:  &ctx.Block.DefRange,
+	}
+}
+
+// ctyObjectToMap converts the raw HCL match object to a JSON-friendly
+// map. Strings, numbers, and bools become themselves; lists/tuples
+// become []any; nested objects recurse. Null returns nil.
+func ctyObjectToMap(v cty.Value) map[string]any {
+	if v.IsNull() || !v.Type().IsObjectType() {
+		return nil
+	}
+	out := map[string]any{}
+	it := v.ElementIterator()
+	for it.Next() {
+		k, el := it.Element()
+		out[k.AsString()] = ctyToGo(el)
+	}
+	return out
+}
+
+func ctyToGo(v cty.Value) any {
+	if v.IsNull() {
+		return nil
+	}
+	t := v.Type()
+	switch {
+	case t == cty.String:
+		return v.AsString()
+	case t == cty.Number:
+		i, _ := v.AsBigFloat().Int64()
+		return i
+	case t == cty.Bool:
+		return v.True()
+	case t.IsObjectType() || t.IsMapType():
+		return ctyObjectToMap(v)
+	case t.IsTupleType() || t.IsListType() || t.IsSetType():
+		var out []any
+		it := v.ElementIterator()
+		for it.Next() {
+			_, el := it.Element()
+			out = append(out, ctyToGo(el))
+		}
+		return out
+	}
+	return v.GoString()
+}
+
+func listKeys(m map[string]bool) string {
+	out := ""
+	first := true
+	for k := range m {
+		if !first {
+			out += ", "
+		}
+		out += k
+		first = false
+	}
+	return out
+}
+
+func init() {
+	for typ, fam := range families {
+		fam := fam
+		typ := typ
+		config.Register(&config.Plugin{
+			Kind:     config.KindRule,
+			Type:     typ,
+			Families: fam.endpointFamilies,
+			New:      func() any { return &RuleBody{} },
+			Refs: []config.RefSpec{
+				{Path: "Endpoint", Kind: config.KindEndpoint, FamilyConstraint: fam.endpointFamilies, Optional: true},
+				{Path: "Endpoints[*]", Kind: config.KindEndpoint, FamilyConstraint: fam.endpointFamilies, Optional: true},
+			},
+			Validate: func(d any, name string, ctx *config.BuildCtx) hcl.Diagnostics {
+				return validate(d, name, ctx, fam)
+			},
+			Build: func(d any, name string, ctx *config.BuildCtx) (any, hcl.Diagnostics) {
+				return build(d, name, ctx, fam)
+			},
+		})
+	}
+}

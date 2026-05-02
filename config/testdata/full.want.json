@@ -1,0 +1,1788 @@
+{
+  "policy": {
+    "approvers": {
+      "billing": {
+        "body": {
+          "Channel": "#billing-approvals",
+          "Timeout": 0,
+          "RequireApprovers": 0
+        },
+        "type": "human_approver"
+      },
+      "billing-strict": {
+        "body": {
+          "Channel": "#billing-approvals",
+          "Timeout": 0,
+          "RequireApprovers": 2
+        },
+        "type": "human_approver"
+      },
+      "console-dba": {
+        "body": {
+          "Channel": "#agent-db",
+          "Timeout": 0,
+          "RequireApprovers": 0
+        },
+        "type": "human_approver"
+      },
+      "content-safety": {
+        "body": {
+          "Model": "claude-sonnet-4-20250514"
+        },
+        "type": "llm_approver"
+      },
+      "fast": {
+        "body": {
+          "Model": "claude-haiku-4-5-20251001"
+        },
+        "type": "llm_approver"
+      },
+      "notion-archive": {
+        "body": {
+          "Channel": "#agent-notion",
+          "Timeout": 0,
+          "RequireApprovers": 0
+        },
+        "type": "human_approver"
+      },
+      "observability": {
+        "body": {
+          "Channel": "#observability",
+          "Timeout": 0,
+          "RequireApprovers": 0
+        },
+        "type": "human_approver"
+      },
+      "scheduler-ops": {
+        "body": {
+          "Channel": "#agent-db",
+          "Timeout": 0,
+          "RequireApprovers": 0
+        },
+        "type": "human_approver"
+      },
+      "support-ops": {
+        "body": {
+          "Channel": "#agent-support",
+          "Timeout": 86400,
+          "RequireApprovers": 0
+        },
+        "type": "human_approver"
+      }
+    },
+    "credentials": {
+      "amem-kaju": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "type": "bearer_token"
+      },
+      "anthropic-avocet-key": {
+        "body": {},
+        "type": "anthropic_manual_key"
+      },
+      "anthropic-avocet-sub": {
+        "body": {},
+        "type": "anthropic_oauth_subscription"
+      },
+      "ch-o11y": {
+        "body": {
+          "User": "avocet"
+        },
+        "type": "clickhouse_credential"
+      },
+      "checkly-kaju": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "type": "bearer_token"
+      },
+      "deno-deploy-pat": {
+        "body": {
+          "CookieName": "session"
+        },
+        "type": "cookie_token"
+      },
+      "deno-support-kaju": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "type": "bearer_token"
+      },
+      "gemini-mira-cred": {
+        "body": {},
+        "type": "gemini_api_key"
+      },
+      "github-avocet-pat": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "type": "bearer_token"
+      },
+      "github-kaju-pat": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "type": "bearer_token"
+      },
+      "github-mira-pat": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "type": "bearer_token"
+      },
+      "grafana-token": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "type": "bearer_token"
+      },
+      "honeycomb-kaju": {
+        "body": {
+          "Header": "x-honeycomb-team",
+          "Prefix": ""
+        },
+        "type": "header_token"
+      },
+      "k8s-dev-ams-mtls": {
+        "body": {},
+        "type": "mtls_credential"
+      },
+      "k8s-dev-ord-mtls": {
+        "body": {},
+        "type": "mtls_credential"
+      },
+      "k8s-eks-deployng-aws": {
+        "body": {
+          "Cluster": "deployng-prod",
+          "Region": "us-east-2",
+          "Profile": "deployng-console-prod"
+        },
+        "type": "aws_eks_credential"
+      },
+      "notion-deno": {
+        "body": {},
+        "type": "notion_oauth"
+      },
+      "openai-codex-divy-cred": {
+        "body": {},
+        "type": "openai_codex_oauth"
+      },
+      "openai-codex-mira-cred": {
+        "body": {},
+        "type": "openai_codex_oauth"
+      },
+      "orb-prod-key": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "type": "bearer_token"
+      },
+      "orb-test-key": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "type": "bearer_token"
+      },
+      "pagerduty-kaju": {
+        "body": {
+          "Header": "authorization",
+          "Prefix": "Token token="
+        },
+        "type": "header_token"
+      },
+      "pg-deployng-ro": {
+        "body": {
+          "User": "console_ro"
+        },
+        "type": "postgres_credential"
+      },
+      "pg-deployng-rw": {
+        "body": {
+          "User": "console"
+        },
+        "type": "postgres_credential"
+      },
+      "pg-scheduler-cred": {
+        "body": {
+          "User": "scheduler"
+        },
+        "type": "postgres_credential"
+      },
+      "posthog-kaju": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "type": "bearer_token"
+      },
+      "slack-avocet-cred": {
+        "body": {},
+        "type": "slack_tokens"
+      },
+      "slack-kaju-cred": {
+        "body": {},
+        "type": "slack_tokens"
+      },
+      "slack-mira-cred": {
+        "body": {},
+        "type": "slack_tokens"
+      },
+      "smithery-kaju": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "type": "bearer_token"
+      },
+      "stripe-live-key": {
+        "body": {
+          "IdempotencyKey": true
+        },
+        "type": "bearer_token"
+      },
+      "telegram-divy-cred": {
+        "body": {},
+        "type": "telegram_bot_token"
+      },
+      "telegram-mira-cred": {
+        "body": {},
+        "type": "telegram_bot_token"
+      }
+    },
+    "defaults": {
+      "human_on_timeout": "deny",
+      "human_timeout": 600,
+      "llm_cache_ttl": 300,
+      "llm_fail_mode": "closed",
+      "unknown_host": "passthrough"
+    },
+    "endpoints": {
+      "amem": {
+        "body": {
+          "Hosts": [
+            "api.amem.ai"
+          ],
+          "Credential": "amem-kaju",
+          "Credentials": null
+        },
+        "family": "https",
+        "type": "https"
+      },
+      "anthropic-avocet": {
+        "body": {
+          "Hosts": [
+            "api.anthropic.com"
+          ],
+          "Credential": "",
+          "Credentials": [
+            {
+              "placeholder": "PH_anthropic_avocet_apikey",
+              "credential": "anthropic-avocet-key"
+            },
+            {
+              "placeholder": "PH_anthropic_avocet_subscription",
+              "credential": "anthropic-avocet-sub"
+            }
+          ]
+        },
+        "family": "https",
+        "type": "https"
+      },
+      "ch-o11y-https": {
+        "body": {
+          "Hosts": [
+            "clickhouse-o11y.tail9a48e.ts.net",
+            "ch-o11y.infra.deno-gcp.net"
+          ],
+          "Credential": "ch-o11y"
+        },
+        "family": "sql",
+        "type": "clickhouse_https"
+      },
+      "ch-o11y-native": {
+        "body": {
+          "Hosts": [
+            "clickhouse-o11y.tail9a48e.ts.net"
+          ],
+          "Credential": "ch-o11y"
+        },
+        "family": "sql",
+        "type": "clickhouse_native"
+      },
+      "checkly": {
+        "body": {
+          "Hosts": [
+            "api.checklyhq.com"
+          ],
+          "Credential": "checkly-kaju",
+          "Credentials": null
+        },
+        "family": "https",
+        "type": "https"
+      },
+      "deno-deploy": {
+        "body": {
+          "Hosts": [
+            "console.deno.com"
+          ],
+          "Credential": "deno-deploy-pat",
+          "Credentials": null
+        },
+        "family": "https",
+        "type": "https"
+      },
+      "gemini-mira": {
+        "body": {
+          "Hosts": [
+            "generativelanguage.googleapis.com"
+          ],
+          "Credential": "gemini-mira-cred",
+          "Credentials": null
+        },
+        "family": "https",
+        "type": "https"
+      },
+      "github-avocet": {
+        "body": {
+          "Hosts": [
+            "api.github.com",
+            "github.com"
+          ],
+          "Credential": "github-avocet-pat",
+          "Credentials": null
+        },
+        "family": "https",
+        "type": "https"
+      },
+      "github-kaju": {
+        "body": {
+          "Hosts": [
+            "api.github.com",
+            "github.com"
+          ],
+          "Credential": "github-kaju-pat",
+          "Credentials": null
+        },
+        "family": "https",
+        "type": "https"
+      },
+      "github-mira": {
+        "body": {
+          "Hosts": [
+            "api.github.com",
+            "github.com"
+          ],
+          "Credential": "github-mira-pat",
+          "Credentials": null
+        },
+        "family": "https",
+        "type": "https"
+      },
+      "grafana": {
+        "body": {
+          "Hosts": [
+            "denoland.grafana.net"
+          ],
+          "Credential": "grafana-token",
+          "Credentials": null
+        },
+        "family": "https",
+        "type": "https"
+      },
+      "honeycomb": {
+        "body": {
+          "Hosts": [
+            "api.honeycomb.io"
+          ],
+          "Credential": "honeycomb-kaju",
+          "Credentials": null
+        },
+        "family": "https",
+        "type": "https"
+      },
+      "k8s-dev-ams": {
+        "body": {
+          "Hosts": null,
+          "Server": "209.250.247.66",
+          "CACert": "<<file:k8s-dev-ams-ca.pem>>",
+          "Description": "admin@net.deno-cluster.prod.vultr.ams",
+          "Credential": "k8s-dev-ams-mtls"
+        },
+        "family": "k8s",
+        "type": "kubernetes"
+      },
+      "k8s-dev-ord": {
+        "body": {
+          "Hosts": null,
+          "Server": "216.128.145.115",
+          "CACert": "<<file:k8s-dev-ord-ca.pem>>",
+          "Description": "admin@net.deno-cluster.prod.vultr.ord",
+          "Credential": "k8s-dev-ord-mtls"
+        },
+        "family": "k8s",
+        "type": "kubernetes"
+      },
+      "k8s-eks-deployng-prod": {
+        "body": {
+          "Hosts": [
+            "*.gr7.us-east-2.eks.amazonaws.com"
+          ],
+          "Server": "",
+          "CACert": "",
+          "Description": "arn:aws:eks:us-east-2:050451385055:cluster/deployng-prod",
+          "Credential": "k8s-eks-deployng-aws"
+        },
+        "family": "k8s",
+        "type": "kubernetes"
+      },
+      "kaju-deno-support": {
+        "body": {
+          "Hosts": [
+            "support.deno.com"
+          ],
+          "Credential": "deno-support-kaju",
+          "Credentials": null
+        },
+        "family": "https",
+        "type": "https"
+      },
+      "notion": {
+        "body": {
+          "Hosts": [
+            "api.notion.com",
+            "mcp.notion.com"
+          ],
+          "Credential": "notion-deno",
+          "Credentials": null
+        },
+        "family": "https",
+        "type": "https"
+      },
+      "openai-codex-divy": {
+        "body": {
+          "Hosts": [
+            "chatgpt.com",
+            "auth.openai.com"
+          ],
+          "Credential": "openai-codex-divy-cred",
+          "Credentials": null
+        },
+        "family": "https",
+        "type": "https"
+      },
+      "openai-codex-mira": {
+        "body": {
+          "Hosts": [
+            "chatgpt.com",
+            "auth.openai.com"
+          ],
+          "Credential": "openai-codex-mira-cred",
+          "Credentials": null
+        },
+        "family": "https",
+        "type": "https"
+      },
+      "orb": {
+        "body": {
+          "Hosts": [
+            "api.withorb.com"
+          ],
+          "Credential": "",
+          "Credentials": [
+            {
+              "placeholder": "PH_orb_test",
+              "credential": "orb-test-key"
+            },
+            {
+              "placeholder": "PH_orb_prod",
+              "credential": "orb-prod-key"
+            }
+          ]
+        },
+        "family": "https",
+        "type": "https"
+      },
+      "pagerduty": {
+        "body": {
+          "Hosts": [
+            "api.pagerduty.com"
+          ],
+          "Credential": "pagerduty-kaju",
+          "Credentials": null
+        },
+        "family": "https",
+        "type": "https"
+      },
+      "pg-deployng": {
+        "body": {
+          "Host": "deployng-prod.cluster-cnmc6k08siv7.us-east-2.rds.amazonaws.com:5432",
+          "Database": "deployng",
+          "Tunnel": {
+            "Type": "kubectl-portforward-ssh",
+            "Cluster": "deployng-prod",
+            "Profile": "deployng-console-prod",
+            "SSHPod": "ssh-server"
+          },
+          "Credential": "",
+          "Credentials": [
+            {
+              "placeholder": "PH_pg_deployng_ro",
+              "credential": "pg-deployng-ro"
+            },
+            {
+              "placeholder": "PH_pg_deployng_rw",
+              "credential": "pg-deployng-rw"
+            }
+          ]
+        },
+        "family": "sql",
+        "type": "postgres"
+      },
+      "pg-scheduler": {
+        "body": {
+          "Host": "scheduler-prod.cluster-cnmc6k08siv7.us-east-2.rds.amazonaws.com:5432",
+          "Database": "scheduler",
+          "Tunnel": {
+            "Type": "kubectl-portforward-ssh",
+            "Cluster": "deployng-prod",
+            "Profile": "deployng-console-prod",
+            "SSHPod": "ssh-server"
+          },
+          "Credential": "pg-scheduler-cred",
+          "Credentials": null
+        },
+        "family": "sql",
+        "type": "postgres"
+      },
+      "posthog": {
+        "body": {
+          "Hosts": [
+            "us.i.posthog.com",
+            "us.posthog.com"
+          ],
+          "Credential": "posthog-kaju",
+          "Credentials": null
+        },
+        "family": "https",
+        "type": "https"
+      },
+      "slack-avocet": {
+        "body": {
+          "Hosts": [
+            "slack.com",
+            "www.slack.com",
+            "api.slack.com"
+          ],
+          "Credential": "slack-avocet-cred",
+          "Credentials": null
+        },
+        "family": "https",
+        "type": "https"
+      },
+      "slack-kaju": {
+        "body": {
+          "Hosts": [
+            "slack.com",
+            "www.slack.com",
+            "api.slack.com"
+          ],
+          "Credential": "slack-kaju-cred",
+          "Credentials": null
+        },
+        "family": "https",
+        "type": "https"
+      },
+      "slack-mira": {
+        "body": {
+          "Hosts": [
+            "slack.com",
+            "www.slack.com",
+            "api.slack.com"
+          ],
+          "Credential": "slack-mira-cred",
+          "Credentials": null
+        },
+        "family": "https",
+        "type": "https"
+      },
+      "smithery": {
+        "body": {
+          "Hosts": [
+            "smithery.ai"
+          ],
+          "Credential": "smithery-kaju",
+          "Credentials": null
+        },
+        "family": "https",
+        "type": "https"
+      },
+      "stripe": {
+        "body": {
+          "Hosts": [
+            "api.stripe.com"
+          ],
+          "Credential": "stripe-live-key",
+          "Credentials": null
+        },
+        "family": "https",
+        "type": "https"
+      },
+      "telegram-divy": {
+        "body": {
+          "Hosts": [
+            "api.telegram.org"
+          ],
+          "Credential": "telegram-divy-cred",
+          "Credentials": null
+        },
+        "family": "https",
+        "type": "https"
+      },
+      "telegram-mira": {
+        "body": {
+          "Hosts": [
+            "api.telegram.org"
+          ],
+          "Credential": "telegram-mira-cred",
+          "Credentials": null
+        },
+        "family": "https",
+        "type": "https"
+      }
+    },
+    "policies": {
+      "k8s-exec-content": {
+        "text": "Inspect the kubectl exec command (each ?command= argv element).\nDeny if it dumps env vars (env, printenv, set, export, cat\n/proc/*/environ). Deny if it reads sensitive host-mount files\n(kubelet pod tokens, certs, private keys, kubeconfig,\n/etc/shadow, containerd/CRI sockets). Allow ls, ps, df, ip, ss,\nmount, dmesg, top, and apt-get install for debugging.\n"
+      },
+      "pg-secret-columns": {
+        "text": "Deny if the SELECT projects (directly, via *, or via aggregates\nlike json_agg / encode) any of:\n  - github_identities.access_token or .refresh_token\n  - tokens.hash\n  - email_confirmations.token\n  - authorizations.exchange_token, .code, .challenge\n  - domain_certificates.private_key\n  - database_instances.certificate\n  - database_instances.connection_config password / secret keys\n  - env_vars.value when is_secret = true (allow when restricted\n    to is_secret = false explicitly)\nAllow reads of every other column.\n"
+      },
+      "pg-secret-named-defense": {
+        "text": "Decide whether this SELECT actually returns secret data — i.e.\nit projects or aggregates a column whose name suggests a secret.\nApprove if the secret-named identifier appears only as a string\nliteral or in a non-projected predicate.\n"
+      },
+      "reply-content": {
+        "text": "The JSON body has a `body` field containing a customer support\nreply. Apply these checks in order; deny on the first failure.\n\n  (1) Salutation: deny if first line is a salutation. System\n      auto-prepends \"Hi <name>,\". Apology / acknowledgment /\n      substantive openers are fine.\n  (2) Sign-off: deny if the very last line is a standalone\n      sign-off. System auto-appends sign-off automatically.\n  (3) Markdown: deny **bold**, __bold__, *italic*, _italic_,\n      [text](url), # headings, --- / *** rules.\n  (4) Content: deny offensive / abusive / impersonating /\n      account-harming / empty / nonsensical content.\n"
+      },
+      "slack-block-kit-shape": {
+        "text": "The chat.postMessage body has a Block Kit message containing one\nor more buttons whose action_id starts with \"approve_reply_\". The\nreviewer in Slack must see what they're approving, and that text\nwill be sent as plain-text email. Approve only if all of:\n\n  1. A \"Draft Reply\" header block precedes the actions block.\n  2. The next section block has non-empty text.\n  3. After stripping leading/trailing ``` fences, that section\n     text equals the button's `value` exactly.\n  4. The button `value` contains no markdown — no [text](url),\n     **bold**, __bold__, # heading, --- or *** rules.\n\nOtherwise DENY with a precise reason.\n"
+      }
+    },
+    "profiles": {
+      "avocet": {
+        "endpoints": [
+          "anthropic-avocet",
+          "github-avocet",
+          "slack-avocet",
+          "deno-deploy",
+          "stripe",
+          "orb",
+          "notion",
+          "grafana",
+          "pg-deployng",
+          "pg-scheduler",
+          "k8s-dev-ams",
+          "k8s-dev-ord",
+          "k8s-eks-deployng-prod",
+          "ch-o11y-https",
+          "ch-o11y-native"
+        ]
+      },
+      "kaju": {
+        "endpoints": [
+          "github-kaju",
+          "slack-kaju",
+          "telegram-divy",
+          "openai-codex-divy",
+          "notion",
+          "grafana",
+          "ch-o11y-https",
+          "ch-o11y-native",
+          "k8s-dev-ams",
+          "k8s-dev-ord",
+          "smithery",
+          "amem",
+          "checkly",
+          "posthog",
+          "honeycomb",
+          "pagerduty",
+          "kaju-deno-support"
+        ]
+      },
+      "mira": {
+        "endpoints": [
+          "github-mira",
+          "slack-mira",
+          "telegram-mira",
+          "gemini-mira",
+          "openai-codex-mira",
+          "openai-codex-divy"
+        ]
+      }
+    },
+    "rules": {
+      "clickhouse-default": {
+        "body": {
+          "name": "clickhouse-default",
+          "family": "sql",
+          "endpoints": [
+            "ch-o11y-https",
+            "ch-o11y-native"
+          ],
+          "priority": -100,
+          "match": {},
+          "verdict": "deny",
+          "reason": "ClickHouse access is read-only"
+        },
+        "type": "sql_rule"
+      },
+      "clickhouse-reads": {
+        "body": {
+          "name": "clickhouse-reads",
+          "family": "sql",
+          "endpoints": [
+            "ch-o11y-https",
+            "ch-o11y-native"
+          ],
+          "match": {
+            "verb": [
+              "select",
+              "show",
+              "describe",
+              "explain",
+              "use"
+            ]
+          },
+          "verdict": "allow"
+        },
+        "type": "sql_rule"
+      },
+      "deno-deploy-default": {
+        "body": {
+          "name": "deno-deploy-default",
+          "family": "https",
+          "endpoints": [
+            "deno-deploy"
+          ],
+          "priority": -100,
+          "match": {},
+          "verdict": "deny",
+          "reason": "console.deno.com mutations require an explicit approval rule"
+        },
+        "type": "http_rule"
+      },
+      "deno-deploy-reads": {
+        "body": {
+          "name": "deno-deploy-reads",
+          "family": "https",
+          "endpoints": [
+            "deno-deploy"
+          ],
+          "match": {
+            "method": "GET"
+          },
+          "verdict": "allow"
+        },
+        "type": "http_rule"
+      },
+      "deno-deploy-reply-on-behalf": {
+        "body": {
+          "name": "deno-deploy-reply-on-behalf",
+          "family": "https",
+          "endpoints": [
+            "deno-deploy"
+          ],
+          "match": {
+            "method": "POST",
+            "path": "/api/trpc/admin.supportTickets.replyOnBehalf"
+          },
+          "approve": [
+            {
+              "name": "content-safety",
+              "policy": "reply-content"
+            },
+            {
+              "name": "support-ops"
+            }
+          ]
+        },
+        "type": "http_rule"
+      },
+      "deno-deploy-ticket-mutations": {
+        "body": {
+          "name": "deno-deploy-ticket-mutations",
+          "family": "https",
+          "endpoints": [
+            "deno-deploy"
+          ],
+          "match": {
+            "method": "POST",
+            "path": [
+              "/api/trpc/admin.supportTickets.markAsSpam",
+              "/api/trpc/admin.supportTickets.updateStatus"
+            ]
+          },
+          "approve": [
+            {
+              "name": "support-ops"
+            }
+          ]
+        },
+        "type": "http_rule"
+      },
+      "grafana-annotations-snapshots": {
+        "body": {
+          "name": "grafana-annotations-snapshots",
+          "family": "https",
+          "endpoints": [
+            "grafana"
+          ],
+          "match": {
+            "method": "POST",
+            "path": [
+              "/api/annotations",
+              "/api/snapshots"
+            ]
+          },
+          "verdict": "allow"
+        },
+        "type": "http_rule"
+      },
+      "grafana-dashboard-writes": {
+        "body": {
+          "name": "grafana-dashboard-writes",
+          "family": "https",
+          "endpoints": [
+            "grafana"
+          ],
+          "match": {
+            "method": [
+              "POST",
+              "PUT",
+              "PATCH"
+            ],
+            "path": [
+              "/api/dashboards/*",
+              "/api/datasources/*",
+              "/api/folders/*",
+              "/api/alert-rules/*"
+            ]
+          },
+          "approve": [
+            {
+              "name": "observability"
+            }
+          ]
+        },
+        "type": "http_rule"
+      },
+      "grafana-no-destructive-deletes": {
+        "body": {
+          "name": "grafana-no-destructive-deletes",
+          "family": "https",
+          "endpoints": [
+            "grafana"
+          ],
+          "match": {
+            "method": "DELETE",
+            "path": [
+              "/api/dashboards/*",
+              "/api/datasources/*",
+              "/api/folders/*",
+              "/api/alert-rules/*"
+            ]
+          },
+          "verdict": "deny",
+          "reason": "Destructive deletes go through a PR, not the agent"
+        },
+        "type": "http_rule"
+      },
+      "grafana-reads": {
+        "body": {
+          "name": "grafana-reads",
+          "family": "https",
+          "endpoints": [
+            "grafana"
+          ],
+          "match": {
+            "method": [
+              "GET",
+              "HEAD"
+            ]
+          },
+          "verdict": "allow"
+        },
+        "type": "http_rule"
+      },
+      "k8s-debug-pods": {
+        "body": {
+          "name": "k8s-debug-pods",
+          "family": "k8s",
+          "endpoints": [
+            "k8s-dev-ams",
+            "k8s-dev-ord",
+            "k8s-eks-deployng-prod"
+          ],
+          "match": {
+            "name": "debug-*",
+            "resource": "pods",
+            "verb": [
+              "create",
+              "delete"
+            ]
+          },
+          "verdict": "allow"
+        },
+        "type": "k8s_rule"
+      },
+      "k8s-dev-ams-default": {
+        "body": {
+          "name": "k8s-dev-ams-default",
+          "family": "k8s",
+          "endpoints": [
+            "k8s-dev-ams"
+          ],
+          "priority": -100,
+          "match": {},
+          "verdict": "deny"
+        },
+        "type": "k8s_rule"
+      },
+      "k8s-dev-ord-default": {
+        "body": {
+          "name": "k8s-dev-ord-default",
+          "family": "k8s",
+          "endpoints": [
+            "k8s-dev-ord"
+          ],
+          "priority": -100,
+          "match": {},
+          "verdict": "deny"
+        },
+        "type": "k8s_rule"
+      },
+      "k8s-eks-default": {
+        "body": {
+          "name": "k8s-eks-default",
+          "family": "k8s",
+          "endpoints": [
+            "k8s-eks-deployng-prod"
+          ],
+          "priority": -100,
+          "match": {},
+          "verdict": "deny"
+        },
+        "type": "k8s_rule"
+      },
+      "k8s-eks-no-legacy-secret-configmaps": {
+        "body": {
+          "name": "k8s-eks-no-legacy-secret-configmaps",
+          "family": "k8s",
+          "endpoints": [
+            "k8s-eks-deployng-prod"
+          ],
+          "priority": 1000,
+          "match": {
+            "name": [
+              "*-secrets",
+              "env-*"
+            ],
+            "namespace": "console",
+            "resource": "configmaps",
+            "verb": [
+              "get",
+              "list"
+            ]
+          },
+          "verdict": "deny",
+          "reason": "Some legacy configmaps still carry cleartext secrets"
+        },
+        "type": "k8s_rule"
+      },
+      "k8s-eks-no-runtime-writes": {
+        "body": {
+          "name": "k8s-eks-no-runtime-writes",
+          "family": "k8s",
+          "endpoints": [
+            "k8s-eks-deployng-prod"
+          ],
+          "priority": 1000,
+          "match": {
+            "namespace": [
+              "console",
+              "kube-system",
+              "cert-manager",
+              "external-secrets",
+              "argocd",
+              "flux*"
+            ],
+            "verb": [
+              "create",
+              "update",
+              "patch",
+              "delete"
+            ]
+          },
+          "verdict": "deny",
+          "reason": "Writes to runtime namespaces would impact production"
+        },
+        "type": "k8s_rule"
+      },
+      "k8s-exec-attach": {
+        "body": {
+          "name": "k8s-exec-attach",
+          "family": "k8s",
+          "endpoints": [
+            "k8s-dev-ams",
+            "k8s-dev-ord",
+            "k8s-eks-deployng-prod"
+          ],
+          "match": {
+            "resource": [
+              "pods/exec",
+              "pods/attach",
+              "pods/portforward"
+            ],
+            "verb": [
+              "create",
+              "get"
+            ]
+          },
+          "verdict": "allow"
+        },
+        "type": "k8s_rule"
+      },
+      "k8s-exec-content-check": {
+        "body": {
+          "name": "k8s-exec-content-check",
+          "family": "k8s",
+          "endpoints": [
+            "k8s-dev-ams",
+            "k8s-dev-ord",
+            "k8s-eks-deployng-prod"
+          ],
+          "priority": 500,
+          "match": {
+            "resource": "pods/exec"
+          },
+          "approve": [
+            {
+              "name": "fast",
+              "policy": "k8s-exec-content",
+              "cache_ttl": 60
+            }
+          ]
+        },
+        "type": "k8s_rule"
+      },
+      "k8s-no-disruptive": {
+        "body": {
+          "name": "k8s-no-disruptive",
+          "family": "k8s",
+          "endpoints": [
+            "k8s-dev-ams",
+            "k8s-dev-ord",
+            "k8s-eks-deployng-prod"
+          ],
+          "match": {
+            "verb": [
+              "drain",
+              "cordon",
+              "evict"
+            ]
+          },
+          "verdict": "deny",
+          "reason": "Cluster-disruptive operations are not allowed"
+        },
+        "type": "k8s_rule"
+      },
+      "k8s-no-interactive": {
+        "body": {
+          "name": "k8s-no-interactive",
+          "family": "k8s",
+          "endpoints": [
+            "k8s-dev-ams",
+            "k8s-dev-ord",
+            "k8s-eks-deployng-prod"
+          ],
+          "priority": 1000,
+          "match": {
+            "params": {
+              "stdin": "true"
+            },
+            "resource": [
+              "pods/exec",
+              "pods/attach"
+            ]
+          },
+          "verdict": "deny",
+          "reason": "Interactive shells can't be evaluated by the rules engine"
+        },
+        "type": "k8s_rule"
+      },
+      "k8s-no-mutations": {
+        "body": {
+          "name": "k8s-no-mutations",
+          "family": "k8s",
+          "endpoints": [
+            "k8s-dev-ams",
+            "k8s-dev-ord",
+            "k8s-eks-deployng-prod"
+          ],
+          "match": {
+            "name": "!debug-*",
+            "resource": [
+              "!*/exec",
+              "!*/attach",
+              "!*/portforward"
+            ],
+            "verb": [
+              "create",
+              "update",
+              "patch",
+              "delete"
+            ]
+          },
+          "verdict": "deny",
+          "reason": "Only debug-* pods may be created / modified / deleted"
+        },
+        "type": "k8s_rule"
+      },
+      "k8s-no-portforward-non-debug": {
+        "body": {
+          "name": "k8s-no-portforward-non-debug",
+          "family": "k8s",
+          "endpoints": [
+            "k8s-dev-ams",
+            "k8s-dev-ord",
+            "k8s-eks-deployng-prod"
+          ],
+          "priority": 1000,
+          "match": {
+            "name": "!debug-*",
+            "resource": "pods/portforward"
+          },
+          "verdict": "deny",
+          "reason": "Port-forward only allowed to debug-* pods"
+        },
+        "type": "k8s_rule"
+      },
+      "k8s-no-secrets": {
+        "body": {
+          "name": "k8s-no-secrets",
+          "family": "k8s",
+          "endpoints": [
+            "k8s-dev-ams",
+            "k8s-dev-ord",
+            "k8s-eks-deployng-prod"
+          ],
+          "priority": 1000,
+          "match": {
+            "resource": "secrets"
+          },
+          "verdict": "deny",
+          "reason": "Secret values must not leave the cluster via the agent"
+        },
+        "type": "k8s_rule"
+      },
+      "k8s-reads": {
+        "body": {
+          "name": "k8s-reads",
+          "family": "k8s",
+          "endpoints": [
+            "k8s-dev-ams",
+            "k8s-dev-ord",
+            "k8s-eks-deployng-prod"
+          ],
+          "match": {
+            "verb": [
+              "get",
+              "list",
+              "watch"
+            ]
+          },
+          "verdict": "allow"
+        },
+        "type": "k8s_rule"
+      },
+      "notion-archive-route": {
+        "body": {
+          "name": "notion-archive-route",
+          "family": "https",
+          "endpoints": [
+            "notion"
+          ],
+          "priority": 100,
+          "match": {
+            "body_json": {
+              "archived": true
+            },
+            "method": "PATCH",
+            "path": [
+              "/v1/pages/*",
+              "/v1/blocks/*",
+              "/v1/databases/*"
+            ]
+          },
+          "approve": [
+            {
+              "name": "notion-archive"
+            }
+          ]
+        },
+        "type": "http_rule"
+      },
+      "notion-create-update": {
+        "body": {
+          "name": "notion-create-update",
+          "family": "https",
+          "endpoints": [
+            "notion"
+          ],
+          "match": {
+            "method": [
+              "POST",
+              "PATCH"
+            ]
+          },
+          "verdict": "allow"
+        },
+        "type": "http_rule"
+      },
+      "notion-deletes": {
+        "body": {
+          "name": "notion-deletes",
+          "family": "https",
+          "endpoints": [
+            "notion"
+          ],
+          "match": {
+            "method": "DELETE"
+          },
+          "approve": [
+            {
+              "name": "notion-archive"
+            }
+          ]
+        },
+        "type": "http_rule"
+      },
+      "notion-reads": {
+        "body": {
+          "name": "notion-reads",
+          "family": "https",
+          "endpoints": [
+            "notion"
+          ],
+          "match": {
+            "method": [
+              "GET",
+              "HEAD"
+            ]
+          },
+          "verdict": "allow"
+        },
+        "type": "http_rule"
+      },
+      "notion-search": {
+        "body": {
+          "name": "notion-search",
+          "family": "https",
+          "endpoints": [
+            "notion"
+          ],
+          "match": {
+            "method": "POST",
+            "path": "/v1/search"
+          },
+          "verdict": "allow"
+        },
+        "type": "http_rule"
+      },
+      "orb-prod-no-deletes": {
+        "body": {
+          "name": "orb-prod-no-deletes",
+          "family": "https",
+          "endpoints": [
+            "orb"
+          ],
+          "match": {
+            "credential": "orb-prod-key",
+            "method": "DELETE"
+          },
+          "verdict": "deny",
+          "reason": "Orb deletes go through approval flow as POST",
+          "credential_ref": "orb-prod-key"
+        },
+        "type": "http_rule"
+      },
+      "orb-prod-reads": {
+        "body": {
+          "name": "orb-prod-reads",
+          "family": "https",
+          "endpoints": [
+            "orb"
+          ],
+          "match": {
+            "credential": "orb-prod-key",
+            "method": "GET"
+          },
+          "verdict": "allow",
+          "credential_ref": "orb-prod-key"
+        },
+        "type": "http_rule"
+      },
+      "orb-prod-writes": {
+        "body": {
+          "name": "orb-prod-writes",
+          "family": "https",
+          "endpoints": [
+            "orb"
+          ],
+          "match": {
+            "credential": "orb-prod-key",
+            "method": [
+              "POST",
+              "PUT",
+              "PATCH"
+            ]
+          },
+          "approve": [
+            {
+              "name": "billing"
+            }
+          ],
+          "credential_ref": "orb-prod-key"
+        },
+        "type": "http_rule"
+      },
+      "orb-test-allow-all": {
+        "body": {
+          "name": "orb-test-allow-all",
+          "family": "https",
+          "endpoints": [
+            "orb"
+          ],
+          "match": {
+            "credential": "orb-test-key"
+          },
+          "verdict": "allow",
+          "credential_ref": "orb-test-key"
+        },
+        "type": "http_rule"
+      },
+      "pg-banned-copy-from": {
+        "body": {
+          "name": "pg-banned-copy-from",
+          "family": "sql",
+          "endpoints": [
+            "pg-deployng",
+            "pg-scheduler"
+          ],
+          "match": {
+            "statement": "*COPY*FROM PROGRAM*"
+          },
+          "verdict": "deny",
+          "reason": "COPY ... FROM PROGRAM is disallowed"
+        },
+        "type": "sql_rule"
+      },
+      "pg-banned-copy-to": {
+        "body": {
+          "name": "pg-banned-copy-to",
+          "family": "sql",
+          "endpoints": [
+            "pg-deployng",
+            "pg-scheduler"
+          ],
+          "match": {
+            "statement": "*COPY*TO PROGRAM*"
+          },
+          "verdict": "deny",
+          "reason": "COPY ... TO PROGRAM is disallowed"
+        },
+        "type": "sql_rule"
+      },
+      "pg-banned-functions": {
+        "body": {
+          "name": "pg-banned-functions",
+          "family": "sql",
+          "endpoints": [
+            "pg-deployng",
+            "pg-scheduler"
+          ],
+          "match": {
+            "function": [
+              "pg_terminate_backend",
+              "pg_cancel_backend",
+              "pg_read_file",
+              "pg_read_binary_file",
+              "lo_get",
+              "dblink_*"
+            ]
+          },
+          "verdict": "deny",
+          "reason": "Disallowed function for agent access"
+        },
+        "type": "sql_rule"
+      },
+      "pg-banned-verbs": {
+        "body": {
+          "name": "pg-banned-verbs",
+          "family": "sql",
+          "endpoints": [
+            "pg-deployng",
+            "pg-scheduler"
+          ],
+          "match": {
+            "verb": [
+              "drop",
+              "truncate",
+              "alter",
+              "grant",
+              "revoke",
+              "vacuum",
+              "create",
+              "comment",
+              "do"
+            ]
+          },
+          "verdict": "deny",
+          "reason": "Schema changes / destructive DDL not permitted; use a migration PR"
+        },
+        "type": "sql_rule"
+      },
+      "pg-deployng-default": {
+        "body": {
+          "name": "pg-deployng-default",
+          "family": "sql",
+          "endpoints": [
+            "pg-deployng"
+          ],
+          "priority": -100,
+          "match": {},
+          "verdict": "deny"
+        },
+        "type": "sql_rule"
+      },
+      "pg-deployng-reads": {
+        "body": {
+          "name": "pg-deployng-reads",
+          "family": "sql",
+          "endpoints": [
+            "pg-deployng"
+          ],
+          "match": {
+            "verb": [
+              "select",
+              "show",
+              "explain"
+            ]
+          },
+          "verdict": "allow"
+        },
+        "type": "sql_rule"
+      },
+      "pg-deployng-ro-no-writes": {
+        "body": {
+          "name": "pg-deployng-ro-no-writes",
+          "family": "sql",
+          "endpoints": [
+            "pg-deployng"
+          ],
+          "match": {
+            "credential": "pg-deployng-ro",
+            "verb": [
+              "insert",
+              "update",
+              "delete",
+              "merge",
+              "notify"
+            ]
+          },
+          "verdict": "deny",
+          "reason": "ro account is read-only — use the rw placeholder if you need to write",
+          "credential_ref": "pg-deployng-ro"
+        },
+        "type": "sql_rule"
+      },
+      "pg-deployng-rw-writes": {
+        "body": {
+          "name": "pg-deployng-rw-writes",
+          "family": "sql",
+          "endpoints": [
+            "pg-deployng"
+          ],
+          "match": {
+            "credential": "pg-deployng-rw",
+            "verb": [
+              "insert",
+              "update",
+              "delete",
+              "merge",
+              "notify"
+            ]
+          },
+          "approve": [
+            {
+              "name": "console-dba"
+            }
+          ],
+          "credential_ref": "pg-deployng-rw"
+        },
+        "type": "sql_rule"
+      },
+      "pg-deployng-secret-columns": {
+        "body": {
+          "name": "pg-deployng-secret-columns",
+          "family": "sql",
+          "endpoints": [
+            "pg-deployng"
+          ],
+          "priority": 100,
+          "match": {
+            "tables": [
+              "github_identities",
+              "tokens",
+              "email_confirmations",
+              "authorizations",
+              "domain_certificates",
+              "database_instances",
+              "env_vars"
+            ],
+            "verb": "select"
+          },
+          "approve": [
+            {
+              "name": "fast",
+              "policy": "pg-secret-columns",
+              "cache_ttl": 600
+            }
+          ]
+        },
+        "type": "sql_rule"
+      },
+      "pg-no-migrations": {
+        "body": {
+          "name": "pg-no-migrations",
+          "family": "sql",
+          "endpoints": [
+            "pg-deployng",
+            "pg-scheduler"
+          ],
+          "match": {
+            "tables": "kysely_migration"
+          },
+          "verdict": "deny",
+          "reason": "Migrations table is owned by the deploy pipeline"
+        },
+        "type": "sql_rule"
+      },
+      "pg-scheduler-default": {
+        "body": {
+          "name": "pg-scheduler-default",
+          "family": "sql",
+          "endpoints": [
+            "pg-scheduler"
+          ],
+          "priority": -100,
+          "match": {},
+          "verdict": "deny"
+        },
+        "type": "sql_rule"
+      },
+      "pg-scheduler-reads": {
+        "body": {
+          "name": "pg-scheduler-reads",
+          "family": "sql",
+          "endpoints": [
+            "pg-scheduler"
+          ],
+          "match": {
+            "verb": [
+              "select",
+              "show",
+              "explain"
+            ]
+          },
+          "verdict": "allow"
+        },
+        "type": "sql_rule"
+      },
+      "pg-scheduler-secret-named-defense": {
+        "body": {
+          "name": "pg-scheduler-secret-named-defense",
+          "family": "sql",
+          "endpoints": [
+            "pg-scheduler"
+          ],
+          "priority": 100,
+          "match": {
+            "statement_regex": "(?i)\\b(secret|password|token|api_key|private_key|access_key|signing_secret)\\b",
+            "verb": "select"
+          },
+          "approve": [
+            {
+              "name": "fast",
+              "policy": "pg-secret-named-defense",
+              "cache_ttl": 600
+            }
+          ]
+        },
+        "type": "sql_rule"
+      },
+      "pg-scheduler-writes": {
+        "body": {
+          "name": "pg-scheduler-writes",
+          "family": "sql",
+          "endpoints": [
+            "pg-scheduler"
+          ],
+          "match": {
+            "verb": [
+              "insert",
+              "update",
+              "delete",
+              "merge",
+              "notify"
+            ]
+          },
+          "approve": [
+            {
+              "name": "scheduler-ops"
+            }
+          ]
+        },
+        "type": "sql_rule"
+      },
+      "slack-avocet-approve-reply-shape": {
+        "body": {
+          "name": "slack-avocet-approve-reply-shape",
+          "family": "https",
+          "endpoints": [
+            "slack-avocet"
+          ],
+          "match": {
+            "body_contains": "approve_reply_",
+            "method": "POST",
+            "path": "/api/chat.postMessage"
+          },
+          "approve": [
+            {
+              "name": "content-safety",
+              "policy": "slack-block-kit-shape"
+            }
+          ]
+        },
+        "type": "http_rule"
+      },
+      "stripe-default": {
+        "body": {
+          "name": "stripe-default",
+          "family": "https",
+          "endpoints": [
+            "stripe"
+          ],
+          "priority": -100,
+          "match": {},
+          "verdict": "deny"
+        },
+        "type": "http_rule"
+      },
+      "stripe-ephemeral-keys": {
+        "body": {
+          "name": "stripe-ephemeral-keys",
+          "family": "https",
+          "endpoints": [
+            "stripe"
+          ],
+          "priority": 100,
+          "match": {
+            "method": "POST",
+            "path": "/v1/ephemeral_keys"
+          },
+          "verdict": "allow"
+        },
+        "type": "http_rule"
+      },
+      "stripe-extra-scrutiny": {
+        "body": {
+          "name": "stripe-extra-scrutiny",
+          "family": "https",
+          "endpoints": [
+            "stripe"
+          ],
+          "priority": 100,
+          "match": {
+            "method": "POST",
+            "path": [
+              "/v1/refunds",
+              "/v1/charges/*/refund",
+              "/v1/subscriptions",
+              "/v1/subscriptions/*",
+              "/v1/subscription_items",
+              "/v1/customers/*/subscriptions",
+              "/v1/invoices/*/void",
+              "/v1/invoices/*/finalize",
+              "/v1/payouts",
+              "/v1/transfers",
+              "/v1/coupons",
+              "/v1/promotion_codes"
+            ]
+          },
+          "approve": [
+            {
+              "name": "billing-strict"
+            }
+          ]
+        },
+        "type": "http_rule"
+      },
+      "stripe-no-deletes": {
+        "body": {
+          "name": "stripe-no-deletes",
+          "family": "https",
+          "endpoints": [
+            "stripe"
+          ],
+          "match": {
+            "method": "DELETE"
+          },
+          "verdict": "deny",
+          "reason": "Stripe deletes go through the approval flow as POST"
+        },
+        "type": "http_rule"
+      },
+      "stripe-other-writes": {
+        "body": {
+          "name": "stripe-other-writes",
+          "family": "https",
+          "endpoints": [
+            "stripe"
+          ],
+          "match": {
+            "method": "POST"
+          },
+          "approve": [
+            {
+              "name": "billing"
+            }
+          ]
+        },
+        "type": "http_rule"
+      },
+      "stripe-reads": {
+        "body": {
+          "name": "stripe-reads",
+          "family": "https",
+          "endpoints": [
+            "stripe"
+          ],
+          "match": {
+            "method": "GET"
+          },
+          "verdict": "allow"
+        },
+        "type": "http_rule"
+      }
+    }
+  }
+}

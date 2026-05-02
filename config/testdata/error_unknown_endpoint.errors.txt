@@ -1,0 +1,3 @@
+error: error_unknown_endpoint.hcl:10:14: Unknown variable — There is no variable named "mystery".
+error: error_unknown_endpoint.hcl:10:14: Unsuitable value type — Unsuitable value: value must be known
+error: error_unknown_endpoint.hcl:9:1: Rule "broken" has no endpoints — Set `endpoint = X` or `endpoints = [X, Y]`.

@@ -1,0 +1,90 @@
+{
+  "ca_dir": "/opt/clawpatrol/ca",
+  "listen": "0.0.0.0:8443",
+  "policy": {
+    "approvers": {
+      "ops": {
+        "body": {
+          "Channel": "#agent-ops",
+          "Timeout": 600,
+          "RequireApprovers": 0
+        },
+        "type": "human_approver"
+      }
+    },
+    "credentials": {
+      "github-pat": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "type": "bearer_token"
+      }
+    },
+    "defaults": {
+      "llm_fail_mode": "closed",
+      "unknown_host": "passthrough"
+    },
+    "endpoints": {
+      "github": {
+        "body": {
+          "Hosts": [
+            "api.github.com",
+            "github.com"
+          ],
+          "Credential": "github-pat",
+          "Credentials": null
+        },
+        "family": "https",
+        "type": "https"
+      }
+    },
+    "profiles": {
+      "default": {
+        "endpoints": [
+          "github"
+        ]
+      }
+    },
+    "rules": {
+      "github-reads": {
+        "body": {
+          "name": "github-reads",
+          "family": "https",
+          "endpoints": [
+            "github"
+          ],
+          "match": {
+            "method": [
+              "GET",
+              "HEAD"
+            ]
+          },
+          "verdict": "allow"
+        },
+        "type": "http_rule"
+      },
+      "github-writes": {
+        "body": {
+          "name": "github-writes",
+          "family": "https",
+          "endpoints": [
+            "github"
+          ],
+          "match": {
+            "method": [
+              "POST",
+              "PATCH",
+              "DELETE"
+            ]
+          },
+          "approve": [
+            {
+              "name": "ops"
+            }
+          ]
+        },
+        "type": "http_rule"
+      }
+    }
+  }
+}
