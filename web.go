@@ -24,9 +24,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/hashicorp/hcl/v2/hclsimple"
-	"github.com/hashicorp/hcl/v2/hclwrite"
 	"golang.org/x/oauth2"
+
+	"github.com/denoland/clawpatrol-go/config"
 )
 
 //go:embed all:www/dist
@@ -479,127 +479,31 @@ func (w *webMux) apiProfiles(rw http.ResponseWriter, _ *http.Request) {
 	writeJSON(rw, out)
 }
 
+// apiRules / apiDeviceRules: rule editing has been disabled while the
+// new typed-block grammar is wired up. The dashboard's editor is
+// reinstated on top of config.Emit + the plugin runtime in a follow-up
+// commit on this branch. GET returns the empty current rule set so
+// existing dashboard tabs render without errors; PUT 501s.
 func (w *webMux) apiRules(rw http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
-		writeJSON(rw, w.g.cfg.Rules)
-	case "PUT":
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-		if err != nil {
-			http.Error(rw, err.Error(), 400)
-			return
-		}
-		var rules []Rule
-		if err := json.Unmarshal(body, &rules); err != nil {
-			http.Error(rw, "json: "+err.Error(), 400)
-			return
-		}
-		w.g.cfg.Rules = rules
-		rulesCopy := append([]Rule(nil), rules...)
-		w.g.rules.Store(&rulesCopy)
-		if err := writeConfigHCL(w.g.cfg, w.g.cfgPath); err != nil {
-			http.Error(rw, "persist: "+err.Error(), 500)
-			return
-		}
-		writeJSON(rw, map[string]any{"ok": true, "count": len(rules)})
+		writeJSON(rw, []Rule{})
 	default:
-		http.Error(rw, "GET or PUT", 405)
+		http.Error(rw, "rule editing temporarily disabled while the new policy grammar lands", http.StatusNotImplemented)
 	}
 }
 
-// apiDeviceRules manages per-device rules. Device IP is read from
-// ?ip= query param. Operations only touch rules with Device=ip; global
-// rules (Device=="") are passed through untouched.
 func (w *webMux) apiDeviceRules(rw http.ResponseWriter, r *http.Request) {
-	ip := r.URL.Query().Get("ip")
-	if ip == "" {
+	if r.URL.Query().Get("ip") == "" {
 		http.Error(rw, "missing ip", 400)
 		return
 	}
-	hcl := r.URL.Query().Get("format") == "hcl"
 	switch r.Method {
 	case "GET":
-		deviceRules := []Rule{}
-		for _, x := range w.g.cfg.Rules {
-			if x.Device == ip {
-				deviceRules = append(deviceRules, x)
-			}
-		}
-		if hcl {
-			rw.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			rw.Write(emitDeviceRulesHCL(w.g, ip, deviceRules))
-			return
-		}
-		writeJSON(rw, deviceRules)
-	case "PUT":
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-		if err != nil {
-			http.Error(rw, err.Error(), 400)
-			return
-		}
-		var newRules []Rule
-		if hcl {
-			var holder struct {
-				Rules []Rule `hcl:"rule,block"`
-			}
-			if err := hclsimple.Decode("device.hcl", body, nil, &holder); err != nil {
-				http.Error(rw, "hcl: "+err.Error(), 400)
-				return
-			}
-			newRules = holder.Rules
-		} else {
-			if err := json.Unmarshal(body, &newRules); err != nil {
-				http.Error(rw, "json: "+err.Error(), 400)
-				return
-			}
-		}
-		// Force Device=ip on every submitted rule (server-side trust:
-		// don't let a device's editor accidentally edit other devices'
-		// or global rules).
-		for i := range newRules {
-			newRules[i].Device = ip
-		}
-		var merged []Rule
-		for _, x := range w.g.cfg.Rules {
-			if x.Device != ip {
-				merged = append(merged, x)
-			}
-		}
-		merged = append(merged, newRules...)
-		w.g.cfg.Rules = merged
-		mergedCopy := append([]Rule(nil), merged...)
-		w.g.rules.Store(&mergedCopy)
-		if err := writeConfigHCL(w.g.cfg, w.g.cfgPath); err != nil {
-			http.Error(rw, "persist: "+err.Error(), 500)
-			return
-		}
-		writeJSON(rw, map[string]any{"ok": true, "count": len(newRules)})
+		writeJSON(rw, []Rule{})
 	default:
-		http.Error(rw, "GET or PUT", 405)
+		http.Error(rw, "rule editing temporarily disabled while the new policy grammar lands", http.StatusNotImplemented)
 	}
-}
-
-// emitDeviceRulesHCL renders a per-device editing fragment: a
-// commented summary of which profile the device sits in (read-only
-// context for the operator) plus the editable `rule {}` blocks scoped
-// to this device. Operators edit only the device-scoped rules; profile
-// + global config lives in /api/config.
-func emitDeviceRulesHCL(g *Gateway, ip string, deviceRules []Rule) []byte {
-	profile := g.profileFor(ip)
-	var b []byte
-	b = append(b, []byte("# device: "+ip+"\n# profile: "+profile+"\n")...)
-	b = append(b, []byte("# (this editor manages device-scoped rule overrides only —\n#  profile + global rules live in the gateway settings editor.)\n\n")...)
-	if len(deviceRules) == 0 {
-		b = append(b, []byte("# no device-scoped rules yet. Add `rule { ... }` blocks below.\n")...)
-		return b
-	}
-	f := hclwrite.NewEmptyFile()
-	for _, r := range deviceRules {
-		f.Body().AppendNewline()
-		writeRuleHCL(f.Body(), r)
-	}
-	b = append(b, f.Bytes()...)
-	return b
 }
 
 // apiConfig serves the entire gateway.hcl for the global settings
@@ -622,10 +526,11 @@ func (w *webMux) apiConfig(rw http.ResponseWriter, r *http.Request) {
 			http.Error(rw, err.Error(), 400)
 			return
 		}
-		// validate by parsing into a fresh Config
-		var probe Config
-		if err := hclsimple.Decode("gateway.hcl", body, nil, &probe); err != nil {
-			http.Error(rw, "hcl: "+err.Error(), 400)
+		// Validate via the new typed-block loader before persisting —
+		// rejects unknown attributes / dangling references / kind
+		// mismatches with precise diagnostics.
+		if _, diags := config.LoadBytes(body, "gateway.hcl"); diags.HasErrors() {
+			http.Error(rw, "hcl: "+diags.Error(), 400)
 			return
 		}
 		// atomic write — mtime watcher reloads + applies.

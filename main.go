@@ -22,51 +22,34 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/hashicorp/hcl/v2/hclsimple"
-	"github.com/hashicorp/hcl/v2/hclwrite"
-	"github.com/zclconf/go-cty/cty"
+	"github.com/denoland/clawpatrol-go/config"
+	_ "github.com/denoland/clawpatrol-go/config/plugins/all"
 )
 
-// Config is the on-disk gateway configuration. Decoded from HCL via
-// hclsimple.DecodeFile. Hot-reloadable: Profiles + AdminEmail. Listen
-// ports / CA dir / OAuth dir / Tailscale block require restart.
+// Config is the runtime view of the gateway configuration. Operational
+// fields (listen / ca_dir / tailscale / ...) are populated from the
+// new typed-block HCL grammar via config.Load; the runtime-shaped
+// Profiles / Rules / Approvers / Integrations / OAuth slices used by
+// the legacy request handler are populated by adaptLegacy and stay
+// empty until commit 4 wires the plugin runtime through.
 type Config struct {
-	Listen     string `hcl:"listen,optional"`
-	InfoListen string `hcl:"info_listen,optional"`
-	// PublicURL is shown in the dashboard "add device" modal so new
-	// clients reach the gateway from the public internet.
-	PublicURL string `hcl:"public_url,optional"`
-	// AdminEmail is the dashboard caller's identity in WG mode (no
-	// tailnet whois). The dashboard auto-approves onboarding requests
-	// against it.
-	AdminEmail string `hcl:"admin_email,optional"`
-	// DashboardSecret gates the dashboard + JSON APIs behind a shared
-	// secret. When empty, the dashboard is open (subject to the
-	// existing tailnetGate). When set, every non-public route demands
-	// either a `cp_dash` cookie matching this value, an
-	// `X-Clawpatrol-Secret` header, or a one-shot `?secret=` query
-	// param — the last form is exchanged at /__login for a cookie so
-	// browsers don't have to keep the secret in the URL.
-	DashboardSecret string         `hcl:"dashboard_secret,optional"`
-	CADir           string         `hcl:"ca_dir,optional"`
-	Resolver        string         `hcl:"resolver,optional"`
-	OAuthDir        string         `hcl:"oauth_dir,optional"`
-	Gateway         *GatewayConfig `hcl:"gateway,block"`
-	Profiles        []Profile      `hcl:"profile,block"`
-	Rulesets        []Ruleset      `hcl:"ruleset,block"`
-	Approvers       []Approver     `hcl:"approver,block"`
-	Integrations    []Integration  `hcl:"integration,block"`
+	Listen       string
+	InfoListen   string
+	PublicURL    string
+	AdminEmail   string
+	CADir        string
+	Resolver     string
+	LogPath      string
+	OAuthDir     string
+	Tailscale    *Tailscale
+	Profiles     []Profile
+	Rulesets     []Ruleset
+	Approvers    []Approver
+	Integrations []Integration
 
-	// TopRules carries top-level `rule {}` blocks decoded directly
-	// from HCL — used for device-scoped overrides that don't belong
-	// to any profile (set via the dashboard's per-device editor) and
-	// for profile-less standalone overrides. expandDefaults folds
-	// these into Rules at the end of expansion.
-	TopRules []Rule `hcl:"rule,block"`
-
-	// Rules + OAuth are not decoded from HCL — populated by
-	// expandDefaults() from the configured Profiles + Rulesets +
-	// TopRules.
+	// Rules + OAuth describe what the request handler sees. They're
+	// derived from the loaded config.Gateway by adaptLegacy — currently
+	// empty, populated by Compile in a follow-up commit.
 	Rules []Rule
 	OAuth []OAuthIntegration
 
@@ -82,590 +65,171 @@ type Config struct {
 // Profile binds integrations + rulesets + inline rules. Each onboarded
 // device gets a profile at approval time.
 type Profile struct {
-	Name string `hcl:"name,label"`
-	// Extends names other profiles to inherit from. Parent
-	// integrations / rulesets / inline rules are folded in BEFORE
-	// this profile's own contributions, so child rules with the
-	// same Host override parent rules.
-	Extends          []string `hcl:"extend,optional"`
-	IntegrationNames []string `hcl:"integrations,optional"`
-	// RulesetRefs reference top-level Ruleset blocks by name. Names
-	// must resolve to a declared ruleset; otherwise expandDefaults
-	// returns an error.
-	RulesetRefs []string `hcl:"rules,optional"`
-	// Rules are inline policy specific to this profile. Composed
-	// alongside referenced rulesets.
-	Rules []Rule `hcl:"rule,block"`
+	Name             string
+	Extends          []string
+	IntegrationNames []string
+	RulesetRefs      []string
+	Rules            []Rule
 }
 
-// Ruleset is a named bundle of rules. Profiles compose rulesets via
-// `rules = ["name", ...]`. Same Rule shape as inline profile rules.
+// Ruleset is a named bundle of rules.
 type Ruleset struct {
-	Name  string `hcl:"name,label"`
-	Rules []Rule `hcl:"rule,block"`
+	Name  string
+	Rules []Rule
 }
 
-// Integration declares the auth shape for a set of hosts. Schema is
-// wired; behavior (per-owner secret storage + injection at MITM time)
-// is the next pass. Built-in OAuth integrations (claude/codex/github)
-// stay declared in code; custom integrations live in the operator's
-// HCL config.
-//
-// Type selects wire shape:
-//
-//	oauth | bearer | header | cookie | mtls   — HTTPS variants
-//	postgres                                  — TCP postgres wire MITM
-//	clickhouse                                — native (9440) + HTTPS (8443)
-//	kubernetes                                — k8s API; mtls or aws-eks-token
-//
-// Multi-credential / multi-account / private-target shapes use the
-// nested blocks: `secret "name" {}` for N credential refs (slack
-// bot+app, CH user+pass), `account "name" {}` for switchable
-// (user, password) pairs picked at request time via match.account
-// (postgres ro/rw, orb test/prod), `tunnel {}` to wrap the
-// connection in an SSH/kubectl-portforward pipe, `auth {}` to
-// runtime-mint creds (e.g. AWS STS for EKS).
+// Integration declares the auth shape for a set of hosts.
 type Integration struct {
-	Name           string           `hcl:"name,label"`
-	Type           string           `hcl:"type"`
-	Hosts          []string         `hcl:"hosts,optional"`
-	Header         string           `hcl:"header,optional"`      // type=header
-	Prefix         string           `hcl:"prefix,optional"`      // type=header / bearer
-	CookieName     string           `hcl:"cookie_name,optional"` // type=cookie
-	Port           int              `hcl:"port,optional"`        // default TCP port
-	Ports          map[string]int   `hcl:"ports,optional"`       // named ports (e.g. clickhouse https/native)
-	Database       string           `hcl:"database,optional"`    // type=postgres
-	Description    string           `hcl:"description,optional"`
-	IdempotencyKey bool             `hcl:"idempotency_key,optional"` // auto-add Idempotency-Key on POST/PUT
-	MTLS           *MTLSConfig      `hcl:"mtls,block"`
-	Auth           *IntegrationAuth `hcl:"auth,block"`
-	Tunnel         *Tunnel          `hcl:"tunnel,block"`
-	Secrets        []NamedSecret    `hcl:"secret,block"`
-	Accounts       []NamedAccount   `hcl:"account,block"`
-}
-
-// NamedSecret declares one credential ref under an integration.
-// Multi-credential integrations (slack bot+app, clickhouse user+pass)
-// use repeated `secret "name" {}` blocks. The dashboard provisions one
-// per-owner secret slot per (integration, secret-name).
-type NamedSecret struct {
-	Name        string `hcl:"name,label"`
-	Placeholder string `hcl:"placeholder,optional"`
-	Ref         string `hcl:"ref,optional"`
-}
-
-// NamedAccount declares one switchable (user, password) pair under an
-// integration. Rules pick which account to use via `match.account =
-// "name"`. Each account name binds to a distinct dashboard-managed
-// secret slot.
-type NamedAccount struct {
-	Name        string `hcl:"name,label"`
-	Placeholder string `hcl:"placeholder,optional"`
-	User        string `hcl:"user,optional"`
-	Password    string `hcl:"password,optional"`
-	Ref         string `hcl:"ref,optional"` // single-credential accounts (e.g. orb test/prod)
-}
-
-// IntegrationAuth declares a runtime-minted credential source.
-// Currently supported: type = "aws-eks-token" — mints an STS-signed
-// k8s bearer token via the AWS SDK / `aws eks get-token`, cached for
-// the token's TTL.
-type IntegrationAuth struct {
-	Type    string `hcl:"type"`
-	Cluster string `hcl:"cluster,optional"`
-	Region  string `hcl:"region,optional"`
-	Profile string `hcl:"profile,optional"`
-}
-
-// Tunnel wraps the integration's TCP connection in a transport pipe
-// before speaking the wire protocol. Used for private targets (e.g.
-// RDS in a VPC reachable only via an SSH bastion pod inside an EKS
-// cluster). Supported types:
-//
-//	kubectl-portforward-ssh — `kubectl port-forward` to a named pod,
-//	                          then SSH-forward to the upstream host.
-type Tunnel struct {
-	Type    string `hcl:"type"`
-	Cluster string `hcl:"cluster,optional"`
-	Profile string `hcl:"profile,optional"`
-	SSHPod  string `hcl:"ssh_pod,optional"`
+	Name       string
+	Type       string // oauth | bearer | header | cookie | mtls
+	Hosts      []string
+	Header     string
+	Prefix     string
+	CookieName string
 }
 
 // Approver is a HITL notifier. The "dashboard" name is reserved for
-// the always-available built-in (no declaration needed). Operators
-// declare slack/llm/etc. via this block and reference by name in
-// `rule { approve = ["..."] }`.
+// the always-available built-in.
 type Approver struct {
-	Name             string `hcl:"name,label"`
-	Type             string `hcl:"type"` // "dashboard" | "slack" | "llm"
-	Channel          string `hcl:"channel,optional"`
-	Timeout          int    `hcl:"timeout,optional"`           // seconds; 0 → 60s default
-	Model            string `hcl:"model,optional"`             // type=llm
-	Policy           string `hcl:"policy,optional"`            // type=llm — judge prompt
-	RequireApprovers int    `hcl:"require_approvers,optional"` // type=slack — N-of-N quorum (default 1)
+	Name    string
+	Type    string // "dashboard" | "slack" | "llm"
+	Channel string
+	Timeout int
+	Model   string
+	Policy  string
 }
 
-// GatewayConfig is the operator-facing tunnel/control-plane block.
-// Decoded from `gateway { ... }` in gateway.hcl. Carries both the
-// Tailscale-control-plane fields (authkey / OAuth) and the
-// self-host WireGuard fields; `control` selects which set is active.
-type GatewayConfig struct {
-	AuthKey    string `hcl:"authkey,optional"`
-	ControlURL string `hcl:"control_url,optional"`
-	Hostname   string `hcl:"hostname,optional"`
-	StateDir   string `hcl:"state_dir,optional"`
-	// Control is "tailscale" (default) or "wireguard". Picks which
-	// onboarder mints auth-keys when new clients run `clawpatrol join`.
-	Control string `hcl:"control,optional"`
-	// (control=tailscale) OAuth client to mint single-use auth-keys.
-	OAuthClientID     string   `hcl:"oauth_client_id,optional"`
-	OAuthClientSecret string   `hcl:"oauth_client_secret,optional"`
-	Tags              []string `hcl:"tags,optional"`
-	// (control=wireguard) Plain WG self-host. Gateway IS the endpoint.
-	WGInterface  string `hcl:"wg_interface,optional"`
-	WGEndpoint   string `hcl:"wg_endpoint,optional"`
-	WGServerPub  string `hcl:"wg_server_pub,optional"`
-	WGSubnetCIDR string `hcl:"wg_subnet_cidr,optional"`
+type Tailscale struct {
+	AuthKey           string
+	ControlURL        string
+	Hostname          string
+	StateDir          string
+	Control           string
+	OAuthClientID     string
+	OAuthClientSecret string
+	Tags              []string
+	WGInterface       string
+	WGEndpoint        string
+	WGServerPub       string
+	WGSubnetCIDR      string
 }
 
-// Rule is a host-scoped policy: SNI matches Host, then optional Match
-// gates per-request, then Action / Auth / Swap / Headers apply.
-//
-// Tags carry both `hcl` (gateway config decode) and `yaml` + `json`
-// (dashboard rule-editor API uses yaml on the wire; events emit JSON).
+// Rule is the runtime-shaped rule consumed by the legacy MITM handler.
+// JSON tags drive the dashboard event log.
 type Rule struct {
-	// Profile scopes the rule to a profile name. Set automatically by
-	// expandDefaults from the profile/ruleset containing the rule.
-	Profile  string            `yaml:"profile,omitempty" json:"profile,omitempty"`
-	Device   string            `hcl:"device,optional" yaml:"device,omitempty" json:"device,omitempty"`
-	Host     string            `hcl:"host" yaml:"host" json:"host"`
-	Port     int               `hcl:"port,optional" yaml:"port,omitempty" json:"port,omitempty"`
-	Action   string            `hcl:"action,optional" yaml:"action,omitempty" json:"action,omitempty"` // "" | "deny"
-	Reason   string            `hcl:"reason,optional" yaml:"reason,omitempty" json:"reason,omitempty"`
-	Headers  map[string]string `hcl:"headers,optional" yaml:"headers,omitempty" json:"headers,omitempty"`
-	Body     bool              `hcl:"body,optional" yaml:"body,omitempty" json:"body,omitempty"`
-	Upstream string            `hcl:"upstream,optional" yaml:"upstream,omitempty" json:"upstream,omitempty"`
-	Auth     string            `hcl:"auth,optional" yaml:"auth,omitempty" json:"auth,omitempty"`
-	// Approve gates the request on HITL approval. Names must resolve
-	// to declared Approvers (or "dashboard", always-available). Empty
-	// or absent = pass-through (no HITL).
-	Approve []string    `hcl:"approve,optional" yaml:"approve,omitempty" json:"approve,omitempty"`
-	Match   *Match      `hcl:"match,block" yaml:"match,omitempty" json:"match,omitempty"`
-	Swap    []Swap      `hcl:"swap,block" yaml:"swap,omitempty" json:"swap,omitempty"`
-	MTLS    *MTLSConfig `hcl:"mtls,block" yaml:"mtls,omitempty" json:"mtls,omitempty"`
+	Profile  string            `json:"profile,omitempty"`
+	Device   string            `json:"device,omitempty"`
+	Host     string            `json:"host"`
+	Port     int               `json:"port,omitempty"`
+	Action   string            `json:"action,omitempty"`
+	Reason   string            `json:"reason,omitempty"`
+	Headers  map[string]string `json:"headers,omitempty"`
+	Body     bool              `json:"body,omitempty"`
+	Upstream string            `json:"upstream,omitempty"`
+	Auth     string            `json:"auth,omitempty"`
+	Approve  []string          `json:"approve,omitempty"`
+	Match    *Match            `json:"match,omitempty"`
+	Swap     []Swap            `json:"swap,omitempty"`
+	MTLS     *MTLSConfig       `json:"mtls,omitempty"`
 }
 
 type MTLSConfig struct {
-	CA   string `hcl:"ca,optional" yaml:"ca" json:"ca"`
-	Cert string `hcl:"cert" yaml:"cert" json:"cert"`
-	Key  string `hcl:"key" yaml:"key" json:"key"`
+	CA   string `json:"ca"`
+	Cert string `json:"cert"`
+	Key  string `json:"key"`
 }
 
 type Swap struct {
-	Placeholder string `hcl:"placeholder" yaml:"placeholder" json:"placeholder"`
-	Secret      string `hcl:"secret" yaml:"secret" json:"secret"`
+	Placeholder string `json:"placeholder"`
+	Secret      string `json:"secret"`
 }
 
+// loadConfig parses the gateway HCL via the new typed-block grammar
+// and adapts it to the legacy runtime shape. Loader diagnostics are
+// returned as a single error joining their summaries.
 func loadConfig(path string) (*Config, error) {
-	var c Config
-	if err := hclsimple.DecodeFile(path, nil, &c); err != nil {
-		return nil, err
+	gw, diags := config.Load(path)
+	if diags.HasErrors() {
+		return nil, fmt.Errorf("%s", diags.Error())
 	}
-	if c.Gateway == nil {
-		c.Gateway = &GatewayConfig{}
+	return adaptLegacy(gw), nil
+}
+
+// adaptLegacy translates the new policy-aware *config.Gateway into the
+// legacy *Config shape the request handler still consumes. Operational
+// fields copy through verbatim. Profile / Rule / Approver / Integration
+// / OAuth slices are left empty here — they get populated in commit 4
+// when the plugin runtime takes over request dispatch. Profiles are
+// the exception: their NAMES must round-trip so device onboarding,
+// dashboard tabs, and `g.profileFor` keep working.
+func adaptLegacy(gw *config.Gateway) *Config {
+	c := &Config{
+		Listen:     gw.Listen,
+		InfoListen: gw.InfoListen,
+		PublicURL:  gw.PublicURL,
+		AdminEmail: gw.AdminEmail,
+		CADir:      gw.CADir,
+		Resolver:   gw.Resolver,
+		LogPath:    gw.LogPath,
+		OAuthDir:   gw.OAuthDir,
 	}
 	if c.Listen == "" {
 		c.Listen = ":443"
 	}
-	return &c, nil
+	if gw.Tailscale != nil {
+		c.Tailscale = &Tailscale{
+			AuthKey:           gw.Tailscale.AuthKey,
+			ControlURL:        gw.Tailscale.ControlURL,
+			Hostname:          gw.Tailscale.Hostname,
+			StateDir:          gw.Tailscale.StateDir,
+			Control:           gw.Tailscale.Control,
+			OAuthClientID:     gw.Tailscale.OAuthClientID,
+			OAuthClientSecret: gw.Tailscale.OAuthClientSecret,
+			Tags:              gw.Tailscale.Tags,
+			WGInterface:       gw.Tailscale.WGInterface,
+			WGEndpoint:        gw.Tailscale.WGEndpoint,
+			WGServerPub:       gw.Tailscale.WGServerPub,
+			WGSubnetCIDR:      gw.Tailscale.WGSubnetCIDR,
+		}
+	} else {
+		c.Tailscale = &Tailscale{}
+	}
+	if gw.Policy != nil {
+		// Profile names round-trip so onboarding can assign a device
+		// to a declared profile. Endpoint / rule contents are not
+		// translated here — that lands when Compile + runtime plug
+		// the new policy into the request handler.
+		for _, name := range orderedProfileNames(gw.Policy) {
+			c.Profiles = append(c.Profiles, Profile{Name: name})
+		}
+	}
+	return c
 }
 
-// writeConfigHCL re-emits the gateway config as HCL at path. Used by
-// the dashboard rule editor — loses comments but keeps the file as the
-// single source of truth (no rules.yaml sidecar). Atomic via temp +
-// rename so a crashed write doesn't corrupt the live config.
-func writeConfigHCL(c *Config, path string) error {
-	f := hclwrite.NewEmptyFile()
-	body := f.Body()
-	setStr := func(name, v string) {
-		if v != "" {
-			body.SetAttributeValue(name, cty.StringVal(v))
-		}
-	}
-	setStr("listen", c.Listen)
-	setStr("info_listen", c.InfoListen)
-	setStr("public_url", c.PublicURL)
-	setStr("admin_email", c.AdminEmail)
-	setStr("ca_dir", c.CADir)
-	setStr("oauth_dir", c.OAuthDir)
-	setStr("resolver", c.Resolver)
-	if c.Gateway != nil && (c.Gateway.Control != "" || c.Gateway.WGEndpoint != "") {
-		body.AppendNewline()
-		ts := body.AppendNewBlock("gateway", nil).Body()
-		if c.Gateway.Control != "" {
-			ts.SetAttributeValue("control", cty.StringVal(c.Gateway.Control))
-		}
-		if c.Gateway.WGEndpoint != "" {
-			ts.SetAttributeValue("wg_endpoint", cty.StringVal(c.Gateway.WGEndpoint))
-		}
-		if c.Gateway.WGSubnetCIDR != "" {
-			ts.SetAttributeValue("wg_subnet_cidr", cty.StringVal(c.Gateway.WGSubnetCIDR))
-		}
-		if c.Gateway.WGInterface != "" {
-			ts.SetAttributeValue("wg_interface", cty.StringVal(c.Gateway.WGInterface))
-		}
-	}
-	// Group rules back into their profile blocks. Custom (operator-
-	// declared) rules persist; default-host rules are dropped because
-	// expandDefaults regenerates them from each profile's integration
-	// list on every load. Rules whose content matches a top-level
-	// ruleset block are also skipped — they came from the ruleset
-	// during expand and re-emitting them inline would duplicate.
-	rulesetContent := map[string]bool{}
-	for _, rs := range c.Rulesets {
-		for _, r := range rs.Rules {
-			rulesetContent[ruleContentKey(r)] = true
-		}
-	}
-	customByProfile := map[string][]Rule{}
-	for _, r := range c.Rules {
-		if isDefaultRule(r) {
+// orderedProfileNames returns the declared profile names in source
+// order. Map iteration over Policy.Profiles isn't deterministic, so
+// we re-sort by the Order slice (which buildSymbols populates in
+// declaration order) and filter to KindProfile entries.
+func orderedProfileNames(p *config.Policy) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, name := range p.Order {
+		if seen[name] {
 			continue
 		}
-		if rulesetContent[ruleContentKey(r)] {
-			continue
-		}
-		customByProfile[r.Profile] = append(customByProfile[r.Profile], r)
-	}
-	for _, in := range c.Integrations {
-		body.AppendNewline()
-		writeIntegrationHCL(body, in)
-	}
-	for _, a := range c.Approvers {
-		body.AppendNewline()
-		ab := body.AppendNewBlock("approver", []string{a.Name}).Body()
-		ab.SetAttributeValue("type", cty.StringVal(a.Type))
-		if a.Channel != "" {
-			ab.SetAttributeValue("channel", cty.StringVal(a.Channel))
-		}
-		if a.Timeout != 0 {
-			ab.SetAttributeValue("timeout", cty.NumberIntVal(int64(a.Timeout)))
-		}
-		if a.Model != "" {
-			ab.SetAttributeValue("model", cty.StringVal(a.Model))
-		}
-		if a.Policy != "" {
-			ab.SetAttributeValue("policy", cty.StringVal(a.Policy))
-		}
-		if a.RequireApprovers != 0 {
-			ab.SetAttributeValue("require_approvers", cty.NumberIntVal(int64(a.RequireApprovers)))
+		if _, ok := p.Profiles[name]; ok {
+			out = append(out, name)
+			seen[name] = true
 		}
 	}
-	for _, rs := range c.Rulesets {
-		body.AppendNewline()
-		rsb := body.AppendNewBlock("ruleset", []string{rs.Name}).Body()
-		for _, r := range rs.Rules {
-			writeRuleHCL(rsb, r)
+	for name := range p.Profiles {
+		if !seen[name] {
+			out = append(out, name)
 		}
 	}
-	// Profile-less rules (Profile=="") — device-scoped overrides
-	// saved via the dashboard's per-device editor + any standalone
-	// operator rules — get emitted as top-level `rule {}` blocks.
-	// On reload they decode into Config.TopRules and fold back into
-	// cfg.Rules at the end of expandDefaults.
-	if free := customByProfile[""]; len(free) > 0 {
-		body.AppendNewline()
-		for _, r := range free {
-			writeRuleHCL(body, r)
-		}
-	}
-	for _, p := range c.Profiles {
-		body.AppendNewline()
-		pb := body.AppendNewBlock("profile", []string{p.Name}).Body()
-		if len(p.IntegrationNames) > 0 {
-			vs := make([]cty.Value, len(p.IntegrationNames))
-			for i, n := range p.IntegrationNames {
-				vs[i] = cty.StringVal(n)
-			}
-			pb.SetAttributeValue("integrations", cty.ListVal(vs))
-		}
-		if len(p.RulesetRefs) > 0 {
-			vs := make([]cty.Value, len(p.RulesetRefs))
-			for i, n := range p.RulesetRefs {
-				vs[i] = cty.StringVal(n)
-			}
-			pb.SetAttributeValue("rules", cty.ListVal(vs))
-		}
-		for _, r := range customByProfile[p.Name] {
-			writeRuleHCL(pb, r)
-		}
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, f.Bytes(), 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return out
 }
 
-// ruleContentKey returns a stable serialization of a rule's content
-// (excluding Profile, which is set by expandDefaults from its enclosing
-// block). Used by writeConfigHCL to detect rules that came from a
-// referenced ruleset and avoid double-emitting them inline.
-func ruleContentKey(r Rule) string {
-	cp := r
-	cp.Profile = ""
-	b, _ := json.Marshal(cp)
-	return string(b)
-}
-
-// isDefaultRule reports whether r is the shape expandDefaults would
-// re-create for its (profile, integration). Used by writeConfigHCL to
-// avoid serialising auto-derived rules back into the operator's config.
-func isDefaultRule(r Rule) bool {
-	if r.Device != "" || r.Action != "" || r.Reason != "" || r.Body ||
-		r.Upstream != "" || len(r.Approve) > 0 ||
-		len(r.Headers) > 0 || r.Match != nil || len(r.Swap) > 0 || r.MTLS != nil {
-		return false
-	}
-	if r.Auth == "" {
-		return false
-	}
-	def, ok := defaultIntegrations[r.Auth]
-	if !ok {
-		return false
-	}
-	for _, h := range def.Hosts {
-		if h == r.Host {
-			return true
-		}
-	}
-	return false
-}
-
-func writeIntegrationHCL(parent *hclwrite.Body, in Integration) {
-	ib := parent.AppendNewBlock("integration", []string{in.Name}).Body()
-	if in.Type != "" {
-		ib.SetAttributeValue("type", cty.StringVal(in.Type))
-	}
-	if len(in.Hosts) > 0 {
-		vs := make([]cty.Value, len(in.Hosts))
-		for i, h := range in.Hosts {
-			vs[i] = cty.StringVal(h)
-		}
-		ib.SetAttributeValue("hosts", cty.ListVal(vs))
-	}
-	if in.Header != "" {
-		ib.SetAttributeValue("header", cty.StringVal(in.Header))
-	}
-	if in.Prefix != "" {
-		ib.SetAttributeValue("prefix", cty.StringVal(in.Prefix))
-	}
-	if in.CookieName != "" {
-		ib.SetAttributeValue("cookie_name", cty.StringVal(in.CookieName))
-	}
-	if in.Port != 0 {
-		ib.SetAttributeValue("port", cty.NumberIntVal(int64(in.Port)))
-	}
-	if len(in.Ports) > 0 {
-		vs := map[string]cty.Value{}
-		for k, v := range in.Ports {
-			vs[k] = cty.NumberIntVal(int64(v))
-		}
-		ib.SetAttributeValue("ports", cty.ObjectVal(vs))
-	}
-	if in.Database != "" {
-		ib.SetAttributeValue("database", cty.StringVal(in.Database))
-	}
-	if in.Description != "" {
-		ib.SetAttributeValue("description", cty.StringVal(in.Description))
-	}
-	if in.IdempotencyKey {
-		ib.SetAttributeValue("idempotency_key", cty.True)
-	}
-	if in.MTLS != nil {
-		mb := ib.AppendNewBlock("mtls", nil).Body()
-		if in.MTLS.CA != "" {
-			mb.SetAttributeValue("ca", cty.StringVal(in.MTLS.CA))
-		}
-		if in.MTLS.Cert != "" {
-			mb.SetAttributeValue("cert", cty.StringVal(in.MTLS.Cert))
-		}
-		if in.MTLS.Key != "" {
-			mb.SetAttributeValue("key", cty.StringVal(in.MTLS.Key))
-		}
-	}
-	if in.Auth != nil {
-		ab := ib.AppendNewBlock("auth", nil).Body()
-		ab.SetAttributeValue("type", cty.StringVal(in.Auth.Type))
-		if in.Auth.Cluster != "" {
-			ab.SetAttributeValue("cluster", cty.StringVal(in.Auth.Cluster))
-		}
-		if in.Auth.Region != "" {
-			ab.SetAttributeValue("region", cty.StringVal(in.Auth.Region))
-		}
-		if in.Auth.Profile != "" {
-			ab.SetAttributeValue("profile", cty.StringVal(in.Auth.Profile))
-		}
-	}
-	if in.Tunnel != nil {
-		tb := ib.AppendNewBlock("tunnel", nil).Body()
-		tb.SetAttributeValue("type", cty.StringVal(in.Tunnel.Type))
-		if in.Tunnel.Cluster != "" {
-			tb.SetAttributeValue("cluster", cty.StringVal(in.Tunnel.Cluster))
-		}
-		if in.Tunnel.Profile != "" {
-			tb.SetAttributeValue("profile", cty.StringVal(in.Tunnel.Profile))
-		}
-		if in.Tunnel.SSHPod != "" {
-			tb.SetAttributeValue("ssh_pod", cty.StringVal(in.Tunnel.SSHPod))
-		}
-	}
-	for _, s := range in.Secrets {
-		sb := ib.AppendNewBlock("secret", []string{s.Name}).Body()
-		if s.Placeholder != "" {
-			sb.SetAttributeValue("placeholder", cty.StringVal(s.Placeholder))
-		}
-		if s.Ref != "" {
-			sb.SetAttributeValue("ref", cty.StringVal(s.Ref))
-		}
-	}
-	for _, ac := range in.Accounts {
-		ab := ib.AppendNewBlock("account", []string{ac.Name}).Body()
-		if ac.Placeholder != "" {
-			ab.SetAttributeValue("placeholder", cty.StringVal(ac.Placeholder))
-		}
-		if ac.User != "" {
-			ab.SetAttributeValue("user", cty.StringVal(ac.User))
-		}
-		if ac.Password != "" {
-			ab.SetAttributeValue("password", cty.StringVal(ac.Password))
-		}
-		if ac.Ref != "" {
-			ab.SetAttributeValue("ref", cty.StringVal(ac.Ref))
-		}
-	}
-}
-
-func writeRuleHCL(parent *hclwrite.Body, r Rule) {
-	rb := parent.AppendNewBlock("rule", nil).Body()
-	if r.Device != "" {
-		rb.SetAttributeValue("device", cty.StringVal(r.Device))
-	}
-	rb.SetAttributeValue("host", cty.StringVal(r.Host))
-	if r.Port != 0 {
-		rb.SetAttributeValue("port", cty.NumberIntVal(int64(r.Port)))
-	}
-	if r.Action != "" {
-		rb.SetAttributeValue("action", cty.StringVal(r.Action))
-	}
-	if r.Reason != "" {
-		rb.SetAttributeValue("reason", cty.StringVal(r.Reason))
-	}
-	if r.Auth != "" {
-		rb.SetAttributeValue("auth", cty.StringVal(r.Auth))
-	}
-	if r.Upstream != "" {
-		rb.SetAttributeValue("upstream", cty.StringVal(r.Upstream))
-	}
-	if r.Body {
-		rb.SetAttributeValue("body", cty.True)
-	}
-	if len(r.Approve) > 0 {
-		vs := make([]cty.Value, len(r.Approve))
-		for i, n := range r.Approve {
-			vs[i] = cty.StringVal(n)
-		}
-		rb.SetAttributeValue("approve", cty.ListVal(vs))
-	}
-	if len(r.Headers) > 0 {
-		vs := map[string]cty.Value{}
-		for k, v := range r.Headers {
-			vs[k] = cty.StringVal(v)
-		}
-		rb.SetAttributeValue("headers", cty.ObjectVal(vs))
-	}
-	if r.Match != nil {
-		mb := rb.AppendNewBlock("match", nil).Body()
-		setStrList := func(name string, xs []string) {
-			if len(xs) == 0 {
-				return
-			}
-			vs := make([]cty.Value, len(xs))
-			for i, s := range xs {
-				vs[i] = cty.StringVal(s)
-			}
-			mb.SetAttributeValue(name, cty.ListVal(vs))
-		}
-		setStrMap := func(name string, m map[string]string) {
-			if len(m) == 0 {
-				return
-			}
-			vs := map[string]cty.Value{}
-			for k, v := range m {
-				vs[k] = cty.StringVal(v)
-			}
-			mb.SetAttributeValue(name, cty.ObjectVal(vs))
-		}
-		setStrListMap := func(name string, m map[string][]string) {
-			if len(m) == 0 {
-				return
-			}
-			vs := map[string]cty.Value{}
-			for k, list := range m {
-				lv := make([]cty.Value, len(list))
-				for i, s := range list {
-					lv[i] = cty.StringVal(s)
-				}
-				if len(lv) == 0 {
-					vs[k] = cty.ListValEmpty(cty.String)
-				} else {
-					vs[k] = cty.ListVal(lv)
-				}
-			}
-			mb.SetAttributeValue(name, cty.ObjectVal(vs))
-		}
-		setStrList("method", r.Match.Method)
-		if r.Match.Path != "" {
-			mb.SetAttributeValue("path", cty.StringVal(r.Match.Path))
-		}
-		setStrListMap("query", r.Match.Query)
-		setStrMap("headers", r.Match.Headers)
-		setStrMap("body_json", r.Match.BodyJSON)
-		if r.Match.BodyContains != "" {
-			mb.SetAttributeValue("body_contains", cty.StringVal(r.Match.BodyContains))
-		}
-		setStrList("resource", r.Match.Resource)
-		setStrList("verb", r.Match.Verb)
-		setStrList("namespace", r.Match.Namespace)
-		setStrList("name", r.Match.Name)
-		setStrMap("params", r.Match.Params)
-		setStrList("sql_verb", r.Match.SQLVerb)
-		setStrList("tables", r.Match.SQLTables)
-		setStrList("function", r.Match.SQLFunction)
-		if r.Match.Statement != "" {
-			mb.SetAttributeValue("statement", cty.StringVal(r.Match.Statement))
-		}
-		if r.Match.StatementRegex != "" {
-			mb.SetAttributeValue("statement_regex", cty.StringVal(r.Match.StatementRegex))
-		}
-		if r.Match.Account != "" {
-			mb.SetAttributeValue("account", cty.StringVal(r.Match.Account))
-		}
-	}
-	for _, s := range r.Swap {
-		sb := rb.AppendNewBlock("swap", nil).Body()
-		sb.SetAttributeValue("placeholder", cty.StringVal(s.Placeholder))
-		sb.SetAttributeValue("secret", cty.StringVal(s.Secret))
-	}
-	if r.MTLS != nil {
-		mb := rb.AppendNewBlock("mtls", nil).Body()
-		if r.MTLS.CA != "" {
-			mb.SetAttributeValue("ca", cty.StringVal(r.MTLS.CA))
-		}
-		mb.SetAttributeValue("cert", cty.StringVal(r.MTLS.Cert))
-		mb.SetAttributeValue("key", cty.StringVal(r.MTLS.Key))
-	}
-}
 
 func (r *Rule) matches(host string) bool {
 	if r.Host == host {
@@ -902,10 +466,6 @@ func (g *Gateway) watchConfig(path string) {
 		next, err := loadConfig(path)
 		if err != nil {
 			log.Printf("config reload: %v", err)
-			continue
-		}
-		if err := expandDefaults(next); err != nil {
-			log.Printf("config reload: expand defaults: %v", err)
 			continue
 		}
 		newRules := append([]Rule(nil), next.Rules...)
@@ -1488,16 +1048,6 @@ func (g *Gateway) handle(raw net.Conn) {
 	g.mitm(c, host, hostRule)
 }
 
-// denyMessage formats a deny reason into the standard Clawpatrol
-// rejection text — surfaced as the HTTP 403 body and the postgres
-// ErrorResponse message so users see *who* denied them and *why*.
-func denyMessage(reason string) string {
-	if reason == "" {
-		reason = "denied by policy"
-	}
-	return "Clawpatrol - access denied - " + reason
-}
-
 func (g *Gateway) splice(c net.Conn, host string) {
 	start := time.Now()
 	up, err := g.dialer.Dial("tcp", net.JoinHostPort(host, "443"))
@@ -1647,8 +1197,7 @@ func (g *Gateway) mitm(c net.Conn, host string, defaultRule *Rule) {
 					reason = "denied by approver"
 				}
 				log.Printf("hitl-deny %s %s %s: %s (by %s)", host, req.Method, req.URL.Path, reason, d.By)
-				body := denyMessage(reason)
-				fmt.Fprintf(tc, "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body)
+				fmt.Fprintf(tc, "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(reason), reason)
 				ev.Status = 403
 				ev.Action = "hitl_deny"
 				ev.Reason = reason
@@ -1665,8 +1214,7 @@ func (g *Gateway) mitm(c net.Conn, host string, defaultRule *Rule) {
 				reason = "denied by policy"
 			}
 			log.Printf("deny %s %s %s: %s", host, req.Method, req.URL.Path, reason)
-			body := denyMessage(reason)
-			fmt.Fprintf(tc, "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body)
+			fmt.Fprintf(tc, "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(reason), reason)
 			ev.Status = 403
 			ev.Action = "deny"
 			ev.Reason = reason
@@ -1892,9 +1440,6 @@ func runGateway(args []string) {
 	cfg, err := loadConfig(*cfgPath)
 	if err != nil {
 		log.Fatalf("config: %v", err)
-	}
-	if err := expandDefaults(cfg); err != nil {
-		log.Fatalf("expand defaults: %v", err)
 	}
 	certs, err := loadCA(cfg.CADir)
 	if err != nil {
