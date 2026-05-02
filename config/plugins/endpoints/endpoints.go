@@ -17,6 +17,8 @@ import (
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
 
 	"github.com/denoland/clawpatrol-go/config"
@@ -48,29 +50,18 @@ type HTTPSEndpoint struct {
 	Credentials []CredentialEntry `json:"Credentials,omitempty"`
 }
 
-// PostgresEndpoint addresses a single RDS-or-equivalent server,
-// reachable over an optional kubectl-portforward-ssh tunnel. Multiple
-// endpoints can share a tunnel topology (same cluster, same ssh pod)
-// without duplicating the connection state — that consolidation
-// happens in the runtime, not here.
+// PostgresEndpoint addresses a single RDS-or-equivalent server.
+// Tunnel topologies (kubectl-portforward-ssh and friends) aren't
+// supported in this iteration — operators run the gateway with
+// network reachability already arranged. That field returns when
+// the postgres runtime hooks land.
 type PostgresEndpoint struct {
-	Host           string          `hcl:"host"`
-	Database       string          `hcl:"database"`
-	Tunnel         *PostgresTunnel `hcl:"tunnel,optional"`
-	Credential     string          `hcl:"credential,optional"`
-	CredentialsRaw cty.Value       `hcl:"credentials,optional" json:"-"`
+	Host           string    `hcl:"host"`
+	Database       string    `hcl:"database"`
+	Credential     string    `hcl:"credential,optional"`
+	CredentialsRaw cty.Value `hcl:"credentials,optional" json:"-"`
 
 	Credentials []CredentialEntry `json:"Credentials,omitempty"`
-}
-
-// PostgresTunnel describes one supported tunnel topology. Currently
-// only kubectl-portforward-ssh is implemented; others would extend
-// Type and add fields here.
-type PostgresTunnel struct {
-	Type    string `cty:"type"`
-	Cluster string `cty:"cluster"`
-	Profile string `cty:"profile"`
-	SSHPod  string `cty:"ssh_pod"`
 }
 
 // KubernetesEndpoint covers self-hosted clusters (server + ca_cert)
@@ -412,6 +403,11 @@ func init() {
 		Validate: multiCredValidate,
 		Runtime:  HTTPSEndpointRuntime{},
 		Build:    func(d any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics) { return d, nil },
+		Emit: func(body any, _ string, b *hclwrite.Body) {
+			e := body.(*HTTPSEndpoint)
+			b.SetAttributeValue("hosts", config.StringListVal(e.Hosts))
+			emitCredentialBinding(b, e.Credential, e.Credentials)
+		},
 	})
 
 	config.Register(&config.Plugin{
@@ -423,6 +419,12 @@ func init() {
 		Validate: multiCredValidate,
 		Runtime:  PostgresEndpointRuntime{},
 		Build:    func(d any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics) { return d, nil },
+		Emit: func(body any, _ string, b *hclwrite.Body) {
+			e := body.(*PostgresEndpoint)
+			b.SetAttributeValue("host", cty.StringVal(e.Host))
+			b.SetAttributeValue("database", cty.StringVal(e.Database))
+			emitCredentialBinding(b, e.Credential, e.Credentials)
+		},
 	})
 
 	config.Register(&config.Plugin{
@@ -434,6 +436,24 @@ func init() {
 			{Path: "Credential", Kind: config.KindCredential, Optional: true},
 		},
 		Build: func(d any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics) { return d, nil },
+		Emit: func(body any, _ string, b *hclwrite.Body) {
+			e := body.(*KubernetesEndpoint)
+			if len(e.Hosts) > 0 {
+				b.SetAttributeValue("hosts", config.StringListVal(e.Hosts))
+			}
+			if e.Server != "" {
+				b.SetAttributeValue("server", cty.StringVal(e.Server))
+			}
+			if e.CACert != "" {
+				b.SetAttributeValue("ca_cert", cty.StringVal(e.CACert))
+			}
+			if e.Description != "" {
+				b.SetAttributeValue("description", cty.StringVal(e.Description))
+			}
+			if e.Credential != "" {
+				config.SetIdent(b, "credential", e.Credential)
+			}
+		},
 	})
 
 	config.Register(&config.Plugin{
@@ -445,6 +465,13 @@ func init() {
 			{Path: "Credential", Kind: config.KindCredential, Optional: true},
 		},
 		Build: func(d any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics) { return d, nil },
+		Emit: func(body any, _ string, b *hclwrite.Body) {
+			e := body.(*ClickhouseHTTPSEndpoint)
+			b.SetAttributeValue("hosts", config.StringListVal(e.Hosts))
+			if e.Credential != "" {
+				config.SetIdent(b, "credential", e.Credential)
+			}
+		},
 	})
 
 	config.Register(&config.Plugin{
@@ -456,5 +483,55 @@ func init() {
 			{Path: "Credential", Kind: config.KindCredential, Optional: true},
 		},
 		Build: func(d any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics) { return d, nil },
+		Emit: func(body any, _ string, b *hclwrite.Body) {
+			e := body.(*ClickhouseNativeEndpoint)
+			b.SetAttributeValue("hosts", config.StringListVal(e.Hosts))
+			if e.Credential != "" {
+				config.SetIdent(b, "credential", e.Credential)
+			}
+		},
 	})
+}
+
+// emitCredentialBinding writes either `credential = X` (singular) or
+// `credentials = [{...}, {...}]` (multi-credential dispatch). The
+// list form needs raw tokens because each entry's `credential` value
+// is a bare identifier ref, not a quoted string — gocty can't emit
+// the right shape via cty.ObjectVal alone.
+func emitCredentialBinding(b *hclwrite.Body, single string, list []CredentialEntry) {
+	if len(list) == 0 {
+		if single != "" {
+			config.SetIdent(b, "credential", single)
+		}
+		return
+	}
+	tokens := hclwrite.Tokens{
+		{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")},
+		{Type: hclsyntax.TokenNewline, Bytes: []byte("\n")},
+	}
+	for _, e := range list {
+		tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte("    {")})
+		// Don't emit `placeholder = ""` — only when set.
+		if e.Placeholder != "" {
+			tokens = append(tokens,
+				&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(" placeholder = ")},
+				&hclwrite.Token{Type: hclsyntax.TokenOQuote, Bytes: []byte(`"`)},
+				&hclwrite.Token{Type: hclsyntax.TokenQuotedLit, Bytes: []byte(e.Placeholder)},
+				&hclwrite.Token{Type: hclsyntax.TokenCQuote, Bytes: []byte(`"`)},
+				&hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(",")},
+			)
+		}
+		tokens = append(tokens,
+			&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(" credential = ")},
+			&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(e.Credential)},
+			&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(" }")},
+			&hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(",")},
+			&hclwrite.Token{Type: hclsyntax.TokenNewline, Bytes: []byte("\n")},
+		)
+	}
+	tokens = append(tokens,
+		&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte("  ")},
+		&hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")},
+	)
+	b.SetAttributeRaw("credentials", tokens)
 }

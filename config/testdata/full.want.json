@@ -502,12 +502,6 @@
         "body": {
           "Host": "deployng-prod.cluster-cnmc6k08siv7.us-east-2.rds.amazonaws.com:5432",
           "Database": "deployng",
-          "Tunnel": {
-            "Type": "kubectl-portforward-ssh",
-            "Cluster": "deployng-prod",
-            "Profile": "deployng-console-prod",
-            "SSHPod": "ssh-server"
-          },
           "Credential": "",
           "Credentials": [
             {
@@ -527,12 +521,6 @@
         "body": {
           "Host": "scheduler-prod.cluster-cnmc6k08siv7.us-east-2.rds.amazonaws.com:5432",
           "Database": "scheduler",
-          "Tunnel": {
-            "Type": "kubectl-portforward-ssh",
-            "Cluster": "deployng-prod",
-            "Profile": "deployng-console-prod",
-            "SSHPod": "ssh-server"
-          },
           "Credential": "pg-scheduler-cred"
         },
         "family": "sql",

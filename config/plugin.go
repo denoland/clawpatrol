@@ -11,6 +11,7 @@ package config
 
 import (
 	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclwrite"
 )
 
 // Kind names a class of policy block. The four kinds with plugin-
@@ -95,10 +96,13 @@ type Plugin struct {
 	// dispatch reports a clear diagnostic when it tries to use one.
 	Runtime any
 
-	// Emit, when set, customizes how the dashboard writer serializes
-	// this entity back to HCL. Without it, the loader uses gohcl's
-	// reverse path (driven by the same struct New produces).
-	Emit func(decoded any, name string, body any) // body is *hclwrite.Body — kept any to avoid the import here
+	// Emit serializes a built entity back to HCL by populating an
+	// hclwrite block body. Required for every plugin — the framework
+	// has no generic reverse path that handles bare-name refs,
+	// heterogeneous list shapes (credentials with optional
+	// placeholders), or per-family match maps. Plugins that decode
+	// nothing (zero-attribute credentials) provide a no-op Emit.
+	Emit func(body any, name string, hb *hclwrite.Body)
 }
 
 // BuildCtx is what the loader hands to Validate and Build. It bundles

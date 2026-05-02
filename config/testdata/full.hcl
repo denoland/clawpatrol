@@ -647,19 +647,11 @@ endpoint "https" "orb" {
   ]
 }
 
-# Postgres. Tunnel goes through an in-cluster ssh-server pod that
-# kubectl-port-forwards to the RDS instance. Tunnel is shared by
-# pg-deployng and pg-scheduler (same cluster, same ssh hop, distinct
-# upstream RDS endpoints).
+# Postgres. Network reachability is arranged out-of-band; tunnel
+# topology declarations land when the postgres runtime hooks ship.
 endpoint "postgres" "pg-deployng" {
   host     = "deployng-prod.cluster-cnmc6k08siv7.us-east-2.rds.amazonaws.com:5432"
   database = "deployng"
-  tunnel = {
-    type    = "kubectl-portforward-ssh"
-    cluster = "deployng-prod"
-    profile = "deployng-console-prod"
-    ssh_pod = "ssh-server"
-  }
   # ro/rw dispatch via placeholder. Ro is the default for reads;
   # rw requires explicit selection AND human approval (see rules).
   credentials = [
@@ -668,14 +660,8 @@ endpoint "postgres" "pg-deployng" {
   ]
 }
 endpoint "postgres" "pg-scheduler" {
-  host     = "scheduler-prod.cluster-cnmc6k08siv7.us-east-2.rds.amazonaws.com:5432"
-  database = "scheduler"
-  tunnel = {
-    type    = "kubectl-portforward-ssh"
-    cluster = "deployng-prod"
-    profile = "deployng-console-prod"
-    ssh_pod = "ssh-server"
-  }
+  host       = "scheduler-prod.cluster-cnmc6k08siv7.us-east-2.rds.amazonaws.com:5432"
+  database   = "scheduler"
   credential = pg-scheduler-cred
 }
 

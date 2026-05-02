@@ -5,6 +5,8 @@ package approvers
 
 import (
 	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclwrite"
+	"github.com/zclconf/go-cty/cty"
 
 	"github.com/denoland/clawpatrol-go/config"
 )
@@ -30,11 +32,25 @@ func init() {
 		Type:  "llm_approver",
 		New:   func() any { return &LLMApprover{} },
 		Build: func(d any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics) { return d, nil },
+		Emit: func(body any, _ string, b *hclwrite.Body) {
+			a := body.(*LLMApprover)
+			b.SetAttributeValue("model", cty.StringVal(a.Model))
+		},
 	})
 	config.Register(&config.Plugin{
 		Kind:  config.KindApprover,
 		Type:  "human_approver",
 		New:   func() any { return &HumanApprover{} },
 		Build: func(d any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics) { return d, nil },
+		Emit: func(body any, _ string, b *hclwrite.Body) {
+			a := body.(*HumanApprover)
+			b.SetAttributeValue("channel", cty.StringVal(a.Channel))
+			if a.Timeout != 0 {
+				b.SetAttributeValue("timeout", cty.NumberIntVal(int64(a.Timeout)))
+			}
+			if a.RequireApprovers != 0 {
+				b.SetAttributeValue("require_approvers", cty.NumberIntVal(int64(a.RequireApprovers)))
+			}
+		},
 	})
 }

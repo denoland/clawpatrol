@@ -12,6 +12,8 @@ import (
 	"net/http"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclwrite"
+	"github.com/zclconf/go-cty/cty"
 
 	"github.com/denoland/clawpatrol-go/config"
 	"github.com/denoland/clawpatrol-go/config/runtime"
@@ -198,6 +200,46 @@ func trimSpaces(s string) string {
 	return s
 }
 
+// emitFor returns a per-type Emit hook. Most credential bodies are
+// either empty or a tiny set of attributes; we route all of them
+// through one helper that knows the field set per type.
+func emitFor(typ string) func(any, string, *hclwrite.Body) {
+	return func(body any, _ string, b *hclwrite.Body) {
+		switch v := body.(type) {
+		case *BearerToken:
+			if v.IdempotencyKey {
+				b.SetAttributeValue("idempotency_key", cty.True)
+			}
+		case *CookieToken:
+			if v.CookieName != "" {
+				b.SetAttributeValue("cookie_name", cty.StringVal(v.CookieName))
+			}
+		case *HeaderToken:
+			b.SetAttributeValue("header", cty.StringVal(v.Header))
+			if v.Prefix != "" {
+				b.SetAttributeValue("prefix", cty.StringVal(v.Prefix))
+			}
+		case *PostgresCredential:
+			if v.User != "" {
+				b.SetAttributeValue("user", cty.StringVal(v.User))
+			}
+		case *ClickhouseCredential:
+			if v.User != "" {
+				b.SetAttributeValue("user", cty.StringVal(v.User))
+			}
+		case *AWSEKSCredential:
+			b.SetAttributeValue("cluster", cty.StringVal(v.Cluster))
+			b.SetAttributeValue("region", cty.StringVal(v.Region))
+			if v.Profile != "" {
+				b.SetAttributeValue("profile", cty.StringVal(v.Profile))
+			}
+		}
+		// Empty-body credentials (mtls / anthropic / slack / telegram /
+		// gemini / openai_codex / notion) emit no attributes.
+		_ = typ
+	}
+}
+
 func init() {
 	// Wired runtimes — each implements HTTPCredentialRuntime and
 	// gets stamped onto the plugin's Runtime field so the dispatcher
@@ -235,6 +277,7 @@ func init() {
 			Build: func(decoded any, name string, _ *config.BuildCtx) (any, hcl.Diagnostics) {
 				return decoded, nil
 			},
+			Emit: emitFor(w.typ),
 		})
 	}
 	// Sanity check at init time that the wired runtimes satisfy the

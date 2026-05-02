@@ -20,6 +20,8 @@ import (
 	"fmt"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
 
 	"github.com/denoland/clawpatrol-go/config"
@@ -394,6 +396,158 @@ func listKeys(m map[string]bool) string {
 	return out
 }
 
+// emitRule serializes a built *Rule back to HCL block body. Endpoints
+// are emitted as bare-name idents (singular vs list forms preserved
+// to round-trip the operator's choice). Match emits as an object
+// literal; approve mixes bare-name idents and struct stages depending
+// on each entry's shape.
+func emitRule(body any, _ string, b *hclwrite.Body) {
+	r := body.(*Rule)
+	if len(r.Endpoints) == 1 {
+		config.SetIdent(b, "endpoint", r.Endpoints[0])
+	} else if len(r.Endpoints) > 1 {
+		config.SetIdentList(b, "endpoints", r.Endpoints)
+	}
+	if r.Priority != 0 {
+		b.SetAttributeValue("priority", cty.NumberIntVal(int64(r.Priority)))
+	}
+	if r.Disabled {
+		b.SetAttributeValue("disabled", cty.True)
+	}
+	if len(r.Match) > 0 {
+		b.SetAttributeRaw("match", matchToTokens(r.Match))
+	}
+	if r.Verdict != "" {
+		b.SetAttributeValue("verdict", cty.StringVal(r.Verdict))
+	}
+	if r.Reason != "" {
+		b.SetAttributeValue("reason", cty.StringVal(r.Reason))
+	}
+	if len(r.Approve) > 0 {
+		b.SetAttributeRaw("approve", approveToTokens(r.Approve))
+	}
+}
+
+// matchToTokens emits a match map as `{ key = value, ... }`. Values
+// that are bare-name refs (currently only `credential = X`) get
+// emitted as identifiers, not quoted strings.
+func matchToTokens(m map[string]any) hclwrite.Tokens {
+	tokens := hclwrite.Tokens{
+		{Type: hclsyntax.TokenOBrace, Bytes: []byte("{ ")},
+	}
+	first := true
+	// Stable order: sorted keys.
+	keys := sortedKeys(m)
+	for _, k := range keys {
+		if !first {
+			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(", ")})
+		}
+		first = false
+		tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(k + " = ")})
+		tokens = append(tokens, valueTokens(k, m[k])...)
+	}
+	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCBrace, Bytes: []byte(" }")})
+	return tokens
+}
+
+func valueTokens(key string, v any) hclwrite.Tokens {
+	// `credential = X` is a bare-name ref.
+	if key == "credential" {
+		if s, ok := v.(string); ok {
+			return hclwrite.Tokens{{Type: hclsyntax.TokenIdent, Bytes: []byte(s)}}
+		}
+	}
+	// Other shapes emit via hclwrite.TokensForValue from the cty form.
+	cv, err := goToCty(v)
+	if err != nil {
+		return hclwrite.Tokens{{Type: hclsyntax.TokenIdent, Bytes: []byte("null")}}
+	}
+	return hclwrite.TokensForValue(cv)
+}
+
+func goToCty(v any) (cty.Value, error) {
+	switch x := v.(type) {
+	case nil:
+		return cty.NullVal(cty.DynamicPseudoType), nil
+	case string:
+		return cty.StringVal(x), nil
+	case bool:
+		return cty.BoolVal(x), nil
+	case int:
+		return cty.NumberIntVal(int64(x)), nil
+	case int64:
+		return cty.NumberIntVal(x), nil
+	case float64:
+		return cty.NumberFloatVal(x), nil
+	case []any:
+		if len(x) == 0 {
+			return cty.ListValEmpty(cty.String), nil
+		}
+		out := make([]cty.Value, len(x))
+		for i, e := range x {
+			cv, err := goToCty(e)
+			if err != nil {
+				return cty.NilVal, err
+			}
+			out[i] = cv
+		}
+		return cty.TupleVal(out), nil
+	case map[string]any:
+		out := make(map[string]cty.Value, len(x))
+		for k, e := range x {
+			cv, err := goToCty(e)
+			if err != nil {
+				return cty.NilVal, err
+			}
+			out[k] = cv
+		}
+		return cty.ObjectVal(out), nil
+	}
+	return cty.NilVal, fmt.Errorf("unsupported value type %T", v)
+}
+
+func sortedKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	// In-place sort. Avoiding sort import here is a wash; small.
+	for i := 1; i < len(keys); i++ {
+		for j := i; j > 0 && keys[j] < keys[j-1]; j-- {
+			keys[j], keys[j-1] = keys[j-1], keys[j]
+		}
+	}
+	return keys
+}
+
+// approveToTokens emits the approve list. Bare stages
+// (`{ Name: "x" }` only) emit as bare idents; struct stages emit as
+// object literals with `name`/`policy`/`cache_ttl`.
+func approveToTokens(stages []config.ApproveStage) hclwrite.Tokens {
+	tokens := hclwrite.Tokens{
+		{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")},
+	}
+	for i, s := range stages {
+		if i > 0 {
+			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(", ")})
+		}
+		if s.Policy == "" && s.CacheTTL == 0 {
+			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(s.Name)})
+			continue
+		}
+		tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte("{ name = " + s.Name)})
+		if s.Policy != "" {
+			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(", policy = " + s.Policy)})
+		}
+		if s.CacheTTL != 0 {
+			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(fmt.Sprintf(", cache_ttl = %d", s.CacheTTL))})
+		}
+		tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(" }")})
+	}
+	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")})
+	return tokens
+}
+
 func init() {
 	for typ, fam := range families {
 		fam := fam
@@ -416,6 +570,7 @@ func init() {
 			CompileRule: func(body any, _ string) (*config.CompiledRule, []string, error) {
 				return body.(*Rule).Compile()
 			},
+			Emit: emitRule,
 		})
 	}
 }
