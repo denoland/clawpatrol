@@ -1,0 +1,10 @@
+linters:
+  disable:
+    - errcheck
+  settings:
+    staticcheck:
+      checks:
+        - all
+        - -ST1005  # error string punctuation
+        - -ST1013  # http status constants
+        - -SA1019  # deprecated (fix later)
