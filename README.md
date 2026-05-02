@@ -1,6 +1,6 @@
 
 ```
-curl -fsSL https://denoland.github.io/clawpatrol-go/install.sh | sh
+curl -fsSL https://clawpatrol.dev/install.sh | sh
 ```
 
 ```
