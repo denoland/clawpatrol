@@ -50,22 +50,38 @@ export type Agent = {
 };
 
 export type RuleSummary = {
-  host: string;
-  device?: string;
+  // Rule's bare-name identifier (declared in HCL as
+  // `rule "<type>" "<name>"`). Unique across the file.
+  name: string;
+  // "https" | "sql" | "k8s" — protocol family the rule's match
+  // facets apply to. Determines which fields appear in `match`.
+  family: string;
+  // Endpoint this rule attaches to. Multi-endpoint rules emit one
+  // RuleSummary per attachment site.
+  endpoint: string;
+  // Profile that includes the endpoint. Empty when the row came
+  // back from a non-profile-scoped query.
   profile?: string;
-  port?: number;
-  action?: string;
-  approve?: string[];
+  // Priority — higher wins. Negative values are catch-alls;
+  // priority 0 is the default declaration-order tier.
+  priority?: number;
+  disabled?: boolean;
+  // verdict: "allow" | "deny". Empty when approve = [...] is the
+  // outcome instead.
+  verdict?: string;
   reason?: string;
-  auth?: string;
-  body?: boolean;
-  ws_scan?: boolean;
-  match?: {
-    method?: string[];
-    path?: string;
-    query?: Record<string, string[]>;
-    headers?: Record<string, string>;
-  };
+  // Approve chain stages. Each stage names an approver (LLM or
+  // human); some stages additionally bind a policy + cache_ttl.
+  approve?: Array<{
+    name: string;
+    policy?: string;
+    cache_ttl?: number;
+  }>;
+  // Match facet map. Keys vary by family — http rules have
+  // method / path / headers; sql rules have verb / tables / function;
+  // k8s rules have resource / verb / namespace / name. Values are
+  // either a string or a list of strings; "!prefix" entries negate.
+  match?: Record<string, unknown>;
 };
 
 export async function getRules(): Promise<RuleSummary[]> {
