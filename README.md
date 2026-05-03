@@ -6,7 +6,7 @@ curl -fsSL https://denoland.github.io/clawpatrol-go/install.sh | sh
 ```
 clawpatrol gateway init --admin-email you@example.com
 
-Detected public IP: 203.0.113.10
+Detected public IP: gw.example.com
 ├ Generated CA at /etc/clawpatrol/ca/ca.crt
 ├ Wrote /etc/clawpatrol/gateway.hcl
 ├ Opened udp/51820 + tcp/9080
