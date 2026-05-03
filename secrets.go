@@ -35,42 +35,27 @@ func (s *gatewaySecretStore) Get(name, owner string) (runtime.Secret, error) {
 	return s.env.Get(name, owner)
 }
 
-// oauthCredentialTypes maps the v14 credential type → built-in OAuth
-// flow definition (auth URL / token URL / scopes / etc.). Credentials
-// of these types get registered with OAuthRegistry under their bare
-// name so the dashboard's connect / revoke / device-flow handlers
-// see them.
-var oauthCredentialTypes = map[string]string{
-	// Anthropic OAuth subscription reuses the existing "claude"
-	// integration default — same client_id, scopes, and refresh
-	// behaviour the legacy claude integration had.
-	"anthropic_oauth_subscription": "claude",
-	"openai_codex_oauth":           "codex",
-	// notion_oauth and the remaining OAuth-shaped credentials don't
-	// have a built-in default yet. Operators set CLAWPATROL_SECRET_<NAME>
-	// for now; a follow-up adds notion / slack / etc. defaults.
-}
-
 // registerOAuthCredentials walks the loaded policy and registers each
-// OAuth-type credential with the OAuthRegistry under its bare name.
-// Idempotent — safe to call on every config reload.
+// OAuth-flow credential with the OAuthRegistry under its bare name.
+// The OAuth flow data (auth/token URLs, scopes, client id) lives on
+// the credential plugin itself via the OAuthFlow() method — see
+// config/plugins/credentials/oauth_flows.go. Idempotent — safe to
+// call on every config reload.
 func registerOAuthCredentials(reg *OAuthRegistry, policy *config.CompiledPolicy) {
 	if reg == nil || policy == nil {
 		return
 	}
 	for name, ent := range policy.Credentials {
-		defaultID, ok := oauthCredentialTypes[ent.Plugin.Type]
+		fp, ok := ent.Body.(config.OAuthFlowProvider)
 		if !ok {
 			continue
 		}
-		def := defaultOAuthByID(defaultID)
-		if def == nil {
+		flow := fp.OAuthFlow()
+		if flow == nil {
 			continue
 		}
-		// Copy by value so the registered definition's ID matches the
-		// credential's bare name (the registry keys by ID).
-		copy := *def
-		copy.ID = name
+		copy := *flow
+		copy.ID = name // registry keys by ID; bare name is the lookup key
 		reg.Register(name, copy)
 	}
 }

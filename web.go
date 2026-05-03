@@ -351,13 +351,20 @@ func (w *webMux) apiWhoami(rw http.ResponseWriter, r *http.Request) {
 
 func (w *webMux) apiStatus(rw http.ResponseWriter, _ *http.Request) {
 	out := []IntegrationRow{}
-	for _, name := range allIntegrationKeys() {
-		def, ok := defaultIntegrations[name]
-		if !ok {
-			continue
-		}
+	policy := w.g.policy.Load()
+	if policy == nil {
+		writeJSON(rw, out)
+		return
+	}
+	names := make([]string, 0, len(policy.Credentials))
+	for name := range policy.Credentials {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		ent := policy.Credentials[name]
 		row := IntegrationRow{ID: name, Name: name}
-		if def.OAuth != nil {
+		if _, ok := ent.Body.(config.OAuthFlowProvider); ok {
 			row.HasOAuth = true
 			for _, owner := range w.g.oauth.Owners(name) {
 				connected, exp := w.g.oauth.Status(name, owner)
@@ -371,6 +378,24 @@ func (w *webMux) apiStatus(rw http.ResponseWriter, _ *http.Request) {
 		out = append(out, row)
 	}
 	writeJSON(rw, out)
+}
+
+// lookupOAuthFlow finds the OAuth flow for a credential bare name in
+// the loaded policy. Returns nil when the credential doesn't exist or
+// the credential type isn't an OAuth-flow type.
+func lookupOAuthFlow(policy *config.CompiledPolicy, name string) *config.OAuthIntegration {
+	if policy == nil {
+		return nil
+	}
+	ent, ok := policy.Credentials[name]
+	if !ok {
+		return nil
+	}
+	fp, ok := ent.Body.(config.OAuthFlowProvider)
+	if !ok {
+		return nil
+	}
+	return fp.OAuthFlow()
 }
 
 func (w *webMux) apiAgents(rw http.ResponseWriter, _ *http.Request) {
@@ -697,8 +722,8 @@ func (w *webMux) apiOAuthStart(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.URL.Query().Get("id")
-	def, ok := defaultIntegrations[id]
-	if !ok || def.OAuth == nil {
+	flow := lookupOAuthFlow(w.g.policy.Load(), id)
+	if flow == nil {
 		http.Error(rw, "no oauth integration: "+id, 400)
 		return
 	}
@@ -708,8 +733,8 @@ func (w *webMux) apiOAuthStart(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Branch: device flow vs auth-code+PKCE.
-	if def.OAuth.Flow == "device" {
-		w.startDeviceFlow(rw, def.OAuth, owner, ownerLabel)
+	if flow.Flow == "device" {
+		w.startDeviceFlow(rw, flow, owner, ownerLabel)
 		return
 	}
 
@@ -718,11 +743,11 @@ func (w *webMux) apiOAuthStart(rw http.ResponseWriter, r *http.Request) {
 	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
 	state := randomString(32)
 	cfg := &oauth2.Config{
-		ClientID:     resolveTemplate(def.OAuth.OAuth.ClientID),
-		ClientSecret: resolveTemplate(def.OAuth.OAuth.ClientSecret),
-		Scopes:       def.OAuth.OAuth.Scopes,
-		RedirectURL:  def.OAuth.OAuth.RedirectURI,
-		Endpoint:     oauth2.Endpoint{AuthURL: def.OAuth.OAuth.AuthURL, TokenURL: def.OAuth.OAuth.TokenURL},
+		ClientID:     resolveTemplate(flow.OAuth.ClientID),
+		ClientSecret: resolveTemplate(flow.OAuth.ClientSecret),
+		Scopes:       flow.OAuth.Scopes,
+		RedirectURL:  flow.OAuth.RedirectURI,
+		Endpoint:     oauth2.Endpoint{AuthURL: flow.OAuth.AuthURL, TokenURL: flow.OAuth.TokenURL},
 	}
 	authURL := cfg.AuthCodeURL(state,
 		oauth2.SetAuthURLParam("code_challenge", challenge),

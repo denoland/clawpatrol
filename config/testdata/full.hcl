@@ -365,8 +365,14 @@ defaults {
 # `billing-strict` requires two approvers (`require_approvers = 2`)
 # for the highest-blast-radius Stripe operations.
 
-approver "llm_approver" "fast"           { model = "claude-haiku-4-5-20251001" }
-approver "llm_approver" "content-safety" { model = "claude-sonnet-4-20250514" }
+approver "llm_approver" "fast" {
+  model      = "claude-haiku-4-5-20251001"
+  credential = anthropic-avocet-sub
+}
+approver "llm_approver" "content-safety" {
+  model      = "claude-sonnet-4-20250514"
+  credential = anthropic-avocet-sub
+}
 
 approver "human_approver" "support-ops" {
   channel = "#agent-support"

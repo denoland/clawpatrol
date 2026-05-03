@@ -12,29 +12,19 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+
+	"github.com/denoland/clawpatrol-go/config"
 )
 
 const ScopeUser = "user"
 
-type OAuthConfig struct {
-	ClientID     string   `yaml:"client_id"`
-	ClientSecret string   `yaml:"client_secret"`
-	AuthURL      string   `yaml:"auth_url"`
-	TokenURL     string   `yaml:"token_url"`
-	DeviceURL    string   `yaml:"device_url"` // used by Flow="device"
-	RedirectURI  string   `yaml:"redirect_uri"`
-	Scopes       []string `yaml:"scopes"`
-	RefreshToken string   `yaml:"refresh_token"` // bootstrap; per-owner tokens override
-}
-
-type OAuthIntegration struct {
-	ID     string      `yaml:"id"`
-	Type   string      `yaml:"type"`
-	Header string      `yaml:"header"`
-	Prefix string      `yaml:"prefix"`
-	Flow   string      `yaml:"flow"` // "auth_code" (default) | "device"
-	OAuth  OAuthConfig `yaml:"oauth"`
-}
+// OAuthConfig + OAuthIntegration moved to config/oauth.go so credential
+// plugins can ship their own OAuth flow data without import cycles.
+// Aliased here so existing call sites in this package don't churn.
+type (
+	OAuthConfig      = config.OAuthConfig
+	OAuthIntegration = config.OAuthIntegration
+)
 
 type tokenStore struct {
 	AccessToken  string    `json:"access_token"`

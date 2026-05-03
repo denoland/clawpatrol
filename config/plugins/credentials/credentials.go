@@ -65,7 +65,13 @@ type SlackTokens struct{}
 
 type TelegramBotToken struct{}
 type GeminiAPIKey struct{}
+
+// OpenAICodexOAuth + GitHubOAuth — both OAuth-flow bearer tokens.
+// Empty body; the credential's NAME is the OAuthRegistry lookup key
+// (registered via secrets.go's registerOAuthCredentials at policy-
+// load time).
 type OpenAICodexOAuth struct{}
+type GitHubOAuth struct{}
 type NotionOAuth struct{}
 
 type ClickhouseCredential struct {
@@ -182,6 +188,26 @@ func (a *AnthropicOAuthSubscription) InjectHTTP(_ context.Context, req *http.Req
 	return nil
 }
 
+// OpenAICodexOAuth: bearer token for the codex OAuth flow.
+// api.openai.com + chatgpt.com both accept `Authorization: Bearer ...`.
+func (a *OpenAICodexOAuth) InjectHTTP(_ context.Context, req *http.Request, sec runtime.Secret) error {
+	if len(sec.Bytes) == 0 {
+		return nil
+	}
+	req.Header.Set("Authorization", "Bearer "+string(sec.Bytes))
+	return nil
+}
+
+// GitHubOAuth: bearer token from gh's device-flow OAuth. Used by
+// gh CLI + the GitHub REST API (api.github.com / raw.githubusercontent.com).
+func (g *GitHubOAuth) InjectHTTP(_ context.Context, req *http.Request, sec runtime.Secret) error {
+	if len(sec.Bytes) == 0 {
+		return nil
+	}
+	req.Header.Set("Authorization", "Bearer "+string(sec.Bytes))
+	return nil
+}
+
 // ensureBeta appends `beta` to a comma-separated `anthropic-beta`
 // header if it isn't already present. Anthropic gates experimental
 // features (including OAuth bearer auth) behind these tokens.
@@ -264,7 +290,8 @@ func init() {
 		{"slack_tokens", newer[SlackTokens](), nil},
 		{"telegram_bot_token", newer[TelegramBotToken](), nil},
 		{"gemini_api_key", newer[GeminiAPIKey](), nil},
-		{"openai_codex_oauth", newer[OpenAICodexOAuth](), nil},
+		{"openai_codex_oauth", newer[OpenAICodexOAuth](), (*OpenAICodexOAuth)(nil)},
+		{"github_oauth", newer[GitHubOAuth](), (*GitHubOAuth)(nil)},
 		{"notion_oauth", newer[NotionOAuth](), nil},
 		{"clickhouse_credential", newer[ClickhouseCredential](), nil},
 		{"aws_eks_credential", newer[AWSEKSCredential](), nil},
@@ -289,6 +316,8 @@ func init() {
 		_ runtime.HTTPCredentialRuntime = (*HeaderToken)(nil)
 		_ runtime.HTTPCredentialRuntime = (*AnthropicManualKey)(nil)
 		_ runtime.HTTPCredentialRuntime = (*AnthropicOAuthSubscription)(nil)
+		_ runtime.HTTPCredentialRuntime = (*OpenAICodexOAuth)(nil)
+		_ runtime.HTTPCredentialRuntime = (*GitHubOAuth)(nil)
 		_ runtime.TLSCredentialRuntime  = (*MTLSCredential)(nil)
 	)
 }

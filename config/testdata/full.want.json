@@ -27,13 +27,15 @@
       },
       "content-safety": {
         "body": {
-          "Model": "claude-sonnet-4-20250514"
+          "Model": "claude-sonnet-4-20250514",
+          "Credential": "anthropic-avocet-sub"
         },
         "type": "llm_approver"
       },
       "fast": {
         "body": {
-          "Model": "claude-haiku-4-5-20251001"
+          "Model": "claude-haiku-4-5-20251001",
+          "Credential": "anthropic-avocet-sub"
         },
         "type": "llm_approver"
       },

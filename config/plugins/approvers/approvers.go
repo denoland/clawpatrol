@@ -11,11 +11,18 @@ import (
 	"github.com/denoland/clawpatrol-go/config"
 )
 
-// LLMApprover only carries the model — the prompt itself comes from
-// the per-rule `policy = ...` reference, so the same approver instance
-// can be reused across many rules with different prompts.
+// LLMApprover carries the model + the credential used to authenticate
+// the call to the model API. The prompt comes from the per-rule
+// `policy = ...` reference, so the same approver can be reused across
+// many rules with different prompts.
+//
+// Credential resolves at load time against the symbol table — the
+// runtime fetches its access token via the SecretStore at call time,
+// so OAuth refresh / per-profile token rotation works the same way it
+// does for credential injection on endpoint requests.
 type LLMApprover struct {
-	Model string `hcl:"model"`
+	Model      string `hcl:"model"`
+	Credential string `hcl:"credential"`
 }
 
 // HumanApprover targets one Slack channel. Timeout / require_approvers
@@ -28,13 +35,17 @@ type HumanApprover struct {
 
 func init() {
 	config.Register(&config.Plugin{
-		Kind:  config.KindApprover,
-		Type:  "llm_approver",
-		New:   func() any { return &LLMApprover{} },
+		Kind: config.KindApprover,
+		Type: "llm_approver",
+		New:  func() any { return &LLMApprover{} },
+		Refs: []config.RefSpec{
+			{Path: "Credential", Kind: config.KindCredential},
+		},
 		Build: func(d any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics) { return d, nil },
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			a := body.(*LLMApprover)
 			b.SetAttributeValue("model", cty.StringVal(a.Model))
+			config.SetIdent(b, "credential", a.Credential)
 		},
 	})
 	config.Register(&config.Plugin{
