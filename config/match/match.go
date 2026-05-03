@@ -56,10 +56,10 @@ type K8sMeta struct {
 // SQLMeta describes one parsed SQL statement. The pg / clickhouse
 // front-ends populate it before walking the rule list.
 type SQLMeta struct {
-	Verb       string   // select | insert | update | delete | merge | ...
-	Tables     []string // unqualified table names referenced
-	Functions  []string // unqualified function names called
-	Statement  string   // the raw text — exposed for `statement` /
+	Verb      string   // select | insert | update | delete | merge | ...
+	Tables    []string // unqualified table names referenced
+	Functions []string // unqualified function names called
+	Statement string   // the raw text — exposed for `statement` /
 	// `statement_regex` matchers
 }
 

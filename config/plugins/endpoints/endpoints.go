@@ -112,11 +112,15 @@ func singleBinding(name string) []config.CredBinding {
 	return []config.CredBinding{{Credential: name}}
 }
 
-func (e *HTTPSEndpoint) EndpointHosts() []string              { return e.Hosts }
-func (e *HTTPSEndpoint) EndpointCredentials() []config.CredBinding { return bindings(e.Credential, e.Credentials) }
+func (e *HTTPSEndpoint) EndpointHosts() []string { return e.Hosts }
+func (e *HTTPSEndpoint) EndpointCredentials() []config.CredBinding {
+	return bindings(e.Credential, e.Credentials)
+}
 
-func (e *PostgresEndpoint) EndpointHosts() []string                  { return []string{e.Host} }
-func (e *PostgresEndpoint) EndpointCredentials() []config.CredBinding { return bindings(e.Credential, e.Credentials) }
+func (e *PostgresEndpoint) EndpointHosts() []string { return []string{e.Host} }
+func (e *PostgresEndpoint) EndpointCredentials() []config.CredBinding {
+	return bindings(e.Credential, e.Credentials)
+}
 
 func (e *KubernetesEndpoint) EndpointHosts() []string {
 	if len(e.Hosts) > 0 {
@@ -136,13 +140,19 @@ func (e *KubernetesEndpoint) FileIncludeFields() []config.FileIncludeField {
 		{Get: func() string { return e.CACert }, Set: func(v string) { e.CACert = v }},
 	}
 }
-func (e *KubernetesEndpoint) EndpointCredentials() []config.CredBinding { return singleBinding(e.Credential) }
+func (e *KubernetesEndpoint) EndpointCredentials() []config.CredBinding {
+	return singleBinding(e.Credential)
+}
 
-func (e *ClickhouseHTTPSEndpoint) EndpointHosts() []string                  { return e.Hosts }
-func (e *ClickhouseHTTPSEndpoint) EndpointCredentials() []config.CredBinding { return singleBinding(e.Credential) }
+func (e *ClickhouseHTTPSEndpoint) EndpointHosts() []string { return e.Hosts }
+func (e *ClickhouseHTTPSEndpoint) EndpointCredentials() []config.CredBinding {
+	return singleBinding(e.Credential)
+}
 
-func (e *ClickhouseNativeEndpoint) EndpointHosts() []string                  { return e.Hosts }
-func (e *ClickhouseNativeEndpoint) EndpointCredentials() []config.CredBinding { return singleBinding(e.Credential) }
+func (e *ClickhouseNativeEndpoint) EndpointHosts() []string { return e.Hosts }
+func (e *ClickhouseNativeEndpoint) EndpointCredentials() []config.CredBinding {
+	return singleBinding(e.Credential)
+}
 
 // ── Endpoint runtimes ────────────────────────────────────────────────
 //

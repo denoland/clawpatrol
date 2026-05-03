@@ -482,16 +482,16 @@ func (w *webMux) apiProfiles(rw http.ResponseWriter, _ *http.Request) {
 // context so the table view doesn't need to walk the policy graph
 // itself.
 type RuleSummary struct {
-	Name      string                  `json:"name"`
-	Family    string                  `json:"family"` // "https" | "sql" | "k8s"
-	Endpoint  string                  `json:"endpoint"`
-	Profile   string                  `json:"profile,omitempty"`
-	Priority  int                     `json:"priority,omitempty"`
-	Disabled  bool                    `json:"disabled,omitempty"`
-	Match     map[string]any          `json:"match,omitempty"`
-	Verdict   string                  `json:"verdict,omitempty"`
-	Reason    string                  `json:"reason,omitempty"`
-	Approve   []config.ApproveStage   `json:"approve,omitempty"`
+	Name     string                `json:"name"`
+	Family   string                `json:"family"` // "https" | "sql" | "k8s"
+	Endpoint string                `json:"endpoint"`
+	Profile  string                `json:"profile,omitempty"`
+	Priority int                   `json:"priority,omitempty"`
+	Disabled bool                  `json:"disabled,omitempty"`
+	Match    map[string]any        `json:"match,omitempty"`
+	Verdict  string                `json:"verdict,omitempty"`
+	Reason   string                `json:"reason,omitempty"`
+	Approve  []config.ApproveStage `json:"approve,omitempty"`
 }
 
 // apiRules returns every compiled rule across every profile, flattened

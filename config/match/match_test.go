@@ -23,10 +23,10 @@ func httpReq(method, path string) *match.Request {
 
 func TestHTTPMatcherMethodAndPath(t *testing.T) {
 	cases := []struct {
-		name   string
-		raw    map[string]any
-		req    *match.Request
-		want   bool
+		name string
+		raw  map[string]any
+		req  *match.Request
+		want bool
 	}{
 		{
 			"empty match → match-all",

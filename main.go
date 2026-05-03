@@ -82,7 +82,6 @@ func orderedProfileNames(p *config.Policy) []string {
 	return out
 }
 
-
 func peekSNI(c net.Conn) (string, []byte, error) {
 	c.SetReadDeadline(time.Now().Add(10 * time.Second))
 	defer c.SetReadDeadline(time.Time{})
@@ -1306,7 +1305,6 @@ func defaultHITLTimeout(p *config.CompiledPolicy) time.Duration {
 	}
 	return 60 * time.Second
 }
-
 
 func main() {
 	if len(os.Args) < 2 {
