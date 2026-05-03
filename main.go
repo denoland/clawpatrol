@@ -25,6 +25,7 @@ import (
 	"github.com/denoland/clawpatrol-go/config"
 	"github.com/denoland/clawpatrol-go/config/match"
 	_ "github.com/denoland/clawpatrol-go/config/plugins/all"
+	"github.com/denoland/clawpatrol-go/config/plugins/approvers"
 	"github.com/denoland/clawpatrol-go/config/runtime"
 )
 
@@ -912,26 +913,11 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 			})
 		},
 		Approve: func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
-			names := make([]string, len(req.Stages))
-			for i, s := range req.Stages {
-				names[i] = s.Name
-			}
-			pending := &HITLPending{
-				AgentIP:   pip,
-				Host:      dstIP,
-				Method:    req.Verb,
-				Path:      req.Summary,
-				Reason:    "",
-				Approvers: names,
-			}
-			if req.Rule != nil {
-				pending.Reason = req.Rule.Outcome.Reason
-			}
-			d := g.hitl.Wait(context.Background(), pending, defaultHITLTimeout(g.Policy()))
-			if d.Allow {
-				return runtime.ApproveVerdict{Decision: "allow"}
-			}
-			return runtime.ApproveVerdict{Decision: "deny", Reason: d.Reason}
+			return g.runApproveChain(context.Background(), req.Stages, runApproveCtx{
+				AgentIP: pip, Host: dstIP, Method: req.Verb, Path: req.Summary,
+				Reason:   ifNotEmpty(req.Rule, func(r *config.CompiledRule) string { return r.Outcome.Reason }),
+				Endpoint: ep, Rule: req.Rule, Profile: profile,
+			})
 		},
 	}
 	if err := connRT.HandleConn(context.Background(), ch); err != nil {
@@ -1045,6 +1031,7 @@ func pipe(a, b net.Conn) (rx, tx int64) {
 // matched requests forward verbatim.
 func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint) {
 	agentAddr := peerIP(c)
+	profile := g.profileFor(agentAddr)
 	cert, err := g.certs.mint(host)
 	if err != nil {
 		log.Printf("mint %s: %v", host, err)
@@ -1132,31 +1119,21 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 
 		cr := runtime.MatchRequest(ep, mreq)
 
-		// Approve chain — translate stage names into the legacy
-		// HITL approver name list (the dashboard / Slack / LLM
-		// notifiers register themselves under those names already).
+		// Approve chain — dispatch each stage to its approver
+		// runtime (config/plugins/approvers). All stages must
+		// allow; first deny short-circuits.
 		if cr != nil && len(cr.Outcome.Approve) > 0 {
-			names := make([]string, len(cr.Outcome.Approve))
-			for i, s := range cr.Outcome.Approve {
-				names[i] = s.Name
-			}
-			pending := &HITLPending{
-				AgentIP:   pip,
-				Host:      host,
-				Method:    req.Method,
-				Path:      req.URL.Path,
-				UA:        req.Header.Get("User-Agent"),
-				Reason:    cr.Outcome.Reason,
-				Approvers: names,
-			}
-			timeout := defaultHITLTimeout(g.Policy())
-			d := g.hitl.Wait(req.Context(), pending, timeout)
-			if !d.Allow {
-				reason := d.Reason
+			v := g.runApproveChain(req.Context(), cr.Outcome.Approve, runApproveCtx{
+				AgentIP: pip, Host: host, Method: req.Method, Path: req.URL.Path,
+				UA: req.Header.Get("User-Agent"), Reason: cr.Outcome.Reason,
+				Endpoint: ep, Rule: cr, Profile: profile,
+			})
+			if v.Decision != "allow" {
+				reason := v.Reason
 				if reason == "" {
 					reason = "denied by approver"
 				}
-				log.Printf("hitl-deny %s %s %s: %s (by %s)", host, req.Method, req.URL.Path, reason, d.By)
+				log.Printf("hitl-deny %s %s %s: %s (by %s)", host, req.Method, req.URL.Path, reason, v.By)
 				fmt.Fprintf(tc, "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(reason), reason)
 				ev.Status = 403
 				ev.Action = "hitl_deny"
@@ -1165,7 +1142,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				g.sink.Emit(ev)
 				return
 			}
-			log.Printf("hitl-allow %s %s %s by %s", host, req.Method, req.URL.Path, d.By)
+			log.Printf("hitl-allow %s %s %s by %s", host, req.Method, req.URL.Path, v.By)
 			ev.Action = "hitl_allow"
 		}
 
@@ -1333,6 +1310,92 @@ func secretEnvName(credName string) string {
 // defaultHITLTimeout returns the configured human approver timeout
 // (defaults.human_timeout) or the legacy 60s default when nothing
 // is configured. Per-approver timeouts overlay this in a follow-up.
+// runApproveCtx is the context blob the dispatcher passes per stage —
+// HITL prompt fields + the matching rule + the device's profile.
+type runApproveCtx struct {
+	AgentIP    string
+	Host       string
+	Method     string
+	Path       string
+	UA         string
+	BodySample string
+	Reason     string
+	Endpoint   *config.CompiledEndpoint
+	Rule       *config.CompiledRule
+	Profile    string
+}
+
+// runApproveChain dispatches each stage of an approve = [...] list to
+// the matching approver entity's runtime. All-must-allow semantics —
+// the first non-allow verdict short-circuits and is returned. Built-in
+// `dashboard` is handled inline (no policy entity needed).
+func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveStage, c runApproveCtx) runtime.ApproveVerdict {
+	policy := g.Policy()
+	for _, st := range stages {
+		var ar runtime.ApproverRuntime
+		if st.Name == "dashboard" {
+			ar = approvers.DashboardApprover{}
+		} else if policy != nil {
+			if ent, ok := policy.Approvers[st.Name]; ok {
+				if rt, ok := ent.Body.(runtime.ApproverRuntime); ok {
+					ar = rt
+				}
+			}
+		}
+		if ar == nil {
+			return runtime.ApproveVerdict{Decision: "deny", Reason: "approver " + st.Name + " not found", By: "gateway"}
+		}
+		var policyText string
+		if st.Policy != "" && policy != nil {
+			if pt, ok := policy.Policies[st.Policy]; ok {
+				policyText = pt.Text
+			}
+		}
+		req := runtime.ApproveRequest{
+			Stage:        st,
+			Endpoint:     c.Endpoint,
+			Rule:         c.Rule,
+			ApproverName: st.Name,
+			Profile:      c.Profile,
+			Method:       c.Method,
+			Host:         c.Host,
+			Path:         c.Path,
+			UA:           c.UA,
+			BodySample:   c.BodySample,
+			Reason:       c.Reason,
+			Pool:         g.hitl,
+			Secrets:      g.secrets,
+			DashboardURL: g.cfg.PublicURL,
+			PolicyText:   policyText,
+		}
+		if policy != nil {
+			req.Defaults = policy.Defaults
+		}
+		v, err := ar.Approve(ctx, req)
+		if err != nil {
+			return runtime.ApproveVerdict{Decision: "deny", Reason: err.Error(), By: "gateway"}
+		}
+		if v.Decision != "allow" {
+			if v.Decision == "" {
+				v.Decision = "deny"
+				if v.Reason == "" {
+					v.Reason = "approver " + st.Name + " timed out"
+				}
+			}
+			return v
+		}
+	}
+	return runtime.ApproveVerdict{Decision: "allow"}
+}
+
+// ifNotEmpty returns f(v) when v != nil, else "".
+func ifNotEmpty(r *config.CompiledRule, f func(*config.CompiledRule) string) string {
+	if r == nil {
+		return ""
+	}
+	return f(r)
+}
+
 func defaultHITLTimeout(p *config.CompiledPolicy) time.Duration {
 	if p != nil && p.Defaults.HumanTimeout > 0 {
 		return time.Duration(p.Defaults.HumanTimeout) * time.Second
@@ -1464,7 +1527,7 @@ func runGateway(args []string) {
 		sink:    sink,
 		oauth:   oauthReg,
 		agents:  NewAgentRegistry(),
-		hitl:    newHITLRegistry(),
+		hitl:    newHITLRegistry(sink),
 		onboard: newOnboardRegistry(),
 	}
 	g.secrets = newGatewaySecretStore(db, oauthReg)
@@ -1491,12 +1554,9 @@ func runGateway(args []string) {
 		rows.Close()
 	}
 
-	// always-on built-in HITL notifier: fan-out to dashboard SSE.
-	g.hitl.Register(&hitlSinkNotifier{sink: g.sink})
-	// One Slack notifier per `human_approver` block whose `credential`
-	// names a slack_tokens credential. Token is fetched at notify
-	// time so dashboard rotations apply without restart.
-	registerSlackHITLNotifiers(g, policy, cfg.PublicURL)
+	// HITL notifications fan-out via the approver runtimes
+	// (config/plugins/approvers); the registry's Add hook emits
+	// the SSE event for the dashboard.
 
 	if cfg.InfoListen != "" {
 		mux := newWebMux(g, cfg.CADir, *cfg.Tailscale, cfg.PublicURL)

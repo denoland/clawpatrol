@@ -82,7 +82,7 @@ export default function App() {
           </div>
           <section className="bg-white border border-[#e5e5e5] rounded overflow-hidden">
             <div className="overflow-x-auto">
-              <AgentsTable agents={agents} onSelect={(ip) => navigate("#/device/" + encodeURIComponent(ip))} />
+              <AgentsTable agents={agents} integrations={integrations} onSelect={(ip) => navigate("#/device/" + encodeURIComponent(ip))} />
             </div>
           </section>
           <HITLBar />

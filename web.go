@@ -28,6 +28,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/denoland/clawpatrol-go/config"
+	"github.com/denoland/clawpatrol-go/config/runtime"
 )
 
 //go:embed all:www/dist
@@ -572,10 +573,27 @@ func (w *webMux) apiAgents(rw http.ResponseWriter, _ *http.Request) {
 		if profile == "" {
 			continue
 		}
+		// Walk every declared credential — connected if either an
+		// OAuth token exists OR the operator pasted a secret slot via
+		// the dashboard. Was hardcoded to the claude/codex/github
+		// legacy trio, which silently hid every other credential type
+		// from the agents table.
 		var ids []string
-		for _, id := range allIntegrationKeys() {
-			if conn, _ := w.g.oauth.Status(id, profile); conn {
-				ids = append(ids, id)
+		if policy := w.g.Policy(); policy != nil {
+			names := make([]string, 0, len(policy.Credentials))
+			for name := range policy.Credentials {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				if conn, _ := w.g.oauth.Status(name, profile); conn {
+					ids = append(ids, name)
+					continue
+				}
+				present, _ := credentialSlotPresence(w.g.db, name, profile)
+				if len(present) > 0 {
+					ids = append(ids, name)
+				}
 			}
 		}
 		if ids != nil {
@@ -947,7 +965,7 @@ func (w *webMux) apiHITLDecide(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	owner, _ := w.ownerForCaller(r)
-	ok := w.g.hitl.Decide(body.ID, HITLDecision{Allow: body.Allow, By: owner})
+	ok := w.g.hitl.Decide(body.ID, runtime.HITLDecision{Allow: body.Allow, By: owner})
 	writeJSON(rw, map[string]bool{"ok": ok})
 }
 
@@ -1787,121 +1805,83 @@ func wrapBodySampler(rc io.ReadCloser, s *sampler) io.ReadCloser {
 // after Rule.HITLTimeout (default 60s). Notifier plugins (Slack,
 // web-push, etc.) are fired when an approval becomes pending.
 
-type HITLDecision struct {
-	Allow  bool
-	Reason string
-	By     string // user who approved
-}
+// HITLPending and HITLDecision moved to config/runtime — declared
+// there so approver plugins can produce them without importing main.
 
-type HITLPending struct {
-	ID         string    `json:"id"`
-	AgentIP    string    `json:"agent_ip"`
-	Host       string    `json:"host"`
-	Method     string    `json:"method"`
-	Path       string    `json:"path"`
-	UA         string    `json:"ua,omitempty"`
-	BodySample string    `json:"body_sample,omitempty"`
-	Reason     string    `json:"reason,omitempty"`
-	Approvers  []string  `json:"approvers,omitempty"` // names from rule.Approve
-	CreatedAt  time.Time `json:"created_at"`
-	ExpiresAt  time.Time `json:"expires_at"`
-	decision   chan HITLDecision
-}
-
-type HITLNotifier interface {
-	Notify(p *HITLPending)
-}
-
+// HITLRegistry is the pool of pending approvals + per-pending decision
+// channel. Approver runtimes (config/plugins/approvers) call Add to
+// publish a pending entry and select on the returned channel.
+// Dashboard's PUT /api/hitl/decide calls Decide(id, allow) to resolve.
+//
+// Implements runtime.HITLPool via Add / Discard.
 type HITLRegistry struct {
-	mu        sync.Mutex
-	pending   map[string]*HITLPending
-	notifiers []HITLNotifier
+	mu      sync.Mutex
+	pending map[string]*pendingEntry
+	sink    *Sink // SSE fan-out for the dashboard
 }
 
-func newHITLRegistry() *HITLRegistry {
-	return &HITLRegistry{pending: map[string]*HITLPending{}}
+type pendingEntry struct {
+	p        runtime.HITLPending
+	decision chan runtime.HITLDecision
 }
 
-func (r *HITLRegistry) Register(n HITLNotifier) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.notifiers = append(r.notifiers, n)
+func newHITLRegistry(sink *Sink) *HITLRegistry {
+	return &HITLRegistry{pending: map[string]*pendingEntry{}, sink: sink}
 }
 
-// Wait registers a pending approval and blocks until decision OR ctx
-// timeout. Notifier plugins are fired (best-effort) before the wait.
-func (r *HITLRegistry) Wait(ctx context.Context, p *HITLPending, timeout time.Duration) HITLDecision {
-	if timeout <= 0 {
-		timeout = 60 * time.Second
-	}
+// Add publishes a pending entry and returns its assigned id + a
+// decision channel. Caller selects on the channel and calls Discard
+// when ctx fires before the channel.
+func (r *HITLRegistry) Add(p runtime.HITLPending) (string, <-chan runtime.HITLDecision) {
 	p.ID = randomString(16)
-	p.CreatedAt = time.Now()
-	p.ExpiresAt = p.CreatedAt.Add(timeout)
-	p.decision = make(chan HITLDecision, 1)
-
+	if p.CreatedAt.IsZero() {
+		p.CreatedAt = time.Now()
+	}
+	if p.ExpiresAt.IsZero() {
+		p.ExpiresAt = p.CreatedAt.Add(30 * time.Minute)
+	}
+	ch := make(chan runtime.HITLDecision, 1)
 	r.mu.Lock()
-	r.pending[p.ID] = p
-	notifiers := append([]HITLNotifier(nil), r.notifiers...)
+	r.pending[p.ID] = &pendingEntry{p: p, decision: ch}
 	r.mu.Unlock()
-
-	for _, n := range notifiers {
-		go func(n HITLNotifier) { n.Notify(p) }(n)
+	if r.sink != nil {
+		r.sink.Emit(Event{
+			Mode: "hitl_pending", Host: p.Host, Method: p.Method,
+			Path: p.Path, AgentIP: p.AgentIP, Reason: p.Reason, Action: "pending",
+		})
 	}
-
-	defer func() {
-		r.mu.Lock()
-		delete(r.pending, p.ID)
-		r.mu.Unlock()
-	}()
-
-	select {
-	case d := <-p.decision:
-		return d
-	case <-time.After(timeout):
-		return HITLDecision{Allow: false, Reason: "approval timed out"}
-	case <-ctx.Done():
-		return HITLDecision{Allow: false, Reason: "request cancelled"}
-	}
+	return p.ID, ch
 }
 
-func (r *HITLRegistry) List() []*HITLPending {
+func (r *HITLRegistry) Discard(id string) {
+	r.mu.Lock()
+	delete(r.pending, id)
+	r.mu.Unlock()
+}
+
+func (r *HITLRegistry) List() []runtime.HITLPending {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := make([]*HITLPending, 0, len(r.pending))
-	for _, p := range r.pending {
-		out = append(out, p)
+	out := make([]runtime.HITLPending, 0, len(r.pending))
+	for _, e := range r.pending {
+		out = append(out, e.p)
 	}
 	return out
 }
 
-func (r *HITLRegistry) Decide(id string, d HITLDecision) bool {
+// Decide fires the pending entry's channel. Returns false when the
+// id is unknown (already discarded / never existed).
+func (r *HITLRegistry) Decide(id string, d runtime.HITLDecision) bool {
 	r.mu.Lock()
-	p := r.pending[id]
+	e := r.pending[id]
 	r.mu.Unlock()
-	if p == nil {
+	if e == nil {
 		return false
 	}
 	select {
-	case p.decision <- d:
+	case e.decision <- d:
 		return true
 	default:
 		return false
 	}
-}
-
-// hitlSinkNotifier fan-outs pending approvals onto the gateway's main
-// event sink so the dashboard SSE stream picks them up alongside
-// regular request events. Mode=hitl_pending.
-type hitlSinkNotifier struct{ sink *Sink }
-
-func (n *hitlSinkNotifier) Notify(p *HITLPending) {
-	n.sink.Emit(Event{
-		Mode:    "hitl_pending",
-		Host:    p.Host,
-		Method:  p.Method,
-		Path:    p.Path,
-		AgentIP: p.AgentIP,
-		Reason:  p.Reason,
-		Action:  "pending",
-	})
 }

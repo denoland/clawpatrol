@@ -1,6 +1,6 @@
 // Devices table — flat per-device summary. Click row → device page.
 
-import type { Agent } from "../lib/api";
+import type { Agent, Integration } from "../lib/api";
 import { fmtBytes } from "../lib/format";
 import { DeviceIcon } from "./Logos";
 import { Sparkline } from "./Sparkline";
@@ -8,11 +8,18 @@ import { IntegrationStack } from "./IntegrationStack";
 
 export function AgentsTable({
   agents,
+  integrations,
   onSelect,
 }: {
   agents: Agent[];
+  integrations?: Integration[];
   onSelect?: (ip: string) => void;
 }) {
+  // id → Integration lookup so the icon stack can pick the right
+  // logo per credential type (postgres/slack/etc, not just the
+  // hardcoded claude/codex/github trio).
+  const byId = new Map<string, Integration>();
+  for (const i of integrations ?? []) byId.set(i.id, i);
   const stable = [...(agents ?? [])].sort((a, b) => a.ip.localeCompare(b.ip));
   return (
     <table className="w-full table-fixed border-collapse bg-white" style={{ minWidth: 760 }}>
@@ -83,7 +90,9 @@ export function AgentsTable({
                 {a.ip}
               </Td>
               <Td>
-                <IntegrationStack ids={a.integrations ?? []} />
+                <IntegrationStack
+                  items={(a.integrations ?? []).map((id) => ({ id, type: byId.get(id)?.type }))}
+                />
               </Td>
             </tr>
           );

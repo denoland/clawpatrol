@@ -63,9 +63,10 @@ func init() {
 		},
 	})
 	config.Register(&config.Plugin{
-		Kind: config.KindApprover,
-		Type: "human_approver",
-		New:  func() any { return &HumanApprover{} },
+		Kind:    config.KindApprover,
+		Type:    "human_approver",
+		New:     func() any { return &HumanApprover{} },
+		Runtime: (*HumanApprover)(nil),
 		Refs: []config.RefSpec{
 			{Path: "Credential", Kind: config.KindCredential, Optional: true},
 		},

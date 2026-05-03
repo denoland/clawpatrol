@@ -58,13 +58,28 @@ export function IntegrationIcon({ id, type, className = "" }: { id: string; type
   if (t === "github_oauth" || id === "github") return <GithubLogo className={className} />;
   if (t === "postgres_credential") return <BrandIcon name="postgresql" color="%23336791" className={className} />;
   if (t === "clickhouse_credential") return <BrandIcon name="clickhouse" color="%23faff69" className={className} />;
-  if (t === "slack_tokens") return <BrandIcon name="slack" className={className} />;
+  if (t === "slack_tokens") return <SlackGlyph className={className} />;
   if (t === "telegram_bot_token") return <BrandIcon name="telegram" color="%2326a5e4" className={className} />;
   if (t === "gemini_api_key") return <BrandIcon name="googlegemini" color="%238e75b2" className={className} />;
   if (t === "notion_oauth") return <BrandIcon name="notion" className={className} />;
   if (t === "aws_eks_credential") return <BrandIcon name="amazoneks" color="%23ff9900" className={className} />;
   if (t === "mtls_credential") return <KeyGlyph className={className} />;
   return <KeyGlyph className={className} />;
+}
+
+// SlackGlyph is the official 4-color Slack logo, embedded inline so
+// it doesn't depend on simpleicons' Slack entry (Salesforce pulled
+// Slack from simpleicons over a trademark dispute and replaced it
+// with the Salesforce swirl).
+function SlackGlyph({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 270 270" xmlns="http://www.w3.org/2000/svg" className={className}>
+      <path fill="#E01E5A" d="M99.4 151.2c0 7.1-5.8 12.9-12.9 12.9-7.1 0-12.9-5.8-12.9-12.9 0-7.1 5.8-12.9 12.9-12.9h12.9v12.9zm6.5 0c0-7.1 5.8-12.9 12.9-12.9 7.1 0 12.9 5.8 12.9 12.9v32.3c0 7.1-5.8 12.9-12.9 12.9-7.1 0-12.9-5.8-12.9-12.9v-32.3z" />
+      <path fill="#36C5F0" d="M118.8 99.4c-7.1 0-12.9-5.8-12.9-12.9 0-7.1 5.8-12.9 12.9-12.9 7.1 0 12.9 5.8 12.9 12.9v12.9h-12.9zm0 6.5c7.1 0 12.9 5.8 12.9 12.9 0 7.1-5.8 12.9-12.9 12.9H86.5c-7.1 0-12.9-5.8-12.9-12.9 0-7.1 5.8-12.9 12.9-12.9h32.3z" />
+      <path fill="#2EB67D" d="M170.6 118.8c0-7.1 5.8-12.9 12.9-12.9 7.1 0 12.9 5.8 12.9 12.9 0 7.1-5.8 12.9-12.9 12.9h-12.9v-12.9zm-6.5 0c0 7.1-5.8 12.9-12.9 12.9-7.1 0-12.9-5.8-12.9-12.9V86.5c0-7.1 5.8-12.9 12.9-12.9 7.1 0 12.9 5.8 12.9 12.9v32.3z" />
+      <path fill="#ECB22E" d="M151.2 170.6c7.1 0 12.9 5.8 12.9 12.9 0 7.1-5.8 12.9-12.9 12.9-7.1 0-12.9-5.8-12.9-12.9v-12.9h12.9zm0-6.5c-7.1 0-12.9-5.8-12.9-12.9 0-7.1 5.8-12.9 12.9-12.9h32.3c7.1 0 12.9 5.8 12.9 12.9 0 7.1-5.8 12.9-12.9 12.9h-32.3z" />
+    </svg>
+  );
 }
 
 function BrandIcon({ name, color = "", className = "" }: { name: string; color?: string; className?: string }) {
