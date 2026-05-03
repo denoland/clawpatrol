@@ -90,8 +90,19 @@ func (w *webMux) apiSlackInteractive(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "no payload", 400)
 		return
 	}
+	msg := applySlackInteractivePayload(w.g, []byte(payload))
+	writeJSON(rw, map[string]string{"text": msg})
+}
+
+// applySlackInteractivePayload parses one Slack interactive payload
+// (block-actions JSON) and resolves the matching pending HITL entry.
+// Shared between the HTTP webhook (apiSlackInteractive) and the
+// Socket Mode listener (slack_socket.go) — they only differ in
+// transport + signature verification.
+//
+// Returns a one-line ack the transport can show back to the user.
+func applySlackInteractivePayload(g *Gateway, payload []byte) string {
 	var p struct {
-		Type string `json:"type"`
 		User struct {
 			Name string `json:"name"`
 		} `json:"user"`
@@ -100,33 +111,27 @@ func (w *webMux) apiSlackInteractive(rw http.ResponseWriter, r *http.Request) {
 			Value    string `json:"value"`
 		} `json:"actions"`
 	}
-	if err := json.Unmarshal([]byte(payload), &p); err != nil {
-		http.Error(rw, "json: "+err.Error(), 400)
-		return
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return "couldn't parse payload: " + err.Error()
 	}
 	if len(p.Actions) == 0 {
-		http.Error(rw, "no actions", 400)
-		return
+		return "no actions"
 	}
 	act := p.Actions[0]
 	if act.Value == "" {
-		http.Error(rw, "missing pending id", 400)
-		return
+		return "missing pending id"
 	}
 	allow := act.ActionID == "approve"
-	by := "slack:" + p.User.Name
-	ok := w.g.hitl.Decide(act.Value, runtime.HITLDecision{Allow: allow, By: by})
+	ok := g.hitl.Decide(act.Value, runtime.HITLDecision{Allow: allow, By: "slack:" + p.User.Name})
 	if !ok {
-		// Already decided / expired.
-		writeJSON(rw, map[string]string{"text": "Already resolved or expired."})
-		return
+		return "Already resolved or expired."
 	}
 	verb := "approved"
 	if !allow {
 		verb = "denied"
 	}
-	writeJSON(rw, map[string]string{"text": fmt.Sprintf("Request %s by %s.", verb, p.User.Name)})
 	log.Printf("slack-interactive: %s %s by %s", act.Value, verb, p.User.Name)
+	return fmt.Sprintf("Request %s by %s.", verb, p.User.Name)
 }
 
 // verifySlackSig checks Slack's v0 HMAC-SHA256 signature.
