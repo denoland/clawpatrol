@@ -66,6 +66,9 @@ func emitOperational(body *hclwrite.Body, gw *Gateway) {
 	setStr("log_path", gw.LogPath)
 	setStr("oauth_dir", gw.OAuthDir)
 	setStr("dashboard_secret", gw.DashboardSecret)
+	if gw.InsecureNoDashboardSecret {
+		body.SetAttributeValue("insecure_no_dashboard_secret", cty.BoolVal(true))
+	}
 
 	if gw.Tailscale != nil && !isZeroTailscale(gw.Tailscale) {
 		body.AppendNewline()

@@ -34,6 +34,16 @@ admin_email = "test@example.com"
 ca_dir      = "/opt/clawpatrol/ca"
 oauth_dir   = "/opt/clawpatrol/oauth"
 
+# Dashboard auth — pick exactly one. The gateway refuses to serve the
+# dashboard / APIs until one of these is set, to avoid silently
+# exposing it on a public network.
+#
+#   dashboard_secret = "<long random string>"   # production
+#   insecure_no_dashboard_secret = true         # testing only — anyone
+#                                               # who can reach the
+#                                               # dashboard URL gets in
+dashboard_secret = "change-me-to-a-long-random-string"
+
 gateway {
   control        = "wireguard"
   wg_endpoint    = "66.42.120.196:51820"

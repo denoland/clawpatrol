@@ -266,6 +266,22 @@ func (g *Gateway) watchConfig(path string) {
 		g.cfg = next
 		log.Printf("config reloaded: %d endpoints across %d profile(s)",
 			len(policy.Endpoints), len(policy.Profiles))
+		logDashboardSecretState(next)
+	}
+}
+
+// logDashboardSecretState emits a one-line summary of dashboard-auth
+// state every time the config (re)loads, so an accidentally-open
+// dashboard shows up in `journalctl -u clawpatrol-gateway` even when
+// nobody opens the dashboard in a browser.
+func logDashboardSecretState(cfg *config.Gateway) {
+	switch {
+	case cfg.DashboardSecret != "":
+		log.Printf("dashboard auth: enabled (dashboard_secret set)")
+	case cfg.InsecureNoDashboardSecret:
+		log.Printf("dashboard auth: DISABLED via insecure_no_dashboard_secret — anyone who reaches the dashboard URL gets in")
+	default:
+		log.Printf("dashboard auth: MISCONFIGURED — gateway.hcl is missing both dashboard_secret and insecure_no_dashboard_secret; dashboard will refuse to serve until one is set")
 	}
 }
 
@@ -1485,6 +1501,7 @@ func runGateway(args []string) {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
+	logDashboardSecretState(cfg)
 	certs, err := loadCA(cfg.CADir)
 	if err != nil {
 		log.Fatalf("ca: %v", err)

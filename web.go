@@ -111,8 +111,12 @@ func newWebMux(g *Gateway, caDir string, ts Tailscale, publicURL string) http.Ha
 // dashboardSecretGate requires every non-public request to carry the
 // configured dashboard_secret (cookie / header / query). Onboarding
 // + health endpoints stay open so brand-new clients can still join.
-// When dashboard_secret is empty the gate is a no-op — installs
-// without an explicit secret keep their current open behavior.
+//
+// When dashboard_secret is empty, the gate's behavior depends on
+// insecure_no_dashboard_secret: if that's true, the gate is a no-op
+// (testing escape hatch); otherwise the gate refuses to serve and
+// every gated route returns a misconfiguration error so an open
+// dashboard isn't published by accident.
 func (w *webMux) dashboardSecretGate(next http.Handler) http.Handler {
 	publicPaths := map[string]bool{
 		"/api/onboard/start":     true,
@@ -125,9 +129,28 @@ func (w *webMux) dashboardSecretGate(next http.Handler) http.Handler {
 		"/ca.crt":                true,
 		"/__login":               true,
 	}
+	// /info and /ca.crt are public-by-design (health + cert distribution).
+	// They keep working even when the dashboard is misconfigured so
+	// monitoring + already-onboarded clients aren't taken offline.
+	alwaysOpen := map[string]bool{
+		"/info":   true,
+		"/ca.crt": true,
+	}
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		secret := w.g.cfg.DashboardSecret
-		if secret == "" || publicPaths[r.URL.Path] {
+		if secret == "" {
+			if alwaysOpen[r.URL.Path] {
+				next.ServeHTTP(rw, r)
+				return
+			}
+			if w.g.cfg.InsecureNoDashboardSecret {
+				next.ServeHTTP(rw, r)
+				return
+			}
+			renderDashboardMisconfigured(rw, r)
+			return
+		}
+		if publicPaths[r.URL.Path] {
 			next.ServeHTTP(rw, r)
 			return
 		}
@@ -142,6 +165,29 @@ func (w *webMux) dashboardSecretGate(next http.Handler) http.Handler {
 		}
 		http.Redirect(rw, r, "/__login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
 	})
+}
+
+const dashboardMisconfiguredMsg = "dashboard refuses to serve: gateway.hcl is missing both `dashboard_secret` and `insecure_no_dashboard_secret`. Set `dashboard_secret = \"<long random string>\"` to require a password, or `insecure_no_dashboard_secret = true` to explicitly run without auth (testing only)."
+
+func renderDashboardMisconfigured(rw http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		http.Error(rw, dashboardMisconfiguredMsg, http.StatusServiceUnavailable)
+		return
+	}
+	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
+	rw.WriteHeader(http.StatusServiceUnavailable)
+	fmt.Fprintf(rw, `<!doctype html>
+<html><head><meta charset="utf-8"><title>clawpatrol — dashboard disabled</title>
+<style>body{font:14px/1.5 -apple-system,system-ui,sans-serif;max-width:42em;margin:6em auto;padding:0 1em;color:#222}code{background:#f3f3f3;padding:.1em .3em;border-radius:3px}h1{font-size:1.4em}</style>
+</head><body>
+<h1>Dashboard refuses to serve</h1>
+<p>Your <code>gateway.hcl</code> sets neither <code>dashboard_secret</code> nor <code>insecure_no_dashboard_secret</code>, so the dashboard is locked to avoid being exposed without auth.</p>
+<p>Pick one and reload (the gateway hot-reloads <code>gateway.hcl</code> within a few seconds):</p>
+<ul>
+<li><code>dashboard_secret = "&lt;long random string&gt;"</code> — production, requires a password.</li>
+<li><code>insecure_no_dashboard_secret = true</code> — testing only, anyone who reaches this URL gets in.</li>
+</ul>
+</body></html>`)
 }
 
 func checkDashboardSecret(r *http.Request, want string) bool {

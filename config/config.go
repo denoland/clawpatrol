@@ -27,6 +27,12 @@ type Gateway struct {
 	LogPath         string `hcl:"log_path,optional"`
 	OAuthDir        string `hcl:"oauth_dir,optional"`
 	DashboardSecret string `hcl:"dashboard_secret,optional"`
+	// InsecureNoDashboardSecret opts out of dashboard auth. Required
+	// (alongside an empty DashboardSecret) for the gateway to serve
+	// the dashboard at all — otherwise the secret gate replies with a
+	// misconfiguration page on every request. Verbose by design so
+	// you can't disable auth by accident.
+	InsecureNoDashboardSecret bool `hcl:"insecure_no_dashboard_secret,optional"`
 
 	Tailscale *Tailscale `hcl:"tailscale,block"`
 
