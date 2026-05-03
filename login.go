@@ -873,18 +873,12 @@ func runGatewayInit(args []string) {
 	dataDir := fs.String("data-dir", "/etc/clawpatrol", "where to put gateway.hcl + CA + state")
 	publicURL := fs.String("public-url", "", "public dashboard URL (auto-detected from public IP if empty)")
 	publicIP := fs.String("public-ip", "", "public IP for the WG endpoint (auto-detected if empty)")
-	adminEmail := fs.String("admin-email", "", "operator email — owner of all approved devices")
 	wgPort := fs.Int("wg-port", 51820, "wireguard UDP port")
 	dashPort := fs.Int("dash-port", 9080, "dashboard / onboard HTTP port")
 	tlsPort := fs.Int("tls-port", 8443, "TLS gateway port (host kernel — does NOT need to be public)")
 	subnet := fs.String("subnet", "10.55.0.0/24", "wireguard subnet pool")
 	skipFirewall := fs.Bool("no-firewall", false, "skip iptables ACCEPT rules")
 	_ = fs.Parse(args)
-
-	if *adminEmail == "" {
-		fmt.Fprintln(os.Stderr, "missing --admin-email (the operator's identity for OAuth credential ownership)")
-		os.Exit(2)
-	}
 
 	// 1. data dir + CA -----------------------------------------------------
 	if err := os.MkdirAll(filepath.Join(*dataDir, "ca"), 0o700); err != nil {
@@ -921,20 +915,42 @@ func runGatewayInit(args []string) {
 listen      = "0.0.0.0:%d"
 info_listen = "0.0.0.0:%d"
 public_url  = "%s"
-admin_email = "%s"
 ca_dir      = "%s"
 log_path    = "%s"
 oauth_dir   = "%s"
-
-integrations = ["claude", "codex", "github"]
 
 tailscale {
   control        = "wireguard"
   wg_endpoint    = "%s:%d"
   wg_subnet_cidr = "%s"
 }
+
+# Starter policy: claude / codex / github via OAuth. Operator pastes
+# tokens via the dashboard; rules permit everything by default. Edit
+# below or via the dashboard's settings modal.
+
+credential "anthropic_oauth_subscription" "claude" {}
+credential "openai_codex_oauth"           "codex"  {}
+credential "github_oauth"                 "github" {}
+
+endpoint "https" "anthropic" {
+  hosts      = ["api.anthropic.com"]
+  credential = claude
+}
+endpoint "https" "openai" {
+  hosts      = ["api.openai.com", "chatgpt.com"]
+  credential = codex
+}
+endpoint "https" "github-api" {
+  hosts      = ["api.github.com", "raw.githubusercontent.com"]
+  credential = github
+}
+
+profile "default" {
+  endpoints = [anthropic, openai, github-api]
+}
 `,
-		*tlsPort, *dashPort, url, *adminEmail,
+		*tlsPort, *dashPort, url,
 		filepath.Join(*dataDir, "ca"),
 		filepath.Join(*dataDir, "gateway.log"),
 		filepath.Join(*dataDir, "oauth"),
