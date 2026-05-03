@@ -118,10 +118,6 @@ rule "sql_rule" "pg-secret-defense" {
 }
 ```
 
-## operator
-
-The dashboard lives at `public_url`. From there you watch the live request stream, paste OAuth tokens against credentials, and approve or deny pending HITL requests. To get those approvals into Slack, drop a `slack_tokens` credential and reference it from a `human_approver` block — interactive approve/deny buttons land in the channel you configured.
-
 ## modes
 
 Clawpatrol ships two control planes for the gateway-to-device tunnel. Pick one when you run `gateway init`; the default is WireGuard.
