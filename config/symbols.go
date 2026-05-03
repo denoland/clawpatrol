@@ -19,6 +19,9 @@ type Symbol struct {
 // Range is the block's declaration range — handy as a diagnostic
 // fallback when the loader doesn't have a more precise pointer.
 func (s *Symbol) Range() hcl.Range {
+	if s == nil || s.Block == nil {
+		return hcl.Range{}
+	}
 	return s.Block.DefRange
 }
 
@@ -113,6 +116,17 @@ func buildSymbols(blocks hcl.Blocks) (*SymbolTable, hcl.Diagnostics) {
 		byKind:   make(map[Kind][]*Symbol),
 		byName:   make(map[string]*Symbol),
 		allNames: make(map[string]struct{}),
+	}
+	// Pre-register built-in approvers (e.g. dashboard) so bare-name
+	// references like `approve = [dashboard]` resolve at load time
+	// without requiring an explicit `approver "..." "dashboard" {}`
+	// block.
+	for _, name := range builtinApproverNames {
+		sym := &Symbol{Name: name, Kind: KindApprover, Type: "builtin"}
+		table.byKey[symKey{Kind: KindApprover, Name: name}] = sym
+		table.byKind[KindApprover] = append(table.byKind[KindApprover], sym)
+		table.byName[name] = sym
+		table.allNames[name] = struct{}{}
 	}
 	var diags hcl.Diagnostics
 

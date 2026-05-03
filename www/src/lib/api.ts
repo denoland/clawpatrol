@@ -244,7 +244,12 @@ export async function decideHITL(id: string, allow: boolean): Promise<void> {
   if (!r.ok) throw new Error(await r.text());
 }
 
-export async function aiEditRules(prompt: string, currentYAML: string, scope: "global" | "device", agent?: string): Promise<{ yaml: string }> {
+export async function aiEditRules(
+  prompt: string,
+  currentYAML: string,
+  scope: "global" | "device",
+  agent?: string,
+): Promise<{ yaml: string; refused?: string }> {
   const r = await api("/api/rules/ai", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

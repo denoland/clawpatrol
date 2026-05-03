@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/denoland/clawpatrol-go/config"
@@ -144,8 +145,12 @@ func credentialSlotPresence(db *sql.DB, credential, profile string) (map[string]
 // OAuth-flow credential with the OAuthRegistry under its bare name.
 // The OAuth flow data (auth/token URLs, scopes, client id) lives on
 // the credential plugin itself via the OAuthFlow() method — see
-// config/plugins/credentials/oauth_flows.go. Idempotent — safe to
-// call on every config reload.
+// config/plugins/credentials/oauth_flows.go.
+//
+// Re-hydrates existing tokens from the credentials table after
+// registration, so policy reloads / first-boot don't lose tokens
+// that pre-date this gateway process. Idempotent — safe on every
+// config reload.
 func registerOAuthCredentials(reg *OAuthRegistry, policy *config.CompiledPolicy) {
 	if reg == nil || policy == nil {
 		return
@@ -162,5 +167,8 @@ func registerOAuthCredentials(reg *OAuthRegistry, policy *config.CompiledPolicy)
 		copy := *flow
 		copy.ID = name
 		reg.Register(name, copy)
+	}
+	if err := reg.LoadFromDB(); err != nil {
+		log.Printf("oauth: rehydrate from db: %v", err)
 	}
 }

@@ -281,13 +281,24 @@ func extractPolicyBlocks(body hcl.Body) (hcl.Blocks, hcl.Blocks, hcl.Diagnostics
 	return policy, defaults, diags
 }
 
+// builtinApproverNames are approvers the gateway provides without
+// requiring an HCL declaration. They resolve as bare names anywhere
+// an approver reference is allowed.
+var builtinApproverNames = []string{"dashboard"}
+
 // buildEvalContext installs every declared name as a string variable
 // in an hcl.EvalContext. Bare-name references in HCL expressions
 // (`endpoint = github-avocet`) then evaluate to the string "github-
 // avocet"; the kind / family check happens after decode.
+//
+// Built-in approver names (currently just `dashboard`) are added so
+// `approve = [dashboard]` resolves without a matching approver block.
 func buildEvalContext(table *SymbolTable) *hcl.EvalContext {
-	vars := make(map[string]cty.Value, len(table.allNames))
+	vars := make(map[string]cty.Value, len(table.allNames)+len(builtinApproverNames))
 	for name := range table.allNames {
+		vars[name] = cty.StringVal(name)
+	}
+	for _, name := range builtinApproverNames {
 		vars[name] = cty.StringVal(name)
 	}
 	return &hcl.EvalContext{Variables: vars}

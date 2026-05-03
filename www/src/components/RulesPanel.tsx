@@ -4,17 +4,14 @@ import { EditGlyph } from "./Logos";
 import { RulesEditor } from "./RulesEditor";
 
 // Rules panel. On a device page (deviceIP set) it splits rules into
-// two sections — profile rules (read-only here, edited via gateway.hcl)
-// and device rules (editable in-place via the device's HCL block).
-// Each section has its own pencil button on the right of the header.
-//
-// On the global view (no deviceIP) there's one section showing every
-// profile's rules with a single pencil opening the whole gateway.hcl.
+// two sections — Profile rules (read-only, edited via the dashboard's
+// global gateway.hcl editor) and Device rules (editable in-place via
+// the device's HCL block, pencil button in the section header).
+// On the global view there's one section with the pencil that opens
+// gateway.hcl.
 export function RulesPanel({ deviceIP }: { deviceIP?: string; profile?: string }) {
   const [rows, setRows] = useState<RuleSummary[]>([]);
   const [err, setErr] = useState<string | null>(null);
-  // Which editor is open. "" = none, "global" = gateway.hcl,
-  // "device" = device block.
   const [editing, setEditing] = useState<"" | "global" | "device">("");
 
   function reload() {
@@ -27,10 +24,7 @@ export function RulesPanel({ deviceIP }: { deviceIP?: string; profile?: string }
     reload();
   }, [deviceIP]);
 
-  const profileRows = useMemo(
-    () => rows.filter((r) => !r.device_ip),
-    [rows],
-  );
+  const profileRows = useMemo(() => rows.filter((r) => !r.device_ip), [rows]);
   const deviceRows = useMemo(
     () => rows.filter((r) => r.device_ip === deviceIP),
     [rows, deviceIP],
@@ -40,24 +34,19 @@ export function RulesPanel({ deviceIP }: { deviceIP?: string; profile?: string }
     <div className="bg-white border border-[#e5e5e5] rounded">
       {err && <div className="px-4 py-3 text-[11px] text-red-600">{err}</div>}
 
+      {/* Single "Rules" section. Device-pinned rules render with a
+          "device" badge and float to the top of their endpoint group
+          (their +1000 priority bump from the compiler does this for
+          free); endpoint groups containing any device rules sort
+          before pure profile-rule groups. The pencil is context-
+          aware: device editor on a device page, gateway.hcl on the
+          root. */}
       <Section
-        title={deviceIP ? "Profile rules" : "Rules (all profiles)"}
-        count={profileRows.length}
-        onEdit={() => setEditing("global")}
-        editLabel="edit gateway.hcl"
-        rows={profileRows}
+        title="Rules"
+        rows={[...deviceRows, ...profileRows]}
+        onEdit={() => setEditing(deviceIP ? "device" : "global")}
+        editTitle={deviceIP ? "edit device overrides" : "edit gateway.hcl"}
       />
-
-      {deviceIP && (
-        <Section
-          title={`Device rules · ${deviceIP}`}
-          count={deviceRows.length}
-          onEdit={() => setEditing("device")}
-          editLabel="edit device block"
-          rows={deviceRows}
-          emptyHint="no per-device overrides — click the pencil to add one"
-        />
-      )}
 
       {editing && (
         <RulesEditor
@@ -75,19 +64,21 @@ export function RulesPanel({ deviceIP }: { deviceIP?: string; profile?: string }
 
 function Section({
   title,
-  count,
   rows,
   onEdit,
-  editLabel,
+  editTitle,
   emptyHint,
 }: {
   title: string;
-  count: number;
   rows: RuleSummary[];
-  onEdit: () => void;
-  editLabel: string;
+  onEdit?: () => void;
+  editTitle?: string;
   emptyHint?: string;
 }) {
+  // Group by endpoint. Server already sorts rules within an endpoint
+  // by priority desc (device rules have a +1000 bump so they land at
+  // the top of their group naturally). Endpoint groups themselves
+  // sort alphabetically.
   const groups = useMemo(() => {
     const m = new Map<string, { endpoint: string; family: string; rules: RuleSummary[] }>();
     for (const r of rows) {
@@ -100,20 +91,22 @@ function Section({
 
   return (
     <div className="border-b border-[#e5e5e5] last:border-b-0">
-      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-[#e5e5e5]">
+      <div className="flex items-center px-4 py-2.5 border-b border-[#e5e5e5]">
         <div className="text-[11px] uppercase tracking-[.09em] text-[#a3a3a3] font-medium">
           {title}
         </div>
-        <span className="text-[10px] text-[#a3a3a3] tabular-nums">
-          {count} rule{count === 1 ? "" : "s"}
+        <span className="ml-2 text-[10px] text-[#a3a3a3] tabular-nums">
+          {rows.length} rule{rows.length === 1 ? "" : "s"}
         </span>
-        <button
-          onClick={onEdit}
-          title={editLabel}
-          className="ml-auto p-1 text-[#a3a3a3] hover:text-[#171717] transition-colors"
-        >
-          <EditGlyph />
-        </button>
+        {onEdit && (
+          <button
+            onClick={onEdit}
+            title={editTitle ?? "edit"}
+            className="ml-auto p-1 text-[#a3a3a3] hover:text-[#171717] transition-colors"
+          >
+            <EditGlyph />
+          </button>
+        )}
       </div>
       {groups.length === 0 ? (
         <div className="px-5 py-5 text-center text-[11px] text-[#a3a3a3]">
@@ -169,7 +162,10 @@ function RuleRow({ rule: r }: { rule: RuleSummary }) {
             </span>
           )}
         </div>
-        <div className="text-[11px] text-[#737373] mt-1 font-mono truncate" title={renderMatch(r.match)}>
+        <div
+          className="text-[11px] text-[#737373] mt-1 font-mono truncate"
+          title={renderMatch(r.match)}
+        >
           {renderMatch(r.match)}
         </div>
       </div>
@@ -177,14 +173,25 @@ function RuleRow({ rule: r }: { rule: RuleSummary }) {
         <span className="text-[11px] text-[#a3a3a3] truncate max-w-[160px]" title={r.name}>
           {r.name}
         </span>
-        {r.priority ? (
+        {displayPriority(r) ? (
           <span className="text-[10px] text-[#a3a3a3] tabular-nums">
-            p{r.priority > 0 ? "+" : ""}{r.priority}
+            p{displayPriority(r)! > 0 ? "+" : ""}
+            {displayPriority(r)}
           </span>
         ) : null}
       </div>
     </div>
   );
+}
+
+// displayPriority strips the +1000 bump the compiler adds to device-
+// block rules — that's a tie-breaker implementation detail, not
+// something the operator wrote. Returns null when there's nothing
+// meaningful to show (zero priority).
+function displayPriority(r: RuleSummary): number | null {
+  let p = r.priority ?? 0;
+  if (r.device_ip) p -= 1000;
+  return p === 0 ? null : p;
 }
 
 function FamilyDot({ family }: { family: string }) {
@@ -201,10 +208,6 @@ function FamilyDot({ family }: { family: string }) {
   );
 }
 
-// Verdict is the badge on the left of a rule row — bare verb (DENY /
-// ALLOW / APPROVE) without inlined reason; reason text renders next
-// to it in the row layout, kept separate so long reasons don't
-// stretch the badge.
 function Verdict({ r }: { r: RuleSummary }) {
   if (r.approve && r.approve.length > 0) {
     const names = r.approve.map((s) => s.name).join(" → ");
@@ -224,18 +227,12 @@ function Verdict({ r }: { r: RuleSummary }) {
   };
   const cls = palette[verdict] ?? "bg-white border-[#e5e5e5] text-[#737373]";
   return (
-    <span
-      className={"text-[10px] uppercase tracking-[.08em] px-1.5 py-0.5 rounded border " + cls}
-    >
+    <span className={"text-[10px] uppercase tracking-[.08em] px-1.5 py-0.5 rounded border " + cls}>
       {verdict}
     </span>
   );
 }
 
-// renderMatch flattens the match map into a readable line. Each
-// entry: scalar → `key = value`; single-element list → `key = value`;
-// multi-element list → `key in [a, b, c]`. Multiple match keys join
-// with " · ".
 function renderMatch(match?: Record<string, unknown>): string {
   if (!match || Object.keys(match).length === 0) return "matches every request";
   const parts: string[] = [];

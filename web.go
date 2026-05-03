@@ -709,7 +709,7 @@ func (w *webMux) apiDeviceRules(rw http.ResponseWriter, r *http.Request) {
 			return
 		}
 		profile := w.g.profileFor(ip)
-		writeJSON(rw, w.collectRuleSummaries(profile))
+		writeJSON(rw, w.collectRuleSummariesForDevice(profile, ip))
 	case "PUT":
 		if !hclMode {
 			http.Error(rw, "PUT requires ?format=hcl", 400)
@@ -745,6 +745,48 @@ func (w *webMux) apiDeviceRules(rw http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(rw, "GET or PUT", 405)
 	}
+}
+
+// collectRuleSummariesForDevice yields the same set as
+// collectRuleSummaries(profileFilter) PLUS every device-pinned rule
+// whose DeviceIP matches the device — even when the rule's endpoint
+// isn't part of that device's profile (the AI may declare a new
+// endpoint inside a device fragment that doesn't get added to the
+// profile until later).
+func (w *webMux) collectRuleSummariesForDevice(profile, deviceIP string) []RuleSummary {
+	out := w.collectRuleSummaries(profile)
+	policy := w.g.Policy()
+	if policy == nil {
+		return out
+	}
+	seen := map[string]bool{}
+	for _, s := range out {
+		seen[s.Endpoint+"\x00"+s.Name] = true
+	}
+	for epName, ep := range policy.Endpoints {
+		for _, r := range ep.Rules {
+			if r.DeviceIP != deviceIP {
+				continue
+			}
+			key := epName + "\x00" + r.Name
+			if seen[key] {
+				continue
+			}
+			out = append(out, RuleSummary{
+				Name:     r.Name,
+				Family:   ep.Family,
+				Endpoint: epName,
+				DeviceIP: r.DeviceIP,
+				Priority: r.Priority,
+				Disabled: r.Disabled,
+				Match:    matchSourceMap(r),
+				Verdict:  r.Outcome.Verdict,
+				Reason:   r.Outcome.Reason,
+				Approve:  r.Outcome.Approve,
+			})
+		}
+	}
+	return out
 }
 
 // collectRuleSummaries walks the compiled policy and emits one
@@ -875,12 +917,16 @@ func (w *webMux) apiRulesAI(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "tailnet identity required", 403)
 		return
 	}
-	out, err := generateRuleHCL(r.Context(), w.g.oauth, body.Agent, owner, body.Prompt, body.CurrentYAML, body.Scope)
+	out, refused, err := generateRuleHCL(r.Context(), w.g, body.Agent, owner, body.Prompt, body.CurrentYAML, body.Scope)
 	if err != nil {
 		http.Error(rw, "ai: "+err.Error(), 502)
 		return
 	}
-	writeJSON(rw, map[string]string{"yaml": out})
+	resp := map[string]string{"yaml": out}
+	if refused != "" {
+		resp["refused"] = refused
+	}
+	writeJSON(rw, resp)
 }
 
 func (w *webMux) apiHITLPending(rw http.ResponseWriter, _ *http.Request) {

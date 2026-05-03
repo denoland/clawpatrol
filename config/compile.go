@@ -201,6 +201,25 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 		})
 	}
 
+	// Endpoints referenced ONLY by device-block rules need to land in
+	// every profile's HostIndex, otherwise dispatch never picks them
+	// up for the affected device's traffic. Other devices' traffic to
+	// these hosts gets MITM'd too — the device-pinned rule's DeviceIP
+	// check filters per-peer at match time, so non-target devices
+	// fall through to default allow / passthrough.
+	deviceReferenced := map[string]bool{}
+	for _, dev := range p.Devices {
+		for _, ent := range dev.Rules {
+			cr, targets, err := ent.Plugin.CompileRule(ent.Body, ent.Symbol.Name)
+			if err != nil || cr == nil {
+				continue
+			}
+			for _, t := range targets {
+				deviceReferenced[t] = true
+			}
+		}
+	}
+
 	// Build per-profile views. A profile's Endpoints map points at
 	// the SAME *CompiledEndpoint instances as cp.Endpoints — rules
 	// don't fork per profile.
@@ -213,12 +232,27 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 		for _, epName := range pr.Endpoints {
 			ce, ok := cp.Endpoints[epName]
 			if !ok {
-				// Already reported at Load time.
 				continue
 			}
 			profile.Endpoints[epName] = ce
 			for _, h := range ce.Hosts {
 				profile.HostIndex[h] = ce
+			}
+		}
+		// Layer in device-referenced endpoints so device rules fire.
+		for epName := range deviceReferenced {
+			ce, ok := cp.Endpoints[epName]
+			if !ok {
+				continue
+			}
+			if _, already := profile.Endpoints[epName]; already {
+				continue
+			}
+			profile.Endpoints[epName] = ce
+			for _, h := range ce.Hosts {
+				if _, taken := profile.HostIndex[h]; !taken {
+					profile.HostIndex[h] = ce
+				}
 			}
 		}
 		cp.Profiles[name] = profile

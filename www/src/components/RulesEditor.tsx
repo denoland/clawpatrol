@@ -60,13 +60,22 @@ export function RulesEditor({
     setAIBusy(true);
     setErr(null);
     try {
+      // 4th arg is the LLM agent name (claude/codex), not the
+      // device IP — leave empty so the backend auto-picks the first
+      // connected provider.
       const r = await aiEditRules(
         aiPrompt,
         text,
         deviceIP ? "device" : "global",
-        deviceIP,
       );
-      setText(r.yaml);
+      if (r.refused) {
+        // AI declined to apply the change — keep the editor as-is and
+        // surface the model's reason as the err text. Empty `yaml`
+        // means "don't touch the buffer."
+        setErr("AI declined: " + r.refused);
+      } else if (r.yaml) {
+        setText(r.yaml);
+      }
       setAIPrompt("");
     } catch (e: any) {
       setErr(String(e.message ?? e));

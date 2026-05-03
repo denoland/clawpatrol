@@ -351,6 +351,16 @@ func (s *oauthState) persist(t *oauth2.Token) {
 	`, s.id, s.owner, t.AccessToken, t.TokenType, t.RefreshToken, expiryNs, time.Now().UnixNano())
 }
 
+// LoadFromDB rehydrates every (id, owner) credential row whose
+// integration is currently registered. Safe to call repeatedly —
+// re-running after registerOAuthCredentials picks up tokens for IDs
+// that were registered after NewOAuthRegistry's initial pass.
+// Idempotent: existing in-memory state for an (id, owner) is
+// overwritten with the DB-stored token.
+func (r *OAuthRegistry) LoadFromDB() error {
+	return r.loadFromDB()
+}
+
 // loadFromDB rehydrates every (id, owner) credential row whose
 // integration is still declared in r.integrations.
 func (r *OAuthRegistry) loadFromDB() error {
