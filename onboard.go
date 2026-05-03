@@ -272,7 +272,7 @@ type Onboarder interface {
 	MintKey(ctx context.Context) (authKey, loginServer, peerIP string, err error)
 }
 
-func newOnboarder(ts GatewayConfig) Onboarder {
+func newOnboarder(ts Tailscale) Onboarder {
 	switch strings.ToLower(ts.Control) {
 	case "wireguard":
 		return &wireguardOnboarder{ts: ts}
@@ -281,7 +281,7 @@ func newOnboarder(ts GatewayConfig) Onboarder {
 	}
 }
 
-type tailscaleOnboarder struct{ ts GatewayConfig }
+type tailscaleOnboarder struct{ ts Tailscale }
 
 func (t *tailscaleOnboarder) MintKey(ctx context.Context) (string, string, string, error) {
 	k, err := mintTailscaleAuthKey(ctx, t.ts)
@@ -294,7 +294,7 @@ func (t *tailscaleOnboarder) MintKey(ctx context.Context) (string, string, strin
 // mintTailscaleAuthKey calls Tailscale's OAuth + auth-key API to create
 // a single-use, non-ephemeral auth key the new client can use to join
 // the tailnet exactly once.
-func mintTailscaleAuthKey(ctx context.Context, ts GatewayConfig) (string, error) {
+func mintTailscaleAuthKey(ctx context.Context, ts Tailscale) (string, error) {
 	clientID := resolveTemplate(ts.OAuthClientID)
 	clientSecret := resolveTemplate(ts.OAuthClientSecret)
 	if clientID == "" || clientSecret == "" {

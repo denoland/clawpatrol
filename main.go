@@ -278,6 +278,7 @@ func newUpstreamDialer(resolver string) *net.Dialer {
 type Gateway struct {
 	cfg     *Config
 	cfgPath string // path the HCL config was loaded from
+	db      *sql.DB
 	policy  atomic.Pointer[config.CompiledPolicy]
 	certs   *CertCache
 	dialer  *net.Dialer
@@ -1501,7 +1502,8 @@ func runGateway(args []string) {
 	// in place because per-owner token persistence + refresh logic
 	// is reused by the credential-plugin runtime bridge (lands when
 	// the credential injection path is wired into mitmHTTPS).
-	oauthReg, err := NewOAuthRegistry(nil, oauthDir)
+	_ = oauthDir
+	oauthReg, err := NewOAuthRegistry(nil, db)
 	if err != nil {
 		log.Fatalf("oauth: %v", err)
 	}
@@ -1545,7 +1547,7 @@ func runGateway(args []string) {
 	g.hitl.Register(&hitlSinkNotifier{sink: g.sink})
 
 	if cfg.InfoListen != "" {
-		mux := newWebMux(g, cfg.CADir, *cfg.Gateway, cfg.PublicURL)
+		mux := newWebMux(g, cfg.CADir, *cfg.Tailscale, cfg.PublicURL)
 		go func() {
 			http.ListenAndServe(cfg.InfoListen, mux)
 		}()
@@ -1563,13 +1565,13 @@ func runGateway(args []string) {
 	//   - else   → transparent relay to the real upstream
 	// No /etc/hosts hack needed on clients — agents resolve real
 	// hostnames via public DNS and the gateway intercepts at L3.
-	if strings.EqualFold(cfg.Gateway.Control, "wireguard") {
-		wg, err := StartWGServer(*cfg.Gateway, stateDir)
+	if strings.EqualFold(cfg.Tailscale.Control, "wireguard") {
+		wg, err := StartWGServer(*cfg.Tailscale, stateDir)
 		if err != nil {
 			log.Fatalf("wireguard: %v", err)
 		}
 		setWGServer(wg)
-		dashMux := newWebMux(g, cfg.CADir, *cfg.Gateway, cfg.PublicURL)
+		dashMux := newWebMux(g, cfg.CADir, *cfg.Tailscale, cfg.PublicURL)
 		dashPort := portOf(cfg.InfoListen)
 		if err := wg.EnablePromiscuousForwarder(func(c net.Conn, dstIP string, dstPort uint16) {
 			log.Printf("wg-fwd: %s:%d", dstIP, dstPort)

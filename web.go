@@ -63,14 +63,14 @@ type oauthSession struct {
 type webMux struct {
 	g         *Gateway
 	caDir     string
-	ts        GatewayConfig // for onboarding key minting
+	ts        Tailscale // for onboarding key minting
 	publicURL string
 	mu        sync.Mutex
 	sessions  map[string]*oauthSession
 	onboard   *onboardRegistry
 }
 
-func newWebMux(g *Gateway, caDir string, ts GatewayConfig, publicURL string) http.Handler {
+func newWebMux(g *Gateway, caDir string, ts Tailscale, publicURL string) http.Handler {
 	w := &webMux{g: g, caDir: caDir, ts: ts, publicURL: publicURL, sessions: map[string]*oauthSession{}, onboard: g.onboard}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/info", w.serveInfo)
@@ -227,8 +227,8 @@ func (w *webMux) tailnetGate(next http.Handler) http.Handler {
 	// In wireguard / proxy mode there is no tailnet identity to gate
 	// against. Operators put the dashboard behind their own
 	// authentication (Cloudflare Access, basic auth proxy, etc).
-	skipGate := !strings.EqualFold(w.g.cfg.Gateway.Control, "tailscale") &&
-		w.g.cfg.Gateway.Control != ""
+	skipGate := !strings.EqualFold(w.g.cfg.Tailscale.Control, "tailscale") &&
+		w.g.cfg.Tailscale.Control != ""
 
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		if publicPaths[r.URL.Path] || skipGate {
