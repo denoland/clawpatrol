@@ -57,6 +57,12 @@ type Config struct {
 	Approvers       []Approver     `hcl:"approver,block"`
 	Integrations    []Integration  `hcl:"integration,block"`
 
+	// SlackBotToken is a single workspace-scoped Slack bot token
+	// (xoxb-...). Used by every approver of type=slack to call
+	// chat.postMessage with the approver's `channel` field. Supports
+	// `{{secret:NAME}}` so the token can live in env rather than HCL.
+	SlackBotToken string `hcl:"slack_bot_token,optional"`
+
 	// TopRules carries top-level `rule {}` blocks decoded directly
 	// from HCL — used for device-scoped overrides that don't belong
 	// to any profile (set via the dashboard's per-device editor) and
@@ -1955,6 +1961,25 @@ func runGateway(args []string) {
 
 	// always-on built-in HITL notifier: fan-out to dashboard SSE.
 	g.hitl.Register(&hitlSinkNotifier{sink: g.sink})
+	// register one notifier per declared Approver. Currently slack
+	// is the only externally-shaped type; other types (llm) wire in
+	// elsewhere.
+	slackToken := resolveTemplate(cfg.SlackBotToken)
+	for _, a := range cfg.Approvers {
+		switch a.Type {
+		case "slack":
+			if slackToken == "" {
+				log.Printf("slack approver %q declared but slack_bot_token is empty — skipping", a.Name)
+				continue
+			}
+			g.hitl.Register(&SlackNotifier{
+				Name:      a.Name,
+				Channel:   a.Channel,
+				BotToken:  slackToken,
+				Dashboard: cfg.PublicURL,
+			})
+		}
+	}
 
 	if cfg.InfoListen != "" {
 		mux := newWebMux(g, cfg.CADir, *cfg.Gateway, cfg.PublicURL)

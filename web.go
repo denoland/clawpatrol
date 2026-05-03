@@ -1644,10 +1644,15 @@ func (r *HITLRegistry) Decide(id string, d HITLDecision) bool {
 
 // hitlSinkNotifier fan-outs pending approvals onto the gateway's main
 // event sink so the dashboard SSE stream picks them up alongside
-// regular request events. Mode=hitl_pending.
+// regular request events. Mode=hitl_pending. Only fires when
+// "dashboard" is in the rule's Approvers list — keeps the dashboard
+// quiet for slack-only / llm-only rules.
 type hitlSinkNotifier struct{ sink *Sink }
 
 func (n *hitlSinkNotifier) Notify(p *HITLPending) {
+	if !approverNamed(p.Approvers, "dashboard") {
+		return
+	}
 	n.sink.Emit(Event{
 		Mode:    "hitl_pending",
 		Host:    p.Host,
