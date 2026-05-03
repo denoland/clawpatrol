@@ -1493,6 +1493,10 @@ func runGateway(args []string) {
 
 	// always-on built-in HITL notifier: fan-out to dashboard SSE.
 	g.hitl.Register(&hitlSinkNotifier{sink: g.sink})
+	// One Slack notifier per `human_approver` block whose `credential`
+	// names a slack_tokens credential. Token is fetched at notify
+	// time so dashboard rotations apply without restart.
+	registerSlackHITLNotifiers(g, policy, cfg.PublicURL)
 
 	if cfg.InfoListen != "" {
 		mux := newWebMux(g, cfg.CADir, *cfg.Tailscale, cfg.PublicURL)

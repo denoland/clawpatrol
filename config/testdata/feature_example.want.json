@@ -10,6 +10,7 @@
       "ops": {
         "body": {
           "Channel": "#agent-ops",
+          "Credential": "",
           "Timeout": 600,
           "RequireApprovers": 0
         },
