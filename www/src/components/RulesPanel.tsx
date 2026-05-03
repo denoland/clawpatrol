@@ -99,21 +99,28 @@ function RuleRow({ rule: r }: { rule: RuleSummary }) {
       }
     >
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="text-[12px] text-[#171717] font-medium truncate" title={r.name}>
-            {r.name}
-          </span>
-          {r.priority ? (
-            <span className="text-[10px] text-[#737373] tabular-nums">
-              p{r.priority > 0 ? "+" : ""}{r.priority}
+        <div className="flex items-center gap-2 flex-wrap">
+          <Verdict r={r} />
+          {r.reason && (
+            <span className="text-[12px] text-[#525252] truncate" title={r.reason}>
+              {r.reason}
             </span>
-          ) : null}
+          )}
         </div>
-        <div className="text-[11px] text-[#525252] mt-0.5 truncate" title={renderMatch(r.match)}>
+        <div className="text-[11px] text-[#737373] mt-1 font-mono truncate" title={renderMatch(r.match)}>
           {renderMatch(r.match)}
         </div>
       </div>
-      <Outcome r={r} />
+      <div className="flex flex-col items-end gap-0.5 flex-shrink-0">
+        <span className="text-[11px] text-[#a3a3a3] truncate max-w-[160px]" title={r.name}>
+          {r.name}
+        </span>
+        {r.priority ? (
+          <span className="text-[10px] text-[#a3a3a3] tabular-nums">
+            p{r.priority > 0 ? "+" : ""}{r.priority}
+          </span>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -132,15 +139,19 @@ function FamilyDot({ family }: { family: string }) {
   );
 }
 
-function Outcome({ r }: { r: RuleSummary }) {
+// Verdict is the badge on the left of a rule row — bare verb (DENY /
+// ALLOW / APPROVE) without inlined reason; reason text renders next
+// to it in the row layout, kept separate so long reasons don't
+// stretch the badge.
+function Verdict({ r }: { r: RuleSummary }) {
   if (r.approve && r.approve.length > 0) {
     const names = r.approve.map((s) => s.name).join(" → ");
     return (
       <span
-        className="flex-shrink-0 text-[10px] uppercase tracking-[.08em] px-1.5 py-0.5 rounded border bg-[#fef9c3] border-[#fde68a] text-[#854d0e]"
+        className="text-[10px] uppercase tracking-[.08em] px-1.5 py-0.5 rounded border bg-[#fef9c3] border-[#fde68a] text-[#854d0e]"
         title={names}
       >
-        approve: {names}
+        approve
       </span>
     );
   }
@@ -152,32 +163,33 @@ function Outcome({ r }: { r: RuleSummary }) {
   const cls = palette[verdict] ?? "bg-white border-[#e5e5e5] text-[#737373]";
   return (
     <span
-      className={"flex-shrink-0 text-[10px] uppercase tracking-[.08em] px-1.5 py-0.5 rounded border " + cls}
-      title={r.reason ?? ""}
+      className={"text-[10px] uppercase tracking-[.08em] px-1.5 py-0.5 rounded border " + cls}
     >
       {verdict}
-      {r.reason ? ` · ${r.reason}` : ""}
     </span>
   );
 }
 
-// renderMatch flattens the family-agnostic match map into a single
-// readable line: "verb in [drop,truncate,…] · tables in [secrets]".
+// renderMatch flattens the match map into a readable line. Each
+// entry: scalar → `key = value`; single-element list → `key = value`;
+// multi-element list → `key in [a, b, c]`. Multiple match keys join
+// with " · ".
 function renderMatch(match?: Record<string, unknown>): string {
   if (!match || Object.keys(match).length === 0) return "matches every request";
   const parts: string[] = [];
   for (const [k, v] of Object.entries(match)) {
-    parts.push(`${k} ${formatValue(v)}`);
+    if (Array.isArray(v)) {
+      if (v.length === 1) parts.push(`${k} = ${scalar(v[0])}`);
+      else parts.push(`${k} in [${v.map(scalar).join(", ")}]`);
+    } else {
+      parts.push(`${k} = ${scalar(v)}`);
+    }
   }
   return parts.join(" · ");
 }
 
-function formatValue(v: unknown): string {
-  if (Array.isArray(v)) {
-    if (v.length === 1) return `= ${formatValue(v[0])}`;
-    return `in [${v.map((x) => formatValue(x)).join(",")}]`;
-  }
+function scalar(v: unknown): string {
   if (v === null || v === undefined) return "";
-  if (typeof v === "object") return `= ${JSON.stringify(v)}`;
-  return `= ${String(v)}`;
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
 }
