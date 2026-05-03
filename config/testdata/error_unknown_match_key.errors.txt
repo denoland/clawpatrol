@@ -1,0 +1,1 @@
+error: error_unknown_match_key.hcl:11:1: Unknown match key "methood" for https — Valid keys for this rule type: method, path, query, headers, body_json, body_contains, credential.

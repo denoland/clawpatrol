@@ -18,6 +18,7 @@ package rules
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
@@ -97,38 +98,29 @@ func (r *Rule) Compile() (*config.CompiledRule, []string, error) {
 }
 
 // validatedFamily defines the family + endpoint family-constraint
-// for one rule type, plus any per-family match-key sanity checks.
+// for one rule type. The set of valid match keys comes from
+// match.KnownKeys at validate time so the validator and the matcher
+// can't drift apart — adding a match facet in match/ automatically
+// makes it a valid key here.
 type validatedFamily struct {
-	family            string
-	endpointFamilies  []string
-	knownMatchKeys    map[string]bool
+	family           string
+	endpointFamilies []string
 }
 
 var families = map[string]validatedFamily{
-	"http_rule": {
-		family:           "https",
-		endpointFamilies: []string{"https"},
-		knownMatchKeys: map[string]bool{
-			"method": true, "path": true, "query": true, "headers": true,
-			"body_json": true, "body_contains": true, "credential": true,
-		},
-	},
-	"sql_rule": {
-		family:           "sql",
-		endpointFamilies: []string{"sql"},
-		knownMatchKeys: map[string]bool{
-			"verb": true, "tables": true, "function": true,
-			"statement": true, "statement_regex": true, "credential": true,
-		},
-	},
-	"k8s_rule": {
-		family:           "k8s",
-		endpointFamilies: []string{"k8s"},
-		knownMatchKeys: map[string]bool{
-			"resource": true, "verb": true, "namespace": true,
-			"name": true, "params": true, "credential": true,
-		},
-	},
+	"http_rule": {family: "https", endpointFamilies: []string{"https"}},
+	"sql_rule":  {family: "sql", endpointFamilies: []string{"sql"}},
+	"k8s_rule":  {family: "k8s", endpointFamilies: []string{"k8s"}},
+}
+
+// knownMatchKeys returns the per-family valid match keys as a set,
+// memoized off match.KnownKeys.
+func knownMatchKeys(family string) map[string]bool {
+	out := map[string]bool{}
+	for _, k := range match.KnownKeys(family) {
+		out[k] = true
+	}
+	return out
 }
 
 func validate(body any, name string, ctx *config.BuildCtx, fam validatedFamily) hcl.Diagnostics {
@@ -192,15 +184,16 @@ func validate(body any, name string, ctx *config.BuildCtx, fam validatedFamily) 
 				Subject:  &ctx.Block.DefRange,
 			})
 		} else {
+			valid := knownMatchKeys(fam.family)
 			it := rb.Match.ElementIterator()
 			for it.Next() {
 				k, _ := it.Element()
 				key := k.AsString()
-				if !fam.knownMatchKeys[key] {
+				if !valid[key] {
 					diags = append(diags, &hcl.Diagnostic{
 						Severity: hcl.DiagError,
 						Summary:  fmt.Sprintf("Unknown match key %q for %s", key, fam.family),
-						Detail:   fmt.Sprintf("Valid keys for this rule type: %s.", listKeys(fam.knownMatchKeys)),
+						Detail:   fmt.Sprintf("Valid keys for this rule type: %s.", strings.Join(match.KnownKeys(fam.family), ", ")),
 						Subject:  &ctx.Block.DefRange,
 					})
 				}
@@ -382,19 +375,6 @@ func ctyToGo(v cty.Value) any {
 		return out
 	}
 	return v.GoString()
-}
-
-func listKeys(m map[string]bool) string {
-	out := ""
-	first := true
-	for k := range m {
-		if !first {
-			out += ", "
-		}
-		out += k
-		first = false
-	}
-	return out
 }
 
 // emitRule serializes a built *Rule back to HCL block body. Endpoints

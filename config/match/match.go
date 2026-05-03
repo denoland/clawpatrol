@@ -85,6 +85,41 @@ func New(family string, raw map[string]any) (Matcher, error) {
 	return nil, fmt.Errorf("unknown family %q", family)
 }
 
+// KnownKeys returns the match-block keys the named family's matcher
+// consumes. The rule loader uses this to reject typo'd keys at load
+// time instead of silently producing a no-op rule. Sourced from the
+// per-family key sets below so the matcher and the validator can never
+// drift apart.
+func KnownKeys(family string) []string {
+	switch family {
+	case "https":
+		return append([]string(nil), httpMatchKeys...)
+	case "sql":
+		return append([]string(nil), sqlMatchKeys...)
+	case "k8s":
+		return append([]string(nil), k8sMatchKeys...)
+	}
+	return nil
+}
+
+// Per-family match keys — the single source of truth. Each newXXX
+// constructor must read from these names; KnownKeys hands the same
+// list to the loader for validation.
+var (
+	httpMatchKeys = []string{
+		"method", "path", "query", "headers",
+		"body_json", "body_contains", "credential",
+	}
+	sqlMatchKeys = []string{
+		"verb", "tables", "function",
+		"statement", "statement_regex", "credential",
+	}
+	k8sMatchKeys = []string{
+		"resource", "verb", "namespace", "name",
+		"params", "credential",
+	}
+)
+
 // ── shared helpers ────────────────────────────────────────────────────
 
 // stringList coerces a match-map value (either a single string or a
