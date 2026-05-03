@@ -36,6 +36,14 @@ type PostgresCredentialRuntime interface {
 	InjectPostgres(ctx context.Context, startup *PostgresStartup, sec Secret) error
 }
 
+// PostgresAuthCredential is what the postgres endpoint runtime needs
+// from a credential plugin to terminate upstream auth. The credential
+// returns its (user, password) — runtime drives the SCRAM / cleartext
+// handshake itself, so the agent never sees an auth challenge.
+type PostgresAuthCredential interface {
+	PostgresAuth(sec Secret) (user, password string)
+}
+
 // TLSCredentialRuntime customizes the upstream TLS configuration
 // before the dial. mTLS credentials use this to add a client cert
 // (Certificates) and an optional custom root pool (RootCAs); other

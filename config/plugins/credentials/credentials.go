@@ -48,10 +48,18 @@ type HeaderToken struct {
 type MTLSCredential struct{}
 
 // PostgresCredential: the wire-protocol user the runtime uses when
-// swapping the agent's StartupMessage. Password is fetched by name
-// from the secret store at request time.
+// terminating upstream auth on the agent's behalf. User is the HCL
+// field; password lives in the secret store under the credential's
+// bare name (operator pastes via the dashboard's Postgres slot).
 type PostgresCredential struct {
 	User string `hcl:"user,optional"`
+}
+
+// PostgresAuth implements runtime.PostgresAuthCredential — the
+// postgres endpoint runtime calls this once per session to learn
+// what (user, password) to use for upstream SCRAM / cleartext.
+func (p *PostgresCredential) PostgresAuth(sec runtime.Secret) (string, string) {
+	return p.User, string(sec.Bytes)
 }
 
 // Anthropic — manual key (X-API-Key bearer-style) and the OAuth
@@ -429,7 +437,7 @@ func init() {
 		{"cookie_token", newer[CookieToken](), (*CookieToken)(nil)},
 		{"header_token", newer[HeaderToken](), (*HeaderToken)(nil)},
 		{"mtls_credential", newer[MTLSCredential](), (*MTLSCredential)(nil)},
-		{"postgres_credential", newer[PostgresCredential](), nil},
+		{"postgres_credential", newer[PostgresCredential](), (*PostgresCredential)(nil)},
 		{"anthropic_manual_key", newer[AnthropicManualKey](), (*AnthropicManualKey)(nil)},
 		{"anthropic_oauth_subscription", newer[AnthropicOAuthSubscription](), (*AnthropicOAuthSubscription)(nil)},
 		{"slack_tokens", newer[SlackTokens](), (*SlackTokens)(nil)},
@@ -456,18 +464,19 @@ func init() {
 	// contract — catches signature drift early rather than at first
 	// request.
 	var (
-		_ runtime.HTTPCredentialRuntime = (*BearerToken)(nil)
-		_ runtime.HTTPCredentialRuntime = (*CookieToken)(nil)
-		_ runtime.HTTPCredentialRuntime = (*HeaderToken)(nil)
-		_ runtime.HTTPCredentialRuntime = (*AnthropicManualKey)(nil)
-		_ runtime.HTTPCredentialRuntime = (*AnthropicOAuthSubscription)(nil)
-		_ runtime.HTTPCredentialRuntime = (*OpenAICodexOAuth)(nil)
-		_ runtime.HTTPCredentialRuntime = (*GitHubOAuth)(nil)
-		_ runtime.HTTPCredentialRuntime = (*SlackTokens)(nil)
-		_ runtime.HTTPCredentialRuntime = (*TelegramBotToken)(nil)
-		_ runtime.HTTPCredentialRuntime = (*GeminiAPIKey)(nil)
-		_ runtime.HTTPCredentialRuntime = (*NotionOAuth)(nil)
-		_ runtime.HTTPCredentialRuntime = (*ClickhouseCredential)(nil)
-		_ runtime.TLSCredentialRuntime  = (*MTLSCredential)(nil)
+		_ runtime.HTTPCredentialRuntime  = (*BearerToken)(nil)
+		_ runtime.HTTPCredentialRuntime  = (*CookieToken)(nil)
+		_ runtime.HTTPCredentialRuntime  = (*HeaderToken)(nil)
+		_ runtime.HTTPCredentialRuntime  = (*AnthropicManualKey)(nil)
+		_ runtime.HTTPCredentialRuntime  = (*AnthropicOAuthSubscription)(nil)
+		_ runtime.HTTPCredentialRuntime  = (*OpenAICodexOAuth)(nil)
+		_ runtime.HTTPCredentialRuntime  = (*GitHubOAuth)(nil)
+		_ runtime.HTTPCredentialRuntime  = (*SlackTokens)(nil)
+		_ runtime.HTTPCredentialRuntime  = (*TelegramBotToken)(nil)
+		_ runtime.HTTPCredentialRuntime  = (*GeminiAPIKey)(nil)
+		_ runtime.HTTPCredentialRuntime  = (*NotionOAuth)(nil)
+		_ runtime.HTTPCredentialRuntime  = (*ClickhouseCredential)(nil)
+		_ runtime.TLSCredentialRuntime   = (*MTLSCredential)(nil)
+		_ runtime.PostgresAuthCredential = (*PostgresCredential)(nil)
 	)
 }
