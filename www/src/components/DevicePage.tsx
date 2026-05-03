@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { deleteAgent, listProfiles, setDeviceProfile, type Agent, type Integration, type Whoami } from "../lib/api";
+import { deleteAgent, getStatus, listProfiles, setDeviceProfile, type Agent, type Integration, type Whoami } from "../lib/api";
 import { fmtBytes } from "../lib/format";
 import { DeviceIcon } from "./Logos";
 import { Sparkline } from "./Sparkline";
@@ -47,7 +47,20 @@ export function DevicePage({
 
   const dev = a;
   const total = dev.bytes_in + dev.bytes_out;
-  const allForUser = integrations;
+  // Per-profile credential list — server-filters to only the
+  // credentials referenced by endpoints in this device's profile,
+  // so a "writer" device doesn't see the readonly's pg-cred and vice
+  // versa. Falls back to the parent's full list for the no-profile
+  // case (legacy single-tenant configs).
+  const [profileCreds, setProfileCreds] = useState<Integration[] | null>(null);
+  useEffect(() => {
+    if (!dev.profile) {
+      setProfileCreds(null);
+      return;
+    }
+    getStatus(dev.profile).then(setProfileCreds).catch(() => setProfileCreds(null));
+  }, [dev.profile]);
+  const allForUser = profileCreds ?? integrations;
 
   async function remove() {
     if (!confirm(`Remove ${dev.hostname || dev.ip} from clawpatrol?\n\nThis clears the device's tracking + owner mapping. Tailscale node stays — remove from admin console if you want a hard kick.`)) return;

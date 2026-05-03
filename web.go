@@ -41,8 +41,9 @@ var loginTpl = template.Must(template.New("login").Parse(loginHTML))
 type IntegrationRow struct {
 	ID       string              `json:"id"`
 	Name     string              `json:"name"`
+	Type     string              `json:"type"` // credential plugin type
 	HasOAuth bool                `json:"has_oauth"`
-	Slots    []config.SecretSlot `json:"slots,omitempty"` // non-OAuth dashboard-managed slots
+	Slots    []config.SecretSlot `json:"slots,omitempty"`
 	Owners   []Owner             `json:"owners"`
 }
 
@@ -352,6 +353,10 @@ func (w *webMux) apiWhoami(rw http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// apiStatus returns the credentials list for the dashboard. Filters
+// by profile when ?profile=NAME is set — only credentials referenced
+// by an endpoint in that profile come back. Without the param, every
+// declared credential ships (root view).
 func (w *webMux) apiStatus(rw http.ResponseWriter, r *http.Request) {
 	out := []IntegrationRow{}
 	policy := w.g.policy.Load()
@@ -359,15 +364,21 @@ func (w *webMux) apiStatus(rw http.ResponseWriter, r *http.Request) {
 		writeJSON(rw, out)
 		return
 	}
+	profile := r.URL.Query().Get("profile")
+	allowed := credentialsInProfile(policy, profile) // nil = no filter
+
 	names := make([]string, 0, len(policy.Credentials))
 	for name := range policy.Credentials {
+		if allowed != nil && !allowed[name] {
+			continue
+		}
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	caller, _ := w.ownerForCaller(r)
 	for _, name := range names {
 		ent := policy.Credentials[name]
-		row := IntegrationRow{ID: name, Name: name}
+		row := IntegrationRow{ID: name, Name: name, Type: ent.Plugin.Type}
 		if _, ok := ent.Body.(config.OAuthFlowProvider); ok {
 			row.HasOAuth = true
 			for _, owner := range w.g.oauth.Owners(name) {
@@ -381,8 +392,6 @@ func (w *webMux) apiStatus(rw http.ResponseWriter, r *http.Request) {
 		}
 		if sp, ok := ent.Body.(config.SecretSlotsProvider); ok {
 			row.Slots = sp.SecretSlots()
-			// Per-caller "connected" check for dashboard rendering —
-			// any slot present counts as connected.
 			if caller != "" {
 				present, _ := credentialSlotPresence(w.g.db, name, caller)
 				if len(present) > 0 {
@@ -393,6 +402,30 @@ func (w *webMux) apiStatus(rw http.ResponseWriter, r *http.Request) {
 		out = append(out, row)
 	}
 	writeJSON(rw, out)
+}
+
+// credentialsInProfile returns the set of credential bare names that
+// any endpoint in the given profile references. nil means "no filter
+// — return everything." Used by apiStatus and the device-page card
+// render so per-device views only show credentials the device's
+// profile actually uses.
+func credentialsInProfile(policy *config.CompiledPolicy, profile string) map[string]bool {
+	if profile == "" || policy == nil {
+		return nil
+	}
+	prof, ok := policy.Profiles[profile]
+	if !ok {
+		return map[string]bool{} // unknown profile → empty set, not nil
+	}
+	out := map[string]bool{}
+	for _, ep := range prof.Endpoints {
+		for _, cb := range ep.Credentials {
+			if cb.Credential != nil {
+				out[cb.Credential.Symbol.Name] = true
+			}
+		}
+	}
+	return out
 }
 
 // apiCredentialsSet persists one or more slot values for a non-OAuth

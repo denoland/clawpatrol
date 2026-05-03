@@ -5,15 +5,33 @@ import { IntegrationIcon } from "./Logos";
 import { clearCredential, oauthRevoke } from "../lib/api";
 import { CredentialSecretsModal } from "./CredentialSecretsModal";
 
-const PRETTY: Record<string, string> = {
-  claude: "Claude",
-  codex: "Codex",
-  github: "GitHub",
+// Display name by credential plugin type. Bare credential names
+// often look like "pg-writer-cred" — useful as identifier, not as a
+// label. The type maps to the recognizable brand / protocol; the
+// bare name shows up as a subtitle so operators can still tell two
+// "Postgres" cards apart.
+const TYPE_LABEL: Record<string, string> = {
+  anthropic_oauth_subscription: "Claude",
+  anthropic_manual_key: "Claude (API key)",
+  openai_codex_oauth: "Codex",
+  github_oauth: "GitHub",
+  notion_oauth: "Notion",
+  postgres_credential: "Postgres",
+  clickhouse_credential: "ClickHouse",
+  mtls_credential: "mTLS",
+  slack_tokens: "Slack",
+  telegram_bot_token: "Telegram",
+  gemini_api_key: "Gemini",
+  aws_eks_credential: "AWS EKS",
+  bearer_token: "Bearer token",
+  header_token: "Header token",
+  cookie_token: "Cookie token",
 };
 
 // Cap on visible cards before the overflow button appears. The N-th
-// slot is replaced by "+ K more" so the row width stays predictable.
-const VISIBLE_CAP = 6;
+// slot is replaced by "+ K more" so the row width stays predictable
+// — 3 cards + 1 overflow button keeps the device-page row tidy.
+const VISIBLE_CAP = 4;
 
 export function IntegrationsCards({
   list,
@@ -152,9 +170,9 @@ function Card({
       }
     >
       <div className="flex items-center gap-2 w-full">
-        <IntegrationIcon id={i.id} className="w-[16px] h-[16px] flex-shrink-0" />
-        <span className="text-[12px] font-semibold text-[#171717] truncate">
-          {PRETTY[i.id] ?? i.name}
+        <IntegrationIcon id={i.id} type={i.type} className="w-[16px] h-[16px] flex-shrink-0" />
+        <span className="text-[12px] font-semibold text-[#171717] truncate" title={i.id}>
+          {TYPE_LABEL[i.type] ?? i.name}
         </span>
         <span className="ml-auto flex items-center gap-1.5 flex-shrink-0">
           {connected && (
@@ -177,8 +195,16 @@ function Card({
           />
         </span>
       </div>
-      <div className="text-[10px] text-[#737373] tabular-nums w-full truncate">
-        {subtitle}
+      <div className="text-[10px] text-[#737373] tabular-nums w-full truncate" title={i.id}>
+        {/* Connected → show expiry / "connected". Otherwise show the
+            bare credential name so two same-type cards (pg-writer +
+            pg-readonly) are distinguishable; falls back to the status
+            text when type and name match (claude / codex / github). */}
+        {connected
+          ? subtitle
+          : TYPE_LABEL[i.type] && i.id !== (TYPE_LABEL[i.type] ?? "").toLowerCase()
+          ? i.id
+          : subtitle}
       </div>
     </button>
   );

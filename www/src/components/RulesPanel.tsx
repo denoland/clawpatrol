@@ -1,13 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getDeviceRules, getRules, type RuleSummary } from "../lib/api";
 import { RulesEditor } from "./RulesEditor";
 
-// Rule view, read-only on the new policy. deviceIP=undefined → all
-// rules across every profile, deviceIP=ip → rules in the device's
-// profile only. Edits flow through the gateway HCL editor (the
-// "edit" button opens it) — the v14 schema's first-match-wins
-// priority + approve-chain shape doesn't fit the legacy per-row
-// edit UX cleanly.
+// Rules grouped by endpoint (one card per endpoint that has rules).
+// Endpoints with zero rules are hidden — keeps the panel short on
+// device pages where most endpoints are pass-through.
+//
+// Edits flow through the global gateway.hcl editor for now. Per-
+// profile inline editing is on the roadmap; the new typed-block
+// schema doesn't yet model device-scoped rules the way the legacy
+// schema did.
 export function RulesPanel({ deviceIP }: { deviceIP?: string; profile?: string }) {
   const [rows, setRows] = useState<RuleSummary[]>([]);
   const [err, setErr] = useState<string | null>(null);
@@ -23,105 +25,110 @@ export function RulesPanel({ deviceIP }: { deviceIP?: string; profile?: string }
     reload();
   }, [deviceIP]);
 
+  // Group by endpoint name, preserving server's priority sort within
+  // each group. Family rides along (uniform per endpoint).
+  const groups = useMemo(() => {
+    const m = new Map<string, { endpoint: string; family: string; rules: RuleSummary[] }>();
+    for (const r of rows) {
+      const g = m.get(r.endpoint) ?? { endpoint: r.endpoint, family: r.family, rules: [] };
+      g.rules.push(r);
+      m.set(r.endpoint, g);
+    }
+    return Array.from(m.values()).sort((a, b) => a.endpoint.localeCompare(b.endpoint));
+  }, [rows]);
+
   return (
-    <div className="bg-white border border-[#e5e5e5] rounded overflow-hidden relative">
-      <button
-        onClick={() => setEditing(true)}
-        className="absolute top-2 right-2 z-10 text-[10px] px-2 py-0.5 border border-[#e5e5e5] text-[#737373] rounded bg-white hover:border-[#a3a3a3] hover:text-[#171717]"
-      >
-        edit gateway.hcl
-      </button>
+    <div className="bg-white border border-[#e5e5e5] rounded relative">
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-[#e5e5e5]">
+        <div className="text-[11px] uppercase tracking-[.09em] text-[#a3a3a3] font-medium">
+          Rules {deviceIP ? "(this device)" : "(all profiles)"}
+        </div>
+        <button
+          onClick={() => setEditing(true)}
+          className="text-[10px] px-2 py-0.5 border border-[#e5e5e5] text-[#737373] rounded bg-white hover:border-[#a3a3a3] hover:text-[#171717]"
+        >
+          edit gateway.hcl
+        </button>
+      </div>
       {editing && (
-        <RulesEditor
-          onClose={() => setEditing(false)}
-          onSaved={() => reload()}
-        />
+        <RulesEditor onClose={() => setEditing(false)} onSaved={() => reload()} />
       )}
       {err && <div className="px-4 py-3 text-[11px] text-red-600">{err}</div>}
-      <table className="w-full table-fixed border-collapse">
-        <colgroup>
-          <col style={{ width: 200 }} />
-          <col style={{ width: 64 }} />
-          <col style={{ width: 140 }} />
-          <col />
-          <col style={{ width: 96 }} />
-          <col style={{ width: 56 }} />
-        </colgroup>
-        <thead>
-          <tr className="border-b border-[#e5e5e5]">
-            <Th>RULE</Th>
-            <Th>FAMILY</Th>
-            <Th>ENDPOINT</Th>
-            <Th>MATCH</Th>
-            <Th>OUTCOME</Th>
-            <Th className="text-right">PRIORITY</Th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.length === 0 && (
-            <tr>
-              <td colSpan={6} className="px-5 py-6 text-center text-[11px] text-[#a3a3a3]">
-                no rules configured
-              </td>
-            </tr>
-          )}
-          {rows.map((r, i) => (
-            <tr
-              key={`${r.profile ?? ""}/${r.endpoint}/${r.name}/${i}`}
-              className={
-                "border-b border-[#f5f5f5] hover:bg-[#f9f9f9] " +
-                (r.disabled ? "opacity-50" : "")
-              }
-            >
-              <Td>
-                <div className="text-[12px] text-[#171717] truncate" title={r.name}>
-                  {r.name}
-                </div>
-                {r.profile && (
-                  <div className="text-[10px] text-[#737373]">profile: {r.profile}</div>
-                )}
-              </Td>
-              <Td>
-                <FamilyBadge family={r.family} />
-              </Td>
-              <Td>
-                <span className="text-[11px] text-[#525252] truncate block" title={r.endpoint}>
-                  {r.endpoint}
-                </span>
-              </Td>
-              <Td>
-                <MatchSummary match={r.match} />
-              </Td>
-              <Td>
-                <Outcome r={r} />
-              </Td>
-              <Td className="text-right text-[11px] text-[#737373]">
-                {priorityLabel(r.priority)}
-              </Td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      {groups.length === 0 && (
+        <div className="px-5 py-6 text-center text-[11px] text-[#a3a3a3]">
+          no rules configured
+        </div>
+      )}
+      <div className="flex flex-col">
+        {groups.map((g) => (
+          <EndpointGroup key={g.endpoint} group={g} />
+        ))}
+      </div>
     </div>
   );
 }
 
-function priorityLabel(p?: number): string {
-  if (!p) return "0";
-  return p > 0 ? `+${p}` : String(p);
+function EndpointGroup({
+  group,
+}: {
+  group: { endpoint: string; family: string; rules: RuleSummary[] };
+}) {
+  return (
+    <div className="border-b border-[#f5f5f5] last:border-b-0">
+      <div className="flex items-center gap-2 px-4 py-2 bg-[#fafafa]">
+        <FamilyDot family={group.family} />
+        <span className="text-[12px] font-mono text-[#171717]">{group.endpoint}</span>
+        <span className="text-[10px] text-[#a3a3a3]">{group.family}</span>
+        <span className="ml-auto text-[10px] text-[#737373] tabular-nums">
+          {group.rules.length} rule{group.rules.length === 1 ? "" : "s"}
+        </span>
+      </div>
+      {group.rules.map((r, i) => (
+        <RuleRow key={`${r.name}/${i}`} rule={r} />
+      ))}
+    </div>
+  );
 }
 
-function FamilyBadge({ family }: { family: string }) {
-  const palette: Record<string, string> = {
-    https: "bg-[#eff6ff] border-[#bfdbfe] text-[#1d4ed8]",
-    sql: "bg-[#fef3c7] border-[#fde68a] text-[#92400e]",
-    k8s: "bg-[#ede9fe] border-[#ddd6fe] text-[#5b21b6]",
-  };
-  const cls = palette[family] || "bg-white border-[#e5e5e5] text-[#737373]";
+function RuleRow({ rule: r }: { rule: RuleSummary }) {
   return (
-    <span className={"text-[10px] uppercase tracking-[.08em] px-1.5 py-0.5 rounded border " + cls}>
-      {family}
-    </span>
+    <div
+      className={
+        "flex items-start gap-3 px-4 py-2 border-t border-[#f5f5f5] hover:bg-[#fcfcfc] " +
+        (r.disabled ? "opacity-50" : "")
+      }
+    >
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="text-[12px] text-[#171717] font-medium truncate" title={r.name}>
+            {r.name}
+          </span>
+          {r.priority ? (
+            <span className="text-[10px] text-[#737373] tabular-nums">
+              p{r.priority > 0 ? "+" : ""}{r.priority}
+            </span>
+          ) : null}
+        </div>
+        <div className="text-[11px] text-[#525252] mt-0.5 truncate" title={renderMatch(r.match)}>
+          {renderMatch(r.match)}
+        </div>
+      </div>
+      <Outcome r={r} />
+    </div>
+  );
+}
+
+function FamilyDot({ family }: { family: string }) {
+  const palette: Record<string, string> = {
+    https: "bg-[#3b82f6]",
+    sql: "bg-[#f59e0b]",
+    k8s: "bg-[#8b5cf6]",
+  };
+  return (
+    <span
+      className={"inline-block w-[6px] h-[6px] rounded-full " + (palette[family] ?? "bg-[#a3a3a3]")}
+      title={family}
+    />
   );
 }
 
@@ -130,7 +137,7 @@ function Outcome({ r }: { r: RuleSummary }) {
     const names = r.approve.map((s) => s.name).join(" → ");
     return (
       <span
-        className="text-[10px] uppercase tracking-[.08em] px-1.5 py-0.5 rounded border bg-[#fef9c3] border-[#fde68a] text-[#854d0e]"
+        className="flex-shrink-0 text-[10px] uppercase tracking-[.08em] px-1.5 py-0.5 rounded border bg-[#fef9c3] border-[#fde68a] text-[#854d0e]"
         title={names}
       >
         approve: {names}
@@ -141,72 +148,36 @@ function Outcome({ r }: { r: RuleSummary }) {
   const palette: Record<string, string> = {
     allow: "bg-[#f0fdf4] border-[#bbf7d0] text-[#166534]",
     deny: "bg-[#fef2f2] border-[#fecaca] text-[#991b1b]",
-    hitl: "bg-[#fef3c7] border-[#fde68a] text-[#92400e]",
   };
-  const cls = palette[verdict] || "bg-white border-[#e5e5e5] text-[#737373]";
+  const cls = palette[verdict] ?? "bg-white border-[#e5e5e5] text-[#737373]";
   return (
-    <span className={"text-[10px] uppercase tracking-[.08em] px-1.5 py-0.5 rounded border " + cls}>
+    <span
+      className={"flex-shrink-0 text-[10px] uppercase tracking-[.08em] px-1.5 py-0.5 rounded border " + cls}
+      title={r.reason ?? ""}
+    >
       {verdict}
       {r.reason ? ` · ${r.reason}` : ""}
     </span>
   );
 }
 
-// MatchSummary renders the family-agnostic match map as
-// "key=value · key=[a,b]" parts, truncating to keep the row tidy.
-// "credential = X" shows up here too, since v14 lets a rule pin the
-// credential a request was dispatched against.
-function MatchSummary({ match }: { match?: Record<string, unknown> }) {
-  if (!match || Object.keys(match).length === 0) {
-    return <span className="text-[10px] text-[#a3a3a3]">all</span>;
-  }
+// renderMatch flattens the family-agnostic match map into a single
+// readable line: "verb in [drop,truncate,…] · tables in [secrets]".
+function renderMatch(match?: Record<string, unknown>): string {
+  if (!match || Object.keys(match).length === 0) return "matches every request";
   const parts: string[] = [];
   for (const [k, v] of Object.entries(match)) {
-    parts.push(`${k}=${formatValue(v)}`);
+    parts.push(`${k} ${formatValue(v)}`);
   }
-  const text = parts.join(" · ");
-  return (
-    <span className="text-[11px] text-[#525252] truncate block" title={text}>
-      {text}
-    </span>
-  );
+  return parts.join(" · ");
 }
 
 function formatValue(v: unknown): string {
-  if (Array.isArray(v)) return `[${v.map((x) => formatValue(x)).join(",")}]`;
+  if (Array.isArray(v)) {
+    if (v.length === 1) return `= ${formatValue(v[0])}`;
+    return `in [${v.map((x) => formatValue(x)).join(",")}]`;
+  }
   if (v === null || v === undefined) return "";
-  if (typeof v === "object") return JSON.stringify(v);
-  return String(v);
-}
-
-function Th({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return (
-    <th
-      className={
-        "px-3 sm:px-[14px] py-[9px] text-left text-[10px] uppercase tracking-[.09em] text-[#a3a3a3] font-medium bg-white " +
-        className
-      }
-    >
-      {children}
-    </th>
-  );
-}
-
-function Td({
-  children,
-  className = "",
-  ...rest
-}: {
-  children: React.ReactNode;
-  className?: string;
-  title?: string;
-}) {
-  return (
-    <td
-      className={"px-3 sm:px-[14px] py-[9px] align-middle overflow-hidden " + className}
-      {...rest}
-    >
-      {children}
-    </td>
-  );
+  if (typeof v === "object") return `= ${JSON.stringify(v)}`;
+  return `= ${String(v)}`;
 }

@@ -19,6 +19,7 @@ export type SecretSlot = {
 export type Integration = {
   id: string;
   name: string;
+  type: string; // credential plugin type (e.g. "postgres_credential")
   has_oauth: boolean;
   slots?: SecretSlot[] | null;
   owners: Owner[] | null;
@@ -257,8 +258,9 @@ export type Whoami = {
   public_url?: string;
 };
 
-export async function getStatus(): Promise<Integration[]> {
-  const r = await api("/api/status");
+export async function getStatus(profile?: string): Promise<Integration[]> {
+  const url = profile ? `/api/status?profile=${encodeURIComponent(profile)}` : "/api/status";
+  const r = await api(url);
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }

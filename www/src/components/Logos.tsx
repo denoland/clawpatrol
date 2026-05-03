@@ -44,11 +44,40 @@ export function ShellGlyph({ className = "" }: { className?: string }) {
   );
 }
 
-export function IntegrationIcon({ id, className = "" }: { id: string; className?: string }) {
-  if (id === "claude") return <ClaudeLogo className={className} />;
-  if (id === "codex") return <OpenAILogo className={className} />;
-  if (id === "github") return <GithubLogo className={className} />;
-  return <span className={className} />;
+// IntegrationIcon picks an icon from the credential's plugin type
+// first (e.g. "postgres_credential" → Postgres logo), falling back to
+// the credential's bare name for the legacy claude/codex/github built-
+// ins where the bare name happens to match the brand. Unknown types
+// get a neutral key glyph rather than empty space, so dashboard rows
+// stay visually anchored.
+export function IntegrationIcon({ id, type, className = "" }: { id: string; type?: string; className?: string }) {
+  const t = type ?? "";
+  if (t === "anthropic_oauth_subscription" || t === "anthropic_manual_key" || id === "claude")
+    return <ClaudeLogo className={className} />;
+  if (t === "openai_codex_oauth" || id === "codex") return <OpenAILogo className={className} />;
+  if (t === "github_oauth" || id === "github") return <GithubLogo className={className} />;
+  if (t === "postgres_credential") return <BrandIcon name="postgresql" color="%23336791" className={className} />;
+  if (t === "clickhouse_credential") return <BrandIcon name="clickhouse" color="%23faff69" className={className} />;
+  if (t === "slack_tokens") return <BrandIcon name="slack" className={className} />;
+  if (t === "telegram_bot_token") return <BrandIcon name="telegram" color="%2326a5e4" className={className} />;
+  if (t === "gemini_api_key") return <BrandIcon name="googlegemini" color="%238e75b2" className={className} />;
+  if (t === "notion_oauth") return <BrandIcon name="notion" className={className} />;
+  if (t === "aws_eks_credential") return <BrandIcon name="amazoneks" color="%23ff9900" className={className} />;
+  if (t === "mtls_credential") return <KeyGlyph className={className} />;
+  return <KeyGlyph className={className} />;
+}
+
+function BrandIcon({ name, color = "", className = "" }: { name: string; color?: string; className?: string }) {
+  const url = ICON_BASE + name + ".svg" + (color ? "?color=" + color : "");
+  return <img src={url} className={className} alt={name} draggable={false} />;
+}
+
+function KeyGlyph({ className = "" }: { className?: string }) {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#737373" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
+    </svg>
+  );
 }
 
 // ── device / OS icons (kept local) ─────────────────────────────────
