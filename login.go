@@ -447,14 +447,57 @@ func fail(format string, a ...any) {
 	os.Exit(2)
 }
 
+// startSpinner paints a braille spinner + label on the current line and
+// returns a stop function that clears the line. Tick is 80ms — fast
+// enough to feel alive while the device-flow poll loop sits on its
+// 3-second interval. Writes only land on stderr-attached TTYs; if stdout
+// isn't a terminal (CI, piped logs) the spinner suppresses itself so it
+// doesn't scribble control codes into log files.
+func startSpinner(label string) func() {
+	if !isTerminal(os.Stdout) {
+		return func() {}
+	}
+	frames := []rune{'⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		i := 0
+		t := time.NewTicker(80 * time.Millisecond)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				fmt.Printf("\r\033[K")
+				return
+			case <-t.C:
+				fmt.Printf("\r%c %s", frames[i%len(frames)], label)
+				i++
+			}
+		}
+	}()
+	return func() {
+		close(stop)
+		<-done
+	}
+}
+
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
 // printTreeItems prints a list as ├-prefixed sub-items with the final
-// entry marked ⎿ (bottom-corner). Single item prints as ⎿ alone.
-// README's status blocks use this convention.
+// entry marked └ (bottom-corner). Same box-drawing family so the glyphs
+// align visually instead of mixing the heavier ⎿ corner.
 func printTreeItems(items []string) {
 	for i, line := range items {
 		prefix := "├ "
 		if i == len(items)-1 {
-			prefix = "⎿ "
+			prefix = "└ "
 		}
 		fmt.Println(prefix + line)
 	}
@@ -541,9 +584,11 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, setup joinSetup) (b
 	}
 
 	fmt.Println()
-	fmt.Println("Open and approve:")
-	fmt.Printf("├ %s\n", start.VerifyURL)
-	fmt.Printf("⎿ Code: %s\n", start.UserCode)
+	fmt.Println("Verify code in browser:")
+	fmt.Println()
+	fmt.Printf("    %s\n", start.UserCode)
+	fmt.Println()
+	fmt.Println(start.VerifyURL)
 	fmt.Println()
 	tryOpen(start.VerifyURL)
 
@@ -553,6 +598,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, setup joinSetup) (b
 		interval = 3 * time.Second
 	}
 	deadline := time.Now().Add(time.Duration(start.ExpiresIn) * time.Second)
+	stopSpin := startSpinner("Waiting for approval")
 	authKey, loginServer := "", ""
 	for time.Now().Before(deadline) {
 		time.Sleep(interval)
@@ -569,14 +615,14 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, setup joinSetup) (b
 			break
 		}
 		if e := pv["error"]; e != "" && e != "authorization_pending" && e != "slow_down" {
+			stopSpin()
 			return false, fmt.Errorf("poll: %s (%s)", e, pv["detail"])
 		}
-		fmt.Print(".")
 	}
+	stopSpin()
 	if authKey == "" {
 		return false, fmt.Errorf("timed out waiting for approval")
 	}
-	fmt.Println()
 	fmt.Println("Approved.")
 
 	// 3a. wireguard branch — auth_key is the full client config.
@@ -656,7 +702,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, setup joinSetup) (b
 
 	// 3b. tailscale branch — ensure binary + daemon.
 	if _, err := tailscaleBin(); err != nil {
-		fmt.Println("⎿ Installing tailscale (will require sudo)")
+		fmt.Println("└ Installing tailscale (will require sudo)")
 		if err := installTailscale(); err != nil {
 			return false, fmt.Errorf("install tailscale: %w", err)
 		}
