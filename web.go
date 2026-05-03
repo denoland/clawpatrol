@@ -39,10 +39,11 @@ var loginHTML string
 var loginTpl = template.Must(template.New("login").Parse(loginHTML))
 
 type IntegrationRow struct {
-	ID       string  `json:"id"`
-	Name     string  `json:"name"`
-	HasOAuth bool    `json:"has_oauth"`
-	Owners   []Owner `json:"owners"`
+	ID       string              `json:"id"`
+	Name     string              `json:"name"`
+	HasOAuth bool                `json:"has_oauth"`
+	Slots    []config.SecretSlot `json:"slots,omitempty"` // non-OAuth dashboard-managed slots
+	Owners   []Owner             `json:"owners"`
 }
 
 type Owner struct {
@@ -91,6 +92,8 @@ func newWebMux(g *Gateway, caDir string, ts Tailscale, publicURL string) http.Ha
 	mux.HandleFunc("/api/oauth/exchange", w.apiOAuthExchange)
 	mux.HandleFunc("/api/oauth/device-poll", w.apiOAuthDevicePoll)
 	mux.HandleFunc("/api/oauth/revoke", w.apiOAuthRevoke)
+	mux.HandleFunc("/api/credentials/set", w.apiCredentialsSet)
+	mux.HandleFunc("/api/credentials/clear", w.apiCredentialsClear)
 	mux.HandleFunc("/api/events", w.apiEventsSSE)
 	mux.HandleFunc("/api/onboard/start", w.apiOnboardStart)
 	mux.HandleFunc("/api/onboard/poll", w.apiOnboardPoll)
@@ -349,7 +352,7 @@ func (w *webMux) apiWhoami(rw http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (w *webMux) apiStatus(rw http.ResponseWriter, _ *http.Request) {
+func (w *webMux) apiStatus(rw http.ResponseWriter, r *http.Request) {
 	out := []IntegrationRow{}
 	policy := w.g.policy.Load()
 	if policy == nil {
@@ -361,6 +364,7 @@ func (w *webMux) apiStatus(rw http.ResponseWriter, _ *http.Request) {
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	caller, _ := w.ownerForCaller(r)
 	for _, name := range names {
 		ent := policy.Credentials[name]
 		row := IntegrationRow{ID: name, Name: name}
@@ -375,9 +379,120 @@ func (w *webMux) apiStatus(rw http.ResponseWriter, _ *http.Request) {
 				row.Owners = append(row.Owners, o)
 			}
 		}
+		if sp, ok := ent.Body.(config.SecretSlotsProvider); ok {
+			row.Slots = sp.SecretSlots()
+			// Per-caller "connected" check for dashboard rendering —
+			// any slot present counts as connected.
+			if caller != "" {
+				present, _ := credentialSlotPresence(w.g.db, name, caller)
+				if len(present) > 0 {
+					row.Owners = append(row.Owners, Owner{Owner: caller, Connected: true})
+				}
+			}
+		}
 		out = append(out, row)
 	}
 	writeJSON(rw, out)
+}
+
+// apiCredentialsSet persists one or more slot values for a non-OAuth
+// credential. Owner defaults to the caller's profile. Body shape:
+//
+//	{ "id": "stripe-live", "owner": "default", "slots": { "": "sk_live_…" } }
+//
+// Multi-slot credentials (mtls, slack tokens) pass multiple keys.
+// Empty values clear the slot.
+func (w *webMux) apiCredentialsSet(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(rw, "POST", 405)
+		return
+	}
+	var body struct {
+		ID    string            `json:"id"`
+		Owner string            `json:"owner"`
+		Slots map[string]string `json:"slots"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(rw, err.Error(), 400)
+		return
+	}
+	if body.ID == "" {
+		http.Error(rw, "missing id", 400)
+		return
+	}
+	if body.Owner == "" {
+		body.Owner, _ = w.ownerForCaller(r)
+	}
+	if body.Owner == "" {
+		http.Error(rw, "missing owner", 400)
+		return
+	}
+	policy := w.g.policy.Load()
+	ent, ok := policy.Credentials[body.ID]
+	if !ok {
+		http.Error(rw, "unknown credential: "+body.ID, 404)
+		return
+	}
+	sp, ok := ent.Body.(config.SecretSlotsProvider)
+	if !ok {
+		http.Error(rw, "credential is OAuth-flow, use /api/oauth/start", 400)
+		return
+	}
+	valid := map[string]bool{}
+	for _, s := range sp.SecretSlots() {
+		valid[s.Name] = true
+	}
+	for slot, v := range body.Slots {
+		if !valid[slot] {
+			http.Error(rw, "unknown slot: "+slot, 400)
+			return
+		}
+		if v == "" {
+			// Empty value = clear that slot specifically.
+			if _, err := w.g.db.Exec(
+				`DELETE FROM credential_secrets WHERE credential = ? AND profile = ? AND slot = ?`,
+				body.ID, body.Owner, slot,
+			); err != nil {
+				http.Error(rw, err.Error(), 500)
+				return
+			}
+			continue
+		}
+		if err := setCredentialSlot(w.g.db, body.ID, body.Owner, slot, v); err != nil {
+			http.Error(rw, err.Error(), 500)
+			return
+		}
+	}
+	writeJSON(rw, map[string]any{"ok": true})
+}
+
+// apiCredentialsClear drops every slot for (id, owner). Disconnect
+// button on the dashboard.
+func (w *webMux) apiCredentialsClear(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(rw, "POST", 405)
+		return
+	}
+	var body struct {
+		ID    string `json:"id"`
+		Owner string `json:"owner"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(rw, err.Error(), 400)
+		return
+	}
+	if body.ID == "" {
+		http.Error(rw, "missing id", 400)
+		return
+	}
+	if body.Owner == "" {
+		body.Owner, _ = w.ownerForCaller(r)
+	}
+	if err := clearCredentialSecrets(w.g.db, body.ID, body.Owner); err != nil {
+		http.Error(rw, err.Error(), 500)
+		return
+	}
+	writeJSON(rw, map[string]any{"ok": true})
 }
 
 // lookupOAuthFlow finds the OAuth flow for a credential bare name in

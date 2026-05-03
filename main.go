@@ -1433,7 +1433,7 @@ func runGateway(args []string) {
 		hitl:    newHITLRegistry(),
 		onboard: newOnboardRegistry(),
 	}
-	g.secrets = newGatewaySecretStore(oauthReg)
+	g.secrets = newGatewaySecretStore(db, oauthReg)
 	registerOAuthCredentials(oauthReg, policy)
 	g.policy.Store(policy)
 	g.pgIdx.Store(buildPgIndex(policy))

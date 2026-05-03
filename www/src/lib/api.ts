@@ -9,12 +9,42 @@ export type Owner = {
   expires_at?: number;
 };
 
+export type SecretSlot = {
+  name: string;
+  label: string;
+  multiline?: boolean;
+  description?: string;
+};
+
 export type Integration = {
   id: string;
   name: string;
   has_oauth: boolean;
+  slots?: SecretSlot[] | null;
   owners: Owner[] | null;
 };
+
+export async function setCredentialSlots(
+  id: string,
+  owner: string,
+  slots: Record<string, string>,
+): Promise<void> {
+  const r = await fetch("/api/credentials/set", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id, owner, slots }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+}
+
+export async function clearCredential(id: string, owner: string): Promise<void> {
+  const r = await fetch("/api/credentials/clear", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id, owner }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+}
 
 export type Session = {
   id: string;

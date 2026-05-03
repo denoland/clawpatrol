@@ -1,30 +1,48 @@
 package main
 
 import (
+	"database/sql"
+	"fmt"
+	"time"
+
 	"github.com/denoland/clawpatrol-go/config"
 	"github.com/denoland/clawpatrol-go/config/runtime"
 )
 
 // gatewaySecretStore is the SecretStore the gateway hands to
-// credential plugins. It tries the OAuthRegistry first (so OAuth-flow
-// credentials get a fresh, refreshed access token) and falls back to
-// the env-var store (CLAWPATROL_SECRET_<NAME>) for static credentials
-// that don't go through OAuth.
+// credential plugins. Lookup order per (credential name, owner):
 //
-// The registry is keyed by credential bare-name — e.g.
-// "anthropic-avocet-sub" — registered at policy load time via
-// registerOAuthCredentials below, so dashboard connect / revoke
-// flows operate against the same name space the policy uses.
+//  1. credential_secrets table — slot bytes the operator pasted into
+//     the dashboard (single-slot fills Bytes; multi-slot fills Extras).
+//  2. OAuthRegistry — for OAuth-flow credentials (claude / codex /
+//     github / ...), returns a refreshed access token.
+//  3. EnvSecretStore — CLAWPATROL_SECRET_<NAME>, last-resort fallback
+//     for operator-managed env-var secrets.
+//
+// All three keyspaces are the credential's bare name, so a credential
+// declared `credential "bearer_token" "stripe-live" {}` is reachable
+// via the dashboard, the OAuth registry (if it grew an OAuth flow),
+// or `CLAWPATROL_SECRET_STRIPE-LIVE`, in that priority.
 type gatewaySecretStore struct {
+	db    *sql.DB
 	oauth *OAuthRegistry
 	env   runtime.SecretStore
 }
 
-func newGatewaySecretStore(oauth *OAuthRegistry) runtime.SecretStore {
-	return &gatewaySecretStore{oauth: oauth, env: runtime.EnvSecretStore{}}
+func newGatewaySecretStore(db *sql.DB, oauth *OAuthRegistry) runtime.SecretStore {
+	return &gatewaySecretStore{db: db, oauth: oauth, env: runtime.EnvSecretStore{}}
 }
 
 func (s *gatewaySecretStore) Get(name, owner string) (runtime.Secret, error) {
+	if s.db != nil {
+		sec, ok, err := readCredentialSecrets(s.db, name, owner)
+		if err != nil {
+			return runtime.Secret{}, err
+		}
+		if ok {
+			return sec, nil
+		}
+	}
 	if s.oauth != nil {
 		if tok, err := s.oauth.Token(name, owner); err != nil {
 			return runtime.Secret{}, err
@@ -33,6 +51,93 @@ func (s *gatewaySecretStore) Get(name, owner string) (runtime.Secret, error) {
 		}
 	}
 	return s.env.Get(name, owner)
+}
+
+// readCredentialSecrets fetches every slot persisted for (credential,
+// profile). Returns (Secret, true) when at least one slot exists. The
+// unnamed slot (slot = ”) fills Bytes; named slots fill Extras.
+func readCredentialSecrets(db *sql.DB, credential, profile string) (runtime.Secret, bool, error) {
+	rows, err := db.Query(
+		`SELECT slot, value FROM credential_secrets WHERE credential = ? AND profile = ?`,
+		credential, profile,
+	)
+	if err != nil {
+		return runtime.Secret{}, false, err
+	}
+	defer rows.Close()
+	sec := runtime.Secret{Kind: "dashboard"}
+	any := false
+	for rows.Next() {
+		var slot, value string
+		if err := rows.Scan(&slot, &value); err != nil {
+			return runtime.Secret{}, false, err
+		}
+		any = true
+		if slot == "" {
+			sec.Bytes = []byte(value)
+			continue
+		}
+		if sec.Extras == nil {
+			sec.Extras = map[string]string{}
+		}
+		sec.Extras[slot] = value
+	}
+	return sec, any, rows.Err()
+}
+
+// setCredentialSlot upserts one (credential, profile, slot) row.
+// Used by the dashboard's connect-credential endpoint.
+func setCredentialSlot(db *sql.DB, credential, profile, slot, value string) error {
+	if db == nil {
+		return fmt.Errorf("no db")
+	}
+	_, err := db.Exec(
+		`INSERT INTO credential_secrets (credential, profile, slot, value, updated_ns)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(credential, profile, slot) DO UPDATE SET
+		   value = excluded.value, updated_ns = excluded.updated_ns`,
+		credential, profile, slot, value, time.Now().UnixNano(),
+	)
+	return err
+}
+
+// clearCredentialSecrets drops every slot for (credential, profile).
+// The dashboard's disconnect button calls this.
+func clearCredentialSecrets(db *sql.DB, credential, profile string) error {
+	if db == nil {
+		return nil
+	}
+	_, err := db.Exec(
+		`DELETE FROM credential_secrets WHERE credential = ? AND profile = ?`,
+		credential, profile,
+	)
+	return err
+}
+
+// credentialSlotPresence returns the set of slots persisted for
+// (credential, profile). Used by the dashboard to render per-slot
+// "filled / empty" status without leaking the secret bytes.
+func credentialSlotPresence(db *sql.DB, credential, profile string) (map[string]bool, error) {
+	out := map[string]bool{}
+	if db == nil {
+		return out, nil
+	}
+	rows, err := db.Query(
+		`SELECT slot FROM credential_secrets WHERE credential = ? AND profile = ?`,
+		credential, profile,
+	)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var slot string
+		if err := rows.Scan(&slot); err != nil {
+			return out, err
+		}
+		out[slot] = true
+	}
+	return out, rows.Err()
 }
 
 // registerOAuthCredentials walks the loaded policy and registers each
@@ -55,7 +160,7 @@ func registerOAuthCredentials(reg *OAuthRegistry, policy *config.CompiledPolicy)
 			continue
 		}
 		copy := *flow
-		copy.ID = name // registry keys by ID; bare name is the lookup key
+		copy.ID = name
 		reg.Register(name, copy)
 	}
 }

@@ -50,6 +50,21 @@ CREATE TABLE credentials (
   PRIMARY KEY (id, profile)
 );
 
+-- Per-(credential, profile, slot) raw secret bytes for non-OAuth
+-- credentials: bearer / header / cookie / mtls (cert+key+ca) /
+-- slack (bot+app) / clickhouse (password) / etc. OAuth-flow types
+-- live in the credentials table above; this is for the
+-- "operator pastes a token into the dashboard" path. Multi-slot
+-- credentials write one row per slot.
+CREATE TABLE credential_secrets (
+  credential TEXT NOT NULL,    -- credential bare name from gateway.hcl
+  profile    TEXT NOT NULL,    -- owner profile (single tenant: "default")
+  slot       TEXT NOT NULL,    -- '' for single-slot; named for multi
+  value      TEXT NOT NULL,
+  updated_ns INTEGER NOT NULL,
+  PRIMARY KEY (credential, profile, slot)
+);
+
 CREATE TABLE actions (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   ts_ns       INTEGER NOT NULL,
