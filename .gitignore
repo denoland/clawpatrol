@@ -19,3 +19,4 @@ macos/Clawpatrol.xcodeproj/
 macos/build/
 macos/netstack/libwgnetstack.a
 macos/netstack/libwgnetstack.h
+*.swp
