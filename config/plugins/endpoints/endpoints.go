@@ -89,63 +89,34 @@ type ClickhouseNativeEndpoint struct {
 }
 
 // Cross-cut accessors used by config.Compile. Each endpoint type
-// exposes its hosts and the (placeholder, credential) bindings as a
-// flat list — the singular `credential = X` form collapses to one
-// entry with empty placeholder.
+// exposes its hosts and (placeholder, credential) bindings as a flat
+// []config.CredBinding list. Singular `credential = X` collapses to
+// one entry with empty placeholder; multi-credential endpoints emit
+// one entry per credentials[] item.
 
-type credBinding struct {
-	Placeholder string
-	Credential  string
-}
-
-func bindings(single string, list []CredentialEntry) []credBinding {
+func bindings(single string, list []CredentialEntry) []config.CredBinding {
 	if single != "" && len(list) == 0 {
-		return []credBinding{{Credential: single}}
+		return []config.CredBinding{{Credential: single}}
 	}
-	out := make([]credBinding, 0, len(list))
+	out := make([]config.CredBinding, 0, len(list))
 	for _, e := range list {
-		out = append(out, credBinding{Placeholder: e.Placeholder, Credential: e.Credential})
+		out = append(out, config.CredBinding{Placeholder: e.Placeholder, Credential: e.Credential})
 	}
 	return out
 }
 
-func (e *HTTPSEndpoint) EndpointHosts() []string { return e.Hosts }
-func (e *HTTPSEndpoint) EndpointCredentials() []struct {
-	Placeholder string
-	Credential  string
-} {
-	out := bindings(e.Credential, e.Credentials)
-	r := make([]struct {
-		Placeholder string
-		Credential  string
-	}, len(out))
-	for i, b := range out {
-		r[i] = struct {
-			Placeholder string
-			Credential  string
-		}{b.Placeholder, b.Credential}
+func singleBinding(name string) []config.CredBinding {
+	if name == "" {
+		return nil
 	}
-	return r
+	return []config.CredBinding{{Credential: name}}
 }
 
-func (e *PostgresEndpoint) EndpointHosts() []string { return []string{e.Host} }
-func (e *PostgresEndpoint) EndpointCredentials() []struct {
-	Placeholder string
-	Credential  string
-} {
-	out := bindings(e.Credential, e.Credentials)
-	r := make([]struct {
-		Placeholder string
-		Credential  string
-	}, len(out))
-	for i, b := range out {
-		r[i] = struct {
-			Placeholder string
-			Credential  string
-		}{b.Placeholder, b.Credential}
-	}
-	return r
-}
+func (e *HTTPSEndpoint) EndpointHosts() []string              { return e.Hosts }
+func (e *HTTPSEndpoint) EndpointCredentials() []config.CredBinding { return bindings(e.Credential, e.Credentials) }
+
+func (e *PostgresEndpoint) EndpointHosts() []string                  { return []string{e.Host} }
+func (e *PostgresEndpoint) EndpointCredentials() []config.CredBinding { return bindings(e.Credential, e.Credentials) }
 
 func (e *KubernetesEndpoint) EndpointHosts() []string {
 	if len(e.Hosts) > 0 {
@@ -157,54 +128,21 @@ func (e *KubernetesEndpoint) EndpointHosts() []string {
 	return nil
 }
 
-// FileIncludeFields tells the loader to inline `<<file:NAME>>`
-// markers in ca_cert. Self-hosted clusters reference the cluster
-// CA via filename so cert material stays out of the policy file.
+// FileIncludeFields tells the loader to inline `<<file:NAME>>` markers
+// in ca_cert. Self-hosted clusters reference the cluster CA via
+// filename so cert material stays out of the policy file.
 func (e *KubernetesEndpoint) FileIncludeFields() []config.FileIncludeField {
 	return []config.FileIncludeField{
 		{Get: func() string { return e.CACert }, Set: func(v string) { e.CACert = v }},
 	}
 }
-func (e *KubernetesEndpoint) EndpointCredentials() []struct {
-	Placeholder string
-	Credential  string
-} {
-	if e.Credential == "" {
-		return nil
-	}
-	return []struct {
-		Placeholder string
-		Credential  string
-	}{{Credential: e.Credential}}
-}
+func (e *KubernetesEndpoint) EndpointCredentials() []config.CredBinding { return singleBinding(e.Credential) }
 
-func (e *ClickhouseHTTPSEndpoint) EndpointHosts() []string { return e.Hosts }
-func (e *ClickhouseHTTPSEndpoint) EndpointCredentials() []struct {
-	Placeholder string
-	Credential  string
-} {
-	if e.Credential == "" {
-		return nil
-	}
-	return []struct {
-		Placeholder string
-		Credential  string
-	}{{Credential: e.Credential}}
-}
+func (e *ClickhouseHTTPSEndpoint) EndpointHosts() []string                  { return e.Hosts }
+func (e *ClickhouseHTTPSEndpoint) EndpointCredentials() []config.CredBinding { return singleBinding(e.Credential) }
 
-func (e *ClickhouseNativeEndpoint) EndpointHosts() []string { return e.Hosts }
-func (e *ClickhouseNativeEndpoint) EndpointCredentials() []struct {
-	Placeholder string
-	Credential  string
-} {
-	if e.Credential == "" {
-		return nil
-	}
-	return []struct {
-		Placeholder string
-		Credential  string
-	}{{Credential: e.Credential}}
-}
+func (e *ClickhouseNativeEndpoint) EndpointHosts() []string                  { return e.Hosts }
+func (e *ClickhouseNativeEndpoint) EndpointCredentials() []config.CredBinding { return singleBinding(e.Credential) }
 
 // ── Endpoint runtimes ────────────────────────────────────────────────
 //

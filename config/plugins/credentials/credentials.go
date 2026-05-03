@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclwrite"
@@ -190,114 +191,83 @@ func ensureBeta(h http.Header, beta string) {
 		h.Set("anthropic-beta", beta)
 		return
 	}
-	for _, p := range splitCSV(cur) {
-		if p == beta {
+	for _, p := range strings.Split(cur, ",") {
+		if strings.TrimSpace(p) == beta {
 			return
 		}
 	}
 	h.Set("anthropic-beta", cur+","+beta)
 }
 
-func splitCSV(s string) []string {
-	var out []string
-	for _, p := range []byte(s) {
-		_ = p
-	}
-	// Simple comma split with whitespace trim — header values are
-	// CSV-like in practice. Avoiding strings import keeps this file
-	// dependency-light at the runtime boundary.
-	cur := ""
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c == ',' {
-			out = append(out, trimSpaces(cur))
-			cur = ""
-			continue
+// emitCredential serializes a credential body back to HCL. Most types
+// emit nothing (empty body); shaped types emit their few attributes.
+func emitCredential(body any, _ string, b *hclwrite.Body) {
+	switch v := body.(type) {
+	case *BearerToken:
+		if v.IdempotencyKey {
+			b.SetAttributeValue("idempotency_key", cty.True)
 		}
-		cur += string(c)
+	case *CookieToken:
+		if v.CookieName != "" {
+			b.SetAttributeValue("cookie_name", cty.StringVal(v.CookieName))
+		}
+	case *HeaderToken:
+		b.SetAttributeValue("header", cty.StringVal(v.Header))
+		if v.Prefix != "" {
+			b.SetAttributeValue("prefix", cty.StringVal(v.Prefix))
+		}
+	case *PostgresCredential:
+		if v.User != "" {
+			b.SetAttributeValue("user", cty.StringVal(v.User))
+		}
+	case *ClickhouseCredential:
+		if v.User != "" {
+			b.SetAttributeValue("user", cty.StringVal(v.User))
+		}
+	case *AWSEKSCredential:
+		b.SetAttributeValue("cluster", cty.StringVal(v.Cluster))
+		b.SetAttributeValue("region", cty.StringVal(v.Region))
+		if v.Profile != "" {
+			b.SetAttributeValue("profile", cty.StringVal(v.Profile))
+		}
 	}
-	if cur != "" {
-		out = append(out, trimSpaces(cur))
-	}
-	return out
 }
 
-func trimSpaces(s string) string {
-	for len(s) > 0 && (s[0] == ' ' || s[0] == '\t') {
-		s = s[1:]
-	}
-	for len(s) > 0 && (s[len(s)-1] == ' ' || s[len(s)-1] == '\t') {
-		s = s[:len(s)-1]
-	}
-	return s
-}
+// newer returns a New() func that allocates a fresh *T. Cheaper than
+// repeating `func() any { return &Foo{} }` in the wireds table.
+func newer[T any]() func() any { return func() any { return new(T) } }
 
-// emitFor returns a per-type Emit hook. Most credential bodies are
-// either empty or a tiny set of attributes; we route all of them
-// through one helper that knows the field set per type.
-func emitFor(typ string) func(any, string, *hclwrite.Body) {
-	return func(body any, _ string, b *hclwrite.Body) {
-		switch v := body.(type) {
-		case *BearerToken:
-			if v.IdempotencyKey {
-				b.SetAttributeValue("idempotency_key", cty.True)
-			}
-		case *CookieToken:
-			if v.CookieName != "" {
-				b.SetAttributeValue("cookie_name", cty.StringVal(v.CookieName))
-			}
-		case *HeaderToken:
-			b.SetAttributeValue("header", cty.StringVal(v.Header))
-			if v.Prefix != "" {
-				b.SetAttributeValue("prefix", cty.StringVal(v.Prefix))
-			}
-		case *PostgresCredential:
-			if v.User != "" {
-				b.SetAttributeValue("user", cty.StringVal(v.User))
-			}
-		case *ClickhouseCredential:
-			if v.User != "" {
-				b.SetAttributeValue("user", cty.StringVal(v.User))
-			}
-		case *AWSEKSCredential:
-			b.SetAttributeValue("cluster", cty.StringVal(v.Cluster))
-			b.SetAttributeValue("region", cty.StringVal(v.Region))
-			if v.Profile != "" {
-				b.SetAttributeValue("profile", cty.StringVal(v.Profile))
-			}
-		}
-		// Empty-body credentials (mtls / anthropic / slack / telegram /
-		// gemini / openai_codex / notion) emit no attributes.
-		_ = typ
-	}
+// passthrough is the Build hook every credential uses — credentials
+// own no derived state beyond their decoded body.
+func passthrough(decoded any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics) {
+	return decoded, nil
 }
 
 func init() {
-	// Wired runtimes — each implements HTTPCredentialRuntime and
-	// gets stamped onto the plugin's Runtime field so the dispatcher
-	// can type-assert. Schema-only plugins (slack / telegram / gemini
-	// / etc.) leave Runtime nil; the dispatcher reports a clear "not
+	// Wired runtimes — each implements HTTPCredentialRuntime and gets
+	// stamped onto the plugin's Runtime field so the dispatcher can
+	// type-assert. Schema-only plugins (slack / telegram / gemini /
+	// etc.) leave Runtime nil; the dispatcher reports a clear "not
 	// implemented" diagnostic when a request reaches one.
-	type wired struct {
+	wireds := []struct {
 		typ string
 		new func() any
-		rt  any // satisfies one of the runtime interfaces, or nil
-	}
-	wireds := []wired{
-		{"bearer_token", func() any { return &BearerToken{} }, (*BearerToken)(nil)},
-		{"cookie_token", func() any { return &CookieToken{} }, (*CookieToken)(nil)},
-		{"header_token", func() any { return &HeaderToken{} }, (*HeaderToken)(nil)},
-		{"mtls_credential", func() any { return &MTLSCredential{} }, (*MTLSCredential)(nil)},
-		{"postgres_credential", func() any { return &PostgresCredential{} }, nil},
-		{"anthropic_manual_key", func() any { return &AnthropicManualKey{} }, (*AnthropicManualKey)(nil)},
-		{"anthropic_oauth_subscription", func() any { return &AnthropicOAuthSubscription{} }, (*AnthropicOAuthSubscription)(nil)},
-		{"slack_tokens", func() any { return &SlackTokens{} }, nil},
-		{"telegram_bot_token", func() any { return &TelegramBotToken{} }, nil},
-		{"gemini_api_key", func() any { return &GeminiAPIKey{} }, nil},
-		{"openai_codex_oauth", func() any { return &OpenAICodexOAuth{} }, nil},
-		{"notion_oauth", func() any { return &NotionOAuth{} }, nil},
-		{"clickhouse_credential", func() any { return &ClickhouseCredential{} }, nil},
-		{"aws_eks_credential", func() any { return &AWSEKSCredential{} }, nil},
+		rt  any
+	}{
+		{"bearer_token", newer[BearerToken](), (*BearerToken)(nil)},
+		{"cookie_token", newer[CookieToken](), (*CookieToken)(nil)},
+		{"header_token", newer[HeaderToken](), (*HeaderToken)(nil)},
+		{"mtls_credential", newer[MTLSCredential](), (*MTLSCredential)(nil)},
+		{"postgres_credential", newer[PostgresCredential](), nil},
+		{"anthropic_manual_key", newer[AnthropicManualKey](), (*AnthropicManualKey)(nil)},
+		{"anthropic_oauth_subscription", newer[AnthropicOAuthSubscription](), (*AnthropicOAuthSubscription)(nil)},
+		{"slack_tokens", newer[SlackTokens](), nil},
+		{"telegram_bot_token", newer[TelegramBotToken](), nil},
+		{"gemini_api_key", newer[GeminiAPIKey](), nil},
+		{"openai_codex_oauth", newer[OpenAICodexOAuth](), nil},
+		{"notion_oauth", newer[NotionOAuth](), nil},
+		{"clickhouse_credential", newer[ClickhouseCredential](), nil},
+		{"aws_eks_credential", newer[AWSEKSCredential](), nil},
 	}
 	for _, w := range wireds {
 		w := w
@@ -306,15 +276,13 @@ func init() {
 			Type:    w.typ,
 			New:     w.new,
 			Runtime: w.rt,
-			Build: func(decoded any, name string, _ *config.BuildCtx) (any, hcl.Diagnostics) {
-				return decoded, nil
-			},
-			Emit: emitFor(w.typ),
+			Build:   passthrough,
+			Emit:    emitCredential,
 		})
 	}
-	// Sanity check at init time that the wired runtimes satisfy the
-	// HTTPCredentialRuntime contract — catches signature drift early
-	// rather than at first request.
+	// Sanity check at init time that wired runtimes satisfy the right
+	// contract — catches signature drift early rather than at first
+	// request.
 	var (
 		_ runtime.HTTPCredentialRuntime = (*BearerToken)(nil)
 		_ runtime.HTTPCredentialRuntime = (*CookieToken)(nil)

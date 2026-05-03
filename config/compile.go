@@ -63,6 +63,17 @@ type CompiledCredential struct {
 	Credential  *Entity
 }
 
+// CredBinding is one (placeholder, credential bare-name) pair. Endpoint
+// plugins return these via the EndpointCredentials() interface so the
+// compile pass can resolve credential names against the symbol table
+// without knowing each endpoint type. Named (rather than anonymous)
+// type is what lets every endpoint impl reuse the same return type
+// without restating the field set.
+type CredBinding struct {
+	Placeholder string
+	Credential  string
+}
+
 // CompiledRule is one priority-sorted rule attached to an endpoint.
 //
 // Match is the original source map the matcher was built from, kept
@@ -200,12 +211,12 @@ func compileEndpoint(name string, ent *Entity, p *Policy) (*CompiledEndpoint, er
 		ce.Hosts = extractHosts(ent.Body)
 	}
 	for _, cb := range extractCredentialBindings(ent.Body) {
-		credEnt, ok := p.Credentials[cb.credential]
+		credEnt, ok := p.Credentials[cb.Credential]
 		if !ok {
-			return nil, fmt.Errorf("credential %q not declared", cb.credential)
+			return nil, fmt.Errorf("credential %q not declared", cb.Credential)
 		}
 		ce.Credentials = append(ce.Credentials, &CompiledCredential{
-			Placeholder: cb.placeholder,
+			Placeholder: cb.Placeholder,
 			Credential:  credEnt,
 		})
 	}
@@ -216,15 +227,8 @@ func compileEndpoint(name string, ent *Entity, p *Policy) (*CompiledEndpoint, er
 // used by compileEndpoint. They live on the endpoint plugin types but
 // are referenced via interface here to keep imports clean.
 
-type hostsAndCreds struct {
-	placeholder string
-	credential  string
-}
-
-// extractHosts mirrors the per-type hosts field via reflection — kept
-// as a tiny interface-method dispatch on the endpoint plugin types
-// instead of going through reflect, since the universe of endpoint
-// types is closed.
+// extractHosts mirrors the per-type hosts field via interface dispatch.
+// The universe of endpoint types is closed; reflect would be overkill.
 func extractHosts(body any) []string {
 	if h, ok := body.(interface{ EndpointHosts() []string }); ok {
 		return h.EndpointHosts()
@@ -232,19 +236,9 @@ func extractHosts(body any) []string {
 	return nil
 }
 
-func extractCredentialBindings(body any) []hostsAndCreds {
-	if h, ok := body.(interface {
-		EndpointCredentials() []struct {
-			Placeholder string
-			Credential  string
-		}
-	}); ok {
-		raw := h.EndpointCredentials()
-		out := make([]hostsAndCreds, len(raw))
-		for i, r := range raw {
-			out[i] = hostsAndCreds{placeholder: r.Placeholder, credential: r.Credential}
-		}
-		return out
+func extractCredentialBindings(body any) []CredBinding {
+	if h, ok := body.(interface{ EndpointCredentials() []CredBinding }); ok {
+		return h.EndpointCredentials()
 	}
 	return nil
 }
