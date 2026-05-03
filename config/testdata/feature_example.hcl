@@ -35,7 +35,7 @@ ca_dir      = "/opt/clawpatrol/ca"
 log_path    = "/opt/clawpatrol/gateway.log"
 oauth_dir   = "/opt/clawpatrol/oauth"
 
-tailscale {
+gateway {
   control        = "wireguard"
   wg_endpoint    = "66.42.120.196:51820"
   wg_subnet_cidr = "10.55.0.0/24"

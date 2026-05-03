@@ -39,7 +39,7 @@ func (g *Gateway) Dump() ([]byte, error) {
 		out["resolver"] = g.Resolver
 	}
 	if g.Tailscale != nil && !isZeroTailscale(g.Tailscale) {
-		out["tailscale"] = g.Tailscale
+		out["gateway"] = g.Tailscale
 	}
 	if g.Policy != nil {
 		out["policy"] = dumpPolicy(g.Policy)

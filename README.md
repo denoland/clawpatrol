@@ -1,6 +1,6 @@
 # clawpatrol
 
-MITM gateway for AI agents. Sits between `claude` / `codex` / `gh` and the upstream API. Injects credentials, enforces rules, prompts a human for the dangerous stuff.
+Clawpatrol is a MITM gateway that sits between your AI agents — `claude`, `codex`, `gh` — and the upstream APIs they talk to. It injects credentials so the agent never sees them, enforces per-endpoint rules, and pulls a human into the loop when something needs explicit approval.
 
 ## install
 
@@ -9,6 +9,8 @@ curl -fsSL https://clawpatrol.dev/install.sh | sh
 ```
 
 ## gateway
+
+Stand up a gateway with one command. It generates a CA, writes a config, opens the firewall ports, and drops a systemd unit.
 
 ```
 clawpatrol gateway init
@@ -29,6 +31,8 @@ systemctl enable --now clawpatrol-gateway
 
 ## device
 
+On every machine you want to route through the gateway, run `clawpatrol join`. You'll get a one-time code; verify it matches in the browser tab that opens, approve, and you're done.
+
 ```
 clawpatrol join --url http://gw.example.com:9080
 
@@ -47,7 +51,7 @@ Approved.
 Installed! Try: clawpatrol run claude
 ```
 
-`clawpatrol run` per-process tunnel — only the wrapped command routes via the gateway. No host-wide route table changes.
+`clawpatrol run` opens a per-process tunnel: only the wrapped command's traffic routes through the gateway, so your other apps keep using the public network as usual.
 
 ```
 clawpatrol run claude
@@ -55,11 +59,11 @@ clawpatrol run gh pr create
 clawpatrol run -- psql 'host=db user=agent'
 ```
 
-For host-wide routing pass `--whole-machine` to `join`.
+If you'd rather route every packet on the host through the gateway, pass `--whole-machine` to `join`.
 
 ## policy
 
-`gateway.hcl` declares credentials, endpoints, rules. Bare-name refs throughout.
+Policy lives in `gateway.hcl`. You declare credentials, the endpoints they unlock, and the rules that decide what's allowed. References are bare names — no quotes, no kind prefix.
 
 ```hcl
 credential "anthropic_oauth_subscription" "claude" {}
@@ -94,7 +98,7 @@ profile "default" {
 }
 ```
 
-LLM proctor for cheap automated checks:
+For cheap, automated checks you can put an LLM in front of a rule. The proctor reads a policy block, looks at the request, and votes allow or deny.
 
 ```hcl
 policy "no-secret-columns" {
@@ -116,23 +120,27 @@ rule "sql_rule" "pg-secret-defense" {
 
 ## operator
 
-Dashboard at `public_url`. Live request stream, paste OAuth tokens, approve/deny pending HITL. Slack delivery: drop a `slack_tokens` credential block + reference it from a `human_approver` — interactive approve/deny buttons land in the configured channel.
+The dashboard lives at `public_url`. From there you watch the live request stream, paste OAuth tokens against credentials, and approve or deny pending HITL requests. To get those approvals into Slack, drop a `slack_tokens` credential and reference it from a `human_approver` block — interactive approve/deny buttons land in the channel you configured.
 
 ## modes
 
-Two control planes. Pick at `gateway init` time (default WireGuard).
+Clawpatrol ships two control planes for the gateway-to-device tunnel. Pick one when you run `gateway init`; the default is WireGuard.
 
-**wireguard** (default) — gateway runs an embedded userspace WG endpoint. Operator only opens one UDP port. No daemon, no `wg-quick`, no kernel module on the gateway. Devices `clawpatrol join --url <gw>` and get a per-machine WG conf.
+The WireGuard mode embeds a userspace WG endpoint inside the gateway. You only have to open one UDP port — there's no daemon, no `wg-quick`, and no kernel module on the gateway host. Devices run `clawpatrol join --url <gw>` and walk away with a per-machine WG conf.
 
-**tailscale** — gateway joins your tailnet as an exit-node. Devices already on the tailnet `clawpatrol login` and pin `clawpatrol` as their exit-node. Useful when you already run Tailscale + want the existing ACL/whois plumbing to gate onboarding.
+The Tailscale mode joins the gateway to your existing tailnet as an exit-node. Devices that are already on the tailnet run `clawpatrol login` and pin `clawpatrol` as their exit-node. Use this if you already operate Tailscale and want its ACL and whois plumbing to gate onboarding.
+
+You configure the choice with the `gateway` block:
 
 ```hcl
-tailscale {
-  control = "tailscale"   # or "wireguard"
+gateway {
+  control = "wireguard"   # or "tailscale"
+
   # tailscale-only:
   oauth_client_id     = "{{secret:TS_OAUTH_CLIENT_ID}}"
   oauth_client_secret = "{{secret:TS_OAUTH_CLIENT_SECRET}}"
   tags                = ["tag:client"]
+
   # wireguard-only:
   wg_endpoint    = "gw.example.com:51820"
   wg_subnet_cidr = "10.55.0.0/24"

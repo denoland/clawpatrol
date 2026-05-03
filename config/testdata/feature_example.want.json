@@ -1,6 +1,20 @@
 {
   "admin_email": "test@example.com",
   "ca_dir": "/opt/clawpatrol/ca",
+  "gateway": {
+    "AuthKey": "",
+    "ControlURL": "",
+    "Hostname": "",
+    "StateDir": "",
+    "Control": "wireguard",
+    "OAuthClientID": "",
+    "OAuthClientSecret": "",
+    "Tags": null,
+    "WGInterface": "",
+    "WGEndpoint": "66.42.120.196:51820",
+    "WGServerPub": "",
+    "WGSubnetCIDR": "10.55.0.0/24"
+  },
   "info_listen": "0.0.0.0:8080",
   "listen": "0.0.0.0:8443",
   "log_path": "/opt/clawpatrol/gateway.log",
@@ -96,19 +110,5 @@
       }
     }
   },
-  "public_url": "http://66.42.120.196:8080",
-  "tailscale": {
-    "AuthKey": "",
-    "ControlURL": "",
-    "Hostname": "",
-    "StateDir": "",
-    "Control": "wireguard",
-    "OAuthClientID": "",
-    "OAuthClientSecret": "",
-    "Tags": null,
-    "WGInterface": "",
-    "WGEndpoint": "66.42.120.196:51820",
-    "WGServerPub": "",
-    "WGSubnetCIDR": "10.55.0.0/24"
-  }
+  "public_url": "http://66.42.120.196:8080"
 }

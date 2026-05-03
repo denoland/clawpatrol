@@ -28,7 +28,7 @@ type Gateway struct {
 	OAuthDir        string `hcl:"oauth_dir,optional"`
 	DashboardSecret string `hcl:"dashboard_secret,optional"`
 
-	Tailscale *Tailscale `hcl:"tailscale,block"`
+	Tailscale *Tailscale `hcl:"gateway,block"`
 
 	// Policy holds the v14-grammar block contents. Populated after
 	// the operational decode by Load's pass-1 / pass-2 walk. Set to

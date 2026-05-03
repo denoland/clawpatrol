@@ -69,7 +69,7 @@ func emitOperational(body *hclwrite.Body, gw *Gateway) {
 
 	if gw.Tailscale != nil && !isZeroTailscale(gw.Tailscale) {
 		body.AppendNewline()
-		ts := body.AppendNewBlock("tailscale", nil).Body()
+		ts := body.AppendNewBlock("gateway", nil).Body()
 		emitTailscale(ts, gw.Tailscale)
 	}
 }

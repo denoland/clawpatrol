@@ -919,7 +919,7 @@ ca_dir      = "%s"
 log_path    = "%s"
 oauth_dir   = "%s"
 
-tailscale {
+gateway {
   control        = "wireguard"
   wg_endpoint    = "%s:%d"
   wg_subnet_cidr = "%s"
