@@ -1,0 +1,2 @@
+error: error_approve_stage_typo.hcl:17:1: Unknown approve stage attribute "naem" — Rule "broken-approve": approve stages accept name, policy, cache_ttl. Got "naem".
+error: error_approve_stage_typo.hcl:17:1: Rule "broken-approve" approve stage missing name — Object-form approve stages require `name = <approver>`.

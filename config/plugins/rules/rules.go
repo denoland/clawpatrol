@@ -278,26 +278,8 @@ func decodeApproveChain(v cty.Value, ruleName string, ctx *config.BuildCtx) ([]c
 			}
 			stages = append(stages, config.ApproveStage{Name: name})
 		case t.IsObjectType():
-			st := config.ApproveStage{}
-			if t.HasAttribute("name") {
-				st.Name = el.GetAttr("name").AsString()
-				if d := requireKind(ctx, st.Name, config.KindApprover, ruleName, "approve stage"); d != nil {
-					diags = append(diags, d)
-				}
-			}
-			if t.HasAttribute("policy") {
-				st.Policy = el.GetAttr("policy").AsString()
-				if d := requireKind(ctx, st.Policy, config.KindPolicy, ruleName, "approve stage policy"); d != nil {
-					diags = append(diags, d)
-				}
-			}
-			if t.HasAttribute("cache_ttl") {
-				ttl := el.GetAttr("cache_ttl")
-				if ttl.Type() == cty.Number {
-					i, _ := ttl.AsBigFloat().Int64()
-					st.CacheTTL = int(i)
-				}
-			}
+			st, stDiags := decodeApproveStageObject(el, ruleName, ctx)
+			diags = append(diags, stDiags...)
 			stages = append(stages, st)
 		default:
 			diags = append(diags, &hcl.Diagnostic{
@@ -309,6 +291,94 @@ func decodeApproveChain(v cty.Value, ruleName string, ctx *config.BuildCtx) ([]c
 		}
 	}
 	return stages, diags
+}
+
+// approveStageKeys is the closed set of attributes a struct-form
+// approve stage may carry. Mirrors config.ApproveStage. Drives
+// unknown-attr rejection in decodeApproveStageObject.
+var approveStageKeys = map[string]bool{
+	"name":      true,
+	"policy":    true,
+	"cache_ttl": true,
+}
+
+// decodeApproveStageObject decodes one struct-form approve stage and
+// rejects unknown / mistyped attributes at load time.
+//
+// Without this, `approve = [{ naem = "ops" }]` (typo on `name`) would
+// produce an empty Name silently, which then skips the requireKind
+// check and lands as a no-op stage in the rule — exactly the kind of
+// silent-misfire the typed-key check on `match` already prevents.
+func decodeApproveStageObject(el cty.Value, ruleName string, ctx *config.BuildCtx) (config.ApproveStage, hcl.Diagnostics) {
+	var diags hcl.Diagnostics
+	st := config.ApproveStage{}
+	t := el.Type()
+
+	for name := range t.AttributeTypes() {
+		if !approveStageKeys[name] {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("Unknown approve stage attribute %q", name),
+				Detail:   fmt.Sprintf("Rule %q: approve stages accept name, policy, cache_ttl. Got %q.", ruleName, name),
+				Subject:  &ctx.Block.DefRange,
+			})
+		}
+	}
+
+	if t.HasAttribute("name") {
+		v := el.GetAttr("name")
+		if v.Type() != cty.String {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("Rule %q approve stage name must be a bare-name reference", ruleName),
+				Subject:  &ctx.Block.DefRange,
+			})
+		} else {
+			st.Name = v.AsString()
+			if d := requireKind(ctx, st.Name, config.KindApprover, ruleName, "approve stage"); d != nil {
+				diags = append(diags, d)
+			}
+		}
+	} else {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Rule %q approve stage missing name", ruleName),
+			Detail:   "Object-form approve stages require `name = <approver>`.",
+			Subject:  &ctx.Block.DefRange,
+		})
+	}
+
+	if t.HasAttribute("policy") {
+		v := el.GetAttr("policy")
+		if v.Type() != cty.String {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("Rule %q approve stage policy must be a bare-name reference", ruleName),
+				Subject:  &ctx.Block.DefRange,
+			})
+		} else {
+			st.Policy = v.AsString()
+			if d := requireKind(ctx, st.Policy, config.KindPolicy, ruleName, "approve stage policy"); d != nil {
+				diags = append(diags, d)
+			}
+		}
+	}
+
+	if t.HasAttribute("cache_ttl") {
+		v := el.GetAttr("cache_ttl")
+		if v.Type() != cty.Number {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("Rule %q approve stage cache_ttl must be a number", ruleName),
+				Subject:  &ctx.Block.DefRange,
+			})
+		} else {
+			i, _ := v.AsBigFloat().Int64()
+			st.CacheTTL = int(i)
+		}
+	}
+
+	return st, diags
 }
 
 func requireKind(ctx *config.BuildCtx, name string, kind config.Kind, ruleName, what string) *hcl.Diagnostic {
