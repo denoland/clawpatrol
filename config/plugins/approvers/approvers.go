@@ -12,9 +12,11 @@ import (
 )
 
 // LLMApprover carries the model + the credential used to authenticate
-// the call to the model API. The prompt comes from the per-rule
-// `policy = ...` reference, so the same approver can be reused across
-// many rules with different prompts.
+// the call to the model API + the policy text the model judges
+// against. Inline `policy` is a bare-name reference to a `policy
+// "<name>" { text = ... }` block — operator declares the prompt once
+// and reuses across multiple judges. The use site stays a single
+// bare name: `approve = [claude-judge]`.
 //
 // Credential resolves at load time against the symbol table — the
 // runtime fetches its access token via the SecretStore at call time,
@@ -23,6 +25,7 @@ import (
 type LLMApprover struct {
 	Model      string `hcl:"model"`
 	Credential string `hcl:"credential"`
+	Policy     string `hcl:"policy,optional"`
 }
 
 // HumanApprover targets one Slack channel. Timeout / require_approvers
@@ -56,17 +59,22 @@ func (h *HumanApprover) HumanApproverInteractive() bool  { return h.Interactive 
 
 func init() {
 	config.Register(&config.Plugin{
-		Kind: config.KindApprover,
-		Type: "llm_approver",
-		New:  func() any { return &LLMApprover{} },
+		Kind:    config.KindApprover,
+		Type:    "llm_approver",
+		New:     func() any { return &LLMApprover{} },
+		Runtime: (*LLMApprover)(nil),
 		Refs: []config.RefSpec{
 			{Path: "Credential", Kind: config.KindCredential},
+			{Path: "Policy", Kind: config.KindPolicy, Optional: true},
 		},
 		Build: func(d any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics) { return d, nil },
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			a := body.(*LLMApprover)
 			b.SetAttributeValue("model", cty.StringVal(a.Model))
 			config.SetIdent(b, "credential", a.Credential)
+			if a.Policy != "" {
+				config.SetIdent(b, "policy", a.Policy)
+			}
 		},
 	})
 	config.Register(&config.Plugin{

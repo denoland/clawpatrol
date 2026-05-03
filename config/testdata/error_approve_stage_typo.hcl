@@ -11,9 +11,9 @@ approver "human_approver" "ops" {
 
 policy "draft-review" { text = "Approve only safe edits." }
 
-# Object-form stage with a typo'd attribute (`naem` instead of
-# `name`). Without the closed-set check, this stage would carry an
-# empty Name and silently no-op at request time.
+# Object-form approve stages are no longer accepted — every stage must
+# be a bare-name reference. The previous closed-set check on stage
+# attributes is now subsumed by the shape check.
 rule "http_rule" "broken-approve" {
   endpoint = github
   match    = { method = "POST" }

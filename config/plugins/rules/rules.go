@@ -252,9 +252,8 @@ func build(body any, name string, ctx *config.BuildCtx, fam validatedFamily) (an
 }
 
 // decodeApproveChain walks the cty.Value approve = [...] list. Each
-// element is either a string (bare approver ref) or an object with
-// `name`, `policy`, `cache_ttl`. References resolve against the
-// symbol table.
+// element is a bare-name reference to an approver block; LLM policy
+// text and cache TTL ride on the approver block itself.
 func decodeApproveChain(v cty.Value, ruleName string, ctx *config.BuildCtx) ([]config.ApproveStage, hcl.Diagnostics) {
 	var stages []config.ApproveStage
 	var diags hcl.Diagnostics
@@ -270,115 +269,22 @@ func decodeApproveChain(v cty.Value, ruleName string, ctx *config.BuildCtx) ([]c
 	for it.Next() {
 		_, el := it.Element()
 		t := el.Type()
-		switch {
-		case t == cty.String:
-			name := el.AsString()
-			if d := requireKind(ctx, name, config.KindApprover, ruleName, "approve stage"); d != nil {
-				diags = append(diags, d)
-			}
-			stages = append(stages, config.ApproveStage{Name: name})
-		case t.IsObjectType():
-			st, stDiags := decodeApproveStageObject(el, ruleName, ctx)
-			diags = append(diags, stDiags...)
-			stages = append(stages, st)
-		default:
+		if t != cty.String {
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
-				Summary:  fmt.Sprintf("Rule %q approve stage has unsupported shape", ruleName),
-				Detail:   "Each stage must be a bare-name reference or an object with `name`, `policy`, optional `cache_ttl`.",
+				Summary:  fmt.Sprintf("Rule %q approve stage must be a bare-name reference", ruleName),
+				Detail:   "Each stage is a bare approver name (e.g. `approve = [claude-judge]`). Bind policy text on the approver block itself.",
 				Subject:  &ctx.Block.DefRange,
 			})
+			continue
 		}
+		name := el.AsString()
+		if d := requireKind(ctx, name, config.KindApprover, ruleName, "approve stage"); d != nil {
+			diags = append(diags, d)
+		}
+		stages = append(stages, config.ApproveStage{Name: name})
 	}
 	return stages, diags
-}
-
-// approveStageKeys is the closed set of attributes a struct-form
-// approve stage may carry. Mirrors config.ApproveStage. Drives
-// unknown-attr rejection in decodeApproveStageObject.
-var approveStageKeys = map[string]bool{
-	"name":      true,
-	"policy":    true,
-	"cache_ttl": true,
-}
-
-// decodeApproveStageObject decodes one struct-form approve stage and
-// rejects unknown / mistyped attributes at load time.
-//
-// Without this, `approve = [{ naem = "ops" }]` (typo on `name`) would
-// produce an empty Name silently, which then skips the requireKind
-// check and lands as a no-op stage in the rule — exactly the kind of
-// silent-misfire the typed-key check on `match` already prevents.
-func decodeApproveStageObject(el cty.Value, ruleName string, ctx *config.BuildCtx) (config.ApproveStage, hcl.Diagnostics) {
-	var diags hcl.Diagnostics
-	st := config.ApproveStage{}
-	t := el.Type()
-
-	for name := range t.AttributeTypes() {
-		if !approveStageKeys[name] {
-			diags = append(diags, &hcl.Diagnostic{
-				Severity: hcl.DiagError,
-				Summary:  fmt.Sprintf("Unknown approve stage attribute %q", name),
-				Detail:   fmt.Sprintf("Rule %q: approve stages accept name, policy, cache_ttl. Got %q.", ruleName, name),
-				Subject:  &ctx.Block.DefRange,
-			})
-		}
-	}
-
-	if t.HasAttribute("name") {
-		v := el.GetAttr("name")
-		if v.Type() != cty.String {
-			diags = append(diags, &hcl.Diagnostic{
-				Severity: hcl.DiagError,
-				Summary:  fmt.Sprintf("Rule %q approve stage name must be a bare-name reference", ruleName),
-				Subject:  &ctx.Block.DefRange,
-			})
-		} else {
-			st.Name = v.AsString()
-			if d := requireKind(ctx, st.Name, config.KindApprover, ruleName, "approve stage"); d != nil {
-				diags = append(diags, d)
-			}
-		}
-	} else {
-		diags = append(diags, &hcl.Diagnostic{
-			Severity: hcl.DiagError,
-			Summary:  fmt.Sprintf("Rule %q approve stage missing name", ruleName),
-			Detail:   "Object-form approve stages require `name = <approver>`.",
-			Subject:  &ctx.Block.DefRange,
-		})
-	}
-
-	if t.HasAttribute("policy") {
-		v := el.GetAttr("policy")
-		if v.Type() != cty.String {
-			diags = append(diags, &hcl.Diagnostic{
-				Severity: hcl.DiagError,
-				Summary:  fmt.Sprintf("Rule %q approve stage policy must be a bare-name reference", ruleName),
-				Subject:  &ctx.Block.DefRange,
-			})
-		} else {
-			st.Policy = v.AsString()
-			if d := requireKind(ctx, st.Policy, config.KindPolicy, ruleName, "approve stage policy"); d != nil {
-				diags = append(diags, d)
-			}
-		}
-	}
-
-	if t.HasAttribute("cache_ttl") {
-		v := el.GetAttr("cache_ttl")
-		if v.Type() != cty.Number {
-			diags = append(diags, &hcl.Diagnostic{
-				Severity: hcl.DiagError,
-				Summary:  fmt.Sprintf("Rule %q approve stage cache_ttl must be a number", ruleName),
-				Subject:  &ctx.Block.DefRange,
-			})
-		} else {
-			i, _ := v.AsBigFloat().Int64()
-			st.CacheTTL = int(i)
-		}
-	}
-
-	return st, diags
 }
 
 func requireKind(ctx *config.BuildCtx, name string, kind config.Kind, ruleName, what string) *hcl.Diagnostic {
@@ -571,9 +477,7 @@ func sortedKeys(m map[string]any) []string {
 	return keys
 }
 
-// approveToTokens emits the approve list. Bare stages
-// (`{ Name: "x" }` only) emit as bare idents; struct stages emit as
-// object literals with `name`/`policy`/`cache_ttl`.
+// approveToTokens emits the approve list as bare-name idents.
 func approveToTokens(stages []config.ApproveStage) hclwrite.Tokens {
 	tokens := hclwrite.Tokens{
 		{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")},
@@ -582,18 +486,7 @@ func approveToTokens(stages []config.ApproveStage) hclwrite.Tokens {
 		if i > 0 {
 			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(", ")})
 		}
-		if s.Policy == "" && s.CacheTTL == 0 {
-			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(s.Name)})
-			continue
-		}
-		tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte("{ name = " + s.Name)})
-		if s.Policy != "" {
-			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(", policy = " + s.Policy)})
-		}
-		if s.CacheTTL != 0 {
-			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(fmt.Sprintf(", cache_ttl = %d", s.CacheTTL))})
-		}
-		tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(" }")})
+		tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(s.Name)})
 	}
 	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")})
 	return tokens

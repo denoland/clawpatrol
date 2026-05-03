@@ -31,17 +31,11 @@
         },
         "type": "human_approver"
       },
-      "content-safety": {
-        "body": {
-          "Model": "claude-sonnet-4-20250514",
-          "Credential": "anthropic-avocet-sub"
-        },
-        "type": "llm_approver"
-      },
-      "fast": {
+      "k8s-exec-content-judge": {
         "body": {
           "Model": "claude-haiku-4-5-20251001",
-          "Credential": "anthropic-avocet-sub"
+          "Credential": "anthropic-avocet-sub",
+          "Policy": "k8s-exec-content"
         },
         "type": "llm_approver"
       },
@@ -65,6 +59,30 @@
         },
         "type": "human_approver"
       },
+      "pg-secret-columns-judge": {
+        "body": {
+          "Model": "claude-haiku-4-5-20251001",
+          "Credential": "anthropic-avocet-sub",
+          "Policy": "pg-secret-columns"
+        },
+        "type": "llm_approver"
+      },
+      "pg-secret-named-defense-judge": {
+        "body": {
+          "Model": "claude-haiku-4-5-20251001",
+          "Credential": "anthropic-avocet-sub",
+          "Policy": "pg-secret-named-defense"
+        },
+        "type": "llm_approver"
+      },
+      "reply-content-judge": {
+        "body": {
+          "Model": "claude-sonnet-4-20250514",
+          "Credential": "anthropic-avocet-sub",
+          "Policy": "reply-content"
+        },
+        "type": "llm_approver"
+      },
       "scheduler-ops": {
         "body": {
           "Channel": "#agent-db",
@@ -74,6 +92,14 @@
           "Interactive": false
         },
         "type": "human_approver"
+      },
+      "slack-block-kit-shape-judge": {
+        "body": {
+          "Model": "claude-sonnet-4-20250514",
+          "Credential": "anthropic-avocet-sub",
+          "Policy": "slack-block-kit-shape"
+        },
+        "type": "llm_approver"
       },
       "support-ops": {
         "body": {
@@ -779,8 +805,7 @@
           },
           "approve": [
             {
-              "name": "content-safety",
-              "policy": "reply-content"
+              "name": "reply-content-judge"
             },
             {
               "name": "support-ops"
@@ -1048,9 +1073,7 @@
           },
           "approve": [
             {
-              "name": "fast",
-              "policy": "k8s-exec-content",
-              "cache_ttl": 60
+              "name": "k8s-exec-content-judge"
             }
           ]
         },
@@ -1535,9 +1558,7 @@
           },
           "approve": [
             {
-              "name": "fast",
-              "policy": "pg-secret-columns",
-              "cache_ttl": 600
+              "name": "pg-secret-columns-judge"
             }
           ]
         },
@@ -1604,9 +1625,7 @@
           },
           "approve": [
             {
-              "name": "fast",
-              "policy": "pg-secret-named-defense",
-              "cache_ttl": 600
+              "name": "pg-secret-named-defense-judge"
             }
           ]
         },
@@ -1650,8 +1669,7 @@
           },
           "approve": [
             {
-              "name": "content-safety",
-              "policy": "slack-block-kit-shape"
+              "name": "slack-block-kit-shape-judge"
             }
           ]
         },

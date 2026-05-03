@@ -41,12 +41,16 @@ export function LiveRequests({ agentIP, max = 200, height }: {
     <div className="flex flex-col bg-white border border-[#e5e5e5] rounded overflow-hidden" style={{ height: height ?? "420px" }}>
       <div className="flex items-center px-4 py-2.5 text-[10px] uppercase tracking-[.12em] text-[#a3a3a3] border-b border-[#e5e5e5] flex-shrink-0">
         <span>LIVE REQUESTS</span>
-        <span className="ml-2 text-[#22c55e] tabular-nums">● {events.length}</span>
+        <span className="ml-2 text-[#22c55e] tabular-nums flex items-center gap-1">
+          <span className="w-1.5 h-1.5 rounded-full bg-[#22c55e] animate-pulse" />
+          {events.length}
+        </span>
       </div>
       <div className="flex-1 overflow-y-auto">
         {events.length === 0 ? (
-          <div className="px-5 py-8 text-center text-[11px] text-[#a3a3a3]">
-            It's empty in here
+          <div className="px-5 py-8 text-center text-[11px] text-[#a3a3a3] flex items-center justify-center gap-2">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#22c55e] animate-pulse" />
+            Waiting for requests<AnimatedDots />
           </div>
         ) : (
           events.map((e, i) => <Row key={i} ev={e} />)
@@ -93,6 +97,19 @@ function Row({ ev }: { ev: EventRecord }) {
       <span className="text-[10px] tabular-nums text-[#a3a3a3] flex-shrink-0">{ev.ms}ms</span>
     </div>
   );
+}
+
+// AnimatedDots: cycles "", ".", "..", "..." every 400ms so the empty
+// state reads as actively waiting rather than stalled. Pure CSS would
+// need monospace + width pinning to avoid layout shift; the JS version
+// is small and the surrounding row only paints when the list is empty.
+function AnimatedDots() {
+  const [n, setN] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setN((x) => (x + 1) % 4), 400);
+    return () => clearInterval(t);
+  }, []);
+  return <span className="inline-block w-3 text-left">{".".repeat(n)}</span>;
 }
 
 function ModeIcon({ mode }: { mode: string }) {

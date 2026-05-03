@@ -223,9 +223,6 @@ type ApproveRequest struct {
 	// deep links in Slack messages and similar notifications.
 	DashboardURL string
 
-	// Policy text resolved from the stage's Policy reference, when
-	// the stage names one. Empty for bare-name stages.
-	PolicyText string
 	// Defaults from the file's defaults {} block; plugins fall back
 	// to these when their own config doesn't override.
 	Defaults config.Defaults

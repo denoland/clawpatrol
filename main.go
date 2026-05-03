@@ -1345,12 +1345,6 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 		if ar == nil {
 			return runtime.ApproveVerdict{Decision: "deny", Reason: "approver " + st.Name + " not found", By: "gateway"}
 		}
-		var policyText string
-		if st.Policy != "" && policy != nil {
-			if pt, ok := policy.Policies[st.Policy]; ok {
-				policyText = pt.Text
-			}
-		}
 		req := runtime.ApproveRequest{
 			Stage:        st,
 			Endpoint:     c.Endpoint,
@@ -1366,7 +1360,6 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 			Pool:         g.hitl,
 			Secrets:      g.secrets,
 			DashboardURL: g.cfg.PublicURL,
-			PolicyText:   policyText,
 			Policy:       policy,
 		}
 		if policy != nil {

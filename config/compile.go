@@ -102,14 +102,13 @@ type Outcome struct {
 	Approve []ApproveStage
 }
 
-// ApproveStage is one node in an approve = [...] chain. Either a
-// bare-name reference (Name set, Policy empty) or a struct stage with
-// a bound LLM policy and optional cache TTL override. Lives here so
-// runtime callers don't need to import the rules plugin package.
+// ApproveStage is one node in an approve = [...] chain — a bare-name
+// reference to an approver block. LLM policy text and cache TTL ride on
+// the approver block itself (see LLMApprover), so the use site stays a
+// single bare name. Lives here so runtime callers don't need to import
+// the rules plugin package.
 type ApproveStage struct {
-	Name     string `json:"name"`
-	Policy   string `json:"policy,omitempty"`
-	CacheTTL int    `json:"cache_ttl,omitempty"` // seconds; 0 → defaults
+	Name string `json:"name"`
 }
 
 // Compile lowers a *Gateway into a *CompiledPolicy. Errors surface as

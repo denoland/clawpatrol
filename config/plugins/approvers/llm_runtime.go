@@ -1,0 +1,243 @@
+package approvers
+
+// LLMApprover.Approve calls the configured model with the rule's
+// policy text + the request shape, parses an "allow" / "deny"
+// verdict from the response. Anthropic (api.anthropic.com) and
+// OpenAI / codex (api.openai.com) are wired via the bound
+// credential's HTTPCredentialRuntime — same auth path the agent
+// dispatcher uses for end-user requests, so OAuth refresh /
+// per-profile rotation come for free.
+//
+// Model dispatch is name-prefixed: `claude-…` → Anthropic Messages
+// API, `gpt-…` / `o*-…` → OpenAI Responses API. Other model names
+// surface a clear "unknown model family" deny.
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/denoland/clawpatrol-go/config/runtime"
+)
+
+const llmJudgeSystem = `You are a security gate. Decide whether the operator's policy intends the gateway to ALLOW or DENY this request. The policy text is the source of truth.
+
+Reply with EXACTLY one word on the first line: "allow" or "deny" (lowercase, no punctuation).
+Then a brief one-line reason on the second line.
+
+Be conservative — when the policy is ambiguous about whether the request is permitted, deny.`
+
+func (a *LLMApprover) Approve(ctx context.Context, req runtime.ApproveRequest) (runtime.ApproveVerdict, error) {
+	if a.Model == "" {
+		return runtime.ApproveVerdict{Decision: "deny", Reason: "llm approver has no model"}, nil
+	}
+	if a.Credential == "" {
+		return runtime.ApproveVerdict{Decision: "deny", Reason: "llm approver has no credential"}, nil
+	}
+	if req.Policy == nil {
+		return runtime.ApproveVerdict{Decision: "deny", Reason: "no policy on request"}, nil
+	}
+	var policyText string
+	if a.Policy != "" {
+		pt, ok := req.Policy.Policies[a.Policy]
+		if !ok {
+			return runtime.ApproveVerdict{Decision: "deny", Reason: "policy " + a.Policy + " not declared"}, nil
+		}
+		policyText = pt.Text
+	}
+	credEnt, ok := req.Policy.Credentials[a.Credential]
+	if !ok {
+		return runtime.ApproveVerdict{Decision: "deny", Reason: "credential " + a.Credential + " not declared"}, nil
+	}
+	injector, ok := credEnt.Body.(runtime.HTTPCredentialRuntime)
+	if !ok {
+		return runtime.ApproveVerdict{Decision: "deny", Reason: "credential " + a.Credential + " does not satisfy HTTPCredentialRuntime"}, nil
+	}
+	sec, err := req.Secrets.Get(a.Credential, req.Profile)
+	if err != nil {
+		return runtime.ApproveVerdict{Decision: "deny", Reason: "secret fetch: " + err.Error()}, nil
+	}
+
+	user := buildJudgePrompt(req, policyText)
+
+	var (
+		hreq   *http.Request
+		decode func(io.Reader) (string, error)
+	)
+	switch {
+	case strings.HasPrefix(a.Model, "claude-"):
+		hreq, decode = anthropicJudgeRequest(ctx, a.Model, user)
+	case strings.HasPrefix(a.Model, "gpt-"), strings.HasPrefix(a.Model, "o"):
+		hreq, decode = openaiJudgeRequest(ctx, a.Model, user)
+	default:
+		return runtime.ApproveVerdict{Decision: "deny", Reason: "unknown model family: " + a.Model}, nil
+	}
+	if err := injector.InjectHTTP(ctx, hreq, sec); err != nil {
+		return runtime.ApproveVerdict{Decision: "deny", Reason: "credential inject: " + err.Error()}, nil
+	}
+	c := &http.Client{Timeout: 30 * time.Second}
+	resp, err := c.Do(hreq)
+	if err != nil {
+		return runtime.ApproveVerdict{Decision: "deny", Reason: "llm call: " + err.Error()}, nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return runtime.ApproveVerdict{Decision: "deny", Reason: fmt.Sprintf("llm http %d: %s", resp.StatusCode, string(body))}, nil
+	}
+	text, err := decode(resp.Body)
+	if err != nil {
+		return runtime.ApproveVerdict{Decision: "deny", Reason: "llm response decode: " + err.Error()}, nil
+	}
+	verdict, reason := parseJudgeVerdict(text)
+	by := "llm:" + a.Model
+	return runtime.ApproveVerdict{Decision: verdict, Reason: reason, By: by}, nil
+}
+
+func buildJudgePrompt(req runtime.ApproveRequest, policyText string) string {
+	var sb strings.Builder
+	sb.WriteString("Policy:\n")
+	if policyText != "" {
+		sb.WriteString(policyText)
+	} else if req.Reason != "" {
+		sb.WriteString(req.Reason)
+	} else {
+		sb.WriteString("(none — fall back to default-deny when uncertain)")
+	}
+	sb.WriteString("\n\nRequest:\n")
+	fmt.Fprintf(&sb, "  method: %s\n  host: %s\n  path: %s\n", req.Method, req.Host, req.Path)
+	if req.UA != "" {
+		fmt.Fprintf(&sb, "  user-agent: %s\n", req.UA)
+	}
+	if req.BodySample != "" {
+		fmt.Fprintf(&sb, "  body:\n%s\n", indent(truncate(req.BodySample, 4000), "    "))
+	}
+	return sb.String()
+}
+
+func truncate(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) > n {
+		return s[:n] + "…"
+	}
+	return s
+}
+
+func indent(s, prefix string) string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		lines[i] = prefix + l
+	}
+	return strings.Join(lines, "\n")
+}
+
+func parseJudgeVerdict(text string) (string, string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "deny", "llm returned empty response"
+	}
+	lines := strings.SplitN(text, "\n", 2)
+	first := strings.ToLower(strings.TrimSpace(lines[0]))
+	first = strings.Trim(first, ".,;:!?\"'`")
+	reason := ""
+	if len(lines) > 1 {
+		reason = strings.TrimSpace(lines[1])
+	}
+	switch first {
+	case "allow":
+		return "allow", reason
+	case "deny":
+		return "deny", reason
+	default:
+		// Best-effort: search for the verdict word anywhere in the
+		// response. Models occasionally preface with "Verdict: …".
+		lower := strings.ToLower(text)
+		if strings.Contains(lower, "deny") && !strings.Contains(lower, "allow") {
+			return "deny", text
+		}
+		if strings.Contains(lower, "allow") && !strings.Contains(lower, "deny") {
+			return "allow", text
+		}
+		return "deny", "ambiguous llm response: " + truncate(text, 200)
+	}
+}
+
+// anthropicJudgeRequest builds a /v1/messages call. The credential
+// plugin's InjectHTTP stamps Authorization + the OAuth beta header
+// when needed; we just frame the body.
+func anthropicJudgeRequest(ctx context.Context, model, user string) (*http.Request, func(io.Reader) (string, error)) {
+	body, _ := json.Marshal(map[string]any{
+		"model":      model,
+		"max_tokens": 512,
+		"system":     llmJudgeSystem,
+		"messages": []map[string]any{
+			{"role": "user", "content": user},
+		},
+	})
+	req, _ := http.NewRequestWithContext(ctx, "POST",
+		"https://api.anthropic.com/v1/messages", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("anthropic-version", "2023-06-01")
+	decode := func(r io.Reader) (string, error) {
+		var msg struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		}
+		if err := json.NewDecoder(r).Decode(&msg); err != nil {
+			return "", err
+		}
+		for _, c := range msg.Content {
+			if c.Type == "text" && c.Text != "" {
+				return c.Text, nil
+			}
+		}
+		return "", fmt.Errorf("anthropic response had no text content")
+	}
+	return req, decode
+}
+
+// openaiJudgeRequest builds a /v1/responses call (the modern GPT
+// API). Authorization is supplied by the credential plugin's
+// InjectHTTP.
+func openaiJudgeRequest(ctx context.Context, model, user string) (*http.Request, func(io.Reader) (string, error)) {
+	body, _ := json.Marshal(map[string]any{
+		"model": model,
+		"input": []map[string]any{
+			{"role": "system", "content": []map[string]any{{"type": "input_text", "text": llmJudgeSystem}}},
+			{"role": "user", "content": []map[string]any{{"type": "input_text", "text": user}}},
+		},
+	})
+	req, _ := http.NewRequestWithContext(ctx, "POST",
+		"https://api.openai.com/v1/responses", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	decode := func(r io.Reader) (string, error) {
+		var msg struct {
+			Output []struct {
+				Type    string `json:"type"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"output"`
+		}
+		if err := json.NewDecoder(r).Decode(&msg); err != nil {
+			return "", err
+		}
+		for _, o := range msg.Output {
+			for _, c := range o.Content {
+				if c.Text != "" {
+					return c.Text, nil
+				}
+			}
+		}
+		return "", fmt.Errorf("openai response had no output text")
+	}
+	return req, decode
+}

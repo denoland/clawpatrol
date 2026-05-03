@@ -62,15 +62,15 @@ func runJoin(args []string) {
 	// can't carry traffic until the gateway has internet egress
 	// configured (MASQUERADE etc). The CA is small + cheap and the
 	// onboard endpoints are reachable on the public path.
-	if err := postJoinSetup(*gatewayURL, *caOut, *skipTrust); err != nil {
+	setup, err := postJoinSetup(*gatewayURL, *caOut, *skipTrust)
+	if err != nil {
 		fail("ca fetch: %v", err)
 	}
-	wgMode, err := onboardViaDeviceFlow(*gatewayURL, *wholeMachine)
+	wgMode, err := onboardViaDeviceFlow(*gatewayURL, *wholeMachine, setup)
 	if err != nil {
 		fail("join: %v", err)
 	}
 	if wgMode {
-		fmt.Printf("\n✓ joined via wireguard. start agents with:\n  eval \"$(clawpatrol env)\"\n  claude\n")
 		return
 	}
 	// Tailscale-specific path: exit-node + whois identity.
@@ -81,28 +81,42 @@ func runJoin(args []string) {
 	runLogin(loginArgs)
 }
 
+// joinSetup carries the post-join side-effect status so the caller
+// renders a single coherent block instead of interleaving "✓ ca…" /
+// "⚠ shell rc…" lines around the device-flow output.
+type joinSetup struct {
+	caInstalled bool   // installed into system trust
+	caPath      string // on-disk path to the fetched cert
+	caHint      string // manual-trust hint when caInstalled == false
+	shellRC     bool   // shell rc updated with `eval "$(clawpatrol env)"`
+}
+
 // postJoinSetup downloads the gateway's CA, installs it into the
 // system trust store (best-effort), and appends the env shim to the
-// shell rc. Used by both wireguard and tailscale onboarding paths.
-func postJoinSetup(gateway, caDir string, skipTrust bool) error {
+// shell rc. Returns a summary the caller prints once the onboarding
+// flow completes.
+func postJoinSetup(gateway, caDir string, skipTrust bool) (joinSetup, error) {
+	var s joinSetup
 	if err := os.MkdirAll(caDir, 0o700); err != nil {
-		return fmt.Errorf("mkdir %s: %w", caDir, err)
+		return s, fmt.Errorf("mkdir %s: %w", caDir, err)
 	}
-	caPath := filepath.Join(caDir, "ca.crt")
-	if err := fetchCAHTTP(gateway, caPath); err != nil {
-		return fmt.Errorf("fetch CA: %w", err)
+	s.caPath = filepath.Join(caDir, "ca.crt")
+	if err := fetchCAHTTP(gateway, s.caPath); err != nil {
+		return s, fmt.Errorf("fetch CA: %w", err)
 	}
 	if !skipTrust {
-		if err := installCATrust(caPath); err != nil {
-			fmt.Fprintf(os.Stderr, "⚠ couldn't install CA into system trust: %v\n  trust manually:\n  %s\n", err, manualTrustHint(caPath))
+		if err := installCATrust(s.caPath); err != nil {
+			s.caHint = manualTrustHint(s.caPath)
 		} else {
-			fmt.Println("✓ ca installed in system trust")
+			s.caInstalled = true
 		}
+	} else {
+		s.caHint = manualTrustHint(s.caPath)
 	}
-	if err := installShellRC(); err != nil {
-		fmt.Fprintf(os.Stderr, "⚠ shell rc append failed: %v\n", err)
+	if err := installShellRC(); err == nil {
+		s.shellRC = true
 	}
-	return nil
+	return s, nil
 }
 
 func fetchCAHTTP(gateway, dst string) error {
@@ -140,12 +154,13 @@ func runLogin(args []string) {
 	// so traffic destined for the SSH client keeps using the default
 	// table (= public interface). Reply packets stay direct, SSH
 	// survives, everything else routes via gateway as intended.
+	sshPinned := false
 	if !*skipExitNode && runtime.GOOS == "linux" {
 		if err := exemptSSHFromExitNode(""); err != nil {
 			fmt.Fprintf(os.Stderr, "⚠ couldn't protect SSH (will skip exit-node): %v\n", err)
 			*skipExitNode = true
 		} else {
-			fmt.Println("⎿ SSH (tcp/22) reply traffic pinned to direct route")
+			sshPinned = true
 		}
 	}
 
@@ -162,13 +177,11 @@ func runLogin(args []string) {
 		fail("not logged into a tailnet (run: tailscale up)")
 	}
 	tailnetName := tailnetDisplayName(st)
-	fmt.Printf("\nConnected to %s's tailnet.\n", tailnetName)
 
 	peer := findPeerByName(st, *gwName)
 	if peer == nil {
 		fail("no peer named %q on this tailnet — is the gateway running and joined?", *gwName)
 	}
-	fmt.Printf("⎿ Found exit node: %s (%s)\n", *gwName, peer.TailscaleIPs[0])
 
 	// Fetch CA BEFORE setting exit-node. Once exit-node flips, every
 	// outbound route is rewritten and any in-flight tailscaled
@@ -189,22 +202,32 @@ func runLogin(args []string) {
 		}
 	}
 
+	caInstalled := false
+	caHint := ""
 	if *skipTrust {
-		fmt.Printf("\n⚠ CA install skipped. trust manually:\n  %s\n", manualTrustHint(caPath))
-		return
-	}
-	if err := installCATrust(caPath); err != nil {
-		fmt.Fprintf(os.Stderr, "\n⚠ could not install CA into system trust: %v\n", err)
-		fmt.Fprintf(os.Stderr, "trust manually:\n  %s\n", manualTrustHint(caPath))
-		return
-	}
-	if err := installShellRC(); err != nil {
-		fmt.Fprintf(os.Stderr, "⚠ couldn't auto-source clawpatrol env in shell rc: %v\n", err)
-		fmt.Printf("\nadd to your shell rc manually:\n  eval \"$(clawpatrol env)\"\n")
+		caHint = manualTrustHint(caPath)
+	} else if err := installCATrust(caPath); err != nil {
+		caHint = manualTrustHint(caPath)
 	} else {
-		fmt.Printf("\n✓ added `eval \"$(clawpatrol env)\"` to your shell rc — start a new shell\n")
+		caInstalled = true
 	}
-	fmt.Printf("\nthen just run:\n  claude\n  gh\n")
+	shellOK := installShellRC() == nil
+
+	fmt.Println()
+	fmt.Printf("Connected to %s's tailnet.\n", tailnetName)
+	items := []string{fmt.Sprintf("Found exit node: %s (%s)", *gwName, peer.TailscaleIPs[0])}
+	if sshPinned {
+		items = append(items, "SSH (tcp/22) reply traffic pinned to direct route")
+	}
+	items = append(items, setupSummaryItems(joinSetup{
+		caInstalled: caInstalled,
+		caPath:      caPath,
+		caHint:      caHint,
+		shellRC:     shellOK,
+	})...)
+	printTreeItems(items)
+	fmt.Println()
+	fmt.Println("Next: claude")
 }
 
 // installShellRC appends `eval "$(clawpatrol env)"` to the user's shell
@@ -424,6 +447,38 @@ func fail(format string, a ...any) {
 	os.Exit(2)
 }
 
+// printTreeItems prints a list as ├-prefixed sub-items with the final
+// entry marked ⎿ (bottom-corner). Single item prints as ⎿ alone.
+// README's status blocks use this convention.
+func printTreeItems(items []string) {
+	for i, line := range items {
+		prefix := "├ "
+		if i == len(items)-1 {
+			prefix = "⎿ "
+		}
+		fmt.Println(prefix + line)
+	}
+}
+
+// setupSummaryItems lowers a joinSetup into the human-facing one-liners
+// the join / login output blocks render. CA-trust failures and skipped
+// shell-rc updates surface as their own items so the operator sees what
+// they need to do manually; success cases stay quiet to keep the block
+// short.
+func setupSummaryItems(s joinSetup) []string {
+	var out []string
+	switch {
+	case s.caInstalled:
+		out = append(out, "CA installed in system trust")
+	case s.caHint != "":
+		out = append(out, "CA at "+s.caPath+" — trust manually: "+s.caHint)
+	}
+	if s.shellRC {
+		out = append(out, `Shell rc: eval "$(clawpatrol env)"`)
+	}
+	return out
+}
+
 // onboardViaDeviceFlow: brand-new client (no tailscale yet) calls the
 // gateway dashboard, gets a user_code, prompts the user to approve on
 // an existing trusted device, polls for the minted Tailscale auth key,
@@ -455,7 +510,7 @@ func wgAddressFromConf(conf string) string {
 // gateway and ends in a working VPN connection. Returns wgMode=true
 // when the gateway picked the wireguard control plane (caller skips
 // tailscale-specific post-setup).
-func onboardViaDeviceFlow(gateway string, wholeMachine bool) (bool, error) {
+func onboardViaDeviceFlow(gateway string, wholeMachine bool, setup joinSetup) (bool, error) {
 	gateway = strings.TrimRight(gateway, "/")
 	cli := &http.Client{Timeout: 30 * time.Second}
 
@@ -485,7 +540,11 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool) (bool, error) {
 		return false, fmt.Errorf("start decode: %w", err)
 	}
 
-	fmt.Printf("\n  open this and approve:\n\n    %s\n\n  code: %s\n\n", start.VerifyURL, start.UserCode)
+	fmt.Println()
+	fmt.Println("Open and approve:")
+	fmt.Printf("├ %s\n", start.VerifyURL)
+	fmt.Printf("⎿ Code: %s\n", start.UserCode)
+	fmt.Println()
 	tryOpen(start.VerifyURL)
 
 	// 2. poll
@@ -517,7 +576,8 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool) (bool, error) {
 	if authKey == "" {
 		return false, fmt.Errorf("timed out waiting for approval")
 	}
-	fmt.Println("\n✓ approved")
+	fmt.Println()
+	fmt.Println("Approved.")
 
 	// 3a. wireguard branch — auth_key is the full client config.
 	// Skip tailscale entirely (no daemon, no `tailscale up`). The
@@ -553,37 +613,50 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool) (bool, error) {
 		// wg.conf so `clawpatrol run` can spin up a per-process tunnel
 		// without sudo (root-owned /etc/wireguard/<iface>.conf is
 		// unreadable to the caller's uid).
+		var persistErr error
 		if err := writeUserWGConf(authKey); err != nil {
-			fmt.Fprintf(os.Stderr, "⚠ persist user wg conf: %v\n", err)
+			persistErr = err
 		}
 		// macOS: kick off the NE bootstrap right after the wg.conf is
 		// in place. Surfaces the one-time sysext approval prompt now
 		// (better than waiting until first `clawpatrol run`).
+		var macErr error
 		if runtime.GOOS == "darwin" {
-			if err := macHelperInstall(wholeMachine); err != nil {
-				fmt.Fprintf(os.Stderr, "⚠ macos NE bootstrap: %v\n", err)
-			}
+			macErr = macHelperInstall(wholeMachine)
 		}
+		items := []string{}
+		if wgIP := wgAddressFromConf(authKey); wgIP != "" {
+			items = append(items, "Joined as "+wgIP)
+		} else {
+			items = append(items, "Joined")
+		}
+		items = append(items, setupSummaryItems(setup)...)
+		printTreeItems(items)
 		if !wholeMachine {
-			fmt.Printf("✓ joined. machine identity persisted.\n  next: route a process through the gateway with\n    clawpatrol run -- <cmd> [args...]\n  (or rerun `clawpatrol join --whole-machine` for host-wide routing)\n")
-			return true, nil
+			fmt.Println()
+			fmt.Println("Next: clawpatrol run -- claude")
+		} else if runtime.GOOS == "darwin" {
+			fmt.Println()
+			fmt.Println("All host traffic routes via the system extension.")
+		} else {
+			if err := wgQuickUp(iface, authKey); err != nil {
+				return true, fmt.Errorf("wg-quick up: %w", err)
+			}
+			fmt.Println()
+			fmt.Printf("All host traffic routes via the gateway (%s).\n", iface)
 		}
-		if runtime.GOOS == "darwin" {
-			// On macOS, the helper handles whole-machine via the same
-			// system extension; wg-quick on the host would conflict.
-			fmt.Printf("✓ joined. all host traffic will route via the system extension.\n")
-			return true, nil
+		if persistErr != nil {
+			fmt.Fprintf(os.Stderr, "⚠ persist user wg conf: %v\n", persistErr)
 		}
-		if err := wgQuickUp(iface, authKey); err != nil {
-			return true, fmt.Errorf("wg-quick up: %w", err)
+		if macErr != nil {
+			fmt.Fprintf(os.Stderr, "⚠ macos NE bootstrap: %v\n", macErr)
 		}
-		fmt.Printf("✓ wireguard up (%s) — all host traffic routed via gateway\n", iface)
 		return true, nil
 	}
 
 	// 3b. tailscale branch — ensure binary + daemon.
 	if _, err := tailscaleBin(); err != nil {
-		fmt.Println("  installing tailscale (will require sudo)…")
+		fmt.Println("⎿ Installing tailscale (will require sudo)")
 		if err := installTailscale(); err != nil {
 			return false, fmt.Errorf("install tailscale: %w", err)
 		}
@@ -613,7 +686,6 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool) (bool, error) {
 	if err := cmd.Run(); err != nil {
 		return false, fmt.Errorf("tailscale up: %w", err)
 	}
-	fmt.Println("✓ joined tailnet")
 
 	// 5. claim — tell gateway "this tailnet IP belongs to <approver>".
 	myIP, _ := exec.Command(tscli, "ip", "-4").Output()
@@ -638,7 +710,11 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool) (bool, error) {
 		fmt.Fprintf(os.Stderr, "⚠ onboard claim %d: %s\n", cr.StatusCode, string(body))
 		return false, nil
 	}
-	fmt.Printf("✓ claimed %s for your account\n", tailIP)
+	items := []string{"Joined tailnet as " + tailIP}
+	items = append(items, setupSummaryItems(setup)...)
+	printTreeItems(items)
+	fmt.Println()
+	fmt.Println("Next: claude")
 	return false, nil
 }
 
@@ -774,24 +850,21 @@ func runGatewayInit(args []string) {
 		fail("mkdir oauth: %v", err)
 	}
 	caPath := filepath.Join(*dataDir, "ca", "ca.crt")
+	caGenerated := false
 	if _, err := os.Stat(caPath); err != nil {
-		fmt.Println("==> generating CA")
 		if err := writeCA(filepath.Join(*dataDir, "ca")); err != nil {
 			fail("init-ca: %v", err)
 		}
-	} else {
-		fmt.Println("==> CA exists, keeping")
+		caGenerated = true
 	}
 
 	// 2. detect public IP if not given -------------------------------------
 	ip := *publicIP
 	if ip == "" {
-		fmt.Println("==> detecting public IP via ifconfig.me")
 		ip = detectPublicIP()
 		if ip == "" {
 			fail("couldn't detect public IP — pass --public-ip explicitly")
 		}
-		fmt.Printf("    %s\n", ip)
 	}
 	url := *publicURL
 	if url == "" {
@@ -826,30 +899,41 @@ tailscale {
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
 		fail("write %s: %v", cfgPath, err)
 	}
-	fmt.Printf("==> wrote %s\n", cfgPath)
 
 	// 4. open firewall ports (best-effort) ---------------------------------
+	fwOpened := []string{}
 	if !*skipFirewall {
-		fmt.Println("==> opening firewall ports")
-		openFirewallPort("udp", *wgPort)
-		openFirewallPort("tcp", *dashPort)
+		if openFirewallPort("udp", *wgPort) {
+			fwOpened = append(fwOpened, fmt.Sprintf("udp/%d", *wgPort))
+		}
+		if openFirewallPort("tcp", *dashPort) {
+			fwOpened = append(fwOpened, fmt.Sprintf("tcp/%d", *dashPort))
+		}
 	}
 
 	// 5. systemd unit (if systemd is around) -------------------------------
+	systemdPath := ""
 	if _, err := exec.LookPath("systemctl"); err == nil {
-		writeSystemdUnit(*dataDir, cfgPath)
+		systemdPath = writeSystemdUnit(*dataDir, cfgPath)
 	}
 
-	fmt.Printf(`
-done. start the gateway:
-
-    systemctl enable --now clawpatrol-gateway        # if systemd available
-or:
-    clawpatrol gateway -config %s
-
-dashboard: %s
-new-client onboarding: clawpatrol join --url %s
-`, cfgPath, url, url)
+	fmt.Println()
+	fmt.Printf("Detected public IP: %s\n", ip)
+	items := []string{}
+	if caGenerated {
+		items = append(items, "Generated CA at "+caPath)
+	}
+	items = append(items, "Wrote "+cfgPath)
+	if len(fwOpened) > 0 {
+		items = append(items, "Opened "+strings.Join(fwOpened, " + "))
+	}
+	if systemdPath != "" {
+		items = append(items, "Wrote "+systemdPath)
+	}
+	printTreeItems(items)
+	fmt.Println()
+	fmt.Printf("Dashboard: %s\n", url)
+	fmt.Printf("Join command: clawpatrol join --url %s\n", url)
 }
 
 // detectPublicIP queries plain-text IP echo services. We validate
@@ -898,25 +982,28 @@ func isIPv4(s string) bool {
 	return true
 }
 
-func openFirewallPort(proto string, port int) {
+// openFirewallPort returns true when the rule was newly added (caller
+// renders it in the summary). Already-open / failed-to-open are silent
+// from the caller's perspective; failures emit a warning to stderr.
+func openFirewallPort(proto string, port int) bool {
 	chk := runAsRoot("iptables", "-C", "INPUT", "-p", proto, "--dport", fmt.Sprint(port), "-j", "ACCEPT")
 	if chk.Run() == nil {
-		fmt.Printf("    %s/%d already open\n", proto, port)
-		return
+		return false
 	}
 	add := runAsRoot("iptables", "-I", "INPUT", "-p", proto, "--dport", fmt.Sprint(port), "-j", "ACCEPT")
 	if err := add.Run(); err != nil {
-		fmt.Printf("    ⚠ couldn't open %s/%d: %v (you may need to add it manually)\n", proto, port, err)
-		return
+		fmt.Fprintf(os.Stderr, "⚠ couldn't open %s/%d: %v\n", proto, port, err)
+		return false
 	}
-	fmt.Printf("    opened %s/%d\n", proto, port)
+	return true
 }
 
-func writeSystemdUnit(dataDir, cfgPath string) {
+// writeSystemdUnit returns the unit path on a fresh write, "" when the
+// unit already exists (so the caller skips the summary line).
+func writeSystemdUnit(dataDir, cfgPath string) string {
 	const path = "/etc/systemd/system/clawpatrol-gateway.service"
 	if _, err := os.Stat(path); err == nil {
-		fmt.Printf("==> %s exists, keeping\n", path)
-		return
+		return ""
 	}
 	exe, _ := os.Executable()
 	if exe == "" {
@@ -941,9 +1028,9 @@ WantedBy=multi-user.target
 `, dataDir, dataDir, exe, cfgPath)
 
 	if err := os.WriteFile(path, []byte(unit), 0o644); err != nil {
-		fmt.Printf("    ⚠ couldn't write %s: %v\n", path, err)
-		return
+		fmt.Fprintf(os.Stderr, "⚠ couldn't write %s: %v\n", path, err)
+		return ""
 	}
 	_ = runAsRoot("systemctl", "daemon-reload").Run()
-	fmt.Printf("==> wrote %s\n", path)
+	return path
 }

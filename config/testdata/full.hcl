@@ -251,22 +251,17 @@
 # ║ 6. APPROVE CHAINS                                                ║
 # ╚══════════════════════════════════════════════════════════════════╝
 #
-# `approve = [...]` is an ordered list of stages. The request runs
-# each stage in turn; any stage denying ends the chain.
+# `approve = [...]` is an ordered list of bare-name stages. Each stage
+# names an approver block; the request runs each in turn; any stage
+# denying ends the chain.
 #
-# Stage forms:
+#     approve = [pg-secret-columns-judge]            # one LLM proctor
+#     approve = [reply-content-judge, support-ops]   # LLM, then human
 #
-#     approve = [content-safety]                    # bare ref → llm or human
-#     approve = [{ name = fast, policy = pg-secret-columns, cache_ttl = 600 }]
-#     approve = [
-#       { name = content-safety, policy = reply-content },
-#       support-ops,
-#     ]
-#
-# An LLM stage takes a `policy` (the prompt text), an optional
-# `cache_ttl` override, and inherits `llm_fail_mode` from defaults
-# unless overridden. A human stage takes only the approver's name; the
-# approver block carries channel, timeout, and require_approvers.
+# LLM proctor blocks (llm_approver) bind a `policy = <name>` directly,
+# so the use site stays a bare-name reference. A human stage takes only
+# the approver name; the approver block carries channel, timeout, and
+# require_approvers.
 #
 # Defaults block sets `llm_fail_mode` (deny on LLM error / timeout)
 # and `human_on_timeout` (deny if Slack approver doesn't reply within
@@ -274,12 +269,11 @@
 #
 # Use cases this shape covers:
 #
-#   - LLM-then-human (deno-deploy reply-on-behalf): content-safety
-#     LLM check first, then human in #agent-support.
+#   - LLM-then-human (deno-deploy reply-on-behalf): the content-safety
+#     LLM judge runs first, then a human in #agent-support.
 #   - LLM-only proctoring (pg-deployng-secret-columns): a column-level
 #     read of sensitive tables goes through Claude with a
-#     domain-specific prompt; cache_ttl is bumped to 600s because the
-#     queries are repetitive and cheap to memoize.
+#     domain-specific prompt.
 #   - Human-only (stripe-extra-scrutiny): a curated set of destructive
 #     paths gets routed to billing-strict (require_approvers = 2).
 #
@@ -365,13 +359,30 @@ defaults {
 # `billing-strict` requires two approvers (`require_approvers = 2`)
 # for the highest-blast-radius Stripe operations.
 
-approver "llm_approver" "fast" {
-  model      = "claude-haiku-4-5-20251001"
-  credential = anthropic-avocet-sub
-}
-approver "llm_approver" "content-safety" {
+approver "llm_approver" "slack-block-kit-shape-judge" {
   model      = "claude-sonnet-4-20250514"
   credential = anthropic-avocet-sub
+  policy     = slack-block-kit-shape
+}
+approver "llm_approver" "reply-content-judge" {
+  model      = "claude-sonnet-4-20250514"
+  credential = anthropic-avocet-sub
+  policy     = reply-content
+}
+approver "llm_approver" "pg-secret-columns-judge" {
+  model      = "claude-haiku-4-5-20251001"
+  credential = anthropic-avocet-sub
+  policy     = pg-secret-columns
+}
+approver "llm_approver" "pg-secret-named-defense-judge" {
+  model      = "claude-haiku-4-5-20251001"
+  credential = anthropic-avocet-sub
+  policy     = pg-secret-named-defense
+}
+approver "llm_approver" "k8s-exec-content-judge" {
+  model      = "claude-haiku-4-5-20251001"
+  credential = anthropic-avocet-sub
+  policy     = k8s-exec-content
 }
 
 approver "human_approver" "support-ops" {
@@ -393,8 +404,8 @@ approver "human_approver" "notion-archive" { channel = "#agent-notion" }
 # A `policy` block holds prompt text used by an LLM proctor stage.
 # Pulled out as named blocks so the same prompt can be reused across
 # rules, and so the prompt is auditable as a first-class artifact
-# (rather than hidden inside a rule body). Each policy is referenced
-# from `approve = [{ name = ..., policy = <name> }]` stages.
+# (rather than hidden inside a rule body). An llm_approver block binds
+# a `policy = <name>` reference to one of these.
 
 policy "slack-block-kit-shape" {
   text = <<-EOT
@@ -773,7 +784,7 @@ endpoint "https" "kaju-deno-support" {
 rule "http_rule" "slack-avocet-approve-reply-shape" {
   endpoint = slack-avocet
   match = { method = "POST", path = "/api/chat.postMessage", body_contains = "approve_reply_" }
-  approve = [{ name = content-safety, policy = slack-block-kit-shape }]
+  approve = [slack-block-kit-shape-judge]
 }
 
 # ── Deno Deploy ─────────────────────────────────────
@@ -798,10 +809,7 @@ rule "http_rule" "deno-deploy-ticket-mutations" {
 rule "http_rule" "deno-deploy-reply-on-behalf" {
   endpoint = deno-deploy
   match = { method = "POST", path = "/api/trpc/admin.supportTickets.replyOnBehalf" }
-  approve = [
-    { name = content-safety, policy = reply-content },
-    support-ops,
-  ]
+  approve = [reply-content-judge, support-ops]
 }
 rule "http_rule" "deno-deploy-default" {
   endpoint = deno-deploy
@@ -1028,7 +1036,7 @@ rule "sql_rule" "pg-deployng-secret-columns" {
   endpoint = pg-deployng
   priority = 100
   match = { verb = "select", tables = ["github_identities", "tokens", "email_confirmations", "authorizations", "domain_certificates", "database_instances", "env_vars"] }
-  approve = [{ name = fast, policy = pg-secret-columns, cache_ttl = 600 }]
+  approve = [pg-secret-columns-judge]
 }
 rule "sql_rule" "pg-deployng-rw-writes" {
   endpoint = pg-deployng
@@ -1056,7 +1064,7 @@ rule "sql_rule" "pg-scheduler-secret-named-defense" {
   endpoint = pg-scheduler
   priority = 100
   match = { verb = "select", statement_regex = "(?i)\\b(secret|password|token|api_key|private_key|access_key|signing_secret)\\b" }
-  approve = [{ name = fast, policy = pg-secret-named-defense, cache_ttl = 600 }]
+  approve = [pg-secret-named-defense-judge]
 }
 rule "sql_rule" "pg-scheduler-writes" {
   endpoint = pg-scheduler
@@ -1125,7 +1133,7 @@ rule "k8s_rule" "k8s-exec-content-check" {
   endpoints = [k8s-dev-ams, k8s-dev-ord, k8s-eks-deployng-prod]
   priority = 500
   match = { resource = "pods/exec" }
-  approve = [{ name = fast, policy = k8s-exec-content, cache_ttl = 60 }]
+  approve = [k8s-exec-content-judge]
 }
 rule "k8s_rule" "k8s-reads" {
   endpoints = [k8s-dev-ams, k8s-dev-ord, k8s-eks-deployng-prod]
