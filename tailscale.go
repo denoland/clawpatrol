@@ -10,9 +10,11 @@ package main
 import (
 	"fmt"
 	"net"
+
+	"github.com/denoland/clawpatrol-go/config"
 )
 
-func openListener(cfg *Config) (net.Listener, error) {
+func openListener(cfg *config.Gateway) (net.Listener, error) {
 	if cfg.Tailscale.AuthKey != "" {
 		return nil, fmt.Errorf(
 			"tailscale.authkey set but binary built without tsnet — " +

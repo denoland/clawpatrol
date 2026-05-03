@@ -319,8 +319,8 @@ func (w *webMux) ownerForCaller(r *http.Request) (key, label string) {
 	if p := r.Header.Get("X-Clawpatrol-Profile"); p != "" {
 		return p, p
 	}
-	if profiles := w.g.cfg.Profiles; len(profiles) > 0 {
-		return profiles[0].Name, profiles[0].Name
+	if names := orderedProfileNames(w.g.cfg.Policy); len(names) > 0 {
+		return names[0], names[0]
 	}
 	if w.g.cfg.AdminEmail != "" {
 		return w.g.cfg.AdminEmail, w.g.cfg.AdminEmail
@@ -455,9 +455,10 @@ func (w *webMux) apiAgentProfile(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "missing ip or profile", 400)
 		return
 	}
+	names := orderedProfileNames(w.g.cfg.Policy)
 	known := false
-	for _, p := range w.g.cfg.Profiles {
-		if p.Name == profile {
+	for _, n := range names {
+		if n == profile {
 			known = true
 			break
 		}
@@ -473,11 +474,7 @@ func (w *webMux) apiAgentProfile(rw http.ResponseWriter, r *http.Request) {
 // apiProfiles lists declared profile names so the dashboard can
 // render a profile picker per device.
 func (w *webMux) apiProfiles(rw http.ResponseWriter, _ *http.Request) {
-	out := make([]string, 0, len(w.g.cfg.Profiles))
-	for _, p := range w.g.cfg.Profiles {
-		out = append(out, p.Name)
-	}
-	writeJSON(rw, out)
+	writeJSON(rw, orderedProfileNames(w.g.cfg.Policy))
 }
 
 // RuleSummary is the JSON shape the dashboard renders for each rule.
@@ -1151,8 +1148,10 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 	// Operator picks which profile this device joins. Falls back to the
 	// first declared profile when the dashboard didn't pass one.
 	profile := r.URL.Query().Get("profile")
-	if profile == "" && len(w.g.cfg.Profiles) > 0 {
-		profile = w.g.cfg.Profiles[0].Name
+	if profile == "" {
+		if names := orderedProfileNames(w.g.cfg.Policy); len(names) > 0 {
+			profile = names[0]
+		}
 	}
 	s := w.onboard.byUserCode(code)
 	if s == nil {

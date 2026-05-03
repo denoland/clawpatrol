@@ -28,118 +28,31 @@ import (
 	"github.com/denoland/clawpatrol-go/config/runtime"
 )
 
-// Config holds the operational fields the gateway daemon reads at
-// boot. Policy decisions (approvers / credentials / endpoints / rules
-// / profiles) live on the *config.CompiledPolicy stored on Gateway,
-// not here. Profile names round-trip through this struct so device
-// onboarding (which assigns a peer to a declared profile by name)
-// keeps working without reaching into config.Policy directly.
-type Config struct {
-	Listen     string
-	InfoListen string
-	PublicURL  string
-	AdminEmail string
-	CADir      string
-	Resolver   string
-	LogPath    string
-	OAuthDir   string
-	// DashboardSecret gates dashboard + JSON APIs behind a shared
-	// secret (cookie / header / query). Empty = open (legacy default).
-	DashboardSecret string
-	Tailscale       *Tailscale
-	Profiles        []Profile
-}
+// Tailscale aliases the operational tailscale-block type loaded from
+// HCL. Existing call sites (newWebMux / StartWGServer / newOnboarder /
+// mintTailscaleAuthKey) take a value of this type; aliasing keeps
+// those signatures unchanged while the canonical definition lives in
+// config/.
+type Tailscale = config.Tailscale
 
-// Profile is a name-only handle the dashboard / onboarding code uses
-// to assign devices to declared profiles. Endpoint membership lives
-// on config.Policy and is consulted by runtime.HostEndpoint at
-// dispatch time.
-type Profile struct {
-	Name string
-}
-
-// Tailscale mirrors the operational `tailscale {}` block.
-type Tailscale struct {
-	AuthKey           string
-	ControlURL        string
-	Hostname          string
-	StateDir          string
-	Control           string
-	OAuthClientID     string
-	OAuthClientSecret string
-	Tags              []string
-	WGInterface       string
-	WGEndpoint        string
-	WGServerPub       string
-	WGSubnetCIDR      string
-}
-
-// loadConfig parses the gateway HCL via the new typed-block grammar,
-// compiles it into a runtime CompiledPolicy, and adapts it to the
-// legacy runtime shape the in-tree request handler still consumes.
-// Loader / compile errors are returned as a single error.
-func loadConfig(path string) (*Config, *config.CompiledPolicy, error) {
+// loadConfig parses the gateway HCL via the typed-block grammar and
+// compiles it into a runtime CompiledPolicy.
+func loadConfig(path string) (*config.Gateway, *config.CompiledPolicy, error) {
 	gw, diags := config.Load(path)
 	if diags.HasErrors() {
 		return nil, nil, fmt.Errorf("%s", diags.Error())
+	}
+	if gw.Listen == "" {
+		gw.Listen = ":443"
+	}
+	if gw.Tailscale == nil {
+		gw.Tailscale = &config.Tailscale{}
 	}
 	cp, err := config.Compile(gw)
 	if err != nil {
 		return nil, nil, fmt.Errorf("compile: %w", err)
 	}
-	return adaptLegacy(gw), cp, nil
-}
-
-// adaptLegacy translates the new policy-aware *config.Gateway into the
-// legacy *Config shape the request handler still consumes. Operational
-// fields copy through verbatim. Profile / Rule / Approver / Integration
-// / OAuth slices are left empty here — they get populated in commit 4
-// when the plugin runtime takes over request dispatch. Profiles are
-// the exception: their NAMES must round-trip so device onboarding,
-// dashboard tabs, and `g.profileFor` keep working.
-func adaptLegacy(gw *config.Gateway) *Config {
-	c := &Config{
-		Listen:          gw.Listen,
-		InfoListen:      gw.InfoListen,
-		PublicURL:       gw.PublicURL,
-		AdminEmail:      gw.AdminEmail,
-		CADir:           gw.CADir,
-		Resolver:        gw.Resolver,
-		LogPath:         gw.LogPath,
-		OAuthDir:        gw.OAuthDir,
-		DashboardSecret: gw.DashboardSecret,
-	}
-	if c.Listen == "" {
-		c.Listen = ":443"
-	}
-	if gw.Tailscale != nil {
-		c.Tailscale = &Tailscale{
-			AuthKey:           gw.Tailscale.AuthKey,
-			ControlURL:        gw.Tailscale.ControlURL,
-			Hostname:          gw.Tailscale.Hostname,
-			StateDir:          gw.Tailscale.StateDir,
-			Control:           gw.Tailscale.Control,
-			OAuthClientID:     gw.Tailscale.OAuthClientID,
-			OAuthClientSecret: gw.Tailscale.OAuthClientSecret,
-			Tags:              gw.Tailscale.Tags,
-			WGInterface:       gw.Tailscale.WGInterface,
-			WGEndpoint:        gw.Tailscale.WGEndpoint,
-			WGServerPub:       gw.Tailscale.WGServerPub,
-			WGSubnetCIDR:      gw.Tailscale.WGSubnetCIDR,
-		}
-	} else {
-		c.Tailscale = &Tailscale{}
-	}
-	if gw.Policy != nil {
-		// Profile names round-trip so onboarding can assign a device
-		// to a declared profile. Endpoint / rule contents are not
-		// translated here — that lands when Compile + runtime plug
-		// the new policy into the request handler.
-		for _, name := range orderedProfileNames(gw.Policy) {
-			c.Profiles = append(c.Profiles, Profile{Name: name})
-		}
-	}
-	return c
+	return gw, cp, nil
 }
 
 // orderedProfileNames returns the declared profile names in source
@@ -147,6 +60,9 @@ func adaptLegacy(gw *config.Gateway) *Config {
 // we re-sort by the Order slice (which buildSymbols populates in
 // declaration order) and filter to KindProfile entries.
 func orderedProfileNames(p *config.Policy) []string {
+	if p == nil {
+		return nil
+	}
 	seen := map[string]bool{}
 	var out []string
 	for _, name := range p.Order {
@@ -276,7 +192,7 @@ func newUpstreamDialer(resolver string) *net.Dialer {
 }
 
 type Gateway struct {
-	cfg     *Config
+	cfg     *config.Gateway
 	cfgPath string // path the HCL config was loaded from
 	db      *sql.DB
 	policy  atomic.Pointer[config.CompiledPolicy]
@@ -313,8 +229,8 @@ func (g *Gateway) profileFor(peerIP string) string {
 			return p
 		}
 	}
-	if len(g.cfg.Profiles) > 0 {
-		return g.cfg.Profiles[0].Name
+	if names := orderedProfileNames(g.cfg.Policy); len(names) > 0 {
+		return names[0]
 	}
 	return ""
 }
@@ -344,10 +260,10 @@ func (g *Gateway) watchConfig(path string) {
 		g.policy.Store(policy)
 		registerOAuthCredentials(g.oauth, policy)
 		g.pgIdx.Store(buildPgIndex(policy))
-		g.cfg.AdminEmail = next.AdminEmail
-		g.cfg.PublicURL = next.PublicURL
-		g.cfg.DashboardSecret = next.DashboardSecret
-		g.cfg.Profiles = next.Profiles
+		// Hot-swap the operational *config.Gateway too — AdminEmail /
+		// PublicURL / DashboardSecret reads pick up immediately.
+		// Listen / CADir / Tailscale changes are not applied (restart).
+		g.cfg = next
 		log.Printf("config reloaded: %d endpoints across %d profile(s)",
 			len(policy.Endpoints), len(policy.Profiles))
 	}

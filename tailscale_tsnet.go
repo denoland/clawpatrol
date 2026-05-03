@@ -9,10 +9,11 @@ import (
 	"net"
 	"os"
 
+	"github.com/denoland/clawpatrol-go/config"
 	"tailscale.com/tsnet"
 )
 
-func openListener(cfg *Config) (net.Listener, error) {
+func openListener(cfg *config.Gateway) (net.Listener, error) {
 	authKey := cfg.Tailscale.AuthKey
 	if authKey == "" {
 		authKey = os.Getenv("TS_AUTHKEY")
