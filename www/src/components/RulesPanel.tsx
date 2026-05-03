@@ -1,19 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
 import { getDeviceRules, getRules, type RuleSummary } from "../lib/api";
+import { EditGlyph } from "./Logos";
 import { RulesEditor } from "./RulesEditor";
 
-// Rules grouped by endpoint (one card per endpoint that has rules).
-// Endpoints with zero rules are hidden — keeps the panel short on
-// device pages where most endpoints are pass-through.
+// Rules panel. On a device page (deviceIP set) it splits rules into
+// two sections — profile rules (read-only here, edited via gateway.hcl)
+// and device rules (editable in-place via the device's HCL block).
+// Each section has its own pencil button on the right of the header.
 //
-// Edits flow through the global gateway.hcl editor for now. Per-
-// profile inline editing is on the roadmap; the new typed-block
-// schema doesn't yet model device-scoped rules the way the legacy
-// schema did.
+// On the global view (no deviceIP) there's one section showing every
+// profile's rules with a single pencil opening the whole gateway.hcl.
 export function RulesPanel({ deviceIP }: { deviceIP?: string; profile?: string }) {
   const [rows, setRows] = useState<RuleSummary[]>([]);
   const [err, setErr] = useState<string | null>(null);
-  const [editing, setEditing] = useState(false);
+  // Which editor is open. "" = none, "global" = gateway.hcl,
+  // "device" = device block.
+  const [editing, setEditing] = useState<"" | "global" | "device">("");
 
   function reload() {
     const fetcher = deviceIP ? getDeviceRules(deviceIP) : getRules();
@@ -25,8 +27,67 @@ export function RulesPanel({ deviceIP }: { deviceIP?: string; profile?: string }
     reload();
   }, [deviceIP]);
 
-  // Group by endpoint name, preserving server's priority sort within
-  // each group. Family rides along (uniform per endpoint).
+  const profileRows = useMemo(
+    () => rows.filter((r) => !r.device_ip),
+    [rows],
+  );
+  const deviceRows = useMemo(
+    () => rows.filter((r) => r.device_ip === deviceIP),
+    [rows, deviceIP],
+  );
+
+  return (
+    <div className="bg-white border border-[#e5e5e5] rounded">
+      {err && <div className="px-4 py-3 text-[11px] text-red-600">{err}</div>}
+
+      <Section
+        title={deviceIP ? "Profile rules" : "Rules (all profiles)"}
+        count={profileRows.length}
+        onEdit={() => setEditing("global")}
+        editLabel="edit gateway.hcl"
+        rows={profileRows}
+      />
+
+      {deviceIP && (
+        <Section
+          title={`Device rules · ${deviceIP}`}
+          count={deviceRows.length}
+          onEdit={() => setEditing("device")}
+          editLabel="edit device block"
+          rows={deviceRows}
+          emptyHint="no per-device overrides — click the pencil to add one"
+        />
+      )}
+
+      {editing && (
+        <RulesEditor
+          deviceIP={editing === "device" ? deviceIP : undefined}
+          onClose={() => setEditing("")}
+          onSaved={() => {
+            reload();
+            setEditing("");
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function Section({
+  title,
+  count,
+  rows,
+  onEdit,
+  editLabel,
+  emptyHint,
+}: {
+  title: string;
+  count: number;
+  rows: RuleSummary[];
+  onEdit: () => void;
+  editLabel: string;
+  emptyHint?: string;
+}) {
   const groups = useMemo(() => {
     const m = new Map<string, { endpoint: string; family: string; rules: RuleSummary[] }>();
     for (const r of rows) {
@@ -38,32 +99,33 @@ export function RulesPanel({ deviceIP }: { deviceIP?: string; profile?: string }
   }, [rows]);
 
   return (
-    <div className="bg-white border border-[#e5e5e5] rounded relative">
-      <div className="flex items-center justify-between px-4 py-2.5 border-b border-[#e5e5e5]">
+    <div className="border-b border-[#e5e5e5] last:border-b-0">
+      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-[#e5e5e5]">
         <div className="text-[11px] uppercase tracking-[.09em] text-[#a3a3a3] font-medium">
-          Rules {deviceIP ? "(this device)" : "(all profiles)"}
+          {title}
         </div>
+        <span className="text-[10px] text-[#a3a3a3] tabular-nums">
+          {count} rule{count === 1 ? "" : "s"}
+        </span>
         <button
-          onClick={() => setEditing(true)}
-          className="text-[10px] px-2 py-0.5 border border-[#e5e5e5] text-[#737373] rounded bg-white hover:border-[#a3a3a3] hover:text-[#171717]"
+          onClick={onEdit}
+          title={editLabel}
+          className="ml-auto p-1 text-[#a3a3a3] hover:text-[#171717] transition-colors"
         >
-          edit gateway.hcl
+          <EditGlyph />
         </button>
       </div>
-      {editing && (
-        <RulesEditor onClose={() => setEditing(false)} onSaved={() => reload()} />
-      )}
-      {err && <div className="px-4 py-3 text-[11px] text-red-600">{err}</div>}
-      {groups.length === 0 && (
-        <div className="px-5 py-6 text-center text-[11px] text-[#a3a3a3]">
-          no rules configured
+      {groups.length === 0 ? (
+        <div className="px-5 py-5 text-center text-[11px] text-[#a3a3a3]">
+          {emptyHint ?? "no rules configured"}
+        </div>
+      ) : (
+        <div className="flex flex-col">
+          {groups.map((g) => (
+            <EndpointGroup key={g.endpoint} group={g} />
+          ))}
         </div>
       )}
-      <div className="flex flex-col">
-        {groups.map((g) => (
-          <EndpointGroup key={g.endpoint} group={g} />
-        ))}
-      </div>
     </div>
   );
 }

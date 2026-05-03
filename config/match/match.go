@@ -26,6 +26,7 @@ type Request struct {
 	// Common
 	Credential string // bare-name reference of the credential the
 	// agent dispatched against, "" if none
+	PeerIP string // source IP of the agent — used to scope per-device rules
 
 	// HTTP / K8s
 	Method  string

@@ -659,6 +659,7 @@ type RuleSummary struct {
 	Family   string                `json:"family"` // "https" | "sql" | "k8s"
 	Endpoint string                `json:"endpoint"`
 	Profile  string                `json:"profile,omitempty"`
+	DeviceIP string                `json:"device_ip,omitempty"` // "" for profile rules, IP for device-pinned
 	Priority int                   `json:"priority,omitempty"`
 	Disabled bool                  `json:"disabled,omitempty"`
 	Match    map[string]any        `json:"match,omitempty"`
@@ -694,12 +695,55 @@ func (w *webMux) apiDeviceRules(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "missing ip", 400)
 		return
 	}
+	hclMode := r.URL.Query().Get("format") == "hcl"
 	switch r.Method {
 	case "GET":
+		if hclMode {
+			body, err := readDeviceBlockHCL(w.g.cfgPath, ip)
+			if err != nil {
+				http.Error(rw, err.Error(), 500)
+				return
+			}
+			rw.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			rw.Write([]byte(body))
+			return
+		}
 		profile := w.g.profileFor(ip)
 		writeJSON(rw, w.collectRuleSummaries(profile))
+	case "PUT":
+		if !hclMode {
+			http.Error(rw, "PUT requires ?format=hcl", 400)
+			return
+		}
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if err != nil {
+			http.Error(rw, err.Error(), 400)
+			return
+		}
+		// Splice the new device block into gateway.hcl, then validate
+		// the merged file via the typed-block loader before persisting
+		// — same diagnostic path as PUT /api/config.
+		merged, err := spliceDeviceBlockHCL(w.g.cfgPath, ip, string(body))
+		if err != nil {
+			http.Error(rw, err.Error(), 400)
+			return
+		}
+		if _, diags := config.LoadBytes(merged, "gateway.hcl"); diags.HasErrors() {
+			http.Error(rw, "hcl: "+diags.Error(), 400)
+			return
+		}
+		tmp := w.g.cfgPath + ".tmp"
+		if err := os.WriteFile(tmp, merged, 0o600); err != nil {
+			http.Error(rw, "write: "+err.Error(), 500)
+			return
+		}
+		if err := os.Rename(tmp, w.g.cfgPath); err != nil {
+			http.Error(rw, "rename: "+err.Error(), 500)
+			return
+		}
+		writeJSON(rw, map[string]any{"ok": true})
 	default:
-		http.Error(rw, "edit rules through PUT /api/config", http.StatusNotImplemented)
+		http.Error(rw, "GET or PUT", 405)
 	}
 }
 
@@ -726,6 +770,7 @@ func (w *webMux) collectRuleSummaries(profileFilter string) []RuleSummary {
 					Family:   ep.Family,
 					Endpoint: epName,
 					Profile:  profileName,
+					DeviceIP: r.DeviceIP,
 					Priority: r.Priority,
 					Disabled: r.Disabled,
 					Match:    matchSourceMap(r),

@@ -1,16 +1,17 @@
 import { useEffect, useState } from "react";
-import { aiEditRules, getConfigHCL, putConfigHCL } from "../lib/api";
+import { aiEditRules, getConfigHCL, getDeviceRulesHCL, putConfigHCL, putDeviceRulesHCL } from "../lib/api";
 import { HCLEditor } from "./HCLEditor";
 
-// RulesEditor opens the whole gateway.hcl file for editing. The v14
-// schema's first-match-wins priority + cross-endpoint rule attachment
-// doesn't fit the legacy per-row JSON edit UX, so the dashboard
-// edits the file directly. Validation runs server-side via
-// config.LoadBytes — diagnostics surface in the err panel.
+// RulesEditor edits HCL. Two modes:
+//   - Global: opens the whole gateway.hcl file (deviceIP undefined).
+//   - Device: opens just the `device "<ip>" {}` block, splices on save.
+// Validation runs server-side; diagnostics surface in the err panel.
 export function RulesEditor({
+  deviceIP,
   onClose,
   onSaved,
 }: {
+  deviceIP?: string;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -23,21 +24,27 @@ export function RulesEditor({
   const [aiBusy, setAIBusy] = useState(false);
 
   useEffect(() => {
-    getConfigHCL()
+    const loader = deviceIP ? getDeviceRulesHCL(deviceIP) : getConfigHCL();
+    loader
       .then((t) => {
         setText(t);
         setOriginal(t);
       })
       .catch((e: Error) => setErr(String(e.message ?? e)));
-  }, []);
+  }, [deviceIP]);
 
   async function save() {
     setBusy(true);
     setErr(null);
     setOkMsg(null);
     try {
-      const r = await putConfigHCL(text);
-      setOkMsg(`saved · ${r.bytes} bytes`);
+      if (deviceIP) {
+        await putDeviceRulesHCL(deviceIP, text);
+        setOkMsg("saved");
+      } else {
+        const r = await putConfigHCL(text);
+        setOkMsg(`saved · ${r.bytes} bytes`);
+      }
       setOriginal(text);
       onSaved();
     } catch (e: any) {
@@ -53,7 +60,12 @@ export function RulesEditor({
     setAIBusy(true);
     setErr(null);
     try {
-      const r = await aiEditRules(aiPrompt, text, "global");
+      const r = await aiEditRules(
+        aiPrompt,
+        text,
+        deviceIP ? "device" : "global",
+        deviceIP,
+      );
       setText(r.yaml);
       setAIPrompt("");
     } catch (e: any) {
@@ -76,7 +88,7 @@ export function RulesEditor({
       >
         <div className="flex items-center px-4 py-3 border-b border-[#e5e5e5]">
           <div className="text-[11px] uppercase tracking-[.12em] text-[#a3a3a3]">
-            EDIT GATEWAY.HCL
+            {deviceIP ? `EDIT DEVICE ${deviceIP}` : "EDIT GATEWAY.HCL"}
           </div>
           <button
             onClick={onClose}

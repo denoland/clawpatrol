@@ -1090,6 +1090,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			URL:     req.URL,
 			Headers: req.Header,
 			Body:    matchBody,
+			PeerIP:  pip,
 		}
 		if ep.Family == "k8s" {
 			mreq.K8s = runtime.ParseK8sPath(req.Method, req.URL.RequestURI())

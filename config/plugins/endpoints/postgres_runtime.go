@@ -153,6 +153,7 @@ func pgEvaluate(ch *runtime.ConnHandle, sql string) (string, string) {
 	info := parseSQL(sql)
 	mreq := &match.Request{
 		Family: "sql",
+		PeerIP: ch.PeerIP,
 		SQL: &match.SQLMeta{
 			Verb:      info.Verb,
 			Tables:    info.Tables,

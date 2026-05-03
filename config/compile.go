@@ -80,10 +80,15 @@ type CredBinding struct {
 // alongside Matcher for dashboard / diagnostic consumers that want
 // to inspect predicate fields without re-walking the rule plugin's
 // Body.
+//
+// DeviceIP, when non-empty, scopes the rule to one peer — set by the
+// compile pass for rules declared inside a `device "<ip>" {}` block.
+// The dispatcher skips the rule when req.PeerIP doesn't match.
 type CompiledRule struct {
 	Name     string
 	Priority int
 	Disabled bool
+	DeviceIP string
 	Match    map[string]any
 	Matcher  match.Matcher
 	Outcome  Outcome
@@ -156,6 +161,34 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 				return nil, fmt.Errorf("rule %q targets unknown endpoint %q", name, target)
 			}
 			ce.Rules = append(ce.Rules, cr)
+		}
+	}
+
+	// Device blocks: each `rule {}` inside lowers like a top-level
+	// rule but gets its DeviceIP stamped from the device's label.
+	// Attaches to the named endpoint(s) the same way; the dispatcher
+	// short-circuits to skip when the request's peer IP doesn't
+	// match. Higher priority than top-level (+1000) so device
+	// overrides win against profile rules at the same explicit
+	// priority.
+	for ip, dev := range p.Devices {
+		for _, ent := range dev.Rules {
+			if ent.Plugin.CompileRule == nil {
+				return nil, fmt.Errorf("device %q rule %q: plugin has no CompileRule hook", ip, ent.Symbol.Name)
+			}
+			cr, targets, err := ent.Plugin.CompileRule(ent.Body, ent.Symbol.Name)
+			if err != nil {
+				return nil, fmt.Errorf("device %q rule %q: %w", ip, ent.Symbol.Name, err)
+			}
+			cr.DeviceIP = ip
+			cr.Priority += 1000
+			for _, target := range targets {
+				ce, ok := cp.Endpoints[target]
+				if !ok {
+					return nil, fmt.Errorf("device %q rule %q targets unknown endpoint %q", ip, ent.Symbol.Name, target)
+				}
+				ce.Rules = append(ce.Rules, cr)
+			}
 		}
 	}
 

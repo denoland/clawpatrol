@@ -90,6 +90,9 @@ export type RuleSummary = {
   // Endpoint this rule attaches to. Multi-endpoint rules emit one
   // RuleSummary per attachment site.
   endpoint: string;
+  // device_ip set when this rule comes from a `device "<ip>" {}` block;
+  // empty for profile-level rules.
+  device_ip?: string;
   // Profile that includes the endpoint. Empty when the row came
   // back from a non-profile-scoped query.
   profile?: string;
