@@ -1367,6 +1367,7 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 			Secrets:      g.secrets,
 			DashboardURL: g.cfg.PublicURL,
 			PolicyText:   policyText,
+			Policy:       policy,
 		}
 		if policy != nil {
 			req.Defaults = policy.Defaults

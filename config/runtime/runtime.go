@@ -152,6 +152,28 @@ type PostgresStartup struct {
 	Password string
 }
 
+// HITLNotifier is the optional interface a credential plugin
+// implements when it can deliver a HITL approval prompt to a human
+// (Slack chat.postMessage, Discord webhook, Telegram sendMessage,
+// SMTP, PagerDuty alert, etc.). HumanApprover dispatches to its
+// configured credential's notifier — adding a new channel =
+// implementing this on a new credential plugin, no main-package
+// changes.
+type HITLNotifier interface {
+	NotifyHITL(ctx context.Context, req ApproveRequest, target HITLTarget) error
+}
+
+// HITLTarget is the per-approver config the notifier needs:
+// where to send the prompt, whether to render interactive buttons,
+// and the pending entry's id (for action_id payload encoding).
+type HITLTarget struct {
+	CredentialName string // bare name — for SecretStore.Get
+	Channel        string // routing target (#chan / chat_id / email)
+	Interactive    bool   // approve/deny buttons vs. dashboard-only
+	PendingID      string // pool's pending entry id
+	DashboardURL   string // for fallback dashboard link in non-interactive mode
+}
+
 // ApproverRuntime evaluates one stage of an approve = [...] chain.
 // Built-in approvers (dashboard, human, llm) implement it; out-of-tree
 // plugins ship their own approver type and runtime via the same
@@ -207,6 +229,10 @@ type ApproveRequest struct {
 	// Defaults from the file's defaults {} block; plugins fall back
 	// to these when their own config doesn't override.
 	Defaults config.Defaults
+	// Policy gives approvers access to the full compiled policy —
+	// HumanApprover uses it to look up its referenced credential
+	// entity and dispatch via HITLNotifier.
+	Policy *config.CompiledPolicy
 }
 
 // ApproveVerdict is what an approver returns. "" Decision means the
