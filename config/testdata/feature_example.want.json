@@ -12,7 +12,8 @@
           "Channel": "#agent-ops",
           "Credential": "",
           "Timeout": 600,
-          "RequireApprovers": 0
+          "RequireApprovers": 0,
+          "Interactive": false
         },
         "type": "human_approver"
       }

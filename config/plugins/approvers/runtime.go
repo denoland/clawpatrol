@@ -65,7 +65,7 @@ func (h *HumanApprover) Approve(ctx context.Context, req runtime.ApproveRequest)
 	defer req.Pool.Discard(id)
 
 	if h.Channel != "" && h.Credential != "" && req.Secrets != nil {
-		go postSlackHITL(req, h.Channel, h.Credential, id)
+		go postSlackHITL(req, h.Channel, h.Credential, id, h.Interactive)
 	}
 
 	timeout := time.Duration(h.Timeout) * time.Second
@@ -100,7 +100,7 @@ func (h *HumanApprover) Approve(ctx context.Context, req runtime.ApproveRequest)
 // postSlackHITL sends the chat.postMessage notification. Best-effort
 // — failures log but don't surface as a verdict; the pool wait is
 // the source of truth for the actual decision.
-func postSlackHITL(req runtime.ApproveRequest, channel, credName, id string) {
+func postSlackHITL(req runtime.ApproveRequest, channel, credName, id string, interactive bool) {
 	sec, err := req.Secrets.Get(credName, req.Profile)
 	if err != nil {
 		log.Printf("slack approver %s: fetch credential %s: %v", req.ApproverName, credName, err)
@@ -137,32 +137,39 @@ func postSlackHITL(req runtime.ApproveRequest, channel, credName, id string) {
 			"text": map[string]any{"type": "mrkdwn", "text": "*Body*\n```" + truncate(bs, 1000) + "```"},
 		})
 	}
-	// Two action buttons + a fallback dashboard link. The buttons
-	// carry the pending ID in `value`; the gateway's
-	// /api/slack/interactive handler dispatches on action_id.
-	blocks = append(blocks, map[string]any{
-		"type": "actions",
-		"elements": []map[string]any{
-			{
+	// Action buttons depend on the approver's `interactive` setting.
+	// Interactive: approve + deny buttons that the gateway resolves
+	// via /api/slack/interactive (requires Slack app's Interactivity
+	// URL pointed at the gateway + signing_secret pasted via the
+	// dashboard). Non-interactive: only an "Open dashboard" link —
+	// operator decides on the dashboard.
+	var elements []map[string]any
+	if interactive {
+		elements = append(elements,
+			map[string]any{
 				"type":      "button",
 				"text":      map[string]any{"type": "plain_text", "text": "Approve"},
 				"action_id": "approve",
 				"value":     id,
 				"style":     "primary",
 			},
-			{
+			map[string]any{
 				"type":      "button",
 				"text":      map[string]any{"type": "plain_text", "text": "Deny"},
 				"action_id": "deny",
 				"value":     id,
 				"style":     "danger",
 			},
-			{
-				"type": "button",
-				"text": map[string]any{"type": "plain_text", "text": "Open dashboard"},
-				"url":  link,
-			},
-		},
+		)
+	}
+	elements = append(elements, map[string]any{
+		"type": "button",
+		"text": map[string]any{"type": "plain_text", "text": "Open dashboard"},
+		"url":  link,
+	})
+	blocks = append(blocks, map[string]any{
+		"type":     "actions",
+		"elements": elements,
 	})
 
 	body := map[string]any{

@@ -38,6 +38,12 @@ type HumanApprover struct {
 	Credential       string `hcl:"credential,optional"`
 	Timeout          int    `hcl:"timeout,optional"`
 	RequireApprovers int    `hcl:"require_approvers,optional"`
+	// Interactive toggles in-Slack approve/deny buttons. Requires the
+	// referenced credential's signing_secret slot pasted via the
+	// dashboard AND Slack's Interactivity URL pointed at the gateway.
+	// Default false: message includes only an "Open dashboard" link
+	// — operator decides on the dashboard.
+	Interactive bool `hcl:"interactive,optional"`
 }
 
 // HumanApproverChannel + HumanApproverCredential expose the fields
@@ -46,6 +52,7 @@ type HumanApprover struct {
 // ent.Body.
 func (h *HumanApprover) HumanApproverChannel() string    { return h.Channel }
 func (h *HumanApprover) HumanApproverCredential() string { return h.Credential }
+func (h *HumanApprover) HumanApproverInteractive() bool  { return h.Interactive }
 
 func init() {
 	config.Register(&config.Plugin{
@@ -82,6 +89,9 @@ func init() {
 			}
 			if a.RequireApprovers != 0 {
 				b.SetAttributeValue("require_approvers", cty.NumberIntVal(int64(a.RequireApprovers)))
+			}
+			if a.Interactive {
+				b.SetAttributeValue("interactive", cty.True)
 			}
 		},
 	})

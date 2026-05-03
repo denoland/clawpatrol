@@ -6,7 +6,8 @@
           "Channel": "#billing-approvals",
           "Credential": "",
           "Timeout": 0,
-          "RequireApprovers": 0
+          "RequireApprovers": 0,
+          "Interactive": false
         },
         "type": "human_approver"
       },
@@ -15,7 +16,8 @@
           "Channel": "#billing-approvals",
           "Credential": "",
           "Timeout": 0,
-          "RequireApprovers": 2
+          "RequireApprovers": 2,
+          "Interactive": false
         },
         "type": "human_approver"
       },
@@ -24,7 +26,8 @@
           "Channel": "#agent-db",
           "Credential": "",
           "Timeout": 0,
-          "RequireApprovers": 0
+          "RequireApprovers": 0,
+          "Interactive": false
         },
         "type": "human_approver"
       },
@@ -47,7 +50,8 @@
           "Channel": "#agent-notion",
           "Credential": "",
           "Timeout": 0,
-          "RequireApprovers": 0
+          "RequireApprovers": 0,
+          "Interactive": false
         },
         "type": "human_approver"
       },
@@ -56,7 +60,8 @@
           "Channel": "#observability",
           "Credential": "",
           "Timeout": 0,
-          "RequireApprovers": 0
+          "RequireApprovers": 0,
+          "Interactive": false
         },
         "type": "human_approver"
       },
@@ -65,7 +70,8 @@
           "Channel": "#agent-db",
           "Credential": "",
           "Timeout": 0,
-          "RequireApprovers": 0
+          "RequireApprovers": 0,
+          "Interactive": false
         },
         "type": "human_approver"
       },
@@ -74,7 +80,8 @@
           "Channel": "#agent-support",
           "Credential": "",
           "Timeout": 86400,
-          "RequireApprovers": 0
+          "RequireApprovers": 0,
+          "Interactive": false
         },
         "type": "human_approver"
       }
