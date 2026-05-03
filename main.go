@@ -1182,7 +1182,12 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		// (slack / telegram / gemini / etc.) leave Runtime nil; we
 		// pass through verbatim and rely on policy alone.
 		if cc := runtime.ResolveCredential(ep, mreq); cc != nil {
-			if injector, ok := cc.Credential.Plugin.Runtime.(runtime.HTTPCredentialRuntime); ok {
+			// Plugin.Runtime is a typed-nil sentinel used only for
+			// interface-compliance assertions; the actual decoded HCL
+			// values (BearerToken.IdempotencyKey, PostgresCredential.User,
+			// etc.) live on Body. Invoke methods through Body so the
+			// receiver is the real instance.
+			if injector, ok := cc.Credential.Body.(runtime.HTTPCredentialRuntime); ok {
 				sec, err := g.secrets.Get(cc.Credential.Symbol.Name, pip)
 				if err != nil {
 					log.Printf("secret %s/%s: %v — forwarding without injection", cc.Credential.Symbol.Name, pip, err)

@@ -40,7 +40,10 @@ func (g *Gateway) dialUpstream(ctx context.Context, network, addr, serverName st
 
 	if ep != nil {
 		for _, cc := range ep.Credentials {
-			tlsRT, ok := cc.Credential.Plugin.Runtime.(runtime.TLSCredentialRuntime)
+			// Body is the real decoded HCL instance; Plugin.Runtime
+			// is a typed-nil sentinel used only for interface-
+			// compliance assertions.
+			tlsRT, ok := cc.Credential.Body.(runtime.TLSCredentialRuntime)
 			if !ok {
 				continue
 			}

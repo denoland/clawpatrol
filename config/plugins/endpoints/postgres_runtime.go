@@ -109,7 +109,9 @@ func (PostgresEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnH
 		pgWriteError(ch.Conn, "no credential bound to postgres endpoint")
 		return fmt.Errorf("no credential")
 	}
-	auth, ok := cc.Credential.Plugin.Runtime.(runtime.PostgresAuthCredential)
+	// Plugin.Runtime is a typed-nil sentinel used for interface
+	// dispatch checks; the actual decoded HCL value is on Body.
+	auth, ok := cc.Credential.Body.(runtime.PostgresAuthCredential)
 	if !ok {
 		pgWriteError(ch.Conn, "credential plugin does not implement postgres auth")
 		return fmt.Errorf("credential %q has no PostgresAuth", cc.Credential.Symbol.Name)
