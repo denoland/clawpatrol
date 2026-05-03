@@ -208,6 +208,72 @@ func (g *GitHubOAuth) InjectHTTP(_ context.Context, req *http.Request, sec runti
 	return nil
 }
 
+// SlackTokens: bot + app token pair. Default-injects the bot token
+// as `Authorization: Bearer xoxb-…`. Slack admin endpoints
+// (auth.test, admin.*, apps.*) prefer the app token; if the operator
+// declared one, use it for those paths instead. Falls back to bot
+// when only one slot is filled.
+func (s *SlackTokens) InjectHTTP(_ context.Context, req *http.Request, sec runtime.Secret) error {
+	bot := sec.Extras["bot"]
+	app := sec.Extras["app"]
+	pick := bot
+	if app != "" && slackPathPrefersApp(req.URL.Path) {
+		pick = app
+	}
+	if pick == "" {
+		// Either operator hasn't filled the relevant slot yet, or
+		// they're using a single-slot setup that landed in Bytes.
+		if len(sec.Bytes) > 0 {
+			pick = string(sec.Bytes)
+		}
+	}
+	if pick == "" {
+		return nil
+	}
+	req.Header.Set("Authorization", "Bearer "+pick)
+	return nil
+}
+
+func slackPathPrefersApp(path string) bool {
+	for _, p := range []string{"/api/admin.", "/api/apps.", "/api/auth.test"} {
+		if strings.HasPrefix(path, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// TelegramBotToken: Telegram puts the bot token in the URL path —
+// `/bot<TOKEN>/<METHOD>`. There's no header to overwrite; we rewrite
+// the path itself, swapping the bot prefix's token for the real one.
+// The agent CLI's placeholder token (TELEGRAM_BOT_TOKEN env var) is
+// already in the path; we replace whatever's between `/bot` and the
+// next `/` with the real secret bytes.
+func (t *TelegramBotToken) InjectHTTP(_ context.Context, req *http.Request, sec runtime.Secret) error {
+	if len(sec.Bytes) == 0 || req.URL == nil {
+		return nil
+	}
+	const marker = "/bot"
+	p := req.URL.Path
+	idx := strings.Index(p, marker)
+	if idx < 0 {
+		return nil
+	}
+	rest := p[idx+len(marker):]
+	end := strings.IndexByte(rest, '/')
+	if end < 0 {
+		end = len(rest)
+	}
+	newPath := p[:idx+len(marker)] + string(sec.Bytes) + rest[end:]
+	req.URL.Path = newPath
+	if req.URL.RawPath != "" {
+		// Same swap on the encoded form so http.Client doesn't
+		// re-encode the placeholder back in.
+		req.URL.RawPath = ""
+	}
+	return nil
+}
+
 // ensureBeta appends `beta` to a comma-separated `anthropic-beta`
 // header if it isn't already present. Anthropic gates experimental
 // features (including OAuth bearer auth) behind these tokens.
@@ -287,8 +353,8 @@ func init() {
 		{"postgres_credential", newer[PostgresCredential](), nil},
 		{"anthropic_manual_key", newer[AnthropicManualKey](), (*AnthropicManualKey)(nil)},
 		{"anthropic_oauth_subscription", newer[AnthropicOAuthSubscription](), (*AnthropicOAuthSubscription)(nil)},
-		{"slack_tokens", newer[SlackTokens](), nil},
-		{"telegram_bot_token", newer[TelegramBotToken](), nil},
+		{"slack_tokens", newer[SlackTokens](), (*SlackTokens)(nil)},
+		{"telegram_bot_token", newer[TelegramBotToken](), (*TelegramBotToken)(nil)},
 		{"gemini_api_key", newer[GeminiAPIKey](), nil},
 		{"openai_codex_oauth", newer[OpenAICodexOAuth](), (*OpenAICodexOAuth)(nil)},
 		{"github_oauth", newer[GitHubOAuth](), (*GitHubOAuth)(nil)},
@@ -318,6 +384,8 @@ func init() {
 		_ runtime.HTTPCredentialRuntime = (*AnthropicOAuthSubscription)(nil)
 		_ runtime.HTTPCredentialRuntime = (*OpenAICodexOAuth)(nil)
 		_ runtime.HTTPCredentialRuntime = (*GitHubOAuth)(nil)
+		_ runtime.HTTPCredentialRuntime = (*SlackTokens)(nil)
+		_ runtime.HTTPCredentialRuntime = (*TelegramBotToken)(nil)
 		_ runtime.TLSCredentialRuntime  = (*MTLSCredential)(nil)
 	)
 }

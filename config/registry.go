@@ -102,3 +102,20 @@ func Types(kind Kind) []string {
 	sort.Strings(out)
 	return out
 }
+
+// AllPlugins returns every registered plugin of the given kind,
+// sorted by Type. Used by `clawpatrol env` to walk credential
+// plugins and ask each for its env-pushdown lines without having
+// loaded a specific gateway.hcl.
+func AllPlugins(kind Kind) []*Plugin {
+	registry.RLock()
+	defer registry.RUnlock()
+	var out []*Plugin
+	for k, p := range registry.byKey {
+		if k.Kind == kind {
+			out = append(out, p)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Type < out[j].Type })
+	return out
+}

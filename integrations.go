@@ -16,18 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
-)
 
-// Placeholder tokens. Agent CLIs (claude, gh, codex) refuse to start
-// without these env vars set, even though the gateway swaps in the
-// real OAuth-issued token server-side via the credential plugin.
-const (
-	envClaudePlaceholder = "sk-ant-oat01-clawpatrol-placeholder-token-do-not-use-as-real-key"
-	envGitHubPlaceholder = "ghp_clawpatrol_placeholder_token_do_not_use_as_real_key"
-	// codex CLI / OpenAI SDKs validate OPENAI_API_KEY starts with `sk-`
-	// before sending. The real OAuth bearer is swapped in at MITM time
-	// via the codex integration's Authorization header rewrite.
-	envCodexPlaceholder = "sk-clawpatrol-placeholder-token-do-not-use-as-real-key"
+	"github.com/denoland/clawpatrol-go/config"
 )
 
 // resolveTemplate expands `{{secret:NAME}}` placeholders in s by
@@ -55,6 +45,13 @@ func resolveTemplate(s string) string {
 // runEnv is the `clawpatrol env` subcommand: prints export lines for
 // the agent CLIs, pointing them at our CA bundle and stuffing
 // placeholder tokens into the slots they require.
+//
+// Walks every registered credential plugin (via the global registry —
+// the blank import in main pulls them all in). Plugins that implement
+// EnvPushdownProvider contribute one or more `export FOO="…"` lines.
+// The placeholders look like real tokens so the agent CLI's startup
+// validation accepts them; the gateway overwrites the auth slot at
+// MITM time, so the placeholder bytes never reach the upstream.
 func runEnv(args []string) {
 	fs := flag.NewFlagSet("env", flag.ExitOnError)
 	caDir := fs.String("ca-dir", defaultClawpatrolDir(), "directory containing ca.crt")
@@ -74,13 +71,24 @@ func runEnv(args []string) {
 	} {
 		fmt.Printf("export %s=%q\n", k, caPath)
 	}
-	fmt.Printf("export ANTHROPIC_AUTH_TOKEN=%q\n", envClaudePlaceholder)
-	fmt.Printf("export GH_TOKEN=%q\n", envGitHubPlaceholder)
-	fmt.Printf("export GITHUB_TOKEN=%q\n", envGitHubPlaceholder)
-	// codex OPENAI_API_KEY pushes the CLI into api-key mode, which
-	// targets api.openai.com — wrong endpoint for ChatGPT OAuth.
-	// OAuth-mode codex reads strictly from ~/.codex/auth.json; once
-	// `clawpatrol run -- codex` wraps that, we emit it conditionally.
+	seen := map[string]bool{}
+	for _, p := range config.AllPlugins(config.KindCredential) {
+		body := p.New()
+		ep, ok := body.(config.EnvPushdownProvider)
+		if !ok {
+			continue
+		}
+		for _, ev := range ep.EnvVars() {
+			if seen[ev.Name] {
+				continue
+			}
+			seen[ev.Name] = true
+			if ev.Description != "" {
+				fmt.Printf("# %s — %s\n", ev.Description, p.Type)
+			}
+			fmt.Printf("export %s=%q\n", ev.Name, ev.Value)
+		}
+	}
 }
 
 // Model context-window lookup. Sourced from litellm's
