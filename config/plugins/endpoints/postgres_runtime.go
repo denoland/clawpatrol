@@ -126,6 +126,10 @@ func (PostgresEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnH
 		pgWriteError(ch.Conn, "postgres credential has no user — set `user = ...` in HCL")
 		return fmt.Errorf("credential %q missing user", cc.Credential.Symbol.Name)
 	}
+	if realPassword == "" {
+		pgWriteError(ch.Conn, fmt.Sprintf("postgres credential %q has no password — paste it via the dashboard", cc.Credential.Symbol.Name))
+		return fmt.Errorf("credential %q missing password", cc.Credential.Symbol.Name)
+	}
 
 	// Step 4: dial upstream + send our own StartupMessage.
 	upstream, err := ch.DialUpstream(ctx, "tcp", upstreamAddr)

@@ -857,11 +857,14 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 	policy := g.Policy()
 	// Try the DNS-resolved IP index first — multi-postgres profiles
 	// dispatch correctly when each endpoint's hostname resolves to
-	// distinct IPs. Fall back to first-postgres-in-profile so single-
-	// database profiles work without DNS at all.
+	// distinct IPs. When multiple endpoints share an IP (writer +
+	// readonly pointing at the same RDS), filter by the device's
+	// profile so the right one wins. Fall back to first-postgres-in-
+	// profile so single-database profiles work without DNS at all.
 	var ep *config.CompiledEndpoint
 	if idx := g.pgIdx.Load(); idx != nil {
-		ep = idx.lookup(dstIP)
+		candidates := idx.lookup(dstIP)
+		ep = pickEndpointForProfile(candidates, policy, profile)
 	}
 	if ep == nil {
 		ep = firstPostgresEndpoint(policy, profile)
@@ -940,6 +943,30 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 // the device's profile. Multi-postgres profiles need DNS-aware
 // matching against the WG forwarder's dstIP — tracked as follow-up;
 // the first-match heuristic covers the single-database common case.
+// pickEndpointForProfile takes pgIndex.lookup candidates and returns
+// the one whose name belongs to the device's profile. Falls back to
+// the first candidate when none of them are profile-bound (single-
+// tenant / device-injected endpoints), or nil when the candidate
+// list is empty.
+func pickEndpointForProfile(candidates []*config.CompiledEndpoint, policy *config.CompiledPolicy, profile string) *config.CompiledEndpoint {
+	if len(candidates) == 0 {
+		return nil
+	}
+	if policy == nil || profile == "" {
+		return candidates[0]
+	}
+	prof, ok := policy.Profiles[profile]
+	if !ok {
+		return candidates[0]
+	}
+	for _, c := range candidates {
+		if _, in := prof.Endpoints[c.Name]; in {
+			return c
+		}
+	}
+	return candidates[0]
+}
+
 func firstPostgresEndpoint(policy *config.CompiledPolicy, profile string) *config.CompiledEndpoint {
 	if policy == nil {
 		return nil
