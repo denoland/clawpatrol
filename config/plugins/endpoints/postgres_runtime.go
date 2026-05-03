@@ -97,10 +97,14 @@ func (PostgresEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnH
 		database = pgStartupParam(startupBody, "user") // pg default
 	}
 
-	// Step 3: resolve credential. Postgres endpoints today are
-	// single-credential (multi-cred dispatch via account placeholders
-	// lands later); ResolveCredential(nil req) returns the only entry.
-	cc := runtime.ResolveCredential(ch.Endpoint, nil)
+	// Step 3: resolve credential. Multi-credential postgres endpoints
+	// (account ro/rw) dispatch on the placeholder string the agent
+	// embedded in the StartupMessage user field — operator sets
+	// PGUSER=PH_pg_deployng_ro and the gateway picks the matching
+	// credential. Single-credential endpoints fall through to the
+	// only entry.
+	agentUser := pgStartupParam(startupBody, "user")
+	cc := pgResolveCredential(ch.Endpoint, agentUser)
 	if cc == nil {
 		pgWriteError(ch.Conn, "no credential bound to postgres endpoint")
 		return fmt.Errorf("no credential")
@@ -143,7 +147,11 @@ func (PostgresEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnH
 		return nil
 	}
 
-	// Step 7: bidirectional pump with per-query inspection.
+	// Step 7: bidirectional pump with per-query inspection. The
+	// picked credential's bare name flows into match.Request.Credential
+	// so SQL rules with `match = { credential = pg-deployng-ro }`
+	// resolve against the right account.
+	credName := cc.Credential.Symbol.Name
 	done := make(chan struct{}, 2)
 	go func() {
 		_, _ = io.Copy(ch.Conn, upstream)
@@ -151,7 +159,7 @@ func (PostgresEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnH
 	}()
 	go func() {
 		defer func() { done <- struct{}{} }()
-		pgClientToServer(ctx, ch, upstream)
+		pgClientToServer(ctx, ch, upstream, credName)
 	}()
 	<-done
 	return nil
@@ -220,7 +228,7 @@ func pgStartupParam(body []byte, key string) string {
 
 // pgClientToServer pumps the agent's outbound message stream to the
 // upstream, inspecting Query / Parse for policy.
-func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.Conn) {
+func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.Conn, credName string) {
 	buf := make([]byte, 0, 64*1024)
 	tmp := make([]byte, 32*1024)
 	for {
@@ -236,7 +244,7 @@ func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.
 				if msg.typ == 'Q' || msg.typ == 'P' {
 					sql := pgExtractSQL(msg.typ, msg.payload)
 					if sql != "" {
-						verdict, reason := pgEvaluate(ch, sql)
+						verdict, reason := pgEvaluate(ch, sql, credName)
 						if verdict == "deny" {
 							pgWriteDeny(ch.Conn, reason)
 							log.Printf("pg-deny %s: %s", ch.PeerIP, reason)
@@ -266,11 +274,12 @@ func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.
 //	  rejected, or approve chain timed out (host applies its
 //	  configured fail mode).
 //	("", "")         — no rule fires or the matched rule allows.
-func pgEvaluate(ch *runtime.ConnHandle, sql string) (string, string) {
+func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 	info := parseSQL(sql)
 	mreq := &match.Request{
-		Family: "sql",
-		PeerIP: ch.PeerIP,
+		Family:     "sql",
+		PeerIP:     ch.PeerIP,
+		Credential: credName,
 		SQL: &match.SQLMeta{
 			Verb:      info.Verb,
 			Tables:    info.Tables,
@@ -350,6 +359,36 @@ func pgWriteDeny(conn net.Conn, reason string) {
 	// Z (ReadyForQuery) — 5 bytes total: 'Z' + length(5) + 'I'.
 	ready := []byte{'Z', 0, 0, 0, 5, 'I'}
 	_, _ = conn.Write(append(msg, ready...))
+}
+
+// pgResolveCredential picks the credential entry for this connection.
+//
+// Single-binding endpoints (one entry, no placeholder) return that
+// entry. Multi-credential endpoints dispatch on the agent-supplied
+// StartupMessage user field — match against each entry's placeholder
+// (substring match so PGUSER="PH_pg_ro" or longer derived strings
+// both work). Trailing no-placeholder entry is the fallback when no
+// placeholder matched.
+//
+// Returns nil only when the endpoint declared zero credentials.
+func pgResolveCredential(ep *config.CompiledEndpoint, agentUser string) *config.CompiledCredential {
+	if ep == nil || len(ep.Credentials) == 0 {
+		return nil
+	}
+	if len(ep.Credentials) == 1 && ep.Credentials[0].Placeholder == "" {
+		return ep.Credentials[0]
+	}
+	var fallback *config.CompiledCredential
+	for _, c := range ep.Credentials {
+		if c.Placeholder == "" {
+			fallback = c
+			continue
+		}
+		if agentUser != "" && strings.Contains(agentUser, c.Placeholder) {
+			return c
+		}
+	}
+	return fallback
 }
 
 // pgWriteError sends an ErrorResponse during the pre-auth phase
