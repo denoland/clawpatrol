@@ -58,6 +58,7 @@ func (*SlackTokens) SecretSlots() []config.SecretSlot {
 	return []config.SecretSlot{
 		{Name: "bot", Label: "Bot token", Description: "xoxb-…"},
 		{Name: "app", Label: "App-level token (optional)", Description: "xapp-…"},
+		{Name: "signing_secret", Label: "Signing secret", Description: "Slack app's signing secret — required for interactive approve/deny buttons"},
 	}
 }
 

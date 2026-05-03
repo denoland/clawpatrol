@@ -90,6 +90,7 @@ func newWebMux(g *Gateway, caDir string, ts Tailscale, publicURL string) http.Ha
 	mux.HandleFunc("/api/config", w.apiConfig)
 	mux.HandleFunc("/api/hitl/pending", w.apiHITLPending)
 	mux.HandleFunc("/api/hitl/decide", w.apiHITLDecide)
+	mux.HandleFunc("/api/slack/interactive", w.apiSlackInteractive)
 	mux.HandleFunc("/api/oauth/start", w.apiOAuthStart)
 	mux.HandleFunc("/api/oauth/exchange", w.apiOAuthExchange)
 	mux.HandleFunc("/api/oauth/device-poll", w.apiOAuthDevicePoll)
@@ -114,14 +115,15 @@ func newWebMux(g *Gateway, caDir string, ts Tailscale, publicURL string) http.Ha
 // without an explicit secret keep their current open behavior.
 func (w *webMux) dashboardSecretGate(next http.Handler) http.Handler {
 	publicPaths := map[string]bool{
-		"/api/onboard/start":   true,
-		"/api/onboard/poll":    true,
-		"/api/onboard/claim":   true,
-		"/api/onboard/lookup":  true,
-		"/api/onboard/approve": true,
-		"/info":                true,
-		"/ca.crt":              true,
-		"/__login":             true,
+		"/api/onboard/start":     true,
+		"/api/onboard/poll":      true,
+		"/api/onboard/claim":     true,
+		"/api/onboard/lookup":    true,
+		"/api/onboard/approve":   true,
+		"/api/slack/interactive": true,
+		"/info":                  true,
+		"/ca.crt":                true,
+		"/__login":               true,
 	}
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		secret := w.g.cfg.DashboardSecret
@@ -223,11 +225,12 @@ func renderLogin(rw http.ResponseWriter, next, errMsg string, status int) {
 //	GET  /info                 — health check
 func (w *webMux) tailnetGate(next http.Handler) http.Handler {
 	publicPaths := map[string]bool{
-		"/api/onboard/start": true,
-		"/api/onboard/poll":  true,
-		"/api/onboard/claim": true, // device_code-gated; safe to be public
-		"/info":              true,
-		"/ca.crt":            true, // gateway's public CA cert, intentionally exposed
+		"/api/onboard/start":     true,
+		"/api/onboard/poll":      true,
+		"/api/onboard/claim":     true, // device_code-gated; safe to be public
+		"/api/slack/interactive": true, // signed payload; verified via slack signing secret
+		"/info":                  true,
+		"/ca.crt":                true, // gateway's public CA cert, intentionally exposed
 	}
 	// In wireguard / proxy mode there is no tailnet identity to gate
 	// against. Operators put the dashboard behind their own

@@ -239,19 +239,21 @@ type HITLPool interface {
 }
 
 // HITLPending mirrors the dashboard's pending-approval shape. Stays
-// here (vs main package) so approver plugins can construct it.
+// here (vs main package) so approver plugins can construct it. JSON
+// tags match the dashboard's existing field names — that endpoint is
+// public API to the in-tree React UI.
 type HITLPending struct {
-	ID         string
-	AgentIP    string
-	Host       string
-	Method     string
-	Path       string
-	UA         string
-	BodySample string
-	Reason     string
-	Approvers  []string
-	CreatedAt  time.Time
-	ExpiresAt  time.Time
+	ID         string    `json:"id"`
+	AgentIP    string    `json:"agent_ip"`
+	Host       string    `json:"host"`
+	Method     string    `json:"method"`
+	Path       string    `json:"path"`
+	UA         string    `json:"ua,omitempty"`
+	BodySample string    `json:"body_sample,omitempty"`
+	Reason     string    `json:"reason,omitempty"`
+	Approvers  []string  `json:"approvers,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	ExpiresAt  time.Time `json:"expires_at"`
 }
 
 // HITLDecision is what the pool delivers when an operator approves

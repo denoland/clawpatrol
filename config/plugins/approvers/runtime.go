@@ -137,14 +137,32 @@ func postSlackHITL(req runtime.ApproveRequest, channel, credName, id string) {
 			"text": map[string]any{"type": "mrkdwn", "text": "*Body*\n```" + truncate(bs, 1000) + "```"},
 		})
 	}
+	// Two action buttons + a fallback dashboard link. The buttons
+	// carry the pending ID in `value`; the gateway's
+	// /api/slack/interactive handler dispatches on action_id.
 	blocks = append(blocks, map[string]any{
 		"type": "actions",
-		"elements": []map[string]any{{
-			"type":  "button",
-			"text":  map[string]any{"type": "plain_text", "text": "Approve / deny on dashboard"},
-			"url":   link,
-			"style": "primary",
-		}},
+		"elements": []map[string]any{
+			{
+				"type":      "button",
+				"text":      map[string]any{"type": "plain_text", "text": "Approve"},
+				"action_id": "approve",
+				"value":     id,
+				"style":     "primary",
+			},
+			{
+				"type":      "button",
+				"text":      map[string]any{"type": "plain_text", "text": "Deny"},
+				"action_id": "deny",
+				"value":     id,
+				"style":     "danger",
+			},
+			{
+				"type": "button",
+				"text": map[string]any{"type": "plain_text", "text": "Open dashboard"},
+				"url":  link,
+			},
+		},
 	})
 
 	body := map[string]any{
