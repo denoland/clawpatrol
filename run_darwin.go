@@ -35,12 +35,16 @@ func runRun(args []string) {
 	if err := ensureMacProxyUp(); err != nil {
 		fail(fmt.Sprintf("ensure proxy up: %v", err))
 	}
+	// Stamp CA + placeholder env vars on the current process so the
+	// helper inherits them and forwards them to the wrapped child.
+	applyEnvPushdown(defaultClawpatrolDir())
 	// Forward the command + args through the helper's run subcommand,
 	// which forks the cmd as a child of the .app process so the
 	// extension's PPID walk picks it up.
 	all := append([]string{"run", "--"}, args...)
 	c := exec.Command(macHelperPath, all...)
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
+	c.Env = os.Environ()
 	if err := c.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			os.Exit(exitErr.ExitCode())

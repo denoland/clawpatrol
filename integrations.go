@@ -42,26 +42,24 @@ func resolveTemplate(s string) string {
 	return out
 }
 
-// runEnv is the `clawpatrol env` subcommand: prints export lines for
-// the agent CLIs, pointing them at our CA bundle and stuffing
-// placeholder tokens into the slots they require.
-//
-// Walks every registered credential plugin (via the global registry —
-// the blank import in main pulls them all in). Plugins that implement
-// EnvPushdownProvider contribute one or more `export FOO="…"` lines.
-// The placeholders look like real tokens so the agent CLI's startup
-// validation accepts them; the gateway overwrites the auth slot at
-// MITM time, so the placeholder bytes never reach the upstream.
-func runEnv(args []string) {
-	fs := flag.NewFlagSet("env", flag.ExitOnError)
-	caDir := fs.String("ca-dir", defaultClawpatrolDir(), "directory containing ca.crt")
-	_ = fs.Parse(args)
+// pushdownEnvVar carries one env var contributed by the credential
+// plugins' EnvPushdownProvider impls plus the CA-bundle vars. Used
+// by both `clawpatrol env` (prints export lines) and `clawpatrol run`
+// (sets them on the wrapped child process via os.Setenv).
+type pushdownEnvVar struct {
+	Name        string
+	Value       string
+	Description string // shown only by `env`; `run` ignores
+	PluginType  string
+}
 
-	caPath := filepath.Join(*caDir, "ca.crt")
-	if _, err := os.Stat(caPath); err != nil {
-		fmt.Fprintf(os.Stderr, "clawpatrol: ca not found at %s — run `clawpatrol login` first\n", caPath)
-		os.Exit(2)
-	}
+// envPushdownVars returns every var the operator's CLI environment
+// needs: CA bundle paths + per-credential placeholder tokens. caPath
+// must be the absolute path to ca.crt. Plugin order is registry-
+// stable (alphabetical by Type); first writer wins on duplicate
+// names so the same env var across two plugins doesn't double up.
+func envPushdownVars(caPath string) []pushdownEnvVar {
+	var out []pushdownEnvVar
 	for _, k := range []string{
 		"SSL_CERT_FILE",
 		"NODE_EXTRA_CA_CERTS",
@@ -69,7 +67,7 @@ func runEnv(args []string) {
 		"CURL_CA_BUNDLE",
 		"GIT_SSL_CAINFO",
 	} {
-		fmt.Printf("export %s=%q\n", k, caPath)
+		out = append(out, pushdownEnvVar{Name: k, Value: caPath})
 	}
 	seen := map[string]bool{}
 	for _, p := range config.AllPlugins(config.KindCredential) {
@@ -83,11 +81,64 @@ func runEnv(args []string) {
 				continue
 			}
 			seen[ev.Name] = true
-			if ev.Description != "" {
-				fmt.Printf("# %s — %s\n", ev.Description, p.Type)
-			}
-			fmt.Printf("export %s=%q\n", ev.Name, ev.Value)
+			out = append(out, pushdownEnvVar{
+				Name:        ev.Name,
+				Value:       ev.Value,
+				Description: ev.Description,
+				PluginType:  p.Type,
+			})
 		}
+	}
+	return out
+}
+
+// runEnv is the `clawpatrol env` subcommand: prints export lines for
+// the agent CLIs, pointing them at the CA bundle and stuffing
+// placeholder tokens into the slots they require. The gateway
+// overwrites the auth slot at MITM time, so the placeholder bytes
+// never reach the upstream.
+func runEnv(args []string) {
+	fs := flag.NewFlagSet("env", flag.ExitOnError)
+	caDir := fs.String("ca-dir", defaultClawpatrolDir(), "directory containing ca.crt")
+	_ = fs.Parse(args)
+
+	caPath := filepath.Join(*caDir, "ca.crt")
+	if _, err := os.Stat(caPath); err != nil {
+		fmt.Fprintf(os.Stderr, "clawpatrol: ca not found at %s — run `clawpatrol login` first\n", caPath)
+		os.Exit(2)
+	}
+	for _, ev := range envPushdownVars(caPath) {
+		if ev.Description != "" {
+			if ev.PluginType != "" {
+				fmt.Printf("# %s — %s\n", ev.Description, ev.PluginType)
+			} else {
+				fmt.Printf("# %s\n", ev.Description)
+			}
+		}
+		fmt.Printf("export %s=%q\n", ev.Name, ev.Value)
+	}
+}
+
+// applyEnvPushdown sets every pushdown var on the current process
+// environment. Called by `clawpatrol run` before exec'ing the child
+// command, so the wrapped agent CLI inherits the placeholders + CA
+// paths without the operator having to source `clawpatrol env`
+// separately.
+func applyEnvPushdown(caDir string) {
+	caPath := filepath.Join(caDir, "ca.crt")
+	if _, err := os.Stat(caPath); err != nil {
+		// CA not set up yet — `clawpatrol join` hasn't run. Don't
+		// silently skip; the agent CLI will fail TLS verification
+		// and the operator will be confused. Log and continue.
+		log.Printf("clawpatrol: ca not found at %s — env pushdown skipped (run `clawpatrol join` first)", caPath)
+		return
+	}
+	for _, ev := range envPushdownVars(caPath) {
+		// Don't clobber values the operator already set deliberately.
+		if os.Getenv(ev.Name) != "" {
+			continue
+		}
+		_ = os.Setenv(ev.Name, ev.Value)
 	}
 }
 

@@ -66,6 +66,12 @@ func runRun(args []string) {
 		fail("conf %s: %v\n  hint: run `clawpatrol join --url <gw>` first", *confPath, err)
 	}
 
+	// Stamp CA + per-credential placeholder env vars on the current
+	// process so the re-exec'd child (and thus the user's wrapped cmd)
+	// inherits them. Operator gets the same effect as
+	// `eval $(clawpatrol env)` for free.
+	applyEnvPushdown(defaultClawpatrolDir())
+
 	// socketpair for SCM_RIGHTS handoff of the TUN fd, plus a pipe
 	// the parent uses to tell the child "wg is up, finish setup".
 	sp, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
