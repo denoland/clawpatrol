@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -56,22 +57,32 @@ func (w *webMux) apiSlackInteractive(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "no policy loaded", 500)
 		return
 	}
+	// Try every (slack_tokens credential, profile) signing_secret —
+	// secrets are per-profile in the dashboard, but Slack doesn't
+	// know which profile a click came from. First match wins.
 	verified := false
+	profiles := []string{""}
+	for name := range policy.Profiles {
+		profiles = append(profiles, name)
+	}
+outer:
 	for name, ent := range policy.Credentials {
 		if ent.Plugin.Type != "slack_tokens" {
 			continue
 		}
-		sec, err := w.g.secrets.Get(name, "")
-		if err != nil {
-			continue
-		}
-		signingSecret := sec.Extras["signing_secret"]
-		if signingSecret == "" {
-			continue
-		}
-		if verifySlackSig(signingSecret, ts, body, sig) {
-			verified = true
-			break
+		for _, prof := range profiles {
+			sec, err := w.g.secrets.Get(name, prof)
+			if err != nil {
+				continue
+			}
+			signingSecret := sec.Extras["signing_secret"]
+			if signingSecret == "" {
+				continue
+			}
+			if verifySlackSig(signingSecret, ts, body, sig) {
+				verified = true
+				break outer
+			}
 		}
 	}
 	if !verified {
@@ -90,48 +101,110 @@ func (w *webMux) apiSlackInteractive(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "no payload", 400)
 		return
 	}
-	msg := applySlackInteractivePayload(w.g, []byte(payload))
-	writeJSON(rw, map[string]string{"text": msg})
+	resp := applySlackInteractivePayload(w.g, []byte(payload))
+	writeJSON(rw, resp)
 }
 
-// applySlackInteractivePayload parses one Slack interactive payload
-// (block-actions JSON) and resolves the matching pending HITL entry.
-// Shared between the HTTP webhook (apiSlackInteractive) and the
-// Socket Mode listener (slack_socket.go) — they only differ in
-// transport + signature verification.
+// applySlackInteractivePayload parses one Slack block_actions payload,
+// resolves the matching pending HITL entry, and POSTs an updated
+// message back to Slack's response_url so the buttons disappear and
+// a verdict line appears — instant in-place update.
 //
-// Returns a one-line ack the transport can show back to the user.
-func applySlackInteractivePayload(g *Gateway, payload []byte) string {
+// Returns an empty ack map; Slack requires HTTP 200 within 3s and the
+// real message swap happens via response_url (not the immediate body —
+// that path doesn't work for block_actions per Slack docs).
+func applySlackInteractivePayload(g *Gateway, payload []byte) map[string]any {
 	var p struct {
 		User struct {
 			Name string `json:"name"`
 		} `json:"user"`
-		Actions []struct {
+		ResponseURL string `json:"response_url"`
+		Actions     []struct {
 			ActionID string `json:"action_id"`
 			Value    string `json:"value"`
 		} `json:"actions"`
+		Message struct {
+			Blocks []map[string]any `json:"blocks"`
+		} `json:"message"`
 	}
 	if err := json.Unmarshal(payload, &p); err != nil {
-		return "couldn't parse payload: " + err.Error()
+		return map[string]any{"text": "couldn't parse payload: " + err.Error()}
 	}
 	if len(p.Actions) == 0 {
-		return "no actions"
+		return map[string]any{"text": "no actions"}
 	}
 	act := p.Actions[0]
 	if act.Value == "" {
-		return "missing pending id"
+		return map[string]any{"text": "missing pending id"}
 	}
 	allow := act.ActionID == "approve"
 	ok := g.hitl.Decide(act.Value, runtime.HITLDecision{Allow: allow, By: "slack:" + p.User.Name})
+
+	var status string
 	if !ok {
-		return "Already resolved or expired."
+		status = "Already resolved or expired."
+	} else {
+		verb := "approved"
+		emoji := ":white_check_mark:"
+		if !allow {
+			verb = "denied"
+			emoji = ":no_entry:"
+		}
+		log.Printf("slack-interactive: %s %s by %s", act.Value, verb, p.User.Name)
+		status = fmt.Sprintf("%s %s by <@%s>", emoji, verb, p.User.Name)
 	}
-	verb := "approved"
-	if !allow {
-		verb = "denied"
+
+	if p.ResponseURL != "" {
+		go postSlackResponseURL(p.ResponseURL, status, withStatusBlock(p.Message.Blocks, status))
 	}
-	log.Printf("slack-interactive: %s %s by %s", act.Value, verb, p.User.Name)
-	return fmt.Sprintf("Request %s by %s.", verb, p.User.Name)
+	return map[string]any{} // empty ack — real update flows via response_url
+}
+
+// postSlackResponseURL fires the message-replace POST. Slack accepts
+// JSON with {replace_original: true, text, blocks} on the response_url
+// for up to 30 minutes / 5 calls per interactive event.
+func postSlackResponseURL(url, text string, blocks []map[string]any) {
+	body := map[string]any{
+		"replace_original": true,
+		"text":             text,
+		"blocks":           blocks,
+	}
+	buf, _ := json.Marshal(body)
+	req, err := http.NewRequest("POST", url, bytes.NewReader(buf))
+	if err != nil {
+		log.Printf("slack response_url: build: %v", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c := &http.Client{Timeout: 5 * time.Second}
+	resp, err := c.Do(req)
+	if err != nil {
+		log.Printf("slack response_url: post: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		log.Printf("slack response_url: status=%d", resp.StatusCode)
+	}
+}
+
+// withStatusBlock returns the original message blocks minus any
+// `actions` block, plus a context block carrying the verdict.
+// Slack `replace_original` swaps the message in place — operator
+// sees the buttons disappear and the verdict line appear instantly.
+func withStatusBlock(blocks []map[string]any, status string) []map[string]any {
+	out := make([]map[string]any, 0, len(blocks)+1)
+	for _, b := range blocks {
+		if b["type"] == "actions" {
+			continue
+		}
+		out = append(out, b)
+	}
+	out = append(out, map[string]any{
+		"type":     "context",
+		"elements": []map[string]any{{"type": "mrkdwn", "text": status}},
+	})
+	return out
 }
 
 // verifySlackSig checks Slack's v0 HMAC-SHA256 signature.
