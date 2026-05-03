@@ -31,5 +31,5 @@ Approved.
 ├ CA installed in system trust
 └ Shell rc: eval "$(clawpatrol env)"
 
-Next: clawpatrol run -- claude
+Installed! Try: clawpatrol run claude
 ```

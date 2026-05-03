@@ -227,7 +227,7 @@ func runLogin(args []string) {
 	})...)
 	printTreeItems(items)
 	fmt.Println()
-	fmt.Println("Next: claude")
+	fmt.Println("Installed! Try: claude")
 }
 
 // installShellRC appends `eval "$(clawpatrol env)"` to the user's shell
@@ -678,18 +678,16 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, setup joinSetup) (b
 		}
 		items = append(items, setupSummaryItems(setup)...)
 		printTreeItems(items)
+		fmt.Println()
 		if !wholeMachine {
-			fmt.Println()
-			fmt.Println("Next: clawpatrol run -- claude")
+			fmt.Println("Installed! Try: clawpatrol run claude")
 		} else if runtime.GOOS == "darwin" {
-			fmt.Println()
-			fmt.Println("All host traffic routes via the system extension.")
+			fmt.Println("Installed! All host traffic routes via the system extension.")
 		} else {
 			if err := wgQuickUp(iface, authKey); err != nil {
 				return true, fmt.Errorf("wg-quick up: %w", err)
 			}
-			fmt.Println()
-			fmt.Printf("All host traffic routes via the gateway (%s).\n", iface)
+			fmt.Printf("Installed! All host traffic routes via the gateway (%s).\n", iface)
 		}
 		if persistErr != nil {
 			fmt.Fprintf(os.Stderr, "⚠ persist user wg conf: %v\n", persistErr)
@@ -760,7 +758,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, setup joinSetup) (b
 	items = append(items, setupSummaryItems(setup)...)
 	printTreeItems(items)
 	fmt.Println()
-	fmt.Println("Next: claude")
+	fmt.Println("Installed! Try: claude")
 	return false, nil
 }
 
