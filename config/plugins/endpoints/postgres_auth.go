@@ -28,6 +28,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
@@ -38,6 +39,58 @@ import (
 
 	"golang.org/x/crypto/pbkdf2"
 )
+
+const sslRequestCodeUpstream uint32 = 80877103
+
+// pgUpgradeSSL probes the upstream for TLS support via the standard
+// SSLRequest pre-startup probe, then wraps the connection in TLS
+// when the server agrees ('S'). Returns the upgraded conn, or nil
+// when the server refused and sslmode permits plaintext.
+//
+// sslmode semantics (libpq-compatible):
+//
+//   - prefer      → try TLS, fall back to plain on 'N'
+//   - require     → try TLS, error on 'N'
+//   - verify-full → require + validate cert against pgEp.Host
+func pgUpgradeSSL(upstream net.Conn, pgEp *PostgresEndpoint, sslmode string) (net.Conn, error) {
+	// Send SSLRequest: [int32 length=8][int32 code=80877103].
+	probe := make([]byte, 8)
+	binary.BigEndian.PutUint32(probe[:4], 8)
+	binary.BigEndian.PutUint32(probe[4:8], sslRequestCodeUpstream)
+	if _, err := upstream.Write(probe); err != nil {
+		return nil, fmt.Errorf("write SSLRequest: %w", err)
+	}
+	reply := make([]byte, 1)
+	if _, err := io.ReadFull(upstream, reply); err != nil {
+		return nil, fmt.Errorf("read SSLRequest reply: %w", err)
+	}
+	switch reply[0] {
+	case 'S':
+		host := ""
+		if pgEp != nil {
+			host = pgEp.Host
+			if h, _, err := net.SplitHostPort(host); err == nil {
+				host = h
+			}
+		}
+		cfg := &tls.Config{
+			ServerName:         host,
+			InsecureSkipVerify: sslmode != "verify-full",
+		}
+		secured := tls.Client(upstream, cfg)
+		if err := secured.Handshake(); err != nil {
+			return nil, fmt.Errorf("tls handshake: %w", err)
+		}
+		return secured, nil
+	case 'N':
+		if sslmode == "require" || sslmode == "verify-full" {
+			return nil, fmt.Errorf("upstream refused TLS but sslmode=%q requires it", sslmode)
+		}
+		return nil, nil // continue plaintext
+	default:
+		return nil, fmt.Errorf("unexpected SSLRequest reply byte %q", reply[0])
+	}
+}
 
 const (
 	pgAuthOK            uint32 = 0

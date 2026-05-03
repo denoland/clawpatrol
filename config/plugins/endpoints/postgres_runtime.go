@@ -131,13 +131,31 @@ func (PostgresEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnH
 		return fmt.Errorf("credential %q missing password", cc.Credential.Symbol.Name)
 	}
 
-	// Step 4: dial upstream + send our own StartupMessage.
+	// Step 4: dial upstream, optionally negotiate TLS, then send our
+	// own StartupMessage with real (user, database).
 	upstream, err := ch.DialUpstream(ctx, "tcp", upstreamAddr)
 	if err != nil {
 		pgWriteError(ch.Conn, "dial upstream: "+err.Error())
 		return fmt.Errorf("dial %s: %w", upstreamAddr, err)
 	}
 	defer upstream.Close()
+
+	pgEp, _ := ch.Endpoint.Body.(*PostgresEndpoint)
+	sslmode := "prefer"
+	if pgEp != nil && pgEp.SSLMode != "" {
+		sslmode = pgEp.SSLMode
+	}
+	if sslmode != "disable" {
+		secured, sslErr := pgUpgradeSSL(upstream, pgEp, sslmode)
+		if sslErr != nil {
+			pgWriteError(ch.Conn, "upstream tls: "+sslErr.Error())
+			return sslErr
+		}
+		if secured != nil {
+			upstream = secured
+		}
+	}
+
 	if err := pgSendStartup(upstream, realUser, database); err != nil {
 		pgWriteError(ch.Conn, "send upstream startup: "+err.Error())
 		return err
@@ -371,9 +389,8 @@ func pgWriteDeny(conn net.Conn, reason string) {
 //
 // Single-binding endpoints (one entry, no placeholder) return that
 // entry. Multi-credential endpoints dispatch on the agent-supplied
-// StartupMessage user field — match against each entry's placeholder
-// (substring match so PGUSER="PH_pg_ro" or longer derived strings
-// both work). Trailing no-placeholder entry is the fallback when no
+// StartupMessage user field — exact match against each entry's
+// placeholder. Trailing no-placeholder entry is the fallback when no
 // placeholder matched.
 //
 // Returns nil only when the endpoint declared zero credentials.
@@ -390,7 +407,7 @@ func pgResolveCredential(ep *config.CompiledEndpoint, agentUser string) *config.
 			fallback = c
 			continue
 		}
-		if agentUser != "" && strings.Contains(agentUser, c.Placeholder) {
+		if agentUser == c.Placeholder {
 			return c
 		}
 	}

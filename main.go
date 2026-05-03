@@ -944,10 +944,11 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 // matching against the WG forwarder's dstIP — tracked as follow-up;
 // the first-match heuristic covers the single-database common case.
 // pickEndpointForProfile takes pgIndex.lookup candidates and returns
-// the one whose name belongs to the device's profile. Falls back to
-// the first candidate when none of them are profile-bound (single-
-// tenant / device-injected endpoints), or nil when the candidate
-// list is empty.
+// the one whose name belongs to the device's profile. Returns nil when
+// none of them do — caller should refuse the connection rather than
+// silently route through an endpoint the device isn't supposed to
+// touch. Single-tenant configs (no profile bound) fall through to
+// the first candidate.
 func pickEndpointForProfile(candidates []*config.CompiledEndpoint, policy *config.CompiledPolicy, profile string) *config.CompiledEndpoint {
 	if len(candidates) == 0 {
 		return nil
@@ -964,7 +965,7 @@ func pickEndpointForProfile(candidates []*config.CompiledEndpoint, policy *confi
 			return c
 		}
 	}
-	return candidates[0]
+	return nil
 }
 
 func firstPostgresEndpoint(policy *config.CompiledPolicy, profile string) *config.CompiledEndpoint {

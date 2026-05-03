@@ -504,6 +504,7 @@
         "body": {
           "Host": "deployng-prod.cluster-cnmc6k08siv7.us-east-2.rds.amazonaws.com:5432",
           "Database": "deployng",
+          "SSLMode": "",
           "Credential": "",
           "Credentials": [
             {
@@ -523,6 +524,7 @@
         "body": {
           "Host": "scheduler-prod.cluster-cnmc6k08siv7.us-east-2.rds.amazonaws.com:5432",
           "Database": "scheduler",
+          "SSLMode": "",
           "Credential": "pg-scheduler-cred"
         },
         "family": "sql",

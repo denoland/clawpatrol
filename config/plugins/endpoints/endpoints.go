@@ -55,9 +55,18 @@ type HTTPSEndpoint struct {
 // supported in this iteration — operators run the gateway with
 // network reachability already arranged. That field returns when
 // the postgres runtime hooks land.
+//
+// SSLMode mirrors libpq's sslmode names — "disable" / "prefer" /
+// "require" / "verify-full". Default "prefer": try TLS, fall back
+// to plain when the upstream replies 'N'. "require" hard-fails on
+// 'N'. "verify-full" additionally validates the upstream cert
+// against Host. "disable" skips the SSLRequest probe entirely —
+// fine for self-hosted pg on a private network where WG already
+// encrypts the path.
 type PostgresEndpoint struct {
 	Host           string    `hcl:"host"`
 	Database       string    `hcl:"database"`
+	SSLMode        string    `hcl:"sslmode,optional"`
 	Credential     string    `hcl:"credential,optional"`
 	CredentialsRaw cty.Value `hcl:"credentials,optional" json:"-"`
 
