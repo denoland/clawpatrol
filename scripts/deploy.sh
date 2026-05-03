@@ -84,7 +84,7 @@ CONTROL="${CONTROL:-tailscale}"
 case "$CONTROL" in
   tailscale)
     TS_BLOCK=$(cat <<HCL
-gateway {
+tailscale {
   control             = "tailscale"
   oauth_client_id     = "{{secret:TS_OAUTH_CLIENT_ID}}"
   oauth_client_secret = "{{secret:TS_OAUTH_CLIENT_SECRET}}"
@@ -107,7 +107,7 @@ HCL
             || iptables -I INPUT -p udp --dport ${WG_PORT} -j ACCEPT"
 
     TS_BLOCK=$(cat <<HCL
-gateway {
+tailscale {
   control        = "wireguard"
   wg_endpoint    = "${WG_ENDPOINT}"
   wg_subnet_cidr = "${WG_SUBNET_CIDR}"
@@ -121,15 +121,40 @@ HCL
     ;;
 esac
 
+# v14 typed-block grammar: credentials + endpoints + profile, instead
+# of the legacy `integrations = [...]` shortcut. Operator-managed
+# device "<ip>" {} blocks land at the bottom of the file via the
+# dashboard's per-device editor.
 cat > dist/gateway.hcl <<EOF
-listen       = "0.0.0.0:${PORT}"
-info_listen  = "0.0.0.0:8080"
-public_url   = "${PUBLIC_URL}"
-ca_dir       = "${REMOTE_DIR}/ca"
-oauth_dir    = "${REMOTE_DIR}/oauth"
-integrations = ["claude", "codex", "github"]
+listen      = "0.0.0.0:${PORT}"
+info_listen = "0.0.0.0:8080"
+public_url  = "${PUBLIC_URL}"
+ca_dir      = "${REMOTE_DIR}/ca"
+log_path    = "${REMOTE_DIR}/gateway.log"
+oauth_dir   = "${REMOTE_DIR}/oauth"
 
 ${TS_BLOCK}
+
+credential "anthropic_oauth_subscription" "claude" {}
+credential "openai_codex_oauth"           "codex"  {}
+credential "github_oauth"                 "github" {}
+
+endpoint "https" "anthropic" {
+  hosts      = ["api.anthropic.com"]
+  credential = claude
+}
+endpoint "https" "openai" {
+  hosts      = ["api.openai.com", "chatgpt.com"]
+  credential = codex
+}
+endpoint "https" "github-api" {
+  hosts      = ["api.github.com", "raw.githubusercontent.com"]
+  credential = github
+}
+
+profile "default" {
+  endpoints = [anthropic, openai, github-api]
+}
 EOF
 
 cat > dist/remote-modules.sh <<'EOSSH'

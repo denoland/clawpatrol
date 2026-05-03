@@ -36,6 +36,7 @@ credential "<type>" "<name>" { ... }
 endpoint "<type>" "<name>" { ... }
 rule "<type>" "<name>" { ... }
 profile "<name>" { ... }
+device "<ip>" { rule ... ... { ... } }
 ```
 
 ## Names + references
@@ -236,6 +237,47 @@ profile "kaju" {
   ]
 }
 ```
+
+### `device "<ip>" { rule ... ... { ... } }`
+
+Per-device rule overrides — operator-edited from the dashboard's
+per-device rule editor, splice into gateway.hcl as standalone blocks.
+Each rule decodes through the same plugin pipeline as a top-level
+rule; the compiler pins the rule to the device IP automatically and
+adds a +1000 priority bump so device overrides win against
+profile rules at the same explicit priority.
+
+```hcl
+device "10.55.0.2" {
+  rule "http_rule" "deny-tinyclouds" {
+    endpoint = github-api
+    match    = { path = "/tinyclouds/*" }
+    verdict  = "deny"
+    reason   = "this device shouldn't reach tinyclouds"
+  }
+
+  rule "http_rule" "approve-deno-posts" {
+    endpoint = deno
+    match    = { method = "POST" }
+    approve  = [dashboard]
+    reason   = "POSTs to deno.com require approval"
+  }
+}
+```
+
+Notes:
+
+- Rules inside `device {}` reference the device's IP implicitly. Do
+  NOT add `peer_ip = ...` — the dispatcher handles peer scoping.
+- An endpoint referenced by a device rule is auto-added to every
+  profile's HostIndex so dispatch finds it. Other devices' traffic
+  to those hosts gets MITM'd but no rule fires (the device-pinned
+  rule's IP check filters per-peer at match time).
+- The dashboard's per-device editor accepts `device {}` blocks
+  alongside `endpoint`, `credential`, `approver`, and `policy` blocks
+  — so AI-generated edits can introduce a new endpoint when the
+  device rule needs it. Profiles, top-level rules, and `defaults`
+  belong to the global gateway.hcl editor.
 
 ## Evaluation
 
