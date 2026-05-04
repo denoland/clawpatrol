@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { AgentsTable } from "./components/AgentsTable";
+import { AnalyticsPage } from "./components/AnalyticsPage";
 import { ConnectModal } from "./components/ConnectModal";
 import { DevicePage } from "./components/DevicePage";
 import { LiveRequests } from "./components/LiveRequests";
@@ -9,9 +10,18 @@ import { SettingsModal } from "./components/SettingsModal";
 import { HITLBar } from "./components/HITLBar";
 import { getStatus, getAgents, getWhoami, type Integration, type Agent, type Whoami } from "./lib/api";
 
-function parseRoute(): { name: "main" } | { name: "device"; ip: string } | { name: "onboard"; code: string } {
+type Route =
+  | { name: "main" }
+  | { name: "device"; ip: string }
+  | { name: "analytics"; ip: string }
+  | { name: "onboard"; code: string };
+
+function parseRoute(): Route {
   const h = window.location.hash;
-  if (h.startsWith("#/onboard/")) return { name: "onboard", code: decodeURIComponent(h.slice("#/onboard/".length)) };
+  if (h.startsWith("#/onboard/"))
+    return { name: "onboard", code: decodeURIComponent(h.slice("#/onboard/".length)) };
+  const a = h.match(/^#\/analytics\/(.+)$/);
+  if (a) return { name: "analytics", ip: decodeURIComponent(a[1]) };
   const m = h.match(/^#\/device\/(.+)$/);
   if (m) return { name: "device", ip: decodeURIComponent(m[1]) };
   return { name: "main" };
@@ -83,12 +93,22 @@ export default function App() {
           </div>
           <section className="bg-white border border-[#e5e5e5] rounded overflow-hidden">
             <div className="overflow-x-auto">
-              <AgentsTable agents={agents} integrations={integrations} onSelect={(ip) => navigate("#/device/" + encodeURIComponent(ip))} />
+              <AgentsTable
+                agents={agents}
+                integrations={integrations}
+                onSelect={(ip) => navigate("#/device/" + encodeURIComponent(ip))}
+                onAnalytics={(ip) => navigate("#/analytics/" + encodeURIComponent(ip))}
+              />
             </div>
           </section>
           <HITLBar />
           <LiveRequests height="420px" />
         </main>
+      ) : route.name === "analytics" ? (
+        <AnalyticsPage
+          ip={route.ip}
+          onBack={() => navigate("")}
+        />
       ) : route.name === "onboard" ? (
         <OnboardPage code={route.code} onBack={() => navigate("")} />
       ) : (
