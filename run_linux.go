@@ -98,18 +98,21 @@ func runRun(args []string) {
 	child.ExtraFiles = []*os.File{cSock, wgUpR}
 	child.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET | syscall.CLONE_NEWNS,
+		// Map uid→uid (not 0→uid). Inside uid == host uid == non-zero, so
+		// the root-exec rule (euid=0 → F(permitted)=all-1s) does NOT apply
+		// when the user's command is exec'd. Caps come only from ambient.
 		UidMappings: []syscall.SysProcIDMap{
-			{ContainerID: 0, HostID: os.Getuid(), Size: 1},
+			{ContainerID: os.Getuid(), HostID: os.Getuid(), Size: 1},
 		},
 		GidMappings: []syscall.SysProcIDMap{
-			{ContainerID: 0, HostID: os.Getgid(), Size: 1},
+			{ContainerID: os.Getgid(), HostID: os.Getgid(), Size: 1},
 		},
 		GidMappingsEnableSetgroups: false,
-		// Raise CAP_NET_ADMIN into ambient before exec so it survives into
-		// the child's effective set. Without this, exec clears all caps from
-		// the new user namespace and TUNSETIFF fails with EPERM.
-		// mirrors unclaw's raise_ambient_net_admin() call before ip commands.
-		AmbientCaps: []uintptr{capNetAdmin},
+		// CAP_NET_ADMIN: TUNSETIFF + ip interface/route commands.
+		// CAP_SYS_ADMIN: bind-mount of resolv.conf inside the mnt namespace.
+		// Both are cleared from ambient before the final user exec so the
+		// wrapped command inherits nothing.
+		AmbientCaps: []uintptr{capNetAdmin, capSysAdmin},
 	}
 	if err := child.Start(); err != nil {
 		fail("clone: %v\n  hint: this distro may have unprivileged user namespaces disabled.\n  enable: sudo sysctl -w kernel.unprivileged_userns_clone=1", err)
@@ -223,7 +226,10 @@ func runRunChild() {
 
 // --- capability manipulation -------------------------------------------------
 
-const capNetAdmin = uintptr(12) // CAP_NET_ADMIN, for AmbientCaps slice
+const (
+	capNetAdmin = uintptr(12) // CAP_NET_ADMIN
+	capSysAdmin = uintptr(21) // CAP_SYS_ADMIN — needed for bind-mount in mnt ns
+)
 
 // clearAmbientCaps drops all ambient capabilities before exec'ing the user's
 // command so it does not inherit CAP_NET_ADMIN. Mirrors unclaw's
