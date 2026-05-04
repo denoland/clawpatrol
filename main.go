@@ -1263,7 +1263,9 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			req.Body = wrapBodySampler(req.Body, reqS)
 		}
 
+		rtStart := time.Now()
 		resp, err := transport.RoundTrip(req)
+		rtDur := time.Since(rtStart)
 		if err != nil {
 			log.Printf("mitm upstream %s %s: %v", host, req.URL.Path, err)
 			fmt.Fprintf(tc, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
@@ -1287,7 +1289,18 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		}
 		respS := newSampler(4096)
 		resp.Body = wrapBodySampler(resp.Body, respS)
+		// Close-delimited responses (no Content-Length, no Transfer-
+		// Encoding) come from h2 upstreams that we forced to http/1.1
+		// via ALPN — Go's transport leaves cl=-1 and te=[] in that
+		// case. Without an explicit terminator, peers (curl, browsers)
+		// idle until the conn closes, which the 60s ReadRequest
+		// deadline then triggers — a ~60s perceived delay per request.
+		// Re-frame as chunked so the peer sees a proper end-of-body.
+		if resp.ContentLength < 0 && len(resp.TransferEncoding) == 0 && !resp.Close {
+			resp.TransferEncoding = []string{"chunked"}
+		}
 		writeErr := resp.Write(tc)
+		_ = rtDur
 		resp.Body.Close()
 		if trackBuf != nil && g.agents != nil {
 			body := trackBuf.Bytes()
