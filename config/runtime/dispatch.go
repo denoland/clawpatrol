@@ -39,19 +39,15 @@ func HostEndpoint(policy *config.CompiledPolicy, profile, host string) *config.C
 
 // MatchRequest walks an endpoint's priority-sorted rule list and
 // returns the first rule whose matcher accepts req. Disabled rules
-// are skipped, as are device-scoped rules whose DeviceIP doesn't
-// match the request's peer. nil is returned when no rule fires — the
-// caller then applies the defaults.unknown_host policy (or the
-// endpoint plugin's own default).
+// are skipped. nil is returned when no rule fires — the caller then
+// applies the defaults.unknown_host policy (or the endpoint plugin's
+// own default).
 func MatchRequest(ep *config.CompiledEndpoint, req *match.Request) *config.CompiledRule {
 	if ep == nil {
 		return nil
 	}
 	for _, r := range ep.Rules {
 		if r.Disabled {
-			continue
-		}
-		if r.DeviceIP != "" && r.DeviceIP != req.PeerIP {
 			continue
 		}
 		if r.Matcher == nil {

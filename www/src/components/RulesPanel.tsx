@@ -1,60 +1,45 @@
 import { useEffect, useMemo, useState } from "react";
-import { getDeviceRules, getRules, type RuleSummary } from "../lib/api";
+import { getRules, type RuleSummary } from "../lib/api";
 import { EditGlyph } from "./Logos";
 import { RulesEditor } from "./RulesEditor";
 
-// Rules panel. On a device page (deviceIP set) it splits rules into
-// two sections — Profile rules (read-only, edited via the dashboard's
-// global gateway.hcl editor) and Device rules (editable in-place via
-// the device's HCL block, pencil button in the section header).
-// On the global view there's one section with the pencil that opens
-// gateway.hcl.
-export function RulesPanel({ deviceIP }: { deviceIP?: string; profile?: string }) {
+// Rules panel. Profile-level rules only — device-specific overrides
+// are gone. The pencil opens gateway.hcl. Device pages pass `profile`
+// so the listing filters to the device's profile.
+export function RulesPanel({ profile }: { deviceIP?: string; profile?: string }) {
   const [rows, setRows] = useState<RuleSummary[]>([]);
   const [err, setErr] = useState<string | null>(null);
-  const [editing, setEditing] = useState<"" | "global" | "device">("");
+  const [editing, setEditing] = useState(false);
 
   function reload() {
-    const fetcher = deviceIP ? getDeviceRules(deviceIP) : getRules();
-    fetcher
+    getRules()
       .then((r) => setRows(r ?? []))
       .catch((e) => setErr(String(e)));
   }
   useEffect(() => {
     reload();
-  }, [deviceIP]);
+  }, []);
 
-  const profileRows = useMemo(() => rows.filter((r) => !r.device_ip), [rows]);
-  const deviceRows = useMemo(
-    () => rows.filter((r) => r.device_ip === deviceIP),
-    [rows, deviceIP],
+  const visible = useMemo(
+    () => (profile ? rows.filter((r) => !r.profile || r.profile === profile) : rows),
+    [rows, profile],
   );
 
   return (
     <div className="bg-white border border-[#e5e5e5] rounded">
       {err && <div className="px-4 py-3 text-[11px] text-red-600">{err}</div>}
-
-      {/* Single "Rules" section. Device-pinned rules render with a
-          "device" badge and float to the top of their endpoint group
-          (their +1000 priority bump from the compiler does this for
-          free); endpoint groups containing any device rules sort
-          before pure profile-rule groups. The pencil is context-
-          aware: device editor on a device page, gateway.hcl on the
-          root. */}
       <Section
         title="Rules"
-        rows={[...deviceRows, ...profileRows]}
-        onEdit={() => setEditing(deviceIP ? "device" : "global")}
-        editTitle={deviceIP ? "edit device overrides" : "edit gateway.hcl"}
+        rows={visible}
+        onEdit={() => setEditing(true)}
+        editTitle="edit gateway.hcl"
       />
-
       {editing && (
         <RulesEditor
-          deviceIP={editing === "device" ? deviceIP : undefined}
-          onClose={() => setEditing("")}
+          onClose={() => setEditing(false)}
           onSaved={() => {
             reload();
-            setEditing("");
+            setEditing(false);
           }}
         />
       )}
@@ -76,9 +61,7 @@ function Section({
   emptyHint?: string;
 }) {
   // Group by endpoint. Server already sorts rules within an endpoint
-  // by priority desc (device rules have a +1000 bump so they land at
-  // the top of their group naturally). Endpoint groups themselves
-  // sort alphabetically.
+  // by priority desc. Endpoint groups themselves sort alphabetically.
   const groups = useMemo(() => {
     const m = new Map<string, { endpoint: string; family: string; rules: RuleSummary[] }>();
     for (const r of rows) {
@@ -173,25 +156,15 @@ function RuleRow({ rule: r }: { rule: RuleSummary }) {
         <span className="text-[11px] text-[#a3a3a3] truncate max-w-[160px]" title={r.name}>
           {r.name}
         </span>
-        {displayPriority(r) ? (
+        {(r.priority ?? 0) !== 0 && (
           <span className="text-[10px] text-[#a3a3a3] tabular-nums">
-            p{displayPriority(r)! > 0 ? "+" : ""}
-            {displayPriority(r)}
+            p{(r.priority ?? 0) > 0 ? "+" : ""}
+            {r.priority}
           </span>
-        ) : null}
+        )}
       </div>
     </div>
   );
-}
-
-// displayPriority strips the +1000 bump the compiler adds to device-
-// block rules — that's a tie-breaker implementation detail, not
-// something the operator wrote. Returns null when there's nothing
-// meaningful to show (zero priority).
-function displayPriority(r: RuleSummary): number | null {
-  let p = r.priority ?? 0;
-  if (r.device_ip) p -= 1000;
-  return p === 0 ? null : p;
 }
 
 function FamilyDot({ family }: { family: string }) {

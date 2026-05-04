@@ -86,7 +86,6 @@ func newWebMux(g *Gateway, caDir string, ts Tailscale, publicURL string) http.Ha
 	mux.HandleFunc("/api/agents/profile", w.apiAgentProfile)
 	mux.HandleFunc("/api/profiles", w.apiProfiles)
 	mux.HandleFunc("/api/rules", w.apiRules)
-	mux.HandleFunc("/api/rules/device", w.apiDeviceRules)
 	mux.HandleFunc("/api/rules/ai", w.apiRulesAI)
 	mux.HandleFunc("/api/config", w.apiConfig)
 	mux.HandleFunc("/api/hitl/pending", w.apiHITLPending)
@@ -751,7 +750,6 @@ type RuleSummary struct {
 	Family   string                `json:"family"` // "https" | "sql" | "k8s"
 	Endpoint string                `json:"endpoint"`
 	Profile  string                `json:"profile,omitempty"`
-	DeviceIP string                `json:"device_ip,omitempty"` // "" for profile rules, IP for device-pinned
 	Priority int                   `json:"priority,omitempty"`
 	Disabled bool                  `json:"disabled,omitempty"`
 	Match    map[string]any        `json:"match,omitempty"`
@@ -774,111 +772,6 @@ func (w *webMux) apiRules(rw http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(rw, "edit rules through PUT /api/config", http.StatusNotImplemented)
 	}
-}
-
-// apiDeviceRules returns the rules that apply to one device. The
-// device's profile is read from g.profileFor(ip); rules are filtered
-// to endpoints declared in that profile.
-//
-// Read-only — same as apiRules.
-func (w *webMux) apiDeviceRules(rw http.ResponseWriter, r *http.Request) {
-	ip := r.URL.Query().Get("ip")
-	if ip == "" {
-		http.Error(rw, "missing ip", 400)
-		return
-	}
-	hclMode := r.URL.Query().Get("format") == "hcl"
-	switch r.Method {
-	case "GET":
-		if hclMode {
-			body, err := readDeviceBlockHCL(w.g.cfgPath, ip)
-			if err != nil {
-				http.Error(rw, err.Error(), 500)
-				return
-			}
-			rw.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			rw.Write([]byte(body))
-			return
-		}
-		profile := w.g.profileFor(ip)
-		writeJSON(rw, w.collectRuleSummariesForDevice(profile, ip))
-	case "PUT":
-		if !hclMode {
-			http.Error(rw, "PUT requires ?format=hcl", 400)
-			return
-		}
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-		if err != nil {
-			http.Error(rw, err.Error(), 400)
-			return
-		}
-		// Splice the new device block into gateway.hcl, then validate
-		// the merged file via the typed-block loader before persisting
-		// — same diagnostic path as PUT /api/config.
-		merged, err := spliceDeviceBlockHCL(w.g.cfgPath, ip, string(body))
-		if err != nil {
-			http.Error(rw, err.Error(), 400)
-			return
-		}
-		if _, diags := config.LoadBytes(merged, "gateway.hcl"); diags.HasErrors() {
-			http.Error(rw, "hcl: "+diags.Error(), 400)
-			return
-		}
-		tmp := w.g.cfgPath + ".tmp"
-		if err := os.WriteFile(tmp, merged, 0o600); err != nil {
-			http.Error(rw, "write: "+err.Error(), 500)
-			return
-		}
-		if err := os.Rename(tmp, w.g.cfgPath); err != nil {
-			http.Error(rw, "rename: "+err.Error(), 500)
-			return
-		}
-		writeJSON(rw, map[string]any{"ok": true})
-	default:
-		http.Error(rw, "GET or PUT", 405)
-	}
-}
-
-// collectRuleSummariesForDevice yields the same set as
-// collectRuleSummaries(profileFilter) PLUS every device-pinned rule
-// whose DeviceIP matches the device — even when the rule's endpoint
-// isn't part of that device's profile (the AI may declare a new
-// endpoint inside a device fragment that doesn't get added to the
-// profile until later).
-func (w *webMux) collectRuleSummariesForDevice(profile, deviceIP string) []RuleSummary {
-	out := w.collectRuleSummaries(profile)
-	policy := w.g.Policy()
-	if policy == nil {
-		return out
-	}
-	seen := map[string]bool{}
-	for _, s := range out {
-		seen[s.Endpoint+"\x00"+s.Name] = true
-	}
-	for epName, ep := range policy.Endpoints {
-		for _, r := range ep.Rules {
-			if r.DeviceIP != deviceIP {
-				continue
-			}
-			key := epName + "\x00" + r.Name
-			if seen[key] {
-				continue
-			}
-			out = append(out, RuleSummary{
-				Name:     r.Name,
-				Family:   ep.Family,
-				Endpoint: epName,
-				DeviceIP: r.DeviceIP,
-				Priority: r.Priority,
-				Disabled: r.Disabled,
-				Match:    matchSourceMap(r),
-				Verdict:  r.Outcome.Verdict,
-				Reason:   r.Outcome.Reason,
-				Approve:  r.Outcome.Approve,
-			})
-		}
-	}
-	return out
 }
 
 // collectRuleSummaries walks the compiled policy and emits one
@@ -904,7 +797,6 @@ func (w *webMux) collectRuleSummaries(profileFilter string) []RuleSummary {
 					Family:   ep.Family,
 					Endpoint: epName,
 					Profile:  profileName,
-					DeviceIP: r.DeviceIP,
 					Priority: r.Priority,
 					Disabled: r.Disabled,
 					Match:    matchSourceMap(r),

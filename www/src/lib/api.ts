@@ -92,9 +92,6 @@ export type RuleSummary = {
   // Endpoint this rule attaches to. Multi-endpoint rules emit one
   // RuleSummary per attachment site.
   endpoint: string;
-  // device_ip set when this rule comes from a `device "<ip>" {}` block;
-  // empty for profile-level rules.
-  device_ip?: string;
   // Profile that includes the endpoint. Empty when the row came
   // back from a non-profile-scoped query.
   profile?: string;
@@ -147,31 +144,7 @@ export async function putRulesJSON(json: string): Promise<{ ok: boolean; count: 
   return r.json();
 }
 
-export async function getDeviceRules(ip: string): Promise<RuleSummary[]> {
-  const r = await api(`/api/rules/device?ip=${encodeURIComponent(ip)}`);
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
-}
-
-export async function getDeviceRulesJSON(ip: string): Promise<string> {
-  const r = await api(`/api/rules/device?ip=${encodeURIComponent(ip)}`);
-  if (!r.ok) throw new Error(await r.text());
-  const data = await r.json();
-  return JSON.stringify(data ?? [], null, 2);
-}
-
-export async function putDeviceRulesJSON(ip: string, json: string): Promise<{ ok: boolean; count: number }> {
-  const r = await api(`/api/rules/device?ip=${encodeURIComponent(ip)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: json,
-  });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
-}
-
-// HCL editors. Both /api/config (full gateway.hcl) and the
-// device-scoped /api/rules/device?format=hcl path return raw HCL text.
+// HCL editor. /api/config returns the full gateway.hcl as raw text.
 
 export async function getConfigHCL(): Promise<string> {
   const r = await api("/api/config");
@@ -206,16 +179,6 @@ export async function setDeviceProfile(ip: string, profile: string): Promise<voi
     method: "POST",
   });
   if (!r.ok) throw new Error(await r.text());
-}
-
-export async function putDeviceRulesHCL(ip: string, hcl: string): Promise<{ ok: boolean; count: number }> {
-  const r = await api(`/api/rules/device?ip=${encodeURIComponent(ip)}&format=hcl`, {
-    method: "PUT",
-    headers: { "Content-Type": "text/plain" },
-    body: hcl,
-  });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
 }
 
 export type HITLPending = {

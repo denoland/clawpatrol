@@ -80,7 +80,6 @@ type Policy struct {
 
 	Policies map[string]*PolicyText
 	Profiles map[string]*Profile
-	Devices  map[string]*Device
 
 	// Order preserves declaration order across all kinds combined.
 	// Useful for dashboard rendering and emit round-tripping.
@@ -128,19 +127,6 @@ type profileBody struct {
 	Endpoints []string `hcl:"endpoints"`
 }
 
-// Device is the lowered shape of a device "<ip>" {} block — operator-
-// edited per-device rule overrides. Each rule inside the block decodes
-// through its normal plugin pipeline; Compile pins each resulting
-// CompiledRule to the device's IP via DeviceIP, so the rule only
-// fires when the request comes from that peer.
-//
-// The dashboard's per-device rule editor reads/writes just this block
-// (one device's worth of HCL) instead of the whole gateway.hcl.
-type Device struct {
-	IP    string    `json:"ip"`
-	Rules []*Entity `json:"-"` // resolved per-rule entities, preserved order
-}
-
 // Load parses, validates, and resolves the gateway config at path.
 // Returns a populated *Gateway plus any diagnostics. Callers should
 // check diagnostics first — a non-nil Gateway can still carry errors
@@ -183,7 +169,6 @@ func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
 		Rules:       make(map[string]*Entity),
 		Policies:    make(map[string]*PolicyText),
 		Profiles:    make(map[string]*Profile),
-		Devices:     make(map[string]*Device),
 	}
 
 	// Pass 1: extract the policy blocks from the remainder body.
@@ -272,7 +257,6 @@ func extractPolicyBlocks(body hcl.Body) (hcl.Blocks, hcl.Blocks, hcl.Diagnostics
 			{Type: "rule", LabelNames: []string{"type", "name"}},
 			{Type: "policy", LabelNames: []string{"name"}},
 			{Type: "profile", LabelNames: []string{"name"}},
-			{Type: "device", LabelNames: []string{"ip"}},
 		},
 	}
 	content, _, diags := body.PartialContent(schema)
@@ -322,63 +306,6 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 			diags = append(diags, d...)
 		}
 		p.Policies[sym.Name] = pt
-		p.Order = append(p.Order, sym.Name)
-	}
-
-	for _, sym := range table.byKind[KindDevice] {
-		dev := &Device{IP: sym.Name}
-		// Walk the device body for `rule {}` children, decoding each
-		// through the same plugin pipeline as top-level rules.
-		ruleSchema := &hcl.BodySchema{
-			Blocks: []hcl.BlockHeaderSchema{
-				{Type: "rule", LabelNames: []string{"type", "name"}},
-			},
-		}
-		content, _, cdiags := sym.Block.Body.PartialContent(ruleSchema)
-		diags = append(diags, cdiags...)
-		for _, rb := range content.Blocks {
-			if len(rb.Labels) != 2 {
-				diags = append(diags, &hcl.Diagnostic{
-					Severity: hcl.DiagError,
-					Summary:  fmt.Sprintf("Wrong label count for device %q rule", sym.Name),
-					Detail:   "rule blocks inside a device take 2 labels (type, name).",
-					Subject:  &rb.DefRange,
-				})
-				continue
-			}
-			ruleType, ruleName := rb.Labels[0], rb.Labels[1]
-			plugin := Lookup(KindRule, ruleType)
-			if plugin == nil {
-				diags = append(diags, &hcl.Diagnostic{
-					Severity: hcl.DiagError,
-					Summary:  fmt.Sprintf("Unknown rule type %q in device %q", ruleType, sym.Name),
-					Detail:   fmt.Sprintf("Known rule types: %v.", Types(KindRule)),
-					Subject:  &rb.LabelRanges[0],
-				})
-				continue
-			}
-			target := plugin.New()
-			rdiags := dedupGohclDiags(gohcl.DecodeBody(rb.Body, evalCtx, target))
-			diags = append(diags, rdiags...)
-			if rdiags.HasErrors() {
-				continue
-			}
-			refs, refDiags := resolveRefs(target, ruleName, plugin, table, rb.DefRange)
-			diags = append(diags, refDiags...)
-			ctx := &BuildCtx{Refs: refs, Symbols: table, Block: rb}
-			if plugin.Validate != nil {
-				diags = append(diags, plugin.Validate(target, ruleName, ctx)...)
-			}
-			body, buildDiags := plugin.Build(target, ruleName, ctx)
-			diags = append(diags, buildDiags...)
-			dev.Rules = append(dev.Rules, &Entity{
-				Symbol: &Symbol{Name: ruleName, Kind: KindRule, Type: ruleType, Block: rb},
-				Plugin: plugin,
-				Body:   body,
-				Refs:   refs,
-			})
-		}
-		p.Devices[sym.Name] = dev
 		p.Order = append(p.Order, sym.Name)
 	}
 

@@ -130,7 +130,7 @@ func applyEnvPushdown(caDir string) {
 		// CA not set up yet — `clawpatrol join` hasn't run. Don't
 		// silently skip; the agent CLI will fail TLS verification
 		// and the operator will be confused. Log and continue.
-		log.Printf("clawpatrol: ca not found at %s — env pushdown skipped (run `clawpatrol join` first)", caPath)
+		fmt.Fprintf(os.Stderr, "clawpatrol: ca not found at %s — env pushdown skipped (run `clawpatrol join` first)\n", caPath)
 		return
 	}
 	for _, ev := range envPushdownVars(caPath) {

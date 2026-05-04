@@ -1484,10 +1484,13 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `clawpatrol — secret-injection MITM proxy for AI agents
 
 usage:
-  clawpatrol gateway [-config FILE]    run the gateway server
-  clawpatrol login                     onboard this machine (set exit-node + install CA)
-  clawpatrol env                       print shell exports for sourcing
-  clawpatrol init-ca DIR               generate a new CA in DIR
+  clawpatrol gateway [-config FILE]      run the gateway server
+  clawpatrol join --url <gateway-url>    onboard this machine via wg device flow
+                  [--whole-machine]      bring up wg-quick (route all traffic)
+  clawpatrol login                       onboard this machine (tailscale path)
+  clawpatrol run -- <cmd> [args...]      route one process tree through gateway
+  clawpatrol env                         print shell exports for sourcing
+  clawpatrol init-ca DIR                 generate a new CA in DIR
   clawpatrol version`)
 	os.Exit(2)
 }

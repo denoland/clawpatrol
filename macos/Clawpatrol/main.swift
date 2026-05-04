@@ -28,10 +28,15 @@ func usage() -> Never {
 }
 
 let cmd = CommandLine.arguments.count >= 2 ? CommandLine.arguments[1] : "install"
-let wholeMachine = CommandLine.arguments.contains("--whole-machine")
+let wholeMachineFlag = CommandLine.arguments.contains("--whole-machine")
+// nil → preserve existing mode (subsequent `Clawpatrol install` from
+// `clawpatrol run` shouldn't downgrade a profile that was previously
+// installed with --whole-machine). Set explicitly only when the flag
+// is on the command line.
+let wholeMachine: Bool? = wholeMachineFlag ? true : nil
 
 switch cmd {
-case "install": installSystemExtension(wholeMachine: wholeMachine)
+case "install": installSystemExtension(wholeMachine: wholeMachine ?? false, explicit: wholeMachine != nil)
 case "start":
     guard CommandLine.arguments.count >= 3 else { usage() }
     startProxy(confPath: CommandLine.arguments[2])
@@ -69,10 +74,14 @@ func runWrapped() {
 
 class ExtDelegate: NSObject, OSSystemExtensionRequestDelegate {
     let wholeMachine: Bool
-    init(wholeMachine: Bool) { self.wholeMachine = wholeMachine }
+    let explicit: Bool
+    init(wholeMachine: Bool, explicit: Bool) {
+        self.wholeMachine = wholeMachine
+        self.explicit = explicit
+    }
     func request(_ request: OSSystemExtensionRequest, didFinishWithResult result: OSSystemExtensionRequest.Result) {
         print("system extension: \(result.rawValue)")
-        if result == .completed { saveProxyProfileAndExit(wholeMachine: wholeMachine) } else { exit(1) }
+        if result == .completed { saveProxyProfileAndExit(wholeMachine: wholeMachine, explicit: explicit) } else { exit(1) }
     }
     func request(_ request: OSSystemExtensionRequest, didFailWithError error: Error) {
         FileHandle.standardError.write(Data("system extension failed: \(error)\n".utf8))
@@ -88,8 +97,8 @@ class ExtDelegate: NSObject, OSSystemExtensionRequestDelegate {
 
 var extDelegate: ExtDelegate?
 
-func installSystemExtension(wholeMachine: Bool) {
-    let delegate = ExtDelegate(wholeMachine: wholeMachine)
+func installSystemExtension(wholeMachine: Bool, explicit: Bool) {
+    let delegate = ExtDelegate(wholeMachine: wholeMachine, explicit: explicit)
     extDelegate = delegate
     let req = OSSystemExtensionRequest.activationRequest(
         forExtensionWithIdentifier: extBundleID, queue: .main)
@@ -97,27 +106,40 @@ func installSystemExtension(wholeMachine: Bool) {
     OSSystemExtensionManager.shared.submitRequest(req)
 }
 
-func saveProxyProfileAndExit(wholeMachine: Bool) {
+// saveProxyProfileAndExit writes the NETransparentProxy profile.
+// `explicit` is true when --whole-machine was passed on the command
+// line; when false, an existing profile's `mode` is preserved so the
+// idempotent `Clawpatrol install` from `clawpatrol run` can't downgrade
+// a whole-machine setup back to per-process.
+func saveProxyProfileAndExit(wholeMachine: Bool, explicit: Bool) {
     NETransparentProxyManager.loadAllFromPreferences { managers, err in
         if let err = err { fail("loadAll: \(err)") }
-        let manager = managers?.first(where: { $0.localizedDescription == proxyProfileName })
-            ?? NETransparentProxyManager()
+        let existing = managers?.first(where: { $0.localizedDescription == proxyProfileName })
+        let manager = existing ?? NETransparentProxyManager()
+        var resolvedMode = wholeMachine ? "whole-machine" : "per-process"
+        if !explicit, let proto = existing?.protocolConfiguration as? NETunnelProviderProtocol,
+           let prev = proto.providerConfiguration?["mode"] as? String, !prev.isEmpty {
+            resolvedMode = prev
+        }
         let proto = NETunnelProviderProtocol()
         proto.providerBundleIdentifier = extBundleID
         proto.serverAddress = "clawpatrol-gateway"
-        // wg-conf populated at start; mode read by the extension on
-        // each new flow (per-process gates on audit-token PPID walk,
-        // whole-machine returns true for everything).
+        // Preserve any wg-conf already saved on the existing profile.
+        var wgConf = ""
+        if let existingProto = existing?.protocolConfiguration as? NETunnelProviderProtocol,
+           let prevConf = existingProto.providerConfiguration?["wg-conf"] as? String {
+            wgConf = prevConf
+        }
         proto.providerConfiguration = [
-            "wg-conf": "",
-            "mode": wholeMachine ? "whole-machine" : "per-process",
+            "wg-conf": wgConf,
+            "mode": resolvedMode,
         ]
         manager.protocolConfiguration = proto
         manager.localizedDescription = proxyProfileName
         manager.isEnabled = true
         manager.saveToPreferences { err in
             if let err = err { fail("saveToPreferences: \(err)") }
-            print("✓ proxy profile installed (\(wholeMachine ? "whole-machine" : "per-process"))")
+            print("✓ proxy profile installed (\(resolvedMode))")
             exit(0)
         }
     }

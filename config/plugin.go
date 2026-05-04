@@ -31,7 +31,6 @@ const (
 	KindApprover   Kind = "approver"
 	KindPolicy     Kind = "policy"
 	KindProfile    Kind = "profile"
-	KindDevice     Kind = "device"
 )
 
 // LabelCount returns how many labels a block of this kind carries
@@ -40,8 +39,8 @@ func (k Kind) LabelCount() int {
 	switch k {
 	case KindEndpoint, KindCredential, KindRule, KindApprover:
 		return 2 // first = type, second = name
-	case KindPolicy, KindProfile, KindDevice:
-		return 1 // name (device's name = its IP)
+	case KindPolicy, KindProfile:
+		return 1 // name
 	}
 	return 0
 }

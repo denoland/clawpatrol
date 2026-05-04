@@ -67,55 +67,13 @@ All cross-block references are BARE NAMES (no quotes, no dotted prefix):
 A flat namespace is shared across endpoints / credentials / rules /
 approvers / policies / profiles — names must be globally unique.
 
-# Device blocks
-
-Per-device overrides go inside a device block:
-
-  device "10.55.0.2" {
-    rule "http_rule" "deny-tinyclouds" {
-      endpoint = github
-      match    = { path = "/tinyclouds/*" }
-      verdict  = "deny"
-      reason   = "this device shouldn't reach tinyclouds"
-    }
-  }
-
-The dispatcher pins each rule inside a device block to that device's
-peer IP automatically — DO NOT add a peer_ip match facet.
-
 # What you may emit
 
-- scope=global: any top-level block (credential, endpoint, rule,
-  approver, policy, profile, device). When the request needs a host
-  that isn't covered by an existing endpoint, ADD an endpoint block
-  (and any required credential), then add the rule. Global scope is
-  allowed to expand the policy.
-
-- scope=device: emit ONE device "<ip>" {} block whose body is rule
-  blocks. The IP comes from the document you were given — preserve
-  it. You may ALSO emit endpoint, credential, approver, or policy
-  blocks alongside the device block when the device rules need them.
-  The server splices each into gateway.hcl. So for "block GET to
-  deno.com" on a device, emit:
-
-    endpoint "https" "deno" { hosts = ["deno.com"] }
-
-    device "10.55.0.2" {
-      rule "http_rule" "block-deno-get" {
-        endpoint = deno
-        match    = { method = "GET" }
-        verdict  = "deny"
-        reason   = "blocked per per-device override"
-      }
-    }
-
-  The new endpoint becomes available globally; the rule is pinned to
-  the device IP automatically by the device block, so other devices
-  see deno.com routed through the new endpoint with no rules firing
-  against them.
-
-  Profile, rule (top-level), defaults blocks are NOT allowed in a
-  device fragment — emit them only at scope=global.
+Any top-level block (credential, endpoint, rule, approver, policy,
+profile). When the request needs a host that isn't covered by an
+existing endpoint, ADD an endpoint block (and any required credential),
+then add the rule. Per-device overrides are not supported — scope
+changes happen at the profile level.
 
 # Output rules — STRICT
 
@@ -164,7 +122,7 @@ for SQL match facets on a github endpoint, which is wrong family).
 Anything that is "I need to add an endpoint and a rule" is
 satisfiable — just write the HCL.
 
-- No legacy keys — host, device, sql_verb, action, swap, mtls block
+- No legacy keys — host, sql_verb, action, swap, mtls block
   on a rule, account match key are ALL legacy. Don't emit them.
 
 # When you cannot satisfy the request
@@ -293,8 +251,7 @@ func extractRefusal(s string) (string, string) {
 }
 
 // validateHCLSyntax confirms the output parses as HCL. We only care
-// about syntax here — full type-check happens on PUT /api/config or
-// PUT /api/rules/device.
+// about syntax here — full type-check happens on PUT /api/config.
 func validateHCLSyntax(s string) error {
 	parser := hclparse.NewParser()
 	_, diags := parser.ParseHCL([]byte(s), "ai.hcl")
@@ -336,12 +293,7 @@ func availableSymbols(policy *config.CompiledPolicy) string {
 	)
 }
 
-func scopeLabel(s string) string {
-	if s == "device" {
-		return "device-specific"
-	}
-	return "global"
-}
+func scopeLabel(_ string) string { return "global" }
 
 // callClaude hits Anthropic's /v1/messages with the rule system prompt.
 // Uses the operator's OAuth credential — Inject() adds the Authorization
