@@ -86,8 +86,8 @@ export function AgentsTable({
                 </div>
               </Td>
               <Td className="text-[11px] text-[#525252] tabular-nums text-right">{a.reqs}</Td>
-              <Td className="hidden lg:table-cell text-[11px] text-[#737373] tabular-nums truncate" title={a.ip}>
-                {a.ip}
+              <Td className="hidden lg:table-cell text-[11px] text-[#737373] tabular-nums truncate" title={[a.external_ipv4, a.external_ipv6].filter(Boolean).join(" / ") || `wg ${a.ip}`}>
+                {a.external_ipv4 || a.external_ipv6 || a.ip}
               </Td>
               <Td>
                 <IntegrationStack

@@ -3,10 +3,12 @@ import { oauthDevicePoll, oauthExchange, oauthStart, type OAuthStartResp } from 
 
 export function ConnectModal({
   id,
+  profile,
   onClose,
   onDone,
 }: {
   id: string;
+  profile?: string;
   onClose: () => void;
   onDone: () => void;
 }) {
@@ -16,7 +18,7 @@ export function ConnectModal({
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
   useEffect(() => {
-    oauthStart(id)
+    oauthStart(id, profile)
       .then((r) => {
         setStart(r);
         if (r.flow === "device") {
@@ -26,7 +28,7 @@ export function ConnectModal({
         }
       })
       .catch((e: Error) => setErr(String(e.message ?? e)));
-  }, [id]);
+  }, [id, profile]);
 
   // Stable ref to onDone — parent re-renders (App refreshes integrations
   // every 3s) reset the lambda otherwise, killing the polling interval

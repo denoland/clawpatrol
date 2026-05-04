@@ -43,7 +43,7 @@ export function IntegrationsCards({
   list: Integration[];
   whoami: Whoami | null;
   profile?: string;
-  onConnect: (id: string) => void;
+  onConnect: (id: string, profile?: string) => void;
   onRefresh: () => void;
 }) {
   const youKey = profile || whoami?.user || whoami?.host || "";
@@ -69,7 +69,7 @@ export function IntegrationsCards({
 
   function handleConnect(i: Integration) {
     if (i.has_oauth) {
-      onConnect(i.id);
+      onConnect(i.id, profile);
       return;
     }
     if (i.slots && i.slots.length > 0) {

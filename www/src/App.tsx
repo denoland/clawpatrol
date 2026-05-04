@@ -22,6 +22,7 @@ export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [whoami, setWhoami] = useState<Whoami | null>(null);
   const [connectId, setConnectId] = useState<string | null>(null);
+  const [connectProfile, setConnectProfile] = useState<string | undefined>(undefined);
   const [showAddDevice, setShowAddDevice] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [route, setRoute] = useState(parseRoute());
@@ -97,7 +98,10 @@ export default function App() {
           integrations={integrations}
           whoami={whoami}
           onBack={() => navigate("")}
-          onConnect={(id) => setConnectId(id)}
+          onConnect={(id, profile) => {
+            setConnectId(id);
+            setConnectProfile(profile);
+          }}
           onRefresh={refresh}
         />
       )}
@@ -106,9 +110,14 @@ export default function App() {
       {connectId && (
         <ConnectModal
           id={connectId}
-          onClose={() => setConnectId(null)}
+          profile={connectProfile}
+          onClose={() => {
+            setConnectId(null);
+            setConnectProfile(undefined);
+          }}
           onDone={() => {
             setConnectId(null);
+            setConnectProfile(undefined);
             refresh();
           }}
         />

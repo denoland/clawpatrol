@@ -64,6 +64,8 @@ export type Session = {
 
 export type Agent = {
   ip: string;
+  external_ipv4?: string;
+  external_ipv6?: string;
   hostname: string;
   user: string;
   profile?: string;

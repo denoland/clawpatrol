@@ -16,6 +16,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -601,6 +602,30 @@ func (w *webMux) apiAgents(rw http.ResponseWriter, _ *http.Request) {
 	if w.g.agents != nil {
 		snap = w.g.agents.snapshot()
 	}
+	// External IPs: the underlay v4/v6 each WG peer is dialing in from.
+	// Show these in place of the server-side /32 (routing artefact).
+	// Live endpoint observed via wg-go IpcGet — persist into the devices
+	// row so the dashboard keeps a stable last-known address even when
+	// the peer goes idle and wg-go drops its endpoint state.
+	if globalWG != nil {
+		for ip, ep := range globalWG.EndpointsByIP() {
+			if ep == "" {
+				continue
+			}
+			parsed := net.ParseIP(ep)
+			var v4, v6 string
+			if p4 := parsed.To4(); p4 != nil {
+				v4 = p4.String()
+			} else if parsed != nil {
+				v6 = parsed.String()
+			}
+			w.onboard.SetExternalIPs(ip, v4, v6)
+		}
+	}
+	for _, a := range snap {
+		v4, v6 := w.onboard.ExternalIPs(a.IP)
+		a.ExternalIPv4, a.ExternalIPv6 = v4, v6
+	}
 	// enrich with connected integrations per agent's user. Re-run on
 	// every snapshot — caching by `Integrations != nil` would freeze
 	// the list at first sighting (a freshly-onboarded device whose
@@ -1040,7 +1065,7 @@ func (w *webMux) apiOAuthStart(rw http.ResponseWriter, r *http.Request) {
 	}
 	// Branch: device flow vs auth-code+PKCE.
 	if flow.Flow == "device" {
-		w.startDeviceFlow(rw, flow, owner, ownerLabel)
+		w.startDeviceFlow(rw, id, flow, owner, ownerLabel)
 		return
 	}
 
@@ -1120,7 +1145,7 @@ func (w *webMux) apiOAuthExchange(rw http.ResponseWriter, r *http.Request) {
 // startDeviceFlow kicks off OAuth device flow (RFC 8628). Returns
 // {user_code, verification_uri, device_code, interval} so the dashboard
 // can prompt the user to enter the code at the verification URI.
-func (w *webMux) startDeviceFlow(rw http.ResponseWriter, it *OAuthIntegration, owner, ownerLabel string) {
+func (w *webMux) startDeviceFlow(rw http.ResponseWriter, id string, it *OAuthIntegration, owner, ownerLabel string) {
 	form := url.Values{}
 	form.Set("client_id", resolveTemplate(it.OAuth.ClientID))
 	if len(it.OAuth.Scopes) > 0 {
@@ -1155,7 +1180,7 @@ func (w *webMux) startDeviceFlow(rw http.ResponseWriter, it *OAuthIntegration, o
 	w.mu.Lock()
 	w.sessions[state] = &oauthSession{
 		state:    state,
-		id:       it.ID,
+		id:       id,
 		owner:    owner,
 		created:  time.Now(),
 		verifier: dr.DeviceCode, // reuse field for device_code
@@ -1193,7 +1218,7 @@ func (w *webMux) pollDeviceFlow(rw http.ResponseWriter, sess *oauthSession) {
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	log.Printf("DEBUG device-poll %s status=%d body=%s", sess.id, resp.StatusCode, truncate(string(body), 400))
+	// Don't log the body verbatim — on success it carries access_token.
 	var tr struct {
 		AccessToken      string `json:"access_token"`
 		TokenType        string `json:"token_type"`
@@ -1498,13 +1523,18 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 	s.approved = true
 	s.owner = owner
 	s.profile = profile
+	hostname := s.hostname
 	w.onboard.mu.Unlock()
+
+	// Recycle the wg /32 already bound to (owner, hostname) so a rejoin
+	// from the same machine doesn't spawn a duplicate device row.
+	reuseIP := w.onboard.IPForHostname(owner, hostname)
 
 	// Mint key in background so the approve click returns fast.
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		key, loginServer, peerIP, err := newOnboarder(w.ts).MintKey(ctx)
+		key, loginServer, peerIP, err := newOnboarder(w.ts).MintKey(ctx, reuseIP)
 		w.onboard.mu.Lock()
 		if err != nil {
 			s.err = err.Error()

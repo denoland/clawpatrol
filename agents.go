@@ -16,6 +16,8 @@ import (
 
 type Agent struct {
 	IP           string     `json:"ip"`
+	ExternalIPv4 string     `json:"external_ipv4,omitempty"`
+	ExternalIPv6 string     `json:"external_ipv6,omitempty"`
 	Hostname     string     `json:"hostname"`
 	User         string     `json:"user"`
 	Profile      string     `json:"profile,omitempty"`

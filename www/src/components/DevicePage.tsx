@@ -22,16 +22,34 @@ export function DevicePage({
   integrations: Integration[];
   whoami: Whoami | null;
   onBack: () => void;
-  onConnect: (id: string) => void;
+  onConnect: (id: string, profile?: string) => void;
   onRefresh: () => void;
 }) {
   const a = useMemo(() => agents.find((x) => x.ip === ip) ?? null, [agents, ip]);
   const [profiles, setProfiles] = useState<string[]>([]);
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileErr, setProfileErr] = useState<string | null>(null);
+  // Per-profile credential list — server-filters to only the
+  // credentials referenced by endpoints in this device's profile,
+  // so a "writer" device doesn't see the readonly's pg-cred and vice
+  // versa. Falls back to the parent's full list for the no-profile
+  // case (legacy single-tenant configs).
+  const [profileCreds, setProfileCreds] = useState<Integration[] | null>(null);
   useEffect(() => {
     listProfiles().then(setProfiles).catch(() => setProfiles([]));
   }, []);
+  const devProfile = a?.profile;
+  useEffect(() => {
+    if (!devProfile) {
+      setProfileCreds(null);
+      return;
+    }
+    getStatus(devProfile).then(setProfileCreds).catch(() => setProfileCreds(null));
+    // Re-fetch whenever the parent's integrations list changes too —
+    // OAuth modal calls onRefresh on success, which updates parent state
+    // but otherwise this effect would stay stale and the card wouldn't
+    // flip to "connected" until the next manual profile change.
+  }, [devProfile, integrations]);
   if (!a) {
     return (
       <main className="mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-5">
@@ -47,19 +65,6 @@ export function DevicePage({
 
   const dev = a;
   const total = dev.bytes_in + dev.bytes_out;
-  // Per-profile credential list — server-filters to only the
-  // credentials referenced by endpoints in this device's profile,
-  // so a "writer" device doesn't see the readonly's pg-cred and vice
-  // versa. Falls back to the parent's full list for the no-profile
-  // case (legacy single-tenant configs).
-  const [profileCreds, setProfileCreds] = useState<Integration[] | null>(null);
-  useEffect(() => {
-    if (!dev.profile) {
-      setProfileCreds(null);
-      return;
-    }
-    getStatus(dev.profile).then(setProfileCreds).catch(() => setProfileCreds(null));
-  }, [dev.profile]);
   const allForUser = profileCreds ?? integrations;
 
   async function remove() {
@@ -123,7 +128,7 @@ export function DevicePage({
           <div className="min-w-0">
             <div className="text-[15px] font-semibold text-[#171717] truncate">{a.hostname || a.ip}</div>
             <div className="text-[11px] text-[#737373] truncate">
-              {a.profile || "—"} · {a.ip}
+              {a.profile || "—"} · {[a.external_ipv4, a.external_ipv6].filter(Boolean).join(" / ") || a.ip}
               {a.os && <> · <span className="uppercase tracking-[.08em]">{a.os}</span></>}
             </div>
           </div>

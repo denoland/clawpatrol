@@ -64,6 +64,8 @@ type onboardRegistry struct {
 	ownerByIP    map[string]string
 	hostnameByIP map[string]string
 	profileByIP  map[string]string
+	extV4ByIP    map[string]string
+	extV6ByIP    map[string]string
 	db           *sql.DB
 }
 
@@ -74,7 +76,39 @@ func newOnboardRegistry() *onboardRegistry {
 		ownerByIP:    map[string]string{},
 		hostnameByIP: map[string]string{},
 		profileByIP:  map[string]string{},
+		extV4ByIP:    map[string]string{},
+		extV6ByIP:    map[string]string{},
 	}
+}
+
+// SetExternalIPs records the underlay endpoint addresses (v4 and/or v6)
+// observed for the wg peer at ip. Mirrors unclaw's approvedIpv4 /
+// approvedIpv6 model — the dashboard shows these in place of the wg /32,
+// which is just a routing artefact. Persists through to the devices row.
+func (r *onboardRegistry) SetExternalIPs(ip, v4, v6 string) {
+	if ip == "" || (v4 == "" && v6 == "") {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	changed := false
+	if v4 != "" && r.extV4ByIP[ip] != v4 {
+		r.extV4ByIP[ip] = v4
+		changed = true
+	}
+	if v6 != "" && r.extV6ByIP[ip] != v6 {
+		r.extV6ByIP[ip] = v6
+		changed = true
+	}
+	if changed {
+		r.upsertLocked(ip)
+	}
+}
+
+func (r *onboardRegistry) ExternalIPs(ip string) (v4, v6 string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.extV4ByIP[ip], r.extV6ByIP[ip]
 }
 
 func (r *onboardRegistry) ProfileForIP(ip string) string {
@@ -101,7 +135,7 @@ func (r *onboardRegistry) Load(db *sql.DB) error {
 	if db == nil {
 		return nil
 	}
-	rows, err := db.Query("SELECT id, name, profile FROM devices")
+	rows, err := db.Query("SELECT id, name, profile, external_ipv4, external_ipv6 FROM devices")
 	if err != nil {
 		return err
 	}
@@ -111,8 +145,10 @@ func (r *onboardRegistry) Load(db *sql.DB) error {
 			ip      string
 			name    sql.NullString
 			profile sql.NullString
+			v4      sql.NullString
+			v6      sql.NullString
 		)
-		if err := rows.Scan(&ip, &name, &profile); err != nil {
+		if err := rows.Scan(&ip, &name, &profile, &v4, &v6); err != nil {
 			return err
 		}
 		if name.Valid {
@@ -120,6 +156,12 @@ func (r *onboardRegistry) Load(db *sql.DB) error {
 		}
 		if profile.Valid {
 			r.profileByIP[ip] = profile.String
+		}
+		if v4.Valid {
+			r.extV4ByIP[ip] = v4.String
+		}
+		if v6.Valid {
+			r.extV6ByIP[ip] = v6.String
 		}
 	}
 	return rows.Err()
@@ -136,19 +178,27 @@ func (r *onboardRegistry) upsertLocked(ip string) {
 	if _, seen := r.profileByIP[ip]; !seen {
 		if _, hn := r.hostnameByIP[ip]; !hn {
 			if _, owner := r.ownerByIP[ip]; !owner {
-				return
+				if _, v4 := r.extV4ByIP[ip]; !v4 {
+					if _, v6 := r.extV6ByIP[ip]; !v6 {
+						return
+					}
+				}
 			}
 		}
 	}
 	now := time.Now().UnixNano()
 	_, _ = r.db.Exec(`
-		INSERT INTO devices (id, name, profile, created_ns, last_seen_ns)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO devices (id, name, profile, external_ipv4, external_ipv6, created_ns, last_seen_ns)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
-			name         = excluded.name,
-			profile      = excluded.profile,
-			last_seen_ns = excluded.last_seen_ns
-	`, ip, nullStr(r.hostnameByIP[ip]), nullStr(r.profileByIP[ip]), now, now)
+			name          = excluded.name,
+			profile       = excluded.profile,
+			external_ipv4 = excluded.external_ipv4,
+			external_ipv6 = excluded.external_ipv6,
+			last_seen_ns  = excluded.last_seen_ns
+	`, ip, nullStr(r.hostnameByIP[ip]), nullStr(r.profileByIP[ip]),
+		nullStr(r.extV4ByIP[ip]), nullStr(r.extV6ByIP[ip]),
+		now, now)
 }
 
 func nullStr(s string) any {
@@ -190,12 +240,38 @@ func (r *onboardRegistry) HostnameForIP(ip string) string {
 	return r.hostnameByIP[ip]
 }
 
+// IPForHostname returns the wg IP previously bound to (owner, hostname),
+// if any. Lets the approve flow recycle the existing /32 when the same
+// machine re-runs `clawpatrol join` — without it, every rejoin minted
+// a fresh IP and the dashboard accumulated duplicate device rows.
+func (r *onboardRegistry) IPForHostname(owner, hostname string) string {
+	if hostname == "" {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for ip, hn := range r.hostnameByIP {
+		if hn != hostname {
+			continue
+		}
+		if owner != "" {
+			if o, ok := r.ownerByIP[ip]; ok && o != "" && o != owner {
+				continue
+			}
+		}
+		return ip
+	}
+	return ""
+}
+
 func (r *onboardRegistry) ForgetIP(ip string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.ownerByIP, ip)
 	delete(r.hostnameByIP, ip)
 	delete(r.profileByIP, ip)
+	delete(r.extV4ByIP, ip)
+	delete(r.extV6ByIP, ip)
 	if r.db != nil {
 		_, _ = r.db.Exec("DELETE FROM devices WHERE id = ?", ip)
 	}
@@ -269,7 +345,7 @@ type Onboarder interface {
 	// non-empty, is the IP the server allocated for this peer — the
 	// caller registers it in the onboard registry so per-user OAuth
 	// lookup works without a separate claim round-trip from the CLI.
-	MintKey(ctx context.Context) (authKey, loginServer, peerIP string, err error)
+	MintKey(ctx context.Context, reuseIP string) (authKey, loginServer, peerIP string, err error)
 }
 
 func newOnboarder(ts Tailscale) Onboarder {
@@ -283,7 +359,7 @@ func newOnboarder(ts Tailscale) Onboarder {
 
 type tailscaleOnboarder struct{ ts Tailscale }
 
-func (t *tailscaleOnboarder) MintKey(ctx context.Context) (string, string, string, error) {
+func (t *tailscaleOnboarder) MintKey(ctx context.Context, _ string) (string, string, string, error) {
 	k, err := mintTailscaleAuthKey(ctx, t.ts)
 	// Tailscale assigns peer IPs from the tailnet — we don't know the
 	// new device's IP at mint time, so claim happens later via /api/

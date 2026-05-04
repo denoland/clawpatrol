@@ -327,6 +327,53 @@ func (s *WGServer) EnablePromiscuousForwarder(handler func(c net.Conn, dstIP str
 	return nil
 }
 
+// EndpointsByIP returns a map of allowed-IP → peer endpoint (the
+// underlay source addr the wg handshake came from). Powers the
+// dashboard "external IP" column so operators see the public address
+// each device is dialing in from, not just the server-side /32.
+func (s *WGServer) EndpointsByIP() map[string]string {
+	out := map[string]string{}
+	if s == nil || s.dev == nil {
+		return out
+	}
+	cfg, err := s.dev.IpcGet()
+	if err != nil {
+		return out
+	}
+	var endpoint string
+	var ips []string
+	flush := func() {
+		if endpoint == "" {
+			return
+		}
+		host := endpoint
+		if h, _, err := net.SplitHostPort(endpoint); err == nil {
+			host = h
+		}
+		for _, ip := range ips {
+			out[ip] = host
+		}
+	}
+	for _, line := range strings.Split(cfg, "\n") {
+		switch {
+		case strings.HasPrefix(line, "public_key="):
+			flush()
+			endpoint = ""
+			ips = ips[:0]
+		case strings.HasPrefix(line, "endpoint="):
+			endpoint = strings.TrimPrefix(line, "endpoint=")
+		case strings.HasPrefix(line, "allowed_ip="):
+			v := strings.TrimPrefix(line, "allowed_ip=")
+			if i := strings.IndexByte(v, '/'); i > 0 {
+				v = v[:i]
+			}
+			ips = append(ips, v)
+		}
+	}
+	flush()
+	return out
+}
+
 // PublicKey returns the server's WG pubkey (hex) — handed out to every
 // onboarded client. wireguard-go's IpcGet exposes peer pubkeys, NOT
 // the server's own; we derive ours from the saved private key at boot.
@@ -503,7 +550,7 @@ type wireguardOnboarder struct {
 	mu     sync.Mutex
 }
 
-func (w *wireguardOnboarder) MintKey(ctx context.Context) (string, string, string, error) {
+func (w *wireguardOnboarder) MintKey(ctx context.Context, reuseIP string) (string, string, string, error) {
 	if w.ts.WGEndpoint == "" || w.ts.WGSubnetCIDR == "" {
 		return "", "", "", fmt.Errorf("wireguard not configured (set tailscale.wg_endpoint, wg_subnet_cidr)")
 	}
@@ -514,9 +561,18 @@ func (w *wireguardOnboarder) MintKey(ctx context.Context) (string, string, strin
 	if err != nil {
 		return "", "", "", err
 	}
-	ip, err := w.allocateIP()
-	if err != nil {
-		return "", "", "", err
+	var ip string
+	if reuseIP != "" {
+		// Re-running `clawpatrol join` from the same machine — recycle the
+		// /32 previously bound to (owner, hostname) so the dashboard keeps
+		// one row per device. AddPeer evicts the stale pubkey on the same
+		// IP from both the wg-go trie and wg_peers.
+		ip = reuseIP
+	} else {
+		ip, err = w.allocateIP()
+		if err != nil {
+			return "", "", "", err
+		}
 	}
 	if err := globalWG.AddPeer(clientPubHex, ip); err != nil {
 		return "", "", "", fmt.Errorf("wg add peer: %w", err)
