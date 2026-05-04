@@ -373,8 +373,8 @@ func (w *webMux) ownerForCaller(r *http.Request) (key, label string) {
 	if p := r.Header.Get("X-Clawpatrol-Profile"); p != "" {
 		return p, p
 	}
-	if names := orderedProfileNames(w.g.cfg.Policy); len(names) > 0 {
-		return names[0], names[0]
+	if def := defaultProfileName(w.g.cfg.Policy); def != "" {
+		return def, def
 	}
 	if w.g.cfg.AdminEmail != "" {
 		return w.g.cfg.AdminEmail, w.g.cfg.AdminEmail
@@ -1393,13 +1393,12 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	code := r.URL.Query().Get("code")
-	// Operator picks which profile this device joins. Falls back to the
-	// first declared profile when the dashboard didn't pass one.
+	// Operator picks which profile this device joins. Falls back to a
+	// profile named "default" when declared; otherwise the first profile
+	// in source order.
 	profile := r.URL.Query().Get("profile")
 	if profile == "" {
-		if names := orderedProfileNames(w.g.cfg.Policy); len(names) > 0 {
-			profile = names[0]
-		}
+		profile = defaultProfileName(w.g.cfg.Policy)
 	}
 	s := w.onboard.byUserCode(code)
 	if s == nil {
