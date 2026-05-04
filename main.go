@@ -36,6 +36,16 @@ import (
 // config/.
 type Tailscale = config.Tailscale
 
+// emit a terminal request event to both the SSE sink and OTel.
+// ev.Action and ev.Ms must be populated. Non-request events (e.g.
+// hitl_pending) call g.sink.Emit directly to stay out of the
+// request-duration histogram.
+func (g *Gateway) emit(ev Event) {
+	g.sink.Emit(ev)
+	otelRecordVerdict(ev.Action)
+	otelRecordRequest(time.Duration(ev.Ms)*time.Millisecond, ev.Action, ev.Status)
+}
+
 // loadConfig parses the gateway HCL via the typed-block grammar and
 // compiles it into a runtime CompiledPolicy.
 func loadConfig(path string) (*config.Gateway, *config.CompiledPolicy, error) {
@@ -810,6 +820,7 @@ func (g *Gateway) ownerForRequest(c net.Conn, _ *OAuthIntegration) string {
 
 func (g *Gateway) handle(raw net.Conn) {
 	defer raw.Close()
+	defer otelTrackConn("https_mitm")()
 	host, prefix, err := peekSNI(raw)
 	if err != nil {
 		log.Printf("sni: %v", err)
@@ -852,6 +863,7 @@ func (g *Gateway) handle(raw net.Conn) {
 // HTTPS handler's `unknown_host = passthrough` default.
 func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 	defer c.Close()
+	defer otelTrackConn("pg_relay")()
 	pip := peerIP(c)
 	profile := g.profileFor(pip)
 
@@ -983,13 +995,13 @@ func (g *Gateway) splice(c net.Conn, host string) {
 	up, err := g.dialer.Dial("tcp", net.JoinHostPort(host, "443"))
 	if err != nil {
 		log.Printf("dial %s: %v", host, err)
-		g.sink.Emit(Event{Mode: "splice", Host: host, AgentIP: peerIP(c), Action: "error", Reason: err.Error(), Ms: time.Since(start).Milliseconds()})
+		g.emit(Event{Mode: "splice", Host: host, AgentIP: peerIP(c), Action: "error", Reason: err.Error(), Ms: time.Since(start).Milliseconds()})
 		return
 	}
 	defer up.Close()
 	agentAddr := peerIP(c) // capture BEFORE pipe — RemoteAddr() goes nil once netstack closes the conn
 	in, out := pipe(c, up)
-	g.sink.Emit(Event{Mode: "splice", Host: host, AgentIP: agentAddr, Action: "allow", In: in, Out: out, Ms: time.Since(start).Milliseconds()})
+	g.emit(Event{Mode: "splice", Host: host, AgentIP: agentAddr, Action: "allow", In: in, Out: out, Ms: time.Since(start).Milliseconds()})
 	if g.agents != nil && agentAddr != "" {
 		g.agents.track(agentAddr, host, in, out)
 	}
@@ -1139,7 +1151,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				ev.Action = "hitl_deny"
 				ev.Reason = reason
 				ev.Ms = time.Since(start).Milliseconds()
-				g.sink.Emit(ev)
+				g.emit(ev)
 				return
 			}
 			log.Printf("hitl-allow %s %s %s by %s", host, req.Method, req.URL.Path, v.By)
@@ -1158,7 +1170,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			ev.Action = "deny"
 			ev.Reason = reason
 			ev.Ms = time.Since(start).Milliseconds()
-			g.sink.Emit(ev)
+			g.emit(ev)
 			return
 		}
 
@@ -1214,7 +1226,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			log.Printf("ws-upgrade %s %s", host, req.URL.Path)
 			ev.Action = "ws"
 			ev.Ms = time.Since(start).Milliseconds()
-			g.sink.Emit(ev)
+			g.emit(ev)
 			g.handleWSUpgrade(tc, br, req, host)
 			return
 		}
@@ -1246,7 +1258,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			ev.ReqSha = reqS.sha()
 			ev.ReqSample = reqS.sample()
 			ev.In = reqS.n
-			g.sink.Emit(ev)
+			g.emit(ev)
 			return
 		}
 		var trackBuf *bytes.Buffer
@@ -1285,7 +1297,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		ev.RespSha = respS.sha()
 		ev.RespSample = respS.sample()
 		ev.Ms = time.Since(start).Milliseconds()
-		g.sink.Emit(ev)
+		g.emit(ev)
 		if g.agents != nil && agentAddr != "" {
 			g.agents.trackUA(agentAddr, host, req.UserAgent(), reqS.n, respS.n)
 		}
@@ -1551,6 +1563,10 @@ func runGateway(args []string) {
 	// HITL notifications fan-out via the approver runtimes
 	// (config/plugins/approvers); the registry's Add hook emits
 	// the SSE event for the dashboard.
+
+	if _, err := StartOtel(g); err != nil {
+		log.Printf("otel: %v", err)
+	}
 
 	if cfg.InfoListen != "" {
 		mux := newWebMux(g, cfg.CADir, *cfg.Tailscale, cfg.PublicURL)
