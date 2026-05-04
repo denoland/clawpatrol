@@ -16,7 +16,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/denoland/clawpatrol-go/config/runtime"
+	"github.com/denoland/clawpatrol/config/runtime"
 )
 
 // DashboardApprover: pool.Add → wait for the dashboard's PUT

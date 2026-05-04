@@ -127,7 +127,7 @@ jobs:
           cat > site/index.html <<HTML
           <!doctype html><meta charset=utf-8><title>clawpatrol releases</title>
           <h1>clawpatrol</h1>
-          <p>Install: <code>curl -fsSL https://denoland.github.io/clawpatrol-go/install.sh | sh</code></p>
+          <p>Install: <code>curl -fsSL https://denoland.github.io/clawpatrol/install.sh | sh</code></p>
           <p>Latest binaries: <a href="releases/latest/">releases/latest/</a></p>
           <p>This tag: <a href="releases/${TAG}/">releases/${TAG}/</a></p>
           HTML

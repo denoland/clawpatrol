@@ -15,7 +15,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2/hclparse"
 
-	"github.com/denoland/clawpatrol-go/config"
+	"github.com/denoland/clawpatrol/config"
 )
 
 const ruleSystemPrompt = `You edit clawpatrol gateway policy expressed in the v14 typed-block HCL grammar.

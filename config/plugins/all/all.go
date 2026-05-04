@@ -4,8 +4,8 @@
 package all
 
 import (
-	_ "github.com/denoland/clawpatrol-go/config/plugins/approvers"
-	_ "github.com/denoland/clawpatrol-go/config/plugins/credentials"
-	_ "github.com/denoland/clawpatrol-go/config/plugins/endpoints"
-	_ "github.com/denoland/clawpatrol-go/config/plugins/rules"
+	_ "github.com/denoland/clawpatrol/config/plugins/approvers"
+	_ "github.com/denoland/clawpatrol/config/plugins/credentials"
+	_ "github.com/denoland/clawpatrol/config/plugins/endpoints"
+	_ "github.com/denoland/clawpatrol/config/plugins/rules"
 )

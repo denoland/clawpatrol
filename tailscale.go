@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/denoland/clawpatrol-go/config"
+	"github.com/denoland/clawpatrol/config"
 )
 
 func openListener(cfg *config.Gateway) (net.Listener, error) {

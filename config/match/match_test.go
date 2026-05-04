@@ -5,7 +5,7 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/denoland/clawpatrol-go/config/match"
+	"github.com/denoland/clawpatrol/config/match"
 )
 
 // httpReq builds a minimal Request for the HTTP matcher tests.

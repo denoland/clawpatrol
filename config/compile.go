@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/denoland/clawpatrol-go/config/match"
+	"github.com/denoland/clawpatrol/config/match"
 )
 
 // CompiledPolicy is the runtime-friendly view of a loaded gateway:

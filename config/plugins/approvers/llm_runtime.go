@@ -22,7 +22,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/denoland/clawpatrol-go/config/runtime"
+	"github.com/denoland/clawpatrol/config/runtime"
 )
 
 const llmJudgeSystem = `You are a security gate. Decide whether the operator's policy intends the gateway to ALLOW or DENY this request. The policy text is the source of truth.

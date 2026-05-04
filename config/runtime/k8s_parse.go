@@ -4,7 +4,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/denoland/clawpatrol-go/config/match"
+	"github.com/denoland/clawpatrol/config/match"
 )
 
 // ParseK8sPath best-effort decomposes a Kubernetes API request into

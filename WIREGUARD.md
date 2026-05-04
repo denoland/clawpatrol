@@ -70,7 +70,7 @@ in promiscuous mode — same shape as unclaw's `boringtun` + `smoltcp`
 
 ```bash
 # on the gateway VM (real public IP needed)
-curl -fsSL https://denoland.github.io/clawpatrol-go/install.sh | sh
+curl -fsSL https://denoland.github.io/clawpatrol/install.sh | sh
 
 cat > /etc/clawpatrol/gateway.hcl <<'EOF'
 listen       = "0.0.0.0:8443"
@@ -104,7 +104,7 @@ in `/opt/clawpatrol/oauth/`.
 ## Client setup
 
 ```bash
-curl -fsSL https://denoland.github.io/clawpatrol-go/install.sh | sh
+curl -fsSL https://denoland.github.io/clawpatrol/install.sh | sh
 clawpatrol join --url http://your-gw.example.com:8080
 # approve at the displayed URL, done — claude/gh/codex just work
 ```

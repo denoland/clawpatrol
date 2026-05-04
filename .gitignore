@@ -4,7 +4,7 @@ ts-state/
 dist/
 /gateway
 /clawpatrol
-/clawpatrol-go
+/clawpatrol
 /unclaw
 *.log
 www/node_modules

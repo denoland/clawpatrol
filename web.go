@@ -28,8 +28,8 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/denoland/clawpatrol-go/config"
-	"github.com/denoland/clawpatrol-go/config/runtime"
+	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/runtime"
 )
 
 //go:embed all:www/dist

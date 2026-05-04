@@ -1,6 +1,6 @@
 package credentials
 
-import "github.com/denoland/clawpatrol-go/config"
+import "github.com/denoland/clawpatrol/config"
 
 // OAuth flow definitions for the built-in OAuth credential types.
 // Each lives next to the credential plugin that returns it via

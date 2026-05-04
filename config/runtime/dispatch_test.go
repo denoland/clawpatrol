@@ -4,10 +4,10 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/denoland/clawpatrol-go/config"
-	"github.com/denoland/clawpatrol-go/config/match"
-	_ "github.com/denoland/clawpatrol-go/config/plugins/all"
-	"github.com/denoland/clawpatrol-go/config/runtime"
+	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/match"
+	_ "github.com/denoland/clawpatrol/config/plugins/all"
+	"github.com/denoland/clawpatrol/config/runtime"
 )
 
 const fixture = `

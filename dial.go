@@ -17,8 +17,8 @@ import (
 
 	utls "github.com/refraction-networking/utls"
 
-	"github.com/denoland/clawpatrol-go/config"
-	"github.com/denoland/clawpatrol-go/config/runtime"
+	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/runtime"
 )
 
 // servePorts is a no-op until the postgres / clickhouse_native

@@ -1,6 +1,6 @@
 package credentials
 
-import "github.com/denoland/clawpatrol-go/config"
+import "github.com/denoland/clawpatrol/config"
 
 // Per-credential EnvVars() implementations. Placeholder values are
 // chosen to look like real tokens so the agent CLI's startup

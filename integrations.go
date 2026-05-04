@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/denoland/clawpatrol-go/config"
+	"github.com/denoland/clawpatrol/config"
 )
 
 // resolveTemplate expands `{{secret:NAME}}` placeholders in s by

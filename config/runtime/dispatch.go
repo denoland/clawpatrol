@@ -1,8 +1,8 @@
 package runtime
 
 import (
-	"github.com/denoland/clawpatrol-go/config"
-	"github.com/denoland/clawpatrol-go/config/match"
+	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/match"
 )
 
 // HostEndpoint resolves a profile + SNI host (with port stripped to

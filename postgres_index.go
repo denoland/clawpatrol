@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/denoland/clawpatrol-go/config"
+	"github.com/denoland/clawpatrol/config"
 )
 
 // pgIndex resolves WG-forwarder dstIPs back to the postgres endpoint

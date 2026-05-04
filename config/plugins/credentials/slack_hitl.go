@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/denoland/clawpatrol-go/config/runtime"
+	"github.com/denoland/clawpatrol/config/runtime"
 )
 
 // NotifyHITL posts a Block Kit approval prompt to the operator's

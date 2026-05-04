@@ -9,7 +9,7 @@ import (
 	"net"
 	"os"
 
-	"github.com/denoland/clawpatrol-go/config"
+	"github.com/denoland/clawpatrol/config"
 	"tailscale.com/tsnet"
 )
 

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/denoland/clawpatrol-go/config/runtime"
+	"github.com/denoland/clawpatrol/config/runtime"
 )
 
 // apiSlackInteractive handles Slack's interactive payload POSTs —

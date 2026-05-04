@@ -11,8 +11,8 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/hashicorp/hcl/v2"
 
-	"github.com/denoland/clawpatrol-go/config"
-	_ "github.com/denoland/clawpatrol-go/config/plugins/all"
+	"github.com/denoland/clawpatrol/config"
+	_ "github.com/denoland/clawpatrol/config/plugins/all"
 )
 
 var update = flag.Bool("update", false, "regenerate testdata goldens")

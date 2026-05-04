@@ -3,7 +3,7 @@ package runtime
 import (
 	"fmt"
 
-	"github.com/denoland/clawpatrol-go/config"
+	"github.com/denoland/clawpatrol/config"
 )
 
 // init installs a plugin checker on the config registry that

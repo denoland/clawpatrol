@@ -6,8 +6,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/denoland/clawpatrol-go/config"
-	"github.com/denoland/clawpatrol-go/config/runtime"
+	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/runtime"
 )
 
 // gatewaySecretStore is the SecretStore the gateway hands to

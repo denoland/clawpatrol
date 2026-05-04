@@ -1,6 +1,6 @@
 package credentials
 
-import "github.com/denoland/clawpatrol-go/config"
+import "github.com/denoland/clawpatrol/config"
 
 // Per-credential SecretSlots() implementations. The dashboard uses
 // these to render the connect-credential modal — one input per slot.

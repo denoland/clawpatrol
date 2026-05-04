@@ -14,8 +14,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/denoland/clawpatrol-go/config"
-	"github.com/denoland/clawpatrol-go/config/match"
+	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/match"
 )
 
 // HTTPCredentialRuntime is the credential-plugin contract for HTTP

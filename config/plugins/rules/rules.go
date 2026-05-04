@@ -25,8 +25,8 @@ import (
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
 
-	"github.com/denoland/clawpatrol-go/config"
-	"github.com/denoland/clawpatrol-go/config/match"
+	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/match"
 )
 
 // RuleBody is the shared shape across all three rule types. The

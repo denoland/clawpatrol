@@ -22,11 +22,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/denoland/clawpatrol-go/config"
-	"github.com/denoland/clawpatrol-go/config/match"
-	_ "github.com/denoland/clawpatrol-go/config/plugins/all"
-	"github.com/denoland/clawpatrol-go/config/plugins/approvers"
-	"github.com/denoland/clawpatrol-go/config/runtime"
+	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/match"
+	_ "github.com/denoland/clawpatrol/config/plugins/all"
+	"github.com/denoland/clawpatrol/config/plugins/approvers"
+	"github.com/denoland/clawpatrol/config/runtime"
 )
 
 // Tailscale aliases the operational tailscale-block type loaded from

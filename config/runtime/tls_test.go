@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/denoland/clawpatrol-go/config/plugins/all"
-	"github.com/denoland/clawpatrol-go/config/plugins/credentials"
-	"github.com/denoland/clawpatrol-go/config/runtime"
+	_ "github.com/denoland/clawpatrol/config/plugins/all"
+	"github.com/denoland/clawpatrol/config/plugins/credentials"
+	"github.com/denoland/clawpatrol/config/runtime"
 )
 
 // TestMTLSConfigure round-trips a freshly-generated cert / key / CA
