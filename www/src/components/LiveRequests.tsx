@@ -17,6 +17,8 @@ export type EventRecord = {
   reason?: string;
   frame?: string;
   direction?: string;
+  req_sample?: string;
+  resp_sample?: string;
 };
 
 type RowState = EventRecord & { frames?: { direction: string; frame: string; ts: string }[] };
@@ -27,9 +29,11 @@ export function LiveRequests({ agentIP, max = 200, height }: {
   height?: string;
 }) {
   const [events, setEvents] = useState<RowState[]>([]);
+  const [selected, setSelected] = useState<number | null>(null);
 
   useEffect(() => {
     setEvents([]);
+    setSelected(null);
     const url = agentIP
       ? `/api/events?agent=${encodeURIComponent(agentIP)}`
       : "/api/events";
@@ -59,7 +63,18 @@ export function LiveRequests({ agentIP, max = 200, height }: {
             Waiting for requests<AnimatedDots />
           </div>
         ) : (
-          events.map((e, i) => <Row key={i} ev={e} />)
+          events.map((e, i) => (
+            <div key={i}>
+              <Row
+                ev={e}
+                active={selected === i}
+                onClick={() => setSelected(
+                  selected === i ? null : i,
+                )}
+              />
+              {selected === i && <Detail ev={e} />}
+            </div>
+          ))
         )}
       </div>
     </div>
@@ -107,10 +122,15 @@ function pathSeparator(path: string): string {
   return path.startsWith("/") ? "" : " ";
 }
 
-function Row({ ev }: { ev: RowState }) {
+function Row({ ev, active, onClick }: {
+  ev: RowState;
+  active?: boolean;
+  onClick?: () => void;
+}) {
   const t = new Date(ev.ts);
   const time =
-    t.toLocaleTimeString([], { hour12: false }) + "." + String(t.getMilliseconds()).padStart(3, "0");
+    t.toLocaleTimeString([], { hour12: false })
+    + "." + String(t.getMilliseconds()).padStart(3, "0");
   const inFlight = ev.phase === "start";
   const status = ev.status || 0;
   const statusColor = inFlight
@@ -125,7 +145,14 @@ function Row({ ev }: { ev: RowState }) {
   const hasFrames = (ev.frames?.length ?? 0) > 0;
   return (
     <div className="border-b border-[#f5f5f5]">
-      <div className={"px-4 py-2 hover:bg-[#f9f9f9] flex items-center gap-3 min-w-0 " + (inFlight ? "opacity-70" : "")}>
+      <div
+        onClick={onClick}
+        className={
+          "px-4 py-2 flex items-center gap-3 min-w-0 cursor-pointer transition-colors"
+          + (inFlight ? " opacity-70" : "")
+          + (active ? " bg-[#f0f0f0]" : " hover:bg-[#f9f9f9]")
+        }
+      >
         <span className="text-[10px] tabular-nums text-[#a3a3a3] flex-shrink-0">{time}</span>
         <ModeIcon mode={ev.mode} />
         {ev.method && (
@@ -160,6 +187,76 @@ function Row({ ev }: { ev: RowState }) {
 function InFlightSpinner() {
   return (
     <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#a3a3a3] animate-pulse align-middle" />
+  );
+}
+
+function Detail({ ev }: { ev: RowState }) {
+  const hasReq = ev.req_sample && ev.req_sample.length > 0;
+  const hasResp = ev.resp_sample && ev.resp_sample.length > 0;
+  if (!hasReq && !hasResp) {
+    return (
+      <div className="px-6 py-3 bg-[#fafafa] border-b border-[#e5e5e5] text-[11px] text-[#a3a3a3]">
+        No request/response body captured
+        {ev.mode === "splice" && " (spliced connection)"}
+      </div>
+    );
+  }
+  return (
+    <div className="bg-[#fafafa] border-b border-[#e5e5e5] text-[11px]">
+      <div className="flex gap-0 divide-x divide-[#e5e5e5]">
+        {hasReq && (
+          <div className="flex-1 min-w-0">
+            <div className="px-4 py-1.5 text-[10px] uppercase tracking-wider text-[#a3a3a3] border-b border-[#e5e5e5]">
+              Request
+            </div>
+            <BodyBlock body={ev.req_sample!} />
+          </div>
+        )}
+        {hasResp && (
+          <div className="flex-1 min-w-0">
+            <div className="px-4 py-1.5 text-[10px] uppercase tracking-wider text-[#a3a3a3] border-b border-[#e5e5e5]">
+              Response {ev.status && `(${ev.status})`}
+            </div>
+            <BodyBlock body={ev.resp_sample!} />
+          </div>
+        )}
+      </div>
+      {(ev.action || ev.reason) && (
+        <div className="px-4 py-2 border-t border-[#e5e5e5] text-[10px] text-[#737373]">
+          {ev.action && (
+            <span className={
+              ev.action === "deny"
+                ? "text-[#dc2626] font-semibold"
+                : "text-[#16a34a]"
+            }>
+              {ev.action}
+            </span>
+          )}
+          {ev.reason && (
+            <span className="ml-2">{ev.reason}</span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BodyBlock({ body }: { body: string }) {
+  let content = body;
+  let isJson = false;
+  try {
+    const parsed = JSON.parse(body);
+    content = JSON.stringify(parsed, null, 2);
+    isJson = true;
+  } catch { /* not json */ }
+  return (
+    <pre className={
+      "px-4 py-3 overflow-x-auto max-h-[300px] overflow-y-auto"
+      + " whitespace-pre-wrap break-all font-mono text-[11px]"
+      + (isJson ? " text-[#525252]" : " text-[#737373]")
+    }>
+      {content}
+    </pre>
   );
 }
 
