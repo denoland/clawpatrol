@@ -80,7 +80,6 @@ type CredBinding struct {
 // alongside Matcher for dashboard / diagnostic consumers that want
 // to inspect predicate fields without re-walking the rule plugin's
 // Body.
-//
 type CompiledRule struct {
 	Name     string
 	Priority int
