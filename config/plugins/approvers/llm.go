@@ -1,16 +1,14 @@
 package approvers
 
-// LLMApprover.Approve calls the configured model with the rule's
-// policy text + the request shape, parses an "allow" / "deny"
-// verdict from the response. Anthropic (api.anthropic.com) and
-// OpenAI / codex (api.openai.com) are wired via the bound
-// credential's HTTPCredentialRuntime — same auth path the agent
-// dispatcher uses for end-user requests, so OAuth refresh /
-// per-profile rotation come for free.
+// llm_approver: an LLM proctor that judges a request against the
+// operator's policy text. Anthropic (api.anthropic.com) and OpenAI /
+// codex (api.openai.com) wire through their bound credential's
+// HTTPCredentialRuntime — same auth path the agent dispatcher uses
+// for end-user requests, so OAuth refresh / per-profile rotation
+// come for free.
 //
 // Model dispatch is name-prefixed: `claude-…` → Anthropic Messages
-// API, `gpt-…` / `o*-…` → OpenAI Responses API. Other model names
-// surface a clear "unknown model family" deny.
+// API, `gpt-…` / `o*-…` → OpenAI Responses API.
 
 import (
 	"bytes"
@@ -22,6 +20,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclwrite"
+	"github.com/zclconf/go-cty/cty"
+
+	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
@@ -31,6 +34,17 @@ Reply with EXACTLY one word on the first line: "allow" or "deny" (lowercase, no 
 Then a brief one-line reason on the second line.
 
 Be conservative — when the policy is ambiguous about whether the request is permitted, deny.`
+
+// LLMApprover carries the model + the credential used to authenticate
+// the call to the model API + the policy text the model judges
+// against. Inline `policy` is a bare-name reference to a `policy
+// "<name>" { text = ... }` block — operator declares the prompt once
+// and reuses across multiple judges.
+type LLMApprover struct {
+	Model      string `hcl:"model"`
+	Credential string `hcl:"credential"`
+	Policy     string `hcl:"policy,optional"`
+}
 
 func (a *LLMApprover) Approve(ctx context.Context, req runtime.ApproveRequest) (runtime.ApproveVerdict, error) {
 	if a.Model == "" {
@@ -240,4 +254,26 @@ func openaiJudgeRequest(ctx context.Context, model, user string) (*http.Request,
 		return "", fmt.Errorf("openai response had no output text")
 	}
 	return req, decode
+}
+
+func init() {
+	config.Register(&config.Plugin{
+		Kind:    config.KindApprover,
+		Type:    "llm_approver",
+		New:     func() any { return &LLMApprover{} },
+		Runtime: (*LLMApprover)(nil),
+		Refs: []config.RefSpec{
+			{Path: "Credential", Kind: config.KindCredential},
+			{Path: "Policy", Kind: config.KindPolicy, Optional: true},
+		},
+		Build: func(d any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics) { return d, nil },
+		Emit: func(body any, _ string, b *hclwrite.Body) {
+			a := body.(*LLMApprover)
+			b.SetAttributeValue("model", cty.StringVal(a.Model))
+			config.SetIdent(b, "credential", a.Credential)
+			if a.Policy != "" {
+				config.SetIdent(b, "policy", a.Policy)
+			}
+		},
+	})
 }
