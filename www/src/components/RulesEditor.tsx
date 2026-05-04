@@ -1,17 +1,13 @@
 import { useEffect, useState } from "react";
-import { aiEditRules, getConfigHCL, getDeviceRulesHCL, putConfigHCL, putDeviceRulesHCL } from "../lib/api";
+import { aiEditRules, getConfigHCL, putConfigHCL } from "../lib/api";
 import { HCLEditor } from "./HCLEditor";
 
-// RulesEditor edits HCL. Two modes:
-//   - Global: opens the whole gateway.hcl file (deviceIP undefined).
-//   - Device: opens just the `device "<ip>" {}` block, splices on save.
-// Validation runs server-side; diagnostics surface in the err panel.
+// RulesEditor edits the whole gateway.hcl file. Validation runs
+// server-side; diagnostics surface in the err panel.
 export function RulesEditor({
-  deviceIP,
   onClose,
   onSaved,
 }: {
-  deviceIP?: string;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -24,27 +20,21 @@ export function RulesEditor({
   const [aiBusy, setAIBusy] = useState(false);
 
   useEffect(() => {
-    const loader = deviceIP ? getDeviceRulesHCL(deviceIP) : getConfigHCL();
-    loader
+    getConfigHCL()
       .then((t) => {
         setText(t);
         setOriginal(t);
       })
       .catch((e: Error) => setErr(String(e.message ?? e)));
-  }, [deviceIP]);
+  }, []);
 
   async function save() {
     setBusy(true);
     setErr(null);
     setOkMsg(null);
     try {
-      if (deviceIP) {
-        await putDeviceRulesHCL(deviceIP, text);
-        setOkMsg("saved");
-      } else {
-        const r = await putConfigHCL(text);
-        setOkMsg(`saved · ${r.bytes} bytes`);
-      }
+      const r = await putConfigHCL(text);
+      setOkMsg(`saved · ${r.bytes} bytes`);
       setOriginal(text);
       onSaved();
     } catch (e: any) {
@@ -60,18 +50,8 @@ export function RulesEditor({
     setAIBusy(true);
     setErr(null);
     try {
-      // 4th arg is the LLM agent name (claude/codex), not the
-      // device IP — leave empty so the backend auto-picks the first
-      // connected provider.
-      const r = await aiEditRules(
-        aiPrompt,
-        text,
-        deviceIP ? "device" : "global",
-      );
+      const r = await aiEditRules(aiPrompt, text, "global");
       if (r.refused) {
-        // AI declined to apply the change — keep the editor as-is and
-        // surface the model's reason as the err text. Empty `yaml`
-        // means "don't touch the buffer."
         setErr("AI declined: " + r.refused);
       } else if (r.yaml) {
         setText(r.yaml);
@@ -97,7 +77,7 @@ export function RulesEditor({
       >
         <div className="flex items-center px-4 py-3 border-b border-[#e5e5e5]">
           <div className="text-[11px] uppercase tracking-[.12em] text-[#a3a3a3]">
-            {deviceIP ? `EDIT DEVICE ${deviceIP}` : "EDIT GATEWAY.HCL"}
+            EDIT GATEWAY.HCL
           </div>
           <button
             onClick={onClose}

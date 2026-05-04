@@ -80,15 +80,10 @@ type CredBinding struct {
 // alongside Matcher for dashboard / diagnostic consumers that want
 // to inspect predicate fields without re-walking the rule plugin's
 // Body.
-//
-// DeviceIP, when non-empty, scopes the rule to one peer — set by the
-// compile pass for rules declared inside a `device "<ip>" {}` block.
-// The dispatcher skips the rule when req.PeerIP doesn't match.
 type CompiledRule struct {
 	Name     string
 	Priority int
 	Disabled bool
-	DeviceIP string
 	Match    map[string]any
 	Matcher  match.Matcher
 	Outcome  Outcome
@@ -163,34 +158,6 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 		}
 	}
 
-	// Device blocks: each `rule {}` inside lowers like a top-level
-	// rule but gets its DeviceIP stamped from the device's label.
-	// Attaches to the named endpoint(s) the same way; the dispatcher
-	// short-circuits to skip when the request's peer IP doesn't
-	// match. Higher priority than top-level (+1000) so device
-	// overrides win against profile rules at the same explicit
-	// priority.
-	for ip, dev := range p.Devices {
-		for _, ent := range dev.Rules {
-			if ent.Plugin.CompileRule == nil {
-				return nil, fmt.Errorf("device %q rule %q: plugin has no CompileRule hook", ip, ent.Symbol.Name)
-			}
-			cr, targets, err := ent.Plugin.CompileRule(ent.Body, ent.Symbol.Name)
-			if err != nil {
-				return nil, fmt.Errorf("device %q rule %q: %w", ip, ent.Symbol.Name, err)
-			}
-			cr.DeviceIP = ip
-			cr.Priority += 1000
-			for _, target := range targets {
-				ce, ok := cp.Endpoints[target]
-				if !ok {
-					return nil, fmt.Errorf("device %q rule %q targets unknown endpoint %q", ip, ent.Symbol.Name, target)
-				}
-				ce.Rules = append(ce.Rules, cr)
-			}
-		}
-	}
-
 	// Sort each endpoint's rules by priority descending. Ties keep
 	// declaration order (stable sort) so the source-order intent
 	// expressed in the HCL is preserved within a priority bucket.
@@ -198,25 +165,6 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 		sort.SliceStable(ce.Rules, func(i, j int) bool {
 			return ce.Rules[i].Priority > ce.Rules[j].Priority
 		})
-	}
-
-	// Endpoints referenced ONLY by device-block rules need to land in
-	// every profile's HostIndex, otherwise dispatch never picks them
-	// up for the affected device's traffic. Other devices' traffic to
-	// these hosts gets MITM'd too — the device-pinned rule's DeviceIP
-	// check filters per-peer at match time, so non-target devices
-	// fall through to default allow / passthrough.
-	deviceReferenced := map[string]bool{}
-	for _, dev := range p.Devices {
-		for _, ent := range dev.Rules {
-			cr, targets, err := ent.Plugin.CompileRule(ent.Body, ent.Symbol.Name)
-			if err != nil || cr == nil {
-				continue
-			}
-			for _, t := range targets {
-				deviceReferenced[t] = true
-			}
-		}
 	}
 
 	// Build per-profile views. A profile's Endpoints map points at
@@ -236,22 +184,6 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 			profile.Endpoints[epName] = ce
 			for _, h := range ce.Hosts {
 				profile.HostIndex[h] = ce
-			}
-		}
-		// Layer in device-referenced endpoints so device rules fire.
-		for epName := range deviceReferenced {
-			ce, ok := cp.Endpoints[epName]
-			if !ok {
-				continue
-			}
-			if _, already := profile.Endpoints[epName]; already {
-				continue
-			}
-			profile.Endpoints[epName] = ce
-			for _, h := range ce.Hosts {
-				if _, taken := profile.HostIndex[h]; !taken {
-					profile.HostIndex[h] = ce
-				}
 			}
 		}
 		cp.Profiles[name] = profile

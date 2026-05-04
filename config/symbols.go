@@ -100,7 +100,6 @@ var blockKinds = map[string]Kind{
 	"approver":   KindApprover,
 	"policy":     KindPolicy,
 	"profile":    KindProfile,
-	"device":     KindDevice,
 }
 
 // buildSymbols is pass 1. It walks the parsed file's policy blocks,

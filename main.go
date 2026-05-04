@@ -231,15 +231,29 @@ func (g *Gateway) Policy() *config.CompiledPolicy {
 
 // profileFor returns the profile name to use when applying rules /
 // looking up OAuth credentials for a given peer IP. Falls back to the
-// first declared profile in the config when the peer hasn't been
-// assigned (single-tenant default).
+// "default" profile when declared, otherwise to the first declared
+// profile (single-tenant default).
 func (g *Gateway) profileFor(peerIP string) string {
 	if g.onboard != nil {
 		if p := g.onboard.ProfileForIP(peerIP); p != "" {
 			return p
 		}
 	}
-	if names := orderedProfileNames(g.cfg.Policy); len(names) > 0 {
+	return defaultProfileName(g.cfg.Policy)
+}
+
+// defaultProfileName returns the profile a freshly-onboarded peer
+// should attach to. Prefers a profile literally named "default";
+// otherwise the first declared profile in source order. Empty when
+// no profiles are configured (legacy single-tenant mode).
+func defaultProfileName(p *config.Policy) string {
+	names := orderedProfileNames(p)
+	for _, n := range names {
+		if n == "default" {
+			return "default"
+		}
+	}
+	if len(names) > 0 {
 		return names[0]
 	}
 	return ""
@@ -1484,10 +1498,13 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `clawpatrol — secret-injection MITM proxy for AI agents
 
 usage:
-  clawpatrol gateway [-config FILE]    run the gateway server
-  clawpatrol login                     onboard this machine (set exit-node + install CA)
-  clawpatrol env                       print shell exports for sourcing
-  clawpatrol init-ca DIR               generate a new CA in DIR
+  clawpatrol gateway [-config FILE]      run the gateway server
+  clawpatrol join --url <gateway-url>    onboard this machine via wg device flow
+                  [--whole-machine]      bring up wg-quick (route all traffic)
+  clawpatrol login                       onboard this machine (tailscale path)
+  clawpatrol run -- <cmd> [args...]      route one process tree through gateway
+  clawpatrol env                         print shell exports for sourcing
+  clawpatrol init-ca DIR                 generate a new CA in DIR
   clawpatrol version`)
 	os.Exit(2)
 }
