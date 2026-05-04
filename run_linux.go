@@ -4,18 +4,20 @@ package main
 
 // `clawpatrol run -- <cmd> [args...]` — route a single process tree's
 // traffic through the gateway, leave the rest of the machine alone.
-// Same shape as ../unclaw/native/napi/src/client_linux/netns.rs and
-// cmusatyalab/wireguard4netns: fork a child, unshare user+net+mnt,
-// open a TUN inside the child netns, ship the fd back via SCM_RIGHTS,
-// run wireguard-go on that fd in init netns so its UDP socket egresses
-// the host's normal default route, then exec the user's cmd inside
-// the child.
 //
-// Unprivileged. Reuses the machine's existing WG keypair persisted at
-// ~/.config/clawpatrol/wg.conf by `clawpatrol join`. Multiple
-// concurrent `clawpatrol run` invocations work — each gets its own
-// netns + its own peer slot via the same machine identity (single
-// dashboard device).
+// Mirrors ../unclaw/native/napi/src/client_linux/netns.rs capability model:
+//   - child holds CAP_NET_ADMIN when calling TUNSETIFF (via ambient, survives exec)
+//   - ip subprocesses inherit CAP_NET_ADMIN (ambient propagates through exec chain)
+//   - user's final command does NOT hold CAP_NET_ADMIN (ambient cleared before exec)
+//
+// Implementation: re-exec self with CLONE_NEWUSER|CLONE_NEWNET|CLONE_NEWNS +
+// AmbientCaps=[CAP_NET_ADMIN]. Go's forkAndExecInChild raises ambient before
+// the exec, so the re-exec'd child has CAP_NET_ADMIN in effective from the
+// start — no exec has cleared it yet when TUNSETIFF runs.
+//
+// unclaw uses fork()+unshare() (never re-execs before TUNSETIFF). The effect
+// on capabilities is identical: TUNSETIFF sees effective CAP_NET_ADMIN,
+// ip subprocesses inherit it, the user's cmd gets nothing.
 
 import (
 	"bufio"
@@ -45,8 +47,9 @@ const (
 	tunMTU      = 1420
 )
 
-// runRun is `clawpatrol run`. fork the child, drive WG in this
-// process, exec the user's cmd in the child.
+// runRun is `clawpatrol run`. Re-execs self in new user+net+mnt namespaces
+// with CAP_NET_ADMIN in the ambient set, drives WireGuard in this process,
+// and execs the user's cmd inside the child.
 func runRun(args []string) {
 	if os.Getenv(runChildEnv) == "1" {
 		runRunChild()
@@ -66,14 +69,13 @@ func runRun(args []string) {
 		fail("conf %s: %v\n  hint: run `clawpatrol join --url <gw>` first", *confPath, err)
 	}
 
-	// Stamp CA + per-credential placeholder env vars on the current
-	// process so the re-exec'd child (and thus the user's wrapped cmd)
-	// inherits them. Operator gets the same effect as
-	// `eval $(clawpatrol env)` for free.
+	checkUserNS()
+
+	// Stamp CA + per-credential env vars; child and user's cmd inherit them.
 	applyEnvPushdown(defaultClawpatrolDir())
 
-	// socketpair for SCM_RIGHTS handoff of the TUN fd, plus a pipe
-	// the parent uses to tell the child "wg is up, finish setup".
+	// socketpair: TUN fd handoff (child→parent) via SCM_RIGHTS.
+	// pipe: parent signals child "WG is up, finish setup".
 	sp, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
 		fail("socketpair: %v", err)
@@ -86,11 +88,6 @@ func runRun(args []string) {
 		fail("pipe: %v", err)
 	}
 
-	// Re-exec self under unshare(USER|NET|MNT). Go writes uid_map +
-	// gid_map for us when UidMappings/GidMappingsEnableSetgroups are
-	// set. The clone happens before the runtime starts in the child,
-	// so the single-thread requirement for setns(CLONE_NEWUSER) is
-	// satisfied automatically.
 	self, err := os.Executable()
 	if err != nil {
 		fail("self path: %v", err)
@@ -108,6 +105,11 @@ func runRun(args []string) {
 			{ContainerID: 0, HostID: os.Getgid(), Size: 1},
 		},
 		GidMappingsEnableSetgroups: false,
+		// Raise CAP_NET_ADMIN into ambient before exec so it survives into
+		// the child's effective set. Without this, exec clears all caps from
+		// the new user namespace and TUNSETIFF fails with EPERM.
+		// mirrors unclaw's raise_ambient_net_admin() call before ip commands.
+		AmbientCaps: []uintptr{capNetAdmin},
 	}
 	if err := child.Start(); err != nil {
 		fail("clone: %v\n  hint: this distro may have unprivileged user namespaces disabled.\n  enable: sudo sysctl -w kernel.unprivileged_userns_clone=1", err)
@@ -115,21 +117,12 @@ func runRun(args []string) {
 	cSock.Close()
 	wgUpR.Close()
 
-	// Receive the TUN fd the child opened.
 	tunFd, err := recvFD(pSock)
 	if err != nil {
 		_ = child.Process.Kill()
 		fail("recv tun fd: %v", err)
 	}
 
-	// Build a wireguard-go device on that fd. tun lives in the child
-	// netns; UDP socket binds in our netns (init) so it egresses
-	// through the host's default route. We wrap the fd in a minimal
-	// tun.Device that returns a hardcoded MTU — wireguard-go's stock
-	// linux tun queries SIOCGIFMTU/netlink which won't find wg0 (it's
-	// in the child's netns). The wireguard4netns project documents
-	// this exact footgun; the adapter sidesteps it without patching
-	// the upstream library.
 	tunDev := newRawFDTun(tunFd)
 	logger := device.NewLogger(device.LogLevelError, "[clawpatrol run] ")
 	dev := device.NewDevice(tunDev, conn.NewDefaultBind(), logger)
@@ -143,11 +136,9 @@ func runRun(args []string) {
 	}
 	defer dev.Close()
 
-	// Tell the child WG is up — go ahead and configure addr/route + exec.
 	wgUpW.Write([]byte{1})
 	wgUpW.Close()
 
-	// Forward signals to the child cmd group.
 	sigCh := make(chan os.Signal, 4)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
@@ -165,49 +156,41 @@ func runRun(args []string) {
 }
 
 // runRunChild executes inside the unshared user+net+mnt namespaces.
-// Parent passes the socketpair end as fd 3 and the wg-up pipe as fd 4.
+// Receives its socket on fd 3 and the wg-up pipe on fd 4.
+// Has CAP_NET_ADMIN in effective (via ambient set from parent's AmbientCaps).
 func runRunChild() {
 	cSock := os.NewFile(3, "parent-sock")
 	wgUpR := os.NewFile(4, "wg-up")
-	if cSock == nil || wgUpR == nil {
-		fail("internal: child fds missing")
-	}
 
-	// argv after the leading "run": this is the user's cmd.
 	argv := os.Args[2:]
 	if len(argv) == 0 {
 		fail("internal: child got empty argv")
 	}
 
-	// Open /dev/net/tun with TUNSETIFF for wg0.
 	tunFd, err := openTUN(tunIfName)
 	if err != nil {
 		fail("open tun: %v", err)
 	}
 
-	// Send the fd to the parent.
 	if err := sendFD(cSock, tunFd); err != nil {
 		fail("send tun fd: %v", err)
 	}
 	cSock.Close()
 	unix.Close(tunFd)
 
-	// Wait for parent to bring WG up.
 	one := make([]byte, 1)
 	if _, err := io.ReadFull(wgUpR, one); err != nil {
 		fail("wait wg-up: %v", err)
 	}
 	wgUpR.Close()
 
-	// Configure wg0: link up, addr, default route, MTU. Shelling to
-	// `ip` here is fine — we're inside the unshared netns, so this
-	// configures wg0 not the host. Avoids a netlink dep for ~5 lines.
 	cfg := mustParseRunConf(os.Getenv("CLAWPATROL_RUN_CONF"))
 	addr := cfg.Address
 	if !strings.Contains(addr, "/") {
 		addr += "/32"
 	}
 	for _, a := range [][]string{
+		{"ip", "link", "set", "lo", "up"},
 		{"ip", "link", "set", tunIfName, "mtu", fmt.Sprintf("%d", tunMTU), "up"},
 		{"ip", "addr", "add", addr, "dev", tunIfName},
 		{"ip", "route", "add", "default", "dev", tunIfName},
@@ -219,16 +202,16 @@ func runRunChild() {
 		}
 	}
 
-	// Bind-mount a per-run resolv.conf with a public resolver. Our
-	// netns has no host interfaces — DNS only works through wg0 →
-	// gateway. The gateway forwards UDP/53 like any other packet.
-	// Skip if user said --keep-resolv (pass-through inherited copy).
 	if os.Getenv("CLAWPATROL_RUN_KEEP_RESOLV") != "1" {
 		_ = bindResolv("nameserver 1.1.1.1\nnameserver 8.8.8.8\n")
 	}
 
-	// execve the user's cmd. Replaces the child process; parent's
-	// waitpid sees the cmd's exit status directly.
+	// Clear ambient caps before exec so the user's command does not inherit
+	// CAP_NET_ADMIN. Mirrors clear_ambient_caps() in unclaw netns.rs.
+	if err := clearAmbientCaps(); err != nil {
+		fail("clear ambient caps: %v", err)
+	}
+
 	bin, err := exec.LookPath(argv[0])
 	if err != nil {
 		fail("lookpath %s: %v", argv[0], err)
@@ -238,11 +221,31 @@ func runRunChild() {
 	}
 }
 
+// --- capability manipulation -------------------------------------------------
+
+const capNetAdmin = uintptr(12) // CAP_NET_ADMIN, for AmbientCaps slice
+
+// clearAmbientCaps drops all ambient capabilities before exec'ing the user's
+// command so it does not inherit CAP_NET_ADMIN. Mirrors unclaw's
+// clear_ambient_caps() in netns.rs.
+//
+// From capabilities(7): P'(ambient) = (file is privileged) ? 0 : P(ambient)
+// Clearing ambient here means the user's cmd exec gets P'(ambient)=0 and
+// thus P'(effective)=0 for any cap we had raised.
+func clearAmbientCaps() error {
+	_, _, errno := unix.RawSyscall6(unix.SYS_PRCTL,
+		unix.PR_CAP_AMBIENT, unix.PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0, 0)
+	if errno != 0 {
+		return fmt.Errorf("prctl PR_CAP_AMBIENT_CLEAR_ALL: %w", errno)
+	}
+	return nil
+}
+
 // --- WG conf parsing -------------------------------------------------
 
 type runConf struct {
 	PrivateKey string
-	Address    string // x.y.z.w[/mask]
+	Address    string
 	PeerPubKey string
 	Endpoint   string
 }
@@ -295,7 +298,6 @@ func parseRunConf(path string) (*runConf, error) {
 	if c.PrivateKey == "" || c.Address == "" || c.PeerPubKey == "" || c.Endpoint == "" {
 		return nil, fmt.Errorf("missing PrivateKey/Address/PublicKey/Endpoint")
 	}
-	// Stash for the child re-exec to read without re-parsing.
 	os.Setenv("CLAWPATROL_RUN_CONF", path)
 	return c, nil
 }
@@ -308,15 +310,11 @@ func mustParseRunConf(path string) *runConf {
 	return c
 }
 
-// buildWGIpc translates runConf into the IpcSet text format wg-go
-// accepts. private/public keys must be hex; conf carries them in
-// base64 (wg-quick format), so decode + re-hex.
 func buildWGIpc(c *runConf) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "private_key=%s\n", b64ToHex(c.PrivateKey))
 	fmt.Fprintf(&b, "replace_peers=true\n")
 	fmt.Fprintf(&b, "public_key=%s\n", b64ToHex(c.PeerPubKey))
-	// Resolve hostname → IP — wg-go's parser wants a numeric endpoint.
 	if ep, err := resolveEndpoint(c.Endpoint); err == nil {
 		fmt.Fprintf(&b, "endpoint=%s\n", ep)
 	}
@@ -370,6 +368,20 @@ func openTUN(name string) (int, error) {
 	return fd, nil
 }
 
+func checkUserNS() {
+	if b, err := os.ReadFile("/proc/sys/kernel/unprivileged_userns_clone"); err == nil {
+		if strings.TrimSpace(string(b)) == "0" {
+			fail("unprivileged user namespaces disabled.\n  fix: sudo sysctl -w kernel.unprivileged_userns_clone=1")
+		}
+	}
+	if b, err := os.ReadFile("/proc/sys/kernel/apparmor_restrict_unprivileged_userns"); err == nil {
+		if strings.TrimSpace(string(b)) == "1" {
+			fmt.Fprintf(os.Stderr, "warning: AppArmor may block TUN in user namespaces.\n"+
+				"  if `clawpatrol run` fails: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0\n")
+		}
+	}
+}
+
 func sendFD(s *os.File, fd int) error {
 	rights := unix.UnixRights(fd)
 	return unix.Sendmsg(int(s.Fd()), []byte{0}, rights, nil, 0)
@@ -413,10 +425,6 @@ func bindResolv(body string) error {
 
 // --- raw-fd tun adapter ---------------------------------------------
 
-// rawFDTun is the smallest tun.Device that wireguard-go accepts.
-// Reads/writes go straight to the fd; MTU returns the constant we
-// configured on the iface inside the child netns. Avoids touching
-// netlink/ioctl on the host side.
 type rawFDTun struct {
 	f      *os.File
 	events chan wgtun.Event
