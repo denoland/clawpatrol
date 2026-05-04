@@ -412,6 +412,7 @@ func fetchCA(ip, dst string) error {
 }
 
 func installCATrust(caPath string) error {
+	fmt.Println("Installing CA certificate into system trust store (requires sudo)...")
 	switch runtime.GOOS {
 	case "darwin":
 		return exec.Command("sudo", "security", "add-trusted-cert",
