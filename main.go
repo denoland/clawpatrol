@@ -217,10 +217,11 @@ type Gateway struct {
 	// at request time. Default env-var-backed; OAuth-flow credentials
 	// land via a follow-up bridge that delegates to OAuthRegistry.
 	secrets runtime.SecretStore
-	// pgIdx maps WG-forwarder dstIPs to the postgres endpoint that
-	// owns them. Rebuilt on every policy load. Lookups are O(1)
-	// after the initial DNS resolution.
-	pgIdx atomic.Pointer[pgIndex]
+	// connIdx maps WG-forwarder dstIPs back to the endpoint that
+	// claims them — populated by every endpoint plugin whose body
+	// implements runtime.ConnRouter (postgres today, future binary
+	// protocols). Rebuilt on every policy load.
+	connIdx atomic.Pointer[runtime.ConnIndex]
 }
 
 // Policy returns the current snapshot of the lowered runtime policy.
@@ -283,7 +284,7 @@ func (g *Gateway) watchConfig(path string) {
 		}
 		g.policy.Store(policy)
 		registerOAuthCredentials(g.oauth, policy)
-		g.pgIdx.Store(buildPgIndex(policy))
+		g.connIdx.Store(runtime.BuildConnIndex(policy))
 		// Hot-swap the operational *config.Gateway too — AdminEmail /
 		// PublicURL / DashboardSecret reads pick up immediately.
 		// Listen / CADir / Tailscale changes are not applied (restart).
@@ -905,8 +906,8 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 	// profile so the right one wins. Fall back to first-postgres-in-
 	// profile so single-database profiles work without DNS at all.
 	var ep *config.CompiledEndpoint
-	if idx := g.pgIdx.Load(); idx != nil {
-		candidates := idx.lookup(dstIP)
+	if idx := g.connIdx.Load(); idx != nil {
+		candidates := idx.Lookup(dstIP)
 		ep = pickEndpointForProfile(candidates, policy, profile)
 	}
 	if ep == nil {
@@ -971,7 +972,7 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 // the device's profile. Multi-postgres profiles need DNS-aware
 // matching against the WG forwarder's dstIP — tracked as follow-up;
 // the first-match heuristic covers the single-database common case.
-// pickEndpointForProfile takes pgIndex.lookup candidates and returns
+// pickEndpointForProfile takes ConnIndex.Lookup candidates and returns
 // the one whose name belongs to the device's profile. Returns nil when
 // none of them do — caller should refuse the connection rather than
 // silently route through an endpoint the device isn't supposed to
@@ -1586,7 +1587,7 @@ func runGateway(args []string) {
 	g.secrets = newGatewaySecretStore(db, oauthReg)
 	registerOAuthCredentials(oauthReg, policy)
 	g.policy.Store(policy)
-	g.pgIdx.Store(buildPgIndex(policy))
+	g.connIdx.Store(runtime.BuildConnIndex(policy))
 	log.Printf("policy: %d endpoints across %d profiles", len(policy.Endpoints), len(policy.Profiles))
 	go g.watchConfig(*cfgPath)
 	if err := g.onboard.Load(db); err != nil {

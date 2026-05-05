@@ -82,6 +82,11 @@ func (e *PostgresEndpoint) EndpointCredentials() []config.CredBinding {
 	return bindings(e.Credential, e.Credentials)
 }
 
+// ConnRouteHosts implements runtime.ConnRouter — postgres traffic
+// arrives at the WG forwarder as raw conns (no SNI), so the gateway
+// indexes the upstream host:port → endpoint at policy-load time.
+func (e *PostgresEndpoint) ConnRouteHosts() []string { return []string{e.Host} }
+
 func (e *PostgresEndpoint) credentialAndRaw() (string, cty.Value) {
 	return e.Credential, e.CredentialsRaw
 }
