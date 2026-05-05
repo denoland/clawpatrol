@@ -45,6 +45,13 @@ type PostgresAuthCredential interface {
 	PostgresAuth(sec Secret) (user, password string)
 }
 
+// ClickhouseAuthCredential supplies the upstream credentials for a
+// ClickHouse native protocol session. The endpoint runtime rewrites
+// the client Hello packet with these values before dialing upstream.
+type ClickhouseAuthCredential interface {
+	ClickhouseAuth(sec Secret) (user, password string)
+}
+
 // TLSCredentialRuntime customizes the upstream TLS configuration
 // before the dial. mTLS credentials use this to add a client cert
 // (Certificates) and an optional custom root pool (RootCAs); other

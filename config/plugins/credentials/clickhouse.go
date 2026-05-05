@@ -20,6 +20,10 @@ type ClickhouseCredential struct {
 	User string `hcl:"user,optional"`
 }
 
+func (c *ClickhouseCredential) ClickhouseAuth(sec runtime.Secret) (string, string) {
+	return c.User, string(sec.Bytes)
+}
+
 func (c *ClickhouseCredential) InjectHTTP(_ context.Context, req *http.Request, sec runtime.Secret) error {
 	if c.User == "" || len(sec.Bytes) == 0 || req.URL == nil {
 		return nil
@@ -38,7 +42,10 @@ func (*ClickhouseCredential) SecretSlots() []config.SecretSlot {
 }
 
 func init() {
-	var _ runtime.HTTPCredentialRuntime = (*ClickhouseCredential)(nil)
+	var (
+		_ runtime.HTTPCredentialRuntime    = (*ClickhouseCredential)(nil)
+		_ runtime.ClickhouseAuthCredential = (*ClickhouseCredential)(nil)
+	)
 	config.Register(&config.Plugin{
 		Kind:    config.KindCredential,
 		Type:    "clickhouse_credential",

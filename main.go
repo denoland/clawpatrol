@@ -909,7 +909,7 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 	var ep *config.CompiledEndpoint
 	if idx := g.connIdx.Load(); idx != nil {
 		candidates := idx.Lookup(dstIP)
-		ep = pickEndpointForProfile(candidates, policy, profile)
+		ep = pickEndpointForProfile(filterEndpointType(candidates, "postgres"), policy, profile)
 	}
 	if ep == nil {
 		ep = firstPostgresEndpoint(policy, profile)
@@ -969,6 +969,61 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 	}
 }
 
+func (g *Gateway) handleClickhouseNativeConn(c net.Conn, dstIP string, dstPort uint16) {
+	defer c.Close()
+	pip := peerIP(c)
+	profile := g.profileFor(pip)
+
+	policy := g.Policy()
+	var ep *config.CompiledEndpoint
+	if idx := g.connIdx.Load(); idx != nil {
+		candidates := idx.Lookup(dstIP)
+		ep = pickEndpointForProfile(filterEndpointType(candidates, "clickhouse_native"), policy, profile)
+	}
+	if ep == nil {
+		ep = firstClickhouseNativeEndpoint(policy, profile)
+	}
+	if ep == nil {
+		log.Printf("clickhouse %s: no clickhouse_native endpoint in profile %q; relaying", dstIP, profile)
+		wgRelay(c, dstIP, int(dstPort))
+		return
+	}
+	connRT, ok := ep.Plugin.Runtime.(runtime.ConnEndpointRuntime)
+	if !ok {
+		log.Printf("clickhouse endpoint %q plugin lacks ConnEndpointRuntime", ep.Name)
+		return
+	}
+
+	upstreamAddr := net.JoinHostPort(dstIP, strconv.Itoa(int(dstPort)))
+	ch := &runtime.ConnHandle{
+		Conn:     c,
+		Endpoint: ep,
+		Policy:   policy,
+		Profile:  profile,
+		PeerIP:   pip,
+		Secrets:  g.secrets,
+		DialUpstream: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if addr == "" {
+				addr = upstreamAddr
+			}
+			return g.dialer.DialContext(ctx, network, upstreamAddr)
+		},
+		Emit: func(ev runtime.ConnEvent) {
+			if g.sink == nil {
+				return
+			}
+			g.sink.Emit(Event{
+				Mode: "clickhouse", Host: dstIP, AgentIP: pip,
+				Method: ev.Verb, Path: ev.Summary,
+				Action: ev.Action, Reason: ev.Reason,
+			})
+		},
+	}
+	if err := connRT.HandleConn(context.Background(), ch); err != nil {
+		log.Printf("clickhouse %s:%d: %v", dstIP, dstPort, err)
+	}
+}
+
 // firstPostgresEndpoint returns the first postgres-family endpoint in
 // the device's profile. Multi-postgres profiles need DNS-aware
 // matching against the WG forwarder's dstIP — tracked as follow-up;
@@ -998,7 +1053,40 @@ func pickEndpointForProfile(candidates []*config.CompiledEndpoint, policy *confi
 	return nil
 }
 
+func filterEndpointType(candidates []*config.CompiledEndpoint, pluginType string) []*config.CompiledEndpoint {
+	out := candidates[:0]
+	for _, ep := range candidates {
+		if ep != nil && ep.Plugin.Type == pluginType {
+			out = append(out, ep)
+		}
+	}
+	return out
+}
+
 func firstPostgresEndpoint(policy *config.CompiledPolicy, profile string) *config.CompiledEndpoint {
+	return firstEndpointOfType(policy, profile, "postgres")
+}
+
+func firstClickhouseNativeEndpoint(policy *config.CompiledPolicy, profile string) *config.CompiledEndpoint {
+	return firstEndpointOfType(policy, profile, "clickhouse_native")
+}
+
+func hasClickhouseNativePort(policy *config.CompiledPolicy, port int) bool {
+	if policy == nil {
+		return false
+	}
+	for _, ep := range policy.Endpoints {
+		if ep.Plugin.Type != "clickhouse_native" {
+			continue
+		}
+		if p, ok := ep.Body.(interface{ NativePort() int }); ok && p.NativePort() == port {
+			return true
+		}
+	}
+	return false
+}
+
+func firstEndpointOfType(policy *config.CompiledPolicy, profile, pluginType string) *config.CompiledEndpoint {
 	if policy == nil {
 		return nil
 	}
@@ -1007,7 +1095,7 @@ func firstPostgresEndpoint(policy *config.CompiledPolicy, profile string) *confi
 		// Single-tenant fallback: scan every profile.
 		for _, p := range policy.Profiles {
 			for _, ep := range p.Endpoints {
-				if ep.Plugin.Type == "postgres" {
+				if ep.Plugin.Type == pluginType {
 					return ep
 				}
 			}
@@ -1015,7 +1103,7 @@ func firstPostgresEndpoint(policy *config.CompiledPolicy, profile string) *confi
 		return nil
 	}
 	for _, ep := range prof.Endpoints {
-		if ep.Plugin.Type == "postgres" {
+		if ep.Plugin.Type == pluginType {
 			return ep
 		}
 	}
@@ -1673,6 +1761,8 @@ func runGateway(args []string) {
 	// traffic into our netstack (AllowedIPs=0.0.0.0/0). The
 	// promiscuous forwarder accepts SYNs to any dst IP/port:
 	//   - 443    → MITM (g.handle does SNI peek + rule dispatch)
+	//   - 5432   → Postgres wire-protocol runtime
+	//   - 9440   → ClickHouse native protocol runtime
 	//   - dash   → dashboard mux
 	//   - else   → transparent relay to the real upstream
 	// No /etc/hosts hack needed on clients — agents resolve real
@@ -1692,6 +1782,8 @@ func runGateway(args []string) {
 				g.handle(c)
 			case dstPort == 5432:
 				g.handlePostgresConn(c, dstIP)
+			case dstPort == 9440 || hasClickhouseNativePort(g.Policy(), int(dstPort)):
+				g.handleClickhouseNativeConn(c, dstIP, dstPort)
 			case dashPort != 0 && int(dstPort) == dashPort:
 				_ = http.Serve(&oneShotListener{c: c}, dashMux)
 			default:
@@ -1703,7 +1795,7 @@ func runGateway(args []string) {
 		}); err != nil {
 			log.Fatalf("wireguard forwarder: %v", err)
 		}
-		log.Printf("wireguard promiscuous forwarder ready (any dst → :443=mitm, :5432=pg, :%d=dash, else=relay)", dashPort)
+		log.Printf("wireguard promiscuous forwarder ready (any dst → :443=mitm, :5432=pg, :9440=clickhouse, :%d=dash, else=relay)", dashPort)
 	}
 
 	ln, err := openListener(cfg)
