@@ -67,6 +67,7 @@ func newWebMux(g *Gateway, caDir string, ts Tailscale, publicURL string) http.Ha
 	mux.HandleFunc("/api/credentials/set", w.apiCredentialsSet)
 	mux.HandleFunc("/api/credentials/clear", w.apiCredentialsClear)
 	mux.HandleFunc("/api/events", w.apiEventsSSE)
+	mux.HandleFunc("/api/actions/", w.apiActionByID)
 	mux.HandleFunc("/api/onboard/start", w.apiOnboardStart)
 	mux.HandleFunc("/api/onboard/poll", w.apiOnboardPoll)
 	mux.HandleFunc("/api/onboard/approve", w.apiOnboardApprove)
@@ -711,6 +712,77 @@ func (w *webMux) apiEventsSSE(rw http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (w *webMux) apiActionByID(
+	rw http.ResponseWriter, r *http.Request,
+) {
+	// Path: /api/actions/<uuid>
+	actionID := strings.TrimPrefix(r.URL.Path, "/api/actions/")
+	if actionID == "" {
+		http.Error(rw, "missing id", 400)
+		return
+	}
+	var (
+		e           Event
+		tsNs        int64
+		mode        sql.NullString
+		agentIP     sql.NullString
+		method      sql.NullString
+		path        sql.NullString
+		status      sql.NullInt64
+		in, ot      sql.NullInt64
+		ms          sql.NullInt64
+		action      sql.NullString
+		reason      sql.NullString
+		reqSha      sql.NullString
+		respSha     sql.NullString
+		reqBody     sql.NullString
+		respBody    sql.NullString
+		respHeaders sql.NullString
+	)
+	err := w.g.db.QueryRow(`
+		SELECT ts_ns, mode, agent_ip, host, method, path,
+		       status, bytes_in, bytes_out, ms, action,
+		       reason, req_sha, resp_sha,
+		       req_body, resp_body, resp_headers
+		FROM actions WHERE action_id = ?`, actionID,
+	).Scan(
+		&tsNs, &mode, &agentIP, &e.Host,
+		&method, &path, &status, &in, &ot, &ms,
+		&action, &reason, &reqSha, &respSha,
+		&reqBody, &respBody, &respHeaders,
+	)
+	if err == sql.ErrNoRows {
+		http.Error(rw, "not found", 404)
+		return
+	}
+	if err != nil {
+		http.Error(rw, err.Error(), 500)
+		return
+	}
+	e.ID = actionID
+	e.Ts = time.Unix(0, tsNs).UTC()
+	e.Mode = mode.String
+	e.AgentIP = agentIP.String
+	e.Method = method.String
+	e.Path = path.String
+	e.Status = int(status.Int64)
+	e.In = in.Int64
+	e.Out = ot.Int64
+	e.Ms = ms.Int64
+	e.Action = action.String
+	e.Reason = reason.String
+	e.ReqSha = reqSha.String
+	e.RespSha = respSha.String
+	e.ReqBody = reqBody.String
+	e.RespBody = respBody.String
+	if respHeaders.String != "" {
+		_ = json.Unmarshal(
+			[]byte(respHeaders.String), &e.RespHeaders,
+		)
+	}
+	writeJSON(rw, e)
+}
+
 func writeJSON(rw http.ResponseWriter, v any) {
 	rw.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(rw).Encode(v)
@@ -726,8 +798,8 @@ func allIntegrationKeys() []string { return displayOrder }
 // by the dashboard SSE stream and the on-disk event log).
 
 type Event struct {
-	Ts         time.Time `json:"ts"`
-	ID         string    `json:"id,omitempty"`    // request id; correlates start/end/frame
+	Ts time.Time `json:"ts"`
+	ID string    `json:"id,omitempty"` // UUIDv7; correlates start/end/frame + DB key
 	Phase      string    `json:"phase,omitempty"` // "" (legacy/end), "start", "end", "frame"
 	Mode       string    `json:"mode"`
 	Agent      string    `json:"agent,omitempty"`
@@ -742,9 +814,10 @@ type Event struct {
 	Action     string    `json:"action,omitempty"`
 	Reason     string    `json:"reason,omitempty"`
 	ReqSha     string    `json:"req_sha,omitempty"`
-	ReqSample  string    `json:"req_sample,omitempty"`
-	RespSha    string    `json:"resp_sha,omitempty"`
-	RespSample string    `json:"resp_sample,omitempty"`
+	ReqBody    string    `json:"req_body,omitempty"`
+	RespSha     string            `json:"resp_sha,omitempty"`
+	RespBody    string            `json:"resp_body,omitempty"`
+	RespHeaders map[string]string `json:"resp_headers,omitempty"`
 	// Frame is set for Phase="frame" only — a single WS frame's text
 	// payload (truncated at sampleCap). Direction is "c→s" or "s→c"
 	// to disambiguate masked client frames from unmasked server frames.
@@ -775,8 +848,10 @@ func NewSink(db *sql.DB, buf int) (*Sink, error) {
 
 func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 	rows, err := db.Query(`
-		SELECT ts_ns, mode, agent_ip, host, method, path, status,
-		       bytes_in, bytes_out, ms, action, reason, req_sha, resp_sha
+		SELECT action_id, ts_ns, mode, agent_ip, host,
+		       method, path, status, bytes_in, bytes_out,
+		       ms, action, reason, req_sha, resp_sha,
+		       req_body, resp_body, resp_headers
 		FROM actions ORDER BY id DESC LIMIT ?`, n)
 	if err != nil {
 		return nil, err
@@ -785,23 +860,33 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 	out := make([]Event, 0, n)
 	for rows.Next() {
 		var (
-			e       Event
-			tsNs    int64
-			mode    sql.NullString
-			agentIP sql.NullString
-			method  sql.NullString
-			path    sql.NullString
-			status  sql.NullInt64
-			in, ot  sql.NullInt64
-			ms      sql.NullInt64
-			action  sql.NullString
-			reason  sql.NullString
-			reqSha  sql.NullString
-			respSha sql.NullString
+			e           Event
+			actionID    sql.NullString
+			tsNs        int64
+			mode        sql.NullString
+			agentIP     sql.NullString
+			method      sql.NullString
+			path        sql.NullString
+			status      sql.NullInt64
+			in, ot      sql.NullInt64
+			ms          sql.NullInt64
+			action      sql.NullString
+			reason      sql.NullString
+			reqSha      sql.NullString
+			respSha     sql.NullString
+			reqBody     sql.NullString
+			respBody    sql.NullString
+			respHeaders sql.NullString
 		)
-		if err := rows.Scan(&tsNs, &mode, &agentIP, &e.Host, &method, &path, &status, &in, &ot, &ms, &action, &reason, &reqSha, &respSha); err != nil {
+		if err := rows.Scan(
+			&actionID, &tsNs, &mode, &agentIP, &e.Host,
+			&method, &path, &status, &in, &ot, &ms,
+			&action, &reason, &reqSha, &respSha,
+			&reqBody, &respBody, &respHeaders,
+		); err != nil {
 			return nil, err
 		}
+		e.ID = actionID.String
 		e.Ts = time.Unix(0, tsNs).UTC()
 		e.Mode = mode.String
 		e.AgentIP = agentIP.String
@@ -815,6 +900,13 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 		e.Reason = reason.String
 		e.ReqSha = reqSha.String
 		e.RespSha = respSha.String
+		e.ReqBody = reqBody.String
+		e.RespBody = respBody.String
+		if respHeaders.String != "" {
+			_ = json.Unmarshal(
+				[]byte(respHeaders.String), &e.RespHeaders,
+			)
+		}
 		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {
@@ -852,11 +944,23 @@ func (s *Sink) drain() {
 		// the table for long-poll / WS sessions.
 		persist := e.Phase == "" || e.Phase == "end"
 		if s.db != nil && persist {
-			_, _ = s.db.Exec(`
+			var rhJSON []byte
+			if len(e.RespHeaders) > 0 {
+				rhJSON, _ = json.Marshal(e.RespHeaders)
+			}
+			s.db.Exec(`
 				INSERT INTO actions
-				 (ts_ns, mode, agent_ip, host, method, path, status, bytes_in, bytes_out, ms, action, reason, req_sha, resp_sha)
-				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-			`, e.Ts.UnixNano(), e.Mode, e.AgentIP, e.Host, e.Method, e.Path, e.Status, e.In, e.Out, e.Ms, e.Action, e.Reason, e.ReqSha, e.RespSha)
+				 (action_id, ts_ns, mode, agent_ip, host,
+				  method, path, status, bytes_in, bytes_out,
+				  ms, action, reason, req_sha, resp_sha,
+				  req_body, resp_body, resp_headers)
+				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			`, e.ID, e.Ts.UnixNano(), e.Mode, e.AgentIP,
+				e.Host, e.Method, e.Path, e.Status,
+				e.In, e.Out, e.Ms, e.Action, e.Reason,
+				e.ReqSha, e.RespSha,
+				e.ReqBody, e.RespBody,
+				string(rhJSON))
 		}
 		s.mu.Lock()
 		// Recent ring is the SSE backlog replayed to fresh
@@ -919,6 +1023,14 @@ type sampler struct {
 	cap  int
 	buf  bytes.Buffer
 	n    int64
+}
+
+func flatHeaders(h http.Header) map[string]string {
+	out := make(map[string]string, len(h))
+	for k, v := range h {
+		out[k] = strings.Join(v, ", ")
+	}
+	return out
 }
 
 func newSampler(capBytes int) *sampler {

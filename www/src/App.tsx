@@ -5,6 +5,7 @@ import { ConnectModal } from "./components/ConnectModal";
 import { DevicePage } from "./components/DevicePage";
 import { LiveRequests } from "./components/LiveRequests";
 import { OnboardPage } from "./components/OnboardPage";
+import { RequestDetailPage } from "./components/RequestDetailPage";
 import { AddDeviceModal } from "./components/AddDeviceModal";
 import { SettingsModal } from "./components/SettingsModal";
 import { HITLBar } from "./components/HITLBar";
@@ -14,12 +15,15 @@ type Route =
   | { name: "main" }
   | { name: "device"; ip: string }
   | { name: "analytics"; ip: string }
-  | { name: "onboard"; code: string };
+  | { name: "onboard"; code: string }
+  | { name: "request"; id: string };
 
 function parseRoute(): Route {
   const h = window.location.hash;
   if (h.startsWith("#/onboard/"))
     return { name: "onboard", code: decodeURIComponent(h.slice("#/onboard/".length)) };
+  const r = h.match(/^#\/request\/([^/]+)$/);
+  if (r) return { name: "request", id: decodeURIComponent(r[1]) };
   const a = h.match(/^#\/analytics\/(.+)$/);
   if (a) return { name: "analytics", ip: decodeURIComponent(a[1]) };
   const m = h.match(/^#\/device\/(.+)$/);
@@ -109,6 +113,8 @@ export default function App() {
           ip={route.ip}
           onBack={() => navigate("")}
         />
+      ) : route.name === "request" ? (
+        <RequestDetailPage id={route.id} onBack={() => navigate("")} />
       ) : route.name === "onboard" ? (
         <OnboardPage code={route.code} onBack={() => navigate("")} />
       ) : (

@@ -283,6 +283,36 @@ export async function oauthRevoke(id: string, owner: string): Promise<void> {
   if (!r.ok) throw new Error(await r.text());
 }
 
+export async function getAction(id: string): Promise<EventRecord> {
+  const r = await api(`/api/actions/${id}`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export type EventRecord = {
+  ts: string;
+  id?: string;
+  phase?: "" | "start" | "end" | "frame";
+  mode: string;
+  agent_ip?: string;
+  host: string;
+  method?: string;
+  path?: string;
+  status?: number;
+  in?: number;
+  out?: number;
+  ms: number;
+  action?: string;
+  reason?: string;
+  frame?: string;
+  direction?: string;
+  req_sha?: string;
+  resp_sha?: string;
+  req_body?: string;
+  resp_body?: string;
+  resp_headers?: Record<string, string>;
+};
+
 export async function oauthExchange(state: string, code: string): Promise<{ connected: boolean; owner: string; expires: number }> {
   const r = await api("/api/oauth/exchange", {
     method: "POST",

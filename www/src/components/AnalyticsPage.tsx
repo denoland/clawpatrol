@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import * as Plot from "@observablehq/plot";
-import type { EventRecord } from "./LiveRequests";
+import type { EventRecord } from "../lib/api";
 import { LiveRequests } from "./LiveRequests";
 
 export function AnalyticsPage({ ip, onBack }: {

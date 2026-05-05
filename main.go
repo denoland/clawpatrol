@@ -5,10 +5,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	cryptorand "crypto/rand"
 	"crypto/tls"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -30,6 +28,7 @@ import (
 	_ "github.com/denoland/clawpatrol/config/plugins/all"
 	"github.com/denoland/clawpatrol/config/plugins/approvers"
 	"github.com/denoland/clawpatrol/config/runtime"
+	"github.com/google/uuid"
 )
 
 // Tailscale aliases the operational tailscale-block type loaded from
@@ -78,13 +77,11 @@ func parseDurationOr(s string, def time.Duration) time.Duration {
 	return d
 }
 
-// newReqID returns a short hex token that correlates start/end/frame
-// events for a single request. 8 random bytes is plenty when the
-// dashboard is the only consumer; collisions just merge two rows.
+// newReqID returns a UUIDv7 string. Time-ordered + random tail;
+// used both for start/end/frame correlation and as the persistent
+// action key in the DB / detail page URL.
 func newReqID() string {
-	var b [8]byte
-	_, _ = cryptorand.Read(b[:])
-	return hex.EncodeToString(b[:])
+	return uuid.Must(uuid.NewV7()).String()
 }
 
 // loadConfig parses the gateway HCL via the typed-block grammar and
@@ -1474,7 +1471,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			ev.Reason = err.Error()
 			ev.Ms = time.Since(start).Milliseconds()
 			ev.ReqSha = reqS.sha()
-			ev.ReqSample = reqS.sample()
+			ev.ReqBody = reqS.sample()
 			ev.In = reqS.n
 			g.emitEnd(ev)
 			return
@@ -1519,12 +1516,13 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			ev.Action = "allow"
 		}
 		ev.Status = resp.StatusCode
+		ev.RespHeaders = flatHeaders(resp.Header)
 		ev.In = reqS.n
 		ev.Out = respS.n
 		ev.ReqSha = reqS.sha()
-		ev.ReqSample = reqS.sample()
+		ev.ReqBody = reqS.sample()
 		ev.RespSha = respS.sha()
-		ev.RespSample = respS.sample()
+		ev.RespBody = respS.sample()
 		ev.Ms = time.Since(start).Milliseconds()
 		g.emitEnd(ev)
 		if g.agents != nil && agentAddr != "" {
