@@ -52,6 +52,11 @@ func newWebMux(g *Gateway, caDir string, ts Tailscale, publicURL string) http.Ha
 	mux.HandleFunc("/api/whoami", w.apiWhoami)
 	mux.HandleFunc("/api/status", w.apiStatus)
 	mux.HandleFunc("/api/agents", w.apiAgents)
+	// /api/state is the dashboard's single-call refresh endpoint —
+	// bundles whoami+status+agents in one round-trip and returns 304
+	// when the JSON hash matches If-None-Match. Replaces the three
+	// parallel per-3s fetches App.refresh used to fire.
+	mux.HandleFunc("/api/state", w.apiState)
 	mux.HandleFunc("/api/agents/delete", w.apiAgentDelete)
 	mux.HandleFunc("/api/agents/profile", w.apiAgentProfile)
 	mux.HandleFunc("/api/profiles", w.apiProfiles)
@@ -481,20 +486,55 @@ func (w *webMux) ownerForCaller(r *http.Request) (key, label string) {
 }
 
 func (w *webMux) apiWhoami(rw http.ResponseWriter, r *http.Request) {
+	writeJSON(rw, w.whoamiData(r))
+}
+
+// whoamiData exposes the apiWhoami payload as a Go map so /api/state
+// can bundle it without round-tripping through writeJSON +
+// re-decoding. Cheap (no DB hit; just config + tailscale whois).
+func (w *webMux) whoamiData(r *http.Request) map[string]string {
 	user, device, host := w.callerIdentity(r)
-	// Read public_url straight from the live config so that an
-	// operator editing gateway.hcl sees the new value reflected
-	// without a gateway restart (mtime watcher swaps cfg).
 	pu := w.g.cfg.PublicURL
 	if pu == "" {
 		pu = w.publicURL
 	}
-	writeJSON(rw, map[string]string{
+	return map[string]string{
 		"user":       user,
 		"device":     device,
 		"host":       host,
 		"public_url": pu,
-	})
+	}
+}
+
+// apiState is the dashboard's combined refresh endpoint. Bundles
+// whoami + status (integrations) + agents into one response with an
+// ETag — when the JSON hash matches If-None-Match the gateway returns
+// 304 with no body, so an idle dashboard polling every 5s costs ~120
+// bytes per round-trip instead of three full payloads. Cuts dashboard
+// per-poll work from 3 fetches × 3 marshals → 1 fetch × 1 marshal +
+// hash compare.
+func (w *webMux) apiState(rw http.ResponseWriter, r *http.Request) {
+	state := map[string]any{
+		"whoami":       w.whoamiData(r),
+		"integrations": w.statusList(r),
+		"agents":       w.agentsList(),
+	}
+	body, err := json.Marshal(state)
+	if err != nil {
+		http.Error(rw, err.Error(), 500)
+		return
+	}
+	sum := sha256.Sum256(body)
+	tag := `"` + hex.EncodeToString(sum[:8]) + `"`
+	if r.Header.Get("If-None-Match") == tag {
+		rw.Header().Set("ETag", tag)
+		rw.WriteHeader(http.StatusNotModified)
+		return
+	}
+	rw.Header().Set("ETag", tag)
+	rw.Header().Set("Content-Type", "application/json")
+	rw.Header().Set("Cache-Control", "no-cache") // force browser to revalidate via If-None-Match
+	rw.Write(body)
 }
 
 // apiStatus returns the credentials list for the dashboard. Filters

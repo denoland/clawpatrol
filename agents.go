@@ -551,14 +551,20 @@ type Owner struct {
 }
 
 func (w *webMux) apiStatus(rw http.ResponseWriter, r *http.Request) {
+	writeJSON(rw, w.statusList(r))
+}
+
+// statusList exposes the apiStatus payload as a Go slice so /api/state
+// can bundle it without going through writeJSON. Same data shape; no
+// behavior change.
+func (w *webMux) statusList(r *http.Request) []IntegrationRow {
 	out := []IntegrationRow{}
 	policy := w.g.policy.Load()
 	if policy == nil {
-		writeJSON(rw, out)
-		return
+		return out
 	}
 	profile := r.URL.Query().Get("profile")
-	allowed := credentialsInProfile(policy, profile) // nil = no filter
+	allowed := credentialsInProfile(policy, profile)
 
 	names := make([]string, 0, len(policy.Credentials))
 	for name := range policy.Credentials {
@@ -595,7 +601,7 @@ func (w *webMux) apiStatus(rw http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, row)
 	}
-	writeJSON(rw, out)
+	return out
 }
 
 // credentialsInProfile returns the set of credential bare names that
@@ -623,6 +629,13 @@ func credentialsInProfile(policy *config.CompiledPolicy, profile string) map[str
 }
 
 func (w *webMux) apiAgents(rw http.ResponseWriter, _ *http.Request) {
+	writeJSON(rw, w.agentsList())
+}
+
+// agentsList exposes the apiAgents payload as a Go slice so /api/state
+// can bundle it without re-marshaling. Same population logic; pulled
+// out of apiAgents verbatim.
+func (w *webMux) agentsList() []*Agent {
 	var snap []*Agent
 	if w.g.agents != nil {
 		snap = w.g.agents.snapshot()
@@ -699,7 +712,7 @@ func (w *webMux) apiAgents(rw http.ResponseWriter, _ *http.Request) {
 			a.Integrations = ids
 		}
 	}
-	writeJSON(rw, snap)
+	return snap
 }
 
 // apiAgentDelete drops a device from clawpatrol's view. Removes the

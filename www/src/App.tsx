@@ -9,7 +9,7 @@ import { RequestDetailPage } from "./components/RequestDetailPage";
 import { AddDeviceModal } from "./components/AddDeviceModal";
 import { SettingsModal } from "./components/SettingsModal";
 import { HITLBar } from "./components/HITLBar";
-import { getStatus, getAgents, getWhoami, type Integration, type Agent, type Whoami } from "./lib/api";
+import { getState, type Integration, type Agent, type Whoami } from "./lib/api";
 
 type Route =
   | { name: "main" }
@@ -54,10 +54,13 @@ export default function App() {
 
   async function refresh() {
     try {
-      const [i, a, w] = await Promise.all([getStatus(), getAgents(), getWhoami()]);
-      setIntegrations(i || []);
-      setAgents(a || []);
-      setWhoami(w);
+      // Single round-trip; getState ETags so the no-change path is a
+      // 304 (no body, no JSON parse). Replaces three parallel fetches
+      // that ran every 3 s — one bundled fetch every 5 s now.
+      const s = await getState();
+      setIntegrations(s.integrations || []);
+      setAgents(s.agents || []);
+      setWhoami(s.whoami);
     } catch {
       /* swallow */
     }
@@ -65,7 +68,7 @@ export default function App() {
 
   useEffect(() => {
     refresh();
-    const t = setInterval(refresh, 3000);
+    const t = setInterval(refresh, 5000);
     return () => clearInterval(t);
   }, []);
 

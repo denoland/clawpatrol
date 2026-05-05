@@ -16,13 +16,36 @@ export function LiveRequests({ agentIP, max = 200, height }: {
       ? `/api/events?agent=${encodeURIComponent(agentIP)}`
       : "/api/events";
     const es = new EventSource(url);
+
+    // Batched render: SSE can fire dozens of events per second on a
+    // busy gateway (start + frame + end per request). setState every
+    // event = a re-render every event = jank. Buffer parsed events
+    // into pending[] and flush via requestAnimationFrame; the React
+    // commit happens at most once per browser frame (~16 ms) no
+    // matter how many events arrived in between.
+    let pending: EventRecord[] = [];
+    let raf = 0;
+    const flush = () => {
+      raf = 0;
+      if (pending.length === 0) return;
+      const batch = pending;
+      pending = [];
+      setEvents((prev) => {
+        let next = prev;
+        for (const ev of batch) next = mergeEvent(next, ev, max);
+        return next;
+      });
+    };
     es.onmessage = (e) => {
       try {
-        const ev = JSON.parse(e.data) as EventRecord;
-        setEvents((prev) => mergeEvent(prev, ev, max));
+        pending.push(JSON.parse(e.data) as EventRecord);
+        if (raf === 0) raf = requestAnimationFrame(flush);
       } catch { /* ignore */ }
     };
-    return () => es.close();
+    return () => {
+      es.close();
+      if (raf !== 0) cancelAnimationFrame(raf);
+    };
   }, [agentIP, max]);
 
   return (
