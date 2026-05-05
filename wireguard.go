@@ -290,10 +290,18 @@ func StartWGServer(ts Tailscale, stateDir string) (*WGServer, error) {
 	srv := &WGServer{tun: tun, dev: dev, serverIP: serverIP, publicKey: pub, db: globalDB}
 	// Replay persisted (pubkey → ip) pairs into the in-memory device
 	// so reboots don't strand existing clients.
+	//
+	// Must register BOTH the v4 /32 and the v6 fd77::<n>/128 allowed_ip
+	// to match AddPeer. Replaying v4 only meant peers whose client-side
+	// ULA was active (gateway-emitted wg-quick now sets v6 too) had
+	// their fd77:: outbound packets land at a peer with no matching
+	// allowed_ip → dropped → client thinks the gateway is unreachable
+	// after every restart, fixed only by re-joining.
 	for pubkey, ip := range srv.loadPeers() {
+		v6 := wg6FromV4(netip.MustParseAddr(ip))
 		_ = dev.IpcSet(fmt.Sprintf(
-			"public_key=%s\nreplace_allowed_ips=true\nallowed_ip=%s/32\n",
-			pubkey, ip))
+			"public_key=%s\nreplace_allowed_ips=true\nallowed_ip=%s/32\nallowed_ip=%s/128\n",
+			pubkey, ip, v6.String()))
 	}
 	return srv, nil
 }
