@@ -11,7 +11,7 @@ import (
 // boundaries that matter on the wire (single-byte, two-byte rollover,
 // the protocol-revision range that real ClickHouse clients land in).
 func TestChVarUInt(t *testing.T) {
-	cases := []int{0, 1, 0x7f, 0x80, 0x3fff, 54448 /* recent CH revision */, 1 << 28}
+	cases := []uint64{0, 1, 0x7f, 0x80, 0x3fff, 54448 /* recent CH revision */, 1 << 28, 1 << 50, ^uint64(0)}
 	for _, v := range cases {
 		buf := appendChVarUInt(nil, v)
 		got, n, err := readChVarUInt(buf, 0)
@@ -162,5 +162,80 @@ func TestChHelloPreservesTrailing(t *testing.T) {
 	parsed.Trailing = wire[consumed:]
 	if !bytes.Equal(SerializeChHello(parsed), wire) {
 		t.Errorf("serialize(parse(wire)) != wire")
+	}
+}
+
+// TestChHelloRejectsInvalidUTF8 confirms that the string reader
+// refuses non-UTF-8 bytes inside a length-prefixed string. Defends
+// the per-session log + ConnEvent surface against arbitrary-byte
+// peers.
+func TestChHelloRejectsInvalidUTF8(t *testing.T) {
+	// Build a Hello where client_name carries a stray 0xff (invalid
+	// UTF-8 lead byte). Hand-craft the wire bytes — the serializer
+	// won't produce these from a string.
+	var wire []byte
+	wire = appendChVarUInt(wire, 0)              // packet type Hello
+	wire = appendChVarUInt(wire, 1)              // client_name length
+	wire = append(wire, 0xff)                    // invalid UTF-8 byte
+	wire = appendChVarUInt(wire, 1)              // major
+	wire = appendChVarUInt(wire, 0)              // minor
+	wire = appendChVarUInt(wire, 54448)          // revision
+	wire = appendChString(wire, "default")       // database
+	wire = appendChString(wire, "u")             // user
+	wire = appendChString(wire, "p")             // password
+	if _, _, err := ParseChHello(wire); err == nil {
+		t.Errorf("ParseChHello accepted invalid UTF-8 in client_name")
+	}
+}
+
+// TestClickhouseConnRouteHostsNoDoublePort verifies the
+// host-port-already-present branch: if an operator binds a host as
+// "ch.example.com:9000", ConnRouteHosts must preserve it verbatim
+// rather than producing "ch.example.com:9000:9000".
+func TestClickhouseConnRouteHostsNoDoublePort(t *testing.T) {
+	e := &ClickhouseNativeEndpoint{
+		Hosts: []string{
+			"bare.example.com",
+			"with-port.example.com:9001",
+			"[::1]:9002",
+		},
+		Port: 9000,
+	}
+	got := e.ConnRouteHosts()
+	want := []string{
+		"bare.example.com:9000",
+		"with-port.example.com:9001",
+		"[::1]:9002",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("ConnRouteHosts: got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("ConnRouteHosts[%d]: got %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestChHostPort exercises the host:port splitter — including the
+// IPv6 + named-port edge cases that strconv.Atoi covers but the
+// hand-rolled digit walk did not.
+func TestChHostPort(t *testing.T) {
+	cases := []struct {
+		addr     string
+		wantHost string
+		wantPort int
+	}{
+		{"host:9000", "host", 9000},
+		{"[::1]:9000", "::1", 9000},
+		{"host:not-a-port", "host", 0},
+		{"no-colon", "no-colon", 0},
+	}
+	for _, c := range cases {
+		h, p := chHostPort(c.addr)
+		if h != c.wantHost || p != c.wantPort {
+			t.Errorf("chHostPort(%q) = (%q,%d), want (%q,%d)",
+				c.addr, h, p, c.wantHost, c.wantPort)
+		}
 	}
 }

@@ -15,7 +15,10 @@ package endpoints
 // cross-reference. See denoland/unclaw, refinery/rig/src/plugins/
 // clickhouse/protocol.ts.
 
-import "errors"
+import (
+	"errors"
+	"unicode/utf8"
+)
 
 // errChShortBuffer surfaces from the parsers when the buffer is
 // exhausted mid-packet. Callers use it to drive an
@@ -27,12 +30,17 @@ var errChShortBuffer = errors.New("clickhouse: short buffer")
 // Trailing carries any bytes after the password — addendum data,
 // inline post-Hello pipelining — preserved so the rewritten packet
 // is byte-identical for fields we don't touch.
+//
+// VarUInt fields are typed as uint64 to match the ClickHouse wire
+// spec (LEB128-encoded uint64). Current revisions fit in int but
+// future revisions or non-Hello packets carrying e.g. block sizes
+// are immune to overflow.
 type ChHello struct {
-	PacketType       int
+	PacketType       uint64
 	ClientName       string
-	VersionMajor     int
-	VersionMinor     int
-	ProtocolRevision int
+	VersionMajor     uint64
+	VersionMinor     uint64
+	ProtocolRevision uint64
 	Database         string
 	Username         string
 	Password         string
@@ -127,11 +135,11 @@ func SerializeChHello(h ChHello) []byte {
 	return out
 }
 
-// readChVarUInt decodes a LEB128-style unsigned varint. ClickHouse
-// caps payload sizes well below 2^63 so int is safe; we still bound
-// shift to 63 to fail loudly on malformed packets.
-func readChVarUInt(buf []byte, off int) (int, int, error) {
-	value := 0
+// readChVarUInt decodes a LEB128-encoded uint64 (the ClickHouse
+// VarUInt). Returns the decoded value, the number of bytes
+// consumed, and any error.
+func readChVarUInt(buf []byte, off int) (uint64, int, error) {
+	var value uint64
 	shift := uint(0)
 	i := off
 	for {
@@ -139,7 +147,7 @@ func readChVarUInt(buf []byte, off int) (int, int, error) {
 			return 0, 0, errChShortBuffer
 		}
 		b := buf[i]
-		value |= int(b&0x7f) << shift
+		value |= uint64(b&0x7f) << shift
 		i++
 		if b&0x80 == 0 {
 			return value, i - off, nil
@@ -152,33 +160,42 @@ func readChVarUInt(buf []byte, off int) (int, int, error) {
 }
 
 // appendChVarUInt encodes value as LEB128 and appends to dst.
-func appendChVarUInt(dst []byte, value int) []byte {
-	v := uint64(value)
-	for v > 0x7f {
-		dst = append(dst, byte(0x80|(v&0x7f)))
-		v >>= 7
+func appendChVarUInt(dst []byte, value uint64) []byte {
+	for value > 0x7f {
+		dst = append(dst, byte(0x80|(value&0x7f)))
+		value >>= 7
 	}
-	dst = append(dst, byte(v&0x7f))
+	dst = append(dst, byte(value&0x7f))
 	return dst
 }
 
-// readChString decodes a VarUInt-prefixed UTF-8 string.
+// readChString decodes a VarUInt-prefixed UTF-8 string. Rejects
+// malformed UTF-8 to keep arbitrary peer bytes out of downstream
+// loggers / renderers.
 func readChString(buf []byte, off int) (string, int, error) {
 	length, ln, err := readChVarUInt(buf, off)
 	if err != nil {
 		return "", 0, err
 	}
-	start := off + ln
-	end := start + length
-	if end > len(buf) {
+	if length > uint64(len(buf)-off-ln) {
+		// Either truncated or the length claims more than the
+		// remaining buffer can ever hold (length doesn't fit in int).
+		// Both are "need more bytes" from the read loop's POV; the
+		// 1 MiB cap in chReadHello catches a malicious huge length.
 		return "", 0, errChShortBuffer
 	}
-	return string(buf[start:end]), ln + length, nil
+	start := off + ln
+	end := start + int(length)
+	s := string(buf[start:end])
+	if !utf8.ValidString(s) {
+		return "", 0, errors.New("clickhouse: invalid UTF-8 in string")
+	}
+	return s, ln + int(length), nil
 }
 
 // appendChString encodes a length-prefixed string.
 func appendChString(dst []byte, s string) []byte {
-	dst = appendChVarUInt(dst, len(s))
+	dst = appendChVarUInt(dst, uint64(len(s)))
 	dst = append(dst, s...)
 	return dst
 }
