@@ -696,10 +696,10 @@ func (w *webMux) startOpenAIDeviceFlow(rw http.ResponseWriter, id string, it *OA
 	state := randomString(32)
 	w.mu.Lock()
 	w.sessions[state] = &oauthSession{
-		state:    state,
-		id:       id,
-		owner:    owner,
-		created:  time.Now(),
+		state:   state,
+		id:      id,
+		owner:   owner,
+		created: time.Now(),
 		// Pack device_auth_id|user_code into verifier so pollDeviceFlow
 		// can split them; cfg.RedirectURL carries the codex-specific
 		// callback used in the auth-code exchange.
