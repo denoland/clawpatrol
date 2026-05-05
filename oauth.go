@@ -304,8 +304,8 @@ func newState(it *OAuthIntegration, owner string, db *sql.DB) *oauthState {
 
 func (s *oauthState) setToken(tok *oauth2.Token) {
 	var base oauth2.TokenSource
-	switch s.id {
-	case "claude":
+	switch {
+	case isAnthropicTokenURL(s.cfg.Endpoint.TokenURL):
 		// Anthropic's token endpoint requires a JSON body for refresh
 		// (returns "Invalid request format" otherwise). Stdlib oauth2
 		// only sends form-urlencoded.
@@ -892,13 +892,17 @@ func (w *webMux) pollDeviceFlow(rw http.ResponseWriter, sess *oauthSession) {
 // the standard form-urlencoded body), so we hand-roll the request for
 // claude integration. Other providers use the stdlib oauth2.Exchange.
 func exchangeOAuthCode(ctx context.Context, sess *oauthSession, code, state string) (*oauth2.Token, error) {
-	if sess.id == "claude" {
+	if isAnthropicTokenURL(sess.cfg.Endpoint.TokenURL) {
 		return exchangeAnthropicCode(ctx, sess, code, state)
 	}
 	return sess.cfg.Exchange(ctx, code,
 		oauth2.SetAuthURLParam("code_verifier", sess.verifier),
 		oauth2.SetAuthURLParam("redirect_uri", sess.cfg.RedirectURL),
 	)
+}
+
+func isAnthropicTokenURL(u string) bool {
+	return strings.Contains(u, "anthropic.com/")
 }
 
 func exchangeAnthropicCode(ctx context.Context, sess *oauthSession, code, state string) (*oauth2.Token, error) {
