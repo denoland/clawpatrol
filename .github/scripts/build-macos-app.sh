@@ -25,10 +25,28 @@ build_netstack() {
   popd >/dev/null
 }
 
+# bump_build_number stamps CFBundleVersion = git commit count on both
+# the .app and extension Info.plists. sysextd treats system extensions
+# with the same (CFBundleShortVersionString, CFBundleVersion) tuple as
+# the running one as a no-op activation, so without a bump here a
+# `Clawpatrol install` after an in-place .app replacement leaves the
+# old extension binary running. Commit count is monotonic across
+# rebuilds; sysextd accepts the higher number and swaps the ext.
+bump_build_number() {
+  local n
+  n=$(git rev-list --count HEAD 2>/dev/null || echo 1)
+  /usr/bin/plutil -replace CFBundleVersion -string "$n" \
+    macos/Clawpatrol/Info.plist
+  /usr/bin/plutil -replace CFBundleVersion -string "$n" \
+    macos/ClawpatrolExtension/Info.plist
+  echo "==> CFBundleVersion = $n"
+}
+
 # If no Apple ID, build unsigned (local dev / PR checks).
 if [ -z "${APPLE_ID:-}" ]; then
   echo "==> Building unsigned (no APPLE_ID set)"
   build_netstack
+  bump_build_number
   brew install xcodegen 2>/dev/null || true
   xcodegen --spec macos/project.yml
   xcodebuild \
@@ -76,6 +94,7 @@ echo -n "$APPLE_PROVISIONING_PROFILE_EXT" | base64 --decode \
 
 # 4. Build the Go cgo netstack archive.
 build_netstack
+bump_build_number
 
 # 5. Patch project for distribution: switch entitlements to
 #    -systemextension variants, swap profile names from dev to release.
