@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"log"
 	"net"
@@ -120,6 +121,7 @@ type AgentRegistry struct {
 	agents  map[string]*Agent
 	lc      *local.Client
 	onboard *onboardRegistry // set by Gateway ctor; supplies hostname/owner overrides in WG mode
+	db      *sql.DB          // optional; persists Session rows. nil → in-memory only.
 }
 
 const activityBuckets = 30 // ~30s history at 1s sampling
@@ -362,9 +364,9 @@ func (r *AgentRegistry) Delete(ip string) {
 
 func (r *AgentRegistry) recordLLMUsage(ip, sessionType, sessionID, sessionTitle, model string, in, out int64) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	a := r.agents[ip]
 	if a == nil {
+		r.mu.Unlock()
 		return
 	}
 	s := a.findOrAddSession(sessionType, sessionID, sessionTitle)
@@ -378,6 +380,132 @@ func (r *AgentRegistry) recordLLMUsage(ip, sessionType, sessionID, sessionTitle,
 	s.TokensOut += out
 	s.CtxUsed = in + out
 	s.CtxMax = ctxMaxFor(model)
+	persistAgent := ip
+	persistSession := *s
+	r.mu.Unlock()
+	r.persistSession(persistAgent, &persistSession)
+}
+
+// persistSession writes/updates the session row. No-op when r.db is nil.
+// Called outside the registry lock so a slow disk write doesn't block
+// other request handlers.
+func (r *AgentRegistry) persistSession(ip string, s *Session) {
+	if r == nil || r.db == nil || s == nil {
+		return
+	}
+	_, _ = r.db.Exec(`
+		INSERT INTO sessions
+		  (agent_ip, type, id, title, model, tokens_in, tokens_out, ctx_used, ctx_max, reqs, first_at, last_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(agent_ip, type, id) DO UPDATE SET
+		  title      = COALESCE(NULLIF(excluded.title,''), sessions.title),
+		  model      = COALESCE(NULLIF(excluded.model,''), sessions.model),
+		  tokens_in  = excluded.tokens_in,
+		  tokens_out = excluded.tokens_out,
+		  ctx_used   = excluded.ctx_used,
+		  ctx_max    = excluded.ctx_max,
+		  reqs       = excluded.reqs,
+		  last_at    = excluded.last_at,
+		  closed_at  = NULL
+	`, ip, s.Type, s.ID, s.Title, s.Model,
+		s.TokensIn, s.TokensOut, s.CtxUsed, s.CtxMax, s.Reqs,
+		s.FirstAt.UnixNano(), s.LastAt.UnixNano())
+}
+
+// LoadSessions rehydrates persisted sessions from the DB into the
+// in-memory agent map. Called once at boot, after Seed has populated
+// agents from the devices table. Skips closed sessions older than the
+// keep window — those are sweeper-deletable, no point rendering them.
+func (r *AgentRegistry) LoadSessions(db *sql.DB) {
+	if db == nil {
+		return
+	}
+	r.mu.Lock()
+	r.db = db
+	r.mu.Unlock()
+	rows, err := db.Query(`
+		SELECT agent_ip, type, id, COALESCE(title,''), COALESCE(model,''),
+		       tokens_in, tokens_out, ctx_used, ctx_max, reqs,
+		       first_at, last_at, COALESCE(closed_at, 0)
+		  FROM sessions
+		 ORDER BY last_at ASC`)
+	if err != nil {
+		log.Printf("sessions: load: %v", err)
+		return
+	}
+	defer rows.Close()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for rows.Next() {
+		var (
+			ip, t, id, title, model      string
+			ti, to, cu, cm, reqs, fa, la int64
+			ca                           int64
+		)
+		if err := rows.Scan(&ip, &t, &id, &title, &model, &ti, &to, &cu, &cm, &reqs, &fa, &la, &ca); err != nil {
+			continue
+		}
+		a := r.agents[ip]
+		if a == nil {
+			now := time.Now().UTC()
+			a = &Agent{IP: ip, FirstAt: now, LastAt: now}
+			if r.onboard != nil {
+				if hn := r.onboard.HostnameForIP(ip); hn != "" {
+					a.Hostname = hn
+				}
+				if owner := r.onboard.OwnerForIP(ip); owner != "" {
+					a.User = owner
+				}
+			}
+			r.agents[ip] = a
+		}
+		s := &Session{
+			ID: id, Title: title, Type: t, Model: model,
+			TokensIn: ti, TokensOut: to, CtxUsed: cu, CtxMax: cm,
+			Reqs: reqs, FirstAt: time.Unix(0, fa), LastAt: time.Unix(0, la),
+		}
+		a.Sessions = append(a.Sessions, s)
+		_ = ca // closed_at known but no in-memory flag yet; sweeper enforces.
+	}
+}
+
+// startSessionSweeper marks sessions whose LastAt is older than ttl as
+// closed (sets closed_at), and deletes closed rows older than keep.
+// Both are configurable from gateway.hcl. ttl=0 disables marking;
+// keep=0 disables deletion. Idempotent.
+func (r *AgentRegistry) startSessionSweeper(ttl, keep time.Duration) {
+	if r.db == nil || (ttl <= 0 && keep <= 0) {
+		return
+	}
+	go func() {
+		// First sweep after 30s to let the gateway settle, then every
+		// minute. Sweeps are cheap (indexed last_at / closed_at).
+		time.Sleep(30 * time.Second)
+		t := time.NewTicker(time.Minute)
+		defer t.Stop()
+		for {
+			r.sweepSessions(ttl, keep)
+			<-t.C
+		}
+	}()
+}
+
+func (r *AgentRegistry) sweepSessions(ttl, keep time.Duration) {
+	now := time.Now()
+	if ttl > 0 {
+		cutoff := now.Add(-ttl).UnixNano()
+		_, _ = r.db.Exec(
+			`UPDATE sessions SET closed_at = ? WHERE closed_at IS NULL AND last_at < ?`,
+			now.UnixNano(), cutoff,
+		)
+	}
+	if keep > 0 {
+		cutoff := now.Add(-keep).UnixNano()
+		_, _ = r.db.Exec(
+			`DELETE FROM sessions WHERE closed_at IS NOT NULL AND closed_at < ?`,
+			cutoff,
+		)
+	}
 }
 
 func ctxMaxFor(model string) int64 {

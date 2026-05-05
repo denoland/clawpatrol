@@ -59,6 +59,26 @@ func (g *Gateway) emitEnd(ev Event) {
 	g.emit(ev)
 }
 
+// parseDurationOr parses an HCL duration string ("30m", "2h"). Empty
+// string falls back to def. "0" / "off" disables (returns 0). Used by
+// session_ttl / session_keep + similar knobs that need a default but
+// also a way to opt out.
+func parseDurationOr(s string, def time.Duration) time.Duration {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return def
+	}
+	if s == "0" || s == "off" {
+		return 0
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		log.Printf("parseDuration %q: %v (using default %s)", s, err, def)
+		return def
+	}
+	return d
+}
+
 // newReqID returns a short hex token that correlates start/end/frame
 // events for a single request. 8 random bytes is plenty when the
 // dashboard is the only consumer; collisions just merge two rows.
@@ -400,7 +420,7 @@ func codexInputTitle(input []struct {
 		}
 		text := stripCodexWrappers(joinUserContent(m.Content))
 		if text != "" {
-			return truncate(text, 80)
+			return sanitizeTitle(text)
 		}
 	}
 	return ""
@@ -539,7 +559,7 @@ func codexResponsesRequestTitle(body []byte) string {
 		}
 		text := stripCodexWrappers(joinUserContent(m.Content))
 		if text != "" {
-			return truncate(text, 80)
+			return sanitizeTitle(text)
 		}
 	}
 	return ""
@@ -722,10 +742,82 @@ func parseClaudeRequest(body []byte) claudeReqInfo {
 		if isClaudeProbeMessage(clean) {
 			break
 		}
-		out.Title = truncate(clean, 80)
+		out.Title = sanitizeTitle(clean)
 		break
 	}
 	return out
+}
+
+// sanitizeTitle takes a raw user-message string and turns it into
+// something compact + readable for the dashboard's session row.
+//
+//   - drops fenced code blocks (```…```) — the title's "what was
+//     asked" not "the code in the prompt"
+//   - collapses repeated whitespace (newlines, indent)
+//   - prefers the first sentence / question fragment when one ends
+//     within the cap; otherwise truncates at the last word boundary
+//     before the cap
+//   - hard cap at 60 chars (was 80) — the dashboard column has finite
+//     width and a long string just gets ellipsized anyway
+func sanitizeTitle(s string) string {
+	const cap = 60
+	// Strip fenced blocks. Matches both ``` and ~~~ fences. Multi-pass
+	// in case the user nested fences; bounded loop so a malformed
+	// input can't spin.
+	for i := 0; i < 4; i++ {
+		start := strings.Index(s, "```")
+		if start < 0 {
+			break
+		}
+		end := strings.Index(s[start+3:], "```")
+		if end < 0 {
+			s = s[:start]
+			break
+		}
+		s = s[:start] + " " + s[start+3+end+3:]
+	}
+	// Strip inline backticks but keep the inner text — `useFoo` still
+	// reads fine as part of a title.
+	s = strings.ReplaceAll(s, "`", "")
+	// Collapse whitespace to single spaces.
+	var b strings.Builder
+	prevSpace := false
+	for _, r := range s {
+		if r == '\n' || r == '\r' || r == '\t' || r == ' ' {
+			if !prevSpace && b.Len() > 0 {
+				b.WriteByte(' ')
+				prevSpace = true
+			}
+			continue
+		}
+		b.WriteRune(r)
+		prevSpace = false
+	}
+	s = strings.TrimSpace(b.String())
+	if s == "" {
+		return ""
+	}
+	// Sentence/question break before the cap.
+	if len(s) > cap {
+		// Look for a '.' or '?' or '!' within the first cap chars,
+		// preferring the LAST sentence boundary so we get a coherent
+		// fragment, not a half-question.
+		end := -1
+		for i, r := range s[:cap] {
+			if r == '.' || r == '?' || r == '!' {
+				end = i + 1
+			}
+		}
+		if end > 0 {
+			return strings.TrimSpace(s[:end])
+		}
+		// Fall back to last word boundary.
+		if i := strings.LastIndexByte(s[:cap], ' '); i > 20 {
+			return strings.TrimSpace(s[:i]) + "…"
+		}
+		return s[:cap-1] + "…"
+	}
+	return s
 }
 
 // isClaudeProbeMessage matches single-token health / quota / capability
@@ -815,7 +907,7 @@ func openaiFirstUserMessage(body []byte) string {
 		}
 		var s string
 		if err := json.Unmarshal(m.Content, &s); err == nil {
-			return truncate(s, 80)
+			return sanitizeTitle(s)
 		}
 		var blocks []struct {
 			Type string `json:"type"`
@@ -824,7 +916,7 @@ func openaiFirstUserMessage(body []byte) string {
 		if err := json.Unmarshal(m.Content, &blocks); err == nil {
 			for _, b := range blocks {
 				if b.Text != "" {
-					return truncate(b.Text, 80)
+					return sanitizeTitle(b.Text)
 				}
 			}
 		}
@@ -1718,6 +1810,17 @@ func runGateway(args []string) {
 		}
 		rows.Close()
 	}
+
+	// Sessions: rehydrate persisted rows + start the sweeper. Two
+	// configurable knobs from gateway.hcl:
+	//   session_ttl  — idle time before a session is marked closed
+	//                  (default 30m, "0" disables)
+	//   session_keep — retention for closed sessions before deletion
+	//                  (default 168h, "0" disables)
+	g.agents.LoadSessions(db)
+	sessionTTL := parseDurationOr(cfg.SessionTTL, 30*time.Minute)
+	sessionKeep := parseDurationOr(cfg.SessionKeep, 168*time.Hour)
+	g.agents.startSessionSweeper(sessionTTL, sessionKeep)
 
 	// HITL notifications fan-out via the approver runtimes
 	// (config/plugins/approvers); the registry's Add hook emits

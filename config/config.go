@@ -34,6 +34,15 @@ type Gateway struct {
 	// you can't disable auth by accident.
 	InsecureNoDashboardSecret bool `hcl:"insecure_no_dashboard_secret,optional"`
 
+	// SessionTTL marks a session "closed" after this much idle time
+	// since LastAt. Default 30m. Format accepts time.ParseDuration
+	// strings ("30m", "2h", etc.). Closed sessions stay queryable
+	// for SessionKeep before the sweeper deletes them.
+	SessionTTL string `hcl:"session_ttl,optional"`
+	// SessionKeep drops CLOSED sessions older than this from the DB.
+	// Default 168h (7d). Open sessions are never deleted.
+	SessionKeep string `hcl:"session_keep,optional"`
+
 	Tailscale *Tailscale `hcl:"gateway,block"`
 
 	// Policy holds the v14-grammar block contents. Populated after
