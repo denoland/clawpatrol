@@ -34,6 +34,14 @@ type Gateway struct {
 	// you can't disable auth by accident.
 	InsecureNoDashboardSecret bool `hcl:"insecure_no_dashboard_secret,optional"`
 
+	// SessionKeep is the hard retention floor for the sessions table.
+	// Sessions whose last_at is older than this get deleted by the
+	// background sweeper. Sessions can revive on new activity at any
+	// time, so there's no "closed but kept" intermediate state — only
+	// last_at matters. Default 720h (30d), "0" / "off" disables.
+	// Format accepts time.ParseDuration strings ("30m", "168h", etc.).
+	SessionKeep string `hcl:"session_keep,optional"`
+
 	Tailscale *Tailscale `hcl:"gateway,block"`
 
 	// Policy holds the v14-grammar block contents. Populated after
