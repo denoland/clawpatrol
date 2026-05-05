@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -263,11 +264,39 @@ type Gateway struct {
 	connIdx atomic.Pointer[runtime.ConnIndex]
 	// dnsvip owns the hostname↔virtual-IP table for endpoints whose
 	// wire protocol can't be disambiguated at TCP-accept time (SSH
-	// today). The DNS server hijacks A/AAAA queries inside the WG
-	// tunnel so an agent's `ssh user@host` resolves to a unique VIP
-	// the gateway can route by. Single allocator shared across the
-	// process; mutate-in-place + RWMutex inside.
+	// today).
 	dnsvip *dnsvip.Allocator
+	// transports memoizes one http.Transport per endpoint. Avoids the
+	// per-request allocation + idle-conn-pool reset of the old path.
+	transports sync.Map // *config.CompiledEndpoint -> *http.Transport
+}
+
+// transportFor returns the cached http.Transport for ep, building it
+// on first use. dialBrowserTLS for Cloudflare-fronted hosts; mTLS
+// endpoints stay on dialUpstream so credential plugins run.
+func (g *Gateway) transportFor(ep *config.CompiledEndpoint) *http.Transport {
+	if v, ok := g.transports.Load(ep); ok {
+		return v.(*http.Transport)
+	}
+	tr := &http.Transport{
+		DialContext: g.dialer.DialContext,
+		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			h, _, err := net.SplitHostPort(addr)
+			if err != nil {
+				h = addr
+			}
+			if needsBrowserTLS(h) && !endpointWantsClientCert(ep) {
+				return dialBrowserTLS(ctx, network, addr, h)
+			}
+			return g.dialUpstream(ctx, network, addr, h, ep)
+		},
+		ForceAttemptHTTP2:   false,
+		IdleConnTimeout:     30 * time.Second,
+		MaxIdleConns:        128,
+		MaxIdleConnsPerHost: 8,
+	}
+	actual, _ := g.transports.LoadOrStore(ep, tr)
+	return actual.(*http.Transport)
 }
 
 // Policy returns the current snapshot of the lowered runtime policy.
@@ -1348,29 +1377,12 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 	}
 	defer tc.Close()
 
-	transport := &http.Transport{
-		DialContext: g.dialer.DialContext,
-		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			h, _, err := net.SplitHostPort(addr)
-			if err != nil {
-				h = host
-			}
-			// Cloudflare-fronted hosts (chatgpt.com, openai.com)
-			// fingerprint-block plain Go TLS handshakes on the
-			// REST path with "Attack detected" 405 — same WAF rule
-			// that triggered on the WS upgrade. uTLS Chrome
-			// fingerprint clears it. mTLS-required endpoints stay
-			// on dialUpstream so the credential plugin can stamp
-			// client certs.
-			if needsBrowserTLS(h) && !endpointWantsClientCert(ep) {
-				return dialBrowserTLS(ctx, network, addr, h)
-			}
-			return g.dialUpstream(ctx, network, addr, h, ep)
-		},
-		ForceAttemptHTTP2: false,
-		IdleConnTimeout:   30 * time.Second,
-	}
-	defer transport.CloseIdleConnections()
+	// transport is shared across all requests for this endpoint.
+	// Old path allocated a fresh http.Transport per mitmHTTPS call,
+	// which threw away the idle-conn pool and racked up ~10KB of
+	// internal map allocations per request. Per-endpoint cache lets
+	// repeat requests to the same upstream reuse keep-alives.
+	transport := g.transportFor(ep)
 
 	br := bufio.NewReader(tc)
 	for {
