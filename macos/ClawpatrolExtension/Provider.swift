@@ -336,15 +336,32 @@ private func pidFromAuditToken(_ data: Data) -> pid_t? {
     }
 }
 
-// Walk PPID chain looking for an ancestor whose executable path
-// lives under /Applications/Clawpatrol.app/. SecCode-based identifier
-// matching (the obvious approach) is unreliable in sysext context —
-// SecCodeCopySigningInformation works inconsistently. Path matching
-// is good enough: the only way an ancestor binary is at our app path
-// is if it's our process.
+// Walk PPID chain looking for an ancestor that's "us":
+//   - path under /Applications/Clawpatrol.app/  (GUI app + sysext host)
+//   - OR basename == "clawpatrol"               (standalone CLI from
+//                                                 install.sh, lives at
+//                                                 $HOME/.local/bin by
+//                                                 default but operators
+//                                                 may override via
+//                                                 CLAWPATROL_PREFIX)
+// SecCode-based identifier matching (the obvious approach) is
+// unreliable in sysext context — SecCodeCopySigningInformation works
+// inconsistently. Path + basename matching is good enough.
 private let parentBundlePathPrefix = "/Applications/Clawpatrol.app/"
+private let cliBinaryName = "clawpatrol"
 private let MAX_PROC_PATH = 4096
 private let bsdInfoSize = Int32(MemoryLayout<proc_bsdinfo>.size)
+
+private func processIsClawpatrol(path: String) -> Bool {
+    if path.hasPrefix(parentBundlePathPrefix) { return true }
+    if let slash = path.lastIndex(of: "/") {
+        let after = path.index(after: slash)
+        if path[after...] == cliBinaryName { return true }
+    } else if path == cliBinaryName {
+        return true
+    }
+    return false
+}
 
 // Per-pid cache for ancestorMatches. proc_pidpath + proc_pidinfo are
 // syscalls; on whole-machine every flow walks the chain and hammers
@@ -371,7 +388,7 @@ private func ancestorMatches(pid: pid_t) -> Bool {
     while cur > 1 && !visited.contains(cur) {
         visited.insert(cur)
         if let path = processBinaryPath(pid: cur),
-           path.hasPrefix(parentBundlePathPrefix) {
+           processIsClawpatrol(path: path) {
             matches = true
             break
         }
