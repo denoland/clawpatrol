@@ -48,6 +48,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
+	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/icmp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
@@ -85,13 +86,18 @@ func (n *epNotify) WriteNotify() {
 	}
 }
 
-func newNetTUN(addr netip.Addr, mtu int) (*netTun, error) {
+func newNetTUN(addr netip.Addr, addr6 netip.Addr, mtu int) (*netTun, error) {
 	t := &netTun{
 		ep: channel.New(1024, uint32(mtu), ""),
 		stack: stack.New(stack.Options{
-			NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol},
-			TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol, icmp.NewProtocol4},
-			HandleLocal:        false,
+			NetworkProtocols: []stack.NetworkProtocolFactory{
+				ipv4.NewProtocol, ipv6.NewProtocol,
+			},
+			TransportProtocols: []stack.TransportProtocolFactory{
+				tcp.NewProtocol, udp.NewProtocol,
+				icmp.NewProtocol4, icmp.NewProtocol6,
+			},
+			HandleLocal: false,
 		}),
 		events:         make(chan wgtun.Event, 10),
 		incomingPacket: make(chan []byte, 1024),
@@ -101,14 +107,24 @@ func newNetTUN(addr netip.Addr, mtu int) (*netTun, error) {
 	if e := t.stack.CreateNIC(1, t.ep); e != nil {
 		return nil, fmt.Errorf("CreateNIC: %v", e)
 	}
-	pa := tcpip.ProtocolAddress{
+	pa4 := tcpip.ProtocolAddress{
 		Protocol:          ipv4.ProtocolNumber,
 		AddressWithPrefix: tcpip.AddrFromSlice(addr.AsSlice()).WithPrefix(),
 	}
-	if e := t.stack.AddProtocolAddress(1, pa, stack.AddressProperties{}); e != nil {
-		return nil, fmt.Errorf("AddProtocolAddress: %v", e)
+	if e := t.stack.AddProtocolAddress(1, pa4, stack.AddressProperties{}); e != nil {
+		return nil, fmt.Errorf("AddProtocolAddress v4: %v", e)
+	}
+	if addr6.IsValid() {
+		pa6 := tcpip.ProtocolAddress{
+			Protocol:          ipv6.ProtocolNumber,
+			AddressWithPrefix: tcpip.AddrFromSlice(addr6.AsSlice()).WithPrefix(),
+		}
+		if e := t.stack.AddProtocolAddress(1, pa6, stack.AddressProperties{}); e != nil {
+			return nil, fmt.Errorf("AddProtocolAddress v6: %v", e)
+		}
 	}
 	t.stack.AddRoute(tcpip.Route{Destination: header.IPv4EmptySubnet, NIC: 1})
+	t.stack.AddRoute(tcpip.Route{Destination: header.IPv6EmptySubnet, NIC: 1})
 	t.events <- wgtun.EventUp
 	return t, nil
 }
@@ -138,9 +154,12 @@ func (t *netTun) Write(bufs [][]byte, offset int) (int, error) {
 		pkb := stack.NewPacketBuffer(stack.PacketBufferOptions{
 			Payload: buffer.MakeWithData(pkt),
 		})
-		if pkt[0]>>4 == 4 {
+		switch pkt[0] >> 4 {
+		case 4:
 			t.ep.InjectInbound(header.IPv4ProtocolNumber, pkb)
-		} else {
+		case 6:
+			t.ep.InjectInbound(header.IPv6ProtocolNumber, pkb)
+		default:
 			pkb.DecRef()
 		}
 	}
@@ -236,13 +255,33 @@ func wg_netstack_init(confC *C.char, errBuf *C.char, errLen C.int) C.int {
 		setErr(errBuf, errLen, perr.Error())
 		return -1
 	}
-	addrStr := strings.SplitN(addr, "/", 2)[0]
-	clientIP, err := netip.ParseAddr(addrStr)
-	if err != nil {
-		setErr(errBuf, errLen, "parse client IP: "+err.Error())
+	// Address may carry both v4 and v6 separated by ", ". Each part is
+	// `addr/prefix`. wg-quick conf written by the gateway emits e.g.
+	// `Address = 10.55.0.10/32, fd77::a/128`.
+	var clientIP, clientIP6 netip.Addr
+	for _, part := range strings.Split(addr, ",") {
+		s := strings.TrimSpace(part)
+		if s == "" {
+			continue
+		}
+		if i := strings.IndexByte(s, '/'); i >= 0 {
+			s = s[:i]
+		}
+		ip, perr := netip.ParseAddr(s)
+		if perr != nil {
+			continue
+		}
+		if ip.Is4() && !clientIP.IsValid() {
+			clientIP = ip
+		} else if ip.Is6() && !clientIP6.IsValid() {
+			clientIP6 = ip
+		}
+	}
+	if !clientIP.IsValid() {
+		setErr(errBuf, errLen, "parse client IP: no IPv4 in Address")
 		return -1
 	}
-	t, err := newNetTUN(clientIP, 1420)
+	t, err := newNetTUN(clientIP, clientIP6, 1420)
 	if err != nil {
 		setErr(errBuf, errLen, "newNetTUN: "+err.Error())
 		return -1
@@ -260,7 +299,7 @@ func wg_netstack_init(confC *C.char, errBuf *C.char, errLen C.int) C.int {
 		return -1
 	}
 	ipc := fmt.Sprintf(
-		"private_key=%s\npublic_key=%s\nendpoint=%s\nallowed_ip=0.0.0.0/0\n",
+		"private_key=%s\npublic_key=%s\nendpoint=%s\nallowed_ip=0.0.0.0/0\nallowed_ip=::/0\n",
 		privHex, pubHex, ep,
 	)
 	if ka > 0 {
@@ -376,12 +415,16 @@ func wg_netstack_dial_tcp(hostC *C.char, port C.int, errBuf *C.char, errLen C.in
 		setErr(errBuf, errLen, "parse host: "+err.Error())
 		return -1
 	}
+	proto := ipv4.ProtocolNumber
+	if ip.Is6() {
+		proto = ipv6.ProtocolNumber
+	}
 	addr := tcpip.FullAddress{
 		NIC:  1,
 		Addr: tcpip.AddrFromSlice(ip.AsSlice()),
 		Port: uint16(port),
 	}
-	gconn, err := gonet.DialContextTCP(context.Background(), tun.stack, addr, ipv4.ProtocolNumber)
+	gconn, err := gonet.DialContextTCP(context.Background(), tun.stack, addr, proto)
 	if err != nil {
 		setErr(errBuf, errLen, "DialContextTCP: "+err.Error())
 		return -1
@@ -401,12 +444,16 @@ func wg_netstack_dial_udp(hostC *C.char, port C.int, errBuf *C.char, errLen C.in
 		setErr(errBuf, errLen, "parse host: "+err.Error())
 		return -1
 	}
+	proto := ipv4.ProtocolNumber
+	if ip.Is6() {
+		proto = ipv6.ProtocolNumber
+	}
 	addr := tcpip.FullAddress{
 		NIC:  1,
 		Addr: tcpip.AddrFromSlice(ip.AsSlice()),
 		Port: uint16(port),
 	}
-	gconn, err := gonet.DialUDP(tun.stack, nil, &addr, ipv4.ProtocolNumber)
+	gconn, err := gonet.DialUDP(tun.stack, nil, &addr, proto)
 	if err != nil {
 		setErr(errBuf, errLen, "DialUDP: "+err.Error())
 		return -1

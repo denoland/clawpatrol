@@ -41,6 +41,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
+	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/icmp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
@@ -63,13 +64,18 @@ type netTun struct {
 	closed         bool
 }
 
-func newNetTUN(addr netip.Addr, mtu int) (*netTun, error) {
+func newNetTUN(addr netip.Addr, addr6 netip.Addr, mtu int) (*netTun, error) {
 	dev := &netTun{
 		ep: channel.New(1024, uint32(mtu), ""),
 		stack: stack.New(stack.Options{
-			NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol},
-			TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol, icmp.NewProtocol4},
-			HandleLocal:        false,
+			NetworkProtocols: []stack.NetworkProtocolFactory{
+				ipv4.NewProtocol, ipv6.NewProtocol,
+			},
+			TransportProtocols: []stack.TransportProtocolFactory{
+				tcp.NewProtocol, udp.NewProtocol,
+				icmp.NewProtocol4, icmp.NewProtocol6,
+			},
+			HandleLocal: false,
 		}),
 		events:         make(chan wgtun.Event, 10),
 		incomingPacket: make(chan []byte, 1024),
@@ -79,14 +85,24 @@ func newNetTUN(addr netip.Addr, mtu int) (*netTun, error) {
 	if e := dev.stack.CreateNIC(1, dev.ep); e != nil {
 		return nil, fmt.Errorf("CreateNIC: %v", e)
 	}
-	pa := tcpip.ProtocolAddress{
+	pa4 := tcpip.ProtocolAddress{
 		Protocol:          ipv4.ProtocolNumber,
 		AddressWithPrefix: tcpip.AddrFromSlice(addr.AsSlice()).WithPrefix(),
 	}
-	if e := dev.stack.AddProtocolAddress(1, pa, stack.AddressProperties{}); e != nil {
-		return nil, fmt.Errorf("AddProtocolAddress: %v", e)
+	if e := dev.stack.AddProtocolAddress(1, pa4, stack.AddressProperties{}); e != nil {
+		return nil, fmt.Errorf("AddProtocolAddress v4: %v", e)
+	}
+	if addr6.IsValid() {
+		pa6 := tcpip.ProtocolAddress{
+			Protocol:          ipv6.ProtocolNumber,
+			AddressWithPrefix: tcpip.AddrFromSlice(addr6.AsSlice()).WithPrefix(),
+		}
+		if e := dev.stack.AddProtocolAddress(1, pa6, stack.AddressProperties{}); e != nil {
+			return nil, fmt.Errorf("AddProtocolAddress v6: %v", e)
+		}
 	}
 	dev.stack.AddRoute(tcpip.Route{Destination: header.IPv4EmptySubnet, NIC: 1})
+	dev.stack.AddRoute(tcpip.Route{Destination: header.IPv6EmptySubnet, NIC: 1})
 	dev.events <- wgtun.EventUp
 	return dev, nil
 }
@@ -152,9 +168,12 @@ func (t *netTun) Write(bufs [][]byte, offset int) (int, error) {
 		switch pkt[0] >> 4 {
 		case 4:
 			t.ep.InjectInbound(header.IPv4ProtocolNumber, pkb)
+		case 6:
+			t.ep.InjectInbound(header.IPv6ProtocolNumber, pkb)
 		default:
 			pkb.DecRef()
 		}
+
 	}
 	return len(bufs), nil
 }
@@ -214,8 +233,9 @@ func StartWGServer(ts Tailscale, stateDir string) (*WGServer, error) {
 		return nil, fmt.Errorf("wg subnet: %w", err)
 	}
 	serverIP := prefix.Addr().Next() // x.x.x.1
+	serverIP6 := wg6FromV4(serverIP) // fd77::<last-octet>
 
-	tun, err := newNetTUN(serverIP, 1420)
+	tun, err := newNetTUN(serverIP, serverIP6, 1420)
 	if err != nil {
 		return nil, err
 	}
@@ -266,9 +286,10 @@ func (s *WGServer) AddPeer(pubkeyHex, peerIP string) error {
 			}
 		}
 	}
+	peerIP6 := wg6FromV4(netip.MustParseAddr(peerIP))
 	if err := s.dev.IpcSet(fmt.Sprintf(
-		"public_key=%s\nreplace_allowed_ips=true\nallowed_ip=%s/32\n",
-		pubkeyHex, peerIP,
+		"public_key=%s\nreplace_allowed_ips=true\nallowed_ip=%s/32\nallowed_ip=%s/128\n",
+		pubkeyHex, peerIP, peerIP6.String(),
 	)); err != nil {
 		return err
 	}
@@ -280,6 +301,21 @@ func (s *WGServer) AddPeer(pubkeyHex, peerIP string) error {
 		return err
 	}
 	return nil
+}
+
+// wg6FromV4 derives the per-peer IPv6 address from a peer's wg v4
+// address: fd77::<last-octet>. ULA prefix; matches unclaw's scheme so
+// no extra HCL config is needed.
+func wg6FromV4(v4 netip.Addr) netip.Addr {
+	if !v4.Is4() {
+		return netip.Addr{}
+	}
+	o := v4.As4()
+	var b [16]byte
+	b[0] = 0xfd
+	b[1] = 0x77
+	b[15] = o[3]
+	return netip.AddrFrom16(b)
 }
 
 // EnablePromiscuousForwarder turns the netstack into an L3 sink.
@@ -590,18 +626,19 @@ func (w *wireguardOnboarder) MintKey(ctx context.Context, reuseIP string) (strin
 	// Avoiding `DNS =` because wg-quick needs resolvconf/openresolv
 	// for that, which many minimal images lack. Backup-then-restore
 	// keeps system DNS sane after `wg-quick down`.
+	ip6 := wg6FromV4(netip.MustParseAddr(ip)).String()
 	conf := fmt.Sprintf(`[Interface]
 PrivateKey = %s
-Address = %s/32
+Address = %s/32, %s/128
 PostUp = cp /etc/resolv.conf /etc/resolv.conf.clawpatrol.bak 2>/dev/null; printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
 PostDown = mv /etc/resolv.conf.clawpatrol.bak /etc/resolv.conf 2>/dev/null || true
 
 [Peer]
 PublicKey = %s
 Endpoint = %s
-AllowedIPs = 0.0.0.0/0
+AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
-`, clientPrivB64, ip, serverPubB64, w.ts.WGEndpoint)
+`, clientPrivB64, ip, ip6, serverPubB64, w.ts.WGEndpoint)
 	return conf, "wireguard://" + w.iface(), ip, nil
 }
 
