@@ -498,8 +498,27 @@ func (r *AgentRegistry) startSessionSweeper(keep time.Duration) {
 }
 
 func (r *AgentRegistry) sweepSessions(keep time.Duration) {
-	cutoff := time.Now().Add(-keep).UnixNano()
+	cutoffT := time.Now().Add(-keep)
+	cutoff := cutoffT.UnixNano()
 	_, _ = r.db.Exec(`DELETE FROM sessions WHERE last_at < ?`, cutoff)
+	// Trim in-memory slices too. Without this the dashboard keeps
+	// showing rows the DB no longer has — apiAgents reads from
+	// snapshot(), not from the DB. Single pass under the registry
+	// write lock; sessions are already grouped per-agent.
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, a := range r.agents {
+		if len(a.Sessions) == 0 {
+			continue
+		}
+		kept := a.Sessions[:0]
+		for _, s := range a.Sessions {
+			if s.LastAt.After(cutoffT) {
+				kept = append(kept, s)
+			}
+		}
+		a.Sessions = kept
+	}
 }
 
 func ctxMaxFor(model string) int64 {

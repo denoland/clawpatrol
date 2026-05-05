@@ -354,20 +354,32 @@ func logDashboardSecretState(cfg *config.Gateway) {
 // trackCodexWSUsage parses a single WebSocket text-frame payload from
 // chatgpt.com/codex traffic. Codex sends JSON envelopes containing the
 // user prompt (client→server) and usage info (server→client). Sessions
-// key by remoteAddr — one logical Codex CLI session per WS connection.
-func (g *Gateway) trackCodexWSUsage(remoteAddr string, payload []byte) {
+// key on the per-connection wsSessionID supplied by handleWSUpgrade
+// — usually codex's own `Session_id` request header so two parallel
+// `clawpatrol run codex` instances on the same device land in
+// distinct rows. Empty wsSessionID falls back to a per-remoteAddr
+// hash so older code paths still produce one row per connection.
+func (g *Gateway) trackCodexWSUsage(remoteAddr, wsSessionID string, payload []byte) {
 	ip := remoteAddr
 	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
 		ip = h
 	}
-	sid := "ws_" + shortHash(remoteAddr)
-	// Codex Responses-API frames. Three shapes we care about:
+	sid := wsSessionID
+	if sid == "" {
+		sid = "ws_" + shortHash(remoteAddr)
+	} else {
+		sid = "s_" + shortHash(sid)
+	}
+	// Codex Responses-API frames. Shapes we care about:
 	//   client → server: full request envelope w/ `input` (user prompt)
 	//     {"input":[{"role":"user","content":[{"type":"input_text","text":"..."}]}],
 	//      "model":"...", ...}
-	//   server → client: response.created / response.completed
+	//   server → client:
 	//     {"type":"response.created","response":{"id":"...","model":"..."}}
-	//     {"type":"response.completed","response":{"usage":{...}}}
+	//     {"type":"response.output_item.added","item":{"type":"function_call",
+	//        "name":"shell"|"apply_patch"|...,"arguments":"<json string>"}}
+	//     {"type":"response.completed","response":{"usage":{...},
+	//        "output":[{"type":"message","content":[{"type":"output_text","text":"..."}]}]}}
 	var msg struct {
 		Type     string `json:"type"`
 		Model    string `json:"model"`
@@ -380,6 +392,13 @@ func (g *Gateway) trackCodexWSUsage(remoteAddr string, payload []byte) {
 				OutputTokens          int64 `json:"output_tokens"`
 				ReasoningOutputTokens int64 `json:"reasoning_output_tokens"`
 			} `json:"usage"`
+			Output []struct {
+				Type    string `json:"type"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"output"`
 		} `json:"response"`
 		Usage struct {
 			InputTokens  int64 `json:"input_tokens"`
@@ -389,6 +408,11 @@ func (g *Gateway) trackCodexWSUsage(remoteAddr string, payload []byte) {
 			Role    string          `json:"role"`
 			Content json.RawMessage `json:"content"`
 		} `json:"input"`
+		Item struct {
+			Type      string `json:"type"`
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		} `json:"item"`
 	}
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		return
@@ -399,21 +423,98 @@ func (g *Gateway) trackCodexWSUsage(remoteAddr string, payload []byte) {
 	}
 	in := msg.Response.Usage.InputTokens + msg.Response.Usage.CachedInputTokens + msg.Usage.InputTokens
 	out := msg.Response.Usage.OutputTokens + msg.Response.Usage.ReasoningOutputTokens + msg.Usage.OutputTokens
+	// Title selection — latest wins. recordLLMUsage overwrites Title
+	// on every non-empty pass, so the dashboard shows whatever the
+	// session is doing right now:
+	//   - user prompt frame → "<first input_text>"
+	//   - tool-call frame   → "▸ <name>(<first arg snippet>)"
+	//   - completion frame  → "↩ <assistant text head>"
 	title := codexInputTitle(msg.Input)
+	if title == "" && msg.Type == "response.output_item.added" && msg.Item.Type == "function_call" {
+		title = codexToolTitle(msg.Item.Name, msg.Item.Arguments)
+	}
+	if title == "" && msg.Type == "response.completed" {
+		title = codexCompletedTitle(msg.Response.Output)
+	}
 	if in == 0 && out == 0 && model == "" && title == "" {
 		return
 	}
 	g.agents.recordLLMUsage(ip, "codex", sid, title, model, in, out)
 }
 
-// codexInputTitle returns the first user text from a Codex Responses-API
-// `input` array. Each input item has role + content (which can be either
-// a string or an array of typed blocks like input_text/input_image).
+// codexToolTitle formats a tool-call frame into "▸ name(arg)". Codex's
+// `arguments` field is a JSON string whose shape varies per tool —
+// shell.command[], apply_patch.input, file_search.query, etc. We pull
+// the first usefully-named argument when present, else show the raw
+// args truncated.
+func codexToolTitle(name, args string) string {
+	if name == "" {
+		return ""
+	}
+	var generic map[string]any
+	if err := json.Unmarshal([]byte(args), &generic); err != nil {
+		return "▸ " + name
+	}
+	// Preferred argument keys, in order. Most codex tools surface one
+	// of these as the human-meaningful value.
+	for _, k := range []string{"command", "path", "file_path", "input", "query", "url"} {
+		v, ok := generic[k]
+		if !ok {
+			continue
+		}
+		switch t := v.(type) {
+		case string:
+			return "▸ " + name + " " + truncate(t, 40)
+		case []any:
+			parts := make([]string, 0, len(t))
+			for _, p := range t {
+				if s, ok := p.(string); ok {
+					parts = append(parts, s)
+				}
+			}
+			joined := strings.Join(parts, " ")
+			if joined != "" {
+				return "▸ " + name + " " + truncate(joined, 40)
+			}
+		}
+	}
+	return "▸ " + name
+}
+
+// codexCompletedTitle returns the assistant's final text from a
+// response.completed frame. Walks output[].content[] looking for the
+// first output_text block and uses its head as the title — gives the
+// dashboard a glimpse of what the model just said when no tool call
+// followed.
+func codexCompletedTitle(output []struct {
+	Type    string `json:"type"`
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+}) string {
+	for _, o := range output {
+		for _, c := range o.Content {
+			if c.Text != "" {
+				return "↩ " + truncate(c.Text, 60)
+			}
+		}
+	}
+	return ""
+}
+
+// codexInputTitle returns the LATEST user text from a Codex
+// Responses-API `input` array. Codex sends the full conversation
+// history on every turn; the most-recent user message lives at the
+// tail. Walking forward (the old behavior) returned the system-y
+// first prompt ("You are deno node-compat fixer …") every time and
+// title never changed across turns.
 func codexInputTitle(input []struct {
 	Role    string          `json:"role"`
 	Content json.RawMessage `json:"content"`
 }) string {
-	for _, m := range input {
+	for i := len(input) - 1; i >= 0; i-- {
+		m := input[i]
 		if m.Role != "user" {
 			continue
 		}
@@ -1744,7 +1845,7 @@ func runGateway(args []string) {
 	// Sessions can revive on new activity at any time, so there's no
 	// "closed" intermediate state — keep is the only knob.
 	g.agents.LoadSessions(db)
-	g.agents.startSessionSweeper(parseDurationOr(cfg.SessionKeep, 720*time.Hour))
+	g.agents.startSessionSweeper(parseDurationOr(cfg.SessionKeep, 10*time.Minute))
 
 	// HITL notifications fan-out via the approver runtimes
 	// (config/plugins/approvers); the registry's Add hook emits
