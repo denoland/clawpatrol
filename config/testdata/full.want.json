@@ -344,6 +344,8 @@
           "Hosts": [
             "clickhouse-o11y.tail9a48e.ts.net"
           ],
+          "Port": 0,
+          "TLS": false,
           "Credential": "ch-o11y"
         },
         "family": "sql",

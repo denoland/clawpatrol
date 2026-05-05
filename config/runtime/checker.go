@@ -43,8 +43,9 @@ func checkRuntime(p *config.Plugin) []string {
 		_, http := p.Runtime.(HTTPCredentialRuntime)
 		_, pg := p.Runtime.(PostgresCredentialRuntime)
 		_, pgAuth := p.Runtime.(PostgresAuthCredential)
+		_, chAuth := p.Runtime.(ClickhouseAuthCredential)
 		_, tlsR := p.Runtime.(TLSCredentialRuntime)
-		if http || pg || pgAuth || tlsR {
+		if http || pg || pgAuth || chAuth || tlsR {
 			return nil
 		}
 		for _, check := range extraCredChecks {
@@ -52,7 +53,7 @@ func checkRuntime(p *config.Plugin) []string {
 				return nil
 			}
 		}
-		return []string{fmt.Sprintf("Runtime %T satisfies no credential runtime interface (HTTP / Postgres / TLS or a registered protocol extension)", p.Runtime)}
+		return []string{fmt.Sprintf("Runtime %T satisfies no credential runtime interface (HTTP / Postgres / Clickhouse / TLS or a registered protocol extension)", p.Runtime)}
 	case config.KindEndpoint:
 		// Endpoint plugins satisfy any combination of
 		// PlaceholderDetector and ConnEndpointRuntime. Plugins with

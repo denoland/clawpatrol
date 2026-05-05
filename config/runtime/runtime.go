@@ -66,6 +66,17 @@ type PostgresAuthCredential interface {
 	PostgresAuth(sec Secret) (user, password string)
 }
 
+// ClickhouseAuthCredential is what the clickhouse_native endpoint
+// runtime needs from a credential plugin to inject secrets into the
+// agent's Hello packet. The credential returns its (user, password);
+// the runtime swaps placeholder bytes the agent embedded in the
+// Hello's username / password slots before forwarding the packet
+// upstream. Same shape as PostgresAuth — kept distinct so the
+// checker can confirm a credential is wired for the right protocol.
+type ClickhouseAuthCredential interface {
+	ClickhouseAuth(sec Secret) (user, password string)
+}
+
 // TLSCredentialRuntime customizes the upstream TLS configuration
 // before the dial. mTLS credentials use this to add a client cert
 // (Certificates) and an optional custom root pool (RootCAs); other

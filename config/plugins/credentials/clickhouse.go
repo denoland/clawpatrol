@@ -33,12 +33,20 @@ func (c *ClickhouseCredential) InjectHTTP(_ context.Context, req *http.Request, 
 	return nil
 }
 
+// ClickhouseAuth implements runtime.ClickhouseAuthCredential — the
+// clickhouse_native endpoint runtime calls this once per session to
+// learn what (user, password) to substitute into the Hello packet.
+func (c *ClickhouseCredential) ClickhouseAuth(sec runtime.Secret) (string, string) {
+	return c.User, string(sec.Bytes)
+}
+
 func (*ClickhouseCredential) SecretSlots() []config.SecretSlot {
 	return []config.SecretSlot{{Label: "ClickHouse password"}}
 }
 
 func init() {
 	var _ runtime.HTTPCredentialRuntime = (*ClickhouseCredential)(nil)
+	var _ runtime.ClickhouseAuthCredential = (*ClickhouseCredential)(nil)
 	config.Register(&config.Plugin{
 		Kind:    config.KindCredential,
 		Type:    "clickhouse_credential",
