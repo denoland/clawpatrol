@@ -154,23 +154,36 @@ class TransparentProxyProvider: NETransparentProxyProvider {
     // blocked on Read per direction. Goroutines are 8KB stack each
     // and Go schedules them onto a small worker pool.
     private func pumpTCP(flow: NEAppProxyTCPFlow, cid: Int64) {
+        // Dedicated background queue per flow for the send path. Apple
+        // serializes flow operations on a private per-flow queue; if
+        // we'd called the (potentially-blocking) wg_netstack_send
+        // directly inside the readData callback, NE couldn't invoke
+        // the write-side callback for this same flow until send
+        // returned — full deadlock under TCP back-pressure (gconn's
+        // send buffer fills, send blocks, send-callback queue jams,
+        // recv-side flow.write completion never fires, recv loop's
+        // semaphore never signals → entire flow hangs until idle
+        // close at the browser keep-alive limit (~30s).
+        let sendQueue = DispatchQueue(label: "wgflow.send.\(cid)", qos: .userInitiated)
+
         // flow → cid (send)
         func readFromFlow() {
             flow.readData { data, err in
                 if err != nil { wg_netstack_close_conn(cid); flow.closeWriteWithError(err); return }
                 guard let data = data, !data.isEmpty else {
-                    // EOF on flow read — signal half-close upstream by
-                    // closing the gVisor conn entirely. gVisor TCPConn
-                    // doesn't expose CloseWrite via io.ReadWriteCloser.
                     wg_netstack_close_conn(cid); return
                 }
-                let n = data.withUnsafeBytes { ptr -> Int32 in
-                    wg_netstack_send(cid,
-                                     UnsafeMutablePointer(mutating: ptr.baseAddress!.assumingMemoryBound(to: CChar.self)),
-                                     Int32(data.count))
+                sendQueue.async {
+                    let n = data.withUnsafeBytes { ptr -> Int32 in
+                        wg_netstack_send(cid,
+                                         UnsafeMutablePointer(mutating: ptr.baseAddress!.assumingMemoryBound(to: CChar.self)),
+                                         Int32(data.count))
+                    }
+                    if n < 0 {
+                        wg_netstack_close_conn(cid); flow.closeReadWithError(nil); return
+                    }
+                    readFromFlow()
                 }
-                if n < 0 { wg_netstack_close_conn(cid); flow.closeReadWithError(nil); return }
-                readFromFlow()
             }
         }
         // cid → flow (recv)
