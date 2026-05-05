@@ -66,6 +66,8 @@ func envPushdownVars(caPath string) []pushdownEnvVar {
 		"REQUESTS_CA_BUNDLE",
 		"CURL_CA_BUNDLE",
 		"GIT_SSL_CAINFO",
+		"DENO_CERT",
+		"PIP_CERT",
 	} {
 		out = append(out, pushdownEnvVar{Name: k, Value: caPath})
 	}
