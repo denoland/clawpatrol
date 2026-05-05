@@ -939,8 +939,12 @@ endpoint "https" "anthropic" {
   hosts      = ["api.anthropic.com"]
   credential = claude
 }
-endpoint "https" "openai" {
-  hosts      = ["api.openai.com", "chatgpt.com"]
+endpoint "https" "openai-api" {
+  hosts      = ["api.openai.com"]
+  credential = codex
+}
+endpoint "openai_codex_https" "openai-chatgpt" {
+  hosts      = ["chatgpt.com"]
   credential = codex
 }
 endpoint "https" "github-api" {

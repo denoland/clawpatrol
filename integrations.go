@@ -72,23 +72,33 @@ func envPushdownVars(caPath string) []pushdownEnvVar {
 		out = append(out, pushdownEnvVar{Name: k, Value: caPath})
 	}
 	seen := map[string]bool{}
-	for _, p := range config.AllPlugins(config.KindCredential) {
-		body := p.New()
-		ep, ok := body.(config.EnvPushdownProvider)
-		if !ok {
-			continue
-		}
-		for _, ev := range ep.EnvVars() {
-			if seen[ev.Name] {
+	// Both credential and endpoint plugins can declare env push-down
+	// vars. Credentials cover the bearer-placeholder case
+	// (ANTHROPIC_AUTH_TOKEN, GH_TOKEN, ...) — the env var IS the
+	// secret slot. Endpoints cover routing-control envs that don't
+	// correspond to a single credential
+	// (CODEX_ACCESS_TOKEN flips codex into Agent Identity mode and
+	// points it at chatgpt.com — a property of the openai_codex_https
+	// endpoint, not the underlying bearer credential).
+	for _, kind := range []config.Kind{config.KindCredential, config.KindEndpoint} {
+		for _, p := range config.AllPlugins(kind) {
+			body := p.New()
+			provider, ok := body.(config.EnvPushdownProvider)
+			if !ok {
 				continue
 			}
-			seen[ev.Name] = true
-			out = append(out, pushdownEnvVar{
-				Name:        ev.Name,
-				Value:       ev.Value,
-				Description: ev.Description,
-				PluginType:  p.Type,
-			})
+			for _, ev := range provider.EnvVars() {
+				if seen[ev.Name] {
+					continue
+				}
+				seen[ev.Name] = true
+				out = append(out, pushdownEnvVar{
+					Name:        ev.Name,
+					Value:       ev.Value,
+					Description: ev.Description,
+					PluginType:  p.Type,
+				})
+			}
 		}
 	}
 	return out
