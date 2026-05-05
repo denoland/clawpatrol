@@ -89,6 +89,12 @@ func ensureMacProxyUp() error {
 // the wg.conf is written so the user gets a single-prompt onboarding:
 // `clawpatrol join --url ...` → wg conf saved → sysext approved →
 // proxy up. wholeMachine maps to the helper's --whole-machine flag.
+//
+// After saving the profile, push the freshly written wg.conf into the
+// extension via `Clawpatrol start` so a re-join (new keys, new peer)
+// or a mode switch (per-process ↔ whole-machine) takes effect on the
+// running tunnel — the helper's `start` is reload-aware (stop+start
+// when conf or mode changed).
 func macHelperInstall(wholeMachine bool) error {
 	if _, err := os.Stat(macHelperPath); err != nil {
 		fmt.Fprintln(os.Stderr,
@@ -101,6 +107,15 @@ func macHelperInstall(wholeMachine bool) error {
 		args = append(args, "--whole-machine")
 	}
 	c := exec.Command(macHelperPath, args...)
+	c.Stdout, c.Stderr = os.Stdout, os.Stderr
+	if err := c.Run(); err != nil {
+		return err
+	}
+	confPath := filepath.Join(os.Getenv("HOME"), ".config", "clawpatrol", "wg.conf")
+	if _, err := os.Stat(confPath); err != nil {
+		return nil
+	}
+	c = exec.Command(macHelperPath, "start", confPath)
 	c.Stdout, c.Stderr = os.Stdout, os.Stderr
 	return c.Run()
 }

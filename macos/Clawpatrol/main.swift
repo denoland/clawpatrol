@@ -121,6 +121,8 @@ func saveProxyProfileAndExit(wholeMachine: Bool, explicit: Bool) {
            let prev = proto.providerConfiguration?["mode"] as? String, !prev.isEmpty {
             resolvedMode = prev
         }
+        let prevMode: String? = (existing?.protocolConfiguration as? NETunnelProviderProtocol)?
+            .providerConfiguration?["mode"] as? String
         let proto = NETunnelProviderProtocol()
         proto.providerBundleIdentifier = extBundleID
         proto.serverAddress = "clawpatrol-gateway"
@@ -140,9 +142,48 @@ func saveProxyProfileAndExit(wholeMachine: Bool, explicit: Bool) {
         manager.saveToPreferences { err in
             if let err = err { fail("saveToPreferences: \(err)") }
             print("✓ proxy profile installed (\(resolvedMode))")
-            exit(0)
+            // Mode change while the tunnel is already running needs an
+            // explicit reload — providerConfiguration is read once at
+            // startProxy time, so saveToPreferences alone leaves the
+            // running ext on the old mode. Operators flipping
+            // per-process ↔ whole-machine via re-running install
+            // expect the new mode to apply immediately.
+            let modeChanged = (prevMode ?? "") != resolvedMode
+            let running = manager.connection.status == .connected
+                || manager.connection.status == .connecting
+            if modeChanged && running && !wgConf.isEmpty {
+                reloadTunnelAndExit(manager: manager, label: resolvedMode)
+            } else {
+                exit(0)
+            }
         }
     }
+}
+
+// reloadTunnelAndExit stops the running tunnel, waits for
+// .disconnected, then starts it again. Used after a config change
+// (mode flip, conf swap) that providerConfiguration alone won't
+// surface to the running extension.
+func reloadTunnelAndExit(manager: NETransparentProxyManager, label: String) {
+    print("↻ reloading tunnel for new \(label)")
+    manager.connection.stopVPNTunnel()
+    var attempts = 0
+    func tick() {
+        let s = manager.connection.status
+        if s == .disconnected || s == .invalid || attempts > 50 {
+            do {
+                try manager.connection.startVPNTunnel()
+                print("✓ tunnel reloaded")
+                exit(0)
+            } catch {
+                fail("startVPNTunnel: \(error)")
+            }
+            return
+        }
+        attempts += 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: tick)
+    }
+    tick()
 }
 
 func startProxy(confPath: String) {
@@ -154,6 +195,8 @@ func startProxy(confPath: String) {
         guard let manager = managers?.first(where: { $0.localizedDescription == proxyProfileName }) else {
             fail("no proxy profile — run `Clawpatrol install` first")
         }
+        let prevConf: String = (manager.protocolConfiguration as? NETunnelProviderProtocol)?
+            .providerConfiguration?["wg-conf"] as? String ?? ""
         if let proto = manager.protocolConfiguration as? NETunnelProviderProtocol {
             var cfg = proto.providerConfiguration ?? [:]
             cfg["wg-conf"] = conf
@@ -165,6 +208,20 @@ func startProxy(confPath: String) {
             if let err = err { fail("save: \(err)") }
             manager.loadFromPreferences { err in
                 if let err = err { fail("reload: \(err)") }
+                let running = manager.connection.status == .connected
+                    || manager.connection.status == .connecting
+                let confChanged = prevConf != conf
+                if running && confChanged {
+                    // Conf swap while running — extension parses wg-conf
+                    // once at startProxy. Force a stop+start so the new
+                    // peer key / address takes effect.
+                    reloadTunnelAndExit(manager: manager, label: "wg-conf")
+                    return
+                }
+                if running {
+                    print("✓ proxy already up (no change)")
+                    exit(0)
+                }
                 do {
                     try manager.connection.startVPNTunnel()
                     print("✓ proxy up")
