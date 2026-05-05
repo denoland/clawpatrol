@@ -3,11 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -398,4 +402,327 @@ func (r *OAuthRegistry) loadFromDB() error {
 		r.states[stateKey(id, owner)] = s
 	}
 	return rows.Err()
+}
+
+type oauthSession struct {
+	verifier string
+	state    string
+	cfg      *oauth2.Config
+	id       string
+	owner    string
+	created  time.Time
+}
+
+func (w *webMux) apiOAuthStart(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(rw, "POST", 405)
+		return
+	}
+	id := r.URL.Query().Get("id")
+	flow := lookupOAuthFlow(w.g.policy.Load(), id)
+	if flow == nil {
+		http.Error(rw, "no oauth integration: "+id, 400)
+		return
+	}
+	owner, ownerLabel := w.ownerForCaller(r)
+	if owner == "" {
+		http.Error(rw, "could not determine owner identity (tailscale whois failed)", 400)
+		return
+	}
+	// Branch: device flow vs auth-code+PKCE.
+	if flow.Flow == "device" {
+		w.startDeviceFlow(rw, id, flow, owner, ownerLabel)
+		return
+	}
+
+	verifier := randomString(64)
+	sum := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
+	state := randomString(32)
+	cfg := &oauth2.Config{
+		ClientID:     resolveTemplate(flow.OAuth.ClientID),
+		ClientSecret: resolveTemplate(flow.OAuth.ClientSecret),
+		Scopes:       flow.OAuth.Scopes,
+		RedirectURL:  flow.OAuth.RedirectURI,
+		Endpoint:     oauth2.Endpoint{AuthURL: flow.OAuth.AuthURL, TokenURL: flow.OAuth.TokenURL},
+	}
+	authURL := cfg.AuthCodeURL(state,
+		oauth2.SetAuthURLParam("code_challenge", challenge),
+		oauth2.SetAuthURLParam("code_challenge_method", "S256"),
+	)
+	w.mu.Lock()
+	w.sessions[state] = &oauthSession{verifier: verifier, state: state, cfg: cfg, id: id, owner: owner, created: time.Now()}
+	for k, s := range w.sessions {
+		if time.Since(s.created) > 10*time.Minute {
+			delete(w.sessions, k)
+		}
+	}
+	w.mu.Unlock()
+	writeJSON(rw, map[string]string{"auth_url": authURL, "state": state, "owner": ownerLabel})
+}
+
+func (w *webMux) apiOAuthExchange(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(rw, "POST", 405)
+		return
+	}
+	var body struct {
+		State string `json:"state"`
+		Code  string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(rw, err.Error(), 400)
+		return
+	}
+	body.Code = strings.TrimSpace(body.Code)
+	if body.Code == "" || body.State == "" {
+		http.Error(rw, "missing code/state", 400)
+		return
+	}
+	if i := strings.IndexAny(body.Code, "#&?"); i > 0 {
+		body.Code = body.Code[:i]
+	}
+
+	w.mu.Lock()
+	sess, ok := w.sessions[body.State]
+	if ok {
+		delete(w.sessions, body.State)
+	}
+	w.mu.Unlock()
+	if !ok {
+		http.Error(rw, "unknown state (expired or stale)", 400)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	tok, err := exchangeOAuthCode(ctx, sess, body.Code, body.State)
+	if err != nil {
+		http.Error(rw, "token exchange: "+err.Error(), 400)
+		return
+	}
+	if err := w.g.oauth.Set(sess.id, sess.owner, tok); err != nil {
+		http.Error(rw, err.Error(), 500)
+		return
+	}
+	writeJSON(rw, map[string]any{"connected": true, "owner": sess.owner, "expires": tok.Expiry.Unix()})
+}
+
+// startDeviceFlow kicks off OAuth device flow (RFC 8628). Returns
+// {user_code, verification_uri, device_code, interval} so the dashboard
+// can prompt the user to enter the code at the verification URI.
+func (w *webMux) startDeviceFlow(rw http.ResponseWriter, id string, it *OAuthIntegration, owner, ownerLabel string) {
+	form := url.Values{}
+	form.Set("client_id", resolveTemplate(it.OAuth.ClientID))
+	if len(it.OAuth.Scopes) > 0 {
+		form.Set("scope", strings.Join(it.OAuth.Scopes, " "))
+	}
+	req, _ := http.NewRequest("POST", it.OAuth.DeviceURL, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		http.Error(rw, "device-code: "+err.Error(), 502)
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		http.Error(rw, fmt.Sprintf("device-code %d: %s", resp.StatusCode, string(body)), 502)
+		return
+	}
+	var dr struct {
+		DeviceCode      string `json:"device_code"`
+		UserCode        string `json:"user_code"`
+		VerificationURI string `json:"verification_uri"`
+		ExpiresIn       int    `json:"expires_in"`
+		Interval        int    `json:"interval"`
+	}
+	if err := json.Unmarshal(body, &dr); err != nil {
+		http.Error(rw, "device-code parse: "+err.Error(), 502)
+		return
+	}
+	state := randomString(32)
+	w.mu.Lock()
+	w.sessions[state] = &oauthSession{
+		state:    state,
+		id:       id,
+		owner:    owner,
+		created:  time.Now(),
+		verifier: dr.DeviceCode, // reuse field for device_code
+		cfg: &oauth2.Config{
+			ClientID: resolveTemplate(it.OAuth.ClientID),
+			Endpoint: oauth2.Endpoint{TokenURL: it.OAuth.TokenURL},
+		},
+	}
+	w.mu.Unlock()
+	writeJSON(rw, map[string]any{
+		"flow":             "device",
+		"state":            state,
+		"user_code":        dr.UserCode,
+		"verification_uri": dr.VerificationURI,
+		"interval":         dr.Interval,
+		"expires_in":       dr.ExpiresIn,
+		"owner":            ownerLabel,
+	})
+}
+
+// pollDeviceFlow exchanges device_code for a token. Called by the
+// frontend on a timer until success / denial / expiration.
+func (w *webMux) pollDeviceFlow(rw http.ResponseWriter, sess *oauthSession) {
+	form := url.Values{}
+	form.Set("client_id", sess.cfg.ClientID)
+	form.Set("device_code", sess.verifier)
+	form.Set("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
+	req, _ := http.NewRequest("POST", sess.cfg.Endpoint.TokenURL, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		http.Error(rw, "device poll: "+err.Error(), 502)
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	// Don't log the body verbatim — on success it carries access_token.
+	var tr struct {
+		AccessToken      string `json:"access_token"`
+		TokenType        string `json:"token_type"`
+		RefreshToken     string `json:"refresh_token"`
+		Scope            string `json:"scope"`
+		ExpiresIn        int64  `json:"expires_in"`
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
+		Interval         int    `json:"interval"`
+	}
+	if err := json.Unmarshal(body, &tr); err != nil {
+		http.Error(rw, "device poll parse: "+err.Error(), 502)
+		return
+	}
+	if tr.Error != "" {
+		// `slow_down` carries an updated interval (RFC 8628). Surface
+		// it to the dashboard so the polling loop respects the new
+		// cadence; otherwise the client keeps hitting at the original
+		// interval and GitHub never returns the token.
+		out := map[string]any{"error": tr.Error, "detail": tr.ErrorDescription}
+		if tr.Interval > 0 {
+			out["interval"] = tr.Interval
+		}
+		writeJSON(rw, out)
+		return
+	}
+	if tr.AccessToken == "" {
+		writeJSON(rw, map[string]string{"error": "authorization_pending"})
+		return
+	}
+	tok := &oauth2.Token{
+		AccessToken:  tr.AccessToken,
+		RefreshToken: tr.RefreshToken,
+		TokenType:    tr.TokenType,
+	}
+	if tr.ExpiresIn > 0 {
+		tok.Expiry = time.Now().Add(time.Duration(tr.ExpiresIn) * time.Second)
+	}
+	w.mu.Lock()
+	delete(w.sessions, sess.state)
+	w.mu.Unlock()
+	if err := w.g.oauth.Set(sess.id, sess.owner, tok); err != nil {
+		http.Error(rw, err.Error(), 500)
+		return
+	}
+	writeJSON(rw, map[string]any{"connected": true, "owner": sess.owner})
+}
+
+// exchangeOAuthCode finalizes an OAuth PKCE flow. Anthropic's token
+// endpoint requires a JSON body (returns "Invalid request format" for
+// the standard form-urlencoded body), so we hand-roll the request for
+// claude integration. Other providers use the stdlib oauth2.Exchange.
+func exchangeOAuthCode(ctx context.Context, sess *oauthSession, code, state string) (*oauth2.Token, error) {
+	if sess.id == "claude" {
+		return exchangeAnthropicCode(ctx, sess, code, state)
+	}
+	return sess.cfg.Exchange(ctx, code,
+		oauth2.SetAuthURLParam("code_verifier", sess.verifier),
+		oauth2.SetAuthURLParam("redirect_uri", sess.cfg.RedirectURL),
+	)
+}
+
+func exchangeAnthropicCode(ctx context.Context, sess *oauthSession, code, state string) (*oauth2.Token, error) {
+	body, _ := json.Marshal(map[string]string{
+		"grant_type":    "authorization_code",
+		"code":          code,
+		"redirect_uri":  sess.cfg.RedirectURL,
+		"client_id":     sess.cfg.ClientID,
+		"code_verifier": sess.verifier,
+		"state":         state,
+	})
+	req, err := http.NewRequestWithContext(ctx, "POST", sess.cfg.Endpoint.TokenURL, strings.NewReader(string(body)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	respBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("anthropic %d: %s", resp.StatusCode, string(respBytes))
+	}
+	var tr struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		TokenType    string `json:"token_type"`
+		ExpiresIn    int64  `json:"expires_in"`
+	}
+	if err := json.Unmarshal(respBytes, &tr); err != nil {
+		return nil, err
+	}
+	tok := &oauth2.Token{
+		AccessToken:  tr.AccessToken,
+		RefreshToken: tr.RefreshToken,
+		TokenType:    tr.TokenType,
+	}
+	if tr.ExpiresIn > 0 {
+		tok.Expiry = time.Now().Add(time.Duration(tr.ExpiresIn) * time.Second)
+	}
+	return tok, nil
+}
+
+func (w *webMux) apiOAuthDevicePoll(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(rw, "POST", 405)
+		return
+	}
+	state := r.URL.Query().Get("state")
+	w.mu.Lock()
+	sess := w.sessions[state]
+	w.mu.Unlock()
+	if sess == nil {
+		http.Error(rw, "unknown state (expired)", 400)
+		return
+	}
+	w.pollDeviceFlow(rw, sess)
+}
+
+func (w *webMux) apiOAuthRevoke(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(rw, "POST", 405)
+		return
+	}
+	var body struct {
+		ID    string `json:"id"`
+		Owner string `json:"owner"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(rw, err.Error(), 400)
+		return
+	}
+	if body.ID == "" || body.Owner == "" {
+		http.Error(rw, "missing id or owner", 400)
+		return
+	}
+	w.g.oauth.Revoke(body.ID, body.Owner)
+	writeJSON(rw, map[string]bool{"ok": true})
 }

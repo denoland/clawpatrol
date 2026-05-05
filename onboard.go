@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -447,3 +448,204 @@ func mintTailscaleAuthKey(ctx context.Context, ts Tailscale) (string, error) {
 	}
 	return key.Key, nil
 }
+func (w *webMux) apiOnboardStart(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(rw, "POST", 405)
+		return
+	}
+	s := w.onboard.start()
+	// CLI passes its os.Hostname() so the dashboard shows a real
+	// device name instead of just the WG-side IP. Optional — we still
+	// fall back gracefully when missing.
+	if hn := strings.TrimSpace(r.URL.Query().Get("hostname")); hn != "" {
+		w.onboard.mu.Lock()
+		s.hostname = hn
+		w.onboard.mu.Unlock()
+	}
+	// Prefer the operator-configured public_url so brand-new clients
+	// see a real URL. Fall back to the request's Host header for
+	// dev / direct-IP setups. Tailscale Funnel hostnames (*.ts.net)
+	// are always HTTPS, so detect those explicitly.
+	verifyURL := w.publicURL
+	if verifyURL == "" {
+		scheme := "http"
+		if strings.HasSuffix(r.Host, ".ts.net") || r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+			scheme = "https"
+		}
+		verifyURL = scheme + "://" + r.Host
+	}
+	verifyURL = strings.TrimRight(verifyURL, "/") + "/#/onboard/" + s.userCode
+	writeJSON(rw, map[string]any{
+		"device_code": s.deviceCode,
+		"user_code":   s.userCode,
+		"verify_url":  verifyURL,
+		"interval":    3,
+		"expires_in":  600,
+	})
+}
+
+// apiOnboardLookup returns user_code session info for the dashboard
+// approval page. No secrets exposed (just code + age).
+func (w *webMux) apiOnboardLookup(rw http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	s := w.onboard.byUserCode(code)
+	if s == nil {
+		http.Error(rw, "unknown or expired code", 404)
+		return
+	}
+	writeJSON(rw, map[string]any{
+		"user_code":  s.userCode,
+		"approved":   s.approved,
+		"created_at": s.created.Unix(),
+	})
+}
+
+// apiOnboardApprove is hit by the dashboard "approve" button. The
+// caller must be an existing tailnet member (whois succeeds) — this
+// gates onboarding behind an existing trusted user.
+func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(rw, "POST", 405)
+		return
+	}
+	owner, _ := w.ownerForCaller(r)
+	if owner == "" {
+		http.Error(rw, "approval requires an authenticated tailnet caller (or set admin_email in gateway.hcl)", 403)
+		return
+	}
+	code := r.URL.Query().Get("code")
+	// Operator picks which profile this device joins. Falls back to a
+	// profile named "default" when declared; otherwise the first profile
+	// in source order.
+	profile := r.URL.Query().Get("profile")
+	if profile == "" {
+		profile = defaultProfileName(w.g.cfg.Policy)
+	}
+	s := w.onboard.byUserCode(code)
+	if s == nil {
+		http.Error(rw, "unknown or expired code", 404)
+		return
+	}
+	w.onboard.mu.Lock()
+	if s.approved {
+		w.onboard.mu.Unlock()
+		writeJSON(rw, map[string]any{"already": true})
+		return
+	}
+	s.approved = true
+	s.owner = owner
+	s.profile = profile
+	hostname := s.hostname
+	w.onboard.mu.Unlock()
+
+	// Recycle the wg /32 already bound to (owner, hostname) so a rejoin
+	// from the same machine doesn't spawn a duplicate device row.
+	reuseIP := w.onboard.IPForHostname(owner, hostname)
+
+	// Mint key in background so the approve click returns fast.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		key, loginServer, peerIP, err := newOnboarder(w.ts).MintKey(ctx, reuseIP)
+		w.onboard.mu.Lock()
+		if err != nil {
+			s.err = err.Error()
+			w.onboard.mu.Unlock()
+			return
+		}
+		s.authKey = key
+		s.loginServer = loginServer
+		dc := s.deviceCode
+		w.onboard.mu.Unlock()
+		// WG path: server allocated peerIP and knows the approver, so
+		// register the (ip → owner) mapping right here. Saves the CLI
+		// from making a /api/onboard/claim round-trip after wg-quick
+		// (which is racy: the default route is now the tunnel and the
+		// public gateway URL becomes unreachable).
+		if peerIP != "" {
+			w.onboard.ClaimIP(dc, peerIP, "")
+			if profile != "" {
+				w.onboard.AssignProfile(peerIP, profile)
+			}
+			// Seed the agents registry so the dashboard shows the
+			// device immediately, before it sends any traffic.
+			if w.g.agents != nil {
+				w.g.agents.Seed(peerIP)
+			}
+		}
+	}()
+	writeJSON(rw, map[string]any{"approved": true})
+}
+
+// apiOnboardClaim is hit by the CLI right after `tailscale up`
+// finishes. The peer IP (the new device's tailnet IP) gets associated
+// with the approver email. Subsequent agent traffic from that IP
+// resolves to the approver in lieu of the useless "tagged-devices"
+// whois result.
+func (w *webMux) apiOnboardClaim(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(rw, "POST", 405)
+		return
+	}
+	dc := r.URL.Query().Get("device_code")
+	if dc == "" {
+		http.Error(rw, "missing device_code", 400)
+		return
+	}
+	// CLI passes its own tailnet IP via ?ip=. We can't trust
+	// r.RemoteAddr because tailscale funnel proxies through localhost
+	// and the device_code already binds this to a specific approval —
+	// you can't claim someone else's IP without their device_code.
+	host := r.URL.Query().Get("ip")
+	if host == "" {
+		host = r.RemoteAddr
+		if i := strings.LastIndex(host, ":"); i >= 0 {
+			host = host[:i]
+		}
+	}
+	hostname := strings.TrimSpace(r.URL.Query().Get("hostname"))
+	owner, ok := w.onboard.ClaimIP(dc, host, hostname)
+	if !ok {
+		log.Printf("onboard claim: unknown/unapproved device_code=%s ip=%s", truncate(dc, 16), host)
+		http.Error(rw, "unknown or unapproved device_code", 404)
+		return
+	}
+	log.Printf("onboard claim: %s → %s (hostname=%q)", host, owner, hostname)
+	writeJSON(rw, map[string]string{"owner": owner, "ip": host})
+}
+
+// apiOnboardPoll is hit by the CLI to retrieve the auth key once
+// approved. Uses standard device-flow status codes via JSON.
+func (w *webMux) apiOnboardPoll(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(rw, "POST", 405)
+		return
+	}
+	dc := r.URL.Query().Get("device_code")
+	s := w.onboard.byDeviceCode(dc)
+	if s == nil {
+		writeJSON(rw, map[string]string{"error": "expired_token"})
+		return
+	}
+	w.onboard.mu.Lock()
+	defer w.onboard.mu.Unlock()
+	if s.err != "" {
+		writeJSON(rw, map[string]string{"error": "server_error", "detail": s.err})
+		return
+	}
+	if !s.approved {
+		writeJSON(rw, map[string]string{"error": "authorization_pending"})
+		return
+	}
+	if s.authKey == "" {
+		writeJSON(rw, map[string]string{"error": "slow_down"})
+		return
+	}
+	writeJSON(rw, map[string]any{
+		"auth_key":     s.authKey,
+		"approved_by":  s.owner,
+		"login_server": s.loginServer, // empty = Tailscale Inc default
+	})
+}
+
+var displayOrder = []string{"claude", "codex", "github"}

@@ -133,7 +133,6 @@ func init() {
 
 // ── Wire-protocol gateway ─────────────────────────────────────────────
 
-
 const sslRequestCode = 80877103
 
 // HandleConn is the postgres ConnEndpointRuntime entry point.
@@ -652,7 +651,6 @@ func parseSQL(sql string) pgInfo {
 var _ runtime.ConnEndpointRuntime = PostgresEndpointRuntime{}
 
 // ── Upstream auth: SCRAM / cleartext / trust ──────────────────────────
-
 
 const sslRequestCodeUpstream uint32 = 80877103
 

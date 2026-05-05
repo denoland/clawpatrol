@@ -6,12 +6,16 @@ import (
 	"encoding/hex"
 	"log"
 	"net"
+	"net/http"
 	"net/netip"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"tailscale.com/client/local"
+
+	"github.com/denoland/clawpatrol/config"
 )
 
 type Agent struct {
@@ -386,4 +390,320 @@ func shortHash(s string) string {
 	}
 	h := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(h[:6])
+}
+
+type IntegrationRow struct {
+	ID       string              `json:"id"`
+	Name     string              `json:"name"`
+	Type     string              `json:"type"` // credential plugin type
+	HasOAuth bool                `json:"has_oauth"`
+	Slots    []config.SecretSlot `json:"slots,omitempty"`
+	Owners   []Owner             `json:"owners"`
+}
+
+type Owner struct {
+	Owner     string `json:"owner"`
+	Connected bool   `json:"connected"`
+	ExpiresAt int64  `json:"expires_at,omitempty"`
+}
+
+func (w *webMux) apiStatus(rw http.ResponseWriter, r *http.Request) {
+	out := []IntegrationRow{}
+	policy := w.g.policy.Load()
+	if policy == nil {
+		writeJSON(rw, out)
+		return
+	}
+	profile := r.URL.Query().Get("profile")
+	allowed := credentialsInProfile(policy, profile) // nil = no filter
+
+	names := make([]string, 0, len(policy.Credentials))
+	for name := range policy.Credentials {
+		if allowed != nil && !allowed[name] {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	caller, _ := w.ownerForCaller(r)
+	for _, name := range names {
+		ent := policy.Credentials[name]
+		row := IntegrationRow{ID: name, Name: name, Type: ent.Plugin.Type}
+		if _, ok := ent.Body.(config.OAuthFlowProvider); ok {
+			row.HasOAuth = true
+			for _, owner := range w.g.oauth.Owners(name) {
+				connected, exp := w.g.oauth.Status(name, owner)
+				o := Owner{Owner: owner, Connected: connected}
+				if !exp.IsZero() {
+					o.ExpiresAt = exp.Unix()
+				}
+				row.Owners = append(row.Owners, o)
+			}
+		}
+		if sp, ok := ent.Body.(config.SecretSlotsProvider); ok {
+			row.Slots = sp.SecretSlots()
+			if caller != "" {
+				present, _ := credentialSlotPresence(w.g.db, name, caller)
+				if len(present) > 0 {
+					row.Owners = append(row.Owners, Owner{Owner: caller, Connected: true})
+				}
+			}
+		}
+		out = append(out, row)
+	}
+	writeJSON(rw, out)
+}
+
+// credentialsInProfile returns the set of credential bare names that
+// any endpoint in the given profile references. nil means "no filter
+// — return everything." Used by apiStatus and the device-page card
+// render so per-device views only show credentials the device's
+// profile actually uses.
+func credentialsInProfile(policy *config.CompiledPolicy, profile string) map[string]bool {
+	if profile == "" || policy == nil {
+		return nil
+	}
+	prof, ok := policy.Profiles[profile]
+	if !ok {
+		return map[string]bool{} // unknown profile → empty set, not nil
+	}
+	out := map[string]bool{}
+	for _, ep := range prof.Endpoints {
+		for _, cb := range ep.Credentials {
+			if cb.Credential != nil {
+				out[cb.Credential.Symbol.Name] = true
+			}
+		}
+	}
+	return out
+}
+
+func (w *webMux) apiAgents(rw http.ResponseWriter, _ *http.Request) {
+	var snap []*Agent
+	if w.g.agents != nil {
+		snap = w.g.agents.snapshot()
+	}
+	// External IPs: the underlay v4/v6 each WG peer is dialing in from.
+	// Show these in place of the server-side /32 (routing artefact).
+	// Live endpoint observed via wg-go IpcGet — persist into the devices
+	// row so the dashboard keeps a stable last-known address even when
+	// the peer goes idle and wg-go drops its endpoint state.
+	if globalWG != nil {
+		for ip, ep := range globalWG.EndpointsByIP() {
+			if ep == "" {
+				continue
+			}
+			parsed := net.ParseIP(ep)
+			var v4, v6 string
+			if p4 := parsed.To4(); p4 != nil {
+				v4 = p4.String()
+			} else if parsed != nil {
+				v6 = parsed.String()
+			}
+			w.onboard.SetExternalIPs(ip, v4, v6)
+		}
+	}
+	for _, a := range snap {
+		v4, v6 := w.onboard.ExternalIPs(a.IP)
+		a.ExternalIPv4, a.ExternalIPv6 = v4, v6
+	}
+	// enrich with connected integrations per agent's user. Re-run on
+	// every snapshot — caching by `Integrations != nil` would freeze
+	// the list at first sighting (a freshly-onboarded device whose
+	// user later connects Claude wouldn't reflect the new connection).
+	for _, a := range snap {
+		// Per-profile credentials: the agent's Integrations list
+		// reflects what the device's bound profile has connected. Falls
+		// back to the legacy per-user lookup for tailnet-control-mode
+		// installs that still bucket creds by login.
+		profile := w.onboard.ProfileForIP(a.IP)
+		if profile == "" {
+			if a.User == "" || a.User == "tagged-devices" {
+				if owner := w.onboard.OwnerForIP(a.IP); owner != "" {
+					a.User = owner
+				}
+			}
+			profile = a.User
+		}
+		if profile == "" {
+			continue
+		}
+		// Walk every declared credential — connected if either an
+		// OAuth token exists OR the operator pasted a secret slot via
+		// the dashboard. Was hardcoded to the claude/codex/github
+		// legacy trio, which silently hid every other credential type
+		// from the agents table.
+		var ids []string
+		if policy := w.g.Policy(); policy != nil {
+			names := make([]string, 0, len(policy.Credentials))
+			for name := range policy.Credentials {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				if conn, _ := w.g.oauth.Status(name, profile); conn {
+					ids = append(ids, name)
+					continue
+				}
+				present, _ := credentialSlotPresence(w.g.db, name, profile)
+				if len(present) > 0 {
+					ids = append(ids, name)
+				}
+			}
+		}
+		if ids != nil {
+			a.Integrations = ids
+		}
+	}
+	writeJSON(rw, snap)
+}
+
+// apiAgentDelete drops a device from clawpatrol's view. Removes the
+// in-memory agent record, the onboard owner / hostname / profile
+// row, and (in WG mode) the WireGuard peer + allowed-IP entry — so
+// traffic from the deleted device's tunnel can't keep flowing under
+// the old owner. The Tailscale node itself isn't kicked; admins do
+// that from the Tailscale admin console.
+func (w *webMux) apiAgentDelete(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(rw, "POST", 405)
+		return
+	}
+	ip := r.URL.Query().Get("ip")
+	if ip == "" {
+		http.Error(rw, "missing ip", 400)
+		return
+	}
+	if w.g.agents != nil {
+		w.g.agents.Delete(ip)
+	}
+	if w.g.onboard != nil {
+		w.g.onboard.ForgetIP(ip)
+	}
+	if globalWG != nil {
+		globalWG.RevokePeerByIP(ip)
+	}
+	writeJSON(rw, map[string]bool{"ok": true})
+}
+
+// apiAgentProfile assigns a peer IP to a named profile. Profile must
+// be declared in cfg.Profiles. The mapping is persisted in
+// onboard.profileByIP and consulted by Gateway.profileFor at MITM
+// time, so rule scoping switches over immediately.
+func (w *webMux) apiAgentProfile(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(rw, "POST", 405)
+		return
+	}
+	ip := r.URL.Query().Get("ip")
+	profile := r.URL.Query().Get("profile")
+	if ip == "" || profile == "" {
+		http.Error(rw, "missing ip or profile", 400)
+		return
+	}
+	names := orderedProfileNames(w.g.cfg.Policy)
+	known := false
+	for _, n := range names {
+		if n == profile {
+			known = true
+			break
+		}
+	}
+	if !known {
+		http.Error(rw, "unknown profile", 400)
+		return
+	}
+	w.g.onboard.AssignProfile(ip, profile)
+	writeJSON(rw, map[string]any{"ok": true, "ip": ip, "profile": profile})
+}
+
+// apiProfiles lists declared profile names so the dashboard can
+// render a profile picker per device.
+func (w *webMux) apiProfiles(rw http.ResponseWriter, _ *http.Request) {
+	writeJSON(rw, orderedProfileNames(w.g.cfg.Policy))
+}
+
+// RuleSummary is the JSON shape the dashboard renders for each rule.
+// It flattens a CompiledRule plus its enclosing endpoint and profile
+// context so the table view doesn't need to walk the policy graph
+// itself.
+type RuleSummary struct {
+	Name     string                `json:"name"`
+	Family   string                `json:"family"` // "https" | "sql" | "k8s"
+	Endpoint string                `json:"endpoint"`
+	Profile  string                `json:"profile,omitempty"`
+	Priority int                   `json:"priority,omitempty"`
+	Disabled bool                  `json:"disabled,omitempty"`
+	Match    map[string]any        `json:"match,omitempty"`
+	Verdict  string                `json:"verdict,omitempty"`
+	Reason   string                `json:"reason,omitempty"`
+	Approve  []config.ApproveStage `json:"approve,omitempty"`
+}
+
+// apiRules returns every compiled rule across every profile, flattened
+// for the dashboard table view. Rules attached to multiple endpoints
+// emit one row per endpoint so the operator sees each attachment
+// site individually.
+//
+// Read-only. Edits go through PUT /api/config (whole-file HCL via
+// the new typed-block validator).
+func (w *webMux) apiRules(rw http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "GET":
+		writeJSON(rw, w.collectRuleSummaries(""))
+	default:
+		http.Error(rw, "edit rules through PUT /api/config", http.StatusNotImplemented)
+	}
+}
+
+// collectRuleSummaries walks the compiled policy and emits one
+// RuleSummary per (rule × endpoint × profile) triple. When profile is
+// empty, every profile contributes; otherwise only that profile.
+//
+// Sort: by profile, then endpoint, then descending priority (so the
+// dashboard mirrors first-match-wins order within each endpoint).
+func (w *webMux) collectRuleSummaries(profileFilter string) []RuleSummary {
+	policy := w.g.Policy()
+	if policy == nil {
+		return []RuleSummary{}
+	}
+	var out []RuleSummary
+	for profileName, prof := range policy.Profiles {
+		if profileFilter != "" && profileName != profileFilter {
+			continue
+		}
+		for epName, ep := range prof.Endpoints {
+			for _, r := range ep.Rules {
+				out = append(out, RuleSummary{
+					Name:     r.Name,
+					Family:   ep.Family,
+					Endpoint: epName,
+					Profile:  profileName,
+					Priority: r.Priority,
+					Disabled: r.Disabled,
+					Match:    matchSourceMap(r),
+					Verdict:  r.Outcome.Verdict,
+					Reason:   r.Outcome.Reason,
+					Approve:  r.Outcome.Approve,
+				})
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Profile != out[j].Profile {
+			return out[i].Profile < out[j].Profile
+		}
+		if out[i].Endpoint != out[j].Endpoint {
+			return out[i].Endpoint < out[j].Endpoint
+		}
+		return out[i].Priority > out[j].Priority
+	})
+	return out
+}
+
+func matchSourceMap(r *config.CompiledRule) map[string]any {
+	if r == nil {
+		return nil
+	}
+	return r.Match
 }
