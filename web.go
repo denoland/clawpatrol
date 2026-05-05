@@ -72,6 +72,7 @@ func newWebMux(g *Gateway, caDir string, ts Tailscale, publicURL string) http.Ha
 	mux.HandleFunc("/api/onboard/approve", w.apiOnboardApprove)
 	mux.HandleFunc("/api/onboard/lookup", w.apiOnboardLookup)
 	mux.HandleFunc("/api/onboard/claim", w.apiOnboardClaim)
+	mux.HandleFunc("/api/env-pushdown", w.apiEnvPushdown)
 	mux.HandleFunc("/__login", w.apiDashboardLogin)
 	mux.Handle("/", w.staticHandler())
 	return w.dashboardSecretGate(w.tailnetGate(mux))
@@ -99,6 +100,7 @@ func (w *webMux) dashboardSecretGate(next http.Handler) http.Handler {
 		"/api/onboard/claim":   true,
 		"/api/onboard/lookup":  true,
 		"/api/onboard/approve": true,
+		"/api/env-pushdown":    true,
 		"/info":                true,
 		"/ca.crt":              true,
 		"/__login":             true,
@@ -323,6 +325,62 @@ func (w *webMux) mountCredentialWebhooks(mux *http.ServeMux) {
 			})
 		}
 	}
+}
+
+// apiEnvPushdown returns the env-var push-down list assembled from
+// the gateway's currently-loaded policy. Clients (`clawpatrol env`,
+// `clawpatrol run`) fetch it instead of iterating their own
+// compiled-in plugin set, so the binary on the client doesn't have
+// to track which endpoint plugins the operator has enabled on the
+// gateway.
+//
+// Only the (server, value) bytes are returned; the client owns the
+// CA-bundle vars (SSL_CERT_FILE etc.) because those reference a
+// path on the *client's* disk. Public endpoint — every value
+// emitted is a placeholder or a clawpatrol-signed routing token,
+// nothing the operator wouldn't already happily print on stdout
+// via `clawpatrol env`.
+func (w *webMux) apiEnvPushdown(rw http.ResponseWriter, r *http.Request) {
+	policy := w.g.Policy()
+	out := []map[string]string{}
+	seen := map[string]bool{}
+	add := func(name, value, description, pluginType string) {
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		out = append(out, map[string]string{
+			"name":        name,
+			"value":       value,
+			"description": description,
+			"plugin_type": pluginType,
+		})
+	}
+	if policy != nil {
+		// Credentials first so a credential-shaped placeholder wins
+		// over an endpoint emit on the same name. Mirrors the local
+		// iteration order in integrations.go's envPushdownVars
+		// fallback path.
+		for _, ent := range policy.Credentials {
+			provider, ok := ent.Body.(config.EnvPushdownProvider)
+			if !ok {
+				continue
+			}
+			for _, ev := range provider.EnvVars() {
+				add(ev.Name, ev.Value, ev.Description, ent.Plugin.Type)
+			}
+		}
+		for _, ep := range policy.Endpoints {
+			provider, ok := ep.Body.(config.EnvPushdownProvider)
+			if !ok {
+				continue
+			}
+			for _, ev := range provider.EnvVars() {
+				add(ev.Name, ev.Value, ev.Description, ep.Plugin.Type)
+			}
+		}
+	}
+	writeJSON(rw, map[string]any{"vars": out})
 }
 
 func (w *webMux) staticHandler() http.Handler {

@@ -107,6 +107,13 @@ func postJoinSetup(gateway, caDir string, skipTrust bool) (joinSetup, error) {
 	if err := fetchCAHTTP(gateway, s.caPath); err != nil {
 		return s, fmt.Errorf("fetch CA: %w", err)
 	}
+	// Persist the dashboard URL so subsequent `clawpatrol env` /
+	// `clawpatrol run` invocations can fetch the env push-down list
+	// from the gateway instead of iterating compiled-in plugins.
+	// Best-effort; the read side falls back to local enumeration
+	// when this file is missing.
+	_ = os.WriteFile(filepath.Join(caDir, "gateway"),
+		[]byte(strings.TrimRight(gateway, "/")+"\n"), 0o644)
 	if !skipTrust {
 		if err := installCATrust(s.caPath); err != nil {
 			s.caHint = manualTrustHint(s.caPath)

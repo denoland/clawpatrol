@@ -55,9 +55,17 @@ type pushdownEnvVar struct {
 
 // envPushdownVars returns every var the operator's CLI environment
 // needs: CA bundle paths + per-credential placeholder tokens. caPath
-// must be the absolute path to ca.crt. Plugin order is registry-
-// stable (alphabetical by Type); first writer wins on duplicate
-// names so the same env var across two plugins doesn't double up.
+// must be the absolute path to ca.crt.
+//
+// The placeholder tokens themselves are fetched from the gateway's
+// /api/env-pushdown endpoint when a gateway URL has been persisted
+// alongside the CA (`<caDir>/gateway`, written by `clawpatrol join`).
+// The gateway is the source of truth for which plugins are
+// configured — the local client binary doesn't have to ship every
+// endpoint plugin the operator might enable. Falls back to local
+// plugin enumeration when the gateway URL is missing or the fetch
+// fails (older gateways without the endpoint, network down, etc.),
+// so old + new clients work against any gateway version.
 func envPushdownVars(caPath string) []pushdownEnvVar {
 	var out []pushdownEnvVar
 	for _, k := range []string{
@@ -71,7 +79,11 @@ func envPushdownVars(caPath string) []pushdownEnvVar {
 	} {
 		out = append(out, pushdownEnvVar{Name: k, Value: caPath})
 	}
+	if vars, ok := fetchEnvPushdownFromGateway(filepath.Dir(caPath)); ok {
+		return append(out, vars...)
+	}
 	seen := map[string]bool{}
+	// Fallback: iterate every plugin compiled into this client binary.
 	// Both credential and endpoint plugins can declare env push-down
 	// vars. Credentials cover the bearer-placeholder case
 	// (ANTHROPIC_AUTH_TOKEN, GH_TOKEN, ...) — the env var IS the
@@ -102,6 +114,64 @@ func envPushdownVars(caPath string) []pushdownEnvVar {
 		}
 	}
 	return out
+}
+
+// fetchEnvPushdownFromGateway hits the gateway's /api/env-pushdown
+// endpoint and returns its declared push-down vars. Returns
+// (nil, false) when the gateway URL hasn't been persisted, the
+// network call fails, or the server didn't ship the endpoint
+// (older binary). Callers must fall back to local plugin
+// enumeration in that case.
+func fetchEnvPushdownFromGateway(caDir string) ([]pushdownEnvVar, bool) {
+	gw := readGatewayURL(caDir)
+	if gw == "" {
+		return nil, false
+	}
+	url := strings.TrimRight(gw, "/") + "/api/env-pushdown"
+	cli := &http.Client{Timeout: 5 * time.Second}
+	resp, err := cli.Get(url)
+	if err != nil {
+		return nil, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, false
+	}
+	var body struct {
+		Vars []struct {
+			Name        string `json:"name"`
+			Value       string `json:"value"`
+			Description string `json:"description"`
+			PluginType  string `json:"plugin_type"`
+		} `json:"vars"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, false
+	}
+	out := make([]pushdownEnvVar, 0, len(body.Vars))
+	for _, v := range body.Vars {
+		if v.Name == "" {
+			continue
+		}
+		out = append(out, pushdownEnvVar{
+			Name:        v.Name,
+			Value:       v.Value,
+			Description: v.Description,
+			PluginType:  v.PluginType,
+		})
+	}
+	return out, true
+}
+
+// readGatewayURL returns the dashboard URL `clawpatrol join`
+// persisted next to the CA bundle. Empty when the file is missing
+// or unreadable.
+func readGatewayURL(caDir string) string {
+	b, err := os.ReadFile(filepath.Join(caDir, "gateway"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }
 
 // runEnv is the `clawpatrol env` subcommand: prints export lines for
