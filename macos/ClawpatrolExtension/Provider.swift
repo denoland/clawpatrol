@@ -119,10 +119,6 @@ class TransparentProxyProvider: NETransparentProxyProvider {
               let port = Int32(endpoint.port) else {
             flow.closeReadWithError(nil); flow.closeWriteWithError(nil); return
         }
-        // Resolve hostname → IPv4. wgnetstack expects dotted-quad.
-        // For names, we'd run DNS through the tunnel itself; for now
-        // hostnames that don't parse as IPs are dropped. Curl etc.
-        // typically resolve before opening the flow.
         guard let ip = resolveIPv4(endpoint.hostname) else {
             os_log("DNS unsupported for %{public}@; dropping", log: log, type: .error, endpoint.hostname)
             flow.closeReadWithError(nil); flow.closeWriteWithError(nil); return
@@ -133,50 +129,68 @@ class TransparentProxyProvider: NETransparentProxyProvider {
                 flow.closeReadWithError(err); flow.closeWriteWithError(err); return
             }
             var errBuf = [CChar](repeating: 0, count: 256)
-            let fd = ip.withCString { hostC in
+            let cid = ip.withCString { hostC in
                 errBuf.withUnsafeMutableBufferPointer { ebuf in
-                    wg_netstack_dial_tcp(UnsafeMutablePointer(mutating: hostC),
-                                         port, ebuf.baseAddress, Int32(ebuf.count))
+                    wg_netstack_tcp_connect(UnsafeMutablePointer(mutating: hostC),
+                                            port, ebuf.baseAddress, Int32(ebuf.count))
                 }
             }
-            if fd < 0 {
+            if cid < 0 {
                 let msg = String(cString: errBuf)
-                os_log("dial_tcp %{public}@:%d failed: %{public}@",
+                os_log("tcp_connect %{public}@:%d failed: %{public}@",
                        log: log, type: .error, ip, port, msg)
                 flow.closeReadWithError(nil); flow.closeWriteWithError(nil)
                 return
             }
-            self.pumpTCP(flow: flow, fd: fd)
+            self.pumpTCP(flow: flow, cid: cid)
         }
     }
 
-    private func pumpTCP(flow: NEAppProxyTCPFlow, fd: Int32) {
-        // flow → fd
+    // pumpTCP bridges a flow's read/write to the cgo conn-handle API.
+    // No fds, no socketpair — just two recursive read loops calling
+    // wg_netstack_send / wg_netstack_recv with the conn ID. The Go
+    // side stores one gVisor TCPConn per ID, so we trade socketpair
+    // pressure (RLIMIT_NOFILE on whole-machine) for one Go goroutine
+    // blocked on Read per direction. Goroutines are 8KB stack each
+    // and Go schedules them onto a small worker pool.
+    private func pumpTCP(flow: NEAppProxyTCPFlow, cid: Int64) {
+        // flow → cid (send)
         func readFromFlow() {
             flow.readData { data, err in
-                if let err = err { close(fd); flow.closeWriteWithError(err); return }
+                if err != nil { wg_netstack_close_conn(cid); flow.closeWriteWithError(err); return }
                 guard let data = data, !data.isEmpty else {
-                    shutdown(fd, SHUT_WR); return
+                    // EOF on flow read — signal half-close upstream by
+                    // closing the gVisor conn entirely. gVisor TCPConn
+                    // doesn't expose CloseWrite via io.ReadWriteCloser.
+                    wg_netstack_close_conn(cid); return
                 }
-                let n = data.withUnsafeBytes { write(fd, $0.baseAddress, data.count) }
-                if n < 0 { close(fd); flow.closeReadWithError(nil); return }
+                let n = data.withUnsafeBytes { ptr -> Int32 in
+                    wg_netstack_send(cid,
+                                     UnsafeMutablePointer(mutating: ptr.baseAddress!.assumingMemoryBound(to: CChar.self)),
+                                     Int32(data.count))
+                }
+                if n < 0 { wg_netstack_close_conn(cid); flow.closeReadWithError(nil); return }
                 readFromFlow()
             }
         }
-        // fd → flow
+        // cid → flow (recv)
         DispatchQueue.global(qos: .userInitiated).async {
-            var buf = [UInt8](repeating: 0, count: 65536)
+            var buf = [CChar](repeating: 0, count: 65536)
             while true {
-                let n = buf.withUnsafeMutableBytes { read(fd, $0.baseAddress, $0.count) }
+                let n = buf.withUnsafeMutableBufferPointer { ptr -> Int32 in
+                    wg_netstack_recv(cid, ptr.baseAddress, Int32(ptr.count))
+                }
                 if n <= 0 { break }
-                let chunk = Data(buf.prefix(Int(n)))
+                let chunk = buf.withUnsafeBufferPointer { ptr in
+                    Data(bytes: ptr.baseAddress!, count: Int(n))
+                }
                 let sem = DispatchSemaphore(value: 0)
                 var writeErr: Error?
                 flow.write(chunk) { err in writeErr = err; sem.signal() }
                 sem.wait()
                 if writeErr != nil { break }
             }
-            close(fd)
+            wg_netstack_close_conn(cid)
             flow.closeWriteWithError(nil)
         }
         readFromFlow()
@@ -205,20 +219,29 @@ class TransparentProxyProvider: NETransparentProxyProvider {
                       let port = Int32(host.port),
                       let ip = self.resolveIPv4(host.hostname) else { continue }
                 var errBuf = [CChar](repeating: 0, count: 256)
-                let fd = ip.withCString { hostC in
+                let cid = ip.withCString { hostC in
                     errBuf.withUnsafeMutableBufferPointer { ebuf in
-                        wg_netstack_dial_udp(UnsafeMutablePointer(mutating: hostC),
-                                             port, ebuf.baseAddress, Int32(ebuf.count))
+                        wg_netstack_udp_connect(UnsafeMutablePointer(mutating: hostC),
+                                                port, ebuf.baseAddress, Int32(ebuf.count))
                     }
                 }
-                if fd < 0 { continue }
-                _ = data.withUnsafeBytes { write(fd, $0.baseAddress, data.count) }
+                if cid < 0 { continue }
+                _ = data.withUnsafeBytes { ptr -> Int32 in
+                    wg_netstack_send(cid,
+                                     UnsafeMutablePointer(mutating: ptr.baseAddress!.assumingMemoryBound(to: CChar.self)),
+                                     Int32(data.count))
+                }
                 DispatchQueue.global(qos: .userInitiated).async {
-                    var buf = [UInt8](repeating: 0, count: 65536)
-                    let n = buf.withUnsafeMutableBytes { read(fd, $0.baseAddress, $0.count) }
-                    close(fd)
+                    var buf = [CChar](repeating: 0, count: 65536)
+                    let n = buf.withUnsafeMutableBufferPointer { ptr -> Int32 in
+                        wg_netstack_recv(cid, ptr.baseAddress, Int32(ptr.count))
+                    }
+                    wg_netstack_close_conn(cid)
                     if n > 0 {
-                        flow.writeDatagrams([Data(buf.prefix(Int(n)))], sentBy: [host]) { _ in }
+                        let chunk = buf.withUnsafeBufferPointer { ptr in
+                            Data(bytes: ptr.baseAddress!, count: Int(n))
+                        }
+                        flow.writeDatagrams([chunk], sentBy: [host]) { _ in }
                     }
                 }
             }

@@ -35,6 +35,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -426,10 +427,170 @@ func wg_netstack_close() {
 	started = false
 }
 
+// Connection-handle API. Mirrors unclaw's NE design: instead of
+// opening a unix socketpair per flow (2 fds → RLIMIT_NOFILE pressure
+// + per-flow goroutines + kernel buffer copies), we expose a small
+// integer connection ID. Swift drives an event loop calling
+// _send/_recv/_close; Go side just stores the gVisor conn keyed by
+// the ID. Zero kernel fds per flow, one goroutine when blocked on
+// recv (still cheap — Go schedules onto a worker thread).
+//
+// Trade-off: _send and _recv are blocking. Swift must call them on
+// background dispatch queues so the main pump doesn't stall. The
+// extension's bridgeTCP / bridgeUDP own that pattern.
+
+type connHandle struct {
+	conn io.ReadWriteCloser
+}
+
+var (
+	conns      sync.Map // int64 → *connHandle
+	nextConnID atomic.Int64
+)
+
+// wg_netstack_tcp_connect dials host:port through the wg netstack and
+// returns a positive connection ID on success, -1 on failure (with
+// errBuf populated). The returned ID is opaque to Swift — pass back
+// to _send/_recv/_close. Host must be an IP literal; DNS happens at
+// the wg_netstack_resolve layer above.
+//
+//export wg_netstack_tcp_connect
+func wg_netstack_tcp_connect(hostC *C.char, port C.int, errBuf *C.char, errLen C.int) C.int64_t {
+	if !started {
+		setErr(errBuf, errLen, "wg_netstack not initialized")
+		return -1
+	}
+	host := C.GoString(hostC)
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		setErr(errBuf, errLen, "parse host: "+err.Error())
+		return -1
+	}
+	proto := ipv4.ProtocolNumber
+	if ip.Is6() {
+		proto = ipv6.ProtocolNumber
+	}
+	addr := tcpip.FullAddress{
+		NIC:  1,
+		Addr: tcpip.AddrFromSlice(ip.AsSlice()),
+		Port: uint16(port),
+	}
+	gconn, err := gonet.DialContextTCP(context.Background(), tun.stack, addr, proto)
+	if err != nil {
+		setErr(errBuf, errLen, "DialContextTCP: "+err.Error())
+		return -1
+	}
+	id := nextConnID.Add(1)
+	conns.Store(id, &connHandle{conn: gconn})
+	return C.int64_t(id)
+}
+
+// wg_netstack_udp_connect dials a UDP "connection" (gVisor UDPConn —
+// fixed remote, datagram semantics). Returns positive ID on success.
+//
+//export wg_netstack_udp_connect
+func wg_netstack_udp_connect(hostC *C.char, port C.int, errBuf *C.char, errLen C.int) C.int64_t {
+	if !started {
+		setErr(errBuf, errLen, "wg_netstack not initialized")
+		return -1
+	}
+	host := C.GoString(hostC)
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		setErr(errBuf, errLen, "parse host: "+err.Error())
+		return -1
+	}
+	proto := ipv4.ProtocolNumber
+	if ip.Is6() {
+		proto = ipv6.ProtocolNumber
+	}
+	addr := tcpip.FullAddress{
+		NIC:  1,
+		Addr: tcpip.AddrFromSlice(ip.AsSlice()),
+		Port: uint16(port),
+	}
+	gconn, err := gonet.DialUDP(tun.stack, nil, &addr, proto)
+	if err != nil {
+		setErr(errBuf, errLen, "DialUDP: "+err.Error())
+		return -1
+	}
+	id := nextConnID.Add(1)
+	conns.Store(id, &connHandle{conn: gconn})
+	return C.int64_t(id)
+}
+
+// wg_netstack_send writes up to n bytes from buf to the conn. Blocks
+// until the gVisor stack accepts the bytes (TCP window fills slow
+// receiver). Returns bytes written or -1 on error.
+//
+//export wg_netstack_send
+func wg_netstack_send(id C.int64_t, buf *C.char, n C.int) C.int {
+	v, ok := conns.Load(int64(id))
+	if !ok {
+		return -1
+	}
+	h := v.(*connHandle)
+	if n <= 0 {
+		return 0
+	}
+	p := unsafe.Slice((*byte)(unsafe.Pointer(buf)), int(n))
+	written, err := h.conn.Write(p)
+	if err != nil {
+		return -1
+	}
+	return C.int(written)
+}
+
+// wg_netstack_recv reads up to n bytes from the conn into buf. Blocks
+// until at least one byte is available or the conn closes. Returns
+// the byte count, 0 on EOF, or -1 on error.
+//
+//export wg_netstack_recv
+func wg_netstack_recv(id C.int64_t, buf *C.char, n C.int) C.int {
+	v, ok := conns.Load(int64(id))
+	if !ok {
+		return -1
+	}
+	h := v.(*connHandle)
+	if n <= 0 {
+		return 0
+	}
+	p := unsafe.Slice((*byte)(unsafe.Pointer(buf)), int(n))
+	read, err := h.conn.Read(p)
+	if err != nil {
+		if read == 0 {
+			if err == io.EOF {
+				return 0
+			}
+			return -1
+		}
+		// Short read with error — return what we got; next call
+		// surfaces the error.
+	}
+	return C.int(read)
+}
+
+// wg_netstack_close drops the conn and frees its slot. Idempotent.
+//
+//export wg_netstack_close_conn
+func wg_netstack_close_conn(id C.int64_t) {
+	if v, ok := conns.LoadAndDelete(int64(id)); ok {
+		_ = v.(*connHandle).conn.Close()
+	}
+}
+
+// _unusedSocketpair keeps these imports referenced so the cgo
+// archive still resolves syscall + os without the legacy spliceFD
+// path; the helpers below are the older, deprecated dial_tcp/
+// dial_udp + spliceFD that the new connection-handle API replaces.
+//
+// dial_tcp / dial_udp / spliceFD remain exported temporarily for
+// any caller still using the fd-pair flow; once macos/Provider.swift
+// is fully on the connect/send/recv API we can drop them.
+//
 // dial_tcp opens a TCP connection to host:port via the netstack and
-// returns one end of a unix socketpair. A goroutine pumps bytes
-// between the gVisor conn and the fd. Caller closes the fd to tear
-// down. host can be IPv4 dotted-quad — DNS handled at higher level.
+// returns one end of a unix socketpair. Deprecated — use
+// wg_netstack_tcp_connect.
 //
 //export wg_netstack_dial_tcp
 func wg_netstack_dial_tcp(hostC *C.char, port C.int, errBuf *C.char, errLen C.int) C.int {
@@ -489,21 +650,6 @@ func wg_netstack_dial_udp(hostC *C.char, port C.int, errBuf *C.char, errLen C.in
 	return spliceFD(gconn)
 }
 
-// spliceFD: socketpair() + io.Copy in both directions.
-//
-// Returns the "Swift end" fd; the "Go end" fd is wrapped in os.NewFile
-// and stays alive until both sides close. Uses SOCK_STREAM; UDP
-// callers run datagrams over a stream pair (good enough — extension
-// only sends complete datagrams at a time). Both ends close on
-// pump exit.
-//
-// Both ends get bumped SO_SNDBUF/SO_RCVBUF. macOS default for AF_UNIX
-// SOCK_STREAM is ~8KB which under whole-machine concurrency starved
-// the bridge — many flows hammered `write(fd, ...)`, the 8KB buffer
-// filled instantly, the GCD thread blocked, gateway-side TLS peek
-// timed out at 10s waiting for the ClientHello bytes that were stuck
-// in macOS kernel waiting for the buffer to drain. 1MB per direction
-// gives concurrent flows enough headroom to keep flowing.
 func spliceFD(gconn io.ReadWriteCloser) C.int {
 	pair, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
 	if err != nil {
