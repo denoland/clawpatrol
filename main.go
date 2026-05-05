@@ -15,6 +15,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -1490,10 +1491,45 @@ func peerIP(c net.Conn) string {
 	}
 	host, _, err := net.SplitHostPort(addr.String())
 	if err != nil {
-		return addr.String()
+		host = addr.String()
 	}
-	return host
+	return canonicalPeerIP(host)
 }
+
+// canonicalPeerIP collapses a wg-side v6 source (fd77::<n>) into its
+// v4 equivalent (<wg-subnet-prefix>.<n>) so the agent registry,
+// onboard registry, and dashboard track one device per peer
+// regardless of which IP family the inbound flow used. Non-wg
+// addresses pass through unchanged.
+func canonicalPeerIP(ip string) string {
+	if !strings.Contains(ip, ":") {
+		return ip
+	}
+	a, err := netip.ParseAddr(ip)
+	if err != nil || !a.Is6() {
+		return ip
+	}
+	b := a.As16()
+	if b[0] != 0xfd || b[1] != 0x77 {
+		return ip
+	}
+	last := b[15]
+	// Use the configured wg subnet prefix to reconstruct the v4. Fall
+	// back to 10.55.0.0/24 — same default the gateway init wizard
+	// writes — when nothing's loaded yet (early-boot).
+	prefixV4 := defaultWGV4Prefix
+	if globalWG != nil && globalWG.serverIP.Is4() {
+		s := globalWG.serverIP.As4()
+		prefixV4 = [3]byte{s[0], s[1], s[2]}
+	}
+	v4 := netip.AddrFrom4([4]byte{prefixV4[0], prefixV4[1], prefixV4[2], last})
+	return v4.String()
+}
+
+// defaultWGV4Prefix matches the gateway init wizard's wg_subnet_cidr
+// default (10.55.0.0/24). Lets canonicalPeerIP work before the
+// WGServer is up.
+var defaultWGV4Prefix = [3]byte{10, 55, 0}
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `clawpatrol — secret-injection MITM proxy for AI agents
