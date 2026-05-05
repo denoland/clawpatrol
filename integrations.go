@@ -84,17 +84,28 @@ func envPushdownVars(caPath string) ([]pushdownEnvVar, error) {
 }
 
 // fetchEnvPushdownFromGateway hits the gateway's /api/env-pushdown
-// endpoint and returns its declared push-down vars. Errors when
-// the gateway URL hasn't been persisted, the network call fails,
-// or the server returned non-200.
+// endpoint and returns its declared push-down vars. Authenticated
+// with the per-peer bearer `clawpatrol join` persisted at
+// <caDir>/api-token. Errors when the gateway URL or token isn't
+// persisted, the network call fails, or the server returned
+// non-200.
 func fetchEnvPushdownFromGateway(caDir string) ([]pushdownEnvVar, error) {
 	gw := readGatewayURL(caDir)
 	if gw == "" {
 		return nil, fmt.Errorf("gateway URL not persisted (run `clawpatrol join` first)")
 	}
+	token := readPeerAPIToken(caDir)
+	if token == "" {
+		return nil, fmt.Errorf("peer api token not persisted (run `clawpatrol join` first)")
+	}
 	url := strings.TrimRight(gw, "/") + "/api/env-pushdown"
 	cli := &http.Client{Timeout: 5 * time.Second}
-	resp, err := cli.Get(url)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build %s: %w", url, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := cli.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s: %w", url, err)
 	}
@@ -133,6 +144,17 @@ func fetchEnvPushdownFromGateway(caDir string) ([]pushdownEnvVar, error) {
 // or unreadable.
 func readGatewayURL(caDir string) string {
 	b, err := os.ReadFile(filepath.Join(caDir, "gateway"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// readPeerAPIToken returns the per-peer bearer minted at onboard
+// time, persisted at <caDir>/api-token by `clawpatrol join`.
+// Empty when the file is missing.
+func readPeerAPIToken(caDir string) string {
+	b, err := os.ReadFile(filepath.Join(caDir, "api-token"))
 	if err != nil {
 		return ""
 	}

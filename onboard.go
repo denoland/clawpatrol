@@ -52,6 +52,7 @@ type onboardSession struct {
 	owner       string // who approved (for audit log)
 	profile     string // profile assigned at approval time
 	hostname    string // client-supplied (os.Hostname) at /api/onboard/start
+	apiToken    string // per-peer bearer for gated client API calls (env-pushdown)
 }
 
 // onboardRegistry persists onboarded peers in the `devices` table,
@@ -590,6 +591,17 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 			if w.g.agents != nil {
 				w.g.agents.Seed(peerIP)
 			}
+			// Mint the per-peer bearer the client uses for gated
+			// API calls (currently /api/env-pushdown). Stored hashed
+			// in `peer_api_tokens`; raw token is returned exactly
+			// once via /api/onboard/poll.
+			if token, perr := mintAndPersistPeerAPIToken(w.g.db, peerIP); perr == nil {
+				w.onboard.mu.Lock()
+				s.apiToken = token
+				w.onboard.mu.Unlock()
+			} else {
+				log.Printf("api-token mint for %s: %v", peerIP, perr)
+			}
 		}
 	}()
 	writeJSON(rw, map[string]any{"approved": true})
@@ -661,6 +673,7 @@ func (w *webMux) apiOnboardPoll(rw http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(rw, map[string]any{
 		"auth_key":     s.authKey,
+		"api_token":    s.apiToken,
 		"approved_by":  s.owner,
 		"login_server": s.loginServer, // empty = Tailscale Inc default
 	})

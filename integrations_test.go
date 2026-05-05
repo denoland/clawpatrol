@@ -21,6 +21,12 @@ func TestFetchEnvPushdownFromGateway(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
+		// Verify the client sent the per-peer bearer; the
+		// production handler returns 401 without it.
+		if r.Header.Get("Authorization") != "Bearer test-token" {
+			http.Error(w, "missing bearer", http.StatusUnauthorized)
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"vars": []map[string]string{
 				{"name": "FOO", "value": "1", "description": "d1", "plugin_type": "p1"},
@@ -34,6 +40,9 @@ func TestFetchEnvPushdownFromGateway(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "gateway"), []byte(srv.URL+"\n"), 0o644); err != nil {
 		t.Fatalf("write gateway file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "api-token"), []byte("test-token\n"), 0o600); err != nil {
+		t.Fatalf("write api-token: %v", err)
 	}
 
 	got, err := fetchEnvPushdownFromGateway(dir)
@@ -62,6 +71,14 @@ func TestFetchEnvPushdownErrors(t *testing.T) {
 			t.Fatal("expected error")
 		}
 	})
+	t.Run("no_api_token", func(t *testing.T) {
+		dir := t.TempDir()
+		_ = os.WriteFile(filepath.Join(dir, "gateway"), []byte("http://127.0.0.1:1"), 0o644)
+		// no api-token file
+		if _, err := fetchEnvPushdownFromGateway(dir); err == nil {
+			t.Fatal("expected error when token missing")
+		}
+	})
 	t.Run("server_404", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
@@ -69,6 +86,7 @@ func TestFetchEnvPushdownErrors(t *testing.T) {
 		defer srv.Close()
 		dir := t.TempDir()
 		_ = os.WriteFile(filepath.Join(dir, "gateway"), []byte(srv.URL), 0o644)
+		_ = os.WriteFile(filepath.Join(dir, "api-token"), []byte("t"), 0o600)
 		if _, err := fetchEnvPushdownFromGateway(dir); err == nil {
 			t.Fatal("expected error on 404")
 		}
@@ -83,6 +101,7 @@ func TestFetchEnvPushdownErrors(t *testing.T) {
 		addr := l.Addr().String()
 		l.Close()
 		_ = os.WriteFile(filepath.Join(dir, "gateway"), []byte("http://"+addr), 0o644)
+		_ = os.WriteFile(filepath.Join(dir, "api-token"), []byte("t"), 0o600)
 		if _, err := fetchEnvPushdownFromGateway(dir); err == nil {
 			t.Fatal("expected error on unreachable")
 		}
@@ -105,6 +124,7 @@ func TestEnvPushdownVarsServerDriven(t *testing.T) {
 	caPath := filepath.Join(dir, "ca.crt")
 	_ = os.WriteFile(caPath, []byte("dummy"), 0o644)
 	_ = os.WriteFile(filepath.Join(dir, "gateway"), []byte(srv.URL), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "api-token"), []byte("t"), 0o600)
 
 	got, err := envPushdownVars(caPath)
 	if err != nil {
