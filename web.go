@@ -90,7 +90,7 @@ func newWebMux(g *Gateway, caDir string, ts Tailscale, publicURL string) http.Ha
 	mux.HandleFunc("/api/config", w.apiConfig)
 	mux.HandleFunc("/api/hitl/pending", w.apiHITLPending)
 	mux.HandleFunc("/api/hitl/decide", w.apiHITLDecide)
-	mux.HandleFunc("/api/slack/interactive", w.apiSlackInteractive)
+	w.mountCredentialWebhooks(mux)
 	mux.HandleFunc("/api/oauth/start", w.apiOAuthStart)
 	mux.HandleFunc("/api/oauth/exchange", w.apiOAuthExchange)
 	mux.HandleFunc("/api/oauth/device-poll", w.apiOAuthDevicePoll)
@@ -117,17 +117,22 @@ func newWebMux(g *Gateway, caDir string, ts Tailscale, publicURL string) http.Ha
 // (testing escape hatch); otherwise the gate refuses to serve and
 // every gated route returns a misconfiguration error so an open
 // dashboard isn't published by accident.
+// credentialWebhookPrefix is the path prefix every plugin webhook
+// route mounts under. Public — credential plugins authenticate
+// callbacks via their own signature header (Slack signing secret,
+// etc.) so the dashboard secret gate skips the prefix.
+const credentialWebhookPrefix = "/api/cred/"
+
 func (w *webMux) dashboardSecretGate(next http.Handler) http.Handler {
 	publicPaths := map[string]bool{
-		"/api/onboard/start":     true,
-		"/api/onboard/poll":      true,
-		"/api/onboard/claim":     true,
-		"/api/onboard/lookup":    true,
-		"/api/onboard/approve":   true,
-		"/api/slack/interactive": true,
-		"/info":                  true,
-		"/ca.crt":                true,
-		"/__login":               true,
+		"/api/onboard/start":   true,
+		"/api/onboard/poll":    true,
+		"/api/onboard/claim":   true,
+		"/api/onboard/lookup":  true,
+		"/api/onboard/approve": true,
+		"/info":                true,
+		"/ca.crt":              true,
+		"/__login":             true,
 	}
 	// /info and /ca.crt are public-by-design (health + cert distribution).
 	// They keep working even when the dashboard is misconfigured so
@@ -150,7 +155,7 @@ func (w *webMux) dashboardSecretGate(next http.Handler) http.Handler {
 			renderDashboardMisconfigured(rw, r)
 			return
 		}
-		if publicPaths[r.URL.Path] {
+		if publicPaths[r.URL.Path] || strings.HasPrefix(r.URL.Path, credentialWebhookPrefix) {
 			next.ServeHTTP(rw, r)
 			return
 		}
@@ -316,6 +321,39 @@ func (w *webMux) tailnetGate(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(rw, r)
 	})
+}
+
+// mountCredentialWebhooks walks every credential whose body
+// implements runtime.WebhookProvider and mounts each declared route
+// under /api/cred/<credName>/<route.Path>. Future plugins (Discord,
+// Telegram, generic webhook) plug in by implementing WebhookRoutes()
+// — main needs no plugin-specific path table.
+func (w *webMux) mountCredentialWebhooks(mux *http.ServeMux) {
+	policy := w.g.Policy()
+	if policy == nil {
+		return
+	}
+	for name, ent := range policy.Credentials {
+		provider, ok := ent.Body.(runtime.WebhookProvider)
+		if !ok {
+			continue
+		}
+		credName := name
+		for _, route := range provider.WebhookRoutes() {
+			path := credentialWebhookPrefix + credName + route.Path
+			handler := route.Handler
+			mux.HandleFunc(path, func(rw http.ResponseWriter, r *http.Request) {
+				ctx := runtime.WebhookCtx{
+					CredentialName: credName,
+					Secrets:        w.g.secrets,
+					HITL:           w.g.hitl,
+					Policy:         w.g.Policy(),
+					Profiles:       orderedProfileNames(w.g.cfg.Policy),
+				}
+				handler(ctx, rw, r)
+			})
+		}
+	}
 }
 
 func (w *webMux) staticHandler() http.Handler {

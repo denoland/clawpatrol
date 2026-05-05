@@ -259,6 +259,12 @@ type HITLPool interface {
 	// Discard drops a pending entry without a decision. Use when
 	// the caller's context expires before the channel fires.
 	Discard(id string)
+	// Decide resolves a pending entry — used by webhook handlers
+	// (Slack interactive callback, future Discord etc.) to forward
+	// a side-channel verdict into the same pool the dashboard's
+	// /api/hitl/decide writes to. Returns false when the id is
+	// unknown (already resolved or expired).
+	Decide(id string, d HITLDecision) bool
 }
 
 // HITLPending mirrors the dashboard's pending-approval shape. Stays
