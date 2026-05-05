@@ -269,6 +269,14 @@ func wg_netstack_init(confC *C.char, errBuf *C.char, errLen C.int) C.int {
 	if started {
 		return 0
 	}
+	// Raise the per-process file-descriptor limit. Each flow opens a
+	// unix socketpair (2 fds); macOS extensions default to
+	// RLIMIT_NOFILE = 256. Whole-machine traffic blows past that
+	// almost immediately — socketpair() returns EMFILE, the swift
+	// pumpTCP drops the flow, the mac kernel retransmits, and the
+	// browser sees long stalls with no useful error. Bump to the
+	// hard limit (typically 524288 on macOS 14).
+	raiseFDLimit()
 	conf := C.GoString(confC)
 	priv, addr, peerPub, ep, ka, perr := parseWG(conf)
 	if perr != nil {
@@ -540,6 +548,23 @@ func setErr(buf *C.char, n C.int, msg string) {
 	}
 	copy(dst, msg)
 	dst[len(msg)] = 0
+}
+
+// raiseFDLimit lifts RLIMIT_NOFILE to the hard cap. Idempotent;
+// failures (sandbox refuses) just log without aborting init.
+func raiseFDLimit() {
+	var rlim syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rlim); err != nil {
+		return
+	}
+	old := rlim.Cur
+	rlim.Cur = rlim.Max
+	if rlim.Cur > 1<<20 {
+		rlim.Cur = 1 << 20
+	}
+	if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &rlim); err == nil {
+		_ = old
+	}
 }
 
 func main() {} // required for c-archive build mode
