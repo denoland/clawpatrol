@@ -1470,6 +1470,10 @@ func main() {
 		runEnv(os.Args[2:])
 	case "init-ca":
 		runInitCA(os.Args[2:])
+	case "uninstall":
+		runUninstall(os.Args[2:])
+	case "status":
+		runStatus(os.Args[2:])
 	case "version":
 		fmt.Println("clawpatrol 0.1")
 	case "-h", "--help", "help":
@@ -1504,6 +1508,8 @@ usage:
                   [--whole-machine]      bring up wg-quick (route all traffic)
   clawpatrol login                       onboard this machine (tailscale path)
   clawpatrol run -- <cmd> [args...]      route one process tree through gateway
+  clawpatrol status                      report install + tunnel state
+  clawpatrol uninstall                   tear down everything this machine installed
   clawpatrol env                         print shell exports for sourcing
   clawpatrol init-ca DIR                 generate a new CA in DIR
   clawpatrol version`)
