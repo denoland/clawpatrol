@@ -68,6 +68,7 @@ jobs:
         with: { go-version: "1.23" }
       - name: build + sign + notarize Clawpatrol.app
         env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}

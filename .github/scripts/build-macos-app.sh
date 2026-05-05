@@ -33,13 +33,29 @@ build_netstack() {
 # old extension binary running. Commit count is monotonic across
 # rebuilds; sysextd accepts the higher number and swaps the ext.
 bump_build_number() {
-  local n
-  n=$(git rev-list --count HEAD 2>/dev/null || echo 1)
-  /usr/bin/plutil -replace CFBundleVersion -string "$n" \
+  # CFBundleShortVersionString = release tag (`v0.1.2` → `0.1.2`).
+  # CFBundleVersion bumps too. sysextd treats the (short, build) tuple
+  # as the ext identity — same tuple = no-op activation, leaves the
+  # running ext in place. Bumping short to the release tag forces
+  # sysextd to swap on next `Clawpatrol install`.
+  #
+  # Local dev builds (no RELEASE_TAG) fall back to a timestamp so
+  # iterating builds also rotates the version.
+  local v
+  if [ -n "${RELEASE_TAG:-}" ]; then
+    v="${RELEASE_TAG#v}"
+  else
+    v="0.0.$(date +%s)"
+  fi
+  /usr/bin/plutil -replace CFBundleShortVersionString -string "$v" \
     macos/Clawpatrol/Info.plist
-  /usr/bin/plutil -replace CFBundleVersion -string "$n" \
+  /usr/bin/plutil -replace CFBundleShortVersionString -string "$v" \
     macos/ClawpatrolExtension/Info.plist
-  echo "==> CFBundleVersion = $n"
+  /usr/bin/plutil -replace CFBundleVersion -string "$v" \
+    macos/Clawpatrol/Info.plist
+  /usr/bin/plutil -replace CFBundleVersion -string "$v" \
+    macos/ClawpatrolExtension/Info.plist
+  echo "==> CFBundleShortVersionString = CFBundleVersion = $v"
 }
 
 # If no Apple ID, build unsigned (local dev / PR checks).
