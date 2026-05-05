@@ -9,7 +9,7 @@ export function CrtDisplay({
 }) {
   return (
     <div
-      class="md:squircle-xl bg-cream py-[clamp(20px,3.5vw,34px)] md:p-[clamp(20px,3.5vw,34px)]"
+      class="md:squircle-xl bg-canvas py-[clamp(20px,3.5vw,34px)] md:p-[clamp(20px,3.5vw,34px)]"
       style={{
         boxShadow:
           "2px 3px 14px rgba(42,52,47,0.08), " +

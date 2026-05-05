@@ -1,4 +1,7 @@
 export function Stripe() {
+  const color1 = `var(--color-butter-300)`;
+  const color2 = `var(--color-cornflower-700)`;
+  const sizeInPx = 6;
   return (
     <div
       class="h-2.5 w-full"
@@ -6,10 +9,10 @@ export function Stripe() {
         background:
           "repeating-linear-gradient(" +
           "-60deg," +
-          "var(--color-accent)," +
-          "var(--color-accent) 6px," +
-          "var(--color-slate-dark) 6px," +
-          "var(--color-slate-dark) 12px" +
+          `${color1},` +
+          `${color1} ${sizeInPx}px,` +
+          `${color2} ${sizeInPx}px,` +
+          `${color2} ${sizeInPx * 2}px` +
           ")",
       }}
     />

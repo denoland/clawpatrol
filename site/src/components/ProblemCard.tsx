@@ -6,7 +6,7 @@ export function ProblemCard({
   body: string;
 }) {
   return (
-    <div class="p-8 rounded-sm bg-cream-dark border border-green-light">
+    <div class="p-8 rounded-sm bg-canvas-dark border border-cornflower-200">
       <p class="text-base font-semibold mb-3 text-console-dark font-display">
         {headline}
       </p>

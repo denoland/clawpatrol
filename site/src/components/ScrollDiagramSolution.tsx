@@ -114,7 +114,7 @@ export function ScrollDiagramSolution() {
             {AGENT}
           </div>
 
-          <div class="dia2-clawpatrol absolute text-accent bg-crt-bg z-10 left-[16ch] top-[calc(2*1.6em)]">
+          <div class="dia2-clawpatrol absolute text-persimmon bg-crt-bg z-10 left-[16ch] top-[calc(2*1.6em)]">
             {CLAWPATROL}
           </div>
 

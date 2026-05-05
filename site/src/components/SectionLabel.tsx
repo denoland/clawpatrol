@@ -3,8 +3,8 @@ export function SectionLabel({ children }: { children: string }) {
     <div class="text-center mb-16">
       <h2
         class="inline-block text-[11px] uppercase
-          tracking-[0.35em] px-6 py-2.5 font-semibold
-          bg-accent text-console-dark font-display
+          tracking-[0.35em] px-6 py-2.5 font-black
+          bg-persimmon text-text font-display
           shadow-[2px_2px_0_var(--color-console-dark)]"
       >
         {children}

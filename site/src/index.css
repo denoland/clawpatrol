@@ -1,29 +1,109 @@
 @import "tailwindcss";
 
-/* Self-hosted fonts — Latin subset, variable font files from Google Fonts.
-   Source: gstatic JetBrains Mono v24, Overpass v19. */
+/* Self-hosted fonts. Inter (body) and Cascadia Mono (mono) are on the
+   Google Fonts CDN — TODO: self-host both. */
+
 @font-face {
-  font-family: "JetBrains Mono";
+  font-family: "Fraunces";
   font-style: normal;
-  font-weight: 100 800;
+  font-weight: 100 900;
   font-display: swap;
-  src: url("/fonts/jetbrains-mono-latin.woff2") format("woff2");
+  src: url("/fonts/Fraunces--latin_basic.woff2") format("woff2-variations");
+}
+
+@font-face {
+  font-family: "Fraunces";
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/fonts/Fraunces-Italic--latin_basic.woff2")
+    format("woff2-variations");
+}
+
+/* AmsiPro (Stawix) — display family. Static weights, latin-basic subset. */
+@font-face {
+  font-family: "AmsiPro";
+  font-style: normal;
+  font-weight: 100;
+  font-display: swap;
+  src: url("/fonts/AmsiPro/AmsiPro-Thin.woff2") format("woff2");
   unicode-range:
     U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
     U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
     U+2215, U+FEFF, U+FFFD;
 }
-
 @font-face {
-  font-family: "Overpass";
+  font-family: "AmsiPro";
   font-style: normal;
-  font-weight: 100 900;
+  font-weight: 200;
   font-display: swap;
-  src: url("/fonts/overpass-latin.woff2") format("woff2");
-  /* Vertical metrics (sTypo* and hhea ascender/descender/lineGap)
-     are baked into the woff2 itself — no ascent-override/
-     descent-override/line-gap-override needed, which means line-box
-     sizing is correct in older Safari too. */
+  src: url("/fonts/AmsiPro/AmsiPro-XLight.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "AmsiPro";
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url("/fonts/AmsiPro/AmsiPro-Light.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "AmsiPro";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/AmsiPro/AmsiPro-Regular.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "AmsiPro";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/AmsiPro/AmsiPro-SemiBold.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "AmsiPro";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/AmsiPro/AmsiPro-Bold.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "AmsiPro";
+  font-style: normal;
+  font-weight: 900;
+  font-display: swap;
+  src: url("/fonts/AmsiPro/AmsiPro-Black.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "AmsiPro";
+  font-style: normal;
+  font-weight: 950;
+  font-display: swap;
+  src: url("/fonts/AmsiPro/AmsiPro-Ultra.woff2") format("woff2");
   unicode-range:
     U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
     U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
@@ -31,7 +111,7 @@
 }
 
 @utility neu-raised {
-  --neu-bg: var(--color-cream);
+  --neu-bg: var(--color-canvas);
   --neu-face: var(--neu-bg);
   --bg-shadow: color-mix(in oklch, var(--neu-bg), black 60%);
   --bg-highlight: color-mix(in oklch, var(--neu-bg), white 60%);
@@ -383,9 +463,9 @@ a.neu-raised:active {
   }
 }
 
-@keyframes accent-to-red {
+@keyframes persimmon-to-red {
   from {
-    background: var(--color-accent);
+    background: var(--color-persimmon);
   }
   to {
     background: #ef4444;
@@ -591,42 +671,100 @@ a.neu-raised:active {
 /* Docs-specific styles live in /public/docs.css and are only loaded on
    docs pages. */
 
-@theme {
-  --color-cream-light: #faf5ed;
-  --color-cream: #f0ebe3;
-  --color-cream-dark: #e2dbd0;
-  --color-green-light: #c2d4cc;
-  --color-green-med: #5d8a72;
-  --color-green-dark: #3b5f4f;
-  --color-console: #4a5952;
-  --color-console-dark: #2a342f;
-  --color-slate-light: #7a8894;
-  --color-slate: #5e6b78;
-  --color-slate-dark: #434e58;
+/* `@theme static` emits every declared variable to :root regardless of
+   whether a utility references it. Without `static`, unused shades (e.g.
+   --color-persimmon-50 if nothing reads `bg-persimmon-50`) never get
+   serialized, which broke the dev palette inspector. */
+@theme static {
+  /* Canvas + surfaces — three tiers, mirroring the ink scale. */
+  --color-canvas: #fcfaf5;
+  --color-canvas-muted: #f4efe6;
+  --color-canvas-dark: #ebe5d8;
+
+  /* ── Persimmon — primary brand orange. Punched up a touch from
+	      #ff8a3d → #ff7c2e at the 500 anchor. ───────────────────── */
+  --color-persimmon-50: #fff5ed;
+  --color-persimmon-100: #ffe5d3;
+  --color-persimmon-200: #ffc7a3;
+  --color-persimmon-300: #ffa470;
+  --color-persimmon-400: #ff8a47;
+  --color-persimmon-500: #ff7c2e;
+  --color-persimmon-600: #ed5e0c;
+  --color-persimmon-700: #c4480a;
+  --color-persimmon-800: #9a3a0c;
+  --color-persimmon-900: #7c310f;
+  --color-persimmon-950: #421405;
+  --color-persimmon: var(--color-persimmon-500);
+
+  /* ── Cornflower — secondary muted blue. ──────────────────────── */
+  --color-cornflower-50: #f4f7fb;
+  --color-cornflower-100: #e6edf5;
+  --color-cornflower-200: #cdd9e8;
+  --color-cornflower-300: #a9bcd6;
+  --color-cornflower-400: #8ba3c6;
+  --color-cornflower-500: #7891b8;
+  --color-cornflower-600: #5b749b;
+  --color-cornflower-700: #4a5e80;
+  --color-cornflower-800: #3e4d68;
+  --color-cornflower-900: #374256;
+  --color-cornflower-950: #222937;
+  --color-cornflower: var(--color-cornflower-500);
+
+  /* ── Butter — accent yellow. Pure yellow is naturally light, so
+	      the brand-bright anchor sits at 400, not 500. ────────────── */
+  --color-butter-50: #fffdec;
+  --color-butter-100: #fff8c4;
+  --color-butter-200: #fff088;
+  --color-butter-300: #ffe454;
+  --color-butter-400: #ffd93d;
+  --color-butter-500: #f5b80c;
+  --color-butter-600: #d4a800;
+  --color-butter-700: #a47208;
+  --color-butter-800: #84580f;
+  --color-butter-900: #6f4811;
+  --color-butter-950: #412403;
+  --color-butter: var(--color-butter-400);
+
+  /* Console — dark surface for terminal/CRT blocks; punchier green. */
+  --color-console: #1a2820;
+  --color-console-dark: #0c1410;
   --color-crt-bg-dark: #060a08;
   --color-crt-bg: #0c1410;
   --color-crt-bg-light: #141e18;
   --color-crt-border: #1a2820;
-  --color-crt-faint: #1e7a40;
-  --color-crt-dim: #2a9d54;
-  --color-crt: #4ade80;
-  --color-accent: #e8a838;
-  --color-accent-light: #f4b44c;
-  --color-text: #2a2f2c;
-  --color-text-muted: #6b7770;
-  --font-display: "Overpass", system-ui, sans-serif;
-  --font-sans: "JetBrains Mono", "SF Mono", "Menlo", monospace;
-  --font-mono: "JetBrains Mono", "SF Mono", "Menlo", monospace;
+  --color-crt-faint: #2a8d50;
+  --color-crt-dim: #3fc170;
+  --color-crt: #5be38a;
+
+  /* Ink — three tiers, slightly cooled toward slate so they sit
+	   between the persimmon (warm) and cornflower (cool) brand colors
+	   instead of pulling the page exclusively warm. Low saturation
+	   keeps the cool reading subtle, not tinted. */
+  --color-text: #2c2e35;
+  --color-text-muted: #62656d;
+  --color-text-subtle: #9d9ea7;
+
+  --font-display: "AmsiPro", "Fraunces", system-ui, sans-serif;
+  --font-display-amsipro: "AmsiPro", system-ui, sans-serif;
+  --font-sans: "Cascadia Mono", "SF Mono", "Menlo", ui-monospace, monospace;
+  --font-mono: "Cascadia Mono", "SF Mono", "Menlo", ui-monospace, monospace;
 
   --breakpoint-xs: 32rem;
 }
 
 @layer base {
+  body {
+    /* Cascadia Mono is variable; 350 sits between Light (300) and
+		   Regular (400) for a slightly airier body weight. */
+    font-weight: 350;
+  }
+
   a {
     text-decoration-thickness: 1px;
   }
 
   *:focus-visible {
-    outline: 1px dashed var(--color-green-dark--value(--breakpoint- *));
+    outline: 1px dashed var(--color-persimmon-700);
+    outline-offset: 2px;
   }
 }

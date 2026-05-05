@@ -62,7 +62,7 @@ function SecretInjectionDiagram() {
         width="72"
         height="12"
         rx="2"
-        fill="var(--color-accent)"
+        fill="var(--color-persimmon)"
         opacity="0.35"
       />
       <text
@@ -228,40 +228,40 @@ function AnalyticsDiagram() {
       {/* Area fill */}
       <path
         d="M 0 72 L 26 62 L 52 68 L 78 50 L 104 58 L 130 42 L 156 48 L 182 30 L 208 38 L 234 22 L 260 28 L 286 18 L 320 24 L 320 90 L 0 90 Z"
-        fill="var(--color-accent)"
+        fill="var(--color-persimmon)"
         fill-opacity="0.22"
       />
       {/* Line */}
       <path
         d="M 0 72 L 26 62 L 52 68 L 78 50 L 104 58 L 130 42 L 156 48 L 182 30 L 208 38 L 234 22 L 260 28 L 286 18 L 320 24"
-        stroke="var(--color-accent)"
+        stroke="var(--color-persimmon)"
         stroke-width="1.5"
         fill="none"
         stroke-linecap="round"
         stroke-linejoin="round"
       />
       {/* Markers */}
-      <circle cx="78" cy="50" r="2" fill="var(--color-accent)" />
-      <circle cx="182" cy="30" r="2" fill="var(--color-accent)" />
-      <circle cx="286" cy="18" r="2" fill="var(--color-accent)" />
-      <circle cx="286" cy="18" r="4" fill="var(--color-accent)" fill-opacity="0.25" />
+      <circle cx="78" cy="50" r="2" fill="var(--color-persimmon)" />
+      <circle cx="182" cy="30" r="2" fill="var(--color-persimmon)" />
+      <circle cx="286" cy="18" r="2" fill="var(--color-persimmon)" />
+      <circle cx="286" cy="18" r="4" fill="var(--color-persimmon)" fill-opacity="0.25" />
     </svg>
   );
 }
 
 export function HowItWorksSection() {
   return (
-    <section class="py-24 sm:py-32 bg-green-light">
+    <section class="py-24 sm:py-32 bg-cornflower-200">
       <div class="max-w-5xl mx-auto px-8">
         <SectionLabel>How it works</SectionLabel>
 
         <div class="grid md:grid-cols-2 gap-6">
-          <div class="p-8 rounded-sm bg-cream-dark border border-green-light">
-            <h3 class="text-sm uppercase tracking-[0.2em] mb-4 text-console-dark font-display font-semibold">
+          <div class="p-8 rounded-sm bg-canvas-dark border border-cornflower-200">
+            <h3 class="text-sm uppercase tracking-[0.2em] mb-4 text-console-dark font-display font-black">
               Secret injection
             </h3>
             <SecretInjectionDiagram />
-            <ul class="text-[15px] leading-relaxed text-text-muted font-sans list-disc pl-5 space-y-2 marker:text-green-med">
+            <ul class="text-[15px] leading-relaxed text-text-muted font-sans list-disc pl-5 space-y-2 marker:text-cornflower-500">
               <li>Placeholders swapped for real credentials at the proxy</li>
               <li>Inject into headers, body, or mTLS</li>
               <li>Secrets never reach agent memory</li>
@@ -269,12 +269,12 @@ export function HowItWorksSection() {
               <li>Shared secrets with per-agent access control</li>
             </ul>
           </div>
-          <div class="p-8 rounded-sm bg-cream-dark border border-green-light">
-            <h3 class="text-sm uppercase tracking-[0.2em] mb-4 text-console-dark font-display font-semibold">
+          <div class="p-8 rounded-sm bg-canvas-dark border border-cornflower-200">
+            <h3 class="text-sm uppercase tracking-[0.2em] mb-4 text-console-dark font-display font-black">
               Analytics
             </h3>
             <AnalyticsDiagram />
-            <ul class="text-[15px] leading-relaxed text-text-muted font-sans list-disc pl-5 space-y-2 marker:text-green-med">
+            <ul class="text-[15px] leading-relaxed text-text-muted font-sans list-disc pl-5 space-y-2 marker:text-cornflower-500">
               <li>Every outbound request logged in real time</li>
               <li>
                 LLM costs, tokens, cache hits, and latency across all services
@@ -287,7 +287,7 @@ export function HowItWorksSection() {
           <span
             class="inline-block text-[11px]
               font-semibold uppercase tracking-[0.2em]
-              px-4 py-1.5 font-display bg-accent text-console-dark"
+              px-4 py-1.5 font-display bg-persimmon text-console-dark"
           >
             Coming soon
           </span>

@@ -4,9 +4,10 @@ export function Header() {
       class="max-w-6xl mx-auto px-8 py-8 flex flex-wrap
       gap-y-2 items-center justify-between"
     >
-      <a href="/"
+      <a
+        href="/"
         class="text-lg tracking-[0.25em] uppercase
-          font-semibold font-display text-console-dark"
+          font-semibold font-display text-text"
       >
         Claw Patrol
       </a>

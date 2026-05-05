@@ -1,10 +1,10 @@
 import { SectionLabel } from "../components/SectionLabel";
 
 const CHECK = (
-  <span className="mx-auto flex items-center justify-center text-center w-6 h-4.5 p-1.5 rounded-[100%] squircle-xl bg-green-med align-[-0.08em]">
+  <span className="mx-auto flex items-center justify-center text-center w-6 h-4.5 p-1.5 rounded-[100%] squircle-xl bg-cornflower-500 align-[-0.08em]">
     <svg
       viewBox="0 0 24 24"
-      class=" text-cream w-full h-auto"
+      class=" text-canvas w-full h-auto"
       fill="none"
       stroke="currentColor"
       stroke-width="3"
@@ -53,12 +53,12 @@ const ROWS: {
 
 export function ComparisonSection() {
   return (
-    <section class="max-w-5xl mx-auto px-8 pt-8 pb-28 border-t border-green-light/50">
+    <section class="max-w-5xl mx-auto px-8 pt-8 pb-28 border-t border-cornflower-200/50">
       <div class="pt-28" />
       <div class="max-w-max">
         <SectionLabel>How it compares</SectionLabel>
       </div>
-      <h3 class="text-3xl lg:text-4xl font-display ">
+      <h3 class="text-3xl lg:text-4xl font-display font-black ">
         More than a gateway, more than a sandbox
       </h3>
       <p class=" max-w-2xl mb-16 text-base leading-relaxed text-text-muted mt-8">
@@ -74,7 +74,7 @@ export function ComparisonSection() {
       <div class="overflow-x-auto">
         <table class="w-full text-sm font-sans">
           <thead>
-            <tr class="border-b-2 border-green-light">
+            <tr class="border-b-2 border-cornflower-200">
               <th class="text-left py-3 pr-4 font-medium font-display text-text-muted" />
               {FEATURES.map((f) => (
                 <th
@@ -92,8 +92,8 @@ export function ComparisonSection() {
             {ROWS.map((row) => (
               <tr
                 key={row.name}
-                class={`border-b border-green-light/50 ${
-                  row.highlight ? "bg-accent/20" : ""
+                class={`border-b border-cornflower-200/50 ${
+                  row.highlight ? "bg-persimmon/20" : ""
                 }`}
               >
                 <td

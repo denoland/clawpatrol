@@ -18,8 +18,8 @@ export function IntegrationsSection() {
       style={{
         background:
           "linear-gradient(160deg, " +
-          "var(--color-green-light) 0%, " +
-          "color-mix(in srgb, var(--color-green-light), var(--color-console) 8%) 100%)",
+          "var(--color-cornflower-200) 0%, " +
+          "color-mix(in srgb, var(--color-cornflower-200), var(--color-console) 8%) 100%)",
       }}
     >
       <div class="max-w-5xl mx-auto px-8">
@@ -59,14 +59,14 @@ export function IntegrationsSection() {
             </a>
           ))}
         </div>
-        <p class="text-center mt-16 tracking-wider text-green-med">— OR —</p>
+        <p class="text-center mt-16 tracking-wider text-cornflower-500">— OR —</p>
         <a
           href="/docs/08-plugins/"
           class="block font-normal uppercase tracking-wide font-display max-w-full
             w-max mx-auto mt-16 mb-8 text-text-muted neu-raised p-6 px-8 squircle-lg
-            bg-linear-to-br from-green-light to-green
-            [--neu-bg:var(--color-green-light)] [--face-highlight-opacity:70%]
-            [--bg-highlight-opacity:10%] [--bg-shadow-opacity:5%] hover:bg-green-light transition-colors"
+            bg-linear-to-br from-cornflower-200 to-green
+            [--neu-bg:var(--color-cornflower-200)] [--face-highlight-opacity:70%]
+            [--bg-highlight-opacity:10%] [--bg-shadow-opacity:5%] hover:bg-cornflower-200 transition-colors"
         >
           Write your own plugin in one TypeScript file{" "}
           <span class="ml-1" aria-hidden="true">

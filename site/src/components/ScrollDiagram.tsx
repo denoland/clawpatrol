@@ -114,7 +114,7 @@ export function ScrollDiagram() {
               <span
                 key={i}
                 class={`dia-typed-char dia-scattered absolute z-20 ${
-                  dim ? "text-accent/30" : "text-accent/70"
+                  dim ? "text-persimmon/30" : "text-persimmon/70"
                 }`}
                 style={{
                   left,
