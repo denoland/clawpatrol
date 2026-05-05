@@ -126,7 +126,15 @@ func runEnv(args []string) {
 // command, so the wrapped agent CLI inherits the placeholders + CA
 // paths without the operator having to source `clawpatrol env`
 // separately.
+//
+// Opt-out: setting CLAWPATROL_NO_ENV=1 disables the entire pushdown.
+// Use when an agent CLI is incompatible with one of the pushed vars
+// (e.g. an OPENAI_API_KEY placeholder that forces a CLI into API
+// mode when its native auth would have worked through the tunnel).
 func applyEnvPushdown(caDir string) {
+	if os.Getenv("CLAWPATROL_NO_ENV") == "1" {
+		return
+	}
 	caPath := filepath.Join(caDir, "ca.crt")
 	if _, err := os.Stat(caPath); err != nil {
 		// CA not set up yet — `clawpatrol join` hasn't run. Don't
