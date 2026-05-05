@@ -116,7 +116,8 @@ function Row({ ev }: { ev: RowState }) {
       <div
         onClick={onClick}
         className={
-          "px-4 py-2 flex items-center gap-3 min-w-0 cursor-pointer transition-colors"
+          "px-4 py-2 flex items-center gap-3 min-w-0 transition-colors"
+          + (onClick ? " cursor-pointer" : "")
           + (inFlight ? " opacity-70" : "")
           + " hover:bg-[#f9f9f9]"
         }

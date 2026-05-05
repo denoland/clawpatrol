@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -851,9 +852,7 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 	rows, err := db.Query(`
 		SELECT action_id, ts_ns, mode, agent_ip, host,
 		       method, path, status, bytes_in, bytes_out,
-		       ms, action, reason, req_sha, resp_sha,
-		       req_body, resp_body,
-		       req_headers, resp_headers
+		       ms, action, reason, req_sha, resp_sha
 		FROM actions ORDER BY id DESC LIMIT ?`, n)
 	if err != nil {
 		return nil, err
@@ -862,31 +861,25 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 	out := make([]Event, 0, n)
 	for rows.Next() {
 		var (
-			e           Event
-			actionID    sql.NullString
-			tsNs        int64
-			mode        sql.NullString
-			agentIP     sql.NullString
-			method      sql.NullString
-			path        sql.NullString
-			status      sql.NullInt64
-			in, ot      sql.NullInt64
-			ms          sql.NullInt64
-			action      sql.NullString
-			reason      sql.NullString
-			reqSha      sql.NullString
-			respSha     sql.NullString
-			reqBody     sql.NullString
-			respBody    sql.NullString
-			reqHeaders  sql.NullString
-			respHeaders sql.NullString
+			e        Event
+			actionID sql.NullString
+			tsNs     int64
+			mode     sql.NullString
+			agentIP  sql.NullString
+			method   sql.NullString
+			path     sql.NullString
+			status   sql.NullInt64
+			in, ot   sql.NullInt64
+			ms       sql.NullInt64
+			action   sql.NullString
+			reason   sql.NullString
+			reqSha   sql.NullString
+			respSha  sql.NullString
 		)
 		if err := rows.Scan(
 			&actionID, &tsNs, &mode, &agentIP, &e.Host,
 			&method, &path, &status, &in, &ot, &ms,
 			&action, &reason, &reqSha, &respSha,
-			&reqBody, &respBody,
-			&reqHeaders, &respHeaders,
 		); err != nil {
 			return nil, err
 		}
@@ -904,10 +897,6 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 		e.Reason = reason.String
 		e.ReqSha = reqSha.String
 		e.RespSha = respSha.String
-		e.ReqBody = reqBody.String
-		e.RespBody = respBody.String
-		unmarshalHeaders(reqHeaders.String, &e.ReqHeaders)
-		unmarshalHeaders(respHeaders.String, &e.RespHeaders)
 		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {
@@ -974,7 +963,16 @@ func (s *Sink) drain() {
 		// terminal events. frame events for already-closed WS streams
 		// also have nowhere to go on reconnect.
 		if persist {
-			s.recent = append(s.recent, e)
+			// Strip bodies from backlog — SSE consumers
+			// (LiveRequests, AnalyticsPage) only need
+			// metadata; the detail page fetches full data
+			// via /api/actions/<id>.
+			lite := e
+			lite.ReqBody = ""
+			lite.RespBody = ""
+			lite.ReqHeaders = nil
+			lite.RespHeaders = nil
+			s.recent = append(s.recent, lite)
 			if len(s.recent) > s.recentCap {
 				s.recent = s.recent[len(s.recent)-s.recentCap:]
 			}
@@ -1036,10 +1034,18 @@ func unmarshalHeaders(s string, dst *map[string]string) {
 	}
 }
 
+var sensitiveHeader = regexp.MustCompile(
+	`(?i)auth|token|secret|key|password|cookie`,
+)
+
 func flatHeaders(h http.Header) map[string]string {
 	out := make(map[string]string, len(h))
 	for k, v := range h {
-		out[k] = strings.Join(v, ", ")
+		if sensitiveHeader.MatchString(k) {
+			out[k] = "***"
+		} else {
+			out[k] = strings.Join(v, ", ")
+		}
 	}
 	return out
 }

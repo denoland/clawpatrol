@@ -72,6 +72,21 @@ export function AgentsTable({
                   <span className="text-[13px] font-semibold text-[#171717] truncate">
                     {a.hostname || a.ip}
                   </span>
+                  {onAnalytics && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onAnalytics(a.ip);
+                      }}
+                      className="p-1 rounded hover:bg-[#e5e5e5] transition-colors text-[#a3a3a3] hover:text-[#171717] flex-shrink-0"
+                      title="Analytics"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M3 3v18h18" />
+                        <path d="m7 16 4-8 4 4 4-6" />
+                      </svg>
+                    </button>
+                  )}
                 </div>
                 <div className="md:hidden text-[10px] text-[#a3a3a3] truncate mt-0.5">
                   {a.profile || "—"}
@@ -108,28 +123,6 @@ export function AgentsTable({
                     };
                   })}
                 />
-              </Td>
-              <Td className="w-[32px]">
-                {onAnalytics && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onAnalytics(a.ip);
-                    }}
-                    className="p-1 rounded hover:bg-[#e5e5e5]
-                      transition-colors text-[#a3a3a3]
-                      hover:text-[#525252]"
-                    title="Analytics"
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24"
-                      fill="none" stroke="currentColor"
-                      strokeWidth="2" strokeLinecap="round"
-                      strokeLinejoin="round">
-                      <path d="M3 3v18h18" />
-                      <path d="m7 16 4-8 4 4 4-6" />
-                    </svg>
-                  </button>
-                )}
               </Td>
             </tr>
           );
