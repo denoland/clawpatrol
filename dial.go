@@ -14,12 +14,48 @@ import (
 	"crypto/tls"
 	"log"
 	"net"
+	"strings"
 
 	utls "github.com/refraction-networking/utls"
 
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/runtime"
 )
+
+// browserTLSHosts: hosts whose Cloudflare WAF rejects plain Go TLS
+// fingerprints. Match suffix so subdomains (e.g. backend-api.chatgpt.com,
+// auth.openai.com) get the uTLS Chrome treatment too. Add new hosts
+// here when "Attack detected" 405s show up in the gateway log.
+var browserTLSHosts = []string{
+	"chatgpt.com",
+	"openai.com",
+}
+
+func needsBrowserTLS(host string) bool {
+	h := strings.ToLower(host)
+	for _, suffix := range browserTLSHosts {
+		if h == suffix || strings.HasSuffix(h, "."+suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// endpointWantsClientCert reports whether ep declares any credential
+// implementing TLSCredentialRuntime. Such endpoints (mtls / k8s) need
+// the upstream Config to carry a client cert, which dialBrowserTLS
+// can't satisfy — fall back to dialUpstream.
+func endpointWantsClientCert(ep *config.CompiledEndpoint) bool {
+	if ep == nil {
+		return false
+	}
+	for _, cc := range ep.Credentials {
+		if _, ok := cc.Credential.Body.(runtime.TLSCredentialRuntime); ok {
+			return true
+		}
+	}
+	return false
+}
 
 // servePorts is a no-op until the postgres / clickhouse_native
 // endpoint plugins land their wire-protocol runtime hooks.

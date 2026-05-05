@@ -1119,11 +1119,16 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			if err != nil {
 				h = host
 			}
-			// mTLS-equipped endpoints (k8s API servers, internal
-			// CAs) carry a credential whose TLSCredentialRuntime
-			// configures the upstream tls.Config — adds a client
-			// cert + a custom root pool. Endpoints with no TLS
-			// credential dial via plain stdlib TLS.
+			// Cloudflare-fronted hosts (chatgpt.com, openai.com)
+			// fingerprint-block plain Go TLS handshakes on the
+			// REST path with "Attack detected" 405 — same WAF rule
+			// that triggered on the WS upgrade. uTLS Chrome
+			// fingerprint clears it. mTLS-required endpoints stay
+			// on dialUpstream so the credential plugin can stamp
+			// client certs.
+			if needsBrowserTLS(h) && !endpointWantsClientCert(ep) {
+				return dialBrowserTLS(ctx, network, addr, h)
+			}
 			return g.dialUpstream(ctx, network, addr, h, ep)
 		},
 		ForceAttemptHTTP2: false,
