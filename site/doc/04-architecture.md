@@ -1,5 +1,9 @@
 # Architecture
 
+> See [Glossary](00-glossary.md) for definitions of gateway, endpoint,
+> credential, rule, profile, plugin, runtime, and the rest of the
+> vocabulary used below.
+
 ## Overview
 
 Claw Patrol is an HTTPS MitM proxy that intercepts, inspects, and forwards
