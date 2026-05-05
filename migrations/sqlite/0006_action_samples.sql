@@ -6,4 +6,4 @@ ALTER TABLE actions ADD COLUMN resp_headers TEXT;
 
 CREATE INDEX actions_action_id_idx ON actions(action_id);
 
-INSERT INTO _schema (version) VALUES (5);
+INSERT INTO _schema (version) VALUES (6);
