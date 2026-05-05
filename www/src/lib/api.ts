@@ -7,6 +7,8 @@ export type Owner = {
   owner: string;
   connected: boolean;
   expires_at?: number;
+  display_name?: string;
+  avatar_url?: string;
 };
 
 export type SecretSlot = {

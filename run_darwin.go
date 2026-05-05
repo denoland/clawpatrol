@@ -97,10 +97,7 @@ func ensureMacProxyUp() error {
 // when conf or mode changed).
 func macHelperInstall(wholeMachine bool) error {
 	if _, err := os.Stat(macHelperPath); err != nil {
-		fmt.Fprintln(os.Stderr,
-			"⚠ Clawpatrol.app not at /Applications — skipping macOS NE bootstrap.\n"+
-				"  build + install via macos/install.sh, then rerun `clawpatrol join`.")
-		return nil
+		return fmt.Errorf("Clawpatrol.app not at /Applications — reinstall: curl -fsSL https://clawpatrol.dev/install.sh | sh")
 	}
 	args := []string{"install"}
 	if wholeMachine {

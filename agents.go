@@ -402,9 +402,11 @@ type IntegrationRow struct {
 }
 
 type Owner struct {
-	Owner     string `json:"owner"`
-	Connected bool   `json:"connected"`
-	ExpiresAt int64  `json:"expires_at,omitempty"`
+	Owner       string `json:"owner"`
+	Connected   bool   `json:"connected"`
+	ExpiresAt   int64  `json:"expires_at,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
+	AvatarURL   string `json:"avatar_url,omitempty"`
 }
 
 func (w *webMux) apiStatus(rw http.ResponseWriter, r *http.Request) {
@@ -437,6 +439,7 @@ func (w *webMux) apiStatus(rw http.ResponseWriter, r *http.Request) {
 				if !exp.IsZero() {
 					o.ExpiresAt = exp.Unix()
 				}
+				o.DisplayName, o.AvatarURL = w.g.oauth.Profile(name, owner)
 				row.Owners = append(row.Owners, o)
 			}
 		}

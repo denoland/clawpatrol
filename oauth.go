@@ -40,14 +40,16 @@ type tokenStore struct {
 // oauthState is one credential: tokens for a single (integration, owner).
 // Persisted in the credentials table; one row per (id, owner).
 type oauthState struct {
-	cfg    *oauth2.Config
-	source oauth2.TokenSource
-	header string
-	prefix string
-	id     string
-	owner  string
-	db     *sql.DB
-	mu     sync.Mutex
+	cfg         *oauth2.Config
+	source      oauth2.TokenSource
+	header      string
+	prefix      string
+	id          string
+	owner       string
+	displayName string // human-readable name (e.g. github login)
+	avatarURL   string // dashboard pfp
+	db          *sql.DB
+	mu          sync.Mutex
 }
 
 // OAuthRegistry holds all configured OAuth integrations and a per-owner
@@ -183,6 +185,20 @@ func (r *OAuthRegistry) Status(id, owner string) (connected bool, expiry time.Ti
 	return true, t.Expiry
 }
 
+// Profile returns the (display_name, avatar_url) the dashboard
+// renders for this owner. Empty strings when no userinfo enricher ran
+// for this provider, when the row pre-dates 0003_credential_profile,
+// or when the userinfo fetch failed at exchange time.
+func (r *OAuthRegistry) Profile(id, owner string) (displayName, avatarURL string) {
+	s := r.get(id, owner)
+	if s == nil {
+		return "", ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.displayName, s.avatarURL
+}
+
 // Revoke deletes the (id, owner) credential and its DB row.
 func (r *OAuthRegistry) Revoke(id, owner string) {
 	r.mu.Lock()
@@ -210,7 +226,54 @@ func (r *OAuthRegistry) Set(id, owner string, tok *oauth2.Token) error {
 		r.states[stateKey(id, owner)] = s
 	}
 	s.setToken(tok)
+	if name, avatar := fetchOAuthProfile(id, tok.AccessToken); name != "" || avatar != "" {
+		s.persistProfile(name, avatar)
+	}
 	return nil
+}
+
+// OAuthProfile holds the human-identity bits we surface on the
+// dashboard (real name + avatar). Populated after a successful token
+// exchange by hitting the provider's userinfo endpoint.
+type OAuthProfile struct {
+	DisplayName string
+	AvatarURL   string
+}
+
+// fetchOAuthProfile returns the (display_name, avatar_url) for a
+// freshly-issued token. Per-provider — `github` hits api.github.com/
+// user; others currently return empty until their userinfo wiring
+// lands. Failure is non-fatal: profile metadata is decorative and
+// missing data falls back to the provider icon on the dashboard.
+func fetchOAuthProfile(id, accessToken string) (string, string) {
+	switch id {
+	case "github":
+		req, _ := http.NewRequest("GET", "https://api.github.com/user", nil)
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+		req.Header.Set("Accept", "application/vnd.github+json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return "", ""
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			return "", ""
+		}
+		var u struct {
+			Login     string `json:"login"`
+			Name      string `json:"name"`
+			AvatarURL string `json:"avatar_url"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&u); err != nil {
+			return "", ""
+		}
+		display := u.Login
+		if u.Name != "" {
+			display = u.Name
+		}
+		return display, u.AvatarURL
+	}
+	return "", ""
 }
 
 func newState(it *OAuthIntegration, owner string, db *sql.DB) *oauthState {
@@ -333,6 +396,26 @@ func (p *persistingSource) Token() (*oauth2.Token, error) {
 	return t, nil
 }
 
+// persistProfile updates the human-identity columns for this
+// (id, owner) row. Called after fetchOAuthProfile populates them post-
+// exchange. UPDATE-only — relies on persist() having INSERTed the
+// row first. Best-effort: a failed write surfaces only as missing
+// avatar on the dashboard.
+func (s *oauthState) persistProfile(displayName, avatarURL string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db == nil {
+		return
+	}
+	_, _ = s.db.Exec(`
+		UPDATE credentials
+		   SET display_name = ?, avatar_url = ?
+		 WHERE id = ? AND profile = ?
+	`, displayName, avatarURL, s.id, s.owner)
+	s.displayName = displayName
+	s.avatarURL = avatarURL
+}
+
 func (s *oauthState) persist(t *oauth2.Token) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -371,18 +454,19 @@ func (r *OAuthRegistry) loadFromDB() error {
 	if r.db == nil {
 		return nil
 	}
-	rows, err := r.db.Query("SELECT id, profile, access_token, token_type, refresh_token, expiry_ns FROM credentials")
+	rows, err := r.db.Query("SELECT id, profile, access_token, token_type, refresh_token, expiry_ns, display_name, avatar_url FROM credentials")
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			id, owner         string
-			access, typ, refr sql.NullString
-			expiryNs          sql.NullInt64
+			id, owner            string
+			access, typ, refr    sql.NullString
+			expiryNs             sql.NullInt64
+			displayName, avatar  sql.NullString
 		)
-		if err := rows.Scan(&id, &owner, &access, &typ, &refr, &expiryNs); err != nil {
+		if err := rows.Scan(&id, &owner, &access, &typ, &refr, &expiryNs, &displayName, &avatar); err != nil {
 			return err
 		}
 		it, ok := r.integrations[id]
@@ -399,6 +483,8 @@ func (r *OAuthRegistry) loadFromDB() error {
 			tok.Expiry = time.Unix(0, expiryNs.Int64)
 		}
 		s.setToken(tok)
+		s.displayName = displayName.String
+		s.avatarURL = avatar.String
 		r.states[stateKey(id, owner)] = s
 	}
 	return rows.Err()

@@ -1,3 +1,4 @@
+import * as React from "react";
 import { useState } from "react";
 import type { Integration, Whoami } from "../lib/api";
 import { fmtExpiry } from "../lib/format";
@@ -132,6 +133,33 @@ export function IntegrationsCards({
   );
 }
 
+// OwnerAvatar renders the OAuth user's PFP (e.g. github avatar) with
+// the provider icon as fallback when the image 404s or the host
+// blocks hotlinking. Failure flips to icon via state, not just an
+// onError swap, so a busted CDN doesn't leave a broken-image glyph.
+function OwnerAvatar({
+  src,
+  fallbackId,
+  fallbackType,
+}: {
+  src: string;
+  fallbackId: string;
+  fallbackType: string;
+}) {
+  const [broken, setBroken] = React.useState(false);
+  if (broken) {
+    return <IntegrationIcon id={fallbackId} type={fallbackType} className="w-[16px] h-[16px] flex-shrink-0" />;
+  }
+  return (
+    <img
+      src={src}
+      alt=""
+      onError={() => setBroken(true)}
+      className="w-[16px] h-[16px] flex-shrink-0 rounded-full object-cover"
+    />
+  );
+}
+
 function Card({
   integration: i,
   youKey,
@@ -170,9 +198,11 @@ function Card({
       }
     >
       <div className="flex items-center gap-2 w-full">
-        <IntegrationIcon id={i.id} type={i.type} className="w-[16px] h-[16px] flex-shrink-0" />
-        <span className="text-[12px] font-semibold text-[#171717] truncate" title={i.id}>
-          {TYPE_LABEL[i.type] ?? i.name}
+        {connected && me?.avatar_url
+          ? <OwnerAvatar src={me.avatar_url} fallbackId={i.id} fallbackType={i.type} />
+          : <IntegrationIcon id={i.id} type={i.type} className="w-[16px] h-[16px] flex-shrink-0" />}
+        <span className="text-[12px] font-semibold text-[#171717] truncate" title={me?.display_name ?? i.id}>
+          {me?.display_name ?? TYPE_LABEL[i.type] ?? i.name}
         </span>
         <span className="ml-auto flex items-center gap-1.5 flex-shrink-0">
           {connected && (
