@@ -18,13 +18,63 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"syscall"
+	"time"
 )
 
 const macHelperPath = "/Applications/Clawpatrol.app/Contents/MacOS/Clawpatrol"
+
+const sessionSockPath = "/tmp/clawpatrol.sock"
+
+// registerSession dials the extension's IPC socket and synchronously
+// hands it our PID before any wrapped command starts. The handshake
+// guarantees the ext has the PID registered before the child exec's
+// first flow can fire — a file-based registry would race at the
+// directory-mtime layer. Returns a cleanup that sends the matching
+// unregister.
+//
+// Best-effort: if the socket can't be reached (sysext not running
+// yet, sandbox issue) we proceed without registering. The child
+// won't be tunneled but the command isn't blocked on IPC plumbing.
+func registerSession() func() {
+	pid := os.Getpid()
+	if err := sessionIPC(fmt.Sprintf("register %d\n", pid)); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ session register: %v (proceeding without tunnel)\n", err)
+		return func() {}
+	}
+	return func() {
+		_ = sessionIPC(fmt.Sprintf("unregister %d\n", pid))
+	}
+}
+
+// sessionIPC dials sessionSockPath, writes msg, expects "ok\n".
+// Tight 2s deadline — the listener should respond in microseconds;
+// anything slower means the ext is wedged and we shouldn't block.
+func sessionIPC(msg string) error {
+	d := net.Dialer{Timeout: 2 * time.Second}
+	c, err := d.Dial("unix", sessionSockPath)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	c.SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := c.Write([]byte(msg)); err != nil {
+		return err
+	}
+	buf := make([]byte, 8)
+	n, err := c.Read(buf)
+	if err != nil {
+		return err
+	}
+	if string(buf[:n]) != "ok\n" {
+		return fmt.Errorf("ext replied %q", string(buf[:n]))
+	}
+	return nil
+}
 
 func runRun(args []string) {
 	if _, err := os.Stat(macHelperPath); err != nil {
@@ -35,6 +85,12 @@ func runRun(args []string) {
 	if err := ensureMacProxyUp(); err != nil {
 		fail(fmt.Sprintf("ensure proxy up: %v", err))
 	}
+	// IPC handshake — synchronously register our PID with the
+	// extension's session listener before exec'ing the helper. The
+	// handshake guarantees the ext has the PID in its registry
+	// before any descendant flow can fire.
+	cleanup := registerSession()
+	defer cleanup()
 	// Stamp CA + placeholder env vars on the current process so the
 	// helper inherits them and forwards them to the wrapped child.
 	applyEnvPushdown(defaultClawpatrolDir())
