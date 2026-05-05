@@ -53,9 +53,11 @@ export function DevicePage({
   if (!a) {
     return (
       <main className="mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-5">
-        <button onClick={onBack} className="text-[11px] text-[#737373] hover:text-[#171717] mb-3">
-          ← back
-        </button>
+        <nav className="text-[11px] text-[#a3a3a3] flex items-center gap-1.5 mb-3">
+          <a href="#/" className="hover:text-[#171717]">clawpatrol</a>
+          <span>/</span>
+          <span className="text-[#525252]">{ip}</span>
+        </nav>
         <div className="bg-white border border-[#e5e5e5] rounded px-5 py-8 text-center text-[12px] text-[#a3a3a3]">
           no agent with ip {ip}
         </div>
@@ -81,9 +83,11 @@ export function DevicePage({
   return (
     <main className="mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-5 space-y-5">
       <div className="flex items-center justify-between">
-        <button onClick={onBack} className="text-[11px] text-[#737373] hover:text-[#171717]">
-          ← back
-        </button>
+        <nav className="text-[11px] text-[#a3a3a3] flex items-center gap-1.5">
+          <a href="#/" className="hover:text-[#171717]">clawpatrol</a>
+          <span>/</span>
+          <span className="text-[#525252]">{dev.hostname || dev.ip}</span>
+        </nav>
         <div className="flex items-center gap-2">
           <ProfilePicker
             current={a.profile ?? ""}

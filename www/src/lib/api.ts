@@ -310,6 +310,7 @@ export type EventRecord = {
   resp_sha?: string;
   req_body?: string;
   resp_body?: string;
+  req_headers?: Record<string, string>;
   resp_headers?: Record<string, string>;
 };
 

@@ -737,19 +737,22 @@ func (w *webMux) apiActionByID(
 		respSha     sql.NullString
 		reqBody     sql.NullString
 		respBody    sql.NullString
+		reqHeaders  sql.NullString
 		respHeaders sql.NullString
 	)
 	err := w.g.db.QueryRow(`
 		SELECT ts_ns, mode, agent_ip, host, method, path,
 		       status, bytes_in, bytes_out, ms, action,
 		       reason, req_sha, resp_sha,
-		       req_body, resp_body, resp_headers
+		       req_body, resp_body,
+		       req_headers, resp_headers
 		FROM actions WHERE action_id = ?`, actionID,
 	).Scan(
 		&tsNs, &mode, &agentIP, &e.Host,
 		&method, &path, &status, &in, &ot, &ms,
 		&action, &reason, &reqSha, &respSha,
-		&reqBody, &respBody, &respHeaders,
+		&reqBody, &respBody,
+		&reqHeaders, &respHeaders,
 	)
 	if err == sql.ErrNoRows {
 		http.Error(rw, "not found", 404)
@@ -775,11 +778,8 @@ func (w *webMux) apiActionByID(
 	e.RespSha = respSha.String
 	e.ReqBody = reqBody.String
 	e.RespBody = respBody.String
-	if respHeaders.String != "" {
-		_ = json.Unmarshal(
-			[]byte(respHeaders.String), &e.RespHeaders,
-		)
-	}
+	unmarshalHeaders(reqHeaders.String, &e.ReqHeaders)
+	unmarshalHeaders(respHeaders.String, &e.RespHeaders)
 	writeJSON(rw, e)
 }
 
@@ -817,6 +817,7 @@ type Event struct {
 	ReqBody    string    `json:"req_body,omitempty"`
 	RespSha     string            `json:"resp_sha,omitempty"`
 	RespBody    string            `json:"resp_body,omitempty"`
+	ReqHeaders  map[string]string `json:"req_headers,omitempty"`
 	RespHeaders map[string]string `json:"resp_headers,omitempty"`
 	// Frame is set for Phase="frame" only — a single WS frame's text
 	// payload (truncated at sampleCap). Direction is "c→s" or "s→c"
@@ -851,7 +852,8 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 		SELECT action_id, ts_ns, mode, agent_ip, host,
 		       method, path, status, bytes_in, bytes_out,
 		       ms, action, reason, req_sha, resp_sha,
-		       req_body, resp_body, resp_headers
+		       req_body, resp_body,
+		       req_headers, resp_headers
 		FROM actions ORDER BY id DESC LIMIT ?`, n)
 	if err != nil {
 		return nil, err
@@ -876,13 +878,15 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 			respSha     sql.NullString
 			reqBody     sql.NullString
 			respBody    sql.NullString
+			reqHeaders  sql.NullString
 			respHeaders sql.NullString
 		)
 		if err := rows.Scan(
 			&actionID, &tsNs, &mode, &agentIP, &e.Host,
 			&method, &path, &status, &in, &ot, &ms,
 			&action, &reason, &reqSha, &respSha,
-			&reqBody, &respBody, &respHeaders,
+			&reqBody, &respBody,
+			&reqHeaders, &respHeaders,
 		); err != nil {
 			return nil, err
 		}
@@ -902,11 +906,8 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 		e.RespSha = respSha.String
 		e.ReqBody = reqBody.String
 		e.RespBody = respBody.String
-		if respHeaders.String != "" {
-			_ = json.Unmarshal(
-				[]byte(respHeaders.String), &e.RespHeaders,
-			)
-		}
+		unmarshalHeaders(reqHeaders.String, &e.ReqHeaders)
+		unmarshalHeaders(respHeaders.String, &e.RespHeaders)
 		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {
@@ -944,23 +945,27 @@ func (s *Sink) drain() {
 		// the table for long-poll / WS sessions.
 		persist := e.Phase == "" || e.Phase == "end"
 		if s.db != nil && persist {
-			var rhJSON []byte
+			var rqhJSON, rshJSON []byte
+			if len(e.ReqHeaders) > 0 {
+				rqhJSON, _ = json.Marshal(e.ReqHeaders)
+			}
 			if len(e.RespHeaders) > 0 {
-				rhJSON, _ = json.Marshal(e.RespHeaders)
+				rshJSON, _ = json.Marshal(e.RespHeaders)
 			}
 			s.db.Exec(`
 				INSERT INTO actions
 				 (action_id, ts_ns, mode, agent_ip, host,
 				  method, path, status, bytes_in, bytes_out,
 				  ms, action, reason, req_sha, resp_sha,
-				  req_body, resp_body, resp_headers)
-				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+				  req_body, resp_body,
+				  req_headers, resp_headers)
+				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			`, e.ID, e.Ts.UnixNano(), e.Mode, e.AgentIP,
 				e.Host, e.Method, e.Path, e.Status,
 				e.In, e.Out, e.Ms, e.Action, e.Reason,
 				e.ReqSha, e.RespSha,
 				e.ReqBody, e.RespBody,
-				string(rhJSON))
+				string(rqhJSON), string(rshJSON))
 		}
 		s.mu.Lock()
 		// Recent ring is the SSE backlog replayed to fresh
@@ -1023,6 +1028,12 @@ type sampler struct {
 	cap  int
 	buf  bytes.Buffer
 	n    int64
+}
+
+func unmarshalHeaders(s string, dst *map[string]string) {
+	if s != "" {
+		_ = json.Unmarshal([]byte(s), dst)
+	}
 }
 
 func flatHeaders(h http.Header) map[string]string {

@@ -1,15 +1,16 @@
 import { useState, useEffect } from "react";
 import {
   getAction,
+  type Agent,
   type EventRecord,
 } from "../lib/api";
 
 export function RequestDetailPage({
   id,
-  onBack,
+  agents,
 }: {
   id: string;
-  onBack: () => void;
+  agents: Agent[];
 }) {
   const [ev, setEv] = useState<EventRecord | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -22,14 +23,14 @@ export function RequestDetailPage({
 
   if (err) {
     return (
-      <Shell onBack={onBack}>
+      <Shell>
         <div className="text-[13px] text-[#dc2626]">{err}</div>
       </Shell>
     );
   }
   if (!ev) {
     return (
-      <Shell onBack={onBack}>
+      <Shell>
         <div className="text-[12px] text-[#a3a3a3]">Loading...</div>
       </Shell>
     );
@@ -52,11 +53,18 @@ export function RequestDetailPage({
     (path.startsWith("/") ? "" : " ") + path;
   const hasReq = !!ev.req_body;
   const hasResp = !!ev.resp_body;
-  const hasHeaders = ev.resp_headers &&
+  const hasReqH = ev.req_headers &&
+    Object.keys(ev.req_headers).length > 0;
+  const hasRespH = ev.resp_headers &&
     Object.keys(ev.resp_headers).length > 0;
+  const hasSections = hasReq || hasResp || hasReqH || hasRespH;
 
   return (
-    <Shell onBack={onBack}>
+    <Shell
+      agentIP={ev.agent_ip}
+      agentName={agents.find(a => a.ip === ev.agent_ip)?.hostname}
+      requestId={ev.id}
+    >
       {/* header */}
       <div className="bg-white border border-[#e5e5e5] rounded p-5 space-y-3">
         <div className="flex items-center gap-3 flex-wrap">
@@ -98,14 +106,19 @@ export function RequestDetailPage({
       </div>
 
       {/* sections */}
-      {(hasReq || hasResp || hasHeaders) ? (
+      {hasSections ? (
         <div className="bg-white border border-[#e5e5e5] rounded divide-y divide-[#e5e5e5]">
+          {hasReqH && (
+            <Section title="Request headers">
+              <Headers obj={ev.req_headers!} />
+            </Section>
+          )}
           {hasReq && (
             <Section title="Request body">
               <HttpBody text={ev.req_body!} />
             </Section>
           )}
-          {hasHeaders && (
+          {hasRespH && (
             <Section title="Response headers">
               <Headers obj={ev.resp_headers!} />
             </Section>
@@ -150,18 +163,48 @@ export function RequestDetailPage({
 
 // --- layout ---
 
-function Shell({ onBack, children }: {
-  onBack: () => void;
+function Breadcrumbs({ agentIP, agentName, requestId }: {
+  agentIP?: string;
+  agentName?: string;
+  requestId?: string;
+}) {
+  return (
+    <nav className="text-[11px] text-[#a3a3a3] flex items-center gap-1.5">
+      <a href="#/" className="hover:text-[#171717]">
+        clawpatrol
+      </a>
+      {agentIP && (
+        <>
+          <span>/</span>
+          <a
+            href={`#/device/${encodeURIComponent(agentIP)}`}
+            className="hover:text-[#171717]"
+          >
+            {agentName || agentIP}
+          </a>
+        </>
+      )}
+      {requestId && (
+        <>
+          <span>/</span>
+          <span className="text-[#525252] font-mono">
+            {requestId.slice(0, 8)}
+          </span>
+        </>
+      )}
+    </nav>
+  );
+}
+
+function Shell({ children, agentIP, agentName, requestId }: {
   children: React.ReactNode;
+  agentIP?: string;
+  agentName?: string;
+  requestId?: string;
 }) {
   return (
     <main className="mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-5 space-y-5">
-      <button
-        onClick={onBack}
-        className="text-[11px] text-[#737373] hover:text-[#171717]"
-      >
-        &#8592; back
-      </button>
+      <Breadcrumbs agentIP={agentIP} agentName={agentName} requestId={requestId} />
       {children}
     </main>
   );
@@ -205,19 +248,83 @@ function Headers({ obj }: { obj: Record<string, string> }) {
 
 // --- body rendering (JSON tree / SSE / plain) ---
 
+// tryParseJSON attempts JSON.parse; on failure (e.g. truncated at
+// the 4KB sampler cap) walks backward to find the last position
+// where closing all open containers yields valid JSON.
+function tryParseJSON(text: string): {
+  parsed: unknown; truncated: boolean;
+} | null {
+  try {
+    return { parsed: JSON.parse(text), truncated: false };
+  } catch { /* fall through */ }
+  // Walk the string tracking container depth, ignoring string
+  // interiors. At each position where we're outside a string
+  // and just finished a complete value (after , or : or [ or {),
+  // record it as a candidate cut point.
+  let inStr = false;
+  let esc = false;
+  const stack: string[] = [];
+  let lastGoodCut = -1;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (esc) { esc = false; continue; }
+    if (ch === "\\") { esc = true; continue; }
+    if (ch === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (ch === "{") stack.push("}");
+    else if (ch === "[") stack.push("]");
+    else if (ch === "}" || ch === "]") {
+      stack.pop();
+      lastGoodCut = i + 1;
+    } else if (ch === ",") {
+      lastGoodCut = i;
+    }
+  }
+  // Try cutting at each candidate, newest first
+  for (let cut = lastGoodCut; cut > 0; cut--) {
+    // Re-scan up to cut to get the stack state
+    const st: string[] = [];
+    let ins = false;
+    let es = false;
+    for (let i = 0; i < cut; i++) {
+      const c = text[i];
+      if (es) { es = false; continue; }
+      if (c === "\\") { es = true; continue; }
+      if (c === '"') { ins = !ins; continue; }
+      if (ins) continue;
+      if (c === "{") st.push("}");
+      else if (c === "[") st.push("]");
+      else if (c === "}" || c === "]") st.pop();
+    }
+    let attempt = text.slice(0, cut);
+    // Strip trailing comma
+    if (attempt.endsWith(",")) {
+      attempt = attempt.slice(0, -1);
+    }
+    attempt += st.reverse().join("");
+    try {
+      return { parsed: JSON.parse(attempt), truncated: true };
+    } catch { continue; }
+  }
+  return null;
+}
+
 function HttpBody({ text }: { text: string }) {
   if (!text) return (
     <div className="px-4 py-3 text-[11px] text-[#a3a3a3]">
       (empty)
     </div>
   );
-  // Try JSON
-  let parsed: unknown;
-  try { parsed = JSON.parse(text); } catch { /* */ }
-  if (parsed !== undefined) {
+  const result = tryParseJSON(text);
+  if (result) {
     return (
       <div className="overflow-auto px-4 py-3 font-mono text-[11px] leading-relaxed">
-        <JsonNode value={parsed} />
+        <JsonNode value={result.parsed} />
+        {result.truncated && (
+          <div className="mt-2 text-[10px] text-[#a3a3a3]">
+            (truncated)
+          </div>
+        )}
       </div>
     );
   }

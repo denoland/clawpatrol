@@ -1516,6 +1516,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			ev.Action = "allow"
 		}
 		ev.Status = resp.StatusCode
+		ev.ReqHeaders = flatHeaders(req.Header)
 		ev.RespHeaders = flatHeaders(resp.Header)
 		ev.In = reqS.n
 		ev.Out = respS.n
