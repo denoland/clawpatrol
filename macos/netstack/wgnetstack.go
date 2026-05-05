@@ -331,9 +331,17 @@ func wg_netstack_init(confC *C.char, errBuf *C.char, errLen C.int) C.int {
 		"private_key=%s\npublic_key=%s\nendpoint=%s\nallowed_ip=0.0.0.0/0\nallowed_ip=::/0\n",
 		privHex, pubHex, ep,
 	)
-	if ka > 0 {
-		ipc += fmt.Sprintf("persistent_keepalive_interval=%d\n", ka)
+	// Force keepalive on. wireguard-go does not initiate a handshake
+	// until outbound traffic appears or keepalive timer fires. Without
+	// this the first user flow's SYN triggers handshake, but the SYN
+	// itself is queued behind the handshake and the TCP retransmit
+	// timer (3s, then 6s, ...) ends up gating the visible latency.
+	// Forcing keepalive=10s drives handshake-on-startup, so by the time
+	// startProxy returns the tunnel is already up.
+	if ka <= 0 {
+		ka = 10
 	}
+	ipc += fmt.Sprintf("persistent_keepalive_interval=%d\n", ka)
 	if err := d.IpcSet(ipc); err != nil {
 		setErr(errBuf, errLen, "IpcSet: "+err.Error())
 		return -1
@@ -346,6 +354,43 @@ func wg_netstack_init(confC *C.char, errBuf *C.char, errLen C.int) C.int {
 	dev = d
 	started = true
 	return 0
+}
+
+// wg_netstack_wait_handshake blocks until the peer completes a
+// WireGuard handshake or `timeoutMs` elapses. Returns 0 on success,
+// -1 on timeout. Polls device.IpcGet for `last_handshake_time_sec`
+// (wireguard-go writes it on handshake completion).
+//
+// Caller must invoke this AFTER wg_netstack_init returns success and
+// BEFORE driving any TCP/UDP flows; otherwise the first user flow
+// races the handshake and TCP retransmit timers (3s, 6s...) gate the
+// visible latency.
+//
+//export wg_netstack_wait_handshake
+func wg_netstack_wait_handshake(timeoutMs C.int) C.int {
+	mu.Lock()
+	d := dev
+	mu.Unlock()
+	if d == nil {
+		return -1
+	}
+	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+	for {
+		if cfg, err := d.IpcGet(); err == nil {
+			for _, line := range strings.Split(cfg, "\n") {
+				if strings.HasPrefix(line, "last_handshake_time_sec=") {
+					sec, _ := strconv.ParseInt(strings.TrimPrefix(line, "last_handshake_time_sec="), 10, 64)
+					if sec > 0 {
+						return 0
+					}
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			return -1
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // wg_netstack_resolve runs A-record lookup through the netstack so

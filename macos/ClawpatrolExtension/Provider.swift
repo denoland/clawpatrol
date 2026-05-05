@@ -66,6 +66,31 @@ class TransparentProxyProvider: NETransparentProxyProvider {
             return
         }
 
+        // Block until WireGuard handshake completes. setTunnelNetwork-
+        // Settings succeeding does NOT mean the WG underlay is up — it
+        // only means the OS accepted the proxy rules. Without this gate
+        // the first user flow's SYN races wireguard-go's handshake and
+        // the visible latency is dominated by the TCP retransmit timer
+        // (3s, 6s, 12s, ...). 10s budget covers a healthy handshake;
+        // longer than that, network is broken and we should fail loudly
+        // rather than serve a stalled tunnel.
+        let hsq = DispatchQueue.global(qos: .userInitiated)
+        hsq.async {
+            let hrc = wg_netstack_wait_handshake(10000)
+            if hrc != 0 {
+                os_log("wg handshake timeout (10s)", log: log, type: .error)
+                completionHandler(NSError(domain: "clawpatrol", code: 3,
+                    userInfo: [NSLocalizedDescriptionKey: "wg handshake timeout — gateway unreachable?"]))
+                return
+            }
+            os_log("wg handshake complete", log: log, type: .info)
+            DispatchQueue.main.async {
+                self.applyNetworkSettings(completionHandler: completionHandler)
+            }
+        }
+    }
+
+    private func applyNetworkSettings(completionHandler: @escaping (Error?) -> Void) {
         // Intercept everything outbound — filter inside handleNewFlow.
         let settings = NETransparentProxyNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
         settings.includedNetworkRules = [
@@ -186,8 +211,20 @@ class TransparentProxyProvider: NETransparentProxyProvider {
                 }
             }
         }
-        // cid → flow (recv)
-        DispatchQueue.global(qos: .userInitiated).async {
+        // cid → flow (recv).
+        //
+        // Run on a dedicated pthread, NOT GCD. wg_netstack_recv blocks
+        // on gVisor TCPConn.Read — it parks indefinitely waiting for
+        // bytes. GCD's global queue has a fixed worker pool (~64 on
+        // macOS); under whole-machine load with hundreds of long-lived
+        // keep-alive connections, every blocked recv pins one worker
+        // and the pool exhausts. New flows' read closures never get
+        // scheduled → the symptom is "browser tabs hang for 30s, then
+        // suddenly all complete at once when something times out".
+        // Foundation's Thread bypasses the pool: each flow gets its
+        // own kernel thread (8KB Go-side goroutine + ~520KB darwin
+        // pthread stack). Cost is real but bounded by active flows.
+        let recvThread = Thread {
             var buf = [CChar](repeating: 0, count: 65536)
             while true {
                 let n = buf.withUnsafeMutableBufferPointer { ptr -> Int32 in
@@ -206,6 +243,10 @@ class TransparentProxyProvider: NETransparentProxyProvider {
             wg_netstack_close_conn(cid)
             flow.closeWriteWithError(nil)
         }
+        recvThread.stackSize = 256 * 1024
+        recvThread.qualityOfService = .userInitiated
+        recvThread.name = "wgflow.recv.\(cid)"
+        recvThread.start()
         readFromFlow()
     }
 
@@ -244,7 +285,12 @@ class TransparentProxyProvider: NETransparentProxyProvider {
                                      UnsafeMutablePointer(mutating: ptr.baseAddress!.assumingMemoryBound(to: CChar.self)),
                                      Int32(data.count))
                 }
-                DispatchQueue.global(qos: .userInitiated).async {
+                // Dedicated pthread for the same GCD-pool-exhaustion
+                // reason as pumpTCP. UDP path is one-reply-per-dial so
+                // the thread is short-lived, but DNS amplification +
+                // QUIC racing on whole-machine still hits the pool cap
+                // when reads stack up.
+                let udpThread = Thread {
                     var buf = [CChar](repeating: 0, count: 65536)
                     let n = buf.withUnsafeMutableBufferPointer { ptr -> Int32 in
                         wg_netstack_recv(cid, ptr.baseAddress, Int32(ptr.count))
@@ -257,6 +303,10 @@ class TransparentProxyProvider: NETransparentProxyProvider {
                         flow.writeDatagrams([chunk], sentBy: [host]) { _ in }
                     }
                 }
+                udpThread.stackSize = 256 * 1024
+                udpThread.qualityOfService = .userInitiated
+                udpThread.name = "wgflow.udp.\(cid)"
+                udpThread.start()
             }
             self.pumpUDP(flow: flow)
         }
@@ -296,19 +346,47 @@ private let parentBundlePathPrefix = "/Applications/Clawpatrol.app/"
 private let MAX_PROC_PATH = 4096
 private let bsdInfoSize = Int32(MemoryLayout<proc_bsdinfo>.size)
 
+// Per-pid cache for ancestorMatches. proc_pidpath + proc_pidinfo are
+// syscalls; on whole-machine every flow walks the chain and hammers
+// these (5-10 syscalls per flow × thousands of flows/sec). Cache the
+// terminal verdict (matches?) keyed by pid with a 5s TTL — pids get
+// recycled fast on macOS, so don't keep stale entries.
+private struct ancestorCacheEntry { let matches: Bool; let expires: Date }
+private var ancestorCache: [pid_t: ancestorCacheEntry] = [:]
+private let ancestorCacheLock = NSLock()
+private let ancestorCacheTTL: TimeInterval = 5
+
 private func ancestorMatches(pid: pid_t) -> Bool {
+    let now = Date()
+    ancestorCacheLock.lock()
+    if let e = ancestorCache[pid], e.expires > now {
+        ancestorCacheLock.unlock()
+        return e.matches
+    }
+    ancestorCacheLock.unlock()
+
     var cur = pid
     var visited = Set<pid_t>()
+    var matches = false
     while cur > 1 && !visited.contains(cur) {
         visited.insert(cur)
         if let path = processBinaryPath(pid: cur),
            path.hasPrefix(parentBundlePathPrefix) {
-            return true
+            matches = true
+            break
         }
         guard let ppid = parentPid(of: cur), ppid != cur else { break }
         cur = ppid
     }
-    return false
+
+    ancestorCacheLock.lock()
+    ancestorCache[pid] = ancestorCacheEntry(matches: matches, expires: now.addingTimeInterval(ancestorCacheTTL))
+    if ancestorCache.count > 4096 {
+        // Cap memory: drop expired entries on overflow.
+        ancestorCache = ancestorCache.filter { $0.value.expires > now }
+    }
+    ancestorCacheLock.unlock()
+    return matches
 }
 
 private func parentPid(of pid: pid_t) -> pid_t? {
