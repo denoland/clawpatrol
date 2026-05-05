@@ -64,9 +64,18 @@ type netTun struct {
 	closed         bool
 }
 
+// netstackQueueSize is per-direction packet capacity for the gVisor
+// channel.Endpoint and the inbound buffer. 1024 packets (~1.5MB at
+// MTU 1500) was tight under whole-machine bursts — a single browser
+// page-load + system-service chatter overflowed the queue, packets
+// dropped silently, wg-go retransmitted, throughput tanked.
+// 16384 ≈ 24MB max which absorbs realistic bursts without ballooning
+// resident memory.
+const netstackQueueSize = 16384
+
 func newNetTUN(addr netip.Addr, addr6 netip.Addr, mtu int) (*netTun, error) {
 	dev := &netTun{
-		ep: channel.New(1024, uint32(mtu), ""),
+		ep: channel.New(netstackQueueSize, uint32(mtu), ""),
 		stack: stack.New(stack.Options{
 			NetworkProtocols: []stack.NetworkProtocolFactory{
 				ipv4.NewProtocol, ipv6.NewProtocol,
@@ -78,7 +87,7 @@ func newNetTUN(addr netip.Addr, addr6 netip.Addr, mtu int) (*netTun, error) {
 			HandleLocal: false,
 		}),
 		events:         make(chan wgtun.Event, 10),
-		incomingPacket: make(chan []byte, 1024),
+		incomingPacket: make(chan []byte, netstackQueueSize),
 		mtu:            mtu,
 	}
 	dev.ep.AddNotify(&epNotify{dev: dev})
@@ -110,19 +119,24 @@ func newNetTUN(addr netip.Addr, addr6 netip.Addr, mtu int) (*netTun, error) {
 type epNotify struct{ dev *netTun }
 
 func (n *epNotify) WriteNotify() {
-	pkt := n.dev.ep.Read()
-	if pkt == nil {
-		return
-	}
-	view := pkt.ToView()
-	pkt.DecRef()
-	b := view.AsSlice()
-	cp := make([]byte, len(b))
-	copy(cp, b)
-	select {
-	case n.dev.incomingPacket <- cp:
-	default:
-		// drop on full queue; wireguard-go will keep up under normal load
+	// Drain every available packet — channel.Endpoint may queue
+	// multiple writes between notifications, especially under burst.
+	for {
+		pkt := n.dev.ep.Read()
+		if pkt == nil {
+			return
+		}
+		view := pkt.ToView()
+		pkt.DecRef()
+		b := view.AsSlice()
+		cp := make([]byte, len(b))
+		copy(cp, b)
+		select {
+		case n.dev.incomingPacket <- cp:
+		default:
+			// dropped — incomingPacket is sized to absorb bursts; if it
+			// still overflows wg-go's reader is bottlenecked.
+		}
 	}
 }
 
@@ -130,16 +144,38 @@ func (t *netTun) File() *os.File             { return nil }
 func (t *netTun) Name() (string, error)      { return "clawpatrol-wg", nil }
 func (t *netTun) MTU() (int, error)          { return t.mtu, nil }
 func (t *netTun) Events() <-chan wgtun.Event { return t.events }
-func (t *netTun) BatchSize() int             { return 1 }
+func (t *netTun) BatchSize() int             { return tunBatchSize }
+
+// tunBatchSize lets wg-go pull up to N packets per Read syscall.
+// Each packet otherwise costs one channel recv + one Read trip
+// through wg-go's encryption pipeline. Batching amortizes the per-
+// packet overhead under burst traffic. 128 is what wireguard-go's
+// own kernel-tun adapter targets.
+const tunBatchSize = 128
 
 func (t *netTun) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
 	pkt, ok := <-t.incomingPacket
 	if !ok {
 		return 0, os.ErrClosed
 	}
-	n := copy(bufs[0][offset:], pkt)
-	sizes[0] = n
-	return 1, nil
+	sizes[0] = copy(bufs[0][offset:], pkt)
+	count := 1
+	// Drain any pending packets without blocking — the next Read call
+	// will block again when the channel drains, but we let wg-go
+	// process burst inflows in one trip.
+	for count < len(bufs) {
+		select {
+		case more, ok := <-t.incomingPacket:
+			if !ok {
+				return count, os.ErrClosed
+			}
+			sizes[count] = copy(bufs[count][offset:], more)
+			count++
+		default:
+			return count, nil
+		}
+	}
+	return count, nil
 }
 
 func (t *netTun) Write(bufs [][]byte, offset int) (int, error) {
@@ -333,7 +369,13 @@ func (s *WGServer) EnablePromiscuousForwarder(handler func(c net.Conn, dstIP str
 	if err := st.SetSpoofing(1, true); err != nil {
 		return fmt.Errorf("set spoofing: %v", err)
 	}
-	fwd := tcp.NewForwarder(st, 0, 1024, func(req *tcp.ForwarderRequest) {
+	// 16384 in-flight SYNs covers many peers × many concurrent flows.
+	// Default 1024 throttled multi-tenant whole-machine traffic:
+	// browsers + system services + agent CLIs combined easily exceed
+	// the cap, after which new SYNs sit queued at the netstack until
+	// older requests Complete. tcp.NewForwarder allocates lazily, so
+	// the higher bound only costs memory under actual load.
+	fwd := tcp.NewForwarder(st, 0, 16384, func(req *tcp.ForwarderRequest) {
 		id := req.ID()
 		var wq waiter.Queue
 		ep, err := req.CreateEndpoint(&wq)

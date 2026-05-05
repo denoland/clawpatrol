@@ -71,24 +71,30 @@ type netTun struct {
 type epNotify struct{ dev *netTun }
 
 func (n *epNotify) WriteNotify() {
-	pkt := n.dev.ep.Read()
-	if pkt == nil {
-		return
-	}
-	v := pkt.ToView()
-	pkt.DecRef()
-	b := v.AsSlice()
-	cp := make([]byte, len(b))
-	copy(cp, b)
-	select {
-	case n.dev.incomingPacket <- cp:
-	default:
+	for {
+		pkt := n.dev.ep.Read()
+		if pkt == nil {
+			return
+		}
+		v := pkt.ToView()
+		pkt.DecRef()
+		b := v.AsSlice()
+		cp := make([]byte, len(b))
+		copy(cp, b)
+		select {
+		case n.dev.incomingPacket <- cp:
+		default:
+		}
 	}
 }
 
+// netstackQueueSize matches the gateway side. 1024 was tight under
+// whole-machine bursts; 16384 absorbs realistic spikes.
+const netstackQueueSize = 16384
+
 func newNetTUN(addr netip.Addr, addr6 netip.Addr, mtu int) (*netTun, error) {
 	t := &netTun{
-		ep: channel.New(1024, uint32(mtu), ""),
+		ep: channel.New(netstackQueueSize, uint32(mtu), ""),
 		stack: stack.New(stack.Options{
 			NetworkProtocols: []stack.NetworkProtocolFactory{
 				ipv4.NewProtocol, ipv6.NewProtocol,
@@ -100,7 +106,7 @@ func newNetTUN(addr netip.Addr, addr6 netip.Addr, mtu int) (*netTun, error) {
 			HandleLocal: false,
 		}),
 		events:         make(chan wgtun.Event, 10),
-		incomingPacket: make(chan []byte, 1024),
+		incomingPacket: make(chan []byte, netstackQueueSize),
 		mtu:            mtu,
 	}
 	t.ep.AddNotify(&epNotify{dev: t})
@@ -133,16 +139,30 @@ func (t *netTun) File() *os.File             { return nil }
 func (t *netTun) Name() (string, error)      { return "clawpatrol-wg", nil }
 func (t *netTun) MTU() (int, error)          { return t.mtu, nil }
 func (t *netTun) Events() <-chan wgtun.Event { return t.events }
-func (t *netTun) BatchSize() int             { return 1 }
+func (t *netTun) BatchSize() int             { return tunBatchSize }
+
+const tunBatchSize = 128
 
 func (t *netTun) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
 	pkt, ok := <-t.incomingPacket
 	if !ok {
 		return 0, os.ErrClosed
 	}
-	n := copy(bufs[0][offset:], pkt)
-	sizes[0] = n
-	return 1, nil
+	sizes[0] = copy(bufs[0][offset:], pkt)
+	count := 1
+	for count < len(bufs) {
+		select {
+		case more, ok := <-t.incomingPacket:
+			if !ok {
+				return count, os.ErrClosed
+			}
+			sizes[count] = copy(bufs[count][offset:], more)
+			count++
+		default:
+			return count, nil
+		}
+	}
+	return count, nil
 }
 
 func (t *netTun) Write(bufs [][]byte, offset int) (int, error) {
@@ -468,12 +488,25 @@ func wg_netstack_dial_udp(hostC *C.char, port C.int, errBuf *C.char, errLen C.in
 // callers run datagrams over a stream pair (good enough — extension
 // only sends complete datagrams at a time). Both ends close on
 // pump exit.
+//
+// Both ends get bumped SO_SNDBUF/SO_RCVBUF. macOS default for AF_UNIX
+// SOCK_STREAM is ~8KB which under whole-machine concurrency starved
+// the bridge — many flows hammered `write(fd, ...)`, the 8KB buffer
+// filled instantly, the GCD thread blocked, gateway-side TLS peek
+// timed out at 10s waiting for the ClientHello bytes that were stuck
+// in macOS kernel waiting for the buffer to drain. 1MB per direction
+// gives concurrent flows enough headroom to keep flowing.
 func spliceFD(gconn io.ReadWriteCloser) C.int {
 	pair, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
 	if err != nil {
 		return -1
 	}
 	swiftFD, goFD := pair[0], pair[1]
+	const bufSize = 1 << 20 // 1 MiB
+	for _, fd := range pair {
+		_ = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_SNDBUF, bufSize)
+		_ = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_RCVBUF, bufSize)
+	}
 	goFile := os.NewFile(uintptr(goFD), "wgsplice")
 	if goFile == nil {
 		syscall.Close(swiftFD)
