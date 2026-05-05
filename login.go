@@ -55,9 +55,10 @@ func runJoin(args []string) {
 	skipTrust := fs.Bool("no-trust", false, "fetch CA but skip system trust install (do it manually)")
 	wholeMachine := fs.Bool("whole-machine", false, "bring up wg-quick to route ALL host traffic through the gateway (default: persist conf only, use `clawpatrol run` for per-process routing)")
 	profile := fs.String("profile", "", "profile to assign at approval time (defaults to the gateway's default profile if the approver doesn't pick one)")
+	hostname := fs.String("hostname", "", "device name to register with the gateway (defaults to os.Hostname)")
 	_ = fs.Parse(args)
 	if *gatewayURL == "" {
-		fail("usage: clawpatrol join --url <gateway-url> [--profile NAME] [--whole-machine]")
+		fail("usage: clawpatrol join --url <gateway-url> [--hostname NAME] [--profile NAME] [--whole-machine]")
 	}
 	// Fetch CA + write shell rc BEFORE the VPN goes up. Once
 	// `wg-quick up` flips the default route through the gateway,
@@ -69,7 +70,7 @@ func runJoin(args []string) {
 	if err != nil {
 		fail("ca fetch: %v", err)
 	}
-	wgMode, err := onboardViaDeviceFlow(*gatewayURL, *wholeMachine, *profile, setup)
+	wgMode, err := onboardViaDeviceFlow(*gatewayURL, *wholeMachine, *profile, *hostname, setup)
 	if err != nil {
 		fail("join: %v", err)
 	}
@@ -557,15 +558,22 @@ func wgAddressFromConf(conf string) string {
 // when the gateway picked the wireguard control plane (caller skips
 // tailscale-specific post-setup). profile, when non-empty, is sent
 // to the gateway as the suggested profile for this device — the
-// approver can still override it from the dashboard.
-func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile string, setup joinSetup) (bool, error) {
+// approver can still override it from the dashboard. hostname, when
+// non-empty, overrides os.Hostname() for the device name registered
+// with the gateway.
+func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname string, setup joinSetup) (bool, error) {
 	gateway = strings.TrimRight(gateway, "/")
 	cli := &http.Client{Timeout: 30 * time.Second}
+
+	hn := hostname
+	if hn == "" {
+		hn, _ = os.Hostname()
+	}
 
 	// 1. start — pass our hostname so the dashboard shows a real
 	// device name in WG mode (no whois fallback there).
 	q := neturl.Values{}
-	if hn, _ := os.Hostname(); hn != "" {
+	if hn != "" {
 		q.Set("hostname", hn)
 	}
 	if profile != "" {
@@ -656,7 +664,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile string, set
 		// the hostname only landed if the CLI sent it at /start. This
 		// claim call is idempotent on owner and updates the hostname
 		// row in the devices table.
-		if hn, _ := os.Hostname(); hn != "" {
+		if hn != "" {
 			wgIP := wgAddressFromConf(authKey)
 			claimURL := fmt.Sprintf("%s/api/onboard/claim?device_code=%s&hostname=%s",
 				gateway, start.DeviceCode, neturl.QueryEscape(hn))
@@ -752,7 +760,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile string, set
 	}
 	claimURL := fmt.Sprintf("%s/api/onboard/claim?device_code=%s&ip=%s",
 		gateway, start.DeviceCode, tailIP)
-	if hn, _ := os.Hostname(); hn != "" {
+	if hn != "" {
 		claimURL += "&hostname=" + neturl.QueryEscape(hn)
 	}
 	cr, err := cli.Post(claimURL, "application/json", nil)

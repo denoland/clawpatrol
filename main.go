@@ -1747,6 +1747,7 @@ func usage() {
 usage:
   clawpatrol gateway [-config FILE]      run the gateway server
   clawpatrol join --url <gateway-url>    onboard this machine via wg device flow
+                  [--hostname NAME]      device name to register (default: os.Hostname)
                   [--profile NAME]       suggest a profile for the approver
                   [--whole-machine]      bring up wg-quick (route all traffic)
   clawpatrol login                       onboard this machine (tailscale path)
