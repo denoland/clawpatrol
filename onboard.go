@@ -87,6 +87,11 @@ func newOnboardRegistry() *onboardRegistry {
 // approvedIpv6 model — the dashboard shows these in place of the wg /32,
 // which is just a routing artefact. Persists through to the devices row.
 func (r *onboardRegistry) SetExternalIPs(ip, v4, v6 string) {
+	// Both v4 and v6 wg-side allowed_ips reach this path (one fd77::<n>
+	// per peer); collapse to the canonical v4 so each device exists as a
+	// single row. Without this the dashboard shows ghost fd77:: entries
+	// alongside the real device.
+	ip = canonicalPeerIP(ip)
 	if ip == "" || (v4 == "" && v6 == "") {
 		return
 	}

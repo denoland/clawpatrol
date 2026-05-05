@@ -1691,11 +1691,16 @@ func runGateway(args []string) {
 	// renders them on boot, before any traffic arrives. Without this,
 	// devices disappear after every gateway restart and only reappear
 	// on the next request from each peer.
+	// Clean fd77:: ghost rows left by older builds where SetExternalIPs
+	// upserted both v4 and v6 allowed_ips as separate device IDs. Drop
+	// them on every boot — the v4 row carries the same metadata and
+	// will be re-seeded below.
+	_, _ = db.Exec("DELETE FROM devices WHERE id LIKE 'fd77:%'")
 	if rows, err := db.Query("SELECT id FROM devices"); err == nil {
 		for rows.Next() {
 			var ip string
 			if rows.Scan(&ip) == nil {
-				g.agents.Seed(ip)
+				g.agents.Seed(canonicalPeerIP(ip))
 			}
 		}
 		rows.Close()
