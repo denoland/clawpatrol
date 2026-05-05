@@ -373,7 +373,14 @@ func (r *AgentRegistry) recordLLMUsage(ip, sessionType, sessionID, sessionTitle,
 	if model != "" {
 		s.Model = model
 	}
-	if s.Title == "" && sessionTitle != "" {
+	// Title tracks the LATEST user message, not the first. Sessions
+	// can stretch across days and revive on new activity — pinning the
+	// title to the first prompt buries what the agent is actually
+	// working on right now. parseClaudeRequest / codex parsers send
+	// the latest user-message text on every recordLLMUsage call, so
+	// just overwrite. Empty sessionTitle (e.g. tool-result-only turns)
+	// preserves the previous value.
+	if sessionTitle != "" {
 		s.Title = sessionTitle
 	}
 	s.TokensIn += in
@@ -405,8 +412,7 @@ func (r *AgentRegistry) persistSession(ip string, s *Session) {
 		  ctx_used   = excluded.ctx_used,
 		  ctx_max    = excluded.ctx_max,
 		  reqs       = excluded.reqs,
-		  last_at    = excluded.last_at,
-		  closed_at  = NULL
+		  last_at    = excluded.last_at
 	`, ip, s.Type, s.ID, s.Title, s.Model,
 		s.TokensIn, s.TokensOut, s.CtxUsed, s.CtxMax, s.Reqs,
 		s.FirstAt.UnixNano(), s.LastAt.UnixNano())
@@ -426,7 +432,7 @@ func (r *AgentRegistry) LoadSessions(db *sql.DB) {
 	rows, err := db.Query(`
 		SELECT agent_ip, type, id, COALESCE(title,''), COALESCE(model,''),
 		       tokens_in, tokens_out, ctx_used, ctx_max, reqs,
-		       first_at, last_at, COALESCE(closed_at, 0)
+		       first_at, last_at
 		  FROM sessions
 		 ORDER BY last_at ASC`)
 	if err != nil {
@@ -440,9 +446,8 @@ func (r *AgentRegistry) LoadSessions(db *sql.DB) {
 		var (
 			ip, t, id, title, model      string
 			ti, to, cu, cm, reqs, fa, la int64
-			ca                           int64
 		)
-		if err := rows.Scan(&ip, &t, &id, &title, &model, &ti, &to, &cu, &cm, &reqs, &fa, &la, &ca); err != nil {
+		if err := rows.Scan(&ip, &t, &id, &title, &model, &ti, &to, &cu, &cm, &reqs, &fa, &la); err != nil {
 			continue
 		}
 		a := r.agents[ip]
@@ -465,47 +470,36 @@ func (r *AgentRegistry) LoadSessions(db *sql.DB) {
 			Reqs: reqs, FirstAt: time.Unix(0, fa), LastAt: time.Unix(0, la),
 		}
 		a.Sessions = append(a.Sessions, s)
-		_ = ca // closed_at known but no in-memory flag yet; sweeper enforces.
 	}
 }
 
-// startSessionSweeper marks sessions whose LastAt is older than ttl as
-// closed (sets closed_at), and deletes closed rows older than keep.
-// Both are configurable from gateway.hcl. ttl=0 disables marking;
-// keep=0 disables deletion. Idempotent.
-func (r *AgentRegistry) startSessionSweeper(ttl, keep time.Duration) {
-	if r.db == nil || (ttl <= 0 && keep <= 0) {
+// startSessionSweeper deletes sessions whose last_at is older than
+// keep. There's no "closed" intermediate state — sessions can revive
+// on new activity at any time, marking them closed mid-life would
+// either drop legitimate rows or freeze the dashboard's history.
+// Sweep just enforces a hard retention floor.
+//
+// keep=0 disables the sweeper entirely; otherwise the goroutine ticks
+// every minute (first run 30s after boot to avoid log noise on
+// restart) and runs an indexed DELETE.
+func (r *AgentRegistry) startSessionSweeper(keep time.Duration) {
+	if r.db == nil || keep <= 0 {
 		return
 	}
 	go func() {
-		// First sweep after 30s to let the gateway settle, then every
-		// minute. Sweeps are cheap (indexed last_at / closed_at).
 		time.Sleep(30 * time.Second)
 		t := time.NewTicker(time.Minute)
 		defer t.Stop()
 		for {
-			r.sweepSessions(ttl, keep)
+			r.sweepSessions(keep)
 			<-t.C
 		}
 	}()
 }
 
-func (r *AgentRegistry) sweepSessions(ttl, keep time.Duration) {
-	now := time.Now()
-	if ttl > 0 {
-		cutoff := now.Add(-ttl).UnixNano()
-		_, _ = r.db.Exec(
-			`UPDATE sessions SET closed_at = ? WHERE closed_at IS NULL AND last_at < ?`,
-			now.UnixNano(), cutoff,
-		)
-	}
-	if keep > 0 {
-		cutoff := now.Add(-keep).UnixNano()
-		_, _ = r.db.Exec(
-			`DELETE FROM sessions WHERE closed_at IS NOT NULL AND closed_at < ?`,
-			cutoff,
-		)
-	}
+func (r *AgentRegistry) sweepSessions(keep time.Duration) {
+	cutoff := time.Now().Add(-keep).UnixNano()
+	_, _ = r.db.Exec(`DELETE FROM sessions WHERE last_at < ?`, cutoff)
 }
 
 func ctxMaxFor(model string) int64 {
