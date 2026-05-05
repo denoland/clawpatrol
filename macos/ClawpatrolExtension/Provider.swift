@@ -37,21 +37,6 @@ private let parentBundleID = "dev.clawpatrol.app"
 class TransparentProxyProvider: NETransparentProxyProvider {
     private var wholeMachine = false
 
-    // rulesActive tracks which includedNetworkRules variant is currently
-    // applied: full (intercept TCP+UDP) when ≥1 session is registered,
-    // empty (kernel skips us entirely) when idle. Toggling between the
-    // two on session register/unregister is the hard guarantee that
-    // per-process mode never breaks the rest of the machine's
-    // internet — when no clawpatrol session is running, NE simply
-    // doesn't see flows, so even a slow/buggy handleNewFlow can't
-    // stall an unrelated app's UDP socket. wholeMachine bypasses this
-    // dance entirely (always-on full rules).
-    private var rulesActive = false
-    // Serializes setTunnelNetworkSettings calls from session
-    // register/unregister so two concurrent CLI invocations don't
-    // race the rule toggle.
-    private let rulesMu = NSLock()
-
     override func startProxy(options: [String: Any]?,
                              completionHandler: @escaping (Error?) -> Void) {
         os_log("startProxy", log: log, type: .info)
@@ -106,103 +91,62 @@ class TransparentProxyProvider: NETransparentProxyProvider {
             startSessionListener()
             startSessionReaper()
             DispatchQueue.main.async {
-                self.applyNetworkSettings { err in
-                    // Wire the rules toggle ONLY after the initial
-                    // settings landed. Otherwise a clawpatrol-run that
-                    // registers between startSessionListener and
-                    // applyNetworkSettings would race two
-                    // setTunnelNetworkSettings calls — Apple
-                    // serializes them but ordering is undefined.
-                    if err == nil {
-                        sessionsChangedHook = { [weak self] active in
-                            self?.updateRulesForSessions(active: active)
-                        }
-                        // If a session registered during the brief
-                        // window before the hook was wired, catch it
-                        // up now.
-                        if !self.wholeMachine && sessionsActive() {
-                            self.updateRulesForSessions(active: true)
-                        }
-                    }
-                    completionHandler(err)
-                }
+                self.applyNetworkSettings(completionHandler: completionHandler)
             }
         }
     }
 
     private func applyNetworkSettings(completionHandler: @escaping (Error?) -> Void) {
-        // Initial settings post-handshake: full rules in whole-machine
-        // mode (operator opted in to all-traffic), empty otherwise so
-        // idle clawpatrol doesn't intercept the host's traffic. The
-        // toggle to full rules happens in updateRulesForSessions when
-        // the first `clawpatrol run` registers a session.
-        if wholeMachine {
-            setTunnelNetworkSettings(activeSettings(), completionHandler: completionHandler)
-            rulesActive = true
-            return
-        }
-        setTunnelNetworkSettings(idleSettings(), completionHandler: completionHandler)
-        rulesActive = false
-    }
-
-    // activeSettings: intercept all outbound TCP+UDP, filter in
-    // handleNewFlow. excluded rules cover multicast / link-local where
-    // tunneling is never correct.
-    private func activeSettings() -> NETransparentProxyNetworkSettings {
-        let s = NETransparentProxyNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
-        s.includedNetworkRules = [
+        // Apple's DTS guidance on the canonical fast decline path
+        // (forum 716594): "Set up the rules so that you're not passed
+        // the flow." Returning false from handleNewFlow on a UDP flow
+        // we don't want is racy — Apple radar r.98382363 (also
+        // confirmed in forum 691711, 758113) shows it can stall the
+        // originating socket for ~30s (Chrome's QUIC fallback timer)
+        // or surface ECONNREFUSED. The fix is to never ask for UDP
+        // when we don't intend to tunnel every UDP flow:
+        //
+        //   per-process mode  → TCP only. UDP from non-clawpatrol
+        //                       processes (Chrome QUIC, system DNS,
+        //                       mDNS) goes through normal OS routing
+        //                       and never enters our handler. Caveat:
+        //                       UDP from clawpatrol-launched children
+        //                       isn't tunneled — agent CLIs we care
+        //                       about (claude, codex, gh) speak TCP
+        //                       HTTPS, so this is acceptable.
+        //
+        //   whole-machine     → TCP + UDP. Operator opted in to
+        //                       all-traffic; bridgeUDP claims every
+        //                       flow so the false-return stall doesn't
+        //                       apply. Excludes multicast / link-local.
+        //
+        // Settings are applied ONCE at startProxy and never toggled.
+        // forum 691341 shows mid-life setTunnelNetworkSettings can
+        // wedge the provider; treat the rule set as immutable.
+        let settings = NETransparentProxyNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
+        var included: [NENetworkRule] = [
             NENetworkRule(remoteNetwork: nil, remotePrefix: 0,
                           localNetwork: nil, localPrefix: 0,
                           protocol: .TCP, direction: .outbound),
-            NENetworkRule(remoteNetwork: nil, remotePrefix: 0,
-                          localNetwork: nil, localPrefix: 0,
-                          protocol: .UDP, direction: .outbound),
         ]
-        s.excludedNetworkRules = [
-            NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "224.0.0.0", port: "0"),
-                          remotePrefix: 4, localNetwork: nil, localPrefix: 0,
-                          protocol: .UDP, direction: .outbound),
-            NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "ff00::", port: "0"),
-                          remotePrefix: 8, localNetwork: nil, localPrefix: 0,
-                          protocol: .UDP, direction: .outbound),
-            NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "169.254.0.0", port: "0"),
-                          remotePrefix: 16, localNetwork: nil, localPrefix: 0,
-                          protocol: .UDP, direction: .outbound),
-        ]
-        return s
-    }
-
-    // idleSettings: empty includedNetworkRules. Apple's NE evaluates
-    // these as "don't intercept anything" — flows go through normal
-    // OS routing as if the proxy provider didn't exist. Used in
-    // per-process mode whenever the session registry is empty.
-    private func idleSettings() -> NETransparentProxyNetworkSettings {
-        NETransparentProxyNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
-    }
-
-    // updateRulesForSessions toggles the active rule set based on
-    // whether the session registry has any entries. Called from
-    // sessionRegister/sessionUnregister via a tiny callback so the
-    // bookkeeping lives next to the session set.
-    func updateRulesForSessions(active: Bool) {
-        if wholeMachine { return } // always-on; never toggle
-        rulesMu.lock()
-        if active == rulesActive {
-            rulesMu.unlock()
-            return
+        if wholeMachine {
+            included.append(NENetworkRule(remoteNetwork: nil, remotePrefix: 0,
+                                          localNetwork: nil, localPrefix: 0,
+                                          protocol: .UDP, direction: .outbound))
+            settings.excludedNetworkRules = [
+                NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "224.0.0.0", port: "0"),
+                              remotePrefix: 4, localNetwork: nil, localPrefix: 0,
+                              protocol: .UDP, direction: .outbound),
+                NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "ff00::", port: "0"),
+                              remotePrefix: 8, localNetwork: nil, localPrefix: 0,
+                              protocol: .UDP, direction: .outbound),
+                NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "169.254.0.0", port: "0"),
+                              remotePrefix: 16, localNetwork: nil, localPrefix: 0,
+                              protocol: .UDP, direction: .outbound),
+            ]
         }
-        rulesActive = active
-        rulesMu.unlock()
-        let settings = active ? activeSettings() : idleSettings()
-        DispatchQueue.main.async { [weak self] in
-            self?.setTunnelNetworkSettings(settings) { err in
-                if let err = err {
-                    os_log("rules toggle %{public}@: %{public}@",
-                           log: log, type: .error,
-                           active ? "active" : "idle", err.localizedDescription)
-                }
-            }
-        }
+        settings.includedNetworkRules = included
+        setTunnelNetworkSettings(settings, completionHandler: completionHandler)
     }
 
     override func stopProxy(with reason: NEProviderStopReason,
@@ -448,13 +392,6 @@ let sessionSockPath = "/tmp/clawpatrol.sock"
 private var sessionPidsSet: Set<pid_t> = []
 private let sessionPidsLock = NSLock()
 
-// sessionsChangedHook fires after every register/unregister transition
-// with the new "any sessions registered?" state. The provider sets it
-// at startProxy to call updateRulesForSessions; the toggle from false
-// → true (or vice versa) re-applies setTunnelNetworkSettings so the
-// kernel either intercepts everything (active) or nothing (idle).
-var sessionsChangedHook: ((Bool) -> Void)?
-
 private func sessionPids() -> Set<pid_t> {
     sessionPidsLock.lock()
     defer { sessionPidsLock.unlock() }
@@ -463,7 +400,6 @@ private func sessionPids() -> Set<pid_t> {
 private func sessionRegister(_ pid: pid_t) {
     sessionPidsLock.lock()
     sessionPidsSet.insert(pid)
-    let active = !sessionPidsSet.isEmpty
     sessionPidsLock.unlock()
     // Do NOT invalidate the ancestor cache here. The cache stores
     // "was this pid a descendant of any session pid I checked?". A
@@ -475,20 +411,16 @@ private func sessionRegister(_ pid: pid_t) {
     // helper, system service, and background daemon re-walked its
     // full PPID chain via proc_pidinfo, the per-flow handleNewFlow
     // latency spiked, and macOS started stalling unrelated UDP
-    // sockets. Leaving the cache intact keeps existing flows on
-    // their O(1) cached false verdict while the new session's
-    // descendants get fresh lookups.
-    sessionsChangedHook?(active)
+    // sockets.
 }
 private func sessionUnregister(_ pid: pid_t) {
     sessionPidsLock.lock()
     sessionPidsSet.remove(pid)
-    let active = !sessionPidsSet.isEmpty
     sessionPidsLock.unlock()
-    // On unregister we DO want to evict cache entries that pointed
-    // to this session pid — their descendants are no longer
-    // tunneled. Walk the cache once and drop the matches; cheaper
-    // than removeAll because most entries are unrelated negatives.
+    // On unregister evict cache entries that pointed to this
+    // session pid — their descendants are no longer tunneled. Walk
+    // the cache once and drop the matches; cheaper than removeAll
+    // because most entries are unrelated negatives.
     ancestorCacheLock.lock()
     if !ancestorCache.isEmpty {
         for (k, v) in ancestorCache where v.sessionPID == pid {
@@ -496,7 +428,6 @@ private func sessionUnregister(_ pid: pid_t) {
         }
     }
     ancestorCacheLock.unlock()
-    sessionsChangedHook?(active)
 }
 
 // Reaper: every 5s drop registered PIDs whose process is gone.
@@ -591,24 +522,44 @@ private func serviceSessionClient(_ fd: Int32) {
 // membership is nanoseconds.
 private let bsdInfoSize = Int32(MemoryLayout<proc_bsdinfo>.size)
 
+// ancestorCache memoizes the verdict for each (pid, start_time) seen
+// in handleNewFlow. start_time is included in the key so the cache
+// is immune to PID reuse — macOS recycles PIDs aggressively under
+// fork-heavy workloads and a stale entry under bare-pid keying could
+// flip a non-clawpatrol flow into "tunneled" or vice versa.
+//
+// Pattern matches unclaw's SessionRegistry.swift:57-61 (start-time
+// validation on read) and Apple Endpoint Security guidance (audit
+// tokens are the canonical anti-reuse key, but pidversion isn't
+// exposed via proc_pidinfo so start_time is the next best thing).
+//
+// 60s TTL: long-running browser helpers (Chrome, Slack) shouldn't
+// re-walk their PPID chain every few seconds. The reaper already
+// drops session pids within 5s of process exit, so a stale "matched"
+// verdict is at most 5s out of date.
+private struct ancestorCacheKey: Hashable {
+    let pid: pid_t
+    let startTimeSec: UInt64
+}
 private struct ancestorCacheEntry { let sessionPID: pid_t; let expires: Date }
-private var ancestorCache: [pid_t: ancestorCacheEntry] = [:]
+private var ancestorCache: [ancestorCacheKey: ancestorCacheEntry] = [:]
 private let ancestorCacheLock = NSLock()
-// 5s was too aggressive — long-running browser helper PIDs (Chrome,
-// Slack, Discord) hit handleNewFlow continuously and re-walked their
-// full PPID chain every 5s. macOS doesn't recycle PIDs fast enough
-// to make 60s a real concern, and the Reaper already drops a PID
-// from the session set within 5s of the underlying process dying.
-// The remaining staleness window: a PID that ages out, gets recycled
-// to a clawpatrol descendant within 60s, and lands a flow before its
-// cache entry expires. Vanishingly rare; the failure mode is "one
-// flow not tunneled" not "machine internet broken".
 private let ancestorCacheTTL: TimeInterval = 60
 
+// procStartTime returns the start_time field of proc_bsdinfo for pid.
+// 0 on failure — keep the entry in cache anyway under the bare-pid
+// key so a transient lookup miss doesn't disable caching.
+private func procStartTime(_ pid: pid_t) -> UInt64 {
+    var info = proc_bsdinfo()
+    let n = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, bsdInfoSize)
+    return n == bsdInfoSize ? UInt64(info.pbi_start_tvsec) : 0
+}
+
 private func ancestorMatches(pid: pid_t) -> Bool {
+    let key = ancestorCacheKey(pid: pid, startTimeSec: procStartTime(pid))
     let now = Date()
     ancestorCacheLock.lock()
-    if let e = ancestorCache[pid], e.expires > now {
+    if let e = ancestorCache[key], e.expires > now {
         let v = e.sessionPID != 0
         ancestorCacheLock.unlock()
         return v
@@ -635,7 +586,7 @@ private func ancestorMatches(pid: pid_t) -> Bool {
     }
 
     ancestorCacheLock.lock()
-    ancestorCache[pid] = ancestorCacheEntry(sessionPID: sessionPID, expires: now.addingTimeInterval(ancestorCacheTTL))
+    ancestorCache[key] = ancestorCacheEntry(sessionPID: sessionPID, expires: now.addingTimeInterval(ancestorCacheTTL))
     if ancestorCache.count > 4096 {
         ancestorCache = ancestorCache.filter { $0.value.expires > now }
     }
