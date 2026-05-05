@@ -84,6 +84,12 @@ class TransparentProxyProvider: NETransparentProxyProvider {
                 return
             }
             os_log("wg handshake complete", log: log, type: .info)
+            // IPC listener — synchronous handshake from clawpatrol
+            // CLI registers its PID before exec'ing the wrapped child,
+            // eliminating the start-of-flow race a file-watcher would
+            // have. Idempotent if startProxy fires twice.
+            startSessionListener()
+            startSessionReaper()
             DispatchQueue.main.async {
                 self.applyNetworkSettings(completionHandler: completionHandler)
             }
@@ -336,39 +342,145 @@ private func pidFromAuditToken(_ data: Data) -> pid_t? {
     }
 }
 
-// Walk PPID chain looking for an ancestor that's "us":
-//   - path under /Applications/Clawpatrol.app/  (GUI app + sysext host)
-//   - OR basename == "clawpatrol"               (standalone CLI from
-//                                                 install.sh, lives at
-//                                                 $HOME/.local/bin by
-//                                                 default but operators
-//                                                 may override via
-//                                                 CLAWPATROL_PREFIX)
-// SecCode-based identifier matching (the obvious approach) is
-// unreliable in sysext context — SecCodeCopySigningInformation works
-// inconsistently. Path + basename matching is good enough.
-private let parentBundlePathPrefix = "/Applications/Clawpatrol.app/"
-private let cliBinaryName = "clawpatrol"
-private let MAX_PROC_PATH = 4096
-private let bsdInfoSize = Int32(MemoryLayout<proc_bsdinfo>.size)
+// Session registry — populated synchronously by `clawpatrol run`
+// (Go) or `Clawpatrol run` (Swift helper) over the unix socket at
+// sessionSockPath before the wrapped child exec's. Mirrors unclaw's
+// SessionRegistry, transport-agnostic so the Go CLI can speak it
+// without an ObjC runtime.
+//
+// Wire protocol (newline-framed ASCII):
+//   client → "register <pid>\n"      ext → "ok\n"
+//   client → "unregister <pid>\n"    ext → "ok\n"
+// Unknown verbs reply "err\n". Connection close = no-op; lingering
+// PIDs are reaped via kill(pid, 0).
+//
+// Why /tmp: sysext sandbox allows /private/tmp (alias /tmp);
+// /var/run requires root for both bind AND connect, but the CLI runs
+// as user. /tmp is world-RW which is fine — registering a non-
+// clawpatrol PID just means the ext might tunnel that PID's flows,
+// a local authz concern only the host's user controls anyway.
+let sessionSockPath = "/tmp/clawpatrol.sock"
 
-private func processIsClawpatrol(path: String) -> Bool {
-    if path.hasPrefix(parentBundlePathPrefix) { return true }
-    if let slash = path.lastIndex(of: "/") {
-        let after = path.index(after: slash)
-        if path[after...] == cliBinaryName { return true }
-    } else if path == cliBinaryName {
-        return true
-    }
-    return false
+private var sessionPidsSet: Set<pid_t> = []
+private let sessionPidsLock = NSLock()
+
+private func sessionPids() -> Set<pid_t> {
+    sessionPidsLock.lock()
+    defer { sessionPidsLock.unlock() }
+    return sessionPidsSet
+}
+private func sessionRegister(_ pid: pid_t) {
+    sessionPidsLock.lock()
+    sessionPidsSet.insert(pid)
+    sessionPidsLock.unlock()
+    // Ancestor cache invalidates because new session PID changes
+    // the verdict for any descendant — clear and let it re-warm.
+    ancestorCacheLock.lock()
+    ancestorCache.removeAll(keepingCapacity: true)
+    ancestorCacheLock.unlock()
+}
+private func sessionUnregister(_ pid: pid_t) {
+    sessionPidsLock.lock()
+    sessionPidsSet.remove(pid)
+    sessionPidsLock.unlock()
+    ancestorCacheLock.lock()
+    ancestorCache.removeAll(keepingCapacity: true)
+    ancestorCacheLock.unlock()
 }
 
-// Per-pid cache for ancestorMatches. proc_pidpath + proc_pidinfo are
-// syscalls; on whole-machine every flow walks the chain and hammers
-// these (5-10 syscalls per flow × thousands of flows/sec). Cache the
-// terminal verdict (matches?) keyed by pid with a 5s TTL — pids get
-// recycled fast on macOS, so don't keep stale entries.
-private struct ancestorCacheEntry { let matches: Bool; let expires: Date }
+// Reaper: every 5s drop registered PIDs whose process is gone.
+// Covers SIGKILLed CLIs that didn't get to send unregister.
+private var sessionReaperTimer: DispatchSourceTimer?
+private func startSessionReaper() {
+    let t = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+    t.schedule(deadline: .now() + 5, repeating: 5)
+    t.setEventHandler {
+        for pid in sessionPids() where kill(pid, 0) != 0 {
+            sessionUnregister(pid)
+        }
+    }
+    t.resume()
+    sessionReaperTimer = t
+}
+
+private var sessionListenFD: Int32 = -1
+private func startSessionListener() {
+    unlink(sessionSockPath)
+    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+    if fd < 0 { return }
+    var addr = sockaddr_un()
+    addr.sun_family = sa_family_t(AF_UNIX)
+    let pathBytes = sessionSockPath.utf8CString
+    withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+        ptr.withMemoryRebound(to: CChar.self, capacity: pathBytes.count) { p in
+            for (i, b) in pathBytes.enumerated() {
+                p.advanced(by: i).pointee = b
+            }
+        }
+    }
+    let len = socklen_t(MemoryLayout<sockaddr_un>.size)
+    let rc = withUnsafePointer(to: &addr) { ap -> Int32 in
+        ap.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+            Darwin.bind(fd, sa, len)
+        }
+    }
+    if rc != 0 { Darwin.close(fd); return }
+    chmod(sessionSockPath, 0o666)
+    if listen(fd, 16) != 0 { Darwin.close(fd); return }
+    sessionListenFD = fd
+    DispatchQueue.global(qos: .userInitiated).async {
+        while true {
+            let cfd = Darwin.accept(fd, nil, nil)
+            if cfd < 0 { continue }
+            DispatchQueue.global(qos: .userInitiated).async {
+                serviceSessionClient(cfd)
+            }
+        }
+    }
+}
+
+private func serviceSessionClient(_ fd: Int32) {
+    defer { Darwin.close(fd) }
+    var buf = [UInt8](repeating: 0, count: 256)
+    var pending = ""
+    while true {
+        let n = buf.withUnsafeMutableBufferPointer { p -> Int in
+            Darwin.read(fd, p.baseAddress, p.count)
+        }
+        if n <= 0 { return }
+        pending += String(bytes: buf[0..<n], encoding: .utf8) ?? ""
+        while let nl = pending.firstIndex(of: "\n") {
+            let line = String(pending[..<nl])
+            pending = String(pending[pending.index(after: nl)...])
+            let parts = line.split(separator: " ", maxSplits: 1).map(String.init)
+            var reply = "err\n"
+            if parts.count == 2, let pid = pid_t(parts[1]) {
+                switch parts[0] {
+                case "register":   sessionRegister(pid);   reply = "ok\n"
+                case "unregister": sessionUnregister(pid); reply = "ok\n"
+                default: break
+                }
+            }
+            _ = reply.withCString { cs in
+                Darwin.write(fd, cs, strlen(cs))
+            }
+        }
+    }
+}
+
+// Ancestor match — walk PPID chain via proc_pidinfo only (no
+// proc_pidpath; Set<pid_t> membership instead of string compares).
+// Mirrors unclaw/UnclawExtension/ProcessTree.swift. The path-based
+// check we used previously was the actual cause of the
+// Chrome-hangs-during-clawpatrol-run symptom: proc_pidpath is
+// ~50–200µs per level, and Chrome spawns many helper processes whose
+// flows all hit handleNewFlow. Walking 5–10 levels × hundreds of
+// concurrent flows × the path syscall = handleNewFlow returning
+// slowly enough to mis-route UDP. proc_pidinfo is ~5µs and Set
+// membership is nanoseconds.
+private let bsdInfoSize = Int32(MemoryLayout<proc_bsdinfo>.size)
+
+private struct ancestorCacheEntry { let sessionPID: pid_t; let expires: Date }
 private var ancestorCache: [pid_t: ancestorCacheEntry] = [:]
 private let ancestorCacheLock = NSLock()
 private let ancestorCacheTTL: TimeInterval = 5
@@ -377,26 +489,25 @@ private func ancestorMatches(pid: pid_t) -> Bool {
     let now = Date()
     ancestorCacheLock.lock()
     if let e = ancestorCache[pid], e.expires > now {
+        let v = e.sessionPID != 0
         ancestorCacheLock.unlock()
-        return e.matches
+        return v
     }
     ancestorCacheLock.unlock()
 
+    let registered = sessionPids()
+    if registered.isEmpty { return false }
+
     // Start at the parent — the process itself is never "its own
-    // ancestor". Without this, any process whose binary is named
-    // "clawpatrol" (including the gateway) would match on the first
-    // iteration and have its outbound flows tunneled back into itself.
-    guard let first = parentPid(of: pid), first != pid else {
-        return false
-    }
+    // ancestor".
+    guard let first = parentPid(of: pid), first != pid else { return false }
     var cur = first
     var visited = Set<pid_t>()
-    var matches = false
+    var sessionPID: pid_t = 0
     while cur > 1 && !visited.contains(cur) {
         visited.insert(cur)
-        if let path = processBinaryPath(pid: cur),
-           processIsClawpatrol(path: path) {
-            matches = true
+        if registered.contains(cur) {
+            sessionPID = cur
             break
         }
         guard let ppid = parentPid(of: cur), ppid != cur else { break }
@@ -404,23 +515,16 @@ private func ancestorMatches(pid: pid_t) -> Bool {
     }
 
     ancestorCacheLock.lock()
-    ancestorCache[pid] = ancestorCacheEntry(matches: matches, expires: now.addingTimeInterval(ancestorCacheTTL))
+    ancestorCache[pid] = ancestorCacheEntry(sessionPID: sessionPID, expires: now.addingTimeInterval(ancestorCacheTTL))
     if ancestorCache.count > 4096 {
-        // Cap memory: drop expired entries on overflow.
         ancestorCache = ancestorCache.filter { $0.value.expires > now }
     }
     ancestorCacheLock.unlock()
-    return matches
+    return sessionPID != 0
 }
 
 private func parentPid(of pid: pid_t) -> pid_t? {
     var info = proc_bsdinfo()
     let n = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, bsdInfoSize)
     return n == bsdInfoSize ? pid_t(info.pbi_ppid) : nil
-}
-
-private func processBinaryPath(pid: pid_t) -> String? {
-    var path = [CChar](repeating: 0, count: MAX_PROC_PATH)
-    let n = proc_pidpath(pid, &path, UInt32(MAX_PROC_PATH))
-    return n > 0 ? String(cString: path) : nil
 }

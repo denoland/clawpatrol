@@ -91,7 +91,19 @@ export function AgentsTable({
               </Td>
               <Td>
                 <IntegrationStack
-                  items={(a.integrations ?? []).map((id) => ({ id, type: byId.get(id)?.type }))}
+                  items={(a.integrations ?? []).map((id) => {
+                    const it = byId.get(id);
+                    // Pick the owner row matching this device's profile
+                    // so two profiles connected to different GH accounts
+                    // surface distinct avatars in their respective rows.
+                    const owner = it?.owners?.find((o) => o.owner === a.profile)
+                      ?? it?.owners?.[0];
+                    return {
+                      id,
+                      type: it?.type,
+                      avatar_url: owner?.avatar_url,
+                    };
+                  })}
                 />
               </Td>
             </tr>
