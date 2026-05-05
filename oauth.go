@@ -520,6 +520,10 @@ func (w *webMux) apiOAuthStart(rw http.ResponseWriter, r *http.Request) {
 		w.startDeviceFlow(rw, id, flow, owner, ownerLabel)
 		return
 	}
+	if flow.Flow == "openai_device" {
+		w.startOpenAIDeviceFlow(rw, id, flow, owner, ownerLabel)
+		return
+	}
 
 	verifier := randomString(64)
 	sum := sha256.Sum256([]byte(verifier))
@@ -651,6 +655,170 @@ func (w *webMux) startDeviceFlow(rw http.ResponseWriter, id string, it *OAuthInt
 		"expires_in":       dr.ExpiresIn,
 		"owner":            ownerLabel,
 	})
+}
+
+// startOpenAIDeviceFlow drives the non-RFC-8628 device-code flow that
+// auth.openai.com exposes for the codex CLI. Mirrors unclaw's
+// src/plugins/openai-codex/index.ts: POST JSON to deviceauth/usercode,
+// the resulting device_auth_id + user_code are persisted in the
+// session and fed to the poll handler. Verification URL is hardcoded
+// to https://auth.openai.com/codex/device since OpenAI's response
+// doesn't include one.
+func (w *webMux) startOpenAIDeviceFlow(rw http.ResponseWriter, id string, it *OAuthIntegration, owner, ownerLabel string) {
+	clientID := resolveTemplate(it.OAuth.ClientID)
+	body, _ := json.Marshal(map[string]string{"client_id": clientID})
+	req, _ := http.NewRequest("POST", it.OAuth.DeviceURL, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "clawpatrol/1.0")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		http.Error(rw, "openai deviceauth: "+err.Error(), 502)
+		return
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		http.Error(rw, fmt.Sprintf("openai deviceauth %d: %s", resp.StatusCode, string(respBody)), 502)
+		return
+	}
+	// OpenAI ships `interval` as a quoted string ("5") rather than a
+	// JSON number — pull it as json.Number to accept both shapes.
+	var dr struct {
+		DeviceAuthID string      `json:"device_auth_id"`
+		UserCode     string      `json:"user_code"`
+		Interval     json.Number `json:"interval"`
+	}
+	if err := json.Unmarshal(respBody, &dr); err != nil || dr.DeviceAuthID == "" || dr.UserCode == "" {
+		http.Error(rw, "openai deviceauth parse: "+string(respBody), 502)
+		return
+	}
+	state := randomString(32)
+	w.mu.Lock()
+	w.sessions[state] = &oauthSession{
+		state:    state,
+		id:       id,
+		owner:    owner,
+		created:  time.Now(),
+		// Pack device_auth_id|user_code into verifier so pollDeviceFlow
+		// can split them; cfg.RedirectURL carries the codex-specific
+		// callback used in the auth-code exchange.
+		verifier: dr.DeviceAuthID + "|" + dr.UserCode,
+		cfg: &oauth2.Config{
+			ClientID:    clientID,
+			RedirectURL: it.OAuth.RedirectURI,
+			Endpoint: oauth2.Endpoint{
+				AuthURL:  it.OAuth.AuthURL,  // poll endpoint
+				TokenURL: it.OAuth.TokenURL, // exchange endpoint
+			},
+		},
+	}
+	w.mu.Unlock()
+	interval, _ := dr.Interval.Int64()
+	if interval <= 0 {
+		interval = 5
+	}
+	// Tag as plain "device" in the response so the dashboard's
+	// ConnectModal renders the user-code UI (it switches on
+	// `flow === "device"`). The internal openai_device dispatch is
+	// in the session-id lookup at poll time.
+	writeJSON(rw, map[string]any{
+		"flow":             "device",
+		"state":            state,
+		"user_code":        dr.UserCode,
+		"verification_uri": "https://auth.openai.com/codex/device",
+		"interval":         interval,
+		"owner":            ownerLabel,
+	})
+}
+
+// pollOpenAIDeviceFlow runs one iteration of the codex device-code
+// poll. 202/204 = still pending; 200 with authorization_code +
+// code_verifier triggers the /oauth/token exchange that returns the
+// real access token bundle.
+func (w *webMux) pollOpenAIDeviceFlow(rw http.ResponseWriter, sess *oauthSession) {
+	parts := strings.SplitN(sess.verifier, "|", 2)
+	if len(parts) != 2 {
+		http.Error(rw, "session corrupt", 500)
+		return
+	}
+	deviceAuthID, userCode := parts[0], parts[1]
+	pollBody, _ := json.Marshal(map[string]string{
+		"device_auth_id": deviceAuthID,
+		"user_code":      userCode,
+	})
+	req, _ := http.NewRequest("POST", sess.cfg.Endpoint.AuthURL, bytes.NewReader(pollBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "clawpatrol/1.0")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		http.Error(rw, "openai poll: "+err.Error(), 502)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 202 || resp.StatusCode == 204 {
+		writeJSON(rw, map[string]string{"error": "authorization_pending"})
+		return
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var pr struct {
+		AuthorizationCode string `json:"authorization_code"`
+		CodeVerifier      string `json:"code_verifier"`
+	}
+	if err := json.Unmarshal(body, &pr); err != nil || pr.AuthorizationCode == "" || pr.CodeVerifier == "" {
+		writeJSON(rw, map[string]string{"error": "authorization_pending"})
+		return
+	}
+	// Exchange auth code for tokens via the standard /oauth/token
+	// endpoint (form-urlencoded body, PKCE code_verifier).
+	form := url.Values{}
+	form.Set("grant_type", "authorization_code")
+	form.Set("code", pr.AuthorizationCode)
+	form.Set("code_verifier", pr.CodeVerifier)
+	form.Set("client_id", sess.cfg.ClientID)
+	form.Set("redirect_uri", sess.cfg.RedirectURL)
+	exReq, _ := http.NewRequest("POST", sess.cfg.Endpoint.TokenURL, strings.NewReader(form.Encode()))
+	exReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	exReq.Header.Set("Accept", "application/json")
+	exResp, err := http.DefaultClient.Do(exReq)
+	if err != nil {
+		http.Error(rw, "openai exchange: "+err.Error(), 502)
+		return
+	}
+	defer exResp.Body.Close()
+	exBody, _ := io.ReadAll(exResp.Body)
+	if exResp.StatusCode != 200 {
+		http.Error(rw, fmt.Sprintf("openai exchange %d: %s", exResp.StatusCode, string(exBody)), 502)
+		return
+	}
+	var tr struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		IDToken      string `json:"id_token"`
+		TokenType    string `json:"token_type"`
+		ExpiresIn    int64  `json:"expires_in"`
+	}
+	if err := json.Unmarshal(exBody, &tr); err != nil || tr.AccessToken == "" {
+		http.Error(rw, "openai exchange parse", 502)
+		return
+	}
+	tok := &oauth2.Token{
+		AccessToken:  tr.AccessToken,
+		RefreshToken: tr.RefreshToken,
+		TokenType:    tr.TokenType,
+	}
+	if tr.ExpiresIn > 0 {
+		tok.Expiry = time.Now().Add(time.Duration(tr.ExpiresIn) * time.Second)
+	}
+	w.mu.Lock()
+	delete(w.sessions, sess.state)
+	w.mu.Unlock()
+	if err := w.g.oauth.Set(sess.id, sess.owner, tok); err != nil {
+		http.Error(rw, err.Error(), 500)
+		return
+	}
+	writeJSON(rw, map[string]any{"connected": true, "owner": sess.owner})
 }
 
 // pollDeviceFlow exchanges device_code for a token. Called by the
@@ -787,6 +955,14 @@ func (w *webMux) apiOAuthDevicePoll(rw http.ResponseWriter, r *http.Request) {
 	w.mu.Unlock()
 	if sess == nil {
 		http.Error(rw, "unknown state (expired)", 400)
+		return
+	}
+	// Dispatch by integration's flow type. openai_device uses the
+	// codex deviceauth/token endpoint shape (JSON body, returns
+	// authorization_code + code_verifier instead of a token); the
+	// stdlib RFC-8628 path covers github.
+	if it := w.g.oauth.Integration(sess.id); it != nil && it.Flow == "openai_device" {
+		w.pollOpenAIDeviceFlow(rw, sess)
 		return
 	}
 	w.pollDeviceFlow(rw, sess)

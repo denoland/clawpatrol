@@ -1243,17 +1243,25 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 
 		// Forward upstream. Hop-by-hop / proxy-leak headers stripped
 		// per RFC 7230 §6.1 plus chatgpt.com / Cloudflare flagged set.
+		// WS upgrade requests skip this strip block — Connection +
+		// Upgrade are part of the handshake (codex hits chatgpt.com
+		// /backend-api/codex/responses as a WS upgrade and the server
+		// flags requests with Sec-Websocket-* but no Upgrade as
+		// "Attack detected"). isWSUpgrade is checked again below to
+		// route through handleWSUpgrade after credential injection.
 		req.URL.Scheme = "https"
 		req.URL.Host = host
 		req.Host = host
 		req.RequestURI = ""
-		for _, h := range []string{
-			"Connection", "Keep-Alive", "Proxy-Authenticate",
-			"Proxy-Authorization", "Te", "Trailers", "Transfer-Encoding", "Upgrade",
-			"Cf-Worker", "Cf-Ray", "Cf-Ew-Via", "Cf-Connecting-Ip", "Cdn-Loop",
-			"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Via",
-		} {
-			req.Header.Del(h)
+		if !isWSUpgrade(req) {
+			for _, h := range []string{
+				"Connection", "Keep-Alive", "Proxy-Authenticate",
+				"Proxy-Authorization", "Te", "Trailers", "Transfer-Encoding", "Upgrade",
+				"Cf-Worker", "Cf-Ray", "Cf-Ew-Via", "Cf-Connecting-Ip", "Cdn-Loop",
+				"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Via",
+			} {
+				req.Header.Del(h)
+			}
 		}
 
 		// Credential injection. Pick the credential entry that
