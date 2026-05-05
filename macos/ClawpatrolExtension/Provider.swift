@@ -382,7 +382,14 @@ private func ancestorMatches(pid: pid_t) -> Bool {
     }
     ancestorCacheLock.unlock()
 
-    var cur = pid
+    // Start at the parent — the process itself is never "its own
+    // ancestor". Without this, any process whose binary is named
+    // "clawpatrol" (including the gateway) would match on the first
+    // iteration and have its outbound flows tunneled back into itself.
+    guard let first = parentPid(of: pid), first != pid else {
+        return false
+    }
+    var cur = first
     var visited = Set<pid_t>()
     var matches = false
     while cur > 1 && !visited.contains(cur) {
