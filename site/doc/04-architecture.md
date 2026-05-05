@@ -2,351 +2,439 @@
 
 ## Overview
 
-Claw Patrol is an HTTPS MitM proxy that intercepts, inspects, and forwards
-HTTPS traffic from agent machines. It runs as a single Node.js process
-with two listeners:
+Clawpatrol is a single Go binary (`go 1.26.1`, no external runtime) that
+sits between agents and the upstream APIs they call. It does three jobs:
+
+1. Terminates a userspace WireGuard tunnel and accepts traffic from
+   onboarded peers at L3.
+2. MITMs HTTPS, dispatches requests through a typed policy compiled
+   from HCL, and lets credential plugins stamp real secrets onto
+   matched requests so the agent never holds them.
+3. Serves a dashboard for onboarding devices, approving/denying
+   pending requests, and pasting credential material into per-profile
+   slots.
+
+The same binary is the WG endpoint, the MITM proxy, the dashboard
+server, and the CLI used on agent machines (`clawpatrol join`,
+`clawpatrol run …`, `clawpatrol login`, etc.).
+
+## Process layout
 
 ```
-Internet
-  |
-  +-- port 443 (Caddy/TLS) --> localhost:8080 (Dashboard + API)
-  +-- port 8443 (direct)   --> 0.0.0.0:8443  (CONNECT proxy + transparent MitM)
-  +-- port 51820 (UDP)     --> WireGuard tunnel
+                        agents
+                          │
+                          │  WireGuard (UDP :51820)
+                          ▼
+         ┌────────────────────────────────────┐
+         │ clawpatrol gateway (single Go bin) │
+         │                                    │
+         │  ┌──────────────────────────────┐  │
+         │  │ wireguard-go device          │  │
+         │  │  + gVisor netstack TUN       │  │  promiscuous L3:
+         │  │  + promiscuous forwarder     │  │  any dst IP/port
+         │  └──────────────┬───────────────┘  │
+         │                 │                  │
+         │  dispatch by dst port              │
+         │   :443  → MITM (HTTPS)             │
+         │   :5432 → postgres conn handler    │
+         │   :dash → dashboard mux            │
+         │   else  → transparent relay        │
+         │                                    │
+         │  policy: HCL → CompiledPolicy      │
+         │  state:  SQLite (clawpatrol.db)    │
+         │  CA:     ca.crt / ca.key (P-256)   │
+         └────────────────────────────────────┘
+                          │
+                          ▼
+                       upstream
 ```
 
-## Connection Methods
+There is no Node.js process, no `iptables`, no `wg-quick`, no
+`/etc/wireguard/`, no DNS-interception sidecar, no virtual-IP subnet,
+and no separate Caddy/TLS frontend. The Go binary is the only moving
+part on the gateway host.
 
-Clients connect via one of two methods:
+## Connecting an agent
 
-### 1. WireGuard Tunnel (recommended)
+The dashboard's onboarding flow mints a WireGuard keypair, allocates a
+`/32` from the configured subnet (`gateway.wg_subnet_cidr`, default
+`10.55.0.0/24`), and registers the peer with the running
+wireguard-go device. The agent gets back a `wg-quick`-style config
+with `AllowedIPs = 0.0.0.0/0, ::/0` — every byte the agent emits goes
+into the tunnel.
 
-All traffic from the client is routed through a WireGuard VPN tunnel
-(`AllowedIPs = 0.0.0.0/0`). On the server, iptables transparently redirects
-port 443 traffic from the WireGuard subnet to the proxy:
+There is no `HTTPS_PROXY` env var, no per-tool CA configuration, and
+no `iptables` rule on the gateway host. The promiscuous netstack
+forwarder accepts a SYN to any dst IP:port and hands it to the
+gateway's dispatcher with the original 4-tuple intact, so the agent
+just resolves the real upstream hostname via public DNS and dials it.
 
+### macOS network extension
+
+`clawpatrol run -- <cmd>` on macOS routes one process tree through
+the gateway without a system-wide tunnel. The CLI registers the
+child PID with an `NETransparentProxyProvider` system extension over
+XPC; the extension walks each outbound flow's PPID chain to decide
+whether the flow belongs to the wrapped tree, then relays matched
+flows over a userspace WireGuard tunnel to the same `:51820` endpoint.
+
+See [Userspace WireGuard](10-userspace-wireguard.md) for the netstack
+internals.
+
+## Promiscuous WG forwarder
+
+The gateway boots a `wireguard-go` device backed by a custom gVisor
+`netstack` TUN. The stack runs with `HandleLocal=false` so inbound
+flows aren't dropped as "local source". A custom `NIC` route
+matching `0.0.0.0/0` and `::/0` makes the netstack accept connections
+to any destination IP, not just its own.
+
+`Gateway.EnablePromiscuousForwarder` registers a callback that fires
+once per inbound TCP flow with the original `(c, dstIP, dstPort)`. The
+gateway dispatches by dst port:
+
+| dst port | handler                                                |
+|----------|--------------------------------------------------------|
+| `443`    | `Gateway.handle` — SNI peek, MITM TLS, policy dispatch |
+| `5432`   | `Gateway.handlePostgresConn` — postgres wire protocol  |
+| dashboard | `http.Serve` against the dashboard mux on a one-shot listener |
+| else     | `wgRelay` — transparent TCP relay to the real upstream |
+
+Anything not on `:443` or `:5432` (plain HTTP, SSH, etc.) is relayed
+verbatim until its endpoint plugin's wire-protocol runtime ships
+(e.g. `clickhouse_native`).
+
+## HTTPS MITM
+
+`Gateway.handle` runs once per TCP flow on `:443`:
+
+1. **SNI peek.** `peekSNI` reads up to one TLS record (5-byte header +
+   record body), validates the `0x16` content type and `ClientHello`
+   handshake type, walks extensions, returns the SNI server name plus
+   the buffered prefix. The connection is wrapped with a `peekConn`
+   that replays the prefix on the next `Read`.
+
+2. **Endpoint lookup.** `runtime.HostEndpoint(policy, profile, host)`
+   maps SNI to a `CompiledEndpoint` if the device's profile has an
+   endpoint claiming this host. If not, `defaults.unknown_host` (the
+   default is `passthrough`) decides whether to splice or close.
+
+3. **Family dispatch.** `https` and `k8s` endpoints go to
+   `mitmHTTPS`; binary-protocol families (`postgres`,
+   `clickhouse_*`) on `:443` fall back to passthrough until their
+   plugin's `ConnEndpointRuntime` lands.
+
+4. **TLS termination.** Stdlib `crypto/tls.Server` wraps the duplex
+   `net.Conn` directly. There is no loopback bridge — the legacy
+   "ephemeral `tls.createServer` on `127.0.0.1:0`" workaround was a
+   Node.js quirk, not a structural requirement. The leaf cert is
+   minted by `CertCache.mint` (P-256, 30-day validity, in-memory
+   cache, signed by the gateway CA).
+
+5. **Request loop.** For each `http.Request`, the gateway:
+   - Buffers the body (up to 1 MiB) so rules with `body_json` /
+     `body_contains` facets can match.
+   - Builds a `match.Request` and runs `runtime.MatchRequest` to find
+     the rule. For `k8s` endpoints, `runtime.ParseK8sPath` populates
+     `K8s` with `verb / namespace / resource`.
+   - Runs the rule's `approve = […]` chain (if any) through
+     `runApproveChain` — every stage must allow, first deny
+     short-circuits to a 403.
+   - Honors the rule's verdict (`allow` / `deny` / `…`), strips
+     hop-by-hop and proxy-leak headers, asks the credential plugin
+     to inject the secret, and round-trips the request.
+   - Forces `http/1.1` ALPN upstream and falls back to chunked
+     framing on close-delimited responses so peers don't idle waiting
+     for EOF.
+   - Hands WS upgrades off to a raw byte bridge (`handleWSUpgrade`);
+     the stdlib `http.Transport` mangles `101 Switching Protocols`
+     enough that Cloudflare's WAF rejects it.
+
+The dialer used for upstream sockets is `Gateway.dialUpstream`, which
+runs stdlib TLS by default and lets a credential plugin satisfying
+`runtime.TLSCredentialRuntime` (e.g. `mtls`) configure client certs
+and a custom root CA pool before the handshake. A separate
+`dialBrowserTLS` runs a uTLS Chrome fingerprint for the few endpoints
+where Cloudflare WAF rejects plain-Go TLS handshakes (currently the
+chatgpt.com WS upgrade).
+
+## CA certificate management
+
+The CA is a P-256 ECDSA self-signed cert with `CN=clawpatrol gateway
+CA` and 10-year validity. Files live in `cfg.CADir`:
+
+- `ca.crt` — PEM-encoded certificate (mode `0o644`)
+- `ca.key` — PEM-encoded EC private key (mode `0o600`)
+
+`clawpatrol init-ca DIR` writes a fresh pair. The gateway loads the
+existing pair on every start; minting one when missing is the
+operator's responsibility (the systemd unit and onboard wizard call
+`init-ca` once on first boot).
+
+Per-host leaf certs are P-256 ECDSA, signed by the CA, with a single
+DNS SAN matching the SNI. They're cached in memory keyed by hostname;
+there is no on-disk leaf cache and no LRU bound — the cache grows
+unboundedly until restart. (The legacy "256-entry LRU" was a Node.js
+artifact; the Go path doesn't bound it because typical agent traffic
+hits a few dozen distinct hosts.)
+
+## Policy: gateway.hcl
+
+Policy is HCL, parsed by `config/` and compiled into a
+`CompiledPolicy` the request-time dispatcher reads. Operational
+fields (listen ports, CA dir, dashboard secret, WG block) sit at the
+top of the file; everything else is a typed top-level block:
+
+| Block                                | Meaning                                                             |
+|--------------------------------------|---------------------------------------------------------------------|
+| `defaults {}`                        | Singleton: `unknown_host`, `llm_fail_mode`, `llm_cache_ttl`, `human_timeout`, `human_on_timeout` |
+| `approver "<type>" "<name>"`         | Who arbitrates HITL stages (`llm_approver`, `human_approver`)       |
+| `policy "<name>"`                    | Reusable LLM-proctor prompt heredoc                                 |
+| `credential "<type>" "<name>"`       | Typed handle to a secret (`bearer_token`, `oauth`, `mtls`, …)       |
+| `endpoint "<type>" "<name>"`         | Upstream binding (`https`, `kubernetes`, `postgres`, `clickhouse_*`)|
+| `rule "<type>" "<name>"`             | One policy decision targeting one or more endpoints                 |
+| `profile "<name>"`                   | Endpoint membership list — a device's profile gets exactly these    |
+
+Names live in one flat namespace; references are bare names
+(`endpoint = github`, not `endpoint.github`). HCL `gohcl` decodes
+operational fields; everything below `gateway {}` runs through a
+two-pass loader:
+
+- **Pass 1** extracts policy blocks and builds a symbol table so
+  forward references resolve cleanly.
+- **Pass 2** dispatches each block to its plugin (registered via
+  `config.Register` from `config/plugins/{approvers,credentials,endpoints,rules}/`),
+  decodes the body against the plugin's struct, walks declared refs,
+  validates, and calls `Build` to produce the canonical body the
+  runtime reads.
+
+The compiled output is a `CompiledPolicy` keyed by name plus
+per-endpoint rule lists, secret-slot metadata, and a `ConnIndex` (see
+below). The dashboard renders this directly; rules don't get
+re-parsed at request time.
+
+## Credential plugins
+
+A `credential "<type>" "<name>" {}` block declares one credential
+shape. The plugin's body satisfies one or more runtime interfaces in
+`config/runtime/runtime.go`:
+
+| Interface                  | Used by                                  | What it does                                                                          |
+|----------------------------|------------------------------------------|---------------------------------------------------------------------------------------|
+| `HTTPCredentialRuntime`    | `bearer_token`, `header_token`, `cookie_token`, OAuth-flow shapes | Mutate `req.Header` (and sometimes URL) before the upstream round-trip                |
+| `TLSCredentialRuntime`     | `mtls`                                   | Add client cert / replace `RootCAs` on the upstream `tls.Config`                      |
+| `PostgresCredentialRuntime`| `postgres` credential plugin             | Rewrite the `StartupMessage` password before the upstream connect                     |
+| `PostgresAuthCredential`   | `postgres` credential plugin             | Hand `(user, password)` to the postgres endpoint runtime so the agent never sees auth |
+
+Schema-only credential types (e.g. `slack`, `telegram`, `gemini`)
+declare slots and rule hooks but leave `Runtime` nil; their requests
+forward verbatim and policy alone gates them.
+
+### How injection works (and why anti-exfil is now structural)
+
+The legacy proxy did string-replacement: agents sent the placeholder
+`CLAWPATROL_PLACEHOLDER_github` in arbitrary headers and the proxy
+search-and-replaced it with the real token, with a hand-maintained
+"never replace inside `user-agent` / `sec-*` / `/cdn-cgi/*`" blocklist
+to keep the secret from being echoed back.
+
+The current architecture removes that whole footgun. Each credential
+plugin's `InjectHTTP` writes to one specific slot:
+
+```go
+// bearer_token
+req.Header.Set("Authorization", "Bearer "+string(sec.Bytes))
+
+// header_token
+req.Header.Set(h.Header, h.Prefix+string(sec.Bytes))
+
+// cookie_token
+// rewrites a single named cookie in the Cookie header
 ```
-Client (10.77.0.x) --> WireGuard tunnel --> Server wg0
-  --> iptables PREROUTING REDIRECT :443 -> :8443
-  --> Proxy detects TLS ClientHello, extracts SNI
-  --> MitM: generate cert, terminate TLS, forward upstream
-```
-
-The client needs no `HTTPS_PROXY` environment variable. The interception is
-completely transparent. The CA certificate is installed system-wide during
-onboarding.
-
-Non-443 traffic (HTTP, etc.) passes through the tunnel and is forwarded
-via NAT masquerade. DNS queries (port 53) are intercepted by the
-proxy's DNS server for virtual IP resolution (see DNS Interception).
-
-Client identification: by WireGuard tunnel source IP (10.77.0.x).
-
-### 2. HTTPS_PROXY (explicit proxy)
-
-The client sets `HTTPS_PROXY=http://ID:TOKEN@gateway.example.com:8443`. Tools that
-respect this env var send CONNECT requests to the proxy:
-
-```
-Client --> CONNECT httpbin.org:443 HTTP/1.1
-        Proxy-Authorization: Basic base64(ID:TOKEN)
-  --> Proxy responds: 200 Connection Established
-  --> Client starts TLS inside the tunnel
-  --> MitM: generate cert, terminate TLS, forward upstream
-```
-
-This works without root access on the client, but only covers tools that
-respect `HTTPS_PROXY`. Per-tool CA certificate configuration is needed
-(the join script sets `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, etc.).
-
-Client identification: by Proxy-Authorization header (Basic auth with
-client ID and token).
-
-### 3. macOS Network Extension (transparent proxy)
-
-On macOS, `clawpatrol run <cmd>` uses a system extension
-(`NETransparentProxyProvider`) to intercept traffic from the wrapped
-process tree. The CLI registers the child PID with the NE over XPC
-(Mach service `group.2H4KBF436B.com.clawpatrol.app.extension`). The NE
-walks the PPID chain of each outbound flow to check if it belongs to a
-registered process tree, then relays matched flows through a userspace
-WireGuard tunnel (boringtun + smoltcp) to the gateway.
-
-```
-clawpatrol run <cmd>
-  --> XPC: registerPid(child, agent, cmd)
-  --> XPC: tunnelActivate(wgConfig)
-  --> NE intercepts outbound TCP/UDP from child's process tree
-  --> boringtun encrypts --> UDP to gateway:51820
-  --> Gateway decrypts, MitM, injects secrets, forwards upstream
-```
-
-The process is sandboxed via `sandbox-exec` to deny access to local
-credentials. No `HTTPS_PROXY` env var or system-wide CA install is
-needed — the NE handles interception transparently at the network
-layer.
-
-## MitM TLS Interception
-
-The proxy intercepts HTTPS traffic using the "loopback bridge" pattern
-(from the Avocet proxy):
-
-1. Generate a per-host TLS certificate signed by the Claw Patrol CA
-   (EC P-256, cached in memory with LRU eviction at 256 entries)
-2. Create an ephemeral `tls.createServer()` listening on `127.0.0.1:0`
-   with the forged certificate
-3. Connect to the ephemeral listener via `net.connect()`
-4. Bidirectionally pipe the client connection to the loopback connection
-   (the encrypted TLS data flows through this pipe)
-5. The TLS server's `secureConnection` event fires with the decrypted
-   `TLSSocket`
-6. Read HTTP requests from the decrypted connection, forward upstream
-   via `fetch()`, relay responses back
 
-This avoids node:tls's lack of a way to wrap an arbitrary existing
-duplex stream as a TLS server.
-
-## Protocol Detection
-
-Port 8443 handles both CONNECT and transparent connections on the same
-listener. The first byte of the connection determines the protocol:
-
-- `0x16` (TLS handshake record) -> transparent mode: extract SNI from
-  ClientHello, identify client by WireGuard IP
-- `C` (start of `CONNECT ...`) -> explicit proxy mode: parse CONNECT
-  request, identify client by Proxy-Authorization header
-
-## CA Certificate Management
-
-The CA is auto-generated on first startup using `@peculiar/x509` and the
-Web Crypto API (no external tools like `openssl` needed):
-
-- EC P-256 key pair
-- Self-signed X.509 certificate (CN=Claw Patrol CA, 10 year validity)
-- Saved to `data/ca/ca-cert.pem` and `data/ca/ca-key.pem`
-- Loaded from disk on subsequent starts
-
-Per-host certificates are generated on demand:
-
-- EC P-256 key pair per hostname
-- Signed by the CA with SAN extension (DNS or IP type)
-- 30-day validity
-- Cached in memory (LRU, max 256 entries)
-
-## Secret Injection
-
-The proxy replaces placeholder strings in HTTP requests with real secret
-values before forwarding upstream. Agents never see or handle real
-credentials -- they use placeholders like `CLAWPATROL_PLACEHOLDER_github`.
-
-### Endpoint Configuration
-
-Endpoint configs live in `data/endpoints/*.ts` (outside the source tree).
-Each file defines target hosts and secrets:
-
-```ts
-export default {
-  hosts: ["api.github.com", "github.com"],
-  secrets: [{
-    placeholder: "CLAWPATROL_PLACEHOLDER_github",
-    file: "/opt/clawpatrol/data/secrets/github-token",
-    headers: ["authorization"],  // only replace in this header
-  }],
-};
-```
-
-Secret fields:
-- `placeholder`: the string agents use in requests
-- `file`: path to the file containing the real secret value
-- `headers`: (optional) restrict replacement to specific header names
-- `body`: (optional) if `true`, also replace in the request body
-
-Secrets are read from disk at startup and on SIGHUP reload.
-
-### Replacement Pipeline
-
-For each intercepted HTTP request:
-
-1. Look up the endpoint by trusted hostname (from SNI or CONNECT target,
-   never from the HTTP Host header)
-2. Replace placeholders in allowed headers (respecting the `headers` filter)
-3. Replace placeholders in the body (if `body: true`)
-4. Handle Basic auth specially: base64-decode, replace, re-encode
-5. Update Content-Length if the body was modified
-
-### Anti-Exfiltration
-
-Secrets are never injected into headers that could be echoed back in
-error responses or debug pages:
-
-- **Blocked headers**: `user-agent`, `accept`, `content-type`, `origin`,
-  `referer`, `cache-control`, `sec-*`, `openai-organization`,
-  `anthropic-version`, and others
-- **Blocked paths**: `/cdn-cgi/*` (Cloudflare debug endpoints)
-
-### Host Header Security
-
-The proxy enforces that the HTTP Host header matches the trusted hostname
-from SNI/CONNECT. This prevents a malicious agent from setting
-`Host: evil.com` to redirect injected secrets to an attacker-controlled
-server. The Host header is always overwritten with the trusted hostname.
-
-### Hot Reload
-
-Endpoint configs can be reloaded without restarting:
-
-```
-systemctl reload clawpatrol   # sends SIGHUP
-```
-
-This re-reads all `data/endpoints/*.ts` files and reloads secrets from
-disk. Active connections are not interrupted.
-
-## IP Binding
-
-Per the spec, leaked credentials should be useless from an unknown IP.
-
-On first request after approval, the client is bound to its external IP
-(`approvedIp`). If a subsequent request comes from a different IP,
-approval is auto-revoked and the client goes back to "pending" on the
-dashboard.
-
-For WireGuard clients, the real endpoint IP is resolved via
-`wg show wg0 dump` (not the tunnel IP `10.77.0.x`). For HTTPS_PROXY
-clients, the source IP of the CONNECT request is used.
-
-Re-approving a client clears the IP binding, allowing it to bind to
-a new IP on next use.
-
-## Client Lifecycle
-
-1. **Join**: client runs the onboarding script, which:
-   - Checks server availability
-   - Chooses connection method (interactive wizard or `--method` flag)
-   - Registers via `POST /api/register` (client starts as "pending")
-   - Installs the CA certificate
-   - Configures WireGuard tunnel or HTTPS_PROXY env vars
-
-2. **Approval**: admin approves the client on the dashboard
-   (`POST /api/clients/:id/approve`)
-
-3. **Active**: proxy allows the client's traffic. Each connection is
-   identified (by WireGuard IP or Proxy-Authorization), checked for
-   approval, then MitM'd.
-
-4. **Deny**: admin can revoke access (`POST /api/clients/:id/deny`).
-   The client remains registered but traffic is rejected.
-
-Client state is persisted in SQLite (`data/clients.db`). Registrations,
-approvals, WireGuard links, and IP bindings survive service restarts.
-On startup, WireGuard peers from the database are re-added to the `wg0`
-interface.
-
-## API Endpoints
-
-**Public** (no auth required):
-
-| Method | Path                         | Description                     |
-| ------ | ---------------------------- | ------------------------------- |
-| GET    | `/join`                      | Client onboarding script        |
-| GET    | `/api/status`                | Health check + WG availability  |
-| GET    | `/api/ca.pem`                | CA certificate download         |
-| POST   | `/api/register`              | Register new client             |
-| POST   | `/api/setup-wireguard`       | Configure WireGuard for client  |
-
-**Auth** (Google OAuth, configurable domain restriction):
-
-| Method | Path                         | Description                     |
-| ------ | ---------------------------- | ------------------------------- |
-| GET    | `/auth/login`                | Redirect to Google OAuth        |
-| GET    | `/auth/callback`             | OAuth callback, sets session    |
-| GET    | `/auth/logout`               | Clear session cookie            |
-
-**Protected** (requires session):
-
-| Method | Path                                  | Description                         |
-| ------ | ------------------------------------- | ----------------------------------- |
-| GET    | `/`                                   | Dashboard SPA (index.html)          |
-| GET    | `/assets/*`                           | Dashboard static assets (JS, CSS)   |
-| GET    | `/api/me`                             | Current user email                  |
-| GET    | `/api/clients`                        | List all clients                    |
-| POST   | `/api/clients/:id/profile`            | Assign profile to client            |
-| DELETE | `/api/clients/:id/profile`            | Remove profile from client          |
-| DELETE | `/api/clients/:id`                    | Delete client                       |
-| GET    | `/api/plugins`                        | List available plugins              |
-| GET    | `/api/integrations`                   | List integrations                   |
-| POST   | `/api/integrations`                   | Create integration                  |
-| DELETE | `/api/integrations/:id`               | Delete integration                  |
-| GET    | `/api/profiles`                       | List profiles                       |
-| POST   | `/api/profiles`                       | Create profile                      |
-| DELETE | `/api/profiles/:id`                   | Delete profile                      |
-| POST   | `/api/profiles/:id/integrations`      | Add integration to profile          |
-| DELETE | `/api/profiles/:id/integrations/:id`  | Remove integration from profile     |
-| POST   | `/api/oauth/authorize`                | Start OAuth flow for integration    |
-| POST   | `/api/oauth/disconnect`               | Disconnect OAuth for integration    |
-| GET    | `/api/oauth/status/:id`               | OAuth connection status             |
-| GET    | `/api/requests`                       | Query request audit log             |
-
-## WireGuard Network
-
-- Server interface: `wg0`, IP `10.77.0.1/24`, port `51820/UDP`
-- Client IPs: `10.77.0.2`, `.3`, `.4`, ... (assigned sequentially)
-- Server keypair stored in `data/wg/`
-- iptables rules (managed by the application, cleaned up on restart):
-  - `INPUT -i wg0 -s 10.77.0.0/24 -j ACCEPT` (allows DNS + VIP DNAT traffic)
-  - `PREROUTING -s 10.77.0.0/24 -p tcp --dport 443 -j REDIRECT --to-port 8443`
-  - `PREROUTING -s 10.77.0.0/24 -d 10.78.x.y -p tcp -j DNAT --to 10.77.0.1:<port>` (per DNS entry)
-  - `FORWARD -i wg0 -j ACCEPT`
-  - `FORWARD -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT`
-  - `POSTROUTING -s 10.77.0.0/24 -o enp1s0 -j MASQUERADE`
-
-## DNS Interception
-
-For protocols without TLS SNI (e.g. SSH), the proxy intercepts DNS
-queries from WireGuard clients and returns virtual IPs that route traffic
-to per-hostname TCP listeners.
-
-### Flow
-
-1. Plugin declares `dnsEntries(config)` returning hostnames it wants to
-   intercept (e.g. the GitHub plugin registers `github.com:22`)
-2. On startup, each unique hostname gets a virtual IP from `10.78.0.0/16`
-3. An iptables DNAT rule routes traffic for that VIP to a per-hostname
-   TCP listener on a random port
-4. A DNS server on `10.77.0.1:53` (UDP + TCP) intercepts DNS from WG
-   clients (requires `CAP_NET_BIND_SERVICE` on the node binary):
-   - Registered hostnames: return the virtual IP (A record, TTL 30s)
-   - AAAA queries for registered hostnames: empty response (force IPv4)
-   - All other queries: forwarded to upstream DNS (8.8.8.8)
-   - EDNS (OPT records) are parsed and echoed in responses
-5. When a WG client connects to the virtual IP, the listener:
-   - Identifies the client by WireGuard tunnel IP
-   - Verifies the client's profile registered this DNS entry (prevents
-     a client from bypassing DNS and using another profile's VIP directly)
-   - If TLS (first byte 0x16): performs MitM TLS termination using the
-     loopback bridge pattern (same as the main proxy), then processes
-     the decrypted stream
-   - Tries plugin protocol handlers for credential injection
-   - Otherwise pipes to the upstream host bidirectionally
-
-### Virtual IP Subnet
-
-`10.78.0.0/16` is reserved for DNS-intercepted hostnames. These IPs are
-never routed to the internet -- they only exist within the WireGuard
-tunnel and are resolved by iptables DNAT rules to local listeners.
-
-Allocations are ephemeral (reset on restart). The 30s DNS TTL ensures
-clients pick up new mappings quickly.
-
-### DNS Transport
-
-Both UDP and TCP are supported. UDP is used for normal queries. TCP
-is used by clients when responses are large or when the truncation
-(TC) flag is set. TCP DNS messages are framed with a 2-byte length
-prefix per RFC 1035.
-
-## Request Logging
-
-Every proxied request/response is logged to the SQLite database
-at `$CLAWPATROL_DATA/clients.db` with a 7-day retention (configurable
-via `ANALYTICS_RETENTION_DAYS`). See
-[Self-Hosting](06-self-hosting.md) for details.
+Secret bytes never flow into a header the plugin didn't explicitly
+target. There is no global header blocklist because there is no
+global replacement step — the structural property replaces the
+blocklist. (`config/plugins/credentials/util.go` still defines
+plumbing-level placeholder strings like `phClaude`, `phOpenAI`,
+`phGitHub`, but they're agent-side env-var stand-ins that the
+gateway's `Authorization`-header overwrite renders inert before the
+request leaves the gateway.)
+
+For multi-credential endpoints (e.g. an `https` endpoint binding
+both a personal and a service-account token), the endpoint plugin's
+`PlaceholderDetector` looks at the agent's request and picks which
+credential entry applies. Singular bindings short-circuit before
+that check.
+
+## Endpoint plugins
+
+`endpoint "<type>" "<name>" {}` declares an upstream binding. Built-in
+families:
+
+- `https` / `kubernetes` — MITM via `mitmHTTPS`, served on `:443`
+  via SNI dispatch.
+- `postgres` — MITM via `handlePostgresConn`, served on `:5432` via
+  WG forwarder dst-port match. Full request-time handling lives in
+  the plugin's `ConnEndpointRuntime`.
+- `clickhouse_https` / `clickhouse_native` — schema only today;
+  `_https` rides the HTTPS path, `_native` is parked behind a future
+  `ConnEndpointRuntime` and currently passes through.
+
+Endpoint plugins whose body satisfies `runtime.ConnRouter` declare
+which `host[:port]` tuples they claim. At policy load,
+`runtime.BuildConnIndex` resolves each declared host to IPs and builds
+a `dstIP → []*CompiledEndpoint` map. The promiscuous forwarder uses
+this index to map the WG-side dst IP back to a candidate endpoint;
+when multiple endpoints claim the same IP (writer + readonly RDS),
+`pickEndpointForProfile` filters by the device's profile and falls
+back to `firstPostgresEndpoint` for single-tenant configs without
+explicit DNS.
+
+## Rules and approval
+
+`rule "<type>" "<name>" {}` is one policy decision targeting one or
+more endpoints. Rule types are protocol-typed: `http_rule` for
+`https` endpoints, `sql_rule` for `postgres` / `clickhouse_*`,
+`k8s_rule` for `kubernetes`. The rule's body declares a `match`
+(method/path/header/body facets) and an `outcome` (`verdict` plus
+optional `approve = […]` chain plus `reason`).
+
+`runtime.MatchRequest(ep, req)` walks the endpoint's compiled rules
+in source order and returns the first match. The gateway then:
+
+- runs the approve chain through `runApproveChain` if non-empty;
+- short-circuits to 403 on the first non-allow verdict;
+- honors the rule's verdict (`allow` continues, `deny` returns 403);
+- forwards upstream after the credential plugin's injection.
+
+Approvers live in `config/plugins/approvers/`:
+
+- `dashboard` — built-in (no HCL block needed). Pushes a pending
+  entry onto the in-memory `HITLPool`; the dashboard SPA reads via
+  SSE and writes verdicts via `PUT /api/hitl/decide`.
+- `human_approver` — Slack / Discord / Telegram / etc., delivered via
+  whatever credential plugin satisfies `runtime.HITLNotifier`. Uses
+  the same `HITLPool` so the dashboard and the side channel both
+  resolve the same pending entry.
+- `llm_approver` — synchronous LLM call via the configured `policy
+  "<name>"` heredoc; verdict caching is bounded by
+  `defaults.llm_cache_ttl` and failure semantics by
+  `defaults.llm_fail_mode`.
+
+## Profiles as the tenancy unit
+
+`profile "<name>" { endpoints = [...] }` binds a device's identity to
+an endpoint set. The profile is the credential-bucket key: when the
+gateway looks up a credential, the lookup is keyed by `(credential
+name, profile)`, not by user. The dashboard scopes everything to the
+operator-selected profile.
+
+`Gateway.profileFor(peerIP)` resolves a WG peer to its profile by
+walking the onboard registry. Devices land in a profile at onboard
+time (`apiOnboardClaim`); operators can re-assign via
+`POST /api/clients/:id/profile`.
+
+The "user / owner email" concept that lived in the legacy proxy is
+gone for WG-mode deployments. It survives behind
+`gateway.control = "tailscale"` where Tailscale's whois lookup still
+maps tunnel IPs to login names — see `Gateway.ownerForRequest`.
+
+## Secret store
+
+`gatewaySecretStore` (in `secrets.go`) is the `runtime.SecretStore`
+the gateway hands to credential plugins. Lookup order per
+`(credential, profile)`:
+
+1. **`credential_secrets` table.** Slot rows the operator pasted into
+   the dashboard. Single-slot credentials fill `Secret.Bytes`;
+   multi-slot fill `Secret.Extras`.
+2. **`OAuthRegistry`.** For OAuth-flow credentials (Anthropic Claude,
+   OpenAI Codex, GitHub, …): returns a refreshed access token, with
+   refresh state persisted in the `credentials` table.
+3. **`EnvSecretStore`.** Last-resort `CLAWPATROL_SECRET_<NAME>`
+   env-var fallback for operator-managed secrets, with
+   `CLAWPATROL_SECRET_<NAME>_{CERT,KEY,CA}` and `@/path/to/file`
+   shorthand for mTLS bundles.
+
+OAuth-flow registration runs at policy-load time via
+`registerOAuthCredentials`: it walks every credential plugin
+implementing `OAuthFlowProvider`, copies the flow shape (auth/token
+URLs, scopes, client id) onto the registry, and rehydrates persisted
+tokens from the `credentials` table.
+
+## Persistence
+
+State lives in SQLite at `<oauth_dir>/clawpatrol.db`. Migrations are
+embedded SQL files in `migrations/sqlite/`, applied in numbered order.
+Tables:
+
+| Table                | Purpose                                                                              |
+|----------------------|--------------------------------------------------------------------------------------|
+| `devices`            | Onboarded peer identity: `id` (WG IP) → `name`, `profile`, `blocked`, `last_seen_ns` |
+| `wg_peers`           | `(pubkey, ip)` registrations for the wireguard-go device, written before claim       |
+| `credentials`        | Per-`(credential id, profile)` OAuth tokens (access, refresh, expiry)                |
+| `credential_secrets` | Per-`(credential, profile, slot)` raw secret bytes for non-OAuth credentials         |
+| `actions`            | Append-only request event log: mode, agent IP, host, method, path, status, bytes, action, reason, sample SHAs |
+
+HCL is the source of truth for *policy*. SQLite persists *state* —
+device identities, peer key allocations, credential material, and
+request history. The dashboard never edits HCL; it edits SQLite.
+
+## Hot reload
+
+`Gateway.watchConfig` polls the config file's mtime every 3 seconds.
+On change it re-decodes the HCL, atomically swaps in the new
+`CompiledPolicy` (via `g.policy.Store`), rebuilds the `ConnIndex`,
+re-registers OAuth credentials, and hot-swaps the operational
+`*config.Gateway` so `admin_email` / `public_url` /
+`dashboard_secret` reads pick up immediately.
+
+Listen ports, `ca_dir`, `oauth_dir`, and the `gateway {}` block
+(WireGuard / Tailscale wiring) are *not* hot-applied — changes to
+those fields are logged but require a restart.
+
+There is no `SIGHUP` handler; mtime polling replaces it. (The
+gateway's child-process supervisor inside `clawpatrol run` does
+forward `SIGHUP` to the wrapped agent, but that's on the agent host,
+not the gateway.)
+
+## Dashboard and API
+
+The dashboard is a React SPA served by `newWebMux` on
+`info_listen` (default `0.0.0.0:8080`). The same mux is also wired
+into the WG forwarder for in-tunnel access on the dashboard port —
+operators on the WG network reach the dashboard at the gateway's WG
+IP without leaving the tunnel.
+
+Dashboard auth requires exactly one of:
+
+- `dashboard_secret = "<long random string>"` — production. The
+  dashboard issues a session cookie after the operator presents the
+  secret.
+- `insecure_no_dashboard_secret = true` — testing only. Anyone who
+  can reach the dashboard URL gets in. Logged loudly on every
+  config (re)load.
+
+If neither is set, the dashboard refuses to serve anything and
+returns a misconfiguration page on every request.
+
+The on-the-wire API is stable enough to survive operator scripts but
+isn't versioned for external consumers; consult `web.go`,
+`onboard.go`, and `oauth.go` for the current routes (onboard
+start/lookup/approve/claim/poll, HITL pending/decide, profiles,
+endpoints, credentials, request log).
+
+## Observability
+
+Every terminal request emits an `Event` to:
+
+- the SSE sink (`g.sink`), consumed by the dashboard's "live" tab and
+  written to `actions` for the request log;
+- the OpenTelemetry recorder (`otelRecordVerdict`,
+  `otelRecordRequest`), feeding a Prometheus-style histogram of
+  request duration tagged by action / status.
+
+There is no built-in retention sweep on the `actions` table — it
+grows indefinitely until the operator truncates it. The dashboard's
+"backlog replay" reads the most recent ~500 rows on connect.
