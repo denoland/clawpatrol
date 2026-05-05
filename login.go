@@ -54,9 +54,10 @@ func runJoin(args []string) {
 	caOut := fs.String("ca-dir", defaultClawpatrolDir(), "where to store the fetched CA")
 	skipTrust := fs.Bool("no-trust", false, "fetch CA but skip system trust install (do it manually)")
 	wholeMachine := fs.Bool("whole-machine", false, "bring up wg-quick to route ALL host traffic through the gateway (default: persist conf only, use `clawpatrol run` for per-process routing)")
+	profile := fs.String("profile", "", "profile to assign at approval time (defaults to the gateway's default profile if the approver doesn't pick one)")
 	_ = fs.Parse(args)
 	if *gatewayURL == "" {
-		fail("usage: clawpatrol join --url <gateway-url> [--whole-machine]")
+		fail("usage: clawpatrol join --url <gateway-url> [--profile NAME] [--whole-machine]")
 	}
 	// Fetch CA + write shell rc BEFORE the VPN goes up. Once
 	// `wg-quick up` flips the default route through the gateway,
@@ -68,7 +69,7 @@ func runJoin(args []string) {
 	if err != nil {
 		fail("ca fetch: %v", err)
 	}
-	wgMode, err := onboardViaDeviceFlow(*gatewayURL, *wholeMachine, setup)
+	wgMode, err := onboardViaDeviceFlow(*gatewayURL, *wholeMachine, *profile, setup)
 	if err != nil {
 		fail("join: %v", err)
 	}
@@ -554,16 +555,25 @@ func wgAddressFromConf(conf string) string {
 // onboardViaDeviceFlow drives the device-flow handshake against the
 // gateway and ends in a working VPN connection. Returns wgMode=true
 // when the gateway picked the wireguard control plane (caller skips
-// tailscale-specific post-setup).
-func onboardViaDeviceFlow(gateway string, wholeMachine bool, setup joinSetup) (bool, error) {
+// tailscale-specific post-setup). profile, when non-empty, is sent
+// to the gateway as the suggested profile for this device — the
+// approver can still override it from the dashboard.
+func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile string, setup joinSetup) (bool, error) {
 	gateway = strings.TrimRight(gateway, "/")
 	cli := &http.Client{Timeout: 30 * time.Second}
 
 	// 1. start — pass our hostname so the dashboard shows a real
 	// device name in WG mode (no whois fallback there).
-	startURL := gateway + "/api/onboard/start"
+	q := neturl.Values{}
 	if hn, _ := os.Hostname(); hn != "" {
-		startURL += "?hostname=" + neturl.QueryEscape(hn)
+		q.Set("hostname", hn)
+	}
+	if profile != "" {
+		q.Set("profile", profile)
+	}
+	startURL := gateway + "/api/onboard/start"
+	if encoded := q.Encode(); encoded != "" {
+		startURL += "?" + encoded
 	}
 	resp, err := cli.Post(startURL, "application/json", nil)
 	if err != nil {

@@ -462,9 +462,19 @@ func (w *webMux) apiOnboardStart(rw http.ResponseWriter, r *http.Request) {
 	// CLI passes its os.Hostname() so the dashboard shows a real
 	// device name instead of just the WG-side IP. Optional — we still
 	// fall back gracefully when missing.
-	if hn := strings.TrimSpace(r.URL.Query().Get("hostname")); hn != "" {
+	hn := strings.TrimSpace(r.URL.Query().Get("hostname"))
+	// `clawpatrol join --profile X` forwards X here so the approver
+	// doesn't have to pick it manually. Stored as the session-level
+	// suggestion; the dashboard's approve call can still override.
+	prof := strings.TrimSpace(r.URL.Query().Get("profile"))
+	if hn != "" || prof != "" {
 		w.onboard.mu.Lock()
-		s.hostname = hn
+		if hn != "" {
+			s.hostname = hn
+		}
+		if prof != "" {
+			s.profile = prof
+		}
 		w.onboard.mu.Unlock()
 	}
 	// Prefer the operator-configured public_url so brand-new clients
@@ -519,17 +529,20 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	code := r.URL.Query().Get("code")
-	// Operator picks which profile this device joins. Falls back to a
-	// profile named "default" when declared; otherwise the first profile
-	// in source order.
-	profile := r.URL.Query().Get("profile")
-	if profile == "" {
-		profile = defaultProfileName(w.g.cfg.Policy)
-	}
 	s := w.onboard.byUserCode(code)
 	if s == nil {
 		http.Error(rw, "unknown or expired code", 404)
 		return
+	}
+	// Operator picks which profile this device joins. Priority:
+	// dashboard query param → CLI suggestion stashed at /start time →
+	// profile named "default" → first profile in source order.
+	profile := r.URL.Query().Get("profile")
+	if profile == "" {
+		profile = s.profile
+	}
+	if profile == "" {
+		profile = defaultProfileName(w.g.cfg.Policy)
 	}
 	w.onboard.mu.Lock()
 	if s.approved {
