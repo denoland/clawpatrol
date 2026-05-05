@@ -36,9 +36,9 @@ func TestFetchEnvPushdownFromGateway(t *testing.T) {
 		t.Fatalf("write gateway file: %v", err)
 	}
 
-	got, ok := fetchEnvPushdownFromGateway(dir)
-	if !ok {
-		t.Fatalf("expected ok")
+	got, err := fetchEnvPushdownFromGateway(dir)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
 	}
 	if len(got) != 2 {
 		t.Fatalf("got %d vars want 2: %#v", len(got), got)
@@ -51,15 +51,15 @@ func TestFetchEnvPushdownFromGateway(t *testing.T) {
 	}
 }
 
-// TestFetchEnvPushdownFallback covers the every-failure-mode path:
-// no gateway file, unreachable server, 404 from older gateway. All
-// must return (nil, false) so envPushdownVars falls back to local
-// plugin enumeration without surfacing an error.
-func TestFetchEnvPushdownFallback(t *testing.T) {
+// TestFetchEnvPushdownErrors covers the error paths: no gateway URL
+// persisted, server unreachable, server 404. Each must return a
+// non-nil error so envPushdownVars can surface it to the caller
+// (server-only — there's no local fallback).
+func TestFetchEnvPushdownErrors(t *testing.T) {
 	t.Run("no_gateway_file", func(t *testing.T) {
 		dir := t.TempDir()
-		if _, ok := fetchEnvPushdownFromGateway(dir); ok {
-			t.Fatal("expected not ok")
+		if _, err := fetchEnvPushdownFromGateway(dir); err == nil {
+			t.Fatal("expected error")
 		}
 	})
 	t.Run("server_404", func(t *testing.T) {
@@ -69,8 +69,8 @@ func TestFetchEnvPushdownFallback(t *testing.T) {
 		defer srv.Close()
 		dir := t.TempDir()
 		_ = os.WriteFile(filepath.Join(dir, "gateway"), []byte(srv.URL), 0o644)
-		if _, ok := fetchEnvPushdownFromGateway(dir); ok {
-			t.Fatal("expected not ok on 404")
+		if _, err := fetchEnvPushdownFromGateway(dir); err == nil {
+			t.Fatal("expected error on 404")
 		}
 	})
 	t.Run("unreachable", func(t *testing.T) {
@@ -83,8 +83,8 @@ func TestFetchEnvPushdownFallback(t *testing.T) {
 		addr := l.Addr().String()
 		l.Close()
 		_ = os.WriteFile(filepath.Join(dir, "gateway"), []byte("http://"+addr), 0o644)
-		if _, ok := fetchEnvPushdownFromGateway(dir); ok {
-			t.Fatal("expected not ok on unreachable")
+		if _, err := fetchEnvPushdownFromGateway(dir); err == nil {
+			t.Fatal("expected error on unreachable")
 		}
 	})
 }
@@ -106,7 +106,10 @@ func TestEnvPushdownVarsServerDriven(t *testing.T) {
 	_ = os.WriteFile(caPath, []byte("dummy"), 0o644)
 	_ = os.WriteFile(filepath.Join(dir, "gateway"), []byte(srv.URL), 0o644)
 
-	got := envPushdownVars(caPath)
+	got, err := envPushdownVars(caPath)
+	if err != nil {
+		t.Fatalf("envPushdownVars: %v", err)
+	}
 	hasSSL, hasCodex := false, false
 	for _, ev := range got {
 		if ev.Name == "SSL_CERT_FILE" && ev.Value == caPath {
@@ -115,12 +118,6 @@ func TestEnvPushdownVarsServerDriven(t *testing.T) {
 		if ev.Name == "CODEX_ACCESS_TOKEN" && ev.Value == "from-server" {
 			hasCodex = true
 		}
-		// No plugin should have produced a CODEX_ACCESS_TOKEN with
-		// our client-side openai_codex_https plugin too — server-
-		// driven path short-circuits the local iteration.
-		if ev.Name == "CODEX_ACCESS_TOKEN" && ev.Value != "from-server" {
-			t.Errorf("CODEX_ACCESS_TOKEN came from local fallback: %#v", ev)
-		}
 	}
 	if !hasSSL {
 		t.Errorf("missing SSL_CERT_FILE")
@@ -128,4 +125,26 @@ func TestEnvPushdownVarsServerDriven(t *testing.T) {
 	if !hasCodex {
 		t.Errorf("missing CODEX_ACCESS_TOKEN from server")
 	}
+}
+
+// TestEnvPushdownVarsErrorReturnsCAOnly: when the gateway is
+// unreachable, the function should still return the CA-bundle vars
+// (so TLS verification keeps working) but surface the error so the
+// caller can warn the operator.
+func TestEnvPushdownVarsErrorReturnsCAOnly(t *testing.T) {
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "ca.crt")
+	_ = os.WriteFile(caPath, []byte("dummy"), 0o644)
+	// no gateway file
+
+	got, err := envPushdownVars(caPath)
+	if err == nil {
+		t.Fatal("expected error when gateway URL missing")
+	}
+	for _, ev := range got {
+		if ev.Name == "SSL_CERT_FILE" && ev.Value == caPath {
+			return
+		}
+	}
+	t.Errorf("expected SSL_CERT_FILE in fallback CA vars; got %#v", got)
 }

@@ -16,8 +16,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/denoland/clawpatrol/config"
 )
 
 // resolveTemplate expands `{{secret:NAME}}` placeholders in s by
@@ -54,19 +52,18 @@ type pushdownEnvVar struct {
 }
 
 // envPushdownVars returns every var the operator's CLI environment
-// needs: CA bundle paths + per-credential placeholder tokens. caPath
-// must be the absolute path to ca.crt.
+// needs: CA-bundle vars (which point at a path on the *client's*
+// disk so the client owns them) plus the gateway's declared
+// push-down list. caPath must be the absolute path to ca.crt.
 //
-// The placeholder tokens themselves are fetched from the gateway's
-// /api/env-pushdown endpoint when a gateway URL has been persisted
-// alongside the CA (`<caDir>/gateway`, written by `clawpatrol join`).
-// The gateway is the source of truth for which plugins are
-// configured — the local client binary doesn't have to ship every
-// endpoint plugin the operator might enable. Falls back to local
-// plugin enumeration when the gateway URL is missing or the fetch
-// fails (older gateways without the endpoint, network down, etc.),
-// so old + new clients work against any gateway version.
-func envPushdownVars(caPath string) []pushdownEnvVar {
+// The placeholder tokens come from the gateway's /api/env-pushdown
+// endpoint — the gateway is the only source of truth for which
+// plugins the operator has actually configured. Returns CA vars
+// only with an error when the gateway URL hasn't been persisted
+// (no `clawpatrol join` yet) or the gateway is unreachable;
+// callers surface the error so the operator knows their agents
+// won't get the placeholder tokens.
+func envPushdownVars(caPath string) ([]pushdownEnvVar, error) {
 	var out []pushdownEnvVar
 	for _, k := range []string{
 		"SSL_CERT_FILE",
@@ -79,63 +76,31 @@ func envPushdownVars(caPath string) []pushdownEnvVar {
 	} {
 		out = append(out, pushdownEnvVar{Name: k, Value: caPath})
 	}
-	if vars, ok := fetchEnvPushdownFromGateway(filepath.Dir(caPath)); ok {
-		return append(out, vars...)
+	vars, err := fetchEnvPushdownFromGateway(filepath.Dir(caPath))
+	if err != nil {
+		return out, err
 	}
-	seen := map[string]bool{}
-	// Fallback: iterate every plugin compiled into this client binary.
-	// Both credential and endpoint plugins can declare env push-down
-	// vars. Credentials cover the bearer-placeholder case
-	// (ANTHROPIC_AUTH_TOKEN, GH_TOKEN, ...) — the env var IS the
-	// secret slot. Endpoints cover routing-control envs that don't
-	// correspond to a single credential
-	// (CODEX_ACCESS_TOKEN flips codex into Agent Identity mode and
-	// points it at chatgpt.com — a property of the openai_codex_https
-	// endpoint, not the underlying bearer credential).
-	for _, kind := range []config.Kind{config.KindCredential, config.KindEndpoint} {
-		for _, p := range config.AllPlugins(kind) {
-			body := p.New()
-			provider, ok := body.(config.EnvPushdownProvider)
-			if !ok {
-				continue
-			}
-			for _, ev := range provider.EnvVars() {
-				if seen[ev.Name] {
-					continue
-				}
-				seen[ev.Name] = true
-				out = append(out, pushdownEnvVar{
-					Name:        ev.Name,
-					Value:       ev.Value,
-					Description: ev.Description,
-					PluginType:  p.Type,
-				})
-			}
-		}
-	}
-	return out
+	return append(out, vars...), nil
 }
 
 // fetchEnvPushdownFromGateway hits the gateway's /api/env-pushdown
-// endpoint and returns its declared push-down vars. Returns
-// (nil, false) when the gateway URL hasn't been persisted, the
-// network call fails, or the server didn't ship the endpoint
-// (older binary). Callers must fall back to local plugin
-// enumeration in that case.
-func fetchEnvPushdownFromGateway(caDir string) ([]pushdownEnvVar, bool) {
+// endpoint and returns its declared push-down vars. Errors when
+// the gateway URL hasn't been persisted, the network call fails,
+// or the server returned non-200.
+func fetchEnvPushdownFromGateway(caDir string) ([]pushdownEnvVar, error) {
 	gw := readGatewayURL(caDir)
 	if gw == "" {
-		return nil, false
+		return nil, fmt.Errorf("gateway URL not persisted (run `clawpatrol join` first)")
 	}
 	url := strings.TrimRight(gw, "/") + "/api/env-pushdown"
 	cli := &http.Client{Timeout: 5 * time.Second}
 	resp, err := cli.Get(url)
 	if err != nil {
-		return nil, false
+		return nil, fmt.Errorf("fetch %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return nil, false
+		return nil, fmt.Errorf("fetch %s: status %d", url, resp.StatusCode)
 	}
 	var body struct {
 		Vars []struct {
@@ -146,7 +111,7 @@ func fetchEnvPushdownFromGateway(caDir string) ([]pushdownEnvVar, bool) {
 		} `json:"vars"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return nil, false
+		return nil, fmt.Errorf("decode %s: %w", url, err)
 	}
 	out := make([]pushdownEnvVar, 0, len(body.Vars))
 	for _, v := range body.Vars {
@@ -160,7 +125,7 @@ func fetchEnvPushdownFromGateway(caDir string) ([]pushdownEnvVar, bool) {
 			PluginType:  v.PluginType,
 		})
 	}
-	return out, true
+	return out, nil
 }
 
 // readGatewayURL returns the dashboard URL `clawpatrol join`
@@ -189,7 +154,11 @@ func runEnv(args []string) {
 		fmt.Fprintf(os.Stderr, "clawpatrol: ca not found at %s — run `clawpatrol login` first\n", caPath)
 		os.Exit(2)
 	}
-	for _, ev := range envPushdownVars(caPath) {
+	vars, err := envPushdownVars(caPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "clawpatrol: %v\n", err)
+	}
+	for _, ev := range vars {
 		if ev.Description != "" {
 			if ev.PluginType != "" {
 				fmt.Printf("# %s — %s\n", ev.Description, ev.PluginType)
@@ -198,6 +167,9 @@ func runEnv(args []string) {
 			}
 		}
 		fmt.Printf("export %s=%q\n", ev.Name, ev.Value)
+	}
+	if err != nil {
+		os.Exit(1)
 	}
 }
 
@@ -223,7 +195,11 @@ func applyEnvPushdown(caDir string) {
 		fmt.Fprintf(os.Stderr, "clawpatrol: ca not found at %s — env pushdown skipped (run `clawpatrol join` first)\n", caPath)
 		return
 	}
-	for _, ev := range envPushdownVars(caPath) {
+	vars, err := envPushdownVars(caPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "clawpatrol: %v — agent will run without placeholder push-down\n", err)
+	}
+	for _, ev := range vars {
 		// Don't clobber values the operator already set deliberately.
 		if os.Getenv(ev.Name) != "" {
 			continue
