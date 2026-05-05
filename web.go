@@ -798,23 +798,23 @@ func allIntegrationKeys() []string { return displayOrder }
 // by the dashboard SSE stream and the on-disk event log).
 
 type Event struct {
-	Ts time.Time `json:"ts"`
-	ID string    `json:"id,omitempty"` // UUIDv7; correlates start/end/frame + DB key
-	Phase      string    `json:"phase,omitempty"` // "" (legacy/end), "start", "end", "frame"
-	Mode       string    `json:"mode"`
-	Agent      string    `json:"agent,omitempty"`
-	AgentIP    string    `json:"agent_ip,omitempty"`
-	Host       string    `json:"host"`
-	Method     string    `json:"method,omitempty"`
-	Path       string    `json:"path,omitempty"`
-	Status     int       `json:"status,omitempty"`
-	In         int64     `json:"in,omitempty"`
-	Out        int64     `json:"out,omitempty"`
-	Ms         int64     `json:"ms"`
-	Action     string    `json:"action,omitempty"`
-	Reason     string    `json:"reason,omitempty"`
-	ReqSha     string    `json:"req_sha,omitempty"`
-	ReqBody    string    `json:"req_body,omitempty"`
+	Ts          time.Time         `json:"ts"`
+	ID          string            `json:"id,omitempty"`    // UUIDv7; correlates start/end/frame + DB key
+	Phase       string            `json:"phase,omitempty"` // "" (legacy/end), "start", "end", "frame"
+	Mode        string            `json:"mode"`
+	Agent       string            `json:"agent,omitempty"`
+	AgentIP     string            `json:"agent_ip,omitempty"`
+	Host        string            `json:"host"`
+	Method      string            `json:"method,omitempty"`
+	Path        string            `json:"path,omitempty"`
+	Status      int               `json:"status,omitempty"`
+	In          int64             `json:"in,omitempty"`
+	Out         int64             `json:"out,omitempty"`
+	Ms          int64             `json:"ms"`
+	Action      string            `json:"action,omitempty"`
+	Reason      string            `json:"reason,omitempty"`
+	ReqSha      string            `json:"req_sha,omitempty"`
+	ReqBody     string            `json:"req_body,omitempty"`
 	RespSha     string            `json:"resp_sha,omitempty"`
 	RespBody    string            `json:"resp_body,omitempty"`
 	ReqHeaders  map[string]string `json:"req_headers,omitempty"`
