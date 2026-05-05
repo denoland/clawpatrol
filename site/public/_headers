@@ -1,0 +1,8 @@
+# Cloudflare Pages serves clawpatrol.dev. Default behaviour caches
+# /install.sh hard at the edge — a fresh release's install.sh doesn't
+# reach `curl | sh` users until the TTL expires. Tell CF to revalidate
+# every request so the next deploy is visible immediately.
+
+/install.sh
+  Cache-Control: no-cache, no-store, must-revalidate
+  CDN-Cache-Control: no-store
