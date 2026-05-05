@@ -30,6 +30,22 @@ type HTTPCredentialRuntime interface {
 	InjectHTTP(ctx context.Context, req *http.Request, sec Secret) error
 }
 
+// HTTPCredentialResponder is the optional contract a credential plugin
+// implements when it needs to short-circuit certain matched requests
+// and return a synthetic response without forwarding upstream. Codex
+// uses this to serve a clawpatrol-controlled JWKS at chatgpt.com's
+// agent-identity URL (so a JWT we minted ourselves validates) and to
+// stub out the agent-task registration POST.
+//
+// RespondHTTP is called after credential injection but before the
+// upstream forward. Returning (resp, true, nil) writes resp to the
+// agent and skips forwarding; returning (_, false, nil) falls through
+// to the normal proxy path. Errors are logged and the request still
+// forwards verbatim.
+type HTTPCredentialResponder interface {
+	RespondHTTP(ctx context.Context, req *http.Request, sec Secret) (*http.Response, bool, error)
+}
+
 // PostgresCredentialRuntime swaps the agent's StartupMessage password
 // for the real one before the upstream connect. The wire-protocol
 // front-end calls this once per session.

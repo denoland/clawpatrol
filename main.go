@@ -1273,22 +1273,51 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		// to stamp onto the request. Schema-only credential types
 		// (slack / telegram / gemini / etc.) leave Runtime nil; we
 		// pass through verbatim and rely on policy alone.
+		var synthResp *http.Response
 		if cc := runtime.ResolveCredential(ep, mreq); cc != nil {
 			// Plugin.Runtime is a typed-nil sentinel used only for
 			// interface-compliance assertions; the actual decoded HCL
 			// values (BearerToken.IdempotencyKey, PostgresCredential.User,
 			// etc.) live on Body. Invoke methods through Body so the
 			// receiver is the real instance.
-			if injector, ok := cc.Credential.Body.(runtime.HTTPCredentialRuntime); ok {
-				sec, err := g.secrets.Get(cc.Credential.Symbol.Name, profile)
-				if err != nil {
-					log.Printf("secret %s/%s: %v — forwarding without injection", cc.Credential.Symbol.Name, profile, err)
-				} else if len(sec.Bytes) == 0 {
-					log.Printf("secret %s/%s: not configured (set CLAWPATROL_SECRET_%s)", cc.Credential.Symbol.Name, profile, secretEnvName(cc.Credential.Symbol.Name))
-				} else if err := injector.InjectHTTP(req.Context(), req, sec); err != nil {
-					log.Printf("inject %s: %v", cc.Credential.Symbol.Name, err)
+			var sec runtime.Secret
+			var secErr error
+			if _, ok := cc.Credential.Body.(runtime.HTTPCredentialRuntime); ok {
+				sec, secErr = g.secrets.Get(cc.Credential.Symbol.Name, profile)
+			}
+			// Synthetic-response hook (e.g. codex's JWKS / task-register
+			// stubs). Runs before the upstream forward — credential
+			// plugins use this to terminate well-known internal paths
+			// without leaking to the network. Errors fall through to
+			// normal proxying.
+			if responder, ok := cc.Credential.Body.(runtime.HTTPCredentialResponder); ok {
+				if r, handled, err := responder.RespondHTTP(req.Context(), req, sec); err != nil {
+					log.Printf("respond %s: %v", cc.Credential.Symbol.Name, err)
+				} else if handled {
+					synthResp = r
 				}
 			}
+			if synthResp == nil {
+				if injector, ok := cc.Credential.Body.(runtime.HTTPCredentialRuntime); ok {
+					if secErr != nil {
+						log.Printf("secret %s/%s: %v — forwarding without injection", cc.Credential.Symbol.Name, profile, secErr)
+					} else if len(sec.Bytes) == 0 {
+						log.Printf("secret %s/%s: not configured (set CLAWPATROL_SECRET_%s)", cc.Credential.Symbol.Name, profile, secretEnvName(cc.Credential.Symbol.Name))
+					} else if err := injector.InjectHTTP(req.Context(), req, sec); err != nil {
+						log.Printf("inject %s: %v", cc.Credential.Symbol.Name, err)
+					}
+				}
+			}
+		}
+		if synthResp != nil {
+			ev.Status = synthResp.StatusCode
+			ev.Action = "synth"
+			if err := synthResp.Write(tc); err != nil {
+				log.Printf("synth write %s %s: %v", host, req.URL.Path, err)
+			}
+			ev.Ms = time.Since(start).Milliseconds()
+			g.emitEnd(ev)
+			continue
 		}
 
 		// WebSocket upgrade. http.Transport.RoundTrip mangles the
