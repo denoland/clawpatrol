@@ -461,10 +461,10 @@ func (r *OAuthRegistry) loadFromDB() error {
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			id, owner            string
-			access, typ, refr    sql.NullString
-			expiryNs             sql.NullInt64
-			displayName, avatar  sql.NullString
+			id, owner           string
+			access, typ, refr   sql.NullString
+			expiryNs            sql.NullInt64
+			displayName, avatar sql.NullString
 		)
 		if err := rows.Scan(&id, &owner, &access, &typ, &refr, &expiryNs, &displayName, &avatar); err != nil {
 			return err
