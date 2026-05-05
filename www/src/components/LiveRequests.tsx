@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 
 export type EventRecord = {
   ts: string;
+  id?: string;
+  phase?: "" | "start" | "end" | "frame";
   mode: string;
   agent_ip?: string;
   host: string;
@@ -13,14 +15,18 @@ export type EventRecord = {
   ms: number;
   action?: string;
   reason?: string;
+  frame?: string;
+  direction?: string;
 };
+
+type RowState = EventRecord & { frames?: { direction: string; frame: string; ts: string }[] };
 
 export function LiveRequests({ agentIP, max = 200, height }: {
   agentIP?: string;
   max?: number;
   height?: string;
 }) {
-  const [events, setEvents] = useState<EventRecord[]>([]);
+  const [events, setEvents] = useState<RowState[]>([]);
 
   useEffect(() => {
     setEvents([]);
@@ -31,7 +37,7 @@ export function LiveRequests({ agentIP, max = 200, height }: {
     es.onmessage = (e) => {
       try {
         const ev = JSON.parse(e.data) as EventRecord;
-        setEvents((prev) => [ev, ...prev].slice(0, max));
+        setEvents((prev) => mergeEvent(prev, ev, max));
       } catch { /* ignore */ }
     };
     return () => es.close();
@@ -60,6 +66,39 @@ export function LiveRequests({ agentIP, max = 200, height }: {
   );
 }
 
+// mergeEvent applies a new SSE event to the row list:
+//   - phase="start" with id  → prepend in-flight row, dedupe by id.
+//   - phase="end" with id    → replace the matching in-flight row in
+//                              place so its visual position doesn't
+//                              jump (preserve any accumulated WS frames).
+//   - phase="frame" with id  → append a frame to the matching row's
+//                              `frames` list, no row reorder.
+//   - phase undefined / no id → legacy/non-correlated event, prepend.
+function mergeEvent(prev: RowState[], ev: EventRecord, max: number): RowState[] {
+  if (ev.id && ev.phase === "frame") {
+    return prev.map((r) =>
+      r.id === ev.id
+        ? { ...r, frames: [...(r.frames ?? []), { direction: ev.direction ?? "", frame: ev.frame ?? "", ts: ev.ts }] }
+        : r,
+    );
+  }
+  if (ev.id && ev.phase === "end") {
+    let found = false;
+    const next = prev.map((r) => {
+      if (r.id !== ev.id) return r;
+      found = true;
+      return { ...ev, frames: r.frames };
+    });
+    if (found) return next;
+    return [ev, ...prev].slice(0, max);
+  }
+  if (ev.id && ev.phase === "start") {
+    if (prev.some((r) => r.id === ev.id)) return prev;
+    return [ev, ...prev].slice(0, max);
+  }
+  return [ev, ...prev].slice(0, max);
+}
+
 // pathSeparator: HTTP paths start with "/", so they visually butt up
 // against the host fine. SQL "paths" (`SELECT now()`) need a space so
 // the row reads `66.42.120.196 SELECT now()` not `66.42.120.196SELECT`.
@@ -68,34 +107,59 @@ function pathSeparator(path: string): string {
   return path.startsWith("/") ? "" : " ";
 }
 
-function Row({ ev }: { ev: EventRecord }) {
+function Row({ ev }: { ev: RowState }) {
   const t = new Date(ev.ts);
   const time =
     t.toLocaleTimeString([], { hour12: false }) + "." + String(t.getMilliseconds()).padStart(3, "0");
+  const inFlight = ev.phase === "start";
   const status = ev.status || 0;
-  const statusColor =
-    status >= 500 ? "text-[#dc2626]"
+  const statusColor = inFlight
+    ? "text-[#a3a3a3]"
+    : status >= 500 ? "text-[#dc2626]"
     : status >= 400 ? "text-[#ea580c]"
     : status >= 300 ? "text-[#ca8a04]"
     : status >= 200 ? "text-[#16a34a]"
     : "text-[#737373]";
   const path = ev.path ?? "";
   const sep = pathSeparator(path);
+  const hasFrames = (ev.frames?.length ?? 0) > 0;
   return (
-    <div className="px-4 py-2 border-b border-[#f5f5f5] hover:bg-[#f9f9f9] flex items-center gap-3 min-w-0">
-      <span className="text-[10px] tabular-nums text-[#a3a3a3] flex-shrink-0">{time}</span>
-      <ModeIcon mode={ev.mode} />
-      {ev.method && (
-        <span className="text-[10px] uppercase font-semibold text-[#525252] flex-shrink-0 w-[44px]">{ev.method}</span>
+    <div className="border-b border-[#f5f5f5]">
+      <div className={"px-4 py-2 hover:bg-[#f9f9f9] flex items-center gap-3 min-w-0 " + (inFlight ? "opacity-70" : "")}>
+        <span className="text-[10px] tabular-nums text-[#a3a3a3] flex-shrink-0">{time}</span>
+        <ModeIcon mode={ev.mode} />
+        {ev.method && (
+          <span className="text-[10px] uppercase font-semibold text-[#525252] flex-shrink-0 w-[44px]">{ev.method}</span>
+        )}
+        <span className={"text-[11px] tabular-nums flex-shrink-0 w-[36px] " + statusColor}>
+          {inFlight ? <InFlightSpinner /> : (status || "—")}
+        </span>
+        <span className="text-[12px] text-[#171717] truncate flex-1 min-w-0" title={ev.host + sep + path}>
+          <span className="text-[#737373]">{ev.host}</span>
+          {sep && <span> </span>}
+          <span>{path}</span>
+        </span>
+        <span className="text-[10px] tabular-nums text-[#a3a3a3] flex-shrink-0">
+          {inFlight ? "…" : ev.ms + "ms"}
+        </span>
+      </div>
+      {hasFrames && (
+        <div className="bg-[#fafafa] border-t border-[#f5f5f5] max-h-[180px] overflow-y-auto">
+          {ev.frames!.map((f, i) => (
+            <div key={i} className="px-4 py-1 flex items-start gap-2 text-[10px] font-mono">
+              <span className="text-[#a3a3a3] flex-shrink-0 w-[24px]">{f.direction}</span>
+              <span className="text-[#525252] truncate" title={f.frame}>{f.frame}</span>
+            </div>
+          ))}
+        </div>
       )}
-      <span className={"text-[11px] tabular-nums flex-shrink-0 w-[36px] " + statusColor}>{status || "—"}</span>
-      <span className="text-[12px] text-[#171717] truncate flex-1 min-w-0" title={ev.host + sep + path}>
-        <span className="text-[#737373]">{ev.host}</span>
-        {sep && <span> </span>}
-        <span>{path}</span>
-      </span>
-      <span className="text-[10px] tabular-nums text-[#a3a3a3] flex-shrink-0">{ev.ms}ms</span>
     </div>
+  );
+}
+
+function InFlightSpinner() {
+  return (
+    <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#a3a3a3] animate-pulse align-middle" />
   );
 }
 

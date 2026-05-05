@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	cryptorand "crypto/rand"
 	"crypto/tls"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -45,6 +47,25 @@ func (g *Gateway) emit(ev Event) {
 	g.sink.Emit(ev)
 	otelRecordVerdict(ev.Action)
 	otelRecordRequest(time.Duration(ev.Ms)*time.Millisecond, ev.Action, ev.Status)
+}
+
+// emitEnd marks ev as the terminal event for its request and emits.
+// Skip-noop for events without an ID (legacy callers that don't have
+// the start/end pairing yet — splice end events keep working).
+func (g *Gateway) emitEnd(ev Event) {
+	if ev.ID != "" {
+		ev.Phase = "end"
+	}
+	g.emit(ev)
+}
+
+// newReqID returns a short hex token that correlates start/end/frame
+// events for a single request. 8 random bytes is plenty when the
+// dashboard is the only consumer; collisions just merge two rows.
+func newReqID() string {
+	var b [8]byte
+	_, _ = cryptorand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 // loadConfig parses the gateway HCL via the typed-block grammar and
@@ -1156,10 +1177,19 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		}
 
 		ev := Event{
+			ID:   newReqID(),
 			Mode: "mitm", Host: host,
 			Method: req.Method, Path: req.URL.Path,
 			AgentIP: pip,
 		}
+		// Emit start event so the dashboard renders the request as
+		// in-flight immediately. The end event with the same ID
+		// arrives when resp.Write finishes — long-poll / SSE / WS
+		// requests no longer wait for connection close to surface.
+		startEv := ev
+		startEv.Phase = "start"
+		startEv.Action = "in_flight"
+		g.emit(startEv)
 
 		cr := runtime.MatchRequest(ep, mreq)
 
@@ -1183,7 +1213,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				ev.Action = "hitl_deny"
 				ev.Reason = reason
 				ev.Ms = time.Since(start).Milliseconds()
-				g.emit(ev)
+				g.emitEnd(ev)
 				return
 			}
 			log.Printf("hitl-allow %s %s %s by %s", host, req.Method, req.URL.Path, v.By)
@@ -1202,7 +1232,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			ev.Action = "deny"
 			ev.Reason = reason
 			ev.Ms = time.Since(start).Milliseconds()
-			g.emit(ev)
+			g.emitEnd(ev)
 			return
 		}
 
@@ -1257,9 +1287,30 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		if isWSUpgrade(req) {
 			log.Printf("ws-upgrade %s %s", host, req.URL.Path)
 			ev.Action = "ws"
+			// Frame-level observability: handleWSUpgrade emits one
+			// frame event per WS message in either direction so the
+			// dashboard can render them like pg queries instead of
+			// surfacing a single "ws" row at session close. Carries
+			// the same request ID as the upgrade so the dashboard
+			// nests them under the parent row.
+			frameEmit := func(direction string, sample string) {
+				g.sink.Emit(Event{
+					Ts:        time.Now().UTC(),
+					ID:        ev.ID,
+					Phase:     "frame",
+					Mode:      "mitm",
+					Host:      host,
+					Method:    "WS",
+					Path:      req.URL.Path,
+					AgentIP:   ev.AgentIP,
+					Frame:     sample,
+					Direction: direction,
+				})
+			}
+			g.handleWSUpgrade(tc, br, req, host, frameEmit)
+			ev.Status = 101
 			ev.Ms = time.Since(start).Milliseconds()
-			g.emit(ev)
-			g.handleWSUpgrade(tc, br, req, host)
+			g.emitEnd(ev)
 			return
 		}
 
@@ -1292,7 +1343,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			ev.ReqSha = reqS.sha()
 			ev.ReqSample = reqS.sample()
 			ev.In = reqS.n
-			g.emit(ev)
+			g.emitEnd(ev)
 			return
 		}
 		var trackBuf *bytes.Buffer
@@ -1342,7 +1393,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		ev.RespSha = respS.sha()
 		ev.RespSample = respS.sample()
 		ev.Ms = time.Since(start).Milliseconds()
-		g.emit(ev)
+		g.emitEnd(ev)
 		if g.agents != nil && agentAddr != "" {
 			g.agents.trackUA(agentAddr, host, req.UserAgent(), reqS.n, respS.n)
 		}

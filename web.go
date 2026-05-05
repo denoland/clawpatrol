@@ -727,6 +727,8 @@ func allIntegrationKeys() []string { return displayOrder }
 
 type Event struct {
 	Ts         time.Time `json:"ts"`
+	ID         string    `json:"id,omitempty"`    // request id; correlates start/end/frame
+	Phase      string    `json:"phase,omitempty"` // "" (legacy/end), "start", "end", "frame"
 	Mode       string    `json:"mode"`
 	Agent      string    `json:"agent,omitempty"`
 	AgentIP    string    `json:"agent_ip,omitempty"`
@@ -743,6 +745,11 @@ type Event struct {
 	ReqSample  string    `json:"req_sample,omitempty"`
 	RespSha    string    `json:"resp_sha,omitempty"`
 	RespSample string    `json:"resp_sample,omitempty"`
+	// Frame is set for Phase="frame" only — a single WS frame's text
+	// payload (truncated at sampleCap). Direction is "c→s" or "s→c"
+	// to disambiguate masked client frames from unmasked server frames.
+	Frame     string `json:"frame,omitempty"`
+	Direction string `json:"direction,omitempty"`
 }
 
 type Sink struct {
@@ -839,7 +846,12 @@ func (s *Sink) Drops() uint64 { return s.drops.Load() }
 
 func (s *Sink) drain() {
 	for e := range s.ch {
-		if s.db != nil {
+		// Persist only terminal events. start/frame are transient
+		// signals for live SSE — duplicating them in `actions` would
+		// double-count requests in the request-history view and bloat
+		// the table for long-poll / WS sessions.
+		persist := e.Phase == "" || e.Phase == "end"
+		if s.db != nil && persist {
 			_, _ = s.db.Exec(`
 				INSERT INTO actions
 				 (ts_ns, mode, agent_ip, host, method, path, status, bytes_in, bytes_out, ms, action, reason, req_sha, resp_sha)
@@ -847,9 +859,16 @@ func (s *Sink) drain() {
 			`, e.Ts.UnixNano(), e.Mode, e.AgentIP, e.Host, e.Method, e.Path, e.Status, e.In, e.Out, e.Ms, e.Action, e.Reason, e.ReqSha, e.RespSha)
 		}
 		s.mu.Lock()
-		s.recent = append(s.recent, e)
-		if len(s.recent) > s.recentCap {
-			s.recent = s.recent[len(s.recent)-s.recentCap:]
+		// Recent ring is the SSE backlog replayed to fresh
+		// dashboards. start events without matching ends would render
+		// as stuck in-flight rows on every reconnect, so only keep
+		// terminal events. frame events for already-closed WS streams
+		// also have nowhere to go on reconnect.
+		if persist {
+			s.recent = append(s.recent, e)
+			if len(s.recent) > s.recentCap {
+				s.recent = s.recent[len(s.recent)-s.recentCap:]
+			}
 		}
 		for _, sub := range s.subs {
 			select {

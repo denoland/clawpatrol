@@ -81,7 +81,7 @@ func isWSUpgrade(req *http.Request) bool {
 // raw byte bridge once the agent's request looks like a WS upgrade.
 // The connection stays alive until either side closes; pumpWS
 // observes text frames for codex usage tracking when applicable.
-func (g *Gateway) handleWSUpgrade(client *tls.Conn, br *bufio.Reader, req *http.Request, upstream string) {
+func (g *Gateway) handleWSUpgrade(client *tls.Conn, br *bufio.Reader, req *http.Request, upstream string, frameEmit func(direction, sample string)) {
 	agentAddr := peerIP(client) // capture before netstack races to nil
 
 	// Cloudflare flags non-browser TLS fingerprints on WS handshakes
@@ -160,15 +160,33 @@ func (g *Gateway) handleWSUpgrade(client *tls.Conn, br *bufio.Reader, req *http.
 		}
 	}
 
+	const wsFrameSampleCap = 512
+	wrapPayload := func(direction string, base func([]byte)) func([]byte) {
+		return func(text []byte) {
+			if base != nil {
+				base(text)
+			}
+			if frameEmit != nil {
+				s := text
+				if len(s) > wsFrameSampleCap {
+					s = s[:wsFrameSampleCap]
+				}
+				frameEmit(direction, string(s))
+			}
+		}
+	}
+	clientToServer := wrapPayload("c→s", onPayload)
+	serverToClient := wrapPayload("s→c", onPayload)
+
 	done := make(chan struct{}, 2)
 	// client → server (frames are masked on this side)
 	go func() {
-		_ = pumpWS(br, up, params, true, onPayload)
+		_ = pumpWS(br, up, params, true, clientToServer)
 		done <- struct{}{}
 	}()
 	// server → client (frames are NOT masked)
 	go func() {
-		_ = pumpWS(upBR, client, params, false, onPayload)
+		_ = pumpWS(upBR, client, params, false, serverToClient)
 		done <- struct{}{}
 	}()
 	<-done
