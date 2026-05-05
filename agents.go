@@ -122,6 +122,12 @@ type AgentRegistry struct {
 	lc      *local.Client
 	onboard *onboardRegistry // set by Gateway ctor; supplies hostname/owner overrides in WG mode
 	db      *sql.DB          // optional; persists Session rows. nil → in-memory only.
+
+	// persistState debounces per-session DB writes (see persistSession).
+	// Separate mutex from r.mu so a slow SQLite write doesn't block
+	// snapshot()/track() readers.
+	persistMu    sync.Mutex
+	persistState map[string]persistMark
 }
 
 const activityBuckets = 30 // ~30s history at 1s sampling
@@ -393,13 +399,44 @@ func (r *AgentRegistry) recordLLMUsage(ip, sessionType, sessionID, sessionTitle,
 	r.persistSession(persistAgent, &persistSession)
 }
 
-// persistSession writes/updates the session row. No-op when r.db is nil.
+// persistSession writes/updates the session row. Debounced — a
+// session that's already been persisted within persistDebounce gets
+// skipped unless the title changed (which is what dashboard users
+// most want to see live). The skipped writes are coalesced into the
+// next call after the debounce expires; in-memory state is always
+// authoritative, the DB lags by ≤ persistDebounce.
+//
+// Why this matters: codex WS frames hit recordLLMUsage every output
+// token (tens per second on a streaming response). Without debounce
+// each one triggered an UPDATE — bursty SQLite writes serialize on
+// the writer thread and the per-event sink drain backs up. With
+// debounce the DB sees ~1 write/sec/session even under streaming.
+//
 // Called outside the registry lock so a slow disk write doesn't block
 // other request handlers.
+const persistDebounce = 2 * time.Second
+
 func (r *AgentRegistry) persistSession(ip string, s *Session) {
 	if r == nil || r.db == nil || s == nil {
 		return
 	}
+	key := ip + "|" + s.Type + "|" + s.ID
+	now := time.Now()
+
+	r.persistMu.Lock()
+	prev, hadPrev := r.persistState[key]
+	titleChanged := prev.title != s.Title
+	stale := !hadPrev || now.Sub(prev.at) >= persistDebounce
+	if !titleChanged && !stale {
+		r.persistMu.Unlock()
+		return
+	}
+	if r.persistState == nil {
+		r.persistState = map[string]persistMark{}
+	}
+	r.persistState[key] = persistMark{at: now, title: s.Title}
+	r.persistMu.Unlock()
+
 	_, _ = r.db.Exec(`
 		INSERT INTO sessions
 		  (agent_ip, type, id, title, model, tokens_in, tokens_out, ctx_used, ctx_max, reqs, first_at, last_at)
@@ -416,6 +453,11 @@ func (r *AgentRegistry) persistSession(ip string, s *Session) {
 	`, ip, s.Type, s.ID, s.Title, s.Model,
 		s.TokensIn, s.TokensOut, s.CtxUsed, s.CtxMax, s.Reqs,
 		s.FirstAt.UnixNano(), s.LastAt.UnixNano())
+}
+
+type persistMark struct {
+	at    time.Time
+	title string
 }
 
 // LoadSessions rehydrates persisted sessions from the DB into the
