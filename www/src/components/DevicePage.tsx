@@ -108,6 +108,16 @@ export function DevicePage({
               }
             }}
           />
+          <a
+            href={`#/analytics/${encodeURIComponent(ip)}`}
+            title="analytics"
+            className="w-[36px] h-[36px] rounded-full border border-[#e5e5e5] text-[#525252] flex items-center justify-center hover:border-[#171717] hover:text-[#171717] transition-colors"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 3v18h18" />
+              <path d="m7 16 4-8 4 4 4-6" />
+            </svg>
+          </a>
           <button
             type="button"
             onClick={remove}
