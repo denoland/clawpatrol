@@ -85,6 +85,9 @@ func (e *ClickhouseNativeEndpoint) port() int {
 	if e.Port > 0 {
 		return e.Port
 	}
+	if e.TLS {
+		return 9440
+	}
 	return 9000
 }
 

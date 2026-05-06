@@ -217,6 +217,40 @@ func TestClickhouseConnRouteHostsNoDoublePort(t *testing.T) {
 	}
 }
 
+// TestClickhouseDefaultPortTLS pins the default-port fork: when the
+// operator omits Port, plaintext endpoints land on 9000 and TLS
+// endpoints on 9440 (ClickHouse's published convention). An explicit
+// Port always wins over the TLS-derived default.
+func TestClickhouseDefaultPortTLS(t *testing.T) {
+	cases := []struct {
+		name string
+		e    ClickhouseNativeEndpoint
+		want string
+	}{
+		{
+			name: "no port, plaintext → 9000",
+			e:    ClickhouseNativeEndpoint{Hosts: []string{"ch.example.com"}},
+			want: "ch.example.com:9000",
+		},
+		{
+			name: "no port, tls → 9440",
+			e:    ClickhouseNativeEndpoint{Hosts: []string{"ch.example.com"}, TLS: true},
+			want: "ch.example.com:9440",
+		},
+		{
+			name: "explicit port wins over tls default",
+			e:    ClickhouseNativeEndpoint{Hosts: []string{"ch.example.com"}, TLS: true, Port: 9001},
+			want: "ch.example.com:9001",
+		},
+	}
+	for _, c := range cases {
+		got := c.e.EndpointHosts()
+		if len(got) != 1 || got[0] != c.want {
+			t.Errorf("%s: EndpointHosts() = %v, want [%q]", c.name, got, c.want)
+		}
+	}
+}
+
 // TestChHostPort exercises the host:port splitter — including the
 // IPv6 + named-port edge cases that strconv.Atoi covers but the
 // hand-rolled digit walk did not.

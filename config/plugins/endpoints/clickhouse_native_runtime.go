@@ -246,7 +246,8 @@ func chPickCredential(ep *config.CompiledEndpoint) *config.CompiledCredential {
 //
 // hosts entries are normalized by EndpointHosts to host:port so the
 // helper can split cleanly; defaultPort is the plugin's fallback
-// (9000) used only when an entry slipped through without a port.
+// (9000 plaintext / 9440 TLS) used only when an entry slipped through
+// without a port.
 func chPickUpstream(hosts []string, upstreamHost string, dstPort uint16, defaultPort int) string {
 	if upstreamHost != "" && dstPort != 0 {
 		return net.JoinHostPort(upstreamHost, strconv.Itoa(int(dstPort)))
