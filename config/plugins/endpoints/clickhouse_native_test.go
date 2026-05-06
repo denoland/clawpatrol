@@ -251,6 +251,33 @@ func TestClickhouseDefaultPortTLS(t *testing.T) {
 	}
 }
 
+// TestClickhouseUpstreamTLSConfig pins the AcceptInvalidCertificate
+// → InsecureSkipVerify mapping that gates the self-signed-CA opt-out.
+func TestClickhouseUpstreamTLSConfig(t *testing.T) {
+	cases := []struct {
+		name              string
+		acceptInvalidCert bool
+		wantSkip          bool
+		wantSrvName       string
+	}{
+		{"default verifies", false, false, "ch.example.com"},
+		{"accept_invalid skips verification", true, true, "ch.example.com"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := chUpstreamTLSConfig("ch.example.com", c.acceptInvalidCert)
+			if cfg.InsecureSkipVerify != c.wantSkip {
+				t.Errorf("acceptInvalidCert=%v InsecureSkipVerify=%v, want %v",
+					c.acceptInvalidCert, cfg.InsecureSkipVerify, c.wantSkip)
+			}
+			if cfg.ServerName != c.wantSrvName {
+				t.Errorf("acceptInvalidCert=%v ServerName=%q, want %q",
+					c.acceptInvalidCert, cfg.ServerName, c.wantSrvName)
+			}
+		})
+	}
+}
+
 // TestChHostPort exercises the host:port splitter — including the
 // IPv6 + named-port edge cases that strconv.Atoi covers but the
 // hand-rolled digit walk did not.

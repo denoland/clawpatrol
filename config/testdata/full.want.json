@@ -346,6 +346,7 @@
           ],
           "Port": 0,
           "TLS": false,
+          "AcceptInvalidCertificate": false,
           "Credential": "ch-o11y"
         },
         "family": "sql",

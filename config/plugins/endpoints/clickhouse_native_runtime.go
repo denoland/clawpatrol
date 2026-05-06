@@ -151,7 +151,7 @@ func (ClickhouseNativeEndpointRuntime) HandleConn(ctx context.Context, ch *runti
 		if h, _, err := net.SplitHostPort(host); err == nil {
 			host = h
 		}
-		tc := tls.Client(upstream, &tls.Config{ServerName: host})
+		tc := tls.Client(upstream, chUpstreamTLSConfig(host, chEp.AcceptInvalidCertificate))
 		if err := tc.HandshakeContext(ctx); err != nil {
 			chEmitError(ch, "tls-handshake", err.Error())
 			return fmt.Errorf("upstream tls: %w", err)
@@ -199,6 +199,20 @@ func (ClickhouseNativeEndpointRuntime) HandleConn(ctx context.Context, ch *runti
 	// Step 5: bidirectional pipe.
 	chPipe(ch.Conn, upstream)
 	return nil
+}
+
+// chUpstreamTLSConfig builds the upstream tls.Config from the
+// endpoint's AcceptInvalidCertificate flag. False (default) keeps the
+// public-roots, hostname-matched check. True disables both —
+// necessary for self-hosted ClickHouse fronted by a private CA, at
+// the cost of trusting whatever cert the upstream presents (MITM
+// exposure on the wg→clickhouse hop). Operators opt in per endpoint;
+// the default stays safe.
+func chUpstreamTLSConfig(host string, acceptInvalidCert bool) *tls.Config {
+	return &tls.Config{
+		ServerName:         host,
+		InsecureSkipVerify: acceptInvalidCert,
+	}
 }
 
 // chEmitError emits a structured error ConnEvent if the host wired

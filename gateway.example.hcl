@@ -72,6 +72,21 @@ endpoint "https" "github" {
   credential = github-pat
 }
 
+# ClickHouse over the native protocol. `tls = true` enables TLS on
+# the upstream hop. `accept_invalid_certificate = true` (mirrors
+# clickhouse-client's flag) skips upstream cert validation — use for
+# self-hosted ClickHouse fronted by a private CA; trusts whatever
+# cert the upstream presents. Default keeps full cert validation
+# against system roots.
+#
+# credential "clickhouse_credential" "ch-self-hosted" {}
+# endpoint "clickhouse_native" "ch-self-hosted" {
+#   hosts                      = ["clickhouse.internal:9440"]
+#   tls                        = true
+#   accept_invalid_certificate = true
+#   credential                 = ch-self-hosted
+# }
+
 # Approvers: who arbitrates when a rule needs human / LLM review.
 
 approver "human_approver" "ops" {

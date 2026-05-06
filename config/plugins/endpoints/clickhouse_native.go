@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
 
@@ -37,11 +38,17 @@ import (
 // TLS posture. Default false: WG-only deployments where the operator
 // wants plaintext on the inner hop (typical self-hosted ClickHouse
 // on 9000 behind a private network) leave it off.
+//
+// AcceptInvalidCertificate mirrors clickhouse-client's flag of the
+// same name: when true and tls is on, the gateway skips upstream cert
+// validation. Use for self-hosted ClickHouse fronted by a private CA.
+// Default false keeps full validation against system roots.
 type ClickhouseNativeEndpoint struct {
-	Hosts      []string `hcl:"hosts"`
-	Port       int      `hcl:"port,optional"`
-	TLS        bool     `hcl:"tls,optional"`
-	Credential string   `hcl:"credential,optional"`
+	Hosts                    []string `hcl:"hosts"`
+	Port                     int      `hcl:"port,optional"`
+	TLS                      bool     `hcl:"tls,optional"`
+	AcceptInvalidCertificate bool     `hcl:"accept_invalid_certificate,optional"`
+	Credential               string   `hcl:"credential,optional"`
 }
 
 // EndpointHosts returns the endpoint's host:port list, normalized so
@@ -102,13 +109,14 @@ type ClickhouseNativeEndpointRuntime struct{}
 func init() {
 	var _ runtime.ConnEndpointRuntime = ClickhouseNativeEndpointRuntime{}
 	config.Register(&config.Plugin{
-		Kind:    config.KindEndpoint,
-		Type:    "clickhouse_native",
-		Family:  "sql",
-		New:     func() any { return &ClickhouseNativeEndpoint{} },
-		Refs:    singularRef,
-		Runtime: ClickhouseNativeEndpointRuntime{},
-		Build:   passthroughBuild,
+		Kind:     config.KindEndpoint,
+		Type:     "clickhouse_native",
+		Family:   "sql",
+		New:      func() any { return &ClickhouseNativeEndpoint{} },
+		Refs:     singularRef,
+		Runtime:  ClickhouseNativeEndpointRuntime{},
+		Validate: validateClickhouseNativeEndpoint,
+		Build:    passthroughBuild,
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			e := body.(*ClickhouseNativeEndpoint)
 			b.SetAttributeValue("hosts", config.StringListVal(e.Hosts))
@@ -118,9 +126,31 @@ func init() {
 			if e.TLS {
 				b.SetAttributeValue("tls", cty.BoolVal(true))
 			}
+			if e.AcceptInvalidCertificate {
+				b.SetAttributeValue("accept_invalid_certificate", cty.BoolVal(true))
+			}
 			if e.Credential != "" {
 				config.SetIdent(b, "credential", e.Credential)
 			}
 		},
 	})
+}
+
+// validateClickhouseNativeEndpoint rejects accept_invalid_certificate
+// when tls is off — the flag only affects the upstream TLS handshake,
+// so without tls there's nothing for it to do.
+func validateClickhouseNativeEndpoint(d any, name string, ctx *config.BuildCtx) hcl.Diagnostics {
+	e, ok := d.(*ClickhouseNativeEndpoint)
+	if !ok {
+		return nil
+	}
+	if e.AcceptInvalidCertificate && !e.TLS {
+		return hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("accept_invalid_certificate set without tls on clickhouse_native endpoint %q", name),
+			Detail:   "accept_invalid_certificate only affects the upstream TLS handshake; set `tls = true` to enable TLS, or remove accept_invalid_certificate.",
+			Subject:  &ctx.Block.DefRange,
+		}}
+	}
+	return nil
 }
