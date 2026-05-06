@@ -22,10 +22,10 @@ func TestPickSSHCredential(t *testing.T) {
 		}
 	}
 	cases := []struct {
-		name    string
-		creds   []*config.CompiledCredential
-		user    string
-		want    string // expected credential name; "" for nil
+		name  string
+		creds []*config.CompiledCredential
+		user  string
+		want  string // expected credential name; "" for nil
 	}{
 		{"empty list", nil, "anybody", ""},
 		{"singular catchall — matches any user", []*config.CompiledCredential{mk("", "default")}, "anybody", "default"},

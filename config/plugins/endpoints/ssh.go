@@ -59,10 +59,10 @@ import (
 // per-username dispatch (mirrors postgres' placeholder-based dispatch,
 // just spelled `user` because that's what SSH calls it):
 //
-//   credential = X                                  // any user → X
-//   credentials = [{ user = "root",   credential = X },
-//                  { user = "deploy", credential = Y },
-//                  { credential = Z }]              // fallback
+//	credential = X                                  // any user → X
+//	credentials = [{ user = "root",   credential = X },
+//	               { user = "deploy", credential = Y },
+//	               { credential = Z }]              // fallback
 //
 // The agent's username is also passed through verbatim as the upstream
 // SSH user — credentials carry only auth material (key / password /
@@ -95,8 +95,8 @@ func (e *SSHEndpoint) RequiresVIP() bool { return true }
 
 // hasCredentialsRaw plumbing — lets the shared multiCredValidate hook
 // read CredentialsRaw and stash the parsed entries back.
-func (e *SSHEndpoint) credentialAndRaw() (string, cty.Value)         { return e.Credential, e.CredentialsRaw }
-func (e *SSHEndpoint) setCredentialEntries(es []CredentialEntry)     { e.Credentials = es }
+func (e *SSHEndpoint) credentialAndRaw() (string, cty.Value)     { return e.Credential, e.CredentialsRaw }
+func (e *SSHEndpoint) setCredentialEntries(es []CredentialEntry) { e.Credentials = es }
 
 // SSHEndpointRuntime is stateful only in the host-key cache: each
 // endpoint's persisted ed25519 key is parsed once and reused for the
