@@ -88,7 +88,13 @@ func validateBinding(decoded any, kind string, name string, blockRange hcl.Range
 
 // parseCredentialList walks a raw cty.Value list of objects into
 // typed CredentialEntry values. Each object must have a "credential"
-// attribute; "placeholder" is optional.
+// attribute; the dispatch key is optional and may be spelled either
+// "placeholder" (postgres / https flavour — the agent's wire-level
+// discriminator string) or "user" (ssh — the agent's username),
+// whichever reads more naturally for the protocol. Both forms compile
+// to the same CredentialEntry.Placeholder field. Specifying both on
+// one entry is an error. Within a list there must be at most one
+// fallback entry (no dispatch key) and no duplicate dispatch values.
 func parseCredentialList(raw cty.Value, blockRange hcl.Range) ([]CredentialEntry, hcl.Diagnostics) {
 	if raw.IsNull() {
 		return nil, nil
@@ -111,7 +117,7 @@ func parseCredentialList(raw cty.Value, blockRange hcl.Range) ([]CredentialEntry
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
 				Summary:  "credentials list element must be an object",
-				Detail:   fmt.Sprintf("Got %s; expected `{ placeholder = ..., credential = ... }`.", t.FriendlyName()),
+				Detail:   fmt.Sprintf("Got %s; expected `{ placeholder|user = ..., credential = ... }`.", t.FriendlyName()),
 				Subject:  &blockRange,
 			})
 			continue
@@ -131,13 +137,55 @@ func parseCredentialList(raw cty.Value, blockRange hcl.Range) ([]CredentialEntry
 			})
 			continue
 		}
+		hasPlaceholder := false
 		if t.HasAttribute("placeholder") {
 			pv := el.GetAttr("placeholder")
-			if !pv.IsNull() && pv.Type() == cty.String {
+			if !pv.IsNull() && pv.Type() == cty.String && pv.AsString() != "" {
 				entry.Placeholder = pv.AsString()
+				hasPlaceholder = true
+			}
+		}
+		if t.HasAttribute("user") {
+			uv := el.GetAttr("user")
+			if !uv.IsNull() && uv.Type() == cty.String && uv.AsString() != "" {
+				if hasPlaceholder {
+					diags = append(diags, &hcl.Diagnostic{
+						Severity: hcl.DiagError,
+						Summary:  "credentials entry has both `placeholder` and `user`",
+						Detail:   "Pick one — they're aliases for the same dispatch key.",
+						Subject:  &blockRange,
+					})
+					continue
+				}
+				entry.Placeholder = uv.AsString()
 			}
 		}
 		out = append(out, entry)
+	}
+	// Enforce: at most one fallback entry; no duplicate dispatch keys.
+	seen := map[string]bool{}
+	fallbacks := 0
+	for _, e := range out {
+		if e.Placeholder == "" {
+			fallbacks++
+			continue
+		}
+		if seen[e.Placeholder] {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("duplicate credentials dispatch key %q", e.Placeholder),
+				Subject:  &blockRange,
+			})
+		}
+		seen[e.Placeholder] = true
+	}
+	if fallbacks > 1 {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "credentials list has more than one fallback entry",
+			Detail:   "An entry without `placeholder`/`user` is the catchall; only one is allowed.",
+			Subject:  &blockRange,
+		})
 	}
 	return out, diags
 }
@@ -198,7 +246,13 @@ var singularRef = []config.RefSpec{
 // `credentials = [{...}, {...}]` (multi-credential dispatch). The
 // list form needs raw tokens because each entry's `credential` value
 // is a bare identifier ref, not a quoted string.
-func emitCredentialBinding(b *hclwrite.Body, single string, list []CredentialEntry) {
+//
+// dispatchKey is the HCL keyword the protocol uses for the dispatch
+// value — "placeholder" for postgres / https / openai_codex (where
+// the agent embeds an arbitrary discriminator string in the wire
+// protocol), or "user" for ssh (where the agent's username is the
+// natural label). Both compile to the same CredentialEntry.Placeholder.
+func emitCredentialBinding(b *hclwrite.Body, single string, list []CredentialEntry, dispatchKey string) {
 	if len(list) == 0 {
 		if single != "" {
 			config.SetIdent(b, "credential", single)
@@ -213,7 +267,7 @@ func emitCredentialBinding(b *hclwrite.Body, single string, list []CredentialEnt
 		tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte("    {")})
 		if e.Placeholder != "" {
 			tokens = append(tokens,
-				&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(" placeholder = ")},
+				&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(" " + dispatchKey + " = ")},
 				&hclwrite.Token{Type: hclsyntax.TokenOQuote, Bytes: []byte(`"`)},
 				&hclwrite.Token{Type: hclsyntax.TokenQuotedLit, Bytes: []byte(e.Placeholder)},
 				&hclwrite.Token{Type: hclsyntax.TokenCQuote, Bytes: []byte(`"`)},

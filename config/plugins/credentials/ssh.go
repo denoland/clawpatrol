@@ -1,10 +1,12 @@
 package credentials
 
-// ssh credential: the wire-protocol user + key/password the SSH
-// endpoint runtime uses when terminating upstream auth on the agent's
-// behalf. The agent never sees the upstream auth challenge; the
-// gateway accepts whatever the agent's SSH client offers (WG is the
-// trust boundary) and replays the credential's material upstream.
+// ssh credential: the auth material the SSH endpoint runtime replays
+// upstream on the agent's behalf. The credential carries only key /
+// password / host-pubkey-pin — the username sent upstream is the one
+// the agent typed, passed through verbatim. Per-username dispatch
+// (e.g. `ssh root@host` vs `ssh deploy@host` picking different keys)
+// lives on the endpoint via the `credentials = [{user=..., credential=...}]`
+// list, mirroring postgres' placeholder-based dispatch.
 //
 // Material is split across slots so operators can paste a multi-line
 // PEM into one textarea and a single-line passphrase into another:
@@ -20,23 +22,20 @@ package credentials
 
 import (
 	"github.com/hashicorp/hcl/v2/hclwrite"
-	"github.com/zclconf/go-cty/cty"
 
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/plugins/sshproto"
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
-type SSHCredential struct {
-	User string `hcl:"user,optional"`
-}
+type SSHCredential struct{}
 
 // SSHAuth implements sshproto.AuthCredential. Returns the raw
 // material; the SSH endpoint runtime parses keys via
 // golang.org/x/crypto/ssh and surfaces parse errors with line
 // context.
 func (s *SSHCredential) SSHAuth(sec runtime.Secret) (sshproto.Creds, error) {
-	creds := sshproto.Creds{User: s.User}
+	creds := sshproto.Creds{}
 	if v, ok := sec.Extras["private_key"]; ok {
 		creds.PrivateKey = []byte(v)
 	}
@@ -86,11 +85,6 @@ func init() {
 		New:     newer[SSHCredential](),
 		Runtime: (*SSHCredential)(nil),
 		Build:   passthrough,
-		Emit: func(body any, _ string, b *hclwrite.Body) {
-			v := body.(*SSHCredential)
-			if v.User != "" {
-				b.SetAttributeValue("user", cty.StringVal(v.User))
-			}
-		},
+		Emit:    func(any, string, *hclwrite.Body) {},
 	})
 }

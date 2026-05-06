@@ -109,7 +109,6 @@ rule "http_rule" "github-writes" {
 # dashboard surfaces it per endpoint).
 
 credential "ssh" "build-host-cred" {
-  user = "deploy"
   # private_key + (optional) passphrase + (optional) host_pubkey live
   # in the secret store — paste them via the dashboard.
 }
@@ -117,6 +116,10 @@ credential "ssh" "build-host-cred" {
 endpoint "ssh" "build-host" {
   hosts      = ["build.example.com:2222"]
   credential = build-host-cred
+  # The agent's username (`ssh user@build.example.com`) is passed
+  # through to the upstream verbatim. For per-username dispatch use
+  # `credentials = [{user="root", credential=...}, {credential=...}]`
+  # — last entry without `user` is the catchall.
 }
 
 # Profiles: bind a device identity to an endpoint set. Rules ride along

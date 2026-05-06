@@ -54,18 +54,30 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
-// SSHEndpoint binds one or more host:port tuples to a single SSH
-// credential. Multi-credential dispatch isn't supported in v1 — SSH
-// has no convenient placeholder slot like postgres' StartupMessage
-// password, so adding it would require a UX-affecting decision.
+// SSHEndpoint binds one or more host:port tuples to one or more SSH
+// credentials. The agent's username is the discriminator for
+// per-username dispatch (mirrors postgres' placeholder-based dispatch,
+// just spelled `user` because that's what SSH calls it):
+//
+//   credential = X                                  // any user → X
+//   credentials = [{ user = "root",   credential = X },
+//                  { user = "deploy", credential = Y },
+//                  { credential = Z }]              // fallback
+//
+// The agent's username is also passed through verbatim as the upstream
+// SSH user — credentials carry only auth material (key / password /
+// host_pubkey), never a username override.
 type SSHEndpoint struct {
-	Hosts      []string `hcl:"hosts"`
-	Credential string   `hcl:"credential,optional"`
+	Hosts          []string  `hcl:"hosts"`
+	Credential     string    `hcl:"credential,optional"`
+	CredentialsRaw cty.Value `hcl:"credentials,optional" json:"-"`
+
+	Credentials []CredentialEntry `json:"Credentials,omitempty"`
 }
 
 func (e *SSHEndpoint) EndpointHosts() []string { return e.Hosts }
 func (e *SSHEndpoint) EndpointCredentials() []config.CredBinding {
-	return singleBinding(e.Credential)
+	return bindings(e.Credential, e.Credentials)
 }
 
 // ConnRouteHosts implements runtime.ConnRouter — gives the gateway's
@@ -81,6 +93,11 @@ func (e *SSHEndpoint) ConnRouteHosts() []string { return e.Hosts }
 // second one behind the same upstream IP).
 func (e *SSHEndpoint) RequiresVIP() bool { return true }
 
+// hasCredentialsRaw plumbing — lets the shared multiCredValidate hook
+// read CredentialsRaw and stash the parsed entries back.
+func (e *SSHEndpoint) credentialAndRaw() (string, cty.Value)         { return e.Credential, e.CredentialsRaw }
+func (e *SSHEndpoint) setCredentialEntries(es []CredentialEntry)     { e.Credentials = es }
+
 // SSHEndpointRuntime is stateful only in the host-key cache: each
 // endpoint's persisted ed25519 key is parsed once and reused for the
 // lifetime of the process. The runtime struct itself is shared
@@ -93,13 +110,14 @@ type SSHEndpointRuntime struct {
 func init() {
 	rt := &SSHEndpointRuntime{}
 	config.Register(&config.Plugin{
-		Kind:    config.KindEndpoint,
-		Type:    "ssh",
-		Family:  "ssh",
-		New:     func() any { return &SSHEndpoint{} },
-		Refs:    singularRef,
-		Runtime: rt,
-		Build:   passthroughBuild,
+		Kind:     config.KindEndpoint,
+		Type:     "ssh",
+		Family:   "ssh",
+		New:      func() any { return &SSHEndpoint{} },
+		Refs:     singularRef,
+		Validate: multiCredValidate,
+		Runtime:  rt,
+		Build:    passthroughBuild,
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			e := body.(*SSHEndpoint)
 			if len(e.Hosts) > 0 {
@@ -109,7 +127,7 @@ func init() {
 				}
 				b.SetAttributeValue("hosts", cty.ListVal(vals))
 			}
-			emitCredentialBinding(b, e.Credential, nil)
+			emitCredentialBinding(b, e.Credential, e.Credentials, "user")
 		},
 	})
 }
@@ -149,17 +167,10 @@ func (rt *SSHEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHa
 		return fmt.Errorf("ssh endpoint %q has no host matching dst port %d", ch.Endpoint.Name, ch.DstPort)
 	}
 
-	// Step 3: resolve credential and parse the auth material before
-	// the SSH handshake, so we can fail loudly on the agent side
-	// rather than after a successful client greeting.
-	upstreamCfg, err := rt.upstreamClientConfig(ch, ep)
-	if err != nil {
-		return fmt.Errorf("ssh credential: %w", err)
-	}
-
-	// Step 4: agent-side server. Accept anything the client offers —
+	// Step 3: agent-side server. Accept anything the client offers —
 	// WG is the trust boundary, same model postgres uses for its
-	// SCRAM-offload.
+	// SCRAM-offload. The handshake also gives us the agent's
+	// username, which we need before resolving the credential.
 	srvCfg := &ssh.ServerConfig{
 		PasswordCallback: func(ssh.ConnMetadata, []byte) (*ssh.Permissions, error) {
 			return &ssh.Permissions{}, nil
@@ -176,6 +187,25 @@ func (rt *SSHEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHa
 		return fmt.Errorf("ssh server handshake: %w", err)
 	}
 	defer srvConn.Close()
+
+	agentUser := srvConn.User()
+	if agentUser == "" {
+		return fmt.Errorf("agent did not specify a username")
+	}
+
+	// Step 4: pick the credential for this username and build the
+	// upstream SSH client config. Per-username dispatch lives on the
+	// endpoint via `credentials = [{user=..., credential=...}, ...]`;
+	// the singular `credential = X` form collapses to a one-entry list
+	// with empty Placeholder (catchall).
+	cc := pickSSHCredential(ch.Endpoint, agentUser)
+	if cc == nil {
+		return fmt.Errorf("ssh endpoint %q has no credential matching agent user %q", ch.Endpoint.Name, agentUser)
+	}
+	upstreamCfg, err := rt.upstreamClientConfig(ch, cc, agentUser)
+	if err != nil {
+		return fmt.Errorf("ssh credential %q: %w", cc.Credential.Symbol.Name, err)
+	}
 
 	// Step 5: dial upstream and do the client handshake. DialUpstream
 	// takes a real hostname:port and resolves it on the gateway's
@@ -199,7 +229,7 @@ func (rt *SSHEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHa
 		ch.Emit(runtime.ConnEvent{
 			Action:  "allow",
 			Verb:    "ssh",
-			Summary: fmt.Sprintf("%s@%s", upstreamCfg.User, upstreamAddr),
+			Summary: fmt.Sprintf("%s@%s", agentUser, upstreamAddr),
 		})
 	}
 
@@ -235,28 +265,47 @@ func (rt *SSHEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHa
 	return nil
 }
 
-// ── Upstream auth ─────────────────────────────────────────────────────
+// ── Credential dispatch + upstream auth ──────────────────────────────
 
-func (rt *SSHEndpointRuntime) upstreamClientConfig(ch *runtime.ConnHandle, ep *SSHEndpoint) (*ssh.ClientConfig, error) {
-	cred := ch.Endpoint.Credentials
-	if len(cred) == 0 {
-		return nil, fmt.Errorf("endpoint %q has no credential bound", ch.Endpoint.Name)
+// pickSSHCredential resolves the agent username to a CompiledCredential.
+// Single-binding endpoints (one entry, no placeholder) return that
+// entry. Multi-credential endpoints pick the entry whose Placeholder
+// (= HCL `user`) matches; if no entry matches and there's a
+// no-placeholder fallback, that wins. Returns nil when nothing fits —
+// the caller refuses the connection rather than silently routing
+// through a credential not meant for the user.
+func pickSSHCredential(ep *config.CompiledEndpoint, agentUser string) *config.CompiledCredential {
+	if ep == nil || len(ep.Credentials) == 0 {
+		return nil
 	}
-	cc := cred[0]
+	if len(ep.Credentials) == 1 && ep.Credentials[0].Placeholder == "" {
+		return ep.Credentials[0]
+	}
+	var fallback *config.CompiledCredential
+	for _, c := range ep.Credentials {
+		if c.Placeholder == "" {
+			fallback = c
+			continue
+		}
+		if agentUser == c.Placeholder {
+			return c
+		}
+	}
+	return fallback
+}
+
+func (rt *SSHEndpointRuntime) upstreamClientConfig(ch *runtime.ConnHandle, cc *config.CompiledCredential, agentUser string) (*ssh.ClientConfig, error) {
 	auth, ok := cc.Credential.Body.(sshproto.AuthCredential)
 	if !ok {
-		return nil, fmt.Errorf("credential %q does not implement sshproto.AuthCredential (use credential type \"ssh\")", cc.Credential.Symbol.Name)
+		return nil, fmt.Errorf("does not implement sshproto.AuthCredential (use credential type \"ssh\")")
 	}
 	sec, err := ch.Secrets.Get(cc.Credential.Symbol.Name, ch.Profile)
 	if err != nil {
-		return nil, fmt.Errorf("fetch secret for %q: %w", cc.Credential.Symbol.Name, err)
+		return nil, fmt.Errorf("fetch secret: %w", err)
 	}
 	creds, err := auth.SSHAuth(sec)
 	if err != nil {
 		return nil, err
-	}
-	if creds.User == "" {
-		return nil, fmt.Errorf("credential %q has no user — set `user = ...` in HCL", cc.Credential.Symbol.Name)
 	}
 
 	var methods []ssh.AuthMethod
@@ -268,7 +317,7 @@ func (rt *SSHEndpointRuntime) upstreamClientConfig(ch *runtime.ConnHandle, ep *S
 			signer, err = ssh.ParsePrivateKey(creds.PrivateKey)
 		}
 		if err != nil {
-			return nil, fmt.Errorf("parse private_key for credential %q: %w", cc.Credential.Symbol.Name, err)
+			return nil, fmt.Errorf("parse private_key: %w", err)
 		}
 		methods = append(methods, ssh.PublicKeys(signer))
 	}
@@ -276,16 +325,16 @@ func (rt *SSHEndpointRuntime) upstreamClientConfig(ch *runtime.ConnHandle, ep *S
 		methods = append(methods, ssh.Password(creds.Password))
 	}
 	if len(methods) == 0 {
-		return nil, fmt.Errorf("credential %q has neither private_key nor password — paste one via the dashboard", cc.Credential.Symbol.Name)
+		return nil, fmt.Errorf("neither private_key nor password set — paste one via the dashboard")
 	}
 
 	hostKeyCb, err := buildHostKeyCallback(creds.HostPubkey, ch.Endpoint.Name)
 	if err != nil {
-		return nil, fmt.Errorf("parse host_pubkey for credential %q: %w", cc.Credential.Symbol.Name, err)
+		return nil, fmt.Errorf("parse host_pubkey: %w", err)
 	}
 
 	return &ssh.ClientConfig{
-		User:            creds.User,
+		User:            agentUser,
 		Auth:            methods,
 		HostKeyCallback: hostKeyCb,
 		Timeout:         30 * time.Second,

@@ -16,13 +16,14 @@ import (
 )
 
 // Creds is the materialised view an SSH credential hands to the SSH
-// endpoint runtime. PrivateKey is the raw PEM bytes (PKCS#1, PKCS#8
-// or OpenSSH format — golang.org/x/crypto/ssh.ParsePrivateKey* handles
-// all three). HostPubkey, when non-empty, is a single-line
+// endpoint runtime. The credential carries only auth material — the
+// upstream username comes from the agent (whatever the SSH client
+// sent in the connect line). PrivateKey is the raw PEM bytes (PKCS#1,
+// PKCS#8 or OpenSSH format — golang.org/x/crypto/ssh.ParsePrivateKey*
+// handles all three). HostPubkey, when non-empty, is a single-line
 // authorized_keys-style entry the endpoint pins for upstream
 // verification (matches `ssh-keyscan` output).
 type Creds struct {
-	User       string
 	PrivateKey []byte
 	Passphrase string
 	Password   string

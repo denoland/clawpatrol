@@ -126,7 +126,7 @@ func init() {
 			e := body.(*PostgresEndpoint)
 			b.SetAttributeValue("host", cty.StringVal(e.Host))
 			b.SetAttributeValue("database", cty.StringVal(e.Database))
-			emitCredentialBinding(b, e.Credential, e.Credentials)
+			emitCredentialBinding(b, e.Credential, e.Credentials, "placeholder")
 		},
 	})
 }
