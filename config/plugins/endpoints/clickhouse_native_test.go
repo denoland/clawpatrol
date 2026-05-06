@@ -239,3 +239,72 @@ func TestChHostPort(t *testing.T) {
 		}
 	}
 }
+
+// TestClickhouseRequiresVIP nails down the marker — clickhouse_native
+// always opts into VIP allocation. The dispatcher's IP-literal carve-
+// out happens at the dnsvip layer (entries whose host is an IP are
+// skipped during VIP allocation), not by toggling RequiresVIP per
+// host, so the plugin can return a constant true.
+func TestClickhouseRequiresVIP(t *testing.T) {
+	e := &ClickhouseNativeEndpoint{}
+	if !e.RequiresVIP() {
+		t.Fatal("ClickhouseNativeEndpoint.RequiresVIP() = false, want true")
+	}
+}
+
+// TestClickhousePickUpstream covers the upstream-resolver helper
+// across the dispatch shapes the plugin has to handle: VIP path
+// (UpstreamHost + DstPort known), direct-IP fallback (only DstPort),
+// and the legacy first-host fallback when both are missing. Multi-
+// host / mixed-port endpoints rely on DstPort matching to disambiguate.
+func TestClickhousePickUpstream(t *testing.T) {
+	cases := []struct {
+		name         string
+		hosts        []string
+		upstreamHost string
+		dstPort      uint16
+		defaultPort  int
+		want         string
+	}{
+		{
+			name:         "vip path: hostname + port supplied",
+			hosts:        []string{"a.example.com:9440", "b.example.com:9440"},
+			upstreamHost: "b.example.com",
+			dstPort:      9440,
+			defaultPort:  9000,
+			want:         "b.example.com:9440",
+		},
+		{
+			name:        "direct-ip path: only dst port → port-matched first host",
+			hosts:       []string{"172.17.0.1:19440", "192.168.1.5:9000"},
+			dstPort:     9000,
+			defaultPort: 9000,
+			want:        "192.168.1.5:9000",
+		},
+		{
+			name:        "fallback: no upstream/port → first host",
+			hosts:       []string{"only.example.com:9000"},
+			defaultPort: 9000,
+			want:        "only.example.com:9000",
+		},
+		{
+			name:        "bare hostname falls back to defaultPort",
+			hosts:       []string{"bare.example.com"},
+			defaultPort: 9000,
+			want:        "bare.example.com:9000",
+		},
+		{
+			name:        "no hosts → empty string",
+			hosts:       nil,
+			defaultPort: 9000,
+			want:        "",
+		},
+	}
+	for _, c := range cases {
+		got := chPickUpstream(c.hosts, c.upstreamHost, c.dstPort, c.defaultPort)
+		if got != c.want {
+			t.Errorf("%s: chPickUpstream(%v, %q, %d, %d) = %q, want %q",
+				c.name, c.hosts, c.upstreamHost, c.dstPort, c.defaultPort, got, c.want)
+		}
+	}
+}

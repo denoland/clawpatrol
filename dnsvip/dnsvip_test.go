@@ -235,6 +235,35 @@ func TestLookupVIP(t *testing.T) {
 	}
 }
 
+// IP-literal entries opt out of VIP allocation: agents dialing an IP
+// literal don't issue a DNS query, so a VIP for "172.17.0.1" is
+// stranded state. The direct-IP dispatch path covers those entries.
+func TestRebuildSkipsIPLiteralHosts(t *testing.T) {
+	dir := t.TempDir()
+	a, err := New(dir, DefaultCIDR4, DefaultCIDR6)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Mixed slice: one hostname, one IPv4 literal, one IPv6 literal.
+	pol := fakePolicy(t, []string{
+		"upstream.example.com:22",
+		"172.17.0.1:22",
+		"[fd00::1]:22",
+	})
+	if err := a.RebuildFromPolicy(pol); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+	if v4, _ := a.VIPsFor("upstream.example.com"); !v4.IsValid() {
+		t.Fatalf("hostname did not get a VIP")
+	}
+	if v4, _ := a.VIPsFor("172.17.0.1"); v4.IsValid() {
+		t.Errorf("IPv4 literal got a VIP: %v (should be skipped)", v4)
+	}
+	if v4, _ := a.VIPsFor("fd00::1"); v4.IsValid() {
+		t.Errorf("IPv6 literal got a VIP: %v (should be skipped)", v4)
+	}
+}
+
 func TestPersistenceDropsOutOfRangeEntries(t *testing.T) {
 	dir := t.TempDir()
 	// Allocate with the default CIDRs.

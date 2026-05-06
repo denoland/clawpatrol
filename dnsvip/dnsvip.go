@@ -307,6 +307,12 @@ func (a *Allocator) RebuildFromPolicy(policy *config.CompiledPolicy) error {
 // (the same one ConnIndex uses for direct-IP routing). A host string
 // without a port falls back to that protocol's default; SSH is the
 // only RequiresVIP plugin in v1 so the default is 22.
+//
+// IP-literal entries are skipped: VIPs exist to recover hostname
+// identity from a TCP dst IP, but agents dialing an IP literal never
+// issue a DNS query, so allocating a VIP for one is wasted state. The
+// gateway's direct-IP dispatch path (consulting ConnIndex inside the
+// WG forwarder's default case) covers those entries instead.
 func collectRequiredHosts(policy *config.CompiledPolicy) map[string][]EndpointHit {
 	out := map[string][]EndpointHit{}
 	if policy == nil {
@@ -326,6 +332,9 @@ func collectRequiredHosts(policy *config.CompiledPolicy) map[string][]EndpointHi
 				portStr = ""
 			}
 			if host == "" {
+				continue
+			}
+			if net.ParseIP(host) != nil {
 				continue
 			}
 			var port uint16 = defaultPortFor(ep)

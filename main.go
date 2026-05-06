@@ -1158,9 +1158,6 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 // for instance) can plug in without a separate forwarder branch.
 func (g *Gateway) handleVIPConn(c net.Conn, dstIP string, dstPort uint16) {
 	defer otelTrackConn("vip_conn")()
-	pip := peerIP(c)
-	profile := g.profileFor(pip)
-	policy := g.Policy()
 
 	hostname, hits := g.dnsvip.LookupVIP(dstIP)
 	if hostname == "" || len(hits) == 0 {
@@ -1168,6 +1165,9 @@ func (g *Gateway) handleVIPConn(c net.Conn, dstIP string, dstPort uint16) {
 		c.Close()
 		return
 	}
+	pip := peerIP(c)
+	profile := g.profileFor(pip)
+	policy := g.Policy()
 	// Profile-filter the hits, then port-match. Port match handles
 	// the case where one hostname is bound to multiple endpoints on
 	// different ports (rare but legal).
@@ -1196,15 +1196,66 @@ func (g *Gateway) handleVIPConn(c net.Conn, dstIP string, dstPort uint16) {
 		c.Close()
 		return
 	}
+	g.dispatchConnEndpoint(c, dstIP, matchedPort, ep, hostname)
+}
 
+// tryDirectIPConn is the post-VIP fallback that dispatches inbound
+// connections to ConnEndpointRuntime plugins whose endpoint hosts are
+// IP literals (or hostnames whose resolved IP happens to land in the
+// conn-index). Returns true when a matching endpoint claimed the
+// connection so the caller skips wgRelay.
+//
+// Mirrors handlePostgresConn's index-then-dispatch pattern, but
+// generalised: any endpoint whose body implements ConnRouter +
+// whose plugin Runtime satisfies ConnEndpointRuntime is eligible.
+// The clickhouse_native plugin uses this path when an operator binds
+// it to bare-IP hosts (`hosts = ["172.17.0.1"]`) — those entries are
+// skipped by dnsvip (no DNS query to intercept) so direct-IP dispatch
+// is the only way they reach the plugin. profile filter prevents one
+// device from punching into another profile's endpoint by IP.
+func (g *Gateway) tryDirectIPConn(c net.Conn, dstIP string, dstPort uint16) bool {
+	idx := g.connIdx.Load()
+	if idx == nil {
+		return false
+	}
+	pip := peerIP(c)
+	profile := g.profileFor(pip)
+	policy := g.Policy()
+	candidates := idx.Lookup(dstIP)
+	ep := pickEndpointForProfile(candidates, policy, profile)
+	if ep == nil {
+		return false
+	}
+	if _, ok := ep.Plugin.Runtime.(runtime.ConnEndpointRuntime); !ok {
+		return false
+	}
+	g.dispatchConnEndpoint(c, dstIP, dstPort, ep, "")
+	return true
+}
+
+// dispatchConnEndpoint hands one accepted conn to the endpoint's
+// ConnEndpointRuntime. Shared between handleVIPConn and
+// tryDirectIPConn; hostname is the agent-dialed name (set by the VIP
+// path, empty for direct-IP). Closes c on a runtime-mismatch fail
+// path; otherwise the plugin owns the conn lifetime.
+func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16, ep *config.CompiledEndpoint, hostname string) {
 	connRT, ok := ep.Plugin.Runtime.(runtime.ConnEndpointRuntime)
 	if !ok {
-		log.Printf("vip endpoint %q plugin lacks ConnEndpointRuntime", ep.Name)
+		log.Printf("conn dispatch: endpoint %q plugin lacks ConnEndpointRuntime", ep.Name)
 		c.Close()
 		return
 	}
-
-	mode := ep.Plugin.Type // "ssh" today; future plugins surface as their own mode tag
+	pip := peerIP(c)
+	profile := g.profileFor(pip)
+	policy := g.Policy()
+	mode := ep.Plugin.Type
+	// Event Host carries the hostname when known (VIP path), else the
+	// dst IP — keeps the dashboard's "where is this traffic going"
+	// column populated for both dispatch shapes.
+	eventHost := hostname
+	if eventHost == "" {
+		eventHost = dstIP
+	}
 	ch := &runtime.ConnHandle{
 		Conn:         c,
 		Endpoint:     ep,
@@ -1213,7 +1264,7 @@ func (g *Gateway) handleVIPConn(c net.Conn, dstIP string, dstPort uint16) {
 		PeerIP:       pip,
 		Secrets:      g.secrets,
 		CADir:        g.cfg.CADir,
-		DstPort:      matchedPort,
+		DstPort:      dstPort,
 		UpstreamHost: hostname,
 		MintCert: func(host string) (*tls.Certificate, error) {
 			return g.certs.mint(host)
@@ -1221,9 +1272,10 @@ func (g *Gateway) handleVIPConn(c net.Conn, dstIP string, dstPort uint16) {
 		DialUpstream: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			// Plugin passes the *real* upstream host:port — the
 			// gateway's host network resolves it (the VIP only
-			// exists inside the WG netstack).
+			// exists inside the WG netstack; direct-IP dispatch
+			// already has the real IP).
 			if addr == "" {
-				return nil, fmt.Errorf("vip dispatch: plugin gave empty upstream addr")
+				return nil, fmt.Errorf("conn dispatch: plugin gave empty upstream addr")
 			}
 			return g.dialer.DialContext(ctx, network, addr)
 		},
@@ -1232,21 +1284,25 @@ func (g *Gateway) handleVIPConn(c net.Conn, dstIP string, dstPort uint16) {
 				return
 			}
 			g.sink.Emit(Event{
-				Mode: mode, Host: hostname, AgentIP: pip,
+				Mode: mode, Host: eventHost, AgentIP: pip,
 				Method: ev.Verb, Path: ev.Summary,
 				Action: ev.Action, Reason: ev.Reason,
 			})
 		},
 		Approve: func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
 			return g.runApproveChain(context.Background(), req.Stages, runApproveCtx{
-				AgentIP: pip, Host: hostname, Method: req.Verb, Path: req.Summary,
+				AgentIP: pip, Host: eventHost, Method: req.Verb, Path: req.Summary,
 				Reason:   ifNotEmpty(req.Rule, func(r *config.CompiledRule) string { return r.Outcome.Reason }),
 				Endpoint: ep, Rule: req.Rule, Profile: profile,
 			})
 		},
 	}
 	if err := connRT.HandleConn(context.Background(), ch); err != nil {
-		log.Printf("%s vip %s (%s): %v", mode, dstIP, hostname, err)
+		if hostname != "" {
+			log.Printf("%s vip %s (%s): %v", mode, dstIP, hostname, err)
+		} else {
+			log.Printf("%s direct %s:%d: %v", mode, dstIP, dstPort, err)
+		}
 	}
 }
 
@@ -2071,9 +2127,15 @@ func runGateway(args []string) {
 			case dashPort != 0 && int(dstPort) == dashPort:
 				_ = http.Serve(&oneShotListener{c: c}, dashMux)
 			default:
-				// Anything else relays transparently until its
-				// endpoint plugin's wire-protocol runtime ships
-				// (clickhouse_native, etc.).
+				// Direct-IP dispatch via conn-index: catches
+				// clickhouse_native and friends when the operator
+				// binds them to IP-literal hosts (dnsvip skips
+				// those — they don't need DNS interception). Falls
+				// through to transparent relay when no endpoint
+				// claims the dst.
+				if g.tryDirectIPConn(c, dstIP, dstPort) {
+					return
+				}
 				wgRelay(c, dstIP, int(dstPort))
 			}
 		}
@@ -2087,7 +2149,7 @@ func runGateway(args []string) {
 		if err := wg.EnablePromiscuousForwarder(tcpDispatch, udpDispatch); err != nil {
 			log.Fatalf("wireguard forwarder: %v", err)
 		}
-		log.Printf("wireguard promiscuous forwarder ready (any dst → :443=mitm, :5432=pg, :53=dns-vip, VIP=ssh, :%d=dash, else=relay)", dashPort)
+		log.Printf("wireguard promiscuous forwarder ready (any dst → :443=mitm, :5432=pg, :53=dns-vip, VIP=ssh|ch_native, :%d=dash, plugins=conn-index, else=relay)", dashPort)
 	}
 
 	ln, err := openListener(cfg)
