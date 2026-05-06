@@ -279,8 +279,19 @@ func startProxy(confPath: String) {
                     return
                 }
                 if running {
-                    print("✓ proxy already up (no change)")
-                    exit(0)
+                    // mitmproxy-style staleness guard: NE can report
+                    // "connected" after a reboot/wake even though the
+                    // sysext process hasn't actually run startProxy yet
+                    // (no IPC socket, no flow handler). Ping the
+                    // listener; if it doesn't respond, force a stop +
+                    // start to recreate it.
+                    if extSocketAlive() {
+                        print("✓ proxy already up (no change)")
+                        exit(0)
+                    }
+                    print("⟳ proxy reports connected but ext socket is dead — reloading")
+                    reloadTunnelAndExit(manager: manager, label: "stale-connected")
+                    return
                 }
                 do {
                     try manager.connection.startVPNTunnel()
@@ -347,4 +358,42 @@ func wipeAllConfigs() {
 func fail(_ msg: String) -> Never {
     FileHandle.standardError.write(Data("clawpatrol-macos: \(msg)\n".utf8))
     exit(1)
+}
+
+// extSocketAlive pings the IPC listener the extension sets up at
+// startProxy. NEVPNStatus.connected is unreliable after reboot/wake —
+// the manager's stored state can claim "connected" while the sysext
+// process hasn't actually been spawned yet. Connecting to the unix
+// socket is the ground truth.
+func extSocketAlive() -> Bool {
+    let path = "/tmp/clawpatrol.sock"
+    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+    if fd < 0 { return false }
+    defer { close(fd) }
+    var addr = sockaddr_un()
+    addr.sun_family = sa_family_t(AF_UNIX)
+    let pathBytes = Array(path.utf8)
+    if pathBytes.count >= MemoryLayout.size(ofValue: addr.sun_path) { return false }
+    withUnsafeMutableBytes(of: &addr.sun_path) { ptr in
+        for (i, b) in pathBytes.enumerated() {
+            ptr[i] = b
+        }
+    }
+    let len = socklen_t(MemoryLayout<sockaddr_un>.size)
+    var fl = fcntl(fd, F_GETFL, 0); fl |= O_NONBLOCK
+    _ = fcntl(fd, F_SETFL, fl)
+    let rc = withUnsafePointer(to: &addr) { ptr in
+        ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+            connect(fd, sa, len)
+        }
+    }
+    if rc == 0 { return true }
+    if errno != EINPROGRESS { return false }
+    var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+    let pr = poll(&pfd, 1, 500)
+    if pr <= 0 { return false }
+    var soerr: Int32 = 0
+    var slen = socklen_t(MemoryLayout<Int32>.size)
+    if getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &slen) != 0 { return false }
+    return soerr == 0
 }
