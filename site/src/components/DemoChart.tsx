@@ -87,7 +87,7 @@ export function renderChart(
 
     const title = el("span",
       "text-[11px] font-semibold uppercase " +
-      "tracking-wider text-cornflower-200");
+      "tracking-wider text-navy-200");
     title.textContent = "RESPONSE LATENCY";
     toolbar.appendChild(title);
 
@@ -107,7 +107,7 @@ export function renderChart(
       for (const host of activeHosts) {
         const pill = el("button",
           "inline-flex items-center gap-1 px-2 py-0.5 " +
-          "text-xs bg-cornflower-200/20 text-cornflower-200 " +
+          "text-xs bg-navy-200/20 text-navy-200 " +
           "rounded cursor-pointer");
         pill.textContent = `${host} ✕`;
         (pill as HTMLButtonElement).onclick = () => {
@@ -119,7 +119,7 @@ export function renderChart(
       if (activeHosts.size > 1) {
         const clear = el("button",
           "inline-flex items-center px-2 py-0.5 " +
-          "text-xs text-cornflower-200/60 hover:text-cornflower-200 cursor-pointer");
+          "text-xs text-navy-200/60 hover:text-navy-200 cursor-pointer");
         clear.textContent = "clear all";
         (clear as HTMLButtonElement).onclick = () => {
           activeHosts.clear();
@@ -193,7 +193,7 @@ export function renderChart(
     // --- Histogram ---
     const histTitle = el("div",
       "text-[11px] font-semibold uppercase " +
-      "tracking-wider text-cornflower-200 mt-4 mb-1");
+      "tracking-wider text-navy-200 mt-4 mb-1");
     histTitle.textContent = "LATENCY HISTOGRAM";
     container.appendChild(histTitle);
 
@@ -279,9 +279,9 @@ function btnGroup(
     const btn = el("button",
       `px-2 py-0.5 text-[10px] font-medium ${
         opt === active
-          ? "bg-cornflower-200 text-console-dark"
-          : "bg-console-dark/50 text-cornflower-200/60 " +
-            "hover:text-cornflower-200"
+          ? "bg-navy-200 text-console-dark"
+          : "bg-console-dark/50 text-navy-200/60 " +
+            "hover:text-navy-200"
       }`);
     btn.textContent = opt;
     (btn as HTMLButtonElement).onclick = () =>

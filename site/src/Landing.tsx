@@ -3,6 +3,9 @@ import { HeroSection } from "./sections/HeroSection";
 import { ProblemSection } from "./sections/ProblemSection";
 import { ScrollDiagram } from "./components/ScrollDiagram";
 import { ScrollDiagramSolution } from "./components/ScrollDiagramSolution";
+import { RulesSection } from "./sections/RulesSection";
+import { ApproversSection } from "./sections/ApproversSection";
+import { ProtocolDepthSection } from "./sections/ProtocolDepthSection";
 import { HowItWorksSection } from "./sections/HowItWorksSection";
 import { AnalyticsSection } from "./sections/AnalyticsSection";
 import { ComparisonSection } from "./sections/ComparisonSection";
@@ -18,6 +21,9 @@ export function Landing() {
       <Stripe />
       <ScrollDiagram />
       <ScrollDiagramSolution />
+      <RulesSection />
+      <ApproversSection />
+      <ProtocolDepthSection />
       <HowItWorksSection />
       <AnalyticsSection />
       <ComparisonSection />

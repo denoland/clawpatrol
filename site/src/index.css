@@ -463,9 +463,9 @@ a.neu-raised:active {
   }
 }
 
-@keyframes persimmon-to-red {
+@keyframes rust-to-red {
   from {
-    background: var(--color-persimmon);
+    background: var(--color-rust);
   }
   to {
     background: #ef4444;
@@ -673,7 +673,7 @@ a.neu-raised:active {
 
 /* `@theme static` emits every declared variable to :root regardless of
    whether a utility references it. Without `static`, unused shades (e.g.
-   --color-persimmon-50 if nothing reads `bg-persimmon-50`) never get
+   --color-rust-50 if nothing reads `bg-rust-50`) never get
    serialized, which broke the dev palette inspector. */
 @theme static {
   /* Canvas + surfaces — three tiers, mirroring the ink scale. */
@@ -681,34 +681,36 @@ a.neu-raised:active {
   --color-canvas-muted: #f4efe6;
   --color-canvas-dark: #ebe5d8;
 
-  /* ── Persimmon — primary brand orange. Punched up a touch from
-	      #ff8a3d → #ff7c2e at the 500 anchor. ───────────────────── */
-  --color-persimmon-50: #fff5ed;
-  --color-persimmon-100: #ffe5d3;
-  --color-persimmon-200: #ffc7a3;
-  --color-persimmon-300: #ffa470;
-  --color-persimmon-400: #ff8a47;
-  --color-persimmon-500: #ff7c2e;
-  --color-persimmon-600: #ed5e0c;
-  --color-persimmon-700: #c4480a;
-  --color-persimmon-800: #9a3a0c;
-  --color-persimmon-900: #7c310f;
-  --color-persimmon-950: #421405;
-  --color-persimmon: var(--color-persimmon-500);
+  /* ── Persimmon — primary brand orange. Anchored at the mascot's
+	      rust overall color (#d8531c) to harmonize with the illustration. */
+  --color-rust-50: #fcf3ec;
+  --color-rust-100: #fce0c9;
+  --color-rust-200: #f8c294;
+  --color-rust-300: #f29e5a;
+  --color-rust-400: #e87632;
+  --color-rust-500: #d8531c;
+  --color-rust-600: #b6420f;
+  --color-rust-700: #92350f;
+  --color-rust-800: #732a10;
+  --color-rust-900: #5d2412;
+  --color-rust-950: #2e0e05;
+  --color-rust: var(--color-rust-400);
 
-  /* ── Cornflower — secondary muted blue. ──────────────────────── */
-  --color-cornflower-50: #f4f7fb;
-  --color-cornflower-100: #e6edf5;
-  --color-cornflower-200: #cdd9e8;
-  --color-cornflower-300: #a9bcd6;
-  --color-cornflower-400: #8ba3c6;
-  --color-cornflower-500: #7891b8;
-  --color-cornflower-600: #5b749b;
-  --color-cornflower-700: #4a5e80;
-  --color-cornflower-800: #3e4d68;
-  --color-cornflower-900: #374256;
-  --color-cornflower-950: #222937;
-  --color-cornflower: var(--color-cornflower-500);
+  /* ── Cornflower — secondary blue. Anchored at the mascot's deep
+	      hoodie navy (#1f2a44). Lighter shades stay usable as soft
+	      backgrounds; darker shades compress into near-black-blue. */
+  --color-navy-50: #eef1f8;
+  --color-navy-100: #d6dde9;
+  --color-navy-200: #b1becf;
+  --color-navy-300: #8194af;
+  --color-navy-400: #4f6489;
+  --color-navy-500: #1f2a44;
+  --color-navy-600: #18213a;
+  --color-navy-700: #131a30;
+  --color-navy-800: #0e1426;
+  --color-navy-900: #0a0f1c;
+  --color-navy-950: #050810;
+  --color-navy: var(--color-navy-500);
 
   /* ── Butter — accent yellow. Pure yellow is naturally light, so
 	      the brand-bright anchor sits at 400, not 500. ────────────── */
@@ -737,7 +739,7 @@ a.neu-raised:active {
   --color-crt: #5be38a;
 
   /* Ink — three tiers, slightly cooled toward slate so they sit
-	   between the persimmon (warm) and cornflower (cool) brand colors
+	   between the rust (warm) and navy (cool) brand colors
 	   instead of pulling the page exclusively warm. Low saturation
 	   keeps the cool reading subtle, not tinted. */
   --color-text: #2c2e35;
@@ -764,7 +766,7 @@ a.neu-raised:active {
   }
 
   *:focus-visible {
-    outline: 1px dashed var(--color-persimmon-700);
+    outline: 1px dashed var(--color-rust-700);
     outline-offset: 2px;
   }
 }

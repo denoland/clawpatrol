@@ -1,6 +1,6 @@
 export function Stripe() {
   const color1 = `var(--color-butter-300)`;
-  const color2 = `var(--color-cornflower-700)`;
+  const color2 = `var(--color-navy-500)`;
   const sizeInPx = 6;
   return (
     <div

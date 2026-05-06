@@ -15,7 +15,7 @@ export function Footer() {
             <a
               href="https://github.com/denoland/clawpatrol/blob/main/LICENSE"
               class="underline underline-offset-4
-                hover:text-persimmon"
+                hover:text-rust"
             >
               MIT license
             </a>
@@ -26,7 +26,7 @@ export function Footer() {
             <a
               href="https://deno.com"
               class="underline underline-offset-4
-                hover:text-persimmon"
+                hover:text-rust"
             >
               Deno
             </a>
@@ -40,21 +40,21 @@ export function Footer() {
           <a
             href="/docs/"
             class="underline underline-offset-4
-              hover:text-persimmon"
+              hover:text-rust"
           >
             Docs
           </a>
           <a
             href="https://github.com/denoland/clawpatrol"
             class="underline underline-offset-4
-              hover:text-persimmon"
+              hover:text-rust"
           >
             GitHub
           </a>
           <a
             href="https://github.com/denoland/clawpatrol/blob/main/LICENSE"
             class="underline underline-offset-4
-              hover:text-persimmon"
+              hover:text-rust"
           >
             License
           </a>

@@ -25,11 +25,12 @@ export function HeroSection() {
             class="text-lg leading-relaxed mb-10 max-w-lg
             text-text-muted"
           >
-            Your agent can access every API key in plaintext — and you have no
-            idea what it costs or where requests go. Claw Patrol is a forward
-            proxy that intercepts all traffic, injects secrets without exposing
-            them, and shows you everything. Works with OpenAI, Claude Code,
-            Codex, or any agent — no code changes.
+            Decide what your agents can do — before they do it. Claw Patrol is
+            a forward proxy that intercepts every outbound request, runs it
+            against rules you write, and routes the risky ones to a human or
+            an LLM judge for approval. Secrets stay out of the agent. Every
+            decision is logged. Works with Claude Code, Codex, or any agent —
+            no code changes.
           </p>
           <Button href="https://github.com/denoland/clawpatrol" size="lg">
             Get Started

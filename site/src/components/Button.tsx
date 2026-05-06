@@ -33,8 +33,8 @@ const sizes: Record<Size, string> = {
 };
 
 const variants: Record<Variant, string> = {
-  normal: "bg-persimmon border-persimmon text-text " +
-    "hover:bg-persimmon-600 hover:border-persimmon-600",
+  normal: "bg-rust border-rust text-text " +
+    "hover:bg-rust-500 hover:border-rust-500",
   outline: "border-text-muted text-text-muted " +
     "hover:bg-canvas-muted",
 };
