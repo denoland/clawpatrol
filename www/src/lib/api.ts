@@ -245,18 +245,6 @@ export async function deleteAgent(ip: string): Promise<void> {
   if (!r.ok) throw new Error(await r.text());
 }
 
-export async function getAgents(): Promise<Agent[]> {
-  const r = await api("/api/agents");
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
-}
-
-export async function getWhoami(): Promise<Whoami> {
-  const r = await api("/api/whoami");
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
-}
-
 // /api/state bundles whoami + integrations + agents in one ETag'd
 // response. Module-level lastTag persists across getState calls so
 // the 304 fast path kicks in on every poll after the first; cached
