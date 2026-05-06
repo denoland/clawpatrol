@@ -97,32 +97,31 @@ class TransparentProxyProvider: NETransparentProxyProvider {
     }
 
     private func applyNetworkSettings(completionHandler: @escaping (Error?) -> Void) {
-        // NETransparentProxy rejects port-specific rules ("X cannot be
-        // specified as the port for transparent proxy network rules").
-        // So per-process is TCP-only; whole-machine takes UDP+TCP and
-        // accepts the QUIC false-return race (radar r.98382363).
+        // Claim TCP+UDP everywhere. UDP cannot return false safely
+        // (radar r.98382363 race → ~30s Chrome QUIC stall), so non-
+        // tunnel UDP is bypassed via a real host socket in handleNew-
+        // Flow. Per-process clawpatrol children's UDP/53 is tunneled
+        // through the gateway, enabling SSH endpoint VIP DNS.
         let settings = NETransparentProxyNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
-        var included: [NENetworkRule] = [
+        let included: [NENetworkRule] = [
             NENetworkRule(remoteNetwork: nil, remotePrefix: 0,
                           localNetwork: nil, localPrefix: 0,
                           protocol: .TCP, direction: .outbound),
+            NENetworkRule(remoteNetwork: nil, remotePrefix: 0,
+                          localNetwork: nil, localPrefix: 0,
+                          protocol: .UDP, direction: .outbound),
         ]
-        if wholeMachine {
-            included.append(NENetworkRule(remoteNetwork: nil, remotePrefix: 0,
-                                          localNetwork: nil, localPrefix: 0,
-                                          protocol: .UDP, direction: .outbound))
-            settings.excludedNetworkRules = [
-                NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "224.0.0.0", port: "0"),
-                              remotePrefix: 4, localNetwork: nil, localPrefix: 0,
-                              protocol: .UDP, direction: .outbound),
-                NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "ff00::", port: "0"),
-                              remotePrefix: 8, localNetwork: nil, localPrefix: 0,
-                              protocol: .UDP, direction: .outbound),
-                NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "169.254.0.0", port: "0"),
-                              remotePrefix: 16, localNetwork: nil, localPrefix: 0,
-                              protocol: .UDP, direction: .outbound),
-            ]
-        }
+        settings.excludedNetworkRules = [
+            NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "224.0.0.0", port: "0"),
+                          remotePrefix: 4, localNetwork: nil, localPrefix: 0,
+                          protocol: .UDP, direction: .outbound),
+            NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "ff00::", port: "0"),
+                          remotePrefix: 8, localNetwork: nil, localPrefix: 0,
+                          protocol: .UDP, direction: .outbound),
+            NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "169.254.0.0", port: "0"),
+                          remotePrefix: 16, localNetwork: nil, localPrefix: 0,
+                          protocol: .UDP, direction: .outbound),
+        ]
         settings.includedNetworkRules = included
         setTunnelNetworkSettings(settings, completionHandler: completionHandler)
     }
@@ -134,14 +133,30 @@ class TransparentProxyProvider: NETransparentProxyProvider {
     }
 
     override func handleNewFlow(_ flow: NEAppProxyFlow) -> Bool {
-        if !shouldTunnel(flow) { return false }
+        let tunnel = shouldTunnel(flow)
         if let tcp = flow as? NEAppProxyTCPFlow {
+            if !tunnel { return false }
             bridgeTCP(tcp); return true
         }
         if let udp = flow as? NEAppProxyUDPFlow {
+            // Claim every UDP flow. Returning false on UDP races kernel
+            // detach (radar r.98382363) → ~30s Chrome QUIC stall.
+            // Tunnel-side flows go through the gateway; non-tunnel
+            // flows are bypassed by re-emitting datagrams via a real
+            // host UDP socket (Mozilla VPN's bypassudpflow pattern).
+            if !tunnel { bypassUDP(udp); return true }
             bridgeUDP(udp); return true
         }
         return false
+    }
+
+    private func bypassUDP(_ flow: NEAppProxyUDPFlow) {
+        flow.open(withLocalEndpoint: nil) { err in
+            if err != nil {
+                flow.closeReadWithError(err); flow.closeWriteWithError(err); return
+            }
+            BypassUDP(flow: flow).start()
+        }
     }
 
     private func shouldTunnel(_ flow: NEAppProxyFlow) -> Bool {
@@ -576,4 +591,136 @@ private func parentPid(of pid: pid_t) -> pid_t? {
     var info = proc_bsdinfo()
     let n = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, bsdInfoSize)
     return n == bsdInfoSize ? pid_t(info.pbi_ppid) : nil
+}
+
+// BypassUDP — non-tunnel UDP flows from non-clawpatrol processes.
+// We claim the flow (rather than return false) to dodge the radar
+// r.98382363 race, then pump datagrams between the flow and a real
+// host UDP socket. Caller's UDP socket sees normal traffic; QUIC,
+// mDNS, DNS, NTP, etc. all work unchanged.
+final class BypassUDP {
+    private static var live = Set<BypassUDP>()
+    private static let liveLock = NSLock()
+
+    private let flow: NEAppProxyUDPFlow
+    private var sock: Int32 = -1
+    private var recvSource: DispatchSourceRead?
+    private let recvQueue = DispatchQueue(label: "bypass.udp.recv", qos: .userInitiated)
+
+    init(flow: NEAppProxyUDPFlow) { self.flow = flow }
+
+    func start() {
+        BypassUDP.liveLock.lock()
+        BypassUDP.live.insert(self)
+        BypassUDP.liveLock.unlock()
+        // AF_INET6 dual-stack so v4-mapped addresses route correctly.
+        sock = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP)
+        if sock < 0 { closeAll(); return }
+        var off: Int32 = 0
+        setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, &off, socklen_t(MemoryLayout<Int32>.size))
+        // Non-blocking + close-on-exec.
+        var fl = fcntl(sock, F_GETFL, 0); fl |= O_NONBLOCK; _ = fcntl(sock, F_SETFL, fl)
+        _ = fcntl(sock, F_SETFD, FD_CLOEXEC)
+
+        let src = DispatchSource.makeReadSource(fileDescriptor: sock, queue: recvQueue)
+        src.setEventHandler { [weak self] in self?.recvOne() }
+        src.setCancelHandler { [weak self] in
+            guard let s = self, s.sock >= 0 else { return }
+            close(s.sock); s.sock = -1
+        }
+        src.resume()
+        recvSource = src
+        readFromFlow()
+    }
+
+    private func readFromFlow() {
+        flow.readDatagrams { [weak self] data, endpoints, err in
+            guard let self = self else { return }
+            if err != nil || data == nil || data!.isEmpty {
+                self.closeAll(); return
+            }
+            for (d, ep) in zip(data!, endpoints ?? []) {
+                guard let host = ep as? NWHostEndpoint else { continue }
+                self.sendOne(d, to: host)
+            }
+            self.readFromFlow()
+        }
+    }
+
+    private func sendOne(_ data: Data, to host: NWHostEndpoint) {
+        var ss = sockaddr_storage()
+        guard fillSockaddr(&ss, host: host.hostname, port: host.port) else { return }
+        let slen = socklen_t(ss.ss_len)
+        withUnsafePointer(to: &ss) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                _ = data.withUnsafeBytes { buf in
+                    sendto(self.sock, buf.baseAddress, buf.count, 0, sa, slen)
+                }
+            }
+        }
+    }
+
+    private func recvOne() {
+        var buf = [UInt8](repeating: 0, count: 65535)
+        var ss = sockaddr_storage()
+        var slen = socklen_t(MemoryLayout<sockaddr_storage>.size)
+        let n = buf.withUnsafeMutableBufferPointer { bp -> Int in
+            withUnsafeMutablePointer(to: &ss) { ptr in
+                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                    recvfrom(sock, bp.baseAddress, bp.count, 0, sa, &slen)
+                }
+            }
+        }
+        if n <= 0 { return }
+        guard let src = sockaddrToHostEndpoint(&ss) else { return }
+        let chunk = Data(bytes: buf, count: n)
+        flow.writeDatagrams([chunk], sentBy: [src]) { _ in }
+    }
+
+    private func closeAll() {
+        recvSource?.cancel()
+        recvSource = nil
+        flow.closeReadWithError(nil)
+        flow.closeWriteWithError(nil)
+        BypassUDP.liveLock.lock()
+        BypassUDP.live.remove(self)
+        BypassUDP.liveLock.unlock()
+    }
+}
+
+extension BypassUDP: Hashable {
+    static func == (lhs: BypassUDP, rhs: BypassUDP) -> Bool { lhs === rhs }
+    func hash(into hasher: inout Hasher) { hasher.combine(ObjectIdentifier(self)) }
+}
+
+private func fillSockaddr(_ ss: inout sockaddr_storage, host: String, port: String) -> Bool {
+    guard let p = UInt16(port) else { return false }
+    var hints = addrinfo(ai_flags: AI_NUMERICHOST | AI_NUMERICSERV,
+                         ai_family: AF_UNSPEC, ai_socktype: SOCK_DGRAM,
+                         ai_protocol: IPPROTO_UDP, ai_addrlen: 0,
+                         ai_canonname: nil, ai_addr: nil, ai_next: nil)
+    var res: UnsafeMutablePointer<addrinfo>?
+    if getaddrinfo(host, port, &hints, &res) != 0 || res == nil { return false }
+    defer { freeaddrinfo(res) }
+    let info = res!.pointee
+    memcpy(&ss, info.ai_addr, Int(info.ai_addrlen))
+    ss.ss_len = UInt8(info.ai_addrlen)
+    _ = p
+    return true
+}
+
+private func sockaddrToHostEndpoint(_ ss: inout sockaddr_storage) -> NWHostEndpoint? {
+    var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+    var serv = [CChar](repeating: 0, count: Int(NI_MAXSERV))
+    let slen = socklen_t(ss.ss_len)
+    let rc = withUnsafePointer(to: &ss) { ptr -> Int32 in
+        ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+            getnameinfo(sa, slen,
+                        &host, socklen_t(host.count),
+                        &serv, socklen_t(serv.count),
+                        NI_NUMERICHOST | NI_NUMERICSERV)
+        }
+    }
+    if rc != 0 { return nil }
+    return NWHostEndpoint(hostname: String(cString: host), port: String(cString: serv))
 }
