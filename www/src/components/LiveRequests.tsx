@@ -36,6 +36,19 @@ export function LiveRequests({ agentIP, max = 200, height }: {
         return next;
       });
     };
+    // Backlog ships as one event up front: bulk-insert in a single
+    // commit so old events appear instantly instead of streaming in
+    // through the live render path and looking like fresh activity.
+    es.addEventListener("backlog", (e) => {
+      try {
+        const arr = JSON.parse((e as MessageEvent).data) as EventRecord[];
+        setEvents((prev) => {
+          let next = prev;
+          for (const ev of arr) next = mergeEvent(next, ev, max);
+          return next;
+        });
+      } catch { /* ignore */ }
+    });
     es.onmessage = (e) => {
       try {
         pending.push(JSON.parse(e.data) as EventRecord);

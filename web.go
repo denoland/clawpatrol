@@ -839,18 +839,26 @@ func (w *webMux) apiEventsSSE(rw http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	fmt.Fprint(rw, ": connected\n\n")
-	// Replay backlog (oldest → newest). Backlog events are unmarshaled
-	// Event values from the recent ring; live events ship pre-marshaled
-	// in eventPacket.raw so we skip a Marshal call per subscriber.
-	for _, ev := range backlog {
-		if wantIP != "" && ev.AgentIP != wantIP {
-			continue
+	// Backlog ships as a single `event: backlog` SSE message carrying
+	// the whole array. Client renders that batch in one commit (no
+	// per-event rAF flood), then switches to per-event live streaming.
+	// Default event channel = live only.
+	if len(backlog) > 0 {
+		filtered := backlog
+		if wantIP != "" {
+			filtered = filtered[:0]
+			for _, ev := range backlog {
+				if ev.AgentIP == wantIP {
+					filtered = append(filtered, ev)
+				}
+			}
 		}
-		b, err := json.Marshal(ev)
-		if err != nil {
-			continue
+		if len(filtered) > 0 {
+			b, err := json.Marshal(filtered)
+			if err == nil {
+				fmt.Fprintf(rw, "event: backlog\ndata: %s\n\n", b)
+			}
 		}
-		fmt.Fprintf(rw, "data: %s\n\n", b)
 	}
 	flusher.Flush()
 
