@@ -7,7 +7,7 @@ device config — and, when the configured gateway is local and unreachable,
 auto-spawns an ephemeral one for the lifetime of the wrapped command.
 
 Source of truth: `src/onboard/index.ts`. For the gateway's own architecture and
-request-handling semantics, see [07-gateway.md](../07-gateway.md).
+request-handling semantics, see [07-gateway](/docs/07-gateway/).
 
 ## Gateway lifetime
 
