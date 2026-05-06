@@ -26,7 +26,7 @@ hosts the dashboard and HITL pool, and forwards traffic upstream after
 secret injection. Configured by a top-level HCL file (`gateway.hcl`)
 split into operational fields (listen address, CA dir, WireGuard
 config) and the rest of the global config blocks.
-See [Architecture](04-architecture.md).
+See [Architecture](/docs/04-architecture/).
 
 ### Agent
 
@@ -137,7 +137,7 @@ forges a per-host certificate signed by the Claw Patrol CA, terminates
 TLS itself, and re-establishes a fresh TLS connection upstream. The
 [per-host cert](#per-host-cert) is generated on demand and cached.
 This is also why the agent must trust the Claw Patrol CA. See
-[Architecture › MitM TLS Interception](04-architecture.md#mitm-tls-interception).
+[Architecture › MitM TLS Interception](/docs/04-architecture/#mitm-tls-interception).
 
 ### Per-host cert
 
@@ -325,4 +325,4 @@ SCRAM / cleartext handshake against the upstream and synthesizes
 See [MitM](#mitm) and [per-host cert](#per-host-cert) under Concepts.
 The interception bridge uses node:tls's
 "loopback bridge" pattern — see
-[Architecture › MitM TLS Interception](04-architecture.md#mitm-tls-interception).
+[Architecture › MitM TLS Interception](/docs/04-architecture/#mitm-tls-interception).
