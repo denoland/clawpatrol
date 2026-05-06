@@ -42,8 +42,10 @@ came from* used by the global config.
 A network peer the gateway recognizes, keyed by source IP — typically
 a WireGuard tunnel address (`10.77.0.x`) or, on macOS, the IP the
 Network Extension uses. A device is bound to exactly one
-[profile](#profile), which determines which [endpoints](#endpoint) it
-can reach. The HCL `device "<ip>" { ... }` block (see
+[profile](#profile), which determines which [endpoints](#endpoint)'
+rules apply to its traffic (traffic to hosts outside the profile
+falls through to `defaults.unknown_host`). The HCL
+`device "<ip>" { ... }` block (see
 [Configuration vocabulary](#configuration-vocabulary)) carries
 per-device rule overrides.
 
@@ -86,12 +88,13 @@ implementation.
 
 ### Profile
 
-A named list of [endpoints](#endpoint) — the membership set assigned to
-a [device](#device). A device gets exactly the endpoints its profile
-names; rules ride along automatically because they're attached to
-endpoints. Profiles are how operators say "this dev box can reach
-GitHub and Notion; that build runner can only reach the package
-registry."
+A named list of [endpoints](#endpoint) attached to a [device](#device).
+A profile names the endpoints whose [rules](#rule) apply to that
+device's traffic — it is not an allowlist. Traffic to hosts not
+covered by any profile endpoint falls through to
+`defaults.unknown_host` (default: `passthrough`). Profiles are how
+operators say "these are the endpoints I want to govern for this
+device."
 
 ### Plugin
 
