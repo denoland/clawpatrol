@@ -74,9 +74,12 @@ func (e *ClickhouseNativeEndpoint) EndpointCredentials() []config.CredBinding {
 // to handleVIPConn → this plugin's HandleConn.
 func (e *ClickhouseNativeEndpoint) RequiresVIP() bool { return true }
 
-// ConnRouteHosts mirrors EndpointHosts so legacy ConnIndex consumers
-// that key off the ConnRouter interface stay wired even though VIP
-// dispatch is the active path for clickhouse_native.
+// ConnRouteHosts mirrors EndpointHosts so every host lands in the
+// gateway's conn-index. Hostname entries reach HandleConn through the
+// VIP path (RequiresVIP=true allocates a per-host VIP); IP-literal
+// entries are skipped by dnsvip — there's no DNS query to intercept —
+// and reach HandleConn through the WG forwarder's direct-IP dispatch,
+// which keys off this index.
 func (e *ClickhouseNativeEndpoint) ConnRouteHosts() []string {
 	return e.EndpointHosts()
 }
