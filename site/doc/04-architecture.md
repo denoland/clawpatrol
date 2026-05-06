@@ -1,6 +1,6 @@
 # Architecture
 
-> See [Glossary](00-glossary.md) for definitions of gateway, endpoint,
+> See [Glossary](03a-glossary.md) for definitions of gateway, endpoint,
 > credential, rule, profile, plugin, runtime, and the rest of the
 > vocabulary used below.
 
