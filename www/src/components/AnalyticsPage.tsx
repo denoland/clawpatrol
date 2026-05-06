@@ -116,26 +116,26 @@ export function AnalyticsPage({ ip, agents }: {
     <main className="flex-1 mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-8 space-y-8">
       <div className="flex items-baseline justify-between flex-wrap gap-3">
         <div className="flex items-baseline gap-2">
-          <a href="#/" className="text-[11px] text-[#a3a3a3] hover:text-[#171717]">
+          <a href="#/" className="text-[13px] text-[#a3a3a3] hover:text-[#171717]">
             clawpatrol
           </a>
-          <span className="text-[11px] text-[#a3a3a3]">/</span>
+          <span className="text-[13px] text-[#a3a3a3]">/</span>
           {deviceName ? (
             <>
               <a
                 href={`#/device/${encodeURIComponent(ip!)}`}
-                className="text-[11px] text-[#a3a3a3] hover:text-[#171717]"
+                className="text-[13px] text-[#a3a3a3] hover:text-[#171717]"
               >
                 {deviceName}
               </a>
-              <span className="text-[11px] text-[#a3a3a3]">/</span>
+              <span className="text-[13px] text-[#a3a3a3]">/</span>
             </>
           ) : null}
-          <span className="text-[11px] text-[#525252]">analytics</span>
+          <span className="text-[13px] text-[#525252]">analytics</span>
           {hasFilter && (
             <button
               onClick={() => { setFilterDevice(null); setFilterHost(null); }}
-              className="ml-3 px-2 py-0.5 rounded text-[11px] border border-[#171717] bg-[#171717] text-white flex items-center gap-1.5 self-center"
+              className="ml-3 px-2 py-0.5 rounded text-[13px] border border-[#171717] bg-[#171717] text-white flex items-center gap-1.5 self-center"
             >
               {filterLabel}
               <span className="text-[10px]">&times;</span>
@@ -149,7 +149,10 @@ export function AnalyticsPage({ ip, agents }: {
         />
       </div>
 
-      <div className="bg-white border border-[#e5e5e5] rounded grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-5 divide-x divide-[#e5e5e5]">
+      <div className={
+        "bg-white border border-[#e5e5e5] rounded grid grid-cols-2 divide-x divide-[#e5e5e5] "
+        + (isGlobal ? "sm:grid-cols-4 lg:grid-cols-5" : "sm:grid-cols-4")
+      }>
         <Stat label="Requests" value={stats.n.toLocaleString()} />
         <Stat label="Avg" value={stats.avg ? fmtMs(stats.avg) : "—"} />
         <Stat label="p99" value={stats.p99 ? fmtMs(stats.p99) : "—"} />

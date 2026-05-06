@@ -53,7 +53,7 @@ export function DevicePage({
   if (!a) {
     return (
       <main className="mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-5">
-        <nav className="text-[11px] text-[#a3a3a3] flex items-center gap-1.5 mb-3">
+        <nav className="text-[13px] text-[#a3a3a3] flex items-center gap-1.5 mb-3">
           <a href="#/" className="hover:text-[#171717]">clawpatrol</a>
           <span>/</span>
           <span className="text-[#525252]">{ip}</span>
@@ -83,7 +83,7 @@ export function DevicePage({
   return (
     <main className="mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-5 space-y-5">
       <div className="flex items-center justify-between">
-        <nav className="text-[11px] text-[#a3a3a3] flex items-center gap-1.5">
+        <nav className="text-[13px] text-[#a3a3a3] flex items-center gap-1.5">
           <a href="#/" className="hover:text-[#171717]">clawpatrol</a>
           <span>/</span>
           <span className="text-[#525252]">{dev.hostname || dev.ip}</span>
