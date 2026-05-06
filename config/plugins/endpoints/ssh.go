@@ -171,7 +171,17 @@ func (rt *SSHEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHa
 	// WG is the trust boundary, same model postgres uses for its
 	// SCRAM-offload. The handshake also gives us the agent's
 	// username, which we need before resolving the credential.
+	//
+	// NoClientAuth advertises the `none` userauth method so a plain
+	// `ssh user@host` with no key and no password just works —
+	// without it the OpenSSH client falls through to publickey, then
+	// password, and ends up prompting for a password it'll then
+	// accept anything for, which is gratuitously confusing. The
+	// PasswordCallback / PublicKeyCallback below stay in place so
+	// clients that DO offer credentials still succeed (they just
+	// aren't required to).
 	srvCfg := &ssh.ServerConfig{
+		NoClientAuth: true,
 		PasswordCallback: func(ssh.ConnMetadata, []byte) (*ssh.Permissions, error) {
 			return &ssh.Permissions{}, nil
 		},
