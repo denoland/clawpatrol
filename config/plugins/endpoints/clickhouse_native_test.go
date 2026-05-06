@@ -174,15 +174,15 @@ func TestChHelloRejectsInvalidUTF8(t *testing.T) {
 	// UTF-8 lead byte). Hand-craft the wire bytes — the serializer
 	// won't produce these from a string.
 	var wire []byte
-	wire = appendChVarUInt(wire, 0)              // packet type Hello
-	wire = appendChVarUInt(wire, 1)              // client_name length
-	wire = append(wire, 0xff)                    // invalid UTF-8 byte
-	wire = appendChVarUInt(wire, 1)              // major
-	wire = appendChVarUInt(wire, 0)              // minor
-	wire = appendChVarUInt(wire, 54448)          // revision
-	wire = appendChString(wire, "default")       // database
-	wire = appendChString(wire, "u")             // user
-	wire = appendChString(wire, "p")             // password
+	wire = appendChVarUInt(wire, 0)        // packet type Hello
+	wire = appendChVarUInt(wire, 1)        // client_name length
+	wire = append(wire, 0xff)              // invalid UTF-8 byte
+	wire = appendChVarUInt(wire, 1)        // major
+	wire = appendChVarUInt(wire, 0)        // minor
+	wire = appendChVarUInt(wire, 54448)    // revision
+	wire = appendChString(wire, "default") // database
+	wire = appendChString(wire, "u")       // user
+	wire = appendChString(wire, "p")       // password
 	if _, _, err := ParseChHello(wire); err == nil {
 		t.Errorf("ParseChHello accepted invalid UTF-8 in client_name")
 	}
