@@ -1378,22 +1378,29 @@ func (g *Gateway) splice(c net.Conn, host string) {
 	}
 	defer up.Close()
 	agentAddr := peerIP(c) // capture BEFORE pipe — RemoteAddr() goes nil once netstack closes the conn
-	in, out := pipe(c, up)
+	in, out := pipeProgress(c, up, g.streamTracker(agentAddr, host))
 	g.emit(Event{Mode: "splice", Host: host, AgentIP: agentAddr, Action: "allow", In: in, Out: out, Ms: time.Since(start).Milliseconds()})
-	if g.agents != nil && agentAddr != "" {
-		g.agents.track(agentAddr, host, in, out)
-	}
 }
 
 // pipe shuttles bytes both ways between two conns. Returns (a-rx, a-tx)
 // = (bytes received from up into a, bytes sent from a to up). Sends
 // CloseWrite half-shutdown on each side after its copy finishes.
 func pipe(a, b net.Conn) (rx, tx int64) {
+	return pipeProgress(a, b, nil)
+}
+
+// pipeProgress is pipe with an optional onTick callback fired every
+// second w/ cumulative (rx, tx) snapshots. Lets callers feed the
+// per-agent activity sparkline DURING a long-lived flow (ssh clone,
+// websocket) instead of only after the conn closes — sampleLoop runs
+// at 1s and wants per-second deltas, so a flow that lasts 10 minutes
+// would otherwise paint a single bar at end-of-life.
+func pipeProgress(a, b net.Conn, onTick func(rx, tx int64)) (rx, tx int64) {
+	var rxC, txC atomic.Int64
 	done := make(chan struct{}, 2)
 	go func() {
 		buf := make([]byte, 256<<10)
-		n, _ := io.CopyBuffer(b, a, buf)
-		atomic.AddInt64(&tx, n)
+		_, _ = io.CopyBuffer(&countWriter{Writer: b, n: &txC}, a, buf)
 		if cw, ok := b.(interface{ CloseWrite() error }); ok {
 			cw.CloseWrite()
 		}
@@ -1401,16 +1408,46 @@ func pipe(a, b net.Conn) (rx, tx int64) {
 	}()
 	go func() {
 		buf := make([]byte, 256<<10)
-		n, _ := io.CopyBuffer(a, b, buf)
-		atomic.AddInt64(&rx, n)
+		_, _ = io.CopyBuffer(&countWriter{Writer: a, n: &rxC}, b, buf)
 		if cw, ok := a.(interface{ CloseWrite() error }); ok {
 			cw.CloseWrite()
 		}
 		done <- struct{}{}
 	}()
+	stop := make(chan struct{})
+	if onTick != nil {
+		go func() {
+			t := time.NewTicker(time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-stop:
+					return
+				case <-t.C:
+					onTick(rxC.Load(), txC.Load())
+				}
+			}
+		}()
+	}
 	<-done
 	<-done
-	return
+	close(stop)
+	return rxC.Load(), txC.Load()
+}
+
+// countWriter wraps an io.Writer and atomically tallies bytes written
+// so a concurrent ticker can read in-flight progress.
+type countWriter struct {
+	io.Writer
+	n *atomic.Int64
+}
+
+func (w *countWriter) Write(p []byte) (int, error) {
+	n, err := w.Writer.Write(p)
+	if n > 0 {
+		w.n.Add(int64(n))
+	}
+	return n, err
 }
 
 // mitmHTTPS handles an SNI-matched TLS connection for an HTTPS-family
@@ -2247,14 +2284,34 @@ func (g *Gateway) wgRelay(c net.Conn, dstIP string, dstPort int) {
 		return
 	}
 	defer up.Close()
-	rx, tx := pipe(c, up)
+	rx, tx := pipeProgress(c, up, g.streamTracker(pip, host))
 	g.sink.Emit(Event{
 		Mode: "relay", AgentIP: pip, Agent: profile,
 		Host: host, Action: "allow",
 		In: rx, Out: tx,
 		Ms: time.Since(start).Milliseconds(),
 	})
-	if g.agents != nil && pip != "" {
-		g.agents.track(pip, host, rx, tx)
+}
+
+// streamTracker returns a pipeProgress onTick callback that feeds the
+// per-agent activity sparkline with per-second byte deltas. Long-lived
+// flows (ssh clone, websocket) need DURING-flight updates — sampleLoop
+// reads BytesIn/Out at 1Hz and computes a delta, so a 10-minute flow
+// without streaming track calls paints flat zeros until close. Returns
+// nil when no agent IP / no registry — pipeProgress treats nil as
+// "skip the ticker goroutine entirely".
+func (g *Gateway) streamTracker(agentIP, host string) func(rx, tx int64) {
+	if g.agents == nil || agentIP == "" {
+		return nil
+	}
+	var lastRx, lastTx int64
+	return func(rx, tx int64) {
+		dRx := rx - lastRx
+		dTx := tx - lastTx
+		lastRx, lastTx = rx, tx
+		if dRx == 0 && dTx == 0 {
+			return
+		}
+		g.agents.track(agentIP, host, dRx, dTx)
 	}
 }
