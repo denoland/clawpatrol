@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import * as Plot from "@observablehq/plot";
-import type { Agent, EventRecord } from "../lib/api";
+import { getAnalytics, type Agent, type EventRecord } from "../lib/api";
 
 
 const RANGES = [
@@ -70,41 +70,19 @@ export function AnalyticsPage({ ip, agents }: {
   );
 
   useEffect(() => {
-    setEvents([]);
-    const url = ip
-      ? `/api/events?agent=${encodeURIComponent(ip)}`
-      : "/api/events";
-    const es = new EventSource(url);
-    // rAF-batched render: SSE on a busy gateway fires dozens of
-    // events/sec. setState per event = re-render per event. Coalesce
-    // into one commit per browser frame (~16 ms).
-    let pending: EventRecord[] = [];
-    let raf = 0;
-    const flush = () => {
-      raf = 0;
-      if (pending.length === 0) return;
-      const batch = pending;
-      pending = [];
-      setEvents((prev) => [...batch.reverse(), ...prev].slice(0, 5000));
+    let cancelled = false;
+    const load = () => {
+      getAnalytics({ range, agent: ip, limit: 5000 })
+        .then((r) => { if (!cancelled) setEvents(r.events); })
+        .catch(() => {});
     };
-    es.onmessage = (e) => {
-      try {
-        pending.push(JSON.parse(e.data) as EventRecord);
-        if (raf === 0) raf = requestAnimationFrame(flush);
-      } catch { /* ignore */ }
-    };
-    return () => {
-      es.close();
-      if (raf !== 0) cancelAnimationFrame(raf);
-    };
-  }, [ip]);
+    load();
+    const t = setInterval(load, 10000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [ip, range]);
 
-  const cutoff = Date.now() - RANGE_MS[range];
-  const timeFiltered = events.filter(
-    (e) => new Date(e.ts).getTime() >= cutoff,
-  );
-  // Additional client-side filters from bar chart clicks
-  const filtered = timeFiltered.filter((e) => {
+  // Client-side filters from bar chart clicks
+  const filtered = events.filter((e) => {
     if (filterDevice && e.agent_ip !== filterDevice)
       return false;
     if (filterHost && e.host !== filterHost) return false;
@@ -135,10 +113,19 @@ export function AnalyticsPage({ ip, agents }: {
             </>
           ) : null}
           <span className="text-[11px] text-[#525252]">analytics</span>
+          {ip && (
+            <a
+              href="#/analytics"
+              className="ml-2 px-2.5 py-0.5 rounded text-[11px] border border-[#171717] bg-[#171717] text-white flex items-center gap-1.5 no-underline"
+            >
+              {deviceName}
+              <span className="text-[10px]">&times;</span>
+            </a>
+          )}
           {hasFilter && (
             <button
               onClick={() => { setFilterDevice(null); setFilterHost(null); }}
-              className="ml-2 px-2.5 py-0.5 rounded text-[11px] border border-[#171717] bg-[#171717] text-white flex items-center gap-1.5"
+              className="ml-2 px-2.5 py-0.5 rounded text-[11px] border border-[#525252] bg-[#525252] text-white flex items-center gap-1.5"
             >
               {filterLabel}
               <span className="text-[10px]">&times;</span>
@@ -156,7 +143,7 @@ export function AnalyticsPage({ ip, agents }: {
         {isGlobal && (
           <BarCard
             title="Count by device"
-            events={timeFiltered}
+            events={events}
             field="agent_ip"
             active={filterDevice}
             labelFn={(v) => agentNames.get(v) ?? v}
@@ -171,7 +158,7 @@ export function AnalyticsPage({ ip, agents }: {
         )}
         <BarCard
           title="Count by host"
-          events={timeFiltered}
+          events={events}
           field="host"
           active={filterHost}
           onClickFn={(v) => {
@@ -181,10 +168,10 @@ export function AnalyticsPage({ ip, agents }: {
         />
       </div>
       <LatencyChart
-        events={events}
         filtered={filtered}
         isGlobal={isGlobal}
         agents={agents}
+        range={range}
       />
       <TopRoutes events={filtered} />
       <EventList events={filtered} />
@@ -277,11 +264,11 @@ const deviceColor = (s: string) =>
 
 // --- chart ---
 
-function LatencyChart({ filtered, isGlobal, agents }: {
-  events: EventRecord[];
+function LatencyChart({ filtered, isGlobal, agents, range }: {
   filtered: EventRecord[];
   isGlobal: boolean;
   agents: Agent[];
+  range: Range;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const colorOptions: ColorBy[] = isGlobal
@@ -291,8 +278,6 @@ function LatencyChart({ filtered, isGlobal, agents }: {
     useQS("color", colorOptions[0], colorOptions);
   const [scale, setScale] =
     useQS("scale", "log" as Scale, ["log", "linear"]);
-  const [range] =
-    useQS("range", "1h" as Range, RANGES);
 
   const agentNames = new Map(
     agents.map(a => [a.ip, a.hostname || a.ip]),
@@ -301,7 +286,6 @@ function LatencyChart({ filtered, isGlobal, agents }: {
   useEffect(() => {
     if (!ref.current || filtered.length === 0) return;
 
-    const cutoff = Date.now() - RANGE_MS[range];
     const dots = filtered
       .filter((e) => e.ms > 0)
       .map((e) => ({
@@ -318,11 +302,6 @@ function LatencyChart({ filtered, isGlobal, agents }: {
           : "2xx"
           : "\u2014",
       }));
-
-    if (dots.length === 0) {
-      ref.current.replaceChildren();
-      return;
-    }
 
     const colorField =
       colorBy === "status" ? "status"
@@ -359,11 +338,27 @@ function LatencyChart({ filtered, isGlobal, agents }: {
         type: scale,
         label: "Latency (ms)",
         grid: true,
+        nice: true,
+        ...(scale === "log"
+          ? {
+              ticks: [0.1, 1, 10, 100, 1000, 10000, 100000],
+              tickFormat: (v: number) =>
+                v >= 1000 ? `${v / 1000}k` : `${v}`,
+            }
+          : {
+              domain: [
+                0,
+                Math.max(100, ...dots.map(d => d.ms)) * 1.1,
+              ],
+            }),
       },
       x: {
         type: "time",
         label: null,
-        domain: [new Date(cutoff), new Date()],
+        domain: [
+          new Date(Date.now() - RANGE_MS[range]),
+          new Date(),
+        ],
       },
       color: colorCfg,
       marks: [
@@ -373,7 +368,10 @@ function LatencyChart({ filtered, isGlobal, agents }: {
           fill: colorField,
           r: 3,
           fillOpacity: 0.7,
-          channels: { id: "id" },
+          href: (d: typeof dots[0]) =>
+            d.id ? `#/request/${d.id}` : undefined,
+          title: (d: typeof dots[0]) =>
+            `${d.host}\n${d.device}\n${d.statusCode || "\u2014"} \u2022 ${d.ms}ms`,
         }),
         Plot.tip(dots, Plot.pointer({
           x: "t",
@@ -385,18 +383,22 @@ function LatencyChart({ filtered, isGlobal, agents }: {
       ],
     });
 
+    // SVG <a> elements use xlink:href and do full
+    // navigation — intercept clicks so the hash router
+    // handles them instead.
     chart.addEventListener("click", (evt) => {
-      const el = evt.target as SVGElement;
-      const circle = el.closest("circle");
-      if (!circle) return;
-      const i = (circle as any).__data__;
-      if (typeof i === "number" && dots[i]?.id) {
-        window.location.hash =
-          `#/request/${dots[i].id}`;
+      const a = (evt.target as Element).closest("a");
+      const href = a?.getAttribute("href")
+        ?? a?.getAttributeNS(
+          "http://www.w3.org/1999/xlink", "href",
+        );
+      if (href?.startsWith("#/request/")) {
+        evt.preventDefault();
+        window.location.hash = href;
       }
     });
-    chart.querySelectorAll("circle").forEach((c) => {
-      (c as SVGElement).style.cursor = "pointer";
+    chart.querySelectorAll("a").forEach((a) => {
+      (a as unknown as HTMLElement).style.cursor = "pointer";
     });
 
     // Make legend swatches clickable when colored by device
@@ -443,13 +445,7 @@ function LatencyChart({ filtered, isGlobal, agents }: {
           />
         </div>
       </div>
-      <div ref={ref} className="p-4 min-h-[320px]">
-        {filtered.length === 0 && (
-          <div className="flex items-center justify-center h-[280px] text-[11px] text-[#a3a3a3]">
-            Collecting data...
-          </div>
-        )}
-      </div>
+      <div ref={ref} className="p-4 min-h-[320px]" />
     </div>
   );
 }
@@ -528,8 +524,7 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
   }
 
   rows.sort((a, b) => b[sortBy] - a[sortBy]);
-  if (!rows.length) return null;
-  const maxCount = rows[0].count;
+  const maxCount = rows.length ? rows[0].count : 0;
 
   const hdr = (
     label: string,
@@ -589,6 +584,13 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
               </tr>
             );
           })}
+          {rows.length === 0 && (
+            <tr>
+              <td colSpan={4} className="px-3 py-6 text-center text-[11px] text-[#a3a3a3]">
+                No data in this time range
+              </td>
+            </tr>
+          )}
         </tbody>
       </table>
     </div>
@@ -616,8 +618,7 @@ function BarCard({ title, events, field, active, labelFn, colorFn, onClickFn }: 
     .map(([k, v]) => ({ key: k, label: labelFn ? labelFn(k) : k, value: v }))
     .sort((a, b) => b.value - a.value);
 
-  if (!items.length) return null;
-  const max = items[0].value;
+  const max = items.length ? items[0].value : 0;
 
   return (
     <div className="bg-white border border-[#e5e5e5] rounded overflow-hidden">
@@ -649,6 +650,11 @@ function BarCard({ title, events, field, active, labelFn, colorFn, onClickFn }: 
             </div>
           );
         })}
+        {items.length === 0 && (
+          <div className="py-4 text-center text-[11px] text-[#a3a3a3]">
+            No data in this time range
+          </div>
+        )}
       </div>
     </div>
   );

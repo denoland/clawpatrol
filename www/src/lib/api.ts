@@ -326,6 +326,19 @@ export type EventRecord = {
   resp_headers?: Record<string, string>;
 };
 
+export async function getAnalytics(params: {
+  range: string;
+  agent?: string;
+  limit?: number;
+}): Promise<{ events: EventRecord[]; total: number }> {
+  const p = new URLSearchParams({ range: params.range });
+  if (params.agent) p.set("agent", params.agent);
+  if (params.limit) p.set("limit", String(params.limit));
+  const r = await api(`/api/analytics?${p}`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export async function oauthExchange(state: string, code: string): Promise<{ connected: boolean; owner: string; expires: number }> {
   const r = await api("/api/oauth/exchange", {
     method: "POST",

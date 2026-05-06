@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -81,6 +82,7 @@ func newWebMux(g *Gateway, caDir string, ts Tailscale, publicURL string) http.Ha
 	mux.HandleFunc("/api/credentials/clear", w.apiCredentialsClear)
 	mux.HandleFunc("/api/events", w.apiEventsSSE)
 	mux.HandleFunc("/api/actions/", w.apiActionByID)
+	mux.HandleFunc("/api/analytics", w.apiAnalytics)
 	mux.HandleFunc("/api/onboard/start", w.apiOnboardStart)
 	mux.HandleFunc("/api/onboard/poll", w.apiOnboardPoll)
 	mux.HandleFunc("/api/onboard/approve", w.apiOnboardApprove)
@@ -944,6 +946,129 @@ func (w *webMux) apiActionByID(
 	unmarshalHeaders(reqHeaders.String, &e.ReqHeaders)
 	unmarshalHeaders(respHeaders.String, &e.RespHeaders)
 	writeJSON(rw, e)
+}
+
+// apiAnalytics returns a randomly-sampled set of events for the
+// analytics charts. Query params:
+//
+//	range  — duration string (1m, 5m, 15m, 30m, 1h, 6h, 24h)
+//	agent  — optional agent IP filter
+//	limit  — max rows (default 5000)
+func (w *webMux) apiAnalytics(
+	rw http.ResponseWriter, r *http.Request,
+) {
+	q := r.URL.Query()
+	rangeStr := q.Get("range")
+	if rangeStr == "" {
+		rangeStr = "1h"
+	}
+	dur, err := time.ParseDuration(
+		strings.TrimSuffix(rangeStr, "m") + "m0s",
+	)
+	// Parse shorthand: 1m, 5m, 30m, 1h, 6h, 24h
+	switch rangeStr {
+	case "1m":
+		dur = time.Minute
+	case "5m":
+		dur = 5 * time.Minute
+	case "15m":
+		dur = 15 * time.Minute
+	case "30m":
+		dur = 30 * time.Minute
+	case "1h":
+		dur = time.Hour
+	case "6h":
+		dur = 6 * time.Hour
+	case "24h":
+		dur = 24 * time.Hour
+	default:
+		if err != nil {
+			dur = time.Hour
+		}
+	}
+	cutoff := time.Now().Add(-dur).UnixNano()
+	limit := 5000
+	if l := q.Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 {
+			if n > 10000 {
+				n = 10000
+			}
+			limit = n
+		}
+	}
+	agent := q.Get("agent")
+
+	var query string
+	var args []any
+	if agent != "" {
+		query = `
+			SELECT action_id, ts_ns, mode, agent_ip, host,
+			       method, path, status, bytes_in, bytes_out,
+			       ms, action, reason
+			FROM actions
+			WHERE ts_ns >= ? AND agent_ip = ?
+			ORDER BY RANDOM()
+			LIMIT ?`
+		args = []any{cutoff, agent, limit}
+	} else {
+		query = `
+			SELECT action_id, ts_ns, mode, agent_ip, host,
+			       method, path, status, bytes_in, bytes_out,
+			       ms, action, reason
+			FROM actions
+			WHERE ts_ns >= ?
+			ORDER BY RANDOM()
+			LIMIT ?`
+		args = []any{cutoff, limit}
+	}
+	rows, err := w.g.db.Query(query, args...)
+	if err != nil {
+		http.Error(rw, err.Error(), 500)
+		return
+	}
+	defer rows.Close()
+	out := make([]Event, 0, 256)
+	for rows.Next() {
+		var (
+			e        Event
+			actionID sql.NullString
+			tsNs     int64
+			mode     sql.NullString
+			agentIP  sql.NullString
+			method   sql.NullString
+			path     sql.NullString
+			status   sql.NullInt64
+			in, ot   sql.NullInt64
+			ms       sql.NullInt64
+			action   sql.NullString
+			reason   sql.NullString
+		)
+		if err := rows.Scan(
+			&actionID, &tsNs, &mode, &agentIP, &e.Host,
+			&method, &path, &status, &in, &ot, &ms,
+			&action, &reason,
+		); err != nil {
+			http.Error(rw, err.Error(), 500)
+			return
+		}
+		e.ID = actionID.String
+		e.Ts = time.Unix(0, tsNs).UTC()
+		e.Mode = mode.String
+		e.AgentIP = agentIP.String
+		e.Method = method.String
+		e.Path = path.String
+		e.Status = int(status.Int64)
+		e.In = in.Int64
+		e.Out = ot.Int64
+		e.Ms = ms.Int64
+		e.Action = action.String
+		e.Reason = reason.String
+		out = append(out, e)
+	}
+	writeJSON(rw, map[string]any{
+		"events": out,
+		"total":  len(out),
+	})
 }
 
 func writeJSON(rw http.ResponseWriter, v any) {
