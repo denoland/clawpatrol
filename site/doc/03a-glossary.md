@@ -5,7 +5,7 @@
 Claw Patrol is an HTTPS-and-friends [gateway](#gateway) that sits between
 an [agent](#agent) (or any [device](#device) on its tunnel) and the
 upstream services it talks to. The gateway is driven by a single HCL
-[policy](#policy) file that names [endpoints](#endpoint),
+[global config](#global-config) that names [endpoints](#endpoint),
 [credentials](#credential), [rules](#rule), and [approvers](#approver),
 and groups them into [profiles](#profile) bound to specific devices.
 Per-request, the gateway intercepts the connection ([MitM](#mitm) for
@@ -21,11 +21,12 @@ appropriate [runtime](#runtime) interface.
 ### Gateway
 
 The Claw Patrol daemon. Terminates TLS via [MitM](#mitm), runs the
-[policy](#policy) loader and the per-request dispatcher, hosts the
-dashboard and HITL pool, and forwards traffic upstream after secret
-injection. Configured by a top-level HCL file (`gateway.hcl`) split
-into operational fields (listen address, CA dir, WireGuard config) and
-[policy](#policy) blocks. See [Architecture](04-architecture.md).
+[global config](#global-config) loader and the per-request dispatcher,
+hosts the dashboard and HITL pool, and forwards traffic upstream after
+secret injection. Configured by a top-level HCL file (`gateway.hcl`)
+split into operational fields (listen address, CA dir, WireGuard
+config) and the rest of the [global config](#global-config) blocks.
+See [Architecture](04-architecture.md).
 
 ### Agent
 
@@ -34,7 +35,7 @@ typically an AI coding agent (Claude Code, Codex, OpenClaw) or a custom
 script. The agent never holds real credentials; it sends
 [placeholders](#placeholder) and the gateway swaps them at the wire.
 "Agent" is the *who* of a request; [device](#device) is the *where it
-came from* used by the policy.
+came from* used by the global config.
 
 ### Device
 
@@ -46,19 +47,20 @@ can reach. The HCL `device "<ip>" { ... }` block (see
 [Configuration vocabulary](#configuration-vocabulary)) carries
 per-device rule overrides.
 
-### Policy
+### Global config
 
-Overloaded — call out which sense applies:
+The whole HCL document (this file): the gateway's full configuration.
+Loaded once at boot, hot-reloadable on SIGHUP.
 
-- **Policy file** (this whole HCL document): the gateway's full
-  configuration. Loaded once at boot, hot-reloadable on SIGHUP.
-- **`policy "<name>" { ... }` block**: a reusable LLM proctor prompt,
-  referenced from approve-chain stages — see
-  [Configuration vocabulary](#configuration-vocabulary).
+The `policy "<name>" { ... }` block is a separate concept — a
+reusable LLM proctor prompt referenced from approve-chain stages,
+which lives inside the global config; see
+[Configuration vocabulary](#configuration-vocabulary).
 
-When this glossary says "the policy" unqualified it means the file /
-compiled `*config.CompiledPolicy` in code; the block is always written
-"`policy {}` block".
+When this glossary says "the global config" unqualified it means the
+file / compiled `*config.CompiledPolicy` in code (called the *global
+config* in this doc — the code-level rename lands later); the block
+is always written "`policy {}` block".
 
 ### Endpoint
 
@@ -191,8 +193,8 @@ An [approver](#approver) entity. First label = type (`llm_approver` /
 
 ### `policy "<name>" { text = "..." }`
 
-A reusable LLM proctor prompt. *Not* the [policy file](#policy) — this
-is one block within it. Referenced from `approve = [{ name, policy =
+A reusable LLM proctor prompt. *Not* the [global config](#global-config) —
+this is one block within it. Referenced from `approve = [{ name, policy =
 my-policy }, ...]` stages.
 
 ### `credential "<type>" "<name>" { ... }`
@@ -282,7 +284,7 @@ denies / pauses for approval per the matched rule's [outcome](#outcome).
 `ConnRouteHosts() []string` — the optional interface an endpoint
 plugin's body implements when its traffic arrives as raw conns rather
 than via SNI. Returns the host[:port] tuples the endpoint claims; the
-gateway resolves each via DNS once at policy load and indexes
+gateway resolves each via DNS once at config load and indexes
 IP → endpoint for the [WG promiscuous forwarder](#wg-promiscuous-forwarder).
 
 ### `PlaceholderDetector`
@@ -306,7 +308,7 @@ plugins ship their own type via the same interface.
 
 The IP → endpoint map built by walking every endpoint whose body
 implements [`ConnRouter`](#connrouter), resolving its declared hosts
-once at policy load. The [WG promiscuous forwarder](#wg-promiscuous-forwarder)
+once at config load. The [WG promiscuous forwarder](#wg-promiscuous-forwarder)
 calls `ConnIndex.Lookup(dstIP)` to recover which endpoint(s) own a
 given destination IP — multiple endpoints can share an IP (e.g.
 `pg-writer` / `pg-readonly` against the same RDS host); the caller
