@@ -7,15 +7,18 @@ sits between agents and the upstream APIs they call. It does three jobs:
 
 1. Terminates a userspace WireGuard tunnel and accepts traffic from
    onboarded peers at L3.
-2. MITMs HTTPS, dispatches requests through a typed policy compiled
-   from HCL, and lets credential plugins stamp real secrets onto
-   matched requests so the agent never holds them.
+2. Intercepts each agent flow at the wire — HTTPS via SNI peek and
+   MITM, postgres / clickhouse-native / SSH via per-protocol
+   gateways — dispatches it through a typed policy compiled from
+   HCL, and lets credential plugins stamp real secrets onto matched
+   requests so the agent never holds them.
 3. Serves a dashboard for onboarding devices, approving/denying
    pending requests, and pasting credential material into per-profile
    slots.
 
-The same binary is the WG endpoint, the MITM proxy, the dashboard
-server, and the CLI used on agent machines (`clawpatrol join`,
+The same binary is the WG endpoint, the wire-protocol gateway
+(HTTPS / postgres / clickhouse / SSH), the dashboard server, and
+the CLI used on agent machines (`clawpatrol join`,
 `clawpatrol run …`, `clawpatrol login`, etc.).
 
 ## Process layout
@@ -34,11 +37,14 @@ server, and the CLI used on agent machines (`clawpatrol join`,
          │  │  + promiscuous forwarder     │  │  any dst IP/port
          │  └──────────────┬───────────────┘  │
          │                 │                  │
-         │  dispatch by dst port              │
-         │   :443  → MITM (HTTPS)             │
-         │   :5432 → postgres conn handler    │
+         │  dispatch by dst port + VIP:       │
+         │   :443  → HTTPS MITM (SNI peek)    │
+         │   :5432 → postgres wire gateway    │
+         │   :53   → DNS-VIP responder        │
+         │   VIP   → SSH / clickhouse_native  │
          │   :dash → dashboard mux            │
-         │   else  → transparent relay        │
+         │   else  → ConnIndex direct-IP /    │
+         │           transparent relay        │
          │                                    │
          │  policy: HCL → CompiledPolicy      │
          │  state:  SQLite (clawpatrol.db)    │
@@ -52,10 +58,13 @@ server, and the CLI used on agent machines (`clawpatrol join`,
 The Go binary is the only moving part on the gateway host. The
 WireGuard endpoint is userspace (no kernel module, `wg-quick`, or
 `/etc/wireguard/` config), L3 dispatch happens in-process via the
-gVisor netstack (no `iptables` rules or DNS-interception sidecar),
-agents dial real upstream IPs (no virtual-IP subnet), and TLS
-termination runs against stdlib `crypto/tls` directly (no separate
-Caddy/TLS frontend).
+gVisor netstack (no `iptables` rules), the in-process DNS-VIP
+responder handles virtual-IP synthesis without a separate
+Bind/Unbound sidecar (and only for the SSH and `clickhouse_native`
+endpoint families that can't be dispatched on dst port alone —
+every other DNS query is forwarded verbatim and the agent dials the
+real upstream IP), and TLS termination runs against stdlib
+`crypto/tls` directly (no separate Caddy/TLS frontend).
 
 ## Connecting an agent
 
@@ -70,7 +79,9 @@ There is no `HTTPS_PROXY` env var, no per-tool CA configuration, and
 no `iptables` rule on the gateway host. The promiscuous netstack
 forwarder accepts a SYN to any dst IP:port and hands it to the
 gateway's dispatcher with the original 4-tuple intact, so the agent
-just resolves the real upstream hostname via public DNS and dials it.
+just resolves the upstream hostname (the gateway's in-process DNS
+responder forwards real upstreams unchanged and substitutes a
+virtual IP only for endpoints flagged `RequiresVIP`) and dials it.
 
 ### macOS network extension
 
@@ -92,20 +103,25 @@ flows aren't dropped as "local source". A custom `NIC` route
 matching `0.0.0.0/0` and `::/0` makes the netstack accept connections
 to any destination IP, not just its own.
 
-`Gateway.EnablePromiscuousForwarder` registers a callback that fires
-once per inbound TCP flow with the original `(c, dstIP, dstPort)`. The
-gateway dispatches by dst port:
+`Gateway.EnablePromiscuousForwarder` registers two callbacks: one
+fires per inbound TCP flow with the original `(c, dstIP, dstPort)`,
+the other per UDP datagram. TCP dispatch:
 
-| dst port | handler                                                |
-|----------|--------------------------------------------------------|
-| `443`    | `Gateway.handle` — SNI peek, MITM TLS, policy dispatch |
-| `5432`   | `Gateway.handlePostgresConn` — postgres wire protocol  |
-| dashboard | `http.Serve` against the dashboard mux on a one-shot listener |
-| else     | `wgRelay` — transparent TCP relay to the real upstream |
+| dst tuple              | handler                                                                                                                                                                    |
+|------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `:443`                 | `Gateway.handle` — SNI peek, then `mitmHTTPS` for `https` / `k8s` family endpoints; passthrough for SQL-family hosts that arrive on `:443` (e.g. `clickhouse_https`)        |
+| `:5432`                | `Gateway.handlePostgresConn` — postgres wire-protocol gateway (auth offload + `sql_rule` matching)                                                                         |
+| `:53`                  | `Gateway.handleDNSTCPConn` — TCP fallback for the DNS-VIP responder                                                                                                        |
+| any port, dst IP ∈ VIP | `Gateway.handleVIPConn` — recovers the agent-dialed hostname from the dnsvip table, picks the endpoint per profile, dispatches to its `ConnEndpointRuntime` (currently SSH; clickhouse_native when bound by hostname) |
+| dashboard port         | `http.Serve` against the dashboard mux on a one-shot listener                                                                                                              |
+| else                   | `Gateway.tryDirectIPConn` — `ConnIndex.Lookup(dstIP)` to dispatch direct-IP `ConnEndpointRuntime` bindings (e.g. `clickhouse_native` with `hosts = ["172.17.0.1"]`); falls through to `wgRelay` (transparent TCP relay) when no endpoint claims the dst |
 
-Anything not on `:443` or `:5432` (plain HTTP, SSH, etc.) is relayed
-verbatim until its endpoint plugin's wire-protocol runtime ships
-(e.g. `clickhouse_native`).
+UDP dispatch is narrower: `:53` lands on the DNS-VIP responder
+(`g.dnsvip.ServeUDP`); other UDP datagrams are dropped today.
+
+Plain HTTP, arbitrary outbound TCP, and any wire protocol whose
+plugin hasn't shipped a `ConnEndpointRuntime` yet fall through to
+`wgRelay` — transparent TCP relay to the real upstream IP.
 
 ## HTTPS MITM
 
@@ -123,9 +139,11 @@ verbatim until its endpoint plugin's wire-protocol runtime ships
    default is `passthrough`) decides whether to splice or close.
 
 3. **Family dispatch.** `https` and `k8s` endpoints go to
-   `mitmHTTPS`; binary-protocol families (`postgres`,
-   `clickhouse_*`) on `:443` fall back to passthrough until their
-   plugin's `ConnEndpointRuntime` lands.
+   `mitmHTTPS`. SQL-family endpoints that happen to surface on
+   `:443` (today: `clickhouse_https`, schema only) fall through to
+   passthrough — the postgres / clickhouse_native / SSH families
+   have their own dispatch paths (`:5432`, dnsvip, direct-IP) and
+   never reach this branch in the first place.
 
 4. **TLS termination.** Stdlib `crypto/tls.Server` wraps the duplex
    `net.Conn` directly. The leaf cert is minted by `CertCache.mint`
@@ -191,7 +209,7 @@ top of the file; everything else is a typed top-level block:
 | `approver "<type>" "<name>"`         | Who arbitrates HITL stages (`llm_approver`, `human_approver`)       |
 | `policy "<name>"`                    | Reusable LLM-proctor prompt heredoc                                 |
 | `credential "<type>" "<name>"`       | Typed handle to a secret (`bearer_token`, `oauth`, `mtls`, …)       |
-| `endpoint "<type>" "<name>"`         | Upstream binding (`https`, `kubernetes`, `postgres`, `clickhouse_*`)|
+| `endpoint "<type>" "<name>"`         | Upstream binding (`https`, `kubernetes`, `postgres`, `clickhouse_*`, `ssh`)|
 | `rule "<type>" "<name>"`             | One policy decision targeting one or more endpoints                 |
 | `profile "<name>"`                   | Endpoint membership list — a device's profile gets exactly these    |
 
@@ -219,12 +237,14 @@ A `credential "<type>" "<name>" {}` block declares one credential
 shape. The plugin's body satisfies one or more runtime interfaces in
 `config/runtime/runtime.go`:
 
-| Interface                  | Used by                                  | What it does                                                                          |
-|----------------------------|------------------------------------------|---------------------------------------------------------------------------------------|
-| `HTTPCredentialRuntime`    | `bearer_token`, `header_token`, `cookie_token`, OAuth-flow shapes | Mutate `req.Header` (and sometimes URL) before the upstream round-trip                |
-| `TLSCredentialRuntime`     | `mtls`                                   | Add client cert / replace `RootCAs` on the upstream `tls.Config`                      |
-| `PostgresCredentialRuntime`| `postgres` credential plugin             | Rewrite the `StartupMessage` password before the upstream connect                     |
-| `PostgresAuthCredential`   | `postgres` credential plugin             | Hand `(user, password)` to the postgres endpoint runtime so the agent never sees auth |
+| Interface                  | Used by                                  | What it does                                                                                                |
+|----------------------------|------------------------------------------|-------------------------------------------------------------------------------------------------------------|
+| `HTTPCredentialRuntime`    | `bearer_token`, `header_token`, `cookie_token`, OAuth-flow shapes | Mutate `req.Header` (and sometimes URL) before the upstream round-trip                                      |
+| `TLSCredentialRuntime`     | `mtls`                                   | Add client cert / replace `RootCAs` on the upstream `tls.Config`                                            |
+| `PostgresCredentialRuntime`| `postgres` credential plugin             | Rewrite the `StartupMessage` password before the upstream connect                                           |
+| `PostgresAuthCredential`   | `postgres` credential plugin             | Hand `(user, password)` to the postgres endpoint runtime so the agent never sees auth                       |
+| `ClickhouseAuthCredential` | `clickhouse` credential plugin           | Hand `(user, password)` to the `clickhouse_native` runtime so it can swap placeholder bytes in the Hello packet |
+| `sshproto.AuthCredential`  | `ssh` credential plugin                  | Hand SSH user / private key / password / host pubkey to the SSH endpoint runtime for upstream auth replay   |
 
 Schema-only credential types (e.g. `slack`, `telegram`, `gemini`)
 declare slots and rule hooks but leave `Runtime` nil; their requests
@@ -265,27 +285,94 @@ that check.
 
 ## Endpoint plugins
 
-`endpoint "<type>" "<name>" {}` declares an upstream binding. Built-in
-families:
+`endpoint "<type>" "<name>" {}` declares an upstream binding. Each
+plugin sits in one of four families; the family code is what the
+dispatcher and the rule-type checker key off. The
+[`config/README.md`](../../config/README.md) endpoint table is the
+canonical HCL syntax reference; this section is the runtime-side
+view.
 
-- `https` / `kubernetes` — MITM via `mitmHTTPS`, served on `:443`
-  via SNI dispatch.
-- `postgres` — MITM via `handlePostgresConn`, served on `:5432` via
-  WG forwarder dst-port match. Full request-time handling lives in
-  the plugin's `ConnEndpointRuntime`.
-- `clickhouse_https` / `clickhouse_native` — schema only today;
-  `_https` rides the HTTPS path, `_native` is parked behind a future
-  `ConnEndpointRuntime` and currently passes through.
+| Family code | Plugin types                                        | Runtime contracts                                                                          | Dispatch path                                                                          |
+|-------------|-----------------------------------------------------|--------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------|
+| `https`     | [`https`][ep-https]                                 | `HTTPCredentialRuntime` (+ `TLSCredentialRuntime` for mTLS on the upstream dial)           | `:443` → SNI peek → `mitmHTTPS`                                                        |
+| `k8s`       | [`kubernetes`][ep-k8s]                              | `HTTPCredentialRuntime`; URL parses to `verb / namespace / resource` for `k8s_rule`        | `:443` → SNI peek → `mitmHTTPS`                                                        |
+| `sql`       | [`postgres`][ep-pg]                                 | `ConnEndpointRuntime` + `PostgresCredentialRuntime` / `PostgresAuthCredential`             | `:5432` → `handlePostgresConn`                                                         |
+| `sql`       | [`clickhouse_native`][ep-chn]                       | `ConnEndpointRuntime` + `ClickhouseAuthCredential`                                         | hostname → VIP → `handleVIPConn`; IP-literal hosts → `tryDirectIPConn`                 |
+| `sql`       | [`clickhouse_https`][ep-chh]                        | schema only today (no runtime); rides the HTTPS path but family-switches to passthrough    | `:443` → SNI peek → splice                                                             |
+| `ssh`       | [`ssh`][ep-ssh]                                     | `ConnEndpointRuntime` + `sshproto.AuthCredential`                                          | hostname → VIP → `handleVIPConn` (any dst port)                                        |
+
+[ep-https]: ../../config/plugins/endpoints/https.go
+[ep-k8s]: ../../config/plugins/endpoints/kubernetes.go
+[ep-pg]: ../../config/plugins/endpoints/postgres.go
+[ep-chn]: ../../config/plugins/endpoints/clickhouse_native.go
+[ep-chh]: ../../config/plugins/endpoints/clickhouse_https.go
+[ep-ssh]: ../../config/plugins/endpoints/ssh.go
+
+Rule families bind to endpoint families: `http_rule` → `https`,
+`sql_rule` → `sql` (postgres + clickhouse_*), `k8s_rule` → `k8s`.
+SSH endpoints have no rule type today — auth replay through the
+credential plugin is the policy boundary; rule-driven matching on
+SSH channels lands in a follow-up.
+
+### ConnIndex: dstIP → endpoint
 
 Endpoint plugins whose body satisfies `runtime.ConnRouter` declare
 which `host[:port]` tuples they claim. At policy load,
-`runtime.BuildConnIndex` resolves each declared host to IPs and builds
-a `dstIP → []*CompiledEndpoint` map. The promiscuous forwarder uses
-this index to map the WG-side dst IP back to a candidate endpoint;
-when multiple endpoints claim the same IP (writer + readonly RDS),
-`pickEndpointForProfile` filters by the device's profile and falls
-back to `firstPostgresEndpoint` for single-tenant configs without
-explicit DNS.
+`runtime.BuildConnIndex` resolves each declared host to IPs and
+builds a `dstIP → []*CompiledEndpoint` map. The promiscuous
+forwarder uses this index to map the WG-side dst IP back to a
+candidate endpoint; when multiple endpoints claim the same IP
+(writer + readonly RDS), `pickEndpointForProfile` filters by the
+device's profile and falls back to `firstPostgresEndpoint` for
+single-tenant configs without explicit DNS.
+
+### ConnEndpointRuntime: postgres / clickhouse_native / ssh
+
+The non-HTTPS families share a runtime shape. The plugin's
+`Runtime` field implements `ConnEndpointRuntime`, its endpoint body
+implements `ConnRouter`, and the dispatcher hands an inbound conn
+to `HandleConn` after picking the right endpoint per the device's
+profile. Each family's wire-protocol specifics differ, but the
+secret-injection model is the same one as HTTPS: the credential
+plugin owns one well-defined slot, the runtime swaps placeholder
+bytes for real ones, and nothing else mutates the wire bytes.
+
+- **postgres** terminates SCRAM/cleartext upstream using the
+  credential's `(user, password)` — the agent never participates
+  in the auth handshake — synthesizes `AuthenticationOk` for the
+  agent, and runs each subsequent `Query` / `Parse` through the
+  `sql_rule` matcher. Denied statements get an `ErrorResponse +
+  ReadyForQuery` so the session continues.
+- **clickhouse_native** parses the Hello packet, swaps placeholder
+  bytes in the agent-supplied `(username, password)` for the real
+  values via `ClickhouseAuthCredential`, emits one connection
+  event, and pipes bidirectionally. TLS is terminated on both hops
+  when `tls = true`. SQL-statement parsing lands in a follow-up;
+  today the plugin gates on connect-time policy only.
+- **ssh** acts as an SSH server toward the agent (any auth —
+  WireGuard is the trust boundary) and an SSH client toward the
+  upstream, replaying the credential's `user` / `key` / `password`
+  and splicing channels and global requests both directions. The
+  gateway-side host key is a lazy-generated ed25519 keypair under
+  `<ca_dir>/ssh/<endpoint>.key`; interactive sessions, exec, port
+  forwarding, and SFTP all work without per-channel logic.
+
+### DNS-VIP for non-SNI families
+
+SSH and `clickhouse_native` carry no SNI / Host header, so the
+dispatcher can't recover the agent-dialed hostname from the dst IP
+alone. Their plugins return `RequiresVIP() = true`; the `dnsvip`
+allocator (in [`dnsvip/`](../../dnsvip/)) assigns a stable virtual
+IP per declared hostname at policy build and persists the table to
+`<state_dir>/dnsvip.json` so VIPs survive restart. The gateway's
+in-process DNS responder serves UDP/TCP `:53`: queries for VIP-
+bound hostnames return the allocated VIP; everything else is
+forwarded to the upstream resolver verbatim, with A/AAAA responses
+passed through unchanged. The WG forwarder routes any port on a
+VIP through `handleVIPConn`, which recovers the hostname from the
+VIP table and dispatches into the matching `ConnEndpointRuntime`.
+IP-literal `hosts` entries skip dnsvip entirely (no DNS query to
+intercept) and reach `HandleConn` via `tryDirectIPConn`.
 
 ## Rules and approval
 
