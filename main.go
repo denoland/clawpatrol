@@ -28,6 +28,7 @@ import (
 	_ "github.com/denoland/clawpatrol/config/plugins/all"
 	"github.com/denoland/clawpatrol/config/plugins/approvers"
 	"github.com/denoland/clawpatrol/config/runtime"
+	"github.com/denoland/clawpatrol/dnsvip"
 	"github.com/google/uuid"
 )
 
@@ -260,6 +261,13 @@ type Gateway struct {
 	// implements runtime.ConnRouter (postgres today, future binary
 	// protocols). Rebuilt on every policy load.
 	connIdx atomic.Pointer[runtime.ConnIndex]
+	// dnsvip owns the hostname↔virtual-IP table for endpoints whose
+	// wire protocol can't be disambiguated at TCP-accept time (SSH
+	// today). The DNS server hijacks A/AAAA queries inside the WG
+	// tunnel so an agent's `ssh user@host` resolves to a unique VIP
+	// the gateway can route by. Single allocator shared across the
+	// process; mutate-in-place + RWMutex inside.
+	dnsvip *dnsvip.Allocator
 }
 
 // Policy returns the current snapshot of the lowered runtime policy.
@@ -323,6 +331,11 @@ func (g *Gateway) watchConfig(path string) {
 		g.policy.Store(policy)
 		registerOAuthCredentials(g.oauth, policy)
 		g.connIdx.Store(runtime.BuildConnIndex(policy))
+		if g.dnsvip != nil {
+			if err := g.dnsvip.RebuildFromPolicy(policy); err != nil {
+				log.Printf("dnsvip rebuild on reload: %v", err)
+			}
+		}
 		// Hot-swap the operational *config.Gateway too — AdminEmail /
 		// PublicURL / DashboardSecret reads pick up immediately.
 		// Listen / CADir / Tailscale changes are not applied (restart).
@@ -1107,6 +1120,112 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 	}
 }
 
+// handleVIPConn dispatches an inbound TCP connection whose dst IP
+// falls in the dnsvip range. The VIP table maps the IP back to the
+// hostname → endpoints that claimed a VIP at policy build; profile
+// filter picks the one for this device. Today the only RequiresVIP
+// plugin is "ssh", but the path is generic so future binary
+// protocols (clickhouse_native with a hostname-keyed dispatch quirk,
+// for instance) can plug in without a separate forwarder branch.
+func (g *Gateway) handleVIPConn(c net.Conn, dstIP string, dstPort uint16) {
+	defer otelTrackConn("vip_conn")()
+	pip := peerIP(c)
+	profile := g.profileFor(pip)
+	policy := g.Policy()
+
+	hostname, hits := g.dnsvip.LookupVIP(dstIP)
+	if hostname == "" || len(hits) == 0 {
+		log.Printf("vip %s:%d: VIP allocated but no endpoint binding (stale?); dropping", dstIP, dstPort)
+		c.Close()
+		return
+	}
+	// Profile-filter the hits, then port-match. Port match handles
+	// the case where one hostname is bound to multiple endpoints on
+	// different ports (rare but legal).
+	var ep *config.CompiledEndpoint
+	var matchedPort uint16
+	for _, h := range hits {
+		if h.Endpoint == nil {
+			continue
+		}
+		if profile != "" {
+			if prof, ok := policy.Profiles[profile]; ok {
+				if _, in := prof.Endpoints[h.Endpoint.Name]; !in {
+					continue
+				}
+			}
+		}
+		if dstPort != 0 && h.Port != 0 && dstPort != h.Port {
+			continue
+		}
+		ep = h.Endpoint
+		matchedPort = h.Port
+		break
+	}
+	if ep == nil {
+		log.Printf("vip %s:%d (host %q): no endpoint matches profile %q + port", dstIP, dstPort, hostname, profile)
+		c.Close()
+		return
+	}
+
+	connRT, ok := ep.Plugin.Runtime.(runtime.ConnEndpointRuntime)
+	if !ok {
+		log.Printf("vip endpoint %q plugin lacks ConnEndpointRuntime", ep.Name)
+		c.Close()
+		return
+	}
+
+	mode := ep.Plugin.Type // "ssh" today; future plugins surface as their own mode tag
+	ch := &runtime.ConnHandle{
+		Conn:     c,
+		Endpoint: ep,
+		Policy:   policy,
+		Profile:  profile,
+		PeerIP:   pip,
+		Secrets:  g.secrets,
+		CADir:    g.cfg.CADir,
+		DstPort:  matchedPort,
+		DialUpstream: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			// Plugin passes the *real* upstream host:port — the
+			// gateway's host network resolves it (the VIP only
+			// exists inside the WG netstack).
+			if addr == "" {
+				return nil, fmt.Errorf("vip dispatch: plugin gave empty upstream addr")
+			}
+			return g.dialer.DialContext(ctx, network, addr)
+		},
+		Emit: func(ev runtime.ConnEvent) {
+			if g.sink == nil {
+				return
+			}
+			g.sink.Emit(Event{
+				Mode: mode, Host: hostname, AgentIP: pip,
+				Method: ev.Verb, Path: ev.Summary,
+				Action: ev.Action, Reason: ev.Reason,
+			})
+		},
+		Approve: func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
+			return g.runApproveChain(context.Background(), req.Stages, runApproveCtx{
+				AgentIP: pip, Host: hostname, Method: req.Verb, Path: req.Summary,
+				Reason:   ifNotEmpty(req.Rule, func(r *config.CompiledRule) string { return r.Outcome.Reason }),
+				Endpoint: ep, Rule: req.Rule, Profile: profile,
+			})
+		},
+	}
+	if err := connRT.HandleConn(context.Background(), ch); err != nil {
+		log.Printf("%s vip %s (%s): %v", mode, dstIP, hostname, err)
+	}
+}
+
+// handleDNSTCPConn dispatches an inbound TCP/53 flow to the dnsvip
+// allocator's TCP serving loop. The udpDispatch closure handles the
+// UDP variant; this is its TCP twin so DNS-over-TCP queries (large
+// answers, axfr-style retries, or simply `dig +tcp`) keep working.
+func (g *Gateway) handleDNSTCPConn(c net.Conn, dstIP string) {
+	defer otelTrackConn("dns_tcp")()
+	g.dnsvip.ServeTCP(c, dstIP)
+}
+
 // firstPostgresEndpoint returns the first postgres-family endpoint in
 // the device's profile. Multi-postgres profiles need DNS-aware
 // matching against the WG forwarder's dstIP — tracked as follow-up;
@@ -1837,6 +1956,20 @@ func runGateway(args []string) {
 	registerOAuthCredentials(oauthReg, policy)
 	g.policy.Store(policy)
 	g.connIdx.Store(runtime.BuildConnIndex(policy))
+	// dnsvip is opt-in by policy: if no endpoint requires VIPs, the
+	// allocator stays empty and ServeUDP / ServeTCP are never called
+	// (no endpoint dispatches port-53 to them). Construct
+	// unconditionally so reloads that *add* an SSH endpoint don't
+	// have to re-init. Persists to <stateDir>/dnsvip.json so VIPs
+	// survive restarts.
+	dvip, err := dnsvip.New(stateDir, dnsvip.DefaultCIDR4, dnsvip.DefaultCIDR6)
+	if err != nil {
+		log.Fatalf("dnsvip init: %v", err)
+	}
+	g.dnsvip = dvip
+	if err := g.dnsvip.RebuildFromPolicy(policy); err != nil {
+		log.Fatalf("dnsvip build: %v", err)
+	}
 	log.Printf("policy: %d endpoints across %d profiles", len(policy.Endpoints), len(policy.Profiles))
 	go g.watchConfig(*cfgPath)
 	if err := g.onboard.Load(db); err != nil {
@@ -1905,13 +2038,20 @@ func runGateway(args []string) {
 		setWGServer(wg)
 		dashMux := newWebMux(g, cfg.CADir, *cfg.Tailscale, cfg.PublicURL)
 		dashPort := portOf(cfg.InfoListen)
-		if err := wg.EnablePromiscuousForwarder(func(c net.Conn, dstIP string, dstPort uint16) {
+		tcpDispatch := func(c net.Conn, dstIP string, dstPort uint16) {
 			log.Printf("wg-fwd: %s:%d", dstIP, dstPort)
 			switch {
 			case dstPort == 443:
 				g.handle(c)
 			case dstPort == 5432:
 				g.handlePostgresConn(c, dstIP)
+			case dstPort == 53:
+				g.handleDNSTCPConn(c, dstIP)
+			case g.dnsvip.IsVIP(dstIP):
+				// Any port on a VIP belongs to the SSH endpoint that
+				// hostname maps to. Future RequiresVIP plugins can
+				// branch on ep.Plugin.Type inside handleVIPConn.
+				g.handleVIPConn(c, dstIP, dstPort)
 			case dashPort != 0 && int(dstPort) == dashPort:
 				_ = http.Serve(&oneShotListener{c: c}, dashMux)
 			default:
@@ -1920,10 +2060,18 @@ func runGateway(args []string) {
 				// (clickhouse_native, etc.).
 				wgRelay(c, dstIP, int(dstPort))
 			}
-		}); err != nil {
+		}
+		udpDispatch := func(c net.Conn, dstIP string, dstPort uint16) bool {
+			if dstPort == 53 {
+				g.dnsvip.ServeUDP(c, dstIP)
+				return true
+			}
+			return false
+		}
+		if err := wg.EnablePromiscuousForwarder(tcpDispatch, udpDispatch); err != nil {
 			log.Fatalf("wireguard forwarder: %v", err)
 		}
-		log.Printf("wireguard promiscuous forwarder ready (any dst → :443=mitm, :5432=pg, :%d=dash, else=relay)", dashPort)
+		log.Printf("wireguard promiscuous forwarder ready (any dst → :443=mitm, :5432=pg, :53=dns-vip, VIP=ssh, :%d=dash, else=relay)", dashPort)
 	}
 
 	ln, err := openListener(cfg)

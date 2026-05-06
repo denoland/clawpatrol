@@ -66,6 +66,29 @@ type PostgresAuthCredential interface {
 	PostgresAuth(sec Secret) (user, password string)
 }
 
+// SSHCreds is the materialised view an SSH credential hands to the
+// SSH endpoint runtime. PrivateKey is the raw PEM bytes (PKCS#1, PKCS#8
+// or OpenSSH format — golang.org/x/crypto/ssh.ParsePrivateKey* handles
+// all three). HostPubkey, when non-empty, is a single-line
+// authorized_keys-style entry the endpoint pins for upstream
+// verification (matches `ssh-keyscan` output).
+type SSHCreds struct {
+	User       string
+	PrivateKey []byte
+	Passphrase string
+	Password   string
+	HostPubkey string
+}
+
+// SSHAuthCredential is what the SSH endpoint runtime needs from a
+// credential plugin to authenticate upstream on the agent's behalf.
+// The credential never sees the agent connection — it just returns the
+// material; the endpoint runtime drives the upstream handshake. Mirrors
+// the postgres SCRAM-offload split.
+type SSHAuthCredential interface {
+	SSHAuth(sec Secret) (SSHCreds, error)
+}
+
 // TLSCredentialRuntime customizes the upstream TLS configuration
 // before the dial. mTLS credentials use this to add a client cert
 // (Certificates) and an optional custom root pool (RootCAs); other
@@ -126,6 +149,18 @@ type ConnHandle struct {
 	// support HITL for this conn family — plugins must default to
 	// deny in that case.
 	Approve func(req ApproveCallRequest) ApproveVerdict
+	// CADir is the gateway's CA / persistent state root (matches
+	// cfg.CADir). Endpoint runtimes that need to persist material
+	// per endpoint — e.g. SSH host keys at <CADir>/ssh/<name>.key —
+	// derive paths from this. Empty when the gateway hasn't been
+	// configured with a CA dir; plugins that need persistence error
+	// out clearly in that case.
+	CADir string
+	// DstPort is the destination port the agent connection arrived
+	// on (post-VIP / direct dial). Endpoints whose host strings
+	// carry a non-default port (`hosts = ["x.com:22222"]`) consult
+	// this to pick which Hosts[i] the connection corresponds to.
+	DstPort uint16
 }
 
 // ApproveCallRequest is what a ConnEndpointRuntime hands to

@@ -28,8 +28,9 @@ func checkRuntime(p *config.Plugin) []string {
 		_, pg := p.Runtime.(PostgresCredentialRuntime)
 		_, pgAuth := p.Runtime.(PostgresAuthCredential)
 		_, tlsR := p.Runtime.(TLSCredentialRuntime)
-		if !http && !pg && !pgAuth && !tlsR {
-			return []string{fmt.Sprintf("Runtime %T satisfies no credential runtime interface (HTTP / Postgres / TLS)", p.Runtime)}
+		_, sshR := p.Runtime.(SSHAuthCredential)
+		if !http && !pg && !pgAuth && !tlsR && !sshR {
+			return []string{fmt.Sprintf("Runtime %T satisfies no credential runtime interface (HTTP / Postgres / TLS / SSH)", p.Runtime)}
 		}
 	case config.KindEndpoint:
 		// Endpoint plugins satisfy any combination of

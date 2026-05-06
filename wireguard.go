@@ -363,13 +363,24 @@ func wg6FromV4(v4 netip.Addr) netip.Addr {
 }
 
 // EnablePromiscuousForwarder turns the netstack into an L3 sink.
-// SYNs to ANY destination IP/port reach `handler`; the wrapped net.Conn
-// already carries the original 4-tuple via TransportEndpointID. Mirrors
-// unclaw/smoltcp's set_any_ip + dynamic listener pool model.
+// SYNs to ANY destination IP/port reach `tcpHandler`; the wrapped
+// net.Conn already carries the original 4-tuple via
+// TransportEndpointID. Mirrors unclaw/smoltcp's set_any_ip + dynamic
+// listener pool model.
 //
-// Caller dispatches by dstPort (e.g. 443 → MITM, dash port → mux,
+// udpHandler is consulted before the default UDP relay: it may take
+// over a flow (return true) — used for DNS interception so the
+// gateway can answer A queries with VIPs for SSH-able hostnames —
+// or pass (return false) to fall through to relayUDP, which shuttles
+// datagrams to the real upstream over the host's network. Pass nil
+// for the all-relay default.
+//
+// Caller dispatches TCP by dstPort (e.g. 443 → MITM, dash port → mux,
 // else → transparent relay to the real upstream IP).
-func (s *WGServer) EnablePromiscuousForwarder(handler func(c net.Conn, dstIP string, dstPort uint16)) error {
+func (s *WGServer) EnablePromiscuousForwarder(
+	tcpHandler func(c net.Conn, dstIP string, dstPort uint16),
+	udpHandler func(c net.Conn, dstIP string, dstPort uint16) bool,
+) error {
 	st := s.tun.stack
 	if err := st.SetPromiscuousMode(1, true); err != nil {
 		return fmt.Errorf("set promiscuous: %v", err)
@@ -393,11 +404,12 @@ func (s *WGServer) EnablePromiscuousForwarder(handler func(c net.Conn, dstIP str
 		}
 		req.Complete(false)
 		c := gonet.NewTCPConn(&wq, ep)
-		go handler(c, id.LocalAddress.String(), id.LocalPort)
+		go tcpHandler(c, id.LocalAddress.String(), id.LocalPort)
 	})
 	st.SetTransportProtocolHandler(tcp.ProtocolNumber, fwd.HandlePacket)
 
-	// UDP forwarder — DNS, QUIC, etc. need to reach real upstreams.
+	// UDP forwarder — DNS interception (when udpHandler claims the
+	// flow) or transparent relay (default).
 	udpFwd := udp.NewForwarder(st, func(req *udp.ForwarderRequest) bool {
 		id := req.ID()
 		var wq waiter.Queue
@@ -405,8 +417,15 @@ func (s *WGServer) EnablePromiscuousForwarder(handler func(c net.Conn, dstIP str
 		if err != nil {
 			return true
 		}
-		go relayUDP(gonet.NewUDPConn(&wq, ep),
-			id.LocalAddress.String(), id.LocalPort)
+		c := gonet.NewUDPConn(&wq, ep)
+		dstIP := id.LocalAddress.String()
+		dstPort := id.LocalPort
+		go func() {
+			if udpHandler != nil && udpHandler(c, dstIP, dstPort) {
+				return
+			}
+			relayUDP(c, dstIP, dstPort)
+		}()
 		return true
 	})
 	st.SetTransportProtocolHandler(udp.ProtocolNumber, udpFwd.HandlePacket)
