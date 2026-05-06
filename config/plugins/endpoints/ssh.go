@@ -496,6 +496,12 @@ func proxyChannel(a ssh.Channel, aReqs <-chan *ssh.Request, b ssh.Channel, bReqs
 
 func pumpGlobalReqs(target ssh.Conn, source <-chan *ssh.Request) {
 	for r := range source {
+		if isProxyDroppedGlobalReq(r.Type) {
+			if r.WantReply {
+				_ = r.Reply(false, nil)
+			}
+			continue
+		}
 		ok, payload, err := target.SendRequest(r.Type, r.WantReply, r.Payload)
 		if err != nil {
 			ok = false
@@ -505,6 +511,28 @@ func pumpGlobalReqs(target ssh.Conn, source <-chan *ssh.Request) {
 			_ = r.Reply(ok, payload)
 		}
 	}
+}
+
+// isProxyDroppedGlobalReq names global requests we deliberately swallow
+// at the gateway instead of forwarding. Currently just OpenSSH's
+// UpdateHostKeys exchange (RFC draft, names below): the agent sees the
+// gateway's per-endpoint host key, not the upstream's, and the
+// signed-payload includes the SSH session id — which is necessarily
+// different on the agent↔gateway and gateway↔upstream halves of a
+// proxied conn. Forwarding the exchange transparently makes the OpenSSH
+// client log "client_global_hostkeys_prove_confirm: server gave bad
+// signature" because it's verifying upstream's signature against the
+// agent-side session id. Dropping the request makes UpdateHostKeys
+// silently no-op for proxied SSH — agents can't auto-rotate the
+// gateway's known_hosts entry that way, but rotation of an
+// MITM gateway's host key is an operator concern anyway, not something
+// the upstream can usefully advertise.
+func isProxyDroppedGlobalReq(name string) bool {
+	switch name {
+	case "hostkeys-00@openssh.com", "hostkeys-prove-00@openssh.com":
+		return true
+	}
+	return false
 }
 
 // ── Host key persistence ──────────────────────────────────────────────
