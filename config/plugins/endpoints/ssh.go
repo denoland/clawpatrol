@@ -50,6 +50,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/plugins/sshproto"
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
@@ -230,9 +231,9 @@ func (rt *SSHEndpointRuntime) upstreamClientConfig(ch *runtime.ConnHandle, ep *S
 		return nil, fmt.Errorf("endpoint %q has no credential bound", ch.Endpoint.Name)
 	}
 	cc := cred[0]
-	auth, ok := cc.Credential.Body.(runtime.SSHAuthCredential)
+	auth, ok := cc.Credential.Body.(sshproto.AuthCredential)
 	if !ok {
-		return nil, fmt.Errorf("credential %q does not implement SSHAuth (use credential type \"ssh\")", cc.Credential.Symbol.Name)
+		return nil, fmt.Errorf("credential %q does not implement sshproto.AuthCredential (use credential type \"ssh\")", cc.Credential.Symbol.Name)
 	}
 	sec, err := ch.Secrets.Get(cc.Credential.Symbol.Name, ch.Profile)
 	if err != nil {

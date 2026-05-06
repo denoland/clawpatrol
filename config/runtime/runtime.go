@@ -66,29 +66,6 @@ type PostgresAuthCredential interface {
 	PostgresAuth(sec Secret) (user, password string)
 }
 
-// SSHCreds is the materialised view an SSH credential hands to the
-// SSH endpoint runtime. PrivateKey is the raw PEM bytes (PKCS#1, PKCS#8
-// or OpenSSH format — golang.org/x/crypto/ssh.ParsePrivateKey* handles
-// all three). HostPubkey, when non-empty, is a single-line
-// authorized_keys-style entry the endpoint pins for upstream
-// verification (matches `ssh-keyscan` output).
-type SSHCreds struct {
-	User       string
-	PrivateKey []byte
-	Passphrase string
-	Password   string
-	HostPubkey string
-}
-
-// SSHAuthCredential is what the SSH endpoint runtime needs from a
-// credential plugin to authenticate upstream on the agent's behalf.
-// The credential never sees the agent connection — it just returns the
-// material; the endpoint runtime drives the upstream handshake. Mirrors
-// the postgres SCRAM-offload split.
-type SSHAuthCredential interface {
-	SSHAuth(sec Secret) (SSHCreds, error)
-}
-
 // TLSCredentialRuntime customizes the upstream TLS configuration
 // before the dial. mTLS credentials use this to add a client cert
 // (Certificates) and an optional custom root pool (RootCAs); other

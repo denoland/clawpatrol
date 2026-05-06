@@ -23,6 +23,7 @@ import (
 	"github.com/zclconf/go-cty/cty"
 
 	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/plugins/sshproto"
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
@@ -30,12 +31,12 @@ type SSHCredential struct {
 	User string `hcl:"user,optional"`
 }
 
-// SSHAuth implements runtime.SSHAuthCredential. Returns the raw
+// SSHAuth implements sshproto.AuthCredential. Returns the raw
 // material; the SSH endpoint runtime parses keys via
 // golang.org/x/crypto/ssh and surfaces parse errors with line
 // context.
-func (s *SSHCredential) SSHAuth(sec runtime.Secret) (runtime.SSHCreds, error) {
-	creds := runtime.SSHCreds{User: s.User}
+func (s *SSHCredential) SSHAuth(sec runtime.Secret) (sshproto.Creds, error) {
+	creds := sshproto.Creds{User: s.User}
 	if v, ok := sec.Extras["private_key"]; ok {
 		creds.PrivateKey = []byte(v)
 	}
@@ -78,7 +79,7 @@ func (*SSHCredential) SecretSlots() []config.SecretSlot {
 }
 
 func init() {
-	var _ runtime.SSHAuthCredential = (*SSHCredential)(nil)
+	var _ sshproto.AuthCredential = (*SSHCredential)(nil)
 	config.Register(&config.Plugin{
 		Kind:    config.KindCredential,
 		Type:    "ssh",

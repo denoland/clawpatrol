@@ -18,6 +18,22 @@ func init() {
 	config.AddPluginChecker(checkRuntime)
 }
 
+// extraCredChecks holds protocol-specific extensions to the credential
+// runtime check. Plugin packages that introduce a new credential
+// runtime interface (e.g. config/plugins/sshproto) call
+// AcceptCredentialRuntime so their interface joins the accepted set
+// without runtime needing to import the protocol-specific package.
+var extraCredChecks []func(*config.Plugin) bool
+
+// AcceptCredentialRuntime registers an additional credential
+// runtime-interface check. checkRuntime accepts a credential plugin
+// when ANY registered check (or built-in interface) matches its
+// Runtime — out-of-tree credential families plug in here from their
+// own init() rather than editing this file.
+func AcceptCredentialRuntime(check func(*config.Plugin) bool) {
+	extraCredChecks = append(extraCredChecks, check)
+}
+
 func checkRuntime(p *config.Plugin) []string {
 	if p.Runtime == nil {
 		return nil
@@ -28,10 +44,15 @@ func checkRuntime(p *config.Plugin) []string {
 		_, pg := p.Runtime.(PostgresCredentialRuntime)
 		_, pgAuth := p.Runtime.(PostgresAuthCredential)
 		_, tlsR := p.Runtime.(TLSCredentialRuntime)
-		_, sshR := p.Runtime.(SSHAuthCredential)
-		if !http && !pg && !pgAuth && !tlsR && !sshR {
-			return []string{fmt.Sprintf("Runtime %T satisfies no credential runtime interface (HTTP / Postgres / TLS / SSH)", p.Runtime)}
+		if http || pg || pgAuth || tlsR {
+			return nil
 		}
+		for _, check := range extraCredChecks {
+			if check(p) {
+				return nil
+			}
+		}
+		return []string{fmt.Sprintf("Runtime %T satisfies no credential runtime interface (HTTP / Postgres / TLS or a registered protocol extension)", p.Runtime)}
 	case config.KindEndpoint:
 		// Endpoint plugins satisfy any combination of
 		// PlaceholderDetector and ConnEndpointRuntime. Plugins with
