@@ -184,15 +184,6 @@ func saveProxyProfileAndExit(wholeMachine: Bool, explicit: Bool) {
         manager.protocolConfiguration = proto
         manager.localizedDescription = proxyProfileName
         manager.isEnabled = true
-        // On-demand: NE auto-starts the proxy at boot / wake / network
-        // change, so per-process flow tracking survives reboot+sleep
-        // without the user re-running `Clawpatrol start`. Without this
-        // the manager config persists but the tunnel sits idle until
-        // explicitly restarted, leaving /tmp/clawpatrol.sock missing.
-        let rule = NEOnDemandRuleConnect()
-        rule.interfaceTypeMatch = .any
-        manager.onDemandRules = [rule]
-        manager.isOnDemandEnabled = true
         manager.saveToPreferences { err in
             if let err = err { fail("saveToPreferences: \(err)") }
             print("✓ proxy profile installed (\(resolvedMode))")
@@ -246,41 +237,18 @@ func startProxy(confPath: String) {
     }
     NETransparentProxyManager.loadAllFromPreferences { managers, err in
         if let err = err { fail("loadAll: \(err)") }
-        let all = managers ?? []
-        // mitmproxy_rs pattern: if NE reports an already-connected
-        // manager, don't trust it — its sysext process may not have
-        // actually run startProxy this boot (post-reboot/wake quirk
-        // where status is "connected" but the IPC socket doesn't
-        // exist). Pick a non-connected one, or create fresh.
-        let reusable = all.first(where: { m in
-            m.localizedDescription == proxyProfileName
-                && (!m.isEnabled || m.connection.status != .connected)
-        })
-        let manager = reusable ?? NETransparentProxyManager()
+        guard let manager = managers?.first(where: { $0.localizedDescription == proxyProfileName }) else {
+            fail("no proxy profile — run `Clawpatrol install` first")
+        }
         let prevConf: String = (manager.protocolConfiguration as? NETunnelProviderProtocol)?
             .providerConfiguration?["wg-conf"] as? String ?? ""
-        // Preserve mode from any prior profile (the connected-but-stale
-        // one if that's all we had) so re-running start doesn't
-        // downgrade whole-machine to per-process.
-        var prevMode = ""
-        if let proto = (reusable ?? all.first(where: { $0.localizedDescription == proxyProfileName }))?
-            .protocolConfiguration as? NETunnelProviderProtocol {
-            prevMode = (proto.providerConfiguration?["mode"] as? String) ?? ""
+        if let proto = manager.protocolConfiguration as? NETunnelProviderProtocol {
+            var cfg = proto.providerConfiguration ?? [:]
+            cfg["wg-conf"] = conf
+            proto.providerConfiguration = cfg
+            manager.protocolConfiguration = proto
         }
-        let proto = NETunnelProviderProtocol()
-        proto.providerBundleIdentifier = extBundleID
-        proto.serverAddress = "clawpatrol-gateway"
-        proto.providerConfiguration = [
-            "wg-conf": conf,
-            "mode": prevMode.isEmpty ? "per-process" : prevMode,
-        ]
-        manager.protocolConfiguration = proto
-        manager.localizedDescription = proxyProfileName
         manager.isEnabled = true
-        let rule = NEOnDemandRuleConnect()
-        rule.interfaceTypeMatch = .any
-        manager.onDemandRules = [rule]
-        manager.isOnDemandEnabled = true
         manager.saveToPreferences { err in
             if let err = err { fail("save: \(err)") }
             manager.loadFromPreferences { err in
@@ -289,6 +257,9 @@ func startProxy(confPath: String) {
                     || manager.connection.status == .connecting
                 let confChanged = prevConf != conf
                 if running && confChanged {
+                    // Conf swap while running — extension parses wg-conf
+                    // once at startProxy. Force a stop+start so the new
+                    // peer key / address takes effect.
                     reloadTunnelAndExit(manager: manager, label: "wg-conf")
                     return
                 }
@@ -362,4 +333,3 @@ func fail(_ msg: String) -> Never {
     FileHandle.standardError.write(Data("clawpatrol-macos: \(msg)\n".utf8))
     exit(1)
 }
-
