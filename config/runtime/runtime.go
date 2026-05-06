@@ -149,6 +149,21 @@ type ConnHandle struct {
 	// carry a non-default port (`hosts = ["x.com:22222"]`) consult
 	// this to pick which Hosts[i] the connection corresponds to.
 	DstPort uint16
+	// UpstreamHost is the hostname the agent dialed, resolved from
+	// the VIP table at dispatch time. Populated for VIP-routed conns
+	// only; empty for direct-IP / fixed-port dispatches (postgres).
+	// Plugins use it to (a) pass a real hostname to DialUpstream so
+	// the gateway's host network can resolve it, and (b) drive SNI /
+	// SAN matching when the protocol layers TLS on top.
+	UpstreamHost string
+	// MintCert returns a leaf certificate signed by the gateway CA
+	// for the given hostname (or IP literal). Plugins that
+	// TLS-terminate inbound traffic — clickhouse_native with
+	// `tls = true`, future binary protocols — call this from a
+	// `tls.Config.GetCertificate` callback so the SAN matches the
+	// SNI the client sent. nil when the dispatcher can't mint
+	// (gateway has no CA).
+	MintCert func(host string) (*tls.Certificate, error)
 }
 
 // ApproveCallRequest is what a ConnEndpointRuntime hands to

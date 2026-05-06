@@ -22,3 +22,11 @@ macos/build/
 macos/netstack/libwgnetstack.a
 macos/netstack/libwgnetstack.h
 *.swp
+
+# Gas Town (added by gt)
+.runtime/
+.claude/
+.logs/
+__pycache__/
+state.json
+CLAUDE.md

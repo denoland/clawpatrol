@@ -46,10 +46,47 @@ func (ClickhouseNativeEndpointRuntime) HandleConn(ctx context.Context, ch *runti
 		chEmitError(ch, "wrong-endpoint-type", ch.Endpoint.Name)
 		return err
 	}
-	upstreamAddr := chNativeUpstreamAddr(ch.Endpoint, chEp)
+	upstreamAddr := chPickUpstream(ch.Endpoint.Hosts, ch.UpstreamHost, ch.DstPort, chEp.port())
 	if upstreamAddr == "" {
 		chEmitError(ch, "no-host", ch.Endpoint.Name)
 		return fmt.Errorf("clickhouse_native endpoint %q has no host", ch.Endpoint.Name)
+	}
+
+	// Inbound TLS termination. The wrapped agent (clickhouse-client
+	// --secure, etc.) speaks native-over-TLS exactly as it would
+	// against the real upstream; we terminate here using a leaf
+	// minted off the gateway CA so the SAN matches whatever SNI the
+	// agent sent. Agents already trust the gateway CA via the
+	// SSL_CERT_FILE env-var pushdown that `clawpatrol run` stamps,
+	// so verification passes without any client-side opt-out.
+	//
+	// Falls back to the dst host (UpstreamHost when dialed by name,
+	// else the upstream host slice's first entry) when the client
+	// didn't carry SNI — covers bare-IP dialing and odd clients that
+	// omit it.
+	if chEp.TLS && ch.MintCert != nil {
+		fallback := ch.UpstreamHost
+		if fallback == "" {
+			h, _ := chHostPort(upstreamAddr)
+			fallback = h
+		}
+		mint := ch.MintCert
+		tc := tls.Server(ch.Conn, &tls.Config{
+			GetCertificate: func(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
+				host := chi.ServerName
+				if host == "" {
+					host = fallback
+				}
+				return mint(host)
+			},
+		})
+		if err := tc.HandshakeContext(ctx); err != nil {
+			chEmitError(ch, "inbound-tls-handshake", err.Error())
+			return fmt.Errorf("inbound tls: %w", err)
+		}
+		// Splice the wrapped conn back onto the handle so downstream
+		// helpers (chReadHello, chPipe) operate on plaintext.
+		ch.Conn = tc
 	}
 
 	// Step 1: read agent's Hello. ClickHouse's native protocol begins
@@ -194,16 +231,45 @@ func chPickCredential(ep *config.CompiledEndpoint) *config.CompiledCredential {
 	return ep.Credentials[0]
 }
 
-func chNativeUpstreamAddr(ep *config.CompiledEndpoint, body *ClickhouseNativeEndpoint) string {
-	for _, h := range ep.Hosts {
+// chPickUpstream resolves the upstream addr the plugin should dial.
+//
+// Preference order:
+//
+//  1. (upstreamHost, dstPort) — VIP-dispatched conns: the agent
+//     dialed a specific hostname which dnsvip mapped to a VIP plus
+//     the matched port; that pair is the canonical upstream.
+//  2. host whose declared port equals dstPort — disambiguates
+//     multi-host endpoints where each member runs on a different
+//     port (rare but legal).
+//  3. first non-empty host — single-host endpoint, or the operator
+//     just declared one.
+//
+// hosts entries are normalized by EndpointHosts to host:port so the
+// helper can split cleanly; defaultPort is the plugin's fallback
+// (9000) used only when an entry slipped through without a port.
+func chPickUpstream(hosts []string, upstreamHost string, dstPort uint16, defaultPort int) string {
+	if upstreamHost != "" && dstPort != 0 {
+		return net.JoinHostPort(upstreamHost, strconv.Itoa(int(dstPort)))
+	}
+	if dstPort != 0 {
+		want := strconv.Itoa(int(dstPort))
+		for _, h := range hosts {
+			if h == "" {
+				continue
+			}
+			if _, p, err := net.SplitHostPort(h); err == nil && p == want {
+				return h
+			}
+		}
+	}
+	for _, h := range hosts {
 		if h == "" {
 			continue
 		}
-		// ep.Hosts entries already carry the port from ConnRouteHosts.
 		if _, _, err := net.SplitHostPort(h); err == nil {
 			return h
 		}
-		return fmt.Sprintf("%s:%d", h, body.port())
+		return net.JoinHostPort(h, strconv.Itoa(defaultPort))
 	}
 	return ""
 }

@@ -1206,14 +1206,18 @@ func (g *Gateway) handleVIPConn(c net.Conn, dstIP string, dstPort uint16) {
 
 	mode := ep.Plugin.Type // "ssh" today; future plugins surface as their own mode tag
 	ch := &runtime.ConnHandle{
-		Conn:     c,
-		Endpoint: ep,
-		Policy:   policy,
-		Profile:  profile,
-		PeerIP:   pip,
-		Secrets:  g.secrets,
-		CADir:    g.cfg.CADir,
-		DstPort:  matchedPort,
+		Conn:         c,
+		Endpoint:     ep,
+		Policy:       policy,
+		Profile:      profile,
+		PeerIP:       pip,
+		Secrets:      g.secrets,
+		CADir:        g.cfg.CADir,
+		DstPort:      matchedPort,
+		UpstreamHost: hostname,
+		MintCert: func(host string) (*tls.Certificate, error) {
+			return g.certs.mint(host)
+		},
 		DialUpstream: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			// Plugin passes the *real* upstream host:port — the
 			// gateway's host network resolves it (the VIP only

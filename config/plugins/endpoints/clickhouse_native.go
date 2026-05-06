@@ -29,12 +29,14 @@ import (
 // substitutes the credential's (user, password) where the agent
 // embedded a placeholder.
 //
-// TLS toggles upstream TLS-wrapping. The native protocol is
-// persistent (no inner TLS negotiation), so this is a one-time
-// decision per endpoint. Default false: WG already encrypts
-// agent→gateway and most self-hosted ClickHouse on a private network
-// runs plaintext on 9000. Operators using cloud ClickHouse on 9440
-// flip TLS=true and set Port=9440.
+// TLS toggles TLS on both hops: the gateway terminates the agent's
+// TLS using a leaf minted off the gateway CA, parses the Hello in
+// plaintext, then re-wraps to upstream. The wrapped client therefore
+// keeps speaking native-over-TLS exactly as it would against the
+// real cloud ClickHouse — `clawpatrol run` is transparent to its
+// TLS posture. Default false: WG-only deployments where the operator
+// wants plaintext on the inner hop (typical self-hosted ClickHouse
+// on 9000 behind a private network) leave it off.
 type ClickhouseNativeEndpoint struct {
 	Hosts      []string `hcl:"hosts"`
 	Port       int      `hcl:"port,optional"`
@@ -42,21 +44,13 @@ type ClickhouseNativeEndpoint struct {
 	Credential string   `hcl:"credential,optional"`
 }
 
-func (e *ClickhouseNativeEndpoint) EndpointHosts() []string { return e.Hosts }
-func (e *ClickhouseNativeEndpoint) EndpointCredentials() []config.CredBinding {
-	return singleBinding(e.Credential)
-}
-
-// ConnRouteHosts implements runtime.ConnRouter — clickhouse native
-// arrives at the WG forwarder as raw conns (no SNI), so the gateway
-// indexes the upstream host:port → endpoint at policy-load time.
-//
-// Hosts may be supplied as bare hostnames or as host:port literals.
-// The bare form is normalized to host:e.port(); the host:port form
-// is preserved verbatim, so an operator binding a cluster on mixed
-// ports gets the literal each member declared rather than a
-// silently-double-suffixed `host:port:port`.
-func (e *ClickhouseNativeEndpoint) ConnRouteHosts() []string {
+// EndpointHosts returns the endpoint's host:port list, normalized so
+// every entry carries an explicit port. The dnsvip allocator and
+// runtime helpers both consume this; emitting host:port everywhere
+// lets a single endpoint mix bare hostnames and host:port literals
+// in HCL without the plugin or dnsvip having to special-case the
+// "default port" rule.
+func (e *ClickhouseNativeEndpoint) EndpointHosts() []string {
 	port := e.port()
 	out := make([]string, 0, len(e.Hosts))
 	for _, h := range e.Hosts {
@@ -67,6 +61,24 @@ func (e *ClickhouseNativeEndpoint) ConnRouteHosts() []string {
 		out = append(out, fmt.Sprintf("%s:%d", h, port))
 	}
 	return out
+}
+func (e *ClickhouseNativeEndpoint) EndpointCredentials() []config.CredBinding {
+	return singleBinding(e.Credential)
+}
+
+// RequiresVIP opts the endpoint into DNS-VIP interception. The wire
+// protocol carries no SNI / Host header, so the gateway can't
+// dispatch on dst IP alone — dnsvip allocates a stable VIP per
+// hostname at policy build, intercepts the agent's DNS query for
+// that hostname, and the WG forwarder routes the resulting traffic
+// to handleVIPConn → this plugin's HandleConn.
+func (e *ClickhouseNativeEndpoint) RequiresVIP() bool { return true }
+
+// ConnRouteHosts mirrors EndpointHosts so legacy ConnIndex consumers
+// that key off the ConnRouter interface stay wired even though VIP
+// dispatch is the active path for clickhouse_native.
+func (e *ClickhouseNativeEndpoint) ConnRouteHosts() []string {
+	return e.EndpointHosts()
 }
 
 func (e *ClickhouseNativeEndpoint) port() int {
