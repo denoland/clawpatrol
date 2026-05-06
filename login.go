@@ -860,6 +860,9 @@ func wgQuickUp(iface, conf string) error {
 		}
 	}
 	dst := filepath.Join("/etc/wireguard", iface+".conf")
+	if runtime.GOOS == "linux" {
+		conf = injectSSHExemptPostUp(conf)
+	}
 	tmp, err := os.CreateTemp("", "clawpatrol-wg-*.conf")
 	if err != nil {
 		return err
@@ -877,6 +880,59 @@ func wgQuickUp(iface, conf string) error {
 	c := runAsRoot("wg-quick", "up", iface)
 	c.Stdout, c.Stderr = os.Stdout, os.Stderr
 	return c.Run()
+}
+
+// injectSSHExemptPostUp inserts policy-routing PostUp/PostDown hooks
+// into the [Interface] block of a wg-quick conf so packets sourced
+// from the host's public IP keep using the original routing table.
+//
+// Without this, `AllowedIPs = 0.0.0.0/0` makes wg-quick replace the
+// default route with one through the tunnel — including reply packets
+// for inbound connections. SSH replies route through clawpatrol →
+// wrong source IP → in-flight admin session that ran `clawpatrol join
+// --whole-machine` dies mid-handshake. Same trick unclaw landed in
+// commit 53e0496.
+//
+// Returns conf unchanged when the host IP can't be detected (best
+// effort — better to bring up the tunnel than block on a heuristic).
+// Idempotent on the wire because PostUp's `ip rule add` is a single
+// rule with a fixed priority; re-runs add a duplicate but PostDown
+// removes one at a time and wg-quick down/up cycles cleanly.
+func injectSSHExemptPostUp(conf string) string {
+	hostIP := detectHostIP()
+	if hostIP == "" {
+		return conf
+	}
+	postUp := fmt.Sprintf("PostUp = ip rule add from %s lookup main priority 10", hostIP)
+	postDown := fmt.Sprintf("PostDown = ip rule del from %s lookup main priority 10", hostIP)
+	if strings.Contains(conf, postUp) {
+		return conf
+	}
+	// Insert before [Peer] (always present, terminates [Interface]).
+	// Falls back to append if [Peer] is missing for some reason.
+	idx := strings.Index(conf, "[Peer]")
+	if idx < 0 {
+		return conf + "\n" + postUp + "\n" + postDown + "\n"
+	}
+	return conf[:idx] + postUp + "\n" + postDown + "\n\n" + conf[idx:]
+}
+
+// detectHostIP returns the IPv4 address used to reach the public
+// internet, mirroring `ip -4 route get 1.1.1.1 | grep -oP 'src \K...'`.
+// Returns "" on any error so callers can decide to skip the rule.
+func detectHostIP() string {
+	out, err := exec.Command("ip", "-4", "route", "get", "1.1.1.1").Output()
+	if err != nil {
+		return ""
+	}
+	// Output: "1.1.1.1 via X dev eth0 src Y.Y.Y.Y uid 0 \n cache"
+	fields := strings.Fields(string(out))
+	for i, f := range fields {
+		if f == "src" && i+1 < len(fields) {
+			return fields[i+1]
+		}
+	}
+	return ""
 }
 
 // installTailscale runs the official one-line installer for the
