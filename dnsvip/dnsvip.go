@@ -22,6 +22,7 @@
 package dnsvip
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -41,6 +42,15 @@ import (
 
 	"github.com/denoland/clawpatrol/config"
 )
+
+// hostResolver routes A/AAAA lookups for non-VIP names through the
+// gateway's host resolver chain — /etc/hosts + /etc/resolv.conf +
+// any platform-native split-horizon entries (Tailscale MagicDNS,
+// VPN-pushed servers, corp resolvers). PreferGo bypasses cgo's
+// getaddrinfo so macOS mDNSResponder doesn't coalesce the gateway's
+// own lookup onto the agent's in-flight tunnelled query and deadlock
+// both — the same hardening unclaw landed in dns.ts.
+var hostResolver = &net.Resolver{PreferGo: true}
 
 // RequiresVIP is the marker an endpoint plugin's body implements when
 // its hostnames need DNS-VIP interception (because the wire protocol
@@ -572,18 +582,102 @@ func (a *Allocator) intercepts(hostname string) bool {
 	return ok
 }
 
-// forwardUpstream sends the query to the IP the agent originally
-// addressed and returns the upstream's reply. Errors are converted to
-// SERVFAIL so the agent's resolver gets a clean response — log line
-// captures the actual cause.
+// forwardUpstream answers a query the VIP table didn't claim. For A
+// and AAAA we synthesise the response from the gateway's host
+// resolver — /etc/hosts, /etc/resolv.conf, and any platform-native
+// split-horizon backends — so internal names the operator's machine
+// can resolve work transparently inside `clawpatrol run`. The naive
+// alternative (forwarding verbatim to the dstIP the agent's
+// resolv.conf pointed at — typically 1.1.1.1 from the WG conf's
+// PostUp) produces NXDOMAIN for any internal name and is the bug
+// this layer exists to fix.
+//
+// Other record types (TXT / SRV / MX / CAA / etc.) keep their raw-
+// relay behavior. Go's stdlib doesn't expose a generic "any record
+// type" lookup, so synthesising from the local resolver would mean
+// re-implementing per-type serialisation against an incomplete API
+// surface. Relaying preserves wire fidelity (EDNS, flags, DNSSEC
+// records) and matches operator intent — if the agent's resolv.conf
+// names a specific resolver, that resolver answers TXT lookups.
+//
+// Errors collapse to NXDOMAIN (synthesised path) or SERVFAIL (relay
+// path). The split keeps the synth path's "name doesn't exist"
+// signal distinct from the relay path's "upstream unreachable".
 func (a *Allocator) forwardUpstream(q *dns.Msg, dstIP string) *dns.Msg {
+	if len(q.Question) == 0 {
+		return errorResp(q, dns.RcodeFormatError)
+	}
+	qd := q.Question[0]
+	switch qd.Qtype {
+	case dns.TypeA:
+		return synthIPResponse(q, "ip4")
+	case dns.TypeAAAA:
+		return synthIPResponse(q, "ip6")
+	default:
+		return relayUpstream(q, dstIP)
+	}
+}
+
+// synthIPResponse resolves the query name via the gateway's host
+// resolver and builds an A or AAAA response. network is "ip4" or
+// "ip6"; the returned message reuses the query's id and question.
+func synthIPResponse(q *dns.Msg, network string) *dns.Msg {
+	qd := q.Question[0]
+	name := strings.TrimSuffix(qd.Name, ".")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	ips, err := hostResolver.LookupIP(ctx, network, name)
+	if err != nil || len(ips) == 0 {
+		// LookupIP folds DNS error codes (NXDOMAIN, SERVFAIL,
+		// timeout) into a single error type. Treat any failure as
+		// NXDOMAIN — the gateway has already exhausted its local
+		// resolver chain, and there's nowhere else to consult that
+		// would know about an internal name the operator's machine
+		// doesn't know about either.
+		return errorResp(q, dns.RcodeNameError)
+	}
+	resp := new(dns.Msg)
+	resp.SetReply(q)
+	resp.RecursionAvailable = true
+	for _, ip := range ips {
+		hdr := dns.RR_Header{
+			Name:   qd.Name,
+			Rrtype: qd.Qtype,
+			Class:  dns.ClassINET,
+			Ttl:    30,
+		}
+		switch qd.Qtype {
+		case dns.TypeA:
+			if ip4 := ip.To4(); ip4 != nil {
+				resp.Answer = append(resp.Answer, &dns.A{Hdr: hdr, A: ip4})
+			}
+		case dns.TypeAAAA:
+			if ip4 := ip.To4(); ip4 == nil {
+				resp.Answer = append(resp.Answer, &dns.AAAA{Hdr: hdr, AAAA: ip})
+			}
+		}
+	}
+	if len(resp.Answer) == 0 {
+		// Resolver returned addresses but none matched the query
+		// family (e.g. AAAA query, IPv4-only host). Empty NOERROR
+		// response — same shape DNS servers use for "name exists,
+		// no records of this type."
+		return resp
+	}
+	return resp
+}
+
+// relayUpstream forwards the query verbatim to the dstIP the agent
+// originally addressed and returns whatever comes back. Used for
+// record types the synth path doesn't handle.
+func relayUpstream(q *dns.Msg, dstIP string) *dns.Msg {
 	if dstIP == "" {
 		return errorResp(q, dns.RcodeServerFailure)
 	}
 	c := &dns.Client{Net: "udp", Timeout: 3 * time.Second}
 	in, _, err := c.Exchange(q, net.JoinHostPort(dstIP, "53"))
 	if err != nil {
-		log.Printf("dnsvip: forward to %s: %v", dstIP, err)
+		log.Printf("dnsvip: relay to %s: %v", dstIP, err)
 		return errorResp(q, dns.RcodeServerFailure)
 	}
 	return in

@@ -340,3 +340,85 @@ func TestPersistenceDropsOutOfRangeEntries(t *testing.T) {
 		t.Fatalf("dnsvip.json unreadable: %v", err)
 	}
 }
+
+// TestForwardUpstreamSynthesisesA covers the happy path of the
+// synthesis route: a name the gateway's host resolver knows about
+// (here "localhost", which every standards-compliant /etc/hosts
+// declares) round-trips to an A record without touching dstIP. This
+// is the path that lets agents reach internal-only names like
+// `clickhouse-o11y` even when their resolver inside the WG
+// namespace points at 1.1.1.1.
+func TestForwardUpstreamSynthesisesA(t *testing.T) {
+	a, err := New(t.TempDir(), DefaultCIDR4, DefaultCIDR6)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	q := new(dns.Msg)
+	q.SetQuestion("localhost.", dns.TypeA)
+
+	// dstIP is empty: if synthesis fails we'd fall to relayUpstream,
+	// which returns SERVFAIL for empty dstIP. Either an NXDOMAIN or
+	// a SERVFAIL would tell us the synth path didn't run.
+	resp := a.forwardUpstream(q, "")
+	if resp == nil {
+		t.Fatal("forwardUpstream returned nil")
+	}
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("rcode = %d (%s), want NOERROR — synth path didn't fire",
+			resp.Rcode, dns.RcodeToString[resp.Rcode])
+	}
+	if len(resp.Answer) == 0 {
+		t.Fatal("no answer records — local resolver should have returned 127.0.0.1")
+	}
+	rr, ok := resp.Answer[0].(*dns.A)
+	if !ok {
+		t.Fatalf("first answer is not an A record: %T", resp.Answer[0])
+	}
+	if !rr.A.IsLoopback() {
+		t.Errorf("localhost resolved to %v, expected loopback", rr.A)
+	}
+}
+
+// TestForwardUpstreamNXDomainOnUnresolvable covers the failure
+// branch of the synth path: the .invalid TLD is RFC-reserved as
+// "guaranteed not to resolve", so any compliant resolver returns
+// NXDOMAIN. Confirms we don't accidentally fall through to the
+// relay path on resolution errors.
+func TestForwardUpstreamNXDomainOnUnresolvable(t *testing.T) {
+	a, err := New(t.TempDir(), DefaultCIDR4, DefaultCIDR6)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	q := new(dns.Msg)
+	q.SetQuestion("nothing-here.invalid.", dns.TypeA)
+	resp := a.forwardUpstream(q, "")
+	if resp == nil {
+		t.Fatal("forwardUpstream returned nil")
+	}
+	if resp.Rcode != dns.RcodeNameError {
+		t.Errorf("rcode = %d (%s), want NXDOMAIN",
+			resp.Rcode, dns.RcodeToString[resp.Rcode])
+	}
+}
+
+// TestForwardUpstreamRelaysOtherTypes confirms TXT (and by
+// extension SRV/MX/CAA/etc.) skips the synth path and goes through
+// relayUpstream. We send dstIP="" so the relay path returns
+// SERVFAIL (its empty-dstIP guard) — the route taken is the
+// observable behavior.
+func TestForwardUpstreamRelaysOtherTypes(t *testing.T) {
+	a, err := New(t.TempDir(), DefaultCIDR4, DefaultCIDR6)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	q := new(dns.Msg)
+	q.SetQuestion("example.com.", dns.TypeTXT)
+	resp := a.forwardUpstream(q, "")
+	if resp == nil {
+		t.Fatal("forwardUpstream returned nil")
+	}
+	if resp.Rcode != dns.RcodeServerFailure {
+		t.Errorf("rcode = %d (%s), want SERVFAIL — TXT should have hit relayUpstream's empty-dstIP guard",
+			resp.Rcode, dns.RcodeToString[resp.Rcode])
+	}
+}
