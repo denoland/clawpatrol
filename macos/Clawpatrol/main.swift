@@ -184,6 +184,15 @@ func saveProxyProfileAndExit(wholeMachine: Bool, explicit: Bool) {
         manager.protocolConfiguration = proto
         manager.localizedDescription = proxyProfileName
         manager.isEnabled = true
+        // On-demand: NE auto-starts the proxy at boot / wake / network
+        // change, so per-process flow tracking survives reboot+sleep
+        // without the user re-running `Clawpatrol start`. Without this
+        // the manager config persists but the tunnel sits idle until
+        // explicitly restarted, leaving /tmp/clawpatrol.sock missing.
+        let rule = NEOnDemandRuleConnect()
+        rule.interfaceTypeMatch = .any
+        manager.onDemandRules = [rule]
+        manager.isOnDemandEnabled = true
         manager.saveToPreferences { err in
             if let err = err { fail("saveToPreferences: \(err)") }
             print("✓ proxy profile installed (\(resolvedMode))")
@@ -249,6 +258,12 @@ func startProxy(confPath: String) {
             manager.protocolConfiguration = proto
         }
         manager.isEnabled = true
+        // Idempotently re-assert on-demand so existing installs
+        // upgrade onto the auto-start path without re-running install.
+        let rule = NEOnDemandRuleConnect()
+        rule.interfaceTypeMatch = .any
+        manager.onDemandRules = [rule]
+        manager.isOnDemandEnabled = true
         manager.saveToPreferences { err in
             if let err = err { fail("save: \(err)") }
             manager.loadFromPreferences { err in
