@@ -97,43 +97,29 @@ class TransparentProxyProvider: NETransparentProxyProvider {
     }
 
     private func applyNetworkSettings(completionHandler: @escaping (Error?) -> Void) {
-        // Apple's DTS guidance on the canonical fast decline path
-        // (forum 716594): "Set up the rules so that you're not passed
-        // the flow." Returning false from handleNewFlow on a UDP flow
-        // we don't want is racy — Apple radar r.98382363 (also
-        // confirmed in forum 691711, 758113) shows it can stall the
-        // originating socket for ~30s (Chrome's QUIC fallback timer)
-        // or surface ECONNREFUSED. The fix is to never ask for UDP
-        // when we don't intend to tunnel every UDP flow:
-        //
-        //   per-process mode  → TCP only. UDP from non-clawpatrol
-        //                       processes (Chrome QUIC, system DNS,
-        //                       mDNS) goes through normal OS routing
-        //                       and never enters our handler. Caveat:
-        //                       UDP from clawpatrol-launched children
-        //                       isn't tunneled — agent CLIs we care
-        //                       about (claude, codex, gh) speak TCP
-        //                       HTTPS, so this is acceptable.
-        //
-        //   whole-machine     → TCP + UDP. Operator opted in to
-        //                       all-traffic; bridgeUDP claims every
-        //                       flow so the false-return stall doesn't
-        //                       apply. Excludes multicast / link-local.
-        //
-        // Settings are applied ONCE at startProxy and never toggled.
-        // forum 691341 shows mid-life setTunnelNetworkSettings can
-        // wedge the provider; treat the rule set as immutable.
+        // Exclude UDP/443 at rule layer: QUIC false-return races
+        // (radar r.98382363) cause ~30s Chrome stalls. Per-process
+        // adds UDP/53 so children resolve DNS. Settings applied once;
+        // mid-life setTunnelNetworkSettings wedges provider (691341).
         let settings = NETransparentProxyNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
         var included: [NENetworkRule] = [
             NENetworkRule(remoteNetwork: nil, remotePrefix: 0,
                           localNetwork: nil, localPrefix: 0,
                           protocol: .TCP, direction: .outbound),
         ]
+        var excluded: [NENetworkRule] = [
+            NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "0.0.0.0", port: "443"),
+                          remotePrefix: 0, localNetwork: nil, localPrefix: 0,
+                          protocol: .UDP, direction: .outbound),
+            NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "::", port: "443"),
+                          remotePrefix: 0, localNetwork: nil, localPrefix: 0,
+                          protocol: .UDP, direction: .outbound),
+        ]
         if wholeMachine {
             included.append(NENetworkRule(remoteNetwork: nil, remotePrefix: 0,
                                           localNetwork: nil, localPrefix: 0,
                                           protocol: .UDP, direction: .outbound))
-            settings.excludedNetworkRules = [
+            excluded.append(contentsOf: [
                 NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "224.0.0.0", port: "0"),
                               remotePrefix: 4, localNetwork: nil, localPrefix: 0,
                               protocol: .UDP, direction: .outbound),
@@ -143,9 +129,17 @@ class TransparentProxyProvider: NETransparentProxyProvider {
                 NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "169.254.0.0", port: "0"),
                               remotePrefix: 16, localNetwork: nil, localPrefix: 0,
                               protocol: .UDP, direction: .outbound),
-            ]
+            ])
+        } else {
+            included.append(NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "0.0.0.0", port: "53"),
+                                          remotePrefix: 0, localNetwork: nil, localPrefix: 0,
+                                          protocol: .UDP, direction: .outbound))
+            included.append(NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "::", port: "53"),
+                                          remotePrefix: 0, localNetwork: nil, localPrefix: 0,
+                                          protocol: .UDP, direction: .outbound))
         }
         settings.includedNetworkRules = included
+        settings.excludedNetworkRules = excluded
         setTunnelNetworkSettings(settings, completionHandler: completionHandler)
     }
 
