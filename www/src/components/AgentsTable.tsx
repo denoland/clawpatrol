@@ -136,7 +136,7 @@ function Th({ children, className = "" }: { children: React.ReactNode; className
   return (
     <th
       className={
-        "px-3 sm:px-[14px] py-[9px] text-left text-[10px] uppercase tracking-[.09em] text-[#a3a3a3] font-medium bg-white " +
+        "px-3 sm:px-[14px] py-[9px] text-left text-[10px] uppercase tracking-[.12em] text-[#a3a3a3] font-medium bg-white " +
         className
       }
     >

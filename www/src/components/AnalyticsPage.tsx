@@ -93,9 +93,28 @@ export function AnalyticsPage({ ip, agents }: {
     ? agentNames.get(filterDevice) ?? filterDevice
     : filterHost ?? "";
 
+  // --- summary stats ---
+  const stats = (() => {
+    const n = filtered.length;
+    if (n === 0) return { n: 0, avg: 0, p99: 0, errPct: 0, devices: 0 };
+    const lats = filtered
+      .map(e => e.ms).filter(m => m > 0)
+      .sort((a, b) => a - b);
+    const avg = lats.length
+      ? Math.round(lats.reduce((a, b) => a + b, 0) / lats.length) : 0;
+    const p99 = lats.length
+      ? lats[Math.min(Math.floor(lats.length * 0.99), lats.length - 1)] : 0;
+    const errs = filtered.filter(e => (e.status ?? 0) >= 400).length;
+    const errPct = n > 0 ? (errs / n) * 100 : 0;
+    const devices = new Set(
+      filtered.map(e => e.agent_ip).filter(Boolean),
+    ).size;
+    return { n, avg, p99, errPct, devices };
+  })();
+
   return (
-    <main className="flex-1 mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-8 space-y-6">
-      <div className="flex items-center justify-between">
+    <main className="flex-1 mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-8 space-y-8">
+      <div className="flex items-baseline justify-between flex-wrap gap-3">
         <div className="flex items-baseline gap-2">
           <a href="#/" className="text-[11px] text-[#a3a3a3] hover:text-[#171717]">
             clawpatrol
@@ -105,7 +124,7 @@ export function AnalyticsPage({ ip, agents }: {
             <>
               <a
                 href={`#/device/${encodeURIComponent(ip!)}`}
-                className="text-[16px] font-semibold text-[#171717] hover:underline"
+                className="text-[11px] text-[#a3a3a3] hover:text-[#171717]"
               >
                 {deviceName}
               </a>
@@ -113,19 +132,10 @@ export function AnalyticsPage({ ip, agents }: {
             </>
           ) : null}
           <span className="text-[11px] text-[#525252]">analytics</span>
-          {ip && (
-            <a
-              href="#/analytics"
-              className="ml-2 px-2.5 py-0.5 rounded text-[11px] border border-[#171717] bg-[#171717] text-white flex items-center gap-1.5 no-underline"
-            >
-              {deviceName}
-              <span className="text-[10px]">&times;</span>
-            </a>
-          )}
           {hasFilter && (
             <button
               onClick={() => { setFilterDevice(null); setFilterHost(null); }}
-              className="ml-2 px-2.5 py-0.5 rounded text-[11px] border border-[#525252] bg-[#525252] text-white flex items-center gap-1.5"
+              className="ml-3 px-2 py-0.5 rounded text-[11px] border border-[#171717] bg-[#171717] text-white flex items-center gap-1.5 self-center"
             >
               {filterLabel}
               <span className="text-[10px]">&times;</span>
@@ -139,25 +149,42 @@ export function AnalyticsPage({ ip, agents }: {
         />
       </div>
 
+      <div className="bg-white border border-[#e5e5e5] rounded grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-5 divide-x divide-[#e5e5e5]">
+        <Stat label="Requests" value={stats.n.toLocaleString()} />
+        <Stat label="Avg" value={stats.avg ? fmtMs(stats.avg) : "—"} />
+        <Stat label="p99" value={stats.p99 ? fmtMs(stats.p99) : "—"} />
+        <Stat label="Errors"
+          value={stats.errPct ? stats.errPct.toFixed(1) + "%" : "0%"}
+          tone={stats.errPct >= 5 ? "warn" : undefined} />
+        {isGlobal && (
+          <Stat label="Devices"
+            value={stats.devices.toLocaleString()} />
+        )}
+      </div>
+
+      <LatencyChart
+        filtered={filtered}
+        isGlobal={isGlobal}
+        agents={agents}
+        range={range}
+      />
+
       <div className={"grid gap-4 " + (isGlobal ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1")}>
         {isGlobal && (
-          <BarCard
-            title="Count by device"
+          <BarList
+            title="By device"
             events={events}
             field="agent_ip"
             active={filterDevice}
             labelFn={(v) => agentNames.get(v) ?? v}
-            colorFn={deviceColor}
             onClickFn={(v) => {
-              setFilterDevice(
-                filterDevice === v ? null : v,
-              );
+              setFilterDevice(filterDevice === v ? null : v);
               setFilterHost(null);
             }}
           />
         )}
-        <BarCard
-          title="Count by host"
+        <BarList
+          title="By host"
           events={events}
           field="host"
           active={filterHost}
@@ -167,39 +194,73 @@ export function AnalyticsPage({ ip, agents }: {
           }}
         />
       </div>
-      <LatencyChart
-        filtered={filtered}
-        isGlobal={isGlobal}
-        agents={agents}
-        range={range}
-      />
+
       <TopRoutes events={filtered} />
       <EventList events={filtered} />
     </main>
   );
 }
 
+function fmtMs(ms: number): string {
+  if (ms >= 1000) return (ms / 1000).toFixed(1) + "s";
+  return ms + "ms";
+}
+
+function Stat({ label, value, tone }: {
+  label: string;
+  value: string;
+  tone?: "warn";
+}) {
+  return (
+    <div className="flex flex-col gap-1.5 px-5 py-4">
+      <span className="text-[10px] uppercase tracking-[.12em] text-[#a3a3a3]">
+        {label}
+      </span>
+      <span className={
+        "text-[22px] font-semibold leading-none tabular-nums tracking-tight "
+        + (tone === "warn" ? "text-[#b91c1c]" : "text-[#171717]")
+      }>
+        {value}
+      </span>
+    </div>
+  );
+}
+
 // --- event list (time-filtered) ---
 
 function EventList({ events }: { events: EventRecord[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const shown = expanded ? events : events.slice(0, 50);
   return (
-    <div className="bg-white border border-[#e5e5e5] rounded overflow-hidden"
-      style={{ height: "500px" }}
-    >
-      <div className="flex items-center px-4 py-2.5 text-[10px] uppercase tracking-[.12em] text-[#a3a3a3] border-b border-[#e5e5e5]">
-        <span>REQUESTS</span>
-        <span className="ml-2 tabular-nums">{events.length}</span>
-      </div>
-      <div className="flex-1 overflow-y-auto" style={{ height: "calc(100% - 36px)" }}>
+    <section className="bg-white border border-[#e5e5e5] rounded overflow-hidden">
+      <header className="flex items-center justify-between px-4 py-2.5 border-b border-[#e5e5e5]">
+        <div className="flex items-baseline gap-2">
+          <span className="text-[10px] uppercase tracking-[.12em] text-[#a3a3a3]">
+            Requests
+          </span>
+          <span className="text-[10px] tabular-nums text-[#a3a3a3]">
+            {events.length}
+          </span>
+        </div>
+        {events.length > 50 && (
+          <button
+            onClick={() => setExpanded(v => !v)}
+            className="text-[10px] uppercase tracking-[.12em] text-[#525252] hover:text-[#171717]"
+          >
+            {expanded ? "collapse" : "show all"}
+          </button>
+        )}
+      </header>
+      <div className={expanded ? "max-h-[600px] overflow-y-auto" : ""}>
         {events.length === 0 ? (
-          <div className="px-5 py-8 text-center text-[11px] text-[#a3a3a3]">
+          <div className="py-6 text-center text-[11px] text-[#a3a3a3]">
             No requests in this time range
           </div>
-        ) : events.map((e, i) => (
+        ) : shown.map((e, i) => (
           <EventRow key={e.id || i} ev={e} />
         ))}
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -212,11 +273,11 @@ function EventRow({ ev }: { ev: EventRecord }) {
     + "." + String(t.getMilliseconds()).padStart(3, "0");
   const status = ev.status || 0;
   const statusColor =
-    status >= 500 ? "text-[#dc2626]"
-    : status >= 400 ? "text-[#ea580c]"
-    : status >= 300 ? "text-[#ca8a04]"
-    : status >= 200 ? "text-[#16a34a]"
-    : "text-[#737373]";
+    status >= 500 ? "text-[#b91c1c]"
+    : status >= 400 ? "text-[#c2410c]"
+    : status >= 300 ? "text-[#a16207]"
+    : status >= 200 ? "text-[#15803d]"
+    : "text-[#a3a3a3]";
   const path = ev.path ?? "";
   const sep = path.startsWith("/") ? "" : " ";
   return (
@@ -235,7 +296,7 @@ function EventRow({ ev }: { ev: EventRecord }) {
         {status || "\u2014"}
       </span>
       <span className="text-[12px] text-[#171717] truncate flex-1 min-w-0">
-        <span className="text-[#737373]">{ev.host}</span>
+        <span className="text-[#525252]">{ev.host}</span>
         {sep && <span> </span>}
         <span>{path}</span>
       </span>
@@ -248,19 +309,32 @@ function EventRow({ ev }: { ev: EventRecord }) {
 
 // --- stable color from string hash ---
 
-function stableHue(s: string): number {
+function stableIndex(s: string, n: number): number {
   let h = 0;
   for (let i = 0; i < s.length; i++) {
     h = Math.imul(31, h) + s.charCodeAt(i) | 0;
   }
-  return ((h % 360) + 360) % 360;
+  return ((h % n) + n) % n;
 }
-// Hosts: warm palette (saturated, mid-lightness)
-const hostColor = (s: string) =>
-  `hsl(${stableHue(s)}, 70%, 45%)`;
-// Devices: cool-shifted, lower saturation, darker
+
+// Cool-leaning Tailwind -700 shades. Cohesive intensity, distinct hues,
+// no rainbow-toy vibe. Used for chart series (one color per host /
+// device); bars use a rank-grayscale ramp instead.
+const PALETTE = [
+  "#1d4ed8", "#0f766e", "#7c3aed", "#0369a1",
+  "#15803d", "#a16207", "#c2410c", "#be185d",
+  "#4338ca", "#0e7490", "#65a30d", "#9f1239",
+];
+const hostColor = (s: string) => PALETTE[stableIndex(s, PALETTE.length)];
 const deviceColor = (s: string) =>
-  `hsl(${(stableHue(s) + 180) % 360}, 50%, 35%)`;
+  PALETTE[(stableIndex(s, PALETTE.length) + 6) % PALETTE.length];
+
+// Status: Tailwind -700 (desaturated vs original -600). Used both in
+// scatter legend and EventRow status text.
+const STATUS_COLORS = {
+  "2xx": "#15803d", "3xx": "#a16207", "4xx": "#c2410c",
+  "5xx": "#b91c1c", "—": "#a3a3a3",
+} as const;
 
 // --- chart ---
 
@@ -316,8 +390,9 @@ function LatencyChart({ filtered, isGlobal, agents, range }: {
       ? {
           domain: ["2xx", "3xx", "4xx", "5xx", "\u2014"],
           range: [
-            "#16a34a", "#ca8a04", "#ea580c",
-            "#dc2626", "#a3a3a3",
+            STATUS_COLORS["2xx"], STATUS_COLORS["3xx"],
+            STATUS_COLORS["4xx"], STATUS_COLORS["5xx"],
+            STATUS_COLORS["\u2014"],
           ],
           legend: true,
         }
@@ -427,12 +502,12 @@ function LatencyChart({ filtered, isGlobal, agents, range }: {
   }, [filtered, colorBy, scale, range]);
 
   return (
-    <div className="bg-white border border-[#e5e5e5] rounded overflow-hidden">
-      <div className="px-4 py-2.5 border-b border-[#e5e5e5] flex items-center justify-between">
+    <section className="bg-white border border-[#e5e5e5] rounded overflow-hidden">
+      <header className="flex items-center justify-between px-4 py-2.5 border-b border-[#e5e5e5]">
         <span className="text-[10px] uppercase tracking-[.12em] text-[#a3a3a3]">
           Latency
         </span>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3">
           <Toggle
             options={colorOptions}
             value={colorBy}
@@ -444,9 +519,9 @@ function LatencyChart({ filtered, isGlobal, agents, range }: {
             onChange={setScale}
           />
         </div>
-      </div>
+      </header>
       <div ref={ref} className="p-4 min-h-[320px]" />
-    </div>
+    </section>
   );
 }
 
@@ -469,7 +544,7 @@ function Toggle<T extends string>({
             "px-2 py-0.5 " +
             (o === value
               ? "bg-[#171717] text-white"
-              : "text-[#737373] hover:bg-[#f5f5f5]")
+              : "text-[#525252] hover:bg-[#fafafa]")
           }
         >
           {o}
@@ -531,27 +606,24 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
     field: "count" | "avgMs" | "p99Ms",
   ) => (
     <th
-      className="px-2 py-1.5 text-right text-[10px] font-medium uppercase text-[#a3a3a3] cursor-pointer hover:text-[#525252] select-none"
+      className="px-3 sm:px-[14px] py-[9px] text-right text-[10px] font-medium uppercase tracking-[.12em] text-[#a3a3a3] cursor-pointer hover:text-[#525252] select-none"
       onClick={() => setSortBy(field)}
     >
       {label}{sortBy === field ? " \u25BE" : ""}
     </th>
   );
 
-  const fmtMs = (ms: number) => {
-    if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
-    return `${ms}ms`;
-  };
-
   return (
-    <div className="bg-white border border-[#e5e5e5] rounded overflow-hidden">
-      <div className="px-4 py-2.5 text-[10px] uppercase tracking-[.12em] text-[#a3a3a3] border-b border-[#e5e5e5]">
-        Top Routes
-      </div>
+    <section className="bg-white border border-[#e5e5e5] rounded overflow-hidden">
+      <header className="px-4 py-2.5 border-b border-[#e5e5e5]">
+        <span className="text-[10px] uppercase tracking-[.12em] text-[#a3a3a3]">
+          Top routes
+        </span>
+      </header>
       <table className="w-full table-fixed text-[11px]">
         <thead>
-          <tr className="border-b border-[#f5f5f5]">
-            <th className="px-3 py-1.5 text-left text-[10px] font-medium uppercase text-[#a3a3a3]">
+          <tr className="border-b border-[#e5e5e5]">
+            <th className="px-3 sm:px-[14px] py-[9px] text-left text-[10px] uppercase tracking-[.12em] text-[#a3a3a3] font-medium">
               Route
             </th>
             {hdr("Reqs", "count")}
@@ -566,12 +638,12 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
             return (
               <tr
                 key={d.key}
-                className="border-b border-[#f5f5f5] hover:bg-[#f9f9f9]"
+                className="border-b border-[#f5f5f5] hover:bg-[#f9f9f9] transition-colors"
               >
-                <td className="px-3 py-1.5 font-mono truncate max-w-0" title={`${d.method} ${d.host}${d.path}`}>
+                <td className="px-3 sm:px-[14px] py-[9px] font-mono truncate max-w-0 align-middle" title={`${d.method} ${d.host}${d.path}`}>
                   <span className="text-[#a3a3a3]">{d.method}</span>{" "}{d.host}<span className="text-[#525252]">{d.path}</span>
                 </td>
-                <td className="px-2 py-1.5 text-right whitespace-nowrap">
+                <td className="px-3 sm:px-[14px] py-[9px] text-right whitespace-nowrap align-middle">
                   <div className="flex items-center justify-end gap-1.5">
                     <div className="w-12 h-1.5 bg-[#f5f5f5] rounded-full">
                       <div className="h-full bg-[#a3a3a3] rounded-full" style={{ width: `${pct}%` }} />
@@ -579,33 +651,32 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
                     <span className="w-6 text-right tabular-nums">{d.count}</span>
                   </div>
                 </td>
-                <td className="px-2 py-1.5 text-right text-[#737373] tabular-nums">{fmtMs(d.avgMs)}</td>
-                <td className="px-2 py-1.5 text-right text-[#737373] tabular-nums">{fmtMs(d.p99Ms)}</td>
+                <td className="px-3 sm:px-[14px] py-[9px] text-right text-[#525252] tabular-nums align-middle">{fmtMs(d.avgMs)}</td>
+                <td className="px-3 sm:px-[14px] py-[9px] text-right text-[#525252] tabular-nums align-middle">{fmtMs(d.p99Ms)}</td>
               </tr>
             );
           })}
           {rows.length === 0 && (
             <tr>
-              <td colSpan={4} className="px-3 py-6 text-center text-[11px] text-[#a3a3a3]">
+              <td colSpan={4} className="px-1 py-6 text-center text-[11px] text-[#a3a3a3]">
                 No data in this time range
               </td>
             </tr>
           )}
         </tbody>
       </table>
-    </div>
+    </section>
   );
 }
 
-// --- horizontal bar card ---
+// --- horizontal bar list ---
 
-function BarCard({ title, events, field, active, labelFn, colorFn, onClickFn }: {
+function BarList({ title, events, field, active, labelFn, onClickFn }: {
   title: string;
   events: EventRecord[];
   field: "host" | "agent_ip";
   active?: string | null;
   labelFn?: (v: string) => string;
-  colorFn?: (label: string) => string;
   onClickFn?: (v: string) => void;
 }) {
   const counts = new Map<string, number>();
@@ -621,30 +692,33 @@ function BarCard({ title, events, field, active, labelFn, colorFn, onClickFn }: 
   const max = items.length ? items[0].value : 0;
 
   return (
-    <div className="bg-white border border-[#e5e5e5] rounded overflow-hidden">
-      <div className="px-4 py-2.5 text-[10px] uppercase tracking-[.12em] text-[#a3a3a3] border-b border-[#e5e5e5]">
-        {title}
-      </div>
+    <section className="bg-white border border-[#e5e5e5] rounded overflow-hidden">
+      <header className="px-4 py-2.5 border-b border-[#e5e5e5]">
+        <span className="text-[10px] uppercase tracking-[.12em] text-[#a3a3a3]">
+          {title}
+        </span>
+      </header>
       <div className="p-3 space-y-0.5">
-        {items.map((item) => {
+        {items.slice(0, 10).map((item) => {
           const pct = max > 0 ? (item.value / max) * 100 : 0;
           const isActive = active === item.key;
+          const barColor = isActive ? "#171717" : "#525252";
           return (
             <div
               key={item.key}
               className={
                 "flex items-center gap-2 px-1 py-0.5 rounded cursor-pointer "
-                + (isActive ? "bg-[#f0f0f0]" : "hover:bg-[#f5f5f5]")
+                + (isActive ? "bg-[#f5f5f5]" : "hover:bg-[#fafafa]")
               }
               onClick={onClickFn ? () => onClickFn(item.key) : undefined}
             >
               <span className={"w-32 truncate text-[11px] " + (isActive ? "text-[#171717] font-semibold" : "text-[#525252]")} title={item.label}>
                 {item.label}
               </span>
-              <div className="flex-1 h-3 bg-[#f5f5f5] rounded-full">
-                <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: isActive ? "#171717" : (colorFn ? colorFn(item.label) : hostColor(item.label)) }} />
+              <div className="flex-1 h-2 bg-[#f5f5f5] rounded-full">
+                <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: barColor }} />
               </div>
-              <span className="w-8 text-right text-[11px] text-[#737373] tabular-nums">
+              <span className="w-8 text-right text-[11px] text-[#a3a3a3] tabular-nums">
                 {item.value}
               </span>
             </div>
@@ -656,6 +730,6 @@ function BarCard({ title, events, field, active, labelFn, colorFn, onClickFn }: 
           </div>
         )}
       </div>
-    </div>
+    </section>
   );
 }

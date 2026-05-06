@@ -46,7 +46,7 @@ export function SessionsTable({ sessions: all }: { sessions: Session[] }) {
                     <div className="text-[12px] text-[#171717] truncate" title={s.title}>
                       {s.title}
                     </div>
-                    {s.id && <div className="text-[9px] text-[#a3a3a3] tabular-nums truncate">{s.id}</div>}
+                    {s.id && <div className="text-[10px] text-[#a3a3a3] tabular-nums truncate">{s.id}</div>}
                   </div>
                 </div>
               </Td>

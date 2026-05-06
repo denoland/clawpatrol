@@ -222,7 +222,7 @@ function ProfilePicker({
       </button>
       {open && (
         <div className="absolute right-0 top-[calc(100%+6px)] z-20 min-w-[200px] bg-white border border-[#e5e5e5] rounded shadow-lg py-1">
-          <div className="px-3 py-1.5 text-[9px] uppercase tracking-[.12em] text-[#a3a3a3] border-b border-[#f5f5f5]">
+          <div className="px-3 py-1.5 text-[10px] uppercase tracking-[.12em] text-[#a3a3a3] border-b border-[#f5f5f5]">
             choose profile
           </div>
           {profiles.length === 0 ? (
@@ -256,7 +256,7 @@ function ProfilePicker({
           )}
         </div>
       )}
-      {err && <div className="text-[9px] text-red-600 mt-1">{err}</div>}
+      {err && <div className="text-[10px] text-red-600 mt-1">{err}</div>}
     </div>
   );
 }
