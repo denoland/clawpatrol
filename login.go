@@ -903,8 +903,15 @@ func injectSSHExemptPostUp(conf string) string {
 	if hostIP == "" {
 		return conf
 	}
-	postUp := fmt.Sprintf("PostUp = ip rule add from %s lookup main priority 10", hostIP)
-	postDown := fmt.Sprintf("PostDown = ip rule del from %s lookup main priority 10", hostIP)
+	// Priority 5 — must beat wg-quick's two own rules:
+	//   pref 8: from all lookup main suppress_prefixlength 0
+	//   pref 9: not fwmark 51820 lookup 51820
+	// Pref 10 (what unclaw originally used in commit 53e0496) gets
+	// shadowed by pref 9 — pref 9 matches every non-fwmarked packet
+	// first → table 51820 → clawpatrol iface → SYN-ACK exits the wrong
+	// interface, SSH session dies. Observed on Ubuntu 24.04 / Vultr.
+	postUp := fmt.Sprintf("PostUp = ip rule add from %s lookup main priority 5", hostIP)
+	postDown := fmt.Sprintf("PostDown = ip rule del from %s lookup main priority 5", hostIP)
 	if strings.Contains(conf, postUp) {
 		return conf
 	}
