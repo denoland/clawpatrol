@@ -1,18 +1,15 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import { mockApi } from "./mock-api";
-
-const demo = process.env.DEMO === "1";
 
 export default defineConfig({
-  plugins: [react(), ...(demo ? [mockApi()] : [])],
+  plugins: [react()],
   build: {
     outDir: "dist",
     emptyOutDir: true,
     assetsDir: "_a",
     sourcemap: false,
   },
-  server: demo ? {} : {
+  server: {
     proxy: {
       "/api": "http://localhost:8080",
     },
