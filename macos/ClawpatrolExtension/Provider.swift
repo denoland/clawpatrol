@@ -97,29 +97,21 @@ class TransparentProxyProvider: NETransparentProxyProvider {
     }
 
     private func applyNetworkSettings(completionHandler: @escaping (Error?) -> Void) {
-        // Exclude UDP/443 at rule layer: QUIC false-return races
-        // (radar r.98382363) cause ~30s Chrome stalls. Per-process
-        // adds UDP/53 so children resolve DNS. Settings applied once;
-        // mid-life setTunnelNetworkSettings wedges provider (691341).
+        // NETransparentProxy rejects port-specific rules ("X cannot be
+        // specified as the port for transparent proxy network rules").
+        // So per-process is TCP-only; whole-machine takes UDP+TCP and
+        // accepts the QUIC false-return race (radar r.98382363).
         let settings = NETransparentProxyNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
         var included: [NENetworkRule] = [
             NENetworkRule(remoteNetwork: nil, remotePrefix: 0,
                           localNetwork: nil, localPrefix: 0,
                           protocol: .TCP, direction: .outbound),
         ]
-        var excluded: [NENetworkRule] = [
-            NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "0.0.0.0", port: "443"),
-                          remotePrefix: 0, localNetwork: nil, localPrefix: 0,
-                          protocol: .UDP, direction: .outbound),
-            NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "::", port: "443"),
-                          remotePrefix: 0, localNetwork: nil, localPrefix: 0,
-                          protocol: .UDP, direction: .outbound),
-        ]
         if wholeMachine {
             included.append(NENetworkRule(remoteNetwork: nil, remotePrefix: 0,
                                           localNetwork: nil, localPrefix: 0,
                                           protocol: .UDP, direction: .outbound))
-            excluded.append(contentsOf: [
+            settings.excludedNetworkRules = [
                 NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "224.0.0.0", port: "0"),
                               remotePrefix: 4, localNetwork: nil, localPrefix: 0,
                               protocol: .UDP, direction: .outbound),
@@ -129,17 +121,9 @@ class TransparentProxyProvider: NETransparentProxyProvider {
                 NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "169.254.0.0", port: "0"),
                               remotePrefix: 16, localNetwork: nil, localPrefix: 0,
                               protocol: .UDP, direction: .outbound),
-            ])
-        } else {
-            included.append(NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "0.0.0.0", port: "53"),
-                                          remotePrefix: 0, localNetwork: nil, localPrefix: 0,
-                                          protocol: .UDP, direction: .outbound))
-            included.append(NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "::", port: "53"),
-                                          remotePrefix: 0, localNetwork: nil, localPrefix: 0,
-                                          protocol: .UDP, direction: .outbound))
+            ]
         }
         settings.includedNetworkRules = included
-        settings.excludedNetworkRules = excluded
         setTunnelNetworkSettings(settings, completionHandler: completionHandler)
     }
 
