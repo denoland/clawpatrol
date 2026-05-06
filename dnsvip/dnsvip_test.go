@@ -10,6 +10,7 @@ import (
 	"github.com/miekg/dns"
 
 	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/plugins/endpoints"
 )
 
 // fakePolicy builds a CompiledPolicy whose endpoints opt into VIPs.
@@ -261,6 +262,50 @@ func TestRebuildSkipsIPLiteralHosts(t *testing.T) {
 	}
 	if v4, _ := a.VIPsFor("fd00::1"); v4.IsValid() {
 		t.Errorf("IPv6 literal got a VIP: %v (should be skipped)", v4)
+	}
+}
+
+// TestRebuildResolvesDefaultPortForTLSEndpoint pins the integration
+// between an endpoint plugin's default-port resolution and the VIP
+// index. A clickhouse_native endpoint with tls=true and no explicit
+// port should land in the VIP table keyed at the TLS default (9440),
+// not at the unresolved 0 — otherwise an agent dialing <vip>:9440
+// (the natural TLS port) misses the index and falls through to the
+// unmatched-traffic path. The same shape applies to any future plugin
+// whose EndpointHosts() does TLS-conditional default-port resolution.
+func TestRebuildResolvesDefaultPortForTLSEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	a, err := New(dir, DefaultCIDR4, DefaultCIDR6)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	body := &endpoints.ClickhouseNativeEndpoint{
+		Hosts: []string{"ch.example.com"},
+		TLS:   true,
+	}
+	ep := &config.CompiledEndpoint{
+		Name:   "ch",
+		Family: "sql",
+		Plugin: &config.Plugin{Type: "clickhouse_native", Family: "sql"},
+		Body:   body,
+		Hosts:  body.EndpointHosts(),
+	}
+	pol := &config.CompiledPolicy{
+		Endpoints: map[string]*config.CompiledEndpoint{"ch": ep},
+	}
+	if err := a.RebuildFromPolicy(pol); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+	v4, _ := a.VIPsFor("ch.example.com")
+	if !v4.IsValid() {
+		t.Fatalf("ch.example.com did not get a VIP")
+	}
+	host, hits := a.LookupVIP(v4.String())
+	if host != "ch.example.com" || len(hits) != 1 {
+		t.Fatalf("LookupVIP(%v): host=%q hits=%d, want ch.example.com / 1", v4, host, len(hits))
+	}
+	if hits[0].Port != 9440 {
+		t.Fatalf("hit port = %d, want 9440 (TLS default)", hits[0].Port)
 	}
 }
 
