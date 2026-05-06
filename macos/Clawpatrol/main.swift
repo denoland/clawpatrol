@@ -246,20 +246,37 @@ func startProxy(confPath: String) {
     }
     NETransparentProxyManager.loadAllFromPreferences { managers, err in
         if let err = err { fail("loadAll: \(err)") }
-        guard let manager = managers?.first(where: { $0.localizedDescription == proxyProfileName }) else {
-            fail("no proxy profile — run `Clawpatrol install` first")
-        }
+        let all = managers ?? []
+        // mitmproxy_rs pattern: if NE reports an already-connected
+        // manager, don't trust it — its sysext process may not have
+        // actually run startProxy this boot (post-reboot/wake quirk
+        // where status is "connected" but the IPC socket doesn't
+        // exist). Pick a non-connected one, or create fresh.
+        let reusable = all.first(where: { m in
+            m.localizedDescription == proxyProfileName
+                && (!m.isEnabled || m.connection.status != .connected)
+        })
+        let manager = reusable ?? NETransparentProxyManager()
         let prevConf: String = (manager.protocolConfiguration as? NETunnelProviderProtocol)?
             .providerConfiguration?["wg-conf"] as? String ?? ""
-        if let proto = manager.protocolConfiguration as? NETunnelProviderProtocol {
-            var cfg = proto.providerConfiguration ?? [:]
-            cfg["wg-conf"] = conf
-            proto.providerConfiguration = cfg
-            manager.protocolConfiguration = proto
+        // Preserve mode from any prior profile (the connected-but-stale
+        // one if that's all we had) so re-running start doesn't
+        // downgrade whole-machine to per-process.
+        var prevMode = ""
+        if let proto = (reusable ?? all.first(where: { $0.localizedDescription == proxyProfileName }))?
+            .protocolConfiguration as? NETunnelProviderProtocol {
+            prevMode = (proto.providerConfiguration?["mode"] as? String) ?? ""
         }
+        let proto = NETunnelProviderProtocol()
+        proto.providerBundleIdentifier = extBundleID
+        proto.serverAddress = "clawpatrol-gateway"
+        proto.providerConfiguration = [
+            "wg-conf": conf,
+            "mode": prevMode.isEmpty ? "per-process" : prevMode,
+        ]
+        manager.protocolConfiguration = proto
+        manager.localizedDescription = proxyProfileName
         manager.isEnabled = true
-        // Idempotently re-assert on-demand so existing installs
-        // upgrade onto the auto-start path without re-running install.
         let rule = NEOnDemandRuleConnect()
         rule.interfaceTypeMatch = .any
         manager.onDemandRules = [rule]
@@ -272,26 +289,12 @@ func startProxy(confPath: String) {
                     || manager.connection.status == .connecting
                 let confChanged = prevConf != conf
                 if running && confChanged {
-                    // Conf swap while running — extension parses wg-conf
-                    // once at startProxy. Force a stop+start so the new
-                    // peer key / address takes effect.
                     reloadTunnelAndExit(manager: manager, label: "wg-conf")
                     return
                 }
                 if running {
-                    // mitmproxy-style staleness guard: NE can report
-                    // "connected" after a reboot/wake even though the
-                    // sysext process hasn't actually run startProxy yet
-                    // (no IPC socket, no flow handler). Ping the
-                    // listener; if it doesn't respond, force a stop +
-                    // start to recreate it.
-                    if extSocketAlive() {
-                        print("✓ proxy already up (no change)")
-                        exit(0)
-                    }
-                    print("⟳ proxy reports connected but ext socket is dead — reloading")
-                    reloadTunnelAndExit(manager: manager, label: "stale-connected")
-                    return
+                    print("✓ proxy already up (no change)")
+                    exit(0)
                 }
                 do {
                     try manager.connection.startVPNTunnel()
@@ -360,40 +363,3 @@ func fail(_ msg: String) -> Never {
     exit(1)
 }
 
-// extSocketAlive pings the IPC listener the extension sets up at
-// startProxy. NEVPNStatus.connected is unreliable after reboot/wake —
-// the manager's stored state can claim "connected" while the sysext
-// process hasn't actually been spawned yet. Connecting to the unix
-// socket is the ground truth.
-func extSocketAlive() -> Bool {
-    let path = "/tmp/clawpatrol.sock"
-    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-    if fd < 0 { return false }
-    defer { close(fd) }
-    var addr = sockaddr_un()
-    addr.sun_family = sa_family_t(AF_UNIX)
-    let pathBytes = Array(path.utf8)
-    if pathBytes.count >= MemoryLayout.size(ofValue: addr.sun_path) { return false }
-    withUnsafeMutableBytes(of: &addr.sun_path) { ptr in
-        for (i, b) in pathBytes.enumerated() {
-            ptr[i] = b
-        }
-    }
-    let len = socklen_t(MemoryLayout<sockaddr_un>.size)
-    var fl = fcntl(fd, F_GETFL, 0); fl |= O_NONBLOCK
-    _ = fcntl(fd, F_SETFL, fl)
-    let rc = withUnsafePointer(to: &addr) { ptr in
-        ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-            connect(fd, sa, len)
-        }
-    }
-    if rc == 0 { return true }
-    if errno != EINPROGRESS { return false }
-    var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
-    let pr = poll(&pfd, 1, 500)
-    if pr <= 0 { return false }
-    var soerr: Int32 = 0
-    var slen = socklen_t(MemoryLayout<Int32>.size)
-    if getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &slen) != 0 { return false }
-    return soerr == 0
-}
