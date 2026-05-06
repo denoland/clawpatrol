@@ -49,10 +49,13 @@ server, and the CLI used on agent machines (`clawpatrol join`,
                        upstream
 ```
 
-There is no Node.js process, no `iptables`, no `wg-quick`, no
-`/etc/wireguard/`, no DNS-interception sidecar, no virtual-IP subnet,
-and no separate Caddy/TLS frontend. The Go binary is the only moving
-part on the gateway host.
+The Go binary is the only moving part on the gateway host. The
+WireGuard endpoint is userspace (no kernel module, `wg-quick`, or
+`/etc/wireguard/` config), L3 dispatch happens in-process via the
+gVisor netstack (no `iptables` rules or DNS-interception sidecar),
+agents dial real upstream IPs (no virtual-IP subnet), and TLS
+termination runs against stdlib `crypto/tls` directly (no separate
+Caddy/TLS frontend).
 
 ## Connecting an agent
 
@@ -125,11 +128,9 @@ verbatim until its endpoint plugin's wire-protocol runtime ships
    plugin's `ConnEndpointRuntime` lands.
 
 4. **TLS termination.** Stdlib `crypto/tls.Server` wraps the duplex
-   `net.Conn` directly. There is no loopback bridge — the legacy
-   "ephemeral `tls.createServer` on `127.0.0.1:0`" workaround was a
-   Node.js quirk, not a structural requirement. The leaf cert is
-   minted by `CertCache.mint` (P-256, 30-day validity, in-memory
-   cache, signed by the gateway CA).
+   `net.Conn` directly. The leaf cert is minted by `CertCache.mint`
+   (P-256, 30-day validity, in-memory cache, signed by the gateway
+   CA).
 
 5. **Request loop.** For each `http.Request`, the gateway:
    - Buffers the body (up to 1 MiB) so rules with `body_json` /
@@ -174,9 +175,8 @@ operator's responsibility (the systemd unit and onboard wizard call
 Per-host leaf certs are P-256 ECDSA, signed by the CA, with a single
 DNS SAN matching the SNI. They're cached in memory keyed by hostname;
 there is no on-disk leaf cache and no LRU bound — the cache grows
-unboundedly until restart. (The legacy "256-entry LRU" was a Node.js
-artifact; the Go path doesn't bound it because typical agent traffic
-hits a few dozen distinct hosts.)
+unboundedly until restart. Typical agent traffic hits only a few
+dozen distinct hosts, so the unbounded shape is fine in practice.
 
 ## Policy: gateway.hcl
 
@@ -230,16 +230,10 @@ Schema-only credential types (e.g. `slack`, `telegram`, `gemini`)
 declare slots and rule hooks but leave `Runtime` nil; their requests
 forward verbatim and policy alone gates them.
 
-### How injection works (and why anti-exfil is now structural)
+### How injection works
 
-The legacy proxy did string-replacement: agents sent the placeholder
-`CLAWPATROL_PLACEHOLDER_github` in arbitrary headers and the proxy
-search-and-replaced it with the real token, with a hand-maintained
-"never replace inside `user-agent` / `sec-*` / `/cdn-cgi/*`" blocklist
-to keep the secret from being echoed back.
-
-The current architecture removes that whole footgun. Each credential
-plugin's `InjectHTTP` writes to one specific slot:
+Each credential plugin's `InjectHTTP` writes to one specific slot on
+the request:
 
 ```go
 // bearer_token
@@ -252,14 +246,16 @@ req.Header.Set(h.Header, h.Prefix+string(sec.Bytes))
 // rewrites a single named cookie in the Cookie header
 ```
 
-Secret bytes never flow into a header the plugin didn't explicitly
-target. There is no global header blocklist because there is no
-global replacement step — the structural property replaces the
-blocklist. (`config/plugins/credentials/util.go` still defines
-plumbing-level placeholder strings like `phClaude`, `phOpenAI`,
-`phGitHub`, but they're agent-side env-var stand-ins that the
-gateway's `Authorization`-header overwrite renders inert before the
-request leaves the gateway.)
+Secret bytes only flow into the exact header the plugin targets, and
+no global pass scans the request for placeholders to substitute. That
+makes anti-exfil a structural property rather than a blocklist
+problem: there's nothing to leak through, because no code path
+mutates a header the plugin didn't pick.
+(`config/plugins/credentials/util.go` defines plumbing-level
+placeholder strings like `phClaude`, `phOpenAI`, `phGitHub` for
+agent-side env-var stand-ins; the gateway's `Authorization`-header
+overwrite renders any echoed placeholder inert before the request
+leaves the gateway.)
 
 For multi-credential endpoints (e.g. an `https` endpoint binding
 both a personal and a service-account token), the endpoint plugin's
@@ -335,10 +331,11 @@ walking the onboard registry. Devices land in a profile at onboard
 time (`apiOnboardClaim`); operators can re-assign via
 `POST /api/clients/:id/profile`.
 
-The "user / owner email" concept that lived in the legacy proxy is
-gone for WG-mode deployments. It survives behind
-`gateway.control = "tailscale"` where Tailscale's whois lookup still
-maps tunnel IPs to login names — see `Gateway.ownerForRequest`.
+WG-mode deployments have no per-request owner identity: requests are
+attributed to the device's profile, not to a user. The optional
+`gateway.control = "tailscale"` mode does carry a user/owner concept
+— Tailscale's whois lookup maps tunnel IPs to login names — see
+`Gateway.ownerForRequest`.
 
 ## Secret store
 
@@ -394,10 +391,10 @@ Listen ports, `ca_dir`, `oauth_dir`, and the `gateway {}` block
 (WireGuard / Tailscale wiring) are *not* hot-applied — changes to
 those fields are logged but require a restart.
 
-There is no `SIGHUP` handler; mtime polling replaces it. (The
-gateway's child-process supervisor inside `clawpatrol run` does
-forward `SIGHUP` to the wrapped agent, but that's on the agent host,
-not the gateway.)
+The gateway has no `SIGHUP` handler; mtime polling drives reload.
+(The child-process supervisor inside `clawpatrol run` does forward
+`SIGHUP` to the wrapped agent, but that's on the agent host, not the
+gateway.)
 
 ## Dashboard and API
 
