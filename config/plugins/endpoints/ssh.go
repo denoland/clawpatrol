@@ -203,23 +203,35 @@ func (rt *SSHEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHa
 		})
 	}
 
-	// Step 6: bidirectional pump. Each side has a channel-open feed
-	// and a global-request feed; we forward them across.
-	var wg sync.WaitGroup
-	wg.Add(4)
-	go func() { defer wg.Done(); pumpChannels(clientConn, srvChans) }()
-	go func() { defer wg.Done(); pumpChannels(srvConn, clientChans) }()
-	go func() { defer wg.Done(); pumpGlobalReqs(clientConn, srvReqs) }()
-	go func() { defer wg.Done(); pumpGlobalReqs(srvConn, clientReqs) }()
+	// Step 6: bidirectional pump. Two waitgroups — `dispatch` covers
+	// the four conn-level demuxers (channel + global-request feeds);
+	// `chans` covers each individual proxyChannel goroutine spawned
+	// by the channel demuxers. Tracking the channel proxies separately
+	// is what makes graceful close possible: when one SSH conn dies
+	// we close the other only after all in-flight channel proxies
+	// have drained, so a fast `ssh host echo hi` doesn't lose its
+	// final bytes when the upstream half tears down (visible as ~10%
+	// blank-output flake when running tests in tight succession).
+	var dispatch, chans sync.WaitGroup
+	dispatch.Add(4)
+	go func() { defer dispatch.Done(); pumpChannels(clientConn, srvChans, &chans) }()
+	go func() { defer dispatch.Done(); pumpChannels(srvConn, clientChans, &chans) }()
+	go func() { defer dispatch.Done(); pumpGlobalReqs(clientConn, srvReqs) }()
+	go func() { defer dispatch.Done(); pumpGlobalReqs(srvConn, clientReqs) }()
 
 	// Wait for either half to drop.
 	exit := make(chan struct{}, 2)
 	go func() { _ = srvConn.Wait(); exit <- struct{}{} }()
 	go func() { _ = clientConn.Wait(); exit <- struct{}{} }()
 	<-exit
+	// Drain in-flight channel proxies — proxyChannel handles its own
+	// teardown gracefully (forwards exit-status, then Closes) so by
+	// the time chans.Wait() returns every byte that was going to flow
+	// has flowed.
+	chans.Wait()
 	srvConn.Close()
 	clientConn.Close()
-	wg.Wait()
+	dispatch.Wait()
 	return nil
 }
 
@@ -317,10 +329,10 @@ func warnHostKeyOnce(endpointName string) {
 // ── Channel + request pumps ───────────────────────────────────────────
 
 // pumpChannels accepts incoming channel-open requests from one side
-// and opens the same type on the other. Each successful pair gets a
-// data-copy goroutine in each direction plus a per-channel request
-// pump in each direction.
-func pumpChannels(target ssh.Conn, source <-chan ssh.NewChannel) {
+// and opens the same type on the other. Each successful pair runs
+// proxyChannel (tracked via wg so HandleConn can drain in-flight
+// channels before closing the SSH conns).
+func pumpChannels(target ssh.Conn, source <-chan ssh.NewChannel, wg *sync.WaitGroup) {
 	for newCh := range source {
 		targetCh, targetReqs, err := target.OpenChannel(newCh.ChannelType(), newCh.ExtraData())
 		if err != nil {
@@ -337,36 +349,90 @@ func pumpChannels(target ssh.Conn, source <-chan ssh.NewChannel) {
 			targetCh.Close()
 			continue
 		}
-		go pumpChannelReqs(targetCh, sourceReqs)
-		go pumpChannelReqs(sourceCh, targetReqs)
-		go func(dst, src ssh.Channel) {
-			_, _ = io.Copy(dst, src)
-			_ = dst.CloseWrite()
-		}(targetCh, sourceCh)
-		go func(dst, src ssh.Channel) {
-			_, _ = io.Copy(dst, src)
-			_ = src.CloseWrite()
-		}(sourceCh, targetCh)
-		// Forward stderr too (channel extended-data type 1).
-		go func(dst, src ssh.Channel) {
-			_, _ = io.Copy(dst.Stderr(), src.Stderr())
-		}(targetCh, sourceCh)
-		go func(dst, src ssh.Channel) {
-			_, _ = io.Copy(dst.Stderr(), src.Stderr())
-		}(sourceCh, targetCh)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			proxyChannel(sourceCh, sourceReqs, targetCh, targetReqs)
+		}()
 	}
 }
 
-func pumpChannelReqs(target ssh.Channel, source <-chan *ssh.Request) {
-	for r := range source {
-		ok, err := target.SendRequest(r.Type, r.WantReply, r.Payload)
-		if err != nil {
-			ok = false
-		}
-		if r.WantReply {
-			_ = r.Reply(ok, nil)
+// proxyChannel splices two ssh.Channels in both directions
+// (stdout/stdin AND stderr) plus their per-channel request streams.
+//
+// Each "direction" is the pair (data pump, request forwarder) that
+// reads from one side and writes to the other. A direction is
+// COMPLETE when its source has been fully drained — both the channel
+// data buffer (read until EOF) AND the request stream (read until
+// closed, which happens only after channel-close, which the peer
+// sends AFTER any final exit-status / signal). So when a direction
+// completes, we know every byte and every request has been forwarded.
+//
+// Whichever direction completes first triggers a Close on the OTHER
+// side's channel: that unsticks the slower direction's data pump,
+// which would otherwise block forever on a peer that left its stdin
+// open (notably the OpenSSH client during `ssh host cmd`). Closing
+// only the OTHER side keeps the now-finished direction's bytes
+// intact — closing too eagerly would cut off in-flight reads on the
+// fast side and lose the last few bytes of output (~10% flake rate
+// in `ssh host echo X` stress tests).
+func proxyChannel(a ssh.Channel, aReqs <-chan *ssh.Request, b ssh.Channel, bReqs <-chan *ssh.Request) {
+	// pumpDir copies both stdout and stderr from src to dst, then
+	// emits channel-eof. Combining the two before CloseWrite is
+	// required: stderr is just extended-data on the same channel,
+	// and SSH treats any extended-data after channel-eof as a
+	// protocol violation. Without this, OpenSSH disconnects with
+	// "Received extended_data after EOF on channel 0" the moment
+	// the remote process exits with anything on stderr.
+	pumpDir := func(dst, src ssh.Channel, done chan<- struct{}) {
+		defer close(done)
+		var inner sync.WaitGroup
+		inner.Add(2)
+		go func() { defer inner.Done(); _, _ = io.Copy(dst, src) }()
+		go func() { defer inner.Done(); _, _ = io.Copy(dst.Stderr(), src.Stderr()) }()
+		inner.Wait()
+		_ = dst.CloseWrite()
+	}
+	forwardReqs := func(target ssh.Channel, source <-chan *ssh.Request, done chan<- struct{}) {
+		defer close(done)
+		for r := range source {
+			ok, err := target.SendRequest(r.Type, r.WantReply, r.Payload)
+			if err != nil {
+				ok = false
+			}
+			if r.WantReply {
+				_ = r.Reply(ok, nil)
+			}
 		}
 	}
+
+	pumpA := make(chan struct{}) // upstream→agent data finished
+	pumpB := make(chan struct{}) // agent→upstream data finished
+	reqA := make(chan struct{})  // upstream→agent reqs finished
+	reqB := make(chan struct{})  // agent→upstream reqs finished
+	go pumpDir(a, b, pumpA)
+	go pumpDir(b, a, pumpB)
+	go forwardReqs(a, bReqs, reqA)
+	go forwardReqs(b, aReqs, reqB)
+
+	// fromUpstream / fromAgent fire when a full direction
+	// (data + reqs) has drained — at that point its source channel
+	// is fully closed and every byte/request has been forwarded.
+	fromUpstream := make(chan struct{})
+	fromAgent := make(chan struct{})
+	go func() { <-pumpA; <-reqA; close(fromUpstream) }()
+	go func() { <-pumpB; <-reqB; close(fromAgent) }()
+
+	// Whichever direction finishes first closes the OPPOSITE side to
+	// unstick its blocked pump. Then wait for the other direction.
+	select {
+	case <-fromUpstream:
+		_ = a.Close()
+	case <-fromAgent:
+		_ = b.Close()
+	}
+	<-fromUpstream
+	<-fromAgent
 }
 
 func pumpGlobalReqs(target ssh.Conn, source <-chan *ssh.Request) {
