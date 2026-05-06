@@ -206,6 +206,7 @@ function fmtMs(ms: number): string {
   return ms + "ms";
 }
 
+
 function Stat({ label, value, tone }: {
   label: string;
   value: string;
@@ -406,17 +407,25 @@ function LatencyChart({ filtered, isGlobal, agents, range }: {
 
     const chart = Plot.plot({
       width: ref.current.clientWidth,
-      height: 280,
-      marginLeft: 60,
-      marginBottom: 40,
+      height: 300,
+      marginLeft: 52,
+      marginBottom: 28,
+      marginTop: 12,
+      marginRight: 8,
+      style: {
+        background: "transparent",
+        fontSize: "11px",
+        fontFamily: "ui-sans-serif, system-ui, sans-serif",
+        color: "#525252",
+      },
       y: {
         type: scale,
-        label: "Latency (ms)",
+        label: null,
         grid: true,
         nice: true,
         ...(scale === "log"
           ? {
-              ticks: [0.1, 1, 10, 100, 1000, 10000, 100000],
+              ticks: [1, 10, 100, 1000, 10000],
               tickFormat: (v: number) =>
                 v >= 1000 ? `${v / 1000}k` : `${v}`,
             }
@@ -437,12 +446,20 @@ function LatencyChart({ filtered, isGlobal, agents, range }: {
       },
       color: colorCfg,
       marks: [
+        // Soft grid: redraw with very light stroke (Plot's default
+        // grid is too dark against the muted palette).
+        Plot.gridY({ stroke: "#f0f0f0", strokeWidth: 1 }),
+        Plot.gridX({ stroke: "#f5f5f5", strokeWidth: 1 }),
+        // Dots: smaller radius, white stroke ring for separation in
+        // dense clusters, lower opacity so density reads as shading.
         Plot.dot(dots, {
           x: "t",
           y: "ms",
           fill: colorField,
-          r: 3,
-          fillOpacity: 0.7,
+          r: 2.5,
+          fillOpacity: 0.75,
+          stroke: "white",
+          strokeWidth: 0.5,
           href: (d: typeof dots[0]) =>
             d.id ? `#/request/${d.id}` : undefined,
           title: (d: typeof dots[0]) =>
@@ -454,7 +471,6 @@ function LatencyChart({ filtered, isGlobal, agents, range }: {
           title: (d: typeof dots[0]) =>
             `${d.host}\n${d.device}\n${d.statusCode || "\u2014"} \u2022 ${d.ms}ms`,
         })),
-        Plot.ruleY([0]),
       ],
     });
 

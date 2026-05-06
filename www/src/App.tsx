@@ -121,7 +121,6 @@ export default function App() {
                 agents={agents}
                 integrations={integrations}
                 onSelect={(ip) => navigate("#/device/" + encodeURIComponent(ip))}
-                onAnalytics={(ip) => navigate("#/analytics/" + encodeURIComponent(ip))}
               />
             </div>
           </section>
