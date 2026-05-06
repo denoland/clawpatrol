@@ -58,16 +58,30 @@ export function AnalyticsPage({ ip, agents }: {
 
   useEffect(() => {
     setEvents([]);
-    const url =
-      `/api/events?agent=${encodeURIComponent(ip)}`;
+    const url = `/api/events?agent=${encodeURIComponent(ip)}`;
     const es = new EventSource(url);
+    // rAF-batched render: SSE on a busy gateway fires dozens of
+    // events/sec. setState per event = re-render per event. Coalesce
+    // into one commit per browser frame (~16 ms).
+    let pending: EventRecord[] = [];
+    let raf = 0;
+    const flush = () => {
+      raf = 0;
+      if (pending.length === 0) return;
+      const batch = pending;
+      pending = [];
+      setEvents((prev) => [...batch.reverse(), ...prev].slice(0, 5000));
+    };
     es.onmessage = (e) => {
       try {
-        const ev = JSON.parse(e.data) as EventRecord;
-        setEvents((prev) => [ev, ...prev].slice(0, 5000));
+        pending.push(JSON.parse(e.data) as EventRecord);
+        if (raf === 0) raf = requestAnimationFrame(flush);
       } catch { /* ignore */ }
     };
-    return () => es.close();
+    return () => {
+      es.close();
+      if (raf !== 0) cancelAnimationFrame(raf);
+    };
   }, [ip]);
 
   return (

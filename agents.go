@@ -670,13 +670,8 @@ func credentialsInProfile(policy *config.CompiledPolicy, profile string) map[str
 	return out
 }
 
-func (w *webMux) apiAgents(rw http.ResponseWriter, _ *http.Request) {
-	writeJSON(rw, w.agentsList())
-}
-
-// agentsList exposes the apiAgents payload as a Go slice so /api/state
-// can bundle it without re-marshaling. Same population logic; pulled
-// out of apiAgents verbatim.
+// agentsList backs the agents slice of /api/state. No HTTP handler —
+// the route was removed once App.tsx switched to bundled state.
 func (w *webMux) agentsList() []*Agent {
 	var snap []*Agent
 	if w.g.agents != nil {

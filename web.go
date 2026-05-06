@@ -56,9 +56,9 @@ func newWebMux(g *Gateway, caDir string, ts Tailscale, publicURL string) http.Ha
 	mux := http.NewServeMux()
 	mux.HandleFunc("/info", w.serveInfo)
 	mux.HandleFunc("/ca.crt", w.serveCA)
-	mux.HandleFunc("/api/whoami", w.apiWhoami)
+	// /api/whoami + /api/agents are gone — superseded by /api/state.
+	// /api/status stays because DevicePage scopes it with ?profile=.
 	mux.HandleFunc("/api/status", w.apiStatus)
-	mux.HandleFunc("/api/agents", w.apiAgents)
 	// /api/state is the dashboard's single-call refresh endpoint —
 	// bundles whoami+status+agents in one round-trip and returns 304
 	// when the JSON hash matches If-None-Match. Replaces the three
@@ -492,13 +492,9 @@ func (w *webMux) ownerForCaller(r *http.Request) (key, label string) {
 	return host, host
 }
 
-func (w *webMux) apiWhoami(rw http.ResponseWriter, r *http.Request) {
-	writeJSON(rw, w.whoamiData(r))
-}
-
-// whoamiData exposes the apiWhoami payload as a Go map so /api/state
-// can bundle it without round-tripping through writeJSON +
-// re-decoding. Cheap (no DB hit; just config + tailscale whois).
+// whoamiData backs the whoami slice of /api/state. No HTTP handler —
+// the route was removed once App.tsx switched to the bundled
+// /api/state response.
 func (w *webMux) whoamiData(r *http.Request) map[string]string {
 	user, device, host := w.callerIdentity(r)
 	pu := w.g.cfg.PublicURL
