@@ -169,16 +169,16 @@ function Breadcrumbs({ agentIP, agentName, requestId }: {
   requestId?: string;
 }) {
   return (
-    <nav className="text-[11px] text-[#a3a3a3] flex items-center gap-1.5">
-      <a href="#/" className="hover:text-[#171717]">
+    <nav className="flex items-baseline gap-2">
+      <a href="#/" className="text-[11px] text-[#a3a3a3] hover:text-[#171717]">
         clawpatrol
       </a>
       {agentIP && (
         <>
-          <span>/</span>
+          <span className="text-[11px] text-[#a3a3a3]">/</span>
           <a
             href={`#/device/${encodeURIComponent(agentIP)}`}
-            className="hover:text-[#171717]"
+            className="text-[16px] font-semibold text-[#171717] hover:underline"
           >
             {agentName || agentIP}
           </a>
@@ -186,8 +186,8 @@ function Breadcrumbs({ agentIP, agentName, requestId }: {
       )}
       {requestId && (
         <>
-          <span>/</span>
-          <span className="text-[#525252] font-mono">
+          <span className="text-[11px] text-[#a3a3a3]">/</span>
+          <span className="text-[11px] text-[#525252] font-mono">
             {requestId.slice(0, 8)}
           </span>
         </>

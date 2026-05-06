@@ -14,7 +14,7 @@ import { getState, type Integration, type Agent, type Whoami } from "./lib/api";
 type Route =
   | { name: "main" }
   | { name: "device"; ip: string }
-  | { name: "analytics"; ip: string }
+  | { name: "analytics"; ip?: string }
   | { name: "onboard"; code: string }
   | { name: "request"; id: string };
 
@@ -27,12 +27,14 @@ function parseRoute(): Route {
     return { name: "onboard", code: decodeURIComponent(h.slice("#/onboard/".length)) };
   const r = h.match(/^#\/request\/([^/]+)$/);
   if (r) return { name: "request", id: decodeURIComponent(r[1]) };
+  if (h === "#/analytics") return { name: "analytics" };
+  const a = h.match(/^#\/analytics\/([^/]+)$/);
+  if (a) return { name: "analytics", ip: decodeURIComponent(a[1]) };
+  // Legacy device/IP/analytics URL
   const da = h.match(/^#\/device\/([^/]+)\/analytics$/);
   if (da) return { name: "analytics", ip: decodeURIComponent(da[1]) };
   const m = h.match(/^#\/device\/([^/]+)$/);
   if (m) return { name: "device", ip: decodeURIComponent(m[1]) };
-  const a = h.match(/^#\/analytics\/(.+)$/);
-  if (a) return { name: "analytics", ip: decodeURIComponent(a[1]) };
   return { name: "main" };
 }
 
@@ -92,6 +94,16 @@ export default function App() {
             >
               +
             </button>
+            <a
+              href="#/analytics"
+              className="w-[36px] h-[36px] rounded-full border border-[#e5e5e5] text-[#525252] flex items-center justify-center hover:border-[#171717] hover:text-[#171717] transition-colors"
+              title="analytics"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 3v18h18" />
+                <path d="m7 16 4-8 4 4 4-6" />
+              </svg>
+            </a>
             <button
               onClick={() => setShowSettings(true)}
               className="w-[36px] h-[36px] rounded-full border border-[#e5e5e5] text-[#525252] flex items-center justify-center hover:border-[#171717] hover:text-[#171717] transition-colors"
@@ -109,7 +121,7 @@ export default function App() {
                 agents={agents}
                 integrations={integrations}
                 onSelect={(ip) => navigate("#/device/" + encodeURIComponent(ip))}
-                onAnalytics={(ip) => navigate("#/device/" + encodeURIComponent(ip) + "/analytics")}
+                onAnalytics={(ip) => navigate("#/analytics/" + encodeURIComponent(ip))}
               />
             </div>
           </section>
