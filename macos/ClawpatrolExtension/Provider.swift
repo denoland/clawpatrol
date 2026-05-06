@@ -97,32 +97,31 @@ class TransparentProxyProvider: NETransparentProxyProvider {
     }
 
     private func applyNetworkSettings(completionHandler: @escaping (Error?) -> Void) {
-        // NETransparentProxy rejects port-specific rules ("X cannot be
-        // specified as the port for transparent proxy network rules").
-        // So per-process is TCP-only; whole-machine takes UDP+TCP and
-        // accepts the QUIC false-return race (radar r.98382363).
+        // Claim TCP+UDP everywhere. Non-tunneled UDP flows get claimed
+        // and immediately closed with ECONNREFUSED in handleNewFlow,
+        // dodging the radar r.98382363 false-return race that stalls
+        // Chrome QUIC for ~30s. SSH/VIP DNS works because per-process
+        // children's UDP/53 is now tunneled.
         let settings = NETransparentProxyNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
-        var included: [NENetworkRule] = [
+        let included: [NENetworkRule] = [
             NENetworkRule(remoteNetwork: nil, remotePrefix: 0,
                           localNetwork: nil, localPrefix: 0,
                           protocol: .TCP, direction: .outbound),
+            NENetworkRule(remoteNetwork: nil, remotePrefix: 0,
+                          localNetwork: nil, localPrefix: 0,
+                          protocol: .UDP, direction: .outbound),
         ]
-        if wholeMachine {
-            included.append(NENetworkRule(remoteNetwork: nil, remotePrefix: 0,
-                                          localNetwork: nil, localPrefix: 0,
-                                          protocol: .UDP, direction: .outbound))
-            settings.excludedNetworkRules = [
-                NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "224.0.0.0", port: "0"),
-                              remotePrefix: 4, localNetwork: nil, localPrefix: 0,
-                              protocol: .UDP, direction: .outbound),
-                NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "ff00::", port: "0"),
-                              remotePrefix: 8, localNetwork: nil, localPrefix: 0,
-                              protocol: .UDP, direction: .outbound),
-                NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "169.254.0.0", port: "0"),
-                              remotePrefix: 16, localNetwork: nil, localPrefix: 0,
-                              protocol: .UDP, direction: .outbound),
-            ]
-        }
+        settings.excludedNetworkRules = [
+            NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "224.0.0.0", port: "0"),
+                          remotePrefix: 4, localNetwork: nil, localPrefix: 0,
+                          protocol: .UDP, direction: .outbound),
+            NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "ff00::", port: "0"),
+                          remotePrefix: 8, localNetwork: nil, localPrefix: 0,
+                          protocol: .UDP, direction: .outbound),
+            NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "169.254.0.0", port: "0"),
+                          remotePrefix: 16, localNetwork: nil, localPrefix: 0,
+                          protocol: .UDP, direction: .outbound),
+        ]
         settings.includedNetworkRules = included
         setTunnelNetworkSettings(settings, completionHandler: completionHandler)
     }
@@ -134,14 +133,30 @@ class TransparentProxyProvider: NETransparentProxyProvider {
     }
 
     override func handleNewFlow(_ flow: NEAppProxyFlow) -> Bool {
-        if !shouldTunnel(flow) { return false }
+        let tunnel = shouldTunnel(flow)
         if let tcp = flow as? NEAppProxyTCPFlow {
+            if !tunnel { return false }
             bridgeTCP(tcp); return true
         }
         if let udp = flow as? NEAppProxyUDPFlow {
+            // Claim every UDP flow. Non-tunneled = open + close with
+            // ECONNREFUSED so the caller's recvfrom returns port-
+            // unreachable and Chrome QUIC fast-fails to h2 instead of
+            // hitting its 30s idle timeout. Returning false here would
+            // race the kernel detach (radar r.98382363).
+            if !tunnel { rejectUDP(udp); return true }
             bridgeUDP(udp); return true
         }
         return false
+    }
+
+    private func rejectUDP(_ flow: NEAppProxyUDPFlow) {
+        flow.open(withLocalEndpoint: nil) { _ in
+            let err = NSError(domain: NSPOSIXErrorDomain,
+                              code: Int(ECONNREFUSED), userInfo: nil)
+            flow.closeReadWithError(err)
+            flow.closeWriteWithError(err)
+        }
     }
 
     private func shouldTunnel(_ flow: NEAppProxyFlow) -> Bool {
