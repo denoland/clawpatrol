@@ -1098,7 +1098,7 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 		// No postgres policy → relay verbatim. Closes when either
 		// side hangs up.
 		log.Printf("pg %s: no postgres endpoint in profile %q; relaying", dstIP, profile)
-		wgRelay(c, dstIP, 5432)
+		g.wgRelay(c, dstIP, 5432)
 		return
 	}
 
@@ -1391,7 +1391,8 @@ func (g *Gateway) splice(c net.Conn, host string) {
 func pipe(a, b net.Conn) (rx, tx int64) {
 	done := make(chan struct{}, 2)
 	go func() {
-		n, _ := io.Copy(b, a)
+		buf := make([]byte, 256<<10)
+		n, _ := io.CopyBuffer(b, a, buf)
 		atomic.AddInt64(&tx, n)
 		if cw, ok := b.(interface{ CloseWrite() error }); ok {
 			cw.CloseWrite()
@@ -1399,7 +1400,8 @@ func pipe(a, b net.Conn) (rx, tx int64) {
 		done <- struct{}{}
 	}()
 	go func() {
-		n, _ := io.Copy(a, b)
+		buf := make([]byte, 256<<10)
+		n, _ := io.CopyBuffer(a, b, buf)
 		atomic.AddInt64(&rx, n)
 		if cw, ok := a.(interface{ CloseWrite() error }); ok {
 			cw.CloseWrite()
@@ -2136,7 +2138,7 @@ func runGateway(args []string) {
 				if g.tryDirectIPConn(c, dstIP, dstPort) {
 					return
 				}
-				wgRelay(c, dstIP, int(dstPort))
+				g.wgRelay(c, dstIP, int(dstPort))
 			}
 		}
 		udpDispatch := func(c net.Conn, dstIP string, dstPort uint16) bool {
@@ -2226,12 +2228,30 @@ func (l *oneShotListener) Addr() net.Addr {
 // wgRelay is the catch-all path: WG peer wants to talk to a host we
 // don't MITM (plain HTTP, ssh, anything not on :443 or the dash port).
 // Dials the real dst from the host network and pipes bytes both ways.
-func wgRelay(c net.Conn, dstIP string, dstPort int) {
+// Emits a sink Event so transparently-relayed flows show up in the
+// dashboard request history alongside MITM traffic — without this,
+// ssh / git-over-ssh / arbitrary-port connections went silent.
+func (g *Gateway) wgRelay(c net.Conn, dstIP string, dstPort int) {
 	defer c.Close()
+	pip := peerIP(c)
+	profile := g.profileFor(pip)
+	host := fmt.Sprintf("%s:%d", dstIP, dstPort)
+	start := time.Now()
 	up, err := net.DialTimeout("tcp", net.JoinHostPort(dstIP, strconv.Itoa(dstPort)), 10*time.Second)
 	if err != nil {
+		g.sink.Emit(Event{
+			Mode: "relay", AgentIP: pip, Agent: profile,
+			Host: host, Action: "deny", Reason: err.Error(),
+			Ms: time.Since(start).Milliseconds(),
+		})
 		return
 	}
 	defer up.Close()
-	pipe(c, up)
+	rx, tx := pipe(c, up)
+	g.sink.Emit(Event{
+		Mode: "relay", AgentIP: pip, Agent: profile,
+		Host: host, Action: "allow",
+		In: rx, Out: tx,
+		Ms: time.Since(start).Milliseconds(),
+	})
 }
