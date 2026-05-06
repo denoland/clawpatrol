@@ -12,25 +12,23 @@ export function HeroSection() {
       >
         <div>
           <h1
-            class="text-3xl sm:text-4xl md:text-[3.5rem]
-              font-black tracking-tight
-              leading-[1.1] mb-8 font-display
+            class="text-3xl sm:text-4xl md:text-5xl md:text-[3.5rem]
+              font-extrabold
+               mb-8 font-display text-balance
               text-text"
           >
-            The security proxy
-            <br />
-            for AI agents
+            Your control plane for AI agents
           </h1>
           <p
-            class="text-lg leading-relaxed mb-10 max-w-lg
+            class="mb-10 max-w-lg
             text-text-muted"
           >
-            Decide what your agents can do — before they do it. Claw Patrol is
-            a forward proxy that intercepts every outbound request, runs it
-            against rules you write, and routes the risky ones to a human or
-            an LLM judge for approval. Secrets stay out of the agent. Every
-            decision is logged. Works with Claude Code, Codex, or any agent —
-            no code changes.
+            Decide what your agents can do — before they do it. Claw Patrol is a
+            forward proxy that intercepts every outbound request, runs it
+            against rules you write, and routes the risky ones to a human or an
+            LLM judge for approval. Secrets stay out of the agent. Every
+            decision is logged. Works with Claude Code, Codex, or any agent — no
+            code changes.
           </p>
           <Button href="https://github.com/denoland/clawpatrol" size="lg">
             Get Started

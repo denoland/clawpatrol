@@ -10,7 +10,7 @@ export function ProblemCard({
       <p class="text-base font-semibold mb-3 text-console-dark font-display">
         {headline}
       </p>
-      <p class="text-[15px] leading-relaxed text-text-muted font-sans">
+      <p class="text-[15px]  text-text-muted font-sans">
         {body}
       </p>
     </div>

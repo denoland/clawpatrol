@@ -42,16 +42,16 @@ function RuleCodeBlock() {
      full highlighter for one snippet. */
   return (
     <pre
-      class="text-[13px] sm:text-sm leading-relaxed font-mono
+      class="text-[13px] sm:text-sm  font-mono
         bg-console-dark text-canvas/85 squircle-md p-6 overflow-x-auto
         border border-navy-700"
     >
       <code>
-        <span class="text-text-subtle"># Block destructive SQL on prod{"\n"}</span>
-        <span class="text-rust-300">rule</span>
-        {" "}
-        <span class="text-butter-300">"sql_rule"</span>
-        {" "}
+        <span class="text-text-subtle">
+          # Block destructive SQL on prod{"\n"}
+        </span>
+        <span class="text-rust-300">rule</span>{" "}
+        <span class="text-butter-300">"sql_rule"</span>{" "}
         <span class="text-butter-300">"no-prod-drops"</span>
         {" {\n"}
         {"  "}
@@ -68,12 +68,11 @@ function RuleCodeBlock() {
         {" = "}
         <span class="text-butter-300">"deny"</span>
         {"\n}\n\n"}
-
-        <span class="text-text-subtle"># Slack-approve any GitHub write{"\n"}</span>
-        <span class="text-rust-300">rule</span>
-        {" "}
-        <span class="text-butter-300">"http_rule"</span>
-        {" "}
+        <span class="text-text-subtle">
+          # Slack-approve any GitHub write{"\n"}
+        </span>
+        <span class="text-rust-300">rule</span>{" "}
+        <span class="text-butter-300">"http_rule"</span>{" "}
         <span class="text-butter-300">"github-writes"</span>
         {" {\n"}
         {"  "}
@@ -94,12 +93,11 @@ function RuleCodeBlock() {
         <span class="text-rust-300">approve</span>
         {"  = [ops]\n"}
         {"}\n\n"}
-
-        <span class="text-text-subtle"># Hand sensitive reads to an LLM judge{"\n"}</span>
-        <span class="text-rust-300">approver</span>
-        {" "}
-        <span class="text-butter-300">"llm_approver"</span>
-        {" "}
+        <span class="text-text-subtle">
+          # Hand sensitive reads to an LLM judge{"\n"}
+        </span>
+        <span class="text-rust-300">approver</span>{" "}
+        <span class="text-butter-300">"llm_approver"</span>{" "}
         <span class="text-butter-300">"secret-judge"</span>
         {" {\n"}
         {"  "}
@@ -109,7 +107,9 @@ function RuleCodeBlock() {
         {"\n  "}
         <span class="text-rust-300">policy</span>
         {" = "}
-        <span class="text-butter-300">"deny if SELECT touches secret/token columns"</span>
+        <span class="text-butter-300">
+          "deny if SELECT touches secret/token columns"
+        </span>
         {"\n}"}
       </code>
     </pre>
@@ -122,29 +122,28 @@ export function RulesSection() {
       <div class="max-w-6xl mx-auto px-6 sm:px-8">
         <SectionLabel>Approval rules</SectionLabel>
 
-        <div class="grid lg:grid-cols-[1.1fr_1fr] gap-10 lg:gap-14 items-start mb-20">
+        <div class="grid lg:grid-cols-[2fr_3fr] gap-8 lg:gap-16 xl:gap-32 items-start mb-20">
           <div>
-            <h3 class="text-3xl sm:text-4xl lg:text-[2.75rem] font-display font-black leading-[1.1] mb-6 text-text">
-              You write the rules.
-              <br />
-              <span class="text-rust">The proxy enforces them.</span>
+            <h3 class="text-3xl sm:text-4xl md:text-5xl lg:text-[2.75rem] font-display font-extrabold  mb-6 text-text">
+              You write the rules.{" "}
+              <span class="text-rust">Claw Patrol enforces them.</span>
             </h3>
-            <p class="text-base sm:text-lg leading-relaxed text-text-muted mb-5 max-w-xl">
-              Every outbound request — HTTP, SQL, SSH, Kubernetes — runs
-              through a rule engine before it leaves your machine. Match on
-              method, host, SQL verbs and tables, k8s namespaces, plugin-
-              defined facets. Decide what happens next.
+            <p class="text-base  text-text-muted mb-5 max-w-xl">
+              Every outbound request — HTTP, SQL, SSH, Kubernetes — runs through
+              a rule engine before it leaves your machine. Match on method,
+              host, SQL verbs and tables, k8s namespaces, plugin- defined
+              facets. Decide what happens next.
             </p>
-            <p class="text-base sm:text-lg leading-relaxed text-text-muted max-w-xl">
-              Edits are hot. Save a rule in the dashboard, the next request
-              sees it. No restarts, no redeploys, no waiting.
+            <p class="text-base  text-text-muted max-w-xl">
+              Edits are hot. Save a rule in the dashboard, the next request sees
+              it. No restarts, no redeploys, no waiting.
             </p>
           </div>
           <RuleCodeBlock />
         </div>
 
         <div>
-          <p class="text-xs uppercase tracking-[0.25em] font-display font-bold text-text-muted mb-5">
+          <p class="text-xs uppercase tracking-[0.25em] font-display font-extrabold text-text-muted mb-5">
             Four verdicts. Mix freely.
           </p>
           <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -154,14 +153,14 @@ export function RulesSection() {
                 class="bg-canvas border border-navy-200 squircle-md p-6"
               >
                 <div class="flex items-baseline justify-between mb-3">
-                  <h4 class="text-lg font-display font-black text-text">
+                  <h4 class="text-lg font-display font-extrabold text-text">
                     {d.label}
                   </h4>
                   <code class="text-[10px] font-mono text-text-subtle">
                     {d.verdict}
                   </code>
                 </div>
-                <p class="text-sm leading-relaxed text-text-muted">{d.body}</p>
+                <p class="text-sm  text-text-muted">{d.body}</p>
               </div>
             ))}
           </div>

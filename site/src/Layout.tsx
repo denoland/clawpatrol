@@ -1,6 +1,6 @@
 import type { ComponentChildren } from "preact";
-import { Header } from "./components/Header";
 import { Footer } from "./components/Footer";
+import { Header } from "./components/Header";
 import { Stripe } from "./components/Stripe";
 
 export function Layout({ children }: { children: ComponentChildren }) {
@@ -12,8 +12,8 @@ export function Layout({ children }: { children: ComponentChildren }) {
       >
         Skip to main content
       </a>
-      <Stripe />
       <Header />
+      <Stripe color1="var(--color-navy)" />
       <main
         id="main"
         tabindex={-1}

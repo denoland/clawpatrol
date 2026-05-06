@@ -10,19 +10,16 @@ type CommonProps = {
   children?: ComponentChildren;
 };
 
-type AnchorProps =
-  & CommonProps
-  & Omit<JSX.HTMLAttributes<HTMLAnchorElement>, "size">
-  & { href: string };
+type AnchorProps = CommonProps &
+  Omit<JSX.HTMLAttributes<HTMLAnchorElement>, "size"> & { href: string };
 
-type ButtonElProps =
-  & CommonProps
-  & Omit<JSX.HTMLAttributes<HTMLButtonElement>, "size">
-  & { href?: undefined };
+type ButtonElProps = CommonProps &
+  Omit<JSX.HTMLAttributes<HTMLButtonElement>, "size"> & { href?: undefined };
 
 type ButtonProps = AnchorProps | ButtonElProps;
 
-const base = "inline-block font-display font-bold uppercase " +
+const base =
+  "inline-block font-sans font-semibold uppercase " +
   "tracking-wider border cursor-pointer transition-colors " +
   "disabled:opacity-50 disabled:cursor-not-allowed";
 
@@ -33,10 +30,10 @@ const sizes: Record<Size, string> = {
 };
 
 const variants: Record<Variant, string> = {
-  normal: "bg-rust border-rust text-text " +
-    "hover:bg-rust-500 hover:border-rust-500",
-  outline: "border-text-muted text-text-muted " +
-    "hover:bg-canvas-muted",
+  normal:
+    "border-2 border-navy text-navy " +
+    "hover:bg-rust-300 bg-rust hover:border-rust-300 shadow-[5px_5px_0_0_var(--color-rust),inset_3px_3px_0_0_var(--color-canvas)]",
+  outline: "border-text-muted text-text-muted " + "hover:bg-canvas-muted",
 };
 
 export function Button(props: ButtonProps) {

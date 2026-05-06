@@ -1,3 +1,4 @@
+import { Button } from "../components/Button";
 import { SectionLabel } from "../components/SectionLabel";
 
 const INTEGRATIONS = [
@@ -18,13 +19,14 @@ export function IntegrationsSection() {
       style={{
         background:
           "linear-gradient(160deg, " +
-          "var(--color-navy-200) 0%, " +
-          "color-mix(in srgb, var(--color-navy-200), var(--color-console) 8%) 100%)",
+          "var(--color-navy-200), " +
+          "var(--color-navy-50), " +
+          "var(--color-navy-100)",
       }}
     >
       <div class="max-w-5xl mx-auto px-8">
         <SectionLabel>Built-in plugins</SectionLabel>
-        <p class="text-center max-w-2xl mx-auto mb-16  leading-relaxed text-text-muted">
+        <p class="text-center max-w-2xl mx-auto mb-16   text-text-muted">
           Plugins are pre-configured integrations with external services.
           Connect your agent(s) without writing the request-handling, auth, or
           secret-management code yourself.
@@ -50,7 +52,6 @@ export function IntegrationsSection() {
                   alt={name}
                   width="48"
                   height="48"
-                  class="opacity-80"
                 />
               </div>
               <span class="text-xs font-mono text-console-dark mt-3">
@@ -60,19 +61,14 @@ export function IntegrationsSection() {
           ))}
         </div>
         <p class="text-center mt-16 tracking-wider text-navy-500">— OR —</p>
-        <a
-          href="/docs/08-plugins/"
-          class="block font-normal uppercase tracking-wide font-display max-w-full
-            w-max mx-auto mt-16 mb-8 text-text-muted neu-raised p-6 px-8 squircle-lg
-            bg-linear-to-br from-navy-200 to-green
-            [--neu-bg:var(--color-navy-200)] [--face-highlight-opacity:70%]
-            [--bg-highlight-opacity:10%] [--bg-shadow-opacity:5%] hover:bg-navy-200 transition-colors"
-        >
-          Write your own plugin in one TypeScript file{" "}
-          <span class="ml-1" aria-hidden="true">
-            &rarr;
-          </span>
-        </a>
+        <div class="text-center mt-16 mb-8">
+          <Button href="/docs/08-plugins/" variant="normal" size="lg">
+            Write your own plugin in one TypeScript file{" "}
+            <span class="ml-1" aria-hidden="true">
+              &rarr;
+            </span>
+          </Button>
+        </div>
       </div>
     </section>
   );

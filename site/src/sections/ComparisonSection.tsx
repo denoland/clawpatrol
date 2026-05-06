@@ -1,7 +1,7 @@
 import { SectionLabel } from "../components/SectionLabel";
 
 const CHECK = (
-  <span className="mx-auto flex items-center justify-center text-center w-6 h-4.5 p-1.5 rounded-[100%] squircle-xl bg-navy-500 align-[-0.08em]">
+  <span className="mx-auto flex items-center justify-center text-center w-6 h-4.5 p-1.5 rounded-[100%] squircle-xl bg-rust align-[-0.08em]">
     <svg
       viewBox="0 0 24 24"
       class=" text-canvas w-full h-auto"
@@ -16,10 +16,11 @@ const CHECK = (
     </svg>
   </span>
 );
-const CROSS = <span class="text-lg text-text-muted/50">&#10005;</span>;
+const CROSS = <span class="text-lg text-text-subtle">&#10005;</span>;
 
 function slug(text: string): string {
-  return text.toLowerCase()
+  return text
+    .toLowerCase()
     .replace(/[^\w\s-]/g, "")
     .replace(/\s+/g, "-");
 }
@@ -40,15 +41,61 @@ const ROWS: {
   checks: boolean[];
   highlight?: boolean;
 }[] = [
-  { name: "Helicone", desc: "AI gateway and observability", url: "https://helicone.ai", checks: [false, false, false, true, false, true] },
-  { name: "Portkey", desc: "AI gateway, guardrails, observability", url: "https://portkey.ai", checks: [false, false, false, true, true, true] },
-  { name: "LiteLLM", desc: "Unified API for 100+ LLMs", url: "https://github.com/BerriAI/litellm", checks: [false, false, false, true, true, true] },
-  { name: "agentgateway", desc: "Agentic proxy for AI and MCP", url: "https://github.com/agentgateway/agentgateway", checks: [false, false, false, true, true, true] },
-  { name: "Clawvisor", desc: "API gateway for agent authorization", url: "https://github.com/clawvisor/clawvisor", checks: [true, false, false, false, true, true] },
-  { name: "httpjail", desc: "HTTP request filter and sandbox", url: "https://github.com/coder/httpjail", checks: [false, false, false, false, true, false] },
-  { name: "Agent Vault", desc: "Credential proxy and vault", url: "https://github.com/Infisical/agent-vault", checks: [true, false, false, false, true, true] },
-  { name: "Crab Trap", desc: "LLM-as-judge agent proxy", url: "https://github.com/brexhq/CrabTrap", checks: [false, false, false, false, true, true] },
-  { name: "Claw Patrol", desc: "Security proxy for AI agents", url: "https://github.com/denoland/clawpatrol", checks: [true, true, true, true, true, true], highlight: true },
+  {
+    name: "Helicone",
+    desc: "AI gateway and observability",
+    url: "https://helicone.ai",
+    checks: [false, false, false, true, false, true],
+  },
+  {
+    name: "Portkey",
+    desc: "AI gateway, guardrails, observability",
+    url: "https://portkey.ai",
+    checks: [false, false, false, true, true, true],
+  },
+  {
+    name: "LiteLLM",
+    desc: "Unified API for 100+ LLMs",
+    url: "https://github.com/BerriAI/litellm",
+    checks: [false, false, false, true, true, true],
+  },
+  {
+    name: "agentgateway",
+    desc: "Agentic proxy for AI and MCP",
+    url: "https://github.com/agentgateway/agentgateway",
+    checks: [false, false, false, true, true, true],
+  },
+  {
+    name: "Clawvisor",
+    desc: "API gateway for agent authorization",
+    url: "https://github.com/clawvisor/clawvisor",
+    checks: [true, false, false, false, true, true],
+  },
+  {
+    name: "httpjail",
+    desc: "HTTP request filter and sandbox",
+    url: "https://github.com/coder/httpjail",
+    checks: [false, false, false, false, true, false],
+  },
+  {
+    name: "Agent Vault",
+    desc: "Credential proxy and vault",
+    url: "https://github.com/Infisical/agent-vault",
+    checks: [true, false, false, false, true, true],
+  },
+  {
+    name: "Crab Trap",
+    desc: "LLM-as-judge agent proxy",
+    url: "https://github.com/brexhq/CrabTrap",
+    checks: [false, false, false, false, true, true],
+  },
+  {
+    name: "Claw Patrol",
+    desc: "Security proxy for AI agents",
+    url: "https://github.com/denoland/clawpatrol",
+    checks: [true, true, true, true, true, true],
+    highlight: true,
+  },
 ];
 
 export function ComparisonSection() {
@@ -58,18 +105,16 @@ export function ComparisonSection() {
       <div class="max-w-max">
         <SectionLabel>How it compares</SectionLabel>
       </div>
-      <h3 class="text-3xl lg:text-4xl font-display font-black ">
+      <h3 class="text-3xl lg:text-4xl font-display font-extrabold ">
         More than a gateway, more than a sandbox
       </h3>
-      <p class=" max-w-2xl mb-16 text-base leading-relaxed text-text-muted mt-8">
-        Many teams have attacked this problem — credential
-        vaults, LLM gateways, sandboxes — but most stop at
-        the surface. Hiding a key isn't enough if the agent
-        can still DROP TABLE or exfiltrate data through an
-        allowed API. Real security means deep inspection:
-        constraining which SQL queries run, which endpoints
-        get called, what payloads look like. Claw Patrol goes
-        that deep.
+      <p class=" max-w-2xl mb-16 text-base  text-text-muted mt-8">
+        Many teams have attacked this problem — credential vaults, LLM gateways,
+        sandboxes — but most stop at the surface. Hiding a key isn't enough if
+        the agent can still DROP TABLE or exfiltrate data through an allowed
+        API. Real security means deep inspection: constraining which SQL queries
+        run, which endpoints get called, what payloads look like. Claw Patrol
+        goes that deep.
       </p>
       <div class="overflow-x-auto">
         <table class="w-full text-sm font-sans">
@@ -97,10 +142,10 @@ export function ComparisonSection() {
                 }`}
               >
                 <td
-                  class={`py-3 px-4 font-medium font-display
+                  class={`py-3 px-4 font-bold font-sans font
                     whitespace-nowrap ${
-                    row.highlight ? "text-text" : "text-text-muted"
-                  }`}
+                      row.highlight ? "text-navy" : "text-navy-400"
+                    }`}
                 >
                   <a
                     href={row.url}
@@ -109,16 +154,16 @@ export function ComparisonSection() {
                   >
                     {row.name}
                   </a>
-                  <span class="hidden sm:inline text-[11px]
+                  <span
+                    class="hidden sm:inline text-[11px]
                     font-sans font-normal text-text-muted
-                    ml-1.5">
+                    ml-1.5"
+                  >
                     {row.desc}
                   </span>
                 </td>
                 {row.checks.map((ok, i) => {
-                  const anchor = slug(
-                    `${row.name} ${FEATURES[i]} ${ok}`,
-                  );
+                  const anchor = slug(`${row.name} ${FEATURES[i]} ${ok}`);
                   return (
                     <td key={i} class="py-3 px-3 text-center text-lg">
                       <a href={`/docs/competitors/#${anchor}`}>

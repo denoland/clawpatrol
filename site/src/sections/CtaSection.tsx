@@ -11,7 +11,7 @@ export function CtaSection() {
       <SectionLabel>Open source</SectionLabel>
       <p
         class="max-w-lg mx-auto text-base sm:text-lg
-        leading-relaxed mb-10 text-text-muted"
+         mb-10 text-text-muted"
       >
         The proxy handles your secrets — it must be auditable. MIT licensed.
         Multiple agents share secrets and endpoints, each with their own

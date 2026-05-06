@@ -21,7 +21,7 @@ export function Footer() {
             </a>
             .
           </p>
-          <p class="max-w-sm leading-relaxed">
+          <p class="max-w-sm ">
             Made by the folks at{" "}
             <a
               href="https://deno.com"

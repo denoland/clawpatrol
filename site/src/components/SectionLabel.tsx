@@ -2,13 +2,30 @@ export function SectionLabel({ children }: { children: string }) {
   return (
     <div class="text-center mb-16">
       <h2
-        class="inline-block text-[11px] uppercase
-          tracking-[0.35em] px-6 py-2.5 font-black
-          bg-rust text-text font-display
-          shadow-[2px_2px_0_var(--color-console-dark)]"
+        class="text-lg uppercase flex items-center gap-4 mx-auto w-max
+          font-bold
+           text-rust font-sans"
       >
+        <Stripes />
         {children}
+        <Stripes />
       </h2>
     </div>
   );
 }
+
+const Stripes = () => (
+  <div
+    class="h-4 w-13 "
+    style={{
+      background:
+        "repeating-linear-gradient(" +
+        "-60deg," +
+        `var(--color-rust),` +
+        `var(--color-rust) 4px,` +
+        `transparent 4px,` +
+        `transparent 8px` +
+        ")",
+    }}
+  />
+);

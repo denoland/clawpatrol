@@ -1,18 +1,23 @@
-export function Stripe() {
-  const color1 = `var(--color-butter-300)`;
-  const color2 = `var(--color-navy-500)`;
-  const sizeInPx = 6;
+type StripeArgs = {
+  color1?: string;
+  color2?: string;
+};
+
+export function Stripe({ color1, color2 }: StripeArgs) {
+  const stripeA = color1 ?? `var(--color-rust)`;
+  const stripeB = color2 ?? `transparent`;
+  const sizeInPx = 4;
   return (
     <div
-      class="h-2.5 w-full"
+      class="h-4 w-full"
       style={{
         background:
           "repeating-linear-gradient(" +
           "-60deg," +
-          `${color1},` +
-          `${color1} ${sizeInPx}px,` +
-          `${color2} ${sizeInPx}px,` +
-          `${color2} ${sizeInPx * 2}px` +
+          `${stripeA},` +
+          `${stripeA} ${sizeInPx}px,` +
+          `${stripeB} ${sizeInPx}px,` +
+          `${stripeB} ${sizeInPx * 2}px` +
           ")",
       }}
     />

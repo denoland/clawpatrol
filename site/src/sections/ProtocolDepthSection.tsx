@@ -75,17 +75,17 @@ export function ProtocolDepthSection() {
         <SectionLabel>Not just HTTP</SectionLabel>
 
         <div class="max-w-3xl mx-auto text-center mb-16">
-          <h3 class="text-3xl sm:text-4xl font-display font-black leading-[1.15] mb-5">
-            Rules see <span class="text-rust">into</span> every request.
+          <h3 class="text-3xl sm:text-4xl md:text-5xl font-display font-extrabold  mb-5">
+            Rules see into <span class="text-rust">every request.</span>
           </h3>
-          <p class="text-base sm:text-lg leading-relaxed text-canvas/70">
+          <p class="text-base  text-canvas/70">
             Most gateways stop at HTTP method and URL. Claw Patrol parses each
             protocol — so you can write rules that mean something. Block
             destructive SQL. Gate sudo over SSH. Quarantine prod kubectl.
           </p>
         </div>
 
-        <p class="text-xs uppercase tracking-[0.25em] font-display font-bold text-rust-300 mb-5 text-center">
+        <p class="text-xs uppercase tracking-[0.25em] font-display font-extrabold text-rust-300 mb-5 text-center">
           Match anything in the request
         </p>
         <ul class="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -95,12 +95,12 @@ export function ProtocolDepthSection() {
               class="bg-navy squircle-lg p-6
                 flex flex-col gap-4"
             >
-              <h4 class="text-xl font-display font-black text-canvas">
+              <h4 class="text-2xl font-display font-extrabold text-canvas">
                 {p.name}
               </h4>
-              <p class="text-sm leading-relaxed text-canvas/70">{p.body}</p>
+              <p class="text-sm  text-canvas/70">{p.body}</p>
               <pre
-                class="block text-[12px] leading-relaxed font-mono
+                class="block text-[12px] mt-4  font-mono
                   bg-navy-950 text-rust-200 px-3 py-2 rounded-sm
                   whitespace-pre-wrap break-words"
               >

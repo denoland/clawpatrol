@@ -6,12 +6,12 @@ export function AnalyticsSection() {
     <section class="pt-32 pb-28">
       <div class="max-w-5xl mx-auto px-8">
         <SectionLabel>What you've been missing</SectionLabel>
-        <h3 class="text-3xl lg:text-4xl font-display font-black text-center">
+        <h3 class="text-3xl lg:text-4xl font-display font-extrabold text-center">
           See everything your agents do in the Claw Patrol dashboard
         </h3>
         <p
           class="text-center max-w-2xl mx-auto mb-16 mt-4
-         leading-relaxed text-text-muted"
+          text-text-muted"
         >
           Thousands of requests across dozens of services. Claw Patrol captures it
           all passively, with zero instrumentation.

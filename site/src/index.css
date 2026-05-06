@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
-/* Self-hosted fonts. Inter (body) and Cascadia Mono (mono) are on the
-   Google Fonts CDN — TODO: self-host both. */
+/* Self-hosted fonts. Anonymous Pro (body + mono) is on the
+   Google Fonts CDN — TODO: self-host. */
 
 @font-face {
   font-family: "Fraunces";
@@ -104,6 +104,374 @@
   font-weight: 950;
   font-display: swap;
   src: url("/fonts/AmsiPro/AmsiPro-Ultra.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+
+/* Gazpacho — display serif. Static cuts, latin-basic subset. */
+@font-face {
+  font-family: "Gazpacho";
+  font-style: normal;
+  font-weight: 100;
+  font-display: swap;
+  src: url("/fonts/gazpacho/Gazpacho-Thin.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Gazpacho";
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url("/fonts/gazpacho/Gazpacho-Light.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Gazpacho";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/gazpacho/Gazpacho-Regular.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Gazpacho";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/gazpacho/Gazpacho-Medium.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Gazpacho";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/gazpacho/Gazpacho-Bold.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Gazpacho";
+  font-style: normal;
+  font-weight: 800;
+  font-display: swap;
+  src: url("/fonts/gazpacho/Gazpacho-Heavy.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Gazpacho";
+  font-style: normal;
+  font-weight: 900;
+  font-display: swap;
+  src: url("/fonts/gazpacho/Gazpacho-Black.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Gazpacho";
+  font-style: italic;
+  font-weight: 100;
+  font-display: swap;
+  src: url("/fonts/gazpacho/GazpachoItalic-Thin.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Gazpacho";
+  font-style: italic;
+  font-weight: 300;
+  font-display: swap;
+  src: url("/fonts/gazpacho/GazpachoItalic-Light.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Gazpacho";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/gazpacho/GazpachoItalic-Regular.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Gazpacho";
+  font-style: italic;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/gazpacho/GazpachoItalic-Medium.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Gazpacho";
+  font-style: italic;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/gazpacho/GazpachoItalic-Bold.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Gazpacho";
+  font-style: italic;
+  font-weight: 800;
+  font-display: swap;
+  src: url("/fonts/gazpacho/GazpachoItalic-Heavy.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Gazpacho";
+  font-style: italic;
+  font-weight: 900;
+  font-display: swap;
+  src: url("/fonts/gazpacho/GazpachoItalic-Black.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+
+/* Basic Sans (Latinotype) — body family. Static cuts, latin-basic subset. */
+@font-face {
+  font-family: "Basic Sans";
+  size-adjust: 125%;
+  ascent-override: 87.9%;
+  descent-override: 18.9%;
+  line-gap-override: 0%;
+  font-style: normal;
+  font-weight: 100;
+  font-display: swap;
+  src: url("/fonts/basic-sans/BasicSans-Thin.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Basic Sans";
+  size-adjust: 125%;
+  ascent-override: 87.9%;
+  descent-override: 18.9%;
+  line-gap-override: 0%;
+  font-style: italic;
+  font-weight: 100;
+  font-display: swap;
+  src: url("/fonts/basic-sans/BasicSans-ThinIt.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Basic Sans";
+  size-adjust: 125%;
+  ascent-override: 87.9%;
+  descent-override: 18.9%;
+  line-gap-override: 0%;
+  font-style: normal;
+  font-weight: 200;
+  font-display: swap;
+  src: url("/fonts/basic-sans/BasicSans-ExtraLight.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Basic Sans";
+  size-adjust: 125%;
+  ascent-override: 87.9%;
+  descent-override: 18.9%;
+  line-gap-override: 0%;
+  font-style: italic;
+  font-weight: 200;
+  font-display: swap;
+  src: url("/fonts/basic-sans/BasicSans-ExtraLightIt.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Basic Sans";
+  size-adjust: 125%;
+  ascent-override: 87.9%;
+  descent-override: 18.9%;
+  line-gap-override: 0%;
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url("/fonts/basic-sans/BasicSans-Light.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Basic Sans";
+  size-adjust: 125%;
+  ascent-override: 87.9%;
+  descent-override: 18.9%;
+  line-gap-override: 0%;
+  font-style: italic;
+  font-weight: 300;
+  font-display: swap;
+  src: url("/fonts/basic-sans/BasicSans-LightIt.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Basic Sans";
+  size-adjust: 125%;
+  ascent-override: 87.9%;
+  descent-override: 18.9%;
+  line-gap-override: 0%;
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/basic-sans/BasicSans-Regular.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Basic Sans";
+  size-adjust: 125%;
+  ascent-override: 87.9%;
+  descent-override: 18.9%;
+  line-gap-override: 0%;
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/basic-sans/BasicSans-RegularIt.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Basic Sans";
+  size-adjust: 125%;
+  ascent-override: 87.9%;
+  descent-override: 18.9%;
+  line-gap-override: 0%;
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/basic-sans/BasicSans-SemiBold.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Basic Sans";
+  size-adjust: 125%;
+  ascent-override: 87.9%;
+  descent-override: 18.9%;
+  line-gap-override: 0%;
+  font-style: italic;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/basic-sans/BasicSans-SemiBoldIt.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Basic Sans";
+  size-adjust: 125%;
+  ascent-override: 87.9%;
+  descent-override: 18.9%;
+  line-gap-override: 0%;
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/basic-sans/BasicSans-Bold.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Basic Sans";
+  size-adjust: 125%;
+  ascent-override: 87.9%;
+  descent-override: 18.9%;
+  line-gap-override: 0%;
+  font-style: italic;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/basic-sans/BasicSans-BoldIt.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Basic Sans";
+  size-adjust: 125%;
+  ascent-override: 87.9%;
+  descent-override: 18.9%;
+  line-gap-override: 0%;
+  font-style: normal;
+  font-weight: 900;
+  font-display: swap;
+  src: url("/fonts/basic-sans/BasicSans-Black.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Basic Sans";
+  size-adjust: 125%;
+  ascent-override: 87.9%;
+  descent-override: 18.9%;
+  line-gap-override: 0%;
+  font-style: italic;
+  font-weight: 900;
+  font-display: swap;
+  src: url("/fonts/basic-sans/BasicSans-BlackIt.woff2") format("woff2");
   unicode-range:
     U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
     U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
@@ -295,145 +663,6 @@ a.neu-raised:active {
   }
 }
 
-/* === Shared scroll diagram keyframes === */
-
-@keyframes dia-appear {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-@keyframes line-draw {
-  from {
-    stroke-dashoffset: 1;
-  }
-  to {
-    stroke-dashoffset: 0;
-  }
-}
-
-@keyframes line-draw-partial {
-  from {
-    stroke-dashoffset: 1;
-  }
-  to {
-    stroke-dashoffset: 0.25;
-  }
-}
-
-@keyframes type-char {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-@supports ((animation-timeline: view()) and (animation-range: 0% 100%)) {
-  :root.has-sda {
-    .dia-typed-char {
-      opacity: 0;
-      animation-name: type-char;
-      animation-timing-function: linear;
-      animation-fill-mode: both;
-      /* animation-timeline and animation-range set inline per character */
-    }
-  }
-}
-
-/* Caption: clip-path reveals left-to-right, then hides left-to-right */
-@keyframes cap-cycle {
-  0% {
-    clip-path: inset(0 100% 0 0);
-  }
-  25% {
-    clip-path: inset(0 0 0 0);
-  }
-  75% {
-    clip-path: inset(0 0 0 0);
-  }
-  100% {
-    clip-path: inset(0 0 0 100%);
-  }
-}
-
-@keyframes cap-in {
-  from {
-    clip-path: inset(0 100% 0 0);
-  }
-  to {
-    clip-path: inset(0 0 0 0);
-  }
-}
-
-@keyframes dia-keys-travel {
-  0% {
-    left: 0ch;
-  }
-  100% {
-    left: 38ch;
-  }
-}
-
-@keyframes scale-in {
-  from {
-    transform: scale(0);
-  }
-  to {
-    transform: scale(1);
-  }
-}
-
-@keyframes scale-x-in {
-  from {
-    transform: scaleX(0);
-  }
-  to {
-    transform: scaleX(1);
-  }
-}
-
-@keyframes scale-y-in {
-  from {
-    transform: scaleY(0);
-  }
-  to {
-    transform: scaleY(1);
-  }
-}
-
-@keyframes scroll-hint-in {
-  from {
-    opacity: 0;
-    transform: translateY(-18px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.scroll-hint {
-  display: none;
-}
-
-@supports ((animation-timeline: view()) and (animation-range: 0% 100%)) {
-  :root.has-sda {
-    .scroll-hint {
-      display: flex;
-      opacity: 0;
-      animation-name: scroll-hint-in;
-      animation-timing-function: linear;
-      animation-fill-mode: both;
-      /* animation-timeline and animation-range set inline per instance */
-    }
-  }
-}
-
 /* Integration tiles — each slides up into place and settles partway through
    the viewport pass. Per-tile animation-range set inline for the stagger.
    Uses CSS `translate` so hover `scale` transforms compose cleanly. */
@@ -459,211 +688,6 @@ a.neu-raised:active {
         animation-fill-mode: both;
         /* animation-range set inline per tile for the staggered entrance */
       }
-    }
-  }
-}
-
-@keyframes rust-to-red {
-  from {
-    background: var(--color-rust);
-  }
-  to {
-    background: #ef4444;
-  }
-}
-
-@keyframes blocked-flicker {
-  0% {
-    opacity: 0;
-  }
-  25% {
-    opacity: 0.8;
-  }
-  35% {
-    opacity: 0.2;
-  }
-  50% {
-    opacity: 1;
-  }
-  58% {
-    opacity: 0.6;
-  }
-  70% {
-    opacity: 1;
-  }
-  100% {
-    opacity: 1;
-  }
-}
-
-/* === Scroll diagram — problem === */
-
-.scroll-diagram {
-  view-timeline: --diagram block;
-}
-
-/* Fallback: show everything in end state for browsers without scroll-driven animations */
-.dia-cap {
-  display: none;
-}
-.dia-cap-4 {
-  display: block;
-}
-.dia-scattered {
-  display: inline;
-}
-
-@supports ((animation-timeline: view()) and (animation-range: 0% 100%)) {
-  :root.has-sda {
-    .dia-cap {
-      display: block;
-    }
-    .scroll-diagram {
-      height: 400vh;
-    }
-
-    .dia-agent,
-    .dia-keys-static,
-    .dia-internet {
-      opacity: 0;
-    }
-
-    .dia-agent {
-      animation: dia-appear linear both;
-      animation-timeline: --diagram;
-      animation-range: cover 10% cover 16%;
-    }
-
-    .dia-internet {
-      animation: dia-appear linear both;
-      animation-timeline: --diagram;
-      animation-range: cover 10% cover 16%;
-    }
-
-    .dia-keys-static {
-      animation: dia-appear linear both;
-      animation-timeline: --diagram;
-      animation-range: cover 16% cover 22%;
-    }
-
-    .dia-cap {
-      clip-path: inset(0 100% 0 0);
-    }
-
-    .dia-cap-1 {
-      animation: cap-cycle linear both;
-      animation-timeline: --diagram;
-      animation-range: cover 10% cover 26%;
-    }
-    .dia-cap-2 {
-      animation: cap-cycle linear both;
-      animation-timeline: --diagram;
-      animation-range: cover 26% cover 42%;
-    }
-    .dia-cap-3 {
-      animation: cap-cycle linear both;
-      animation-timeline: --diagram;
-      animation-range: cover 42% cover 58%;
-    }
-    .dia-cap-4 {
-      animation: cap-in linear both;
-      animation-timeline: --diagram;
-      animation-range: cover 58% cover 66%;
-    }
-  }
-}
-
-/* === Scroll diagram — solution === */
-
-.scroll-diagram-sol {
-  view-timeline: --diagram-sol block;
-}
-
-/* Fallback: show only the final caption */
-.dia2-cap {
-  display: none;
-}
-.dia2-cap-6 {
-  display: block;
-}
-
-@supports ((animation-timeline: view()) and (animation-range: 0% 100%)) {
-  :root.has-sda {
-    .dia2-cap {
-      display: block;
-    }
-    .scroll-diagram-sol {
-      height: 500vh;
-    }
-
-    .dia2-clawpatrol,
-    .dia2-keys,
-    .dia2-oneway,
-    .dia2-blocked {
-      opacity: 0;
-    }
-
-    /* Nodes appear */
-    .dia2-clawpatrol {
-      animation: dia-appear linear both;
-      animation-timeline: --diagram-sol;
-      animation-range: cover 20% cover 26%;
-    }
-
-    /* One-way label appears as line passes through Secrets */
-    .dia2-oneway {
-      animation: dia-appear linear both;
-      animation-timeline: --diagram-sol;
-      animation-range: cover 40% cover 44%;
-    }
-
-    /* Keys appear as line starts toward Approved */
-    .dia2-keys {
-      animation: dia-appear linear both;
-      animation-timeline: --diagram-sol;
-      animation-range: cover 36% cover 40%;
-    }
-
-    /* ACCESS DENIED appears after red line x */
-    .dia2-blocked {
-      animation: blocked-flicker linear both;
-      animation-timeline: --diagram-sol;
-      animation-range: cover 80% cover 86%;
-    }
-
-    .dia2-cap {
-      clip-path: inset(0 100% 0 0);
-    }
-
-    .dia2-cap-1 {
-      animation: cap-cycle linear both;
-      animation-timeline: --diagram-sol;
-      animation-range: cover 10% cover 22%;
-    }
-    .dia2-cap-2 {
-      animation: cap-cycle linear both;
-      animation-timeline: --diagram-sol;
-      animation-range: cover 22% cover 34%;
-    }
-    .dia2-cap-3 {
-      animation: cap-cycle linear both;
-      animation-timeline: --diagram-sol;
-      animation-range: cover 34% cover 46%;
-    }
-    .dia2-cap-4 {
-      animation: cap-cycle linear both;
-      animation-timeline: --diagram-sol;
-      animation-range: cover 46% cover 58%;
-    }
-    .dia2-cap-5 {
-      animation: cap-cycle linear both;
-      animation-timeline: --diagram-sol;
-      animation-range: cover 58% cover 70%;
-    }
-    .dia2-cap-6 {
-      animation: cap-in linear both;
-      animation-timeline: --diagram-sol;
-      animation-range: cover 70% cover 78%;
     }
   }
 }
@@ -746,19 +770,31 @@ a.neu-raised:active {
   --color-text-muted: #62656d;
   --color-text-subtle: #9d9ea7;
 
-  --font-display: "AmsiPro", "Fraunces", system-ui, sans-serif;
-  --font-display-amsipro: "AmsiPro", system-ui, sans-serif;
-  --font-sans: "Cascadia Mono", "SF Mono", "Menlo", ui-monospace, monospace;
-  --font-mono: "Cascadia Mono", "SF Mono", "Menlo", ui-monospace, monospace;
+  --font-display: "Gazpacho", "Fraunces", system-ui, serif;
+  --font-sans: "Basic Sans", system-ui, sans-serif;
+  --font-mono:
+    "MonoLisa", "Anonymous Pro", "SF Mono", "Menlo", ui-monospace, monospace;
 
   --breakpoint-xs: 32rem;
+
+  /* Body-text sizes inherit our looser body line-height instead of
+     Tailwind 4's bundled per-size defaults. Heading sizes (text-2xl+)
+     keep Tailwind's tight defaults so they don't go airy. */
+  --text-xs--line-height: 1.7;
+  --text-sm--line-height: 1.7;
+  --text-base--line-height: 1.7;
+  --text-lg--line-height: 1.7;
 }
 
 @layer base {
+  :root {
+    @media (min-width: 64rem) {
+      font-size: 112.5%;
+    }
+  }
+
   body {
-    /* Cascadia Mono is variable; 350 sits between Light (300) and
-		   Regular (400) for a slightly airier body weight. */
-    font-weight: 350;
+    line-height: 1.7;
   }
 
   a {

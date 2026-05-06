@@ -1,8 +1,6 @@
 import { Layout } from "./Layout";
 import { HeroSection } from "./sections/HeroSection";
 import { ProblemSection } from "./sections/ProblemSection";
-import { ScrollDiagram } from "./components/ScrollDiagram";
-import { ScrollDiagramSolution } from "./components/ScrollDiagramSolution";
 import { RulesSection } from "./sections/RulesSection";
 import { ApproversSection } from "./sections/ApproversSection";
 import { ProtocolDepthSection } from "./sections/ProtocolDepthSection";
@@ -19,8 +17,6 @@ export function Landing() {
       <HeroSection />
       <ProblemSection />
       <Stripe />
-      <ScrollDiagram />
-      <ScrollDiagramSolution />
       <RulesSection />
       <ApproversSection />
       <ProtocolDepthSection />

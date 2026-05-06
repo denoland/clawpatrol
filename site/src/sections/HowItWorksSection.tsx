@@ -262,23 +262,23 @@ export function HowItWorksSection() {
         <SectionLabel>The foundation</SectionLabel>
 
         <div class="max-w-2xl mb-14">
-          <h3 class="text-3xl sm:text-4xl font-display font-black leading-[1.15] mb-5 text-text">
+          <h3 class="text-3xl sm:text-4xl md:text-5xl font-display font-extrabold  mb-5 text-text">
             Rules need a substrate.
           </h3>
-          <p class="text-base sm:text-lg leading-relaxed text-text-muted">
-            Approval rules only work if the proxy actually owns the request
-            path — sees every byte, holds the secrets, records every
-            decision. Two pieces of plumbing that make the rest possible.
+          <p class="text-base  text-text-muted">
+            Approval rules only work if the proxy actually owns the request path
+            — sees every byte, holds the secrets, records every decision. Two
+            pieces of plumbing that make the rest possible.
           </p>
         </div>
 
         <div class="grid md:grid-cols-2 gap-6">
           <div class="p-8 rounded-sm bg-canvas-dark border border-navy-200">
-            <h3 class="text-sm uppercase tracking-[0.2em] mb-4 text-console-dark font-display font-black">
+            <h3 class="text-sm uppercase mb-4 text-console-dark font-display font-extrabold">
               Full audit log
             </h3>
             <AnalyticsDiagram />
-            <ul class="text-[15px] leading-relaxed text-text-muted font-sans list-disc pl-5 space-y-2 marker:text-navy-500">
+            <ul class="text-[15px]  text-text-muted font-sans list-disc pl-5 space-y-2 marker:text-navy-500">
               <li>Every outbound request logged in real time</li>
               <li>
                 Every approval decision recorded — who, what, when, and why
@@ -288,11 +288,11 @@ export function HowItWorksSection() {
             </ul>
           </div>
           <div class="p-8 rounded-sm bg-canvas-dark border border-navy-200">
-            <h3 class="text-sm uppercase tracking-[0.2em] mb-4 text-console-dark font-display font-black">
+            <h3 class="text-sm uppercase mb-4 text-console-dark font-display font-extrabold">
               Secret injection
             </h3>
             <SecretInjectionDiagram />
-            <ul class="text-[15px] leading-relaxed text-text-muted font-sans list-disc pl-5 space-y-2 marker:text-navy-500">
+            <ul class="text-[15px]  text-text-muted font-sans list-disc pl-5 space-y-2 marker:text-navy-500">
               <li>Placeholders swapped for real credentials at the proxy</li>
               <li>Inject into headers, body, or mTLS</li>
               <li>Secrets never reach agent memory</li>
