@@ -13,6 +13,7 @@ import (
 	"strconv"
 
 	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/match"
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
@@ -25,7 +26,13 @@ import (
 //     placeholder substring inside Hello.username / Hello.password.
 //  3. Dial upstream (TLS or plain), send the (possibly modified) Hello.
 //  4. Emit one ConnEvent describing the session.
-//  5. Bidirectional pipe until either side closes.
+//  5. Forward the server Hello back to the agent (capturing the
+//     negotiated revision), then run a packet-aware shuttle: the
+//     first agent Query packet is parsed, fed into the SQL matcher,
+//     and either forwarded (allow), gated through ConnHandle.Approve
+//     (approve), or denied via a synthesized Exception packet (deny).
+//     Subsequent bytes flow verbatim — multi-query inspection on a
+//     single TCP session is iter 2.5.
 //
 // Errors before the upstream dial close the agent's conn silently —
 // the native protocol has no Error packet at the pre-handshake stage
@@ -112,7 +119,9 @@ func (ClickhouseNativeEndpointRuntime) HandleConn(ctx context.Context, ch *runti
 	// discipline.
 	claimedUser := hello.Username
 	injected := false
+	credName := ""
 	if cc := chPickCredential(ch.Endpoint); cc != nil {
+		credName = cc.Credential.Symbol.Name
 		auth, ok := cc.Credential.Body.(runtime.ClickhouseAuthCredential)
 		if !ok {
 			chEmitError(ch, "credential-not-clickhouse-auth", cc.Credential.Symbol.Name)
@@ -196,8 +205,16 @@ func (ClickhouseNativeEndpointRuntime) HandleConn(ctx context.Context, ch *runti
 		ch.Endpoint.Name, hello.Username, claimedUser, database,
 		hello.ClientName, hello.ProtocolRevision, injected)
 
-	// Step 5: bidirectional pipe.
-	chPipe(ch.Conn, upstream)
+	// Step 5: post-auth bidirectional shuttle with per-Query
+	// inspection. The agent→server direction parses the first Query
+	// packet, runs the SQL through the matcher, and either forwards
+	// (allow), invokes the approve chain (approve), or synthesizes an
+	// Exception packet and closes (deny). After the first Query is
+	// handled the shuttle relays bytes verbatim — block-aware parsing
+	// of subsequent client packets is iter 2.5 work; one-query-per-
+	// connection covers the agent-shaped use cases that drove the
+	// iter 2 ask (each agent-issued statement opens its own session).
+	chRunSession(ctx, ch, upstream, hello.ProtocolRevision, credName)
 	return nil
 }
 
@@ -212,6 +229,278 @@ func chUpstreamTLSConfig(host string, acceptInvalidCert bool) *tls.Config {
 	return &tls.Config{
 		ServerName:         host,
 		InsecureSkipVerify: acceptInvalidCert,
+	}
+}
+
+// chRunSession is the post-auth orchestrator. It reads the server's
+// Hello (forwarded verbatim to the agent so the protocol negotiation
+// completes normally), captures the negotiated revision, then runs
+// agent→server through the Query inspector while server→agent stays
+// a pure copy.
+//
+// Failures past auth log + emit but do not surface — the connection
+// is best-effort drained and closed.
+func chRunSession(ctx context.Context, ch *runtime.ConnHandle, upstream net.Conn, clientRev uint64, credName string) {
+	negotiatedRev, err := chReadAndForwardServerHello(upstream, ch.Conn)
+	if err != nil {
+		chEmitError(ch, "server-hello", err.Error())
+		return
+	}
+	// Negotiated rev is min(client_rev, server_rev) — the format the
+	// client uses for subsequent packets.
+	if clientRev > 0 && clientRev < negotiatedRev {
+		negotiatedRev = clientRev
+	}
+
+	// Server → agent: pure copy. Started before we touch agent→server
+	// so any out-of-band server message (Progress, Log, etc.) makes it
+	// through while the inspector buffers a Query packet.
+	srvDone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(ch.Conn, upstream)
+		if cw, ok := ch.Conn.(interface{ CloseWrite() error }); ok {
+			_ = cw.CloseWrite()
+		}
+		close(srvDone)
+	}()
+
+	chAgentToServer(ctx, ch, upstream, negotiatedRev, credName)
+
+	// Either side closing tears the other down via CloseWrite + EOF.
+	if cw, ok := upstream.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+	}
+	<-srvDone
+}
+
+// chReadAndForwardServerHello pulls bytes from upstream until the
+// server Hello has been fully buffered (just enough to extract the
+// revision), forwards them to the agent verbatim, and returns the
+// revision. Anything beyond the Hello that arrived in the same read
+// is forwarded too — modern servers sometimes include the addendum
+// random hash inline.
+func chReadAndForwardServerHello(upstream net.Conn, agent net.Conn) (uint64, error) {
+	buf := make([]byte, 0, 1024)
+	tmp := make([]byte, 4096)
+	for {
+		n, err := upstream.Read(tmp)
+		if n > 0 {
+			buf = append(buf, tmp[:n]...)
+			rev, parseErr := ParseChServerHelloRevision(buf)
+			if parseErr == nil {
+				if _, werr := agent.Write(buf); werr != nil {
+					return 0, fmt.Errorf("forward server hello: %w", werr)
+				}
+				return rev, nil
+			}
+			if parseErr != errChShortBuffer {
+				return 0, parseErr
+			}
+		}
+		if err != nil {
+			return 0, fmt.Errorf("read server hello: %w", err)
+		}
+		if len(buf) > 1<<20 {
+			return 0, fmt.Errorf("server hello exceeded 1 MiB without parsing")
+		}
+	}
+}
+
+// chAgentToServer pumps the agent's outbound bytes to the upstream,
+// inspecting the first Query packet for policy. Subsequent bytes
+// (post-Query Data blocks, future Query packets) flow verbatim — see
+// the iter 2.5 follow-up note in chRunSession's comment.
+//
+// On policy deny the function writes an Exception packet to the
+// agent and returns; the caller closes the connection.
+func chAgentToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.Conn, revision uint64, credName string) {
+	buf := make([]byte, 0, 64*1024)
+	tmp := make([]byte, 32*1024)
+	inspected := false
+	for {
+		n, err := ch.Conn.Read(tmp)
+		if n > 0 {
+			buf = append(buf, tmp[:n]...)
+			if !inspected {
+				done, consumed, deny := chMaybeInspectQuery(ctx, ch, buf, revision, credName)
+				if deny {
+					return
+				}
+				if done {
+					inspected = true
+					if consumed > 0 {
+						if _, werr := upstream.Write(buf[:consumed]); werr != nil {
+							return
+						}
+						buf = buf[consumed:]
+					}
+					if len(buf) > 0 {
+						if _, werr := upstream.Write(buf); werr != nil {
+							return
+						}
+						buf = buf[:0]
+					}
+				}
+				// else: keep reading until we have a full packet.
+			} else {
+				if _, werr := upstream.Write(buf); werr != nil {
+					return
+				}
+				buf = buf[:0]
+			}
+		}
+		if err != nil {
+			return
+		}
+		if !inspected && len(buf) > 4<<20 {
+			// First packet didn't parse within 4 MiB — probably an
+			// unsupported revision or malformed input. Stop trying to
+			// inspect and forward verbatim from here on.
+			chEmitError(ch, "query-parse-overflow", strconv.Itoa(len(buf)))
+			if _, werr := upstream.Write(buf); werr != nil {
+				return
+			}
+			buf = buf[:0]
+			inspected = true
+		}
+	}
+}
+
+// chMaybeInspectQuery attempts to parse a complete client packet from
+// buf. Returns:
+//
+//	done = true when a packet was fully decoded
+//	consumed = bytes the runtime should forward (or drop, on deny)
+//	deny = true when the runtime should close the connection
+//
+// On a Query packet the function runs the matcher + Approve chain,
+// emits the per-query event, and either lets the caller forward
+// (allow / approved) or writes the Exception + signals deny.
+//
+// On a non-Query packet the function returns done=true with consumed
+// covering only the first byte — non-Query packets are forwarded
+// verbatim and inspection stops; the rest of the connection becomes
+// a transparent pipe.
+func chMaybeInspectQuery(ctx context.Context, ch *runtime.ConnHandle, buf []byte, revision uint64, credName string) (done bool, consumed int, deny bool) {
+	pktType, _, err := readChVarUInt(buf, 0)
+	if err == errChShortBuffer {
+		return false, 0, false
+	}
+	if err != nil {
+		chEmitError(ch, "client-packet-type", err.Error())
+		return true, 0, false
+	}
+	if pktType != chClientPacketQuery {
+		// Cancel/Ping/etc. — let the verbatim pump take over.
+		return true, 0, false
+	}
+	if revision < chMinRevWithSettingsAsStrings {
+		// Pre-21.x clients: skip inspection and forward.
+		chEmitError(ch, "unsupported-revision", strconv.FormatUint(revision, 10))
+		return true, 0, false
+	}
+	view, perr := ParseChQuery(buf, revision)
+	if perr == errChShortBuffer {
+		return false, 0, false
+	}
+	if perr != nil {
+		chEmitError(ch, "query-parse", perr.Error())
+		// Fall back to verbatim forwarding rather than denying — a
+		// parser miss on an exotic field set shouldn't break the
+		// agent.
+		return true, 0, false
+	}
+	verdict, reason := chEvaluateSQL(ctx, ch, view.SQL, credName)
+	if verdict == "deny" {
+		_, _ = ch.Conn.Write(SerializeChException(497, reason))
+		log.Printf("clickhouse_native %s deny %s: %s",
+			ch.Endpoint.Name, ch.PeerIP, reason)
+		return true, 0, true
+	}
+	return true, view.End, false
+}
+
+// chEvaluateSQL runs SQL through the endpoint's compiled rules. The
+// shape mirrors pgEvaluate so the SQL family rule semantics stay
+// consistent across plugins — same Match.Request fields, same allow /
+// deny / approve verdicts.
+//
+// Returns:
+//
+//	("deny", reason) — matched rule denies, or approve rejected.
+//	("", "")         — no rule fires, or the matched rule allows.
+func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName string) (string, string) {
+	info := parseChSQL(sql)
+	mreq := &match.Request{
+		Family:     "sql",
+		PeerIP:     ch.PeerIP,
+		Credential: credName,
+		SQL: &match.SQLMeta{
+			Verb:      info.Verb,
+			Tables:    info.Tables,
+			Functions: info.Functions,
+			Statement: info.Statement,
+		},
+	}
+	cr := runtime.MatchRequest(ch.Endpoint, mreq)
+	if cr == nil {
+		chEmit(ch, runtime.ConnEvent{
+			Action: "allow", Verb: info.Verb, Summary: chSummary(info),
+		})
+		return "", ""
+	}
+	summary := chSummary(info)
+
+	if len(cr.Outcome.Approve) > 0 {
+		if ch.Approve == nil {
+			chEmit(ch, runtime.ConnEvent{
+				Action: "deny", Reason: "HITL not configured",
+				Verb: info.Verb, Summary: summary,
+			})
+			return "deny", "approval required but HITL is not configured"
+		}
+		v := ch.Approve(runtime.ApproveCallRequest{
+			Stages: cr.Outcome.Approve, Verb: info.Verb,
+			Summary: summary, Rule: cr,
+		})
+		if v.Decision != "allow" {
+			reason := v.Reason
+			if reason == "" {
+				reason = "denied by approver"
+			}
+			chEmit(ch, runtime.ConnEvent{
+				Action: "hitl_deny", Reason: reason,
+				Verb: info.Verb, Summary: summary,
+			})
+			return "deny", reason
+		}
+		chEmit(ch, runtime.ConnEvent{
+			Action: "hitl_allow", Verb: info.Verb, Summary: summary,
+		})
+		return "", ""
+	}
+
+	if cr.Outcome.Verdict == "deny" {
+		reason := cr.Outcome.Reason
+		if reason == "" {
+			reason = "denied by policy"
+		}
+		chEmit(ch, runtime.ConnEvent{
+			Action: "deny", Reason: reason,
+			Verb: info.Verb, Summary: summary,
+		})
+		return "deny", reason
+	}
+	chEmit(ch, runtime.ConnEvent{
+		Action: "allow", Verb: info.Verb, Summary: summary,
+	})
+	_ = ctx
+	return "", ""
+}
+
+func chEmit(ch *runtime.ConnHandle, ev runtime.ConnEvent) {
+	if ch != nil && ch.Emit != nil {
+		ch.Emit(ev)
 	}
 }
 
@@ -299,29 +588,6 @@ func chHostPort(addr string) (string, int) {
 		return h, 0
 	}
 	return h, port
-}
-
-// chPipe shuttles bytes between agent and upstream, half-closing each
-// direction on EOF. Mirrors main.pipe but lives here so the plugin
-// stays self-contained.
-func chPipe(a, b net.Conn) {
-	done := make(chan struct{}, 2)
-	go func() {
-		_, _ = io.Copy(b, a)
-		if cw, ok := b.(interface{ CloseWrite() error }); ok {
-			_ = cw.CloseWrite()
-		}
-		done <- struct{}{}
-	}()
-	go func() {
-		_, _ = io.Copy(a, b)
-		if cw, ok := a.(interface{ CloseWrite() error }); ok {
-			_ = cw.CloseWrite()
-		}
-		done <- struct{}{}
-	}()
-	<-done
-	<-done
 }
 
 // chReadHello reads from r until enough bytes have arrived to fully

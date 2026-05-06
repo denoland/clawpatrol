@@ -2,10 +2,83 @@ package endpoints
 
 import (
 	"bytes"
+	"context"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
+
+	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/match"
+	"github.com/denoland/clawpatrol/config/runtime"
 )
+
+// chBuildClientInfo writes a representative ClientInfo block for the
+// given revision, mirroring the order ClickHouse's
+// src/Interpreters/ClientInfo.cpp::write produces. Tests use it to
+// hand the parser realistic Query packets without re-implementing
+// the field set inline at every call site.
+func chBuildClientInfo(rev uint64) []byte {
+	var b []byte
+	b = append(b, 1) // query_kind = INITIAL_QUERY
+	b = appendChString(b, "alice")
+	b = appendChString(b, "qid-1")
+	b = appendChString(b, "127.0.0.1:0")
+	if rev >= chMinRevWithInitialQueryStartTime {
+		b = append(b, make([]byte, 8)...) // initial_query_start_time
+	}
+	b = append(b, byte(chClientInterfaceTCP))
+	b = appendChString(b, "alice-os")
+	b = appendChString(b, "host")
+	b = appendChString(b, "ClickHouse client")
+	b = appendChVarUInt(b, 24)
+	b = appendChVarUInt(b, 8)
+	b = appendChVarUInt(b, rev)
+	if rev >= chMinRevWithQuotaKeyInClientInfo {
+		b = appendChString(b, "")
+	}
+	if rev >= chMinRevWithDistributedDepth {
+		b = appendChVarUInt(b, 0)
+	}
+	if rev >= chMinRevWithVersionPatch {
+		b = appendChVarUInt(b, 0)
+	}
+	if rev >= chMinRevWithOpenTelemetry {
+		b = append(b, 0) // trace_present = 0
+	}
+	if rev >= chMinRevWithParallelReplicas {
+		b = appendChVarUInt(b, 0)
+		b = appendChVarUInt(b, 0)
+		b = appendChVarUInt(b, 0)
+	}
+	return b
+}
+
+// chBuildQuery builds a complete client Query packet for the given
+// revision: header + ClientInfo + (empty) settings + (optional)
+// interserver secret + stage + compression + sql + (optional) empty
+// parameters.
+func chBuildQuery(rev uint64, sql string) []byte {
+	var b []byte
+	b = appendChVarUInt(b, chClientPacketQuery)
+	b = appendChString(b, "qid-1")
+	if rev >= chMinRevWithClientInfo {
+		b = append(b, chBuildClientInfo(rev)...)
+	}
+	// Settings — empty: just the terminator empty key.
+	b = appendChString(b, "")
+	if rev >= chMinRevWithInterserverSecret {
+		b = appendChString(b, "")
+	}
+	b = appendChVarUInt(b, 2) // stage = Complete
+	b = appendChVarUInt(b, 0) // compression = Disable
+	b = appendChString(b, sql)
+	if rev >= chMinRevWithParameters {
+		b = appendChString(b, "")
+	}
+	return b
+}
 
 // TestChVarUInt exercises the LEB128 varint helpers across the byte
 // boundaries that matter on the wire (single-byte, two-byte rollover,
@@ -298,6 +371,474 @@ func TestChHostPort(t *testing.T) {
 			t.Errorf("chHostPort(%q) = (%q,%d), want (%q,%d)",
 				c.addr, h, p, c.wantHost, c.wantPort)
 		}
+	}
+}
+
+// TestParseChQueryRevisions exercises the Query packet parser across
+// the revisions modern ClickHouse clients negotiate. The parser must
+// extract the SQL string regardless of which OpenTelemetry / parallel-
+// replicas / parameters fields are present — these toggle on at fixed
+// rev gates and shift every subsequent field's offset.
+func TestParseChQueryRevisions(t *testing.T) {
+	const sample = "SELECT id FROM users WHERE id = 1"
+	for _, rev := range []uint64{
+		chMinRevWithSettingsAsStrings,     // 54429: lower bound we support
+		chMinRevWithInterserverSecret,     // 54441
+		chMinRevWithOpenTelemetry,         // 54442
+		chMinRevWithParallelReplicas,      // 54447
+		chMinRevWithDistributedDepth,      // 54448
+		chMinRevWithInitialQueryStartTime, // 54449
+		chMinRevWithParameters,            // 54459
+		54470,                             // beyond known gates: parser must still find the SQL
+	} {
+		buf := chBuildQuery(rev, sample)
+		view, err := ParseChQuery(buf, rev)
+		if err != nil {
+			t.Fatalf("rev %d: ParseChQuery: %v", rev, err)
+		}
+		if view.SQL != sample {
+			t.Errorf("rev %d: SQL = %q, want %q", rev, view.SQL, sample)
+		}
+		if view.End != len(buf) {
+			t.Errorf("rev %d: End = %d, want %d", rev, view.End, len(buf))
+		}
+	}
+}
+
+// TestParseChQueryShortBuffer drives the incremental-parse contract
+// the runtime relies on: the parser must signal errChShortBuffer at
+// every byte boundary so the read loop can pull more bytes and retry.
+func TestParseChQueryShortBuffer(t *testing.T) {
+	rev := uint64(chMinRevWithParameters)
+	buf := chBuildQuery(rev, "SELECT 1")
+	for cut := 0; cut < len(buf); cut++ {
+		_, err := ParseChQuery(buf[:cut], rev)
+		if err != errChShortBuffer {
+			t.Errorf("ParseChQuery(prefix=%d): err = %v, want errChShortBuffer", cut, err)
+		}
+	}
+}
+
+// TestParseChQueryRejectsLowRevision pins the lower-bound gate: pre-
+// 21.x clients (rev < chMinRevWithSettingsAsStrings) use a
+// type-prefixed BINARY settings format the parser doesn't implement.
+// The error lets the runtime fall back to verbatim forwarding.
+func TestParseChQueryRejectsLowRevision(t *testing.T) {
+	if _, err := ParseChQuery([]byte{0x01}, chMinRevWithSettingsAsStrings-1); err == errChShortBuffer || err == nil {
+		t.Fatalf("ParseChQuery(low rev): err = %v, want non-short-buffer error", err)
+	}
+}
+
+// TestParseChQueryRejectsNonQuery confirms the parser refuses non-
+// Query packets — important for the runtime's "first client packet"
+// branch where a Cancel or Ping must take the verbatim path.
+func TestParseChQueryRejectsNonQuery(t *testing.T) {
+	buf := appendChVarUInt(nil, chClientPacketCancel)
+	if _, err := ParseChQuery(buf, chMinRevWithParameters); err == nil {
+		t.Errorf("ParseChQuery accepted non-Query packet")
+	}
+}
+
+// TestParseChServerHelloRevision pulls just the negotiated revision
+// out of a server Hello — the runtime forwards the full bytes
+// verbatim, this helper exists to gate Query-packet parsing on the
+// negotiated revision.
+func TestParseChServerHelloRevision(t *testing.T) {
+	want := uint64(54470)
+	var buf []byte
+	buf = appendChVarUInt(buf, chServerPacketHello)
+	buf = appendChString(buf, "ClickHouse")
+	buf = appendChVarUInt(buf, 24)
+	buf = appendChVarUInt(buf, 8)
+	buf = appendChVarUInt(buf, want)
+	buf = appendChString(buf, "Etc/UTC")
+	got, err := ParseChServerHelloRevision(buf)
+	if err != nil {
+		t.Fatalf("ParseChServerHelloRevision: %v", err)
+	}
+	if got != want {
+		t.Errorf("revision = %d, want %d", got, want)
+	}
+}
+
+// TestParseChServerHelloRevisionRejectsException covers the pre-Hello
+// upstream-error path: a misconfigured server can reply with an
+// Exception packet where we expected a Hello. The runtime needs a
+// distinct error so it doesn't silently mistake server bytes for a
+// Hello.
+func TestParseChServerHelloRevisionRejectsException(t *testing.T) {
+	buf := appendChVarUInt(nil, chServerPacketException)
+	if _, err := ParseChServerHelloRevision(buf); err == nil {
+		t.Errorf("ParseChServerHelloRevision accepted Exception packet")
+	}
+}
+
+// TestParseChSQL covers the matcher-input lexer's coverage of the v14
+// rule shapes: verb extraction, table refs across FROM/JOIN/INTO,
+// stripping ClickHouse trailers (FORMAT, SETTINGS) before regex
+// extraction, and comment handling.
+func TestParseChSQL(t *testing.T) {
+	cases := []struct {
+		name string
+		sql  string
+		want chSQLInfo
+	}{
+		{
+			"select with format trailer",
+			"SELECT id FROM users FORMAT JSON",
+			chSQLInfo{
+				Verb:      "select",
+				Tables:    []string{"users"},
+				Functions: nil,
+				Statement: "SELECT id FROM users FORMAT JSON",
+			},
+		},
+		{
+			"insert with settings trailer",
+			"INSERT INTO events (ts, body) VALUES (now(), 'x') SETTINGS max_insert_threads = 4",
+			chSQLInfo{
+				Verb:      "insert",
+				Tables:    []string{"events"},
+				Functions: []string{"events", "values", "now"},
+				Statement: "INSERT INTO events (ts, body) VALUES (now(), 'x') SETTINGS max_insert_threads = 4",
+			},
+		},
+		{
+			"line comments stripped",
+			"-- audit\nSELECT id FROM secrets",
+			chSQLInfo{
+				Verb:      "select",
+				Tables:    []string{"secrets"},
+				Functions: nil,
+				Statement: "-- audit\nSELECT id FROM secrets",
+			},
+		},
+		{
+			"block comments stripped",
+			"/* note */ SELECT count() FROM events",
+			chSQLInfo{
+				Verb:      "select",
+				Tables:    []string{"events"},
+				Functions: []string{"count"},
+				Statement: "/* note */ SELECT count() FROM events",
+			},
+		},
+		{
+			"join extracts both tables",
+			"SELECT u.id FROM users u JOIN tokens t ON t.user_id = u.id",
+			chSQLInfo{
+				Verb:      "select",
+				Tables:    []string{"users", "tokens"},
+				Functions: nil,
+				Statement: "SELECT u.id FROM users u JOIN tokens t ON t.user_id = u.id",
+			},
+		},
+		{
+			"empty sql preserved",
+			"",
+			chSQLInfo{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseChSQL(tc.sql)
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("parseChSQL mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestSerializeChException pins the Exception-packet wire format the
+// runtime emits on policy deny. ClickHouse client renders the
+// display_text — we assert the leading varuint type, error code,
+// and string offsets are recoverable so the agent can read the
+// reason out cleanly.
+func TestSerializeChException(t *testing.T) {
+	out := SerializeChException(497, "denied by policy")
+
+	// type
+	pkt, n, err := readChVarUInt(out, 0)
+	if err != nil {
+		t.Fatalf("readChVarUInt: %v", err)
+	}
+	if pkt != chServerPacketException {
+		t.Errorf("packet type = %d, want %d", pkt, chServerPacketException)
+	}
+	off := n
+
+	// 4-byte LE error code
+	if off+4 > len(out) {
+		t.Fatalf("buffer too short for error code")
+	}
+	got := uint32(out[off]) | uint32(out[off+1])<<8 | uint32(out[off+2])<<16 | uint32(out[off+3])<<24
+	if got != 497 {
+		t.Errorf("error code = %d, want 497", got)
+	}
+	off += 4
+
+	name, n, err := readChString(out, off)
+	if err != nil || name != "DB::Exception" {
+		t.Errorf("name = %q err=%v, want DB::Exception", name, err)
+	}
+	off += n
+	display, n, err := readChString(out, off)
+	if err != nil || display != "denied by policy" {
+		t.Errorf("display = %q err=%v, want %q", display, err, "denied by policy")
+	}
+	off += n
+	stack, n, err := readChString(out, off)
+	if err != nil || stack != "" {
+		t.Errorf("stack = %q err=%v, want empty", stack, err)
+	}
+	off += n
+	if off != len(out)-1 {
+		t.Errorf("trailing has_nested byte at wrong offset (off=%d len=%d)", off, len(out))
+	}
+	if out[len(out)-1] != 0 {
+		t.Errorf("has_nested byte = %d, want 0", out[len(out)-1])
+	}
+}
+
+// chBuildEndpoint hand-builds a *CompiledEndpoint with a list of
+// pre-compiled rules. Tests use it to exercise the policy pipeline
+// without spinning up the full HCL → Build → Compile path — the
+// matcher's input shape is what we care about, not how the policy
+// got there.
+func chBuildEndpoint(t *testing.T, rules ...*config.CompiledRule) *config.CompiledEndpoint {
+	t.Helper()
+	return &config.CompiledEndpoint{
+		Name:   "test-ch",
+		Family: "sql",
+		Body:   &ClickhouseNativeEndpoint{Hosts: []string{"ch.example:9000"}},
+		Hosts:  []string{"ch.example:9000"},
+		Rules:  rules,
+	}
+}
+
+func chRuleSQL(t *testing.T, name string, raw map[string]any, verdict, reason string, priority int) *config.CompiledRule {
+	t.Helper()
+	m, err := match.New("sql", raw)
+	if err != nil {
+		t.Fatalf("compile rule %q: %v", name, err)
+	}
+	return &config.CompiledRule{
+		Name: name, Priority: priority, Match: raw, Matcher: m,
+		Outcome: config.Outcome{Verdict: verdict, Reason: reason},
+	}
+}
+
+// chMockHandle wires a *runtime.ConnHandle around the agent end of an
+// in-memory net.Pipe so the inspector's Conn.Write (Exception
+// synthesis) hits a buffer the test can read.
+type chMockHandle struct {
+	*runtime.ConnHandle
+	events []runtime.ConnEvent
+}
+
+func chNewMockHandle(t *testing.T, ep *config.CompiledEndpoint) (*chMockHandle, net.Conn) {
+	t.Helper()
+	agentSide, runtimeSide := net.Pipe()
+	mock := &chMockHandle{}
+	mock.ConnHandle = &runtime.ConnHandle{
+		Conn:     runtimeSide,
+		Endpoint: ep,
+		PeerIP:   "127.0.0.1",
+		Emit: func(ev runtime.ConnEvent) {
+			mock.events = append(mock.events, ev)
+		},
+	}
+	return mock, agentSide
+}
+
+// TestChEvaluateSQLAllowsSelectDeniesInsert is the iter 2 acceptance
+// criterion in test form: a sql_rule with `verb = ["insert"]` /
+// `verdict = "deny"` denies an INSERT and lets a SELECT through. The
+// matcher input is the same shape the runtime constructs (Verb /
+// Tables / Functions / Statement).
+func TestChEvaluateSQLAllowsSelectDeniesInsert(t *testing.T) {
+	denyInsert := chRuleSQL(t, "deny-insert",
+		map[string]any{"verb": []any{"insert"}}, "deny", "writes blocked", 100)
+	ep := chBuildEndpoint(t, denyInsert)
+
+	mock, _ := chNewMockHandle(t, ep)
+
+	verdict, reason := chEvaluateSQL(context.Background(), mock.ConnHandle, "INSERT INTO events VALUES (1)", "ch-cred")
+	if verdict != "deny" {
+		t.Errorf("INSERT verdict = %q, want deny", verdict)
+	}
+	if reason != "writes blocked" {
+		t.Errorf("INSERT reason = %q, want %q", reason, "writes blocked")
+	}
+
+	verdict, _ = chEvaluateSQL(context.Background(), mock.ConnHandle, "SELECT 1", "ch-cred")
+	if verdict != "" {
+		t.Errorf("SELECT verdict = %q, want allow (empty)", verdict)
+	}
+
+	if len(mock.events) != 2 {
+		t.Fatalf("expected 2 events (deny + allow), got %d", len(mock.events))
+	}
+	if mock.events[0].Action != "deny" || mock.events[0].Verb != "insert" {
+		t.Errorf("first event: %+v", mock.events[0])
+	}
+	if mock.events[1].Action != "allow" || mock.events[1].Verb != "select" {
+		t.Errorf("second event: %+v", mock.events[1])
+	}
+}
+
+// chMockApprove hands ConnHandle.Approve a deterministic verdict so
+// the approve-chain branch can be exercised without spinning up the
+// HITL machinery.
+func chMockApprove(decision, reason string) func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
+	return func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
+		return runtime.ApproveVerdict{Decision: decision, Reason: reason, By: "test"}
+	}
+}
+
+// TestChEvaluateSQLApproveChain covers the third verdict path: rule
+// has `approve = [...]`. ConnHandle.Approve runs synchronously; an
+// allow lets the query forward, a deny rejects with the approver's
+// reason.
+func TestChEvaluateSQLApproveChain(t *testing.T) {
+	approveRule := &config.CompiledRule{
+		Name:  "approve-drops",
+		Match: map[string]any{"verb": []any{"drop"}},
+		Outcome: config.Outcome{
+			Approve: []config.ApproveStage{{Name: "human"}},
+		},
+	}
+	m, err := match.New("sql", approveRule.Match)
+	if err != nil {
+		t.Fatalf("matcher: %v", err)
+	}
+	approveRule.Matcher = m
+	ep := chBuildEndpoint(t, approveRule)
+
+	t.Run("approver allows", func(t *testing.T) {
+		mock, _ := chNewMockHandle(t, ep)
+		mock.Approve = chMockApprove("allow", "ok")
+		verdict, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred")
+		if verdict != "" {
+			t.Errorf("approver allow → verdict %q, want empty", verdict)
+		}
+		if len(mock.events) != 1 || mock.events[0].Action != "hitl_allow" {
+			t.Errorf("expected one hitl_allow event, got %+v", mock.events)
+		}
+	})
+	t.Run("approver denies", func(t *testing.T) {
+		mock, _ := chNewMockHandle(t, ep)
+		mock.Approve = chMockApprove("deny", "operator rejected")
+		verdict, reason := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred")
+		if verdict != "deny" || reason != "operator rejected" {
+			t.Errorf("verdict=%q reason=%q, want deny/operator rejected", verdict, reason)
+		}
+		if len(mock.events) != 1 || mock.events[0].Action != "hitl_deny" {
+			t.Errorf("expected one hitl_deny event, got %+v", mock.events)
+		}
+	})
+	t.Run("missing Approve callback default-denies", func(t *testing.T) {
+		mock, _ := chNewMockHandle(t, ep)
+		mock.Approve = nil
+		verdict, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred")
+		if verdict != "deny" {
+			t.Errorf("no Approve → verdict %q, want deny", verdict)
+		}
+	})
+}
+
+// TestChMaybeInspectQueryDenyWritesException drives the runtime's
+// inspector end-to-end on an in-memory pipe: a Query packet whose
+// SQL trips a deny rule must (a) cause the function to signal deny
+// and (b) write a server-side Exception packet onto the agent
+// connection.
+func TestChMaybeInspectQueryDenyWritesException(t *testing.T) {
+	rule := chRuleSQL(t, "deny-insert",
+		map[string]any{"verb": []any{"insert"}}, "deny", "writes blocked", 100)
+	ep := chBuildEndpoint(t, rule)
+
+	mock, agentSide := chNewMockHandle(t, ep)
+	defer agentSide.Close()
+	defer mock.Conn.Close()
+
+	rev := uint64(chMinRevWithParameters)
+	pkt := chBuildQuery(rev, "INSERT INTO events VALUES (1)")
+
+	read := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		_ = agentSide.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, _ := agentSide.Read(buf)
+		read <- append([]byte(nil), buf[:n]...)
+	}()
+
+	done, _, deny := chMaybeInspectQuery(context.Background(), mock.ConnHandle, pkt, rev, "ch-cred")
+	if !done || !deny {
+		t.Fatalf("inspect: done=%v deny=%v, want true/true", done, deny)
+	}
+
+	got := <-read
+	pktType, _, err := readChVarUInt(got, 0)
+	if err != nil {
+		t.Fatalf("read exception: %v", err)
+	}
+	if pktType != chServerPacketException {
+		t.Errorf("agent received packet type %d, want Exception(%d)", pktType, chServerPacketException)
+	}
+}
+
+// TestChMaybeInspectQueryAllowConsumesPacket pins the allow path's
+// "consumed = full Query packet length" contract — the runtime
+// forwards exactly view.End bytes to upstream and resumes verbatim
+// relay from the next byte.
+func TestChMaybeInspectQueryAllowConsumesPacket(t *testing.T) {
+	rule := chRuleSQL(t, "allow-selects",
+		map[string]any{"verb": []any{"select"}}, "allow", "", 100)
+	ep := chBuildEndpoint(t, rule)
+	mock, agentSide := chNewMockHandle(t, ep)
+	defer agentSide.Close()
+	defer mock.Conn.Close()
+
+	rev := uint64(chMinRevWithParameters)
+	pkt := chBuildQuery(rev, "SELECT 1")
+	// Append trailing bytes the runtime should NOT consume.
+	full := append([]byte{}, pkt...)
+	full = append(full, []byte{0xde, 0xad, 0xbe, 0xef}...)
+
+	done, consumed, deny := chMaybeInspectQuery(context.Background(), mock.ConnHandle, full, rev, "ch-cred")
+	if !done || deny {
+		t.Fatalf("inspect: done=%v deny=%v, want true/false", done, deny)
+	}
+	if consumed != len(pkt) {
+		t.Errorf("consumed=%d, want %d (Query packet length)", consumed, len(pkt))
+	}
+}
+
+// TestChMaybeInspectQueryShortBuffer covers the parser-needs-more-
+// bytes branch: when buf doesn't yet hold a full Query packet, the
+// inspector reports done=false so the runtime keeps reading.
+func TestChMaybeInspectQueryShortBuffer(t *testing.T) {
+	mock, _ := chNewMockHandle(t, chBuildEndpoint(t))
+	rev := uint64(chMinRevWithParameters)
+	pkt := chBuildQuery(rev, "SELECT 1")
+	done, _, _ := chMaybeInspectQuery(context.Background(), mock.ConnHandle, pkt[:len(pkt)/2], rev, "ch-cred")
+	if done {
+		t.Errorf("partial Query packet should not be done")
+	}
+}
+
+// TestChMaybeInspectQueryNonQueryPasses confirms Cancel/Ping/etc.
+// short-circuit through verbatim relay rather than denying or
+// blocking on a parse miss.
+func TestChMaybeInspectQueryNonQueryPasses(t *testing.T) {
+	mock, _ := chNewMockHandle(t, chBuildEndpoint(t))
+	pkt := appendChVarUInt(nil, chClientPacketCancel)
+	done, consumed, deny := chMaybeInspectQuery(context.Background(), mock.ConnHandle, pkt, chMinRevWithParameters, "ch-cred")
+	if !done || deny {
+		t.Errorf("Cancel: done=%v deny=%v, want true/false", done, deny)
+	}
+	if consumed != 0 {
+		t.Errorf("Cancel consumed=%d, want 0 (verbatim relay)", consumed)
 	}
 }
 
