@@ -5,7 +5,7 @@
 Claw Patrol is an HTTPS-and-friends [gateway](#gateway) that sits between
 an [agent](#agent) (or any [device](#device) on its tunnel) and the
 upstream services it talks to. The gateway is driven by a single HCL
-[global config](#global-config) that names [endpoints](#endpoint),
+global config that names [endpoints](#endpoint),
 [credentials](#credential), [rules](#rule), and [approvers](#approver),
 and groups them into [profiles](#profile) bound to specific devices.
 Per-request, the gateway intercepts the connection ([MitM](#mitm) for
@@ -21,11 +21,11 @@ appropriate [runtime](#runtime) interface.
 ### Gateway
 
 The Claw Patrol daemon. Terminates TLS via [MitM](#mitm), runs the
-[global config](#global-config) loader and the per-request dispatcher,
+global config loader and the per-request dispatcher,
 hosts the dashboard and HITL pool, and forwards traffic upstream after
 secret injection. Configured by a top-level HCL file (`gateway.hcl`)
 split into operational fields (listen address, CA dir, WireGuard
-config) and the rest of the [global config](#global-config) blocks.
+config) and the rest of the global config blocks.
 See [Architecture](04-architecture.md).
 
 ### Agent
@@ -46,21 +46,6 @@ Network Extension uses. A device is bound to exactly one
 can reach. The HCL `device "<ip>" { ... }` block (see
 [Configuration vocabulary](#configuration-vocabulary)) carries
 per-device rule overrides.
-
-### Global config
-
-The whole HCL document (this file): the gateway's full configuration.
-Loaded once at boot, hot-reloadable on SIGHUP.
-
-The `policy "<name>" { ... }` block is a separate concept — a
-reusable LLM proctor prompt referenced from approve-chain stages,
-which lives inside the global config; see
-[Configuration vocabulary](#configuration-vocabulary).
-
-When this glossary says "the global config" unqualified it means the
-file / compiled `*config.CompiledPolicy` in code (called the *global
-config* in this doc — the code-level rename lands later); the block
-is always written "`policy {}` block".
 
 ### Endpoint
 
@@ -193,9 +178,9 @@ An [approver](#approver) entity. First label = type (`llm_approver` /
 
 ### `policy "<name>" { text = "..." }`
 
-A reusable LLM proctor prompt. *Not* the [global config](#global-config) —
-this is one block within it. Referenced from `approve = [{ name, policy =
-my-policy }, ...]` stages.
+A reusable LLM proctor prompt. *Not* the global config — this is one
+block within it. Referenced from `approve = [{ name, policy = my-policy
+}, ...]` stages.
 
 ### `credential "<type>" "<name>" { ... }`
 
