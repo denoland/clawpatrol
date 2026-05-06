@@ -2254,4 +2254,7 @@ func (g *Gateway) wgRelay(c net.Conn, dstIP string, dstPort int) {
 		In: rx, Out: tx,
 		Ms: time.Since(start).Milliseconds(),
 	})
+	if g.agents != nil && pip != "" {
+		g.agents.track(pip, host, rx, tx)
+	}
 }
