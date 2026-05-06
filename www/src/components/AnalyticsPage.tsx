@@ -196,7 +196,6 @@ export function AnalyticsPage({ ip, agents }: {
       </div>
 
       <TopRoutes events={filtered} />
-      <EventList events={filtered} />
     </main>
   );
 }
@@ -229,84 +228,6 @@ function Stat({ label, value, tone }: {
 
 // --- event list (time-filtered) ---
 
-function EventList({ events }: { events: EventRecord[] }) {
-  const [expanded, setExpanded] = useState(false);
-  const shown = expanded ? events : events.slice(0, 50);
-  return (
-    <section className="bg-white border border-[#e5e5e5] rounded overflow-hidden">
-      <header className="flex items-center justify-between px-4 py-2.5 border-b border-[#e5e5e5]">
-        <div className="flex items-baseline gap-2">
-          <span className="text-[10px] uppercase tracking-[.12em] text-[#a3a3a3]">
-            Requests
-          </span>
-          <span className="text-[10px] tabular-nums text-[#a3a3a3]">
-            {events.length}
-          </span>
-        </div>
-        {events.length > 50 && (
-          <button
-            onClick={() => setExpanded(v => !v)}
-            className="text-[10px] uppercase tracking-[.12em] text-[#525252] hover:text-[#171717]"
-          >
-            {expanded ? "collapse" : "show all"}
-          </button>
-        )}
-      </header>
-      <div className={expanded ? "max-h-[600px] overflow-y-auto" : ""}>
-        {events.length === 0 ? (
-          <div className="py-6 text-center text-[11px] text-[#a3a3a3]">
-            No requests in this time range
-          </div>
-        ) : shown.map((e, i) => (
-          <EventRow key={e.id || i} ev={e} />
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function EventRow({ ev }: { ev: EventRecord }) {
-  const onClick = ev.id
-    ? () => { window.location.hash = `#/request/${ev.id}`; }
-    : undefined;
-  const t = new Date(ev.ts);
-  const time = t.toLocaleTimeString([], { hour12: false })
-    + "." + String(t.getMilliseconds()).padStart(3, "0");
-  const status = ev.status || 0;
-  const statusColor =
-    status >= 500 ? "text-[#b91c1c]"
-    : status >= 400 ? "text-[#c2410c]"
-    : status >= 300 ? "text-[#a16207]"
-    : status >= 200 ? "text-[#15803d]"
-    : "text-[#a3a3a3]";
-  const path = ev.path ?? "";
-  const sep = path.startsWith("/") ? "" : " ";
-  return (
-    <div
-      onClick={onClick}
-      className={
-        "px-4 py-2 border-b border-[#f5f5f5] flex items-center gap-3 min-w-0 transition-colors hover:bg-[#f9f9f9]"
-        + (onClick ? " cursor-pointer" : "")
-      }
-    >
-      <span className="text-[10px] tabular-nums text-[#a3a3a3] flex-shrink-0">{time}</span>
-      {ev.method && (
-        <span className="text-[10px] uppercase font-semibold text-[#525252] flex-shrink-0 w-[44px]">{ev.method}</span>
-      )}
-      <span className={"text-[11px] tabular-nums flex-shrink-0 w-[36px] " + statusColor}>
-        {status || "\u2014"}
-      </span>
-      <span className="text-[12px] text-[#171717] truncate flex-1 min-w-0">
-        <span className="text-[#525252]">{ev.host}</span>
-        {sep && <span> </span>}
-        <span>{path}</span>
-      </span>
-      <span className="text-[10px] tabular-nums text-[#a3a3a3] flex-shrink-0">
-        {ev.ms}ms
-      </span>
-    </div>
-  );
-}
 
 // --- stable color from string hash ---
 
@@ -631,16 +552,11 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
 
   return (
     <section className="bg-white border border-[#e5e5e5] rounded overflow-hidden">
-      <header className="px-4 py-2.5 border-b border-[#e5e5e5]">
-        <span className="text-[10px] uppercase tracking-[.12em] text-[#a3a3a3]">
-          Top routes
-        </span>
-      </header>
       <table className="w-full table-fixed text-[11px]">
         <thead>
           <tr className="border-b border-[#e5e5e5]">
             <th className="px-3 sm:px-[14px] py-[9px] text-left text-[10px] uppercase tracking-[.12em] text-[#a3a3a3] font-medium">
-              Route
+              Top routes
             </th>
             {hdr("Reqs", "count")}
             {hdr("Avg", "avgMs")}
