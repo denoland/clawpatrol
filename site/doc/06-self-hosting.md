@@ -43,7 +43,7 @@ docker run -v ~/.clawpatrol:/root/.clawpatrol -p 8080:8080 -p 8443:8443 clawpatr
 All configuration is via environment variables. Set them in
 your shell profile, systemd unit, or launchd plist.
 
-See [CLI Reference](05-cli) for the full list.
+See [CLI Reference](/docs/05-cli/) for the full list.
 
 ## Extending with Providers
 
