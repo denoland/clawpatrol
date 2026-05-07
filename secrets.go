@@ -65,15 +65,15 @@ func readCredentialSecrets(db *sql.DB, credential, profile string) (runtime.Secr
 	if err != nil {
 		return runtime.Secret{}, false, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	sec := runtime.Secret{Kind: "dashboard"}
-	any := false
+	found := false
 	for rows.Next() {
 		var slot, value string
 		if err := rows.Scan(&slot, &value); err != nil {
 			return runtime.Secret{}, false, err
 		}
-		any = true
+		found = true
 		if slot == "" {
 			sec.Bytes = []byte(value)
 			continue
@@ -83,7 +83,7 @@ func readCredentialSecrets(db *sql.DB, credential, profile string) (runtime.Secr
 		}
 		sec.Extras[slot] = value
 	}
-	return sec, any, rows.Err()
+	return sec, found, rows.Err()
 }
 
 // setCredentialSlot upserts one (credential, profile, slot) row.
@@ -130,7 +130,7 @@ func credentialSlotPresence(db *sql.DB, credential, profile string) (map[string]
 	if err != nil {
 		return out, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var slot string
 		if err := rows.Scan(&slot); err != nil {
@@ -164,9 +164,9 @@ func registerOAuthCredentials(reg *OAuthRegistry, policy *config.CompiledPolicy)
 		if flow == nil {
 			continue
 		}
-		copy := *flow
-		copy.ID = name
-		reg.Register(name, copy)
+		copied := *flow
+		copied.ID = name
+		reg.Register(name, copied)
 	}
 	if err := reg.LoadFromDB(); err != nil {
 		log.Printf("oauth: rehydrate from db: %v", err)

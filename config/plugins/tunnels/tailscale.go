@@ -46,6 +46,7 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
+// TailscaleTunnel configures the tunnel runtime.
 type TailscaleTunnel struct {
 	AuthKey    string   `hcl:"authkey,optional"`
 	ControlURL string   `hcl:"control_url,optional"`
@@ -60,6 +61,7 @@ type TailscaleTunnel struct {
 	Credential string `hcl:"credential,optional"`
 }
 
+// TunnelCommon returns shared tunnel settings.
 func (t *TailscaleTunnel) TunnelCommon() config.TunnelCommon {
 	return config.TunnelCommon{
 		Share:      t.Share,

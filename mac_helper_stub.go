@@ -6,7 +6,7 @@ package main
 // login.go's runJoin guards the call with `runtime.GOOS == "darwin"`
 // already, but Go still needs the symbol resolvable at compile time
 // on every build.
-func macHelperInstall(wholeMachine bool) error { return nil }
+func macHelperInstall(_ bool) error { return nil }
 
 // macHelperPath alias for cross-platform builds. On non-darwin, the
 // path doesn't exist (uninstall + status guard with os.Stat); the

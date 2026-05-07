@@ -44,7 +44,7 @@ func TestSinkPersistsGeneratedID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenDB: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	s, err := NewSink(db, 4)
 	if err != nil {

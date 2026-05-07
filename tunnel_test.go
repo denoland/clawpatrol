@@ -24,7 +24,7 @@ type fakeTunnel struct {
 
 func (f *fakeTunnel) Sharing() runtime.TunnelSharing { return runtime.TunnelShareSingleton }
 
-func (f *fakeTunnel) Open(ctx context.Context, host runtime.TunnelHost, via runtime.Tunnel) (runtime.Tunnel, error) {
+func (f *fakeTunnel) Open(_ context.Context, _ runtime.TunnelHost, via runtime.Tunnel) (runtime.Tunnel, error) {
 	f.openCount.Add(1)
 	if f.openDelay > 0 {
 		time.Sleep(f.openDelay)

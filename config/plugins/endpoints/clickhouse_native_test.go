@@ -449,7 +449,7 @@ func TestChEvaluateSQLAllowsSelectDeniesInsert(t *testing.T) {
 // the approve-chain branch can be exercised without spinning up the
 // HITL machinery.
 func chMockApprove(decision, reason string) func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
-	return func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
+	return func(_ runtime.ApproveCallRequest) runtime.ApproveVerdict {
 		return runtime.ApproveVerdict{Decision: decision, Reason: reason, By: "test"}
 	}
 }
@@ -518,7 +518,7 @@ func TestChAgentToServerForwardsQuery(t *testing.T) {
 	const revision = 54448
 
 	mock, _ := chNewMockHandle(t, chBuildEndpoint(t))
-	defer mock.Conn.Close()
+	defer func() { _ = mock.Conn.Close() }()
 
 	q := chgoproto.Query{
 		ID:          "qid-1",
@@ -593,7 +593,7 @@ func chBuildSampleBlock(t *testing.T) *chproto.Block {
 func TestChHandleDataUncompressed(t *testing.T) {
 	const revision = 54448
 	mock, _ := chNewMockHandle(t, chBuildEndpoint(t))
-	defer mock.Conn.Close()
+	defer func() { _ = mock.Conn.Close() }()
 
 	block := chBuildSampleBlock(t)
 	var agentBuf chgoproto.Buffer
@@ -643,7 +643,7 @@ func TestChHandleDataUncompressed(t *testing.T) {
 func TestChHandleDataCompressedForwardsOpaquely(t *testing.T) {
 	const revision = 54448
 	mock, _ := chNewMockHandle(t, chBuildEndpoint(t))
-	defer mock.Conn.Close()
+	defer func() { _ = mock.Conn.Close() }()
 
 	// Build the Query packet (Compression=Enabled).
 	q := chgoproto.Query{
@@ -763,7 +763,7 @@ func chCompressedDataEventSummary(t *testing.T, events []runtime.ConnEvent) stri
 func TestChCompressedDataEventDropsRowsCols(t *testing.T) {
 	const revision = 54448
 	mock, _ := chNewMockHandle(t, chBuildEndpoint(t))
-	defer mock.Conn.Close()
+	defer func() { _ = mock.Conn.Close() }()
 
 	q := chgoproto.Query{
 		ID: "qid-1", Body: "SELECT 1",
@@ -818,7 +818,7 @@ func TestChCompressedDataEventDropsRowsCols(t *testing.T) {
 func TestChProbeForwardsMultiChunkBlock(t *testing.T) {
 	const revision = 54448
 	mock, _ := chNewMockHandle(t, chBuildEndpoint(t))
-	defer mock.Conn.Close()
+	defer func() { _ = mock.Conn.Close() }()
 
 	q := chgoproto.Query{
 		ID: "qid-1", Body: "SELECT 1",
@@ -889,7 +889,7 @@ func TestChProbeForwardsMultiChunkBlock(t *testing.T) {
 func TestChProbeRewindsToNextQuery(t *testing.T) {
 	const revision = 54448
 	mock, _ := chNewMockHandle(t, chBuildEndpoint(t))
-	defer mock.Conn.Close()
+	defer func() { _ = mock.Conn.Close() }()
 
 	mkQuery := func(id, body string, comp chgoproto.Compression) chgoproto.Query {
 		return chgoproto.Query{
@@ -984,8 +984,8 @@ func TestChAgentToServerDeniesQuery(t *testing.T) {
 		map[string]any{"verb": []any{"insert"}}, "deny", "writes blocked", 100)
 	ep := chBuildEndpoint(t, rule)
 	mock, agentSide := chNewMockHandle(t, ep)
-	defer agentSide.Close()
-	defer mock.Conn.Close()
+	defer func() { _ = agentSide.Close() }()
+	defer func() { _ = mock.Conn.Close() }()
 
 	q := chgoproto.Query{
 		ID: "qid-1", Body: sql,
@@ -1037,8 +1037,8 @@ func TestChAgentToServerMultiQueryDenyContinues(t *testing.T) {
 		map[string]any{"verb": []any{"drop"}}, "deny", "drops blocked", 100)
 	ep := chBuildEndpoint(t, rule)
 	mock, agentSide := chNewMockHandle(t, ep)
-	defer agentSide.Close()
-	defer mock.Conn.Close()
+	defer func() { _ = agentSide.Close() }()
+	defer func() { _ = mock.Conn.Close() }()
 
 	mkQuery := func(id, body string) []byte {
 		q := chgoproto.Query{

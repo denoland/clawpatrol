@@ -45,10 +45,15 @@ type HumanApprover struct {
 // HumanApproverChannel + HumanApproverCredential expose the fields
 // the gateway's HITL wiring needs without main importing this package
 // — main does an anonymous-interface type-assert on ent.Body.
-func (h *HumanApprover) HumanApproverChannel() string    { return h.Channel }
-func (h *HumanApprover) HumanApproverCredential() string { return h.Credential }
-func (h *HumanApprover) HumanApproverInteractive() bool  { return h.Interactive }
+func (h *HumanApprover) HumanApproverChannel() string { return h.Channel }
 
+// HumanApproverCredential is part of the clawpatrol plugin API.
+func (h *HumanApprover) HumanApproverCredential() string { return h.Credential }
+
+// HumanApproverInteractive is part of the clawpatrol plugin API.
+func (h *HumanApprover) HumanApproverInteractive() bool { return h.Interactive }
+
+// Approve is part of the clawpatrol plugin API.
 func (h *HumanApprover) Approve(ctx context.Context, req runtime.ApproveRequest) (runtime.ApproveVerdict, error) {
 	if req.Pool == nil {
 		return runtime.ApproveVerdict{}, fmt.Errorf("human approver %q: no pool", req.ApproverName)

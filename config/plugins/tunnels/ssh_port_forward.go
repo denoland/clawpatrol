@@ -42,6 +42,7 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
+// SSHPortForwardTunnel configures the tunnel runtime.
 type SSHPortForwardTunnel struct {
 	Bastion string `hcl:"bastion,optional"` // host:port; required when Via is unset
 	User    string `hcl:"user"`
@@ -53,6 +54,7 @@ type SSHPortForwardTunnel struct {
 	Credential string `hcl:"credential"`
 }
 
+// TunnelCommon returns shared tunnel settings.
 func (t *SSHPortForwardTunnel) TunnelCommon() config.TunnelCommon {
 	return config.TunnelCommon{
 		Share:      t.Share,
@@ -136,7 +138,7 @@ func (t *SSHPortForwardTunnel) Open(ctx context.Context, host runtime.TunnelHost
 	}
 	clientConn, chans, reqs, err := ssh.NewClientConn(netConn, bastionAddr, clientCfg)
 	if err != nil {
-		netConn.Close()
+		_ = netConn.Close()
 		return nil, fmt.Errorf("ssh_port_forward: handshake to %q: %w", bastionAddr, err)
 	}
 	client := ssh.NewClient(clientConn, chans, reqs)

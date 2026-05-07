@@ -135,8 +135,8 @@ func orderedProfileNames(p *config.Policy) []string {
 }
 
 func peekSNI(c net.Conn) (string, []byte, error) {
-	c.SetReadDeadline(time.Now().Add(10 * time.Second))
-	defer c.SetReadDeadline(time.Time{})
+	_ = c.SetReadDeadline(time.Now().Add(10 * time.Second))
+	defer func() { _ = c.SetReadDeadline(time.Time{}) }()
 
 	hdr := make([]byte, 5)
 	if _, err := io.ReadFull(c, hdr); err != nil {
@@ -1051,18 +1051,18 @@ func stripSystemReminders(s string) string {
 func stripXMLBlocks(s string, tags ...string) string {
 	for _, tag := range tags {
 		open := "<" + tag + ">"
-		close := "</" + tag + ">"
+		closing := "</" + tag + ">"
 		for {
 			i := strings.Index(s, open)
 			if i < 0 {
 				break
 			}
-			j := strings.Index(s[i:], close)
+			j := strings.Index(s[i:], closing)
 			if j < 0 {
 				s = s[:i]
 				break
 			}
-			s = s[:i] + s[i+j+len(close):]
+			s = s[:i] + s[i+j+len(closing):]
 		}
 	}
 	return strings.TrimSpace(s)
@@ -1109,39 +1109,8 @@ func truncate(s string, n int) string {
 	return s
 }
 
-// ownerForRequest returns the credential-bucket key for a peer. With
-// the profile-as-tenant model, that's the device's assigned profile
-// name (devices.profile). Falls back to the peer's onboard-mapped
-// owner email and finally peer IP for un-onboarded clients — both
-// preserve compatibility with credentials saved before the profile
-// migration. Whois lookup remains in place for tailscale-control mode
-// where the dashboard still binds creds to the human's login.
-func (g *Gateway) ownerForRequest(c net.Conn, _ *OAuthIntegration) string {
-	ip := peerIP(c)
-	if g.onboard != nil {
-		if profile := g.onboard.ProfileForIP(ip); profile != "" {
-			return profile
-		}
-	}
-	login := ""
-	if g.agents != nil && g.agents.lc != nil {
-		if who := g.agents.lookupWhois(ip); who != nil && !who.UserProfile.IsZero() {
-			login = who.UserProfile.LoginName
-		}
-	}
-	if (login == "" || login == "tagged-devices") && g.onboard != nil {
-		if owner := g.onboard.OwnerForIP(ip); owner != "" {
-			return owner
-		}
-	}
-	if login != "" {
-		return login
-	}
-	return ip
-}
-
 func (g *Gateway) handle(raw net.Conn, dstIP string) {
-	defer raw.Close()
+	defer func() { _ = raw.Close() }()
 	defer otelTrackConn("https_mitm")()
 	host, prefix, err := peekSNI(raw)
 	if err != nil {
@@ -1198,7 +1167,7 @@ func (g *Gateway) handle(raw net.Conn, dstIP string) {
 // passthrough fallback when no endpoint applies, mirroring the
 // HTTPS handler's `unknown_host = passthrough` default.
 func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	defer otelTrackConn("pg_relay")()
 	pip := peerIP(c)
 	profile := g.profileFor(pip)
@@ -1240,7 +1209,7 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 		Profile:  profile,
 		PeerIP:   pip,
 		Secrets:  g.secrets,
-		DialUpstream: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		DialUpstream: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			// Plugin asks for ep.Hosts[0]:port; we bypass DNS by
 			// dialing the original upstream IP the WG forwarder
 			// gave us. Plugin-supplied addr is ignored when it's
@@ -1249,9 +1218,6 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 			// has no tunnel; this path is used by non-tunneled
 			// postgres endpoints today (tunneled ones land in the
 			// VIP dispatch path, not here).
-			if addr == "" {
-				addr = upstreamAddr
-			}
 			return g.dialThrough(ctx, ep, network, upstreamAddr)
 		},
 		Emit: func(ev runtime.ConnEvent) {
@@ -1290,7 +1256,7 @@ func (g *Gateway) handleVIPConn(c net.Conn, dstIP string, dstPort uint16) {
 	hostname, hits := g.dnsvip.LookupVIP(dstIP)
 	if hostname == "" || len(hits) == 0 {
 		log.Printf("vip %s:%d: VIP allocated but no endpoint binding (stale?); dropping", dstIP, dstPort)
-		c.Close()
+		_ = c.Close()
 		return
 	}
 	pip := peerIP(c)
@@ -1321,7 +1287,7 @@ func (g *Gateway) handleVIPConn(c net.Conn, dstIP string, dstPort uint16) {
 	}
 	if ep == nil {
 		log.Printf("vip %s:%d (host %q): no endpoint matches profile %q + port", dstIP, dstPort, hostname, profile)
-		c.Close()
+		_ = c.Close()
 		return
 	}
 	g.dispatchConnEndpoint(c, dstIP, matchedPort, ep, hostname)
@@ -1370,7 +1336,7 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 	connRT, ok := ep.Plugin.Runtime.(runtime.ConnEndpointRuntime)
 	if !ok {
 		log.Printf("conn dispatch: endpoint %q plugin lacks ConnEndpointRuntime", ep.Name)
-		c.Close()
+		_ = c.Close()
 		return
 	}
 	pip := peerIP(c)
@@ -1507,25 +1473,12 @@ func (g *Gateway) splice(c net.Conn, host string) {
 		g.emit(Event{Mode: "splice", Host: host, AgentIP: peerIP(c), Action: "error", Reason: err.Error(), Ms: time.Since(start).Milliseconds()})
 		return
 	}
-	defer up.Close()
+	defer func() { _ = up.Close() }()
 	agentAddr := peerIP(c) // capture BEFORE pipe — RemoteAddr() goes nil once netstack closes the conn
 	in, out := pipeProgress(c, up, g.streamTracker(agentAddr, host))
 	g.emit(Event{Mode: "splice", Host: host, AgentIP: agentAddr, Action: "allow", In: in, Out: out, Ms: time.Since(start).Milliseconds()})
 }
 
-// pipe shuttles bytes both ways between two conns. Returns (a-rx, a-tx)
-// = (bytes received from up into a, bytes sent from a to up). Sends
-// CloseWrite half-shutdown on each side after its copy finishes.
-func pipe(a, b net.Conn) (rx, tx int64) {
-	return pipeProgress(a, b, nil)
-}
-
-// pipeProgress is pipe with an optional onTick callback fired every
-// second w/ cumulative (rx, tx) snapshots. Lets callers feed the
-// per-agent activity sparkline DURING a long-lived flow (ssh clone,
-// websocket) instead of only after the conn closes — sampleLoop runs
-// at 1s and wants per-second deltas, so a flow that lasts 10 minutes
-// would otherwise paint a single bar at end-of-life.
 func pipeProgress(a, b net.Conn, onTick func(rx, tx int64)) (rx, tx int64) {
 	var rxC, txC atomic.Int64
 	done := make(chan struct{}, 2)
@@ -1533,7 +1486,7 @@ func pipeProgress(a, b net.Conn, onTick func(rx, tx int64)) (rx, tx int64) {
 		buf := make([]byte, 256<<10)
 		_, _ = io.CopyBuffer(&countWriter{Writer: b, n: &txC}, a, buf)
 		if cw, ok := b.(interface{ CloseWrite() error }); ok {
-			cw.CloseWrite()
+			_ = cw.CloseWrite()
 		}
 		done <- struct{}{}
 	}()
@@ -1541,7 +1494,7 @@ func pipeProgress(a, b net.Conn, onTick func(rx, tx int64)) (rx, tx int64) {
 		buf := make([]byte, 256<<10)
 		_, _ = io.CopyBuffer(&countWriter{Writer: a, n: &rxC}, b, buf)
 		if cw, ok := a.(interface{ CloseWrite() error }); ok {
-			cw.CloseWrite()
+			_ = cw.CloseWrite()
 		}
 		done <- struct{}{}
 	}()
@@ -1605,7 +1558,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		log.Printf("mitm tls handshake %s: %v", host, err)
 		return
 	}
-	defer tc.Close()
+	defer func() { _ = tc.Close() }()
 
 	// transport is shared across all requests for this endpoint.
 	// Old path allocated a fresh http.Transport per mitmHTTPS call,
@@ -1616,15 +1569,15 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 
 	br := bufio.NewReader(tc)
 	for {
-		tc.SetReadDeadline(time.Now().Add(60 * time.Second))
+		_ = tc.SetReadDeadline(time.Now().Add(60 * time.Second))
 		req, err := http.ReadRequest(br)
 		if err != nil {
-			if err != io.EOF {
+			if !errors.Is(err, io.EOF) {
 				log.Printf("mitm read req %s: %v", host, err)
 			}
 			return
 		}
-		tc.SetReadDeadline(time.Time{})
+		_ = tc.SetReadDeadline(time.Time{})
 
 		start := time.Now()
 		pip := peerIP(c)
@@ -1690,7 +1643,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 					reason = "denied by approver"
 				}
 				log.Printf("hitl-deny %s %s %s: %s (by %s)", host, req.Method, req.URL.Path, reason, v.By)
-				fmt.Fprintf(tc, "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(reason), reason)
+				_, _ = fmt.Fprintf(tc, "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(reason), reason)
 				ev.Status = 403
 				ev.Action = "hitl_deny"
 				ev.Reason = reason
@@ -1709,7 +1662,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				reason = "denied by policy"
 			}
 			log.Printf("deny %s %s %s: %s (rule %q)", host, req.Method, req.URL.Path, reason, cr.Name)
-			fmt.Fprintf(tc, "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(reason), reason)
+			_, _ = fmt.Fprintf(tc, "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(reason), reason)
 			ev.Status = 403
 			ev.Action = "deny"
 			ev.Reason = reason
@@ -1753,6 +1706,9 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			if r, handled, err := responder.RespondHTTP(req.Context(), req); err != nil {
 				log.Printf("respond %s: %v", ep.Name, err)
 			} else if handled {
+				if r.Body != nil {
+					defer func() { _ = r.Body.Close() }()
+				}
 				ev.Status = r.StatusCode
 				ev.Action = "synth"
 				if err := r.Write(tc); err != nil {
@@ -1859,7 +1815,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		rtDur := time.Since(rtStart)
 		if err != nil {
 			log.Printf("mitm upstream %s %s: %v", host, req.URL.Path, err)
-			fmt.Fprintf(tc, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+			_, _ = fmt.Fprintf(tc, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
 			ev.Status = 502
 			ev.Action = "error"
 			ev.Reason = err.Error()
@@ -1892,7 +1848,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		}
 		writeErr := resp.Write(tc)
 		_ = rtDur
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if trackBuf != nil && g.agents != nil {
 			body := trackBuf.Bytes()
 			if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
@@ -1900,7 +1856,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 					if d, err := io.ReadAll(zr); err == nil {
 						body = d
 					}
-					zr.Close()
+					_ = zr.Close()
 				}
 			}
 			g.trackLLMUsage(c, trackKind, req.URL.Path, trackedReqBody, body, sessionHint)
@@ -2024,13 +1980,6 @@ func ifNotEmpty(r *config.CompiledRule, f func(*config.CompiledRule) string) str
 		return ""
 	}
 	return f(r)
-}
-
-func defaultHITLTimeout(p *config.CompiledPolicy) time.Duration {
-	if p != nil && p.Defaults.HumanTimeout > 0 {
-		return time.Duration(p.Defaults.HumanTimeout) * time.Second
-	}
-	return 60 * time.Second
 }
 
 func main() {
@@ -2247,13 +2196,16 @@ func runGateway(args []string) {
 	// will be re-seeded below.
 	_, _ = db.Exec("DELETE FROM devices WHERE id LIKE 'fd77:%'")
 	if rows, err := db.Query("SELECT id FROM devices"); err == nil {
+		defer func() { _ = rows.Close() }()
 		for rows.Next() {
 			var ip string
 			if rows.Scan(&ip) == nil {
 				g.agents.Seed(canonicalPeerIP(ip))
 			}
 		}
-		rows.Close()
+		if err := rows.Err(); err != nil {
+			log.Printf("seed devices: %v", err)
+		}
 	}
 
 	// Sessions: rehydrate persisted rows + start the sweeper.
@@ -2277,11 +2229,11 @@ func runGateway(args []string) {
 	if cfg.InfoListen != "" {
 		mux := newWebMux(g, cfg.CADir, *cfg.Tailscale, cfg.PublicURL)
 		go func() {
-			http.ListenAndServe(cfg.InfoListen, mux)
+			_ = http.ListenAndServe(cfg.InfoListen, mux)
 		}()
 		printDashboardURL(cfg.InfoListen)
 	}
-	go http.ListenAndServe("127.0.0.1:6060", nil)
+	go func() { _ = http.ListenAndServe("127.0.0.1:6060", nil) }()
 	go g.servePorts()
 
 	// Embedded userspace WireGuard server. When operator sets
@@ -2422,7 +2374,7 @@ func (l *oneShotListener) Addr() net.Addr {
 // dashboard request history alongside MITM traffic — without this,
 // ssh / git-over-ssh / arbitrary-port connections went silent.
 func (g *Gateway) wgRelay(c net.Conn, dstIP string, dstPort int) {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	pip := peerIP(c)
 	profile := g.profileFor(pip)
 	host := fmt.Sprintf("%s:%d", dstIP, dstPort)
@@ -2436,7 +2388,7 @@ func (g *Gateway) wgRelay(c net.Conn, dstIP string, dstPort int) {
 		})
 		return
 	}
-	defer up.Close()
+	defer func() { _ = up.Close() }()
 	rx, tx := pipeProgress(c, up, g.streamTracker(pip, host))
 	g.sink.Emit(Event{
 		Mode: "relay", AgentIP: pip, Agent: profile,

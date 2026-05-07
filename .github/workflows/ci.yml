@@ -6,6 +6,21 @@ on:
   pull_request:
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cd www && npm ci && npm run build
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+
   test:
     runs-on: ubuntu-latest
     steps:

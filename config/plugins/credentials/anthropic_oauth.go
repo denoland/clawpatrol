@@ -12,8 +12,10 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
+// AnthropicOAuthSubscription is part of the clawpatrol plugin API.
 type AnthropicOAuthSubscription struct{}
 
+// InjectHTTP is part of the clawpatrol plugin API.
 func (a *AnthropicOAuthSubscription) InjectHTTP(_ context.Context, req *http.Request, sec runtime.Secret) error {
 	if len(sec.Bytes) == 0 {
 		return nil
@@ -23,6 +25,7 @@ func (a *AnthropicOAuthSubscription) InjectHTTP(_ context.Context, req *http.Req
 	return nil
 }
 
+// EnvVars is part of the clawpatrol plugin API.
 func (*AnthropicOAuthSubscription) EnvVars() []config.EnvVar {
 	return []config.EnvVar{
 		{Name: "ANTHROPIC_AUTH_TOKEN", Value: phClaude, Description: "Claude Code / Anthropic SDKs"},

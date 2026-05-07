@@ -300,7 +300,7 @@ func StartWGServer(ts Tailscale, stateDir string) (*WGServer, error) {
 	listenPort := 51820
 	if ts.WGEndpoint != "" {
 		if _, p, err := net.SplitHostPort(ts.WGEndpoint); err == nil {
-			fmt.Sscanf(p, "%d", &listenPort)
+			_, _ = fmt.Sscanf(p, "%d", &listenPort)
 		}
 	}
 
@@ -361,6 +361,7 @@ func (s *WGServer) AddPeer(pubkeyHex, peerIP string) error {
 	if s.db != nil {
 		rows, err := s.db.Query("SELECT pubkey FROM wg_peers WHERE ip = ? AND pubkey != ?", peerIP, pubkeyHex)
 		if err == nil {
+			defer func() { _ = rows.Close() }()
 			var stale []string
 			for rows.Next() {
 				var k string
@@ -368,7 +369,9 @@ func (s *WGServer) AddPeer(pubkeyHex, peerIP string) error {
 					stale = append(stale, k)
 				}
 			}
-			rows.Close()
+			if err := rows.Err(); err != nil {
+				stale = nil
+			}
 			for _, k := range stale {
 				_ = s.dev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", k))
 				_, _ = s.db.Exec("DELETE FROM wg_peers WHERE pubkey = ?", k)
@@ -550,7 +553,7 @@ var udpRelayBufPool = sync.Pool{
 // and the real upstream over the host's network. Both directions run
 // until one half closes.
 func relayUDP(c net.Conn, dstIP string, dstPort uint16) {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(dstIP, fmt.Sprintf("%d", dstPort)))
 	if err != nil {
 		return
@@ -559,7 +562,7 @@ func relayUDP(c net.Conn, dstIP string, dstPort uint16) {
 	if err != nil {
 		return
 	}
-	defer up.Close()
+	defer func() { _ = up.Close() }()
 	done := make(chan struct{}, 2)
 	go func() {
 		bp := udpRelayBufPool.Get().(*[]byte)
@@ -603,12 +606,15 @@ func (s *WGServer) loadPeers() map[string]string {
 	if err != nil {
 		return out
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var k, ip string
 		if rows.Scan(&k, &ip) == nil {
 			out[k] = ip
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return map[string]string{}
 	}
 	return out
 }
@@ -625,6 +631,7 @@ func (s *WGServer) RevokePeerByIP(ip string) {
 	if err != nil {
 		return
 	}
+	defer func() { _ = rows.Close() }()
 	var keys []string
 	for rows.Next() {
 		var k string
@@ -632,7 +639,9 @@ func (s *WGServer) RevokePeerByIP(ip string) {
 			keys = append(keys, k)
 		}
 	}
-	rows.Close()
+	if err := rows.Err(); err != nil {
+		keys = nil
+	}
 	for _, k := range keys {
 		_ = s.dev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", k))
 	}
@@ -711,12 +720,11 @@ func hexToB64(h string) (string, error) {
 }
 
 type wireguardOnboarder struct {
-	ts     Tailscale
-	server *WGServer // injected at gateway boot; set by setWGServer
-	mu     sync.Mutex
+	ts Tailscale
+	mu sync.Mutex
 }
 
-func (w *wireguardOnboarder) MintKey(ctx context.Context, reuseIP string) (string, string, string, error) {
+func (w *wireguardOnboarder) MintKey(_ context.Context, reuseIP string) (string, string, string, error) {
 	if w.ts.WGEndpoint == "" || w.ts.WGSubnetCIDR == "" {
 		return "", "", "", fmt.Errorf("wireguard not configured (set tailscale.wg_endpoint, wg_subnet_cidr)")
 	}
@@ -789,13 +797,16 @@ func (w *wireguardOnboarder) allocateIP() (string, error) {
 	if globalDB != nil {
 		rows, err := globalDB.Query("SELECT ip FROM wg_peers")
 		if err == nil {
+			defer func() { _ = rows.Close() }()
 			for rows.Next() {
 				var ip string
 				if rows.Scan(&ip) == nil {
 					used[ip] = true
 				}
 			}
-			rows.Close()
+			if err := rows.Err(); err != nil {
+				used = map[string]bool{}
+			}
 		}
 	}
 	_, cidr, err := net.ParseCIDR(w.ts.WGSubnetCIDR)

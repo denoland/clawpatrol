@@ -44,19 +44,19 @@ type TunnelRuntime interface {
 type TunnelSharing = string
 
 const (
-	// TunnelShareSingleton: one runtime instance per tunnel name.
+	// TunnelShareSingleton creates one runtime instance per tunnel name.
 	// All endpoints, all connections, share the same Tunnel. Idle
 	// teardown is shared too. Right default for tailscale (one node
 	// in the tailnet) and singleton local listeners (cloud_sql_proxy).
 	TunnelShareSingleton TunnelSharing = "singleton"
 
-	// TunnelSharePerEndpoint: one runtime instance per (tunnel,
+	// TunnelSharePerEndpoint creates one runtime instance per (tunnel,
 	// endpoint) pair. Right default for kubernetes_port_forward,
 	// where each endpoint allocates its own ephemeral local port
 	// and two endpoints can't share the same forwarder.
 	TunnelSharePerEndpoint TunnelSharing = "per_endpoint"
 
-	// TunnelSharePerConn: a fresh instance per inbound connection,
+	// TunnelSharePerConn creates a fresh instance per inbound connection,
 	// torn down on conn close. Niche but useful for stateless
 	// "tunnels" whose lifetime should track a single request.
 	TunnelSharePerConn TunnelSharing = "per_conn"

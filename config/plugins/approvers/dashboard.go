@@ -12,8 +12,10 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
+// DashboardApprover is part of the clawpatrol plugin API.
 type DashboardApprover struct{}
 
+// Approve is part of the clawpatrol plugin API.
 func (DashboardApprover) Approve(ctx context.Context, req runtime.ApproveRequest) (runtime.ApproveVerdict, error) {
 	if req.Pool == nil {
 		return runtime.ApproveVerdict{}, fmt.Errorf("dashboard approver: no pool")

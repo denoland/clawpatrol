@@ -71,13 +71,13 @@ func inProcessSSHServer(t *testing.T, pubKey ssh.PublicKey, hostSigner ssh.Signe
 		}
 	}()
 	return l.Addr().String(), func() {
-		l.Close()
+		_ = l.Close()
 		<-done
 	}
 }
 
 func serveSSH(rawConn net.Conn, cfg *ssh.ServerConfig) {
-	defer rawConn.Close()
+	defer func() { _ = rawConn.Close() }()
 	_, chans, reqs, err := ssh.NewServerConn(rawConn, cfg)
 	if err != nil {
 		return
@@ -85,7 +85,7 @@ func serveSSH(rawConn net.Conn, cfg *ssh.ServerConfig) {
 	go ssh.DiscardRequests(reqs)
 	for newChan := range chans {
 		if newChan.ChannelType() != "direct-tcpip" {
-			newChan.Reject(ssh.UnknownChannelType, "unsupported")
+			_ = newChan.Reject(ssh.UnknownChannelType, "unsupported")
 			continue
 		}
 		// direct-tcpip extra data is RFC 4254 §7.2:
@@ -100,7 +100,7 @@ func serveSSH(rawConn net.Conn, cfg *ssh.ServerConfig) {
 			OriginPort uint32
 		}
 		if err := ssh.Unmarshal(newChan.ExtraData(), &payload); err != nil {
-			newChan.Reject(ssh.ConnectionFailed, "bad payload")
+			_ = newChan.Reject(ssh.ConnectionFailed, "bad payload")
 			continue
 		}
 		ch, chReqs, err := newChan.Accept()
@@ -112,7 +112,7 @@ func serveSSH(rawConn net.Conn, cfg *ssh.ServerConfig) {
 		target := net.JoinHostPort(payload.Target, itoaPort(int(payload.TargetPort)))
 		up, err := net.DialTimeout("tcp", target, 5*time.Second)
 		if err != nil {
-			ch.Close()
+			_ = ch.Close()
 			continue
 		}
 		go bridge(ch, up)
@@ -122,8 +122,8 @@ func serveSSH(rawConn net.Conn, cfg *ssh.ServerConfig) {
 func bridge(a, b io.ReadWriteCloser) {
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); io.Copy(a, b); a.Close() }()
-	go func() { defer wg.Done(); io.Copy(b, a); b.Close() }()
+	go func() { defer wg.Done(); _, _ = io.Copy(a, b); _ = a.Close() }()
+	go func() { defer wg.Done(); _, _ = io.Copy(b, a); _ = b.Close() }()
 	wg.Wait()
 }
 
@@ -177,15 +177,15 @@ func TestSSHPortForward(t *testing.T) {
 	if err != nil {
 		t.Fatalf("target listen: %v", err)
 	}
-	defer targetL.Close()
+	defer func() { _ = targetL.Close() }()
 	go func() {
 		for {
 			c, err := targetL.Accept()
 			if err != nil {
 				return
 			}
-			c.Write([]byte("hello"))
-			c.Close()
+			_, _ = c.Write([]byte("hello"))
+			_ = c.Close()
 		}
 	}()
 
@@ -225,7 +225,7 @@ func TestSSHPortForward(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer rt.Close()
+	defer func() { _ = rt.Close() }()
 
 	// Dial via SSH session — uses the bastion's `direct-tcpip`
 	// channel to reach our target listener. Use `clientSigner`
@@ -235,7 +235,7 @@ func TestSSHPortForward(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	buf := make([]byte, 5)
 	n, err := io.ReadFull(conn, buf)
 	if err != nil {

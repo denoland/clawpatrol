@@ -25,7 +25,7 @@ func TestLocalCommandSpawn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 	listenAddr := l.Addr().String()
 
 	// Accept-and-discard in the background so Dial succeeds.
@@ -35,7 +35,7 @@ func TestLocalCommandSpawn(t *testing.T) {
 			if err != nil {
 				return
 			}
-			c.Close()
+			_ = c.Close()
 		}
 	}()
 
@@ -61,7 +61,7 @@ func TestLocalCommandSpawn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	conn.Close()
+	_ = conn.Close()
 
 	// Close terminates the spawned `sleep`; the test would hang
 	// for 30s if SIGTERM weren't routed to the process group.

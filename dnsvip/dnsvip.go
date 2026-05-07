@@ -202,12 +202,12 @@ func (a *Allocator) persistLocked() error {
 	}
 	tmpName := tmp.Name()
 	if _, err := tmp.Write(buf); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
 		return err
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 		return err
 	}
 	return os.Rename(tmpName, a.statePath)
@@ -351,7 +351,7 @@ func collectRequiredHosts(policy *config.CompiledPolicy) map[string][]EndpointHi
 			if net.ParseIP(host) != nil {
 				continue
 			}
-			var port uint16 = defaultPortFor(ep)
+			var port = defaultPortFor(ep)
 			if portStr != "" {
 				var p uint16
 				if _, err := fmt.Sscanf(portStr, "%d", &p); err == nil {
@@ -456,7 +456,7 @@ func (a *Allocator) VIPsFor(hostname string) (netip.Addr, netip.Addr) {
 // existing DNS configuration keeps working — the gateway hijacks
 // only the names it has policy for.
 func (a *Allocator) ServeUDP(c net.Conn, dstIP string) {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	buf := make([]byte, 4096)
 	for {
 		_ = c.SetReadDeadline(time.Now().Add(60 * time.Second))
@@ -476,7 +476,7 @@ func (a *Allocator) ServeUDP(c net.Conn, dstIP string) {
 // netstack gives us one TCP conn per agent flow; we loop until the
 // agent closes (DNS-over-TCP supports pipelining).
 func (a *Allocator) ServeTCP(c net.Conn, dstIP string) {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	hdr := make([]byte, 2)
 	for {
 		_ = c.SetReadDeadline(time.Now().Add(60 * time.Second))

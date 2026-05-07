@@ -14,7 +14,7 @@ func TestPeerAPITokenRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	token, err := mintAndPersistPeerAPIToken(db, "10.55.0.42")
 	if err != nil {
@@ -50,7 +50,7 @@ func TestForgetPeerAPITokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	t1, _ := mintAndPersistPeerAPIToken(db, "10.55.0.1")
 	t2, _ := mintAndPersistPeerAPIToken(db, "10.55.0.1")

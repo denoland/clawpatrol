@@ -70,7 +70,7 @@ func readinessTCP(ctx context.Context, dst string, interval time.Duration) error
 	for {
 		c, err := (&net.Dialer{Timeout: interval}).DialContext(ctx, "tcp", dst)
 		if err == nil {
-			c.Close()
+			_ = c.Close()
 			return nil
 		}
 		select {

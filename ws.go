@@ -24,6 +24,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -98,11 +99,11 @@ func (g *Gateway) handleWSUpgrade(client *tls.Conn, br *bufio.Reader, req *http.
 		up, err = dialBrowserTLS(context.Background(), "tcp", net.JoinHostPort(upstream, "443"), upstream)
 	}
 	if err != nil {
-		fmt.Fprintf(client, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+		_, _ = fmt.Fprintf(client, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
 		log.Printf("ws dial %s: %v", upstream, err)
 		return
 	}
-	defer up.Close()
+	defer func() { _ = up.Close() }()
 
 	// Build raw HTTP/1.1 upgrade request — Go's http.Request.Write +
 	// http.ReadResponse + http.Response.Write round-trip mangles
@@ -146,8 +147,8 @@ func (g *Gateway) handleWSUpgrade(client *tls.Conn, br *bufio.Reader, req *http.
 	if !strings.Contains(statusLine, " 101 ") {
 		log.Printf("ws upgrade non-101 host=%s status=%q", upstream, statusLine)
 		body, _ := io.ReadAll(io.LimitReader(upBR, 2048))
-		client.Write(headerBytes)
-		client.Write(body)
+		_, _ = client.Write(headerBytes)
+		_, _ = client.Write(body)
 		return
 	}
 	if _, err := client.Write(headerBytes); err != nil {
@@ -332,12 +333,12 @@ func (w *wsInflater) decompress(payload []byte, noTakeover bool) []byte {
 	src.Write(payload)
 	src.Write(deflateTrailer)
 	fr := flate.NewReaderDict(&src, dict)
-	defer fr.Close()
+	defer func() { _ = fr.Close() }()
 	out, err := io.ReadAll(fr)
 	// io.ErrUnexpectedEOF is expected — permessage-deflate's trailer
 	// (00 00 ff ff) is a non-final SYNC block, so flate never sees a
 	// real EOF marker. We accept the bytes decoded up to that point.
-	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
 		return nil
 	}
 	if !noTakeover && len(out) > 0 {

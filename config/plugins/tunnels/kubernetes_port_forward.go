@@ -84,6 +84,7 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
+// KubernetesPortForwardTunnel configures the tunnel runtime.
 type KubernetesPortForwardTunnel struct {
 	Context   string `hcl:"context,optional"`
 	Namespace string `hcl:"namespace,optional"`
@@ -112,6 +113,7 @@ type KubernetesPortForwardTunnel struct {
 	Credential string `hcl:"credential,optional"`
 }
 
+// TunnelCommon returns shared tunnel settings.
 func (t *KubernetesPortForwardTunnel) TunnelCommon() config.TunnelCommon {
 	return config.TunnelCommon{
 		Share:      t.Share,

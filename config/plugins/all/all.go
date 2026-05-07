@@ -4,7 +4,7 @@
 package all
 
 import (
-	_ "github.com/denoland/clawpatrol/config/plugins/approvers"
+	_ "github.com/denoland/clawpatrol/config/plugins/approvers" // register built-in plugin
 	_ "github.com/denoland/clawpatrol/config/plugins/credentials"
 	_ "github.com/denoland/clawpatrol/config/plugins/endpoints"
 	_ "github.com/denoland/clawpatrol/config/plugins/rules"

@@ -202,7 +202,7 @@ func generateRuleHCL(ctx context.Context, g *Gateway, agent, owner, prompt, curr
 		return "", refusal, nil
 	}
 	if perr := validateHCLSyntax(out); perr != nil {
-		return "", "", fmt.Errorf("AI returned invalid HCL — %v", perr)
+		return "", "", fmt.Errorf("AI returned invalid HCL — %w", perr)
 	}
 	return out, "", nil
 }
@@ -322,7 +322,7 @@ func callClaude(ctx context.Context, reg *OAuthRegistry, owner, user string) (st
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	rb, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
 		return "", fmt.Errorf("anthropic %d: %s", resp.StatusCode, truncate(string(rb), 400))
@@ -368,7 +368,7 @@ func callCodex(ctx context.Context, reg *OAuthRegistry, owner, user string) (str
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	rb, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
 		return "", fmt.Errorf("openai %d: %s", resp.StatusCode, truncate(string(rb), 400))

@@ -157,7 +157,7 @@ func (w *webMux) dashboardSecretGate(next http.Handler) http.Handler {
 		}
 		// API callers see 401; browsers get redirected to the login form.
 		if strings.HasPrefix(r.URL.Path, "/api/") {
-			http.Error(rw, "dashboard secret required", 401)
+			http.Error(rw, "dashboard secret required", http.StatusUnauthorized)
 			return
 		}
 		http.Redirect(rw, r, "/__login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
@@ -173,7 +173,7 @@ func renderDashboardMisconfigured(rw http.ResponseWriter, r *http.Request) {
 	}
 	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
 	rw.WriteHeader(http.StatusServiceUnavailable)
-	fmt.Fprintf(rw, `<!doctype html>
+	_, _ = fmt.Fprintf(rw, `<!doctype html>
 <html><head><meta charset="utf-8"><title>clawpatrol — dashboard disabled</title>
 <style>body{font:14px/1.5 -apple-system,system-ui,sans-serif;max-width:42em;margin:6em auto;padding:0 1em;color:#222}code{background:#f3f3f3;padding:.1em .3em;border-radius:3px}h1{font-size:1.4em}</style>
 </head><body>
@@ -308,7 +308,7 @@ func (w *webMux) tailnetGate(next http.Handler) http.Handler {
 			login = r.Header.Get("Tailscale-User-Login")
 		}
 		if login == "" {
-			http.Error(rw, "tailnet access required — onboard via `clawpatrol join <gateway>`", 403)
+			http.Error(rw, "tailnet access required — onboard via `clawpatrol join <gateway>`", http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(rw, r)
@@ -443,7 +443,7 @@ func (w *webMux) serveCA(rw http.ResponseWriter, r *http.Request) {
 
 func (w *webMux) serveInfo(rw http.ResponseWriter, _ *http.Request) {
 	rw.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(rw, `{"clawpatrol":true,"version":"0.1"}`+"\n")
+	_, _ = fmt.Fprintf(rw, `{"clawpatrol":true,"version":"0.1"}`+"\n")
 }
 
 // callerIdentity resolves the (user, device) of the request peer via
@@ -578,7 +578,7 @@ func serveState(rw http.ResponseWriter, r *http.Request, body []byte, tag string
 	rw.Header().Set("ETag", tag)
 	rw.Header().Set("Content-Type", "application/json")
 	rw.Header().Set("Cache-Control", "no-cache")
-	rw.Write(body)
+	_, _ = rw.Write(body)
 }
 
 // apiStatus returns the credentials list for the dashboard. Filters
@@ -595,7 +595,7 @@ func serveState(rw http.ResponseWriter, r *http.Request, body []byte, tag string
 // Empty values clear the slot.
 func (w *webMux) apiCredentialsSet(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		http.Error(rw, "POST", 405)
+		http.Error(rw, "POST", http.StatusMethodNotAllowed)
 		return
 	}
 	var body struct {
@@ -661,7 +661,7 @@ func (w *webMux) apiCredentialsSet(rw http.ResponseWriter, r *http.Request) {
 // button on the dashboard.
 func (w *webMux) apiCredentialsClear(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		http.Error(rw, "POST", 405)
+		http.Error(rw, "POST", http.StatusMethodNotAllowed)
 		return
 	}
 	var body struct {
@@ -717,7 +717,7 @@ func (w *webMux) apiConfig(rw http.ResponseWriter, r *http.Request) {
 			return
 		}
 		rw.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		rw.Write(b)
+		_, _ = rw.Write(b)
 	case "PUT":
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		if err != nil {
@@ -743,7 +743,7 @@ func (w *webMux) apiConfig(rw http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(rw, map[string]any{"ok": true, "bytes": len(body)})
 	default:
-		http.Error(rw, "GET or PUT", 405)
+		http.Error(rw, "GET or PUT", http.StatusMethodNotAllowed)
 	}
 }
 
@@ -757,7 +757,7 @@ func (w *webMux) apiConfig(rw http.ResponseWriter, r *http.Request) {
 // builds — the contents are HCL.)
 func (w *webMux) apiRulesAI(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		http.Error(rw, "POST", 405)
+		http.Error(rw, "POST", http.StatusMethodNotAllowed)
 		return
 	}
 	var body struct {
@@ -776,12 +776,12 @@ func (w *webMux) apiRulesAI(rw http.ResponseWriter, r *http.Request) {
 	}
 	owner, _ := w.ownerForCaller(r)
 	if owner == "" {
-		http.Error(rw, "tailnet identity required", 403)
+		http.Error(rw, "tailnet identity required", http.StatusForbidden)
 		return
 	}
 	out, refused, err := generateRuleHCL(r.Context(), w.g, body.Agent, owner, body.Prompt, body.CurrentYAML, body.Scope)
 	if err != nil {
-		http.Error(rw, "ai: "+err.Error(), 502)
+		http.Error(rw, "ai: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	resp := map[string]string{"yaml": out}
@@ -797,7 +797,7 @@ func (w *webMux) apiHITLPending(rw http.ResponseWriter, _ *http.Request) {
 
 func (w *webMux) apiHITLDecide(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		http.Error(rw, "POST", 405)
+		http.Error(rw, "POST", http.StatusMethodNotAllowed)
 		return
 	}
 	var body struct {
@@ -832,14 +832,14 @@ func (w *webMux) apiEventsSSE(rw http.ResponseWriter, r *http.Request) {
 	wantIP := r.URL.Query().Get("agent")
 
 	if w.g.sink == nil {
-		fmt.Fprintf(rw, ": no sink\n\n")
+		_, _ = fmt.Fprintf(rw, ": no sink\n\n")
 		flusher.Flush()
 		return
 	}
 	backlog, ch, cancel := w.g.sink.RecentAndSubscribe()
 	defer cancel()
 
-	fmt.Fprint(rw, ": connected\n\n")
+	_, _ = fmt.Fprint(rw, ": connected\n\n")
 	// Backlog ships as a single `event: backlog` SSE message carrying
 	// the whole array. Client renders that batch in one commit (no
 	// per-event rAF flood), then switches to per-event live streaming.
@@ -857,7 +857,7 @@ func (w *webMux) apiEventsSSE(rw http.ResponseWriter, r *http.Request) {
 		if len(filtered) > 0 {
 			b, err := json.Marshal(filtered)
 			if err == nil {
-				fmt.Fprintf(rw, "event: backlog\ndata: %s\n\n", b)
+				_, _ = fmt.Fprintf(rw, "event: backlog\ndata: %s\n\n", b)
 			}
 		}
 	}
@@ -871,7 +871,7 @@ func (w *webMux) apiEventsSSE(rw http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-keepalive.C:
-			fmt.Fprint(rw, ": ka\n\n")
+			_, _ = fmt.Fprint(rw, ": ka\n\n")
 			flusher.Flush()
 		case pkt, ok := <-ch:
 			if !ok {
@@ -880,7 +880,7 @@ func (w *webMux) apiEventsSSE(rw http.ResponseWriter, r *http.Request) {
 			if wantIP != "" && pkt.ev.AgentIP != wantIP {
 				continue
 			}
-			fmt.Fprintf(rw, "data: %s\n\n", pkt.raw)
+			_, _ = fmt.Fprintf(rw, "data: %s\n\n", pkt.raw)
 			flusher.Flush()
 		}
 	}
@@ -1032,7 +1032,7 @@ func (w *webMux) apiAnalytics(
 		http.Error(rw, err.Error(), 500)
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := make([]Event, 0, 256)
 	for rows.Next() {
 		var (
@@ -1070,6 +1070,10 @@ func (w *webMux) apiAnalytics(
 		e.Action = action.String
 		e.Reason = reason.String
 		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		http.Error(rw, err.Error(), 500)
+		return
 	}
 
 	// Real (non-sampled) totals so the top stats reflect the actual
@@ -1113,7 +1117,7 @@ func groupCount(db *sql.DB, q string, args []any) []map[string]any {
 	if err != nil {
 		return out
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var k sql.NullString
 		var c int64
@@ -1124,19 +1128,16 @@ func groupCount(db *sql.DB, q string, args []any) []map[string]any {
 			"key": k.String, "count": c,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		return []map[string]any{}
+	}
 	return out
 }
 
 func writeJSON(rw http.ResponseWriter, v any) {
 	rw.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(rw).Encode(v)
+	_ = json.NewEncoder(rw).Encode(v)
 }
-
-// apiOnboardStart begins device-flow onboarding. Public (no auth)
-// since this IS how a brand-new client first contacts the gateway.
-// The returned user_code must still be approved by an existing tailnet
-// member on the dashboard.
-func allIntegrationKeys() []string { return displayOrder }
 
 // Event sink + sampling helpers (fed by g.handle/mitm/splice; consumed
 // by the dashboard SSE stream and the on-disk event log).
@@ -1226,7 +1227,7 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := make([]Event, 0, n)
 	for rows.Next() {
 		var (
@@ -1317,7 +1318,7 @@ func (s *Sink) drain() {
 			if len(e.RespHeaders) > 0 {
 				rshJSON, _ = json.Marshal(e.RespHeaders)
 			}
-			s.db.Exec(`
+			_, _ = s.db.Exec(`
 				INSERT INTO actions
 				 (action_id, ts_ns, mode, agent_ip, host,
 				  method, path, status, bytes_in, bytes_out,

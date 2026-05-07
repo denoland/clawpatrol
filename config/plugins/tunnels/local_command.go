@@ -43,6 +43,7 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
+// LocalCommandTunnel configures the tunnel runtime.
 type LocalCommandTunnel struct {
 	Command      []string          `hcl:"command"`
 	Listen       string            `hcl:"listen"`
@@ -59,6 +60,7 @@ type LocalCommandTunnel struct {
 	Credential string `hcl:"credential,optional"`
 }
 
+// TunnelCommon returns shared tunnel settings.
 func (t *LocalCommandTunnel) TunnelCommon() config.TunnelCommon {
 	return config.TunnelCommon{
 		Share:      t.Share,
@@ -135,7 +137,7 @@ func (t *LocalCommandTunnel) Open(ctx context.Context, host runtime.TunnelHost, 
 		probeCtx, cancel := context.WithTimeout(ctx, readyTimeout)
 		defer cancel()
 		if err := readinessTCP(probeCtx, t.Listen, 200*time.Millisecond); err != nil {
-			rt.Close()
+			_ = rt.Close()
 			return nil, fmt.Errorf("local_command/%s: %w", host.Name, err)
 		}
 	}

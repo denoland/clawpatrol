@@ -69,6 +69,8 @@ func (e *ClickhouseNativeEndpoint) EndpointHosts() []string {
 	}
 	return out
 }
+
+// EndpointCredentials is part of the clawpatrol plugin API.
 func (e *ClickhouseNativeEndpoint) EndpointCredentials() []config.CredBinding {
 	return singleBinding(e.Credential)
 }

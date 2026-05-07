@@ -77,7 +77,10 @@ type PostgresEndpoint struct {
 	Credentials []CredentialEntry `json:"Credentials,omitempty"`
 }
 
+// EndpointHosts is part of the clawpatrol plugin API.
 func (e *PostgresEndpoint) EndpointHosts() []string { return []string{e.Host} }
+
+// EndpointCredentials is part of the clawpatrol plugin API.
 func (e *PostgresEndpoint) EndpointCredentials() []config.CredBinding {
 	return bindings(e.Credential, e.Credentials)
 }
@@ -100,6 +103,7 @@ func (e *PostgresEndpoint) setCredentialEntries(es []CredentialEntry) { e.Creden
 // password verbatim before injection.
 type PostgresEndpointRuntime struct{}
 
+// DetectPlaceholder is part of the clawpatrol plugin API.
 func (PostgresEndpointRuntime) DetectPlaceholder(req *runtime.Request, candidates []string) string {
 	if req == nil || req.SQL == nil {
 		return ""
@@ -155,7 +159,7 @@ const sslRequestCode = 80877103
 //     post-auth frames so agent proceeds as if it just authed.
 //  7. Bidirectional pump with per-query inspection.
 func (PostgresEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHandle) error {
-	defer ch.Conn.Close()
+	defer func() { _ = ch.Conn.Close() }()
 	if ch.Endpoint == nil || ch.Endpoint.Family != "sql" {
 		return fmt.Errorf("postgres runtime invoked on non-sql endpoint %v", ch.Endpoint)
 	}
@@ -233,7 +237,7 @@ func (PostgresEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnH
 		pgWriteError(ch.Conn, "dial upstream: "+err.Error())
 		return fmt.Errorf("dial %s: %w", upstreamAddr, err)
 	}
-	defer upstream.Close()
+	defer func() { _ = upstream.Close() }()
 
 	pgEp, _ := ch.Endpoint.Body.(*PostgresEndpoint)
 	sslmode := "prefer"
@@ -347,7 +351,7 @@ func pgStartupParam(body []byte, key string) string {
 
 // pgClientToServer pumps the agent's outbound message stream to the
 // upstream, inspecting Query / Parse for policy.
-func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.Conn, credName string) {
+func pgClientToServer(_ context.Context, ch *runtime.ConnHandle, upstream net.Conn, credName string) {
 	buf := make([]byte, 0, 64*1024)
 	tmp := make([]byte, 32*1024)
 	for {
@@ -381,7 +385,6 @@ func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.
 			return
 		}
 	}
-	_ = ctx
 }
 
 // pgEvaluate runs the SQL through the endpoint's compiled rules and
@@ -711,7 +714,7 @@ func pgUpgradeSSL(upstream net.Conn, pgEp *PostgresEndpoint, sslmode string) (ne
 		if sslmode == "require" || sslmode == "verify-full" {
 			return nil, fmt.Errorf("upstream refused TLS but sslmode=%q requires it", sslmode)
 		}
-		return nil, nil // continue plaintext
+		return upstream, nil // continue plaintext
 	default:
 		return nil, fmt.Errorf("unexpected SSLRequest reply byte %q", reply[0])
 	}

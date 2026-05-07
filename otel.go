@@ -78,7 +78,7 @@ func StartOtel(g *Gateway) (func(context.Context) error, error) {
 		return noop, fmt.Errorf("register gauges: %w", err)
 	}
 
-	var tpShutdown func(context.Context) error = noop
+	var tpShutdown = noop
 	texp, err := otlptracehttp.New(context.Background())
 	if err != nil {
 		log.Printf("otel: otlp trace exporter: %v (continuing without traces)", err)

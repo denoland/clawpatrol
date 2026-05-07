@@ -24,6 +24,7 @@ import (
 // collisions across the flat namespace.
 type Kind string
 
+// Plugin kind constants enumerate supported config block kinds.
 const (
 	KindEndpoint   Kind = "endpoint"
 	KindCredential Kind = "credential"

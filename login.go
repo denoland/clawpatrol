@@ -138,7 +138,7 @@ func fetchCAHTTP(gateway, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("status %d", resp.StatusCode)
 	}
@@ -271,7 +271,7 @@ func installShellRC() error {
 			return err
 		}
 		if _, err := f.WriteString(block); err != nil {
-			f.Close()
+			_ = f.Close()
 			return err
 		}
 		return f.Close()
@@ -410,7 +410,7 @@ func fetchCA(ip, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("status %d from %s", resp.StatusCode, url)
 	}
@@ -596,7 +596,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	if err != nil {
 		return false, fmt.Errorf("start: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		b, _ := io.ReadAll(resp.Body)
 		return false, fmt.Errorf("start: %d %s", resp.StatusCode, string(b))
@@ -647,7 +647,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		}
 		var pv map[string]string
 		_ = json.NewDecoder(pr.Body).Decode(&pv)
-		pr.Body.Close()
+		_ = pr.Body.Close()
 		if k, ok := pv["auth_key"]; ok && k != "" {
 			authKey = k
 			loginServer = pv["login_server"]
@@ -701,7 +701,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 				claimURL += "&ip=" + neturl.QueryEscape(wgIP)
 			}
 			if cr, err := cli.Post(claimURL, "application/json", nil); err == nil {
-				cr.Body.Close()
+				_ = cr.Body.Close()
 			}
 		}
 		// Always persist a user-readable copy at ~/.config/clawpatrol/
@@ -797,7 +797,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		fmt.Fprintf(os.Stderr, "⚠ onboard claim failed: %v\n", err)
 		return false, nil
 	}
-	defer cr.Body.Close()
+	defer func() { _ = cr.Body.Close() }()
 	if cr.StatusCode != 200 {
 		body, _ := io.ReadAll(io.LimitReader(cr.Body, 400))
 		fmt.Fprintf(os.Stderr, "⚠ onboard claim %d: %s\n", cr.StatusCode, string(body))
@@ -881,8 +881,8 @@ func wgQuickUp(iface, conf string) error {
 	if _, err := tmp.WriteString(conf); err != nil {
 		return err
 	}
-	tmp.Close()
-	defer os.Remove(tmp.Name())
+	_ = tmp.Close()
+	defer func() { _ = os.Remove(tmp.Name()) }()
 	if err := runAsRoot("install", "-m", "0600", tmp.Name(), dst).Run(); err != nil {
 		return fmt.Errorf("install conf: %w", err)
 	}
@@ -1131,7 +1131,7 @@ func detectPublicIP() string {
 			continue
 		}
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		ip := strings.TrimSpace(string(b))
 		if isIPv4(ip) {
 			return ip
@@ -1379,7 +1379,7 @@ func wgEndpointFromConf(path string) string {
 	if err != nil {
 		return ""
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
@@ -1400,6 +1400,6 @@ func pingGateway(endpoint string) bool {
 	if err != nil {
 		return false
 	}
-	c.Close()
+	_ = c.Close()
 	return true
 }

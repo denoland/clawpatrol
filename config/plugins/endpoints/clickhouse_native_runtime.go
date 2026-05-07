@@ -103,7 +103,7 @@ func chValidCompressedMethod(b byte) bool {
 //     the path). Cancel/Ping forward as-is. Server → agent stays a
 //     pure copy past the Hello.
 func (ClickhouseNativeEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHandle) error {
-	defer ch.Conn.Close()
+	defer func() { _ = ch.Conn.Close() }()
 	if ch.Endpoint == nil || ch.Endpoint.Family != "sql" {
 		err := fmt.Errorf("clickhouse_native runtime invoked on non-sql endpoint %v", ch.Endpoint)
 		chEmitError(ch, "wrong-family", "")
@@ -199,7 +199,7 @@ func (ClickhouseNativeEndpointRuntime) HandleConn(ctx context.Context, ch *runti
 		chEmitError(ch, "dial-upstream", fmt.Sprintf("%s: %v", upstreamAddr, err))
 		return fmt.Errorf("dial upstream %s: %w", upstreamAddr, err)
 	}
-	defer upstream.Close()
+	defer func() { _ = upstream.Close() }()
 
 	if chEp.TLS {
 		host := upstreamAddr

@@ -11,8 +11,10 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
+// NotionOAuth is part of the clawpatrol plugin API.
 type NotionOAuth struct{}
 
+// InjectHTTP is part of the clawpatrol plugin API.
 func (n *NotionOAuth) InjectHTTP(_ context.Context, req *http.Request, sec runtime.Secret) error {
 	if len(sec.Bytes) == 0 {
 		return nil
@@ -24,6 +26,7 @@ func (n *NotionOAuth) InjectHTTP(_ context.Context, req *http.Request, sec runti
 	return nil
 }
 
+// SecretSlots is part of the clawpatrol plugin API.
 func (*NotionOAuth) SecretSlots() []config.SecretSlot {
 	return []config.SecretSlot{{Label: "Notion OAuth access token", Description: "secret_… integration token or OAuth access_token. Stamped as Authorization: Bearer + Notion-Version header."}}
 }

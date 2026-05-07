@@ -166,7 +166,7 @@ func postTelemetry(payload []byte) (*telemetryResp, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf(
 			"telemetry: server status %d", resp.StatusCode,
