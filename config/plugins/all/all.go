@@ -8,4 +8,5 @@ import (
 	_ "github.com/denoland/clawpatrol/config/plugins/credentials"
 	_ "github.com/denoland/clawpatrol/config/plugins/endpoints"
 	_ "github.com/denoland/clawpatrol/config/plugins/rules"
+	_ "github.com/denoland/clawpatrol/config/plugins/tunnels"
 )

@@ -267,6 +267,11 @@ type Gateway struct {
 	// wire protocol can't be disambiguated at TCP-accept time (SSH
 	// today).
 	dnsvip *dnsvip.Allocator
+	// tunnels is the lifecycle manager for endpoints whose
+	// CompiledEndpoint.Tunnel is non-nil. Refcounts runtime tunnel
+	// instances across endpoints; the dispatcher consults it from
+	// dialUpstream / ConnHandle.DialUpstream callbacks.
+	tunnels *TunnelManager
 	// transports memoizes one http.Transport per endpoint. Avoids the
 	// per-request allocation + idle-conn-pool reset of the old path.
 	transports sync.Map // *config.CompiledEndpoint -> *http.Transport
@@ -362,6 +367,9 @@ func (g *Gateway) watchConfig(path string) {
 		g.policy.Store(policy)
 		registerOAuthCredentials(g.oauth, policy)
 		g.connIdx.Store(runtime.BuildConnIndex(policy))
+		if g.tunnels != nil {
+			g.tunnels.SetPolicy(context.Background(), policy)
+		}
 		if g.dnsvip != nil {
 			if err := g.dnsvip.RebuildFromPolicy(policy); err != nil {
 				log.Printf("dnsvip rebuild on reload: %v", err)
@@ -1237,10 +1245,14 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 			// dialing the original upstream IP the WG forwarder
 			// gave us. Plugin-supplied addr is ignored when it's
 			// the endpoint's declared host (the common case).
+			// dialThrough degrades to the direct dialer when ep
+			// has no tunnel; this path is used by non-tunneled
+			// postgres endpoints today (tunneled ones land in the
+			// VIP dispatch path, not here).
 			if addr == "" {
 				addr = upstreamAddr
 			}
-			return g.dialer.DialContext(ctx, network, upstreamAddr)
+			return g.dialThrough(ctx, ep, network, upstreamAddr)
 		},
 		Emit: func(ev runtime.ConnEvent) {
 			if g.sink == nil {
@@ -1389,11 +1401,14 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 			// Plugin passes the *real* upstream host:port — the
 			// gateway's host network resolves it (the VIP only
 			// exists inside the WG netstack; direct-IP dispatch
-			// already has the real IP).
+			// already has the real IP). When the endpoint declares
+			// a tunnel, dialThrough routes the dial through the
+			// TunnelManager; otherwise it falls back to the
+			// gateway's direct dialer.
 			if addr == "" {
 				return nil, fmt.Errorf("conn dispatch: plugin gave empty upstream addr")
 			}
-			return g.dialer.DialContext(ctx, network, addr)
+			return g.dialThrough(ctx, ep, network, addr)
 		},
 		Emit: func(ev runtime.ConnEvent) {
 			if g.sink == nil {
@@ -2193,9 +2208,11 @@ func runGateway(args []string) {
 		onboard: newOnboardRegistry(),
 	}
 	g.secrets = newGatewaySecretStore(db, oauthReg)
+	g.tunnels = NewTunnelManager(g.secrets, cfg.CADir)
 	registerOAuthCredentials(oauthReg, policy)
 	g.policy.Store(policy)
 	g.connIdx.Store(runtime.BuildConnIndex(policy))
+	g.tunnels.SetPolicy(context.Background(), policy)
 	// dnsvip is opt-in by policy: if no endpoint requires VIPs, the
 	// allocator stays empty and ServeUDP / ServeTCP are never called
 	// (no endpoint dispatches port-53 to them). Construct

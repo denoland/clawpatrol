@@ -107,8 +107,7 @@ func (g *Gateway) dialUpstream(ctx context.Context, network, addr, serverName st
 		}
 	}
 
-	d := &net.Dialer{}
-	raw, err := d.DialContext(ctx, network, addr)
+	raw, err := g.dialThrough(ctx, ep, network, addr)
 	if err != nil {
 		return nil, err
 	}

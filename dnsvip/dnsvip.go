@@ -329,8 +329,12 @@ func collectRequiredHosts(policy *config.CompiledPolicy) map[string][]EndpointHi
 		return out
 	}
 	for _, ep := range policy.Endpoints {
-		req, ok := ep.Body.(RequiresVIP)
-		if !ok || !req.RequiresVIP() {
+		// CompiledEndpoint.RequiresVIP() OR's the body's marker
+		// with the "tunneled endpoint always needs a VIP" rule —
+		// tunneled upstream hostnames don't resolve in the agent's
+		// namespace, so VIP-routing is the only way the gateway
+		// recovers the endpoint at conn-accept.
+		if !ep.RequiresVIP() {
 			continue
 		}
 		// Use the compiled Hosts list (already populated via
