@@ -90,6 +90,12 @@ func (a *LLMApprover) Approve(ctx context.Context, req runtime.ApproveRequest) (
 	if req.OAuthInjectAny != nil {
 		if ok, _ := req.OAuthInjectAny(a.Credential, hreq); ok {
 			injected = true
+			// Claude OAuth tokens require this beta header in addition to Bearer.
+			// reg.Inject only stamps the token; the credential plugin's InjectHTTP
+			// would add it, but OAuthInjectAny bypasses that path.
+			if strings.HasPrefix(a.Model, "claude-") {
+				hreq.Header.Set("anthropic-beta", "oauth-2025-04-20")
+			}
 		}
 	}
 	if !injected {
