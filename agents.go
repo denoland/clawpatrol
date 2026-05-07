@@ -5,16 +5,21 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"log"
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"tailscale.com/client/local"
+
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclwrite"
 
 	"github.com/denoland/clawpatrol/config"
 )
@@ -826,6 +831,143 @@ type EndpointTypeInfo struct {
 	Description string `json:"description,omitempty"`
 	ExampleHCL  string `json:"example_hcl,omitempty"`
 	InConfig    bool   `json:"in_config"`
+}
+
+// AddEndpointRequest is the body shape for POST /api/endpoints/add.
+// Snippet is HCL the operator edited in the discovery modal — usually
+// a credential block + an endpoint block. Profile, when non-empty,
+// names a profile whose endpoints list should be amended with the
+// snippet's endpoint blocks (so the new endpoint actually applies to
+// the device's traffic instead of dangling unbound).
+type AddEndpointRequest struct {
+	Profile string `json:"profile"`
+	Snippet string `json:"snippet"`
+}
+
+// AddEndpointResponse reports what changed. Attached is true when
+// Profile was non-empty AND the profile existed AND at least one new
+// endpoint name was spliced into its endpoints list.
+type AddEndpointResponse struct {
+	OK            bool     `json:"ok"`
+	Attached      bool     `json:"attached"`
+	EndpointNames []string `json:"endpoint_names"`
+}
+
+// apiEndpointAdd appends an HCL snippet to gateway.hcl and, when a
+// profile is named, splices the snippet's endpoint names into that
+// profile's endpoints list using hclwrite. The merged file is
+// re-validated through config.LoadBytes before persisting; an invalid
+// merge (duplicate name, unresolved ref, schema error) returns 400
+// and leaves gateway.hcl untouched.
+func (w *webMux) apiEndpointAdd(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(rw, "POST", 405)
+		return
+	}
+	var body AddEndpointRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(rw, err.Error(), 400)
+		return
+	}
+	if strings.TrimSpace(body.Snippet) == "" {
+		http.Error(rw, "missing snippet", 400)
+		return
+	}
+
+	startPos := hcl.Pos{Line: 1, Column: 1}
+
+	// Parse the snippet on its own first to surface obvious syntax
+	// errors with snippet-relative line numbers.
+	snipFile, diags := hclwrite.ParseConfig([]byte(body.Snippet), "snippet.hcl", startPos)
+	if diags.HasErrors() {
+		http.Error(rw, "snippet parse: "+diags.Error(), 400)
+		return
+	}
+	var newEndpoints []string
+	for _, b := range snipFile.Body().Blocks() {
+		if b.Type() == "endpoint" && len(b.Labels()) == 2 {
+			newEndpoints = append(newEndpoints, b.Labels()[1])
+		}
+	}
+
+	cur, err := os.ReadFile(w.g.cfgPath)
+	if err != nil {
+		http.Error(rw, err.Error(), 500)
+		return
+	}
+	merged := append([]byte{}, cur...)
+	if !strings.HasSuffix(string(merged), "\n") {
+		merged = append(merged, '\n')
+	}
+	merged = append(merged, '\n')
+	merged = append(merged, body.Snippet...)
+	if !strings.HasSuffix(string(merged), "\n") {
+		merged = append(merged, '\n')
+	}
+
+	attached := false
+	if body.Profile != "" && len(newEndpoints) > 0 {
+		// Read the existing profile's endpoints via the typed loader so
+		// the splice preserves whatever the operator already had — even
+		// if those entries are listed across multiple lines or include
+		// trailing comments.
+		gw, ldiags := config.LoadBytes(merged, "gateway.hcl")
+		if ldiags.HasErrors() {
+			http.Error(rw, "merged parse: "+ldiags.Error(), 400)
+			return
+		}
+		if prof, ok := gw.Policy.Profiles[body.Profile]; ok {
+			hf, hdiags := hclwrite.ParseConfig(merged, "gateway.hcl", startPos)
+			if hdiags.HasErrors() {
+				http.Error(rw, "merged hclwrite: "+hdiags.Error(), 500)
+				return
+			}
+			combined := append([]string{}, prof.Endpoints...)
+			for _, n := range newEndpoints {
+				if !contains(combined, n) {
+					combined = append(combined, n)
+				}
+			}
+			for _, blk := range hf.Body().Blocks() {
+				if blk.Type() != "profile" {
+					continue
+				}
+				if labels := blk.Labels(); len(labels) == 1 && labels[0] == body.Profile {
+					config.SetIdentList(blk.Body(), "endpoints", combined)
+					attached = true
+					break
+				}
+			}
+			if attached {
+				merged = hf.Bytes()
+			}
+		}
+	}
+
+	// Final validation pass against the actual bytes that will hit disk.
+	if _, diags := config.LoadBytes(merged, "gateway.hcl"); diags.HasErrors() {
+		http.Error(rw, "validate: "+diags.Error(), 400)
+		return
+	}
+	tmp := w.g.cfgPath + ".tmp"
+	if err := os.WriteFile(tmp, merged, 0o600); err != nil {
+		http.Error(rw, err.Error(), 500)
+		return
+	}
+	if err := os.Rename(tmp, w.g.cfgPath); err != nil {
+		http.Error(rw, err.Error(), 500)
+		return
+	}
+	writeJSON(rw, AddEndpointResponse{OK: true, Attached: attached, EndpointNames: newEndpoints})
+}
+
+func contains(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 // apiEndpointTypes powers the device-page discovery panel. Walks the

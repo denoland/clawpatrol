@@ -177,7 +177,7 @@ export function DevicePage({
       />
 
       {/* endpoint plugin discovery */}
-      <EndpointTypesPanel />
+      <EndpointTypesPanel profile={a.profile} onConfigChanged={onRefresh} />
 
       {/* rules — per-device scope (with global rules layered in) */}
       <RulesPanel deviceIP={a.ip} profile={a.profile} />

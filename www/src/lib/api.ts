@@ -190,6 +190,19 @@ export async function getEndpointTypes(): Promise<EndpointTypeInfo[]> {
   return r.json();
 }
 
+export async function addEndpoint(
+  snippet: string,
+  profile?: string,
+): Promise<{ ok: boolean; attached: boolean; endpoint_names: string[] }> {
+  const r = await api("/api/endpoints/add", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ snippet, profile: profile ?? "" }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export async function setDeviceProfile(ip: string, profile: string): Promise<void> {
   const r = await api(`/api/agents/profile?ip=${encodeURIComponent(ip)}&profile=${encodeURIComponent(profile)}`, {
     method: "POST",

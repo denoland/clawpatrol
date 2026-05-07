@@ -13,7 +13,13 @@ import { AddEndpointModal } from "./AddEndpointModal";
 // In-config pills are dimmed and not clickable: editing existing
 // endpoints happens through the Rules pencil, which opens the
 // whole-file editor without an append.
-export function EndpointTypesPanel() {
+export function EndpointTypesPanel({
+  profile,
+  onConfigChanged,
+}: {
+  profile?: string;
+  onConfigChanged?: () => void;
+}) {
   const [rows, setRows] = useState<EndpointTypeInfo[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [adding, setAdding] = useState<EndpointTypeInfo | null>(null);
@@ -44,9 +50,11 @@ export function EndpointTypesPanel() {
         <AddEndpointModal
           type={adding.type}
           initialHCL={adding.example_hcl ?? ""}
+          profile={profile}
           onClose={() => setAdding(null)}
           onSaved={() => {
             reload();
+            onConfigChanged?.();
             setAdding(null);
           }}
         />

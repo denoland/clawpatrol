@@ -1,26 +1,31 @@
 import { useState } from "react";
-import { getConfigHCL, putConfigHCL } from "../lib/api";
+import { addEndpoint } from "../lib/api";
 import { HCLEditor } from "./HCLEditor";
 
 // Small modal for "add an endpoint of type X to gateway.hcl". Shows
-// only the starter snippet, not the whole file — the operator edits
-// names / hosts / referenced credential here, hits save, and the
-// modal fetches the current config, appends the edited snippet, and
-// PUTs the result. Server-side LoadBytes validates the whole file
-// before persisting, so a typo in the snippet still surfaces with
-// gateway.hcl line numbers.
+// only the starter snippet, not the whole file. The operator edits
+// the names / hosts / referenced credential here, hits save, and the
+// server appends the snippet AND splices the new endpoint name(s)
+// into `profile`'s endpoints list — so the new endpoint actually
+// applies to the device's traffic instead of dangling unbound.
+//
+// Server-side LoadBytes validates the merged file before persisting,
+// so a typo still surfaces with gateway.hcl line numbers.
 export function AddEndpointModal({
   type,
   initialHCL,
+  profile,
   onClose,
   onSaved,
 }: {
   type: string;
   initialHCL: string;
+  profile?: string;
   onClose: () => void;
   onSaved: () => void;
 }) {
   const [text, setText] = useState(initialHCL);
+  const [attach, setAttach] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -28,10 +33,7 @@ export function AddEndpointModal({
     setBusy(true);
     setErr(null);
     try {
-      const current = await getConfigHCL();
-      const sep = current.endsWith("\n") ? "\n" : "\n\n";
-      const next = current + sep + text;
-      await putConfigHCL(next);
+      await addEndpoint(text, attach ? profile : undefined);
       onSaved();
     } catch (e: any) {
       setErr(String(e.message ?? e));
@@ -69,6 +71,21 @@ export function AddEndpointModal({
         <div className="flex-1 overflow-auto px-2">
           <HCLEditor value={text} onChange={setText} minHeight={220} />
         </div>
+
+        {profile && (
+          <label className="flex items-center gap-2 px-4 py-2 border-t border-[#e5e5e5] text-[11px] text-[#525252] cursor-pointer">
+            <input
+              type="checkbox"
+              checked={attach}
+              onChange={(e) => setAttach(e.target.checked)}
+              className="cursor-pointer"
+            />
+            <span>
+              Add the new endpoint to profile{" "}
+              <span className="font-mono text-[#171717]">{profile}</span>
+            </span>
+          </label>
+        )}
 
         <div className="flex items-center px-4 py-3 border-t border-[#e5e5e5] gap-3">
           {err && (
