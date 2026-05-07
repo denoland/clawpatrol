@@ -283,11 +283,6 @@ type ApproveRequest struct {
 	// Secrets fetches the bot token / API key the approver needs to
 	// post a notification or call an LLM judge.
 	Secrets SecretStore
-	// OAuthInjectAny stamps the Authorization header for the named
-	// OAuth credential using any currently-connected owner's token.
-	// Nil when the gateway has no OAuth registry (tests). LLM approvers
-	// use this to call claude/codex without a separate API key in the DB.
-	OAuthInjectAny func(id string, req *http.Request) (bool, error)
 	// DashboardURL is the operator-facing dashboard origin used for
 	// deep links in Slack messages and similar notifications.
 	DashboardURL string

@@ -1983,14 +1983,6 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 			ThreadTS:     c.ThreadTS,
 			Pool:         g.hitl,
 			Secrets:      g.secrets,
-			OAuthInjectAny: func(id string, hr *http.Request) (bool, error) {
-				for _, owner := range g.oauth.Owners(id) {
-					if ok, err := g.oauth.Inject(id, owner, hr); ok {
-						return true, err
-					}
-				}
-				return false, fmt.Errorf("no connected owner for oauth credential %q", id)
-			},
 			DashboardURL: g.cfg.PublicURL,
 			Policy:       policy,
 		}
