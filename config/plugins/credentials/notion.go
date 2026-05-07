@@ -59,8 +59,8 @@ func (n *NotionOAuth) OAuthFlow() *config.OAuthIntegration {
 		OAuth: config.OAuthConfig{
 			ClientID:     n.ClientID,
 			ClientSecret: n.ClientSecret,
-			AuthURL:  "https://api.notion.com/v1/oauth/authorize",
-			TokenURL: "https://mcp.notion.com/token",
+			AuthURL:      "https://api.notion.com/v1/oauth/authorize",
+			TokenURL:     "https://mcp.notion.com/token",
 			RedirectURI:  redirectURI,
 		},
 	}
