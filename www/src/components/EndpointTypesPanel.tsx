@@ -1,20 +1,22 @@
 import { useEffect, useState } from "react";
 import { getEndpointTypes, type EndpointTypeInfo } from "../lib/api";
-import { RulesEditor } from "./RulesEditor";
+import { AddEndpointModal } from "./AddEndpointModal";
 
 // EndpointTypesPanel surfaces every registered endpoint plugin so
 // operators can discover types not yet in their config. Compact pill
 // row — keeps the device page from ballooning. Clicking a not-
-// configured pill opens gateway.hcl with the plugin's example block
-// appended at the bottom; operator edits names / hosts before saving.
+// configured pill opens AddEndpointModal scoped to that plugin's
+// example block; the operator edits the snippet (names, hosts,
+// referenced credential) and saves, which appends it to
+// gateway.hcl through PUT /api/config.
 //
 // In-config pills are dimmed and not clickable: editing existing
-// endpoints happens through the Rules pencil, which opens the same
-// editor without an append.
+// endpoints happens through the Rules pencil, which opens the
+// whole-file editor without an append.
 export function EndpointTypesPanel() {
   const [rows, setRows] = useState<EndpointTypeInfo[]>([]);
   const [err, setErr] = useState<string | null>(null);
-  const [appending, setAppending] = useState<string | null>(null);
+  const [adding, setAdding] = useState<EndpointTypeInfo | null>(null);
 
   function reload() {
     getEndpointTypes()
@@ -35,20 +37,17 @@ export function EndpointTypesPanel() {
           Endpoint types
         </span>
         {rows.map((r) => (
-          <Pill
-            key={r.type}
-            row={r}
-            onAdd={() => setAppending(r.example_hcl ?? "")}
-          />
+          <Pill key={r.type} row={r} onAdd={() => setAdding(r)} />
         ))}
       </div>
-      {appending !== null && (
-        <RulesEditor
-          initialAppend={appending}
-          onClose={() => setAppending(null)}
+      {adding && (
+        <AddEndpointModal
+          type={adding.type}
+          initialHCL={adding.example_hcl ?? ""}
+          onClose={() => setAdding(null)}
           onSaved={() => {
             reload();
-            setAppending(null);
+            setAdding(null);
           }}
         />
       )}
