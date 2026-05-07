@@ -565,6 +565,26 @@ func codexInputTitle(input []struct {
 	return ""
 }
 
+// codexInputFirstTitle returns the FIRST real user message from a Codex
+// input array — used as a stable session ID seed across turns (since the
+// full conversation history is resent every turn, the first message never
+// changes, giving a consistent shortHash).
+func codexInputFirstTitle(input []struct {
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
+}) string {
+	for _, m := range input {
+		if m.Role != "user" {
+			continue
+		}
+		text := stripCodexWrappers(joinUserContent(m.Content))
+		if text != "" {
+			return truncate(text, 80)
+		}
+	}
+	return ""
+}
+
 // joinUserContent flattens a Codex/OpenAI message Content (string OR
 // array of typed blocks). Blocks are joined with newlines so a single
 // user message that mixes <environment_context> + the actual prompt
@@ -665,7 +685,9 @@ func (g *Gateway) preCreateLLMSession(c net.Conn, kind, path string, reqBody []b
 		if title == "" {
 			return
 		}
-		g.agents.recordLLMUsage(ip, "codex", "", title, codexRequestModel(reqBody), 0, 0)
+		firstTitle := codexResponsesRequestFirstTitle(reqBody)
+		sid := shortHash(firstTitle)
+		g.agents.recordLLMUsage(ip, "codex", sid, title, codexRequestModel(reqBody), 0, 0)
 	}
 }
 
@@ -737,10 +759,9 @@ func (g *Gateway) trackLLMUsage(c net.Conn, kind, path string, reqBody, respBody
 		if model == "" && in == 0 && out == 0 && title == "" {
 			return
 		}
-		// Empty sid → reuse the latest codex session for this device
-		// (see findOrAddSession). Each codex CLI run shares a session on
-		// the same device; first call w/ a real prompt fills the title.
-		g.agents.recordLLMUsage(ip, "codex", "", title, model, in, out)
+		firstTitle := codexResponsesRequestFirstTitle(reqBody)
+		sid := shortHash(firstTitle)
+		g.agents.recordLLMUsage(ip, "codex", sid, title, model, in, out)
 	}
 }
 
@@ -760,6 +781,21 @@ func codexResponsesRequestTitle(body []byte) string {
 		return ""
 	}
 	return codexInputTitle(req.Input)
+}
+
+// codexResponsesRequestFirstTitle returns the first real user message from
+// the request body — stable across turns, used as a session ID seed.
+func codexResponsesRequestFirstTitle(body []byte) string {
+	var req struct {
+		Input []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return ""
+	}
+	return codexInputFirstTitle(req.Input)
 }
 
 func parseOpenAIResponse(body []byte) (model string, in, out int64) {
