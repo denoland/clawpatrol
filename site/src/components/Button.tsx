@@ -36,7 +36,7 @@ const variants: Record<Variant, string> = {
 
 function Background() {
   return (
-    <div class="w-[calc(100%+4px)] h-[calc(100%+4px)] absolute left-1 top-1 bg-rust -z-10 group-hover:bg-rust-300 transition-colors duration-150" />
+    <div class="w-[calc(100%+4px)] h-[calc(100%+4px)] absolute left-1 top-1 bg-linear-to-r from-rust-300 to-rust-400 -z-10 group-hover:from-butter group-hover:to-rust-300  transition-colors duration-150" />
   );
 }
 
