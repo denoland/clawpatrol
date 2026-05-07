@@ -1,13 +1,21 @@
-import { useEffect, useRef, useState } from "react";
-import { oauthDevicePoll, oauthExchange, oauthStart, type OAuthStartResp } from "../lib/api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  oauthDevicePoll,
+  oauthExchange,
+  oauthStart,
+  type OAuthIntegrationUI,
+  type OAuthStartResp,
+} from "../lib/api";
 
 export function ConnectModal({
   id,
+  oauth,
   profile,
   onClose,
   onDone,
 }: {
   id: string;
+  oauth?: OAuthIntegrationUI | null;
   profile?: string;
   onClose: () => void;
   onDone: () => void;
@@ -17,8 +25,20 @@ export function ConnectModal({
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  // The picker only appears when the plugin declared optional scopes.
+  // Plugins that don't surface a picker fall straight through to the
+  // OAuth start (started=true on mount).
+  const optionalGroups = oauth?.optional_scopes ?? [];
+  const baseScopes = oauth?.base_scopes ?? [];
+  const showsScopePicker = optionalGroups.length > 0;
+  const [started, setStarted] = useState(!showsScopePicker);
+  const [extras, setExtras] = useState<Set<string>>(() => new Set());
+  const baseSet = useMemo(() => new Set(baseScopes), [baseScopes]);
+
   useEffect(() => {
-    oauthStart(id, profile)
+    if (!started) return;
+    const extraList = showsScopePicker ? Array.from(extras) : undefined;
+    oauthStart(id, profile, extraList)
       .then((r) => {
         setStart(r);
         if (r.flow === "device") {
@@ -28,7 +48,11 @@ export function ConnectModal({
         }
       })
       .catch((e: Error) => setErr(String(e.message ?? e)));
-  }, [id, profile]);
+    // extras intentionally captured at the moment of "continue" — the
+    // checklist is frozen once we kick off the OAuth flow, so don't
+    // rerun this effect on later toggles.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, profile, started]);
 
   // Stable ref to onDone — parent re-renders (App refreshes integrations
   // every 3s) reset the lambda otherwise, killing the polling interval
@@ -110,6 +134,90 @@ export function ConnectModal({
           <div className="py-6 text-center">
             <div className="text-[24px] mb-2">✓</div>
             <div className="text-[12px] text-[#171717]">connected</div>
+          </div>
+        ) : showsScopePicker && !started ? (
+          <div className="space-y-3">
+            <div className="text-[11px] text-[#737373] leading-relaxed">
+              {baseScopes.length > 0 ? (
+                <>
+                  defaults (
+                  <code className="text-[#171717]">{baseScopes.join(", ")}</code>
+                  ) are always requested.
+                </>
+              ) : (
+                <>no scopes are requested by default.</>
+              )}
+            </div>
+            <details className="border border-[#e5e5e5] rounded bg-[#fafafa] group">
+              <summary className="cursor-pointer list-none flex items-center gap-2 px-2 py-1.5 text-[11px] text-[#171717] hover:bg-white rounded">
+                <span className="inline-block w-3 text-[#a3a3a3] transition-transform group-open:rotate-90">
+                  ›
+                </span>
+                <span>advanced permissions</span>
+                <span className="ml-auto text-[10px] text-[#737373] tabular-nums">
+                  {extras.size > 0 ? `${extras.size} selected` : "optional"}
+                </span>
+              </summary>
+              <div className="max-h-[300px] overflow-y-auto p-2 space-y-3 border-t border-[#e5e5e5]">
+                {optionalGroups.map((g) => (
+                  <div key={g.title}>
+                    <div className="text-[10px] uppercase tracking-[.1em] text-[#a3a3a3] mb-1">
+                      {g.title}
+                    </div>
+                    <div className="grid grid-cols-1 gap-y-0.5">
+                      {g.scopes.map((s) => {
+                        const isBase = baseSet.has(s.id);
+                        const checked = isBase || extras.has(s.id);
+                        return (
+                          <label
+                            key={s.id}
+                            className={
+                              "flex items-center gap-2 text-[11px] py-0.5 px-1 rounded " +
+                              (isBase ? "text-[#a3a3a3]" : "text-[#171717] cursor-pointer hover:bg-white")
+                            }
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={isBase}
+                              onChange={(e) => {
+                                setExtras((prev) => {
+                                  const next = new Set(prev);
+                                  if (e.target.checked) next.add(s.id);
+                                  else next.delete(s.id);
+                                  return next;
+                                });
+                              }}
+                              className="accent-[#171717]"
+                            />
+                            <code className="text-[11px]">{s.id}</code>
+                            <span className="text-[#737373]">— {s.label}</span>
+                            {isBase && <span className="ml-auto text-[10px] text-[#a3a3a3]">default</span>}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </details>
+            {err && <div className="text-[11px] text-red-600 break-all">{err}</div>}
+            <div className="flex gap-2 justify-end">
+              <button
+                type="button"
+                onClick={onClose}
+                className="text-[11px] px-3 py-1.5 border border-[#e5e5e5] text-[#737373] rounded hover:border-[#a3a3a3]"
+              >
+                cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => setStarted(true)}
+                className="text-[11px] px-3 py-1.5 bg-[#171717] text-white rounded"
+              >
+                continue ({baseScopes.length + extras.size} scopes)
+              </button>
+            </div>
           </div>
         ) : !start ? (
           <div className="text-[12px] text-[#737373]">opening browser…</div>
