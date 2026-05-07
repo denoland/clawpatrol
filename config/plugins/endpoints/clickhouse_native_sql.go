@@ -1,19 +1,26 @@
 package endpoints
 
-// Best-effort SQL lexer for the clickhouse_native runtime's matcher
-// input. The shape mirrors postgres's pgInfo so the SQL family
-// matcher consumes both endpoints' output without per-plugin special
-// cases.
-//
-// ClickHouse statements carry a few syntactic trailers postgres
-// doesn't have (`SETTINGS k=v, …`, `FORMAT JSON`); stripping them
-// before regex extraction keeps `tables` / `function` lists tight
-// and makes `statement_regex` rules predictable.
+// SQL extractor for the clickhouse_native runtime's matcher input.
+// Parses ClickHouse SQL via AfterShip/clickhouse-sql-parser, walks
+// the AST to harvest tables / functions, and derives the verb from
+// the top-level statement type. The shape (chSQLInfo) mirrors
+// postgres's pgInfo so the SQL family matcher consumes both
+// endpoints' output without per-plugin special cases.
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
+
+	chparser "github.com/AfterShip/clickhouse-sql-parser/parser"
 )
+
+// chSQLTrailerRE strips ClickHouse-specific trailers a query may carry
+// after the body proper. AfterShip's parser doesn't accept these in
+// every position the server does (e.g. `INSERT … VALUES … SETTINGS …`
+// fails), so we chop them off the input before parsing. The Statement
+// field on chSQLInfo still carries the original SQL.
+var chSQLTrailerRE = regexp.MustCompile(`(?is)\s+(?:SETTINGS\s+.*|FORMAT\s+\S+\s*)$`)
 
 type chSQLInfo struct {
 	Verb      string
@@ -22,60 +29,165 @@ type chSQLInfo struct {
 	Statement string // raw, untrimmed — fed to statement / statement_regex matchers
 }
 
-// chSQLTrailerRE strips ClickHouse-specific trailers a query may carry
-// after the body proper. Both `SETTINGS …` and `FORMAT …` appear on
-// the right side of arbitrary statements (`SELECT … FORMAT JSON`,
-// `INSERT … SETTINGS max_insert_threads = 4`), so the lexer treats
-// them as optional appendages — chop, then extract verb / tables /
-// functions from the prefix.
-var chSQLTrailerRE = regexp.MustCompile(`(?is)\s+(?:SETTINGS\s+.*|FORMAT\s+\S+)$`)
-
-var (
-	chTableRE = regexp.MustCompile(`(?i)\b(?:from|update|into|join|table)\s+([a-z_][a-z0-9_.]*)`)
-	chFuncRE  = regexp.MustCompile(`(?i)\b([a-z_][a-z0-9_]*)\s*\(`)
-)
-
 // parseChSQL extracts verb / tables / functions / statement for the
-// SQL matcher. Best-effort by design — the matcher's predicates are
-// coarse (verb lists, glob'd table names, statement_regex), so a
-// regex-based extractor produces actionable results across the v14
-// rule shapes without dragging in a full SQL parser.
+// SQL matcher.
 //
-// The raw Statement preserves the original SQL so `statement` /
-// `statement_regex` rules see exactly what the agent sent. Verb and
-// tables are derived from a trailer-stripped, comment-flattened lower
-// case copy.
+// On parser failure we fall back to a degraded `chSQLInfo` carrying
+// only `Statement` plus a best-effort verb sniffed from the first
+// keyword. Forwarding `Statement` keeps `statement_regex` rules live
+// even on syntactically odd inputs the AST parser rejects, which
+// matters because those are exactly the queries an operator most
+// likely wants to match on.
 func parseChSQL(sql string) chSQLInfo {
 	info := chSQLInfo{Statement: sql}
 	trimmed := strings.TrimSpace(sql)
 	if trimmed == "" {
 		return info
 	}
-	body := chStripSQLComments(trimmed)
-	body = chSQLTrailerRE.ReplaceAllString(body, "")
-	body = strings.TrimSpace(body)
-	if body == "" {
+
+	parseInput := chSQLTrailerRE.ReplaceAllString(trimmed, "")
+	stmts, err := chparser.NewParser(parseInput).ParseStmts()
+	if err != nil || len(stmts) == 0 {
+		info.Verb = chSniffVerb(trimmed)
 		return info
 	}
-	lower := strings.ToLower(body)
-	if i := strings.IndexAny(lower, " \t\n\r("); i > 0 {
-		info.Verb = lower[:i]
-	} else {
-		info.Verb = lower
+
+	// Multi-statement queries: the verb tracks the first statement, but
+	// tables / functions are unioned across all of them so a rule that
+	// denies access to `secrets` still fires when `secrets` is the
+	// second statement in a "use db; select * from secrets" pair.
+	info.Verb = chVerbFromStmt(stmts[0])
+	tables := map[string]struct{}{}
+	funcs := map[string]struct{}{}
+	for _, stmt := range stmts {
+		chparser.Walk(stmt, func(node chparser.Expr) bool {
+			switch n := node.(type) {
+			case *chparser.TableIdentifier:
+				tables[chTableName(n)] = struct{}{}
+			case *chparser.FunctionExpr:
+				if n.Name != nil {
+					funcs[strings.ToLower(n.Name.Name)] = struct{}{}
+				}
+			}
+			return true
+		})
 	}
-	for _, m := range chTableRE.FindAllStringSubmatch(lower, -1) {
-		info.Tables = append(info.Tables, m[1])
-	}
-	for _, m := range chFuncRE.FindAllStringSubmatch(lower, -1) {
-		info.Functions = append(info.Functions, m[1])
-	}
+	info.Tables = chSortedKeys(tables)
+	info.Functions = chSortedKeys(funcs)
 	return info
+}
+
+// chTableName renders a TableIdentifier as `db.table` or `table`
+// depending on whether the parser captured a database qualifier. Lower
+// cased so glob rules don't have to special-case casing.
+func chTableName(t *chparser.TableIdentifier) string {
+	if t == nil || t.Table == nil {
+		return ""
+	}
+	if t.Database != nil && t.Database.Name != "" {
+		return strings.ToLower(t.Database.Name + "." + t.Table.Name)
+	}
+	return strings.ToLower(t.Table.Name)
+}
+
+// chVerbFromStmt maps a parsed statement node to a lowercase verb
+// string aligned with the SQL matcher's vocabulary.
+func chVerbFromStmt(stmt chparser.Expr) string {
+	switch s := stmt.(type) {
+	case *chparser.SelectQuery:
+		return "select"
+	case *chparser.InsertStmt:
+		return "insert"
+	case *chparser.DropStmt:
+		return "drop"
+	case *chparser.UseStmt:
+		return "use"
+	case *chparser.SetStmt:
+		return "set"
+	case *chparser.OptimizeStmt:
+		return "optimize"
+	case *chparser.SystemStmt:
+		return "system"
+	case *chparser.CheckStmt:
+		return "check"
+	case *chparser.RenameStmt:
+		return "rename"
+	case *chparser.ExplainStmt:
+		return "explain"
+	case *chparser.ShowStmt:
+		return "show"
+	case *chparser.DescribeStmt:
+		return "describe"
+	case *chparser.GrantPrivilegeStmt:
+		return "grant"
+	case *chparser.AlterTable:
+		return "alter"
+	case *chparser.CTEStmt:
+		// WITH … followed by a SELECT/INSERT — surface the underlying
+		// verb so rules that gate writes don't get fooled by a CTE wrap.
+		if s != nil && s.Expr != nil {
+			return chVerbFromStmt(s.Expr)
+		}
+		return "with"
+	}
+	// Fallback: derive from concrete type name, e.g.
+	// `*parser.CreateTable` → "create".
+	name := fmt.Sprintf("%T", stmt)
+	if i := strings.LastIndex(name, "."); i >= 0 {
+		name = name[i+1:]
+	}
+	name = strings.TrimSuffix(name, "Stmt")
+	name = strings.TrimSuffix(name, "Query")
+	if idx := chFirstUpperBoundary(name); idx > 0 {
+		name = name[:idx]
+	}
+	return strings.ToLower(name)
+}
+
+// chFirstUpperBoundary finds the index of the second uppercase letter
+// in s, treating s[:i] as the leading word in a CamelCase identifier
+// (e.g. "CreateTable" → 6, returning "Create").
+func chFirstUpperBoundary(s string) int {
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			return i
+		}
+	}
+	return 0
+}
+
+// chSniffVerb is the parser-failure fallback: lowercase the first
+// alphabetic run and return it. Keeps `verb=` rules functional when
+// the AST parser bails — at the cost of correctness on exotic syntax,
+// which the matcher would have struggled with anyway.
+func chSniffVerb(s string) string {
+	body := chStripSQLComments(s)
+	body = strings.TrimSpace(body)
+	for i := 0; i < len(body); i++ {
+		c := body[i]
+		isLetter := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+		if !isLetter {
+			continue
+		}
+		j := i
+		for j < len(body) {
+			cj := body[j]
+			isAlnum := (cj >= 'a' && cj <= 'z') || (cj >= 'A' && cj <= 'Z') || (cj >= '0' && cj <= '9') || cj == '_'
+			if !isAlnum {
+				break
+			}
+			j++
+		}
+		return strings.ToLower(body[i:j])
+	}
+	return ""
 }
 
 // chStripSQLComments removes -- line comments and /* … */ block
 // comments. Comments inside quoted string literals are preserved so
 // the lexer doesn't accidentally truncate a SQL string that contains
-// "--" or "/*".
+// "--" or "/*". Used by the parser-failure fallback path.
 func chStripSQLComments(s string) string {
 	var out strings.Builder
 	out.Grow(len(s))
@@ -84,7 +196,6 @@ func chStripSQLComments(s string) string {
 		c := s[i]
 		switch c {
 		case '\'', '"', '`':
-			// Quoted run — copy verbatim, respect doubled-quote escapes.
 			q := c
 			out.WriteByte(c)
 			i++
@@ -132,6 +243,26 @@ func chStripSQLComments(s string) string {
 		}
 	}
 	return out.String()
+}
+
+// chSortedKeys returns the keys of m in stable lexical order. Map
+// iteration order is randomized in Go, so without sorting the matcher
+// would see jittery `tables=[...]` output run-to-run, breaking
+// snapshot-style assertions and dashboard event diffing.
+func chSortedKeys(m map[string]struct{}) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j-1] > out[j]; j-- {
+			out[j-1], out[j] = out[j], out[j-1]
+		}
+	}
+	return out
 }
 
 // chSummary renders a one-line description of a SQL meta for the

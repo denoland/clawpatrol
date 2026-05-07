@@ -12,6 +12,9 @@ import (
 	"net"
 	"strconv"
 
+	chgoproto "github.com/ClickHouse/ch-go/proto"
+	chproto "github.com/ClickHouse/clickhouse-go/v2/lib/proto"
+
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/match"
 	"github.com/denoland/clawpatrol/config/runtime"
@@ -26,20 +29,14 @@ import (
 //     placeholder substring inside Hello.username / Hello.password.
 //  3. Dial upstream (TLS or plain), send the (possibly modified) Hello.
 //  4. Emit one ConnEvent describing the session.
-//  5. Forward the server Hello back to the agent (capturing the
-//     negotiated revision), then run a packet-aware shuttle: the
-//     first agent Query packet is parsed, fed into the SQL matcher,
-//     and either forwarded (allow), gated through ConnHandle.Approve
-//     (approve), or denied via a synthesized Exception packet (deny).
-//     Subsequent bytes flow verbatim — multi-query inspection on a
-//     single TCP session is iter 2.5.
-//
-// Errors before the upstream dial close the agent's conn silently —
-// the native protocol has no Error packet at the pre-handshake stage
-// that we could send back without first observing the server-side
-// reply — but every pre-pipe failure path emits a structured
-// ConnEvent{Action:"error", Reason:...} so the dashboard / JSONL
-// log gets first-class signal, not just a stdout log line.
+//  5. Read the server Hello (forwarded back to the agent), capture
+//     the negotiated revision, then run a fully-transcoding
+//     agent → server pump that decodes every client packet via
+//     ch-go / lib/proto: Query packets feed the SQL matcher (with
+//     compression rewritten to Disabled so subsequent Data blocks
+//     decode without a compression-library dependency), Data blocks
+//     decode through lib/proto.Block, Cancel/Ping forward as-is.
+//     Server → agent stays a pure copy past the Hello.
 func (ClickhouseNativeEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHandle) error {
 	defer ch.Conn.Close()
 	if ch.Endpoint == nil || ch.Endpoint.Family != "sql" {
@@ -66,11 +63,6 @@ func (ClickhouseNativeEndpointRuntime) HandleConn(ctx context.Context, ch *runti
 	// agent sent. Agents already trust the gateway CA via the
 	// SSL_CERT_FILE env-var pushdown that `clawpatrol run` stamps,
 	// so verification passes without any client-side opt-out.
-	//
-	// Falls back to the dst host (UpstreamHost when dialed by name,
-	// else the upstream host slice's first entry) when the client
-	// didn't carry SNI — covers bare-IP dialing and odd clients that
-	// omit it.
 	if chEp.TLS && ch.MintCert != nil {
 		fallback := ch.UpstreamHost
 		if fallback == "" {
@@ -91,16 +83,13 @@ func (ClickhouseNativeEndpointRuntime) HandleConn(ctx context.Context, ch *runti
 			chEmitError(ch, "inbound-tls-handshake", err.Error())
 			return fmt.Errorf("inbound tls: %w", err)
 		}
-		// Splice the wrapped conn back onto the handle so downstream
-		// helpers (chReadHello, chPipe) operate on plaintext.
 		ch.Conn = tc
 	}
 
-	// Step 1: read agent's Hello. ClickHouse's native protocol begins
-	// with a single client Hello packet (type 0). We accumulate bytes
-	// until ParseChHello succeeds — typical Hellos fit in one read but
-	// large client_name strings can span multiple TCP segments.
-	hello, leftover, err := chReadHello(ch.Conn)
+	// Step 1: read agent Hello. Once the conn is wrapped in a
+	// chgoproto.Reader the underlying bytes are buffered; subsequent
+	// agent → server packets must transcode through that reader.
+	hello, agentReader, err := chReadHello(ch.Conn)
 	if err != nil {
 		chEmitError(ch, "read-hello", err.Error())
 		return fmt.Errorf("read hello: %w", err)
@@ -109,14 +98,6 @@ func (ClickhouseNativeEndpointRuntime) HandleConn(ctx context.Context, ch *runti
 	// Step 2: resolve credential and inject. Single-credential native
 	// endpoints today; multi-credential dispatch via placeholder lands
 	// when SQL parsing does in iter 2.
-	//
-	// Hard-fail on secret-fetch errors and on missing real credential
-	// material. Soft-failing here would leak the agent's placeholder
-	// Hello upstream, which (a) reveals the placeholder shape to the
-	// server and (b) produces an opaque auth-fail downstream — better
-	// to drop the conn with a structured Reason and let the operator
-	// fix the credential binding. Mirrors postgres's pgWriteError
-	// discipline.
 	claimedUser := hello.Username
 	injected := false
 	credName := ""
@@ -168,23 +149,13 @@ func (ClickhouseNativeEndpointRuntime) HandleConn(ctx context.Context, ch *runti
 		upstream = tc
 	}
 
-	rewritten := SerializeChHello(hello)
-	if _, err := upstream.Write(rewritten); err != nil {
+	if _, err := upstream.Write(chEncodeHello(hello)); err != nil {
 		chEmitError(ch, "send-hello", err.Error())
 		return fmt.Errorf("send hello: %w", err)
 	}
-	// Any bytes the agent sent past the Hello (rare — clients usually
-	// wait for ServerHello before pipelining) follow immediately.
-	if len(leftover) > 0 {
-		if _, err := upstream.Write(leftover); err != nil {
-			chEmitError(ch, "forward-post-hello", err.Error())
-			return fmt.Errorf("forward post-hello: %w", err)
-		}
-	}
 
 	// Step 4: emit the connection event. One event per TCP session —
-	// the native protocol is persistent, per-query parsing isn't here
-	// yet, so the connection itself is the unit of audit.
+	// per-Query events come from the agent → server pump below.
 	database := hello.Database
 	if database == "" {
 		database = "default"
@@ -205,16 +176,11 @@ func (ClickhouseNativeEndpointRuntime) HandleConn(ctx context.Context, ch *runti
 		ch.Endpoint.Name, hello.Username, claimedUser, database,
 		hello.ClientName, hello.ProtocolRevision, injected)
 
-	// Step 5: post-auth bidirectional shuttle with per-Query
-	// inspection. The agent→server direction parses the first Query
-	// packet, runs the SQL through the matcher, and either forwards
-	// (allow), invokes the approve chain (approve), or synthesizes an
-	// Exception packet and closes (deny). After the first Query is
-	// handled the shuttle relays bytes verbatim — block-aware parsing
-	// of subsequent client packets is iter 2.5 work; one-query-per-
-	// connection covers the agent-shaped use cases that drove the
-	// iter 2 ask (each agent-issued statement opens its own session).
-	chRunSession(ctx, ch, upstream, hello.ProtocolRevision, credName)
+	// Step 5: post-handshake bidirectional shuttle. Server → agent
+	// stays a pure copy (decoded only far enough to forward the
+	// ServerHello and capture the revision). Agent → server is fully
+	// transcoded.
+	chRunSession(ctx, ch, agentReader, upstream, hello.ProtocolRevision, credName)
 	return nil
 }
 
@@ -232,192 +198,145 @@ func chUpstreamTLSConfig(host string, acceptInvalidCert bool) *tls.Config {
 	}
 }
 
-// chRunSession is the post-auth orchestrator. It reads the server's
-// Hello (forwarded verbatim to the agent so the protocol negotiation
-// completes normally), captures the negotiated revision, then runs
-// agent→server through the Query inspector while server→agent stays
-// a pure copy.
-//
-// Failures past auth log + emit but do not surface — the connection
-// is best-effort drained and closed.
-func chRunSession(ctx context.Context, ch *runtime.ConnHandle, upstream net.Conn, clientRev uint64, credName string) {
-	negotiatedRev, err := chReadAndForwardServerHello(upstream, ch.Conn)
+// chRunSession orchestrates the post-Hello exchange. Reads the
+// server Hello (forwarded verbatim to the agent), captures the
+// negotiated revision, then runs agent → server through the Query /
+// Data inspector while server → agent stays a pure passthrough.
+func chRunSession(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream net.Conn, clientRev int, credName string) {
+	upstreamReader := chgoproto.NewReader(upstream)
+	negotiatedRev, err := chReadAndForwardServerHello(upstreamReader, ch.Conn, clientRev)
 	if err != nil {
 		chEmitError(ch, "server-hello", err.Error())
 		return
 	}
-	// Negotiated rev is min(client_rev, server_rev) — the format the
-	// client uses for subsequent packets.
-	if clientRev > 0 && clientRev < negotiatedRev {
-		negotiatedRev = clientRev
-	}
 
-	// Server → agent: pure copy. Started before we touch agent→server
-	// so any out-of-band server message (Progress, Log, etc.) makes it
-	// through while the inspector buffers a Query packet.
+	// Server → agent: pure copy via the wrapped reader (delegates to
+	// the underlying bufio.Reader once the Hello bytes have been
+	// drained). Started before agent → server so any out-of-band
+	// server message (Progress, Log, etc.) makes it through while the
+	// inspector buffers a Query packet.
 	srvDone := make(chan struct{})
 	go func() {
-		_, _ = io.Copy(ch.Conn, upstream)
+		_, _ = io.Copy(ch.Conn, upstreamReader)
 		if cw, ok := ch.Conn.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
 		}
 		close(srvDone)
 	}()
 
-	chAgentToServer(ctx, ch, upstream, negotiatedRev, credName)
+	chAgentToServer(ctx, ch, agentReader, upstream, negotiatedRev, credName)
 
-	// Either side closing tears the other down via CloseWrite + EOF.
 	if cw, ok := upstream.(interface{ CloseWrite() error }); ok {
 		_ = cw.CloseWrite()
 	}
 	<-srvDone
 }
 
-// chReadAndForwardServerHello pulls bytes from upstream until the
-// server Hello has been fully buffered (just enough to extract the
-// revision), forwards them to the agent verbatim, and returns the
-// revision. Anything beyond the Hello that arrived in the same read
-// is forwarded too — modern servers sometimes include the addendum
-// random hash inline.
-func chReadAndForwardServerHello(upstream net.Conn, agent net.Conn) (uint64, error) {
-	buf := make([]byte, 0, 1024)
-	tmp := make([]byte, 4096)
-	for {
-		n, err := upstream.Read(tmp)
-		if n > 0 {
-			buf = append(buf, tmp[:n]...)
-			rev, parseErr := ParseChServerHelloRevision(buf)
-			if parseErr == nil {
-				if _, werr := agent.Write(buf); werr != nil {
-					return 0, fmt.Errorf("forward server hello: %w", werr)
-				}
-				return rev, nil
-			}
-			if parseErr != errChShortBuffer {
-				return 0, parseErr
-			}
-		}
-		if err != nil {
-			return 0, fmt.Errorf("read server hello: %w", err)
-		}
-		if len(buf) > 1<<20 {
-			return 0, fmt.Errorf("server hello exceeded 1 MiB without parsing")
-		}
-	}
-}
-
-// chAgentToServer pumps the agent's outbound bytes to the upstream,
-// inspecting the first Query packet for policy. Subsequent bytes
-// (post-Query Data blocks, future Query packets) flow verbatim — see
-// the iter 2.5 follow-up note in chRunSession's comment.
+// chAgentToServer is the agent → server transcoding pump. Each
+// iteration reads one packet code off the agent reader, dispatches
+// to a per-packet handler that decodes the body, and writes the
+// re-encoded packet to upstream. On policy deny the function writes
+// an Exception to the agent and returns; the caller closes the
+// connection.
 //
-// On policy deny the function writes an Exception packet to the
-// agent and returns; the caller closes the connection.
-func chAgentToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.Conn, revision uint64, credName string) {
-	buf := make([]byte, 0, 64*1024)
-	tmp := make([]byte, 32*1024)
-	inspected := false
+// Compression: every Query body is rewritten with `compression =
+// CompressionDisabled` so subsequent Data blocks arrive uncompressed
+// and lib/proto.Block.Decode reads them without an LZ4/ZSTD
+// dependency. The trade-off is bytes-on-wire on the inner hop —
+// accepted in PR #100 review.
+func chAgentToServer(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream io.Writer, revision int, credName string) {
 	for {
-		n, err := ch.Conn.Read(tmp)
-		if n > 0 {
-			buf = append(buf, tmp[:n]...)
-			if !inspected {
-				done, consumed, deny := chMaybeInspectQuery(ctx, ch, buf, revision, credName)
-				if deny {
-					return
-				}
-				if done {
-					inspected = true
-					if consumed > 0 {
-						if _, werr := upstream.Write(buf[:consumed]); werr != nil {
-							return
-						}
-						buf = buf[consumed:]
-					}
-					if len(buf) > 0 {
-						if _, werr := upstream.Write(buf); werr != nil {
-							return
-						}
-						buf = buf[:0]
-					}
-				}
-				// else: keep reading until we have a full packet.
-			} else {
-				if _, werr := upstream.Write(buf); werr != nil {
-					return
-				}
-				buf = buf[:0]
-			}
-		}
+		code, err := agentReader.UInt8()
 		if err != nil {
 			return
 		}
-		if !inspected && len(buf) > 4<<20 {
-			// First packet didn't parse within 4 MiB — probably an
-			// unsupported revision or malformed input. Stop trying to
-			// inspect and forward verbatim from here on.
-			chEmitError(ch, "query-parse-overflow", strconv.Itoa(len(buf)))
-			if _, werr := upstream.Write(buf); werr != nil {
+		switch chgoproto.ClientCode(code) {
+		case chgoproto.ClientCodeQuery:
+			if !chHandleQuery(ctx, ch, agentReader, upstream, revision, credName) {
 				return
 			}
-			buf = buf[:0]
-			inspected = true
+		case chgoproto.ClientCodeData:
+			if !chHandleData(ch, agentReader, upstream, revision) {
+				return
+			}
+		case chgoproto.ClientCodeCancel, chgoproto.ClientCodePing:
+			// Headerless packets — single byte, forward verbatim.
+			if _, werr := upstream.Write([]byte{code}); werr != nil {
+				return
+			}
+		default:
+			// Unknown / future packet type — log and stop. We can't
+			// safely forward an unknown packet because we don't know
+			// its body length to skip past it.
+			chEmitError(ch, "unknown-client-packet", strconv.Itoa(int(code)))
+			return
 		}
 	}
 }
 
-// chMaybeInspectQuery attempts to parse a complete client packet from
-// buf. Returns:
+// chHandleQuery decodes one client Query packet, runs the SQL through
+// the matcher, rewrites the compression flag to Disabled, and
+// forwards the re-encoded packet to upstream.
 //
-//	done = true when a packet was fully decoded
-//	consumed = bytes the runtime should forward (or drop, on deny)
-//	deny = true when the runtime should close the connection
-//
-// On a Query packet the function runs the matcher + Approve chain,
-// emits the per-query event, and either lets the caller forward
-// (allow / approved) or writes the Exception + signals deny.
-//
-// On a non-Query packet the function returns done=true with consumed
-// covering only the first byte — non-Query packets are forwarded
-// verbatim and inspection stops; the rest of the connection becomes
-// a transparent pipe.
-func chMaybeInspectQuery(ctx context.Context, ch *runtime.ConnHandle, buf []byte, revision uint64, credName string) (done bool, consumed int, deny bool) {
-	pktType, _, err := readChVarUInt(buf, 0)
-	if err == errChShortBuffer {
-		return false, 0, false
+// Returns false on policy deny (caller tears down the connection)
+// or transport error.
+func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream io.Writer, revision int, credName string) bool {
+	var q chgoproto.Query
+	if err := q.DecodeAware(agentReader, revision); err != nil {
+		chEmitError(ch, "query-decode", err.Error())
+		return false
 	}
-	if err != nil {
-		chEmitError(ch, "client-packet-type", err.Error())
-		return true, 0, false
-	}
-	if pktType != chClientPacketQuery {
-		// Cancel/Ping/etc. — let the verbatim pump take over.
-		return true, 0, false
-	}
-	if revision < chMinRevWithSettingsAsStrings {
-		// Pre-21.x clients: skip inspection and forward.
-		chEmitError(ch, "unsupported-revision", strconv.FormatUint(revision, 10))
-		return true, 0, false
-	}
-	view, perr := ParseChQuery(buf, revision)
-	if perr == errChShortBuffer {
-		return false, 0, false
-	}
-	if perr != nil {
-		chEmitError(ch, "query-parse", perr.Error())
-		// Fall back to verbatim forwarding rather than denying — a
-		// parser miss on an exotic field set shouldn't break the
-		// agent.
-		return true, 0, false
-	}
-	verdict, reason := chEvaluateSQL(ctx, ch, view.SQL, credName)
+	verdict, reason := chEvaluateSQL(ctx, ch, q.Body, credName)
 	if verdict == "deny" {
-		_, _ = ch.Conn.Write(SerializeChException(497, reason))
+		_, _ = ch.Conn.Write(chEncodeException(reason))
 		log.Printf("clickhouse_native %s deny %s: %s",
 			ch.Endpoint.Name, ch.PeerIP, reason)
-		return true, 0, true
+		return false
 	}
-	return true, view.End, false
+
+	// Force compression off so subsequent Data blocks decode without
+	// LZ4/ZSTD support.
+	q.Compression = chgoproto.CompressionDisabled
+
+	var b chgoproto.Buffer
+	q.EncodeAware(&b, revision)
+	if _, werr := upstream.Write(b.Buf); werr != nil {
+		return false
+	}
+	return true
+}
+
+// chHandleData decodes one client Data packet (table-name header +
+// uncompressed Block), passes it to the matcher's optional
+// block-aware hook (today: a no-op event for visibility), and
+// forwards the re-encoded packet upstream.
+func chHandleData(ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream io.Writer, revision int) bool {
+	var hdr chgoproto.ClientData
+	if err := hdr.DecodeAware(agentReader, revision); err != nil {
+		chEmitError(ch, "data-header-decode", err.Error())
+		return false
+	}
+	block := chproto.NewBlock()
+	if err := block.Decode(agentReader, uint64(revision)); err != nil {
+		chEmitError(ch, "data-block-decode", err.Error())
+		return false
+	}
+	if ch.Emit != nil {
+		summary := fmt.Sprintf("data table=%q rows=%d cols=%d", hdr.TableName, block.Rows(), len(block.Columns))
+		ch.Emit(runtime.ConnEvent{Action: "allow", Verb: "data", Summary: summary})
+	}
+
+	var b chgoproto.Buffer
+	b.PutByte(byte(chgoproto.ClientCodeData))
+	hdr.EncodeAware(&b, revision)
+	if err := block.Encode(&b, uint64(revision)); err != nil {
+		chEmitError(ch, "data-block-encode", err.Error())
+		return false
+	}
+	if _, werr := upstream.Write(b.Buf); werr != nil {
+		return false
+	}
+	return true
 }
 
 // chEvaluateSQL runs SQL through the endpoint's compiled rules. The
@@ -546,11 +465,6 @@ func chPickCredential(ep *config.CompiledEndpoint) *config.CompiledCredential {
 //     port (rare but legal).
 //  3. first non-empty host — single-host endpoint, or the operator
 //     just declared one.
-//
-// hosts entries are normalized by EndpointHosts to host:port so the
-// helper can split cleanly; defaultPort is the plugin's fallback
-// (9000 plaintext / 9440 TLS) used only when an entry slipped through
-// without a port.
 func chPickUpstream(hosts []string, upstreamHost string, dstPort uint16, defaultPort int) string {
 	if upstreamHost != "" && dstPort != 0 {
 		return net.JoinHostPort(upstreamHost, strconv.Itoa(int(dstPort)))
@@ -588,40 +502,4 @@ func chHostPort(addr string) (string, int) {
 		return h, 0
 	}
 	return h, port
-}
-
-// chReadHello reads from r until enough bytes have arrived to fully
-// decode a client Hello. Returns the parsed packet and any leftover
-// bytes already pulled past the Hello (rare — clients usually wait
-// for ServerHello before sending more — but possible).
-//
-// ClickHouse's native protocol prefixes nothing about packet length:
-// the Hello is a sequence of VarUInt + length-prefixed strings.
-// ParseChHello is incremental — we attempt a parse on each read and
-// retry when errChShortBuffer surfaces.
-func chReadHello(r io.Reader) (ChHello, []byte, error) {
-	buf := make([]byte, 0, 1024)
-	tmp := make([]byte, 4096)
-	for {
-		n, readErr := r.Read(tmp)
-		if n > 0 {
-			buf = append(buf, tmp[:n]...)
-			h, consumed, err := ParseChHello(buf)
-			if err == nil {
-				return h, buf[consumed:], nil
-			}
-			if err != errChShortBuffer {
-				return ChHello{}, nil, err
-			}
-		}
-		if readErr != nil {
-			if readErr == io.EOF && len(buf) > 0 {
-				return ChHello{}, nil, fmt.Errorf("hello truncated after %d bytes", len(buf))
-			}
-			return ChHello{}, nil, readErr
-		}
-		if len(buf) > 1<<20 {
-			return ChHello{}, nil, fmt.Errorf("hello exceeded 1 MiB without parsing")
-		}
-	}
 }

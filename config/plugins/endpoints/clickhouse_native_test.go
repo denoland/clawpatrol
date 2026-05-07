@@ -5,8 +5,8 @@ import (
 	"context"
 	"net"
 	"testing"
-	"time"
 
+	chgoproto "github.com/ClickHouse/ch-go/proto"
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/denoland/clawpatrol/config"
@@ -14,104 +14,22 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
-// chBuildClientInfo writes a representative ClientInfo block for the
-// given revision, mirroring the order ClickHouse's
-// src/Interpreters/ClientInfo.cpp::write produces. Tests use it to
-// hand the parser realistic Query packets without re-implementing
-// the field set inline at every call site.
-func chBuildClientInfo(rev uint64) []byte {
-	var b []byte
-	b = append(b, 1) // query_kind = INITIAL_QUERY
-	b = appendChString(b, "alice")
-	b = appendChString(b, "qid-1")
-	b = appendChString(b, "127.0.0.1:0")
-	if rev >= chMinRevWithInitialQueryStartTime {
-		b = append(b, make([]byte, 8)...) // initial_query_start_time
-	}
-	b = append(b, byte(chClientInterfaceTCP))
-	b = appendChString(b, "alice-os")
-	b = appendChString(b, "host")
-	b = appendChString(b, "ClickHouse client")
-	b = appendChVarUInt(b, 24)
-	b = appendChVarUInt(b, 8)
-	b = appendChVarUInt(b, rev)
-	if rev >= chMinRevWithQuotaKeyInClientInfo {
-		b = appendChString(b, "")
-	}
-	if rev >= chMinRevWithDistributedDepth {
-		b = appendChVarUInt(b, 0)
-	}
-	if rev >= chMinRevWithVersionPatch {
-		b = appendChVarUInt(b, 0)
-	}
-	if rev >= chMinRevWithOpenTelemetry {
-		b = append(b, 0) // trace_present = 0
-	}
-	if rev >= chMinRevWithParallelReplicas {
-		b = appendChVarUInt(b, 0)
-		b = appendChVarUInt(b, 0)
-		b = appendChVarUInt(b, 0)
-	}
-	return b
+// chBuildHelloWire produces the byte-for-byte ClientHello packet a
+// real client would send. ch-go/proto.ClientHello.Encode already
+// emits the leading ClientCodeHello byte, so this is just a wrapper
+// around chEncodeHello that exists to flag the asymmetry with
+// chReadHello (which expects the caller to consume the code byte
+// before invoking ClientHello.Decode).
+func chBuildHelloWire(t *testing.T, h ChHello) []byte {
+	t.Helper()
+	return chEncodeHello(h)
 }
 
-// chBuildQuery builds a complete client Query packet for the given
-// revision: header + ClientInfo + (empty) settings + (optional)
-// interserver secret + stage + compression + sql + (optional) empty
-// parameters.
-func chBuildQuery(rev uint64, sql string) []byte {
-	var b []byte
-	b = appendChVarUInt(b, chClientPacketQuery)
-	b = appendChString(b, "qid-1")
-	if rev >= chMinRevWithClientInfo {
-		b = append(b, chBuildClientInfo(rev)...)
-	}
-	// Settings — empty: just the terminator empty key.
-	b = appendChString(b, "")
-	if rev >= chMinRevWithInterserverSecret {
-		b = appendChString(b, "")
-	}
-	b = appendChVarUInt(b, 2) // stage = Complete
-	b = appendChVarUInt(b, 0) // compression = Disable
-	b = appendChString(b, sql)
-	if rev >= chMinRevWithParameters {
-		b = appendChString(b, "")
-	}
-	return b
-}
-
-// TestChVarUInt exercises the LEB128 varint helpers across the byte
-// boundaries that matter on the wire (single-byte, two-byte rollover,
-// the protocol-revision range that real ClickHouse clients land in).
-func TestChVarUInt(t *testing.T) {
-	cases := []uint64{0, 1, 0x7f, 0x80, 0x3fff, 54448 /* recent CH revision */, 1 << 28, 1 << 50, ^uint64(0)}
-	for _, v := range cases {
-		buf := appendChVarUInt(nil, v)
-		got, n, err := readChVarUInt(buf, 0)
-		if err != nil {
-			t.Fatalf("readChVarUInt(%d): %v", v, err)
-		}
-		if got != v {
-			t.Errorf("varuint roundtrip: got %d, want %d (bytes=%v)", got, v, buf)
-		}
-		if n != len(buf) {
-			t.Errorf("varuint(%d) consumed %d bytes, want %d", v, n, len(buf))
-		}
-	}
-}
-
-func TestChVarUIntShortBuffer(t *testing.T) {
-	// 0x80 alone signals "more bytes follow" but there are none.
-	if _, _, err := readChVarUInt([]byte{0x80}, 0); err != errChShortBuffer {
-		t.Fatalf("readChVarUInt(short): err = %v, want errChShortBuffer", err)
-	}
-}
-
-// TestChHelloRoundtrip verifies that parse(serialize(h)) == h for a
-// representative client Hello.
+// TestChHelloRoundtrip verifies that decode(encode(h)) returns the
+// same fields, end-to-end across the gateway's (encode → wire → ch-go
+// decode) pipeline.
 func TestChHelloRoundtrip(t *testing.T) {
 	h := ChHello{
-		PacketType:       0,
 		ClientName:       "ClickHouse client",
 		VersionMajor:     24,
 		VersionMinor:     8,
@@ -120,13 +38,11 @@ func TestChHelloRoundtrip(t *testing.T) {
 		Username:         "alice",
 		Password:         "hunter2",
 	}
-	wire := SerializeChHello(h)
-	got, n, err := ParseChHello(wire)
+	wire := chBuildHelloWire(t, h)
+
+	got, _, err := chReadHello(bytes.NewReader(wire))
 	if err != nil {
-		t.Fatalf("ParseChHello: %v", err)
-	}
-	if n != len(wire) {
-		t.Errorf("ParseChHello consumed %d, want %d", n, len(wire))
+		t.Fatalf("chReadHello: %v", err)
 	}
 	if diff := cmp.Diff(h, got); diff != "" {
 		t.Errorf("hello mismatch (-want +got):\n%s", diff)
@@ -134,13 +50,12 @@ func TestChHelloRoundtrip(t *testing.T) {
 }
 
 // TestChHelloPlaceholderInjection mirrors the gateway's rewrite path:
-// parse → swap username/password → serialize. The rewritten bytes
-// must (a) decode back to the new fields and (b) preserve every other
+// decode → swap username/password → encode. The rewritten bytes must
+// (a) decode back to the new fields and (b) preserve every other
 // field byte-for-byte so the upstream sees the agent's exact client
 // metadata.
 func TestChHelloPlaceholderInjection(t *testing.T) {
 	original := ChHello{
-		PacketType:       0,
 		ClientName:       "agent-cli",
 		VersionMajor:     1,
 		VersionMinor:     0,
@@ -149,24 +64,23 @@ func TestChHelloPlaceholderInjection(t *testing.T) {
 		Username:         "CLAWPATROL_PH_user",
 		Password:         "CLAWPATROL_PH_pass",
 	}
-	wire := SerializeChHello(original)
+	wire := chBuildHelloWire(t, original)
 
-	parsed, _, err := ParseChHello(wire)
+	parsed, _, err := chReadHello(bytes.NewReader(wire))
 	if err != nil {
-		t.Fatalf("ParseChHello: %v", err)
+		t.Fatalf("chReadHello: %v", err)
 	}
 	parsed.Username = "real-user"
 	parsed.Password = "real-pass"
-	rewritten := SerializeChHello(parsed)
+	rewrittenWire := chBuildHelloWire(t, parsed)
 
-	final, _, err := ParseChHello(rewritten)
+	final, _, err := chReadHello(bytes.NewReader(rewrittenWire))
 	if err != nil {
-		t.Fatalf("ParseChHello rewritten: %v", err)
+		t.Fatalf("chReadHello rewritten: %v", err)
 	}
 	if final.Username != "real-user" || final.Password != "real-pass" {
 		t.Errorf("injection failed: got user=%q pass=%q", final.Username, final.Password)
 	}
-	// Non-credential fields untouched.
 	if final.ClientName != original.ClientName ||
 		final.Database != original.Database ||
 		final.VersionMajor != original.VersionMajor ||
@@ -175,89 +89,153 @@ func TestChHelloPlaceholderInjection(t *testing.T) {
 	}
 }
 
-// TestChHelloShortBuffer drives the incremental-parse contract
-// HandleConn relies on: when the buffer ends mid-packet, the parser
-// returns errChShortBuffer so the caller can read more bytes.
-func TestChHelloShortBuffer(t *testing.T) {
-	wire := SerializeChHello(ChHello{
-		PacketType:       0,
-		ClientName:       "ClickHouse client",
-		VersionMajor:     24,
-		VersionMinor:     8,
-		ProtocolRevision: 54448,
-		Database:         "analytics",
-		Username:         "alice",
-		Password:         "hunter2",
-	})
-	for cut := 0; cut < len(wire); cut++ {
-		_, _, err := ParseChHello(wire[:cut])
-		if err != errChShortBuffer {
-			t.Errorf("ParseChHello(prefix len=%d): err = %v, want errChShortBuffer", cut, err)
-		}
-	}
-}
-
-// TestChHelloRejectsNonHello asserts that the parser refuses packets
-// whose first VarUInt isn't 0 (Hello). Important because the runtime
-// dispatches off the result and we don't want a Query packet to be
-// silently treated as a Hello.
+// TestChHelloRejectsNonHello asserts chReadHello refuses packets whose
+// leading code isn't ClientCodeHello (0). Important because the
+// runtime branches off the result and we don't want a Query packet to
+// be silently treated as a Hello.
 func TestChHelloRejectsNonHello(t *testing.T) {
-	bad := appendChVarUInt(nil, 1) // packet type 1 = Query
-	bad = appendChString(bad, "x")
-	if _, _, err := ParseChHello(bad); err == nil {
-		t.Errorf("ParseChHello accepted non-Hello packet")
+	bad := []byte{byte(chgoproto.ClientCodeQuery)}
+	if _, _, err := chReadHello(bytes.NewReader(bad)); err == nil {
+		t.Errorf("chReadHello accepted non-Hello packet")
 	}
 }
 
-// TestChHelloPreservesTrailing confirms post-password bytes (addendum
-// data, inline pipelined packets) survive a parse + serialize cycle
-// when reattached.
-func TestChHelloPreservesTrailing(t *testing.T) {
-	h := ChHello{
-		PacketType:       0,
-		ClientName:       "c",
-		VersionMajor:     1,
-		VersionMinor:     0,
-		ProtocolRevision: 54448,
-		Database:         "d",
-		Username:         "u",
-		Password:         "p",
-		Trailing:         []byte{0xde, 0xad, 0xbe, 0xef},
-	}
-	wire := SerializeChHello(h)
-	parsed, consumed, err := ParseChHello(wire)
+// TestChEncodeException pins the Exception-packet wire format the
+// runtime emits on policy deny: ServerCodeException byte, error code
+// 497 (ACCESS_DENIED), exception name "DB::Exception", caller-
+// supplied message, empty stack, and has_nested = 0. ClickHouse
+// clients render the message as
+// "DB::Exception: ACCESS_DENIED: <reason>" on the user-facing side.
+func TestChEncodeException(t *testing.T) {
+	const reason = "denied by policy"
+	out := chEncodeException(reason)
+
+	r := chgoproto.NewReader(bytes.NewReader(out))
+	code, err := r.UInt8()
 	if err != nil {
-		t.Fatalf("ParseChHello: %v", err)
+		t.Fatalf("read packet code: %v", err)
 	}
-	if !bytes.Equal(wire[consumed:], h.Trailing) {
-		t.Errorf("trailing bytes lost: got %x, want %x", wire[consumed:], h.Trailing)
+	if chgoproto.ServerCode(code) != chgoproto.ServerCodeException {
+		t.Errorf("packet code = %d, want %d", code, chgoproto.ServerCodeException)
 	}
-	parsed.Trailing = wire[consumed:]
-	if !bytes.Equal(SerializeChHello(parsed), wire) {
-		t.Errorf("serialize(parse(wire)) != wire")
+	var exc chgoproto.Exception
+	if err := exc.DecodeAware(r, 0); err != nil {
+		t.Fatalf("decode exception: %v", err)
+	}
+	if exc.Code != chgoproto.ErrAccessDenied {
+		t.Errorf("Code = %d, want %d", exc.Code, chgoproto.ErrAccessDenied)
+	}
+	if exc.Name != "DB::Exception" {
+		t.Errorf("Name = %q, want DB::Exception", exc.Name)
+	}
+	if exc.Message != reason {
+		t.Errorf("Message = %q, want %q", exc.Message, reason)
+	}
+	if exc.Stack != "" {
+		t.Errorf("Stack = %q, want empty", exc.Stack)
+	}
+	if exc.Nested {
+		t.Errorf("Nested = true, want false")
 	}
 }
 
-// TestChHelloRejectsInvalidUTF8 confirms that the string reader
-// refuses non-UTF-8 bytes inside a length-prefixed string. Defends
-// the per-session log + ConnEvent surface against arbitrary-byte
-// peers.
-func TestChHelloRejectsInvalidUTF8(t *testing.T) {
-	// Build a Hello where client_name carries a stray 0xff (invalid
-	// UTF-8 lead byte). Hand-craft the wire bytes — the serializer
-	// won't produce these from a string.
-	var wire []byte
-	wire = appendChVarUInt(wire, 0)        // packet type Hello
-	wire = appendChVarUInt(wire, 1)        // client_name length
-	wire = append(wire, 0xff)              // invalid UTF-8 byte
-	wire = appendChVarUInt(wire, 1)        // major
-	wire = appendChVarUInt(wire, 0)        // minor
-	wire = appendChVarUInt(wire, 54448)    // revision
-	wire = appendChString(wire, "default") // database
-	wire = appendChString(wire, "u")       // user
-	wire = appendChString(wire, "p")       // password
-	if _, _, err := ParseChHello(wire); err == nil {
-		t.Errorf("ParseChHello accepted invalid UTF-8 in client_name")
+// TestParseChSQL covers the matcher-input extractor across the rule
+// shapes the v14 SQL family supports: verb derivation from the
+// statement type, table refs walked out of FROM/JOIN/INTO/DROP TABLE,
+// trailing FORMAT/SETTINGS chopped before the AST parser sees them
+// (the parser doesn't accept those in every position the server
+// does), and the parser-failure fallback.
+func TestParseChSQL(t *testing.T) {
+	cases := []struct {
+		name string
+		sql  string
+		want chSQLInfo
+	}{
+		{
+			"select with format trailer",
+			"SELECT id FROM users FORMAT JSON",
+			chSQLInfo{
+				Verb:      "select",
+				Tables:    []string{"users"},
+				Statement: "SELECT id FROM users FORMAT JSON",
+			},
+		},
+		{
+			"insert with settings trailer",
+			"INSERT INTO events (ts, body) VALUES (now(), 'x') SETTINGS max_insert_threads = 4",
+			chSQLInfo{
+				Verb:      "insert",
+				Tables:    []string{"events"},
+				Statement: "INSERT INTO events (ts, body) VALUES (now(), 'x') SETTINGS max_insert_threads = 4",
+			},
+		},
+		{
+			"select aggregate function",
+			"SELECT count() FROM events",
+			chSQLInfo{
+				Verb:      "select",
+				Tables:    []string{"events"},
+				Functions: []string{"count"},
+				Statement: "SELECT count() FROM events",
+			},
+		},
+		{
+			"join extracts both tables",
+			"SELECT u.id FROM users u JOIN tokens t ON t.user_id = u.id",
+			chSQLInfo{
+				Verb:      "select",
+				Tables:    []string{"tokens", "users"},
+				Statement: "SELECT u.id FROM users u JOIN tokens t ON t.user_id = u.id",
+			},
+		},
+		{
+			"drop table",
+			"DROP TABLE events",
+			chSQLInfo{
+				Verb:      "drop",
+				Tables:    []string{"events"},
+				Statement: "DROP TABLE events",
+			},
+		},
+		{
+			"qualified table preserves db",
+			"SELECT * FROM analytics.events",
+			chSQLInfo{
+				Verb:      "select",
+				Tables:    []string{"analytics.events"},
+				Statement: "SELECT * FROM analytics.events",
+			},
+		},
+		{
+			"empty sql preserved",
+			"",
+			chSQLInfo{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseChSQL(tc.sql)
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("parseChSQL mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestParseChSQLVerbFallback covers the parser-failure path: when
+// AfterShip's parser rejects the syntax (some ALTER permutations,
+// non-standard system commands, …) we still surface a verb sniffed
+// from the first keyword so verb-based rules keep firing.
+func TestParseChSQLVerbFallback(t *testing.T) {
+	// Construct an input the AST parser will refuse but the sniffer
+	// can still produce "system" out of.
+	sql := "SYSTEM ${{not_a_real_thing}}"
+	got := parseChSQL(sql)
+	if got.Verb != "system" {
+		t.Errorf("fallback verb = %q, want system", got.Verb)
+	}
+	if got.Statement != sql {
+		t.Errorf("fallback dropped Statement: %q", got.Statement)
 	}
 }
 
@@ -371,232 +349,6 @@ func TestChHostPort(t *testing.T) {
 			t.Errorf("chHostPort(%q) = (%q,%d), want (%q,%d)",
 				c.addr, h, p, c.wantHost, c.wantPort)
 		}
-	}
-}
-
-// TestParseChQueryRevisions exercises the Query packet parser across
-// the revisions modern ClickHouse clients negotiate. The parser must
-// extract the SQL string regardless of which OpenTelemetry / parallel-
-// replicas / parameters fields are present — these toggle on at fixed
-// rev gates and shift every subsequent field's offset.
-func TestParseChQueryRevisions(t *testing.T) {
-	const sample = "SELECT id FROM users WHERE id = 1"
-	for _, rev := range []uint64{
-		chMinRevWithSettingsAsStrings,     // 54429: lower bound we support
-		chMinRevWithInterserverSecret,     // 54441
-		chMinRevWithOpenTelemetry,         // 54442
-		chMinRevWithParallelReplicas,      // 54447
-		chMinRevWithDistributedDepth,      // 54448
-		chMinRevWithInitialQueryStartTime, // 54449
-		chMinRevWithParameters,            // 54459
-		54470,                             // beyond known gates: parser must still find the SQL
-	} {
-		buf := chBuildQuery(rev, sample)
-		view, err := ParseChQuery(buf, rev)
-		if err != nil {
-			t.Fatalf("rev %d: ParseChQuery: %v", rev, err)
-		}
-		if view.SQL != sample {
-			t.Errorf("rev %d: SQL = %q, want %q", rev, view.SQL, sample)
-		}
-		if view.End != len(buf) {
-			t.Errorf("rev %d: End = %d, want %d", rev, view.End, len(buf))
-		}
-	}
-}
-
-// TestParseChQueryShortBuffer drives the incremental-parse contract
-// the runtime relies on: the parser must signal errChShortBuffer at
-// every byte boundary so the read loop can pull more bytes and retry.
-func TestParseChQueryShortBuffer(t *testing.T) {
-	rev := uint64(chMinRevWithParameters)
-	buf := chBuildQuery(rev, "SELECT 1")
-	for cut := 0; cut < len(buf); cut++ {
-		_, err := ParseChQuery(buf[:cut], rev)
-		if err != errChShortBuffer {
-			t.Errorf("ParseChQuery(prefix=%d): err = %v, want errChShortBuffer", cut, err)
-		}
-	}
-}
-
-// TestParseChQueryRejectsLowRevision pins the lower-bound gate: pre-
-// 21.x clients (rev < chMinRevWithSettingsAsStrings) use a
-// type-prefixed BINARY settings format the parser doesn't implement.
-// The error lets the runtime fall back to verbatim forwarding.
-func TestParseChQueryRejectsLowRevision(t *testing.T) {
-	if _, err := ParseChQuery([]byte{0x01}, chMinRevWithSettingsAsStrings-1); err == errChShortBuffer || err == nil {
-		t.Fatalf("ParseChQuery(low rev): err = %v, want non-short-buffer error", err)
-	}
-}
-
-// TestParseChQueryRejectsNonQuery confirms the parser refuses non-
-// Query packets — important for the runtime's "first client packet"
-// branch where a Cancel or Ping must take the verbatim path.
-func TestParseChQueryRejectsNonQuery(t *testing.T) {
-	buf := appendChVarUInt(nil, chClientPacketCancel)
-	if _, err := ParseChQuery(buf, chMinRevWithParameters); err == nil {
-		t.Errorf("ParseChQuery accepted non-Query packet")
-	}
-}
-
-// TestParseChServerHelloRevision pulls just the negotiated revision
-// out of a server Hello — the runtime forwards the full bytes
-// verbatim, this helper exists to gate Query-packet parsing on the
-// negotiated revision.
-func TestParseChServerHelloRevision(t *testing.T) {
-	want := uint64(54470)
-	var buf []byte
-	buf = appendChVarUInt(buf, chServerPacketHello)
-	buf = appendChString(buf, "ClickHouse")
-	buf = appendChVarUInt(buf, 24)
-	buf = appendChVarUInt(buf, 8)
-	buf = appendChVarUInt(buf, want)
-	buf = appendChString(buf, "Etc/UTC")
-	got, err := ParseChServerHelloRevision(buf)
-	if err != nil {
-		t.Fatalf("ParseChServerHelloRevision: %v", err)
-	}
-	if got != want {
-		t.Errorf("revision = %d, want %d", got, want)
-	}
-}
-
-// TestParseChServerHelloRevisionRejectsException covers the pre-Hello
-// upstream-error path: a misconfigured server can reply with an
-// Exception packet where we expected a Hello. The runtime needs a
-// distinct error so it doesn't silently mistake server bytes for a
-// Hello.
-func TestParseChServerHelloRevisionRejectsException(t *testing.T) {
-	buf := appendChVarUInt(nil, chServerPacketException)
-	if _, err := ParseChServerHelloRevision(buf); err == nil {
-		t.Errorf("ParseChServerHelloRevision accepted Exception packet")
-	}
-}
-
-// TestParseChSQL covers the matcher-input lexer's coverage of the v14
-// rule shapes: verb extraction, table refs across FROM/JOIN/INTO,
-// stripping ClickHouse trailers (FORMAT, SETTINGS) before regex
-// extraction, and comment handling.
-func TestParseChSQL(t *testing.T) {
-	cases := []struct {
-		name string
-		sql  string
-		want chSQLInfo
-	}{
-		{
-			"select with format trailer",
-			"SELECT id FROM users FORMAT JSON",
-			chSQLInfo{
-				Verb:      "select",
-				Tables:    []string{"users"},
-				Functions: nil,
-				Statement: "SELECT id FROM users FORMAT JSON",
-			},
-		},
-		{
-			"insert with settings trailer",
-			"INSERT INTO events (ts, body) VALUES (now(), 'x') SETTINGS max_insert_threads = 4",
-			chSQLInfo{
-				Verb:      "insert",
-				Tables:    []string{"events"},
-				Functions: []string{"events", "values", "now"},
-				Statement: "INSERT INTO events (ts, body) VALUES (now(), 'x') SETTINGS max_insert_threads = 4",
-			},
-		},
-		{
-			"line comments stripped",
-			"-- audit\nSELECT id FROM secrets",
-			chSQLInfo{
-				Verb:      "select",
-				Tables:    []string{"secrets"},
-				Functions: nil,
-				Statement: "-- audit\nSELECT id FROM secrets",
-			},
-		},
-		{
-			"block comments stripped",
-			"/* note */ SELECT count() FROM events",
-			chSQLInfo{
-				Verb:      "select",
-				Tables:    []string{"events"},
-				Functions: []string{"count"},
-				Statement: "/* note */ SELECT count() FROM events",
-			},
-		},
-		{
-			"join extracts both tables",
-			"SELECT u.id FROM users u JOIN tokens t ON t.user_id = u.id",
-			chSQLInfo{
-				Verb:      "select",
-				Tables:    []string{"users", "tokens"},
-				Functions: nil,
-				Statement: "SELECT u.id FROM users u JOIN tokens t ON t.user_id = u.id",
-			},
-		},
-		{
-			"empty sql preserved",
-			"",
-			chSQLInfo{},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := parseChSQL(tc.sql)
-			if diff := cmp.Diff(tc.want, got); diff != "" {
-				t.Errorf("parseChSQL mismatch (-want +got):\n%s", diff)
-			}
-		})
-	}
-}
-
-// TestSerializeChException pins the Exception-packet wire format the
-// runtime emits on policy deny. ClickHouse client renders the
-// display_text — we assert the leading varuint type, error code,
-// and string offsets are recoverable so the agent can read the
-// reason out cleanly.
-func TestSerializeChException(t *testing.T) {
-	out := SerializeChException(497, "denied by policy")
-
-	// type
-	pkt, n, err := readChVarUInt(out, 0)
-	if err != nil {
-		t.Fatalf("readChVarUInt: %v", err)
-	}
-	if pkt != chServerPacketException {
-		t.Errorf("packet type = %d, want %d", pkt, chServerPacketException)
-	}
-	off := n
-
-	// 4-byte LE error code
-	if off+4 > len(out) {
-		t.Fatalf("buffer too short for error code")
-	}
-	got := uint32(out[off]) | uint32(out[off+1])<<8 | uint32(out[off+2])<<16 | uint32(out[off+3])<<24
-	if got != 497 {
-		t.Errorf("error code = %d, want 497", got)
-	}
-	off += 4
-
-	name, n, err := readChString(out, off)
-	if err != nil || name != "DB::Exception" {
-		t.Errorf("name = %q err=%v, want DB::Exception", name, err)
-	}
-	off += n
-	display, n, err := readChString(out, off)
-	if err != nil || display != "denied by policy" {
-		t.Errorf("display = %q err=%v, want %q", display, err, "denied by policy")
-	}
-	off += n
-	stack, n, err := readChString(out, off)
-	if err != nil || stack != "" {
-		t.Errorf("stack = %q err=%v, want empty", stack, err)
-	}
-	off += n
-	if off != len(out)-1 {
-		t.Errorf("trailing has_nested byte at wrong offset (off=%d len=%d)", off, len(out))
-	}
-	if out[len(out)-1] != 0 {
-		t.Errorf("has_nested byte = %d, want 0", out[len(out)-1])
 	}
 }
 
@@ -747,98 +499,112 @@ func TestChEvaluateSQLApproveChain(t *testing.T) {
 	})
 }
 
-// TestChMaybeInspectQueryDenyWritesException drives the runtime's
-// inspector end-to-end on an in-memory pipe: a Query packet whose
-// SQL trips a deny rule must (a) cause the function to signal deny
-// and (b) write a server-side Exception packet onto the agent
-// connection.
-func TestChMaybeInspectQueryDenyWritesException(t *testing.T) {
+// TestChAgentToServerForwardsQuery exercises the agent → server pump
+// end-to-end: build a Query packet on the "agent" side of an
+// in-memory pipe, run chAgentToServer with an upstream io.Writer
+// capturing the rewritten bytes, then assert that (a) the upstream
+// packet decodes back to a Query with the same SQL body and (b) the
+// Compression flag has been forced to Disabled regardless of what
+// the agent sent.
+func TestChAgentToServerForwardsQuery(t *testing.T) {
+	const sql = "SELECT 1"
+	const revision = 54448
+
+	mock, _ := chNewMockHandle(t, chBuildEndpoint(t))
+	defer mock.Conn.Close()
+
+	// Agent-side bytes: ClientCodeQuery byte + Query body with
+	// CompressionEnabled to verify the runtime overwrites it.
+	q := chgoproto.Query{
+		ID:          "qid-1",
+		Body:        sql,
+		Stage:       chgoproto.StageComplete,
+		Compression: chgoproto.CompressionEnabled,
+		Info: chgoproto.ClientInfo{
+			ProtocolVersion: revision,
+			Major:           24,
+			Minor:           8,
+			Interface:       chgoproto.InterfaceTCP,
+			Query:           chgoproto.ClientQueryInitial,
+			InitialUser:     "alice",
+		},
+	}
+	// Query.EncodeAware emits the ClientCodeQuery byte itself.
+	var agentBuf chgoproto.Buffer
+	q.EncodeAware(&agentBuf, revision)
+
+	// chAgentToServer reads from a chgoproto.Reader; close the input
+	// after the packet so the loop hits EOF and returns.
+	reader := chgoproto.NewReader(bytes.NewReader(agentBuf.Buf))
+	var upstream bytes.Buffer
+
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
+
+	if upstream.Len() == 0 {
+		t.Fatal("upstream got no bytes")
+	}
+	out := upstream.Bytes()
+	if chgoproto.ClientCode(out[0]) != chgoproto.ClientCodeQuery {
+		t.Fatalf("upstream packet code = %d, want ClientCodeQuery", out[0])
+	}
+	r := chgoproto.NewReader(bytes.NewReader(out[1:]))
+	var got chgoproto.Query
+	if err := got.DecodeAware(r, revision); err != nil {
+		t.Fatalf("decode upstream Query: %v", err)
+	}
+	if got.Body != sql {
+		t.Errorf("Body = %q, want %q", got.Body, sql)
+	}
+	if got.Compression != chgoproto.CompressionDisabled {
+		t.Errorf("Compression = %d, want Disabled", got.Compression)
+	}
+}
+
+// TestChAgentToServerDeniesQuery confirms the deny path: a Query
+// matched by a deny rule must (a) write a server Exception packet to
+// the agent's Conn and (b) NOT forward anything to upstream.
+func TestChAgentToServerDeniesQuery(t *testing.T) {
+	const sql = "INSERT INTO events VALUES (1)"
+	const revision = 54448
+
 	rule := chRuleSQL(t, "deny-insert",
 		map[string]any{"verb": []any{"insert"}}, "deny", "writes blocked", 100)
 	ep := chBuildEndpoint(t, rule)
-
 	mock, agentSide := chNewMockHandle(t, ep)
 	defer agentSide.Close()
 	defer mock.Conn.Close()
 
-	rev := uint64(chMinRevWithParameters)
-	pkt := chBuildQuery(rev, "INSERT INTO events VALUES (1)")
+	q := chgoproto.Query{
+		ID: "qid-1", Body: sql,
+		Stage: chgoproto.StageComplete,
+		Info: chgoproto.ClientInfo{
+			ProtocolVersion: revision, Major: 24, Minor: 8,
+			Interface:   chgoproto.InterfaceTCP,
+			Query:       chgoproto.ClientQueryInitial,
+			InitialUser: "alice",
+		},
+	}
+	// Query.EncodeAware emits the ClientCodeQuery byte itself.
+	var agentBuf chgoproto.Buffer
+	q.EncodeAware(&agentBuf, revision)
+	reader := chgoproto.NewReader(bytes.NewReader(agentBuf.Buf))
+	var upstream bytes.Buffer
 
 	read := make(chan []byte, 1)
 	go func() {
 		buf := make([]byte, 4096)
-		_ = agentSide.SetReadDeadline(time.Now().Add(2 * time.Second))
 		n, _ := agentSide.Read(buf)
 		read <- append([]byte(nil), buf[:n]...)
 	}()
 
-	done, _, deny := chMaybeInspectQuery(context.Background(), mock.ConnHandle, pkt, rev, "ch-cred")
-	if !done || !deny {
-		t.Fatalf("inspect: done=%v deny=%v, want true/true", done, deny)
-	}
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
 
+	if upstream.Len() != 0 {
+		t.Errorf("denied query forwarded %d bytes upstream", upstream.Len())
+	}
 	got := <-read
-	pktType, _, err := readChVarUInt(got, 0)
-	if err != nil {
-		t.Fatalf("read exception: %v", err)
-	}
-	if pktType != chServerPacketException {
-		t.Errorf("agent received packet type %d, want Exception(%d)", pktType, chServerPacketException)
-	}
-}
-
-// TestChMaybeInspectQueryAllowConsumesPacket pins the allow path's
-// "consumed = full Query packet length" contract — the runtime
-// forwards exactly view.End bytes to upstream and resumes verbatim
-// relay from the next byte.
-func TestChMaybeInspectQueryAllowConsumesPacket(t *testing.T) {
-	rule := chRuleSQL(t, "allow-selects",
-		map[string]any{"verb": []any{"select"}}, "allow", "", 100)
-	ep := chBuildEndpoint(t, rule)
-	mock, agentSide := chNewMockHandle(t, ep)
-	defer agentSide.Close()
-	defer mock.Conn.Close()
-
-	rev := uint64(chMinRevWithParameters)
-	pkt := chBuildQuery(rev, "SELECT 1")
-	// Append trailing bytes the runtime should NOT consume.
-	full := append([]byte{}, pkt...)
-	full = append(full, []byte{0xde, 0xad, 0xbe, 0xef}...)
-
-	done, consumed, deny := chMaybeInspectQuery(context.Background(), mock.ConnHandle, full, rev, "ch-cred")
-	if !done || deny {
-		t.Fatalf("inspect: done=%v deny=%v, want true/false", done, deny)
-	}
-	if consumed != len(pkt) {
-		t.Errorf("consumed=%d, want %d (Query packet length)", consumed, len(pkt))
-	}
-}
-
-// TestChMaybeInspectQueryShortBuffer covers the parser-needs-more-
-// bytes branch: when buf doesn't yet hold a full Query packet, the
-// inspector reports done=false so the runtime keeps reading.
-func TestChMaybeInspectQueryShortBuffer(t *testing.T) {
-	mock, _ := chNewMockHandle(t, chBuildEndpoint(t))
-	rev := uint64(chMinRevWithParameters)
-	pkt := chBuildQuery(rev, "SELECT 1")
-	done, _, _ := chMaybeInspectQuery(context.Background(), mock.ConnHandle, pkt[:len(pkt)/2], rev, "ch-cred")
-	if done {
-		t.Errorf("partial Query packet should not be done")
-	}
-}
-
-// TestChMaybeInspectQueryNonQueryPasses confirms Cancel/Ping/etc.
-// short-circuit through verbatim relay rather than denying or
-// blocking on a parse miss.
-func TestChMaybeInspectQueryNonQueryPasses(t *testing.T) {
-	mock, _ := chNewMockHandle(t, chBuildEndpoint(t))
-	pkt := appendChVarUInt(nil, chClientPacketCancel)
-	done, consumed, deny := chMaybeInspectQuery(context.Background(), mock.ConnHandle, pkt, chMinRevWithParameters, "ch-cred")
-	if !done || deny {
-		t.Errorf("Cancel: done=%v deny=%v, want true/false", done, deny)
-	}
-	if consumed != 0 {
-		t.Errorf("Cancel consumed=%d, want 0 (verbatim relay)", consumed)
+	if len(got) == 0 || chgoproto.ServerCode(got[0]) != chgoproto.ServerCodeException {
+		t.Errorf("agent did not receive Exception packet; first byte = %d", got[0])
 	}
 }
 
