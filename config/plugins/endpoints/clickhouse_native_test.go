@@ -780,6 +780,90 @@ func TestChAgentToServerDeniesQuery(t *testing.T) {
 	}
 }
 
+// TestChAgentToServerMultiQueryDenyContinues is the regression for
+// the per-Query inspector fix. The earlier shape returned out of the
+// pump on deny — that left the gateway "first-Query-only" and let
+// an agent smuggle a denied statement after an allowed one (or vice
+// versa) by reordering. The pump now mirrors postgres' shape: deny
+// writes Exception, the loop keeps reading, and a follow-up Query
+// is re-evaluated end-to-end.
+//
+// Stream: SELECT (allow) → DROP (deny) → SELECT (allow). Upstream
+// must see only the two SELECTs; the agent must see one Exception.
+func TestChAgentToServerMultiQueryDenyContinues(t *testing.T) {
+	const revision = 54448
+	rule := chRuleSQL(t, "deny-drop",
+		map[string]any{"verb": []any{"drop"}}, "deny", "drops blocked", 100)
+	ep := chBuildEndpoint(t, rule)
+	mock, agentSide := chNewMockHandle(t, ep)
+	defer agentSide.Close()
+	defer mock.Conn.Close()
+
+	mkQuery := func(id, body string) []byte {
+		q := chgoproto.Query{
+			ID:    id,
+			Body:  body,
+			Stage: chgoproto.StageComplete,
+			Info: chgoproto.ClientInfo{
+				ProtocolVersion: revision, Major: 24, Minor: 8,
+				Interface:   chgoproto.InterfaceTCP,
+				Query:       chgoproto.ClientQueryInitial,
+				InitialUser: "alice",
+			},
+		}
+		var b chgoproto.Buffer
+		q.EncodeAware(&b, revision)
+		return b.Buf
+	}
+
+	var stream bytes.Buffer
+	stream.Write(mkQuery("q1", "SELECT 1"))
+	stream.Write(mkQuery("q2", "DROP TABLE events"))
+	stream.Write(mkQuery("q3", "SELECT 2"))
+
+	// Drain the agent side asynchronously — net.Pipe is synchronous,
+	// so the runtime's Exception write would otherwise block. We
+	// loop with a short wait so the goroutine catches the deny even
+	// if it's followed quickly by the next Query packet.
+	agentBytes := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		n, _ := agentSide.Read(buf)
+		agentBytes <- append([]byte(nil), buf[:n]...)
+	}()
+
+	reader := chgoproto.NewReader(bytes.NewReader(stream.Bytes()))
+	var upstream bytes.Buffer
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
+
+	// Upstream must contain q1 and q3 (q2 was denied → not forwarded).
+	r := chgoproto.NewReader(bytes.NewReader(upstream.Bytes()))
+	var bodies []string
+	for {
+		code, err := r.UInt8()
+		if err != nil {
+			break
+		}
+		if chgoproto.ClientCode(code) != chgoproto.ClientCodeQuery {
+			t.Fatalf("upstream packet code = %d, want ClientCodeQuery", code)
+		}
+		var q chgoproto.Query
+		if err := q.DecodeAware(r, revision); err != nil {
+			t.Fatalf("decode upstream Query: %v", err)
+		}
+		bodies = append(bodies, q.Body)
+	}
+	wantBodies := []string{"SELECT 1", "SELECT 2"}
+	if diff := cmp.Diff(wantBodies, bodies); diff != "" {
+		t.Errorf("upstream Query bodies (-want +got):\n%s", diff)
+	}
+
+	exc := <-agentBytes
+	if len(exc) == 0 || chgoproto.ServerCode(exc[0]) != chgoproto.ServerCodeException {
+		t.Errorf("agent did not receive Exception; first byte = %d", exc[0])
+	}
+}
+
 // TestClickhouseRequiresVIP nails down the marker — clickhouse_native
 // always opts into VIP allocation. The dispatcher's IP-literal carve-
 // out happens at the dnsvip layer (entries whose host is an IP are

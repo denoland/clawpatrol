@@ -238,15 +238,20 @@ func chRunSession(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgo
 // iteration reads one packet code off the agent reader, dispatches
 // to a per-packet handler that decodes the body, and writes the
 // (possibly re-encoded) packet to upstream. On policy deny the
-// function writes an Exception to the agent and returns; the caller
-// closes the connection.
+// handler writes a server Exception to the agent and the loop
+// continues — mirroring postgres' pgWriteDeny + ReadyForQuery so a
+// session can't smuggle a denied statement past an allowed one (or
+// vice versa). Every Query for the lifetime of the connection is
+// re-evaluated; there is no per-session "already inspected" flag.
 //
 // Compression: the agent's `compression` flag on the Query packet
 // is forwarded verbatim and tracked here so subsequent Data packets
 // take the right code path — uncompressed blocks round-trip through
 // lib/proto.Block.Decode/Encode, compressed blocks forward chunk
 // bytes opaquely with a decompressing reader walking just far enough
-// to find the block boundary.
+// to find the block boundary. A denied Query does not advance the
+// compression state — the next Data packet (if any) framing depends
+// on the most recent ALLOWED Query.
 func chAgentToServer(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream io.Writer, revision int, credName string) {
 	compression := chgoproto.CompressionDisabled
 	for {
@@ -256,11 +261,13 @@ func chAgentToServer(ctx context.Context, ch *runtime.ConnHandle, agentReader *c
 		}
 		switch chgoproto.ClientCode(code) {
 		case chgoproto.ClientCodeQuery:
-			next, ok := chHandleQuery(ctx, ch, agentReader, upstream, revision, credName)
-			if !ok {
+			next, ok, fatal := chHandleQuery(ctx, ch, agentReader, upstream, revision, credName)
+			if fatal {
 				return
 			}
-			compression = next
+			if ok {
+				compression = next
+			}
 		case chgoproto.ClientCodeData:
 			if !chHandleData(ch, agentReader, upstream, revision, compression) {
 				return
@@ -281,32 +288,43 @@ func chAgentToServer(ctx context.Context, ch *runtime.ConnHandle, agentReader *c
 }
 
 // chHandleQuery decodes one client Query packet, runs the SQL through
-// the matcher, and forwards the re-encoded packet to upstream with
-// the agent's `compression` choice preserved. The returned flag is
-// what subsequent Data packets on this session will be framed with.
+// the matcher, and either forwards the re-encoded packet to upstream
+// (allow) or writes a server Exception to the agent (deny). The
+// agent's `compression` choice is preserved on the wire — the
+// gateway used to override it to Disabled, which silently corrupted
+// blocks from agents that originated with compression on.
 //
-// Returns (_, false) on policy deny (caller tears down the connection)
-// or transport error.
-func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream io.Writer, revision int, credName string) (chgoproto.Compression, bool) {
+// Returns:
+//
+//	(comp, true,  false) — allow: caller updates session compression to comp.
+//	(_,    false, false) — deny:  caller leaves session state alone and
+//	                              keeps the loop alive (the agent can issue
+//	                              another Query after seeing the Exception).
+//	(_,    _,     true)  — fatal: caller tears the connection down (decode
+//	                              error or upstream/agent transport failed).
+func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream io.Writer, revision int, credName string) (chgoproto.Compression, bool, bool) {
 	var q chgoproto.Query
 	if err := q.DecodeAware(agentReader, revision); err != nil {
 		chEmitError(ch, "query-decode", err.Error())
-		return chgoproto.CompressionDisabled, false
+		return chgoproto.CompressionDisabled, false, true
 	}
 	verdict, reason := chEvaluateSQL(ctx, ch, q.Body, credName)
 	if verdict == "deny" {
-		_, _ = ch.Conn.Write(chEncodeException(reason))
+		if _, werr := ch.Conn.Write(chEncodeException(reason)); werr != nil {
+			// Agent gone — there's nothing left to keep alive.
+			return chgoproto.CompressionDisabled, false, true
+		}
 		log.Printf("clickhouse_native %s deny %s: %s",
 			ch.Endpoint.Name, ch.PeerIP, reason)
-		return chgoproto.CompressionDisabled, false
+		return chgoproto.CompressionDisabled, false, false
 	}
 
 	var b chgoproto.Buffer
 	q.EncodeAware(&b, revision)
 	if _, werr := upstream.Write(b.Buf); werr != nil {
-		return chgoproto.CompressionDisabled, false
+		return chgoproto.CompressionDisabled, false, true
 	}
-	return q.Compression, true
+	return q.Compression, true, false
 }
 
 // chHandleData decodes one client Data packet (table-name header +
