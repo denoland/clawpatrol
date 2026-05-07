@@ -1403,7 +1403,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				sec, err := g.secrets.Get(cc.Credential.Symbol.Name, profile)
 				if err != nil {
 					log.Printf("secret %s/%s: %v — forwarding without injection", cc.Credential.Symbol.Name, profile, err)
-				} else if len(sec.Bytes) == 0 {
+				} else if len(sec.Bytes) == 0 && len(sec.Extras) == 0 {
 					log.Printf("secret %s/%s: not configured (set CLAWPATROL_SECRET_%s)", cc.Credential.Symbol.Name, profile, secretEnvName(cc.Credential.Symbol.Name))
 				} else if err := injector.InjectHTTP(req.Context(), req, sec); err != nil {
 					log.Printf("inject %s: %v", cc.Credential.Symbol.Name, err)
