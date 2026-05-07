@@ -16,6 +16,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,6 +43,13 @@ type webMux struct {
 	mu        sync.Mutex
 	sessions  map[string]*oauthSession
 	onboard   *onboardRegistry
+
+	// stateCache: per-caller TTL'd memo for /api/state. RWMutex
+	// because reads vastly outnumber writes — every dashboard tab
+	// polls every 5s, but the cached entry only refreshes once per
+	// stateCacheTTL (1s). 99% of polls are RLock-only.
+	stateCacheMu sync.RWMutex
+	stateCache   map[string]stateCacheEntry
 }
 
 func newWebMux(g *Gateway, caDir string, ts Tailscale, publicURL string) http.Handler {
@@ -48,9 +57,14 @@ func newWebMux(g *Gateway, caDir string, ts Tailscale, publicURL string) http.Ha
 	mux := http.NewServeMux()
 	mux.HandleFunc("/info", w.serveInfo)
 	mux.HandleFunc("/ca.crt", w.serveCA)
-	mux.HandleFunc("/api/whoami", w.apiWhoami)
+	// /api/whoami + /api/agents are gone — superseded by /api/state.
+	// /api/status stays because DevicePage scopes it with ?profile=.
 	mux.HandleFunc("/api/status", w.apiStatus)
-	mux.HandleFunc("/api/agents", w.apiAgents)
+	// /api/state is the dashboard's single-call refresh endpoint —
+	// bundles whoami+status+agents in one round-trip and returns 304
+	// when the JSON hash matches If-None-Match. Replaces the three
+	// parallel per-3s fetches App.refresh used to fire.
+	mux.HandleFunc("/api/state", w.apiState)
 	mux.HandleFunc("/api/agents/delete", w.apiAgentDelete)
 	mux.HandleFunc("/api/agents/profile", w.apiAgentProfile)
 	mux.HandleFunc("/api/profiles", w.apiProfiles)
@@ -67,11 +81,14 @@ func newWebMux(g *Gateway, caDir string, ts Tailscale, publicURL string) http.Ha
 	mux.HandleFunc("/api/credentials/set", w.apiCredentialsSet)
 	mux.HandleFunc("/api/credentials/clear", w.apiCredentialsClear)
 	mux.HandleFunc("/api/events", w.apiEventsSSE)
+	mux.HandleFunc("/api/actions/", w.apiActionByID)
+	mux.HandleFunc("/api/analytics", w.apiAnalytics)
 	mux.HandleFunc("/api/onboard/start", w.apiOnboardStart)
 	mux.HandleFunc("/api/onboard/poll", w.apiOnboardPoll)
 	mux.HandleFunc("/api/onboard/approve", w.apiOnboardApprove)
 	mux.HandleFunc("/api/onboard/lookup", w.apiOnboardLookup)
 	mux.HandleFunc("/api/onboard/claim", w.apiOnboardClaim)
+	mux.HandleFunc("/api/env-pushdown", w.apiEnvPushdown)
 	mux.HandleFunc("/__login", w.apiDashboardLogin)
 	mux.Handle("/", w.staticHandler())
 	return w.dashboardSecretGate(w.tailnetGate(mux))
@@ -99,9 +116,15 @@ func (w *webMux) dashboardSecretGate(next http.Handler) http.Handler {
 		"/api/onboard/claim":   true,
 		"/api/onboard/lookup":  true,
 		"/api/onboard/approve": true,
-		"/info":                true,
-		"/ca.crt":              true,
-		"/__login":             true,
+		// /api/env-pushdown is NOT public — it's gated by the
+		// per-peer bearer minted at onboard time. The handler
+		// validates `Authorization: Bearer <token>` against
+		// peer_api_tokens; dashboardSecretGate doesn't need to
+		// see it.
+		"/api/env-pushdown": true,
+		"/info":             true,
+		"/ca.crt":           true,
+		"/__login":          true,
 	}
 	// /info and /ca.crt are public-by-design (health + cert distribution).
 	// They keep working even when the dashboard is misconfigured so
@@ -325,6 +348,84 @@ func (w *webMux) mountCredentialWebhooks(mux *http.ServeMux) {
 	}
 }
 
+// apiEnvPushdown returns the env-var push-down list assembled from
+// the gateway's currently-loaded policy, scoped to the calling
+// peer's profile. Clients (`clawpatrol env`, `clawpatrol run`)
+// fetch this instead of iterating their own compiled-in plugin
+// set, so the binary on the client doesn't have to track which
+// endpoint plugins the operator has enabled on the gateway.
+//
+// Auth: requires `Authorization: Bearer <token>` where <token>
+// matches a row in peer_api_tokens. The token was minted for the
+// caller at onboard-approve time and persisted next to ca.crt by
+// `clawpatrol join`. Only the (name, value, description,
+// plugin_type) bytes for plugins reachable from the peer's
+// profile are returned; CA-bundle vars stay client-side because
+// they reference a path on the *client's* disk.
+func (w *webMux) apiEnvPushdown(rw http.ResponseWriter, r *http.Request) {
+	token := bearerFromAuthHeader(r.Header.Get("Authorization"))
+	peerIP := peerIPForAPIToken(w.g.db, token)
+	if peerIP == "" {
+		http.Error(rw, "unknown or missing peer api token", http.StatusUnauthorized)
+		return
+	}
+	profileName := w.g.profileFor(peerIP)
+	policy := w.g.Policy()
+	if policy == nil {
+		writeJSON(rw, map[string]any{"vars": []any{}})
+		return
+	}
+	prof, ok := policy.Profiles[profileName]
+	if !ok || prof == nil {
+		writeJSON(rw, map[string]any{"vars": []any{}})
+		return
+	}
+
+	out := []map[string]string{}
+	seen := map[string]bool{}
+	add := func(name, value, description, pluginType string) {
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		out = append(out, map[string]string{
+			"name":        name,
+			"value":       value,
+			"description": description,
+			"plugin_type": pluginType,
+		})
+	}
+	credSeen := map[string]bool{}
+	// Endpoints in this profile, plus the credentials they bind.
+	// Credentials are emitted first (so credential-shaped
+	// placeholders win on duplicate names), endpoints second.
+	for _, ep := range prof.Endpoints {
+		for _, cc := range ep.Credentials {
+			if cc == nil || cc.Credential == nil || credSeen[cc.Credential.Symbol.Name] {
+				continue
+			}
+			credSeen[cc.Credential.Symbol.Name] = true
+			provider, ok := cc.Credential.Body.(config.EnvPushdownProvider)
+			if !ok {
+				continue
+			}
+			for _, ev := range provider.EnvVars() {
+				add(ev.Name, ev.Value, ev.Description, cc.Credential.Plugin.Type)
+			}
+		}
+	}
+	for _, ep := range prof.Endpoints {
+		provider, ok := ep.Body.(config.EnvPushdownProvider)
+		if !ok {
+			continue
+		}
+		for _, ev := range provider.EnvVars() {
+			add(ev.Name, ev.Value, ev.Description, ep.Plugin.Type)
+		}
+	}
+	writeJSON(rw, map[string]any{"vars": out})
+}
+
 func (w *webMux) staticHandler() http.Handler {
 	sub, err := fs.Sub(dashboardFS, "www/dist")
 	if err != nil {
@@ -393,21 +494,90 @@ func (w *webMux) ownerForCaller(r *http.Request) (key, label string) {
 	return host, host
 }
 
-func (w *webMux) apiWhoami(rw http.ResponseWriter, r *http.Request) {
+// whoamiData backs the whoami slice of /api/state. No HTTP handler —
+// the route was removed once App.tsx switched to the bundled
+// /api/state response.
+func (w *webMux) whoamiData(r *http.Request) map[string]string {
 	user, device, host := w.callerIdentity(r)
-	// Read public_url straight from the live config so that an
-	// operator editing gateway.hcl sees the new value reflected
-	// without a gateway restart (mtime watcher swaps cfg).
 	pu := w.g.cfg.PublicURL
 	if pu == "" {
 		pu = w.publicURL
 	}
-	writeJSON(rw, map[string]string{
+	return map[string]string{
 		"user":       user,
 		"device":     device,
 		"host":       host,
 		"public_url": pu,
-	})
+	}
+}
+
+// apiState is the dashboard's combined refresh endpoint. Bundles
+// whoami + status (integrations) + agents into one response with an
+// ETag — when the JSON hash matches If-None-Match the gateway returns
+// 304 with no body. Server-side caches the last (tag, body) under a
+// short TTL so concurrent dashboards on the same tag answer 304
+// without re-marshaling+hashing; only the first request per change-
+// window pays the full cost. Whoami varies per-caller so the cache
+// is keyed by (caller-user, profile).
+//
+// Cache TTL is conservatively short (1s) so changes propagate to
+// idle dashboards within their 5s poll window without us needing a
+// real invalidation hook off every credential mutation.
+func (w *webMux) apiState(rw http.ResponseWriter, r *http.Request) {
+	user, _, _ := w.callerIdentity(r)
+	cacheKey := user + "|" + r.URL.Query().Get("profile")
+	now := time.Now()
+
+	w.stateCacheMu.RLock()
+	if c, ok := w.stateCache[cacheKey]; ok && now.Sub(c.At) < stateCacheTTL {
+		body, tag := c.Body, c.Tag
+		w.stateCacheMu.RUnlock()
+		serveState(rw, r, body, tag)
+		return
+	}
+	w.stateCacheMu.RUnlock()
+
+	state := map[string]any{
+		"whoami":       w.whoamiData(r),
+		"integrations": w.statusList(r),
+		"agents":       w.agentsList(),
+	}
+	body, err := json.Marshal(state)
+	if err != nil {
+		http.Error(rw, err.Error(), 500)
+		return
+	}
+	sum := sha256.Sum256(body)
+	tag := `"` + hex.EncodeToString(sum[:8]) + `"`
+
+	w.stateCacheMu.Lock()
+	if w.stateCache == nil {
+		w.stateCache = map[string]stateCacheEntry{}
+	}
+	w.stateCache[cacheKey] = stateCacheEntry{Body: body, Tag: tag, At: now}
+	w.stateCacheMu.Unlock()
+
+	serveState(rw, r, body, tag)
+}
+
+const stateCacheTTL = 1 * time.Second
+
+type stateCacheEntry struct {
+	Body []byte
+	Tag  string
+	At   time.Time
+}
+
+func serveState(rw http.ResponseWriter, r *http.Request, body []byte, tag string) {
+	if r.Header.Get("If-None-Match") == tag {
+		rw.Header().Set("ETag", tag)
+		rw.WriteHeader(http.StatusNotModified)
+		return
+	}
+	rw.Header().Set("ETag", tag)
+	rw.Header().Set("Content-Type", "application/json")
+	rw.Header().Set("Cache-Control", "no-cache")
+	rw.Write(body)
 }
 
 // apiStatus returns the credentials list for the dashboard. Filters
@@ -669,18 +839,26 @@ func (w *webMux) apiEventsSSE(rw http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	fmt.Fprint(rw, ": connected\n\n")
-	// Replay backlog (oldest → newest) so a refreshed dashboard sees the
-	// last few hundred events instead of an empty stream. Frontend
-	// prepends each event, so newest still ends up at the top.
-	for _, ev := range backlog {
-		if wantIP != "" && ev.AgentIP != wantIP {
-			continue
+	// Backlog ships as a single `event: backlog` SSE message carrying
+	// the whole array. Client renders that batch in one commit (no
+	// per-event rAF flood), then switches to per-event live streaming.
+	// Default event channel = live only.
+	if len(backlog) > 0 {
+		filtered := backlog
+		if wantIP != "" {
+			filtered = filtered[:0]
+			for _, ev := range backlog {
+				if ev.AgentIP == wantIP {
+					filtered = append(filtered, ev)
+				}
+			}
 		}
-		b, err := json.Marshal(ev)
-		if err != nil {
-			continue
+		if len(filtered) > 0 {
+			b, err := json.Marshal(filtered)
+			if err == nil {
+				fmt.Fprintf(rw, "event: backlog\ndata: %s\n\n", b)
+			}
 		}
-		fmt.Fprintf(rw, "data: %s\n\n", b)
 	}
 	flusher.Flush()
 
@@ -694,21 +872,211 @@ func (w *webMux) apiEventsSSE(rw http.ResponseWriter, r *http.Request) {
 		case <-keepalive.C:
 			fmt.Fprint(rw, ": ka\n\n")
 			flusher.Flush()
-		case ev, ok := <-ch:
+		case pkt, ok := <-ch:
 			if !ok {
 				return
 			}
-			if wantIP != "" && ev.AgentIP != wantIP {
+			if wantIP != "" && pkt.ev.AgentIP != wantIP {
 				continue
 			}
-			b, err := json.Marshal(ev)
-			if err != nil {
-				continue
-			}
-			fmt.Fprintf(rw, "data: %s\n\n", b)
+			fmt.Fprintf(rw, "data: %s\n\n", pkt.raw)
 			flusher.Flush()
 		}
 	}
+}
+
+func (w *webMux) apiActionByID(
+	rw http.ResponseWriter, r *http.Request,
+) {
+	// Path: /api/actions/<uuid>
+	actionID := strings.TrimPrefix(r.URL.Path, "/api/actions/")
+	if actionID == "" {
+		http.Error(rw, "missing id", 400)
+		return
+	}
+	var (
+		e           Event
+		tsNs        int64
+		mode        sql.NullString
+		agentIP     sql.NullString
+		method      sql.NullString
+		path        sql.NullString
+		status      sql.NullInt64
+		in, ot      sql.NullInt64
+		ms          sql.NullInt64
+		action      sql.NullString
+		reason      sql.NullString
+		reqSha      sql.NullString
+		respSha     sql.NullString
+		reqBody     sql.NullString
+		respBody    sql.NullString
+		reqHeaders  sql.NullString
+		respHeaders sql.NullString
+	)
+	err := w.g.db.QueryRow(`
+		SELECT ts_ns, mode, agent_ip, host, method, path,
+		       status, bytes_in, bytes_out, ms, action,
+		       reason, req_sha, resp_sha,
+		       req_body, resp_body,
+		       req_headers, resp_headers
+		FROM actions WHERE action_id = ?`, actionID,
+	).Scan(
+		&tsNs, &mode, &agentIP, &e.Host,
+		&method, &path, &status, &in, &ot, &ms,
+		&action, &reason, &reqSha, &respSha,
+		&reqBody, &respBody,
+		&reqHeaders, &respHeaders,
+	)
+	if err == sql.ErrNoRows {
+		http.Error(rw, "not found", 404)
+		return
+	}
+	if err != nil {
+		http.Error(rw, err.Error(), 500)
+		return
+	}
+	e.ID = actionID
+	e.Ts = time.Unix(0, tsNs).UTC()
+	e.Mode = mode.String
+	e.AgentIP = agentIP.String
+	e.Method = method.String
+	e.Path = path.String
+	e.Status = int(status.Int64)
+	e.In = in.Int64
+	e.Out = ot.Int64
+	e.Ms = ms.Int64
+	e.Action = action.String
+	e.Reason = reason.String
+	e.ReqSha = reqSha.String
+	e.RespSha = respSha.String
+	e.ReqBody = reqBody.String
+	e.RespBody = respBody.String
+	unmarshalHeaders(reqHeaders.String, &e.ReqHeaders)
+	unmarshalHeaders(respHeaders.String, &e.RespHeaders)
+	writeJSON(rw, e)
+}
+
+// apiAnalytics returns a randomly-sampled set of events for the
+// analytics charts. Query params:
+//
+//	range  — duration string (1m, 5m, 15m, 30m, 1h, 6h, 24h)
+//	agent  — optional agent IP filter
+//	limit  — max rows (default 5000)
+func (w *webMux) apiAnalytics(
+	rw http.ResponseWriter, r *http.Request,
+) {
+	q := r.URL.Query()
+	rangeStr := q.Get("range")
+	if rangeStr == "" {
+		rangeStr = "1h"
+	}
+	dur, err := time.ParseDuration(
+		strings.TrimSuffix(rangeStr, "m") + "m0s",
+	)
+	// Parse shorthand: 1m, 5m, 30m, 1h, 6h, 24h
+	switch rangeStr {
+	case "1m":
+		dur = time.Minute
+	case "5m":
+		dur = 5 * time.Minute
+	case "15m":
+		dur = 15 * time.Minute
+	case "30m":
+		dur = 30 * time.Minute
+	case "1h":
+		dur = time.Hour
+	case "6h":
+		dur = 6 * time.Hour
+	case "24h":
+		dur = 24 * time.Hour
+	default:
+		if err != nil {
+			dur = time.Hour
+		}
+	}
+	cutoff := time.Now().Add(-dur).UnixNano()
+	limit := 5000
+	if l := q.Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 {
+			if n > 10000 {
+				n = 10000
+			}
+			limit = n
+		}
+	}
+	agent := q.Get("agent")
+
+	var query string
+	var args []any
+	if agent != "" {
+		query = `
+			SELECT action_id, ts_ns, mode, agent_ip, host,
+			       method, path, status, bytes_in, bytes_out,
+			       ms, action, reason
+			FROM actions
+			WHERE ts_ns >= ? AND agent_ip = ?
+			ORDER BY RANDOM()
+			LIMIT ?`
+		args = []any{cutoff, agent, limit}
+	} else {
+		query = `
+			SELECT action_id, ts_ns, mode, agent_ip, host,
+			       method, path, status, bytes_in, bytes_out,
+			       ms, action, reason
+			FROM actions
+			WHERE ts_ns >= ?
+			ORDER BY RANDOM()
+			LIMIT ?`
+		args = []any{cutoff, limit}
+	}
+	rows, err := w.g.db.Query(query, args...)
+	if err != nil {
+		http.Error(rw, err.Error(), 500)
+		return
+	}
+	defer rows.Close()
+	out := make([]Event, 0, 256)
+	for rows.Next() {
+		var (
+			e        Event
+			actionID sql.NullString
+			tsNs     int64
+			mode     sql.NullString
+			agentIP  sql.NullString
+			method   sql.NullString
+			path     sql.NullString
+			status   sql.NullInt64
+			in, ot   sql.NullInt64
+			ms       sql.NullInt64
+			action   sql.NullString
+			reason   sql.NullString
+		)
+		if err := rows.Scan(
+			&actionID, &tsNs, &mode, &agentIP, &e.Host,
+			&method, &path, &status, &in, &ot, &ms,
+			&action, &reason,
+		); err != nil {
+			http.Error(rw, err.Error(), 500)
+			return
+		}
+		e.ID = actionID.String
+		e.Ts = time.Unix(0, tsNs).UTC()
+		e.Mode = mode.String
+		e.AgentIP = agentIP.String
+		e.Method = method.String
+		e.Path = path.String
+		e.Status = int(status.Int64)
+		e.In = in.Int64
+		e.Out = ot.Int64
+		e.Ms = ms.Int64
+		e.Action = action.String
+		e.Reason = reason.String
+		out = append(out, e)
+	}
+	writeJSON(rw, map[string]any{
+		"events": out,
+		"total":  len(out),
+	})
 }
 
 func writeJSON(rw http.ResponseWriter, v any) {
@@ -726,25 +1094,27 @@ func allIntegrationKeys() []string { return displayOrder }
 // by the dashboard SSE stream and the on-disk event log).
 
 type Event struct {
-	Ts         time.Time `json:"ts"`
-	ID         string    `json:"id,omitempty"`    // request id; correlates start/end/frame
-	Phase      string    `json:"phase,omitempty"` // "" (legacy/end), "start", "end", "frame"
-	Mode       string    `json:"mode"`
-	Agent      string    `json:"agent,omitempty"`
-	AgentIP    string    `json:"agent_ip,omitempty"`
-	Host       string    `json:"host"`
-	Method     string    `json:"method,omitempty"`
-	Path       string    `json:"path,omitempty"`
-	Status     int       `json:"status,omitempty"`
-	In         int64     `json:"in,omitempty"`
-	Out        int64     `json:"out,omitempty"`
-	Ms         int64     `json:"ms"`
-	Action     string    `json:"action,omitempty"`
-	Reason     string    `json:"reason,omitempty"`
-	ReqSha     string    `json:"req_sha,omitempty"`
-	ReqSample  string    `json:"req_sample,omitempty"`
-	RespSha    string    `json:"resp_sha,omitempty"`
-	RespSample string    `json:"resp_sample,omitempty"`
+	Ts          time.Time         `json:"ts"`
+	ID          string            `json:"id,omitempty"`    // UUIDv7; correlates start/end/frame + DB key
+	Phase       string            `json:"phase,omitempty"` // "" (legacy/end), "start", "end", "frame"
+	Mode        string            `json:"mode"`
+	Agent       string            `json:"agent,omitempty"`
+	AgentIP     string            `json:"agent_ip,omitempty"`
+	Host        string            `json:"host"`
+	Method      string            `json:"method,omitempty"`
+	Path        string            `json:"path,omitempty"`
+	Status      int               `json:"status,omitempty"`
+	In          int64             `json:"in,omitempty"`
+	Out         int64             `json:"out,omitempty"`
+	Ms          int64             `json:"ms"`
+	Action      string            `json:"action,omitempty"`
+	Reason      string            `json:"reason,omitempty"`
+	ReqSha      string            `json:"req_sha,omitempty"`
+	ReqBody     string            `json:"req_body,omitempty"`
+	RespSha     string            `json:"resp_sha,omitempty"`
+	RespBody    string            `json:"resp_body,omitempty"`
+	ReqHeaders  map[string]string `json:"req_headers,omitempty"`
+	RespHeaders map[string]string `json:"resp_headers,omitempty"`
 	// Frame is set for Phase="frame" only — a single WS frame's text
 	// payload (truncated at sampleCap). Direction is "c→s" or "s→c"
 	// to disambiguate masked client frames from unmasked server frames.
@@ -752,21 +1122,47 @@ type Event struct {
 	Direction string `json:"direction,omitempty"`
 }
 
+// eventPacket carries an event plus its marshaled JSON bytes. drain()
+// marshals once and ships the same bytes to every subscriber so a
+// busy gateway doesn't pay N × json.Marshal per event when N
+// dashboards are connected.
+type eventPacket struct {
+	ev  Event
+	raw []byte
+}
+
 type Sink struct {
-	ch        chan Event
-	db        *sql.DB
-	drops     atomic.Uint64
-	mu        sync.Mutex
-	subs      []chan Event
-	recent    []Event // ring of recent events for backlog replay
-	recentCap int
+	ch    chan Event
+	db    *sql.DB
+	drops atomic.Uint64
+	mu    sync.Mutex
+	subs  []chan eventPacket
+	// Recent ring backlog. recent is sized once at construction; we
+	// write at recentNext (modulo cap) and rotate. Old behavior used
+	// `append + slice` which reallocated on every overflow, churning
+	// GC at ~10 alloc/sec on a busy gateway. Lazy fill: until we wrap,
+	// recentLen tracks valid entries.
+	recent     []Event
+	recentNext int
+	recentLen  int
+	recentCap  int
 }
 
 func NewSink(db *sql.DB, buf int) (*Sink, error) {
 	s := &Sink{ch: make(chan Event, buf), db: db, recentCap: 500}
+	s.recent = make([]Event, s.recentCap)
 	if db != nil {
 		if seed, err := readTailEvents(db, s.recentCap); err == nil && len(seed) > 0 {
-			s.recent = seed
+			// Seed fills oldest→newest; place at indices 0..len(seed)-1
+			// and set recentNext to the next slot, recentLen to length.
+			n := len(seed)
+			if n > s.recentCap {
+				seed = seed[n-s.recentCap:]
+				n = s.recentCap
+			}
+			copy(s.recent, seed)
+			s.recentLen = n
+			s.recentNext = n % s.recentCap
 		}
 	}
 	go s.drain()
@@ -775,8 +1171,9 @@ func NewSink(db *sql.DB, buf int) (*Sink, error) {
 
 func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 	rows, err := db.Query(`
-		SELECT ts_ns, mode, agent_ip, host, method, path, status,
-		       bytes_in, bytes_out, ms, action, reason, req_sha, resp_sha
+		SELECT action_id, ts_ns, mode, agent_ip, host,
+		       method, path, status, bytes_in, bytes_out,
+		       ms, action, reason, req_sha, resp_sha
 		FROM actions ORDER BY id DESC LIMIT ?`, n)
 	if err != nil {
 		return nil, err
@@ -785,23 +1182,29 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 	out := make([]Event, 0, n)
 	for rows.Next() {
 		var (
-			e       Event
-			tsNs    int64
-			mode    sql.NullString
-			agentIP sql.NullString
-			method  sql.NullString
-			path    sql.NullString
-			status  sql.NullInt64
-			in, ot  sql.NullInt64
-			ms      sql.NullInt64
-			action  sql.NullString
-			reason  sql.NullString
-			reqSha  sql.NullString
-			respSha sql.NullString
+			e        Event
+			actionID sql.NullString
+			tsNs     int64
+			mode     sql.NullString
+			agentIP  sql.NullString
+			method   sql.NullString
+			path     sql.NullString
+			status   sql.NullInt64
+			in, ot   sql.NullInt64
+			ms       sql.NullInt64
+			action   sql.NullString
+			reason   sql.NullString
+			reqSha   sql.NullString
+			respSha  sql.NullString
 		)
-		if err := rows.Scan(&tsNs, &mode, &agentIP, &e.Host, &method, &path, &status, &in, &ot, &ms, &action, &reason, &reqSha, &respSha); err != nil {
+		if err := rows.Scan(
+			&actionID, &tsNs, &mode, &agentIP, &e.Host,
+			&method, &path, &status, &in, &ot, &ms,
+			&action, &reason, &reqSha, &respSha,
+		); err != nil {
 			return nil, err
 		}
+		e.ID = actionID.String
 		e.Ts = time.Unix(0, tsNs).UTC()
 		e.Mode = mode.String
 		e.AgentIP = agentIP.String
@@ -852,48 +1255,104 @@ func (s *Sink) drain() {
 		// the table for long-poll / WS sessions.
 		persist := e.Phase == "" || e.Phase == "end"
 		if s.db != nil && persist {
-			_, _ = s.db.Exec(`
+			var rqhJSON, rshJSON []byte
+			if len(e.ReqHeaders) > 0 {
+				rqhJSON, _ = json.Marshal(e.ReqHeaders)
+			}
+			if len(e.RespHeaders) > 0 {
+				rshJSON, _ = json.Marshal(e.RespHeaders)
+			}
+			s.db.Exec(`
 				INSERT INTO actions
-				 (ts_ns, mode, agent_ip, host, method, path, status, bytes_in, bytes_out, ms, action, reason, req_sha, resp_sha)
-				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-			`, e.Ts.UnixNano(), e.Mode, e.AgentIP, e.Host, e.Method, e.Path, e.Status, e.In, e.Out, e.Ms, e.Action, e.Reason, e.ReqSha, e.RespSha)
+				 (action_id, ts_ns, mode, agent_ip, host,
+				  method, path, status, bytes_in, bytes_out,
+				  ms, action, reason, req_sha, resp_sha,
+				  req_body, resp_body,
+				  req_headers, resp_headers)
+				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			`, e.ID, e.Ts.UnixNano(), e.Mode, e.AgentIP,
+				e.Host, e.Method, e.Path, e.Status,
+				e.In, e.Out, e.Ms, e.Action, e.Reason,
+				e.ReqSha, e.RespSha,
+				e.ReqBody, e.RespBody,
+				string(rqhJSON), string(rshJSON))
 		}
+
+		// Marshal once per event regardless of subscriber count. Old
+		// path marshaled inside each subscriber's SSE handler — N
+		// dashboards = N json.Marshal calls per event. Now it's 1.
+		raw, err := json.Marshal(e)
+		if err != nil {
+			continue
+		}
+		pkt := eventPacket{ev: e, raw: raw}
+
 		s.mu.Lock()
-		// Recent ring is the SSE backlog replayed to fresh
-		// dashboards. start events without matching ends would render
-		// as stuck in-flight rows on every reconnect, so only keep
-		// terminal events. frame events for already-closed WS streams
-		// also have nowhere to go on reconnect.
+		// Recent ring updated under lock since RecentAndSubscribe
+		// snapshots it. Circular write: O(1) regardless of cap.
+		// Strip bodies from the backlog copy — SSE consumers only
+		// need metadata; the detail page fetches full data via
+		// /api/actions/<id>.
 		if persist {
-			s.recent = append(s.recent, e)
-			if len(s.recent) > s.recentCap {
-				s.recent = s.recent[len(s.recent)-s.recentCap:]
+			lite := e
+			lite.ReqBody = ""
+			lite.RespBody = ""
+			lite.ReqHeaders = nil
+			lite.RespHeaders = nil
+			s.recent[s.recentNext] = lite
+			s.recentNext = (s.recentNext + 1) % s.recentCap
+			if s.recentLen < s.recentCap {
+				s.recentLen++
 			}
 		}
-		for _, sub := range s.subs {
+		// Copy subs out of the lock, fan-out without holding mu so
+		// a slow channel doesn't serialize the gateway. Cheap copy
+		// (slice of channel pointers, len ~= dashboards open).
+		subs := append([]chan eventPacket(nil), s.subs...)
+		s.mu.Unlock()
+
+		for _, sub := range subs {
 			select {
-			case sub <- e:
+			case sub <- pkt:
 			default:
 				// slow consumer; drop
+				s.drops.Add(1)
 			}
 		}
-		s.mu.Unlock()
 	}
+}
+
+// recentSnapshot copies the ring into a flat oldest→newest slice.
+// Caller must hold s.mu (or call from RecentAndSubscribe which does).
+func (s *Sink) recentSnapshot() []Event {
+	if s.recentLen == 0 {
+		return nil
+	}
+	out := make([]Event, s.recentLen)
+	if s.recentLen < s.recentCap {
+		copy(out, s.recent[:s.recentLen])
+		return out
+	}
+	// Wrapped: oldest entry sits at recentNext, walk forward modulo cap.
+	for i := 0; i < s.recentCap; i++ {
+		out[i] = s.recent[(s.recentNext+i)%s.recentCap]
+	}
+	return out
 }
 
 // RecentAndSubscribe atomically snapshots the backlog and registers a
 // subscriber under the same lock so no event is missed or duplicated
-// between the two. Caller should write the snapshot first, then loop on
-// the channel for new events.
-func (s *Sink) RecentAndSubscribe() ([]Event, <-chan Event, func()) {
+// between the two. Channel ships eventPackets — drain marshaled the
+// JSON once and shares those bytes across every subscriber.
+func (s *Sink) RecentAndSubscribe() ([]Event, <-chan eventPacket, func()) {
 	if s == nil {
-		ch := make(chan Event)
+		ch := make(chan eventPacket)
 		close(ch)
 		return nil, ch, func() {}
 	}
-	ch := make(chan Event, 64)
+	ch := make(chan eventPacket, 64)
 	s.mu.Lock()
-	snap := append([]Event(nil), s.recent...)
+	snap := s.recentSnapshot()
 	s.subs = append(s.subs, ch)
 	s.mu.Unlock()
 	cancel := func() {
@@ -909,7 +1368,7 @@ func (s *Sink) RecentAndSubscribe() ([]Event, <-chan Event, func()) {
 	return snap, ch, cancel
 }
 
-func (s *Sink) Subscribe() (<-chan Event, func()) {
+func (s *Sink) Subscribe() (<-chan eventPacket, func()) {
 	_, ch, cancel := s.RecentAndSubscribe()
 	return ch, cancel
 }
@@ -919,6 +1378,28 @@ type sampler struct {
 	cap  int
 	buf  bytes.Buffer
 	n    int64
+}
+
+func unmarshalHeaders(s string, dst *map[string]string) {
+	if s != "" {
+		_ = json.Unmarshal([]byte(s), dst)
+	}
+}
+
+var sensitiveHeader = regexp.MustCompile(
+	`(?i)auth|token|secret|key|password|cookie`,
+)
+
+func flatHeaders(h http.Header) map[string]string {
+	out := make(map[string]string, len(h))
+	for k, v := range h {
+		if sensitiveHeader.MatchString(k) {
+			out[k] = "***"
+		} else {
+			out[k] = strings.Join(v, ", ")
+		}
+	}
+	return out
 }
 
 func newSampler(capBytes int) *sampler {

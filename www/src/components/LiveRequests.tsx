@@ -1,23 +1,5 @@
 import { useEffect, useState } from "react";
-
-export type EventRecord = {
-  ts: string;
-  id?: string;
-  phase?: "" | "start" | "end" | "frame";
-  mode: string;
-  agent_ip?: string;
-  host: string;
-  method?: string;
-  path?: string;
-  status?: number;
-  in?: number;
-  out?: number;
-  ms: number;
-  action?: string;
-  reason?: string;
-  frame?: string;
-  direction?: string;
-};
+import { type EventRecord } from "../lib/api";
 
 type RowState = EventRecord & { frames?: { direction: string; frame: string; ts: string }[] };
 
@@ -34,13 +16,49 @@ export function LiveRequests({ agentIP, max = 200, height }: {
       ? `/api/events?agent=${encodeURIComponent(agentIP)}`
       : "/api/events";
     const es = new EventSource(url);
+
+    // Batched render: SSE can fire dozens of events per second on a
+    // busy gateway (start + frame + end per request). setState every
+    // event = a re-render every event = jank. Buffer parsed events
+    // into pending[] and flush via requestAnimationFrame; the React
+    // commit happens at most once per browser frame (~16 ms) no
+    // matter how many events arrived in between.
+    let pending: EventRecord[] = [];
+    let raf = 0;
+    const flush = () => {
+      raf = 0;
+      if (pending.length === 0) return;
+      const batch = pending;
+      pending = [];
+      setEvents((prev) => {
+        let next = prev;
+        for (const ev of batch) next = mergeEvent(next, ev, max);
+        return next;
+      });
+    };
+    // Backlog ships as one event up front: bulk-insert in a single
+    // commit so old events appear instantly instead of streaming in
+    // through the live render path and looking like fresh activity.
+    es.addEventListener("backlog", (e) => {
+      try {
+        const arr = JSON.parse((e as MessageEvent).data) as EventRecord[];
+        setEvents((prev) => {
+          let next = prev;
+          for (const ev of arr) next = mergeEvent(next, ev, max);
+          return next;
+        });
+      } catch { /* ignore */ }
+    });
     es.onmessage = (e) => {
       try {
-        const ev = JSON.parse(e.data) as EventRecord;
-        setEvents((prev) => mergeEvent(prev, ev, max));
+        pending.push(JSON.parse(e.data) as EventRecord);
+        if (raf === 0) raf = requestAnimationFrame(flush);
       } catch { /* ignore */ }
     };
-    return () => es.close();
+    return () => {
+      es.close();
+      if (raf !== 0) cancelAnimationFrame(raf);
+    };
   }, [agentIP, max]);
 
   return (
@@ -59,7 +77,9 @@ export function LiveRequests({ agentIP, max = 200, height }: {
             Waiting for requests<AnimatedDots />
           </div>
         ) : (
-          events.map((e, i) => <Row key={i} ev={e} />)
+          events.map((e, i) => (
+            <Row key={i} ev={e} />
+          ))
         )}
       </div>
     </div>
@@ -108,9 +128,13 @@ function pathSeparator(path: string): string {
 }
 
 function Row({ ev }: { ev: RowState }) {
+  const onClick = ev.id
+    ? () => { window.location.hash = `#/request/${ev.id}`; }
+    : undefined;
   const t = new Date(ev.ts);
   const time =
-    t.toLocaleTimeString([], { hour12: false }) + "." + String(t.getMilliseconds()).padStart(3, "0");
+    t.toLocaleTimeString([], { hour12: false })
+    + "." + String(t.getMilliseconds()).padStart(3, "0");
   const inFlight = ev.phase === "start";
   const status = ev.status || 0;
   const statusColor = inFlight
@@ -125,7 +149,15 @@ function Row({ ev }: { ev: RowState }) {
   const hasFrames = (ev.frames?.length ?? 0) > 0;
   return (
     <div className="border-b border-[#f5f5f5]">
-      <div className={"px-4 py-2 hover:bg-[#f9f9f9] flex items-center gap-3 min-w-0 " + (inFlight ? "opacity-70" : "")}>
+      <div
+        onClick={onClick}
+        className={
+          "px-4 py-2 flex items-center gap-3 min-w-0 transition-colors"
+          + (onClick ? " cursor-pointer" : "")
+          + (inFlight ? " opacity-70" : "")
+          + " hover:bg-[#f9f9f9]"
+        }
+      >
         <span className="text-[10px] tabular-nums text-[#a3a3a3] flex-shrink-0">{time}</span>
         <ModeIcon mode={ev.mode} />
         {ev.method && (

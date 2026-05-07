@@ -67,6 +67,7 @@ func (h *HumanApprover) Approve(ctx context.Context, req runtime.ApproveRequest)
 					Interactive:    h.Interactive,
 					PendingID:      id,
 					DashboardURL:   req.DashboardURL,
+					ThreadTS:       req.ThreadTS,
 				}
 				go func() {
 					if err := notifier.NotifyHITL(ctx, req, target); err != nil {

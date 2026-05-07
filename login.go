@@ -54,9 +54,11 @@ func runJoin(args []string) {
 	caOut := fs.String("ca-dir", defaultClawpatrolDir(), "where to store the fetched CA")
 	skipTrust := fs.Bool("no-trust", false, "fetch CA but skip system trust install (do it manually)")
 	wholeMachine := fs.Bool("whole-machine", false, "bring up wg-quick to route ALL host traffic through the gateway (default: persist conf only, use `clawpatrol run` for per-process routing)")
+	profile := fs.String("profile", "", "profile to assign at approval time (defaults to the gateway's default profile if the approver doesn't pick one)")
+	hostname := fs.String("hostname", "", "device name to register with the gateway (defaults to os.Hostname)")
 	_ = fs.Parse(args)
 	if *gatewayURL == "" {
-		fail("usage: clawpatrol join --url <gateway-url> [--whole-machine]")
+		fail("usage: clawpatrol join --url <gateway-url> [--hostname NAME] [--profile NAME] [--whole-machine]")
 	}
 	// Fetch CA + write shell rc BEFORE the VPN goes up. Once
 	// `wg-quick up` flips the default route through the gateway,
@@ -68,7 +70,7 @@ func runJoin(args []string) {
 	if err != nil {
 		fail("ca fetch: %v", err)
 	}
-	wgMode, err := onboardViaDeviceFlow(*gatewayURL, *wholeMachine, setup)
+	wgMode, err := onboardViaDeviceFlow(*gatewayURL, *wholeMachine, *profile, *hostname, setup)
 	if err != nil {
 		fail("join: %v", err)
 	}
@@ -106,6 +108,13 @@ func postJoinSetup(gateway, caDir string, skipTrust bool) (joinSetup, error) {
 	if err := fetchCAHTTP(gateway, s.caPath); err != nil {
 		return s, fmt.Errorf("fetch CA: %w", err)
 	}
+	// Persist the dashboard URL so subsequent `clawpatrol env` /
+	// `clawpatrol run` invocations can fetch the env push-down list
+	// from the gateway instead of iterating compiled-in plugins.
+	// Best-effort; the read side falls back to local enumeration
+	// when this file is missing.
+	_ = os.WriteFile(filepath.Join(caDir, "gateway"),
+		[]byte(strings.TrimRight(gateway, "/")+"\n"), 0o644)
 	if !skipTrust {
 		if err := installCATrust(s.caPath); err != nil {
 			s.caHint = manualTrustHint(s.caPath)
@@ -412,6 +421,7 @@ func fetchCA(ip, dst string) error {
 }
 
 func installCATrust(caPath string) error {
+	fmt.Println("Installing CA certificate into system trust store (requires sudo)...")
 	switch runtime.GOOS {
 	case "darwin":
 		return exec.Command("sudo", "security", "add-trusted-cert",
@@ -554,16 +564,32 @@ func wgAddressFromConf(conf string) string {
 // onboardViaDeviceFlow drives the device-flow handshake against the
 // gateway and ends in a working VPN connection. Returns wgMode=true
 // when the gateway picked the wireguard control plane (caller skips
-// tailscale-specific post-setup).
-func onboardViaDeviceFlow(gateway string, wholeMachine bool, setup joinSetup) (bool, error) {
+// tailscale-specific post-setup). profile, when non-empty, is sent
+// to the gateway as the suggested profile for this device — the
+// approver can still override it from the dashboard. hostname, when
+// non-empty, overrides os.Hostname() for the device name registered
+// with the gateway.
+func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname string, setup joinSetup) (bool, error) {
 	gateway = strings.TrimRight(gateway, "/")
 	cli := &http.Client{Timeout: 30 * time.Second}
 
+	hn := hostname
+	if hn == "" {
+		hn, _ = os.Hostname()
+	}
+
 	// 1. start — pass our hostname so the dashboard shows a real
 	// device name in WG mode (no whois fallback there).
+	q := neturl.Values{}
+	if hn != "" {
+		q.Set("hostname", hn)
+	}
+	if profile != "" {
+		q.Set("profile", profile)
+	}
 	startURL := gateway + "/api/onboard/start"
-	if hn, _ := os.Hostname(); hn != "" {
-		startURL += "?hostname=" + neturl.QueryEscape(hn)
+	if encoded := q.Encode(); encoded != "" {
+		startURL += "?" + encoded
 	}
 	resp, err := cli.Post(startURL, "application/json", nil)
 	if err != nil {
@@ -601,7 +627,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, setup joinSetup) (b
 	}
 	deadline := time.Now().Add(time.Duration(start.ExpiresIn) * time.Second)
 	stopSpin := startSpinner("Waiting for approval")
-	authKey, loginServer := "", ""
+	authKey, loginServer, apiToken := "", "", ""
 	for time.Now().Before(deadline) {
 		time.Sleep(interval)
 		pr, err := cli.Post(gateway+"/api/onboard/poll?device_code="+start.DeviceCode, "application/json", nil)
@@ -614,6 +640,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, setup joinSetup) (b
 		if k, ok := pv["auth_key"]; ok && k != "" {
 			authKey = k
 			loginServer = pv["login_server"]
+			apiToken = pv["api_token"]
 			break
 		}
 		if e := pv["error"]; e != "" && e != "authorization_pending" && e != "slow_down" {
@@ -626,6 +653,15 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, setup joinSetup) (b
 		return false, fmt.Errorf("timed out waiting for approval")
 	}
 	fmt.Println("Approved.")
+	// Persist the per-peer bearer the gateway minted alongside the
+	// wg conf. Lives next to ca.crt — same dir the env-pushdown
+	// fetcher reads. Best-effort; missing file means env-pushdown
+	// will refuse to authenticate and the operator gets a clear
+	// stderr warning instead of a silent fall-through.
+	if apiToken != "" {
+		_ = os.WriteFile(filepath.Join(filepath.Dir(setup.caPath), "api-token"),
+			[]byte(apiToken+"\n"), 0o600)
+	}
 
 	// 3a. wireguard branch — auth_key is the full client config.
 	// Skip tailscale entirely (no daemon, no `tailscale up`). The
@@ -646,7 +682,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, setup joinSetup) (b
 		// the hostname only landed if the CLI sent it at /start. This
 		// claim call is idempotent on owner and updates the hostname
 		// row in the devices table.
-		if hn, _ := os.Hostname(); hn != "" {
+		if hn != "" {
 			wgIP := wgAddressFromConf(authKey)
 			claimURL := fmt.Sprintf("%s/api/onboard/claim?device_code=%s&hostname=%s",
 				gateway, start.DeviceCode, neturl.QueryEscape(hn))
@@ -742,7 +778,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, setup joinSetup) (b
 	}
 	claimURL := fmt.Sprintf("%s/api/onboard/claim?device_code=%s&ip=%s",
 		gateway, start.DeviceCode, tailIP)
-	if hn, _ := os.Hostname(); hn != "" {
+	if hn != "" {
 		claimURL += "&hostname=" + neturl.QueryEscape(hn)
 	}
 	cr, err := cli.Post(claimURL, "application/json", nil)
@@ -824,6 +860,9 @@ func wgQuickUp(iface, conf string) error {
 		}
 	}
 	dst := filepath.Join("/etc/wireguard", iface+".conf")
+	if runtime.GOOS == "linux" {
+		conf = injectSSHExemptPostUp(conf)
+	}
 	tmp, err := os.CreateTemp("", "clawpatrol-wg-*.conf")
 	if err != nil {
 		return err
@@ -841,6 +880,66 @@ func wgQuickUp(iface, conf string) error {
 	c := runAsRoot("wg-quick", "up", iface)
 	c.Stdout, c.Stderr = os.Stdout, os.Stderr
 	return c.Run()
+}
+
+// injectSSHExemptPostUp inserts policy-routing PostUp/PostDown hooks
+// into the [Interface] block of a wg-quick conf so packets sourced
+// from the host's public IP keep using the original routing table.
+//
+// Without this, `AllowedIPs = 0.0.0.0/0` makes wg-quick replace the
+// default route with one through the tunnel — including reply packets
+// for inbound connections. SSH replies route through clawpatrol →
+// wrong source IP → in-flight admin session that ran `clawpatrol join
+// --whole-machine` dies mid-handshake. Same trick unclaw landed in
+// commit 53e0496.
+//
+// Returns conf unchanged when the host IP can't be detected (best
+// effort — better to bring up the tunnel than block on a heuristic).
+// Idempotent on the wire because PostUp's `ip rule add` is a single
+// rule with a fixed priority; re-runs add a duplicate but PostDown
+// removes one at a time and wg-quick down/up cycles cleanly.
+func injectSSHExemptPostUp(conf string) string {
+	hostIP := detectHostIP()
+	if hostIP == "" {
+		return conf
+	}
+	// Priority 5 — must beat wg-quick's two own rules:
+	//   pref 8: from all lookup main suppress_prefixlength 0
+	//   pref 9: not fwmark 51820 lookup 51820
+	// Pref 10 (what unclaw originally used in commit 53e0496) gets
+	// shadowed by pref 9 — pref 9 matches every non-fwmarked packet
+	// first → table 51820 → clawpatrol iface → SYN-ACK exits the wrong
+	// interface, SSH session dies. Observed on Ubuntu 24.04 / Vultr.
+	postUp := fmt.Sprintf("PostUp = ip rule add from %s lookup main priority 5", hostIP)
+	postDown := fmt.Sprintf("PostDown = ip rule del from %s lookup main priority 5", hostIP)
+	if strings.Contains(conf, postUp) {
+		return conf
+	}
+	// Insert before [Peer] (always present, terminates [Interface]).
+	// Falls back to append if [Peer] is missing for some reason.
+	idx := strings.Index(conf, "[Peer]")
+	if idx < 0 {
+		return conf + "\n" + postUp + "\n" + postDown + "\n"
+	}
+	return conf[:idx] + postUp + "\n" + postDown + "\n\n" + conf[idx:]
+}
+
+// detectHostIP returns the IPv4 address used to reach the public
+// internet, mirroring `ip -4 route get 1.1.1.1 | grep -oP 'src \K...'`.
+// Returns "" on any error so callers can decide to skip the rule.
+func detectHostIP() string {
+	out, err := exec.Command("ip", "-4", "route", "get", "1.1.1.1").Output()
+	if err != nil {
+		return ""
+	}
+	// Output: "1.1.1.1 via X dev eth0 src Y.Y.Y.Y uid 0 \n cache"
+	fields := strings.Fields(string(out))
+	for i, f := range fields {
+		if f == "src" && i+1 < len(fields) {
+			return fields[i+1]
+		}
+	}
+	return ""
 }
 
 // installTailscale runs the official one-line installer for the
@@ -939,8 +1038,12 @@ endpoint "https" "anthropic" {
   hosts      = ["api.anthropic.com"]
   credential = claude
 }
-endpoint "https" "openai" {
-  hosts      = ["api.openai.com", "chatgpt.com"]
+endpoint "https" "openai-api" {
+  hosts      = ["api.openai.com"]
+  credential = codex
+}
+endpoint "openai_codex_https" "openai-chatgpt" {
+  hosts      = ["chatgpt.com"]
   credential = codex
 }
 endpoint "https" "github-api" {

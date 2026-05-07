@@ -27,7 +27,7 @@ On macOS, you'll be prompted to approve a Network Extension
 and proxy configuration. On Linux, you can choose between a
 systemd service or an ephemeral process.
 
-See [Onboarding](03-onboarding) for all the details about the
+See [Onboarding](/docs/03-onboarding/) for all the details about the
 onboarding process.
 
 ## Run an Agent

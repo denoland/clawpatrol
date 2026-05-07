@@ -14,12 +14,54 @@ import (
 	"crypto/tls"
 	"log"
 	"net"
+	"strings"
 
 	utls "github.com/refraction-networking/utls"
 
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/runtime"
 )
+
+// browserTLSHosts: hosts whose Cloudflare WAF rejects plain Go TLS
+// fingerprints. Match suffix so subdomains (e.g. backend-api.chatgpt.com,
+// auth.openai.com) get the uTLS Chrome treatment too. Add new hosts
+// here when "Attack detected" 405s show up in the gateway log.
+var browserTLSHosts = []string{
+	"chatgpt.com",
+	"openai.com",
+}
+
+func needsBrowserTLS(host string) bool {
+	h := strings.ToLower(host)
+	for _, suffix := range browserTLSHosts {
+		if h == suffix || strings.HasSuffix(h, "."+suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// endpointWantsClientCert reports whether ep declares any credential
+// implementing TLSCredentialRuntime. Such endpoints (mtls / k8s) need
+// the upstream Config to carry a client cert, which dialBrowserTLS
+// can't satisfy — fall back to dialUpstream.
+func endpointWantsClientCert(ep *config.CompiledEndpoint) bool {
+	if ep == nil {
+		return false
+	}
+	for _, cc := range ep.Credentials {
+		if _, ok := cc.Credential.Body.(runtime.TLSCredentialRuntime); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// profileCtxKey is the context key for the peer's profile name.
+// mitmHTTPS injects it into each request's context so DialTLSContext
+// can fetch per-profile mTLS credentials without the transport needing
+// to know about WireGuard peer → profile mapping.
+type profileCtxKey struct{}
 
 // servePorts is a no-op until the postgres / clickhouse_native
 // endpoint plugins land their wire-protocol runtime hooks.
@@ -31,11 +73,16 @@ func (g *Gateway) servePorts() {}
 // (currently mtls_credential) get the plugin a chance to add client
 // certs / replace RootCAs before the handshake.
 //
+// profile is the peer's profile name (e.g. "avocet2"); it is used to
+// fetch per-profile secrets from the dashboard DB. Callers that don't
+// have a profile may pass "" — secrets stored under "" or via env-var
+// still resolve correctly for non-profiled deployments.
+//
 // Empty TLS credential (cert/key not configured) logs a hint and
 // falls back to plain TLS — the request still flows but the
 // upstream rejects it on cert-required endpoints. Operators see
 // the misconfiguration in the dashboard event log.
-func (g *Gateway) dialUpstream(ctx context.Context, network, addr, serverName string, ep *config.CompiledEndpoint) (net.Conn, error) {
+func (g *Gateway) dialUpstream(ctx context.Context, network, addr, serverName string, ep *config.CompiledEndpoint, profile string) (net.Conn, error) {
 	cfg := &tls.Config{ServerName: serverName, NextProtos: []string{"http/1.1"}}
 
 	if ep != nil {
@@ -47,7 +94,7 @@ func (g *Gateway) dialUpstream(ctx context.Context, network, addr, serverName st
 			if !ok {
 				continue
 			}
-			sec, err := g.secrets.Get(cc.Credential.Symbol.Name, "")
+			sec, err := g.secrets.Get(cc.Credential.Symbol.Name, profile)
 			if err != nil {
 				log.Printf("tls-secret %s: %v — dialing without client cert", cc.Credential.Symbol.Name, err)
 				break

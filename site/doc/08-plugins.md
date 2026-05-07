@@ -233,7 +233,7 @@ Endpoints with `port !== 443` automatically get DNS entries registered. The
 framework scans endpoint `domains` and `port` to build the DNS entry table.
 WireGuard clients querying DNS for matching hostnames receive a virtual IP
 from `10.78.0.0/16`. Connections to those VIPs are routed to the proxy via
-iptables DNAT. See `doc/04-architecture.md` for details.
+iptables DNAT. See [Architecture](/docs/04-architecture/) for details.
 
 ### Config schema
 

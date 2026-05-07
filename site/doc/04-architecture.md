@@ -1,5 +1,9 @@
 # Architecture
 
+> See [Glossary](/docs/03a-glossary/) for definitions of gateway, endpoint,
+> credential, rule, profile, plugin, runtime, and the rest of the
+> vocabulary used below.
+
 ## Overview — actors
 
 Five actors take part in a clawpatrol deployment:

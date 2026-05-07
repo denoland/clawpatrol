@@ -1,18 +1,39 @@
 import { useEffect, useState } from "react";
 import { AgentsTable } from "./components/AgentsTable";
+import { AnalyticsPage } from "./components/AnalyticsPage";
 import { ConnectModal } from "./components/ConnectModal";
 import { DevicePage } from "./components/DevicePage";
 import { LiveRequests } from "./components/LiveRequests";
 import { OnboardPage } from "./components/OnboardPage";
+import { RequestDetailPage } from "./components/RequestDetailPage";
 import { AddDeviceModal } from "./components/AddDeviceModal";
 import { SettingsModal } from "./components/SettingsModal";
 import { HITLBar } from "./components/HITLBar";
-import { getStatus, getAgents, getWhoami, type Integration, type Agent, type Whoami } from "./lib/api";
+import { getState, type Integration, type Agent, type Whoami } from "./lib/api";
 
-function parseRoute(): { name: "main" } | { name: "device"; ip: string } | { name: "onboard"; code: string } {
-  const h = window.location.hash;
-  if (h.startsWith("#/onboard/")) return { name: "onboard", code: decodeURIComponent(h.slice("#/onboard/".length)) };
-  const m = h.match(/^#\/device\/(.+)$/);
+type Route =
+  | { name: "main" }
+  | { name: "device"; ip: string }
+  | { name: "analytics"; ip?: string }
+  | { name: "onboard"; code: string }
+  | { name: "request"; id: string };
+
+function parseRoute(): Route {
+  // Strip query string before matching routes.
+  const raw = window.location.hash;
+  const qi = raw.indexOf("?");
+  const h = qi < 0 ? raw : raw.slice(0, qi);
+  if (h.startsWith("#/onboard/"))
+    return { name: "onboard", code: decodeURIComponent(h.slice("#/onboard/".length)) };
+  const r = h.match(/^#\/request\/([^/]+)$/);
+  if (r) return { name: "request", id: decodeURIComponent(r[1]) };
+  if (h === "#/analytics") return { name: "analytics" };
+  const a = h.match(/^#\/analytics\/([^/]+)$/);
+  if (a) return { name: "analytics", ip: decodeURIComponent(a[1]) };
+  // Legacy device/IP/analytics URL
+  const da = h.match(/^#\/device\/([^/]+)\/analytics$/);
+  if (da) return { name: "analytics", ip: decodeURIComponent(da[1]) };
+  const m = h.match(/^#\/device\/([^/]+)$/);
   if (m) return { name: "device", ip: decodeURIComponent(m[1]) };
   return { name: "main" };
 }
@@ -35,10 +56,13 @@ export default function App() {
 
   async function refresh() {
     try {
-      const [i, a, w] = await Promise.all([getStatus(), getAgents(), getWhoami()]);
-      setIntegrations(i || []);
-      setAgents(a || []);
-      setWhoami(w);
+      // Single round-trip; getState ETags so the no-change path is a
+      // 304 (no body, no JSON parse). Replaces three parallel fetches
+      // that ran every 3 s — one bundled fetch every 5 s now.
+      const s = await getState();
+      setIntegrations(s.integrations || []);
+      setAgents(s.agents || []);
+      setWhoami(s.whoami);
     } catch {
       /* swallow */
     }
@@ -46,7 +70,7 @@ export default function App() {
 
   useEffect(() => {
     refresh();
-    const t = setInterval(refresh, 3000);
+    const t = setInterval(refresh, 5000);
     return () => clearInterval(t);
   }, []);
 
@@ -70,6 +94,16 @@ export default function App() {
             >
               +
             </button>
+            <a
+              href="#/analytics"
+              className="w-[36px] h-[36px] rounded-full border border-[#e5e5e5] text-[#525252] flex items-center justify-center hover:border-[#171717] hover:text-[#171717] transition-colors"
+              title="analytics"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 3v18h18" />
+                <path d="m7 16 4-8 4 4 4-6" />
+              </svg>
+            </a>
             <button
               onClick={() => setShowSettings(true)}
               className="w-[36px] h-[36px] rounded-full border border-[#e5e5e5] text-[#525252] flex items-center justify-center hover:border-[#171717] hover:text-[#171717] transition-colors"
@@ -83,12 +117,20 @@ export default function App() {
           </div>
           <section className="bg-white border border-[#e5e5e5] rounded overflow-hidden">
             <div className="overflow-x-auto">
-              <AgentsTable agents={agents} integrations={integrations} onSelect={(ip) => navigate("#/device/" + encodeURIComponent(ip))} />
+              <AgentsTable
+                agents={agents}
+                integrations={integrations}
+                onSelect={(ip) => navigate("#/device/" + encodeURIComponent(ip))}
+              />
             </div>
           </section>
           <HITLBar />
           <LiveRequests height="420px" />
         </main>
+      ) : route.name === "analytics" ? (
+        <AnalyticsPage ip={route.ip} agents={agents} />
+      ) : route.name === "request" ? (
+        <RequestDetailPage id={route.id} agents={agents} />
       ) : route.name === "onboard" ? (
         <OnboardPage code={route.code} onBack={() => navigate("")} />
       ) : (

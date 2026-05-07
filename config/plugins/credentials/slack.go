@@ -26,6 +26,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -54,6 +55,24 @@ func (s *SlackTokens) InjectHTTP(_ context.Context, req *http.Request, sec runti
 		return nil
 	}
 	req.Header.Set("Authorization", "Bearer "+pick)
+	// Slack's legacy SDKs send `token=<value>` in the form body alongside
+	// the Authorization header. If the body token is a placeholder it
+	// reaches Slack unsubstituted and causes invalid_auth. Strip it so
+	// Slack uses only the Authorization header we just set.
+	if strings.Contains(req.Header.Get("Content-Type"), "application/x-www-form-urlencoded") && req.Body != nil {
+		raw, err := io.ReadAll(req.Body)
+		if err == nil {
+			vals, err := url.ParseQuery(string(raw))
+			if err == nil && vals.Get("token") != "" {
+				vals.Del("token")
+				encoded := vals.Encode()
+				req.Body = io.NopCloser(strings.NewReader(encoded))
+				req.ContentLength = int64(len(encoded))
+			} else {
+				req.Body = io.NopCloser(bytes.NewReader(raw))
+			}
+		}
+	}
 	return nil
 }
 
@@ -159,6 +178,9 @@ func (s *SlackTokens) NotifyHITL(_ context.Context, req runtime.ApproveRequest, 
 		"channel": target.Channel,
 		"text":    fmt.Sprintf("clawpatrol HITL: %s %s%s", req.Method, req.Host, req.Path),
 		"blocks":  blocks,
+	}
+	if target.ThreadTS != "" {
+		body["thread_ts"] = target.ThreadTS
 	}
 	buf, _ := json.Marshal(body)
 	hreq, err := http.NewRequest("POST", "https://slack.com/api/chat.postMessage", bytes.NewReader(buf))

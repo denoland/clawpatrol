@@ -245,16 +245,28 @@ export async function deleteAgent(ip: string): Promise<void> {
   if (!r.ok) throw new Error(await r.text());
 }
 
-export async function getAgents(): Promise<Agent[]> {
-  const r = await api("/api/agents");
+// /api/state bundles whoami + integrations + agents in one ETag'd
+// response. Module-level lastTag persists across getState calls so
+// the 304 fast path kicks in on every poll after the first; cached
+// value returned on 304 means consumers always get a non-null shape.
+//
+// Browser fetch with default cache + ETag would also revalidate, but
+// the cached body is still copied into JS land — going through If-
+// None-Match explicitly skips JSON.parse on the no-change path too.
+type StateResp = { whoami: Whoami; integrations: Integration[]; agents: Agent[] };
+let lastStateTag = "";
+let lastState: StateResp | null = null;
+export async function getState(): Promise<StateResp> {
+  const headers: Record<string, string> = {};
+  if (lastStateTag) headers["If-None-Match"] = lastStateTag;
+  const r = await fetch("/api/state", { headers, credentials: "same-origin" });
+  if (r.status === 304 && lastState) return lastState;
   if (!r.ok) throw new Error(await r.text());
-  return r.json();
-}
-
-export async function getWhoami(): Promise<Whoami> {
-  const r = await api("/api/whoami");
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
+  const tag = r.headers.get("ETag");
+  if (tag) lastStateTag = tag;
+  const body = (await r.json()) as StateResp;
+  lastState = body;
+  return body;
 }
 
 export type OAuthStartResp =
@@ -281,6 +293,50 @@ export async function oauthRevoke(id: string, owner: string): Promise<void> {
     body: JSON.stringify({ id, owner }),
   });
   if (!r.ok) throw new Error(await r.text());
+}
+
+export async function getAction(id: string): Promise<EventRecord> {
+  const r = await api(`/api/actions/${id}`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export type EventRecord = {
+  ts: string;
+  id?: string;
+  phase?: "" | "start" | "end" | "frame";
+  mode: string;
+  agent_ip?: string;
+  host: string;
+  method?: string;
+  path?: string;
+  status?: number;
+  in?: number;
+  out?: number;
+  ms: number;
+  action?: string;
+  reason?: string;
+  frame?: string;
+  direction?: string;
+  req_sha?: string;
+  resp_sha?: string;
+  req_body?: string;
+  resp_body?: string;
+  req_headers?: Record<string, string>;
+  resp_headers?: Record<string, string>;
+};
+
+export async function getAnalytics(params: {
+  range: string;
+  agent?: string;
+  limit?: number;
+}): Promise<{ events: EventRecord[]; total: number }> {
+  const p = new URLSearchParams({ range: params.range });
+  if (params.agent) p.set("agent", params.agent);
+  if (params.limit) p.set("limit", String(params.limit));
+  const r = await api(`/api/analytics?${p}`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
 }
 
 export async function oauthExchange(state: string, code: string): Promise<{ connected: boolean; owner: string; expires: number }> {

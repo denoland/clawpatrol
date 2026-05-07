@@ -56,6 +56,15 @@ NSApplication.shared.run()
 func runWrapped() {
     let argv = Array(CommandLine.arguments.dropFirst(2)).filter { $0 != "--" }
     if argv.isEmpty { usage() }
+
+    // IPC handshake — synchronously register our PID with the
+    // extension's session listener before posix_spawn'ing the child.
+    // The handshake guarantees the ext has the PID in its registry
+    // before the child's first flow can fire. See sessionRegister()
+    // in Provider.swift for protocol details.
+    sessionIPC("register \(getpid())")
+    defer { sessionIPC("unregister \(getpid())") }
+
     var pid: pid_t = 0
     let cargs = argv.map { strdup($0) } + [nil]
     var actions: posix_spawn_file_actions_t? = nil
@@ -70,6 +79,42 @@ func runWrapped() {
     var status: Int32 = 0
     waitpid(pid, &status, 0)
     exit((status >> 8) & 0xff)
+}
+
+// sessionIPC dials /tmp/clawpatrol.sock and sends a single newline-
+// framed verb. Best-effort: failures (sysext not yet running, sandbox
+// quirk) just no-op. The wrapped child won't be tunneled in that
+// case, but blocking the user's command on extension plumbing is
+// worse than passthrough.
+func sessionIPC(_ msg: String) {
+    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+    if fd < 0 { return }
+    defer { Darwin.close(fd) }
+    var addr = sockaddr_un()
+    addr.sun_family = sa_family_t(AF_UNIX)
+    let bytes = "/tmp/clawpatrol.sock".utf8CString
+    withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+        ptr.withMemoryRebound(to: CChar.self, capacity: bytes.count) { p in
+            for (i, b) in bytes.enumerated() {
+                p.advanced(by: i).pointee = b
+            }
+        }
+    }
+    let len = socklen_t(MemoryLayout<sockaddr_un>.size)
+    let rc = withUnsafePointer(to: &addr) { ap -> Int32 in
+        ap.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+            Darwin.connect(fd, sa, len)
+        }
+    }
+    if rc != 0 { return }
+    var line = msg + "\n"
+    _ = line.withUTF8 { buf in
+        Darwin.write(fd, buf.baseAddress, buf.count)
+    }
+    var reply = [UInt8](repeating: 0, count: 8)
+    _ = reply.withUnsafeMutableBufferPointer { p in
+        Darwin.read(fd, p.baseAddress, p.count)
+    }
 }
 
 class ExtDelegate: NSObject, OSSystemExtensionRequestDelegate {

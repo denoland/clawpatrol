@@ -70,7 +70,7 @@ func init() {
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			e := body.(*HTTPSEndpoint)
 			b.SetAttributeValue("hosts", config.StringListVal(e.Hosts))
-			emitCredentialBinding(b, e.Credential, e.Credentials)
+			emitCredentialBinding(b, e.Credential, e.Credentials, "placeholder")
 		},
 	})
 }

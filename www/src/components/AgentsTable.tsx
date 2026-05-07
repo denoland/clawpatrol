@@ -39,12 +39,13 @@ export function AgentsTable({
           <Th className="text-right">REQS</Th>
           <Th className="hidden lg:table-cell">IP</Th>
           <Th>INTEGRATIONS</Th>
+          <Th className="w-[32px]">{""}</Th>
         </tr>
       </thead>
       <tbody>
         {stable.length === 0 && (
           <tr>
-            <td colSpan={6} className="px-5 py-8 text-center text-[11px] text-[#a3a3a3]">
+            <td colSpan={7} className="px-5 py-8 text-center text-[11px] text-[#a3a3a3]">
               It's empty in here
             </td>
           </tr>
@@ -91,7 +92,19 @@ export function AgentsTable({
               </Td>
               <Td>
                 <IntegrationStack
-                  items={(a.integrations ?? []).map((id) => ({ id, type: byId.get(id)?.type }))}
+                  items={(a.integrations ?? []).map((id) => {
+                    const it = byId.get(id);
+                    // Pick the owner row matching this device's profile
+                    // so two profiles connected to different GH accounts
+                    // surface distinct avatars in their respective rows.
+                    const owner = it?.owners?.find((o) => o.owner === a.profile)
+                      ?? it?.owners?.[0];
+                    return {
+                      id,
+                      type: it?.type,
+                      avatar_url: owner?.avatar_url,
+                    };
+                  })}
                 />
               </Td>
             </tr>
@@ -106,7 +119,7 @@ function Th({ children, className = "" }: { children: React.ReactNode; className
   return (
     <th
       className={
-        "px-3 sm:px-[14px] py-[9px] text-left text-[10px] uppercase tracking-[.09em] text-[#a3a3a3] font-medium bg-white " +
+        "px-3 sm:px-[14px] py-[9px] text-left text-[10px] uppercase tracking-[.12em] text-[#a3a3a3] font-medium bg-white " +
         className
       }
     >

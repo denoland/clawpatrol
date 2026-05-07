@@ -290,10 +290,18 @@ func StartWGServer(ts Tailscale, stateDir string) (*WGServer, error) {
 	srv := &WGServer{tun: tun, dev: dev, serverIP: serverIP, publicKey: pub, db: globalDB}
 	// Replay persisted (pubkey → ip) pairs into the in-memory device
 	// so reboots don't strand existing clients.
+	//
+	// Must register BOTH the v4 /32 and the v6 fd77::<n>/128 allowed_ip
+	// to match AddPeer. Replaying v4 only meant peers whose client-side
+	// ULA was active (gateway-emitted wg-quick now sets v6 too) had
+	// their fd77:: outbound packets land at a peer with no matching
+	// allowed_ip → dropped → client thinks the gateway is unreachable
+	// after every restart, fixed only by re-joining.
 	for pubkey, ip := range srv.loadPeers() {
+		v6 := wg6FromV4(netip.MustParseAddr(ip))
 		_ = dev.IpcSet(fmt.Sprintf(
-			"public_key=%s\nreplace_allowed_ips=true\nallowed_ip=%s/32\n",
-			pubkey, ip))
+			"public_key=%s\nreplace_allowed_ips=true\nallowed_ip=%s/32\nallowed_ip=%s/128\n",
+			pubkey, ip, v6.String()))
 	}
 	return srv, nil
 }
@@ -355,13 +363,24 @@ func wg6FromV4(v4 netip.Addr) netip.Addr {
 }
 
 // EnablePromiscuousForwarder turns the netstack into an L3 sink.
-// SYNs to ANY destination IP/port reach `handler`; the wrapped net.Conn
-// already carries the original 4-tuple via TransportEndpointID. Mirrors
-// unclaw/smoltcp's set_any_ip + dynamic listener pool model.
+// SYNs to ANY destination IP/port reach `tcpHandler`; the wrapped
+// net.Conn already carries the original 4-tuple via
+// TransportEndpointID. Mirrors unclaw/smoltcp's set_any_ip + dynamic
+// listener pool model.
 //
-// Caller dispatches by dstPort (e.g. 443 → MITM, dash port → mux,
+// udpHandler is consulted before the default UDP relay: it may take
+// over a flow (return true) — used for DNS interception so the
+// gateway can answer A queries with VIPs for SSH-able hostnames —
+// or pass (return false) to fall through to relayUDP, which shuttles
+// datagrams to the real upstream over the host's network. Pass nil
+// for the all-relay default.
+//
+// Caller dispatches TCP by dstPort (e.g. 443 → MITM, dash port → mux,
 // else → transparent relay to the real upstream IP).
-func (s *WGServer) EnablePromiscuousForwarder(handler func(c net.Conn, dstIP string, dstPort uint16)) error {
+func (s *WGServer) EnablePromiscuousForwarder(
+	tcpHandler func(c net.Conn, dstIP string, dstPort uint16),
+	udpHandler func(c net.Conn, dstIP string, dstPort uint16) bool,
+) error {
 	st := s.tun.stack
 	if err := st.SetPromiscuousMode(1, true); err != nil {
 		return fmt.Errorf("set promiscuous: %v", err)
@@ -385,11 +404,12 @@ func (s *WGServer) EnablePromiscuousForwarder(handler func(c net.Conn, dstIP str
 		}
 		req.Complete(false)
 		c := gonet.NewTCPConn(&wq, ep)
-		go handler(c, id.LocalAddress.String(), id.LocalPort)
+		go tcpHandler(c, id.LocalAddress.String(), id.LocalPort)
 	})
 	st.SetTransportProtocolHandler(tcp.ProtocolNumber, fwd.HandlePacket)
 
-	// UDP forwarder — DNS, QUIC, etc. need to reach real upstreams.
+	// UDP forwarder — DNS interception (when udpHandler claims the
+	// flow) or transparent relay (default).
 	udpFwd := udp.NewForwarder(st, func(req *udp.ForwarderRequest) bool {
 		id := req.ID()
 		var wq waiter.Queue
@@ -397,8 +417,15 @@ func (s *WGServer) EnablePromiscuousForwarder(handler func(c net.Conn, dstIP str
 		if err != nil {
 			return true
 		}
-		go relayUDP(gonet.NewUDPConn(&wq, ep),
-			id.LocalAddress.String(), id.LocalPort)
+		c := gonet.NewUDPConn(&wq, ep)
+		dstIP := id.LocalAddress.String()
+		dstPort := id.LocalPort
+		go func() {
+			if udpHandler != nil && udpHandler(c, dstIP, dstPort) {
+				return
+			}
+			relayUDP(c, dstIP, dstPort)
+		}()
 		return true
 	})
 	st.SetTransportProtocolHandler(udp.ProtocolNumber, udpFwd.HandlePacket)
@@ -462,6 +489,18 @@ func (s *WGServer) PublicKey() (string, error) {
 	return s.publicKey, nil
 }
 
+// udpRelayBufPool reuses 64KB UDP packet buffers across flows. Each
+// relayUDP previously allocated 130KB of buffers per connection (two
+// 65535-byte slices) that lived for the entire flow. Pool keeps a
+// small set warm and recycles on close — saves ~13MB resident per 100
+// concurrent UDP flows.
+var udpRelayBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 65535)
+		return &b
+	},
+}
+
 // relayUDP shuttles datagrams between a netstack UDP conn (peer side)
 // and the real upstream over the host's network. Both directions run
 // until one half closes.
@@ -478,7 +517,9 @@ func relayUDP(c net.Conn, dstIP string, dstPort uint16) {
 	defer up.Close()
 	done := make(chan struct{}, 2)
 	go func() {
-		buf := make([]byte, 65535)
+		bp := udpRelayBufPool.Get().(*[]byte)
+		defer udpRelayBufPool.Put(bp)
+		buf := *bp
 		for {
 			n, err := c.Read(buf)
 			if err != nil {
@@ -491,7 +532,9 @@ func relayUDP(c net.Conn, dstIP string, dstPort uint16) {
 		done <- struct{}{}
 	}()
 	go func() {
-		buf := make([]byte, 65535)
+		bp := udpRelayBufPool.Get().(*[]byte)
+		defer udpRelayBufPool.Put(bp)
+		buf := *bp
 		for {
 			n, _, err := up.ReadFromUDP(buf)
 			if err != nil {

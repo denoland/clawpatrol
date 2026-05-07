@@ -188,16 +188,33 @@ func runRunChild() {
 	wgUpR.Close()
 
 	cfg := mustParseRunConf(os.Getenv("CLAWPATROL_RUN_CONF"))
-	addr := cfg.Address
-	if !strings.Contains(addr, "/") {
-		addr += "/32"
+	// Address may carry both v4 and v6 separated by ", " — gateway-emitted
+	// wg-quick conf looks like `Address = 10.55.0.5/32, fd77::5/128`. The
+	// `ip addr add` command rejects the comma-joined form ("any valid
+	// prefix is expected rather than ..."), so split + assign each addr.
+	var addrs []string
+	for _, part := range strings.Split(cfg.Address, ",") {
+		s := strings.TrimSpace(part)
+		if s == "" {
+			continue
+		}
+		if !strings.Contains(s, "/") {
+			s += "/32"
+		}
+		addrs = append(addrs, s)
 	}
-	for _, a := range [][]string{
+	if len(addrs) == 0 {
+		fail("wg conf: empty Address")
+	}
+	steps := [][]string{
 		{"ip", "link", "set", "lo", "up"},
 		{"ip", "link", "set", tunIfName, "mtu", fmt.Sprintf("%d", tunMTU), "up"},
-		{"ip", "addr", "add", addr, "dev", tunIfName},
-		{"ip", "route", "add", "default", "dev", tunIfName},
-	} {
+	}
+	for _, a := range addrs {
+		steps = append(steps, []string{"ip", "addr", "add", a, "dev", tunIfName})
+	}
+	steps = append(steps, []string{"ip", "route", "add", "default", "dev", tunIfName})
+	for _, a := range steps {
 		c := exec.Command(a[0], a[1:]...)
 		c.Stderr = os.Stderr
 		if err := c.Run(); err != nil {

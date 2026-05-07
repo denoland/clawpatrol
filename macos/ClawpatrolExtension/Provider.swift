@@ -84,6 +84,12 @@ class TransparentProxyProvider: NETransparentProxyProvider {
                 return
             }
             os_log("wg handshake complete", log: log, type: .info)
+            // IPC listener — synchronous handshake from clawpatrol
+            // CLI registers its PID before exec'ing the wrapped child,
+            // eliminating the start-of-flow race a file-watcher would
+            // have. Idempotent if startProxy fires twice.
+            startSessionListener()
+            startSessionReaper()
             DispatchQueue.main.async {
                 self.applyNetworkSettings(completionHandler: completionHandler)
             }
@@ -91,9 +97,13 @@ class TransparentProxyProvider: NETransparentProxyProvider {
     }
 
     private func applyNetworkSettings(completionHandler: @escaping (Error?) -> Void) {
-        // Intercept everything outbound — filter inside handleNewFlow.
+        // Claim TCP+UDP everywhere. UDP cannot return false safely
+        // (radar r.98382363 race → ~30s Chrome QUIC stall), so non-
+        // tunnel UDP is bypassed via a real host socket in handleNew-
+        // Flow. Per-process clawpatrol children's UDP/53 is tunneled
+        // through the gateway, enabling SSH endpoint VIP DNS.
         let settings = NETransparentProxyNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
-        settings.includedNetworkRules = [
+        let included: [NENetworkRule] = [
             NENetworkRule(remoteNetwork: nil, remotePrefix: 0,
                           localNetwork: nil, localPrefix: 0,
                           protocol: .TCP, direction: .outbound),
@@ -112,6 +122,7 @@ class TransparentProxyProvider: NETransparentProxyProvider {
                           remotePrefix: 16, localNetwork: nil, localPrefix: 0,
                           protocol: .UDP, direction: .outbound),
         ]
+        settings.includedNetworkRules = included
         setTunnelNetworkSettings(settings, completionHandler: completionHandler)
     }
 
@@ -122,14 +133,30 @@ class TransparentProxyProvider: NETransparentProxyProvider {
     }
 
     override func handleNewFlow(_ flow: NEAppProxyFlow) -> Bool {
-        if !shouldTunnel(flow) { return false }
+        let tunnel = shouldTunnel(flow)
         if let tcp = flow as? NEAppProxyTCPFlow {
+            if !tunnel { return false }
             bridgeTCP(tcp); return true
         }
         if let udp = flow as? NEAppProxyUDPFlow {
+            // Claim every UDP flow. Returning false on UDP races kernel
+            // detach (radar r.98382363) → ~30s Chrome QUIC stall.
+            // Tunnel-side flows go through the gateway; non-tunnel
+            // flows are bypassed by re-emitting datagrams via a real
+            // host UDP socket (Mozilla VPN's bypassudpflow pattern).
+            if !tunnel { bypassUDP(udp); return true }
             bridgeUDP(udp); return true
         }
         return false
+    }
+
+    private func bypassUDP(_ flow: NEAppProxyUDPFlow) {
+        flow.open(withLocalEndpoint: nil) { err in
+            if err != nil {
+                flow.closeReadWithError(err); flow.closeWriteWithError(err); return
+            }
+            BypassUDP(flow: flow).start()
+        }
     }
 
     private func shouldTunnel(_ flow: NEAppProxyFlow) -> Bool {
@@ -336,67 +363,215 @@ private func pidFromAuditToken(_ data: Data) -> pid_t? {
     }
 }
 
-// Walk PPID chain looking for an ancestor that's "us":
-//   - path under /Applications/Clawpatrol.app/  (GUI app + sysext host)
-//   - OR basename == "clawpatrol"               (standalone CLI from
-//                                                 install.sh, lives at
-//                                                 $HOME/.local/bin by
-//                                                 default but operators
-//                                                 may override via
-//                                                 CLAWPATROL_PREFIX)
-// SecCode-based identifier matching (the obvious approach) is
-// unreliable in sysext context — SecCodeCopySigningInformation works
-// inconsistently. Path + basename matching is good enough.
-private let parentBundlePathPrefix = "/Applications/Clawpatrol.app/"
-private let cliBinaryName = "clawpatrol"
-private let MAX_PROC_PATH = 4096
-private let bsdInfoSize = Int32(MemoryLayout<proc_bsdinfo>.size)
+// Session registry — populated synchronously by `clawpatrol run`
+// (Go) or `Clawpatrol run` (Swift helper) over the unix socket at
+// sessionSockPath before the wrapped child exec's. Mirrors unclaw's
+// SessionRegistry, transport-agnostic so the Go CLI can speak it
+// without an ObjC runtime.
+//
+// Wire protocol (newline-framed ASCII):
+//   client → "register <pid>\n"      ext → "ok\n"
+//   client → "unregister <pid>\n"    ext → "ok\n"
+// Unknown verbs reply "err\n". Connection close = no-op; lingering
+// PIDs are reaped via kill(pid, 0).
+//
+// Why /tmp: sysext sandbox allows /private/tmp (alias /tmp);
+// /var/run requires root for both bind AND connect, but the CLI runs
+// as user. /tmp is world-RW which is fine — registering a non-
+// clawpatrol PID just means the ext might tunnel that PID's flows,
+// a local authz concern only the host's user controls anyway.
+let sessionSockPath = "/tmp/clawpatrol.sock"
 
-private func processIsClawpatrol(path: String) -> Bool {
-    if path.hasPrefix(parentBundlePathPrefix) { return true }
-    if let slash = path.lastIndex(of: "/") {
-        let after = path.index(after: slash)
-        if path[after...] == cliBinaryName { return true }
-    } else if path == cliBinaryName {
-        return true
+private var sessionPidsSet: Set<pid_t> = []
+private let sessionPidsLock = NSLock()
+
+private func sessionPids() -> Set<pid_t> {
+    sessionPidsLock.lock()
+    defer { sessionPidsLock.unlock() }
+    return sessionPidsSet
+}
+private func sessionRegister(_ pid: pid_t) {
+    sessionPidsLock.lock()
+    sessionPidsSet.insert(pid)
+    sessionPidsLock.unlock()
+    // Do NOT invalidate the ancestor cache here. The cache stores
+    // "was this pid a descendant of any session pid I checked?". A
+    // new session pid only changes the verdict for processes that
+    // descend from it — and those processes don't exist yet at
+    // register time (the CLI registers before exec'ing the child).
+    // Dumping the cache on every register made the first 100ms
+    // after `clawpatrol run` a cold-cache storm: every Chrome
+    // helper, system service, and background daemon re-walked its
+    // full PPID chain via proc_pidinfo, the per-flow handleNewFlow
+    // latency spiked, and macOS started stalling unrelated UDP
+    // sockets.
+}
+private func sessionUnregister(_ pid: pid_t) {
+    sessionPidsLock.lock()
+    sessionPidsSet.remove(pid)
+    sessionPidsLock.unlock()
+    // On unregister evict cache entries that pointed to this
+    // session pid — their descendants are no longer tunneled. Walk
+    // the cache once and drop the matches; cheaper than removeAll
+    // because most entries are unrelated negatives.
+    ancestorCacheLock.lock()
+    if !ancestorCache.isEmpty {
+        for (k, v) in ancestorCache where v.sessionPID == pid {
+            ancestorCache.removeValue(forKey: k)
+        }
     }
-    return false
+    ancestorCacheLock.unlock()
 }
 
-// Per-pid cache for ancestorMatches. proc_pidpath + proc_pidinfo are
-// syscalls; on whole-machine every flow walks the chain and hammers
-// these (5-10 syscalls per flow × thousands of flows/sec). Cache the
-// terminal verdict (matches?) keyed by pid with a 5s TTL — pids get
-// recycled fast on macOS, so don't keep stale entries.
-private struct ancestorCacheEntry { let matches: Bool; let expires: Date }
-private var ancestorCache: [pid_t: ancestorCacheEntry] = [:]
+// Reaper: every 5s drop registered PIDs whose process is gone.
+// Covers SIGKILLed CLIs that didn't get to send unregister.
+private var sessionReaperTimer: DispatchSourceTimer?
+private func startSessionReaper() {
+    let t = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+    t.schedule(deadline: .now() + 5, repeating: 5)
+    t.setEventHandler {
+        for pid in sessionPids() where kill(pid, 0) != 0 {
+            sessionUnregister(pid)
+        }
+    }
+    t.resume()
+    sessionReaperTimer = t
+}
+
+private var sessionListenFD: Int32 = -1
+private func startSessionListener() {
+    unlink(sessionSockPath)
+    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+    if fd < 0 { return }
+    var addr = sockaddr_un()
+    addr.sun_family = sa_family_t(AF_UNIX)
+    let pathBytes = sessionSockPath.utf8CString
+    withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+        ptr.withMemoryRebound(to: CChar.self, capacity: pathBytes.count) { p in
+            for (i, b) in pathBytes.enumerated() {
+                p.advanced(by: i).pointee = b
+            }
+        }
+    }
+    let len = socklen_t(MemoryLayout<sockaddr_un>.size)
+    let rc = withUnsafePointer(to: &addr) { ap -> Int32 in
+        ap.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+            Darwin.bind(fd, sa, len)
+        }
+    }
+    if rc != 0 { Darwin.close(fd); return }
+    chmod(sessionSockPath, 0o666)
+    if listen(fd, 16) != 0 { Darwin.close(fd); return }
+    sessionListenFD = fd
+    DispatchQueue.global(qos: .userInitiated).async {
+        while true {
+            let cfd = Darwin.accept(fd, nil, nil)
+            if cfd < 0 { continue }
+            DispatchQueue.global(qos: .userInitiated).async {
+                serviceSessionClient(cfd)
+            }
+        }
+    }
+}
+
+private func serviceSessionClient(_ fd: Int32) {
+    defer { Darwin.close(fd) }
+    var buf = [UInt8](repeating: 0, count: 256)
+    var pending = ""
+    while true {
+        let n = buf.withUnsafeMutableBufferPointer { p -> Int in
+            Darwin.read(fd, p.baseAddress, p.count)
+        }
+        if n <= 0 { return }
+        pending += String(bytes: buf[0..<n], encoding: .utf8) ?? ""
+        while let nl = pending.firstIndex(of: "\n") {
+            let line = String(pending[..<nl])
+            pending = String(pending[pending.index(after: nl)...])
+            let parts = line.split(separator: " ", maxSplits: 1).map(String.init)
+            var reply = "err\n"
+            if parts.count == 2, let pid = pid_t(parts[1]) {
+                switch parts[0] {
+                case "register":   sessionRegister(pid);   reply = "ok\n"
+                case "unregister": sessionUnregister(pid); reply = "ok\n"
+                default: break
+                }
+            }
+            _ = reply.withCString { cs in
+                Darwin.write(fd, cs, strlen(cs))
+            }
+        }
+    }
+}
+
+// Ancestor match — walk PPID chain via proc_pidinfo only (no
+// proc_pidpath; Set<pid_t> membership instead of string compares).
+// Mirrors unclaw/UnclawExtension/ProcessTree.swift. The path-based
+// check we used previously was the actual cause of the
+// Chrome-hangs-during-clawpatrol-run symptom: proc_pidpath is
+// ~50–200µs per level, and Chrome spawns many helper processes whose
+// flows all hit handleNewFlow. Walking 5–10 levels × hundreds of
+// concurrent flows × the path syscall = handleNewFlow returning
+// slowly enough to mis-route UDP. proc_pidinfo is ~5µs and Set
+// membership is nanoseconds.
+private let bsdInfoSize = Int32(MemoryLayout<proc_bsdinfo>.size)
+
+// ancestorCache memoizes the verdict for each (pid, start_time) seen
+// in handleNewFlow. start_time is included in the key so the cache
+// is immune to PID reuse — macOS recycles PIDs aggressively under
+// fork-heavy workloads and a stale entry under bare-pid keying could
+// flip a non-clawpatrol flow into "tunneled" or vice versa.
+//
+// Pattern matches unclaw's SessionRegistry.swift:57-61 (start-time
+// validation on read) and Apple Endpoint Security guidance (audit
+// tokens are the canonical anti-reuse key, but pidversion isn't
+// exposed via proc_pidinfo so start_time is the next best thing).
+//
+// 60s TTL: long-running browser helpers (Chrome, Slack) shouldn't
+// re-walk their PPID chain every few seconds. The reaper already
+// drops session pids within 5s of process exit, so a stale "matched"
+// verdict is at most 5s out of date.
+private struct ancestorCacheKey: Hashable {
+    let pid: pid_t
+    let startTimeSec: UInt64
+}
+private struct ancestorCacheEntry { let sessionPID: pid_t; let expires: Date }
+private var ancestorCache: [ancestorCacheKey: ancestorCacheEntry] = [:]
 private let ancestorCacheLock = NSLock()
-private let ancestorCacheTTL: TimeInterval = 5
+private let ancestorCacheTTL: TimeInterval = 60
+
+// procStartTime returns the start_time field of proc_bsdinfo for pid.
+// 0 on failure — keep the entry in cache anyway under the bare-pid
+// key so a transient lookup miss doesn't disable caching.
+private func procStartTime(_ pid: pid_t) -> UInt64 {
+    var info = proc_bsdinfo()
+    let n = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, bsdInfoSize)
+    return n == bsdInfoSize ? UInt64(info.pbi_start_tvsec) : 0
+}
 
 private func ancestorMatches(pid: pid_t) -> Bool {
+    let key = ancestorCacheKey(pid: pid, startTimeSec: procStartTime(pid))
     let now = Date()
     ancestorCacheLock.lock()
-    if let e = ancestorCache[pid], e.expires > now {
+    if let e = ancestorCache[key], e.expires > now {
+        let v = e.sessionPID != 0
         ancestorCacheLock.unlock()
-        return e.matches
+        return v
     }
     ancestorCacheLock.unlock()
 
+    let registered = sessionPids()
+    if registered.isEmpty { return false }
+
     // Start at the parent — the process itself is never "its own
-    // ancestor". Without this, any process whose binary is named
-    // "clawpatrol" (including the gateway) would match on the first
-    // iteration and have its outbound flows tunneled back into itself.
-    guard let first = parentPid(of: pid), first != pid else {
-        return false
-    }
+    // ancestor".
+    guard let first = parentPid(of: pid), first != pid else { return false }
     var cur = first
     var visited = Set<pid_t>()
-    var matches = false
+    var sessionPID: pid_t = 0
     while cur > 1 && !visited.contains(cur) {
         visited.insert(cur)
-        if let path = processBinaryPath(pid: cur),
-           processIsClawpatrol(path: path) {
-            matches = true
+        if registered.contains(cur) {
+            sessionPID = cur
             break
         }
         guard let ppid = parentPid(of: cur), ppid != cur else { break }
@@ -404,13 +579,12 @@ private func ancestorMatches(pid: pid_t) -> Bool {
     }
 
     ancestorCacheLock.lock()
-    ancestorCache[pid] = ancestorCacheEntry(matches: matches, expires: now.addingTimeInterval(ancestorCacheTTL))
+    ancestorCache[key] = ancestorCacheEntry(sessionPID: sessionPID, expires: now.addingTimeInterval(ancestorCacheTTL))
     if ancestorCache.count > 4096 {
-        // Cap memory: drop expired entries on overflow.
         ancestorCache = ancestorCache.filter { $0.value.expires > now }
     }
     ancestorCacheLock.unlock()
-    return matches
+    return sessionPID != 0
 }
 
 private func parentPid(of pid: pid_t) -> pid_t? {
@@ -419,8 +593,134 @@ private func parentPid(of pid: pid_t) -> pid_t? {
     return n == bsdInfoSize ? pid_t(info.pbi_ppid) : nil
 }
 
-private func processBinaryPath(pid: pid_t) -> String? {
-    var path = [CChar](repeating: 0, count: MAX_PROC_PATH)
-    let n = proc_pidpath(pid, &path, UInt32(MAX_PROC_PATH))
-    return n > 0 ? String(cString: path) : nil
+// BypassUDP — non-tunnel UDP flows from non-clawpatrol processes.
+// We claim the flow (rather than return false) to dodge the radar
+// r.98382363 race, then pump datagrams between the flow and a real
+// host UDP socket. Caller's UDP socket sees normal traffic; QUIC,
+// mDNS, DNS, NTP, etc. all work unchanged.
+final class BypassUDP {
+    private static var live = Set<BypassUDP>()
+    private static let liveLock = NSLock()
+
+    private let flow: NEAppProxyUDPFlow
+    private var sock: Int32 = -1
+    private var recvSource: DispatchSourceRead?
+    private let recvQueue = DispatchQueue(label: "bypass.udp.recv", qos: .userInitiated)
+
+    init(flow: NEAppProxyUDPFlow) { self.flow = flow }
+
+    func start() {
+        BypassUDP.liveLock.lock()
+        BypassUDP.live.insert(self)
+        BypassUDP.liveLock.unlock()
+        // AF_INET6 dual-stack so v4-mapped addresses route correctly.
+        sock = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP)
+        if sock < 0 { closeAll(); return }
+        var off: Int32 = 0
+        setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, &off, socklen_t(MemoryLayout<Int32>.size))
+        // Non-blocking + close-on-exec.
+        var fl = fcntl(sock, F_GETFL, 0); fl |= O_NONBLOCK; _ = fcntl(sock, F_SETFL, fl)
+        _ = fcntl(sock, F_SETFD, FD_CLOEXEC)
+
+        let src = DispatchSource.makeReadSource(fileDescriptor: sock, queue: recvQueue)
+        src.setEventHandler { [weak self] in self?.recvOne() }
+        src.setCancelHandler { [weak self] in
+            guard let s = self, s.sock >= 0 else { return }
+            close(s.sock); s.sock = -1
+        }
+        src.resume()
+        recvSource = src
+        readFromFlow()
+    }
+
+    private func readFromFlow() {
+        flow.readDatagrams { [weak self] data, endpoints, err in
+            guard let self = self else { return }
+            if err != nil || data == nil || data!.isEmpty {
+                self.closeAll(); return
+            }
+            for (d, ep) in zip(data!, endpoints ?? []) {
+                guard let host = ep as? NWHostEndpoint else { continue }
+                self.sendOne(d, to: host)
+            }
+            self.readFromFlow()
+        }
+    }
+
+    private func sendOne(_ data: Data, to host: NWHostEndpoint) {
+        var ss = sockaddr_storage()
+        guard fillSockaddr(&ss, host: host.hostname, port: host.port) else { return }
+        let slen = socklen_t(ss.ss_len)
+        withUnsafePointer(to: &ss) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                _ = data.withUnsafeBytes { buf in
+                    sendto(self.sock, buf.baseAddress, buf.count, 0, sa, slen)
+                }
+            }
+        }
+    }
+
+    private func recvOne() {
+        var buf = [UInt8](repeating: 0, count: 65535)
+        var ss = sockaddr_storage()
+        var slen = socklen_t(MemoryLayout<sockaddr_storage>.size)
+        let n = buf.withUnsafeMutableBufferPointer { bp -> Int in
+            withUnsafeMutablePointer(to: &ss) { ptr in
+                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                    recvfrom(sock, bp.baseAddress, bp.count, 0, sa, &slen)
+                }
+            }
+        }
+        if n <= 0 { return }
+        guard let src = sockaddrToHostEndpoint(&ss) else { return }
+        let chunk = Data(bytes: buf, count: n)
+        flow.writeDatagrams([chunk], sentBy: [src]) { _ in }
+    }
+
+    private func closeAll() {
+        recvSource?.cancel()
+        recvSource = nil
+        flow.closeReadWithError(nil)
+        flow.closeWriteWithError(nil)
+        BypassUDP.liveLock.lock()
+        BypassUDP.live.remove(self)
+        BypassUDP.liveLock.unlock()
+    }
+}
+
+extension BypassUDP: Hashable {
+    static func == (lhs: BypassUDP, rhs: BypassUDP) -> Bool { lhs === rhs }
+    func hash(into hasher: inout Hasher) { hasher.combine(ObjectIdentifier(self)) }
+}
+
+private func fillSockaddr(_ ss: inout sockaddr_storage, host: String, port: String) -> Bool {
+    guard let p = UInt16(port) else { return false }
+    var hints = addrinfo(ai_flags: AI_NUMERICHOST | AI_NUMERICSERV,
+                         ai_family: AF_UNSPEC, ai_socktype: SOCK_DGRAM,
+                         ai_protocol: IPPROTO_UDP, ai_addrlen: 0,
+                         ai_canonname: nil, ai_addr: nil, ai_next: nil)
+    var res: UnsafeMutablePointer<addrinfo>?
+    if getaddrinfo(host, port, &hints, &res) != 0 || res == nil { return false }
+    defer { freeaddrinfo(res) }
+    let info = res!.pointee
+    memcpy(&ss, info.ai_addr, Int(info.ai_addrlen))
+    ss.ss_len = UInt8(info.ai_addrlen)
+    _ = p
+    return true
+}
+
+private func sockaddrToHostEndpoint(_ ss: inout sockaddr_storage) -> NWHostEndpoint? {
+    var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+    var serv = [CChar](repeating: 0, count: Int(NI_MAXSERV))
+    let slen = socklen_t(ss.ss_len)
+    let rc = withUnsafePointer(to: &ss) { ptr -> Int32 in
+        ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+            getnameinfo(sa, slen,
+                        &host, socklen_t(host.count),
+                        &serv, socklen_t(serv.count),
+                        NI_NUMERICHOST | NI_NUMERICSERV)
+        }
+    }
+    if rc != 0 { return nil }
+    return NWHostEndpoint(hostname: String(cString: host), port: String(cString: serv))
 }

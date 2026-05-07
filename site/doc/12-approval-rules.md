@@ -10,11 +10,11 @@ actions, how decisions are dispatched, where rules are stored, and the
 HTTP API surface used by the dashboard.
 
 For the broader request flow see
-[04-architecture.md](04-architecture.md) and
-[07-gateway.md](07-gateway.md). For the agent trust boundary see
-[11-security-model.md](11-security-model.md). For LLM cost concerns
+[Architecture](/docs/04-architecture/) and
+[Gateway](/docs/07-gateway/). For the agent trust boundary see
+[Security Model](/docs/11-security-model/). For LLM cost concerns
 referenced by the `require_llm` decision see
-[09-token-usage.md](09-token-usage.md).
+[Token Usage](/docs/09-token-usage/).
 
 
 ## Where rules sit
@@ -336,7 +336,7 @@ curl -s http://localhost:8080/api/action-schemas | jq
 
 Each entry comes from a plugin's `actionSchemas` export -- plugins
 declare their schemas through the plugin SDK; see
-[08-plugins.md](08-plugins.md). The catalog only ships the facet *keys*,
+[Plugins](/docs/08-plugins/). The catalog only ships the facet *keys*,
 not the full Zod schemas (Zod schemas are not JSON-serializable). The
 rule builder uses these keys to surface the supported `<facet>.<field>`
 prefixes.
@@ -384,7 +384,7 @@ After `evaluate()` selects a rule, `approvals/index.ts` lowers
   rule id and approver identity.
 
 The cost of these reviews shows up in the request log like any other
-LLM call -- see [09-token-usage.md](09-token-usage.md). Use the cache
+LLM call -- see [Token Usage](/docs/09-token-usage/). Use the cache
 TTL aggressively for repetitive actions.
 
 ### `require_human`
@@ -496,7 +496,7 @@ is fixed at `"pattern"`.
 
 All endpoints are under `/api/` on the dashboard listener (default
 `127.0.0.1:8080`). They require an authenticated session -- see
-[06-self-hosting.md](06-self-hosting.md) for how to drive them
+[Self-Hosting](/docs/06-self-hosting/) for how to drive them
 programmatically with a session cookie.
 
 ### `GET /api/rules`

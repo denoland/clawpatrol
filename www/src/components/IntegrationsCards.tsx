@@ -202,7 +202,10 @@ function Card({
           ? <OwnerAvatar src={me.avatar_url} fallbackId={i.id} fallbackType={i.type} />
           : <IntegrationIcon id={i.id} type={i.type} className="w-[16px] h-[16px] flex-shrink-0" />}
         <span className="text-[12px] font-semibold text-[#171717] truncate" title={me?.display_name ?? i.id}>
-          {me?.display_name ?? TYPE_LABEL[i.type] ?? i.name}
+          {(() => {
+            const label = TYPE_LABEL[i.type] ?? i.name;
+            return me?.display_name ? `${label} (${me.display_name})` : label;
+          })()}
         </span>
         <span className="ml-auto flex items-center gap-1.5 flex-shrink-0">
           {connected && (

@@ -30,6 +30,8 @@ import (
 	"net"
 	"net/http"
 	"strings"
+
+	"github.com/denoland/clawpatrol/config"
 )
 
 const (
@@ -81,14 +83,20 @@ func isWSUpgrade(req *http.Request) bool {
 // raw byte bridge once the agent's request looks like a WS upgrade.
 // The connection stays alive until either side closes; pumpWS
 // observes text frames for codex usage tracking when applicable.
-func (g *Gateway) handleWSUpgrade(client *tls.Conn, br *bufio.Reader, req *http.Request, upstream string, frameEmit func(direction, sample string)) {
+func (g *Gateway) handleWSUpgrade(client *tls.Conn, br *bufio.Reader, req *http.Request, upstream string, frameEmit func(direction, sample string), ep *config.CompiledEndpoint, profile string) {
 	agentAddr := peerIP(client) // capture before netstack races to nil
 
-	// Cloudflare flags non-browser TLS fingerprints on WS handshakes
-	// to chatgpt.com with "Attack attempt detected". Use uTLS Chrome
-	// fingerprint for every WS upstream — cheap, and only WS
-	// upgrades hit this path.
-	up, err := dialBrowserTLS(context.Background(), "tcp", net.JoinHostPort(upstream, "443"), upstream)
+	// Endpoints that require a client cert (e.g. kubernetes mTLS) must
+	// use dialUpstream so the credential plugin can inject the cert.
+	// All other upstreams use dialBrowserTLS — Cloudflare WAF rejects
+	// plain Go TLS fingerprints on WS handshakes to chatgpt.com.
+	var up net.Conn
+	var err error
+	if endpointWantsClientCert(ep) {
+		up, err = g.dialUpstream(context.Background(), "tcp", net.JoinHostPort(upstream, "443"), upstream, ep, profile)
+	} else {
+		up, err = dialBrowserTLS(context.Background(), "tcp", net.JoinHostPort(upstream, "443"), upstream)
+	}
 	if err != nil {
 		fmt.Fprintf(client, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
 		log.Printf("ws dial %s: %v", upstream, err)
@@ -153,10 +161,26 @@ func (g *Gateway) handleWSUpgrade(client *tls.Conn, br *bufio.Reader, req *http.
 	// inside text frames. trackKindFor returns "codex_ws_usage" for
 	// hosts that need this; the inspector decodes (unmasks +
 	// inflates) frame text without modifying the on-wire bytes.
+	// Per-connection codex session id pulled from the upgrade request
+	// — codex sets `Session_id: <uuid>` on every WS upgrade and
+	// re-uses it across reconnects within one TUI invocation. Without
+	// this, three parallel `clawpatrol run codex` instances on one
+	// device collapse into a single dashboard row (the old keying
+	// hashed remoteAddr, which is identical for all three). Empty
+	// header falls back to a per-conn URL+key hash for non-codex WS
+	// traffic.
+	wsSessionID := req.Header.Get("Session_id")
+	if wsSessionID == "" {
+		wsSessionID = req.Header.Get("Session-Id")
+	}
+	if wsSessionID == "" {
+		wsSessionID = req.Header.Get("Sec-Websocket-Key") // unique per handshake
+	}
+
 	var onPayload func([]byte)
 	if trackKindFor(upstream) == "codex_ws_usage" {
 		onPayload = func(text []byte) {
-			g.trackCodexWSUsage(agentAddr, text)
+			g.trackCodexWSUsage(agentAddr, wsSessionID, text)
 		}
 	}
 
@@ -178,15 +202,29 @@ func (g *Gateway) handleWSUpgrade(client *tls.Conn, br *bufio.Reader, req *http.
 	clientToServer := wrapPayload("c→s", onPayload)
 	serverToClient := wrapPayload("s→c", onPayload)
 
+	// Per-frame byte tracker fed to AgentRegistry.track. Calling once
+	// at session close was insufficient — the dashboard sparkline
+	// computes per-second deltas, and long-lived WS sessions (codex
+	// /backend-api/codex/responses, anthropic /v1/messages streaming)
+	// showed flat traffic until they ended. Per-frame keeps the
+	// sparkline live. atomic.Int64 is overkill here (caller-locked
+	// agent struct) but the WS pump goroutines run in parallel so
+	// keep it lock-free.
+	track := func(in, out int64) {
+		if g.agents != nil && agentAddr != "" {
+			g.agents.track(agentAddr, upstream, in, out)
+		}
+	}
+
 	done := make(chan struct{}, 2)
 	// client → server (frames are masked on this side)
 	go func() {
-		_ = pumpWS(br, up, params, true, clientToServer)
+		_ = pumpWS(br, up, params, true, clientToServer, func(n int) { track(int64(n), 0) })
 		done <- struct{}{}
 	}()
 	// server → client (frames are NOT masked)
 	go func() {
-		_ = pumpWS(upBR, client, params, false, serverToClient)
+		_ = pumpWS(upBR, client, params, false, serverToClient, func(n int) { track(0, int64(n)) })
 		done <- struct{}{}
 	}()
 	<-done
@@ -238,7 +276,7 @@ func parseRespHeaders(raw []byte) http.Header {
 // client sent.
 //
 // fromClient controls which deflate context-takeover state to use.
-func pumpWS(src *bufio.Reader, dst io.Writer, params wsParams, fromClient bool, onPayload func([]byte)) error {
+func pumpWS(src *bufio.Reader, dst io.Writer, params wsParams, fromClient bool, onPayload func([]byte), onFrameBytes func(int)) error {
 	noTakeover := params.serverNoTakeover
 	if fromClient {
 		noTakeover = params.clientNoTakeover
@@ -248,6 +286,9 @@ func pumpWS(src *bufio.Reader, dst io.Writer, params wsParams, fromClient bool, 
 		raw, _, op, compressed, masked, maskKey, payload, err := readFrameRaw(src)
 		if err != nil {
 			return err
+		}
+		if onFrameBytes != nil {
+			onFrameBytes(len(raw))
 		}
 		if _, werr := dst.Write(raw); werr != nil {
 			return werr

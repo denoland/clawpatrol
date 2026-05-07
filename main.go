@@ -5,10 +5,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	cryptorand "crypto/rand"
 	"crypto/tls"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -22,6 +20,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -30,6 +29,8 @@ import (
 	_ "github.com/denoland/clawpatrol/config/plugins/all"
 	"github.com/denoland/clawpatrol/config/plugins/approvers"
 	"github.com/denoland/clawpatrol/config/runtime"
+	"github.com/denoland/clawpatrol/dnsvip"
+	"github.com/google/uuid"
 )
 
 // Tailscale aliases the operational tailscale-block type loaded from
@@ -59,13 +60,30 @@ func (g *Gateway) emitEnd(ev Event) {
 	g.emit(ev)
 }
 
-// newReqID returns a short hex token that correlates start/end/frame
-// events for a single request. 8 random bytes is plenty when the
-// dashboard is the only consumer; collisions just merge two rows.
+// parseDurationOr parses an HCL duration string ("30m", "2h"). Empty
+// string falls back to def. "0" / "off" disables (returns 0). Used by
+// session_keep + similar knobs that need a default with an opt-out.
+func parseDurationOr(s string, def time.Duration) time.Duration {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return def
+	}
+	if s == "0" || s == "off" {
+		return 0
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		log.Printf("parseDuration %q: %v (using default %s)", s, err, def)
+		return def
+	}
+	return d
+}
+
+// newReqID returns a UUIDv7 string. Time-ordered + random tail;
+// used both for start/end/frame correlation and as the persistent
+// action key in the DB / detail page URL.
 func newReqID() string {
-	var b [8]byte
-	_, _ = cryptorand.Read(b[:])
-	return hex.EncodeToString(b[:])
+	return uuid.Must(uuid.NewV7()).String()
 }
 
 // loadConfig parses the gateway HCL via the typed-block grammar and
@@ -244,6 +262,42 @@ type Gateway struct {
 	// implements runtime.ConnRouter (postgres today, future binary
 	// protocols). Rebuilt on every policy load.
 	connIdx atomic.Pointer[runtime.ConnIndex]
+	// dnsvip owns the hostname↔virtual-IP table for endpoints whose
+	// wire protocol can't be disambiguated at TCP-accept time (SSH
+	// today).
+	dnsvip *dnsvip.Allocator
+	// transports memoizes one http.Transport per endpoint. Avoids the
+	// per-request allocation + idle-conn-pool reset of the old path.
+	transports sync.Map // *config.CompiledEndpoint -> *http.Transport
+}
+
+// transportFor returns the cached http.Transport for ep, building it
+// on first use. dialBrowserTLS for Cloudflare-fronted hosts; mTLS
+// endpoints stay on dialUpstream so credential plugins run.
+func (g *Gateway) transportFor(ep *config.CompiledEndpoint) *http.Transport {
+	if v, ok := g.transports.Load(ep); ok {
+		return v.(*http.Transport)
+	}
+	tr := &http.Transport{
+		DialContext: g.dialer.DialContext,
+		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			h, _, err := net.SplitHostPort(addr)
+			if err != nil {
+				h = addr
+			}
+			if needsBrowserTLS(h) && !endpointWantsClientCert(ep) {
+				return dialBrowserTLS(ctx, network, addr, h)
+			}
+			profile, _ := ctx.Value(profileCtxKey{}).(string)
+			return g.dialUpstream(ctx, network, addr, h, ep, profile)
+		},
+		ForceAttemptHTTP2:   false,
+		IdleConnTimeout:     30 * time.Second,
+		MaxIdleConns:        128,
+		MaxIdleConnsPerHost: 8,
+	}
+	actual, _ := g.transports.LoadOrStore(ep, tr)
+	return actual.(*http.Transport)
 }
 
 // Policy returns the current snapshot of the lowered runtime policy.
@@ -307,6 +361,11 @@ func (g *Gateway) watchConfig(path string) {
 		g.policy.Store(policy)
 		registerOAuthCredentials(g.oauth, policy)
 		g.connIdx.Store(runtime.BuildConnIndex(policy))
+		if g.dnsvip != nil {
+			if err := g.dnsvip.RebuildFromPolicy(policy); err != nil {
+				log.Printf("dnsvip rebuild on reload: %v", err)
+			}
+		}
 		// Hot-swap the operational *config.Gateway too — AdminEmail /
 		// PublicURL / DashboardSecret reads pick up immediately.
 		// Listen / CADir / Tailscale changes are not applied (restart).
@@ -335,20 +394,32 @@ func logDashboardSecretState(cfg *config.Gateway) {
 // trackCodexWSUsage parses a single WebSocket text-frame payload from
 // chatgpt.com/codex traffic. Codex sends JSON envelopes containing the
 // user prompt (client→server) and usage info (server→client). Sessions
-// key by remoteAddr — one logical Codex CLI session per WS connection.
-func (g *Gateway) trackCodexWSUsage(remoteAddr string, payload []byte) {
+// key on the per-connection wsSessionID supplied by handleWSUpgrade
+// — usually codex's own `Session_id` request header so two parallel
+// `clawpatrol run codex` instances on the same device land in
+// distinct rows. Empty wsSessionID falls back to a per-remoteAddr
+// hash so older code paths still produce one row per connection.
+func (g *Gateway) trackCodexWSUsage(remoteAddr, wsSessionID string, payload []byte) {
 	ip := remoteAddr
 	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
 		ip = h
 	}
-	sid := "ws_" + shortHash(remoteAddr)
-	// Codex Responses-API frames. Three shapes we care about:
+	sid := wsSessionID
+	if sid == "" {
+		sid = "ws_" + shortHash(remoteAddr)
+	} else {
+		sid = "s_" + shortHash(sid)
+	}
+	// Codex Responses-API frames. Shapes we care about:
 	//   client → server: full request envelope w/ `input` (user prompt)
 	//     {"input":[{"role":"user","content":[{"type":"input_text","text":"..."}]}],
 	//      "model":"...", ...}
-	//   server → client: response.created / response.completed
+	//   server → client:
 	//     {"type":"response.created","response":{"id":"...","model":"..."}}
-	//     {"type":"response.completed","response":{"usage":{...}}}
+	//     {"type":"response.output_item.added","item":{"type":"function_call",
+	//        "name":"shell"|"apply_patch"|...,"arguments":"<json string>"}}
+	//     {"type":"response.completed","response":{"usage":{...},
+	//        "output":[{"type":"message","content":[{"type":"output_text","text":"..."}]}]}}
 	var msg struct {
 		Type     string `json:"type"`
 		Model    string `json:"model"`
@@ -361,6 +432,13 @@ func (g *Gateway) trackCodexWSUsage(remoteAddr string, payload []byte) {
 				OutputTokens          int64 `json:"output_tokens"`
 				ReasoningOutputTokens int64 `json:"reasoning_output_tokens"`
 			} `json:"usage"`
+			Output []struct {
+				Type    string `json:"type"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"output"`
 		} `json:"response"`
 		Usage struct {
 			InputTokens  int64 `json:"input_tokens"`
@@ -370,6 +448,11 @@ func (g *Gateway) trackCodexWSUsage(remoteAddr string, payload []byte) {
 			Role    string          `json:"role"`
 			Content json.RawMessage `json:"content"`
 		} `json:"input"`
+		Item struct {
+			Type      string `json:"type"`
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		} `json:"item"`
 	}
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		return
@@ -380,17 +463,114 @@ func (g *Gateway) trackCodexWSUsage(remoteAddr string, payload []byte) {
 	}
 	in := msg.Response.Usage.InputTokens + msg.Response.Usage.CachedInputTokens + msg.Usage.InputTokens
 	out := msg.Response.Usage.OutputTokens + msg.Response.Usage.ReasoningOutputTokens + msg.Usage.OutputTokens
+	// Title selection — latest wins. recordLLMUsage overwrites Title
+	// on every non-empty pass, so the dashboard shows whatever the
+	// session is doing right now:
+	//   - user prompt frame → "<first input_text>"
+	//   - tool-call frame   → "▸ <name>(<first arg snippet>)"
+	//   - completion frame  → "↩ <assistant text head>"
 	title := codexInputTitle(msg.Input)
+	if title == "" && msg.Type == "response.output_item.added" && msg.Item.Type == "function_call" {
+		title = codexToolTitle(msg.Item.Name, msg.Item.Arguments)
+	}
+	if title == "" && msg.Type == "response.completed" {
+		title = codexCompletedTitle(msg.Response.Output)
+	}
 	if in == 0 && out == 0 && model == "" && title == "" {
 		return
 	}
 	g.agents.recordLLMUsage(ip, "codex", sid, title, model, in, out)
 }
 
-// codexInputTitle returns the first user text from a Codex Responses-API
-// `input` array. Each input item has role + content (which can be either
-// a string or an array of typed blocks like input_text/input_image).
+// codexToolTitle formats a tool-call frame into "▸ name(arg)". Codex's
+// `arguments` field is a JSON string whose shape varies per tool —
+// shell.command[], apply_patch.input, file_search.query, etc. We pull
+// the first usefully-named argument when present, else show the raw
+// args truncated.
+func codexToolTitle(name, args string) string {
+	if name == "" {
+		return ""
+	}
+	var generic map[string]any
+	if err := json.Unmarshal([]byte(args), &generic); err != nil {
+		return "▸ " + name
+	}
+	// Preferred argument keys, in order. Most codex tools surface one
+	// of these as the human-meaningful value.
+	for _, k := range []string{"command", "path", "file_path", "input", "query", "url"} {
+		v, ok := generic[k]
+		if !ok {
+			continue
+		}
+		switch t := v.(type) {
+		case string:
+			return "▸ " + name + " " + truncate(t, 40)
+		case []any:
+			parts := make([]string, 0, len(t))
+			for _, p := range t {
+				if s, ok := p.(string); ok {
+					parts = append(parts, s)
+				}
+			}
+			joined := strings.Join(parts, " ")
+			if joined != "" {
+				return "▸ " + name + " " + truncate(joined, 40)
+			}
+		}
+	}
+	return "▸ " + name
+}
+
+// codexCompletedTitle returns the assistant's final text from a
+// response.completed frame. Walks output[].content[] looking for the
+// first output_text block and uses its head as the title — gives the
+// dashboard a glimpse of what the model just said when no tool call
+// followed.
+func codexCompletedTitle(output []struct {
+	Type    string `json:"type"`
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+}) string {
+	for _, o := range output {
+		for _, c := range o.Content {
+			if c.Text != "" {
+				return "↩ " + truncate(c.Text, 60)
+			}
+		}
+	}
+	return ""
+}
+
+// codexInputTitle returns the LATEST user text from a Codex
+// Responses-API `input` array. Codex sends the full conversation
+// history on every turn; the most-recent user message lives at the
+// tail. Walking forward (the old behavior) returned the system-y
+// first prompt ("You are deno node-compat fixer …") every time and
+// title never changed across turns.
 func codexInputTitle(input []struct {
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
+}) string {
+	for i := len(input) - 1; i >= 0; i-- {
+		m := input[i]
+		if m.Role != "user" {
+			continue
+		}
+		text := stripCodexWrappers(joinUserContent(m.Content))
+		if text != "" {
+			return truncate(text, 80)
+		}
+	}
+	return ""
+}
+
+// codexInputFirstTitle returns the FIRST real user message from a Codex
+// input array — used as a stable session ID seed across turns (since the
+// full conversation history is resent every turn, the first message never
+// changes, giving a consistent shortHash).
+func codexInputFirstTitle(input []struct {
 	Role    string          `json:"role"`
 	Content json.RawMessage `json:"content"`
 }) string {
@@ -445,23 +625,94 @@ func stripCodexWrappers(s string) string {
 
 // trackKindFor returns the usage-parsing flavor for a given host (and,
 // for chatgpt.com, also gates HTTP-mode codex tracking). Tracking is
-// always-on; operators don't configure it per rule.
+// always-on; operators don't configure it per rule. chatgpt.com matches
+// by suffix — codex HTTP POSTs hit backend-api.chatgpt.com, WS upgrades
+// hit chatgpt.com bare; both need the codex parser.
 func trackKindFor(host string) string {
-	switch host {
+	h := strings.ToLower(host)
+	switch h {
 	case "api.anthropic.com":
 		return "claude_usage"
 	case "api.openai.com":
 		return "openai_usage"
-	case "chatgpt.com":
+	}
+	if strings.HasSuffix(h, "chatgpt.com") {
 		return "codex_ws_usage"
 	}
 	return ""
 }
 
+// preCreateLLMSession parses just the request body and seeds a session
+// row with title + model so the dashboard reflects an in-flight turn
+// before the SSE stream completes. Token counts arrive later via
+// trackLLMUsage. Mirrors trackLLMUsage's path/kind gating but skips
+// any work that depends on the response body.
+// sessionHint is the value of the Session_id / Session-Id request header
+// when present — used as a stable session key for codex_ws_usage HTTP requests.
+func (g *Gateway) preCreateLLMSession(c net.Conn, kind, path string, reqBody []byte, sessionHint string) {
+	if g.agents == nil {
+		return
+	}
+	ip := peerIP(c)
+	switch kind {
+	case "claude_usage":
+		if path != "/v1/messages" {
+			return
+		}
+		reqInfo := parseClaudeRequest(reqBody)
+		sid := reqInfo.SessionID
+		title := reqInfo.Title
+		if sid == "" {
+			if title == "" {
+				return
+			}
+			sid = shortHash(title)
+		}
+		g.agents.recordLLMUsage(ip, "claude", sid, title, reqInfo.Model, 0, 0)
+	case "openai_usage":
+		if !strings.HasPrefix(path, "/v1/chat/completions") &&
+			!strings.HasPrefix(path, "/v1/responses") &&
+			!strings.HasPrefix(path, "/v1/completions") {
+			return
+		}
+		title := openaiFirstUserMessage(reqBody)
+		if title == "" {
+			return
+		}
+		g.agents.recordLLMUsage(ip, "codex", shortHash(title), title, "", 0, 0)
+	case "codex_ws_usage":
+		if !strings.Contains(path, "/codex/responses") {
+			return
+		}
+		title := codexResponsesRequestTitle(reqBody)
+		if title == "" {
+			return
+		}
+		sid := shortHash(sessionHint)
+		if sid == "" {
+			sid = shortHash(codexResponsesRequestFirstTitle(reqBody))
+		}
+		g.agents.recordLLMUsage(ip, "codex", sid, title, codexRequestModel(reqBody), 0, 0)
+	}
+}
+
+// codexRequestModel pulls the top-level "model" field from a codex
+// /backend-api/codex/responses request body. The Codex SSE stream
+// doesn't include model in the JSON payload (it ships in the
+// OpenAI-Model response header instead), so the request body is the
+// only place to source it before the turn completes.
+func codexRequestModel(body []byte) string {
+	var r struct {
+		Model string `json:"model"`
+	}
+	_ = json.Unmarshal(body, &r)
+	return r.Model
+}
+
 // trackLLMUsage parses LLM API request/response bodies for session id,
 // title, model, and token usage. Only fires on actual model-invocation
 // endpoints; ignores heartbeat / event_logging / mcp / oauth probes.
-func (g *Gateway) trackLLMUsage(c net.Conn, kind, path string, reqBody, respBody []byte) {
+func (g *Gateway) trackLLMUsage(c net.Conn, kind, path string, reqBody, respBody []byte, sessionHint string) {
 	ip := peerIP(c)
 	switch kind {
 	case "claude_usage":
@@ -513,16 +764,19 @@ func (g *Gateway) trackLLMUsage(c net.Conn, kind, path string, reqBody, respBody
 		if model == "" && in == 0 && out == 0 && title == "" {
 			return
 		}
-		// Empty sid → reuse the latest codex session for this device
-		// (see findOrAddSession). Each codex CLI run shares a session on
-		// the same device; first call w/ a real prompt fills the title.
-		g.agents.recordLLMUsage(ip, "codex", "", title, model, in, out)
+		sid := shortHash(sessionHint)
+		if sid == "" {
+			sid = shortHash(codexResponsesRequestFirstTitle(reqBody))
+		}
+		g.agents.recordLLMUsage(ip, "codex", sid, title, model, in, out)
 	}
 }
 
 // codexResponsesRequestTitle parses a chatgpt.com /backend-api/codex/responses
-// POST body and returns the first user message text. Body shape mirrors
+// POST body and returns the latest user message text. Body shape mirrors
 // OpenAI Responses API: {"input":[{"role":"user","content":[{"type":"input_text","text":"..."}]},...]}.
+// Reuses codexInputTitle so HTTP and WS paths agree — backward walk skips
+// the stale environment_context wrapper that fronts every turn.
 func codexResponsesRequestTitle(body []byte) string {
 	var req struct {
 		Input []struct {
@@ -533,16 +787,22 @@ func codexResponsesRequestTitle(body []byte) string {
 	if err := json.Unmarshal(body, &req); err != nil {
 		return ""
 	}
-	for _, m := range req.Input {
-		if m.Role != "user" {
-			continue
-		}
-		text := stripCodexWrappers(joinUserContent(m.Content))
-		if text != "" {
-			return truncate(text, 80)
-		}
+	return codexInputTitle(req.Input)
+}
+
+// codexResponsesRequestFirstTitle returns the first real user message from
+// the request body — stable across turns, used as a session ID seed.
+func codexResponsesRequestFirstTitle(body []byte) string {
+	var req struct {
+		Input []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"input"`
 	}
-	return ""
+	if err := json.Unmarshal(body, &req); err != nil {
+		return ""
+	}
+	return codexInputFirstTitle(req.Input)
 }
 
 func parseOpenAIResponse(body []byte) (model string, in, out int64) {
@@ -871,11 +1131,25 @@ func (g *Gateway) ownerForRequest(c net.Conn, _ *OAuthIntegration) string {
 	return ip
 }
 
-func (g *Gateway) handle(raw net.Conn) {
+func (g *Gateway) handle(raw net.Conn, dstIP string) {
 	defer raw.Close()
 	defer otelTrackConn("https_mitm")()
 	host, prefix, err := peekSNI(raw)
 	if err != nil {
+		// No SNI — fall back to direct-IP endpoint lookup for kubernetes/https
+		// endpoints whose `server` field is an IP literal (kubectl connects
+		// by IP and never sends SNI).
+		if dstIP != "" {
+			c := wrapPeek(raw, prefix)
+			pip := peerIP(c)
+			profile := g.profileFor(pip)
+			ep := runtime.HostEndpoint(g.Policy(), profile, dstIP)
+			if ep != nil && (ep.Family == "https" || ep.Family == "k8s") {
+				log.Printf("sni-fallback: %s → %s", dstIP, ep.Name)
+				g.mitmHTTPS(c, dstIP, ep)
+				return
+			}
+		}
 		log.Printf("sni: %v", err)
 		return
 	}
@@ -939,7 +1213,7 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 		// No postgres policy → relay verbatim. Closes when either
 		// side hangs up.
 		log.Printf("pg %s: no postgres endpoint in profile %q; relaying", dstIP, profile)
-		wgRelay(c, dstIP, 5432)
+		g.wgRelay(c, dstIP, 5432)
 		return
 	}
 
@@ -988,6 +1262,172 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 	if err := connRT.HandleConn(context.Background(), ch); err != nil {
 		log.Printf("pg %s: %v", dstIP, err)
 	}
+}
+
+// handleVIPConn dispatches an inbound TCP connection whose dst IP
+// falls in the dnsvip range. The VIP table maps the IP back to the
+// hostname → endpoints that claimed a VIP at policy build; profile
+// filter picks the one for this device. Today the only RequiresVIP
+// plugin is "ssh", but the path is generic so future binary
+// protocols (clickhouse_native with a hostname-keyed dispatch quirk,
+// for instance) can plug in without a separate forwarder branch.
+func (g *Gateway) handleVIPConn(c net.Conn, dstIP string, dstPort uint16) {
+	defer otelTrackConn("vip_conn")()
+
+	hostname, hits := g.dnsvip.LookupVIP(dstIP)
+	if hostname == "" || len(hits) == 0 {
+		log.Printf("vip %s:%d: VIP allocated but no endpoint binding (stale?); dropping", dstIP, dstPort)
+		c.Close()
+		return
+	}
+	pip := peerIP(c)
+	profile := g.profileFor(pip)
+	policy := g.Policy()
+	// Profile-filter the hits, then port-match. Port match handles
+	// the case where one hostname is bound to multiple endpoints on
+	// different ports (rare but legal).
+	var ep *config.CompiledEndpoint
+	var matchedPort uint16
+	for _, h := range hits {
+		if h.Endpoint == nil {
+			continue
+		}
+		if profile != "" {
+			if prof, ok := policy.Profiles[profile]; ok {
+				if _, in := prof.Endpoints[h.Endpoint.Name]; !in {
+					continue
+				}
+			}
+		}
+		if dstPort != 0 && h.Port != 0 && dstPort != h.Port {
+			continue
+		}
+		ep = h.Endpoint
+		matchedPort = h.Port
+		break
+	}
+	if ep == nil {
+		log.Printf("vip %s:%d (host %q): no endpoint matches profile %q + port", dstIP, dstPort, hostname, profile)
+		c.Close()
+		return
+	}
+	g.dispatchConnEndpoint(c, dstIP, matchedPort, ep, hostname)
+}
+
+// tryDirectIPConn is the post-VIP fallback that dispatches inbound
+// connections to ConnEndpointRuntime plugins whose endpoint hosts are
+// IP literals (or hostnames whose resolved IP happens to land in the
+// conn-index). Returns true when a matching endpoint claimed the
+// connection so the caller skips wgRelay.
+//
+// Mirrors handlePostgresConn's index-then-dispatch pattern, but
+// generalised: any endpoint whose body implements ConnRouter +
+// whose plugin Runtime satisfies ConnEndpointRuntime is eligible.
+// The clickhouse_native plugin uses this path when an operator binds
+// it to bare-IP hosts (`hosts = ["172.17.0.1"]`) — those entries are
+// skipped by dnsvip (no DNS query to intercept) so direct-IP dispatch
+// is the only way they reach the plugin. profile filter prevents one
+// device from punching into another profile's endpoint by IP.
+func (g *Gateway) tryDirectIPConn(c net.Conn, dstIP string, dstPort uint16) bool {
+	idx := g.connIdx.Load()
+	if idx == nil {
+		return false
+	}
+	pip := peerIP(c)
+	profile := g.profileFor(pip)
+	policy := g.Policy()
+	candidates := idx.Lookup(dstIP)
+	ep := pickEndpointForProfile(candidates, policy, profile)
+	if ep == nil {
+		return false
+	}
+	if _, ok := ep.Plugin.Runtime.(runtime.ConnEndpointRuntime); !ok {
+		return false
+	}
+	g.dispatchConnEndpoint(c, dstIP, dstPort, ep, "")
+	return true
+}
+
+// dispatchConnEndpoint hands one accepted conn to the endpoint's
+// ConnEndpointRuntime. Shared between handleVIPConn and
+// tryDirectIPConn; hostname is the agent-dialed name (set by the VIP
+// path, empty for direct-IP). Closes c on a runtime-mismatch fail
+// path; otherwise the plugin owns the conn lifetime.
+func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16, ep *config.CompiledEndpoint, hostname string) {
+	connRT, ok := ep.Plugin.Runtime.(runtime.ConnEndpointRuntime)
+	if !ok {
+		log.Printf("conn dispatch: endpoint %q plugin lacks ConnEndpointRuntime", ep.Name)
+		c.Close()
+		return
+	}
+	pip := peerIP(c)
+	profile := g.profileFor(pip)
+	policy := g.Policy()
+	mode := ep.Plugin.Type
+	// Event Host carries the hostname when known (VIP path), else the
+	// dst IP — keeps the dashboard's "where is this traffic going"
+	// column populated for both dispatch shapes.
+	eventHost := hostname
+	if eventHost == "" {
+		eventHost = dstIP
+	}
+	ch := &runtime.ConnHandle{
+		Conn:         c,
+		Endpoint:     ep,
+		Policy:       policy,
+		Profile:      profile,
+		PeerIP:       pip,
+		Secrets:      g.secrets,
+		CADir:        g.cfg.CADir,
+		DstPort:      dstPort,
+		UpstreamHost: hostname,
+		MintCert: func(host string) (*tls.Certificate, error) {
+			return g.certs.mint(host)
+		},
+		DialUpstream: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			// Plugin passes the *real* upstream host:port — the
+			// gateway's host network resolves it (the VIP only
+			// exists inside the WG netstack; direct-IP dispatch
+			// already has the real IP).
+			if addr == "" {
+				return nil, fmt.Errorf("conn dispatch: plugin gave empty upstream addr")
+			}
+			return g.dialer.DialContext(ctx, network, addr)
+		},
+		Emit: func(ev runtime.ConnEvent) {
+			if g.sink == nil {
+				return
+			}
+			g.sink.Emit(Event{
+				Mode: mode, Host: eventHost, AgentIP: pip,
+				Method: ev.Verb, Path: ev.Summary,
+				Action: ev.Action, Reason: ev.Reason,
+			})
+		},
+		Approve: func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
+			return g.runApproveChain(context.Background(), req.Stages, runApproveCtx{
+				AgentIP: pip, Host: eventHost, Method: req.Verb, Path: req.Summary,
+				Reason:   ifNotEmpty(req.Rule, func(r *config.CompiledRule) string { return r.Outcome.Reason }),
+				Endpoint: ep, Rule: req.Rule, Profile: profile,
+			})
+		},
+	}
+	if err := connRT.HandleConn(context.Background(), ch); err != nil {
+		if hostname != "" {
+			log.Printf("%s vip %s (%s): %v", mode, dstIP, hostname, err)
+		} else {
+			log.Printf("%s direct %s:%d: %v", mode, dstIP, dstPort, err)
+		}
+	}
+}
+
+// handleDNSTCPConn dispatches an inbound TCP/53 flow to the dnsvip
+// allocator's TCP serving loop. The udpDispatch closure handles the
+// UDP variant; this is its TCP twin so DNS-over-TCP queries (large
+// answers, axfr-style retries, or simply `dig +tcp`) keep working.
+func (g *Gateway) handleDNSTCPConn(c net.Conn, dstIP string) {
+	defer otelTrackConn("dns_tcp")()
+	g.dnsvip.ServeTCP(c, dstIP)
 }
 
 // firstPostgresEndpoint returns the first postgres-family endpoint in
@@ -1053,37 +1493,76 @@ func (g *Gateway) splice(c net.Conn, host string) {
 	}
 	defer up.Close()
 	agentAddr := peerIP(c) // capture BEFORE pipe — RemoteAddr() goes nil once netstack closes the conn
-	in, out := pipe(c, up)
+	in, out := pipeProgress(c, up, g.streamTracker(agentAddr, host))
 	g.emit(Event{Mode: "splice", Host: host, AgentIP: agentAddr, Action: "allow", In: in, Out: out, Ms: time.Since(start).Milliseconds()})
-	if g.agents != nil && agentAddr != "" {
-		g.agents.track(agentAddr, host, in, out)
-	}
 }
 
 // pipe shuttles bytes both ways between two conns. Returns (a-rx, a-tx)
 // = (bytes received from up into a, bytes sent from a to up). Sends
 // CloseWrite half-shutdown on each side after its copy finishes.
 func pipe(a, b net.Conn) (rx, tx int64) {
+	return pipeProgress(a, b, nil)
+}
+
+// pipeProgress is pipe with an optional onTick callback fired every
+// second w/ cumulative (rx, tx) snapshots. Lets callers feed the
+// per-agent activity sparkline DURING a long-lived flow (ssh clone,
+// websocket) instead of only after the conn closes — sampleLoop runs
+// at 1s and wants per-second deltas, so a flow that lasts 10 minutes
+// would otherwise paint a single bar at end-of-life.
+func pipeProgress(a, b net.Conn, onTick func(rx, tx int64)) (rx, tx int64) {
+	var rxC, txC atomic.Int64
 	done := make(chan struct{}, 2)
 	go func() {
-		n, _ := io.Copy(b, a)
-		atomic.AddInt64(&tx, n)
+		buf := make([]byte, 256<<10)
+		_, _ = io.CopyBuffer(&countWriter{Writer: b, n: &txC}, a, buf)
 		if cw, ok := b.(interface{ CloseWrite() error }); ok {
 			cw.CloseWrite()
 		}
 		done <- struct{}{}
 	}()
 	go func() {
-		n, _ := io.Copy(a, b)
-		atomic.AddInt64(&rx, n)
+		buf := make([]byte, 256<<10)
+		_, _ = io.CopyBuffer(&countWriter{Writer: a, n: &rxC}, b, buf)
 		if cw, ok := a.(interface{ CloseWrite() error }); ok {
 			cw.CloseWrite()
 		}
 		done <- struct{}{}
 	}()
+	stop := make(chan struct{})
+	if onTick != nil {
+		go func() {
+			t := time.NewTicker(time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-stop:
+					return
+				case <-t.C:
+					onTick(rxC.Load(), txC.Load())
+				}
+			}
+		}()
+	}
 	<-done
 	<-done
-	return
+	close(stop)
+	return rxC.Load(), txC.Load()
+}
+
+// countWriter wraps an io.Writer and atomically tallies bytes written
+// so a concurrent ticker can read in-flight progress.
+type countWriter struct {
+	io.Writer
+	n *atomic.Int64
+}
+
+func (w *countWriter) Write(p []byte) (int, error) {
+	n, err := w.Writer.Write(p)
+	if n > 0 {
+		w.n.Add(int64(n))
+	}
+	return n, err
 }
 
 // mitmHTTPS handles an SNI-matched TLS connection for an HTTPS-family
@@ -1112,24 +1591,12 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 	}
 	defer tc.Close()
 
-	transport := &http.Transport{
-		DialContext: g.dialer.DialContext,
-		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			h, _, err := net.SplitHostPort(addr)
-			if err != nil {
-				h = host
-			}
-			// mTLS-equipped endpoints (k8s API servers, internal
-			// CAs) carry a credential whose TLSCredentialRuntime
-			// configures the upstream tls.Config — adds a client
-			// cert + a custom root pool. Endpoints with no TLS
-			// credential dial via plain stdlib TLS.
-			return g.dialUpstream(ctx, network, addr, h, ep)
-		},
-		ForceAttemptHTTP2: false,
-		IdleConnTimeout:   30 * time.Second,
-	}
-	defer transport.CloseIdleConnections()
+	// transport is shared across all requests for this endpoint.
+	// Old path allocated a fresh http.Transport per mitmHTTPS call,
+	// which threw away the idle-conn pool and racked up ~10KB of
+	// internal map allocations per request. Per-endpoint cache lets
+	// repeat requests to the same upstream reuse keep-alives.
+	transport := g.transportFor(ep)
 
 	br := bufio.NewReader(tc)
 	for {
@@ -1198,8 +1665,9 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		// allow; first deny short-circuits.
 		if cr != nil && len(cr.Outcome.Approve) > 0 {
 			v := g.runApproveChain(req.Context(), cr.Outcome.Approve, runApproveCtx{
-				AgentIP: pip, Host: host, Method: req.Method, Path: req.URL.Path,
+				AgentIP: pip, Host: host, Method: req.Method, Path: req.URL.RequestURI(),
 				UA: req.Header.Get("User-Agent"), Reason: cr.Outcome.Reason,
+				ThreadTS: req.Header.Get("X-HITL-Thread-TS"),
 				Endpoint: ep, Rule: cr, Profile: profile,
 			})
 			if v.Decision != "allow" {
@@ -1238,17 +1706,48 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 
 		// Forward upstream. Hop-by-hop / proxy-leak headers stripped
 		// per RFC 7230 §6.1 plus chatgpt.com / Cloudflare flagged set.
+		// WS upgrade requests skip this strip block — Connection +
+		// Upgrade are part of the handshake (codex hits chatgpt.com
+		// /backend-api/codex/responses as a WS upgrade and the server
+		// flags requests with Sec-Websocket-* but no Upgrade as
+		// "Attack detected"). isWSUpgrade is checked again below to
+		// route through handleWSUpgrade after credential injection.
 		req.URL.Scheme = "https"
 		req.URL.Host = host
 		req.Host = host
 		req.RequestURI = ""
-		for _, h := range []string{
-			"Connection", "Keep-Alive", "Proxy-Authenticate",
-			"Proxy-Authorization", "Te", "Trailers", "Transfer-Encoding", "Upgrade",
-			"Cf-Worker", "Cf-Ray", "Cf-Ew-Via", "Cf-Connecting-Ip", "Cdn-Loop",
-			"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Via",
-		} {
-			req.Header.Del(h)
+		if !isWSUpgrade(req) {
+			for _, h := range []string{
+				"Connection", "Keep-Alive", "Proxy-Authenticate",
+				"Proxy-Authorization", "Te", "Trailers", "Transfer-Encoding", "Upgrade",
+				"Cf-Worker", "Cf-Ray", "Cf-Ew-Via", "Cf-Connecting-Ip", "Cdn-Loop",
+				"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Via",
+				"X-HITL-Thread-TS",
+			} {
+				req.Header.Del(h)
+			}
+		}
+
+		// Endpoint-level synthetic-response hook. The endpoint
+		// plugin's runtime can short-circuit specific paths and
+		// return a clawpatrol-generated response without forwarding
+		// upstream — used by openai_codex_https to serve the JWKS +
+		// agent-task-register stubs that anchor codex's Agent
+		// Identity flow on hosts we MITM. Endpoints without a
+		// responder (the default https plugin) fall through.
+		if responder, ok := ep.Plugin.Runtime.(runtime.HTTPSyntheticResponder); ok {
+			if r, handled, err := responder.RespondHTTP(req.Context(), req); err != nil {
+				log.Printf("respond %s: %v", ep.Name, err)
+			} else if handled {
+				ev.Status = r.StatusCode
+				ev.Action = "synth"
+				if err := r.Write(tc); err != nil {
+					log.Printf("synth write %s %s: %v", host, req.URL.Path, err)
+				}
+				ev.Ms = time.Since(start).Milliseconds()
+				g.emitEnd(ev)
+				continue
+			}
 		}
 
 		// Credential injection. Pick the credential entry that
@@ -1270,7 +1769,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				sec, err := g.secrets.Get(cc.Credential.Symbol.Name, profile)
 				if err != nil {
 					log.Printf("secret %s/%s: %v — forwarding without injection", cc.Credential.Symbol.Name, profile, err)
-				} else if len(sec.Bytes) == 0 {
+				} else if len(sec.Bytes) == 0 && len(sec.Extras) == 0 {
 					log.Printf("secret %s/%s: not configured (set CLAWPATROL_SECRET_%s)", cc.Credential.Symbol.Name, profile, secretEnvName(cc.Credential.Symbol.Name))
 				} else if err := injector.InjectHTTP(req.Context(), req, sec); err != nil {
 					log.Printf("inject %s: %v", cc.Credential.Symbol.Name, err)
@@ -1307,7 +1806,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 					Direction: direction,
 				})
 			}
-			g.handleWSUpgrade(tc, br, req, host, frameEmit)
+			g.handleWSUpgrade(tc, br, req, host, frameEmit, ep, profile)
 			ev.Status = 101
 			ev.Ms = time.Since(start).Milliseconds()
 			g.emitEnd(ev)
@@ -1325,13 +1824,26 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				req.ContentLength = int64(len(b))
 			}
 		}
+		// Pre-create session from the request body so streaming SSE
+		// responses (codex /backend-api/codex/responses, anthropic
+		// /v1/messages with stream:true) surface in the dashboard at
+		// turn-start, not at turn-end. trackLLMUsage below runs after
+		// resp.Write completes — which for codex can be minutes. WS
+		// reports per-frame; HTTP needs this kickoff so it doesn't lag.
+		sessionHint := req.Header.Get("Session_id")
+		if sessionHint == "" {
+			sessionHint = req.Header.Get("Session-Id")
+		}
+		if trackKind != "" && len(trackedReqBody) > 0 && g.agents != nil {
+			g.preCreateLLMSession(c, trackKind, req.URL.Path, trackedReqBody, sessionHint)
+		}
 		reqS := newSampler(4096)
 		if req.Body != nil {
 			req.Body = wrapBodySampler(req.Body, reqS)
 		}
 
 		rtStart := time.Now()
-		resp, err := transport.RoundTrip(req)
+		resp, err := transport.RoundTrip(req.WithContext(context.WithValue(req.Context(), profileCtxKey{}, profile)))
 		rtDur := time.Since(rtStart)
 		if err != nil {
 			log.Printf("mitm upstream %s %s: %v", host, req.URL.Path, err)
@@ -1341,7 +1853,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			ev.Reason = err.Error()
 			ev.Ms = time.Since(start).Milliseconds()
 			ev.ReqSha = reqS.sha()
-			ev.ReqSample = reqS.sample()
+			ev.ReqBody = reqS.sample()
 			ev.In = reqS.n
 			g.emitEnd(ev)
 			return
@@ -1379,19 +1891,21 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 					zr.Close()
 				}
 			}
-			g.trackLLMUsage(c, trackKind, req.URL.Path, trackedReqBody, body)
+			g.trackLLMUsage(c, trackKind, req.URL.Path, trackedReqBody, body, sessionHint)
 		}
 
 		if ev.Action == "" {
 			ev.Action = "allow"
 		}
 		ev.Status = resp.StatusCode
+		ev.ReqHeaders = flatHeaders(req.Header)
+		ev.RespHeaders = flatHeaders(resp.Header)
 		ev.In = reqS.n
 		ev.Out = respS.n
 		ev.ReqSha = reqS.sha()
-		ev.ReqSample = reqS.sample()
+		ev.ReqBody = reqS.sample()
 		ev.RespSha = respS.sha()
-		ev.RespSample = respS.sample()
+		ev.RespBody = respS.sample()
 		ev.Ms = time.Since(start).Milliseconds()
 		g.emitEnd(ev)
 		if g.agents != nil && agentAddr != "" {
@@ -1428,6 +1942,7 @@ type runApproveCtx struct {
 	UA         string
 	BodySample string
 	Reason     string
+	ThreadTS   string
 	Endpoint   *config.CompiledEndpoint
 	Rule       *config.CompiledRule
 	Profile    string
@@ -1465,8 +1980,17 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 			UA:           c.UA,
 			BodySample:   c.BodySample,
 			Reason:       c.Reason,
+			ThreadTS:     c.ThreadTS,
 			Pool:         g.hitl,
 			Secrets:      g.secrets,
+			OAuthInjectAny: func(id string, hr *http.Request) (bool, error) {
+				for _, owner := range g.oauth.Owners(id) {
+					if ok, err := g.oauth.Inject(id, owner, hr); ok {
+						return true, err
+					}
+				}
+				return false, fmt.Errorf("no connected owner for oauth credential %q", id)
+			},
 			DashboardURL: g.cfg.PublicURL,
 			Policy:       policy,
 		}
@@ -1592,6 +2116,8 @@ func usage() {
 usage:
   clawpatrol gateway [-config FILE]      run the gateway server
   clawpatrol join --url <gateway-url>    onboard this machine via wg device flow
+                  [--hostname NAME]      device name to register (default: os.Hostname)
+                  [--profile NAME]       suggest a profile for the approver
                   [--whole-machine]      bring up wg-quick (route all traffic)
   clawpatrol login                       onboard this machine (tailscale path)
   clawpatrol run -- <cmd> [args...]      route one process tree through gateway
@@ -1681,6 +2207,20 @@ func runGateway(args []string) {
 	registerOAuthCredentials(oauthReg, policy)
 	g.policy.Store(policy)
 	g.connIdx.Store(runtime.BuildConnIndex(policy))
+	// dnsvip is opt-in by policy: if no endpoint requires VIPs, the
+	// allocator stays empty and ServeUDP / ServeTCP are never called
+	// (no endpoint dispatches port-53 to them). Construct
+	// unconditionally so reloads that *add* an SSH endpoint don't
+	// have to re-init. Persists to <stateDir>/dnsvip.json so VIPs
+	// survive restarts.
+	dvip, err := dnsvip.New(stateDir, dnsvip.DefaultCIDR4, dnsvip.DefaultCIDR6)
+	if err != nil {
+		log.Fatalf("dnsvip init: %v", err)
+	}
+	g.dnsvip = dvip
+	if err := g.dnsvip.RebuildFromPolicy(policy); err != nil {
+		log.Fatalf("dnsvip build: %v", err)
+	}
 	log.Printf("policy: %d endpoints across %d profiles", len(policy.Endpoints), len(policy.Profiles))
 	go g.watchConfig(*cfgPath)
 	if err := g.onboard.Load(db); err != nil {
@@ -1691,15 +2231,28 @@ func runGateway(args []string) {
 	// renders them on boot, before any traffic arrives. Without this,
 	// devices disappear after every gateway restart and only reappear
 	// on the next request from each peer.
+	// Clean fd77:: ghost rows left by older builds where SetExternalIPs
+	// upserted both v4 and v6 allowed_ips as separate device IDs. Drop
+	// them on every boot — the v4 row carries the same metadata and
+	// will be re-seeded below.
+	_, _ = db.Exec("DELETE FROM devices WHERE id LIKE 'fd77:%'")
 	if rows, err := db.Query("SELECT id FROM devices"); err == nil {
 		for rows.Next() {
 			var ip string
 			if rows.Scan(&ip) == nil {
-				g.agents.Seed(ip)
+				g.agents.Seed(canonicalPeerIP(ip))
 			}
 		}
 		rows.Close()
 	}
+
+	// Sessions: rehydrate persisted rows + start the sweeper.
+	//   session_keep — hard retention floor by last_at (default
+	//                  720h / 30d, "0" / "off" disables sweep).
+	// Sessions can revive on new activity at any time, so there's no
+	// "closed" intermediate state — keep is the only knob.
+	g.agents.LoadSessions(db)
+	g.agents.startSessionSweeper(parseDurationOr(cfg.SessionKeep, 10*time.Minute))
 
 	// HITL notifications fan-out via the approver runtimes
 	// (config/plugins/approvers); the registry's Add hook emits
@@ -1736,25 +2289,46 @@ func runGateway(args []string) {
 		setWGServer(wg)
 		dashMux := newWebMux(g, cfg.CADir, *cfg.Tailscale, cfg.PublicURL)
 		dashPort := portOf(cfg.InfoListen)
-		if err := wg.EnablePromiscuousForwarder(func(c net.Conn, dstIP string, dstPort uint16) {
+		tcpDispatch := func(c net.Conn, dstIP string, dstPort uint16) {
 			log.Printf("wg-fwd: %s:%d", dstIP, dstPort)
 			switch {
 			case dstPort == 443:
-				g.handle(c)
+				g.handle(c, dstIP)
 			case dstPort == 5432:
 				g.handlePostgresConn(c, dstIP)
+			case dstPort == 53:
+				g.handleDNSTCPConn(c, dstIP)
+			case g.dnsvip.IsVIP(dstIP):
+				// Any port on a VIP belongs to the SSH endpoint that
+				// hostname maps to. Future RequiresVIP plugins can
+				// branch on ep.Plugin.Type inside handleVIPConn.
+				g.handleVIPConn(c, dstIP, dstPort)
 			case dashPort != 0 && int(dstPort) == dashPort:
 				_ = http.Serve(&oneShotListener{c: c}, dashMux)
 			default:
-				// Anything else relays transparently until its
-				// endpoint plugin's wire-protocol runtime ships
-				// (clickhouse_native, etc.).
-				wgRelay(c, dstIP, int(dstPort))
+				// Direct-IP dispatch via conn-index: catches
+				// clickhouse_native and friends when the operator
+				// binds them to IP-literal hosts (dnsvip skips
+				// those — they don't need DNS interception). Falls
+				// through to transparent relay when no endpoint
+				// claims the dst.
+				if g.tryDirectIPConn(c, dstIP, dstPort) {
+					return
+				}
+				g.wgRelay(c, dstIP, int(dstPort))
 			}
-		}); err != nil {
+		}
+		udpDispatch := func(c net.Conn, dstIP string, dstPort uint16) bool {
+			if dstPort == 53 {
+				g.dnsvip.ServeUDP(c, dstIP)
+				return true
+			}
+			return false
+		}
+		if err := wg.EnablePromiscuousForwarder(tcpDispatch, udpDispatch); err != nil {
 			log.Fatalf("wireguard forwarder: %v", err)
 		}
-		log.Printf("wireguard promiscuous forwarder ready (any dst → :443=mitm, :5432=pg, :%d=dash, else=relay)", dashPort)
+		log.Printf("wireguard promiscuous forwarder ready (any dst → :443=mitm, :5432=pg, :53=dns-vip, VIP=ssh|ch_native, :%d=dash, plugins=conn-index, else=relay)", dashPort)
 	}
 
 	ln, err := openListener(cfg)
@@ -1770,7 +2344,7 @@ func runGateway(args []string) {
 			log.Printf("accept: %v", err)
 			continue
 		}
-		go g.handle(c)
+		go g.handle(c, "")
 	}
 }
 
@@ -1831,12 +2405,53 @@ func (l *oneShotListener) Addr() net.Addr {
 // wgRelay is the catch-all path: WG peer wants to talk to a host we
 // don't MITM (plain HTTP, ssh, anything not on :443 or the dash port).
 // Dials the real dst from the host network and pipes bytes both ways.
-func wgRelay(c net.Conn, dstIP string, dstPort int) {
+// Emits a sink Event so transparently-relayed flows show up in the
+// dashboard request history alongside MITM traffic — without this,
+// ssh / git-over-ssh / arbitrary-port connections went silent.
+func (g *Gateway) wgRelay(c net.Conn, dstIP string, dstPort int) {
 	defer c.Close()
+	pip := peerIP(c)
+	profile := g.profileFor(pip)
+	host := fmt.Sprintf("%s:%d", dstIP, dstPort)
+	start := time.Now()
 	up, err := net.DialTimeout("tcp", net.JoinHostPort(dstIP, strconv.Itoa(dstPort)), 10*time.Second)
 	if err != nil {
+		g.sink.Emit(Event{
+			Mode: "relay", AgentIP: pip, Agent: profile,
+			Host: host, Action: "deny", Reason: err.Error(),
+			Ms: time.Since(start).Milliseconds(),
+		})
 		return
 	}
 	defer up.Close()
-	pipe(c, up)
+	rx, tx := pipeProgress(c, up, g.streamTracker(pip, host))
+	g.sink.Emit(Event{
+		Mode: "relay", AgentIP: pip, Agent: profile,
+		Host: host, Action: "allow",
+		In: rx, Out: tx,
+		Ms: time.Since(start).Milliseconds(),
+	})
+}
+
+// streamTracker returns a pipeProgress onTick callback that feeds the
+// per-agent activity sparkline with per-second byte deltas. Long-lived
+// flows (ssh clone, websocket) need DURING-flight updates — sampleLoop
+// reads BytesIn/Out at 1Hz and computes a delta, so a 10-minute flow
+// without streaming track calls paints flat zeros until close. Returns
+// nil when no agent IP / no registry — pipeProgress treats nil as
+// "skip the ticker goroutine entirely".
+func (g *Gateway) streamTracker(agentIP, host string) func(rx, tx int64) {
+	if g.agents == nil || agentIP == "" {
+		return nil
+	}
+	var lastRx, lastTx int64
+	return func(rx, tx int64) {
+		dRx := rx - lastRx
+		dTx := tx - lastTx
+		lastRx, lastTx = rx, tx
+		if dRx == 0 && dTx == 0 {
+			return
+		}
+		g.agents.track(agentIP, host, dRx, dTx)
+	}
 }

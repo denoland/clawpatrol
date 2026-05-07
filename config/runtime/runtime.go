@@ -30,6 +30,27 @@ type HTTPCredentialRuntime interface {
 	InjectHTTP(ctx context.Context, req *http.Request, sec Secret) error
 }
 
+// HTTPSyntheticResponder is the optional contract an endpoint
+// plugin's runtime implements when it needs to short-circuit certain
+// matched requests and return a synthetic response without forwarding
+// upstream. The openai_codex_https endpoint uses it to serve a
+// clawpatrol-controlled JWKS at chatgpt.com's agent-identity URL (so
+// a JWT we minted ourselves validates) and to stub out the agent-task
+// registration POST.
+//
+// RespondHTTP is called by mitmHTTPS before credential injection.
+// Returning (resp, true, nil) writes resp to the agent and skips
+// forwarding; returning (_, false, nil) falls through to the normal
+// inject + proxy path. Errors are logged and the request still
+// forwards verbatim.
+//
+// The hook lives on the endpoint plugin (not the credential) so the
+// behavior is bound to the protocol surface, not to whichever bearer
+// happens to be configured for it.
+type HTTPSyntheticResponder interface {
+	RespondHTTP(ctx context.Context, req *http.Request) (*http.Response, bool, error)
+}
+
 // PostgresCredentialRuntime swaps the agent's StartupMessage password
 // for the real one before the upstream connect. The wire-protocol
 // front-end calls this once per session.
@@ -43,6 +64,17 @@ type PostgresCredentialRuntime interface {
 // handshake itself, so the agent never sees an auth challenge.
 type PostgresAuthCredential interface {
 	PostgresAuth(sec Secret) (user, password string)
+}
+
+// ClickhouseAuthCredential is what the clickhouse_native endpoint
+// runtime needs from a credential plugin to inject secrets into the
+// agent's Hello packet. The credential returns its (user, password);
+// the runtime swaps placeholder bytes the agent embedded in the
+// Hello's username / password slots before forwarding the packet
+// upstream. Same shape as PostgresAuth — kept distinct so the
+// checker can confirm a credential is wired for the right protocol.
+type ClickhouseAuthCredential interface {
+	ClickhouseAuth(sec Secret) (user, password string)
 }
 
 // TLSCredentialRuntime customizes the upstream TLS configuration
@@ -105,6 +137,33 @@ type ConnHandle struct {
 	// support HITL for this conn family — plugins must default to
 	// deny in that case.
 	Approve func(req ApproveCallRequest) ApproveVerdict
+	// CADir is the gateway's CA / persistent state root (matches
+	// cfg.CADir). Endpoint runtimes that need to persist material
+	// per endpoint — e.g. SSH host keys at <CADir>/ssh/<name>.key —
+	// derive paths from this. Empty when the gateway hasn't been
+	// configured with a CA dir; plugins that need persistence error
+	// out clearly in that case.
+	CADir string
+	// DstPort is the destination port the agent connection arrived
+	// on (post-VIP / direct dial). Endpoints whose host strings
+	// carry a non-default port (`hosts = ["x.com:22222"]`) consult
+	// this to pick which Hosts[i] the connection corresponds to.
+	DstPort uint16
+	// UpstreamHost is the hostname the agent dialed, resolved from
+	// the VIP table at dispatch time. Populated for VIP-routed conns
+	// only; empty for direct-IP / fixed-port dispatches (postgres).
+	// Plugins use it to (a) pass a real hostname to DialUpstream so
+	// the gateway's host network can resolve it, and (b) drive SNI /
+	// SAN matching when the protocol layers TLS on top.
+	UpstreamHost string
+	// MintCert returns a leaf certificate signed by the gateway CA
+	// for the given hostname (or IP literal). Plugins that
+	// TLS-terminate inbound traffic — clickhouse_native with
+	// `tls = true`, future binary protocols — call this from a
+	// `tls.Config.GetCertificate` callback so the SAN matches the
+	// SNI the client sent. nil when the dispatcher can't mint
+	// (gateway has no CA).
+	MintCert func(host string) (*tls.Certificate, error)
 }
 
 // ApproveCallRequest is what a ConnEndpointRuntime hands to
@@ -172,6 +231,7 @@ type HITLTarget struct {
 	Interactive    bool   // approve/deny buttons vs. dashboard-only
 	PendingID      string // pool's pending entry id
 	DashboardURL   string // for fallback dashboard link in non-interactive mode
+	ThreadTS       string // if set, post as a reply in this Slack thread
 }
 
 // ApproverRuntime evaluates one stage of an approve = [...] chain.
@@ -210,6 +270,10 @@ type ApproveRequest struct {
 	UA         string
 	BodySample string
 	Reason     string
+	// ThreadTS, when set, asks HITL notifiers to post the approval
+	// prompt as a reply in this Slack thread rather than top-level.
+	// Populated from the X-HITL-Thread-TS request header.
+	ThreadTS string
 
 	// Pool exposes the gateway's shared pending-approval list — the
 	// dashboard / Slack approvers use it to publish a pending entry
@@ -219,6 +283,11 @@ type ApproveRequest struct {
 	// Secrets fetches the bot token / API key the approver needs to
 	// post a notification or call an LLM judge.
 	Secrets SecretStore
+	// OAuthInjectAny stamps the Authorization header for the named
+	// OAuth credential using any currently-connected owner's token.
+	// Nil when the gateway has no OAuth registry (tests). LLM approvers
+	// use this to call claude/codex without a separate API key in the DB.
+	OAuthInjectAny func(id string, req *http.Request) (bool, error)
 	// DashboardURL is the operator-facing dashboard origin used for
 	// deep links in Slack messages and similar notifications.
 	DashboardURL string

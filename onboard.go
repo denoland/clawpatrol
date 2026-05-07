@@ -52,6 +52,7 @@ type onboardSession struct {
 	owner       string // who approved (for audit log)
 	profile     string // profile assigned at approval time
 	hostname    string // client-supplied (os.Hostname) at /api/onboard/start
+	apiToken    string // per-peer bearer for gated client API calls (env-pushdown)
 }
 
 // onboardRegistry persists onboarded peers in the `devices` table,
@@ -87,6 +88,11 @@ func newOnboardRegistry() *onboardRegistry {
 // approvedIpv6 model — the dashboard shows these in place of the wg /32,
 // which is just a routing artefact. Persists through to the devices row.
 func (r *onboardRegistry) SetExternalIPs(ip, v4, v6 string) {
+	// Both v4 and v6 wg-side allowed_ips reach this path (one fd77::<n>
+	// per peer); collapse to the canonical v4 so each device exists as a
+	// single row. Without this the dashboard shows ghost fd77:: entries
+	// alongside the real device.
+	ip = canonicalPeerIP(ip)
 	if ip == "" || (v4 == "" && v6 == "") {
 		return
 	}
@@ -457,9 +463,19 @@ func (w *webMux) apiOnboardStart(rw http.ResponseWriter, r *http.Request) {
 	// CLI passes its os.Hostname() so the dashboard shows a real
 	// device name instead of just the WG-side IP. Optional — we still
 	// fall back gracefully when missing.
-	if hn := strings.TrimSpace(r.URL.Query().Get("hostname")); hn != "" {
+	hn := strings.TrimSpace(r.URL.Query().Get("hostname"))
+	// `clawpatrol join --profile X` forwards X here so the approver
+	// doesn't have to pick it manually. Stored as the session-level
+	// suggestion; the dashboard's approve call can still override.
+	prof := strings.TrimSpace(r.URL.Query().Get("profile"))
+	if hn != "" || prof != "" {
 		w.onboard.mu.Lock()
-		s.hostname = hn
+		if hn != "" {
+			s.hostname = hn
+		}
+		if prof != "" {
+			s.profile = prof
+		}
 		w.onboard.mu.Unlock()
 	}
 	// Prefer the operator-configured public_url so brand-new clients
@@ -514,17 +530,20 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	code := r.URL.Query().Get("code")
-	// Operator picks which profile this device joins. Falls back to a
-	// profile named "default" when declared; otherwise the first profile
-	// in source order.
-	profile := r.URL.Query().Get("profile")
-	if profile == "" {
-		profile = defaultProfileName(w.g.cfg.Policy)
-	}
 	s := w.onboard.byUserCode(code)
 	if s == nil {
 		http.Error(rw, "unknown or expired code", 404)
 		return
+	}
+	// Operator picks which profile this device joins. Priority:
+	// dashboard query param → CLI suggestion stashed at /start time →
+	// profile named "default" → first profile in source order.
+	profile := r.URL.Query().Get("profile")
+	if profile == "" {
+		profile = s.profile
+	}
+	if profile == "" {
+		profile = defaultProfileName(w.g.cfg.Policy)
 	}
 	w.onboard.mu.Lock()
 	if s.approved {
@@ -571,6 +590,17 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 			// device immediately, before it sends any traffic.
 			if w.g.agents != nil {
 				w.g.agents.Seed(peerIP)
+			}
+			// Mint the per-peer bearer the client uses for gated
+			// API calls (currently /api/env-pushdown). Stored hashed
+			// in `peer_api_tokens`; raw token is returned exactly
+			// once via /api/onboard/poll.
+			if token, perr := mintAndPersistPeerAPIToken(w.g.db, peerIP); perr == nil {
+				w.onboard.mu.Lock()
+				s.apiToken = token
+				w.onboard.mu.Unlock()
+			} else {
+				log.Printf("api-token mint for %s: %v", peerIP, perr)
 			}
 		}
 	}()
@@ -643,6 +673,7 @@ func (w *webMux) apiOnboardPoll(rw http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(rw, map[string]any{
 		"auth_key":     s.authKey,
+		"api_token":    s.apiToken,
 		"approved_by":  s.owner,
 		"login_server": s.loginServer, // empty = Tailscale Inc default
 	})

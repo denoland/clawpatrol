@@ -50,10 +50,10 @@ a SQLite database.
 
 ## Next Steps
 
-- [Getting Started](02-getting-started) — install and
+- [Getting Started](/docs/02-getting-started/) — install and
   onboard in 2 minutes
-- [CLI Reference](05-cli) — all commands and options
-- [Plugin System](08-plugins) — extend Claw Patrol for custom
+- [CLI Reference](/docs/05-cli/) — all commands and options
+- [Plugin System](/docs/08-plugins/) — extend Claw Patrol for custom
   services
-- [Approval Rules](12-approval-rules) — gate outbound
+- [Approval Rules](/docs/12-approval-rules/) — gate outbound
   actions: allow, deny, defer to a human or an LLM judge

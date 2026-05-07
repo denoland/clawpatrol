@@ -45,6 +45,6 @@ jobs:
             mv /opt/clawall/gateway.new /opt/clawall/gateway
             chmod +x /opt/clawall/gateway
             systemctl restart clawall-gateway
-            sleep 2
+            sleep 5
             systemctl is-active clawall-gateway
           '

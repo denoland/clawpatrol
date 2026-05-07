@@ -72,6 +72,21 @@ endpoint "https" "github" {
   credential = github-pat
 }
 
+# ClickHouse over the native protocol. `tls = true` enables TLS on
+# the upstream hop. `accept_invalid_certificate = true` (mirrors
+# clickhouse-client's flag) skips upstream cert validation — use for
+# self-hosted ClickHouse fronted by a private CA; trusts whatever
+# cert the upstream presents. Default keeps full cert validation
+# against system roots.
+#
+# credential "clickhouse_credential" "ch-self-hosted" {}
+# endpoint "clickhouse_native" "ch-self-hosted" {
+#   hosts                      = ["clickhouse.internal:9440"]
+#   tls                        = true
+#   accept_invalid_certificate = true
+#   credential                 = ch-self-hosted
+# }
+
 # Approvers: who arbitrates when a rule needs human / LLM review.
 
 approver "human_approver" "ops" {
@@ -94,9 +109,37 @@ rule "http_rule" "github-writes" {
   approve  = [ops]
 }
 
+# SSH endpoints. The wire protocol carries no SNI / Host header, so
+# the gateway runs a DNS server inside the WG tunnel and answers
+# A/AAAA queries for SSH-able hostnames with virtual IPs from
+# 10.78.0.0/16 and fd78::/64. When the client connects to the VIP
+# the gateway recovers the hostname, terminates SSH on both halves,
+# and uses the credential below for upstream auth.
+#
+# VIPs are persisted under <state_dir>/dnsvip.json so they survive
+# restarts AND policy reloads — clients' cached DNS answers stay
+# valid through gateway hops. Each SSH endpoint also gets its own
+# persisted host key under <ca_dir>/ssh/<endpoint>.key on first use;
+# add the printed fingerprint to the user's known_hosts file (the
+# dashboard surfaces it per endpoint).
+
+credential "ssh" "build-host-cred" {
+  # private_key + (optional) passphrase + (optional) host_pubkey live
+  # in the secret store — paste them via the dashboard.
+}
+
+endpoint "ssh" "build-host" {
+  hosts      = ["build.example.com:2222"]
+  credential = build-host-cred
+  # The agent's username (`ssh user@build.example.com`) is passed
+  # through to the upstream verbatim. For per-username dispatch use
+  # `credentials = [{user="root", credential=...}, {credential=...}]`
+  # — last entry without `user` is the catchall.
+}
+
 # Profiles: bind a device identity to an endpoint set. Rules ride along
 # automatically because they're attached to endpoints.
 
 profile "default" {
-  endpoints = [github]
+  endpoints = [github, build-host]
 }

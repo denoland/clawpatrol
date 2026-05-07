@@ -16,8 +16,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/denoland/clawpatrol/config"
 )
 
 // resolveTemplate expands `{{secret:NAME}}` placeholders in s by
@@ -54,11 +52,18 @@ type pushdownEnvVar struct {
 }
 
 // envPushdownVars returns every var the operator's CLI environment
-// needs: CA bundle paths + per-credential placeholder tokens. caPath
-// must be the absolute path to ca.crt. Plugin order is registry-
-// stable (alphabetical by Type); first writer wins on duplicate
-// names so the same env var across two plugins doesn't double up.
-func envPushdownVars(caPath string) []pushdownEnvVar {
+// needs: CA-bundle vars (which point at a path on the *client's*
+// disk so the client owns them) plus the gateway's declared
+// push-down list. caPath must be the absolute path to ca.crt.
+//
+// The placeholder tokens come from the gateway's /api/env-pushdown
+// endpoint — the gateway is the only source of truth for which
+// plugins the operator has actually configured. Returns CA vars
+// only with an error when the gateway URL hasn't been persisted
+// (no `clawpatrol join` yet) or the gateway is unreachable;
+// callers surface the error so the operator knows their agents
+// won't get the placeholder tokens.
+func envPushdownVars(caPath string) ([]pushdownEnvVar, error) {
 	var out []pushdownEnvVar
 	for _, k := range []string{
 		"SSL_CERT_FILE",
@@ -66,30 +71,94 @@ func envPushdownVars(caPath string) []pushdownEnvVar {
 		"REQUESTS_CA_BUNDLE",
 		"CURL_CA_BUNDLE",
 		"GIT_SSL_CAINFO",
+		"DENO_CERT",
+		"PIP_CERT",
 	} {
 		out = append(out, pushdownEnvVar{Name: k, Value: caPath})
 	}
-	seen := map[string]bool{}
-	for _, p := range config.AllPlugins(config.KindCredential) {
-		body := p.New()
-		ep, ok := body.(config.EnvPushdownProvider)
-		if !ok {
+	vars, err := fetchEnvPushdownFromGateway(filepath.Dir(caPath))
+	if err != nil {
+		return out, err
+	}
+	return append(out, vars...), nil
+}
+
+// fetchEnvPushdownFromGateway hits the gateway's /api/env-pushdown
+// endpoint and returns its declared push-down vars. Authenticated
+// with the per-peer bearer `clawpatrol join` persisted at
+// <caDir>/api-token. Errors when the gateway URL or token isn't
+// persisted, the network call fails, or the server returned
+// non-200.
+func fetchEnvPushdownFromGateway(caDir string) ([]pushdownEnvVar, error) {
+	gw := readGatewayURL(caDir)
+	if gw == "" {
+		return nil, fmt.Errorf("gateway URL not persisted (run `clawpatrol join` first)")
+	}
+	token := readPeerAPIToken(caDir)
+	if token == "" {
+		return nil, fmt.Errorf("peer api token not persisted (run `clawpatrol join` first)")
+	}
+	url := strings.TrimRight(gw, "/") + "/api/env-pushdown"
+	cli := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build %s: %w", url, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := cli.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("fetch %s: status %d", url, resp.StatusCode)
+	}
+	var body struct {
+		Vars []struct {
+			Name        string `json:"name"`
+			Value       string `json:"value"`
+			Description string `json:"description"`
+			PluginType  string `json:"plugin_type"`
+		} `json:"vars"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, fmt.Errorf("decode %s: %w", url, err)
+	}
+	out := make([]pushdownEnvVar, 0, len(body.Vars))
+	for _, v := range body.Vars {
+		if v.Name == "" {
 			continue
 		}
-		for _, ev := range ep.EnvVars() {
-			if seen[ev.Name] {
-				continue
-			}
-			seen[ev.Name] = true
-			out = append(out, pushdownEnvVar{
-				Name:        ev.Name,
-				Value:       ev.Value,
-				Description: ev.Description,
-				PluginType:  p.Type,
-			})
-		}
+		out = append(out, pushdownEnvVar{
+			Name:        v.Name,
+			Value:       v.Value,
+			Description: v.Description,
+			PluginType:  v.PluginType,
+		})
 	}
-	return out
+	return out, nil
+}
+
+// readGatewayURL returns the dashboard URL `clawpatrol join`
+// persisted next to the CA bundle. Empty when the file is missing
+// or unreadable.
+func readGatewayURL(caDir string) string {
+	b, err := os.ReadFile(filepath.Join(caDir, "gateway"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// readPeerAPIToken returns the per-peer bearer minted at onboard
+// time, persisted at <caDir>/api-token by `clawpatrol join`.
+// Empty when the file is missing.
+func readPeerAPIToken(caDir string) string {
+	b, err := os.ReadFile(filepath.Join(caDir, "api-token"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }
 
 // runEnv is the `clawpatrol env` subcommand: prints export lines for
@@ -107,7 +176,11 @@ func runEnv(args []string) {
 		fmt.Fprintf(os.Stderr, "clawpatrol: ca not found at %s — run `clawpatrol login` first\n", caPath)
 		os.Exit(2)
 	}
-	for _, ev := range envPushdownVars(caPath) {
+	vars, err := envPushdownVars(caPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "clawpatrol: %v\n", err)
+	}
+	for _, ev := range vars {
 		if ev.Description != "" {
 			if ev.PluginType != "" {
 				fmt.Printf("# %s — %s\n", ev.Description, ev.PluginType)
@@ -117,6 +190,9 @@ func runEnv(args []string) {
 		}
 		fmt.Printf("export %s=%q\n", ev.Name, ev.Value)
 	}
+	if err != nil {
+		os.Exit(1)
+	}
 }
 
 // applyEnvPushdown sets every pushdown var on the current process
@@ -124,7 +200,15 @@ func runEnv(args []string) {
 // command, so the wrapped agent CLI inherits the placeholders + CA
 // paths without the operator having to source `clawpatrol env`
 // separately.
+//
+// Opt-out: setting CLAWPATROL_NO_ENV=1 disables the entire pushdown.
+// Use when an agent CLI is incompatible with one of the pushed vars
+// (e.g. an OPENAI_API_KEY placeholder that forces a CLI into API
+// mode when its native auth would have worked through the tunnel).
 func applyEnvPushdown(caDir string) {
+	if os.Getenv("CLAWPATROL_NO_ENV") == "1" {
+		return
+	}
 	caPath := filepath.Join(caDir, "ca.crt")
 	if _, err := os.Stat(caPath); err != nil {
 		// CA not set up yet — `clawpatrol join` hasn't run. Don't
@@ -133,7 +217,11 @@ func applyEnvPushdown(caDir string) {
 		fmt.Fprintf(os.Stderr, "clawpatrol: ca not found at %s — env pushdown skipped (run `clawpatrol join` first)\n", caPath)
 		return
 	}
-	for _, ev := range envPushdownVars(caPath) {
+	vars, err := envPushdownVars(caPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "clawpatrol: %v — agent will run without placeholder push-down\n", err)
+	}
+	for _, ev := range vars {
 		// Don't clobber values the operator already set deliberately.
 		if os.Getenv(ev.Name) != "" {
 			continue
