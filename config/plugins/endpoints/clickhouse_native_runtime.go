@@ -12,6 +12,7 @@ import (
 	"net"
 	"strconv"
 
+	chcompress "github.com/ClickHouse/ch-go/compress"
 	chgoproto "github.com/ClickHouse/ch-go/proto"
 	chproto "github.com/ClickHouse/clickhouse-go/v2/lib/proto"
 
@@ -30,13 +31,14 @@ import (
 //  3. Dial upstream (TLS or plain), send the (possibly modified) Hello.
 //  4. Emit one ConnEvent describing the session.
 //  5. Read the server Hello (forwarded back to the agent), capture
-//     the negotiated revision, then run a fully-transcoding
-//     agent → server pump that decodes every client packet via
-//     ch-go / lib/proto: Query packets feed the SQL matcher (with
-//     compression rewritten to Disabled so subsequent Data blocks
-//     decode without a compression-library dependency), Data blocks
-//     decode through lib/proto.Block, Cancel/Ping forward as-is.
-//     Server → agent stays a pure copy past the Hello.
+//     the negotiated revision, then run an agent → server pump that
+//     decodes every client packet via ch-go / lib/proto: Query packets
+//     feed the SQL matcher with the agent's compression preference
+//     preserved verbatim, uncompressed Data blocks decode through
+//     lib/proto.Block, compressed Data blocks forward chunk bytes
+//     opaquely while a decompressing reader walks far enough to find
+//     the block boundary. Cancel/Ping forward as-is. Server → agent
+//     stays a pure copy past the Hello.
 func (ClickhouseNativeEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHandle) error {
 	defer ch.Conn.Close()
 	if ch.Endpoint == nil || ch.Endpoint.Family != "sql" {
@@ -235,16 +237,18 @@ func chRunSession(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgo
 // chAgentToServer is the agent → server transcoding pump. Each
 // iteration reads one packet code off the agent reader, dispatches
 // to a per-packet handler that decodes the body, and writes the
-// re-encoded packet to upstream. On policy deny the function writes
-// an Exception to the agent and returns; the caller closes the
-// connection.
+// (possibly re-encoded) packet to upstream. On policy deny the
+// function writes an Exception to the agent and returns; the caller
+// closes the connection.
 //
-// Compression: every Query body is rewritten with `compression =
-// CompressionDisabled` so subsequent Data blocks arrive uncompressed
-// and lib/proto.Block.Decode reads them without an LZ4/ZSTD
-// dependency. The trade-off is bytes-on-wire on the inner hop —
-// accepted in PR #100 review.
+// Compression: the agent's `compression` flag on the Query packet
+// is forwarded verbatim and tracked here so subsequent Data packets
+// take the right code path — uncompressed blocks round-trip through
+// lib/proto.Block.Decode/Encode, compressed blocks forward chunk
+// bytes opaquely with a decompressing reader walking just far enough
+// to find the block boundary.
 func chAgentToServer(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream io.Writer, revision int, credName string) {
+	compression := chgoproto.CompressionDisabled
 	for {
 		code, err := agentReader.UInt8()
 		if err != nil {
@@ -252,11 +256,13 @@ func chAgentToServer(ctx context.Context, ch *runtime.ConnHandle, agentReader *c
 		}
 		switch chgoproto.ClientCode(code) {
 		case chgoproto.ClientCodeQuery:
-			if !chHandleQuery(ctx, ch, agentReader, upstream, revision, credName) {
+			next, ok := chHandleQuery(ctx, ch, agentReader, upstream, revision, credName)
+			if !ok {
 				return
 			}
+			compression = next
 		case chgoproto.ClientCodeData:
-			if !chHandleData(ch, agentReader, upstream, revision) {
+			if !chHandleData(ch, agentReader, upstream, revision, compression) {
 				return
 			}
 		case chgoproto.ClientCodeCancel, chgoproto.ClientCodePing:
@@ -275,47 +281,79 @@ func chAgentToServer(ctx context.Context, ch *runtime.ConnHandle, agentReader *c
 }
 
 // chHandleQuery decodes one client Query packet, runs the SQL through
-// the matcher, rewrites the compression flag to Disabled, and
-// forwards the re-encoded packet to upstream.
+// the matcher, and forwards the re-encoded packet to upstream with
+// the agent's `compression` choice preserved. The returned flag is
+// what subsequent Data packets on this session will be framed with.
 //
-// Returns false on policy deny (caller tears down the connection)
+// Returns (_, false) on policy deny (caller tears down the connection)
 // or transport error.
-func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream io.Writer, revision int, credName string) bool {
+func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream io.Writer, revision int, credName string) (chgoproto.Compression, bool) {
 	var q chgoproto.Query
 	if err := q.DecodeAware(agentReader, revision); err != nil {
 		chEmitError(ch, "query-decode", err.Error())
-		return false
+		return chgoproto.CompressionDisabled, false
 	}
 	verdict, reason := chEvaluateSQL(ctx, ch, q.Body, credName)
 	if verdict == "deny" {
 		_, _ = ch.Conn.Write(chEncodeException(reason))
 		log.Printf("clickhouse_native %s deny %s: %s",
 			ch.Endpoint.Name, ch.PeerIP, reason)
-		return false
+		return chgoproto.CompressionDisabled, false
 	}
-
-	// Force compression off so subsequent Data blocks decode without
-	// LZ4/ZSTD support.
-	q.Compression = chgoproto.CompressionDisabled
 
 	var b chgoproto.Buffer
 	q.EncodeAware(&b, revision)
 	if _, werr := upstream.Write(b.Buf); werr != nil {
-		return false
+		return chgoproto.CompressionDisabled, false
 	}
-	return true
+	return q.Compression, true
 }
 
 // chHandleData decodes one client Data packet (table-name header +
-// uncompressed Block), passes it to the matcher's optional
-// block-aware hook (today: a no-op event for visibility), and
-// forwards the re-encoded packet upstream.
-func chHandleData(ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream io.Writer, revision int) bool {
+// Block) and forwards it to upstream. Two paths depending on the
+// session's negotiated compression:
+//
+//   - Disabled: full Block.Decode → Block.Encode round-trip. The
+//     gateway sees columns it can later route to a block-aware
+//     matcher and re-emits a wire-equivalent block.
+//
+//   - Enabled: chunk bytes flow to upstream verbatim through an
+//     io.TeeReader. A ch-go/compress.Reader on top decompresses
+//     just enough to feed Block.Decode, which finds the block
+//     boundary without the gateway re-encoding (or re-compressing)
+//     the column payload. The materialized block is used only to
+//     populate the data event — the bytes on the inner hop are the
+//     agent's own compressed bytes.
+func chHandleData(ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream io.Writer, revision int, compression chgoproto.Compression) bool {
 	var hdr chgoproto.ClientData
 	if err := hdr.DecodeAware(agentReader, revision); err != nil {
 		chEmitError(ch, "data-header-decode", err.Error())
 		return false
 	}
+	var headBuf chgoproto.Buffer
+	headBuf.PutByte(byte(chgoproto.ClientCodeData))
+	hdr.EncodeAware(&headBuf, revision)
+	if _, werr := upstream.Write(headBuf.Buf); werr != nil {
+		return false
+	}
+
+	if compression == chgoproto.CompressionEnabled {
+		teed := io.TeeReader(agentReader, upstream)
+		decomp := chcompress.NewReader(teed)
+		pr := chgoproto.NewReader(decomp)
+		block := chproto.NewBlock()
+		if err := block.Decode(pr, uint64(revision)); err != nil {
+			chEmitError(ch, "data-block-decode", err.Error())
+			return false
+		}
+		if ch.Emit != nil {
+			summary := fmt.Sprintf("data table=%q rows=%d cols=%d (compressed)",
+				hdr.TableName, block.Rows(), len(block.Columns))
+			ch.Emit(runtime.ConnEvent{Action: "allow", Verb: "data", Summary: summary})
+		}
+		return true
+	}
+
 	block := chproto.NewBlock()
 	if err := block.Decode(agentReader, uint64(revision)); err != nil {
 		chEmitError(ch, "data-block-decode", err.Error())
@@ -325,10 +363,7 @@ func chHandleData(ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstrea
 		summary := fmt.Sprintf("data table=%q rows=%d cols=%d", hdr.TableName, block.Rows(), len(block.Columns))
 		ch.Emit(runtime.ConnEvent{Action: "allow", Verb: "data", Summary: summary})
 	}
-
 	var b chgoproto.Buffer
-	b.PutByte(byte(chgoproto.ClientCodeData))
-	hdr.EncodeAware(&b, revision)
 	if err := block.Encode(&b, uint64(revision)); err != nil {
 		chEmitError(ch, "data-block-encode", err.Error())
 		return false

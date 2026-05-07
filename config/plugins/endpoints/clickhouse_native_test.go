@@ -3,10 +3,14 @@ package endpoints
 import (
 	"bytes"
 	"context"
+	"io"
 	"net"
 	"testing"
 
+	chcompress "github.com/ClickHouse/ch-go/compress"
 	chgoproto "github.com/ClickHouse/ch-go/proto"
+	"github.com/ClickHouse/clickhouse-go/v2/lib/column"
+	chproto "github.com/ClickHouse/clickhouse-go/v2/lib/proto"
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/denoland/clawpatrol/config"
@@ -502,10 +506,11 @@ func TestChEvaluateSQLApproveChain(t *testing.T) {
 // TestChAgentToServerForwardsQuery exercises the agent → server pump
 // end-to-end: build a Query packet on the "agent" side of an
 // in-memory pipe, run chAgentToServer with an upstream io.Writer
-// capturing the rewritten bytes, then assert that (a) the upstream
-// packet decodes back to a Query with the same SQL body and (b) the
-// Compression flag has been forced to Disabled regardless of what
-// the agent sent.
+// capturing the forwarded bytes, then assert that the upstream
+// packet decodes back to a Query with the same SQL body and the
+// agent's Compression choice is preserved verbatim — the gateway
+// must not silently flip the flag, since that desyncs subsequent
+// Data block framing on the inner hop.
 func TestChAgentToServerForwardsQuery(t *testing.T) {
 	const sql = "SELECT 1"
 	const revision = 54448
@@ -513,8 +518,6 @@ func TestChAgentToServerForwardsQuery(t *testing.T) {
 	mock, _ := chNewMockHandle(t, chBuildEndpoint(t))
 	defer mock.Conn.Close()
 
-	// Agent-side bytes: ClientCodeQuery byte + Query body with
-	// CompressionEnabled to verify the runtime overwrites it.
 	q := chgoproto.Query{
 		ID:          "qid-1",
 		Body:        sql,
@@ -555,9 +558,178 @@ func TestChAgentToServerForwardsQuery(t *testing.T) {
 	if got.Body != sql {
 		t.Errorf("Body = %q, want %q", got.Body, sql)
 	}
-	if got.Compression != chgoproto.CompressionDisabled {
-		t.Errorf("Compression = %d, want Disabled", got.Compression)
+	if got.Compression != chgoproto.CompressionEnabled {
+		t.Errorf("Compression = %d, want Enabled (must preserve agent's choice)", got.Compression)
 	}
+}
+
+// chBuildSampleBlock returns a small Block populated with a single
+// UInt32 column so the codec paths have a non-trivial wire payload
+// to round-trip in the Data tests.
+func chBuildSampleBlock(t *testing.T) *chproto.Block {
+	t.Helper()
+	block := chproto.NewBlock()
+	if err := block.AddColumn("n", column.Type("UInt32")); err != nil {
+		t.Fatalf("AddColumn: %v", err)
+	}
+	if err := block.Append(uint32(1)); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := block.Append(uint32(2)); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	return block
+}
+
+// TestChHandleDataUncompressed pins the uncompressed Data block path:
+// the gateway round-trips the block through Block.Decode → Block.Encode
+// and forwards a wire-equivalent packet. We compare upstream bytes by
+// re-decoding rather than byte-by-byte because Block.Encode emits a
+// canonical custom-serialization byte and the original encoder did the
+// same — but some helpers are sensitive to capacity/order, so the
+// shape-equivalence check is the contract worth pinning.
+func TestChHandleDataUncompressed(t *testing.T) {
+	const revision = 54448
+	mock, _ := chNewMockHandle(t, chBuildEndpoint(t))
+	defer mock.Conn.Close()
+
+	block := chBuildSampleBlock(t)
+	var agentBuf chgoproto.Buffer
+	agentBuf.PutByte(byte(chgoproto.ClientCodeData))
+	chgoproto.ClientData{TableName: "t1"}.EncodeAware(&agentBuf, revision)
+	if err := block.Encode(&agentBuf, uint64(revision)); err != nil {
+		t.Fatalf("encode block: %v", err)
+	}
+
+	reader := chgoproto.NewReader(bytes.NewReader(agentBuf.Buf))
+	var upstream bytes.Buffer
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
+
+	out := upstream.Bytes()
+	if len(out) == 0 || chgoproto.ClientCode(out[0]) != chgoproto.ClientCodeData {
+		t.Fatalf("first byte = %d, want ClientCodeData", out[0])
+	}
+	r := chgoproto.NewReader(bytes.NewReader(out[1:]))
+	var hdr chgoproto.ClientData
+	if err := hdr.DecodeAware(r, revision); err != nil {
+		t.Fatalf("decode header: %v", err)
+	}
+	if hdr.TableName != "t1" {
+		t.Errorf("TableName = %q, want t1", hdr.TableName)
+	}
+	got := chproto.NewBlock()
+	if err := got.Decode(r, uint64(revision)); err != nil {
+		t.Fatalf("decode upstream block: %v", err)
+	}
+	if got.Rows() != 2 || len(got.Columns) != 1 {
+		t.Errorf("upstream block rows=%d cols=%d, want rows=2 cols=1", got.Rows(), len(got.Columns))
+	}
+
+	if !chHasEvent(mock.events, "data") {
+		t.Errorf("expected a data event, got %+v", mock.events)
+	}
+}
+
+// TestChHandleDataCompressedForwardsOpaquely covers the compressed
+// path: a Query with Compression=Enabled followed by a Data packet
+// whose block payload is wrapped in one ch-go/compress chunk. The
+// gateway must (a) forward the Query verbatim (compression flag
+// preserved), (b) forward the [code+name] header, and (c) forward
+// the compressed chunk bytes byte-for-byte without re-encoding —
+// because the agent's compression context is what the upstream
+// expects to decode.
+func TestChHandleDataCompressedForwardsOpaquely(t *testing.T) {
+	const revision = 54448
+	mock, _ := chNewMockHandle(t, chBuildEndpoint(t))
+	defer mock.Conn.Close()
+
+	// Build the Query packet (Compression=Enabled).
+	q := chgoproto.Query{
+		ID: "qid-1", Body: "SELECT 1",
+		Stage:       chgoproto.StageComplete,
+		Compression: chgoproto.CompressionEnabled,
+		Info: chgoproto.ClientInfo{
+			ProtocolVersion: revision, Major: 24, Minor: 8,
+			Interface:   chgoproto.InterfaceTCP,
+			Query:       chgoproto.ClientQueryInitial,
+			InitialUser: "alice",
+		},
+	}
+	var agentBuf chgoproto.Buffer
+	q.EncodeAware(&agentBuf, revision)
+	agentBuf.PutByte(byte(chgoproto.ClientCodeData))
+	chgoproto.ClientData{TableName: "t1"}.EncodeAware(&agentBuf, revision)
+
+	// Encode the block uncompressed into a scratch buffer, then run
+	// it through compress.Writer to produce a single chunk on the
+	// wire. ClickHouse's writer can split blocks across chunks past
+	// MaxCompressionBuffer, but the small block here fits in one.
+	block := chBuildSampleBlock(t)
+	var raw chgoproto.Buffer
+	if err := block.Encode(&raw, uint64(revision)); err != nil {
+		t.Fatalf("encode raw block: %v", err)
+	}
+	w := chcompress.NewWriter(chcompress.LevelZero, chcompress.LZ4)
+	if err := w.Compress(raw.Buf); err != nil {
+		t.Fatalf("compress: %v", err)
+	}
+	chunkBytes := append([]byte(nil), w.Data...)
+	agentBuf.Buf = append(agentBuf.Buf, chunkBytes...)
+
+	reader := chgoproto.NewReader(bytes.NewReader(agentBuf.Buf))
+	var upstream bytes.Buffer
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
+
+	out := upstream.Bytes()
+
+	// Strip the Query frame off the upstream output by re-decoding it.
+	r := chgoproto.NewReader(bytes.NewReader(out))
+	if code, err := r.UInt8(); err != nil || chgoproto.ClientCode(code) != chgoproto.ClientCodeQuery {
+		t.Fatalf("first packet code = %d (err=%v), want ClientCodeQuery", code, err)
+	}
+	var fwdQ chgoproto.Query
+	if err := fwdQ.DecodeAware(r, revision); err != nil {
+		t.Fatalf("decode forwarded Query: %v", err)
+	}
+	if fwdQ.Compression != chgoproto.CompressionEnabled {
+		t.Errorf("forwarded Compression = %d, want Enabled", fwdQ.Compression)
+	}
+
+	// Next: the Data header.
+	if code, err := r.UInt8(); err != nil || chgoproto.ClientCode(code) != chgoproto.ClientCodeData {
+		t.Fatalf("second packet code = %d (err=%v), want ClientCodeData", code, err)
+	}
+	var fwdHdr chgoproto.ClientData
+	if err := fwdHdr.DecodeAware(r, revision); err != nil {
+		t.Fatalf("decode forwarded ClientData: %v", err)
+	}
+	if fwdHdr.TableName != "t1" {
+		t.Errorf("forwarded TableName = %q, want t1", fwdHdr.TableName)
+	}
+
+	// Bytes after the Data header on the upstream must equal the
+	// compressed chunk byte-for-byte — the gateway must not have
+	// re-encoded the column payload.
+	tail, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read tail: %v", err)
+	}
+	if diff := cmp.Diff(chunkBytes, tail); diff != "" {
+		t.Errorf("compressed chunk bytes diverged from agent's wire (-agent +upstream):\n%s", diff)
+	}
+
+	if !chHasEvent(mock.events, "data") {
+		t.Errorf("expected a data event, got %+v", mock.events)
+	}
+}
+
+func chHasEvent(events []runtime.ConnEvent, verb string) bool {
+	for _, e := range events {
+		if e.Verb == verb {
+			return true
+		}
+	}
+	return false
 }
 
 // TestChAgentToServerDeniesQuery confirms the deny path: a Query

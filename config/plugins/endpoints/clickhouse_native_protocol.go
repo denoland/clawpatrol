@@ -8,14 +8,15 @@ package endpoints
 // extract the negotiated revision, and synthesize an Exception
 // packet when policy denies a Query.
 //
-// The runtime side is a fully-transcoding pump on agent → server: we
-// decode every client packet (Hello, Query, Data, Cancel, Ping) and
-// re-encode it for the upstream. That lets us rewrite the Query's
-// `compression` flag to Disabled so subsequent Data blocks arrive
-// uncompressed and `lib/proto.Block.Decode` can read them without
-// pulling in LZ4/ZSTD code paths the gateway doesn't otherwise
-// exercise. The trade-off is bytes-on-wire on the inner hop; the
-// reviewer explicitly accepted that perf penalty in PR #100.
+// The runtime side is a packet-aware pump on agent → server: it
+// decodes each client packet (Hello, Query, Data, Cancel, Ping) for
+// inspection. Query packets are re-encoded with the agent's
+// `compression` choice preserved. Data blocks branch on that flag —
+// uncompressed blocks round-trip through `lib/proto.Block.Decode`
+// and `Block.Encode`, compressed blocks forward chunk bytes opaquely
+// while a ch-go/compress.Reader walks just far enough to find the
+// block boundary. That keeps LZ4/ZSTD on the path only when the
+// agent originally negotiated it.
 
 import (
 	"errors"
