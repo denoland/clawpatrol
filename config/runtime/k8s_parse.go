@@ -20,9 +20,10 @@ import (
 //	/api/v1/namespaces/<ns>/<resource>/<name>/<sub> → subresource (exec / portforward / etc.)
 //	/apis/<group>/<v>/...                           → same shapes under named groups
 //
-// Verb derives from the HTTP method (GET → list/get, POST → create,
-// PUT → update, PATCH → patch, DELETE → delete) — kubectl uses POST
-// to /api/v1/.../<name>/exec so the matcher relies on Resource ending
+// Verb derives from the HTTP method (GET → list/get/watch, POST → create,
+// PUT → update, PATCH → patch, DELETE → delete). GET requests with
+// watch=true are normalized to watch. kubectl uses POST to
+// /api/v1/.../<name>/exec so the matcher relies on Resource ending
 // in "/exec" rather than special-casing the verb.
 func ParseK8sPath(method, rawURL string) *match.K8sMeta {
 	u, err := url.Parse(rawURL)
@@ -87,6 +88,9 @@ func ParseK8sPath(method, rawURL string) *match.K8sMeta {
 				m.Params[k] = v[0]
 			}
 		}
+	}
+	if strings.EqualFold(method, "GET") && strings.EqualFold(m.Params["watch"], "true") {
+		m.Verb = "watch"
 	}
 	return m
 }

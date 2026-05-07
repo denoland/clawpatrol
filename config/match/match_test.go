@@ -162,6 +162,31 @@ func TestK8sMatcherParams(t *testing.T) {
 	}
 }
 
+func TestK8sMatcherWatchVerbAndParams(t *testing.T) {
+	m, err := match.New("k8s", map[string]any{
+		"verb":     "watch",
+		"resource": "pods",
+		"params":   map[string]any{"watch": "true"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := &match.Request{
+		Family: "k8s",
+		K8s: &match.K8sMeta{
+			Verb: "watch", Resource: "pods", Params: map[string]string{"watch": "true"},
+		},
+	}
+	if !m.Match(req) {
+		t.Errorf("expected watch pod list to match")
+	}
+	req.K8s.Verb = "list"
+	if m.Match(req) {
+		t.Errorf("expected plain list to miss watch rule")
+	}
+}
+
 func TestSQLMatcherVerbAndTables(t *testing.T) {
 	m, err := match.New("sql", map[string]any{
 		"verb":   "select",
