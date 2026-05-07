@@ -1665,7 +1665,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		// allow; first deny short-circuits.
 		if cr != nil && len(cr.Outcome.Approve) > 0 {
 			v := g.runApproveChain(req.Context(), cr.Outcome.Approve, runApproveCtx{
-				AgentIP: pip, Host: host, Method: req.Method, Path: req.URL.Path,
+				AgentIP: pip, Host: host, Method: req.Method, Path: req.URL.RequestURI(),
 				UA: req.Header.Get("User-Agent"), Reason: cr.Outcome.Reason,
 				ThreadTS: req.Header.Get("X-HITL-Thread-TS"),
 				Endpoint: ep, Rule: cr, Profile: profile,
