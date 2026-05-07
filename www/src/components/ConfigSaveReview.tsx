@@ -1,4 +1,6 @@
+import { useMemo } from "react";
 import type { ConfigSavePreview } from "../lib/api";
+import { highlightDiff } from "../lib/diffHighlight";
 
 export function ConfigSaveReview({
   preview,
@@ -11,6 +13,11 @@ export function ConfigSaveReview({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const diffHtml = useMemo(
+    () => highlightDiff(preview.diff || "No file content changes after formatting."),
+    [preview.diff],
+  );
+
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[60]">
       <div className="bg-white border border-[#e5e5e5] rounded-md shadow-2xl flex flex-col w-[920px] max-w-[96vw] max-h-[88vh]">
@@ -33,12 +40,16 @@ export function ConfigSaveReview({
         </div>
 
         <div className="px-4 py-3 border-b border-[#e5e5e5] bg-[#fafafa] text-[12px] text-[#404040]">
-          Confirming writes the <span className="font-mono">formatted</span> draft below to disk.
-          If <span className="font-mono">gateway.hcl</span> changed since this preview, the save is rejected.
+          Confirming writes the <span className="font-mono">formatted</span> draft below to disk. If{" "}
+          <span className="font-mono">gateway.hcl</span> changed since this preview, the save is
+          rejected.
         </div>
 
-        <pre className="flex-1 overflow-auto m-0 p-4 text-[12px] leading-5 font-mono bg-[#0a0a0a] text-[#e5e5e5] whitespace-pre-wrap">
-          {preview.diff || "No file content changes after formatting."}
+        <pre className="config-diff-view flex-1 overflow-auto m-0 p-4 text-[12px] leading-5 font-mono whitespace-pre-wrap language-diff diff-highlight">
+          <code
+            className="config-diff-view language-diff diff-highlight"
+            dangerouslySetInnerHTML={{ __html: diffHtml }}
+          />
         </pre>
 
         <div className="flex items-center gap-2 px-4 py-3 border-t border-[#e5e5e5]">

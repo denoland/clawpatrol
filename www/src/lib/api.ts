@@ -169,6 +169,7 @@ export type ConfigSavePreview = {
   changed: boolean;
   bytes: number;
   revision: string;
+  preview_token: string;
 };
 
 export type ConfigSaveResult = {
@@ -187,11 +188,19 @@ export async function previewConfigHCL(hcl: string): Promise<ConfigSavePreview> 
   return r.json();
 }
 
-export async function saveConfigHCL(content: string, expectedRevision: string): Promise<ConfigSaveResult> {
+export async function saveConfigHCL(
+  content: string,
+  expectedRevision: string,
+  previewToken: string,
+): Promise<ConfigSaveResult> {
   const r = await api("/api/config/save", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content, expected_revision: expectedRevision }),
+    body: JSON.stringify({
+      content,
+      expected_revision: expectedRevision,
+      preview_token: previewToken,
+    }),
   });
   if (!r.ok) throw new Error(await r.text());
   return r.json();

@@ -30,3 +30,41 @@ body {
   background: #d4d4d4;
   border-radius: 2px;
 }
+
+.config-diff-view,
+pre.config-diff-view[class*="language-"],
+code.config-diff-view[class*="language-"] {
+  background: #020617;
+  color: #e2e8f0;
+  text-shadow: none;
+}
+
+pre.config-diff-view.diff-highlight > code .token.inserted:not(.prefix),
+pre > code.config-diff-view.diff-highlight .token.inserted:not(.prefix) {
+  background: rgba(34, 197, 94, 0.18);
+  color: #dcfce7;
+}
+
+pre.config-diff-view.diff-highlight > code .token.deleted:not(.prefix),
+pre > code.config-diff-view.diff-highlight .token.deleted:not(.prefix) {
+  background: rgba(239, 68, 68, 0.2);
+  color: #fee2e2;
+}
+
+.config-diff-view .token.inserted {
+  color: #86efac;
+}
+
+.config-diff-view .token.deleted {
+  color: #fca5a5;
+}
+
+.config-diff-view .token.coord {
+  color: #93c5fd;
+}
+
+.config-diff-view .token.prefix.inserted,
+.config-diff-view .token.prefix.deleted {
+  color: #f8fafc;
+  user-select: none;
+}
