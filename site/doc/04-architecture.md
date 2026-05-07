@@ -228,7 +228,7 @@ to any destination IP/port and hands the dispatcher the original
 The promiscuous WG forwarder picks one branch per inbound flow
 based on the destination port and IP:
 
-<svg viewBox="0 0 980 470" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="gateway dispatch decision flow: incoming flows are routed by destination port and IP into MitM HTTPS, postgres MitM, DNS-VIP, VIP-bound endpoint runtime, direct-IP endpoint runtime, or transparent relay">
+<svg viewBox="0 0 980 540" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="gateway dispatch decision flow: incoming flows are routed by destination port and IP into MitM HTTPS, postgres MitM, DNS-VIP, VIP-bound endpoint runtime, direct-IP endpoint runtime, or transparent relay">
   <defs>
     <marker id="ar-disp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
       <path d="M0,0 L10,5 L0,10 z" fill="#2a342f"/>
@@ -247,31 +247,43 @@ based on the destination port and IP:
   <line class="arr-disp" x1="120" y1="56" x2="120" y2="80" marker-end="url(#ar-disp)"/>
   <rect class="b-disp" x="20" y="80" width="200" height="36" rx="4"/>
   <text class="lbl-disp" x="120" y="102">dispatch on dst port / IP</text>
-  <line class="arr-disp" x1="120" y1="116" x2="120" y2="430"/>
-  <line class="arr-disp" x1="120" y1="160" x2="240" y2="160" marker-end="url(#ar-disp)"/>
-  <text class="cond-disp" x="125" y="155">TCP :443</text>
-  <rect class="b-disp" x="240" y="142" width="720" height="36" rx="4"/>
-  <text class="row-disp" x="250" y="164">SNI peek; matched endpoint ⇒ MitM TLS (https / k8s family); no match ⇒ unknown_host policy (passthrough or close)</text>
-  <line class="arr-disp" x1="120" y1="210" x2="240" y2="210" marker-end="url(#ar-disp)"/>
-  <text class="cond-disp" x="125" y="205">TCP :5432</text>
-  <rect class="b-disp" x="240" y="192" width="720" height="36" rx="4"/>
-  <text class="row-disp" x="250" y="214">ConnIndex (DNS-resolved IP) → device profile picks one postgres endpoint ⇒ MitM (sql_rule); no match ⇒ relay</text>
-  <line class="arr-disp" x1="120" y1="260" x2="240" y2="260" marker-end="url(#ar-disp)"/>
-  <text class="cond-disp" x="125" y="255">UDP/TCP :53</text>
-  <rect class="b-disp" x="240" y="242" width="720" height="36" rx="4"/>
-  <text class="row-disp" x="250" y="264">DNS-VIP responder: known VIP-bound host returns its allocated VIP; everything else is forwarded to the upstream resolver</text>
-  <line class="arr-disp" x1="120" y1="310" x2="240" y2="310" marker-end="url(#ar-disp)"/>
-  <text class="cond-disp" x="125" y="305">dst is allocated VIP</text>
-  <rect class="b-disp" x="240" y="292" width="720" height="36" rx="4"/>
-  <text class="row-disp" x="250" y="314">VIP table → endpoint runtime owning the VIP (today: ssh, clickhouse_native reached by hostname)</text>
-  <line class="arr-disp" x1="120" y1="360" x2="240" y2="360" marker-end="url(#ar-disp)"/>
-  <text class="cond-disp" x="125" y="355">dst IP in ConnIndex</text>
-  <rect class="b-disp" x="240" y="342" width="720" height="36" rx="4"/>
-  <text class="row-disp" x="250" y="364">direct-IP endpoint runtime (e.g. clickhouse_native bound to a literal cluster IP)</text>
-  <line class="arr-disp" x1="120" y1="410" x2="240" y2="410" marker-end="url(#ar-disp)"/>
-  <text class="cond-disp" x="125" y="405">otherwise</text>
-  <rect class="b-disp" x="240" y="392" width="720" height="36" rx="4"/>
-  <text class="row-disp" x="250" y="414">transparent relay (defaults.unknown_host = passthrough by default)</text>
+  <line class="arr-disp" x1="120" y1="116" x2="120" y2="498"/>
+  <line class="arr-disp" x1="120" y1="168" x2="240" y2="168" marker-end="url(#ar-disp)"/>
+  <text class="cond-disp" x="125" y="163">TCP :443</text>
+  <rect class="b-disp" x="240" y="142" width="720" height="52" rx="4"/>
+  <text class="row-disp" x="250" y="162">
+    <tspan x="250" dy="0">SNI peek; matched endpoint ⇒ MitM TLS (https / k8s family);</tspan>
+    <tspan x="250" dy="1.3em">no match ⇒ unknown_host policy (passthrough or close)</tspan>
+  </text>
+  <line class="arr-disp" x1="120" y1="234" x2="240" y2="234" marker-end="url(#ar-disp)"/>
+  <text class="cond-disp" x="125" y="229">TCP :5432</text>
+  <rect class="b-disp" x="240" y="208" width="720" height="52" rx="4"/>
+  <text class="row-disp" x="250" y="228">
+    <tspan x="250" dy="0">ConnIndex (DNS-resolved IP) → device profile picks one postgres endpoint</tspan>
+    <tspan x="250" dy="1.3em">⇒ MitM (sql_rule); no match ⇒ relay</tspan>
+  </text>
+  <line class="arr-disp" x1="120" y1="300" x2="240" y2="300" marker-end="url(#ar-disp)"/>
+  <text class="cond-disp" x="125" y="295">UDP/TCP :53</text>
+  <rect class="b-disp" x="240" y="274" width="720" height="52" rx="4"/>
+  <text class="row-disp" x="250" y="294">
+    <tspan x="250" dy="0">DNS-VIP responder: known VIP-bound host returns its allocated VIP;</tspan>
+    <tspan x="250" dy="1.3em">everything else is forwarded to the upstream resolver</tspan>
+  </text>
+  <line class="arr-disp" x1="120" y1="366" x2="240" y2="366" marker-end="url(#ar-disp)"/>
+  <text class="cond-disp" x="125" y="361">dst is allocated VIP</text>
+  <rect class="b-disp" x="240" y="340" width="720" height="52" rx="4"/>
+  <text class="row-disp" x="250" y="360">
+    <tspan x="250" dy="0">VIP table → endpoint runtime owning the VIP</tspan>
+    <tspan x="250" dy="1.3em">(today: ssh, clickhouse_native reached by hostname)</tspan>
+  </text>
+  <line class="arr-disp" x1="120" y1="432" x2="240" y2="432" marker-end="url(#ar-disp)"/>
+  <text class="cond-disp" x="125" y="427">dst IP in ConnIndex</text>
+  <rect class="b-disp" x="240" y="406" width="720" height="52" rx="4"/>
+  <text class="row-disp" x="250" y="436">direct-IP endpoint runtime (e.g. clickhouse_native bound to a literal cluster IP)</text>
+  <line class="arr-disp" x1="120" y1="498" x2="240" y2="498" marker-end="url(#ar-disp)"/>
+  <text class="cond-disp" x="125" y="493">otherwise</text>
+  <rect class="b-disp" x="240" y="472" width="720" height="52" rx="4"/>
+  <text class="row-disp" x="250" y="502">transparent relay (defaults.unknown_host = passthrough by default)</text>
 </svg>
 
 The branches are described below, with the summary table at the
