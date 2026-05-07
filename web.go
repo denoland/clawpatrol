@@ -16,12 +16,15 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/hashicorp/hcl/v2/hclwrite"
 
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/runtime"
@@ -71,6 +74,8 @@ func newWebMux(g *Gateway, caDir string, ts Tailscale, publicURL string) http.Ha
 	mux.HandleFunc("/api/rules", w.apiRules)
 	mux.HandleFunc("/api/rules/ai", w.apiRulesAI)
 	mux.HandleFunc("/api/config", w.apiConfig)
+	mux.HandleFunc("/api/config/preview", w.apiConfigPreview)
+	mux.HandleFunc("/api/config/save", w.apiConfigSave)
 	mux.HandleFunc("/api/hitl/pending", w.apiHITLPending)
 	mux.HandleFunc("/api/hitl/decide", w.apiHITLDecide)
 	w.mountCredentialWebhooks(mux)
@@ -706,8 +711,9 @@ func lookupOAuthFlow(policy *config.CompiledPolicy, name string) *config.OAuthIn
 
 // apiConfig serves the entire gateway.hcl for the global settings
 // editor. GET returns the file as-is (preserves operator comments).
-// PUT validates by re-parsing + writing through writeConfigHCL so
-// hot-reload picks up the change.
+// Writes must go through /api/config/preview + /api/config/save (or
+// include If-Match/X-Config-Revision on legacy PUT) so operators can
+// review the formatted diff before the atomic write.
 func (w *webMux) apiConfig(rw http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
@@ -716,35 +722,228 @@ func (w *webMux) apiConfig(rw http.ResponseWriter, r *http.Request) {
 			http.Error(rw, err.Error(), 500)
 			return
 		}
+		rev := revisionForBytes(b)
+		rw.Header().Set("ETag", `"`+rev+`"`)
+		rw.Header().Set("X-Config-Revision", rev)
 		rw.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = rw.Write(b)
 	case "PUT":
+		expectedRev := strings.Trim(r.Header.Get("If-Match"), `"`)
+		if expectedRev == "" {
+			expectedRev = r.Header.Get("X-Config-Revision")
+		}
+		if expectedRev == "" {
+			http.Error(rw, "If-Match or X-Config-Revision required; use /api/config/preview then /api/config/save", http.StatusPreconditionRequired)
+			return
+		}
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		if err != nil {
 			http.Error(rw, err.Error(), 400)
 			return
 		}
-		// Validate via the new typed-block loader before persisting —
-		// rejects unknown attributes / dangling references / kind
-		// mismatches with precise diagnostics.
-		if _, diags := config.LoadBytes(body, "gateway.hcl"); diags.HasErrors() {
-			http.Error(rw, "hcl: "+diags.Error(), 400)
+		formatted, err := validateAndFormatConfig(body)
+		if err != nil {
+			http.Error(rw, err.Error(), 400)
 			return
 		}
-		// atomic write — mtime watcher reloads + applies.
-		tmp := w.g.cfgPath + ".tmp"
-		if err := os.WriteFile(tmp, body, 0o600); err != nil {
-			http.Error(rw, "write: "+err.Error(), 500)
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		currentRev, err := fileRevision(w.g.cfgPath)
+		if err != nil {
+			http.Error(rw, err.Error(), 500)
 			return
 		}
-		if err := os.Rename(tmp, w.g.cfgPath); err != nil {
-			http.Error(rw, "rename: "+err.Error(), 500)
+		if expectedRev != currentRev {
+			http.Error(rw, "gateway.hcl changed since read; reload before saving", http.StatusConflict)
 			return
 		}
-		writeJSON(rw, map[string]any{"ok": true, "bytes": len(body)})
+		if err := writeConfigAtomically(w.g.cfgPath, formatted); err != nil {
+			http.Error(rw, err.Error(), 500)
+			return
+		}
+		writeJSON(rw, map[string]any{"ok": true, "bytes": len(formatted), "revision": revisionForBytes(formatted)})
 	default:
 		http.Error(rw, "GET or PUT", http.StatusMethodNotAllowed)
 	}
+}
+
+func (w *webMux) apiConfigPreview(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(rw, "POST", 405)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(rw, err.Error(), 400)
+		return
+	}
+	formatted, err := validateAndFormatConfig(body)
+	if err != nil {
+		http.Error(rw, err.Error(), 400)
+		return
+	}
+	w.mu.Lock()
+	current, err := os.ReadFile(w.g.cfgPath)
+	if err != nil {
+		w.mu.Unlock()
+		http.Error(rw, err.Error(), 500)
+		return
+	}
+	rev := revisionForBytes(current)
+	w.mu.Unlock()
+	writeJSON(rw, map[string]any{
+		"ok":        true,
+		"formatted": string(formatted),
+		"diff":      unifiedDiff("gateway.hcl", "formatted draft", string(current), string(formatted)),
+		"changed":   !bytes.Equal(current, formatted),
+		"bytes":     len(formatted),
+		"revision":  rev,
+	})
+}
+
+func (w *webMux) apiConfigSave(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(rw, "POST", 405)
+		return
+	}
+	var body struct {
+		Content          string `json:"content"`
+		ExpectedRevision string `json:"expected_revision"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		http.Error(rw, err.Error(), 400)
+		return
+	}
+	if body.ExpectedRevision == "" {
+		http.Error(rw, "expected_revision required", 400)
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	currentRev, err := fileRevision(w.g.cfgPath)
+	if err != nil {
+		http.Error(rw, err.Error(), 500)
+		return
+	}
+	if body.ExpectedRevision != currentRev {
+		http.Error(rw, "gateway.hcl changed since preview; reload before saving", http.StatusConflict)
+		return
+	}
+	formatted, err := validateAndFormatConfig([]byte(body.Content))
+	if err != nil {
+		http.Error(rw, err.Error(), 400)
+		return
+	}
+	if err := writeConfigAtomically(w.g.cfgPath, formatted); err != nil {
+		http.Error(rw, err.Error(), 500)
+		return
+	}
+	writeJSON(rw, map[string]any{"ok": true, "bytes": len(formatted), "revision": revisionForBytes(formatted)})
+}
+
+func validateAndFormatConfig(body []byte) ([]byte, error) {
+	if _, diags := config.LoadBytes(body, "gateway.hcl"); diags.HasErrors() {
+		return nil, fmt.Errorf("hcl: %s", diags.Error())
+	}
+	formatted := hclwrite.Format(body)
+	if _, diags := config.LoadBytes(formatted, "gateway.hcl"); diags.HasErrors() {
+		return nil, fmt.Errorf("formatted hcl: %s", diags.Error())
+	}
+	return formatted, nil
+}
+
+func writeConfigAtomically(path string, body []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(body); err != nil {
+		tmp.Close()
+		return fmt.Errorf("write: %w", err)
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return fmt.Errorf("chmod: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("rename: %w", err)
+	}
+	return nil
+}
+
+func fileRevision(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return revisionForBytes(b), nil
+}
+
+func revisionForBytes(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+func unifiedDiff(oldName, newName, oldText, newText string) string {
+	if oldText == newText {
+		return ""
+	}
+	oldLines := splitDiffLines(oldText)
+	newLines := splitDiffLines(newText)
+	var b strings.Builder
+	fmt.Fprintf(&b, "--- %s\n+++ %s\n", oldName, newName)
+	fmt.Fprintf(&b, "@@ -1,%d +1,%d @@\n", len(oldLines), len(newLines))
+
+	dp := make([][]int, len(oldLines)+1)
+	for i := range dp {
+		dp[i] = make([]int, len(newLines)+1)
+	}
+	for i := len(oldLines) - 1; i >= 0; i-- {
+		for j := len(newLines) - 1; j >= 0; j-- {
+			if oldLines[i] == newLines[j] {
+				dp[i][j] = dp[i+1][j+1] + 1
+			} else if dp[i+1][j] >= dp[i][j+1] {
+				dp[i][j] = dp[i+1][j]
+			} else {
+				dp[i][j] = dp[i][j+1]
+			}
+		}
+	}
+
+	for i, j := 0, 0; i < len(oldLines) || j < len(newLines); {
+		switch {
+		case i < len(oldLines) && j < len(newLines) && oldLines[i] == newLines[j]:
+			b.WriteByte(' ')
+			b.WriteString(oldLines[i])
+			b.WriteByte('\n')
+			i++
+			j++
+		case j < len(newLines) && (i == len(oldLines) || dp[i][j+1] >= dp[i+1][j]):
+			b.WriteByte('+')
+			b.WriteString(newLines[j])
+			b.WriteByte('\n')
+			j++
+		case i < len(oldLines):
+			b.WriteByte('-')
+			b.WriteString(oldLines[i])
+			b.WriteByte('\n')
+			i++
+		}
+	}
+	return b.String()
+}
+
+func splitDiffLines(s string) []string {
+	trimmed := strings.TrimSuffix(s, "\n")
+	if trimmed == "" {
+		return nil
+	}
+	return strings.Split(trimmed, "\n")
 }
 
 // apiRulesAI translates a natural-language request into an HCL rule

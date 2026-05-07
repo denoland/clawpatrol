@@ -842,14 +842,15 @@ type RuleSummary struct {
 // emit one row per endpoint so the operator sees each attachment
 // site individually.
 //
-// Read-only. Edits go through PUT /api/config (whole-file HCL via
-// the new typed-block validator).
+// Read-only. Dashboard edits go through the whole-file gateway.hcl
+// preview/save flow so operators review the formatted diff before the
+// typed-block validator persists changes.
 func (w *webMux) apiRules(rw http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
 		writeJSON(rw, w.collectRuleSummaries(""))
 	default:
-		http.Error(rw, "edit rules through PUT /api/config", http.StatusNotImplemented)
+		http.Error(rw, "edit rules through the gateway.hcl preview/save flow", http.StatusNotImplemented)
 	}
 }
 

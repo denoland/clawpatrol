@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { aiEditRules, getConfigHCL, putConfigHCL } from "../lib/api";
+import { aiEditRules, getConfigHCL, previewConfigHCL, saveConfigHCL, type ConfigSavePreview } from "../lib/api";
+import { ConfigSaveReview } from "./ConfigSaveReview";
 import { HCLEditor } from "./HCLEditor";
 
 // RulesEditor edits the whole gateway.hcl file. Validation runs
@@ -10,6 +11,7 @@ export function RulesEditor({ onClose, onSaved }: { onClose: () => void; onSaved
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [okMsg, setOkMsg] = useState<string | null>(null);
+  const [preview, setPreview] = useState<ConfigSavePreview | null>(null);
   const [aiPrompt, setAIPrompt] = useState("");
   const [aiBusy, setAIBusy] = useState(false);
 
@@ -27,11 +29,29 @@ export function RulesEditor({ onClose, onSaved }: { onClose: () => void; onSaved
     setErr(null);
     setOkMsg(null);
     try {
-      const r = await putConfigHCL(text);
+      const p = await previewConfigHCL(text);
+      setPreview(p);
+    } catch (e: any) {
+      setErr(String(e.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmSave() {
+    if (!preview) return;
+    setBusy(true);
+    setErr(null);
+    setOkMsg(null);
+    try {
+      const r = await saveConfigHCL(preview.formatted, preview.revision);
+      setText(preview.formatted);
+      setOriginal(preview.formatted);
+      setPreview(null);
       setOkMsg(`saved · ${r.bytes} bytes`);
-      setOriginal(text);
       onSaved();
     } catch (e: any) {
+      setPreview(null);
       setErr(String(e.message ?? e));
     } finally {
       setBusy(false);
@@ -61,7 +81,8 @@ export function RulesEditor({ onClose, onSaved }: { onClose: () => void; onSaved
   const dirty = text !== original;
 
   return (
-    <div
+    <>
+      <div
       className="fixed inset-0 bg-black/30 flex items-center justify-center z-50"
       onClick={onClose}
     >
@@ -129,6 +150,15 @@ export function RulesEditor({ onClose, onSaved }: { onClose: () => void; onSaved
           </button>
         </div>
       </div>
-    </div>
+      </div>
+      {preview && (
+        <ConfigSaveReview
+          preview={preview}
+          busy={busy}
+          onCancel={() => setPreview(null)}
+          onConfirm={confirmSave}
+        />
+      )}
+    </>
   );
 }

@@ -3,7 +3,8 @@
 // hot-reloads rules / profiles / approvers without a restart.
 
 import { useEffect, useState } from "react";
-import { getConfigHCL, putConfigHCL } from "../lib/api";
+import { getConfigHCL, previewConfigHCL, saveConfigHCL, type ConfigSavePreview } from "../lib/api";
+import { ConfigSaveReview } from "./ConfigSaveReview";
 import { HCLEditor } from "./HCLEditor";
 
 export function SettingsModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
@@ -12,6 +13,7 @@ export function SettingsModal({ onClose, onSaved }: { onClose: () => void; onSav
   const [err, setErr] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [preview, setPreview] = useState<ConfigSavePreview | null>(null);
 
   useEffect(() => {
     getConfigHCL()
@@ -27,11 +29,29 @@ export function SettingsModal({ onClose, onSaved }: { onClose: () => void; onSav
     setErr(null);
     setOkMsg(null);
     try {
-      const r = await putConfigHCL(text);
+      const p = await previewConfigHCL(text);
+      setPreview(p);
+    } catch (e: any) {
+      setErr(String(e.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmSave() {
+    if (!preview) return;
+    setBusy(true);
+    setErr(null);
+    setOkMsg(null);
+    try {
+      const r = await saveConfigHCL(preview.formatted, preview.revision);
+      setText(preview.formatted);
+      setOriginal(preview.formatted);
+      setPreview(null);
       setOkMsg(`saved · ${r.bytes} bytes`);
-      setOriginal(text);
       onSaved();
     } catch (e: any) {
+      setPreview(null);
       setErr(String(e.message ?? e));
     } finally {
       setBusy(false);
@@ -41,7 +61,8 @@ export function SettingsModal({ onClose, onSaved }: { onClose: () => void; onSav
   const dirty = text !== original;
 
   return (
-    <div
+    <>
+      <div
       className="fixed inset-0 bg-black/30 flex items-center justify-center z-50"
       onClick={onClose}
     >
@@ -77,6 +98,15 @@ export function SettingsModal({ onClose, onSaved }: { onClose: () => void; onSav
           </button>
         </div>
       </div>
-    </div>
+      </div>
+      {preview && (
+        <ConfigSaveReview
+          preview={preview}
+          busy={busy}
+          onCancel={() => setPreview(null)}
+          onConfirm={confirmSave}
+        />
+      )}
+    </>
   );
 }

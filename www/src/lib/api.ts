@@ -162,11 +162,36 @@ export async function getConfigHCL(): Promise<string> {
   return r.text();
 }
 
-export async function putConfigHCL(hcl: string): Promise<{ ok: boolean; bytes: number }> {
-  const r = await api("/api/config", {
-    method: "PUT",
+export type ConfigSavePreview = {
+  ok: boolean;
+  formatted: string;
+  diff: string;
+  changed: boolean;
+  bytes: number;
+  revision: string;
+};
+
+export type ConfigSaveResult = {
+  ok: boolean;
+  bytes: number;
+  revision: string;
+};
+
+export async function previewConfigHCL(hcl: string): Promise<ConfigSavePreview> {
+  const r = await api("/api/config/preview", {
+    method: "POST",
     headers: { "Content-Type": "text/plain" },
     body: hcl,
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function saveConfigHCL(content: string, expectedRevision: string): Promise<ConfigSaveResult> {
+  const r = await api("/api/config/save", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content, expected_revision: expectedRevision }),
   });
   if (!r.ok) throw new Error(await r.text());
   return r.json();

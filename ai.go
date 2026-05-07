@@ -251,7 +251,8 @@ func extractRefusal(s string) (string, string) {
 }
 
 // validateHCLSyntax confirms the output parses as HCL. We only care
-// about syntax here — full type-check happens on PUT /api/config.
+// about syntax here — full type-check happens during the gateway.hcl
+// preview/save flow.
 func validateHCLSyntax(s string) error {
 	parser := hclparse.NewParser()
 	_, diags := parser.ParseHCL([]byte(s), "ai.hcl")
