@@ -3,8 +3,10 @@ package endpoints
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net"
+	"strings"
 	"testing"
 
 	chcompress "github.com/ClickHouse/ch-go/compress"
@@ -730,6 +732,245 @@ func chHasEvent(events []runtime.ConnEvent, verb string) bool {
 		}
 	}
 	return false
+}
+
+// chCompressedDataEventSummary returns the Summary of the (single)
+// "data" ConnEvent emitted during the test. Used by probe tests that
+// pin the new bytes=N (compressed) wording.
+func chCompressedDataEventSummary(t *testing.T, events []runtime.ConnEvent) string {
+	t.Helper()
+	var found *runtime.ConnEvent
+	for i := range events {
+		if events[i].Verb == "data" {
+			if found != nil {
+				t.Fatalf("expected exactly one data event, got: %+v", events)
+			}
+			found = &events[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("no data event in: %+v", events)
+	}
+	return found.Summary
+}
+
+// TestChCompressedDataEventDropsRowsCols pins the option-1a wording
+// of the per-Data event on the compressed path: probe-walking forwards
+// opaque bytes without materializing the block, so the summary drops
+// rows/cols and reports forwarded byte count instead. Regression for
+// the old "rows=N cols=M (compressed)" string the Block.Decode-backed
+// path emitted.
+func TestChCompressedDataEventDropsRowsCols(t *testing.T) {
+	const revision = 54448
+	mock, _ := chNewMockHandle(t, chBuildEndpoint(t))
+	defer mock.Conn.Close()
+
+	q := chgoproto.Query{
+		ID: "qid-1", Body: "SELECT 1",
+		Stage:       chgoproto.StageComplete,
+		Compression: chgoproto.CompressionEnabled,
+		Info: chgoproto.ClientInfo{
+			ProtocolVersion: revision, Major: 24, Minor: 8,
+			Interface:   chgoproto.InterfaceTCP,
+			Query:       chgoproto.ClientQueryInitial,
+			InitialUser: "alice",
+		},
+	}
+	var agentBuf chgoproto.Buffer
+	q.EncodeAware(&agentBuf, revision)
+	agentBuf.PutByte(byte(chgoproto.ClientCodeData))
+	chgoproto.ClientData{TableName: "t1"}.EncodeAware(&agentBuf, revision)
+
+	block := chBuildSampleBlock(t)
+	var raw chgoproto.Buffer
+	if err := block.Encode(&raw, uint64(revision)); err != nil {
+		t.Fatalf("encode raw block: %v", err)
+	}
+	w := chcompress.NewWriter(chcompress.LevelZero, chcompress.LZ4)
+	if err := w.Compress(raw.Buf); err != nil {
+		t.Fatalf("compress: %v", err)
+	}
+	chunkBytes := append([]byte(nil), w.Data...)
+	agentBuf.Buf = append(agentBuf.Buf, chunkBytes...)
+
+	reader := chgoproto.NewReader(bytes.NewReader(agentBuf.Buf))
+	var upstream bytes.Buffer
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
+
+	summary := chCompressedDataEventSummary(t, mock.events)
+	wantBytes := fmt.Sprintf("bytes=%d", len(chunkBytes))
+	if !strings.Contains(summary, wantBytes) {
+		t.Errorf("event summary %q missing %q", summary, wantBytes)
+	}
+	if !strings.Contains(summary, "(compressed)") {
+		t.Errorf("event summary %q missing (compressed) marker", summary)
+	}
+	if strings.Contains(summary, "rows=") || strings.Contains(summary, "cols=") {
+		t.Errorf("event summary %q must drop rows/cols on compressed path", summary)
+	}
+}
+
+// TestChProbeForwardsMultiChunkBlock verifies the probe walks a
+// multi-chunk compressed block without re-decoding. Two chunks under
+// one ClientData header simulate clickhouse-go's behaviour past
+// MaxCompressionBuffer (default 10 MiB): both chunks must reach
+// upstream byte-for-byte.
+func TestChProbeForwardsMultiChunkBlock(t *testing.T) {
+	const revision = 54448
+	mock, _ := chNewMockHandle(t, chBuildEndpoint(t))
+	defer mock.Conn.Close()
+
+	q := chgoproto.Query{
+		ID: "qid-1", Body: "SELECT 1",
+		Stage:       chgoproto.StageComplete,
+		Compression: chgoproto.CompressionEnabled,
+		Info: chgoproto.ClientInfo{
+			ProtocolVersion: revision, Major: 24, Minor: 8,
+			Interface:   chgoproto.InterfaceTCP,
+			Query:       chgoproto.ClientQueryInitial,
+			InitialUser: "alice",
+		},
+	}
+	var agentBuf chgoproto.Buffer
+	q.EncodeAware(&agentBuf, revision)
+	agentBuf.PutByte(byte(chgoproto.ClientCodeData))
+	chgoproto.ClientData{TableName: "t1"}.EncodeAware(&agentBuf, revision)
+
+	// Two distinct chunks. Real clients flush across chunk boundaries
+	// inside one ClientData when a block exceeds MaxCompressionBuffer.
+	chunkA := chCompressLZ4Frame(t, []byte("payload-A-aaaaaaaaaaaaaaaaaaaaaaaa"))
+	chunkB := chCompressLZ4Frame(t, []byte("payload-B-bbbbbbbb"))
+	agentBuf.Buf = append(agentBuf.Buf, chunkA...)
+	agentBuf.Buf = append(agentBuf.Buf, chunkB...)
+
+	reader := chgoproto.NewReader(bytes.NewReader(agentBuf.Buf))
+	var upstream bytes.Buffer
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
+
+	// Strip the Query frame + Data header; what's left must be both
+	// chunks concatenated, byte-for-byte.
+	r := chgoproto.NewReader(bytes.NewReader(upstream.Bytes()))
+	if code, err := r.UInt8(); err != nil || chgoproto.ClientCode(code) != chgoproto.ClientCodeQuery {
+		t.Fatalf("first packet code = %d (err=%v), want ClientCodeQuery", code, err)
+	}
+	var fwdQ chgoproto.Query
+	if err := fwdQ.DecodeAware(r, revision); err != nil {
+		t.Fatalf("decode forwarded Query: %v", err)
+	}
+	if code, err := r.UInt8(); err != nil || chgoproto.ClientCode(code) != chgoproto.ClientCodeData {
+		t.Fatalf("second packet code = %d (err=%v), want ClientCodeData", code, err)
+	}
+	var fwdHdr chgoproto.ClientData
+	if err := fwdHdr.DecodeAware(r, revision); err != nil {
+		t.Fatalf("decode forwarded ClientData: %v", err)
+	}
+	tail, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read tail: %v", err)
+	}
+	want := append(append([]byte(nil), chunkA...), chunkB...)
+	if diff := cmp.Diff(want, tail); diff != "" {
+		t.Errorf("multi-chunk forward (-want +got):\n%s", diff)
+	}
+
+	summary := chCompressedDataEventSummary(t, mock.events)
+	wantBytes := fmt.Sprintf("bytes=%d", len(chunkA)+len(chunkB))
+	if !strings.Contains(summary, wantBytes) {
+		t.Errorf("event summary %q missing %q (sum across both chunks)", summary, wantBytes)
+	}
+}
+
+// TestChProbeRewindsToNextQuery is the regression for option-(3): when
+// the probe's lookahead byte turns out to be the next packet's code,
+// the rewind path must re-feed it (and any candidate-header bytes the
+// probe pulled trying to validate the frame) so the pump dispatches
+// the packet correctly. Stream: Query (compressed) → compressed Data
+// (one chunk) → Query — upstream must see all three.
+func TestChProbeRewindsToNextQuery(t *testing.T) {
+	const revision = 54448
+	mock, _ := chNewMockHandle(t, chBuildEndpoint(t))
+	defer mock.Conn.Close()
+
+	mkQuery := func(id, body string, comp chgoproto.Compression) chgoproto.Query {
+		return chgoproto.Query{
+			ID: id, Body: body,
+			Stage:       chgoproto.StageComplete,
+			Compression: comp,
+			Info: chgoproto.ClientInfo{
+				ProtocolVersion: revision, Major: 24, Minor: 8,
+				Interface:   chgoproto.InterfaceTCP,
+				Query:       chgoproto.ClientQueryInitial,
+				InitialUser: "alice",
+			},
+		}
+	}
+
+	var agentBuf chgoproto.Buffer
+	mkQuery("q1", "SELECT 1", chgoproto.CompressionEnabled).EncodeAware(&agentBuf, revision)
+	agentBuf.PutByte(byte(chgoproto.ClientCodeData))
+	chgoproto.ClientData{TableName: "t1"}.EncodeAware(&agentBuf, revision)
+	chunk := chCompressLZ4Frame(t, []byte("payload-some-bytes"))
+	agentBuf.Buf = append(agentBuf.Buf, chunk...)
+	mkQuery("q2", "SELECT 2", chgoproto.CompressionEnabled).EncodeAware(&agentBuf, revision)
+
+	reader := chgoproto.NewReader(bytes.NewReader(agentBuf.Buf))
+	var upstream bytes.Buffer
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
+
+	r := chgoproto.NewReader(bytes.NewReader(upstream.Bytes()))
+	// Q1
+	if code, err := r.UInt8(); err != nil || chgoproto.ClientCode(code) != chgoproto.ClientCodeQuery {
+		t.Fatalf("first packet code = %d (err=%v), want Query", code, err)
+	}
+	var q1 chgoproto.Query
+	if err := q1.DecodeAware(r, revision); err != nil {
+		t.Fatalf("decode q1: %v", err)
+	}
+	if q1.Body != "SELECT 1" {
+		t.Errorf("q1.Body = %q, want SELECT 1", q1.Body)
+	}
+	// Data
+	if code, err := r.UInt8(); err != nil || chgoproto.ClientCode(code) != chgoproto.ClientCodeData {
+		t.Fatalf("second packet code = %d (err=%v), want Data", code, err)
+	}
+	var hdr chgoproto.ClientData
+	if err := hdr.DecodeAware(r, revision); err != nil {
+		t.Fatalf("decode data header: %v", err)
+	}
+	// Read the chunk worth of bytes (= len(chunk)) — this is the
+	// probe's verbatim forward.
+	got := make([]byte, len(chunk))
+	if _, err := io.ReadFull(r, got); err != nil {
+		t.Fatalf("read forwarded chunk: %v", err)
+	}
+	if diff := cmp.Diff(chunk, got); diff != "" {
+		t.Errorf("forwarded chunk diverged (-want +got):\n%s", diff)
+	}
+	// Q2 — this is the rewind regression. Probe read [0x01, ...24
+	// candidate bytes...] and rejected; rewind put them back and
+	// the pump dispatched as Query.
+	if code, err := r.UInt8(); err != nil || chgoproto.ClientCode(code) != chgoproto.ClientCodeQuery {
+		t.Fatalf("third packet code = %d (err=%v), want Query (rewind dispatch)", code, err)
+	}
+	var q2 chgoproto.Query
+	if err := q2.DecodeAware(r, revision); err != nil {
+		t.Fatalf("decode q2 after rewind: %v", err)
+	}
+	if q2.Body != "SELECT 2" {
+		t.Errorf("q2.Body after rewind = %q, want SELECT 2", q2.Body)
+	}
+}
+
+// chCompressLZ4Frame wraps payload in one ch-go/compress LZ4 frame —
+// the wire shape every test that exercises the compressed Data path
+// (single-chunk, multi-chunk, rewind) needs.
+func chCompressLZ4Frame(t *testing.T, payload []byte) []byte {
+	t.Helper()
+	w := chcompress.NewWriter(chcompress.LevelZero, chcompress.LZ4)
+	if err := w.Compress(payload); err != nil {
+		t.Fatalf("compress: %v", err)
+	}
+	return append([]byte(nil), w.Data...)
 }
 
 // TestChAgentToServerDeniesQuery confirms the deny path: a Query

@@ -13,10 +13,10 @@ package endpoints
 // inspection. Query packets are re-encoded with the agent's
 // `compression` choice preserved. Data blocks branch on that flag —
 // uncompressed blocks round-trip through `lib/proto.Block.Decode`
-// and `Block.Encode`, compressed blocks forward chunk bytes opaquely
-// while a ch-go/compress.Reader walks just far enough to find the
-// block boundary. That keeps LZ4/ZSTD on the path only when the
-// agent originally negotiated it.
+// and `Block.Encode`, compressed blocks walk the frame chain
+// verbatim with a CityHash-discriminator probe that detects the
+// next packet boundary without decompressing column data. Net
+// effect: LZ4/ZSTD stays out of the gateway entirely.
 
 import (
 	"errors"

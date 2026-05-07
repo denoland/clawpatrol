@@ -4,22 +4,70 @@ package endpoints
 // and registration live in clickhouse_native.go.
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"strconv"
 
-	chcompress "github.com/ClickHouse/ch-go/compress"
 	chgoproto "github.com/ClickHouse/ch-go/proto"
+	"github.com/ClickHouse/clickhouse-go/v2/lib/cityhash102"
 	chproto "github.com/ClickHouse/clickhouse-go/v2/lib/proto"
 
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/match"
 	"github.com/denoland/clawpatrol/config/runtime"
 )
+
+// chMaxCompressionBuffer caps the per-frame compressed-payload size the
+// probe accepts. clickhouse-go's writer flushes a chunk every 10 MiB
+// by default; 16 MiB gives us headroom for clients that bump the
+// option without weakening the discriminator at the size-range gate.
+const chMaxCompressionBuffer = 16 * 1024 * 1024
+
+// chCompressedFrameHeader = 16-byte CityHash128 checksum + 1B method +
+// 4B compressed_size + 4B decompressed_size. The compressed_size field
+// includes the 9-byte sub-header itself (so payload bytes after the
+// header = compressed_size - 9, total wire bytes = compressed_size + 16).
+const chCompressedFrameHeader = 25
+
+// chValidClientCode is the discriminator used by the compressed-Data
+// probe. Any byte outside this set on the next-byte read MUST be a
+// frame checksum byte (since a valid stream alternates frames within a
+// Data block); anything inside this set is ambiguous and demands a
+// full frame parse + CityHash check.
+//
+// Mirrors the codes ch-go's protocol enum knows about; new ones land
+// here as ClickHouse adds them.
+func chValidClientCode(b byte) bool {
+	switch chgoproto.ClientCode(b) {
+	case chgoproto.ClientCodeHello,
+		chgoproto.ClientCodeQuery,
+		chgoproto.ClientCodeData,
+		chgoproto.ClientCodeCancel,
+		chgoproto.ClientCodePing,
+		chgoproto.ClientTablesStatusRequest,
+		chgoproto.ClientCodeSSHChallengeRequest,
+		chgoproto.ClientCodeSSHChallengeResponse:
+		return true
+	}
+	return false
+}
+
+// chValidCompressedMethod is the second discriminator gate: a real
+// frame's method byte is one of LZ4 (0x82, also LZ4HC) or ZSTD (0x90).
+// Uncompressed (0x02) is intentionally excluded — agents that
+// negotiated compression=Enabled and then sent a None-coded frame are
+// mis-framed regardless, and accepting None here would weaken the
+// false-positive rate on the probe (0x02 is also ClientCodeData).
+func chValidCompressedMethod(b byte) bool {
+	return b == 0x82 || b == 0x90
+}
 
 // HandleConn services one inbound native-protocol connection.
 //
@@ -35,10 +83,10 @@ import (
 //     decodes every client packet via ch-go / lib/proto: Query packets
 //     feed the SQL matcher with the agent's compression preference
 //     preserved verbatim, uncompressed Data blocks decode through
-//     lib/proto.Block, compressed Data blocks forward chunk bytes
-//     opaquely while a decompressing reader walks far enough to find
-//     the block boundary. Cancel/Ping forward as-is. Server → agent
-//     stays a pure copy past the Hello.
+//     lib/proto.Block, compressed Data blocks walk the frame chain
+//     opaquely with a CityHash-discriminator probe (no LZ4/ZSTD on
+//     the path). Cancel/Ping forward as-is. Server → agent stays a
+//     pure copy past the Hello.
 func (ClickhouseNativeEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHandle) error {
 	defer ch.Conn.Close()
 	if ch.Endpoint == nil || ch.Endpoint.Family != "sql" {
@@ -247,11 +295,19 @@ func chRunSession(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgo
 // Compression: the agent's `compression` flag on the Query packet
 // is forwarded verbatim and tracked here so subsequent Data packets
 // take the right code path — uncompressed blocks round-trip through
-// lib/proto.Block.Decode/Encode, compressed blocks forward chunk
-// bytes opaquely with a decompressing reader walking just far enough
-// to find the block boundary. A denied Query does not advance the
-// compression state — the next Data packet (if any) framing depends
-// on the most recent ALLOWED Query.
+// lib/proto.Block.Decode/Encode, compressed blocks walk frame bytes
+// opaquely with an optimistic CityHash-discriminator probe (no
+// decompression library on the path). A denied Query does not advance
+// the compression state — the next Data packet (if any) framing
+// depends on the most recent ALLOWED Query.
+//
+// Probe-and-rewind: the compressed Data handler owns the next-byte
+// read past the last frame. When that byte turns out to be the start
+// of the next packet (probe rejects), the handler returns a fresh
+// chgoproto.Reader pre-fed with the look-ahead bytes via
+// io.MultiReader. The pump swaps it in-place and dispatches as usual,
+// so the code-loop here doesn't need its own buffered-byte rewind
+// channel.
 func chAgentToServer(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream io.Writer, revision int, credName string) {
 	compression := chgoproto.CompressionDisabled
 	for {
@@ -269,8 +325,12 @@ func chAgentToServer(ctx context.Context, ch *runtime.ConnHandle, agentReader *c
 				compression = next
 			}
 		case chgoproto.ClientCodeData:
-			if !chHandleData(ch, agentReader, upstream, revision, compression) {
+			rewound, ok := chHandleData(ch, agentReader, upstream, revision, compression)
+			if !ok {
 				return
+			}
+			if rewound != nil {
+				agentReader = rewound
 			}
 		case chgoproto.ClientCodeCancel, chgoproto.ClientCodePing:
 			// Headerless packets — single byte, forward verbatim.
@@ -335,47 +395,47 @@ func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chg
 //     gateway sees columns it can later route to a block-aware
 //     matcher and re-emits a wire-equivalent block.
 //
-//   - Enabled: chunk bytes flow to upstream verbatim through an
-//     io.TeeReader. A ch-go/compress.Reader on top decompresses
-//     just enough to feed Block.Decode, which finds the block
-//     boundary without the gateway re-encoding (or re-compressing)
-//     the column payload. The materialized block is used only to
-//     populate the data event — the bytes on the inner hop are the
-//     agent's own compressed bytes.
-func chHandleData(ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream io.Writer, revision int, compression chgoproto.Compression) bool {
+//   - Enabled: an optimistic CityHash-discriminator probe walks the
+//     compressed frame chain opaquely. Each iteration reads the next
+//     byte; if it can't be a client packet code it must be a frame
+//     checksum byte, so we forward the whole frame verbatim. If it
+//     could be either, we pull the candidate header, sanity-check
+//     the method byte and size, then verify the checksum over
+//     [method | comp_size | decomp_size | payload]. On match it's a
+//     frame; on any rejection the byte was the start of the NEXT
+//     packet — we hand a rewound reader back to the caller so the
+//     pump dispatches it without rereading.
+//
+// Returns (rewound, ok):
+//
+//	(nil,    true)  — Data packet fully consumed; pump reads the next
+//	                  packet code from agentReader as usual.
+//	(reader, true)  — probe rejected; caller MUST swap agentReader for
+//	                  reader before its next read, since the look-ahead
+//	                  byte (and any candidate frame bytes that came
+//	                  with it) are buffered inside reader.
+//	(_,      false) — fatal: tear the connection down.
+func chHandleData(ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream io.Writer, revision int, compression chgoproto.Compression) (*chgoproto.Reader, bool) {
 	var hdr chgoproto.ClientData
 	if err := hdr.DecodeAware(agentReader, revision); err != nil {
 		chEmitError(ch, "data-header-decode", err.Error())
-		return false
+		return nil, false
 	}
 	var headBuf chgoproto.Buffer
 	headBuf.PutByte(byte(chgoproto.ClientCodeData))
 	hdr.EncodeAware(&headBuf, revision)
 	if _, werr := upstream.Write(headBuf.Buf); werr != nil {
-		return false
+		return nil, false
 	}
 
 	if compression == chgoproto.CompressionEnabled {
-		teed := io.TeeReader(agentReader, upstream)
-		decomp := chcompress.NewReader(teed)
-		pr := chgoproto.NewReader(decomp)
-		block := chproto.NewBlock()
-		if err := block.Decode(pr, uint64(revision)); err != nil {
-			chEmitError(ch, "data-block-decode", err.Error())
-			return false
-		}
-		if ch.Emit != nil {
-			summary := fmt.Sprintf("data table=%q rows=%d cols=%d (compressed)",
-				hdr.TableName, block.Rows(), len(block.Columns))
-			ch.Emit(runtime.ConnEvent{Action: "allow", Verb: "data", Summary: summary})
-		}
-		return true
+		return chProbeCompressedData(ch, agentReader, upstream, hdr.TableName)
 	}
 
 	block := chproto.NewBlock()
 	if err := block.Decode(agentReader, uint64(revision)); err != nil {
 		chEmitError(ch, "data-block-decode", err.Error())
-		return false
+		return nil, false
 	}
 	if ch.Emit != nil {
 		summary := fmt.Sprintf("data table=%q rows=%d cols=%d", hdr.TableName, block.Rows(), len(block.Columns))
@@ -384,12 +444,191 @@ func chHandleData(ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstrea
 	var b chgoproto.Buffer
 	if err := block.Encode(&b, uint64(revision)); err != nil {
 		chEmitError(ch, "data-block-encode", err.Error())
-		return false
+		return nil, false
 	}
 	if _, werr := upstream.Write(b.Buf); werr != nil {
-		return false
+		return nil, false
 	}
-	return true
+	return nil, true
+}
+
+// chProbeCompressedData walks the compressed frame chain that follows
+// a ClientData header. It owns the next-byte read past every frame —
+// the byte that, on rejection, turns out to be the leading code of
+// the next packet. When that happens we wrap the candidate bytes
+// (look-ahead code + whatever else we'd pulled trying to validate the
+// frame header) into a MultiReader-backed chgoproto.Reader and hand
+// it back so the pump dispatches as usual. No bytes are dropped: the
+// old chgoproto.Reader is the second source of the multi-reader, so
+// any bytes its bufio had pre-fetched are still drained on demand.
+//
+// Forwarding semantics: every byte that belongs to a real frame goes
+// to upstream verbatim; nothing is decompressed or re-encoded. The
+// per-Data event drops the rows/cols counts the old Block.Decode path
+// produced (we don't materialize columns here on purpose) — the
+// summary carries forwarded byte count + table name + (compressed).
+func chProbeCompressedData(ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream io.Writer, tableName string) (*chgoproto.Reader, bool) {
+	var totalBytes int64
+	emit := func() {
+		if ch.Emit == nil {
+			return
+		}
+		ch.Emit(runtime.ConnEvent{
+			Action: "allow", Verb: "data",
+			Summary: fmt.Sprintf("data table=%q bytes=%d (compressed)", tableName, totalBytes),
+		})
+	}
+
+	for {
+		x, err := agentReader.UInt8()
+		if err != nil {
+			// EOF (or transport error) at a clean inter-frame boundary.
+			// Surface the data event we accumulated and let the pump
+			// see EOF on its next read.
+			if totalBytes > 0 {
+				emit()
+			}
+			return nil, true
+		}
+
+		if !chValidClientCode(x) {
+			// Fast path — x is a checksum byte, no rewind risk. Read
+			// the rest of the frame header to learn payload size and
+			// stream the payload through. We still range-check the
+			// header so a corrupt stream is rejected before we hand
+			// io.CopyN a multi-gigabyte size to chase.
+			var rest [chCompressedFrameHeader - 1]byte
+			if err := agentReader.ReadFull(rest[:]); err != nil {
+				chEmitError(ch, "data-frame-header", err.Error())
+				return nil, false
+			}
+			method := rest[15]
+			compSize := binary.LittleEndian.Uint32(rest[16:20])
+			if !chValidCompressedMethod(method) ||
+				compSize < 9 || compSize > chMaxCompressionBuffer+9 {
+				chEmitError(ch, "data-frame-corrupt",
+					fmt.Sprintf("method=0x%02x comp_size=%d", method, compSize))
+				return nil, false
+			}
+			payloadLen := int64(compSize) - 9
+			if _, werr := upstream.Write([]byte{x}); werr != nil {
+				return nil, false
+			}
+			if _, werr := upstream.Write(rest[:]); werr != nil {
+				return nil, false
+			}
+			if _, werr := io.CopyN(upstream, agentReader, payloadLen); werr != nil {
+				return nil, false
+			}
+			totalBytes += int64(chCompressedFrameHeader) + payloadLen
+			continue
+		}
+
+		// Slow path — x could be a checksum byte OR the leading code
+		// of the next packet. Pull the candidate header and run the
+		// discriminators in cheapest-first order; on any rejection,
+		// rewind everything we've buffered as the next packet's bytes.
+		var rest [chCompressedFrameHeader - 1]byte
+		n, err := io.ReadFull(agentReader, rest[:])
+		if err != nil {
+			// EOF before we filled the candidate header: x was a
+			// packet code at end of stream (Cancel/Ping with no body,
+			// or a Query whose body happens to be < 24 bytes after
+			// reaching EOF). Rewind whatever we read and let the
+			// pump dispatch x; non-EOF errors are fatal.
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				if totalBytes > 0 {
+					emit()
+				}
+				rewind := make([]byte, 0, 1+n)
+				rewind = append(rewind, x)
+				rewind = append(rewind, rest[:n]...)
+				return chRewindReader(rewind, agentReader), true
+			}
+			chEmitError(ch, "data-frame-header", err.Error())
+			return nil, false
+		}
+		method := rest[15]
+		compSize := binary.LittleEndian.Uint32(rest[16:20])
+		if !chValidCompressedMethod(method) ||
+			compSize < 9 || compSize > chMaxCompressionBuffer+9 {
+			// x was a packet code; rest is the start of its body.
+			if totalBytes > 0 {
+				emit()
+			}
+			rewind := make([]byte, 0, chCompressedFrameHeader)
+			rewind = append(rewind, x)
+			rewind = append(rewind, rest[:]...)
+			return chRewindReader(rewind, agentReader), true
+		}
+
+		payloadLen := int(compSize) - 9
+		body := make([]byte, payloadLen)
+		bn, err := io.ReadFull(agentReader, body)
+		if err != nil {
+			// Same edge as above, deeper into the candidate frame:
+			// the bytes that "looked like" a frame are actually a
+			// packet body that ended sooner. Rewind everything.
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				if totalBytes > 0 {
+					emit()
+				}
+				rewind := make([]byte, 0, chCompressedFrameHeader+bn)
+				rewind = append(rewind, x)
+				rewind = append(rewind, rest[:]...)
+				rewind = append(rewind, body[:bn]...)
+				return chRewindReader(rewind, agentReader), true
+			}
+			chEmitError(ch, "data-frame-payload", err.Error())
+			return nil, false
+		}
+
+		hashed := make([]byte, 0, 9+payloadLen)
+		hashed = append(hashed, rest[15:24]...)
+		hashed = append(hashed, body...)
+		got := cityhash102.CityHash128(hashed, uint32(len(hashed)))
+		candLow := uint64(x) |
+			uint64(rest[0])<<8 | uint64(rest[1])<<16 |
+			uint64(rest[2])<<24 | uint64(rest[3])<<32 |
+			uint64(rest[4])<<40 | uint64(rest[5])<<48 |
+			uint64(rest[6])<<56
+		candHigh := binary.LittleEndian.Uint64(rest[7:15])
+		if got.Lower64() != candLow || got.Higher64() != candHigh {
+			// Hash mismatch — x was a packet code; everything we read
+			// (header + payload-shaped body) is the start of that
+			// packet's body.
+			if totalBytes > 0 {
+				emit()
+			}
+			rewind := make([]byte, 0, chCompressedFrameHeader+payloadLen)
+			rewind = append(rewind, x)
+			rewind = append(rewind, rest[:]...)
+			rewind = append(rewind, body...)
+			return chRewindReader(rewind, agentReader), true
+		}
+
+		// Frame verified by checksum — forward all bytes verbatim.
+		if _, werr := upstream.Write([]byte{x}); werr != nil {
+			return nil, false
+		}
+		if _, werr := upstream.Write(rest[:]); werr != nil {
+			return nil, false
+		}
+		if _, werr := upstream.Write(body); werr != nil {
+			return nil, false
+		}
+		totalBytes += int64(chCompressedFrameHeader) + int64(payloadLen)
+	}
+}
+
+// chRewindReader builds a fresh chgoproto.Reader whose stream starts
+// with `head` and then continues from the existing agent reader. It's
+// the prepend-buffer wrapper for the probe's rewind: the look-ahead
+// bytes the probe pulled trying to validate a frame become the first
+// reads of the new reader, with the underlying chgoproto.Reader as
+// the second source so any bytes its bufio still holds are not lost.
+func chRewindReader(head []byte, tail *chgoproto.Reader) *chgoproto.Reader {
+	return chgoproto.NewReader(io.MultiReader(bytes.NewReader(head), tail))
 }
 
 // chEvaluateSQL runs SQL through the endpoint's compiled rules. The
