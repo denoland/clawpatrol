@@ -1796,6 +1796,19 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			return
 		}
 
+		// Generic HTTP upgrade (SPDY/3.1 for kubectl exec/attach/portforward,
+		// HTTP/2 cleartext, etc.). No frame parsing — raw bidirectional splice
+		// after the 101 handshake. Credentials already injected above.
+		if isHTTPUpgrade(req) {
+			log.Printf("http-upgrade %s %s %s", host, req.Header.Get("Upgrade"), req.URL.Path)
+			ev.Action = "upgrade"
+			g.handleHTTPUpgrade(tc, br, req, host, ep)
+			ev.Status = 101
+			ev.Ms = time.Since(start).Milliseconds()
+			g.emitEnd(ev)
+			return
+		}
+
 		trackKind := trackKindFor(host)
 		var trackedReqBody []byte
 		if trackKind != "" && req.Body != nil {
