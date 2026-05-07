@@ -604,17 +604,82 @@ func stripCodexWrappers(s string) string {
 
 // trackKindFor returns the usage-parsing flavor for a given host (and,
 // for chatgpt.com, also gates HTTP-mode codex tracking). Tracking is
-// always-on; operators don't configure it per rule.
+// always-on; operators don't configure it per rule. chatgpt.com matches
+// by suffix — codex HTTP POSTs hit backend-api.chatgpt.com, WS upgrades
+// hit chatgpt.com bare; both need the codex parser.
 func trackKindFor(host string) string {
-	switch host {
+	h := strings.ToLower(host)
+	switch h {
 	case "api.anthropic.com":
 		return "claude_usage"
 	case "api.openai.com":
 		return "openai_usage"
-	case "chatgpt.com":
+	}
+	if strings.HasSuffix(h, "chatgpt.com") {
 		return "codex_ws_usage"
 	}
 	return ""
+}
+
+// preCreateLLMSession parses just the request body and seeds a session
+// row with title + model so the dashboard reflects an in-flight turn
+// before the SSE stream completes. Token counts arrive later via
+// trackLLMUsage. Mirrors trackLLMUsage's path/kind gating but skips
+// any work that depends on the response body.
+func (g *Gateway) preCreateLLMSession(c net.Conn, kind, path string, reqBody []byte) {
+	if g.agents == nil {
+		return
+	}
+	ip := peerIP(c)
+	switch kind {
+	case "claude_usage":
+		if path != "/v1/messages" {
+			return
+		}
+		reqInfo := parseClaudeRequest(reqBody)
+		sid := reqInfo.SessionID
+		title := reqInfo.Title
+		if sid == "" {
+			if title == "" {
+				return
+			}
+			sid = shortHash(title)
+		}
+		g.agents.recordLLMUsage(ip, "claude", sid, title, reqInfo.Model, 0, 0)
+	case "openai_usage":
+		if !strings.HasPrefix(path, "/v1/chat/completions") &&
+			!strings.HasPrefix(path, "/v1/responses") &&
+			!strings.HasPrefix(path, "/v1/completions") {
+			return
+		}
+		title := openaiFirstUserMessage(reqBody)
+		if title == "" {
+			return
+		}
+		g.agents.recordLLMUsage(ip, "codex", shortHash(title), title, "", 0, 0)
+	case "codex_ws_usage":
+		if !strings.Contains(path, "/codex/responses") {
+			return
+		}
+		title := codexResponsesRequestTitle(reqBody)
+		if title == "" {
+			return
+		}
+		g.agents.recordLLMUsage(ip, "codex", "", title, codexRequestModel(reqBody), 0, 0)
+	}
+}
+
+// codexRequestModel pulls the top-level "model" field from a codex
+// /backend-api/codex/responses request body. The Codex SSE stream
+// doesn't include model in the JSON payload (it ships in the
+// OpenAI-Model response header instead), so the request body is the
+// only place to source it before the turn completes.
+func codexRequestModel(body []byte) string {
+	var r struct {
+		Model string `json:"model"`
+	}
+	_ = json.Unmarshal(body, &r)
+	return r.Model
 }
 
 // trackLLMUsage parses LLM API request/response bodies for session id,
@@ -680,8 +745,10 @@ func (g *Gateway) trackLLMUsage(c net.Conn, kind, path string, reqBody, respBody
 }
 
 // codexResponsesRequestTitle parses a chatgpt.com /backend-api/codex/responses
-// POST body and returns the first user message text. Body shape mirrors
+// POST body and returns the latest user message text. Body shape mirrors
 // OpenAI Responses API: {"input":[{"role":"user","content":[{"type":"input_text","text":"..."}]},...]}.
+// Reuses codexInputTitle so HTTP and WS paths agree — backward walk skips
+// the stale environment_context wrapper that fronts every turn.
 func codexResponsesRequestTitle(body []byte) string {
 	var req struct {
 		Input []struct {
@@ -692,16 +759,7 @@ func codexResponsesRequestTitle(body []byte) string {
 	if err := json.Unmarshal(body, &req); err != nil {
 		return ""
 	}
-	for _, m := range req.Input {
-		if m.Role != "user" {
-			continue
-		}
-		text := stripCodexWrappers(joinUserContent(m.Content))
-		if text != "" {
-			return truncate(text, 80)
-		}
-	}
-	return ""
+	return codexInputTitle(req.Input)
 }
 
 func parseOpenAIResponse(body []byte) (model string, in, out int64) {
@@ -1652,7 +1710,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				sec, err := g.secrets.Get(cc.Credential.Symbol.Name, profile)
 				if err != nil {
 					log.Printf("secret %s/%s: %v — forwarding without injection", cc.Credential.Symbol.Name, profile, err)
-				} else if len(sec.Bytes) == 0 {
+				} else if len(sec.Bytes) == 0 && len(sec.Extras) == 0 {
 					log.Printf("secret %s/%s: not configured (set CLAWPATROL_SECRET_%s)", cc.Credential.Symbol.Name, profile, secretEnvName(cc.Credential.Symbol.Name))
 				} else if err := injector.InjectHTTP(req.Context(), req, sec); err != nil {
 					log.Printf("inject %s: %v", cc.Credential.Symbol.Name, err)
@@ -1706,6 +1764,15 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			if req.ContentLength > 0 {
 				req.ContentLength = int64(len(b))
 			}
+		}
+		// Pre-create session from the request body so streaming SSE
+		// responses (codex /backend-api/codex/responses, anthropic
+		// /v1/messages with stream:true) surface in the dashboard at
+		// turn-start, not at turn-end. trackLLMUsage below runs after
+		// resp.Write completes — which for codex can be minutes. WS
+		// reports per-frame; HTTP needs this kickoff so it doesn't lag.
+		if trackKind != "" && len(trackedReqBody) > 0 && g.agents != nil {
+			g.preCreateLLMSession(c, trackKind, req.URL.Path, trackedReqBody)
 		}
 		reqS := newSampler(4096)
 		if req.Body != nil {
