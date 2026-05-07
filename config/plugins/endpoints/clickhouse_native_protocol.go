@@ -40,6 +40,19 @@ const (
 	chServerPacketException = chgoproto.ServerCodeException
 )
 
+// chMaxProtocolRev caps the protocol revision the gateway is willing
+// to negotiate on either leg. It's pinned to ch-go's own max
+// (`proto.Version`) so every packet the runtime decodes / re-encodes
+// uses a field set ch-go actually models. Beyond this rev ClickHouse
+// adds addendum extensions (chunked-protocol negotiation, password
+// complexity rules, …) the vendored proto package doesn't know how
+// to read or write — letting peers negotiate up there silently desyncs
+// the wire (server's tail bytes go unread, client's addendum has
+// extra fields the gateway parses as packet codes). Clamping both
+// directions to chgoproto.Version keeps the addendum at exactly one
+// quota_key string, which chForwardClientAddendum handles cleanly.
+const chMaxProtocolRev = chgoproto.Version
+
 // ChHello mirrors the subset of the ClientHello fields the gateway
 // inspects or rewrites: client identification (forwarded as-is),
 // negotiated protocol revision (drives field-set decisions
@@ -75,11 +88,15 @@ func chReadHello(r io.Reader) (ChHello, *chgoproto.Reader, error) {
 	if err := raw.Decode(pr); err != nil {
 		return ChHello{}, nil, fmt.Errorf("decode client hello: %w", err)
 	}
+	rev := raw.ProtocolVersion
+	if rev > chMaxProtocolRev {
+		rev = chMaxProtocolRev
+	}
 	return ChHello{
 		ClientName:       raw.Name,
 		VersionMajor:     raw.Major,
 		VersionMinor:     raw.Minor,
-		ProtocolRevision: raw.ProtocolVersion,
+		ProtocolRevision: rev,
 		Database:         raw.Database,
 		Username:         raw.User,
 		Password:         raw.Password,
@@ -138,13 +155,23 @@ func chReadAndForwardServerHello(upstream *chgoproto.Reader, agent io.Writer, cl
 		// Decode with the client's revision — that's the upper bound
 		// on the field set the server will have used to encode (it's
 		// gated by min(client_rev, server_rev), and the server hasn't
-		// learned our revision yet from the addendum either).
+		// learned our revision yet from the addendum either). clientRev
+		// is already clamped to chMaxProtocolRev by chReadHello, so the
+		// upstream — which negotiated against our forwarded ClientHello
+		// — hasn't sent any post-rev features ch-go can't model.
 		var srv chgoproto.ServerHello
 		if err := srv.DecodeAware(upstream, clientRev); err != nil {
 			return 0, fmt.Errorf("decode server hello: %w", err)
 		}
+		// Clamp the revision the agent sees so its negotiated rev
+		// matches the upstream's. Without this the agent could think
+		// the session is at a higher rev than the upstream actually
+		// agreed to, leading both sides to disagree on addendum /
+		// query schema.
+		if srv.Revision > chMaxProtocolRev {
+			srv.Revision = chMaxProtocolRev
+		}
 		var b chgoproto.Buffer
-		b.PutByte(byte(chgoproto.ServerCodeHello))
 		srv.EncodeAware(&b, clientRev)
 		if _, werr := agent.Write(b.Buf); werr != nil {
 			return 0, fmt.Errorf("forward server hello: %w", werr)
@@ -157,6 +184,35 @@ func chReadAndForwardServerHello(upstream *chgoproto.Reader, agent io.Writer, cl
 	default:
 		return 0, fmt.Errorf("clickhouse: unexpected server packet code %d during handshake", code)
 	}
+}
+
+// chForwardClientAddendum reads and forwards the post-ServerHello
+// ClientHelloAddendum that modern clients send when the negotiated
+// protocol revision is at FeatureAddendum (54458) or higher. The
+// addendum is not a packet — it's a bare `quota_key` string written
+// straight after the client receives the ServerHello, and the
+// upstream server reads it before the first Query. Skipping it on
+// rev<54458 connections is safe (the wire carries nothing extra
+// there); failing to forward it on rev>=54458 desyncs both sides:
+// the upstream blocks waiting for the string, and the agent → server
+// pump misreads the addendum's first byte (often 0x00 for an empty
+// quota_key) as a client packet code, returns "unknown-client-packet"
+// and closes — which surfaces agent-side as ATTEMPT_TO_READ_AFTER_EOF
+// on the next server read.
+func chForwardClientAddendum(agent *chgoproto.Reader, upstream io.Writer, negotiatedRev int) error {
+	if !chgoproto.FeatureAddendum.In(negotiatedRev) {
+		return nil
+	}
+	quotaKey, err := agent.Str()
+	if err != nil {
+		return fmt.Errorf("read client addendum quota_key: %w", err)
+	}
+	var b chgoproto.Buffer
+	b.PutString(quotaKey)
+	if _, werr := upstream.Write(b.Buf); werr != nil {
+		return fmt.Errorf("forward client addendum: %w", werr)
+	}
+	return nil
 }
 
 // chEncodeException builds a server Exception packet (code 2) the

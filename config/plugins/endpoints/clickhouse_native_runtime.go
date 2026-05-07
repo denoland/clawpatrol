@@ -14,6 +14,7 @@ import (
 	"log"
 	"net"
 	"strconv"
+	"time"
 
 	chgoproto "github.com/ClickHouse/ch-go/proto"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/cityhash102"
@@ -29,6 +30,20 @@ import (
 // by default; 16 MiB gives us headroom for clients that bump the
 // option without weakening the discriminator at the size-range gate.
 const chMaxCompressionBuffer = 16 * 1024 * 1024
+
+// chProbeSlowPathDeadline bounds how long the probe's slow path is
+// willing to wait for the rest of a candidate frame header. Real frame
+// bytes follow the leading byte in the same TCP burst (the
+// agent-side LZ4/ZSTD writer flushes a frame as one buffer); when 24
+// more bytes don't arrive within this window we treat the leading
+// byte as the start of the next packet and rewind. This is what
+// rescues headerless 1-byte packets (Ping = 4, Cancel = 3) that sit
+// directly after a compressed Data block — without it the probe
+// blocks forever while the agent waits for the Pong / cancellation
+// reply, eventually times out client-side and tears the connection
+// down. 200ms is generous on a wireguard tunnel (single-digit ms RTT)
+// while still well under any client-side Pong timeout we've seen.
+const chProbeSlowPathDeadline = 200 * time.Millisecond
 
 // chCompressedFrameHeader = 16-byte CityHash128 checksum + 1B method +
 // 4B compressed_size + 4B decompressed_size. The compressed_size field
@@ -260,11 +275,13 @@ func chRunSession(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgo
 		return
 	}
 
-	// Server → agent: pure copy via the wrapped reader (delegates to
-	// the underlying bufio.Reader once the Hello bytes have been
-	// drained). Started before agent → server so any out-of-band
-	// server message (Progress, Log, etc.) makes it through while the
-	// inspector buffers a Query packet.
+	// Server → agent: pure copy via the wrapped reader. Started BEFORE
+	// the synchronous addendum read so any post-ServerHello bytes the
+	// upstream emits (which the agent waits on before sending its own
+	// addendum) can flow through without deadlocking. With the rev
+	// clamped to chMaxProtocolRev there shouldn't be any such tail
+	// today, but keeping the goroutine first is the safe ordering for
+	// future protocol additions.
 	srvDone := make(chan struct{})
 	go func() {
 		_, _ = io.Copy(ch.Conn, upstreamReader)
@@ -273,6 +290,11 @@ func chRunSession(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgo
 		}
 		close(srvDone)
 	}()
+
+	if err := chForwardClientAddendum(agentReader, upstream, negotiatedRev); err != nil {
+		chEmitError(ch, "client-addendum", err.Error())
+		return
+	}
 
 	chAgentToServer(ctx, ch, agentReader, upstream, negotiatedRev, credName)
 
@@ -528,15 +550,25 @@ func chProbeCompressedData(ch *runtime.ConnHandle, agentReader *chgoproto.Reader
 		// of the next packet. Pull the candidate header and run the
 		// discriminators in cheapest-first order; on any rejection,
 		// rewind everything we've buffered as the next packet's bytes.
+		//
+		// A read deadline here is critical for headerless 1-byte
+		// packets (Ping / Cancel): they don't carry 24 more bytes, so
+		// without a deadline the ReadFull blocks until the agent
+		// gives up and closes — driving per-query reconnects and
+		// multi-second latency.
+		_ = ch.Conn.SetReadDeadline(time.Now().Add(chProbeSlowPathDeadline))
 		var rest [chCompressedFrameHeader - 1]byte
 		n, err := io.ReadFull(agentReader, rest[:])
+		_ = ch.Conn.SetReadDeadline(time.Time{})
 		if err != nil {
-			// EOF before we filled the candidate header: x was a
-			// packet code at end of stream (Cancel/Ping with no body,
-			// or a Query whose body happens to be < 24 bytes after
-			// reaching EOF). Rewind whatever we read and let the
-			// pump dispatch x; non-EOF errors are fatal.
-			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			// EOF or timeout before we filled the candidate header:
+			// x was a packet code with a short / no body (Cancel,
+			// Ping, end-of-stream). Rewind whatever we managed to
+			// read and let the pump dispatch x; only non-timeout,
+			// non-EOF errors are fatal.
+			var nerr net.Error
+			isTimeout := errors.As(err, &nerr) && nerr.Timeout()
+			if isTimeout || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				if totalBytes > 0 {
 					emit()
 				}
