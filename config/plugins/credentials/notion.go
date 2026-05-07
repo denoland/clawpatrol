@@ -24,6 +24,10 @@ func (n *NotionOAuth) InjectHTTP(_ context.Context, req *http.Request, sec runti
 	return nil
 }
 
+func (*NotionOAuth) SecretSlots() []config.SecretSlot {
+	return []config.SecretSlot{{Label: "Notion OAuth access token", Description: "secret_… integration token or OAuth access_token. Stamped as Authorization: Bearer + Notion-Version header."}}
+}
+
 func init() {
 	var _ runtime.HTTPCredentialRuntime = (*NotionOAuth)(nil)
 	config.Register(&config.Plugin{
