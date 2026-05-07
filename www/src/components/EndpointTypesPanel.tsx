@@ -3,13 +3,13 @@ import { getEndpointTypes, type EndpointTypeInfo } from "../lib/api";
 import { RulesEditor } from "./RulesEditor";
 
 // EndpointTypesPanel surfaces every registered endpoint plugin so
-// operators can discover types not yet in their config. Clicking a
-// not-configured card opens the gateway.hcl editor with that plugin's
-// example block appended at the bottom — operator edits names / hosts
-// before saving.
+// operators can discover types not yet in their config. Compact pill
+// row — keeps the device page from ballooning. Clicking a not-
+// configured pill opens gateway.hcl with the plugin's example block
+// appended at the bottom; operator edits names / hosts before saving.
 //
-// "In your config" cards are non-clickable: editing existing endpoints
-// happens through the regular Rules pencil, which opens the same
+// In-config pills are dimmed and not clickable: editing existing
+// endpoints happens through the Rules pencil, which opens the same
 // editor without an append.
 export function EndpointTypesPanel() {
   const [rows, setRows] = useState<EndpointTypeInfo[]>([]);
@@ -23,20 +23,19 @@ export function EndpointTypesPanel() {
   }
   useEffect(reload, []);
 
+  if (err) {
+    return <div className="text-[11px] text-red-600 px-1">{err}</div>;
+  }
+  if (rows.length === 0) return null;
+
   return (
-    <div className="bg-white border border-[#e5e5e5] rounded">
-      <div className="flex items-center px-4 py-2.5 border-b border-[#e5e5e5]">
-        <span className="text-[10px] uppercase tracking-[.12em] text-[#a3a3a3]">
+    <>
+      <div className="flex items-center flex-wrap gap-1.5 px-1">
+        <span className="text-[10px] uppercase tracking-[.12em] text-[#a3a3a3] mr-1">
           Endpoint types
         </span>
-        <span className="ml-2 text-[10px] text-[#a3a3a3]">
-          discover what the gateway can intercept
-        </span>
-      </div>
-      {err && <div className="px-4 py-3 text-[11px] text-red-600">{err}</div>}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-px bg-[#f5f5f5]">
         {rows.map((r) => (
-          <Card
+          <Pill
             key={r.type}
             row={r}
             onAdd={() => setAppending(r.example_hcl ?? "")}
@@ -53,59 +52,45 @@ export function EndpointTypesPanel() {
           }}
         />
       )}
-    </div>
+    </>
   );
 }
 
-function Card({
-  row,
-  onAdd,
-}: {
-  row: EndpointTypeInfo;
-  onAdd: () => void;
-}) {
-  const clickable = !row.in_config && !!row.example_hcl;
-  return (
-    <div
-      onClick={clickable ? onAdd : undefined}
-      className={
-        "bg-white px-4 py-3 flex flex-col gap-1 min-w-0 transition-colors" +
-        (clickable
-          ? " cursor-pointer hover:bg-[#f9f9f9]"
-          : " opacity-70")
-      }
-      title={clickable ? "click to add an example block to gateway.hcl" : undefined}
-    >
-      <div className="flex items-center gap-2 min-w-0">
-        <span className="text-[12px] font-mono font-semibold text-[#171717] truncate">
-          {row.type}
-        </span>
-        <FamilyBadge family={row.family} />
-        <span className="ml-auto text-[10px] uppercase tracking-[.09em] text-[#a3a3a3] flex-shrink-0">
-          {row.in_config ? "in config" : "+ add"}
-        </span>
-      </div>
-      {row.description && (
-        <div className="text-[11px] text-[#525252] leading-snug">
-          {row.description}
-        </div>
-      )}
-    </div>
-  );
-}
-
-const FAMILY_COLORS: Record<string, string> = {
-  https: "bg-[#dbeafe] text-[#1e40af]",
-  sql: "bg-[#fef3c7] text-[#92400e]",
-  k8s: "bg-[#dcfce7] text-[#166534]",
-  ssh: "bg-[#f3e8ff] text-[#6b21a8]",
+const FAMILY_DOT: Record<string, string> = {
+  https: "bg-[#3b82f6]",
+  sql: "bg-[#d97706]",
+  k8s: "bg-[#16a34a]",
+  ssh: "bg-[#9333ea]",
 };
 
-function FamilyBadge({ family }: { family: string }) {
-  const cls = FAMILY_COLORS[family] ?? "bg-[#f5f5f5] text-[#525252]";
+function Pill({ row, onAdd }: { row: EndpointTypeInfo; onAdd: () => void }) {
+  const clickable = !row.in_config && !!row.example_hcl;
+  const dot = FAMILY_DOT[row.family] ?? "bg-[#a3a3a3]";
+  const title = row.description
+    ? `${row.family} · ${row.description}` +
+      (clickable ? "\n\nclick to add an example block to gateway.hcl" : "")
+    : row.family;
+  const cls = row.in_config
+    ? "border-[#e5e5e5] text-[#a3a3a3]"
+    : clickable
+      ? "border-[#e5e5e5] text-[#525252] hover:border-[#171717] hover:text-[#171717] cursor-pointer"
+      : "border-[#e5e5e5] text-[#a3a3a3]";
   return (
-    <span className={"text-[9px] font-mono uppercase tracking-[.06em] px-1.5 py-0.5 rounded flex-shrink-0 " + cls}>
-      {family}
-    </span>
+    <button
+      type="button"
+      disabled={!clickable}
+      onClick={clickable ? onAdd : undefined}
+      title={title}
+      className={
+        "inline-flex items-center gap-1.5 text-[11px] font-mono px-2 py-1 border rounded-full transition-colors " +
+        cls
+      }
+    >
+      <span className={"w-1.5 h-1.5 rounded-full flex-shrink-0 " + dot} />
+      <span>{row.type}</span>
+      {!row.in_config && clickable && (
+        <span className="text-[#a3a3a3]">+</span>
+      )}
+    </button>
   );
 }
