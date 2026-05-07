@@ -164,12 +164,6 @@ export async function putConfigHCL(hcl: string): Promise<{ ok: boolean; bytes: n
   return r.json();
 }
 
-export async function getDeviceRulesHCL(ip: string): Promise<string> {
-  const r = await api(`/api/rules/device?ip=${encodeURIComponent(ip)}&format=hcl`);
-  if (!r.ok) throw new Error(await r.text());
-  return r.text();
-}
-
 export async function listProfiles(): Promise<string[]> {
   const r = await api("/api/profiles");
   if (!r.ok) throw new Error(await r.text());

@@ -1,8 +1,8 @@
 # Internal architecture notes
 
-Implementation-level writeups: how the gateway, WireGuard tunnel,
-agent model, and onboarding flow actually work, plus design memos and
-testing notes. The audience is people reading or changing the code.
+Implementation-level writeups for people reading or changing the
+code: how subsystems actually work, where the layering lives, design
+memos.
 
 **Looking for product docs?** They live in `site/doc/` and render at
 <https://clawpatrol.dev/docs/>.
