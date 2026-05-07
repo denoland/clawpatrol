@@ -29,6 +29,28 @@ type OAuthIntegration struct {
 	Prefix string
 	Flow   string // "auth_code" (default) | "device"
 	OAuth  OAuthConfig
+	// OptionalScopes is the catalog of opt-in scopes the dashboard
+	// shows as a checklist before kicking off the OAuth flow. Plugins
+	// that don't surface a picker leave this empty; the connect modal
+	// then goes straight to the OAuth start without a picker step.
+	OptionalScopes []OptionalScopeGroup
+}
+
+// OptionalScopeGroup is one section of the connect-time scope picker
+// (e.g. "ssh keys", "packages"). Each group holds zero or more
+// OptionalScope rows that the user can individually toggle on top of
+// OAuthConfig.Scopes.
+type OptionalScopeGroup struct {
+	Title  string          `json:"title"`
+	Scopes []OptionalScope `json:"scopes"`
+}
+
+// OptionalScope is one toggleable scope in the picker. ID is the
+// literal scope value sent to the IdP (e.g. "admin:public_key");
+// Label is a short human description rendered next to the checkbox.
+type OptionalScope struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
 }
 
 // OAuthFlowProvider is the optional interface a credential plugin's

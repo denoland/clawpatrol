@@ -43,7 +43,76 @@ func (g *GitHubOAuth) OAuthFlow() *config.OAuthIntegration {
 			TokenURL:  "https://github.com/login/oauth/access_token",
 			Scopes:    []string{"repo", "read:org", "gist", "workflow"},
 		},
+		OptionalScopes: githubOptionalScopes,
 	}
+}
+
+// githubOptionalScopes is the connect-time picker catalog. The base
+// Scopes above are always sent; everything below is opt-in so users
+// can add SSH key, GPG key, packages, etc. permissions when needed
+// without the plugin shipping a maximally-broad default token.
+var githubOptionalScopes = []config.OptionalScopeGroup{
+	{Title: "repo", Scopes: []config.OptionalScope{
+		{ID: "public_repo", Label: "public repos only"},
+		{ID: "repo:status", Label: "commit statuses"},
+		{ID: "repo_deployment", Label: "deployment statuses"},
+		{ID: "repo:invite", Label: "repo invitations"},
+		{ID: "security_events", Label: "code scanning / secret scanning"},
+		{ID: "delete_repo", Label: "delete repos"},
+	}},
+	{Title: "ssh keys", Scopes: []config.OptionalScope{
+		{ID: "admin:public_key", Label: "manage SSH auth keys"},
+		{ID: "write:public_key", Label: "create SSH auth keys"},
+		{ID: "read:public_key", Label: "read SSH auth keys"},
+		{ID: "admin:ssh_signing_key", Label: "manage SSH signing keys"},
+		{ID: "write:ssh_signing_key", Label: "create SSH signing keys"},
+		{ID: "read:ssh_signing_key", Label: "read SSH signing keys"},
+	}},
+	{Title: "gpg keys", Scopes: []config.OptionalScope{
+		{ID: "admin:gpg_key", Label: "manage GPG keys"},
+		{ID: "write:gpg_key", Label: "create GPG keys"},
+		{ID: "read:gpg_key", Label: "read GPG keys"},
+	}},
+	{Title: "user / org", Scopes: []config.OptionalScope{
+		{ID: "user", Label: "all user scopes"},
+		{ID: "read:user", Label: "profile"},
+		{ID: "user:email", Label: "email addresses"},
+		{ID: "user:follow", Label: "follow users"},
+		{ID: "admin:org", Label: "manage org & teams"},
+		{ID: "write:org", Label: "write org & teams"},
+	}},
+	{Title: "webhooks", Scopes: []config.OptionalScope{
+		{ID: "admin:repo_hook", Label: "manage repo webhooks"},
+		{ID: "write:repo_hook", Label: "write repo webhooks"},
+		{ID: "read:repo_hook", Label: "read repo webhooks"},
+		{ID: "admin:org_hook", Label: "manage org webhooks"},
+	}},
+	{Title: "packages", Scopes: []config.OptionalScope{
+		{ID: "write:packages", Label: "publish packages"},
+		{ID: "read:packages", Label: "download packages"},
+		{ID: "delete:packages", Label: "delete packages"},
+	}},
+	{Title: "discussions / projects / notifications", Scopes: []config.OptionalScope{
+		{ID: "write:discussion", Label: "write discussions"},
+		{ID: "read:discussion", Label: "read discussions"},
+		{ID: "project", Label: "manage projects"},
+		{ID: "read:project", Label: "read projects"},
+		{ID: "notifications", Label: "notifications"},
+	}},
+	{Title: "codespaces / copilot", Scopes: []config.OptionalScope{
+		{ID: "codespace", Label: "manage codespaces"},
+		{ID: "codespace:secrets", Label: "codespaces user secrets"},
+		{ID: "copilot", Label: "manage copilot subscription"},
+		{ID: "manage_billing:copilot", Label: "copilot billing"},
+	}},
+	{Title: "enterprise / audit", Scopes: []config.OptionalScope{
+		{ID: "admin:enterprise", Label: "manage enterprise"},
+		{ID: "manage_billing:enterprise", Label: "enterprise billing"},
+		{ID: "manage_runners:enterprise", Label: "enterprise runners"},
+		{ID: "read:enterprise", Label: "read enterprise"},
+		{ID: "audit_log", Label: "manage audit log"},
+		{ID: "read:audit_log", Label: "read audit log"},
+	}},
 }
 
 func init() {

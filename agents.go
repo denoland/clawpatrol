@@ -580,8 +580,17 @@ type IntegrationRow struct {
 	Name     string              `json:"name"`
 	Type     string              `json:"type"` // credential plugin type
 	HasOAuth bool                `json:"has_oauth"`
+	OAuth    *OAuthIntegrationUI `json:"oauth,omitempty"`
 	Slots    []config.SecretSlot `json:"slots,omitempty"`
 	Owners   []Owner             `json:"owners"`
+}
+
+// OAuthIntegrationUI is the dashboard-facing slice of an
+// OAuthIntegration: just enough for the connect modal to render the
+// always-included base scopes and the optional pickable catalog.
+type OAuthIntegrationUI struct {
+	BaseScopes     []string                    `json:"base_scopes"`
+	OptionalScopes []config.OptionalScopeGroup `json:"optional_scopes,omitempty"`
 }
 
 type Owner struct {
@@ -620,8 +629,14 @@ func (w *webMux) statusList(r *http.Request) []IntegrationRow {
 	for _, name := range names {
 		ent := policy.Credentials[name]
 		row := IntegrationRow{ID: name, Name: name, Type: ent.Plugin.Type}
-		if _, ok := ent.Body.(config.OAuthFlowProvider); ok {
+		if op, ok := ent.Body.(config.OAuthFlowProvider); ok {
 			row.HasOAuth = true
+			if flow := op.OAuthFlow(); flow != nil {
+				row.OAuth = &OAuthIntegrationUI{
+					BaseScopes:     flow.OAuth.Scopes,
+					OptionalScopes: flow.OptionalScopes,
+				}
+			}
 			for _, owner := range w.g.oauth.Owners(name) {
 				connected, exp := w.g.oauth.Status(name, owner)
 				o := Owner{Owner: owner, Connected: connected}

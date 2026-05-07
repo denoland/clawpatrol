@@ -499,6 +499,52 @@ type oauthSession struct {
 	created  time.Time
 }
 
+// mergeExtraScopes appends user-selected scopes from the connect-time
+// query param onto the integration's declared base scopes, deduped.
+// Returns nil when there's nothing to add so the caller can keep the
+// original slice. Each scope is constrained to the GitHub-style
+// alphabet to keep this from being a vector for arbitrary OAuth
+// parameter injection.
+func mergeExtraScopes(base []string, raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	have := make(map[string]bool, len(base))
+	for _, s := range base {
+		have[s] = true
+	}
+	out := append([]string(nil), base...)
+	for _, s := range strings.Split(raw, ",") {
+		s = strings.TrimSpace(s)
+		if s == "" || have[s] || !validOAuthScope(s) {
+			continue
+		}
+		have[s] = true
+		out = append(out, s)
+	}
+	if len(out) == len(base) {
+		return nil
+	}
+	return out
+}
+
+func validOAuthScope(s string) bool {
+	if len(s) == 0 || len(s) > 64 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		case r == ':' || r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func (w *webMux) apiOAuthStart(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(rw, "POST", 405)
@@ -515,6 +561,15 @@ func (w *webMux) apiOAuthStart(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "could not determine owner identity (tailscale whois failed)", 400)
 		return
 	}
+	// User may opt into additional scopes (e.g. SSH/GPG key management
+	// for github_oauth) at connect time. Merge into base scopes so the
+	// declared defaults remain mandatory — narrowing scope at the UI
+	// layer would silently break dependent functionality.
+	mergedFlow := *flow
+	if extra := mergeExtraScopes(flow.OAuth.Scopes, r.URL.Query().Get("extra_scopes")); extra != nil {
+		mergedFlow.OAuth.Scopes = extra
+	}
+	flow = &mergedFlow
 	// Branch: device flow vs auth-code+PKCE.
 	if flow.Flow == "device" {
 		w.startDeviceFlow(rw, id, flow, owner, ownerLabel)

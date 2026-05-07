@@ -18,11 +18,19 @@ export type SecretSlot = {
   description?: string;
 };
 
+export type OptionalScope = { id: string; label: string };
+export type OptionalScopeGroup = { title: string; scopes: OptionalScope[] };
+export type OAuthIntegrationUI = {
+  base_scopes: string[];
+  optional_scopes?: OptionalScopeGroup[];
+};
+
 export type Integration = {
   id: string;
   name: string;
   type: string; // credential plugin type (e.g. "postgres_credential")
   has_oauth: boolean;
+  oauth?: OAuthIntegrationUI | null;
   slots?: SecretSlot[] | null;
   owners: Owner[] | null;
 };
@@ -273,8 +281,12 @@ export type OAuthStartResp =
   | { flow?: "auth_code"; auth_url: string; state: string; owner: string }
   | { flow: "device"; user_code: string; verification_uri: string; state: string; owner: string; interval: number; expires_in: number };
 
-export async function oauthStart(id: string, profile?: string): Promise<OAuthStartResp> {
-  const qs = `id=${encodeURIComponent(id)}` + (profile ? `&profile=${encodeURIComponent(profile)}` : "");
+export async function oauthStart(id: string, profile?: string, extraScopes?: string[]): Promise<OAuthStartResp> {
+  let qs = `id=${encodeURIComponent(id)}`;
+  if (profile) qs += `&profile=${encodeURIComponent(profile)}`;
+  if (extraScopes && extraScopes.length > 0) {
+    qs += `&extra_scopes=${encodeURIComponent(extraScopes.join(","))}`;
+  }
   const r = await api(`/api/oauth/start?${qs}`, { method: "POST" });
   if (!r.ok) throw new Error(await r.text());
   return r.json();

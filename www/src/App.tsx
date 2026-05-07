@@ -152,6 +152,7 @@ export default function App() {
       {connectId && (
         <ConnectModal
           id={connectId}
+          oauth={integrations.find((i) => i.id === connectId)?.oauth}
           profile={connectProfile}
           onClose={() => {
             setConnectId(null);
