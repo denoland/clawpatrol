@@ -138,57 +138,69 @@ export function ConnectModal({
         ) : showsScopePicker && !started ? (
           <div className="space-y-3">
             <div className="text-[11px] text-[#737373] leading-relaxed">
-              pick any extra permissions to grant.
-              {baseScopes.length > 0 && (
+              {baseScopes.length > 0 ? (
                 <>
-                  {" "}defaults (
+                  defaults (
                   <code className="text-[#171717]">{baseScopes.join(", ")}</code>
                   ) are always requested.
                 </>
+              ) : (
+                <>no scopes are requested by default.</>
               )}
             </div>
-            <div className="max-h-[340px] overflow-y-auto border border-[#e5e5e5] rounded p-2 space-y-3 bg-[#fafafa]">
-              {optionalGroups.map((g) => (
-                <div key={g.title}>
-                  <div className="text-[10px] uppercase tracking-[.1em] text-[#a3a3a3] mb-1">
-                    {g.title}
+            <details className="border border-[#e5e5e5] rounded bg-[#fafafa] group">
+              <summary className="cursor-pointer list-none flex items-center gap-2 px-2 py-1.5 text-[11px] text-[#171717] hover:bg-white rounded">
+                <span className="inline-block w-3 text-[#a3a3a3] transition-transform group-open:rotate-90">
+                  ›
+                </span>
+                <span>advanced permissions</span>
+                <span className="ml-auto text-[10px] text-[#737373] tabular-nums">
+                  {extras.size > 0 ? `${extras.size} selected` : "optional"}
+                </span>
+              </summary>
+              <div className="max-h-[300px] overflow-y-auto p-2 space-y-3 border-t border-[#e5e5e5]">
+                {optionalGroups.map((g) => (
+                  <div key={g.title}>
+                    <div className="text-[10px] uppercase tracking-[.1em] text-[#a3a3a3] mb-1">
+                      {g.title}
+                    </div>
+                    <div className="grid grid-cols-1 gap-y-0.5">
+                      {g.scopes.map((s) => {
+                        const isBase = baseSet.has(s.id);
+                        const checked = isBase || extras.has(s.id);
+                        return (
+                          <label
+                            key={s.id}
+                            className={
+                              "flex items-center gap-2 text-[11px] py-0.5 px-1 rounded " +
+                              (isBase ? "text-[#a3a3a3]" : "text-[#171717] cursor-pointer hover:bg-white")
+                            }
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={isBase}
+                              onChange={(e) => {
+                                setExtras((prev) => {
+                                  const next = new Set(prev);
+                                  if (e.target.checked) next.add(s.id);
+                                  else next.delete(s.id);
+                                  return next;
+                                });
+                              }}
+                              className="accent-[#171717]"
+                            />
+                            <code className="text-[11px]">{s.id}</code>
+                            <span className="text-[#737373]">— {s.label}</span>
+                            {isBase && <span className="ml-auto text-[10px] text-[#a3a3a3]">default</span>}
+                          </label>
+                        );
+                      })}
+                    </div>
                   </div>
-                  <div className="grid grid-cols-1 gap-y-0.5">
-                    {g.scopes.map((s) => {
-                      const isBase = baseSet.has(s.id);
-                      const checked = isBase || extras.has(s.id);
-                      return (
-                        <label
-                          key={s.id}
-                          className={
-                            "flex items-center gap-2 text-[11px] py-0.5 px-1 rounded " +
-                            (isBase ? "text-[#a3a3a3]" : "text-[#171717] cursor-pointer hover:bg-white")
-                          }
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            disabled={isBase}
-                            onChange={(e) => {
-                              setExtras((prev) => {
-                                const next = new Set(prev);
-                                if (e.target.checked) next.add(s.id);
-                                else next.delete(s.id);
-                                return next;
-                              });
-                            }}
-                            className="accent-[#171717]"
-                          />
-                          <code className="text-[11px]">{s.id}</code>
-                          <span className="text-[#737373]">— {s.label}</span>
-                          {isBase && <span className="ml-auto text-[10px] text-[#a3a3a3]">default</span>}
-                        </label>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            </details>
             {err && <div className="text-[11px] text-red-600 break-all">{err}</div>}
             <div className="flex gap-2 justify-end">
               <button
