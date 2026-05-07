@@ -339,13 +339,17 @@ func chAgentToServer(ctx context.Context, ch *runtime.ConnHandle, agentReader *c
 		}
 		switch chgoproto.ClientCode(code) {
 		case chgoproto.ClientCodeQuery:
-			next, ok, fatal := chHandleQuery(ctx, ch, agentReader, upstream, revision, credName)
+			next, fatal := chHandleQuery(ctx, ch, agentReader, upstream, revision, credName)
 			if fatal {
 				return
 			}
-			if ok {
-				compression = next
-			}
+			// Track agent's compression for every decoded Query —
+			// allow OR deny — because the trailing Data block on the
+			// wire uses this Query's declared compression regardless
+			// of our verdict. Skipping the deny branch would leave
+			// us reading a compressed frame as an uncompressed Block,
+			// which surfaces as a "data-block-decode" boolean error.
+			compression = next
 		case chgoproto.ClientCodeData:
 			rewound, ok := chHandleData(ch, agentReader, upstream, revision, compression)
 			if !ok {
@@ -376,37 +380,37 @@ func chAgentToServer(ctx context.Context, ch *runtime.ConnHandle, agentReader *c
 // gateway used to override it to Disabled, which silently corrupted
 // blocks from agents that originated with compression on.
 //
-// Returns:
-//
-//	(comp, true,  false) — allow: caller updates session compression to comp.
-//	(_,    false, false) — deny:  caller leaves session state alone and
-//	                              keeps the loop alive (the agent can issue
-//	                              another Query after seeing the Exception).
-//	(_,    _,     true)  — fatal: caller tears the connection down (decode
-//	                              error or upstream/agent transport failed).
-func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream io.Writer, revision int, credName string) (chgoproto.Compression, bool, bool) {
+// Returns (comp, fatal). `comp` is the agent's declared compression
+// for this Query and is ALWAYS surfaced (allow and deny alike) so
+// the pump can track session state for the trailing Data block —
+// the agent emits Query + Data as a pair, and the Data block uses
+// the declared compression regardless of our verdict, so we must
+// know which path (probe vs Block.Decode) to take when we read it
+// off the wire. `fatal` is true on a decode / transport failure
+// where the pump must tear the connection down.
+func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream io.Writer, revision int, credName string) (chgoproto.Compression, bool) {
 	var q chgoproto.Query
 	if err := q.DecodeAware(agentReader, revision); err != nil {
 		chEmitError(ch, "query-decode", err.Error())
-		return chgoproto.CompressionDisabled, false, true
+		return chgoproto.CompressionDisabled, true
 	}
 	verdict, reason := chEvaluateSQL(ctx, ch, q.Body, credName)
 	if verdict == "deny" {
 		if _, werr := ch.Conn.Write(chEncodeException(reason)); werr != nil {
 			// Agent gone — there's nothing left to keep alive.
-			return chgoproto.CompressionDisabled, false, true
+			return q.Compression, true
 		}
 		log.Printf("clickhouse_native %s deny %s: %s",
 			ch.Endpoint.Name, ch.PeerIP, reason)
-		return chgoproto.CompressionDisabled, false, false
+		return q.Compression, false
 	}
 
 	var b chgoproto.Buffer
 	q.EncodeAware(&b, revision)
 	if _, werr := upstream.Write(b.Buf); werr != nil {
-		return chgoproto.CompressionDisabled, false, true
+		return q.Compression, true
 	}
-	return q.Compression, true, false
+	return q.Compression, false
 }
 
 // chHandleData decodes one client Data packet (table-name header +
