@@ -116,6 +116,13 @@ function RuleCodeBlock() {
   );
 }
 
+const colorClasses = [
+  "bg-rust-100",
+  "bg-navy-100",
+  "bg-butter-100",
+  "bg-canvas",
+];
+
 export function RulesSection() {
   return (
     <section class="bg-canvas-muted py-24 sm:py-32">
@@ -143,16 +150,17 @@ export function RulesSection() {
         </div>
 
         <div>
-          <p class="text-xs uppercase tracking-[0.25em] font-display font-extrabold text-text-muted mb-5">
+          <p class="text-xs uppercase tracking-[0.25em]  font-extrabold text-text-muted mb-5">
             Four verdicts. Mix freely.
           </p>
           <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {DECISIONS.map((d) => (
+            {DECISIONS.map((d, i) => (
               <div
                 key={d.verdict}
-                class="bg-canvas border border-navy-200 squircle-md p-6"
+                class="bg-transparent relative squircle-md p-6"
               >
-                <div class="flex items-baseline justify-between mb-3">
+                <div className=" absolute w-full h-full border-navy border-2 squircle-md inset-0 z-10"></div>
+                <div class="flex items-baseline justify-between mb-3 relative z-10">
                   <h4 class="text-lg font-display font-extrabold text-text">
                     {d.label}
                   </h4>
@@ -160,7 +168,13 @@ export function RulesSection() {
                     {d.verdict}
                   </code>
                 </div>
-                <p class="text-sm  text-text-muted">{d.body}</p>
+                <p class="text-sm relative z-10 text-text-muted">{d.body}</p>
+                <div
+                  className={
+                    `isolate absolute w-full h-full squircle-md top-1.5 left-2 z-0 ` +
+                    colorClasses[i]
+                  }
+                ></div>
               </div>
             ))}
           </div>

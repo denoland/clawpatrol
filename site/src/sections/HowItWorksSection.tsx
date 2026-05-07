@@ -257,7 +257,7 @@ function AnalyticsDiagram() {
 
 export function HowItWorksSection() {
   return (
-    <section class="py-24 sm:py-32 bg-navy-100">
+    <section class="py-24 sm:py-32 bg-linear-to-br from-navy-100 to-navy-200">
       <div class="max-w-5xl mx-auto px-8">
         <SectionLabel>The foundation</SectionLabel>
 
