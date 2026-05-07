@@ -179,6 +179,9 @@ func (s *SlackTokens) NotifyHITL(_ context.Context, req runtime.ApproveRequest, 
 		"text":    fmt.Sprintf("clawpatrol HITL: %s %s%s", req.Method, req.Host, req.Path),
 		"blocks":  blocks,
 	}
+	if target.ThreadTS != "" {
+		body["thread_ts"] = target.ThreadTS
+	}
 	buf, _ := json.Marshal(body)
 	hreq, err := http.NewRequest("POST", "https://slack.com/api/chat.postMessage", bytes.NewReader(buf))
 	if err != nil {

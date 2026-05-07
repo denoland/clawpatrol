@@ -1667,6 +1667,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			v := g.runApproveChain(req.Context(), cr.Outcome.Approve, runApproveCtx{
 				AgentIP: pip, Host: host, Method: req.Method, Path: req.URL.Path,
 				UA: req.Header.Get("User-Agent"), Reason: cr.Outcome.Reason,
+				ThreadTS: req.Header.Get("X-HITL-Thread-TS"),
 				Endpoint: ep, Rule: cr, Profile: profile,
 			})
 			if v.Decision != "allow" {
@@ -1721,6 +1722,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				"Proxy-Authorization", "Te", "Trailers", "Transfer-Encoding", "Upgrade",
 				"Cf-Worker", "Cf-Ray", "Cf-Ew-Via", "Cf-Connecting-Ip", "Cdn-Loop",
 				"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Via",
+				"X-HITL-Thread-TS",
 			} {
 				req.Header.Del(h)
 			}
@@ -1940,6 +1942,7 @@ type runApproveCtx struct {
 	UA         string
 	BodySample string
 	Reason     string
+	ThreadTS   string
 	Endpoint   *config.CompiledEndpoint
 	Rule       *config.CompiledRule
 	Profile    string
@@ -1977,8 +1980,17 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 			UA:           c.UA,
 			BodySample:   c.BodySample,
 			Reason:       c.Reason,
+			ThreadTS:     c.ThreadTS,
 			Pool:         g.hitl,
 			Secrets:      g.secrets,
+			OAuthInjectAny: func(id string, hr *http.Request) (bool, error) {
+				for _, owner := range g.oauth.Owners(id) {
+					if ok, err := g.oauth.Inject(id, owner, hr); ok {
+						return true, err
+					}
+				}
+				return false, fmt.Errorf("no connected owner for oauth credential %q", id)
+			},
 			DashboardURL: g.cfg.PublicURL,
 			Policy:       policy,
 		}

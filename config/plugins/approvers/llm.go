@@ -64,17 +64,8 @@ func (a *LLMApprover) Approve(ctx context.Context, req runtime.ApproveRequest) (
 		}
 		policyText = pt.Text
 	}
-	credEnt, ok := req.Policy.Credentials[a.Credential]
-	if !ok {
+	if _, ok := req.Policy.Credentials[a.Credential]; !ok {
 		return runtime.ApproveVerdict{Decision: "deny", Reason: "credential " + a.Credential + " not declared"}, nil
-	}
-	injector, ok := credEnt.Body.(runtime.HTTPCredentialRuntime)
-	if !ok {
-		return runtime.ApproveVerdict{Decision: "deny", Reason: "credential " + a.Credential + " does not satisfy HTTPCredentialRuntime"}, nil
-	}
-	sec, err := req.Secrets.Get(a.Credential, req.Profile)
-	if err != nil {
-		return runtime.ApproveVerdict{Decision: "deny", Reason: "secret fetch: " + err.Error()}, nil
 	}
 
 	user := buildJudgePrompt(req, policyText)
@@ -91,8 +82,29 @@ func (a *LLMApprover) Approve(ctx context.Context, req runtime.ApproveRequest) (
 	default:
 		return runtime.ApproveVerdict{Decision: "deny", Reason: "unknown model family: " + a.Model}, nil
 	}
-	if err := injector.InjectHTTP(ctx, hreq, sec); err != nil {
-		return runtime.ApproveVerdict{Decision: "deny", Reason: "credential inject: " + err.Error()}, nil
+
+	// Try OAuth registry first (claude/codex OAuth — no API key needed).
+	// Fall back to per-profile secret store (anthropic_manual_key, bearer_token, etc.).
+	// Silently fall through when credential isn't an OAuth type or no owner is connected.
+	injected := false
+	if req.OAuthInjectAny != nil {
+		if ok, _ := req.OAuthInjectAny(a.Credential, hreq); ok {
+			injected = true
+		}
+	}
+	if !injected {
+		credEnt := req.Policy.Credentials[a.Credential]
+		injector, ok := credEnt.Body.(runtime.HTTPCredentialRuntime)
+		if !ok {
+			return runtime.ApproveVerdict{Decision: "deny", Reason: "credential " + a.Credential + " does not satisfy HTTPCredentialRuntime"}, nil
+		}
+		sec, err := req.Secrets.Get(a.Credential, req.Profile)
+		if err != nil {
+			return runtime.ApproveVerdict{Decision: "deny", Reason: "secret fetch: " + err.Error()}, nil
+		}
+		if err := injector.InjectHTTP(ctx, hreq, sec); err != nil {
+			return runtime.ApproveVerdict{Decision: "deny", Reason: "credential inject: " + err.Error()}, nil
+		}
 	}
 	c := &http.Client{Timeout: 30 * time.Second}
 	resp, err := c.Do(hreq)

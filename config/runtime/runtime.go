@@ -231,6 +231,7 @@ type HITLTarget struct {
 	Interactive    bool   // approve/deny buttons vs. dashboard-only
 	PendingID      string // pool's pending entry id
 	DashboardURL   string // for fallback dashboard link in non-interactive mode
+	ThreadTS       string // if set, post as a reply in this Slack thread
 }
 
 // ApproverRuntime evaluates one stage of an approve = [...] chain.
@@ -269,6 +270,10 @@ type ApproveRequest struct {
 	UA         string
 	BodySample string
 	Reason     string
+	// ThreadTS, when set, asks HITL notifiers to post the approval
+	// prompt as a reply in this Slack thread rather than top-level.
+	// Populated from the X-HITL-Thread-TS request header.
+	ThreadTS string
 
 	// Pool exposes the gateway's shared pending-approval list — the
 	// dashboard / Slack approvers use it to publish a pending entry
@@ -278,6 +283,11 @@ type ApproveRequest struct {
 	// Secrets fetches the bot token / API key the approver needs to
 	// post a notification or call an LLM judge.
 	Secrets SecretStore
+	// OAuthInjectAny stamps the Authorization header for the named
+	// OAuth credential using any currently-connected owner's token.
+	// Nil when the gateway has no OAuth registry (tests). LLM approvers
+	// use this to call claude/codex without a separate API key in the DB.
+	OAuthInjectAny func(id string, req *http.Request) (bool, error)
 	// DashboardURL is the operator-facing dashboard origin used for
 	// deep links in Slack messages and similar notifications.
 	DashboardURL string
