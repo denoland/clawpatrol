@@ -125,8 +125,8 @@ export function ComparisonSection() {
                 <th
                   key={f}
                   class="py-3 px-3 font-medium
-                    font-display text-text-muted
-                    text-[11px] uppercase tracking-widest"
+                     text-text-muted align-bottom
+                    text-2xs uppercase tracking-widest"
                 >
                   {f}
                 </th>
@@ -154,13 +154,12 @@ export function ComparisonSection() {
                   >
                     {row.name}
                   </a>
-                  <span
-                    class="hidden sm:inline text-[11px]
-                    font-sans font-normal text-text-muted
-                    ml-1.5"
+                  {/* <span
+                    class="hidden sm:block text-[11px]
+                    font-sans font-normal text-text-muted"
                   >
                     {row.desc}
-                  </span>
+                  </span> */}
                 </td>
                 {row.checks.map((ok, i) => {
                   const anchor = slug(`${row.name} ${FEATURES[i]} ${ok}`);

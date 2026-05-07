@@ -777,12 +777,15 @@ a.neu-raised:active {
 
   --breakpoint-xs: 32rem;
 
+  --text-2xs: 0.625rem;
+
   /* Body-text sizes inherit our looser body line-height instead of
      Tailwind 4's bundled per-size defaults. Heading sizes (text-2xl+)
      keep Tailwind's tight defaults so they don't go airy. */
+  --text-2xs--line-height: 1.5;
   --text-xs--line-height: 1.7;
   --text-sm--line-height: 1.7;
-  --text-base--line-height: 1.7;
+  --text-base--line-height: 1.8;
   --text-lg--line-height: 1.7;
 }
 

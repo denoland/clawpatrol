@@ -19,22 +19,26 @@ type ButtonElProps = CommonProps &
 type ButtonProps = AnchorProps | ButtonElProps;
 
 const base =
-  "inline-block font-sans font-semibold uppercase " +
-  "tracking-wider border cursor-pointer transition-colors " +
-  "disabled:opacity-50 disabled:cursor-not-allowed";
+  "group inline-block font-sans font-semibold uppercase relative isolate z-10 " +
+  "tracking-wider border cursor-pointer transition-colors outline-2 outline-navy " +
+  "-outline-offset-2 disabled:opacity-50 disabled:cursor-not-allowed";
 
 const sizes: Record<Size, string> = {
-  sm: "px-2 py-1 text-sm",
-  md: "px-4 py-2 text-base",
+  sm: "px-2 py-1 text-xs",
+  md: "px-4 py-2 text-sm",
   lg: "px-7 py-3.5 text-base",
 };
 
 const variants: Record<Variant, string> = {
-  normal:
-    "border-2 border-navy text-navy " +
-    "hover:bg-rust-300 bg-rust hover:border-rust-300 shadow-[5px_5px_0_0_var(--color-rust),inset_3px_3px_0_0_var(--color-canvas)]",
-  outline: "border-text-muted text-text-muted " + "hover:bg-canvas-muted",
+  normal: "border-2 border-navy text-navy relative",
+  outline: "border-2 border-navy text-text-muted " + "hover:bg-canvas-muted",
 };
+
+function Background() {
+  return (
+    <div class="w-[calc(100%+4px)] h-[calc(100%+4px)] absolute left-1 top-1 bg-rust -z-10 group-hover:bg-rust-300 transition-colors duration-150" />
+  );
+}
 
 export function Button(props: ButtonProps) {
   const { variant = "normal", size = "md", class: className, children } = props;
@@ -45,6 +49,7 @@ export function Button(props: ButtonProps) {
     return (
       <a class={cls} {...rest}>
         {children}
+        {variants.normal && <Background />}
       </a>
     );
   }
@@ -53,6 +58,8 @@ export function Button(props: ButtonProps) {
   return (
     <button type="button" class={cls} {...rest}>
       {children}
+      <Background />
+      {variants.normal && <Background />}
     </button>
   );
 }
