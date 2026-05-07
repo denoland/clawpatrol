@@ -1,4 +1,5 @@
 import { Layout } from "./Layout";
+import { Wave } from "./components/Wave";
 import { AnalyticsSection } from "./sections/AnalyticsSection";
 import { ApproversSection } from "./sections/ApproversSection";
 import { ComparisonSection } from "./sections/ComparisonSection";
@@ -18,6 +19,10 @@ export function Landing() {
 
       <RulesSection />
       <ApproversSection />
+      <Wave
+        topColor="var(--color-rust-50)"
+        bottomColor="var(--color-navy-600)"
+      />
       <ProtocolDepthSection />
       <HowItWorksSection />
       <AnalyticsSection />

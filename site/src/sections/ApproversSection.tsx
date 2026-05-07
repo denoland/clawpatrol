@@ -134,20 +134,35 @@ function ApproverCard({
   diagram: ComponentChildren;
 }) {
   return (
-    <article class="bg-canvas border border-rust-200 squircle-md p-7 flex flex-col gap-5">
-      <header class="flex items-baseline justify-between">
-        <h4 class="text-2xl font-display font-extrabold text-text">{title}</h4>
-        <code class="text-[10px] font-mono text-text-subtle">{verdict}</code>
-      </header>
-
-      <p class="text-sm  text-text-muted">{pitch}</p>
-
-      <pre class="text-[12px]  font-mono bg-console-dark text-canvas/85 squircle-sm p-4 overflow-x-auto whitespace-pre">
-        {config}
-      </pre>
-
-      {diagram}
+    <article class="isolate bg-transparent relative lg:squircle-xl lg:p-8 xl:p-12">
+      <div className="hidden w-full h-full border-2 lg:block border-navy squircle-xl z-10 absolute inset-0"></div>
+      <div className="hidden lg:block absolute w-full h-full top-2 left-2 bg-navy-100 squircle-xl z-0" />
+      <div className="relative z-10 flex flex-col gap-4">
+        <header class="flex items-baseline justify-between">
+          <h4 class="text-2xl font-display font-extrabold text-text">
+            {title}
+          </h4>
+          <code class="text-[10px] font-mono text-text-subtle">{verdict}</code>
+        </header>
+        <p class="text-sm  text-text-muted">{pitch}</p>
+        <pre class="text-[12px]  font-mono bg-console-dark text-canvas/85 squircle-sm p-4 overflow-x-auto whitespace-pre">
+          {config}
+        </pre>
+        {diagram}
+      </div>
     </article>
+  );
+}
+
+/* ── "OR" divider between the two approver cards ───────────────────── */
+
+function OrDivider() {
+  return (
+    <div class="flex justify-center lg:self-center">
+      <span class="font-display font-black uppercase text-rust text-2xl">
+        - or -
+      </span>
+    </div>
   );
 }
 
@@ -167,7 +182,7 @@ export function ApproversSection() {
           </p>
         </div>
 
-        <div class="grid lg:grid-cols-2 gap-6">
+        <div class="grid gap-8 lg:grid-cols-[1fr_auto_1fr] lg:gap-4">
           <ApproverCard
             title="LLM judge"
             verdict="require_llm"
@@ -175,6 +190,7 @@ export function ApproversSection() {
             config={LLM_CONFIG}
             diagram={<LlmDiagram />}
           />
+          <OrDivider />
           <ApproverCard
             title="Human review"
             verdict="require_human"

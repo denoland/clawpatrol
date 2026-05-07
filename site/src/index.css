@@ -663,6 +663,18 @@ a.neu-raised:active {
   }
 }
 
+/* Wave divider — slow horizontal drift. The SVG path is two full wave
+   periods wide and the element is 200% width; sliding by -50% lands on
+   an identical pattern, so the loop is seamless. */
+@keyframes wave-drift {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
 /* Integration tiles — each slides up into place and settles partway through
    the viewport pass. Per-tile animation-range set inline for the stagger.
    Uses CSS `translate` so hover `scale` transforms compose cleanly. */
@@ -776,6 +788,10 @@ a.neu-raised:active {
     "MonoLisa", "Anonymous Pro", "SF Mono", "Menlo", ui-monospace, monospace;
 
   --breakpoint-xs: 32rem;
+
+  --animate-wave-drift: wave-drift 16s linear infinite;
+  --animate-wave-drift-medium: wave-drift 30s linear infinite;
+  --animate-wave-drift-slow: wave-drift 60s linear infinite;
 
   --text-2xs: 0.625rem;
 

@@ -76,7 +76,7 @@ export function ProtocolDepthSection() {
 
         <div class="max-w-3xl mx-auto text-center mb-16">
           <h3 class="text-3xl sm:text-4xl md:text-5xl font-display font-extrabold  mb-5">
-            Rules see into <span class="text-rust">every request.</span>
+            Rules dive into <span class="text-rust">every request.</span>
           </h3>
           <p class="text-base  text-canvas/70">
             Most gateways stop at HTTP method and URL. Claw Patrol parses each
