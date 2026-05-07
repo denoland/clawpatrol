@@ -145,6 +145,15 @@ func TestChEncodeException(t *testing.T) {
 	}
 }
 
+func TestChHelloRejectsServerExceptionPacket(t *testing.T) {
+	// ServerCodeException is what ClickHouse sends on auth failure. It must
+	// not be interpreted as a partially valid client Hello.
+	bad := []byte{byte(chgoproto.ServerCodeException)}
+	if _, _, err := chReadHello(bytes.NewReader(bad)); err == nil {
+		t.Fatal("chReadHello accepted server Exception packet")
+	}
+}
+
 // TestParseChSQL covers the matcher-input extractor across the rule
 // shapes the v14 SQL family supports: verb derivation from the
 // statement type, table refs walked out of FROM/JOIN/INTO/DROP TABLE,

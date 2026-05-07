@@ -81,6 +81,36 @@ func TestParseSQL(t *testing.T) {
 			"",
 			pgInfo{},
 		},
+		{
+			"multi-statement keeps raw statement and first verb",
+			"SELECT * FROM users; DELETE FROM sessions",
+			pgInfo{
+				Verb:      "select",
+				Tables:    []string{"users", "sessions"},
+				Functions: nil,
+				Statement: "SELECT * FROM users; DELETE FROM sessions",
+			},
+		},
+		{
+			"schema-qualified table",
+			"SELECT * FROM audit.secret_tokens",
+			pgInfo{
+				Verb:      "select",
+				Tables:    []string{"audit.secret_tokens"},
+				Functions: nil,
+				Statement: "SELECT * FROM audit.secret_tokens",
+			},
+		},
+		{
+			"quoted identifier is best-effort only",
+			"SELECT * FROM \"Sensitive Table\"",
+			pgInfo{
+				Verb:      "select",
+				Tables:    nil,
+				Functions: nil,
+				Statement: "SELECT * FROM \"Sensitive Table\"",
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -111,6 +141,28 @@ func TestPgMessageFraming(t *testing.T) {
 	}
 	if string(parsed.payload) != string(original.payload) {
 		t.Errorf("payload=%q want %q", parsed.payload, original.payload)
+	}
+}
+
+func TestPgMessageFramingRejectsIncompleteOrMalformedPackets(t *testing.T) {
+	cases := []struct {
+		name string
+		wire []byte
+	}{
+		{name: "partial header", wire: []byte{'Q', 0, 0}},
+		{name: "invalid length below minimum", wire: []byte{'Q', 0, 0, 0, 3}},
+		{name: "declared payload not fully buffered", wire: []byte{'Q', 0, 0, 0, 9, 'S', 'E'}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, rest, ok := readPgMessage(tc.wire)
+			if ok {
+				t.Fatalf("readPgMessage(%v) returned ok=true", tc.wire)
+			}
+			if string(rest) != string(tc.wire) {
+				t.Fatalf("readPgMessage should preserve buffered bytes; got %v want %v", rest, tc.wire)
+			}
+		})
 	}
 }
 
