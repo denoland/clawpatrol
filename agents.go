@@ -817,6 +817,43 @@ func (w *webMux) apiProfiles(rw http.ResponseWriter, _ *http.Request) {
 	writeJSON(rw, orderedProfileNames(w.g.cfg.Policy))
 }
 
+// EndpointTypeInfo is the dashboard-facing description of one endpoint
+// plugin. InConfig flags whether the operator has at least one
+// endpoint of this type already declared.
+type EndpointTypeInfo struct {
+	Type        string `json:"type"`
+	Family      string `json:"family"`
+	Description string `json:"description,omitempty"`
+	ExampleHCL  string `json:"example_hcl,omitempty"`
+	InConfig    bool   `json:"in_config"`
+}
+
+// apiEndpointTypes powers the device-page discovery panel. Walks the
+// plugin registry for every KindEndpoint plugin, joins against the
+// current policy to flag which types are already configured.
+func (w *webMux) apiEndpointTypes(rw http.ResponseWriter, _ *http.Request) {
+	inUse := map[string]bool{}
+	if policy := w.g.Policy(); policy != nil {
+		for _, ep := range policy.Endpoints {
+			if ep.Plugin != nil {
+				inUse[ep.Plugin.Type] = true
+			}
+		}
+	}
+	plugins := config.AllPlugins(config.KindEndpoint)
+	out := make([]EndpointTypeInfo, 0, len(plugins))
+	for _, p := range plugins {
+		out = append(out, EndpointTypeInfo{
+			Type:        p.Type,
+			Family:      p.Family,
+			Description: p.Description,
+			ExampleHCL:  p.ExampleHCL,
+			InConfig:    inUse[p.Type],
+		})
+	}
+	writeJSON(rw, out)
+}
+
 // RuleSummary is the JSON shape the dashboard renders for each rule.
 // It flattens a CompiledRule plus its enclosing endpoint and profile
 // context so the table view doesn't need to walk the policy graph

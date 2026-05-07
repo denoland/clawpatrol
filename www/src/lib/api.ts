@@ -176,6 +176,20 @@ export async function listProfiles(): Promise<string[]> {
   return r.json();
 }
 
+export type EndpointTypeInfo = {
+  type: string;
+  family: string;
+  description?: string;
+  example_hcl?: string;
+  in_config: boolean;
+};
+
+export async function getEndpointTypes(): Promise<EndpointTypeInfo[]> {
+  const r = await api("/api/endpoint-types");
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export async function setDeviceProfile(ip: string, profile: string): Promise<void> {
   const r = await api(`/api/agents/profile?ip=${encodeURIComponent(ip)}&profile=${encodeURIComponent(profile)}`, {
     method: "POST",

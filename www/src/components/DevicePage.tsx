@@ -6,6 +6,7 @@ import { Sparkline } from "./Sparkline";
 import { LiveRequests } from "./LiveRequests";
 import { RulesPanel } from "./RulesPanel";
 import { IntegrationsCards } from "./IntegrationsCards";
+import { EndpointTypesPanel } from "./EndpointTypesPanel";
 import { SessionsTable } from "./SessionsTable";
 
 export function DevicePage({
@@ -174,6 +175,9 @@ export function DevicePage({
         onConnect={onConnect}
         onRefresh={onRefresh}
       />
+
+      {/* endpoint plugin discovery */}
+      <EndpointTypesPanel />
 
       {/* rules — per-device scope (with global rules layered in) */}
       <RulesPanel deviceIP={a.ip} profile={a.profile} />

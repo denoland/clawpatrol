@@ -72,5 +72,13 @@ func init() {
 			b.SetAttributeValue("hosts", config.StringListVal(e.Hosts))
 			emitCredentialBinding(b, e.Credential, e.Credentials, "placeholder")
 		},
+		Description: "Generic TLS-wrapped HTTP API. The gateway MITMs the connection and the bound credential's HTTPCredentialRuntime stamps the secret onto every forwarded request.",
+		ExampleHCL: `credential "bearer_token" "example-api-key" {}
+
+endpoint "https" "example-api" {
+  hosts      = ["api.example.com"]
+  credential = example-api-key
+}
+`,
 	})
 }

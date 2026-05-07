@@ -114,14 +114,24 @@ func (PostgresEndpointRuntime) DetectPlaceholder(req *runtime.Request, candidate
 func init() {
 	var _ runtime.PlaceholderDetector = PostgresEndpointRuntime{}
 	config.Register(&config.Plugin{
-		Kind:     config.KindEndpoint,
-		Type:     "postgres",
-		Family:   "sql",
-		New:      func() any { return &PostgresEndpoint{} },
-		Refs:     singularRef,
-		Validate: multiCredValidate,
-		Runtime:  PostgresEndpointRuntime{},
-		Build:    passthroughBuild,
+		Kind:        config.KindEndpoint,
+		Type:        "postgres",
+		Family:      "sql",
+		New:         func() any { return &PostgresEndpoint{} },
+		Refs:        singularRef,
+		Validate:    multiCredValidate,
+		Runtime:     PostgresEndpointRuntime{},
+		Build:       passthroughBuild,
+		Description: "Postgres wire protocol with SCRAM/cleartext auth offload — the gateway terminates auth on the upstream side using the credential's real (user, password) and synthesizes AuthenticationOk for the agent.",
+		ExampleHCL: `credential "postgres_credential" "pg-writer-cred" {}
+
+endpoint "postgres" "pg-writer" {
+  host       = "db.example.com:5432"
+  database   = "postgres"
+  sslmode    = "prefer"
+  credential = pg-writer-cred
+}
+`,
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			e := body.(*PostgresEndpoint)
 			b.SetAttributeValue("host", cty.StringVal(e.Host))

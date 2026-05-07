@@ -68,6 +68,7 @@ func newWebMux(g *Gateway, caDir string, ts Tailscale, publicURL string) http.Ha
 	mux.HandleFunc("/api/agents/delete", w.apiAgentDelete)
 	mux.HandleFunc("/api/agents/profile", w.apiAgentProfile)
 	mux.HandleFunc("/api/profiles", w.apiProfiles)
+	mux.HandleFunc("/api/endpoint-types", w.apiEndpointTypes)
 	mux.HandleFunc("/api/rules", w.apiRules)
 	mux.HandleFunc("/api/rules/ai", w.apiRulesAI)
 	mux.HandleFunc("/api/config", w.apiConfig)

@@ -44,12 +44,23 @@ func (e *KubernetesEndpoint) EndpointCredentials() []config.CredBinding {
 
 func init() {
 	config.Register(&config.Plugin{
-		Kind:   config.KindEndpoint,
-		Type:   "kubernetes",
-		Family: "k8s",
-		New:    func() any { return &KubernetesEndpoint{} },
-		Refs:   singularRef,
-		Build:  passthroughBuild,
+		Kind:        config.KindEndpoint,
+		Type:        "kubernetes",
+		Family:      "k8s",
+		New:         func() any { return &KubernetesEndpoint{} },
+		Refs:        singularRef,
+		Build:       passthroughBuild,
+		Description: "Kubernetes API server. Self-hosted clusters bind server + ca_cert; managed clusters (EKS / GKE) bind hosts + a token-style credential.",
+		ExampleHCL: `credential "aws_eks_credential" "eks-prod" {
+  cluster = "prod"
+  region  = "us-east-1"
+}
+
+endpoint "kubernetes" "prod" {
+  hosts      = ["*.eks.amazonaws.com"]
+  credential = eks-prod
+}
+`,
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			e := body.(*KubernetesEndpoint)
 			if len(e.Hosts) > 0 {

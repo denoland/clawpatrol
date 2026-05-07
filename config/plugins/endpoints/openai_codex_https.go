@@ -158,14 +158,22 @@ func init() {
 	var _ runtime.PlaceholderDetector = OpenAICodexHTTPSEndpointRuntime{}
 	var _ runtime.HTTPSyntheticResponder = OpenAICodexHTTPSEndpointRuntime{}
 	config.Register(&config.Plugin{
-		Kind:     config.KindEndpoint,
-		Type:     "openai_codex_https",
-		Family:   "https",
-		New:      func() any { return &OpenAICodexHTTPSEndpoint{} },
-		Refs:     singularRef,
-		Validate: multiCredValidate,
-		Runtime:  OpenAICodexHTTPSEndpointRuntime{},
-		Build:    passthroughBuild,
+		Kind:        config.KindEndpoint,
+		Type:        "openai_codex_https",
+		Family:      "https",
+		New:         func() any { return &OpenAICodexHTTPSEndpoint{} },
+		Refs:        singularRef,
+		Validate:    multiCredValidate,
+		Runtime:     OpenAICodexHTTPSEndpointRuntime{},
+		Build:       passthroughBuild,
+		Description: "Routes codex-cli through chatgpt.com using OpenAI's Agent Identity flow. The gateway mints a JWT, serves the matching JWKS at MITM time, and stamps the bound OAuth credential's bearer onto outbound requests.",
+		ExampleHCL: `credential "openai_codex_oauth" "codex-cred" {}
+
+endpoint "openai_codex_https" "codex" {
+  hosts      = ["chatgpt.com"]
+  credential = codex-cred
+}
+`,
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			e := body.(*OpenAICodexHTTPSEndpoint)
 			b.SetAttributeValue("hosts", config.StringListVal(e.Hosts))

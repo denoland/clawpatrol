@@ -110,14 +110,25 @@ type SSHEndpointRuntime struct {
 func init() {
 	rt := &SSHEndpointRuntime{}
 	config.Register(&config.Plugin{
-		Kind:     config.KindEndpoint,
-		Type:     "ssh",
-		Family:   "ssh",
-		New:      func() any { return &SSHEndpoint{} },
-		Refs:     singularRef,
-		Validate: multiCredValidate,
-		Runtime:  rt,
-		Build:    passthroughBuild,
+		Kind:        config.KindEndpoint,
+		Type:        "ssh",
+		Family:      "ssh",
+		New:         func() any { return &SSHEndpoint{} },
+		Refs:        singularRef,
+		Validate:    multiCredValidate,
+		Runtime:     rt,
+		Build:       passthroughBuild,
+		Description: "Terminates SSH on both halves: server toward the agent, client toward the upstream, with channels and global requests spliced. Interactive sessions, exec, port forwarding, SFTP all work without per-channel logic.",
+		ExampleHCL: `credential "ssh" "build-host-cred" {
+  # private_key + (optional) passphrase + (optional) host_pubkey live
+  # in the secret store — paste them via the dashboard.
+}
+
+endpoint "ssh" "build-host" {
+  hosts      = ["build.example.com:2222"]
+  credential = build-host-cred
+}
+`,
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			e := body.(*SSHEndpoint)
 			if len(e.Hosts) > 0 {

@@ -109,14 +109,23 @@ type ClickhouseNativeEndpointRuntime struct{}
 func init() {
 	var _ runtime.ConnEndpointRuntime = ClickhouseNativeEndpointRuntime{}
 	config.Register(&config.Plugin{
-		Kind:     config.KindEndpoint,
-		Type:     "clickhouse_native",
-		Family:   "sql",
-		New:      func() any { return &ClickhouseNativeEndpoint{} },
-		Refs:     singularRef,
-		Runtime:  ClickhouseNativeEndpointRuntime{},
-		Validate: validateClickhouseNativeEndpoint,
-		Build:    passthroughBuild,
+		Kind:        config.KindEndpoint,
+		Type:        "clickhouse_native",
+		Family:      "sql",
+		New:         func() any { return &ClickhouseNativeEndpoint{} },
+		Refs:        singularRef,
+		Runtime:     ClickhouseNativeEndpointRuntime{},
+		Validate:    validateClickhouseNativeEndpoint,
+		Build:       passthroughBuild,
+		Description: "ClickHouse native binary protocol (default 9000 plaintext / 9440 TLS). Parses the Hello packet and substitutes the bound credential's (user, password) where the agent embedded a placeholder.",
+		ExampleHCL: `credential "clickhouse_credential" "ch-cred" {}
+
+endpoint "clickhouse_native" "ch" {
+  hosts      = ["clickhouse.example.com"]
+  tls        = true
+  credential = ch-cred
+}
+`,
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			e := body.(*ClickhouseNativeEndpoint)
 			b.SetAttributeValue("hosts", config.StringListVal(e.Hosts))

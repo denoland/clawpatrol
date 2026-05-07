@@ -4,12 +4,18 @@ import { HCLEditor } from "./HCLEditor";
 
 // RulesEditor edits the whole gateway.hcl file. Validation runs
 // server-side; diagnostics surface in the err panel.
+//
+// initialAppend pre-fills the editor with `current + "\n\n" + snippet`
+// so the device-page endpoint-discovery panel can drop a starter block
+// at the bottom of the file with the operator's edits unsaved.
 export function RulesEditor({
   onClose,
   onSaved,
+  initialAppend,
 }: {
   onClose: () => void;
   onSaved: () => void;
+  initialAppend?: string;
 }) {
   const [text, setText] = useState("");
   const [original, setOriginal] = useState("");
@@ -22,11 +28,16 @@ export function RulesEditor({
   useEffect(() => {
     getConfigHCL()
       .then((t) => {
-        setText(t);
         setOriginal(t);
+        if (initialAppend) {
+          const sep = t.endsWith("\n") ? "\n" : "\n\n";
+          setText(t + sep + initialAppend);
+        } else {
+          setText(t);
+        }
       })
       .catch((e: Error) => setErr(String(e.message ?? e)));
-  }, []);
+  }, [initialAppend]);
 
   async function save() {
     setBusy(true);

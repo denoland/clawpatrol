@@ -22,12 +22,20 @@ func (e *ClickhouseHTTPSEndpoint) EndpointCredentials() []config.CredBinding {
 
 func init() {
 	config.Register(&config.Plugin{
-		Kind:   config.KindEndpoint,
-		Type:   "clickhouse_https",
-		Family: "sql",
-		New:    func() any { return &ClickhouseHTTPSEndpoint{} },
-		Refs:   singularRef,
-		Build:  passthroughBuild,
+		Kind:        config.KindEndpoint,
+		Type:        "clickhouse_https",
+		Family:      "sql",
+		New:         func() any { return &ClickhouseHTTPSEndpoint{} },
+		Refs:        singularRef,
+		Build:       passthroughBuild,
+		Description: "ClickHouse HTTPS API. Pairs with clickhouse_native against the same upstream — bind both with rules = endpoints = [...] to govern either path.",
+		ExampleHCL: `credential "clickhouse_credential" "ch-cred" {}
+
+endpoint "clickhouse_https" "ch" {
+  hosts      = ["clickhouse.example.com"]
+  credential = ch-cred
+}
+`,
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			e := body.(*ClickhouseHTTPSEndpoint)
 			b.SetAttributeValue("hosts", config.StringListVal(e.Hosts))

@@ -103,6 +103,16 @@ type Plugin struct {
 	// placeholders), or per-family match maps. Plugins that decode
 	// nothing (zero-attribute credentials) provide a no-op Emit.
 	Emit func(body any, name string, hb *hclwrite.Body)
+
+	// Description: one-line human-readable summary of what the plugin
+	// does. Surfaced on the dashboard's endpoint-discovery panel.
+	Description string
+
+	// ExampleHCL: a complete, self-consistent HCL snippet that the
+	// dashboard can append to gateway.hcl when the operator wants to
+	// add this plugin. Should declare the plugin's block plus any
+	// referenced credentials/policies needed for it to load cleanly.
+	ExampleHCL string
 }
 
 // BuildCtx is what the loader hands to Validate and Build. It bundles
