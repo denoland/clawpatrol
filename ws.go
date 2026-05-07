@@ -79,11 +79,6 @@ func isWSUpgrade(req *http.Request) bool {
 	return strings.Contains(conn, "upgrade") && upg == "websocket"
 }
 
-// isHTTPUpgrade returns true for non-WebSocket HTTP upgrade requests —
-// e.g. SPDY/3.1 used by kubectl exec/attach/portforward.
-func isHTTPUpgrade(req *http.Request) bool {
-	return !isWSUpgrade(req) && req.Header.Get("Upgrade") != ""
-}
 
 // handleWSUpgrade swaps the http.Transport-driven request loop for a
 // raw byte bridge once the agent's request looks like a WS upgrade.
@@ -406,80 +401,3 @@ func readFrameRaw(br *bufio.Reader) (raw []byte, b0 byte, op byte, compressed, m
 	return
 }
 
-// handleHTTPUpgrade handles non-WebSocket HTTP upgrade requests such as
-// SPDY/3.1 (kubectl exec / attach / portforward). Unlike the WebSocket
-// path it needs no frame parsing — bidirectional raw splice suffices.
-//
-// Credentials are injected by the caller (mitmHTTPS) before this is
-// invoked, so the request headers already carry any bearer token or
-// client cert that the endpoint requires.
-func (g *Gateway) handleHTTPUpgrade(client net.Conn, br *bufio.Reader, req *http.Request, host string, ep *config.CompiledEndpoint) {
-	profile := g.profileFor(peerIP(client))
-	up, err := g.dialUpstream(context.Background(), "tcp", net.JoinHostPort(host, "443"), host, ep, profile)
-	if err != nil {
-		fmt.Fprintf(client, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-		log.Printf("http-upgrade dial %s: %v", host, err)
-		return
-	}
-	defer up.Close()
-
-	var reqBuf bytes.Buffer
-	fmt.Fprintf(&reqBuf, "%s %s HTTP/1.1\r\n", req.Method, req.URL.RequestURI())
-	h := req.Host
-	if h == "" {
-		h = host
-	}
-	fmt.Fprintf(&reqBuf, "Host: %s\r\n", h)
-	for name, values := range req.Header {
-		if strings.EqualFold(name, "Host") {
-			continue
-		}
-		for _, v := range values {
-			fmt.Fprintf(&reqBuf, "%s: %s\r\n", name, v)
-		}
-	}
-	reqBuf.WriteString("\r\n")
-	if _, err := up.Write(reqBuf.Bytes()); err != nil {
-		log.Printf("http-upgrade req write %s: %v", host, err)
-		return
-	}
-
-	upBR := bufio.NewReader(up)
-	headerBytes, err := readHTTPHeader(upBR)
-	if err != nil {
-		log.Printf("http-upgrade read resp %s: %v", host, err)
-		return
-	}
-	statusLine := ""
-	if i := bytes.Index(headerBytes, []byte("\r\n")); i >= 0 {
-		statusLine = string(headerBytes[:i])
-	}
-	if !strings.Contains(statusLine, " 101 ") {
-		body, _ := io.ReadAll(io.LimitReader(upBR, 4096))
-		client.Write(headerBytes)
-		client.Write(body)
-		log.Printf("http-upgrade non-101 %s: %s", host, statusLine)
-		return
-	}
-	if _, err := client.Write(headerBytes); err != nil {
-		return
-	}
-
-	done := make(chan struct{}, 2)
-	go func() {
-		io.Copy(client, upBR)
-		if cw, ok := client.(interface{ CloseWrite() error }); ok {
-			cw.CloseWrite()
-		}
-		done <- struct{}{}
-	}()
-	go func() {
-		io.Copy(up, br)
-		if cw, ok := up.(interface{ CloseWrite() error }); ok {
-			cw.CloseWrite()
-		}
-		done <- struct{}{}
-	}()
-	<-done
-	<-done
-}
