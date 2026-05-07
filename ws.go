@@ -89,14 +89,20 @@ func isHTTPUpgrade(req *http.Request) bool {
 // raw byte bridge once the agent's request looks like a WS upgrade.
 // The connection stays alive until either side closes; pumpWS
 // observes text frames for codex usage tracking when applicable.
-func (g *Gateway) handleWSUpgrade(client *tls.Conn, br *bufio.Reader, req *http.Request, upstream string, frameEmit func(direction, sample string)) {
+func (g *Gateway) handleWSUpgrade(client *tls.Conn, br *bufio.Reader, req *http.Request, upstream string, frameEmit func(direction, sample string), ep *config.CompiledEndpoint, profile string) {
 	agentAddr := peerIP(client) // capture before netstack races to nil
 
-	// Cloudflare flags non-browser TLS fingerprints on WS handshakes
-	// to chatgpt.com with "Attack attempt detected". Use uTLS Chrome
-	// fingerprint for every WS upstream — cheap, and only WS
-	// upgrades hit this path.
-	up, err := dialBrowserTLS(context.Background(), "tcp", net.JoinHostPort(upstream, "443"), upstream)
+	// Endpoints that require a client cert (e.g. kubernetes mTLS) must
+	// use dialUpstream so the credential plugin can inject the cert.
+	// All other upstreams use dialBrowserTLS — Cloudflare WAF rejects
+	// plain Go TLS fingerprints on WS handshakes to chatgpt.com.
+	var up net.Conn
+	var err error
+	if endpointWantsClientCert(ep) {
+		up, err = g.dialUpstream(context.Background(), "tcp", net.JoinHostPort(upstream, "443"), upstream, ep, profile)
+	} else {
+		up, err = dialBrowserTLS(context.Background(), "tcp", net.JoinHostPort(upstream, "443"), upstream)
+	}
 	if err != nil {
 		fmt.Fprintf(client, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
 		log.Printf("ws dial %s: %v", upstream, err)
@@ -408,7 +414,8 @@ func readFrameRaw(br *bufio.Reader) (raw []byte, b0 byte, op byte, compressed, m
 // invoked, so the request headers already carry any bearer token or
 // client cert that the endpoint requires.
 func (g *Gateway) handleHTTPUpgrade(client net.Conn, br *bufio.Reader, req *http.Request, host string, ep *config.CompiledEndpoint) {
-	up, err := g.dialUpstream(context.Background(), "tcp", net.JoinHostPort(host, "443"), host, ep)
+	profile := g.profileFor(peerIP(client))
+	up, err := g.dialUpstream(context.Background(), "tcp", net.JoinHostPort(host, "443"), host, ep, profile)
 	if err != nil {
 		fmt.Fprintf(client, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
 		log.Printf("http-upgrade dial %s: %v", host, err)

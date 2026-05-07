@@ -288,7 +288,8 @@ func (g *Gateway) transportFor(ep *config.CompiledEndpoint) *http.Transport {
 			if needsBrowserTLS(h) && !endpointWantsClientCert(ep) {
 				return dialBrowserTLS(ctx, network, addr, h)
 			}
-			return g.dialUpstream(ctx, network, addr, h, ep)
+			profile, _ := ctx.Value(profileCtxKey{}).(string)
+			return g.dialUpstream(ctx, network, addr, h, ep, profile)
 		},
 		ForceAttemptHTTP2:   false,
 		IdleConnTimeout:     30 * time.Second,
@@ -1130,11 +1131,25 @@ func (g *Gateway) ownerForRequest(c net.Conn, _ *OAuthIntegration) string {
 	return ip
 }
 
-func (g *Gateway) handle(raw net.Conn) {
+func (g *Gateway) handle(raw net.Conn, dstIP string) {
 	defer raw.Close()
 	defer otelTrackConn("https_mitm")()
 	host, prefix, err := peekSNI(raw)
 	if err != nil {
+		// No SNI — fall back to direct-IP endpoint lookup for kubernetes/https
+		// endpoints whose `server` field is an IP literal (kubectl connects
+		// by IP and never sends SNI).
+		if dstIP != "" {
+			c := wrapPeek(raw, prefix)
+			pip := peerIP(c)
+			profile := g.profileFor(pip)
+			ep := runtime.HostEndpoint(g.Policy(), profile, dstIP)
+			if ep != nil && (ep.Family == "https" || ep.Family == "k8s") {
+				log.Printf("sni-fallback: %s → %s", dstIP, ep.Name)
+				g.mitmHTTPS(c, dstIP, ep)
+				return
+			}
+		}
 		log.Printf("sni: %v", err)
 		return
 	}
@@ -1789,7 +1804,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 					Direction: direction,
 				})
 			}
-			g.handleWSUpgrade(tc, br, req, host, frameEmit)
+			g.handleWSUpgrade(tc, br, req, host, frameEmit, ep, profile)
 			ev.Status = 101
 			ev.Ms = time.Since(start).Milliseconds()
 			g.emitEnd(ev)
@@ -1839,7 +1854,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		}
 
 		rtStart := time.Now()
-		resp, err := transport.RoundTrip(req)
+		resp, err := transport.RoundTrip(req.WithContext(context.WithValue(req.Context(), profileCtxKey{}, profile)))
 		rtDur := time.Since(rtStart)
 		if err != nil {
 			log.Printf("mitm upstream %s %s: %v", host, req.URL.Path, err)
@@ -2279,7 +2294,7 @@ func runGateway(args []string) {
 			log.Printf("wg-fwd: %s:%d", dstIP, dstPort)
 			switch {
 			case dstPort == 443:
-				g.handle(c)
+				g.handle(c, dstIP)
 			case dstPort == 5432:
 				g.handlePostgresConn(c, dstIP)
 			case dstPort == 53:
@@ -2330,7 +2345,7 @@ func runGateway(args []string) {
 			log.Printf("accept: %v", err)
 			continue
 		}
-		go g.handle(c)
+		go g.handle(c, "")
 	}
 }
 
