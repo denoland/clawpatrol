@@ -79,7 +79,6 @@ func isWSUpgrade(req *http.Request) bool {
 	return strings.Contains(conn, "upgrade") && upg == "websocket"
 }
 
-
 // handleWSUpgrade swaps the http.Transport-driven request loop for a
 // raw byte bridge once the agent's request looks like a WS upgrade.
 // The connection stays alive until either side closes; pumpWS
@@ -400,4 +399,3 @@ func readFrameRaw(br *bufio.Reader) (raw []byte, b0 byte, op byte, compressed, m
 	raw = rawBuf.Bytes()
 	return
 }
-
