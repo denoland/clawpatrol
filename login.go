@@ -626,6 +626,16 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		interval = 3 * time.Second
 	}
 	deadline := time.Now().Add(time.Duration(start.ExpiresIn) * time.Second)
+
+	// In whole-machine mode the clawpatrol WireGuard tunnel already routes
+	// all traffic — including these poll requests. When the admin approves,
+	// MintKey evicts our old peer from the gateway device, killing the
+	// tunnel mid-poll and hanging the spinner indefinitely. Bring it down
+	// before polling so requests go over the regular internet.
+	if wholeMachine {
+		_ = runAsRoot("wg-quick", "down", "clawpatrol").Run()
+	}
+
 	stopSpin := startSpinner("Waiting for approval")
 	authKey, loginServer, apiToken := "", "", ""
 	for time.Now().Before(deadline) {
