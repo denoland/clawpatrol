@@ -1,10 +1,10 @@
 import { SectionLabel } from "../components/SectionLabel";
 
 /* ──────────────────────────────────────────────────────────────────────
-   Multi-protocol depth — sells the idea that the proxy doesn't just
-   sniff HTTP, it actually parses each protocol so rules can match on
-   meaningful fields. Dark navy band — first major palette break of
-   the page after the cream + canvas-muted runs.
+   Multi-protocol depth — sells the idea that the gateway doesn't just
+   sniff HTTP, it parses each protocol (HTTP, SQL, Kubernetes) so rules
+   can match on meaningful fields of every action. Dark navy band —
+   first major palette break after the cream / canvas-muted runs.
    ──────────────────────────────────────────────────────────────────── */
 
 const PROTOCOLS: {
@@ -15,13 +15,13 @@ const PROTOCOLS: {
   {
     name: "HTTPS",
     body:
-      "Method, URL, headers, body. Any host, any service. " +
-      "Plugins add per-service facets — github.repo, slack.channel.",
-    example: `{
-  "http.method": "DELETE",
-  "http.url": {
-    "contains": "/repos/"
-  }
+      "Method, path, headers, body. Any host, any service. " +
+      "Hostname matching is implicit via the endpoint scope.",
+    example: `rule "http_rule" "github-no-repo-delete" {
+  endpoint = github-api
+  match    = { method = "DELETE", path = "/repos/*" }
+  verdict  = "deny"
+  reason   = "deleting repos is not allowed"
 }`,
   },
   {
@@ -29,21 +29,11 @@ const PROTOCOLS: {
     body:
       "Postgres and ClickHouse traffic parsed verb-by-verb. " +
       "Match SELECT, INSERT, DROP. Inspect tables and statement text.",
-    example: `{
-  "sql.verb": {
-    "in": ["DROP", "TRUNCATE"]
-  }
-}`,
-  },
-  {
-    name: "SSH",
-    body:
-      "Commands sent over interactive shells and exec sessions. " +
-      "Block rm -rf. Approve sudo. Audit every keystroke.",
-    example: `{
-  "ssh.command": {
-    "contains": "rm -rf"
-  }
+    example: `rule "sql_rule" "no-ddl" {
+  endpoint = pg-writer
+  match    = { verb = ["drop", "truncate", "alter"] }
+  verdict  = "deny"
+  reason   = "no DDL"
 }`,
   },
   {
@@ -51,19 +41,11 @@ const PROTOCOLS: {
     body:
       "API calls to kube-apiserver. Match by namespace, resource, " +
       "and verb — protect prod from accidental kubectl delete.",
-    example: `{
-  "k8s.namespace": "prod",
-  "k8s.verb": "delete"
-}`,
-  },
-  {
-    name: "Plugins",
-    body:
-      "Write a plugin in TypeScript and emit your own facets. " +
-      "Rules can match on whatever you surface.",
-    example: `{
-  "myplugin.action": "transfer",
-  "myplugin.amount_tier": "high"
+    example: `rule "k8s_rule" "no-secrets" {
+  endpoints = [k8s-dev-ams, k8s-dev-ord]
+  match     = { resource = "secrets" }
+  verdict   = "deny"
+  reason    = "Secret values must not leave the cluster"
 }`,
   },
 ];
@@ -76,17 +58,18 @@ export function ProtocolDepthSection() {
 
         <div class="max-w-3xl mx-auto text-center mb-16">
           <h3 class="text-3xl sm:text-4xl md:text-5xl font-display font-extrabold  mb-5">
-            Rules dive into <span class="text-rust">every request.</span>
+            Rules dive into <span class="text-rust">every action.</span>
           </h3>
           <p class="text-base  text-canvas/70">
-            Most gateways stop at HTTP method and URL. Claw Patrol parses each
-            protocol — so you can write rules that mean something. Block
-            destructive SQL. Gate sudo over SSH. Quarantine prod kubectl.
+            Most gateways stop at HTTP method and URL. Claw Patrol parses
+            each protocol — so you can write rules that mean something.
+            Block destructive SQL. Quarantine prod kubectl. Gate writes
+            to GitHub.
           </p>
         </div>
 
         <p class="text-xs uppercase tracking-[0.25em] font-display font-extrabold text-rust-300 mb-5 text-center">
-          Match anything in the request
+          Match anything in the action
         </p>
         <ul class="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
           {PROTOCOLS.map((p) => (
