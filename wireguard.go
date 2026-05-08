@@ -155,10 +155,15 @@ func (n *epNotify) WriteNotify() {
 		b := view.AsSlice()
 		cp := make([]byte, len(b))
 		copy(cp, b)
+		// Block until WireGuard drains the packet. Backpressure propagates
+		// through gVisor's notification goroutine — NOT the TCP sender goroutine —
+		// so per-connection send buffers don't accumulate. Dropping instead
+		// collapses cwnd (5MB/s → 200KB/s on high-latency paths) because gVisor
+		// fires retransmit timers on every silent drop.
 		select {
 		case n.dev.incomingPacket <- cp:
-		default:
-			// dropped — incomingPacket sized to absorb bursts; TCP recovers
+		case <-n.dev.done:
+			return
 		}
 	}
 }
