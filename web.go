@@ -1254,6 +1254,13 @@ func (s *Sink) drain() {
 		// double-count requests in the request-history view and bloat
 		// the table for long-poll / WS sessions.
 		persist := e.Phase == "" || e.Phase == "end"
+		if persist && e.ID == "" {
+			// Some connection-oriented endpoint runtimes emit a single terminal
+			// event instead of the HTTP start/end pair. Give those events a
+			// stable action_id before DB insert + SSE fan-out so every persisted
+			// live-request row can navigate to /api/actions/<id>.
+			e.ID = newReqID()
+		}
 		if s.db != nil && persist {
 			var rqhJSON, rshJSON []byte
 			if len(e.ReqHeaders) > 0 {
