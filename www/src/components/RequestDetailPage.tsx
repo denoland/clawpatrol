@@ -186,14 +186,12 @@ function SQLDetail({ ev }: { ev: EventRecord }) {
   const tables = ev.tables ?? [];
   const functions = ev.functions ?? [];
   const statement = ev.statement ?? "";
-  const family = ev.mode || "";
   const facets: Array<{ label: string; value: string }> = [];
   if (verb) facets.push({ label: "Verb", value: verb });
   if (tables.length > 0)
     facets.push({ label: "Tables", value: tables.join(", ") });
   if (functions.length > 0)
     facets.push({ label: "Functions", value: functions.join(", ") });
-  if (family) facets.push({ label: "Endpoint", value: family });
   return (
     <div className="bg-white border border-[#e5e5e5] rounded divide-y divide-[#e5e5e5]">
       {facets.length > 0 && (
