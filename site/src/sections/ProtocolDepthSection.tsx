@@ -1,4 +1,5 @@
 import { SectionLabel } from "../components/SectionLabel";
+import { HclCode } from "../components/HclCode";
 
 /* ──────────────────────────────────────────────────────────────────────
    Multi-protocol depth — sells the idea that the gateway doesn't just
@@ -82,13 +83,12 @@ export function ProtocolDepthSection() {
                 {p.name}
               </h4>
               <p class="text-sm  text-canvas/70">{p.body}</p>
-              <pre
-                class="block text-[12px] mt-4  font-mono
-                  bg-navy-950 text-rust-200 px-3 py-2 rounded-sm
+              <HclCode
+                source={p.example}
+                class="block text-[12px] mt-2 font-mono
+                  bg-navy-950 text-canvas/85 px-3 py-2 rounded-sm
                   whitespace-pre-wrap break-words"
-              >
-                {p.example}
-              </pre>
+              />
             </li>
           ))}
         </ul>
