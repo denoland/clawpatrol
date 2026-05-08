@@ -60,32 +60,22 @@ func (r *renderer) run() (string, error) {
 func (r *renderer) writeHeader() {
 	r.out.WriteString(`# HCL config reference
 
-> **This page is auto-generated** from the plugin registry under
-> ` + "`config/plugins/`" + ` and the operational structs in ` + "`config/`" + `.
-> Do not hand-edit. Re-run ` + "`go run ./tools/docgen`" + ` after changing any
-> ` + "`hcl:\"...\"`" + ` tag, plugin registration, or struct field comment.
-
 A clawpatrol gateway config mixes **operational** fields (top-level
-plumbing) with **policy** blocks. Operational fields decode statically
-into ` + "`config.Gateway`" + `; policy blocks dispatch to plugins by their
-first label.
-
-For prose context (references, namespaces, design rationale) see
-[` + "`config/README.md`" + `](https://github.com/denoland/clawpatrol/blob/main/config/README.md);
-the page you're reading is the field-by-field reference.
+plumbing) with **policy** blocks. Operational fields are top-level
+attributes; policy blocks (` + "`approver`, `credential`, `endpoint`, `rule`" + `)
+dispatch to a plugin chosen by the block's first label.
 
 ## How to read this page
 
 Each block section lists the attributes the loader accepts, with:
 
-- **Type** — Go type after HCL decode. ` + "`string`" + `, ` + "`bool`" + `, ` + "`int`" + ` map to
-  the obvious HCL kinds; ` + "`[]string`" + ` is an HCL list of strings;
-  ` + "`object`" + ` denotes a nested block / object whose shape is
-  described inline.
+- **Type** — the HCL value type. ` + "`string`" + `, ` + "`bool`" + `, ` + "`int`" + ` are scalar
+  literals; ` + "`[]string`" + ` is a list of strings; ` + "`ref(<kind>)`" + ` is a
+  bare-name reference to another block of that kind (e.g.
+  ` + "`credential = github-pat`" + `); ` + "`[]ref(<kind>)`" + ` is a list of such
+  references; nested blocks have their shape described inline.
 - **Required** — ` + "`yes`" + ` if the loader rejects the block when the
   attribute is missing.
-- **Reference** — when set, the value is a bare-name reference to
-  another block of the named kind (e.g. ` + "`credential = github-pat`" + `).
 
 Plugin-dispatched kinds (` + "`approver`, `credential`, `endpoint`, `rule`" + `)
 list one subsection per registered type.
@@ -95,19 +85,53 @@ list one subsection per registered type.
 
 // ── operational top-level + tailscale ───────────────────────────────
 
+// stripIdentPrefix drops a leading "<ident> " (and the common Go-doc
+// "<ident> is "/"<ident> are " linking verb) from a doc comment, then
+// re-capitalises the next word so the sentence still reads cleanly.
+// Go convention starts every godoc with the identifier name; in HCL
+// reference output that name is rarely meaningful (the user knows the
+// HCL attribute, not the Go field), so we elide it.
+func stripIdentPrefix(doc, ident string) string {
+	if doc == "" || ident == "" {
+		return doc
+	}
+	prefix := ident + " "
+	if !strings.HasPrefix(doc, prefix) {
+		return doc
+	}
+	rest := doc[len(prefix):]
+	// Drop the common "<Ident> is/are <article>" linker so the
+	// remaining sentence reads as a noun phrase ("The shared body
+	// shape...") rather than a fragment ("Is the shared body shape...").
+	linkers := []struct{ from, to string }{
+		{"is the ", "The "},
+		{"is a ", "A "},
+		{"is an ", "An "},
+		{"are the ", "The "},
+		{"are ", ""},
+	}
+	for _, l := range linkers {
+		if strings.HasPrefix(rest, l.from) {
+			return l.to + rest[len(l.from):]
+		}
+	}
+	if rest == "" {
+		return rest
+	}
+	first := rest[0]
+	if first >= 'a' && first <= 'z' {
+		return strings.ToUpper(rest[:1]) + rest[1:]
+	}
+	return rest
+}
+
 func (r *renderer) writeOperational() {
 	r.out.WriteString("## Top-level operational fields\n\n")
-	if doc := r.docs.typeDoc("config", "Gateway"); doc != "" {
-		r.out.WriteString(doc)
-		r.out.WriteString("\n\n")
-	}
+	r.out.WriteString("These are the attributes you set directly at the top of `gateway.hcl`. Anything below `gateway {}` (defaults, policy, profile, approver, credential, endpoint, rule) is a separate block documented in its own section.\n\n")
 	r.writeStructTable("config", "Gateway", reflect.TypeOf(config.Gateway{}))
 
 	r.out.WriteString("### `gateway {}` block\n\n")
-	if doc := r.docs.typeDoc("config", "Tailscale"); doc != "" {
-		r.out.WriteString(doc)
-		r.out.WriteString("\n\n")
-	}
+	r.out.WriteString("Singleton block configuring how the gateway joins the operator's tailnet (or a self-hosted control plane) and the WireGuard tunnel that carries agent traffic.\n\n")
 	r.writeStructTable("config", "Tailscale", reflect.TypeOf(config.Tailscale{}))
 }
 
@@ -120,7 +144,7 @@ func (r *renderer) writeFixedKind(kind, pkg, typeName, headerSuffix string) {
 		header = fmt.Sprintf("`%s { ... }`", headerSuffix)
 	}
 	fmt.Fprintf(&r.out, "## %s\n\n", header)
-	if doc := r.docs.typeDoc(pkg, typeName); doc != "" {
+	if doc := stripIdentPrefix(r.docs.typeDoc(pkg, typeName), typeName); doc != "" {
 		r.out.WriteString(doc)
 		r.out.WriteString("\n\n")
 	}
@@ -149,9 +173,9 @@ func reflectTypeFor(pkg, name string) reflect.Type {
 func (r *renderer) writeProfile() {
 	r.out.WriteString("## `profile \"<name>\" { ... }`\n\n")
 	r.out.WriteString("Names a set of endpoints. Profiles bind to dashboard owners; an owner's profile determines which endpoints their gateway requests can reach. Rules ride along automatically because they're attached to endpoints.\n\n")
-	r.out.WriteString("| Attribute | Type | Required | Reference | Description |\n")
-	r.out.WriteString("|-----------|------|----------|-----------|-------------|\n")
-	r.out.WriteString("| `endpoints` | `[]string` | yes | endpoint | Bare-name endpoint references included in this profile. |\n\n")
+	r.out.WriteString("| Attribute | Type | Required | Description |\n")
+	r.out.WriteString("|-----------|------|----------|-------------|\n")
+	r.out.WriteString("| `endpoints` | `[]ref(endpoint)` | yes | Bare-name endpoint references included in this profile. |\n\n")
 	r.out.WriteString("```hcl\nprofile \"default\" {\n  endpoints = [github, postgres-prod]\n}\n```\n\n")
 }
 
@@ -179,13 +203,13 @@ func (r *renderer) writeKind(kind config.Kind) {
 }
 
 func (r *renderer) writePlugin(kind config.Kind, p *config.Plugin) {
-	fmt.Fprintf(&r.out, "### `%s \"%s\"`\n\n", kind, p.Type)
+	fmt.Fprintf(&r.out, "### `%s \"%s\" \"<name>\"`\n\n", kind, p.Type)
 
 	rt := pluginStructType(p)
 	pkgName := pkgNameOf(rt)
 	typeName := rt.Name()
 
-	if doc := r.docs.typeDoc(pkgName, typeName); doc != "" {
+	if doc := stripIdentPrefix(r.docs.typeDoc(pkgName, typeName), typeName); doc != "" {
 		r.out.WriteString(doc)
 		r.out.WriteString("\n\n")
 	}
@@ -198,21 +222,6 @@ func (r *renderer) writePlugin(kind config.Kind, p *config.Plugin) {
 	}
 
 	r.writeStructTable(pkgName, typeName, rt)
-
-	// Reference list: cross-reference fields driven by RefSpec.
-	if len(p.Refs) > 0 {
-		r.out.WriteString("**References:** ")
-		for i, ref := range p.Refs {
-			if i > 0 {
-				r.out.WriteString("; ")
-			}
-			fmt.Fprintf(&r.out, "`%s` → %s", ref.Path, ref.Kind)
-			if ref.Optional {
-				r.out.WriteString(" (optional)")
-			}
-		}
-		r.out.WriteString(".\n\n")
-	}
 
 	// Rule plugins: enumerate per-family valid match keys.
 	if kind == config.KindRule {
@@ -261,11 +270,8 @@ type fieldRow struct {
 	Name        string
 	Type        string
 	Required    bool
-	Reference   string
 	Doc         string
 	Block       bool
-	Skip        bool
-	IsLabel     bool
 	GoFieldName string
 }
 
@@ -276,19 +282,15 @@ func (r *renderer) writeStructTable(pkgName, typeName string, rt reflect.Type) {
 		return
 	}
 
-	r.out.WriteString("| Attribute | Type | Required | Reference | Description |\n")
-	r.out.WriteString("|-----------|------|----------|-----------|-------------|\n")
+	r.out.WriteString("| Attribute | Type | Required | Description |\n")
+	r.out.WriteString("|-----------|------|----------|-------------|\n")
 	for _, f := range rows {
 		req := "no"
 		if f.Required {
 			req = "yes"
 		}
-		ref := f.Reference
-		if ref == "" {
-			ref = "—"
-		}
-		fmt.Fprintf(&r.out, "| `%s` | `%s` | %s | %s | %s |\n",
-			f.Name, f.Type, req, ref, mdEscape(oneLine(f.Doc)))
+		fmt.Fprintf(&r.out, "| `%s` | `%s` | %s | %s |\n",
+			f.Name, f.Type, req, mdEscape(oneLine(f.Doc)))
 	}
 	r.out.WriteString("\n")
 
@@ -308,7 +310,7 @@ func (r *renderer) writeStructTable(pkgName, typeName string, rt reflect.Type) {
 		bp := pkgNameOf(blockType)
 		bn := blockType.Name()
 		fmt.Fprintf(&r.out, "**Nested block `%s {}`:**\n\n", f.Name)
-		if doc := r.docs.typeDoc(bp, bn); doc != "" {
+		if doc := stripIdentPrefix(r.docs.typeDoc(bp, bn), bn); doc != "" {
 			r.out.WriteString(doc)
 			r.out.WriteString("\n\n")
 		}
@@ -333,7 +335,6 @@ func (r *renderer) collectFields(pkgName, typeName string, rt reflect.Type) []fi
 		if !ok {
 			continue
 		}
-		jsonTag := f.Tag.Get("json")
 		// Fields populated post-decode (CredentialEntry slice on
 		// HTTPSEndpoint) carry json:"-" or no hcl tag — skip.
 		if hclTag == "" || hclTag == "-" {
@@ -350,24 +351,24 @@ func (r *renderer) collectFields(pkgName, typeName string, rt reflect.Type) []fi
 		if hasOpt(opts, "block") {
 			typeStr = "block"
 		}
+		// Reference annotation: a RefSpec path either exactly equals
+		// the Go field name (singular) or starts with "<field>[*]"
+		// (slice of refs). When set, fold the kind into the type as
+		// `ref(<kind>)` (or `[]ref(<kind>)` for list-valued refs).
+		if kindRef, ok := refByPath[f.Name]; ok {
+			typeStr = fmt.Sprintf("ref(%s)", kindRef)
+		} else if kindRef, ok := refByPath[f.Name+"[*]"]; ok {
+			typeStr = fmt.Sprintf("[]ref(%s)", kindRef)
+		} else if override := ctyTypeOverride(name); override != "" && typeStr == "object" {
+			typeStr = override
+		}
 		row := fieldRow{
 			Name:        name,
 			Type:        typeStr,
 			Required:    !hasOpt(opts, "optional"),
 			Block:       hasOpt(opts, "block"),
 			GoFieldName: f.Name,
-			Doc:         r.docs.fieldDoc(pkgName, typeName, f.Name),
-		}
-		if jsonTag == "-" && row.Block {
-			// jsonTag "-" + block is unusual; keep but don't skip.
-		}
-		// Reference annotation: a RefSpec path either exactly equals
-		// the Go field name (singular) or starts with "<field>[*]"
-		// (slice of refs).
-		if kindRef, ok := refByPath[f.Name]; ok {
-			row.Reference = kindRef
-		} else if kindRef, ok := refByPath[f.Name+"[*]"]; ok {
-			row.Reference = kindRef
+			Doc:         stripIdentPrefix(r.docs.fieldDoc(pkgName, typeName, f.Name), f.Name),
 		}
 		rows = append(rows, row)
 	}
@@ -535,6 +536,21 @@ func hasOpt(opts []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// ctyTypeOverride spells out a more specific type for HCL fields
+// decoded as raw cty.Value, where the loader interprets a per-shape
+// schema after gohcl. Returns "" when no override is known and the
+// generic `object` should stand. Keyed by HCL attribute name; safe
+// because these names are unique across the registry.
+func ctyTypeOverride(hclName string) string {
+	switch hclName {
+	case "credentials":
+		return "[]credential"
+	case "approve":
+		return "[]ref(approver)"
+	}
+	return ""
 }
 
 // formatGoType renders a Go type for the docs table. cty.Value is

@@ -29,24 +29,30 @@ import (
 	"github.com/denoland/clawpatrol/config/facet"
 )
 
-// RuleBody is the shared shape across all three rule types. The
-// match keys vary by family (interpreted in Build), but the outer
-// frame is identical: endpoint targeting, priority, outcome.
+// RuleBody is the shared body shape across the three rule types
+// (`http_rule`, `sql_rule`, `k8s_rule`). The available keys inside the
+// `match` block depend on the rule's family (listed per kind below);
+// the outer frame is identical: endpoint targeting, priority, outcome.
 type RuleBody struct {
 	Endpoint  string   `hcl:"endpoint,optional"`
 	Endpoints []string `hcl:"endpoints,optional"`
 	Priority  int      `hcl:"priority,optional"`
 	Disabled  bool     `hcl:"disabled,optional"`
 
-	// Match is decoded raw and interpreted per family in Build. An
-	// absent match block matches everything — the v14 catch-all
-	// pattern (`rule "..." "X-default" { priority = -100; verdict =
-	// "deny" }`) relies on this.
+	// Match is a free-form block whose keys depend on the rule
+	// family. Each value is either a single string or a list of
+	// strings. Omitting `match` matches every request — the
+	// catch-all pattern (`rule "..." "X-default" { priority = -100;
+	// verdict = "deny" }`) relies on this.
 	Match cty.Value `hcl:"match,optional"`
 
-	// Outcome: exactly one of verdict / approve.
-	Verdict string    `hcl:"verdict,optional"`
-	Reason  string    `hcl:"reason,optional"`
+	// Verdict is the outcome when the rule matches. Set exactly one
+	// of `verdict` (`"allow"` / `"deny"`) or `approve`.
+	Verdict string `hcl:"verdict,optional"`
+	Reason  string `hcl:"reason,optional"`
+	// Approve is a list of bare-name approver references. The
+	// approvers run in order; the request is allowed only if every
+	// stage approves. Set this *or* `verdict`, not both.
 	Approve cty.Value `hcl:"approve,optional"`
 }
 

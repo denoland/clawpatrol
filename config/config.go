@@ -135,7 +135,9 @@ func (f FrameworkAttrs) Ref(name string) string {
 	return f.Refs[name]
 }
 
-// Defaults captures the singleton defaults {} block.
+// Defaults holds gateway-wide fallbacks used when an `approver` block
+// or other policy entity does not pin its own value. Exactly one
+// `defaults {}` block per config.
 type Defaults struct {
 	UnknownHost    string `hcl:"unknown_host,optional"`
 	LLMFailMode    string `hcl:"llm_fail_mode,optional"`
@@ -144,8 +146,9 @@ type Defaults struct {
 	HumanOnTimeout string `hcl:"human_on_timeout,optional"`
 }
 
-// PolicyText is the lowered shape of a policy "<name>" {} block:
-// the heredoc text plus its source range for diagnostic messages.
+// PolicyText defines a named, reusable chunk of policy prose that
+// `llm_approver` blocks reference by name. The single `text` attribute
+// is typically a heredoc.
 type PolicyText struct {
 	Name string
 	Text string `hcl:"text"`
