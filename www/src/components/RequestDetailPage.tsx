@@ -182,7 +182,7 @@ export function RequestDetailPage({
 // tables / functions are the parser's rule-targeting facets, surfaced
 // here so it's obvious why a given rule fired or didn't.
 function SQLDetail({ ev }: { ev: EventRecord }) {
-  const verb = (ev.method || "").toLowerCase();
+  const verb = (ev.method || "").toUpperCase();
   const tables = ev.tables ?? [];
   const functions = ev.functions ?? [];
   const statement = ev.statement ?? "";
