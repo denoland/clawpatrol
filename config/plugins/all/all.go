@@ -3,6 +3,8 @@
 // the Terraform provider blank-import pattern and lib/pq drivers.
 package all
 
+//go:generate go run ../../../tools/docgen -o ../../../site/doc/15-config-reference.md
+
 import (
 	_ "github.com/denoland/clawpatrol/config/plugins/approvers" // register built-in plugin
 	_ "github.com/denoland/clawpatrol/config/plugins/credentials"
