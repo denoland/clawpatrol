@@ -4,6 +4,9 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+
+	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/runtime"
 )
 
 // TestParseSQL exercises the best-effort lexer that feeds the SQL
@@ -125,5 +128,35 @@ func TestPgExtractSQL(t *testing.T) {
 	}
 	if got := pgExtractSQL('B', []byte("ignored")); got != "" {
 		t.Errorf("non-Q/P extract should return empty, got %q", got)
+	}
+}
+
+// TestPgEvaluateEmitsAllowOnNoMatch nails down the dashboard logging
+// fix: an endpoint with zero rules (or one whose rules don't match
+// the current query) still emits an `allow` event so the query
+// shows up in the actions tab. Without this, postgres connections
+// to permissive endpoints were invisible to operators — the runtime
+// previously short-circuited on `cr == nil`.
+func TestPgEvaluateEmitsAllowOnNoMatch(t *testing.T) {
+	var events []runtime.ConnEvent
+	ch := &runtime.ConnHandle{
+		Endpoint: &config.CompiledEndpoint{
+			Name:   "pg-test",
+			Family: "sql",
+			// Rules is nil — no rule will fire.
+		},
+		Emit: func(ev runtime.ConnEvent) { events = append(events, ev) },
+	}
+	if v, _ := pgEvaluate(ch, "SELECT 1", ""); v != "" {
+		t.Errorf("verdict %q, want empty (allow)", v)
+	}
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want 1: %+v", len(events), events)
+	}
+	if events[0].Action != "allow" {
+		t.Errorf("Action = %q, want allow", events[0].Action)
+	}
+	if events[0].Verb != "select" {
+		t.Errorf("Verb = %q, want select", events[0].Verb)
 	}
 }

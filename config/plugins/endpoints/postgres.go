@@ -385,7 +385,10 @@ func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.
 }
 
 // pgEvaluate runs the SQL through the endpoint's compiled rules and
-// returns the disposition for this query.
+// returns the disposition for this query. Emits a per-query event in
+// every branch (allow, deny, hitl_allow, hitl_deny) so the dashboard
+// surfaces the activity even when no rule fires — endpoints with
+// zero rules still log every query as "allow".
 //
 // Returns:
 //
@@ -395,6 +398,7 @@ func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.
 //	("", "")         — no rule fires or the matched rule allows.
 func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 	info := parseSQL(sql)
+	summary := pgSummary(info)
 	mreq := &match.Request{
 		Family:     "sql",
 		PeerIP:     ch.PeerIP,
@@ -408,9 +412,16 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 	}
 	cr := runtime.MatchRequest(ch.Endpoint, mreq)
 	if cr == nil {
+		// No rule matched — implicit allow. Emit so the query
+		// shows up in the dashboard's actions tab anyway; the
+		// HTTP path does the same (main.go:1909 — every request
+		// gets an `allow` event when no explicit verdict was
+		// recorded).
+		emit(ch, runtime.ConnEvent{
+			Action: "allow", Verb: info.Verb, Summary: summary,
+		})
 		return "", ""
 	}
-	summary := pgSummary(info)
 
 	// Approve chain. ConnHandle.Approve dispatches through the
 	// host's HITL machinery (same one HTTPS uses) — the postgres
