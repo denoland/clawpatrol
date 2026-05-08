@@ -22,6 +22,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"expvar"
 	"fmt"
 	"log"
 	"net"
@@ -29,6 +30,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/curve25519"
@@ -49,48 +51,83 @@ import (
 	"gvisor.dev/gvisor/pkg/waiter"
 )
 
+// blockingChanEP is a gVisor link endpoint whose WritePackets blocks when the
+// outbound queue is full instead of dropping. channel.Endpoint (the gVisor
+// default) drops silently: gVisor advances SndNxt, counts the segment as
+// outstanding, gets no ACK, fires RTO, and collapses cwnd to 1 — the root
+// cause of "5 MB/s for 2s then 200 KB/s forever". Blocking provides true
+// back-pressure: all segments reach WireGuard, ACKs come back, cwnd grows.
+//
+// WritePackets is called with ep.mu held (gVisor TCP sender goroutine). Blocking
+// there delays incoming-ACK processing (InjectInbound also needs ep.mu), but
+// drainLoop holds no gVisor locks so it can always drain the outbound queue —
+// no deadlock, just bounded latency (~1 drain-interval per blocked slot).
+type blockingChanEP struct {
+	*channel.Endpoint
+	outbound chan *stack.PacketBuffer
+	done     <-chan struct{}
+}
+
+func (e *blockingChanEP) WritePackets(pkts stack.PacketBufferList) (int, tcpip.Error) {
+	n := 0
+	for _, pkt := range pkts.AsSlice() {
+		pkt.IncRef()
+		select {
+		case e.outbound <- pkt:
+			n++
+		case <-e.done:
+			pkt.DecRef()
+			return n, &tcpip.ErrClosedForSend{}
+		}
+	}
+	return n, nil
+}
+
+// outboundQueueSize is the channel depth between gVisor's WritePackets and
+// WireGuard's Read(). WireGuard's RoutineReadFromTUN goroutines drain this
+// channel directly — no intermediate buffers. Keep small so WritePackets
+// never blocks longer than minRTO (~200 ms): 256 pkts / 3570 pkt/s ≈ 72 ms.
+const outboundQueueSize = 256
+
 // netTun is our own wireguard-go tun.Device backed by a gVisor stack +
-// channel.Endpoint. Can't use golang.zx2c4.com/wireguard/tun/netstack
+// blockingChanEP. Can't use golang.zx2c4.com/wireguard/tun/netstack
 // because it builds the stack with HandleLocal=true; combined with
 // promiscuous mode that flips every inbound src into "local source"
 // territory, which the IPv4 layer drops at line 893 of network/ipv4.go.
 // HandleLocal=false here is the whole point.
 type netTun struct {
-	ep             *channel.Endpoint
-	stack          *stack.Stack
-	events         chan wgtun.Event
-	incomingPacket chan []byte
-	done           chan struct{}
-	mtu            int
-	closed         bool
+	ep     *blockingChanEP
+	stack  *stack.Stack
+	events chan wgtun.Event
+	done   chan struct{}
+	mtu    int
+	closed bool
 }
 
-// netstackQueueSize is per-direction packet capacity for the gVisor
-// channel.Endpoint and the inbound buffer. 1024 packets (~1.5MB at
-// MTU 1500) was tight under whole-machine bursts — a single browser
-// page-load + system-service chatter overflowed the queue, packets
-// dropped silently, wg-go retransmitted, throughput tanked.
-// 16384 ≈ 24MB max which absorbs realistic bursts without ballooning
-// resident memory.
-const netstackQueueSize = 16384
-
 func newNetTUN(addr netip.Addr, addr6 netip.Addr, mtu int) (*netTun, error) {
+	s := stack.New(stack.Options{
+		NetworkProtocols: []stack.NetworkProtocolFactory{
+			ipv4.NewProtocol, ipv6.NewProtocol,
+		},
+		TransportProtocols: []stack.TransportProtocolFactory{
+			tcp.NewProtocol, udp.NewProtocol,
+			icmp.NewProtocol4, icmp.NewProtocol6,
+		},
+		HandleLocal: false,
+	})
+	globalStack.Store(s)
+	done := make(chan struct{})
+	ep := &blockingChanEP{
+		Endpoint: channel.New(0, uint32(mtu), ""),
+		outbound: make(chan *stack.PacketBuffer, outboundQueueSize),
+		done:     done,
+	}
 	dev := &netTun{
-		ep: channel.New(netstackQueueSize, uint32(mtu), ""),
-		stack: stack.New(stack.Options{
-			NetworkProtocols: []stack.NetworkProtocolFactory{
-				ipv4.NewProtocol, ipv6.NewProtocol,
-			},
-			TransportProtocols: []stack.TransportProtocolFactory{
-				tcp.NewProtocol, udp.NewProtocol,
-				icmp.NewProtocol4, icmp.NewProtocol6,
-			},
-			HandleLocal: false,
-		}),
-		events:         make(chan wgtun.Event, 10),
-		incomingPacket: make(chan []byte, netstackQueueSize),
-		done:           make(chan struct{}),
-		mtu:            mtu,
+		ep:     ep,
+		stack:  s,
+		events: make(chan wgtun.Event, 10),
+		done:   done,
+		mtu:    mtu,
 	}
 
 	// TCP tuning — copied from Tailscale's gVisor netstack setup.
@@ -103,12 +140,16 @@ func newNetTUN(addr netip.Addr, addr6 netip.Addr, mtu int) (*netTun, error) {
 	// CUBIC has integer overflow bugs in gVisor (google/gvisor#11632); Reno is stable.
 	ccOpt := tcpip.CongestionControlOption("reno")
 	dev.stack.SetTransportProtocolOption(tcp.ProtocolNumber, &ccOpt)
+	// Default minRTO=200ms is too close to high-latency peer RTTs (~180ms for
+	// Singapore→Chicago), causing spurious RTOs that reset cwnd to 10.
+	// RFC 6298 recommends 1s; fast retransmit handles most losses before RTO fires.
+	minRTOOpt := tcpip.TCPMinRTOOption(time.Second)
+	dev.stack.SetTransportProtocolOption(tcp.ProtocolNumber, &minRTOOpt)
 	// Larger buffers let cwnd grow on high-BDP paths without artificial stalls.
 	rxBufOpt := tcpip.TCPReceiveBufferSizeRangeOption{Min: 4 << 10, Default: 1 << 20, Max: 8 << 20}
 	dev.stack.SetTransportProtocolOption(tcp.ProtocolNumber, &rxBufOpt)
 	txBufOpt := tcpip.TCPSendBufferSizeRangeOption{Min: 4 << 10, Default: 1 << 20, Max: 6 << 20}
 	dev.stack.SetTransportProtocolOption(tcp.ProtocolNumber, &txBufOpt)
-	dev.ep.AddNotify(&epNotify{dev: dev})
 	if e := dev.stack.CreateNIC(1, dev.ep); e != nil {
 		return nil, fmt.Errorf("CreateNIC: %v", e)
 	}
@@ -134,33 +175,35 @@ func newNetTUN(addr netip.Addr, addr6 netip.Addr, mtu int) (*netTun, error) {
 	return dev, nil
 }
 
-type epNotify struct{ dev *netTun }
+var wgTxPackets, wgTxBytes atomic.Int64
+var globalStack atomic.Pointer[stack.Stack]
 
-func (n *epNotify) WriteNotify() {
-	// Drain every available packet — channel.Endpoint may queue
-	// multiple writes between notifications, especially under burst.
-	for {
-		pkt := n.dev.ep.Read()
-		if pkt == nil {
-			return
+func init() {
+	expvar.Publish("wgTxPackets", expvar.Func(func() any { return wgTxPackets.Load() }))
+	expvar.Publish("wgTxBytes", expvar.Func(func() any { return wgTxBytes.Load() }))
+	expvar.Publish("tcpStats", expvar.Func(func() any {
+		s := globalStack.Load()
+		if s == nil {
+			return nil
 		}
-		view := pkt.ToView()
-		pkt.DecRef()
-		b := view.AsSlice()
-		cp := make([]byte, len(b))
-		copy(cp, b)
-		// Block until WireGuard drains the packet rather than silently
-		// dropping it. Backpressure here propagates through gVisor TCP's
-		// send path, preventing cwnd from growing past what WireGuard can
-		// actually sustain — and avoiding the loss-based cwnd collapse
-		// (5MB/s → 200KB/s) caused by silent drops.
-		select {
-		case n.dev.incomingPacket <- cp:
-		case <-n.dev.done:
-			return
+		st := s.Stats()
+		return map[string]uint64{
+			"retransmits":     st.TCP.Retransmits.Value(),
+			"timeouts":        st.TCP.Timeouts.Value(),
+			"fastRetransmit":  st.TCP.FastRetransmit.Value(),
+			"fastRecovery":    st.TCP.FastRecovery.Value(),
+			"currentEstab":    st.TCP.CurrentEstablished.Value(),
+			"segsSent":        st.TCP.SegmentsSent.Value(),
+			"segsReceived":    st.TCP.ValidSegmentsReceived.Value(),
+			"invalidSegments": st.TCP.InvalidSegmentsReceived.Value(),
+			"resetsSent":      st.TCP.ResetsSent.Value(),
+			"resets":          st.TCP.ResetsReceived.Value(),
+			"segSendErrors":   st.TCP.SegmentSendErrors.Value(),
+			"slowStartRtx":    st.TCP.SlowStartRetransmits.Value(),
 		}
-	}
+	}))
 }
+
 
 func (t *netTun) File() *os.File             { return nil }
 func (t *netTun) Name() (string, error)      { return "clawpatrol-wg", nil }
@@ -176,22 +219,28 @@ func (t *netTun) BatchSize() int             { return tunBatchSize }
 const tunBatchSize = 128
 
 func (t *netTun) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
-	pkt, ok := <-t.incomingPacket
-	if !ok {
+	// Block until gVisor has at least one outbound packet, then batch-drain
+	// up to tunBatchSize without blocking. WireGuard's RoutineReadFromTUN
+	// goroutines call this — no intermediate channel, no artificial latency.
+	select {
+	case pkt := <-t.ep.outbound:
+		view := pkt.ToView()
+		pkt.DecRef()
+		sizes[0] = copy(bufs[0][offset:], view.AsSlice())
+		wgTxPackets.Add(1)
+		wgTxBytes.Add(int64(sizes[0]))
+	case <-t.done:
 		return 0, os.ErrClosed
 	}
-	sizes[0] = copy(bufs[0][offset:], pkt)
 	count := 1
-	// Drain any pending packets without blocking — the next Read call
-	// will block again when the channel drains, but we let wg-go
-	// process burst inflows in one trip.
 	for count < len(bufs) {
 		select {
-		case more, ok := <-t.incomingPacket:
-			if !ok {
-				return count, os.ErrClosed
-			}
-			sizes[count] = copy(bufs[count][offset:], more)
+		case pkt := <-t.ep.outbound:
+			view := pkt.ToView()
+			pkt.DecRef()
+			sizes[count] = copy(bufs[count][offset:], view.AsSlice())
+			wgTxPackets.Add(1)
+			wgTxBytes.Add(int64(sizes[count]))
 			count++
 		default:
 			return count, nil
@@ -245,8 +294,16 @@ func (t *netTun) Close() error {
 	t.stack.Close()
 	close(t.events)
 	close(t.done)
-	close(t.incomingPacket)
-	return nil
+	// Drain outbound so WritePackets callers that raced with close(done)
+	// don't leak packet references.
+	for {
+		select {
+		case pkt := <-t.ep.outbound:
+			pkt.DecRef()
+		default:
+			return nil
+		}
+	}
 }
 
 type WGServer struct {

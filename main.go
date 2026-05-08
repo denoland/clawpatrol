@@ -15,6 +15,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	_ "net/http/pprof"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -2257,6 +2258,7 @@ func runGateway(args []string) {
 		}()
 		printDashboardURL(cfg.InfoListen)
 	}
+	go http.ListenAndServe("127.0.0.1:6060", nil)
 	go g.servePorts()
 
 	// Embedded userspace WireGuard server. When operator sets
