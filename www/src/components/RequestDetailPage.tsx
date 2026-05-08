@@ -197,7 +197,7 @@ function SQLDetail({ ev }: { ev: EventRecord }) {
   return (
     <div className="bg-white border border-[#e5e5e5] rounded divide-y divide-[#e5e5e5]">
       {facets.length > 0 && (
-        <Section title="Query">
+        <Section title="Details">
           <div className="px-4 py-3 grid grid-cols-[100px_1fr] gap-y-1.5 gap-x-3 text-[12px]">
             {facets.map(f => (
               <div key={f.label} className="contents">
