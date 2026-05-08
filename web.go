@@ -308,7 +308,7 @@ func (w *webMux) tailnetGate(next http.Handler) http.Handler {
 			login = r.Header.Get("Tailscale-User-Login")
 		}
 		if login == "" {
-			http.Error(rw, "tailnet access required — onboard via `clawpatrol join --url <gateway>`", 403)
+			http.Error(rw, "tailnet access required — onboard via `clawpatrol join <gateway>`", 403)
 			return
 		}
 		next.ServeHTTP(rw, r)

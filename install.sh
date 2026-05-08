@@ -133,4 +133,4 @@ if [ "$OS" = "darwin" ]; then
   rm -rf "$APP_TMP"
 fi
 
-echo "next: clawpatrol join --url <gateway-url>"
+echo "next: clawpatrol join <gateway-url>"

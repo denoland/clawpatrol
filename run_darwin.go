@@ -80,7 +80,7 @@ func runRun(args []string) {
 	if _, err := os.Stat(macHelperPath); err != nil {
 		fail("Clawpatrol.app not installed. Build + install from macos/:\n" +
 			"  cd macos && ./install.sh\n" +
-			"then: clawpatrol join --url <gateway>")
+			"then: clawpatrol join <gateway>")
 	}
 	if err := ensureMacProxyUp(); err != nil {
 		fail(fmt.Sprintf("ensure proxy up: %v", err))
@@ -119,7 +119,7 @@ func runRun(args []string) {
 func ensureMacProxyUp() error {
 	confPath := filepath.Join(os.Getenv("HOME"), ".config", "clawpatrol", "wg.conf")
 	if _, err := os.Stat(confPath); err != nil {
-		return fmt.Errorf("no wg.conf at %s — run `clawpatrol join --url <gateway>` first", confPath)
+		return fmt.Errorf("no wg.conf at %s — run `clawpatrol join <gateway>` first", confPath)
 	}
 	// `install` may surface the system-extension approval prompt the
 	// first time; once activated it's a fast no-op.
@@ -143,7 +143,7 @@ func ensureMacProxyUp() error {
 
 // macHelperInstall is invoked from runJoin (on darwin) right after
 // the wg.conf is written so the user gets a single-prompt onboarding:
-// `clawpatrol join --url ...` → wg conf saved → sysext approved →
+// `clawpatrol join …` → wg conf saved → sysext approved →
 // proxy up. wholeMachine maps to the helper's --whole-machine flag.
 //
 // After saving the profile, push the freshly written wg.conf into the

@@ -66,7 +66,7 @@ func runRun(args []string) {
 
 	cfg, err := parseRunConf(*confPath)
 	if err != nil {
-		fail("conf %s: %v\n  hint: run `clawpatrol join --url <gw>` first", *confPath, err)
+		fail("conf %s: %v\n  hint: run `clawpatrol join <gw>` first", *confPath, err)
 	}
 
 	checkUserNS()
