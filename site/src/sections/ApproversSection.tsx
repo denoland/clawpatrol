@@ -85,7 +85,7 @@ function LlmDiagram() {
   );
 }
 
-/* ── Human review: Slack ping → human reply → verdict ──────────────── */
+/* ── Human In The Loop: Slack ping → human reply → verdict ─────────── */
 
 function HumanDiagram() {
   return (
@@ -194,7 +194,7 @@ export function ApproversSection() {
           />
           <OrDivider />
           <ApproverCard
-            title="Human review"
+            title="Human In The Loop"
             verdict="require_human"
             pitch="A person votes in Slack, the dashboard, or your own webhook. Times out closed if no one's home."
             config={HUMAN_CONFIG}

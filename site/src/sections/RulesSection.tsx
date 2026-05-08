@@ -29,7 +29,7 @@ const DECISIONS: { label: string; verdict: string; body: string }[] = [
       "with your custom prompt — it reads the payload and votes.",
   },
   {
-    label: "Human review",
+    label: "Human In The Loop",
     verdict: "require_human",
     body:
       "Park the request. Ping Slack, the dashboard, or your own " +
