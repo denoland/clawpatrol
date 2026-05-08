@@ -107,9 +107,7 @@ function RuleCodeBlock() {
         {"\n  "}
         <span class="text-rust-300">policy</span>
         {" = "}
-        <span class="text-butter-300">
-          "reject changes with bad words"
-        </span>
+        <span class="text-butter-300">"reject changes with bad words"</span>
         {"\n}"}
       </code>
     </pre>
