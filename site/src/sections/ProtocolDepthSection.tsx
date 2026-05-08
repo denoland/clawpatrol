@@ -64,8 +64,8 @@ export function ProtocolDepthSection() {
           <p class="text-base  text-canvas/70">
             Most gateways stop at HTTP method and URL. Claw Patrol parses
             each protocol — so you can write rules that mean something.
-            Block destructive SQL. Quarantine prod kubectl. Gate writes
-            to GitHub.
+            Block destructive SQL. Quarantine prod kubectl. Gate
+            specific ssh commands.
           </p>
         </div>
 
