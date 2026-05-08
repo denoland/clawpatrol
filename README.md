@@ -22,7 +22,7 @@ Detected public IP: gw.example.com
 └ Wrote /etc/systemd/system/clawpatrol-gateway.service
 
 Dashboard: http://gw.example.com:9080
-Join command: clawpatrol join --url http://gw.example.com:9080
+Join command: clawpatrol join http://gw.example.com:9080
 ```
 
 ```
@@ -34,7 +34,7 @@ systemctl enable --now clawpatrol-gateway
 On every machine you want to route through the gateway, run `clawpatrol join`. You'll get a one-time code; verify it matches in the browser tab that opens, approve, and you're done.
 
 ```
-clawpatrol join --url http://gw.example.com:9080
+clawpatrol join http://gw.example.com:9080
 
 Verify code in browser:
 
@@ -122,7 +122,7 @@ rule "sql_rule" "pg-secret-defense" {
 
 Clawpatrol ships two control planes for the gateway-to-device tunnel. Pick one when you run `gateway init`; the default is WireGuard.
 
-The WireGuard mode embeds a userspace WG endpoint inside the gateway. You only have to open one UDP port — there's no daemon, no `wg-quick`, and no kernel module on the gateway host. Devices run `clawpatrol join --url <gw>` and walk away with a per-machine WG conf.
+The WireGuard mode embeds a userspace WG endpoint inside the gateway. You only have to open one UDP port — there's no daemon, no `wg-quick`, and no kernel module on the gateway host. Devices run `clawpatrol join <gw>` and walk away with a per-machine WG conf.
 
 The Tailscale mode joins the gateway to your existing tailnet as an exit-node. Devices that are already on the tailnet run `clawpatrol login` and pin `clawpatrol` as their exit-node. Use this if you already operate Tailscale and want its ACL and whois plumbing to gate onboarding.
 

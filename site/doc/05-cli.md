@@ -95,11 +95,12 @@ Options:
 
 ### `clawpatrol join`
 
-Register this device with an existing gateway (low-level,
-used internally by `onboard`).
+Register this device with an existing gateway. The URL is the only
+positional argument; `--hostname`, `--profile`, `--whole-machine`,
+and `--no-trust` are optional flags.
 
 ```bash
-clawpatrol join --server URL
+clawpatrol join <gateway-url>
 ```
 
 ### `clawpatrol --version`

@@ -37,7 +37,7 @@ in promiscuous mode — same shape as unclaw's `boringtun` + `smoltcp`
   derived via curve25519 at boot. Peer (pubkey → IP) map persisted
   at `<oauth_dir>/wg-peers.json`, replayed on every restart so
   existing clients survive gateway redeploys.
-- `clawpatrol join --url <gw>` runs once: prints user-code, opens
+- `clawpatrol join <gw>` runs once: prints user-code, opens
   dashboard URL, server mints a fresh keypair, allocates a /32 from
   the configured subnet, registers the peer with wireguard-go,
   hands back a `wg-quick` conf. Server **auto-claims** the peer
@@ -105,7 +105,7 @@ in `/opt/clawpatrol/oauth/`.
 
 ```bash
 curl -fsSL https://denoland.github.io/clawpatrol/install.sh | sh
-clawpatrol join --url http://your-gw.example.com:8080
+clawpatrol join http://your-gw.example.com:8080
 # approve at the displayed URL, done — claude/gh/codex just work
 ```
 

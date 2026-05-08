@@ -49,7 +49,6 @@ type tsPeer struct {
 // system trust) — single command, full setup.
 func runJoin(args []string) {
 	fs := flag.NewFlagSet("join", flag.ExitOnError)
-	gatewayURL := fs.String("url", "", "gateway URL (e.g. http://gw.example.com:8080) — required")
 	gwName := fs.String("name", "clawpatrol", "exit-node hostname on the tailnet")
 	caOut := fs.String("ca-dir", defaultClawpatrolDir(), "where to store the fetched CA")
 	skipTrust := fs.Bool("no-trust", false, "fetch CA but skip system trust install (do it manually)")
@@ -57,20 +56,22 @@ func runJoin(args []string) {
 	profile := fs.String("profile", "", "profile to assign at approval time (defaults to the gateway's default profile if the approver doesn't pick one)")
 	hostname := fs.String("hostname", "", "device name to register with the gateway (defaults to os.Hostname)")
 	_ = fs.Parse(args)
-	if *gatewayURL == "" {
-		fail("usage: clawpatrol join --url <gateway-url> [--hostname NAME] [--profile NAME] [--whole-machine]")
+	rest := fs.Args()
+	if len(rest) != 1 || rest[0] == "" {
+		fail("usage: clawpatrol join <gateway-url> [--hostname NAME] [--profile NAME] [--whole-machine]")
 	}
+	gatewayURL := rest[0]
 	// Fetch CA + write shell rc BEFORE the VPN goes up. Once
 	// `wg-quick up` flips the default route through the gateway,
 	// reaching the gateway's public URL goes via the tunnel — which
 	// can't carry traffic until the gateway has internet egress
 	// configured (MASQUERADE etc). The CA is small + cheap and the
 	// onboard endpoints are reachable on the public path.
-	setup, err := postJoinSetup(*gatewayURL, *caOut, *skipTrust)
+	setup, err := postJoinSetup(gatewayURL, *caOut, *skipTrust)
 	if err != nil {
 		fail("ca fetch: %v", err)
 	}
-	wgMode, err := onboardViaDeviceFlow(*gatewayURL, *wholeMachine, *profile, *hostname, setup)
+	wgMode, err := onboardViaDeviceFlow(gatewayURL, *wholeMachine, *profile, *hostname, setup)
 	if err != nil {
 		fail("join: %v", err)
 	}
@@ -1108,7 +1109,7 @@ profile "default" {
 	printTreeItems(items)
 	fmt.Println()
 	fmt.Printf("Dashboard: %s\n", url)
-	fmt.Printf("Join command: clawpatrol join --url %s\n", url)
+	fmt.Printf("Join command: clawpatrol join %s\n", url)
 }
 
 // detectPublicIP queries plain-text IP echo services. We validate

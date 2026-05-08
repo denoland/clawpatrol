@@ -131,7 +131,7 @@ The gateway pulls in three plugin families:
 ## Connection modes
 
 There are three ways to connect a device to the gateway. Onboarding
-runs through `clawpatrol join --url <gateway>`: the dashboard mints
+runs through `clawpatrol join <gateway>`: the dashboard mints
 a WireGuard keypair, allocates a `/32` from the configured subnet,
 registers the peer with the running wireguard-go device, and the
 device persists the resulting `wg-quick`-style config at
