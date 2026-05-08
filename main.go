@@ -292,7 +292,7 @@ func (g *Gateway) transportFor(ep *config.CompiledEndpoint) *http.Transport {
 			return g.dialUpstream(ctx, network, addr, h, ep, profile)
 		},
 		ForceAttemptHTTP2:   false,
-		IdleConnTimeout:     30 * time.Second,
+		IdleConnTimeout:     5 * time.Second,
 		MaxIdleConns:        128,
 		MaxIdleConnsPerHost: 8,
 	}
@@ -1621,13 +1621,11 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		var matchBody []byte
 		if req.Body != nil && (req.Method == "POST" || req.Method == "PUT" || req.Method == "PATCH") {
 			b, rdErr := io.ReadAll(io.LimitReader(req.Body, 1<<20))
-			req.Body.Close()
 			if rdErr == nil {
 				matchBody = b
-				req.Body = io.NopCloser(bytes.NewReader(b))
-				if req.ContentLength > 0 {
-					req.ContentLength = int64(len(b))
-				}
+				// Re-attach: buffered prefix + rest of original stream.
+				// Do not close req.Body — it still holds bytes beyond 1 MiB.
+				req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), req.Body))
 			}
 		}
 
@@ -1817,12 +1815,10 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		var trackedReqBody []byte
 		if trackKind != "" && req.Body != nil {
 			b, _ := io.ReadAll(io.LimitReader(req.Body, 1<<20))
-			req.Body.Close()
 			trackedReqBody = b
-			req.Body = io.NopCloser(bytes.NewReader(b))
-			if req.ContentLength > 0 {
-				req.ContentLength = int64(len(b))
-			}
+			// Re-attach: buffered prefix + rest of original stream.
+			// Do not close req.Body — it still holds bytes beyond 1 MiB.
+			req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), req.Body))
 		}
 		// Pre-create session from the request body so streaming SSE
 		// responses (codex /backend-api/codex/responses, anthropic
