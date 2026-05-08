@@ -60,6 +60,7 @@ type netTun struct {
 	stack          *stack.Stack
 	events         chan wgtun.Event
 	incomingPacket chan []byte
+	done           chan struct{}
 	mtu            int
 	closed         bool
 }
@@ -88,8 +89,25 @@ func newNetTUN(addr netip.Addr, addr6 netip.Addr, mtu int) (*netTun, error) {
 		}),
 		events:         make(chan wgtun.Event, 10),
 		incomingPacket: make(chan []byte, netstackQueueSize),
+		done:           make(chan struct{}),
 		mtu:            mtu,
 	}
+
+	// TCP tuning — copied from Tailscale's gVisor netstack setup.
+	// SACK improves recovery without full retransmit.
+	sackOpt := tcpip.TCPSACKEnabled(true)
+	dev.stack.SetTransportProtocolOption(tcp.ProtocolNumber, &sackOpt)
+	// RACK has correctness bugs in gVisor (tailscale/tailscale#9707).
+	rackOpt := tcpip.TCPRecovery(0)
+	dev.stack.SetTransportProtocolOption(tcp.ProtocolNumber, &rackOpt)
+	// CUBIC has integer overflow bugs in gVisor (google/gvisor#11632); Reno is stable.
+	ccOpt := tcpip.CongestionControlOption("reno")
+	dev.stack.SetTransportProtocolOption(tcp.ProtocolNumber, &ccOpt)
+	// Larger buffers let cwnd grow on high-BDP paths without artificial stalls.
+	rxBufOpt := tcpip.TCPReceiveBufferSizeRangeOption{Min: 4 << 10, Default: 1 << 20, Max: 8 << 20}
+	dev.stack.SetTransportProtocolOption(tcp.ProtocolNumber, &rxBufOpt)
+	txBufOpt := tcpip.TCPSendBufferSizeRangeOption{Min: 4 << 10, Default: 1 << 20, Max: 6 << 20}
+	dev.stack.SetTransportProtocolOption(tcp.ProtocolNumber, &txBufOpt)
 	dev.ep.AddNotify(&epNotify{dev: dev})
 	if e := dev.stack.CreateNIC(1, dev.ep); e != nil {
 		return nil, fmt.Errorf("CreateNIC: %v", e)
@@ -131,11 +149,15 @@ func (n *epNotify) WriteNotify() {
 		b := view.AsSlice()
 		cp := make([]byte, len(b))
 		copy(cp, b)
+		// Block until WireGuard drains the packet rather than silently
+		// dropping it. Backpressure here propagates through gVisor TCP's
+		// send path, preventing cwnd from growing past what WireGuard can
+		// actually sustain — and avoiding the loss-based cwnd collapse
+		// (5MB/s → 200KB/s) caused by silent drops.
 		select {
 		case n.dev.incomingPacket <- cp:
-		default:
-			// dropped — incomingPacket is sized to absorb bursts; if it
-			// still overflows wg-go's reader is bottlenecked.
+		case <-n.dev.done:
+			return
 		}
 	}
 }
@@ -222,6 +244,7 @@ func (t *netTun) Close() error {
 	t.stack.RemoveNIC(1)
 	t.stack.Close()
 	close(t.events)
+	close(t.done)
 	close(t.incomingPacket)
 	return nil
 }
@@ -394,7 +417,7 @@ func (s *WGServer) EnablePromiscuousForwarder(
 	// the cap, after which new SYNs sit queued at the netstack until
 	// older requests Complete. tcp.NewForwarder allocates lazily, so
 	// the higher bound only costs memory under actual load.
-	fwd := tcp.NewForwarder(st, 0, 16384, func(req *tcp.ForwarderRequest) {
+	fwd := tcp.NewForwarder(st, 1<<20, 16384, func(req *tcp.ForwarderRequest) {
 		id := req.ID()
 		var wq waiter.Queue
 		ep, err := req.CreateEndpoint(&wq)
