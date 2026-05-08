@@ -309,6 +309,35 @@ function tryParseJSON(text: string): {
   return null;
 }
 
+// SSE bodies (text/event-stream) are blocks of `event:`/`data:` lines
+// separated by blank lines. Returns null when the body doesn't look
+// like SSE.
+type SseEvent = { type?: string; id?: string; data: string };
+function parseSSE(text: string): SseEvent[] | null {
+  if (!/^(event|data|id|retry):/m.test(text)) return null;
+  const events: SseEvent[] = [];
+  for (const block of text.split(/\r?\n\r?\n+/)) {
+    if (!block.trim()) continue;
+    const ev: SseEvent = { data: "" };
+    let valid = false;
+    for (const line of block.split(/\r?\n/)) {
+      const idx = line.indexOf(":");
+      if (idx <= 0) continue;
+      const k = line.slice(0, idx);
+      let v = line.slice(idx + 1);
+      if (v.startsWith(" ")) v = v.slice(1);
+      if (k === "event") { ev.type = v; valid = true; }
+      else if (k === "data") {
+        ev.data = ev.data ? ev.data + "\n" + v : v;
+        valid = true;
+      }
+      else if (k === "id") ev.id = v;
+    }
+    if (valid) events.push(ev);
+  }
+  return events.length > 0 ? events : null;
+}
+
 function HttpBody({ text }: { text: string }) {
   if (!text) return (
     <div className="px-4 py-3 text-[11px] text-[#a3a3a3]">
@@ -325,6 +354,37 @@ function HttpBody({ text }: { text: string }) {
             (truncated)
           </div>
         )}
+      </div>
+    );
+  }
+  const sse = parseSSE(text);
+  if (sse) {
+    return (
+      <div className="overflow-auto px-4 py-3 font-mono text-[11px] leading-relaxed space-y-3">
+        {sse.map((e, i) => {
+          const dataJson = tryParseJSON(e.data);
+          return (
+            <div key={i}>
+              {e.type && (
+                <div className="text-[10px] uppercase tracking-[.12em] text-[#a3a3a3] mb-1">
+                  event: <span className="normal-case tracking-normal text-[#525252]">{e.type}</span>
+                </div>
+              )}
+              {dataJson ? (
+                <>
+                  <JsonNode value={dataJson.parsed} />
+                  {dataJson.truncated && (
+                    <div className="mt-1 text-[10px] text-[#a3a3a3]">
+                      (truncated)
+                    </div>
+                  )}
+                </>
+              ) : (
+                <pre className="whitespace-pre-wrap break-all text-[#525252]">{e.data}</pre>
+              )}
+            </div>
+          );
+        })}
       </div>
     );
   }
