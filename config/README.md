@@ -3,10 +3,20 @@
 `config/` is clawpatrol's HCL policy loader. The grammar is a typed-
 block dialect — every named entity declares its kind + type via two
 labels, and operators reference entities by bare name. This README
-is the canonical syntax reference; the runtime semantics live in
-`config/runtime/` and the per-plugin schemas in `config/plugins/`.
+is the human-curated narrative reference; the runtime semantics live
+in `config/runtime/` and the per-plugin schemas in `config/plugins/`.
 
 A complete example fixture lives at [`testdata/full.hcl`](testdata/full.hcl).
+The auto-generated, exhaustive field reference lives at
+[`site/doc/15-config-reference.md`](../site/doc/15-config-reference.md) —
+regenerate it with:
+
+```
+go run ./tools/docgen -out site/doc/15-config-reference.md
+```
+
+(equivalently: `go generate ./tools/docgen`). A `go test ./tools/docgen/...`
+drift check fails CI if the committed file goes stale.
 
 ## Top-level structure
 
