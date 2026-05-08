@@ -26,7 +26,7 @@ async function init() {
   let data = (window as any).__DEMO_DATA__;
   if (!data) {
     // Dev mode: fetch the JSON
-    const res = await fetch("/s/demo-analytics.json");
+    const res = await fetch("/demo-analytics.json");
     data = await res.json();
   }
   renderChart(el, data);

@@ -646,6 +646,37 @@ a.neu-raised:active {
   }
 }
 
+/* Wave-divider spread — back layer drifts up, front layer drifts down
+   as the user scrolls past the divider into the next section. Uses the
+   standalone `translate` property so it composes with `transform`-based
+   wave-drift instead of overriding it. */
+@keyframes wave-spread-back {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-12px);
+  }
+}
+
+@keyframes wave-spread-mid {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-26px);
+  }
+}
+
+@keyframes wave-spread-front {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-40px);
+  }
+}
+
 /* Integration tiles — each slides up into place and settles partway through
    the viewport pass. Per-tile animation-range set inline for the stagger.
    Uses CSS `translate` so hover `scale` transforms compose cleanly. */
@@ -670,6 +701,33 @@ a.neu-raised:active {
         animation-timing-function: ease-out;
         animation-fill-mode: both;
         /* animation-range set inline per tile for the staggered entrance */
+      }
+
+      .wave-spread-back {
+        animation-name: wave-spread-back;
+        animation-range: contain 0% exit 100%;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-duration: 1ms;
+        animation-timeline: view();
+      }
+
+      .wave-spread-mid {
+        animation-name: wave-spread-mid;
+        animation-range: contain 0% exit 100%;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-duration: 1ms;
+        animation-timeline: view();
+      }
+
+      .wave-spread-front {
+        animation-name: wave-spread-front;
+        animation-range: contain 0% exit 100%;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-duration: 1ms;
+        animation-timeline: view();
       }
     }
   }
@@ -763,9 +821,9 @@ a.neu-raised:active {
 
   --breakpoint-xs: 32rem;
 
-  --animate-wave-drift: wave-drift 16s linear infinite;
-  --animate-wave-drift-medium: wave-drift 30s linear infinite;
-  --animate-wave-drift-slow: wave-drift 60s linear infinite;
+  --animate-wave-drift: wave-drift 37s linear infinite;
+  --animate-wave-drift-medium: wave-drift 27s linear infinite;
+  --animate-wave-drift-slow: wave-drift 21s linear infinite;
 
   --text-2xs: 0.625rem;
 

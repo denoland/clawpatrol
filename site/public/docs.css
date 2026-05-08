@@ -21,13 +21,14 @@
     text-decoration: none;
     opacity: 0;
     font-weight: 400;
-    color: var(--color-text-muted, #6b7770);
+    color: var(--color-text-muted);
     transition: opacity 0.15s;
   }
 
   :where(h1, h2, h3, h4, h5, h6) {
     font-family: var(--font-display);
     font-weight: 700;
+    line-height: 1.1;
   }
 
   h1 {
@@ -37,13 +38,13 @@
 
   h2 {
     font-size: 1.5rem;
-    margin-top: 2.5rem;
+    margin-top: 3rem;
     margin-bottom: 0.75rem;
   }
 
   h3 {
     font-size: 1.17rem;
-    margin-top: 2rem;
+    margin-top: 2.5rem;
     margin-bottom: 0.5rem;
   }
 
@@ -56,6 +57,12 @@
   ol {
     margin-bottom: 1rem;
     padding-left: 1.5rem;
+    list-style: initial;
+    padding-left: 1rem;
+
+    ::marker {
+      color: var(--color-navy);
+    }
   }
 
   li {
@@ -63,8 +70,8 @@
   }
 
   pre {
-    background: #1a1f1c;
-    color: #b8c4be;
+    background: var(--color-navy);
+    color: var(--color-navy-100);
     padding: 1rem;
     border-radius: 0.5rem;
     overflow-x: auto;
@@ -78,23 +85,24 @@
   }
 
   :not(pre) > code {
-    background: #e8e3db;
+    background: var(--color-navy-50);
     padding: 0.15em 0.4em;
     border-radius: 0.25rem;
   }
 
   a {
-    color: var(--color-console-dark, #2a342f);
+    color: var(--color-navy-400);
     text-decoration: underline;
+    text-decoration-color: var(--color-rust);
     text-underline-offset: 3px;
     font-weight: 500;
   }
 
   blockquote {
-    border-left: 3px solid #ccc;
+    border-left: 3px solid var(--color-navy-200);
     padding-left: 1rem;
     margin-bottom: 1rem;
-    color: #6b7770;
+    color: var(--color-text-muted);
   }
 
   table {
@@ -105,13 +113,13 @@
 
   th,
   td {
-    border: 1px solid #d0cbc3;
+    border: 1px solid var(--color-navy-200);
     padding: 0.5rem 0.75rem;
     text-align: left;
   }
 
   th {
-    background: #e8e3db;
+    background: var(--color-navy-50);
     font-weight: 600;
   }
 

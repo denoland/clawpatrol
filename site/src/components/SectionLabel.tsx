@@ -2,7 +2,7 @@ export function SectionLabel({ children }: { children: string }) {
   return (
     <div class="text-center mb-16">
       <h2
-        class="text-lg uppercase flex items-center gap-2 mx-auto w-max
+        class="text-xl uppercase flex items-center gap-2 mx-auto w-max
           font-bold
            text-rust font-sans"
       >

@@ -50,7 +50,7 @@ function VerdictPill({
     <div class="flex justify-center">
       <span
         class={`inline-block text-[10px] uppercase tracking-[0.25em]
-          font-display font-extrabold px-3 py-1.5 ${styles}`}
+          font-display font-bold px-3 py-1.5 ${styles}`}
       >
         verdict · {label}
       </span>
@@ -73,7 +73,7 @@ function LlmDiagram() {
       </div>
 
       <div class="flex items-start gap-2">
-        <div class="shrink-0 w-7 h-7 rounded-full bg-rust-200 flex items-center justify-center text-[11px] font-display font-extrabold text-rust-800">
+        <div class="shrink-0 w-7 h-7 rounded-full bg-rust-200 flex items-center justify-center text-[11px] font-display font-bold text-rust-800">
           AI
         </div>
         <div class="bg-canvas border border-rust-100 squircle-sm px-3 py-2 text-[12px]  text-text-muted">
@@ -93,7 +93,7 @@ function HumanDiagram() {
   return (
     <DiagramFrame>
       <div class="flex items-start gap-2">
-        <div class="shrink-0 w-7 h-7 rounded-full bg-navy-700 flex items-center justify-center text-[11px] font-display font-extrabold text-canvas">
+        <div class="shrink-0 w-7 h-7 rounded-full bg-navy-700 flex items-center justify-center text-[11px] font-display font-bold text-canvas">
           CP
         </div>
         <div class="bg-canvas border border-rust-100 squircle-sm px-3 py-2 text-[12px] ">
@@ -108,7 +108,7 @@ function HumanDiagram() {
       </div>
 
       <div class="flex items-start gap-2 flex-row-reverse">
-        <div class="shrink-0 w-7 h-7 rounded-full bg-rust-300 flex items-center justify-center text-[11px] font-display font-extrabold text-rust-900">
+        <div class="shrink-0 w-7 h-7 rounded-full bg-rust-300 flex items-center justify-center text-[11px] font-display font-bold text-rust-900">
           JC
         </div>
         <div class="bg-rust-100 border border-rust-200 squircle-sm px-3 py-2 text-[12px]  text-text">
@@ -142,7 +142,7 @@ function ApproverCard({
       <div className="hidden lg:block absolute w-full h-full top-2 left-2 bg-navy-100 squircle-xl z-0" />
       <div className="relative z-10 flex flex-col gap-4">
         <header class="flex items-baseline justify-between">
-          <h4 class="text-2xl font-display font-extrabold text-text">
+          <h4 class="text-3xl font-display font-bold text-text">
             {title}
           </h4>
           <code class="text-[10px] font-mono text-text-subtle">{verdict}</code>
@@ -177,7 +177,7 @@ export function ApproversSection() {
         <SectionLabel>Approvers</SectionLabel>
 
         <div class="max-w-3xl mb-14">
-          <h3 class="text-3xl sm:text-4xl md:text-5xl font-display font-extrabold  mb-5 text-text">
+          <h3 class="text-4xl sm:text-5xl md:text-6xl font-display font-bold  mb-5 text-text">
             Humans, models, <span class="text-rust">your call</span>
           </h3>
           <p class="text-base  text-text-muted">
