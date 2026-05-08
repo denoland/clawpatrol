@@ -58,6 +58,9 @@ export function AnalyticsPage({ ip, agents }: {
   const [events, setEvents] = useState<EventRecord[]>([]);
   const [totalCount, setTotalCount] = useState(0);
   const [errorCount, setErrorCount] = useState(0);
+  type Counts = Array<{ key: string; count: number }>;
+  const [byDevice, setByDevice] = useState<Counts>([]);
+  const [byHost, setByHost] = useState<Counts>([]);
   const [range, setRange] =
     useQS("range", "1h" as Range, RANGES);
   const [filterDevice, setFilterDevice] = useState<
@@ -71,19 +74,36 @@ export function AnalyticsPage({ ip, agents }: {
     agents.map(a => [a.ip, a.hostname || a.ip]),
   );
 
+  // Skip setState (and thus the chart redraw) when the polled
+  // response is identical to the last one — common on long ranges
+  // where 24h of data barely shifts every 10 s.
+  const lastSig = useRef("");
   useEffect(() => {
+    lastSig.current = "";
     let cancelled = false;
     const load = () => {
       getAnalytics({ range, agent: ip, limit: 5000 })
         .then((r) => {
           if (cancelled) return;
+          const first = r.events[0]?.id ?? "";
+          const last = r.events[r.events.length - 1]?.id ?? "";
+          const sig = `${r.total_count}|${r.error_count}|${r.events.length}|${first}|${last}`;
+          if (sig === lastSig.current) return;
+          lastSig.current = sig;
           setEvents(r.events);
           setTotalCount(r.total_count);
           setErrorCount(r.error_count);
+          setByDevice(r.by_device ?? []);
+          setByHost(r.by_host ?? []);
         })
         .catch(() => {});
     };
     load();
+    // Auto-refresh only for short ranges. On 1h+ the data barely
+    // shifts per poll and the redraw is mostly noise.
+    if (RANGE_MS[range] >= 3600e3) {
+      return () => { cancelled = true; };
+    }
     const t = setInterval(load, 10000);
     return () => { cancelled = true; clearInterval(t); };
   }, [ip, range]);
@@ -190,9 +210,8 @@ export function AnalyticsPage({ ip, agents }: {
       <div className={"grid gap-4 " + (isGlobal ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1")}>
         {isGlobal && (
           <BarList
-            title="By device"
-            events={events}
-            field="agent_ip"
+            title="Count by device"
+            items={byDevice}
             active={filterDevice}
             labelFn={(v) => agentNames.get(v) ?? v}
             colorFn={(_, label) => deviceColor(label)}
@@ -203,9 +222,8 @@ export function AnalyticsPage({ ip, agents }: {
           />
         )}
         <BarList
-          title="By host"
-          events={events}
-          field="host"
+          title="Count by host"
+          items={byHost}
           active={filterHost}
           colorFn={(key) => hostColor(key)}
           onClickFn={(v) => {
@@ -656,26 +674,20 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
 // --- horizontal bar list ---
 
 function BarList({
-  title, events, field, active, labelFn, onClickFn, colorFn,
+  title, items: rawItems, active, labelFn, onClickFn, colorFn,
 }: {
   title: string;
-  events: EventRecord[];
-  field: "host" | "agent_ip";
+  items: Array<{ key: string; count: number }>;
   active?: string | null;
   labelFn?: (v: string) => string;
   onClickFn?: (v: string) => void;
   colorFn?: (key: string, label: string) => string;
 }) {
-  const counts = new Map<string, number>();
-  for (const e of events) {
-    const v = (field === "host" ? e.host : e.agent_ip) ?? "";
-    if (!v) continue;
-    counts.set(v, (counts.get(v) ?? 0) + 1);
-  }
-  const items = [...counts.entries()]
-    .map(([k, v]) => ({ key: k, label: labelFn ? labelFn(k) : k, value: v }))
-    .sort((a, b) => b.value - a.value);
-
+  const items = rawItems.map((it) => ({
+    key: it.key,
+    label: labelFn ? labelFn(it.key) : it.key,
+    value: it.count,
+  }));
   const max = items.length ? items[0].value : 0;
 
   return (

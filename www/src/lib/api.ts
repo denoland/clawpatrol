@@ -347,6 +347,8 @@ export async function getAnalytics(params: {
   total: number;
   total_count: number;
   error_count: number;
+  by_device: Array<{ key: string; count: number }>;
+  by_host: Array<{ key: string; count: number }>;
 }> {
   const p = new URLSearchParams({ range: params.range });
   if (params.agent) p.set("agent", params.agent);

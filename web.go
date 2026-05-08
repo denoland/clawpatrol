@@ -1013,13 +1013,17 @@ func (w *webMux) apiAnalytics(
 		whereArgs = append(whereArgs, agent)
 	}
 
+	// Sort by the random suffix of action_id (UUIDv7, so the last
+	// chars are uniform random) instead of RANDOM(). Same range +
+	// agent → same sample, so a polling dashboard doesn't reshuffle
+	// the scatter every 10 s.
 	query := `
 		SELECT action_id, ts_ns, mode, agent_ip, host,
 		       method, path, status, bytes_in, bytes_out,
 		       ms, action, reason
 		FROM actions
 		WHERE ` + where + `
-		ORDER BY RANDOM()
+		ORDER BY COALESCE(substr(action_id, -8), CAST(ts_ns AS TEXT))
 		LIMIT ?`
 	args := append(append([]any{}, whereArgs...), limit)
 	rows, err := w.g.db.Query(query, args...)
@@ -1078,12 +1082,48 @@ func (w *webMux) apiAnalytics(
 		 FROM actions WHERE `+where, whereArgs...,
 	).Scan(&totalCount, &errorCount)
 
+	// Real per-device / per-host counts so the bar lists aren't
+	// capped at the sample size either. Same filter; bar charts only
+	// render the top ~10 so 50 is a generous cap.
+	byDevice := groupCount(w.g.db,
+		`SELECT agent_ip, COUNT(*) FROM actions
+		 WHERE `+where+` AND agent_ip IS NOT NULL AND agent_ip != ''
+		 GROUP BY agent_ip ORDER BY 2 DESC LIMIT 50`,
+		whereArgs)
+	byHost := groupCount(w.g.db,
+		`SELECT host, COUNT(*) FROM actions
+		 WHERE `+where+` AND host IS NOT NULL AND host != ''
+		 GROUP BY host ORDER BY 2 DESC LIMIT 50`,
+		whereArgs)
+
 	writeJSON(rw, map[string]any{
 		"events":      out,
 		"total":       len(out),
 		"total_count": totalCount,
 		"error_count": errorCount.Int64,
+		"by_device":   byDevice,
+		"by_host":     byHost,
 	})
+}
+
+func groupCount(db *sql.DB, q string, args []any) []map[string]any {
+	out := []map[string]any{}
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k sql.NullString
+		var c int64
+		if err := rows.Scan(&k, &c); err != nil || !k.Valid {
+			continue
+		}
+		out = append(out, map[string]any{
+			"key": k.String, "count": c,
+		})
+	}
+	return out
 }
 
 func writeJSON(rw http.ResponseWriter, v any) {
