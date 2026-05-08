@@ -2040,7 +2040,11 @@ func main() {
 	case "status":
 		runStatus(os.Args[2:])
 	case "version":
-		fmt.Println("clawpatrol 0.1")
+		v := buildVersion
+		if buildGitSHA != "" {
+			v += " (" + buildGitSHA + ")"
+		}
+		fmt.Println("clawpatrol", v)
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -2250,6 +2254,8 @@ func runGateway(args []string) {
 	if _, err := StartOtel(g); err != nil {
 		log.Printf("otel: %v", err)
 	}
+
+	startTelemetry(g, stateDir)
 
 	if cfg.InfoListen != "" {
 		mux := newWebMux(g, cfg.CADir, *cfg.Tailscale, cfg.PublicURL)

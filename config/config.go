@@ -34,6 +34,12 @@ type Gateway struct {
 	// you can't disable auth by accident.
 	InsecureNoDashboardSecret bool `hcl:"insecure_no_dashboard_secret,optional"`
 
+	// Telemetry opts in/out of the update-checker / anonymous usage
+	// ping (doc/telemetry.md). nil = default on; explicit `telemetry
+	// = false` silences the goroutine. Env vars CLAWPATROL_TELEMETRY=0
+	// and DO_NOT_TRACK=1 also work.
+	Telemetry *bool `hcl:"telemetry,optional"`
+
 	// SessionKeep is the hard retention floor for the sessions table.
 	// Sessions whose last_at is older than this get deleted by the
 	// background sweeper. Sessions can revive on new activity at any

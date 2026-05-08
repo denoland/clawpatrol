@@ -261,7 +261,19 @@ export async function deleteAgent(ip: string): Promise<void> {
 // Browser fetch with default cache + ETag would also revalidate, but
 // the cached body is still copied into JS land — going through If-
 // None-Match explicitly skips JSON.parse on the no-change path too.
-type StateResp = { whoami: Whoami; integrations: Integration[]; agents: Agent[] };
+export type UpdateBanner = {
+  latest: string;
+  update_available: boolean;
+  url: string;
+  advisory?: string;
+};
+
+type StateResp = {
+  whoami: Whoami;
+  integrations: Integration[];
+  agents: Agent[];
+  update?: UpdateBanner | null;
+};
 let lastStateTag = "";
 let lastState: StateResp | null = null;
 export async function getState(): Promise<StateResp> {

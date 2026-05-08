@@ -50,9 +50,15 @@ jobs:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
           CGO_ENABLED: "0"
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          SHA: ${{ github.sha }}
         run: |
           mkdir -p out
-          go build -ldflags "-s -w" -trimpath -o out/clawpatrol-${{ matrix.os }}-${{ matrix.arch }} .
+          version="${TAG#v}"
+          go build \
+            -ldflags "-s -w -X main.buildVersion=${version} -X main.buildGitSHA=${SHA}" \
+            -trimpath \
+            -o out/clawpatrol-${{ matrix.os }}-${{ matrix.arch }} .
 
       - uses: actions/upload-artifact@v4
         with:

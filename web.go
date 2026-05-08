@@ -541,6 +541,7 @@ func (w *webMux) apiState(rw http.ResponseWriter, r *http.Request) {
 		"whoami":       w.whoamiData(r),
 		"integrations": w.statusList(r),
 		"agents":       w.agentsList(),
+		"update":       currentUpdateBanner.Load(),
 	}
 	body, err := json.Marshal(state)
 	if err != nil {

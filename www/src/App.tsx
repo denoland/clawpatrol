@@ -9,7 +9,13 @@ import { RequestDetailPage } from "./components/RequestDetailPage";
 import { AddDeviceModal } from "./components/AddDeviceModal";
 import { SettingsModal } from "./components/SettingsModal";
 import { HITLBar } from "./components/HITLBar";
-import { getState, type Integration, type Agent, type Whoami } from "./lib/api";
+import {
+  getState,
+  type Agent,
+  type Integration,
+  type UpdateBanner,
+  type Whoami,
+} from "./lib/api";
 
 type Route =
   | { name: "main" }
@@ -42,6 +48,7 @@ export default function App() {
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [whoami, setWhoami] = useState<Whoami | null>(null);
+  const [update, setUpdate] = useState<UpdateBanner | null>(null);
   const [connectId, setConnectId] = useState<string | null>(null);
   const [connectProfile, setConnectProfile] = useState<string | undefined>(undefined);
   const [showAddDevice, setShowAddDevice] = useState(false);
@@ -63,6 +70,7 @@ export default function App() {
       setIntegrations(s.integrations || []);
       setAgents(s.agents || []);
       setWhoami(s.whoami);
+      setUpdate(s.update ?? null);
     } catch {
       /* swallow */
     }
@@ -81,6 +89,7 @@ export default function App() {
 
   return (
     <div className="flex flex-col min-h-screen">
+      <UpdateNotice update={update} />
       {route.name === "main" ? (
         <main className="flex-1 mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-8 space-y-8">
           <div className="flex items-center gap-4">
@@ -165,6 +174,47 @@ export default function App() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+function UpdateNotice({ update }: { update: UpdateBanner | null }) {
+  if (!update?.update_available) return null;
+  const dismissKey = "clawpatrol:update-dismissed:" + update.latest;
+  const [dismissed, setDismissed] = useState(
+    typeof localStorage !== "undefined" &&
+      localStorage.getItem(dismissKey) === "1",
+  );
+  if (dismissed) return null;
+  return (
+    <div className="bg-[#fef3c7] border-b border-[#fcd34d] px-4 sm:px-6 py-2 text-[12px] text-[#78350f] flex items-center justify-between gap-3">
+      <div className="flex-1">
+        <span className="font-semibold">clawpatrol {update.latest}</span>
+        {" available — "}
+        <a
+          href={update.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="underline hover:no-underline"
+        >
+          release notes
+        </a>
+        {update.advisory && (
+          <span className="ml-2 text-[#92400e]">
+            ({update.advisory})
+          </span>
+        )}
+      </div>
+      <button
+        onClick={() => {
+          localStorage.setItem(dismissKey, "1");
+          setDismissed(true);
+        }}
+        className="text-[#78350f] hover:text-[#171717] text-[14px] leading-none px-1"
+        title="dismiss"
+      >
+        &times;
+      </button>
     </div>
   );
 }
