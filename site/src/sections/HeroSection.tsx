@@ -1,4 +1,5 @@
 import { Button } from "../components/Button";
+import { InstallTerminal } from "../components/InstallTerminal";
 
 export function HeroSection() {
   return (
@@ -17,22 +18,26 @@ export function HeroSection() {
                mb-8 font-display text-balance
               text-text"
           >
-            Your control plane for AI agents
+            Let your agents into production.
           </h1>
           <p
             class="mb-10 max-w-lg
             text-text-muted"
           >
-            Decide what your agents can do — before they do it. Claw Patrol is a
-            forward proxy that intercepts every outbound request, runs it
-            against rules you write, and routes the risky ones to a human or an
-            LLM judge for approval. Secrets stay out of the agent. Every
-            decision is logged. Works with Claude Code, Codex, or any agent — no
-            code changes.
+            An agent stuck in a sandbox is a toy. Handing it your prod
+            keys is reckless. Claw Patrol sits at the only universal
+            checkpoint — the network — between your agents and real
+            systems. Every outbound action runs against rules you write
+            in HCL. Risky ones get a human in Slack or an LLM judge.
+            Secrets live in the proxy, not the agent. Works with Claude
+            Code, Codex, or any agent — no code changes.
           </p>
           <Button href="https://github.com/denoland/clawpatrol" size="lg">
             Get Started
           </Button>
+          <div class="mt-5 max-w-lg">
+            <InstallTerminal />
+          </div>
         </div>
 
         <div class="flex justify-center">

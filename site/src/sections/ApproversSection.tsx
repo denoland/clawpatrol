@@ -16,7 +16,7 @@ import { HclCode } from "../components/HclCode";
 
 const LLM_CONFIG = `approver "llm_approver" "secret-judge" {
   model       = "claude-haiku-4-5"
-  policy      = "deny if SELECT touches secret/token columns"
+  policy      = "reject changes with bad words"
   cache_ttl   = 300
   fail_closed = true
 }`;
@@ -67,7 +67,9 @@ function LlmDiagram() {
         <div class="text-text-subtle text-[10px] uppercase tracking-[0.18em] mb-1">
           incoming
         </div>
-        <code class="text-text">SELECT password FROM users</code>
+        <code class="text-text">
+          POST /tickets/reply {"{ "}body: "RTFM you moron"{" }"}
+        </code>
       </div>
 
       <div class="flex items-start gap-2">
@@ -75,8 +77,8 @@ function LlmDiagram() {
           AI
         </div>
         <div class="bg-canvas border border-rust-100 squircle-sm px-3 py-2 text-[12px]  text-text-muted">
-          Column <code class="text-text font-mono">password</code> matches the
-          secret-token policy.
+          Reply body contains banned term{" "}
+          <code class="text-text font-mono">moron</code>.
         </div>
       </div>
 

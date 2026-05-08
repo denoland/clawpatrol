@@ -2,25 +2,28 @@ import { SectionLabel } from "../components/SectionLabel";
 
 const PROBLEMS = [
   {
-    title: "No way to gate writes",
+    title: "Agents are stuck without access",
     body:
-      "Your agent can DROP TABLE, force-push, send the email, delete the " +
-      "repo. By the time you notice, the action's already shipped. " +
-      "There's no checkpoint between intent and damage.",
+      "An agent that can only edit files in a sandbox is a toy. The " +
+      "work that matters — running a migration, replying to a " +
+      "customer, fixing a deploy — lives behind API calls. But every " +
+      "credential you hand the agent is one you've given away.",
   },
   {
-    title: "No audit trail",
+    title: "Prompt injection turns every input into instructions",
     body:
-      "When something goes wrong, you can't reconstruct who decided what. " +
-      "No record of which model called which API, no record of who — or " +
-      "what — approved the destructive action.",
+      "Tool outputs, RAG hits, MCP responses, file contents the agent " +
+      "reads — any of it can hide instructions the model will follow. " +
+      "You can't audit the model's intent. The only thing you can " +
+      "constrain is what leaves the machine.",
   },
   {
-    title: "Secrets in plaintext",
+    title: "Today's options are no-access or YOLO",
     body:
-      "Every API key in the agent's environment is one prompt injection " +
-      "away from exfiltration. The agent doesn't need to see your " +
-      "credentials to use them — but right now it does.",
+      "API keys in env vars, broad OAuth scopes, no checkpoint " +
+      "between intent and damage. By the time you notice the agent " +
+      "ran DROP TABLE on prod, the table is gone — and you have no " +
+      "record of who decided what.",
   },
 ];
 

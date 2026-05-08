@@ -108,7 +108,7 @@ function RuleCodeBlock() {
         <span class="text-rust-300">policy</span>
         {" = "}
         <span class="text-butter-300">
-          "deny if SELECT touches secret/token columns"
+          "reject changes with bad words"
         </span>
         {"\n}"}
       </code>
