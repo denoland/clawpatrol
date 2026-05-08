@@ -1,819 +1,724 @@
 # Approval rules
 
-Claw Patrol classifies every outbound action it intercepts and asks: should
-this action be allowed, denied, deferred to a human, or deferred to an
-LLM judge? The decision is made by a single rule engine — the **approval
-rules** subsystem documented here.
+Rules are how an operator says "let this through", "block it", or
+"ask a human / LLM first". A rule is a block in `gateway.hcl` that
+targets one or more [endpoints](/docs/03a-glossary/#endpoint), names
+the requests it matches, and declares what to do.
 
-This doc covers the rule shape, the pattern dialect used to match
-actions, how decisions are dispatched, where rules are stored, and the
-HTTP API surface used by the dashboard.
+Three rule types ship today:
 
-For the broader request flow see
-[Architecture](/docs/04-architecture/) and
-[Gateway](/docs/07-gateway/). For the agent trust boundary see
-[Security Model](/docs/11-security-model/). For LLM cost concerns
-referenced by the `require_llm` decision see
-[Token Usage](/docs/09-token-usage/).
+| Type        | Endpoint family  | What it matches                                |
+|-------------|------------------|------------------------------------------------|
+| `http_rule` | `https` (incl. `kubernetes` HTTP transport) | HTTP method / path / query / headers / body |
+| `sql_rule`  | `sql` (`postgres`, `clickhouse_*`) | SQL verb / tables / functions / statement text |
+| `k8s_rule`  | `k8s` (`kubernetes` endpoints)     | Kubernetes resource / verb / namespace / name / query params |
 
+Rules don't cross families: a `sql_rule` never fires on an HTTPS
+request and vice versa. The endpoint plugin owns its matchers, so
+adding a family means adding both an endpoint type and a rule type.
 
-## Where rules sit
+The canonical syntax reference is
+[`config/README.md`](https://github.com/denoland/clawpatrol/blob/main/config/README.md);
+this page covers the operator's view: how to write a rule, what each
+facet does, what surprises to expect.
 
-Every protocol the proxy understands -- HTTPS, SQL, SSH, Kubernetes,
-WebSocket, plugin-defined -- lowers each request into a uniform
-`ActionRecord`. Before the request is forwarded, the rule engine runs.
-
-```
-agent
-  |
-  |  outbound request (HTTPS / SQL / SSH / k8s / ...)
-  v
-proxy / plugin
-  |
-  |  emits ActionRecord
-  v
-+-------------------------------+
-|  approvals/index.ts           |
-|                               |
-|  evaluate(rules, action)      |   <-- this doc
-|    -> static allow            |
-|    -> static deny             |
-|    -> require_llm  --> LLM    |
-|    -> require_human --> human |
-|    -> default policy          |
-+---------------+---------------+
-                |
-                |  ApprovalVerdict { decision, source, reason, ... }
-                v
-            forward / drop
-```
-
-The implementation lives in `src/approvals/`:
-
-- `rules.ts` -- compilation + evaluation (this is the spec)
-- `config.ts` -- SQLite row layer (`approval_rules` table)
-- `index.ts` -- router that lowers `require_*` decisions to approver
-  plugin calls
-- `registry.ts` -- registry of approver plugins and per-plugin profiles
-- `llm.ts` -- LLM approver driver (with verdict cache)
-- `human.ts` -- in-memory pending-approval queue used by
-  `dashboard-approval` and consumed by the dashboard's PendingActions
-  page
-- `webhooks.ts` -- inbound dispatch to approver-plugin webhooks
-- `schema-catalog.ts` -- catalog of `ActionSchema` entries the dashboard
-  rule builder reads to populate dropdowns
+For the surrounding picture see
+[Architecture](/docs/04-architecture/) (request flow, where matching
+fits) and [Gateway](/docs/07-gateway/) (the listener and dispatcher).
 
 
-## Rule shape
+## Rule families
 
-A rule is a single row in the `approval_rules` SQLite table, compiled
-into a `Rule` object at load time.
+### `http_rule`
 
-```typescript
-interface Rule {
-  id: string;
-  label?: string;
+Binds to `https` endpoints — including `kubernetes` endpoints, since
+the kubernetes API speaks HTTPS underneath. The matcher consumes
+the request *before* it is forwarded upstream, after MITM has
+terminated TLS.
 
-  // Scope: any of these may be null. Null means "applies to anything".
-  scopePluginId?: string | null;
-  scopeProfileId?: string | null;
-  scopeIntegrationId?: string | null;
+Match keys (all optional, all combine with implicit AND):
 
-  priority: number;        // higher wins
-  enabled: boolean;
-  dialect: "pattern";      // only dialect supported today
-  when: unknown;           // matcher tree (see "The pattern dialect")
-  decision: RuleDecision;  // allow | deny | require_llm | require_human
-
-  source?: string;         // raw JSON of `when` (round-tripped to UI)
+```hcl
+match = {
+  method        = "POST"                # HTTP verb (case-insensitive)
+  path          = ["/v1/refunds", "/v1/payouts"]   # URL path; glob OK
+  query         = { agent_id = "ci" }   # exact query-param match
+  headers       = { "x-tenant" = "prod" }
+  body_json     = { archived = true }   # JSON subset match
+  body_contains = "DELETE FROM users"   # raw substring (case-sensitive)
+  credential    = github-prod-pat       # bare-name ref
 }
 ```
 
-### Decision values
+Use `http_rule` against `kubernetes` endpoints only when you need a
+match facet `k8s_rule` doesn't expose (e.g. raw header inspection).
+Otherwise reach for `k8s_rule` — it gives you a parsed
+`(verb, resource, namespace, name)` tuple.
 
-```typescript
-type RuleDecision =
-  | { kind: "allow" }
-  | { kind: "deny"; reason?: string }
-  | { kind: "require_llm";
-      approverPluginId: string;
-      approverProfileId: string;
-      model: string;
-      prompt: string;
-      cacheTtlSeconds: number;
-      failClosed: boolean }
-  | { kind: "require_human";
-      approverPluginId: string;
-      approverProfileId: string;
-      timeoutMs: number;
-      onTimeout: "allow" | "deny" };
-```
+### `sql_rule`
 
-| Decision | Meaning |
-|----------|---------|
-| `allow` | Forward the request immediately. |
-| `deny` | Block the request. `reason` is surfaced back to the agent and recorded on the action. |
-| `require_llm` | Defer to an LLM approver plugin. The plugin returns a verdict; identical actions within `cacheTtlSeconds` reuse the verdict. If the approver call fails or times out (30s hard ceiling), `failClosed` decides: `true` denies, `false` allows. |
-| `require_human` | Park the request and surface it to a human reviewer (dashboard or webhook-driven plugin). If no decision arrives within `timeoutMs`, `onTimeout` decides. |
+Binds to `sql` endpoints (`postgres`, `clickhouse_https`,
+`clickhouse_native`). The matcher runs against every parsed SQL
+statement the agent sends.
 
-### Scope
-
-Scope narrows the set of sessions a rule applies to. Each session
-carries a `pluginId`, `profileId`, and (optionally) `integrationId`.
-A rule's scope field is matched against the session's corresponding
-field; a `null` rule field is wildcard.
-
-```typescript
-function inScope(rule: Rule, session: SessionContext): boolean {
-  if (rule.scopePluginId    && rule.scopePluginId    !== session.pluginId)    return false;
-  if (rule.scopeProfileId   && rule.scopeProfileId   !== session.profileId)   return false;
-  if (rule.scopeIntegrationId && rule.scopeIntegrationId !== session.integrationId) return false;
-  return true;
+```hcl
+match = {
+  verb            = ["select", "show", "explain"]
+  tables          = ["users", "secret_*"]
+  function        = ["pg_read_file", "dblink_*"]
+  statement       = "*COPY*FROM PROGRAM*"          # path.Match glob
+  statement_regex = "(?i)\\bpassword\\b"           # Go RE2
+  credential      = pg-readwrite
 }
 ```
 
-Scope is *AND* across the three dimensions: a rule scoped to plugin
-`github` AND profile `prod` only fires if both match.
+`verb`, `tables`, and `function` are extracted by a best-effort
+regex-based lexer — see "Gotchas" below.
 
-### Priority and specificity
+### `k8s_rule`
 
-Rules are evaluated in this order:
+Binds to `kubernetes` endpoints. The matcher receives the
+`(verb, resource, namespace, name, params)` tuple that Claw Patrol
+parses out of the kubernetes API path.
 
-1. Filter to enabled rules whose scope matches the session.
-2. Sort by `priority` descending.
-3. Within the same priority, sort by **specificity** descending:
-   `integration` (4) > `profile` (2) > `plugin` (1) > global (0); the
-   weights add (a plugin+profile-scoped rule has specificity 3).
-4. Walk the sorted list and return the first rule whose `when` matches
-   the action.
-
-Two practical consequences:
-
-- A high-priority global rule beats a low-priority integration-scoped
-  rule. Use priority for "this should always win", not for ordering
-  within the same logical band.
-- At equal priority, the more specific rule wins. The dashboard surfaces
-  this as: *"more specific scopes win at equal priority: integration >
-  profile > plugin > global."*
-
-### Default policy
-
-If no rule matches, the engine falls back to the value of the
-`CLAWPATROL_DEFAULT_POLICY` environment variable:
-
-| Value | Behavior |
-|-------|----------|
-| `allow` (default) | Allow anything no rule denied. |
-| `deny_writes` | Allow only `read` actions; deny `write`, `mutate`, and `destructive`. The verdict carries `source: "default"` and `reason: "default-deny for non-read actions"`. |
-
-Default-policy verdicts have no `ruleId`. They are reported as
-`source: "default"` in the action log.
-
-
-## The pattern dialect
-
-`when` is a tree. The leaves are *path → condition* pairs; the interior
-nodes are boolean combinators.
-
-### Paths
-
-A path names a field of the `ActionRecord`. Two forms:
-
-1. **Top-level fields** -- bare names map to top-level fields of the
-   record:
-
-   ```
-   type        -- e.g. "http.request"
-   summary     -- short human-readable summary
-   description -- longer description (optional)
-   verb        -- protocol verb (e.g. "DELETE", "SELECT")
-   sensitivity -- "read" | "write" | "mutate" | "destructive"
-   primary     -- name of the primary facet (e.g. "http")
-   tags        -- string[] (any-of semantics for `contains` / `in`)
-   ```
-
-2. **Facet fields** -- everything else. The leading segment is treated
-   as a facet key:
-
-   ```
-   "http.method"      -> $.facets.http.method
-   "http.url"         -> $.facets.http.url
-   "sql.verb"         -> $.facets.sql.verb
-   "sql.tables"       -> $.facets.sql.tables
-   "k8s.namespace"    -> $.facets.k8s.namespace
-   "ssh.command"      -> $.facets.ssh.command
-   ```
-
-   The literal prefix `facets.` is also accepted and equivalent:
-   `"facets.http.method"` resolves identically to `"http.method"`.
-
-   Plugin-defined facets work the same way -- if a plugin emits a
-   facet `slack`, then `"slack.channel"` resolves to
-   `$.facets.slack.channel`.
-
-The well-known facet keys are `http`, `ws`, `sse`, `llm`, `sql`, `ssh`,
-`k8s`. Plugins may add more. The dashboard rule builder reads the
-catalog from `/api/action-schemas` (see below) to populate field
-dropdowns.
-
-### Conditions
-
-A condition either tests a value directly, or specifies an operator.
-
-#### Literal sugar
-
-A bare primitive is shorthand for `equals`:
-
-```json
-{ "http.method": "DELETE" }
-```
-
-is identical to:
-
-```json
-{ "http.method": { "equals": "DELETE" } }
-```
-
-A bare array literal has two semantics:
-
-- if the value at the path is an array, the cond array must match
-  element-for-element (set equality with order);
-- otherwise, "value is one of":
-
-```json
-{ "http.method": ["GET", "HEAD"] }
-```
-
-For the common "one of" case prefer the explicit `in` form -- it works
-with array-valued fields too (any-of semantics).
-
-#### Operators
-
-Every operator is keyed by its name in a single-key object:
-
-| Operator | Example | Behavior |
-|----------|---------|----------|
-| `equals` | `{ equals: "DELETE" }` | Strict equality (`===`). |
-| `in` | `{ in: ["GET", "HEAD"] }` | For scalars: value is in the array. For arrays (e.g. `tags`): any element overlaps. |
-| `pattern` | `{ pattern: "^https://api\\.github\\.com/" }` | JS `RegExp` test. String-only. Invalid regex compiles to "no match". No flags. |
-| `contains` | `{ contains: "/repos/" }` | Case-insensitive substring for strings; element membership for arrays. |
-| `notContains` | `{ notContains: "test" }` | Inverse of `contains`. Returns `true` for non-string non-array values. |
-| `glob` | `{ glob: "*.example.com" }` | Shell-style glob: `*` is `.*`, `?` is `.`, anchored. String-only. |
-| `exists` | `{ exists: true }` | True iff the path resolves to a non-`null`, non-`undefined` value. `{ exists: false }` is its inverse. |
-
-Notes:
-
-- `contains` is **case-insensitive** when applied to strings; the array
-  form is strict (uses `Array.includes`).
-- `pattern` does not support flags. Inline them with the standard
-  `(?i)` form -- e.g. `"(?i)delete"`.
-- `glob` is a literal regex translation: only `*` and `?` are
-  meta-characters. There is no `**` or character class support.
-- An unknown operator key on a cond object means "no match" (silent).
-  Misspell at your own risk; use the dashboard preview to catch this
-  before saving.
-
-### Combinators
-
-```json
-{ "http.method": "DELETE", "http.url": { "contains": "/repos/" } }   // implicit AND
-{ "all": [ ... ] }                                                   // explicit AND
-{ "any": [ ... ] }                                                   // OR
-{ "not": { ... } }                                                   // NOT
-```
-
-`all` / `any` take an array of matchers. `not` takes a single matcher.
-The implicit-AND form is the same as `all` over the keys: the rule
-matches only if every key's condition matches.
-
-`all`, `any`, `not` may appear at any depth. Mix freely with
-implicit-AND keys at the same level:
-
-```json
-{
-  "any": [
-    { "http.method": "DELETE" },
-    { "http.method": "PATCH" }
-  ],
-  "not": { "http.url": { "contains": "/sandbox/" } }
+```hcl
+match = {
+  resource   = ["pods/exec", "pods/attach"]   # `<resource>/<sub>` for subresources
+  verb       = ["create", "delete"]           # HTTP-derived: list/get/create/update/patch/delete
+  namespace  = ["console", "kube-system"]
+  name       = "!debug-*"                     # negation glob
+  params     = { stdin = "true" }             # query-string params (kubectl exec --stdin)
+  credential = k8s-prod
 }
 ```
 
 
-## Action schemas
+## How to create a rule
 
-The dashboard rule builder needs to know what facets and fields each
-plugin emits. The endpoint `/api/action-schemas` returns the merged
-catalog.
+Every rule shares the same outer skeleton. Field-by-field:
 
-```bash
-curl -s http://localhost:8080/api/action-schemas | jq
+```hcl
+rule "<type>" "<name>" {
+  endpoint  = <endpoint-name>           # singular: bare-name ref
+  # endpoints = [<a>, <b>]              # OR list form (mutually exclusive)
+
+  priority  = 100                        # default 0; higher wins
+
+  match     = { <family-specific keys> } # absent / empty == match-all
+
+  verdict   = "allow"                    # OR
+  # verdict = "deny"                     # OR
+  # approve = [<approver>, ...]          # bare-name refs to approver blocks
+
+  reason    = "destructive money movement"
+
+  # disabled = true                      # keep in source, skip evaluation
+}
 ```
 
-```json
-{
-  "schemas": [
-    {
-      "pluginId": "github",
-      "type": "github.repo.delete",
-      "label": "Delete repository",
-      "description": "Permanently delete a GitHub repository.",
-      "primary": "http",
-      "defaultSensitivity": "destructive",
-      "facets": ["http"]
-    },
-    {
-      "pluginId": "postgres",
-      "type": "sql.query",
-      "label": "SQL query",
-      "primary": "sql",
-      "defaultSensitivity": "write",
-      "facets": ["sql"]
-    }
+| Field        | Required?                | Notes |
+|--------------|--------------------------|-------|
+| `endpoint` / `endpoints` | exactly one             | Bare-name refs to declared endpoints. The endpoint family must match the rule type. |
+| `priority`   | optional (default `0`)   | Higher fires first. Negative for catch-alls (`-100` is the convention). |
+| `match`      | optional                 | Object literal of family-specific keys. Absent or empty `{}` matches every request the endpoint sees. |
+| `verdict`    | one of `verdict` / `approve` | `"allow"` or `"deny"`. |
+| `approve`    | one of `verdict` / `approve` | List of approver bare names. Stages run in order; **all must allow** for the request to proceed. |
+| `reason`     | optional                 | Surfaced to the agent on `deny` / approver-deny, and shown on the dashboard. |
+| `disabled`   | optional                 | Keeps the rule in source but suppresses it at compile time. |
+
+Naming: every named entity in `gateway.hcl` (approvers, credentials,
+endpoints, rules, profiles) shares **one flat namespace**. References
+are bare names — never `endpoint.foo` or `credential.foo`. A
+duplicate name across kinds is a load error.
+
+A rule that names a wrong-family endpoint, an undeclared name, or a
+typo in a match key fails at load time with an error pointing at the
+offending block. Save iteratively: load, fix, repeat.
+
+
+## Examples
+
+The fixtures in
+[`config/testdata/full.hcl`](https://github.com/denoland/clawpatrol/blob/main/config/testdata/full.hcl)
+are runnable; the snippets below are pulled from there.
+
+### Allow / deny pair (HTTP)
+
+A simple shape: read-only is free, deletes are blocked, everything
+else needs a human.
+
+```hcl
+endpoint "https" "stripe" {
+  hosts      = ["api.stripe.com"]
+  credential = stripe-key
+}
+
+rule "http_rule" "stripe-reads" {
+  endpoint = stripe
+  match    = { method = "GET" }
+  verdict  = "allow"
+}
+
+rule "http_rule" "stripe-no-deletes" {
+  endpoint = stripe
+  match    = { method = "DELETE" }
+  verdict  = "deny"
+  reason   = "Stripe deletes go through the approval flow as POST"
+}
+
+rule "http_rule" "stripe-other-writes" {
+  endpoint = stripe
+  match    = { method = "POST" }
+  approve  = [billing]
+}
+
+rule "http_rule" "stripe-default" {
+  endpoint = stripe
+  priority = -100
+  verdict  = "deny"
+}
+```
+
+The trailing `priority = -100` rule is the default-deny floor —
+matched only when no higher-priority rule does. Without it, an
+unmatched request would fall through and pass.
+
+### Multi-credential endpoint with `credential = X` selector
+
+One endpoint, two credentials, dispatched by an agent-side
+placeholder:
+
+```hcl
+credential "bearer_token" "orb-test-key" {}
+credential "bearer_token" "orb-prod-key" {}
+
+endpoint "https" "orb" {
+  hosts = ["api.withorb.com"]
+  credentials = [
+    { placeholder = "PH_orb_test", credential = orb-test-key },
+    { placeholder = "PH_orb_prod", credential = orb-prod-key },
   ]
 }
+
+rule "http_rule" "orb-test-allow-all" {
+  endpoint = orb
+  match    = { credential = orb-test-key }
+  verdict  = "allow"
+}
+
+rule "http_rule" "orb-prod-reads" {
+  endpoint = orb
+  match    = { credential = orb-prod-key, method = "GET" }
+  verdict  = "allow"
+}
+
+rule "http_rule" "orb-prod-writes" {
+  endpoint = orb
+  match    = { credential = orb-prod-key, method = ["POST", "PUT", "PATCH"] }
+  approve  = [billing]
+}
 ```
 
-Each entry comes from a plugin's `actionSchemas` export -- plugins
-declare their schemas through the plugin SDK; see
-[Plugins](/docs/08-plugins/). The catalog only ships the facet *keys*,
-not the full Zod schemas (Zod schemas are not JSON-serializable). The
-rule builder uses these keys to surface the supported `<facet>.<field>`
-prefixes.
+`match.credential` fires when the request was *dispatched against*
+that credential — i.e. the agent embedded `PH_orb_prod` in the
+`Authorization: Bearer ...` slot. The matcher does not look at the
+request body for the placeholder.
 
-To register new schemas, ship them on a plugin -- there is no separate
-schema registration API. The catalog is rebuilt on every API call.
+### LLM proctor → human approver chain
+
+Stages run in order, all must allow. The first stage is cheap (an
+LLM judge), the second is expensive (a human gets paged):
+
+```hcl
+approver "llm_approver" "pg-secret-columns-judge" {
+  model      = "claude-haiku-4-5-20251001"
+  credential = anthropic-key
+  policy     = pg-secret-columns
+}
+approver "human_approver" "console-dba" {
+  channel = "#agent-db"
+  timeout = 600
+}
+policy "pg-secret-columns" {
+  text = <<-EOT
+    Deny SELECTs that read raw secret material (tokens, password hashes,
+    cert private keys). Allow metadata-only reads (id, name, created_at).
+  EOT
+}
+
+rule "sql_rule" "pg-secret-columns" {
+  endpoint = pg-deployng
+  priority = 100
+  match    = {
+    verb   = "select"
+    tables = ["github_identities", "tokens", "domain_certificates", "env_vars"]
+  }
+  approve = [pg-secret-columns-judge, console-dba]
+}
+```
+
+If the LLM judge says `allow`, the request goes to `console-dba` for
+human approval. If the LLM judge says `deny`, the human is never
+paged. If either says `deny`, the request is rejected with the
+reason returned by the rejecting stage.
+
+The bare name `dashboard` is a built-in approver: `approve =
+[dashboard]` parks the request on the dashboard's pending-approvals
+view without paging any channel.
+
+### Priority override pattern
+
+A high-priority allow / deny short-circuits a broader rule that
+would otherwise fire at default priority:
+
+```hcl
+# Priority 100 — fires before anything else.
+rule "http_rule" "stripe-ephemeral-keys" {
+  endpoint = stripe
+  priority = 100
+  match    = { method = "POST", path = "/v1/ephemeral_keys" }
+  verdict  = "allow"
+}
+
+# Priority 0 (default) — would otherwise force every POST through approval.
+rule "http_rule" "stripe-other-writes" {
+  endpoint = stripe
+  match    = { method = "POST" }
+  approve  = [billing]
+}
+```
+
+Ephemeral-key creation is whitelisted — every other POST still goes
+through `billing`. Without the priority override, the broader rule
+would page a human for every key issuance.
+
+### SQL banned-verbs catch-all
+
+```hcl
+rule "sql_rule" "pg-banned-verbs" {
+  endpoints = [pg-deployng, pg-scheduler]
+  match     = { verb = ["drop", "truncate", "alter", "grant", "revoke", "vacuum", "create"] }
+  verdict   = "deny"
+  reason    = "Schema changes / destructive DDL not permitted; use a migration PR"
+}
+```
+
+The same rule attaches to two endpoints. Both copies share the
+compiled matcher — the cost of attaching a rule to N endpoints is
+just N pointer-appends.
+
+### Kubernetes negation glob
+
+```hcl
+rule "k8s_rule" "k8s-no-mutations" {
+  endpoint = k8s-prod
+  match = {
+    verb     = ["create", "update", "patch", "delete"]
+    name     = "!debug-*"
+    resource = ["!*/exec", "!*/attach", "!*/portforward"]
+  }
+  verdict = "deny"
+  reason  = "Only debug-* pods may be created / modified / deleted"
+}
+```
+
+A negation entry is a leading `!`. List semantics with negation are
+worth a careful read — see Gotchas below.
 
 
-## Decision dispatch
+## Matching semantics
 
-After `evaluate()` selects a rule, `approvals/index.ts` lowers
-`require_*` decisions to a real verdict:
+### Endpoint resolution
+
+Before any rule fires, Claw Patrol picks the endpoint:
+
+- **HTTPS / kubernetes**: from the SNI hostname in the agent's TLS
+  ClientHello, scoped to the device's profile (`runtime.HostEndpoint`).
+- **Postgres / clickhouse_native**: from the destination IP at the
+  L3 forwarder, again scoped to the device's profile.
+
+If no profile endpoint matches, the connection is **passed through
+verbatim** with no rule evaluation. This is the
+"unknown host" path; see "schema-only defaults" in Gotchas.
+
+### Priority and first-match-wins
+
+Each endpoint's rules are sorted **descending by priority** at compile
+time. The runtime walks them in order and returns the first rule
+whose matcher accepts the request:
 
 ```
-                  evaluate()
-                      |
-       +--------------+--------------+
-       |       |             |       |
-     allow   deny       require_llm  require_human
-       |       |             |             |
-       v       v             v             v
-   forward  return     reviewWithCache  requestHuman
-            with         (llm.ts)       (human.ts)
-            reason          |               |
-                            v               v
-                       LlmApproverPlugin  HumanApproverPlugin
-                       .review(...)       .request(...)  /
-                                          dashboard queue
+sort.SliceStable(rules, func(i, j int) bool {
+  return rules[i].Priority > rules[j].Priority
+})
 ```
 
-### `require_llm`
+`SliceStable` means **declaration order is the tiebreaker** within a
+priority bucket. Two rules at the same priority that both match —
+the one written first in the HCL wins.
 
-`approvals/llm.ts` wraps the configured LLM approver plugin's
-`review()` method:
+`disabled = true` rules are skipped entirely.
 
-- Cache key: `(action.type, action.primary, action.facets, prompt,
-  model)`. Two identical actions within `cacheTtlSeconds` reuse the
-  earlier verdict.
-- The call is aborted after **30 seconds** regardless of the plugin's
-  internal timeouts.
-- On error or timeout: the `failClosed` flag on the rule's decision
-  decides. `failClosed: true` returns `deny`; `false` returns `allow`.
-  Both carry `source: "llm"` and a synthetic `reason`.
-- On success, the plugin's verdict is propagated and stamped with the
-  rule id and approver identity.
+### Match facet semantics
 
-The cost of these reviews shows up in the request log like any other
-LLM call -- see [Token Usage](/docs/09-token-usage/). Use the cache
-TTL aggressively for repetitive actions.
+Each match key takes either a single string or a list of strings.
+Lists are "any-of":
 
-### `require_human`
+```hcl
+verb = ["create", "update", "patch"]    # matches any of the three
+```
 
-`approvals/human.ts` has two modes:
+A leading `!` on a list element negates that element:
 
-- **`dashboard-approval`** (built-in): the action is enqueued in an
-  in-memory `pending` map, every SSE listener on
-  `/api/pending-actions/stream` is notified, and the framework parks on
-  a `Promise` until either the dashboard PendingActions page resolves
-  the entry, or the timeout fires.
-- **third-party** (Slack, email, etc.): the framework calls the
-  plugin's `request()` method. The plugin owns its correlation state
-  (a webhook from Slack arrives via `dispatchWebhook` in
-  `src/approvals/webhooks.ts`, mounted at
-  `/api/approvers/<plugin-id>/<path>`).
+```hcl
+resource = ["!*/exec", "!*/attach"]     # matches when neither glob matches
+name     = ["debug-*", "!debug-prod"]   # matches debug-* AND not debug-prod
+```
 
-In both cases:
+The list-with-negation rule:
 
-- The total wait is bounded by `timeoutMs`. For third-party plugins,
-  the framework adds a one-second grace to the `AbortController`
-  signal.
-- On timeout the verdict is `{ decision: onTimeout, reason: "no
-  response within <ms>ms" }`.
-- On a verdict, the action proceeds (or is denied) and is logged with
-  `source: "human"`, the rule id, and the approver identity.
+- If the list has any **positive** entries, at least one must match.
+- Any **negative** entry that *does* match disqualifies the whole
+  list (returns false).
+- A list with only negatives fires when none of the negatives match.
 
-Note: `dashboard-approval` keys pending entries by a fresh UUID rather
-than the real action id (the action id isn't yet known when the router
-is invoked). This UUID is what the dashboard sees and is what
-`POST /api/pending-actions/<id>/decision` resolves.
+`*` and `?` in a string make it a `path.Match` glob. `*` matches any
+sequence of characters except the separator (`/`); `?` matches any
+single character. There is no `**`, no character classes beyond
+`[abc]`, no escape sequence.
+
+`statement_regex` (SQL only) is a Go RE2 regular expression run via
+`regexp.MatchString` — **unanchored**. To require start-of-string
+add `^`; to require end add `$`. Anchor your regex if you mean it.
+
+### Case sensitivity, by facet
+
+| Facet                      | Case sensitivity |
+|----------------------------|------------------|
+| HTTP `method`              | insensitive      |
+| HTTP `path`, `query`, `headers` | sensitive   |
+| HTTP `body_contains`       | sensitive        |
+| SQL `verb`                 | insensitive (and folded to lower before compare) |
+| SQL `tables`, `function`   | sensitive (matched against lower-cased extractions) |
+| SQL `statement`, `statement_regex` | sensitive against lower-cased statement |
+| K8s `verb`                 | insensitive      |
+| K8s `resource`, `namespace`, `name`, `params` | sensitive |
+
+For SQL, the parser lower-cases the statement before extracting verbs,
+tables, and functions — so `tables = "Users"` will never fire. Write
+match keys in the same case the parser will produce (lower).
+
+### `credential = X`
+
+Fires when the request is *dispatched against* the named credential.
+On a multi-credential endpoint, the agent picks the credential by
+embedding the configured placeholder; on a single-credential endpoint,
+every request matches the only credential.
+
+`credential` does not look at the request body or headers — it
+matches the resolved credential name, not the credential's secret
+contents.
+
+### Outcome dispatch
+
+After a rule matches:
+
+- `verdict = "allow"` — the request is forwarded.
+- `verdict = "deny"` — the request is rejected. HTTP gets a 403
+  with `reason` in the body; postgres gets an `ErrorResponse` frame
+  carrying `reason`.
+- `approve = [a, b, c]` — stages run in order, **all must allow**.
+  The first non-allow stage short-circuits and is returned. A stage
+  that returns no decision (e.g. timeout) is treated as deny.
+
+LLM stages call the configured LLM approver via its bound credential.
+Human stages park the request: the dashboard's pending-approvals page
+plus, optionally, a Slack channel ping if the approver block has a
+`credential` reference to a `slack_tokens` credential.
+
+If no rule matches, the request is **allowed** — there is no global
+default-deny. Add a `priority = -100, verdict = "deny"` catch-all
+per endpoint to invert this.
 
 
-## Rule storage
+## Gotchas
 
-Rules live in the `approval_rules` table of the main SQLite database,
-under `$CLAWPATROL_DATA/clawpatrol.db` (default `~/.clawpatrol/clawpatrol.db`). They are
-**not** loaded from files on disk -- the dashboard is the only writer
-in the supported path.
+This is the section to read carefully. Most of these are best-effort
+parser limitations, schema-vs-runtime gaps, or surprising matcher
+semantics.
+
+### HTTP request bodies are capped at 1 MiB for matching
+
+The gateway buffers up to 1 MiB of request body before evaluating
+rules. Bytes beyond 1 MiB stream through to the upstream unbuffered
+and are **invisible** to `body_contains` and `body_json`.
+
+```go
+io.ReadAll(io.LimitReader(req.Body, 1<<20))
+```
+
+Practical effect: a `body_contains = "secret"` rule matches only if
+the substring appears in the first 1 MiB of the body. Above that
+size, the rule's outcome doesn't depend on body content. Most agent
+traffic stays well below this; bulk file uploads are the obvious
+exception.
+
+### SQL `verb` matches only the first verb in a statement
+
+The SQL parser takes the first whitespace-delimited token as `verb`.
+A multi-statement query like:
 
 ```sql
-CREATE TABLE approval_rules (
-  id               TEXT PRIMARY KEY,
-  label            TEXT,
-  scope_plugin_id  TEXT,
-  scope_profile_id TEXT,
-  scope_integration_id TEXT,    -- added in migration 0006
-  priority         INTEGER NOT NULL,
-  enabled          INTEGER NOT NULL DEFAULT 1,
-  dialect          TEXT NOT NULL DEFAULT 'pattern',
-  source           TEXT NOT NULL,   -- raw JSON of `when`
-  compiled         TEXT,            -- reserved for future dialects
-  decision         TEXT NOT NULL,   -- allow | deny | require_llm | require_human
-  reason           TEXT,
-  approver_plugin_id  TEXT,
-  approver_profile_id TEXT,
-  llm_prompt      TEXT,
-  llm_model       TEXT,
-  llm_cache_ttl_s INTEGER,
-  llm_fail_closed INTEGER,
-  timeout_ms INTEGER,
-  on_timeout TEXT,
-  created_by TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE INDEX rules_scope_idx
-  ON approval_rules(scope_plugin_id, scope_profile_id, priority);
+SELECT 1; DROP TABLE users;
 ```
 
-### Compiled cache and reload semantics
+has `verb = "select"`. A `verb = "drop"` rule does **not** fire on
+this query.
 
-The router holds a process-local `cachedRules: Rule[]` snapshot. The
-cache is rebuilt by `invalidateRules()`, which is called:
+`tables`, `functions`, and `statement` / `statement_regex` see the
+full statement text — so the `DROP` victim's table name *will* show
+up under `tables`, and `statement_regex = "(?i)\\bdrop\\b"` *does*
+match. Belt-and-braces banned-verb policies should pair `verb` with
+`statement_regex`.
 
-- Once at startup, from `installApprovalRouter()`.
-- After every successful `POST /api/rules` (create or update).
-- After every successful `DELETE /api/rules/<id>`.
+### SQL `tables` and `functions` are regex-extracted
 
-In other words, dashboard edits are **hot** -- the very next action
-sees the new rule set. There is no file watcher and no SIGHUP. If you
-mutate the table out-of-band (direct SQLite write), call
-`invalidateRules()` from a plugin or restart the process.
+`tables` is extracted by `(?i)\b(?:from|update|into|join)\s+(<ident>)`.
+`functions` is extracted by `(?i)\b(<ident>)\s*\(`. Both run on the
+lower-cased statement. Consequences:
 
-### Validation
+- **CTEs are invisible** — `WITH t AS (...)` does not put `t` into
+  `tables`. The actual `FROM t` after the CTE does.
+- **Subqueries with table aliases** lose the alias's relationship
+  to the underlying table.
+- **Schema-qualified tables**: the regex captures the dotted form
+  (`schema.users`) so `tables = "users"` will not match
+  `SELECT ... FROM schema.users`. Use a glob: `tables = ["*.users",
+  "users"]`.
+- **Schema-qualified function calls**: the regex captures only the
+  ident *immediately before* `(`, so `pg_catalog.pg_terminate_backend(...)`
+  extracts as `pg_terminate_backend` — fine for banned-function lists.
+- **Functions match aggressively**: anything-followed-by-`(`
+  qualifies. `count(*)` puts `count` in `functions`.
 
-Validation is intentionally thin:
+If you need precise semantic SQL matching, lean on `statement_regex`
+or implement the rule downstream of an LLM proctor.
 
-- The HTTP layer trusts the body shape (TypeScript at the call site,
-  no runtime schema). Bad payloads produce SQL errors or odd-but-safe
-  rules.
-- `compileRule()` parses `source` as JSON at load time. **Invalid JSON
-  throws** -- and because rules are loaded as a batch, one corrupt
-  row poisons the whole reload. The previous good cache stays in
-  effect; the failure is logged as `[approvals] failed to reload
-  rules: <error>`.
-- Operator misuse (unknown operator key, wrong-typed argument,
-  invalid regex) silently fails the match -- the rule never fires.
-  Use the dashboard preview to catch this (see "Authoring rules
-  in the dashboard").
+### Postgres prepared statements are evaluated
 
-The `compiled` column is reserved for non-pattern dialects (e.g. a
-future expression dialect). Today it's always `NULL` and the dialect
-is fixed at `"pattern"`.
+Both the simple-query frame (`'Q'`) and the `Parse` frame (`'P'`,
+i.e. prepared statements) feed the matcher. The parsed `verb` /
+`tables` / `function` come from the SQL text, not from the protocol
+shape — `Parse "SELECT $1 FROM users" ...` is matched the same way
+as a simple `SELECT 1 FROM users`.
 
+### ClickHouse native: every Query is evaluated
 
-## API surface
+The `clickhouse_native` runtime decodes every `Query` packet on the
+wire and runs it through the matcher. Compressed inserts (a `Data`
+block with an LZ4/ZSTD frame chain) are forwarded opaquely after
+their parent `Query` has been allowed.
 
-All endpoints are under `/api/` on the dashboard listener (default
-`127.0.0.1:8080`). They require an authenticated session -- see
-[Self-Hosting](/docs/06-self-hosting/) for how to drive them
-programmatically with a session cookie.
+### `statement_regex` is unanchored
 
-### `GET /api/rules`
-
-List every rule, ordered by `priority DESC, id`.
-
-```bash
-curl -s http://localhost:8080/api/rules | jq '.rules[0]'
+```hcl
+statement_regex = "drop"
 ```
 
-```json
-{
-  "id": "0d8c...-...-...",
-  "label": "deny prod deletes",
-  "scope_plugin_id": "github",
-  "scope_profile_id": null,
-  "scope_integration_id": "int-prod",
-  "priority": 100,
-  "enabled": 1,
-  "dialect": "pattern",
-  "source": "{\"http.method\":\"DELETE\"}",
-  "decision": "deny",
-  "reason": "no prod deletes",
-  ...
+matches any statement containing `drop` anywhere — including
+`SELECT 'drop' AS t`. Anchor with `^` / `$` if you want strict-prefix
+or full-match semantics. The flavor is Go RE2; PCRE features (
+backreferences, lookbehind) are unavailable. Inline flags (`(?i)`)
+work.
+
+### `body_json` only matches JSON-shaped bodies
+
+`body_json` runs `json.Unmarshal` on the buffered prefix. A body
+that's empty, malformed JSON, or non-JSON content (form-encoded,
+multipart, raw bytes) silently **fails the match** — the rule never
+fires. Pair it with a `headers = { "content-type" = "application/json" }`
+sibling if you want a clearer signal.
+
+The match itself is a strict subset: every key/value in `body_json`
+must appear in the body (extra keys in the body are fine, missing
+keys fail). Lists in `body_json` are order-insensitive subsets.
+
+### HTTP `headers` and `query` use substring matching
+
+The matcher checks `want == got || strings.Contains(got, want)`. A
+rule like:
+
+```hcl
+match = { headers = { "x-tenant" = "prod" } }
+```
+
+matches `x-tenant: prod` **and** `x-tenant: production` **and**
+`x-tenant: prod-east-1`. To pin to exact equality, write a longer
+`want` that wouldn't be a substring of any other value, or use
+`statement_regex`-equivalents in body matchers. There is no
+`equals`-only mode for headers today; file a bead if your policy
+hinges on it.
+
+### HTTP `Host` header isn't trustworthy for matching
+
+The gateway resolves the upstream from the SNI hostname **before**
+running rules, but the `Host` header in `req.Header` still carries
+the agent's value at match time. The Host-overwrite to the canonical
+upstream happens later, just before forwarding. So
+`headers = { host = "api.github.com" }` reads the agent-supplied
+header, not the trusted-from-SNI value. Don't rely on it for
+authorization.
+
+### K8s verbs are HTTP-method-derived, not real k8s verbs
+
+`k8s_rule.match.verb` reads the value
+[ParseK8sPath](https://github.com/denoland/clawpatrol/blob/main/config/runtime/k8s_parse.go)
+synthesises from the HTTP method:
+
+| HTTP   | k8s `verb` |
+|--------|-----------|
+| GET (no name)   | `list`   |
+| GET (with name) | `get`    |
+| POST   | `create` (incl. `pods/exec`) |
+| PUT    | `update` |
+| PATCH  | `patch`  |
+| DELETE | `delete` |
+
+There is **no `watch` verb**, and no
+`drain` / `cordon` / `evict` / `scale` — those don't appear at the
+HTTP layer in the same form. A rule asking for them never fires.
+Match on `resource` (e.g. `pods/eviction`, `pods/scale`) instead.
+
+### Negation glob lists are per-element
+
+A common misread:
+
+```hcl
+name = ["allowed", "!debug-*"]
+```
+
+This is **not** "name in {allowed} AND name not in {debug-*}". It
+is a list with one positive entry (`allowed`) and one negative entry
+(`!debug-*`). Evaluation:
+
+- If `name == "allowed"` and not glob-`debug-*`, both pass → match.
+- If `name == "debug-prod"`, the negative fires → no match (regardless
+  of the positive).
+- If `name == "anything-else"`, the positive doesn't match and the
+  negative doesn't fire → no match.
+
+The list is **AND of element predicates** — every positive must
+have at least one match, and no negative may match. Splitting
+positives and negatives across rules is usually clearer.
+
+### `defaults.unknown_host`, `llm_fail_mode`, `llm_cache_ttl`,
+### `human_on_timeout` are schema-only today
+
+The `defaults {}` block accepts these fields and they round-trip
+through dump / emit, but only `human_timeout` is actually consulted
+at runtime. The rest are reserved for future wiring. Behavior today,
+regardless of what you set:
+
+| Setting             | Configured  | Actual runtime behavior |
+|---------------------|-------------|-------------------------|
+| `unknown_host`      | (any)       | Passthrough — unmatched hostnames are forwarded verbatim. |
+| `llm_fail_mode`     | (any)       | Closed — LLM API errors / timeouts deny. |
+| `llm_cache_ttl`     | (any)       | No verdict cache — every approval call hits the LLM. |
+| `human_on_timeout`  | (any)       | Deny — a human approver that doesn't respond before its timeout returns deny. |
+| `human_timeout`     | seconds     | **Wired**: per-approver `timeout` overrides this default. |
+
+Production policy that depends on any of the unwired fields has to
+encode the intent another way (e.g. an explicit `verdict = "deny"`
+catch-all instead of relying on `unknown_host = "deny"`).
+
+### `device {}` blocks are not yet supported
+
+The
+[grammar reference](https://github.com/denoland/clawpatrol/blob/main/config/README.md)
+mentions `device "<ip>" { rule ... }` for per-device overrides. The
+parser does not currently accept these blocks — you'll get an
+"Unsupported block type" diagnostic at load time. Per-device policy
+is on the roadmap; today, scope policy by **profile** instead.
+
+### `approve` stages are bare names only
+
+The grammar reference also shows struct stages:
+
+```hcl
+approve = [{ name = fast, policy = pg-secret-columns, cache_ttl = 600 }]
+```
+
+The current decoder rejects these:
+
+```
+Rule "X" approve stage must be a bare-name reference.
+Bind policy text on the approver block itself.
+```
+
+Put the policy and any LLM-specific tuning on the `approver` block
+and reference it by bare name from the rule.
+
+### Empty `match` matches everything
+
+```hcl
+rule "http_rule" "deny-all-fallback" {
+  endpoint = stripe
+  priority = -100
+  verdict  = "deny"
 }
 ```
 
-### `POST /api/rules`
+No `match` block means "match every request reaching this endpoint".
+Combined with the lowest-possible priority, this is the
+default-deny pattern. Make sure your high-priority allow rules
+exist before relying on it.
 
-Upsert a rule. With no `id`, a UUID is assigned and returned. With
-`id`, the row is updated in place. The router cache is invalidated
-before the response is sent.
+### Names live in a single namespace
 
-```bash
-curl -s -X POST http://localhost:8080/api/rules \
-  -H 'content-type: application/json' \
-  -d '{
-    "label": "deny destructive SQL on prod",
-    "scopeIntegrationId": "int-prod-pg",
-    "priority": 100,
-    "enabled": true,
-    "source": "{\"sql.verb\":{\"in\":[\"DROP\",\"TRUNCATE\",\"DELETE\"]}}",
-    "decision": "deny",
-    "reason": "no destructive DDL on prod"
-  }'
-```
+`approver "human_approver" "stripe"` and `endpoint "https" "stripe"`
+collide — both register the bare name `stripe`. The loader rejects
+the second declaration with a duplicate-name diagnostic. When in
+doubt, prefix-name within a kind: `stripe-billing` (approver),
+`stripe-api` (endpoint), `stripe-no-deletes` (rule).
 
-Response: `{ "id": "<uuid>" }`.
+### Rules attach to endpoints, not profiles
 
-### `GET /api/rules/<id>`
-
-Fetch one rule (the same shape as a list element).
-
-### `DELETE /api/rules/<id>`
-
-Delete a rule. Always returns `{ "ok": true }`, even if no row
-matched. The router cache is invalidated.
-
-### `POST /api/rules/preview`
-
-Dry-run a draft rule against the most recent N actions logged in the
-analytics store. Used by the dashboard's preview pane.
-
-```bash
-curl -s -X POST http://localhost:8080/api/rules/preview \
-  -H 'content-type: application/json' \
-  -d '{
-    "draft": {
-      "source": "{\"http.method\":\"DELETE\"}",
-      "decision": "deny"
-    },
-    "lookbackLimit": 200
-  }'
-```
-
-```json
-{
-  "matched": 12,
-  "samples": [
-    { "timestamp": "...", "sessionId": "...", "record": { ... } }
-  ]
-}
-```
-
-`lookbackLimit` is capped at 500. `samples` is capped at 20 entries.
-The preview ignores scope -- it tells you whether the `when` matcher
-would have hit; whether the rule would have *fired* depends on the
-session's plugin/profile/integration at evaluation time.
-
-### `GET /api/action-schemas`
-
-The schema catalog used by the rule builder (see "Action schemas").
-
-### `GET /api/approvers`
-
-List registered approver plugins:
-
-```json
-{
-  "llm": [{ "id": "anthropic-approver", "name": "...", "description": "..." }],
-  "human": [{ "id": "dashboard-approval", "name": "...", "description": "..." }]
-}
-```
-
-### Approver webhooks
-
-```
-/api/approvers/<plugin-id>/<path>
-```
-
-Mounted by `dispatchWebhook` in `src/approvals/webhooks.ts`. Forwarded
-to the plugin's `webhooks[<path>]` handler. The plugin handles
-signature verification and matches the inbound verdict to its parked
-latch. Claw Patrol never inspects the body.
-
-### Pending human approvals
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/pending-actions` | Snapshot of in-memory queue. |
-| GET | `/api/pending-actions/stream` | SSE stream: pending entries + removals. |
-| POST | `/api/pending-actions/<actionId>/decision` | Resolve a parked approval (`{ decision, reason?, reviewer? }`). |
-
-Only entries from the `dashboard-approval` plugin live in this queue;
-third-party human approvers manage their own state.
-
-
-## Authoring rules in the dashboard
-
-The dashboard's *Approval rules* page (component:
-`dashboard/src/components/RulesPage.tsx`) is the supported authoring
-surface.
-
-The flow:
-
-1. Click **New rule**. The editor opens with a blank draft (default:
-   `{ "http.method": "DELETE" }`, decision `deny`, priority 100).
-2. **Label** -- shown in the rule list.
-3. **Scope** -- three dropdowns: plugin (filtered by what the schema
-   catalog reports), profile (from `/api/profiles`), integration (from
-   `/api/integrations`, filtered by selected plugin). Leaving all three
-   empty is "global". Selecting plugin clears any integration that
-   doesn't belong to that plugin.
-4. **Priority** + **enabled** checkbox.
-5. **Match (JSON)** -- the `when` matcher, edited as JSON. The hint
-   under the textarea names the supported operators inline.
-6. **Decision** dropdown -- selecting `require_llm` or `require_human`
-   reveals the approver-specific fields (model, prompt, cache TTL,
-   fail-closed flag for LLM; timeout, on-timeout for human).
-7. **Preview** -- runs `/api/rules/preview` against the last 200
-   actions. Surfaces "would have matched X of 200" and up to eight
-   sample summaries. Use this to check for false positives before
-   saving.
-8. **Save** -- calls `POST /api/rules`. The list refreshes; the new
-   rule is live for the next action.
-
-Available action types are surfaced as a collapsed `<details>` block
-at the bottom of the editor.
-
-The list view shows label, scope, decision, priority, enabled, and
-edit/delete affordances. Editing a rule rehydrates the draft with all
-its fields; deleting is confirmed by browser `confirm()`.
-
-
-## Worked examples
-
-### Example 1: deny destructive SQL on a prod Postgres integration
-
-Rule that fires when a session attached to integration `int-prod-pg`
-runs any `DROP`, `TRUNCATE`, or `DELETE`.
-
-```json
-{
-  "label": "no destructive DDL on prod",
-  "scopeIntegrationId": "int-prod-pg",
-  "priority": 100,
-  "enabled": true,
-  "source": "{\"sql.verb\":{\"in\":[\"DROP\",\"TRUNCATE\",\"DELETE\"]}}",
-  "decision": "deny",
-  "reason": "destructive SQL on prod is human-only"
-}
-```
-
-Triggers: any action where the SQL plugin populates
-`facets.sql.verb` with one of those values **and** the session is
-scoped to integration `int-prod-pg`. Scope acts as the "where it
-applies" filter; `when` is the "what it matches" predicate.
-
-Result: the agent receives `ActionDeniedError` with the configured
-reason; the action is logged with `source: "static"` and the rule id.
-
-### Example 2: auto-allow read-only GET requests to internal docs
-
-Allow any HTTP GET to a wiki host without prompting. Scoped globally,
-high priority so it overrides any later "human approve all writes"
-rule.
-
-```json
-{
-  "label": "allow internal-wiki reads",
-  "priority": 200,
-  "enabled": true,
-  "source": "{\"http.method\":\"GET\",\"http.url\":{\"glob\":\"https://wiki.internal.example/*\"}}",
-  "decision": "allow"
-}
-```
-
-Triggers: any HTTP request whose method is `GET` AND whose URL begins
-with the configured prefix. Both keys must match (implicit AND).
-
-Result: `source: "static"`, `decision: "allow"`, no approver call.
-
-### Example 3: defer expensive LLM calls to a human
-
-The pattern dialect cannot do numeric comparisons (see
-"Limitations") so we cannot say "$ > 0.10" directly. The closest
-expressible thing is "calls to expensive models", matched by model
-name:
-
-```json
-{
-  "label": "human-approve big-model calls",
-  "scopePluginId": "anthropic",
-  "priority": 50,
-  "enabled": true,
-  "source": "{\"any\":[{\"llm.model\":{\"glob\":\"claude-opus-*\"}},{\"llm.model\":{\"glob\":\"gpt-4*\"}}]}",
-  "decision": "require_human",
-  "approverPluginId": "dashboard-approval",
-  "approverProfileId": "default",
-  "timeoutMs": 300000,
-  "onTimeout": "deny"
-}
-```
-
-Triggers: any action carrying an `llm` facet whose `model` matches
-either glob.
-
-Result: the action is parked in the in-memory queue; the dashboard's
-PendingActions page lights up; SSE listeners are notified. The agent
-blocks for up to 5 minutes. If a reviewer denies, the agent receives
-`ActionDeniedError` with their reason. If no one acts in 5 minutes,
-`onTimeout: "deny"` denies the call.
+A rule does not name a profile; it names an endpoint. A profile
+"opts in" to a rule by listing the rule's endpoint. Two profiles
+that share an endpoint share the rule. To diverge per-profile, use
+distinct endpoints (often differing only in name and `credential`)
+and attach distinct rules to each.
 
 
 ## Operational notes
 
 ### Testing rules
 
-There is no `clawpatrol rules test` CLI today. Use the dashboard preview
-(`POST /api/rules/preview`) for dry runs against historical actions.
+There is no `clawpatrol rules test` CLI today. The matchers and
+plugins are pure Go functions; the canonical test fixtures live at
+[`config/testdata/full.hcl`](https://github.com/denoland/clawpatrol/blob/main/config/testdata/full.hcl)
+and the matcher unit tests at
+[`config/match/match_test.go`](https://github.com/denoland/clawpatrol/blob/main/config/match/match_test.go).
 
-For unit tests, the engine itself is a pure function:
-
-```typescript
-import { evaluate, compileRule } from "./approvals/rules.js";
-
-const rule = compileRule({ /* DB row */ });
-const out = evaluate({ rules: [rule], defaultPolicy: "allow" }, action, session);
-// out.verdict.decision in {"allow", "deny", "timeout"}
-// out.rule is the matched Rule, or null for a default-policy verdict
-```
-
-`src/approvals/rules.test.ts` is the canonical reference for how each
-operator and combinator behaves; treat the test cases as runnable
-examples.
+To smoke-test a rule against your real config: load the gateway
+locally, point an agent at it, and watch the dashboard's per-action
+log. The log line carries the matched rule name so you can confirm
+which rule fired.
 
 ### Rolling back a rule
 
-Three options, in order of preference:
+Two options:
 
-1. **Disable** the rule from the dashboard (clear the *enabled*
-   checkbox, save). The change is hot.
-2. **Lower priority** below another rule that allows the action.
-3. **Delete** the rule. Irreversible -- the row is gone.
+1. **Disable** by adding `disabled = true` to the rule body. The rule
+   stays in source for review; reload to take effect.
+2. **Delete** by removing the block and reloading.
 
-For audit, every successful save updates `updated_at`; deletes leave
-no audit trail in the table itself, but each `POST /api/rules` and
-`DELETE /api/rules/<id>` is logged as a regular dashboard request and
-shows up in the analytics store.
+Both require a config reload (the gateway re-reads `gateway.hcl` on
+SIGHUP / dashboard save).
 
-### Conflict reporting
+### Where matched rules show up
 
-There is no built-in conflict report today. The first matching rule
-wins by the priority+specificity sort, and the verdict carries the
-winning `ruleId`. To find which rule fired for a given action, look
-at the action's logged verdict in the analytics view.
-
-
-## Limitations
-
-The pattern dialect is intentionally small. Known gaps:
-
-- **No numeric comparison.** `>=`, `<=`, `>`, `<` are not implemented.
-  Worked example 3 shows the workaround (match on a categorical proxy
-  -- e.g. model name).
-- **No time-of-day or calendar matching.** "Block on weekends" and
-  "allow only during business hours" are not expressible.
-- **No rate-based or sequence-based matching.** The engine sees one
-  `ActionRecord` at a time; it cannot match "more than 10 deletes per
-  minute".
-- **No regex flags.** Use inline groups (`(?i)`) instead.
-- **No `**` glob.** Only `*` (any sequence) and `?` (any single char).
-- **No object equality.** Object-valued conditions are interpreted as
-  operator objects, not literal values.
-- **`pattern`, `glob`, and case-insensitive `contains` only apply to
-  strings.** On non-string values they return false.
-- **Single dialect.** The schema reserves a `compiled` column and a
-  `dialect` field, but only `"pattern"` is implemented.
-- **Validation is best-effort.** A misspelled operator key silently
-  produces a rule that never fires.
-- **Rule storage is dashboard-only.** No file-based rule definitions,
-  no `git`-able rule files, no import/export endpoint.
-- **`dashboard-approval` action ids are queue-local.** The id the
-  dashboard sees is a UUID minted by `human.ts`, not the
-  `ActionRecord` id; correlation between an audit-log entry and a
-  pending-approvals entry has to go through the rule id and timestamp.
-
-When you hit any of these, the typical response is to express the
-intent more coarsely (e.g. "always require human for this action
-type") and lean on the LLM approver for the contextual judgment.
+Every action's verdict carries the matched rule name. The dashboard
+surfaces this on the per-request page; the JSON API exposes it on
+`/api/actions/<id>` (see [Self-Hosting](/docs/06-self-hosting/)).
+Default-policy outcomes (no rule matched) carry an empty rule name.
