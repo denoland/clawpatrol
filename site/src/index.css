@@ -1,24 +1,9 @@
+@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@100..900&family=PT+Mono&family=Sora:wght@100..800&display=swap");
 @import "tailwindcss";
 
-/* Self-hosted fonts. Anonymous Pro (body + mono) is on the
-   Google Fonts CDN — TODO: self-host. */
-
-@font-face {
-  font-family: "Fraunces";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url("/fonts/Fraunces--latin_basic.woff2") format("woff2-variations");
-}
-
-@font-face {
-  font-family: "Fraunces";
-  font-style: italic;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url("/fonts/Fraunces-Italic--latin_basic.woff2")
-    format("woff2-variations");
-}
+/* Self-hosted families below. PT Mono, Outfit, and Sora are imported
+   above from Google Fonts so they ship with the CSS bundle (works on
+   /docs/ too). */
 
 /* AmsiPro (Stawix) — display family. Static weights, latin-basic subset. */
 @font-face {
@@ -269,7 +254,6 @@
 /* Basic Sans (Latinotype) — body family. Static cuts, latin-basic subset. */
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -284,7 +268,6 @@
 }
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -299,7 +282,6 @@
 }
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -314,7 +296,6 @@
 }
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -329,7 +310,6 @@
 }
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -344,7 +324,6 @@
 }
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -359,7 +338,6 @@
 }
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -374,7 +352,6 @@
 }
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -389,7 +366,6 @@
 }
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -404,7 +380,6 @@
 }
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -419,7 +394,6 @@
 }
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -434,7 +408,6 @@
 }
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -449,7 +422,6 @@
 }
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -464,7 +436,6 @@
 }
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -782,10 +753,13 @@ a.neu-raised:active {
   --color-text-muted: #62656d;
   --color-text-subtle: #9d9ea7;
 
-  --font-display: "Gazpacho", "Fraunces", system-ui, serif;
-  --font-sans: "Basic Sans", system-ui, sans-serif;
+  --font-display: "Basic Sans", "Gazpacho", system-ui, serif;
+  --font-sans:
+    "Sora", "Outfit", "Public Sans", "Eastman", "Courier New",
+    "American Typewriter", "Chronica Pro", "Basic Sans", system-ui, sans-serif;
   --font-mono:
-    "MonoLisa", "Anonymous Pro", "SF Mono", "Menlo", ui-monospace, monospace;
+    "PT Mono", "MonoLisa", "DankMono Nerd Font", "SF Mono", "Menlo",
+    ui-monospace, monospace;
 
   --breakpoint-xs: 32rem;
 
@@ -798,11 +772,7 @@ a.neu-raised:active {
   /* Body-text sizes inherit our looser body line-height instead of
      Tailwind 4's bundled per-size defaults. Heading sizes (text-2xl+)
      keep Tailwind's tight defaults so they don't go airy. */
-  --text-2xs--line-height: 1.5;
-  --text-xs--line-height: 1.7;
-  --text-sm--line-height: 1.7;
-  --text-base--line-height: 1.8;
-  --text-lg--line-height: 1.7;
+  --text-base--line-height: inherit;
 }
 
 @layer base {
@@ -810,6 +780,7 @@ a.neu-raised:active {
     @media (min-width: 64rem) {
       font-size: 112.5%;
     }
+    font-weight: 400;
   }
 
   body {
