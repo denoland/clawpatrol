@@ -1,7 +1,20 @@
 {
   "name": "clawpatrol",
+  "main": "worker/index.ts",
   "compatibility_date": "2026-05-02",
   "assets": {
-    "directory": "./dist"
-  }
+    "directory": "./dist",
+    "binding": "ASSETS"
+  },
+  "d1_databases": [
+    {
+      "binding": "TELEMETRY_DB",
+      "database_name": "clawpatrol-telemetry",
+      // Run `wrangler d1 create clawpatrol-telemetry` once and paste
+      // the returned uuid here. Then `wrangler d1 migrations apply
+      // TELEMETRY_DB --remote` runs migrations/.
+      "database_id": "REPLACE_WITH_D1_UUID",
+      "migrations_dir": "migrations"
+    }
+  ]
 }
