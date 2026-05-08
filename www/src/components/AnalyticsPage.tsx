@@ -56,6 +56,8 @@ export function AnalyticsPage({ ip, agents }: {
     ? agents.find(a => a.ip === ip)?.hostname || ip
     : undefined;
   const [events, setEvents] = useState<EventRecord[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [errorCount, setErrorCount] = useState(0);
   const [range, setRange] =
     useQS("range", "1h" as Range, RANGES);
   const [filterDevice, setFilterDevice] = useState<
@@ -73,7 +75,12 @@ export function AnalyticsPage({ ip, agents }: {
     let cancelled = false;
     const load = () => {
       getAnalytics({ range, agent: ip, limit: 5000 })
-        .then((r) => { if (!cancelled) setEvents(r.events); })
+        .then((r) => {
+          if (cancelled) return;
+          setEvents(r.events);
+          setTotalCount(r.total_count);
+          setErrorCount(r.error_count);
+        })
         .catch(() => {});
     };
     load();
@@ -94,9 +101,15 @@ export function AnalyticsPage({ ip, agents }: {
     : filterHost ?? "";
 
   // --- summary stats ---
+  // Counts (n, errPct) come from server-side aggregates so the
+  // headline isn't capped at the 5000-row scatter sample. Avg / p99 /
+  // devices are computed from the sample — statistically valid for
+  // a uniform random draw and avoids extra SQL passes.
   const stats = (() => {
-    const n = filtered.length;
-    if (n === 0) return { n: 0, avg: 0, p99: 0, errPct: 0, devices: 0 };
+    const sampleN = filtered.length;
+    if (sampleN === 0 && !hasFilter && totalCount === 0) {
+      return { n: 0, avg: 0, p99: 0, errPct: 0, devices: 0 };
+    }
     const lats = filtered
       .map(e => e.ms).filter(m => m > 0)
       .sort((a, b) => a - b);
@@ -104,12 +117,17 @@ export function AnalyticsPage({ ip, agents }: {
       ? Math.round(lats.reduce((a, b) => a + b, 0) / lats.length) : 0;
     const p99 = lats.length
       ? lats[Math.min(Math.floor(lats.length * 0.99), lats.length - 1)] : 0;
-    const errs = filtered.filter(e => (e.status ?? 0) >= 400).length;
-    const errPct = n > 0 ? (errs / n) * 100 : 0;
     const devices = new Set(
       filtered.map(e => e.agent_ip).filter(Boolean),
     ).size;
-    return { n, avg, p99, errPct, devices };
+    if (hasFilter) {
+      const errs = filtered.filter(e => (e.status ?? 0) >= 400).length;
+      const errPct = sampleN > 0 ? (errs / sampleN) * 100 : 0;
+      return { n: sampleN, avg, p99, errPct, devices };
+    }
+    const errPct = totalCount > 0
+      ? (errorCount / totalCount) * 100 : 0;
+    return { n: totalCount, avg, p99, errPct, devices };
   })();
 
   return (
@@ -129,9 +147,13 @@ export function AnalyticsPage({ ip, agents }: {
                 {deviceName}
               </a>
               <span className="text-[13px] text-[#a3a3a3]">/</span>
+              <a href="#/analytics" className="text-[13px] text-[#525252] hover:text-[#171717]">
+                analytics
+              </a>
             </>
-          ) : null}
-          <span className="text-[13px] text-[#525252]">analytics</span>
+          ) : (
+            <span className="text-[13px] text-[#525252]">analytics</span>
+          )}
           {hasFilter && (
             <button
               onClick={() => { setFilterDevice(null); setFilterHost(null); }}
@@ -165,13 +187,6 @@ export function AnalyticsPage({ ip, agents }: {
         )}
       </div>
 
-      <LatencyChart
-        filtered={filtered}
-        isGlobal={isGlobal}
-        agents={agents}
-        range={range}
-      />
-
       <div className={"grid gap-4 " + (isGlobal ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1")}>
         {isGlobal && (
           <BarList
@@ -180,6 +195,7 @@ export function AnalyticsPage({ ip, agents }: {
             field="agent_ip"
             active={filterDevice}
             labelFn={(v) => agentNames.get(v) ?? v}
+            colorFn={(_, label) => deviceColor(label)}
             onClickFn={(v) => {
               setFilterDevice(filterDevice === v ? null : v);
               setFilterHost(null);
@@ -191,12 +207,20 @@ export function AnalyticsPage({ ip, agents }: {
           events={events}
           field="host"
           active={filterHost}
+          colorFn={(key) => hostColor(key)}
           onClickFn={(v) => {
             setFilterHost(filterHost === v ? null : v);
             setFilterDevice(null);
           }}
         />
       </div>
+
+      <LatencyChart
+        filtered={filtered}
+        isGlobal={isGlobal}
+        agents={agents}
+        range={range}
+      />
 
       <TopRoutes events={filtered} />
     </main>
@@ -242,17 +266,26 @@ function stableIndex(s: string, n: number): number {
   return ((h % n) + n) % n;
 }
 
-// Cool-leaning Tailwind -700 shades. Cohesive intensity, distinct hues,
-// no rainbow-toy vibe. Used for chart series (one color per host /
-// device); bars use a rank-grayscale ramp instead.
+// 10 perceptually-distinct Tailwind-600 hues. The previous -700 set
+// had four near-blues that hashed-into clashes; Tableau-10 fixed the
+// distinctness but read as washed-out on white.
 const PALETTE = [
-  "#1d4ed8", "#0f766e", "#7c3aed", "#0369a1",
-  "#15803d", "#a16207", "#c2410c", "#be185d",
-  "#4338ca", "#0e7490", "#65a30d", "#9f1239",
+  "#2563eb", // blue-600
+  "#dc2626", // red-600
+  "#16a34a", // green-600
+  "#ea580c", // orange-600
+  "#9333ea", // purple-600
+  "#0d9488", // teal-600
+  "#ca8a04", // yellow-600
+  "#db2777", // pink-600
+  "#65a30d", // lime-600
+  "#475569", // slate-600
 ];
 const hostColor = (s: string) => PALETTE[stableIndex(s, PALETTE.length)];
+// Offset by half the palette so the same string hashes to a maximally
+// different hue when used as a device vs. a host.
 const deviceColor = (s: string) =>
-  PALETTE[(stableIndex(s, PALETTE.length) + 6) % PALETTE.length];
+  PALETTE[(stableIndex(s, PALETTE.length) + 5) % PALETTE.length];
 
 // Status: Tailwind -700 (desaturated vs original -600). Used both in
 // scatter legend and EventRow status text.
@@ -416,26 +449,48 @@ function LatencyChart({ filtered, isGlobal, agents, range }: {
       (a as unknown as HTMLElement).style.cursor = "pointer";
     });
 
-    // Make legend swatches clickable when colored by device
-    if (colorBy === "device") {
-      const nameToIP = new Map(
-        agents.map(a => [a.hostname || a.ip, a.ip]),
-      );
-      chart.querySelectorAll(
-        "[aria-label='color'] [aria-label]",
-      ).forEach((el) => {
-        const label = el.getAttribute("aria-label") ?? "";
+    // Hover-to-highlight: dim dots whose `fill` doesn't match the
+    // swatch's `fill`. Plot's swatch DOM is `<span class="*-swatch">`
+    // with an inner `<svg fill="...">` and the value as a text node —
+    // there are no aria-labels, so we read the color straight off the
+    // swatch's SVG (same scale as the dots use).
+    const dotEls = chart.querySelectorAll<SVGCircleElement>(
+      "g[aria-label='dot'] circle",
+    );
+    const setHighlight = (target: string | null) => {
+      if (!target) {
+        dotEls.forEach((c) => { c.style.opacity = ""; });
+        return;
+      }
+      dotEls.forEach((c) => {
+        c.style.opacity =
+          c.getAttribute("fill") === target ? "1" : "0.08";
+      });
+    };
+
+    const nameToIP = colorBy === "device"
+      ? new Map(agents.map(a => [a.hostname || a.ip, a.ip]))
+      : null;
+
+    chart.querySelectorAll<HTMLElement>(
+      "[class*='-swatch']:not([class*='-swatches'])",
+    ).forEach((el) => {
+      const color = el.querySelector("svg")?.getAttribute("fill")
+        ?? null;
+      const label = el.textContent?.trim() ?? "";
+      el.addEventListener("mouseenter", () => setHighlight(color));
+      el.addEventListener("mouseleave", () => setHighlight(null));
+      if (nameToIP) {
         const devIP = nameToIP.get(label);
         if (!devIP) return;
-        const span = el as HTMLElement;
-        span.style.cursor = "pointer";
-        span.addEventListener("click", (e) => {
+        el.style.cursor = "pointer";
+        el.addEventListener("click", (e) => {
           e.stopPropagation();
           window.location.hash =
             `#/analytics/${encodeURIComponent(devIP)}`;
         });
-      });
-    }
+      }
+    });
 
     ref.current.replaceChildren(chart);
     return () => chart.remove();
@@ -502,14 +557,11 @@ type RouteRow = {
   host: string;
   path: string;
   count: number;
-  avgMs: number;
   p99Ms: number;
 };
 
 function TopRoutes({ events }: { events: EventRecord[] }) {
-  const [sortBy, setSortBy] = useState<
-    "count" | "avgMs" | "p99Ms"
-  >("count");
+  const [sortBy, setSortBy] = useState<"count" | "p99Ms">("count");
 
   const byRoute = new Map<string, number[]>();
   for (const e of events) {
@@ -524,8 +576,6 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
   for (const [k, latencies] of byRoute) {
     const [method, host, path] = k.split("|");
     const sorted = latencies.slice().sort((a, b) => a - b);
-    const avg = sorted.reduce((a, b) => a + b, 0) /
-      sorted.length;
     const p99i = Math.floor(sorted.length * 0.99);
     rows.push({
       key: k,
@@ -533,7 +583,6 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
       host,
       path,
       count: sorted.length,
-      avgMs: Math.round(avg),
       p99Ms: sorted[Math.min(p99i, sorted.length - 1)],
     });
   }
@@ -541,10 +590,7 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
   rows.sort((a, b) => b[sortBy] - a[sortBy]);
   const maxCount = rows.length ? rows[0].count : 0;
 
-  const hdr = (
-    label: string,
-    field: "count" | "avgMs" | "p99Ms",
-  ) => (
+  const hdr = (label: string, field: "count" | "p99Ms") => (
     <th
       className="px-3 sm:px-[14px] py-[9px] text-right text-[10px] font-medium uppercase tracking-[.12em] text-[#a3a3a3] cursor-pointer hover:text-[#525252] select-none"
       onClick={() => setSortBy(field)}
@@ -555,14 +601,18 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
 
   return (
     <section className="bg-white border border-[#e5e5e5] rounded overflow-hidden">
-      <table className="w-full table-fixed text-[11px]">
+      <table className="w-full text-[11px]">
+        <colgroup>
+          <col />
+          <col className="w-[120px]" />
+          <col className="w-[80px]" />
+        </colgroup>
         <thead>
           <tr className="border-b border-[#e5e5e5]">
             <th className="px-3 sm:px-[14px] py-[9px] text-left text-[10px] uppercase tracking-[.12em] text-[#a3a3a3] font-medium">
               Top routes
             </th>
             {hdr("Reqs", "count")}
-            {hdr("Avg", "avgMs")}
             {hdr("p99", "p99Ms")}
           </tr>
         </thead>
@@ -575,7 +625,7 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
                 key={d.key}
                 className="border-b border-[#f5f5f5] hover:bg-[#f9f9f9] transition-colors"
               >
-                <td className="px-3 sm:px-[14px] py-[9px] font-mono truncate max-w-0 align-middle" title={`${d.method} ${d.host}${d.path}`}>
+                <td className="px-3 sm:px-[14px] py-[9px] font-mono align-middle break-all" title={`${d.method} ${d.host}${d.path}`}>
                   <span className="text-[#a3a3a3]">{d.method}</span>{" "}{d.host}<span className="text-[#525252]">{d.path}</span>
                 </td>
                 <td className="px-3 sm:px-[14px] py-[9px] text-right whitespace-nowrap align-middle">
@@ -583,17 +633,16 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
                     <div className="w-12 h-1.5 bg-[#f5f5f5] rounded-full">
                       <div className="h-full bg-[#a3a3a3] rounded-full" style={{ width: `${pct}%` }} />
                     </div>
-                    <span className="w-6 text-right tabular-nums">{d.count}</span>
+                    <span className="w-8 text-right tabular-nums">{d.count}</span>
                   </div>
                 </td>
-                <td className="px-3 sm:px-[14px] py-[9px] text-right text-[#525252] tabular-nums align-middle">{fmtMs(d.avgMs)}</td>
                 <td className="px-3 sm:px-[14px] py-[9px] text-right text-[#525252] tabular-nums align-middle">{fmtMs(d.p99Ms)}</td>
               </tr>
             );
           })}
           {rows.length === 0 && (
             <tr>
-              <td colSpan={4} className="px-1 py-6 text-center text-[11px] text-[#a3a3a3]">
+              <td colSpan={3} className="px-1 py-6 text-center text-[11px] text-[#a3a3a3]">
                 No data in this time range
               </td>
             </tr>
@@ -606,13 +655,16 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
 
 // --- horizontal bar list ---
 
-function BarList({ title, events, field, active, labelFn, onClickFn }: {
+function BarList({
+  title, events, field, active, labelFn, onClickFn, colorFn,
+}: {
   title: string;
   events: EventRecord[];
   field: "host" | "agent_ip";
   active?: string | null;
   labelFn?: (v: string) => string;
   onClickFn?: (v: string) => void;
+  colorFn?: (key: string, label: string) => string;
 }) {
   const counts = new Map<string, number>();
   for (const e of events) {
@@ -637,7 +689,9 @@ function BarList({ title, events, field, active, labelFn, onClickFn }: {
         {items.slice(0, 10).map((item) => {
           const pct = max > 0 ? (item.value / max) * 100 : 0;
           const isActive = active === item.key;
-          const barColor = isActive ? "#171717" : "#525252";
+          const barColor = colorFn
+            ? colorFn(item.key, item.label)
+            : (isActive ? "#171717" : "#525252");
           return (
             <div
               key={item.key}
@@ -651,7 +705,14 @@ function BarList({ title, events, field, active, labelFn, onClickFn }: {
                 {item.label}
               </span>
               <div className="flex-1 h-2 bg-[#f5f5f5] rounded-full">
-                <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: barColor }} />
+                <div
+                  className="h-full rounded-full"
+                  style={{
+                    width: `${pct}%`,
+                    backgroundColor: barColor,
+                    opacity: isActive ? 1 : 0.85,
+                  }}
+                />
               </div>
               <span className="w-8 text-right text-[11px] text-[#a3a3a3] tabular-nums">
                 {item.value}

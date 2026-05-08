@@ -1006,29 +1006,22 @@ func (w *webMux) apiAnalytics(
 	}
 	agent := q.Get("agent")
 
-	var query string
-	var args []any
+	where := "ts_ns >= ?"
+	whereArgs := []any{cutoff}
 	if agent != "" {
-		query = `
-			SELECT action_id, ts_ns, mode, agent_ip, host,
-			       method, path, status, bytes_in, bytes_out,
-			       ms, action, reason
-			FROM actions
-			WHERE ts_ns >= ? AND agent_ip = ?
-			ORDER BY RANDOM()
-			LIMIT ?`
-		args = []any{cutoff, agent, limit}
-	} else {
-		query = `
-			SELECT action_id, ts_ns, mode, agent_ip, host,
-			       method, path, status, bytes_in, bytes_out,
-			       ms, action, reason
-			FROM actions
-			WHERE ts_ns >= ?
-			ORDER BY RANDOM()
-			LIMIT ?`
-		args = []any{cutoff, limit}
+		where += " AND agent_ip = ?"
+		whereArgs = append(whereArgs, agent)
 	}
+
+	query := `
+		SELECT action_id, ts_ns, mode, agent_ip, host,
+		       method, path, status, bytes_in, bytes_out,
+		       ms, action, reason
+		FROM actions
+		WHERE ` + where + `
+		ORDER BY RANDOM()
+		LIMIT ?`
+	args := append(append([]any{}, whereArgs...), limit)
 	rows, err := w.g.db.Query(query, args...)
 	if err != nil {
 		http.Error(rw, err.Error(), 500)
@@ -1073,9 +1066,23 @@ func (w *webMux) apiAnalytics(
 		e.Reason = reason.String
 		out = append(out, e)
 	}
+
+	// Real (non-sampled) totals so the top stats reflect the actual
+	// request volume, not the chart's 5000-row sample. Filtered by
+	// the same range + agent as the events query above.
+	var totalCount int64
+	var errorCount sql.NullInt64
+	_ = w.g.db.QueryRow(
+		`SELECT COUNT(*),
+		        SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END)
+		 FROM actions WHERE `+where, whereArgs...,
+	).Scan(&totalCount, &errorCount)
+
 	writeJSON(rw, map[string]any{
-		"events": out,
-		"total":  len(out),
+		"events":      out,
+		"total":       len(out),
+		"total_count": totalCount,
+		"error_count": errorCount.Int64,
 	})
 }
 

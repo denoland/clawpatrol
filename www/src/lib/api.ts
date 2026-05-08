@@ -342,7 +342,12 @@ export async function getAnalytics(params: {
   range: string;
   agent?: string;
   limit?: number;
-}): Promise<{ events: EventRecord[]; total: number }> {
+}): Promise<{
+  events: EventRecord[];
+  total: number;
+  total_count: number;
+  error_count: number;
+}> {
   const p = new URLSearchParams({ range: params.range });
   if (params.agent) p.set("agent", params.agent);
   if (params.limit) p.set("limit", String(params.limit));
