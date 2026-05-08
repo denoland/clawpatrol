@@ -551,22 +551,23 @@ func (w *webMux) apiOAuthStart(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.URL.Query().Get("id")
-	// Fetch operator-level credential secrets (profile="") so plugins that
-	// don't embed client_secret in HCL (e.g. notion_oauth) can read it here.
+	owner, ownerLabel := w.ownerForCaller(r)
+	if owner == "" {
+		http.Error(rw, "could not determine owner identity (tailscale whois failed)", 400)
+		return
+	}
+	// Fetch per-profile credential secrets so plugins that store their OAuth
+	// app credentials in the dashboard (e.g. notion_oauth client_id/secret)
+	// can read them here. owner == profile in the profile-as-tenant model.
 	var oauthExtras map[string]string
 	if w.g.db != nil {
-		if sec, ok, _ := readCredentialSecrets(w.g.db, id, ""); ok {
+		if sec, ok, _ := readCredentialSecrets(w.g.db, id, owner); ok {
 			oauthExtras = sec.Extras
 		}
 	}
 	flow := lookupOAuthFlow(w.g.policy.Load(), id, oauthExtras)
 	if flow == nil {
 		http.Error(rw, "no oauth integration: "+id, 400)
-		return
-	}
-	owner, ownerLabel := w.ownerForCaller(r)
-	if owner == "" {
-		http.Error(rw, "could not determine owner identity (tailscale whois failed)", 400)
 		return
 	}
 	// User may opt into additional scopes (e.g. SSH/GPG key management
