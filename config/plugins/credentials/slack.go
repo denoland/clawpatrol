@@ -232,7 +232,6 @@ func slackTrunc(s string, n int) string {
 	return s
 }
 
-
 // WebhookRoutes returns Slack's interactive callback handler. main
 // mounts it at /api/cred/<credName>/interactive — operator pastes
 // that URL into the Slack app's "Interactivity & Shortcuts" config.
