@@ -262,7 +262,7 @@ export function HowItWorksSection() {
         <SectionLabel>The foundation</SectionLabel>
 
         <div class="max-w-2xl mb-14">
-          <h3 class="text-3xl sm:text-4xl md:text-5xl font-display font-extrabold  mb-5 text-text">
+          <h3 class="text-3xl sm:text-4xl md:text-5xl font-display font-bold  mb-5 text-text">
             Rules need a substrate.
           </h3>
           <p class="text-base  text-text-muted">
@@ -274,7 +274,7 @@ export function HowItWorksSection() {
 
         <div class="grid md:grid-cols-2 gap-6">
           <div class="p-8 rounded-sm bg-canvas-dark border border-navy-200">
-            <h3 class="text-sm uppercase mb-4 text-console-dark font-display font-extrabold">
+            <h3 class="text-sm uppercase mb-4 text-console-dark font-display font-bold">
               Full audit log
             </h3>
             <AnalyticsDiagram />
@@ -288,7 +288,7 @@ export function HowItWorksSection() {
             </ul>
           </div>
           <div class="p-8 rounded-sm bg-canvas-dark border border-navy-200">
-            <h3 class="text-sm uppercase mb-4 text-console-dark font-display font-extrabold">
+            <h3 class="text-sm uppercase mb-4 text-console-dark font-display font-bold">
               Secret injection
             </h3>
             <SecretInjectionDiagram />
