@@ -97,7 +97,6 @@ export function RequestDetailPage({
           <span>{time}</span>
           <span>{ev.ms}ms</span>
           {ev.agent_ip && <span>{ev.agent_ip}</span>}
-          {isSQL && <span className="font-mono">{ev.mode}</span>}
         </div>
         {(ev.action || ev.reason) && (
           <div className="flex items-center gap-2 text-[11px]">
