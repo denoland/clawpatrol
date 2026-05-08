@@ -142,7 +142,7 @@ function ApproverCard({
       <div className="hidden lg:block absolute w-full h-full top-2 left-2 bg-navy-100 squircle-xl z-0" />
       <div className="relative z-10 flex flex-col gap-4">
         <header class="flex items-baseline justify-between">
-          <h4 class="text-2xl font-display font-bold text-text">
+          <h4 class="text-3xl font-display font-bold text-text">
             {title}
           </h4>
           <code class="text-[10px] font-mono text-text-subtle">{verdict}</code>
@@ -177,7 +177,7 @@ export function ApproversSection() {
         <SectionLabel>Approvers</SectionLabel>
 
         <div class="max-w-3xl mb-14">
-          <h3 class="text-3xl sm:text-4xl md:text-5xl font-display font-bold  mb-5 text-text">
+          <h3 class="text-4xl sm:text-5xl md:text-6xl font-display font-bold  mb-5 text-text">
             Humans, models, <span class="text-rust">your call</span>
           </h3>
           <p class="text-base  text-text-muted">

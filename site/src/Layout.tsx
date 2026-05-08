@@ -13,7 +13,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
         Skip to main content
       </a>
       <Header />
-      <Stripe color1="var(--color-navy)" />
+      <Stripe color1="var(--color-navy-100)" />
       <main
         id="main"
         tabindex={-1}

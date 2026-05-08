@@ -131,7 +131,7 @@ export function RulesSection() {
 
         <div class="grid lg:grid-cols-[2fr_3fr] gap-8 lg:gap-16 xl:gap-32 items-start mb-20">
           <div>
-            <h3 class="text-3xl sm:text-4xl md:text-5xl lg:text-[2.75rem] font-display font-bold  mb-6 text-text">
+            <h3 class="text-4xl sm:text-5xl md:text-6xl lg:text-[3.25rem] font-display font-bold  mb-6 text-text">
               You write the rules.{" "}
               <span class="text-rust">Claw Patrol enforces them.</span>
             </h3>
@@ -161,7 +161,7 @@ export function RulesSection() {
               >
                 <div className=" absolute w-full h-full border-navy border-2 squircle-md inset-0 z-10"></div>
                 <div class="flex items-baseline justify-between mb-3 relative z-10">
-                  <h4 class="text-lg font-display font-bold text-text">
+                  <h4 class="text-xl font-display font-bold text-text">
                     {d.label}
                   </h4>
                   <code class="text-[10px] font-mono text-text-subtle">

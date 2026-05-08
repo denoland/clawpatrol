@@ -13,7 +13,7 @@ export function HeroSection() {
       >
         <div>
           <h1
-            class="text-3xl sm:text-4xl md:text-5xl md:text-[3.5rem]
+            class="text-4xl sm:text-5xl md:text-6xl md:text-[4rem]
               font-bold
                mb-8 font-display text-balance
               text-text"

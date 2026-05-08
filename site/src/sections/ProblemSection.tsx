@@ -40,7 +40,7 @@ export function ProblemSection() {
               </span>
             </div>
             <div class="py-1">
-              <h3 class="text-2xl font-display font-bold text-console-dark mb-3">
+              <h3 class="text-3xl font-display font-bold text-console-dark mb-3">
                 {title}
               </h3>
               <p class="text-base  text-text-muted">{body}</p>

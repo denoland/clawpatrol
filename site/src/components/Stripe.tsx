@@ -6,10 +6,10 @@ type StripeArgs = {
 export function Stripe({ color1, color2 }: StripeArgs) {
   const stripeA = color1 ?? `var(--color-rust)`;
   const stripeB = color2 ?? `transparent`;
-  const sizeInPx = 4;
+  const sizeInPx = 5;
   return (
     <div
-      class="h-4 w-full"
+      class="h-3 w-full"
       style={{
         background:
           "repeating-linear-gradient(" +
