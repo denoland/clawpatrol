@@ -203,7 +203,11 @@
         "type": "aws_eks_credential"
       },
       "notion-deno": {
-        "body": {},
+        "body": {
+          "ClientID": "",
+          "ClientSecret": "",
+          "RedirectURI": ""
+        },
         "type": "notion_oauth"
       },
       "openai-codex-divy-cred": {

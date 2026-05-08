@@ -2,26 +2,34 @@ package credentials
 
 // notion_oauth: Bearer token in Authorization + Notion-Version header.
 //
-// Two modes, controlled entirely through the dashboard (no HCL config):
+// Two modes depending on HCL configuration:
 //
-//   - Simple (client_id slot not set): operator pastes an integration token
-//     via SecretSlots; gateway stamps Authorization: Bearer + Notion-Version.
-//   - OAuth (client_id + client_secret slots set): full auth-code flow via
-//     https://api.notion.com/v1/oauth/authorize. Dashboard operator sets the
-//     Notion OAuth app credentials once per profile; users connect via the
-//     dashboard OAuth button. All three client credentials are stored in
-//     credential_secrets (credential, profile, slot) — one row per slot,
-//     one profile per tenant, readable only via the dashboard secret API.
+//   - Simple (no client_id): single token paste via SecretSlots, no refresh.
+//   - OAuth (client_id + client_secret set): full auth-code flow via
+//     https://api.notion.com/v1/oauth/authorize. Dashboard opens the
+//     auth URL, user connects, gateway exchanges + auto-refreshes.
+//
+// The Notion OAuth app (client_id / client_secret / redirect_uri) is
+// gateway config — set it in HCL. Per-user access tokens are stored in
+// the OAuth registry keyed by owner, as with every other OAuth credential.
+// Multiple Notion apps on one gateway = multiple credential blocks in HCL.
 
 import (
 	"context"
 	"net/http"
 
+	"github.com/hashicorp/hcl/v2/hclwrite"
+	"github.com/zclconf/go-cty/cty"
+
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
-type NotionOAuth struct{}
+type NotionOAuth struct {
+	ClientID     string `hcl:"client_id,optional"`
+	ClientSecret string `hcl:"client_secret,optional"`
+	RedirectURI  string `hcl:"redirect_uri,optional"`
+}
 
 func (n *NotionOAuth) InjectHTTP(_ context.Context, req *http.Request, sec runtime.Secret) error {
 	if len(sec.Bytes) == 0 {
@@ -35,23 +43,16 @@ func (n *NotionOAuth) InjectHTTP(_ context.Context, req *http.Request, sec runti
 }
 
 func (*NotionOAuth) SecretSlots() []config.SecretSlot {
-	return []config.SecretSlot{
-		{Label: "Notion OAuth access token", Description: "secret_… integration token or OAuth access_token. Used in simple (non-OAuth-app) mode."},
-		{Name: "client_id", Label: "OAuth app client ID", Description: "From your Notion integration's OAuth credentials page. Required for the OAuth connect flow."},
-		{Name: "client_secret", Label: "OAuth app client secret", Description: "From your Notion integration's OAuth credentials page."},
-		{Name: "redirect_uri", Label: "Redirect URI", Description: "Must match the redirect URI registered in your Notion integration. Defaults to the gateway public URL."},
-	}
+	return []config.SecretSlot{{Label: "Notion OAuth access token", Description: "secret_… integration token or OAuth access_token. Stamped as Authorization: Bearer + Notion-Version header."}}
 }
 
-// OAuthFlow returns the Notion OAuth auth-code flow when extras["client_id"]
-// is set (i.e. the operator has configured the Notion OAuth app credentials
-// via the dashboard for this profile). Returns nil in simple token-paste mode.
-func (n *NotionOAuth) OAuthFlow(extras map[string]string) *config.OAuthIntegration {
-	clientID := extras["client_id"]
-	if clientID == "" {
+// OAuthFlow returns the Notion OAuth auth-code flow when client_id is
+// configured. Returns nil in simple token-paste mode.
+func (n *NotionOAuth) OAuthFlow(_ map[string]string) *config.OAuthIntegration {
+	if n.ClientID == "" {
 		return nil
 	}
-	redirectURI := extras["redirect_uri"]
+	redirectURI := n.RedirectURI
 	if redirectURI == "" {
 		redirectURI = "https://deno.clawpatrol.dev"
 	}
@@ -60,8 +61,8 @@ func (n *NotionOAuth) OAuthFlow(extras map[string]string) *config.OAuthIntegrati
 		Header: "Authorization",
 		Prefix: "Bearer ",
 		OAuth: config.OAuthConfig{
-			ClientID:     clientID,
-			ClientSecret: extras["client_secret"],
+			ClientID:     n.ClientID,
+			ClientSecret: n.ClientSecret,
 			AuthURL:      "https://api.notion.com/v1/oauth/authorize",
 			TokenURL:     "https://mcp.notion.com/token",
 			RedirectURI:  redirectURI,
@@ -77,6 +78,17 @@ func init() {
 		New:     newer[NotionOAuth](),
 		Runtime: (*NotionOAuth)(nil),
 		Build:   passthrough,
-		Emit:    emptyEmit,
+		Emit: func(body any, _ string, b *hclwrite.Body) {
+			v := body.(*NotionOAuth)
+			if v.ClientID != "" {
+				b.SetAttributeValue("client_id", cty.StringVal(v.ClientID))
+			}
+			if v.ClientSecret != "" {
+				b.SetAttributeValue("client_secret", cty.StringVal(v.ClientSecret))
+			}
+			if v.RedirectURI != "" {
+				b.SetAttributeValue("redirect_uri", cty.StringVal(v.RedirectURI))
+			}
+		},
 	})
 }
