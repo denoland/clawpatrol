@@ -118,7 +118,7 @@ func (s *SlackTokens) NotifyHITL(_ context.Context, req runtime.ApproveRequest, 
 	}
 	link := strings.TrimRight(target.DashboardURL, "/") + "/#hitl/" + target.PendingID
 
-	title := fmt.Sprintf("Approve: %s %s%s", req.Method, req.Host, slackTrunc(req.Path, 60))
+	title := fmt.Sprintf("Approve: %s %s %s", req.Method, req.Host, slackTrunc(req.Path, 60))
 	blocks := []map[string]any{
 		{"type": "header", "text": map[string]any{"type": "plain_text", "text": title}},
 		{"type": "section", "fields": []map[string]any{
@@ -176,7 +176,7 @@ func (s *SlackTokens) NotifyHITL(_ context.Context, req runtime.ApproveRequest, 
 
 	body := map[string]any{
 		"channel": target.Channel,
-		"text":    fmt.Sprintf("clawpatrol HITL: %s %s%s", req.Method, req.Host, req.Path),
+		"text":    fmt.Sprintf("clawpatrol HITL: %s %s %s", req.Method, req.Host, req.Path),
 		"blocks":  blocks,
 	}
 	if target.ThreadTS != "" {
