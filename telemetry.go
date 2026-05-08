@@ -255,8 +255,8 @@ func actionsCountIn1h(g *Gateway) (int64, int64, int64) {
 	}
 	cutoff := time.Now().Add(-time.Hour).UnixNano()
 	var (
-		count   sql.NullInt64
-		bytesIn sql.NullInt64
+		count    sql.NullInt64
+		bytesIn  sql.NullInt64
 		bytesOut sql.NullInt64
 	)
 	err := g.db.QueryRow(
