@@ -409,6 +409,12 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 		return "", ""
 	}
 	summary := pgSummary(info)
+	sqlMeta := func(ev runtime.ConnEvent) runtime.ConnEvent {
+		ev.Statement = info.Statement
+		ev.Tables = info.Tables
+		ev.Functions = info.Functions
+		return ev
+	}
 
 	// Approve chain. ConnHandle.Approve dispatches through the
 	// host's HITL machinery (same one HTTPS uses) — the postgres
@@ -418,10 +424,10 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 	// can't accidentally let approve-gated queries through.
 	if len(cr.Outcome.Approve) > 0 {
 		if ch.Approve == nil {
-			emit(ch, runtime.ConnEvent{
+			emit(ch, sqlMeta(runtime.ConnEvent{
 				Action: "deny", Reason: "HITL not configured",
 				Verb: info.Verb, Summary: summary,
-			})
+			}))
 			return "deny", "approval required but HITL is not configured"
 		}
 		v := ch.Approve(runtime.ApproveCallRequest{
@@ -433,15 +439,15 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 			if reason == "" {
 				reason = "denied by approver"
 			}
-			emit(ch, runtime.ConnEvent{
+			emit(ch, sqlMeta(runtime.ConnEvent{
 				Action: "hitl_deny", Reason: reason,
 				Verb: info.Verb, Summary: summary,
-			})
+			}))
 			return "deny", reason
 		}
-		emit(ch, runtime.ConnEvent{
+		emit(ch, sqlMeta(runtime.ConnEvent{
 			Action: "hitl_allow", Verb: info.Verb, Summary: summary,
-		})
+		}))
 		return "", ""
 	}
 
@@ -450,15 +456,15 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 		if reason == "" {
 			reason = "denied by policy"
 		}
-		emit(ch, runtime.ConnEvent{
+		emit(ch, sqlMeta(runtime.ConnEvent{
 			Action: "deny", Reason: reason,
 			Verb: info.Verb, Summary: summary,
-		})
+		}))
 		return "deny", reason
 	}
-	emit(ch, runtime.ConnEvent{
+	emit(ch, sqlMeta(runtime.ConnEvent{
 		Action: "allow", Verb: info.Verb, Summary: summary,
-	})
+	}))
 	return "", ""
 }
 

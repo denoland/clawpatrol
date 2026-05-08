@@ -690,20 +690,26 @@ func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName st
 		},
 	}
 	cr := runtime.MatchRequest(ch.Endpoint, mreq)
+	sqlMeta := func(ev runtime.ConnEvent) runtime.ConnEvent {
+		ev.Statement = info.Statement
+		ev.Tables = info.Tables
+		ev.Functions = info.Functions
+		return ev
+	}
 	if cr == nil {
-		chEmit(ch, runtime.ConnEvent{
+		chEmit(ch, sqlMeta(runtime.ConnEvent{
 			Action: "allow", Verb: info.Verb, Summary: chSummary(info),
-		})
+		}))
 		return "", ""
 	}
 	summary := chSummary(info)
 
 	if len(cr.Outcome.Approve) > 0 {
 		if ch.Approve == nil {
-			chEmit(ch, runtime.ConnEvent{
+			chEmit(ch, sqlMeta(runtime.ConnEvent{
 				Action: "deny", Reason: "HITL not configured",
 				Verb: info.Verb, Summary: summary,
-			})
+			}))
 			return "deny", "approval required but HITL is not configured"
 		}
 		v := ch.Approve(runtime.ApproveCallRequest{
@@ -715,15 +721,15 @@ func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName st
 			if reason == "" {
 				reason = "denied by approver"
 			}
-			chEmit(ch, runtime.ConnEvent{
+			chEmit(ch, sqlMeta(runtime.ConnEvent{
 				Action: "hitl_deny", Reason: reason,
 				Verb: info.Verb, Summary: summary,
-			})
+			}))
 			return "deny", reason
 		}
-		chEmit(ch, runtime.ConnEvent{
+		chEmit(ch, sqlMeta(runtime.ConnEvent{
 			Action: "hitl_allow", Verb: info.Verb, Summary: summary,
-		})
+		}))
 		return "", ""
 	}
 
@@ -732,15 +738,15 @@ func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName st
 		if reason == "" {
 			reason = "denied by policy"
 		}
-		chEmit(ch, runtime.ConnEvent{
+		chEmit(ch, sqlMeta(runtime.ConnEvent{
 			Action: "deny", Reason: reason,
 			Verb: info.Verb, Summary: summary,
-		})
+		}))
 		return "deny", reason
 	}
-	chEmit(ch, runtime.ConnEvent{
+	chEmit(ch, sqlMeta(runtime.ConnEvent{
 		Action: "allow", Verb: info.Verb, Summary: summary,
-	})
+	}))
 	_ = ctx
 	return "", ""
 }

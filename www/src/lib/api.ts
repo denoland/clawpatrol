@@ -336,6 +336,11 @@ export type EventRecord = {
   resp_body?: string;
   req_headers?: Record<string, string>;
   resp_headers?: Record<string, string>;
+  // SQL-family detail. Populated for postgres / clickhouse_native
+  // per-query events; empty for HTTP / WS rows.
+  statement?: string;
+  tables?: string[];
+  functions?: string[];
 };
 
 export async function getAnalytics(params: {

@@ -912,20 +912,21 @@ func (w *webMux) apiActionByID(
 		respBody    sql.NullString
 		reqHeaders  sql.NullString
 		respHeaders sql.NullString
+		extra       sql.NullString
 	)
 	err := w.g.db.QueryRow(`
 		SELECT ts_ns, mode, agent_ip, host, method, path,
 		       status, bytes_in, bytes_out, ms, action,
 		       reason, req_sha, resp_sha,
 		       req_body, resp_body,
-		       req_headers, resp_headers
+		       req_headers, resp_headers, extra
 		FROM actions WHERE action_id = ?`, actionID,
 	).Scan(
 		&tsNs, &mode, &agentIP, &e.Host,
 		&method, &path, &status, &in, &ot, &ms,
 		&action, &reason, &reqSha, &respSha,
 		&reqBody, &respBody,
-		&reqHeaders, &respHeaders,
+		&reqHeaders, &respHeaders, &extra,
 	)
 	if err == sql.ErrNoRows {
 		http.Error(rw, "not found", 404)
@@ -953,6 +954,18 @@ func (w *webMux) apiActionByID(
 	e.RespBody = respBody.String
 	unmarshalHeaders(reqHeaders.String, &e.ReqHeaders)
 	unmarshalHeaders(respHeaders.String, &e.RespHeaders)
+	if extra.String != "" {
+		var x struct {
+			Statement string   `json:"statement"`
+			Tables    []string `json:"tables"`
+			Functions []string `json:"functions"`
+		}
+		if json.Unmarshal([]byte(extra.String), &x) == nil {
+			e.Statement = x.Statement
+			e.Tables = x.Tables
+			e.Functions = x.Functions
+		}
+	}
 	writeJSON(rw, e)
 }
 
@@ -1120,6 +1133,13 @@ type Event struct {
 	// to disambiguate masked client frames from unmasked server frames.
 	Frame     string `json:"frame,omitempty"`
 	Direction string `json:"direction,omitempty"`
+	// SQL-family detail. Populated for postgres / clickhouse_native
+	// per-query events from parseSQL output; surfaced in the
+	// dashboard's per-action detail page so SQL rows reach parity
+	// with HTTP rows. Zero values for non-SQL events.
+	Statement string   `json:"statement,omitempty"`
+	Tables    []string `json:"tables,omitempty"`
+	Functions []string `json:"functions,omitempty"`
 }
 
 // eventPacket carries an event plus its marshaled JSON bytes. drain()
@@ -1262,20 +1282,34 @@ func (s *Sink) drain() {
 			if len(e.RespHeaders) > 0 {
 				rshJSON, _ = json.Marshal(e.RespHeaders)
 			}
+			// SQL-family detail rides in `extra` as JSON. Reusing the
+			// already-allocated extension column instead of bolting on
+			// three new ones keeps the schema flat for the only field
+			// shape that needed it (the conn-family plugins). NULL when
+			// there's nothing SQL-shaped to record.
+			var extraJSON []byte
+			if e.Statement != "" || len(e.Tables) > 0 || len(e.Functions) > 0 {
+				extraJSON, _ = json.Marshal(map[string]any{
+					"statement": e.Statement,
+					"tables":    e.Tables,
+					"functions": e.Functions,
+				})
+			}
 			s.db.Exec(`
 				INSERT INTO actions
 				 (action_id, ts_ns, mode, agent_ip, host,
 				  method, path, status, bytes_in, bytes_out,
 				  ms, action, reason, req_sha, resp_sha,
 				  req_body, resp_body,
-				  req_headers, resp_headers)
-				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+				  req_headers, resp_headers, extra)
+				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			`, e.ID, e.Ts.UnixNano(), e.Mode, e.AgentIP,
 				e.Host, e.Method, e.Path, e.Status,
 				e.In, e.Out, e.Ms, e.Action, e.Reason,
 				e.ReqSha, e.RespSha,
 				e.ReqBody, e.RespBody,
-				string(rqhJSON), string(rshJSON))
+				string(rqhJSON), string(rshJSON),
+				string(extraJSON))
 		}
 
 		// Marshal once per event regardless of subscriber count. Old

@@ -1246,9 +1246,12 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 				return
 			}
 			g.sink.Emit(Event{
+				ID:   newReqID(),
 				Mode: "pg", Host: dstIP, AgentIP: pip,
 				Method: ev.Verb, Path: ev.Summary,
 				Action: ev.Action, Reason: ev.Reason,
+				Statement: ev.Statement, Tables: ev.Tables,
+				Functions: ev.Functions,
 			})
 		},
 		Approve: func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
@@ -1399,9 +1402,12 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 				return
 			}
 			g.sink.Emit(Event{
+				ID:   newReqID(),
 				Mode: mode, Host: eventHost, AgentIP: pip,
 				Method: ev.Verb, Path: ev.Summary,
 				Action: ev.Action, Reason: ev.Reason,
+				Statement: ev.Statement, Tables: ev.Tables,
+				Functions: ev.Functions,
 			})
 		},
 		Approve: func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {

@@ -187,6 +187,15 @@ type ConnEvent struct {
 	Verb    string // SQL verb / k8s verb / etc.
 	Summary string // human-readable one-liner for the event log
 	Bytes   int64  // approximate request size for billing / quotas
+	// Statement / Tables / Functions: family-specific detail, populated
+	// for SQL queries from the parseSQL output. Carried into the
+	// dashboard's per-action detail page so an operator can see the
+	// raw query alongside its parsed facets. Empty for non-SQL
+	// families and for SQL events that don't have a parsed statement
+	// (errors, session-level allow/deny, etc.).
+	Statement string
+	Tables    []string
+	Functions []string
 }
 
 // Secret is what credential plugins receive at injection time. The
