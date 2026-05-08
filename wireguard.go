@@ -204,7 +204,6 @@ func init() {
 	}))
 }
 
-
 func (t *netTun) File() *os.File             { return nil }
 func (t *netTun) Name() (string, error)      { return "clawpatrol-wg", nil }
 func (t *netTun) MTU() (int, error)          { return t.mtu, nil }
