@@ -98,8 +98,7 @@ A single named matchable property inside a [rule](#rule)'s
 `credential`; `k8s_rule` carries `resource` / `verb` / `namespace` /
 `name` / `params` / `credential`. Per-facet semantics vary — list
 values are any-of, a `!`-prefix on a string negates it, and individual
-facets are glob, PCRE, or exact match (see
-[`config/README.md`](../../config/README.md) for the full table).
+facets are glob, PCRE, or exact match.
 
 ### Approver
 
