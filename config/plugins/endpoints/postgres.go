@@ -408,7 +408,6 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 	if cr == nil {
 		return "", ""
 	}
-	summary := pgSummary(info)
 	sqlMeta := func(ev runtime.ConnEvent) runtime.ConnEvent {
 		ev.Verb = info.Verb
 		ev.Statement = info.Statement
@@ -427,13 +426,12 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 		if ch.Approve == nil {
 			emit(ch, sqlMeta(runtime.ConnEvent{
 				Action: "deny", Reason: "HITL not configured",
-				Summary: summary,
 			}))
 			return "deny", "approval required but HITL is not configured"
 		}
 		v := ch.Approve(runtime.ApproveCallRequest{
 			Stages: cr.Outcome.Approve, Verb: info.Verb,
-			Summary: summary, Rule: cr,
+			Summary: pgSummary(info), Rule: cr,
 		})
 		if v.Decision != "allow" {
 			reason := v.Reason
@@ -442,13 +440,10 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 			}
 			emit(ch, sqlMeta(runtime.ConnEvent{
 				Action: "hitl_deny", Reason: reason,
-				Summary: summary,
 			}))
 			return "deny", reason
 		}
-		emit(ch, sqlMeta(runtime.ConnEvent{
-			Action: "hitl_allow", Summary: summary,
-		}))
+		emit(ch, sqlMeta(runtime.ConnEvent{Action: "hitl_allow"}))
 		return "", ""
 	}
 
@@ -459,13 +454,10 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 		}
 		emit(ch, sqlMeta(runtime.ConnEvent{
 			Action: "deny", Reason: reason,
-			Summary: summary,
 		}))
 		return "deny", reason
 	}
-	emit(ch, sqlMeta(runtime.ConnEvent{
-		Action: "allow", Summary: summary,
-	}))
+	emit(ch, sqlMeta(runtime.ConnEvent{Action: "allow"}))
 	return "", ""
 }
 
