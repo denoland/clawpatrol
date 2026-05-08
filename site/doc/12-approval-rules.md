@@ -39,11 +39,6 @@ Binds to `https` endpoints. The matcher consumes the parsed HTTP
 request *before* it is forwarded upstream, after MITM has terminated
 TLS.
 
-`http_rule` does **not** bind to `kubernetes` endpoints — those are
-in the `k8s` family and only accept `k8s_rule`. To express HTTP-level
-intent against kubernetes traffic, write a `k8s_rule` against the
-parsed `(verb, resource, namespace, name)` tuple.
-
 Match keys (all optional, all combine with implicit AND):
 
 ```hcl
@@ -67,8 +62,8 @@ statement the agent sends.
 ```hcl
 match = {
   verb            = ["select", "show", "explain"]  # first verb of the statement
-  tables          = ["users", "secret_*"]          # tables read or written; glob OK
-  function        = ["pg_read_file", "dblink_*"]   # function calls in the statement; glob OK
+  tables          = ["users", "secret_*"]          # any extracted table satisfies the list; glob OK
+  function        = ["pg_read_file", "dblink_*"]   # any extracted function satisfies the list; glob OK
   statement       = "*COPY*FROM PROGRAM*"          # whole-statement glob
   statement_regex = "(?i)\\bpassword\\b"           # whole-statement Go RE2 regex
   credential      = pg-readwrite                   # bare-name ref to the dispatched credential
@@ -78,11 +73,27 @@ match = {
 `verb`, `tables`, and `function` are extracted by a best-effort
 lexer — see "Gotchas" below.
 
+`tables` and `function` are **multi-valued** facets: a single
+statement can name several tables (`SELECT ... FROM a JOIN b`) and
+call several functions. The rule fires when **at least one**
+extracted name satisfies the list — i.e. matches at least one
+positive glob and is not knocked out by a negative glob. So
+`tables = ["users", "secret_*"]` fires on
+`SELECT * FROM users JOIN orders` (because `users` matches), and
+`tables = ["!audit_*"]` fires on any statement that touches at least
+one table outside `audit_*`. To require *every* extracted name be
+covered, write the rule against `statement_regex` instead.
+
 ### `k8s_rule`
 
 Binds to `kubernetes` endpoints. The matcher receives the
 `(verb, resource, namespace, name, params)` tuple Claw Patrol parses
 out of the kubernetes API path.
+
+`http_rule` does **not** bind to `kubernetes` endpoints — they are
+in the `k8s` family and only accept `k8s_rule`. To express HTTP-level
+intent against kubernetes traffic, write a `k8s_rule` against the
+parsed `(verb, resource, namespace, name)` tuple.
 
 ```hcl
 match = {
