@@ -336,11 +336,19 @@ type HITLPool interface {
 // tags match the dashboard's existing field names — that endpoint is
 // public API to the in-tree React UI.
 type HITLPending struct {
-	ID         string    `json:"id"`
-	AgentIP    string    `json:"agent_ip"`
-	Host       string    `json:"host"`
-	Method     string    `json:"method"`
-	Path       string    `json:"path"`
+	ID      string `json:"id"`
+	AgentIP string `json:"agent_ip"`
+	Host    string `json:"host"`
+	Method  string `json:"method"`
+	Path    string `json:"path"`
+	// Endpoint is the operator-readable identifier for what's being
+	// called. HITLEndpointLabel-derived: hostname for HTTPS, resource
+	// name for SQL / k8s where Host is a virtual IP.
+	Endpoint string `json:"endpoint,omitempty"`
+	// Family is the endpoint family ("https" | "sql" | "k8s") so the
+	// dashboard can pick a matching label for Path ("Query" /
+	// "Resource" / "Path"). Empty when no endpoint metadata is set.
+	Family     string    `json:"family,omitempty"`
 	UA         string    `json:"ua,omitempty"`
 	BodySample string    `json:"body_sample,omitempty"`
 	Reason     string    `json:"reason,omitempty"`

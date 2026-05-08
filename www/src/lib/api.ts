@@ -197,6 +197,13 @@ export type HITLPending = {
   host: string;
   method: string;
   path: string;
+  // Operator-readable endpoint identifier (hostname for HTTPS,
+  // resource name for SQL/k8s where host is a virtual IP).
+  // Computed server-side; falls back to host when unset.
+  endpoint?: string;
+  // Endpoint family — "https" | "sql" | "k8s". Used to label the
+  // path column ("Path" vs "Query" vs "Resource") in the UI.
+  family?: string;
   ua?: string;
   body_sample?: string;
   reason?: string;

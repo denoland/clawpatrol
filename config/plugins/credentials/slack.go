@@ -118,20 +118,34 @@ func (s *SlackTokens) NotifyHITL(_ context.Context, req runtime.ApproveRequest, 
 	}
 	link := strings.TrimRight(target.DashboardURL, "/") + "/#hitl/" + target.PendingID
 
-	title := fmt.Sprintf("Approve: %s %s %s", req.Method, req.Host, slackTrunc(req.Path, 60))
+	endpoint := runtime.HITLEndpointLabel(req)
+	queryLabel := runtime.HITLQueryLabel(req.Endpoint)
+
+	title := slackTrunc(runtime.HITLTitle(req.Method, endpoint), 140)
 	blocks := []map[string]any{
 		{"type": "header", "text": map[string]any{"type": "plain_text", "text": title}},
-		{"type": "section", "fields": []map[string]any{
-			{"type": "mrkdwn", "text": "*Method*\n`" + req.Method + "`"},
-			{"type": "mrkdwn", "text": "*Host*\n`" + req.Host + "`"},
-			{"type": "mrkdwn", "text": "*Path*\n`" + slackTrunc(req.Path, 80) + "`"},
-			{"type": "mrkdwn", "text": "*Agent*\n`" + req.Profile + "`"},
+		{"type": "section", "text": map[string]any{
+			"type": "mrkdwn",
+			"text": "*" + queryLabel + "*\n```" + slackTrunc(req.Path, 800) + "```",
 		}},
 	}
+	ctx := []map[string]any{}
+	if req.Profile != "" {
+		ctx = append(ctx, map[string]any{
+			"type": "mrkdwn",
+			"text": "agent `" + req.Profile + "`",
+		})
+	}
 	if r := strings.TrimSpace(req.Reason); r != "" {
+		ctx = append(ctx, map[string]any{
+			"type": "mrkdwn",
+			"text": "reason: " + slackTrunc(r, 200),
+		})
+	}
+	if len(ctx) > 0 {
 		blocks = append(blocks, map[string]any{
-			"type": "section",
-			"text": map[string]any{"type": "mrkdwn", "text": "*Reason*\n" + r},
+			"type":     "context",
+			"elements": ctx,
 		})
 	}
 	if bs := strings.TrimSpace(req.BodySample); bs != "" {
@@ -176,7 +190,7 @@ func (s *SlackTokens) NotifyHITL(_ context.Context, req runtime.ApproveRequest, 
 
 	body := map[string]any{
 		"channel": target.Channel,
-		"text":    fmt.Sprintf("clawpatrol HITL: %s %s %s", req.Method, req.Host, req.Path),
+		"text":    "clawpatrol: " + title,
 		"blocks":  blocks,
 	}
 	if target.ThreadTS != "" {
@@ -217,6 +231,7 @@ func slackTrunc(s string, n int) string {
 	}
 	return s
 }
+
 
 // WebhookRoutes returns Slack's interactive callback handler. main
 // mounts it at /api/cred/<credName>/interactive — operator pastes
