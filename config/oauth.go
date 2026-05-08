@@ -59,15 +59,9 @@ type OptionalScope struct {
 // to this, and registers the returned flow under the credential's
 // bare name.
 //
-// extras carries operator-level secrets fetched from the credential_secrets
-// table (slot → value, profile = ""). Plugins that embed their client secret
-// in code (Anthropic, GitHub) ignore it; plugins with operator-supplied
-// secrets (notion_oauth) read extras["client_secret"] instead of storing
-// the secret in plaintext HCL.
-//
 // Drop-in for adding a new OAuth provider: ship a credential plugin
 // type whose body implements OAuthFlow() and you're done — no host
 // changes, no auxiliary maps to update.
 type OAuthFlowProvider interface {
-	OAuthFlow(extras map[string]string) *OAuthIntegration
+	OAuthFlow() *OAuthIntegration
 }

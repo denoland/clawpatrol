@@ -686,10 +686,9 @@ func (w *webMux) apiCredentialsClear(rw http.ResponseWriter, r *http.Request) {
 }
 
 // lookupOAuthFlow finds the OAuth flow for a credential bare name in
-// the loaded policy. extras is forwarded to the plugin's OAuthFlow method
-// so plugins can read per-credential operator secrets (e.g. client_secret)
-// without storing them in HCL. Pass nil when no extras are available.
-func lookupOAuthFlow(policy *config.CompiledPolicy, name string, extras map[string]string) *config.OAuthIntegration {
+// the loaded policy. Returns nil when the credential doesn't exist or
+// the credential type isn't an OAuth-flow type.
+func lookupOAuthFlow(policy *config.CompiledPolicy, name string) *config.OAuthIntegration {
 	if policy == nil {
 		return nil
 	}
@@ -701,7 +700,7 @@ func lookupOAuthFlow(policy *config.CompiledPolicy, name string, extras map[stri
 	if !ok {
 		return nil
 	}
-	return fp.OAuthFlow(extras)
+	return fp.OAuthFlow()
 }
 
 // apiConfig serves the entire gateway.hcl for the global settings

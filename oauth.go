@@ -551,7 +551,7 @@ func (w *webMux) apiOAuthStart(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.URL.Query().Get("id")
-	flow := lookupOAuthFlow(w.g.policy.Load(), id, nil)
+	flow := lookupOAuthFlow(w.g.policy.Load(), id)
 	if flow == nil {
 		http.Error(rw, "no oauth integration: "+id, 400)
 		return

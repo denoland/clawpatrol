@@ -160,7 +160,7 @@ func registerOAuthCredentials(reg *OAuthRegistry, policy *config.CompiledPolicy)
 		if !ok {
 			continue
 		}
-		flow := fp.OAuthFlow(nil)
+		flow := fp.OAuthFlow()
 		if flow == nil {
 			continue
 		}

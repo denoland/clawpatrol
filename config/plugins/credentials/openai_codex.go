@@ -80,7 +80,7 @@ func chatgptAccountID(jwt string) string {
 //	}
 func (*OpenAICodexOAuth) EnvVars() []config.EnvVar { return nil }
 
-func (a *OpenAICodexOAuth) OAuthFlow(_ map[string]string) *config.OAuthIntegration {
+func (a *OpenAICodexOAuth) OAuthFlow() *config.OAuthIntegration {
 	return &config.OAuthIntegration{
 		Type:   "oauth2",
 		Header: "Authorization",

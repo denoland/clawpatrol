@@ -34,7 +34,7 @@ func (*AnthropicOAuthSubscription) EnvVars() []config.EnvVar {
 // refresh token is templated as `{{secret:CLAUDE_REFRESH}}` so the
 // gateway can mint per-owner sessions from operator-provided env
 // before the dashboard connect flow has run.
-func (a *AnthropicOAuthSubscription) OAuthFlow(_ map[string]string) *config.OAuthIntegration {
+func (a *AnthropicOAuthSubscription) OAuthFlow() *config.OAuthIntegration {
 	return &config.OAuthIntegration{
 		Type:   "oauth2",
 		Header: "Authorization",

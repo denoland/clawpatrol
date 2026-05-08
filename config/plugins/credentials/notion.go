@@ -48,7 +48,7 @@ func (*NotionOAuth) SecretSlots() []config.SecretSlot {
 
 // OAuthFlow returns the Notion OAuth auth-code flow when client_id is
 // configured. Returns nil in simple token-paste mode.
-func (n *NotionOAuth) OAuthFlow(_ map[string]string) *config.OAuthIntegration {
+func (n *NotionOAuth) OAuthFlow() *config.OAuthIntegration {
 	if n.ClientID == "" {
 		return nil
 	}

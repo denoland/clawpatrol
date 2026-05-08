@@ -31,7 +31,7 @@ func (*GitHubOAuth) EnvVars() []config.EnvVar {
 // OAuthFlow on GitHubOAuth returns the gh CLI's published OAuth
 // device flow. No client secret — device flow is designed for public
 // clients.
-func (g *GitHubOAuth) OAuthFlow(_ map[string]string) *config.OAuthIntegration {
+func (g *GitHubOAuth) OAuthFlow() *config.OAuthIntegration {
 	return &config.OAuthIntegration{
 		Type:   "oauth2",
 		Header: "Authorization",
