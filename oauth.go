@@ -551,7 +551,15 @@ func (w *webMux) apiOAuthStart(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.URL.Query().Get("id")
-	flow := lookupOAuthFlow(w.g.policy.Load(), id)
+	// Fetch operator-level credential secrets (profile="") so plugins that
+	// don't embed client_secret in HCL (e.g. notion_oauth) can read it here.
+	var oauthExtras map[string]string
+	if w.g.db != nil {
+		if sec, ok, _ := readCredentialSecrets(w.g.db, id, ""); ok {
+			oauthExtras = sec.Extras
+		}
+	}
+	flow := lookupOAuthFlow(w.g.policy.Load(), id, oauthExtras)
 	if flow == nil {
 		http.Error(rw, "no oauth integration: "+id, 400)
 		return

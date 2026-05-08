@@ -631,7 +631,7 @@ func (w *webMux) statusList(r *http.Request) []IntegrationRow {
 		row := IntegrationRow{ID: name, Name: name, Type: ent.Plugin.Type}
 		if op, ok := ent.Body.(config.OAuthFlowProvider); ok {
 			row.HasOAuth = true
-			if flow := op.OAuthFlow(); flow != nil {
+			if flow := op.OAuthFlow(nil); flow != nil {
 				row.OAuth = &OAuthIntegrationUI{
 					BaseScopes:     flow.OAuth.Scopes,
 					OptionalScopes: flow.OptionalScopes,

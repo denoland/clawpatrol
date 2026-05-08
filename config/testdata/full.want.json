@@ -205,7 +205,6 @@
       "notion-deno": {
         "body": {
           "ClientID": "",
-          "ClientSecret": "",
           "RedirectURI": ""
         },
         "type": "notion_oauth"
