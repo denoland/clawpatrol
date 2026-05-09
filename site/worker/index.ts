@@ -14,7 +14,7 @@ interface Env {
   TELEMETRY_DB: D1Database;
 }
 
-const MAX_BODY = 4096;
+const MAX_BODY_BYTES = 4096;
 const RELEASES_URL =
   "https://api.github.com/repos/denoland/clawpatrol/releases/latest";
 
@@ -35,8 +35,18 @@ async function handleCheck(
   if (req.method !== "POST") {
     return new Response(null, { status: 405 });
   }
+  const contentLength = req.headers.get("Content-Length");
+  if (contentLength !== null) {
+    const n = Number(contentLength);
+    if (Number.isFinite(n) && n > MAX_BODY_BYTES) {
+      return new Response(null, { status: 413 });
+    }
+  }
+
   const text = await req.text();
-  if (text.length > MAX_BODY) return new Response(null, { status: 400 });
+  if (new TextEncoder().encode(text).byteLength > MAX_BODY_BYTES) {
+    return new Response(null, { status: 413 });
+  }
 
   let body: Record<string, unknown>;
   try {

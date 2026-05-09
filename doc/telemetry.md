@@ -237,7 +237,9 @@ Schema versioned in the URL so we can add fields later without
 breaking older clients (they get the v1 response shape forever; v2
 clients can ask for richer responses).
 
-The Worker validates: payload < 4 KB, required fields present.
-Anything else is dropped with a 400 and no detail body — bad clients
-get silence. No other public routes; the data is read via D1 SQL.
+The Worker validates: payload ≤ 4 KB, measured in UTF-8 bytes,
+required fields present. If `Content-Length` is over the limit, the
+Worker rejects the request before reading the body. Oversized
+payloads return 413; malformed JSON or schema errors return 400.
+No other public routes; the data is read via D1 SQL.
 

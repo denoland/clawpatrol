@@ -6,6 +6,7 @@
     "dev": "vite",
     "build": "vite build && tsx build-docs.ts",
     "deploy": "npm run build && wrangler deploy",
+    "test": "tsx --test worker/**/*.test.ts",
     "telemetry": "tsx scripts/telemetry.ts"
   },
   "dependencies": {
