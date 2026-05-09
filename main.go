@@ -2234,12 +2234,10 @@ func runGateway(args []string) {
 
 	if cfg.InfoListen != "" {
 		mux := newWebMux(g, cfg.CADir, *cfg.Tailscale, cfg.PublicURL)
-		go func() {
-			_ = http.ListenAndServe(cfg.InfoListen, mux)
-		}()
+		go serveHTTPLogged("dashboard", cfg.InfoListen, mux)
 		printDashboardURL(cfg.InfoListen)
 	}
-	go func() { _ = http.ListenAndServe("127.0.0.1:6060", nil) }()
+	go serveHTTPLogged("pprof", "127.0.0.1:6060", nil)
 	go g.servePorts()
 
 	// Embedded userspace WireGuard server. When operator sets
@@ -2317,6 +2315,19 @@ func runGateway(args []string) {
 		}
 		go g.handle(c, "")
 	}
+}
+
+func serveHTTPLogged(name, addr string, handler http.Handler) {
+	if err := http.ListenAndServe(addr, handler); err != nil {
+		logHTTPServerExit(name, addr, err)
+	}
+}
+
+func logHTTPServerExit(name, addr string, err error) {
+	if err == nil || errors.Is(err, http.ErrServerClosed) {
+		return
+	}
+	log.Printf("%s http server on %s stopped: %v", name, addr, err)
 }
 
 // portOf extracts the numeric port from a "host:port" or ":port" listen
