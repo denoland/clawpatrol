@@ -1534,6 +1534,22 @@ func (w *countWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+const maxHTTPMatchBody = 1 << 20
+
+func bufferHTTPBodyForMatch(req *http.Request) []byte {
+	if req.Body == nil {
+		return nil
+	}
+	b, err := io.ReadAll(io.LimitReader(req.Body, maxHTTPMatchBody))
+	if err != nil {
+		return nil
+	}
+	// Re-attach the buffered prefix in front of the original stream,
+	// which may still contain bytes beyond maxHTTPMatchBody.
+	req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), req.Body))
+	return b
+}
+
 // mitmHTTPS handles an SNI-matched TLS connection for an HTTPS-family
 // endpoint (https, kubernetes). It mints a leaf cert, terminates TLS,
 // then loops reading HTTP requests and dispatching each through the
@@ -1588,14 +1604,8 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		// body we read up to 1 MiB and re-attach. Reads beyond 1 MiB
 		// stream through unbuffered (rare for agent traffic).
 		var matchBody []byte
-		if req.Body != nil && (req.Method == "POST" || req.Method == "PUT" || req.Method == "PATCH") {
-			b, rdErr := io.ReadAll(io.LimitReader(req.Body, 1<<20))
-			if rdErr == nil {
-				matchBody = b
-				// Re-attach: buffered prefix + rest of original stream.
-				// Do not close req.Body — it still holds bytes beyond 1 MiB.
-				req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), req.Body))
-			}
+		if req.Method == "POST" || req.Method == "PUT" || req.Method == "PATCH" {
+			matchBody = bufferHTTPBodyForMatch(req)
 		}
 
 		mreq := &match.Request{
@@ -1785,12 +1795,8 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 
 		trackKind := trackKindFor(host)
 		var trackedReqBody []byte
-		if trackKind != "" && req.Body != nil {
-			b, _ := io.ReadAll(io.LimitReader(req.Body, 1<<20))
-			trackedReqBody = b
-			// Re-attach: buffered prefix + rest of original stream.
-			// Do not close req.Body — it still holds bytes beyond 1 MiB.
-			req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), req.Body))
+		if trackKind != "" {
+			trackedReqBody = bufferHTTPBodyForMatch(req)
 		}
 		// Pre-create session from the request body so streaming SSE
 		// responses (codex /backend-api/codex/responses, anthropic
