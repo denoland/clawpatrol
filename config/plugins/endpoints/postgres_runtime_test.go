@@ -186,12 +186,6 @@ func TestPgExtractSQL(t *testing.T) {
 	}
 }
 
-// TestPgEvaluateEmitsAllowOnNoMatch nails down the dashboard logging
-// fix: an endpoint with zero rules (or one whose rules don't match
-// the current query) still emits an `allow` event so the query
-// shows up in the actions tab. Without this, postgres connections
-// to permissive endpoints were invisible to operators — the runtime
-// previously short-circuited on `cr == nil`.
 func TestPgClientToServerReturnsOnContextCancel(t *testing.T) {
 	agent, gateway := net.Pipe()
 	defer agent.Close()
@@ -214,6 +208,12 @@ func TestPgClientToServerReturnsOnContextCancel(t *testing.T) {
 	}
 }
 
+// TestPgEvaluateEmitsAllowOnNoMatch nails down the dashboard logging
+// fix: an endpoint with zero rules (or one whose rules don't match
+// the current query) still emits an `allow` event so the query
+// shows up in the actions tab. Without this, postgres connections
+// to permissive endpoints were invisible to operators — the runtime
+// previously short-circuited on `cr == nil`.
 func TestPgEvaluateEmitsAllowOnNoMatch(t *testing.T) {
 	var events []runtime.ConnEvent
 	ch := &runtime.ConnHandle{
