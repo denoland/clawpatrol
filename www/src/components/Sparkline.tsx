@@ -28,14 +28,27 @@ export function Sparkline({
   const fillPath = linePath + ` L ${width},${height} L 0,${height} Z`;
 
   return (
-    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="block" preserveAspectRatio="none">
+    <svg
+      width={width}
+      height={height}
+      viewBox={`0 0 ${width} ${height}`}
+      className="block"
+      preserveAspectRatio="none"
+    >
       <path d={fillPath} fill={color} opacity={0.15} />
-      <path d={linePath} fill="none" stroke={color} strokeWidth={1.25} strokeLinejoin="round" strokeLinecap="round" />
+      <path
+        d={linePath}
+        fill="none"
+        stroke={color}
+        strokeWidth={1.25}
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }
 
 function padTo(a: number[], n: number): number[] {
   if (a.length >= n) return a.slice(-n);
-  return new Array(n - a.length).fill(0).concat(a);
+  return Array.from({ length: n - a.length }, () => 0).concat(a);
 }

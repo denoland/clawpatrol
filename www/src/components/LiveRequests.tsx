@@ -3,7 +3,11 @@ import { type EventRecord } from "../lib/api";
 
 type RowState = EventRecord & { frames?: { direction: string; frame: string; ts: string }[] };
 
-export function LiveRequests({ agentIP, max = 200, height }: {
+export function LiveRequests({
+  agentIP,
+  max = 200,
+  height,
+}: {
   agentIP?: string;
   max?: number;
   height?: string;
@@ -12,9 +16,7 @@ export function LiveRequests({ agentIP, max = 200, height }: {
 
   useEffect(() => {
     setEvents([]);
-    const url = agentIP
-      ? `/api/events?agent=${encodeURIComponent(agentIP)}`
-      : "/api/events";
+    const url = agentIP ? `/api/events?agent=${encodeURIComponent(agentIP)}` : "/api/events";
     const es = new EventSource(url);
 
     // Batched render: SSE can fire dozens of events per second on a
@@ -47,13 +49,17 @@ export function LiveRequests({ agentIP, max = 200, height }: {
           for (const ev of arr) next = mergeEvent(next, ev, max);
           return next;
         });
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     });
     es.onmessage = (e) => {
       try {
         pending.push(JSON.parse(e.data) as EventRecord);
         if (raf === 0) raf = requestAnimationFrame(flush);
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     };
     return () => {
       es.close();
@@ -62,7 +68,10 @@ export function LiveRequests({ agentIP, max = 200, height }: {
   }, [agentIP, max]);
 
   return (
-    <div className="flex flex-col bg-white border border-[#e5e5e5] rounded overflow-hidden" style={{ height: height ?? "420px" }}>
+    <div
+      className="flex flex-col bg-white border border-[#e5e5e5] rounded overflow-hidden"
+      style={{ height: height ?? "420px" }}
+    >
       <div className="flex items-center px-4 py-2.5 text-[10px] uppercase tracking-[.12em] text-[#a3a3a3] border-b border-[#e5e5e5] flex-shrink-0">
         <span>LIVE REQUESTS</span>
         <span className="ml-2 text-[#22c55e] tabular-nums flex items-center gap-1">
@@ -74,12 +83,11 @@ export function LiveRequests({ agentIP, max = 200, height }: {
         {events.length === 0 ? (
           <div className="px-5 py-8 text-center text-[11px] text-[#a3a3a3] flex items-center justify-center gap-2">
             <span className="w-1.5 h-1.5 rounded-full bg-[#22c55e] animate-pulse" />
-            Waiting for requests<AnimatedDots />
+            Waiting for requests
+            <AnimatedDots />
           </div>
         ) : (
-          events.map((e, i) => (
-            <Row key={i} ev={e} />
-          ))
+          events.map((e, i) => <Row key={i} ev={e} />)
         )}
       </div>
     </div>
@@ -98,7 +106,13 @@ function mergeEvent(prev: RowState[], ev: EventRecord, max: number): RowState[] 
   if (ev.id && ev.phase === "frame") {
     return prev.map((r) =>
       r.id === ev.id
-        ? { ...r, frames: [...(r.frames ?? []), { direction: ev.direction ?? "", frame: ev.frame ?? "", ts: ev.ts }] }
+        ? {
+            ...r,
+            frames: [
+              ...(r.frames ?? []),
+              { direction: ev.direction ?? "", frame: ev.frame ?? "", ts: ev.ts },
+            ],
+          }
         : r,
     );
   }
@@ -129,21 +143,28 @@ function pathSeparator(path: string): string {
 
 function Row({ ev }: { ev: RowState }) {
   const onClick = ev.id
-    ? () => { window.location.hash = `#/request/${ev.id}`; }
+    ? () => {
+        window.location.hash = `#/request/${ev.id}`;
+      }
     : undefined;
   const t = new Date(ev.ts);
   const time =
-    t.toLocaleTimeString([], { hour12: false })
-    + "." + String(t.getMilliseconds()).padStart(3, "0");
+    t.toLocaleTimeString([], { hour12: false }) +
+    "." +
+    String(t.getMilliseconds()).padStart(3, "0");
   const inFlight = ev.phase === "start";
   const status = ev.status || 0;
   const statusColor = inFlight
     ? "text-[#a3a3a3]"
-    : status >= 500 ? "text-[#dc2626]"
-    : status >= 400 ? "text-[#ea580c]"
-    : status >= 300 ? "text-[#ca8a04]"
-    : status >= 200 ? "text-[#16a34a]"
-    : "text-[#737373]";
+    : status >= 500
+      ? "text-[#dc2626]"
+      : status >= 400
+        ? "text-[#ea580c]"
+        : status >= 300
+          ? "text-[#ca8a04]"
+          : status >= 200
+            ? "text-[#16a34a]"
+            : "text-[#737373]";
   const path = ev.path ?? "";
   const sep = pathSeparator(path);
   const hasFrames = (ev.frames?.length ?? 0) > 0;
@@ -152,21 +173,26 @@ function Row({ ev }: { ev: RowState }) {
       <div
         onClick={onClick}
         className={
-          "px-4 py-2 flex items-center gap-3 min-w-0 transition-colors"
-          + (onClick ? " cursor-pointer" : "")
-          + (inFlight ? " opacity-70" : "")
-          + " hover:bg-[#f9f9f9]"
+          "px-4 py-2 flex items-center gap-3 min-w-0 transition-colors" +
+          (onClick ? " cursor-pointer" : "") +
+          (inFlight ? " opacity-70" : "") +
+          " hover:bg-[#f9f9f9]"
         }
       >
         <span className="text-[10px] tabular-nums text-[#a3a3a3] flex-shrink-0">{time}</span>
         <ModeIcon mode={ev.mode} />
         {ev.method && (
-          <span className="text-[10px] uppercase font-semibold text-[#525252] flex-shrink-0 w-[44px]">{ev.method}</span>
+          <span className="text-[10px] uppercase font-semibold text-[#525252] flex-shrink-0 w-[44px]">
+            {ev.method}
+          </span>
         )}
         <span className={"text-[11px] tabular-nums flex-shrink-0 w-[36px] " + statusColor}>
-          {inFlight ? <InFlightSpinner /> : (status || "—")}
+          {inFlight ? <InFlightSpinner /> : status || "—"}
         </span>
-        <span className="text-[12px] text-[#171717] truncate flex-1 min-w-0" title={ev.host + sep + path}>
+        <span
+          className="text-[12px] text-[#171717] truncate flex-1 min-w-0"
+          title={ev.host + sep + path}
+        >
           <span className="text-[#737373]">{ev.host}</span>
           {sep && <span> </span>}
           <span>{path}</span>
@@ -180,7 +206,9 @@ function Row({ ev }: { ev: RowState }) {
           {ev.frames!.map((f, i) => (
             <div key={i} className="px-4 py-1 flex items-start gap-2 text-[10px] font-mono">
               <span className="text-[#a3a3a3] flex-shrink-0 w-[24px]">{f.direction}</span>
-              <span className="text-[#525252] truncate" title={f.frame}>{f.frame}</span>
+              <span className="text-[#525252] truncate" title={f.frame}>
+                {f.frame}
+              </span>
             </div>
           ))}
         </div>
@@ -220,7 +248,16 @@ function ModeIcon({ mode }: { mode: string }) {
   }
   return (
     <span title="Splice — gateway forwarded encrypted bytes untouched" className="flex-shrink-0">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#a3a3a3" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="#a3a3a3"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
         <path d="M5 12h14" />
         <path d="m13 6 6 6-6 6" />
       </svg>

@@ -6,13 +6,7 @@ import { useEffect, useState } from "react";
 import { getConfigHCL, putConfigHCL } from "../lib/api";
 import { HCLEditor } from "./HCLEditor";
 
-export function SettingsModal({
-  onClose,
-  onSaved,
-}: {
-  onClose: () => void;
-  onSaved: () => void;
-}) {
+export function SettingsModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
   const [text, setText] = useState("");
   const [original, setOriginal] = useState("");
   const [err, setErr] = useState<string | null>(null);

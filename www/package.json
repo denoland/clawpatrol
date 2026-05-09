@@ -1,11 +1,15 @@
 {
   "name": "clawpatrol-dashboard",
-  "private": true,
   "version": "0.1.0",
+  "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b --noEmit && vite build"
+    "build": "tsc -b --noEmit && vite build",
+    "format": "oxfmt src index.html login.html package.json tsconfig.json vite.config.ts tailwind.config.js postcss.config.js",
+    "format:check": "oxfmt --check src index.html login.html package.json tsconfig.json vite.config.ts tailwind.config.js postcss.config.js",
+    "lint": "oxlint src vite.config.ts tailwind.config.js postcss.config.js",
+    "lint:github": "oxlint --format=github src vite.config.ts tailwind.config.js postcss.config.js"
   },
   "dependencies": {
     "@observablehq/plot": "^0.6.17",
@@ -20,6 +24,8 @@
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
     "autoprefixer": "^10.4.19",
+    "oxfmt": "^0.48.0",
+    "oxlint": "^1.63.0",
     "postcss": "^8.4.39",
     "tailwindcss": "^3.4.4",
     "typescript": "^5.5.3",

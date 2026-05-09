@@ -31,6 +31,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: cd www && npm ci && npm run build
+      - run: cd www && npm ci && npm run format:check && npm run lint:github && npm run build
       - run: gofmt -l . && test -z "$(gofmt -l .)"
       - run: go test ./...

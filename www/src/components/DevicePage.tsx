@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { deleteAgent, getStatus, listProfiles, setDeviceProfile, type Agent, type Integration, type Whoami } from "../lib/api";
+import {
+  deleteAgent,
+  getStatus,
+  listProfiles,
+  setDeviceProfile,
+  type Agent,
+  type Integration,
+  type Whoami,
+} from "../lib/api";
 import { fmtBytes } from "../lib/format";
 import { DeviceIcon } from "./Logos";
 import { Sparkline } from "./Sparkline";
@@ -36,7 +44,9 @@ export function DevicePage({
   // case (legacy single-tenant configs).
   const [profileCreds, setProfileCreds] = useState<Integration[] | null>(null);
   useEffect(() => {
-    listProfiles().then(setProfiles).catch(() => setProfiles([]));
+    listProfiles()
+      .then(setProfiles)
+      .catch(() => setProfiles([]));
   }, []);
   const devProfile = a?.profile;
   useEffect(() => {
@@ -44,7 +54,9 @@ export function DevicePage({
       setProfileCreds(null);
       return;
     }
-    getStatus(devProfile).then(setProfileCreds).catch(() => setProfileCreds(null));
+    getStatus(devProfile)
+      .then(setProfileCreds)
+      .catch(() => setProfileCreds(null));
     // Re-fetch whenever the parent's integrations list changes too —
     // OAuth modal calls onRefresh on success, which updates parent state
     // but otherwise this effect would stay stale and the card wouldn't
@@ -54,7 +66,9 @@ export function DevicePage({
     return (
       <main className="mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-5">
         <nav className="text-[13px] text-[#a3a3a3] flex items-center gap-1.5 mb-3">
-          <a href="#/" className="hover:text-[#171717]">clawpatrol</a>
+          <a href="#/" className="hover:text-[#171717]">
+            clawpatrol
+          </a>
           <span>/</span>
           <span className="text-[#525252]">{ip}</span>
         </nav>
@@ -70,7 +84,12 @@ export function DevicePage({
   const allForUser = profileCreds ?? integrations;
 
   async function remove() {
-    if (!confirm(`Remove ${dev.hostname || dev.ip} from clawpatrol?\n\nThis clears the device's tracking + owner mapping. Tailscale node stays — remove from admin console if you want a hard kick.`)) return;
+    if (
+      !confirm(
+        `Remove ${dev.hostname || dev.ip} from clawpatrol?\n\nThis clears the device's tracking + owner mapping. Tailscale node stays — remove from admin console if you want a hard kick.`,
+      )
+    )
+      return;
     try {
       await deleteAgent(dev.ip);
       onBack();
@@ -84,7 +103,9 @@ export function DevicePage({
     <main className="mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-5 space-y-5">
       <div className="flex items-center justify-between">
         <nav className="text-[13px] text-[#a3a3a3] flex items-center gap-1.5">
-          <a href="#/" className="hover:text-[#171717]">clawpatrol</a>
+          <a href="#/" className="hover:text-[#171717]">
+            clawpatrol
+          </a>
           <span>/</span>
           <span className="text-[#525252]">{dev.hostname || dev.ip}</span>
         </nav>
@@ -113,7 +134,16 @@ export function DevicePage({
             title="analytics"
             className="w-[36px] h-[36px] rounded-full border border-[#e5e5e5] text-[#525252] flex items-center justify-center hover:border-[#171717] hover:text-[#171717] transition-colors"
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
               <path d="M3 3v18h18" />
               <path d="m7 16 4-8 4 4 4-6" />
             </svg>
@@ -124,7 +154,16 @@ export function DevicePage({
             title="forget this device"
             className="w-[36px] h-[36px] rounded-full border border-[#e5e5e5] text-[#525252] flex items-center justify-center hover:border-[#dc2626] hover:text-[#dc2626] transition-colors"
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
               <path d="M3 6h18" />
               <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
               <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
@@ -138,12 +177,25 @@ export function DevicePage({
       {/* device header card */}
       <section className="bg-white border border-[#e5e5e5] rounded">
         <div className="flex items-center gap-3 px-5 py-4 border-b border-[#e5e5e5]">
-          <DeviceIcon os={a.os} hostname={a.hostname} ua={a.ua} className="w-[18px] h-[18px] text-[#525252]" />
+          <DeviceIcon
+            os={a.os}
+            hostname={a.hostname}
+            ua={a.ua}
+            className="w-[18px] h-[18px] text-[#525252]"
+          />
           <div className="min-w-0">
-            <div className="text-[15px] font-semibold text-[#171717] truncate">{a.hostname || a.ip}</div>
+            <div className="text-[15px] font-semibold text-[#171717] truncate">
+              {a.hostname || a.ip}
+            </div>
             <div className="text-[11px] text-[#737373] truncate">
-              {a.profile || "—"} · {[a.external_ipv4, a.external_ipv6].filter(Boolean).join(" / ") || a.ip}
-              {a.os && <> · <span className="uppercase tracking-[.08em]">{a.os}</span></>}
+              {a.profile || "—"} ·{" "}
+              {[a.external_ipv4, a.external_ipv6].filter(Boolean).join(" / ") || a.ip}
+              {a.os && (
+                <>
+                  {" "}
+                  · <span className="uppercase tracking-[.08em]">{a.os}</span>
+                </>
+              )}
             </div>
           </div>
           <div className="ml-auto flex items-center gap-3">
@@ -214,7 +266,16 @@ function ProfilePicker({
         title={`profile: ${current || "—"}`}
         className="w-[36px] h-[36px] rounded-full border border-[#e5e5e5] text-[#525252] flex items-center justify-center hover:border-[#171717] hover:text-[#171717] transition-colors disabled:opacity-50"
       >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
           <path d="M12 2 2 7l10 5 10-5-10-5z" />
           <path d="M2 17l10 5 10-5" />
           <path d="M2 12l10 5 10-5" />

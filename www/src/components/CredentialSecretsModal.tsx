@@ -55,9 +55,7 @@ export function CredentialSecretsModal({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-4">
-          <div className="text-[14px] font-semibold text-[#171717]">
-            Connect {integration.name}
-          </div>
+          <div className="text-[14px] font-semibold text-[#171717]">Connect {integration.name}</div>
           <button
             onClick={onClose}
             className="text-[#a3a3a3] hover:text-[#171717] text-[14px] leading-none"

@@ -2,14 +2,31 @@
 @tailwind components;
 @tailwind utilities;
 
-*, *::before, *::after { box-sizing: border-box; }
-html, body { height: 100%; }
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+html,
+body {
+  height: 100%;
+}
 body {
   background: #fafafa;
   color: #171717;
-  font: 13px/1.4 ui-monospace, "SF Mono", Menlo, monospace;
+  font:
+    13px/1.4 ui-monospace,
+    "SF Mono",
+    Menlo,
+    monospace;
   -webkit-font-smoothing: antialiased;
 }
 
-::-webkit-scrollbar { width: 4px; height: 4px; }
-::-webkit-scrollbar-thumb { background: #d4d4d4; border-radius: 2px; }
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-thumb {
+  background: #d4d4d4;
+  border-radius: 2px;
+}

@@ -4,13 +4,7 @@ import { HCLEditor } from "./HCLEditor";
 
 // RulesEditor edits the whole gateway.hcl file. Validation runs
 // server-side; diagnostics surface in the err panel.
-export function RulesEditor({
-  onClose,
-  onSaved,
-}: {
-  onClose: () => void;
-  onSaved: () => void;
-}) {
+export function RulesEditor({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
   const [text, setText] = useState("");
   const [original, setOriginal] = useState("");
   const [err, setErr] = useState<string | null>(null);
@@ -113,9 +107,7 @@ export function RulesEditor({
         </form>
 
         <div className="flex items-center px-4 py-3 border-t border-[#e5e5e5] gap-3">
-          {err && (
-            <span className="text-[11px] text-red-600 break-all flex-1">{err}</span>
-          )}
+          {err && <span className="text-[11px] text-red-600 break-all flex-1">{err}</span>}
           {okMsg && <span className="text-[11px] text-[#16a34a] flex-1">{okMsg}</span>}
           {!err && !okMsg && (
             <span className="text-[11px] text-[#a3a3a3] flex-1">

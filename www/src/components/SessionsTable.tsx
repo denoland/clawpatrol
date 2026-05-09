@@ -46,14 +46,18 @@ export function SessionsTable({ sessions: all }: { sessions: Session[] }) {
                     <div className="text-[12px] text-[#171717] truncate" title={s.title}>
                       {s.title}
                     </div>
-                    {s.id && <div className="text-[10px] text-[#a3a3a3] tabular-nums truncate">{s.id}</div>}
+                    {s.id && (
+                      <div className="text-[10px] text-[#a3a3a3] tabular-nums truncate">{s.id}</div>
+                    )}
                   </div>
                 </div>
               </Td>
               <Td>
                 <Sparkline data={s.activity} width={100} height={16} />
               </Td>
-              <Td className="text-[11px] text-[#737373] tabular-nums text-right">{fmtAge(s.first_at)}</Td>
+              <Td className="text-[11px] text-[#737373] tabular-nums text-right">
+                {fmtAge(s.first_at)}
+              </Td>
               <Td className="text-[11px] text-[#525252] tabular-nums text-right">{s.reqs}</Td>
               <Td>
                 {s.model ? (
@@ -100,7 +104,9 @@ function ModelDonut({ session: s }: { session: Session }) {
           style={{ top: tip.top, left: tip.left }}
         >
           {fmtTokens(s.tokens_in)} in · {fmtTokens(s.tokens_out)} out
-          {s.ctx_max ? ` · ${fmtTokens(s.ctx_used)}/${fmtTokens(s.ctx_max)} (${pct.toFixed(0)}%)` : ""}
+          {s.ctx_max
+            ? ` · ${fmtTokens(s.ctx_used)}/${fmtTokens(s.ctx_max)} (${pct.toFixed(0)}%)`
+            : ""}
         </div>
       )}
     </div>
@@ -120,9 +126,20 @@ function Th({ children, className = "" }: { children: React.ReactNode; className
   );
 }
 
-function Td({ children, className = "", ...rest }: { children: React.ReactNode; className?: string; title?: string }) {
+function Td({
+  children,
+  className = "",
+  ...rest
+}: {
+  children: React.ReactNode;
+  className?: string;
+  title?: string;
+}) {
   return (
-    <td className={"px-3 sm:px-[14px] py-[9px] align-middle overflow-hidden " + className} {...rest}>
+    <td
+      className={"px-3 sm:px-[14px] py-[9px] align-middle overflow-hidden " + className}
+      {...rest}
+    >
       {children}
     </td>
   );

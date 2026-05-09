@@ -185,9 +185,12 @@ export async function listProfiles(): Promise<string[]> {
 }
 
 export async function setDeviceProfile(ip: string, profile: string): Promise<void> {
-  const r = await api(`/api/agents/profile?ip=${encodeURIComponent(ip)}&profile=${encodeURIComponent(profile)}`, {
-    method: "POST",
-  });
+  const r = await api(
+    `/api/agents/profile?ip=${encodeURIComponent(ip)}&profile=${encodeURIComponent(profile)}`,
+    {
+      method: "POST",
+    },
+  );
   if (!r.ok) throw new Error(await r.text());
 }
 
@@ -298,9 +301,21 @@ export async function getState(): Promise<StateResp> {
 
 export type OAuthStartResp =
   | { flow?: "auth_code"; auth_url: string; state: string; owner: string }
-  | { flow: "device"; user_code: string; verification_uri: string; state: string; owner: string; interval: number; expires_in: number };
+  | {
+      flow: "device";
+      user_code: string;
+      verification_uri: string;
+      state: string;
+      owner: string;
+      interval: number;
+      expires_in: number;
+    };
 
-export async function oauthStart(id: string, profile?: string, extraScopes?: string[]): Promise<OAuthStartResp> {
+export async function oauthStart(
+  id: string,
+  profile?: string,
+  extraScopes?: string[],
+): Promise<OAuthStartResp> {
   let qs = `id=${encodeURIComponent(id)}`;
   if (profile) qs += `&profile=${encodeURIComponent(profile)}`;
   if (extraScopes && extraScopes.length > 0) {
@@ -311,8 +326,16 @@ export async function oauthStart(id: string, profile?: string, extraScopes?: str
   return r.json();
 }
 
-export async function oauthDevicePoll(state: string): Promise<{ connected?: boolean; owner?: string; error?: string; detail?: string; interval?: number }> {
-  const r = await api(`/api/oauth/device-poll?state=${encodeURIComponent(state)}`, { method: "POST" });
+export async function oauthDevicePoll(state: string): Promise<{
+  connected?: boolean;
+  owner?: string;
+  error?: string;
+  detail?: string;
+  interval?: number;
+}> {
+  const r = await api(`/api/oauth/device-poll?state=${encodeURIComponent(state)}`, {
+    method: "POST",
+  });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
@@ -377,7 +400,10 @@ export async function getAnalytics(params: {
   return r.json();
 }
 
-export async function oauthExchange(state: string, code: string): Promise<{ connected: boolean; owner: string; expires: number }> {
+export async function oauthExchange(
+  state: string,
+  code: string,
+): Promise<{ connected: boolean; owner: string; expires: number }> {
   const r = await api("/api/oauth/exchange", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

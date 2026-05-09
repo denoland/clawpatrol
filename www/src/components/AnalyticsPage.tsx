@@ -1,18 +1,19 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as Plot from "@observablehq/plot";
 import { getAnalytics, type Agent, type EventRecord } from "../lib/api";
 
-
-const RANGES = [
-  "1m", "5m", "15m", "30m", "1h", "6h", "24h",
-] as const;
-type Range = typeof RANGES[number];
+const RANGES = ["1m", "5m", "15m", "30m", "1h", "6h", "24h"] as const;
+type Range = (typeof RANGES)[number];
 type ColorBy = "host" | "status" | "device";
 type Scale = "log" | "linear";
 
 const RANGE_MS: Record<Range, number> = {
-  "1m": 60e3, "5m": 300e3, "15m": 900e3,
-  "30m": 1800e3, "1h": 3600e3, "6h": 21600e3,
+  "1m": 60e3,
+  "5m": 300e3,
+  "15m": 900e3,
+  "30m": 1800e3,
+  "1h": 3600e3,
+  "6h": 21600e3,
   "24h": 86400e3,
 };
 
@@ -36,42 +37,36 @@ function qsSet(key: string, value: string) {
 }
 
 function useQS<T extends string>(
-  key: string, fallback: T, valid: readonly T[],
+  key: string,
+  fallback: T,
+  valid: readonly T[],
 ): [T, (v: T) => void] {
   const init = qsGet(key, fallback) as T;
-  const [val, setVal] = useState(
-    valid.includes(init) ? init : fallback,
-  );
-  const set = (v: T) => { setVal(v); qsSet(key, v); };
+  const [val, setVal] = useState(valid.includes(init) ? init : fallback);
+  const set = (v: T) => {
+    setVal(v);
+    qsSet(key, v);
+  };
   return [val, set];
 }
 
 // --- page ---
 
-export function AnalyticsPage({ ip, agents }: {
-  ip?: string;
-  agents: Agent[];
-}) {
-  const deviceName = ip
-    ? agents.find(a => a.ip === ip)?.hostname || ip
-    : undefined;
+export function AnalyticsPage({ ip, agents }: { ip?: string; agents: Agent[] }) {
+  const deviceName = ip ? agents.find((a) => a.ip === ip)?.hostname || ip : undefined;
   const [events, setEvents] = useState<EventRecord[]>([]);
   const [totalCount, setTotalCount] = useState(0);
   const [errorCount, setErrorCount] = useState(0);
   type Counts = Array<{ key: string; count: number }>;
   const [byDevice, setByDevice] = useState<Counts>([]);
   const [byHost, setByHost] = useState<Counts>([]);
-  const [range, setRange] =
-    useQS("range", "1h" as Range, RANGES);
-  const [filterDevice, setFilterDevice] = useState<
-    string | null
-  >(null);
-  const [filterHost, setFilterHost] = useState<
-    string | null
-  >(null);
+  const [range, setRange] = useQS("range", "1h" as Range, RANGES);
+  const [filterDevice, setFilterDevice] = useState<string | null>(null);
+  const [filterHost, setFilterHost] = useState<string | null>(null);
   const isGlobal = !ip;
-  const agentNames = new Map(
-    agents.map(a => [a.ip, a.hostname || a.ip]),
+  const agentNames = useMemo(
+    () => new Map(agents.map((a) => [a.ip, a.hostname || a.ip])),
+    [agents],
   );
 
   // Skip setState (and thus the chart redraw) when the polled
@@ -102,23 +97,31 @@ export function AnalyticsPage({ ip, agents }: {
     // Auto-refresh only for short ranges. On 1h+ the data barely
     // shifts per poll and the redraw is mostly noise.
     if (RANGE_MS[range] >= 3600e3) {
-      return () => { cancelled = true; };
+      return () => {
+        cancelled = true;
+      };
     }
     const t = setInterval(load, 10000);
-    return () => { cancelled = true; clearInterval(t); };
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
   }, [ip, range]);
 
   // Client-side filters from bar chart clicks
-  const filtered = events.filter((e) => {
-    if (filterDevice && e.agent_ip !== filterDevice)
-      return false;
-    if (filterHost && e.host !== filterHost) return false;
-    return true;
-  });
+  const filtered = useMemo(
+    () =>
+      events.filter((e) => {
+        if (filterDevice && e.agent_ip !== filterDevice) return false;
+        if (filterHost && e.host !== filterHost) return false;
+        return true;
+      }),
+    [events, filterDevice, filterHost],
+  );
   const hasFilter = filterDevice || filterHost;
   const filterLabel = filterDevice
-    ? agentNames.get(filterDevice) ?? filterDevice
-    : filterHost ?? "";
+    ? (agentNames.get(filterDevice) ?? filterDevice)
+    : (filterHost ?? "");
 
   // --- summary stats ---
   // Counts (n, errPct) come from server-side aggregates so the
@@ -131,22 +134,18 @@ export function AnalyticsPage({ ip, agents }: {
       return { n: 0, avg: 0, p99: 0, errPct: 0, devices: 0 };
     }
     const lats = filtered
-      .map(e => e.ms).filter(m => m > 0)
+      .map((e) => e.ms)
+      .filter((m) => m > 0)
       .sort((a, b) => a - b);
-    const avg = lats.length
-      ? Math.round(lats.reduce((a, b) => a + b, 0) / lats.length) : 0;
-    const p99 = lats.length
-      ? lats[Math.min(Math.floor(lats.length * 0.99), lats.length - 1)] : 0;
-    const devices = new Set(
-      filtered.map(e => e.agent_ip).filter(Boolean),
-    ).size;
+    const avg = lats.length ? Math.round(lats.reduce((a, b) => a + b, 0) / lats.length) : 0;
+    const p99 = lats.length ? lats[Math.min(Math.floor(lats.length * 0.99), lats.length - 1)] : 0;
+    const devices = new Set(filtered.map((e) => e.agent_ip).filter(Boolean)).size;
     if (hasFilter) {
-      const errs = filtered.filter(e => (e.status ?? 0) >= 400).length;
+      const errs = filtered.filter((e) => (e.status ?? 0) >= 400).length;
       const errPct = sampleN > 0 ? (errs / sampleN) * 100 : 0;
       return { n: sampleN, avg, p99, errPct, devices };
     }
-    const errPct = totalCount > 0
-      ? (errorCount / totalCount) * 100 : 0;
+    const errPct = totalCount > 0 ? (errorCount / totalCount) * 100 : 0;
     return { n: totalCount, avg, p99, errPct, devices };
   })();
 
@@ -176,7 +175,10 @@ export function AnalyticsPage({ ip, agents }: {
           )}
           {hasFilter && (
             <button
-              onClick={() => { setFilterDevice(null); setFilterHost(null); }}
+              onClick={() => {
+                setFilterDevice(null);
+                setFilterHost(null);
+              }}
               className="ml-3 px-2 py-0.5 rounded text-[13px] border border-[#171717] bg-[#171717] text-white flex items-center gap-1.5 self-center"
             >
               {filterLabel}
@@ -184,27 +186,24 @@ export function AnalyticsPage({ ip, agents }: {
             </button>
           )}
         </div>
-        <Toggle
-          options={[...RANGES]}
-          value={range}
-          onChange={setRange}
-        />
+        <Toggle options={[...RANGES]} value={range} onChange={setRange} />
       </div>
 
-      <div className={
-        "bg-white border border-[#e5e5e5] rounded grid grid-cols-2 divide-x divide-[#e5e5e5] "
-        + (isGlobal ? "sm:grid-cols-4 lg:grid-cols-5" : "sm:grid-cols-4")
-      }>
+      <div
+        className={
+          "bg-white border border-[#e5e5e5] rounded grid grid-cols-2 divide-x divide-[#e5e5e5] " +
+          (isGlobal ? "sm:grid-cols-4 lg:grid-cols-5" : "sm:grid-cols-4")
+        }
+      >
         <Stat label="Requests" value={stats.n.toLocaleString()} />
         <Stat label="Avg" value={stats.avg ? fmtMs(stats.avg) : "—"} />
         <Stat label="p99" value={stats.p99 ? fmtMs(stats.p99) : "—"} />
-        <Stat label="Errors"
+        <Stat
+          label="Errors"
           value={stats.errPct ? stats.errPct.toFixed(1) + "%" : "0%"}
-          tone={stats.errPct >= 5 ? "warn" : undefined} />
-        {isGlobal && (
-          <Stat label="Devices"
-            value={stats.devices.toLocaleString()} />
-        )}
+          tone={stats.errPct >= 5 ? "warn" : undefined}
+        />
+        {isGlobal && <Stat label="Devices" value={stats.devices.toLocaleString()} />}
       </div>
 
       <div className={"grid gap-4 " + (isGlobal ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1")}>
@@ -233,12 +232,7 @@ export function AnalyticsPage({ ip, agents }: {
         />
       </div>
 
-      <LatencyChart
-        filtered={filtered}
-        isGlobal={isGlobal}
-        agents={agents}
-        range={range}
-      />
+      <LatencyChart filtered={filtered} isGlobal={isGlobal} agents={agents} range={range} />
 
       <TopRoutes events={filtered} />
     </main>
@@ -250,21 +244,16 @@ function fmtMs(ms: number): string {
   return ms + "ms";
 }
 
-
-function Stat({ label, value, tone }: {
-  label: string;
-  value: string;
-  tone?: "warn";
-}) {
+function Stat({ label, value, tone }: { label: string; value: string; tone?: "warn" }) {
   return (
     <div className="flex flex-col gap-1.5 px-5 py-4">
-      <span className="text-[10px] uppercase tracking-[.12em] text-[#a3a3a3]">
-        {label}
-      </span>
-      <span className={
-        "text-[22px] font-semibold leading-none tabular-nums tracking-tight "
-        + (tone === "warn" ? "text-[#b91c1c]" : "text-[#171717]")
-      }>
+      <span className="text-[10px] uppercase tracking-[.12em] text-[#a3a3a3]">{label}</span>
+      <span
+        className={
+          "text-[22px] font-semibold leading-none tabular-nums tracking-tight " +
+          (tone === "warn" ? "text-[#b91c1c]" : "text-[#171717]")
+        }
+      >
         {value}
       </span>
     </div>
@@ -273,13 +262,12 @@ function Stat({ label, value, tone }: {
 
 // --- event list (time-filtered) ---
 
-
 // --- stable color from string hash ---
 
 function stableIndex(s: string, n: number): number {
   let h = 0;
   for (let i = 0; i < s.length; i++) {
-    h = Math.imul(31, h) + s.charCodeAt(i) | 0;
+    h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
   }
   return ((h % n) + n) % n;
 }
@@ -302,35 +290,39 @@ const PALETTE = [
 const hostColor = (s: string) => PALETTE[stableIndex(s, PALETTE.length)];
 // Offset by half the palette so the same string hashes to a maximally
 // different hue when used as a device vs. a host.
-const deviceColor = (s: string) =>
-  PALETTE[(stableIndex(s, PALETTE.length) + 5) % PALETTE.length];
+const deviceColor = (s: string) => PALETTE[(stableIndex(s, PALETTE.length) + 5) % PALETTE.length];
 
 // Status: Tailwind -700 (desaturated vs original -600). Used both in
 // scatter legend and EventRow status text.
 const STATUS_COLORS = {
-  "2xx": "#15803d", "3xx": "#a16207", "4xx": "#c2410c",
-  "5xx": "#b91c1c", "—": "#a3a3a3",
+  "2xx": "#15803d",
+  "3xx": "#a16207",
+  "4xx": "#c2410c",
+  "5xx": "#b91c1c",
+  "—": "#a3a3a3",
 } as const;
 
 // --- chart ---
 
-function LatencyChart({ filtered, isGlobal, agents, range }: {
+function LatencyChart({
+  filtered,
+  isGlobal,
+  agents,
+  range,
+}: {
   filtered: EventRecord[];
   isGlobal: boolean;
   agents: Agent[];
   range: Range;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  const colorOptions: ColorBy[] = isGlobal
-    ? ["device", "host", "status"]
-    : ["host", "status"];
-  const [colorBy, setColorBy] =
-    useQS("color", colorOptions[0], colorOptions);
-  const [scale, setScale] =
-    useQS("scale", "log" as Scale, ["log", "linear"]);
+  const colorOptions: ColorBy[] = isGlobal ? ["device", "host", "status"] : ["host", "status"];
+  const [colorBy, setColorBy] = useQS("color", colorOptions[0], colorOptions);
+  const [scale, setScale] = useQS("scale", "log" as Scale, ["log", "linear"]);
 
-  const agentNames = new Map(
-    agents.map(a => [a.ip, a.hostname || a.ip]),
+  const agentNames = useMemo(
+    () => new Map(agents.map((a) => [a.ip, a.hostname || a.ip])),
+    [agents],
   );
 
   useEffect(() => {
@@ -346,39 +338,38 @@ function LatencyChart({ filtered, isGlobal, agents, range }: {
         device: agentNames.get(e.agent_ip ?? "") ?? e.agent_ip ?? "?",
         statusCode: e.status ?? 0,
         status: e.status
-          ? e.status >= 500 ? "5xx"
-          : e.status >= 400 ? "4xx"
-          : e.status >= 300 ? "3xx"
-          : "2xx"
+          ? e.status >= 500
+            ? "5xx"
+            : e.status >= 400
+              ? "4xx"
+              : e.status >= 300
+                ? "3xx"
+                : "2xx"
           : "\u2014",
       }));
 
-    const colorField =
-      colorBy === "status" ? "status"
-      : colorBy === "device" ? "device"
-      : "host";
+    const colorField = colorBy === "status" ? "status" : colorBy === "device" ? "device" : "host";
 
-    const vals = [...new Set(dots.map(
-      d => d[colorField] as string,
-    ))];
+    const vals = [...new Set(dots.map((d) => d[colorField] as string))];
 
-    const colorCfg = colorBy === "status"
-      ? {
-          domain: ["2xx", "3xx", "4xx", "5xx", "\u2014"],
-          range: [
-            STATUS_COLORS["2xx"], STATUS_COLORS["3xx"],
-            STATUS_COLORS["4xx"], STATUS_COLORS["5xx"],
-            STATUS_COLORS["\u2014"],
-          ],
-          legend: true,
-        }
-      : {
-          domain: vals,
-          range: vals.map((v) =>
-            colorBy === "device" ? deviceColor(v) : hostColor(v),
-          ),
-          legend: true,
-        };
+    const colorCfg =
+      colorBy === "status"
+        ? {
+            domain: ["2xx", "3xx", "4xx", "5xx", "\u2014"],
+            range: [
+              STATUS_COLORS["2xx"],
+              STATUS_COLORS["3xx"],
+              STATUS_COLORS["4xx"],
+              STATUS_COLORS["5xx"],
+              STATUS_COLORS["\u2014"],
+            ],
+            legend: true,
+          }
+        : {
+            domain: vals,
+            range: vals.map((v) => (colorBy === "device" ? deviceColor(v) : hostColor(v))),
+            legend: true,
+          };
 
     const chart = Plot.plot({
       width: ref.current.clientWidth,
@@ -401,23 +392,16 @@ function LatencyChart({ filtered, isGlobal, agents, range }: {
         ...(scale === "log"
           ? {
               ticks: [1, 10, 100, 1000, 10000],
-              tickFormat: (v: number) =>
-                v >= 1000 ? `${v / 1000}k` : `${v}`,
+              tickFormat: (v: number) => (v >= 1000 ? `${v / 1000}k` : `${v}`),
             }
           : {
-              domain: [
-                0,
-                Math.max(100, ...dots.map(d => d.ms)) * 1.1,
-              ],
+              domain: [0, Math.max(100, ...dots.map((d) => d.ms)) * 1.1],
             }),
       },
       x: {
         type: "time",
         label: null,
-        domain: [
-          new Date(Date.now() - RANGE_MS[range]),
-          new Date(),
-        ],
+        domain: [new Date(Date.now() - RANGE_MS[range]), new Date()],
       },
       color: colorCfg,
       marks: [
@@ -435,17 +419,19 @@ function LatencyChart({ filtered, isGlobal, agents, range }: {
           fillOpacity: 0.75,
           stroke: "white",
           strokeWidth: 0.5,
-          href: (d: typeof dots[0]) =>
-            d.id ? `#/request/${d.id}` : undefined,
-          title: (d: typeof dots[0]) =>
+          href: (d: (typeof dots)[0]) => (d.id ? `#/request/${d.id}` : undefined),
+          title: (d: (typeof dots)[0]) =>
             `${d.host}\n${d.device}\n${d.statusCode || "\u2014"} \u2022 ${d.ms}ms`,
         }),
-        Plot.tip(dots, Plot.pointer({
-          x: "t",
-          y: "ms",
-          title: (d: typeof dots[0]) =>
-            `${d.host}\n${d.device}\n${d.statusCode || "\u2014"} \u2022 ${d.ms}ms`,
-        })),
+        Plot.tip(
+          dots,
+          Plot.pointer({
+            x: "t",
+            y: "ms",
+            title: (d: (typeof dots)[0]) =>
+              `${d.host}\n${d.device}\n${d.statusCode || "\u2014"} \u2022 ${d.ms}ms`,
+          }),
+        ),
       ],
     });
 
@@ -454,10 +440,8 @@ function LatencyChart({ filtered, isGlobal, agents, range }: {
     // handles them instead.
     chart.addEventListener("click", (evt) => {
       const a = (evt.target as Element).closest("a");
-      const href = a?.getAttribute("href")
-        ?? a?.getAttributeNS(
-          "http://www.w3.org/1999/xlink", "href",
-        );
+      const href =
+        a?.getAttribute("href") ?? a?.getAttributeNS("http://www.w3.org/1999/xlink", "href");
       if (href?.startsWith("#/request/")) {
         evt.preventDefault();
         window.location.hash = href;
@@ -472,65 +456,51 @@ function LatencyChart({ filtered, isGlobal, agents, range }: {
     // with an inner `<svg fill="...">` and the value as a text node —
     // there are no aria-labels, so we read the color straight off the
     // swatch's SVG (same scale as the dots use).
-    const dotEls = chart.querySelectorAll<SVGCircleElement>(
-      "g[aria-label='dot'] circle",
-    );
+    const dotEls = chart.querySelectorAll<SVGCircleElement>("g[aria-label='dot'] circle");
     const setHighlight = (target: string | null) => {
       if (!target) {
-        dotEls.forEach((c) => { c.style.opacity = ""; });
+        dotEls.forEach((c) => {
+          c.style.opacity = "";
+        });
         return;
       }
       dotEls.forEach((c) => {
-        c.style.opacity =
-          c.getAttribute("fill") === target ? "1" : "0.08";
+        c.style.opacity = c.getAttribute("fill") === target ? "1" : "0.08";
       });
     };
 
-    const nameToIP = colorBy === "device"
-      ? new Map(agents.map(a => [a.hostname || a.ip, a.ip]))
-      : null;
+    const nameToIP =
+      colorBy === "device" ? new Map(agents.map((a) => [a.hostname || a.ip, a.ip])) : null;
 
-    chart.querySelectorAll<HTMLElement>(
-      "[class*='-swatch']:not([class*='-swatches'])",
-    ).forEach((el) => {
-      const color = el.querySelector("svg")?.getAttribute("fill")
-        ?? null;
-      const label = el.textContent?.trim() ?? "";
-      el.addEventListener("mouseenter", () => setHighlight(color));
-      el.addEventListener("mouseleave", () => setHighlight(null));
-      if (nameToIP) {
-        const devIP = nameToIP.get(label);
-        if (!devIP) return;
-        el.style.cursor = "pointer";
-        el.addEventListener("click", (e) => {
-          e.stopPropagation();
-          window.location.hash =
-            `#/analytics/${encodeURIComponent(devIP)}`;
-        });
-      }
-    });
+    chart
+      .querySelectorAll<HTMLElement>("[class*='-swatch']:not([class*='-swatches'])")
+      .forEach((el) => {
+        const color = el.querySelector("svg")?.getAttribute("fill") ?? null;
+        const label = el.textContent?.trim() ?? "";
+        el.addEventListener("mouseenter", () => setHighlight(color));
+        el.addEventListener("mouseleave", () => setHighlight(null));
+        if (nameToIP) {
+          const devIP = nameToIP.get(label);
+          if (!devIP) return;
+          el.style.cursor = "pointer";
+          el.addEventListener("click", (e) => {
+            e.stopPropagation();
+            window.location.hash = `#/analytics/${encodeURIComponent(devIP)}`;
+          });
+        }
+      });
 
     ref.current.replaceChildren(chart);
     return () => chart.remove();
-  }, [filtered, colorBy, scale, range]);
+  }, [filtered, colorBy, scale, range, agents, agentNames]);
 
   return (
     <section className="bg-white border border-[#e5e5e5] rounded overflow-hidden">
       <header className="flex items-center justify-between px-4 py-2.5 border-b border-[#e5e5e5]">
-        <span className="text-[10px] uppercase tracking-[.12em] text-[#a3a3a3]">
-          Latency
-        </span>
+        <span className="text-[10px] uppercase tracking-[.12em] text-[#a3a3a3]">Latency</span>
         <div className="flex items-center gap-3">
-          <Toggle
-            options={colorOptions}
-            value={colorBy}
-            onChange={setColorBy}
-          />
-          <Toggle
-            options={["log", "linear"] as Scale[]}
-            value={scale}
-            onChange={setScale}
-          />
+          <Toggle options={colorOptions} value={colorBy} onChange={setColorBy} />
+          <Toggle options={["log", "linear"] as Scale[]} value={scale} onChange={setScale} />
         </div>
       </header>
       <div ref={ref} className="p-4 min-h-[320px]" />
@@ -541,7 +511,9 @@ function LatencyChart({ filtered, isGlobal, agents, range }: {
 // --- toggle ---
 
 function Toggle<T extends string>({
-  options, value, onChange,
+  options,
+  value,
+  onChange,
 }: {
   options: T[];
   value: T;
@@ -555,9 +527,7 @@ function Toggle<T extends string>({
           onClick={() => onChange(o)}
           className={
             "px-2 py-0.5 " +
-            (o === value
-              ? "bg-[#171717] text-white"
-              : "text-[#525252] hover:bg-[#fafafa]")
+            (o === value ? "bg-[#171717] text-white" : "text-[#525252] hover:bg-[#fafafa]")
           }
         >
           {o}
@@ -613,7 +583,8 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
       className="px-3 sm:px-[14px] py-[9px] text-right text-[10px] font-medium uppercase tracking-[.12em] text-[#a3a3a3] cursor-pointer hover:text-[#525252] select-none"
       onClick={() => setSortBy(field)}
     >
-      {label}{sortBy === field ? " \u25BE" : ""}
+      {label}
+      {sortBy === field ? " \u25BE" : ""}
     </th>
   );
 
@@ -636,25 +607,33 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
         </thead>
         <tbody>
           {rows.slice(0, 20).map((d) => {
-            const pct = maxCount > 0
-              ? (d.count / maxCount) * 100 : 0;
+            const pct = maxCount > 0 ? (d.count / maxCount) * 100 : 0;
             return (
               <tr
                 key={d.key}
                 className="border-b border-[#f5f5f5] hover:bg-[#f9f9f9] transition-colors"
               >
-                <td className="px-3 sm:px-[14px] py-[9px] font-mono align-middle break-all" title={`${d.method} ${d.host}${d.path}`}>
-                  <span className="text-[#a3a3a3]">{d.method}</span>{" "}{d.host}<span className="text-[#525252]">{d.path}</span>
+                <td
+                  className="px-3 sm:px-[14px] py-[9px] font-mono align-middle break-all"
+                  title={`${d.method} ${d.host}${d.path}`}
+                >
+                  <span className="text-[#a3a3a3]">{d.method}</span> {d.host}
+                  <span className="text-[#525252]">{d.path}</span>
                 </td>
                 <td className="px-3 sm:px-[14px] py-[9px] text-right whitespace-nowrap align-middle">
                   <div className="flex items-center justify-end gap-1.5">
                     <div className="w-12 h-1.5 bg-[#f5f5f5] rounded-full">
-                      <div className="h-full bg-[#a3a3a3] rounded-full" style={{ width: `${pct}%` }} />
+                      <div
+                        className="h-full bg-[#a3a3a3] rounded-full"
+                        style={{ width: `${pct}%` }}
+                      />
                     </div>
                     <span className="w-8 text-right tabular-nums">{d.count}</span>
                   </div>
                 </td>
-                <td className="px-3 sm:px-[14px] py-[9px] text-right text-[#525252] tabular-nums align-middle">{fmtMs(d.p99Ms)}</td>
+                <td className="px-3 sm:px-[14px] py-[9px] text-right text-[#525252] tabular-nums align-middle">
+                  {fmtMs(d.p99Ms)}
+                </td>
               </tr>
             );
           })}
@@ -674,7 +653,12 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
 // --- horizontal bar list ---
 
 function BarList({
-  title, items: rawItems, active, labelFn, onClickFn, colorFn,
+  title,
+  items: rawItems,
+  active,
+  labelFn,
+  onClickFn,
+  colorFn,
 }: {
   title: string;
   items: Array<{ key: string; count: number }>;
@@ -693,9 +677,7 @@ function BarList({
   return (
     <section className="bg-white border border-[#e5e5e5] rounded overflow-hidden">
       <header className="px-4 py-2.5 border-b border-[#e5e5e5]">
-        <span className="text-[10px] uppercase tracking-[.12em] text-[#a3a3a3]">
-          {title}
-        </span>
+        <span className="text-[10px] uppercase tracking-[.12em] text-[#a3a3a3]">{title}</span>
       </header>
       <div className="p-3 space-y-0.5">
         {items.slice(0, 10).map((item) => {
@@ -703,17 +685,25 @@ function BarList({
           const isActive = active === item.key;
           const barColor = colorFn
             ? colorFn(item.key, item.label)
-            : (isActive ? "#171717" : "#525252");
+            : isActive
+              ? "#171717"
+              : "#525252";
           return (
             <div
               key={item.key}
               className={
-                "flex items-center gap-2 px-1 py-0.5 rounded cursor-pointer "
-                + (isActive ? "bg-[#f5f5f5]" : "hover:bg-[#fafafa]")
+                "flex items-center gap-2 px-1 py-0.5 rounded cursor-pointer " +
+                (isActive ? "bg-[#f5f5f5]" : "hover:bg-[#fafafa]")
               }
               onClick={onClickFn ? () => onClickFn(item.key) : undefined}
             >
-              <span className={"w-32 truncate text-[11px] " + (isActive ? "text-[#171717] font-semibold" : "text-[#525252]")} title={item.label}>
+              <span
+                className={
+                  "w-32 truncate text-[11px] " +
+                  (isActive ? "text-[#171717] font-semibold" : "text-[#525252]")
+                }
+                title={item.label}
+              >
                 {item.label}
               </span>
               <div className="flex-1 h-2 bg-[#f5f5f5] rounded-full">

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   oauthDevicePoll,
   oauthExchange,
@@ -33,7 +33,7 @@ export function ConnectModal({
   const showsScopePicker = optionalGroups.length > 0;
   const [started, setStarted] = useState(!showsScopePicker);
   const [extras, setExtras] = useState<Set<string>>(() => new Set());
-  const baseSet = useMemo(() => new Set(baseScopes), [baseScopes]);
+  const baseSet = new Set(baseScopes);
 
   useEffect(() => {
     if (!started) return;
@@ -85,7 +85,7 @@ export function ConnectModal({
           setErr(`${r.error}: ${r.detail || ""}`);
           return;
         }
-      } catch (_) {
+      } catch {
         /* transient — keep polling */
       }
       if (!cancelled) timer = setTimeout(tick, intervalSec * 1000);
@@ -140,9 +140,8 @@ export function ConnectModal({
             <div className="text-[11px] text-[#737373] leading-relaxed">
               {baseScopes.length > 0 ? (
                 <>
-                  defaults (
-                  <code className="text-[#171717]">{baseScopes.join(", ")}</code>
-                  ) are always requested.
+                  defaults (<code className="text-[#171717]">{baseScopes.join(", ")}</code>) are
+                  always requested.
                 </>
               ) : (
                 <>no scopes are requested by default.</>
@@ -173,7 +172,9 @@ export function ConnectModal({
                             key={s.id}
                             className={
                               "flex items-center gap-2 text-[11px] py-0.5 px-1 rounded " +
-                              (isBase ? "text-[#a3a3a3]" : "text-[#171717] cursor-pointer hover:bg-white")
+                              (isBase
+                                ? "text-[#a3a3a3]"
+                                : "text-[#171717] cursor-pointer hover:bg-white")
                             }
                           >
                             <input
@@ -192,7 +193,9 @@ export function ConnectModal({
                             />
                             <code className="text-[11px]">{s.id}</code>
                             <span className="text-[#737373]">— {s.label}</span>
-                            {isBase && <span className="ml-auto text-[10px] text-[#a3a3a3]">default</span>}
+                            {isBase && (
+                              <span className="ml-auto text-[10px] text-[#a3a3a3]">default</span>
+                            )}
                           </label>
                         );
                       })}
@@ -224,7 +227,8 @@ export function ConnectModal({
         ) : start.flow === "device" ? (
           <div className="space-y-3">
             <div className="text-[11px] text-[#737373] leading-relaxed">
-              browser opened to <code className="text-[#171717]">{start.verification_uri}</code>. enter this code:
+              browser opened to <code className="text-[#171717]">{start.verification_uri}</code>.
+              enter this code:
             </div>
             <div className="font-mono text-[28px] tracking-[.18em] text-[#171717] text-center py-3 bg-[#fafafa] border border-[#e5e5e5] rounded select-all">
               {start.user_code}
