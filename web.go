@@ -111,7 +111,7 @@ func newWebMux(g *Gateway, caDir string, ts Tailscale, publicURL string) http.Ha
 }
 
 // dashboardSecretGate requires every non-public request to carry the
-// configured dashboard_secret (cookie / header / query). Onboarding
+// configured dashboard_secret (cookie / header). Onboarding
 // + health endpoints stay open so brand-new clients can still join.
 //
 // When dashboard_secret is empty, the gate's behavior depends on
@@ -210,9 +210,6 @@ func checkDashboardSecret(r *http.Request, want string) bool {
 	if h := r.Header.Get("X-Clawpatrol-Secret"); h != "" && subtle.ConstantTimeCompare([]byte(h), []byte(want)) == 1 {
 		return true
 	}
-	if q := r.URL.Query().Get("secret"); q != "" && subtle.ConstantTimeCompare([]byte(q), []byte(want)) == 1 {
-		return true
-	}
 	return false
 }
 
@@ -246,20 +243,6 @@ func (w *webMux) apiDashboardLogin(rw http.ResponseWriter, r *http.Request) {
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
 			MaxAge:   30 * 24 * 3600, // 30d
-		})
-		http.Redirect(rw, r, next, http.StatusFound)
-		return
-	}
-	// GET — accept ?secret= one-shot to set the cookie automatically
-	// (so an operator can paste a single URL with the secret).
-	if q := r.URL.Query().Get("secret"); q != "" && subtle.ConstantTimeCompare([]byte(q), []byte(want)) == 1 {
-		http.SetCookie(rw, &http.Cookie{
-			Name:     "cp_dash",
-			Value:    want,
-			Path:     "/",
-			HttpOnly: true,
-			SameSite: http.SameSiteLaxMode,
-			MaxAge:   30 * 24 * 3600,
 		})
 		http.Redirect(rw, r, next, http.StatusFound)
 		return
