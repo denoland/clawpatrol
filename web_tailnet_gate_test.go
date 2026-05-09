@@ -11,7 +11,7 @@ import (
 func TestTailnetGateAllowsEnvPushdownToReachBearerAuth(t *testing.T) {
 	w := &webMux{g: &Gateway{cfg: &config.Gateway{Tailscale: &config.Tailscale{Control: "tailscale"}}}}
 	reached := false
-	h := w.tailnetGate(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+	h := w.tailnetGate(http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
 		reached = true
 		http.Error(rw, "unknown or missing peer api token", http.StatusUnauthorized)
 	}))
