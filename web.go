@@ -204,7 +204,7 @@ func renderDashboardMisconfigured(rw http.ResponseWriter, r *http.Request) {
 }
 
 func checkDashboardSecret(r *http.Request, want string) bool {
-	if c, err := r.Cookie("cp_dash"); err == nil && subtle.ConstantTimeCompare([]byte(c.Value), []byte(want)) == 1 {
+	if c, err := r.Cookie("cp_dash"); err == nil && subtle.ConstantTimeCompare([]byte(c.Value), []byte(dashboardCookieValue(want))) == 1 {
 		return true
 	}
 	if h := r.Header.Get("X-Clawpatrol-Secret"); h != "" && subtle.ConstantTimeCompare([]byte(h), []byte(want)) == 1 {
@@ -239,32 +239,34 @@ func (w *webMux) apiDashboardLogin(rw http.ResponseWriter, r *http.Request) {
 			renderLogin(rw, next, "wrong secret", 401)
 			return
 		}
-		http.SetCookie(rw, &http.Cookie{
-			Name:     "cp_dash",
-			Value:    want,
-			Path:     "/",
-			HttpOnly: true,
-			SameSite: http.SameSiteLaxMode,
-			MaxAge:   30 * 24 * 3600, // 30d
-		})
+		setDashboardCookie(rw, want)
 		http.Redirect(rw, r, next, http.StatusFound)
 		return
 	}
 	// GET — accept ?secret= one-shot to set the cookie automatically
 	// (so an operator can paste a single URL with the secret).
 	if q := r.URL.Query().Get("secret"); q != "" && subtle.ConstantTimeCompare([]byte(q), []byte(want)) == 1 {
-		http.SetCookie(rw, &http.Cookie{
-			Name:     "cp_dash",
-			Value:    want,
-			Path:     "/",
-			HttpOnly: true,
-			SameSite: http.SameSiteLaxMode,
-			MaxAge:   30 * 24 * 3600,
-		})
+		setDashboardCookie(rw, want)
 		http.Redirect(rw, r, next, http.StatusFound)
 		return
 	}
 	renderLogin(rw, next, "", 200)
+}
+
+func dashboardCookieValue(secret string) string {
+	sum := sha256.Sum256([]byte("clawpatrol-dashboard-cookie\x00" + secret))
+	return "v1." + hex.EncodeToString(sum[:])
+}
+
+func setDashboardCookie(rw http.ResponseWriter, secret string) {
+	http.SetCookie(rw, &http.Cookie{
+		Name:     "cp_dash",
+		Value:    dashboardCookieValue(secret),
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   30 * 24 * 3600,
+	})
 }
 
 func renderLogin(rw http.ResponseWriter, next, errMsg string, status int) {
