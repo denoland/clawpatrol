@@ -979,9 +979,20 @@ func installTailscale() error {
 // writes a sane wireguard-mode gateway.hcl, opens firewall ports,
 // and prints the run command. Replaces the bash-script deploy hacks.
 
+func defaultGatewayDataDir() string {
+	if os.Getuid() == 0 {
+		return "/etc/clawpatrol"
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "/etc/clawpatrol"
+	}
+	return filepath.Join(home, ".clawpatrol")
+}
+
 func runGatewayInit(args []string) {
 	fs := flag.NewFlagSet("gateway init", flag.ExitOnError)
-	dataDir := fs.String("data-dir", "/etc/clawpatrol", "where to put gateway.hcl + CA + state")
+	dataDir := fs.String("data-dir", defaultGatewayDataDir(), "where to put gateway.hcl + CA + state")
 	publicURL := fs.String("public-url", "", "public dashboard URL (auto-detected from public IP if empty)")
 	publicIP := fs.String("public-ip", "", "public IP for the WG endpoint (auto-detected if empty)")
 	wgPort := fs.Int("wg-port", 51820, "wireguard UDP port")
