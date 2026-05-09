@@ -131,7 +131,8 @@ func (w *webMux) dashboardSecretGate(next http.Handler) http.Handler {
 		"/api/onboard/poll":    true,
 		"/api/onboard/claim":   true,
 		"/api/onboard/lookup":  true,
-		"/api/onboard/approve": true,
+		"/api/onboard/approve": true, // tailnetGate authenticates this in Tailscale mode.
+		// In skipped tailnet modes, tailnetGate requires dashboard auth for approve.
 		// /api/env-pushdown is NOT public — it's gated by the
 		// per-peer bearer minted at onboard time. The handler
 		// validates `Authorization: Bearer <token>` against
@@ -281,7 +282,20 @@ func (w *webMux) tailnetGate(next http.Handler) http.Handler {
 		w.g.cfg.Tailscale.Control != ""
 
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		if publicPaths[r.URL.Path] || skipGate {
+		if publicPaths[r.URL.Path] {
+			next.ServeHTTP(rw, r)
+			return
+		}
+		if skipGate {
+			// In non-Tailscale control modes there is no tailnet identity to
+			// authenticate approval, so keep the historical Tailscale-mode
+			// behavior while requiring dashboard auth for this operator action.
+			if r.URL.Path == "/api/onboard/approve" && w.g.cfg.DashboardSecret != "" {
+				if !checkDashboardSecret(r, w.g.cfg.DashboardSecret) {
+					http.Error(rw, "dashboard secret required", http.StatusUnauthorized)
+					return
+				}
+			}
 			next.ServeHTTP(rw, r)
 			return
 		}

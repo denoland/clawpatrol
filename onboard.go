@@ -516,9 +516,10 @@ func (w *webMux) apiOnboardLookup(rw http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// apiOnboardApprove is hit by the dashboard "approve" button. The
-// caller must be an existing tailnet member (whois succeeds) — this
-// gates onboarding behind an existing trusted user.
+// apiOnboardApprove is hit by the dashboard "approve" button.
+// Approval is an operator action: in production with dashboard_secret
+// configured, dashboardSecretGate must authenticate the request before
+// this handler can approve a pending device.
 func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(rw, "POST", http.StatusMethodNotAllowed)
