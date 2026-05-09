@@ -188,10 +188,10 @@ func TestPgExtractSQL(t *testing.T) {
 
 func TestPgClientToServerReturnsOnContextCancel(t *testing.T) {
 	agent, gateway := net.Pipe()
-	defer agent.Close()
+	defer func() { _ = agent.Close() }()
 	upstream, upstreamPeer := net.Pipe()
-	defer upstream.Close()
-	defer upstreamPeer.Close()
+	defer func() { _ = upstream.Close() }()
+	defer func() { _ = upstreamPeer.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
