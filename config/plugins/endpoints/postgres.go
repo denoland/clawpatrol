@@ -351,10 +351,26 @@ func pgStartupParam(body []byte, key string) string {
 
 // pgClientToServer pumps the agent's outbound message stream to the
 // upstream, inspecting Query / Parse for policy.
-func pgClientToServer(_ context.Context, ch *runtime.ConnHandle, upstream net.Conn, credName string) {
+func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.Conn, credName string) {
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = ch.Conn.Close()
+		case <-done:
+		}
+	}()
+
 	buf := make([]byte, 0, 64*1024)
 	tmp := make([]byte, 32*1024)
 	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
 		n, err := ch.Conn.Read(tmp)
 		if n > 0 {
 			buf = append(buf, tmp[:n]...)

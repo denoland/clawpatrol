@@ -1,7 +1,10 @@
 package endpoints
 
 import (
+	"context"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 
@@ -189,6 +192,28 @@ func TestPgExtractSQL(t *testing.T) {
 // shows up in the actions tab. Without this, postgres connections
 // to permissive endpoints were invisible to operators — the runtime
 // previously short-circuited on `cr == nil`.
+func TestPgClientToServerReturnsOnContextCancel(t *testing.T) {
+	agent, gateway := net.Pipe()
+	defer agent.Close()
+	upstream, upstreamPeer := net.Pipe()
+	defer upstream.Close()
+	defer upstreamPeer.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "")
+	}()
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("pgClientToServer did not return after context cancellation")
+	}
+}
+
 func TestPgEvaluateEmitsAllowOnNoMatch(t *testing.T) {
 	var events []runtime.ConnEvent
 	ch := &runtime.ConnHandle{
