@@ -287,6 +287,7 @@ func (w *webMux) tailnetGate(next http.Handler) http.Handler {
 		"/api/onboard/start":     true,
 		"/api/onboard/poll":      true,
 		"/api/onboard/claim":     true, // device_code-gated; safe to be public
+		"/api/env-pushdown":      true, // bearer-token gated by the handler
 		"/api/slack/interactive": true, // signed payload; verified via slack signing secret
 		"/info":                  true,
 		"/ca.crt":                true, // gateway's public CA cert, intentionally exposed
