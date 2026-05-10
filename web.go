@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -52,6 +53,7 @@ type webMux struct {
 	sessions  map[string]*oauthSession
 	onboard   *onboardRegistry
 	previews  map[string]configPreviewToken
+	routeAuth map[string]authRequirement
 
 	// stateCache: per-caller TTL'd memo for /api/state. RWMutex
 	// because reads vastly outnumber writes — every dashboard tab
@@ -66,48 +68,178 @@ type configPreviewToken struct {
 	contentHash string
 }
 
+type authRequirement int
+
+const (
+	// authDashboard routes require the configured dashboard secret before
+	// they can reach the handler. In Tailscale control mode, the existing
+	// tailnet gate still runs after dashboard auth.
+	authDashboard authRequirement = iota
+	// authPublic routes are intentionally reachable before any dashboard
+	// or tailnet identity exists.
+	authPublic
+	// authTailnetOperator routes skip dashboard-secret auth but are still
+	// protected by tailnet identity when Tailscale control mode is active.
+	authTailnetOperator
+	// authDashboardOrTailnetOperator accepts dashboard auth everywhere and
+	// may defer to tailnet identity in Tailscale control mode. In WireGuard
+	// / proxy mode there is no tailnet identity, so dashboard auth remains
+	// mandatory.
+	authDashboardOrTailnetOperator
+	// authSelfAuthenticating routes carry their own request-level proof
+	// (for example a bearer token or webhook signature), so they do not
+	// require the dashboard secret. Existing tailnet-gate behavior is kept.
+	authSelfAuthenticating
+)
+
+type webRoute struct {
+	Method  string
+	Path    string
+	Auth    authRequirement
+	Handler http.HandlerFunc
+}
+
+type principalKind string
+
+const (
+	principalDashboardSecret principalKind = "dashboard_secret"
+	principalTailnet         principalKind = "tailnet"
+)
+
+type principal struct {
+	Kind   principalKind
+	Owner  string
+	User   string
+	Device string
+	Host   string
+}
+
+type principalContextKey struct{}
+
+func contextWithPrincipal(ctx context.Context, p principal) context.Context {
+	if p.Owner == "" {
+		p.Owner = p.User
+	}
+	return context.WithValue(ctx, principalContextKey{}, p)
+}
+
+func principalFromContext(ctx context.Context) (principal, bool) {
+	p, ok := ctx.Value(principalContextKey{}).(principal)
+	if !ok || p.Owner == "" {
+		return principal{}, false
+	}
+	return p, true
+}
+
+func (w *webMux) dashboardSecretPrincipal() principal {
+	owner := w.g.cfg.AdminEmail
+	if owner == "" {
+		owner = "dashboard"
+	}
+	return principal{Kind: principalDashboardSecret, Owner: owner}
+}
+
+func routeAuthIndex(routes []webRoute) map[string]authRequirement {
+	out := make(map[string]authRequirement, len(routes))
+	for _, route := range routes {
+		out[route.Path] = route.Auth
+	}
+	return out
+}
+
+func (w *webMux) authRequirementForPath(path string) authRequirement {
+	if strings.HasPrefix(path, credentialWebhookPrefix) {
+		return authSelfAuthenticating
+	}
+	if w.routeAuth != nil {
+		if req, ok := w.routeAuth[path]; ok {
+			return req
+		}
+	}
+	return authDashboard
+}
+
+func (w *webMux) skipsDashboardSecret(path string) bool {
+	switch w.authRequirementForPath(path) {
+	case authPublic, authTailnetOperator, authSelfAuthenticating:
+		return true
+	default:
+		return false
+	}
+}
+
+func isTailscaleControlMode(control string) bool {
+	return control == "" || strings.EqualFold(control, "tailscale")
+}
+
+func (w *webMux) mayUseTailnetInsteadOfDashboard(path string) bool {
+	return w.authRequirementForPath(path) == authDashboardOrTailnetOperator &&
+		isTailscaleControlMode(w.g.cfg.Tailscale.Control)
+}
+
+func (w *webMux) skipsTailnetGate(path string) bool {
+	return w.authRequirementForPath(path) == authPublic
+}
+
 func newWebMux(g *Gateway, caDir string, ts Tailscale, publicURL string) http.Handler {
 	w := &webMux{g: g, caDir: caDir, ts: ts, publicURL: publicURL, sessions: map[string]*oauthSession{}, onboard: g.onboard, previews: map[string]configPreviewToken{}}
+	return w.handler()
+}
+
+func (w *webMux) handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/info", w.serveInfo)
-	mux.HandleFunc("/ca.crt", w.serveCA)
-	// /api/whoami + /api/agents are gone — superseded by /api/state.
-	// /api/status stays because DevicePage scopes it with ?profile=.
-	mux.HandleFunc("/api/status", w.apiStatus)
-	// /api/state is the dashboard's single-call refresh endpoint —
-	// bundles whoami+status+agents in one round-trip and returns 304
-	// when the JSON hash matches If-None-Match. Replaces the three
-	// parallel per-3s fetches App.refresh used to fire.
-	mux.HandleFunc("/api/state", w.apiState)
-	mux.HandleFunc("/api/agents/delete", w.apiAgentDelete)
-	mux.HandleFunc("/api/agents/profile", w.apiAgentProfile)
-	mux.HandleFunc("/api/profiles", w.apiProfiles)
-	mux.HandleFunc("/api/rules", w.apiRules)
-	mux.HandleFunc("/api/rules/ai", w.apiRulesAI)
-	mux.HandleFunc("/api/config", w.apiConfig)
-	mux.HandleFunc("/api/config/preview", w.apiConfigPreview)
-	mux.HandleFunc("/api/config/save", w.apiConfigSave)
-	mux.HandleFunc("/api/hitl/pending", w.apiHITLPending)
-	mux.HandleFunc("/api/hitl/decide", w.apiHITLDecide)
+	routes := w.routes()
+	w.routeAuth = routeAuthIndex(routes)
+	for _, route := range routes {
+		if route.Method == "" {
+			panic("web route missing method: " + route.Path)
+		}
+		mux.HandleFunc(route.Path, route.Handler)
+	}
 	w.mountCredentialWebhooks(mux)
-	mux.HandleFunc("/api/oauth/start", w.apiOAuthStart)
-	mux.HandleFunc("/api/oauth/exchange", w.apiOAuthExchange)
-	mux.HandleFunc("/api/oauth/device-poll", w.apiOAuthDevicePoll)
-	mux.HandleFunc("/api/oauth/revoke", w.apiOAuthRevoke)
-	mux.HandleFunc("/api/credentials/set", w.apiCredentialsSet)
-	mux.HandleFunc("/api/credentials/clear", w.apiCredentialsClear)
-	mux.HandleFunc("/api/events", w.apiEventsSSE)
-	mux.HandleFunc("/api/actions/", w.apiActionByID)
-	mux.HandleFunc("/api/analytics", w.apiAnalytics)
-	mux.HandleFunc("/api/onboard/start", w.apiOnboardStart)
-	mux.HandleFunc("/api/onboard/poll", w.apiOnboardPoll)
-	mux.HandleFunc("/api/onboard/approve", w.apiOnboardApprove)
-	mux.HandleFunc("/api/onboard/lookup", w.apiOnboardLookup)
-	mux.HandleFunc("/api/onboard/claim", w.apiOnboardClaim)
-	mux.HandleFunc("/api/env-pushdown", w.apiEnvPushdown)
-	mux.HandleFunc("/__login", w.apiDashboardLogin)
 	mux.Handle("/", w.staticHandler())
 	return w.dashboardSecretGate(w.tailnetGate(mux))
+}
+
+func (w *webMux) routes() []webRoute {
+	return []webRoute{
+		{Method: http.MethodGet, Path: "/info", Auth: authPublic, Handler: w.serveInfo},
+		{Method: http.MethodGet, Path: "/ca.crt", Auth: authPublic, Handler: w.serveCA},
+		// /api/whoami + /api/agents are gone — superseded by /api/state.
+		// /api/status stays because DevicePage scopes it with ?profile=.
+		{Method: http.MethodGet, Path: "/api/status", Auth: authDashboard, Handler: w.apiStatus},
+		// /api/state is the dashboard's single-call refresh endpoint —
+		// bundles whoami+status+agents in one round-trip and returns 304
+		// when the JSON hash matches If-None-Match. Replaces the three
+		// parallel per-3s fetches App.refresh used to fire.
+		{Method: http.MethodGet, Path: "/api/state", Auth: authDashboard, Handler: w.apiState},
+		{Method: http.MethodPost, Path: "/api/agents/delete", Auth: authDashboard, Handler: w.apiAgentDelete},
+		{Method: http.MethodPost, Path: "/api/agents/profile", Auth: authDashboard, Handler: w.apiAgentProfile},
+		{Method: http.MethodGet, Path: "/api/profiles", Auth: authDashboard, Handler: w.apiProfiles},
+		{Method: http.MethodGet, Path: "/api/rules", Auth: authDashboard, Handler: w.apiRules},
+		{Method: http.MethodPost, Path: "/api/rules/ai", Auth: authDashboard, Handler: w.apiRulesAI},
+		{Method: http.MethodGet, Path: "/api/config", Auth: authDashboard, Handler: w.apiConfig},
+		{Method: http.MethodPost, Path: "/api/config/preview", Auth: authDashboard, Handler: w.apiConfigPreview},
+		{Method: http.MethodPost, Path: "/api/config/save", Auth: authDashboard, Handler: w.apiConfigSave},
+		{Method: http.MethodGet, Path: "/api/hitl/pending", Auth: authDashboard, Handler: w.apiHITLPending},
+		{Method: http.MethodPost, Path: "/api/hitl/decide", Auth: authDashboard, Handler: w.apiHITLDecide},
+		{Method: http.MethodPost, Path: "/api/oauth/start", Auth: authDashboard, Handler: w.apiOAuthStart},
+		{Method: http.MethodPost, Path: "/api/oauth/exchange", Auth: authDashboard, Handler: w.apiOAuthExchange},
+		{Method: http.MethodPost, Path: "/api/oauth/device-poll", Auth: authDashboard, Handler: w.apiOAuthDevicePoll},
+		{Method: http.MethodPost, Path: "/api/oauth/revoke", Auth: authDashboard, Handler: w.apiOAuthRevoke},
+		{Method: http.MethodPost, Path: "/api/credentials/set", Auth: authDashboard, Handler: w.apiCredentialsSet},
+		{Method: http.MethodPost, Path: "/api/credentials/clear", Auth: authDashboard, Handler: w.apiCredentialsClear},
+		{Method: http.MethodGet, Path: "/api/events", Auth: authDashboard, Handler: w.apiEventsSSE},
+		{Method: http.MethodPost, Path: "/api/actions/", Auth: authDashboard, Handler: w.apiActionByID},
+		{Method: http.MethodGet, Path: "/api/analytics", Auth: authDashboard, Handler: w.apiAnalytics},
+		{Method: http.MethodPost, Path: "/api/onboard/start", Auth: authPublic, Handler: w.apiOnboardStart},
+		{Method: http.MethodPost, Path: "/api/onboard/poll", Auth: authPublic, Handler: w.apiOnboardPoll},
+		{Method: http.MethodPost, Path: "/api/onboard/approve", Auth: authDashboardOrTailnetOperator, Handler: w.apiOnboardApprove},
+		{Method: http.MethodGet, Path: "/api/onboard/lookup", Auth: authTailnetOperator, Handler: w.apiOnboardLookup},
+		{Method: http.MethodPost, Path: "/api/onboard/claim", Auth: authPublic, Handler: w.apiOnboardClaim},
+		{Method: http.MethodGet, Path: "/api/env-pushdown", Auth: authSelfAuthenticating, Handler: w.apiEnvPushdown},
+		{Method: http.MethodGet, Path: "/__login", Auth: authTailnetOperator, Handler: w.apiDashboardLogin},
+	}
 }
 
 // dashboardSecretGate requires every non-public request to carry the
@@ -126,49 +258,29 @@ func newWebMux(g *Gateway, caDir string, ts Tailscale, publicURL string) http.Ha
 const credentialWebhookPrefix = "/api/cred/"
 
 func (w *webMux) dashboardSecretGate(next http.Handler) http.Handler {
-	publicPaths := map[string]bool{
-		"/api/onboard/start":   true,
-		"/api/onboard/poll":    true,
-		"/api/onboard/claim":   true,
-		"/api/onboard/lookup":  true,
-		"/api/onboard/approve": true, // tailnetGate authenticates this in Tailscale mode.
-		// In skipped tailnet modes, tailnetGate requires dashboard auth for approve.
-		// /api/env-pushdown is NOT public — it's gated by the
-		// per-peer bearer minted at onboard time. The handler
-		// validates `Authorization: Bearer <token>` against
-		// peer_api_tokens; dashboardSecretGate doesn't need to
-		// see it.
-		"/api/env-pushdown": true,
-		"/info":             true,
-		"/ca.crt":           true,
-		"/__login":          true,
-	}
-	// /info and /ca.crt are public-by-design (health + cert distribution).
-	// They keep working even when the dashboard is misconfigured so
-	// monitoring + already-onboarded clients aren't taken offline.
-	alwaysOpen := map[string]bool{
-		"/info":   true,
-		"/ca.crt": true,
-	}
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		secret := w.g.cfg.DashboardSecret
 		if secret == "" {
-			if alwaysOpen[r.URL.Path] {
+			if dashboardMisconfigAlwaysOpen(r.URL.Path) {
 				next.ServeHTTP(rw, r)
 				return
 			}
 			if w.g.cfg.InsecureNoDashboardSecret {
-				next.ServeHTTP(rw, r)
+				next.ServeHTTP(rw, r.WithContext(contextWithPrincipal(r.Context(), w.dashboardSecretPrincipal())))
 				return
 			}
 			renderDashboardMisconfigured(rw, r)
 			return
 		}
-		if publicPaths[r.URL.Path] || strings.HasPrefix(r.URL.Path, credentialWebhookPrefix) {
+		if w.skipsDashboardSecret(r.URL.Path) {
 			next.ServeHTTP(rw, r)
 			return
 		}
 		if checkDashboardSecret(r, secret) {
+			next.ServeHTTP(rw, r.WithContext(contextWithPrincipal(r.Context(), w.dashboardSecretPrincipal())))
+			return
+		}
+		if w.mayUseTailnetInsteadOfDashboard(r.URL.Path) {
 			next.ServeHTTP(rw, r)
 			return
 		}
@@ -179,6 +291,10 @@ func (w *webMux) dashboardSecretGate(next http.Handler) http.Handler {
 		}
 		http.Redirect(rw, r, "/__login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
 	})
+}
+
+func dashboardMisconfigAlwaysOpen(path string) bool {
+	return path == "/info" || path == "/ca.crt"
 }
 
 const dashboardMisconfiguredMsg = "dashboard refuses to serve: gateway.hcl is missing both `dashboard_secret` and `insecure_no_dashboard_secret`. Set `dashboard_secret = \"<long random string>\"` to require a password, or `insecure_no_dashboard_secret = true` to explicitly run without auth (testing only)."
@@ -257,47 +373,25 @@ func renderLogin(rw http.ResponseWriter, next, errMsg string, status int) {
 	_ = loginTpl.Execute(rw, struct{ Next, Error string }{next, errMsg})
 }
 
-// tailnetGate restricts non-tailnet callers to a minimal allow-list
-// needed for `clawpatrol join` device-flow onboarding. Dashboard, status,
-// oauth and event streams are tailnet-only.
-//
-// Public allow-list:
-//
-//	POST /api/onboard/start    — kicks off device flow
-//	POST /api/onboard/poll     — CLI polls for approval + auth key
-//	GET  /info                 — health check
+// tailnetGate restricts non-tailnet callers to routes whose centralized
+// auth policy is authPublic. Dashboard, status, OAuth, event streams, and
+// self-authenticating routes keep the existing tailnet behavior.
 func (w *webMux) tailnetGate(next http.Handler) http.Handler {
-	publicPaths := map[string]bool{
-		"/api/onboard/start":     true,
-		"/api/onboard/poll":      true,
-		"/api/onboard/claim":     true, // device_code-gated; safe to be public
-		"/api/slack/interactive": true, // signed payload; verified via slack signing secret
-		"/info":                  true,
-		"/ca.crt":                true, // gateway's public CA cert, intentionally exposed
-	}
 	// In wireguard / proxy mode there is no tailnet identity to gate
 	// against. Operators put the dashboard behind their own
 	// authentication (Cloudflare Access, basic auth proxy, etc).
-	skipGate := !strings.EqualFold(w.g.cfg.Tailscale.Control, "tailscale") &&
-		w.g.cfg.Tailscale.Control != ""
+	skipGate := !isTailscaleControlMode(w.g.cfg.Tailscale.Control)
 
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		if publicPaths[r.URL.Path] {
+		if w.skipsTailnetGate(r.URL.Path) || skipGate {
 			next.ServeHTTP(rw, r)
 			return
 		}
-		if skipGate {
-			// In non-Tailscale control modes there is no tailnet identity to
-			// authenticate approval, so keep the historical Tailscale-mode
-			// behavior while requiring dashboard auth for this operator action.
-			if r.URL.Path == "/api/onboard/approve" && w.g.cfg.DashboardSecret != "" {
-				if !checkDashboardSecret(r, w.g.cfg.DashboardSecret) {
-					http.Error(rw, "dashboard secret required", http.StatusUnauthorized)
-					return
-				}
+		if w.authRequirementForPath(r.URL.Path) == authDashboardOrTailnetOperator {
+			if _, ok := principalFromContext(r.Context()); ok {
+				next.ServeHTTP(rw, r)
+				return
 			}
-			next.ServeHTTP(rw, r)
-			return
 		}
 		// Two ways to prove tailnet membership:
 		//   1. peer IP whois (direct tailnet → gateway, no proxy).
@@ -309,22 +403,26 @@ func (w *webMux) tailnetGate(next http.Handler) http.Handler {
 		if i := strings.LastIndex(host, ":"); i >= 0 {
 			host = host[:i]
 		}
-		var login string
+		var login, device, displayHost string
 		if w.g.agents != nil {
 			if who := w.g.agents.lookupWhois(host); who != nil {
 				login = who.UserProfile.LoginName
+				device = who.Node.StableID
+				displayHost = who.Node.HostName
 			}
 		}
 		if login == "" && isLoopback(host) {
 			// `tailscale serve` proxy hop. The header is authoritative
 			// here because nothing public can reach loopback.
 			login = r.Header.Get("Tailscale-User-Login")
+			displayHost = host
 		}
 		if login == "" {
 			http.Error(rw, "tailnet access required — onboard via `clawpatrol join <gateway>`", http.StatusForbidden)
 			return
 		}
-		next.ServeHTTP(rw, r)
+		principal := principal{Kind: principalTailnet, Owner: login, User: login, Device: device, Host: displayHost}
+		next.ServeHTTP(rw, r.WithContext(contextWithPrincipal(r.Context(), principal)))
 	})
 }
 
@@ -481,13 +579,10 @@ func (w *webMux) callerIdentity(r *http.Request) (user, device, displayHost stri
 	return who.UserProfile.LoginName, who.Node.StableID, who.Node.HostName
 }
 
-// ownerForCaller returns the credential-bucket key for a dashboard
-// request. With the profile-as-tenant model, that key is the profile
-// name selected by the operator — passed via `?profile=<name>` query
-// param or the `X-Clawpatrol-Profile` header. Falls back to the first
-// declared profile in gateway.hcl, or admin_email when no profiles
-// are configured (legacy single-tenant mode).
-func (w *webMux) ownerForCaller(r *http.Request) (key, label string) {
+// targetOwnerForRequest returns the credential-bucket key selected by a
+// dashboard request. It is target/profile selection only; it must not be
+// used as evidence that the caller is authenticated.
+func (w *webMux) targetOwnerForRequest(r *http.Request) (key, label string) {
 	if p := r.URL.Query().Get("profile"); p != "" {
 		return p, p
 	}
@@ -505,6 +600,13 @@ func (w *webMux) ownerForCaller(r *http.Request) (key, label string) {
 		return user, user
 	}
 	return host, host
+}
+
+// ownerForCaller is the legacy name for targetOwnerForRequest. Existing
+// handlers still use it to choose credential buckets; new authenticated
+// operator checks should consume principal from context instead.
+func (w *webMux) ownerForCaller(r *http.Request) (key, label string) {
+	return w.targetOwnerForRequest(r)
 }
 
 // whoamiData backs the whoami slice of /api/state. No HTTP handler —

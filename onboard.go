@@ -525,9 +525,13 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "POST", http.StatusMethodNotAllowed)
 		return
 	}
-	owner, _ := w.ownerForCaller(r)
+	if _, ok := principalFromContext(r.Context()); !ok {
+		http.Error(rw, "approval requires an authenticated operator", http.StatusForbidden)
+		return
+	}
+	owner, _ := w.targetOwnerForRequest(r)
 	if owner == "" {
-		http.Error(rw, "approval requires an authenticated tailnet caller (or set admin_email in gateway.hcl)", http.StatusForbidden)
+		http.Error(rw, "approval requires a target owner or profile", http.StatusForbidden)
 		return
 	}
 	code := r.URL.Query().Get("code")
