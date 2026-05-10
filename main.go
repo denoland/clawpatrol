@@ -292,7 +292,7 @@ func (g *Gateway) transportFor(ep *config.CompiledEndpoint) *http.Transport {
 				h = addr
 			}
 			if needsBrowserTLS(h) && !endpointWantsClientCert(ep) {
-				return dialBrowserTLS(ctx, network, addr, h)
+				return g.dialBrowserTLS(ctx, network, addr, h, ep)
 			}
 			profile, _ := ctx.Value(profileCtxKey{}).(string)
 			return g.dialUpstream(ctx, network, addr, h, ep, profile)

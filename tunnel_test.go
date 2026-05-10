@@ -16,10 +16,14 @@ import (
 // fakeTunnel implements runtime.TunnelRuntime for tests. Open returns
 // a fakeOpenedTunnel; the test inspects open / close counts.
 type fakeTunnel struct {
-	openCount  atomic.Int32
-	closeCount atomic.Int32
-	openErr    error
-	openDelay  time.Duration
+	openCount       atomic.Int32
+	closeCount      atomic.Int32
+	dialCount       atomic.Int32
+	openErr         error
+	dialErr         error
+	dialAddr        string
+	closePeerOnDial bool
+	openDelay       time.Duration
 }
 
 func (f *fakeTunnel) Sharing() runtime.TunnelSharing { return runtime.TunnelShareSingleton }
@@ -41,11 +45,20 @@ type fakeOpenedTunnel struct {
 }
 
 func (t *fakeOpenedTunnel) Dial(ctx context.Context, network, addr string) (net.Conn, error) {
+	t.parent.dialCount.Add(1)
+	t.parent.dialAddr = addr
+	if t.parent.dialErr != nil {
+		return nil, t.parent.dialErr
+	}
 	if t.via != nil {
 		return t.via.Dial(ctx, network, addr)
 	}
 	a, b := net.Pipe()
-	_ = a
+	if t.parent.closePeerOnDial {
+		_ = a.Close()
+	} else {
+		_ = a
+	}
 	return b, nil
 }
 

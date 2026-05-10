@@ -80,6 +80,18 @@ func isWSUpgrade(req *http.Request) bool {
 	return strings.Contains(conn, "upgrade") && upg == "websocket"
 }
 
+// dialWSUpstream opens the upstream TLS connection used by the raw WS bridge.
+// mTLS endpoints keep using dialUpstream so credential plugins can populate the
+// stdlib TLS config; all other WS upstreams use browser TLS while still honoring
+// endpoint tunnel configuration via dialBrowserTLS.
+func (g *Gateway) dialWSUpstream(ctx context.Context, upstream string, ep *config.CompiledEndpoint, profile string) (net.Conn, error) {
+	addr := net.JoinHostPort(upstream, "443")
+	if endpointWantsClientCert(ep) {
+		return g.dialUpstream(ctx, "tcp", addr, upstream, ep, profile)
+	}
+	return g.dialBrowserTLS(ctx, "tcp", addr, upstream, ep)
+}
+
 // handleWSUpgrade swaps the http.Transport-driven request loop for a
 // raw byte bridge once the agent's request looks like a WS upgrade.
 // The connection stays alive until either side closes; pumpWS
@@ -87,17 +99,11 @@ func isWSUpgrade(req *http.Request) bool {
 func (g *Gateway) handleWSUpgrade(client *tls.Conn, br *bufio.Reader, req *http.Request, upstream string, frameEmit func(direction, sample string), ep *config.CompiledEndpoint, profile string) {
 	agentAddr := peerIP(client) // capture before netstack races to nil
 
-	// Endpoints that require a client cert (e.g. kubernetes mTLS) must
-	// use dialUpstream so the credential plugin can inject the cert.
-	// All other upstreams use dialBrowserTLS — Cloudflare WAF rejects
-	// plain Go TLS fingerprints on WS handshakes to chatgpt.com.
-	var up net.Conn
-	var err error
-	if endpointWantsClientCert(ep) {
-		up, err = g.dialUpstream(context.Background(), "tcp", net.JoinHostPort(upstream, "443"), upstream, ep, profile)
-	} else {
-		up, err = dialBrowserTLS(context.Background(), "tcp", net.JoinHostPort(upstream, "443"), upstream)
-	}
+	// dialWSUpstream preserves the existing split: endpoints that require a
+	// client cert (e.g. kubernetes mTLS) use dialUpstream so credential plugins
+	// can inject the cert; all other WS upstreams use browser TLS because
+	// Cloudflare WAF rejects plain Go TLS fingerprints on chatgpt.com.
+	up, err := g.dialWSUpstream(context.Background(), upstream, ep, profile)
 	if err != nil {
 		_, _ = fmt.Fprintf(client, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
 		log.Printf("ws dial %s: %v", upstream, err)

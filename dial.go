@@ -119,20 +119,23 @@ func (g *Gateway) dialUpstream(ctx context.Context, network, addr, serverName st
 	return tc, nil
 }
 
-// dialBrowserTLS opens a TCP connection and performs a uTLS handshake
-// using Chrome's TLS fingerprint (HelloChrome_Auto), with ALPN forced
-// to http/1.1. Used for WS upgrades to chatgpt.com — Cloudflare WAF
+// dialBrowserTLS opens a tunnel-aware TCP connection and performs a uTLS
+// handshake using Chrome's TLS fingerprint (HelloChrome_Auto), with ALPN
+// forced to http/1.1. Used for WS upgrades to chatgpt.com — Cloudflare WAF
 // otherwise rejects the WS handshake with "Attack attempt detected".
 //
 // Plain Go TLS works fine for chatgpt.com HTTP requests but the WS
 // upgrade specifically gets fingerprint-blocked. Mimicking Chrome's
 // ClientHello bypasses it.
-func dialBrowserTLS(ctx context.Context, network, addr, serverName string) (net.Conn, error) {
-	d := &net.Dialer{}
-	raw, err := d.DialContext(ctx, network, addr)
+func (g *Gateway) dialBrowserTLS(ctx context.Context, network, addr, serverName string, ep *config.CompiledEndpoint) (net.Conn, error) {
+	raw, err := g.dialThrough(ctx, ep, network, addr)
 	if err != nil {
 		return nil, err
 	}
+	return browserTLSOver(ctx, raw, serverName)
+}
+
+func browserTLSOver(ctx context.Context, raw net.Conn, serverName string) (net.Conn, error) {
 	// HelloChrome_Auto bakes ALPN ["h2","http/1.1"] into the ClientHello.
 	// We need http/1.1 only (WS upgrade requires HTTP/1.1; raw response
 	// reader breaks on h2 SETTINGS frames). Apply preset spec, mutate
