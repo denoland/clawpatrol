@@ -24,6 +24,7 @@ import (
 // collisions across the flat namespace.
 type Kind string
 
+// Plugin kind constants enumerate supported config block kinds.
 const (
 	KindEndpoint   Kind = "endpoint"
 	KindCredential Kind = "credential"
@@ -31,13 +32,14 @@ const (
 	KindApprover   Kind = "approver"
 	KindPolicy     Kind = "policy"
 	KindProfile    Kind = "profile"
+	KindTunnel     Kind = "tunnel"
 )
 
 // LabelCount returns how many labels a block of this kind carries
 // (excluding the kind keyword itself).
 func (k Kind) LabelCount() int {
 	switch k {
-	case KindEndpoint, KindCredential, KindRule, KindApprover:
+	case KindEndpoint, KindCredential, KindRule, KindApprover, KindTunnel:
 		return 2 // first = type, second = name
 	case KindPolicy, KindProfile:
 		return 1 // name
@@ -92,6 +94,7 @@ type Plugin struct {
 	//   KindCredential → runtime.CredentialRuntime
 	//   KindApprover   → runtime.ApproverRuntime
 	//   KindRule       → runtime.RuleMatcherFactory
+	//   KindTunnel     → runtime.TunnelRuntime
 	// nil means "schema-only; runtime not implemented" — request-time
 	// dispatch reports a clear diagnostic when it tries to use one.
 	Runtime any
@@ -114,6 +117,41 @@ type BuildCtx struct {
 	Refs    *Refs
 	Symbols *SymbolTable
 	Block   *hcl.Block // for diagnostic ranges when nothing more precise is available
+}
+
+// FrameworkAttrSpec declares an HCL attribute that the loader peels
+// off a block body BEFORE the plugin's gohcl decode runs. The plugin
+// never sees these attrs in its struct or schema — the framework
+// owns them. Mirrors Terraform's `lifecycle {}` shape: every
+// resource accepts `lifecycle` without each provider having to
+// implement it.
+//
+// For Kind != "", the attr is a bare-name reference into the symbol
+// table; the loader resolves and kind-checks against the table and
+// stashes the resolved name on Entity.Framework. Primitive
+// (non-ref) framework attrs are reserved for future use; today
+// every framework attr is a ref.
+type FrameworkAttrSpec struct {
+	Name     string
+	Kind     Kind // ref kind; "" reserved for primitives (unused today)
+	Optional bool
+}
+
+// frameworkAttrsByKind is the per-kind table of framework-level
+// attrs the loader extracts before invoking each plugin. New
+// cross-cutting endpoint attributes (a `timeout`, a future
+// `retry_policy`, …) land as one-line additions here, with no
+// plugin churn.
+var frameworkAttrsByKind = map[Kind][]FrameworkAttrSpec{
+	KindEndpoint: {
+		{Name: "tunnel", Kind: KindTunnel, Optional: true},
+	},
+}
+
+// FrameworkAttrsFor returns the framework attr specs declared for
+// kind, or nil if none.
+func FrameworkAttrsFor(kind Kind) []FrameworkAttrSpec {
+	return frameworkAttrsByKind[kind]
 }
 
 // RefSpec declares a field on a decoded plugin struct that holds a

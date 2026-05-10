@@ -14,8 +14,10 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
+// OpenAICodexOAuth is part of the clawpatrol plugin API.
 type OpenAICodexOAuth struct{}
 
+// InjectHTTP is part of the clawpatrol plugin API.
 func (a *OpenAICodexOAuth) InjectHTTP(_ context.Context, req *http.Request, sec runtime.Secret) error {
 	if len(sec.Bytes) == 0 {
 		return nil
@@ -80,6 +82,7 @@ func chatgptAccountID(jwt string) string {
 //	}
 func (*OpenAICodexOAuth) EnvVars() []config.EnvVar { return nil }
 
+// OAuthFlow is part of the clawpatrol plugin API.
 func (a *OpenAICodexOAuth) OAuthFlow() *config.OAuthIntegration {
 	return &config.OAuthIntegration{
 		Type:   "oauth2",

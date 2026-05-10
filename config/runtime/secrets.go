@@ -38,7 +38,8 @@ type SecretStore interface {
 // per-owner extension would key on `_<OWNER>` suffix.
 type EnvSecretStore struct{}
 
-func (EnvSecretStore) Get(name, owner string) (Secret, error) {
+// Get is part of the clawpatrol plugin API.
+func (EnvSecretStore) Get(name, _ string) (Secret, error) {
 	if name == "" {
 		return Secret{}, fmt.Errorf("empty credential name")
 	}

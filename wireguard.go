@@ -22,13 +22,14 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"expvar"
 	"fmt"
-	"log"
 	"net"
 	"net/netip"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/curve25519"
@@ -75,23 +76,26 @@ type netTun struct {
 const netstackQueueSize = 16384
 
 func newNetTUN(addr netip.Addr, addr6 netip.Addr, mtu int) (*netTun, error) {
+	s := stack.New(stack.Options{
+		NetworkProtocols: []stack.NetworkProtocolFactory{
+			ipv4.NewProtocol, ipv6.NewProtocol,
+		},
+		TransportProtocols: []stack.TransportProtocolFactory{
+			tcp.NewProtocol, udp.NewProtocol,
+			icmp.NewProtocol4, icmp.NewProtocol6,
+		},
+		HandleLocal: false,
+	})
+	globalStack.Store(s)
 	dev := &netTun{
-		ep: channel.New(netstackQueueSize, uint32(mtu), ""),
-		stack: stack.New(stack.Options{
-			NetworkProtocols: []stack.NetworkProtocolFactory{
-				ipv4.NewProtocol, ipv6.NewProtocol,
-			},
-			TransportProtocols: []stack.TransportProtocolFactory{
-				tcp.NewProtocol, udp.NewProtocol,
-				icmp.NewProtocol4, icmp.NewProtocol6,
-			},
-			HandleLocal: false,
-		}),
+		ep:             channel.New(netstackQueueSize, uint32(mtu), ""),
+		stack:          s,
 		events:         make(chan wgtun.Event, 10),
 		incomingPacket: make(chan []byte, netstackQueueSize),
 		done:           make(chan struct{}),
 		mtu:            mtu,
 	}
+	dev.ep.AddNotify(&epNotify{dev: dev})
 
 	// TCP tuning — copied from Tailscale's gVisor netstack setup.
 	// SACK improves recovery without full retransmit.
@@ -103,12 +107,16 @@ func newNetTUN(addr netip.Addr, addr6 netip.Addr, mtu int) (*netTun, error) {
 	// CUBIC has integer overflow bugs in gVisor (google/gvisor#11632); Reno is stable.
 	ccOpt := tcpip.CongestionControlOption("reno")
 	dev.stack.SetTransportProtocolOption(tcp.ProtocolNumber, &ccOpt)
+	// Default minRTO=200ms is too close to high-latency peer RTTs (~180ms for
+	// Singapore→Chicago), causing spurious RTOs that reset cwnd to 10.
+	// RFC 6298 recommends 1s; fast retransmit handles most losses before RTO fires.
+	minRTOOpt := tcpip.TCPMinRTOOption(time.Second)
+	dev.stack.SetTransportProtocolOption(tcp.ProtocolNumber, &minRTOOpt)
 	// Larger buffers let cwnd grow on high-BDP paths without artificial stalls.
 	rxBufOpt := tcpip.TCPReceiveBufferSizeRangeOption{Min: 4 << 10, Default: 1 << 20, Max: 8 << 20}
 	dev.stack.SetTransportProtocolOption(tcp.ProtocolNumber, &rxBufOpt)
 	txBufOpt := tcpip.TCPSendBufferSizeRangeOption{Min: 4 << 10, Default: 1 << 20, Max: 6 << 20}
 	dev.stack.SetTransportProtocolOption(tcp.ProtocolNumber, &txBufOpt)
-	dev.ep.AddNotify(&epNotify{dev: dev})
 	if e := dev.stack.CreateNIC(1, dev.ep); e != nil {
 		return nil, fmt.Errorf("CreateNIC: %v", e)
 	}
@@ -137,8 +145,6 @@ func newNetTUN(addr netip.Addr, addr6 netip.Addr, mtu int) (*netTun, error) {
 type epNotify struct{ dev *netTun }
 
 func (n *epNotify) WriteNotify() {
-	// Drain every available packet — channel.Endpoint may queue
-	// multiple writes between notifications, especially under burst.
 	for {
 		pkt := n.dev.ep.Read()
 		if pkt == nil {
@@ -149,17 +155,46 @@ func (n *epNotify) WriteNotify() {
 		b := view.AsSlice()
 		cp := make([]byte, len(b))
 		copy(cp, b)
-		// Block until WireGuard drains the packet rather than silently
-		// dropping it. Backpressure here propagates through gVisor TCP's
-		// send path, preventing cwnd from growing past what WireGuard can
-		// actually sustain — and avoiding the loss-based cwnd collapse
-		// (5MB/s → 200KB/s) caused by silent drops.
+		// Block until WireGuard drains the packet. Backpressure propagates
+		// through gVisor's notification goroutine — NOT the TCP sender goroutine —
+		// so per-connection send buffers don't accumulate. Dropping instead
+		// collapses cwnd (5MB/s → 200KB/s on high-latency paths) because gVisor
+		// fires retransmit timers on every silent drop.
 		select {
 		case n.dev.incomingPacket <- cp:
 		case <-n.dev.done:
 			return
 		}
 	}
+}
+
+var wgTxPackets, wgTxBytes atomic.Int64
+var globalStack atomic.Pointer[stack.Stack]
+
+func init() {
+	expvar.Publish("wgTxPackets", expvar.Func(func() any { return wgTxPackets.Load() }))
+	expvar.Publish("wgTxBytes", expvar.Func(func() any { return wgTxBytes.Load() }))
+	expvar.Publish("tcpStats", expvar.Func(func() any {
+		s := globalStack.Load()
+		if s == nil {
+			return nil
+		}
+		st := s.Stats()
+		return map[string]uint64{
+			"retransmits":     st.TCP.Retransmits.Value(),
+			"timeouts":        st.TCP.Timeouts.Value(),
+			"fastRetransmit":  st.TCP.FastRetransmit.Value(),
+			"fastRecovery":    st.TCP.FastRecovery.Value(),
+			"currentEstab":    st.TCP.CurrentEstablished.Value(),
+			"segsSent":        st.TCP.SegmentsSent.Value(),
+			"segsReceived":    st.TCP.ValidSegmentsReceived.Value(),
+			"invalidSegments": st.TCP.InvalidSegmentsReceived.Value(),
+			"resetsSent":      st.TCP.ResetsSent.Value(),
+			"resets":          st.TCP.ResetsReceived.Value(),
+			"segSendErrors":   st.TCP.SegmentSendErrors.Value(),
+			"slowStartRtx":    st.TCP.SlowStartRetransmits.Value(),
+		}
+	}))
 }
 
 func (t *netTun) File() *os.File             { return nil }
@@ -181,10 +216,9 @@ func (t *netTun) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
 		return 0, os.ErrClosed
 	}
 	sizes[0] = copy(bufs[0][offset:], pkt)
+	wgTxPackets.Add(1)
+	wgTxBytes.Add(int64(sizes[0]))
 	count := 1
-	// Drain any pending packets without blocking — the next Read call
-	// will block again when the channel drains, but we let wg-go
-	// process burst inflows in one trip.
 	for count < len(bufs) {
 		select {
 		case more, ok := <-t.incomingPacket:
@@ -192,6 +226,8 @@ func (t *netTun) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
 				return count, os.ErrClosed
 			}
 			sizes[count] = copy(bufs[count][offset:], more)
+			wgTxPackets.Add(1)
+			wgTxBytes.Add(int64(sizes[count]))
 			count++
 		default:
 			return count, nil
@@ -205,20 +241,6 @@ func (t *netTun) Write(bufs [][]byte, offset int) (int, error) {
 		pkt := b[offset:]
 		if len(pkt) == 0 {
 			continue
-		}
-		// diag: log TCP SYNs to non-443/8080 ports so we can see if
-		// packets reach the netstack but the forwarder doesn't fire.
-		if len(pkt) >= 40 && (pkt[0]>>4) == 4 && pkt[9] == 6 {
-			ihl := int(pkt[0]&0xf) * 4
-			if len(pkt) >= ihl+14 {
-				flags := pkt[ihl+13]
-				dstPort := (uint16(pkt[ihl+2]) << 8) | uint16(pkt[ihl+3])
-				if flags&0x02 != 0 && dstPort != 443 && dstPort != 80 && dstPort != 8080 {
-					srcIP := net.IP(pkt[12:16]).String()
-					dstIP := net.IP(pkt[16:20]).String()
-					log.Printf("wg-syn: %s → %s:%d", srcIP, dstIP, dstPort)
-				}
-			}
 		}
 		pkb := stack.NewPacketBuffer(stack.PacketBufferOptions{
 			Payload: buffer.MakeWithData(pkt),
@@ -278,7 +300,7 @@ func StartWGServer(ts Tailscale, stateDir string) (*WGServer, error) {
 	listenPort := 51820
 	if ts.WGEndpoint != "" {
 		if _, p, err := net.SplitHostPort(ts.WGEndpoint); err == nil {
-			fmt.Sscanf(p, "%d", &listenPort)
+			_, _ = fmt.Sscanf(p, "%d", &listenPort)
 		}
 	}
 
@@ -339,6 +361,7 @@ func (s *WGServer) AddPeer(pubkeyHex, peerIP string) error {
 	if s.db != nil {
 		rows, err := s.db.Query("SELECT pubkey FROM wg_peers WHERE ip = ? AND pubkey != ?", peerIP, pubkeyHex)
 		if err == nil {
+			defer func() { _ = rows.Close() }()
 			var stale []string
 			for rows.Next() {
 				var k string
@@ -346,7 +369,9 @@ func (s *WGServer) AddPeer(pubkeyHex, peerIP string) error {
 					stale = append(stale, k)
 				}
 			}
-			rows.Close()
+			if err := rows.Err(); err != nil {
+				stale = nil
+			}
 			for _, k := range stale {
 				_ = s.dev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", k))
 				_, _ = s.db.Exec("DELETE FROM wg_peers WHERE pubkey = ?", k)
@@ -528,7 +553,7 @@ var udpRelayBufPool = sync.Pool{
 // and the real upstream over the host's network. Both directions run
 // until one half closes.
 func relayUDP(c net.Conn, dstIP string, dstPort uint16) {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(dstIP, fmt.Sprintf("%d", dstPort)))
 	if err != nil {
 		return
@@ -537,7 +562,7 @@ func relayUDP(c net.Conn, dstIP string, dstPort uint16) {
 	if err != nil {
 		return
 	}
-	defer up.Close()
+	defer func() { _ = up.Close() }()
 	done := make(chan struct{}, 2)
 	go func() {
 		bp := udpRelayBufPool.Get().(*[]byte)
@@ -581,12 +606,15 @@ func (s *WGServer) loadPeers() map[string]string {
 	if err != nil {
 		return out
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var k, ip string
 		if rows.Scan(&k, &ip) == nil {
 			out[k] = ip
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return map[string]string{}
 	}
 	return out
 }
@@ -603,6 +631,7 @@ func (s *WGServer) RevokePeerByIP(ip string) {
 	if err != nil {
 		return
 	}
+	defer func() { _ = rows.Close() }()
 	var keys []string
 	for rows.Next() {
 		var k string
@@ -610,7 +639,9 @@ func (s *WGServer) RevokePeerByIP(ip string) {
 			keys = append(keys, k)
 		}
 	}
-	rows.Close()
+	if err := rows.Err(); err != nil {
+		keys = nil
+	}
 	for _, k := range keys {
 		_ = s.dev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", k))
 	}
@@ -689,12 +720,11 @@ func hexToB64(h string) (string, error) {
 }
 
 type wireguardOnboarder struct {
-	ts     Tailscale
-	server *WGServer // injected at gateway boot; set by setWGServer
-	mu     sync.Mutex
+	ts Tailscale
+	mu sync.Mutex
 }
 
-func (w *wireguardOnboarder) MintKey(ctx context.Context, reuseIP string) (string, string, string, error) {
+func (w *wireguardOnboarder) MintKey(_ context.Context, reuseIP string) (string, string, string, error) {
 	if w.ts.WGEndpoint == "" || w.ts.WGSubnetCIDR == "" {
 		return "", "", "", fmt.Errorf("wireguard not configured (set tailscale.wg_endpoint, wg_subnet_cidr)")
 	}
@@ -767,13 +797,16 @@ func (w *wireguardOnboarder) allocateIP() (string, error) {
 	if globalDB != nil {
 		rows, err := globalDB.Query("SELECT ip FROM wg_peers")
 		if err == nil {
+			defer func() { _ = rows.Close() }()
 			for rows.Next() {
 				var ip string
 				if rows.Scan(&ip) == nil {
 					used[ip] = true
 				}
 			}
-			rows.Close()
+			if err := rows.Err(); err != nil {
+				used = map[string]bool{}
+			}
 		}
 	}
 	_, cidr, err := net.ParseCIDR(w.ts.WGSubnetCIDR)

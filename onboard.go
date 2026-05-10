@@ -146,7 +146,7 @@ func (r *onboardRegistry) Load(db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var (
 			ip      string
@@ -396,7 +396,7 @@ func mintTailscaleAuthKey(ctx context.Context, ts Tailscale) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("tailscale oauth: %w", err)
 	}
-	defer tokResp.Body.Close()
+	defer func() { _ = tokResp.Body.Close() }()
 	if tokResp.StatusCode != 200 {
 		body, _ := io.ReadAll(io.LimitReader(tokResp.Body, 1024))
 		return "", fmt.Errorf("tailscale oauth %d: %s", tokResp.StatusCode, string(body))
@@ -438,7 +438,7 @@ func mintTailscaleAuthKey(ctx context.Context, ts Tailscale) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer keyResp.Body.Close()
+	defer func() { _ = keyResp.Body.Close() }()
 	if keyResp.StatusCode != 200 {
 		body, _ := io.ReadAll(io.LimitReader(keyResp.Body, 1024))
 		return "", fmt.Errorf("tailscale key %d: %s", keyResp.StatusCode, string(body))
@@ -456,7 +456,7 @@ func mintTailscaleAuthKey(ctx context.Context, ts Tailscale) (string, error) {
 }
 func (w *webMux) apiOnboardStart(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		http.Error(rw, "POST", 405)
+		http.Error(rw, "POST", http.StatusMethodNotAllowed)
 		return
 	}
 	s := w.onboard.start()
@@ -516,17 +516,18 @@ func (w *webMux) apiOnboardLookup(rw http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// apiOnboardApprove is hit by the dashboard "approve" button. The
-// caller must be an existing tailnet member (whois succeeds) — this
-// gates onboarding behind an existing trusted user.
+// apiOnboardApprove is hit by the dashboard "approve" button.
+// Approval is an operator action: in production with dashboard_secret
+// configured, dashboardSecretGate must authenticate the request before
+// this handler can approve a pending device.
 func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		http.Error(rw, "POST", 405)
+		http.Error(rw, "POST", http.StatusMethodNotAllowed)
 		return
 	}
 	owner, _ := w.ownerForCaller(r)
 	if owner == "" {
-		http.Error(rw, "approval requires an authenticated tailnet caller (or set admin_email in gateway.hcl)", 403)
+		http.Error(rw, "approval requires an authenticated tailnet caller (or set admin_email in gateway.hcl)", http.StatusForbidden)
 		return
 	}
 	code := r.URL.Query().Get("code")
@@ -614,7 +615,7 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 // whois result.
 func (w *webMux) apiOnboardClaim(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		http.Error(rw, "POST", 405)
+		http.Error(rw, "POST", http.StatusMethodNotAllowed)
 		return
 	}
 	dc := r.URL.Query().Get("device_code")
@@ -648,7 +649,7 @@ func (w *webMux) apiOnboardClaim(rw http.ResponseWriter, r *http.Request) {
 // approved. Uses standard device-flow status codes via JSON.
 func (w *webMux) apiOnboardPoll(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		http.Error(rw, "POST", 405)
+		http.Error(rw, "POST", http.StatusMethodNotAllowed)
 		return
 	}
 	dc := r.URL.Query().Get("device_code")
@@ -678,5 +679,3 @@ func (w *webMux) apiOnboardPoll(rw http.ResponseWriter, r *http.Request) {
 		"login_server": s.loginServer, // empty = Tailscale Inc default
 	})
 }
-
-var displayOrder = []string{"claude", "codex", "github"}

@@ -1,7 +1,17 @@
 {
-  "name": "clawpatrol",
-  "compatibility_date": "2026-05-02",
-  "assets": {
-    "directory": "./dist"
-  }
+	"name": "clawpatrol",
+	"main": "worker/index.ts",
+	"compatibility_date": "2026-05-02",
+	"assets": {
+		"directory": "./dist",
+		"binding": "ASSETS"
+	},
+	"d1_databases": [
+		{
+			"binding": "TELEMETRY_DB",
+			"database_name": "clawpatrol-telemetry",
+			"database_id": "30ce7fa5-60cb-406b-b077-d38280e080c4",
+			"migrations_dir": "migrations"
+		}
+	]
 }

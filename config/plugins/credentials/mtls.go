@@ -14,8 +14,10 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
+// MTLSCredential is part of the clawpatrol plugin API.
 type MTLSCredential struct{}
 
+// ConfigureUpstreamTLS is part of the clawpatrol plugin API.
 func (m *MTLSCredential) ConfigureUpstreamTLS(cfg *tls.Config, sec runtime.Secret) error {
 	certPEM := []byte(sec.Extras["cert"])
 	keyPEM := []byte(sec.Extras["key"])
@@ -37,6 +39,7 @@ func (m *MTLSCredential) ConfigureUpstreamTLS(cfg *tls.Config, sec runtime.Secre
 	return nil
 }
 
+// SecretSlots is part of the clawpatrol plugin API.
 func (*MTLSCredential) SecretSlots() []config.SecretSlot {
 	return []config.SecretSlot{
 		{Name: "cert", Label: "Client cert (PEM)", Multiline: true},

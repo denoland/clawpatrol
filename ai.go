@@ -202,7 +202,7 @@ func generateRuleHCL(ctx context.Context, g *Gateway, agent, owner, prompt, curr
 		return "", refusal, nil
 	}
 	if perr := validateHCLSyntax(out); perr != nil {
-		return "", "", fmt.Errorf("AI returned invalid HCL — %v", perr)
+		return "", "", fmt.Errorf("AI returned invalid HCL — %w", perr)
 	}
 	return out, "", nil
 }
@@ -251,7 +251,8 @@ func extractRefusal(s string) (string, string) {
 }
 
 // validateHCLSyntax confirms the output parses as HCL. We only care
-// about syntax here — full type-check happens on PUT /api/config.
+// about syntax here — full type-check happens during the gateway.hcl
+// preview/save flow.
 func validateHCLSyntax(s string) error {
 	parser := hclparse.NewParser()
 	_, diags := parser.ParseHCL([]byte(s), "ai.hcl")
@@ -322,7 +323,7 @@ func callClaude(ctx context.Context, reg *OAuthRegistry, owner, user string) (st
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	rb, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
 		return "", fmt.Errorf("anthropic %d: %s", resp.StatusCode, truncate(string(rb), 400))
@@ -368,7 +369,7 @@ func callCodex(ctx context.Context, reg *OAuthRegistry, owner, user string) (str
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	rb, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
 		return "", fmt.Errorf("openai %d: %s", resp.StatusCode, truncate(string(rb), 400))

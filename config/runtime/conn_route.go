@@ -63,6 +63,14 @@ func BuildConnIndex(policy *config.CompiledPolicy) *ConnIndex {
 		m[k] = append(m[k], ep)
 	}
 	for _, ep := range policy.Endpoints {
+		// Tunneled endpoints reach upstream through the
+		// TunnelManager, never via dst-IP forwarder dispatch.
+		// Indexing them here would create two parallel routes
+		// (real-IP + VIP) and the WG forwarder picks on dst-IP
+		// first, bypassing the tunnel.
+		if ep.Tunnel != nil {
+			continue
+		}
 		router, ok := ep.Body.(ConnRouter)
 		if !ok {
 			continue

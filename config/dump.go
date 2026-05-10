@@ -82,6 +82,9 @@ func dumpPolicy(p *Policy) map[string]any {
 	if v := dumpEntityMap(p.Rules); v != nil {
 		out["rules"] = v
 	}
+	if v := dumpEntityMap(p.Tunnels); v != nil {
+		out["tunnels"] = v
+	}
 	if v := dumpProfiles(p.Profiles); v != nil {
 		out["profiles"] = v
 	}
@@ -124,6 +127,14 @@ func dumpEntityMap(m map[string]*Entity) map[string]any {
 			row["family"] = ent.Plugin.Family
 		}
 		row["body"] = ent.Body
+		// Surface framework-level attrs (e.g. tunnel) at the entity
+		// row, not inside the plugin body — matches where the
+		// loader extracted them from.
+		for _, spec := range frameworkAttrsByKind[ent.Symbol.Kind] {
+			if v := ent.Framework.Ref(spec.Name); v != "" {
+				row[spec.Name] = v
+			}
+		}
 		out[name] = row
 	}
 	return out

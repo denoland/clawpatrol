@@ -107,31 +107,13 @@ func (g *Gateway) dialUpstream(ctx context.Context, network, addr, serverName st
 		}
 	}
 
-	d := &net.Dialer{}
-	raw, err := d.DialContext(ctx, network, addr)
+	raw, err := g.dialThrough(ctx, ep, network, addr)
 	if err != nil {
 		return nil, err
 	}
 	tc := tls.Client(raw, cfg)
 	if err := tc.HandshakeContext(ctx); err != nil {
-		raw.Close()
-		return nil, err
-	}
-	return tc, nil
-}
-
-// dialUpstreamTLS opens a TCP connection and runs stdlib TLS with
-// ALPN forced to http/1.1 (our http.Transport is HTTP/1.1 only).
-// Used for normal HTTP-mode upstreams.
-func dialUpstreamTLS(ctx context.Context, network, addr, serverName string) (net.Conn, error) {
-	d := &net.Dialer{}
-	raw, err := d.DialContext(ctx, network, addr)
-	if err != nil {
-		return nil, err
-	}
-	tc := tls.Client(raw, &tls.Config{ServerName: serverName, NextProtos: []string{"http/1.1"}})
-	if err := tc.HandshakeContext(ctx); err != nil {
-		raw.Close()
+		_ = raw.Close()
 		return nil, err
 	}
 	return tc, nil
@@ -158,7 +140,7 @@ func dialBrowserTLS(ctx context.Context, network, addr, serverName string) (net.
 	c := utls.UClient(raw, &utls.Config{ServerName: serverName}, utls.HelloCustom)
 	spec, err := utls.UTLSIdToSpec(utls.HelloChrome_Auto)
 	if err != nil {
-		raw.Close()
+		_ = raw.Close()
 		return nil, err
 	}
 	for _, ext := range spec.Extensions {
@@ -167,11 +149,11 @@ func dialBrowserTLS(ctx context.Context, network, addr, serverName string) (net.
 		}
 	}
 	if err := c.ApplyPreset(&spec); err != nil {
-		raw.Close()
+		_ = raw.Close()
 		return nil, err
 	}
 	if err := c.HandshakeContext(ctx); err != nil {
-		raw.Close()
+		_ = raw.Close()
 		return nil, err
 	}
 	return c, nil

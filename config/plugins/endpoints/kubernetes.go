@@ -11,6 +11,7 @@ import (
 	"github.com/denoland/clawpatrol/config"
 )
 
+// KubernetesEndpoint is part of the clawpatrol plugin API.
 type KubernetesEndpoint struct {
 	Hosts       []string `hcl:"hosts,optional"`
 	Server      string   `hcl:"server,optional"`
@@ -19,6 +20,7 @@ type KubernetesEndpoint struct {
 	Credential  string   `hcl:"credential,optional"`
 }
 
+// EndpointHosts is part of the clawpatrol plugin API.
 func (e *KubernetesEndpoint) EndpointHosts() []string {
 	if len(e.Hosts) > 0 {
 		return e.Hosts
@@ -38,6 +40,7 @@ func (e *KubernetesEndpoint) FileIncludeFields() []config.FileIncludeField {
 	}
 }
 
+// EndpointCredentials is part of the clawpatrol plugin API.
 func (e *KubernetesEndpoint) EndpointCredentials() []config.CredBinding {
 	return singleBinding(e.Credential)
 }

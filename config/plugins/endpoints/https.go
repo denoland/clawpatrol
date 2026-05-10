@@ -15,6 +15,7 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
+// HTTPSEndpoint is part of the clawpatrol plugin API.
 type HTTPSEndpoint struct {
 	Hosts          []string  `hcl:"hosts"`
 	Credential     string    `hcl:"credential,optional"`
@@ -25,7 +26,10 @@ type HTTPSEndpoint struct {
 	Credentials []CredentialEntry `json:"Credentials,omitempty"`
 }
 
+// EndpointHosts is part of the clawpatrol plugin API.
 func (e *HTTPSEndpoint) EndpointHosts() []string { return e.Hosts }
+
+// EndpointCredentials is part of the clawpatrol plugin API.
 func (e *HTTPSEndpoint) EndpointCredentials() []config.CredBinding {
 	return bindings(e.Credential, e.Credentials)
 }
@@ -43,6 +47,7 @@ func (e *HTTPSEndpoint) setCredentialEntries(es []CredentialEntry) { e.Credentia
 // the auth scheme.
 type HTTPSEndpointRuntime struct{}
 
+// DetectPlaceholder is part of the clawpatrol plugin API.
 func (HTTPSEndpointRuntime) DetectPlaceholder(req *runtime.Request, candidates []string) string {
 	if req == nil || req.Headers == nil {
 		return ""

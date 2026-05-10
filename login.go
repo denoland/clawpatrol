@@ -49,7 +49,6 @@ type tsPeer struct {
 // system trust) — single command, full setup.
 func runJoin(args []string) {
 	fs := flag.NewFlagSet("join", flag.ExitOnError)
-	gatewayURL := fs.String("url", "", "gateway URL (e.g. http://gw.example.com:8080) — required")
 	gwName := fs.String("name", "clawpatrol", "exit-node hostname on the tailnet")
 	caOut := fs.String("ca-dir", defaultClawpatrolDir(), "where to store the fetched CA")
 	skipTrust := fs.Bool("no-trust", false, "fetch CA but skip system trust install (do it manually)")
@@ -57,20 +56,22 @@ func runJoin(args []string) {
 	profile := fs.String("profile", "", "profile to assign at approval time (defaults to the gateway's default profile if the approver doesn't pick one)")
 	hostname := fs.String("hostname", "", "device name to register with the gateway (defaults to os.Hostname)")
 	_ = fs.Parse(args)
-	if *gatewayURL == "" {
-		fail("usage: clawpatrol join --url <gateway-url> [--hostname NAME] [--profile NAME] [--whole-machine]")
+	rest := fs.Args()
+	if len(rest) != 1 || rest[0] == "" {
+		fail("usage: clawpatrol join <gateway-url> [--hostname NAME] [--profile NAME] [--whole-machine]")
 	}
+	gatewayURL := rest[0]
 	// Fetch CA + write shell rc BEFORE the VPN goes up. Once
 	// `wg-quick up` flips the default route through the gateway,
 	// reaching the gateway's public URL goes via the tunnel — which
 	// can't carry traffic until the gateway has internet egress
 	// configured (MASQUERADE etc). The CA is small + cheap and the
 	// onboard endpoints are reachable on the public path.
-	setup, err := postJoinSetup(*gatewayURL, *caOut, *skipTrust)
+	setup, err := postJoinSetup(gatewayURL, *caOut, *skipTrust)
 	if err != nil {
 		fail("ca fetch: %v", err)
 	}
-	wgMode, err := onboardViaDeviceFlow(*gatewayURL, *wholeMachine, *profile, *hostname, setup)
+	wgMode, err := onboardViaDeviceFlow(gatewayURL, *wholeMachine, *profile, *hostname, setup)
 	if err != nil {
 		fail("join: %v", err)
 	}
@@ -137,7 +138,7 @@ func fetchCAHTTP(gateway, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("status %d", resp.StatusCode)
 	}
@@ -270,7 +271,7 @@ func installShellRC() error {
 			return err
 		}
 		if _, err := f.WriteString(block); err != nil {
-			f.Close()
+			_ = f.Close()
 			return err
 		}
 		return f.Close()
@@ -409,7 +410,7 @@ func fetchCA(ip, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("status %d from %s", resp.StatusCode, url)
 	}
@@ -595,7 +596,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	if err != nil {
 		return false, fmt.Errorf("start: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		b, _ := io.ReadAll(resp.Body)
 		return false, fmt.Errorf("start: %d %s", resp.StatusCode, string(b))
@@ -626,6 +627,16 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		interval = 3 * time.Second
 	}
 	deadline := time.Now().Add(time.Duration(start.ExpiresIn) * time.Second)
+
+	// In whole-machine mode the clawpatrol WireGuard tunnel already routes
+	// all traffic — including these poll requests. When the admin approves,
+	// MintKey evicts our old peer from the gateway device, killing the
+	// tunnel mid-poll and hanging the spinner indefinitely. Bring it down
+	// before polling so requests go over the regular internet.
+	if wholeMachine {
+		_ = runAsRoot("wg-quick", "down", "clawpatrol").Run()
+	}
+
 	stopSpin := startSpinner("Waiting for approval")
 	authKey, loginServer, apiToken := "", "", ""
 	for time.Now().Before(deadline) {
@@ -636,7 +647,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		}
 		var pv map[string]string
 		_ = json.NewDecoder(pr.Body).Decode(&pv)
-		pr.Body.Close()
+		_ = pr.Body.Close()
 		if k, ok := pv["auth_key"]; ok && k != "" {
 			authKey = k
 			loginServer = pv["login_server"]
@@ -690,7 +701,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 				claimURL += "&ip=" + neturl.QueryEscape(wgIP)
 			}
 			if cr, err := cli.Post(claimURL, "application/json", nil); err == nil {
-				cr.Body.Close()
+				_ = cr.Body.Close()
 			}
 		}
 		// Always persist a user-readable copy at ~/.config/clawpatrol/
@@ -786,7 +797,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		fmt.Fprintf(os.Stderr, "⚠ onboard claim failed: %v\n", err)
 		return false, nil
 	}
-	defer cr.Body.Close()
+	defer func() { _ = cr.Body.Close() }()
 	if cr.StatusCode != 200 {
 		body, _ := io.ReadAll(io.LimitReader(cr.Body, 400))
 		fmt.Fprintf(os.Stderr, "⚠ onboard claim %d: %s\n", cr.StatusCode, string(body))
@@ -870,8 +881,8 @@ func wgQuickUp(iface, conf string) error {
 	if _, err := tmp.WriteString(conf); err != nil {
 		return err
 	}
-	tmp.Close()
-	defer os.Remove(tmp.Name())
+	_ = tmp.Close()
+	defer func() { _ = os.Remove(tmp.Name()) }()
 	if err := runAsRoot("install", "-m", "0600", tmp.Name(), dst).Run(); err != nil {
 		return fmt.Errorf("install conf: %w", err)
 	}
@@ -1098,7 +1109,7 @@ profile "default" {
 	printTreeItems(items)
 	fmt.Println()
 	fmt.Printf("Dashboard: %s\n", url)
-	fmt.Printf("Join command: clawpatrol join --url %s\n", url)
+	fmt.Printf("Join command: clawpatrol join %s\n", url)
 }
 
 // detectPublicIP queries plain-text IP echo services. We validate
@@ -1120,7 +1131,7 @@ func detectPublicIP() string {
 			continue
 		}
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		ip := strings.TrimSpace(string(b))
 		if isIPv4(ip) {
 			return ip
@@ -1368,7 +1379,7 @@ func wgEndpointFromConf(path string) string {
 	if err != nil {
 		return ""
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
@@ -1389,6 +1400,6 @@ func pingGateway(endpoint string) bool {
 	if err != nil {
 		return false
 	}
-	c.Close()
+	_ = c.Close()
 	return true
 }

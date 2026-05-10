@@ -15,6 +15,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	_ "net/http/pprof"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -134,8 +135,8 @@ func orderedProfileNames(p *config.Policy) []string {
 }
 
 func peekSNI(c net.Conn) (string, []byte, error) {
-	c.SetReadDeadline(time.Now().Add(10 * time.Second))
-	defer c.SetReadDeadline(time.Time{})
+	_ = c.SetReadDeadline(time.Now().Add(10 * time.Second))
+	defer func() { _ = c.SetReadDeadline(time.Time{}) }()
 
 	hdr := make([]byte, 5)
 	if _, err := io.ReadFull(c, hdr); err != nil {
@@ -266,6 +267,11 @@ type Gateway struct {
 	// wire protocol can't be disambiguated at TCP-accept time (SSH
 	// today).
 	dnsvip *dnsvip.Allocator
+	// tunnels is the lifecycle manager for endpoints whose
+	// CompiledEndpoint.Tunnel is non-nil. Refcounts runtime tunnel
+	// instances across endpoints; the dispatcher consults it from
+	// dialUpstream / ConnHandle.DialUpstream callbacks.
+	tunnels *TunnelManager
 	// transports memoizes one http.Transport per endpoint. Avoids the
 	// per-request allocation + idle-conn-pool reset of the old path.
 	transports sync.Map // *config.CompiledEndpoint -> *http.Transport
@@ -361,6 +367,9 @@ func (g *Gateway) watchConfig(path string) {
 		g.policy.Store(policy)
 		registerOAuthCredentials(g.oauth, policy)
 		g.connIdx.Store(runtime.BuildConnIndex(policy))
+		if g.tunnels != nil {
+			g.tunnels.SetPolicy(context.Background(), policy)
+		}
 		if g.dnsvip != nil {
 			if err := g.dnsvip.RebuildFromPolicy(policy); err != nil {
 				log.Printf("dnsvip rebuild on reload: %v", err)
@@ -1042,18 +1051,18 @@ func stripSystemReminders(s string) string {
 func stripXMLBlocks(s string, tags ...string) string {
 	for _, tag := range tags {
 		open := "<" + tag + ">"
-		close := "</" + tag + ">"
+		closing := "</" + tag + ">"
 		for {
 			i := strings.Index(s, open)
 			if i < 0 {
 				break
 			}
-			j := strings.Index(s[i:], close)
+			j := strings.Index(s[i:], closing)
 			if j < 0 {
 				s = s[:i]
 				break
 			}
-			s = s[:i] + s[i+j+len(close):]
+			s = s[:i] + s[i+j+len(closing):]
 		}
 	}
 	return strings.TrimSpace(s)
@@ -1100,39 +1109,8 @@ func truncate(s string, n int) string {
 	return s
 }
 
-// ownerForRequest returns the credential-bucket key for a peer. With
-// the profile-as-tenant model, that's the device's assigned profile
-// name (devices.profile). Falls back to the peer's onboard-mapped
-// owner email and finally peer IP for un-onboarded clients — both
-// preserve compatibility with credentials saved before the profile
-// migration. Whois lookup remains in place for tailscale-control mode
-// where the dashboard still binds creds to the human's login.
-func (g *Gateway) ownerForRequest(c net.Conn, _ *OAuthIntegration) string {
-	ip := peerIP(c)
-	if g.onboard != nil {
-		if profile := g.onboard.ProfileForIP(ip); profile != "" {
-			return profile
-		}
-	}
-	login := ""
-	if g.agents != nil && g.agents.lc != nil {
-		if who := g.agents.lookupWhois(ip); who != nil && !who.UserProfile.IsZero() {
-			login = who.UserProfile.LoginName
-		}
-	}
-	if (login == "" || login == "tagged-devices") && g.onboard != nil {
-		if owner := g.onboard.OwnerForIP(ip); owner != "" {
-			return owner
-		}
-	}
-	if login != "" {
-		return login
-	}
-	return ip
-}
-
 func (g *Gateway) handle(raw net.Conn, dstIP string) {
-	defer raw.Close()
+	defer func() { _ = raw.Close() }()
 	defer otelTrackConn("https_mitm")()
 	host, prefix, err := peekSNI(raw)
 	if err != nil {
@@ -1189,7 +1167,7 @@ func (g *Gateway) handle(raw net.Conn, dstIP string) {
 // passthrough fallback when no endpoint applies, mirroring the
 // HTTPS handler's `unknown_host = passthrough` default.
 func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	defer otelTrackConn("pg_relay")()
 	pip := peerIP(c)
 	profile := g.profileFor(pip)
@@ -1231,15 +1209,16 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 		Profile:  profile,
 		PeerIP:   pip,
 		Secrets:  g.secrets,
-		DialUpstream: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		DialUpstream: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			// Plugin asks for ep.Hosts[0]:port; we bypass DNS by
 			// dialing the original upstream IP the WG forwarder
 			// gave us. Plugin-supplied addr is ignored when it's
 			// the endpoint's declared host (the common case).
-			if addr == "" {
-				addr = upstreamAddr
-			}
-			return g.dialer.DialContext(ctx, network, upstreamAddr)
+			// dialThrough degrades to the direct dialer when ep
+			// has no tunnel; this path is used by non-tunneled
+			// postgres endpoints today (tunneled ones land in the
+			// VIP dispatch path, not here).
+			return g.dialThrough(ctx, ep, network, upstreamAddr)
 		},
 		Emit: func(ev runtime.ConnEvent) {
 			if g.sink == nil {
@@ -1280,7 +1259,7 @@ func (g *Gateway) handleVIPConn(c net.Conn, dstIP string, dstPort uint16) {
 	hostname, hits := g.dnsvip.LookupVIP(dstIP)
 	if hostname == "" || len(hits) == 0 {
 		log.Printf("vip %s:%d: VIP allocated but no endpoint binding (stale?); dropping", dstIP, dstPort)
-		c.Close()
+		_ = c.Close()
 		return
 	}
 	pip := peerIP(c)
@@ -1311,7 +1290,7 @@ func (g *Gateway) handleVIPConn(c net.Conn, dstIP string, dstPort uint16) {
 	}
 	if ep == nil {
 		log.Printf("vip %s:%d (host %q): no endpoint matches profile %q + port", dstIP, dstPort, hostname, profile)
-		c.Close()
+		_ = c.Close()
 		return
 	}
 	g.dispatchConnEndpoint(c, dstIP, matchedPort, ep, hostname)
@@ -1360,7 +1339,7 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 	connRT, ok := ep.Plugin.Runtime.(runtime.ConnEndpointRuntime)
 	if !ok {
 		log.Printf("conn dispatch: endpoint %q plugin lacks ConnEndpointRuntime", ep.Name)
-		c.Close()
+		_ = c.Close()
 		return
 	}
 	pip := peerIP(c)
@@ -1391,11 +1370,14 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 			// Plugin passes the *real* upstream host:port — the
 			// gateway's host network resolves it (the VIP only
 			// exists inside the WG netstack; direct-IP dispatch
-			// already has the real IP).
+			// already has the real IP). When the endpoint declares
+			// a tunnel, dialThrough routes the dial through the
+			// TunnelManager; otherwise it falls back to the
+			// gateway's direct dialer.
 			if addr == "" {
 				return nil, fmt.Errorf("conn dispatch: plugin gave empty upstream addr")
 			}
-			return g.dialer.DialContext(ctx, network, addr)
+			return g.dialThrough(ctx, ep, network, addr)
 		},
 		Emit: func(ev runtime.ConnEvent) {
 			if g.sink == nil {
@@ -1497,25 +1479,12 @@ func (g *Gateway) splice(c net.Conn, host string) {
 		g.emit(Event{Mode: "splice", Host: host, AgentIP: peerIP(c), Action: "error", Reason: err.Error(), Ms: time.Since(start).Milliseconds()})
 		return
 	}
-	defer up.Close()
+	defer func() { _ = up.Close() }()
 	agentAddr := peerIP(c) // capture BEFORE pipe — RemoteAddr() goes nil once netstack closes the conn
 	in, out := pipeProgress(c, up, g.streamTracker(agentAddr, host))
 	g.emit(Event{Mode: "splice", Host: host, AgentIP: agentAddr, Action: "allow", In: in, Out: out, Ms: time.Since(start).Milliseconds()})
 }
 
-// pipe shuttles bytes both ways between two conns. Returns (a-rx, a-tx)
-// = (bytes received from up into a, bytes sent from a to up). Sends
-// CloseWrite half-shutdown on each side after its copy finishes.
-func pipe(a, b net.Conn) (rx, tx int64) {
-	return pipeProgress(a, b, nil)
-}
-
-// pipeProgress is pipe with an optional onTick callback fired every
-// second w/ cumulative (rx, tx) snapshots. Lets callers feed the
-// per-agent activity sparkline DURING a long-lived flow (ssh clone,
-// websocket) instead of only after the conn closes — sampleLoop runs
-// at 1s and wants per-second deltas, so a flow that lasts 10 minutes
-// would otherwise paint a single bar at end-of-life.
 func pipeProgress(a, b net.Conn, onTick func(rx, tx int64)) (rx, tx int64) {
 	var rxC, txC atomic.Int64
 	done := make(chan struct{}, 2)
@@ -1523,7 +1492,7 @@ func pipeProgress(a, b net.Conn, onTick func(rx, tx int64)) (rx, tx int64) {
 		buf := make([]byte, 256<<10)
 		_, _ = io.CopyBuffer(&countWriter{Writer: b, n: &txC}, a, buf)
 		if cw, ok := b.(interface{ CloseWrite() error }); ok {
-			cw.CloseWrite()
+			_ = cw.CloseWrite()
 		}
 		done <- struct{}{}
 	}()
@@ -1531,7 +1500,7 @@ func pipeProgress(a, b net.Conn, onTick func(rx, tx int64)) (rx, tx int64) {
 		buf := make([]byte, 256<<10)
 		_, _ = io.CopyBuffer(&countWriter{Writer: a, n: &rxC}, b, buf)
 		if cw, ok := a.(interface{ CloseWrite() error }); ok {
-			cw.CloseWrite()
+			_ = cw.CloseWrite()
 		}
 		done <- struct{}{}
 	}()
@@ -1571,6 +1540,22 @@ func (w *countWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+const maxHTTPMatchBody = 1 << 20
+
+func bufferHTTPBodyForMatch(req *http.Request) []byte {
+	if req.Body == nil {
+		return nil
+	}
+	b, err := io.ReadAll(io.LimitReader(req.Body, maxHTTPMatchBody))
+	if err != nil {
+		return nil
+	}
+	// Re-attach the buffered prefix in front of the original stream,
+	// which may still contain bytes beyond maxHTTPMatchBody.
+	req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), req.Body))
+	return b
+}
+
 // mitmHTTPS handles an SNI-matched TLS connection for an HTTPS-family
 // endpoint (https, kubernetes). It mints a leaf cert, terminates TLS,
 // then loops reading HTTP requests and dispatching each through the
@@ -1595,7 +1580,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		log.Printf("mitm tls handshake %s: %v", host, err)
 		return
 	}
-	defer tc.Close()
+	defer func() { _ = tc.Close() }()
 
 	// transport is shared across all requests for this endpoint.
 	// Old path allocated a fresh http.Transport per mitmHTTPS call,
@@ -1606,15 +1591,15 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 
 	br := bufio.NewReader(tc)
 	for {
-		tc.SetReadDeadline(time.Now().Add(60 * time.Second))
+		_ = tc.SetReadDeadline(time.Now().Add(60 * time.Second))
 		req, err := http.ReadRequest(br)
 		if err != nil {
-			if err != io.EOF {
+			if !errors.Is(err, io.EOF) {
 				log.Printf("mitm read req %s: %v", host, err)
 			}
 			return
 		}
-		tc.SetReadDeadline(time.Time{})
+		_ = tc.SetReadDeadline(time.Time{})
 
 		start := time.Now()
 		pip := peerIP(c)
@@ -1625,14 +1610,8 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		// body we read up to 1 MiB and re-attach. Reads beyond 1 MiB
 		// stream through unbuffered (rare for agent traffic).
 		var matchBody []byte
-		if req.Body != nil && (req.Method == "POST" || req.Method == "PUT" || req.Method == "PATCH") {
-			b, rdErr := io.ReadAll(io.LimitReader(req.Body, 1<<20))
-			if rdErr == nil {
-				matchBody = b
-				// Re-attach: buffered prefix + rest of original stream.
-				// Do not close req.Body — it still holds bytes beyond 1 MiB.
-				req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), req.Body))
-			}
+		if req.Method == "POST" || req.Method == "PUT" || req.Method == "PATCH" {
+			matchBody = bufferHTTPBodyForMatch(req)
 		}
 
 		mreq := &match.Request{
@@ -1680,7 +1659,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 					reason = "denied by approver"
 				}
 				log.Printf("hitl-deny %s %s %s: %s (by %s)", host, req.Method, req.URL.Path, reason, v.By)
-				fmt.Fprintf(tc, "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(reason), reason)
+				_, _ = fmt.Fprintf(tc, "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(reason), reason)
 				ev.Status = 403
 				ev.Action = "hitl_deny"
 				ev.Reason = reason
@@ -1699,7 +1678,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				reason = "denied by policy"
 			}
 			log.Printf("deny %s %s %s: %s (rule %q)", host, req.Method, req.URL.Path, reason, cr.Name)
-			fmt.Fprintf(tc, "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(reason), reason)
+			_, _ = fmt.Fprintf(tc, "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(reason), reason)
 			ev.Status = 403
 			ev.Action = "deny"
 			ev.Reason = reason
@@ -1743,6 +1722,9 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			if r, handled, err := responder.RespondHTTP(req.Context(), req); err != nil {
 				log.Printf("respond %s: %v", ep.Name, err)
 			} else if handled {
+				if r.Body != nil {
+					defer func() { _ = r.Body.Close() }()
+				}
 				ev.Status = r.StatusCode
 				ev.Action = "synth"
 				if err := r.Write(tc); err != nil {
@@ -1819,12 +1801,8 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 
 		trackKind := trackKindFor(host)
 		var trackedReqBody []byte
-		if trackKind != "" && req.Body != nil {
-			b, _ := io.ReadAll(io.LimitReader(req.Body, 1<<20))
-			trackedReqBody = b
-			// Re-attach: buffered prefix + rest of original stream.
-			// Do not close req.Body — it still holds bytes beyond 1 MiB.
-			req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), req.Body))
+		if trackKind != "" {
+			trackedReqBody = bufferHTTPBodyForMatch(req)
 		}
 		// Pre-create session from the request body so streaming SSE
 		// responses (codex /backend-api/codex/responses, anthropic
@@ -1849,7 +1827,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		rtDur := time.Since(rtStart)
 		if err != nil {
 			log.Printf("mitm upstream %s %s: %v", host, req.URL.Path, err)
-			fmt.Fprintf(tc, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+			_, _ = fmt.Fprintf(tc, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
 			ev.Status = 502
 			ev.Action = "error"
 			ev.Reason = err.Error()
@@ -1882,7 +1860,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		}
 		writeErr := resp.Write(tc)
 		_ = rtDur
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if trackBuf != nil && g.agents != nil {
 			body := trackBuf.Bytes()
 			if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
@@ -1890,7 +1868,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 					if d, err := io.ReadAll(zr); err == nil {
 						body = d
 					}
-					zr.Close()
+					_ = zr.Close()
 				}
 			}
 			g.trackLLMUsage(c, trackKind, req.URL.Path, trackedReqBody, body, sessionHint)
@@ -2016,13 +1994,6 @@ func ifNotEmpty(r *config.CompiledRule, f func(*config.CompiledRule) string) str
 	return f(r)
 }
 
-func defaultHITLTimeout(p *config.CompiledPolicy) time.Duration {
-	if p != nil && p.Defaults.HumanTimeout > 0 {
-		return time.Duration(p.Defaults.HumanTimeout) * time.Second
-	}
-	return 60 * time.Second
-}
-
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -2045,7 +2016,11 @@ func main() {
 	case "status":
 		runStatus(os.Args[2:])
 	case "version":
-		fmt.Println("clawpatrol 0.1")
+		v := buildVersion
+		if buildGitSHA != "" {
+			v += " (" + buildGitSHA + ")"
+		}
+		fmt.Println("clawpatrol", v)
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -2109,7 +2084,7 @@ func usage() {
 
 usage:
   clawpatrol gateway [-config FILE]      run the gateway server
-  clawpatrol join --url <gateway-url>    onboard this machine via wg device flow
+  clawpatrol join <gateway-url>          onboard this machine via wg device flow
                   [--hostname NAME]      device name to register (default: os.Hostname)
                   [--profile NAME]       suggest a profile for the approver
                   [--whole-machine]      bring up wg-quick (route all traffic)
@@ -2198,9 +2173,11 @@ func runGateway(args []string) {
 		onboard: newOnboardRegistry(),
 	}
 	g.secrets = newGatewaySecretStore(db, oauthReg)
+	g.tunnels = NewTunnelManager(g.secrets, cfg.CADir)
 	registerOAuthCredentials(oauthReg, policy)
 	g.policy.Store(policy)
 	g.connIdx.Store(runtime.BuildConnIndex(policy))
+	g.tunnels.SetPolicy(context.Background(), policy)
 	// dnsvip is opt-in by policy: if no endpoint requires VIPs, the
 	// allocator stays empty and ServeUDP / ServeTCP are never called
 	// (no endpoint dispatches port-53 to them). Construct
@@ -2231,13 +2208,16 @@ func runGateway(args []string) {
 	// will be re-seeded below.
 	_, _ = db.Exec("DELETE FROM devices WHERE id LIKE 'fd77:%'")
 	if rows, err := db.Query("SELECT id FROM devices"); err == nil {
+		defer func() { _ = rows.Close() }()
 		for rows.Next() {
 			var ip string
 			if rows.Scan(&ip) == nil {
 				g.agents.Seed(canonicalPeerIP(ip))
 			}
 		}
-		rows.Close()
+		if err := rows.Err(); err != nil {
+			log.Printf("seed devices: %v", err)
+		}
 	}
 
 	// Sessions: rehydrate persisted rows + start the sweeper.
@@ -2256,13 +2236,14 @@ func runGateway(args []string) {
 		log.Printf("otel: %v", err)
 	}
 
+	startTelemetry(g, stateDir)
+
 	if cfg.InfoListen != "" {
 		mux := newWebMux(g, cfg.CADir, *cfg.Tailscale, cfg.PublicURL)
-		go func() {
-			http.ListenAndServe(cfg.InfoListen, mux)
-		}()
+		go serveHTTPLogged("dashboard", cfg.InfoListen, mux)
 		printDashboardURL(cfg.InfoListen)
 	}
+	go serveHTTPLogged("pprof", "127.0.0.1:6060", nil)
 	go g.servePorts()
 
 	// Embedded userspace WireGuard server. When operator sets
@@ -2342,6 +2323,19 @@ func runGateway(args []string) {
 	}
 }
 
+func serveHTTPLogged(name, addr string, handler http.Handler) {
+	if err := http.ListenAndServe(addr, handler); err != nil {
+		logHTTPServerExit(name, addr, err)
+	}
+}
+
+func logHTTPServerExit(name, addr string, err error) {
+	if err == nil || errors.Is(err, http.ErrServerClosed) {
+		return
+	}
+	log.Printf("%s http server on %s stopped: %v", name, addr, err)
+}
+
 // portOf extracts the numeric port from a "host:port" or ":port" listen
 // string. Returns 0 when the input is empty or unparseable.
 func portOf(addr string) int {
@@ -2403,7 +2397,7 @@ func (l *oneShotListener) Addr() net.Addr {
 // dashboard request history alongside MITM traffic — without this,
 // ssh / git-over-ssh / arbitrary-port connections went silent.
 func (g *Gateway) wgRelay(c net.Conn, dstIP string, dstPort int) {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	pip := peerIP(c)
 	profile := g.profileFor(pip)
 	host := fmt.Sprintf("%s:%d", dstIP, dstPort)
@@ -2417,7 +2411,7 @@ func (g *Gateway) wgRelay(c net.Conn, dstIP string, dstPort int) {
 		})
 		return
 	}
-	defer up.Close()
+	defer func() { _ = up.Close() }()
 	rx, tx := pipeProgress(c, up, g.streamTracker(pip, host))
 	g.sink.Emit(Event{
 		Mode: "relay", AgentIP: pip, Agent: profile,

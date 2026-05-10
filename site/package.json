@@ -4,21 +4,27 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && tsx build-docs.ts"
+    "build": "vite build && tsx build-docs.ts",
+    "deploy": "npm run build && wrangler deploy",
+    "test": "tsx --test worker/**/*.test.ts",
+    "telemetry": "tsx scripts/telemetry.ts"
   },
   "dependencies": {
     "@observablehq/plot": "^0.6.17",
     "highlight.js": "^11.11.1",
-    "marked": "^18.0.0",
+    "marked": "^18.0.3",
     "marked-highlight": "^2.2.4",
     "preact": "^10.29.0"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^4.20251008.0",
     "@preact/preset-vite": "^2.10.4",
     "@tailwindcss/vite": "^4.1.3",
+    "@types/node": "^22.10.0",
     "tailwindcss": "^4.1.3",
     "tsx": "^4.19.0",
     "typescript": "^5.8.0",
-    "vite": "^6.3.0"
+    "vite": "^6.3.0",
+    "wrangler": "^4.30.0"
   }
 }

@@ -64,6 +64,10 @@ func checkRuntime(p *config.Plugin) []string {
 		if _, ok := p.Runtime.(ApproverRuntime); !ok {
 			return []string{fmt.Sprintf("Runtime %T does not satisfy ApproverRuntime", p.Runtime)}
 		}
+	case config.KindTunnel:
+		if _, ok := p.Runtime.(TunnelRuntime); !ok {
+			return []string{fmt.Sprintf("Runtime %T does not satisfy TunnelRuntime", p.Runtime)}
+		}
 	}
 	return nil
 }

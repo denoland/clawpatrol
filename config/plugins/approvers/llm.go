@@ -46,6 +46,7 @@ type LLMApprover struct {
 	Policy     string `hcl:"policy,optional"`
 }
 
+// Approve is part of the clawpatrol plugin API.
 func (a *LLMApprover) Approve(ctx context.Context, req runtime.ApproveRequest) (runtime.ApproveVerdict, error) {
 	if a.Model == "" {
 		return runtime.ApproveVerdict{Decision: "deny", Reason: "llm approver has no model"}, nil
@@ -100,7 +101,7 @@ func (a *LLMApprover) Approve(ctx context.Context, req runtime.ApproveRequest) (
 	if err != nil {
 		return runtime.ApproveVerdict{Decision: "deny", Reason: "llm call: " + err.Error()}, nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return runtime.ApproveVerdict{Decision: "deny", Reason: fmt.Sprintf("llm http %d: %s", resp.StatusCode, string(body))}, nil

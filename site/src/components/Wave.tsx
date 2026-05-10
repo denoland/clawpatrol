@@ -10,51 +10,63 @@ type WaveArgs = {
 export function Wave({
   topColor,
   bottomColor,
-  height = "h-24",
+  height = "h-32",
 }: WaveArgs) {
   return (
     <div
-      class={`relative w-full overflow-hidden ${height}`}
+      class={`relative w-full overflow-clip ${height}`}
       style={{ background: bottomColor }}
       aria-hidden="true"
     >
-      {/* Back row — deepest baseline, mostly navy blend, slow drift. */}
-      <svg
-        class="absolute inset-0 block h-full w-[200%] motion-safe:animate-wave-drift-slow"
-        viewBox="0 0 2400 60"
-        preserveAspectRatio="none"
-      >
-        <path
-          d="M0,0 L2400,0 L2400,46 C2347,58 2253,58 2200,46 C2147,58 2053,58 2000,46 C1947,58 1853,58 1800,46 C1747,58 1653,58 1600,46 C1547,58 1453,58 1400,46 C1347,58 1253,58 1200,46 C1147,58 1053,58 1000,46 C947,58 853,58 800,46 C747,58 653,58 600,46 C547,58 453,58 400,46 C347,58 253,58 200,46 C147,58 53,58 0,46 Z"
-          style={{
-            fill: `color-mix(in oklch, ${topColor} 35%, ${bottomColor})`,
-          }}
-        />
-      </svg>
+      {/* `overflow-clip` (not `overflow-hidden`) on the outer: it visually
+         clips the 200%-wide SVGs and any vertical bleed from the spread
+         animation, but does NOT make this element a scroll container — so
+         `animation-timeline: view()` on the inner divs still observes
+         document scroll progress, not the (always-zero) progress within
+         a clipped wrapper. */}
+      {/* Back row — deepest baseline, mostly navy blend, slowest drift. */}
+      <div class="wave-spread-back absolute inset-0">
+        <svg
+          class="block h-full w-[200%] motion-safe:animate-wave-drift-slow"
+          viewBox="0 0 2400 60"
+          preserveAspectRatio="none"
+        >
+          <path
+            d="M0,0 L2400,0 L2400,46 C2360,58 2290,58 2250,46 C2210,58 2140,58 2100,46 C2060,58 1990,58 1950,46 C1910,58 1840,58 1800,46 C1760,58 1690,58 1650,46 C1610,58 1540,58 1500,46 C1460,58 1390,58 1350,46 C1310,58 1240,58 1200,46 C1160,58 1090,58 1050,46 C1010,58 940,58 900,46 C860,58 790,58 750,46 C710,58 640,58 600,46 C560,58 490,58 450,46 C410,58 340,58 300,46 C260,58 190,58 150,46 C110,58 40,58 0,46 Z"
+            style={{
+              fill: `color-mix(in oklch, ${topColor} 35%, ${bottomColor})`,
+            }}
+          />
+        </svg>
+      </div>
       {/* Mid row — middle baseline, even blend, medium drift. */}
-      <svg
-        class="absolute inset-0 block h-full w-[200%] motion-safe:animate-wave-drift-medium"
-        viewBox="0 0 2400 60"
-        preserveAspectRatio="none"
-      >
-        <path
-          d="M0,0 L2400,0 L2400,33 C2347,45 2253,45 2200,33 C2147,45 2053,45 2000,33 C1947,45 1853,45 1800,33 C1747,45 1653,45 1600,33 C1547,45 1453,45 1400,33 C1347,45 1253,45 1200,33 C1147,45 1053,45 1000,33 C947,45 853,45 800,33 C747,45 653,45 600,33 C547,45 453,45 400,33 C347,45 253,45 200,33 C147,45 53,45 0,33 Z"
-          style={{
-            fill: `color-mix(in oklch, ${topColor} 70%, ${bottomColor})`,
-          }}
-        />
-      </svg>
+      <div class="wave-spread-mid absolute inset-0">
+        <svg
+          class="block h-full w-[200%] motion-safe:animate-wave-drift-medium"
+          viewBox="0 0 2400 60"
+          preserveAspectRatio="none"
+        >
+          <path
+            d="M0,0 L2400,0 L2400,33 C2360,45 2290,45 2250,33 C2210,45 2140,45 2100,33 C2060,45 1990,45 1950,33 C1910,45 1840,45 1800,33 C1760,45 1690,45 1650,33 C1610,45 1540,45 1500,33 C1460,45 1390,45 1350,33 C1310,45 1240,45 1200,33 C1160,45 1090,45 1050,33 C1010,45 940,45 900,33 C860,45 790,45 750,33 C710,45 640,45 600,33 C560,45 490,45 450,33 C410,45 340,45 300,33 C260,45 190,45 150,33 C110,45 40,45 0,33 Z"
+            style={{
+              fill: `color-mix(in oklch, ${topColor} 70%, ${bottomColor})`,
+            }}
+          />
+        </svg>
+      </div>
       {/* Front row — shallowest baseline, pure topColor, fast drift. */}
-      <svg
-        class="absolute inset-0 block h-full w-[200%] motion-safe:animate-wave-drift"
-        viewBox="0 0 2400 60"
-        preserveAspectRatio="none"
-      >
-        <path
-          d="M0,0 L2400,0 L2400,20 C2347,32 2253,32 2200,20 C2147,32 2053,32 2000,20 C1947,32 1853,32 1800,20 C1747,32 1653,32 1600,20 C1547,32 1453,32 1400,20 C1347,32 1253,32 1200,20 C1147,32 1053,32 1000,20 C947,32 853,32 800,20 C747,32 653,32 600,20 C547,32 453,32 400,20 C347,32 253,32 200,20 C147,32 53,32 0,20 Z"
-          fill={topColor}
-        />
-      </svg>
+      <div class="wave-spread-front absolute inset-0">
+        <svg
+          class="block h-full w-[200%] motion-safe:animate-wave-drift"
+          viewBox="0 0 2400 60"
+          preserveAspectRatio="none"
+        >
+          <path
+            d="M0,0 L2400,0 L2400,16 C2360,26 2290,26 2250,16 C2210,26 2140,26 2100,16 C2060,26 1990,26 1950,16 C1910,26 1840,26 1800,16 C1760,26 1690,26 1650,16 C1610,26 1540,26 1500,16 C1460,26 1390,26 1350,16 C1310,26 1240,26 1200,16 C1160,26 1090,26 1050,16 C1010,26 940,26 900,16 C860,26 790,26 750,16 C710,26 640,26 600,16 C560,26 490,26 450,16 C410,26 340,26 300,16 C260,26 190,26 150,16 C110,26 40,26 0,16 Z"
+            fill={topColor}
+          />
+        </svg>
+      </div>
     </div>
   );
 }

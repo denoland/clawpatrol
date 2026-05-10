@@ -14,16 +14,7 @@ const INTEGRATIONS = [
 
 export function IntegrationsSection() {
   return (
-    <section
-      class="py-28 text-center"
-      style={{
-        background:
-          "linear-gradient(160deg, " +
-          "var(--color-navy-200), " +
-          "var(--color-navy-50), " +
-          "var(--color-navy-100)",
-      }}
-    >
+    <section class="py-28 text-center bg-linear-to-b from-navy-100 to-navy-50">
       <div class="max-w-5xl mx-auto px-8">
         <SectionLabel>Built-in plugins</SectionLabel>
         <p class="text-center max-w-2xl mx-auto mb-16   text-text-muted">

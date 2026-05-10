@@ -105,7 +105,7 @@ export function ComparisonSection() {
       <div class="max-w-max">
         <SectionLabel>How it compares</SectionLabel>
       </div>
-      <h3 class="text-3xl lg:text-4xl font-display font-extrabold ">
+      <h3 class="text-4xl lg:text-5xl font-display font-bold ">
         More than a gateway, more than a sandbox
       </h3>
       <p class=" max-w-2xl mb-16 text-base  text-text-muted mt-8">

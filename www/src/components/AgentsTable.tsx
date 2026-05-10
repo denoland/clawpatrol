@@ -87,7 +87,12 @@ export function AgentsTable({
                 </div>
               </Td>
               <Td className="text-[11px] text-[#525252] tabular-nums text-right">{a.reqs}</Td>
-              <Td className="hidden lg:table-cell text-[11px] text-[#737373] tabular-nums truncate" title={[a.external_ipv4, a.external_ipv6].filter(Boolean).join(" / ") || `wg ${a.ip}`}>
+              <Td
+                className="hidden lg:table-cell text-[11px] text-[#737373] tabular-nums truncate"
+                title={
+                  [a.external_ipv4, a.external_ipv6].filter(Boolean).join(" / ") || `wg ${a.ip}`
+                }
+              >
                 {a.external_ipv4 || a.external_ipv6 || a.ip}
               </Td>
               <Td>
@@ -97,8 +102,7 @@ export function AgentsTable({
                     // Pick the owner row matching this device's profile
                     // so two profiles connected to different GH accounts
                     // surface distinct avatars in their respective rows.
-                    const owner = it?.owners?.find((o) => o.owner === a.profile)
-                      ?? it?.owners?.[0];
+                    const owner = it?.owners?.find((o) => o.owner === a.profile) ?? it?.owners?.[0];
                     return {
                       id,
                       type: it?.type,
@@ -138,7 +142,10 @@ function Td({
   title?: string;
 }) {
   return (
-    <td className={"px-3 sm:px-[14px] py-[9px] align-middle overflow-hidden " + className} {...rest}>
+    <td
+      className={"px-3 sm:px-[14px] py-[9px] align-middle overflow-hidden " + className}
+      {...rest}
+    >
       {children}
     </td>
   );

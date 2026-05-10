@@ -69,13 +69,36 @@ are fetched at injection time. Built-in shapes include `bearer_token`,
 `postgres_credential`, `anthropic_manual_key`, and the OAuth variants.
 See [Configuration vocabulary](#configuration-vocabulary).
 
+### Action
+
+One unit of agent work the gateway sees and applies policy to — one
+HTTP call, one SQL query, one `kubectl` invocation, one SSH command.
+Each action targets an [endpoint](#endpoint), is gated by the matching
+[rule](#rule)'s [outcome](#outcome), and surfaces in the dashboard's
+live request feed (record kinds: `http`, `sql`, `k8s`, `ssh`) with its
+own detail page. "Action" is the operator-visible concept of "the
+thing the agent did."
+
 ### Rule
 
 One policy decision targeting one or more [endpoints](#endpoint). Three
 rule types — `http_rule`, `sql_rule`, `k8s_rule` — each constrained to
-a matching endpoint family. A rule has a `match = { ... }` map (facets
-depend on the rule type) and an [outcome](#outcome) — either a literal
-`verdict` or an `approve = [...]` chain.
+a matching endpoint family. A rule has a `match = { ... }` map of
+[facets](#facet) (the set depends on the rule type) and an
+[outcome](#outcome) — either a literal `verdict` or an `approve = [...]`
+chain.
+
+### Facet
+
+A single named matchable property inside a [rule](#rule)'s
+`match { ... }` block. Each rule family exposes its own facet set:
+`http_rule` carries `method` / `path` / `query` / `headers` /
+`body_json` / `body_contains` / `credential`; `sql_rule` carries
+`verb` / `tables` / `function` / `statement` / `statement_regex` /
+`credential`; `k8s_rule` carries `resource` / `verb` / `namespace` /
+`name` / `params` / `credential`. Per-facet semantics vary — list
+values are any-of, a `!`-prefix on a string negates it, and individual
+facets are glob, PCRE, or exact match.
 
 ### Approver
 

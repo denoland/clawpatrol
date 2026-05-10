@@ -1,13 +1,13 @@
 export function Header() {
   return (
-    <nav class="w-full px-8 py-8 bg-navy text-canvas">
+    <nav class="w-full px-8 py-8 bg-navy-100">
       <div className="max-w-6xl mx-auto flex flex-wrap justify-between gap-y-2 items-center">
         <a
           href="/"
           class="text-2xl
         font-black font-display hover:text-rust"
         >
-          Claw Patrol
+          <img src="cp-logo-test.svg" alt="" class="h-12 w-auto" />
         </a>
         <div class="flex items-center gap-4 sm:gap-8 text-sm">
           <a

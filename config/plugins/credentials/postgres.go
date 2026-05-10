@@ -13,6 +13,7 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
+// PostgresCredential is part of the clawpatrol plugin API.
 type PostgresCredential struct {
 	User string `hcl:"user,optional"`
 }
@@ -24,6 +25,7 @@ func (p *PostgresCredential) PostgresAuth(sec runtime.Secret) (string, string) {
 	return p.User, string(sec.Bytes)
 }
 
+// SecretSlots is part of the clawpatrol plugin API.
 func (*PostgresCredential) SecretSlots() []config.SecretSlot {
 	return []config.SecretSlot{{Label: "Postgres password"}}
 }

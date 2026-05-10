@@ -2,7 +2,9 @@ package config_test
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/match"
@@ -158,6 +160,101 @@ func priorities(rules []*config.CompiledRule) []int {
 		out[i] = r.Priority
 	}
 	return out
+}
+
+// TestCompileTunnel exercises the tunnel-specific bits of Compile:
+// CompiledTunnel population, endpoint→tunnel ref resolution, the
+// VIP forcing for tunneled endpoints, and skipping ConnRouter
+// indexing for the same.
+func TestCompileTunnel(t *testing.T) {
+	gw, diags := config.Load(filepath.Join("testdata", "feature_tunnel.hcl"))
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	cp, err := config.Compile(gw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	ct, ok := cp.Tunnels["csql-prod"]
+	if !ok {
+		t.Fatal("missing csql-prod tunnel in CompiledPolicy")
+	}
+	if ct.Sharing != "singleton" {
+		t.Errorf("Sharing = %q, want singleton", ct.Sharing)
+	}
+	if ct.Keepalive != 5*time.Minute {
+		t.Errorf("Keepalive = %v, want 5m", ct.Keepalive)
+	}
+	if ct.KeepaliveAlways {
+		t.Error("KeepaliveAlways = true, want false")
+	}
+
+	ep, ok := cp.Endpoints["deploy-classic"]
+	if !ok {
+		t.Fatal("missing deploy-classic endpoint")
+	}
+	if ep.Tunnel != ct {
+		t.Errorf("ep.Tunnel = %p, want %p (csql-prod)", ep.Tunnel, ct)
+	}
+	if !ep.RequiresVIP() {
+		t.Error("tunneled endpoint must opt into VIP, got RequiresVIP() = false")
+	}
+}
+
+// TestCompileTunnelViaCycle: a → b → a fails to compile with a
+// diagnostic that names the cycle.
+func TestCompileTunnelViaCycle(t *testing.T) {
+	src := []byte(`
+tunnel "local_command" "a" {
+  command = ["true"]
+  listen  = "127.0.0.1:1"
+  via     = b
+}
+tunnel "local_command" "b" {
+  command = ["true"]
+  listen  = "127.0.0.1:2"
+  via     = a
+}
+`)
+	gw, diags := config.LoadBytes(src, "cycle.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	_, err := config.Compile(gw)
+	if err == nil {
+		t.Fatal("Compile succeeded on via cycle, want error")
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Errorf("error %q does not mention cycle", err)
+	}
+}
+
+// TestCompileTunnelIPLiteralOnly rejects a tunneled endpoint whose
+// hosts are all IP literals — DNS-VIP needs a name to intercept.
+func TestCompileTunnelIPLiteralOnly(t *testing.T) {
+	src := []byte(`
+tunnel "local_command" "t" {
+  command = ["true"]
+  listen  = "127.0.0.1:1"
+}
+endpoint "postgres" "ipliteral" {
+  host     = "10.0.0.5:5432"
+  database = "x"
+  tunnel   = t
+}
+`)
+	gw, diags := config.LoadBytes(src, "ipliteral.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	_, err := config.Compile(gw)
+	if err == nil {
+		t.Fatal("Compile succeeded on tunneled IP-literal endpoint, want error")
+	}
+	if !strings.Contains(err.Error(), "no hostnames") {
+		t.Errorf("error %q does not mention hostnames", err)
+	}
 }
 
 // TestCompileFullSpec confirms the verbatim v14 fixture compiles

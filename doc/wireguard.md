@@ -37,7 +37,7 @@ in promiscuous mode — same shape as unclaw's `boringtun` + `smoltcp`
   derived via curve25519 at boot. Peer (pubkey → IP) map persisted
   at `<oauth_dir>/wg-peers.json`, replayed on every restart so
   existing clients survive gateway redeploys.
-- `clawpatrol join --url <gw>` runs once: prints user-code, opens
+- `clawpatrol join <gw>` runs once: prints user-code, opens
   dashboard URL, server mints a fresh keypair, allocates a /32 from
   the configured subnet, registers the peer with wireguard-go,
   hands back a `wg-quick` conf. Server **auto-claims** the peer
@@ -105,6 +105,73 @@ in `/opt/clawpatrol/oauth/`.
 
 ```bash
 curl -fsSL https://denoland.github.io/clawpatrol/install.sh | sh
-clawpatrol join --url http://your-gw.example.com:8080
+clawpatrol join http://your-gw.example.com:8080
 # approve at the displayed URL, done — claude/gh/codex just work
+```
+
+## Diagnostics
+
+The gateway exposes a debug endpoint on `127.0.0.1:6060` (localhost only).
+
+| Path | Description |
+|------|-------------|
+| `/debug/vars` | JSON: expvar counters (tcpStats, wgTxPackets, wgTxBytes) |
+| `/debug/pprof/` | pprof index (goroutine, heap, CPU profile, trace) |
+
+```bash
+curl -s http://localhost:6060/debug/vars | python3 -m json.tool
+```
+
+### tcpStats fields
+
+| Field | What it means |
+|-------|---------------|
+| `currentEstab` | Live TCP connections through the gVisor stack |
+| `retransmits` | Total retransmitted segments (all causes) |
+| `fastRetransmit` | Loss events caught by 3-dupack — normal loss recovery |
+| `timeouts` | **RTO timeout events** — each resets cwnd to 10; high values kill throughput |
+| `slowStartRtx` | Retransmits during slow start — usually equals `timeouts` |
+| `resetsSent` | RSTs sent by the stack |
+| `segSendErrors` | gVisor failed to hand a segment to WireGuard — should always be 0 |
+
+### Reading the numbers
+
+**Healthy:**
+```
+timeouts: 0
+fastRetransmit: low relative to segsSent (< 0.5%)
+```
+
+**cwnd collapse (RTO-driven):**
+```
+timeouts: high (> 10)
+slowStartRtx: matches timeouts
+```
+Each timeout resets the congestion window to 10 segments. Cause: peer RTT is
+close to `minRTO` (1 s). Investigate path latency if a peer's RTT exceeds ~800 ms.
+
+**Burst packet loss:**
+```
+timeouts: 0
+fastRetransmit: high
+retransmits >> fastRetransmit  (many segments lost per event)
+```
+SACK reports many missing segments per fast-retransmit event. Check the peer's
+UDP receive buffer (`/proc/net/snmp` `RcvbufErrors`); increase
+`net.core.rmem_default` on the peer if non-zero.
+
+### Throughput counters
+
+`wgTxPackets` / `wgTxBytes` count IP packets leaving gVisor toward WireGuard.
+Poll twice and divide by interval for current throughput.
+
+### pprof
+
+```bash
+# 30-second CPU profile
+curl -s "http://localhost:6060/debug/pprof/profile?seconds=30" -o cpu.prof
+go tool pprof cpu.prof
+
+# goroutine dump
+curl -s "http://localhost:6060/debug/pprof/goroutine?debug=2"
 ```

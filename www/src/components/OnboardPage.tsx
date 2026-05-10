@@ -15,7 +15,9 @@ export function OnboardPage({ code, onBack }: { code: string; onBack: () => void
   async function approve() {
     setStatus("approving");
     try {
-      const r = await fetch("/api/onboard/approve?code=" + encodeURIComponent(code), { method: "POST" });
+      const r = await fetch("/api/onboard/approve?code=" + encodeURIComponent(code), {
+        method: "POST",
+      });
       if (!r.ok) {
         setErr(await r.text());
         setStatus("error");
@@ -33,7 +35,9 @@ export function OnboardPage({ code, onBack }: { code: string; onBack: () => void
       <button onClick={onBack} className="text-[11px] text-[#737373] hover:text-[#171717]">
         ← back
       </button>
-      <h1 className="font-serif text-[36px] leading-none tracking-tight text-[#171717]">add device</h1>
+      <h1 className="font-serif text-[36px] leading-none tracking-tight text-[#171717]">
+        add device
+      </h1>
 
       {!info && !err && <div className="text-[12px] text-[#737373]">loading…</div>}
       {err && <div className="text-[12px] text-[#dc2626]">{err}</div>}
@@ -41,8 +45,12 @@ export function OnboardPage({ code, onBack }: { code: string; onBack: () => void
       {info && (
         <div className="bg-white border border-[#e5e5e5] rounded p-6 space-y-4">
           <div>
-            <div className="text-[10px] uppercase tracking-[.12em] text-[#a3a3a3]">code from CLI</div>
-            <div className="font-mono text-[28px] tracking-[.18em] text-[#171717] mt-1">{info.user_code || code}</div>
+            <div className="text-[10px] uppercase tracking-[.12em] text-[#a3a3a3]">
+              code from CLI
+            </div>
+            <div className="font-mono text-[28px] tracking-[.18em] text-[#171717] mt-1">
+              {info.user_code || code}
+            </div>
           </div>
 
           <div className="text-[11px] text-[#737373]">

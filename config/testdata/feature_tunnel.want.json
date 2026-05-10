@@ -1,0 +1,67 @@
+{
+  "ca_dir": "/opt/clawpatrol/ca",
+  "listen": "0.0.0.0:8443",
+  "policy": {
+    "credentials": {
+      "github-pat": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "type": "bearer_token"
+      }
+    },
+    "endpoints": {
+      "deploy-classic": {
+        "body": {
+          "Host": "main-pg14.classic.example:5432",
+          "Database": "deployng",
+          "SSLMode": "",
+          "Credential": "github-pat"
+        },
+        "family": "sql",
+        "tunnel": "csql-prod",
+        "type": "postgres"
+      },
+      "github": {
+        "body": {
+          "Hosts": [
+            "api.github.com",
+            "github.com"
+          ],
+          "Credential": "github-pat"
+        },
+        "family": "https",
+        "type": "https"
+      }
+    },
+    "profiles": {
+      "default": {
+        "endpoints": [
+          "github",
+          "deploy-classic"
+        ]
+      }
+    },
+    "tunnels": {
+      "csql-prod": {
+        "body": {
+          "Command": [
+            "cloud_sql_proxy",
+            "--enable_iam_login",
+            "--instances",
+            "denosr-prod:us-central1:main-pg14=tcp:5432"
+          ],
+          "Listen": "127.0.0.1:5432",
+          "ReadyProbe": "tcp",
+          "ReadyTimeout": "30s",
+          "Env": null,
+          "Share": "singleton",
+          "Keepalive": "5m",
+          "Via": "",
+          "Credential": ""
+        },
+        "type": "local_command"
+      }
+    }
+  }
+}

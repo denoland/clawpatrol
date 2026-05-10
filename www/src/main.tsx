@@ -5,4 +5,8 @@ import "./index.css";
 
 const root = document.getElementById("root");
 if (!root) throw new Error("no root");
-createRoot(root).render(<React.StrictMode><App /></React.StrictMode>);
+createRoot(root).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>,
+);

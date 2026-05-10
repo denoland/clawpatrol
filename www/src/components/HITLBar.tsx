@@ -49,35 +49,54 @@ export function HITLBar() {
           <col style={{ width: 160 }} />
         </colgroup>
         <tbody>
-          {pending.map((p) => (
-            <tr key={p.id} className="border-b border-[#f5f5f5] last:border-b-0 hover:bg-[#f9f9f9]">
-              <Td className="text-[11px] text-[#525252] tabular-nums truncate">{p.agent_ip}</Td>
-              <Td className="text-[11px] uppercase font-semibold text-[#9a3412]">{p.method}</Td>
-              <Td>
-                <span className="text-[12px] text-[#171717] truncate block" title={p.host + p.path}>
-                  <span className="text-[#737373]">{p.host}</span>
-                  <span>{p.path}</span>
-                </span>
-                {p.reason && <div className="text-[10px] text-[#737373] truncate">{p.reason}</div>}
-              </Td>
-              <Td className="text-right">
-                <div className="flex gap-1.5 justify-end">
-                  <button
-                    onClick={() => decide(p.id, false)}
-                    className="text-[11px] px-3 py-1 border border-[#fecaca] text-[#991b1b] rounded hover:bg-[#fef2f2]"
+          {pending.map((p) => {
+            const ep = p.endpoint || p.host;
+            // HTTPS paths start with `/` and concatenate cleanly into
+            // a URL ("api.anthropic.com/v1/messages"). SQL / k8s
+            // paths don't start with `/`; insert a space so we get
+            // "users-db UPDATE ..." rather than "users-dbUPDATE ...".
+            const sep = p.path && !p.path.startsWith("/") ? " " : "";
+            return (
+              <tr
+                key={p.id}
+                className="border-b border-[#f5f5f5] last:border-b-0 hover:bg-[#f9f9f9]"
+              >
+                <Td className="text-[11px] text-[#525252] tabular-nums truncate">{p.agent_ip}</Td>
+                <Td className="text-[11px] uppercase font-semibold text-[#9a3412]">{p.method}</Td>
+                <Td>
+                  <span
+                    className="text-[12px] text-[#171717] truncate block"
+                    title={ep + sep + p.path}
                   >
-                    deny
-                  </button>
-                  <button
-                    onClick={() => decide(p.id, true)}
-                    className="text-[11px] px-3 py-1 bg-[#171717] text-white rounded hover:bg-[#000]"
-                  >
-                    allow
-                  </button>
-                </div>
-              </Td>
-            </tr>
-          ))}
+                    <span className="text-[#737373]">
+                      {ep}
+                      {sep}
+                    </span>
+                    <span>{p.path}</span>
+                  </span>
+                  {p.reason && (
+                    <div className="text-[10px] text-[#737373] truncate">{p.reason}</div>
+                  )}
+                </Td>
+                <Td className="text-right">
+                  <div className="flex gap-1.5 justify-end">
+                    <button
+                      onClick={() => decide(p.id, false)}
+                      className="text-[11px] px-3 py-1 border border-[#fecaca] text-[#991b1b] rounded hover:bg-[#fef2f2]"
+                    >
+                      deny
+                    </button>
+                    <button
+                      onClick={() => decide(p.id, true)}
+                      className="text-[11px] px-3 py-1 bg-[#171717] text-white rounded hover:bg-[#000]"
+                    >
+                      allow
+                    </button>
+                  </div>
+                </Td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

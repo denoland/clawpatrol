@@ -148,7 +148,13 @@ function OwnerAvatar({
 }) {
   const [broken, setBroken] = React.useState(false);
   if (broken) {
-    return <IntegrationIcon id={fallbackId} type={fallbackType} className="w-[16px] h-[16px] flex-shrink-0" />;
+    return (
+      <IntegrationIcon
+        id={fallbackId}
+        type={fallbackType}
+        className="w-[16px] h-[16px] flex-shrink-0"
+      />
+    );
   }
   return (
     <img
@@ -180,10 +186,10 @@ function Card({
       ? "expires " + fmtExpiry(me.expires_at)
       : "connected"
     : i.has_oauth
-    ? "click to connect"
-    : hasSlots
-    ? "paste secret"
-    : "api key only";
+      ? "click to connect"
+      : hasSlots
+        ? "paste secret"
+        : "api key only";
   return (
     <button
       disabled={!clickable && !connected}
@@ -193,15 +199,20 @@ function Card({
         (connected
           ? "border-[#bbf7d0] bg-[#f0fdf4]"
           : clickable
-          ? "border-[#e5e5e5] hover:border-[#171717] cursor-pointer"
-          : "border-[#e5e5e5] cursor-default")
+            ? "border-[#e5e5e5] hover:border-[#171717] cursor-pointer"
+            : "border-[#e5e5e5] cursor-default")
       }
     >
       <div className="flex items-center gap-2 w-full">
-        {connected && me?.avatar_url
-          ? <OwnerAvatar src={me.avatar_url} fallbackId={i.id} fallbackType={i.type} />
-          : <IntegrationIcon id={i.id} type={i.type} className="w-[16px] h-[16px] flex-shrink-0" />}
-        <span className="text-[12px] font-semibold text-[#171717] truncate" title={me?.display_name ?? i.id}>
+        {connected && me?.avatar_url ? (
+          <OwnerAvatar src={me.avatar_url} fallbackId={i.id} fallbackType={i.type} />
+        ) : (
+          <IntegrationIcon id={i.id} type={i.type} className="w-[16px] h-[16px] flex-shrink-0" />
+        )}
+        <span
+          className="text-[12px] font-semibold text-[#171717] truncate"
+          title={me?.display_name ?? i.id}
+        >
           {(() => {
             const label = TYPE_LABEL[i.type] ?? i.name;
             return me?.display_name ? `${label} (${me.display_name})` : label;
@@ -222,8 +233,7 @@ function Card({
           )}
           <span
             className={
-              "w-[6px] h-[6px] rounded-full " +
-              (connected ? "bg-[#22c55e]" : "bg-[#d4d4d4]")
+              "w-[6px] h-[6px] rounded-full " + (connected ? "bg-[#22c55e]" : "bg-[#d4d4d4]")
             }
           />
         </span>
@@ -236,8 +246,8 @@ function Card({
         {connected
           ? subtitle
           : TYPE_LABEL[i.type] && i.id !== (TYPE_LABEL[i.type] ?? "").toLowerCase()
-          ? i.id
-          : subtitle}
+            ? i.id
+            : subtitle}
       </div>
     </button>
   );

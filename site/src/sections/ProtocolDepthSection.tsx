@@ -58,7 +58,7 @@ export function ProtocolDepthSection() {
         <SectionLabel>Not just HTTP</SectionLabel>
 
         <div class="max-w-3xl mx-auto text-center mb-16">
-          <h3 class="text-3xl sm:text-4xl md:text-5xl font-display font-extrabold  mb-5">
+          <h3 class="text-4xl sm:text-5xl md:text-6xl font-display font-bold  mb-5">
             Rules dive into <span class="text-rust">every action.</span>
           </h3>
           <p class="text-base  text-canvas/70">
@@ -69,7 +69,7 @@ export function ProtocolDepthSection() {
           </p>
         </div>
 
-        <p class="text-xs uppercase tracking-[0.25em] font-display font-extrabold text-rust-300 mb-5 text-center">
+        <p class="text-xs uppercase tracking-[0.25em] font-display font-bold text-rust-300 mb-5 text-center">
           Match anything in the action
         </p>
         <ul class="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -79,7 +79,7 @@ export function ProtocolDepthSection() {
               class="bg-navy squircle-lg p-6
                 flex flex-col gap-4"
             >
-              <h4 class="text-2xl font-display font-extrabold text-canvas">
+              <h4 class="text-3xl font-display font-bold text-canvas">
                 {p.name}
               </h4>
               <p class="text-sm  text-canvas/70">{p.body}</p>

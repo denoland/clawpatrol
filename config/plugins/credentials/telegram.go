@@ -27,15 +27,17 @@ import (
 // their SDK config / URL when running through the gateway.
 const telegramPlaceholder = "0000000000:clawpatrol-placeholder-do-not-use"
 
+// TelegramBotToken is part of the clawpatrol plugin API.
 type TelegramBotToken struct{}
 
+// InjectHTTP is part of the clawpatrol plugin API.
 func (t *TelegramBotToken) InjectHTTP(_ context.Context, req *http.Request, sec runtime.Secret) error {
 	if len(sec.Bytes) == 0 || req.URL == nil {
 		return nil
 	}
-	real := string(sec.Bytes)
+	actualToken := string(sec.Bytes)
 	swap := func(s string) string {
-		return strings.ReplaceAll(s, telegramPlaceholder, real)
+		return strings.ReplaceAll(s, telegramPlaceholder, actualToken)
 	}
 
 	if strings.Contains(req.URL.Path, telegramPlaceholder) {
@@ -62,6 +64,7 @@ func (t *TelegramBotToken) InjectHTTP(_ context.Context, req *http.Request, sec 
 	return nil
 }
 
+// SecretSlots is part of the clawpatrol plugin API.
 func (*TelegramBotToken) SecretSlots() []config.SecretSlot {
 	return []config.SecretSlot{{Label: "Telegram bot token"}}
 }

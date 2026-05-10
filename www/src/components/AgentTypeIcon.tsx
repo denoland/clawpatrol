@@ -23,7 +23,15 @@ export function AgentTypeIcon({ type, className = "" }: { type?: string; classNa
     );
   if (t === "shell")
     return (
-      <svg className={className} viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <svg
+        className={className}
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="#7c3aed"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
         <path d="M4 17l6-6-6-6" />
         <path d="M12 19h8" />
       </svg>

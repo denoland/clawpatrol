@@ -4,7 +4,7 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        mono: ['ui-monospace', '"SF Mono"', 'Menlo', 'monospace'],
+        mono: ["ui-monospace", '"SF Mono"', "Menlo", "monospace"],
       },
       letterSpacing: {
         tight12: ".12em",

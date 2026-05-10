@@ -23,6 +23,7 @@ import (
 	"bufio"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -66,7 +67,7 @@ func runRun(args []string) {
 
 	cfg, err := parseRunConf(*confPath)
 	if err != nil {
-		fail("conf %s: %v\n  hint: run `clawpatrol join --url <gw>` first", *confPath, err)
+		fail("conf %s: %v\n  hint: run `clawpatrol join <gw>` first", *confPath, err)
 	}
 
 	checkUserNS()
@@ -82,7 +83,7 @@ func runRun(args []string) {
 	}
 	pSock := os.NewFile(uintptr(sp[0]), "parent-sock")
 	cSock := os.NewFile(uintptr(sp[1]), "child-sock")
-	defer pSock.Close()
+	defer func() { _ = pSock.Close() }()
 	wgUpR, wgUpW, err := os.Pipe()
 	if err != nil {
 		fail("pipe: %v", err)
@@ -117,8 +118,8 @@ func runRun(args []string) {
 	if err := child.Start(); err != nil {
 		fail("clone: %v\n  hint: this distro may have unprivileged user namespaces disabled.\n  enable: sudo sysctl -w kernel.unprivileged_userns_clone=1", err)
 	}
-	cSock.Close()
-	wgUpR.Close()
+	_ = cSock.Close()
+	_ = wgUpR.Close()
 
 	tunFd, err := recvFD(pSock)
 	if err != nil {
@@ -139,8 +140,8 @@ func runRun(args []string) {
 	}
 	defer dev.Close()
 
-	wgUpW.Write([]byte{1})
-	wgUpW.Close()
+	_, _ = wgUpW.Write([]byte{1})
+	_ = wgUpW.Close()
 
 	sigCh := make(chan os.Signal, 4)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
@@ -151,7 +152,8 @@ func runRun(args []string) {
 	}()
 
 	if err := child.Wait(); err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
 			os.Exit(ee.ExitCode())
 		}
 		fail("wait: %v", err)
@@ -178,14 +180,14 @@ func runRunChild() {
 	if err := sendFD(cSock, tunFd); err != nil {
 		fail("send tun fd: %v", err)
 	}
-	cSock.Close()
-	unix.Close(tunFd)
+	_ = cSock.Close()
+	_ = unix.Close(tunFd)
 
 	one := make([]byte, 1)
 	if _, err := io.ReadFull(wgUpR, one); err != nil {
 		fail("wait wg-up: %v", err)
 	}
-	wgUpR.Close()
+	_ = wgUpR.Close()
 
 	cfg := mustParseRunConf(os.Getenv("CLAWPATROL_RUN_CONF"))
 	// Address may carry both v4 and v6 separated by ", " — gateway-emitted
@@ -285,7 +287,7 @@ func parseRunConf(path string) (*runConf, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	c := &runConf{}
 	section := ""
 	sc := bufio.NewScanner(f)
@@ -321,7 +323,7 @@ func parseRunConf(path string) (*runConf, error) {
 	if c.PrivateKey == "" || c.Address == "" || c.PeerPubKey == "" || c.Endpoint == "" {
 		return nil, fmt.Errorf("missing PrivateKey/Address/PublicKey/Endpoint")
 	}
-	os.Setenv("CLAWPATROL_RUN_CONF", path)
+	_ = os.Setenv("CLAWPATROL_RUN_CONF", path)
 	return c, nil
 }
 
@@ -385,8 +387,8 @@ func openTUN(name string) (int, error) {
 	copy(req.Name[:], name)
 	req.Flags = iffTun | iffNoPi
 	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), tunsetiff, uintptr(unsafe.Pointer(&req))); errno != 0 {
-		unix.Close(fd)
-		return -1, fmt.Errorf("TUNSETIFF: %v", errno)
+		_ = unix.Close(fd)
+		return -1, fmt.Errorf("TUNSETIFF: %w", errno)
 	}
 	return fd, nil
 }
@@ -425,7 +427,7 @@ func recvFD(s *os.File) (int, error) {
 		fds, err := unix.ParseUnixRights(&cmsg)
 		if err == nil && len(fds) > 0 {
 			for _, x := range fds[1:] {
-				unix.Close(x)
+				_ = unix.Close(x)
 			}
 			return fds[0], nil
 		}
@@ -439,10 +441,10 @@ func bindResolv(body string) error {
 		return err
 	}
 	if _, err := tmp.WriteString(body); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
-	tmp.Close()
+	_ = tmp.Close()
 	return unix.Mount(tmp.Name(), "/etc/resolv.conf", "", unix.MS_BIND, "")
 }
 
