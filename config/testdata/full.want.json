@@ -858,6 +858,19 @@
           "verdict": "allow"
         }
       },
+      "k8s-allow-meta": {
+        "body": {
+          "name": "k8s-allow-meta",
+          "family": "k8s",
+          "endpoints": [
+            "k8s-dev-ams",
+            "k8s-dev-ord",
+            "k8s-eks-deployng-prod"
+          ],
+          "condition": "k8s.verb == 'meta'",
+          "verdict": "allow"
+        }
+      },
       "k8s-debug-pods": {
         "body": {
           "name": "k8s-debug-pods",

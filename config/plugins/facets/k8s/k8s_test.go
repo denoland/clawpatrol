@@ -75,10 +75,16 @@ func TestParsePath(t *testing.T) {
 			},
 		},
 		{
-			name:   "non k8s path returns nil",
+			name:   "non-k8s-shaped path returns nil",
+			method: "GET",
+			rawURL: "/some/random/path",
+			want:   nil,
+		},
+		{
+			name:   "health probe parses as verb=meta",
 			method: "GET",
 			rawURL: "/healthz",
-			want:   nil,
+			want:   &Meta{Verb: "meta"},
 		},
 	}
 

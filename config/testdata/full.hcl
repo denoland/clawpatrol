@@ -1151,6 +1151,11 @@ rule "k8s-exec-content-check" {
   condition = "k8s.resource == 'pods/exec'"
   approve   = [k8s-exec-content-judge]
 }
+rule "k8s-allow-meta" {
+  endpoints = [k8s-dev-ams, k8s-dev-ord, k8s-eks-deployng-prod]
+  condition = "k8s.verb == 'meta'"
+  verdict   = "allow"
+}
 rule "k8s-reads" {
   endpoints = [k8s-dev-ams, k8s-dev-ord, k8s-eks-deployng-prod]
   condition = "k8s.verb in ['get', 'list', 'watch']"

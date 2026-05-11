@@ -176,6 +176,13 @@ func buildActivation(req *match.Request) map[string]any {
 //	/api/v1/namespaces/<ns>/<resource>/<name>/<sub> → subresource (exec / portforward / etc.)
 //	/apis/<group>/<v>/...                           → same shapes under named groups
 //
+// Non-resource URIs that kubectl / client-go probe reflexively
+// before any resource call (`/api`, `/apis`, `/api/<v>`, `/apis/<g>`,
+// `/apis/<g>/<v>`, `/healthz`, `/livez`, `/readyz`, `/version`,
+// `/openapi/...`, `/metrics`) parse as `verb = "meta"` with empty
+// resource. Configs allow them with `k8s.verb == "meta"` rather than
+// folding them into `list` / `get`.
+//
 // Verb derives from the HTTP method (GET → list/get/watch, POST →
 // create, PUT → update, PATCH → patch, DELETE → delete). GET
 // requests with watch=true are normalized to watch. kubectl uses
@@ -185,6 +192,9 @@ func parsePath(method, rawURL string) *Meta {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return nil
+	}
+	if isMetaPath(strings.Trim(u.Path, "/")) {
+		return &Meta{Verb: "meta"}
 	}
 	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
 	if len(parts) < 2 {
@@ -249,4 +259,28 @@ func parsePath(method, rawURL string) *Meta {
 		m.Verb = "watch"
 	}
 	return m
+}
+
+// isMetaPath reports whether p (URL path, leading/trailing slashes
+// trimmed) targets a non-resource k8s URI — API discovery, health
+// probes, version, OpenAPI schema, prometheus scrape. These are
+// hit reflexively by kubectl / client-go before any resource call.
+func isMetaPath(p string) bool {
+	switch p {
+	case "api", "apis", "healthz", "livez", "readyz", "version",
+		"metrics", "openapi":
+		return true
+	}
+	if strings.HasPrefix(p, "openapi/") {
+		return true
+	}
+	// /api/<v> with nothing after.
+	if rest, ok := strings.CutPrefix(p, "api/"); ok {
+		return !strings.Contains(rest, "/")
+	}
+	// /apis/<g> or /apis/<g>/<v>, nothing after.
+	if rest, ok := strings.CutPrefix(p, "apis/"); ok {
+		return strings.Count(rest, "/") <= 1
+	}
+	return false
 }
