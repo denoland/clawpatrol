@@ -11,7 +11,7 @@ import (
 	"github.com/denoland/clawpatrol/tools/docgen/internal/render"
 )
 
-// TestGeneratedDocIsFresh fails when site/doc/15-config-reference.md
+// TestGeneratedDocIsFresh fails when site/doc/config-reference.md
 // drifts from what the generator currently produces. Run
 // `go run ./tools/docgen` from the repo root and commit the result.
 func TestGeneratedDocIsFresh(t *testing.T) {
@@ -21,7 +21,7 @@ func TestGeneratedDocIsFresh(t *testing.T) {
 	}
 
 	root := repoRoot(t)
-	path := filepath.Join(root, "site", "doc", "15-config-reference.md")
+	path := filepath.Join(root, "site", "doc", "config-reference.md")
 	want, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
@@ -33,7 +33,7 @@ func TestGeneratedDocIsFresh(t *testing.T) {
 
 	wantLines := strings.Split(string(want), "\n")
 	gotLines := strings.Split(got, "\n")
-	t.Errorf("site/doc/15-config-reference.md is stale.\n"+
+	t.Errorf("site/doc/config-reference.md is stale.\n"+
 		"Run `go run ./tools/docgen` from the repo root and commit the result.\n"+
 		"Committed: %d lines; generated: %d lines.\n%s",
 		len(wantLines), len(gotLines), firstDiff(wantLines, gotLines))

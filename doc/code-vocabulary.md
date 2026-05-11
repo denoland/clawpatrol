@@ -3,7 +3,7 @@
 Implementation terms that appear in package docs and code comments.
 For user-facing concepts (gateway, agent, endpoint, rule, profile,
 credential, approver, mitm, ...) see the public
-[glossary](/docs/03a-glossary/).
+[glossary](/docs/glossary/).
 
 ## Plugin
 
@@ -105,11 +105,11 @@ The code path in `config/plugins/endpoints/postgres.go` that runs the
 SCRAM / cleartext handshake against the upstream and synthesizes
 `AuthenticationOk` for the agent — so the agent never participates in
 the upstream auth handshake. (User-facing description in the public
-[glossary](/docs/03a-glossary/#auth-offload).)
+[glossary](/docs/glossary/#auth-offload).)
 
 ## MitM / per-host cert
 
 The interception bridge uses node:tls's "loopback bridge" pattern.
-See the public glossary's [MitM](/docs/03a-glossary/#mitm) and
-[per-host cert](/docs/03a-glossary/#per-host-cert) entries, and
-[Architecture › MitM TLS Interception](/docs/04-architecture/#mitm-tls-interception).
+See the public glossary's [MitM](/docs/glossary/#mitm) and
+[per-host cert](/docs/glossary/#per-host-cert) entries, and
+[Architecture › MitM TLS Interception](/docs/architecture/#mitm-tls-interception).
