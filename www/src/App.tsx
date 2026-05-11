@@ -7,7 +7,7 @@ import { LiveRequests } from "./components/LiveRequests";
 import { OnboardPage } from "./components/OnboardPage";
 import { RequestDetailPage } from "./components/RequestDetailPage";
 import { AddDeviceModal } from "./components/AddDeviceModal";
-import { SettingsModal } from "./components/SettingsModal";
+import { SettingsPage } from "./components/SettingsPage";
 import { HITLBar } from "./components/HITLBar";
 import { getState, type Agent, type Integration, type UpdateBanner, type Whoami } from "./lib/api";
 
@@ -16,7 +16,8 @@ type Route =
   | { name: "device"; ip: string }
   | { name: "analytics"; ip?: string }
   | { name: "onboard"; code: string }
-  | { name: "request"; id: string };
+  | { name: "request"; id: string }
+  | { name: "settings" };
 
 function parseRoute(): Route {
   // Strip query string before matching routes.
@@ -27,6 +28,7 @@ function parseRoute(): Route {
     return { name: "onboard", code: decodeURIComponent(h.slice("#/onboard/".length)) };
   const r = h.match(/^#\/request\/([^/]+)$/);
   if (r) return { name: "request", id: decodeURIComponent(r[1]) };
+  if (h === "#/settings") return { name: "settings" };
   if (h === "#/analytics") return { name: "analytics" };
   const a = h.match(/^#\/analytics\/([^/]+)$/);
   if (a) return { name: "analytics", ip: decodeURIComponent(a[1]) };
@@ -47,7 +49,6 @@ export default function App() {
   const [connectId, setConnectId] = useState<string | null>(null);
   const [connectProfile, setConnectProfile] = useState<string | undefined>(undefined);
   const [showAddDevice, setShowAddDevice] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
   const [route, setRoute] = useState(parseRoute());
 
   useEffect(() => {
@@ -118,10 +119,10 @@ export default function App() {
                 <path d="m7 16 4-8 4 4 4-6" />
               </svg>
             </a>
-            <button
-              onClick={() => setShowSettings(true)}
+            <a
+              href="#/settings"
               className="w-[36px] h-[36px] rounded-full border border-[#e5e5e5] text-[#525252] flex items-center justify-center hover:border-[#171717] hover:text-[#171717] transition-colors"
-              title="settings (gateway.hcl)"
+              title="settings"
             >
               <svg
                 width="16"
@@ -136,7 +137,7 @@ export default function App() {
                 <circle cx="12" cy="12" r="3" />
                 <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
               </svg>
-            </button>
+            </a>
           </div>
           <section className="bg-white border border-[#e5e5e5] rounded overflow-hidden">
             <div className="overflow-x-auto">
@@ -156,6 +157,17 @@ export default function App() {
         <RequestDetailPage id={route.id} agents={agents} />
       ) : route.name === "onboard" ? (
         <OnboardPage code={route.code} onBack={() => navigate("")} />
+      ) : route.name === "settings" ? (
+        <SettingsPage
+          integrations={integrations}
+          whoami={whoami}
+          readOnlyConfig={readOnlyConfig}
+          onConnect={(id, profile) => {
+            setConnectId(id);
+            setConnectProfile(profile);
+          }}
+          onRefresh={refresh}
+        />
       ) : (
         <DevicePage
           ip={route.ip}
@@ -173,13 +185,6 @@ export default function App() {
       )}
       {showAddDevice && (
         <AddDeviceModal publicURL={whoami?.public_url} onClose={() => setShowAddDevice(false)} />
-      )}
-      {showSettings && (
-        <SettingsModal
-          readOnly={readOnlyConfig}
-          onClose={() => setShowSettings(false)}
-          onSaved={refresh}
-        />
       )}
       {connectId && (
         <ConnectModal

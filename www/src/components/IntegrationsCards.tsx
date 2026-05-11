@@ -38,12 +38,17 @@ export function IntegrationsCards({
   list,
   whoami,
   profile,
+  showAll,
   onConnect,
   onRefresh,
 }: {
   list: Integration[];
   whoami: Whoami | null;
   profile?: string;
+  // When true, render every card in the grid (no overflow button,
+  // no "+ K more" modal). Used by the Settings page where the
+  // integrations row IS the page and there's space for the full list.
+  showAll?: boolean;
   onConnect: (id: string, profile?: string) => void;
   onRefresh: () => void;
 }) {
@@ -64,7 +69,7 @@ export function IntegrationsCards({
     return score(a) - score(b);
   });
 
-  const overflow = sorted.length > VISIBLE_CAP;
+  const overflow = !showAll && sorted.length > VISIBLE_CAP;
   const visible = overflow ? sorted.slice(0, VISIBLE_CAP - 1) : sorted;
   const hiddenCount = sorted.length - visible.length;
 
