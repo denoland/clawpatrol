@@ -120,8 +120,13 @@ func dumpEntityMap(m map[string]*Entity) map[string]any {
 	}
 	out := map[string]any{}
 	for name, ent := range m {
-		row := map[string]any{
-			"type": ent.Plugin.Type,
+		row := map[string]any{}
+		// One-label kinds (rule) carry an empty Plugin.Type — the
+		// block header has no type label to dump. Family lives on
+		// the built body (rules infer it from their endpoints) and
+		// gets serialized there.
+		if ent.Plugin.Type != "" {
+			row["type"] = ent.Plugin.Type
 		}
 		if ent.Plugin.Family != "" {
 			row["family"] = ent.Plugin.Family

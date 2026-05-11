@@ -251,7 +251,14 @@ func emitOne(body *hclwrite.Body, p *Policy, kind Kind, name string) bool {
 
 func emitEntityBlock(body *hclwrite.Body, kind string, ent *Entity, name string) {
 	body.AppendNewline()
-	block := body.AppendNewBlock(kind, []string{ent.Plugin.Type, name}).Body()
+	labels := []string{ent.Plugin.Type, name}
+	if ent.Symbol.Kind.LabelCount() == 1 {
+		// Single-label kinds (rule) omit the type label — the block
+		// header is `rule "<name>" { ... }` and the plugin is the
+		// kind's single registered entry.
+		labels = []string{name}
+	}
+	block := body.AppendNewBlock(kind, labels).Body()
 	if ent.Plugin.Emit != nil {
 		ent.Plugin.Emit(ent.Body, name, block)
 	}

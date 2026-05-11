@@ -14,14 +14,15 @@ import (
 	"github.com/hashicorp/hcl/v2/hclwrite"
 )
 
-// Kind names a class of policy block. The four kinds with plugin-
-// dispatched types — KindEndpoint, KindCredential, KindRule,
-// KindApprover — read their type from the block's first label
-// (e.g. `endpoint "https" "github-avocet"` → Type="https").
+// Kind names a class of policy block. The plugin-dispatched two-label
+// kinds — KindEndpoint, KindCredential, KindApprover, KindTunnel —
+// read their type from the block's first label (e.g. `endpoint "https"
+// "github-avocet"` → Type="https").
 //
-// KindPolicy and KindProfile are one-label blocks with fixed schemas;
-// they're listed so the symbol table can record their names and detect
-// collisions across the flat namespace.
+// KindRule, KindPolicy and KindProfile are one-label blocks. KindRule
+// has a single registered plugin (Type="") and infers its protocol
+// family from the endpoints it targets at validate/build time. The
+// other two have fixed schemas.
 type Kind string
 
 // Plugin kind constants enumerate supported config block kinds.
@@ -39,9 +40,9 @@ const (
 // (excluding the kind keyword itself).
 func (k Kind) LabelCount() int {
 	switch k {
-	case KindEndpoint, KindCredential, KindRule, KindApprover, KindTunnel:
+	case KindEndpoint, KindCredential, KindApprover, KindTunnel:
 		return 2 // first = type, second = name
-	case KindPolicy, KindProfile:
+	case KindRule, KindPolicy, KindProfile:
 		return 1 // name
 	}
 	return 0
@@ -64,8 +65,9 @@ type Plugin struct {
 
 	// Family classifies an endpoint's protocol so rule plugins can
 	// constrain which endpoints they target. Set on KindEndpoint
-	// plugins ("https" | "sql" | "k8s"). KindRule plugins set
-	// Families to the families they accept.
+	// plugins ("https" | "sql" | "k8s"). KindRule, with a single
+	// unified plugin, leaves these empty — family is inferred from
+	// the rule's resolved endpoints at validate/build time.
 	Family   string
 	Families []string
 

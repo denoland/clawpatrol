@@ -1,8 +1,8 @@
 // Package https is the HTTPS protocol-family facet. It owns the
 // HTTPS CEL environment (method / path / query / headers / body /
-// body_json), the matcher that walks an HTTP-shaped match.Request,
-// and the per-family report fields the dashboard renders for an
-// HTTPS request.
+// body_json, exposed as fields on the `http` variable), the matcher
+// that walks an HTTP-shaped match.Request, and the per-family report
+// fields the dashboard renders for an HTTPS request.
 //
 // HTTPS leaves match.Request.Meta nil — every variable the matcher
 // reads comes from the request snapshot the gateway already
@@ -13,15 +13,35 @@ package https
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/ext"
+	structpb "google.golang.org/protobuf/types/known/structpb"
 
-	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/facet"
 	"github.com/denoland/clawpatrol/config/match"
-	"github.com/denoland/clawpatrol/config/plugins/rules"
 )
+
+// HttpsFields is the CEL-facing view of an HTTPS request. Exposed
+// as the `http` variable in rule conditions (`http.method`,
+// `http.path`, `http.body_json`, etc.). The variable name is short
+// (`http`, not `https`) to keep conditions readable; the facet name
+// is `https` because the wire is TLS.
+//
+// BodyJson is *structpb.Value rather than `any` because cel-go's
+// NativeTypes converter drops interface-typed struct fields silently;
+// google.protobuf.Value gives the field the dyn-shape the operator
+// expects when writing `http.body_json.archived == true` style
+// predicates.
+type HttpsFields struct {
+	Method   string              `cel:"method"`
+	Path     string              `cel:"path"`
+	Query    map[string][]string `cel:"query"`
+	Headers  map[string][]string `cel:"headers"`
+	Body     string              `cel:"body"`
+	BodyJson *structpb.Value     `cel:"body_json"`
+}
 
 // Facet is the HTTPS facet Runtime. Singleton; held by the registry
 // for the lifetime of the process.
@@ -30,13 +50,10 @@ type Facet struct{}
 // Name reports the family identifier this facet handles.
 func (Facet) Name() string { return "https" }
 
-// RuleType reports the HCL rule label that targets this facet.
-func (Facet) RuleType() string { return "http_rule" }
-
 // EndpointFamilies enumerates endpoint families a rule of this facet
 // may attach to. Kubernetes endpoints are also `https`-family because
 // the kubernetes API is HTTPS-shaped; they get their k8s-specific
-// matchers through k8s_rule, not through http_rule.
+// matchers through the k8s facet, not through http rules.
 func (Facet) EndpointFamilies() []string { return []string{"https"} }
 
 // Transport reports the gateway-side dispatch handler this facet uses.
@@ -82,21 +99,18 @@ var celEnv *cel.Env
 func init() {
 	env, err := cel.NewEnv(
 		ext.Sets(),
-		cel.Variable("method", cel.StringType),
-		cel.Variable("path", cel.StringType),
-		cel.Variable("query", cel.MapType(cel.StringType, cel.ListType(cel.StringType))),
-		cel.Variable("headers", cel.MapType(cel.StringType, cel.ListType(cel.StringType))),
-		cel.Variable("body", cel.StringType),
-		cel.Variable("body_json", cel.DynType),
+		ext.NativeTypes(
+			reflect.TypeFor[HttpsFields](),
+			ext.ParseStructTags(true),
+		),
+		cel.Variable("http", cel.ObjectType("https.HttpsFields")),
 	)
 	if err != nil {
 		panic(fmt.Sprintf("https facet: cel env: %v", err))
 	}
 	celEnv = env
 
-	f := Facet{}
-	facet.Register(f)
-	config.Register(rules.PluginFor(f))
+	facet.Register(Facet{})
 }
 
 // NewMatcher compiles a CEL condition into a Matcher. An empty
@@ -112,33 +126,45 @@ func buildActivation(req *match.Request) map[string]any {
 	if req == nil {
 		return nil
 	}
-	act := map[string]any{
-		"method": req.Method,
-		"path":   match.PathOf(req.URL),
+	f := &HttpsFields{
+		Method:  req.Method,
+		Path:    match.PathOf(req.URL),
+		Headers: mapToCEL(req.Headers),
+		Body:    string(req.Body),
 	}
 	if req.URL != nil {
-		act["query"] = mapToCEL(req.URL.Query())
+		f.Query = mapToCEL(req.URL.Query())
 	} else {
-		act["query"] = map[string][]string{}
+		f.Query = map[string][]string{}
 	}
-	act["headers"] = mapToCEL(req.Headers)
-	act["body"] = string(req.Body)
-	// body_json is parsed lazily; provide a deferred value via
-	// a thunk-shaped wrapper. CEL doesn't support lazy bindings
-	// directly, so we parse upfront only when the body looks like
-	// JSON. The cost is bounded by request body size, which the
-	// gateway already limits.
-	if len(req.Body) > 0 {
-		var v any
-		if err := json.Unmarshal(req.Body, &v); err == nil {
-			act["body_json"] = v
-		} else {
-			act["body_json"] = map[string]any{}
-		}
-	} else {
-		act["body_json"] = map[string]any{}
+	// body_json is parsed eagerly when the body looks like JSON. The
+	// cost is bounded by request body size, which the gateway already
+	// limits. Empty body / parse error → an empty struct value, so
+	// `http.body_json.<field>` evaluates to null rather than blowing
+	// up at request time.
+	f.BodyJson = parseBodyJSON(req.Body)
+	return map[string]any{"http": f}
+}
+
+// parseBodyJSON converts a raw request body into a *structpb.Value
+// for the body_json field. JSON-shaped input lands as the matching
+// structpb tree (objects → Struct, arrays → List, scalars → their
+// natural type); non-JSON / empty input falls back to an empty
+// struct so field accesses yield null.
+func parseBodyJSON(body []byte) *structpb.Value {
+	empty := structpb.NewStructValue(&structpb.Struct{Fields: map[string]*structpb.Value{}})
+	if len(body) == 0 {
+		return empty
 	}
-	return act
+	var raw any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return empty
+	}
+	v, err := structpb.NewValue(raw)
+	if err != nil {
+		return empty
+	}
+	return v
 }
 
 // mapToCEL converts a net/http map-of-string-list to a plain

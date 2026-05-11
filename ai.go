@@ -22,16 +22,14 @@ const ruleSystemPrompt = `You edit clawpatrol gateway policy expressed in the v1
 
 # Grammar
 
-A rule is a top-level block with two labels: rule TYPE NAME { ... }.
-TYPE is one of:
+A rule is a top-level block with one label: rule NAME { ... }. The
+rule's protocol family (https / sql / k8s) is inferred from the
+endpoint(s) it targets — all endpoints on one rule must be from the
+same family.
 
-  http_rule  — for endpoints whose family is "https" / "kubernetes"
-  sql_rule   — for endpoints whose family is "sql"  (postgres / clickhouse)
-  k8s_rule   — for endpoints whose family is "k8s"
+Body shape:
 
-Body shape (every type shares the outer frame):
-
-  rule "http_rule" "name-of-rule" {
+  rule "name-of-rule" {
     endpoint   = some-endpoint                   # bare-name ref (no quotes)
     # endpoints = [a, b]                          # list form for multi-endpoint
     priority   = 100                              # optional; default 0
@@ -46,27 +44,32 @@ Exactly one of verdict / approve must be set.
 
 # Per-family CEL variables
 
-http_rule:  method (string), path (string), query (map<string,list<string>>),
-            headers (map<string,list<string>>), body (string), body_json (dyn)
-sql_rule:   verb (string, lower-case), tables (list<string>),
-            functions (list<string>), statement (string)
-k8s_rule:   resource (string), verb (string, lower-case),
-            ns (string; the namespace), name (string),
-            params (map<string,string>)
+Each family exposes a single struct-typed variable. Fields are
+accessed via dot notation.
+
+https endpoints:  http.method, http.path,
+                  http.query (map<string,list<string>>),
+                  http.headers (map<string,list<string>>),
+                  http.body (string), http.body_json (dyn)
+sql endpoints:    sql.verb (lower-case), sql.tables (list<string>),
+                  sql.function (list<string>), sql.statement (string)
+k8s endpoints:    k8s.resource, k8s.verb (lower-case),
+                  k8s.namespace, k8s.name,
+                  k8s.params (map<string,string>)
 
 Use CEL operators / builtins: ==, !=, &&, ||, !, in, startsWith,
 endsWith, contains, matches (regex), size().
 
 Examples:
 
-  condition = "method in ['POST', 'DELETE']"
-  condition = "'secrets' in tables || tables.exists(t, t.startsWith('audit.'))"
-  condition = "verb == 'drop'"
-  condition = "resource == 'secrets' && verb in ['get', 'list']"
-  condition = "!name.startsWith('debug-')"
-  condition = "statement.matches('(?i)copy.*from program')"
-  condition = "body.contains('approve_reply_')"
-  condition = "body_json.archived == true"
+  condition = "http.method in ['POST', 'DELETE']"
+  condition = "'secrets' in sql.tables || sql.tables.exists(t, t.startsWith('audit.'))"
+  condition = "sql.verb == 'drop'"
+  condition = "k8s.resource == 'secrets' && k8s.verb in ['get', 'list']"
+  condition = "!k8s.name.startsWith('debug-')"
+  condition = "sql.statement.matches('(?i)copy.*from program')"
+  condition = "http.body.contains('approve_reply_')"
+  condition = "http.body_json.archived == true"
 
 # References
 

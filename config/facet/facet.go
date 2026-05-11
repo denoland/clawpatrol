@@ -32,15 +32,10 @@ type Runtime interface {
 	// `family` string carried on endpoints and rules.
 	Name() string
 
-	// RuleType is the HCL block label used for rules targeting this
-	// facet ("http_rule", "sql_rule", "k8s_rule"). The rules plugin
-	// registers one config.KindRule entry per facet using this name.
-	RuleType() string
-
 	// EndpointFamilies lists the endpoint families a rule of this
 	// facet is allowed to attach to. Almost always a single entry
-	// equal to Name(); kept as a slice because the existing
-	// RefSpec.FamilyConstraint takes a slice.
+	// equal to Name(); kept as a slice because rule family inference
+	// (the per-endpoint family check at validate time) takes a set.
 	EndpointFamilies() []string
 
 	// Transport names the gateway-side handler that owns the wire
@@ -137,9 +132,6 @@ func Register(r Runtime) {
 	name := r.Name()
 	if name == "" {
 		panic("facet.Register: empty Name")
-	}
-	if r.RuleType() == "" {
-		panic(fmt.Sprintf("facet.Register(%s): empty RuleType", name))
 	}
 	registry.Lock()
 	defer registry.Unlock()

@@ -1,9 +1,9 @@
 // Package k8s is the Kubernetes protocol-family facet. It owns the
-// k8s CEL environment (resource / verb / ns / name / params),
-// the matcher that walks a parsed Kubernetes API request, the Meta
-// type derived from the request URL, the path parser that produces
-// that Meta, and the per-family report fields the dashboard shows
-// for a k8s call.
+// k8s CEL environment (resource / verb / namespace / name / params,
+// exposed as fields on the `k8s` variable), the matcher that walks a
+// parsed Kubernetes API request, the Meta type derived from the
+// request URL, the path parser that produces that Meta, and the
+// per-family report fields the dashboard shows for a k8s call.
 //
 // Kubernetes traffic is HTTPS at the wire level, so the gateway's
 // HTTPS handler populates match.Request.Method/URL/Headers before
@@ -15,16 +15,27 @@ package k8s
 import (
 	"fmt"
 	"net/url"
+	"reflect"
 	"strings"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/ext"
 
-	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/facet"
 	"github.com/denoland/clawpatrol/config/match"
-	"github.com/denoland/clawpatrol/config/plugins/rules"
 )
+
+// K8sFields is the CEL-facing view of a kubernetes request. Exposed
+// as the `k8s` variable in rule conditions (`k8s.verb`,
+// `k8s.namespace`, etc.). Tag-driven field naming keeps the Go field
+// names idiomatic while preserving the on-the-wire CEL names.
+type K8sFields struct {
+	Verb      string            `cel:"verb"`
+	Resource  string            `cel:"resource"`
+	Namespace string            `cel:"namespace"`
+	Name      string            `cel:"name"`
+	Params    map[string]string `cel:"params"`
+}
 
 // Meta is the (verb, resource, namespace, name, params) tuple
 // derived from a Kubernetes API path. Empty fields when the request
@@ -46,10 +57,7 @@ type Facet struct{}
 // Name reports the family identifier this facet handles.
 func (Facet) Name() string { return "k8s" }
 
-// RuleType reports the HCL rule label that targets this facet.
-func (Facet) RuleType() string { return "k8s_rule" }
-
-// EndpointFamilies enumerates endpoint families a k8s_rule may attach
+// EndpointFamilies enumerates endpoint families a k8s rule may attach
 // to.
 func (Facet) EndpointFamilies() []string { return []string{"k8s"} }
 
@@ -109,20 +117,18 @@ var celEnv *cel.Env
 func init() {
 	env, err := cel.NewEnv(
 		ext.Sets(),
-		cel.Variable("resource", cel.StringType),
-		cel.Variable("verb", cel.StringType),
-		cel.Variable("ns", cel.StringType),
-		cel.Variable("name", cel.StringType),
-		cel.Variable("params", cel.MapType(cel.StringType, cel.StringType)),
+		ext.NativeTypes(
+			reflect.TypeFor[K8sFields](),
+			ext.ParseStructTags(true),
+		),
+		cel.Variable("k8s", cel.ObjectType("k8s.K8sFields")),
 	)
 	if err != nil {
 		panic(fmt.Sprintf("k8s facet: cel env: %v", err))
 	}
 	celEnv = env
 
-	f := Facet{}
-	facet.Register(f)
-	config.Register(rules.PluginFor(f))
+	facet.Register(Facet{})
 }
 
 // NewMatcher compiles a CEL condition into a Matcher. An empty
@@ -147,11 +153,13 @@ func buildActivation(req *match.Request) map[string]any {
 		params = map[string]string{}
 	}
 	return map[string]any{
-		"resource":  meta.Resource,
-		"verb":      strings.ToLower(meta.Verb),
-		"ns":        meta.Namespace,
-		"name":      meta.Name,
-		"params":    params,
+		"k8s": &K8sFields{
+			Verb:      strings.ToLower(meta.Verb),
+			Resource:  meta.Resource,
+			Namespace: meta.Namespace,
+			Name:      meta.Name,
+			Params:    params,
+		},
 	}
 }
 

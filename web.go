@@ -1587,7 +1587,6 @@ func (w *webMux) apiFacets(rw http.ResponseWriter, r *http.Request) {
 	}
 	type facetJSON struct {
 		Name             string            `json:"name"`
-		RuleType         string            `json:"rule_type"`
 		EndpointFamilies []string          `json:"endpoint_families"`
 		Transport        string            `json:"transport,omitempty"`
 		HITLQueryLabel   string            `json:"hitl_query_label,omitempty"`
@@ -1600,7 +1599,6 @@ func (w *webMux) apiFacets(rw http.ResponseWriter, r *http.Request) {
 		fks := f.ReportFields()
 		entry := facetJSON{
 			Name:             f.Name(),
-			RuleType:         f.RuleType(),
 			EndpointFamilies: f.EndpointFamilies(),
 			Transport:        f.Transport(),
 			HITLQueryLabel:   f.HITLQueryLabel(),

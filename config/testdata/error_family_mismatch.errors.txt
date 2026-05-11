@@ -1,1 +1,1 @@
-error: error_family_mismatch.hcl:9:1: Incompatible endpoint family for "github" — Rule "wrong-family" (k8s_rule) accepts endpoint families [k8s] but "github" is family "https".
+error: error_family_mismatch.hcl:16:1: Rule "mixed-family" targets endpoints from mixed families — Endpoints span families [https sql]. A rule's CEL condition is evaluated against a single facet's variable set; split into one rule per family.

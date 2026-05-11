@@ -39,43 +39,43 @@ func TestHTTPMatcherMethodAndPath(t *testing.T) {
 		},
 		{
 			"method list, GET hit",
-			"method in ['GET', 'HEAD']",
+			"http.method in ['GET', 'HEAD']",
 			httpReq("GET", "/x"),
 			true,
 		},
 		{
 			"method list, POST miss",
-			"method in ['GET', 'HEAD']",
+			"http.method in ['GET', 'HEAD']",
 			httpReq("POST", "/x"),
 			false,
 		},
 		{
 			"method scalar",
-			"method == 'DELETE'",
+			"http.method == 'DELETE'",
 			httpReq("DELETE", "/x"),
 			true,
 		},
 		{
 			"path exact",
-			"path == '/v1/refunds'",
+			"http.path == '/v1/refunds'",
 			httpReq("POST", "/v1/refunds"),
 			true,
 		},
 		{
 			"path startsWith + endsWith for glob",
-			"path.startsWith('/v1/charges/') && path.endsWith('/refund')",
+			"http.path.startsWith('/v1/charges/') && http.path.endsWith('/refund')",
 			httpReq("POST", "/v1/charges/abc/refund"),
 			true,
 		},
 		{
 			"path list any-of",
-			"path in ['/a', '/b']",
+			"http.path in ['/a', '/b']",
 			httpReq("POST", "/b"),
 			true,
 		},
 		{
 			"path list miss",
-			"path in ['/a', '/b']",
+			"http.path in ['/a', '/b']",
 			httpReq("POST", "/c"),
 			false,
 		},
@@ -94,7 +94,7 @@ func TestHTTPMatcherMethodAndPath(t *testing.T) {
 }
 
 func TestHTTPMatcherBodyJSON(t *testing.T) {
-	m, err := facet.NewMatcher("https", "method == 'PATCH' && body_json.archived == true")
+	m, err := facet.NewMatcher("https", "http.method == 'PATCH' && http.body_json.archived == true")
 	if err != nil {
 		t.Fatal(err)
 	}

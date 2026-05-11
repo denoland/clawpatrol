@@ -1,30 +1,41 @@
 // Package sql is the SQL protocol-family facet. It owns the SQL CEL
-// environment (verb / tables / functions / statement), the matcher
-// that walks a parsed SQL statement, the Meta type wire-frame
-// frontends (postgres, clickhouse) populate on match.Request.Meta,
-// and the per-family report fields the dashboard shows for a SQL
-// query.
+// environment (verb / tables / function / statement, exposed as
+// fields on the `sql` variable), the matcher that walks a parsed SQL
+// statement, the Meta type wire-frame frontends (postgres,
+// clickhouse) populate on match.Request.Meta, and the per-family
+// report fields the dashboard shows for a SQL query.
 //
 // SQL endpoints derive Meta themselves from the wire frame (the
 // postgres / clickhouse runtimes parse the Query message and stash
 // a *Meta on the request before dispatch), so PrepareRequest is a
 // no-op. The matcher type-asserts req.Meta to *Meta and fails the
 // match cleanly when the assertion fails — e.g. when an https-
-// family request accidentally reaches a sql_rule.
+// family request accidentally reaches a sql rule.
 package sql
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/ext"
 
-	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/facet"
 	"github.com/denoland/clawpatrol/config/match"
-	"github.com/denoland/clawpatrol/config/plugins/rules"
 )
+
+// SqlFields is the CEL-facing view of a SQL statement. Exposed as
+// the `sql` variable in rule conditions (`sql.verb`, `sql.tables`,
+// `sql.function`, `sql.statement`). The Go-level Function field is
+// named in singular to match the CEL field; the dashboard column
+// stays plural ("functions") for readability.
+type SqlFields struct {
+	Verb      string   `cel:"verb"`
+	Tables    []string `cel:"tables"`
+	Function  []string `cel:"function"`
+	Statement string   `cel:"statement"`
+}
 
 // Meta carries the per-request SQL fields the matcher reads. The
 // postgres and clickhouse endpoint runtimes build one of these from
@@ -43,10 +54,7 @@ type Facet struct{}
 // Name reports the family identifier this facet handles.
 func (Facet) Name() string { return "sql" }
 
-// RuleType reports the HCL rule label that targets this facet.
-func (Facet) RuleType() string { return "sql_rule" }
-
-// EndpointFamilies enumerates endpoint families a sql_rule may
+// EndpointFamilies enumerates endpoint families a sql rule may
 // attach to.
 func (Facet) EndpointFamilies() []string { return []string{"sql"} }
 
@@ -100,19 +108,18 @@ var celEnv *cel.Env
 func init() {
 	env, err := cel.NewEnv(
 		ext.Sets(),
-		cel.Variable("verb", cel.StringType),
-		cel.Variable("tables", cel.ListType(cel.StringType)),
-		cel.Variable("functions", cel.ListType(cel.StringType)),
-		cel.Variable("statement", cel.StringType),
+		ext.NativeTypes(
+			reflect.TypeFor[SqlFields](),
+			ext.ParseStructTags(true),
+		),
+		cel.Variable("sql", cel.ObjectType("sql.SqlFields")),
 	)
 	if err != nil {
 		panic(fmt.Sprintf("sql facet: cel env: %v", err))
 	}
 	celEnv = env
 
-	f := Facet{}
-	facet.Register(f)
-	config.Register(rules.PluginFor(f))
+	facet.Register(Facet{})
 }
 
 // NewMatcher compiles a CEL condition into a Matcher. An empty
@@ -133,10 +140,12 @@ func buildActivation(req *match.Request) map[string]any {
 		return nil
 	}
 	return map[string]any{
-		"verb":      strings.ToLower(meta.Verb),
-		"tables":    coalesceList(meta.Tables),
-		"functions": coalesceList(meta.Functions),
-		"statement": meta.Statement,
+		"sql": &SqlFields{
+			Verb:      strings.ToLower(meta.Verb),
+			Tables:    coalesceList(meta.Tables),
+			Function:  coalesceList(meta.Functions),
+			Statement: meta.Statement,
+		},
 	}
 }
 

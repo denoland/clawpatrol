@@ -16,7 +16,7 @@
 #   policy     "<name>"               reusable LLM proctor prompt
 #   credential "<type>" "<name>"      typed handle to a secret
 #   endpoint   "<type>" "<name>"      typed upstream binding
-#   rule       "<type>" "<name>"      one policy decision targeting
+#   rule       "<name>"               one policy decision targeting
 #                                     one or more endpoints
 #   profile    "<name>"               endpoint membership list — a
 #                                     device's profile gets exactly
@@ -94,18 +94,18 @@ approver "human_approver" "ops" {
   timeout = 600
 }
 
-# Rules: typed by protocol family. http_rule applies to https endpoints,
-# sql_rule to postgres / clickhouse_*, k8s_rule to kubernetes.
+# Rules: family is inferred from each rule's endpoint(s). The
+# condition's CEL variable is `http`, `sql`, or `k8s` accordingly.
 
-rule "http_rule" "github-reads" {
+rule "github-reads" {
   endpoint  = github
-  condition = "method in ['GET', 'HEAD']"
+  condition = "http.method in ['GET', 'HEAD']"
   verdict   = "allow"
 }
 
-rule "http_rule" "github-writes" {
+rule "github-writes" {
   endpoint  = github
-  condition = "method in ['POST', 'PUT', 'PATCH', 'DELETE']"
+  condition = "http.method in ['POST', 'PUT', 'PATCH', 'DELETE']"
   approve   = [ops]
 }
 

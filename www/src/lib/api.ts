@@ -429,7 +429,6 @@ export type EventRecord = {
 // list of protocol families.
 export type FacetSchema = {
   name: string;
-  rule_type: string;
   endpoint_families: string[];
   transport?: string;
   hitl_query_label?: string;

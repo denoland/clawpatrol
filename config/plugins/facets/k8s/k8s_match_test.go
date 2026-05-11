@@ -10,8 +10,8 @@ import (
 
 func TestK8sMatcherNegationAndGlobs(t *testing.T) {
 	m, err := facet.NewMatcher("k8s",
-		"verb in ['create', 'update', 'patch', 'delete'] && !name.startsWith('debug-') "+
-			"&& !resource.endsWith('/exec') && !resource.endsWith('/attach') && !resource.endsWith('/portforward')")
+		"k8s.verb in ['create', 'update', 'patch', 'delete'] && !k8s.name.startsWith('debug-') "+
+			"&& !k8s.resource.endsWith('/exec') && !k8s.resource.endsWith('/attach') && !k8s.resource.endsWith('/portforward')")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestK8sMatcherNegationAndGlobs(t *testing.T) {
 }
 
 func TestK8sMatcherParams(t *testing.T) {
-	m, err := facet.NewMatcher("k8s", "resource in ['pods/exec', 'pods/attach'] && params.stdin == 'true'")
+	m, err := facet.NewMatcher("k8s", "k8s.resource in ['pods/exec', 'pods/attach'] && k8s.params.stdin == 'true'")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestK8sMatcherParams(t *testing.T) {
 }
 
 func TestK8sMatcherWatchVerbAndParams(t *testing.T) {
-	m, err := facet.NewMatcher("k8s", "verb == 'watch' && resource == 'pods' && params.watch == 'true'")
+	m, err := facet.NewMatcher("k8s", "k8s.verb == 'watch' && k8s.resource == 'pods' && k8s.params.watch == 'true'")
 	if err != nil {
 		t.Fatal(err)
 	}

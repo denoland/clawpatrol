@@ -7,9 +7,9 @@ endpoint "https" "github" {
 
 # Syntactically invalid CEL — unbalanced quote.
 # The compile step must surface the parse error.
-rule "http_rule" "broken" {
+rule "broken" {
   endpoint  = github
-  condition = "method == 'GET"
+  condition = "http.method == 'GET"
   verdict   = "allow"
 }
 

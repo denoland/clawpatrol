@@ -18,15 +18,15 @@ approver "human_approver" "ops" {
   timeout = 600
 }
 
-rule "http_rule" "github-reads" {
+rule "github-reads" {
   endpoint  = github
-  condition = "method in ['GET', 'HEAD']"
+  condition = "http.method in ['GET', 'HEAD']"
   verdict   = "allow"
 }
 
-rule "http_rule" "github-writes" {
+rule "github-writes" {
   endpoint  = github
-  condition = "method in ['POST', 'PATCH', 'DELETE']"
+  condition = "http.method in ['POST', 'PATCH', 'DELETE']"
   approve   = [ops]
 }
 

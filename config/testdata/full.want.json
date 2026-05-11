@@ -742,8 +742,7 @@
           "priority": -100,
           "verdict": "deny",
           "reason": "ClickHouse access is read-only"
-        },
-        "type": "sql_rule"
+        }
       },
       "clickhouse-reads": {
         "body": {
@@ -753,10 +752,9 @@
             "ch-o11y-https",
             "ch-o11y-native"
           ],
-          "condition": "verb in ['select', 'show', 'describe', 'explain', 'use']",
+          "condition": "sql.verb in ['select', 'show', 'describe', 'explain', 'use']",
           "verdict": "allow"
-        },
-        "type": "sql_rule"
+        }
       },
       "deno-deploy-default": {
         "body": {
@@ -768,8 +766,7 @@
           "priority": -100,
           "verdict": "deny",
           "reason": "console.deno.com mutations require an explicit approval rule"
-        },
-        "type": "http_rule"
+        }
       },
       "deno-deploy-reads": {
         "body": {
@@ -778,10 +775,9 @@
           "endpoints": [
             "deno-deploy"
           ],
-          "condition": "method == 'GET'",
+          "condition": "http.method == 'GET'",
           "verdict": "allow"
-        },
-        "type": "http_rule"
+        }
       },
       "deno-deploy-reply-on-behalf": {
         "body": {
@@ -790,7 +786,7 @@
           "endpoints": [
             "deno-deploy"
           ],
-          "condition": "method == 'POST' && path == '/api/trpc/admin.supportTickets.replyOnBehalf'",
+          "condition": "http.method == 'POST' && http.path == '/api/trpc/admin.supportTickets.replyOnBehalf'",
           "approve": [
             {
               "name": "reply-content-judge"
@@ -799,8 +795,7 @@
               "name": "support-ops"
             }
           ]
-        },
-        "type": "http_rule"
+        }
       },
       "deno-deploy-ticket-mutations": {
         "body": {
@@ -809,14 +804,13 @@
           "endpoints": [
             "deno-deploy"
           ],
-          "condition": "method == 'POST' && path in ['/api/trpc/admin.supportTickets.markAsSpam', '/api/trpc/admin.supportTickets.updateStatus']",
+          "condition": "http.method == 'POST' && http.path in ['/api/trpc/admin.supportTickets.markAsSpam', '/api/trpc/admin.supportTickets.updateStatus']",
           "approve": [
             {
               "name": "support-ops"
             }
           ]
-        },
-        "type": "http_rule"
+        }
       },
       "grafana-annotations-snapshots": {
         "body": {
@@ -825,10 +819,9 @@
           "endpoints": [
             "grafana"
           ],
-          "condition": "method == 'POST' && path in ['/api/annotations', '/api/snapshots']",
+          "condition": "http.method == 'POST' && http.path in ['/api/annotations', '/api/snapshots']",
           "verdict": "allow"
-        },
-        "type": "http_rule"
+        }
       },
       "grafana-dashboard-writes": {
         "body": {
@@ -837,14 +830,13 @@
           "endpoints": [
             "grafana"
           ],
-          "condition": "method in ['POST', 'PUT', 'PATCH'] && (path.startsWith('/api/dashboards/') || path.startsWith('/api/datasources/') || path.startsWith('/api/folders/') || path.startsWith('/api/alert-rules/'))",
+          "condition": "http.method in ['POST', 'PUT', 'PATCH'] && (http.path.startsWith('/api/dashboards/') || http.path.startsWith('/api/datasources/') || http.path.startsWith('/api/folders/') || http.path.startsWith('/api/alert-rules/'))",
           "approve": [
             {
               "name": "observability"
             }
           ]
-        },
-        "type": "http_rule"
+        }
       },
       "grafana-no-destructive-deletes": {
         "body": {
@@ -853,11 +845,10 @@
           "endpoints": [
             "grafana"
           ],
-          "condition": "method == 'DELETE' && (path.startsWith('/api/dashboards/') || path.startsWith('/api/datasources/') || path.startsWith('/api/folders/') || path.startsWith('/api/alert-rules/'))",
+          "condition": "http.method == 'DELETE' && (http.path.startsWith('/api/dashboards/') || http.path.startsWith('/api/datasources/') || http.path.startsWith('/api/folders/') || http.path.startsWith('/api/alert-rules/'))",
           "verdict": "deny",
           "reason": "Destructive deletes go through a PR, not the agent"
-        },
-        "type": "http_rule"
+        }
       },
       "grafana-reads": {
         "body": {
@@ -866,10 +857,9 @@
           "endpoints": [
             "grafana"
           ],
-          "condition": "method in ['GET', 'HEAD']",
+          "condition": "http.method in ['GET', 'HEAD']",
           "verdict": "allow"
-        },
-        "type": "http_rule"
+        }
       },
       "k8s-debug-pods": {
         "body": {
@@ -880,10 +870,9 @@
             "k8s-dev-ord",
             "k8s-eks-deployng-prod"
           ],
-          "condition": "verb in ['create', 'delete'] && resource == 'pods' && name.startsWith('debug-')",
+          "condition": "k8s.verb in ['create', 'delete'] && k8s.resource == 'pods' && k8s.name.startsWith('debug-')",
           "verdict": "allow"
-        },
-        "type": "k8s_rule"
+        }
       },
       "k8s-dev-ams-default": {
         "body": {
@@ -894,8 +883,7 @@
           ],
           "priority": -100,
           "verdict": "deny"
-        },
-        "type": "k8s_rule"
+        }
       },
       "k8s-dev-ord-default": {
         "body": {
@@ -906,8 +894,7 @@
           ],
           "priority": -100,
           "verdict": "deny"
-        },
-        "type": "k8s_rule"
+        }
       },
       "k8s-eks-default": {
         "body": {
@@ -918,8 +905,7 @@
           ],
           "priority": -100,
           "verdict": "deny"
-        },
-        "type": "k8s_rule"
+        }
       },
       "k8s-eks-no-legacy-secret-configmaps": {
         "body": {
@@ -929,11 +915,10 @@
             "k8s-eks-deployng-prod"
           ],
           "priority": 1000,
-          "condition": "verb in ['get', 'list'] && resource == 'configmaps' && ns == 'console' && (name.endsWith('-secrets') || name.startsWith('env-'))",
+          "condition": "k8s.verb in ['get', 'list'] && k8s.resource == 'configmaps' && k8s.namespace == 'console' && (k8s.name.endsWith('-secrets') || k8s.name.startsWith('env-'))",
           "verdict": "deny",
           "reason": "Some legacy configmaps still carry cleartext secrets"
-        },
-        "type": "k8s_rule"
+        }
       },
       "k8s-eks-no-runtime-writes": {
         "body": {
@@ -943,11 +928,10 @@
             "k8s-eks-deployng-prod"
           ],
           "priority": 1000,
-          "condition": "verb in ['create', 'update', 'patch', 'delete'] && (ns in ['console', 'kube-system', 'cert-manager', 'external-secrets', 'argocd'] || ns.startsWith('flux'))",
+          "condition": "k8s.verb in ['create', 'update', 'patch', 'delete'] && (k8s.namespace in ['console', 'kube-system', 'cert-manager', 'external-secrets', 'argocd'] || k8s.namespace.startsWith('flux'))",
           "verdict": "deny",
           "reason": "Writes to runtime namespaces would impact production"
-        },
-        "type": "k8s_rule"
+        }
       },
       "k8s-exec-attach": {
         "body": {
@@ -958,10 +942,9 @@
             "k8s-dev-ord",
             "k8s-eks-deployng-prod"
           ],
-          "condition": "verb in ['create', 'get'] && resource in ['pods/exec', 'pods/attach', 'pods/portforward']",
+          "condition": "k8s.verb in ['create', 'get'] && k8s.resource in ['pods/exec', 'pods/attach', 'pods/portforward']",
           "verdict": "allow"
-        },
-        "type": "k8s_rule"
+        }
       },
       "k8s-exec-content-check": {
         "body": {
@@ -973,14 +956,13 @@
             "k8s-eks-deployng-prod"
           ],
           "priority": 500,
-          "condition": "resource == 'pods/exec'",
+          "condition": "k8s.resource == 'pods/exec'",
           "approve": [
             {
               "name": "k8s-exec-content-judge"
             }
           ]
-        },
-        "type": "k8s_rule"
+        }
       },
       "k8s-no-disruptive": {
         "body": {
@@ -991,11 +973,10 @@
             "k8s-dev-ord",
             "k8s-eks-deployng-prod"
           ],
-          "condition": "verb in ['drain', 'cordon', 'evict']",
+          "condition": "k8s.verb in ['drain', 'cordon', 'evict']",
           "verdict": "deny",
           "reason": "Cluster-disruptive operations are not allowed"
-        },
-        "type": "k8s_rule"
+        }
       },
       "k8s-no-interactive": {
         "body": {
@@ -1007,11 +988,10 @@
             "k8s-eks-deployng-prod"
           ],
           "priority": 1000,
-          "condition": "resource in ['pods/exec', 'pods/attach'] && params.stdin == 'true'",
+          "condition": "k8s.resource in ['pods/exec', 'pods/attach'] && k8s.params.stdin == 'true'",
           "verdict": "deny",
           "reason": "Interactive shells can't be evaluated by the rules engine"
-        },
-        "type": "k8s_rule"
+        }
       },
       "k8s-no-mutations": {
         "body": {
@@ -1022,11 +1002,10 @@
             "k8s-dev-ord",
             "k8s-eks-deployng-prod"
           ],
-          "condition": "verb in ['create', 'update', 'patch', 'delete'] && !name.startsWith('debug-') && !resource.endsWith('/exec') && !resource.endsWith('/attach') && !resource.endsWith('/portforward')",
+          "condition": "k8s.verb in ['create', 'update', 'patch', 'delete'] && !k8s.name.startsWith('debug-') && !k8s.resource.endsWith('/exec') && !k8s.resource.endsWith('/attach') && !k8s.resource.endsWith('/portforward')",
           "verdict": "deny",
           "reason": "Only debug-* pods may be created / modified / deleted"
-        },
-        "type": "k8s_rule"
+        }
       },
       "k8s-no-portforward-non-debug": {
         "body": {
@@ -1038,11 +1017,10 @@
             "k8s-eks-deployng-prod"
           ],
           "priority": 1000,
-          "condition": "resource == 'pods/portforward' && !name.startsWith('debug-')",
+          "condition": "k8s.resource == 'pods/portforward' && !k8s.name.startsWith('debug-')",
           "verdict": "deny",
           "reason": "Port-forward only allowed to debug-* pods"
-        },
-        "type": "k8s_rule"
+        }
       },
       "k8s-no-secrets": {
         "body": {
@@ -1054,11 +1032,10 @@
             "k8s-eks-deployng-prod"
           ],
           "priority": 1000,
-          "condition": "resource == 'secrets'",
+          "condition": "k8s.resource == 'secrets'",
           "verdict": "deny",
           "reason": "Secret values must not leave the cluster via the agent"
-        },
-        "type": "k8s_rule"
+        }
       },
       "k8s-reads": {
         "body": {
@@ -1069,10 +1046,9 @@
             "k8s-dev-ord",
             "k8s-eks-deployng-prod"
           ],
-          "condition": "verb in ['get', 'list', 'watch']",
+          "condition": "k8s.verb in ['get', 'list', 'watch']",
           "verdict": "allow"
-        },
-        "type": "k8s_rule"
+        }
       },
       "notion-archive-route": {
         "body": {
@@ -1082,14 +1058,13 @@
             "notion"
           ],
           "priority": 100,
-          "condition": "method == 'PATCH' && (path.startsWith('/v1/pages/') || path.startsWith('/v1/blocks/') || path.startsWith('/v1/databases/')) && body_json.archived == true",
+          "condition": "http.method == 'PATCH' && (http.path.startsWith('/v1/pages/') || http.path.startsWith('/v1/blocks/') || http.path.startsWith('/v1/databases/')) && http.body_json.archived == true",
           "approve": [
             {
               "name": "notion-archive"
             }
           ]
-        },
-        "type": "http_rule"
+        }
       },
       "notion-create-update": {
         "body": {
@@ -1098,10 +1073,9 @@
           "endpoints": [
             "notion"
           ],
-          "condition": "method in ['POST', 'PATCH']",
+          "condition": "http.method in ['POST', 'PATCH']",
           "verdict": "allow"
-        },
-        "type": "http_rule"
+        }
       },
       "notion-deletes": {
         "body": {
@@ -1110,14 +1084,13 @@
           "endpoints": [
             "notion"
           ],
-          "condition": "method == 'DELETE'",
+          "condition": "http.method == 'DELETE'",
           "approve": [
             {
               "name": "notion-archive"
             }
           ]
-        },
-        "type": "http_rule"
+        }
       },
       "notion-reads": {
         "body": {
@@ -1126,10 +1099,9 @@
           "endpoints": [
             "notion"
           ],
-          "condition": "method in ['GET', 'HEAD']",
+          "condition": "http.method in ['GET', 'HEAD']",
           "verdict": "allow"
-        },
-        "type": "http_rule"
+        }
       },
       "notion-search": {
         "body": {
@@ -1138,10 +1110,9 @@
           "endpoints": [
             "notion"
           ],
-          "condition": "method == 'POST' && path == '/v1/search'",
+          "condition": "http.method == 'POST' && http.path == '/v1/search'",
           "verdict": "allow"
-        },
-        "type": "http_rule"
+        }
       },
       "orb-prod-no-deletes": {
         "body": {
@@ -1150,12 +1121,11 @@
           "endpoints": [
             "orb"
           ],
-          "condition": "method == 'DELETE'",
+          "condition": "http.method == 'DELETE'",
           "credential": "orb-prod-key",
           "verdict": "deny",
           "reason": "Orb deletes go through approval flow as POST"
-        },
-        "type": "http_rule"
+        }
       },
       "orb-prod-reads": {
         "body": {
@@ -1164,11 +1134,10 @@
           "endpoints": [
             "orb"
           ],
-          "condition": "method == 'GET'",
+          "condition": "http.method == 'GET'",
           "credential": "orb-prod-key",
           "verdict": "allow"
-        },
-        "type": "http_rule"
+        }
       },
       "orb-prod-writes": {
         "body": {
@@ -1177,15 +1146,14 @@
           "endpoints": [
             "orb"
           ],
-          "condition": "method in ['POST', 'PUT', 'PATCH']",
+          "condition": "http.method in ['POST', 'PUT', 'PATCH']",
           "credential": "orb-prod-key",
           "approve": [
             {
               "name": "billing"
             }
           ]
-        },
-        "type": "http_rule"
+        }
       },
       "orb-test-allow-all": {
         "body": {
@@ -1196,8 +1164,7 @@
           ],
           "credential": "orb-test-key",
           "verdict": "allow"
-        },
-        "type": "http_rule"
+        }
       },
       "pg-banned-copy-from": {
         "body": {
@@ -1207,11 +1174,10 @@
             "pg-deployng",
             "pg-scheduler"
           ],
-          "condition": "statement.matches('(?is)copy.*from program')",
+          "condition": "sql.statement.matches('(?is)copy.*from program')",
           "verdict": "deny",
           "reason": "COPY ... FROM PROGRAM is disallowed"
-        },
-        "type": "sql_rule"
+        }
       },
       "pg-banned-copy-to": {
         "body": {
@@ -1221,11 +1187,10 @@
             "pg-deployng",
             "pg-scheduler"
           ],
-          "condition": "statement.matches('(?is)copy.*to program')",
+          "condition": "sql.statement.matches('(?is)copy.*to program')",
           "verdict": "deny",
           "reason": "COPY ... TO PROGRAM is disallowed"
-        },
-        "type": "sql_rule"
+        }
       },
       "pg-banned-functions": {
         "body": {
@@ -1235,11 +1200,10 @@
             "pg-deployng",
             "pg-scheduler"
           ],
-          "condition": "sets.intersects(functions, ['pg_terminate_backend', 'pg_cancel_backend', 'pg_read_file', 'pg_read_binary_file', 'lo_get']) || functions.exists(f, f.startsWith('dblink_'))",
+          "condition": "sets.intersects(sql.function, ['pg_terminate_backend', 'pg_cancel_backend', 'pg_read_file', 'pg_read_binary_file', 'lo_get']) || sql.function.exists(f, f.startsWith('dblink_'))",
           "verdict": "deny",
           "reason": "Disallowed function for agent access"
-        },
-        "type": "sql_rule"
+        }
       },
       "pg-banned-verbs": {
         "body": {
@@ -1249,11 +1213,10 @@
             "pg-deployng",
             "pg-scheduler"
           ],
-          "condition": "verb in ['drop', 'truncate', 'alter', 'grant', 'revoke', 'vacuum', 'create', 'comment', 'do']",
+          "condition": "sql.verb in ['drop', 'truncate', 'alter', 'grant', 'revoke', 'vacuum', 'create', 'comment', 'do']",
           "verdict": "deny",
           "reason": "Schema changes / destructive DDL not permitted; use a migration PR"
-        },
-        "type": "sql_rule"
+        }
       },
       "pg-deployng-default": {
         "body": {
@@ -1264,8 +1227,7 @@
           ],
           "priority": -100,
           "verdict": "deny"
-        },
-        "type": "sql_rule"
+        }
       },
       "pg-deployng-reads": {
         "body": {
@@ -1274,10 +1236,9 @@
           "endpoints": [
             "pg-deployng"
           ],
-          "condition": "verb in ['select', 'show', 'explain']",
+          "condition": "sql.verb in ['select', 'show', 'explain']",
           "verdict": "allow"
-        },
-        "type": "sql_rule"
+        }
       },
       "pg-deployng-ro-no-writes": {
         "body": {
@@ -1286,12 +1247,11 @@
           "endpoints": [
             "pg-deployng"
           ],
-          "condition": "verb in ['insert', 'update', 'delete', 'merge', 'notify']",
+          "condition": "sql.verb in ['insert', 'update', 'delete', 'merge', 'notify']",
           "credential": "pg-deployng-ro",
           "verdict": "deny",
           "reason": "ro account is read-only — use the rw placeholder if you need to write"
-        },
-        "type": "sql_rule"
+        }
       },
       "pg-deployng-rw-writes": {
         "body": {
@@ -1300,15 +1260,14 @@
           "endpoints": [
             "pg-deployng"
           ],
-          "condition": "verb in ['insert', 'update', 'delete', 'merge', 'notify']",
+          "condition": "sql.verb in ['insert', 'update', 'delete', 'merge', 'notify']",
           "credential": "pg-deployng-rw",
           "approve": [
             {
               "name": "console-dba"
             }
           ]
-        },
-        "type": "sql_rule"
+        }
       },
       "pg-deployng-secret-columns": {
         "body": {
@@ -1318,14 +1277,13 @@
             "pg-deployng"
           ],
           "priority": 100,
-          "condition": "verb == 'select' && sets.intersects(tables, ['github_identities', 'tokens', 'email_confirmations', 'authorizations', 'domain_certificates', 'database_instances', 'env_vars'])",
+          "condition": "sql.verb == 'select' && sets.intersects(sql.tables, ['github_identities', 'tokens', 'email_confirmations', 'authorizations', 'domain_certificates', 'database_instances', 'env_vars'])",
           "approve": [
             {
               "name": "pg-secret-columns-judge"
             }
           ]
-        },
-        "type": "sql_rule"
+        }
       },
       "pg-no-migrations": {
         "body": {
@@ -1335,11 +1293,10 @@
             "pg-deployng",
             "pg-scheduler"
           ],
-          "condition": "'kysely_migration' in tables",
+          "condition": "'kysely_migration' in sql.tables",
           "verdict": "deny",
           "reason": "Migrations table is owned by the deploy pipeline"
-        },
-        "type": "sql_rule"
+        }
       },
       "pg-scheduler-default": {
         "body": {
@@ -1350,8 +1307,7 @@
           ],
           "priority": -100,
           "verdict": "deny"
-        },
-        "type": "sql_rule"
+        }
       },
       "pg-scheduler-reads": {
         "body": {
@@ -1360,10 +1316,9 @@
           "endpoints": [
             "pg-scheduler"
           ],
-          "condition": "verb in ['select', 'show', 'explain']",
+          "condition": "sql.verb in ['select', 'show', 'explain']",
           "verdict": "allow"
-        },
-        "type": "sql_rule"
+        }
       },
       "pg-scheduler-secret-named-defense": {
         "body": {
@@ -1373,14 +1328,13 @@
             "pg-scheduler"
           ],
           "priority": 100,
-          "condition": "verb == 'select' && statement.matches('(?i)\\\\b(secret|password|token|api_key|private_key|access_key|signing_secret)\\\\b')",
+          "condition": "sql.verb == 'select' && sql.statement.matches('(?i)\\\\b(secret|password|token|api_key|private_key|access_key|signing_secret)\\\\b')",
           "approve": [
             {
               "name": "pg-secret-named-defense-judge"
             }
           ]
-        },
-        "type": "sql_rule"
+        }
       },
       "pg-scheduler-writes": {
         "body": {
@@ -1389,14 +1343,13 @@
           "endpoints": [
             "pg-scheduler"
           ],
-          "condition": "verb in ['insert', 'update', 'delete', 'merge', 'notify']",
+          "condition": "sql.verb in ['insert', 'update', 'delete', 'merge', 'notify']",
           "approve": [
             {
               "name": "scheduler-ops"
             }
           ]
-        },
-        "type": "sql_rule"
+        }
       },
       "slack-avocet-approve-reply-shape": {
         "body": {
@@ -1405,14 +1358,13 @@
           "endpoints": [
             "slack-avocet"
           ],
-          "condition": "method == 'POST' && path == '/api/chat.postMessage' && body.contains('approve_reply_')",
+          "condition": "http.method == 'POST' && http.path == '/api/chat.postMessage' && http.body.contains('approve_reply_')",
           "approve": [
             {
               "name": "slack-block-kit-shape-judge"
             }
           ]
-        },
-        "type": "http_rule"
+        }
       },
       "stripe-default": {
         "body": {
@@ -1423,8 +1375,7 @@
           ],
           "priority": -100,
           "verdict": "deny"
-        },
-        "type": "http_rule"
+        }
       },
       "stripe-ephemeral-keys": {
         "body": {
@@ -1434,10 +1385,9 @@
             "stripe"
           ],
           "priority": 100,
-          "condition": "method == 'POST' && path == '/v1/ephemeral_keys'",
+          "condition": "http.method == 'POST' && http.path == '/v1/ephemeral_keys'",
           "verdict": "allow"
-        },
-        "type": "http_rule"
+        }
       },
       "stripe-extra-scrutiny": {
         "body": {
@@ -1447,14 +1397,13 @@
             "stripe"
           ],
           "priority": 100,
-          "condition": "method == 'POST' && (path in ['/v1/refunds', '/v1/subscriptions', '/v1/subscription_items', '/v1/payouts', '/v1/transfers', '/v1/coupons', '/v1/promotion_codes'] || path.startsWith('/v1/charges/') && path.endsWith('/refund') || path.startsWith('/v1/subscriptions/') || path.startsWith('/v1/customers/') && path.endsWith('/subscriptions') || path.startsWith('/v1/invoices/') && (path.endsWith('/void') || path.endsWith('/finalize')))",
+          "condition": "http.method == 'POST' && (http.path in ['/v1/refunds', '/v1/subscriptions', '/v1/subscription_items', '/v1/payouts', '/v1/transfers', '/v1/coupons', '/v1/promotion_codes'] || http.path.startsWith('/v1/charges/') && http.path.endsWith('/refund') || http.path.startsWith('/v1/subscriptions/') || http.path.startsWith('/v1/customers/') && http.path.endsWith('/subscriptions') || http.path.startsWith('/v1/invoices/') && (http.path.endsWith('/void') || http.path.endsWith('/finalize')))",
           "approve": [
             {
               "name": "billing-strict"
             }
           ]
-        },
-        "type": "http_rule"
+        }
       },
       "stripe-no-deletes": {
         "body": {
@@ -1463,11 +1412,10 @@
           "endpoints": [
             "stripe"
           ],
-          "condition": "method == 'DELETE'",
+          "condition": "http.method == 'DELETE'",
           "verdict": "deny",
           "reason": "Stripe deletes go through the approval flow as POST"
-        },
-        "type": "http_rule"
+        }
       },
       "stripe-other-writes": {
         "body": {
@@ -1476,14 +1424,13 @@
           "endpoints": [
             "stripe"
           ],
-          "condition": "method == 'POST'",
+          "condition": "http.method == 'POST'",
           "approve": [
             {
               "name": "billing"
             }
           ]
-        },
-        "type": "http_rule"
+        }
       },
       "stripe-reads": {
         "body": {
@@ -1492,10 +1439,9 @@
           "endpoints": [
             "stripe"
           ],
-          "condition": "method == 'GET'",
+          "condition": "http.method == 'GET'",
           "verdict": "allow"
-        },
-        "type": "http_rule"
+        }
       }
     }
   }

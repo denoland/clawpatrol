@@ -297,7 +297,7 @@ func extractPolicyBlocks(body hcl.Body) (hcl.Blocks, hcl.Blocks, hcl.Diagnostics
 			{Type: "approver", LabelNames: []string{"type", "name"}},
 			{Type: "credential", LabelNames: []string{"type", "name"}},
 			{Type: "endpoint", LabelNames: []string{"type", "name"}},
-			{Type: "rule", LabelNames: []string{"type", "name"}},
+			{Type: "rule", LabelNames: []string{"name"}},
 			{Type: "policy", LabelNames: []string{"name"}},
 			{Type: "profile", LabelNames: []string{"name"}},
 			{Type: "tunnel", LabelNames: []string{"type", "name"}},

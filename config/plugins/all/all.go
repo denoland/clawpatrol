@@ -9,12 +9,13 @@ import (
 	_ "github.com/denoland/clawpatrol/config/plugins/approvers" // register built-in plugin
 	_ "github.com/denoland/clawpatrol/config/plugins/credentials"
 	_ "github.com/denoland/clawpatrol/config/plugins/endpoints"
-	// Facet packages register both their facet runtime and the
-	// corresponding `<facet>_rule` KindRule plugin. The legacy
-	// rules package is now a library — it no longer has its own
-	// init() — so the rule registrations come from these imports.
+	// Facet packages register their facet runtime only. The single
+	// `rule` block plugin is registered by config/plugins/rules and
+	// infers the family from each rule's endpoint set at validate
+	// time.
 	_ "github.com/denoland/clawpatrol/config/plugins/facets/https"
 	_ "github.com/denoland/clawpatrol/config/plugins/facets/k8s"
 	_ "github.com/denoland/clawpatrol/config/plugins/facets/sql"
+	_ "github.com/denoland/clawpatrol/config/plugins/rules"
 	_ "github.com/denoland/clawpatrol/config/plugins/tunnels"
 )

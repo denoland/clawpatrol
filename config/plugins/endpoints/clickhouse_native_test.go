@@ -427,7 +427,7 @@ func chNewMockHandle(t *testing.T, ep *config.CompiledEndpoint) (*chMockHandle, 
 // Tables / Functions / Statement).
 func TestChEvaluateSQLAllowsSelectDeniesInsert(t *testing.T) {
 	denyInsert := chRuleSQL(t, "deny-insert",
-		"verb == 'insert'", "deny", "writes blocked", 100)
+		"sql.verb == 'insert'", "deny", "writes blocked", 100)
 	ep := chBuildEndpoint(t, denyInsert)
 
 	mock, _ := chNewMockHandle(t, ep)
@@ -470,7 +470,7 @@ func chMockApprove(decision, reason string) func(req runtime.ApproveCallRequest)
 // allow lets the query forward, a deny rejects with the approver's
 // reason.
 func TestChEvaluateSQLApproveChain(t *testing.T) {
-	approveCondition := "verb == 'drop'"
+	approveCondition := "sql.verb == 'drop'"
 	approveRule := &config.CompiledRule{
 		Name:      "approve-drops",
 		Condition: approveCondition,
@@ -993,7 +993,7 @@ func TestChAgentToServerDeniesQuery(t *testing.T) {
 	const revision = 54448
 
 	rule := chRuleSQL(t, "deny-insert",
-		"verb == 'insert'", "deny", "writes blocked", 100)
+		"sql.verb == 'insert'", "deny", "writes blocked", 100)
 	ep := chBuildEndpoint(t, rule)
 	mock, agentSide := chNewMockHandle(t, ep)
 	defer func() { _ = agentSide.Close() }()
@@ -1046,7 +1046,7 @@ func TestChAgentToServerDeniesQuery(t *testing.T) {
 func TestChAgentToServerMultiQueryDenyContinues(t *testing.T) {
 	const revision = 54448
 	rule := chRuleSQL(t, "deny-drop",
-		"verb == 'drop'", "deny", "drops blocked", 100)
+		"sql.verb == 'drop'", "deny", "drops blocked", 100)
 	ep := chBuildEndpoint(t, rule)
 	mock, agentSide := chNewMockHandle(t, ep)
 	defer func() { _ = agentSide.Close() }()

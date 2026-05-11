@@ -1,21 +1,19 @@
-// Package rules registers the three rule kinds: http_rule, sql_rule,
-// and k8s_rule. Each rule is one policy decision targeting one or more
-// endpoints of a matching protocol family.
+// Package rules registers the single `rule` block kind. Each rule is
+// one policy decision targeting one or more endpoints; the rule's
+// protocol family (https / sql / k8s) is inferred from the resolved
+// endpoints at validate/build time. Mixed-family endpoint sets are
+// rejected with a clean diagnostic.
 //
-// A rule's predicate is expressed as a single CEL string in the
-// `condition` attribute. The set of variables a rule may reference
-// is owned by the facet that registered the rule type (see
-// config/plugins/facets/{https,sql,k8s}/).
-//
+// The match predicate is expressed as a single CEL string in the
+// `condition` attribute, evaluated against the facet-owned environment
+// for the rule's family (see config/plugins/facets/{https,sql,k8s}/).
 // `approve` is a list whose elements are bare-name approver
 // references.
-//
-// Rule type ↔ endpoint family compatibility is enforced via RefSpec
-// FamilyConstraint.
 package rules
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
@@ -26,9 +24,10 @@ import (
 	"github.com/denoland/clawpatrol/config/facet"
 )
 
-// RuleBody is the shared shape across all three rule types. The
-// match predicate is family-agnostic at the HCL layer (just a CEL
-// string); the facet's *cel.Env decides which variables are valid.
+// RuleBody is the gohcl-tagged decode target. The match predicate is
+// family-agnostic at the HCL layer (just a CEL string); the facet's
+// *cel.Env decides which variables are valid once the family has
+// been inferred from the endpoint refs.
 type RuleBody struct {
 	Endpoint  string   `hcl:"endpoint,optional"`
 	Endpoints []string `hcl:"endpoints,optional"`
@@ -37,7 +36,7 @@ type RuleBody struct {
 
 	// Condition is a CEL expression evaluated against the
 	// family-specific variable set. An absent / empty condition
-	// matches everything — the v14 catch-all pattern (`rule "..."
+	// matches everything — the catch-all pattern (`rule
 	// "X-default" { priority = -100; verdict = "deny" }`) relies
 	// on this.
 	Condition string `hcl:"condition,optional"`
@@ -100,32 +99,59 @@ func (r *Rule) Compile() (*config.CompiledRule, []string, error) {
 	}, r.Endpoints, nil
 }
 
-// validatedFamily defines the family + endpoint family-constraint
-// for one rule type.
-type validatedFamily struct {
-	family           string
-	endpointFamilies []string
+// inferFamily walks the rule's endpoint list, looks each one up in
+// the symbol table, and reports the common endpoint family. Returns
+// "" plus a diagnostic if the endpoints span more than one family
+// (the rule's CEL env can only bind one facet's variables) or if no
+// endpoint is set (caught separately by the shape check, but a
+// defensive empty-set check keeps the family lookup safe). Unknown
+// endpoint names are skipped — the framework's ref-resolution pass
+// already emitted "unknown endpoint" diagnostics for those.
+func inferFamily(endpoints []string, name string, ctx *config.BuildCtx) (string, *hcl.Diagnostic) {
+	seen := map[string]struct{}{}
+	for _, ep := range endpoints {
+		sym := ctx.Symbols.Get(config.KindEndpoint, ep)
+		if sym == nil || sym.Family == "" {
+			continue
+		}
+		seen[sym.Family] = struct{}{}
+	}
+	if len(seen) == 0 {
+		return "", nil
+	}
+	if len(seen) > 1 {
+		fams := make([]string, 0, len(seen))
+		for f := range seen {
+			fams = append(fams, f)
+		}
+		sort.Strings(fams)
+		return "", &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Rule %q targets endpoints from mixed families", name),
+			Detail:   fmt.Sprintf("Endpoints span families %v. A rule's CEL condition is evaluated against a single facet's variable set; split into one rule per family.", fams),
+			Subject:  &ctx.Block.DefRange,
+		}
+	}
+	for f := range seen {
+		return f, nil
+	}
+	return "", nil
 }
 
-func validate(body any, name string, ctx *config.BuildCtx, fam validatedFamily) hcl.Diagnostics {
+func endpointList(rb *RuleBody) []string {
+	if rb.Endpoint != "" {
+		return []string{rb.Endpoint}
+	}
+	return rb.Endpoints
+}
+
+func validate(body any, name string, ctx *config.BuildCtx) hcl.Diagnostics {
 	rb := body.(*RuleBody)
 	var diags hcl.Diagnostics
 
-	// CEL condition syntactic + type validation. Compile against
-	// the facet's environment so unknown variables and result-type
-	// mismatches are caught at Load time.
-	if rb.Condition != "" {
-		if _, err := facet.NewMatcher(fam.family, rb.Condition); err != nil {
-			diags = append(diags, &hcl.Diagnostic{
-				Severity: hcl.DiagError,
-				Summary:  fmt.Sprintf("Invalid CEL condition on rule %q", name),
-				Detail:   err.Error(),
-				Subject:  &ctx.Block.DefRange,
-			})
-		}
-	}
-
-	// Exactly one of endpoint / endpoints.
+	// Exactly one of endpoint / endpoints. Catch shape errors first
+	// so the family-inference diagnostic doesn't fire on a rule that
+	// already has a clearer problem to fix.
 	if rb.Endpoint != "" && len(rb.Endpoints) > 0 {
 		diags = append(diags, &hcl.Diagnostic{
 			Severity: hcl.DiagError,
@@ -141,6 +167,29 @@ func validate(body any, name string, ctx *config.BuildCtx, fam validatedFamily) 
 			Detail:   "Set `endpoint = X` or `endpoints = [X, Y]`.",
 			Subject:  &ctx.Block.DefRange,
 		})
+	}
+
+	// Infer family from the endpoint set so condition compilation
+	// can pick the right facet env.
+	fam, famDiag := inferFamily(endpointList(rb), name, ctx)
+	if famDiag != nil {
+		diags = append(diags, famDiag)
+	}
+
+	// CEL condition syntactic + type validation. Compile against the
+	// inferred facet's environment so unknown variables and result-
+	// type mismatches are caught at Load time. With no family
+	// (unknown endpoints, etc.) skip the compile — the unknown-
+	// endpoint diagnostic is enough.
+	if rb.Condition != "" && fam != "" {
+		if _, err := facet.NewMatcher(fam, rb.Condition); err != nil {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("Invalid CEL condition on rule %q", name),
+				Detail:   err.Error(),
+				Subject:  &ctx.Block.DefRange,
+			})
+		}
 	}
 
 	// Outcome: exactly one of verdict / approve.
@@ -174,18 +223,20 @@ func validate(body any, name string, ctx *config.BuildCtx, fam validatedFamily) 
 	return diags
 }
 
-func build(body any, name string, ctx *config.BuildCtx, fam validatedFamily) (any, hcl.Diagnostics) {
+func build(body any, name string, ctx *config.BuildCtx) (any, hcl.Diagnostics) {
 	rb := body.(*RuleBody)
 	var diags hcl.Diagnostics
 
-	endpoints := rb.Endpoints
-	if rb.Endpoint != "" {
-		endpoints = []string{rb.Endpoint}
+	endpoints := endpointList(rb)
+	fam, famDiag := inferFamily(endpoints, name, ctx)
+	if famDiag != nil {
+		// Already reported by validate; don't double-emit.
+		_ = famDiag
 	}
 
 	r := &Rule{
 		Name:       name,
-		Family:     fam.family,
+		Family:     fam,
 		Endpoints:  endpoints,
 		Priority:   rb.Priority,
 		Disabled:   rb.Disabled,
@@ -314,38 +365,28 @@ func approveToTokens(stages []config.ApproveStage) hclwrite.Tokens {
 	return tokens
 }
 
-// PluginFor returns the config.Plugin that registers `<facet>_rule`
-// as a config.KindRule. Each facet package calls this from its init()
-// to install a rule type for its protocol family, so adding a new
-// facet plugin doesn't require touching the rules package at all.
-//
-// The returned Plugin closes over the facet's identity so the rule
-// loader's validation, build, and compile paths emit the right
-// family stamp on the built Rule.
-func PluginFor(f facet.Runtime) *config.Plugin {
-	fam := validatedFamily{
-		family:           f.Name(),
-		endpointFamilies: f.EndpointFamilies(),
-	}
+// Plugin returns the single config.Plugin that registers `rule` as
+// a one-label config.KindRule. Family inference happens at validate
+// time based on the resolved endpoints, so this plugin doesn't carry
+// a family constraint on its endpoint refs — the inferFamily walk
+// reports mixed-family endpoint sets directly.
+func Plugin() *config.Plugin {
 	return &config.Plugin{
-		Kind:     config.KindRule,
-		Type:     f.RuleType(),
-		Families: fam.endpointFamilies,
-		New:      func() any { return &RuleBody{} },
+		Kind: config.KindRule,
+		Type: "",
+		New:  func() any { return &RuleBody{} },
 		Refs: []config.RefSpec{
-			{Path: "Endpoint", Kind: config.KindEndpoint, FamilyConstraint: fam.endpointFamilies, Optional: true},
-			{Path: "Endpoints[*]", Kind: config.KindEndpoint, FamilyConstraint: fam.endpointFamilies, Optional: true},
+			{Path: "Endpoint", Kind: config.KindEndpoint, Optional: true},
+			{Path: "Endpoints[*]", Kind: config.KindEndpoint, Optional: true},
 			{Path: "Credential", Kind: config.KindCredential, Optional: true},
 		},
-		Validate: func(d any, name string, ctx *config.BuildCtx) hcl.Diagnostics {
-			return validate(d, name, ctx, fam)
-		},
-		Build: func(d any, name string, ctx *config.BuildCtx) (any, hcl.Diagnostics) {
-			return build(d, name, ctx, fam)
-		},
-		CompileRule: func(body any, _ string) (*config.CompiledRule, []string, error) {
-			return body.(*Rule).Compile()
-		},
-		Emit: emitRule,
+		Validate:    validate,
+		Build:       build,
+		CompileRule: func(body any, _ string) (*config.CompiledRule, []string, error) { return body.(*Rule).Compile() },
+		Emit:        emitRule,
 	}
+}
+
+func init() {
+	config.Register(Plugin())
 }

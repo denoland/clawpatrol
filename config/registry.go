@@ -39,6 +39,8 @@ func Register(p *Plugin) {
 	if p.Kind.LabelCount() == 2 && p.Type == "" {
 		panic(fmt.Sprintf("config.Register(%s): Type is required for two-label kinds", p.Kind))
 	}
+	// One-label kinds (KindRule today) carry Type="" — the block has
+	// no type label to dispatch on. Allowed; nothing to check.
 	registry.Lock()
 	defer registry.Unlock()
 	if registry.byKey == nil {

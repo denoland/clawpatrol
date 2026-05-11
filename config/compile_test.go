@@ -115,21 +115,21 @@ endpoint "https" "ep" {
 }
 profile "p" { endpoints = [ep] }
 
-rule "http_rule" "fallback" {
+rule "fallback" {
   endpoint  = ep
   priority  = -100
-  condition = "method == 'POST'"
+  condition = "http.method == 'POST'"
   verdict   = "deny"
 }
-rule "http_rule" "specific" {
+rule "specific" {
   endpoint  = ep
   priority  = 100
-  condition = "method == 'POST' && path == '/v1/refunds'"
+  condition = "http.method == 'POST' && http.path == '/v1/refunds'"
   verdict   = "deny"
 }
-rule "http_rule" "general" {
+rule "general" {
   endpoint  = ep
-  condition = "method == 'POST'"
+  condition = "http.method == 'POST'"
   verdict   = "allow"
 }
 `
