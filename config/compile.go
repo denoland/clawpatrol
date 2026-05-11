@@ -39,9 +39,11 @@ type CompiledPolicy struct {
 }
 
 // CompiledProfile binds an identity to the endpoint set its requests
-// dispatch against. Endpoints map by name; HostIndex maps every host
-// (with port) to the endpoint that owns it for fast SNI / authority
-// lookup.
+// dispatch against. Endpoints map by name; HostIndex maps exact
+// declared hosts plus bare-host aliases for HTTPS-family default-port
+// declarations to the endpoint that owns them for fast SNI / authority
+// lookup. CompiledEndpoint.Hosts keeps the operator-declared strings
+// unchanged.
 type CompiledProfile struct {
 	Name      string
 	Endpoints map[string]*CompiledEndpoint
@@ -274,6 +276,24 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 				profile.HostIndex[h] = ce
 			}
 		}
+		// Add default-port TLS aliases only after every exact host is
+		// indexed. That lets an explicit bare host beat any alias, while
+		// keeping the alias attached to the HTTPS-family endpoint that
+		// declared it even if another endpoint collides on the exact
+		// host:port string.
+		for _, epName := range pr.Endpoints {
+			ce, ok := cp.Endpoints[epName]
+			if !ok {
+				continue
+			}
+			for _, h := range ce.Hosts {
+				if bare, ok := bareHostAlias(ce, h); ok {
+					if _, exists := profile.HostIndex[bare]; !exists {
+						profile.HostIndex[bare] = ce
+					}
+				}
+			}
+		}
 		cp.Profiles[name] = profile
 	}
 
@@ -340,6 +360,17 @@ func hasResolvableHostname(hosts []string) bool {
 		}
 	}
 	return false
+}
+
+func bareHostAlias(ep *CompiledEndpoint, host string) (string, bool) {
+	if ep == nil || (ep.Family != "https" && ep.Family != "k8s") {
+		return "", false
+	}
+	bare, port, err := net.SplitHostPort(host)
+	if err != nil || bare == "" || port != "443" {
+		return "", false
+	}
+	return bare, true
 }
 
 // hostExtractor / credentialExtractor are the small cross-cut readers
