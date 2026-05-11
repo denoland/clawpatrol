@@ -47,14 +47,25 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
             ? "text-[#16a34a]"
             : "text-[#737373]";
   const schema = ev.family ? byFamily[ev.family] : undefined;
-  const { verb, body } = headerFromFacets(ev, schema);
+  // SQL-family records come from the postgres / clickhouse_native
+  // conn-family plugins. They populate Facets with verb / tables /
+  // functions / statement. The HTTP-shaped fields (status, body,
+  // headers) are unused for these rows; render the SQL-specific
+  // section instead of the generic facets list so Statement gets a
+  // dedicated code block. The header collapses to host only — the
+  // full breakdown lives in SQLDetail below.
+  const isSQL = ev.family === "sql" || ev.mode === "pg" || ev.mode === "clickhouse_native";
+  const header = isSQL
+    ? { verb: ((ev.facets?.verb as string | undefined) ?? ev.method ?? "").toUpperCase(), body: "" }
+    : headerFromFacets(ev, schema);
+  const { verb, body } = header;
   const fullUrl = ev.host + (body && !body.startsWith("/") ? " " : "") + body;
   const facetFields = facetDetailRows(ev, schema);
   const hasReq = !!ev.req_body;
   const hasResp = !!ev.resp_body;
   const hasReqH = ev.req_headers && Object.keys(ev.req_headers).length > 0;
   const hasRespH = ev.resp_headers && Object.keys(ev.resp_headers).length > 0;
-  const hasFacets = facetFields.length > 0;
+  const hasFacets = !isSQL && facetFields.length > 0;
   const hasSections = hasFacets || hasReq || hasResp || hasReqH || hasRespH;
 
   return (
@@ -70,9 +81,11 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
           {verb && (
             <span className="text-[12px] uppercase font-semibold text-[#525252]">{verb}</span>
           )}
-          <span className={"text-[13px] tabular-nums font-semibold " + statusColor}>
-            {status || "\u2014"}
-          </span>
+          {!isSQL && (
+            <span className={"text-[13px] tabular-nums font-semibold " + statusColor}>
+              {status || "\u2014"}
+            </span>
+          )}
           <span className="text-[13px] text-[#171717] break-all font-mono" title={fullUrl}>
             {fullUrl}
           </span>
@@ -88,7 +101,7 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
               <span
                 className={
                   "px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase " +
-                  (ev.action === "deny"
+                  (ev.action === "deny" || ev.action === "hitl_deny"
                     ? "bg-[#fef2f2] text-[#dc2626]"
                     : "bg-[#f0fdf4] text-[#16a34a]")
                 }
@@ -102,7 +115,9 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
       </div>
 
       {/* sections */}
-      {hasSections ? (
+      {isSQL ? (
+        <SQLDetail ev={ev} />
+      ) : hasSections ? (
         <div className="bg-white border border-[#e5e5e5] rounded divide-y divide-[#e5e5e5]">
           {hasFacets && (
             <Section title="Request">
@@ -153,6 +168,55 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
         )}
       </div>
     </Shell>
+  );
+}
+
+// --- SQL detail ---
+
+// SQLDetail renders the postgres / clickhouse_native per-query view.
+// Statement is the deliverable (operators want the raw SQL); verb /
+// tables / functions are the parser's rule-targeting facets, surfaced
+// here so it's obvious why a given rule fired or didn't. Reads from
+// ev.facets (populated by the sql facet's Report hook) since the
+// generic facet pipeline replaced the legacy direct fields.
+function SQLDetail({ ev }: { ev: EventRecord }) {
+  const f = ev.facets ?? {};
+  const verb = (typeof f.verb === "string" ? f.verb : (ev.method ?? "")).toUpperCase();
+  const tables = Array.isArray(f.tables) ? (f.tables as string[]) : [];
+  const functions = Array.isArray(f.functions) ? (f.functions as string[]) : [];
+  const statement = typeof f.statement === "string" ? f.statement : "";
+  const facets: Array<{ label: string; value: string }> = [];
+  if (verb) facets.push({ label: "Verb", value: verb });
+  if (tables.length > 0) facets.push({ label: "Tables", value: tables.join(", ") });
+  if (functions.length > 0) {
+    facets.push({ label: "Functions", value: functions.map((s) => s.toUpperCase()).join(", ") });
+  }
+  return (
+    <div className="bg-white border border-[#e5e5e5] rounded divide-y divide-[#e5e5e5]">
+      {facets.length > 0 && (
+        <Section title="Details">
+          <div className="px-4 py-3 grid grid-cols-[100px_1fr] gap-y-1.5 gap-x-3 text-[12px]">
+            {facets.map((f) => (
+              <div key={f.label} className="contents">
+                <div className="text-[10px] uppercase tracking-wider text-[#a3a3a3] pt-0.5">
+                  {f.label}
+                </div>
+                <div className="text-[#171717] font-mono break-all">{f.value}</div>
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
+      <Section title="Statement">
+        {statement ? (
+          <pre className="overflow-auto whitespace-pre-wrap break-all px-4 py-3 font-mono text-[11px] leading-relaxed text-[#171717]">
+            {statement}
+          </pre>
+        ) : (
+          <div className="px-4 py-3 text-[11px] text-[#a3a3a3]">(no parsed statement)</div>
+        )}
+      </Section>
+    </div>
   );
 }
 
