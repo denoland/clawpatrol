@@ -2,7 +2,7 @@
 
 import hljs from "highlight.js";
 import { Marked } from "marked";
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { h } from "preact";
 import { renderToString } from "preact-render-to-string";
@@ -114,20 +114,20 @@ export interface Doc {
   slug: string;
   title: string;
   html: string;
+  raw: string;
 }
 
 export function loadDocs(docsDir: string): Doc[] {
-  return readdirSync(docsDir)
-    .filter((f) => f.endsWith(".md"))
-    .sort()
-    .map((f) => {
-      const raw = readFileSync(join(docsDir, f), "utf-8");
-      const slug = f.replace(/\.md$/, "");
-      const h1 = raw.match(/^#\s+(.+)$/m);
-      const title = h1 ? h1[1] : slug.replace(/-/g, " ");
-      const html = marked.parse(raw, { async: false }) as string;
-      return { slug, title, html };
-    });
+  const toc = JSON.parse(
+    readFileSync(join(docsDir, "toc.json"), "utf-8"),
+  ) as string[];
+  return toc.map((slug) => {
+    const raw = readFileSync(join(docsDir, `${slug}.md`), "utf-8");
+    const h1 = raw.match(/^#\s+(.+)$/m);
+    const title = h1 ? h1[1] : slug.replace(/-/g, " ");
+    const html = marked.parse(raw, { async: false }) as string;
+    return { slug, title, html, raw };
+  });
 }
 
 function sidebar(docs: Doc[], current: string): string {

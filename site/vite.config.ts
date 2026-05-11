@@ -14,19 +14,30 @@ function serveDocsInDev(): Plugin {
             await server.ssrLoadModule("/docs-render.ts");
           const docsDir = resolve(__dirname, "doc");
           const docs = loadDocs(docsDir);
-          const path = req.url.replace(/\/$/, "") || "/docs";
+          const rawPath = req.url.split("?")[0];
+          const isMarkdown = rawPath.endsWith(".md");
+          const path = (isMarkdown
+            ? rawPath
+            : rawPath.replace(/\/$/, "")) || "/docs";
 
           let doc;
           if (path === "/docs") {
             doc = docs[0];
           } else {
             const slug = path.replace("/docs/", "")
+              .replace(/\.md$/, "")
               .replace(/\/$/, "");
             doc = docs.find(
               (d: any) => d.slug === slug,
             );
           }
           if (!doc) return next();
+
+          if (isMarkdown) {
+            res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+            res.end(doc.raw);
+            return;
+          }
 
           const css = `<script type="module"
             src="/@vite/client"></script>

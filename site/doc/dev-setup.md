@@ -115,7 +115,7 @@ cd /path/to/clawpatrol
 docker build -t clawpatrol/sidecar:dev sidecar/
 ```
 
-Run the onboard script (see [Onboarding](/docs/03-onboarding/) for
+Run the onboard script (see [Onboarding](/docs/onboarding/) for
 the full flow):
 
 ```sh

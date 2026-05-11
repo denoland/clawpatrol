@@ -25,7 +25,7 @@ export function Header() {
             GitHub
           </a>
           <a
-            href="/docs/02-getting-started/"
+            href="/docs/getting-started/"
             class="squircle-sm bg-console-dark text-canvas px-3 py-2 sm:px-4 sm:py-2.5 inline-flex items-center gap-2 font-mono hover:bg-rust transition-colors"
           >
             <svg

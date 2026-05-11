@@ -55,7 +55,7 @@ export function IntegrationsSection() {
           — OR —
         </p>
         <div class="text-center mt-12 sm:mt-16 mb-8">
-          <Button href="/docs/08-plugins/" variant="normal" size="lg">
+          <Button href="/docs/plugins/" variant="normal" size="lg">
             Write your own plugin in one TypeScript file{" "}
             <span class="ml-1" aria-hidden="true">
               &rarr;
