@@ -66,32 +66,38 @@ class TransparentProxyProvider: NETransparentProxyProvider {
             return
         }
 
-        // Block until WireGuard handshake completes. setTunnelNetwork-
-        // Settings succeeding does NOT mean the WG underlay is up — it
-        // only means the OS accepted the proxy rules. Without this gate
-        // the first user flow's SYN races wireguard-go's handshake and
-        // the visible latency is dominated by the TCP retransmit timer
-        // (3s, 6s, 12s, ...). 10s budget covers a healthy handshake;
-        // longer than that, network is broken and we should fail loudly
-        // rather than serve a stalled tunnel.
-        let hsq = DispatchQueue.global(qos: .userInitiated)
-        hsq.async {
-            let hrc = wg_netstack_wait_handshake(10000)
+        // IPC listener — synchronous handshake from clawpatrol
+        // CLI registers its PID before exec'ing the wrapped child,
+        // eliminating the start-of-flow race a file-watcher would
+        // have. Idempotent if startProxy fires twice.
+        startSessionListener()
+        startSessionReaper()
+
+        // Apply network settings immediately — do NOT wait for the WG
+        // handshake before calling completionHandler. The old approach
+        // (10s wg_netstack_wait_handshake on the critical path) caused
+        // startProxy to fail whenever the gateway was temporarily
+        // unreachable: laptop wake-from-sleep (WG peer needs a new
+        // handshake) or airport/captive-portal WiFi (the portal blocks
+        // WG's UDP before you authenticate). On failure macOS enters a
+        // reasserting loop that blocks ALL traffic — including bypassUDP
+        // DNS — until the proxy reconnects or the user disables it.
+        //
+        // Moving the handshake off the critical path means:
+        //   • bypassUDP flows (system DNS, QUIC, etc.) always work.
+        //   • Tunnel flows (bridgeTCP/bridgeUDP for clawpatrol children)
+        //     fail fast via the cgo return code when WG is not yet up.
+        //   • Once the handshake completes, tunnel flows start working
+        //     without any user action.
+        applyNetworkSettings(completionHandler: completionHandler)
+
+        // Background handshake — logging only, not on the critical path.
+        DispatchQueue.global(qos: .utility).async {
+            let hrc = wg_netstack_wait_handshake(30000)
             if hrc != 0 {
-                os_log("wg handshake timeout (10s)", log: log, type: .error)
-                completionHandler(NSError(domain: "clawpatrol", code: 3,
-                    userInfo: [NSLocalizedDescriptionKey: "wg handshake timeout — gateway unreachable?"]))
-                return
-            }
-            os_log("wg handshake complete", log: log, type: .info)
-            // IPC listener — synchronous handshake from clawpatrol
-            // CLI registers its PID before exec'ing the wrapped child,
-            // eliminating the start-of-flow race a file-watcher would
-            // have. Idempotent if startProxy fires twice.
-            startSessionListener()
-            startSessionReaper()
-            DispatchQueue.main.async {
-                self.applyNetworkSettings(completionHandler: completionHandler)
+                os_log("wg handshake did not complete in 30s — tunnel flows will fail until gateway is reachable", log: log, type: .error)
+            } else {
+                os_log("wg handshake complete", log: log, type: .info)
             }
         }
     }
@@ -111,17 +117,35 @@ class TransparentProxyProvider: NETransparentProxyProvider {
                           localNetwork: nil, localPrefix: 0,
                           protocol: .UDP, direction: .outbound),
         ]
-        settings.excludedNetworkRules = [
-            NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "224.0.0.0", port: "0"),
-                          remotePrefix: 4, localNetwork: nil, localPrefix: 0,
-                          protocol: .UDP, direction: .outbound),
-            NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "ff00::", port: "0"),
-                          remotePrefix: 8, localNetwork: nil, localPrefix: 0,
-                          protocol: .UDP, direction: .outbound),
-            NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: "169.254.0.0", port: "0"),
-                          remotePrefix: 16, localNetwork: nil, localPrefix: 0,
-                          protocol: .UDP, direction: .outbound),
+        // Exclude RFC1918, loopback, link-local, and multicast so captive
+        // portal DNS/HTTP, local network services, and mDNS bypass the
+        // extension entirely. Without RFC1918 exclusions, airport WiFi
+        // captive portals break: the portal's DNS server (typically
+        // 192.168.x.x or 10.x.x.x) is reachable but the portal HTTP
+        // server is on the same subnet — bypassUDP handles DNS fine, but
+        // excluding the subnet avoids the NE claiming the flow at all,
+        // which is more robust (no DispatchSource on the real socket needed).
+        let excludedHosts: [(String, Int)] = [
+            ("10.0.0.0",    8),   // RFC1918
+            ("172.16.0.0",  12),  // RFC1918
+            ("192.168.0.0", 16),  // RFC1918
+            ("127.0.0.0",   8),   // loopback
+            ("169.254.0.0", 16),  // link-local / APIPA
+            ("224.0.0.0",   4),   // IPv4 multicast
+            ("ff00::",      8),   // IPv6 multicast
+            ("::1",         128), // IPv6 loopback
+            ("fe80::",      10),  // IPv6 link-local
         ]
+        settings.excludedNetworkRules = excludedHosts.flatMap { (host, prefix) -> [NENetworkRule] in
+            [
+                NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: host, port: "0"),
+                              remotePrefix: prefix, localNetwork: nil, localPrefix: 0,
+                              protocol: .TCP, direction: .outbound),
+                NENetworkRule(remoteNetwork: NWHostEndpoint(hostname: host, port: "0"),
+                              remotePrefix: prefix, localNetwork: nil, localPrefix: 0,
+                              protocol: .UDP, direction: .outbound),
+            ]
+        }
         settings.includedNetworkRules = included
         setTunnelNetworkSettings(settings, completionHandler: completionHandler)
     }
@@ -130,6 +154,26 @@ class TransparentProxyProvider: NETransparentProxyProvider {
                             completionHandler: @escaping () -> Void) {
         wg_netstack_close()
         completionHandler()
+    }
+
+    // Sleep/wake — without these overrides macOS may restart the
+    // extension when the network interface comes back up after sleep,
+    // causing startProxy to be called again. Setting reasserting=true
+    // during sleep tells the runtime the tunnel is temporarily down;
+    // clearing it on wake avoids a full stop/start cycle.
+    override func sleepWithCompletionHandler(_ completionHandler: @escaping () -> Void) {
+        reasserting = true
+        completionHandler()
+    }
+
+    override func wake() {
+        // WireGuard auto-initiates a new handshake on the next keepalive
+        // tick (≤10s, per persistent_keepalive_interval). Clear reasserting
+        // immediately — bypassUDP flows don't need the WG tunnel and will
+        // work right away. Tunnel-side flows (clawpatrol children) fail fast
+        // via the cgo return code until the handshake completes.
+        reasserting = false
+        os_log("wake — wg will reconnect via keepalive", log: log, type: .info)
     }
 
     override func handleNewFlow(_ flow: NEAppProxyFlow) -> Bool {
