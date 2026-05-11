@@ -161,7 +161,7 @@ class TransparentProxyProvider: NETransparentProxyProvider {
     // causing startProxy to be called again. Setting reasserting=true
     // during sleep tells the runtime the tunnel is temporarily down;
     // clearing it on wake avoids a full stop/start cycle.
-    override func sleepWithCompletionHandler(_ completionHandler: @escaping () -> Void) {
+    override func sleep(completionHandler: @escaping () -> Void) {
         reasserting = true
         completionHandler()
     }
