@@ -900,4 +900,3 @@ func (w *webMux) collectRuleSummaries(profileFilter string) []RuleSummary {
 	})
 	return out
 }
-

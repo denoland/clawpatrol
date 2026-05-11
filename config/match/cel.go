@@ -3,8 +3,8 @@ package match
 import (
 	"fmt"
 
-	celast "github.com/google/cel-go/common/ast"
 	"github.com/google/cel-go/cel"
+	celast "github.com/google/cel-go/common/ast"
 	"github.com/google/cel-go/common/types"
 )
 
@@ -137,4 +137,3 @@ func collectReferencedVars(e celast.Expr) map[string]bool {
 	walk(e)
 	return refs
 }
-
