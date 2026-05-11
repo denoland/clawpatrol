@@ -9,14 +9,16 @@ and run an agent.
 
 ## Install
 
-On both the gateway host and any device:
+Gateway and device run the **same `clawpatrol` binary** — there's no
+separate server package. Install it on both the gateway host and any
+machine you want to enroll:
 
 ```bash
 curl -fsSL https://clawpatrol.dev/install.sh | sh
 ```
 
-The installer drops a single `clawpatrol` binary in `~/.local/bin`. macOS
-and Linux on amd64/arm64 are supported. To build from source instead, set
+The installer drops a single ~80 MB binary in `~/.local/bin`. macOS and
+Linux on amd64/arm64 are supported. To build from source instead, set
 `CLAWPATROL_FROM_SOURCE=1` (requires Go and `gh auth login`).
 
 ## Stand up a gateway
