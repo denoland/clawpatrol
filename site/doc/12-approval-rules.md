@@ -231,11 +231,6 @@ match keys in the same case the parser will produce (lower).
 
 ### `credential = X`
 
-Fires when the request is *dispatched against* the named credential.
-On a multi-credential endpoint, the agent picks the credential by
-embedding the configured placeholder; on a single-credential endpoint,
-every request matches the only credential.
-
 `credential` does not look at the request body or headers — it
 matches the resolved credential name, not the credential's secret
 contents.
