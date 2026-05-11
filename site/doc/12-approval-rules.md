@@ -151,7 +151,7 @@ duplicate name across kinds is a load error.
 
 A rule that names a wrong-family endpoint, an undeclared name, or a
 typo in a match key fails at load time with an error pointing at the
-offending block. Save iteratively: load, fix, repeat.
+offending block.
 
 
 ## Matching semantics
