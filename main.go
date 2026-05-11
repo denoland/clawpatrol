@@ -246,12 +246,7 @@ func newUpstreamDialer(resolver string) *net.Dialer {
 type Gateway struct {
 	cfg     *config.Gateway
 	cfgPath string // path the HCL config was loaded from
-	// readOnlyConfig, when set via --read-only-config, rejects every
-	// dashboard write that mutates cfgPath. The dashboard reads the
-	// flag from /api/state and hides its editor affordances; the
-	// server enforces it regardless of UI state.
-	readOnlyConfig bool
-	db             *sql.DB
+	db      *sql.DB
 	policy  atomic.Pointer[config.CompiledPolicy]
 	certs   *CertCache
 	dialer  *net.Dialer
@@ -260,6 +255,11 @@ type Gateway struct {
 	agents  *AgentRegistry
 	hitl    *HITLRegistry
 	onboard *onboardRegistry
+	// readOnlyConfig, when set via --read-only-config, rejects every
+	// dashboard write that mutates cfgPath. The dashboard reads the
+	// flag from /api/state and hides its editor affordances; the
+	// server enforces it regardless of UI state.
+	readOnlyConfig bool
 	// secrets hands credential plugins the secret bytes they inject
 	// at request time. Default env-var-backed; OAuth-flow credentials
 	// land via a follow-up bridge that delegates to OAuthRegistry.
