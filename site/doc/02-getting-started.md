@@ -23,24 +23,30 @@ on amd64/arm64 are supported. To build from source instead, set
 
 ## Stand up a gateway
 
-On the server:
+On the server, generate a CA and write the config:
 
 ```bash
-clawpatrol gateway init
+sudo mkdir -p /etc/clawpatrol /opt/clawpatrol
+sudo clawpatrol init-ca /opt/clawpatrol/ca
+sudo cp gateway.example.hcl /etc/clawpatrol/gateway.hcl
+sudo $EDITOR /etc/clawpatrol/gateway.hcl
 ```
 
-This generates a CA, writes `/etc/clawpatrol/gateway.hcl`, opens
-`udp/51820` and `tcp/9080`, and installs a systemd unit. Start it:
+Set at minimum `public_url`, `wg_endpoint`, and `dashboard_secret`. Then
+run the gateway:
 
 ```bash
-systemctl enable --now clawpatrol-gateway
+clawpatrol gateway -config /etc/clawpatrol/gateway.hcl
 ```
 
-The dashboard is at `http://<gateway-host>:9080`. The `join` command
-printed by `gateway init` is what your devices will run.
+The example config listens on `tcp/8443` (TLS proxy), `tcp/8080`
+(dashboard), and `udp/51820` (WireGuard) — open those in your firewall.
+For a long-running setup, wrap that command in a systemd unit of your
+choosing.
 
-See [Self-hosting](/docs/06-self-hosting/) for the gateway host
-requirements and [Gateway](/docs/07-gateway/) for the config reference.
+The dashboard is at `http://<gateway-host>:8080` (gated by
+`dashboard_secret`). See [Gateway](/docs/07-gateway/) for the full HCL
+reference.
 
 ## Join a device
 
@@ -83,5 +89,6 @@ real key.
 
 - [Architecture](/docs/04-architecture/) — how interception works
 - [CLI](/docs/05-cli/) — full command reference
+- [Gateway](/docs/07-gateway/) — gateway config reference
 - [Approval rules](/docs/12-approval-rules/) — gating writes behind a human or LLM
 - [Security model](/docs/11-security-model/) — what Claw Patrol does and doesn't protect against
