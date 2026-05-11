@@ -60,11 +60,11 @@ type onboardSession struct {
 // (OwnerForIP / HostnameForIP / ProfileForIP fire on every request);
 // mutations write through to SQLite.
 type onboardRegistry struct {
-	mu           sync.Mutex
-	byDevice     map[string]*onboardSession
-	byUser       map[string]*onboardSession
-	ownerByIP    map[string]string
-	hostnameByIP map[string]string
+	mu                   sync.Mutex
+	byDevice             map[string]*onboardSession
+	byUser               map[string]*onboardSession
+	ownerByIP            map[string]string
+	hostnameByIP         map[string]string
 	profileByIP          map[string]string
 	ephemeralProfileByIP map[string]string // never written to devices table
 	ephemeralParentByIP  map[string]string // ephemeral IP → parent device IP
