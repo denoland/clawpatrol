@@ -161,7 +161,7 @@ func (m *sqlMatcher) Match(req *match.Request) bool {
 			return false
 		}
 	}
-	if m.statement != "" && !match.MatchGlob(m.statement, meta.Statement) {
+	if m.statement != "" && !match.PatternMatch(m.statement, meta.Statement) {
 		return false
 	}
 	if m.statementRegex != nil && !m.statementRegex.MatchString(meta.Statement) {

@@ -143,7 +143,7 @@ func (m *httpMatcher) Match(req *match.Request) bool {
 			return false
 		}
 	}
-	if len(m.path) > 0 && !match.MatchAny(m.path, match.PathOf(req.URL)) {
+	if len(m.path) > 0 && !match.Any(m.path, match.PathOf(req.URL)) {
 		return false
 	}
 	for k, wants := range m.query {
@@ -168,7 +168,7 @@ func (m *httpMatcher) Match(req *match.Request) bool {
 		// pair must be present in the request body. We rely on the
 		// caller having set req.Body — bodyJSON in a rule means the
 		// runtime must buffer the body.
-		if !match.MatchBodyJSON(req.Body, m.bodyJSON) {
+		if !match.BodyJSON(req.Body, m.bodyJSON) {
 			return false
 		}
 	}

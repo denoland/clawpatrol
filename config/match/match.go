@@ -117,7 +117,7 @@ func ParseGlobs(raw any) []Glob {
 	return out
 }
 
-// MatchAny returns true iff the candidate satisfies the list — list
+// Any returns true iff the candidate satisfies the list — list
 // semantics are "any positive matches OR no positives AND no negatives
 // match". Mixed lists compose: every "!" entry is checked
 // (candidate must NOT match it); positive entries are OR'd.
@@ -127,14 +127,14 @@ func ParseGlobs(raw any) []Glob {
 //	["pods/exec", "pods/attach"]                   → in [...]
 //	["!*/exec", "!*/attach", "!*/portforward"]     → not (any of those)
 //	["foo", "!bar"]                                → matches foo AND not bar
-func MatchAny(globs []Glob, candidate string) bool {
+func Any(globs []Glob, candidate string) bool {
 	if len(globs) == 0 {
 		return true // no constraint
 	}
 	hasPositive := false
 	positiveOK := false
 	for _, g := range globs {
-		ok := MatchGlob(g.Pattern, candidate)
+		ok := PatternMatch(g.Pattern, candidate)
 		if g.Neg {
 			if ok {
 				return false
@@ -152,9 +152,9 @@ func MatchAny(globs []Glob, candidate string) bool {
 	return true
 }
 
-// MatchGlob is a thin wrapper around path.Match that also handles
+// PatternMatch is a thin wrapper around path.Match that also handles
 // the empty-pattern edge case (matches anything).
-func MatchGlob(pattern, s string) bool {
+func PatternMatch(pattern, s string) bool {
 	if pattern == "" {
 		return true
 	}
@@ -187,7 +187,7 @@ func LowerAll(xs []string) []string {
 // can name several.
 func AnyOfStrings(candidates []string, globs []Glob) bool {
 	for _, c := range candidates {
-		if MatchAny(globs, c) {
+		if Any(globs, c) {
 			return true
 		}
 	}

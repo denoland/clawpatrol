@@ -146,7 +146,7 @@ func (m *k8sMatcher) Match(req *match.Request) bool {
 	if m.credential != "" && req.Credential != m.credential {
 		return false
 	}
-	if len(m.resource) > 0 && !match.MatchAny(m.resource, meta.Resource) {
+	if len(m.resource) > 0 && !match.Any(m.resource, meta.Resource) {
 		return false
 	}
 	if len(m.verb) > 0 {
@@ -161,10 +161,10 @@ func (m *k8sMatcher) Match(req *match.Request) bool {
 			return false
 		}
 	}
-	if len(m.namespace) > 0 && !match.MatchAny(m.namespace, meta.Namespace) {
+	if len(m.namespace) > 0 && !match.Any(m.namespace, meta.Namespace) {
 		return false
 	}
-	if len(m.name) > 0 && !match.MatchAny(m.name, meta.Name) {
+	if len(m.name) > 0 && !match.Any(m.name, meta.Name) {
 		return false
 	}
 	for k, want := range m.params {
