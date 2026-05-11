@@ -1,10 +1,10 @@
 # Approval rules
 
 Rules are how an operator decides what happens to a request:
-forward it, reject it, or route it through one or more **approver**
-stages (a human approver who acts from the dashboard or Slack, an
-LLM approver that judges against a policy, or both in sequence) that
-must each allow before the request is forwarded. Each rule is a
+forward it, reject it, or route it through one or more
+**approvers** (a human approver who acts from the dashboard or
+Slack, an LLM approver that judges against a policy, or both in
+sequence) that must each allow before the request is forwarded. Each rule is a
 block in `gateway.hcl` that targets one or more
 [endpoints](/docs/03a-glossary/#endpoint), describes which requests
 it applies to (the `match` block), and declares the outcome
@@ -140,7 +140,7 @@ rule "<type>" "<name>" {
 | `priority`   | optional (default `0`)   | Higher fires first. Negative for catch-alls (`-100` is the convention). |
 | `match`      | optional                 | Object literal of family-specific keys. Absent or empty `{}` matches every request the endpoint sees. |
 | `verdict`    | one of `verdict` / `approve` | `"allow"` or `"deny"`. |
-| `approve`    | one of `verdict` / `approve` | List of approver bare names. Stages run in order; **all must allow** for the request to proceed. |
+| `approve`    | one of `verdict` / `approve` | List of approver bare names. Approvers run in order; **all must allow** for the request to proceed. |
 | `reason`     | optional                 | Surfaced to the agent on `deny` / approver-deny, and shown on the dashboard. |
 | `disabled`   | optional                 | Keeps the rule in source but suppresses it at compile time. |
 
@@ -243,14 +243,18 @@ After a rule matches:
 - `verdict = "deny"` — the request is rejected. HTTP gets a 403
   with `reason` in the body; postgres gets an `ErrorResponse` frame
   carrying `reason`.
-- `approve = [a, b, c]` — stages run in order, **all must allow**.
-  The first non-allow stage short-circuits and is returned. A stage
-  that returns no decision (e.g. timeout) is treated as deny.
+- `approve = [a, b, c]` — approvers run in order, **all must allow**.
+  The first non-allow approver short-circuits and is returned. An
+  approver that returns no decision (e.g. timeout) is treated as deny.
 
-LLM stages call the configured LLM approver via its bound credential.
-Human stages park the request: the dashboard's pending-approvals page
-plus, optionally, a Slack channel ping if the approver block has a
-`credential` reference to a `slack_tokens` credential.
+LLM approvers call the configured model via its bound credential and
+judge the request against the approver's policy. Human approvers park
+the request on the dashboard's pending-approvals page. If the approver
+block has a `credential` reference to a `slack_tokens` credential, Claw
+Patrol also posts an approval message to the configured Slack channel.
+By default the message carries a link back to the dashboard; setting
+`interactive = true` on the approver embeds in-channel "approve" and
+"deny" buttons so the reviewer can decide without leaving Slack.
 
 If no rule matches, the request is **allowed** — there is no global
 default-deny. Add a `priority = -100, verdict = "deny"` catch-all
@@ -353,8 +357,8 @@ request body for the placeholder.
 
 ### LLM proctor → human approver chain
 
-Stages run in order, all must allow. The first stage is cheap (an
-LLM judge), the second is expensive (a human gets paged):
+Approvers run in order, all must allow. The first approver is cheap
+(an LLM judge), the second is expensive (a human gets paged):
 
 ```hcl
 approver "llm_approver" "pg-secret-columns-judge" {
@@ -387,7 +391,7 @@ rule "sql_rule" "pg-secret-columns" {
 If the LLM judge says `allow`, the request goes to `console-dba` for
 human approval. If the LLM judge says `deny`, the human is never
 paged. If either says `deny`, the request is rejected with the
-reason returned by the rejecting stage.
+reason returned by the rejecting approver.
 
 The bare name `dashboard` is a built-in approver: `approve =
 [dashboard]` parks the request on the dashboard's pending-approvals
@@ -643,10 +647,10 @@ roadmap but not currently accepted by the parser — you'll get an
 "Unsupported block type" diagnostic at load time. Today, scope
 policy by **profile** instead.
 
-### `approve` stages are bare names only
+### `approve` entries must be bare names
 
-Struct-form stages (e.g. inline `policy` and `cache_ttl` on a stage)
-are rejected by the current decoder:
+Struct-form entries (e.g. inline `policy` and `cache_ttl` on the
+approver reference) are rejected by the current decoder:
 
 ```
 Rule "X" approve stage must be a bare-name reference.
