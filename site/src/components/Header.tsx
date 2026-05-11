@@ -28,6 +28,27 @@ export function Header() {
           >
             GitHub
           </a>
+          <a
+            href="/docs/02-getting-started/"
+            class="squircle-sm bg-console-dark text-canvas px-3 py-2 sm:px-4 sm:py-2.5 inline-flex items-center gap-2 font-mono hover:bg-rust transition-colors"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 14 14"
+              fill="none"
+              aria-hidden="true"
+            >
+              <path
+                d="M7 1.5v7.25m0 0L4 5.75m3 3 3-3M2.25 12h9.5"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+            Download
+          </a>
         </div>
       </div>
     </nav>
