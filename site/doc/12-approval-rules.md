@@ -348,6 +348,12 @@ rule "http_rule" "orb-prod-writes" {
   match    = { credential = orb-prod-key, method = ["POST", "PUT", "PATCH"] }
   approve  = [billing]
 }
+
+rule "http_rule" "orb-prod-deletes" {
+  endpoint = orb
+  match    = { credential = orb-prod-key, method = "DELETE" }
+  verdict  = "deny"
+}
 ```
 
 `match.credential` fires when the request was *dispatched against*
