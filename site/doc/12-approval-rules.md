@@ -48,7 +48,7 @@ match = {
   query         = { agent_id = "ci" }   # exact query-param match
   headers       = { "x-tenant" = "prod" }           # substring header match
   body_json     = { archived = true }   # JSON subset match
-  body_contains = "DELETE FROM users"   # raw substring (case-sensitive)
+  body_contains = "BEGIN PRIVATE KEY"   # raw substring (case-sensitive)
   credential    = github-prod-pat       # bare-name ref to the dispatched credential
 }
 ```
