@@ -125,7 +125,7 @@ esac
 # of the legacy `integrations = [...]` shortcut. Operator-managed
 # device "<ip>" {} blocks land at the bottom of the file via the
 # dashboard's per-device editor.
-cat > dist/gateway.hcl <<EOF
+cat > dist/deno.hcl <<EOF
 listen      = "0.0.0.0:${PORT}"
 info_listen = "0.0.0.0:8080"
 public_url  = "${PUBLIC_URL}"
@@ -278,7 +278,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=${REMOTE_DIR}
 EnvironmentFile=-${REMOTE_DIR}/secrets.env
-ExecStart=${REMOTE_DIR}/gateway gateway -config ${REMOTE_DIR}/gateway.hcl
+ExecStart=${REMOTE_DIR}/gateway gateway -config ${REMOTE_DIR}/deno.hcl --read-only-config
 Restart=on-failure
 RestartSec=2
 LimitNOFILE=65536
@@ -295,7 +295,7 @@ ship_if_changed dist/gateway-linux-amd64 "${REMOTE_DIR}/gateway"
 remote "chmod +x ${REMOTE_DIR}/gateway"
 ship_if_changed ca/ca.crt "${REMOTE_DIR}/ca/ca.crt"
 ship_if_changed ca/ca.key "${REMOTE_DIR}/ca/ca.key"
-ship_if_changed dist/gateway.hcl "${REMOTE_DIR}/gateway.hcl"
+ship_if_changed dist/deno.hcl "${REMOTE_DIR}/deno.hcl"
 ship_if_changed dist/remote-modules.sh "${REMOTE_DIR}/remote-modules.sh"
 ship_if_changed dist/remote-nft.sh "${REMOTE_DIR}/remote-nft.sh"
 ship_if_changed dist/remote-up.sh "${REMOTE_DIR}/remote-up.sh"
