@@ -700,10 +700,3 @@ There is no `clawpatrol rules test` CLI today. To smoke-test a rule
 against your real config: load the gateway locally, point an agent
 at it, and watch the dashboard's per-action log. The log line
 carries the matched rule name so you can confirm which rule fired.
-
-### Where matched rules show up
-
-Every action's verdict carries the matched rule name. The dashboard
-surfaces this on the per-request page; the JSON API exposes it on
-`/api/actions/<id>` (see [Self-Hosting](/docs/06-self-hosting/)).
-Default-policy outcomes (no rule matched) carry an empty rule name.
