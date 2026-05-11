@@ -569,14 +569,15 @@ per-session model, token counts, and estimated cost.
 
 ### Claw Patrol, Rules: true
 
-HCL-based policy language with typed rulesets:
-`http_ruleset`, `sql_ruleset`, `k8s_ruleset`. SQL rules match
-on verb, tables, functions, statement patterns, and regex. K8s
-rules match on verb, resource, namespace, name with glob and
-negation support. HTTP rules match on method, path, query,
-headers, body JSON, and body substrings. LLM and human
-approvers with configurable cache TTL. Two-pass precedence:
-device-scoped before global.
+HCL-based policy language with one `rule` block kind whose
+protocol family (HTTP / SQL / Kubernetes) is inferred from its
+endpoint(s). Rules carry a CEL `condition` matched against
+family-specific variables: SQL rules see verb, tables, functions,
+and statement text; K8s rules see verb, resource, namespace,
+name, and params; HTTP rules see method, path, query, headers,
+body, and parsed JSON body. LLM and human approvers with
+configurable cache TTL. Two-pass precedence: device-scoped before
+global.
 
 ### Claw Patrol, Analytics: true
 

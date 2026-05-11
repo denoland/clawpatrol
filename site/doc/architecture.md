@@ -213,14 +213,14 @@ filter and tunnels every flow.
 Once a flow reaches the gateway over the tunnel, the gateway
 inspects the destination port (and, for some families, the SNI or
 the resolved hostname) to pick a handler. A **family** is the
-protocol class an endpoint plugin advertises so rule plugins can
-target it: today the gateway ships `https` (the `https` endpoint),
-`sql` (postgres, clickhouse_native, clickhouse_https), and `k8s`
-(kubernetes). Rule kinds bind to families, not to individual
-endpoint types — `http_rule` matches anything in `https`,
-`sql_rule` anything in `sql`, `k8s_rule` anything in `k8s`. New
-protocols (e.g. `ssh`) carry their own family identifier when
-their rule kind ships. Anything the gateway has no opinion on
+protocol class an endpoint plugin advertises so the rule engine
+can target it: today the gateway ships `https` (the `https`
+endpoint), `sql` (postgres, clickhouse_native, clickhouse_https),
+and `k8s` (kubernetes). Rules are a single block kind; the family
+is inferred from the rule's endpoint(s) at load time, and each
+family exposes its own CEL variable (`http.*`, `sql.*`, `k8s.*`)
+that the rule's `condition` may reference. New protocols (e.g.
+`ssh`) ship with their own family identifier and CEL variable. Anything the gateway has no opinion on
 splices to the real upstream byte-for-byte. There is no
 `HTTPS_PROXY` env var, no per-tool CA configuration, and no
 `iptables` rule on the gateway host: the WG netstack accepts SYNs
@@ -264,7 +264,7 @@ based on the destination port and IP:
   <rect class="b-disp" x="240" y="208" width="720" height="52" rx="4"/>
   <text class="row-disp" x="250" y="228">
     <tspan x="250" dy="0">ConnIndex (DNS-resolved IP) → device profile picks one postgres endpoint</tspan>
-    <tspan x="250" dy="1.3em">⇒ MitM (sql_rule); no match ⇒ relay</tspan>
+    <tspan x="250" dy="1.3em">⇒ MitM (sql family); no match ⇒ relay</tspan>
   </text>
   <line class="arr-disp" x1="120" y1="300" x2="240" y2="300" marker-end="url(#ar-disp)"/>
   <text class="cond-disp" x="125" y="295">UDP/TCP :53</text>
@@ -329,7 +329,7 @@ RDS instance) the lookup filters by the device's profile so the
 right one wins; single-database profiles fall back to "first
 postgres in profile" without needing DNS at all. The postgres
 endpoint runtime then performs auth offload and runs the flow
-through `sql_rule` matching with the right credential.
+through `sql`-family rule matching with the right credential.
 
 The same `ConnRouter` mechanism powers `clickhouse_native` (claimed
 by direct IP) and `ssh` (claimed by DNS-VIP); the plugin only has
@@ -378,7 +378,7 @@ summary:
 | dst port             | handler                                                                                  |
 |----------------------|------------------------------------------------------------------------------------------|
 | `:443`               | SNI peek, then HTTPS family dispatch (`https` / `k8s`) or passthrough                    |
-| `:5432`              | postgres wire-protocol gateway (auth offload + `sql_rule` matching)                      |
+| `:5432`              | postgres wire-protocol gateway (auth offload + `sql`-family rule matching)               |
 | `:53`                | DNS-VIP responder (UDP and TCP fallback)                                                 |
 | any port, dst is VIP | VIP-bound endpoint runtime (today: `ssh`, `clickhouse_native` reached by hostname)       |
 | `else`               | direct-IP endpoint lookup; falls through to transparent TCP relay when no plugin claims  |

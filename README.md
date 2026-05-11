@@ -92,15 +92,15 @@ approver "human_approver" "ops" {
   channel = "#agent-ops"
 }
 
-rule "http_rule" "github-reads" {
-  endpoint = github-api
-  match    = { method = ["GET", "HEAD"] }
-  verdict  = "allow"
+rule "github-reads" {
+  endpoint  = github-api
+  condition = "http.method in ['GET', 'HEAD']"
+  verdict   = "allow"
 }
-rule "http_rule" "github-writes" {
-  endpoint = github-api
-  match    = { method = ["POST", "PUT", "PATCH", "DELETE"] }
-  approve  = [ops]
+rule "github-writes" {
+  endpoint  = github-api
+  condition = "http.method in ['POST', 'PUT', 'PATCH', 'DELETE']"
+  approve   = [ops]
 }
 
 profile "default" {
@@ -121,10 +121,10 @@ approver "llm_approver" "secret-judge" {
   policy     = no-secret-columns
 }
 
-rule "sql_rule" "pg-secret-defense" {
-  endpoint = pg-prod
-  match    = { verb = "select", statement_regex = "(?i)\\b(secret|token|password)\\b" }
-  approve  = [secret-judge]
+rule "pg-secret-defense" {
+  endpoint  = pg-prod
+  condition = "sql.verb == 'select' && sql.statement.matches('(?i)\\\\b(secret|token|password)\\\\b')"
+  approve   = [secret-judge]
 }
 ```
 

@@ -525,18 +525,16 @@ endpoint "ssh" "example" {
 
 ## `rule` blocks
 
-Block syntax: `rule "<type>" "<name>" { ... }`
+Block syntax: `rule "<name>" { ... }`
 
-Registered types: [`http_rule`](#rule-httprule), [`k8s_rule`](#rule-k8srule), [`sql_rule`](#rule-sqlrule).
+Registered types: [``](#rule-).
 
-### `rule "http_rule" "<name>"`
+### `rule "" "<name>"`
 
-The shared body shape across the three rule types
-(`http_rule`, `sql_rule`, `k8s_rule`). The available keys inside the
-`match` block depend on the rule's family (listed per kind below);
-the outer frame is identical: endpoint targeting, priority, outcome.
-
-Targets endpoints of family: `https`.
+The gohcl-tagged decode target. The match predicate is
+family-agnostic at the HCL layer (just a CEL string); the facet's
+*cel.Env decides which variables are valid once the family has
+been inferred from the endpoint refs.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -544,72 +542,13 @@ Targets endpoints of family: `https`.
 | `endpoints` | `[]ref(endpoint)` | no |  |
 | `priority` | `int` | no |  |
 | `disabled` | `bool` | no |  |
-| `match` | `block` | no | A free-form block whose keys depend on the rule family. Each value is either a single string or a list of strings. Omitting `match` matches every request — the catch-all pattern (`rule "..." "X-default" { priority = -100; verdict = "deny" }`) relies on this. |
+| `condition` | `string` | no | A CEL expression evaluated against the family-specific variable set. An absent / empty condition matches everything — the catch-all pattern (`rule "X-default" { priority = -100; verdict = "deny" }`) relies on this. |
+| `credential` | `ref(credential)` | no | Credential, if set, is a bare-name reference to a credential block. The runtime treats it as an extra match predicate (request must have been dispatched against this credential) evaluated before the CEL expression. |
 | `verdict` | `string` | no | The outcome when the rule matches. Set exactly one of `verdict` (`"allow"` / `"deny"`) or `approve`. |
 | `reason` | `string` | no |  |
 | `approve` | `[]ref(approver)` | no | A list of bare-name approver references. The approvers run in order; the request is allowed only if every stage approves. Set this *or* `verdict`, not both. |
 
-**`match` keys** (single string or list of strings each):
-
-- family `https`: `method`, `path`, `query`, `headers`, `body_json`, `body_contains`, `credential`
-
 ```hcl
-rule "http_rule" "example" {}
-```
-
-### `rule "k8s_rule" "<name>"`
-
-The shared body shape across the three rule types
-(`http_rule`, `sql_rule`, `k8s_rule`). The available keys inside the
-`match` block depend on the rule's family (listed per kind below);
-the outer frame is identical: endpoint targeting, priority, outcome.
-
-Targets endpoints of family: `k8s`.
-
-| Attribute | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `endpoint` | `ref(endpoint)` | no |  |
-| `endpoints` | `[]ref(endpoint)` | no |  |
-| `priority` | `int` | no |  |
-| `disabled` | `bool` | no |  |
-| `match` | `block` | no | A free-form block whose keys depend on the rule family. Each value is either a single string or a list of strings. Omitting `match` matches every request — the catch-all pattern (`rule "..." "X-default" { priority = -100; verdict = "deny" }`) relies on this. |
-| `verdict` | `string` | no | The outcome when the rule matches. Set exactly one of `verdict` (`"allow"` / `"deny"`) or `approve`. |
-| `reason` | `string` | no |  |
-| `approve` | `[]ref(approver)` | no | A list of bare-name approver references. The approvers run in order; the request is allowed only if every stage approves. Set this *or* `verdict`, not both. |
-
-**`match` keys** (single string or list of strings each):
-
-- family `k8s`: `resource`, `verb`, `namespace`, `name`, `params`, `credential`
-
-```hcl
-rule "k8s_rule" "example" {}
-```
-
-### `rule "sql_rule" "<name>"`
-
-The shared body shape across the three rule types
-(`http_rule`, `sql_rule`, `k8s_rule`). The available keys inside the
-`match` block depend on the rule's family (listed per kind below);
-the outer frame is identical: endpoint targeting, priority, outcome.
-
-Targets endpoints of family: `sql`.
-
-| Attribute | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `endpoint` | `ref(endpoint)` | no |  |
-| `endpoints` | `[]ref(endpoint)` | no |  |
-| `priority` | `int` | no |  |
-| `disabled` | `bool` | no |  |
-| `match` | `block` | no | A free-form block whose keys depend on the rule family. Each value is either a single string or a list of strings. Omitting `match` matches every request — the catch-all pattern (`rule "..." "X-default" { priority = -100; verdict = "deny" }`) relies on this. |
-| `verdict` | `string` | no | The outcome when the rule matches. Set exactly one of `verdict` (`"allow"` / `"deny"`) or `approve`. |
-| `reason` | `string` | no |  |
-| `approve` | `[]ref(approver)` | no | A list of bare-name approver references. The approvers run in order; the request is allowed only if every stage approves. Set this *or* `verdict`, not both. |
-
-**`match` keys** (single string or list of strings each):
-
-- family `sql`: `verb`, `tables`, `function`, `statement`, `statement_regex`, `credential`
-
-```hcl
-rule "sql_rule" "example" {}
+rule {}
 ```
 

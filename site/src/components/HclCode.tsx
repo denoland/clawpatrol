@@ -17,6 +17,7 @@ const KEYWORDS = new Set([
   "policy",
   "profile",
   "match",
+  "condition",
   "verdict",
   "approve",
   "reason",

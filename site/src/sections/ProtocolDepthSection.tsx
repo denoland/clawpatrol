@@ -18,11 +18,11 @@ const PROTOCOLS: {
     body:
       "Method, path, headers, body. Any host, any service. " +
       "Hostname matching is implicit via the endpoint scope.",
-    example: `rule "http_rule" "github-no-repo-delete" {
-  endpoint = github-api
-  match    = { method = "DELETE", path = "/repos/*" }
-  verdict  = "deny"
-  reason   = "deleting repos is not allowed"
+    example: `rule "github-no-repo-delete" {
+  endpoint  = github-api
+  condition = "http.method == 'DELETE' && http.path.startsWith('/repos/')"
+  verdict   = "deny"
+  reason    = "deleting repos is not allowed"
 }`,
   },
   {
@@ -30,11 +30,11 @@ const PROTOCOLS: {
     body:
       "Postgres and ClickHouse traffic parsed verb-by-verb. " +
       "Match SELECT, INSERT, DROP. Inspect tables and statement text.",
-    example: `rule "sql_rule" "no-ddl" {
-  endpoint = pg-writer
-  match    = { verb = ["drop", "truncate", "alter"] }
-  verdict  = "deny"
-  reason   = "no DDL"
+    example: `rule "no-ddl" {
+  endpoint  = pg-writer
+  condition = "sql.verb in ['drop', 'truncate', 'alter']"
+  verdict   = "deny"
+  reason    = "no DDL"
 }`,
   },
   {
@@ -42,9 +42,9 @@ const PROTOCOLS: {
     body:
       "API calls to kube-apiserver. Match by namespace, resource, " +
       "and verb — protect prod from accidental kubectl delete.",
-    example: `rule "k8s_rule" "no-secrets" {
+    example: `rule "no-secrets" {
   endpoints = [k8s-dev-ams, k8s-dev-ord]
-  match     = { resource = "secrets" }
+  condition = "k8s.resource == 'secrets'"
   verdict   = "deny"
   reason    = "Secret values must not leave the cluster"
 }`,

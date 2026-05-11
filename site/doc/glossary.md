@@ -81,24 +81,39 @@ thing the agent did."
 
 ### Rule
 
-One policy decision targeting one or more [endpoints](#endpoint). Three
-rule types — `http_rule`, `sql_rule`, `k8s_rule` — each constrained to
-a matching endpoint family. A rule has a `match = { ... }` map of
-[facets](#facet) (the set depends on the rule type) and an
-[outcome](#outcome) — either a literal `verdict` or an `approve = [...]`
-chain.
+One policy decision targeting one or more [endpoints](#endpoint). A
+rule has a CEL [`condition`](#cel-condition) string that matches against
+the [facets](#facet) of the rule's protocol family (inferred from its
+endpoints), an optional `credential` predicate, and an [outcome](#outcome)
+— either a literal `verdict` or an `approve = [...]` chain. Rules are
+one HCL block kind (`rule "<name>" { ... }`); the family is inferred
+from the endpoint(s) at load time, and mixed-family endpoint sets are
+a load error.
 
 ### Facet
 
-A single named matchable property inside a [rule](#rule)'s
-`match { ... }` block. Each rule family exposes its own facet set:
-`http_rule` carries `method` / `path` / `query` / `headers` /
-`body_json` / `body_contains` / `credential`; `sql_rule` carries
-`verb` / `tables` / `function` / `statement` / `statement_regex` /
-`credential`; `k8s_rule` carries `resource` / `verb` / `namespace` /
-`name` / `params` / `credential`. Per-facet semantics vary — list
-values are any-of, a `!`-prefix on a string negates it, and individual
-facets are glob, PCRE, or exact match.
+A single named matchable property exposed to a [rule](#rule)'s CEL
+[`condition`](#cel-condition). Each protocol family exposes its own
+top-level struct-typed variable: `http.method` / `http.path` /
+`http.query` / `http.headers` / `http.body` / `http.body_json`;
+`sql.verb` / `sql.tables` / `sql.function` / `sql.statement`;
+`k8s.verb` / `k8s.resource` / `k8s.namespace` / `k8s.name` /
+`k8s.params`. Per-facet types vary — `method` and `verb` are scalar
+strings, `tables` / `function` are lists, `query` / `headers` /
+`params` are maps, and `body_json` is parsed-JSON `dyn`.
+
+### CEL condition
+
+The boolean expression a [rule](#rule)'s `condition = "..."` field
+carries. CEL ([Common Expression Language](https://github.com/google/cel-spec))
+is evaluated against the [facets](#facet) of the rule's inferred
+family. Idioms: equality / membership (`http.method == 'POST'`,
+`sql.verb in ['select', 'show']`), prefix / suffix / substring
+(`k8s.name.startsWith('debug-')`, `http.body.contains('secret')`),
+regex (`sql.statement.matches('(?i)\\bpassword\\b')`), list overlap
+(`sets.intersects(sql.tables, ['users', 'audit_log'])`), and `!`
+negation. An absent or empty `condition` matches every request the
+rule's endpoints see.
 
 ### Approver
 
@@ -218,11 +233,12 @@ An [endpoint](#endpoint) entity. First label = endpoint type
 name. Family-specific fields: `hosts` (for `https`), `host` + `database`
 (for `postgres`), `server` + `ca_cert` (for `kubernetes`).
 
-### `rule "<type>" "<name>" { ... }`
+### `rule "<name>" { ... }`
 
-A [rule](#rule). First label = rule type (`http_rule` / `sql_rule` /
-`k8s_rule`); second = bare name. Body carries `endpoint(s) =`,
-`priority`, `match = { ... }`, and either `verdict` or `approve`.
+A [rule](#rule). One label — the bare name. The protocol family is
+inferred from `endpoint(s) =`. Body carries `endpoint(s) =`,
+`priority`, an optional `credential =` predicate, an optional CEL
+`condition = "..."`, and either `verdict` or `approve`.
 
 ### `profile "<name>" { endpoints = [...] }`
 

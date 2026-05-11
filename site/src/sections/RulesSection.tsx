@@ -51,47 +51,40 @@ function RuleCodeBlock() {
           # Block destructive SQL on prod{"\n"}
         </span>
         <span class="text-rust-300">rule</span>{" "}
-        <span class="text-butter-300">"sql_rule"</span>{" "}
         <span class="text-butter-300">"no-prod-drops"</span>
         {" {\n"}
         {"  "}
-        <span class="text-rust-300">match</span>
-        {"   = { "}
-        <span class="text-canvas/70">verb</span>
-        {" = ["}
-        <span class="text-butter-300">"DROP"</span>
-        {", "}
-        <span class="text-butter-300">"TRUNCATE"</span>
-        {"] }\n"}
+        <span class="text-rust-300">endpoint</span>
+        {"  = pg-prod\n"}
         {"  "}
-        <span class="text-rust-300">verdict</span>
+        <span class="text-rust-300">condition</span>
         {" = "}
+        <span class="text-butter-300">
+          "sql.verb in ['drop', 'truncate']"
+        </span>
+        {"\n  "}
+        <span class="text-rust-300">verdict</span>
+        {"   = "}
         <span class="text-butter-300">"deny"</span>
         {"\n}\n\n"}
         <span class="text-text-subtle">
           # Slack-approve any GitHub write{"\n"}
         </span>
         <span class="text-rust-300">rule</span>{" "}
-        <span class="text-butter-300">"http_rule"</span>{" "}
         <span class="text-butter-300">"github-writes"</span>
         {" {\n"}
         {"  "}
         <span class="text-rust-300">endpoint</span>
-        {" = github-api\n"}
+        {"  = github-api\n"}
         {"  "}
-        <span class="text-rust-300">match</span>
-        {"    = { "}
-        <span class="text-canvas/70">method</span>
-        {" = ["}
-        <span class="text-butter-300">"POST"</span>
-        {", "}
-        <span class="text-butter-300">"PUT"</span>
-        {", "}
-        <span class="text-butter-300">"DELETE"</span>
-        {"] }\n"}
-        {"  "}
+        <span class="text-rust-300">condition</span>
+        {" = "}
+        <span class="text-butter-300">
+          "http.method in ['POST', 'PUT', 'DELETE']"
+        </span>
+        {"\n  "}
         <span class="text-rust-300">approve</span>
-        {"  = [ops]\n"}
+        {"   = [ops]\n"}
         {"}\n\n"}
         <span class="text-text-subtle">
           # Hand sensitive reads to an LLM judge{"\n"}

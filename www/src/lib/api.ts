@@ -94,10 +94,11 @@ export type Agent = {
 
 export type RuleSummary = {
   // Rule's bare-name identifier (declared in HCL as
-  // `rule "<type>" "<name>"`). Unique across the file.
+  // `rule "<name>"`). Unique across the file.
   name: string;
-  // "https" | "sql" | "k8s" — protocol family the rule's match
-  // facets apply to. Determines which fields appear in `match`.
+  // "https" | "sql" | "k8s" — protocol family inferred from the
+  // rule's endpoint(s); pins the facet whose CEL variables are
+  // bound when evaluating `condition`.
   family: string;
   // Endpoint this rule attaches to. Multi-endpoint rules emit one
   // RuleSummary per attachment site.
@@ -120,11 +121,15 @@ export type RuleSummary = {
     policy?: string;
     cache_ttl?: number;
   }>;
-  // Match facet map. Keys vary by family — http rules have
-  // method / path / headers; sql rules have verb / tables / function;
-  // k8s rules have resource / verb / namespace / name. Values are
-  // either a string or a list of strings; "!prefix" entries negate.
-  match?: Record<string, unknown>;
+  // CEL condition string. Empty for catch-all rules. Variables
+  // exposed depend on the family: http.{method, path, query,
+  // headers, body, body_json}, sql.{verb, tables, function,
+  // statement}, k8s.{verb, resource, namespace, name, params}.
+  condition?: string;
+  // Bare-name credential ref the request must have been
+  // dispatched against. Empty when the rule doesn't filter on
+  // credential.
+  credential?: string;
 };
 
 export async function getRules(): Promise<RuleSummary[]> {
@@ -433,7 +438,6 @@ export type FacetSchema = {
   transport?: string;
   hitl_query_label?: string;
   host_is_resource: boolean;
-  match_keys: Array<{ name: string; kind: string }>;
   report_fields: Array<{ name: string; kind: string; label?: string }>;
 };
 

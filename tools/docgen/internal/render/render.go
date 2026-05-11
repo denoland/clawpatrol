@@ -16,7 +16,6 @@ import (
 	"github.com/zclconf/go-cty/cty"
 
 	"github.com/denoland/clawpatrol/config"
-	"github.com/denoland/clawpatrol/config/facet"
 
 	// Side-effect import: every plugin's init() calls config.Register
 	// so AllPlugins(kind) returns the full set during generation.
@@ -223,27 +222,7 @@ func (r *renderer) writePlugin(kind config.Kind, p *config.Plugin) {
 
 	r.writeStructTable(pkgName, typeName, rt)
 
-	// Rule plugins: enumerate per-family valid match keys.
-	if kind == config.KindRule {
-		r.writeRuleMatchKeys(p)
-	}
-
 	r.writeExample(string(kind), p.Type, rt, true)
-}
-
-func (r *renderer) writeRuleMatchKeys(p *config.Plugin) {
-	if len(p.Families) == 0 {
-		return
-	}
-	r.out.WriteString("**`match` keys** (single string or list of strings each):\n\n")
-	for _, fam := range p.Families {
-		keys := facet.KnownKeys(fam)
-		if len(keys) == 0 {
-			continue
-		}
-		fmt.Fprintf(&r.out, "- family `%s`: %s\n", fam, joinTicked(keys))
-	}
-	r.out.WriteString("\n")
 }
 
 // pluginStructType invokes plugin.New() and returns the underlying
