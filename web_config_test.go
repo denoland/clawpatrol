@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -128,6 +129,34 @@ func TestUnifiedDiffSplitsDistantChangesIntoSeparateHunks(t *testing.T) {
 	}
 }
 
+func TestUnifiedDiffUsesContextDiffForRealisticGatewayConfigSize(t *testing.T) {
+	const lineCount = 600
+	oldLines := make([]string, lineCount)
+	newLines := make([]string, lineCount)
+	for i := range oldLines {
+		oldLines[i] = fmt.Sprintf("line %03d", i+1)
+		newLines[i] = oldLines[i]
+	}
+	newLines[520] = "line 521 changed"
+
+	diff := unifiedDiff("gateway.hcl", "formatted draft",
+		strings.Join(oldLines, "\n")+"\n",
+		strings.Join(newLines, "\n")+"\n",
+	)
+
+	if strings.Contains(diff, "@@ -1,600 +1,600 @@") {
+		t.Fatalf("diff fell back to full-file hunk:\n%s", diff)
+	}
+	for _, want := range []string{"-line 521", "+line 521 changed"} {
+		if !strings.Contains(diff, want) {
+			t.Fatalf("diff missing %q:\n%s", want, diff)
+		}
+	}
+	if strings.Contains(diff, " line 300\n") {
+		t.Fatalf("diff included distant unchanged context:\n%s", diff)
+	}
+}
+
 func TestAPIConfigSaveRequiresPreviewTokenAndWritesFormattedHCL(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "gateway.hcl")
@@ -211,6 +240,40 @@ func TestAPIConfigSaveRejectsUnpreviewedContent(t *testing.T) {
 	}
 	if !bytes.Equal(contents, original) {
 		t.Fatalf("unpreviewed save wrote file: %q", contents)
+	}
+}
+
+func TestAPIConfigReadOnlyModeRejectsWrites(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "gateway.hcl")
+	original := []byte("insecure_no_dashboard_secret = true\n")
+	if err := os.WriteFile(cfgPath, original, 0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+	w := &webMux{g: &Gateway{cfgPath: cfgPath, readOnlyConfig: true}}
+
+	preview := httptest.NewRequest(http.MethodPost, "/api/config/preview",
+		strings.NewReader("insecure_no_dashboard_secret=false\n"))
+	pr := httptest.NewRecorder()
+	w.apiConfigPreview(pr, preview)
+	if pr.Code != http.StatusForbidden {
+		t.Fatalf("preview status = %d, want 403, body = %s", pr.Code, pr.Body.String())
+	}
+
+	save := httptest.NewRequest(http.MethodPost, "/api/config/save",
+		strings.NewReader(`{"content":"x","expected_revision":"r","preview_token":"t"}`))
+	sr := httptest.NewRecorder()
+	w.apiConfigSave(sr, save)
+	if sr.Code != http.StatusForbidden {
+		t.Fatalf("save status = %d, want 403, body = %s", sr.Code, sr.Body.String())
+	}
+
+	contents, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read cfg: %v", err)
+	}
+	if !bytes.Equal(contents, original) {
+		t.Fatalf("read-only mode wrote file: %q", contents)
 	}
 }
 

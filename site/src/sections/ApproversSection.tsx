@@ -1,6 +1,6 @@
 import type { ComponentChildren } from "preact";
-import { SectionLabel } from "../components/SectionLabel";
 import { HclCode } from "../components/HclCode";
+import { SectionLabel } from "../components/SectionLabel";
 
 /* ──────────────────────────────────────────────────────────────────────
    Approvers — deepens the `require_llm` and `require_human` verdicts
@@ -137,14 +137,12 @@ function ApproverCard({
   diagram: ComponentChildren;
 }) {
   return (
-    <article class="isolate bg-transparent relative lg:squircle-xl lg:p-8 xl:p-12">
+    <article class="isolate min-w-0 bg-transparent relative lg:squircle-xl lg:p-8 xl:p-12">
       <div className="hidden w-full h-full border-2 lg:block border-navy squircle-xl z-10 absolute inset-0"></div>
       <div className="hidden lg:block absolute w-full h-full top-2 left-2 bg-navy-100 squircle-xl z-0" />
       <div className="relative z-10 flex flex-col gap-4">
         <header class="flex items-baseline justify-between">
-          <h4 class="text-3xl font-display font-bold text-text">
-            {title}
-          </h4>
+          <h4 class="text-3xl font-display font-bold text-text">{title}</h4>
           <code class="text-[10px] font-mono text-text-subtle">{verdict}</code>
         </header>
         <p class="text-sm  text-text-muted">{pitch}</p>
@@ -177,7 +175,7 @@ export function ApproversSection() {
         <SectionLabel>Approvers</SectionLabel>
 
         <div class="max-w-3xl mb-14">
-          <h3 class="text-4xl sm:text-5xl md:text-6xl font-display font-bold  mb-5 text-text">
+          <h3 class="text-4xl sm:text-5xl md:text-6xl font-display font-bold text-balance mb-5 text-text">
             Humans, models, <span class="text-rust">your call</span>
           </h3>
           <p class="text-base  text-text-muted">
@@ -186,7 +184,7 @@ export function ApproversSection() {
           </p>
         </div>
 
-        <div class="grid gap-8 lg:grid-cols-[1fr_auto_1fr] lg:gap-4">
+        <div class="grid grid-cols-1 gap-8 lg:grid-cols-[1fr_auto_1fr] lg:gap-4">
           <ApproverCard
             title="LLM judge"
             verdict="require_llm"

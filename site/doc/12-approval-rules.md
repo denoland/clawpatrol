@@ -495,9 +495,8 @@ is fixed at `"pattern"`.
 ## API surface
 
 All endpoints are under `/api/` on the dashboard listener (default
-`127.0.0.1:8080`). They require an authenticated session -- see
-[Self-Hosting](/docs/06-self-hosting/) for how to drive them
-programmatically with a session cookie.
+`127.0.0.1:8080`). They require an authenticated session driven by the
+`dashboard_secret` cookie (see [Gateway](/docs/07-gateway/)).
 
 ### `GET /api/rules`
 

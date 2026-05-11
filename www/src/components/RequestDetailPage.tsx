@@ -1,9 +1,11 @@
 import { useState, useEffect } from "react";
-import { getAction, type Agent, type EventRecord } from "../lib/api";
+import { getAction, type Agent, type EventRecord, type FacetSchema } from "../lib/api";
+import { formatFacetValue, useFacets } from "../lib/facets";
 
 export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] }) {
   const [ev, setEv] = useState<EventRecord | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const { byFamily } = useFacets();
 
   useEffect(() => {
     getAction(id)
@@ -44,24 +46,27 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
           : status >= 200
             ? "text-[#16a34a]"
             : "text-[#737373]";
-  const path = ev.path ?? "";
-  const fullUrl = ev.host + (path.startsWith("/") ? "" : " ") + path;
+  const schema = ev.family ? byFamily[ev.family] : undefined;
   // SQL-family records come from the postgres / clickhouse_native
-  // conn-family plugins. They share Mode = the plugin type and (when
-  // a rule fired with a parsed statement) populate statement / tables /
-  // functions. The HTTP-shaped fields (status, body, headers) are
-  // unused for these rows; render the SQL-specific section instead.
-  const isSQL =
-    ev.mode === "pg" ||
-    ev.mode === "clickhouse_native" ||
-    !!ev.statement ||
-    (ev.tables?.length ?? 0) > 0 ||
-    (ev.functions?.length ?? 0) > 0;
+  // conn-family plugins. They populate Facets with verb / tables /
+  // functions / statement. The HTTP-shaped fields (status, body,
+  // headers) are unused for these rows; render the SQL-specific
+  // section instead of the generic facets list so Statement gets a
+  // dedicated code block. The header collapses to host only — the
+  // full breakdown lives in SQLDetail below.
+  const isSQL = ev.family === "sql" || ev.mode === "pg" || ev.mode === "clickhouse_native";
+  const header = isSQL
+    ? { verb: ((ev.facets?.verb as string | undefined) ?? ev.method ?? "").toUpperCase(), body: "" }
+    : headerFromFacets(ev, schema);
+  const { verb, body } = header;
+  const fullUrl = ev.host + (body && !body.startsWith("/") ? " " : "") + body;
+  const facetFields = facetDetailRows(ev, schema);
   const hasReq = !!ev.req_body;
   const hasResp = !!ev.resp_body;
   const hasReqH = ev.req_headers && Object.keys(ev.req_headers).length > 0;
   const hasRespH = ev.resp_headers && Object.keys(ev.resp_headers).length > 0;
-  const hasSections = hasReq || hasResp || hasReqH || hasRespH;
+  const hasFacets = !isSQL && facetFields.length > 0;
+  const hasSections = hasFacets || hasReq || hasResp || hasReqH || hasRespH;
 
   return (
     <Shell
@@ -73,8 +78,8 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
       <div className="bg-white border border-[#e5e5e5] rounded p-5 space-y-3">
         <div className="flex items-center gap-3 flex-wrap">
           <ModeIcon mode={ev.mode} />
-          {ev.method && (
-            <span className="text-[12px] uppercase font-semibold text-[#525252]">{ev.method}</span>
+          {verb && (
+            <span className="text-[12px] uppercase font-semibold text-[#525252]">{verb}</span>
           )}
           {!isSQL && (
             <span className={"text-[13px] tabular-nums font-semibold " + statusColor}>
@@ -114,6 +119,11 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
         <SQLDetail ev={ev} />
       ) : hasSections ? (
         <div className="bg-white border border-[#e5e5e5] rounded divide-y divide-[#e5e5e5]">
+          {hasFacets && (
+            <Section title="Request">
+              <Facets rows={facetFields} />
+            </Section>
+          )}
           {hasReqH && (
             <Section title="Request headers">
               <Headers obj={ev.req_headers!} />
@@ -166,16 +176,21 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
 // SQLDetail renders the postgres / clickhouse_native per-query view.
 // Statement is the deliverable (operators want the raw SQL); verb /
 // tables / functions are the parser's rule-targeting facets, surfaced
-// here so it's obvious why a given rule fired or didn't.
+// here so it's obvious why a given rule fired or didn't. Reads from
+// ev.facets (populated by the sql facet's Report hook) since the
+// generic facet pipeline replaced the legacy direct fields.
 function SQLDetail({ ev }: { ev: EventRecord }) {
-  const verb = (ev.method || "").toUpperCase();
-  const tables = ev.tables ?? [];
-  const functions = ev.functions ?? [];
-  const statement = ev.statement ?? "";
+  const f = ev.facets ?? {};
+  const verb = (typeof f.verb === "string" ? f.verb : (ev.method ?? "")).toUpperCase();
+  const tables = Array.isArray(f.tables) ? (f.tables as string[]) : [];
+  const functions = Array.isArray(f.functions) ? (f.functions as string[]) : [];
+  const statement = typeof f.statement === "string" ? f.statement : "";
   const facets: Array<{ label: string; value: string }> = [];
   if (verb) facets.push({ label: "Verb", value: verb });
   if (tables.length > 0) facets.push({ label: "Tables", value: tables.join(", ") });
-  if (functions.length > 0) facets.push({ label: "Functions", value: functions.join(", ") });
+  if (functions.length > 0) {
+    facets.push({ label: "Functions", value: functions.map((s) => s.toUpperCase()).join(", ") });
+  }
   return (
     <div className="bg-white border border-[#e5e5e5] rounded divide-y divide-[#e5e5e5]">
       {facets.length > 0 && (
@@ -258,6 +273,79 @@ function Shell({
       <Breadcrumbs agentIP={agentIP} agentName={agentName} requestId={requestId} />
       {children}
     </main>
+  );
+}
+
+// headerFromFacets picks the verb + body strings for the event
+// header. With a known facet schema, the leading column is
+// method/verb and the trailing body collapses every other report
+// field (status excepted, since it has its own coloured slot). New
+// protocol facets render correctly without touching this file.
+function headerFromFacets(
+  ev: EventRecord,
+  schema: FacetSchema | undefined,
+): { verb: string; body: string } {
+  const facets = ev.facets ?? {};
+  if (schema && Object.keys(facets).length > 0) {
+    const leadName =
+      schema.report_fields.find((f) => f.name === "method")?.name ??
+      schema.report_fields.find((f) => f.name === "verb")?.name ??
+      "";
+    const verbField = leadName ? schema.report_fields.find((f) => f.name === leadName) : undefined;
+    const verb = verbField ? formatFacetValue(verbField.kind, facets[leadName]) : "";
+    const bodyParts: string[] = [];
+    for (const f of schema.report_fields) {
+      if (f.name === leadName || f.name === "status") continue;
+      const v = formatFacetValue(f.kind, facets[f.name]);
+      if (v) bodyParts.push(v);
+    }
+    return { verb, body: bodyParts.join(" · ") };
+  }
+  return { verb: ev.method ?? "", body: ev.path ?? "" };
+}
+
+// facetDetailRows returns the per-family fields shown in the
+// "facets" section under the request header. Renders every
+// report-field the schema declares for which the event carries a
+// non-empty value; unknown families fall back to the raw facets
+// object so the operator still sees what was captured.
+function facetDetailRows(
+  ev: EventRecord,
+  schema: FacetSchema | undefined,
+): Array<{ name: string; label: string; value: string }> {
+  const facets = ev.facets;
+  if (!facets || Object.keys(facets).length === 0) return [];
+  if (!schema) {
+    return Object.entries(facets).map(([k, v]) => ({
+      name: k,
+      label: k,
+      value: typeof v === "string" ? v : JSON.stringify(v),
+    }));
+  }
+  const out: Array<{ name: string; label: string; value: string }> = [];
+  for (const f of schema.report_fields) {
+    const v = formatFacetValue(f.kind, facets[f.name]);
+    if (v) out.push({ name: f.name, label: f.label || f.name, value: v });
+  }
+  return out;
+}
+
+// Facets renders the per-family report payload using the same
+// monospace key:value layout as the Request/Response headers list,
+// so the detail page reads consistently regardless of which facet
+// owns the row. No masking: the facets payload is policy metadata,
+// not secret material (credentials live in headers).
+function Facets({ rows }: { rows: Array<{ name: string; label: string; value: string }> }) {
+  return (
+    <pre className="overflow-auto whitespace-pre-wrap break-all px-4 py-3 font-mono text-[11px] leading-relaxed">
+      {rows.map((r) => (
+        <div key={r.name}>
+          <span className="font-semibold text-[#171717]">{r.label}</span>
+          <span className="text-[#a3a3a3]">: </span>
+          <span className="text-[#525252]">{r.value}</span>
+        </div>
+      ))}
+    </pre>
   );
 }
 

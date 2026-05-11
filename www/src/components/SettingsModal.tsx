@@ -7,7 +7,15 @@ import { getConfigHCL, previewConfigHCL, saveConfigHCL, type ConfigSavePreview }
 import { ConfigSaveReview } from "./ConfigSaveReview";
 import { HCLEditor } from "./HCLEditor";
 
-export function SettingsModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+export function SettingsModal({
+  onClose,
+  onSaved,
+  readOnly,
+}: {
+  onClose: () => void;
+  onSaved: () => void;
+  readOnly?: boolean;
+}) {
   const [text, setText] = useState("");
   const [original, setOriginal] = useState("");
   const [err, setErr] = useState<string | null>(null);
@@ -73,6 +81,11 @@ export function SettingsModal({ onClose, onSaved }: { onClose: () => void; onSav
           <div className="flex items-center px-4 py-3 border-b border-[#e5e5e5]">
             <div className="text-[11px] uppercase tracking-[.12em] text-[#a3a3a3]">
               GATEWAY SETTINGS · gateway.hcl
+              {readOnly && (
+                <span className="ml-2 normal-case tracking-normal text-[#737373]">
+                  · read-only (--read-only-config)
+                </span>
+              )}
             </div>
             <button
               onClick={onClose}
@@ -83,19 +96,21 @@ export function SettingsModal({ onClose, onSaved }: { onClose: () => void; onSav
           </div>
 
           <div className="flex-1 overflow-auto">
-            <HCLEditor value={text} onChange={setText} minHeight={420} />
+            <HCLEditor value={text} onChange={setText} minHeight={420} readOnly={readOnly} />
           </div>
 
           <div className="flex items-center gap-2 px-4 py-3 border-t border-[#e5e5e5]">
             {err && <div className="text-[11px] text-red-600 truncate">{err}</div>}
             {okMsg && <div className="text-[11px] text-green-700 truncate">{okMsg}</div>}
-            <button
-              onClick={save}
-              disabled={!dirty || busy}
-              className="ml-auto text-[11px] px-3 py-1 bg-black text-white rounded disabled:opacity-40 hover:bg-[#171717]"
-            >
-              {busy ? "saving…" : "save"}
-            </button>
+            {!readOnly && (
+              <button
+                onClick={save}
+                disabled={!dirty || busy}
+                className="ml-auto text-[11px] px-3 py-1 bg-black text-white rounded disabled:opacity-40 hover:bg-[#171717]"
+              >
+                {busy ? "saving…" : "save"}
+              </button>
+            )}
           </div>
         </div>
       </div>

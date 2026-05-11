@@ -43,6 +43,7 @@ export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [whoami, setWhoami] = useState<Whoami | null>(null);
   const [update, setUpdate] = useState<UpdateBanner | null>(null);
+  const [readOnlyConfig, setReadOnlyConfig] = useState(false);
   const [connectId, setConnectId] = useState<string | null>(null);
   const [connectProfile, setConnectProfile] = useState<string | undefined>(undefined);
   const [showAddDevice, setShowAddDevice] = useState(false);
@@ -65,6 +66,7 @@ export default function App() {
       setAgents(s.agents || []);
       setWhoami(s.whoami);
       setUpdate(s.update ?? null);
+      setReadOnlyConfig(!!s.read_only_config);
     } catch {
       /* swallow */
     }
@@ -160,6 +162,7 @@ export default function App() {
           agents={agents}
           integrations={integrations}
           whoami={whoami}
+          readOnlyConfig={readOnlyConfig}
           onBack={() => navigate("")}
           onConnect={(id, profile) => {
             setConnectId(id);
@@ -171,7 +174,13 @@ export default function App() {
       {showAddDevice && (
         <AddDeviceModal publicURL={whoami?.public_url} onClose={() => setShowAddDevice(false)} />
       )}
-      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} onSaved={refresh} />}
+      {showSettings && (
+        <SettingsModal
+          readOnly={readOnlyConfig}
+          onClose={() => setShowSettings(false)}
+          onSaved={refresh}
+        />
+      )}
       {connectId && (
         <ConnectModal
           id={connectId}

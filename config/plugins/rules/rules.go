@@ -26,7 +26,7 @@ import (
 	"github.com/zclconf/go-cty/cty"
 
 	"github.com/denoland/clawpatrol/config"
-	"github.com/denoland/clawpatrol/config/match"
+	"github.com/denoland/clawpatrol/config/facet"
 )
 
 // RuleBody is the shared shape across all three rule types. The
@@ -73,13 +73,13 @@ type Rule struct {
 
 // Compile lowers a built rule into the runtime-friendly *CompiledRule
 // the request handler consumes. The match.Matcher is constructed
-// here (next to the rule's schema) instead of in a generic compile
-// pass, so per-family quirks live with the plugin that owns them.
+// via the facet registry so per-family quirks live with the plugin
+// that owns them.
 //
 // Returns the compiled rule plus the list of endpoint names this
 // rule attaches to.
 func (r *Rule) Compile() (*config.CompiledRule, []string, error) {
-	matcher, err := match.New(r.Family, r.Match)
+	matcher, err := facet.NewMatcher(r.Family, r.Match)
 	if err != nil {
 		return nil, nil, fmt.Errorf("match: %w", err)
 	}
@@ -99,25 +99,19 @@ func (r *Rule) Compile() (*config.CompiledRule, []string, error) {
 
 // validatedFamily defines the family + endpoint family-constraint
 // for one rule type. The set of valid match keys comes from
-// match.KnownKeys at validate time so the validator and the matcher
-// can't drift apart — adding a match facet in match/ automatically
-// makes it a valid key here.
+// facet.KnownKeys at validate time so the validator and the matcher
+// can't drift apart — adding a match key in a facet plugin
+// automatically makes it valid here.
 type validatedFamily struct {
 	family           string
 	endpointFamilies []string
 }
 
-var families = map[string]validatedFamily{
-	"http_rule": {family: "https", endpointFamilies: []string{"https"}},
-	"sql_rule":  {family: "sql", endpointFamilies: []string{"sql"}},
-	"k8s_rule":  {family: "k8s", endpointFamilies: []string{"k8s"}},
-}
-
 // knownMatchKeys returns the per-family valid match keys as a set,
-// memoized off match.KnownKeys.
+// memoized off facet.KnownKeys.
 func knownMatchKeys(family string) map[string]bool {
 	out := map[string]bool{}
-	for _, k := range match.KnownKeys(family) {
+	for _, k := range facet.KnownKeys(family) {
 		out[k] = true
 	}
 	return out
@@ -193,7 +187,7 @@ func validate(body any, name string, ctx *config.BuildCtx, fam validatedFamily) 
 					diags = append(diags, &hcl.Diagnostic{
 						Severity: hcl.DiagError,
 						Summary:  fmt.Sprintf("Unknown match key %q for %s", key, fam.family),
-						Detail:   fmt.Sprintf("Valid keys for this rule type: %s.", strings.Join(match.KnownKeys(fam.family), ", ")),
+						Detail:   fmt.Sprintf("Valid keys for this rule type: %s.", strings.Join(facet.KnownKeys(fam.family), ", ")),
 						Subject:  &ctx.Block.DefRange,
 					})
 				}
@@ -492,29 +486,37 @@ func approveToTokens(stages []config.ApproveStage) hclwrite.Tokens {
 	return tokens
 }
 
-func init() {
-	for typ, fam := range families {
-		fam := fam
-		typ := typ
-		config.Register(&config.Plugin{
-			Kind:     config.KindRule,
-			Type:     typ,
-			Families: fam.endpointFamilies,
-			New:      func() any { return &RuleBody{} },
-			Refs: []config.RefSpec{
-				{Path: "Endpoint", Kind: config.KindEndpoint, FamilyConstraint: fam.endpointFamilies, Optional: true},
-				{Path: "Endpoints[*]", Kind: config.KindEndpoint, FamilyConstraint: fam.endpointFamilies, Optional: true},
-			},
-			Validate: func(d any, name string, ctx *config.BuildCtx) hcl.Diagnostics {
-				return validate(d, name, ctx, fam)
-			},
-			Build: func(d any, name string, ctx *config.BuildCtx) (any, hcl.Diagnostics) {
-				return build(d, name, ctx, fam)
-			},
-			CompileRule: func(body any, _ string) (*config.CompiledRule, []string, error) {
-				return body.(*Rule).Compile()
-			},
-			Emit: emitRule,
-		})
+// PluginFor returns the config.Plugin that registers `<facet>_rule`
+// as a config.KindRule. Each facet package calls this from its init()
+// to install a rule type for its protocol family, so adding a new
+// facet plugin doesn't require touching the rules package at all.
+//
+// The returned Plugin closes over the facet's identity so the rule
+// loader's validation, build, and compile paths consult the right
+// match-key set and emit the right family stamp on the built Rule.
+func PluginFor(f facet.Runtime) *config.Plugin {
+	fam := validatedFamily{
+		family:           f.Name(),
+		endpointFamilies: f.EndpointFamilies(),
+	}
+	return &config.Plugin{
+		Kind:     config.KindRule,
+		Type:     f.RuleType(),
+		Families: fam.endpointFamilies,
+		New:      func() any { return &RuleBody{} },
+		Refs: []config.RefSpec{
+			{Path: "Endpoint", Kind: config.KindEndpoint, FamilyConstraint: fam.endpointFamilies, Optional: true},
+			{Path: "Endpoints[*]", Kind: config.KindEndpoint, FamilyConstraint: fam.endpointFamilies, Optional: true},
+		},
+		Validate: func(d any, name string, ctx *config.BuildCtx) hcl.Diagnostics {
+			return validate(d, name, ctx, fam)
+		},
+		Build: func(d any, name string, ctx *config.BuildCtx) (any, hcl.Diagnostics) {
+			return build(d, name, ctx, fam)
+		},
+		CompileRule: func(body any, _ string) (*config.CompiledRule, []string, error) {
+			return body.(*Rule).Compile()
+		},
+		Emit: emitRule,
 	}
 }

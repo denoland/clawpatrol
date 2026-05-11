@@ -51,7 +51,9 @@ import (
 	"golang.org/x/crypto/pbkdf2"
 
 	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/facet"
 	"github.com/denoland/clawpatrol/config/match"
+	sqlfacet "github.com/denoland/clawpatrol/config/plugins/facets/sql"
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
@@ -105,10 +107,14 @@ type PostgresEndpointRuntime struct{}
 
 // DetectPlaceholder is part of the clawpatrol plugin API.
 func (PostgresEndpointRuntime) DetectPlaceholder(req *runtime.Request, candidates []string) string {
-	if req == nil || req.SQL == nil {
+	if req == nil {
 		return ""
 	}
-	hay := req.SQL.Statement
+	meta, _ := req.Meta.(*sqlfacet.Meta)
+	if meta == nil {
+		return ""
+	}
+	hay := meta.Statement
 	for _, c := range candidates {
 		if c != "" && strings.Contains(hay, c) {
 			return c
@@ -417,32 +423,36 @@ func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.
 //	("", "")         — no rule fires or the matched rule allows.
 func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 	info := parseSQL(sql)
+	summary := pgSummary(info)
 	mreq := &match.Request{
 		Family:     "sql",
 		PeerIP:     ch.PeerIP,
 		Credential: credName,
-		SQL: &match.SQLMeta{
+		Meta: &sqlfacet.Meta{
 			Verb:      info.Verb,
 			Tables:    info.Tables,
 			Functions: info.Functions,
 			Statement: info.Statement,
 		},
 	}
-	cr := runtime.MatchRequest(ch.Endpoint, mreq)
-	sqlMeta := func(ev runtime.ConnEvent) runtime.ConnEvent {
-		ev.Verb = info.Verb
-		ev.Statement = info.Statement
-		ev.Tables = info.Tables
-		ev.Functions = info.Functions
-		return ev
+	// Per-family report payload — the same map the gateway will
+	// stash on Event.Facets so the dashboard renders sql_rule
+	// columns (verb / tables / functions / statement) directly
+	// instead of squashing through the legacy Verb/Summary fields.
+	var facets map[string]any
+	if f := facet.Lookup("sql"); f != nil {
+		facets = f.Report(mreq)
 	}
+	cr := runtime.MatchRequest(ch.Endpoint, mreq)
 	if cr == nil {
 		// No rule matched — implicit allow. Emit so the query
 		// shows up in the dashboard's actions tab anyway; the
 		// HTTP path does the same (main.go:1909 — every request
 		// gets an `allow` event when no explicit verdict was
 		// recorded).
-		emit(ch, sqlMeta(runtime.ConnEvent{Action: "allow"}))
+		emit(ch, runtime.ConnEvent{
+			Action: "allow", Verb: info.Verb, Summary: summary, Facets: facets,
+		})
 		return "", ""
 	}
 
@@ -454,26 +464,30 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 	// can't accidentally let approve-gated queries through.
 	if len(cr.Outcome.Approve) > 0 {
 		if ch.Approve == nil {
-			emit(ch, sqlMeta(runtime.ConnEvent{
+			emit(ch, runtime.ConnEvent{
 				Action: "deny", Reason: "HITL not configured",
-			}))
+				Verb: info.Verb, Summary: summary, Facets: facets,
+			})
 			return "deny", "approval required but HITL is not configured"
 		}
 		v := ch.Approve(runtime.ApproveCallRequest{
 			Stages: cr.Outcome.Approve, Verb: info.Verb,
-			Summary: pgSummary(info), Rule: cr,
+			Summary: summary, Rule: cr,
 		})
 		if v.Decision != "allow" {
 			reason := v.Reason
 			if reason == "" {
 				reason = "denied by approver"
 			}
-			emit(ch, sqlMeta(runtime.ConnEvent{
+			emit(ch, runtime.ConnEvent{
 				Action: "hitl_deny", Reason: reason,
-			}))
+				Verb: info.Verb, Summary: summary, Facets: facets,
+			})
 			return "deny", reason
 		}
-		emit(ch, sqlMeta(runtime.ConnEvent{Action: "hitl_allow"}))
+		emit(ch, runtime.ConnEvent{
+			Action: "hitl_allow", Verb: info.Verb, Summary: summary, Facets: facets,
+		})
 		return "", ""
 	}
 
@@ -482,12 +496,15 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 		if reason == "" {
 			reason = "denied by policy"
 		}
-		emit(ch, sqlMeta(runtime.ConnEvent{
+		emit(ch, runtime.ConnEvent{
 			Action: "deny", Reason: reason,
-		}))
+			Verb: info.Verb, Summary: summary, Facets: facets,
+		})
 		return "deny", reason
 	}
-	emit(ch, sqlMeta(runtime.ConnEvent{Action: "allow"}))
+	emit(ch, runtime.ConnEvent{
+		Action: "allow", Verb: info.Verb, Summary: summary, Facets: facets,
+	})
 	return "", ""
 }
 

@@ -2,7 +2,7 @@ package match
 
 import "encoding/json"
 
-// matchBodyJSON reports whether every key/value pair in want is present
+// BodyJSON reports whether every key/value pair in want is present
 // in the JSON document body. It's a structural subset check, not deep
 // equality — extra keys in the body are fine, missing keys fail.
 //
@@ -15,7 +15,7 @@ import "encoding/json"
 //
 // Returns false on JSON parse errors so a malformed body never
 // accidentally matches a rule.
-func matchBodyJSON(body []byte, want map[string]any) bool {
+func BodyJSON(body []byte, want map[string]any) bool {
 	if len(body) == 0 {
 		return false
 	}

@@ -181,21 +181,21 @@ type ApproveCallRequest struct {
 
 // ConnEvent is the wire-protocol-agnostic event shape conn-family
 // plugins emit per request / query.
+//
+// Facets carries the per-family report payload the host writes to
+// Event.Facets — the result of calling the family's facet.Runtime
+// Report hook against the matched request. Conn plugins populate it
+// when they have the parsed metadata in scope (postgres / clickhouse
+// build it from the *sqlfacet.Meta stashed on mreq.Meta) so the
+// dashboard doesn't have to round-trip through the legacy
+// Verb / Summary squashing.
 type ConnEvent struct {
 	Action  string // "allow" | "deny" | "hitl_allow" | "hitl_deny" | "error"
 	Reason  string
 	Verb    string // SQL verb / k8s verb / etc.
 	Summary string // human-readable one-liner for the event log
 	Bytes   int64  // approximate request size for billing / quotas
-	// Statement / Tables / Functions: family-specific detail, populated
-	// for SQL queries from the parseSQL output. Carried into the
-	// dashboard's per-action detail page so an operator can see the
-	// raw query alongside its parsed facets. Empty for non-SQL
-	// families and for SQL events that don't have a parsed statement
-	// (errors, session-level allow/deny, etc.).
-	Statement string
-	Tables    []string
-	Functions []string
+	Facets  map[string]any
 }
 
 // Secret is what credential plugins receive at injection time. The

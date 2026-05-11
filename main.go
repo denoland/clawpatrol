@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/facet"
 	"github.com/denoland/clawpatrol/config/match"
 	_ "github.com/denoland/clawpatrol/config/plugins/all"
 	"github.com/denoland/clawpatrol/config/plugins/approvers"
@@ -254,6 +255,11 @@ type Gateway struct {
 	agents  *AgentRegistry
 	hitl    *HITLRegistry
 	onboard *onboardRegistry
+	// readOnlyConfig, when set via --read-only-config, rejects every
+	// dashboard write that mutates cfgPath. The dashboard reads the
+	// flag from /api/state and hides its editor affordances; the
+	// server enforces it regardless of UI state.
+	readOnlyConfig bool
 	// secrets hands credential plugins the secret bytes they inject
 	// at request time. Default env-var-backed; OAuth-flow credentials
 	// land via a follow-up bridge that delegates to OAuthRegistry.
@@ -292,7 +298,7 @@ func (g *Gateway) transportFor(ep *config.CompiledEndpoint) *http.Transport {
 				h = addr
 			}
 			if needsBrowserTLS(h) && !endpointWantsClientCert(ep) {
-				return dialBrowserTLS(ctx, network, addr, h)
+				return g.dialBrowserTLS(ctx, network, addr, h, ep)
 			}
 			profile, _ := ctx.Value(profileCtxKey{}).(string)
 			return g.dialUpstream(ctx, network, addr, h, ep, profile)
@@ -1122,7 +1128,7 @@ func (g *Gateway) handle(raw net.Conn, dstIP string) {
 			pip := peerIP(c)
 			profile := g.profileFor(pip)
 			ep := runtime.HostEndpoint(g.Policy(), profile, dstIP)
-			if ep != nil && (ep.Family == "https" || ep.Family == "k8s") {
+			if ep != nil && isHTTPSMITMFamily(ep.Family) {
 				log.Printf("sni-fallback: %s → %s", dstIP, ep.Name)
 				g.mitmHTTPS(c, dstIP, ep)
 				return
@@ -1143,17 +1149,36 @@ func (g *Gateway) handle(raw net.Conn, dstIP string) {
 		g.splice(c, host)
 		return
 	}
-	switch ep.Family {
-	case "https", "k8s":
-		// k8s endpoints are HTTPS-underneath; the matcher walk
-		// populates K8sMeta from the URL path.
+	if isHTTPSMITMFamily(ep.Family) {
+		// Every facet whose Transport() is "https-mitm" — https and
+		// k8s today, future plugins tomorrow — terminates TLS here
+		// and runs the request loop through mitmHTTPS. The facet's
+		// PrepareRequest hook derives any per-family metadata
+		// (URL → Meta for k8s) before the matcher walks.
 		g.mitmHTTPS(c, host, ep)
-	default:
-		// postgres / clickhouse_* — wire-protocol handlers land in
-		// a follow-up commit. Until then: passthrough.
-		log.Printf("endpoint %s family %q: runtime not yet wired; passthrough", ep.Name, ep.Family)
-		g.splice(c, host)
+		return
 	}
+	// Wire-protocol families (postgres / clickhouse_* / future
+	// native plugins) dispatch through their own port handlers,
+	// not through SNI peek on 443. Anything that lands here is
+	// either an unknown family or a family without an HTTPS
+	// transport — splice through.
+	log.Printf("endpoint %s family %q: no https-mitm transport; passthrough", ep.Name, ep.Family)
+	g.splice(c, host)
+}
+
+// isHTTPSMITMFamily reports whether the facet registered for family
+// drives its wire through the HTTPS MITM handler. Replaces what used
+// to be a hardcoded `case "https", "k8s"` so new HTTPS-shaped
+// protocol facets (e.g. a future "openai" or "anthropic" family that
+// wants per-family report fields beyond what http_rule offers) drop
+// in without touching the dispatch switch.
+func isHTTPSMITMFamily(family string) bool {
+	if family == "" {
+		return false
+	}
+	f := facet.Lookup(family)
+	return f != nil && f.Transport() == "https-mitm"
 }
 
 // handlePostgresConn dispatches an inbound 5432 connection to the
@@ -1225,12 +1250,10 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 				return
 			}
 			g.sink.Emit(Event{
-				ID:   newReqID(),
-				Mode: "pg", Host: dstIP, AgentIP: pip,
+				Mode: "pg", Family: ep.Family, Host: dstIP, AgentIP: pip,
 				Method: ev.Verb, Path: ev.Summary,
 				Action: ev.Action, Reason: ev.Reason,
-				Statement: ev.Statement, Tables: ev.Tables,
-				Functions: ev.Functions,
+				Facets: ev.Facets,
 			})
 		},
 		Approve: func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
@@ -1384,12 +1407,10 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 				return
 			}
 			g.sink.Emit(Event{
-				ID:   newReqID(),
-				Mode: mode, Host: eventHost, AgentIP: pip,
+				Mode: mode, Family: ep.Family, Host: eventHost, AgentIP: pip,
 				Method: ev.Verb, Path: ev.Summary,
 				Action: ev.Action, Reason: ev.Reason,
-				Statement: ev.Statement, Tables: ev.Tables,
-				Functions: ev.Functions,
+				Facets: ev.Facets,
 			})
 		},
 		Approve: func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
@@ -1622,15 +1643,21 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			Body:    matchBody,
 			PeerIP:  pip,
 		}
-		if ep.Family == "k8s" {
-			mreq.K8s = runtime.ParseK8sPath(req.Method, req.URL.RequestURI())
+		fac := facet.Lookup(ep.Family)
+		if fac != nil {
+			fac.PrepareRequest(mreq)
 		}
 
 		ev := Event{
-			ID:   newReqID(),
-			Mode: "mitm", Host: host,
+			ID:     newReqID(),
+			Mode:   "mitm",
+			Family: ep.Family,
+			Host:   host,
 			Method: req.Method, Path: req.URL.Path,
 			AgentIP: pip,
+		}
+		if fac != nil {
+			ev.Facets = fac.Report(mreq)
 		}
 		// Emit start event so the dashboard renders the request as
 		// in-flight immediately. The end event with the same ID
@@ -1858,6 +1885,11 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		if resp.ContentLength < 0 && len(resp.TransferEncoding) == 0 && !resp.Close {
 			resp.TransferEncoding = []string{"chunked"}
 		}
+		// Snapshot the upstream's response headers for the audit log
+		// before stripping credential-bearing ones — the dashboard
+		// still wants to show what the upstream actually sent.
+		ev.RespHeaders = flatHeaders(resp.Header)
+		stripAuthResponseHeaders(resp.Header)
 		writeErr := resp.Write(tc)
 		_ = rtDur
 		_ = resp.Body.Close()
@@ -1879,7 +1911,6 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		}
 		ev.Status = resp.StatusCode
 		ev.ReqHeaders = flatHeaders(req.Header)
-		ev.RespHeaders = flatHeaders(resp.Header)
 		ev.In = reqS.n
 		ev.Out = respS.n
 		ev.ReqSha = reqS.sha()
@@ -2011,6 +2042,8 @@ func main() {
 		runEnv(os.Args[2:])
 	case "init-ca":
 		runInitCA(os.Args[2:])
+	case "validate":
+		runValidate(os.Args[2:])
 	case "uninstall":
 		runUninstall(os.Args[2:])
 	case "status":
@@ -2083,6 +2116,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `clawpatrol — secret-injection MITM proxy for AI agents
 
 usage:
+  clawpatrol gateway init [flags]        bootstrap a new gateway host
   clawpatrol gateway [-config FILE]      run the gateway server
   clawpatrol join <gateway-url>          onboard this machine via wg device flow
                   [--hostname NAME]      device name to register (default: os.Hostname)
@@ -2094,12 +2128,13 @@ usage:
   clawpatrol uninstall                   tear down everything this machine installed
   clawpatrol env                         print shell exports for sourcing
   clawpatrol init-ca DIR                 generate a new CA in DIR
+  clawpatrol validate <config.hcl>       parse + compile a config and exit
   clawpatrol version`)
 	os.Exit(2)
 }
 
 func runInitCA(args []string) {
-	if len(args) != 1 {
+	if len(args) != 1 || args[0] == "-h" || args[0] == "--help" {
 		fmt.Fprintln(os.Stderr, "usage: clawpatrol init-ca DIR")
 		os.Exit(2)
 	}
@@ -2118,6 +2153,8 @@ func runGateway(args []string) {
 	}
 	fs := flag.NewFlagSet("gateway", flag.ExitOnError)
 	cfgPath := fs.String("config", "config.yaml", "config file")
+	readOnly := fs.Bool("read-only-config", false,
+		"reject dashboard writes to the HCL config file")
 	_ = fs.Parse(args)
 
 	startModelRefresh()
@@ -2161,16 +2198,20 @@ func runGateway(args []string) {
 		log.Fatalf("oauth: %v", err)
 	}
 	g := &Gateway{
-		cfg:     cfg,
-		cfgPath: *cfgPath,
-		db:      db,
-		certs:   certs,
-		dialer:  newUpstreamDialer(cfg.Resolver),
-		sink:    sink,
-		oauth:   oauthReg,
-		agents:  NewAgentRegistry(),
-		hitl:    newHITLRegistry(sink),
-		onboard: newOnboardRegistry(),
+		cfg:            cfg,
+		cfgPath:        *cfgPath,
+		readOnlyConfig: *readOnly,
+		db:             db,
+		certs:          certs,
+		dialer:         newUpstreamDialer(cfg.Resolver),
+		sink:           sink,
+		oauth:          oauthReg,
+		agents:         NewAgentRegistry(),
+		hitl:           newHITLRegistry(sink),
+		onboard:        newOnboardRegistry(),
+	}
+	if *readOnly {
+		log.Printf("config: read-only mode (dashboard writes rejected)")
 	}
 	g.secrets = newGatewaySecretStore(db, oauthReg)
 	g.tunnels = NewTunnelManager(g.secrets, cfg.CADir)
