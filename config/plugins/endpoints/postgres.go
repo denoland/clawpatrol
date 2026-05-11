@@ -52,6 +52,7 @@ import (
 
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/match"
+	sqlfacet "github.com/denoland/clawpatrol/config/plugins/facets/sql"
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
@@ -105,10 +106,14 @@ type PostgresEndpointRuntime struct{}
 
 // DetectPlaceholder is part of the clawpatrol plugin API.
 func (PostgresEndpointRuntime) DetectPlaceholder(req *runtime.Request, candidates []string) string {
-	if req == nil || req.SQL == nil {
+	if req == nil {
 		return ""
 	}
-	hay := req.SQL.Statement
+	meta, _ := req.Meta.(*sqlfacet.Meta)
+	if meta == nil {
+		return ""
+	}
+	hay := meta.Statement
 	for _, c := range candidates {
 		if c != "" && strings.Contains(hay, c) {
 			return c
@@ -422,7 +427,7 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 		Family:     "sql",
 		PeerIP:     ch.PeerIP,
 		Credential: credName,
-		SQL: &match.SQLMeta{
+		Meta: &sqlfacet.Meta{
 			Verb:      info.Verb,
 			Tables:    info.Tables,
 			Functions: info.Functions,

@@ -16,8 +16,10 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/denoland/clawpatrol/config"
-	"github.com/denoland/clawpatrol/config/match"
+	"github.com/denoland/clawpatrol/config/facet"
 	"github.com/denoland/clawpatrol/config/runtime"
+
+	_ "github.com/denoland/clawpatrol/config/plugins/facets/sql"
 )
 
 // chBuildHelloWire produces the byte-for-byte ClientHello packet a
@@ -385,7 +387,7 @@ func chBuildEndpoint(t *testing.T, rules ...*config.CompiledRule) *config.Compil
 
 func chRuleSQL(t *testing.T, name string, raw map[string]any, verdict, reason string, priority int) *config.CompiledRule {
 	t.Helper()
-	m, err := match.New("sql", raw)
+	m, err := facet.NewMatcher("sql", raw)
 	if err != nil {
 		t.Fatalf("compile rule %q: %v", name, err)
 	}
@@ -475,7 +477,7 @@ func TestChEvaluateSQLApproveChain(t *testing.T) {
 			Approve: []config.ApproveStage{{Name: "human"}},
 		},
 	}
-	m, err := match.New("sql", approveRule.Match)
+	m, err := facet.NewMatcher("sql", approveRule.Match)
 	if err != nil {
 		t.Fatalf("matcher: %v", err)
 	}

@@ -22,6 +22,7 @@ import (
 
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/match"
+	sqlfacet "github.com/denoland/clawpatrol/config/plugins/facets/sql"
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
@@ -682,7 +683,7 @@ func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName st
 		Family:     "sql",
 		PeerIP:     ch.PeerIP,
 		Credential: credName,
-		SQL: &match.SQLMeta{
+		Meta: &sqlfacet.Meta{
 			Verb:      info.Verb,
 			Tables:    info.Tables,
 			Functions: info.Functions,

@@ -1,25 +1,22 @@
-package runtime_test
+package k8s
 
 import (
 	"reflect"
 	"testing"
-
-	"github.com/denoland/clawpatrol/config/match"
-	"github.com/denoland/clawpatrol/config/runtime"
 )
 
-func TestParseK8sPath(t *testing.T) {
+func TestParsePath(t *testing.T) {
 	cases := []struct {
 		name   string
 		method string
 		rawURL string
-		want   *match.K8sMeta
+		want   *Meta
 	}{
 		{
 			name:   "core namespaced pod get",
 			method: "GET",
 			rawURL: "/api/v1/namespaces/default/pods/nginx",
-			want: &match.K8sMeta{
+			want: &Meta{
 				Verb: "get", Resource: "pods", Namespace: "default", Name: "nginx",
 			},
 		},
@@ -27,7 +24,7 @@ func TestParseK8sPath(t *testing.T) {
 			name:   "pod logs subresource",
 			method: "GET",
 			rawURL: "/api/v1/namespaces/default/pods/nginx/log?container=app",
-			want: &match.K8sMeta{
+			want: &Meta{
 				Verb:      "get",
 				Resource:  "pods/log",
 				Namespace: "default",
@@ -39,7 +36,7 @@ func TestParseK8sPath(t *testing.T) {
 			name:   "interactive exec subresource preserves params",
 			method: "POST",
 			rawURL: "/api/v1/namespaces/default/pods/nginx/exec?stdin=true&tty=true&command=sh",
-			want: &match.K8sMeta{
+			want: &Meta{
 				Verb:      "create",
 				Resource:  "pods/exec",
 				Namespace: "default",
@@ -51,7 +48,7 @@ func TestParseK8sPath(t *testing.T) {
 			name:   "portforward subresource",
 			method: "POST",
 			rawURL: "/api/v1/namespaces/default/pods/nginx/portforward?ports=5432",
-			want: &match.K8sMeta{
+			want: &Meta{
 				Verb:      "create",
 				Resource:  "pods/portforward",
 				Namespace: "default",
@@ -63,7 +60,7 @@ func TestParseK8sPath(t *testing.T) {
 			name:   "named API group deployment",
 			method: "PATCH",
 			rawURL: "/apis/apps/v1/namespaces/default/deployments/web",
-			want: &match.K8sMeta{
+			want: &Meta{
 				Verb: "patch", Resource: "deployments", Namespace: "default", Name: "web",
 			},
 		},
@@ -71,7 +68,7 @@ func TestParseK8sPath(t *testing.T) {
 			name:   "cluster scoped list with watch param is watch verb",
 			method: "GET",
 			rawURL: "/api/v1/pods?watch=true&resourceVersion=123",
-			want: &match.K8sMeta{
+			want: &Meta{
 				Verb:     "watch",
 				Resource: "pods",
 				Params:   map[string]string{"watch": "true", "resourceVersion": "123"},
@@ -87,9 +84,9 @@ func TestParseK8sPath(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := runtime.ParseK8sPath(tc.method, tc.rawURL)
+			got := parsePath(tc.method, tc.rawURL)
 			if !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("ParseK8sPath(%q, %q) = %#v, want %#v", tc.method, tc.rawURL, got, tc.want)
+				t.Fatalf("parsePath(%q, %q) = %#v, want %#v", tc.method, tc.rawURL, got, tc.want)
 			}
 		})
 	}

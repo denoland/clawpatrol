@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/facet"
 	"github.com/denoland/clawpatrol/config/match"
 	_ "github.com/denoland/clawpatrol/config/plugins/all"
 	"github.com/denoland/clawpatrol/config/plugins/approvers"
@@ -1616,8 +1617,8 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			Body:    matchBody,
 			PeerIP:  pip,
 		}
-		if ep.Family == "k8s" {
-			mreq.K8s = runtime.ParseK8sPath(req.Method, req.URL.RequestURI())
+		if f := facet.Lookup(ep.Family); f != nil {
+			f.PrepareRequest(mreq)
 		}
 
 		ev := Event{
