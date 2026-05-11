@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -125,6 +126,34 @@ func TestUnifiedDiffSplitsDistantChangesIntoSeparateHunks(t *testing.T) {
 	}
 	if strings.Contains(diff, " line 07\n") {
 		t.Fatalf("diff included distant unchanged middle context:\n%s", diff)
+	}
+}
+
+func TestUnifiedDiffUsesContextDiffForRealisticGatewayConfigSize(t *testing.T) {
+	const lineCount = 600
+	oldLines := make([]string, lineCount)
+	newLines := make([]string, lineCount)
+	for i := range oldLines {
+		oldLines[i] = fmt.Sprintf("line %03d", i+1)
+		newLines[i] = oldLines[i]
+	}
+	newLines[520] = "line 521 changed"
+
+	diff := unifiedDiff("gateway.hcl", "formatted draft",
+		strings.Join(oldLines, "\n")+"\n",
+		strings.Join(newLines, "\n")+"\n",
+	)
+
+	if strings.Contains(diff, "@@ -1,600 +1,600 @@") {
+		t.Fatalf("diff fell back to full-file hunk:\n%s", diff)
+	}
+	for _, want := range []string{"-line 521", "+line 521 changed"} {
+		if !strings.Contains(diff, want) {
+			t.Fatalf("diff missing %q:\n%s", want, diff)
+		}
+	}
+	if strings.Contains(diff, " line 300\n") {
+		t.Fatalf("diff included distant unchanged context:\n%s", diff)
 	}
 }
 
