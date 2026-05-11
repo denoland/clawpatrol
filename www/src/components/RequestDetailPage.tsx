@@ -1,9 +1,11 @@
 import { useState, useEffect } from "react";
-import { getAction, type Agent, type EventRecord } from "../lib/api";
+import { getAction, type Agent, type EventRecord, type FacetSchema } from "../lib/api";
+import { formatFacetValue, useFacets } from "../lib/facets";
 
 export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] }) {
   const [ev, setEv] = useState<EventRecord | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const { byFamily } = useFacets();
 
   useEffect(() => {
     getAction(id)
@@ -44,8 +46,10 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
           : status >= 200
             ? "text-[#16a34a]"
             : "text-[#737373]";
-  const path = ev.path ?? "";
-  const fullUrl = ev.host + (path.startsWith("/") ? "" : " ") + path;
+  const schema = ev.family ? byFamily[ev.family] : undefined;
+  const { verb, body } = headerFromFacets(ev, schema);
+  const fullUrl = ev.host + (body && !body.startsWith("/") ? " " : "") + body;
+  const facetFields = facetDetailRows(ev, schema);
   const hasReq = !!ev.req_body;
   const hasResp = !!ev.resp_body;
   const hasReqH = ev.req_headers && Object.keys(ev.req_headers).length > 0;
@@ -62,8 +66,8 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
       <div className="bg-white border border-[#e5e5e5] rounded p-5 space-y-3">
         <div className="flex items-center gap-3 flex-wrap">
           <ModeIcon mode={ev.mode} />
-          {ev.method && (
-            <span className="text-[12px] uppercase font-semibold text-[#525252]">{ev.method}</span>
+          {verb && (
+            <span className="text-[12px] uppercase font-semibold text-[#525252]">{verb}</span>
           )}
           <span className={"text-[13px] tabular-nums font-semibold " + statusColor}>
             {status || "\u2014"}
@@ -95,6 +99,19 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
           </div>
         )}
       </div>
+
+      {/* per-family report fields */}
+      {facetFields.length > 0 && (
+        <div className="bg-white border border-[#e5e5e5] rounded">
+          <Section title={schema ? `${schema.name} facets` : "Facets"}>
+            <dl className="grid grid-cols-[140px_1fr] gap-x-3 gap-y-1 text-[12px]">
+              {facetFields.map((f) => (
+                <FacetField key={f.name} label={f.label} value={f.value} />
+              ))}
+            </dl>
+          </Section>
+        </div>
+      )}
 
       {/* sections */}
       {hasSections ? (
@@ -199,6 +216,69 @@ function Shell({
       <Breadcrumbs agentIP={agentIP} agentName={agentName} requestId={requestId} />
       {children}
     </main>
+  );
+}
+
+// headerFromFacets picks the verb + body strings for the event
+// header. With a known facet schema, the leading column is
+// method/verb and the trailing body collapses every other report
+// field (status excepted, since it has its own coloured slot). New
+// protocol facets render correctly without touching this file.
+function headerFromFacets(
+  ev: EventRecord,
+  schema: FacetSchema | undefined,
+): { verb: string; body: string } {
+  const facets = ev.facets ?? {};
+  if (schema && Object.keys(facets).length > 0) {
+    const leadName =
+      schema.report_fields.find((f) => f.name === "method")?.name ??
+      schema.report_fields.find((f) => f.name === "verb")?.name ??
+      "";
+    const verbField = leadName ? schema.report_fields.find((f) => f.name === leadName) : undefined;
+    const verb = verbField ? formatFacetValue(verbField.kind, facets[leadName]) : "";
+    const bodyParts: string[] = [];
+    for (const f of schema.report_fields) {
+      if (f.name === leadName || f.name === "status") continue;
+      const v = formatFacetValue(f.kind, facets[f.name]);
+      if (v) bodyParts.push(v);
+    }
+    return { verb, body: bodyParts.join(" · ") };
+  }
+  return { verb: ev.method ?? "", body: ev.path ?? "" };
+}
+
+// facetDetailRows returns the per-family fields shown in the
+// "facets" section under the request header. Renders every
+// report-field the schema declares for which the event carries a
+// non-empty value; unknown families fall back to the raw facets
+// object so the operator still sees what was captured.
+function facetDetailRows(
+  ev: EventRecord,
+  schema: FacetSchema | undefined,
+): Array<{ name: string; label: string; value: string }> {
+  const facets = ev.facets;
+  if (!facets || Object.keys(facets).length === 0) return [];
+  if (!schema) {
+    return Object.entries(facets).map(([k, v]) => ({
+      name: k,
+      label: k,
+      value: typeof v === "string" ? v : JSON.stringify(v),
+    }));
+  }
+  const out: Array<{ name: string; label: string; value: string }> = [];
+  for (const f of schema.report_fields) {
+    const v = formatFacetValue(f.kind, facets[f.name]);
+    if (v) out.push({ name: f.name, label: f.label || f.name, value: v });
+  }
+  return out;
+}
+
+function FacetField({ label, value }: { label: string; value: string }) {
+  return (
+    <>
+      <dt className="text-[#737373] uppercase text-[10px] tracking-wider py-1">{label}</dt>
+      <dd className="text-[#171717] font-mono break-all">{value}</dd>
+    </>
   );
 }
 

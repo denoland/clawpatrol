@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { type EventRecord } from "../lib/api";
+import { type EventRecord, type FacetSchema } from "../lib/api";
+import { formatFacetValue, useFacets } from "../lib/facets";
 
 type RowState = EventRecord & { frames?: { direction: string; frame: string; ts: string }[] };
 
@@ -13,6 +14,7 @@ export function LiveRequests({
   height?: string;
 }) {
   const [events, setEvents] = useState<RowState[]>([]);
+  const { byFamily } = useFacets();
 
   useEffect(() => {
     setEvents([]);
@@ -87,7 +89,9 @@ export function LiveRequests({
             <AnimatedDots />
           </div>
         ) : (
-          events.map((e, i) => <Row key={i} ev={e} />)
+          events.map((e, i) => (
+            <Row key={i} ev={e} schema={e.family ? byFamily[e.family] : undefined} />
+          ))
         )}
       </div>
     </div>
@@ -133,15 +137,47 @@ function mergeEvent(prev: RowState[], ev: EventRecord, max: number): RowState[] 
   return [ev, ...prev].slice(0, max);
 }
 
-// pathSeparator: HTTP paths start with "/", so they visually butt up
-// against the host fine. SQL "paths" (`SELECT now()`) need a space so
-// the row reads `66.42.120.196 SELECT now()` not `66.42.120.196SELECT`.
-function pathSeparator(path: string): string {
-  if (!path) return "";
-  return path.startsWith("/") ? "" : " ";
+// rowDescriptors picks the short labels shown per event:
+//   - leading slot (HTTP verb / SQL verb / k8s verb / "" if unknown)
+//   - trailing slot (path / SQL summary / k8s resource·name / "")
+// Uses the facet schema when one is registered for ev.family so new
+// protocol plugins drop in without dashboard edits; falls back to
+// the legacy method/path stuffing when facets aren't populated
+// (pre-migration rows / unknown families).
+function rowDescriptors(
+  ev: EventRecord,
+  schema: FacetSchema | undefined,
+): { verb: string; body: string } {
+  const facets = ev.facets ?? {};
+  if (schema && Object.keys(facets).length > 0) {
+    // Convention shared by the built-in facets: the leading column
+    // is either "method" (HTTPS) or "verb" (SQL / k8s); the rest of
+    // the report fields render into the trailing body. The schema
+    // controls how each value formats.
+    const leadName =
+      schema.report_fields.find((f) => f.name === "method")?.name ??
+      schema.report_fields.find((f) => f.name === "verb")?.name ??
+      "";
+    const verbField = leadName ? schema.report_fields.find((f) => f.name === leadName) : undefined;
+    const verb = verbField ? formatFacetValue(verbField.kind, facets[leadName]) : "";
+    const bodyParts: string[] = [];
+    for (const f of schema.report_fields) {
+      if (f.name === leadName) continue;
+      // Status is rendered in its own coloured slot below — don't
+      // duplicate it in the body.
+      if (f.name === "status") continue;
+      const v = formatFacetValue(f.kind, facets[f.name]);
+      if (v) bodyParts.push(v);
+    }
+    return { verb, body: bodyParts.join(" · ") };
+  }
+  // Legacy fallback for events without a facets payload — the
+  // gateway still populates ev.method/ev.path for back-compat with
+  // pre-migration consumers.
+  return { verb: ev.method ?? "", body: ev.path ?? "" };
 }
 
-function Row({ ev }: { ev: RowState }) {
+function Row({ ev, schema }: { ev: RowState; schema: FacetSchema | undefined }) {
   const onClick = ev.id
     ? () => {
         window.location.hash = `#/request/${ev.id}`;
@@ -165,8 +201,8 @@ function Row({ ev }: { ev: RowState }) {
           : status >= 200
             ? "text-[#16a34a]"
             : "text-[#737373]";
-  const path = ev.path ?? "";
-  const sep = pathSeparator(path);
+  const { verb, body } = rowDescriptors(ev, schema);
+  const sep = body && !body.startsWith("/") ? " " : "";
   const hasFrames = (ev.frames?.length ?? 0) > 0;
   return (
     <div className="border-b border-[#f5f5f5]">
@@ -181,9 +217,9 @@ function Row({ ev }: { ev: RowState }) {
       >
         <span className="text-[10px] tabular-nums text-[#a3a3a3] flex-shrink-0">{time}</span>
         <ModeIcon mode={ev.mode} />
-        {ev.method && (
+        {verb && (
           <span className="text-[10px] uppercase font-semibold text-[#525252] flex-shrink-0 w-[44px]">
-            {ev.method}
+            {verb}
           </span>
         )}
         <span className={"text-[11px] tabular-nums flex-shrink-0 w-[36px] " + statusColor}>
@@ -191,11 +227,11 @@ function Row({ ev }: { ev: RowState }) {
         </span>
         <span
           className="text-[12px] text-[#171717] truncate flex-1 min-w-0"
-          title={ev.host + sep + path}
+          title={ev.host + sep + body}
         >
           <span className="text-[#737373]">{ev.host}</span>
           {sep && <span> </span>}
-          <span>{path}</span>
+          <span>{body}</span>
         </span>
         <span className="text-[10px] tabular-nums text-[#a3a3a3] flex-shrink-0">
           {inFlight ? "…" : ev.ms + "ms"}

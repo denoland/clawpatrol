@@ -412,7 +412,34 @@ export type EventRecord = {
   resp_body?: string;
   req_headers?: Record<string, string>;
   resp_headers?: Record<string, string>;
+  // family identifies which facet plugin emitted this event; facets
+  // carries that plugin's per-request report payload (HTTPS:
+  // method/path/status; SQL: verb/tables/...; k8s: verb/resource/...).
+  family?: string;
+  facets?: Record<string, unknown>;
 };
+
+// FacetSchema mirrors the JSON returned by GET /api/facets — the
+// dashboard fetches it once at boot and uses it to render
+// per-family columns from the facets payload without hardcoding the
+// list of protocol families.
+export type FacetSchema = {
+  name: string;
+  rule_type: string;
+  endpoint_families: string[];
+  transport?: string;
+  hitl_query_label?: string;
+  host_is_resource: boolean;
+  match_keys: Array<{ name: string; kind: string }>;
+  report_fields: Array<{ name: string; kind: string; label?: string }>;
+};
+
+export async function getFacets(): Promise<FacetSchema[]> {
+  const r = await api(`/api/facets`);
+  if (!r.ok) throw new Error(await r.text());
+  const body = (await r.json()) as { facets: FacetSchema[] };
+  return body.facets ?? [];
+}
 
 export async function getAnalytics(params: {
   range: string;
