@@ -51,7 +51,9 @@ export function IntegrationsSection() {
             </a>
           ))}
         </div>
-        <p class="text-center mt-12 sm:mt-16 tracking-wider text-navy-500">— OR —</p>
+        <p class="text-center mt-12 sm:mt-16 tracking-wider text-navy-500">
+          — OR —
+        </p>
         <div class="text-center mt-12 sm:mt-16 mb-8">
           <Button href="/docs/08-plugins/" variant="normal" size="lg">
             Write your own plugin in one TypeScript file{" "}

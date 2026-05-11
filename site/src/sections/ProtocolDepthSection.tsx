@@ -1,5 +1,5 @@
-import { SectionLabel } from "../components/SectionLabel";
 import { HclCode } from "../components/HclCode";
+import { SectionLabel } from "../components/SectionLabel";
 
 /* ──────────────────────────────────────────────────────────────────────
    Multi-protocol depth — sells the idea that the gateway doesn't just
@@ -62,10 +62,10 @@ export function ProtocolDepthSection() {
             Rules dive into <span class="text-rust">every action.</span>
           </h3>
           <p class="text-base  text-canvas/70">
-            Most gateways stop at HTTP method and URL. Claw Patrol parses
-            each protocol — so you can write rules that mean something.
-            Block destructive SQL. Quarantine prod kubectl. Gate
-            specific ssh commands.
+            Most gateways stop at HTTP method and URL. Claw Patrol parses each
+            protocol — so you can write rules that mean something. Block
+            destructive SQL. Quarantine prod kubectl. Gate specific ssh
+            commands.
           </p>
         </div>
 

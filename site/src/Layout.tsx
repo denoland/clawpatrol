@@ -21,7 +21,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
       >
         {children}
       </main>
-      <Stripe />
+      <Stripe color1="var(--color-navy)" />
       <Footer />
     </div>
   );

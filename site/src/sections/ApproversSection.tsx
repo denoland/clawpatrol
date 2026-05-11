@@ -1,6 +1,6 @@
 import type { ComponentChildren } from "preact";
-import { SectionLabel } from "../components/SectionLabel";
 import { HclCode } from "../components/HclCode";
+import { SectionLabel } from "../components/SectionLabel";
 
 /* ──────────────────────────────────────────────────────────────────────
    Approvers — deepens the `require_llm` and `require_human` verdicts
@@ -142,9 +142,7 @@ function ApproverCard({
       <div className="hidden lg:block absolute w-full h-full top-2 left-2 bg-navy-100 squircle-xl z-0" />
       <div className="relative z-10 flex flex-col gap-4">
         <header class="flex items-baseline justify-between">
-          <h4 class="text-3xl font-display font-bold text-text">
-            {title}
-          </h4>
+          <h4 class="text-3xl font-display font-bold text-text">{title}</h4>
           <code class="text-[10px] font-mono text-text-subtle">{verdict}</code>
         </header>
         <p class="text-sm  text-text-muted">{pitch}</p>
