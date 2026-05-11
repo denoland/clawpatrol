@@ -42,7 +42,18 @@ const sessionSockPath = "/tmp/clawpatrol.sock"
 // won't be tunneled but the command isn't blocked on IPC plumbing.
 func registerSession() func() {
 	pid := os.Getpid()
-	if err := sessionIPC(fmt.Sprintf("register %d\n", pid)); err != nil {
+	// Retry: startProxy (which calls startSessionListener) may not have
+	// fired yet when ensureMacProxyUp returns — the helper reports the
+	// tunnel as "up" before the NE framework calls startProxy. Poll for
+	// up to 3s at 150ms intervals before giving up.
+	var err error
+	for i := 0; i < 20; i++ {
+		if err = sessionIPC(fmt.Sprintf("register %d\n", pid)); err == nil {
+			break
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "⚠ session register: %v (proceeding without tunnel)\n", err)
 		return func() {}
 	}
