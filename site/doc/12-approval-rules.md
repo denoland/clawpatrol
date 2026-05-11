@@ -43,13 +43,13 @@ Match keys (all optional, all combine with implicit AND):
 
 ```hcl
 match = {
-  method        = "POST"                # HTTP verb (case-insensitive)
-  path          = ["/v1/refunds", "/v1/payouts"]   # URL path; glob OK
-  query         = { agent_id = "ci" }   # substring query-param match
+  method        = "POST"                            # HTTP verb (case-insensitive)
+  path          = ["/v1/refunds", "/v1/payouts"]    # URL path; glob OK
+  query         = { agent_id = "ci" }               # substring query-param match
   headers       = { "x-tenant" = "prod" }           # substring header match
-  body_json     = { archived = true }   # JSON subset match
-  body_contains = "DELETE FROM users"   # raw substring (case-sensitive)
-  credential    = github-prod-pat       # bare-name ref to the dispatched credential
+  body_json     = { archived = true }               # JSON subset match
+  body_contains = "DELETE FROM users"               # raw substring (case-sensitive)
+  credential    = github-prod-pat                   # bare-name ref to the dispatched credential
 }
 ```
 
@@ -117,8 +117,8 @@ Every rule shares the same outer skeleton. Field-by-field:
 
 ```hcl
 rule "<type>" "<name>" {
-  endpoint  = <endpoint-name>           # singular: bare-name ref
-  # endpoints = [<a>, <b>]              # OR list form (mutually exclusive)
+  endpoint  = <endpoint-name>            # singular: bare-name ref
+  # endpoints = [<a>, <b>]               # OR list form (mutually exclusive)
 
   priority  = 100                        # default 0; higher wins
 
