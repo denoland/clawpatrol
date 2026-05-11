@@ -1,4 +1,6 @@
-@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@100..900&family=PT+Mono&family=Sora:wght@100..800&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@100..900&family=Sora:wght@100..800&display=swap");
+@import "./docs.css";
+@import "highlight.js/styles/atom-one-dark.css";
 @import "tailwindcss";
 
 /* Self-hosted families below. PT Mono, Outfit, and Sora are imported
@@ -245,6 +247,53 @@
   font-weight: 900;
   font-display: swap;
   src: url("/fonts/gazpacho/GazpachoItalic-Black.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+
+/* IBM Plex Mono — code/mono family. Two weights (Regular 400, SemiBold
+   600), latin-basic subset. */
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/IBMPlexMono-Regular--latin_basic.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/IBMPlexMono-SemiBold--latin_basic.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/IBMPlexMono-Italic--latin_basic.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: italic;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/IBMPlexMono-SemiBoldItalic--latin_basic.woff2") format("woff2");
   unicode-range:
     U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
     U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
@@ -816,7 +865,7 @@ a.neu-raised:active {
     "Sora", "Outfit", "Public Sans", "Eastman", "Courier New",
     "American Typewriter", "Chronica Pro", "Basic Sans", system-ui, sans-serif;
   --font-mono:
-    "PT Mono", "MonoLisa", "DankMono Nerd Font", "SF Mono", "Menlo",
+    "IBM Plex Mono", "MonoLisa", "DankMono Nerd Font", "SF Mono", "Menlo",
     ui-monospace, monospace;
 
   --breakpoint-xs: 32rem;
