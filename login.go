@@ -61,7 +61,7 @@ func runJoin(args []string) {
 		fail("usage: clawpatrol join <gateway-url> [--hostname NAME] [--profile NAME] [--whole-machine]")
 	}
 	gatewayURL := rest[0]
-	if err := requireSecureGatewayURL(gatewayURL); err != nil {
+	if err := checkGatewayURL(gatewayURL); err != nil {
 		fail("%v", err)
 	}
 	// Fetch CA + write shell rc BEFORE the VPN goes up. Once
@@ -134,13 +134,15 @@ func postJoinSetup(gateway, caDir string, skipTrust bool) (joinSetup, error) {
 	return s, nil
 }
 
-// requireSecureGatewayURL gates the gateway URL the agent host is
-// about to trust the CA root from. The CA root is the anchor for
-// every subsequent intercepted TLS connection, so an on-path
-// attacker who can substitute it during onboarding owns all later
-// credentialled traffic. Require https for non-loopback hosts;
-// permit http only when the gateway is on the same machine.
-func requireSecureGatewayURL(gateway string) error {
+// checkGatewayURL validates the gateway URL the agent host is about
+// to trust the CA root from. The CA root is the anchor for every
+// subsequent intercepted TLS connection, so an on-path attacker who
+// substitutes it during onboarding owns all later credentialled
+// traffic. https is the supported configuration; http to loopback
+// is fine for local development; http to a public host warns but
+// proceeds, since requiring https outright would block operators
+// whose gateway is not yet behind TLS.
+func checkGatewayURL(gateway string) error {
 	u, err := neturl.Parse(gateway)
 	if err != nil {
 		return fmt.Errorf("parse gateway URL %q: %w", gateway, err)
@@ -152,10 +154,13 @@ func requireSecureGatewayURL(gateway string) error {
 		if isLoopbackHost(u.Hostname()) {
 			return nil
 		}
-		return fmt.Errorf("refusing to fetch gateway CA from %s over "+
-			"plain http: use https for non-loopback gateways (a network "+
-			"attacker can otherwise substitute their own CA and intercept "+
-			"every subsequent intercepted TLS connection)", gateway)
+		fmt.Fprintf(os.Stderr,
+			"⚠ fetching gateway CA from %s over plain http — "+
+				"a network attacker on path can substitute the CA "+
+				"and intercept every subsequent intercepted TLS "+
+				"connection; use https for non-loopback gateways\n",
+			gateway)
+		return nil
 	default:
 		return fmt.Errorf("gateway URL must use http or https, got %q", gateway)
 	}
