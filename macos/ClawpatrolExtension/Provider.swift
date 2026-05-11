@@ -227,8 +227,11 @@ class TransparentProxyProvider: NETransparentProxyProvider {
             var errBuf = [CChar](repeating: 0, count: 256)
             let cid = ip.withCString { hostC in
                 errBuf.withUnsafeMutableBufferPointer { ebuf in
+                    // 15s: covers one WG keepalive cycle (≤10s) + handshake
+                    // (~2s). Fails fast if gateway is unreachable rather than
+                    // blocking the flow indefinitely (whole-machine wake stall).
                     wg_netstack_tcp_connect(UnsafeMutablePointer(mutating: hostC),
-                                            port, ebuf.baseAddress, Int32(ebuf.count))
+                                            port, 15000, ebuf.baseAddress, Int32(ebuf.count))
                 }
             }
             if cid < 0 {
