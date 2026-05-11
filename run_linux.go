@@ -549,7 +549,7 @@ func ephemeralPeer(cfg *runConf) (cleanup func(), err error) {
 		fmt.Fprintf(os.Stderr, "⚠ ephemeral peer: register: %v (using shared identity)\n", err)
 		return noop, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		fmt.Fprintf(os.Stderr, "⚠ ephemeral peer: gateway returned %d (using shared identity)\n", resp.StatusCode)
 		return noop, fmt.Errorf("gateway %d", resp.StatusCode)
