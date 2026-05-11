@@ -199,12 +199,10 @@ resource = ["!*/exec", "!*/attach"]     # matches when neither glob matches
 name     = ["debug-*", "!debug-prod"]   # matches debug-* AND not debug-prod
 ```
 
-The list-with-negation rule:
+The list-with-negation rule. For the rule to trigger:
 
-- If the list has any **positive** entries, at least one must match.
-- Any **negative** entry that *does* match disqualifies the whole
-  list (returns false).
-- A list with only negatives fires when none of the negatives match.
+- If the list has **positive** entries, at least one must match.
+- No **negative** entry may match.
 
 `*` and `?` in a string make it a `path.Match` glob. `*` matches any
 sequence of characters except the separator (`/`); `?` matches any
