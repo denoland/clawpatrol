@@ -19,15 +19,17 @@ export function HCLEditor({
   value,
   onChange,
   minHeight = 320,
+  readOnly,
 }: {
   value: string;
   onChange: (v: string) => void;
   minHeight?: number;
+  readOnly?: boolean;
 }) {
   return (
     <Editor
       value={value}
-      onValueChange={onChange}
+      onValueChange={readOnly ? () => {} : onChange}
       highlight={(code) => Prism.highlight(code, Prism.languages.hcl, "hcl")}
       padding={16}
       style={{

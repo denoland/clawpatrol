@@ -21,6 +21,7 @@ export function DevicePage({
   agents,
   integrations,
   whoami,
+  readOnlyConfig,
   onBack,
   onConnect,
   onRefresh,
@@ -29,6 +30,7 @@ export function DevicePage({
   agents: Agent[];
   integrations: Integration[];
   whoami: Whoami | null;
+  readOnlyConfig?: boolean;
   onBack: () => void;
   onConnect: (id: string, profile?: string) => void;
   onRefresh: () => void;
@@ -228,7 +230,7 @@ export function DevicePage({
       />
 
       {/* rules — per-device scope (with global rules layered in) */}
-      <RulesPanel deviceIP={a.ip} profile={a.profile} />
+      <RulesPanel deviceIP={a.ip} profile={a.profile} readOnly={readOnlyConfig} />
     </main>
   );
 }

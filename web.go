@@ -655,10 +655,11 @@ func (w *webMux) apiState(rw http.ResponseWriter, r *http.Request) {
 	w.stateCacheMu.RUnlock()
 
 	state := map[string]any{
-		"whoami":       w.whoamiData(r),
-		"integrations": w.statusList(r),
-		"agents":       w.agentsList(),
-		"update":       currentUpdateBanner.Load(),
+		"whoami":           w.whoamiData(r),
+		"integrations":     w.statusList(r),
+		"agents":           w.agentsList(),
+		"update":           currentUpdateBanner.Load(),
+		"read_only_config": w.g.readOnlyConfig,
 	}
 	body, err := json.Marshal(state)
 	if err != nil {
@@ -846,6 +847,10 @@ func (w *webMux) apiConfig(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (w *webMux) apiConfigPreview(rw http.ResponseWriter, r *http.Request) {
+	if w.g.readOnlyConfig {
+		http.Error(rw, "read-only config", http.StatusForbidden)
+		return
+	}
 	if r.Method != "POST" {
 		http.Error(rw, "POST", http.StatusMethodNotAllowed)
 		return
@@ -897,6 +902,10 @@ func (w *webMux) apiConfigPreview(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (w *webMux) apiConfigSave(rw http.ResponseWriter, r *http.Request) {
+	if w.g.readOnlyConfig {
+		http.Error(rw, "read-only config", http.StatusForbidden)
+		return
+	}
 	if r.Method != "POST" {
 		http.Error(rw, "POST", http.StatusMethodNotAllowed)
 		return

@@ -317,6 +317,10 @@ type StateResp = {
   integrations: Integration[];
   agents: Agent[];
   update?: UpdateBanner | null;
+  // When true, the gateway was launched with --read-only-config and
+  // will reject /api/config/preview + /api/config/save with 403. The
+  // dashboard hides its editor affordances to match.
+  read_only_config?: boolean;
 };
 let lastStateTag = "";
 let lastState: StateResp | null = null;

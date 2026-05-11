@@ -243,6 +243,40 @@ func TestAPIConfigSaveRejectsUnpreviewedContent(t *testing.T) {
 	}
 }
 
+func TestAPIConfigReadOnlyModeRejectsWrites(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "gateway.hcl")
+	original := []byte("insecure_no_dashboard_secret = true\n")
+	if err := os.WriteFile(cfgPath, original, 0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+	w := &webMux{g: &Gateway{cfgPath: cfgPath, readOnlyConfig: true}}
+
+	preview := httptest.NewRequest(http.MethodPost, "/api/config/preview",
+		strings.NewReader("insecure_no_dashboard_secret=false\n"))
+	pr := httptest.NewRecorder()
+	w.apiConfigPreview(pr, preview)
+	if pr.Code != http.StatusForbidden {
+		t.Fatalf("preview status = %d, want 403, body = %s", pr.Code, pr.Body.String())
+	}
+
+	save := httptest.NewRequest(http.MethodPost, "/api/config/save",
+		strings.NewReader(`{"content":"x","expected_revision":"r","preview_token":"t"}`))
+	sr := httptest.NewRecorder()
+	w.apiConfigSave(sr, save)
+	if sr.Code != http.StatusForbidden {
+		t.Fatalf("save status = %d, want 403, body = %s", sr.Code, sr.Body.String())
+	}
+
+	contents, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read cfg: %v", err)
+	}
+	if !bytes.Equal(contents, original) {
+		t.Fatalf("read-only mode wrote file: %q", contents)
+	}
+}
+
 func TestAPIConfigPutIsReadOnly(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "gateway.hcl")

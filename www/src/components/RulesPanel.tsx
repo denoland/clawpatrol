@@ -6,7 +6,14 @@ import { RulesEditor } from "./RulesEditor";
 // Rules panel. Profile-level rules only — device-specific overrides
 // are gone. The pencil opens gateway.hcl. Device pages pass `profile`
 // so the listing filters to the device's profile.
-export function RulesPanel({ profile }: { deviceIP?: string; profile?: string }) {
+export function RulesPanel({
+  profile,
+  readOnly,
+}: {
+  deviceIP?: string;
+  profile?: string;
+  readOnly?: boolean;
+}) {
   const [rows, setRows] = useState<RuleSummary[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
@@ -31,7 +38,7 @@ export function RulesPanel({ profile }: { deviceIP?: string; profile?: string })
       <Section
         title="Rules"
         rows={visible}
-        onEdit={() => setEditing(true)}
+        onEdit={readOnly ? undefined : () => setEditing(true)}
         editTitle="edit gateway.hcl"
       />
       {editing && (
