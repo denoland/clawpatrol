@@ -17,8 +17,8 @@ machine you want to enroll:
 curl -fsSL https://clawpatrol.dev/install.sh | sh
 ```
 
-The installer drops a single ~80 MB binary in `~/.local/bin`. macOS and
-Linux on amd64/arm64 are supported. To build from source instead, set
+The installer drops a single binary in `~/.local/bin`. macOS and Linux
+on amd64/arm64 are supported. To build from source instead, set
 `CLAWPATROL_FROM_SOURCE=1` (requires Go and `gh auth login`).
 
 ## Stand up a gateway
