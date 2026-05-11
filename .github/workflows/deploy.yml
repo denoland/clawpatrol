@@ -39,12 +39,22 @@ jobs:
       - env:
           SSH_HOST: ${{ secrets.VULTR_HOST }}
         run: |
-          scp -i ~/.ssh/id_ed25519 gateway "root@$SSH_HOST:/opt/clawall/gateway.new"
+          scp -i ~/.ssh/id_ed25519 gateway "root@$SSH_HOST:/opt/clawpatrol/gateway.new"
           ssh -i ~/.ssh/id_ed25519 "root@$SSH_HOST" '
             set -e
-            mv /opt/clawall/gateway.new /opt/clawall/gateway
-            chmod +x /opt/clawall/gateway
-            systemctl restart clawall-gateway
-            sleep 5
-            systemctl is-active clawall-gateway
+            mv /opt/clawpatrol/gateway.new /opt/clawpatrol/gateway
+            chmod +x /opt/clawpatrol/gateway
+            systemctl restart clawpatrol-gateway
+            # systemd reports "activating" briefly while the gateway
+            # binds sockets + warms the policy compile; 10s is enough
+            # to settle in practice. is-active loops to avoid a stale
+            # snapshot.
+            for i in 1 2 3 4 5 6 7 8 9 10; do
+              state=$(systemctl is-active clawpatrol-gateway || true)
+              [ "$state" = "active" ] && exit 0
+              sleep 1
+            done
+            echo "service did not reach active: $state" >&2
+            systemctl status clawpatrol-gateway --no-pager | tail -20 >&2
+            exit 1
           '
