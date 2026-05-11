@@ -1053,6 +1053,8 @@ type diffOp struct {
 	newLine int
 }
 
+const maxUnifiedDiffCells = 4_000_000 // ~32 MiB DP table on 64-bit Go; covers ~2k x ~2k line configs.
+
 func unifiedDiff(oldName, newName, oldText, newText string) string {
 	if oldText == newText {
 		return ""
@@ -1062,7 +1064,7 @@ func unifiedDiff(oldName, newName, oldText, newText string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "--- %s\n+++ %s\n", oldName, newName)
 
-	if len(oldLines) > 0 && len(newLines) > 0 && len(oldLines) > 250000/len(newLines) {
+	if len(oldLines) > 0 && len(newLines) > 0 && len(oldLines) > maxUnifiedDiffCells/len(newLines) {
 		fmt.Fprintf(&b, "@@ -1,%d +1,%d @@\n", len(oldLines), len(newLines))
 		for _, line := range oldLines {
 			b.WriteByte('-')
