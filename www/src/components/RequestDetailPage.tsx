@@ -54,7 +54,8 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
   const hasResp = !!ev.resp_body;
   const hasReqH = ev.req_headers && Object.keys(ev.req_headers).length > 0;
   const hasRespH = ev.resp_headers && Object.keys(ev.resp_headers).length > 0;
-  const hasSections = hasReq || hasResp || hasReqH || hasRespH;
+  const hasFacets = facetFields.length > 0;
+  const hasSections = hasFacets || hasReq || hasResp || hasReqH || hasRespH;
 
   return (
     <Shell
@@ -100,22 +101,14 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
         )}
       </div>
 
-      {/* per-family report fields */}
-      {facetFields.length > 0 && (
-        <div className="bg-white border border-[#e5e5e5] rounded">
-          <Section title={schema ? `${schema.name} facets` : "Facets"}>
-            <dl className="grid grid-cols-[140px_1fr] gap-x-3 gap-y-1 text-[12px]">
-              {facetFields.map((f) => (
-                <FacetField key={f.name} label={f.label} value={f.value} />
-              ))}
-            </dl>
-          </Section>
-        </div>
-      )}
-
       {/* sections */}
       {hasSections ? (
         <div className="bg-white border border-[#e5e5e5] rounded divide-y divide-[#e5e5e5]">
+          {hasFacets && (
+            <Section title="Request">
+              <Facets rows={facetFields} />
+            </Section>
+          )}
           {hasReqH && (
             <Section title="Request headers">
               <Headers obj={ev.req_headers!} />
@@ -273,12 +266,22 @@ function facetDetailRows(
   return out;
 }
 
-function FacetField({ label, value }: { label: string; value: string }) {
+// Facets renders the per-family report payload using the same
+// monospace key:value layout as the Request/Response headers list,
+// so the detail page reads consistently regardless of which facet
+// owns the row. No masking: the facets payload is policy metadata,
+// not secret material (credentials live in headers).
+function Facets({ rows }: { rows: Array<{ name: string; label: string; value: string }> }) {
   return (
-    <>
-      <dt className="text-[#737373] uppercase text-[10px] tracking-wider py-1">{label}</dt>
-      <dd className="text-[#171717] font-mono break-all">{value}</dd>
-    </>
+    <pre className="overflow-auto whitespace-pre-wrap break-all px-4 py-3 font-mono text-[11px] leading-relaxed">
+      {rows.map((r) => (
+        <div key={r.name}>
+          <span className="font-semibold text-[#171717]">{r.label}</span>
+          <span className="text-[#a3a3a3]">: </span>
+          <span className="text-[#525252]">{r.value}</span>
+        </div>
+      ))}
+    </pre>
   );
 }
 
