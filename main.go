@@ -1852,6 +1852,11 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		if resp.ContentLength < 0 && len(resp.TransferEncoding) == 0 && !resp.Close {
 			resp.TransferEncoding = []string{"chunked"}
 		}
+		// Snapshot the upstream's response headers for the audit log
+		// before stripping credential-bearing ones — the dashboard
+		// still wants to show what the upstream actually sent.
+		ev.RespHeaders = flatHeaders(resp.Header)
+		stripAuthResponseHeaders(resp.Header)
 		writeErr := resp.Write(tc)
 		_ = rtDur
 		_ = resp.Body.Close()
@@ -1873,7 +1878,6 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		}
 		ev.Status = resp.StatusCode
 		ev.ReqHeaders = flatHeaders(req.Header)
-		ev.RespHeaders = flatHeaders(resp.Header)
 		ev.In = reqS.n
 		ev.Out = respS.n
 		ev.ReqSha = reqS.sha()

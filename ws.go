@@ -139,6 +139,12 @@ func (g *Gateway) handleWSUpgrade(client *tls.Conn, br *bufio.Reader, req *http.
 		log.Printf("ws read resp: %v", err)
 		return
 	}
+	// Drop credential-bearing response headers (Set-Cookie, WWW-
+	// Authenticate, …) before they cross to the agent. Filters
+	// bytes verbatim — must not parse + re-serialise, since that
+	// mangles the Connection / Upgrade hop-by-hop headers the
+	// 101 handshake depends on.
+	headerBytes = stripAuthResponseHeadersRaw(headerBytes)
 	statusLine := ""
 	if i := bytes.Index(headerBytes, []byte("\r\n")); i >= 0 {
 		statusLine = string(headerBytes[:i])
