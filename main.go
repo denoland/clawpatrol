@@ -2042,6 +2042,8 @@ func main() {
 		runEnv(os.Args[2:])
 	case "init-ca":
 		runInitCA(os.Args[2:])
+	case "validate":
+		runValidate(os.Args[2:])
 	case "uninstall":
 		runUninstall(os.Args[2:])
 	case "status":
@@ -2126,6 +2128,7 @@ usage:
   clawpatrol uninstall                   tear down everything this machine installed
   clawpatrol env                         print shell exports for sourcing
   clawpatrol init-ca DIR                 generate a new CA in DIR
+  clawpatrol validate <config.hcl>       parse + compile a config and exit
   clawpatrol version`)
 	os.Exit(2)
 }
