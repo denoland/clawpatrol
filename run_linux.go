@@ -537,8 +537,12 @@ func ephemeralPeer(cfg *runConf) (cleanup func(), err error) {
 		return noop, err
 	}
 
-	req, _ := http.NewRequest(http.MethodPost,
+	req, err := http.NewRequest(http.MethodPost,
 		gwURL+"/api/peer/ephemeral?pubkey="+pubHex, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ ephemeral peer: build request: %v (using shared identity)\n", err)
+		return noop, err
+	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := client.Do(req)
 	if err != nil {
@@ -565,8 +569,11 @@ func ephemeralPeer(cfg *runConf) (cleanup func(), err error) {
 	_ = os.Setenv("CLAWPATROL_EPHEMERAL_ADDR", cfg.Address)
 
 	return func() {
-		dreq, _ := http.NewRequest(http.MethodDelete,
+		dreq, err := http.NewRequest(http.MethodDelete,
 			gwURL+"/api/peer/ephemeral?pubkey="+pubHex, nil)
+		if err != nil {
+			return
+		}
 		dreq.Header.Set("Authorization", "Bearer "+token)
 		if dr, derr := client.Do(dreq); derr == nil {
 			_ = dr.Body.Close()

@@ -31,13 +31,16 @@ func allocateEphemeralIP(subnetCIDR string) (string, error) {
 	if globalDB != nil {
 		rows, err := globalDB.Query("SELECT ip FROM wg_peers")
 		if err == nil {
+			defer func() { _ = rows.Close() }()
 			for rows.Next() {
 				var ip string
 				if rows.Scan(&ip) == nil {
 					used[ip] = true
 				}
 			}
-			_ = rows.Close()
+			if err := rows.Err(); err != nil {
+				used = map[string]bool{}
+			}
 		}
 	}
 	_, cidr, err := net.ParseCIDR(subnetCIDR)
