@@ -80,7 +80,8 @@ condition = "sql.statement.matches('(?i)\\bpassword\\b')"
 ```
 
 `verb`, `tables`, and `function` are extracted by a best-effort
-lexer — see "Gotchas" below.
+lexer over a lower-cased copy of the statement — see
+[Case sensitivity](#case-sensitivity-by-variable) below.
 
 `tables` and `function` are **multi-valued** facets: a single
 statement can name several tables (`SELECT ... FROM a JOIN b`) and
@@ -114,6 +115,11 @@ condition = "!k8s.resource.endsWith('/exec') && !k8s.resource.endsWith('/attach'
 A rule bound to `https` endpoints sees `http.*` only; a rule bound
 to `kubernetes` endpoints sees `k8s.*` only. Mixing families across
 a rule's `endpoints = [...]` is a load error.
+
+`ssh` endpoints exist but have no rule family yet — the gateway
+terminates auth and splices channels as opaque byte streams, emitting
+a single `allow` event at session start. Rules cannot gate anything
+inside an SSH session today.
 
 
 ## How to create a rule
@@ -219,14 +225,17 @@ accessed with dot notation. Common idioms:
 | `http.method`                 | upper-case (normalized) |
 | `http.path`, `http.query`, `http.headers`, `http.body` | as on the wire |
 | `sql.verb`                    | lower-case (normalized) |
-| `sql.tables`, `sql.function`, `sql.statement` | lower-case (statement is lower-cased before extraction) |
+| `sql.tables`, `sql.function`  | lower-case (extracted from a lower-cased copy of the statement) |
+| `sql.statement`               | as on the wire (raw text, no case folding) |
 | `k8s.verb`                    | lower-case (normalized) |
 | `k8s.resource`, `k8s.namespace`, `k8s.name`, `k8s.params` | as on the wire |
 
-For SQL, the parser lower-cases the statement before extracting
-verbs, tables, and functions — so `'Users' in sql.tables` will never
-fire. Write literals in the same case the parser will produce
-(lower).
+For SQL, the parser lower-cases an internal copy of the statement
+before extracting verbs, tables, and functions — so
+`'Users' in sql.tables` will never fire. Write literals in the same
+case the parser will produce (lower). `sql.statement` itself is the
+raw on-the-wire text; match it case-blindly with a `(?i)` regex
+flag (`sql.statement.matches('(?i)\\bpassword\\b')`).
 
 ### `credential = X`
 
