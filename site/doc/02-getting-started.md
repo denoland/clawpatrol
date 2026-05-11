@@ -23,30 +23,24 @@ on amd64/arm64 are supported. To build from source instead, set
 
 ## Stand up a gateway
 
-On the server, generate a CA and write the config:
+On the server:
 
 ```bash
-sudo mkdir -p /etc/clawpatrol /opt/clawpatrol
-sudo clawpatrol init-ca /opt/clawpatrol/ca
-sudo cp gateway.example.hcl /etc/clawpatrol/gateway.hcl
-sudo $EDITOR /etc/clawpatrol/gateway.hcl
+clawpatrol gateway init
 ```
 
-Set at minimum `public_url`, `wg_endpoint`, and `dashboard_secret`. Then
-run the gateway:
+This detects the public IP, generates a CA, writes
+`/etc/clawpatrol/gateway.hcl`, opens the firewall ports (`udp/51820` +
+`tcp/9080`), and drops a systemd unit. Start it:
 
 ```bash
-clawpatrol gateway -config /etc/clawpatrol/gateway.hcl
+systemctl enable --now clawpatrol-gateway
 ```
 
-The example config listens on `tcp/8443` (TLS proxy), `tcp/8080`
-(dashboard), and `udp/51820` (WireGuard) — open those in your firewall.
-For a long-running setup, wrap that command in a systemd unit of your
-choosing.
+The dashboard is at `http://<gateway-host>:9080`. The `join` command
+printed by `gateway init` is what your devices will run.
 
-The dashboard is at `http://<gateway-host>:8080` (gated by
-`dashboard_secret`). See [Gateway](/docs/07-gateway/) for the full HCL
-reference.
+See [Gateway](/docs/07-gateway/) for the full HCL reference.
 
 ## Join a device
 

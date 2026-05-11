@@ -2077,6 +2077,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `clawpatrol — secret-injection MITM proxy for AI agents
 
 usage:
+  clawpatrol gateway init [flags]        bootstrap a new gateway host
   clawpatrol gateway [-config FILE]      run the gateway server
   clawpatrol join <gateway-url>          onboard this machine via wg device flow
                   [--hostname NAME]      device name to register (default: os.Hostname)
@@ -2093,7 +2094,7 @@ usage:
 }
 
 func runInitCA(args []string) {
-	if len(args) != 1 {
+	if len(args) != 1 || args[0] == "-h" || args[0] == "--help" {
 		fmt.Fprintln(os.Stderr, "usage: clawpatrol init-ca DIR")
 		os.Exit(2)
 	}
