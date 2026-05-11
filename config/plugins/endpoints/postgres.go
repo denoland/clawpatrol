@@ -417,7 +417,6 @@ func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.
 //	("", "")         — no rule fires or the matched rule allows.
 func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 	info := parseSQL(sql)
-	summary := pgSummary(info)
 	mreq := &match.Request{
 		Family:     "sql",
 		PeerIP:     ch.PeerIP,
@@ -430,23 +429,21 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 		},
 	}
 	cr := runtime.MatchRequest(ch.Endpoint, mreq)
-	if cr == nil {
-		// No rule matched — implicit allow. Emit so the query
-		// shows up in the dashboard's actions tab anyway; the
-		// HTTP path does the same (main.go:1909 — every request
-		// gets an `allow` event when no explicit verdict was
-		// recorded).
-		emit(ch, runtime.ConnEvent{
-			Action: "allow", Verb: info.Verb, Summary: summary,
-		})
-		return "", ""
-	}
 	sqlMeta := func(ev runtime.ConnEvent) runtime.ConnEvent {
 		ev.Verb = info.Verb
 		ev.Statement = info.Statement
 		ev.Tables = info.Tables
 		ev.Functions = info.Functions
 		return ev
+	}
+	if cr == nil {
+		// No rule matched — implicit allow. Emit so the query
+		// shows up in the dashboard's actions tab anyway; the
+		// HTTP path does the same (main.go:1909 — every request
+		// gets an `allow` event when no explicit verdict was
+		// recorded).
+		emit(ch, sqlMeta(runtime.ConnEvent{Action: "allow"}))
+		return "", ""
 	}
 
 	// Approve chain. ConnHandle.Approve dispatches through the
