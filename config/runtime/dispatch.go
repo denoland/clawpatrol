@@ -5,15 +5,13 @@ import (
 	"github.com/denoland/clawpatrol/config/match"
 )
 
-// HostEndpoint resolves a profile + SNI host (with port stripped to
-// match how endpoint plugins record hosts) to the endpoint that owns
-// it. Returns nil when the profile doesn't bind any matching endpoint
-// — the caller then applies the defaults.unknown_host policy.
-//
-// Hosts include port when an endpoint declared one ("localhost:8443"),
-// per the v14 design notes. We try the host-with-port first, then a
-// bare host fallback so agents that connect on the default port don't
-// have to know whether the endpoint hardcoded ":443".
+// HostEndpoint resolves a profile + SNI/authority host to the endpoint
+// that owns it. Compile populates HostIndex with exact declared hosts
+// plus bare-host aliases for HTTPS-family default-port declarations,
+// so a TLS SNI value like "api.example.com" can match an endpoint
+// declared as "api.example.com:443" without a runtime scan. Returns nil
+// when the profile doesn't bind any matching endpoint — the caller then
+// applies the defaults.unknown_host policy.
 func HostEndpoint(policy *config.CompiledPolicy, profile, host string) *config.CompiledEndpoint {
 	if policy == nil {
 		return nil
