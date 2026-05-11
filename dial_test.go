@@ -57,7 +57,9 @@ func TestTransportBrowserTLSUsesEndpointTunnel(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	_, err := g.transportFor(ep).DialTLSContext(ctx, "tcp", "browser.invalid:443")
+	transport, releaseTransport := g.transportFor(ep)
+	defer releaseTransport()
+	_, err := transport.DialTLSContext(ctx, "tcp", "browser.invalid:443")
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("DialTLSContext error = %v, want fake tunnel sentinel", err)
 	}
@@ -154,7 +156,9 @@ func TestTransportBrowserTLSWithClientCertUsesDialUpstream(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	_, err := g.transportFor(ep).DialTLSContext(ctx, "tcp", "browser.invalid:443")
+	transport, releaseTransport := g.transportFor(ep)
+	defer releaseTransport()
+	_, err := transport.DialTLSContext(ctx, "tcp", "browser.invalid:443")
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("DialTLSContext error = %v, want fake tunnel sentinel", err)
 	}
