@@ -331,6 +331,17 @@ func (g *Gateway) profileFor(peerIP string) string {
 	return defaultProfileName(g.cfg.Policy)
 }
 
+// agentIPFor returns the IP to use for traffic attribution. Ephemeral
+// peers are remapped to their parent device's IP so all activity shows
+// under a single device in the dashboard.
+func (g *Gateway) agentIPFor(c net.Conn) string {
+	ip := peerIP(c)
+	if g.onboard != nil {
+		return g.onboard.AgentIPFor(ip)
+	}
+	return ip
+}
+
 // defaultProfileName returns the profile a freshly-onboarded peer
 // should attach to. Prefers a profile literally named "default";
 // otherwise the first declared profile in source order. Empty when
@@ -668,7 +679,7 @@ func (g *Gateway) preCreateLLMSession(c net.Conn, kind, path string, reqBody []b
 	if g.agents == nil {
 		return
 	}
-	ip := peerIP(c)
+	ip := g.agentIPFor(c)
 	switch kind {
 	case "claude_usage":
 		if path != "/v1/messages" {
@@ -728,7 +739,7 @@ func codexRequestModel(body []byte) string {
 // title, model, and token usage. Only fires on actual model-invocation
 // endpoints; ignores heartbeat / event_logging / mcp / oauth probes.
 func (g *Gateway) trackLLMUsage(c net.Conn, kind, path string, reqBody, respBody []byte, sessionHint string) {
-	ip := peerIP(c)
+	ip := g.agentIPFor(c)
 	switch kind {
 	case "claude_usage":
 		if path != "/v1/messages" {
@@ -1196,6 +1207,7 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 	defer otelTrackConn("pg_relay")()
 	pip := peerIP(c)
 	profile := g.profileFor(pip)
+	agentPip := g.agentIPFor(c)
 
 	policy := g.Policy()
 	// Try the DNS-resolved IP index first — multi-postgres profiles
@@ -1250,7 +1262,7 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 				return
 			}
 			g.sink.Emit(Event{
-				Mode: "pg", Family: ep.Family, Host: dstIP, AgentIP: pip,
+				Mode: "pg", Family: ep.Family, Host: dstIP, AgentIP: agentPip,
 				Method: ev.Verb, Path: ev.Summary,
 				Action: ev.Action, Reason: ev.Reason,
 				Facets: ev.Facets,
@@ -1258,7 +1270,7 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 		},
 		Approve: func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
 			return g.runApproveChain(context.Background(), req.Stages, runApproveCtx{
-				AgentIP: pip, Host: dstIP, Method: req.Verb, Path: req.Summary,
+				AgentIP: agentPip, Host: dstIP, Method: req.Verb, Path: req.Summary,
 				Reason:   ifNotEmpty(req.Rule, func(r *config.CompiledRule) string { return r.Outcome.Reason }),
 				Endpoint: ep, Rule: req.Rule, Profile: profile,
 			})
@@ -1367,6 +1379,7 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 	}
 	pip := peerIP(c)
 	profile := g.profileFor(pip)
+	agentPip := g.agentIPFor(c)
 	policy := g.Policy()
 	mode := ep.Plugin.Type
 	// Event Host carries the hostname when known (VIP path), else the
@@ -1407,7 +1420,7 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 				return
 			}
 			g.sink.Emit(Event{
-				Mode: mode, Family: ep.Family, Host: eventHost, AgentIP: pip,
+				Mode: mode, Family: ep.Family, Host: eventHost, AgentIP: agentPip,
 				Method: ev.Verb, Path: ev.Summary,
 				Action: ev.Action, Reason: ev.Reason,
 				Facets: ev.Facets,
@@ -1415,7 +1428,7 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 		},
 		Approve: func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
 			return g.runApproveChain(context.Background(), req.Stages, runApproveCtx{
-				AgentIP: pip, Host: eventHost, Method: req.Verb, Path: req.Summary,
+				AgentIP: agentPip, Host: eventHost, Method: req.Verb, Path: req.Summary,
 				Reason:   ifNotEmpty(req.Rule, func(r *config.CompiledRule) string { return r.Outcome.Reason }),
 				Endpoint: ep, Rule: req.Rule, Profile: profile,
 			})
@@ -1497,11 +1510,11 @@ func (g *Gateway) splice(c net.Conn, host string) {
 	up, err := g.dialer.Dial("tcp", net.JoinHostPort(host, "443"))
 	if err != nil {
 		log.Printf("dial %s: %v", host, err)
-		g.emit(Event{Mode: "splice", Host: host, AgentIP: peerIP(c), Action: "error", Reason: err.Error(), Ms: time.Since(start).Milliseconds()})
+		g.emit(Event{Mode: "splice", Host: host, AgentIP: g.onboard.AgentIPFor(peerIP(c)), Action: "error", Reason: err.Error(), Ms: time.Since(start).Milliseconds()})
 		return
 	}
 	defer func() { _ = up.Close() }()
-	agentAddr := peerIP(c) // capture BEFORE pipe — RemoteAddr() goes nil once netstack closes the conn
+	agentAddr := g.onboard.AgentIPFor(peerIP(c)) // capture BEFORE pipe — RemoteAddr() goes nil once netstack closes the conn
 	in, out := pipeProgress(c, up, g.streamTracker(agentAddr, host))
 	g.emit(Event{Mode: "splice", Host: host, AgentIP: agentAddr, Action: "allow", In: in, Out: out, Ms: time.Since(start).Milliseconds()})
 }
@@ -1588,6 +1601,7 @@ func bufferHTTPBodyForMatch(req *http.Request) []byte {
 func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint) {
 	agentAddr := peerIP(c)
 	profile := g.profileFor(agentAddr)
+	agentAddr = g.agentIPFor(c)
 	cert, err := g.certs.mint(host)
 	if err != nil {
 		log.Printf("mint %s: %v", host, err)
@@ -1654,7 +1668,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			Family: ep.Family,
 			Host:   host,
 			Method: req.Method, Path: req.URL.Path,
-			AgentIP: pip,
+			AgentIP: agentAddr,
 		}
 		if fac != nil {
 			ev.Facets = fac.Report(mreq)
@@ -1675,7 +1689,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		// allow; first deny short-circuits.
 		if cr != nil && len(cr.Outcome.Approve) > 0 {
 			v := g.runApproveChain(req.Context(), cr.Outcome.Approve, runApproveCtx{
-				AgentIP: pip, Host: host, Method: req.Method, Path: req.URL.RequestURI(),
+				AgentIP: agentAddr, Host: host, Method: req.Method, Path: req.URL.RequestURI(),
 				UA: req.Header.Get("User-Agent"), Reason: cr.Outcome.Reason,
 				ThreadTS: req.Header.Get("X-HITL-Thread-TS"),
 				Endpoint: ep, Rule: cr, Profile: profile,
@@ -2441,21 +2455,22 @@ func (g *Gateway) wgRelay(c net.Conn, dstIP string, dstPort int) {
 	defer func() { _ = c.Close() }()
 	pip := peerIP(c)
 	profile := g.profileFor(pip)
+	agentPip := g.agentIPFor(c)
 	host := fmt.Sprintf("%s:%d", dstIP, dstPort)
 	start := time.Now()
 	up, err := net.DialTimeout("tcp", net.JoinHostPort(dstIP, strconv.Itoa(dstPort)), 10*time.Second)
 	if err != nil {
 		g.sink.Emit(Event{
-			Mode: "relay", AgentIP: pip, Agent: profile,
+			Mode: "relay", AgentIP: agentPip, Agent: profile,
 			Host: host, Action: "deny", Reason: err.Error(),
 			Ms: time.Since(start).Milliseconds(),
 		})
 		return
 	}
 	defer func() { _ = up.Close() }()
-	rx, tx := pipeProgress(c, up, g.streamTracker(pip, host))
+	rx, tx := pipeProgress(c, up, g.streamTracker(agentPip, host))
 	g.sink.Emit(Event{
-		Mode: "relay", AgentIP: pip, Agent: profile,
+		Mode: "relay", AgentIP: agentPip, Agent: profile,
 		Host: host, Action: "allow",
 		In: rx, Out: tx,
 		Ms: time.Since(start).Milliseconds(),

@@ -67,6 +67,7 @@ type onboardRegistry struct {
 	hostnameByIP map[string]string
 	profileByIP          map[string]string
 	ephemeralProfileByIP map[string]string // never written to devices table
+	ephemeralParentByIP  map[string]string // ephemeral IP → parent device IP
 	extV4ByIP            map[string]string
 	extV6ByIP            map[string]string
 	db                   *sql.DB
@@ -80,6 +81,7 @@ func newOnboardRegistry() *onboardRegistry {
 		hostnameByIP:         map[string]string{},
 		profileByIP:          map[string]string{},
 		ephemeralProfileByIP: map[string]string{},
+		ephemeralParentByIP:  map[string]string{},
 		extV4ByIP:            map[string]string{},
 		extV6ByIP:            map[string]string{},
 	}
@@ -138,14 +140,27 @@ func (r *onboardRegistry) AssignProfile(ip, profile string) {
 	r.upsertLocked(ip)
 }
 
-// setEphemeralProfile pins an ephemeral peer IP to a profile using a
-// separate map that ProfileForIP reads but upsertLocked never touches.
-// This keeps ephemeral peers invisible to the devices table and the
-// dashboard regardless of what other code (SetExternalIPs, etc.) does.
-func (r *onboardRegistry) setEphemeralProfile(ip, profile string) {
+// setEphemeralProfile pins an ephemeral peer to a profile and records
+// its parent device IP. ephemeralProfileByIP is never read by upsertLocked
+// so no devices row is created. ephemeralParentByIP is used by AgentIPFor
+// to route traffic attribution back to the parent device.
+func (r *onboardRegistry) setEphemeralProfile(ip, parentIP, profile string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.ephemeralProfileByIP[ip] = profile
+	r.ephemeralParentByIP[ip] = parentIP
+}
+
+// AgentIPFor returns the device IP that traffic from ip should be attributed
+// to. For ephemeral peers this is the parent device; for regular peers it
+// returns ip unchanged.
+func (r *onboardRegistry) AgentIPFor(ip string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if parent := r.ephemeralParentByIP[ip]; parent != "" {
+		return parent
+	}
+	return ip
 }
 
 // Load attaches the SQLite-backed `devices` table and replays every
@@ -293,6 +308,7 @@ func (r *onboardRegistry) ForgetIP(ip string) {
 	delete(r.hostnameByIP, ip)
 	delete(r.profileByIP, ip)
 	delete(r.ephemeralProfileByIP, ip)
+	delete(r.ephemeralParentByIP, ip)
 	delete(r.extV4ByIP, ip)
 	delete(r.extV6ByIP, ip)
 	if r.db != nil {

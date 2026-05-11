@@ -103,9 +103,8 @@ func (w *webMux) apiAddEphemeralPeer(rw http.ResponseWriter, r *http.Request) {
 	// the record when the parent has no explicit profile. The gateway's
 	// normal defaultProfileName fallback then applies per-request, same
 	// as it does for the parent device.
-	if profile := w.g.onboard.ProfileForIP(parentIP); profile != "" {
-		w.g.onboard.setEphemeralProfile(ip, profile)
-	}
+	profile := w.g.onboard.ProfileForIP(parentIP)
+	w.g.onboard.setEphemeralProfile(ip, parentIP, profile)
 	ip6 := wg6FromV4(netip.MustParseAddr(ip)).String()
 	writeJSON(rw, map[string]string{"ip": ip, "ip6": ip6})
 }
