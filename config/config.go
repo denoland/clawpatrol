@@ -20,13 +20,25 @@ import (
 // attributes. Labeled blocks (`credential "x" "y" {}`, etc.) are the
 // things you have N of and dispatch to the plugin registry.
 type Gateway struct {
-	Listen          string `hcl:"listen,optional"`
-	InfoListen      string `hcl:"info_listen,optional"`
-	PublicURL       string `hcl:"public_url,optional"`
-	AdminEmail      string `hcl:"admin_email,optional"`
-	CADir           string `hcl:"ca_dir,optional"`
-	Resolver        string `hcl:"resolver,optional"`
-	LogPath         string `hcl:"log_path,optional"`
+	Listen     string `hcl:"listen,optional"`
+	InfoListen string `hcl:"info_listen,optional"`
+	PublicURL  string `hcl:"public_url,optional"`
+	AdminEmail string `hcl:"admin_email,optional"`
+	// CADir is the legacy path the gateway used to keep the CA cert
+	// + ssh host keys on disk. Kept for backwards compat: existing
+	// configs still parse, and state_import.go consults this path to
+	// move any leftover on-disk artifacts into sqlite on first boot
+	// of a migrated gateway. New deployments should set state_dir
+	// instead — the gateway now keeps everything in sqlite.
+	CADir string `hcl:"ca_dir,optional"`
+	// StateDir is the directory holding clawpatrol.db. Falls back to
+	// OAuthDir (historical name) or ${CADir}/../oauth or
+	// ${HOME}/.clawpatrol/state, in that order.
+	StateDir string `hcl:"state_dir,optional"`
+	Resolver string `hcl:"resolver,optional"`
+	LogPath  string `hcl:"log_path,optional"`
+	// OAuthDir is the historical state directory name. Equivalent to
+	// state_dir and kept for backwards compat.
 	OAuthDir        string `hcl:"oauth_dir,optional"`
 	DashboardSecret string `hcl:"dashboard_secret,optional"`
 	// InsecureNoDashboardSecret opts out of dashboard auth. Required
@@ -53,7 +65,6 @@ type Gateway struct {
 	AuthKey           string `hcl:"authkey,optional"`
 	ControlURL        string `hcl:"control_url,optional"`
 	Hostname          string `hcl:"hostname,optional"`
-	StateDir          string `hcl:"state_dir,optional"`
 	Control           string `hcl:"control,optional"`
 	OAuthClientID     string `hcl:"oauth_client_id,optional"`
 	OAuthClientSecret string `hcl:"oauth_client_secret,optional"`

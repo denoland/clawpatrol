@@ -22,6 +22,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"expvar"
 	"fmt"
 	"net"
@@ -291,9 +292,10 @@ func setWGServer(s *WGServer) { globalWG = s }
 func setDB(d *sql.DB)         { globalDB = d }
 
 // StartWGServer brings up a userspace WG endpoint listening on
-// 0.0.0.0:<ListenPort>. Server private key is read from disk; if
-// missing, generated and persisted at <stateDir>/wg-server.key.
-func StartWGServer(ts JoinConfig, stateDir string) (*WGServer, error) {
+// 0.0.0.0:<ListenPort>. Server private key is read from the
+// wg_server_key sqlite row; if missing, generated and persisted on
+// first boot. Stable across restarts so onboarded peers keep working.
+func StartWGServer(ts JoinConfig) (*WGServer, error) {
 	if ts.WGSubnetCIDR == "" {
 		return nil, fmt.Errorf("wireguard: wg_subnet_cidr required")
 	}
@@ -304,7 +306,7 @@ func StartWGServer(ts JoinConfig, stateDir string) (*WGServer, error) {
 		}
 	}
 
-	priv, err := loadOrGenWGKey(stateDir + "/wg-server.key")
+	priv, err := loadOrGenWGServerKey(globalDB)
 	if err != nil {
 		return nil, err
 	}
@@ -653,21 +655,47 @@ func (s *WGServer) RevokePeerByIP(ip string) {
 	_, _ = s.db.Exec("DELETE FROM wg_peers WHERE ip = ?", ip)
 }
 
-func loadOrGenWGKey(path string) (string, error) {
-	if b, err := os.ReadFile(path); err == nil {
-		return strings.TrimSpace(string(b)), nil
+// loadOrGenWGServerKey returns the gateway's WG server private key in
+// hex (the format wireguard-go's IpcSet expects). Reads from the
+// wg_server_key sqlite row; mints + persists on first call.
+func loadOrGenWGServerKey(db *sql.DB) (string, error) {
+	if db == nil {
+		return "", fmt.Errorf("wg server key: no db")
 	}
-	priv, err := wgGenPrivateHex()
+	var priv string
+	err := db.QueryRow(`SELECT priv_hex FROM wg_server_key WHERE id = 1`).Scan(&priv)
+	if err == nil {
+		return strings.TrimSpace(priv), nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("wg server key read: %w", err)
+	}
+	priv, err = wgGenPrivateHex()
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(strings.TrimSuffix(path, "/wg-server.key"), 0o700); err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(path, []byte(priv), 0o600); err != nil {
-		return "", err
+	if _, err := db.Exec(
+		`INSERT INTO wg_server_key (id, priv_hex, created_ns) VALUES (1, ?, ?)`,
+		priv, time.Now().UnixNano(),
+	); err != nil {
+		return "", fmt.Errorf("wg server key insert: %w", err)
 	}
 	return priv, nil
+}
+
+// importWGServerKey writes a pre-existing hex key into wg_server_key.
+// Used by the legacy-state importer to move the on-disk
+// wg-server.key into sqlite. Caller guards against double-insert.
+func importWGServerKey(db *sql.DB, privHex string) error {
+	privHex = strings.TrimSpace(privHex)
+	if _, err := wgPubFromPrivHex(privHex); err != nil {
+		return fmt.Errorf("validate legacy wg key: %w", err)
+	}
+	_, err := db.Exec(
+		`INSERT INTO wg_server_key (id, priv_hex, created_ns) VALUES (1, ?, ?)`,
+		privHex, time.Now().UnixNano(),
+	)
+	return err
 }
 
 func wgPubFromPrivHex(privHex string) (string, error) {

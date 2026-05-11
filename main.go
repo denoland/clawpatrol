@@ -30,6 +30,7 @@ import (
 	"github.com/denoland/clawpatrol/config/match"
 	_ "github.com/denoland/clawpatrol/config/plugins/all"
 	"github.com/denoland/clawpatrol/config/plugins/approvers"
+	"github.com/denoland/clawpatrol/config/plugins/endpoints"
 	"github.com/denoland/clawpatrol/config/runtime"
 	"github.com/denoland/clawpatrol/dnsvip"
 	"github.com/google/uuid"
@@ -39,6 +40,28 @@ import (
 // StartWGServer / newOnboarder / mintTailscaleAuthKey) can refer to
 // it as a bare name.
 type JoinConfig = config.JoinConfig
+
+// resolveStateDir picks the directory where the gateway keeps its
+// sqlite DB. Priority: cfg.StateDir (new canonical name) →
+// cfg.OAuthDir (the historical name, kept for backwards compat) →
+// ${cfg.CADir}/../oauth (the original layout that put state next to
+// the CA materials).
+func resolveStateDir(cfg *config.Gateway) string {
+	if cfg.StateDir != "" {
+		return cfg.StateDir
+	}
+	if cfg.OAuthDir != "" {
+		return cfg.OAuthDir
+	}
+	if cfg.CADir != "" {
+		return filepath.Join(cfg.CADir, "..", "oauth")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		log.Fatalf("state_dir / oauth_dir / ca_dir all unset and $HOME unavailable")
+	}
+	return filepath.Join(home, ".clawpatrol", "state")
+}
 
 // emit a terminal request event to both the SSE sink and OTel.
 // ev.Action and ev.Ms must be populated. Non-request events (e.g.
@@ -2082,8 +2105,6 @@ func main() {
 		runRun(os.Args[2:])
 	case "env":
 		runEnv(os.Args[2:])
-	case "init-ca":
-		runInitCA(os.Args[2:])
 	case "validate":
 		runValidate(os.Args[2:])
 	case "test":
@@ -2175,24 +2196,12 @@ usage:
   clawpatrol status                      report install + tunnel state
   clawpatrol uninstall                   remove local join state and tunnel config
   clawpatrol env                         print shell exports for sourcing
-  clawpatrol init-ca DIR                 generate a new CA in DIR
   clawpatrol validate <config.hcl>       parse + compile a config and exit
   clawpatrol test <config> <path>        replay action fixtures against a candidate policy
   clawpatrol version | -v | --version    print version and exit
 
 Documentation: https://clawpatrol.dev/docs/`)
 	os.Exit(2)
-}
-
-func runInitCA(args []string) {
-	if len(args) != 1 || args[0] == "-h" || args[0] == "--help" {
-		fmt.Fprintln(os.Stderr, "usage: clawpatrol init-ca DIR")
-		os.Exit(2)
-	}
-	if err := writeCA(args[0]); err != nil {
-		log.Fatal(err)
-	}
-	fmt.Printf("wrote ca.crt + ca.key to %s\n", args[0])
 }
 
 // gatewayHelp is shown for `clawpatrol gateway -h` and any wrong
@@ -2235,14 +2244,7 @@ func runGateway(args []string) {
 		log.Fatalf("config: %v", err)
 	}
 	logDashboardSecretState(cfg)
-	certs, err := loadCA(cfg.CADir)
-	if err != nil {
-		log.Fatalf("ca: %v", err)
-	}
-	stateDir := cfg.OAuthDir
-	if stateDir == "" {
-		stateDir = filepath.Join(cfg.CADir, "..", "oauth")
-	}
+	stateDir := resolveStateDir(cfg)
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		log.Fatalf("state dir: %v", err)
 	}
@@ -2251,6 +2253,17 @@ func runGateway(args []string) {
 		log.Fatalf("db: %v", err)
 	}
 	setDB(db)
+	blobs := newGatewayBlobStore(db)
+	endpoints.SetBlobStore(blobs)
+	// Move any pre-sqlite on-disk state into the DB so existing
+	// deployments don't lose their CA / WG key / SSH host keys when
+	// they upgrade. No-op on fresh installs and on every subsequent
+	// boot. See state_import.go for per-artifact behavior.
+	importLegacyState(db, blobs, cfg.CADir, stateDir)
+	certs, err := loadOrMintCA(db)
+	if err != nil {
+		log.Fatalf("ca: %v", err)
+	}
 	sink, err := NewSink(db, 4096)
 	if err != nil {
 		log.Fatalf("log: %v", err)
@@ -2297,7 +2310,7 @@ func runGateway(args []string) {
 	// unconditionally so reloads that *add* an SSH endpoint don't
 	// have to re-init. Persists to <stateDir>/dnsvip.json so VIPs
 	// survive restarts.
-	dvip, err := dnsvip.New(stateDir, dnsvip.DefaultCIDR4, dnsvip.DefaultCIDR6)
+	dvip, err := dnsvip.New(db, dnsvip.DefaultCIDR4, dnsvip.DefaultCIDR6)
 	if err != nil {
 		log.Fatalf("dnsvip init: %v", err)
 	}
@@ -2349,7 +2362,7 @@ func runGateway(args []string) {
 		log.Printf("otel: %v", err)
 	}
 
-	startTelemetry(g, stateDir)
+	startTelemetry(g)
 
 	if cfg.InfoListen != "" {
 		mux := newWebMux(g, cfg.CADir, cfg.Join(), cfg.PublicURL)
@@ -2370,7 +2383,7 @@ func runGateway(args []string) {
 	// No /etc/hosts hack needed on clients — agents resolve real
 	// hostnames via public DNS and the gateway intercepts at L3.
 	if strings.EqualFold(cfg.Control, "wireguard") {
-		wg, err := StartWGServer(cfg.Join(), stateDir)
+		wg, err := StartWGServer(cfg.Join())
 		if err != nil {
 			log.Fatalf("wireguard: %v", err)
 		}

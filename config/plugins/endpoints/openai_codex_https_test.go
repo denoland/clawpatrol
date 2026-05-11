@@ -12,12 +12,49 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 )
+
+// fakeBlobs is an in-memory runtime.BlobStore for tests. Plugins read
+// / write blobs through this in place of the production sqlite-backed
+// store. Keyed by (kind, name) like the real one.
+type fakeBlobs struct {
+	mu sync.Mutex
+	m  map[string][]byte
+}
+
+func newFakeBlobs() *fakeBlobs { return &fakeBlobs{m: map[string][]byte{}} }
+
+func (f *fakeBlobs) key(kind, name string) string { return kind + "\x00" + name }
+
+func (f *fakeBlobs) Get(kind, name string) ([]byte, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, ok := f.m[f.key(kind, name)]
+	return v, ok, nil
+}
+
+func (f *fakeBlobs) Put(kind, name string, data []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cp := make([]byte, len(data))
+	copy(cp, data)
+	f.m[f.key(kind, name)] = cp
+	return nil
+}
+
+// resetCodexKeys clears the sync.Once-cached keypair so a test gets a
+// fresh BlobStore-backed mint without inheriting state from earlier
+// tests in the same process.
+func resetCodexKeys(t *testing.T, b *fakeBlobs) {
+	t.Helper()
+	codexKeysOnce = sync.Once{}
+	codexKeys = nil
+	codexKeysErr = nil
+	SetBlobStore(b)
+}
 
 // TestCodexJWTRoundTrip mints a JWT and verifies its RS256 signature
 // using the public key extracted from the JWKS the gateway would
@@ -26,25 +63,15 @@ import (
 // codex-rs/agent-identity/src/lib.rs:147-171). If this passes, codex
 // will accept the JWT.
 func TestCodexJWTRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("CLAWPATROL_DIR", dir)
-
-	// Reset the package-level once so the test gets fresh keys in a
-	// clean tempdir. The init runs once per process; the production
-	// API caches via sync.Once so we have to break out of it here.
-	codexKeysOnce = sync.Once{}
-	codexKeys = nil
-	codexKeysErr = nil
+	b := newFakeBlobs()
+	resetCodexKeys(t, b)
 
 	jwt, err := mintCodexAccessToken()
 	if err != nil {
 		t.Fatalf("mint: %v", err)
 	}
-	if !strings.HasSuffix(filepath.Dir(codexJWTKeysPath()), filepath.Base(dir)) {
-		t.Fatalf("CLAWPATROL_DIR not honored: %s", codexJWTKeysPath())
-	}
-	if _, err := os.Stat(codexJWTKeysPath()); err != nil {
-		t.Fatalf("keys file missing: %v", err)
+	if _, found, _ := b.Get(CodexJWTKeysKind, ""); !found {
+		t.Fatalf("keys blob not persisted")
 	}
 
 	jwksJSON, err := codexJWKSResponse()
@@ -144,10 +171,7 @@ func TestCodexJWTRoundTrip(t *testing.T) {
 // CODEX_ACCESS_TOKEN / CODEX_AGENT_IDENTITY env vars (both for cross-
 // version codex compat) plus the auth-API base URL override.
 func TestCodexEndpointEnvVars(t *testing.T) {
-	t.Setenv("CLAWPATROL_DIR", t.TempDir())
-	codexKeysOnce = sync.Once{}
-	codexKeys = nil
-	codexKeysErr = nil
+	resetCodexKeys(t, newFakeBlobs())
 
 	got := (&OpenAICodexHTTPSEndpoint{}).EnvVars()
 	want := map[string]bool{
@@ -177,10 +201,7 @@ func TestCodexEndpointEnvVars(t *testing.T) {
 // Both must return 200 with parseable JSON; non-matching paths must
 // fall through.
 func TestCodexRespondHTTP(t *testing.T) {
-	t.Setenv("CLAWPATROL_DIR", t.TempDir())
-	codexKeysOnce = sync.Once{}
-	codexKeys = nil
-	codexKeysErr = nil
+	resetCodexKeys(t, newFakeBlobs())
 
 	rt := OpenAICodexHTTPSEndpointRuntime{}
 	cases := []struct {
@@ -233,10 +254,7 @@ func TestCodexRespondHTTP(t *testing.T) {
 // confirm the bytes the agent sees are what we serve. Closest thing
 // to an integration test without standing up the full MITM gateway.
 func TestCodexSynthRoundTripOverHTTP(t *testing.T) {
-	t.Setenv("CLAWPATROL_DIR", t.TempDir())
-	codexKeysOnce = sync.Once{}
-	codexKeys = nil
-	codexKeysErr = nil
+	resetCodexKeys(t, newFakeBlobs())
 
 	rt := OpenAICodexHTTPSEndpointRuntime{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

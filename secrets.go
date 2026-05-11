@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -152,6 +153,52 @@ func credentialSlotPresence(db *sql.DB, credential, profile string) (map[string]
 		out[slot] = true
 	}
 	return out, rows.Err()
+}
+
+// gatewayBlobStore is the host-side BlobStore: plugins persist opaque
+// bytes here keyed by (kind, name), backed by the gateway_blobs sqlite
+// table. Companion to gatewaySecretStore — that one handles
+// credential-scoped material, this one handles plugin-internal state.
+type gatewayBlobStore struct {
+	db *sql.DB
+}
+
+func newGatewayBlobStore(db *sql.DB) *gatewayBlobStore {
+	return &gatewayBlobStore{db: db}
+}
+
+// Get is part of the clawpatrol plugin API.
+func (s *gatewayBlobStore) Get(kind, name string) ([]byte, bool, error) {
+	if s == nil || s.db == nil {
+		return nil, false, fmt.Errorf("blob store: no db")
+	}
+	var value []byte
+	err := s.db.QueryRow(
+		`SELECT value FROM gateway_blobs WHERE kind = ? AND name = ?`,
+		kind, name,
+	).Scan(&value)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return value, true, nil
+}
+
+// Put is part of the clawpatrol plugin API.
+func (s *gatewayBlobStore) Put(kind, name string, data []byte) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("blob store: no db")
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO gateway_blobs (kind, name, value, updated_ns)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(kind, name) DO UPDATE SET
+		   value = excluded.value, updated_ns = excluded.updated_ns`,
+		kind, name, data, time.Now().UnixNano(),
+	)
+	return err
 }
 
 // registerOAuthCredentials walks the loaded policy and registers each

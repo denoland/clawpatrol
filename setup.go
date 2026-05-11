@@ -1042,20 +1042,17 @@ func runGatewayInit(args []string) {
 	skipFirewall := fs.Bool("no-firewall", false, "skip iptables ACCEPT rules")
 	_ = fs.Parse(args)
 
-	// 1. data dir + CA -----------------------------------------------------
+	// 1. data dir ----------------------------------------------------------
+	// The gateway lazy-mints its CA into sqlite on first boot, so
+	// there's nothing to pre-create here besides the state directory
+	// itself. ${dataDir}/ca is kept (empty for now) so the generated
+	// gateway.hcl's ca_dir path resolves to a real directory — the
+	// CA materials themselves live in the DB.
 	if err := os.MkdirAll(filepath.Join(*dataDir, "ca"), 0o700); err != nil {
 		fail("mkdir ca: %v", err)
 	}
 	if err := os.MkdirAll(filepath.Join(*dataDir, "oauth"), 0o700); err != nil {
 		fail("mkdir oauth: %v", err)
-	}
-	caPath := filepath.Join(*dataDir, "ca", "ca.crt")
-	caGenerated := false
-	if _, err := os.Stat(caPath); err != nil {
-		if err := writeCA(filepath.Join(*dataDir, "ca")); err != nil {
-			fail("init-ca: %v", err)
-		}
-		caGenerated = true
 	}
 
 	// 2. detect public IP if not given -------------------------------------
@@ -1144,9 +1141,6 @@ profile "default" {
 	fmt.Println()
 	fmt.Printf("Detected public IP: %s\n", ip)
 	items := []string{}
-	if caGenerated {
-		items = append(items, "Generated CA at "+caPath)
-	}
 	items = append(items, "Wrote "+cfgPath)
 	if len(fwOpened) > 0 {
 		items = append(items, "Opened "+strings.Join(fwOpened, " + "))
