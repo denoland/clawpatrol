@@ -1,9 +1,14 @@
 # Approval rules
 
-Rules are how an operator says "let this through", "block it", or
-"ask a human / LLM first". A rule is a block in `gateway.hcl` that
-targets one or more [endpoints](/docs/03a-glossary/#endpoint), names
-the requests it matches, and declares what to do.
+Rules are how an operator decides what happens to a request:
+forward it, reject it, or route it through one or more **approver**
+stages (a human approver who acts from the dashboard or Slack, an
+LLM approver that judges against a policy, or both in sequence) that
+must each allow before the request is forwarded. Each rule is a
+block in `gateway.hcl` that targets one or more
+[endpoints](/docs/03a-glossary/#endpoint), describes which requests
+it applies to (the `match` block), and declares the outcome
+(`verdict = "allow" / "deny"`, or `approve = [...]`).
 
 Three rule types ship today:
 
