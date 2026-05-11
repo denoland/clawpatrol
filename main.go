@@ -35,10 +35,10 @@ import (
 	"github.com/google/uuid"
 )
 
-// Tailscale aliases config.Tailscale so existing call sites
-// (newWebMux / StartWGServer / newOnboarder / mintTailscaleAuthKey)
-// can refer to it as a bare name.
-type Tailscale = config.Tailscale
+// JoinConfig aliases config.JoinConfig so call sites (newWebMux /
+// StartWGServer / newOnboarder / mintTailscaleAuthKey) can refer to
+// it as a bare name.
+type JoinConfig = config.JoinConfig
 
 // emit a terminal request event to both the SSE sink and OTel.
 // ev.Action and ev.Ms must be populated. Non-request events (e.g.
@@ -2272,7 +2272,7 @@ func runGateway(args []string) {
 	startTelemetry(g, stateDir)
 
 	if cfg.InfoListen != "" {
-		mux := newWebMux(g, cfg.CADir, cfg.JoinConfig(), cfg.PublicURL)
+		mux := newWebMux(g, cfg.CADir, cfg.Join(), cfg.PublicURL)
 		go serveHTTPLogged("dashboard", cfg.InfoListen, mux)
 		printDashboardURL(cfg.InfoListen)
 	}
@@ -2290,12 +2290,12 @@ func runGateway(args []string) {
 	// No /etc/hosts hack needed on clients — agents resolve real
 	// hostnames via public DNS and the gateway intercepts at L3.
 	if strings.EqualFold(cfg.Control, "wireguard") {
-		wg, err := StartWGServer(cfg.JoinConfig(), stateDir)
+		wg, err := StartWGServer(cfg.Join(), stateDir)
 		if err != nil {
 			log.Fatalf("wireguard: %v", err)
 		}
 		setWGServer(wg)
-		dashMux := newWebMux(g, cfg.CADir, cfg.JoinConfig(), cfg.PublicURL)
+		dashMux := newWebMux(g, cfg.CADir, cfg.Join(), cfg.PublicURL)
 		dashPort := portOf(cfg.InfoListen)
 		tcpDispatch := func(c net.Conn, dstIP string, dstPort uint16) {
 			log.Printf("wg-fwd: %s:%d", dstIP, dstPort)

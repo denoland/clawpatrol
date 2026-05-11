@@ -69,8 +69,8 @@ func dumpJoinFields(g *Gateway, out map[string]any) {
 	setStr("control", g.Control)
 	setStr("oauth_client_id", g.OAuthClientID)
 	setStr("oauth_client_secret", g.OAuthClientSecret)
-	if len(g.Tags) > 0 {
-		out["tags"] = g.Tags
+	if len(g.TailscaleTags) > 0 {
+		out["tailscale_tags"] = g.TailscaleTags
 	}
 	setStr("wg_interface", g.WGInterface)
 	setStr("wg_endpoint", g.WGEndpoint)

@@ -49,22 +49,22 @@ type Gateway struct {
 	// Format accepts time.ParseDuration strings ("30m", "168h", etc.).
 	SessionKeep string `hcl:"session_keep,optional"`
 
-	// Control-plane joining (Tailscale or WireGuard).
-	AuthKey           string   `hcl:"authkey,optional"`
-	ControlURL        string   `hcl:"control_url,optional"`
-	Hostname          string   `hcl:"hostname,optional"`
-	StateDir          string   `hcl:"state_dir,optional"`
-	Control           string   `hcl:"control,optional"`
-	OAuthClientID     string   `hcl:"oauth_client_id,optional"`
-	OAuthClientSecret string   `hcl:"oauth_client_secret,optional"`
-	Tags              []string `hcl:"tags,optional"`
-	WGInterface       string   `hcl:"wg_interface,optional"`
-	WGEndpoint        string   `hcl:"wg_endpoint,optional"`
-	WGServerPub       string   `hcl:"wg_server_pub,optional"`
-	WGSubnetCIDR      string   `hcl:"wg_subnet_cidr,optional"`
+	AuthKey           string `hcl:"authkey,optional"`
+	ControlURL        string `hcl:"control_url,optional"`
+	Hostname          string `hcl:"hostname,optional"`
+	StateDir          string `hcl:"state_dir,optional"`
+	Control           string `hcl:"control,optional"`
+	OAuthClientID     string `hcl:"oauth_client_id,optional"`
+	OAuthClientSecret string `hcl:"oauth_client_secret,optional"`
+	// TailscaleTags is the Tailscale device-tag list applied to keys
+	// the gateway mints for onboarded clients (`tag:client` etc.).
+	// Tailscale-only — ignored in WireGuard mode.
+	TailscaleTags []string `hcl:"tailscale_tags,optional"`
+	WGInterface   string   `hcl:"wg_interface,optional"`
+	WGEndpoint    string   `hcl:"wg_endpoint,optional"`
+	WGServerPub   string   `hcl:"wg_server_pub,optional"`
+	WGSubnetCIDR  string   `hcl:"wg_subnet_cidr,optional"`
 
-	// Policy fallbacks used when an approver / endpoint doesn't pin
-	// its own value.
 	UnknownHost    string `hcl:"unknown_host,optional"`
 	LLMFailMode    string `hcl:"llm_fail_mode,optional"`
 	LLMCacheTTL    int    `hcl:"llm_cache_ttl,optional"`
@@ -83,11 +83,11 @@ type Gateway struct {
 	Remain hcl.Body `hcl:",remain"`
 }
 
-// Tailscale is a parameter bundle of the join/transport-related
+// JoinConfig is a parameter bundle of the join/transport-related
 // Gateway fields. Not an HCL block — the fields live flat on Gateway.
 // This struct exists purely so functions like StartWGServer /
 // newOnboarder can take one argument instead of twelve.
-type Tailscale struct {
+type JoinConfig struct {
 	AuthKey           string
 	ControlURL        string
 	Hostname          string
@@ -95,17 +95,17 @@ type Tailscale struct {
 	Control           string
 	OAuthClientID     string
 	OAuthClientSecret string
-	Tags              []string
+	TailscaleTags     []string
 	WGInterface       string
 	WGEndpoint        string
 	WGServerPub       string
 	WGSubnetCIDR      string
 }
 
-// JoinConfig returns the join-related fields as a Tailscale value
-// bundle. Cheap to call — it's a small struct copy.
-func (g *Gateway) JoinConfig() Tailscale {
-	return Tailscale{
+// Join returns the join-related fields as a JoinConfig value bundle.
+// Cheap to call — it's a small struct copy.
+func (g *Gateway) Join() JoinConfig {
+	return JoinConfig{
 		AuthKey:           g.AuthKey,
 		ControlURL:        g.ControlURL,
 		Hostname:          g.Hostname,
@@ -113,7 +113,7 @@ func (g *Gateway) JoinConfig() Tailscale {
 		Control:           g.Control,
 		OAuthClientID:     g.OAuthClientID,
 		OAuthClientSecret: g.OAuthClientSecret,
-		Tags:              g.Tags,
+		TailscaleTags:     g.TailscaleTags,
 		WGInterface:       g.WGInterface,
 		WGEndpoint:        g.WGEndpoint,
 		WGServerPub:       g.WGServerPub,

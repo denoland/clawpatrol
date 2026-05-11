@@ -78,8 +78,8 @@ func emitOperational(body *hclwrite.Body, gw *Gateway) {
 	setStr("control", gw.Control)
 	setStr("oauth_client_id", gw.OAuthClientID)
 	setStr("oauth_client_secret", gw.OAuthClientSecret)
-	if len(gw.Tags) > 0 {
-		body.SetAttributeValue("tags", StringListVal(gw.Tags))
+	if len(gw.TailscaleTags) > 0 {
+		body.SetAttributeValue("tailscale_tags", StringListVal(gw.TailscaleTags))
 	}
 	setStr("wg_interface", gw.WGInterface)
 	setStr("wg_endpoint", gw.WGEndpoint)

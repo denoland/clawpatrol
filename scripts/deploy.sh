@@ -84,12 +84,10 @@ CONTROL="${CONTROL:-tailscale}"
 case "$CONTROL" in
   tailscale)
     TS_BLOCK=$(cat <<HCL
-gateway {
-  control             = "tailscale"
-  oauth_client_id     = "{{secret:TS_OAUTH_CLIENT_ID}}"
-  oauth_client_secret = "{{secret:TS_OAUTH_CLIENT_SECRET}}"
-  tags                = ["tag:client"]
-}
+control             = "tailscale"
+oauth_client_id     = "{{secret:TS_OAUTH_CLIENT_ID}}"
+oauth_client_secret = "{{secret:TS_OAUTH_CLIENT_SECRET}}"
+tailscale_tags      = ["tag:client"]
 HCL
 )
     ;;
@@ -107,11 +105,9 @@ HCL
             || iptables -I INPUT -p udp --dport ${WG_PORT} -j ACCEPT"
 
     TS_BLOCK=$(cat <<HCL
-gateway {
-  control        = "wireguard"
-  wg_endpoint    = "${WG_ENDPOINT}"
-  wg_subnet_cidr = "${WG_SUBNET_CIDR}"
-}
+control        = "wireguard"
+wg_endpoint    = "${WG_ENDPOINT}"
+wg_subnet_cidr = "${WG_SUBNET_CIDR}"
 HCL
 )
     ;;

@@ -144,7 +144,7 @@ control = "wireguard"   # or "tailscale"
 # tailscale-only:
 oauth_client_id     = "{{secret:TS_OAUTH_CLIENT_ID}}"
 oauth_client_secret = "{{secret:TS_OAUTH_CLIENT_SECRET}}"
-tags                = ["tag:client"]
+tailscale_tags      = ["tag:client"]
 
 # wireguard-only:
 wg_endpoint    = "gw.example.com:51820"

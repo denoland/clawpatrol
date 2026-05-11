@@ -38,19 +38,19 @@ Every singleton gateway attribute — listen addresses, paths, control-plane joi
 | `insecure_no_dashboard_secret` | `bool` | no | Opts out of dashboard auth. Required (alongside an empty DashboardSecret) for the gateway to serve the dashboard at all — otherwise the secret gate replies with a misconfiguration page on every request. Verbose by design so you can't disable auth by accident. |
 | `telemetry` | `bool` | no | Opts in/out of the update-checker / anonymous usage ping (doc/telemetry.md). nil = default on; explicit `telemetry = false` silences the goroutine. Env vars CLAWPATROL_TELEMETRY=0 and DO_NOT_TRACK=1 also work. |
 | `session_keep` | `string` | no | The hard retention floor for the sessions table. Sessions whose last_at is older than this get deleted by the background sweeper. Sessions can revive on new activity at any time, so there's no "closed but kept" intermediate state — only last_at matters. Default 720h (30d), "0" / "off" disables. Format accepts time.ParseDuration strings ("30m", "168h", etc.). |
-| `authkey` | `string` | no | Control-plane joining (Tailscale or WireGuard). |
+| `authkey` | `string` | no |  |
 | `control_url` | `string` | no |  |
 | `hostname` | `string` | no |  |
 | `state_dir` | `string` | no |  |
 | `control` | `string` | no |  |
 | `oauth_client_id` | `string` | no |  |
 | `oauth_client_secret` | `string` | no |  |
-| `tags` | `[]string` | no |  |
+| `tailscale_tags` | `[]string` | no | The Tailscale device-tag list applied to keys the gateway mints for onboarded clients (`tag:client` etc.). Tailscale-only — ignored in WireGuard mode. |
 | `wg_interface` | `string` | no |  |
 | `wg_endpoint` | `string` | no |  |
 | `wg_server_pub` | `string` | no |  |
 | `wg_subnet_cidr` | `string` | no |  |
-| `unknown_host` | `string` | no | Policy fallbacks used when an approver / endpoint doesn't pin its own value. |
+| `unknown_host` | `string` | no |  |
 | `llm_fail_mode` | `string` | no |  |
 | `llm_cache_ttl` | `int` | no |  |
 | `human_timeout` | `int` | no |  |

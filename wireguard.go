@@ -293,7 +293,7 @@ func setDB(d *sql.DB)         { globalDB = d }
 // StartWGServer brings up a userspace WG endpoint listening on
 // 0.0.0.0:<ListenPort>. Server private key is read from disk; if
 // missing, generated and persisted at <stateDir>/wg-server.key.
-func StartWGServer(ts Tailscale, stateDir string) (*WGServer, error) {
+func StartWGServer(ts JoinConfig, stateDir string) (*WGServer, error) {
 	if ts.WGSubnetCIDR == "" {
 		return nil, fmt.Errorf("wireguard: wg_subnet_cidr required")
 	}
@@ -720,7 +720,7 @@ func hexToB64(h string) (string, error) {
 }
 
 type wireguardOnboarder struct {
-	ts Tailscale
+	ts JoinConfig
 	mu sync.Mutex
 }
 

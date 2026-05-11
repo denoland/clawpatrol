@@ -79,7 +79,7 @@ integrations = ["claude", "codex", "github"]
 control             = "tailscale"
 oauth_client_id     = "{{secret:TS_OAUTH_CLIENT_ID}}"
 oauth_client_secret = "{{secret:TS_OAUTH_CLIENT_SECRET}}"
-tags                = ["tag:client"]       # applied to minted device keys
+tailscale_tags      = ["tag:client"]       # applied to minted device keys
 hostname            = "clawpatrol-gateway" # gateway's name on the tailnet
 state_dir           = "/opt/clawpatrol/ts-state"
 EOF
