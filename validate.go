@@ -5,20 +5,30 @@ import (
 	"os"
 )
 
-// runValidate parses + compiles an HCL config and reports diagnostics.
-// Exit 0 on success, 1 on validation failure, 2 on usage error. Same
-// pipeline the gateway uses at startup — anything that would crash the
-// daemon shows up here first.
+// runValidate is the CLI entry: print msg, exit with code.
 func runValidate(args []string) {
+	msg, code := validateCmd(args)
+	if code == 0 {
+		fmt.Println(msg)
+		return
+	}
+	fmt.Fprintln(os.Stderr, msg)
+	os.Exit(code)
+}
+
+// validateCmd is the pure side: same arg parsing, but returns
+// (output, exitCode) instead of touching stdio. Same pipeline the
+// gateway uses at startup — anything that would crash the daemon
+// shows up here first. Exit codes: 0 ok, 1 validation failure,
+// 2 usage error.
+func validateCmd(args []string) (string, int) {
 	if len(args) != 1 || args[0] == "-h" || args[0] == "--help" {
-		fmt.Fprintln(os.Stderr, "usage: clawpatrol validate <config.hcl>")
-		os.Exit(2)
+		return "usage: clawpatrol validate <config.hcl>", 2
 	}
 	_, cp, err := loadConfig(args[0])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", args[0], err)
-		os.Exit(1)
+		return fmt.Sprintf("%s: %v", args[0], err), 1
 	}
-	fmt.Printf("ok: %s — %d endpoints across %d profile(s)\n",
-		args[0], len(cp.Endpoints), len(cp.Profiles))
+	return fmt.Sprintf("ok: %s — %d endpoints across %d profile(s)",
+		args[0], len(cp.Endpoints), len(cp.Profiles)), 0
 }
