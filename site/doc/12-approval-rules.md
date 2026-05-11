@@ -17,10 +17,6 @@ it can run or which tables it can touch; a `k8s_rule` lets you say
 which Kubernetes resources, verbs, or namespaces it can reach. The
 next section walks through each in detail.
 
-Rules don't cross families: a `sql_rule` never fires on an HTTPS
-request and vice versa. Each endpoint family declares its own match
-facets, and the matching rule type binds to those facets.
-
 This page covers the operator's view: how to write a rule, what
 each facet does, what surprises to expect.
 
@@ -109,6 +105,10 @@ match = {
   credential = k8s-prod                       # bare-name ref to the dispatched credential
 }
 ```
+
+Rules don't cross families: a `sql_rule` never fires on an HTTPS
+request and vice versa. Each endpoint family declares its own match
+facets, and the matching rule type binds to those facets.
 
 
 ## How to create a rule
