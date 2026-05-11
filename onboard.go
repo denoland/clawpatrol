@@ -65,21 +65,23 @@ type onboardRegistry struct {
 	byUser       map[string]*onboardSession
 	ownerByIP    map[string]string
 	hostnameByIP map[string]string
-	profileByIP  map[string]string
-	extV4ByIP    map[string]string
-	extV6ByIP    map[string]string
-	db           *sql.DB
+	profileByIP          map[string]string
+	ephemeralProfileByIP map[string]string // never written to devices table
+	extV4ByIP            map[string]string
+	extV6ByIP            map[string]string
+	db                   *sql.DB
 }
 
 func newOnboardRegistry() *onboardRegistry {
 	return &onboardRegistry{
-		byDevice:     map[string]*onboardSession{},
-		byUser:       map[string]*onboardSession{},
-		ownerByIP:    map[string]string{},
-		hostnameByIP: map[string]string{},
-		profileByIP:  map[string]string{},
-		extV4ByIP:    map[string]string{},
-		extV6ByIP:    map[string]string{},
+		byDevice:             map[string]*onboardSession{},
+		byUser:               map[string]*onboardSession{},
+		ownerByIP:            map[string]string{},
+		hostnameByIP:         map[string]string{},
+		profileByIP:          map[string]string{},
+		ephemeralProfileByIP: map[string]string{},
+		extV4ByIP:            map[string]string{},
+		extV6ByIP:            map[string]string{},
 	}
 }
 
@@ -121,6 +123,9 @@ func (r *onboardRegistry) ExternalIPs(ip string) (v4, v6 string) {
 func (r *onboardRegistry) ProfileForIP(ip string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if p := r.ephemeralProfileByIP[ip]; p != "" {
+		return p
+	}
 	return r.profileByIP[ip]
 }
 
@@ -133,13 +138,14 @@ func (r *onboardRegistry) AssignProfile(ip, profile string) {
 	r.upsertLocked(ip)
 }
 
-// setEphemeralProfile pins an ephemeral peer IP to a profile in
-// memory only — no devices row is written, so the peer stays invisible
-// to the dashboard. ForgetIP clears it on exit.
+// setEphemeralProfile pins an ephemeral peer IP to a profile using a
+// separate map that ProfileForIP reads but upsertLocked never touches.
+// This keeps ephemeral peers invisible to the devices table and the
+// dashboard regardless of what other code (SetExternalIPs, etc.) does.
 func (r *onboardRegistry) setEphemeralProfile(ip, profile string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.profileByIP[ip] = profile
+	r.ephemeralProfileByIP[ip] = profile
 }
 
 // Load attaches the SQLite-backed `devices` table and replays every
@@ -286,6 +292,7 @@ func (r *onboardRegistry) ForgetIP(ip string) {
 	delete(r.ownerByIP, ip)
 	delete(r.hostnameByIP, ip)
 	delete(r.profileByIP, ip)
+	delete(r.ephemeralProfileByIP, ip)
 	delete(r.extV4ByIP, ip)
 	delete(r.extV6ByIP, ip)
 	if r.db != nil {
