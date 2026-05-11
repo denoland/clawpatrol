@@ -96,7 +96,7 @@ func (g *Gateway) dialWSUpstream(ctx context.Context, upstream string, ep *confi
 // raw byte bridge once the agent's request looks like a WS upgrade.
 // The connection stays alive until either side closes; pumpWS
 // observes text frames for codex usage tracking when applicable.
-func (g *Gateway) handleWSUpgrade(client *tls.Conn, br *bufio.Reader, req *http.Request, upstream string, frameEmit func(direction, sample string), ep *config.CompiledEndpoint, profile string) {
+func (g *Gateway) handleWSUpgrade(client *tls.Conn, br *bufio.Reader, req *http.Request, upstream string, frameEmit func(direction, sample string, truncated bool), ep *config.CompiledEndpoint, profile string) {
 	agentAddr := peerIP(client) // capture before netstack races to nil
 
 	// dialWSUpstream preserves the existing split: endpoints that require a
@@ -205,10 +205,12 @@ func (g *Gateway) handleWSUpgrade(client *tls.Conn, br *bufio.Reader, req *http.
 			}
 			if frameEmit != nil {
 				s := text
+				truncated := false
 				if len(s) > wsFrameSampleCap {
 					s = s[:wsFrameSampleCap]
+					truncated = true
 				}
-				frameEmit(direction, string(s))
+				frameEmit(direction, string(s), truncated)
 			}
 		}
 	}
