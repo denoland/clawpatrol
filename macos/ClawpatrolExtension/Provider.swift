@@ -489,7 +489,12 @@ private var sessionListenFD: Int32 = -1
 private func startSessionListener() {
     unlink(sessionSockPath)
     let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-    if fd < 0 { return }
+    if fd < 0 {
+        os_log("session socket: socket() failed errno=%d", log: log, type: .error, errno)
+        return
+    }
+    var one: Int32 = 1
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, socklen_t(MemoryLayout<Int32>.size))
     var addr = sockaddr_un()
     addr.sun_family = sa_family_t(AF_UNIX)
     let pathBytes = sessionSockPath.utf8CString
@@ -506,9 +511,16 @@ private func startSessionListener() {
             Darwin.bind(fd, sa, len)
         }
     }
-    if rc != 0 { Darwin.close(fd); return }
+    if rc != 0 {
+        os_log("session socket: bind() failed errno=%d", log: log, type: .error, errno)
+        Darwin.close(fd); return
+    }
     chmod(sessionSockPath, 0o666)
-    if listen(fd, 16) != 0 { Darwin.close(fd); return }
+    if listen(fd, 16) != 0 {
+        os_log("session socket: listen() failed errno=%d", log: log, type: .error, errno)
+        Darwin.close(fd); return
+    }
+    os_log("session socket: listening at %{public}@", log: log, type: .info, sessionSockPath)
     sessionListenFD = fd
     DispatchQueue.global(qos: .userInitiated).async {
         while true {
