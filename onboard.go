@@ -133,6 +133,15 @@ func (r *onboardRegistry) AssignProfile(ip, profile string) {
 	r.upsertLocked(ip)
 }
 
+// setEphemeralProfile pins an ephemeral peer IP to a profile in
+// memory only — no devices row is written, so the peer stays invisible
+// to the dashboard. ForgetIP clears it on exit.
+func (r *onboardRegistry) setEphemeralProfile(ip, profile string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.profileByIP[ip] = profile
+}
+
 // Load attaches the SQLite-backed `devices` table and replays every
 // row into the in-memory caches. Call once after construction.
 func (r *onboardRegistry) Load(db *sql.DB) error {
