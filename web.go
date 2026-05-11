@@ -238,6 +238,7 @@ func (w *webMux) routes() []webRoute {
 		{Method: http.MethodGet, Path: "/api/onboard/lookup", Auth: authTailnetOperator, Handler: w.apiOnboardLookup},
 		{Method: http.MethodPost, Path: "/api/onboard/claim", Auth: authPublic, Handler: w.apiOnboardClaim},
 		{Method: http.MethodGet, Path: "/api/env-pushdown", Auth: authSelfAuthenticating, Handler: w.apiEnvPushdown},
+		{Method: http.MethodPost, Path: "/api/peer/ephemeral", Auth: authSelfAuthenticating, Handler: w.apiEphemeralPeer},
 		{Method: http.MethodGet, Path: "/__login", Auth: authTailnetOperator, Handler: w.apiDashboardLogin},
 	}
 }

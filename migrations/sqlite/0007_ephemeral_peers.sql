@@ -1,0 +1,2 @@
+ALTER TABLE wg_peers ADD COLUMN ephemeral INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE wg_peers ADD COLUMN parent_ip TEXT;
