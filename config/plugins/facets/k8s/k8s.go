@@ -49,6 +49,20 @@ func (Facet) RuleType() string { return "k8s_rule" }
 // to.
 func (Facet) EndpointFamilies() []string { return []string{"k8s"} }
 
+// Transport reports the gateway-side dispatch handler this facet uses.
+// Kubernetes traffic is HTTPS on the wire, so it shares the https-mitm
+// path with the https facet.
+func (Facet) Transport() string { return "https-mitm" }
+
+// HITLQueryLabel is the dashboard / Slack label for a kubernetes
+// request.
+func (Facet) HITLQueryLabel() string { return "Resource" }
+
+// HostIsResource reports that a k8s request's Host is typically the
+// apiserver address (a VIP or IP), not a label the operator would
+// recognise — the operator's endpoint name is more useful.
+func (Facet) HostIsResource() bool { return false }
+
 // MatchKeys lists every key allowed in a k8s_rule's match{} block.
 func (Facet) MatchKeys() []facet.MatchKeySpec {
 	return []facet.MatchKeySpec{

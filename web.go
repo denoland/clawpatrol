@@ -31,6 +31,7 @@ import (
 	"github.com/hashicorp/hcl/v2/hclwrite"
 
 	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/facet"
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
@@ -232,6 +233,7 @@ func (w *webMux) routes() []webRoute {
 		{Method: http.MethodGet, Path: "/api/events", Auth: authDashboard, Handler: w.apiEventsSSE},
 		{Method: http.MethodPost, Path: "/api/actions/", Auth: authDashboard, Handler: w.apiActionByID},
 		{Method: http.MethodGet, Path: "/api/analytics", Auth: authDashboard, Handler: w.apiAnalytics},
+		{Method: http.MethodGet, Path: "/api/facets", Auth: authDashboard, Handler: w.apiFacets},
 		{Method: http.MethodPost, Path: "/api/onboard/start", Auth: authPublic, Handler: w.apiOnboardStart},
 		{Method: http.MethodPost, Path: "/api/onboard/poll", Auth: authPublic, Handler: w.apiOnboardPoll},
 		{Method: http.MethodPost, Path: "/api/onboard/approve", Auth: authDashboardOrTailnetOperator, Handler: w.apiOnboardApprove},
@@ -1336,6 +1338,7 @@ func (w *webMux) apiActionByID(
 		e           Event
 		tsNs        int64
 		mode        sql.NullString
+		family      sql.NullString
 		agentIP     sql.NullString
 		method      sql.NullString
 		path        sql.NullString
@@ -1350,20 +1353,21 @@ func (w *webMux) apiActionByID(
 		respBody    sql.NullString
 		reqHeaders  sql.NullString
 		respHeaders sql.NullString
+		extra       sql.NullString
 	)
 	err := w.g.db.QueryRow(`
-		SELECT ts_ns, mode, agent_ip, host, method, path,
+		SELECT ts_ns, mode, family, agent_ip, host, method, path,
 		       status, bytes_in, bytes_out, ms, action,
 		       reason, req_sha, resp_sha,
 		       req_body, resp_body,
-		       req_headers, resp_headers
+		       req_headers, resp_headers, extra
 		FROM actions WHERE action_id = ?`, actionID,
 	).Scan(
-		&tsNs, &mode, &agentIP, &e.Host,
+		&tsNs, &mode, &family, &agentIP, &e.Host,
 		&method, &path, &status, &in, &ot, &ms,
 		&action, &reason, &reqSha, &respSha,
 		&reqBody, &respBody,
-		&reqHeaders, &respHeaders,
+		&reqHeaders, &respHeaders, &extra,
 	)
 	if err == sql.ErrNoRows {
 		http.Error(rw, "not found", 404)
@@ -1376,6 +1380,7 @@ func (w *webMux) apiActionByID(
 	e.ID = actionID
 	e.Ts = time.Unix(0, tsNs).UTC()
 	e.Mode = mode.String
+	e.Family = family.String
 	e.AgentIP = agentIP.String
 	e.Method = method.String
 	e.Path = path.String
@@ -1391,6 +1396,9 @@ func (w *webMux) apiActionByID(
 	e.RespBody = respBody.String
 	unmarshalHeaders(reqHeaders.String, &e.ReqHeaders)
 	unmarshalHeaders(respHeaders.String, &e.RespHeaders)
+	if extra.String != "" {
+		_ = json.Unmarshal([]byte(extra.String), &e.Facets)
+	}
 	writeJSON(rw, e)
 }
 
@@ -1456,9 +1464,9 @@ func (w *webMux) apiAnalytics(
 	// agent → same sample, so a polling dashboard doesn't reshuffle
 	// the scatter every 10 s.
 	query := `
-		SELECT action_id, ts_ns, mode, agent_ip, host,
+		SELECT action_id, ts_ns, mode, family, agent_ip, host,
 		       method, path, status, bytes_in, bytes_out,
-		       ms, action, reason
+		       ms, action, reason, extra
 		FROM actions
 		WHERE ` + where + `
 		ORDER BY COALESCE(substr(action_id, -8), CAST(ts_ns AS TEXT))
@@ -1477,6 +1485,7 @@ func (w *webMux) apiAnalytics(
 			actionID sql.NullString
 			tsNs     int64
 			mode     sql.NullString
+			family   sql.NullString
 			agentIP  sql.NullString
 			method   sql.NullString
 			path     sql.NullString
@@ -1485,11 +1494,12 @@ func (w *webMux) apiAnalytics(
 			ms       sql.NullInt64
 			action   sql.NullString
 			reason   sql.NullString
+			extra    sql.NullString
 		)
 		if err := rows.Scan(
-			&actionID, &tsNs, &mode, &agentIP, &e.Host,
+			&actionID, &tsNs, &mode, &family, &agentIP, &e.Host,
 			&method, &path, &status, &in, &ot, &ms,
-			&action, &reason,
+			&action, &reason, &extra,
 		); err != nil {
 			http.Error(rw, err.Error(), 500)
 			return
@@ -1497,6 +1507,7 @@ func (w *webMux) apiAnalytics(
 		e.ID = actionID.String
 		e.Ts = time.Unix(0, tsNs).UTC()
 		e.Mode = mode.String
+		e.Family = family.String
 		e.AgentIP = agentIP.String
 		e.Method = method.String
 		e.Path = path.String
@@ -1506,6 +1517,9 @@ func (w *webMux) apiAnalytics(
 		e.Ms = ms.Int64
 		e.Action = action.String
 		e.Reason = reason.String
+		if extra.String != "" {
+			_ = json.Unmarshal([]byte(extra.String), &e.Facets)
+		}
 		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {
@@ -1546,6 +1560,95 @@ func (w *webMux) apiAnalytics(
 		"by_device":   byDevice,
 		"by_host":     byHost,
 	})
+}
+
+// apiFacets returns every registered facet's reporting + match
+// schema. The dashboard fetches this once at boot and uses it to
+// render per-family columns (HTTPS: method/path/status, SQL:
+// verb/tables/..., k8s: verb/resource/...) directly from the JSON
+// `facets` payload on each event, instead of carrying a hardcoded
+// switch on family strings.
+func (w *webMux) apiFacets(rw http.ResponseWriter, r *http.Request) {
+	_ = r
+	type matchKeyJSON struct {
+		Name string `json:"name"`
+		Kind string `json:"kind"`
+	}
+	type reportFieldJSON struct {
+		Name  string `json:"name"`
+		Kind  string `json:"kind"`
+		Label string `json:"label,omitempty"`
+	}
+	type facetJSON struct {
+		Name             string            `json:"name"`
+		RuleType         string            `json:"rule_type"`
+		EndpointFamilies []string          `json:"endpoint_families"`
+		Transport        string            `json:"transport,omitempty"`
+		HITLQueryLabel   string            `json:"hitl_query_label,omitempty"`
+		HostIsResource   bool              `json:"host_is_resource"`
+		MatchKeys        []matchKeyJSON    `json:"match_keys"`
+		ReportFields     []reportFieldJSON `json:"report_fields"`
+	}
+	all := facet.All()
+	out := make([]facetJSON, 0, len(all))
+	for _, f := range all {
+		mks := f.MatchKeys()
+		fks := f.ReportFields()
+		entry := facetJSON{
+			Name:             f.Name(),
+			RuleType:         f.RuleType(),
+			EndpointFamilies: f.EndpointFamilies(),
+			Transport:        f.Transport(),
+			HITLQueryLabel:   f.HITLQueryLabel(),
+			HostIsResource:   f.HostIsResource(),
+			MatchKeys:        make([]matchKeyJSON, len(mks)),
+			ReportFields:     make([]reportFieldJSON, len(fks)),
+		}
+		for i, mk := range mks {
+			entry.MatchKeys[i] = matchKeyJSON{Name: mk.Name, Kind: matchKindName(mk.Kind)}
+		}
+		for i, fk := range fks {
+			entry.ReportFields[i] = reportFieldJSON{
+				Name: fk.Name, Kind: reportKindName(fk.Kind), Label: fk.Label,
+			}
+		}
+		out = append(out, entry)
+	}
+	writeJSON(rw, map[string]any{"facets": out})
+}
+
+func matchKindName(k facet.MatchValueKind) string {
+	switch k {
+	case facet.MatchString:
+		return "string"
+	case facet.MatchStringList:
+		return "string_list"
+	case facet.MatchGlobList:
+		return "glob_list"
+	case facet.MatchStringMap:
+		return "string_map"
+	case facet.MatchRegex:
+		return "regex"
+	case facet.MatchObject:
+		return "object"
+	case facet.MatchCredentialRef:
+		return "credential_ref"
+	}
+	return ""
+}
+
+func reportKindName(k facet.ReportValueKind) string {
+	switch k {
+	case facet.ReportString:
+		return "string"
+	case facet.ReportStringList:
+		return "string_list"
+	case facet.ReportStringMap:
+		return "string_map"
+	case facet.ReportInt:
+		return "int"
+	}
+	return ""
 }
 
 func groupCount(db *sql.DB, q string, args []any) []map[string]any {
@@ -1606,6 +1709,19 @@ type Event struct {
 	// to disambiguate masked client frames from unmasked server frames.
 	Frame     string `json:"frame,omitempty"`
 	Direction string `json:"direction,omitempty"`
+
+	// Family identifies which protocol-family facet emitted this
+	// event ("https", "sql", "k8s", or a future plugin's name).
+	// Persisted as a dedicated column on actions so analytics can
+	// filter by family; drives dashboard column selection via
+	// /api/facets. Empty for splice events and pre-migration rows.
+	Family string `json:"family,omitempty"`
+
+	// Facets carries the per-family report payload — the result of
+	// the family's facet.Runtime.Report hook against the matched
+	// request. Keys correspond to the family's ReportFields().
+	// Serialised as JSON into the actions table's `extra` column.
+	Facets map[string]any `json:"facets,omitempty"`
 }
 
 // eventPacket carries an event plus its marshaled JSON bytes. drain()
@@ -1657,9 +1773,9 @@ func NewSink(db *sql.DB, buf int) (*Sink, error) {
 
 func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 	rows, err := db.Query(`
-		SELECT action_id, ts_ns, mode, agent_ip, host,
+		SELECT action_id, ts_ns, mode, family, agent_ip, host,
 		       method, path, status, bytes_in, bytes_out,
-		       ms, action, reason, req_sha, resp_sha
+		       ms, action, reason, req_sha, resp_sha, extra
 		FROM actions ORDER BY id DESC LIMIT ?`, n)
 	if err != nil {
 		return nil, err
@@ -1672,6 +1788,7 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 			actionID sql.NullString
 			tsNs     int64
 			mode     sql.NullString
+			family   sql.NullString
 			agentIP  sql.NullString
 			method   sql.NullString
 			path     sql.NullString
@@ -1682,17 +1799,19 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 			reason   sql.NullString
 			reqSha   sql.NullString
 			respSha  sql.NullString
+			extra    sql.NullString
 		)
 		if err := rows.Scan(
-			&actionID, &tsNs, &mode, &agentIP, &e.Host,
+			&actionID, &tsNs, &mode, &family, &agentIP, &e.Host,
 			&method, &path, &status, &in, &ot, &ms,
-			&action, &reason, &reqSha, &respSha,
+			&action, &reason, &reqSha, &respSha, &extra,
 		); err != nil {
 			return nil, err
 		}
 		e.ID = actionID.String
 		e.Ts = time.Unix(0, tsNs).UTC()
 		e.Mode = mode.String
+		e.Family = family.String
 		e.AgentIP = agentIP.String
 		e.Method = method.String
 		e.Path = path.String
@@ -1704,6 +1823,9 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 		e.Reason = reason.String
 		e.ReqSha = reqSha.String
 		e.RespSha = respSha.String
+		if extra.String != "" {
+			_ = json.Unmarshal([]byte(extra.String), &e.Facets)
+		}
 		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {
@@ -1755,20 +1877,25 @@ func (s *Sink) drain() {
 			if len(e.RespHeaders) > 0 {
 				rshJSON, _ = json.Marshal(e.RespHeaders)
 			}
+			var extraJSON []byte
+			if len(e.Facets) > 0 {
+				extraJSON, _ = json.Marshal(e.Facets)
+			}
 			_, _ = s.db.Exec(`
 				INSERT INTO actions
-				 (action_id, ts_ns, mode, agent_ip, host,
+				 (action_id, ts_ns, mode, family, agent_ip, host,
 				  method, path, status, bytes_in, bytes_out,
 				  ms, action, reason, req_sha, resp_sha,
 				  req_body, resp_body,
-				  req_headers, resp_headers)
-				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-			`, e.ID, e.Ts.UnixNano(), e.Mode, e.AgentIP,
+				  req_headers, resp_headers, extra)
+				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			`, e.ID, e.Ts.UnixNano(), e.Mode, e.Family, e.AgentIP,
 				e.Host, e.Method, e.Path, e.Status,
 				e.In, e.Out, e.Ms, e.Action, e.Reason,
 				e.ReqSha, e.RespSha,
 				e.ReqBody, e.RespBody,
-				string(rqhJSON), string(rshJSON))
+				string(rqhJSON), string(rshJSON),
+				string(extraJSON))
 		}
 
 		// Marshal once per event regardless of subscriber count. Old

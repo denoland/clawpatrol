@@ -1123,7 +1123,7 @@ func (g *Gateway) handle(raw net.Conn, dstIP string) {
 			pip := peerIP(c)
 			profile := g.profileFor(pip)
 			ep := runtime.HostEndpoint(g.Policy(), profile, dstIP)
-			if ep != nil && (ep.Family == "https" || ep.Family == "k8s") {
+			if ep != nil && isHTTPSMITMFamily(ep.Family) {
 				log.Printf("sni-fallback: %s → %s", dstIP, ep.Name)
 				g.mitmHTTPS(c, dstIP, ep)
 				return
@@ -1144,17 +1144,36 @@ func (g *Gateway) handle(raw net.Conn, dstIP string) {
 		g.splice(c, host)
 		return
 	}
-	switch ep.Family {
-	case "https", "k8s":
-		// k8s endpoints are HTTPS-underneath; the matcher walk
-		// populates K8sMeta from the URL path.
+	if isHTTPSMITMFamily(ep.Family) {
+		// Every facet whose Transport() is "https-mitm" — https and
+		// k8s today, future plugins tomorrow — terminates TLS here
+		// and runs the request loop through mitmHTTPS. The facet's
+		// PrepareRequest hook derives any per-family metadata
+		// (URL → Meta for k8s) before the matcher walks.
 		g.mitmHTTPS(c, host, ep)
-	default:
-		// postgres / clickhouse_* — wire-protocol handlers land in
-		// a follow-up commit. Until then: passthrough.
-		log.Printf("endpoint %s family %q: runtime not yet wired; passthrough", ep.Name, ep.Family)
-		g.splice(c, host)
+		return
 	}
+	// Wire-protocol families (postgres / clickhouse_* / future
+	// native plugins) dispatch through their own port handlers,
+	// not through SNI peek on 443. Anything that lands here is
+	// either an unknown family or a family without an HTTPS
+	// transport — splice through.
+	log.Printf("endpoint %s family %q: no https-mitm transport; passthrough", ep.Name, ep.Family)
+	g.splice(c, host)
+}
+
+// isHTTPSMITMFamily reports whether the facet registered for family
+// drives its wire through the HTTPS MITM handler. Replaces what used
+// to be a hardcoded `case "https", "k8s"` so new HTTPS-shaped
+// protocol facets (e.g. a future "openai" or "anthropic" family that
+// wants per-family report fields beyond what http_rule offers) drop
+// in without touching the dispatch switch.
+func isHTTPSMITMFamily(family string) bool {
+	if family == "" {
+		return false
+	}
+	f := facet.Lookup(family)
+	return f != nil && f.Transport() == "https-mitm"
 }
 
 // handlePostgresConn dispatches an inbound 5432 connection to the
@@ -1226,9 +1245,10 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 				return
 			}
 			g.sink.Emit(Event{
-				Mode: "pg", Host: dstIP, AgentIP: pip,
+				Mode: "pg", Family: ep.Family, Host: dstIP, AgentIP: pip,
 				Method: ev.Verb, Path: ev.Summary,
 				Action: ev.Action, Reason: ev.Reason,
+				Facets: ev.Facets,
 			})
 		},
 		Approve: func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
@@ -1382,9 +1402,10 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 				return
 			}
 			g.sink.Emit(Event{
-				Mode: mode, Host: eventHost, AgentIP: pip,
+				Mode: mode, Family: ep.Family, Host: eventHost, AgentIP: pip,
 				Method: ev.Verb, Path: ev.Summary,
 				Action: ev.Action, Reason: ev.Reason,
+				Facets: ev.Facets,
 			})
 		},
 		Approve: func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
@@ -1617,15 +1638,21 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			Body:    matchBody,
 			PeerIP:  pip,
 		}
-		if f := facet.Lookup(ep.Family); f != nil {
-			f.PrepareRequest(mreq)
+		fac := facet.Lookup(ep.Family)
+		if fac != nil {
+			fac.PrepareRequest(mreq)
 		}
 
 		ev := Event{
-			ID:   newReqID(),
-			Mode: "mitm", Host: host,
+			ID:     newReqID(),
+			Mode:   "mitm",
+			Family: ep.Family,
+			Host:   host,
 			Method: req.Method, Path: req.URL.Path,
 			AgentIP: pip,
+		}
+		if fac != nil {
+			ev.Facets = fac.Report(mreq)
 		}
 		// Emit start event so the dashboard renders the request as
 		// in-flight immediately. The end event with the same ID

@@ -49,6 +49,30 @@ type Runtime interface {
 	// RefSpec.FamilyConstraint takes a slice.
 	EndpointFamilies() []string
 
+	// Transport names the gateway-side handler that owns the wire
+	// for endpoints of this family. "https-mitm" → SNI peek + TLS
+	// terminate + HTTP request loop (used by https and kubernetes
+	// endpoints alike). "" → no MITM-port-443 dispatch; the
+	// endpoint plugin's own runtime drives the wire (postgres /
+	// clickhouse / future native protocols). Lets the gateway
+	// decide where to route a TLS connection without switching on
+	// family strings.
+	Transport() string
+
+	// HITLQueryLabel is the human-readable label the dashboard /
+	// Slack approval card uses for the body of a HITL prompt
+	// ("Path" for HTTPS, "Query" for SQL, "Resource" for k8s, etc.).
+	// Empty falls back to "Path".
+	HITLQueryLabel() string
+
+	// HostIsResource reports whether the request's Host field is a
+	// meaningful label on its own (e.g. an HTTPS hostname like
+	// `api.anthropic.com`) or merely a wire-level address (a SQL
+	// virtual IP, a k8s cluster IP) that the dashboard should
+	// substitute with the operator-defined endpoint name. Replaces
+	// the old `Family == "https"` carve-out in HITLEndpointLabel.
+	HostIsResource() bool
+
 	// MatchKeys returns the keys a rule's match{} block may contain
 	// for this facet. The loader uses these to reject typos before
 	// the matcher ever sees the raw map.

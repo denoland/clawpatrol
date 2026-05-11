@@ -47,6 +47,20 @@ func (Facet) RuleType() string { return "sql_rule" }
 // attach to.
 func (Facet) EndpointFamilies() []string { return []string{"sql"} }
 
+// Transport returns "" because the SQL family doesn't share the
+// HTTPS-MITM dispatch path. Each SQL endpoint plugin (postgres,
+// clickhouse_native, ...) owns its own wire-protocol handler and
+// gets dispatched on the protocol's well-known port instead of
+// through SNI peek on 443.
+func (Facet) Transport() string { return "" }
+
+// HITLQueryLabel is the dashboard / Slack label for a SQL query.
+func (Facet) HITLQueryLabel() string { return "Query" }
+
+// HostIsResource reports that a SQL request's Host is typically a
+// virtual IP, not a label the operator would recognise.
+func (Facet) HostIsResource() bool { return false }
+
 // MatchKeys lists every key allowed in a sql_rule's match{} block.
 func (Facet) MatchKeys() []facet.MatchKeySpec {
 	return []facet.MatchKeySpec{

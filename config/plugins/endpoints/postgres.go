@@ -51,6 +51,7 @@ import (
 	"golang.org/x/crypto/pbkdf2"
 
 	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/facet"
 	"github.com/denoland/clawpatrol/config/match"
 	sqlfacet "github.com/denoland/clawpatrol/config/plugins/facets/sql"
 	"github.com/denoland/clawpatrol/config/runtime"
@@ -434,6 +435,14 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 			Statement: info.Statement,
 		},
 	}
+	// Per-family report payload — the same map the gateway will
+	// stash on Event.Facets so the dashboard renders sql_rule
+	// columns (verb / tables / functions / statement) directly
+	// instead of squashing through the legacy Verb/Summary fields.
+	var facets map[string]any
+	if f := facet.Lookup("sql"); f != nil {
+		facets = f.Report(mreq)
+	}
 	cr := runtime.MatchRequest(ch.Endpoint, mreq)
 	if cr == nil {
 		// No rule matched — implicit allow. Emit so the query
@@ -442,7 +451,7 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 		// gets an `allow` event when no explicit verdict was
 		// recorded).
 		emit(ch, runtime.ConnEvent{
-			Action: "allow", Verb: info.Verb, Summary: summary,
+			Action: "allow", Verb: info.Verb, Summary: summary, Facets: facets,
 		})
 		return "", ""
 	}
@@ -457,7 +466,7 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 		if ch.Approve == nil {
 			emit(ch, runtime.ConnEvent{
 				Action: "deny", Reason: "HITL not configured",
-				Verb: info.Verb, Summary: summary,
+				Verb: info.Verb, Summary: summary, Facets: facets,
 			})
 			return "deny", "approval required but HITL is not configured"
 		}
@@ -472,12 +481,12 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 			}
 			emit(ch, runtime.ConnEvent{
 				Action: "hitl_deny", Reason: reason,
-				Verb: info.Verb, Summary: summary,
+				Verb: info.Verb, Summary: summary, Facets: facets,
 			})
 			return "deny", reason
 		}
 		emit(ch, runtime.ConnEvent{
-			Action: "hitl_allow", Verb: info.Verb, Summary: summary,
+			Action: "hitl_allow", Verb: info.Verb, Summary: summary, Facets: facets,
 		})
 		return "", ""
 	}
@@ -489,12 +498,12 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 		}
 		emit(ch, runtime.ConnEvent{
 			Action: "deny", Reason: reason,
-			Verb: info.Verb, Summary: summary,
+			Verb: info.Verb, Summary: summary, Facets: facets,
 		})
 		return "deny", reason
 	}
 	emit(ch, runtime.ConnEvent{
-		Action: "allow", Verb: info.Verb, Summary: summary,
+		Action: "allow", Verb: info.Verb, Summary: summary, Facets: facets,
 	})
 	return "", ""
 }

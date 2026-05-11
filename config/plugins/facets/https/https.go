@@ -36,6 +36,16 @@ func (Facet) RuleType() string { return "http_rule" }
 // matchers through k8s_rule, not through http_rule.
 func (Facet) EndpointFamilies() []string { return []string{"https"} }
 
+// Transport reports the gateway-side dispatch handler this facet uses.
+func (Facet) Transport() string { return "https-mitm" }
+
+// HITLQueryLabel is the dashboard / Slack label for an HTTPS request.
+func (Facet) HITLQueryLabel() string { return "Path" }
+
+// HostIsResource reports that an HTTPS request's Host is already a
+// meaningful resource label (api.anthropic.com, etc.).
+func (Facet) HostIsResource() bool { return true }
+
 // MatchKeys lists every key allowed in an http_rule's match{} block.
 func (Facet) MatchKeys() []facet.MatchKeySpec {
 	return []facet.MatchKeySpec{
