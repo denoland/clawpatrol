@@ -613,7 +613,7 @@ func (w *webMux) statusList(r *http.Request) []IntegrationRow {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	caller, _ := w.ownerForCaller(r)
+	selectedProfile, _ := w.credentialProfileKeyForRequest(r)
 	for _, name := range names {
 		ent := policy.Credentials[name]
 		row := IntegrationRow{ID: name, Name: name, Type: ent.Plugin.Type}
@@ -637,10 +637,10 @@ func (w *webMux) statusList(r *http.Request) []IntegrationRow {
 		}
 		if sp, ok := ent.Body.(config.SecretSlotsProvider); ok {
 			row.Slots = sp.SecretSlots()
-			if caller != "" {
-				present, _ := credentialSlotPresence(w.g.db, name, caller)
+			if selectedProfile != "" {
+				present, _ := credentialSlotPresence(w.g.db, name, selectedProfile)
 				if len(present) > 0 {
-					row.Owners = append(row.Owners, Owner{Owner: caller, Connected: true})
+					row.Owners = append(row.Owners, Owner{Owner: selectedProfile, Connected: true})
 				}
 			}
 		}

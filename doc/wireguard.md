@@ -61,7 +61,7 @@ in promiscuous mode — same shape as unclaw's `boringtun` + `smoltcp`
   approval. Multi-user setups need an auth proxy
   (Cloudflare Access, basic auth, etc.) that fills
   `X-Forwarded-User` / `X-Forwarded-Email` (~10 LoC to teach
-  `ownerForCaller` to read those).
+  profile resolution to read those).
 - Both endpoints behind the same NAT egress IP can't establish a
   WG handshake (UDP hairpin drop). Same constraint as plain unclaw
   remote mode. Use a real public-IP VPS for the gateway.

@@ -529,9 +529,9 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "approval requires an authenticated operator", http.StatusForbidden)
 		return
 	}
-	owner, _ := w.targetOwnerForRequest(r)
+	owner, _ := w.credentialProfileKeyForRequest(r)
 	if owner == "" {
-		http.Error(rw, "approval requires a target owner or profile", http.StatusForbidden)
+		http.Error(rw, "approval requires a profile", http.StatusForbidden)
 		return
 	}
 	code := r.URL.Query().Get("code")

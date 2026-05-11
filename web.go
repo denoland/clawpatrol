@@ -579,10 +579,13 @@ func (w *webMux) callerIdentity(r *http.Request) (user, device, displayHost stri
 	return who.UserProfile.LoginName, who.Node.StableID, who.Node.HostName
 }
 
-// targetOwnerForRequest returns the credential-bucket key selected by a
-// dashboard request. It is target/profile selection only; it must not be
-// used as evidence that the caller is authenticated.
-func (w *webMux) targetOwnerForRequest(r *http.Request) (key, label string) {
+// credentialProfileKeyForRequest returns the credentials.profile key used when
+// dashboard requests read or write OAuth/secret rows. Prefer an explicit
+// profile selector, then the configured default policy profile. The remaining
+// fallbacks preserve legacy single-user/per-caller credential keys; they are
+// not necessarily declared policy profiles and must not be used as evidence
+// that the caller is authenticated.
+func (w *webMux) credentialProfileKeyForRequest(r *http.Request) (key, label string) {
 	if p := r.URL.Query().Get("profile"); p != "" {
 		return p, p
 	}
@@ -600,13 +603,6 @@ func (w *webMux) targetOwnerForRequest(r *http.Request) (key, label string) {
 		return user, user
 	}
 	return host, host
-}
-
-// ownerForCaller is the legacy name for targetOwnerForRequest. Existing
-// handlers still use it to choose credential buckets; new authenticated
-// operator checks should consume principal from context instead.
-func (w *webMux) ownerForCaller(r *http.Request) (key, label string) {
-	return w.targetOwnerForRequest(r)
 }
 
 // whoamiData backs the whoami slice of /api/state. No HTTP handler —
@@ -727,7 +723,7 @@ func (w *webMux) apiCredentialsSet(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.Owner == "" {
-		body.Owner, _ = w.ownerForCaller(r)
+		body.Owner, _ = w.credentialProfileKeyForRequest(r)
 	}
 	if body.Owner == "" {
 		http.Error(rw, "missing owner", 400)
@@ -792,7 +788,7 @@ func (w *webMux) apiCredentialsClear(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.Owner == "" {
-		body.Owner, _ = w.ownerForCaller(r)
+		body.Owner, _ = w.credentialProfileKeyForRequest(r)
 	}
 	if err := clearCredentialSecrets(w.g.db, body.ID, body.Owner); err != nil {
 		http.Error(rw, err.Error(), 500)
@@ -1209,9 +1205,9 @@ func (w *webMux) apiRulesAI(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "prompt required", 400)
 		return
 	}
-	owner, _ := w.ownerForCaller(r)
+	owner, _ := w.credentialProfileKeyForRequest(r)
 	if owner == "" {
-		http.Error(rw, "tailnet identity required", http.StatusForbidden)
+		http.Error(rw, "profile required", http.StatusForbidden)
 		return
 	}
 	out, refused, err := generateRuleHCL(r.Context(), w.g, body.Agent, owner, body.Prompt, body.CurrentYAML, body.Scope)
@@ -1243,8 +1239,12 @@ func (w *webMux) apiHITLDecide(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, err.Error(), 400)
 		return
 	}
-	owner, _ := w.ownerForCaller(r)
-	ok := w.g.hitl.Decide(body.ID, runtime.HITLDecision{Allow: body.Allow, By: owner})
+	principal, ok := principalFromContext(r.Context())
+	if !ok {
+		http.Error(rw, "decision requires an authenticated operator", http.StatusForbidden)
+		return
+	}
+	ok = w.g.hitl.Decide(body.ID, runtime.HITLDecision{Allow: body.Allow, By: principal.Owner})
 	writeJSON(rw, map[string]bool{"ok": ok})
 }
 
