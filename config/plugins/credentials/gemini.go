@@ -14,8 +14,10 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
+// GeminiAPIKey is part of the clawpatrol plugin API.
 type GeminiAPIKey struct{}
 
+// InjectHTTP is part of the clawpatrol plugin API.
 func (g *GeminiAPIKey) InjectHTTP(_ context.Context, req *http.Request, sec runtime.Secret) error {
 	if len(sec.Bytes) == 0 || req.URL == nil {
 		return nil
@@ -33,10 +35,12 @@ func (g *GeminiAPIKey) InjectHTTP(_ context.Context, req *http.Request, sec runt
 	return nil
 }
 
+// SecretSlots is part of the clawpatrol plugin API.
 func (*GeminiAPIKey) SecretSlots() []config.SecretSlot {
 	return []config.SecretSlot{{Label: "Gemini API key"}}
 }
 
+// EnvVars is part of the clawpatrol plugin API.
 func (*GeminiAPIKey) EnvVars() []config.EnvVar {
 	return []config.EnvVar{
 		{Name: "GOOGLE_API_KEY", Value: phGemini, Description: "Gemini SDKs"},

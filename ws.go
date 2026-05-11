@@ -24,6 +24,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -79,6 +80,18 @@ func isWSUpgrade(req *http.Request) bool {
 	return strings.Contains(conn, "upgrade") && upg == "websocket"
 }
 
+// dialWSUpstream opens the upstream TLS connection used by the raw WS bridge.
+// mTLS endpoints keep using dialUpstream so credential plugins can populate the
+// stdlib TLS config; all other WS upstreams use browser TLS while still honoring
+// endpoint tunnel configuration via dialBrowserTLS.
+func (g *Gateway) dialWSUpstream(ctx context.Context, upstream string, ep *config.CompiledEndpoint, profile string) (net.Conn, error) {
+	addr := net.JoinHostPort(upstream, "443")
+	if endpointWantsClientCert(ep) {
+		return g.dialUpstream(ctx, "tcp", addr, upstream, ep, profile)
+	}
+	return g.dialBrowserTLS(ctx, "tcp", addr, upstream, ep)
+}
+
 // handleWSUpgrade swaps the http.Transport-driven request loop for a
 // raw byte bridge once the agent's request looks like a WS upgrade.
 // The connection stays alive until either side closes; pumpWS
@@ -86,23 +99,17 @@ func isWSUpgrade(req *http.Request) bool {
 func (g *Gateway) handleWSUpgrade(client *tls.Conn, br *bufio.Reader, req *http.Request, upstream string, frameEmit func(direction, sample string), ep *config.CompiledEndpoint, profile string) {
 	agentAddr := peerIP(client) // capture before netstack races to nil
 
-	// Endpoints that require a client cert (e.g. kubernetes mTLS) must
-	// use dialUpstream so the credential plugin can inject the cert.
-	// All other upstreams use dialBrowserTLS — Cloudflare WAF rejects
-	// plain Go TLS fingerprints on WS handshakes to chatgpt.com.
-	var up net.Conn
-	var err error
-	if endpointWantsClientCert(ep) {
-		up, err = g.dialUpstream(context.Background(), "tcp", net.JoinHostPort(upstream, "443"), upstream, ep, profile)
-	} else {
-		up, err = dialBrowserTLS(context.Background(), "tcp", net.JoinHostPort(upstream, "443"), upstream)
-	}
+	// dialWSUpstream preserves the existing split: endpoints that require a
+	// client cert (e.g. kubernetes mTLS) use dialUpstream so credential plugins
+	// can inject the cert; all other WS upstreams use browser TLS because
+	// Cloudflare WAF rejects plain Go TLS fingerprints on chatgpt.com.
+	up, err := g.dialWSUpstream(context.Background(), upstream, ep, profile)
 	if err != nil {
-		fmt.Fprintf(client, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+		_, _ = fmt.Fprintf(client, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
 		log.Printf("ws dial %s: %v", upstream, err)
 		return
 	}
-	defer up.Close()
+	defer func() { _ = up.Close() }()
 
 	// Build raw HTTP/1.1 upgrade request — Go's http.Request.Write +
 	// http.ReadResponse + http.Response.Write round-trip mangles
@@ -138,6 +145,12 @@ func (g *Gateway) handleWSUpgrade(client *tls.Conn, br *bufio.Reader, req *http.
 		log.Printf("ws read resp: %v", err)
 		return
 	}
+	// Drop credential-bearing response headers (Set-Cookie, WWW-
+	// Authenticate, …) before they cross to the agent. Filters
+	// bytes verbatim — must not parse + re-serialise, since that
+	// mangles the Connection / Upgrade hop-by-hop headers the
+	// 101 handshake depends on.
+	headerBytes = stripAuthResponseHeadersRaw(headerBytes)
 	statusLine := ""
 	if i := bytes.Index(headerBytes, []byte("\r\n")); i >= 0 {
 		statusLine = string(headerBytes[:i])
@@ -146,8 +159,8 @@ func (g *Gateway) handleWSUpgrade(client *tls.Conn, br *bufio.Reader, req *http.
 	if !strings.Contains(statusLine, " 101 ") {
 		log.Printf("ws upgrade non-101 host=%s status=%q", upstream, statusLine)
 		body, _ := io.ReadAll(io.LimitReader(upBR, 2048))
-		client.Write(headerBytes)
-		client.Write(body)
+		_, _ = client.Write(headerBytes)
+		_, _ = client.Write(body)
 		return
 	}
 	if _, err := client.Write(headerBytes); err != nil {
@@ -332,12 +345,12 @@ func (w *wsInflater) decompress(payload []byte, noTakeover bool) []byte {
 	src.Write(payload)
 	src.Write(deflateTrailer)
 	fr := flate.NewReaderDict(&src, dict)
-	defer fr.Close()
+	defer func() { _ = fr.Close() }()
 	out, err := io.ReadAll(fr)
 	// io.ErrUnexpectedEOF is expected — permessage-deflate's trailer
 	// (00 00 ff ff) is a non-final SYNC block, so flate never sees a
 	// real EOF marker. We accept the bytes decoded up to that point.
-	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
 		return nil
 	}
 	if !noTakeover && len(out) > 0 {

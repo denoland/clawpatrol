@@ -15,10 +15,12 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
+// BearerToken is part of the clawpatrol plugin API.
 type BearerToken struct {
 	IdempotencyKey bool `hcl:"idempotency_key,optional"`
 }
 
+// InjectHTTP is part of the clawpatrol plugin API.
 func (b *BearerToken) InjectHTTP(_ context.Context, req *http.Request, sec runtime.Secret) error {
 	if len(sec.Bytes) == 0 {
 		return nil
@@ -45,6 +47,7 @@ func idempotencyKeyFor(req *http.Request) string {
 	return req.URL.Path + "@" + req.Method
 }
 
+// SecretSlots is part of the clawpatrol plugin API.
 func (*BearerToken) SecretSlots() []config.SecretSlot {
 	return []config.SecretSlot{{Label: "Bearer token", Description: "Stamped as `Authorization: Bearer …`."}}
 }

@@ -34,6 +34,12 @@ type Gateway struct {
 	// you can't disable auth by accident.
 	InsecureNoDashboardSecret bool `hcl:"insecure_no_dashboard_secret,optional"`
 
+	// Telemetry opts in/out of the update-checker / anonymous usage
+	// ping (doc/telemetry.md). nil = default on; explicit `telemetry
+	// = false` silences the goroutine. Env vars CLAWPATROL_TELEMETRY=0
+	// and DO_NOT_TRACK=1 also work.
+	Telemetry *bool `hcl:"telemetry,optional"`
+
 	// SessionKeep is the hard retention floor for the sessions table.
 	// Sessions whose last_at is older than this get deleted by the
 	// background sweeper. Sessions can revive on new activity at any
@@ -85,6 +91,7 @@ type Policy struct {
 	Credentials map[string]*Entity
 	Endpoints   map[string]*Entity
 	Rules       map[string]*Entity
+	Tunnels     map[string]*Entity
 
 	Policies map[string]*PolicyText
 	Profiles map[string]*Profile
@@ -102,6 +109,30 @@ type Entity struct {
 	Plugin *Plugin
 	Body   any
 	Refs   *Refs
+	// Framework holds the resolved values of framework-level attrs
+	// (the FrameworkAttrSpec entries declared for this kind). The
+	// loader extracts these from the block body via
+	// body.PartialContent before invoking the plugin's gohcl
+	// decode, so plugin authors get cross-cutting features
+	// (`tunnel = X` on every endpoint) without per-plugin schema
+	// boilerplate.
+	Framework FrameworkAttrs
+}
+
+// FrameworkAttrs is the per-Entity bag of framework-level attr
+// values. Keyed by FrameworkAttrSpec.Name; values are the resolved
+// bare-name references for ref-typed attrs.
+type FrameworkAttrs struct {
+	Refs map[string]string
+}
+
+// Ref returns the resolved reference for the named framework attr,
+// or "" if unset.
+func (f FrameworkAttrs) Ref(name string) string {
+	if f.Refs == nil {
+		return ""
+	}
+	return f.Refs[name]
 }
 
 // Defaults captures the singleton defaults {} block.
@@ -175,6 +206,7 @@ func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
 		Credentials: make(map[string]*Entity),
 		Endpoints:   make(map[string]*Entity),
 		Rules:       make(map[string]*Entity),
+		Tunnels:     make(map[string]*Entity),
 		Policies:    make(map[string]*PolicyText),
 		Profiles:    make(map[string]*Profile),
 	}
@@ -265,6 +297,7 @@ func extractPolicyBlocks(body hcl.Body) (hcl.Blocks, hcl.Blocks, hcl.Diagnostics
 			{Type: "rule", LabelNames: []string{"type", "name"}},
 			{Type: "policy", LabelNames: []string{"name"}},
 			{Type: "profile", LabelNames: []string{"name"}},
+			{Type: "tunnel", LabelNames: []string{"type", "name"}},
 		},
 	}
 	content, _, diags := body.PartialContent(schema)
@@ -348,15 +381,29 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 		p.Order = append(p.Order, sym.Name)
 	}
 
-	for _, kind := range []Kind{KindApprover, KindCredential, KindEndpoint, KindRule} {
+	// Decode order: credentials and tunnels first (no cross-deps on
+	// other kinds), then endpoints (which reference both), then rules
+	// (which reference endpoints), then approvers (referenced by
+	// rules but with no body-level dep on them at decode time).
+	// Symbol-table-backed ref resolution doesn't actually require this
+	// ordering — symbols are populated in pass 1 — but matching decode
+	// order to compile order keeps Order[] stable across the file's
+	// declaration sequence and avoids surprising readers.
+	for _, kind := range []Kind{KindApprover, KindCredential, KindTunnel, KindEndpoint, KindRule} {
 		for _, sym := range table.byKind[kind] {
 			plugin := Lookup(sym.Kind, sym.Type)
 			if plugin == nil {
 				// Already reported in pass 1.
 				continue
 			}
+			// Peel off framework-level attrs (e.g. `tunnel = X` on
+			// endpoints) before gohcl sees the body. The plugin's
+			// schema doesn't need to know about them; the loader
+			// resolves the refs against the symbol table here.
+			fw, body, fwDiags := extractFramework(sym.Block.Body, kind, evalCtx, table)
+			diags = append(diags, fwDiags...)
 			target := plugin.New()
-			decodeDiags := dedupGohclDiags(gohcl.DecodeBody(sym.Block.Body, evalCtx, target))
+			decodeDiags := dedupGohclDiags(gohcl.DecodeBody(body, evalCtx, target))
 			diags = append(diags, decodeDiags...)
 			// When decode errors, the struct may be partially populated
 			// and feeding it through Validate / Build typically produces
@@ -373,19 +420,22 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 			if plugin.Validate != nil {
 				diags = append(diags, plugin.Validate(target, sym.Name, ctx)...)
 			}
-			body, buildDiags := plugin.Build(target, sym.Name, ctx)
+			built, buildDiags := plugin.Build(target, sym.Name, ctx)
 			diags = append(diags, buildDiags...)
 			ent := &Entity{
-				Symbol: sym,
-				Plugin: plugin,
-				Body:   body,
-				Refs:   refs,
+				Symbol:    sym,
+				Plugin:    plugin,
+				Body:      built,
+				Refs:      refs,
+				Framework: fw,
 			}
 			switch kind {
 			case KindApprover:
 				p.Approvers[sym.Name] = ent
 			case KindCredential:
 				p.Credentials[sym.Name] = ent
+			case KindTunnel:
+				p.Tunnels[sym.Name] = ent
 			case KindEndpoint:
 				p.Endpoints[sym.Name] = ent
 			case KindRule:

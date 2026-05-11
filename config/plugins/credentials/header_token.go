@@ -14,11 +14,13 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
+// HeaderToken is part of the clawpatrol plugin API.
 type HeaderToken struct {
 	Header string `hcl:"header"`
 	Prefix string `hcl:"prefix,optional"`
 }
 
+// InjectHTTP is part of the clawpatrol plugin API.
 func (h *HeaderToken) InjectHTTP(_ context.Context, req *http.Request, sec runtime.Secret) error {
 	if h.Header == "" || len(sec.Bytes) == 0 {
 		return nil
@@ -27,6 +29,7 @@ func (h *HeaderToken) InjectHTTP(_ context.Context, req *http.Request, sec runti
 	return nil
 }
 
+// SecretSlots is part of the clawpatrol plugin API.
 func (*HeaderToken) SecretSlots() []config.SecretSlot {
 	return []config.SecretSlot{{Label: "Header value"}}
 }

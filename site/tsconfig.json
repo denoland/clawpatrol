@@ -9,5 +9,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src", "prerender.ts"]
+  "include": ["src", "prerender.ts", "worker", "scripts"]
 }

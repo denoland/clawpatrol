@@ -2,12 +2,15 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash"
 	"html/template"
@@ -16,14 +19,19 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
+	"github.com/hashicorp/hcl/v2/hclwrite"
+
 	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/facet"
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
@@ -35,6 +43,8 @@ var loginHTML string
 
 var loginTpl = template.Must(template.New("login").Parse(loginHTML))
 
+var errConfigRevisionConflict = errors.New("config revision conflict")
+
 type webMux struct {
 	g         *Gateway
 	caDir     string
@@ -43,6 +53,8 @@ type webMux struct {
 	mu        sync.Mutex
 	sessions  map[string]*oauthSession
 	onboard   *onboardRegistry
+	previews  map[string]configPreviewToken
+	routeAuth map[string]authRequirement
 
 	// stateCache: per-caller TTL'd memo for /api/state. RWMutex
 	// because reads vastly outnumber writes — every dashboard tab
@@ -52,50 +64,189 @@ type webMux struct {
 	stateCache   map[string]stateCacheEntry
 }
 
+type configPreviewToken struct {
+	revision    string
+	contentHash string
+}
+
+type authRequirement int
+
+const (
+	// authDashboard routes require the configured dashboard secret before
+	// they can reach the handler. In Tailscale control mode, the existing
+	// tailnet gate still runs after dashboard auth.
+	authDashboard authRequirement = iota
+	// authPublic routes are intentionally reachable before any dashboard
+	// or tailnet identity exists.
+	authPublic
+	// authTailnetOperator routes skip dashboard-secret auth but are still
+	// protected by tailnet identity when Tailscale control mode is active.
+	authTailnetOperator
+	// authDashboardOrTailnetOperator accepts dashboard auth everywhere and
+	// may defer to tailnet identity in Tailscale control mode. In WireGuard
+	// / proxy mode there is no tailnet identity, so dashboard auth remains
+	// mandatory.
+	authDashboardOrTailnetOperator
+	// authSelfAuthenticating routes carry their own request-level proof
+	// (for example a bearer token or webhook signature), so they do not
+	// require the dashboard secret. Existing tailnet-gate behavior is kept.
+	authSelfAuthenticating
+)
+
+type webRoute struct {
+	Method  string
+	Path    string
+	Auth    authRequirement
+	Handler http.HandlerFunc
+}
+
+type principalKind string
+
+const (
+	principalDashboardSecret principalKind = "dashboard_secret"
+	principalTailnet         principalKind = "tailnet"
+)
+
+type principal struct {
+	Kind   principalKind
+	Owner  string
+	User   string
+	Device string
+	Host   string
+}
+
+type principalContextKey struct{}
+
+func contextWithPrincipal(ctx context.Context, p principal) context.Context {
+	if p.Owner == "" {
+		p.Owner = p.User
+	}
+	return context.WithValue(ctx, principalContextKey{}, p)
+}
+
+func principalFromContext(ctx context.Context) (principal, bool) {
+	p, ok := ctx.Value(principalContextKey{}).(principal)
+	if !ok || p.Owner == "" {
+		return principal{}, false
+	}
+	return p, true
+}
+
+func (w *webMux) dashboardSecretPrincipal() principal {
+	owner := w.g.cfg.AdminEmail
+	if owner == "" {
+		owner = "dashboard"
+	}
+	return principal{Kind: principalDashboardSecret, Owner: owner}
+}
+
+func routeAuthIndex(routes []webRoute) map[string]authRequirement {
+	out := make(map[string]authRequirement, len(routes))
+	for _, route := range routes {
+		out[route.Path] = route.Auth
+	}
+	return out
+}
+
+func (w *webMux) authRequirementForPath(path string) authRequirement {
+	if strings.HasPrefix(path, credentialWebhookPrefix) {
+		return authSelfAuthenticating
+	}
+	if w.routeAuth != nil {
+		if req, ok := w.routeAuth[path]; ok {
+			return req
+		}
+	}
+	return authDashboard
+}
+
+func (w *webMux) skipsDashboardSecret(path string) bool {
+	switch w.authRequirementForPath(path) {
+	case authPublic, authTailnetOperator, authSelfAuthenticating:
+		return true
+	default:
+		return false
+	}
+}
+
+func isTailscaleControlMode(control string) bool {
+	return control == "" || strings.EqualFold(control, "tailscale")
+}
+
+func (w *webMux) mayUseTailnetInsteadOfDashboard(path string) bool {
+	return w.authRequirementForPath(path) == authDashboardOrTailnetOperator &&
+		isTailscaleControlMode(w.g.cfg.Tailscale.Control)
+}
+
+func (w *webMux) skipsTailnetGate(path string) bool {
+	return w.authRequirementForPath(path) == authPublic
+}
+
 func newWebMux(g *Gateway, caDir string, ts Tailscale, publicURL string) http.Handler {
-	w := &webMux{g: g, caDir: caDir, ts: ts, publicURL: publicURL, sessions: map[string]*oauthSession{}, onboard: g.onboard}
+	w := &webMux{g: g, caDir: caDir, ts: ts, publicURL: publicURL, sessions: map[string]*oauthSession{}, onboard: g.onboard, previews: map[string]configPreviewToken{}}
+	return w.handler()
+}
+
+func (w *webMux) handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/info", w.serveInfo)
-	mux.HandleFunc("/ca.crt", w.serveCA)
-	// /api/whoami + /api/agents are gone — superseded by /api/state.
-	// /api/status stays because DevicePage scopes it with ?profile=.
-	mux.HandleFunc("/api/status", w.apiStatus)
-	// /api/state is the dashboard's single-call refresh endpoint —
-	// bundles whoami+status+agents in one round-trip and returns 304
-	// when the JSON hash matches If-None-Match. Replaces the three
-	// parallel per-3s fetches App.refresh used to fire.
-	mux.HandleFunc("/api/state", w.apiState)
-	mux.HandleFunc("/api/agents/delete", w.apiAgentDelete)
-	mux.HandleFunc("/api/agents/profile", w.apiAgentProfile)
-	mux.HandleFunc("/api/profiles", w.apiProfiles)
-	mux.HandleFunc("/api/rules", w.apiRules)
-	mux.HandleFunc("/api/rules/ai", w.apiRulesAI)
-	mux.HandleFunc("/api/config", w.apiConfig)
-	mux.HandleFunc("/api/hitl/pending", w.apiHITLPending)
-	mux.HandleFunc("/api/hitl/decide", w.apiHITLDecide)
+	routes := w.routes()
+	w.routeAuth = routeAuthIndex(routes)
+	for _, route := range routes {
+		if route.Method == "" {
+			panic("web route missing method: " + route.Path)
+		}
+		mux.HandleFunc(route.Path, route.Handler)
+	}
 	w.mountCredentialWebhooks(mux)
-	mux.HandleFunc("/api/oauth/start", w.apiOAuthStart)
-	mux.HandleFunc("/api/oauth/exchange", w.apiOAuthExchange)
-	mux.HandleFunc("/api/oauth/device-poll", w.apiOAuthDevicePoll)
-	mux.HandleFunc("/api/oauth/revoke", w.apiOAuthRevoke)
-	mux.HandleFunc("/api/credentials/set", w.apiCredentialsSet)
-	mux.HandleFunc("/api/credentials/clear", w.apiCredentialsClear)
-	mux.HandleFunc("/api/events", w.apiEventsSSE)
-	mux.HandleFunc("/api/actions/", w.apiActionByID)
-	mux.HandleFunc("/api/analytics", w.apiAnalytics)
-	mux.HandleFunc("/api/onboard/start", w.apiOnboardStart)
-	mux.HandleFunc("/api/onboard/poll", w.apiOnboardPoll)
-	mux.HandleFunc("/api/onboard/approve", w.apiOnboardApprove)
-	mux.HandleFunc("/api/onboard/lookup", w.apiOnboardLookup)
-	mux.HandleFunc("/api/onboard/claim", w.apiOnboardClaim)
-	mux.HandleFunc("/api/env-pushdown", w.apiEnvPushdown)
-	mux.HandleFunc("/__login", w.apiDashboardLogin)
 	mux.Handle("/", w.staticHandler())
 	return w.dashboardSecretGate(w.tailnetGate(mux))
 }
 
+func (w *webMux) routes() []webRoute {
+	return []webRoute{
+		{Method: http.MethodGet, Path: "/info", Auth: authPublic, Handler: w.serveInfo},
+		{Method: http.MethodGet, Path: "/ca.crt", Auth: authPublic, Handler: w.serveCA},
+		// /api/whoami + /api/agents are gone — superseded by /api/state.
+		// /api/status stays because DevicePage scopes it with ?profile=.
+		{Method: http.MethodGet, Path: "/api/status", Auth: authDashboard, Handler: w.apiStatus},
+		// /api/state is the dashboard's single-call refresh endpoint —
+		// bundles whoami+status+agents in one round-trip and returns 304
+		// when the JSON hash matches If-None-Match. Replaces the three
+		// parallel per-3s fetches App.refresh used to fire.
+		{Method: http.MethodGet, Path: "/api/state", Auth: authDashboard, Handler: w.apiState},
+		{Method: http.MethodPost, Path: "/api/agents/delete", Auth: authDashboard, Handler: w.apiAgentDelete},
+		{Method: http.MethodPost, Path: "/api/agents/profile", Auth: authDashboard, Handler: w.apiAgentProfile},
+		{Method: http.MethodGet, Path: "/api/profiles", Auth: authDashboard, Handler: w.apiProfiles},
+		{Method: http.MethodGet, Path: "/api/rules", Auth: authDashboard, Handler: w.apiRules},
+		{Method: http.MethodPost, Path: "/api/rules/ai", Auth: authDashboard, Handler: w.apiRulesAI},
+		{Method: http.MethodGet, Path: "/api/config", Auth: authDashboard, Handler: w.apiConfig},
+		{Method: http.MethodPost, Path: "/api/config/preview", Auth: authDashboard, Handler: w.apiConfigPreview},
+		{Method: http.MethodPost, Path: "/api/config/save", Auth: authDashboard, Handler: w.apiConfigSave},
+		{Method: http.MethodGet, Path: "/api/hitl/pending", Auth: authDashboard, Handler: w.apiHITLPending},
+		{Method: http.MethodPost, Path: "/api/hitl/decide", Auth: authDashboard, Handler: w.apiHITLDecide},
+		{Method: http.MethodPost, Path: "/api/oauth/start", Auth: authDashboard, Handler: w.apiOAuthStart},
+		{Method: http.MethodPost, Path: "/api/oauth/exchange", Auth: authDashboard, Handler: w.apiOAuthExchange},
+		{Method: http.MethodPost, Path: "/api/oauth/device-poll", Auth: authDashboard, Handler: w.apiOAuthDevicePoll},
+		{Method: http.MethodPost, Path: "/api/oauth/revoke", Auth: authDashboard, Handler: w.apiOAuthRevoke},
+		{Method: http.MethodPost, Path: "/api/credentials/set", Auth: authDashboard, Handler: w.apiCredentialsSet},
+		{Method: http.MethodPost, Path: "/api/credentials/clear", Auth: authDashboard, Handler: w.apiCredentialsClear},
+		{Method: http.MethodGet, Path: "/api/events", Auth: authDashboard, Handler: w.apiEventsSSE},
+		{Method: http.MethodPost, Path: "/api/actions/", Auth: authDashboard, Handler: w.apiActionByID},
+		{Method: http.MethodGet, Path: "/api/analytics", Auth: authDashboard, Handler: w.apiAnalytics},
+		{Method: http.MethodGet, Path: "/api/facets", Auth: authDashboard, Handler: w.apiFacets},
+		{Method: http.MethodPost, Path: "/api/onboard/start", Auth: authPublic, Handler: w.apiOnboardStart},
+		{Method: http.MethodPost, Path: "/api/onboard/poll", Auth: authPublic, Handler: w.apiOnboardPoll},
+		{Method: http.MethodPost, Path: "/api/onboard/approve", Auth: authDashboardOrTailnetOperator, Handler: w.apiOnboardApprove},
+		{Method: http.MethodGet, Path: "/api/onboard/lookup", Auth: authTailnetOperator, Handler: w.apiOnboardLookup},
+		{Method: http.MethodPost, Path: "/api/onboard/claim", Auth: authPublic, Handler: w.apiOnboardClaim},
+		{Method: http.MethodGet, Path: "/api/env-pushdown", Auth: authSelfAuthenticating, Handler: w.apiEnvPushdown},
+		{Method: http.MethodPost, Path: "/api/peer/ephemeral", Auth: authSelfAuthenticating, Handler: w.apiEphemeralPeer},
+		{Method: http.MethodGet, Path: "/__login", Auth: authTailnetOperator, Handler: w.apiDashboardLogin},
+	}
+}
+
 // dashboardSecretGate requires every non-public request to carry the
-// configured dashboard_secret (cookie / header / query). Onboarding
+// configured dashboard_secret (cookie / header). Onboarding
 // + health endpoints stay open so brand-new clients can still join.
 //
 // When dashboard_secret is empty, the gate's behavior depends on
@@ -110,58 +261,43 @@ func newWebMux(g *Gateway, caDir string, ts Tailscale, publicURL string) http.Ha
 const credentialWebhookPrefix = "/api/cred/"
 
 func (w *webMux) dashboardSecretGate(next http.Handler) http.Handler {
-	publicPaths := map[string]bool{
-		"/api/onboard/start":   true,
-		"/api/onboard/poll":    true,
-		"/api/onboard/claim":   true,
-		"/api/onboard/lookup":  true,
-		"/api/onboard/approve": true,
-		// /api/env-pushdown is NOT public — it's gated by the
-		// per-peer bearer minted at onboard time. The handler
-		// validates `Authorization: Bearer <token>` against
-		// peer_api_tokens; dashboardSecretGate doesn't need to
-		// see it.
-		"/api/env-pushdown": true,
-		"/info":             true,
-		"/ca.crt":           true,
-		"/__login":          true,
-	}
-	// /info and /ca.crt are public-by-design (health + cert distribution).
-	// They keep working even when the dashboard is misconfigured so
-	// monitoring + already-onboarded clients aren't taken offline.
-	alwaysOpen := map[string]bool{
-		"/info":   true,
-		"/ca.crt": true,
-	}
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		secret := w.g.cfg.DashboardSecret
 		if secret == "" {
-			if alwaysOpen[r.URL.Path] {
+			if dashboardMisconfigAlwaysOpen(r.URL.Path) {
 				next.ServeHTTP(rw, r)
 				return
 			}
 			if w.g.cfg.InsecureNoDashboardSecret {
-				next.ServeHTTP(rw, r)
+				next.ServeHTTP(rw, r.WithContext(contextWithPrincipal(r.Context(), w.dashboardSecretPrincipal())))
 				return
 			}
 			renderDashboardMisconfigured(rw, r)
 			return
 		}
-		if publicPaths[r.URL.Path] || strings.HasPrefix(r.URL.Path, credentialWebhookPrefix) {
+		if w.skipsDashboardSecret(r.URL.Path) {
 			next.ServeHTTP(rw, r)
 			return
 		}
 		if checkDashboardSecret(r, secret) {
+			next.ServeHTTP(rw, r.WithContext(contextWithPrincipal(r.Context(), w.dashboardSecretPrincipal())))
+			return
+		}
+		if w.mayUseTailnetInsteadOfDashboard(r.URL.Path) {
 			next.ServeHTTP(rw, r)
 			return
 		}
 		// API callers see 401; browsers get redirected to the login form.
 		if strings.HasPrefix(r.URL.Path, "/api/") {
-			http.Error(rw, "dashboard secret required", 401)
+			http.Error(rw, "dashboard secret required", http.StatusUnauthorized)
 			return
 		}
 		http.Redirect(rw, r, "/__login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
 	})
+}
+
+func dashboardMisconfigAlwaysOpen(path string) bool {
+	return path == "/info" || path == "/ca.crt"
 }
 
 const dashboardMisconfiguredMsg = "dashboard refuses to serve: gateway.hcl is missing both `dashboard_secret` and `insecure_no_dashboard_secret`. Set `dashboard_secret = \"<long random string>\"` to require a password, or `insecure_no_dashboard_secret = true` to explicitly run without auth (testing only)."
@@ -173,7 +309,7 @@ func renderDashboardMisconfigured(rw http.ResponseWriter, r *http.Request) {
 	}
 	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
 	rw.WriteHeader(http.StatusServiceUnavailable)
-	fmt.Fprintf(rw, `<!doctype html>
+	_, _ = fmt.Fprintf(rw, `<!doctype html>
 <html><head><meta charset="utf-8"><title>clawpatrol — dashboard disabled</title>
 <style>body{font:14px/1.5 -apple-system,system-ui,sans-serif;max-width:42em;margin:6em auto;padding:0 1em;color:#222}code{background:#f3f3f3;padding:.1em .3em;border-radius:3px}h1{font-size:1.4em}</style>
 </head><body>
@@ -192,9 +328,6 @@ func checkDashboardSecret(r *http.Request, want string) bool {
 		return true
 	}
 	if h := r.Header.Get("X-Clawpatrol-Secret"); h != "" && subtle.ConstantTimeCompare([]byte(h), []byte(want)) == 1 {
-		return true
-	}
-	if q := r.URL.Query().Get("secret"); q != "" && subtle.ConstantTimeCompare([]byte(q), []byte(want)) == 1 {
 		return true
 	}
 	return false
@@ -234,20 +367,6 @@ func (w *webMux) apiDashboardLogin(rw http.ResponseWriter, r *http.Request) {
 		http.Redirect(rw, r, next, http.StatusFound)
 		return
 	}
-	// GET — accept ?secret= one-shot to set the cookie automatically
-	// (so an operator can paste a single URL with the secret).
-	if q := r.URL.Query().Get("secret"); q != "" && subtle.ConstantTimeCompare([]byte(q), []byte(want)) == 1 {
-		http.SetCookie(rw, &http.Cookie{
-			Name:     "cp_dash",
-			Value:    want,
-			Path:     "/",
-			HttpOnly: true,
-			SameSite: http.SameSiteLaxMode,
-			MaxAge:   30 * 24 * 3600,
-		})
-		http.Redirect(rw, r, next, http.StatusFound)
-		return
-	}
 	renderLogin(rw, next, "", 200)
 }
 
@@ -257,34 +376,25 @@ func renderLogin(rw http.ResponseWriter, next, errMsg string, status int) {
 	_ = loginTpl.Execute(rw, struct{ Next, Error string }{next, errMsg})
 }
 
-// tailnetGate restricts non-tailnet callers to a minimal allow-list
-// needed for `clawpatrol join` device-flow onboarding. Dashboard, status,
-// oauth and event streams are tailnet-only.
-//
-// Public allow-list:
-//
-//	POST /api/onboard/start    — kicks off device flow
-//	POST /api/onboard/poll     — CLI polls for approval + auth key
-//	GET  /info                 — health check
+// tailnetGate restricts non-tailnet callers to routes whose centralized
+// auth policy is authPublic. Dashboard, status, OAuth, event streams, and
+// self-authenticating routes keep the existing tailnet behavior.
 func (w *webMux) tailnetGate(next http.Handler) http.Handler {
-	publicPaths := map[string]bool{
-		"/api/onboard/start":     true,
-		"/api/onboard/poll":      true,
-		"/api/onboard/claim":     true, // device_code-gated; safe to be public
-		"/api/slack/interactive": true, // signed payload; verified via slack signing secret
-		"/info":                  true,
-		"/ca.crt":                true, // gateway's public CA cert, intentionally exposed
-	}
 	// In wireguard / proxy mode there is no tailnet identity to gate
 	// against. Operators put the dashboard behind their own
 	// authentication (Cloudflare Access, basic auth proxy, etc).
-	skipGate := !strings.EqualFold(w.g.cfg.Tailscale.Control, "tailscale") &&
-		w.g.cfg.Tailscale.Control != ""
+	skipGate := !isTailscaleControlMode(w.g.cfg.Tailscale.Control)
 
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		if publicPaths[r.URL.Path] || skipGate {
+		if w.skipsTailnetGate(r.URL.Path) || skipGate {
 			next.ServeHTTP(rw, r)
 			return
+		}
+		if w.authRequirementForPath(r.URL.Path) == authDashboardOrTailnetOperator {
+			if _, ok := principalFromContext(r.Context()); ok {
+				next.ServeHTTP(rw, r)
+				return
+			}
 		}
 		// Two ways to prove tailnet membership:
 		//   1. peer IP whois (direct tailnet → gateway, no proxy).
@@ -296,22 +406,26 @@ func (w *webMux) tailnetGate(next http.Handler) http.Handler {
 		if i := strings.LastIndex(host, ":"); i >= 0 {
 			host = host[:i]
 		}
-		var login string
+		var login, device, displayHost string
 		if w.g.agents != nil {
 			if who := w.g.agents.lookupWhois(host); who != nil {
 				login = who.UserProfile.LoginName
+				device = who.Node.StableID
+				displayHost = who.Node.HostName
 			}
 		}
 		if login == "" && isLoopback(host) {
 			// `tailscale serve` proxy hop. The header is authoritative
 			// here because nothing public can reach loopback.
 			login = r.Header.Get("Tailscale-User-Login")
+			displayHost = host
 		}
 		if login == "" {
-			http.Error(rw, "tailnet access required — onboard via `clawpatrol join --url <gateway>`", 403)
+			http.Error(rw, "tailnet access required — onboard via `clawpatrol join <gateway>`", http.StatusForbidden)
 			return
 		}
-		next.ServeHTTP(rw, r)
+		principal := principal{Kind: principalTailnet, Owner: login, User: login, Device: device, Host: displayHost}
+		next.ServeHTTP(rw, r.WithContext(contextWithPrincipal(r.Context(), principal)))
 	})
 }
 
@@ -443,7 +557,7 @@ func (w *webMux) serveCA(rw http.ResponseWriter, r *http.Request) {
 
 func (w *webMux) serveInfo(rw http.ResponseWriter, _ *http.Request) {
 	rw.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(rw, `{"clawpatrol":true,"version":"0.1"}`+"\n")
+	_, _ = fmt.Fprintf(rw, `{"clawpatrol":true,"version":"0.1"}`+"\n")
 }
 
 // callerIdentity resolves the (user, device) of the request peer via
@@ -468,13 +582,10 @@ func (w *webMux) callerIdentity(r *http.Request) (user, device, displayHost stri
 	return who.UserProfile.LoginName, who.Node.StableID, who.Node.HostName
 }
 
-// ownerForCaller returns the credential-bucket key for a dashboard
-// request. With the profile-as-tenant model, that key is the profile
-// name selected by the operator — passed via `?profile=<name>` query
-// param or the `X-Clawpatrol-Profile` header. Falls back to the first
-// declared profile in gateway.hcl, or admin_email when no profiles
-// are configured (legacy single-tenant mode).
-func (w *webMux) ownerForCaller(r *http.Request) (key, label string) {
+// targetOwnerForRequest returns the credential-bucket key selected by a
+// dashboard request. It is target/profile selection only; it must not be
+// used as evidence that the caller is authenticated.
+func (w *webMux) targetOwnerForRequest(r *http.Request) (key, label string) {
 	if p := r.URL.Query().Get("profile"); p != "" {
 		return p, p
 	}
@@ -492,6 +603,13 @@ func (w *webMux) ownerForCaller(r *http.Request) (key, label string) {
 		return user, user
 	}
 	return host, host
+}
+
+// ownerForCaller is the legacy name for targetOwnerForRequest. Existing
+// handlers still use it to choose credential buckets; new authenticated
+// operator checks should consume principal from context instead.
+func (w *webMux) ownerForCaller(r *http.Request) (key, label string) {
+	return w.targetOwnerForRequest(r)
 }
 
 // whoamiData backs the whoami slice of /api/state. No HTTP handler —
@@ -538,9 +656,11 @@ func (w *webMux) apiState(rw http.ResponseWriter, r *http.Request) {
 	w.stateCacheMu.RUnlock()
 
 	state := map[string]any{
-		"whoami":       w.whoamiData(r),
-		"integrations": w.statusList(r),
-		"agents":       w.agentsList(),
+		"whoami":           w.whoamiData(r),
+		"integrations":     w.statusList(r),
+		"agents":           w.agentsList(),
+		"update":           currentUpdateBanner.Load(),
+		"read_only_config": w.g.readOnlyConfig,
 	}
 	body, err := json.Marshal(state)
 	if err != nil {
@@ -577,7 +697,7 @@ func serveState(rw http.ResponseWriter, r *http.Request, body []byte, tag string
 	rw.Header().Set("ETag", tag)
 	rw.Header().Set("Content-Type", "application/json")
 	rw.Header().Set("Cache-Control", "no-cache")
-	rw.Write(body)
+	_, _ = rw.Write(body)
 }
 
 // apiStatus returns the credentials list for the dashboard. Filters
@@ -594,7 +714,7 @@ func serveState(rw http.ResponseWriter, r *http.Request, body []byte, tag string
 // Empty values clear the slot.
 func (w *webMux) apiCredentialsSet(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		http.Error(rw, "POST", 405)
+		http.Error(rw, "POST", http.StatusMethodNotAllowed)
 		return
 	}
 	var body struct {
@@ -660,7 +780,7 @@ func (w *webMux) apiCredentialsSet(rw http.ResponseWriter, r *http.Request) {
 // button on the dashboard.
 func (w *webMux) apiCredentialsClear(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		http.Error(rw, "POST", 405)
+		http.Error(rw, "POST", http.StatusMethodNotAllowed)
 		return
 	}
 	var body struct {
@@ -705,8 +825,8 @@ func lookupOAuthFlow(policy *config.CompiledPolicy, name string) *config.OAuthIn
 
 // apiConfig serves the entire gateway.hcl for the global settings
 // editor. GET returns the file as-is (preserves operator comments).
-// PUT validates by re-parsing + writing through writeConfigHCL so
-// hot-reload picks up the change.
+// Writes must go through /api/config/preview + /api/config/save so
+// operators can review the formatted diff before the atomic write.
 func (w *webMux) apiConfig(rw http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
@@ -715,35 +835,365 @@ func (w *webMux) apiConfig(rw http.ResponseWriter, r *http.Request) {
 			http.Error(rw, err.Error(), 500)
 			return
 		}
+		rev := revisionForBytes(b)
+		rw.Header().Set("ETag", `"`+rev+`"`)
+		rw.Header().Set("X-Config-Revision", rev)
 		rw.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		rw.Write(b)
+		_, _ = rw.Write(b)
 	case "PUT":
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-		if err != nil {
-			http.Error(rw, err.Error(), 400)
-			return
-		}
-		// Validate via the new typed-block loader before persisting —
-		// rejects unknown attributes / dangling references / kind
-		// mismatches with precise diagnostics.
-		if _, diags := config.LoadBytes(body, "gateway.hcl"); diags.HasErrors() {
-			http.Error(rw, "hcl: "+diags.Error(), 400)
-			return
-		}
-		// atomic write — mtime watcher reloads + applies.
-		tmp := w.g.cfgPath + ".tmp"
-		if err := os.WriteFile(tmp, body, 0o600); err != nil {
-			http.Error(rw, "write: "+err.Error(), 500)
-			return
-		}
-		if err := os.Rename(tmp, w.g.cfgPath); err != nil {
-			http.Error(rw, "rename: "+err.Error(), 500)
-			return
-		}
-		writeJSON(rw, map[string]any{"ok": true, "bytes": len(body)})
+		http.Error(rw, "use /api/config/preview then /api/config/save", http.StatusMethodNotAllowed)
 	default:
-		http.Error(rw, "GET or PUT", 405)
+		http.Error(rw, "GET or PUT", http.StatusMethodNotAllowed)
 	}
+}
+
+func (w *webMux) apiConfigPreview(rw http.ResponseWriter, r *http.Request) {
+	if w.g.readOnlyConfig {
+		http.Error(rw, "read-only config", http.StatusForbidden)
+		return
+	}
+	if r.Method != "POST" {
+		http.Error(rw, "POST", http.StatusMethodNotAllowed)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(rw, err.Error(), 400)
+		return
+	}
+	formatted, err := validateAndFormatConfig(body)
+	if err != nil {
+		http.Error(rw, err.Error(), 400)
+		return
+	}
+	w.mu.Lock()
+	var current []byte
+	var rev string
+	var token string
+	if err := withConfigFileLock(w.g.cfgPath, func() error {
+		current, err = os.ReadFile(w.g.cfgPath)
+		if err != nil {
+			return err
+		}
+		rev = revisionForBytes(current)
+		token, err = newConfigPreviewToken()
+		if err != nil {
+			return err
+		}
+		w.configPreviewTokens()[token] = configPreviewToken{
+			revision:    rev,
+			contentHash: revisionForBytes(formatted),
+		}
+		return nil
+	}); err != nil {
+		w.mu.Unlock()
+		http.Error(rw, err.Error(), 500)
+		return
+	}
+	w.mu.Unlock()
+	writeJSON(rw, map[string]any{
+		"ok":            true,
+		"formatted":     string(formatted),
+		"diff":          unifiedDiff("gateway.hcl", "formatted draft", string(current), string(formatted)),
+		"changed":       !bytes.Equal(current, formatted),
+		"bytes":         len(formatted),
+		"revision":      rev,
+		"preview_token": token,
+	})
+}
+
+func (w *webMux) apiConfigSave(rw http.ResponseWriter, r *http.Request) {
+	if w.g.readOnlyConfig {
+		http.Error(rw, "read-only config", http.StatusForbidden)
+		return
+	}
+	if r.Method != "POST" {
+		http.Error(rw, "POST", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Content          string `json:"content"`
+		ExpectedRevision string `json:"expected_revision"`
+		PreviewToken     string `json:"preview_token"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		http.Error(rw, err.Error(), 400)
+		return
+	}
+	if body.ExpectedRevision == "" {
+		http.Error(rw, "expected_revision required", 400)
+		return
+	}
+	if body.PreviewToken == "" {
+		http.Error(rw, "preview_token required", 400)
+		return
+	}
+	formatted, err := validateAndFormatConfig([]byte(body.Content))
+	if err != nil {
+		http.Error(rw, err.Error(), 400)
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	preview, ok := w.configPreviewTokens()[body.PreviewToken]
+	if !ok {
+		http.Error(rw, "preview token not found; review changes before saving", http.StatusPreconditionRequired)
+		return
+	}
+	if preview.revision != body.ExpectedRevision || preview.contentHash != revisionForBytes(formatted) {
+		http.Error(rw, "preview token does not match reviewed content", http.StatusPreconditionFailed)
+		return
+	}
+	if err := withConfigFileLock(w.g.cfgPath, func() error {
+		currentRev, err := fileRevision(w.g.cfgPath)
+		if err != nil {
+			return err
+		}
+		if body.ExpectedRevision != currentRev {
+			return errConfigRevisionConflict
+		}
+		if err := writeConfigAtomically(w.g.cfgPath, formatted); err != nil {
+			return err
+		}
+		delete(w.previews, body.PreviewToken)
+		return nil
+	}); err != nil {
+		if errors.Is(err, errConfigRevisionConflict) {
+			http.Error(rw, "gateway.hcl changed since preview; reload before saving", http.StatusConflict)
+			return
+		}
+		http.Error(rw, err.Error(), 500)
+		return
+	}
+	writeJSON(rw, map[string]any{"ok": true, "bytes": len(formatted), "revision": revisionForBytes(formatted)})
+}
+
+func validateAndFormatConfig(body []byte) ([]byte, error) {
+	if _, diags := config.LoadBytes(body, "gateway.hcl"); diags.HasErrors() {
+		return nil, fmt.Errorf("hcl: %s", diags.Error())
+	}
+	formatted := hclwrite.Format(body)
+	if _, diags := config.LoadBytes(formatted, "gateway.hcl"); diags.HasErrors() {
+		return nil, fmt.Errorf("formatted hcl: %s", diags.Error())
+	}
+	return formatted, nil
+}
+
+func withConfigFileLock(configPath string, fn func() error) error {
+	lockPath := configPath + ".lock"
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("lock: %w", err)
+	}
+	defer func() { _ = lockFile.Close() }()
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("lock: %w", err)
+	}
+	defer func() { _ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN) }()
+	return fn()
+}
+
+func writeConfigAtomically(path string, body []byte) error {
+	mode := os.FileMode(0o600)
+	if st, err := os.Stat(path); err == nil {
+		mode = st.Mode().Perm()
+	}
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if _, err := tmp.Write(body); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write: %w", err)
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("rename: %w", err)
+	}
+	if dirFile, err := os.Open(dir); err == nil {
+		_ = dirFile.Sync()
+		_ = dirFile.Close()
+	}
+	return nil
+}
+
+func fileRevision(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return revisionForBytes(b), nil
+}
+
+func revisionForBytes(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+func (w *webMux) configPreviewTokens() map[string]configPreviewToken {
+	if w.previews == nil {
+		w.previews = map[string]configPreviewToken{}
+	}
+	return w.previews
+}
+
+func newConfigPreviewToken() (string, error) {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("preview token: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+type diffOp struct {
+	prefix  byte
+	line    string
+	oldLine int
+	newLine int
+}
+
+const maxUnifiedDiffCells = 4_000_000 // ~32 MiB DP table on 64-bit Go; covers ~2k x ~2k line configs.
+
+func unifiedDiff(oldName, newName, oldText, newText string) string {
+	if oldText == newText {
+		return ""
+	}
+	oldLines := splitDiffLines(oldText)
+	newLines := splitDiffLines(newText)
+	var b strings.Builder
+	fmt.Fprintf(&b, "--- %s\n+++ %s\n", oldName, newName)
+
+	if len(oldLines) > 0 && len(newLines) > 0 && len(oldLines) > maxUnifiedDiffCells/len(newLines) {
+		fmt.Fprintf(&b, "@@ -1,%d +1,%d @@\n", len(oldLines), len(newLines))
+		for _, line := range oldLines {
+			b.WriteByte('-')
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+		for _, line := range newLines {
+			b.WriteByte('+')
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+		return b.String()
+	}
+
+	dp := make([][]int, len(oldLines)+1)
+	for i := range dp {
+		dp[i] = make([]int, len(newLines)+1)
+	}
+	for i := len(oldLines) - 1; i >= 0; i-- {
+		for j := len(newLines) - 1; j >= 0; j-- {
+			if oldLines[i] == newLines[j] {
+				dp[i][j] = dp[i+1][j+1] + 1
+			} else if dp[i+1][j] >= dp[i][j+1] {
+				dp[i][j] = dp[i+1][j]
+			} else {
+				dp[i][j] = dp[i][j+1]
+			}
+		}
+	}
+
+	ops := make([]diffOp, 0, len(oldLines)+len(newLines))
+	for i, j := 0, 0; i < len(oldLines) || j < len(newLines); {
+		switch {
+		case i < len(oldLines) && j < len(newLines) && oldLines[i] == newLines[j]:
+			ops = append(ops, diffOp{prefix: ' ', line: oldLines[i], oldLine: i + 1, newLine: j + 1})
+			i++
+			j++
+		case i < len(oldLines) && (j == len(newLines) || dp[i+1][j] >= dp[i][j+1]):
+			ops = append(ops, diffOp{prefix: '-', line: oldLines[i], oldLine: i + 1, newLine: j + 1})
+			i++
+		case j < len(newLines):
+			ops = append(ops, diffOp{prefix: '+', line: newLines[j], oldLine: i + 1, newLine: j + 1})
+			j++
+		}
+	}
+
+	const contextLines = 3
+	for start := 0; start < len(ops); {
+		for start < len(ops) && ops[start].prefix == ' ' {
+			start++
+		}
+		if start >= len(ops) {
+			break
+		}
+
+		hunkStart := max(start-contextLines, 0)
+		lastChange := start
+		end := min(start+contextLines+1, len(ops))
+		for scan := start + 1; scan < len(ops); scan++ {
+			if ops[scan].prefix == ' ' {
+				continue
+			}
+			if scan > end+contextLines {
+				break
+			}
+			lastChange = scan
+			end = min(scan+contextLines+1, len(ops))
+		}
+
+		writeDiffHunk(&b, ops[hunkStart:end])
+		start = lastChange + 1
+	}
+
+	return b.String()
+}
+
+func writeDiffHunk(b *strings.Builder, ops []diffOp) {
+	if len(ops) == 0 {
+		return
+	}
+	oldStart, newStart := 0, 0
+	oldCount, newCount := 0, 0
+	for _, op := range ops {
+		if oldStart == 0 && op.prefix != '+' {
+			oldStart = op.oldLine
+		}
+		if newStart == 0 && op.prefix != '-' {
+			newStart = op.newLine
+		}
+		if op.prefix != '+' {
+			oldCount++
+		}
+		if op.prefix != '-' {
+			newCount++
+		}
+	}
+	if oldStart == 0 {
+		oldStart = ops[0].oldLine
+	}
+	if newStart == 0 {
+		newStart = ops[0].newLine
+	}
+
+	fmt.Fprintf(b, "@@ -%d,%d +%d,%d @@\n", oldStart, oldCount, newStart, newCount)
+	for _, op := range ops {
+		b.WriteByte(op.prefix)
+		b.WriteString(op.line)
+		b.WriteByte('\n')
+	}
+}
+
+func splitDiffLines(s string) []string {
+	trimmed := strings.TrimSuffix(s, "\n")
+	if trimmed == "" {
+		return nil
+	}
+	return strings.Split(trimmed, "\n")
 }
 
 // apiRulesAI translates a natural-language request into an HCL rule
@@ -756,7 +1206,7 @@ func (w *webMux) apiConfig(rw http.ResponseWriter, r *http.Request) {
 // builds — the contents are HCL.)
 func (w *webMux) apiRulesAI(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		http.Error(rw, "POST", 405)
+		http.Error(rw, "POST", http.StatusMethodNotAllowed)
 		return
 	}
 	var body struct {
@@ -775,12 +1225,12 @@ func (w *webMux) apiRulesAI(rw http.ResponseWriter, r *http.Request) {
 	}
 	owner, _ := w.ownerForCaller(r)
 	if owner == "" {
-		http.Error(rw, "tailnet identity required", 403)
+		http.Error(rw, "tailnet identity required", http.StatusForbidden)
 		return
 	}
 	out, refused, err := generateRuleHCL(r.Context(), w.g, body.Agent, owner, body.Prompt, body.CurrentYAML, body.Scope)
 	if err != nil {
-		http.Error(rw, "ai: "+err.Error(), 502)
+		http.Error(rw, "ai: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	resp := map[string]string{"yaml": out}
@@ -796,7 +1246,7 @@ func (w *webMux) apiHITLPending(rw http.ResponseWriter, _ *http.Request) {
 
 func (w *webMux) apiHITLDecide(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		http.Error(rw, "POST", 405)
+		http.Error(rw, "POST", http.StatusMethodNotAllowed)
 		return
 	}
 	var body struct {
@@ -831,14 +1281,14 @@ func (w *webMux) apiEventsSSE(rw http.ResponseWriter, r *http.Request) {
 	wantIP := r.URL.Query().Get("agent")
 
 	if w.g.sink == nil {
-		fmt.Fprintf(rw, ": no sink\n\n")
+		_, _ = fmt.Fprintf(rw, ": no sink\n\n")
 		flusher.Flush()
 		return
 	}
 	backlog, ch, cancel := w.g.sink.RecentAndSubscribe()
 	defer cancel()
 
-	fmt.Fprint(rw, ": connected\n\n")
+	_, _ = fmt.Fprint(rw, ": connected\n\n")
 	// Backlog ships as a single `event: backlog` SSE message carrying
 	// the whole array. Client renders that batch in one commit (no
 	// per-event rAF flood), then switches to per-event live streaming.
@@ -856,7 +1306,7 @@ func (w *webMux) apiEventsSSE(rw http.ResponseWriter, r *http.Request) {
 		if len(filtered) > 0 {
 			b, err := json.Marshal(filtered)
 			if err == nil {
-				fmt.Fprintf(rw, "event: backlog\ndata: %s\n\n", b)
+				_, _ = fmt.Fprintf(rw, "event: backlog\ndata: %s\n\n", b)
 			}
 		}
 	}
@@ -870,7 +1320,7 @@ func (w *webMux) apiEventsSSE(rw http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-keepalive.C:
-			fmt.Fprint(rw, ": ka\n\n")
+			_, _ = fmt.Fprint(rw, ": ka\n\n")
 			flusher.Flush()
 		case pkt, ok := <-ch:
 			if !ok {
@@ -879,7 +1329,7 @@ func (w *webMux) apiEventsSSE(rw http.ResponseWriter, r *http.Request) {
 			if wantIP != "" && pkt.ev.AgentIP != wantIP {
 				continue
 			}
-			fmt.Fprintf(rw, "data: %s\n\n", pkt.raw)
+			_, _ = fmt.Fprintf(rw, "data: %s\n\n", pkt.raw)
 			flusher.Flush()
 		}
 	}
@@ -898,6 +1348,7 @@ func (w *webMux) apiActionByID(
 		e           Event
 		tsNs        int64
 		mode        sql.NullString
+		family      sql.NullString
 		agentIP     sql.NullString
 		method      sql.NullString
 		path        sql.NullString
@@ -912,20 +1363,21 @@ func (w *webMux) apiActionByID(
 		respBody    sql.NullString
 		reqHeaders  sql.NullString
 		respHeaders sql.NullString
+		extra       sql.NullString
 	)
 	err := w.g.db.QueryRow(`
-		SELECT ts_ns, mode, agent_ip, host, method, path,
+		SELECT ts_ns, mode, family, agent_ip, host, method, path,
 		       status, bytes_in, bytes_out, ms, action,
 		       reason, req_sha, resp_sha,
 		       req_body, resp_body,
-		       req_headers, resp_headers
+		       req_headers, resp_headers, extra
 		FROM actions WHERE action_id = ?`, actionID,
 	).Scan(
-		&tsNs, &mode, &agentIP, &e.Host,
+		&tsNs, &mode, &family, &agentIP, &e.Host,
 		&method, &path, &status, &in, &ot, &ms,
 		&action, &reason, &reqSha, &respSha,
 		&reqBody, &respBody,
-		&reqHeaders, &respHeaders,
+		&reqHeaders, &respHeaders, &extra,
 	)
 	if err == sql.ErrNoRows {
 		http.Error(rw, "not found", 404)
@@ -938,6 +1390,7 @@ func (w *webMux) apiActionByID(
 	e.ID = actionID
 	e.Ts = time.Unix(0, tsNs).UTC()
 	e.Mode = mode.String
+	e.Family = family.String
 	e.AgentIP = agentIP.String
 	e.Method = method.String
 	e.Path = path.String
@@ -953,6 +1406,9 @@ func (w *webMux) apiActionByID(
 	e.RespBody = respBody.String
 	unmarshalHeaders(reqHeaders.String, &e.ReqHeaders)
 	unmarshalHeaders(respHeaders.String, &e.RespHeaders)
+	if extra.String != "" {
+		_ = json.Unmarshal([]byte(extra.String), &e.Facets)
+	}
 	writeJSON(rw, e)
 }
 
@@ -1006,35 +1462,32 @@ func (w *webMux) apiAnalytics(
 	}
 	agent := q.Get("agent")
 
-	var query string
-	var args []any
+	where := "ts_ns >= ?"
+	whereArgs := []any{cutoff}
 	if agent != "" {
-		query = `
-			SELECT action_id, ts_ns, mode, agent_ip, host,
-			       method, path, status, bytes_in, bytes_out,
-			       ms, action, reason
-			FROM actions
-			WHERE ts_ns >= ? AND agent_ip = ?
-			ORDER BY RANDOM()
-			LIMIT ?`
-		args = []any{cutoff, agent, limit}
-	} else {
-		query = `
-			SELECT action_id, ts_ns, mode, agent_ip, host,
-			       method, path, status, bytes_in, bytes_out,
-			       ms, action, reason
-			FROM actions
-			WHERE ts_ns >= ?
-			ORDER BY RANDOM()
-			LIMIT ?`
-		args = []any{cutoff, limit}
+		where += " AND agent_ip = ?"
+		whereArgs = append(whereArgs, agent)
 	}
+
+	// Sort by the random suffix of action_id (UUIDv7, so the last
+	// chars are uniform random) instead of RANDOM(). Same range +
+	// agent → same sample, so a polling dashboard doesn't reshuffle
+	// the scatter every 10 s.
+	query := `
+		SELECT action_id, ts_ns, mode, family, agent_ip, host,
+		       method, path, status, bytes_in, bytes_out,
+		       ms, action, reason, extra
+		FROM actions
+		WHERE ` + where + `
+		ORDER BY COALESCE(substr(action_id, -8), CAST(ts_ns AS TEXT))
+		LIMIT ?`
+	args := append(append([]any{}, whereArgs...), limit)
 	rows, err := w.g.db.Query(query, args...)
 	if err != nil {
 		http.Error(rw, err.Error(), 500)
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := make([]Event, 0, 256)
 	for rows.Next() {
 		var (
@@ -1042,6 +1495,7 @@ func (w *webMux) apiAnalytics(
 			actionID sql.NullString
 			tsNs     int64
 			mode     sql.NullString
+			family   sql.NullString
 			agentIP  sql.NullString
 			method   sql.NullString
 			path     sql.NullString
@@ -1050,11 +1504,12 @@ func (w *webMux) apiAnalytics(
 			ms       sql.NullInt64
 			action   sql.NullString
 			reason   sql.NullString
+			extra    sql.NullString
 		)
 		if err := rows.Scan(
-			&actionID, &tsNs, &mode, &agentIP, &e.Host,
+			&actionID, &tsNs, &mode, &family, &agentIP, &e.Host,
 			&method, &path, &status, &in, &ot, &ms,
-			&action, &reason,
+			&action, &reason, &extra,
 		); err != nil {
 			http.Error(rw, err.Error(), 500)
 			return
@@ -1062,6 +1517,7 @@ func (w *webMux) apiAnalytics(
 		e.ID = actionID.String
 		e.Ts = time.Unix(0, tsNs).UTC()
 		e.Mode = mode.String
+		e.Family = family.String
 		e.AgentIP = agentIP.String
 		e.Method = method.String
 		e.Path = path.String
@@ -1071,24 +1527,167 @@ func (w *webMux) apiAnalytics(
 		e.Ms = ms.Int64
 		e.Action = action.String
 		e.Reason = reason.String
+		if extra.String != "" {
+			_ = json.Unmarshal([]byte(extra.String), &e.Facets)
+		}
 		out = append(out, e)
 	}
+	if err := rows.Err(); err != nil {
+		http.Error(rw, err.Error(), 500)
+		return
+	}
+
+	// Real (non-sampled) totals so the top stats reflect the actual
+	// request volume, not the chart's 5000-row sample. Filtered by
+	// the same range + agent as the events query above.
+	var totalCount int64
+	var errorCount sql.NullInt64
+	_ = w.g.db.QueryRow(
+		`SELECT COUNT(*),
+		        SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END)
+		 FROM actions WHERE `+where, whereArgs...,
+	).Scan(&totalCount, &errorCount)
+
+	// Real per-device / per-host counts so the bar lists aren't
+	// capped at the sample size either. Same filter; bar charts only
+	// render the top ~10 so 50 is a generous cap.
+	byDevice := groupCount(w.g.db,
+		`SELECT agent_ip, COUNT(*) FROM actions
+		 WHERE `+where+` AND agent_ip IS NOT NULL AND agent_ip != ''
+		 GROUP BY agent_ip ORDER BY 2 DESC LIMIT 50`,
+		whereArgs)
+	byHost := groupCount(w.g.db,
+		`SELECT host, COUNT(*) FROM actions
+		 WHERE `+where+` AND host IS NOT NULL AND host != ''
+		 GROUP BY host ORDER BY 2 DESC LIMIT 50`,
+		whereArgs)
+
 	writeJSON(rw, map[string]any{
-		"events": out,
-		"total":  len(out),
+		"events":      out,
+		"total":       len(out),
+		"total_count": totalCount,
+		"error_count": errorCount.Int64,
+		"by_device":   byDevice,
+		"by_host":     byHost,
 	})
+}
+
+// apiFacets returns every registered facet's reporting + match
+// schema. The dashboard fetches this once at boot and uses it to
+// render per-family columns (HTTPS: method/path/status, SQL:
+// verb/tables/..., k8s: verb/resource/...) directly from the JSON
+// `facets` payload on each event, instead of carrying a hardcoded
+// switch on family strings.
+func (w *webMux) apiFacets(rw http.ResponseWriter, r *http.Request) {
+	_ = r
+	type matchKeyJSON struct {
+		Name string `json:"name"`
+		Kind string `json:"kind"`
+	}
+	type reportFieldJSON struct {
+		Name  string `json:"name"`
+		Kind  string `json:"kind"`
+		Label string `json:"label,omitempty"`
+	}
+	type facetJSON struct {
+		Name             string            `json:"name"`
+		RuleType         string            `json:"rule_type"`
+		EndpointFamilies []string          `json:"endpoint_families"`
+		Transport        string            `json:"transport,omitempty"`
+		HITLQueryLabel   string            `json:"hitl_query_label,omitempty"`
+		HostIsResource   bool              `json:"host_is_resource"`
+		MatchKeys        []matchKeyJSON    `json:"match_keys"`
+		ReportFields     []reportFieldJSON `json:"report_fields"`
+	}
+	all := facet.All()
+	out := make([]facetJSON, 0, len(all))
+	for _, f := range all {
+		mks := f.MatchKeys()
+		fks := f.ReportFields()
+		entry := facetJSON{
+			Name:             f.Name(),
+			RuleType:         f.RuleType(),
+			EndpointFamilies: f.EndpointFamilies(),
+			Transport:        f.Transport(),
+			HITLQueryLabel:   f.HITLQueryLabel(),
+			HostIsResource:   f.HostIsResource(),
+			MatchKeys:        make([]matchKeyJSON, len(mks)),
+			ReportFields:     make([]reportFieldJSON, len(fks)),
+		}
+		for i, mk := range mks {
+			entry.MatchKeys[i] = matchKeyJSON{Name: mk.Name, Kind: matchKindName(mk.Kind)}
+		}
+		for i, fk := range fks {
+			entry.ReportFields[i] = reportFieldJSON{
+				Name: fk.Name, Kind: reportKindName(fk.Kind), Label: fk.Label,
+			}
+		}
+		out = append(out, entry)
+	}
+	writeJSON(rw, map[string]any{"facets": out})
+}
+
+func matchKindName(k facet.MatchValueKind) string {
+	switch k {
+	case facet.MatchString:
+		return "string"
+	case facet.MatchStringList:
+		return "string_list"
+	case facet.MatchGlobList:
+		return "glob_list"
+	case facet.MatchStringMap:
+		return "string_map"
+	case facet.MatchRegex:
+		return "regex"
+	case facet.MatchObject:
+		return "object"
+	case facet.MatchCredentialRef:
+		return "credential_ref"
+	}
+	return ""
+}
+
+func reportKindName(k facet.ReportValueKind) string {
+	switch k {
+	case facet.ReportString:
+		return "string"
+	case facet.ReportStringList:
+		return "string_list"
+	case facet.ReportStringMap:
+		return "string_map"
+	case facet.ReportInt:
+		return "int"
+	}
+	return ""
+}
+
+func groupCount(db *sql.DB, q string, args []any) []map[string]any {
+	out := []map[string]any{}
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return out
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var k sql.NullString
+		var c int64
+		if err := rows.Scan(&k, &c); err != nil || !k.Valid {
+			continue
+		}
+		out = append(out, map[string]any{
+			"key": k.String, "count": c,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return []map[string]any{}
+	}
+	return out
 }
 
 func writeJSON(rw http.ResponseWriter, v any) {
 	rw.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(rw).Encode(v)
+	_ = json.NewEncoder(rw).Encode(v)
 }
-
-// apiOnboardStart begins device-flow onboarding. Public (no auth)
-// since this IS how a brand-new client first contacts the gateway.
-// The returned user_code must still be approved by an existing tailnet
-// member on the dashboard.
-func allIntegrationKeys() []string { return displayOrder }
 
 // Event sink + sampling helpers (fed by g.handle/mitm/splice; consumed
 // by the dashboard SSE stream and the on-disk event log).
@@ -1120,6 +1719,19 @@ type Event struct {
 	// to disambiguate masked client frames from unmasked server frames.
 	Frame     string `json:"frame,omitempty"`
 	Direction string `json:"direction,omitempty"`
+
+	// Family identifies which protocol-family facet emitted this
+	// event ("https", "sql", "k8s", or a future plugin's name).
+	// Persisted as a dedicated column on actions so analytics can
+	// filter by family; drives dashboard column selection via
+	// /api/facets. Empty for splice events and pre-migration rows.
+	Family string `json:"family,omitempty"`
+
+	// Facets carries the per-family report payload — the result of
+	// the family's facet.Runtime.Report hook against the matched
+	// request. Keys correspond to the family's ReportFields().
+	// Serialised as JSON into the actions table's `extra` column.
+	Facets map[string]any `json:"facets,omitempty"`
 }
 
 // eventPacket carries an event plus its marshaled JSON bytes. drain()
@@ -1171,14 +1783,14 @@ func NewSink(db *sql.DB, buf int) (*Sink, error) {
 
 func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 	rows, err := db.Query(`
-		SELECT action_id, ts_ns, mode, agent_ip, host,
+		SELECT action_id, ts_ns, mode, family, agent_ip, host,
 		       method, path, status, bytes_in, bytes_out,
-		       ms, action, reason, req_sha, resp_sha
+		       ms, action, reason, req_sha, resp_sha, extra
 		FROM actions ORDER BY id DESC LIMIT ?`, n)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := make([]Event, 0, n)
 	for rows.Next() {
 		var (
@@ -1186,6 +1798,7 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 			actionID sql.NullString
 			tsNs     int64
 			mode     sql.NullString
+			family   sql.NullString
 			agentIP  sql.NullString
 			method   sql.NullString
 			path     sql.NullString
@@ -1196,17 +1809,19 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 			reason   sql.NullString
 			reqSha   sql.NullString
 			respSha  sql.NullString
+			extra    sql.NullString
 		)
 		if err := rows.Scan(
-			&actionID, &tsNs, &mode, &agentIP, &e.Host,
+			&actionID, &tsNs, &mode, &family, &agentIP, &e.Host,
 			&method, &path, &status, &in, &ot, &ms,
-			&action, &reason, &reqSha, &respSha,
+			&action, &reason, &reqSha, &respSha, &extra,
 		); err != nil {
 			return nil, err
 		}
 		e.ID = actionID.String
 		e.Ts = time.Unix(0, tsNs).UTC()
 		e.Mode = mode.String
+		e.Family = family.String
 		e.AgentIP = agentIP.String
 		e.Method = method.String
 		e.Path = path.String
@@ -1218,6 +1833,9 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 		e.Reason = reason.String
 		e.ReqSha = reqSha.String
 		e.RespSha = respSha.String
+		if extra.String != "" {
+			_ = json.Unmarshal([]byte(extra.String), &e.Facets)
+		}
 		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {
@@ -1254,6 +1872,13 @@ func (s *Sink) drain() {
 		// double-count requests in the request-history view and bloat
 		// the table for long-poll / WS sessions.
 		persist := e.Phase == "" || e.Phase == "end"
+		if persist && e.ID == "" {
+			// Some connection-oriented endpoint runtimes emit a single terminal
+			// event instead of the HTTP start/end pair. Give those events a
+			// stable action_id before DB insert + SSE fan-out so every persisted
+			// live-request row can navigate to /api/actions/<id>.
+			e.ID = newReqID()
+		}
 		if s.db != nil && persist {
 			var rqhJSON, rshJSON []byte
 			if len(e.ReqHeaders) > 0 {
@@ -1262,20 +1887,25 @@ func (s *Sink) drain() {
 			if len(e.RespHeaders) > 0 {
 				rshJSON, _ = json.Marshal(e.RespHeaders)
 			}
-			s.db.Exec(`
+			var extraJSON []byte
+			if len(e.Facets) > 0 {
+				extraJSON, _ = json.Marshal(e.Facets)
+			}
+			_, _ = s.db.Exec(`
 				INSERT INTO actions
-				 (action_id, ts_ns, mode, agent_ip, host,
+				 (action_id, ts_ns, mode, family, agent_ip, host,
 				  method, path, status, bytes_in, bytes_out,
 				  ms, action, reason, req_sha, resp_sha,
 				  req_body, resp_body,
-				  req_headers, resp_headers)
-				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-			`, e.ID, e.Ts.UnixNano(), e.Mode, e.AgentIP,
+				  req_headers, resp_headers, extra)
+				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			`, e.ID, e.Ts.UnixNano(), e.Mode, e.Family, e.AgentIP,
 				e.Host, e.Method, e.Path, e.Status,
 				e.In, e.Out, e.Ms, e.Action, e.Reason,
 				e.ReqSha, e.RespSha,
 				e.ReqBody, e.RespBody,
-				string(rqhJSON), string(rshJSON))
+				string(rqhJSON), string(rshJSON),
+				string(extraJSON))
 		}
 
 		// Marshal once per event regardless of subscriber count. Old

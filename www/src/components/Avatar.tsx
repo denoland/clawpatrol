@@ -3,9 +3,7 @@
 
 import { useState } from "react";
 
-const PALETTE = [
-  "#a78bfa", "#f87171", "#fbbf24", "#34d399", "#60a5fa", "#f472b6", "#facc15",
-];
+const PALETTE = ["#a78bfa", "#f87171", "#fbbf24", "#34d399", "#60a5fa", "#f472b6", "#facc15"];
 
 function colorFor(s: string): string {
   let h = 0;

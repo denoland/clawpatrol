@@ -21,7 +21,9 @@ import (
 	chproto "github.com/ClickHouse/clickhouse-go/v2/lib/proto"
 
 	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/facet"
 	"github.com/denoland/clawpatrol/config/match"
+	sqlfacet "github.com/denoland/clawpatrol/config/plugins/facets/sql"
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
@@ -103,7 +105,7 @@ func chValidCompressedMethod(b byte) bool {
 //     the path). Cancel/Ping forward as-is. Server → agent stays a
 //     pure copy past the Hello.
 func (ClickhouseNativeEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHandle) error {
-	defer ch.Conn.Close()
+	defer func() { _ = ch.Conn.Close() }()
 	if ch.Endpoint == nil || ch.Endpoint.Family != "sql" {
 		err := fmt.Errorf("clickhouse_native runtime invoked on non-sql endpoint %v", ch.Endpoint)
 		chEmitError(ch, "wrong-family", "")
@@ -199,7 +201,7 @@ func (ClickhouseNativeEndpointRuntime) HandleConn(ctx context.Context, ch *runti
 		chEmitError(ch, "dial-upstream", fmt.Sprintf("%s: %v", upstreamAddr, err))
 		return fmt.Errorf("dial upstream %s: %w", upstreamAddr, err)
 	}
-	defer upstream.Close()
+	defer func() { _ = upstream.Close() }()
 
 	if chEp.TLS {
 		host := upstreamAddr
@@ -682,17 +684,21 @@ func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName st
 		Family:     "sql",
 		PeerIP:     ch.PeerIP,
 		Credential: credName,
-		SQL: &match.SQLMeta{
+		Meta: &sqlfacet.Meta{
 			Verb:      info.Verb,
 			Tables:    info.Tables,
 			Functions: info.Functions,
 			Statement: info.Statement,
 		},
 	}
+	var facets map[string]any
+	if f := facet.Lookup("sql"); f != nil {
+		facets = f.Report(mreq)
+	}
 	cr := runtime.MatchRequest(ch.Endpoint, mreq)
 	if cr == nil {
 		chEmit(ch, runtime.ConnEvent{
-			Action: "allow", Verb: info.Verb, Summary: chSummary(info),
+			Action: "allow", Verb: info.Verb, Summary: chSummary(info), Facets: facets,
 		})
 		return "", ""
 	}
@@ -702,7 +708,7 @@ func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName st
 		if ch.Approve == nil {
 			chEmit(ch, runtime.ConnEvent{
 				Action: "deny", Reason: "HITL not configured",
-				Verb: info.Verb, Summary: summary,
+				Verb: info.Verb, Summary: summary, Facets: facets,
 			})
 			return "deny", "approval required but HITL is not configured"
 		}
@@ -717,12 +723,12 @@ func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName st
 			}
 			chEmit(ch, runtime.ConnEvent{
 				Action: "hitl_deny", Reason: reason,
-				Verb: info.Verb, Summary: summary,
+				Verb: info.Verb, Summary: summary, Facets: facets,
 			})
 			return "deny", reason
 		}
 		chEmit(ch, runtime.ConnEvent{
-			Action: "hitl_allow", Verb: info.Verb, Summary: summary,
+			Action: "hitl_allow", Verb: info.Verb, Summary: summary, Facets: facets,
 		})
 		return "", ""
 	}
@@ -734,12 +740,12 @@ func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName st
 		}
 		chEmit(ch, runtime.ConnEvent{
 			Action: "deny", Reason: reason,
-			Verb: info.Verb, Summary: summary,
+			Verb: info.Verb, Summary: summary, Facets: facets,
 		})
 		return "deny", reason
 	}
 	chEmit(ch, runtime.ConnEvent{
-		Action: "allow", Verb: info.Verb, Summary: summary,
+		Action: "allow", Verb: info.Verb, Summary: summary, Facets: facets,
 	})
 	_ = ctx
 	return "", ""

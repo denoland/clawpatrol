@@ -212,6 +212,7 @@ func TestCodexRespondHTTP(t *testing.T) {
 			if !handled {
 				return
 			}
+			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != c.want {
 				t.Fatalf("status=%d want %d", resp.StatusCode, c.want)
 			}
@@ -253,6 +254,7 @@ func TestCodexSynthRoundTripOverHTTP(t *testing.T) {
 				w.Header().Add(k, v)
 			}
 		}
+		defer func() { _ = resp.Body.Close() }()
 		w.WriteHeader(resp.StatusCode)
 		_, _ = io.Copy(w, resp.Body)
 	}))
@@ -262,7 +264,7 @@ func TestCodexSynthRoundTripOverHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get jwks: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		t.Fatalf("status %d", resp.StatusCode)
 	}

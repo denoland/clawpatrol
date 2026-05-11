@@ -11,8 +11,10 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
+// GitHubOAuth is part of the clawpatrol plugin API.
 type GitHubOAuth struct{}
 
+// InjectHTTP is part of the clawpatrol plugin API.
 func (g *GitHubOAuth) InjectHTTP(_ context.Context, req *http.Request, sec runtime.Secret) error {
 	if len(sec.Bytes) == 0 {
 		return nil
@@ -21,6 +23,7 @@ func (g *GitHubOAuth) InjectHTTP(_ context.Context, req *http.Request, sec runti
 	return nil
 }
 
+// EnvVars is part of the clawpatrol plugin API.
 func (*GitHubOAuth) EnvVars() []config.EnvVar {
 	return []config.EnvVar{
 		{Name: "GH_TOKEN", Value: phGitHub, Description: "gh CLI"},

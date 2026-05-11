@@ -1,0 +1,170 @@
+/* Docs-specific styles. Loaded only on /docs/* pages via a <link> tag
+   in docs-render.ts. Plain CSS — not processed by Tailwind. */
+
+.docs-content {
+  h1,
+  h2,
+  h3 {
+    position: relative;
+
+    &:hover .anchor {
+      opacity: 1;
+    }
+  }
+
+  .anchor {
+    /* Floats in the heading's left margin so headings start flush;
+       reveals on hover without shifting the heading text. */
+    position: absolute;
+    right: 100%;
+    margin-right: 0.3em;
+    text-decoration: none;
+    opacity: 0;
+    font-weight: 400;
+    color: var(--color-text-muted);
+    transition: opacity 0.15s;
+  }
+
+  :where(h1, h2, h3, h4, h5, h6) {
+    font-family: var(--font-display);
+    font-weight: 700;
+    line-height: 1.1;
+    margin-bottom: 0.75rem;
+  }
+
+  h1 {
+    font-size: 2.75rem;
+  }
+
+  h2 {
+    font-size: 2rem;
+    margin-top: 3.5rem;
+  }
+
+  h3 {
+    font-size: 1.5rem;
+    margin-top: 3rem;
+  }
+
+  h4 {
+    font-size: 1.25rem;
+    margin-top: 2rem;
+  }
+
+  h5 {
+    font-size: 1.125rem;
+    margin-top: 1rem;
+  }
+
+  p {
+    margin-bottom: 1rem;
+    line-height: 1.7;
+  }
+
+  ul,
+  ol {
+    margin-bottom: 1rem;
+    padding-left: 1.5rem;
+    list-style: initial;
+    padding-left: 1rem;
+
+    ::marker {
+      color: var(--color-navy);
+    }
+  }
+
+  li {
+    margin-bottom: 0.5rem;
+  }
+
+  pre,
+  code {
+    scrollbar-width: none;
+  }
+
+  pre {
+    background: var(--color-navy);
+    color: var(--color-navy-100);
+    padding: 1rem;
+    border-radius: 0.5rem;
+    overflow-x: auto;
+    margin-bottom: 1rem;
+    font-size: 0.875rem;
+
+    @media (min-width: 64rem) {
+      padding: 1.5rem;
+    }
+  }
+
+  /* Defeat the hljs theme's own background+padding on `.hljs` so the
+     pre's navy bg + rhythm win. Token colors (`.hljs-keyword` etc.)
+     still come from the imported theme. */
+  pre code.hljs {
+    background: transparent;
+    padding: 0;
+  }
+
+  code {
+    font-family: var(--font-mono);
+  }
+
+  :not(pre) > code {
+    background: var(--color-navy-50);
+    padding: 0.15em 0.4em;
+    border-radius: 0.25rem;
+    border: 1px solid var(--color-navy-100);
+    font-size: 0.9em;
+  }
+
+  a {
+    color: var(--color-navy-400);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    font-weight: 500;
+
+    &:hover {
+      text-decoration-color: var(--color-rust);
+    }
+  }
+
+  blockquote {
+    border-left: 3px solid var(--color-navy-200);
+    padding-left: 1rem;
+    margin-bottom: 1rem;
+    color: var(--color-text-muted);
+  }
+
+  /* Tables are emitted wrapped in `.table-wrap` by docs-render.ts so
+     wide tables scroll horizontally instead of blowing out the page on
+     narrow viewports. The wrap owns the block-level margin; the table
+     itself fills the wrap. */
+  .table-wrap {
+    margin-bottom: 1rem;
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    border: 2px solid var(--color-navy);
+    font-size: 0.75rem;
+  }
+
+  th,
+  td {
+    border: 1px solid var(--color-navy-100);
+    padding: 0.5rem 0.75rem;
+    text-align: left;
+  }
+
+  th {
+    background: var(--color-navy-50);
+    font-weight: 600;
+    /* line-height: 1; */
+  }
+
+  strong {
+    font-weight: 600;
+  }
+}

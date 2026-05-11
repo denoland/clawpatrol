@@ -1,7 +1,7 @@
 export function Footer() {
   return (
     <footer
-      class="px-8 py-16 text-xs
+      class="px-6 sm:px-8 py-12 sm:py-16 text-xs
         font-mono text-canvas bg-console-dark"
     >
       <div
@@ -33,10 +33,7 @@ export function Footer() {
             .
           </p>
         </div>
-        <nav
-          aria-label="Footer"
-          class="flex flex-wrap gap-x-6 gap-y-2"
-        >
+        <nav aria-label="Footer" class="flex flex-wrap gap-x-6 gap-y-2">
           <a
             href="/docs/"
             class="underline underline-offset-4

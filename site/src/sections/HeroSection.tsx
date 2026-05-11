@@ -11,10 +11,10 @@ export function HeroSection() {
         class="grid md:grid-cols-2 gap-10
         md:gap-16 items-center"
       >
-        <div>
+        <div class="min-w-0">
           <h1
-            class="text-3xl sm:text-4xl md:text-5xl md:text-[3.5rem]
-              font-extrabold
+            class="text-4xl sm:text-5xl md:text-6xl md:text-[4rem]
+              font-bold
                mb-8 font-display text-balance
               text-text"
           >
@@ -24,13 +24,12 @@ export function HeroSection() {
             class="mb-10 max-w-lg
             text-text-muted"
           >
-            An agent stuck in a sandbox is a toy. Handing it your prod
-            keys is reckless. Claw Patrol sits at the only universal
-            checkpoint — the network — between your agents and real
-            systems. Every outbound action runs against rules you write
-            in HCL. Risky ones get a human in Slack or an LLM judge.
-            Secrets live in the proxy, not the agent. Works with Claude
-            Code, Codex, or any agent — no code changes.
+            An agent stuck in a sandbox is a toy. Handing it your prod keys is
+            reckless. Claw Patrol sits at the only universal checkpoint — the
+            network — between your agents and real systems. Every outbound
+            action runs against rules you write in HCL. Risky ones get a human
+            in Slack or an LLM judge. Secrets live in the proxy, not the agent.
+            Works with Claude Code, Codex, or any agent — no code changes.
           </p>
           <Button href="https://github.com/denoland/clawpatrol" size="lg">
             Get Started
@@ -40,7 +39,7 @@ export function HeroSection() {
           </div>
         </div>
 
-        <div class="flex justify-center">
+        <div class="flex justify-center min-w-0">
           <img
             src="/clawpatrol.png"
             alt="Claw Patrol mascot"
@@ -49,20 +48,6 @@ export function HeroSection() {
           />
         </div>
       </div>
-
-      <p
-        class="text-sm mt-24 text-center text-text-muted
-        font-sans"
-      >
-        Built by{" "}
-        <a
-          href="https://deno.com"
-          class="underline underline-offset-2
-            transition-colors text-text"
-        >
-          Deno
-        </a>
-      </p>
     </section>
   );
 }

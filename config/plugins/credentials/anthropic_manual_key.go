@@ -1,3 +1,4 @@
+// Package credentials implements clawpatrol credentials support.
 package credentials
 
 // anthropic_manual_key: Anthropic API key stamped into the
@@ -12,8 +13,10 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
+// AnthropicManualKey is part of the clawpatrol plugin API.
 type AnthropicManualKey struct{}
 
+// InjectHTTP is part of the clawpatrol plugin API.
 func (a *AnthropicManualKey) InjectHTTP(_ context.Context, req *http.Request, sec runtime.Secret) error {
 	if len(sec.Bytes) == 0 {
 		return nil
@@ -22,6 +25,7 @@ func (a *AnthropicManualKey) InjectHTTP(_ context.Context, req *http.Request, se
 	return nil
 }
 
+// SecretSlots is part of the clawpatrol plugin API.
 func (*AnthropicManualKey) SecretSlots() []config.SecretSlot {
 	return []config.SecretSlot{{Label: "Anthropic API key", Description: "sk-ant-…"}}
 }

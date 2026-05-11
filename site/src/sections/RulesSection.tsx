@@ -42,7 +42,7 @@ function RuleCodeBlock() {
      full highlighter for one snippet. */
   return (
     <pre
-      class="text-[13px] sm:text-sm  font-mono
+      class="min-w-0 text-[13px] sm:text-sm  font-mono
         bg-console-dark text-canvas/85 squircle-md p-6 overflow-x-auto
         border border-navy-700"
     >
@@ -107,9 +107,7 @@ function RuleCodeBlock() {
         {"\n  "}
         <span class="text-rust-300">policy</span>
         {" = "}
-        <span class="text-butter-300">
-          "reject changes with bad words"
-        </span>
+        <span class="text-butter-300">"reject changes with bad words"</span>
         {"\n}"}
       </code>
     </pre>
@@ -129,9 +127,9 @@ export function RulesSection() {
       <div class="max-w-6xl mx-auto px-6 sm:px-8">
         <SectionLabel>Approval rules</SectionLabel>
 
-        <div class="grid lg:grid-cols-[2fr_3fr] gap-8 lg:gap-16 xl:gap-32 items-start mb-20">
-          <div>
-            <h3 class="text-3xl sm:text-4xl md:text-5xl lg:text-[2.75rem] font-display font-extrabold  mb-6 text-text">
+        <div class="grid grid-cols-1 lg:grid-cols-[2fr_3fr] gap-8 lg:gap-16 xl:gap-32 items-start mb-20">
+          <div class="min-w-0">
+            <h3 class="text-4xl sm:text-5xl md:text-6xl lg:text-[3.25rem] font-display font-bold text-balance mb-6 text-text">
               You write the rules.{" "}
               <span class="text-rust">Claw Patrol enforces them.</span>
             </h3>
@@ -150,7 +148,7 @@ export function RulesSection() {
         </div>
 
         <div>
-          <p class="text-xs uppercase tracking-[0.25em]  font-extrabold text-text-muted mb-5">
+          <p class="text-xs uppercase tracking-[0.25em]  font-bold text-text-muted mb-5">
             Four verdicts. Mix freely.
           </p>
           <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -161,7 +159,7 @@ export function RulesSection() {
               >
                 <div className=" absolute w-full h-full border-navy border-2 squircle-md inset-0 z-10"></div>
                 <div class="flex items-baseline justify-between mb-3 relative z-10">
-                  <h4 class="text-lg font-display font-extrabold text-text">
+                  <h4 class="text-xl font-display font-bold text-text">
                     {d.label}
                   </h4>
                   <code class="text-[10px] font-mono text-text-subtle">

@@ -47,6 +47,7 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
+// OpenAICodexHTTPSEndpoint is part of the clawpatrol plugin API.
 type OpenAICodexHTTPSEndpoint struct {
 	Hosts          []string  `hcl:"hosts"`
 	Credential     string    `hcl:"credential,optional"`
@@ -55,7 +56,10 @@ type OpenAICodexHTTPSEndpoint struct {
 	Credentials []CredentialEntry `json:"Credentials,omitempty"`
 }
 
+// EndpointHosts is part of the clawpatrol plugin API.
 func (e *OpenAICodexHTTPSEndpoint) EndpointHosts() []string { return e.Hosts }
+
+// EndpointCredentials is part of the clawpatrol plugin API.
 func (e *OpenAICodexHTTPSEndpoint) EndpointCredentials() []config.CredBinding {
 	return bindings(e.Credential, e.Credentials)
 }
@@ -99,6 +103,7 @@ func (e *OpenAICodexHTTPSEndpoint) EnvVars() []config.EnvVar {
 	}
 }
 
+// OpenAICodexHTTPSEndpointRuntime is part of the clawpatrol plugin API.
 type OpenAICodexHTTPSEndpointRuntime struct{}
 
 // DetectPlaceholder mirrors the default https endpoint — agent

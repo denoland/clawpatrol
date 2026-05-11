@@ -1,37 +1,111 @@
 // Shared docs rendering used by both vite dev and build.
 
-import { readdirSync, readFileSync } from "node:fs";
-import { resolve, join } from "node:path";
-import { marked } from "marked";
-import { markedHighlight } from "marked-highlight";
 import hljs from "highlight.js";
+import { Marked } from "marked";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { h } from "preact";
+import { renderToString } from "preact-render-to-string";
+import { Footer } from "./src/components/Footer";
+import { Header } from "./src/components/Header";
+import { Stripe } from "./src/components/Stripe";
 
-marked.use(markedHighlight({
-  langPrefix: "hljs language-",
-  highlight(code, lang) {
-    if (lang && hljs.getLanguage(lang)) {
-      return hljs.highlight(code, { language: lang }).value;
-    }
-    return code;
-  },
-}));
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
 
 function slugify(text: string): string {
-  return text.toLowerCase()
+  return text
+    .toLowerCase()
     .replace(/[^\w\s-]/g, "")
     .replace(/\s+/g, "-")
     .replace(/-+/g, "-")
     .trim();
 }
 
+// A fresh Marked instance scoped to this module. Avoids accumulating
+// duplicate extensions onto the global singleton across Vite SSR module
+// reloads, which previously caused old `markedHighlight` calls to keep
+// running alongside our custom code renderer.
+const marked = new Marked();
+
 marked.use({
   renderer: {
-    heading({ text, depth }: { text: string; depth: number }) {
+    heading(
+      this: { parser: { parseInline: (t: unknown[]) => string } },
+      { text, tokens, depth }: {
+        text: string;
+        tokens: unknown[];
+        depth: number;
+      },
+    ) {
+      // `text` is the raw markdown source — backticks, asterisks, etc. are
+      // still literal. Use the inline parser on `tokens` to get the HTML
+      // (so `` `Foo` `` becomes <code>Foo</code> inside the heading).
       const id = slugify(text);
+      const html = this.parser.parseInline(tokens);
       return `<h${depth} id="${id}">
         <a href="#${id}" class="anchor">#</a>
-        ${text}
+        ${html}
       </h${depth}>`;
+    },
+    // Render code fences ourselves so hljs runs exactly once and we emit
+    // already-HTML output — no `marked-highlight` involved (its escape
+    // behavior was double-rendering hljs spans as text in marked v18).
+    // Untagged fences fall through to plain escaped text — no auto-detect.
+    code({ text, lang }: { text: string; lang?: string }) {
+      const requested = (lang || "").trim().toLowerCase();
+      if (requested && hljs.getLanguage(requested)) {
+        const html = hljs.highlight(text, { language: requested }).value;
+        return `<pre><code class="hljs language-${requested}">${html}</code></pre>\n`;
+      }
+      return `<pre><code>${escapeHtml(text)}</code></pre>\n`;
+    },
+    // Wrap tables in a horizontally-scrolling div so wide tables don't
+    // blow out the page width on narrow viewports.
+    table(
+      this: { parser: { parseInline: (t: unknown[]) => string } },
+      { header, align, rows }: {
+        header: Array<{ tokens: unknown[] }>;
+        align: Array<"left" | "right" | "center" | null>;
+        rows: Array<Array<{ tokens: unknown[] }>>;
+      },
+    ) {
+      const alignAttr = (i: number) =>
+        align[i] ? ` align="${align[i]}"` : "";
+      const thead = `<thead><tr>${
+        header
+          .map(
+            (cell, i) =>
+              `<th${alignAttr(i)}>${
+                this.parser.parseInline(cell.tokens)
+              }</th>`,
+          )
+          .join("")
+      }</tr></thead>`;
+      const tbody = `<tbody>${
+        rows
+          .map(
+            (row) =>
+              `<tr>${
+                row
+                  .map(
+                    (cell, i) =>
+                      `<td${alignAttr(i)}>${
+                        this.parser.parseInline(cell.tokens)
+                      }</td>`,
+                  )
+                  .join("")
+              }</tr>`,
+          )
+          .join("")
+      }</tbody>`;
+      return `<div class="table-wrap"><table>${thead}${tbody}</table></div>\n`;
     },
   },
 });
@@ -44,9 +118,9 @@ export interface Doc {
 
 export function loadDocs(docsDir: string): Doc[] {
   return readdirSync(docsDir)
-    .filter(f => f.endsWith(".md"))
+    .filter((f) => f.endsWith(".md"))
     .sort()
-    .map(f => {
+    .map((f) => {
       const raw = readFileSync(join(docsDir, f), "utf-8");
       const slug = f.replace(/\.md$/, "");
       const h1 = raw.match(/^#\s+(.+)$/m);
@@ -57,87 +131,34 @@ export function loadDocs(docsDir: string): Doc[] {
 }
 
 function sidebar(docs: Doc[], current: string): string {
-  return docs.map(d => {
-    const cls = d.slug === current
-      ? "font-semibold text-accent"
-      : "text-text-muted hover:text-text";
-    return `<a href="/docs/${d.slug}/"
+  return docs
+    .map((d) => {
+      const cls =
+        d.slug === current
+          ? "font-semibold text-rust"
+          : "text-text-muted hover:text-text";
+      return `<a href="/docs/${d.slug}/"
       class="${cls} block py-1 text-sm font-mono
         underline-offset-4 transition-colors"
     >${d.title}</a>`;
-  }).join("\n");
+    })
+    .join("\n");
 }
 
-const DOCS_STYLE = `
-.docs-content h1,
-.docs-content h2,
-.docs-content h3 {
-  position: relative;
-}
-.docs-content .anchor {
-  text-decoration: none; opacity: 0;
-  font-weight: 400; margin-right: 0.3em;
-  color: var(--color-text-muted, #6b7770);
-  transition: opacity 0.15s;
-}
-.docs-content h1:hover .anchor,
-.docs-content h2:hover .anchor,
-.docs-content h3:hover .anchor {
-  opacity: 1;
-}
-.docs-content h1 {
-  font-size: 2rem; font-weight: 700; margin-bottom: 1rem;
-}
-.docs-content h2 {
-  font-size: 1.5rem; font-weight: 600;
-  margin-top: 2.5rem; margin-bottom: 0.75rem;
-}
-.docs-content h3 {
-  font-size: 1.17rem; font-weight: 600;
-  margin-top: 2rem; margin-bottom: 0.5rem;
-}
-.docs-content p { margin-bottom: 1rem; line-height: 1.7; }
-.docs-content ul, .docs-content ol {
-  margin-bottom: 1rem; padding-left: 1.5rem;
-}
-.docs-content li { margin-bottom: 0.25rem; }
-.docs-content pre {
-  background: #1a1f1c; color: #b8c4be;
-  padding: 1rem; border-radius: 0.5rem;
-  overflow-x: auto; margin-bottom: 1rem; font-size: 0.875rem;
-}
-.docs-content code {
-  font-family: 'JetBrains Mono', monospace; font-size: 0.9em;
-}
-.docs-content :not(pre) > code {
-  background: #e8e3db; padding: 0.15em 0.4em;
-  border-radius: 0.25rem;
-}
-.docs-content a {
-  color: var(--color-console-dark, #2a342f);
-  text-decoration: underline; text-underline-offset: 3px;
-  font-weight: 500;
-}
-.docs-content blockquote {
-  border-left: 3px solid #ccc; padding-left: 1rem;
-  margin-bottom: 1rem; color: #6b7770;
-}
-.docs-content table {
-  border-collapse: collapse; margin-bottom: 1rem; width: 100%;
-}
-.docs-content th, .docs-content td {
-  border: 1px solid #d0cbc3;
-  padding: 0.5rem 0.75rem; text-align: left;
-}
-.docs-content th { background: #e8e3db; font-weight: 600; }
-.docs-content strong { font-weight: 600; }
-`;
-
-export function renderDocPage(
-  doc: Doc,
-  docs: Doc[],
-  extraHead = "",
+/** Render a Preact component to an HTML string (server-side). */
+function renderHtml(
+  component: Parameters<typeof h>[0],
+  props: Record<string, unknown> = {},
 ): string {
+  return renderToString(h(component, props));
+}
+
+export function renderDocPage(doc: Doc, docs: Doc[], extraHead = ""): string {
+  const headerHtml = renderHtml(Header);
+  const topStripeHtml = renderHtml(Stripe, { color1: "var(--color-navy-100)" });
+  const bottomStripeHtml = renderHtml(Stripe, { color1: "var(--color-navy)" });
+  const footerHtml = renderHtml(Footer);
+
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -145,25 +166,12 @@ export function renderDocPage(
   <meta name="viewport"
     content="width=device-width, initial-scale=1.0" />
   <title>${doc.title} — Claw Patrol Docs</title>
-  <link rel="preload" as="font" type="font/woff2"
-    href="/fonts/overpass-latin.woff2" crossorigin />
-  <link rel="preload" as="font" type="font/woff2"
-    href="/fonts/jetbrains-mono-latin.woff2" crossorigin />
   ${extraHead}
-  <style>${DOCS_STYLE}</style>
 </head>
-<body class="bg-cream-light text-text min-h-screen">
-  <nav class="max-w-6xl mx-auto px-8 py-8 flex items-center
-    justify-between">
-    <a href="/" style="font-family:'Overpass',sans-serif;
-      color:#2a342f; font-size:1.125rem; letter-spacing:0.25em;
-      text-transform:uppercase; font-weight:600;
-      text-decoration:none;">Claw Patrol</a>
-    <a href="/docs/"
-      class="font-mono text-sm text-text-muted
-        underline underline-offset-4">Docs</a>
-  </nav>
-  <div class="max-w-6xl mx-auto px-8 pb-20
+<body class="min-h-screen bg-canvas text-text font-sans">
+  ${headerHtml}
+  ${topStripeHtml}
+  <div class="max-w-6xl mx-auto px-8 py-20
     flex flex-col md:flex-row gap-10">
     <aside class="md:w-56 shrink-0 md:sticky md:top-8
       md:self-start">
@@ -173,6 +181,8 @@ export function renderDocPage(
       ${doc.html}
     </main>
   </div>
+  ${bottomStripeHtml}
+  ${footerHtml}
 </body>
 </html>`;
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/denoland/clawpatrol/config"
 )
 
+// AWSEKSCredential is part of the clawpatrol plugin API.
 type AWSEKSCredential struct {
 	Cluster string `hcl:"cluster"`
 	Region  string `hcl:"region"`

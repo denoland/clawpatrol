@@ -1,24 +1,11 @@
+@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@100..900&family=Sora:wght@100..800&display=swap");
+@import "./docs.css";
+@import "highlight.js/styles/atom-one-dark.css";
 @import "tailwindcss";
 
-/* Self-hosted fonts. Anonymous Pro (body + mono) is on the
-   Google Fonts CDN — TODO: self-host. */
-
-@font-face {
-  font-family: "Fraunces";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url("/fonts/Fraunces--latin_basic.woff2") format("woff2-variations");
-}
-
-@font-face {
-  font-family: "Fraunces";
-  font-style: italic;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url("/fonts/Fraunces-Italic--latin_basic.woff2")
-    format("woff2-variations");
-}
+/* Self-hosted families below. PT Mono, Outfit, and Sora are imported
+   above from Google Fonts so they ship with the CSS bundle (works on
+   /docs/ too). */
 
 /* AmsiPro (Stawix) — display family. Static weights, latin-basic subset. */
 @font-face {
@@ -266,10 +253,56 @@
     U+2215, U+FEFF, U+FFFD;
 }
 
+/* IBM Plex Mono — code/mono family. Two weights (Regular 400, SemiBold
+   600), latin-basic subset. */
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/IBMPlexMono-Regular--latin_basic.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/IBMPlexMono-SemiBold--latin_basic.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/IBMPlexMono-Italic--latin_basic.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: italic;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/IBMPlexMono-SemiBoldItalic--latin_basic.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+
 /* Basic Sans (Latinotype) — body family. Static cuts, latin-basic subset. */
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -284,7 +317,6 @@
 }
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -299,7 +331,6 @@
 }
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -314,7 +345,6 @@
 }
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -329,7 +359,6 @@
 }
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -344,7 +373,6 @@
 }
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -359,7 +387,6 @@
 }
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -374,7 +401,6 @@
 }
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -389,7 +415,6 @@
 }
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -404,7 +429,6 @@
 }
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -419,7 +443,6 @@
 }
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -434,7 +457,6 @@
 }
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -449,7 +471,6 @@
 }
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -464,7 +485,6 @@
 }
 @font-face {
   font-family: "Basic Sans";
-  size-adjust: 125%;
   ascent-override: 87.9%;
   descent-override: 18.9%;
   line-gap-override: 0%;
@@ -675,6 +695,37 @@ a.neu-raised:active {
   }
 }
 
+/* Wave-divider spread — back layer drifts up, front layer drifts down
+   as the user scrolls past the divider into the next section. Uses the
+   standalone `translate` property so it composes with `transform`-based
+   wave-drift instead of overriding it. */
+@keyframes wave-spread-back {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-12px);
+  }
+}
+
+@keyframes wave-spread-mid {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-26px);
+  }
+}
+
+@keyframes wave-spread-front {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-40px);
+  }
+}
+
 /* Integration tiles — each slides up into place and settles partway through
    the viewport pass. Per-tile animation-range set inline for the stagger.
    Uses CSS `translate` so hover `scale` transforms compose cleanly. */
@@ -699,6 +750,33 @@ a.neu-raised:active {
         animation-timing-function: ease-out;
         animation-fill-mode: both;
         /* animation-range set inline per tile for the staggered entrance */
+      }
+
+      .wave-spread-back {
+        animation-name: wave-spread-back;
+        animation-range: contain 0% exit 100%;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-duration: 1ms;
+        animation-timeline: view();
+      }
+
+      .wave-spread-mid {
+        animation-name: wave-spread-mid;
+        animation-range: contain 0% exit 100%;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-duration: 1ms;
+        animation-timeline: view();
+      }
+
+      .wave-spread-front {
+        animation-name: wave-spread-front;
+        animation-range: contain 0% exit 100%;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+        animation-duration: 1ms;
+        animation-timeline: view();
       }
     }
   }
@@ -782,27 +860,26 @@ a.neu-raised:active {
   --color-text-muted: #62656d;
   --color-text-subtle: #9d9ea7;
 
-  --font-display: "Gazpacho", "Fraunces", system-ui, serif;
-  --font-sans: "Basic Sans", system-ui, sans-serif;
+  --font-display: "Basic Sans", "Gazpacho", system-ui, serif;
+  --font-sans:
+    "Sora", "Outfit", "Public Sans", "Eastman", "Courier New",
+    "American Typewriter", "Chronica Pro", "Basic Sans", system-ui, sans-serif;
   --font-mono:
-    "MonoLisa", "Anonymous Pro", "SF Mono", "Menlo", ui-monospace, monospace;
+    "IBM Plex Mono", "MonoLisa", "DankMono Nerd Font", "SF Mono", "Menlo",
+    ui-monospace, monospace;
 
   --breakpoint-xs: 32rem;
 
-  --animate-wave-drift: wave-drift 16s linear infinite;
-  --animate-wave-drift-medium: wave-drift 30s linear infinite;
-  --animate-wave-drift-slow: wave-drift 60s linear infinite;
+  --animate-wave-drift: wave-drift 37s linear infinite;
+  --animate-wave-drift-medium: wave-drift 27s linear infinite;
+  --animate-wave-drift-slow: wave-drift 21s linear infinite;
 
   --text-2xs: 0.625rem;
 
   /* Body-text sizes inherit our looser body line-height instead of
      Tailwind 4's bundled per-size defaults. Heading sizes (text-2xl+)
      keep Tailwind's tight defaults so they don't go airy. */
-  --text-2xs--line-height: 1.5;
-  --text-xs--line-height: 1.7;
-  --text-sm--line-height: 1.7;
-  --text-base--line-height: 1.8;
-  --text-lg--line-height: 1.7;
+  --text-base--line-height: inherit;
 }
 
 @layer base {
@@ -810,6 +887,7 @@ a.neu-raised:active {
     @media (min-width: 64rem) {
       font-size: 112.5%;
     }
+    font-weight: 400;
   }
 
   body {

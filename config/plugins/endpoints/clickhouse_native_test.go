@@ -16,8 +16,10 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/denoland/clawpatrol/config"
-	"github.com/denoland/clawpatrol/config/match"
+	"github.com/denoland/clawpatrol/config/facet"
 	"github.com/denoland/clawpatrol/config/runtime"
+
+	_ "github.com/denoland/clawpatrol/config/plugins/facets/sql"
 )
 
 // chBuildHelloWire produces the byte-for-byte ClientHello packet a
@@ -142,6 +144,15 @@ func TestChEncodeException(t *testing.T) {
 	}
 	if exc.Nested {
 		t.Errorf("Nested = true, want false")
+	}
+}
+
+func TestChHelloRejectsServerExceptionPacket(t *testing.T) {
+	// ServerCodeException is what ClickHouse sends on auth failure. It must
+	// not be interpreted as a partially valid client Hello.
+	bad := []byte{byte(chgoproto.ServerCodeException)}
+	if _, _, err := chReadHello(bytes.NewReader(bad)); err == nil {
+		t.Fatal("chReadHello accepted server Exception packet")
 	}
 }
 
@@ -376,7 +387,7 @@ func chBuildEndpoint(t *testing.T, rules ...*config.CompiledRule) *config.Compil
 
 func chRuleSQL(t *testing.T, name string, raw map[string]any, verdict, reason string, priority int) *config.CompiledRule {
 	t.Helper()
-	m, err := match.New("sql", raw)
+	m, err := facet.NewMatcher("sql", raw)
 	if err != nil {
 		t.Fatalf("compile rule %q: %v", name, err)
 	}
@@ -449,7 +460,7 @@ func TestChEvaluateSQLAllowsSelectDeniesInsert(t *testing.T) {
 // the approve-chain branch can be exercised without spinning up the
 // HITL machinery.
 func chMockApprove(decision, reason string) func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
-	return func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
+	return func(_ runtime.ApproveCallRequest) runtime.ApproveVerdict {
 		return runtime.ApproveVerdict{Decision: decision, Reason: reason, By: "test"}
 	}
 }
@@ -466,7 +477,7 @@ func TestChEvaluateSQLApproveChain(t *testing.T) {
 			Approve: []config.ApproveStage{{Name: "human"}},
 		},
 	}
-	m, err := match.New("sql", approveRule.Match)
+	m, err := facet.NewMatcher("sql", approveRule.Match)
 	if err != nil {
 		t.Fatalf("matcher: %v", err)
 	}
@@ -518,7 +529,7 @@ func TestChAgentToServerForwardsQuery(t *testing.T) {
 	const revision = 54448
 
 	mock, _ := chNewMockHandle(t, chBuildEndpoint(t))
-	defer mock.Conn.Close()
+	defer func() { _ = mock.Conn.Close() }()
 
 	q := chgoproto.Query{
 		ID:          "qid-1",
@@ -593,7 +604,7 @@ func chBuildSampleBlock(t *testing.T) *chproto.Block {
 func TestChHandleDataUncompressed(t *testing.T) {
 	const revision = 54448
 	mock, _ := chNewMockHandle(t, chBuildEndpoint(t))
-	defer mock.Conn.Close()
+	defer func() { _ = mock.Conn.Close() }()
 
 	block := chBuildSampleBlock(t)
 	var agentBuf chgoproto.Buffer
@@ -643,7 +654,7 @@ func TestChHandleDataUncompressed(t *testing.T) {
 func TestChHandleDataCompressedForwardsOpaquely(t *testing.T) {
 	const revision = 54448
 	mock, _ := chNewMockHandle(t, chBuildEndpoint(t))
-	defer mock.Conn.Close()
+	defer func() { _ = mock.Conn.Close() }()
 
 	// Build the Query packet (Compression=Enabled).
 	q := chgoproto.Query{
@@ -763,7 +774,7 @@ func chCompressedDataEventSummary(t *testing.T, events []runtime.ConnEvent) stri
 func TestChCompressedDataEventDropsRowsCols(t *testing.T) {
 	const revision = 54448
 	mock, _ := chNewMockHandle(t, chBuildEndpoint(t))
-	defer mock.Conn.Close()
+	defer func() { _ = mock.Conn.Close() }()
 
 	q := chgoproto.Query{
 		ID: "qid-1", Body: "SELECT 1",
@@ -818,7 +829,7 @@ func TestChCompressedDataEventDropsRowsCols(t *testing.T) {
 func TestChProbeForwardsMultiChunkBlock(t *testing.T) {
 	const revision = 54448
 	mock, _ := chNewMockHandle(t, chBuildEndpoint(t))
-	defer mock.Conn.Close()
+	defer func() { _ = mock.Conn.Close() }()
 
 	q := chgoproto.Query{
 		ID: "qid-1", Body: "SELECT 1",
@@ -889,7 +900,7 @@ func TestChProbeForwardsMultiChunkBlock(t *testing.T) {
 func TestChProbeRewindsToNextQuery(t *testing.T) {
 	const revision = 54448
 	mock, _ := chNewMockHandle(t, chBuildEndpoint(t))
-	defer mock.Conn.Close()
+	defer func() { _ = mock.Conn.Close() }()
 
 	mkQuery := func(id, body string, comp chgoproto.Compression) chgoproto.Query {
 		return chgoproto.Query{
@@ -984,8 +995,8 @@ func TestChAgentToServerDeniesQuery(t *testing.T) {
 		map[string]any{"verb": []any{"insert"}}, "deny", "writes blocked", 100)
 	ep := chBuildEndpoint(t, rule)
 	mock, agentSide := chNewMockHandle(t, ep)
-	defer agentSide.Close()
-	defer mock.Conn.Close()
+	defer func() { _ = agentSide.Close() }()
+	defer func() { _ = mock.Conn.Close() }()
 
 	q := chgoproto.Query{
 		ID: "qid-1", Body: sql,
@@ -1037,8 +1048,8 @@ func TestChAgentToServerMultiQueryDenyContinues(t *testing.T) {
 		map[string]any{"verb": []any{"drop"}}, "deny", "drops blocked", 100)
 	ep := chBuildEndpoint(t, rule)
 	mock, agentSide := chNewMockHandle(t, ep)
-	defer agentSide.Close()
-	defer mock.Conn.Close()
+	defer func() { _ = agentSide.Close() }()
+	defer func() { _ = mock.Conn.Close() }()
 
 	mkQuery := func(id, body string) []byte {
 		q := chgoproto.Query{

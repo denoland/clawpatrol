@@ -109,7 +109,7 @@ func fetchEnvPushdownFromGateway(caDir string) ([]pushdownEnvVar, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s: %w", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("fetch %s: status %d", url, resp.StatusCode)
 	}
@@ -253,17 +253,19 @@ func (f *flexInt) UnmarshalJSON(b []byte) error {
 			return err
 		}
 		var n int64
-		if _, err := fmt.Sscan(s, &n); err != nil {
-			return nil // leave as 0
+		if _, scanErr := fmt.Sscan(s, &n); scanErr == nil {
+			*f = flexInt(n)
+		} else {
+			*f = 0
 		}
-		*f = flexInt(n)
 		return nil
 	}
 	var n int64
-	if err := json.Unmarshal(b, &n); err != nil {
-		return nil
+	if json.Unmarshal(b, &n) == nil {
+		*f = flexInt(n)
+	} else {
+		*f = 0
 	}
-	*f = flexInt(n)
 	return nil
 }
 
@@ -297,7 +299,7 @@ func (m *modelDB) fetch() error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var raw map[string]modelInfo
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return err

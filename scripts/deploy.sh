@@ -198,7 +198,7 @@ table ip clawpatrol {
 }
 NFT
 # Open dashboard/onboard port (8080) on the public iface — needed for
-# brand-new clients running \`clawpatrol join --url ...\` since they
+# brand-new clients running \`clawpatrol join …\` since they
 # aren't on the tailnet yet. The tailnetGate middleware in web.go
 # restricts non-tailnet callers to /api/onboard/* + /info anyway.
 if ! iptables -C INPUT -p tcp --dport 8080 -j ACCEPT 2>/dev/null; then
@@ -259,7 +259,7 @@ echo "  -- tailnet IP: $(tailscale ip -4 | head -1)"
 
 # Tailscale Funnel: expose port 8080 publicly via the tailnet's
 # magic DNS hostname (https://<host>.<tailnet>.ts.net). Avoids
-# distributing raw IPs in `clawpatrol join --url` commands. Requires
+# distributing raw IPs in `clawpatrol join` commands. Requires
 # `nodeAttrs: [funnel]` on this node in the tailnet ACL.
 echo "  -- enabling tailscale funnel for :8080"
 tailscale funnel reset 2>/dev/null || true

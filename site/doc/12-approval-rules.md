@@ -434,13 +434,3 @@ rule "k8s_rule" "k8s-no-mutations" {
 
 A negation entry is a leading `!`. List semantics with negation are
 worth a careful read.
-
-
-## Operational notes
-
-### Testing rules
-
-There is no `clawpatrol rules test` CLI today. To smoke-test a rule
-against your real config: load the gateway locally, point an agent
-at it, and watch the dashboard's per-action log. The log line
-carries the matched rule name so you can confirm which rule fired.

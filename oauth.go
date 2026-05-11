@@ -30,13 +30,6 @@ type (
 	OAuthIntegration = config.OAuthIntegration
 )
 
-type tokenStore struct {
-	AccessToken  string    `json:"access_token"`
-	TokenType    string    `json:"token_type"`
-	RefreshToken string    `json:"refresh_token"`
-	Expiry       time.Time `json:"expiry"`
-}
-
 // oauthState is one credential: tokens for a single (integration, owner).
 // Persisted in the credentials table; one row per (id, owner).
 type oauthState struct {
@@ -255,7 +248,7 @@ func fetchOAuthProfile(id, accessToken string) (string, string) {
 		if err != nil {
 			return "", ""
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != 200 {
 			return "", ""
 		}
@@ -353,7 +346,7 @@ func (a *anthropicRefreshSource) Token() (*oauth2.Token, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBytes, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("anthropic refresh %d: %s", resp.StatusCode, string(respBytes))
@@ -458,7 +451,7 @@ func (r *OAuthRegistry) loadFromDB() error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var (
 			id, owner           string
@@ -547,7 +540,7 @@ func validOAuthScope(s string) bool {
 
 func (w *webMux) apiOAuthStart(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		http.Error(rw, "POST", 405)
+		http.Error(rw, "POST", http.StatusMethodNotAllowed)
 		return
 	}
 	id := r.URL.Query().Get("id")
@@ -608,7 +601,7 @@ func (w *webMux) apiOAuthStart(rw http.ResponseWriter, r *http.Request) {
 
 func (w *webMux) apiOAuthExchange(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		http.Error(rw, "POST", 405)
+		http.Error(rw, "POST", http.StatusMethodNotAllowed)
 		return
 	}
 	var body struct {
@@ -667,13 +660,13 @@ func (w *webMux) startDeviceFlow(rw http.ResponseWriter, id string, it *OAuthInt
 	req.Header.Set("Accept", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		http.Error(rw, "device-code: "+err.Error(), 502)
+		http.Error(rw, "device-code: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
-		http.Error(rw, fmt.Sprintf("device-code %d: %s", resp.StatusCode, string(body)), 502)
+		http.Error(rw, fmt.Sprintf("device-code %d: %s", resp.StatusCode, string(body)), http.StatusBadGateway)
 		return
 	}
 	var dr struct {
@@ -684,7 +677,7 @@ func (w *webMux) startDeviceFlow(rw http.ResponseWriter, id string, it *OAuthInt
 		Interval        int    `json:"interval"`
 	}
 	if err := json.Unmarshal(body, &dr); err != nil {
-		http.Error(rw, "device-code parse: "+err.Error(), 502)
+		http.Error(rw, "device-code parse: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	state := randomString(32)
@@ -728,13 +721,13 @@ func (w *webMux) startOpenAIDeviceFlow(rw http.ResponseWriter, id string, it *OA
 	req.Header.Set("User-Agent", "clawpatrol/1.0")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		http.Error(rw, "openai deviceauth: "+err.Error(), 502)
+		http.Error(rw, "openai deviceauth: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
-		http.Error(rw, fmt.Sprintf("openai deviceauth %d: %s", resp.StatusCode, string(respBody)), 502)
+		http.Error(rw, fmt.Sprintf("openai deviceauth %d: %s", resp.StatusCode, string(respBody)), http.StatusBadGateway)
 		return
 	}
 	// OpenAI ships `interval` as a quoted string ("5") rather than a
@@ -745,7 +738,7 @@ func (w *webMux) startOpenAIDeviceFlow(rw http.ResponseWriter, id string, it *OA
 		Interval     json.Number `json:"interval"`
 	}
 	if err := json.Unmarshal(respBody, &dr); err != nil || dr.DeviceAuthID == "" || dr.UserCode == "" {
-		http.Error(rw, "openai deviceauth parse: "+string(respBody), 502)
+		http.Error(rw, "openai deviceauth parse: "+string(respBody), http.StatusBadGateway)
 		return
 	}
 	state := randomString(32)
@@ -808,10 +801,10 @@ func (w *webMux) pollOpenAIDeviceFlow(rw http.ResponseWriter, sess *oauthSession
 	req.Header.Set("User-Agent", "clawpatrol/1.0")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		http.Error(rw, "openai poll: "+err.Error(), 502)
+		http.Error(rw, "openai poll: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == 202 || resp.StatusCode == 204 {
 		writeJSON(rw, map[string]string{"error": "authorization_pending"})
 		return
@@ -838,13 +831,13 @@ func (w *webMux) pollOpenAIDeviceFlow(rw http.ResponseWriter, sess *oauthSession
 	exReq.Header.Set("Accept", "application/json")
 	exResp, err := http.DefaultClient.Do(exReq)
 	if err != nil {
-		http.Error(rw, "openai exchange: "+err.Error(), 502)
+		http.Error(rw, "openai exchange: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	defer exResp.Body.Close()
+	defer func() { _ = exResp.Body.Close() }()
 	exBody, _ := io.ReadAll(exResp.Body)
 	if exResp.StatusCode != 200 {
-		http.Error(rw, fmt.Sprintf("openai exchange %d: %s", exResp.StatusCode, string(exBody)), 502)
+		http.Error(rw, fmt.Sprintf("openai exchange %d: %s", exResp.StatusCode, string(exBody)), http.StatusBadGateway)
 		return
 	}
 	var tr struct {
@@ -855,7 +848,7 @@ func (w *webMux) pollOpenAIDeviceFlow(rw http.ResponseWriter, sess *oauthSession
 		ExpiresIn    int64  `json:"expires_in"`
 	}
 	if err := json.Unmarshal(exBody, &tr); err != nil || tr.AccessToken == "" {
-		http.Error(rw, "openai exchange parse", 502)
+		http.Error(rw, "openai exchange parse", http.StatusBadGateway)
 		return
 	}
 	tok := &oauth2.Token{
@@ -888,10 +881,10 @@ func (w *webMux) pollDeviceFlow(rw http.ResponseWriter, sess *oauthSession) {
 	req.Header.Set("Accept", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		http.Error(rw, "device poll: "+err.Error(), 502)
+		http.Error(rw, "device poll: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	// Don't log the body verbatim — on success it carries access_token.
 	var tr struct {
@@ -905,7 +898,7 @@ func (w *webMux) pollDeviceFlow(rw http.ResponseWriter, sess *oauthSession) {
 		Interval         int    `json:"interval"`
 	}
 	if err := json.Unmarshal(body, &tr); err != nil {
-		http.Error(rw, "device poll parse: "+err.Error(), 502)
+		http.Error(rw, "device poll parse: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	if tr.Error != "" {
@@ -978,7 +971,7 @@ func exchangeAnthropicCode(ctx context.Context, sess *oauthSession, code, state 
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBytes, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("anthropic %d: %s", resp.StatusCode, string(respBytes))
@@ -1005,7 +998,7 @@ func exchangeAnthropicCode(ctx context.Context, sess *oauthSession, code, state 
 
 func (w *webMux) apiOAuthDevicePoll(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		http.Error(rw, "POST", 405)
+		http.Error(rw, "POST", http.StatusMethodNotAllowed)
 		return
 	}
 	state := r.URL.Query().Get("state")
@@ -1029,7 +1022,7 @@ func (w *webMux) apiOAuthDevicePoll(rw http.ResponseWriter, r *http.Request) {
 
 func (w *webMux) apiOAuthRevoke(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		http.Error(rw, "POST", 405)
+		http.Error(rw, "POST", http.StatusMethodNotAllowed)
 		return
 	}
 	var body struct {

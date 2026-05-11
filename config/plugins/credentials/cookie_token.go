@@ -14,10 +14,12 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
+// CookieToken is part of the clawpatrol plugin API.
 type CookieToken struct {
 	CookieName string `hcl:"cookie_name,optional"`
 }
 
+// InjectHTTP is part of the clawpatrol plugin API.
 func (c *CookieToken) InjectHTTP(_ context.Context, req *http.Request, sec runtime.Secret) error {
 	if c.CookieName == "" || len(sec.Bytes) == 0 {
 		return nil
@@ -26,6 +28,7 @@ func (c *CookieToken) InjectHTTP(_ context.Context, req *http.Request, sec runti
 	return nil
 }
 
+// SecretSlots is part of the clawpatrol plugin API.
 func (*CookieToken) SecretSlots() []config.SecretSlot {
 	return []config.SecretSlot{{Label: "Cookie value"}}
 }

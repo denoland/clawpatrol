@@ -1,8 +1,12 @@
 export function fmtBytes(n: number): string {
   if (!n) return "0";
   const u = ["B", "K", "M", "G"];
-  let i = 0, x = n;
-  while (x >= 1024 && i < u.length - 1) { x /= 1024; i++; }
+  let i = 0,
+    x = n;
+  while (x >= 1024 && i < u.length - 1) {
+    x /= 1024;
+    i++;
+  }
   return x.toFixed(x < 10 && i > 0 ? 1 : 0) + u[i];
 }
 

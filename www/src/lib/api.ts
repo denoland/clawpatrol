@@ -162,11 +162,45 @@ export async function getConfigHCL(): Promise<string> {
   return r.text();
 }
 
-export async function putConfigHCL(hcl: string): Promise<{ ok: boolean; bytes: number }> {
-  const r = await api("/api/config", {
-    method: "PUT",
+export type ConfigSavePreview = {
+  ok: boolean;
+  formatted: string;
+  diff: string;
+  changed: boolean;
+  bytes: number;
+  revision: string;
+  preview_token: string;
+};
+
+export type ConfigSaveResult = {
+  ok: boolean;
+  bytes: number;
+  revision: string;
+};
+
+export async function previewConfigHCL(hcl: string): Promise<ConfigSavePreview> {
+  const r = await api("/api/config/preview", {
+    method: "POST",
     headers: { "Content-Type": "text/plain" },
     body: hcl,
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function saveConfigHCL(
+  content: string,
+  expectedRevision: string,
+  previewToken: string,
+): Promise<ConfigSaveResult> {
+  const r = await api("/api/config/save", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      content,
+      expected_revision: expectedRevision,
+      preview_token: previewToken,
+    }),
   });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
@@ -185,9 +219,12 @@ export async function listProfiles(): Promise<string[]> {
 }
 
 export async function setDeviceProfile(ip: string, profile: string): Promise<void> {
-  const r = await api(`/api/agents/profile?ip=${encodeURIComponent(ip)}&profile=${encodeURIComponent(profile)}`, {
-    method: "POST",
-  });
+  const r = await api(
+    `/api/agents/profile?ip=${encodeURIComponent(ip)}&profile=${encodeURIComponent(profile)}`,
+    {
+      method: "POST",
+    },
+  );
   if (!r.ok) throw new Error(await r.text());
 }
 
@@ -197,6 +234,13 @@ export type HITLPending = {
   host: string;
   method: string;
   path: string;
+  // Operator-readable endpoint identifier (hostname for HTTPS,
+  // resource name for SQL/k8s where host is a virtual IP).
+  // Computed server-side; falls back to host when unset.
+  endpoint?: string;
+  // Endpoint family — "https" | "sql" | "k8s". Used to label the
+  // path column ("Path" vs "Query" vs "Resource") in the UI.
+  family?: string;
   ua?: string;
   body_sample?: string;
   reason?: string;
@@ -261,7 +305,23 @@ export async function deleteAgent(ip: string): Promise<void> {
 // Browser fetch with default cache + ETag would also revalidate, but
 // the cached body is still copied into JS land — going through If-
 // None-Match explicitly skips JSON.parse on the no-change path too.
-type StateResp = { whoami: Whoami; integrations: Integration[]; agents: Agent[] };
+export type UpdateBanner = {
+  latest: string;
+  update_available: boolean;
+  url: string;
+  advisory?: string;
+};
+
+type StateResp = {
+  whoami: Whoami;
+  integrations: Integration[];
+  agents: Agent[];
+  update?: UpdateBanner | null;
+  // When true, the gateway was launched with --read-only-config and
+  // will reject /api/config/preview + /api/config/save with 403. The
+  // dashboard hides its editor affordances to match.
+  read_only_config?: boolean;
+};
 let lastStateTag = "";
 let lastState: StateResp | null = null;
 export async function getState(): Promise<StateResp> {
@@ -279,9 +339,21 @@ export async function getState(): Promise<StateResp> {
 
 export type OAuthStartResp =
   | { flow?: "auth_code"; auth_url: string; state: string; owner: string }
-  | { flow: "device"; user_code: string; verification_uri: string; state: string; owner: string; interval: number; expires_in: number };
+  | {
+      flow: "device";
+      user_code: string;
+      verification_uri: string;
+      state: string;
+      owner: string;
+      interval: number;
+      expires_in: number;
+    };
 
-export async function oauthStart(id: string, profile?: string, extraScopes?: string[]): Promise<OAuthStartResp> {
+export async function oauthStart(
+  id: string,
+  profile?: string,
+  extraScopes?: string[],
+): Promise<OAuthStartResp> {
   let qs = `id=${encodeURIComponent(id)}`;
   if (profile) qs += `&profile=${encodeURIComponent(profile)}`;
   if (extraScopes && extraScopes.length > 0) {
@@ -292,8 +364,16 @@ export async function oauthStart(id: string, profile?: string, extraScopes?: str
   return r.json();
 }
 
-export async function oauthDevicePoll(state: string): Promise<{ connected?: boolean; owner?: string; error?: string; detail?: string; interval?: number }> {
-  const r = await api(`/api/oauth/device-poll?state=${encodeURIComponent(state)}`, { method: "POST" });
+export async function oauthDevicePoll(state: string): Promise<{
+  connected?: boolean;
+  owner?: string;
+  error?: string;
+  detail?: string;
+  interval?: number;
+}> {
+  const r = await api(`/api/oauth/device-poll?state=${encodeURIComponent(state)}`, {
+    method: "POST",
+  });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
@@ -336,13 +416,47 @@ export type EventRecord = {
   resp_body?: string;
   req_headers?: Record<string, string>;
   resp_headers?: Record<string, string>;
+  // family identifies which facet plugin emitted this event; facets
+  // carries that plugin's per-request report payload (HTTPS:
+  // method/path/status; SQL: verb/tables/...; k8s: verb/resource/...).
+  family?: string;
+  facets?: Record<string, unknown>;
 };
+
+// FacetSchema mirrors the JSON returned by GET /api/facets — the
+// dashboard fetches it once at boot and uses it to render
+// per-family columns from the facets payload without hardcoding the
+// list of protocol families.
+export type FacetSchema = {
+  name: string;
+  rule_type: string;
+  endpoint_families: string[];
+  transport?: string;
+  hitl_query_label?: string;
+  host_is_resource: boolean;
+  match_keys: Array<{ name: string; kind: string }>;
+  report_fields: Array<{ name: string; kind: string; label?: string }>;
+};
+
+export async function getFacets(): Promise<FacetSchema[]> {
+  const r = await api(`/api/facets`);
+  if (!r.ok) throw new Error(await r.text());
+  const body = (await r.json()) as { facets: FacetSchema[] };
+  return body.facets ?? [];
+}
 
 export async function getAnalytics(params: {
   range: string;
   agent?: string;
   limit?: number;
-}): Promise<{ events: EventRecord[]; total: number }> {
+}): Promise<{
+  events: EventRecord[];
+  total: number;
+  total_count: number;
+  error_count: number;
+  by_device: Array<{ key: string; count: number }>;
+  by_host: Array<{ key: string; count: number }>;
+}> {
   const p = new URLSearchParams({ range: params.range });
   if (params.agent) p.set("agent", params.agent);
   if (params.limit) p.set("limit", String(params.limit));
@@ -351,7 +465,10 @@ export async function getAnalytics(params: {
   return r.json();
 }
 
-export async function oauthExchange(state: string, code: string): Promise<{ connected: boolean; owner: string; expires: number }> {
+export async function oauthExchange(
+  state: string,
+  code: string,
+): Promise<{ connected: boolean; owner: string; expires: number }> {
   const r = await api("/api/oauth/exchange", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

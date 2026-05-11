@@ -10,12 +10,16 @@ import (
 	"github.com/denoland/clawpatrol/config"
 )
 
+// ClickhouseHTTPSEndpoint is part of the clawpatrol plugin API.
 type ClickhouseHTTPSEndpoint struct {
 	Hosts      []string `hcl:"hosts"`
 	Credential string   `hcl:"credential,optional"`
 }
 
+// EndpointHosts is part of the clawpatrol plugin API.
 func (e *ClickhouseHTTPSEndpoint) EndpointHosts() []string { return e.Hosts }
+
+// EndpointCredentials is part of the clawpatrol plugin API.
 func (e *ClickhouseHTTPSEndpoint) EndpointCredentials() []config.CredBinding {
 	return singleBinding(e.Credential)
 }

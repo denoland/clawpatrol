@@ -16,8 +16,8 @@ func TestExchangeAnthropicSendsJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			gotCT = r.Header.Get("Content-Type")
-			json.NewDecoder(r.Body).Decode(&gotBody)
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewDecoder(r.Body).Decode(&gotBody)
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"access_token": "tok",
 				"token_type":   "bearer",
 				"expires_in":   3600,
@@ -71,7 +71,7 @@ func TestExchangeNonAnthropicUsesFormEncoded(t *testing.T) {
 			// the key assertion is what Content-Type the
 			// *request* used.
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"access_token": "tok",
 				"token_type":   "bearer",
 				"expires_in":   3600,

@@ -9,7 +9,7 @@ import { RequestDetailPage } from "./components/RequestDetailPage";
 import { AddDeviceModal } from "./components/AddDeviceModal";
 import { SettingsModal } from "./components/SettingsModal";
 import { HITLBar } from "./components/HITLBar";
-import { getState, type Integration, type Agent, type Whoami } from "./lib/api";
+import { getState, type Agent, type Integration, type UpdateBanner, type Whoami } from "./lib/api";
 
 type Route =
   | { name: "main" }
@@ -42,6 +42,8 @@ export default function App() {
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [whoami, setWhoami] = useState<Whoami | null>(null);
+  const [update, setUpdate] = useState<UpdateBanner | null>(null);
+  const [readOnlyConfig, setReadOnlyConfig] = useState(false);
   const [connectId, setConnectId] = useState<string | null>(null);
   const [connectProfile, setConnectProfile] = useState<string | undefined>(undefined);
   const [showAddDevice, setShowAddDevice] = useState(false);
@@ -63,6 +65,8 @@ export default function App() {
       setIntegrations(s.integrations || []);
       setAgents(s.agents || []);
       setWhoami(s.whoami);
+      setUpdate(s.update ?? null);
+      setReadOnlyConfig(!!s.read_only_config);
     } catch {
       /* swallow */
     }
@@ -81,6 +85,7 @@ export default function App() {
 
   return (
     <div className="flex flex-col min-h-screen">
+      <UpdateNotice update={update} />
       {route.name === "main" ? (
         <main className="flex-1 mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-8 space-y-8">
           <div className="flex items-center gap-4">
@@ -99,7 +104,16 @@ export default function App() {
               className="w-[36px] h-[36px] rounded-full border border-[#e5e5e5] text-[#525252] flex items-center justify-center hover:border-[#171717] hover:text-[#171717] transition-colors"
               title="analytics"
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
                 <path d="M3 3v18h18" />
                 <path d="m7 16 4-8 4 4 4-6" />
               </svg>
@@ -109,7 +123,16 @@ export default function App() {
               className="w-[36px] h-[36px] rounded-full border border-[#e5e5e5] text-[#525252] flex items-center justify-center hover:border-[#171717] hover:text-[#171717] transition-colors"
               title="settings (gateway.hcl)"
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
                 <circle cx="12" cy="12" r="3" />
                 <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
               </svg>
@@ -139,6 +162,7 @@ export default function App() {
           agents={agents}
           integrations={integrations}
           whoami={whoami}
+          readOnlyConfig={readOnlyConfig}
           onBack={() => navigate("")}
           onConnect={(id, profile) => {
             setConnectId(id);
@@ -147,8 +171,16 @@ export default function App() {
           onRefresh={refresh}
         />
       )}
-      {showAddDevice && <AddDeviceModal publicURL={whoami?.public_url} onClose={() => setShowAddDevice(false)} />}
-      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} onSaved={refresh} />}
+      {showAddDevice && (
+        <AddDeviceModal publicURL={whoami?.public_url} onClose={() => setShowAddDevice(false)} />
+      )}
+      {showSettings && (
+        <SettingsModal
+          readOnly={readOnlyConfig}
+          onClose={() => setShowSettings(false)}
+          onSaved={refresh}
+        />
+      )}
       {connectId && (
         <ConnectModal
           id={connectId}
@@ -165,6 +197,42 @@ export default function App() {
           }}
         />
       )}
+    </div>
+  );
+}
+
+function UpdateNotice({ update }: { update: UpdateBanner | null }) {
+  if (!update?.update_available) return null;
+  const dismissKey = "clawpatrol:update-dismissed:" + update.latest;
+  const [dismissed, setDismissed] = useState(
+    typeof localStorage !== "undefined" && localStorage.getItem(dismissKey) === "1",
+  );
+  if (dismissed) return null;
+  return (
+    <div className="bg-[#fef3c7] border-b border-[#fcd34d] px-4 sm:px-6 py-2 text-[12px] text-[#78350f] flex items-center justify-between gap-3">
+      <div className="flex-1">
+        <span className="font-semibold">clawpatrol {update.latest}</span>
+        {" available — "}
+        <a
+          href={update.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="underline hover:no-underline"
+        >
+          release notes
+        </a>
+        {update.advisory && <span className="ml-2 text-[#92400e]">({update.advisory})</span>}
+      </div>
+      <button
+        onClick={() => {
+          localStorage.setItem(dismissKey, "1");
+          setDismissed(true);
+        }}
+        className="text-[#78350f] hover:text-[#171717] text-[14px] leading-none px-1"
+        title="dismiss"
+      >
+        &times;
+      </button>
     </div>
   );
 }

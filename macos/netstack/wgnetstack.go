@@ -499,8 +499,16 @@ var (
 // to _send/_recv/_close. Host must be an IP literal; DNS happens at
 // the wg_netstack_resolve layer above.
 //
+// timeoutMs is the dial deadline in milliseconds. <=0 means no timeout
+// (context.Background). Callers should always pass a finite timeout:
+// if the WireGuard peer is unreachable (post-sleep, captive portal),
+// DialContextTCP blocks indefinitely under context.Background while
+// wireguard-go queues the TCP SYN waiting for a handshake that never
+// completes — stalling whole-machine TCP flows until the user disables
+// the extension.
+//
 //export wg_netstack_tcp_connect
-func wg_netstack_tcp_connect(hostC *C.char, port C.int, errBuf *C.char, errLen C.int) C.int64_t {
+func wg_netstack_tcp_connect(hostC *C.char, port C.int, timeoutMs C.int, errBuf *C.char, errLen C.int) C.int64_t {
 	if !started {
 		setErr(errBuf, errLen, "wg_netstack not initialized")
 		return -1
@@ -520,7 +528,13 @@ func wg_netstack_tcp_connect(hostC *C.char, port C.int, errBuf *C.char, errLen C
 		Addr: tcpip.AddrFromSlice(ip.AsSlice()),
 		Port: uint16(port),
 	}
-	gconn, err := gonet.DialContextTCP(context.Background(), tun.stack, addr, proto)
+	ctx := context.Background()
+	var cancel context.CancelFunc
+	if timeoutMs > 0 {
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
+		defer cancel()
+	}
+	gconn, err := gonet.DialContextTCP(ctx, tun.stack, addr, proto)
 	if err != nil {
 		setErr(errBuf, errLen, "DialContextTCP: "+err.Error())
 		return -1

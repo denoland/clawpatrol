@@ -1,3 +1,4 @@
+// Package main implements clawpatrol main support.
 package main
 
 import (
@@ -85,22 +86,6 @@ func (a *Agent) findOrAddSession(t, id, title string) *Session {
 	s := &Session{ID: id, Title: title, Type: t, FirstAt: now, LastAt: now, Reqs: 1}
 	a.Sessions = append(a.Sessions, s)
 	return s
-}
-
-func detectAgentType(ua string) string {
-	u := strings.ToLower(ua)
-	switch {
-	case strings.Contains(u, "claude-code") || strings.Contains(u, "anthropic"):
-		return "claude"
-	case strings.Contains(u, "codex") || strings.Contains(u, "openai"):
-		return "codex"
-	case strings.Contains(u, "curl/") || strings.Contains(u, "wget/") || strings.Contains(u, "httpie"):
-		return "shell"
-	case u == "":
-		return ""
-	default:
-		return "other"
-	}
 }
 
 // detectAgentTypeFromHost infers type from destination host (used for
@@ -321,8 +306,8 @@ func printDashboardURL(listen string) {
 		return
 	}
 	hostName := st.Self.HostName
-	if st.MagicDNSSuffix != "" && hostName != "" {
-		log.Printf("dashboard: http://%s.%s%s", hostName, st.MagicDNSSuffix, port)
+	if st.CurrentTailnet != nil && st.CurrentTailnet.MagicDNSSuffix != "" && hostName != "" {
+		log.Printf("dashboard: http://%s.%s%s", hostName, st.CurrentTailnet.MagicDNSSuffix, port)
 	}
 	if len(st.Self.TailscaleIPs) > 0 {
 		log.Printf("dashboard: http://%s%s", st.Self.TailscaleIPs[0], port)
@@ -481,7 +466,7 @@ func (r *AgentRegistry) LoadSessions(db *sql.DB) {
 		log.Printf("sessions: load: %v", err)
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for rows.Next() {
@@ -512,6 +497,9 @@ func (r *AgentRegistry) LoadSessions(db *sql.DB) {
 			Reqs: reqs, FirstAt: time.Unix(0, fa), LastAt: time.Unix(0, la),
 		}
 		a.Sessions = append(a.Sessions, s)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("sessions: load rows: %v", err)
 	}
 }
 
@@ -775,7 +763,7 @@ func (w *webMux) agentsList() []*Agent {
 // that from the Tailscale admin console.
 func (w *webMux) apiAgentDelete(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		http.Error(rw, "POST", 405)
+		http.Error(rw, "POST", http.StatusMethodNotAllowed)
 		return
 	}
 	ip := r.URL.Query().Get("ip")
@@ -801,7 +789,7 @@ func (w *webMux) apiAgentDelete(rw http.ResponseWriter, r *http.Request) {
 // time, so rule scoping switches over immediately.
 func (w *webMux) apiAgentProfile(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		http.Error(rw, "POST", 405)
+		http.Error(rw, "POST", http.StatusMethodNotAllowed)
 		return
 	}
 	ip := r.URL.Query().Get("ip")
@@ -854,14 +842,15 @@ type RuleSummary struct {
 // emit one row per endpoint so the operator sees each attachment
 // site individually.
 //
-// Read-only. Edits go through PUT /api/config (whole-file HCL via
-// the new typed-block validator).
+// Read-only. Dashboard edits go through the whole-file gateway.hcl
+// preview/save flow so operators review the formatted diff before the
+// typed-block validator persists changes.
 func (w *webMux) apiRules(rw http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
 		writeJSON(rw, w.collectRuleSummaries(""))
 	default:
-		http.Error(rw, "edit rules through PUT /api/config", http.StatusNotImplemented)
+		http.Error(rw, "edit rules through the gateway.hcl preview/save flow", http.StatusNotImplemented)
 	}
 }
 

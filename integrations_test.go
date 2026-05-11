@@ -99,7 +99,7 @@ func TestFetchEnvPushdownErrors(t *testing.T) {
 			t.Fatalf("listen: %v", err)
 		}
 		addr := l.Addr().String()
-		l.Close()
+		_ = l.Close()
 		_ = os.WriteFile(filepath.Join(dir, "gateway"), []byte("http://"+addr), 0o644)
 		_ = os.WriteFile(filepath.Join(dir, "api-token"), []byte("t"), 0o600)
 		if _, err := fetchEnvPushdownFromGateway(dir); err == nil {
@@ -113,7 +113,7 @@ func TestFetchEnvPushdownErrors(t *testing.T) {
 // vars (client-side) plus the server-supplied ones in a single
 // flat list.
 func TestEnvPushdownVarsServerDriven(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"vars": []map[string]string{{"name": "CODEX_ACCESS_TOKEN", "value": "from-server"}},
 		})

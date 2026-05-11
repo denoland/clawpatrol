@@ -19,25 +19,10 @@ package endpoints
 // effect: LZ4/ZSTD stays out of the gateway entirely.
 
 import (
-	"errors"
 	"fmt"
 	"io"
 
 	chgoproto "github.com/ClickHouse/ch-go/proto"
-)
-
-// Local aliases of the ch-go packet codes — keeps the runtime's
-// switch statements readable without leaking the dependency name
-// everywhere.
-const (
-	chClientPacketHello  = chgoproto.ClientCodeHello
-	chClientPacketQuery  = chgoproto.ClientCodeQuery
-	chClientPacketData   = chgoproto.ClientCodeData
-	chClientPacketCancel = chgoproto.ClientCodeCancel
-	chClientPacketPing   = chgoproto.ClientCodePing
-
-	chServerPacketHello     = chgoproto.ServerCodeHello
-	chServerPacketException = chgoproto.ServerCodeException
 )
 
 // chMaxProtocolRev caps the protocol revision the gateway is willing
@@ -231,8 +216,3 @@ func chEncodeException(displayText string) []byte {
 	exc.EncodeAware(&b, 0)
 	return b.Buf
 }
-
-// chErrShortBuffer is returned by helpers that try-decode out of a
-// fixed buffer. With ch-go/proto the runtime always reads from a live
-// io.Reader so this surfaces only from buffer-backed unit tests.
-var chErrShortBuffer = errors.New("clickhouse: short buffer")

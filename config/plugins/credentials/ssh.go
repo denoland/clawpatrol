@@ -28,6 +28,7 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
+// SSHCredential is part of the clawpatrol plugin API.
 type SSHCredential struct{}
 
 // SSHAuth implements sshproto.AuthCredential. Returns the raw
@@ -51,6 +52,7 @@ func (s *SSHCredential) SSHAuth(sec runtime.Secret) (sshproto.Creds, error) {
 	return creds, nil
 }
 
+// SecretSlots is part of the clawpatrol plugin API.
 func (*SSHCredential) SecretSlots() []config.SecretSlot {
 	return []config.SecretSlot{
 		{

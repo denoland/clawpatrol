@@ -1,78 +1,90 @@
 <!doctype html>
 <html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>clawpatrol</title>
-  <style>
-    body {
-      font: 14px -apple-system, BlinkMacSystemFont, sans-serif;
-      background: #fafafa;
-      color: #171717;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 100vh;
-      margin: 0;
-    }
-    form {
-      background: #fff;
-      border: 1px solid #e5e5e5;
-      border-radius: 6px;
-      padding: 24px;
-      width: 320px;
-    }
-    h1 {
-      font-family: Georgia, serif;
-      font-size: 28px;
-      font-weight: 400;
-      margin: 0 0 16px;
-      letter-spacing: -0.01em;
-    }
-    label {
-      display: block;
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: .09em;
-      color: #a3a3a3;
-      margin: 0 0 6px;
-    }
-    input {
-      width: 100%;
-      box-sizing: border-box;
-      padding: 8px 10px;
-      border: 1px solid #e5e5e5;
-      border-radius: 4px;
-      font: 13px ui-monospace, SFMono-Regular, monospace;
-      outline: none;
-    }
-    input:focus { border-color: #171717; }
-    button {
-      margin-top: 12px;
-      width: 100%;
-      padding: 8px;
-      background: #171717;
-      color: #fff;
-      border: 0;
-      border-radius: 4px;
-      font-size: 12px;
-      cursor: pointer;
-    }
-    button:hover { background: #000; }
-    .err {
-      color: #dc2626;
-      font-size: 12px;
-      margin: 0 0 12px;
-    }
-  </style>
-</head>
-<body>
-  <form method="POST" action="/__login?next={{.Next}}">
-    <h1>clawpatrol</h1>
-    {{if .Error}}<p class="err">{{.Error}}</p>{{end}}
-    <label>secret</label>
-    <input type="password" name="secret" autofocus required>
-    <button type="submit">unlock</button>
-  </form>
-</body>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>clawpatrol</title>
+    <style>
+      body {
+        font:
+          14px -apple-system,
+          BlinkMacSystemFont,
+          sans-serif;
+        background: #fafafa;
+        color: #171717;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        margin: 0;
+      }
+      form {
+        background: #fff;
+        border: 1px solid #e5e5e5;
+        border-radius: 6px;
+        padding: 24px;
+        width: 320px;
+      }
+      h1 {
+        font-family: Georgia, serif;
+        font-size: 28px;
+        font-weight: 400;
+        margin: 0 0 16px;
+        letter-spacing: -0.01em;
+      }
+      label {
+        display: block;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.09em;
+        color: #a3a3a3;
+        margin: 0 0 6px;
+      }
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 8px 10px;
+        border: 1px solid #e5e5e5;
+        border-radius: 4px;
+        font:
+          13px ui-monospace,
+          SFMono-Regular,
+          monospace;
+        outline: none;
+      }
+      input:focus {
+        border-color: #171717;
+      }
+      button {
+        margin-top: 12px;
+        width: 100%;
+        padding: 8px;
+        background: #171717;
+        color: #fff;
+        border: 0;
+        border-radius: 4px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #000;
+      }
+      .err {
+        color: #dc2626;
+        font-size: 12px;
+        margin: 0 0 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <form method="POST" action="/__login?next={{.Next}}">
+      <h1>clawpatrol</h1>
+      {{if .Error}}
+      <p class="err">{{.Error}}</p>
+      {{end}}
+      <label>secret</label>
+      <input type="password" name="secret" autofocus required />
+      <button type="submit">unlock</button>
+    </form>
+  </body>
 </html>

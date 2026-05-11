@@ -35,6 +35,7 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
+// SlackTokens is part of the clawpatrol plugin API.
 type SlackTokens struct{}
 
 // InjectHTTP defaults to the bot token (xoxb-…) for chat.postMessage
@@ -85,6 +86,7 @@ func slackPathPrefersApp(path string) bool {
 	return false
 }
 
+// SecretSlots is part of the clawpatrol plugin API.
 func (*SlackTokens) SecretSlots() []config.SecretSlot {
 	return []config.SecretSlot{
 		{Name: "bot", Label: "Bot token", Description: "xoxb-…"},
@@ -118,20 +120,34 @@ func (s *SlackTokens) NotifyHITL(_ context.Context, req runtime.ApproveRequest, 
 	}
 	link := strings.TrimRight(target.DashboardURL, "/") + "/#hitl/" + target.PendingID
 
-	title := fmt.Sprintf("Approve: %s %s%s", req.Method, req.Host, slackTrunc(req.Path, 60))
+	endpoint := runtime.HITLEndpointLabel(req)
+	queryLabel := runtime.HITLQueryLabel(req.Endpoint)
+
+	title := slackTrunc(runtime.HITLTitle(req.Method, endpoint), 140)
 	blocks := []map[string]any{
 		{"type": "header", "text": map[string]any{"type": "plain_text", "text": title}},
-		{"type": "section", "fields": []map[string]any{
-			{"type": "mrkdwn", "text": "*Method*\n`" + req.Method + "`"},
-			{"type": "mrkdwn", "text": "*Host*\n`" + req.Host + "`"},
-			{"type": "mrkdwn", "text": "*Path*\n`" + slackTrunc(req.Path, 80) + "`"},
-			{"type": "mrkdwn", "text": "*Agent*\n`" + req.Profile + "`"},
+		{"type": "section", "text": map[string]any{
+			"type": "mrkdwn",
+			"text": "*" + queryLabel + "*\n```" + slackTrunc(req.Path, 800) + "```",
 		}},
 	}
+	ctx := []map[string]any{}
+	if req.Profile != "" {
+		ctx = append(ctx, map[string]any{
+			"type": "mrkdwn",
+			"text": "agent `" + req.Profile + "`",
+		})
+	}
 	if r := strings.TrimSpace(req.Reason); r != "" {
+		ctx = append(ctx, map[string]any{
+			"type": "mrkdwn",
+			"text": "reason: " + slackTrunc(r, 200),
+		})
+	}
+	if len(ctx) > 0 {
 		blocks = append(blocks, map[string]any{
-			"type": "section",
-			"text": map[string]any{"type": "mrkdwn", "text": "*Reason*\n" + r},
+			"type":     "context",
+			"elements": ctx,
 		})
 	}
 	if bs := strings.TrimSpace(req.BodySample); bs != "" {
@@ -176,7 +192,7 @@ func (s *SlackTokens) NotifyHITL(_ context.Context, req runtime.ApproveRequest, 
 
 	body := map[string]any{
 		"channel": target.Channel,
-		"text":    fmt.Sprintf("clawpatrol HITL: %s %s%s", req.Method, req.Host, req.Path),
+		"text":    "clawpatrol: " + title,
 		"blocks":  blocks,
 	}
 	if target.ThreadTS != "" {
@@ -195,7 +211,7 @@ func (s *SlackTokens) NotifyHITL(_ context.Context, req runtime.ApproveRequest, 
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	var result struct {
 		OK    bool   `json:"ok"`
@@ -236,7 +252,7 @@ func (*SlackTokens) WebhookRoutes() []runtime.WebhookRoute {
 // payload, and decides the matching pending HITL entry.
 func slackInteractive(ctx runtime.WebhookCtx, rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		http.Error(rw, "POST", 405)
+		http.Error(rw, "POST", http.StatusMethodNotAllowed)
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
@@ -247,12 +263,12 @@ func slackInteractive(ctx runtime.WebhookCtx, rw http.ResponseWriter, r *http.Re
 	ts := r.Header.Get("X-Slack-Request-Timestamp")
 	sig := r.Header.Get("X-Slack-Signature")
 	if ts == "" || sig == "" {
-		http.Error(rw, "missing slack signature headers", 401)
+		http.Error(rw, "missing slack signature headers", http.StatusUnauthorized)
 		return
 	}
 	// Replay protection: timestamp within 5 minutes.
 	if tsi, _ := strconv.ParseInt(ts, 10, 64); tsi == 0 || time.Since(time.Unix(tsi, 0)) > 5*time.Minute {
-		http.Error(rw, "stale slack signature", 401)
+		http.Error(rw, "stale slack signature", http.StatusUnauthorized)
 		return
 	}
 
@@ -275,7 +291,7 @@ func slackInteractive(ctx runtime.WebhookCtx, rw http.ResponseWriter, r *http.Re
 		}
 	}
 	if !verified {
-		http.Error(rw, "slack signature verification failed", 401)
+		http.Error(rw, "slack signature verification failed", http.StatusUnauthorized)
 		return
 	}
 
@@ -371,7 +387,7 @@ func postSlackResponseURL(url, text string, blocks []map[string]any) {
 		log.Printf("slack response_url: post: %v", err)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
 		log.Printf("slack response_url: status=%d", resp.StatusCode)
 	}

@@ -181,12 +181,21 @@ type ApproveCallRequest struct {
 
 // ConnEvent is the wire-protocol-agnostic event shape conn-family
 // plugins emit per request / query.
+//
+// Facets carries the per-family report payload the host writes to
+// Event.Facets — the result of calling the family's facet.Runtime
+// Report hook against the matched request. Conn plugins populate it
+// when they have the parsed metadata in scope (postgres / clickhouse
+// build it from the *sqlfacet.Meta stashed on mreq.Meta) so the
+// dashboard doesn't have to round-trip through the legacy
+// Verb / Summary squashing.
 type ConnEvent struct {
 	Action  string // "allow" | "deny" | "hitl_allow" | "hitl_deny" | "error"
 	Reason  string
 	Verb    string // SQL verb / k8s verb / etc.
 	Summary string // human-readable one-liner for the event log
 	Bytes   int64  // approximate request size for billing / quotas
+	Facets  map[string]any
 }
 
 // Secret is what credential plugins receive at injection time. The
@@ -336,11 +345,19 @@ type HITLPool interface {
 // tags match the dashboard's existing field names — that endpoint is
 // public API to the in-tree React UI.
 type HITLPending struct {
-	ID         string    `json:"id"`
-	AgentIP    string    `json:"agent_ip"`
-	Host       string    `json:"host"`
-	Method     string    `json:"method"`
-	Path       string    `json:"path"`
+	ID      string `json:"id"`
+	AgentIP string `json:"agent_ip"`
+	Host    string `json:"host"`
+	Method  string `json:"method"`
+	Path    string `json:"path"`
+	// Endpoint is the operator-readable identifier for what's being
+	// called. HITLEndpointLabel-derived: hostname for HTTPS, resource
+	// name for SQL / k8s where Host is a virtual IP.
+	Endpoint string `json:"endpoint,omitempty"`
+	// Family is the endpoint family ("https" | "sql" | "k8s") so the
+	// dashboard can pick a matching label for Path ("Query" /
+	// "Resource" / "Path"). Empty when no endpoint metadata is set.
+	Family     string    `json:"family,omitempty"`
 	UA         string    `json:"ua,omitempty"`
 	BodySample string    `json:"body_sample,omitempty"`
 	Reason     string    `json:"reason,omitempty"`

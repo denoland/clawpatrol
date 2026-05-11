@@ -14,17 +14,8 @@ const INTEGRATIONS = [
 
 export function IntegrationsSection() {
   return (
-    <section
-      class="py-28 text-center"
-      style={{
-        background:
-          "linear-gradient(160deg, " +
-          "var(--color-navy-200), " +
-          "var(--color-navy-50), " +
-          "var(--color-navy-100)",
-      }}
-    >
-      <div class="max-w-5xl mx-auto px-8">
+    <section class="py-20 sm:py-28 text-center bg-linear-to-b from-navy-100 to-navy-50">
+      <div class="max-w-5xl mx-auto px-6 sm:px-8">
         <SectionLabel>Built-in plugins</SectionLabel>
         <p class="text-center max-w-2xl mx-auto mb-16   text-text-muted">
           Plugins are pre-configured integrations with external services.
@@ -60,8 +51,10 @@ export function IntegrationsSection() {
             </a>
           ))}
         </div>
-        <p class="text-center mt-16 tracking-wider text-navy-500">— OR —</p>
-        <div class="text-center mt-16 mb-8">
+        <p class="text-center mt-12 sm:mt-16 tracking-wider text-navy-500">
+          — OR —
+        </p>
+        <div class="text-center mt-12 sm:mt-16 mb-8">
           <Button href="/docs/08-plugins/" variant="normal" size="lg">
             Write your own plugin in one TypeScript file{" "}
             <span class="ml-1" aria-hidden="true">

@@ -75,7 +75,10 @@ type SSHEndpoint struct {
 	Credentials []CredentialEntry `json:"Credentials,omitempty"`
 }
 
+// EndpointHosts is part of the clawpatrol plugin API.
 func (e *SSHEndpoint) EndpointHosts() []string { return e.Hosts }
+
+// EndpointCredentials is part of the clawpatrol plugin API.
 func (e *SSHEndpoint) EndpointCredentials() []config.CredBinding {
 	return bindings(e.Credential, e.Credentials)
 }
@@ -140,8 +143,9 @@ var (
 
 // ── HandleConn ────────────────────────────────────────────────────────
 
+// HandleConn is part of the clawpatrol plugin API.
 func (rt *SSHEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHandle) error {
-	defer ch.Conn.Close()
+	defer func() { _ = ch.Conn.Close() }()
 	if ch.Endpoint == nil || ch.Endpoint.Family != "ssh" {
 		return fmt.Errorf("ssh runtime invoked on non-ssh endpoint %v", ch.Endpoint)
 	}
@@ -196,7 +200,7 @@ func (rt *SSHEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHa
 	if err != nil {
 		return fmt.Errorf("ssh server handshake: %w", err)
 	}
-	defer srvConn.Close()
+	defer func() { _ = srvConn.Close() }()
 
 	agentUser := srvConn.User()
 	if agentUser == "" {
@@ -227,13 +231,13 @@ func (rt *SSHEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHa
 	if err != nil {
 		return fmt.Errorf("dial upstream %s: %w", upstreamAddr, err)
 	}
-	defer upConn.Close()
+	defer func() { _ = upConn.Close() }()
 
 	clientConn, clientChans, clientReqs, err := ssh.NewClientConn(upConn, upstreamAddr, upstreamCfg)
 	if err != nil {
 		return fmt.Errorf("ssh client handshake to %s: %w", upstreamAddr, err)
 	}
-	defer clientConn.Close()
+	defer func() { _ = clientConn.Close() }()
 
 	if ch.Emit != nil {
 		ch.Emit(runtime.ConnEvent{
@@ -269,8 +273,8 @@ func (rt *SSHEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHa
 	// the time chans.Wait() returns every byte that was going to flow
 	// has flowed.
 	chans.Wait()
-	srvConn.Close()
-	clientConn.Close()
+	_ = srvConn.Close()
+	_ = clientConn.Close()
 	dispatch.Wait()
 	return nil
 }
@@ -368,7 +372,7 @@ func buildHostKeyCallback(hostPubkey, endpointName string) (ssh.HostKeyCallback,
 		return nil, err
 	}
 	pinned := pubkey.Marshal()
-	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+	return func(hostname string, _ net.Addr, key ssh.PublicKey) error {
 		if !bytes.Equal(key.Marshal(), pinned) {
 			return fmt.Errorf("upstream host key for %s does not match credential's pin", hostname)
 		}
@@ -405,7 +409,7 @@ func pumpChannels(target ssh.Conn, source <-chan ssh.NewChannel, wg *sync.WaitGr
 		}
 		sourceCh, sourceReqs, err := newCh.Accept()
 		if err != nil {
-			targetCh.Close()
+			_ = targetCh.Close()
 			continue
 		}
 		wg.Add(1)
@@ -588,17 +592,17 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	}
 	tmpName := tmp.Name()
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
 		return err
 	}
 	if err := tmp.Chmod(perm); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
 		return err
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 		return err
 	}
 	return os.Rename(tmpName, path)

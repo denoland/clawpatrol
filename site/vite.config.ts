@@ -45,6 +45,39 @@ function serveDocsInDev(): Plugin {
   };
 }
 
+/**
+ * Docs HTML is server-rendered via middleware, so Vite's normal HMR doesn't
+ * apply. Watch the docs template, the components it embeds, and the markdown
+ * sources; trigger a full browser reload when any of them change. (CSS still
+ * hot-reloads through the normal Vite path since docs.css is now imported
+ * from index.css.)
+ */
+function reloadDocsOnChange(): Plugin {
+  const docsTemplate = resolve(__dirname, "docs-render.ts");
+  const docDir = resolve(__dirname, "doc");
+  const sharedComponents = [
+    resolve(__dirname, "src/components/Header.tsx"),
+    resolve(__dirname, "src/components/Footer.tsx"),
+    resolve(__dirname, "src/components/Stripe.tsx"),
+  ];
+
+  return {
+    name: "reload-docs-on-change",
+    configureServer(server) {
+      server.watcher.add(docDir);
+      server.watcher.on("change", (file) => {
+        const triggers =
+          file === docsTemplate ||
+          sharedComponents.includes(file) ||
+          (file.startsWith(docDir) && file.endsWith(".md"));
+        if (triggers) {
+          server.ws.send({ type: "full-reload", path: "*" });
+        }
+      });
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [preact(), tailwindcss(), serveDocsInDev()],
+  plugins: [preact(), tailwindcss(), serveDocsInDev(), reloadDocsOnChange()],
 });

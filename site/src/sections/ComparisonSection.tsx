@@ -100,15 +100,15 @@ const ROWS: {
 
 export function ComparisonSection() {
   return (
-    <section class="max-w-5xl mx-auto px-8 pt-8 pb-28 border-t border-navy-200/50">
-      <div class="pt-28" />
+    <section class="max-w-5xl mx-auto px-6 sm:px-8 pt-8 pb-20 sm:pb-28 border-t border-navy-200/50">
+      <div class="pt-16 sm:pt-28" />
       <div class="max-w-max">
         <SectionLabel>How it compares</SectionLabel>
       </div>
-      <h3 class="text-3xl lg:text-4xl font-display font-extrabold ">
+      <h3 class="text-3xl sm:text-4xl lg:text-5xl font-display font-bold text-balance">
         More than a gateway, more than a sandbox
       </h3>
-      <p class=" max-w-2xl mb-16 text-base  text-text-muted mt-8">
+      <p class=" max-w-2xl mb-12 sm:mb-16 text-base  text-text-muted mt-6 sm:mt-8">
         Many teams have attacked this problem — credential vaults, LLM gateways,
         sandboxes — but most stop at the surface. Hiding a key isn't enough if
         the agent can still DROP TABLE or exfiltrate data through an allowed
@@ -116,15 +116,15 @@ export function ComparisonSection() {
         run, which endpoints get called, what payloads look like. Claw Patrol
         goes that deep.
       </p>
-      <div class="overflow-x-auto">
+      <div class="overflow-x-auto -mx-6 px-6 sm:mx-0 sm:px-0">
         <table class="w-full text-sm font-sans">
           <thead>
             <tr class="border-b-2 border-navy-200">
-              <th class="text-left py-3 pr-4 font-medium font-display text-text-muted" />
+              <th class="text-left py-3 pr-2 sm:pr-4 font-medium font-display text-text-muted" />
               {FEATURES.map((f) => (
                 <th
                   key={f}
-                  class="py-3 px-3 font-medium
+                  class="py-3 px-1.5 sm:px-3 font-medium
                      text-text-muted align-bottom
                     text-2xs uppercase tracking-widest"
                 >
@@ -142,7 +142,7 @@ export function ComparisonSection() {
                 }`}
               >
                 <td
-                  class={`py-3 px-4 font-bold font-sans font
+                  class={`py-3 px-2 sm:px-4 font-bold font-sans font
                     whitespace-nowrap ${
                       row.highlight ? "text-navy" : "text-navy-400"
                     }`}
@@ -164,7 +164,7 @@ export function ComparisonSection() {
                 {row.checks.map((ok, i) => {
                   const anchor = slug(`${row.name} ${FEATURES[i]} ${ok}`);
                   return (
-                    <td key={i} class="py-3 px-3 text-center text-lg">
+                    <td key={i} class="py-3 px-1.5 sm:px-3 text-center text-lg">
                       <a href={`/docs/competitors/#${anchor}`}>
                         {ok ? CHECK : CROSS}
                       </a>

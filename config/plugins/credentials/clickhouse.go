@@ -16,10 +16,12 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
+// ClickhouseCredential is part of the clawpatrol plugin API.
 type ClickhouseCredential struct {
 	User string `hcl:"user,optional"`
 }
 
+// InjectHTTP is part of the clawpatrol plugin API.
 func (c *ClickhouseCredential) InjectHTTP(_ context.Context, req *http.Request, sec runtime.Secret) error {
 	if c.User == "" || len(sec.Bytes) == 0 || req.URL == nil {
 		return nil
@@ -40,6 +42,7 @@ func (c *ClickhouseCredential) ClickhouseAuth(sec runtime.Secret) (string, strin
 	return c.User, string(sec.Bytes)
 }
 
+// SecretSlots is part of the clawpatrol plugin API.
 func (*ClickhouseCredential) SecretSlots() []config.SecretSlot {
 	return []config.SecretSlot{{Label: "ClickHouse password"}}
 }

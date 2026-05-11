@@ -21,12 +21,17 @@ package main
 
 import (
 	"bufio"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -66,13 +71,19 @@ func runRun(args []string) {
 
 	cfg, err := parseRunConf(*confPath)
 	if err != nil {
-		fail("conf %s: %v\n  hint: run `clawpatrol join --url <gw>` first", *confPath, err)
+		fail("conf %s: %v\n  hint: run `clawpatrol join <gw>` first", *confPath, err)
 	}
 
 	checkUserNS()
 
 	// Stamp CA + per-credential env vars; child and user's cmd inherit them.
 	applyEnvPushdown(defaultClawpatrolDir())
+
+	// Allocate a per-run ephemeral WireGuard identity so concurrent
+	// `clawpatrol run` invocations on the same machine don't share a
+	// keypair and fight over the gateway's WG session.
+	cleanupEphemeral, _ := ephemeralPeer(cfg)
+	defer cleanupEphemeral()
 
 	// socketpair: TUN fd handoff (child→parent) via SCM_RIGHTS.
 	// pipe: parent signals child "WG is up, finish setup".
@@ -82,7 +93,7 @@ func runRun(args []string) {
 	}
 	pSock := os.NewFile(uintptr(sp[0]), "parent-sock")
 	cSock := os.NewFile(uintptr(sp[1]), "child-sock")
-	defer pSock.Close()
+	defer func() { _ = pSock.Close() }()
 	wgUpR, wgUpW, err := os.Pipe()
 	if err != nil {
 		fail("pipe: %v", err)
@@ -117,8 +128,8 @@ func runRun(args []string) {
 	if err := child.Start(); err != nil {
 		fail("clone: %v\n  hint: this distro may have unprivileged user namespaces disabled.\n  enable: sudo sysctl -w kernel.unprivileged_userns_clone=1", err)
 	}
-	cSock.Close()
-	wgUpR.Close()
+	_ = cSock.Close()
+	_ = wgUpR.Close()
 
 	tunFd, err := recvFD(pSock)
 	if err != nil {
@@ -139,8 +150,8 @@ func runRun(args []string) {
 	}
 	defer dev.Close()
 
-	wgUpW.Write([]byte{1})
-	wgUpW.Close()
+	_, _ = wgUpW.Write([]byte{1})
+	_ = wgUpW.Close()
 
 	sigCh := make(chan os.Signal, 4)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
@@ -151,7 +162,8 @@ func runRun(args []string) {
 	}()
 
 	if err := child.Wait(); err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
 			os.Exit(ee.ExitCode())
 		}
 		fail("wait: %v", err)
@@ -178,22 +190,28 @@ func runRunChild() {
 	if err := sendFD(cSock, tunFd); err != nil {
 		fail("send tun fd: %v", err)
 	}
-	cSock.Close()
-	unix.Close(tunFd)
+	_ = cSock.Close()
+	_ = unix.Close(tunFd)
 
 	one := make([]byte, 1)
 	if _, err := io.ReadFull(wgUpR, one); err != nil {
 		fail("wait wg-up: %v", err)
 	}
-	wgUpR.Close()
+	_ = wgUpR.Close()
 
 	cfg := mustParseRunConf(os.Getenv("CLAWPATROL_RUN_CONF"))
+	// CLAWPATROL_EPHEMERAL_ADDR overrides cfg.Address when the parent
+	// successfully registered an ephemeral WG identity for this run.
+	addrSource := cfg.Address
+	if ea := os.Getenv("CLAWPATROL_EPHEMERAL_ADDR"); ea != "" {
+		addrSource = ea
+	}
 	// Address may carry both v4 and v6 separated by ", " — gateway-emitted
 	// wg-quick conf looks like `Address = 10.55.0.5/32, fd77::5/128`. The
 	// `ip addr add` command rejects the comma-joined form ("any valid
 	// prefix is expected rather than ..."), so split + assign each addr.
 	var addrs []string
-	for _, part := range strings.Split(cfg.Address, ",") {
+	for _, part := range strings.Split(addrSource, ",") {
 		s := strings.TrimSpace(part)
 		if s == "" {
 			continue
@@ -285,7 +303,7 @@ func parseRunConf(path string) (*runConf, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	c := &runConf{}
 	section := ""
 	sc := bufio.NewScanner(f)
@@ -321,7 +339,7 @@ func parseRunConf(path string) (*runConf, error) {
 	if c.PrivateKey == "" || c.Address == "" || c.PeerPubKey == "" || c.Endpoint == "" {
 		return nil, fmt.Errorf("missing PrivateKey/Address/PublicKey/Endpoint")
 	}
-	os.Setenv("CLAWPATROL_RUN_CONF", path)
+	_ = os.Setenv("CLAWPATROL_RUN_CONF", path)
 	return c, nil
 }
 
@@ -385,8 +403,8 @@ func openTUN(name string) (int, error) {
 	copy(req.Name[:], name)
 	req.Flags = iffTun | iffNoPi
 	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), tunsetiff, uintptr(unsafe.Pointer(&req))); errno != 0 {
-		unix.Close(fd)
-		return -1, fmt.Errorf("TUNSETIFF: %v", errno)
+		_ = unix.Close(fd)
+		return -1, fmt.Errorf("TUNSETIFF: %w", errno)
 	}
 	return fd, nil
 }
@@ -425,7 +443,7 @@ func recvFD(s *os.File) (int, error) {
 		fds, err := unix.ParseUnixRights(&cmsg)
 		if err == nil && len(fds) > 0 {
 			for _, x := range fds[1:] {
-				unix.Close(x)
+				_ = unix.Close(x)
 			}
 			return fds[0], nil
 		}
@@ -439,10 +457,10 @@ func bindResolv(body string) error {
 		return err
 	}
 	if _, err := tmp.WriteString(body); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
-	tmp.Close()
+	_ = tmp.Close()
 	return unix.Mount(tmp.Name(), "/etc/resolv.conf", "", unix.MS_BIND, "")
 }
 
@@ -485,6 +503,109 @@ func (t *rawFDTun) Write(bufs [][]byte, offset int) (int, error) {
 func (t *rawFDTun) Close() error {
 	close(t.events)
 	return t.f.Close()
+}
+
+// --- ephemeral peer --------------------------------------------------
+
+// ephemeralPeer registers a fresh per-run WireGuard keypair with the
+// gateway, mutates cfg to use the ephemeral private key and address,
+// and sets CLAWPATROL_EPHEMERAL_ADDR so the re-exec'd child uses the
+// ephemeral IP for `ip addr add`. Returns a cleanup func that removes
+// the ephemeral peer from the gateway on exit.
+//
+// Best-effort: any failure logs a warning and returns a no-op cleanup
+// so the caller falls back to the shared permanent identity.
+func ephemeralPeer(cfg *runConf) (cleanup func(), err error) {
+	noop := func() {}
+	dir := defaultClawpatrolDir()
+
+	gwURL := strings.TrimSpace(readFileSilent(filepath.Join(dir, "gateway")))
+	token := strings.TrimSpace(readFileSilent(filepath.Join(dir, "api-token")))
+	if gwURL == "" || token == "" {
+		return noop, fmt.Errorf("ephemeral peer: no gateway url or api-token")
+	}
+
+	client, err := gatewayHTTPClient(filepath.Join(dir, "ca.crt"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ ephemeral peer: build http client: %v (using shared identity)\n", err)
+		return noop, err
+	}
+
+	privB64, pubHex, _, err := wgGenKeypair()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ ephemeral peer: keygen: %v (using shared identity)\n", err)
+		return noop, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost,
+		gwURL+"/api/peer/ephemeral?pubkey="+pubHex, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ ephemeral peer: build request: %v (using shared identity)\n", err)
+		return noop, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ ephemeral peer: register: %v (using shared identity)\n", err)
+		return noop, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "⚠ ephemeral peer: gateway returned %d (using shared identity)\n", resp.StatusCode)
+		return noop, fmt.Errorf("gateway %d", resp.StatusCode)
+	}
+
+	var result struct {
+		IP  string `json:"ip"`
+		IP6 string `json:"ip6"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ ephemeral peer: decode response: %v (using shared identity)\n", err)
+		return noop, err
+	}
+
+	cfg.PrivateKey = privB64
+	cfg.Address = result.IP + "/32, " + result.IP6 + "/128"
+	_ = os.Setenv("CLAWPATROL_EPHEMERAL_ADDR", cfg.Address)
+
+	return func() {
+		dreq, err := http.NewRequest(http.MethodDelete,
+			gwURL+"/api/peer/ephemeral?pubkey="+pubHex, nil)
+		if err != nil {
+			return
+		}
+		dreq.Header.Set("Authorization", "Bearer "+token)
+		if dr, derr := client.Do(dreq); derr == nil {
+			_ = dr.Body.Close()
+		}
+	}, nil
+}
+
+// gatewayHTTPClient builds an http.Client that trusts caPath in addition
+// to system roots.
+func gatewayHTTPClient(caPath string) (*http.Client, error) {
+	roots, err := x509.SystemCertPool()
+	if err != nil {
+		roots = x509.NewCertPool()
+	}
+	if pem, err := os.ReadFile(caPath); err == nil {
+		roots.AppendCertsFromPEM(pem)
+	}
+	return &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{RootCAs: roots},
+		},
+	}, nil
+}
+
+// readFileSilent reads a file and returns its contents as a string,
+// or empty on any error.
+func readFileSilent(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 // --- helpers ---------------------------------------------------------

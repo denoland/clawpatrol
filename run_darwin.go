@@ -17,6 +17,7 @@ package main
 // `Clawpatrol run` just forks the user command.
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -60,8 +61,8 @@ func sessionIPC(msg string) error {
 	if err != nil {
 		return err
 	}
-	defer c.Close()
-	c.SetDeadline(time.Now().Add(2 * time.Second))
+	defer func() { _ = c.Close() }()
+	_ = c.SetDeadline(time.Now().Add(2 * time.Second))
 	if _, err := c.Write([]byte(msg)); err != nil {
 		return err
 	}
@@ -80,7 +81,7 @@ func runRun(args []string) {
 	if _, err := os.Stat(macHelperPath); err != nil {
 		fail("Clawpatrol.app not installed. Build + install from macos/:\n" +
 			"  cd macos && ./install.sh\n" +
-			"then: clawpatrol join --url <gateway>")
+			"then: clawpatrol join <gateway>")
 	}
 	if err := ensureMacProxyUp(); err != nil {
 		fail(fmt.Sprintf("ensure proxy up: %v", err))
@@ -102,7 +103,8 @@ func runRun(args []string) {
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
 	c.Env = os.Environ()
 	if err := c.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			os.Exit(exitErr.ExitCode())
 		}
 		fail(fmt.Sprintf("run: %v", err))
@@ -119,7 +121,7 @@ func runRun(args []string) {
 func ensureMacProxyUp() error {
 	confPath := filepath.Join(os.Getenv("HOME"), ".config", "clawpatrol", "wg.conf")
 	if _, err := os.Stat(confPath); err != nil {
-		return fmt.Errorf("no wg.conf at %s — run `clawpatrol join --url <gateway>` first", confPath)
+		return fmt.Errorf("no wg.conf at %s — run `clawpatrol join <gateway>` first", confPath)
 	}
 	// `install` may surface the system-extension approval prompt the
 	// first time; once activated it's a fast no-op.
@@ -129,7 +131,8 @@ func ensureMacProxyUp() error {
 	cmd = exec.Command(macHelperPath, "start", confPath)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
 			// helper exits non-zero if profile missing — map to friendlier msg.
 			ws := ee.Sys().(syscall.WaitStatus)
 			if ws.ExitStatus() != 0 {
@@ -143,7 +146,7 @@ func ensureMacProxyUp() error {
 
 // macHelperInstall is invoked from runJoin (on darwin) right after
 // the wg.conf is written so the user gets a single-prompt onboarding:
-// `clawpatrol join --url ...` → wg conf saved → sysext approved →
+// `clawpatrol join …` → wg conf saved → sysext approved →
 // proxy up. wholeMachine maps to the helper's --whole-machine flag.
 //
 // After saving the profile, push the freshly written wg.conf into the
@@ -153,7 +156,7 @@ func ensureMacProxyUp() error {
 // when conf or mode changed).
 func macHelperInstall(wholeMachine bool) error {
 	if _, err := os.Stat(macHelperPath); err != nil {
-		return fmt.Errorf("Clawpatrol.app not at /Applications — reinstall: curl -fsSL https://clawpatrol.dev/install.sh | sh")
+		return fmt.Errorf("missing Clawpatrol.app at /Applications — reinstall: curl -fsSL https://clawpatrol.dev/install.sh | sh")
 	}
 	args := []string{"install"}
 	if wholeMachine {
@@ -165,10 +168,10 @@ func macHelperInstall(wholeMachine bool) error {
 		return err
 	}
 	confPath := filepath.Join(os.Getenv("HOME"), ".config", "clawpatrol", "wg.conf")
-	if _, err := os.Stat(confPath); err != nil {
-		return nil
+	if _, err := os.Stat(confPath); err == nil {
+		c = exec.Command(macHelperPath, "start", confPath)
+		c.Stdout, c.Stderr = os.Stdout, os.Stderr
+		return c.Run()
 	}
-	c = exec.Command(macHelperPath, "start", confPath)
-	c.Stdout, c.Stderr = os.Stdout, os.Stderr
-	return c.Run()
+	return nil
 }

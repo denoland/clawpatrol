@@ -41,7 +41,12 @@ rule "http_rule" "github-default" {
 
 func compile(t *testing.T) *config.CompiledPolicy {
 	t.Helper()
-	gw, diags := config.LoadBytes([]byte(fixture), "in.hcl")
+	return compileFixture(t, fixture)
+}
+
+func compileFixture(t *testing.T, src string) *config.CompiledPolicy {
+	t.Helper()
+	gw, diags := config.LoadBytes([]byte(src), "in.hcl")
 	if diags.HasErrors() {
 		t.Fatalf("load: %v", diags)
 	}
@@ -66,6 +71,110 @@ func TestHostEndpoint(t *testing.T) {
 	// Unknown profile + known host → fallback scan finds it.
 	if got := runtime.HostEndpoint(cp, "no-such-profile", "github.com"); got == nil {
 		t.Errorf("fallback scan should find github.com")
+	}
+}
+
+func TestHostEndpointMatchesBareSNIForPortQualifiedHost(t *testing.T) {
+	cp := compileFixture(t, `
+endpoint "https" "api" {
+  hosts = ["api.example.com:443"]
+}
+profile "default" { endpoints = [api] }
+`)
+
+	if got := runtime.HostEndpoint(cp, "default", "api.example.com"); got == nil || got.Name != "api" {
+		t.Fatalf("bare SNI host resolved to %+v, want api", got)
+	}
+	if got := runtime.HostEndpoint(cp, "default", "api.example.com:443"); got == nil || got.Name != "api" {
+		t.Fatalf("exact port-qualified host resolved to %+v, want api", got)
+	}
+	if got := runtime.HostEndpoint(cp, "missing-profile", "api.example.com"); got == nil || got.Name != "api" {
+		t.Fatalf("fallback scan resolved to %+v, want api", got)
+	}
+}
+
+func TestHostEndpointMatchesBareSNIForPortQualifiedKubernetesServer(t *testing.T) {
+	cp := compileFixture(t, `
+endpoint "kubernetes" "cluster" {
+  server = "cluster.example.com:443"
+}
+profile "default" { endpoints = [cluster] }
+`)
+
+	if got := runtime.HostEndpoint(cp, "default", "cluster.example.com"); got == nil || got.Name != "cluster" {
+		t.Fatalf("bare Kubernetes SNI host resolved to %+v, want cluster", got)
+	}
+	if got := runtime.HostEndpoint(cp, "default", "cluster.example.com:443"); got == nil || got.Name != "cluster" {
+		t.Fatalf("exact Kubernetes server host resolved to %+v, want cluster", got)
+	}
+}
+
+func TestHostEndpointBareHostExactBindingBeatsPortAlias(t *testing.T) {
+	cp := compileFixture(t, `
+endpoint "https" "port_qualified" {
+  hosts = ["api.example.com:443"]
+}
+endpoint "https" "bare" {
+  hosts = ["api.example.com"]
+}
+profile "default" { endpoints = [port_qualified, bare] }
+`)
+
+	if got := runtime.HostEndpoint(cp, "default", "api.example.com"); got == nil || got.Name != "bare" {
+		t.Fatalf("bare host resolved to %+v, want explicit bare endpoint", got)
+	}
+	if got := runtime.HostEndpoint(cp, "default", "api.example.com:443"); got == nil || got.Name != "port_qualified" {
+		t.Fatalf("port-qualified host resolved to %+v, want port-qualified endpoint", got)
+	}
+}
+
+func TestHostEndpointDoesNotAliasNonDefaultHTTPSPort(t *testing.T) {
+	cp := compileFixture(t, `
+endpoint "https" "api" {
+  hosts = ["api.example.com:8443"]
+}
+profile "default" { endpoints = [api] }
+`)
+
+	if got := runtime.HostEndpoint(cp, "default", "api.example.com"); got != nil {
+		t.Fatalf("bare host resolved to %+v, want nil for non-default port alias", got)
+	}
+	if got := runtime.HostEndpoint(cp, "default", "api.example.com:8443"); got == nil || got.Name != "api" {
+		t.Fatalf("exact non-default port host resolved to %+v, want api", got)
+	}
+}
+
+func TestHostEndpointDoesNotAliasNonHTTPFamilies(t *testing.T) {
+	cp := compileFixture(t, `
+endpoint "postgres" "db" {
+  host     = "db.example.com:5432"
+  database = "app"
+}
+profile "default" { endpoints = [db] }
+`)
+
+	if got := runtime.HostEndpoint(cp, "default", "db.example.com"); got != nil {
+		t.Fatalf("bare SQL host resolved to %+v, want nil", got)
+	}
+	if got := runtime.HostEndpoint(cp, "default", "db.example.com:5432"); got == nil || got.Name != "db" {
+		t.Fatalf("exact SQL host resolved to %+v, want db", got)
+	}
+}
+
+func TestHostEndpointPortAliasCannotBeCapturedByNonHTTPExactCollision(t *testing.T) {
+	cp := compileFixture(t, `
+endpoint "https" "api" {
+  hosts = ["api.example.com:443"]
+}
+endpoint "postgres" "db" {
+  host     = "api.example.com:443"
+  database = "app"
+}
+profile "default" { endpoints = [api, db] }
+`)
+
+	if got := runtime.HostEndpoint(cp, "default", "api.example.com"); got == nil || got.Name != "api" {
+		t.Fatalf("bare SNI host resolved to %+v, want HTTPS endpoint", got)
 	}
 }
 

@@ -44,6 +44,7 @@ func Emit(gw *Gateway) ([]byte, error) {
 	emitGroup(body, p, KindApprover)
 	emitGroup(body, p, KindPolicy)
 	emitGroup(body, p, KindCredential)
+	emitGroup(body, p, KindTunnel)
 	emitGroup(body, p, KindEndpoint)
 	emitGroup(body, p, KindRule)
 	emitGroup(body, p, KindProfile)
@@ -170,6 +171,12 @@ func leftoverNames(p *Policy, kind Kind, emitted map[string]bool) []string {
 				out = append(out, n)
 			}
 		}
+	case KindTunnel:
+		for n := range p.Tunnels {
+			if !emitted[n] {
+				out = append(out, n)
+			}
+		}
 	case KindProfile:
 		for n := range p.Profiles {
 			if !emitted[n] {
@@ -220,6 +227,12 @@ func emitOne(body *hclwrite.Body, p *Policy, kind Kind, name string) bool {
 			return false
 		}
 		emitEntityBlock(body, "rule", ent, name)
+	case KindTunnel:
+		ent, ok := p.Tunnels[name]
+		if !ok {
+			return false
+		}
+		emitEntityBlock(body, "tunnel", ent, name)
 	case KindProfile:
 		pr, ok := p.Profiles[name]
 		if !ok {
@@ -241,6 +254,24 @@ func emitEntityBlock(body *hclwrite.Body, kind string, ent *Entity, name string)
 	block := body.AppendNewBlock(kind, []string{ent.Plugin.Type, name}).Body()
 	if ent.Plugin.Emit != nil {
 		ent.Plugin.Emit(ent.Body, name, block)
+	}
+	emitFrameworkAttrs(block, ent)
+}
+
+// emitFrameworkAttrs writes the framework-level attrs (tunnel, etc.)
+// onto the block body after the plugin's own Emit. Mirrors the
+// loader's extractFramework — the loader peels these off, this puts
+// them back, so HCL → load → emit round-trips.
+func emitFrameworkAttrs(b *hclwrite.Body, ent *Entity) {
+	for _, spec := range frameworkAttrsByKind[ent.Symbol.Kind] {
+		ref := ent.Framework.Ref(spec.Name)
+		if ref == "" {
+			continue
+		}
+		// All current framework attrs are bare-name refs; emit as
+		// identifiers, not quoted strings, so the round-trip output
+		// matches the operator's input syntax.
+		SetIdent(b, spec.Name, ref)
 	}
 }
 

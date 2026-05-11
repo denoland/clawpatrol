@@ -19,7 +19,7 @@ type ButtonElProps = CommonProps &
 type ButtonProps = AnchorProps | ButtonElProps;
 
 const base =
-  "group inline-block font-sans font-semibold uppercase relative isolate z-10 squircle-lg " +
+  "group inline-block font-sans font-semibold uppercase relative isolate z-10 " +
   "tracking-wider border cursor-pointer transition-colors outline-2 outline-navy " +
   "-outline-offset-2 disabled:opacity-50 disabled:cursor-not-allowed";
 
@@ -36,7 +36,7 @@ const variants: Record<Variant, string> = {
 
 function Background() {
   return (
-    <div class="w-[calc(100%+4px)] h-[calc(100%+4px)] absolute left-1 top-1 bg-linear-to-r from-rust-300 to-rust-400 -z-10 group-hover:from-butter group-hover:to-rust-300  transition-colors duration-150 squircle-lg" />
+    <div class="w-[calc(100%+4px)] h-[calc(100%+4px)] absolute left-1 top-1 bg-linear-to-r from-rust-300 to-rust-400 -z-10 group-hover:from-butter group-hover:to-rust-300  transition-colors duration-150" />
   );
 }
 

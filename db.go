@@ -41,11 +41,11 @@ func OpenDB(path string) (*sql.DB, error) {
 		return nil, fmt.Errorf("sqlite open %s: %w", path, err)
 	}
 	if err := db.Ping(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("sqlite ping: %w", err)
 	}
 	if err := migrate(db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	return db, nil

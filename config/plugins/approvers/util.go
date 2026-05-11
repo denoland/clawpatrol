@@ -15,11 +15,17 @@ import (
 // pool (dashboard, human).
 func buildPending(req runtime.ApproveRequest) runtime.HITLPending {
 	now := time.Now()
+	family := ""
+	if req.Endpoint != nil {
+		family = req.Endpoint.Family
+	}
 	return runtime.HITLPending{
 		AgentIP:    req.Profile,
 		Host:       req.Host,
 		Method:     req.Method,
 		Path:       req.Path,
+		Endpoint:   runtime.HITLEndpointLabel(req),
+		Family:     family,
 		UA:         req.UA,
 		BodySample: req.BodySample,
 		Reason:     req.Reason,
