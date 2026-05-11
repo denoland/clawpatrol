@@ -56,6 +56,7 @@ jobs:
           mkdir -p out
           version="${TAG#v}"
           go build \
+            -tags ts_omit_identityfederation \
             -ldflags "-s -w -X main.buildVersion=${version} -X main.buildGitSHA=${SHA}" \
             -trimpath \
             -o out/clawpatrol-${{ matrix.os }}-${{ matrix.arch }} .
