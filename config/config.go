@@ -299,6 +299,12 @@ func dedupGohclDiags(in hcl.Diagnostics) hcl.Diagnostics {
 
 // extractPolicyBlocks pulls every recognized top-level block out of
 // the remainder body returned by the operational gohcl decode.
+// Uses Content (not PartialContent) so unknown block types — left over
+// from a stale config file the new loader doesn't know about — surface
+// as diagnostics instead of getting silently dropped. (Past incident:
+// PR #225 renamed `gateway {}` to top-level fields; a brief deploy
+// ordering meant the new binary booted against an old config and
+// silently ran without a WireGuard endpoint.)
 func extractPolicyBlocks(body hcl.Body) (hcl.Blocks, hcl.Diagnostics) {
 	schema := &hcl.BodySchema{
 		Blocks: []hcl.BlockHeaderSchema{
@@ -311,7 +317,10 @@ func extractPolicyBlocks(body hcl.Body) (hcl.Blocks, hcl.Diagnostics) {
 			{Type: "tunnel", LabelNames: []string{"type", "name"}},
 		},
 	}
-	content, _, diags := body.PartialContent(schema)
+	content, diags := body.Content(schema)
+	if content == nil {
+		return nil, diags
+	}
 	return content.Blocks, diags
 }
 

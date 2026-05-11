@@ -1,0 +1,1 @@
+error: error_stale_defaults_block.hcl:8:1: Unsupported block type — Blocks of type "defaults" are not expected here.
