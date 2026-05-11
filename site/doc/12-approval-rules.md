@@ -18,7 +18,7 @@ which Kubernetes resources, verbs, or namespaces it can reach. The
 next section walks through each in detail.
 
 This page covers the operator's view: how to write a rule, what
-each facet does, what surprises to expect.
+each facet does, and how rules behave in different situations.
 
 For the surrounding picture see
 [Architecture](/docs/04-architecture/) (request flow, where matching
