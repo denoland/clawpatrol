@@ -1,0 +1,1 @@
+error: Dashboard auth not configured — info_listen is set but the dashboard has no auth: set dashboard_secret = "<long random string>", or set insecure_no_dashboard_secret = true to explicitly opt out.

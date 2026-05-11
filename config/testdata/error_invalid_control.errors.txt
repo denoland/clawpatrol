@@ -1,0 +1,1 @@
+error: Invalid control value — control = "kubernetes". Expected "wireguard", "tailscale", or omitted.

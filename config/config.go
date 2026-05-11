@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/gohcl"
@@ -242,6 +243,8 @@ func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
 		Profiles:    make(map[string]*Profile),
 	}
 
+	diags = append(diags, validateOperational(gw)...)
+
 	// Pass 1: extract the policy blocks from the remainder body.
 	policyBlocks, polDiags := extractPolicyBlocks(gw.Remain)
 	diags = append(diags, polDiags...)
@@ -295,6 +298,54 @@ func dedupGohclDiags(in hcl.Diagnostics) hcl.Diagnostics {
 		out = append(out, d)
 	}
 	return out
+}
+
+// validateOperational checks cross-field consistency on the operational
+// fields that gohcl can't express in a struct tag. Catches the typical
+// shapes that boot a gateway in a degraded state (silent fallback to
+// plain TCP, missing WireGuard endpoint, dashboard-with-no-auth).
+func validateOperational(gw *Gateway) hcl.Diagnostics {
+	var diags hcl.Diagnostics
+
+	switch strings.ToLower(gw.Control) {
+	case "", "wireguard", "tailscale":
+		// ok
+	default:
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Invalid control value",
+			Detail: fmt.Sprintf(
+				"control = %q. Expected \"wireguard\", \"tailscale\", or omitted.",
+				gw.Control),
+		})
+	}
+
+	if strings.EqualFold(gw.Control, "wireguard") {
+		if gw.WGSubnetCIDR == "" {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Missing wg_subnet_cidr",
+				Detail:   "control = \"wireguard\" requires wg_subnet_cidr (e.g. \"10.55.0.0/24\").",
+			})
+		}
+		if gw.WGEndpoint == "" {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Missing wg_endpoint",
+				Detail:   "control = \"wireguard\" requires wg_endpoint (e.g. \"gw.example.com:51820\") so onboarded clients know where to dial.",
+			})
+		}
+	}
+
+	if gw.InfoListen != "" && gw.DashboardSecret == "" && !gw.InsecureNoDashboardSecret {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Dashboard auth not configured",
+			Detail:   "info_listen is set but the dashboard has no auth: set dashboard_secret = \"<long random string>\", or set insecure_no_dashboard_secret = true to explicitly opt out.",
+		})
+	}
+
+	return diags
 }
 
 // extractPolicyBlocks pulls every recognized top-level block out of
