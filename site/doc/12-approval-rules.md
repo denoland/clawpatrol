@@ -403,37 +403,6 @@ The bare name `dashboard` is a built-in approver: `approve =
 [dashboard]` parks the request on the dashboard's pending-approvals
 view without paging any channel.
 
-### Priority override pattern
-
-A high-priority allow / deny short-circuits a broader rule that
-would otherwise fire at default priority:
-
-```hcl
-approver "human_approver" "billing" {
-  channel = "#agent-billing"
-  timeout = 600
-}
-
-# Priority 100 — fires before anything else.
-rule "http_rule" "stripe-ephemeral-keys" {
-  endpoint = stripe
-  priority = 100
-  match    = { method = "POST", path = "/v1/ephemeral_keys" }
-  verdict  = "allow"
-}
-
-# Priority 0 (default) — would otherwise force every POST through approval.
-rule "http_rule" "stripe-other-writes" {
-  endpoint = stripe
-  match    = { method = "POST" }
-  approve  = [billing]
-}
-```
-
-Ephemeral-key creation is whitelisted — every other POST still goes
-through `billing`. Without the priority override, the broader rule
-would page a human for every key issuance.
-
 ### SQL banned-verbs catch-all
 
 ```hcl
