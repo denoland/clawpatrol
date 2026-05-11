@@ -1,4 +1,4 @@
-// Command docgen generates site/doc/15-config-reference.md from the
+// Command docgen generates site/doc/config-reference.md from the
 // clawpatrol HCL config plugin registry. Schema source of truth is
 // the Go structs under config/plugins/ and the operational structs
 // in config/. Field documentation is read from Go source comments.
@@ -27,7 +27,7 @@ import (
 )
 
 func main() {
-	out := flag.String("o", "site/doc/15-config-reference.md", "output file (relative to repo root)")
+	out := flag.String("o", "site/doc/config-reference.md", "output file (relative to repo root)")
 	check := flag.Bool("check", false, "exit non-zero if the generated content differs from the file at -o")
 	flag.Parse()
 

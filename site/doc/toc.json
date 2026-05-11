@@ -1,0 +1,17 @@
+[
+  "introduction",
+  "getting-started",
+  "onboarding",
+  "glossary",
+  "architecture",
+  "cli",
+  "gateway",
+  "plugins",
+  "token-usage",
+  "userspace-wireguard",
+  "security-model",
+  "approval-rules",
+  "config-reference",
+  "dev-setup",
+  "competitors"
+]

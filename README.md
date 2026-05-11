@@ -65,7 +65,7 @@ If you'd rather route every packet on the host through the gateway, pass `--whol
 
 Policy lives in `gateway.hcl`. You declare credentials, the endpoints they unlock, and the rules that decide what's allowed. References are bare names — no quotes, no kind prefix.
 
-The full per-block field reference lives at [`site/doc/15-config-reference.md`](site/doc/15-config-reference.md). It is auto-generated from the plugin registry under `config/plugins/`; regenerate after adding a plugin or changing an `hcl:"..."` tag:
+The full per-block field reference lives at [`site/doc/config-reference.md`](site/doc/config-reference.md). It is auto-generated from the plugin registry under `config/plugins/`; regenerate after adding a plugin or changing an `hcl:"..."` tag:
 
 ```
 go generate ./config/plugins/all/

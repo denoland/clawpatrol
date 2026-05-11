@@ -40,7 +40,7 @@ systemctl enable --now clawpatrol-gateway
 The dashboard is at `http://<gateway-host>:9080`. The `join` command
 printed by `gateway init` is what your devices will run.
 
-See [Gateway](/docs/07-gateway/) for the full HCL reference.
+See [Gateway](/docs/gateway/) for the full HCL reference.
 
 ## Join a device
 
@@ -62,7 +62,7 @@ you want every packet on the host to route through it.
 On macOS, the first join prompts you to approve the Claw Patrol Network
 Extension in **System Settings → Privacy & Security**.
 
-See [Onboarding](/docs/03-onboarding/) for the full join flow.
+See [Onboarding](/docs/onboarding/) for the full join flow.
 
 ## Run an agent
 
@@ -81,8 +81,8 @@ real key.
 
 ## What's next
 
-- [Architecture](/docs/04-architecture/) — how interception works
-- [CLI](/docs/05-cli/) — full command reference
-- [Gateway](/docs/07-gateway/) — gateway config reference
-- [Approval rules](/docs/12-approval-rules/) — gating writes behind a human or LLM
-- [Security model](/docs/11-security-model/) — what Claw Patrol does and doesn't protect against
+- [Architecture](/docs/architecture/) — how interception works
+- [CLI](/docs/cli/) — full command reference
+- [Gateway](/docs/gateway/) — gateway config reference
+- [Approval rules](/docs/approval-rules/) — gating writes behind a human or LLM
+- [Security model](/docs/security-model/) — what Claw Patrol does and doesn't protect against

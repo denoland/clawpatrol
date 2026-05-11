@@ -1,4 +1,5 @@
-// Renders doc/*.md into dist/docs/<slug>/index.html
+// Renders doc/*.md into dist/docs/<slug>/index.html, and also copies
+// the raw markdown to dist/docs/<slug>.md.
 // Run after `vite build`.
 
 import { readFileSync, mkdirSync, writeFileSync }
@@ -33,6 +34,7 @@ for (const doc of docs) {
     join(dir, "index.html"),
     renderDocPage(doc, docs, cssLinks),
   );
+  writeFileSync(join(distDir, `${doc.slug}.md`), doc.raw);
 }
 
 console.log(`Built ${docs.length} doc pages`);

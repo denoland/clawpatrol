@@ -94,4 +94,4 @@ API.
 
 Local-gateway install modes (launchd on macOS, systemd system/user/linger
 on Linux, ephemeral per-invocation) are documented in
-[Onboarding](/docs/03-onboarding/).
+[Onboarding](/docs/onboarding/).

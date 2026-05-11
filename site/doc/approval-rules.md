@@ -6,7 +6,7 @@ forward it, reject it, or route it through one or more
 Slack, an LLM approver that judges against a policy, or both in
 sequence) that must each allow before the request is forwarded. Each rule is a
 block in `gateway.hcl` that targets one or more
-[endpoints](/docs/03a-glossary/#endpoint), describes which requests
+[endpoints](/docs/glossary/#endpoint), describes which requests
 it applies to (the `match` block), and declares the outcome
 (`verdict = "allow" / "deny"`, or `approve = [...]`).
 
@@ -21,16 +21,16 @@ This page covers the operator's view: how to write a rule, what
 each facet does, and how rules behave in different situations.
 
 For the surrounding picture see
-[Architecture](/docs/04-architecture/) (request flow, where matching
+[Architecture](/docs/architecture/) (request flow, where matching
 fits — including how endpoints claim requests) and
-[Gateway](/docs/07-gateway/) (the listener and dispatcher).
+[Gateway](/docs/gateway/) (the listener and dispatcher).
 
 
 ## Rule families
 
 Each endpoint claims requests and emits **actions** of a specific
 family. Each action carries the family's facets, and rules match
-against those facets. See [Architecture](/docs/04-architecture/) for
+against those facets. See [Architecture](/docs/architecture/) for
 how endpoints claim requests in the first place.
 
 ### `http_rule`
@@ -167,7 +167,7 @@ k8s). Rules then match against those facets.
 
 How an endpoint claims a given connection (SNI peek, destination IP,
 profile scoping) is described in
-[Architecture](/docs/04-architecture/). If no endpoint claims the
+[Architecture](/docs/architecture/). If no endpoint claims the
 flow, no rule evaluation happens — the connection is passed through
 verbatim.
 
