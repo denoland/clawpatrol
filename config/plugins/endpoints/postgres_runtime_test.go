@@ -1,7 +1,9 @@
 package endpoints
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -184,6 +186,128 @@ func TestPgExtractSQL(t *testing.T) {
 	if got := pgExtractSQL('B', []byte("ignored")); got != "" {
 		t.Errorf("non-Q/P extract should return empty, got %q", got)
 	}
+}
+
+func TestPgClientToServerForwardsQueryMessage(t *testing.T) {
+	agent, gateway, upstream, upstreamPeer, cleanup := pgPumpTestPipes(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "")
+
+	wire := serializePgMessage(pgMessage{typ: 'Q', payload: []byte("SELECT 1\x00")})
+	go func() { _, _ = agent.Write(wire) }()
+
+	got := readFullWithDeadline(t, upstreamPeer, len(wire))
+	if !bytes.Equal(got, wire) {
+		t.Fatalf("forwarded bytes = %v, want %v", got, wire)
+	}
+}
+
+func TestPgClientToServerDeniesQueryMessage(t *testing.T) {
+	agent, gateway, upstream, upstreamPeer, cleanup := pgPumpTestPipes(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := &runtime.ConnHandle{
+		Conn: gateway,
+		Endpoint: &config.CompiledEndpoint{Rules: []*config.CompiledRule{{
+			Outcome: config.Outcome{Verdict: "deny", Reason: "blocked"},
+		}}},
+	}
+	go pgClientToServer(ctx, ch, upstream, "")
+
+	wire := serializePgMessage(pgMessage{typ: 'Q', payload: []byte("DROP TABLE users\x00")})
+	go func() { _, _ = agent.Write(wire) }()
+	_ = readFullWithDeadline(t, agent, 5) // ErrorResponse header; unblocks pgWriteDeny.
+
+	_ = upstreamPeer.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+	buf := make([]byte, 1)
+	if n, err := upstreamPeer.Read(buf); err == nil || n != 0 {
+		t.Fatalf("upstream received denied query bytes: n=%d err=%v", n, err)
+	}
+}
+
+func TestPgClientToServerForwardsNonInspectedMessage(t *testing.T) {
+	agent, gateway, upstream, upstreamPeer, cleanup := pgPumpTestPipes(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "")
+
+	wire := serializePgMessage(pgMessage{typ: 'B', payload: []byte("portal\x00stmt\x00\x00\x00")})
+	go func() { _, _ = agent.Write(wire) }()
+
+	got := readFullWithDeadline(t, upstreamPeer, len(wire))
+	if !bytes.Equal(got, wire) {
+		t.Fatalf("forwarded bytes = %v, want %v", got, wire)
+	}
+}
+
+func TestPgClientToServerForwardsPartialFrame(t *testing.T) {
+	agent, gateway, upstream, upstreamPeer, cleanup := pgPumpTestPipes(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "")
+
+	wire := serializePgMessage(pgMessage{typ: 'Q', payload: []byte("SELECT 1\x00")})
+	go func() {
+		_, _ = agent.Write(wire[:3])
+		time.Sleep(10 * time.Millisecond)
+		_, _ = agent.Write(wire[3:])
+	}()
+
+	got := readFullWithDeadline(t, upstreamPeer, len(wire))
+	if !bytes.Equal(got, wire) {
+		t.Fatalf("forwarded bytes = %v, want %v", got, wire)
+	}
+}
+
+func TestPgClientToServerForwardsMultipleFramesFromOneRead(t *testing.T) {
+	agent, gateway, upstream, upstreamPeer, cleanup := pgPumpTestPipes(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "")
+
+	q := serializePgMessage(pgMessage{typ: 'Q', payload: []byte("SELECT 1\x00")})
+	syncMsg := serializePgMessage(pgMessage{typ: 'S'})
+	wire := append(append([]byte{}, q...), syncMsg...)
+	go func() { _, _ = agent.Write(wire) }()
+
+	got := readFullWithDeadline(t, upstreamPeer, len(wire))
+	if !bytes.Equal(got, wire) {
+		t.Fatalf("forwarded bytes = %v, want %v", got, wire)
+	}
+}
+
+func pgPumpTestPipes(t *testing.T) (agent, gateway, upstream, upstreamPeer net.Conn, cleanup func()) {
+	t.Helper()
+	agent, gateway = net.Pipe()
+	upstream, upstreamPeer = net.Pipe()
+	cleanup = func() {
+		_ = agent.Close()
+		_ = gateway.Close()
+		_ = upstream.Close()
+		_ = upstreamPeer.Close()
+	}
+	return agent, gateway, upstream, upstreamPeer, cleanup
+}
+
+func readFullWithDeadline(t *testing.T, c net.Conn, n int) []byte {
+	t.Helper()
+	_ = c.SetReadDeadline(time.Now().Add(time.Second))
+	buf := make([]byte, n)
+	if _, err := io.ReadFull(c, buf); err != nil {
+		t.Fatalf("read %d bytes: %v", n, err)
+	}
+	return buf
 }
 
 func TestPgClientToServerReturnsOnContextCancel(t *testing.T) {
