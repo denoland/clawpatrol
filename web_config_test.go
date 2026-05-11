@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAPIConfigPreviewFormatsAndDiffsWithoutWriting(t *testing.T) {
@@ -211,6 +212,55 @@ func TestAPIConfigSaveRejectsUnpreviewedContent(t *testing.T) {
 	}
 	if !bytes.Equal(contents, original) {
 		t.Fatalf("unpreviewed save wrote file: %q", contents)
+	}
+}
+
+func TestAPIConfigSaveConsumesPreviewTokenOnFailedSave(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "gateway.hcl")
+	original := []byte("insecure_no_dashboard_secret = true\n")
+	if err := os.WriteFile(cfgPath, original, 0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+	w := &webMux{g: &Gateway{cfgPath: cfgPath}}
+	preview := previewConfigForTest(t, w, "insecure_no_dashboard_secret=false\n")
+
+	payload := `{"content":"insecure_no_dashboard_secret = true\n","expected_revision":"` + preview.Revision + `","preview_token":"` + preview.PreviewToken + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/config/save", strings.NewReader(payload))
+	rr := httptest.NewRecorder()
+	w.apiConfigSave(rr, req)
+	if rr.Code != http.StatusPreconditionFailed {
+		t.Fatalf("status = %d, want 412, body = %s", rr.Code, rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/config/save", strings.NewReader(payload))
+	rr = httptest.NewRecorder()
+	w.apiConfigSave(rr, req)
+	if rr.Code != http.StatusPreconditionRequired {
+		t.Fatalf("reuse status = %d, want 428, body = %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestConfigPreviewTokensPrunedByTTLAndCap(t *testing.T) {
+	w := &webMux{previews: map[string]configPreviewToken{}}
+	now := time.Now()
+	w.previews["expired"] = configPreviewToken{createdAt: now.Add(-configPreviewTokenTTL - time.Second)}
+	w.previews["fresh"] = configPreviewToken{createdAt: now}
+	w.pruneConfigPreviewTokensLocked(now)
+	if _, ok := w.previews["expired"]; ok {
+		t.Fatal("expired token was not pruned")
+	}
+	if _, ok := w.previews["fresh"]; !ok {
+		t.Fatal("fresh token was pruned")
+	}
+
+	w.previews = map[string]configPreviewToken{}
+	for i := 0; i < configPreviewTokenCap; i++ {
+		w.previews[string(rune(i))] = configPreviewToken{createdAt: now.Add(time.Duration(i) * time.Second)}
+	}
+	w.pruneConfigPreviewTokensLocked(now.Add(configPreviewTokenTTL / 2))
+	if len(w.previews) != configPreviewTokenCap-1 {
+		t.Fatalf("token count = %d, want %d", len(w.previews), configPreviewTokenCap-1)
 	}
 }
 

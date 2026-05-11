@@ -17,6 +17,7 @@ jobs:
         with:
           node-version: 22
       - run: cd www && npm ci && npm run build
+      - run: cd site && npm ci && npm run typecheck && npm test && npm run build
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
@@ -32,5 +33,6 @@ jobs:
         with:
           node-version: 22
       - run: cd www && npm ci && npm run format:check && npm run lint:github && npm run build
+      - run: cd site && npm ci && npm run typecheck && npm test && npm run build
       - run: gofmt -l . && test -z "$(gofmt -l .)"
       - run: go test ./...

@@ -63,9 +63,49 @@ func TestHostEndpoint(t *testing.T) {
 	if got := runtime.HostEndpoint(cp, "default", "unknown.example"); got != nil {
 		t.Errorf("unknown host should resolve to nil, got %+v", got)
 	}
-	// Unknown profile + known host → fallback scan finds it.
-	if got := runtime.HostEndpoint(cp, "no-such-profile", "github.com"); got == nil {
+	// Empty profile + known host → fallback scan finds it.
+	if got := runtime.HostEndpoint(cp, "", "github.com"); got == nil {
 		t.Errorf("fallback scan should find github.com")
+	}
+	if got := runtime.HostEndpoint(cp, "no-such-profile", "github.com"); got != nil {
+		t.Errorf("unknown named profile should fail closed, got %+v", got)
+	}
+}
+
+func TestHostEndpointDefaultPortFallbackPreservesExactPrecedence(t *testing.T) {
+	src := `
+credential "bearer_token" "pat" {}
+endpoint "https" "bare" {
+  hosts = ["api.example.com"]
+  credential = pat
+}
+endpoint "https" "default_port" {
+  hosts = ["port.example.com:443"]
+  credential = pat
+}
+endpoint "https" "exact_port" {
+  hosts = ["api.example.com:443"]
+  credential = pat
+}
+profile "default" { endpoints = [bare, default_port, exact_port] }
+`
+	gw, diags := config.LoadBytes([]byte(src), "in.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	cp, err := config.Compile(gw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	if got := runtime.HostEndpoint(cp, "default", "port.example.com"); got == nil || got.Name != "default_port" {
+		t.Fatalf("bare runtime host should fall back to declared :443 endpoint, got %+v", got)
+	}
+	if got := runtime.HostEndpoint(cp, "default", "api.example.com:443"); got == nil || got.Name != "exact_port" {
+		t.Fatalf("exact host:port should win before bare fallback, got %+v", got)
+	}
+	if got := runtime.HostEndpoint(cp, "default", "api.example.com"); got == nil || got.Name != "bare" {
+		t.Fatalf("exact bare host should win before :443 fallback, got %+v", got)
 	}
 }
 

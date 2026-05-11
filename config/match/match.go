@@ -57,7 +57,8 @@ type K8sMeta struct {
 // SQLMeta describes one parsed SQL statement. The pg / clickhouse
 // front-ends populate it before walking the rule list.
 type SQLMeta struct {
-	Verb      string   // select | insert | update | delete | merge | ...
+	Verb      string   // first verb: select | insert | update | delete | merge | ...
+	Verbs     []string // all verbs in a multi-statement simple query
 	Tables    []string // unqualified table names referenced
 	Functions []string // unqualified function names called
 	Statement string   // the raw text — exposed for `statement` /
@@ -380,10 +381,19 @@ func (m *sqlMatcher) Match(req *Request) bool {
 		return false
 	}
 	if len(m.verb) > 0 {
+		candidates := req.SQL.Verbs
+		if len(candidates) == 0 && req.SQL.Verb != "" {
+			candidates = []string{req.SQL.Verb}
+		}
 		ok := false
 		for _, v := range m.verb {
-			if equalsIgnoreCase(req.SQL.Verb, v) {
-				ok = true
+			for _, got := range candidates {
+				if equalsIgnoreCase(got, v) {
+					ok = true
+					break
+				}
+			}
+			if ok {
 				break
 			}
 		}
@@ -410,15 +420,35 @@ func (m *sqlMatcher) Match(req *Request) bool {
 	return true
 }
 
-// anyOfStrings: at least one candidate satisfies the glob list. Used
-// for tables / functions where a SELECT can name several.
+// anyOfStrings applies list-of-globs semantics across multi-candidate
+// facets (SQL tables / functions). A negative glob rejects the entire
+// facet if any candidate matches it; positives are still any-match.
+// Negative-only lists pass when all candidates avoid the forbidden
+// patterns.
 func anyOfStrings(candidates []string, globs []glob) bool {
-	for _, c := range candidates {
-		if matchAny(globs, c) {
-			return true
+	if len(globs) == 0 {
+		return true
+	}
+	hasPositive := false
+	positiveOK := false
+	for _, g := range globs {
+		if !g.neg {
+			hasPositive = true
+		}
+		for _, c := range candidates {
+			ok := matchGlob(g.pattern, c)
+			if g.neg && ok {
+				return false
+			}
+			if !g.neg && ok {
+				positiveOK = true
+			}
 		}
 	}
-	return false
+	if hasPositive {
+		return positiveOK
+	}
+	return true
 }
 
 func lowerAll(xs []string) []string {

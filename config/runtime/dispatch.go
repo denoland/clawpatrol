@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"net"
+
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/match"
 )
@@ -18,23 +20,46 @@ func HostEndpoint(policy *config.CompiledPolicy, profile, host string) *config.C
 	if policy == nil {
 		return nil
 	}
-	prof, ok := policy.Profiles[profile]
-	if !ok {
-		// Single-tenant fallback: if no peer-to-profile mapping is
-		// established, walk every profile and return the first match.
-		// Matches main.go's existing profileFor behavior when only
-		// one profile exists.
-		for _, p := range policy.Profiles {
-			if ep := p.HostIndex[host]; ep != nil {
+	lookup := func(p *config.CompiledProfile) *config.CompiledEndpoint {
+		if p == nil {
+			return nil
+		}
+		for _, h := range hostLookupCandidates(host) {
+			if ep := p.HostIndex[h]; ep != nil {
 				return ep
 			}
 		}
 		return nil
 	}
-	if ep := prof.HostIndex[host]; ep != nil {
-		return ep
+	if profile != "" {
+		// A named profile is an authorization boundary. If a peer maps to a
+		// profile that disappeared after reload, fail closed instead of falling
+		// through to another profile's endpoint.
+		return lookup(policy.Profiles[profile])
+	}
+	// Single-tenant fallback: if no peer-to-profile mapping is established,
+	// walk every profile and return the first matching endpoint.
+	for _, p := range policy.Profiles {
+		if ep := lookup(p); ep != nil {
+			return ep
+		}
 	}
 	return nil
+}
+
+func hostLookupCandidates(host string) []string {
+	if host == "" {
+		return nil
+	}
+	out := []string{host}
+	if h, p, err := net.SplitHostPort(host); err == nil {
+		if p == "443" {
+			out = append(out, h)
+		}
+	} else {
+		out = append(out, net.JoinHostPort(host, "443"))
+	}
+	return out
 }
 
 // MatchRequest walks an endpoint's priority-sorted rule list and

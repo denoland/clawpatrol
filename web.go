@@ -66,7 +66,13 @@ type webMux struct {
 type configPreviewToken struct {
 	revision    string
 	contentHash string
+	createdAt   time.Time
 }
+
+const (
+	configPreviewTokenTTL = 10 * time.Minute
+	configPreviewTokenCap = 128
+)
 
 type authRequirement int
 
@@ -859,6 +865,7 @@ func (w *webMux) apiConfigPreview(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.mu.Lock()
+	w.pruneConfigPreviewTokensLocked(time.Now())
 	var current []byte
 	var rev string
 	var token string
@@ -875,6 +882,7 @@ func (w *webMux) apiConfigPreview(rw http.ResponseWriter, r *http.Request) {
 		w.configPreviewTokens()[token] = configPreviewToken{
 			revision:    rev,
 			contentHash: revisionForBytes(formatted),
+			createdAt:   time.Now(),
 		}
 		return nil
 	}); err != nil {
@@ -923,11 +931,14 @@ func (w *webMux) apiConfigSave(rw http.ResponseWriter, r *http.Request) {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	preview, ok := w.configPreviewTokens()[body.PreviewToken]
+	w.pruneConfigPreviewTokensLocked(time.Now())
+	tokens := w.configPreviewTokens()
+	preview, ok := tokens[body.PreviewToken]
 	if !ok {
 		http.Error(rw, "preview token not found; review changes before saving", http.StatusPreconditionRequired)
 		return
 	}
+	delete(tokens, body.PreviewToken)
 	if preview.revision != body.ExpectedRevision || preview.contentHash != revisionForBytes(formatted) {
 		http.Error(rw, "preview token does not match reviewed content", http.StatusPreconditionFailed)
 		return
@@ -943,7 +954,6 @@ func (w *webMux) apiConfigSave(rw http.ResponseWriter, r *http.Request) {
 		if err := writeConfigAtomically(w.g.cfgPath, formatted); err != nil {
 			return err
 		}
-		delete(w.previews, body.PreviewToken)
 		return nil
 	}); err != nil {
 		if errors.Is(err, errConfigRevisionConflict) {
@@ -1036,6 +1046,29 @@ func (w *webMux) configPreviewTokens() map[string]configPreviewToken {
 		w.previews = map[string]configPreviewToken{}
 	}
 	return w.previews
+}
+
+func (w *webMux) pruneConfigPreviewTokensLocked(now time.Time) {
+	tokens := w.configPreviewTokens()
+	for token, preview := range tokens {
+		if preview.createdAt.IsZero() || now.Sub(preview.createdAt) > configPreviewTokenTTL {
+			delete(tokens, token)
+		}
+	}
+	for len(tokens) >= configPreviewTokenCap {
+		var oldestToken string
+		var oldestTime time.Time
+		for token, preview := range tokens {
+			if oldestToken == "" || preview.createdAt.Before(oldestTime) {
+				oldestToken = token
+				oldestTime = preview.createdAt
+			}
+		}
+		if oldestToken == "" {
+			break
+		}
+		delete(tokens, oldestToken)
+	}
 }
 
 func newConfigPreviewToken() (string, error) {
@@ -1925,6 +1958,36 @@ func (s *sampler) sample() string {
 		return s.buf.String()
 	}
 	return "binary:" + hex.EncodeToString(s.buf.Bytes()[:min(64, s.buf.Len())])
+}
+
+func (s *sampler) sampleRedacted(secrets []runtime.Secret) string {
+	return redactSecretSample(s.sample(), secrets)
+}
+
+func redactSecretSample(sample string, secrets []runtime.Secret) string {
+	if sample == "" || len(secrets) == 0 {
+		return sample
+	}
+	out := sample
+	for _, sec := range secrets {
+		out = redactSecretValue(out, string(sec.Bytes))
+		for _, v := range sec.Extras {
+			out = redactSecretValue(out, v)
+		}
+	}
+	return out
+}
+
+func redactSecretValue(sample, secret string) string {
+	// Very short values produce too many false positives in ordinary JSON/body
+	// samples; redact only values that are credibly secret material.
+	if len(secret) < 4 {
+		return sample
+	}
+	sample = strings.ReplaceAll(sample, secret, "***")
+	// Binary samples are rendered as hex. Redact the byte-for-byte hex form too
+	// so non-printable request bodies cannot expose injected credentials.
+	return strings.ReplaceAll(sample, hex.EncodeToString([]byte(secret)), "***")
 }
 
 func isPrintable(b []byte) bool {

@@ -7,6 +7,7 @@
     "build": "vite build && tsx build-docs.ts",
     "deploy": "npm run build && wrangler deploy",
     "test": "tsx --test worker/**/*.test.ts",
+    "typecheck": "tsc --noEmit",
     "telemetry": "tsx scripts/telemetry.ts"
   },
   "dependencies": {

@@ -96,7 +96,7 @@ func (g *Gateway) handleWSUpgrade(client *tls.Conn, br *bufio.Reader, req *http.
 	if endpointWantsClientCert(ep) {
 		up, err = g.dialUpstream(context.Background(), "tcp", net.JoinHostPort(upstream, "443"), upstream, ep, profile)
 	} else {
-		up, err = dialBrowserTLS(context.Background(), "tcp", net.JoinHostPort(upstream, "443"), upstream)
+		up, err = g.dialBrowserTLS(context.Background(), "tcp", net.JoinHostPort(upstream, "443"), upstream, ep)
 	}
 	if err != nil {
 		_, _ = fmt.Fprintf(client, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")

@@ -42,7 +42,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -424,6 +423,7 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 		Credential: credName,
 		SQL: &match.SQLMeta{
 			Verb:      info.Verb,
+			Verbs:     info.Verbs,
 			Tables:    info.Tables,
 			Functions: info.Functions,
 			Statement: info.Statement,
@@ -642,41 +642,367 @@ func indexByte(b []byte, c byte) int {
 
 type pgInfo struct {
 	Verb      string
+	Verbs     []string
 	Tables    []string
 	Functions []string
 	Statement string
 }
 
-var (
-	pgTableRE = regexp.MustCompile(`(?i)\b(?:from|update|into|join)\s+([a-z_][a-z0-9_.]*)`)
-	pgFuncRE  = regexp.MustCompile(`(?i)\b([a-z_][a-z0-9_]*)\s*\(`)
-)
+type pgToken struct {
+	text          string
+	quoted        bool
+	stringLiteral bool
+	unicodeRaw    string
+}
 
-// parseSQL extracts verb / tables / functions / statement for the
-// SQL matcher. Best-effort — a SQL parser would be more correct but
-// the matcher's predicates are coarse enough that regex extraction
-// produces actionable results for the v14 use cases (banned verbs,
-// banned functions, secret-table reads).
+// parseSQL extracts verb / tables / functions / statement for the SQL matcher.
+// It is still best-effort, but the lexer deliberately skips comments and string
+// literals and understands quoted identifiers so policy checks cannot be fooled
+// by leading comments or common Postgres identifier syntax.
 func parseSQL(sql string) pgInfo {
 	sql = strings.TrimSpace(sql)
 	info := pgInfo{Statement: sql}
 	if sql == "" {
 		return info
 	}
-	lower := strings.ToLower(sql)
-	if i := strings.IndexAny(lower, " \t\n\r("); i > 0 {
-		info.Verb = lower[:i]
-	} else {
-		info.Verb = lower
+	tokens := pgLex(sql)
+	if len(tokens) == 0 {
+		return info
 	}
-	for _, m := range pgTableRE.FindAllStringSubmatch(lower, -1) {
-		info.Tables = append(info.Tables, m[1])
+	for i, tok := range tokens {
+		if (i == 0 || tokens[i-1].text == ";") && pgIdentifierToken(tok) {
+			info.Verbs = append(info.Verbs, tok.text)
+		}
 	}
-	for _, m := range pgFuncRE.FindAllStringSubmatch(lower, -1) {
-		info.Functions = append(info.Functions, m[1])
+	// Also surface actionable DML/DDL verbs nested inside WITH CTEs or other
+	// expressions. This is intentionally conservative: verb deny rules should not
+	// be bypassed by wrapping DELETE/UPDATE/etc. in a data-modifying CTE.
+	seenVerb := map[string]bool{}
+	for _, v := range info.Verbs {
+		seenVerb[v] = true
+	}
+	for _, tok := range tokens {
+		if !tok.stringLiteral && pgActionVerb(tok.text) && !seenVerb[tok.text] {
+			info.Verbs = append(info.Verbs, tok.text)
+			seenVerb[tok.text] = true
+		}
+	}
+	if len(info.Verbs) > 0 {
+		info.Verb = info.Verbs[0]
+	}
+	if len(info.Verbs) <= 1 {
+		info.Verbs = nil
+	}
+	for i := 0; i < len(tokens); i++ {
+		tok := tokens[i].text
+		switch tok {
+		case "from", "table":
+			if fn, next, ok := pgReadQualifiedName(tokens, i+1); ok && next < len(tokens) && tokens[next].text == "(" {
+				info.Functions = append(info.Functions, fn)
+			}
+			if names, next, ok := pgReadTableList(tokens, i+1); ok {
+				info.Tables = append(info.Tables, names...)
+				i = next - 1
+			}
+		case "update", "into", "join":
+			if name, next, ok := pgReadQualifiedName(tokens, i+1); ok {
+				info.Tables = append(info.Tables, name)
+				i = next - 1
+			}
+		default:
+			if i+1 < len(tokens) && tokens[i+1].text == "(" && !pgKeywordBeforeParen(tok) {
+				info.Functions = append(info.Functions, tok)
+			}
+		}
 	}
 	return info
 }
+
+func pgLex(sql string) []pgToken {
+	var out []pgToken
+	for i := 0; i < len(sql); {
+		c := sql[i]
+		if isSQLSpace(c) {
+			i++
+			continue
+		}
+		if c == '-' && i+1 < len(sql) && sql[i+1] == '-' {
+			i += 2
+			for i < len(sql) && sql[i] != '\n' && sql[i] != '\r' {
+				i++
+			}
+			continue
+		}
+		if c == '/' && i+1 < len(sql) && sql[i+1] == '*' {
+			i += 2
+			for i+1 < len(sql) && !(sql[i] == '*' && sql[i+1] == '/') {
+				i++
+			}
+			if i+1 < len(sql) {
+				i += 2
+			}
+			continue
+		}
+		if (c == 'E' || c == 'e') && i+1 < len(sql) && sql[i+1] == '\'' {
+			str, next := pgLexStringLiteral(sql, i+1, true)
+			out = append(out, pgToken{text: str, stringLiteral: true})
+			i = next
+			continue
+		}
+		if c == '\'' {
+			str, next := pgLexStringLiteral(sql, i, false)
+			out = append(out, pgToken{text: str, stringLiteral: true})
+			i = next
+			continue
+		}
+		unicodeQuoted := false
+		if (c == 'U' || c == 'u') && i+2 < len(sql) && sql[i+1] == '&' && sql[i+2] == '"' {
+			unicodeQuoted = true
+			i += 2
+			c = sql[i]
+		}
+		if c == '"' {
+			start := i
+			i++
+			var b strings.Builder
+			closed := false
+			for i < len(sql) {
+				if sql[i] == '"' {
+					if i+1 < len(sql) && sql[i+1] == '"' {
+						b.WriteByte('"')
+						i += 2
+						continue
+					}
+					i++
+					closed = true
+					break
+				}
+				b.WriteByte(sql[i])
+				i++
+			}
+			ident := b.String()
+			if !closed {
+				ident = sql[start+1:]
+			}
+			rawIdent := ident
+			if unicodeQuoted {
+				ident = pgDecodeUnicodeIdent(ident, '\\')
+			}
+			tok := pgToken{text: strings.ToLower(ident), quoted: true}
+			if unicodeQuoted {
+				tok.unicodeRaw = rawIdent
+			}
+			out = append(out, tok)
+			continue
+		}
+		if isSQLIdentStart(c) {
+			start := i
+			i++
+			for i < len(sql) && isSQLIdentPart(sql[i]) {
+				i++
+			}
+			out = append(out, pgToken{text: strings.ToLower(sql[start:i])})
+			continue
+		}
+		if strings.ContainsRune("().,;", rune(c)) {
+			out = append(out, pgToken{text: string(c)})
+		}
+		i++
+	}
+	return out
+}
+
+func pgReadTableList(tokens []pgToken, i int) ([]string, int, bool) {
+	var names []string
+	name, next, ok := pgReadQualifiedName(tokens, i)
+	if !ok {
+		return nil, i, false
+	}
+	names = append(names, name)
+	next = pgSkipTableAlias(tokens, next)
+	for next < len(tokens) && tokens[next].text == "," {
+		next++
+		name, after, ok := pgReadQualifiedName(tokens, next)
+		if !ok {
+			break
+		}
+		names = append(names, name)
+		next = pgSkipTableAlias(tokens, after)
+	}
+	return names, next, true
+}
+
+func pgSkipTableAlias(tokens []pgToken, i int) int {
+	if i < len(tokens) && tokens[i].text == "as" && i+1 < len(tokens) && pgIdentifierToken(tokens[i+1]) {
+		return i + 2
+	}
+	if i < len(tokens) && pgIdentifierToken(tokens[i]) && !pgTableAliasBoundary(tokens[i].text) {
+		return i + 1
+	}
+	return i
+}
+
+func pgTableAliasBoundary(tok string) bool {
+	switch tok {
+	case "where", "join", "left", "right", "inner", "outer", "full", "cross", "on", "using", "group", "order", "limit", "offset", "union", "intersect", "except", "returning", "set", "values", "select", "delete", "update", "insert", "merge", "drop", "alter", "create", "truncate", "copy":
+		return true
+	default:
+		return false
+	}
+}
+
+func pgLexStringLiteral(sql string, i int, escape bool) (string, int) {
+	i++
+	var b strings.Builder
+	for i < len(sql) {
+		if sql[i] == '\'' {
+			if i+1 < len(sql) && sql[i+1] == '\'' {
+				b.WriteByte('\'')
+				i += 2
+				continue
+			}
+			i++
+			break
+		}
+		if escape && sql[i] == '\\' && i+1 < len(sql) {
+			if i+3 < len(sql) && (sql[i+1] == 'x' || sql[i+1] == 'X') {
+				if r, ok := pgParseHexRune(sql[i+2 : i+4]); ok {
+					b.WriteRune(r)
+					i += 4
+					continue
+				}
+			}
+			b.WriteByte(sql[i+1])
+			i += 2
+			continue
+		}
+		b.WriteByte(sql[i])
+		i++
+	}
+	return b.String(), i
+}
+
+func pgReadQualifiedName(tokens []pgToken, i int) (string, int, bool) {
+	if i+1 < len(tokens) && tokens[i].text == "if" && tokens[i+1].text == "exists" {
+		i += 2
+	}
+	if i < len(tokens) && tokens[i].text == "only" {
+		i++
+		paren := i < len(tokens) && tokens[i].text == "("
+		if paren {
+			i++
+		}
+		name, next, ok := pgReadQualifiedName(tokens, i)
+		if !ok {
+			return "", i, false
+		}
+		if paren && next < len(tokens) && tokens[next].text == ")" {
+			next++
+		}
+		return name, next, true
+	}
+	if i >= len(tokens) || !pgIdentifierToken(tokens[i]) {
+		return "", i, false
+	}
+	parts := []string{pgIdentifierText(tokens, i)}
+	i++
+	for i+1 < len(tokens) && tokens[i].text == "." && pgIdentifierToken(tokens[i+1]) {
+		parts = append(parts, pgIdentifierText(tokens, i+1))
+		i += 2
+	}
+	return strings.Join(parts, "."), i, true
+}
+
+func pgIdentifierText(tokens []pgToken, i int) string {
+	tok := tokens[i]
+	if tok.unicodeRaw != "" && i+2 < len(tokens) && tokens[i+1].text == "uescape" && tokens[i+2].stringLiteral && len(tokens[i+2].text) == 1 {
+		return strings.ToLower(pgDecodeUnicodeIdent(tok.unicodeRaw, tokens[i+2].text[0]))
+	}
+	return tok.text
+}
+
+func pgIdentifierToken(tok pgToken) bool {
+	if tok.stringLiteral {
+		return false
+	}
+	if tok.quoted {
+		return tok.text != ""
+	}
+	return tok.text != "" && isSQLIdentStart(tok.text[0])
+}
+
+func pgKeywordBeforeParen(tok string) bool {
+	switch tok {
+	case "select", "where", "join", "from", "into", "update", "values", "as", "on", "and", "or", "not", "in", "exists", "case", "when":
+		return true
+	default:
+		return false
+	}
+}
+
+func pgActionVerb(tok string) bool {
+	switch tok {
+	case "select", "insert", "update", "delete", "merge", "drop", "alter", "create", "truncate", "copy":
+		return true
+	default:
+		return false
+	}
+}
+
+func pgDecodeUnicodeIdent(s string, esc byte) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] != esc {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		if i+1 < len(s) && s[i+1] == esc {
+			b.WriteByte(esc)
+			i += 2
+			continue
+		}
+		digits := 4
+		start := i + 1
+		if start < len(s) && s[start] == '+' {
+			digits = 6
+			start++
+		}
+		if start+digits <= len(s) {
+			if r, ok := pgParseHexRune(s[start : start+digits]); ok {
+				b.WriteRune(r)
+				i = start + digits
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
+func pgParseHexRune(s string) (rune, bool) {
+	var v rune
+	for _, c := range s {
+		switch {
+		case '0' <= c && c <= '9':
+			v = v*16 + c - '0'
+		case 'a' <= c && c <= 'f':
+			v = v*16 + c - 'a' + 10
+		case 'A' <= c && c <= 'F':
+			v = v*16 + c - 'A' + 10
+		default:
+			return 0, false
+		}
+	}
+	return v, true
+}
+
+func isSQLSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' }
+func isSQLIdentStart(c byte) bool {
+	return c == '_' || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z')
+}
+func isSQLIdentPart(c byte) bool { return isSQLIdentStart(c) || ('0' <= c && c <= '9') || c == '$' }
 
 // Compile-time interface check — keeps PostgresEndpointRuntime in
 // sync with the contract.

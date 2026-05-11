@@ -49,8 +49,8 @@ type TunnelManager struct {
 	// pinned holds the manager's own release closure per pinned
 	// (name, sharingKey) tuple. SetPolicy stores one Acquire result
 	// per `keepalive = "always"` tunnel and drops it again when the
-	// pin disappears from a subsequent policy.
-	pinned map[mgrKey]func()
+	// pin disappears or its compiled tunnel config changes in a subsequent policy.
+	pinned map[mgrKey]pinnedTunnel
 
 	// connSeq feeds per_conn sharing keys.
 	connSeq atomic.Uint64
@@ -59,6 +59,11 @@ type TunnelManager struct {
 type mgrKey struct {
 	Name string
 	Key  string
+}
+
+type pinnedTunnel struct {
+	ct  *config.CompiledTunnel
+	rel func()
 }
 
 type tunnelEntry struct {
@@ -73,6 +78,10 @@ type tunnelEntry struct {
 	// read tunnel / openErr.
 	openOnce sync.Once
 	openErr  error
+
+	// ct is the compiled tunnel configuration that opened this runtime. It lets
+	// reloads detach stale entries while in-flight users drain.
+	ct *config.CompiledTunnel
 
 	// tunnel is the live runtime.Tunnel returned by body.Open.
 	tunnel runtime.Tunnel
@@ -92,7 +101,7 @@ func NewTunnelManager(secrets runtime.SecretStore, cadir string) *TunnelManager 
 		secrets: secrets,
 		cadir:   cadir,
 		entries: map[mgrKey]*tunnelEntry{},
-		pinned:  map[mgrKey]func(){},
+		pinned:  map[mgrKey]pinnedTunnel{},
 	}
 }
 
@@ -107,14 +116,33 @@ func (m *TunnelManager) Acquire(ctx context.Context, ct *config.CompiledTunnel, 
 	key := m.shareKey(ct, endpoint)
 	mk := mgrKey{Name: ct.Name, Key: key}
 
+	var staleTunnel runtime.Tunnel
+	var staleViaRelease func()
 	m.mu.Lock()
 	e, exists := m.entries[mk]
+	if exists && e.ct != ct {
+		// A policy reload can produce a new CompiledTunnel for the same logical
+		// manager key while old callers still hold references. Detach the stale
+		// entry so new acquires open the new config; old release closures keep the
+		// old runtime alive only until their refcount drains. If it is already idle,
+		// close it now rather than leaving an unreachable idle timer behind.
+		if e.timer != nil {
+			e.timer.Stop()
+			e.timer = nil
+		}
+		if e.refcount == 0 {
+			staleTunnel, staleViaRelease = e.tunnel, e.viaRelease
+		}
+		delete(m.entries, mk)
+		exists = false
+	}
 	if !exists {
 		e = &tunnelEntry{
 			name:      ct.Name,
 			sharing:   ct.Sharing,
 			keepalive: ct.Keepalive,
 			always:    ct.KeepaliveAlways,
+			ct:        ct,
 		}
 		m.entries[mk] = e
 	}
@@ -124,6 +152,12 @@ func (m *TunnelManager) Acquire(ctx context.Context, ct *config.CompiledTunnel, 
 	}
 	e.refcount++
 	m.mu.Unlock()
+	if staleTunnel != nil {
+		_ = staleTunnel.Close()
+	}
+	if staleViaRelease != nil {
+		staleViaRelease()
+	}
 
 	// Exactly one Acquire per entry runs body.Open; the others
 	// wait on openOnce and read the result.
@@ -188,7 +222,7 @@ func (m *TunnelManager) Acquire(ctx context.Context, ct *config.CompiledTunnel, 
 		return nil, func() {}, e.openErr
 	}
 
-	return wrapTunnel(e.tunnel), m.releaseFunc(mk), nil
+	return wrapTunnel(e.tunnel), m.releaseFunc(mk, e), nil
 }
 
 // shareKey produces the sharing-bucket key for a tunnel + endpoint.
@@ -205,9 +239,9 @@ func (m *TunnelManager) shareKey(ct *config.CompiledTunnel, endpoint string) str
 
 // releaseFunc returns a closure that decrements refcount on the
 // keyed entry exactly once.
-func (m *TunnelManager) releaseFunc(mk mgrKey) func() {
+func (m *TunnelManager) releaseFunc(mk mgrKey, e *tunnelEntry) func() {
 	var once sync.Once
-	return func() { once.Do(func() { m.releaseEntry(mk) }) }
+	return func() { once.Do(func() { m.releaseEntry(mk, e) }) }
 }
 
 // releaseEntry decrements the entry's refcount and either tears it
@@ -215,23 +249,25 @@ func (m *TunnelManager) releaseFunc(mk mgrKey) func() {
 // not a special case here — SetPolicy is the sole owner of the
 // synthetic +1 that keeps pinned tunnels up; once that pin is
 // released, this method tears down like any other.
-func (m *TunnelManager) releaseEntry(mk mgrKey) {
+func (m *TunnelManager) releaseEntry(mk mgrKey, e *tunnelEntry) {
 	m.mu.Lock()
-	e, ok := m.entries[mk]
-	if !ok {
+	if e == nil {
 		m.mu.Unlock()
 		return
 	}
 	if e.refcount > 0 {
 		e.refcount--
 	}
+	current := m.entries[mk] == e
 	if e.refcount > 0 {
 		m.mu.Unlock()
 		return
 	}
-	if e.keepalive == 0 {
+	if e.keepalive == 0 || !current {
 		t, vr := e.tunnel, e.viaRelease
-		delete(m.entries, mk)
+		if current {
+			delete(m.entries, mk)
+		}
 		m.mu.Unlock()
 		if t != nil {
 			_ = t.Close()
@@ -289,21 +325,20 @@ func (m *TunnelManager) SetPolicy(ctx context.Context, policy *config.CompiledPo
 		}
 	}
 
-	// Snapshot pinned releases that need to be dropped.
+	// Snapshot pinned releases that need to be dropped. If an always-on
+	// tunnel keeps the same manager key but its compiled config changed,
+	// drop the old pin so the next block acquires a fresh runtime instance.
 	m.mu.Lock()
 	staleRels := make([]func(), 0)
-	for mk, rel := range m.pinned {
-		if _, keep := wantPin[mk]; !keep {
-			staleRels = append(staleRels, rel)
+	for mk, pin := range m.pinned {
+		want, keep := wantPin[mk]
+		if !keep || pin.ct != want {
+			staleRels = append(staleRels, pin.rel)
 			delete(m.pinned, mk)
+			continue
 		}
-	}
-	// Tunnels that are still pinned in the new policy don't need
-	// re-Acquire — their existing rel keeps the entry alive.
-	for mk := range wantPin {
-		if _, already := m.pinned[mk]; already {
-			delete(wantPin, mk)
-		}
+		// Same config remains pinned; no re-Acquire needed.
+		delete(wantPin, mk)
 	}
 	m.mu.Unlock()
 
@@ -320,7 +355,7 @@ func (m *TunnelManager) SetPolicy(ctx context.Context, policy *config.CompiledPo
 			continue
 		}
 		m.mu.Lock()
-		m.pinned[mk] = rel
+		m.pinned[mk] = pinnedTunnel{ct: ct, rel: rel}
 		m.mu.Unlock()
 	}
 }
@@ -330,7 +365,7 @@ func (m *TunnelManager) Close() {
 	m.mu.Lock()
 	entries := m.entries
 	m.entries = map[mgrKey]*tunnelEntry{}
-	m.pinned = map[mgrKey]func(){}
+	m.pinned = map[mgrKey]pinnedTunnel{}
 	m.mu.Unlock()
 	for _, e := range entries {
 		if e.timer != nil {

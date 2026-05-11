@@ -40,9 +40,9 @@ export function ConfigSaveReview({
         </div>
 
         <div className="px-4 py-3 border-b border-[#e5e5e5] bg-[#fafafa] text-[12px] text-[#404040]">
-          Confirming writes the <span className="font-mono">formatted</span> draft below to disk. If{" "}
-          <span className="font-mono">gateway.hcl</span> changed since this preview, the save is
-          rejected.
+          Confirming writes the <span className="font-mono">formatted</span> config represented by
+          the diff below to disk. If <span className="font-mono">gateway.hcl</span> changed since
+          this preview, the save is rejected.
         </div>
 
         <pre className="config-diff-view flex-1 overflow-auto m-0 p-4 text-[12px] leading-5 font-mono whitespace-pre-wrap language-diff diff-highlight">

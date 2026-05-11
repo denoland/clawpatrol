@@ -292,7 +292,7 @@ func (g *Gateway) transportFor(ep *config.CompiledEndpoint) *http.Transport {
 				h = addr
 			}
 			if needsBrowserTLS(h) && !endpointWantsClientCert(ep) {
-				return dialBrowserTLS(ctx, network, addr, h)
+				return g.dialBrowserTLS(ctx, network, addr, h, ep)
 			}
 			profile, _ := ctx.Value(profileCtxKey{}).(string)
 			return g.dialUpstream(ctx, network, addr, h, ep, profile)
@@ -304,6 +304,19 @@ func (g *Gateway) transportFor(ep *config.CompiledEndpoint) *http.Transport {
 	}
 	actual, _ := g.transports.LoadOrStore(ep, tr)
 	return actual.(*http.Transport)
+}
+
+// closeTransports closes and removes every cached endpoint transport. Called
+// after a successful policy reload so old endpoints cannot keep using stale
+// idle connections, credentials, or tunnel paths through their transport cache.
+func (g *Gateway) closeTransports() {
+	g.transports.Range(func(k, v any) bool {
+		if tr, ok := v.(*http.Transport); ok {
+			tr.CloseIdleConnections()
+		}
+		g.transports.Delete(k)
+		return true
+	})
 }
 
 // Policy returns the current snapshot of the lowered runtime policy.
@@ -365,6 +378,7 @@ func (g *Gateway) watchConfig(path string) {
 			continue
 		}
 		g.policy.Store(policy)
+		g.closeTransports()
 		registerOAuthCredentials(g.oauth, policy)
 		g.connIdx.Store(runtime.BuildConnIndex(policy))
 		if g.tunnels != nil {
@@ -1716,13 +1730,13 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			if r, handled, err := responder.RespondHTTP(req.Context(), req); err != nil {
 				log.Printf("respond %s: %v", ep.Name, err)
 			} else if handled {
-				if r.Body != nil {
-					defer func() { _ = r.Body.Close() }()
-				}
 				ev.Status = r.StatusCode
 				ev.Action = "synth"
 				if err := r.Write(tc); err != nil {
 					log.Printf("synth write %s %s: %v", host, req.URL.Path, err)
+				}
+				if r.Body != nil {
+					_ = r.Body.Close()
 				}
 				ev.Ms = time.Since(start).Milliseconds()
 				g.emitEnd(ev)
@@ -1739,6 +1753,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		// to stamp onto the request. Schema-only credential types
 		// (slack / telegram / gemini / etc.) leave Runtime nil; we
 		// pass through verbatim and rely on policy alone.
+		var injectedSecrets []runtime.Secret
 		if cc := runtime.ResolveCredential(ep, mreq); cc != nil {
 			// Plugin.Runtime is a typed-nil sentinel used only for
 			// interface-compliance assertions; the actual decoded HCL
@@ -1753,6 +1768,8 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 					log.Printf("secret %s/%s: not configured (set CLAWPATROL_SECRET_%s)", cc.Credential.Symbol.Name, profile, secretEnvName(cc.Credential.Symbol.Name))
 				} else if err := injector.InjectHTTP(req.Context(), req, sec); err != nil {
 					log.Printf("inject %s: %v", cc.Credential.Symbol.Name, err)
+				} else {
+					injectedSecrets = append(injectedSecrets, sec)
 				}
 			}
 		}
@@ -1827,7 +1844,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			ev.Reason = err.Error()
 			ev.Ms = time.Since(start).Milliseconds()
 			ev.ReqSha = reqS.sha()
-			ev.ReqBody = reqS.sample()
+			ev.ReqBody = reqS.sampleRedacted(injectedSecrets)
 			ev.In = reqS.n
 			g.emitEnd(ev)
 			return
@@ -1877,7 +1894,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		ev.In = reqS.n
 		ev.Out = respS.n
 		ev.ReqSha = reqS.sha()
-		ev.ReqBody = reqS.sample()
+		ev.ReqBody = reqS.sampleRedacted(injectedSecrets)
 		ev.RespSha = respS.sha()
 		ev.RespBody = respS.sample()
 		ev.Ms = time.Since(start).Milliseconds()

@@ -42,19 +42,14 @@ func TestParseSQL(t *testing.T) {
 			},
 		},
 		{
-			// Regex-based extraction is overgreedy by design: it
-			// flags every `<ident>(` callsite, which includes the
-			// table-name + parens (audit (...)) and SQL keywords
-			// like values(. The matcher consumes a list — banned-
-			// function rules check whether their target is anywhere
-			// in the list, so noise is harmless. Caveat: a SQL
-			// parser would be more precise; accepted trade-off.
+			// The lexer avoids treating INSERT target lists and VALUES
+			// clauses as function calls while still surfacing real calls.
 			"insert with function",
 			"INSERT INTO audit (ts, what) VALUES (now(), 'x')",
 			pgInfo{
 				Verb:      "insert",
 				Tables:    []string{"audit"},
-				Functions: []string{"audit", "values", "now"},
+				Functions: []string{"now"},
 				Statement: "INSERT INTO audit (ts, what) VALUES (now(), 'x')",
 			},
 		},
@@ -88,10 +83,11 @@ func TestParseSQL(t *testing.T) {
 			pgInfo{},
 		},
 		{
-			"multi-statement keeps raw statement and first verb",
+			"multi-statement keeps raw statement and all verbs",
 			"SELECT * FROM users; DELETE FROM sessions",
 			pgInfo{
 				Verb:      "select",
+				Verbs:     []string{"select", "delete"},
 				Tables:    []string{"users", "sessions"},
 				Functions: nil,
 				Statement: "SELECT * FROM users; DELETE FROM sessions",
@@ -108,13 +104,165 @@ func TestParseSQL(t *testing.T) {
 			},
 		},
 		{
-			"quoted identifier is best-effort only",
+			"comma-separated from tables are all matched",
+			"SELECT * FROM users u, github_identities AS gi",
+			pgInfo{
+				Verb:      "select",
+				Tables:    []string{"users", "github_identities"},
+				Functions: nil,
+				Statement: "SELECT * FROM users u, github_identities AS gi",
+			},
+		},
+		{
+			"table-valued function is still recorded as function",
+			"SELECT * FROM pg_terminate_backend(123)",
+			pgInfo{
+				Verb:      "select",
+				Tables:    []string{"pg_terminate_backend"},
+				Functions: []string{"pg_terminate_backend"},
+				Statement: "SELECT * FROM pg_terminate_backend(123)",
+			},
+		},
+		{
+			"quoted identifier is matched",
 			"SELECT * FROM \"Sensitive Table\"",
+			pgInfo{
+				Verb:      "select",
+				Tables:    []string{"sensitive table"},
+				Functions: nil,
+				Statement: "SELECT * FROM \"Sensitive Table\"",
+			},
+		},
+		{
+			"ONLY table modifier is skipped",
+			"SELECT * FROM ONLY secret_table",
+			pgInfo{
+				Verb:      "select",
+				Tables:    []string{"secret_table"},
+				Functions: nil,
+				Statement: "SELECT * FROM ONLY secret_table",
+			},
+		},
+		{
+			"unicode quoted identifier is matched",
+			"SELECT * FROM U&\"secret_table\"",
+			pgInfo{
+				Verb:      "select",
+				Tables:    []string{"secret_table"},
+				Functions: nil,
+				Statement: "SELECT * FROM U&\"secret_table\"",
+			},
+		},
+		{
+			"drop table extracts table name",
+			"DROP TABLE secret_table",
+			pgInfo{
+				Verb:      "drop",
+				Tables:    []string{"secret_table"},
+				Functions: nil,
+				Statement: "DROP TABLE secret_table",
+			},
+		},
+		{
+			"drop table if exists skips optional clause",
+			"DROP TABLE IF EXISTS secret_table",
+			pgInfo{
+				Verb:      "drop",
+				Tables:    []string{"secret_table"},
+				Functions: nil,
+				Statement: "DROP TABLE IF EXISTS secret_table",
+			},
+		},
+		{
+			"leading empty statement uses first real verb",
+			"; DELETE FROM sessions",
+			pgInfo{
+				Verb:      "delete",
+				Tables:    []string{"sessions"},
+				Functions: nil,
+				Statement: "; DELETE FROM sessions",
+			},
+		},
+		{
+			"leading empty multi-statement exposes all real verbs",
+			"; SELECT 1; DELETE FROM sessions",
+			pgInfo{
+				Verb:      "select",
+				Verbs:     []string{"select", "delete"},
+				Tables:    []string{"sessions"},
+				Functions: nil,
+				Statement: "; SELECT 1; DELETE FROM sessions",
+			},
+		},
+		{
+			"with data-modifying cte exposes nested verb",
+			"WITH gone AS (DELETE FROM sessions RETURNING id) SELECT 1",
+			pgInfo{
+				Verb:      "with",
+				Verbs:     []string{"with", "delete", "select"},
+				Tables:    []string{"sessions"},
+				Functions: nil,
+				Statement: "WITH gone AS (DELETE FROM sessions RETURNING id) SELECT 1",
+			},
+		},
+		{
+			"unicode escaped quoted identifier is decoded",
+			"SELECT * FROM U&\"secret\\005Ftable\"",
+			pgInfo{
+				Verb:      "select",
+				Tables:    []string{"secret_table"},
+				Functions: nil,
+				Statement: "SELECT * FROM U&\"secret\\005Ftable\"",
+			},
+		},
+		{
+			"unicode escaped quoted identifier honors custom escape",
+			"SELECT * FROM U&\"secret!005Ftable\" UESCAPE '!'",
+			pgInfo{
+				Verb:      "select",
+				Tables:    []string{"secret_table"},
+				Functions: nil,
+				Statement: "SELECT * FROM U&\"secret!005Ftable\" UESCAPE '!'",
+			},
+		},
+		{
+			"unicode escaped quoted identifier honors escaped custom escape literal",
+			"SELECT * FROM U&\"secret!005Ftable\" UESCAPE E'!'",
+			pgInfo{
+				Verb:      "select",
+				Tables:    []string{"secret_table"},
+				Functions: nil,
+				Statement: "SELECT * FROM U&\"secret!005Ftable\" UESCAPE E'!'",
+			},
+		},
+		{
+			"unicode escaped quoted identifier honors hex escaped custom escape literal",
+			"SELECT * FROM U&\"secret!005Ftable\" UESCAPE E'\\x21'",
+			pgInfo{
+				Verb:      "select",
+				Tables:    []string{"secret_table"},
+				Functions: nil,
+				Statement: "SELECT * FROM U&\"secret!005Ftable\" UESCAPE E'\\x21'",
+			},
+		},
+		{
+			"escaped string literal contents are not verbs",
+			"SELECT E'not a \\' DELETE FROM sessions'",
 			pgInfo{
 				Verb:      "select",
 				Tables:    nil,
 				Functions: nil,
-				Statement: "SELECT * FROM \"Sensitive Table\"",
+				Statement: "SELECT E'not a \\' DELETE FROM sessions'",
+			},
+		},
+		{
+			"string literal contents are not verbs",
+			"SELECT 'DELETE FROM sessions'",
+			pgInfo{
+				Verb:      "select",
+				Tables:    nil,
+				Functions: nil,
+				Statement: "SELECT 'DELETE FROM sessions'",
 			},
 		},
 	}

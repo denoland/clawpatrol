@@ -211,6 +211,58 @@ func TestSQLMatcherVerbAndTables(t *testing.T) {
 	}
 }
 
+func TestSQLMatcherNegativeGlobsRejectAnyCandidate(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  map[string]any
+		meta *match.SQLMeta
+		want bool
+	}{
+		{
+			name: "positive table match rejected by separate forbidden table",
+			raw:  map[string]any{"tables": []any{"users", "!secret_*"}},
+			meta: &match.SQLMeta{Tables: []string{"users", "secret_tokens"}},
+			want: false,
+		},
+		{
+			name: "positive table match accepted when no forbidden table present",
+			raw:  map[string]any{"tables": []any{"users", "!secret_*"}},
+			meta: &match.SQLMeta{Tables: []string{"users", "accounts"}},
+			want: true,
+		},
+		{
+			name: "negative-only tables require all candidates avoid forbidden glob",
+			raw:  map[string]any{"tables": []any{"!secret_*"}},
+			meta: &match.SQLMeta{Tables: []string{"users", "secret_tokens"}},
+			want: false,
+		},
+		{
+			name: "negative-only tables accept all safe candidates",
+			raw:  map[string]any{"tables": []any{"!secret_*"}},
+			meta: &match.SQLMeta{Tables: []string{"users", "accounts"}},
+			want: true,
+		},
+		{
+			name: "function negatives reject any forbidden function",
+			raw:  map[string]any{"function": []any{"count", "!pg_*"}},
+			meta: &match.SQLMeta{Functions: []string{"count", "pg_sleep"}},
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, err := match.New("sql", tc.raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := &match.Request{Family: "sql", SQL: tc.meta}
+			if got := m.Match(req); got != tc.want {
+				t.Fatalf("Match=%v want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSQLMatcherStatementRegex(t *testing.T) {
 	m, err := match.New("sql", map[string]any{
 		"verb":            "select",

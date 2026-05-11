@@ -144,6 +144,33 @@ func TestManagerKeepaliveIdleTimer(t *testing.T) {
 	}
 }
 
+func TestManagerReloadClosesDetachedIdleEntry(t *testing.T) {
+	m := NewTunnelManager(runtime.EnvSecretStore{}, "")
+	ct, fake := makeCompiledTunnel("t1", runtime.TunnelShareSingleton, time.Minute, false, nil)
+
+	_, rel, err := m.Acquire(context.Background(), ct, "ep")
+	if err != nil {
+		t.Fatalf("acquire old config: %v", err)
+	}
+	rel()
+	if got := fake.closeCount.Load(); got != 0 {
+		t.Fatalf("old closeCount before reload = %d, want 0", got)
+	}
+
+	ct2, fake2 := makeCompiledTunnel("t1", runtime.TunnelShareSingleton, time.Minute, false, nil)
+	_, rel2, err := m.Acquire(context.Background(), ct2, "ep")
+	if err != nil {
+		t.Fatalf("acquire new config: %v", err)
+	}
+	defer rel2()
+	if got := fake.closeCount.Load(); got != 1 {
+		t.Fatalf("old closeCount after detached idle reload = %d, want 1", got)
+	}
+	if got := fake2.openCount.Load(); got != 1 {
+		t.Fatalf("new openCount after reload = %d, want 1", got)
+	}
+}
+
 // TestManagerOpenError: Open failure cleans up the entry so a retry
 // behaves like a first-acquire.
 func TestManagerOpenError(t *testing.T) {
@@ -214,10 +241,51 @@ func TestManagerKeepaliveAlways(t *testing.T) {
 	if got := fake.closeCount.Load(); got != 0 {
 		t.Errorf("closeCount = %d while pinned, want 0", got)
 	}
+	// Setting the exact same compiled tunnel again should keep the pin.
+	m.SetPolicy(context.Background(), policy)
+	if got := fake.openCount.Load(); got != 1 {
+		t.Errorf("openCount = %d after unchanged policy, want 1", got)
+	}
+	// A successful reload builds new CompiledTunnel objects; refresh the
+	// always-on pin so same-name/key tunnels pick up changed config.
+	ct2, fake2 := makeCompiledTunnel("t1", runtime.TunnelShareSingleton, 0, true, nil)
+	m.SetPolicy(context.Background(), &config.CompiledPolicy{Tunnels: map[string]*config.CompiledTunnel{"t1": ct2}})
+	if got := fake.closeCount.Load(); got != 1 {
+		t.Errorf("old closeCount = %d after refresh, want 1", got)
+	}
+	if got := fake2.openCount.Load(); got != 1 {
+		t.Errorf("new openCount = %d after refresh, want 1", got)
+	}
+	// If a caller still holds the old runtime during reload, new acquires must
+	// still use the new config and the old runtime must close when that caller
+	// drains.
+	ct3, fake3 := makeCompiledTunnel("t1", runtime.TunnelShareSingleton, 0, true, nil)
+	oldHandle, oldRel, err := m.Acquire(context.Background(), ct2, "ep")
+	if err != nil {
+		t.Fatalf("active acquire before second refresh: %v", err)
+	}
+	_ = oldHandle
+	m.SetPolicy(context.Background(), &config.CompiledPolicy{Tunnels: map[string]*config.CompiledTunnel{"t1": ct3}})
+	if got := fake2.closeCount.Load(); got != 0 {
+		t.Errorf("old active closeCount = %d before caller release, want 0", got)
+	}
+	newHandle, newRel, err := m.Acquire(context.Background(), ct3, "ep")
+	if err != nil {
+		t.Fatalf("acquire new config after refresh: %v", err)
+	}
+	_ = newHandle
+	newRel()
+	if got := fake3.openCount.Load(); got != 1 {
+		t.Errorf("new active-refresh openCount = %d, want 1", got)
+	}
+	oldRel()
+	if got := fake2.closeCount.Load(); got != 1 {
+		t.Errorf("old active closeCount after caller release = %d, want 1", got)
+	}
 	// Drop the pin via SetPolicy with no tunnels.
 	m.SetPolicy(context.Background(), &config.CompiledPolicy{Tunnels: map[string]*config.CompiledTunnel{}})
-	if got := fake.closeCount.Load(); got != 1 {
-		t.Errorf("closeCount = %d after pin drop, want 1", got)
+	if got := fake3.closeCount.Load(); got != 1 {
+		t.Errorf("new closeCount = %d after pin drop, want 1", got)
 	}
 }
 

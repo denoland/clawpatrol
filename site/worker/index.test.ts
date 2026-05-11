@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import worker from "./index";
+import worker, { isUpdateAvailable } from "./index";
 
 type PreparedStatement = {
   bind: (...args: unknown[]) => PreparedStatement;
@@ -17,18 +17,16 @@ function env() {
     },
     run: async () => {},
   };
-  return {
-    calls,
-    env: {
-      ASSETS: { fetch: async () => new Response("asset") },
-      TELEMETRY_DB: {
-        prepare: () => {
-          calls.prepare++;
-          return stmt;
-        },
+  const testEnv = {
+    ASSETS: { fetch: async (_req: Request) => new Response("asset") } as Fetcher,
+    TELEMETRY_DB: {
+      prepare: () => {
+        calls.prepare++;
+        return stmt;
       },
-    },
+    } as unknown as D1Database,
   };
+  return { calls, env: testEnv };
 }
 
 const originalFetch = globalThis.fetch;
@@ -84,4 +82,58 @@ test("rejects payloads over the byte limit, not just the JavaScript string lengt
   assert.equal(res.status, 413);
   assert.equal(calls.prepare, 0);
   assert.equal(calls.releaseFetch, 0);
+});
+
+test("rejects oversized telemetry without Content-Length before reading all chunks", async () => {
+  const { env: testEnv, calls } = env();
+  let pulls = 0;
+  const chunk = new Uint8Array(2048);
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulls++;
+      controller.enqueue(chunk);
+      if (pulls >= 4) controller.close();
+    },
+  });
+
+  const res = await worker.fetch(
+    new Request("https://clawpatrol.dev/api/telemetry/v1/check", {
+      method: "POST",
+      body,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" }),
+    testEnv,
+  );
+
+  assert.equal(res.status, 413);
+  assert.equal(calls.prepare, 0);
+  assert.ok(pulls < 4, `expected early cancellation, read ${pulls} chunks`);
+});
+
+test("compares update versions by major/minor/patch and ignores build metadata", () => {
+  const cases = [
+    { current: "1.2.3", latest: "v1.2.4", want: true },
+    { current: "1.2.3", latest: "v1.3.0", want: true },
+    { current: "1.2.3", latest: "v2.0.0", want: true },
+    { current: "1.2.3-rc.1", latest: "v1.2.3", want: true },
+    { current: "1.2.3-beta.1", latest: "v1.2.3-rc.1", want: true },
+    { current: "1.2.3-rc.2", latest: "v1.2.3-rc.10", want: true },
+    { current: "1.2.3-alpha.10", latest: "v1.2.3-alpha.2", want: false },
+    { current: "1.2.3", latest: "v1.2.3", want: false },
+    { current: "1.2.3+local", latest: "v1.2.3+build.5", want: false },
+    { current: "1.2.3", latest: "v1.2.3-rc.1", want: false },
+    { current: "1.2.4", latest: "v1.2.3", want: false },
+    { current: "", latest: "v1.2.4", want: false },
+    { current: "dev", latest: "v1.2.4", want: false },
+    { current: "1.2", latest: "v1.2.4", want: false },
+    { current: "1.2.3", latest: "", want: false },
+  ];
+
+  for (const tc of cases) {
+    assert.equal(
+      isUpdateAvailable(tc.current, tc.latest),
+      tc.want,
+      `${tc.current} vs ${tc.latest}`,
+    );
+  }
 });

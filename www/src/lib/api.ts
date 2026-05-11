@@ -144,16 +144,6 @@ export async function getRulesJSON(): Promise<string> {
   return JSON.stringify(data ?? [], null, 2);
 }
 
-export async function putRulesJSON(json: string): Promise<{ ok: boolean; count: number }> {
-  const r = await api("/api/rules", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: json,
-  });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
-}
-
 // HCL editor. /api/config returns the full gateway.hcl as raw text.
 
 export async function getConfigHCL(): Promise<string> {
@@ -204,12 +194,6 @@ export async function saveConfigHCL(
   });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
-}
-
-export async function getDeviceRulesHCL(ip: string): Promise<string> {
-  const r = await api(`/api/rules/device?ip=${encodeURIComponent(ip)}&format=hcl`);
-  if (!r.ok) throw new Error(await r.text());
-  return r.text();
 }
 
 export async function listProfiles(): Promise<string[]> {

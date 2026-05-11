@@ -43,14 +43,14 @@ async function handleCheck(
     }
   }
 
-  const text = await req.text();
-  if (new TextEncoder().encode(text).byteLength > MAX_BODY_BYTES) {
+  const bodyText = await readRequestBody(req, MAX_BODY_BYTES);
+  if (bodyText === null) {
     return new Response(null, { status: 413 });
   }
 
   let body: Record<string, unknown>;
   try {
-    body = JSON.parse(text);
+    body = JSON.parse(bodyText);
   } catch {
     return new Response(null, { status: 400 });
   }
@@ -94,12 +94,11 @@ async function handleCheck(
     intOrNull(body.actions_count_1h),
     intOrNull(body.bytes_in_1h),
     intOrNull(body.bytes_out_1h),
-    text,
+    bodyText,
   ).run();
 
   const release = await fetchLatestRelease();
-  const updateAvailable =
-    !!release.tag && release.tag !== version;
+  const updateAvailable = isUpdateAvailable(version, release.tag);
   return Response.json({
     latest: release.tag,
     your_version: version,
@@ -114,6 +113,48 @@ type Release = {
   url: string;
   advisory: { level: string; message: string } | null;
 };
+
+async function readRequestBody(
+  req: Request,
+  limitBytes: number,
+): Promise<string | null> {
+  if (!req.body) return "";
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+
+      const remaining = limitBytes + 1 - total;
+      if (value.byteLength > remaining) {
+        chunks.push(value.slice(0, remaining));
+        await reader.cancel();
+        return null;
+      }
+
+      total += value.byteLength;
+      chunks.push(value);
+      if (total > limitBytes) {
+        await reader.cancel();
+        return null;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
 
 async function fetchLatestRelease(): Promise<Release> {
   const r = await fetch(RELEASES_URL, {
@@ -142,6 +183,57 @@ function parseAdvisory(
   const firstPara = m[2].split(/\n\s*\n/)[0].trim();
   if (!firstPara) return null;
   return { level: m[1].toLowerCase(), message: firstPara };
+}
+
+
+export function isUpdateAvailable(current: string, latest: string): boolean {
+  const currentVersion = parseVersion(current);
+  const latestVersion = parseVersion(latest);
+  if (!currentVersion || !latestVersion) return false;
+  for (const key of ["major", "minor", "patch"] as const) {
+    if (latestVersion[key] > currentVersion[key]) return true;
+    if (latestVersion[key] < currentVersion[key]) return false;
+  }
+  if (currentVersion.prerelease && !latestVersion.prerelease) return true;
+  if (!currentVersion.prerelease && latestVersion.prerelease) return false;
+  if (currentVersion.prerelease && latestVersion.prerelease) {
+    return comparePrerelease(latestVersion.prerelease, currentVersion.prerelease) > 0;
+  }
+  return false;
+}
+
+function comparePrerelease(a: string, b: string): number {
+  const aa = a.split(".");
+  const bb = b.split(".");
+  const n = Math.max(aa.length, bb.length);
+  for (let i = 0; i < n; i++) {
+    const av = aa[i];
+    const bv = bb[i];
+    if (av === undefined) return -1;
+    if (bv === undefined) return 1;
+    if (av === bv) continue;
+    const an = /^[0-9]+$/.test(av) ? Number(av) : null;
+    const bn = /^[0-9]+$/.test(bv) ? Number(bv) : null;
+    if (an !== null && bn !== null) return an > bn ? 1 : -1;
+    if (an !== null) return -1;
+    if (bn !== null) return 1;
+    return av > bv ? 1 : -1;
+  }
+  return 0;
+}
+
+function parseVersion(
+  version: string,
+): { major: number; minor: number; patch: number; prerelease: string | null } | null {
+  const m = version
+    .trim()
+    .match(/^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/);
+  if (!m) return null;
+  const major = Number(m[1]);
+  const minor = Number(m[2]);
+  const patch = Number(m[3]);
+  if (![major, minor, patch].every(Number.isSafeInteger)) return null;
+  return { major, minor, patch, prerelease: m[4] ?? null };
 }
 
 function str(v: unknown): string {
