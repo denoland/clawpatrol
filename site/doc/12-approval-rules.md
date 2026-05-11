@@ -45,10 +45,10 @@ Match keys (all optional, all combine with implicit AND):
 match = {
   method        = "POST"                # HTTP verb (case-insensitive)
   path          = ["/v1/refunds", "/v1/payouts"]   # URL path; glob OK
-  query         = { agent_id = "ci" }   # exact query-param match
+  query         = { agent_id = "ci" }   # substring query-param match
   headers       = { "x-tenant" = "prod" }           # substring header match
   body_json     = { archived = true }   # JSON subset match
-  body_contains = "BEGIN PRIVATE KEY"   # raw substring (case-sensitive)
+  body_contains = "DELETE FROM users"   # raw substring (case-sensitive)
   credential    = github-prod-pat       # bare-name ref to the dispatched credential
 }
 ```
