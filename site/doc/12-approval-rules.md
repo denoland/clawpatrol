@@ -10,13 +10,12 @@ block in `gateway.hcl` that targets one or more
 it applies to (the `match` block), and declares the outcome
 (`verdict = "allow" / "deny"`, or `approve = [...]`).
 
-Three rule types ship today:
-
-| Type        | Endpoint family  | What it matches                                |
-|-------------|------------------|------------------------------------------------|
-| `http_rule` | `https`          | HTTP method / path / query / headers / body |
-| `sql_rule`  | `sql` (`postgres`, `clickhouse_*`) | SQL verb / tables / functions / statement text |
-| `k8s_rule`  | `k8s` (`kubernetes` endpoints)     | Kubernetes resource / verb / namespace / name / query params |
+Three rule types ship today, one per endpoint family. An
+`http_rule` lets you decide which HTTP methods or URL paths your
+agent is allowed to hit; a `sql_rule` lets you say which SQL verbs
+it can run or which tables it can touch; a `k8s_rule` lets you say
+which Kubernetes resources, verbs, or namespaces it can reach. The
+next section walks through each in detail.
 
 Rules don't cross families: a `sql_rule` never fires on an HTTPS
 request and vice versa. Each endpoint family declares its own match
