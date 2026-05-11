@@ -1,13 +1,13 @@
 package tunnels
 
-// kubernetes_port_forward tunnel: opens an SPDY port-forward to a
-// pod (or service) in a Kubernetes cluster. Four mutually-exclusive
-// target modes:
+// kubernetes_port_forward tunnel: shells out to `kubectl
+// port-forward` to expose a pod (or service / selector / templated
+// jump-pod) as a local TCP port. Four mutually-exclusive target
+// modes:
 //
 //   pod      = "<name>"             existing pod by name
-//   service  = "<name>"             existing service by name (resolves
-//                                   to a backend pod via the service's
-//                                   selector + targetPort)
+//   service  = "<name>"             existing service by name (kubectl
+//                                   resolves targetPort)
 //   selector = { app = "..." }      pick the first ready pod by label
 //   template = <<EOT ... EOT>>      apply an operator-supplied Pod
 //                                   manifest, port-forward to it, and
@@ -43,42 +43,33 @@ package tunnels
 //     port = 5432
 //   }
 //
-// The plugin ships no built-in pod manifests. `kubectl port-forward`
-// only forwards to a port that is actively listening inside the pod,
-// so a "default sleep pod" wouldn't actually serve traffic — if you
-// want a jump pod, supply the manifest in `template`.
+// Authentication: whatever `kubectl` picks up — KUBECONFIG /
+// ~/.kube/config, or in-cluster service-account token when the
+// gateway runs as a pod. The `context` HCL field selects a named
+// context; empty means the kubeconfig's current-context.
 //
-// Authentication: client-go's kubeconfig chain (KUBECONFIG, then
-// ~/.kube/config). The `context` HCL field selects which named
-// context to use; empty means kubeconfig's current-context. Falls
-// back to in-cluster downward-API config when no kubeconfig is
-// reachable, so the plugin works when the gateway itself runs as a
-// pod.
+// Requires `kubectl` on PATH. Open returns a helpful error when it
+// can't be found.
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
-	"net/http"
+	"os/exec"
+	"regexp"
 	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
-
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/tools/portforward"
-	"k8s.io/client-go/transport/spdy"
-	sigsyaml "sigs.k8s.io/yaml"
+	"gopkg.in/yaml.v3"
 
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/runtime"
@@ -96,8 +87,8 @@ type KubernetesPortForwardTunnel struct {
 	Template string            `hcl:"template,optional"`
 
 	// Port is the pod-side port the forwarder targets. For service
-	// mode it's the *service* port; the plugin resolves the matching
-	// targetPort from spec.ports[*].port == this value.
+	// mode it's the *service* port; kubectl resolves the matching
+	// targetPort.
 	Port int `hcl:"port"`
 
 	// Cleanup is meaningful only in template mode — controls whether
@@ -130,10 +121,8 @@ func (*KubernetesPortForwardTunnel) Sharing() runtime.TunnelSharing {
 	return runtime.TunnelSharePerEndpoint
 }
 
-// Open builds the kubeconfig-derived REST client, resolves (or
-// creates) the target pod, and starts a port-forward. Returns a
-// Tunnel whose Dial connects to the local listener client-go
-// stands up.
+// Open resolves the target, starts a `kubectl port-forward`
+// subprocess, and parses its stdout for the bound local port.
 func (t *KubernetesPortForwardTunnel) Open(ctx context.Context, host runtime.TunnelHost, _ runtime.Tunnel) (runtime.Tunnel, error) {
 	logger := host.Logger
 	if logger == nil {
@@ -142,56 +131,53 @@ func (t *KubernetesPortForwardTunnel) Open(ctx context.Context, host runtime.Tun
 	if err := t.validateModes(); err != nil {
 		return nil, fmt.Errorf("kubernetes_port_forward/%s: %w", host.Name, err)
 	}
-	cfg, err := buildKubeConfig(t.Context)
-	if err != nil {
-		return nil, fmt.Errorf("kubernetes_port_forward/%s: kubeconfig: %w", host.Name, err)
-	}
-	clientset, err := kubernetes.NewForConfig(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("kubernetes_port_forward/%s: clientset: %w", host.Name, err)
+	if _, err := exec.LookPath("kubectl"); err != nil {
+		return nil, fmt.Errorf(
+			"kubernetes_port_forward/%s: `kubectl` not found in $PATH — "+
+				"install it (https://kubernetes.io/docs/tasks/tools/) and "+
+				"make sure it's on the gateway's PATH",
+			host.Name)
 	}
 	ns := t.Namespace
 	if ns == "" {
 		ns = "default"
 	}
-
 	rt := &kubernetesPortForwardTunnel{
-		name:      host.Name,
-		logger:    logger,
-		ready:     make(chan struct{}),
-		stop:      make(chan struct{}),
-		clientset: clientset,
-		ns:        ns,
+		name:    host.Name,
+		logger:  logger,
+		ctx:     t.Context,
+		ns:      ns,
+		cleanup: t.Cleanup != "keep",
 	}
-
-	pod, port, err := t.resolveTarget(ctx, clientset, ns, host.Name, rt)
+	target, err := t.resolveTarget(ctx, rt)
 	if err != nil {
-		return nil, fmt.Errorf("kubernetes_port_forward/%s: %w", host.Name, err)
-	}
-
-	if err := rt.startPortForward(ctx, cfg, clientset, ns, pod, port); err != nil {
-		// Clean up created pod on failure so we don't leak.
 		rt.cleanupCreatedPod(context.Background())
 		return nil, fmt.Errorf("kubernetes_port_forward/%s: %w", host.Name, err)
 	}
-
-	logger.Printf("kubernetes_port_forward/%s: forwarding %s/%s:%d → %s", host.Name, ns, pod, port, rt.localAddr)
+	if err := rt.startPortForward(ctx, target, t.Port); err != nil {
+		rt.cleanupCreatedPod(context.Background())
+		return nil, fmt.Errorf("kubernetes_port_forward/%s: %w", host.Name, err)
+	}
+	logger.Printf("kubernetes_port_forward/%s: forwarding %s/%s → %s",
+		host.Name, ns, target, rt.localAddr)
 	return rt, nil
 }
 
 // validateModes enforces exactly-one-of pod / service / selector /
-// template.
+// template, and that port is set.
 func (t *KubernetesPortForwardTunnel) validateModes() error {
 	modes := 0
-	for _, set := range []bool{t.Pod != "", t.Service != "", len(t.Selector) > 0, t.Template != ""} {
+	for _, set := range []bool{
+		t.Pod != "",
+		t.Service != "",
+		len(t.Selector) > 0,
+		t.Template != "",
+	} {
 		if set {
 			modes++
 		}
 	}
-	if modes == 0 {
-		return errors.New("set exactly one of `pod`, `service`, `selector`, `template`")
-	}
-	if modes > 1 {
+	if modes != 1 {
 		return errors.New("set exactly one of `pod`, `service`, `selector`, `template`")
 	}
 	if t.Port == 0 {
@@ -200,164 +186,97 @@ func (t *KubernetesPortForwardTunnel) validateModes() error {
 	return nil
 }
 
-// resolveTarget returns (pod-name, pod-side-port). For pod mode the
-// caller-supplied Port is the pod-side port. For service mode we
-// look up the service, find spec.ports[port=t.Port], and return its
-// resolved targetPort + a backend pod from the selector. For
-// selector mode we just pick the first ready pod with t.Port. For
-// template mode we apply the manifest, wait for ready, return its
-// name + t.Port.
-func (t *KubernetesPortForwardTunnel) resolveTarget(ctx context.Context, cs kubernetes.Interface, ns, tunnelName string, rt *kubernetesPortForwardTunnel) (string, int, error) {
+// resolveTarget returns the `kubectl port-forward` target spec
+// (pod/NAME, svc/NAME, or the name of a freshly-created pod in
+// template mode).
+func (t *KubernetesPortForwardTunnel) resolveTarget(ctx context.Context, rt *kubernetesPortForwardTunnel) (string, error) {
 	switch {
 	case t.Pod != "":
-		p, err := cs.CoreV1().Pods(ns).Get(ctx, t.Pod, metav1.GetOptions{})
-		if err != nil {
-			return "", 0, fmt.Errorf("get pod %s/%s: %w", ns, t.Pod, err)
-		}
-		if !podReady(p) {
-			return "", 0, fmt.Errorf("pod %s/%s is not ready", ns, t.Pod)
-		}
-		return p.Name, t.Port, nil
-
+		return "pod/" + t.Pod, nil
 	case t.Service != "":
-		svc, err := cs.CoreV1().Services(ns).Get(ctx, t.Service, metav1.GetOptions{})
-		if err != nil {
-			return "", 0, fmt.Errorf("get service %s/%s: %w", ns, t.Service, err)
-		}
-		if len(svc.Spec.Selector) == 0 {
-			return "", 0, fmt.Errorf("service %s/%s has no selector — port-forward needs to resolve to a backend pod", ns, t.Service)
-		}
-		var matchedPort *corev1.ServicePort
-		for i, p := range svc.Spec.Ports {
-			if int(p.Port) == t.Port {
-				matchedPort = &svc.Spec.Ports[i]
-				break
-			}
-		}
-		if matchedPort == nil {
-			return "", 0, fmt.Errorf("service %s/%s has no port %d (declared ports: %v)", ns, t.Service, t.Port, svcPortNumbers(svc))
-		}
-		pod, err := pickReadyPod(ctx, cs, ns, svc.Spec.Selector)
-		if err != nil {
-			return "", 0, fmt.Errorf("service %s/%s: %w", ns, t.Service, err)
-		}
-		// Resolve targetPort: numeric → use it; named → look up
-		// the matching containerPort name on the chosen pod.
-		targetPort, err := resolveTargetPort(pod, matchedPort.TargetPort)
-		if err != nil {
-			return "", 0, fmt.Errorf("service %s/%s: %w", ns, t.Service, err)
-		}
-		return pod.Name, targetPort, nil
-
+		return "svc/" + t.Service, nil
 	case len(t.Selector) > 0:
-		pod, err := pickReadyPod(ctx, cs, ns, t.Selector)
+		name, err := pickReadyPod(ctx, rt.ctx, rt.ns, t.Selector)
 		if err != nil {
-			return "", 0, err
+			return "", err
 		}
-		return pod.Name, t.Port, nil
-
+		return "pod/" + name, nil
 	case t.Template != "":
-		pod, err := podFromTemplate(t.Template)
+		doc, err := podFromTemplate(t.Template)
 		if err != nil {
-			return "", 0, fmt.Errorf("template: %w", err)
+			return "", fmt.Errorf("template: %w", err)
 		}
-		name, err := t.applyAndWait(ctx, cs, ns, tunnelName, rt, pod)
-		return name, t.Port, err
+		name, err := rt.applyAndWait(ctx, doc)
+		if err != nil {
+			return "", err
+		}
+		return "pod/" + name, nil
 	}
-	return "", 0, errors.New("no target mode set (validateModes should have caught this)")
+	return "", errors.New("no target mode set (validateModes should have caught this)")
 }
 
-// pickReadyPod lists pods matching selector and returns the first
-// one in Running + Ready state.
-func pickReadyPod(ctx context.Context, cs kubernetes.Interface, ns string, selector map[string]string) (*corev1.Pod, error) {
-	sel := labelSelector(selector)
-	pods, err := cs.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: sel})
+// pickReadyPod runs `kubectl get pods -l SEL -o name
+// --field-selector=status.phase=Running` and returns the first
+// match. Ready is approximated by Running; kubectl's port-forward
+// will fail loudly if the pod isn't actually accepting connections.
+func pickReadyPod(ctx context.Context, kctx, ns string, selector map[string]string) (string, error) {
+	args := kctlArgs(kctx, ns,
+		"get", "pods",
+		"-l", labelSelector(selector),
+		"--field-selector=status.phase=Running",
+		"-o", "name")
+	out, err := runKubectl(ctx, args)
 	if err != nil {
-		return nil, fmt.Errorf("list pods %s by %q: %w", ns, sel, err)
+		return "", fmt.Errorf("list pods by selector %q: %w", labelSelector(selector), err)
 	}
-	for i := range pods.Items {
-		p := &pods.Items[i]
-		if podReady(p) {
-			return p, nil
-		}
+	lines := strings.Fields(strings.TrimSpace(out))
+	if len(lines) == 0 {
+		return "", fmt.Errorf("no running pods match selector %q in namespace %q",
+			labelSelector(selector), ns)
 	}
-	return nil, fmt.Errorf("no ready pods match selector %q in namespace %q", sel, ns)
+	// strip the "pod/" prefix kubectl prints with -o name
+	return strings.TrimPrefix(lines[0], "pod/"), nil
 }
 
-// resolveTargetPort turns a Service.spec.ports[*].targetPort
-// (IntOrString) into a numeric pod-side port. Numeric values are
-// returned as-is; named values are matched against the chosen pod's
-// container ports.
-func resolveTargetPort(pod *corev1.Pod, target intstr.IntOrString) (int, error) {
-	if target.Type == intstr.Int {
-		return int(target.IntVal), nil
-	}
-	for _, c := range pod.Spec.Containers {
-		for _, p := range c.Ports {
-			if p.Name == target.StrVal {
-				return int(p.ContainerPort), nil
-			}
-		}
-	}
-	return 0, fmt.Errorf("named targetPort %q not found on pod %s", target.StrVal, pod.Name)
+// podDoc is the minimal slice of a Pod manifest the plugin needs
+// to track an applied-from-template pod. The full YAML is passed
+// verbatim to `kubectl create`.
+type podDoc struct {
+	kind, name, generate, raw string
 }
 
-// applyAndWait creates pod in ns and polls until it reaches
-// Running + Ready or the context expires. Records the created
-// name on rt so Close cleans it up (unless cleanup = "keep").
-func (t *KubernetesPortForwardTunnel) applyAndWait(ctx context.Context, cs kubernetes.Interface, ns, tunnelName string, rt *kubernetesPortForwardTunnel, pod *corev1.Pod) (string, error) {
-	if pod.Labels == nil {
-		pod.Labels = map[string]string{}
+// podFromTemplate parses just enough of a Pod manifest to validate
+// kind/name and round-trip the raw YAML to `kubectl create`. Returns
+// an error for non-Pod kinds and for templates missing both `name`
+// and `generateName`.
+func podFromTemplate(y string) (*podDoc, error) {
+	var head struct {
+		Kind     string `yaml:"kind"`
+		Metadata struct {
+			Name         string `yaml:"name"`
+			GenerateName string `yaml:"generateName"`
+		} `yaml:"metadata"`
 	}
-	pod.Labels[managedByLabel] = tunnelName
-	created, err := cs.CoreV1().Pods(ns).Create(ctx, pod, metav1.CreateOptions{})
-	if err != nil {
-		return "", fmt.Errorf("create pod: %w", err)
-	}
-	if t.Cleanup != "keep" {
-		rt.createdPod = created.Name
-	}
-	rt.logger.Printf("kubernetes_port_forward/%s: created pod %s/%s", tunnelName, ns, created.Name)
-
-	deadline := time.Now().Add(2 * time.Minute)
-	for {
-		p, err := cs.CoreV1().Pods(ns).Get(ctx, created.Name, metav1.GetOptions{})
-		if err == nil && podReady(p) {
-			return created.Name, nil
-		}
-		if time.Now().After(deadline) {
-			return created.Name, fmt.Errorf("pod %s/%s never became ready (2m)", ns, created.Name)
-		}
-		select {
-		case <-time.After(500 * time.Millisecond):
-		case <-ctx.Done():
-			return created.Name, ctx.Err()
-		}
-	}
-}
-
-const managedByLabel = "clawpatrol.io/tunnel"
-
-// podFromTemplate decodes a YAML manifest into a corev1.Pod.
-// Single-document only; non-Pod kinds are rejected so the cleanup
-// path stays simple. Operators with more elaborate shapes (Deployment
-// + Service, etc.) can manage them externally and use `pod`,
-// `service`, or `selector`.
-func podFromTemplate(yaml string) (*corev1.Pod, error) {
-	var pod corev1.Pod
-	if err := sigsyaml.Unmarshal([]byte(yaml), &pod); err != nil {
+	if err := yaml.Unmarshal([]byte(y), &head); err != nil {
 		return nil, fmt.Errorf("decode pod yaml: %w", err)
 	}
-	if pod.Kind != "" && pod.Kind != "Pod" {
-		return nil, fmt.Errorf("template kind %q not supported (Pod only)", pod.Kind)
+	if head.Kind != "" && head.Kind != "Pod" {
+		return nil, fmt.Errorf("template kind %q not supported (Pod only)", head.Kind)
 	}
-	if pod.Name == "" && pod.GenerateName == "" {
+	if head.Metadata.Name == "" && head.Metadata.GenerateName == "" {
 		return nil, fmt.Errorf("template must set metadata.name or metadata.generateName")
 	}
-	return &pod, nil
+	return &podDoc{
+		kind:     head.Kind,
+		name:     head.Metadata.Name,
+		generate: head.Metadata.GenerateName,
+		raw:      y,
+	}, nil
 }
 
 // labelSelector renders {key: val} as a comma-joined key=val list.
+// Stable order isn't required — kubectl treats the selector as a
+// set.
 func labelSelector(m map[string]string) string {
 	out := ""
 	for k, v := range m {
@@ -369,112 +288,147 @@ func labelSelector(m map[string]string) string {
 	return out
 }
 
-// svcPortNumbers extracts the numeric port column from a Service
-// for the "no port N declared" diagnostic.
-func svcPortNumbers(svc *corev1.Service) []int32 {
-	out := make([]int32, 0, len(svc.Spec.Ports))
-	for _, p := range svc.Spec.Ports {
-		out = append(out, p.Port)
+// kctlArgs prepends --context and --namespace flags (when set) to
+// the given kubectl arg vector.
+func kctlArgs(kctx, ns string, args ...string) []string {
+	out := []string{}
+	if kctx != "" {
+		out = append(out, "--context", kctx)
 	}
-	return out
+	if ns != "" {
+		out = append(out, "-n", ns)
+	}
+	return append(out, args...)
 }
 
-func podReady(p *corev1.Pod) bool {
-	if p.Status.Phase != corev1.PodRunning {
-		return false
-	}
-	for _, c := range p.Status.Conditions {
-		if c.Type == corev1.PodReady && c.Status == corev1.ConditionTrue {
-			return true
+// runKubectl runs `kubectl ARGS...` and returns its stdout. Stderr
+// is folded into the returned error on failure.
+func runKubectl(ctx context.Context, args []string) (string, error) {
+	cmd := exec.CommandContext(ctx, "kubectl", args...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
 		}
+		return "", errors.New(msg)
 	}
-	return false
-}
-
-// buildKubeConfig loads kubeconfig from the standard chain, then
-// (when contextName is set) overrides the current-context. Falls
-// back to in-cluster config when no kubeconfig is reachable.
-func buildKubeConfig(contextName string) (*rest.Config, error) {
-	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
-	overrides := &clientcmd.ConfigOverrides{}
-	if contextName != "" {
-		overrides.CurrentContext = contextName
-	}
-	cc := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, overrides)
-	cfg, err := cc.ClientConfig()
-	if err == nil {
-		return cfg, nil
-	}
-	if inCluster, icErr := rest.InClusterConfig(); icErr == nil {
-		return inCluster, nil
-	}
-	return nil, err
+	return string(out), nil
 }
 
 type kubernetesPortForwardTunnel struct {
 	name   string
 	logger *log.Logger
 
-	clientset kubernetes.Interface
-	ns        string
-	// createdPod, if non-empty, is the name of a pod the plugin
-	// applied at Open and should delete on Close.
-	createdPod string
+	ctx string // kubectl --context
+	ns  string
 
-	pf        *portforward.PortForwarder
+	// createdPod, if non-empty, is the name of a pod the plugin
+	// applied at Open and should delete on Close (when cleanup=true).
+	createdPod string
+	cleanup    bool
+
+	pf        *exec.Cmd
 	localAddr string
-	ready     chan struct{}
-	stop      chan struct{}
 	once      sync.Once
 }
 
-// startPortForward boots the port-forward in a background goroutine
-// and blocks until the SPDY stream signals ready.
-func (t *kubernetesPortForwardTunnel) startPortForward(ctx context.Context, cfg *rest.Config, cs kubernetes.Interface, ns, pod string, port int) error {
-	transport, upgrader, err := spdy.RoundTripperFor(cfg)
+// applyAndWait shells out to `kubectl create -f -` + `kubectl wait
+// --for=condition=Ready`. Returns the resolved pod name (which may
+// differ from doc.name when `generateName` is used).
+func (t *kubernetesPortForwardTunnel) applyAndWait(ctx context.Context, doc *podDoc) (string, error) {
+	cmd := exec.CommandContext(ctx, "kubectl",
+		kctlArgs(t.ctx, t.ns, "create", "-f", "-", "-o", "name")...)
+	cmd.Stdin = strings.NewReader(doc.raw)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return fmt.Errorf("spdy roundtripper: %w", err)
+		return "", fmt.Errorf("kubectl create: %s", strings.TrimSpace(stderr.String()))
 	}
-	req := cs.CoreV1().RESTClient().Post().
-		Resource("pods").
-		Namespace(ns).
-		Name(pod).
-		SubResource("portforward")
-	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, "POST", req.URL())
+	name := strings.TrimPrefix(strings.TrimSpace(string(out)), "pod/")
+	if name == "" {
+		return "", fmt.Errorf("kubectl create returned empty name")
+	}
+	if t.cleanup {
+		t.createdPod = name
+	}
+	t.logger.Printf("kubernetes_port_forward/%s: created pod %s/%s", t.name, t.ns, name)
 
-	ports := []string{fmt.Sprintf("0:%d", port)} // 0 = ephemeral local
-	addrs := []string{"127.0.0.1"}
+	waitArgs := kctlArgs(t.ctx, t.ns,
+		"wait", "--for=condition=Ready", "pod/"+name, "--timeout=2m")
+	if _, err := runKubectl(ctx, waitArgs); err != nil {
+		return name, fmt.Errorf("pod %s/%s never became ready: %w", t.ns, name, err)
+	}
+	return name, nil
+}
 
-	pf, err := portforward.NewOnAddresses(dialer, addrs, ports, t.stop, t.ready, io.Discard, io.Discard)
+// portForwardReady matches kubectl's "Forwarding from 127.0.0.1:NNNN
+// -> ..." line. We grab NNNN as the bound local port.
+var portForwardReady = regexp.MustCompile(`Forwarding from 127\.0\.0\.1:(\d+) ->`)
+
+// startPortForward boots `kubectl port-forward` in a child process,
+// reads its stdout for the bound local port, and arranges for SIGTERM
+// on Close. We isolate the child in its own process group so we can
+// signal it (and any subprocesses) reliably.
+func (t *kubernetesPortForwardTunnel) startPortForward(ctx context.Context, target string, podPort int) error {
+	args := kctlArgs(t.ctx, t.ns,
+		"port-forward", target, fmt.Sprintf(":%d", podPort),
+		"--address=127.0.0.1")
+	cmd := exec.Command("kubectl", args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("portforward init: %w", err)
+		return fmt.Errorf("stdout pipe: %w", err)
 	}
-	t.pf = pf
+	cmd.Stderr = io.Discard // kubectl writes the "Forwarding from" line to stdout
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("kubectl port-forward: %w", err)
+	}
+	t.pf = cmd
+
+	// Read stdout until we see the bound-port line or the process dies.
+	ready := make(chan int, 1)
+	failed := make(chan error, 1)
 	go func() {
-		if err := pf.ForwardPorts(); err != nil {
-			t.logger.Printf("kubernetes_port_forward/%s: forward exited: %v", t.name, err)
+		s := bufio.NewScanner(stdout)
+		for s.Scan() {
+			if m := portForwardReady.FindStringSubmatch(s.Text()); m != nil {
+				p, _ := strconv.Atoi(m[1])
+				ready <- p
+				_, _ = io.Copy(io.Discard, stdout) // drain
+				return
+			}
 		}
+		failed <- fmt.Errorf("port-forward exited before becoming ready")
 	}()
 
 	select {
-	case <-t.ready:
+	case p := <-ready:
+		t.localAddr = net.JoinHostPort("127.0.0.1", strconv.Itoa(p))
+		return nil
+	case err := <-failed:
+		t.killPF()
+		return err
 	case <-ctx.Done():
-		close(t.stop)
+		t.killPF()
 		return ctx.Err()
 	case <-time.After(30 * time.Second):
-		close(t.stop)
+		t.killPF()
 		return fmt.Errorf("port-forward never became ready (30s)")
 	}
+}
 
-	bound, err := pf.GetPorts()
-	if err != nil {
-		return fmt.Errorf("get bound ports: %w", err)
+// killPF SIGTERMs the port-forward process group and reaps it. Best
+// effort — we don't surface errors because Close paths already log.
+func (t *kubernetesPortForwardTunnel) killPF() {
+	if t.pf == nil || t.pf.Process == nil {
+		return
 	}
-	if len(bound) == 0 {
-		return fmt.Errorf("no bound ports after ready")
-	}
-	t.localAddr = net.JoinHostPort("127.0.0.1", strconv.Itoa(int(bound[0].Local)))
-	return nil
+	_ = syscall.Kill(-t.pf.Process.Pid, syscall.SIGTERM)
+	_ = t.pf.Wait()
 }
 
 func (t *kubernetesPortForwardTunnel) Dial(ctx context.Context, network, _ string) (net.Conn, error) {
@@ -487,14 +441,14 @@ func (t *kubernetesPortForwardTunnel) Dial(ctx context.Context, network, _ strin
 
 func (t *kubernetesPortForwardTunnel) Close() error {
 	t.once.Do(func() {
-		close(t.stop)
+		t.killPF()
 		t.cleanupCreatedPod(context.Background())
 	})
 	return nil
 }
 
 func (t *kubernetesPortForwardTunnel) cleanupCreatedPod(ctx context.Context) {
-	if t.createdPod == "" || t.clientset == nil {
+	if t.createdPod == "" {
 		return
 	}
 	name := t.createdPod
@@ -502,7 +456,8 @@ func (t *kubernetesPortForwardTunnel) cleanupCreatedPod(ctx context.Context) {
 	t.logger.Printf("kubernetes_port_forward/%s: deleting pod %s/%s", t.name, t.ns, name)
 	delCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := t.clientset.CoreV1().Pods(t.ns).Delete(delCtx, name, metav1.DeleteOptions{}); err != nil {
+	args := kctlArgs(t.ctx, t.ns, "delete", "pod/"+name, "--wait=false")
+	if _, err := runKubectl(delCtx, args); err != nil {
 		t.logger.Printf("kubernetes_port_forward/%s: delete pod failed: %v", t.name, err)
 	}
 }

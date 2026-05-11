@@ -104,7 +104,7 @@ spec:
 }
 
 func TestPodFromTemplateAccepts(t *testing.T) {
-	pod, err := podFromTemplate(`apiVersion: v1
+	src := `apiVersion: v1
 kind: Pod
 metadata:
   generateName: jump-
@@ -112,17 +112,15 @@ spec:
   containers:
   - name: socat
     image: alpine/socat
-    args: ["TCP-LISTEN:5432,fork,reuseaddr", "TCP:rds.example:5432"]
-    ports:
-    - containerPort: 5432
-`)
+`
+	doc, err := podFromTemplate(src)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if pod.GenerateName != "jump-" {
-		t.Errorf("generateName = %q", pod.GenerateName)
+	if doc.generate != "jump-" {
+		t.Errorf("generateName = %q", doc.generate)
 	}
-	if len(pod.Spec.Containers) != 1 || pod.Spec.Containers[0].Name != "socat" {
-		t.Errorf("container shape unexpected: %+v", pod.Spec.Containers)
+	if doc.raw != src {
+		t.Error("raw yaml not round-tripped")
 	}
 }
