@@ -549,6 +549,8 @@ func ctyTypeOverride(hclName string) string {
 		return "[]credential"
 	case "approve":
 		return "[]ref(approver)"
+	case "match":
+		return "block"
 	}
 	return ""
 }

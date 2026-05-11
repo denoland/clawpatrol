@@ -503,7 +503,7 @@ Targets endpoints of family: `https`.
 | `endpoints` | `[]ref(endpoint)` | no |  |
 | `priority` | `int` | no |  |
 | `disabled` | `bool` | no |  |
-| `match` | `object` | no | A free-form block whose keys depend on the rule family. Each value is either a single string or a list of strings. Omitting `match` matches every request — the catch-all pattern (`rule "..." "X-default" { priority = -100; verdict = "deny" }`) relies on this. |
+| `match` | `block` | no | A free-form block whose keys depend on the rule family. Each value is either a single string or a list of strings. Omitting `match` matches every request — the catch-all pattern (`rule "..." "X-default" { priority = -100; verdict = "deny" }`) relies on this. |
 | `verdict` | `string` | no | The outcome when the rule matches. Set exactly one of `verdict` (`"allow"` / `"deny"`) or `approve`. |
 | `reason` | `string` | no |  |
 | `approve` | `[]ref(approver)` | no | A list of bare-name approver references. The approvers run in order; the request is allowed only if every stage approves. Set this *or* `verdict`, not both. |
@@ -531,7 +531,7 @@ Targets endpoints of family: `k8s`.
 | `endpoints` | `[]ref(endpoint)` | no |  |
 | `priority` | `int` | no |  |
 | `disabled` | `bool` | no |  |
-| `match` | `object` | no | A free-form block whose keys depend on the rule family. Each value is either a single string or a list of strings. Omitting `match` matches every request — the catch-all pattern (`rule "..." "X-default" { priority = -100; verdict = "deny" }`) relies on this. |
+| `match` | `block` | no | A free-form block whose keys depend on the rule family. Each value is either a single string or a list of strings. Omitting `match` matches every request — the catch-all pattern (`rule "..." "X-default" { priority = -100; verdict = "deny" }`) relies on this. |
 | `verdict` | `string` | no | The outcome when the rule matches. Set exactly one of `verdict` (`"allow"` / `"deny"`) or `approve`. |
 | `reason` | `string` | no |  |
 | `approve` | `[]ref(approver)` | no | A list of bare-name approver references. The approvers run in order; the request is allowed only if every stage approves. Set this *or* `verdict`, not both. |
@@ -559,7 +559,7 @@ Targets endpoints of family: `sql`.
 | `endpoints` | `[]ref(endpoint)` | no |  |
 | `priority` | `int` | no |  |
 | `disabled` | `bool` | no |  |
-| `match` | `object` | no | A free-form block whose keys depend on the rule family. Each value is either a single string or a list of strings. Omitting `match` matches every request — the catch-all pattern (`rule "..." "X-default" { priority = -100; verdict = "deny" }`) relies on this. |
+| `match` | `block` | no | A free-form block whose keys depend on the rule family. Each value is either a single string or a list of strings. Omitting `match` matches every request — the catch-all pattern (`rule "..." "X-default" { priority = -100; verdict = "deny" }`) relies on this. |
 | `verdict` | `string` | no | The outcome when the rule matches. Set exactly one of `verdict` (`"allow"` / `"deny"`) or `approve`. |
 | `reason` | `string` | no |  |
 | `approve` | `[]ref(approver)` | no | A list of bare-name approver references. The approvers run in order; the request is allowed only if every stage approves. Set this *or* `verdict`, not both. |
