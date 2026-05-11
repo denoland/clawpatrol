@@ -82,6 +82,12 @@ func makeCompiledTunnel(name string, sharing string, keepalive time.Duration, al
 	}, body
 }
 
+func makeCompiledTunnelWithFingerprint(name string, sharing string, keepalive time.Duration, always bool, via *config.CompiledTunnel, fingerprint string) (*config.CompiledTunnel, *fakeTunnel) {
+	ct, fake := makeCompiledTunnel(name, sharing, keepalive, always, via)
+	ct.Fingerprint = fingerprint
+	return ct, fake
+}
+
 // TestManagerSingletonRefcount: two acquires share one Open; release
 // of both with keepalive=0 tears it down.
 func TestManagerSingletonRefcount(t *testing.T) {
@@ -231,6 +237,51 @@ func TestManagerKeepaliveAlways(t *testing.T) {
 	m.SetPolicy(context.Background(), &config.CompiledPolicy{Tunnels: map[string]*config.CompiledTunnel{}})
 	if got := fake.closeCount.Load(); got != 1 {
 		t.Errorf("closeCount = %d after pin drop, want 1", got)
+	}
+}
+
+func TestManagerKeepaliveAlwaysReopensWhenFingerprintChanges(t *testing.T) {
+	m := NewTunnelManager(runtime.EnvSecretStore{}, "")
+	oldCT, oldFake := makeCompiledTunnelWithFingerprint("t1", runtime.TunnelShareSingleton, 0, true, nil, "old-config")
+	newCT, newFake := makeCompiledTunnelWithFingerprint("t1", runtime.TunnelShareSingleton, 0, true, nil, "new-config")
+
+	m.SetPolicy(context.Background(), &config.CompiledPolicy{Tunnels: map[string]*config.CompiledTunnel{"t1": oldCT}})
+	if got := oldFake.openCount.Load(); got != 1 {
+		t.Fatalf("old openCount after initial pin = %d, want 1", got)
+	}
+
+	m.SetPolicy(context.Background(), &config.CompiledPolicy{Tunnels: map[string]*config.CompiledTunnel{"t1": newCT}})
+
+	if got := oldFake.closeCount.Load(); got != 1 {
+		t.Errorf("old closeCount after same-name config change = %d, want 1", got)
+	}
+	if got := newFake.openCount.Load(); got != 1 {
+		t.Errorf("new openCount after same-name config change = %d, want 1", got)
+	}
+}
+
+func TestManagerKeepaliveAlwaysFingerprintChangeDoesNotStealInFlightOldTunnel(t *testing.T) {
+	m := NewTunnelManager(runtime.EnvSecretStore{}, "")
+	oldCT, oldFake := makeCompiledTunnelWithFingerprint("t1", runtime.TunnelShareSingleton, 0, true, nil, "old-config")
+	newCT, newFake := makeCompiledTunnelWithFingerprint("t1", runtime.TunnelShareSingleton, 0, true, nil, "new-config")
+
+	m.SetPolicy(context.Background(), &config.CompiledPolicy{Tunnels: map[string]*config.CompiledTunnel{"t1": oldCT}})
+	_, oldDispatcherRel, err := m.Acquire(context.Background(), oldCT, "ep")
+	if err != nil {
+		t.Fatalf("old dispatcher acquire: %v", err)
+	}
+
+	m.SetPolicy(context.Background(), &config.CompiledPolicy{Tunnels: map[string]*config.CompiledTunnel{"t1": newCT}})
+
+	if got := oldFake.closeCount.Load(); got != 0 {
+		t.Errorf("old closeCount while dispatcher still holds old tunnel = %d, want 0", got)
+	}
+	if got := newFake.openCount.Load(); got != 1 {
+		t.Fatalf("new openCount after same-name config change = %d, want 1", got)
+	}
+	oldDispatcherRel()
+	if got := oldFake.closeCount.Load(); got != 1 {
+		t.Errorf("old closeCount after old dispatcher release = %d, want 1", got)
 	}
 }
 

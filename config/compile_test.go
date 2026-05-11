@@ -202,6 +202,109 @@ func TestCompileTunnel(t *testing.T) {
 	}
 }
 
+func TestCompileTunnelFingerprintTracksConfig(t *testing.T) {
+	base := `
+credential "bearer_token" "tok" {}
+tunnel "local_command" "t" {
+  command    = ["ssh", "old-bastion"]
+  listen     = "127.0.0.1:1001"
+  keepalive  = "always"
+  credential = tok
+}
+`
+	same := `
+credential "bearer_token" "tok" {}
+tunnel "local_command" "t" {
+  command    = ["ssh", "old-bastion"]
+  listen     = "127.0.0.1:1001"
+  keepalive  = "always"
+  credential = tok
+}
+`
+	commandChanged := `
+credential "bearer_token" "tok" {}
+tunnel "local_command" "t" {
+  command    = ["ssh", "new-bastion"]
+  listen     = "127.0.0.1:1001"
+  keepalive  = "always"
+  credential = tok
+}
+`
+	credentialChanged := `
+credential "bearer_token" "tok" { idempotency_key = true }
+tunnel "local_command" "t" {
+  command    = ["ssh", "old-bastion"]
+  listen     = "127.0.0.1:1001"
+  keepalive  = "always"
+  credential = tok
+}
+`
+
+	baseFP := compileTunnelFingerprint(t, base, "t")
+	if baseFP == "" {
+		t.Fatal("Fingerprint is empty")
+	}
+	if sameFP := compileTunnelFingerprint(t, same, "t"); sameFP != baseFP {
+		t.Fatalf("same config fingerprint = %q, want %q", sameFP, baseFP)
+	}
+	if changedFP := compileTunnelFingerprint(t, commandChanged, "t"); changedFP == baseFP {
+		t.Fatal("command change did not change tunnel fingerprint")
+	}
+	if changedFP := compileTunnelFingerprint(t, credentialChanged, "t"); changedFP == baseFP {
+		t.Fatal("credential change did not change tunnel fingerprint")
+	}
+}
+
+func TestCompileTunnelFingerprintTracksViaChain(t *testing.T) {
+	base := `
+tunnel "local_command" "base" {
+  command = ["ssh", "old-jump"]
+  listen  = "127.0.0.1:1001"
+}
+tunnel "local_command" "child" {
+  command = ["ssh", "child"]
+  listen  = "127.0.0.1:1002"
+  via     = base
+}
+`
+	viaChanged := `
+tunnel "local_command" "base" {
+  command = ["ssh", "new-jump"]
+  listen  = "127.0.0.1:1001"
+}
+tunnel "local_command" "child" {
+  command = ["ssh", "child"]
+  listen  = "127.0.0.1:1002"
+  via     = base
+}
+`
+
+	baseChildFP := compileTunnelFingerprint(t, base, "child")
+	if baseChildFP == "" {
+		t.Fatal("child Fingerprint is empty")
+	}
+	if changedChildFP := compileTunnelFingerprint(t, viaChanged, "child"); changedChildFP == baseChildFP {
+		t.Fatal("via tunnel config change did not change child tunnel fingerprint")
+	}
+}
+
+func compileTunnelFingerprint(t *testing.T, src string, name string) string {
+	t.Helper()
+	gw, diags := config.LoadBytes([]byte(src), "fingerprint.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	cp, err := config.Compile(gw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	ct := cp.Tunnels[name]
+	if ct == nil {
+		t.Fatalf("missing tunnel %q", name)
+	}
+	return ct.Fingerprint
+}
+
 // TestCompileTunnelViaCycle: a → b → a fails to compile with a
 // diagnostic that names the cycle.
 func TestCompileTunnelViaCycle(t *testing.T) {
