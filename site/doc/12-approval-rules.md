@@ -64,7 +64,7 @@ match = {
   verb            = ["select", "show", "explain"]  # first verb of the statement
   tables          = ["users", "secret_*"]          # any extracted table satisfies the list; glob OK
   function        = ["pg_read_file", "dblink_*"]   # any extracted function satisfies the list; glob OK
-  statement       = "*COPY*FROM PROGRAM*"          # whole-statement glob
+  statement       = "ALTER SYSTEM *"               # whole-statement glob
   statement_regex = "(?i)\\bpassword\\b"           # whole-statement Go RE2 regex
   credential      = pg-readwrite                   # bare-name ref to the dispatched credential
 }
