@@ -16,14 +16,14 @@ const authTestDashboardCredential = "test-dashboard-credential"
 func newOnboardAuthTestWebMuxForControl(control string) *webMux {
 	cfg := &config.Gateway{
 		DashboardSecret: authTestDashboardCredential,
-		Tailscale:       &config.Tailscale{Control: control},
+		Control:         control,
 		Policy:          &config.Policy{},
 	}
 	g := &Gateway{
 		cfg:     cfg,
 		onboard: newOnboardRegistry(),
 	}
-	w := &webMux{g: g, caDir: "", ts: *cfg.Tailscale, publicURL: "https://gateway.example.test", sessions: map[string]*oauthSession{}, onboard: g.onboard, previews: map[string]configPreviewToken{}}
+	w := &webMux{g: g, caDir: "", ts: cfg.JoinConfig(), publicURL: "https://gateway.example.test", sessions: map[string]*oauthSession{}, onboard: g.onboard, previews: map[string]configPreviewToken{}}
 	w.routeAuth = routeAuthIndex(w.routes())
 	return w
 }

@@ -212,8 +212,7 @@ func buildTelemetryPayload(
 	devices := connectedDevicesIn1h(g)
 	actions, bin, bout := actionsCountIn1h(g)
 	transport := "tailscale"
-	if g.cfg != nil && g.cfg.Tailscale != nil &&
-		strings.EqualFold(g.cfg.Tailscale.Control, "wireguard") {
+	if g.cfg != nil && strings.EqualFold(g.cfg.Control, "wireguard") {
 		transport = "wireguard"
 	}
 	r := telemetryReq{

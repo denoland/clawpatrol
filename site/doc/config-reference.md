@@ -20,9 +20,9 @@ Each block section lists the attributes the loader accepts, with:
 Plugin-dispatched kinds (`approver`, `credential`, `endpoint`, `rule`)
 list one subsection per registered type.
 
-## Top-level operational fields
+## Top-level fields
 
-These are the attributes you set directly at the top of `gateway.hcl`. Anything below `gateway {}` (defaults, policy, profile, approver, credential, endpoint, rule) is a separate block documented in its own section.
+Every singleton gateway attribute — listen addresses, paths, control-plane joining, WireGuard endpoint, and policy fallbacks — is set directly at the top of `gateway.hcl`. Labeled blocks (`policy`, `profile`, `approver`, `credential`, `endpoint`, `rule`, `tunnel`) are documented in their own sections.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -38,15 +38,7 @@ These are the attributes you set directly at the top of `gateway.hcl`. Anything 
 | `insecure_no_dashboard_secret` | `bool` | no | Opts out of dashboard auth. Required (alongside an empty DashboardSecret) for the gateway to serve the dashboard at all — otherwise the secret gate replies with a misconfiguration page on every request. Verbose by design so you can't disable auth by accident. |
 | `telemetry` | `bool` | no | Opts in/out of the update-checker / anonymous usage ping (doc/telemetry.md). nil = default on; explicit `telemetry = false` silences the goroutine. Env vars CLAWPATROL_TELEMETRY=0 and DO_NOT_TRACK=1 also work. |
 | `session_keep` | `string` | no | The hard retention floor for the sessions table. Sessions whose last_at is older than this get deleted by the background sweeper. Sessions can revive on new activity at any time, so there's no "closed but kept" intermediate state — only last_at matters. Default 720h (30d), "0" / "off" disables. Format accepts time.ParseDuration strings ("30m", "168h", etc.). |
-| `gateway` | `block` | yes |  |
-
-### `gateway {}` block
-
-Singleton block configuring how the gateway joins the operator's tailnet (or a self-hosted control plane) and the WireGuard tunnel that carries agent traffic.
-
-| Attribute | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `authkey` | `string` | no |  |
+| `authkey` | `string` | no | Control-plane joining (Tailscale or WireGuard). |
 | `control_url` | `string` | no |  |
 | `hostname` | `string` | no |  |
 | `state_dir` | `string` | no |  |
@@ -58,24 +50,11 @@ Singleton block configuring how the gateway joins the operator's tailnet (or a s
 | `wg_endpoint` | `string` | no |  |
 | `wg_server_pub` | `string` | no |  |
 | `wg_subnet_cidr` | `string` | no |  |
-
-## `defaults {}`
-
-Holds gateway-wide fallbacks used when an `approver` block
-or other policy entity does not pin its own value. Exactly one
-`defaults {}` block per config.
-
-| Attribute | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `unknown_host` | `string` | no |  |
+| `unknown_host` | `string` | no | Policy fallbacks used when an approver / endpoint doesn't pin its own value. |
 | `llm_fail_mode` | `string` | no |  |
 | `llm_cache_ttl` | `int` | no |  |
 | `human_timeout` | `int` | no |  |
 | `human_on_timeout` | `string` | no |  |
-
-```hcl
-defaults {}
-```
 
 ## `policy "<name>" { ... }`
 

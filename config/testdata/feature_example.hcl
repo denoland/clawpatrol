@@ -35,21 +35,17 @@ ca_dir      = "/opt/clawpatrol/ca"
 log_path    = "/opt/clawpatrol/gateway.log"
 oauth_dir   = "/opt/clawpatrol/oauth"
 
-gateway {
-  control        = "wireguard"
-  wg_endpoint    = "66.42.120.196:51820"
-  wg_subnet_cidr = "10.55.0.0/24"
-}
+control        = "wireguard"
+wg_endpoint    = "66.42.120.196:51820"
+wg_subnet_cidr = "10.55.0.0/24"
 
 # ── policy --------------------------------------------------------------
 
-defaults {
-  unknown_host     = "passthrough"
-  llm_fail_mode    = "closed"
-  llm_cache_ttl    = 300
-  human_timeout    = 600
-  human_on_timeout = "deny"
-}
+unknown_host     = "passthrough"
+llm_fail_mode    = "closed"
+llm_cache_ttl    = 300
+human_timeout    = 600
+human_on_timeout = "deny"
 
 # Credentials: one per upstream secret. The body lists only injection
 # parameters; the actual secret is stored separately keyed by name.

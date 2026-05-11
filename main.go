@@ -35,11 +35,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// Tailscale aliases the operational tailscale-block type loaded from
-// HCL. Existing call sites (newWebMux / StartWGServer / newOnboarder /
-// mintTailscaleAuthKey) take a value of this type; aliasing keeps
-// those signatures unchanged while the canonical definition lives in
-// config/.
+// Tailscale aliases config.Tailscale so existing call sites
+// (newWebMux / StartWGServer / newOnboarder / mintTailscaleAuthKey)
+// can refer to it as a bare name.
 type Tailscale = config.Tailscale
 
 // emit a terminal request event to both the SSE sink and OTel.
@@ -97,9 +95,6 @@ func loadConfig(path string) (*config.Gateway, *config.CompiledPolicy, error) {
 	}
 	if gw.Listen == "" {
 		gw.Listen = ":443"
-	}
-	if gw.Tailscale == nil {
-		gw.Tailscale = &config.Tailscale{}
 	}
 	cp, err := config.Compile(gw)
 	if err != nil {
@@ -1997,9 +1992,6 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 			DashboardURL: g.cfg.PublicURL,
 			Policy:       policy,
 		}
-		if policy != nil {
-			req.Defaults = policy.Defaults
-		}
 		v, err := ar.Approve(ctx, req)
 		if err != nil {
 			return runtime.ApproveVerdict{Decision: "deny", Reason: err.Error(), By: "gateway"}
@@ -2280,7 +2272,7 @@ func runGateway(args []string) {
 	startTelemetry(g, stateDir)
 
 	if cfg.InfoListen != "" {
-		mux := newWebMux(g, cfg.CADir, *cfg.Tailscale, cfg.PublicURL)
+		mux := newWebMux(g, cfg.CADir, cfg.JoinConfig(), cfg.PublicURL)
 		go serveHTTPLogged("dashboard", cfg.InfoListen, mux)
 		printDashboardURL(cfg.InfoListen)
 	}
@@ -2297,13 +2289,13 @@ func runGateway(args []string) {
 	//   - else   → transparent relay to the real upstream
 	// No /etc/hosts hack needed on clients — agents resolve real
 	// hostnames via public DNS and the gateway intercepts at L3.
-	if strings.EqualFold(cfg.Tailscale.Control, "wireguard") {
-		wg, err := StartWGServer(*cfg.Tailscale, stateDir)
+	if strings.EqualFold(cfg.Control, "wireguard") {
+		wg, err := StartWGServer(cfg.JoinConfig(), stateDir)
 		if err != nil {
 			log.Fatalf("wireguard: %v", err)
 		}
 		setWGServer(wg)
-		dashMux := newWebMux(g, cfg.CADir, *cfg.Tailscale, cfg.PublicURL)
+		dashMux := newWebMux(g, cfg.CADir, cfg.JoinConfig(), cfg.PublicURL)
 		dashPort := portOf(cfg.InfoListen)
 		tcpDispatch := func(c net.Conn, dstIP string, dstPort uint16) {
 			log.Printf("wg-fwd: %s:%d", dstIP, dstPort)

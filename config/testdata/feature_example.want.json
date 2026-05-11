@@ -1,22 +1,13 @@
 {
   "admin_email": "test@example.com",
   "ca_dir": "/opt/clawpatrol/ca",
-  "gateway": {
-    "AuthKey": "",
-    "ControlURL": "",
-    "Hostname": "",
-    "StateDir": "",
-    "Control": "wireguard",
-    "OAuthClientID": "",
-    "OAuthClientSecret": "",
-    "Tags": null,
-    "WGInterface": "",
-    "WGEndpoint": "66.42.120.196:51820",
-    "WGServerPub": "",
-    "WGSubnetCIDR": "10.55.0.0/24"
-  },
+  "control": "wireguard",
+  "human_on_timeout": "deny",
+  "human_timeout": 600,
   "info_listen": "0.0.0.0:8080",
   "listen": "0.0.0.0:8443",
+  "llm_cache_ttl": 300,
+  "llm_fail_mode": "closed",
   "log_path": "/opt/clawpatrol/gateway.log",
   "oauth_dir": "/opt/clawpatrol/oauth",
   "policy": {
@@ -39,13 +30,6 @@
         },
         "type": "bearer_token"
       }
-    },
-    "defaults": {
-      "human_on_timeout": "deny",
-      "human_timeout": 600,
-      "llm_cache_ttl": 300,
-      "llm_fail_mode": "closed",
-      "unknown_host": "passthrough"
     },
     "endpoints": {
       "github": {
@@ -110,5 +94,8 @@
       }
     }
   },
-  "public_url": "http://66.42.120.196:8080"
+  "public_url": "http://66.42.120.196:8080",
+  "unknown_host": "passthrough",
+  "wg_endpoint": "66.42.120.196:51820",
+  "wg_subnet_cidr": "10.55.0.0/24"
 }

@@ -38,9 +38,11 @@ func (g *Gateway) Dump() ([]byte, error) {
 	if g.Resolver != "" {
 		out["resolver"] = g.Resolver
 	}
-	if g.Tailscale != nil && !isZeroTailscale(g.Tailscale) {
-		out["gateway"] = g.Tailscale
+	if g.SessionKeep != "" {
+		out["session_keep"] = g.SessionKeep
 	}
+	dumpJoinFields(g, out)
+	dumpDefaultsFields(g, out)
 	if g.Policy != nil {
 		out["policy"] = dumpPolicy(g.Policy)
 	}
@@ -54,19 +56,48 @@ func (g *Gateway) Dump() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func isZeroTailscale(t *Tailscale) bool {
-	return t.AuthKey == "" && t.ControlURL == "" && t.Hostname == "" &&
-		t.StateDir == "" && t.Control == "" && t.OAuthClientID == "" &&
-		t.OAuthClientSecret == "" && len(t.Tags) == 0 &&
-		t.WGInterface == "" && t.WGEndpoint == "" && t.WGServerPub == "" &&
-		t.WGSubnetCIDR == ""
+func dumpJoinFields(g *Gateway, out map[string]any) {
+	setStr := func(name, v string) {
+		if v != "" {
+			out[name] = v
+		}
+	}
+	setStr("authkey", g.AuthKey)
+	setStr("control_url", g.ControlURL)
+	setStr("hostname", g.Hostname)
+	setStr("state_dir", g.StateDir)
+	setStr("control", g.Control)
+	setStr("oauth_client_id", g.OAuthClientID)
+	setStr("oauth_client_secret", g.OAuthClientSecret)
+	if len(g.Tags) > 0 {
+		out["tags"] = g.Tags
+	}
+	setStr("wg_interface", g.WGInterface)
+	setStr("wg_endpoint", g.WGEndpoint)
+	setStr("wg_server_pub", g.WGServerPub)
+	setStr("wg_subnet_cidr", g.WGSubnetCIDR)
+}
+
+func dumpDefaultsFields(g *Gateway, out map[string]any) {
+	if g.UnknownHost != "" {
+		out["unknown_host"] = g.UnknownHost
+	}
+	if g.LLMFailMode != "" {
+		out["llm_fail_mode"] = g.LLMFailMode
+	}
+	if g.LLMCacheTTL != 0 {
+		out["llm_cache_ttl"] = g.LLMCacheTTL
+	}
+	if g.HumanTimeout != 0 {
+		out["human_timeout"] = g.HumanTimeout
+	}
+	if g.HumanOnTimeout != "" {
+		out["human_on_timeout"] = g.HumanOnTimeout
+	}
 }
 
 func dumpPolicy(p *Policy) map[string]any {
 	out := map[string]any{}
-	if d := dumpDefaults(p.Defaults); d != nil {
-		out["defaults"] = d
-	}
 	if v := dumpEntityMap(p.Approvers); v != nil {
 		out["approvers"] = v
 	}
@@ -87,29 +118,6 @@ func dumpPolicy(p *Policy) map[string]any {
 	}
 	if v := dumpProfiles(p.Profiles); v != nil {
 		out["profiles"] = v
-	}
-	return out
-}
-
-func dumpDefaults(d Defaults) map[string]any {
-	if d == (Defaults{}) {
-		return nil
-	}
-	out := map[string]any{}
-	if d.UnknownHost != "" {
-		out["unknown_host"] = d.UnknownHost
-	}
-	if d.LLMFailMode != "" {
-		out["llm_fail_mode"] = d.LLMFailMode
-	}
-	if d.LLMCacheTTL != 0 {
-		out["llm_cache_ttl"] = d.LLMCacheTTL
-	}
-	if d.HumanTimeout != 0 {
-		out["human_timeout"] = d.HumanTimeout
-	}
-	if d.HumanOnTimeout != "" {
-		out["human_on_timeout"] = d.HumanOnTimeout
 	}
 	return out
 }

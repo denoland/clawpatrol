@@ -1042,11 +1042,9 @@ ca_dir      = "%s"
 log_path    = "%s"
 oauth_dir   = "%s"
 
-gateway {
-  control        = "wireguard"
-  wg_endpoint    = "%s:%d"
-  wg_subnet_cidr = "%s"
-}
+control        = "wireguard"
+wg_endpoint    = "%s:%d"
+wg_subnet_cidr = "%s"
 
 # Starter policy: claude / codex / github via OAuth. Operator pastes
 # tokens via the dashboard; rules permit everything by default. Edit

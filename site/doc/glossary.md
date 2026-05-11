@@ -188,12 +188,12 @@ carries type information for schema dispatch; reference syntax doesn't
 repeat it. See [`config/README.md`](../../config/README.md) for the
 authoritative grammar.
 
-### `defaults {}`
+### Policy defaults (top-level)
 
-Singleton block. Global fallbacks: `unknown_host` (passthrough vs.
-deny), `llm_fail_mode`, `llm_cache_ttl`, `human_timeout`,
-`human_on_timeout`. Every plugin can read these from `BuildCtx` /
-`ApproveRequest.Defaults`.
+Top-level singleton attributes — not a block. Global fallbacks:
+`unknown_host` (passthrough vs. deny), `llm_fail_mode`,
+`llm_cache_ttl`, `human_timeout`, `human_on_timeout`. Every plugin can
+read these from `BuildCtx` / the compiled policy on `ApproveRequest`.
 
 ### `approver "<type>" "<name>" { ... }`
 

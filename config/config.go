@@ -11,12 +11,13 @@ import (
 	"github.com/zclconf/go-cty/cty"
 )
 
-// Gateway is the fully-loaded clawpatrol gateway config: operational
-// fields at the top, plus a resolved policy.
+// Gateway is the fully-loaded clawpatrol gateway config: every
+// singleton attribute at the top, plus a resolved policy.
 //
-// Operational fields are still decoded via plain gohcl struct tags —
-// they're not pluggable. Anything below `tailscale {}` is dispatched
-// to the plugin registry.
+// All scalar gateway settings — listen addresses, paths, control-plane
+// joining, WireGuard endpoint, and policy defaults — are top-level
+// attributes. Labeled blocks (`credential "x" "y" {}`, etc.) are the
+// things you have N of and dispatch to the plugin registry.
 type Gateway struct {
 	Listen          string `hcl:"listen,optional"`
 	InfoListen      string `hcl:"info_listen,optional"`
@@ -48,7 +49,27 @@ type Gateway struct {
 	// Format accepts time.ParseDuration strings ("30m", "168h", etc.).
 	SessionKeep string `hcl:"session_keep,optional"`
 
-	Tailscale *Tailscale `hcl:"gateway,block"`
+	// Control-plane joining (Tailscale or WireGuard).
+	AuthKey           string   `hcl:"authkey,optional"`
+	ControlURL        string   `hcl:"control_url,optional"`
+	Hostname          string   `hcl:"hostname,optional"`
+	StateDir          string   `hcl:"state_dir,optional"`
+	Control           string   `hcl:"control,optional"`
+	OAuthClientID     string   `hcl:"oauth_client_id,optional"`
+	OAuthClientSecret string   `hcl:"oauth_client_secret,optional"`
+	Tags              []string `hcl:"tags,optional"`
+	WGInterface       string   `hcl:"wg_interface,optional"`
+	WGEndpoint        string   `hcl:"wg_endpoint,optional"`
+	WGServerPub       string   `hcl:"wg_server_pub,optional"`
+	WGSubnetCIDR      string   `hcl:"wg_subnet_cidr,optional"`
+
+	// Policy fallbacks used when an approver / endpoint doesn't pin
+	// its own value.
+	UnknownHost    string `hcl:"unknown_host,optional"`
+	LLMFailMode    string `hcl:"llm_fail_mode,optional"`
+	LLMCacheTTL    int    `hcl:"llm_cache_ttl,optional"`
+	HumanTimeout   int    `hcl:"human_timeout,optional"`
+	HumanOnTimeout string `hcl:"human_on_timeout,optional"`
 
 	// Policy holds the v14-grammar block contents. Populated after
 	// the operational decode by Load's pass-1 / pass-2 walk. Set to
@@ -62,22 +83,42 @@ type Gateway struct {
 	Remain hcl.Body `hcl:",remain"`
 }
 
-// Tailscale mirrors main.go's existing block layout. Kept here so
-// config.Gateway is self-contained; the operational runtime can read
-// from this type after Load.
+// Tailscale is a parameter bundle of the join/transport-related
+// Gateway fields. Not an HCL block — the fields live flat on Gateway.
+// This struct exists purely so functions like StartWGServer /
+// newOnboarder can take one argument instead of twelve.
 type Tailscale struct {
-	AuthKey           string   `hcl:"authkey,optional"`
-	ControlURL        string   `hcl:"control_url,optional"`
-	Hostname          string   `hcl:"hostname,optional"`
-	StateDir          string   `hcl:"state_dir,optional"`
-	Control           string   `hcl:"control,optional"`
-	OAuthClientID     string   `hcl:"oauth_client_id,optional"`
-	OAuthClientSecret string   `hcl:"oauth_client_secret,optional"`
-	Tags              []string `hcl:"tags,optional"`
-	WGInterface       string   `hcl:"wg_interface,optional"`
-	WGEndpoint        string   `hcl:"wg_endpoint,optional"`
-	WGServerPub       string   `hcl:"wg_server_pub,optional"`
-	WGSubnetCIDR      string   `hcl:"wg_subnet_cidr,optional"`
+	AuthKey           string
+	ControlURL        string
+	Hostname          string
+	StateDir          string
+	Control           string
+	OAuthClientID     string
+	OAuthClientSecret string
+	Tags              []string
+	WGInterface       string
+	WGEndpoint        string
+	WGServerPub       string
+	WGSubnetCIDR      string
+}
+
+// JoinConfig returns the join-related fields as a Tailscale value
+// bundle. Cheap to call — it's a small struct copy.
+func (g *Gateway) JoinConfig() Tailscale {
+	return Tailscale{
+		AuthKey:           g.AuthKey,
+		ControlURL:        g.ControlURL,
+		Hostname:          g.Hostname,
+		StateDir:          g.StateDir,
+		Control:           g.Control,
+		OAuthClientID:     g.OAuthClientID,
+		OAuthClientSecret: g.OAuthClientSecret,
+		Tags:              g.Tags,
+		WGInterface:       g.WGInterface,
+		WGEndpoint:        g.WGEndpoint,
+		WGServerPub:       g.WGServerPub,
+		WGSubnetCIDR:      g.WGSubnetCIDR,
+	}
 }
 
 // Policy is the resolved set of named policy entities. Maps are keyed
@@ -85,8 +126,6 @@ type Tailscale struct {
 // of one-label kinds). Insertion order is preserved in the parallel
 // slices for deterministic emit / dump output.
 type Policy struct {
-	Defaults Defaults
-
 	Approvers   map[string]*Entity
 	Credentials map[string]*Entity
 	Endpoints   map[string]*Entity
@@ -133,17 +172,6 @@ func (f FrameworkAttrs) Ref(name string) string {
 		return ""
 	}
 	return f.Refs[name]
-}
-
-// Defaults holds gateway-wide fallbacks used when an `approver` block
-// or other policy entity does not pin its own value. Exactly one
-// `defaults {}` block per config.
-type Defaults struct {
-	UnknownHost    string `hcl:"unknown_host,optional"`
-	LLMFailMode    string `hcl:"llm_fail_mode,optional"`
-	LLMCacheTTL    int    `hcl:"llm_cache_ttl,optional"`
-	HumanTimeout   int    `hcl:"human_timeout,optional"`
-	HumanOnTimeout string `hcl:"human_on_timeout,optional"`
 }
 
 // PolicyText defines a named, reusable chunk of policy prose that
@@ -215,28 +243,11 @@ func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
 	}
 
 	// Pass 1: extract the policy blocks from the remainder body.
-	policyBlocks, defaultsBlocks, polDiags := extractPolicyBlocks(gw.Remain)
+	policyBlocks, polDiags := extractPolicyBlocks(gw.Remain)
 	diags = append(diags, polDiags...)
 
 	table, symDiags := buildSymbols(policyBlocks)
 	diags = append(diags, symDiags...)
-
-	// defaults {} (singleton, no labels)
-	if len(defaultsBlocks) > 1 {
-		diags = append(diags, &hcl.Diagnostic{
-			Severity: hcl.DiagError,
-			Summary:  "Duplicate defaults block",
-			Detail:   "Only one defaults {} block is allowed.",
-			Subject:  &defaultsBlocks[1].DefRange,
-		})
-	}
-	if len(defaultsBlocks) >= 1 {
-		var d Defaults
-		if dd := gohcl.DecodeBody(defaultsBlocks[0].Body, nil, &d); dd.HasErrors() {
-			diags = append(diags, dd...)
-		}
-		gw.Policy.Defaults = d
-	}
 
 	// Pass 2: build the eval context with every name → string, then
 	// decode each policy block against its plugin's schema.
@@ -288,12 +299,9 @@ func dedupGohclDiags(in hcl.Diagnostics) hcl.Diagnostics {
 
 // extractPolicyBlocks pulls every recognized top-level block out of
 // the remainder body returned by the operational gohcl decode.
-// Defaults blocks are returned separately because they have a fixed
-// schema (no labels, no plugin dispatch).
-func extractPolicyBlocks(body hcl.Body) (hcl.Blocks, hcl.Blocks, hcl.Diagnostics) {
+func extractPolicyBlocks(body hcl.Body) (hcl.Blocks, hcl.Diagnostics) {
 	schema := &hcl.BodySchema{
 		Blocks: []hcl.BlockHeaderSchema{
-			{Type: "defaults"},
 			{Type: "approver", LabelNames: []string{"type", "name"}},
 			{Type: "credential", LabelNames: []string{"type", "name"}},
 			{Type: "endpoint", LabelNames: []string{"type", "name"}},
@@ -304,15 +312,7 @@ func extractPolicyBlocks(body hcl.Body) (hcl.Blocks, hcl.Blocks, hcl.Diagnostics
 		},
 	}
 	content, _, diags := body.PartialContent(schema)
-	var policy, defaults hcl.Blocks
-	for _, b := range content.Blocks {
-		if b.Type == "defaults" {
-			defaults = append(defaults, b)
-		} else {
-			policy = append(policy, b)
-		}
-	}
-	return policy, defaults, diags
+	return content.Blocks, diags
 }
 
 // builtinApproverNames are approvers the gateway provides without

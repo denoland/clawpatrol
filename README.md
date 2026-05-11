@@ -136,19 +136,17 @@ The WireGuard mode embeds a userspace WG endpoint inside the gateway. You only h
 
 The Tailscale mode joins the gateway to your existing tailnet as an exit-node. Devices that are already on the tailnet run `clawpatrol login` and pin `clawpatrol` as their exit-node. Use this if you already operate Tailscale and want its ACL and whois plumbing to gate onboarding.
 
-You configure the choice with the `gateway` block:
+You configure the choice with top-level fields:
 
 ```hcl
-gateway {
-  control = "wireguard"   # or "tailscale"
+control = "wireguard"   # or "tailscale"
 
-  # tailscale-only:
-  oauth_client_id     = "{{secret:TS_OAUTH_CLIENT_ID}}"
-  oauth_client_secret = "{{secret:TS_OAUTH_CLIENT_SECRET}}"
-  tags                = ["tag:client"]
+# tailscale-only:
+oauth_client_id     = "{{secret:TS_OAUTH_CLIENT_ID}}"
+oauth_client_secret = "{{secret:TS_OAUTH_CLIENT_SECRET}}"
+tags                = ["tag:client"]
 
-  # wireguard-only:
-  wg_endpoint    = "gw.example.com:51820"
-  wg_subnet_cidr = "10.55.0.0/24"
-}
+# wireguard-only:
+wg_endpoint    = "gw.example.com:51820"
+wg_subnet_cidr = "10.55.0.0/24"
 ```

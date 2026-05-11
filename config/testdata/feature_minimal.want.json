@@ -1,6 +1,7 @@
 {
   "ca_dir": "/opt/clawpatrol/ca",
   "listen": "0.0.0.0:8443",
+  "llm_fail_mode": "closed",
   "policy": {
     "approvers": {
       "ops": {
@@ -21,10 +22,6 @@
         },
         "type": "bearer_token"
       }
-    },
-    "defaults": {
-      "llm_fail_mode": "closed",
-      "unknown_host": "passthrough"
     },
     "endpoints": {
       "github": {
@@ -87,5 +84,6 @@
         "type": "http_rule"
       }
     }
-  }
+  },
+  "unknown_host": "passthrough"
 }

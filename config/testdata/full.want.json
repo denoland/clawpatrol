@@ -1,4 +1,8 @@
 {
+  "human_on_timeout": "deny",
+  "human_timeout": 600,
+  "llm_cache_ttl": 300,
+  "llm_fail_mode": "closed",
   "policy": {
     "approvers": {
       "billing": {
@@ -289,13 +293,6 @@
         "body": {},
         "type": "telegram_bot_token"
       }
-    },
-    "defaults": {
-      "human_on_timeout": "deny",
-      "human_timeout": 600,
-      "llm_cache_ttl": 300,
-      "llm_fail_mode": "closed",
-      "unknown_host": "passthrough"
     },
     "endpoints": {
       "amem": {
@@ -1788,5 +1785,6 @@
         "type": "http_rule"
       }
     }
-  }
+  },
+  "unknown_host": "passthrough"
 }

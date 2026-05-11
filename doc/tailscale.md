@@ -9,8 +9,8 @@ public UDP port, no WireGuard keypair management, no subnet allocation
 ## How it works
 
 1. Gateway starts a `tsnet.Server` (embedded Tailscale node, no
-   `tailscaled` required) using an auth key from `gateway {}` HCL or
-   `$TS_AUTHKEY`. It joins the tailnet under the configured hostname
+   `tailscaled` required) using an auth key from the top-level
+   `authkey` field or `$TS_AUTHKEY`. It joins the tailnet under the configured hostname
    (default: `clawpatrol-gateway`) and binds the MITM + dashboard on
    the resulting tailnet IP.
 2. When a device runs `clawpatrol login`, the dashboard mints a
@@ -76,14 +76,12 @@ ca_dir       = "/opt/clawpatrol/ca"
 oauth_dir    = "/opt/clawpatrol/oauth"
 integrations = ["claude", "codex", "github"]
 
-gateway {
-  control             = "tailscale"
-  oauth_client_id     = "{{secret:TS_OAUTH_CLIENT_ID}}"
-  oauth_client_secret = "{{secret:TS_OAUTH_CLIENT_SECRET}}"
-  tags                = ["tag:client"]       # applied to minted device keys
-  hostname            = "clawpatrol-gateway" # gateway's name on the tailnet
-  state_dir           = "/opt/clawpatrol/ts-state"
-}
+control             = "tailscale"
+oauth_client_id     = "{{secret:TS_OAUTH_CLIENT_ID}}"
+oauth_client_secret = "{{secret:TS_OAUTH_CLIENT_SECRET}}"
+tags                = ["tag:client"]       # applied to minted device keys
+hostname            = "clawpatrol-gateway" # gateway's name on the tailnet
+state_dir           = "/opt/clawpatrol/ts-state"
 EOF
 
 mkdir -p /opt/clawpatrol

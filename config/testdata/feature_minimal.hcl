@@ -1,10 +1,8 @@
 listen     = "0.0.0.0:8443"
 ca_dir     = "/opt/clawpatrol/ca"
 
-defaults {
-  unknown_host  = "passthrough"
-  llm_fail_mode = "closed"
-}
+unknown_host  = "passthrough"
+llm_fail_mode = "closed"
 
 credential "bearer_token" "github-pat" {}
 

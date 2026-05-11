@@ -9,11 +9,11 @@ import (
 )
 
 // Emit serializes a loaded *Gateway back to HCL. The output is
-// deterministic (operational fields first, then defaults, then
-// kind-grouped policy blocks in source order) and re-parsable by
-// Load — round-tripping fixtures through Emit + Load produces a
-// structurally identical *Gateway, modulo comment loss (hclwrite
-// can't preserve operator comments through gohcl decode).
+// deterministic (operational fields first, then kind-grouped policy
+// blocks in source order) and re-parsable by Load — round-tripping
+// fixtures through Emit + Load produces a structurally identical
+// *Gateway, modulo comment loss (hclwrite can't preserve operator
+// comments through gohcl decode).
 //
 // Per-block emission delegates to the plugin's Emit hook so each
 // plugin owns its own body shape — credential bindings, match
@@ -29,12 +29,6 @@ func Emit(gw *Gateway) ([]byte, error) {
 		return f.Bytes(), nil
 	}
 	p := gw.Policy
-
-	// Defaults first if any field is non-zero.
-	if d := gw.Policy.Defaults; d != (Defaults{}) {
-		body.AppendNewline()
-		emitDefaults(body, d)
-	}
 
 	// Per-kind groups in a deterministic order: approvers → policies →
 	// credentials → endpoints → rules → profiles. Within a group, walk
@@ -58,6 +52,11 @@ func emitOperational(body *hclwrite.Body, gw *Gateway) {
 			body.SetAttributeValue(name, cty.StringVal(v))
 		}
 	}
+	setInt := func(name string, v int) {
+		if v != 0 {
+			body.SetAttributeValue(name, cty.NumberIntVal(int64(v)))
+		}
+	}
 	setStr("listen", gw.Listen)
 	setStr("info_listen", gw.InfoListen)
 	setStr("public_url", gw.PublicURL)
@@ -70,53 +69,28 @@ func emitOperational(body *hclwrite.Body, gw *Gateway) {
 	if gw.InsecureNoDashboardSecret {
 		body.SetAttributeValue("insecure_no_dashboard_secret", cty.BoolVal(true))
 	}
+	setStr("session_keep", gw.SessionKeep)
 
-	if gw.Tailscale != nil && !isZeroTailscale(gw.Tailscale) {
-		body.AppendNewline()
-		ts := body.AppendNewBlock("gateway", nil).Body()
-		emitTailscale(ts, gw.Tailscale)
+	setStr("authkey", gw.AuthKey)
+	setStr("control_url", gw.ControlURL)
+	setStr("hostname", gw.Hostname)
+	setStr("state_dir", gw.StateDir)
+	setStr("control", gw.Control)
+	setStr("oauth_client_id", gw.OAuthClientID)
+	setStr("oauth_client_secret", gw.OAuthClientSecret)
+	if len(gw.Tags) > 0 {
+		body.SetAttributeValue("tags", StringListVal(gw.Tags))
 	}
-}
+	setStr("wg_interface", gw.WGInterface)
+	setStr("wg_endpoint", gw.WGEndpoint)
+	setStr("wg_server_pub", gw.WGServerPub)
+	setStr("wg_subnet_cidr", gw.WGSubnetCIDR)
 
-func emitTailscale(b *hclwrite.Body, t *Tailscale) {
-	setStr := func(name, v string) {
-		if v != "" {
-			b.SetAttributeValue(name, cty.StringVal(v))
-		}
-	}
-	setStr("authkey", t.AuthKey)
-	setStr("control_url", t.ControlURL)
-	setStr("hostname", t.Hostname)
-	setStr("state_dir", t.StateDir)
-	setStr("control", t.Control)
-	setStr("oauth_client_id", t.OAuthClientID)
-	setStr("oauth_client_secret", t.OAuthClientSecret)
-	if len(t.Tags) > 0 {
-		b.SetAttributeValue("tags", StringListVal(t.Tags))
-	}
-	setStr("wg_interface", t.WGInterface)
-	setStr("wg_endpoint", t.WGEndpoint)
-	setStr("wg_server_pub", t.WGServerPub)
-	setStr("wg_subnet_cidr", t.WGSubnetCIDR)
-}
-
-func emitDefaults(body *hclwrite.Body, d Defaults) {
-	b := body.AppendNewBlock("defaults", nil).Body()
-	if d.UnknownHost != "" {
-		b.SetAttributeValue("unknown_host", cty.StringVal(d.UnknownHost))
-	}
-	if d.LLMFailMode != "" {
-		b.SetAttributeValue("llm_fail_mode", cty.StringVal(d.LLMFailMode))
-	}
-	if d.LLMCacheTTL != 0 {
-		b.SetAttributeValue("llm_cache_ttl", cty.NumberIntVal(int64(d.LLMCacheTTL)))
-	}
-	if d.HumanTimeout != 0 {
-		b.SetAttributeValue("human_timeout", cty.NumberIntVal(int64(d.HumanTimeout)))
-	}
-	if d.HumanOnTimeout != "" {
-		b.SetAttributeValue("human_on_timeout", cty.StringVal(d.HumanOnTimeout))
-	}
+	setStr("unknown_host", gw.UnknownHost)
+	setStr("llm_fail_mode", gw.LLMFailMode)
+	setInt("llm_cache_ttl", gw.LLMCacheTTL)
+	setInt("human_timeout", gw.HumanTimeout)
+	setStr("human_on_timeout", gw.HumanOnTimeout)
 }
 
 // emitGroup walks p.Order, filters by kind, and emits each entry's

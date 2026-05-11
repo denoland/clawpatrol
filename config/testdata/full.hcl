@@ -337,13 +337,11 @@
 #   token via aws eks get-token at request time" — cluster, region,
 #   and AWS profile name go on the credential.
 
-defaults {
-  unknown_host = "passthrough"
-  llm_fail_mode = "closed"
-  llm_cache_ttl = 300
-  human_timeout = 600
-  human_on_timeout = "deny"
-}
+unknown_host = "passthrough"
+llm_fail_mode = "closed"
+llm_cache_ttl = 300
+human_timeout = 600
+human_on_timeout = "deny"
 
 # ── Approvers ────────────────────────────────────────
 #

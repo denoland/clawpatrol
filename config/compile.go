@@ -13,7 +13,12 @@ import (
 // per-profile maps that the request handler walks at dispatch time.
 // Build with Compile after Load.
 type CompiledPolicy struct {
-	Defaults Defaults
+	// Policy fallbacks (mirrored from the top-level Gateway fields).
+	UnknownHost    string
+	LLMFailMode    string
+	LLMCacheTTL    int
+	HumanTimeout   int
+	HumanOnTimeout string
 
 	// Profiles indexed by name. Each holds a per-endpoint rule list,
 	// already family-tagged and priority-sorted.
@@ -199,13 +204,17 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 	}
 	p := gw.Policy
 	cp := &CompiledPolicy{
-		Defaults:    p.Defaults,
-		Profiles:    map[string]*CompiledProfile{},
-		Endpoints:   map[string]*CompiledEndpoint{},
-		Tunnels:     map[string]*CompiledTunnel{},
-		Approvers:   p.Approvers,
-		Credentials: p.Credentials,
-		Policies:    p.Policies,
+		UnknownHost:    gw.UnknownHost,
+		LLMFailMode:    gw.LLMFailMode,
+		LLMCacheTTL:    gw.LLMCacheTTL,
+		HumanTimeout:   gw.HumanTimeout,
+		HumanOnTimeout: gw.HumanOnTimeout,
+		Profiles:       map[string]*CompiledProfile{},
+		Endpoints:      map[string]*CompiledEndpoint{},
+		Tunnels:        map[string]*CompiledTunnel{},
+		Approvers:      p.Approvers,
+		Credentials:    p.Credentials,
+		Policies:       p.Policies,
 	}
 
 	// Compile tunnels first so endpoint compilation can resolve

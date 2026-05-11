@@ -296,9 +296,6 @@ type ApproveRequest struct {
 	// deep links in Slack messages and similar notifications.
 	DashboardURL string
 
-	// Defaults from the file's defaults {} block; plugins fall back
-	// to these when their own config doesn't override.
-	Defaults config.Defaults
 	// Policy gives approvers access to the full compiled policy —
 	// HumanApprover uses it to look up its referenced credential
 	// entity and dispatch via HITLNotifier.

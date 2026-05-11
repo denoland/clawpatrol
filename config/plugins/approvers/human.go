@@ -89,7 +89,7 @@ func (h *HumanApprover) Approve(ctx context.Context, req runtime.ApproveRequest)
 
 	timeout := time.Duration(h.Timeout) * time.Second
 	if timeout <= 0 {
-		timeout = time.Duration(req.Defaults.HumanTimeout) * time.Second
+		timeout = time.Duration(req.Policy.HumanTimeout) * time.Second
 	}
 	if timeout <= 0 {
 		timeout = 10 * time.Minute

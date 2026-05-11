@@ -15,7 +15,8 @@ A policy file mixes **operational** fields (gateway plumbing) with
 blocks dispatch to plugins by their first label.
 
 ```hcl
-# Operational — read by the gateway daemon at boot.
+# Top-level singletons — read by the gateway daemon at boot.
+# Listen / paths / public URL:
 listen      = "0.0.0.0:8443"
 ca_dir      = "/opt/clawpatrol/ca"
 log_path    = "/opt/clawpatrol/gateway.log"
@@ -23,13 +24,15 @@ oauth_dir   = "/opt/clawpatrol/oauth"
 public_url  = "http://gateway.internal:8080"
 admin_email = "ops@example.com"
 
-tailscale {
-  control     = "wireguard"
-  wg_endpoint = "203.0.113.10:51820"
-}
+# Control-plane joining:
+control     = "wireguard"
+wg_endpoint = "203.0.113.10:51820"
 
-# Policy — dispatched to plugins.
-defaults { ... }
+# Policy fallbacks:
+unknown_host  = "passthrough"
+llm_fail_mode = "closed"
+
+# Labeled policy blocks — dispatched to plugins.
 approver "<type>" "<name>" { ... }
 policy   "<name>" { ... }
 credential "<type>" "<name>" { ... }
@@ -61,19 +64,16 @@ declaration.
 
 ## Kinds
 
-### `defaults {}`
+### Policy defaults (top-level)
 
-Singleton block. Global fallbacks for fail-mode, cache TTL, unknown-
-host policy.
+Global fallbacks for fail-mode, cache TTL, unknown-host policy.
 
 ```hcl
-defaults {
-  unknown_host     = "passthrough"   # "passthrough" | "deny"
-  llm_fail_mode    = "closed"        # "closed" | "open"
-  llm_cache_ttl    = 300             # seconds
-  human_timeout    = 600             # seconds
-  human_on_timeout = "deny"          # "deny" | "allow"
-}
+unknown_host     = "passthrough"   # "passthrough" | "deny"
+llm_fail_mode    = "closed"        # "closed" | "open"
+llm_cache_ttl    = 300             # seconds
+human_timeout    = 600             # seconds
+human_on_timeout = "deny"          # "deny" | "allow"
 ```
 
 ### `approver "<type>" "<name>" { ... }`

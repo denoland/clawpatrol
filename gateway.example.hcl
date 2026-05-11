@@ -7,10 +7,8 @@
 # Hot-reloadable: every policy block + admin_email. Listen ports /
 # ca_dir / oauth_dir / tailscale block need a restart.
 #
-# Top-level kinds:
+# Labeled blocks:
 #
-#   defaults   {}                     global fallbacks for fail-mode,
-#                                     cache TTL, unknown-host policy
 #   approver   "<type>" "<name>"      who arbitrates (llm_approver |
 #                                     human_approver)
 #   policy     "<name>"               reusable LLM proctor prompt
@@ -44,21 +42,17 @@ oauth_dir   = "/opt/clawpatrol/oauth"
 #                                               # dashboard URL gets in
 dashboard_secret = "change-me-to-a-long-random-string"
 
-gateway {
-  control        = "wireguard"
-  wg_endpoint    = "66.42.120.196:51820"
-  wg_subnet_cidr = "10.55.0.0/24"
-}
+control        = "wireguard"
+wg_endpoint    = "66.42.120.196:51820"
+wg_subnet_cidr = "10.55.0.0/24"
 
-# ── policy --------------------------------------------------------------
+# ── policy defaults ----------------------------------------------------
 
-defaults {
-  unknown_host     = "passthrough"
-  llm_fail_mode    = "closed"
-  llm_cache_ttl    = 300
-  human_timeout    = 600
-  human_on_timeout = "deny"
-}
+unknown_host     = "passthrough"
+llm_fail_mode    = "closed"
+llm_cache_ttl    = 300
+human_timeout    = 600
+human_on_timeout = "deny"
 
 # Credentials: one per upstream secret. The body lists only injection
 # parameters; the actual secret is stored separately keyed by name.

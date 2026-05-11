@@ -42,7 +42,6 @@ type renderer struct {
 func (r *renderer) run() (string, error) {
 	r.writeHeader()
 	r.writeOperational()
-	r.writeFixedKind("defaults", "config", "Defaults", "")
 	r.writeFixedKind("policy", "config", "PolicyText", `policy "<name>"`)
 	r.writeProfile()
 
@@ -126,13 +125,9 @@ func stripIdentPrefix(doc, ident string) string {
 }
 
 func (r *renderer) writeOperational() {
-	r.out.WriteString("## Top-level operational fields\n\n")
-	r.out.WriteString("These are the attributes you set directly at the top of `gateway.hcl`. Anything below `gateway {}` (defaults, policy, profile, approver, credential, endpoint, rule) is a separate block documented in its own section.\n\n")
+	r.out.WriteString("## Top-level fields\n\n")
+	r.out.WriteString("Every singleton gateway attribute — listen addresses, paths, control-plane joining, WireGuard endpoint, and policy fallbacks — is set directly at the top of `gateway.hcl`. Labeled blocks (`policy`, `profile`, `approver`, `credential`, `endpoint`, `rule`, `tunnel`) are documented in their own sections.\n\n")
 	r.writeStructTable("config", "Gateway", reflect.TypeOf(config.Gateway{}))
-
-	r.out.WriteString("### `gateway {}` block\n\n")
-	r.out.WriteString("Singleton block configuring how the gateway joins the operator's tailnet (or a self-hosted control plane) and the WireGuard tunnel that carries agent traffic.\n\n")
-	r.writeStructTable("config", "Tailscale", reflect.TypeOf(config.Tailscale{}))
 }
 
 // writeFixedKind documents a one-label kind with a fixed, non-plugin
@@ -157,10 +152,6 @@ func reflectTypeFor(pkg, name string) reflect.Type {
 	switch pkg + "." + name {
 	case "config.Gateway":
 		return reflect.TypeOf(config.Gateway{})
-	case "config.Tailscale":
-		return reflect.TypeOf(config.Tailscale{})
-	case "config.Defaults":
-		return reflect.TypeOf(config.Defaults{})
 	case "config.PolicyText":
 		return reflect.TypeOf(config.PolicyText{})
 	}

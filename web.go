@@ -175,7 +175,7 @@ func isTailscaleControlMode(control string) bool {
 
 func (w *webMux) mayUseTailnetInsteadOfDashboard(path string) bool {
 	return w.authRequirementForPath(path) == authDashboardOrTailnetOperator &&
-		isTailscaleControlMode(w.g.cfg.Tailscale.Control)
+		isTailscaleControlMode(w.g.cfg.Control)
 }
 
 func (w *webMux) skipsTailnetGate(path string) bool {
@@ -383,7 +383,7 @@ func (w *webMux) tailnetGate(next http.Handler) http.Handler {
 	// In wireguard / proxy mode there is no tailnet identity to gate
 	// against. Operators put the dashboard behind their own
 	// authentication (Cloudflare Access, basic auth proxy, etc).
-	skipGate := !isTailscaleControlMode(w.g.cfg.Tailscale.Control)
+	skipGate := !isTailscaleControlMode(w.g.cfg.Control)
 
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		if w.skipsTailnetGate(r.URL.Path) || skipGate {
