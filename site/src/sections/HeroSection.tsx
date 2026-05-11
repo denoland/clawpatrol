@@ -11,7 +11,7 @@ export function HeroSection() {
         class="grid md:grid-cols-2 gap-10
         md:gap-16 items-center"
       >
-        <div>
+        <div class="min-w-0">
           <h1
             class="text-4xl sm:text-5xl md:text-6xl md:text-[4rem]
               font-bold
@@ -39,7 +39,7 @@ export function HeroSection() {
           </div>
         </div>
 
-        <div class="flex justify-center">
+        <div class="flex justify-center min-w-0">
           <img
             src="/clawpatrol.png"
             alt="Claw Patrol mascot"

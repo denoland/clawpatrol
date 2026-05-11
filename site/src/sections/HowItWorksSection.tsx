@@ -257,12 +257,12 @@ function AnalyticsDiagram() {
 
 export function HowItWorksSection() {
   return (
-    <section class="py-24 sm:py-32 bg-linear-to-br from-navy-50 to-navy-200">
-      <div class="max-w-5xl mx-auto px-8">
+    <section class="py-20 sm:py-32 bg-linear-to-br from-navy-50 to-navy-200">
+      <div class="max-w-5xl mx-auto px-6 sm:px-8">
         <SectionLabel>The foundation</SectionLabel>
 
         <div class="max-w-2xl mb-14">
-          <h3 class="text-4xl sm:text-5xl md:text-6xl font-display font-bold  mb-5 text-text">
+          <h3 class="text-4xl sm:text-5xl md:text-6xl font-display font-bold text-balance mb-5 text-text">
             Rules need a substrate.
           </h3>
           <p class="text-base  text-text-muted">
@@ -273,7 +273,7 @@ export function HowItWorksSection() {
         </div>
 
         <div class="grid md:grid-cols-2 gap-6">
-          <div class="p-8 rounded-sm bg-canvas-dark border border-navy-200">
+          <div class="p-6 sm:p-8 rounded-sm bg-canvas-dark border border-navy-200">
             <h3 class="text-base uppercase mb-4 text-console-dark font-display font-bold">
               Full audit log
             </h3>
@@ -287,7 +287,7 @@ export function HowItWorksSection() {
               <li>Drill into full headers, body, and formatted prompts</li>
             </ul>
           </div>
-          <div class="p-8 rounded-sm bg-canvas-dark border border-navy-200">
+          <div class="p-6 sm:p-8 rounded-sm bg-canvas-dark border border-navy-200">
             <h3 class="text-base uppercase mb-4 text-console-dark font-display font-bold">
               Secret injection
             </h3>

@@ -42,7 +42,7 @@ function RuleCodeBlock() {
      full highlighter for one snippet. */
   return (
     <pre
-      class="text-[13px] sm:text-sm  font-mono
+      class="min-w-0 text-[13px] sm:text-sm  font-mono
         bg-console-dark text-canvas/85 squircle-md p-6 overflow-x-auto
         border border-navy-700"
     >
@@ -129,9 +129,9 @@ export function RulesSection() {
       <div class="max-w-6xl mx-auto px-6 sm:px-8">
         <SectionLabel>Approval rules</SectionLabel>
 
-        <div class="grid lg:grid-cols-[2fr_3fr] gap-8 lg:gap-16 xl:gap-32 items-start mb-20">
-          <div>
-            <h3 class="text-4xl sm:text-5xl md:text-6xl lg:text-[3.25rem] font-display font-bold  mb-6 text-text">
+        <div class="grid grid-cols-1 lg:grid-cols-[2fr_3fr] gap-8 lg:gap-16 xl:gap-32 items-start mb-20">
+          <div class="min-w-0">
+            <h3 class="text-4xl sm:text-5xl md:text-6xl lg:text-[3.25rem] font-display font-bold text-balance mb-6 text-text">
               You write the rules.{" "}
               <span class="text-rust">Claw Patrol enforces them.</span>
             </h3>
