@@ -742,8 +742,12 @@ extension BypassUDP: Hashable {
 
 private func fillSockaddr(_ ss: inout sockaddr_storage, host: String, port: String) -> Bool {
     guard let p = UInt16(port) else { return false }
-    var hints = addrinfo(ai_flags: AI_NUMERICHOST | AI_NUMERICSERV,
-                         ai_family: AF_UNSPEC, ai_socktype: SOCK_DGRAM,
+    // AF_INET6 + AI_V4MAPPED: IPv4 addresses are returned as IPv4-mapped
+    // sockaddr_in6 (::ffff:x.x.x.x), which sendto accepts on the dual-stack
+    // AF_INET6 socket. AF_UNSPEC returns sockaddr_in for IPv4, which sendto
+    // rejects with EAFNOSUPPORT — silently dropped → all UDP bypasses fail.
+    var hints = addrinfo(ai_flags: AI_NUMERICHOST | AI_NUMERICSERV | AI_V4MAPPED,
+                         ai_family: AF_INET6, ai_socktype: SOCK_DGRAM,
                          ai_protocol: IPPROTO_UDP, ai_addrlen: 0,
                          ai_canonname: nil, ai_addr: nil, ai_next: nil)
     var res: UnsafeMutablePointer<addrinfo>?
