@@ -11,11 +11,11 @@ it applies to (the `match` block), and declares the outcome
 (`verdict = "allow" / "deny"`, or `approve = [...]`).
 
 Three rule types ship today, one per endpoint family. An
-`http_rule` lets you decide which HTTP methods or URL paths your
-agent is allowed to hit; a `sql_rule` lets you say which SQL verbs
-it can run or which tables it can touch; a `k8s_rule` lets you say
-which Kubernetes resources, verbs, or namespaces it can reach. The
-next section walks through each in detail.
+`http_rule` lets you keep the agent from using certain HTTP methods
+or hitting certain URL paths; a `sql_rule` lets you stop it from
+running certain SQL verbs or touching certain tables; a `k8s_rule`
+lets you block access to certain Kubernetes resources, verbs, or
+namespaces. The next section walks through each in detail.
 
 This page covers the operator's view: how to write a rule, what
 each facet does, and how rules behave in different situations.
