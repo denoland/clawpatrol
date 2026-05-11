@@ -1572,18 +1572,14 @@ func (w *webMux) apiAnalytics(
 	})
 }
 
-// apiFacets returns every registered facet's reporting + match
-// schema. The dashboard fetches this once at boot and uses it to
-// render per-family columns (HTTPS: method/path/status, SQL:
+// apiFacets returns every registered facet's reporting schema.
+// The dashboard fetches this once at boot and uses it to render
+// per-family columns (HTTPS: method/path/status, SQL:
 // verb/tables/..., k8s: verb/resource/...) directly from the JSON
 // `facets` payload on each event, instead of carrying a hardcoded
 // switch on family strings.
 func (w *webMux) apiFacets(rw http.ResponseWriter, r *http.Request) {
 	_ = r
-	type matchKeyJSON struct {
-		Name string `json:"name"`
-		Kind string `json:"kind"`
-	}
 	type reportFieldJSON struct {
 		Name  string `json:"name"`
 		Kind  string `json:"kind"`
@@ -1596,13 +1592,11 @@ func (w *webMux) apiFacets(rw http.ResponseWriter, r *http.Request) {
 		Transport        string            `json:"transport,omitempty"`
 		HITLQueryLabel   string            `json:"hitl_query_label,omitempty"`
 		HostIsResource   bool              `json:"host_is_resource"`
-		MatchKeys        []matchKeyJSON    `json:"match_keys"`
 		ReportFields     []reportFieldJSON `json:"report_fields"`
 	}
 	all := facet.All()
 	out := make([]facetJSON, 0, len(all))
 	for _, f := range all {
-		mks := f.MatchKeys()
 		fks := f.ReportFields()
 		entry := facetJSON{
 			Name:             f.Name(),
@@ -1611,11 +1605,7 @@ func (w *webMux) apiFacets(rw http.ResponseWriter, r *http.Request) {
 			Transport:        f.Transport(),
 			HITLQueryLabel:   f.HITLQueryLabel(),
 			HostIsResource:   f.HostIsResource(),
-			MatchKeys:        make([]matchKeyJSON, len(mks)),
 			ReportFields:     make([]reportFieldJSON, len(fks)),
-		}
-		for i, mk := range mks {
-			entry.MatchKeys[i] = matchKeyJSON{Name: mk.Name, Kind: matchKindName(mk.Kind)}
 		}
 		for i, fk := range fks {
 			entry.ReportFields[i] = reportFieldJSON{
@@ -1625,26 +1615,6 @@ func (w *webMux) apiFacets(rw http.ResponseWriter, r *http.Request) {
 		out = append(out, entry)
 	}
 	writeJSON(rw, map[string]any{"facets": out})
-}
-
-func matchKindName(k facet.MatchValueKind) string {
-	switch k {
-	case facet.MatchString:
-		return "string"
-	case facet.MatchStringList:
-		return "string_list"
-	case facet.MatchGlobList:
-		return "glob_list"
-	case facet.MatchStringMap:
-		return "string_map"
-	case facet.MatchRegex:
-		return "regex"
-	case facet.MatchObject:
-		return "object"
-	case facet.MatchCredentialRef:
-		return "credential_ref"
-	}
-	return ""
 }
 
 func reportKindName(k facet.ReportValueKind) string {

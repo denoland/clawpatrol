@@ -740,7 +740,6 @@
             "ch-o11y-native"
           ],
           "priority": -100,
-          "match": {},
           "verdict": "deny",
           "reason": "ClickHouse access is read-only"
         },
@@ -754,15 +753,7 @@
             "ch-o11y-https",
             "ch-o11y-native"
           ],
-          "match": {
-            "verb": [
-              "select",
-              "show",
-              "describe",
-              "explain",
-              "use"
-            ]
-          },
+          "condition": "verb in ['select', 'show', 'describe', 'explain', 'use']",
           "verdict": "allow"
         },
         "type": "sql_rule"
@@ -775,7 +766,6 @@
             "deno-deploy"
           ],
           "priority": -100,
-          "match": {},
           "verdict": "deny",
           "reason": "console.deno.com mutations require an explicit approval rule"
         },
@@ -788,9 +778,7 @@
           "endpoints": [
             "deno-deploy"
           ],
-          "match": {
-            "method": "GET"
-          },
+          "condition": "method == 'GET'",
           "verdict": "allow"
         },
         "type": "http_rule"
@@ -802,10 +790,7 @@
           "endpoints": [
             "deno-deploy"
           ],
-          "match": {
-            "method": "POST",
-            "path": "/api/trpc/admin.supportTickets.replyOnBehalf"
-          },
+          "condition": "method == 'POST' && path == '/api/trpc/admin.supportTickets.replyOnBehalf'",
           "approve": [
             {
               "name": "reply-content-judge"
@@ -824,13 +809,7 @@
           "endpoints": [
             "deno-deploy"
           ],
-          "match": {
-            "method": "POST",
-            "path": [
-              "/api/trpc/admin.supportTickets.markAsSpam",
-              "/api/trpc/admin.supportTickets.updateStatus"
-            ]
-          },
+          "condition": "method == 'POST' && path in ['/api/trpc/admin.supportTickets.markAsSpam', '/api/trpc/admin.supportTickets.updateStatus']",
           "approve": [
             {
               "name": "support-ops"
@@ -846,13 +825,7 @@
           "endpoints": [
             "grafana"
           ],
-          "match": {
-            "method": "POST",
-            "path": [
-              "/api/annotations",
-              "/api/snapshots"
-            ]
-          },
+          "condition": "method == 'POST' && path in ['/api/annotations', '/api/snapshots']",
           "verdict": "allow"
         },
         "type": "http_rule"
@@ -864,19 +837,7 @@
           "endpoints": [
             "grafana"
           ],
-          "match": {
-            "method": [
-              "POST",
-              "PUT",
-              "PATCH"
-            ],
-            "path": [
-              "/api/dashboards/*",
-              "/api/datasources/*",
-              "/api/folders/*",
-              "/api/alert-rules/*"
-            ]
-          },
+          "condition": "method in ['POST', 'PUT', 'PATCH'] && (path.startsWith('/api/dashboards/') || path.startsWith('/api/datasources/') || path.startsWith('/api/folders/') || path.startsWith('/api/alert-rules/'))",
           "approve": [
             {
               "name": "observability"
@@ -892,15 +853,7 @@
           "endpoints": [
             "grafana"
           ],
-          "match": {
-            "method": "DELETE",
-            "path": [
-              "/api/dashboards/*",
-              "/api/datasources/*",
-              "/api/folders/*",
-              "/api/alert-rules/*"
-            ]
-          },
+          "condition": "method == 'DELETE' && (path.startsWith('/api/dashboards/') || path.startsWith('/api/datasources/') || path.startsWith('/api/folders/') || path.startsWith('/api/alert-rules/'))",
           "verdict": "deny",
           "reason": "Destructive deletes go through a PR, not the agent"
         },
@@ -913,12 +866,7 @@
           "endpoints": [
             "grafana"
           ],
-          "match": {
-            "method": [
-              "GET",
-              "HEAD"
-            ]
-          },
+          "condition": "method in ['GET', 'HEAD']",
           "verdict": "allow"
         },
         "type": "http_rule"
@@ -932,14 +880,7 @@
             "k8s-dev-ord",
             "k8s-eks-deployng-prod"
           ],
-          "match": {
-            "name": "debug-*",
-            "resource": "pods",
-            "verb": [
-              "create",
-              "delete"
-            ]
-          },
+          "condition": "verb in ['create', 'delete'] && resource == 'pods' && name.startsWith('debug-')",
           "verdict": "allow"
         },
         "type": "k8s_rule"
@@ -952,7 +893,6 @@
             "k8s-dev-ams"
           ],
           "priority": -100,
-          "match": {},
           "verdict": "deny"
         },
         "type": "k8s_rule"
@@ -965,7 +905,6 @@
             "k8s-dev-ord"
           ],
           "priority": -100,
-          "match": {},
           "verdict": "deny"
         },
         "type": "k8s_rule"
@@ -978,7 +917,6 @@
             "k8s-eks-deployng-prod"
           ],
           "priority": -100,
-          "match": {},
           "verdict": "deny"
         },
         "type": "k8s_rule"
@@ -991,18 +929,7 @@
             "k8s-eks-deployng-prod"
           ],
           "priority": 1000,
-          "match": {
-            "name": [
-              "*-secrets",
-              "env-*"
-            ],
-            "namespace": "console",
-            "resource": "configmaps",
-            "verb": [
-              "get",
-              "list"
-            ]
-          },
+          "condition": "verb in ['get', 'list'] && resource == 'configmaps' && ns == 'console' && (name.endsWith('-secrets') || name.startsWith('env-'))",
           "verdict": "deny",
           "reason": "Some legacy configmaps still carry cleartext secrets"
         },
@@ -1016,22 +943,7 @@
             "k8s-eks-deployng-prod"
           ],
           "priority": 1000,
-          "match": {
-            "namespace": [
-              "console",
-              "kube-system",
-              "cert-manager",
-              "external-secrets",
-              "argocd",
-              "flux*"
-            ],
-            "verb": [
-              "create",
-              "update",
-              "patch",
-              "delete"
-            ]
-          },
+          "condition": "verb in ['create', 'update', 'patch', 'delete'] && (ns in ['console', 'kube-system', 'cert-manager', 'external-secrets', 'argocd'] || ns.startsWith('flux'))",
           "verdict": "deny",
           "reason": "Writes to runtime namespaces would impact production"
         },
@@ -1046,17 +958,7 @@
             "k8s-dev-ord",
             "k8s-eks-deployng-prod"
           ],
-          "match": {
-            "resource": [
-              "pods/exec",
-              "pods/attach",
-              "pods/portforward"
-            ],
-            "verb": [
-              "create",
-              "get"
-            ]
-          },
+          "condition": "verb in ['create', 'get'] && resource in ['pods/exec', 'pods/attach', 'pods/portforward']",
           "verdict": "allow"
         },
         "type": "k8s_rule"
@@ -1071,9 +973,7 @@
             "k8s-eks-deployng-prod"
           ],
           "priority": 500,
-          "match": {
-            "resource": "pods/exec"
-          },
+          "condition": "resource == 'pods/exec'",
           "approve": [
             {
               "name": "k8s-exec-content-judge"
@@ -1091,13 +991,7 @@
             "k8s-dev-ord",
             "k8s-eks-deployng-prod"
           ],
-          "match": {
-            "verb": [
-              "drain",
-              "cordon",
-              "evict"
-            ]
-          },
+          "condition": "verb in ['drain', 'cordon', 'evict']",
           "verdict": "deny",
           "reason": "Cluster-disruptive operations are not allowed"
         },
@@ -1113,15 +1007,7 @@
             "k8s-eks-deployng-prod"
           ],
           "priority": 1000,
-          "match": {
-            "params": {
-              "stdin": "true"
-            },
-            "resource": [
-              "pods/exec",
-              "pods/attach"
-            ]
-          },
+          "condition": "resource in ['pods/exec', 'pods/attach'] && params.stdin == 'true'",
           "verdict": "deny",
           "reason": "Interactive shells can't be evaluated by the rules engine"
         },
@@ -1136,20 +1022,7 @@
             "k8s-dev-ord",
             "k8s-eks-deployng-prod"
           ],
-          "match": {
-            "name": "!debug-*",
-            "resource": [
-              "!*/exec",
-              "!*/attach",
-              "!*/portforward"
-            ],
-            "verb": [
-              "create",
-              "update",
-              "patch",
-              "delete"
-            ]
-          },
+          "condition": "verb in ['create', 'update', 'patch', 'delete'] && !name.startsWith('debug-') && !resource.endsWith('/exec') && !resource.endsWith('/attach') && !resource.endsWith('/portforward')",
           "verdict": "deny",
           "reason": "Only debug-* pods may be created / modified / deleted"
         },
@@ -1165,10 +1038,7 @@
             "k8s-eks-deployng-prod"
           ],
           "priority": 1000,
-          "match": {
-            "name": "!debug-*",
-            "resource": "pods/portforward"
-          },
+          "condition": "resource == 'pods/portforward' && !name.startsWith('debug-')",
           "verdict": "deny",
           "reason": "Port-forward only allowed to debug-* pods"
         },
@@ -1184,9 +1054,7 @@
             "k8s-eks-deployng-prod"
           ],
           "priority": 1000,
-          "match": {
-            "resource": "secrets"
-          },
+          "condition": "resource == 'secrets'",
           "verdict": "deny",
           "reason": "Secret values must not leave the cluster via the agent"
         },
@@ -1201,13 +1069,7 @@
             "k8s-dev-ord",
             "k8s-eks-deployng-prod"
           ],
-          "match": {
-            "verb": [
-              "get",
-              "list",
-              "watch"
-            ]
-          },
+          "condition": "verb in ['get', 'list', 'watch']",
           "verdict": "allow"
         },
         "type": "k8s_rule"
@@ -1220,17 +1082,7 @@
             "notion"
           ],
           "priority": 100,
-          "match": {
-            "body_json": {
-              "archived": true
-            },
-            "method": "PATCH",
-            "path": [
-              "/v1/pages/*",
-              "/v1/blocks/*",
-              "/v1/databases/*"
-            ]
-          },
+          "condition": "method == 'PATCH' && (path.startsWith('/v1/pages/') || path.startsWith('/v1/blocks/') || path.startsWith('/v1/databases/')) && body_json.archived == true",
           "approve": [
             {
               "name": "notion-archive"
@@ -1246,12 +1098,7 @@
           "endpoints": [
             "notion"
           ],
-          "match": {
-            "method": [
-              "POST",
-              "PATCH"
-            ]
-          },
+          "condition": "method in ['POST', 'PATCH']",
           "verdict": "allow"
         },
         "type": "http_rule"
@@ -1263,9 +1110,7 @@
           "endpoints": [
             "notion"
           ],
-          "match": {
-            "method": "DELETE"
-          },
+          "condition": "method == 'DELETE'",
           "approve": [
             {
               "name": "notion-archive"
@@ -1281,12 +1126,7 @@
           "endpoints": [
             "notion"
           ],
-          "match": {
-            "method": [
-              "GET",
-              "HEAD"
-            ]
-          },
+          "condition": "method in ['GET', 'HEAD']",
           "verdict": "allow"
         },
         "type": "http_rule"
@@ -1298,10 +1138,7 @@
           "endpoints": [
             "notion"
           ],
-          "match": {
-            "method": "POST",
-            "path": "/v1/search"
-          },
+          "condition": "method == 'POST' && path == '/v1/search'",
           "verdict": "allow"
         },
         "type": "http_rule"
@@ -1313,13 +1150,10 @@
           "endpoints": [
             "orb"
           ],
-          "match": {
-            "credential": "orb-prod-key",
-            "method": "DELETE"
-          },
+          "condition": "method == 'DELETE'",
+          "credential": "orb-prod-key",
           "verdict": "deny",
-          "reason": "Orb deletes go through approval flow as POST",
-          "credential_ref": "orb-prod-key"
+          "reason": "Orb deletes go through approval flow as POST"
         },
         "type": "http_rule"
       },
@@ -1330,12 +1164,9 @@
           "endpoints": [
             "orb"
           ],
-          "match": {
-            "credential": "orb-prod-key",
-            "method": "GET"
-          },
-          "verdict": "allow",
-          "credential_ref": "orb-prod-key"
+          "condition": "method == 'GET'",
+          "credential": "orb-prod-key",
+          "verdict": "allow"
         },
         "type": "http_rule"
       },
@@ -1346,20 +1177,13 @@
           "endpoints": [
             "orb"
           ],
-          "match": {
-            "credential": "orb-prod-key",
-            "method": [
-              "POST",
-              "PUT",
-              "PATCH"
-            ]
-          },
+          "condition": "method in ['POST', 'PUT', 'PATCH']",
+          "credential": "orb-prod-key",
           "approve": [
             {
               "name": "billing"
             }
-          ],
-          "credential_ref": "orb-prod-key"
+          ]
         },
         "type": "http_rule"
       },
@@ -1370,11 +1194,8 @@
           "endpoints": [
             "orb"
           ],
-          "match": {
-            "credential": "orb-test-key"
-          },
-          "verdict": "allow",
-          "credential_ref": "orb-test-key"
+          "credential": "orb-test-key",
+          "verdict": "allow"
         },
         "type": "http_rule"
       },
@@ -1386,9 +1207,7 @@
             "pg-deployng",
             "pg-scheduler"
           ],
-          "match": {
-            "statement": "*COPY*FROM PROGRAM*"
-          },
+          "condition": "statement.matches('(?is)copy.*from program')",
           "verdict": "deny",
           "reason": "COPY ... FROM PROGRAM is disallowed"
         },
@@ -1402,9 +1221,7 @@
             "pg-deployng",
             "pg-scheduler"
           ],
-          "match": {
-            "statement": "*COPY*TO PROGRAM*"
-          },
+          "condition": "statement.matches('(?is)copy.*to program')",
           "verdict": "deny",
           "reason": "COPY ... TO PROGRAM is disallowed"
         },
@@ -1418,16 +1235,7 @@
             "pg-deployng",
             "pg-scheduler"
           ],
-          "match": {
-            "function": [
-              "pg_terminate_backend",
-              "pg_cancel_backend",
-              "pg_read_file",
-              "pg_read_binary_file",
-              "lo_get",
-              "dblink_*"
-            ]
-          },
+          "condition": "functions.exists(f, f in ['pg_terminate_backend', 'pg_cancel_backend', 'pg_read_file', 'pg_read_binary_file', 'lo_get']) || functions.exists(f, f.startsWith('dblink_'))",
           "verdict": "deny",
           "reason": "Disallowed function for agent access"
         },
@@ -1441,19 +1249,7 @@
             "pg-deployng",
             "pg-scheduler"
           ],
-          "match": {
-            "verb": [
-              "drop",
-              "truncate",
-              "alter",
-              "grant",
-              "revoke",
-              "vacuum",
-              "create",
-              "comment",
-              "do"
-            ]
-          },
+          "condition": "verb in ['drop', 'truncate', 'alter', 'grant', 'revoke', 'vacuum', 'create', 'comment', 'do']",
           "verdict": "deny",
           "reason": "Schema changes / destructive DDL not permitted; use a migration PR"
         },
@@ -1467,7 +1263,6 @@
             "pg-deployng"
           ],
           "priority": -100,
-          "match": {},
           "verdict": "deny"
         },
         "type": "sql_rule"
@@ -1479,13 +1274,7 @@
           "endpoints": [
             "pg-deployng"
           ],
-          "match": {
-            "verb": [
-              "select",
-              "show",
-              "explain"
-            ]
-          },
+          "condition": "verb in ['select', 'show', 'explain']",
           "verdict": "allow"
         },
         "type": "sql_rule"
@@ -1497,19 +1286,10 @@
           "endpoints": [
             "pg-deployng"
           ],
-          "match": {
-            "credential": "pg-deployng-ro",
-            "verb": [
-              "insert",
-              "update",
-              "delete",
-              "merge",
-              "notify"
-            ]
-          },
+          "condition": "verb in ['insert', 'update', 'delete', 'merge', 'notify']",
+          "credential": "pg-deployng-ro",
           "verdict": "deny",
-          "reason": "ro account is read-only — use the rw placeholder if you need to write",
-          "credential_ref": "pg-deployng-ro"
+          "reason": "ro account is read-only — use the rw placeholder if you need to write"
         },
         "type": "sql_rule"
       },
@@ -1520,22 +1300,13 @@
           "endpoints": [
             "pg-deployng"
           ],
-          "match": {
-            "credential": "pg-deployng-rw",
-            "verb": [
-              "insert",
-              "update",
-              "delete",
-              "merge",
-              "notify"
-            ]
-          },
+          "condition": "verb in ['insert', 'update', 'delete', 'merge', 'notify']",
+          "credential": "pg-deployng-rw",
           "approve": [
             {
               "name": "console-dba"
             }
-          ],
-          "credential_ref": "pg-deployng-rw"
+          ]
         },
         "type": "sql_rule"
       },
@@ -1547,18 +1318,7 @@
             "pg-deployng"
           ],
           "priority": 100,
-          "match": {
-            "tables": [
-              "github_identities",
-              "tokens",
-              "email_confirmations",
-              "authorizations",
-              "domain_certificates",
-              "database_instances",
-              "env_vars"
-            ],
-            "verb": "select"
-          },
+          "condition": "verb == 'select' && tables.exists(t, t in ['github_identities', 'tokens', 'email_confirmations', 'authorizations', 'domain_certificates', 'database_instances', 'env_vars'])",
           "approve": [
             {
               "name": "pg-secret-columns-judge"
@@ -1575,9 +1335,7 @@
             "pg-deployng",
             "pg-scheduler"
           ],
-          "match": {
-            "tables": "kysely_migration"
-          },
+          "condition": "'kysely_migration' in tables",
           "verdict": "deny",
           "reason": "Migrations table is owned by the deploy pipeline"
         },
@@ -1591,7 +1349,6 @@
             "pg-scheduler"
           ],
           "priority": -100,
-          "match": {},
           "verdict": "deny"
         },
         "type": "sql_rule"
@@ -1603,13 +1360,7 @@
           "endpoints": [
             "pg-scheduler"
           ],
-          "match": {
-            "verb": [
-              "select",
-              "show",
-              "explain"
-            ]
-          },
+          "condition": "verb in ['select', 'show', 'explain']",
           "verdict": "allow"
         },
         "type": "sql_rule"
@@ -1622,10 +1373,7 @@
             "pg-scheduler"
           ],
           "priority": 100,
-          "match": {
-            "statement_regex": "(?i)\\b(secret|password|token|api_key|private_key|access_key|signing_secret)\\b",
-            "verb": "select"
-          },
+          "condition": "verb == 'select' && statement.matches('(?i)\\\\b(secret|password|token|api_key|private_key|access_key|signing_secret)\\\\b')",
           "approve": [
             {
               "name": "pg-secret-named-defense-judge"
@@ -1641,15 +1389,7 @@
           "endpoints": [
             "pg-scheduler"
           ],
-          "match": {
-            "verb": [
-              "insert",
-              "update",
-              "delete",
-              "merge",
-              "notify"
-            ]
-          },
+          "condition": "verb in ['insert', 'update', 'delete', 'merge', 'notify']",
           "approve": [
             {
               "name": "scheduler-ops"
@@ -1665,11 +1405,7 @@
           "endpoints": [
             "slack-avocet"
           ],
-          "match": {
-            "body_contains": "approve_reply_",
-            "method": "POST",
-            "path": "/api/chat.postMessage"
-          },
+          "condition": "method == 'POST' && path == '/api/chat.postMessage' && body.contains('approve_reply_')",
           "approve": [
             {
               "name": "slack-block-kit-shape-judge"
@@ -1686,7 +1422,6 @@
             "stripe"
           ],
           "priority": -100,
-          "match": {},
           "verdict": "deny"
         },
         "type": "http_rule"
@@ -1699,10 +1434,7 @@
             "stripe"
           ],
           "priority": 100,
-          "match": {
-            "method": "POST",
-            "path": "/v1/ephemeral_keys"
-          },
+          "condition": "method == 'POST' && path == '/v1/ephemeral_keys'",
           "verdict": "allow"
         },
         "type": "http_rule"
@@ -1715,23 +1447,7 @@
             "stripe"
           ],
           "priority": 100,
-          "match": {
-            "method": "POST",
-            "path": [
-              "/v1/refunds",
-              "/v1/charges/*/refund",
-              "/v1/subscriptions",
-              "/v1/subscriptions/*",
-              "/v1/subscription_items",
-              "/v1/customers/*/subscriptions",
-              "/v1/invoices/*/void",
-              "/v1/invoices/*/finalize",
-              "/v1/payouts",
-              "/v1/transfers",
-              "/v1/coupons",
-              "/v1/promotion_codes"
-            ]
-          },
+          "condition": "method == 'POST' && (path in ['/v1/refunds', '/v1/subscriptions', '/v1/subscription_items', '/v1/payouts', '/v1/transfers', '/v1/coupons', '/v1/promotion_codes'] || path.startsWith('/v1/charges/') && path.endsWith('/refund') || path.startsWith('/v1/subscriptions/') || path.startsWith('/v1/customers/') && path.endsWith('/subscriptions') || path.startsWith('/v1/invoices/') && (path.endsWith('/void') || path.endsWith('/finalize')))",
           "approve": [
             {
               "name": "billing-strict"
@@ -1747,9 +1463,7 @@
           "endpoints": [
             "stripe"
           ],
-          "match": {
-            "method": "DELETE"
-          },
+          "condition": "method == 'DELETE'",
           "verdict": "deny",
           "reason": "Stripe deletes go through the approval flow as POST"
         },
@@ -1762,9 +1476,7 @@
           "endpoints": [
             "stripe"
           ],
-          "match": {
-            "method": "POST"
-          },
+          "condition": "method == 'POST'",
           "approve": [
             {
               "name": "billing"
@@ -1780,9 +1492,7 @@
           "endpoints": [
             "stripe"
           ],
-          "match": {
-            "method": "GET"
-          },
+          "condition": "method == 'GET'",
           "verdict": "allow"
         },
         "type": "http_rule"

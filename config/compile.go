@@ -159,17 +159,20 @@ type CredBinding struct {
 
 // CompiledRule is one priority-sorted rule attached to an endpoint.
 //
-// Match is the original source map the matcher was built from, kept
-// alongside Matcher for dashboard / diagnostic consumers that want
-// to inspect predicate fields without re-walking the rule plugin's
-// Body.
+// Condition is the original CEL source the matcher was built from,
+// kept alongside Matcher for dashboard / diagnostic consumers that
+// want to inspect the predicate without re-walking the rule
+// plugin's Body. Credential, when set, is the bare-name reference
+// the runtime checks against the dispatching credential before
+// evaluating the matcher.
 type CompiledRule struct {
-	Name     string
-	Priority int
-	Disabled bool
-	Match    map[string]any
-	Matcher  match.Matcher
-	Outcome  Outcome
+	Name       string
+	Priority   int
+	Disabled   bool
+	Condition  string
+	Credential string
+	Matcher    match.Matcher
+	Outcome    Outcome
 }
 
 // Outcome captures a rule's verdict + (when applicable) approve chain.

@@ -9,10 +9,7 @@ import (
 )
 
 func TestSQLMatcherVerbAndTables(t *testing.T) {
-	m, err := facet.NewMatcher("sql", map[string]any{
-		"verb":   "select",
-		"tables": []any{"github_identities", "tokens"},
-	})
+	m, err := facet.NewMatcher("sql", "verb == 'select' && tables.exists(t, t in ['github_identities', 'tokens'])")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,10 +28,7 @@ func TestSQLMatcherVerbAndTables(t *testing.T) {
 }
 
 func TestSQLMatcherStatementRegex(t *testing.T) {
-	m, err := facet.NewMatcher("sql", map[string]any{
-		"verb":            "select",
-		"statement_regex": `(?i)\b(secret|password|token)\b`,
-	})
+	m, err := facet.NewMatcher("sql", `verb == 'select' && statement.matches('(?i)\\b(secret|password|token)\\b')`)
 	if err != nil {
 		t.Fatal(err)
 	}

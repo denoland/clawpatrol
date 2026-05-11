@@ -48,9 +48,18 @@ func MatchRequest(ep *config.CompiledEndpoint, req *match.Request) *config.Compi
 		if r.Disabled {
 			continue
 		}
+		// Credential predicate: rule applies only when the
+		// dispatching credential matches. Checked before the CEL
+		// program so an empty condition + a credential pin still
+		// behaves as expected.
+		if r.Credential != "" {
+			if req == nil || req.Credential != r.Credential {
+				continue
+			}
+		}
 		if r.Matcher == nil {
 			// Empty match = match-everything; produced by Compile
-			// for catch-all rules without a match block.
+			// for catch-all rules without a condition.
 			return r
 		}
 		if r.Matcher.Match(req) {

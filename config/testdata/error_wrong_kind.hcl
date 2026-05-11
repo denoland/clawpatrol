@@ -9,9 +9,9 @@ endpoint "https" "github" {
 # endpoint. The diagnostic should disambiguate by pointing at the
 # credential's declaration site.
 rule "http_rule" "broken" {
-  endpoint = shared-creds
-  match    = { method = "GET" }
-  verdict  = "allow"
+  endpoint  = shared-creds
+  condition = "method == 'GET'"
+  verdict   = "allow"
 }
 
 profile "default" {

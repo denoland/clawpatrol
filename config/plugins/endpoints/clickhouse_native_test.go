@@ -385,14 +385,14 @@ func chBuildEndpoint(t *testing.T, rules ...*config.CompiledRule) *config.Compil
 	}
 }
 
-func chRuleSQL(t *testing.T, name string, raw map[string]any, verdict, reason string, priority int) *config.CompiledRule {
+func chRuleSQL(t *testing.T, name, condition, verdict, reason string, priority int) *config.CompiledRule {
 	t.Helper()
-	m, err := facet.NewMatcher("sql", raw)
+	m, err := facet.NewMatcher("sql", condition)
 	if err != nil {
 		t.Fatalf("compile rule %q: %v", name, err)
 	}
 	return &config.CompiledRule{
-		Name: name, Priority: priority, Match: raw, Matcher: m,
+		Name: name, Priority: priority, Condition: condition, Matcher: m,
 		Outcome: config.Outcome{Verdict: verdict, Reason: reason},
 	}
 }
@@ -427,7 +427,7 @@ func chNewMockHandle(t *testing.T, ep *config.CompiledEndpoint) (*chMockHandle, 
 // Tables / Functions / Statement).
 func TestChEvaluateSQLAllowsSelectDeniesInsert(t *testing.T) {
 	denyInsert := chRuleSQL(t, "deny-insert",
-		map[string]any{"verb": []any{"insert"}}, "deny", "writes blocked", 100)
+		"verb == 'insert'", "deny", "writes blocked", 100)
 	ep := chBuildEndpoint(t, denyInsert)
 
 	mock, _ := chNewMockHandle(t, ep)
@@ -470,14 +470,15 @@ func chMockApprove(decision, reason string) func(req runtime.ApproveCallRequest)
 // allow lets the query forward, a deny rejects with the approver's
 // reason.
 func TestChEvaluateSQLApproveChain(t *testing.T) {
+	approveCondition := "verb == 'drop'"
 	approveRule := &config.CompiledRule{
-		Name:  "approve-drops",
-		Match: map[string]any{"verb": []any{"drop"}},
+		Name:      "approve-drops",
+		Condition: approveCondition,
 		Outcome: config.Outcome{
 			Approve: []config.ApproveStage{{Name: "human"}},
 		},
 	}
-	m, err := facet.NewMatcher("sql", approveRule.Match)
+	m, err := facet.NewMatcher("sql", approveCondition)
 	if err != nil {
 		t.Fatalf("matcher: %v", err)
 	}
@@ -992,7 +993,7 @@ func TestChAgentToServerDeniesQuery(t *testing.T) {
 	const revision = 54448
 
 	rule := chRuleSQL(t, "deny-insert",
-		map[string]any{"verb": []any{"insert"}}, "deny", "writes blocked", 100)
+		"verb == 'insert'", "deny", "writes blocked", 100)
 	ep := chBuildEndpoint(t, rule)
 	mock, agentSide := chNewMockHandle(t, ep)
 	defer func() { _ = agentSide.Close() }()
@@ -1045,7 +1046,7 @@ func TestChAgentToServerDeniesQuery(t *testing.T) {
 func TestChAgentToServerMultiQueryDenyContinues(t *testing.T) {
 	const revision = 54448
 	rule := chRuleSQL(t, "deny-drop",
-		map[string]any{"verb": []any{"drop"}}, "deny", "drops blocked", 100)
+		"verb == 'drop'", "deny", "drops blocked", 100)
 	ep := chBuildEndpoint(t, rule)
 	mock, agentSide := chNewMockHandle(t, ep)
 	defer func() { _ = agentSide.Close() }()

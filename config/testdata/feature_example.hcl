@@ -72,17 +72,18 @@ approver "human_approver" "ops" {
 
 # Rules: typed by protocol family. http_rule applies to https endpoints,
 # sql_rule to postgres / clickhouse_*, k8s_rule to kubernetes.
+# The rule's predicate is a single CEL expression in `condition`.
 
 rule "http_rule" "github-reads" {
-  endpoint = github
-  match    = { method = ["GET", "HEAD"] }
-  verdict  = "allow"
+  endpoint  = github
+  condition = "method in ['GET', 'HEAD']"
+  verdict   = "allow"
 }
 
 rule "http_rule" "github-writes" {
-  endpoint = github
-  match    = { method = ["POST", "PUT", "PATCH", "DELETE"] }
-  approve  = [ops]
+  endpoint  = github
+  condition = "method in ['POST', 'PUT', 'PATCH', 'DELETE']"
+  approve   = [ops]
 }
 
 # Profiles: bind a device identity to an endpoint set. Rules ride along

@@ -19,15 +19,15 @@ approver "human_approver" "ops" {
 }
 
 rule "http_rule" "github-reads" {
-  endpoint = github
-  match    = { method = ["GET", "HEAD"] }
-  verdict  = "allow"
+  endpoint  = github
+  condition = "method in ['GET', 'HEAD']"
+  verdict   = "allow"
 }
 
 rule "http_rule" "github-writes" {
-  endpoint = github
-  match    = { method = ["POST", "PATCH", "DELETE"] }
-  approve  = [ops]
+  endpoint  = github
+  condition = "method in ['POST', 'PATCH', 'DELETE']"
+  approve   = [ops]
 }
 
 profile "default" {

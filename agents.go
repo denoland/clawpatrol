@@ -825,16 +825,17 @@ func (w *webMux) apiProfiles(rw http.ResponseWriter, _ *http.Request) {
 // context so the table view doesn't need to walk the policy graph
 // itself.
 type RuleSummary struct {
-	Name     string                `json:"name"`
-	Family   string                `json:"family"` // "https" | "sql" | "k8s"
-	Endpoint string                `json:"endpoint"`
-	Profile  string                `json:"profile,omitempty"`
-	Priority int                   `json:"priority,omitempty"`
-	Disabled bool                  `json:"disabled,omitempty"`
-	Match    map[string]any        `json:"match,omitempty"`
-	Verdict  string                `json:"verdict,omitempty"`
-	Reason   string                `json:"reason,omitempty"`
-	Approve  []config.ApproveStage `json:"approve,omitempty"`
+	Name       string                `json:"name"`
+	Family     string                `json:"family"` // "https" | "sql" | "k8s"
+	Endpoint   string                `json:"endpoint"`
+	Profile    string                `json:"profile,omitempty"`
+	Priority   int                   `json:"priority,omitempty"`
+	Disabled   bool                  `json:"disabled,omitempty"`
+	Condition  string                `json:"condition,omitempty"`
+	Credential string                `json:"credential,omitempty"`
+	Verdict    string                `json:"verdict,omitempty"`
+	Reason     string                `json:"reason,omitempty"`
+	Approve    []config.ApproveStage `json:"approve,omitempty"`
 }
 
 // apiRules returns every compiled rule across every profile, flattened
@@ -873,16 +874,17 @@ func (w *webMux) collectRuleSummaries(profileFilter string) []RuleSummary {
 		for epName, ep := range prof.Endpoints {
 			for _, r := range ep.Rules {
 				out = append(out, RuleSummary{
-					Name:     r.Name,
-					Family:   ep.Family,
-					Endpoint: epName,
-					Profile:  profileName,
-					Priority: r.Priority,
-					Disabled: r.Disabled,
-					Match:    matchSourceMap(r),
-					Verdict:  r.Outcome.Verdict,
-					Reason:   r.Outcome.Reason,
-					Approve:  r.Outcome.Approve,
+					Name:       r.Name,
+					Family:     ep.Family,
+					Endpoint:   epName,
+					Profile:    profileName,
+					Priority:   r.Priority,
+					Disabled:   r.Disabled,
+					Condition:  r.Condition,
+					Credential: r.Credential,
+					Verdict:    r.Outcome.Verdict,
+					Reason:     r.Outcome.Reason,
+					Approve:    r.Outcome.Approve,
 				})
 			}
 		}
@@ -899,9 +901,3 @@ func (w *webMux) collectRuleSummaries(profileFilter string) []RuleSummary {
 	return out
 }
 
-func matchSourceMap(r *config.CompiledRule) map[string]any {
-	if r == nil {
-		return nil
-	}
-	return r.Match
-}

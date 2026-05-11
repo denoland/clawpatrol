@@ -98,15 +98,15 @@ approver "human_approver" "ops" {
 # sql_rule to postgres / clickhouse_*, k8s_rule to kubernetes.
 
 rule "http_rule" "github-reads" {
-  endpoint = github
-  match    = { method = ["GET", "HEAD"] }
-  verdict  = "allow"
+  endpoint  = github
+  condition = "method in ['GET', 'HEAD']"
+  verdict   = "allow"
 }
 
 rule "http_rule" "github-writes" {
-  endpoint = github
-  match    = { method = ["POST", "PUT", "PATCH", "DELETE"] }
-  approve  = [ops]
+  endpoint  = github
+  condition = "method in ['POST', 'PUT', 'PATCH', 'DELETE']"
+  approve   = [ops]
 }
 
 # SSH endpoints. The wire protocol carries no SNI / Host header, so

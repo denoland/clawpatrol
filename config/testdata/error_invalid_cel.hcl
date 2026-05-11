@@ -5,10 +5,11 @@ endpoint "https" "github" {
   credential = pat
 }
 
-# A k8s_rule cannot target an https endpoint.
-rule "k8s_rule" "wrong-family" {
+# Syntactically invalid CEL — unbalanced quote.
+# The compile step must surface the parse error.
+rule "http_rule" "broken" {
   endpoint  = github
-  condition = "resource == 'pods'"
+  condition = "method == 'GET"
   verdict   = "allow"
 }
 

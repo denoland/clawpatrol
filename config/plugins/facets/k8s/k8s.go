@@ -1,5 +1,5 @@
 // Package k8s is the Kubernetes protocol-family facet. It owns the
-// k8s match-key set (resource/verb/namespace/name/params/credential),
+// k8s CEL environment (resource / verb / ns / name / params),
 // the matcher that walks a parsed Kubernetes API request, the Meta
 // type derived from the request URL, the path parser that produces
 // that Meta, and the per-family report fields the dashboard shows
@@ -13,8 +13,11 @@
 package k8s
 
 import (
+	"fmt"
 	"net/url"
 	"strings"
+
+	"github.com/google/cel-go/cel"
 
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/facet"
@@ -63,18 +66,6 @@ func (Facet) HITLQueryLabel() string { return "Resource" }
 // recognise — the operator's endpoint name is more useful.
 func (Facet) HostIsResource() bool { return false }
 
-// MatchKeys lists every key allowed in a k8s_rule's match{} block.
-func (Facet) MatchKeys() []facet.MatchKeySpec {
-	return []facet.MatchKeySpec{
-		{Name: "resource", Kind: facet.MatchGlobList},
-		{Name: "verb", Kind: facet.MatchStringList},
-		{Name: "namespace", Kind: facet.MatchGlobList},
-		{Name: "name", Kind: facet.MatchGlobList},
-		{Name: "params", Kind: facet.MatchStringMap},
-		{Name: "credential", Kind: facet.MatchCredentialRef},
-	}
-}
-
 // ReportFields declares the per-family columns the k8s facet emits.
 func (Facet) ReportFields() []facet.ReportFieldSpec {
 	return []facet.ReportFieldSpec{
@@ -111,68 +102,55 @@ func (Facet) Report(req *match.Request) map[string]any {
 	}
 }
 
-// NewMatcher compiles a k8s_rule match map into a Matcher.
-func (Facet) NewMatcher(raw map[string]any) (match.Matcher, error) {
-	m := &k8sMatcher{
-		resource:   match.ParseGlobs(raw["resource"]),
-		verb:       match.LowerAll(match.StringList(raw["verb"])),
-		namespace:  match.ParseGlobs(raw["namespace"]),
-		name:       match.ParseGlobs(raw["name"]),
-		credential: match.StringValue(raw["credential"]),
+// celEnv is the k8s CEL environment. Built once at init.
+var celEnv *cel.Env
+
+func init() {
+	env, err := cel.NewEnv(
+		cel.Variable("resource", cel.StringType),
+		cel.Variable("verb", cel.StringType),
+		cel.Variable("ns", cel.StringType),
+		cel.Variable("name", cel.StringType),
+		cel.Variable("params", cel.MapType(cel.StringType, cel.StringType)),
+	)
+	if err != nil {
+		panic(fmt.Sprintf("k8s facet: cel env: %v", err))
 	}
-	if p, ok := raw["params"].(map[string]any); ok {
-		m.params = map[string]string{}
-		for k, v := range p {
-			m.params[k] = match.StringValue(v)
-		}
-	}
-	return m, nil
+	celEnv = env
+
+	f := Facet{}
+	facet.Register(f)
+	config.Register(rules.PluginFor(f))
 }
 
-type k8sMatcher struct {
-	resource   []match.Glob
-	verb       []string
-	namespace  []match.Glob
-	name       []match.Glob
-	params     map[string]string
-	credential string
+// NewMatcher compiles a CEL condition into a Matcher. An empty
+// condition is the catch-all match-everything case.
+func (Facet) NewMatcher(condition string) (match.Matcher, error) {
+	if condition == "" {
+		return match.PassThrough{}, nil
+	}
+	return match.CompileCondition(celEnv, condition, buildActivation)
 }
 
-func (m *k8sMatcher) Match(req *match.Request) bool {
+func buildActivation(req *match.Request) map[string]any {
+	if req == nil {
+		return nil
+	}
 	meta, _ := req.Meta.(*Meta)
 	if meta == nil {
-		return false
+		return nil
 	}
-	if m.credential != "" && req.Credential != m.credential {
-		return false
+	params := meta.Params
+	if params == nil {
+		params = map[string]string{}
 	}
-	if len(m.resource) > 0 && !match.Any(m.resource, meta.Resource) {
-		return false
+	return map[string]any{
+		"resource":  meta.Resource,
+		"verb":      strings.ToLower(meta.Verb),
+		"ns":        meta.Namespace,
+		"name":      meta.Name,
+		"params":    params,
 	}
-	if len(m.verb) > 0 {
-		ok := false
-		for _, v := range m.verb {
-			if match.EqualsIgnoreCase(meta.Verb, v) {
-				ok = true
-				break
-			}
-		}
-		if !ok {
-			return false
-		}
-	}
-	if len(m.namespace) > 0 && !match.Any(m.namespace, meta.Namespace) {
-		return false
-	}
-	if len(m.name) > 0 && !match.Any(m.name, meta.Name) {
-		return false
-	}
-	for k, want := range m.params {
-		if meta.Params[k] != want {
-			return false
-		}
-	}
-	return true
 }
 
 // parsePath best-effort decomposes a Kubernetes API request into the
@@ -261,10 +239,4 @@ func parsePath(method, rawURL string) *Meta {
 		m.Verb = "watch"
 	}
 	return m
-}
-
-func init() {
-	f := Facet{}
-	facet.Register(f)
-	config.Register(rules.PluginFor(f))
 }

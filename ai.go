@@ -32,30 +32,41 @@ TYPE is one of:
 Body shape (every type shares the outer frame):
 
   rule "http_rule" "name-of-rule" {
-    endpoint  = some-endpoint                   # bare-name ref (no quotes)
-    # endpoints = [a, b]                         # list form for multi-endpoint
-    priority  = 100                              # optional; default 0
-    disabled  = false                            # optional
-    match     = { ... }                          # optional; absent = match-everything
-    verdict   = "allow"                          # OR  approve = [name1, name2]
-    reason    = "human-readable"                 # required when verdict = "deny"
+    endpoint   = some-endpoint                   # bare-name ref (no quotes)
+    # endpoints = [a, b]                          # list form for multi-endpoint
+    priority   = 100                              # optional; default 0
+    disabled   = false                            # optional
+    credential = some-credential                  # optional bare-name ref
+    condition  = "<CEL expression>"               # optional; absent/"" = match-everything
+    verdict    = "allow"                          # OR  approve = [name1, name2]
+    reason     = "human-readable"                 # required when verdict = "deny"
   }
 
 Exactly one of verdict / approve must be set.
 
-# Per-family match keys
+# Per-family CEL variables
 
-http_rule:  method, path, query, headers, body_json, body_contains, credential
-sql_rule:   verb, tables, function, statement, statement_regex, credential
-k8s_rule:   resource, verb, namespace, name, params, credential
+http_rule:  method (string), path (string), query (map<string,list<string>>),
+            headers (map<string,list<string>>), body (string), body_json (dyn)
+sql_rule:   verb (string, lower-case), tables (list<string>),
+            functions (list<string>), statement (string)
+k8s_rule:   resource (string), verb (string, lower-case),
+            ns (string; the namespace), name (string),
+            params (map<string,string>)
 
-Match values: scalar OR list ("any-of"). Strings beginning with "!" negate.
+Use CEL operators / builtins: ==, !=, &&, ||, !, in, startsWith,
+endsWith, contains, matches (regex), size().
+
 Examples:
 
-  match = { method = ["POST", "DELETE"] }
-  match = { tables = ["secrets", "audit.*"] }
-  match = { verb = "drop" }
-  match = { resource = ["secrets"], verb = ["get", "list"] }
+  condition = "method in ['POST', 'DELETE']"
+  condition = "'secrets' in tables || tables.exists(t, t.startsWith('audit.'))"
+  condition = "verb == 'drop'"
+  condition = "resource == 'secrets' && verb in ['get', 'list']"
+  condition = "!name.startsWith('debug-')"
+  condition = "statement.matches('(?i)copy.*from program')"
+  condition = "body.contains('approve_reply_')"
+  condition = "body_json.archived == true"
 
 # References
 

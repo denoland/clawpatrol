@@ -75,12 +75,7 @@
           "endpoints": [
             "github"
           ],
-          "match": {
-            "method": [
-              "GET",
-              "HEAD"
-            ]
-          },
+          "condition": "method in ['GET', 'HEAD']",
           "verdict": "allow"
         },
         "type": "http_rule"
@@ -92,14 +87,7 @@
           "endpoints": [
             "github"
           ],
-          "match": {
-            "method": [
-              "POST",
-              "PUT",
-              "PATCH",
-              "DELETE"
-            ]
-          },
+          "condition": "method in ['POST', 'PUT', 'PATCH', 'DELETE']",
           "approve": [
             {
               "name": "ops"

@@ -7,9 +7,9 @@ endpoint "https" "github" {
 
 # References an undeclared endpoint name.
 rule "http_rule" "broken" {
-  endpoint = mystery
-  match    = { method = "GET" }
-  verdict  = "allow"
+  endpoint  = mystery
+  condition = "method == 'GET'"
+  verdict   = "allow"
 }
 
 profile "default" {

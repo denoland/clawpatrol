@@ -26,97 +26,75 @@ func httpReq(method, path string) *match.Request {
 
 func TestHTTPMatcherMethodAndPath(t *testing.T) {
 	cases := []struct {
-		name string
-		raw  map[string]any
-		req  *match.Request
-		want bool
+		name      string
+		condition string
+		req       *match.Request
+		want      bool
 	}{
 		{
-			"empty match → match-all",
-			map[string]any{},
+			"empty condition → match-all",
+			"",
 			httpReq("GET", "/anything"),
 			true,
 		},
 		{
 			"method list, GET hit",
-			map[string]any{"method": []any{"GET", "HEAD"}},
+			"method in ['GET', 'HEAD']",
 			httpReq("GET", "/x"),
 			true,
 		},
 		{
 			"method list, POST miss",
-			map[string]any{"method": []any{"GET", "HEAD"}},
+			"method in ['GET', 'HEAD']",
 			httpReq("POST", "/x"),
 			false,
 		},
 		{
-			"method scalar, case-insensitive",
-			map[string]any{"method": "delete"},
+			"method scalar",
+			"method == 'DELETE'",
 			httpReq("DELETE", "/x"),
 			true,
 		},
 		{
-			"path glob",
-			map[string]any{"path": "/v1/refunds"},
+			"path exact",
+			"path == '/v1/refunds'",
 			httpReq("POST", "/v1/refunds"),
 			true,
 		},
 		{
-			"path glob with wildcard",
-			map[string]any{"path": "/v1/charges/*/refund"},
+			"path startsWith + endsWith for glob",
+			"path.startsWith('/v1/charges/') && path.endsWith('/refund')",
 			httpReq("POST", "/v1/charges/abc/refund"),
 			true,
 		},
 		{
 			"path list any-of",
-			map[string]any{"path": []any{"/a", "/b"}},
+			"path in ['/a', '/b']",
 			httpReq("POST", "/b"),
 			true,
 		},
 		{
 			"path list miss",
-			map[string]any{"path": []any{"/a", "/b"}},
+			"path in ['/a', '/b']",
 			httpReq("POST", "/c"),
 			false,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			m, err := facet.NewMatcher("https", tc.raw)
+			m, err := facet.NewMatcher("https", tc.condition)
 			if err != nil {
 				t.Fatalf("NewMatcher: %v", err)
 			}
 			if got := m.Match(tc.req); got != tc.want {
-				t.Errorf("Match=%v want %v (raw=%v req=%v)", got, tc.want, tc.raw, tc.req)
+				t.Errorf("Match=%v want %v (condition=%q)", got, tc.want, tc.condition)
 			}
 		})
 	}
 }
 
-func TestHTTPMatcherCredential(t *testing.T) {
-	m, err := facet.NewMatcher("https", map[string]any{
-		"credential": "orb-prod-key",
-		"method":     "POST",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req := httpReq("POST", "/v1/x")
-	req.Credential = "orb-test-key"
-	if m.Match(req) {
-		t.Errorf("expected credential mismatch to fail; got match")
-	}
-	req.Credential = "orb-prod-key"
-	if !m.Match(req) {
-		t.Errorf("expected credential match; got no match")
-	}
-}
-
 func TestHTTPMatcherBodyJSON(t *testing.T) {
-	m, err := facet.NewMatcher("https", map[string]any{
-		"method":    "PATCH",
-		"body_json": map[string]any{"archived": true},
-	})
+	m, err := facet.NewMatcher("https", "method == 'PATCH' && body_json.archived == true")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,9 +15,9 @@ policy "draft-review" { text = "Approve only safe edits." }
 # be a bare-name reference. The previous closed-set check on stage
 # attributes is now subsumed by the shape check.
 rule "http_rule" "broken-approve" {
-  endpoint = github
-  match    = { method = "POST" }
-  approve  = [{ naem = ops, policy = draft-review }]
+  endpoint  = github
+  condition = "method == 'POST'"
+  approve   = [{ naem = ops, policy = draft-review }]
 }
 
 profile "default" {
