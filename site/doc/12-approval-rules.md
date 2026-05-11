@@ -222,7 +222,7 @@ add `$`. Anchor your regex if you mean it.
 | HTTP `method`              | insensitive      |
 | HTTP `path`, `query`, `headers` | sensitive   |
 | HTTP `body_contains`       | sensitive        |
-| SQL `verb`                 | insensitive (and folded to lower before compare) |
+| SQL `verb`                 | insensitive      |
 | SQL `tables`, `function`   | sensitive (matched against lower-cased extractions) |
 | SQL `statement`, `statement_regex` | sensitive against lower-cased statement |
 | K8s `verb`                 | insensitive      |
