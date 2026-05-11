@@ -15,6 +15,7 @@ import (
 	"fmt"
 
 	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/ext"
 
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/facet"
@@ -80,6 +81,7 @@ var celEnv *cel.Env
 
 func init() {
 	env, err := cel.NewEnv(
+		ext.Sets(),
 		cel.Variable("method", cel.StringType),
 		cel.Variable("path", cel.StringType),
 		cel.Variable("query", cel.MapType(cel.StringType, cel.ListType(cel.StringType))),

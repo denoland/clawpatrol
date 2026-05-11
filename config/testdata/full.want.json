@@ -1235,7 +1235,7 @@
             "pg-deployng",
             "pg-scheduler"
           ],
-          "condition": "functions.exists(f, f in ['pg_terminate_backend', 'pg_cancel_backend', 'pg_read_file', 'pg_read_binary_file', 'lo_get']) || functions.exists(f, f.startsWith('dblink_'))",
+          "condition": "sets.intersects(functions, ['pg_terminate_backend', 'pg_cancel_backend', 'pg_read_file', 'pg_read_binary_file', 'lo_get']) || functions.exists(f, f.startsWith('dblink_'))",
           "verdict": "deny",
           "reason": "Disallowed function for agent access"
         },
@@ -1318,7 +1318,7 @@
             "pg-deployng"
           ],
           "priority": 100,
-          "condition": "verb == 'select' && tables.exists(t, t in ['github_identities', 'tokens', 'email_confirmations', 'authorizations', 'domain_certificates', 'database_instances', 'env_vars'])",
+          "condition": "verb == 'select' && sets.intersects(tables, ['github_identities', 'tokens', 'email_confirmations', 'authorizations', 'domain_certificates', 'database_instances', 'env_vars'])",
           "approve": [
             {
               "name": "pg-secret-columns-judge"

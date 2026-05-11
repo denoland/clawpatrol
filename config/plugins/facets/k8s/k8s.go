@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/ext"
 
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/facet"
@@ -107,6 +108,7 @@ var celEnv *cel.Env
 
 func init() {
 	env, err := cel.NewEnv(
+		ext.Sets(),
 		cel.Variable("resource", cel.StringType),
 		cel.Variable("verb", cel.StringType),
 		cel.Variable("ns", cel.StringType),

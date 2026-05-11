@@ -9,7 +9,7 @@ import (
 )
 
 func TestSQLMatcherVerbAndTables(t *testing.T) {
-	m, err := facet.NewMatcher("sql", "verb == 'select' && tables.exists(t, t in ['github_identities', 'tokens'])")
+	m, err := facet.NewMatcher("sql", "verb == 'select' && sets.intersects(tables, ['github_identities', 'tokens'])")
 	if err != nil {
 		t.Fatal(err)
 	}
