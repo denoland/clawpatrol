@@ -701,17 +701,6 @@ against your real config: load the gateway locally, point an agent
 at it, and watch the dashboard's per-action log. The log line
 carries the matched rule name so you can confirm which rule fired.
 
-### Rolling back a rule
-
-Two options:
-
-1. **Disable** by adding `disabled = true` to the rule body. The rule
-   stays in source for review; reload to take effect.
-2. **Delete** by removing the block and reloading.
-
-Both require a config reload (the gateway re-reads `gateway.hcl` on
-SIGHUP / dashboard save).
-
 ### Where matched rules show up
 
 Every action's verdict carries the matched rule name. The dashboard
