@@ -1,6 +1,9 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net"
 	"sort"
@@ -127,6 +130,13 @@ type CompiledTunnel struct {
 	// Plugins fetch the secret bytes via SecretStore.Get keyed on
 	// Credential.Symbol.Name.
 	Credential *Entity
+
+	// Fingerprint is a stable hash of the compiled tunnel definition,
+	// including its credential definition and via chain. Runtime
+	// managers use it to distinguish same-name tunnels across policy
+	// reloads without retaining or logging raw config/secret-bearing
+	// fields.
+	Fingerprint string `json:"-"`
 }
 
 // KeepaliveAlwaysSentinel is the duration value that means "pin
@@ -495,7 +505,107 @@ func compileTunnels(cp *CompiledPolicy, p *Policy) error {
 			cur = cur.Via
 		}
 	}
+	if err := fingerprintTunnels(cp.Tunnels); err != nil {
+		return err
+	}
 	return nil
+}
+
+type compiledTunnelFingerprint struct {
+	Name            string                         `json:"name"`
+	PluginKind      Kind                           `json:"plugin_kind"`
+	PluginType      string                         `json:"plugin_type"`
+	Body            any                            `json:"body"`
+	Sharing         string                         `json:"sharing"`
+	Keepalive       time.Duration                  `json:"keepalive"`
+	KeepaliveAlways bool                           `json:"keepalive_always"`
+	ViaName         string                         `json:"via_name,omitempty"`
+	ViaFingerprint  string                         `json:"via_fingerprint,omitempty"`
+	Credential      *compiledCredentialFingerprint `json:"credential,omitempty"`
+}
+
+type compiledCredentialFingerprint struct {
+	Name       string `json:"name"`
+	PluginKind Kind   `json:"plugin_kind"`
+	PluginType string `json:"plugin_type"`
+	Body       any    `json:"body"`
+}
+
+func fingerprintTunnels(tunnels map[string]*CompiledTunnel) error {
+	memo := map[*CompiledTunnel]string{}
+	for name, ct := range tunnels {
+		fp, err := tunnelFingerprint(ct, memo)
+		if err != nil {
+			return fmt.Errorf("tunnel %q: fingerprint: %w", name, err)
+		}
+		ct.Fingerprint = fp
+	}
+	return nil
+}
+
+func tunnelFingerprint(ct *CompiledTunnel, memo map[*CompiledTunnel]string) (string, error) {
+	if ct == nil {
+		return "", nil
+	}
+	if fp, ok := memo[ct]; ok {
+		return fp, nil
+	}
+	viaFP, err := tunnelFingerprint(ct.Via, memo)
+	if err != nil {
+		return "", err
+	}
+	rec := compiledTunnelFingerprint{
+		Name:            ct.Name,
+		PluginKind:      pluginKind(ct.Plugin),
+		PluginType:      pluginType(ct.Plugin),
+		Body:            ct.Body,
+		Sharing:         ct.Sharing,
+		Keepalive:       ct.Keepalive,
+		KeepaliveAlways: ct.KeepaliveAlways,
+		Credential:      credentialFingerprint(ct.Credential),
+	}
+	if ct.Via != nil {
+		rec.ViaName = ct.Via.Name
+		rec.ViaFingerprint = viaFP
+	}
+	b, err := json.Marshal(rec)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(b)
+	fp := hex.EncodeToString(sum[:])
+	memo[ct] = fp
+	return fp, nil
+}
+
+func credentialFingerprint(ent *Entity) *compiledCredentialFingerprint {
+	if ent == nil {
+		return nil
+	}
+	name := ""
+	if ent.Symbol != nil {
+		name = ent.Symbol.Name
+	}
+	return &compiledCredentialFingerprint{
+		Name:       name,
+		PluginKind: pluginKind(ent.Plugin),
+		PluginType: pluginType(ent.Plugin),
+		Body:       ent.Body,
+	}
+}
+
+func pluginKind(p *Plugin) Kind {
+	if p == nil {
+		return ""
+	}
+	return p.Kind
+}
+
+func pluginType(p *Plugin) string {
+	if p == nil {
+		return ""
+	}
+	return p.Type
 }
 
 // parseKeepalive turns the HCL keepalive string into (duration,

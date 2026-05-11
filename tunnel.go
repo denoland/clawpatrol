@@ -47,9 +47,9 @@ type TunnelManager struct {
 	mu      sync.Mutex
 	entries map[mgrKey]*tunnelEntry
 	// pinned holds the manager's own release closure per pinned
-	// (name, sharingKey) tuple. SetPolicy stores one Acquire result
-	// per `keepalive = "always"` tunnel and drops it again when the
-	// pin disappears from a subsequent policy.
+	// (name, sharingKey, fingerprint) tuple. SetPolicy stores one
+	// Acquire result per `keepalive = "always"` tunnel and drops it
+	// again when the pin disappears from a subsequent policy.
 	pinned map[mgrKey]func()
 
 	// connSeq feeds per_conn sharing keys.
@@ -57,8 +57,9 @@ type TunnelManager struct {
 }
 
 type mgrKey struct {
-	Name string
-	Key  string
+	Name        string
+	Key         string
+	Fingerprint string
 }
 
 type tunnelEntry struct {
@@ -105,7 +106,7 @@ func (m *TunnelManager) Acquire(ctx context.Context, ct *config.CompiledTunnel, 
 		return nil, func() {}, fmt.Errorf("tunnel manager: nil CompiledTunnel")
 	}
 	key := m.shareKey(ct, endpoint)
-	mk := mgrKey{Name: ct.Name, Key: key}
+	mk := mgrKey{Name: ct.Name, Key: key, Fingerprint: ct.Fingerprint}
 
 	m.mu.Lock()
 	e, exists := m.entries[mk]
@@ -285,7 +286,7 @@ func (m *TunnelManager) SetPolicy(ctx context.Context, policy *config.CompiledPo
 			// are rare but legal — treat the empty key as the pin
 			// target because there's no per-endpoint identity at
 			// pin time.
-			wantPin[mgrKey{Name: ct.Name, Key: ""}] = ct
+			wantPin[mgrKey{Name: ct.Name, Key: "", Fingerprint: ct.Fingerprint}] = ct
 		}
 	}
 
