@@ -154,9 +154,9 @@ function RuleRow({ rule: r }: { rule: RuleSummary }) {
         </div>
         <div
           className="text-[11px] text-[#737373] mt-1 font-mono truncate"
-          title={renderMatch(r.match)}
+          title={renderCondition(r)}
         >
-          {renderMatch(r.match)}
+          {renderCondition(r)}
         </div>
       </div>
       <div className="flex flex-col items-end gap-0.5 flex-shrink-0">
@@ -213,22 +213,10 @@ function Verdict({ r }: { r: RuleSummary }) {
   );
 }
 
-function renderMatch(match?: Record<string, unknown>): string {
-  if (!match || Object.keys(match).length === 0) return "matches every request";
+function renderCondition(r: RuleSummary): string {
   const parts: string[] = [];
-  for (const [k, v] of Object.entries(match)) {
-    if (Array.isArray(v)) {
-      if (v.length === 1) parts.push(`${k} = ${scalar(v[0])}`);
-      else parts.push(`${k} in [${v.map(scalar).join(", ")}]`);
-    } else {
-      parts.push(`${k} = ${scalar(v)}`);
-    }
-  }
+  if (r.credential) parts.push(`credential = ${r.credential}`);
+  if (r.condition) parts.push(r.condition);
+  if (parts.length === 0) return "matches every request";
   return parts.join(" · ");
-}
-
-function scalar(v: unknown): string {
-  if (v === null || v === undefined) return "";
-  if (typeof v === "object") return JSON.stringify(v);
-  return String(v);
 }
