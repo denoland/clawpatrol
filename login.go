@@ -61,6 +61,9 @@ func runJoin(args []string) {
 		fail("usage: clawpatrol join <gateway-url> [--hostname NAME] [--profile NAME] [--whole-machine]")
 	}
 	gatewayURL := rest[0]
+	if err := requireSecureGatewayURL(gatewayURL); err != nil {
+		fail("%v", err)
+	}
 	// Fetch CA + write shell rc BEFORE the VPN goes up. Once
 	// `wg-quick up` flips the default route through the gateway,
 	// reaching the gateway's public URL goes via the tunnel — which
@@ -129,6 +132,46 @@ func postJoinSetup(gateway, caDir string, skipTrust bool) (joinSetup, error) {
 		s.shellRC = true
 	}
 	return s, nil
+}
+
+// requireSecureGatewayURL gates the gateway URL the agent host is
+// about to trust the CA root from. The CA root is the anchor for
+// every subsequent intercepted TLS connection, so an on-path
+// attacker who can substitute it during onboarding owns all later
+// credentialled traffic. Require https for non-loopback hosts;
+// permit http only when the gateway is on the same machine.
+func requireSecureGatewayURL(gateway string) error {
+	u, err := neturl.Parse(gateway)
+	if err != nil {
+		return fmt.Errorf("parse gateway URL %q: %w", gateway, err)
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if isLoopbackHost(u.Hostname()) {
+			return nil
+		}
+		return fmt.Errorf("refusing to fetch gateway CA from %s over "+
+			"plain http: use https for non-loopback gateways (a network "+
+			"attacker can otherwise substitute their own CA and intercept "+
+			"every subsequent intercepted TLS connection)", gateway)
+	default:
+		return fmt.Errorf("gateway URL must use http or https, got %q", gateway)
+	}
+}
+
+func isLoopbackHost(h string) bool {
+	if h == "" {
+		return false
+	}
+	if h == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(h); ip != nil && ip.IsLoopback() {
+		return true
+	}
+	return false
 }
 
 func fetchCAHTTP(gateway, dst string) error {
