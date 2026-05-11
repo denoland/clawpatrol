@@ -36,6 +36,7 @@ These are the attributes you set directly at the top of `gateway.hcl`. Anything 
 | `oauth_dir` | `string` | no |  |
 | `dashboard_secret` | `string` | no |  |
 | `insecure_no_dashboard_secret` | `bool` | no | Opts out of dashboard auth. Required (alongside an empty DashboardSecret) for the gateway to serve the dashboard at all — otherwise the secret gate replies with a misconfiguration page on every request. Verbose by design so you can't disable auth by accident. |
+| `telemetry` | `bool` | no | Opts in/out of the update-checker / anonymous usage ping (doc/telemetry.md). nil = default on; explicit `telemetry = false` silences the goroutine. Env vars CLAWPATROL_TELEMETRY=0 and DO_NOT_TRACK=1 also work. |
 | `session_keep` | `string` | no | The hard retention floor for the sessions table. Sessions whose last_at is older than this get deleted by the background sweeper. Sessions can revive on new activity at any time, so there's no "closed but kept" intermediate state — only last_at matters. Default 720h (30d), "0" / "off" disables. Format accepts time.ParseDuration strings ("30m", "168h", etc.). |
 | `gateway` | `block` | yes |  |
 
@@ -167,6 +168,8 @@ Registered types: [`anthropic_manual_key`](#credential-anthropicmanualkey), [`an
 
 ### `credential "anthropic_manual_key" "<name>"`
 
+Is part of the clawpatrol plugin API.
+
 _No configurable attributes._
 
 ```hcl
@@ -175,6 +178,8 @@ credential "anthropic_manual_key" "example" {}
 
 ### `credential "anthropic_oauth_subscription" "<name>"`
 
+Is part of the clawpatrol plugin API.
+
 _No configurable attributes._
 
 ```hcl
@@ -182,6 +187,8 @@ credential "anthropic_oauth_subscription" "example" {}
 ```
 
 ### `credential "aws_eks_credential" "<name>"`
+
+Is part of the clawpatrol plugin API.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -198,6 +205,8 @@ credential "aws_eks_credential" "example" {
 
 ### `credential "bearer_token" "<name>"`
 
+Is part of the clawpatrol plugin API.
+
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `idempotency_key` | `bool` | no |  |
@@ -207,6 +216,8 @@ credential "bearer_token" "example" {}
 ```
 
 ### `credential "clickhouse_credential" "<name>"`
+
+Is part of the clawpatrol plugin API.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -218,6 +229,8 @@ credential "clickhouse_credential" "example" {}
 
 ### `credential "cookie_token" "<name>"`
 
+Is part of the clawpatrol plugin API.
+
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `cookie_name` | `string` | no |  |
@@ -228,6 +241,8 @@ credential "cookie_token" "example" {}
 
 ### `credential "gemini_api_key" "<name>"`
 
+Is part of the clawpatrol plugin API.
+
 _No configurable attributes._
 
 ```hcl
@@ -236,6 +251,8 @@ credential "gemini_api_key" "example" {}
 
 ### `credential "github_oauth" "<name>"`
 
+Is part of the clawpatrol plugin API.
+
 _No configurable attributes._
 
 ```hcl
@@ -243,6 +260,8 @@ credential "github_oauth" "example" {}
 ```
 
 ### `credential "header_token" "<name>"`
+
+Is part of the clawpatrol plugin API.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -257,6 +276,8 @@ credential "header_token" "example" {
 
 ### `credential "mtls_credential" "<name>"`
 
+Is part of the clawpatrol plugin API.
+
 _No configurable attributes._
 
 ```hcl
@@ -264,6 +285,8 @@ credential "mtls_credential" "example" {}
 ```
 
 ### `credential "notion_oauth" "<name>"`
+
+Is part of the clawpatrol plugin API.
 
 _No configurable attributes._
 
@@ -273,6 +296,8 @@ credential "notion_oauth" "example" {}
 
 ### `credential "openai_codex_oauth" "<name>"`
 
+Is part of the clawpatrol plugin API.
+
 _No configurable attributes._
 
 ```hcl
@@ -280,6 +305,8 @@ credential "openai_codex_oauth" "example" {}
 ```
 
 ### `credential "postgres_credential" "<name>"`
+
+Is part of the clawpatrol plugin API.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -291,6 +318,8 @@ credential "postgres_credential" "example" {}
 
 ### `credential "slack_tokens" "<name>"`
 
+Is part of the clawpatrol plugin API.
+
 _No configurable attributes._
 
 ```hcl
@@ -299,6 +328,8 @@ credential "slack_tokens" "example" {}
 
 ### `credential "ssh" "<name>"`
 
+Is part of the clawpatrol plugin API.
+
 _No configurable attributes._
 
 ```hcl
@@ -306,6 +337,8 @@ credential "ssh" "example" {}
 ```
 
 ### `credential "telegram_bot_token" "<name>"`
+
+Is part of the clawpatrol plugin API.
 
 _No configurable attributes._
 
@@ -320,6 +353,8 @@ Block syntax: `endpoint "<type>" "<name>" { ... }`
 Registered types: [`clickhouse_https`](#endpoint-clickhousehttps), [`clickhouse_native`](#endpoint-clickhousenative), [`https`](#endpoint-https), [`kubernetes`](#endpoint-kubernetes), [`openai_codex_https`](#endpoint-openaicodexhttps), [`postgres`](#endpoint-postgres), [`ssh`](#endpoint-ssh).
 
 ### `endpoint "clickhouse_https" "<name>"`
+
+Is part of the clawpatrol plugin API.
 
 Family: `sql`.
 
@@ -374,6 +409,8 @@ endpoint "clickhouse_native" "example" {
 
 ### `endpoint "https" "<name>"`
 
+Is part of the clawpatrol plugin API.
+
 Family: `https`.
 
 | Attribute | Type | Required | Description |
@@ -390,6 +427,8 @@ endpoint "https" "example" {
 
 ### `endpoint "kubernetes" "<name>"`
 
+Is part of the clawpatrol plugin API.
+
 Family: `k8s`.
 
 | Attribute | Type | Required | Description |
@@ -405,6 +444,8 @@ endpoint "kubernetes" "example" {}
 ```
 
 ### `endpoint "openai_codex_https" "<name>"`
+
+Is part of the clawpatrol plugin API.
 
 Family: `https`.
 

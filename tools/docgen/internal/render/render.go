@@ -16,7 +16,7 @@ import (
 	"github.com/zclconf/go-cty/cty"
 
 	"github.com/denoland/clawpatrol/config"
-	"github.com/denoland/clawpatrol/config/match"
+	"github.com/denoland/clawpatrol/config/facet"
 
 	// Side-effect import: every plugin's init() calls config.Register
 	// so AllPlugins(kind) returns the full set during generation.
@@ -237,7 +237,7 @@ func (r *renderer) writeRuleMatchKeys(p *config.Plugin) {
 	}
 	r.out.WriteString("**`match` keys** (single string or list of strings each):\n\n")
 	for _, fam := range p.Families {
-		keys := match.KnownKeys(fam)
+		keys := facet.KnownKeys(fam)
 		if len(keys) == 0 {
 			continue
 		}
