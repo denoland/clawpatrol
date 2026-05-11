@@ -7,7 +7,7 @@ export function Header() {
           class="text-2xl
         font-black font-display hover:text-rust"
         >
-          <img src="cp-logo-test.svg" alt="" class="h-9 sm:h-12 w-auto" />
+          <img src="/cp-logo-test.svg" alt="" class="h-9 sm:h-12 w-auto" />
         </a>
         <div class="flex items-center gap-4 sm:gap-8 text-sm">
           <a
