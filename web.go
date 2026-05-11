@@ -2062,7 +2062,7 @@ func (s *sampler) sample() string {
 	if isPrintable(s.buf.Bytes()) {
 		return s.buf.String()
 	}
-	return "binary:" + hex.EncodeToString(s.buf.Bytes()[:min(64, s.buf.Len())])
+	return "binary:" + hex.EncodeToString(s.buf.Bytes()[:min(binarySamplePreviewBytes, s.buf.Len())])
 }
 
 func isPrintable(b []byte) bool {

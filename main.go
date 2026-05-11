@@ -1772,6 +1772,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		// to stamp onto the request. Schema-only credential types
 		// (slack / telegram / gemini / etc.) leave Runtime nil; we
 		// pass through verbatim and rely on policy alone.
+		sampleRedactor := newBodySampleRedactor()
 		if cc := runtime.ResolveCredential(ep, mreq); cc != nil {
 			// Plugin.Runtime is a typed-nil sentinel used only for
 			// interface-compliance assertions; the actual decoded HCL
@@ -1784,11 +1785,15 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 					log.Printf("secret %s/%s: %v — forwarding without injection", cc.Credential.Symbol.Name, profile, err)
 				} else if len(sec.Bytes) == 0 && len(sec.Extras) == 0 {
 					log.Printf("secret %s/%s: not configured (set CLAWPATROL_SECRET_%s)", cc.Credential.Symbol.Name, profile, secretEnvName(cc.Credential.Symbol.Name))
-				} else if err := injector.InjectHTTP(req.Context(), req, sec); err != nil {
-					log.Printf("inject %s: %v", cc.Credential.Symbol.Name, err)
+				} else {
+					sampleRedactor.AddSecret(sec)
+					if err := injector.InjectHTTP(req.Context(), req, sec); err != nil {
+						log.Printf("inject %s: %v", cc.Credential.Symbol.Name, err)
+					}
 				}
 			}
 		}
+		redactedReqPath := sampleRedactor.Redact(req.URL.Path)
 
 		// WebSocket upgrade. http.Transport.RoundTrip mangles the
 		// 101 response and Cloudflare's WAF rejects modified frames,
@@ -1797,7 +1802,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		// runs until either side closes — when it returns, the
 		// caller's request loop ends naturally.
 		if isWSUpgrade(req) {
-			log.Printf("ws-upgrade %s %s", host, req.URL.Path)
+			log.Printf("ws-upgrade %s %s", host, redactedReqPath)
 			ev.Action = "ws"
 			// Frame-level observability: handleWSUpgrade emits one
 			// frame event per WS message in either direction so the
@@ -1805,7 +1810,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			// surfacing a single "ws" row at session close. Carries
 			// the same request ID as the upgrade so the dashboard
 			// nests them under the parent row.
-			frameEmit := func(direction string, sample string) {
+			frameEmit := func(direction string, sample string, truncated bool) {
 				g.sink.Emit(Event{
 					Ts:        time.Now().UTC(),
 					ID:        ev.ID,
@@ -1813,9 +1818,9 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 					Mode:      "mitm",
 					Host:      host,
 					Method:    "WS",
-					Path:      req.URL.Path,
+					Path:      redactedReqPath,
 					AgentIP:   ev.AgentIP,
-					Frame:     sample,
+					Frame:     sampleRedactor.RedactStringSample(sample, truncated),
 					Direction: direction,
 				})
 			}
@@ -1842,7 +1847,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			sessionHint = req.Header.Get("Session-Id")
 		}
 		if trackKind != "" && len(trackedReqBody) > 0 && g.agents != nil {
-			g.preCreateLLMSession(c, trackKind, req.URL.Path, trackedReqBody, sessionHint)
+			g.preCreateLLMSession(c, trackKind, redactedReqPath, trackedReqBody, sessionHint)
 		}
 		reqS := newSampler(4096)
 		if req.Body != nil {
@@ -1853,14 +1858,15 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		resp, err := transport.RoundTrip(req.WithContext(context.WithValue(req.Context(), profileCtxKey{}, profile)))
 		rtDur := time.Since(rtStart)
 		if err != nil {
-			log.Printf("mitm upstream %s %s: %v", host, req.URL.Path, err)
+			redactedErr := sampleRedactor.Redact(err.Error())
+			log.Printf("mitm upstream %s %s: %s", host, redactedReqPath, redactedErr)
 			_, _ = fmt.Fprintf(tc, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
 			ev.Status = 502
 			ev.Action = "error"
-			ev.Reason = err.Error()
+			ev.Reason = redactedErr
 			ev.Ms = time.Since(start).Milliseconds()
 			ev.ReqSha = reqS.sha()
-			ev.ReqBody = reqS.sample()
+			ev.ReqBody = sampleRedactor.RedactSample(reqS)
 			ev.In = reqS.n
 			g.emitEnd(ev)
 			return
@@ -1888,7 +1894,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		// Snapshot the upstream's response headers for the audit log
 		// before stripping credential-bearing ones — the dashboard
 		// still wants to show what the upstream actually sent.
-		ev.RespHeaders = flatHeaders(resp.Header)
+		ev.RespHeaders = sampleRedactor.RedactHeaderMap(flatHeaders(resp.Header))
 		stripAuthResponseHeaders(resp.Header)
 		writeErr := resp.Write(tc)
 		_ = rtDur
@@ -1903,20 +1909,20 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 					_ = zr.Close()
 				}
 			}
-			g.trackLLMUsage(c, trackKind, req.URL.Path, trackedReqBody, body, sessionHint)
+			g.trackLLMUsage(c, trackKind, redactedReqPath, trackedReqBody, body, sessionHint)
 		}
 
 		if ev.Action == "" {
 			ev.Action = "allow"
 		}
 		ev.Status = resp.StatusCode
-		ev.ReqHeaders = flatHeaders(req.Header)
+		ev.ReqHeaders = sampleRedactor.RedactHeaderMap(flatHeaders(req.Header))
 		ev.In = reqS.n
 		ev.Out = respS.n
 		ev.ReqSha = reqS.sha()
-		ev.ReqBody = reqS.sample()
+		ev.ReqBody = sampleRedactor.RedactSample(reqS)
 		ev.RespSha = respS.sha()
-		ev.RespBody = respS.sample()
+		ev.RespBody = sampleRedactor.RedactSample(respS)
 		ev.Ms = time.Since(start).Milliseconds()
 		g.emitEnd(ev)
 		if g.agents != nil && agentAddr != "" {
