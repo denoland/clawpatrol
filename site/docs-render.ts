@@ -208,17 +208,40 @@ export interface Doc {
   description: string;
 }
 
+// Strip a leading `---\n...\n---\n` YAML frontmatter block off a
+// markdown source. Only the simple SKILL.md shape is supported:
+// `key: value` lines, one per key, no nested structures. That's the
+// shape Anthropic's Agent Skills spec mandates, which is all we need
+// here — pulling in a real YAML parser for two fields would be
+// overkill.
+function parseFrontmatter(
+  raw: string,
+): { meta: Record<string, string>; body: string } {
+  if (!raw.startsWith("---\n")) return { meta: {}, body: raw };
+  const end = raw.indexOf("\n---\n", 4);
+  if (end < 0) return { meta: {}, body: raw };
+  const block = raw.slice(4, end);
+  const body = raw.slice(end + 5);
+  const meta: Record<string, string> = {};
+  for (const line of block.split("\n")) {
+    const m = line.match(/^([a-zA-Z_][\w-]*):\s*(.+)$/);
+    if (m) meta[m[1]] = m[2].trim();
+  }
+  return { meta, body };
+}
+
 export function loadDocs(docsDir: string): Doc[] {
   const toc = JSON.parse(
     readFileSync(join(docsDir, "toc.json"), "utf-8"),
   ) as string[];
   return toc.map((slug) => {
     const raw = readFileSync(join(docsDir, `${slug}.md`), "utf-8");
-    const h1 = raw.match(/^#\s+(.+)$/m);
-    const title = h1 ? h1[1] : slug.replace(/-/g, " ");
-    const html = marked.parse(raw, { async: false }) as string;
-    const description = extractDescription(
-      raw,
+    const { meta, body } = parseFrontmatter(raw);
+    const h1 = body.match(/^#\s+(.+)$/m);
+    const title = meta.title ?? (h1 ? h1[1] : slug.replace(/-/g, " "));
+    const html = marked.parse(body, { async: false }) as string;
+    const description = meta.description ?? extractDescription(
+      body,
       `${title} — Claw Patrol documentation.`,
     );
     return { slug, title, html, raw, description };

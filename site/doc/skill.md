@@ -1,5 +1,6 @@
 ---
 name: claw-patrol
+title: Operating Claw Patrol
 description: Set up and operate Claw Patrol, a firewall for AI agents. Write the gateway HCL config (credentials, endpoints, rules, approvers, profiles), run the gateway, onboard devices, wrap agent commands with `clawpatrol run`. Use when the user wants to install or operate Claw Patrol, write or modify a `gateway.hcl` policy, add allow / deny / approve rules over HTTPS / Postgres / Kubernetes / ClickHouse / SSH traffic, gate agent actions behind a human or an LLM judge, or debug Claw Patrol behavior.
 ---
 
