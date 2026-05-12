@@ -1,12 +1,19 @@
 # Local Development Setup
 
+Claw Patrol is a single statically linked Go binary. The dashboard SPA
+is built separately with Vite and embedded into the binary at build time.
+
 ## Prerequisites
 
-- Node.js 24+
-- Rust (stable)
-- Docker with Compose (for server testing)
+- Go (see `go.mod` for the required version)
+- Docker with Compose (optional, for end-to-end testing against an
+  in-container agent)
+- npm (only required if you want to rebuild the dashboard SPA in `www/`)
 
 ### macOS only
+
+If you're going to exercise `clawpatrol run` on macOS you also need to
+build the `Clawpatrol.app` system extension:
 
 - Xcode 15+
 - [xcodegen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`)
@@ -21,78 +28,48 @@
     (`group.2H4KBF436B.com.clawpatrol.app.extension`)
 
   Name them "Claw Patrol App Dev" and "Claw Patrol Extension Dev" (these
-  names are referenced in `macos/project.yml`). After creating
-  them, download and install via Xcode: Settings > Apple Accounts
-  > your team > Download Manual Profiles.
+  names are referenced in `macos/project.yml`). After creating them,
+  download and install via Xcode: Settings > Apple Accounts > your team
+  > Download Manual Profiles.
 
-## Building on macOS
+See [`macos/README.md`](https://github.com/denoland/clawpatrol/blob/main/macos/README.md)
+for the full system-extension build walkthrough.
 
-The macOS client has three components that are built separately:
+## Build and run from source
 
-```sh
-# 1. Native FFI lib (static lib linked into the macOS app)
-cd native && cargo build --release -p clawpatrol-ffi --target-dir target/ffi && cd ..
-
-# 2. macOS app + system extension
-cd macos && xcodegen && xcodebuild -scheme Claw Patrol -configuration Debug \
-  build SYMROOT="$PWD/build" && cd ..
-# (The CLI auto-installs to /Applications on first run)
-
-# 3. Native Node addon (XPC client, WireGuard tunnel)
-cd native/napi && npm run build && cd ../..
-
-# 4. TypeScript CLI + server
-npm run build
-```
-
-The FFI lib and Node addon use separate output directories
-(`target/ffi/` vs `target/`) so they don't clobber each other.
-
-Test with:
+The gateway is a single Go binary. To build and run it:
 
 ```sh
-node dist/cli.js onboard
-node dist/cli.js run echo hi
+# Optional: build the dashboard SPA. The Go build embeds whatever is
+# under www/dist/ — if you skip this, the dashboard ships a placeholder.
+cd www && npm ci && npm run build && cd ..
+
+# Build the binary.
+go build -o clawpatrol .
+
+# Or run directly without producing a binary on disk.
+go run .
 ```
 
-On first run you'll need to approve the system extension and
-proxy configuration in System Settings.
+## Quick start
 
-## Quick Start (no Google OAuth)
+The simplest dev loop is to point `gateway init` at a temporary data
+directory and start the gateway against the generated config:
 
 ```sh
-CLAWPATROL_DATA=./data DEV_AUTH_EMAIL=dev@localhost CLAWPATROL_SESSION_SECRET=devsecret npm run dev
+CLAWPATROL_DATA=./data ./clawpatrol gateway init
+CLAWPATROL_DATA=./data ./clawpatrol gateway
 ```
 
-This starts clawpatrol with:
+This generates a CA, writes a `gateway.hcl`, and brings up:
 
-- Proxy on `0.0.0.0:8443`
-- Dashboard/API on `127.0.0.1:8080`
-- Auto-logged in as `dev@localhost` (no browser auth needed)
-- Data stored in `./data/` (SQLite DB, CA certs, etc.)
+- The CONNECT/MitM proxy on `tcp/9443`
+- The WireGuard listener on `udp/51820`
+- The dashboard and HTTP API on `tcp/9080`
 
-Dashboard: http://localhost:8080
+Dashboard: <http://localhost:9080>
 
-## With Google OAuth
-
-For testing the real login flow (device-code auth, `clawpatrol onboard`, etc.):
-
-1. Create OAuth credentials at https://console.cloud.google.com/apis/credentials
-   - Application type: Web application
-   - Authorized redirect URIs:
-     - `http://localhost:8080/auth/callback`
-     - `http://localhost:8080/auth/device/callback`
-2. Start clawpatrol:
-
-```sh
-CLAWPATROL_DATA=./data \
-GOOGLE_CLIENT_ID=xxx.apps.googleusercontent.com \
-GOOGLE_CLIENT_SECRET=xxx \
-CLAWPATROL_SESSION_SECRET=devsecret \
-npm run dev
-```
-
-Optional: `ALLOWED_EMAIL_DOMAIN=deno.com` restricts login to a specific domain.
+Tests live alongside the code and run with `go test ./...`.
 
 ## Testing with a Docker agent (openclaw)
 
@@ -108,24 +85,16 @@ OPENCLAW_WORKSPACE_DIR=/tmp/openclaw-dev/workspace \
 docker compose up -d openclaw-gateway
 ```
 
-Build the sidecar image:
+Onboard the openclaw container against your local gateway (see
+[Onboarding](/docs/onboarding/) for the full flow):
 
 ```sh
-cd /path/to/clawpatrol
-docker build -t clawpatrol/sidecar:dev sidecar/
-```
-
-Run the onboard script (see [Onboarding](/docs/onboarding/) for
-the full flow):
-
-```sh
-npx tsx src/cli.ts onboard
-# Pick "Self-hosted" → http://localhost:8080
+docker exec <openclaw-container> clawpatrol join http://host.docker.internal:9080
 ```
 
 Verify interception:
 
 ```sh
 docker exec <openclaw-container> curl -sf https://httpbin.org/get
-# Check http://localhost:8080/requests to see the intercepted request
+# Check http://localhost:9080/requests to see the intercepted request
 ```

@@ -8,7 +8,6 @@
   "gateway",
   "plugins",
   "token-usage",
-  "userspace-wireguard",
   "security-model",
   "approval-rules",
   "config-reference",

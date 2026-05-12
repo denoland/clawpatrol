@@ -3,11 +3,12 @@
 ## Installation
 
 ```bash
-npm install -g clawpatrol
+curl -fsSL https://clawpatrol.dev/install.sh | sh
 ```
 
-The `clawpatrol` command is the unified entry point for both the
-proxy server and the client tools.
+The installer drops a single statically linked Go binary in
+`~/.local/bin`. The `clawpatrol` command is the unified entry point for
+both the proxy server and the client tools.
 
 ## Commands
 
@@ -54,7 +55,7 @@ Examples:
 ```bash
 clawpatrol run claude
 clawpatrol run --name my-agent python agent.py
-clawpatrol run --profile production node server.js
+clawpatrol run --profile production gh pr create
 ```
 
 The proxy injects API keys and logs all traffic for the

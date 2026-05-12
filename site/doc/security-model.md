@@ -22,7 +22,7 @@ The agent must not be able to:
 - use credentials assigned to another agent,
 - read Claw Patrol's state files (the SQLite database of registrations,
   credentials, and policy),
-- modify the Claw Patrol server code or its runtime,
+- modify the Claw Patrol binary,
 - call Claw Patrol's HTTP API directly, or
 - reach Claw Patrol's dashboard.
 
@@ -163,11 +163,11 @@ from remote mode:
 - Claw Patrol's state directory -- the SQLite database of credentials,
   registrations, and policy -- is owned by the Claw Patrol user and is
   not readable by the agent user.
-- Claw Patrol's server code and its Node.js runtime are either installed
-  as a private copy owned by the Claw Patrol user, or installed into a
-  shared location with permissions that prevent the agent user from
-  modifying them. In either case, the agent cannot substitute the
-  code that Claw Patrol is about to execute.
+- The Claw Patrol binary -- a single statically linked Go executable --
+  is owned by root (or by the Claw Patrol user) and installed with
+  permissions that deny write access to the agent user. The agent
+  cannot replace the binary, drop in a shared library it would load,
+  or otherwise substitute the code that Claw Patrol is about to execute.
 - Claw Patrol's HTTP API and dashboard require an access token. The token
   is stored where only the Claw Patrol user can read it. If the operator
   loses the token, they recover it with `sudo clawpatrol get-token`,
@@ -249,5 +249,6 @@ The model does not defend against:
   also obtains every injected credential,
 - a kernel or hypervisor compromise that bypasses UNIX user
   separation,
-- supply-chain compromise of Claw Patrol itself or its Node.js runtime,
+- supply-chain compromise of the Claw Patrol Go binary or its build
+  toolchain,
 - cross-user side channels such as shared-CPU timing attacks.

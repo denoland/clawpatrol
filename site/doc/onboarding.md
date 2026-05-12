@@ -9,7 +9,7 @@ agent traffic.
 ## Onboard walkthrough
 
 ```bash
-npm install -g clawpatrol
+curl -fsSL https://clawpatrol.dev/install.sh | sh
 clawpatrol onboard
 ```
 
@@ -53,7 +53,7 @@ Once onboarded, wrap any command with `clawpatrol run`:
 
 ```bash
 clawpatrol run --name openclaw -- openclaw gateway
-clawpatrol run -- node server.js
+clawpatrol run -- python agent.py
 ```
 
 The gateway intercepts the agent's HTTPS requests, matches them against your

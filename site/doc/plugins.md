@@ -3,8 +3,8 @@
 ## Overview
 
 Claw Patrol's functionality is extended through plugins. A plugin module is a
-TypeScript file (or npm package) that registers one or more typed plugins via
-a registration API.
+TypeScript file that registers one or more typed plugins via a registration
+API.
 
 There are two plugin types:
 
