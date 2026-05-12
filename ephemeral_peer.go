@@ -1,21 +1,33 @@
 package main
 
-// Ephemeral peer support: each `clawpatrol run` on Linux gets its own
-// WireGuard keypair and IP rather than sharing the device's permanent
-// identity. Without this, concurrent runs on the same machine fight
-// over a single WireGuard session — keepalives from one process
-// invalidate the other's session causing intermittent packet loss.
+// Ephemeral peer support: each machine running `clawpatrol run` on
+// Linux gets its own WireGuard keypair and IP rather than sharing the
+// permanent device's identity. Concurrent runs on a single host would
+// otherwise contend for one WG session — keepalives from one process
+// invalidate the other's session, causing intermittent packet loss —
+// and unconditionally allocating a fresh ephemeral per invocation
+// piles dozens of throwaway device rows onto the gateway dashboard.
 //
-// The client POSTs an ephemeral pubkey; the gateway allocates a fresh
-// IP, wires it up, and inherits the parent device's profile. On clean
-// exit the client DELETEs the peer. The permanent device record
-// (from `clawpatrol join`) is untouched.
+// Lifecycle:
+//   - First `clawpatrol run` on a host: client generates a keypair and
+//     POSTs the pubkey. Gateway evicts any prior ephemeral owned by the
+//     same parent device, allocates a /32, and returns it.
+//   - Subsequent runs on the same host (the client persisted the
+//     keypair to disk): client POSTs the SAME pubkey. Gateway finds it
+//     already registered as this parent's ephemeral and returns the
+//     cached IP unchanged — no new device row.
+//   - The DELETE handler is retained for clients that explicitly drop
+//     their ephemeral identity (uninstall / `clawpatrol leave`). Normal
+//     `run` exits no longer call it: persistence across runs is the
+//     whole point.
 
 import (
+	"database/sql"
 	"fmt"
 	"net"
 	"net/http"
 	"net/netip"
+	"strings"
 	"sync"
 )
 
@@ -57,7 +69,68 @@ func allocateEphemeralIP(subnetCIDR string) (string, error) {
 	return "", fmt.Errorf("wireguard subnet %s exhausted", subnetCIDR)
 }
 
-// apiEphemeralPeer dispatches POST (add) and DELETE (remove) on
+// lookupEphemeralPeer returns (ip, parentIP, exists) for an ephemeral
+// peer pubkey already in wg_peers. exists is false for unknown keys
+// AND for non-ephemeral pubkeys — we deliberately refuse to clobber a
+// parent device's pubkey through this endpoint.
+func lookupEphemeralPeer(db *sql.DB, pubkeyHex string) (string, string, bool) {
+	if db == nil || pubkeyHex == "" {
+		return "", "", false
+	}
+	var (
+		ip        string
+		ephemeral int
+		parentIP  sql.NullString
+	)
+	err := db.QueryRow(
+		"SELECT ip, ephemeral, parent_ip FROM wg_peers WHERE pubkey = ?",
+		pubkeyHex,
+	).Scan(&ip, &ephemeral, &parentIP)
+	if err != nil || ephemeral != 1 {
+		return "", "", false
+	}
+	return ip, parentIP.String, true
+}
+
+// evictEphemeralsForParent drops every existing ephemeral peer that
+// belongs to parentIP — the wg-go peer entry, the wg_peers row, the
+// onboard ephemeral-profile mapping, and the agents-registry entry.
+// Called when a new pubkey arrives for a parent that already has an
+// ephemeral; one parent owns at most one ephemeral at a time so a
+// host that lost its on-disk keypair doesn't leak the previous IP.
+func evictEphemeralsForParent(g *Gateway, parentIP string) {
+	if g == nil || g.db == nil || parentIP == "" {
+		return
+	}
+	rows, err := g.db.Query(
+		"SELECT ip FROM wg_peers WHERE ephemeral = 1 AND parent_ip = ?",
+		parentIP,
+	)
+	if err != nil {
+		return
+	}
+	var ips []string
+	for rows.Next() {
+		var ip string
+		if err := rows.Scan(&ip); err == nil {
+			ips = append(ips, ip)
+		}
+	}
+	_ = rows.Close()
+	for _, ip := range ips {
+		if globalWG != nil {
+			globalWG.RevokePeerByIP(ip)
+		}
+		if g.onboard != nil {
+			g.onboard.ForgetIP(ip)
+		}
+		if g.agents != nil {
+			g.agents.Delete(ip)
+		}
+	}
+}
+
+// apiEphemeralPeer dispatches POST (add/reuse) and DELETE (remove) on
 // /api/peer/ephemeral. Both require a valid per-peer bearer token.
 func (w *webMux) apiEphemeralPeer(rw http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -81,11 +154,38 @@ func (w *webMux) apiAddEphemeralPeer(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "wireguard not active", http.StatusServiceUnavailable)
 		return
 	}
-	pubkeyHex := r.URL.Query().Get("pubkey")
+	pubkeyHex := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("pubkey")))
 	if pubkeyHex == "" {
 		http.Error(rw, "missing pubkey", http.StatusBadRequest)
 		return
 	}
+
+	// Reuse path: the client persists its ephemeral keypair across
+	// invocations and POSTs the same pubkey each run. If it's already
+	// registered as THIS parent's ephemeral, return the existing IP
+	// unchanged.
+	//
+	// A pubkey bound to a different parent is rejected with 409 — that
+	// would otherwise let one machine hijack another's IP just by
+	// guessing its pubkey.
+	if existingIP, existingParent, ok := lookupEphemeralPeer(w.g.db, pubkeyHex); ok {
+		if existingParent == parentIP {
+			profile := w.g.onboard.ProfileForIP(parentIP)
+			w.g.onboard.setEphemeralProfile(existingIP, parentIP, profile)
+			ip6 := wg6FromV4(netip.MustParseAddr(existingIP)).String()
+			writeJSON(rw, map[string]string{"ip": existingIP, "ip6": ip6})
+			return
+		}
+		http.Error(rw, "pubkey already bound", http.StatusConflict)
+		return
+	}
+
+	// Different pubkey but same parent → the client lost its keypair
+	// cache (reboot, profile wipe). Drop the prior ephemeral entirely
+	// so this parent owns at most one ephemeral IP at a time. Without
+	// this every cache loss leaks an IP into wg_peers.
+	evictEphemeralsForParent(w.g, parentIP)
+
 	ip, err := allocateEphemeralIP(w.ts.WGSubnetCIDR)
 	if err != nil {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
@@ -111,7 +211,9 @@ func (w *webMux) apiAddEphemeralPeer(rw http.ResponseWriter, r *http.Request) {
 
 // apiRemoveEphemeralPeer handles DELETE /api/peer/ephemeral?pubkey=<hex>.
 // Only the parent device (identified by bearer token) may remove its
-// own ephemeral peers.
+// own ephemeral peers. Normal `clawpatrol run` exits no longer call
+// this — ephemerals persist across runs — but it's retained so an
+// uninstall or explicit `leave` flow can drop the lingering identity.
 func (w *webMux) apiRemoveEphemeralPeer(rw http.ResponseWriter, r *http.Request) {
 	token := bearerFromAuthHeader(r.Header.Get("Authorization"))
 	parentIP := peerIPForAPIToken(w.g.db, token)
@@ -119,7 +221,7 @@ func (w *webMux) apiRemoveEphemeralPeer(rw http.ResponseWriter, r *http.Request)
 		http.Error(rw, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	pubkeyHex := r.URL.Query().Get("pubkey")
+	pubkeyHex := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("pubkey")))
 	if pubkeyHex == "" {
 		http.Error(rw, "missing pubkey", http.StatusBadRequest)
 		return

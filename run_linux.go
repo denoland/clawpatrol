@@ -520,11 +520,29 @@ func (t *rawFDTun) Close() error {
 
 // --- ephemeral peer --------------------------------------------------
 
-// ephemeralPeer registers a fresh per-run WireGuard keypair with the
-// gateway, mutates cfg to use the ephemeral private key and address,
-// and sets CLAWPATROL_EPHEMERAL_ADDR so the re-exec'd child uses the
-// ephemeral IP for `ip addr add`. Returns a cleanup func that removes
-// the ephemeral peer from the gateway on exit.
+// ephemeralCacheFile is the on-disk record of this host's ephemeral
+// WireGuard identity. Concurrent and sequential `clawpatrol run`
+// invocations on the same host share it: the first run generates the
+// keypair + registers it with the gateway; every subsequent run reads
+// the cache and POSTs the SAME pubkey so the gateway returns the
+// existing /32 instead of allocating a new one. Without this every
+// invocation produced a fresh peer + a new dashboard row.
+const ephemeralCacheFile = "wg-ephemeral.json"
+
+type ephemeralCache struct {
+	GatewayURL string `json:"gateway_url"` // invalidates the cache when the host re-joins a different gateway
+	PrivateKey string `json:"private_key"` // base64
+	PublicHex  string `json:"public_hex"`  // hex (the form sent to gateway)
+	IP         string `json:"ip"`          // v4 /32 assigned by gateway
+	IP6        string `json:"ip6"`         // v6 /128
+}
+
+// ephemeralPeer registers (or reuses) this host's ephemeral WireGuard
+// identity with the gateway, mutates cfg to use the ephemeral private
+// key and address, and sets CLAWPATROL_EPHEMERAL_ADDR so the re-exec'd
+// child uses the ephemeral IP for `ip addr add`. Returns a cleanup
+// func — currently a no-op, since the identity is persisted across
+// runs and a normal exit must not invalidate concurrent siblings.
 //
 // Best-effort: any failure logs a warning and returns a no-op cleanup
 // so the caller falls back to the shared permanent identity.
@@ -544,53 +562,164 @@ func ephemeralPeer(cfg *runConf) (cleanup func(), err error) {
 		return noop, err
 	}
 
-	privB64, pubHex, _, err := wgGenKeypair()
+	// Acquire a flock on the cache so concurrent runs serialize their
+	// read-or-mint step. With this in place the second run sees the
+	// first run's keypair in the cache and reuses it instead of
+	// generating its own — that's the whole point of the cache.
+	cachePath := filepath.Join(dir, ephemeralCacheFile)
+	unlock, err := acquireEphemeralLock(cachePath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "⚠ ephemeral peer: keygen: %v (using shared identity)\n", err)
+		fmt.Fprintf(os.Stderr, "⚠ ephemeral peer: lock cache: %v (using shared identity)\n", err)
+		return noop, err
+	}
+	defer unlock()
+
+	cached, _ := readEphemeralCache(cachePath)
+	if cached != nil && cached.GatewayURL != gwURL {
+		// Gateway URL changed (host re-joined a different gateway) —
+		// the cached pubkey is bound to a parent on the old gateway
+		// and would be rejected on the new one. Discard.
+		cached = nil
+	}
+
+	var (
+		privB64 string
+		pubHex  string
+	)
+	if cached != nil {
+		privB64 = cached.PrivateKey
+		pubHex = cached.PublicHex
+	} else {
+		privB64, pubHex, _, err = wgGenKeypair()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "⚠ ephemeral peer: keygen: %v (using shared identity)\n", err)
+			return noop, err
+		}
+	}
+
+	ip, ip6, err := postEphemeralPeer(client, gwURL, token, pubHex)
+	if err != nil && cached != nil {
+		// Cache was stale (gateway-side eviction, DB wipe, peer manually
+		// removed). Mint a fresh keypair and retry exactly once.
+		fmt.Fprintf(os.Stderr, "⚠ ephemeral peer: reuse failed (%v); minting fresh keypair\n", err)
+		privB64, pubHex, _, err = wgGenKeypair()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "⚠ ephemeral peer: keygen: %v (using shared identity)\n", err)
+			return noop, err
+		}
+		ip, ip6, err = postEphemeralPeer(client, gwURL, token, pubHex)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ ephemeral peer: %v (using shared identity)\n", err)
 		return noop, err
 	}
 
+	writeEphemeralCache(cachePath, &ephemeralCache{
+		GatewayURL: gwURL,
+		PrivateKey: privB64,
+		PublicHex:  pubHex,
+		IP:         ip,
+		IP6:        ip6,
+	})
+
+	cfg.PrivateKey = privB64
+	cfg.Address = ip + "/32, " + ip6 + "/128"
+	_ = os.Setenv("CLAWPATROL_EPHEMERAL_ADDR", cfg.Address)
+
+	// Cleanup is intentionally a no-op. The ephemeral identity persists
+	// across runs (that's the whole reuse story), so an exit MUST NOT
+	// DELETE it: a sibling `clawpatrol run` may still be using the
+	// tunnel. The gateway evicts the identity when a different pubkey
+	// arrives from the same parent (cache invalidation path) or when
+	// the parent device itself is revoked.
+	return noop, nil
+}
+
+// postEphemeralPeer POSTs to /api/peer/ephemeral?pubkey=<hex>. Returns
+// the (v4, v6) addresses the gateway assigned.
+func postEphemeralPeer(client *http.Client, gwURL, token, pubHex string) (string, string, error) {
 	req, err := http.NewRequest(http.MethodPost,
 		gwURL+"/api/peer/ephemeral?pubkey="+pubHex, nil)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "⚠ ephemeral peer: build request: %v (using shared identity)\n", err)
-		return noop, err
+		return "", "", fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "⚠ ephemeral peer: register: %v (using shared identity)\n", err)
-		return noop, err
+		return "", "", fmt.Errorf("register: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(os.Stderr, "⚠ ephemeral peer: gateway returned %d (using shared identity)\n", resp.StatusCode)
-		return noop, fmt.Errorf("gateway %d", resp.StatusCode)
+		return "", "", fmt.Errorf("gateway returned %d", resp.StatusCode)
 	}
-
 	var result struct {
 		IP  string `json:"ip"`
 		IP6 string `json:"ip6"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		fmt.Fprintf(os.Stderr, "⚠ ephemeral peer: decode response: %v (using shared identity)\n", err)
-		return noop, err
+		return "", "", fmt.Errorf("decode response: %w", err)
 	}
+	return result.IP, result.IP6, nil
+}
 
-	cfg.PrivateKey = privB64
-	cfg.Address = result.IP + "/32, " + result.IP6 + "/128"
-	_ = os.Setenv("CLAWPATROL_EPHEMERAL_ADDR", cfg.Address)
+// readEphemeralCache loads the on-disk ephemeral identity. Returns nil
+// on any error (missing / malformed / unreadable) — the caller mints
+// a fresh keypair.
+func readEphemeralCache(path string) (*ephemeralCache, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var c ephemeralCache
+	if err := json.Unmarshal(b, &c); err != nil {
+		return nil, err
+	}
+	if c.PrivateKey == "" || c.PublicHex == "" {
+		return nil, fmt.Errorf("cache missing keypair")
+	}
+	return &c, nil
+}
 
+// writeEphemeralCache persists c atomically (write-then-rename). 0600
+// because c.PrivateKey is the WG private key for this host's
+// ephemeral identity — leaking it lets anyone register as this peer.
+func writeEphemeralCache(path string, c *ephemeralCache) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return
+	}
+	b, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, path)
+}
+
+// acquireEphemeralLock serializes the read-or-mint window between
+// concurrent `clawpatrol run` invocations. Uses LOCK_EX so the second
+// run blocks until the first one finishes its POST + cache write; the
+// second run then reads the freshly-written cache and reuses the
+// keypair instead of generating its own (which would have raced to
+// register a separate IP, defeating the whole reuse mechanism).
+func acquireEphemeralLock(cachePath string) (func(), error) {
+	lockPath := cachePath + ".lock"
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
 	return func() {
-		dreq, err := http.NewRequest(http.MethodDelete,
-			gwURL+"/api/peer/ephemeral?pubkey="+pubHex, nil)
-		if err != nil {
-			return
-		}
-		dreq.Header.Set("Authorization", "Bearer "+token)
-		if dr, derr := client.Do(dreq); derr == nil {
-			_ = dr.Body.Close()
-		}
+		_ = unix.Flock(int(f.Fd()), unix.LOCK_UN)
+		_ = f.Close()
 	}, nil
 }
 
