@@ -5,34 +5,40 @@
 
 ## Goal
 
-Add a CLI subcommand that runs a candidate HCL policy against a
-**recorded actions file** and reports any verdicts the new policy
-would change:
+Add a CLI subcommand that runs a candidate HCL policy against
+**recorded gateway actions** — one JSON file per action, checked
+into a `testdata/` (or `fixtures/`) directory — and reports any
+verdicts the new policy would change. Operators can run against a
+single file or against a whole directory:
 
 ```
-clawpatrol test --config ./candidate.hcl --actions ./actions.json
+clawpatrol test candidate.hcl testdata/action1.json
+clawpatrol test candidate.hcl testdata/
 ```
 
-The actions file is a list of recorded gateway actions. Each
-entry carries the request the gateway saw and the verdict it
-produced — `action` (`allow` / `deny` / `approve` /
+Each file under the actions directory is one recorded gateway
+action. It carries the request the gateway saw and the verdict
+it produced — `action` (`allow` / `deny` / `approve` /
 `passthrough`), the name of the matched `rule`, and the
 `reason`. Nothing in the format is test-specific: it is the same
 shape the gateway logs for live traffic, just persisted to a
-file.
+file. One file per action keeps each fixture independently
+diffable, easy to add or remove, and trivial to skip by renaming.
 
 `clawpatrol test` compiles the candidate config in-process, runs
 each request through `runtime.MatchRequest`, and reports any
 entry whose new verdict differs from the recorded one. Exit
-status is non-zero on any diff.
+status is non-zero if any verdict (e.g. `approve`, `deny`) the
+candidate produces does not match the decision stored in the
+file — for a directory run, any single mismatch fails the run.
 
 To keep the authoring burden low, the dashboard grows a
 **"Download actions"** button on its recent-actions view. The
-button emits an actions file populated from the actions the
-gateway has actually seen, each carrying the verdict it produced
-under the live config. Operators run that file as-is to lock in
-current behaviour, or edit individual entries to drive a policy
-change.
+button emits a zip of one file per recorded action, populated
+from what the gateway has actually seen and each carrying the
+verdict it produced under the live config. Operators unpack into
+`testdata/` and run as-is to lock in current behaviour, or edit
+individual files to drive a policy change.
 
 The point is iteration speed and CI: today an operator changes a
 rule, pushes a full config reload, watches live traffic, and
@@ -55,7 +61,7 @@ That's the entire surface this subcommand needs to drive.
 
 A `match.Request` is plain data: `Family`, `Method`, `URL`,
 `Headers`, `Body`, `PeerIP`, parsed path. It serializes cleanly
-to JSON, which is what the actions-file format is built on.
+to JSON, which is what each per-action file holds.
 
 ### 1.2 Config compile is reusable from a CLI process
 
@@ -80,8 +86,8 @@ it before logging. A small extension of `Event` (`Rule string`)
 populated at the existing dispatch sites is enough; no new
 plumbing.
 
-A "download these as an actions file" endpoint is then a
-re-shape of an existing dataset, not a new pipeline.
+A "download these as a zipped actions directory" endpoint is
+then a re-shape of an existing dataset, not a new pipeline.
 
 ### 1.4 Subcommand wiring
 
@@ -95,33 +101,46 @@ sibling file (`run_linux.go`, `onboard.go`, etc.). Adding
 ```
 ┌──────────────────────────────────┐    ┌──────────────────────────────┐
 │  clawpatrol test                 │    │  gateway dashboard           │
-│   --config candidate.hcl         │    │                              │
-│   --actions actions.json         │    │  recent actions view         │
+│   candidate.hcl                  │    │                              │
+│   testdata/                      │    │  recent actions view         │
 │                                  │    │  ┌────────────────────────┐  │
 │  1. config.Load(candidate.hcl)   │    │  │ [Download actions]     │  │
 │     + config.Compile()           │    │  └────────────────────────┘  │
 │                                  │    │            │                 │
-│  2. read actions.json            │    │            ▼                 │
-│     → []Action{                  │    │  GET /api/actions/export     │
-│         request: match.Request,  │    │   → ndjson over last N       │
-│         verdict: Verdict,        │    │     events, each rendered    │
-│       }                          │    │     as an Action             │
-│                                  │    │     (request + verdict)      │
-│  3. for each entry:              │◀───┤                              │
-│       got := MatchRequest(...)   │    └──────────────────────────────┘
+│  2. resolve path arg:            │    │            ▼                 │
+│     • file → one Action          │    │  GET /api/actions/export     │
+│     • dir  → glob *.json         │    │   → zip of one .json per     │
+│                                  │    │     event in the export      │
+│     each loads as:               │    │     window (request +        │
+│       Action{                    │    │     verdict per file)        │
+│         request: match.Request,  │    │                              │
+│         verdict: Verdict,        │    └──────────────────────────────┘
+│       }                          │
+│                                  │
+│  3. for each Action:             │
+│       got := MatchRequest(...)   │
 │       diff got vs verdict        │
 │                                  │
 │  4. print summary + exit code    │
+│     (non-zero on any mismatch)   │
 └──────────────────────────────────┘
 ```
 
 Concrete plumbing:
 
-- **Actions format** (new): newline-delimited JSON, one entry
-  per line. Same shape whether the file came from the dashboard
-  exporter or was hand-written:
-  ```
-  {"request":{...match.Request...}, "verdict":{"action":"allow","rule":"public-readonly","reason":"..."}}
+- **Actions format** (new): one JSON file per action, checked
+  into a `testdata/` (or `fixtures/`) directory. Same shape
+  whether the file came from the dashboard exporter or was
+  hand-written:
+  ```json
+  {
+    "request": { "...match.Request..." },
+    "verdict": {
+      "action": "allow",
+      "rule":   "public-readonly",
+      "reason": "..."
+    }
+  }
   ```
   - `verdict.action` is one of `allow`, `deny`, `approve`,
     `passthrough`. `approve` is terminal — the human approver
@@ -132,32 +151,43 @@ Concrete plumbing:
   - `verdict.reason` is the human-readable string the runtime
     produced.
   No `expected_*` / `assert_*` keys — the format is not
-  test-specific. The CLI is the test runner; the file is
-  recorded reality.
-  ndjson because it streams cleanly, diffs cleanly, and the
-  dashboard can emit it incrementally.
-- **CLI** (`test.go`, new file): parses `--config`, `--actions`,
-  optional `--endpoint` (which compiled endpoint to dispatch
-  against — defaults to first matching by host), optional
-  `--update` to rewrite the actions file with the new verdicts.
-  No network, no auth, no gateway dependency.
+  test-specific. The CLI is the test runner; each file is
+  recorded reality. One file per action keeps each fixture
+  independently diffable in `git`, makes it easy to add or
+  remove a single case, and lets operators skip a case by
+  renaming or deleting one file rather than editing a
+  multi-record blob.
+- **CLI** (`test.go`, new file): two positional args —
+  `clawpatrol test <config> <path>` — where `<path>` is either
+  a single `*.json` file or a directory. Directory mode globs
+  `*.json` at the top level (no recursion in v1; revisit if
+  operators ask for it). Flags: optional `--endpoint` (which
+  compiled endpoint to dispatch against — defaults to first
+  matching by host) and optional `--update` to rewrite the
+  matching files in place with the new verdicts. No network,
+  no auth, no gateway dependency.
 - **Test runner**: a thin loop that calls `MatchRequest` per
-  entry and compares the new verdict against the recorded one.
+  file and compares the new verdict against the recorded one.
   Comparison: exact match on `verdict.action` and
-  `verdict.rule`. Mismatches print a diff and bump the failure
-  counter. `verdict.reason` is informational and not part of
-  the comparison (it changes too freely under safe edits).
-- **Dashboard endpoint**: `GET /api/actions/export` returns the
-  ndjson form of the recent-events ring. The dashboard UI gets
-  a "Download actions" button on the actions list that hits
-  this endpoint and offers the result as a file download. Auth:
-  same `dashboard_secret` as the rest of `/api/*` (§3.E).
+  `verdict.rule`. Mismatches print a diff keyed by file path
+  and bump the failure counter. Exit status is non-zero if any
+  file mismatches. `verdict.reason` is informational and not
+  part of the comparison (it changes too freely under safe
+  edits).
+- **Dashboard endpoint**: `GET /api/actions/export` returns a
+  `application/zip` of one `<action-id>.json` file per event
+  in the export window. The dashboard UI gets a "Download
+  actions" button on the actions list that hits this endpoint
+  and offers the result as a `.zip` download. Auth: same
+  `dashboard_secret` as the rest of `/api/*` (§3.E).
 - **Dashboard renderer**: for each `Event` in the export
   window, map fields → `request: match.Request` and
   `verdict: {action: ev.Action, rule: ev.Rule, reason:
-  ev.Reason}`. This requires the small `Event.Rule` extension
-  noted in §1.3. Output is "what the gateway actually
-  decided" — a regression baseline.
+  ev.Reason}`, emit as a single JSON file under a stable name
+  (e.g. `<timestamp>-<short-sha>.json`), zip the lot. This
+  requires the small `Event.Rule` extension noted in §1.3.
+  Output is "what the gateway actually decided" — a
+  regression baseline.
 
 This design removes everything that was hard about the previous
 proposal: no session keying, no ephemeral peers, no response
@@ -216,14 +246,14 @@ humans, slow, non-deterministic).
 runner treat `approve` as terminal. The exporter writes
 `verdict.action = "approve"` whenever the matched rule routes
 to a human approver, and the runner compares that literal
-string without invoking any chain. The actions file is a
-*policy match* file, not an end-to-end recording — what the
+string without invoking any chain. Each action file is a
+*policy match* record, not an end-to-end recording — what the
 human ultimately decided is out of scope.
 
-### D. Actions-file emission: redaction
+### D. Actions emission: redaction
 
 `Event.ReqBody` and `RespBody` may contain secrets the operator
-doesn't want in a checked-in actions file. The export endpoint
+doesn't want in checked-in fixture files. The export endpoint
 should respect the same redaction rules the dashboard already
 applies for display (`web_redaction_test.go` exists — confirm
 during implementation that those rules are reusable here).
@@ -252,7 +282,7 @@ How many recent events should the button download?
 - Time-windowed (`?since=...`): supports "actions from the last
   hour of activity"; small UI addition.
 - Filter by `agent` / `mode` / `host`: lets operators export a
-  per-agent or per-host actions file. Likely useful given the
+  per-agent or per-host fixture set. Likely useful given the
   dashboard already filters this way.
 
 **Recommendation:** start with whole ring + `?since=` query
@@ -266,25 +296,27 @@ needs it.
 After the above questions are answered, the implementation PR should:
 
 - Add `clawpatrol test` subcommand (`test.go`) — pure CLI,
-  no gateway dependency.
-- Define the ndjson actions format (`actions_file.go` or
+  no gateway dependency. Two positional args:
+  `clawpatrol test <config> <file-or-dir>`.
+- Define the per-action JSON format (`action_file.go` or
   similar) shared between the CLI runner and the dashboard
   exporter.
 - Extend `Event` with `Rule string` and populate it at the
   existing dispatch sites (`main.go:1638`, postgres,
   clickhouse_native) so the exporter can carry the matched
   rule name.
-- Add `GET /api/actions/export` returning the recent-events
-  ring as actions ndjson, with redaction reusing the
-  dashboard's existing rules.
+- Add `GET /api/actions/export` returning a zip of one
+  `<id>.json` per event in the recent-events ring, with
+  redaction reusing the dashboard's existing rules.
 - Add the "Download actions" button to the dashboard's
   recent-actions view.
 - HTTPS endpoint family in v1; SQL families covered if their
   recorded event fields are sufficient.
 - Tests: unit tests for the runner (verdict match / mismatch
-  on action and rule), a golden-file test for export ndjson
-  shape, and an integration test that exports → runs → asserts
-  zero diffs against the current config.
+  on action and rule, single-file and directory modes), a
+  golden-file test for export zip shape, and an integration
+  test that exports → unpacks → runs → asserts zero diffs
+  against the current config.
 
 Out of scope for v1: live-session candidate dispatch (the
 previous proposal — superseded), mock upstream, time-travel
