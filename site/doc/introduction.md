@@ -17,18 +17,39 @@ production gets touched.
 ## What Claw Patrol gives you
 
 - **Allow / deny rules** on every outbound request, written in CEL
-  against typed facets (HTTP method, K8s verb, SQL statement).
+  against typed variables for the protocol.
+
+- **Protocol-aware, not just HTTP.** Claw Patrol terminates the
+  full wire protocol for the systems agents actually touch, so
+  rules see what the agent is doing — not just where it's
+  pointed:
+
+  - **Postgres / ClickHouse** — the gateway parses the SQL out of
+    the wire protocol. Rules see `sql.verb`, `sql.tables`,
+    `sql.statement`. Deny `DROP TABLE`, gate
+    `SELECT * FROM api_keys`, restrict an agent to read-only
+    verbs.
+  - **Kubernetes** — API URLs decompose into `k8s.verb`,
+    `k8s.resource`, `k8s.namespace`, `k8s.name`. Deny
+    `delete secrets` cluster-wide, allow `get pods` only in
+    `dev`, route any write to `kube-system` through a human
+    approval.
+  - **HTTPS** — `http.method`, `http.path`, `http.headers`,
+    `http.body_json` for the REST APIs (GitHub, Slack,
+    Anthropic, …). The body is parsed once for JSON endpoints
+    so you can match on payload fields, not just shape.
+
 - **Human-in-the-loop approvals** for risky actions — defer
   `kubectl apply -f production` to a Slack approval before the
   request leaves.
+
 - **Secret injection** at the wire. Agents send placeholders
   (`{{github_pat}}`); the gateway swaps them for the real token
   in transit.
+
 - **Full audit log** — every request, verdict, and latency,
   searchable in the dashboard, exportable as fixtures for
   regression tests.
-- **Plugins** for the protocols agents actually use: HTTPS,
-  Postgres, ClickHouse, Kubernetes, SSH.
 
 ## How it fits
 
