@@ -18,10 +18,9 @@ The agent must not be able to:
 - modify the Claw Patrol binary,
 - call Claw Patrol's HTTP API or reach its dashboard.
 
-Two deployment modes. **Remote mode** puts a network between the
-agent and Claw Patrol. **Local mode** keeps them on a single host
-and substitutes UNIX user separation for the network. Remote is
-strictly stronger.
+Two deployment modes: **remote** (agent and Claw Patrol on
+separate hosts, isolated by a network) and **local** (same host,
+isolated by UNIX users). Remote is strictly stronger.
 
 ## Remote mode
 

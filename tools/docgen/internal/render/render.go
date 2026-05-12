@@ -119,7 +119,13 @@ func stripIdentPrefix(doc, ident string) string {
 	}
 	first := rest[0]
 	if first >= 'a' && first <= 'z' {
-		return strings.ToUpper(rest[:1]) + rest[1:]
+		rest = strings.ToUpper(rest[:1]) + rest[1:]
+	}
+	// Drop the stub "Is part of the clawpatrol plugin API." sentence
+	// that's auto-generated as a placeholder doc-comment on plugin
+	// types. It conveys nothing to a reader of the HCL reference.
+	if rest == "Is part of the clawpatrol plugin API." {
+		return ""
 	}
 	return rest
 }

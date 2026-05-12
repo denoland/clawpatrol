@@ -2,13 +2,13 @@
 
 Rules are how an operator decides what happens to a request:
 forward it, reject it, or route it through one or more
-**approvers** (a human approver who acts from the dashboard or
-Slack, an LLM approver that judges against a policy, or both in
-sequence) that must each allow before the request is forwarded. Each rule is a
-block in `gateway.hcl` that targets one or more
-[endpoints](/docs/glossary/#endpoint), describes which requests
-it applies to (the `condition` CEL expression), and declares the outcome
-(`verdict = "allow" / "deny"`, or `approve = [...]`).
+**approvers** — a human acting from the dashboard or Slack, an
+LLM judging against a policy, or both in sequence (every approver
+must allow). Each rule is a block in `gateway.hcl` that targets
+one or more [endpoints](/docs/glossary/#endpoint), describes
+which requests it applies to (the `condition` CEL expression),
+and declares the outcome (`verdict = "allow" / "deny"`, or
+`approve = [...]`).
 
 There is one rule kind. The rule's protocol **family** — `http`,
 `sql`, or `k8s` — is inferred from its endpoint(s) at load time and

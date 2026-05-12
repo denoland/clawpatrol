@@ -287,7 +287,7 @@ based on the destination port and IP:
   <line class="arr-disp" x1="120" y1="498" x2="240" y2="498" marker-end="url(#ar-disp)"/>
   <text class="cond-disp" x="125" y="493">otherwise</text>
   <rect class="b-disp" x="240" y="472" width="720" height="52" rx="4"/>
-  <text class="row-disp" x="250" y="502">transparent relay (defaults.unknown_host = passthrough by default)</text>
+  <text class="row-disp" x="250" y="502">transparent relay (unknown_host = passthrough by default)</text>
 </svg>
 
 The branches are described below, with the summary table at the
@@ -385,9 +385,9 @@ summary:
 
 If no endpoint plugin claims the destination, the gateway falls
 back to a transparent relay: it dials the real destination IP and
-pipes bytes both ways. The `defaults.unknown_host` knob in
-`gateway.hcl` (`passthrough` by default) decides what to do when an
-HTTPS SNI doesn't match any configured endpoint — splice it
+pipes bytes both ways. The top-level `unknown_host` setting in
+`gateway.hcl` (`passthrough` by default) decides what to do when
+an HTTPS SNI doesn't match any configured endpoint — splice it
 unchanged or close it.
 
 UDP dispatch is narrower: only `:53` is handled today (DNS-VIP);
