@@ -2207,7 +2207,7 @@ Documentation: https://clawpatrol.dev/docs/`)
 // gatewayHelp is shown for `clawpatrol gateway -h` and any wrong
 // invocation. The pointer to `gateway init` + the config-reference
 // URL is the discoverability path for first-time users.
-const gatewayHelp = `usage: clawpatrol gateway <config.hcl> [--read-only-config]
+const gatewayHelp = `usage: clawpatrol gateway [--read-only-config] <config.hcl>
 
 The gateway needs an HCL policy file. To create one, run:
   clawpatrol gateway init
