@@ -122,13 +122,20 @@ func init() {
 	facet.Register(Facet{})
 }
 
+// lowercasedPaths declares the SQL fields whose activation values
+// are always lowercase. CompileCondition uses this to normalize the
+// matching string literals in the rule source at compile time, so
+// `sql.verb == "SELECT"` matches a select statement even though the
+// activation reports `verb = "select"`.
+var lowercasedPaths = []string{"sql.verb"}
+
 // NewMatcher compiles a CEL condition into a Matcher. An empty
 // condition is the catch-all match-everything case.
 func (Facet) NewMatcher(condition string) (match.Matcher, error) {
 	if condition == "" {
 		return match.PassThrough{}, nil
 	}
-	return match.CompileCondition(celEnv, condition, buildActivation)
+	return match.CompileCondition(celEnv, condition, buildActivation, lowercasedPaths)
 }
 
 func buildActivation(req *match.Request) map[string]any {

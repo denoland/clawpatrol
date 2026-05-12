@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/ext"
@@ -113,21 +114,31 @@ func init() {
 	facet.Register(Facet{})
 }
 
+// lowercasedPaths declares the HTTPS fields whose activation values
+// are always lowercase. CompileCondition uses this to normalize the
+// matching string literals in the rule source at compile time, so
+// `http.method == "POST"` matches a POST request even though the
+// activation reports `method = "post"`.
+var lowercasedPaths = []string{"http.method"}
+
 // NewMatcher compiles a CEL condition into a Matcher. An empty
 // condition is the catch-all match-everything case.
 func (Facet) NewMatcher(condition string) (match.Matcher, error) {
 	if condition == "" {
 		return match.PassThrough{}, nil
 	}
-	return match.CompileCondition(celEnv, condition, buildActivation)
+	return match.CompileCondition(celEnv, condition, buildActivation, lowercasedPaths)
 }
 
 func buildActivation(req *match.Request) map[string]any {
 	if req == nil {
 		return nil
 	}
+	// HTTP method is lowercased here (and declared in lowercasedPaths)
+	// so rules can write either "POST" or "post" — CompileCondition
+	// normalizes the want-side literals to lowercase at rule-load time.
 	f := &HttpsFields{
-		Method:  req.Method,
+		Method:  strings.ToLower(req.Method),
 		Path:    match.PathOf(req.URL),
 		Headers: mapToCEL(req.Headers),
 		Body:    string(req.Body),
