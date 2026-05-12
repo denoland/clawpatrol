@@ -1156,6 +1156,13 @@ profile "default" {
 	}
 	printTreeItems(items)
 	fmt.Println()
+	fmt.Println("Next:")
+	if systemdPath != "" {
+		fmt.Println("  systemctl enable --now clawpatrol-gateway")
+	} else {
+		fmt.Printf("  clawpatrol gateway %s\n", cfgPath)
+	}
+	fmt.Println()
 	fmt.Printf("Dashboard: %s\n", url)
 	fmt.Printf("Join command: clawpatrol join %s\n", url)
 }
@@ -1242,7 +1249,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=%s
 EnvironmentFile=-%s/secrets.env
-ExecStart=%s gateway -config %s
+ExecStart=%s gateway %s
 Restart=on-failure
 RestartSec=2
 LimitNOFILE=65536

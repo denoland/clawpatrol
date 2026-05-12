@@ -2,7 +2,7 @@
 #
 # Drop in /etc/clawpatrol/gateway.hcl, edit, run:
 #
-#     clawpatrol gateway -config /etc/clawpatrol/gateway.hcl
+#     clawpatrol gateway /etc/clawpatrol/gateway.hcl
 #
 # Hot-reloadable: every policy block + admin_email. Listen ports /
 # ca_dir / oauth_dir / tailscale block need a restart.

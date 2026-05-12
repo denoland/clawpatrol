@@ -31,9 +31,8 @@ public UDP port, no WireGuard keypair management, no subnet allocation
 
 ## What works (verified end-to-end)
 
-- `clawpatrol gateway -config gateway.hcl` boots the tsnet node, no
-  public ports needed — only outbound HTTPS to the Tailscale control
-  plane.
+- `clawpatrol gateway gateway.hcl` boots the tsnet node, no public
+  ports needed — only outbound HTTPS to the Tailscale control plane.
 - `clawpatrol login` is one command on the device: join tailnet +
   install CA + set exit-node. Subsequent re-runs are idempotent.
 - Agents (`claude`, `gh`, `codex`) run unmodified. `eval "$(clawpatrol
@@ -97,7 +96,7 @@ export TS_OAUTH_CLIENT_SECRET=<secret>
 # Tag: tag:gateway (or any ACL-gated tag)
 export TS_AUTHKEY=tskey-auth-...
 
-clawpatrol gateway -config /etc/clawpatrol/gateway.hcl
+clawpatrol gateway /etc/clawpatrol/gateway.hcl
 ```
 
 Dashboard is reachable at `http://clawpatrol-gateway:8080` from any

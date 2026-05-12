@@ -2092,12 +2092,8 @@ func main() {
 		runUninstall(os.Args[2:])
 	case "status":
 		runStatus(os.Args[2:])
-	case "version":
-		v := buildVersion
-		if buildGitSHA != "" {
-			v += " (" + buildGitSHA + ")"
-		}
-		fmt.Println("clawpatrol", v)
+	case "version", "-v", "--version":
+		printVersion()
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -2156,12 +2152,20 @@ func canonicalPeerIP(ip string) string {
 // WGServer is up.
 var defaultWGV4Prefix = [3]byte{10, 55, 0}
 
+func printVersion() {
+	v := buildVersion
+	if buildGitSHA != "" {
+		v += " (" + buildGitSHA + ")"
+	}
+	fmt.Println("clawpatrol", v)
+}
+
 func usage() {
 	fmt.Fprintln(os.Stderr, `clawpatrol — secret-injection MITM proxy for AI agents
 
 usage:
   clawpatrol gateway init [flags]        bootstrap a new gateway host
-  clawpatrol gateway [-config FILE]      run the gateway server
+  clawpatrol gateway <config.hcl>        run the gateway server
   clawpatrol join [flags] <gateway-url>  onboard this machine via wg device flow
                   --hostname NAME        device name to register (default: os.Hostname)
                   --profile NAME         suggest a profile for the approver
@@ -2174,7 +2178,9 @@ usage:
   clawpatrol init-ca DIR                 generate a new CA in DIR
   clawpatrol validate <config.hcl>       parse + compile a config and exit
   clawpatrol test <config> <path>        replay action fixtures against a candidate policy
-  clawpatrol version`)
+  clawpatrol version | -v | --version    print version and exit
+
+Documentation: https://clawpatrol.dev/docs/`)
 	os.Exit(2)
 }
 
@@ -2189,22 +2195,43 @@ func runInitCA(args []string) {
 	fmt.Printf("wrote ca.crt + ca.key to %s\n", args[0])
 }
 
+// gatewayHelp is shown for `clawpatrol gateway -h` and any wrong
+// invocation. The pointer to `gateway init` + the config-reference
+// URL is the discoverability path for first-time users.
+const gatewayHelp = `usage: clawpatrol gateway <config.hcl> [--read-only-config]
+
+The gateway needs an HCL policy file. To create one, run:
+  clawpatrol gateway init
+
+For the HCL reference, see:
+  https://clawpatrol.dev/docs/config-reference`
+
 func runGateway(args []string) {
-	// `clawpatrol gateway init` is a one-shot setup wizard, distinct from
-	// `clawpatrol gateway -config …` which starts the long-running daemon.
+	// `clawpatrol gateway init` is a one-shot setup wizard, distinct
+	// from `clawpatrol gateway <config.hcl>` which starts the daemon.
 	if len(args) > 0 && args[0] == "init" {
 		runGatewayInit(args[1:])
 		return
 	}
 	fs := flag.NewFlagSet("gateway", flag.ExitOnError)
-	cfgPath := fs.String("config", "config.yaml", "config file")
 	readOnly := fs.Bool("read-only-config", false,
 		"reject dashboard writes to the HCL config file")
+	fs.Usage = func() { fmt.Fprintln(os.Stderr, gatewayHelp) }
 	_ = fs.Parse(args)
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fmt.Fprintln(os.Stderr, gatewayHelp)
+		os.Exit(2)
+	}
+	cfgPath := rest[0]
 
 	startModelRefresh()
-	cfg, policy, err := loadConfig(*cfgPath)
+	cfg, policy, err := loadConfig(cfgPath)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), "no such file") {
+			fmt.Fprintf(os.Stderr, "config file %q does not exist.\n\n%s\n", cfgPath, gatewayHelp)
+			os.Exit(2)
+		}
 		log.Fatalf("config: %v", err)
 	}
 	logDashboardSecretState(cfg)
@@ -2244,7 +2271,7 @@ func runGateway(args []string) {
 	}
 	g := &Gateway{
 		cfg:            cfg,
-		cfgPath:        *cfgPath,
+		cfgPath:        cfgPath,
 		readOnlyConfig: *readOnly,
 		db:             db,
 		certs:          certs,
@@ -2279,7 +2306,7 @@ func runGateway(args []string) {
 		log.Fatalf("dnsvip build: %v", err)
 	}
 	log.Printf("policy: %d endpoints across %d profiles", len(policy.Endpoints), len(policy.Profiles))
-	go g.watchConfig(*cfgPath)
+	go g.watchConfig(cfgPath)
 	if err := g.onboard.Load(db); err != nil {
 		log.Fatalf("onboard load: %v", err)
 	}
