@@ -25,11 +25,10 @@ type Gateway struct {
 	PublicURL  string `hcl:"public_url,optional"`
 	AdminEmail string `hcl:"admin_email,optional"`
 	// CADir is the legacy path the gateway used to keep the CA cert
-	// + ssh host keys on disk. Kept for backwards compat: existing
-	// configs still parse, and state_import.go consults this path to
-	// move any leftover on-disk artifacts into sqlite on first boot
-	// of a migrated gateway. New deployments should set state_dir
-	// instead — the gateway now keeps everything in sqlite.
+	// + ssh host keys on disk. Kept for backwards compat so existing
+	// configs still parse and state_dir resolution can fall back to
+	// ${ca_dir}/../oauth. New deployments should set state_dir
+	// instead — the gateway keeps everything in sqlite.
 	CADir string `hcl:"ca_dir,optional"`
 	// StateDir is the directory holding clawpatrol.db. Falls back to
 	// OAuthDir (historical name) or ${CADir}/../oauth or

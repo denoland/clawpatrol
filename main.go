@@ -2255,11 +2255,6 @@ func runGateway(args []string) {
 	setDB(db)
 	blobs := newGatewayBlobStore(db)
 	endpoints.SetBlobStore(blobs)
-	// Move any pre-sqlite on-disk state into the DB so existing
-	// deployments don't lose their CA / WG key / SSH host keys when
-	// they upgrade. No-op on fresh installs and on every subsequent
-	// boot. See state_import.go for per-artifact behavior.
-	importLegacyState(db, blobs, cfg.CADir, stateDir)
 	certs, err := loadOrMintCA(db)
 	if err != nil {
 		log.Fatalf("ca: %v", err)

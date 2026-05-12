@@ -30,7 +30,7 @@ Every singleton gateway attribute — listen addresses, paths, control-plane joi
 | `info_listen` | `string` | no |  |
 | `public_url` | `string` | no |  |
 | `admin_email` | `string` | no |  |
-| `ca_dir` | `string` | no | The legacy path the gateway used to keep the CA cert + ssh host keys on disk. Kept for backwards compat: existing configs still parse, and state_import.go consults this path to move any leftover on-disk artifacts into sqlite on first boot of a migrated gateway. New deployments should set state_dir instead — the gateway now keeps everything in sqlite. |
+| `ca_dir` | `string` | no | The legacy path the gateway used to keep the CA cert + ssh host keys on disk. Kept for backwards compat so existing configs still parse and state_dir resolution can fall back to ${ca_dir}/../oauth. New deployments should set state_dir instead — the gateway keeps everything in sqlite. |
 | `state_dir` | `string` | no | The directory holding clawpatrol.db. Falls back to OAuthDir (historical name) or ${CADir}/../oauth or ${HOME}/.clawpatrol/state, in that order. |
 | `resolver` | `string` | no |  |
 | `log_path` | `string` | no |  |
