@@ -1,49 +1,35 @@
-# Skill
+# Claw Patrol
 
-Everything an operator (or an LLM agent) needs to set up Claw
-Patrol, write a policy, and route traffic through it. Self-contained
-quick reference; link out to the detail pages when something needs
-depth.
+A firewall for AI agents. Self-contained operator reference; link
+out for depth.
 
-## What Claw Patrol is
-
-A firewall for AI agents. Two pieces:
-
-- **Gateway** — a Go binary on a host you control. Holds the
-  policy, the credentials, the audit log, and the dashboard.
-- **Devices** — your laptop, a CI runner — that join the gateway
-  over WireGuard. They tunnel the agent's outbound flows to the
-  gateway, which decides per request what to allow, deny, or gate
-  behind a human, and which credential to inject.
-
-The agent never holds the real credential. The gateway never trusts
-the agent.
+Two pieces: a **gateway** (Go binary on a host you control — policy,
+credentials, audit log, dashboard) and one or more **devices**
+(laptops, CI runners) that join the gateway over WireGuard. Devices
+tunnel agent traffic to the gateway, which per-request decides
+allow / deny / approve and injects the right credential. The agent
+never holds the real credential.
 
 ```
 Agent ─→ Device ──WireGuard──→ Gateway ──→ Upstream
-                                  │
                                   ├ matches rule
                                   ├ injects credential
                                   └ logs the action
 ```
 
----
-
 ## Install
 
-Same binary on the gateway host and every device:
+Same binary, gateway + devices:
 
 ```bash
 curl -fsSL https://clawpatrol.dev/install.sh | sh
 ```
 
-macOS / Linux, amd64 / arm64. `~/.local/bin/clawpatrol`.
-
----
+macOS / Linux on amd64 / arm64. Lands in `~/.local/bin/clawpatrol`.
 
 ## Run a gateway
 
-### Bootstrap (once per host)
+Bootstrap (once):
 
 ```bash
 clawpatrol gateway init
@@ -51,42 +37,30 @@ clawpatrol gateway init
 
 Detects the public IP, generates a CA, writes
 `/etc/clawpatrol/gateway.hcl` (or `~/.clawpatrol/gateway.hcl` for
-non-root), opens firewall ports, drops a systemd unit, prints the
-next-step command.
+non-root), opens firewall ports, drops a systemd unit. Default
+ports: `tcp/9080` dashboard, `tcp/8443` TLS gateway, `udp/51820`
+WireGuard.
 
-Defaults:
-
-| Port | Use |
-|---|---|
-| `udp/51820` | WireGuard listener |
-| `tcp/9080` | Dashboard + HTTP API |
-| `tcp/8443` | TLS gateway (host-local; doesn't need to be public) |
-
-### Run
+Then run:
 
 ```bash
-systemctl enable --now clawpatrol-gateway     # systemd hosts
-clawpatrol gateway /etc/clawpatrol/gateway.hcl    # otherwise
+systemctl enable --now clawpatrol-gateway       # systemd
+clawpatrol gateway /etc/clawpatrol/gateway.hcl  # otherwise
 ```
 
-Dashboard at `http://<gateway-host>:9080`.
-
-### Validate / test policy changes
+Validate or regression-test a policy change:
 
 ```bash
-clawpatrol validate gateway.hcl                # parse + compile
-clawpatrol test gateway.hcl fixtures/          # replay recorded actions
+clawpatrol validate gateway.hcl        # parse + compile
+clawpatrol test gateway.hcl fixtures/  # replay recorded actions
 ```
-
-See [`clawpatrol-test`](clawpatrol-test) for the fixture format.
-
----
 
 ## Write a config
 
-`gateway.hcl` is HCL with five labeled-block kinds plus a handful of
-operational top-level fields. Names share **one flat namespace** —
-references are bare names, never `kind.name`.
+`gateway.hcl` is HCL. Five labeled-block kinds (`credential`,
+`endpoint`, `rule`, `profile`, `approver`) plus operational
+top-level fields. Names share **one flat namespace** — references
+are bare (`credential = github-pat`, never `credential.github-pat`).
 
 ### Minimal complete example
 
@@ -118,137 +92,123 @@ rule "github-writes" {
   reason   = "writes go through PR review"
 }
 
-profile "default" {
-  endpoints = [github]
-}
+profile "default" { endpoints = [github] }
 ```
 
-This compiles, runs, and gates a GitHub PAT behind a read-only
-policy.
-
-### Top-level fields (operational)
-
-The ones you'll actually set:
+### Top-level fields
 
 | Field | Notes |
 |---|---|
-| `admin_email` | Required. Operator contact. |
+| `admin_email` | Required. |
 | `listen` | TLS gateway bind. Default `:443`. |
 | `info_listen` | Dashboard + API bind. |
 | `public_url` | Dashboard URL handed out at join time. |
-| `dashboard_secret` | Required (or set `insecure_no_dashboard_secret = true` for local testing). |
-| `ca_dir` | Where the CA lives. |
-| `oauth_dir` | Where the SQLite state DB lives. |
-| `control` | `"wireguard"` (default) or `"tailscale"`. |
-| `wg_endpoint`, `wg_subnet_cidr` | WireGuard listener + device subnet. |
-| `unknown_host` | `"passthrough"` (default) or `"deny"` — what to do with traffic not claimed by any endpoint. |
+| `dashboard_secret` | Required (or `insecure_no_dashboard_secret = true` for local testing). |
+| `ca_dir` / `oauth_dir` | CA + SQLite state DB locations. |
+| `control` | `"wireguard"` or `"tailscale"`. |
+| `wg_endpoint` / `wg_subnet_cidr` | WG listener + device subnet. |
+| `unknown_host` | `"passthrough"` (default) or `"deny"` for traffic no endpoint claims. |
 
-Full list: [Config reference › Top-level fields](/docs/config-reference/#top-level-fields).
+Full list: [Config reference](/docs/config-reference/#top-level-fields).
 
 ### Credentials
 
-A typed handle to a secret. The HCL carries only injection
-parameters; secret bytes live in the gateway's secret store
-(populated via the dashboard or `CLAWPATROL_SECRET_<NAME>` env
-vars).
-
-Common types:
+Typed handle to a secret. HCL carries injection parameters only;
+secret bytes live in the gateway's secret store (dashboard or
+`CLAWPATROL_SECRET_<NAME>` env vars).
 
 | Type | Injects |
 |---|---|
 | `bearer_token` | `Authorization: Bearer <token>` |
-| `header_token` | `<header>: <prefix><token>` (configurable `header`, `prefix`) |
+| `header_token` | `<header>: <prefix><token>` |
 | `cookie_token` | `Cookie: <name>=<token>` |
-| `mtls_credential` | Client cert + key for the TLS handshake |
-| `postgres_credential` | SCRAM / cleartext password for Postgres |
+| `mtls_credential` | Client cert + key |
+| `postgres_credential` | SCRAM / cleartext password |
 | `clickhouse_credential` | ClickHouse user/password |
-| `ssh` | SSH private key + optional passphrase + host pubkey |
-| `anthropic_oauth_subscription` | Claude.ai OAuth token (refreshed automatically) |
-| `openai_codex_oauth` | Codex / ChatGPT OAuth token |
-| `github_oauth` | GitHub PAT via OAuth device flow |
-| `slack_tokens` | Bot + signing-secret bundle for Slack notifier |
+| `ssh` | SSH private key (+ passphrase, host pubkey) |
+| `anthropic_oauth_subscription` | Claude.ai OAuth (auto-refreshed) |
+| `openai_codex_oauth` | Codex / ChatGPT OAuth |
+| `github_oauth` | GitHub OAuth device flow |
+| `slack_tokens` | Bot + signing-secret for Slack notifier |
 
-Full list: [Config reference › `credential` blocks](/docs/config-reference/#credential-blocks).
+Full list: [Config reference](/docs/config-reference/#credential-blocks).
 
 ### Endpoints
 
-A typed upstream binding. The endpoint type determines the protocol
-family (`http`, `sql`, `k8s`) which determines which CEL variables
-rules can read.
+Typed upstream binding. Type determines the family (`http`, `sql`,
+`k8s`), which determines the CEL variables rules can read.
 
-| Type | Family | Required fields |
+| Type | Family | Required |
 |---|---|---|
-| `https` | `http` | `hosts = [...]` |
-| `openai_codex_https` | `http` | `hosts = [...]` (specialized for ChatGPT Codex's two-transport flow) |
+| `https` | `http` | `hosts` |
+| `openai_codex_https` | `http` | `hosts` (specialized for ChatGPT Codex) |
 | `kubernetes` | `k8s` | `server` or `hosts` |
 | `postgres` | `sql` | `host`, `database` |
-| `clickhouse_native` | `sql` | `hosts = [...]` |
-| `clickhouse_https` | `sql` | `hosts = [...]` |
-| `ssh` | (no rules) | `hosts = [...]` |
+| `clickhouse_native` | `sql` | `hosts` |
+| `clickhouse_https` | `sql` | `hosts` |
+| `ssh` | (no rules) | `hosts` |
 
-All take `credential = <name>` (or `credentials = [{user=..., credential=...}, ...]` for per-user dispatch on SSH and Postgres).
+All take `credential = <name>` or
+`credentials = [{user=..., credential=...}, ...]` for per-user
+dispatch (SSH, Postgres).
 
 ### Rules
 
-One rule per policy decision. The protocol family is inferred from
-the rule's endpoint(s); mixing families in one rule is a load error.
-
 ```hcl
 rule "<name>" {
-  endpoint  = <endpoint-name>           # or endpoints = [a, b, c]
-  priority  = 100                       # higher fires first; default 0
-  condition = "<CEL expression>"        # absent = match everything
-  verdict   = "allow"                   # or "deny"
-  # OR: approve = [<approver-name>, ...]
-  reason    = "human-readable explanation"
+  endpoint  = <endpoint>          # or endpoints = [a, b]
+  priority  = 100                 # higher fires first; default 0
+  condition = "<CEL>"             # absent = match everything
+  verdict   = "allow"             # or "deny"
+  # OR: approve = [<approver>, ...]
+  reason    = "..."
 }
 ```
 
-**Outcome — pick exactly one:**
+Family is inferred from the rule's endpoint(s); mixing families is
+a load error.
 
-- `verdict = "allow"` — forward the request after credential injection.
-- `verdict = "deny"` — refuse, with `reason` in the error to the agent.
-- `approve = [a, b, c]` — route through each approver in order; **all** must allow.
+Outcome — exactly one of `verdict = "allow"`, `verdict = "deny"`,
+or `approve = [a, b, c]` (each approver runs in order; all must
+allow).
 
-**Matching:** rules within an endpoint are sorted by `priority` descending; first match wins. Declaration order is the tiebreaker. Default-deny catch-all is `priority = -100, verdict = "deny"`.
+Matching: rules sorted by `priority` descending, first match wins.
+Declaration order is the tiebreaker. Default-deny catch-all:
+`priority = -100, verdict = "deny"`.
 
-### CEL variables by family
+### CEL variables
 
-**HTTPS** (`http.*`)
-
-| Variable | Type |
-|---|---|
-| `http.method` | string, lowercased — `'GET'` and `'get'` both work |
-| `http.path` | string |
-| `http.query` | `map<string, list<string>>` |
-| `http.headers` | `map<string, list<string>>` |
-| `http.body` | string (raw bytes) |
-| `http.body_json` | parsed JSON; access fields directly (e.g. `http.body_json.archived == true`) |
-
-**SQL** (`sql.*`, for postgres / clickhouse)
+**`http.*`** (HTTPS endpoints)
 
 | Variable | Type |
 |---|---|
-| `sql.verb` | string, lowercased — `'select'`, `'insert'`, `'drop'`, … |
-| `sql.tables` | `list<string>`, lowercased |
-| `sql.function` | `list<string>`, lowercased — function calls in the statement |
-| `sql.statement` | string (raw SQL, no case folding) |
+| `method` | string (lowercased; `'POST'` in rule source works too) |
+| `path` | string |
+| `query` / `headers` | `map<string, list<string>>` |
+| `body` | string |
+| `body_json` | parsed JSON; access fields directly |
 
-**k8s** (`k8s.*`)
+**`sql.*`** (postgres / clickhouse)
 
 | Variable | Type |
 |---|---|
-| `k8s.verb` | string, lowercased — `'get'`, `'list'`, `'create'`, `'delete'`, … |
-| `k8s.resource` | string |
-| `k8s.namespace` | string |
-| `k8s.name` | string |
-| `k8s.params` | `map<string, string>` (single-valued URL query params) |
+| `verb` | string (lowercased) — `'select'`, `'insert'`, `'drop'`, … |
+| `tables` / `function` | `list<string>` (lowercased) |
+| `statement` | string (raw SQL) |
 
-Full details + idioms: [Approval rules](/docs/approval-rules/).
+**`k8s.*`**
+
+| Variable | Type |
+|---|---|
+| `verb` | string (lowercased) — `'get'`, `'create'`, `'delete'`, … |
+| `resource` / `namespace` / `name` | string |
+| `params` | `map<string, string>` (URL query) |
+
+Full idioms: [Approval rules](/docs/approval-rules/).
 
 ### Rule examples
 
-Deny destructive Postgres verbs cluster-wide:
+Deny destructive SQL:
 
 ```hcl
 rule "pg-no-destructive" {
@@ -258,7 +218,7 @@ rule "pg-no-destructive" {
 }
 ```
 
-Allow k8s reads but gate writes behind a human:
+Allow k8s reads, gate writes behind a human:
 
 ```hcl
 rule "k8s-reads" {
@@ -274,11 +234,11 @@ rule "k8s-writes" {
 }
 ```
 
-Gate `SELECT *` from a sensitive table through an LLM judge then a human:
+LLM-then-human gating for sensitive reads:
 
 ```hcl
 policy "no-pii-exfil" {
-  text = "Approve unless the query reads PII (emails, names, ssns) without a WHERE id = clause."
+  text = "Approve unless the query reads PII without a WHERE id = clause."
 }
 
 approver "llm_approver" "judge" {
@@ -287,9 +247,7 @@ approver "llm_approver" "judge" {
   policy     = no-pii-exfil
 }
 
-approver "human_approver" "dba" {
-  channel = "#dba"
-}
+approver "human_approver" "dba" { channel = "#dba" }
 
 rule "pg-sensitive-read" {
   endpoint  = pg-reader
@@ -300,72 +258,50 @@ rule "pg-sensitive-read" {
 
 ### Profiles
 
-A profile is a named endpoint list. Each device gets exactly one
-profile at approval time; that profile's endpoints are what its
-traffic can reach (subject to the rules attached to those
-endpoints).
+Each device gets one profile at approval time. The profile names
+the endpoints whose rules apply to that device's traffic.
 
 ```hcl
-profile "default" {
-  endpoints = [github, pg-reader, k8s-dev]
-}
-
-profile "trusted" {
-  endpoints = [github, pg-writer, k8s-dev, k8s-prod]
-}
+profile "default" { endpoints = [github, pg-reader, k8s-dev] }
+profile "trusted" { endpoints = [github, pg-writer, k8s-dev, k8s-prod] }
 ```
 
 ### Approvers
 
-Two types:
-
 ```hcl
 approver "human_approver" "ops" {
-  channel    = "#agent-ops"   # Slack/Discord/Telegram channel (via the credential)
-  credential = slack-ops      # optional; omit for dashboard-only
-  timeout    = 600            # seconds; falls back to human_on_timeout
+  channel    = "#agent-ops"   # via the credential's notifier
+  credential = slack-ops      # omit for dashboard-only
+  timeout    = 600
 }
 
 approver "llm_approver" "judge" {
   model      = "claude-haiku-4-5-20251001"
   credential = claude
-  policy     = no-pii-exfil   # reusable prompt from a policy "<name>" {} block
+  policy     = no-pii-exfil   # references a `policy "<name>" {}` block
 }
 ```
 
-A rule's `approve = [a, b, c]` runs each in order; all must allow.
-The bare name `dashboard` is a built-in approver that parks pending
-items on the dashboard without paging anyone.
-
----
+Built-in approver `dashboard` parks pending items on the dashboard
+without paging.
 
 ## Onboard a device
-
-On the device:
 
 ```bash
 clawpatrol join http://<gateway-host>:9080
 ```
 
-- Prints a one-time code. Operator opens the dashboard, confirms
-  the code, assigns a profile, approves.
-- WireGuard conf persisted at `~/.config/clawpatrol/wg.conf`.
-- Gateway CA fetched into the system trust store.
-- `eval "$(clawpatrol env)"` added to your shell rc.
+Prints a one-time code; operator confirms it in the dashboard,
+assigns a profile, approves. Persists the WG conf to
+`~/.config/clawpatrol/wg.conf`, installs the gateway CA, adds
+`eval "$(clawpatrol env)"` to your shell rc.
 
-**Flags worth knowing:**
+Flags: `--hostname`, `--profile`, `--whole-machine` (route every
+packet through the gateway instead of just `clawpatrol run`),
+`--no-trust` (skip system trust install).
 
-| Flag | Effect |
-|---|---|
-| `--hostname NAME` | Device name shown in the dashboard. Default: OS hostname. |
-| `--profile NAME` | Profile to suggest at approval time. |
-| `--whole-machine` | Bring up `wg-quick` and route every packet through the gateway. Default: persist conf only, use `clawpatrol run` per-process. |
-| `--no-trust` | Fetch the CA but skip system trust install. |
-
-macOS: first join prompts for the Network Extension in **System
+macOS first join: approve the Network Extension in **System
 Settings → Privacy & Security**.
-
----
 
 ## Run an agent
 
@@ -375,60 +311,47 @@ clawpatrol run -- gh pr create
 clawpatrol run -- psql 'host=db user=agent'
 ```
 
-The wrapped process's traffic routes through the gateway. The
-agent sees a normal network — no proxy URL, no CA bundle, no
-configuration.
+The wrapped process's traffic routes through the gateway. The agent
+sees a normal network — no proxy URL, no CA bundle.
 
-- **Linux**: unprivileged user namespace + private WireGuard tunnel
-  per invocation. Concurrent `clawpatrol run`s don't share an
-  identity.
-- **macOS**: Network Extension captures by PID. First run after
-  install needs the extension approved in System Settings.
+- **Linux**: unprivileged user namespace + private WG tunnel per
+  invocation.
+- **macOS**: Network Extension captures by PID.
 
----
+## State layout
 
-## Where things live
-
-**Gateway host** (set up by `gateway init`):
+**Gateway** (`/etc/clawpatrol/` root, or `~/.clawpatrol` non-root):
 
 ```
-/etc/clawpatrol/          # root install — or ~/.clawpatrol non-root
-  gateway.hcl             # HCL config
-  ca/ca.crt
-  ca/ca.key
-  oauth/clawpatrol.db     # SQLite — devices, sessions, audit log
-  oauth/wg-server.key
+gateway.hcl
+ca/ca.crt, ca/ca.key
+oauth/clawpatrol.db    # SQLite — devices, sessions, audit log
+oauth/wg-server.key
 ```
 
-**Device** (set up by `join`):
+**Device:**
 
 ```
-~/.clawpatrol/
-  ca.crt                  # gateway CA
-~/.config/clawpatrol/
-  wg.conf                 # WireGuard config
+~/.clawpatrol/ca.crt
+~/.config/clawpatrol/wg.conf
 ```
-
----
 
 ## Common errors
 
 | Error | Fix |
 |---|---|
-| `config file "X" does not exist` | Pass a real path, or run `clawpatrol gateway init` first. |
-| `endpoint "X" not in compiled policy` | The fixture pins an endpoint name that no longer exists. Regenerate via the dashboard "Download action" button. |
+| `config file "X" does not exist` | Pass a real path or run `clawpatrol gateway init` first. |
+| `endpoint "X" not in compiled policy` | Fixture pins a stale endpoint name. Regenerate via dashboard "Download action". |
 | `host "X" is claimed by multiple endpoints` | Set `match.endpoint` in the fixture to disambiguate. |
-| Rule loads with `mixed-family endpoint set` | A rule's `endpoints = [a, b]` references endpoints with different families (e.g. an HTTPS and a Postgres endpoint). Split the rule. |
-| Dashboard "misconfiguration" page | Set `dashboard_secret` in `gateway.hcl` (or `insecure_no_dashboard_secret = true` for testing only). |
-| Agent gets `tls: unknown authority` errors | The device's `~/.clawpatrol/ca.crt` isn't in your trust store. Re-run `clawpatrol join` (or trust the cert manually). |
+| `mixed-family endpoint set` | A rule's `endpoints` list mixes families (e.g. HTTPS + Postgres). Split the rule. |
+| Dashboard "misconfiguration" page | Set `dashboard_secret` (or `insecure_no_dashboard_secret = true` for testing). |
+| Agent gets `tls: unknown authority` | Device's `~/.clawpatrol/ca.crt` isn't trusted. Re-run `clawpatrol join` or trust manually. |
 
----
+## Deeper
 
-## Going deeper
-
-- [Architecture](/docs/architecture/) — how interception and dispatch actually work.
-- [Approval rules](/docs/approval-rules/) — full CEL idioms + approver chains.
-- [Config reference](/docs/config-reference/) — every HCL attribute.
-- [CLI](/docs/cli/) — every subcommand and flag.
-- [Security model](/docs/security-model/) — threat model + what's out of scope.
-- [`clawpatrol-test`](/docs/clawpatrol-test/) — fixture format + CI integration.
+[Architecture](/docs/architecture/) — interception + dispatch.
+[Approval rules](/docs/approval-rules/) — CEL idioms + approver
+chains. [Config reference](/docs/config-reference/) — every HCL
+attribute. [CLI](/docs/cli/) — every subcommand.
+[Security model](/docs/security-model/) — threat model.
+[`clawpatrol-test`](/docs/clawpatrol-test/) — fixtures + CI.
