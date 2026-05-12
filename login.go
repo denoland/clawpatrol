@@ -48,6 +48,13 @@ type tsPeer struct {
 // straight into the post-join setup (set exit-node, fetch CA, install
 // system trust) — single command, full setup.
 func runJoin(args []string) {
+	// `sudo clawpatrol join` lands wg.conf + api-token as root:root in
+	// /root/.config/clawpatrol, then the user's `clawpatrol run` (no
+	// sudo) can't read them. The CA-install step is the only piece that
+	// needs elevated rights, and runAsRoot() shells out to sudo on demand.
+	if os.Geteuid() == 0 && os.Getenv("SUDO_USER") != "" {
+		fail("don't run join under sudo — invoke as your normal user; I'll sudo internally for the CA install step")
+	}
 	fs := flag.NewFlagSet("join", flag.ExitOnError)
 	gwName := fs.String("name", "clawpatrol", "exit-node hostname on the tailnet")
 	caOut := fs.String("ca-dir", defaultClawpatrolDir(), "where to store the fetched CA")

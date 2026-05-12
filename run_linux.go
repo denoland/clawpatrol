@@ -61,6 +61,16 @@ func runRun(args []string) {
 		return
 	}
 
+	// `sudo clawpatrol run` is doomed on this distro: the UidMappings
+	// below collapse to `0 → 0`, and most distros refuse to put pid 0
+	// into a new user namespace at all (apparmor restrict-unpriv-userns
+	// on Ubuntu 24.04, kernel.unprivileged_userns_clone=0 elsewhere).
+	// The fallout used to surface as a misleading sysctl hint after
+	// child.Start() failed — catch it here with a clear message instead.
+	if os.Geteuid() == 0 {
+		fail("run as your normal user; clawpatrol run uses unprivileged user namespaces which root cannot enter on this distro")
+	}
+
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	confPath := fs.String("conf", defaultRunConf(), "path to wg conf written by `clawpatrol join`")
 	_ = fs.Parse(args)
@@ -126,6 +136,13 @@ func runRun(args []string) {
 		AmbientCaps: []uintptr{capNetAdmin, capSysAdmin},
 	}
 	if err := child.Start(); err != nil {
+		// The EUID==0 short-circuit at the top of runRun should make this
+		// branch unreachable for root, but keep the check here in case
+		// future changes invert the order — the kernel-sysctl hint is
+		// misleading when the real cause is "user ran us under sudo".
+		if os.Geteuid() == 0 {
+			fail("clone: %v\n  hint: run as your normal user — clawpatrol run uses unprivileged user namespaces which root cannot enter on this distro", err)
+		}
 		fail("clone: %v\n  hint: this distro may have unprivileged user namespaces disabled.\n  enable: sudo sysctl -w kernel.unprivileged_userns_clone=1", err)
 	}
 	_ = cSock.Close()
