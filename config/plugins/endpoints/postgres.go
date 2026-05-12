@@ -42,7 +42,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -413,6 +412,18 @@ func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.
 						}
 					}
 				}
+				// FunctionCall ('F') is the v2 legacy fast-path:
+				// invoke a function by OID with binary args. There
+				// is no SQL text on the wire, so the matcher cannot
+				// fire on it. Fail-closed (§4.1) — modern drivers
+				// don't issue 'F'; agents using it are bypassing the
+				// SQL inspection surface.
+				if msg.typ == 'F' {
+					reason := "FunctionCall (legacy fast-path) blocked — no SQL text to inspect"
+					pgWriteDeny(ch.Conn, reason)
+					log.Printf("pg-deny %s: %s", ch.PeerIP, reason)
+					continue
+				}
 				raw := serializePgMessage(msg)
 				if _, err := upstream.Write(raw); err != nil {
 					return
@@ -426,19 +437,43 @@ func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.
 }
 
 // pgEvaluate runs the SQL through the endpoint's compiled rules and
-// returns the disposition for this query. Emits a per-query event in
-// every branch (allow, deny, hitl_allow, hitl_deny) so the dashboard
-// surfaces the activity even when no rule fires — endpoints with
-// zero rules still log every query as "allow".
+// returns the disposition for this query. Multi-statement Q payloads
+// (§1.3), WITH-CTE-hidden DML (§1.2), and DO body inner statements
+// (§6.5) all flow through the matcher; a deny on any sub-statement
+// denies the whole wire query.
+//
+// Per-statement allow/HITL events are emitted on the matcher's
+// happy path so the dashboard surfaces each component of a batch
+// individually. Shadow sub-statements (CTE-inner DML, DO body) do
+// not emit allow events — they exist to close the parser-evasion
+// loop, and emitting for synthesised reads would inflate dashboard
+// counts. They DO emit deny events when the matcher denies.
 //
 // Returns:
 //
-//	("deny", reason) — matched rule denies, or approve chain
-//	  rejected, or approve chain timed out (host applies its
-//	  configured fail mode).
-//	("", "")         — no rule fires or the matched rule allows.
+//	("deny", reason) — first sub-statement to deny short-circuits.
+//	("", "")         — every sub-statement allowed or had no match.
 func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
-	info := parseSQL(sql)
+	for _, stmt := range analyseAll(sql) {
+		v, reason := pgEvaluateInfo(ch, stmt.Outer, credName, false)
+		if v == "deny" {
+			return v, reason
+		}
+		for _, inner := range stmt.Inner {
+			v, reason := pgEvaluateInfo(ch, inner, credName, true)
+			if v == "deny" {
+				return v, reason
+			}
+		}
+	}
+	return "", ""
+}
+
+// pgEvaluateInfo runs one pgInfo through the matcher. shadow=true
+// suppresses emission on allow / hitl_allow so synthesised
+// sub-statements don't pollute the dashboard; deny emissions still
+// fire either way (operators need to see *why* a batch was denied).
+func pgEvaluateInfo(ch *runtime.ConnHandle, info pgInfo, credName string, shadow bool) (string, string) {
 	summary := pgSummary(info)
 	mreq := &match.Request{
 		Family:     "sql",
@@ -466,9 +501,11 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 		// HTTP path does the same (main.go:1909 — every request
 		// gets an `allow` event when no explicit verdict was
 		// recorded).
-		emit(ch, runtime.ConnEvent{
-			Action: "allow", Verb: info.Verb, Summary: summary, Facets: facets,
-		})
+		if !shadow {
+			emit(ch, runtime.ConnEvent{
+				Action: "allow", Verb: info.Verb, Summary: summary, Facets: facets,
+			})
+		}
 		return "", ""
 	}
 	rule := cr.Name
@@ -502,9 +539,11 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 			})
 			return "deny", reason
 		}
-		emit(ch, runtime.ConnEvent{
-			Action: "hitl_allow", Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
-		})
+		if !shadow {
+			emit(ch, runtime.ConnEvent{
+				Action: "hitl_allow", Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
+			})
+		}
 		return "", ""
 	}
 
@@ -519,9 +558,11 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 		})
 		return "deny", reason
 	}
-	emit(ch, runtime.ConnEvent{
-		Action: "allow", Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
-	})
+	if !shadow {
+		emit(ch, runtime.ConnEvent{
+			Action: "allow", Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
+		})
+	}
 	return "", ""
 }
 
@@ -669,7 +710,14 @@ func indexByte(b []byte, c byte) int {
 	return -1
 }
 
-// ── Best-effort SQL lexer for the SQLMatcher input ────────────────────
+// ── SQL extractor input for the matcher ───────────────────────────────
+//
+// The tokenizer + per-section extractors live in postgres_sql.go.
+// parseSQL produces the pgInfo for the first top-level statement so
+// the legacy ParseStatement plugin API stays single-statement; the
+// wire-protocol gateway uses analyseAll (postgres_sql.go) to walk
+// every statement (including CTE-hidden DML and DO bodies) the
+// matcher should see.
 
 type pgInfo struct {
 	Verb      string
@@ -678,35 +726,16 @@ type pgInfo struct {
 	Statement string
 }
 
-var (
-	pgTableRE = regexp.MustCompile(`(?i)\b(?:from|update|into|join)\s+([a-z_][a-z0-9_.]*)`)
-	pgFuncRE  = regexp.MustCompile(`(?i)\b([a-z_][a-z0-9_]*)\s*\(`)
-)
-
 // parseSQL extracts verb / tables / functions / statement for the
-// SQL matcher. Best-effort — a SQL parser would be more correct but
-// the matcher's predicates are coarse enough that regex extraction
-// produces actionable results for the v14 use cases (banned verbs,
-// banned functions, secret-table reads).
+// first top-level statement in sql. Kept for the ParseStatement
+// plugin entry-point (action fixtures, dashboard previews) which
+// works on a single statement at a time.
 func parseSQL(sql string) pgInfo {
-	sql = strings.TrimSpace(sql)
-	info := pgInfo{Statement: sql}
-	if sql == "" {
-		return info
+	analysed := analyseAll(sql)
+	if len(analysed) == 0 {
+		return pgInfo{Statement: strings.TrimSpace(sql)}
 	}
-	lower := strings.ToLower(sql)
-	if i := strings.IndexAny(lower, " \t\n\r("); i > 0 {
-		info.Verb = lower[:i]
-	} else {
-		info.Verb = lower
-	}
-	for _, m := range pgTableRE.FindAllStringSubmatch(lower, -1) {
-		info.Tables = append(info.Tables, m[1])
-	}
-	for _, m := range pgFuncRE.FindAllStringSubmatch(lower, -1) {
-		info.Functions = append(info.Functions, m[1])
-	}
-	return info
+	return analysed[0].Outer
 }
 
 // Compile-time interface check — keeps PostgresEndpointRuntime in
