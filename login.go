@@ -1156,6 +1156,13 @@ profile "default" {
 	}
 	printTreeItems(items)
 	fmt.Println()
+	fmt.Println("Next:")
+	if systemdPath != "" {
+		fmt.Println("  systemctl enable --now clawpatrol-gateway")
+	} else {
+		fmt.Printf("  clawpatrol gateway %s\n", cfgPath)
+	}
+	fmt.Println()
 	fmt.Printf("Dashboard: %s\n", url)
 	fmt.Printf("Join command: clawpatrol join %s\n", url)
 }
