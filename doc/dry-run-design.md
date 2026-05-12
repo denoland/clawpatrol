@@ -33,12 +33,13 @@ candidate produces does not match the decision stored in the
 file — for a directory run, any single mismatch fails the run.
 
 To keep the authoring burden low, the dashboard grows a
-**"Download actions"** button on its recent-actions view. The
-button emits a zip of one file per recorded action, populated
-from what the gateway has actually seen and each carrying the
-verdict it produced under the live config. Operators unpack into
-`testdata/` and run as-is to lock in current behaviour, or edit
-individual files to drive a policy change.
+**"Download action"** button on the individual action detail
+page (`RequestDetailPage`). The button emits a single JSON file
+for that action, carrying the request and the verdict the
+gateway produced under the live config. Operators drop the file
+into `testdata/` and run as-is to lock in current behaviour, or
+edit it to drive a policy change. Building a multi-action
+fixture set is a matter of downloading each action of interest.
 
 The point is iteration speed and CI: today an operator changes a
 rule, pushes a full config reload, watches live traffic, and
@@ -86,8 +87,8 @@ it before logging. A small extension of `Event` (`Rule string`)
 populated at the existing dispatch sites is enough; no new
 plumbing.
 
-A "download these as a zipped actions directory" endpoint is
-then a re-shape of an existing dataset, not a new pipeline.
+A "download this action as a JSON file" endpoint is then a
+re-shape of an existing dataset, not a new pipeline.
 
 ### 1.4 Subcommand wiring
 
@@ -102,17 +103,17 @@ sibling file (`run_linux.go`, `onboard.go`, etc.). Adding
 ┌──────────────────────────────────┐    ┌──────────────────────────────┐
 │  clawpatrol test                 │    │  gateway dashboard           │
 │   candidate.hcl                  │    │                              │
-│   testdata/                      │    │  recent actions view         │
+│   testdata/                      │    │  action detail page          │
 │                                  │    │  ┌────────────────────────┐  │
-│  1. config.Load(candidate.hcl)   │    │  │ [Download actions]     │  │
+│  1. config.Load(candidate.hcl)   │    │  │ [Download action]      │  │
 │     + config.Compile()           │    │  └────────────────────────┘  │
 │                                  │    │            │                 │
 │  2. resolve path arg:            │    │            ▼                 │
 │     • file → one Action          │    │  GET /api/actions/export     │
-│     • dir  → glob *.json         │    │   → zip of one .json per     │
-│                                  │    │     event in the export      │
-│     each loads as:               │    │     window (request +        │
-│       Action{                    │    │     verdict per file)        │
+│     • dir  → glob *.json         │    │     ?id=<event-id>           │
+│                                  │    │   → one .json for that       │
+│     each loads as:               │    │     event (request +         │
+│       Action{                    │    │     verdict)                 │
 │         request: match.Request,  │    │                              │
 │         verdict: Verdict,        │    └──────────────────────────────┘
 │       }                          │
@@ -174,20 +175,21 @@ Concrete plumbing:
   file mismatches. `verdict.reason` is informational and not
   part of the comparison (it changes too freely under safe
   edits).
-- **Dashboard endpoint**: `GET /api/actions/export` returns a
-  `application/zip` of one `<action-id>.json` file per event
-  in the export window. The dashboard UI gets a "Download
-  actions" button on the actions list that hits this endpoint
-  and offers the result as a `.zip` download. Auth: same
-  `dashboard_secret` as the rest of `/api/*` (§3.E).
-- **Dashboard renderer**: for each `Event` in the export
-  window, map fields → `request: match.Request` and
-  `verdict: {action: ev.Action, rule: ev.Rule, reason:
-  ev.Reason}`, emit as a single JSON file under a stable name
-  (e.g. `<timestamp>-<short-sha>.json`), zip the lot. This
-  requires the small `Event.Rule` extension noted in §1.3.
-  Output is "what the gateway actually decided" — a
-  regression baseline.
+- **Dashboard endpoint**: `GET /api/actions/export?id=<event-id>`
+  returns one `application/json` action file for the named
+  event. The dashboard UI gets a "Download action" button on
+  the individual action detail page (`RequestDetailPage`) that
+  hits this endpoint with the current event id and offers the
+  result as a `.json` download. Operators build a fixture set
+  by downloading each action of interest into `testdata/`.
+  Auth: same `dashboard_secret` as the rest of `/api/*` (§3.E).
+- **Dashboard renderer**: for the requested `Event`, map fields
+  → `request: match.Request` and `verdict: {action: ev.Action,
+  rule: ev.Rule, reason: ev.Reason}`, emit as a single JSON file
+  under a stable name (e.g. `<timestamp>-<short-sha>.json`).
+  This requires the small `Event.Rule` extension noted in §1.3.
+  Output is "what the gateway actually decided" — a regression
+  baseline.
 
 This design removes everything that was hard about the previous
 proposal: no session keying, no ephemeral peers, no response
@@ -275,21 +277,17 @@ endpoint is just a more convenient shape.
 
 ### F. Export window
 
-How many recent events should the button download?
+With the button on the individual action detail page, v1 ships
+single-action download by event id. Operators build a fixture
+set by downloading each action of interest into `testdata/`.
 
-- Whole ring (last 500): matches what the dashboard already
-  shows; simplest mental model.
-- Time-windowed (`?since=...`): supports "actions from the last
-  hour of activity"; small UI addition.
-- Filter by `agent` / `mode` / `host`: lets operators export a
-  per-agent or per-host fixture set. Likely useful given the
-  dashboard already filters this way.
+A list-level "Download all" (zip of the whole ring, `?since=...`,
+or filtered by `agent` / `mode` / `host`) is a natural follow-up
+if operators want bulk export without clicking through every
+action.
 
-**Recommendation:** start with whole ring + `?since=` query
-parameter. Per-agent/per-host filtering can land as the UI
-needs it.
-
-**Decision needed:** confirm scope.
+**Decision needed:** confirm v1 is single-action only, with bulk
+export deferred.
 
 ## 4. Proposed scope for the first PR
 
@@ -305,18 +303,18 @@ After the above questions are answered, the implementation PR should:
   existing dispatch sites (`main.go:1638`, postgres,
   clickhouse_native) so the exporter can carry the matched
   rule name.
-- Add `GET /api/actions/export` returning a zip of one
-  `<id>.json` per event in the recent-events ring, with
-  redaction reusing the dashboard's existing rules.
-- Add the "Download actions" button to the dashboard's
-  recent-actions view.
+- Add `GET /api/actions/export?id=<event-id>` returning one
+  `<id>.json` for the named event as an Action, with redaction
+  reusing the dashboard's existing rules.
+- Add the "Download action" button to the dashboard's
+  individual action detail page (`RequestDetailPage`).
 - HTTPS endpoint family in v1; SQL families covered if their
   recorded event fields are sufficient.
 - Tests: unit tests for the runner (verdict match / mismatch
   on action and rule, single-file and directory modes), a
-  golden-file test for export zip shape, and an integration
-  test that exports → unpacks → runs → asserts zero diffs
-  against the current config.
+  golden-file test for the exported per-action JSON shape, and
+  an integration test that exports → drops into `testdata/` →
+  runs → asserts zero diffs against the current config.
 
 Out of scope for v1: live-session candidate dispatch (the
 previous proposal — superseded), mock upstream, time-travel
