@@ -35,6 +35,12 @@ Then a brief one-line reason on the second line.
 
 Be conservative — when the policy is ambiguous about whether the request is permitted, deny.`
 
+// defaultLLMBodyLimit caps the bytes of req.BodySample embedded in
+// the judge prompt when llm_body_limit is unset. Kept at the
+// historical hardcoded value so configs that don't set the attribute
+// produce the exact same prompts they did before.
+const defaultLLMBodyLimit = 4000
+
 // LLMApprover carries the model + the credential used to authenticate
 // the call to the model API + the policy text the model judges
 // against. Inline `policy` is a bare-name reference to a `policy
@@ -44,6 +50,35 @@ type LLMApprover struct {
 	Model      string `hcl:"model"`
 	Credential string `hcl:"credential"`
 	Policy     string `hcl:"policy,optional"`
+	// LLMBodyLimit caps the bytes of the request body sample
+	// embedded in the judge prompt. Omit the attribute to keep
+	// the historical 4000-byte cap. `0` is a sentinel meaning
+	// "no truncation — send the full body", useful for large SQL
+	// queries or JSON payloads where the decision-relevant
+	// content (a SELECT list, a deeply nested field) sits past
+	// the default cap and would otherwise be hidden from the
+	// judge. Positive N truncates to N bytes with a trailing "…"
+	// marking the cut.
+	//
+	// Tradeoff: larger limits buy the model more context to
+	// judge correctly, at the cost of more input tokens per
+	// approval. Raising the cap on a hot-path approver
+	// multiplies the per-request token spend, so prefer a narrow
+	// cap when the body shape is small and uniform, and reach
+	// for `0` only when truncation has been observed to hide
+	// content the judge needs.
+	LLMBodyLimit *int `hcl:"llm_body_limit,optional"`
+}
+
+// bodyLimit resolves the effective truncation cap in bytes. A nil
+// pointer means the operator did not set the attribute, so we fall
+// back to defaultLLMBodyLimit; an explicit zero from HCL passes
+// through and disables truncation entirely.
+func (a *LLMApprover) bodyLimit() int {
+	if a.LLMBodyLimit == nil {
+		return defaultLLMBodyLimit
+	}
+	return *a.LLMBodyLimit
 }
 
 // Approve is part of the clawpatrol plugin API.
@@ -69,7 +104,7 @@ func (a *LLMApprover) Approve(ctx context.Context, req runtime.ApproveRequest) (
 		return runtime.ApproveVerdict{Decision: "deny", Reason: "credential " + a.Credential + " not declared"}, nil
 	}
 
-	user := buildJudgePrompt(req, policyText)
+	user := buildJudgePrompt(req, policyText, a.bodyLimit())
 
 	var (
 		hreq   *http.Request
@@ -115,7 +150,7 @@ func (a *LLMApprover) Approve(ctx context.Context, req runtime.ApproveRequest) (
 	return runtime.ApproveVerdict{Decision: verdict, Reason: reason, By: by}, nil
 }
 
-func buildJudgePrompt(req runtime.ApproveRequest, policyText string) string {
+func buildJudgePrompt(req runtime.ApproveRequest, policyText string, bodyLimit int) string {
 	var sb strings.Builder
 	sb.WriteString("Policy:\n")
 	if policyText != "" {
@@ -131,9 +166,22 @@ func buildJudgePrompt(req runtime.ApproveRequest, policyText string) string {
 		fmt.Fprintf(&sb, "  user-agent: %s\n", req.UA)
 	}
 	if req.BodySample != "" {
-		fmt.Fprintf(&sb, "  body:\n%s\n", indent(truncate(req.BodySample, 4000), "    "))
+		fmt.Fprintf(&sb, "  body:\n%s\n", indent(truncateBody(req.BodySample, bodyLimit), "    "))
 	}
 	return sb.String()
+}
+
+// truncateBody applies the operator-configured cap. limit <= 0 means
+// "no truncation"; the zero sentinel is handled by the caller via
+// LLMApprover.bodyLimit, and negative values are treated identically
+// to be safe. Positive limit truncates to N bytes and appends "…"
+// when material is dropped.
+func truncateBody(s string, limit int) string {
+	s = strings.TrimSpace(s)
+	if limit <= 0 || len(s) <= limit {
+		return s
+	}
+	return s[:limit] + "…"
 }
 
 func truncate(s string, n int) string {
@@ -275,6 +323,9 @@ func init() {
 			config.SetIdent(b, "credential", a.Credential)
 			if a.Policy != "" {
 				config.SetIdent(b, "policy", a.Policy)
+			}
+			if a.LLMBodyLimit != nil {
+				b.SetAttributeValue("llm_body_limit", cty.NumberIntVal(int64(*a.LLMBodyLimit)))
 			}
 		},
 	})

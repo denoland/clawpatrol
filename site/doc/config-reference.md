@@ -131,6 +131,7 @@ and reuses across multiple judges.
 | `model` | `string` | yes |  |
 | `credential` | `ref(credential)` | yes |  |
 | `policy` | `ref(policy)` | no |  |
+| `llm_body_limit` | `int` | no | Caps the bytes of the request body sample embedded in the judge prompt. Omit the attribute to keep the historical 4000-byte cap. `0` is a sentinel meaning "no truncation — send the full body", useful for large SQL queries or JSON payloads where the decision-relevant content (a SELECT list, a deeply nested field) sits past the default cap and would otherwise be hidden from the judge. Positive N truncates to N bytes with a trailing "…" marking the cut. Tradeoff: larger limits buy the model more context to judge correctly, at the cost of more input tokens per approval. Raising the cap on a hot-path approver multiplies the per-request token spend, so prefer a narrow cap when the body shape is small and uniform, and reach for `0` only when truncation has been observed to hide content the judge needs. |
 
 ```hcl
 approver "llm_approver" "example" {

@@ -39,7 +39,8 @@
         "body": {
           "Model": "claude-haiku-4-5-20251001",
           "Credential": "anthropic-avocet-sub",
-          "Policy": "k8s-exec-content"
+          "Policy": "k8s-exec-content",
+          "LLMBodyLimit": 0
         },
         "type": "llm_approver"
       },
@@ -67,7 +68,8 @@
         "body": {
           "Model": "claude-haiku-4-5-20251001",
           "Credential": "anthropic-avocet-sub",
-          "Policy": "pg-secret-columns"
+          "Policy": "pg-secret-columns",
+          "LLMBodyLimit": 16384
         },
         "type": "llm_approver"
       },
@@ -75,7 +77,8 @@
         "body": {
           "Model": "claude-haiku-4-5-20251001",
           "Credential": "anthropic-avocet-sub",
-          "Policy": "pg-secret-named-defense"
+          "Policy": "pg-secret-named-defense",
+          "LLMBodyLimit": null
         },
         "type": "llm_approver"
       },
@@ -83,7 +86,8 @@
         "body": {
           "Model": "claude-sonnet-4-20250514",
           "Credential": "anthropic-avocet-sub",
-          "Policy": "reply-content"
+          "Policy": "reply-content",
+          "LLMBodyLimit": null
         },
         "type": "llm_approver"
       },
@@ -101,7 +105,8 @@
         "body": {
           "Model": "claude-sonnet-4-20250514",
           "Credential": "anthropic-avocet-sub",
-          "Policy": "slack-block-kit-shape"
+          "Policy": "slack-block-kit-shape",
+          "LLMBodyLimit": null
         },
         "type": "llm_approver"
       },

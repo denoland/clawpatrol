@@ -387,6 +387,10 @@ approver "llm_approver" "pg-secret-columns-judge" {
   model      = "claude-haiku-4-5-20251001"
   credential = anthropic-avocet-sub
   policy     = pg-secret-columns
+  # Long SELECT lists with many columns / aliases can run past the
+  # default 4 KiB body cap; widen the window so the judge sees the
+  # full statement.
+  llm_body_limit = 16384
 }
 approver "llm_approver" "pg-secret-named-defense-judge" {
   model      = "claude-haiku-4-5-20251001"
@@ -397,6 +401,10 @@ approver "llm_approver" "k8s-exec-content-judge" {
   model      = "claude-haiku-4-5-20251001"
   credential = anthropic-avocet-sub
   policy     = k8s-exec-content
+  # `0` disables truncation entirely — kubectl exec payloads can be
+  # large, and an obscured tail can hide the command that determines
+  # the verdict.
+  llm_body_limit = 0
 }
 
 approver "human_approver" "support-ops" {
