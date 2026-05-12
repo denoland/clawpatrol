@@ -1,4 +1,4 @@
--- 0008_gateway_state — collapse on-disk gateway state into sqlite.
+-- 0010_gateway_state — collapse on-disk gateway state into sqlite.
 --
 -- Before this migration the gateway scattered state across the
 -- filesystem alongside its sqlite db:
@@ -66,4 +66,4 @@ CREATE TABLE dnsvip_allocations (
   v6        TEXT NOT NULL UNIQUE
 );
 
-INSERT INTO _schema (version) VALUES (8);
+INSERT INTO _schema (version) VALUES (10);

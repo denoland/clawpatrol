@@ -1,6 +1,6 @@
 package main
 
-// Legacy-state import. Before 0008_gateway_state, the gateway
+// Legacy-state import. Before 0010_gateway_state, the gateway
 // scattered six small pieces of state across the filesystem next to
 // its sqlite db (CA cert+key, WG server key, per-endpoint SSH host
 // keys, codex JWT keys, telemetry instance id, dnsvip allocations).
