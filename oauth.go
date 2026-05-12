@@ -549,9 +549,9 @@ func (w *webMux) apiOAuthStart(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "no oauth integration: "+id, 400)
 		return
 	}
-	owner, ownerLabel := w.ownerForCaller(r)
+	owner, ownerLabel := w.credentialProfileKeyForRequest(r)
 	if owner == "" {
-		http.Error(rw, "could not determine owner identity (tailscale whois failed)", 400)
+		http.Error(rw, "could not determine profile", 400)
 		return
 	}
 	// User may opt into additional scopes (e.g. SSH/GPG key management
