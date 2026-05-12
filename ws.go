@@ -1,11 +1,12 @@
 package main
 
-// WebSocket bridging for the new policy. RFC 6455 frames pass
-// through verbatim — placeholder substitution is gone with the
-// legacy Swap field, so the bridge is just byte-faithful in both
-// directions. Text frames going server-bound get observed (decoded
-// + permessage-deflate inflated) for codex-WS token-usage tracking
-// when the host matches; nothing is mutated on the wire.
+// WebSocket bridging for the new policy. RFC 6455 frames normally pass
+// through verbatim; server-bound text frames can be rebuilt only when a
+// credential plugin explicitly owns an in-frame placeholder (currently used
+// for Discord Gateway token hiding). Text frames also get observed (decoded
+// + permessage-deflate inflated) for codex-WS token-usage tracking when the
+// host matches; observers receive the original placeholder payload rather
+// than any rewritten secret-bearing bytes.
 //
 // Why a separate bridge instead of letting http.Transport.RoundTrip
 // handle the 101 Switching Protocols: Cloudflare's WAF on
@@ -50,6 +51,8 @@ type wsParams struct {
 	clientNoTakeover bool // client_no_context_takeover
 	serverNoTakeover bool // server_no_context_takeover
 }
+
+type wsPayloadRewriter func([]byte) ([]byte, bool, error)
 
 func parseWSExtensions(headerVal string) wsParams {
 	var p wsParams
@@ -96,7 +99,7 @@ func (g *Gateway) dialWSUpstream(ctx context.Context, upstream string, ep *confi
 // raw byte bridge once the agent's request looks like a WS upgrade.
 // The connection stays alive until either side closes; pumpWS
 // observes text frames for codex usage tracking when applicable.
-func (g *Gateway) handleWSUpgrade(client *tls.Conn, br *bufio.Reader, req *http.Request, upstream string, frameEmit func(direction, sample string), ep *config.CompiledEndpoint, profile string) {
+func (g *Gateway) handleWSUpgrade(client *tls.Conn, br *bufio.Reader, req *http.Request, upstream string, frameEmit func(direction, sample string), ep *config.CompiledEndpoint, profile string, rewriteClientPayload wsPayloadRewriter) {
 	agentAddr := peerIP(client) // capture before netstack races to nil
 
 	// dialWSUpstream preserves the existing split: endpoints that require a
@@ -232,12 +235,12 @@ func (g *Gateway) handleWSUpgrade(client *tls.Conn, br *bufio.Reader, req *http.
 	done := make(chan struct{}, 2)
 	// client → server (frames are masked on this side)
 	go func() {
-		_ = pumpWS(br, up, params, true, clientToServer, func(n int) { track(int64(n), 0) })
+		_ = pumpWS(br, up, params, true, clientToServer, rewriteClientPayload, func(n int) { track(int64(n), 0) })
 		done <- struct{}{}
 	}()
 	// server → client (frames are NOT masked)
 	go func() {
-		_ = pumpWS(upBR, client, params, false, serverToClient, func(n int) { track(0, int64(n)) })
+		_ = pumpWS(upBR, client, params, false, serverToClient, nil, func(n int) { track(0, int64(n)) })
 		done <- struct{}{}
 	}()
 	<-done
@@ -280,25 +283,50 @@ func parseRespHeaders(raw []byte) http.Header {
 	return h
 }
 
-// pumpWS reads frames from src and forwards bytes verbatim to dst.
-// For text frames, a COPY of the payload is unmasked + decompressed
-// (if RSV1 set and deflate negotiated) and passed to onPayload for
-// inspection. We do NOT modify or re-mask frames — Cloudflare's WAF
-// on chatgpt.com closes the connection with 1007 ("invalid frame
-// payload data") if forwarded frames don't byte-match what the
-// client sent.
+// pumpWS reads frames from src and forwards bytes to dst. Most
+// connections stay byte-verbatim; rewritePayload is only for credential
+// plugins whose SDKs put token placeholders inside server-bound text
+// frames (Discord Gateway IDENTIFY). For text frames, a COPY of the
+// payload is unmasked + decompressed (if RSV1 set and deflate negotiated)
+// and passed to onPayload for inspection. Inspectors see the original
+// placeholder payload, never the rewritten secret-bearing bytes.
 //
 // fromClient controls which deflate context-takeover state to use.
-func pumpWS(src *bufio.Reader, dst io.Writer, params wsParams, fromClient bool, onPayload func([]byte), onFrameBytes func(int)) error {
+func pumpWS(src *bufio.Reader, dst io.Writer, params wsParams, fromClient bool, onPayload func([]byte), rewritePayload wsPayloadRewriter, onFrameBytes func(int)) error {
 	noTakeover := params.serverNoTakeover
 	if fromClient {
 		noTakeover = params.clientNoTakeover
 	}
 	infl := &wsInflater{}
 	for {
-		raw, _, op, compressed, masked, maskKey, payload, err := readFrameRaw(src)
+		raw, b0, op, compressed, masked, maskKey, payload, err := readFrameRaw(src)
 		if err != nil {
 			return err
+		}
+		plain := payload
+		if op == wsOpText && (onPayload != nil || rewritePayload != nil) {
+			plain = unmaskWSPayload(payload, masked, maskKey)
+			if compressed && params.deflate {
+				if dec := infl.decompress(plain, noTakeover); dec != nil {
+					plain = dec
+				}
+			}
+		}
+		if op == wsOpText && onPayload != nil {
+			onPayload(plain)
+		}
+		// Only rebuild uncompressed text frames. Rewriting compressed frames
+		// would require re-compressing with the negotiated permessage-deflate
+		// context; Discord SDKs send IDENTIFY as plain text, so leave any
+		// compressed traffic byte-faithful instead of corrupting it.
+		if op == wsOpText && rewritePayload != nil && !compressed {
+			rewritten, changed, err := rewritePayload(plain)
+			if err != nil {
+				return err
+			}
+			if changed {
+				raw = buildFrameRaw(b0, masked, maskKey, rewritten)
+			}
 		}
 		if onFrameBytes != nil {
 			onFrameBytes(len(raw))
@@ -306,25 +334,53 @@ func pumpWS(src *bufio.Reader, dst io.Writer, params wsParams, fromClient bool, 
 		if _, werr := dst.Write(raw); werr != nil {
 			return werr
 		}
-		if op == wsOpText && onPayload != nil {
-			plain := payload
-			if masked {
-				plain = make([]byte, len(payload))
-				for i := range payload {
-					plain[i] = payload[i] ^ maskKey[i%4]
-				}
-			}
-			if compressed && params.deflate {
-				if dec := infl.decompress(plain, noTakeover); dec != nil {
-					plain = dec
-				}
-			}
-			onPayload(plain)
-		}
 		if op == wsOpClose {
 			return nil
 		}
 	}
+}
+
+func unmaskWSPayload(payload []byte, masked bool, maskKey [4]byte) []byte {
+	if !masked {
+		return payload
+	}
+	plain := make([]byte, len(payload))
+	for i := range payload {
+		plain[i] = payload[i] ^ maskKey[i%4]
+	}
+	return plain
+}
+
+func buildFrameRaw(b0 byte, masked bool, maskKey [4]byte, payload []byte) []byte {
+	var raw bytes.Buffer
+	raw.WriteByte(b0)
+	maskBit := byte(0)
+	if masked {
+		maskBit = wsMaskBit
+	}
+	switch n := len(payload); {
+	case n < 126:
+		raw.WriteByte(maskBit | byte(n))
+	case n <= 0xffff:
+		raw.WriteByte(maskBit | 126)
+		var ext [2]byte
+		binary.BigEndian.PutUint16(ext[:], uint16(n))
+		raw.Write(ext[:])
+	default:
+		raw.WriteByte(maskBit | 127)
+		var ext [8]byte
+		binary.BigEndian.PutUint64(ext[:], uint64(n))
+		raw.Write(ext[:])
+	}
+	if masked {
+		raw.Write(maskKey[:])
+		for i, b := range payload {
+			raw.WriteByte(b ^ maskKey[i%4])
+		}
+		return raw.Bytes()
+	}
+	raw.Write(payload)
+	return raw.Bytes()
 }
 
 // wsInflater handles permessage-deflate decompression with optional

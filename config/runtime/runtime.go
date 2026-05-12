@@ -30,6 +30,17 @@ type HTTPCredentialRuntime interface {
 	InjectHTTP(ctx context.Context, req *http.Request, sec Secret) error
 }
 
+// WebSocketCredentialRuntime is the credential-plugin contract for
+// server-bound WebSocket text payloads that carry token placeholders.
+// The gateway calls this after decoding/unmasking a complete text frame
+// but before forwarding it upstream; implementations must return a new
+// plaintext payload and indicate whether the frame must be rebuilt.
+// Inspectors still receive the original placeholder-bearing payload so
+// real secrets are not emitted to logs or the dashboard.
+type WebSocketCredentialRuntime interface {
+	RewriteWebSocketPayload(ctx context.Context, payload []byte, sec Secret) ([]byte, bool, error)
+}
+
 // HTTPSyntheticResponder is the optional contract an endpoint
 // plugin's runtime implements when it needs to short-circuit certain
 // matched requests and return a synthetic response without forwarding

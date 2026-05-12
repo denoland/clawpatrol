@@ -1777,34 +1777,48 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		// multi-credential dispatch asks the endpoint plugin's
 		// PlaceholderDetector which placeholder the agent sent),
 		// fetch the secret bytes from the configured store, and
-		// hand both to the credential plugin's HTTPCredentialRuntime
-		// to stamp onto the request. Schema-only credential types
-		// (slack / telegram / gemini / etc.) leave Runtime nil; we
-		// pass through verbatim and rely on policy alone.
+		// hand both to the credential plugin's request-time runtime hooks
+		// to stamp HTTP auth or rewrite server-bound WS token placeholders.
+		// Schema-only credential types leave Runtime nil; we pass through
+		// verbatim and rely on policy alone.
+		var rewriteWSPayload wsPayloadRewriter
 		if cc := runtime.ResolveCredential(ep, mreq); cc != nil {
 			// Plugin.Runtime is a typed-nil sentinel used only for
 			// interface-compliance assertions; the actual decoded HCL
 			// values (BearerToken.IdempotencyKey, PostgresCredential.User,
 			// etc.) live on Body. Invoke methods through Body so the
 			// receiver is the real instance.
-			if injector, ok := cc.Credential.Body.(runtime.HTTPCredentialRuntime); ok {
+			injector, wantsHTTP := cc.Credential.Body.(runtime.HTTPCredentialRuntime)
+			wsRewriter, wantsWS := cc.Credential.Body.(runtime.WebSocketCredentialRuntime)
+			if wantsHTTP || (wantsWS && isWSUpgrade(req)) {
 				sec, err := g.secrets.Get(cc.Credential.Symbol.Name, profile)
 				if err != nil {
 					log.Printf("secret %s/%s: %v — forwarding without injection", cc.Credential.Symbol.Name, profile, err)
 				} else if len(sec.Bytes) == 0 && len(sec.Extras) == 0 {
 					log.Printf("secret %s/%s: not configured (set CLAWPATROL_SECRET_%s)", cc.Credential.Symbol.Name, profile, secretEnvName(cc.Credential.Symbol.Name))
-				} else if err := injector.InjectHTTP(req.Context(), req, sec); err != nil {
-					log.Printf("inject %s: %v", cc.Credential.Symbol.Name, err)
+				} else {
+					if wantsHTTP {
+						if err := injector.InjectHTTP(req.Context(), req, sec); err != nil {
+							log.Printf("inject %s: %v", cc.Credential.Symbol.Name, err)
+						}
+					}
+					if wantsWS && isWSUpgrade(req) {
+						wsSec := sec
+						rewriteWSPayload = func(payload []byte) ([]byte, bool, error) {
+							return wsRewriter.RewriteWebSocketPayload(req.Context(), payload, wsSec)
+						}
+					}
 				}
 			}
 		}
 
 		// WebSocket upgrade. http.Transport.RoundTrip mangles the
-		// 101 response and Cloudflare's WAF rejects modified frames,
-		// so we hand off to a raw byte bridge that forwards the
-		// upgrade verbatim and pumps frames untouched. The handler
-		// runs until either side closes — when it returns, the
-		// caller's request loop ends naturally.
+		// 101 response and Cloudflare's WAF rejects unexpectedly modified
+		// frames, so we hand off to a raw byte bridge. Frames remain
+		// byte-faithful unless the selected credential provides an explicit
+		// WS token-placeholder rewriter (for example Discord Gateway
+		// IDENTIFY). The handler runs until either side closes — when it
+		// returns, the caller's request loop ends naturally.
 		if isWSUpgrade(req) {
 			log.Printf("ws-upgrade %s %s", host, req.URL.Path)
 			ev.Action = "ws"
@@ -1828,7 +1842,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 					Direction: direction,
 				})
 			}
-			g.handleWSUpgrade(tc, br, req, host, frameEmit, ep, profile)
+			g.handleWSUpgrade(tc, br, req, host, frameEmit, ep, profile, rewriteWSPayload)
 			ev.Status = 101
 			ev.Ms = time.Since(start).Milliseconds()
 			g.emitEnd(ev)
