@@ -30,10 +30,11 @@ Every singleton gateway attribute — listen addresses, paths, control-plane joi
 | `info_listen` | `string` | no |  |
 | `public_url` | `string` | no |  |
 | `admin_email` | `string` | no |  |
-| `ca_dir` | `string` | no |  |
+| `ca_dir` | `string` | no | The legacy path the gateway used to keep the CA cert + ssh host keys on disk. Kept for backwards compat: existing configs still parse, and state_import.go consults this path to move any leftover on-disk artifacts into sqlite on first boot of a migrated gateway. New deployments should set state_dir instead — the gateway now keeps everything in sqlite. |
+| `state_dir` | `string` | no | The directory holding clawpatrol.db. Falls back to OAuthDir (historical name) or ${CADir}/../oauth or ${HOME}/.clawpatrol/state, in that order. |
 | `resolver` | `string` | no |  |
 | `log_path` | `string` | no |  |
-| `oauth_dir` | `string` | no |  |
+| `oauth_dir` | `string` | no | The historical state directory name. Equivalent to state_dir and kept for backwards compat. |
 | `dashboard_secret` | `string` | no |  |
 | `insecure_no_dashboard_secret` | `bool` | no | Opts out of dashboard auth. Required (alongside an empty DashboardSecret) for the gateway to serve the dashboard at all — otherwise the secret gate replies with a misconfiguration page on every request. Verbose by design so you can't disable auth by accident. |
 | `telemetry` | `bool` | no | Opts in/out of the update-checker / anonymous usage ping (doc/telemetry.md). nil = default on; explicit `telemetry = false` silences the goroutine. Env vars CLAWPATROL_TELEMETRY=0 and DO_NOT_TRACK=1 also work. |
@@ -41,7 +42,6 @@ Every singleton gateway attribute — listen addresses, paths, control-plane joi
 | `authkey` | `string` | no |  |
 | `control_url` | `string` | no |  |
 | `hostname` | `string` | no |  |
-| `state_dir` | `string` | no |  |
 | `control` | `string` | no |  |
 | `oauth_client_id` | `string` | no |  |
 | `oauth_client_secret` | `string` | no |  |

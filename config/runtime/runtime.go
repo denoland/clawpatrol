@@ -148,13 +148,16 @@ type ConnHandle struct {
 	// support HITL for this conn family — plugins must default to
 	// deny in that case.
 	Approve func(req ApproveCallRequest) ApproveVerdict
-	// CADir is the gateway's CA / persistent state root (matches
-	// cfg.CADir). Endpoint runtimes that need to persist material
-	// per endpoint — e.g. SSH host keys at <CADir>/ssh/<name>.key —
-	// derive paths from this. Empty when the gateway hasn't been
-	// configured with a CA dir; plugins that need persistence error
-	// out clearly in that case.
+	// CADir is the gateway's persistent state root (matches
+	// cfg.CADir). Kept on the handle for tunnel plugins (Tailscale's
+	// tsnet state dir is derived from it). Endpoint plugins should
+	// persist material through Blobs instead — see ConnHandle.Blobs.
 	CADir string
+	// Blobs is the gateway's plugin-blob store. Endpoint plugins
+	// that need persistent bytes (SSH host keys, JWT signing keys)
+	// read / write through it instead of touching the filesystem.
+	// The host backs it with a sqlite table; tests pass a fake.
+	Blobs BlobStore
 	// DstPort is the destination port the agent connection arrived
 	// on (post-VIP / direct dial). Endpoints whose host strings
 	// carry a non-default port (`hosts = ["x.com:22222"]`) consult

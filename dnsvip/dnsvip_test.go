@@ -1,17 +1,42 @@
 package dnsvip
 
 import (
+	"database/sql"
+	"fmt"
 	"net"
 	"net/netip"
-	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/miekg/dns"
+	_ "modernc.org/sqlite"
 
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/plugins/endpoints"
 )
+
+// testDB opens a fresh sqlite db with the dnsvip_allocations schema
+// applied. Uses the same modernc/sqlite driver + PRAGMAs the gateway
+// uses in production. Returns a closed-on-cleanup *sql.DB.
+func testDB(t *testing.T) *sql.DB {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "test.db")
+	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)", path)
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE dnsvip_allocations (
+		id        INTEGER PRIMARY KEY,
+		hostname  TEXT NOT NULL UNIQUE,
+		v4        TEXT NOT NULL UNIQUE,
+		v6        TEXT NOT NULL UNIQUE
+	)`); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
 
 // fakePolicy builds a CompiledPolicy whose endpoints opt into VIPs.
 // The plugin Type drives defaultPortFor lookups, so we set it to
@@ -45,8 +70,8 @@ type testBody struct {
 func (testBody) RequiresVIP() bool { return true }
 
 func TestRebuildAllocatesAndIsStable(t *testing.T) {
-	dir := t.TempDir()
-	a, err := New(dir, DefaultCIDR4, DefaultCIDR6)
+	db := testDB(t)
+	a, err := New(db, DefaultCIDR4, DefaultCIDR6)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -72,8 +97,10 @@ func TestRebuildAllocatesAndIsStable(t *testing.T) {
 		t.Fatalf("VIPs drifted after no-op rebuild: was (%v,%v) now (%v,%v)", v4a, v6a, v4a2, v6a2)
 	}
 
-	// Persistence: load a fresh allocator from the same dir.
-	b, err := New(dir, DefaultCIDR4, DefaultCIDR6)
+	// Persistence: load a fresh allocator from the same db. Same
+	// DB handle is fine — the in-memory state is in *Allocator, not
+	// in the connection.
+	b, err := New(db, DefaultCIDR4, DefaultCIDR6)
 	if err != nil {
 		t.Fatalf("New 2: %v", err)
 	}
@@ -84,8 +111,8 @@ func TestRebuildAllocatesAndIsStable(t *testing.T) {
 }
 
 func TestRebuildFreesAndRecycles(t *testing.T) {
-	dir := t.TempDir()
-	a, err := New(dir, DefaultCIDR4, DefaultCIDR6)
+	db := testDB(t)
+	a, err := New(db, DefaultCIDR4, DefaultCIDR6)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -134,9 +161,9 @@ func TestRebuildFreesAndRecycles(t *testing.T) {
 func TestExhaustion(t *testing.T) {
 	// Use a tiny v4 CIDR so we run out fast. /29 leaves us with 7
 	// usable IDs (1..7 — id 0 reserved). The v6 CIDR can stay big.
-	dir := t.TempDir()
+	db := testDB(t)
 	cidr4 := netip.MustParsePrefix("10.99.0.0/29")
-	a, err := New(dir, cidr4, DefaultCIDR6)
+	a, err := New(db, cidr4, DefaultCIDR6)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -164,8 +191,8 @@ func TestExhaustion(t *testing.T) {
 }
 
 func TestDNSARecordRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	a, err := New(dir, DefaultCIDR4, DefaultCIDR6)
+	db := testDB(t)
+	a, err := New(db, DefaultCIDR4, DefaultCIDR6)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -205,8 +232,8 @@ func TestDNSARecordRoundTrip(t *testing.T) {
 }
 
 func TestLookupVIP(t *testing.T) {
-	dir := t.TempDir()
-	a, err := New(dir, DefaultCIDR4, DefaultCIDR6)
+	db := testDB(t)
+	a, err := New(db, DefaultCIDR4, DefaultCIDR6)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -240,8 +267,8 @@ func TestLookupVIP(t *testing.T) {
 // literal don't issue a DNS query, so a VIP for "172.17.0.1" is
 // stranded state. The direct-IP dispatch path covers those entries.
 func TestRebuildSkipsIPLiteralHosts(t *testing.T) {
-	dir := t.TempDir()
-	a, err := New(dir, DefaultCIDR4, DefaultCIDR6)
+	db := testDB(t)
+	a, err := New(db, DefaultCIDR4, DefaultCIDR6)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -274,8 +301,8 @@ func TestRebuildSkipsIPLiteralHosts(t *testing.T) {
 // unmatched-traffic path. The same shape applies to any future plugin
 // whose EndpointHosts() does TLS-conditional default-port resolution.
 func TestRebuildResolvesDefaultPortForTLSEndpoint(t *testing.T) {
-	dir := t.TempDir()
-	a, err := New(dir, DefaultCIDR4, DefaultCIDR6)
+	db := testDB(t)
+	a, err := New(db, DefaultCIDR4, DefaultCIDR6)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -310,10 +337,10 @@ func TestRebuildResolvesDefaultPortForTLSEndpoint(t *testing.T) {
 }
 
 func TestPersistenceDropsOutOfRangeEntries(t *testing.T) {
-	dir := t.TempDir()
+	db := testDB(t)
 	// Allocate with the default CIDRs.
 	{
-		a, err := New(dir, DefaultCIDR4, DefaultCIDR6)
+		a, err := New(db, DefaultCIDR4, DefaultCIDR6)
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}
@@ -326,18 +353,12 @@ func TestPersistenceDropsOutOfRangeEntries(t *testing.T) {
 	// dropped (its VIPs fall outside the new prefixes).
 	cidr4 := netip.MustParsePrefix("10.42.0.0/16")
 	cidr6 := netip.MustParsePrefix("fd42::/64")
-	a, err := New(dir, cidr4, cidr6)
+	a, err := New(db, cidr4, cidr6)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	if v4, _ := a.VIPsFor("x.example.com"); v4.IsValid() {
 		t.Fatalf("expected entry to be dropped after CIDR change, still have %v", v4)
-	}
-
-	// Persisted file should still be readable next time.
-	want := filepath.Join(dir, "dnsvip.json")
-	if _, err := os.ReadFile(want); err != nil && !os.IsNotExist(err) {
-		t.Fatalf("dnsvip.json unreadable: %v", err)
 	}
 }
 
@@ -349,7 +370,7 @@ func TestPersistenceDropsOutOfRangeEntries(t *testing.T) {
 // `clickhouse-o11y` even when their resolver inside the WG
 // namespace points at 1.1.1.1.
 func TestForwardUpstreamSynthesisesA(t *testing.T) {
-	a, err := New(t.TempDir(), DefaultCIDR4, DefaultCIDR6)
+	a, err := New(testDB(t), DefaultCIDR4, DefaultCIDR6)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -385,7 +406,7 @@ func TestForwardUpstreamSynthesisesA(t *testing.T) {
 // NXDOMAIN. Confirms we don't accidentally fall through to the
 // relay path on resolution errors.
 func TestForwardUpstreamNXDomainOnUnresolvable(t *testing.T) {
-	a, err := New(t.TempDir(), DefaultCIDR4, DefaultCIDR6)
+	a, err := New(testDB(t), DefaultCIDR4, DefaultCIDR6)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -407,7 +428,7 @@ func TestForwardUpstreamNXDomainOnUnresolvable(t *testing.T) {
 // SERVFAIL (its empty-dstIP guard) — the route taken is the
 // observable behavior.
 func TestForwardUpstreamRelaysOtherTypes(t *testing.T) {
-	a, err := New(t.TempDir(), DefaultCIDR4, DefaultCIDR6)
+	a, err := New(testDB(t), DefaultCIDR4, DefaultCIDR6)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

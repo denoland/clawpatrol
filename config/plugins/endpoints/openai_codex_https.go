@@ -34,8 +34,6 @@ import (
 	"io"
 	"math/big"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -181,13 +179,27 @@ func init() {
 
 // ── Synthetic Agent Identity JWT + JWKS ──────────────────────────────
 //
-// Keys live as a JSON file in the user's clawpatrol dir (same dir
-// `clawpatrol login` writes ca.crt to). Both the gateway process
-// (which serves the JWKS) and the `clawpatrol env` CLI (which mints
-// the JWT) read from the same path so the JWT's kid resolves against
-// what the gateway exposes.
+// Keys live in the host's BlobStore under
+// (kind=CodexJWTKeysKind, name=""). The gateway process serves both
+// the JWKS and the JWT mint path (clients fetch the minted JWT over
+// /api/env-pushdown), so the keypair is gateway-internal.
+//
+// SetBlobStore plumbs the host's BlobStore into this package. The
+// gateway wires it up once after OpenDB; tests substitute an
+// in-memory fake. Mirrors the wireguard.go setDB/globalDB precedent
+// for plugin code that needs gateway-side persistence without a
+// circular import.
 
-const codexJWTKeysFile = "codex_jwt_keys.json"
+// CodexJWTKeysKind is the BlobStore namespace for the gateway's
+// minted RSA + ed25519 Agent Identity JWT signing material.
+// Exported so the gateway's legacy-state importer can address the
+// row when migrating on-disk codex_jwt_keys.json into sqlite.
+const CodexJWTKeysKind = "codex_jwt_keys"
+
+var blobs runtime.BlobStore
+
+// SetBlobStore is part of the clawpatrol plugin API.
+func SetBlobStore(b runtime.BlobStore) { blobs = b }
 
 // codexJWTKeys is the persisted keypair set. RSA signs the JWT
 // envelope (codex enforces RS256). Ed25519 lives inside the JWT as
@@ -210,27 +222,21 @@ var (
 
 func loadCodexJWTKeys() (*codexJWTKeys, error) {
 	codexKeysOnce.Do(func() {
-		codexKeys, codexKeysErr = loadOrGenerateCodexJWTKeys(codexJWTKeysPath())
+		codexKeys, codexKeysErr = loadOrGenerateCodexJWTKeys(blobs)
 	})
 	return codexKeys, codexKeysErr
 }
 
-// codexJWTKeysPath mirrors the main package's defaultClawpatrolDir
-// (see login.go). Replicated here to avoid an inversion — endpoint
-// plugins live below the main package.
-func codexJWTKeysPath() string {
-	if d := os.Getenv("CLAWPATROL_DIR"); d != "" {
-		return filepath.Join(d, codexJWTKeysFile)
+func loadOrGenerateCodexJWTKeys(b runtime.BlobStore) (*codexJWTKeys, error) {
+	if b == nil {
+		return nil, fmt.Errorf("codex jwt keys: no blob store")
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".clawpatrol", codexJWTKeysFile)
-}
-
-func loadOrGenerateCodexJWTKeys(path string) (*codexJWTKeys, error) {
-	if b, err := os.ReadFile(path); err == nil {
+	if data, found, err := b.Get(CodexJWTKeysKind, ""); err != nil {
+		return nil, fmt.Errorf("codex jwt keys read: %w", err)
+	} else if found {
 		var k codexJWTKeys
-		if err := json.Unmarshal(b, &k); err != nil {
-			return nil, fmt.Errorf("read %s: %w", path, err)
+		if err := json.Unmarshal(data, &k); err != nil {
+			return nil, fmt.Errorf("parse codex jwt keys: %w", err)
 		}
 		if k.KID != "" && k.RSAPrivatePKCS8B64 != "" && k.Ed25519PKCS8B64 != "" {
 			return &k, nil
@@ -268,15 +274,12 @@ func loadOrGenerateCodexJWTKeys(path string) (*codexJWTKeys, error) {
 		RSAPrivatePKCS8B64: base64.StdEncoding.EncodeToString(rsaDER),
 		Ed25519PKCS8B64:    base64.StdEncoding.EncodeToString(edDER),
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
-	}
 	out, err := json.MarshalIndent(k, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("marshal keys: %w", err)
 	}
-	if err := os.WriteFile(path, out, 0o600); err != nil {
-		return nil, fmt.Errorf("write %s: %w", path, err)
+	if err := b.Put(CodexJWTKeysKind, "", out); err != nil {
+		return nil, fmt.Errorf("write codex jwt keys: %w", err)
 	}
 	return k, nil
 }
