@@ -6,26 +6,33 @@
 ## Goal
 
 Add a CLI subcommand that runs a candidate HCL policy against a
-**fixture suite of actions with expected verdicts** and reports
-pass/fail, like a test runner:
+**recorded actions file** and reports any verdicts the new policy
+would change:
 
 ```
-clawpatrol test --config ./candidate.hcl --suite ./actions.json
+clawpatrol test --config ./candidate.hcl --actions ./actions.json
 ```
 
-The suite is a list of `{action, expected_verdict}` pairs. The
-command compiles the candidate config in-process and runs each
-action through `runtime.MatchRequest`, comparing the returned
-verdict against the expected one. Exit status is non-zero on any
-mismatch.
+The actions file is a list of recorded gateway actions. Each
+entry carries the request the gateway saw and the verdict it
+produced — `action` (`allow` / `deny` / `approve` /
+`passthrough`), the name of the matched `rule`, and the
+`reason`. Nothing in the format is test-specific: it is the same
+shape the gateway logs for live traffic, just persisted to a
+file.
 
-To keep the suite-authoring burden low, the dashboard grows a
-**"Download as test suite"** button on its recent-actions view.
-The button emits a ready-made suite file populated from the
-actions the gateway has actually seen, each pre-filled with the
-verdict it produced under the live config. Operators run that
-file as-is to lock in current behaviour, or edit individual
-entries to drive a policy change.
+`clawpatrol test` compiles the candidate config in-process, runs
+each request through `runtime.MatchRequest`, and reports any
+entry whose new verdict differs from the recorded one. Exit
+status is non-zero on any diff.
+
+To keep the authoring burden low, the dashboard grows a
+**"Download actions"** button on its recent-actions view. The
+button emits an actions file populated from the actions the
+gateway has actually seen, each carrying the verdict it produced
+under the live config. Operators run that file as-is to lock in
+current behaviour, or edit individual entries to drive a policy
+change.
 
 The point is iteration speed and CI: today an operator changes a
 rule, pushes a full config reload, watches live traffic, and
@@ -48,7 +55,7 @@ That's the entire surface this subcommand needs to drive.
 
 A `match.Request` is plain data: `Family`, `Method`, `URL`,
 `Headers`, `Body`, `PeerIP`, parsed path. It serializes cleanly
-to JSON, which is what the suite format is.
+to JSON, which is what the actions-file format is built on.
 
 ### 1.2 Config compile is reusable from a CLI process
 
@@ -63,12 +70,18 @@ CLI process — no gateway required.
 The event sink (`web.go:1582`, `Sink` / `Event`) buffers the
 last 500 actions in-memory and persists to SQLite. The
 dashboard's `/api/state` and `/api/events` endpoints already
-expose this stream, and `Event` carries everything the suite
-needs: `Method`, `Path`, `ReqHeaders`, `ReqBody`, `Host`,
-`Mode`, plus the produced verdict in `Action` + `Reason`.
+expose this stream, and `Event` carries most of what the
+actions file needs: `Method`, `Path`, `ReqHeaders`, `ReqBody`,
+`Host`, `Mode`, plus the produced verdict in `Action` +
+`Reason`. The matched rule name is **not** currently on
+`Event` — `MatchRequest` returns the `*CompiledRule` (which
+has `.Name`), but the call sites at `main.go:1638` etc. drop
+it before logging. A small extension of `Event` (`Rule string`)
+populated at the existing dispatch sites is enough; no new
+plumbing.
 
-A "download these as a test suite" endpoint is a re-shape of an
-existing dataset, not a new pipeline.
+A "download these as an actions file" endpoint is then a
+re-shape of an existing dataset, not a new pipeline.
 
 ### 1.4 Subcommand wiring
 
@@ -83,20 +96,20 @@ sibling file (`run_linux.go`, `onboard.go`, etc.). Adding
 ┌──────────────────────────────────┐    ┌──────────────────────────────┐
 │  clawpatrol test                 │    │  gateway dashboard           │
 │   --config candidate.hcl         │    │                              │
-│   --suite actions.json           │    │  recent actions view         │
+│   --actions actions.json         │    │  recent actions view         │
 │                                  │    │  ┌────────────────────────┐  │
-│  1. config.Load(candidate.hcl)   │    │  │ [Download test suite]  │  │
+│  1. config.Load(candidate.hcl)   │    │  │ [Download actions]     │  │
 │     + config.Compile()           │    │  └────────────────────────┘  │
 │                                  │    │            │                 │
-│  2. read suite.json              │    │            ▼                 │
-│     → []SuiteEntry{              │    │  GET /api/actions/export     │
-│         req: match.Request,      │    │   → ndjson over last N       │
-│         want: Verdict,           │    │     events, each rendered    │
-│       }                          │    │     as a SuiteEntry          │
-│                                  │    │     (req + observed verdict) │
+│  2. read actions.json            │    │            ▼                 │
+│     → []Action{                  │    │  GET /api/actions/export     │
+│         request: match.Request,  │    │   → ndjson over last N       │
+│         verdict: Verdict,        │    │     events, each rendered    │
+│       }                          │    │     as an Action             │
+│                                  │    │     (request + verdict)      │
 │  3. for each entry:              │◀───┤                              │
 │       got := MatchRequest(...)   │    └──────────────────────────────┘
-│       diff against want          │
+│       diff got vs verdict        │
 │                                  │
 │  4. print summary + exit code    │
 └──────────────────────────────────┘
@@ -104,31 +117,47 @@ sibling file (`run_linux.go`, `onboard.go`, etc.). Adding
 
 Concrete plumbing:
 
-- **Suite format** (new): newline-delimited JSON, one entry per
-  line:
+- **Actions format** (new): newline-delimited JSON, one entry
+  per line. Same shape whether the file came from the dashboard
+  exporter or was hand-written:
   ```
-  {"name":"...", "request":{...match.Request...}, "expect":{"action":"allow","reason_contains":"..."}}
+  {"request":{...match.Request...}, "verdict":{"action":"allow","rule":"public-readonly","reason":"..."}}
   ```
+  - `verdict.action` is one of `allow`, `deny`, `approve`,
+    `passthrough`. `approve` is terminal — the human approver
+    chain is not invoked (§3.C).
+  - `verdict.rule` is the name of the matched `CompiledRule`
+    (`config/compile.go:165`), or empty when nothing matched
+    and the endpoint default fired.
+  - `verdict.reason` is the human-readable string the runtime
+    produced.
+  No `expected_*` / `assert_*` keys — the format is not
+  test-specific. The CLI is the test runner; the file is
+  recorded reality.
   ndjson because it streams cleanly, diffs cleanly, and the
   dashboard can emit it incrementally.
-- **CLI** (`test.go`, new file): parses `--config`, `--suite`,
+- **CLI** (`test.go`, new file): parses `--config`, `--actions`,
   optional `--endpoint` (which compiled endpoint to dispatch
   against — defaults to first matching by host), optional
-  `--update` to rewrite the suite file with observed verdicts.
+  `--update` to rewrite the actions file with the new verdicts.
   No network, no auth, no gateway dependency.
 - **Test runner**: a thin loop that calls `MatchRequest` per
-  entry and compares. Verdict comparison: exact match on
-  `Action`; `reason_contains` substring match on `Reason` if
-  set. Mismatches print a diff and bump the failure counter.
+  entry and compares the new verdict against the recorded one.
+  Comparison: exact match on `verdict.action` and
+  `verdict.rule`. Mismatches print a diff and bump the failure
+  counter. `verdict.reason` is informational and not part of
+  the comparison (it changes too freely under safe edits).
 - **Dashboard endpoint**: `GET /api/actions/export` returns the
   ndjson form of the recent-events ring. The dashboard UI gets
-  a "Download test suite" button on the actions list that hits
+  a "Download actions" button on the actions list that hits
   this endpoint and offers the result as a file download. Auth:
   same `dashboard_secret` as the rest of `/api/*` (§3.E).
-- **Dashboard renderer**: for each `Event` in the export window,
-  map fields → `match.Request` and `expect.action = ev.Action`
-  / `expect.reason_contains = ev.Reason`. Output is "what the
-  gateway actually decided" — a regression baseline.
+- **Dashboard renderer**: for each `Event` in the export
+  window, map fields → `request: match.Request` and
+  `verdict: {action: ev.Action, rule: ev.Rule, reason:
+  ev.Reason}`. This requires the small `Event.Rule` extension
+  noted in §1.3. Output is "what the gateway actually
+  decided" — a regression baseline.
 
 This design removes everything that was hard about the previous
 proposal: no session keying, no ephemeral peers, no response
@@ -137,9 +166,10 @@ endpoint, no TTL sweep, no live-traffic carve-out.
 
 ## 3. Open questions (please answer before code)
 
-### A. Suite scope: per-endpoint or global?
+### A. Actions-file scope: per-endpoint or global?
 
-`MatchRequest` is per-`CompiledEndpoint`. The suite either:
+`MatchRequest` is per-`CompiledEndpoint`. The actions file
+either:
 
 1. Pins each entry to an endpoint by name (or by host →
    endpoint resolution at run time), then dispatches into that
@@ -149,7 +179,7 @@ endpoint, no TTL sweep, no live-traffic carve-out.
    the compiled policy) before dispatching. Closer to "what
    would the gateway do end-to-end with this request?"
 
-**Recommendation: (2)**, with the suite carrying the original
+**Recommendation: (2)**, with each entry carrying the original
 `Host` field. It matches what operators read on the dashboard
 and what the export button can populate without extra metadata.
 (1) is a fallback if some endpoint family doesn't fit clean
@@ -175,23 +205,25 @@ fields are sufficient for replay.
 **Decision needed:** OK to ship HTTPS-first with SQL family
 support landing in a follow-up bead if any field is missing?
 
-### C. Approver-chain (HITL) verdicts in the suite
+### C. Approver-chain (HITL) verdicts in the actions file
 
-A live `approve` verdict in production triggers the human
-approver chain. Under `clawpatrol test`, running approvers is
-wrong (pages humans, slow, non-deterministic).
+A live `approve` verdict in production hands off to the human
+approver chain, which ultimately produces an `allow` / `deny`.
+Under `clawpatrol test`, invoking that chain is wrong (pages
+humans, slow, non-deterministic).
 
-**Recommendation:** the test runner treats `approve` as a
-terminal verdict — it matches the literal string `approve`
-without invoking any chain. This is consistent with the suite
-being a *policy match* test, not an end-to-end test.
+**Resolved (per review):** both the recorded verdict and the
+runner treat `approve` as terminal. The exporter writes
+`verdict.action = "approve"` whenever the matched rule routes
+to a human approver, and the runner compares that literal
+string without invoking any chain. The actions file is a
+*policy match* file, not an end-to-end recording — what the
+human ultimately decided is out of scope.
 
-**Decision needed:** confirm.
-
-### D. Suite emission: redaction
+### D. Actions-file emission: redaction
 
 `Event.ReqBody` and `RespBody` may contain secrets the operator
-doesn't want in a checked-in suite file. The export endpoint
+doesn't want in a checked-in actions file. The export endpoint
 should respect the same redaction rules the dashboard already
 applies for display (`web_redaction_test.go` exists — confirm
 during implementation that those rules are reusable here).
@@ -217,11 +249,11 @@ How many recent events should the button download?
 
 - Whole ring (last 500): matches what the dashboard already
   shows; simplest mental model.
-- Time-windowed (`?since=...`): supports "test suite for the
-  last hour of activity"; small UI addition.
+- Time-windowed (`?since=...`): supports "actions from the last
+  hour of activity"; small UI addition.
 - Filter by `agent` / `mode` / `host`: lets operators export a
-  per-agent or per-host suite. Likely useful given the dashboard
-  already filters this way.
+  per-agent or per-host actions file. Likely useful given the
+  dashboard already filters this way.
 
 **Recommendation:** start with whole ring + `?since=` query
 parameter. Per-agent/per-host filtering can land as the UI
@@ -235,23 +267,28 @@ After the above questions are answered, the implementation PR should:
 
 - Add `clawpatrol test` subcommand (`test.go`) — pure CLI,
   no gateway dependency.
-- Define the ndjson suite format (`test_suite.go` or similar)
-  shared between the CLI runner and the dashboard exporter.
+- Define the ndjson actions format (`actions_file.go` or
+  similar) shared between the CLI runner and the dashboard
+  exporter.
+- Extend `Event` with `Rule string` and populate it at the
+  existing dispatch sites (`main.go:1638`, postgres,
+  clickhouse_native) so the exporter can carry the matched
+  rule name.
 - Add `GET /api/actions/export` returning the recent-events
-  ring as suite ndjson, with redaction reusing the dashboard's
-  existing rules.
-- Add the "Download test suite" button to the dashboard's
+  ring as actions ndjson, with redaction reusing the
+  dashboard's existing rules.
+- Add the "Download actions" button to the dashboard's
   recent-actions view.
 - HTTPS endpoint family in v1; SQL families covered if their
   recorded event fields are sufficient.
-- Tests: unit tests for the runner (verdict match / mismatch /
-  reason substring), a golden-file test for export ndjson
+- Tests: unit tests for the runner (verdict match / mismatch
+  on action and rule), a golden-file test for export ndjson
   shape, and an integration test that exports → runs → asserts
-  100% pass on the current config.
+  zero diffs against the current config.
 
 Out of scope for v1: live-session candidate dispatch (the
 previous proposal — superseded), mock upstream, time-travel
-replay against a historical config, suite-vs-suite diffing.
+replay against a historical config, file-vs-file diffing.
 
 ## 5. References
 
