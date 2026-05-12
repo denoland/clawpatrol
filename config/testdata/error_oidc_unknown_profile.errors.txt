@@ -1,0 +1,1 @@
+error: error_oidc_unknown_profile.hcl:3:1: Unknown OIDC enrollment profile — enrollment "ci" targets profile "missing" which is not declared.
