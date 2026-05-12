@@ -381,6 +381,7 @@ summary:
 | `:5432`              | postgres wire-protocol gateway (auth offload + `sql`-family rule matching)               |
 | `:53`                | DNS-VIP responder (UDP and TCP fallback)                                                 |
 | any port, dst is VIP | VIP-bound endpoint runtime (today: `ssh`, `clickhouse_native` reached by hostname)       |
+| `:9000` / `:9440`    | clickhouse_native dispatch: ConnIndex lookup, fall back to first ch endpoint in profile  |
 | `else`               | direct-IP endpoint lookup; falls through to transparent TCP relay when no plugin claims  |
 
 If no endpoint plugin claims the destination, the gateway falls

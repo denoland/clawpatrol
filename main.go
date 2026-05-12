@@ -1276,13 +1276,45 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 	}
 }
 
+// handleClickhouseNativeConn dispatches an inbound :9000 / :9440 flow
+// to the clickhouse_native endpoint runtime. Mirrors handlePostgresConn:
+// ConnIndex lookup by dst IP first (so multi-cluster profiles dispatch
+// to the right binding), fall back to the first clickhouse_native
+// endpoint in the device's profile (single-cluster profiles), fall
+// through to wgRelay when neither applies.
+//
+// Hostname-bound clickhouse_native endpoints reach the runtime via
+// handleVIPConn instead (DNS-VIP path); this handler covers IP-literal
+// and freshly-resolved-but-unindexed upstreams.
+func (g *Gateway) handleClickhouseNativeConn(c net.Conn, dstIP string, dstPort uint16) {
+	defer otelTrackConn("ch_native_relay")()
+	pip := peerIP(c)
+	profile := g.profileFor(pip)
+	policy := g.Policy()
+
+	var ep *config.CompiledEndpoint
+	if idx := g.connIdx.Load(); idx != nil {
+		candidates := idx.Lookup(dstIP)
+		ep = pickEndpointForProfile(candidates, policy, profile)
+	}
+	if ep == nil {
+		ep = firstClickhouseNativeEndpoint(policy, profile)
+	}
+	if ep == nil {
+		log.Printf("ch_native %s:%d: no clickhouse_native endpoint in profile %q; relaying", dstIP, dstPort, profile)
+		g.wgRelay(c, dstIP, int(dstPort))
+		return
+	}
+
+	g.dispatchConnEndpoint(c, dstIP, dstPort, ep, "")
+}
+
 // handleVIPConn dispatches an inbound TCP connection whose dst IP
 // falls in the dnsvip range. The VIP table maps the IP back to the
 // hostname → endpoints that claimed a VIP at policy build; profile
-// filter picks the one for this device. Today the only RequiresVIP
-// plugin is "ssh", but the path is generic so future binary
-// protocols (clickhouse_native with a hostname-keyed dispatch quirk,
-// for instance) can plug in without a separate forwarder branch.
+// filter picks the one for this device. RequiresVIP plugins include
+// ssh and clickhouse_native — handleVIPConn dispatches to either via
+// the endpoint's plugin Runtime, no per-plugin branching needed here.
 func (g *Gateway) handleVIPConn(c net.Conn, dstIP string, dstPort uint16) {
 	defer otelTrackConn("vip_conn")()
 
@@ -1477,15 +1509,31 @@ func pickEndpointForProfile(candidates []*config.CompiledEndpoint, policy *confi
 }
 
 func firstPostgresEndpoint(policy *config.CompiledPolicy, profile string) *config.CompiledEndpoint {
+	return firstEndpointOfType(policy, profile, "postgres")
+}
+
+// firstClickhouseNativeEndpoint mirrors firstPostgresEndpoint for the
+// clickhouse_native plugin. It is the lowest-priority dispatch in
+// handleClickhouseNativeConn — used when a flow lands on :9000 / :9440
+// from an upstream IP that isn't in ConnIndex (typical of Cloud
+// ClickHouse where DNS rotates faster than policy reload).
+func firstClickhouseNativeEndpoint(policy *config.CompiledPolicy, profile string) *config.CompiledEndpoint {
+	return firstEndpointOfType(policy, profile, "clickhouse_native")
+}
+
+// firstEndpointOfType returns the first endpoint of the given plugin
+// type in the device's profile, falling back to a scan of every
+// profile when the device has no profile binding (single-tenant
+// deployments). nil when no such endpoint exists anywhere.
+func firstEndpointOfType(policy *config.CompiledPolicy, profile, pluginType string) *config.CompiledEndpoint {
 	if policy == nil {
 		return nil
 	}
 	prof, ok := policy.Profiles[profile]
 	if !ok {
-		// Single-tenant fallback: scan every profile.
 		for _, p := range policy.Profiles {
 			for _, ep := range p.Endpoints {
-				if ep.Plugin.Type == "postgres" {
+				if ep.Plugin.Type == pluginType {
 					return ep
 				}
 			}
@@ -1493,7 +1541,7 @@ func firstPostgresEndpoint(policy *config.CompiledPolicy, profile string) *confi
 		return nil
 	}
 	for _, ep := range prof.Endpoints {
-		if ep.Plugin.Type == "postgres" {
+		if ep.Plugin.Type == pluginType {
 			return ep
 		}
 	}
@@ -2321,19 +2369,28 @@ func runGateway(args []string) {
 			case dstPort == 53:
 				g.handleDNSTCPConn(c, dstIP)
 			case g.dnsvip.IsVIP(dstIP):
-				// Any port on a VIP belongs to the SSH endpoint that
-				// hostname maps to. Future RequiresVIP plugins can
-				// branch on ep.Plugin.Type inside handleVIPConn.
+				// Any port on a VIP belongs to a hostname-bound
+				// endpoint (ssh, clickhouse_native). handleVIPConn
+				// dispatches by plugin Runtime — no branching here.
 				g.handleVIPConn(c, dstIP, dstPort)
+			case dstPort == 9000 || dstPort == 9440:
+				// ClickHouse native: port-based fallback that mirrors
+				// :5432 for postgres. ConnIndex wins when the dst IP
+				// is registered; otherwise fall back to the first
+				// clickhouse_native endpoint in the device's profile;
+				// otherwise relay (so unrelated services on these
+				// ports — Portainer agent, kdb+ — keep working when
+				// no CH policy is declared).
+				g.handleClickhouseNativeConn(c, dstIP, dstPort)
 			case dashPort != 0 && int(dstPort) == dashPort:
 				_ = http.Serve(&oneShotListener{c: c}, dashMux)
 			default:
-				// Direct-IP dispatch via conn-index: catches
-				// clickhouse_native and friends when the operator
-				// binds them to IP-literal hosts (dnsvip skips
-				// those — they don't need DNS interception). Falls
-				// through to transparent relay when no endpoint
-				// claims the dst.
+				// Direct-IP dispatch via conn-index: catches any
+				// ConnEndpointRuntime plugin (clickhouse_native bound
+				// to IP-literal hosts on a non-default port, future
+				// plugins) when the operator binds them to bare IPs
+				// dnsvip skips. Falls through to transparent relay
+				// when no endpoint claims the dst.
 				if g.tryDirectIPConn(c, dstIP, dstPort) {
 					return
 				}
@@ -2350,7 +2407,7 @@ func runGateway(args []string) {
 		if err := wg.EnablePromiscuousForwarder(tcpDispatch, udpDispatch); err != nil {
 			log.Fatalf("wireguard forwarder: %v", err)
 		}
-		log.Printf("wireguard promiscuous forwarder ready (any dst → :443=mitm, :5432=pg, :53=dns-vip, VIP=ssh|ch_native, :%d=dash, plugins=conn-index, else=relay)", dashPort)
+		log.Printf("wireguard promiscuous forwarder ready (any dst → :443=mitm, :5432=pg, :53=dns-vip, VIP=ssh|ch_native, :9000/:9440=ch_native, :%d=dash, plugins=conn-index, else=relay)", dashPort)
 	}
 
 	ln, err := openListener(cfg)
