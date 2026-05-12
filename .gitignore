@@ -1,5 +1,6 @@
 .env
-.claude/
+.claude/*
+!.claude/CLAUDE.md
 ca/
 ts-state/
 dist/
