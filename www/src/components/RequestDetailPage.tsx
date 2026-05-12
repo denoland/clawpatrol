@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { getAction, type Agent, type EventRecord, type FacetSchema } from "../lib/api";
 import { formatFacetValue, useFacets } from "../lib/facets";
+import { fmtDateTime } from "../lib/format";
 
 export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] }) {
   const [ev, setEv] = useState<EventRecord | null>(null);
@@ -28,13 +29,7 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
     );
   }
 
-  const t = new Date(ev.ts);
-  const time =
-    t.toLocaleDateString() +
-    " " +
-    t.toLocaleTimeString([], { hour12: false }) +
-    "." +
-    String(t.getMilliseconds()).padStart(3, "0");
+  const time = fmtDateTime(ev.ts);
   const status = ev.status || 0;
   const statusColor =
     status >= 500
