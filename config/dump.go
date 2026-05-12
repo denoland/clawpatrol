@@ -37,6 +37,9 @@ func (g *Gateway) Dump() ([]byte, error) {
 	}
 	dumpJoinFields(g, out)
 	dumpDefaultsFields(g, out)
+	if v := dumpEnvPushdown(g.EnvPushdown); v != nil {
+		out["env_pushdown"] = v
+	}
 	if g.Policy != nil {
 		out["policy"] = dumpPolicy(g.Policy)
 	}
@@ -154,6 +157,32 @@ func dumpPolicies(m map[string]*PolicyText) map[string]any {
 	out := map[string]any{}
 	for name, p := range m {
 		out[name] = map[string]any{"text": p.Text}
+	}
+	return out
+}
+
+func dumpEnvPushdown(entries []*EnvPushdownEntry) map[string]any {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := map[string]any{}
+	for _, e := range entries {
+		row := map[string]any{}
+		if e.SecretRef != "" {
+			row["secret"] = e.SecretRef
+		}
+		if e.HasLiteral {
+			// Literal values land in `dump` output for golden-test
+			// purposes; the matching dashboard / `clawpatrol env`
+			// surfaces redact at present time per the operator's
+			// declared sensitivity. Goldens compare structural shape,
+			// not the bytes the agent ultimately sees.
+			row["value"] = e.Literal
+		}
+		if e.Description != "" {
+			row["description"] = e.Description
+		}
+		out[e.Name] = row
 	}
 	return out
 }

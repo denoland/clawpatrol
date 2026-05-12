@@ -1,0 +1,61 @@
+{
+  "env_pushdown": {
+    "AWS_ACCESS_KEY_ID": {
+      "secret": "aws_access"
+    },
+    "AWS_REGION": {
+      "value": "us-east-1"
+    },
+    "OPENAI_API_KEY": {
+      "description": "OpenAI SDKs",
+      "secret": "openai_key"
+    }
+  },
+  "listen": "0.0.0.0:8443",
+  "llm_fail_mode": "closed",
+  "policy": {
+    "credentials": {
+      "github-pat": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "type": "bearer_token"
+      }
+    },
+    "endpoints": {
+      "github": {
+        "body": {
+          "Hosts": [
+            "api.github.com",
+            "github.com"
+          ],
+          "Credential": "github-pat"
+        },
+        "family": "http",
+        "type": "https"
+      }
+    },
+    "profiles": {
+      "default": {
+        "endpoints": [
+          "github"
+        ]
+      }
+    },
+    "rules": {
+      "github-reads": {
+        "body": {
+          "name": "github-reads",
+          "family": "http",
+          "endpoints": [
+            "github"
+          ],
+          "condition": "http.method in ['GET', 'HEAD']",
+          "verdict": "allow"
+        }
+      }
+    }
+  },
+  "state_dir": "/opt/clawpatrol",
+  "unknown_host": "passthrough"
+}

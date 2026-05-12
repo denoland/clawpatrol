@@ -503,25 +503,41 @@ func (w *webMux) apiEnvPushdown(rw http.ResponseWriter, r *http.Request) {
 		writeJSON(rw, map[string]any{"vars": []any{}})
 		return
 	}
-	prof, ok := policy.Profiles[profileName]
-	if !ok || prof == nil {
-		writeJSON(rw, map[string]any{"vars": []any{}})
-		return
-	}
 
-	out := []map[string]string{}
+	out := []map[string]any{}
 	seen := map[string]bool{}
-	add := func(name, value, description, pluginType string) {
+	add := func(name, value, description, pluginType string, sensitive bool) {
 		if name == "" || seen[name] {
 			return
 		}
 		seen[name] = true
-		out = append(out, map[string]string{
+		out = append(out, map[string]any{
 			"name":        name,
 			"value":       value,
 			"description": description,
 			"plugin_type": pluginType,
+			"sensitive":   sensitive,
 		})
+	}
+	// Operator-declared env_pushdown { } entries take precedence: an
+	// explicit declaration in the HCL overrides whatever a credential
+	// plugin's EnvVars() would have contributed under the same name.
+	// Secret-form entries hand the agent a placeholder; the real
+	// secret bytes only enter outbound HTTP traffic via the MITM
+	// substitution path (see mitmHTTPS → applyEnvPushdownSubstitution).
+	// Value-form entries inject the literal verbatim.
+	for _, e := range policy.EnvPushdown {
+		switch {
+		case e.SecretRef != "":
+			add(e.Name, e.Placeholder(), e.Description, "env_pushdown:secret", true)
+		case e.HasLiteral:
+			add(e.Name, e.Literal, e.Description, "env_pushdown:value", false)
+		}
+	}
+	prof, ok := policy.Profiles[profileName]
+	if !ok || prof == nil {
+		writeJSON(rw, map[string]any{"vars": out})
+		return
 	}
 	credSeen := map[string]bool{}
 	// Endpoints in this profile, plus the credentials they bind.
@@ -538,7 +554,7 @@ func (w *webMux) apiEnvPushdown(rw http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			for _, ev := range provider.EnvVars() {
-				add(ev.Name, ev.Value, ev.Description, cc.Credential.Plugin.Type)
+				add(ev.Name, ev.Value, ev.Description, cc.Credential.Plugin.Type, ev.Sensitive)
 			}
 		}
 	}
@@ -548,7 +564,7 @@ func (w *webMux) apiEnvPushdown(rw http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		for _, ev := range provider.EnvVars() {
-			add(ev.Name, ev.Value, ev.Description, ep.Plugin.Type)
+			add(ev.Name, ev.Value, ev.Description, ep.Plugin.Type, ev.Sensitive)
 		}
 	}
 	writeJSON(rw, map[string]any{"vars": out})

@@ -55,6 +55,28 @@ Every singleton gateway attribute — listen addresses, paths, control-plane joi
 | `human_on_timeout` | `string` | no |  |
 | `plugin` | `block` | yes | Lists every `plugin "<name>" { source = "..." }` block at the top of the file. The loader spawns each subprocess (and registers its declared types) before running pass-1 symbol building, so plugin-supplied (kind, type) pairs are available by the time policy blocks are dispatched. |
 
+## `env_pushdown { ... }`
+
+Operator-declared env vars to inject into agent processes, beyond the per-credential placeholders that come from credential plugins' `EnvVars()` implementations.
+
+Each entry maps an env var NAME to an object with **exactly one** of `secret = "<credential-name>"` or `value = "<literal>"`, plus an optional `description = "..."`:
+
+```hcl
+env_pushdown {
+  OPENAI_API_KEY    = { secret = "openai_key", description = "openai SDKs" }
+  AWS_ACCESS_KEY_ID = { secret = "aws_access" }
+  AWS_REGION        = { value  = "us-east-1" }
+}
+```
+
+**Secret form** (`secret = "<credential-name>"`):
+The named credential's bytes are resolved from the secret store at request time. The agent process's environment receives a unique placeholder string (not the real secret), so the secret never sits in `/proc/<agent>/environ`. The MITM HTTPS path swaps the placeholder for the resolved secret bytes on outbound URL / headers / body before forwarding upstream.
+
+**Value form** (`value = "<literal>"`):
+The literal string is injected verbatim into the agent's environment. Use for non-sensitive declarations (`AWS_REGION = "us-east-1"`) or when an SDK requires the real bytes in the env and MITM substitution isn't viable (e.g. AWS request signing, which HMACs over the secret before the request leaves the SDK).
+
+Env-var names must match the POSIX identifier syntax `[A-Za-z_][A-Za-z0-9_]*`. Duplicate names across declarations are a load error.
+
 ## `policy "<name>" { ... }`
 
 Defines a named, reusable chunk of policy prose that

@@ -44,11 +44,20 @@ func resolveTemplate(s string) string {
 // plugins' EnvPushdownProvider impls plus the CA-bundle vars. Used
 // by both `clawpatrol env` (prints export lines) and `clawpatrol run`
 // (sets them on the wrapped child process via os.Setenv).
+//
+// Sensitive marks vars whose Value is a redactable secret — `clawpatrol
+// env --list` masks the bytes before printing, and code paths that
+// log the var name omit the Value. The Value bytes still flow into
+// the agent's process environment via `clawpatrol run` (so SDK init
+// reads them); the gateway's MITM substitution path swaps the
+// placeholder back to the real secret on outbound HTTP traffic so
+// the real bytes never sit in /proc/<agent>/environ.
 type pushdownEnvVar struct {
 	Name        string
 	Value       string
 	Description string // shown only by `env`; `run` ignores
 	PluginType  string
+	Sensitive   bool
 }
 
 // envPushdownVars returns every var the operator's CLI environment
@@ -119,6 +128,7 @@ func fetchEnvPushdownFromGateway(caDir string) ([]pushdownEnvVar, error) {
 			Value       string `json:"value"`
 			Description string `json:"description"`
 			PluginType  string `json:"plugin_type"`
+			Sensitive   bool   `json:"sensitive"`
 		} `json:"vars"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
@@ -134,6 +144,7 @@ func fetchEnvPushdownFromGateway(caDir string) ([]pushdownEnvVar, error) {
 			Value:       v.Value,
 			Description: v.Description,
 			PluginType:  v.PluginType,
+			Sensitive:   v.Sensitive,
 		})
 	}
 	return out, nil
@@ -161,14 +172,28 @@ func readPeerAPIToken(caDir string) string {
 	return strings.TrimSpace(string(b))
 }
 
-// runEnv is the `clawpatrol env` subcommand: prints export lines for
-// the agent CLIs, pointing them at the CA bundle and stuffing
-// placeholder tokens into the slots they require. The gateway
-// overwrites the auth slot at MITM time, so the placeholder bytes
-// never reach the upstream.
+// runEnv is the `clawpatrol env` subcommand. Two output modes:
+//
+//   - default: shell `export NAME=value` lines, sourced via
+//     `eval "$(clawpatrol env)"`. Values are either CA-bundle paths
+//     (on the client's disk, so non-secret) or placeholder tokens —
+//     the gateway swaps the placeholder slot for the real secret at
+//     MITM time. Operator-declared `env_pushdown { NAME = { value =
+//     "..." } }` literals print as-is because the operator has
+//     explicitly chosen the literal form, accepting that the bytes
+//     sit in /proc/<agent>/environ.
+//   - `clawpatrol env --list`: human-readable listing with
+//     `Sensitive` values redacted (`<redacted: env_pushdown:secret>`).
+//     Matches Unix `env` in spirit (`env | grep SECRET` shouldn't be
+//     a leak path for clawpatrol-injected vars).
+//
+// The default mode never prints the resolved real secret bytes: for
+// SecretRef-form env_pushdown entries the value is the placeholder,
+// which is what the agent's /proc/self/environ ultimately holds.
 func runEnv(args []string) {
 	fs := flag.NewFlagSet("env", flag.ExitOnError)
 	caDir := fs.String("ca-dir", defaultClawpatrolDir(), "directory containing ca.crt")
+	list := fs.Bool("list", false, "print a redacted listing instead of shell exports")
 	_ = fs.Parse(args)
 
 	caPath := filepath.Join(*caDir, "ca.crt")
@@ -180,6 +205,23 @@ func runEnv(args []string) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "clawpatrol: %v\n", err)
 	}
+	if *list {
+		printEnvPushdownList(vars)
+	} else {
+		printEnvPushdownExports(vars)
+	}
+	if err != nil {
+		os.Exit(1)
+	}
+}
+
+// printEnvPushdownExports writes shell-sourceable `export NAME=...`
+// lines. Values appear verbatim — they are the placeholder bytes the
+// agent's process env should hold, not real secret values. Comments
+// surface the plugin type + description so an operator running
+// `clawpatrol env` interactively gets context without re-reading the
+// HCL config.
+func printEnvPushdownExports(vars []pushdownEnvVar) {
 	for _, ev := range vars {
 		if ev.Description != "" {
 			if ev.PluginType != "" {
@@ -190,9 +232,42 @@ func runEnv(args []string) {
 		}
 		fmt.Printf("export %s=%q\n", ev.Name, ev.Value)
 	}
-	if err != nil {
-		os.Exit(1)
+}
+
+// printEnvPushdownList writes a redacted human-readable listing.
+// Sensitive values are masked; non-sensitive values (CA paths,
+// credential placeholders, operator-declared literals) print
+// verbatim so the operator can verify the wiring at a glance.
+//
+// Output format mirrors Unix `env`: one var per line, NAME=value,
+// with an optional source-tagging comment. Stable, locale-agnostic
+// rendering — no Intl date / number formatting needed.
+func printEnvPushdownList(vars []pushdownEnvVar) {
+	for _, ev := range vars {
+		val := ev.Value
+		if ev.Sensitive {
+			val = redactEnvValue(ev.Value)
+		}
+		tag := ev.PluginType
+		if tag == "" {
+			tag = "ca"
+		}
+		if ev.Description != "" {
+			fmt.Printf("# %s — %s\n", ev.Description, tag)
+		} else {
+			fmt.Printf("# %s\n", tag)
+		}
+		fmt.Printf("%s=%s\n", ev.Name, val)
 	}
+}
+
+// redactEnvValue replaces the bytes of a sensitive var's value with
+// a fixed-length redaction marker. We deliberately avoid surfacing
+// any prefix / suffix of the original value (no "starts-with abcd…")
+// because operators sometimes paste the listing into chat for
+// troubleshooting and a partial leak is still a leak.
+func redactEnvValue(_ string) string {
+	return "<redacted>"
 }
 
 // applyEnvPushdown sets every pushdown var on the current process

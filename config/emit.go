@@ -24,6 +24,7 @@ func Emit(gw *Gateway) ([]byte, error) {
 	body := f.Body()
 
 	emitOperational(body, gw)
+	emitEnvPushdown(body, gw.EnvPushdown)
 
 	if gw.Policy == nil {
 		return f.Bytes(), nil
@@ -44,6 +45,32 @@ func Emit(gw *Gateway) ([]byte, error) {
 	emitGroup(body, p, KindProfile)
 
 	return f.Bytes(), nil
+}
+
+// emitEnvPushdown writes the operator's env_pushdown { } block. The
+// per-NAME object literal carries one of `secret` / `value` plus an
+// optional `description`. Sorted by Name for deterministic round-
+// trips (load → emit → load produces identical bytes modulo HCL
+// pretty-printing).
+func emitEnvPushdown(body *hclwrite.Body, entries []*EnvPushdownEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	blk := body.AppendNewBlock("env_pushdown", nil)
+	inner := blk.Body()
+	for _, e := range EnvPushdownEntriesSorted(entries) {
+		obj := map[string]cty.Value{}
+		if e.SecretRef != "" {
+			obj["secret"] = cty.StringVal(e.SecretRef)
+		}
+		if e.HasLiteral {
+			obj["value"] = cty.StringVal(e.Literal)
+		}
+		if e.Description != "" {
+			obj["description"] = cty.StringVal(e.Description)
+		}
+		inner.SetAttributeValue(e.Name, cty.ObjectVal(obj))
+	}
 }
 
 func emitOperational(body *hclwrite.Body, gw *Gateway) {

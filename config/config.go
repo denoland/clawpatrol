@@ -86,6 +86,13 @@ type Gateway struct {
 	// a non-nil empty value if the file declared no policy blocks.
 	Policy *Policy `hcl:"-"`
 
+	// EnvPushdown is the operator-declared env_pushdown { } block:
+	// arbitrary env vars to inject into agent processes (beyond the
+	// per-credential placeholders contributed by EnvPushdownProvider
+	// implementations). See env_pushdown.go for the entry shape.
+	// Empty when the HCL file omits the block.
+	EnvPushdown []*EnvPushdownEntry `hcl:"-,optional"`
+
 	// Remain is the part of the file gohcl didn't consume — i.e.
 	// every policy block. Pass-2 reads from this. Not exposed in
 	// the public API but kept on the struct so gohcl knows to
@@ -323,8 +330,20 @@ func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
 	diags = append(diags, validateOperational(gw)...)
 
 	// Pass 1: extract the policy blocks from the remainder body.
-	policyBlocks, polDiags := extractPolicyBlocks(gw.Remain)
+	policyBlocks, envPushdownBlocks, polDiags := extractPolicyBlocks(gw.Remain)
 	diags = append(diags, polDiags...)
+
+	// env_pushdown { } is a top-level singleton declared alongside the
+	// policy blocks. Decode it here so EnvPushdown is populated before
+	// callers compile the policy or serve `clawpatrol env`.
+	for _, blk := range envPushdownBlocks {
+		entries, epDiags := decodeEnvPushdownBlock(blk)
+		diags = append(diags, epDiags...)
+		gw.EnvPushdown = append(gw.EnvPushdown, entries...)
+	}
+	if d := validateEnvPushdownNames(gw.EnvPushdown); len(d) > 0 {
+		diags = append(diags, d...)
+	}
 
 	table, symDiags := buildSymbols(policyBlocks)
 	diags = append(diags, symDiags...)
@@ -455,7 +474,12 @@ func hasWGDialTarget(publicURL, wgEndpoint string) bool {
 // PR #225 renamed `gateway {}` to top-level fields; a brief deploy
 // ordering meant the new binary booted against an old config and
 // silently ran without a WireGuard endpoint.)
-func extractPolicyBlocks(body hcl.Body) (hcl.Blocks, hcl.Diagnostics) {
+//
+// env_pushdown { } is separated from the policy blocks because its
+// body shape (NAME = { ... } attributes) doesn't fit the symbol-
+// table-backed plugin dispatch — the caller decodes it directly via
+// decodeEnvPushdownBlock.
+func extractPolicyBlocks(body hcl.Body) (hcl.Blocks, hcl.Blocks, hcl.Diagnostics) {
 	schema := &hcl.BodySchema{
 		Blocks: []hcl.BlockHeaderSchema{
 			{Type: "approver", LabelNames: []string{"type", "name"}},
@@ -465,13 +489,54 @@ func extractPolicyBlocks(body hcl.Body) (hcl.Blocks, hcl.Diagnostics) {
 			{Type: "policy", LabelNames: []string{"name"}},
 			{Type: "profile", LabelNames: []string{"name"}},
 			{Type: "tunnel", LabelNames: []string{"type", "name"}},
+			{Type: "env_pushdown"},
 		},
 	}
 	content, diags := body.Content(schema)
 	if content == nil {
-		return nil, diags
+		return nil, nil, diags
 	}
-	return content.Blocks, diags
+	var policyBlocks, envPushdown hcl.Blocks
+	for _, b := range content.Blocks {
+		if b.Type == "env_pushdown" {
+			envPushdown = append(envPushdown, b)
+			continue
+		}
+		policyBlocks = append(policyBlocks, b)
+	}
+	if len(envPushdown) > 1 {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Multiple env_pushdown blocks",
+			Detail:   "Only one env_pushdown { } block is allowed per gateway config; merge the declarations into a single block.",
+			Subject:  &envPushdown[1].DefRange,
+		})
+	}
+	return policyBlocks, envPushdown, diags
+}
+
+// validateEnvPushdownNames catches duplicate NAME= declarations that
+// span multiple env_pushdown { } blocks (the per-block decoder only
+// sees one block's attributes). The HCL parser doesn't reject
+// duplicate attribute names across sibling blocks because each block's
+// body is its own scope.
+func validateEnvPushdownNames(entries []*EnvPushdownEntry) hcl.Diagnostics {
+	var diags hcl.Diagnostics
+	seen := map[string]*EnvPushdownEntry{}
+	for _, e := range entries {
+		if prev, ok := seen[e.Name]; ok {
+			r := e.DeclRange
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Duplicate env_pushdown entry",
+				Detail:   fmt.Sprintf("env_pushdown declares %q more than once (first at %s).", e.Name, prev.DeclRange.String()),
+				Subject:  &r,
+			})
+			continue
+		}
+		seen[e.Name] = e
+	}
+	return diags
 }
 
 // builtinApproverNames are approvers the gateway provides without
