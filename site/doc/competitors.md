@@ -435,13 +435,11 @@ Understands Kubernetes API path semantics
 native protocol support. WebSocket frame parsing with
 permessage-deflate decompression.
 
-### Claw Patrol, Understands LLM traffic: true
+### Claw Patrol, Understands LLM traffic: false
 
-Tracks LLM token usage for Anthropic (`/v1/messages`) and
-OpenAI (`/v1/chat/completions`, `/v1/responses`,
-`/v1/completions`, ChatGPT Codex). Parses streaming SSE
-responses for token deltas. Records per-session model, input
-and output tokens, and cache tokens.
+The gateway parses Anthropic and OpenAI response bodies for
+model + token counts internally, but doesn't surface that to
+users yet. Marking false until the dashboard exposes it.
 
 ### Claw Patrol, Rules: true
 
@@ -457,6 +455,6 @@ global.
 
 ### Claw Patrol, Analytics: true
 
-Dashboard with per-session request logging, LLM token
-tracking, integration status, and real-time event streaming.
-SQLite-backed with configurable retention.
+Dashboard with per-session request logging, integration status,
+and real-time event streaming. SQLite-backed with configurable
+retention.

@@ -24,9 +24,9 @@ production gets touched.
 - **Secret injection** at the wire. Agents send placeholders
   (`{{github_pat}}`); the gateway swaps them for the real token
   in transit.
-- **Full audit log** — every request, verdict, latency, and LLM
-  token count — searchable in the dashboard, exportable as
-  fixtures for regression tests.
+- **Full audit log** — every request, verdict, and latency,
+  searchable in the dashboard, exportable as fixtures for
+  regression tests.
 - **Plugins** for the protocols agents actually use: HTTPS,
   Postgres, ClickHouse, Kubernetes, SSH.
 
