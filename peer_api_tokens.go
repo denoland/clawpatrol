@@ -8,11 +8,20 @@ package main
 // usable bearers.
 //
 // Each token is pinned to the IPv4 and/or IPv6 address presented at
-// /api/onboard/start (the registration HTTP call). Gated requests
-// arrive over the WG tunnel; checkPeerAPIToken compares the WG
-// peer's underlay endpoint against the pinned pair and tears the
-// tunnel down on a mismatch — see site/doc/security-model.md
-// "Mitigating a leaked join credential".
+// /api/onboard/start (the registration HTTP call). checkPeerAPIToken
+// compares the request's source against that pair on every gated
+// call and tears the WG peer down on a mismatch — see
+// site/doc/security-model.md "Mitigating a leaked join credential".
+//
+// "Source" is derived from r.RemoteAddr, not from a client header or
+// the request body — both can be forged by anyone holding a leaked
+// token. When the request came in over the WG tunnel (the host's
+// whole-machine wg-quick is up and routes 0.0.0.0/0 via the
+// tunnel), r.RemoteAddr is the wg /32 — the same string for legit
+// and attacker. In that case we look up wireguard-go's remembered
+// underlay endpoint for the peer (i.e. where the UDP packets were
+// actually coming from at the most recent handshake), which IS the
+// public source, and compare against the pin.
 
 import (
 	"crypto/rand"
@@ -38,9 +47,12 @@ type approvedIPs struct {
 }
 
 // classifyRemoteAddr splits an "host:port" or bare-host RemoteAddr
-// and returns it as either v4 or v6. IPs not parseable as either
-// fall back to the v4 slot so loopback string forms ("localhost")
-// don't silently drop into NULL columns during tests.
+// and returns it as either v4 or v6. Unparseable hosts (a bare
+// "localhost" from some test harnesses, an empty string from a
+// reverse-proxy hop) return an empty pair — the pinning column then
+// stays NULL, which the gate treats as fail-closed: every subsequent
+// request from that peer is denied until the registration is redone
+// from somewhere RemoteAddr parses to an IP.
 func classifyRemoteAddr(remote string) approvedIPs {
 	host := remote
 	if h, _, err := net.SplitHostPort(remote); err == nil {
@@ -49,7 +61,7 @@ func classifyRemoteAddr(remote string) approvedIPs {
 	host = strings.Trim(host, "[]")
 	a, err := netip.ParseAddr(host)
 	if err != nil {
-		return approvedIPs{V4: host}
+		return approvedIPs{}
 	}
 	a = a.Unmap()
 	if a.Is6() {
@@ -117,27 +129,30 @@ type underlayEndpointLookup interface {
 // checkPeerAPIToken authenticates a gated request bearer.
 //
 // On success it returns the peer's WG-side IP. On any failure it
-// returns "" — the caller responds 401. The four failure modes are
-// distinct in their side effects:
+// returns "" — the caller responds 401. Failure modes:
 //
 //   - empty/unknown token: nothing to revoke, just deny.
-//   - known token, no WG endpoint yet: not pinned, allow (the WG
-//     handshake hasn't surfaced an endpoint to wireguard-go's IpcGet
-//     yet — for example because the peer is hitting us from the
-//     same loopback in tests, or the very first request races the
-//     first handshake completion). The pinning check fires on the
-//     next call once an endpoint exists.
-//   - token with NULL pin: pre-pinning rows (older registrations or
-//     dev seeds) are treated as unrestricted; allow. New rows always
-//     get at least one column populated.
+//   - token with no pin recorded: this is a pre-migration row that
+//     predates IP pinning. Deny — every fresh mint records a pin, so
+//     a row without one is stale and must be re-issued via
+//     re-approval. (Holding open a free pass for old rows would
+//     defeat the point of finding 2 of clawpatrol#193.)
+//   - no determinable source IP: RemoteAddr was unparseable, or the
+//     request came in over WG but wireguard-go has no underlay
+//     endpoint for the peer yet (no handshake observed). Deny —
+//     pinning is fail-closed.
 //   - mismatch: revoke the WG peer (tunnel down) and drop every
 //     token row for that peer, then deny. Restoring access requires
 //     re-approval in the dashboard.
 //
-// remoteHTTPAddr is the bootstrap HTTP request's RemoteAddr; it is
-// only consulted as a fallback when EndpointsByIP has no entry — in
-// production the request always arrives via WG and the WG endpoint
-// is authoritative.
+// remoteHTTPAddr is the gated HTTP request's RemoteAddr (or any
+// "ip:port" / bare-IP form). When that string is the peer's own WG
+// /32, the request came through the tunnel and the wg-side address
+// is uniform across legit and attacker — we then look up
+// wireguard-go's remembered underlay endpoint for the peer (the IP
+// the most recent UDP handshake came from) and compare that. When
+// it isn't, the request hit the gateway directly over the public
+// internet and RemoteAddr is itself the source we compare.
 func checkPeerAPIToken(db *sql.DB, token, remoteHTTPAddr string, wg underlayEndpointLookup, revoker peerAPITokenRevoker) string {
 	if db == nil || token == "" {
 		return ""
@@ -154,18 +169,22 @@ func checkPeerAPIToken(db *sql.DB, token, remoteHTTPAddr string, wg underlayEndp
 		return ""
 	}
 	if !pinnedV4.Valid && !pinnedV6.Valid {
-		return peerIP
+		// No pin on this row — pre-migration leftover. Refuse rather
+		// than open a free pass. The dashboard re-approve flow mints
+		// a fresh row with a pin.
+		log.Printf("peer_api_token: peer %s has no pin recorded — denying (re-approve to re-pin)", peerIP)
+		return ""
 	}
-	underlay := ""
-	if wg != nil {
-		underlay = wg.EndpointsByIP()[peerIP]
+	observed := requestSourceForPin(remoteHTTPAddr, peerIP, wg)
+	if observed.V4 == "" && observed.V6 == "" {
+		// Couldn't determine a source. Either the request arrived via
+		// WG but wireguard-go has no endpoint for the peer (no
+		// handshake completed), or RemoteAddr was a hostname /
+		// reverse-proxy artefact. Deny — the doc-stated guarantee is
+		// "pinned to the exact pair", not "pinned when we can".
+		log.Printf("peer_api_token: no usable source IP for peer %s (remote=%q) — denying", peerIP, remoteHTTPAddr)
+		return ""
 	}
-	if underlay == "" {
-		// Endpoint not yet surfaced by wireguard-go. Pinning fires on
-		// the next call. See the function comment for context.
-		return peerIP
-	}
-	observed := classifyRemoteAddr(underlay)
 	if peerAPIIPMatches(observed, pinnedV4, pinnedV6) {
 		return peerIP
 	}
@@ -176,6 +195,43 @@ func checkPeerAPIToken(db *sql.DB, token, remoteHTTPAddr string, wg underlayEndp
 	}
 	forgetPeerAPITokens(db, peerIP)
 	return ""
+}
+
+// requestSourceForPin picks the public source IP to compare against
+// the pinned join credential.
+//
+// When RemoteAddr is the peer's own wg /32 (the request came through
+// the tunnel), the wg-side string is uniform across legit and
+// attacker and useless on its own — we look up wireguard-go's
+// remembered underlay endpoint for the peer instead.
+//
+// When RemoteAddr is anything else, the request reached the gateway
+// directly (the host hit the public URL without routing through wg)
+// and RemoteAddr IS the public source.
+//
+// Returns the empty pair when no parseable source can be determined
+// (caller treats that as a deny).
+func requestSourceForPin(remoteHTTPAddr, peerIP string, wg underlayEndpointLookup) approvedIPs {
+	host := remoteHTTPAddr
+	if h, _, err := net.SplitHostPort(remoteHTTPAddr); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	// Request came through the WG tunnel — look up the underlay.
+	if peerIP != "" && canonicalPeerIP(host) == peerIP {
+		if wg == nil {
+			return approvedIPs{}
+		}
+		ep := wg.EndpointsByIP()[peerIP]
+		if ep == "" {
+			return approvedIPs{}
+		}
+		if h, _, err := net.SplitHostPort(ep); err == nil {
+			ep = h
+		}
+		return classifyRemoteAddr(ep)
+	}
+	return classifyRemoteAddr(host)
 }
 
 // peerAPIIPMatches enforces the security-model rule: the observed
