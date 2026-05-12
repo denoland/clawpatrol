@@ -1223,7 +1223,7 @@
             "pg-deployng",
             "pg-scheduler"
           ],
-          "condition": "sql.verb in ['drop', 'truncate', 'alter', 'grant', 'revoke', 'vacuum', 'create', 'comment', 'do']",
+          "condition": "sql.verbs.exists(v, v in ['drop', 'truncate', 'alter', 'grant', 'revoke', 'vacuum', 'create', 'comment', 'do'])",
           "verdict": "deny",
           "reason": "Schema changes / destructive DDL not permitted; use a migration PR"
         }

@@ -51,7 +51,10 @@ https endpoints:  http.method, http.path,
                   http.query (map<string,list<string>>),
                   http.headers (map<string,list<string>>),
                   http.body (string), http.body_json (dyn)
-sql endpoints:    sql.verb (lower-case), sql.tables (list<string>),
+sql endpoints:    sql.verb (lower-case, first stmt's outer verb),
+                  sql.verbs (list<string>: every stmt's outer verb +
+                  CTE-body verbs, lower-case — use for multi-statement
+                  / CTE-wrapped writes), sql.tables (list<string>),
                   sql.function (list<string>), sql.statement (string)
 k8s endpoints:    k8s.resource, k8s.verb (lower-case),
                   k8s.namespace, k8s.name,
@@ -65,6 +68,7 @@ Examples:
   condition = "http.method in ['POST', 'DELETE']"
   condition = "'secrets' in sql.tables || sql.tables.exists(t, t.startsWith('audit.'))"
   condition = "sql.verb == 'drop'"
+  condition = "'drop' in sql.verbs || 'truncate' in sql.verbs"
   condition = "k8s.resource == 'secrets' && k8s.verb in ['get', 'list']"
   condition = "!k8s.name.startsWith('debug-')"
   condition = "sql.statement.matches('(?i)copy.*from program')"

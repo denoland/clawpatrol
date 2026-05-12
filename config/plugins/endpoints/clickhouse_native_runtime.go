@@ -686,6 +686,7 @@ func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName st
 		Credential: credName,
 		Meta: &sqlfacet.Meta{
 			Verb:      info.Verb,
+			Verbs:     info.Verbs,
 			Tables:    info.Tables,
 			Functions: info.Functions,
 			Statement: info.Statement,

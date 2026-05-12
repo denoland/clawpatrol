@@ -26,12 +26,21 @@ import (
 )
 
 // SqlFields is the CEL-facing view of a SQL statement. Exposed as
-// the `sql` variable in rule conditions (`sql.verb`, `sql.tables`,
-// `sql.function`, `sql.statement`). The Go-level Function field is
-// named in singular to match the CEL field; the dashboard column
-// stays plural ("functions") for readability.
+// the `sql` variable in rule conditions (`sql.verb`, `sql.verbs`,
+// `sql.tables`, `sql.function`, `sql.statement`). The Go-level
+// Function field is named in singular to match the CEL field; the
+// dashboard column stays plural ("functions") for readability.
+//
+// `verbs` is the multi-statement / CTE-aware companion to `verb`:
+// `verb` reflects the FIRST top-level statement's outer verb (the
+// shape pre-#143 rules were written against), while `verbs`
+// enumerates every top-level statement's outer verb plus the verbs of
+// every CTE body reachable via WITH ... AS (...). Rule writers can
+// use `"drop" in sql.verbs` to catch a DROP hidden after a leading
+// SELECT or wrapped in a CTE.
 type SqlFields struct {
 	Verb      string   `cel:"verb"`
+	Verbs     []string `cel:"verbs"`
 	Tables    []string `cel:"tables"`
 	Function  []string `cel:"function"`
 	Statement string   `cel:"statement"`
@@ -41,7 +50,8 @@ type SqlFields struct {
 // postgres and clickhouse endpoint runtimes build one of these from
 // the parsed wire frame and assign it to match.Request.Meta.
 type Meta struct {
-	Verb      string   // select | insert | update | delete | merge | ...
+	Verb      string   // outer verb of the FIRST top-level statement
+	Verbs     []string // every statement's outer verb + CTE-body verbs
 	Tables    []string // unqualified table names referenced
 	Functions []string // unqualified function names called
 	Statement string   // the raw text — exposed for `statement` /
@@ -76,6 +86,7 @@ func (Facet) HostIsResource() bool { return false }
 func (Facet) ReportFields() []facet.ReportFieldSpec {
 	return []facet.ReportFieldSpec{
 		{Name: "verb", Kind: facet.ReportString, Label: "Verb"},
+		{Name: "verbs", Kind: facet.ReportStringList, Label: "Verbs"},
 		{Name: "tables", Kind: facet.ReportStringList, Label: "Tables"},
 		{Name: "functions", Kind: facet.ReportStringList, Label: "Functions"},
 		{Name: "statement", Kind: facet.ReportString, Label: "Statement"},
@@ -96,6 +107,7 @@ func (Facet) Report(req *match.Request) map[string]any {
 	}
 	return map[string]any{
 		"verb":      m.Verb,
+		"verbs":     m.Verbs,
 		"tables":    m.Tables,
 		"functions": m.Functions,
 		"statement": m.Statement,
@@ -142,6 +154,7 @@ func buildActivation(req *match.Request) map[string]any {
 	return map[string]any{
 		"sql": &SqlFields{
 			Verb:      strings.ToLower(meta.Verb),
+			Verbs:     coalesceLowerList(meta.Verbs),
 			Tables:    coalesceList(meta.Tables),
 			Function:  coalesceList(meta.Functions),
 			Statement: meta.Statement,
@@ -154,4 +167,18 @@ func coalesceList(xs []string) []string {
 		return []string{}
 	}
 	return xs
+}
+
+// coalesceLowerList mirrors coalesceList but lowercases entries so
+// verb-set rules like `"drop" in sql.verbs` don't need to handle
+// upstream casing variance.
+func coalesceLowerList(xs []string) []string {
+	if len(xs) == 0 {
+		return []string{}
+	}
+	out := make([]string, len(xs))
+	for i, x := range xs {
+		out[i] = strings.ToLower(x)
+	}
+	return out
 }

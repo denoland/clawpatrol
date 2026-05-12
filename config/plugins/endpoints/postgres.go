@@ -42,7 +42,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -430,6 +429,7 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 		Credential: credName,
 		Meta: &sqlfacet.Meta{
 			Verb:      info.Verb,
+			Verbs:     info.Verbs,
 			Tables:    info.Tables,
 			Functions: info.Functions,
 			Statement: info.Statement,
@@ -652,48 +652,8 @@ func indexByte(b []byte, c byte) int {
 	return -1
 }
 
-// ── Best-effort SQL lexer for the SQLMatcher input ────────────────────
-
-type pgInfo struct {
-	Verb      string
-	Tables    []string
-	Functions []string
-	Statement string
-}
-
-var (
-	pgTableRE = regexp.MustCompile(`(?i)\b(?:from|update|into|join)\s+([a-z_][a-z0-9_.]*)`)
-	pgFuncRE  = regexp.MustCompile(`(?i)\b([a-z_][a-z0-9_]*)\s*\(`)
-)
-
-// parseSQL extracts verb / tables / functions / statement for the
-// SQL matcher. Best-effort — a SQL parser would be more correct but
-// the matcher's predicates are coarse enough that regex extraction
-// produces actionable results for the v14 use cases (banned verbs,
-// banned functions, secret-table reads).
-func parseSQL(sql string) pgInfo {
-	sql = strings.TrimSpace(sql)
-	info := pgInfo{Statement: sql}
-	if sql == "" {
-		return info
-	}
-	lower := strings.ToLower(sql)
-	if i := strings.IndexAny(lower, " \t\n\r("); i > 0 {
-		info.Verb = lower[:i]
-	} else {
-		info.Verb = lower
-	}
-	for _, m := range pgTableRE.FindAllStringSubmatch(lower, -1) {
-		info.Tables = append(info.Tables, m[1])
-	}
-	for _, m := range pgFuncRE.FindAllStringSubmatch(lower, -1) {
-		info.Functions = append(info.Functions, m[1])
-	}
-	return info
-}
-
 // Compile-time interface check — keeps PostgresEndpointRuntime in
-// sync with the contract.
+// sync with the contract. SQL extraction lives in postgres_sql.go.
 var _ runtime.ConnEndpointRuntime = PostgresEndpointRuntime{}
 
 // ── Upstream auth: SCRAM / cleartext / trust ──────────────────────────

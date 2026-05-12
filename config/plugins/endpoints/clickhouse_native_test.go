@@ -173,6 +173,7 @@ func TestParseChSQL(t *testing.T) {
 			"SELECT id FROM users FORMAT JSON",
 			chSQLInfo{
 				Verb:      "select",
+				Verbs:     []string{"select"},
 				Tables:    []string{"users"},
 				Statement: "SELECT id FROM users FORMAT JSON",
 			},
@@ -182,6 +183,7 @@ func TestParseChSQL(t *testing.T) {
 			"INSERT INTO events (ts, body) VALUES (now(), 'x') SETTINGS max_insert_threads = 4",
 			chSQLInfo{
 				Verb:      "insert",
+				Verbs:     []string{"insert"},
 				Tables:    []string{"events"},
 				Statement: "INSERT INTO events (ts, body) VALUES (now(), 'x') SETTINGS max_insert_threads = 4",
 			},
@@ -191,6 +193,7 @@ func TestParseChSQL(t *testing.T) {
 			"SELECT count() FROM events",
 			chSQLInfo{
 				Verb:      "select",
+				Verbs:     []string{"select"},
 				Tables:    []string{"events"},
 				Functions: []string{"count"},
 				Statement: "SELECT count() FROM events",
@@ -201,6 +204,7 @@ func TestParseChSQL(t *testing.T) {
 			"SELECT u.id FROM users u JOIN tokens t ON t.user_id = u.id",
 			chSQLInfo{
 				Verb:      "select",
+				Verbs:     []string{"select"},
 				Tables:    []string{"tokens", "users"},
 				Statement: "SELECT u.id FROM users u JOIN tokens t ON t.user_id = u.id",
 			},
@@ -210,6 +214,7 @@ func TestParseChSQL(t *testing.T) {
 			"DROP TABLE events",
 			chSQLInfo{
 				Verb:      "drop",
+				Verbs:     []string{"drop"},
 				Tables:    []string{"events"},
 				Statement: "DROP TABLE events",
 			},
@@ -219,6 +224,7 @@ func TestParseChSQL(t *testing.T) {
 			"SELECT * FROM analytics.events",
 			chSQLInfo{
 				Verb:      "select",
+				Verbs:     []string{"select"},
 				Tables:    []string{"analytics.events"},
 				Statement: "SELECT * FROM analytics.events",
 			},

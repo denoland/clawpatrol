@@ -238,7 +238,8 @@
 #
 #   https → http.method, http.path, http.query, http.headers,
 #           http.body, http.body_json
-#   sql   → sql.verb, sql.tables, sql.function, sql.statement
+#   sql   → sql.verb, sql.verbs, sql.tables, sql.function,
+#           sql.statement
 #   k8s   → k8s.verb, k8s.resource, k8s.namespace, k8s.name,
 #           k8s.params
 #
@@ -1002,7 +1003,11 @@ rule "clickhouse-default" {
 
 rule "pg-banned-verbs" {
   endpoints = [pg-deployng, pg-scheduler]
-  condition = "sql.verb in ['drop', 'truncate', 'alter', 'grant', 'revoke', 'vacuum', 'create', 'comment', 'do']"
+  # `sql.verbs` (plural) catches the verb in EVERY top-level
+  # statement plus every CTE body, so a write hidden after a
+  # leading SELECT (`SELECT 1; DROP TABLE users`) or wrapped in a
+  # CTE (`WITH x AS (DELETE …) SELECT * FROM x`) still fires.
+  condition = "sql.verbs.exists(v, v in ['drop', 'truncate', 'alter', 'grant', 'revoke', 'vacuum', 'create', 'comment', 'do'])"
   verdict   = "deny"
   reason    = "Schema changes / destructive DDL not permitted; use a migration PR"
 }
