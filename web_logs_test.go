@@ -388,4 +388,3 @@ func waitForBufferFill(t *testing.T, s *LogSink, n int) {
 	}
 	t.Fatalf("buffer never reached %d entries", n)
 }
-
