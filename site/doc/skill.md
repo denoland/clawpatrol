@@ -1,14 +1,16 @@
+---
+name: claw-patrol
+description: Set up and operate Claw Patrol, a firewall for AI agents. Write the gateway HCL config (credentials, endpoints, rules, approvers, profiles), run the gateway, onboard devices, wrap agent commands with `clawpatrol run`. Use when the user wants to install or operate Claw Patrol, write or modify a `gateway.hcl` policy, add allow / deny / approve rules over HTTPS / Postgres / Kubernetes / ClickHouse / SSH traffic, gate agent actions behind a human or an LLM judge, or debug Claw Patrol behavior.
+---
+
 # Claw Patrol
 
-A firewall for AI agents. Self-contained operator reference; link
-out for depth.
-
-Two pieces: a **gateway** (Go binary on a host you control — policy,
-credentials, audit log, dashboard) and one or more **devices**
-(laptops, CI runners) that join the gateway over WireGuard. Devices
-tunnel agent traffic to the gateway, which per-request decides
-allow / deny / approve and injects the right credential. The agent
-never holds the real credential.
+A firewall for AI agents. Two pieces: a **gateway** (Go binary on a
+host you control — policy, credentials, audit log, dashboard) and
+one or more **devices** (laptops, CI runners) that join the gateway
+over WireGuard. Devices tunnel agent traffic to the gateway, which
+per-request decides allow / deny / approve and injects the right
+credential. The agent never holds the real credential.
 
 ```
 Agent ─→ Device ──WireGuard──→ Gateway ──→ Upstream
