@@ -3,7 +3,7 @@ package config_test
 import (
 	"testing"
 
-	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/internal/config"
 )
 
 func TestNormalizePublicURLForOIDC(t *testing.T) {
