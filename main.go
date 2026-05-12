@@ -2161,7 +2161,7 @@ usage:
   clawpatrol login                       onboard this machine (tailscale path)
   clawpatrol run -- <cmd> [args...]      route one process tree through gateway
   clawpatrol status                      report install + tunnel state
-  clawpatrol uninstall                   tear down everything this machine installed
+  clawpatrol uninstall                   remove local join state and tunnel config
   clawpatrol env                         print shell exports for sourcing
   clawpatrol init-ca DIR                 generate a new CA in DIR
   clawpatrol validate <config.hcl>       parse + compile a config and exit
