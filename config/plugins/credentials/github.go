@@ -5,7 +5,9 @@ package credentials
 
 import (
 	"context"
+	"encoding/base64"
 	"net/http"
+	"strings"
 
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/runtime"
@@ -19,8 +21,48 @@ func (g *GitHubOAuth) InjectHTTP(_ context.Context, req *http.Request, sec runti
 	if len(sec.Bytes) == 0 {
 		return nil
 	}
+	if isGitHubSmartHTTP(req) {
+		username := githubBasicUsername(req.Header.Get("Authorization"))
+		if username == "" {
+			username = "x-access-token"
+		}
+		token := base64.StdEncoding.EncodeToString([]byte(username + ":" + string(sec.Bytes)))
+		req.Header.Set("Authorization", "Basic "+token)
+		return nil
+	}
 	req.Header.Set("Authorization", "Bearer "+string(sec.Bytes))
 	return nil
+}
+
+func isGitHubSmartHTTP(req *http.Request) bool {
+	if req == nil || req.URL == nil {
+		return false
+	}
+	if !strings.EqualFold(req.URL.Hostname(), "github.com") {
+		return false
+	}
+	path := req.URL.EscapedPath()
+	if strings.HasSuffix(path, ".git/info/refs") {
+		svc := req.URL.Query().Get("service")
+		return svc == "git-upload-pack" || svc == "git-receive-pack"
+	}
+	return strings.HasSuffix(path, ".git/git-upload-pack") || strings.HasSuffix(path, ".git/git-receive-pack")
+}
+
+func githubBasicUsername(authz string) string {
+	scheme, payload, ok := strings.Cut(authz, " ")
+	if !ok || !strings.EqualFold(scheme, "Basic") {
+		return ""
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(payload))
+	if err != nil {
+		return ""
+	}
+	username, _, ok := strings.Cut(string(decoded), ":")
+	if !ok {
+		return ""
+	}
+	return username
 }
 
 // EnvVars is part of the clawpatrol plugin API.
