@@ -1,0 +1,1 @@
+error: error_oidc_empty_match.hcl:8:1: Invalid OIDC enrollment match — match must contain at least one scalar or list-of-scalar claim constraint.

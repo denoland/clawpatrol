@@ -1,0 +1,1 @@
+error: error_oidc_profile_not_opted_in.hcl:7:1: Profile does not allow OIDC enrollment — profile "ci" must set allow_ephemeral_oidc = true before OIDC enrollment can target it.

@@ -1,0 +1,1 @@
+error: error_oidc_invalid_ttl.hcl:8:1: Invalid OIDC enrollment ttl — ttl must be a positive Go duration string such as "1h".
