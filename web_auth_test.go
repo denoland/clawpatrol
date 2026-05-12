@@ -139,6 +139,7 @@ func TestRouteAuthRequirementsDocumentOnboardingBoundary(t *testing.T) {
 		{path: "/api/onboard/start", want: authPublic, wantDashboardPublic: true, wantTailnetPublic: true},
 		{path: "/api/onboard/poll", want: authPublic, wantDashboardPublic: true, wantTailnetPublic: true},
 		{path: "/api/onboard/claim", want: authPublic, wantDashboardPublic: true, wantTailnetPublic: true},
+		{path: "/api/onboard/oidc", want: authPublic, wantDashboardPublic: true, wantTailnetPublic: true},
 		{path: "/api/onboard/lookup", want: authTailnetOperator, wantDashboardPublic: true, wantTailnetPublic: false},
 		{path: "/api/onboard/approve", want: authDashboardOrTailnetOperator, wantDashboardPublic: false, wantTailnetPublic: false},
 		{path: "/api/config/save", want: authDashboard, wantDashboardPublic: false, wantTailnetPublic: false},
