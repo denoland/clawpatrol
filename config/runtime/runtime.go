@@ -210,7 +210,7 @@ type ConnEvent struct {
 	// Rule is the matched CompiledRule.Name, "" when no rule fired.
 	// The host's Emit closure copies it onto the dashboard Event so
 	// the action-fixture exporter can pin a downloaded action to a
-	// specific rule (doc/test.md §1.3).
+	// specific rule (site/doc/clawpatrol-test.md).
 	Rule string
 }
 
@@ -423,7 +423,7 @@ type PlaceholderDetector interface {
 // loader behind `clawpatrol test` reads only `"statement": "..."`
 // from each fixture and calls this to recover verb / tables /
 // functions before running rule matching, so the format stays
-// operator-friendly (doc/test.md §4).
+// operator-friendly (site/doc/clawpatrol-test.md).
 //
 // Implementations return the per-family `*sqlfacet.Meta` value the
 // SQL matcher expects on `match.Request.Meta`. Endpoints whose

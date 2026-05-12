@@ -165,7 +165,7 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
 // into a `clawpatrol test` fixture and saves it as a .json file. The
 // runner reads files in this exact format — drop the download into a
 // fixtures/ directory and `clawpatrol test config.hcl fixtures/` will
-// replay it against a candidate policy. See doc/test.md §5.
+// replay it against a candidate policy. See site/doc/clawpatrol-test.md.
 function DownloadActionButton({ ev }: { ev: EventRecord }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);

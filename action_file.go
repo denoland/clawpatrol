@@ -10,7 +10,7 @@ package main
 // Each facet block carries ONLY that facet's CEL-visible fields —
 // the same vocabulary rules read in `condition = "<facet>.<field>"`.
 // Connection-level fields (host, credential, peer_ip) sit outside
-// the facet block on `action` itself. See doc/test.md.
+// the facet block on `action` itself. See site/doc/clawpatrol-test.md.
 
 import (
 	"encoding/base64"
@@ -34,7 +34,7 @@ type Fixture struct {
 }
 
 // Match is what the rule engine produced (or what the runner
-// should assert). Approve is terminal — see doc/test.md.
+// should assert). Approve is terminal — see site/doc/clawpatrol-test.md.
 type Match struct {
 	Verdict  string `json:"verdict"` // allow | deny | approve | passthrough
 	Rule     string `json:"rule,omitempty"`

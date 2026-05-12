@@ -470,7 +470,7 @@ export type EventRecord = {
   family?: string;
   facets?: Record<string, unknown>;
   // endpoint/rule are populated at dispatch time; needed by the
-  // Download action button (doc/test.md §5).
+  // Download action button (site/doc/clawpatrol-test.md).
   endpoint?: string;
   rule?: string;
 };

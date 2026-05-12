@@ -1427,8 +1427,8 @@ func (w *webMux) apiActionByID(
 }
 
 // writeActionFixture emits the Action JSON for `clawpatrol test`
-// (doc/test.md). 400s on events that pre-date endpoint tracking or
-// can't be mapped to a terminal verdict.
+// (site/doc/clawpatrol-test.md). 400s on events that pre-date
+// endpoint tracking or can't be mapped to a terminal verdict.
 func (w *webMux) writeActionFixture(rw http.ResponseWriter, ev *Event) {
 	policy := w.g.Policy()
 	if policy == nil {
@@ -1881,7 +1881,7 @@ type Event struct {
 	// matched CompiledRule.Name (empty when no rule fired). Populated
 	// at the existing dispatch sites so the action-fixture exporter
 	// can pin a downloaded action to a specific endpoint and assert
-	// the rule that produced its verdict (doc/test.md §1.3).
+	// the rule that produced its verdict (site/doc/clawpatrol-test.md).
 	Endpoint string `json:"endpoint,omitempty"`
 	Rule     string `json:"rule,omitempty"`
 }
