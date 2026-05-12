@@ -88,7 +88,7 @@ function SecretInjectionDiagram() {
 
       {/* Middle proxy — official Claw Patrol logo */}
       <image
-        href="/clawpatrol-logo.svg"
+        href="/claw-patrol-logo.svg"
         x="132"
         y="40"
         width="56"
@@ -274,9 +274,9 @@ export function HowItWorksSection() {
 
         <div class="grid md:grid-cols-2 gap-6">
           <div class="p-6 sm:p-8 rounded-sm bg-canvas-dark border border-navy-200">
-            <h3 class="text-base uppercase mb-4 text-console-dark font-display font-bold">
+            <h4 class="text-base uppercase mb-4 text-console-dark font-display font-bold">
               Full audit log
-            </h3>
+            </h4>
             <AnalyticsDiagram />
             <ul class="text-[15px]  text-text-muted font-sans list-disc pl-5 space-y-2 marker:text-navy-500">
               <li>Every outbound request logged in real time</li>
@@ -288,9 +288,9 @@ export function HowItWorksSection() {
             </ul>
           </div>
           <div class="p-6 sm:p-8 rounded-sm bg-canvas-dark border border-navy-200">
-            <h3 class="text-base uppercase mb-4 text-console-dark font-display font-bold">
+            <h4 class="text-base uppercase mb-4 text-console-dark font-display font-bold">
               Secret injection
-            </h3>
+            </h4>
             <SecretInjectionDiagram />
             <ul class="text-[15px]  text-text-muted font-sans list-disc pl-5 space-y-2 marker:text-navy-500">
               <li>Placeholders swapped for real credentials at the proxy</li>

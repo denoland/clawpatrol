@@ -1,5 +1,5 @@
 import { Button } from "../components/Button";
-import { CrtDisplay } from "../components/CrtDisplay";
+import { InstallTerminal } from "../components/InstallTerminal";
 import { SectionLabel } from "../components/SectionLabel";
 
 export function CtaSection() {
@@ -17,22 +17,14 @@ export function CtaSection() {
         Multiple agents share secrets and endpoints, each with their own
         policies.
       </p>
-      <div class="max-w-sm md:max-w-lg mx-auto mb-16 mt-32">
-        <CrtDisplay title="terminal">
-          <pre
-            class="px-6 sm:px-8 pt-8 pb-32 text-sm
-              font-mono text-crt text-left whitespace-pre-wrap break-all"
-            style={{
-              textShadow:
-                "0 0 6px color-mix(in srgb, " +
-                "var(--color-crt) 31%, transparent), " +
-                "0 0 14px color-mix(in srgb, " +
-                "var(--color-crt-dim) 19%, transparent)",
-            }}
-          >
-            curl -fsSL clawpatrol.dev/install.sh | sh
-          </pre>
-        </CrtDisplay>
+      <img
+        src="/clawpatrol.png"
+        alt="Claw Patrol mascot"
+        class="w-72 md:w-96 max-w-full mx-auto mb-10
+          mix-blend-multiply"
+      />
+      <div class="mb-12 flex justify-center">
+        <InstallTerminal variant="expanded" />
       </div>
       <Button href="https://github.com/denoland/clawpatrol" size="lg">
         Get Started

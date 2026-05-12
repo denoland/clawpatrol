@@ -6,6 +6,7 @@ export function Header() {
       <nav className="max-w-6xl mx-auto px-6 sm:px-8 flex flex-wrap justify-between gap-y-2 items-center">
         <a
           href="/"
+          aria-label="Claw Patrol home"
           class="text-2xl
         font-black font-display hover:text-rust"
         >

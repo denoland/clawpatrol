@@ -23,19 +23,16 @@ export function IntegrationsSection() {
           secret-management code yourself.
         </p>
         <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-6 sm:gap-8 max-w-2xl mx-auto">
-          {INTEGRATIONS.map(({ name, id }, i) => (
+          {INTEGRATIONS.map(({ name, id }) => (
             <a
               key={id}
               href={`https://github.com/denoland/clawpatrol/tree/main/src/plugins/${id}`}
               target="_blank"
               rel="noopener noreferrer"
-              class="integration-tile flex flex-col items-center aspect-square
+              class="flex flex-col items-center aspect-square
                 justify-between py-4 px-2 squircle-md
                 transition-transform hover:scale-[1.03] focus-visible:scale-[1.03]
                 focus-visible:outline-2 focus-visible:outline-console-dark"
-              style={{
-                animationRange: `cover ${10 + i * 3}% cover ${35 + i * 3}%`,
-              }}
             >
               <div class="flex-1 flex items-center">
                 <img
