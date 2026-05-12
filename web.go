@@ -263,8 +263,8 @@ const credentialWebhookPrefix = "/api/cred/"
 
 func (w *webMux) dashboardSecretGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		secret := w.g.cfg.DashboardSecret
-		if secret == "" {
+		tokens := w.dashboardCredentials()
+		if len(tokens) == 0 {
 			if dashboardMisconfigAlwaysOpen(r.URL.Path) {
 				next.ServeHTTP(rw, r)
 				return
@@ -280,7 +280,7 @@ func (w *webMux) dashboardSecretGate(next http.Handler) http.Handler {
 			next.ServeHTTP(rw, r)
 			return
 		}
-		if checkDashboardSecret(r, secret) {
+		if checkDashboardCredential(r, tokens) {
 			next.ServeHTTP(rw, r.WithContext(contextWithPrincipal(r.Context(), w.dashboardSecretPrincipal())))
 			return
 		}
@@ -295,6 +295,23 @@ func (w *webMux) dashboardSecretGate(next http.Handler) http.Handler {
 		}
 		http.Redirect(rw, r, "/__login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
 	})
+}
+
+// dashboardCredentials returns every token the gate will accept on
+// the cp_dash cookie / X-Clawpatrol-Secret header: the HCL
+// dashboard_secret (if set) and the persisted admin token (if a
+// `clawpatrol get-token` invocation minted one). Empty list means
+// the dashboard is unconfigured — render the misconfig page unless
+// insecure_no_dashboard_secret opts out.
+func (w *webMux) dashboardCredentials() []string {
+	var out []string
+	if s := w.g.cfg.DashboardSecret; s != "" {
+		out = append(out, s)
+	}
+	if t := w.g.AdminToken(); t != "" {
+		out = append(out, t)
+	}
+	return out
 }
 
 func dashboardMisconfigAlwaysOpen(path string) bool {
@@ -325,6 +342,9 @@ func renderDashboardMisconfigured(rw http.ResponseWriter, r *http.Request) {
 }
 
 func checkDashboardSecret(r *http.Request, want string) bool {
+	if want == "" {
+		return false
+	}
 	if c, err := r.Cookie("cp_dash"); err == nil && subtle.ConstantTimeCompare([]byte(c.Value), []byte(want)) == 1 {
 		return true
 	}
@@ -334,12 +354,26 @@ func checkDashboardSecret(r *http.Request, want string) bool {
 	return false
 }
 
+// checkDashboardCredential returns true if any of the candidate
+// tokens matches the cookie or header on r. Used by
+// dashboardSecretGate so both the HCL dashboard_secret and the
+// persisted admin token authenticate equally — the operator can
+// log in with either after a `clawpatrol get-token` recovery.
+func checkDashboardCredential(r *http.Request, tokens []string) bool {
+	for _, t := range tokens {
+		if checkDashboardSecret(r, t) {
+			return true
+		}
+	}
+	return false
+}
+
 // apiDashboardLogin renders a one-field form (GET) and validates +
 // sets the cp_dash cookie (POST). Plain HTML, no JS — keeps the
 // login surface small.
 func (w *webMux) apiDashboardLogin(rw http.ResponseWriter, r *http.Request) {
-	want := w.g.cfg.DashboardSecret
-	if want == "" {
+	tokens := w.dashboardCredentials()
+	if len(tokens) == 0 {
 		http.Redirect(rw, r, "/", http.StatusFound)
 		return
 	}
@@ -353,13 +387,20 @@ func (w *webMux) apiDashboardLogin(rw http.ResponseWriter, r *http.Request) {
 			return
 		}
 		got := r.PostFormValue("secret")
-		if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
+		matched := ""
+		for _, t := range tokens {
+			if subtle.ConstantTimeCompare([]byte(got), []byte(t)) == 1 {
+				matched = t
+				break
+			}
+		}
+		if matched == "" {
 			renderLogin(rw, next, "wrong secret", 401)
 			return
 		}
 		http.SetCookie(rw, &http.Cookie{
 			Name:     "cp_dash",
-			Value:    want,
+			Value:    matched,
 			Path:     "/",
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,

@@ -276,6 +276,30 @@ type Gateway struct {
 	// transports memoizes one http.Transport per endpoint. Avoids the
 	// per-request allocation + idle-conn-pool reset of the old path.
 	transports sync.Map // *config.CompiledEndpoint -> *http.Transport
+	// adminTokenVal caches the persisted dashboard admin token loaded
+	// from <stateDir>/admin_token at startup. Empty when the file is
+	// missing or unreadable (gateway still serves; only dashboard_secret
+	// authenticates). Stored as atomic.Value to keep dashboardSecretGate
+	// lock-free on the hot path.
+	adminTokenVal atomic.Value // string
+}
+
+// AdminToken returns the persisted dashboard admin token loaded at
+// gateway startup, or "" when no token file exists. Used by
+// dashboardSecretGate to accept the recovery token from
+// `sudo clawpatrol get-token` alongside the HCL dashboard_secret.
+func (g *Gateway) AdminToken() string {
+	if g == nil {
+		return ""
+	}
+	v, _ := g.adminTokenVal.Load().(string)
+	return v
+}
+
+// setAdminToken stores the persisted admin token on the gateway.
+// Safe to call from boot before any requests land.
+func (g *Gateway) setAdminToken(tok string) {
+	g.adminTokenVal.Store(tok)
 }
 
 // transportFor returns the cached http.Transport for ep, building it
@@ -391,24 +415,36 @@ func (g *Gateway) watchConfig(path string) {
 		// PublicURL / DashboardSecret reads pick up immediately.
 		// Listen / CADir / Tailscale changes are not applied (restart).
 		g.cfg = next
+		// Pick up a newly-minted admin token without requiring a
+		// restart, so `clawpatrol get-token` becomes effective on the
+		// next config-mtime tick. Stat resolves stateDir the same way
+		// runGateway does (cfg.OAuthDir or <ca_dir>/../oauth).
+		if tok, err := loadAdminToken(resolveStateDir(next)); err == nil {
+			g.setAdminToken(tok)
+		}
 		log.Printf("config reloaded: %d endpoints across %d profile(s)",
 			len(policy.Endpoints), len(policy.Profiles))
-		logDashboardSecretState(next)
+		logDashboardSecretState(next, g.AdminToken())
 	}
 }
 
 // logDashboardSecretState emits a one-line summary of dashboard-auth
 // state every time the config (re)loads, so an accidentally-open
 // dashboard shows up in `journalctl -u clawpatrol-gateway` even when
-// nobody opens the dashboard in a browser.
-func logDashboardSecretState(cfg *config.Gateway) {
+// nobody opens the dashboard in a browser. adminToken is the
+// persisted token loaded from <stateDir>/admin_token; non-empty
+// means the operator has already minted a recovery token and the
+// dashboard authenticates even with no HCL dashboard_secret.
+func logDashboardSecretState(cfg *config.Gateway, adminToken string) {
 	switch {
 	case cfg.DashboardSecret != "":
 		log.Printf("dashboard auth: enabled (dashboard_secret set)")
+	case adminToken != "":
+		log.Printf("dashboard auth: enabled (admin token from state dir — recover with `clawpatrol get-token`)")
 	case cfg.InsecureNoDashboardSecret:
 		log.Printf("dashboard auth: DISABLED via insecure_no_dashboard_secret — anyone who reaches the dashboard URL gets in")
 	default:
-		log.Printf("dashboard auth: MISCONFIGURED — gateway.hcl is missing both dashboard_secret and insecure_no_dashboard_secret; dashboard will refuse to serve until one is set")
+		log.Printf("dashboard auth: MISCONFIGURED — gateway.hcl is missing both dashboard_secret and insecure_no_dashboard_secret; dashboard will refuse to serve until one is set (or run `clawpatrol get-token` to mint an admin token)")
 	}
 }
 
@@ -2054,6 +2090,8 @@ func main() {
 		runUninstall(os.Args[2:])
 	case "status":
 		runStatus(os.Args[2:])
+	case "get-token":
+		runGetToken(os.Args[2:])
 	case "version":
 		v := buildVersion
 		if buildGitSHA != "" {
@@ -2135,6 +2173,9 @@ usage:
   clawpatrol env                         print shell exports for sourcing
   clawpatrol init-ca DIR                 generate a new CA in DIR
   clawpatrol validate <config.hcl>       parse + compile a config and exit
+  clawpatrol get-token [-config FILE]    print the dashboard admin token
+                                         (generates one on first use; must
+                                         run as root or the clawpatrol user)
   clawpatrol version`)
 	os.Exit(2)
 }
@@ -2168,7 +2209,6 @@ func runGateway(args []string) {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
-	logDashboardSecretState(cfg)
 	certs, err := loadCA(cfg.CADir)
 	if err != nil {
 		log.Fatalf("ca: %v", err)
@@ -2221,6 +2261,18 @@ func runGateway(args []string) {
 	}
 	g.secrets = newGatewaySecretStore(db, oauthReg)
 	g.tunnels = NewTunnelManager(g.secrets, cfg.CADir)
+	// Load the persisted admin token. Best-effort: if the file is
+	// unreadable (e.g. gateway started before `clawpatrol get-token`
+	// ran), the dashboard still works as long as dashboard_secret is
+	// set in gateway.hcl. The recovery path activates as soon as the
+	// operator generates the token and the gateway picks it up on
+	// the next config reload (see watchConfig).
+	if tok, err := loadAdminToken(stateDir); err != nil {
+		log.Printf("admin token: %v (recovery via `clawpatrol get-token` will mint a new one)", err)
+	} else {
+		g.setAdminToken(tok)
+	}
+	logDashboardSecretState(cfg, g.AdminToken())
 	registerOAuthCredentials(oauthReg, policy)
 	g.policy.Store(policy)
 	g.connIdx.Store(runtime.BuildConnIndex(policy))
