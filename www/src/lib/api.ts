@@ -469,7 +469,20 @@ export type EventRecord = {
   // method/path/status; SQL: verb/tables/...; k8s: verb/resource/...).
   family?: string;
   facets?: Record<string, unknown>;
+  // endpoint/rule are populated at dispatch time; needed by the
+  // Download action button (doc/test.md §5).
+  endpoint?: string;
+  rule?: string;
 };
+
+// downloadActionFixture fetches the action reshaped as a
+// `clawpatrol test` fixture. Returns a Blob so the caller can
+// trigger a browser download.
+export async function downloadActionFixture(id: string): Promise<Blob> {
+  const r = await api(`/api/actions/${id}?fmt=fixture`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.blob();
+}
 
 // FacetSchema mirrors the JSON returned by GET /api/facets — the
 // dashboard fetches it once at boot and uses it to render

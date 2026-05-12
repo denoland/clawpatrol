@@ -1,0 +1,18 @@
+{
+  "match": {
+    "verdict":  "allow",
+    "rule":     "github-reads",
+    "endpoint": "github"
+  },
+  "action": {
+    "host": "api.github.com",
+    "http": {
+      "method": "GET",
+      "path":   "/user",
+      "headers": {
+        "Authorization": ["***"],
+        "User-Agent":    ["clawpatrol-test/sample"]
+      }
+    }
+  }
+}
