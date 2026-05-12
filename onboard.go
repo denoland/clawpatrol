@@ -212,6 +212,9 @@ func (r *onboardRegistry) upsertLocked(ip string) {
 	if r.db == nil {
 		return
 	}
+	if _, isEphemeral := r.ephemeralProfileByIP[ip]; isEphemeral {
+		return
+	}
 	if _, seen := r.profileByIP[ip]; !seen {
 		if _, hn := r.hostnameByIP[ip]; !hn {
 			if _, owner := r.ownerByIP[ip]; !owner {
