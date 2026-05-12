@@ -3,7 +3,7 @@ import { Button } from "./Button";
 export function Header() {
   return (
     <header class="sticky top-0 z-40 w-full py-5 bg-navy-100">
-      <nav className="max-w-6xl mx-auto px-6 sm:px-8 flex flex-wrap justify-between gap-y-2 items-center">
+      <nav className="max-w-6xl mx-auto px-6 sm:px-8 flex flex-wrap sm:justify-between gap-y-2 items-center justify-center gap-16">
         <a
           href="/"
           aria-label="Claw Patrol home"
@@ -12,7 +12,7 @@ export function Header() {
         >
           <img src="/claw-patrol-logo.svg" alt="" class="h-9 sm:h-12 w-auto" />
         </a>
-        <div class="flex items-center gap-4 sm:gap-8 text-sm">
+        <div class="flex flex-wrap items-center gap-4 sm:gap-8 text-sm justify-center sm:justify-start">
           <a
             href="/docs/"
             class="transition-colors font-mono
