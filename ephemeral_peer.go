@@ -72,7 +72,7 @@ func (w *webMux) apiEphemeralPeer(rw http.ResponseWriter, r *http.Request) {
 
 func (w *webMux) apiAddEphemeralPeer(rw http.ResponseWriter, r *http.Request) {
 	token := bearerFromAuthHeader(r.Header.Get("Authorization"))
-	parentIP := peerIPForAPIToken(w.g.db, token)
+	parentIP := checkPeerAPIToken(w.g.db, token, r.RemoteAddr, globalWG, globalWG)
 	if parentIP == "" {
 		http.Error(rw, "unauthorized", http.StatusUnauthorized)
 		return
@@ -114,7 +114,7 @@ func (w *webMux) apiAddEphemeralPeer(rw http.ResponseWriter, r *http.Request) {
 // own ephemeral peers.
 func (w *webMux) apiRemoveEphemeralPeer(rw http.ResponseWriter, r *http.Request) {
 	token := bearerFromAuthHeader(r.Header.Get("Authorization"))
-	parentIP := peerIPForAPIToken(w.g.db, token)
+	parentIP := checkPeerAPIToken(w.g.db, token, r.RemoteAddr, globalWG, globalWG)
 	if parentIP == "" {
 		http.Error(rw, "unauthorized", http.StatusUnauthorized)
 		return

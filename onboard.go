@@ -53,6 +53,12 @@ type onboardSession struct {
 	profile     string // profile assigned at approval time
 	hostname    string // client-supplied (os.Hostname) at /api/onboard/start
 	apiToken    string // per-peer bearer for gated client API calls (env-pushdown)
+	// approvedAt is the public IPv4/IPv6 pair the agent host
+	// presented at /api/onboard/start. Captured from RemoteAddr
+	// (NOT the request body) and pinned to the peer_api_tokens
+	// row at approve time. Subsequent gated calls over WG must
+	// originate from a matching underlay endpoint.
+	approvedAt approvedIPs
 }
 
 // onboardRegistry persists onboarded peers in the `devices` table,
@@ -500,16 +506,19 @@ func (w *webMux) apiOnboardStart(rw http.ResponseWriter, r *http.Request) {
 	// doesn't have to pick it manually. Stored as the session-level
 	// suggestion; the dashboard's approve call can still override.
 	prof := strings.TrimSpace(r.URL.Query().Get("profile"))
-	if hn != "" || prof != "" {
-		w.onboard.mu.Lock()
-		if hn != "" {
-			s.hostname = hn
-		}
-		if prof != "" {
-			s.profile = prof
-		}
-		w.onboard.mu.Unlock()
+	// IP pinning: capture the agent host's public address from
+	// RemoteAddr — NOT the request body, which an attacker holding a
+	// leaked credential could forge. See site/doc/security-model.md.
+	approved := classifyRemoteAddr(r.RemoteAddr)
+	w.onboard.mu.Lock()
+	if hn != "" {
+		s.hostname = hn
 	}
+	if prof != "" {
+		s.profile = prof
+	}
+	s.approvedAt = approved
+	w.onboard.mu.Unlock()
 	// Prefer the operator-configured public_url so brand-new clients
 	// see a real URL. Fall back to the request's Host header for
 	// dev / direct-IP setups. Tailscale Funnel hostnames (*.ts.net)
@@ -592,6 +601,7 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 	s.owner = owner
 	s.profile = profile
 	hostname := s.hostname
+	approvedAt := s.approvedAt
 	w.onboard.mu.Unlock()
 
 	// Recycle the wg /32 already bound to (owner, hostname) so a rejoin
@@ -630,9 +640,10 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 			}
 			// Mint the per-peer bearer the client uses for gated
 			// API calls (currently /api/env-pushdown). Stored hashed
-			// in `peer_api_tokens`; raw token is returned exactly
-			// once via /api/onboard/poll.
-			if token, perr := mintAndPersistPeerAPIToken(w.g.db, peerIP); perr == nil {
+			// in `peer_api_tokens`, pinned to the public IPv4/IPv6
+			// pair captured at /api/onboard/start; raw token is
+			// returned exactly once via /api/onboard/poll.
+			if token, perr := mintAndPersistPeerAPIToken(w.g.db, peerIP, approvedAt); perr == nil {
 				w.onboard.mu.Lock()
 				s.apiToken = token
 				w.onboard.mu.Unlock()

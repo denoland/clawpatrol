@@ -479,7 +479,7 @@ func (w *webMux) mountCredentialWebhooks(mux *http.ServeMux) {
 // they reference a path on the *client's* disk.
 func (w *webMux) apiEnvPushdown(rw http.ResponseWriter, r *http.Request) {
 	token := bearerFromAuthHeader(r.Header.Get("Authorization"))
-	peerIP := peerIPForAPIToken(w.g.db, token)
+	peerIP := checkPeerAPIToken(w.g.db, token, r.RemoteAddr, globalWG, globalWG)
 	if peerIP == "" {
 		http.Error(rw, "unknown or missing peer api token", http.StatusUnauthorized)
 		return
