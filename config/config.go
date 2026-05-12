@@ -132,6 +132,7 @@ type Policy struct {
 	Endpoints   map[string]*Entity
 	Rules       map[string]*Entity
 	Tunnels     map[string]*Entity
+	Enrollments map[string]*Entity
 
 	Policies map[string]*PolicyText
 	Profiles map[string]*Profile
@@ -188,14 +189,16 @@ type PolicyText struct {
 // only body attribute; rules ride along automatically because they're
 // attached to endpoints.
 type Profile struct {
-	Name      string   `json:"name"`
-	Endpoints []string `json:"endpoints"`
+	Name               string   `json:"name"`
+	Endpoints          []string `json:"endpoints"`
+	AllowEphemeralOIDC bool     `json:"allow_ephemeral_oidc,omitempty"`
 }
 
 // profileBody is the gohcl decode target for the profile body — the
 // label is read separately from the block.
 type profileBody struct {
-	Endpoints []string `hcl:"endpoints"`
+	Endpoints          []string `hcl:"endpoints"`
+	AllowEphemeralOIDC bool     `hcl:"allow_ephemeral_oidc,optional"`
 }
 
 // Load parses, validates, and resolves the gateway config at path.
@@ -239,6 +242,7 @@ func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
 		Endpoints:   make(map[string]*Entity),
 		Rules:       make(map[string]*Entity),
 		Tunnels:     make(map[string]*Entity),
+		Enrollments: make(map[string]*Entity),
 		Policies:    make(map[string]*PolicyText),
 		Profiles:    make(map[string]*Profile),
 	}
@@ -258,6 +262,10 @@ func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
 	configDir := filepath.Dir(filename)
 	resolveDiags := decodePolicyBlocks(gw.Policy, table, evalCtx, configDir)
 	diags = append(diags, resolveDiags...)
+
+	// Post-decode pass: OIDC enrollment uses normalized public_url as
+	// its deployment-specific audience and requires HTTPS.
+	diags = append(diags, validateOIDCEnrollmentsForGateway(gw)...)
 
 	// Post-decode pass: substitute `<<file:NAME>>` markers in plugin
 	// body fields that opted in via FileIncludable. Runs after Build
@@ -362,6 +370,7 @@ func extractPolicyBlocks(body hcl.Body) (hcl.Blocks, hcl.Diagnostics) {
 			{Type: "approver", LabelNames: []string{"type", "name"}},
 			{Type: "credential", LabelNames: []string{"type", "name"}},
 			{Type: "endpoint", LabelNames: []string{"type", "name"}},
+			{Type: "enrollment", LabelNames: []string{"type", "name"}},
 			{Type: "rule", LabelNames: []string{"name"}},
 			{Type: "policy", LabelNames: []string{"name"}},
 			{Type: "profile", LabelNames: []string{"name"}},
@@ -418,7 +427,7 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 		if d := gohcl.DecodeBody(sym.Block.Body, evalCtx, &body); d.HasErrors() {
 			diags = append(diags, d...)
 		}
-		pr := &Profile{Name: sym.Name, Endpoints: body.Endpoints}
+		pr := &Profile{Name: sym.Name, Endpoints: body.Endpoints, AllowEphemeralOIDC: body.AllowEphemeralOIDC}
 		// Cross-check: each endpoint name resolves to an endpoint.
 		for _, ep := range pr.Endpoints {
 			if table.Get(KindEndpoint, ep) != nil {
@@ -452,7 +461,7 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 	// ordering — symbols are populated in pass 1 — but matching decode
 	// order to compile order keeps Order[] stable across the file's
 	// declaration sequence and avoids surprising readers.
-	for _, kind := range []Kind{KindApprover, KindCredential, KindTunnel, KindEndpoint, KindRule} {
+	for _, kind := range []Kind{KindApprover, KindCredential, KindTunnel, KindEndpoint, KindRule, KindEnrollment} {
 		for _, sym := range table.byKind[kind] {
 			plugin := Lookup(sym.Kind, sym.Type)
 			if plugin == nil {
@@ -479,7 +488,7 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 			}
 			refs, refDiags := resolveRefs(target, sym.Name, plugin, table, sym.Block.DefRange)
 			diags = append(diags, refDiags...)
-			ctx := &BuildCtx{Refs: refs, Symbols: table, Block: sym.Block}
+			ctx := &BuildCtx{Refs: refs, Symbols: table, Policy: p, Block: sym.Block}
 			if plugin.Validate != nil {
 				diags = append(diags, plugin.Validate(target, sym.Name, ctx)...)
 			}
@@ -503,6 +512,8 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 				p.Endpoints[sym.Name] = ent
 			case KindRule:
 				p.Rules[sym.Name] = ent
+			case KindEnrollment:
+				p.Enrollments[sym.Name] = ent
 			}
 			p.Order = append(p.Order, sym.Name)
 		}

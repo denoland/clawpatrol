@@ -113,6 +113,9 @@ func dumpPolicy(p *Policy) map[string]any {
 	if v := dumpEntityMap(p.Rules); v != nil {
 		out["rules"] = v
 	}
+	if v := dumpEntityMap(p.Enrollments); v != nil {
+		out["enrollments"] = v
+	}
 	if v := dumpEntityMap(p.Tunnels); v != nil {
 		out["tunnels"] = v
 	}
@@ -170,7 +173,11 @@ func dumpProfiles(m map[string]*Profile) map[string]any {
 	}
 	out := map[string]any{}
 	for name, p := range m {
-		out[name] = map[string]any{"endpoints": p.Endpoints}
+		row := map[string]any{"endpoints": p.Endpoints}
+		if p.AllowEphemeralOIDC {
+			row["allow_ephemeral_oidc"] = true
+		}
+		out[name] = row
 	}
 	return out
 }

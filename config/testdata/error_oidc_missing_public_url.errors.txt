@@ -1,0 +1,1 @@
+error: Invalid OIDC enrollment public_url — OIDC enrollment uses public_url as its expected audience: public_url is required.
