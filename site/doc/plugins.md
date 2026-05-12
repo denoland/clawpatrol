@@ -64,6 +64,7 @@ Current built-in plugin types include:
 - `postgres_credential`
 - `slack_tokens`
 - `ssh`
+- `tailscale`
 - `telegram_bot_token`
 
 ### Endpoints

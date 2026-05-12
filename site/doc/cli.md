@@ -18,13 +18,23 @@ Bootstrap a gateway data directory with a starter `gateway.hcl`, CA material,
 and gateway state.
 
 ```bash
-clawpatrol gateway init [--data-dir DIR]
+clawpatrol gateway init [--data-dir DIR] [--public-url URL] [--public-ip IP] [--wg-port PORT] [--dash-port PORT] [--tls-port PORT] [--subnet CIDR] [--no-firewall]
 ```
 
 Options:
 
 - `--data-dir DIR` — where to write gateway config, CA, and state. Defaults to
   the platform gateway data directory.
+- `--public-url URL` — public dashboard/join URL to write into the generated
+  config. When omitted, `gateway init` derives one from the public IP and
+  dashboard port.
+- `--public-ip IP` — public IP to use for the WireGuard endpoint. When omitted,
+  `gateway init` attempts to detect it.
+- `--wg-port PORT` — WireGuard UDP port. Defaults to `51820`.
+- `--dash-port PORT` — dashboard and join HTTP port. Defaults to `9080`.
+- `--tls-port PORT` — TLS gateway port on the host. Defaults to `8443`.
+- `--subnet CIDR` — WireGuard subnet pool. Defaults to `10.55.0.0/24`.
+- `--no-firewall` — skip adding iptables `ACCEPT` rules.
 
 After editing `gateway.hcl`, start the gateway with `clawpatrol gateway`.
 
@@ -52,7 +62,7 @@ Register the current machine with an existing gateway and prepare it for
 Claw Patrol-routed agent traffic.
 
 ```bash
-clawpatrol join <gateway-url> [--hostname NAME] [--profile NAME] [--whole-machine] [--no-trust] [--ca-dir DIR] [--name NAME]
+clawpatrol join [--hostname NAME] [--profile NAME] [--whole-machine] [--no-trust] [--ca-dir DIR] [--name NAME] <gateway-url>
 ```
 
 Options:

@@ -369,8 +369,8 @@ Configures the tunnel runtime.
 | `cleanup` | `string` | no | Controls whether a template-created pod is deleted on tunnel teardown. "delete" (default) is right for the common create-on-demand case; "keep" disables deletion. |
 | `share` | `string` | no | Controls whether runtime instances are singleton, per-endpoint, or per-request. |
 | `keepalive` | `string` | no | Keeps an idle tunnel runtime warm for the given duration. |
-| `via` | `string` | no | Chains kubectl access through another tunnel. |
-| `credential` | `string` | no | References an optional credential block for Kubernetes access. |
+| `via` | `ref(tunnel)` | no | Chains kubectl access through another tunnel. |
+| `credential` | `ref(credential)` | no | References an optional credential block for Kubernetes access. |
 
 ```hcl
 tunnel "kubernetes_port_forward" "example" {
@@ -391,8 +391,8 @@ Configures the tunnel runtime.
 | `env` | `map[string]string` | no | Adds environment variables to the spawned command. |
 | `share` | `string` | no | Controls whether runtime instances are singleton, per-endpoint, or per-request. |
 | `keepalive` | `string` | no | Keeps an idle tunnel runtime warm for the given duration. |
-| `via` | `string` | no | Chains this tunnel through another tunnel. |
-| `credential` | `string` | no | References an optional credential block for the tunnel runtime. |
+| `via` | `ref(tunnel)` | no | Chains this tunnel through another tunnel. |
+| `credential` | `ref(credential)` | no | References an optional credential block for the tunnel runtime. |
 
 ```hcl
 tunnel "local_command" "example" {
@@ -411,11 +411,12 @@ Configures the tunnel runtime.
 | `user` | `string` | yes | The SSH username for the bastion login. |
 | `share` | `string` | no | Controls whether runtime instances are singleton, per-endpoint, or per-request. |
 | `keepalive` | `string` | no | Keeps an idle tunnel runtime warm for the given duration. |
-| `via` | `string` | no | Chains the SSH connection through another tunnel. |
-| `credential` | `string` | yes | References an ssh credential block used for bastion authentication. |
+| `via` | `ref(tunnel)` | no | Chains the SSH connection through another tunnel. |
+| `credential` | `ref(credential)` | yes | References an ssh credential block used for bastion authentication. |
 
 ```hcl
 tunnel "ssh_port_forward" "example" {
+  bastion = "bastion.example:22"
   user = "example"
   credential = example-credential
 }
@@ -434,8 +435,8 @@ Configures the tunnel runtime.
 | `tags` | `[]string` | no | Tailscale tags requested for the tsnet node. |
 | `share` | `string` | no | Controls whether runtime instances are singleton, per-endpoint, or per-request. |
 | `keepalive` | `string` | no | Keeps an idle tunnel runtime warm for the given duration. |
-| `via` | `string` | no | Chains this tunnel through another tunnel. |
-| `credential` | `string` | no | References an optional credential block for the tunnel runtime. |
+| `via` | `ref(tunnel)` | no | Chains this tunnel through another tunnel. |
+| `credential` | `ref(credential)` | no | References an optional credential block for the tunnel runtime. |
 
 ```hcl
 tunnel "tailscale" "example" {}
