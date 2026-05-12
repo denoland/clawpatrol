@@ -22,6 +22,7 @@ import (
 
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/facet"
+	"github.com/denoland/clawpatrol/config/match"
 )
 
 // RuleBody is the gohcl-tagged decode target. The match predicate is
@@ -41,6 +42,14 @@ type RuleBody struct {
 	// on this.
 	Condition string `hcl:"condition,optional"`
 
+	// Match is the declarative glob-and-suffix grammar alternative to
+	// `condition`. Body is `match = { method_any = [...], path_none =
+	// [...] }`-shaped: each key is `<facet-key>[_any|_all|_none]`, each
+	// value is a glob (filepath.Match style). Mutually exclusive with
+	// `condition`. Lowered to an equivalent CEL expression at load
+	// time, so the runtime sees a uniform shape.
+	Match cty.Value `hcl:"match,optional"`
+
 	// Credential, if set, is a bare-name reference to a credential
 	// block. The runtime treats it as an extra match predicate
 	// (request must have been dispatched against this credential)
@@ -59,6 +68,12 @@ type RuleBody struct {
 
 // Rule is the canonical, family-stamped record stored in
 // Policy.Rules[name].Body.
+//
+// MatchBlock, when non-nil, is the parsed source form of a
+// declarative `match = {...}` body. Condition still holds the
+// compiled CEL expression — the runtime always reads from there —
+// but emit prefers MatchBlock so a round-trip preserves the
+// operator's chosen surface syntax.
 type Rule struct {
 	Name       string                `json:"name"`
 	Family     string                `json:"family"` // "https" | "sql" | "k8s"
@@ -70,6 +85,8 @@ type Rule struct {
 	Verdict    string                `json:"verdict,omitempty"` // "allow" | "deny" | "" (when Approve is set)
 	Reason     string                `json:"reason,omitempty"`
 	Approve    []config.ApproveStage `json:"approve,omitempty"`
+
+	MatchBlock *match.Block `json:"-"`
 }
 
 // Compile lowers a built rule into the runtime-friendly *CompiledRule
@@ -176,6 +193,16 @@ func validate(body any, name string, ctx *config.BuildCtx) hcl.Diagnostics {
 		diags = append(diags, famDiag)
 	}
 
+	hasMatch := !rb.Match.IsNull()
+	if rb.Condition != "" && hasMatch {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Both condition and match set on rule %q", name),
+			Detail:   "Use exactly one of `condition = \"<CEL>\"` or `match = { ... }`. The match form lowers to CEL at load time, so the two are interchangeable in expressivity for the keys match supports.",
+			Subject:  &ctx.Block.DefRange,
+		})
+	}
+
 	// CEL condition syntactic + type validation. Compile against the
 	// inferred facet's environment so unknown variables and result-
 	// type mismatches are caught at Load time. With no family
@@ -190,6 +217,15 @@ func validate(body any, name string, ctx *config.BuildCtx) hcl.Diagnostics {
 				Subject:  &ctx.Block.DefRange,
 			})
 		}
+	}
+
+	// Validate the declarative match attribute against the family's
+	// facet keys, then sanity-check the lowered CEL by feeding it
+	// back through the facet's matcher compiler. With no family,
+	// skip — same reason as above.
+	if hasMatch && fam != "" {
+		_, mDiags := compileMatch(fam, rb.Match, name, ctx.Block.DefRange)
+		diags = append(diags, mDiags...)
 	}
 
 	// Outcome: exactly one of verdict / approve.
@@ -244,6 +280,24 @@ func build(body any, name string, ctx *config.BuildCtx) (any, hcl.Diagnostics) {
 		Credential: rb.Credential,
 		Verdict:    rb.Verdict,
 		Reason:     rb.Reason,
+	}
+
+	// Lower the declarative match into CEL and stash both the
+	// compiled string (so the runtime path is uniform) and the
+	// parsed block (so emit can round-trip the operator's source
+	// shape). validate already surfaced any diagnostics for this
+	// match block — discard them here to avoid duplication. With no
+	// family the validate pass already reported the unknown endpoint;
+	// the lowering is silent in that case.
+	if !rb.Match.IsNull() && fam != "" {
+		specs := matchKeysFor(fam)
+		block, _ := match.DecodeAttribute(rb.Match, specs, name, ctx.Block.DefRange)
+		if block != nil {
+			r.MatchBlock = block
+			if expr, err := block.Compile(specs); err == nil {
+				r.Condition = expr
+			}
+		}
 	}
 
 	// Approve chain.
@@ -319,7 +373,9 @@ func requireKind(ctx *config.BuildCtx, name string, kind config.Kind, ruleName, 
 // are emitted as bare-name idents (singular vs list forms preserved
 // to round-trip the operator's choice). Condition emits as a quoted
 // string; credential as a bare-name ident; approve mixes bare-name
-// idents.
+// idents. When the rule was originally written with a `match = {...}`
+// block, emit prefers that form over the lowered CEL so a load /
+// emit cycle preserves the operator's chosen surface syntax.
 func emitRule(body any, _ string, b *hclwrite.Body) {
 	r := body.(*Rule)
 	if len(r.Endpoints) == 1 {
@@ -336,7 +392,9 @@ func emitRule(body any, _ string, b *hclwrite.Body) {
 	if r.Credential != "" {
 		config.SetIdent(b, "credential", r.Credential)
 	}
-	if r.Condition != "" {
+	if r.MatchBlock != nil {
+		b.SetAttributeValue("match", matchBlockToCty(r.MatchBlock))
+	} else if r.Condition != "" {
 		b.SetAttributeValue("condition", cty.StringVal(r.Condition))
 	}
 	if r.Verdict != "" {
@@ -348,6 +406,28 @@ func emitRule(body any, _ string, b *hclwrite.Body) {
 	if len(r.Approve) > 0 {
 		b.SetAttributeRaw("approve", approveToTokens(r.Approve))
 	}
+}
+
+// matchBlockToCty serializes a parsed match.Block into the cty
+// object literal that emits as `match = { key_op = [...], ... }`.
+func matchBlockToCty(b *match.Block) cty.Value {
+	if b == nil || len(b.Predicates) == 0 {
+		return cty.EmptyObjectVal
+	}
+	attrs := make(map[string]cty.Value, len(b.Predicates))
+	for _, p := range b.Predicates {
+		key := p.Key + p.Op.Suffix()
+		vals := make([]cty.Value, len(p.Values))
+		for i, v := range p.Values {
+			vals[i] = cty.StringVal(v)
+		}
+		if len(vals) == 0 {
+			attrs[key] = cty.ListValEmpty(cty.String)
+		} else {
+			attrs[key] = cty.TupleVal(vals)
+		}
+	}
+	return cty.ObjectVal(attrs)
 }
 
 // approveToTokens emits the approve list as bare-name idents.
@@ -363,6 +443,67 @@ func approveToTokens(stages []config.ApproveStage) hclwrite.Tokens {
 	}
 	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")})
 	return tokens
+}
+
+// compileMatch decodes the cty.Value attached to `match = {...}`,
+// validates each (key, op, values) triple against the family's
+// declared MatchKeys, and confirms the lowered CEL compiles cleanly
+// against the family's facet env. Returns the parsed *match.Block
+// alongside any diagnostics — callers may use the parsed block to
+// re-emit the source form via emitRule.
+func compileMatch(family string, val cty.Value, ruleName string, subject hcl.Range) (*match.Block, hcl.Diagnostics) {
+	var diags hcl.Diagnostics
+	specs := matchKeysFor(family)
+	if len(specs) == 0 {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Rule %q match: family %q does not support the match block", ruleName, family),
+			Detail:   "This protocol family hasn't declared any match keys yet — use `condition = \"<CEL>\"` instead.",
+			Subject:  &subject,
+		})
+		return nil, diags
+	}
+	block, dDiags := match.DecodeAttribute(val, specs, ruleName, subject)
+	diags = append(diags, dDiags...)
+	if block == nil {
+		return nil, diags
+	}
+	expr, err := block.Compile(specs)
+	if err != nil {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Could not lower match block on rule %q", ruleName),
+			Detail:   err.Error(),
+			Subject:  &subject,
+		})
+		return nil, diags
+	}
+	if _, err := facet.NewMatcher(family, expr); err != nil {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Rule %q match block compiles to invalid CEL", ruleName),
+			Detail:   fmt.Sprintf("%s\nLowered expression: %s", err.Error(), expr),
+			Subject:  &subject,
+		})
+		return nil, diags
+	}
+	return block, diags
+}
+
+// matchKeysFor returns the per-family match-key list by asking the
+// facet's runtime via the optional MatchKeyer interface. Returns nil
+// when the facet does not declare any keys (or the family is unknown
+// — the caller treats both as "match block not supported here").
+func matchKeysFor(family string) []match.KeySpec {
+	rt := facet.Lookup(family)
+	if rt == nil {
+		return nil
+	}
+	mk, ok := rt.(match.MatchKeyer)
+	if !ok {
+		return nil
+	}
+	return mk.MatchKeys()
 }
 
 // Plugin returns the single config.Plugin that registers `rule` as

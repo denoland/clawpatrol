@@ -103,6 +103,15 @@ rule "github-writes" {
   approve   = [ops]
 }
 
+# The same rule shape using the declarative match block. Pick
+# whichever form reads better — both lower to the same matcher.
+#
+# rule "github-writes" {
+#   endpoint = github
+#   match    = { method_any = ["POST", "PUT", "PATCH", "DELETE"] }
+#   approve  = [ops]
+# }
+
 # SSH endpoints. The wire protocol carries no SNI / Host header, so
 # the gateway runs a DNS server inside the WG tunnel and answers
 # A/AAAA queries for SSH-able hostnames with virtual IPs from

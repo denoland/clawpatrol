@@ -522,6 +522,7 @@ been inferred from the endpoint refs.
 | `priority` | `int` | no |  |
 | `disabled` | `bool` | no |  |
 | `condition` | `string` | no | A CEL expression evaluated against the family-specific variable set. An absent / empty condition matches everything — the catch-all pattern (`rule "X-default" { priority = -100; verdict = "deny" }`) relies on this. |
+| `match` | `block` | no | The declarative glob-and-suffix grammar alternative to `condition`. Body is `match = { method_any = [...], path_none = [...] }`-shaped: each key is `<facet-key>[_any\|_all\|_none]`, each value is a glob (filepath.Match style). Mutually exclusive with `condition`. Lowered to an equivalent CEL expression at load time, so the runtime sees a uniform shape. |
 | `credential` | `ref(credential)` | no | Credential, if set, is a bare-name reference to a credential block. The runtime treats it as an extra match predicate (request must have been dispatched against this credential) evaluated before the CEL expression. |
 | `verdict` | `string` | no | The outcome when the rule matches. Set exactly one of `verdict` (`"allow"` / `"deny"`) or `approve`. |
 | `reason` | `string` | no |  |

@@ -1,0 +1,75 @@
+{
+  "ca_dir": "/opt/clawpatrol/ca",
+  "listen": "0.0.0.0:8443",
+  "llm_fail_mode": "closed",
+  "policy": {
+    "approvers": {
+      "ops": {
+        "body": {
+          "Channel": "#agent-ops",
+          "Credential": "",
+          "Timeout": 600,
+          "RequireApprovers": 0,
+          "Interactive": false
+        },
+        "type": "human_approver"
+      }
+    },
+    "credentials": {
+      "github-pat": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "type": "bearer_token"
+      }
+    },
+    "endpoints": {
+      "github": {
+        "body": {
+          "Hosts": [
+            "api.github.com"
+          ],
+          "Credential": "github-pat"
+        },
+        "family": "https",
+        "type": "https"
+      }
+    },
+    "profiles": {
+      "default": {
+        "endpoints": [
+          "github"
+        ]
+      }
+    },
+    "rules": {
+      "reads": {
+        "body": {
+          "name": "reads",
+          "family": "https",
+          "endpoints": [
+            "github"
+          ],
+          "condition": "(glob(\"GET\", http.method) || glob(\"HEAD\", http.method))",
+          "verdict": "allow"
+        }
+      },
+      "writes": {
+        "body": {
+          "name": "writes",
+          "family": "https",
+          "endpoints": [
+            "github"
+          ],
+          "condition": "(glob(\"POST\", http.method) || glob(\"PUT\", http.method) || glob(\"PATCH\", http.method) || glob(\"DELETE\", http.method)) && !glob(\"TRACE\", http.method) && !glob(\"/admin/*\", http.path)",
+          "approve": [
+            {
+              "name": "ops"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "unknown_host": "passthrough"
+}

@@ -122,6 +122,7 @@ func init() {
 			ext.ParseStructTags(true),
 		),
 		cel.Variable("k8s", cel.ObjectType("k8s.K8sFields")),
+		match.GlobOption(),
 	)
 	if err != nil {
 		panic(fmt.Sprintf("k8s facet: cel env: %v", err))
@@ -129,6 +130,20 @@ func init() {
 	celEnv = env
 
 	facet.Register(Facet{})
+}
+
+// MatchKeys exposes the keys allowed in a rule's `match = { ... }`
+// block for the kubernetes family. `verb` is enumerated; `resource`,
+// `namespace`, and `name` are single-string blobs that take globs
+// (`*/exec`, `pods/*`, `debug-*`). `params` is map-shaped and stays
+// outside the suffix scheme.
+func (Facet) MatchKeys() []match.KeySpec {
+	return []match.KeySpec{
+		{Name: "verb", CELRef: "k8s.verb", Arity: match.UnaryEnum},
+		{Name: "resource", CELRef: "k8s.resource", Arity: match.UnaryBlob},
+		{Name: "namespace", CELRef: "k8s.namespace", Arity: match.UnaryBlob},
+		{Name: "name", CELRef: "k8s.name", Arity: match.UnaryBlob},
+	}
 }
 
 // NewMatcher compiles a CEL condition into a Matcher. An empty

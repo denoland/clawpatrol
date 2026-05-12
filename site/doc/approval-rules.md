@@ -130,7 +130,8 @@ rule "<name>" {
   credential = <credential-name>          # optional: only match when
                                           # the dispatched credential is this one
 
-  condition  = "<CEL expression>"         # absent / empty == match-all
+  condition  = "<CEL expression>"         # OR
+  # match    = { method_any = [...] }     # the declarative form (see below)
 
   verdict    = "allow"                    # OR
   # verdict  = "deny"                     # OR
@@ -147,7 +148,8 @@ rule "<name>" {
 | `endpoint` / `endpoints` | exactly one             | Bare-name refs to declared endpoints. All endpoints must share one protocol family. |
 | `priority`   | optional (default `0`)   | Higher fires first. Negative for catch-alls (`-100` is the convention). |
 | `credential` | optional                 | Bare-name ref. The runtime treats it as an extra predicate evaluated before the CEL condition: the request must have been dispatched against this credential. |
-| `condition`  | optional                 | A CEL string evaluated against the family's variable set. Absent or empty matches every request the endpoint sees. |
+| `condition`  | one of `condition` / `match` | A CEL string evaluated against the family's variable set. Absent or empty (and no `match` block) matches every request the endpoint sees. |
+| `match`      | one of `condition` / `match` | The declarative glob-and-suffix form (see [Match block grammar](#match-block-grammar)). Lowered to CEL at load time. |
 | `verdict`    | one of `verdict` / `approve` | `"allow"` or `"deny"`. |
 | `approve`    | one of `verdict` / `approve` | List of approver bare names. Approvers run in order; **all must allow** for the request to proceed. |
 | `reason`     | optional                 | Surfaced to the agent on `deny` / approver-deny, and shown on the dashboard. |
@@ -162,6 +164,124 @@ A rule that names an undeclared endpoint, mixes endpoint families,
 or has a CEL expression that references variables not in the
 inferred family fails at load time with an error pointing at the
 offending block.
+
+
+## Match block grammar
+
+The `match = { ... }` attribute is a declarative alternative to the
+CEL `condition`. Pick one or the other on a given rule — setting
+both is a load error.
+
+The grammar is small and uniform:
+
+- Every value is a **glob** (`*`, `?`, `[...]` — Go's
+  [`path/filepath.Match`](https://pkg.go.dev/path/filepath#Match)).
+  A literal like `"POST"` is a glob with no metacharacters; `"sel*"`
+  is a prefix glob; `"*admin*"` is a substring glob.
+- Each key is `<name>` or `<name>_<op>` where `<op>` is `any`,
+  `all`, or `none`.
+- A bare `<name>` is sugar for `<name>_any` so the shortest form
+  keeps the most-common semantics.
+- Predicates AND together. Within a predicate the suffix decides
+  the per-value combinator.
+
+```hcl
+rule "k8s-no-mutations" {
+  endpoint = k8s-prod
+  match = {
+    verb_any      = ["create", "update", "patch", "delete"]
+    name_none     = ["debug-*"]
+    resource_none = ["*/exec", "*/attach", "*/portforward"]
+  }
+  verdict = "deny"
+  reason  = "Only debug-* pods may be created / modified / deleted"
+}
+```
+
+### Operator suffixes
+
+| Suffix | Semantics |
+|--------|-----------|
+| `_any` (default) | At least one pattern matches. For multi-valued keys: at least one *value* matches at least one pattern. |
+| `_all` | Every pattern is satisfied. For unary blobs (`name`, `path`, `statement`): every pattern must match the single blob. For multi-valued keys (`tables`, `function`): every pattern must hit at least one element — i.e. require co-occurrence. |
+| `_none` | No pattern matches. The negation idiom. |
+
+### Per-family keys
+
+Only the keys the family declares are accepted in a `match` block.
+Map-shaped facets (`http.headers`, `http.query`, `k8s.params`) and
+JSON-tree facets (`http.body_json`) stay out of the suffix scheme;
+write conditions against them with the CEL form.
+
+| Family | Key | Arity | `_any` | `_all` | `_none` |
+|--------|-----|-------|:------:|:------:|:-------:|
+| `https` | `method` | unary enum | ✓ | ✗ | ✓ |
+| `https` | `path` | unary blob | ✓ | ✓ | ✓ |
+| `https` | `body` | unary blob | ✓ | ✓ | ✓ |
+| `sql` | `verb` | unary enum | ✓ | ✗ | ✓ |
+| `sql` | `tables` | multi-valued | ✓ | ✓ | ✓ |
+| `sql` | `function` | multi-valued | ✓ | ✓ | ✓ |
+| `sql` | `statement` | unary blob | ✓ | ✓ | ✓ |
+| `k8s` | `verb` | unary enum | ✓ | ✗ | ✓ |
+| `k8s` | `resource` | unary blob | ✓ | ✓ | ✓ |
+| `k8s` | `namespace` | unary blob | ✓ | ✓ | ✓ |
+| `k8s` | `name` | unary blob | ✓ | ✓ | ✓ |
+
+`_all` is rejected on unary-enum keys at load time — a single
+discrete value can't equal multiple distinct globs, so
+`method_all = ["GET", "POST"]` is incoherent. The diagnostic
+explains: `_all not valid on unary-enum key`.
+
+### Compounds on the same key
+
+You can repeat a key with different suffixes; the predicates AND
+together. This subsumes the old `[positive, !negative]` mixed-list
+idiom from the pre-CEL grammar:
+
+```hcl
+match = {
+  method_any  = ["GET", "POST", "PUT"]
+  method_none = ["TRACE", "CONNECT"]
+}
+```
+
+### What the loader emits
+
+Internally each match block lowers to a single CEL expression
+against the family's facet env. The runtime sees only the lowered
+form, but the match block is preserved on the rule record so emit
+round-trips the operator's chosen surface syntax.
+
+### Migration from earlier versions
+
+Earlier releases (pre-`condition`) carried a richer `match {}` block
+with seven `MatchValueKind`s, leading-`!` negation, and per-facet
+glob/exact splits. Two things to know:
+
+1. The intermediate release replaced the per-facet match grammar
+   wholesale with a CEL `condition = "..."` field, so the
+   leading-`!` idiom translates as CEL's boolean `!`:
+   `name = "!debug-*"` → `condition = "!k8s.name.startsWith('debug-')"`
+   (or `condition = "!glob('debug-*', k8s.name)"` to keep glob
+   semantics).
+2. The current release adds the **declarative** match block
+   described above as an ergonomic alternative to writing CEL by
+   hand. It does not bring back the leading-`!` idiom — use
+   `_none` instead.
+
+Mechanical translation table for the most common shapes:
+
+| Old form | New form |
+|----------|----------|
+| `match = { method = ["GET", "HEAD"] }` | `match = { method_any = ["GET", "HEAD"] }` (or just `method = ["GET", "HEAD"]`) |
+| `match = { name = "!debug-*" }` | `match = { name_none = ["debug-*"] }` |
+| `match = { resource = ["!*/exec", "!*/attach"] }` | `match = { resource_none = ["*/exec", "*/attach"] }` |
+| `match = { name = ["api-*", "!api-debug-*"] }` | `match = { name_any = ["api-*"], name_none = ["api-debug-*"] }` |
+
+Operators with a single-file gateway config can migrate by hand in
+a few minutes; the loader catches typos in keys and unsupported
+suffixes (`method_all`) at load time, so a stale config fails fast
+rather than running with the wrong rule active.
 
 
 ## Matching semantics
@@ -419,6 +539,8 @@ compiled matcher — attaching a rule to N endpoints is cheap.
 
 ### Kubernetes negation
 
+The CEL form, with explicit per-clause negation:
+
 ```hcl
 rule "k8s-no-mutations" {
   endpoint  = k8s-prod
@@ -428,6 +550,22 @@ rule "k8s-no-mutations" {
 }
 ```
 
+The same rule using the declarative match block — `_any` is the
+positive list, `_none` is the negation:
+
+```hcl
+rule "k8s-no-mutations" {
+  endpoint = k8s-prod
+  match = {
+    verb_any      = ["create", "update", "patch", "delete"]
+    name_none     = ["debug-*"]
+    resource_none = ["*/exec", "*/attach", "*/portforward"]
+  }
+  verdict = "deny"
+  reason  = "Only debug-* pods may be created / modified / deleted"
+}
+```
+
 CEL's `!` operator negates any boolean subexpression — there's no
-list-level negation syntax. Combine `&&` and `!` to express
-"matches the broad pattern, but not these exceptions."
+list-level negation syntax in CEL. The match block's `_none` suffix
+is the equivalent shape for the declarative form.

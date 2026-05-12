@@ -104,6 +104,7 @@ func init() {
 			ext.ParseStructTags(true),
 		),
 		cel.Variable("http", cel.ObjectType("https.HttpsFields")),
+		match.GlobOption(),
 	)
 	if err != nil {
 		panic(fmt.Sprintf("https facet: cel env: %v", err))
@@ -111,6 +112,19 @@ func init() {
 	celEnv = env
 
 	facet.Register(Facet{})
+}
+
+// MatchKeys exposes the keys allowed in a rule's `match = { ... }`
+// block for the HTTPS family. Map-shaped facets (`query`, `headers`)
+// and JSON-tree facets (`body_json`) are out of the suffix scheme
+// (the RFC §6 carve-out) and stay accessible only via the CEL
+// `condition` form.
+func (Facet) MatchKeys() []match.KeySpec {
+	return []match.KeySpec{
+		{Name: "method", CELRef: "http.method", Arity: match.UnaryEnum},
+		{Name: "path", CELRef: "http.path", Arity: match.UnaryBlob},
+		{Name: "body", CELRef: "http.body", Arity: match.UnaryBlob},
+	}
 }
 
 // NewMatcher compiles a CEL condition into a Matcher. An empty

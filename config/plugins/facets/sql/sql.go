@@ -113,6 +113,7 @@ func init() {
 			ext.ParseStructTags(true),
 		),
 		cel.Variable("sql", cel.ObjectType("sql.SqlFields")),
+		match.GlobOption(),
 	)
 	if err != nil {
 		panic(fmt.Sprintf("sql facet: cel env: %v", err))
@@ -120,6 +121,19 @@ func init() {
 	celEnv = env
 
 	facet.Register(Facet{})
+}
+
+// MatchKeys exposes the keys allowed in a rule's `match = { ... }`
+// block for the SQL family. `tables` and `function` are multi-valued
+// (the parser may extract several names from one statement); `verb`
+// is a single token; `statement` is the full lower-cased blob.
+func (Facet) MatchKeys() []match.KeySpec {
+	return []match.KeySpec{
+		{Name: "verb", CELRef: "sql.verb", Arity: match.UnaryEnum},
+		{Name: "tables", CELRef: "sql.tables", Arity: match.MultiValued},
+		{Name: "function", CELRef: "sql.function", Arity: match.MultiValued},
+		{Name: "statement", CELRef: "sql.statement", Arity: match.UnaryBlob},
+	}
 }
 
 // NewMatcher compiles a CEL condition into a Matcher. An empty
