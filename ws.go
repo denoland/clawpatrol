@@ -100,7 +100,7 @@ func (g *Gateway) dialWSUpstream(ctx context.Context, upstream string, ep *confi
 // The connection stays alive until either side closes; pumpWS
 // observes text frames for codex usage tracking when applicable.
 func (g *Gateway) handleWSUpgrade(client *tls.Conn, br *bufio.Reader, req *http.Request, upstream string, frameEmit func(direction, sample string), ep *config.CompiledEndpoint, profile string, rewriteClientPayload wsPayloadRewriter) {
-	agentAddr := peerIP(client) // capture before netstack races to nil
+	agentAddr := g.agentIPFor(client) // capture before netstack races to nil; remap ephemeral → parent
 
 	// dialWSUpstream preserves the existing split: endpoints that require a
 	// client cert (e.g. kubernetes mTLS) use dialUpstream so credential plugins
