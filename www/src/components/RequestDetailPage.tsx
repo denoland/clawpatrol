@@ -1,5 +1,11 @@
 import { useState, useEffect } from "react";
-import { getAction, type Agent, type EventRecord, type FacetSchema } from "../lib/api";
+import {
+  getAction,
+  downloadActionFixture,
+  type Agent,
+  type EventRecord,
+  type FacetSchema,
+} from "../lib/api";
 import { formatFacetValue, useFacets } from "../lib/facets";
 import { fmtDateTime } from "../lib/format";
 
@@ -84,11 +90,16 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
           <span className="text-[13px] text-[#171717] break-all font-mono" title={fullUrl}>
             {fullUrl}
           </span>
+          <span className="ml-auto">
+            <DownloadActionButton ev={ev} />
+          </span>
         </div>
         <div className="flex items-center gap-4 text-[11px] text-[#737373] flex-wrap">
           <span>{time}</span>
           <span>{ev.ms}ms</span>
           {ev.agent_ip && <span>{ev.agent_ip}</span>}
+          {ev.in != null && ev.in > 0 && <span>in: {fmtBytes(ev.in)}</span>}
+          {ev.out != null && ev.out > 0 && <span>out: {fmtBytes(ev.out)}</span>}
         </div>
         {(ev.action || ev.reason) && (
           <div className="flex items-center gap-2 text-[11px]">
@@ -146,23 +157,53 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
           {ev.mode === "splice" && " (spliced connection)"}
         </div>
       )}
-
-      {/* footer */}
-      <div className="flex items-center gap-6 text-[10px] text-[#a3a3a3] flex-wrap">
-        {ev.in != null && ev.in > 0 && <span>in: {fmtBytes(ev.in)}</span>}
-        {ev.out != null && ev.out > 0 && <span>out: {fmtBytes(ev.out)}</span>}
-        {ev.req_sha && (
-          <span className="font-mono" title={ev.req_sha}>
-            req_sha: {ev.req_sha.slice(0, 12)}
-          </span>
-        )}
-        {ev.resp_sha && (
-          <span className="font-mono" title={ev.resp_sha}>
-            resp_sha: {ev.resp_sha.slice(0, 12)}
-          </span>
-        )}
-      </div>
     </Shell>
+  );
+}
+
+// DownloadActionButton triggers a server-side reshape of this event
+// into a `clawpatrol test` fixture and saves it as a .json file. The
+// runner reads files in this exact format — drop the download into a
+// fixtures/ directory and `clawpatrol test config.hcl fixtures/` will
+// replay it against a candidate policy. See doc/test.md §5.
+function DownloadActionButton({ ev }: { ev: EventRecord }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  if (!ev.id) return null;
+  if (!ev.endpoint) return null;
+  if (ev.action === "in_flight") return null;
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      onClick={async () => {
+        setBusy(true);
+        setErr(null);
+        try {
+          const blob = await downloadActionFixture(ev.id!);
+          const href = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = href;
+          a.download = `${ev.id}.json`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(href);
+        } catch (e) {
+          setErr((e as Error).message || "download failed");
+        } finally {
+          setBusy(false);
+        }
+      }}
+      className={
+        "text-[10px] uppercase tracking-wide px-2 py-1 rounded border " +
+        "border-[#e5e5e5] text-[#525252] hover:text-[#171717] hover:border-[#a3a3a3] " +
+        "disabled:opacity-50"
+      }
+      title={err ?? "Download as a clawpatrol test fixture"}
+    >
+      {busy ? "Downloading…" : "Download action"}
+    </button>
   );
 }
 
@@ -245,7 +286,9 @@ function Breadcrumbs({
       {requestId && (
         <>
           <span className="text-[13px] text-[#a3a3a3]">/</span>
-          <span className="text-[13px] text-[#525252] font-mono">{requestId.slice(0, 8)}</span>
+          <span className="text-[13px] text-[#525252] font-mono" title={requestId}>
+            {requestId.split("-").pop()}
+          </span>
         </>
       )}
     </nav>

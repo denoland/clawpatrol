@@ -25,6 +25,20 @@ export type OAuthIntegrationUI = {
   optional_scopes?: OptionalScopeGroup[];
 };
 
+// TailscaleAuthStatusUI matches IntegrationRow.TailscaleAuth on the
+// server. The dashboard reads connect/disconnect endpoint paths off
+// the row instead of hardcoding /api/tailscale/* so backend route
+// changes don't need a coordinated frontend bump. pending_url, when
+// non-empty, is tsnet's live login URL — opening it in a new tab
+// completes the join.
+export type TailscaleAuthStatusUI = {
+  connected: boolean;
+  pending_url?: string;
+  connect_url: string;
+  status_url: string;
+  disconnect_url: string;
+};
+
 export type Integration = {
   id: string;
   name: string;
@@ -33,7 +47,36 @@ export type Integration = {
   oauth?: OAuthIntegrationUI | null;
   slots?: SecretSlot[] | null;
   owners: Owner[] | null;
+  // Tailscale node-auth credentials surface their live state and the
+  // dashboard-relative endpoints the Connect button drives through.
+  // Node identity is gateway-wide, so owners is empty for these rows.
+  has_tailscale_auth?: boolean;
+  tailscale_auth?: TailscaleAuthStatusUI | null;
 };
+
+// tailscaleConnect asks the gateway for the live tsnet login URL.
+// Returns `{connected: true}` when the node is already joined.
+// tsnet mints a fresh URL per attempt — call this on every click
+// rather than caching.
+export async function tailscaleConnect(connectURL: string): Promise<{
+  id: string;
+  connected: boolean;
+  auth_url?: string;
+  pending_url?: string;
+  status: string;
+}> {
+  const r = await fetch(connectURL, { method: "POST" });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+// tailscaleDisconnect drops the persisted node identity. The
+// in-process tsnet node keeps running until gateway restart — the
+// next boot reruns the interactive flow.
+export async function tailscaleDisconnect(disconnectURL: string): Promise<void> {
+  const r = await fetch(disconnectURL, { method: "POST" });
+  if (!r.ok) throw new Error(await r.text());
+}
 
 export async function setCredentialSlots(
   id: string,
@@ -426,7 +469,20 @@ export type EventRecord = {
   // method/path/status; SQL: verb/tables/...; k8s: verb/resource/...).
   family?: string;
   facets?: Record<string, unknown>;
+  // endpoint/rule are populated at dispatch time; needed by the
+  // Download action button (doc/test.md §5).
+  endpoint?: string;
+  rule?: string;
 };
+
+// downloadActionFixture fetches the action reshaped as a
+// `clawpatrol test` fixture. Returns a Blob so the caller can
+// trigger a browser download.
+export async function downloadActionFixture(id: string): Promise<Blob> {
+  const r = await api(`/api/actions/${id}?fmt=fixture`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.blob();
+}
 
 // FacetSchema mirrors the JSON returned by GET /api/facets — the
 // dashboard fetches it once at boot and uses it to render

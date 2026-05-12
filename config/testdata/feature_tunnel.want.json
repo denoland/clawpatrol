@@ -30,7 +30,7 @@
           ],
           "Credential": "github-pat"
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       }
     },

@@ -49,7 +49,7 @@
           ],
           "Credential": "github-pat"
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       },
       "openai": {
@@ -59,7 +59,7 @@
           ],
           "Credential": "openai-prod"
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       }
     },
@@ -75,7 +75,7 @@
       "github-reads": {
         "body": {
           "name": "github-reads",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "github"
           ],
@@ -86,7 +86,7 @@
       "github-writes": {
         "body": {
           "name": "github-writes",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "github"
           ],

@@ -196,7 +196,7 @@ func TestMatchRequest(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req := &match.Request{Family: "https", Method: tc.method}
+			req := &match.Request{Family: "http", Method: tc.method}
 			r := runtime.MatchRequest(ep, req)
 			if r == nil {
 				if tc.want != "" {
@@ -216,7 +216,7 @@ func TestMatchRequest(t *testing.T) {
 func TestResolveCredentialSingular(t *testing.T) {
 	cp := compile(t)
 	ep := cp.Endpoints["github"]
-	got := runtime.ResolveCredential(ep, &match.Request{Family: "https", Headers: http.Header{}})
+	got := runtime.ResolveCredential(ep, &match.Request{Family: "http", Headers: http.Header{}})
 	if got == nil || got.Credential.Symbol.Name != "pat" {
 		t.Errorf("singular credential resolution wrong: %+v", got)
 	}
@@ -256,7 +256,7 @@ profile "default" { endpoints = [ep] }
 		if authz != "" {
 			h.Set("Authorization", authz)
 		}
-		return &match.Request{Family: "https", Headers: h}
+		return &match.Request{Family: "http", Headers: h}
 	}
 
 	got := runtime.ResolveCredential(ep, mkReq("Bearer PH_prod"))

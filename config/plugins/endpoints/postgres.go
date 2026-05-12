@@ -123,8 +123,24 @@ func (PostgresEndpointRuntime) DetectPlaceholder(req *runtime.Request, candidate
 	return ""
 }
 
+// ParseStatement satisfies runtime.SQLParser so the action-fixture
+// loader can populate match.Request.Meta from a raw statement using
+// the same regex extractor pgEvaluate uses on live wire traffic.
+// Returns *sqlfacet.Meta as `any` to keep the runtime interface free
+// of the facets-package import.
+func (PostgresEndpointRuntime) ParseStatement(sql string) any {
+	info := parseSQL(sql)
+	return &sqlfacet.Meta{
+		Verb:      info.Verb,
+		Tables:    info.Tables,
+		Functions: info.Functions,
+		Statement: info.Statement,
+	}
+}
+
 func init() {
 	var _ runtime.PlaceholderDetector = PostgresEndpointRuntime{}
+	var _ runtime.SQLParser = PostgresEndpointRuntime{}
 	config.Register(&config.Plugin{
 		Kind:     config.KindEndpoint,
 		Type:     "postgres",
@@ -455,6 +471,7 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 		})
 		return "", ""
 	}
+	rule := cr.Name
 
 	// Approve chain. ConnHandle.Approve dispatches through the
 	// host's HITL machinery (same one HTTPS uses) — the postgres
@@ -466,7 +483,7 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 		if ch.Approve == nil {
 			emit(ch, runtime.ConnEvent{
 				Action: "deny", Reason: "HITL not configured",
-				Verb: info.Verb, Summary: summary, Facets: facets,
+				Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
 			})
 			return "deny", "approval required but HITL is not configured"
 		}
@@ -481,12 +498,12 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 			}
 			emit(ch, runtime.ConnEvent{
 				Action: "hitl_deny", Reason: reason,
-				Verb: info.Verb, Summary: summary, Facets: facets,
+				Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
 			})
 			return "deny", reason
 		}
 		emit(ch, runtime.ConnEvent{
-			Action: "hitl_allow", Verb: info.Verb, Summary: summary, Facets: facets,
+			Action: "hitl_allow", Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
 		})
 		return "", ""
 	}
@@ -498,12 +515,12 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 		}
 		emit(ch, runtime.ConnEvent{
 			Action: "deny", Reason: reason,
-			Verb: info.Verb, Summary: summary, Facets: facets,
+			Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
 		})
 		return "deny", reason
 	}
 	emit(ch, runtime.ConnEvent{
-		Action: "allow", Verb: info.Verb, Summary: summary, Facets: facets,
+		Action: "allow", Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
 	})
 	return "", ""
 }

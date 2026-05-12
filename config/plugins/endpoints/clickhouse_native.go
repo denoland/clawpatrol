@@ -21,6 +21,7 @@ import (
 	"github.com/zclconf/go-cty/cty"
 
 	"github.com/denoland/clawpatrol/config"
+	sqlfacet "github.com/denoland/clawpatrol/config/plugins/facets/sql"
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
@@ -108,8 +109,22 @@ func (e *ClickhouseNativeEndpoint) port() int {
 // HandleConn is implemented in clickhouse_native_runtime.go.
 type ClickhouseNativeEndpointRuntime struct{}
 
+// ParseStatement satisfies runtime.SQLParser so the action-fixture
+// loader can populate match.Request.Meta from a raw statement using
+// the same AST extractor live dispatch uses.
+func (ClickhouseNativeEndpointRuntime) ParseStatement(sql string) any {
+	info := parseChSQL(sql)
+	return &sqlfacet.Meta{
+		Verb:      info.Verb,
+		Tables:    info.Tables,
+		Functions: info.Functions,
+		Statement: info.Statement,
+	}
+}
+
 func init() {
 	var _ runtime.ConnEndpointRuntime = ClickhouseNativeEndpointRuntime{}
+	var _ runtime.SQLParser = ClickhouseNativeEndpointRuntime{}
 	config.Register(&config.Plugin{
 		Kind:     config.KindEndpoint,
 		Type:     "clickhouse_native",

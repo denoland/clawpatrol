@@ -1175,7 +1175,7 @@ func (g *Gateway) handle(raw net.Conn, dstIP string) {
 
 // isHTTPSMITMFamily reports whether the facet registered for family
 // drives its wire through the HTTPS MITM handler. Replaces what used
-// to be a hardcoded `case "https", "k8s"` so new HTTPS-shaped
+// to be a hardcoded `case "http", "k8s"` so new HTTPS-shaped
 // protocol facets (e.g. a future "openai" or "anthropic" family that
 // wants per-family report fields beyond what http_rule offers) drop
 // in without touching the dispatch switch.
@@ -1260,7 +1260,8 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 				Mode: "pg", Family: ep.Family, Host: dstIP, AgentIP: agentPip,
 				Method: ev.Verb, Path: ev.Summary,
 				Action: ev.Action, Reason: ev.Reason,
-				Facets: ev.Facets,
+				Facets:   ev.Facets,
+				Endpoint: ep.Name, Rule: ev.Rule,
 			})
 		},
 		Approve: func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
@@ -1418,7 +1419,8 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 				Mode: mode, Family: ep.Family, Host: eventHost, AgentIP: agentPip,
 				Method: ev.Verb, Path: ev.Summary,
 				Action: ev.Action, Reason: ev.Reason,
-				Facets: ev.Facets,
+				Facets:   ev.Facets,
+				Endpoint: ep.Name, Rule: ev.Rule,
 			})
 		},
 		Approve: func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
@@ -1663,7 +1665,8 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			Family: ep.Family,
 			Host:   host,
 			Method: req.Method, Path: req.URL.Path,
-			AgentIP: agentAddr,
+			AgentIP:  agentAddr,
+			Endpoint: ep.Name,
 		}
 		if fac != nil {
 			ev.Facets = fac.Report(mreq)
@@ -1678,6 +1681,9 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		g.emit(startEv)
 
 		cr := runtime.MatchRequest(ep, mreq)
+		if cr != nil {
+			ev.Rule = cr.Name
+		}
 
 		// Approve chain — dispatch each stage to its approver
 		// runtime (config/plugins/approvers). All stages must
@@ -1763,6 +1769,15 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				}
 				ev.Status = r.StatusCode
 				ev.Action = "synth"
+				// Synthetic responses are clawpatrol-generated, so the
+				// stock plugins don't set auth-bearing headers — but
+				// the no-injected-credential-reaches-the-agent guarantee
+				// shouldn't rely on plugin authors remembering that.
+				// Strip the same list as the upstream-forwarded path
+				// so a future plugin that mirrors response headers from
+				// an upstream lookup can't accidentally leak them.
+				stripAuthResponseHeaders(r.Header)
+				stripAuthResponseHeaders(r.Trailer)
 				if err := r.Write(tc); err != nil {
 					log.Printf("synth write %s %s: %v", host, req.URL.Path, err)
 				}
@@ -1777,17 +1792,20 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		// multi-credential dispatch asks the endpoint plugin's
 		// PlaceholderDetector which placeholder the agent sent),
 		// fetch the secret bytes from the configured store, and
-		// hand both to the credential plugin's HTTPCredentialRuntime
-		// to stamp onto the request. Schema-only credential types
-		// (slack / telegram / gemini / etc.) leave Runtime nil; we
-		// pass through verbatim and rely on policy alone.
+		// hand both to the credential plugin's request-time runtime hooks
+		// to stamp HTTP auth or rewrite server-bound WS token placeholders.
+		// Schema-only credential types leave Runtime nil; we pass through
+		// verbatim and rely on policy alone.
+		var rewriteWSPayload wsPayloadRewriter
 		if cc := runtime.ResolveCredential(ep, mreq); cc != nil {
 			// Plugin.Runtime is a typed-nil sentinel used only for
 			// interface-compliance assertions; the actual decoded HCL
 			// values (BearerToken.IdempotencyKey, PostgresCredential.User,
 			// etc.) live on Body. Invoke methods through Body so the
 			// receiver is the real instance.
-			if injector, ok := cc.Credential.Body.(runtime.HTTPCredentialRuntime); ok {
+			injector, wantsHTTP := cc.Credential.Body.(runtime.HTTPCredentialRuntime)
+			wsRewriter, wantsWS := cc.Credential.Body.(runtime.WebSocketCredentialRuntime)
+			if wantsHTTP || (wantsWS && isWSUpgrade(req)) {
 				sec, err := g.secrets.Get(cc.Credential.Symbol.Name, profile)
 				// Self-sourcing credentials (1password, future Vault, …)
 				// require their secret to be fetched at request time;
@@ -1812,29 +1830,40 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 					log.Printf("secret %s/%s: %v — forwarding without injection", cc.Credential.Symbol.Name, profile, err)
 				} else if len(sec.Bytes) == 0 && len(sec.Extras) == 0 {
 					log.Printf("secret %s/%s: not configured (set CLAWPATROL_SECRET_%s)", cc.Credential.Symbol.Name, profile, secretEnvName(cc.Credential.Symbol.Name))
-				} else if err := injector.InjectHTTP(req.Context(), req, sec); err != nil {
-					if selfSourcing {
-						reason := fmt.Sprintf("credential injection failed: %v", err)
-						log.Printf("deny %s %s %s: %s (credential %s)", host, req.Method, req.URL.Path, reason, cc.Credential.Symbol.Name)
-						_, _ = fmt.Fprintf(tc, "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(reason), reason)
-						ev.Status = 502
-						ev.Action = "deny"
-						ev.Reason = reason
-						ev.Ms = time.Since(start).Milliseconds()
-						g.emitEnd(ev)
-						return
+				} else {
+					if wantsHTTP {
+						if err := injector.InjectHTTP(req.Context(), req, sec); err != nil {
+							if selfSourcing {
+								reason := fmt.Sprintf("credential injection failed: %v", err)
+								log.Printf("deny %s %s %s: %s (credential %s)", host, req.Method, req.URL.Path, reason, cc.Credential.Symbol.Name)
+								_, _ = fmt.Fprintf(tc, "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(reason), reason)
+								ev.Status = 502
+								ev.Action = "deny"
+								ev.Reason = reason
+								ev.Ms = time.Since(start).Milliseconds()
+								g.emitEnd(ev)
+								return
+							}
+							log.Printf("inject %s: %v", cc.Credential.Symbol.Name, err)
+						}
 					}
-					log.Printf("inject %s: %v", cc.Credential.Symbol.Name, err)
+					if wantsWS && isWSUpgrade(req) {
+						wsSec := sec
+						rewriteWSPayload = func(payload []byte) ([]byte, bool, error) {
+							return wsRewriter.RewriteWebSocketPayload(req.Context(), payload, wsSec)
+						}
+					}
 				}
 			}
 		}
 
 		// WebSocket upgrade. http.Transport.RoundTrip mangles the
-		// 101 response and Cloudflare's WAF rejects modified frames,
-		// so we hand off to a raw byte bridge that forwards the
-		// upgrade verbatim and pumps frames untouched. The handler
-		// runs until either side closes — when it returns, the
-		// caller's request loop ends naturally.
+		// 101 response and Cloudflare's WAF rejects unexpectedly modified
+		// frames, so we hand off to a raw byte bridge. Frames remain
+		// byte-faithful unless the selected credential provides an explicit
+		// WS token-placeholder rewriter (for example Discord Gateway
+		// IDENTIFY). The handler runs until either side closes — when it
+		// returns, the caller's request loop ends naturally.
 		if isWSUpgrade(req) {
 			log.Printf("ws-upgrade %s %s", host, req.URL.Path)
 			ev.Action = "ws"
@@ -1858,7 +1887,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 					Direction: direction,
 				})
 			}
-			g.handleWSUpgrade(tc, br, req, host, frameEmit, ep, profile)
+			g.handleWSUpgrade(tc, br, req, host, frameEmit, ep, profile, rewriteWSPayload)
 			ev.Status = 101
 			ev.Ms = time.Since(start).Milliseconds()
 			g.emitEnd(ev)
@@ -1929,6 +1958,13 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		// still wants to show what the upstream actually sent.
 		ev.RespHeaders = flatHeaders(resp.Header)
 		stripAuthResponseHeaders(resp.Header)
+		// Trailers fall outside resp.Header — Go's http.Transport
+		// surfaces them on resp.Trailer and http.Response.Write
+		// emits them after the chunked body. RFC 9110 §6.5.1 bans
+		// Set-Cookie / auth fields in trailers, but a hostile or
+		// buggy upstream can still try it, so we strip the same
+		// list off the trailer block before resp.Write streams it.
+		stripAuthResponseHeaders(resp.Trailer)
 		writeErr := resp.Write(tc)
 		_ = rtDur
 		_ = resp.Body.Close()
@@ -2080,6 +2116,8 @@ func main() {
 		runInitCA(os.Args[2:])
 	case "validate":
 		runValidate(os.Args[2:])
+	case "test":
+		runTest(os.Args[2:])
 	case "uninstall":
 		runUninstall(os.Args[2:])
 	case "status":
@@ -2154,17 +2192,18 @@ func usage() {
 usage:
   clawpatrol gateway init [flags]        bootstrap a new gateway host
   clawpatrol gateway [-config FILE]      run the gateway server
-  clawpatrol join <gateway-url>          onboard this machine via wg device flow
-                  [--hostname NAME]      device name to register (default: os.Hostname)
-                  [--profile NAME]       suggest a profile for the approver
-                  [--whole-machine]      bring up wg-quick (route all traffic)
+  clawpatrol join [flags] <gateway-url>  onboard this machine via wg device flow
+                  --hostname NAME        device name to register (default: os.Hostname)
+                  --profile NAME         suggest a profile for the approver
+                  --whole-machine        bring up wg-quick (route all traffic)
   clawpatrol login                       onboard this machine (tailscale path)
   clawpatrol run -- <cmd> [args...]      route one process tree through gateway
   clawpatrol status                      report install + tunnel state
-  clawpatrol uninstall                   tear down everything this machine installed
+  clawpatrol uninstall                   remove local join state and tunnel config
   clawpatrol env                         print shell exports for sourcing
   clawpatrol init-ca DIR                 generate a new CA in DIR
   clawpatrol validate <config.hcl>       parse + compile a config and exit
+  clawpatrol test <config> <path>        replay action fixtures against a candidate policy
   clawpatrol version`)
 	os.Exit(2)
 }

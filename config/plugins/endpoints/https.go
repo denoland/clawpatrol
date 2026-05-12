@@ -66,7 +66,7 @@ func init() {
 	config.Register(&config.Plugin{
 		Kind:     config.KindEndpoint,
 		Type:     "https",
-		Family:   "https",
+		Family:   "http",
 		New:      func() any { return &HTTPSEndpoint{} },
 		Refs:     singularRef,
 		Validate: multiCredValidate,

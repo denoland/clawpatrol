@@ -43,7 +43,7 @@ function RuleCodeBlock() {
   return (
     <pre
       class="min-w-0 text-[13px] sm:text-sm  font-mono
-        bg-console-dark text-canvas/85 squircle-md p-6 overflow-x-auto
+        bg-navy text-canvas/85 squircle-md p-6 overflow-x-auto
         border border-navy-700"
     >
       <code>
@@ -59,9 +59,7 @@ function RuleCodeBlock() {
         {"  "}
         <span class="text-rust-300">condition</span>
         {" = "}
-        <span class="text-butter-300">
-          "sql.verb in ['drop', 'truncate']"
-        </span>
+        <span class="text-butter-300">"sql.verb in ['drop', 'truncate']"</span>
         {"\n  "}
         <span class="text-rust-300">verdict</span>
         {"   = "}
@@ -148,9 +146,9 @@ export function RulesSection() {
             {DECISIONS.map((d, i) => (
               <div
                 key={d.verdict}
-                class="bg-transparent relative squircle-md p-6"
+                class="bg-transparent relative squircle-sm p-6"
               >
-                <div className=" absolute w-full h-full border-navy border-2 squircle-md inset-0 z-10"></div>
+                <div className=" absolute w-full h-full border-navy border-2 squircle-sm inset-0 z-10"></div>
                 <div class="flex items-baseline justify-between mb-3 relative z-10">
                   <h4 class="text-xl font-display font-bold text-text">
                     {d.label}
@@ -162,7 +160,7 @@ export function RulesSection() {
                 <p class="text-sm relative z-10 text-text-muted">{d.body}</p>
                 <div
                   className={
-                    `isolate absolute w-full h-full squircle-md top-1.5 left-2 z-0 ` +
+                    `isolate absolute w-full h-full squircle-sm top-1.5 left-2 z-0 ` +
                     colorClasses[i]
                   }
                 ></div>

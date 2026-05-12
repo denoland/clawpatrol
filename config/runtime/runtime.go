@@ -30,6 +30,17 @@ type HTTPCredentialRuntime interface {
 	InjectHTTP(ctx context.Context, req *http.Request, sec Secret) error
 }
 
+// WebSocketCredentialRuntime is the credential-plugin contract for
+// server-bound WebSocket text payloads that carry token placeholders.
+// The gateway calls this after decoding/unmasking a complete text frame
+// but before forwarding it upstream; implementations must return a new
+// plaintext payload and indicate whether the frame must be rebuilt.
+// Inspectors still receive the original placeholder-bearing payload so
+// real secrets are not emitted to logs or the dashboard.
+type WebSocketCredentialRuntime interface {
+	RewriteWebSocketPayload(ctx context.Context, payload []byte, sec Secret) ([]byte, bool, error)
+}
+
 // HTTPSyntheticResponder is the optional contract an endpoint
 // plugin's runtime implements when it needs to short-circuit certain
 // matched requests and return a synthetic response without forwarding
@@ -196,6 +207,11 @@ type ConnEvent struct {
 	Summary string // human-readable one-liner for the event log
 	Bytes   int64  // approximate request size for billing / quotas
 	Facets  map[string]any
+	// Rule is the matched CompiledRule.Name, "" when no rule fired.
+	// The host's Emit closure copies it onto the dashboard Event so
+	// the action-fixture exporter can pin a downloaded action to a
+	// specific rule (doc/test.md §1.3).
+	Rule string
 }
 
 // Secret is what credential plugins receive at injection time. The
@@ -351,7 +367,7 @@ type HITLPending struct {
 	// called. HITLEndpointLabel-derived: hostname for HTTPS, resource
 	// name for SQL / k8s where Host is a virtual IP.
 	Endpoint string `json:"endpoint,omitempty"`
-	// Family is the endpoint family ("https" | "sql" | "k8s") so the
+	// Family is the endpoint family ("http" | "sql" | "k8s") so the
 	// dashboard can pick a matching label for Path ("Query" /
 	// "Resource" / "Path"). Empty when no endpoint metadata is set.
 	Family     string    `json:"family,omitempty"`
@@ -398,6 +414,23 @@ var ErrUnsupported = errors.New("plugin runtime not implemented")
 // calling it.
 type PlaceholderDetector interface {
 	DetectPlaceholder(req *Request, candidates []string) string
+}
+
+// SQLParser is the optional contract a SQL-family endpoint plugin's
+// runtime implements so a host that received a raw SQL string (rather
+// than a live wire-protocol frame) can populate `match.Request.Meta`
+// using the same parser the live dispatch path uses. The fixture
+// loader behind `clawpatrol test` reads only `"statement": "..."`
+// from each fixture and calls this to recover verb / tables /
+// functions before running rule matching, so the format stays
+// operator-friendly (doc/test.md §4).
+//
+// Implementations return the per-family `*sqlfacet.Meta` value the
+// SQL matcher expects on `match.Request.Meta`. Endpoints whose
+// runtime doesn't implement this aren't usable as SQL test
+// fixtures.
+type SQLParser interface {
+	ParseStatement(sql string) any
 }
 
 // Request is re-exported here so callers don't have to import

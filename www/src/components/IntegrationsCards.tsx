@@ -3,7 +3,7 @@ import { useState } from "react";
 import type { Integration, Whoami } from "../lib/api";
 import { fmtExpiry } from "../lib/format";
 import { IntegrationIcon } from "./Logos";
-import { clearCredential, oauthRevoke } from "../lib/api";
+import { clearCredential, oauthRevoke, tailscaleConnect, tailscaleDisconnect } from "../lib/api";
 import { CredentialSecretsModal } from "./CredentialSecretsModal";
 
 // Display name by credential plugin type. Bare credential names
@@ -53,12 +53,15 @@ export function IntegrationsCards({
 
   // Sort: connected first (most relevant), then unconnected, then
   // already-disabled ones (no auth path) — preserves declaration
-  // order within each bucket.
+  // order within each bucket. Tailscale credentials carry their
+  // connect state on the row itself (gateway-wide, no per-owner
+  // entry) so the score falls through to that flag when owners[]
+  // doesn't have a matching row.
   const sorted = [...list].sort((a, b) => {
     const score = (i: Integration) => {
       const me = (i.owners ?? []).find((o) => o.owner === youKey);
-      if (me?.connected) return 0;
-      if (i.has_oauth || (i.slots && i.slots.length > 0)) return 1;
+      if (me?.connected || i.tailscale_auth?.connected) return 0;
+      if (i.has_oauth || i.has_tailscale_auth || (i.slots && i.slots.length > 0)) return 1;
       return 2;
     };
     return score(a) - score(b);
@@ -69,6 +72,28 @@ export function IntegrationsCards({
   const hiddenCount = sorted.length - visible.length;
 
   function handleConnect(i: Integration) {
+    if (i.has_tailscale_auth && i.tailscale_auth) {
+      // tsnet mints the login URL per attempt — fetch fresh on every
+      // click. The handler returns connected:true if the node has
+      // already joined (covers a stale list view); otherwise we open
+      // the live URL in a new tab and let the next /api/state poll
+      // flip the card to "connected" once tsnet finishes joining.
+      tailscaleConnect(i.tailscale_auth.connect_url)
+        .then((r) => {
+          if (r.connected) {
+            onRefresh();
+            return;
+          }
+          const url = r.auth_url || r.pending_url;
+          if (url) {
+            window.open(url, "_blank", "noopener,noreferrer");
+          }
+        })
+        .catch(() => {
+          /* surfaced on the next refresh */
+        });
+      return;
+    }
     if (i.has_oauth) {
       onConnect(i.id, profile);
       return;
@@ -79,6 +104,10 @@ export function IntegrationsCards({
   }
 
   function disconnect(i: Integration) {
+    if (i.has_tailscale_auth && i.tailscale_auth) {
+      tailscaleDisconnect(i.tailscale_auth.disconnect_url).then(onRefresh);
+      return;
+    }
     if (i.has_oauth) {
       oauthRevoke(i.id, youKey).then(onRefresh);
     } else {
@@ -178,14 +207,16 @@ function Card({
   onDisconnect: () => void;
 }) {
   const me = (i.owners ?? []).find((o) => o.owner === youKey);
-  const connected = me?.connected ?? false;
+  // Tailscale credentials don't have per-owner rows — the connect
+  // status hangs off i.tailscale_auth and applies gateway-wide.
+  const connected = (me?.connected ?? false) || (i.tailscale_auth?.connected ?? false);
   const hasSlots = (i.slots?.length ?? 0) > 0;
-  const clickable = (i.has_oauth || hasSlots) && !connected;
+  const clickable = (i.has_oauth || i.has_tailscale_auth || hasSlots) && !connected;
   const subtitle = connected
     ? me?.expires_at
       ? "expires " + fmtExpiry(me.expires_at)
       : "connected"
-    : i.has_oauth
+    : i.has_oauth || i.has_tailscale_auth
       ? "click to connect"
       : hasSlots
         ? "paste secret"

@@ -703,12 +703,13 @@ func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName st
 		return "", ""
 	}
 	summary := chSummary(info)
+	rule := cr.Name
 
 	if len(cr.Outcome.Approve) > 0 {
 		if ch.Approve == nil {
 			chEmit(ch, runtime.ConnEvent{
 				Action: "deny", Reason: "HITL not configured",
-				Verb: info.Verb, Summary: summary, Facets: facets,
+				Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
 			})
 			return "deny", "approval required but HITL is not configured"
 		}
@@ -723,12 +724,12 @@ func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName st
 			}
 			chEmit(ch, runtime.ConnEvent{
 				Action: "hitl_deny", Reason: reason,
-				Verb: info.Verb, Summary: summary, Facets: facets,
+				Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
 			})
 			return "deny", reason
 		}
 		chEmit(ch, runtime.ConnEvent{
-			Action: "hitl_allow", Verb: info.Verb, Summary: summary, Facets: facets,
+			Action: "hitl_allow", Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
 		})
 		return "", ""
 	}
@@ -740,12 +741,12 @@ func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName st
 		}
 		chEmit(ch, runtime.ConnEvent{
 			Action: "deny", Reason: reason,
-			Verb: info.Verb, Summary: summary, Facets: facets,
+			Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
 		})
 		return "deny", reason
 	}
 	chEmit(ch, runtime.ConnEvent{
-		Action: "allow", Verb: info.Verb, Summary: summary, Facets: facets,
+		Action: "allow", Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
 	})
 	_ = ctx
 	return "", ""

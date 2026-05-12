@@ -128,7 +128,75 @@ Options:
 ## Tunnel plugin — reach internal tailnet services
 
 Endpoints can dial out through an embedded tsnet node to reach services
-that are only on the tailnet (e.g., internal Grafana, ClickHouse):
+that are only on the tailnet (e.g., internal Grafana, ClickHouse).
+
+### Credential-driven (recommended) — interactive login, no pasted key
+
+Declare a `credential "tailscale" "..." {}` and reference it from the
+tunnel. The operator never pastes an authkey — instead, the dashboard's
+"Connect" button surfaces tsnet's live Tailscale login URL the first
+time the gateway boots, and the resulting node identity is persisted
+in SQLite (`credential_secrets`) and reused on every subsequent
+restart:
+
+```hcl
+credential "tailscale" "corp-tailnet" {}
+
+tunnel "tailscale" "corp" {
+  credential = corp-tailnet
+  hostname   = "clawpatrol-tunnel-corp"
+  tags       = ["tag:client"]
+}
+
+endpoint "https" "grafana-internal" {
+  hosts  = ["grafana.corp.example.com:443"]
+  tunnel = corp
+}
+```
+
+What happens on first boot:
+
+1. Gateway starts; tunnel comes up "pending". Endpoints depending on
+   it return `tailscale tunnel "corp": node not connected — visit
+   dashboard to complete "corp-tailnet" sign-in` until the operator
+   completes the dance.
+2. tsnet contacts Tailscale and emits an interactive login URL of the
+   form `https://login.tailscale.com/a/<token>`. The gateway parks
+   that URL on its in-process side-channel.
+3. The dashboard's integrations list shows the `corp-tailnet`
+   credential (because at least one endpoint in this profile reaches
+   upstream through the `corp` tunnel). The operator clicks Connect
+   and is redirected to the Tailscale URL.
+4. The operator approves the node in the Tailscale admin console.
+   tsnet receives the node-state callback, the gateway writes the
+   node identity (machine key, node key, login profile) through the
+   credential's SQLite-backed `ipn.StateStore`, and the tunnel flips
+   to "operational". Pending requests retry through and succeed.
+5. Subsequent gateway restarts find the persisted state, join in
+   seconds, and never show the URL prompt again — exactly the
+   `tailscale up` cached-state behaviour.
+
+Operator UX surface:
+
+- Dashboard endpoints (per credential bare name `<id>`):
+  - `POST /api/tailscale/connect?id=<id>` — returns
+    `{status: "connected" | "pending" | "awaiting_url", auth_url, ...}`.
+  - `GET  /api/tailscale/status?id=<id>` — same shape, side-effect free.
+  - `POST /api/tailscale/disconnect?id=<id>` — wipes stored node
+    identity; the next tunnel re-init drives the interactive login
+    again.
+
+Multiple tunnels can share one `credential "tailscale" "..."` block —
+they then share a single tsnet node identity (one node per credential,
+not per tunnel). Per-tailnet selection (`control_url`) lives on the
+tunnel block, not the credential.
+
+### Legacy — literal authkey / env-var fallback
+
+Pre-credential deployments keep working unchanged. The literal
+`authkey = ...` form (and its `CLAWPATROL_TUNNEL_<UPPER_NAME>_AUTHKEY`
+env-var fallback) stays supported for one iteration so existing
+configs don't have to migrate in a hurry:
 
 ```hcl
 tunnel "tailscale" "corp" {
@@ -143,10 +211,12 @@ endpoint "https" "grafana-internal" {
 }
 ```
 
-The tunnel node joins once at gateway startup (`tsnet.Up`), then all
-matching endpoints dial via `tsnet.Server.Dial`. One node per `tunnel`
-block (singleton model — all endpoints sharing a tunnel block share the
-same tsnet node).
+In this mode the tunnel node joins synchronously at gateway startup
+(`tsnet.Up` blocks), reads `authkey` (literal or env fallback), and
+persists tsnet state on disk under `state_dir`. If both `credential =
+...` and `authkey = "..."` are set on the same tunnel, the credential
+takes precedence and the literal authkey is ignored with a load-time
+warning.
 
-Auth key fallback: if `authkey` is omitted, reads
-`CLAWPATROL_TUNNEL_<UPPER_NAME>_AUTHKEY` from the environment.
+One node per `tunnel` block in both modes — singleton sharing; all
+endpoints referencing the same tunnel share the same tsnet node.
