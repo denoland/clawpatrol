@@ -100,7 +100,7 @@ but in practice you record them from real traffic:
    regression-test:
 
    ```bash
-   clawpatrol gateway -config github.hcl
+   clawpatrol gateway github.hcl
    ```
 
 2. **Send real requests through it.** Mix verdicts — drive the

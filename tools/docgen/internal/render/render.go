@@ -49,6 +49,7 @@ func (r *renderer) run() (string, error) {
 		config.KindCredential,
 		config.KindEndpoint,
 		config.KindRule,
+		config.KindTunnel,
 	} {
 		r.writeKind(kind)
 	}
@@ -118,7 +119,13 @@ func stripIdentPrefix(doc, ident string) string {
 	}
 	first := rest[0]
 	if first >= 'a' && first <= 'z' {
-		return strings.ToUpper(rest[:1]) + rest[1:]
+		rest = strings.ToUpper(rest[:1]) + rest[1:]
+	}
+	// Drop the stub "Is part of the clawpatrol plugin API." sentence
+	// that's auto-generated as a placeholder doc-comment on plugin
+	// types. It conveys nothing to a reader of the HCL reference.
+	if rest == "Is part of the clawpatrol plugin API." {
+		return ""
 	}
 	return rest
 }
@@ -178,14 +185,18 @@ func (r *renderer) writeKind(kind config.Kind) {
 	syntax := kindSyntax(kind)
 	fmt.Fprintf(&r.out, "## `%s` blocks\n\n", kind)
 	fmt.Fprintf(&r.out, "Block syntax: `%s`\n\n", syntax)
-	fmt.Fprintf(&r.out, "Registered types: ")
-	for i, p := range plugins {
-		if i > 0 {
-			r.out.WriteString(", ")
+	// Single-label kinds with one registered plugin (rule today) have
+	// no type discriminator — skip the type-link line entirely.
+	if !(len(plugins) == 1 && plugins[0].Type == "") {
+		fmt.Fprintf(&r.out, "Registered types: ")
+		for i, p := range plugins {
+			if i > 0 {
+				r.out.WriteString(", ")
+			}
+			fmt.Fprintf(&r.out, "[`%s`](#%s-%s)", p.Type, kind, anchor(p.Type))
 		}
-		fmt.Fprintf(&r.out, "[`%s`](#%s-%s)", p.Type, kind, anchor(p.Type))
+		r.out.WriteString(".\n\n")
 	}
-	r.out.WriteString(".\n\n")
 
 	for _, p := range plugins {
 		r.writePlugin(kind, p)
@@ -193,7 +204,13 @@ func (r *renderer) writeKind(kind config.Kind) {
 }
 
 func (r *renderer) writePlugin(kind config.Kind, p *config.Plugin) {
-	fmt.Fprintf(&r.out, "### `%s \"%s\" \"<name>\"`\n\n", kind, p.Type)
+	// Plugins with an empty Type (rule today) take a single label —
+	// render `rule "<name>"`, not `rule "" "<name>"`.
+	if p.Type == "" {
+		fmt.Fprintf(&r.out, "### `%s \"<name>\"`\n\n", kind)
+	} else {
+		fmt.Fprintf(&r.out, "### `%s \"%s\" \"<name>\"`\n\n", kind, p.Type)
+	}
 
 	rt := pluginStructType(p)
 	pkgName := pkgNameOf(rt)

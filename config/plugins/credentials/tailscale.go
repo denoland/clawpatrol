@@ -34,9 +34,9 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
-// TailscaleCredential is part of the clawpatrol plugin API. The body
-// is intentionally empty — there is nothing for the operator to paste.
-// Per-tailnet selection (control_url, tags) lives on the tunnel block.
+// TailscaleCredential has no operator-facing fields — there is
+// nothing to paste. Per-tailnet selection (control_url, tags) lives
+// on the tunnel block instead.
 type TailscaleCredential struct{}
 
 // StateStore returns an ipn.StateStore that persists tsnet's identity

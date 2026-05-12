@@ -147,8 +147,6 @@ Registered types: [`anthropic_manual_key`](#credential-anthropicmanualkey), [`an
 
 ### `credential "anthropic_manual_key" "<name>"`
 
-Is part of the clawpatrol plugin API.
-
 _No configurable attributes._
 
 ```hcl
@@ -157,8 +155,6 @@ credential "anthropic_manual_key" "example" {}
 
 ### `credential "anthropic_oauth_subscription" "<name>"`
 
-Is part of the clawpatrol plugin API.
-
 _No configurable attributes._
 
 ```hcl
@@ -166,8 +162,6 @@ credential "anthropic_oauth_subscription" "example" {}
 ```
 
 ### `credential "aws_eks_credential" "<name>"`
-
-Is part of the clawpatrol plugin API.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -184,8 +178,6 @@ credential "aws_eks_credential" "example" {
 
 ### `credential "bearer_token" "<name>"`
 
-Is part of the clawpatrol plugin API.
-
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `idempotency_key` | `bool` | no |  |
@@ -196,8 +188,6 @@ credential "bearer_token" "example" {}
 
 ### `credential "clickhouse_credential" "<name>"`
 
-Is part of the clawpatrol plugin API.
-
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `user` | `string` | no |  |
@@ -207,8 +197,6 @@ credential "clickhouse_credential" "example" {}
 ```
 
 ### `credential "cookie_token" "<name>"`
-
-Is part of the clawpatrol plugin API.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -230,8 +218,6 @@ credential "discord_bot_token" "example" {}
 
 ### `credential "gemini_api_key" "<name>"`
 
-Is part of the clawpatrol plugin API.
-
 _No configurable attributes._
 
 ```hcl
@@ -240,8 +226,6 @@ credential "gemini_api_key" "example" {}
 
 ### `credential "github_oauth" "<name>"`
 
-Is part of the clawpatrol plugin API.
-
 _No configurable attributes._
 
 ```hcl
@@ -249,8 +233,6 @@ credential "github_oauth" "example" {}
 ```
 
 ### `credential "header_token" "<name>"`
-
-Is part of the clawpatrol plugin API.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -265,8 +247,6 @@ credential "header_token" "example" {
 
 ### `credential "mtls_credential" "<name>"`
 
-Is part of the clawpatrol plugin API.
-
 _No configurable attributes._
 
 ```hcl
@@ -274,8 +254,6 @@ credential "mtls_credential" "example" {}
 ```
 
 ### `credential "notion_oauth" "<name>"`
-
-Is part of the clawpatrol plugin API.
 
 _No configurable attributes._
 
@@ -285,8 +263,6 @@ credential "notion_oauth" "example" {}
 
 ### `credential "openai_codex_oauth" "<name>"`
 
-Is part of the clawpatrol plugin API.
-
 _No configurable attributes._
 
 ```hcl
@@ -294,8 +270,6 @@ credential "openai_codex_oauth" "example" {}
 ```
 
 ### `credential "postgres_credential" "<name>"`
-
-Is part of the clawpatrol plugin API.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -307,8 +281,6 @@ credential "postgres_credential" "example" {}
 
 ### `credential "slack_tokens" "<name>"`
 
-Is part of the clawpatrol plugin API.
-
 _No configurable attributes._
 
 ```hcl
@@ -316,8 +288,6 @@ credential "slack_tokens" "example" {}
 ```
 
 ### `credential "ssh" "<name>"`
-
-Is part of the clawpatrol plugin API.
 
 _No configurable attributes._
 
@@ -327,9 +297,9 @@ credential "ssh" "example" {}
 
 ### `credential "tailscale" "<name>"`
 
-Is part of the clawpatrol plugin API. The body
-is intentionally empty — there is nothing for the operator to paste.
-Per-tailnet selection (control_url, tags) lives on the tunnel block.
+Has no operator-facing fields — there is
+nothing to paste. Per-tailnet selection (control_url, tags) lives
+on the tunnel block instead.
 
 _No configurable attributes._
 
@@ -338,8 +308,6 @@ credential "tailscale" "example" {}
 ```
 
 ### `credential "telegram_bot_token" "<name>"`
-
-Is part of the clawpatrol plugin API.
 
 _No configurable attributes._
 
@@ -354,8 +322,6 @@ Block syntax: `endpoint "<type>" "<name>" { ... }`
 Registered types: [`clickhouse_https`](#endpoint-clickhousehttps), [`clickhouse_native`](#endpoint-clickhousenative), [`https`](#endpoint-https), [`kubernetes`](#endpoint-kubernetes), [`openai_codex_https`](#endpoint-openaicodexhttps), [`postgres`](#endpoint-postgres), [`ssh`](#endpoint-ssh).
 
 ### `endpoint "clickhouse_https" "<name>"`
-
-Is part of the clawpatrol plugin API.
 
 Family: `sql`.
 
@@ -410,8 +376,6 @@ endpoint "clickhouse_native" "example" {
 
 ### `endpoint "https" "<name>"`
 
-Is part of the clawpatrol plugin API.
-
 Family: `http`.
 
 | Attribute | Type | Required | Description |
@@ -428,8 +392,6 @@ endpoint "https" "example" {
 
 ### `endpoint "kubernetes" "<name>"`
 
-Is part of the clawpatrol plugin API.
-
 Family: `k8s`.
 
 | Attribute | Type | Required | Description |
@@ -445,8 +407,6 @@ endpoint "kubernetes" "example" {}
 ```
 
 ### `endpoint "openai_codex_https" "<name>"`
-
-Is part of the clawpatrol plugin API.
 
 Family: `http`.
 
@@ -528,9 +488,7 @@ endpoint "ssh" "example" {
 
 Block syntax: `rule "<name>" { ... }`
 
-Registered types: [``](#rule-).
-
-### `rule "" "<name>"`
+### `rule "<name>"`
 
 The gohcl-tagged decode target. The match predicate is
 family-agnostic at the HCL layer (just a CEL string); the facet's
@@ -551,5 +509,91 @@ been inferred from the endpoint refs.
 
 ```hcl
 rule {}
+```
+
+## `tunnel` blocks
+
+Block syntax: `tunnel "<type>" "<name>" { ... }`
+
+Registered types: [`kubernetes_port_forward`](#tunnel-kubernetesportforward), [`local_command`](#tunnel-localcommand), [`ssh_port_forward`](#tunnel-sshportforward), [`tailscale`](#tunnel-tailscale).
+
+### `tunnel "kubernetes_port_forward" "<name>"`
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `context` | `string` | no |  |
+| `namespace` | `string` | no |  |
+| `pod` | `string` | no |  |
+| `service` | `string` | no |  |
+| `selector` | `map[string]string` | no |  |
+| `template` | `string` | no |  |
+| `port` | `int` | yes |  |
+| `cleanup` | `string` | no |  |
+| `share` | `string` | no |  |
+| `keepalive` | `string` | no |  |
+| `via` | `string` | no |  |
+| `credential` | `string` | no |  |
+
+```hcl
+tunnel "kubernetes_port_forward" "example" {
+  port = 30
+}
+```
+
+### `tunnel "local_command" "<name>"`
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `command` | `[]string` | yes |  |
+| `listen` | `string` | yes |  |
+| `ready_probe` | `string` | no |  |
+| `ready_timeout` | `string` | no |  |
+| `env` | `map[string]string` | no |  |
+| `share` | `string` | no |  |
+| `keepalive` | `string` | no |  |
+| `via` | `string` | no |  |
+| `credential` | `string` | no |  |
+
+```hcl
+tunnel "local_command" "example" {
+  command = ["example"]
+  listen = "example"
+}
+```
+
+### `tunnel "ssh_port_forward" "<name>"`
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `bastion` | `string` | no |  |
+| `user` | `string` | yes |  |
+| `share` | `string` | no |  |
+| `keepalive` | `string` | no |  |
+| `via` | `string` | no |  |
+| `credential` | `string` | yes |  |
+
+```hcl
+tunnel "ssh_port_forward" "example" {
+  user = "example"
+  credential = example-credential
+}
+```
+
+### `tunnel "tailscale" "<name>"`
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `authkey` | `string` | no |  |
+| `control_url` | `string` | no |  |
+| `hostname` | `string` | no |  |
+| `state_dir` | `string` | no |  |
+| `tags` | `[]string` | no |  |
+| `share` | `string` | no |  |
+| `keepalive` | `string` | no |  |
+| `via` | `string` | no |  |
+| `credential` | `string` | no |  |
+
+```hcl
+tunnel "tailscale" "example" {}
 ```
 
