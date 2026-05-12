@@ -34,6 +34,7 @@ import (
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/facet"
 	"github.com/denoland/clawpatrol/config/runtime"
+	"github.com/denoland/clawpatrol/internal/oidcverify"
 )
 
 //go:embed all:www/dist
@@ -47,15 +48,16 @@ var loginTpl = template.Must(template.New("login").Parse(loginHTML))
 var errConfigRevisionConflict = errors.New("config revision conflict")
 
 type webMux struct {
-	g         *Gateway
-	caDir     string
-	ts        JoinConfig // for onboarding key minting
-	publicURL string
-	mu        sync.Mutex
-	sessions  map[string]*oauthSession
-	onboard   *onboardRegistry
-	previews  map[string]configPreviewToken
-	routeAuth map[string]authRequirement
+	g            *Gateway
+	caDir        string
+	ts           JoinConfig // for onboarding key minting
+	publicURL    string
+	mu           sync.Mutex
+	sessions     map[string]*oauthSession
+	onboard      *onboardRegistry
+	previews     map[string]configPreviewToken
+	routeAuth    map[string]authRequirement
+	oidcVerifier *oidcverify.Verifier
 
 	// stateCache: per-caller TTL'd memo for /api/state. RWMutex
 	// because reads vastly outnumber writes — every dashboard tab
@@ -184,7 +186,7 @@ func (w *webMux) skipsTailnetGate(path string) bool {
 }
 
 func newWebMux(g *Gateway, caDir string, ts JoinConfig, publicURL string) http.Handler {
-	w := &webMux{g: g, caDir: caDir, ts: ts, publicURL: publicURL, sessions: map[string]*oauthSession{}, onboard: g.onboard, previews: map[string]configPreviewToken{}}
+	w := &webMux{g: g, caDir: caDir, ts: ts, publicURL: publicURL, sessions: map[string]*oauthSession{}, onboard: g.onboard, previews: map[string]configPreviewToken{}, oidcVerifier: oidcverify.New(oidcverify.Options{})}
 	return w.handler()
 }
 
@@ -240,6 +242,7 @@ func (w *webMux) routes() []webRoute {
 		{Method: http.MethodPost, Path: "/api/onboard/approve", Auth: authDashboardOrTailnetOperator, Handler: w.apiOnboardApprove},
 		{Method: http.MethodGet, Path: "/api/onboard/lookup", Auth: authTailnetOperator, Handler: w.apiOnboardLookup},
 		{Method: http.MethodPost, Path: "/api/onboard/claim", Auth: authPublic, Handler: w.apiOnboardClaim},
+		{Method: http.MethodPost, Path: "/api/onboard/oidc", Auth: authPublic, Handler: w.apiOnboardOIDC},
 		{Method: http.MethodGet, Path: "/api/env-pushdown", Auth: authSelfAuthenticating, Handler: w.apiEnvPushdown},
 		{Method: http.MethodPost, Path: "/api/peer/ephemeral", Auth: authSelfAuthenticating, Handler: w.apiEphemeralPeer},
 		{Method: http.MethodGet, Path: "/__login", Auth: authTailnetOperator, Handler: w.apiDashboardLogin},
