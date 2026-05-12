@@ -443,9 +443,9 @@ func TestParseSQL(t *testing.T) {
 			"CREATE TABLE",
 			"CREATE TABLE x (id int)",
 			pgInfo{
-				Verb:      "create",
-				Verbs:     []string{"create"},
-				Tables:    []string{"x"},
+				Verb:   "create",
+				Verbs:  []string{"create"},
+				Tables: []string{"x"},
 				// `x` shows up as a function too because the
 				// column-definition `(` follows the table name —
 				// same overgreed shape as INSERT INTO audit (...).

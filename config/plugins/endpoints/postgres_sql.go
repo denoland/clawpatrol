@@ -150,7 +150,7 @@ func pgTokenize(sql string) []pgToken {
 }
 
 // pgScanString advances past a single-quoted string starting at `from`
-// (one past the opening apostrophe). Doubled '' is a literal quote
+// (one past the opening apostrophe). Doubled ” is a literal quote
 // that does NOT terminate. In E-strings, backslash escapes apply.
 // Returns the index just past the terminating apostrophe, or len(sql)
 // if the string never closes.
