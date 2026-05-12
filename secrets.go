@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -15,12 +16,19 @@ import (
 //
 //  1. credential_secrets table — slot bytes the operator pasted into
 //     the dashboard (single-slot fills Bytes; multi-slot fills Extras).
+//     The dashboard wins so operators can override an external source
+//     (e.g. paste a one-off key while debugging a 1password-backed
+//     credential) without editing the HCL config.
 //  2. OAuthRegistry — for OAuth-flow credentials (claude / codex /
 //     github / ...), returns a refreshed access token.
-//  3. EnvSecretStore — CLAWPATROL_SECRET_<NAME>, last-resort fallback
+//  3. SecretSourceProvider on the credential body — credentials that
+//     fetch their own bytes from an external system (1password today;
+//     future Vault / cloud secrets manager). Errors here propagate so
+//     the dispatcher can fail closed.
+//  4. EnvSecretStore — CLAWPATROL_SECRET_<NAME>, last-resort fallback
 //     for operator-managed env-var secrets.
 //
-// All three keyspaces are the credential's bare name, so a credential
+// All four keyspaces are the credential's bare name, so a credential
 // declared `credential "bearer_token" "stripe-live" {}` is reachable
 // via the dashboard, the OAuth registry (if it grew an OAuth flow),
 // or `CLAWPATROL_SECRET_STRIPE-LIVE`, in that priority.
@@ -28,10 +36,20 @@ type gatewaySecretStore struct {
 	db    *sql.DB
 	oauth *OAuthRegistry
 	env   runtime.SecretStore
+	// policyFn returns the current compiled policy. Used to look up a
+	// credential entity by name when checking for SecretSourceProvider.
+	// Nil when the gateway hasn't loaded a policy yet (boot races); the
+	// store falls back to env in that window.
+	policyFn func() *config.CompiledPolicy
 }
 
-func newGatewaySecretStore(db *sql.DB, oauth *OAuthRegistry) runtime.SecretStore {
-	return &gatewaySecretStore{db: db, oauth: oauth, env: runtime.EnvSecretStore{}}
+func newGatewaySecretStore(db *sql.DB, oauth *OAuthRegistry, policyFn func() *config.CompiledPolicy) runtime.SecretStore {
+	return &gatewaySecretStore{
+		db:       db,
+		oauth:    oauth,
+		env:      runtime.EnvSecretStore{},
+		policyFn: policyFn,
+	}
 }
 
 func (s *gatewaySecretStore) Get(name, owner string) (runtime.Secret, error) {
@@ -49,6 +67,21 @@ func (s *gatewaySecretStore) Get(name, owner string) (runtime.Secret, error) {
 			return runtime.Secret{}, err
 		} else if tok != "" {
 			return runtime.Secret{Kind: "oauth_bearer", Bytes: []byte(tok)}, nil
+		}
+	}
+	if s.policyFn != nil {
+		if policy := s.policyFn(); policy != nil {
+			if ent, ok := policy.Credentials[name]; ok && ent != nil {
+				if src, ok := ent.Body.(runtime.SecretSourceProvider); ok {
+					sec, err := src.FetchSecret(context.Background())
+					if err != nil {
+						return runtime.Secret{}, err
+					}
+					if len(sec.Bytes) != 0 || len(sec.Extras) != 0 {
+						return sec, nil
+					}
+				}
+			}
 		}
 	}
 	return s.env.Get(name, owner)

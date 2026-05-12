@@ -1,10 +1,27 @@
 package runtime
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
 )
+
+// SecretSourceProvider is the optional interface a credential plugin's
+// decoded body implements when it sources its own secret material from
+// an external system at request time (1Password CLI, HashiCorp Vault,
+// cloud secrets manager, …) rather than relying on the operator pasting
+// bytes into the dashboard.
+//
+// The host's SecretStore checks for this interface before falling back
+// to env vars. The credential plugin owns its own cache, retry, and
+// upstream-specific quirks; the only contract is "give me a Secret, or
+// an error." Errors must fail closed at the dispatcher — forwarding an
+// unauthenticated request that lost its credential is worse than
+// returning 502.
+type SecretSourceProvider interface {
+	FetchSecret(ctx context.Context) (Secret, error)
+}
 
 // envParts lists the recognized "multi-part" suffixes EnvSecretStore
 // folds into Secret.Extras when the bare CLAWPATROL_SECRET_<NAME> var

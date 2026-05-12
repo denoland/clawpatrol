@@ -1789,11 +1789,41 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			// receiver is the real instance.
 			if injector, ok := cc.Credential.Body.(runtime.HTTPCredentialRuntime); ok {
 				sec, err := g.secrets.Get(cc.Credential.Symbol.Name, profile)
+				// Self-sourcing credentials (1password, future Vault, …)
+				// require their secret to be fetched at request time;
+				// when that fetch fails we MUST fail closed rather than
+				// forward an un-credentialed request upstream. Other
+				// credential types tolerate empty/missing secrets — the
+				// dispatcher logs and forwards, and the upstream will
+				// reject with its own 401/403.
+				_, selfSourcing := cc.Credential.Body.(runtime.SecretSourceProvider)
 				if err != nil {
+					if selfSourcing {
+						reason := fmt.Sprintf("credential fetch failed: %v", err)
+						log.Printf("deny %s %s %s: %s (credential %s)", host, req.Method, req.URL.Path, reason, cc.Credential.Symbol.Name)
+						_, _ = fmt.Fprintf(tc, "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(reason), reason)
+						ev.Status = 502
+						ev.Action = "deny"
+						ev.Reason = reason
+						ev.Ms = time.Since(start).Milliseconds()
+						g.emitEnd(ev)
+						return
+					}
 					log.Printf("secret %s/%s: %v — forwarding without injection", cc.Credential.Symbol.Name, profile, err)
 				} else if len(sec.Bytes) == 0 && len(sec.Extras) == 0 {
 					log.Printf("secret %s/%s: not configured (set CLAWPATROL_SECRET_%s)", cc.Credential.Symbol.Name, profile, secretEnvName(cc.Credential.Symbol.Name))
 				} else if err := injector.InjectHTTP(req.Context(), req, sec); err != nil {
+					if selfSourcing {
+						reason := fmt.Sprintf("credential injection failed: %v", err)
+						log.Printf("deny %s %s %s: %s (credential %s)", host, req.Method, req.URL.Path, reason, cc.Credential.Symbol.Name)
+						_, _ = fmt.Fprintf(tc, "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(reason), reason)
+						ev.Status = 502
+						ev.Action = "deny"
+						ev.Reason = reason
+						ev.Ms = time.Since(start).Milliseconds()
+						g.emitEnd(ev)
+						return
+					}
 					log.Printf("inject %s: %v", cc.Credential.Symbol.Name, err)
 				}
 			}
@@ -2219,7 +2249,7 @@ func runGateway(args []string) {
 	if *readOnly {
 		log.Printf("config: read-only mode (dashboard writes rejected)")
 	}
-	g.secrets = newGatewaySecretStore(db, oauthReg)
+	g.secrets = newGatewaySecretStore(db, oauthReg, g.Policy)
 	g.tunnels = NewTunnelManager(g.secrets, cfg.CADir)
 	registerOAuthCredentials(oauthReg, policy)
 	g.policy.Store(policy)

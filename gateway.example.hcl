@@ -66,6 +66,24 @@ endpoint "https" "github" {
   credential = github-pat
 }
 
+# 1Password-backed credentials read their secret material from the
+# 1Password CLI at request time. The gateway host must have `op`
+# installed and be signed in (`op signin`); fetched values are cached
+# per-credential with a short TTL. Op-read errors fail closed — the
+# dispatcher returns 502 rather than forwarding a request that lost
+# its credential. Pair with any HTTPS endpoint the same way as
+# bearer_token.
+#
+# credential "1password" "openai-prod" {
+#   ref = "op://Engineering/OpenAI/api_key"
+#   ttl = "60s"   # optional; default 60s
+# }
+#
+# endpoint "https" "openai-prod" {
+#   hosts      = ["api.openai.com"]
+#   credential = openai-prod
+# }
+
 # ClickHouse over the native protocol. `tls = true` enables TLS on
 # the upstream hop. `accept_invalid_certificate = true` (mirrors
 # clickhouse-client's flag) skips upstream cert validation — use for

@@ -150,6 +150,40 @@ After onboarding, open the dashboard at `http://localhost:8080` to add,
 remove, or edit integrations. You can also re-run `clawpatrol onboard` to
 re-discover secrets that were added since the initial setup.
 
+### 1Password-backed credentials
+
+If you'd rather not paste API keys into the dashboard or stash them in
+shell env vars, declare them as `credential "1password" "<name>"` blocks
+in `gateway.hcl`. The gateway reads each secret via the 1Password CLI
+(`op read op://Vault/Item/field`) the first time it's needed and caches
+the value for 60 seconds (configurable via `ttl`).
+
+Prerequisites on the gateway host:
+
+1. Install the [1Password CLI][op-cli] (`op` must be on `$PATH`).
+2. Sign in once with `op signin` — the gateway inherits the resulting
+   session token from its environment. For unattended hosts, use a
+   service-account token (`OP_SERVICE_ACCOUNT_TOKEN`) and skip the
+   interactive signin step.
+3. Reload the gateway. Op-read errors fail closed: a missing or
+   unauthorized ref returns 502 to the agent rather than forwarding an
+   un-credentialed request upstream.
+
+Example:
+
+```hcl
+credential "1password" "openai-prod" {
+  ref = "op://Engineering/OpenAI/api_key"
+}
+
+endpoint "https" "openai" {
+  hosts      = ["api.openai.com"]
+  credential = openai-prod
+}
+```
+
+[op-cli]: https://developer.1password.com/docs/cli/get-started/
+
 ## Uninstalling
 
 ```bash

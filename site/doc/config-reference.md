@@ -143,7 +143,38 @@ approver "llm_approver" "example" {
 
 Block syntax: `credential "<type>" "<name>" { ... }`
 
-Registered types: [`anthropic_manual_key`](#credential-anthropicmanualkey), [`anthropic_oauth_subscription`](#credential-anthropicoauthsubscription), [`aws_eks_credential`](#credential-awsekscredential), [`bearer_token`](#credential-bearertoken), [`clickhouse_credential`](#credential-clickhousecredential), [`cookie_token`](#credential-cookietoken), [`gemini_api_key`](#credential-geminiapikey), [`github_oauth`](#credential-githuboauth), [`header_token`](#credential-headertoken), [`mtls_credential`](#credential-mtlscredential), [`notion_oauth`](#credential-notionoauth), [`openai_codex_oauth`](#credential-openaicodexoauth), [`postgres_credential`](#credential-postgrescredential), [`slack_tokens`](#credential-slacktokens), [`ssh`](#credential-ssh), [`telegram_bot_token`](#credential-telegrambottoken).
+Registered types: [`1password`](#credential-1password), [`anthropic_manual_key`](#credential-anthropicmanualkey), [`anthropic_oauth_subscription`](#credential-anthropicoauthsubscription), [`aws_eks_credential`](#credential-awsekscredential), [`bearer_token`](#credential-bearertoken), [`clickhouse_credential`](#credential-clickhousecredential), [`cookie_token`](#credential-cookietoken), [`gemini_api_key`](#credential-geminiapikey), [`github_oauth`](#credential-githuboauth), [`header_token`](#credential-headertoken), [`mtls_credential`](#credential-mtlscredential), [`notion_oauth`](#credential-notionoauth), [`openai_codex_oauth`](#credential-openaicodexoauth), [`postgres_credential`](#credential-postgrescredential), [`slack_tokens`](#credential-slacktokens), [`ssh`](#credential-ssh), [`telegram_bot_token`](#credential-telegrambottoken).
+
+### `credential "1password" "<name>"`
+
+Is part of the clawpatrol plugin API.
+
+HCL:
+
+	credential "1password" "openai-prod" {
+	  ref    = "op://Engineering/OpenAI/api_key"
+	  ttl    = "60s"           // optional; default 60s
+	  header = "Authorization" // optional; default Authorization
+	  prefix = "Bearer "       // optional; default "Bearer "
+	}
+
+The `op` CLI must be installed on the gateway host and signed in
+(`op signin`) ahead of time. Fetch errors fail closed — the
+dispatcher returns 502 rather than forwarding an un-credentialed
+request.
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `ref` | `string` | yes | The 1Password secret reference. Required; must start with `op://`, e.g. `op://Engineering/OpenAI/api_key`. |
+| `ttl` | `string` | no | The per-process cache lifetime, parsed via time.ParseDuration. Default 60s. Bounds how often the gateway shells out to `op` for the same ref. |
+| `header` | `string` | no | The request header to stamp. Default `Authorization`. |
+| `prefix` | `string` | no | The string prepended to the secret value before stamping. Default `Bearer ` when `header` is left at its default; empty when `header` is overridden. Set to "" explicitly to stamp the secret value verbatim on a custom header (e.g. `X-API-Key`). |
+
+```hcl
+credential "1password" "example" {
+  ref = "example"
+}
+```
 
 ### `credential "anthropic_manual_key" "<name>"`
 

@@ -29,6 +29,15 @@
           "IdempotencyKey": false
         },
         "type": "bearer_token"
+      },
+      "openai-prod": {
+        "body": {
+          "Ref": "op://Engineering/OpenAI/api_key",
+          "TTL": "30s",
+          "Header": "",
+          "Prefix": null
+        },
+        "type": "1password"
       }
     },
     "endpoints": {
@@ -42,12 +51,23 @@
         },
         "family": "https",
         "type": "https"
+      },
+      "openai": {
+        "body": {
+          "Hosts": [
+            "api.openai.com"
+          ],
+          "Credential": "openai-prod"
+        },
+        "family": "https",
+        "type": "https"
       }
     },
     "profiles": {
       "default": {
         "endpoints": [
-          "github"
+          "github",
+          "openai"
         ]
       }
     },

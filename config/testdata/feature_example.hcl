@@ -53,11 +53,26 @@ human_on_timeout = "deny"
 
 credential "bearer_token" "github-pat" {}
 
+# 1password-backed credentials fetch their secret via the `op` CLI at
+# request time. Operators avoid pasting keys anywhere on the gateway
+# host; the value lives in a 1Password vault and is read on demand
+# (cached for `ttl`). `op signin` must have happened on the host
+# already.
+credential "1password" "openai-prod" {
+  ref = "op://Engineering/OpenAI/api_key"
+  ttl = "30s"
+}
+
 # Endpoints: hosts + which credential the agent uses against them.
 
 endpoint "https" "github" {
   hosts      = ["api.github.com", "github.com"]
   credential = github-pat
+}
+
+endpoint "https" "openai" {
+  hosts      = ["api.openai.com"]
+  credential = openai-prod
 }
 
 # Approvers: who arbitrates when a rule needs human / LLM review.
@@ -87,5 +102,5 @@ rule "github-writes" {
 # automatically because they're attached to endpoints.
 
 profile "default" {
-  endpoints = [github]
+  endpoints = [github, openai]
 }
