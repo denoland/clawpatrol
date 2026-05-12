@@ -84,5 +84,6 @@ real key.
 - [Architecture](/docs/architecture/) — how interception works
 - [CLI](/docs/cli/) — full command reference
 - [Gateway](/docs/gateway/) — gateway config reference
+- [Tailscale mode](/docs/tailscale/) — run the gateway as a tailnet exit-node instead of the default WireGuard
 - [Approval rules](/docs/approval-rules/) — gating writes behind a human or LLM
 - [Security model](/docs/security-model/) — what Claw Patrol does and doesn't protect against
