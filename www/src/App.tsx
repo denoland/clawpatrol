@@ -4,6 +4,7 @@ import { AnalyticsPage } from "./components/AnalyticsPage";
 import { ConnectModal } from "./components/ConnectModal";
 import { DevicePage } from "./components/DevicePage";
 import { LiveRequests } from "./components/LiveRequests";
+import { LogsPage } from "./components/LogsPage";
 import { OnboardPage } from "./components/OnboardPage";
 import { RequestDetailPage } from "./components/RequestDetailPage";
 import { AddDeviceModal } from "./components/AddDeviceModal";
@@ -15,6 +16,7 @@ type Route =
   | { name: "main" }
   | { name: "device"; ip: string }
   | { name: "analytics"; ip?: string }
+  | { name: "logs" }
   | { name: "onboard"; code: string }
   | { name: "request"; id: string };
 
@@ -27,6 +29,7 @@ function parseRoute(): Route {
     return { name: "onboard", code: decodeURIComponent(h.slice("#/onboard/".length)) };
   const r = h.match(/^#\/request\/([^/]+)$/);
   if (r) return { name: "request", id: decodeURIComponent(r[1]) };
+  if (h === "#/logs") return { name: "logs" };
   if (h === "#/analytics") return { name: "analytics" };
   const a = h.match(/^#\/analytics\/([^/]+)$/);
   if (a) return { name: "analytics", ip: decodeURIComponent(a[1]) };
@@ -118,6 +121,27 @@ export default function App() {
                 <path d="m7 16 4-8 4 4 4-6" />
               </svg>
             </a>
+            <a
+              href="#/logs"
+              className="w-[36px] h-[36px] rounded-full border border-[#e5e5e5] text-[#525252] flex items-center justify-center hover:border-[#171717] hover:text-[#171717] transition-colors"
+              title="plugin logs"
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <path d="M14 2v6h6" />
+                <path d="M8 13h8" />
+                <path d="M8 17h5" />
+              </svg>
+            </a>
             <button
               onClick={() => setShowSettings(true)}
               className="w-[36px] h-[36px] rounded-full border border-[#e5e5e5] text-[#525252] flex items-center justify-center hover:border-[#171717] hover:text-[#171717] transition-colors"
@@ -152,6 +176,8 @@ export default function App() {
         </main>
       ) : route.name === "analytics" ? (
         <AnalyticsPage ip={route.ip} agents={agents} />
+      ) : route.name === "logs" ? (
+        <LogsPage onBack={() => navigate("")} />
       ) : route.name === "request" ? (
         <RequestDetailPage id={route.id} agents={agents} />
       ) : route.name === "onboard" ? (

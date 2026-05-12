@@ -53,6 +53,12 @@ type Gateway struct {
 	// and DO_NOT_TRACK=1 also work.
 	Telemetry *bool `hcl:"telemetry,optional"`
 
+	// PluginLogBufferSize caps the dashboard /logs tab's in-memory
+	// ring buffer. Default 1000 entries; raise on busy gateways
+	// whose operators want longer scrollback when debugging a
+	// chatty plugin. 0 keeps the default.
+	PluginLogBufferSize int `hcl:"plugin_log_buffer_size,optional"`
+
 	// SessionKeep is the hard retention floor for the sessions table.
 	// Sessions whose last_at is older than this get deleted by the
 	// background sweeper. Sessions can revive on new activity at any

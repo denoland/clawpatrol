@@ -178,6 +178,14 @@ type ConnHandle struct {
 	// SNI the client sent. nil when the dispatcher can't mint
 	// (gateway has no CA).
 	MintCert func(host string) (*tls.Certificate, error)
+	// Logger is the structured-diagnostic sink the plugin writes to.
+	// Always non-nil — the dispatcher installs a no-op Logger when
+	// no log buffer is available (tests, --no-dashboard mode). Plugins
+	// emit per-session diagnostics (failed startup, dropped query,
+	// credential lookup miss) here; the gateway buffers them and
+	// surfaces them on the dashboard's /logs tab. Never log credential
+	// bytes — credential names/refs only.
+	Logger Logger
 }
 
 // ApproveCallRequest is what a ConnEndpointRuntime hands to

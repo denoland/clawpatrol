@@ -239,6 +239,8 @@ func (w *webMux) routes() []webRoute {
 		{Method: http.MethodPost, Path: "/api/credentials/set", Auth: authDashboard, Handler: w.apiCredentialsSet},
 		{Method: http.MethodPost, Path: "/api/credentials/clear", Auth: authDashboard, Handler: w.apiCredentialsClear},
 		{Method: http.MethodGet, Path: "/api/events", Auth: authDashboard, Handler: w.apiEventsSSE},
+		{Method: http.MethodGet, Path: "/api/logs", Auth: authDashboard, Handler: w.apiLogs},
+		{Method: http.MethodGet, Path: "/api/logs/stream", Auth: authDashboard, Handler: w.apiLogsSSE},
 		{Method: http.MethodPost, Path: "/api/actions/", Auth: authDashboard, Handler: w.apiActionByID},
 		{Method: http.MethodGet, Path: "/api/analytics", Auth: authDashboard, Handler: w.apiAnalytics},
 		{Method: http.MethodGet, Path: "/api/facets", Auth: authDashboard, Handler: w.apiFacets},

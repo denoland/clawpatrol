@@ -12,7 +12,6 @@ package approvers
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/hashicorp/hcl/v2"
@@ -62,6 +61,7 @@ func (h *HumanApprover) Approve(ctx context.Context, req runtime.ApproveRequest)
 	id, ch := req.Pool.Add(pending)
 	defer req.Pool.Discard(id)
 
+	plg := runtime.LoggerFrom(ctx)
 	if h.Channel != "" && h.Credential != "" && req.Policy != nil {
 		ent, ok := req.Policy.Credentials[h.Credential]
 		if ok {
@@ -76,14 +76,24 @@ func (h *HumanApprover) Approve(ctx context.Context, req runtime.ApproveRequest)
 				}
 				go func() {
 					if err := notifier.NotifyHITL(ctx, req, target); err != nil {
-						log.Printf("human approver %s: notify: %v", req.ApproverName, err)
+						runtime.Warn(plg, "notify failed", map[string]any{
+							"approver":   req.ApproverName,
+							"credential": h.Credential,
+							"err":        err.Error(),
+						})
 					}
 				}()
 			} else {
-				log.Printf("human approver %s: credential %q does not implement HITLNotifier", req.ApproverName, h.Credential)
+				runtime.Warn(plg, "credential lacks notifier", map[string]any{
+					"approver":   req.ApproverName,
+					"credential": h.Credential,
+				})
 			}
 		} else {
-			log.Printf("human approver %s: credential %q not declared", req.ApproverName, h.Credential)
+			runtime.Warn(plg, "credential not declared", map[string]any{
+				"approver":   req.ApproverName,
+				"credential": h.Credential,
+			})
 		}
 	}
 

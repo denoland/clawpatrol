@@ -524,6 +524,52 @@ export async function getAnalytics(params: {
   return r.json();
 }
 
+// Plugin diagnostic logs (/api/logs and /api/logs/stream).
+// Operators tail these to debug a misbehaving plugin without SSHing
+// to the host. Backend buffers the last N events in memory (default
+// 1000); credential values are never logged — only credential names.
+export type LogLevel = "debug" | "info" | "warn" | "error";
+
+export type LogEntry = {
+  ts: string;
+  plugin: string;
+  level: LogLevel;
+  msg: string;
+  req_id?: string;
+  agent_ip?: string;
+  fields?: Record<string, unknown>;
+};
+
+export type LogsResp = {
+  entries: LogEntry[];
+  buffer_cap: number;
+  buffer_size?: number;
+  drops?: number;
+  plugins?: string[];
+};
+
+export async function getLogs(params: {
+  min?: LogLevel;
+  plugin?: string;
+  agent?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+  meta?: boolean;
+}): Promise<LogsResp> {
+  const p = new URLSearchParams();
+  if (params.min) p.set("min", params.min);
+  if (params.plugin) p.set("plugin", params.plugin);
+  if (params.agent) p.set("agent", params.agent);
+  if (params.since) p.set("since", params.since);
+  if (params.until) p.set("until", params.until);
+  if (params.limit) p.set("limit", String(params.limit));
+  if (params.meta) p.set("meta", "1");
+  const r = await api(`/api/logs?${p}`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export async function oauthExchange(
   state: string,
   code: string,

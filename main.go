@@ -269,6 +269,11 @@ type Gateway struct {
 	certs   *CertCache
 	dialer  *net.Dialer
 	sink    *Sink
+	// logs buffers the last N structured plugin diagnostic events
+	// for the dashboard's /logs tab. Distinct from sink (request
+	// events): operators tail logs to debug a misbehaving plugin,
+	// not to audit traffic.
+	logs    *LogSink
 	oauth   *OAuthRegistry
 	agents  *AgentRegistry
 	hitl    *HITLRegistry
@@ -1264,6 +1269,7 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 		Profile:  profile,
 		PeerIP:   pip,
 		Secrets:  g.secrets,
+		Logger:   g.LoggerFor(pluginID("endpoint", ep.Plugin.Type), "", agentPip),
 		DialUpstream: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			// Plugin asks for ep.Hosts[0]:port; we bypass DNS by
 			// dialing the original upstream IP the WG forwarder
@@ -1418,6 +1424,7 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 		CADir:        g.cfg.CADir,
 		DstPort:      dstPort,
 		UpstreamHost: hostname,
+		Logger:       g.LoggerFor(pluginID("endpoint", ep.Plugin.Type), "", agentPip),
 		MintCert: func(host string) (*tls.Certificate, error) {
 			return g.certs.mint(host)
 		},
@@ -1813,8 +1820,13 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		// Identity flow on hosts we MITM. Endpoints without a
 		// responder (the default https plugin) fall through.
 		if responder, ok := ep.Plugin.Runtime.(runtime.HTTPSyntheticResponder); ok {
-			if r, handled, err := responder.RespondHTTP(req.Context(), req); err != nil {
-				log.Printf("respond %s: %v", ep.Name, err)
+			respLg := g.LoggerFor(pluginID("endpoint", ep.Plugin.Type), ev.ID, ev.AgentIP)
+			respCtx := runtime.WithLogger(req.Context(), respLg)
+			if r, handled, err := responder.RespondHTTP(respCtx, req); err != nil {
+				runtime.Error(respLg, "synthetic response failed", map[string]any{
+					"endpoint": ep.Name,
+					"err":      err.Error(),
+				})
 			} else if handled {
 				if r.Body != nil {
 					defer func() { _ = r.Body.Close() }()
@@ -1858,21 +1870,39 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			injector, wantsHTTP := cc.Credential.Body.(runtime.HTTPCredentialRuntime)
 			wsRewriter, wantsWS := cc.Credential.Body.(runtime.WebSocketCredentialRuntime)
 			if wantsHTTP || (wantsWS && isWSUpgrade(req)) {
-				sec, err := g.secrets.Get(cc.Credential.Symbol.Name, profile)
+				credName := cc.Credential.Symbol.Name
+				lg := g.LoggerFor(pluginID("credential", cc.Credential.Symbol.Type), ev.ID, ev.AgentIP)
+				injCtx := runtime.WithLogger(req.Context(), lg)
+				sec, err := g.secrets.Get(credName, profile)
 				if err != nil {
-					log.Printf("secret %s/%s: %v — forwarding without injection", cc.Credential.Symbol.Name, profile, err)
+					runtime.Warn(lg, "secret lookup failed — forwarding without injection", map[string]any{
+						"credential": credName,
+						"profile":    profile,
+						"err":        err.Error(),
+					})
 				} else if len(sec.Bytes) == 0 && len(sec.Extras) == 0 {
-					log.Printf("secret %s/%s: not configured (set CLAWPATROL_SECRET_%s)", cc.Credential.Symbol.Name, profile, secretEnvName(cc.Credential.Symbol.Name))
+					runtime.Warn(lg, "secret not configured", map[string]any{
+						"credential": credName,
+						"profile":    profile,
+						"env":        "CLAWPATROL_SECRET_" + secretEnvName(credName),
+					})
 				} else {
 					if wantsHTTP {
-						if err := injector.InjectHTTP(req.Context(), req, sec); err != nil {
-							log.Printf("inject %s: %v", cc.Credential.Symbol.Name, err)
+						if err := injector.InjectHTTP(injCtx, req, sec); err != nil {
+							runtime.Error(lg, "credential injection failed", map[string]any{
+								"credential": credName,
+								"err":        err.Error(),
+							})
+						} else {
+							runtime.Debug(lg, "credential injected", map[string]any{
+								"credential": credName,
+							})
 						}
 					}
 					if wantsWS && isWSUpgrade(req) {
 						wsSec := sec
 						rewriteWSPayload = func(payload []byte) ([]byte, bool, error) {
-							return wsRewriter.RewriteWebSocketPayload(req.Context(), payload, wsSec)
+							return wsRewriter.RewriteWebSocketPayload(injCtx, payload, wsSec)
 						}
 					}
 				}
@@ -2094,7 +2124,13 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 			DashboardURL: g.cfg.PublicURL,
 			Policy:       policy,
 		}
-		v, err := ar.Approve(ctx, req)
+		// Attach a per-approver logger so plugin runtimes that
+		// call runtime.LoggerFrom(ctx) (e.g. human approver's notify
+		// failure path) land in the dashboard /logs tab. ReqID is
+		// empty here — the approve chain runs before / parallel to
+		// the request's event ID; we attribute by approver name.
+		stCtx := runtime.WithLogger(ctx, g.LoggerFor(pluginID("approver", approverType(policy, st.Name)), "", c.AgentIP))
+		v, err := ar.Approve(stCtx, req)
 		if err != nil {
 			return runtime.ApproveVerdict{Decision: "deny", Reason: err.Error(), By: "gateway"}
 		}
@@ -2109,6 +2145,25 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 		}
 	}
 	return runtime.ApproveVerdict{Decision: "allow"}
+}
+
+// approverType returns the registered plugin Type for an approver
+// declared in the policy. Falls back to the bare name for the built-in
+// "dashboard" approver (no policy entry) and for any approver whose
+// symbol is somehow missing — the dashboard's /logs filter still
+// shows a meaningful identifier in that case.
+func approverType(policy *config.CompiledPolicy, name string) string {
+	if name == "dashboard" {
+		return "dashboard"
+	}
+	if policy == nil {
+		return name
+	}
+	ent, ok := policy.Approvers[name]
+	if !ok || ent.Plugin == nil {
+		return name
+	}
+	return ent.Plugin.Type
 }
 
 // ifNotEmpty returns f(v) when v != nil, else "".
@@ -2292,6 +2347,7 @@ func runGateway(args []string) {
 	if err != nil {
 		log.Fatalf("log: %v", err)
 	}
+	logs := NewLogSink(cfg.PluginLogBufferSize)
 	oauthDir := cfg.OAuthDir
 	if oauthDir == "" {
 		oauthDir = filepath.Join(cfg.CADir, "..", "oauth")
@@ -2314,6 +2370,7 @@ func runGateway(args []string) {
 		certs:          certs,
 		dialer:         newUpstreamDialer(cfg.Resolver),
 		sink:           sink,
+		logs:           logs,
 		oauth:          oauthReg,
 		agents:         NewAgentRegistry(),
 		hitl:           newHITLRegistry(sink),

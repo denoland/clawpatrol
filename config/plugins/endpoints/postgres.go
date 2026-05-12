@@ -40,7 +40,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"regexp"
 	"strconv"
@@ -440,7 +439,10 @@ func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.
 						verdict, reason := pgEvaluate(ch, sql, credName)
 						if verdict == "deny" {
 							pgWriteDeny(ch.Conn, reason)
-							log.Printf("pg-deny %s: %s", ch.PeerIP, reason)
+							runtime.Info(ch.Logger, "query denied", map[string]any{
+								"peer_ip": ch.PeerIP,
+								"reason":  reason,
+							})
 							continue
 						}
 					}
@@ -539,7 +541,10 @@ func pgHandleOversizeFrame(ch *runtime.ConnHandle, upstream net.Conn, credName s
 		emit(ch, runtime.ConnEvent{
 			Action: "deny", Reason: reason, Summary: summary, Facets: facets,
 		})
-		log.Printf("pg-deny-truncated %s: %s", ch.PeerIP, reason)
+		runtime.Info(ch.Logger, "query denied (inspection buffer overflow)", map[string]any{
+			"peer_ip": ch.PeerIP,
+			"reason":  reason,
+		})
 		return rest, true
 	}
 

@@ -38,6 +38,7 @@ Every singleton gateway attribute — listen addresses, paths, control-plane joi
 | `dashboard_secret` | `string` | no |  |
 | `insecure_no_dashboard_secret` | `bool` | no | Opts out of dashboard auth. Required (alongside an empty DashboardSecret) for the gateway to serve the dashboard at all — otherwise the secret gate replies with a misconfiguration page on every request. Verbose by design so you can't disable auth by accident. |
 | `telemetry` | `bool` | no | Opts in/out of the update-checker / anonymous usage ping (doc/telemetry.md). nil = default on; explicit `telemetry = false` silences the goroutine. Env vars CLAWPATROL_TELEMETRY=0 and DO_NOT_TRACK=1 also work. |
+| `plugin_log_buffer_size` | `int` | no | Caps the dashboard /logs tab's in-memory ring buffer. Default 1000 entries; raise on busy gateways whose operators want longer scrollback when debugging a chatty plugin. 0 keeps the default. |
 | `session_keep` | `string` | no | The hard retention floor for the sessions table. Sessions whose last_at is older than this get deleted by the background sweeper. Sessions can revive on new activity at any time, so there's no "closed but kept" intermediate state — only last_at matters. Default 720h (30d), "0" / "off" disables. Format accepts time.ParseDuration strings ("30m", "168h", etc.). |
 | `authkey` | `string` | no |  |
 | `control_url` | `string` | no |  |
