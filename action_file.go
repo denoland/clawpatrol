@@ -27,10 +27,12 @@ import (
 	sqlfacet "github.com/denoland/clawpatrol/config/plugins/facets/sql"
 )
 
-// Fixture is the on-disk shape.
+// Fixture is the on-disk shape. Field order matters for marshalling:
+// `action` (what happened) reads first, `match` (what the runner
+// asserts about it) reads second.
 type Fixture struct {
-	Match  Match  `json:"match"`
 	Action Action `json:"action"`
+	Match  Match  `json:"match"`
 }
 
 // Match is what the rule engine produced (or what the runner

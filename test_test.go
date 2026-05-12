@@ -122,7 +122,7 @@ profile "default" { endpoints = [alpha, beta, gamma] }
 	}
 
 	t.Run("unique host", func(t *testing.T) {
-		f := mk(t, `{"match":{"verdict":"allow"},"action":{"host":"solo.example.com","http":{"path":"/x"}}}`)
+		f := mk(t, `{"action":{"host":"solo.example.com","http":{"path":"/x"}},"match":{"verdict":"allow"}}`)
 		ep, err := f.ResolveEndpoint(policy)
 		if err != nil {
 			t.Fatal(err)
@@ -133,7 +133,7 @@ profile "default" { endpoints = [alpha, beta, gamma] }
 	})
 
 	t.Run("ambiguous host errors with candidates", func(t *testing.T) {
-		f := mk(t, `{"match":{"verdict":"allow"},"action":{"host":"api.example.com","http":{"path":"/x"}}}`)
+		f := mk(t, `{"action":{"host":"api.example.com","http":{"path":"/x"}},"match":{"verdict":"allow"}}`)
 		_, err := f.ResolveEndpoint(policy)
 		if err == nil || !strings.Contains(err.Error(), "claimed by multiple endpoints") {
 			t.Fatalf("want ambiguity error, got %v", err)
@@ -141,7 +141,7 @@ profile "default" { endpoints = [alpha, beta, gamma] }
 	})
 
 	t.Run("ambiguous host disambiguated by match.endpoint", func(t *testing.T) {
-		f := mk(t, `{"match":{"verdict":"allow","endpoint":"beta"},"action":{"host":"api.example.com","http":{"path":"/x"}}}`)
+		f := mk(t, `{"action":{"host":"api.example.com","http":{"path":"/x"}},"match":{"verdict":"allow","endpoint":"beta"}}`)
 		ep, err := f.ResolveEndpoint(policy)
 		if err != nil {
 			t.Fatal(err)
@@ -152,7 +152,7 @@ profile "default" { endpoints = [alpha, beta, gamma] }
 	})
 
 	t.Run("unknown host", func(t *testing.T) {
-		f := mk(t, `{"match":{"verdict":"allow"},"action":{"host":"nope.example.com","http":{"path":"/x"}}}`)
+		f := mk(t, `{"action":{"host":"nope.example.com","http":{"path":"/x"}},"match":{"verdict":"allow"}}`)
 		_, err := f.ResolveEndpoint(policy)
 		if err == nil || !strings.Contains(err.Error(), "no endpoint claims") {
 			t.Fatalf("want unknown-host error, got %v", err)

@@ -52,11 +52,6 @@ profile "default" { endpoints = [github] }
 
 ```json
 {
-  "match": {
-    "verdict":  "allow",
-    "rule":     "github-reads",
-    "endpoint": "github"
-  },
   "action": {
     "host": "api.github.com",
     "http": {
@@ -64,6 +59,11 @@ profile "default" { endpoints = [github] }
       "path":    "/user",
       "headers": { "Authorization": ["***"] }
     }
+  },
+  "match": {
+    "verdict":  "allow",
+    "rule":     "github-reads",
+    "endpoint": "github"
   }
 }
 ```
@@ -153,22 +153,16 @@ shows up in the log.
 
 ## Fixture format
 
-Each fixture has two top-level keys: `match` is the assertion (what
-the rule engine should produce); `action` is the recorded request
-(what the agent did). Exactly one facet block (`http` / `k8s` /
-`sql`) lives under `action`, carrying that facet's vocabulary —
-the same fields your CEL rule conditions read.
+Each fixture has two top-level keys: `action` is the recorded
+request (what the agent did); `match` is the assertion (what the
+rule engine should produce for that action). Exactly one facet
+block (`http` / `k8s` / `sql`) lives under `action`, carrying that
+facet's vocabulary — the same fields your CEL rule conditions read.
 
 ### HTTPS
 
 ```json
 {
-  "match": {
-    "verdict":  "deny",
-    "rule":     "github-writes",
-    "endpoint": "github",
-    "reason":   "writes go through PR review"
-  },
   "action": {
     "host":       "api.github.com",
     "credential": "github_pat",
@@ -178,6 +172,12 @@ the same fields your CEL rule conditions read.
       "path":    "/repos/me/sandbox/issues/1",
       "headers": { "Authorization": ["***"] }
     }
+  },
+  "match": {
+    "verdict":  "deny",
+    "rule":     "github-writes",
+    "endpoint": "github",
+    "reason":   "writes go through PR review"
   }
 }
 ```
@@ -186,11 +186,6 @@ the same fields your CEL rule conditions read.
 
 ```json
 {
-  "match": {
-    "verdict":  "deny",
-    "rule":     "no-secrets",
-    "endpoint": "k8s-dev"
-  },
   "action": {
     "host": "10.0.0.7",
     "k8s": {
@@ -199,6 +194,11 @@ the same fields your CEL rule conditions read.
       "namespace": "default",
       "name":      "ci-deploy-key"
     }
+  },
+  "match": {
+    "verdict":  "deny",
+    "rule":     "no-secrets",
+    "endpoint": "k8s-dev"
   }
 }
 ```
@@ -207,14 +207,14 @@ the same fields your CEL rule conditions read.
 
 ```json
 {
+  "action": {
+    "host": "pg-staging.internal:5432",
+    "sql":  { "statement": "SELECT id, name FROM workflows WHERE id = 1" }
+  },
   "match": {
     "verdict":  "allow",
     "rule":     "pg-reads",
     "endpoint": "pg-staging"
-  },
-  "action": {
-    "host": "pg-staging.internal:5432",
-    "sql":  { "statement": "SELECT id, name FROM workflows WHERE id = 1" }
   }
 }
 ```
@@ -232,14 +232,14 @@ agent through different rule sets — set `match.endpoint` explicitly:
 
 ```json
 {
+  "action": {
+    "host": "api.anthropic.com",
+    "http": { "method": "POST", "path": "/v1/messages" }
+  },
   "match": {
     "verdict":  "approve",
     "rule":     "anthropic-default",
     "endpoint": "anthropic-agent-A"
-  },
-  "action": {
-    "host": "api.anthropic.com",
-    "http": { "method": "POST", "path": "/v1/messages" }
   }
 }
 ```

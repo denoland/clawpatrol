@@ -328,8 +328,8 @@ profile "default" { endpoints = [github] }
 // to pick one side intentionally.
 func TestRunnerRejectsPassthrough(t *testing.T) {
 	gw := gatewayWithPolicy(t, fixtureHCL)
-	body := `{"match":{"verdict":"passthrough","endpoint":"github"},` +
-		`"action":{"host":"api.github.com","http":{"method":"GET","path":"/x"}}}`
+	body := `{"action":{"host":"api.github.com","http":{"method":"GET","path":"/x"}},` +
+		`"match":{"verdict":"passthrough","endpoint":"github"}}`
 	tmp := filepath.Join(t.TempDir(), "pt.json")
 	if err := os.WriteFile(tmp, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
