@@ -477,6 +477,9 @@ func (r *AgentRegistry) LoadSessions(db *sql.DB) {
 		if err := rows.Scan(&ip, &t, &id, &title, &model, &ti, &to, &cu, &cm, &reqs, &fa, &la); err != nil {
 			continue
 		}
+		if r.onboard != nil && !r.onboard.HasDevice(ip) {
+			continue // ephemeral peer purged on startup — skip orphaned sessions
+		}
 		a := r.agents[ip]
 		if a == nil {
 			now := time.Now().UTC()
