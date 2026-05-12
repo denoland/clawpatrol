@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"compress/flate"
 	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -29,7 +31,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/andybalholm/brotli"
 	"github.com/hashicorp/hcl/v2/hclwrite"
+	"github.com/klauspost/compress/zstd"
 
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/facet"
@@ -2217,11 +2221,10 @@ func (s *sampler) sha() string {
 }
 
 // sample returns the audit-log preview of the captured body. When
-// encoding names a compression we know how to decode (currently only
-// gzip — the encoding most agents request via Accept-Encoding and
-// most upstreams reply with), the buffered prefix is decompressed
-// first so a JSON response doesn't get rendered as "binary:<hex>"
-// just because it's still on the wire as gzip.
+// encoding names a compression we know how to decode (gzip, br,
+// deflate, zstd), the buffered prefix is decompressed first so a
+// JSON response doesn't get rendered as "binary:<hex>" just because
+// it's still on the wire compressed.
 func (s *sampler) sample(encoding string) string {
 	if s.buf.Len() == 0 {
 		return ""
@@ -2234,21 +2237,46 @@ func (s *sampler) sample(encoding string) string {
 	return "binary:" + hex.EncodeToString(raw[:min(64, len(raw))])
 }
 
-// maybeDecode returns the decompressed prefix of buf when encoding is
-// gzip, or buf unchanged otherwise. The sampler captures at most cap
-// bytes, so the gzip stream is almost always truncated mid-block —
-// io.ReadAll returns whatever the reader managed before hitting
-// io.ErrUnexpectedEOF, which is exactly what we want for a preview.
+// maybeDecode returns the decompressed prefix of buf when encoding
+// is a compression scheme we recognise, or buf unchanged otherwise.
+// The sampler captures at most cap bytes, so the stream is almost
+// always truncated mid-block — io.ReadAll returns whatever the
+// reader managed before hitting EOF, which is what we want for a
+// preview.
 func maybeDecode(buf []byte, encoding string) []byte {
-	if !strings.EqualFold(strings.TrimSpace(encoding), "gzip") {
+	var r io.Reader
+	switch strings.ToLower(strings.TrimSpace(encoding)) {
+	case "gzip", "x-gzip":
+		zr, err := gzip.NewReader(bytes.NewReader(buf))
+		if err != nil {
+			return buf
+		}
+		defer func() { _ = zr.Close() }()
+		r = zr
+	case "br":
+		r = brotli.NewReader(bytes.NewReader(buf))
+	case "deflate":
+		// RFC 7230 says "deflate" is zlib-wrapped deflate, but some
+		// servers send raw deflate. Try zlib first, fall back to raw.
+		if zr, err := zlib.NewReader(bytes.NewReader(buf)); err == nil {
+			defer func() { _ = zr.Close() }()
+			r = zr
+		} else {
+			fr := flate.NewReader(bytes.NewReader(buf))
+			defer func() { _ = fr.Close() }()
+			r = fr
+		}
+	case "zstd":
+		zd, err := zstd.NewReader(bytes.NewReader(buf))
+		if err != nil {
+			return buf
+		}
+		defer zd.Close()
+		r = zd
+	default:
 		return buf
 	}
-	zr, err := gzip.NewReader(bytes.NewReader(buf))
-	if err != nil {
-		return buf
-	}
-	defer func() { _ = zr.Close() }()
-	out, _ := io.ReadAll(zr)
+	out, _ := io.ReadAll(r)
 	if len(out) == 0 {
 		return buf
 	}
