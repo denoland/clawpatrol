@@ -25,6 +25,38 @@ type tsStatus struct {
 	User           map[string]tsUser  `json:"User"`
 }
 
+// reorderJoinArgsForFlagParse lets `clawpatrol join` accept flags either
+// before or after the gateway URL. Go's flag package stops parsing at the
+// first positional argument, but the CLI help historically showed the URL
+// first followed by optional flags.
+func reorderJoinArgsForFlagParse(args []string) []string {
+	var flags []string
+	var positional []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			positional = append(positional, args[i+1:]...)
+			break
+		}
+		if arg == "-" || !strings.HasPrefix(arg, "-") {
+			positional = append(positional, arg)
+			continue
+		}
+
+		name := strings.TrimLeft(arg, "-")
+		name, _, hasValue := strings.Cut(name, "=")
+		flags = append(flags, arg)
+		switch name {
+		case "hostname", "profile", "name", "ca-dir":
+			if !hasValue && i+1 < len(args) {
+				i++
+				flags = append(flags, args[i])
+			}
+		}
+	}
+	return append(flags, positional...)
+}
+
 type tsTailnet struct {
 	Name string `json:"Name"`
 }
@@ -55,10 +87,10 @@ func runJoin(args []string) {
 	wholeMachine := fs.Bool("whole-machine", false, "bring up wg-quick to route ALL host traffic through the gateway (default: persist conf only, use `clawpatrol run` for per-process routing)")
 	profile := fs.String("profile", "", "profile to assign at approval time (defaults to the gateway's default profile if the approver doesn't pick one)")
 	hostname := fs.String("hostname", "", "device name to register with the gateway (defaults to os.Hostname)")
-	_ = fs.Parse(args)
+	_ = fs.Parse(reorderJoinArgsForFlagParse(args))
 	rest := fs.Args()
 	if len(rest) != 1 || rest[0] == "" {
-		fail("usage: clawpatrol join <gateway-url> [--hostname NAME] [--profile NAME] [--whole-machine]")
+		fail("usage: clawpatrol join [--hostname NAME] [--profile NAME] [--whole-machine] <gateway-url>")
 	}
 	gatewayURL := rest[0]
 	// Fetch CA + write shell rc BEFORE the VPN goes up. Once
