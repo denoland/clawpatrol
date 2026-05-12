@@ -1869,7 +1869,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			ev.Reason = err.Error()
 			ev.Ms = time.Since(start).Milliseconds()
 			ev.ReqSha = reqS.sha()
-			ev.ReqBody = reqS.sample()
+			ev.ReqBody = reqS.sample(req.Header.Get("Content-Encoding"))
 			ev.In = reqS.n
 			g.emitEnd(ev)
 			return
@@ -1923,9 +1923,9 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		ev.In = reqS.n
 		ev.Out = respS.n
 		ev.ReqSha = reqS.sha()
-		ev.ReqBody = reqS.sample()
+		ev.ReqBody = reqS.sample(req.Header.Get("Content-Encoding"))
 		ev.RespSha = respS.sha()
-		ev.RespBody = respS.sample()
+		ev.RespBody = respS.sample(resp.Header.Get("Content-Encoding"))
 		ev.Ms = time.Since(start).Milliseconds()
 		g.emitEnd(ev)
 		if g.agents != nil && agentAddr != "" {

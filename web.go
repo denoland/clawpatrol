@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -2024,14 +2025,43 @@ func (s *sampler) sha() string {
 	return hex.EncodeToString(s.hash.Sum(nil))
 }
 
-func (s *sampler) sample() string {
+// sample returns the audit-log preview of the captured body. When
+// encoding names a compression we know how to decode (currently only
+// gzip — the encoding most agents request via Accept-Encoding and
+// most upstreams reply with), the buffered prefix is decompressed
+// first so a JSON response doesn't get rendered as "binary:<hex>"
+// just because it's still on the wire as gzip.
+func (s *sampler) sample(encoding string) string {
 	if s.buf.Len() == 0 {
 		return ""
 	}
-	if isPrintable(s.buf.Bytes()) {
-		return s.buf.String()
+	raw := s.buf.Bytes()
+	body := maybeDecode(raw, encoding)
+	if isPrintable(body) {
+		return string(body)
 	}
-	return "binary:" + hex.EncodeToString(s.buf.Bytes()[:min(64, s.buf.Len())])
+	return "binary:" + hex.EncodeToString(raw[:min(64, len(raw))])
+}
+
+// maybeDecode returns the decompressed prefix of buf when encoding is
+// gzip, or buf unchanged otherwise. The sampler captures at most cap
+// bytes, so the gzip stream is almost always truncated mid-block —
+// io.ReadAll returns whatever the reader managed before hitting
+// io.ErrUnexpectedEOF, which is exactly what we want for a preview.
+func maybeDecode(buf []byte, encoding string) []byte {
+	if !strings.EqualFold(strings.TrimSpace(encoding), "gzip") {
+		return buf
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(buf))
+	if err != nil {
+		return buf
+	}
+	defer func() { _ = zr.Close() }()
+	out, _ := io.ReadAll(zr)
+	if len(out) == 0 {
+		return buf
+	}
+	return out
 }
 
 func isPrintable(b []byte) bool {
