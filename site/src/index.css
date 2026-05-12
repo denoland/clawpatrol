@@ -3,9 +3,8 @@
 @import "highlight.js/styles/atom-one-dark.css";
 @import "tailwindcss";
 
-/* Self-hosted families below. PT Mono, Outfit, and Sora are imported
-   above from Google Fonts so they ship with the CSS bundle (works on
-   /docs/ too). */
+/* Self-hosted families below. Outfit and Sora are imported above from
+   Google Fonts so they ship with the CSS bundle (works on /docs/ too). */
 
 /* AmsiPro (Stawix) — display family. Static weights, latin-basic subset. */
 @font-face {
@@ -293,7 +292,8 @@
   font-style: italic;
   font-weight: 600;
   font-display: swap;
-  src: url("/fonts/IBMPlexMono-SemiBoldItalic--latin_basic.woff2") format("woff2");
+  src: url("/fonts/IBMPlexMono-SemiBoldItalic--latin_basic.woff2")
+    format("woff2");
   unicode-range:
     U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
     U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
@@ -695,10 +695,12 @@ a.neu-raised:active {
   }
 }
 
-/* Wave-divider spread — back layer drifts up, front layer drifts down
-   as the user scrolls past the divider into the next section. Uses the
-   standalone `translate` property so it composes with `transform`-based
-   wave-drift instead of overriding it. */
+/* Wave-divider spread — all three layers drift upward at progressively
+   larger amounts (back smallest, front largest) as the user scrolls past
+   the divider into the next section, fanning the visible wave lines
+   apart. These animations run on the outer wrapper divs while wave-drift
+   (above) runs on the inner SVGs, so the two `transform`s never collide
+   on the same element. */
 @keyframes wave-spread-back {
   from {
     transform: translateY(0);
@@ -782,8 +784,9 @@ a.neu-raised:active {
   }
 }
 
-/* Docs-specific styles live in /public/docs.css and are only loaded on
-   docs pages. */
+/* Docs-specific styles live in /src/docs.css and are imported at the
+   top of this file. They ship with the main CSS bundle but are scoped
+   to `.docs-content`, so they only paint inside the docs page wrapper. */
 
 /* `@theme static` emits every declared variable to :root regardless of
    whether a utility references it. Without `static`, unused shades (e.g.
@@ -888,6 +891,22 @@ a.neu-raised:active {
       font-size: 112.5%;
     }
     font-weight: 400;
+
+    /* Header geometry — tracks the sticky <Header /> dimensions.
+       Mobile: py-5 (40px total) + h-9 logo (36px) ≈ 76px, rounded to 5rem.
+       sm+:    py-5 (40px total) + h-12 logo (48px) ≈ 88px, rounded to 6rem.
+       The slight over-rounding gives sticky targets and anchored headings
+       a small buffer below the header. Used by html.scroll-padding-top
+       and the docs sidebar's sticky-top offset. */
+    --header-height: 5rem;
+
+    @media (min-width: 40rem) {
+      --header-height: 6rem;
+    }
+  }
+
+  html {
+    scroll-padding-top: calc(var(--header-height) + 1rem);
   }
 
   body {
