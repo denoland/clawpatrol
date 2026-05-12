@@ -44,13 +44,18 @@ import (
 
 // SSHPortForwardTunnel configures the tunnel runtime.
 type SSHPortForwardTunnel struct {
-	Bastion string `hcl:"bastion,optional"` // host:port; required when Via is unset
-	User    string `hcl:"user"`
+	// Bastion is the SSH server host:port; required when via is unset.
+	Bastion string `hcl:"bastion,optional"`
+	// User is the SSH username for the bastion login.
+	User string `hcl:"user"`
 
-	// Framework-level common attrs.
-	Share      string `hcl:"share,optional"`
-	Keepalive  string `hcl:"keepalive,optional"`
-	Via        string `hcl:"via,optional"`
+	// Share controls whether runtime instances are singleton, per-endpoint, or per-request.
+	Share string `hcl:"share,optional"`
+	// Keepalive keeps an idle tunnel runtime warm for the given duration.
+	Keepalive string `hcl:"keepalive,optional"`
+	// Via chains the SSH connection through another tunnel.
+	Via string `hcl:"via,optional"`
+	// Credential references an ssh credential block used for bastion authentication.
 	Credential string `hcl:"credential"`
 }
 

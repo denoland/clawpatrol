@@ -1,89 +1,82 @@
-# LLM Token Usage & Cost Tracking
+# LLM Token Usage & Session Tracking
 
-## Overview
+Claw Patrol tracks LLM activity while proxying agent traffic. The current
+implementation focuses on live and persisted agent sessions: model names,
+request counts, input/output token totals, and context-window usage.
 
-Claw Patrol extracts token usage from LLM API responses at proxy
-time, estimates cost via OpenRouter pricing data, and attaches
-the result to each request log. This enables cost tracking,
-cache hit analysis, and model usage breakdowns without post-hoc
-log parsing.
+## What is tracked
 
-## How It Works
+Each detected LLM session records:
 
-1. Response bodies are already captured for logging
-2. `extractTokenUsage()` checks if the upstream host is a
-   known LLM provider and parses the usage JSON
-3. Cost is computed using cached pricing from OpenRouter
-4. Token counts + cost are written to the configured
-   analytics store alongside the request
+| Field | Meaning |
+| --- | --- |
+| `type` | Session family, currently `claude` or `codex` depending on the detected client/API shape. |
+| `id` | Stable session identifier derived from provider metadata, request IDs, or request content. |
+| `title` | Latest useful user prompt/tool/completion summary shown in the dashboard. |
+| `model` | Model name reported by the request or response. |
+| `tokens_in` | Accumulated input/prompt tokens. |
+| `tokens_out` | Accumulated output/completion/reasoning tokens. |
+| `ctx_used` | Tokens used by the most recent accounting update. |
+| `ctx_max` | Model context-window size when known. |
+| `reqs` | Session request count. |
+| `first_at`, `last_at` | Session activity timestamps. |
 
-Currently supported providers:
-- **OpenAI** (`*.openai.com`) — `usage.prompt_tokens`,
-  `completion_tokens`, `prompt_tokens_details.cached_tokens`
-- **Anthropic** (`*.anthropic.com`) — `usage.input_tokens`,
-  `output_tokens`, `cache_read_input_tokens`,
-  `cache_creation_input_tokens`
+The gateway stores these rows in the `sessions` table and reloads them on
+restart so the dashboard does not lose recent agent context.
 
-Extraction is zero-cost for non-LLM requests (hostname check
-short-circuits). Parse failures silently produce zeros.
+## Supported traffic shapes
 
-## Pricing via OpenRouter
+The gateway extracts usage from provider response/request shapes it already
+sees while proxying traffic:
 
-Pricing data is fetched from OpenRouter's public API:
-```
-GET https://openrouter.ai/api/v1/models
-```
+- Anthropic Messages API (`/v1/messages`) JSON and SSE responses.
+- OpenAI-compatible chat completions and Responses API JSON/SSE responses.
+- Codex/ChatGPT Responses API frames, including streamed WebSocket/SSE events
+  that report usage or tool activity.
 
-No authentication required. Returns model pricing as USD per
-token in fields: `pricing.prompt`, `pricing.completion`,
-`pricing.input_cache_read`, `pricing.input_cache_write`.
+For Anthropic, cache creation/read input tokens are counted as input tokens.
+For Codex/OpenAI Responses API, cached input and reasoning output tokens are
+included when the response shape reports them.
 
-The pricing cache refreshes every hour. If the fetch fails,
-the stale cache is used (or empty = $0 cost). Model lookup
-tries `{provider}/{model}` first (e.g. `openai/gpt-4o`),
-then the bare model name.
+Non-LLM requests simply do not update an LLM session.
 
-## Logged Fields
+## Context-window lookup
 
-The following fields are attached to each request log and
-persisted to the SQLite analytics store.
+Claw Patrol refreshes model context-window metadata from LiteLLM's public model
+metadata:
 
-| Field | Description |
-| ----- | ----------- |
-| `LlmProvider` | `openai`, `anthropic`, or `""` |
-| `LlmModel` | Model ID from the response |
-| `LlmInputTokens` | Prompt / input tokens |
-| `LlmOutputTokens` | Completion / output tokens |
-| `LlmCacheReadTokens` | Tokens read from cache |
-| `LlmCacheCreationTokens` | Tokens written to cache |
-| `LlmCostUsd` | Estimated cost in USD |
-
-See the `RequestRow` type in `src/analytics.ts` for the
-canonical definition.
-
-## Future: Plugin Response Hooks
-
-The current implementation uses hostname-based detection in
-`src/token_usage.ts`. A natural evolution is to add a
-response hook to the plugin system:
-
-```ts
-// IntegrationEndpoint (future)
-extractUsage?: (resp: Response, body: string) =>
-  TokenUsage | null;
+```text
+https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json
 ```
 
-This would move OpenAI/Anthropic extraction into their
-plugins and support custom/self-hosted LLMs via third-party
-plugins. The `extractTokenUsage()` function serves as a
-reference implementation.
+The refresh runs at gateway startup and periodically afterward. Values from
+`max_input_tokens` populate `ctx_max` when the active model can be matched. If
+the lookup is missing or the refresh fails, token totals still work; the
+context maximum is just unknown.
 
-## Key Files
+## Persistence and retention
+
+Session updates are debounced before being written to SQLite. Streaming Codex
+traffic can produce many frames per second, so the in-memory state is treated as
+authoritative and database writes are coalesced to avoid write amplification.
+
+The gateway reloads session rows on boot and sweeps old rows according to
+`session_keep` in `gateway.hcl`. The default keep window is 30 days; set
+`session_keep = "0"` or `"off"` to disable sweeping.
+
+## What this is not
+
+The current public implementation does not compute per-request USD cost, and it
+does not attach cost fields to every request log. Cost reporting can be layered
+on top of the existing session/token accounting later, but today the source of
+truth is session token usage in the gateway/dashboard.
+
+## Key files
 
 | File | Purpose |
-| ---- | ------- |
-| `src/token_usage.ts` | Provider parsing + OpenRouter pricing |
-| `src/proxy.ts` | WireGuard proxy — calls extractTokenUsage |
-| `src/gateway.ts` | Gateway proxy — calls extractTokenUsage |
-| `src/analytics.ts` | `RequestRow` type and SQLite-backed query API |
-| `src/token_usage_test.ts` | Unit tests |
+| --- | --- |
+| `main.go` | Parses Anthropic/OpenAI/Codex request and response usage shapes. |
+| `agents.go` | Maintains in-memory agent/session state and persists session rows. |
+| `integrations.go` | Refreshes LiteLLM model context-window metadata. |
+| `web.go` | Serves dashboard state, analytics, events, and session-facing API data. |
+| `migrations/sqlite/` | SQLite schema for persisted gateway state. |

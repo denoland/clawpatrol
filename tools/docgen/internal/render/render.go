@@ -47,6 +47,7 @@ func (r *renderer) run() (string, error) {
 	for _, kind := range []config.Kind{
 		config.KindApprover,
 		config.KindCredential,
+		config.KindTunnel,
 		config.KindEndpoint,
 		config.KindRule,
 	} {
@@ -60,7 +61,7 @@ func (r *renderer) writeHeader() {
 
 A clawpatrol gateway config mixes **operational** fields (top-level
 plumbing) with **policy** blocks. Operational fields are top-level
-attributes; policy blocks (` + "`approver`, `credential`, `endpoint`, `rule`" + `)
+attributes; policy blocks (` + "`approver`, `credential`, `tunnel`, `endpoint`, `rule`" + `)
 dispatch to a plugin chosen by the block's first label.
 
 ## How to read this page
@@ -75,7 +76,7 @@ Each block section lists the attributes the loader accepts, with:
 - **Required** — ` + "`yes`" + ` if the loader rejects the block when the
   attribute is missing.
 
-Plugin-dispatched kinds (` + "`approver`, `credential`, `endpoint`, `rule`" + `)
+Plugin-dispatched kinds (` + "`approver`, `credential`, `tunnel`, `endpoint`, `rule`" + `)
 list one subsection per registered type.
 
 `)

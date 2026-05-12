@@ -37,6 +37,7 @@ func loadGoDocs() (*goDocs, error) {
 		filepath.Join(root, "config"),
 		filepath.Join(root, "config", "plugins", "approvers"),
 		filepath.Join(root, "config", "plugins", "credentials"),
+		filepath.Join(root, "config", "plugins", "tunnels"),
 		filepath.Join(root, "config", "plugins", "endpoints"),
 		filepath.Join(root, "config", "plugins", "rules"),
 	}

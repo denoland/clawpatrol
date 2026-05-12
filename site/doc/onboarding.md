@@ -1,160 +1,152 @@
 # Onboarding
 
-`clawpatrol onboard` is an interactive setup wizard that prepares your machine
-to run AI agents through Claw Patrol. It connects to an Claw Patrol gateway, discovers
-your existing API keys, imports them into the gateway, and configures your
-system so that `clawpatrol run` can transparently inject those secrets into
-agent traffic.
+Onboarding connects a machine to a Claw Patrol gateway, installs the gateway CA
+locally, and prepares either per-process or whole-machine traffic routing.
 
-## Onboard walkthrough
+For most client machines the flow is:
 
 ```bash
 curl -fsSL https://clawpatrol.dev/install.sh | sh
-clawpatrol onboard
+clawpatrol join https://gateway.example.com
 ```
 
-The wizard walks you through a series of prompts. On a typical run it will:
+An operator must approve the device from the gateway dashboard before the join
+finishes.
 
-1. **Select a gateway** — local or a remote (self-hosted)
-   instance.
-2. **Start the gateway** — on macOS this is a launchd background service; on
-   Linux you choose between a systemd unit or an ephemeral process.
-3. **Register this machine** as a device on the gateway.
-4. **Install the CA certificate** so the gateway can intercept HTTPS traffic.
-5. **Discover secrets** — scans environment variables and config files for
-   known API keys (Anthropic, OpenAI, Gemini, OpenRouter, GitHub, Slack,
-   Grafana, Telegram, Notion, and others). You pick which ones to import.
-6. **Replace local credentials with placeholders** — the originals are
-   backed up, and the files that held them now contain
-   `CLAWPATROL_PLACEHOLDER_*` tokens. This way the agent never sees your real
-   keys; they are injected by the gateway at request time.
+## What `join` does
 
-When the wizard finishes you'll have:
+`clawpatrol join <gateway-url>` runs a device-flow enrollment against the
+gateway:
 
-| Path | Contents |
-| --- | --- |
-| `~/.clawpatrol/device.json` | Device registration (server URL + device token) |
-| `~/.clawpatrol/ca.pem` | Gateway CA certificate |
-| `~/.clawpatrol/ca-bundle.pem` (macOS) | System roots + Claw Patrol CA, used by `SSL_CERT_FILE` |
-| `~/.clawpatrol/env.sh` (macOS) | Shell exports for the CA bundle |
-| `~/.clawpatrol/data/gateway.json` | Persisted bind address chosen during onboarding |
+1. Downloads the gateway CA into the local Claw Patrol config directory.
+2. Starts an onboard request with the gateway, including the local hostname and
+   optional profile suggestion.
+3. Prints or opens the approval URL for an operator.
+4. Polls until the operator approves the device.
+5. Writes local tunnel/client configuration.
+6. Installs the CA into system trust unless `--no-trust` is set.
+7. For Tailscale-backed gateways, completes the Tailscale-specific `login`
+   path and can set the gateway as an exit node.
 
-The dashboard is available at `http://localhost:8080`.
-
-### macOS note
-
-On first run macOS will prompt you to approve the Claw Patrol Network Extension
-in **System Settings → Privacy & Security**. The wizard waits for this
-approval before continuing.
-
-## Running agents
-
-Once onboarded, wrap any command with `clawpatrol run`:
+Common flags:
 
 ```bash
-clawpatrol run --name openclaw -- openclaw gateway
-clawpatrol run -- python agent.py
+clawpatrol join https://gateway.example.com \
+  --hostname ci-runner-42 \
+  --profile default
 ```
 
-The gateway intercepts the agent's HTTPS requests, matches them against your
-configured integrations (by hostname), injects the real API key, forwards
-the request upstream, and logs it. When the command exits, the session ends.
+- `--hostname NAME` — device name shown in the dashboard.
+- `--profile NAME` — suggested profile for this device.
+- `--whole-machine` — route all host traffic through the gateway with the
+  generated WireGuard config.
+- `--no-trust` — fetch the CA but do not install it into system trust.
+- `--ca-dir DIR` — choose where local CA/client state is written.
 
-Options:
+## Per-process routing
 
-- `--name NAME` — label for this session (defaults to the command name).
-- `--profile PROFILE` — select a specific integration profile instead of the
-  default one.
-- `--no-expose` — (Linux only) don't tunnel the wrapped command's TCP
-  listeners back to the host network. By default Claw Patrol auto-tunnels them.
-
-If you set up a local gateway but it is not running when you call
-`clawpatrol run`, Claw Patrol automatically spawns an ephemeral gateway for the
-lifetime of the command. No manual restart needed.
-
-## OpenClaw integration
-
-If OpenClaw is installed on your machine, `clawpatrol onboard` detects it and
-offers to wrap its daemon so that all OpenClaw agent traffic goes through
-the Claw Patrol gateway automatically.
-
-### Automatic setup
-
-During onboarding, the wizard looks for an existing OpenClaw daemon:
-
-- **macOS** — checks for a launchd agent at
-  `~/Library/LaunchAgents/ai.openclaw.gateway.plist`. If found, it rewrites
-  the plist's `ProgramArguments` to prepend `clawpatrol --name openclaw --` and
-  updates `NODE_EXTRA_CA_CERTS` to point to the Claw Patrol CA bundle. The
-  original plist is backed up with a `.bak` extension. The daemon is then
-  reloaded automatically.
-- **Linux** — checks for `openclaw*.service` user systemd units. If found,
-  it writes a systemd drop-in override at
-  `~/.config/systemd/user/<unit>.d/clawpatrol.conf` that prepends
-  `clawpatrol run --name openclaw --` to the unit's `ExecStart`. The unit is
-  reloaded and restarted automatically.
-
-In both cases the wizard confirms before making changes.
-
-### Manual setup
-
-If you installed OpenClaw after onboarding, or prefer to set it up
-yourself, run the OpenClaw daemon through `clawpatrol run` directly:
+The default join mode writes local config but does not route the whole host.
+Wrap an agent command with `clawpatrol run` when you want that command's
+traffic to go through the gateway:
 
 ```bash
-clawpatrol run --name openclaw -- openclaw gateway
+clawpatrol run claude
+clawpatrol run python agent.py
 ```
 
-For a persistent setup, modify the OpenClaw service definition to prepend
-`clawpatrol run --name openclaw --` to the existing command. For example, in a
-systemd unit:
+On Linux, `run` creates a network namespace, brings up WireGuard inside it, and
+executes the child command there. The rest of the machine keeps its normal
+network path. This is the recommended mode for agent sessions because it scopes
+routing to the process tree you explicitly launched.
 
-```ini
-ExecStart=/path/to/clawpatrol run --name openclaw -- /path/to/openclaw gateway
-```
+## Whole-machine routing
 
-## Linux gateway options
-
-On Linux, `clawpatrol onboard` asks how you want to run the gateway. The
-choices are:
-
-**Systemd user unit** — runs as your user, managed by `systemctl --user`.
-Optionally enable *linger* so the gateway starts at boot and survives
-logout. Best for single-user machines or personal dev setups.
-
-**Systemd system unit** — runs as a dedicated `clawpatrol` system user, managed
-by `systemctl` (requires sudo). Data lives in `/var/lib/clawpatrol/`. Best for
-shared machines or server deployments.
-
-**Ephemeral** — no persistent service. The gateway is spawned on demand by
-`clawpatrol onboard` or `clawpatrol run` and dies when the parent process exits.
-Good for quick experiments, but concurrent `clawpatrol run` invocations share a
-single gateway that stops when the first one exits. Use a systemd unit if
-you need concurrent sessions.
-
-You also choose a bind address (loopback, LAN IP, or custom). Loopback is
-the default and doesn't require authentication beyond the local dev token.
-A non-loopback bind requires browser-based OAuth sign-in.
-
-## Remote gateways
-
-Instead of running a local gateway you can point at a self-hosted
-Claw Patrol gateway URL. Remote onboarding skips local gateway setup
-entirely. You authenticate via an OAuth device-code flow (a
-browser window opens for sign-in), then the wizard registers your
-device and discovers secrets as usual.
-
-## Managing secrets
-
-After onboarding, open the dashboard at `http://localhost:8080` to add,
-remove, or edit integrations. You can also re-run `clawpatrol onboard` to
-re-discover secrets that were added since the initial setup.
-
-## Uninstalling
+Use whole-machine mode when the entire host should route through Claw Patrol:
 
 ```bash
-clawpatrol offboard
+clawpatrol join https://gateway.example.com --whole-machine
 ```
 
-This stops the gateway, removes the Network Extension (macOS) or systemd
-service (Linux), and optionally deletes all data in `~/.clawpatrol/`.
+This brings up the generated WireGuard configuration with host-level routing.
+It is useful for dedicated workers, shared jump boxes, or environments where
+wrapping each process is impractical. Be careful when enabling it over SSH: the
+CLI includes safeguards, but changing the default route can interrupt remote
+sessions if the host network is unusual.
+
+## Tailscale-backed gateways
+
+Some gateways use Tailscale as the control plane. `clawpatrol join` detects
+that mode from the gateway response and delegates to the Tailscale setup path.
+You can also run that path directly when the gateway is already reachable on
+the tailnet:
+
+```bash
+clawpatrol login --name clawpatrol
+```
+
+Useful flags:
+
+- `--name NAME` — Tailscale exit-node hostname to locate.
+- `--no-exit-node` — skip automatically selecting the gateway as an exit node.
+- `--no-trust` — skip CA trust installation.
+
+## Gateway bootstrap for operators
+
+Gateway operators start by creating a gateway data directory:
+
+```bash
+clawpatrol gateway init --data-dir /var/lib/clawpatrol
+```
+
+Then edit the generated `gateway.hcl` and start the daemon:
+
+```bash
+clawpatrol gateway -config /var/lib/clawpatrol/gateway.hcl
+```
+
+The dashboard/API listener is controlled by the `info_listen` field in
+`gateway.hcl`. Public URL, control plane, WireGuard, Tailscale, policy,
+credential, endpoint, tunnel, and rule settings are documented in the
+[HCL config reference](/docs/config-reference/).
+
+## Approving devices
+
+When a user runs `clawpatrol join`, the gateway creates a pending onboard
+request. Operators approve it from the dashboard. The approver can assign or
+change the device profile before approval. Profiles select the endpoints a
+device may reach; rules attached to those endpoints still enforce policy at
+request time.
+
+## Agent environment
+
+After joining, shells can evaluate the generated environment helper:
+
+```bash
+eval "$(clawpatrol env)"
+```
+
+The helper points common clients at the Claw Patrol CA and placeholder-based
+credential values. Set `CLAWPATROL_NO_ENV=1` to disable this env pushdown for a
+shell.
+
+Secrets themselves live on the gateway side in credential blocks, OAuth-backed
+credential storage, or `CLAWPATROL_SECRET_<NAME>` environment fallbacks. The
+agent sees placeholders; the gateway injects real credentials when a matching
+endpoint handles the request.
+
+## Checking and removing setup
+
+Use `status` to diagnose local setup:
+
+```bash
+clawpatrol status
+```
+
+Remove local client setup with:
+
+```bash
+clawpatrol uninstall
+```
+
+Pass `--keep-ca` if you need to preserve local Claw Patrol state and trust
+entries while removing other setup pieces.

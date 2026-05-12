@@ -2,7 +2,7 @@
 
 A clawpatrol gateway config mixes **operational** fields (top-level
 plumbing) with **policy** blocks. Operational fields are top-level
-attributes; policy blocks (`approver`, `credential`, `endpoint`, `rule`)
+attributes; policy blocks (`approver`, `credential`, `tunnel`, `endpoint`, `rule`)
 dispatch to a plugin chosen by the block's first label.
 
 ## How to read this page
@@ -17,7 +17,7 @@ Each block section lists the attributes the loader accepts, with:
 - **Required** — `yes` if the loader rejects the block when the
   attribute is missing.
 
-Plugin-dispatched kinds (`approver`, `credential`, `endpoint`, `rule`)
+Plugin-dispatched kinds (`approver`, `credential`, `tunnel`, `endpoint`, `rule`)
 list one subsection per registered type.
 
 ## Top-level fields
@@ -345,6 +345,100 @@ _No configurable attributes._
 
 ```hcl
 credential "telegram_bot_token" "example" {}
+```
+
+## `tunnel` blocks
+
+Block syntax: `tunnel "<type>" "<name>" { ... }`
+
+Registered types: [`kubernetes_port_forward`](#tunnel-kubernetesportforward), [`local_command`](#tunnel-localcommand), [`ssh_port_forward`](#tunnel-sshportforward), [`tailscale`](#tunnel-tailscale).
+
+### `tunnel "kubernetes_port_forward" "<name>"`
+
+Configures the tunnel runtime.
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `context` | `string` | no | Selects a kubeconfig context; empty uses the current context. |
+| `namespace` | `string` | no | Selects the Kubernetes namespace for kubectl commands. |
+| `pod` | `string` | no | Names an existing pod to port-forward to. |
+| `service` | `string` | no | Names a service to port-forward to. |
+| `selector` | `map[string]string` | no | Matches a ready pod to port-forward to. |
+| `template` | `string` | no | A pod manifest to apply and port-forward to. |
+| `port` | `int` | yes | The pod-side port the forwarder targets. For service mode it's the *service* port; kubectl resolves the matching targetPort. |
+| `cleanup` | `string` | no | Controls whether a template-created pod is deleted on tunnel teardown. "delete" (default) is right for the common create-on-demand case; "keep" disables deletion. |
+| `share` | `string` | no | Controls whether runtime instances are singleton, per-endpoint, or per-request. |
+| `keepalive` | `string` | no | Keeps an idle tunnel runtime warm for the given duration. |
+| `via` | `string` | no | Chains kubectl access through another tunnel. |
+| `credential` | `string` | no | References an optional credential block for Kubernetes access. |
+
+```hcl
+tunnel "kubernetes_port_forward" "example" {
+  port = 30
+}
+```
+
+### `tunnel "local_command" "<name>"`
+
+Configures the tunnel runtime.
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `command` | `[]string` | yes | The argv vector to spawn for the tunnel process. |
+| `listen` | `string` | yes | The local address the spawned command exposes. |
+| `ready_probe` | `string` | no | An optional TCP address to poll before the tunnel is ready. |
+| `ready_timeout` | `string` | no | Overrides the default readiness wait duration. |
+| `env` | `map[string]string` | no | Adds environment variables to the spawned command. |
+| `share` | `string` | no | Controls whether runtime instances are singleton, per-endpoint, or per-request. |
+| `keepalive` | `string` | no | Keeps an idle tunnel runtime warm for the given duration. |
+| `via` | `string` | no | Chains this tunnel through another tunnel. |
+| `credential` | `string` | no | References an optional credential block for the tunnel runtime. |
+
+```hcl
+tunnel "local_command" "example" {
+  command = ["example"]
+  listen = "example"
+}
+```
+
+### `tunnel "ssh_port_forward" "<name>"`
+
+Configures the tunnel runtime.
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `bastion` | `string` | no | The SSH server host:port; required when via is unset. |
+| `user` | `string` | yes | The SSH username for the bastion login. |
+| `share` | `string` | no | Controls whether runtime instances are singleton, per-endpoint, or per-request. |
+| `keepalive` | `string` | no | Keeps an idle tunnel runtime warm for the given duration. |
+| `via` | `string` | no | Chains the SSH connection through another tunnel. |
+| `credential` | `string` | yes | References an ssh credential block used for bastion authentication. |
+
+```hcl
+tunnel "ssh_port_forward" "example" {
+  user = "example"
+  credential = example-credential
+}
+```
+
+### `tunnel "tailscale" "<name>"`
+
+Configures the tunnel runtime.
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `authkey` | `string` | no | The Tailscale auth key; env fallback is CLAWPATROL_TUNNEL_<NAME>_AUTHKEY. |
+| `control_url` | `string` | no | Overrides the Tailscale control-plane URL. |
+| `hostname` | `string` | no | The tsnet node name; defaults to clawpatrol-tunnel-<name>. |
+| `state_dir` | `string` | no | Stores tsnet node state; defaults under the gateway CA directory. |
+| `tags` | `[]string` | no | Tailscale tags requested for the tsnet node. |
+| `share` | `string` | no | Controls whether runtime instances are singleton, per-endpoint, or per-request. |
+| `keepalive` | `string` | no | Keeps an idle tunnel runtime warm for the given duration. |
+| `via` | `string` | no | Chains this tunnel through another tunnel. |
+| `credential` | `string` | no | References an optional credential block for the tunnel runtime. |
+
+```hcl
+tunnel "tailscale" "example" {}
 ```
 
 ## `endpoint` blocks

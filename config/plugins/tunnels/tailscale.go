@@ -51,16 +51,24 @@ import (
 
 // TailscaleTunnel configures the tunnel runtime.
 type TailscaleTunnel struct {
-	AuthKey    string   `hcl:"authkey,optional"`
-	ControlURL string   `hcl:"control_url,optional"`
-	Hostname   string   `hcl:"hostname,optional"`
-	StateDir   string   `hcl:"state_dir,optional"`
-	Tags       []string `hcl:"tags,optional"`
+	// AuthKey is the Tailscale auth key; env fallback is CLAWPATROL_TUNNEL_<NAME>_AUTHKEY.
+	AuthKey string `hcl:"authkey,optional"`
+	// ControlURL overrides the Tailscale control-plane URL.
+	ControlURL string `hcl:"control_url,optional"`
+	// Hostname is the tsnet node name; defaults to clawpatrol-tunnel-<name>.
+	Hostname string `hcl:"hostname,optional"`
+	// StateDir stores tsnet node state; defaults under the gateway CA directory.
+	StateDir string `hcl:"state_dir,optional"`
+	// Tags are Tailscale tags requested for the tsnet node.
+	Tags []string `hcl:"tags,optional"`
 
-	// Framework-level common attrs.
-	Share      string `hcl:"share,optional"`
-	Keepalive  string `hcl:"keepalive,optional"`
-	Via        string `hcl:"via,optional"`
+	// Share controls whether runtime instances are singleton, per-endpoint, or per-request.
+	Share string `hcl:"share,optional"`
+	// Keepalive keeps an idle tunnel runtime warm for the given duration.
+	Keepalive string `hcl:"keepalive,optional"`
+	// Via chains this tunnel through another tunnel.
+	Via string `hcl:"via,optional"`
+	// Credential references an optional credential block for the tunnel runtime.
 	Credential string `hcl:"credential,optional"`
 }
 
