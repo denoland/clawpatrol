@@ -1763,6 +1763,15 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				}
 				ev.Status = r.StatusCode
 				ev.Action = "synth"
+				// Synthetic responses are clawpatrol-generated, so the
+				// stock plugins don't set auth-bearing headers — but
+				// the no-injected-credential-reaches-the-agent guarantee
+				// shouldn't rely on plugin authors remembering that.
+				// Strip the same list as the upstream-forwarded path
+				// so a future plugin that mirrors response headers from
+				// an upstream lookup can't accidentally leak them.
+				stripAuthResponseHeaders(r.Header)
+				stripAuthResponseHeaders(r.Trailer)
 				if err := r.Write(tc); err != nil {
 					log.Printf("synth write %s %s: %v", host, req.URL.Path, err)
 				}
@@ -1899,6 +1908,13 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		// still wants to show what the upstream actually sent.
 		ev.RespHeaders = flatHeaders(resp.Header)
 		stripAuthResponseHeaders(resp.Header)
+		// Trailers fall outside resp.Header — Go's http.Transport
+		// surfaces them on resp.Trailer and http.Response.Write
+		// emits them after the chunked body. RFC 9110 §6.5.1 bans
+		// Set-Cookie / auth fields in trailers, but a hostile or
+		// buggy upstream can still try it, so we strip the same
+		// list off the trailer block before resp.Write streams it.
+		stripAuthResponseHeaders(resp.Trailer)
 		writeErr := resp.Write(tc)
 		_ = rtDur
 		_ = resp.Body.Close()

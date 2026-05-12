@@ -206,21 +206,7 @@ func runRunChild() {
 	if ea := os.Getenv("CLAWPATROL_EPHEMERAL_ADDR"); ea != "" {
 		addrSource = ea
 	}
-	// Address may carry both v4 and v6 separated by ", " — gateway-emitted
-	// wg-quick conf looks like `Address = 10.55.0.5/32, fd77::5/128`. The
-	// `ip addr add` command rejects the comma-joined form ("any valid
-	// prefix is expected rather than ..."), so split + assign each addr.
-	var addrs []string
-	for _, part := range strings.Split(addrSource, ",") {
-		s := strings.TrimSpace(part)
-		if s == "" {
-			continue
-		}
-		if !strings.Contains(s, "/") {
-			s += "/32"
-		}
-		addrs = append(addrs, s)
-	}
+	addrs := splitWGAddresses(addrSource)
 	if len(addrs) == 0 {
 		fail("wg conf: empty Address")
 	}
@@ -280,6 +266,33 @@ func clearAmbientCaps() error {
 		return fmt.Errorf("prctl PR_CAP_AMBIENT_CLEAR_ALL: %w", errno)
 	}
 	return nil
+}
+
+// splitWGAddresses parses a wg-quick `Address =` value into one CIDR per
+// element. Dual-stack peers receive a comma-joined string like
+// `10.55.0.5/32, fd77::5/128`; `ip addr add` rejects that whole string as
+// a single prefix, so we split + emit one `ip addr add` per element.
+//
+// Whitespace around elements is trimmed and empty elements are dropped.
+// Elements without an explicit `/prefix` get a host route (`/32` for v4,
+// `/128` for v6).
+func splitWGAddresses(addrSource string) []string {
+	var addrs []string
+	for _, part := range strings.Split(addrSource, ",") {
+		s := strings.TrimSpace(part)
+		if s == "" {
+			continue
+		}
+		if !strings.Contains(s, "/") {
+			if strings.Contains(s, ":") {
+				s += "/128"
+			} else {
+				s += "/32"
+			}
+		}
+		addrs = append(addrs, s)
+	}
+	return addrs
 }
 
 // --- WG conf parsing -------------------------------------------------

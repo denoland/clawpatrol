@@ -8,6 +8,38 @@ import (
 	k8sfacet "github.com/denoland/clawpatrol/config/plugins/facets/k8s"
 )
 
+// TestK8sMatcherVerbCaseInsensitive locks in that a rule written as
+// `k8s.verb == "GET"` matches a list/get request even though the
+// activation normalizes the got value to lowercase. CompileCondition
+// lowercases the want-side string literals at rule-load time.
+func TestK8sMatcherVerbCaseInsensitive(t *testing.T) {
+	cases := []struct {
+		name      string
+		condition string
+		verb      string
+		want      bool
+	}{
+		{"uppercase want, get got", "k8s.verb == 'GET'", "get", true},
+		{"mixed-case want, get got", "k8s.verb == 'Get'", "get", true},
+		{"uppercase list, watch got",
+			"k8s.verb in ['WATCH', 'LIST']", "watch", true},
+		{"uppercase list, create got",
+			"k8s.verb in ['WATCH', 'LIST']", "create", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, err := facet.NewMatcher("k8s", tc.condition)
+			if err != nil {
+				t.Fatalf("NewMatcher: %v", err)
+			}
+			req := &match.Request{Family: "k8s", Meta: &k8sfacet.Meta{Verb: tc.verb}}
+			if got := m.Match(req); got != tc.want {
+				t.Errorf("Match=%v want %v (condition=%q)", got, tc.want, tc.condition)
+			}
+		})
+	}
+}
+
 func TestK8sMatcherNegationAndGlobs(t *testing.T) {
 	m, err := facet.NewMatcher("k8s",
 		"k8s.verb in ['create', 'update', 'patch', 'delete'] && !k8s.name.startsWith('debug-') "+

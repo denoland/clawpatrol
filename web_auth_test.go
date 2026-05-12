@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/runtime"
 )
 
 const authTestDashboardCredential = "test-dashboard-credential"
@@ -259,5 +261,50 @@ func TestOnboardApproveWithTailnetPrincipalInDefaultTailscaleModeDoesNotRequireD
 	}
 	if !strings.Contains(rr.Body.String(), "unknown or expired code") {
 		t.Fatalf("body = %q, want onboard handler error", rr.Body.String())
+	}
+}
+
+func TestHITLDecideRejectsProfileFallbackWithoutAuthenticatedPrincipal(t *testing.T) {
+	w := newOnboardAuthTestWebMux()
+	w.g.hitl = newHITLRegistry(nil)
+	id, ch := w.g.hitl.Add(runtime.HITLPending{Host: "api.example.test", Method: http.MethodPost, Path: "/v1/write"})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/hitl/decide?profile=default", bytes.NewBufferString(`{"id":"`+id+`","allow":true}`))
+	rr := httptest.NewRecorder()
+	w.apiHITLDecide(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body = %q", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+	select {
+	case d := <-ch:
+		t.Fatalf("decision was recorded using profile fallback: %+v", d)
+	default:
+	}
+}
+
+func TestHITLDecideRecordsAuthenticatedPrincipalNotTargetProfile(t *testing.T) {
+	w := newOnboardAuthTestWebMux()
+	w.g.hitl = newHITLRegistry(nil)
+	id, ch := w.g.hitl.Add(runtime.HITLPending{Host: "api.example.test", Method: http.MethodPost, Path: "/v1/write"})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/hitl/decide?profile=default", bytes.NewBufferString(`{"id":"`+id+`","allow":true}`))
+	req = req.WithContext(contextWithPrincipal(req.Context(), principal{Kind: principalDashboardSecret, Owner: "operator@example.com"}))
+	rr := httptest.NewRecorder()
+	w.apiHITLDecide(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	select {
+	case d := <-ch:
+		if !d.Allow {
+			t.Fatalf("decision allow = false, want true")
+		}
+		if d.By != "operator@example.com" {
+			t.Fatalf("decision by = %q, want authenticated principal", d.By)
+		}
+	default:
+		t.Fatalf("no decision recorded")
 	}
 }

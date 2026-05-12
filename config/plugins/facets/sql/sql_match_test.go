@@ -27,6 +27,36 @@ func TestSQLMatcherVerbAndTables(t *testing.T) {
 	}
 }
 
+// TestSQLMatcherVerbCaseInsensitive locks in that a rule written as
+// `sql.verb == "SELECT"` matches a select statement even though the
+// activation normalizes the got value to lowercase. CompileCondition
+// lowercases the want-side string literals at rule-load time.
+func TestSQLMatcherVerbCaseInsensitive(t *testing.T) {
+	cases := []struct {
+		name      string
+		condition string
+		want      bool
+	}{
+		{"uppercase want", "sql.verb == 'SELECT'", true},
+		{"mixed-case want", "sql.verb == 'Select'", true},
+		{"lowercase want (already)", "sql.verb == 'select'", true},
+		{"upper-case list", "sql.verb in ['SELECT', 'INSERT']", true},
+		{"miss after normalization", "sql.verb == 'UPDATE'", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, err := facet.NewMatcher("sql", tc.condition)
+			if err != nil {
+				t.Fatalf("NewMatcher: %v", err)
+			}
+			req := &match.Request{Family: "sql", Meta: &sqlfacet.Meta{Verb: "select"}}
+			if got := m.Match(req); got != tc.want {
+				t.Errorf("Match=%v want %v (condition=%q)", got, tc.want, tc.condition)
+			}
+		})
+	}
+}
+
 // TestSQLMatcherVerbsList confirms `sql.verbs` is exposed to CEL and
 // that `"drop" in sql.verbs` fires on a multi-statement query whose
 // FIRST verb is the harmless SELECT — the canonical pre-#143 bypass
@@ -47,10 +77,10 @@ func TestSQLMatcherVerbsList(t *testing.T) {
 	}
 }
 
-// TestSQLMatcherVerbsUppercaseTolerated guards the upstream-case
-// guarantee: meta.Verbs come from the extractor lower-cased, but if a
-// future endpoint ever populates them with mixed case the activation
-// path should still feed CEL lowercase values.
+// TestSQLMatcherVerbsUppercaseTolerated guards the activation-side
+// case guarantee: meta.Verbs come from the extractor lower-cased, but
+// if a future endpoint ever populates them with mixed case the
+// activation path should still feed CEL lowercase values.
 func TestSQLMatcherVerbsUppercaseTolerated(t *testing.T) {
 	m, err := facet.NewMatcher("sql", `"insert" in sql.verbs`)
 	if err != nil {
