@@ -49,7 +49,7 @@
             "cloud_sql_proxy",
             "--enable_iam_login",
             "--instances",
-            "denosr-prod:us-central1:main-pg14=tcp:5432"
+            "example-project:us-central1:main-pg14=tcp:5432"
           ],
           "Listen": "127.0.0.1:5432",
           "ReadyProbe": "tcp",

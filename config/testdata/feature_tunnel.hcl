@@ -7,7 +7,7 @@ credential "bearer_token" "github-pat" {}
 # that references it.
 tunnel "local_command" "csql-prod" {
   command       = ["cloud_sql_proxy", "--enable_iam_login",
-                   "--instances", "denosr-prod:us-central1:main-pg14=tcp:5432"]
+                   "--instances", "example-project:us-central1:main-pg14=tcp:5432"]
   listen        = "127.0.0.1:5432"
   ready_probe   = "tcp"
   ready_timeout = "30s"

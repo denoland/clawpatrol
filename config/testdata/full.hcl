@@ -681,7 +681,7 @@ endpoint "https" "orb" {
 # Postgres. Network reachability is arranged out-of-band; tunnel
 # topology declarations land when the postgres runtime hooks ship.
 endpoint "postgres" "pg-deployng" {
-  host     = "deployng-prod.cluster-cnmc6k08siv7.us-east-2.rds.amazonaws.com:5432"
+  host     = "deployng-prod.cluster.example:5432"
   database = "deployng"
   # ro/rw dispatch via placeholder. Ro is the default for reads;
   # rw requires explicit selection AND human approval (see rules).
@@ -691,7 +691,7 @@ endpoint "postgres" "pg-deployng" {
   ]
 }
 endpoint "postgres" "pg-scheduler" {
-  host       = "scheduler-prod.cluster-cnmc6k08siv7.us-east-2.rds.amazonaws.com:5432"
+  host       = "scheduler-prod.cluster.example:5432"
   database   = "scheduler"
   credential = pg-scheduler-cred
 }
@@ -715,11 +715,11 @@ endpoint "https" "grafana" {
 # Two endpoint rows, distinct names, one shared credential. Rules
 # can attach to both via `endpoints = [ch-o11y-https, ch-o11y-native]`.
 endpoint "clickhouse_https" "ch-o11y-https" {
-  hosts       = ["clickhouse-o11y.tail9a48e.ts.net", "ch-o11y.infra.deno-gcp.net"]
+  hosts       = ["clickhouse-o11y.example", "ch-o11y.internal.example"]
   credential = ch-o11y
 }
 endpoint "clickhouse_native" "ch-o11y-native" {
-  hosts       = ["clickhouse-o11y.tail9a48e.ts.net"]
+  hosts       = ["clickhouse-o11y.example"]
   credential = ch-o11y
 }
 # Self-hosted k8s clusters use mTLS. The CA cert is referenced by

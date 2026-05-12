@@ -328,8 +328,8 @@
       "ch-o11y-https": {
         "body": {
           "Hosts": [
-            "clickhouse-o11y.tail9a48e.ts.net",
-            "ch-o11y.infra.deno-gcp.net"
+            "clickhouse-o11y.example",
+            "ch-o11y.internal.example"
           ],
           "Credential": "ch-o11y"
         },
@@ -339,7 +339,7 @@
       "ch-o11y-native": {
         "body": {
           "Hosts": [
-            "clickhouse-o11y.tail9a48e.ts.net"
+            "clickhouse-o11y.example"
           ],
           "Port": 0,
           "TLS": false,
@@ -542,7 +542,7 @@
       },
       "pg-deployng": {
         "body": {
-          "Host": "deployng-prod.cluster-cnmc6k08siv7.us-east-2.rds.amazonaws.com:5432",
+          "Host": "deployng-prod.cluster.example:5432",
           "Database": "deployng",
           "SSLMode": "",
           "Credential": "",
@@ -562,7 +562,7 @@
       },
       "pg-scheduler": {
         "body": {
-          "Host": "scheduler-prod.cluster-cnmc6k08siv7.us-east-2.rds.amazonaws.com:5432",
+          "Host": "scheduler-prod.cluster.example:5432",
           "Database": "scheduler",
           "SSLMode": "",
           "Credential": "pg-scheduler-cred"
