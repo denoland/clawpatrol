@@ -65,7 +65,7 @@ type Plugin struct {
 
 	// Family classifies an endpoint's protocol so rule plugins can
 	// constrain which endpoints they target. Set on KindEndpoint
-	// plugins ("https" | "sql" | "k8s"). KindRule, with a single
+	// plugins ("http" | "sql" | "k8s"). KindRule, with a single
 	// unified plugin, leaves these empty — family is inferred from
 	// the rule's resolved endpoints at validate/build time.
 	Family   string

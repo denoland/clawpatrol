@@ -362,7 +362,7 @@ type HITLPending struct {
 	// called. HITLEndpointLabel-derived: hostname for HTTPS, resource
 	// name for SQL / k8s where Host is a virtual IP.
 	Endpoint string `json:"endpoint,omitempty"`
-	// Family is the endpoint family ("https" | "sql" | "k8s") so the
+	// Family is the endpoint family ("http" | "sql" | "k8s") so the
 	// dashboard can pick a matching label for Path ("Query" /
 	// "Resource" / "Path"). Empty when no endpoint metadata is set.
 	Family     string    `json:"family,omitempty"`

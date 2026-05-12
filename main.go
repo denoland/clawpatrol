@@ -1175,7 +1175,7 @@ func (g *Gateway) handle(raw net.Conn, dstIP string) {
 
 // isHTTPSMITMFamily reports whether the facet registered for family
 // drives its wire through the HTTPS MITM handler. Replaces what used
-// to be a hardcoded `case "https", "k8s"` so new HTTPS-shaped
+// to be a hardcoded `case "http", "k8s"` so new HTTPS-shaped
 // protocol facets (e.g. a future "openai" or "anthropic" family that
 // wants per-family report fields beyond what http_rule offers) drop
 // in without touching the dispatch switch.

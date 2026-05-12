@@ -302,7 +302,7 @@
           ],
           "Credential": "amem-kaju"
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       },
       "anthropic-avocet": {
@@ -322,7 +322,7 @@
             }
           ]
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       },
       "ch-o11y-https": {
@@ -356,7 +356,7 @@
           ],
           "Credential": "checkly-kaju"
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       },
       "deno-deploy": {
@@ -366,7 +366,7 @@
           ],
           "Credential": "deno-deploy-pat"
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       },
       "gemini-mira": {
@@ -376,7 +376,7 @@
           ],
           "Credential": "gemini-mira-cred"
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       },
       "github-avocet": {
@@ -387,7 +387,7 @@
           ],
           "Credential": "github-avocet-pat"
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       },
       "github-kaju": {
@@ -398,7 +398,7 @@
           ],
           "Credential": "github-kaju-pat"
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       },
       "github-mira": {
@@ -409,7 +409,7 @@
           ],
           "Credential": "github-mira-pat"
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       },
       "grafana": {
@@ -419,7 +419,7 @@
           ],
           "Credential": "grafana-token"
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       },
       "honeycomb": {
@@ -429,7 +429,7 @@
           ],
           "Credential": "honeycomb-kaju"
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       },
       "k8s-dev-ams": {
@@ -474,7 +474,7 @@
           ],
           "Credential": "deno-support-kaju"
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       },
       "notion": {
@@ -485,7 +485,7 @@
           ],
           "Credential": "notion-deno"
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       },
       "openai-codex-divy": {
@@ -496,7 +496,7 @@
           ],
           "Credential": "openai-codex-divy-cred"
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       },
       "openai-codex-mira": {
@@ -507,7 +507,7 @@
           ],
           "Credential": "openai-codex-mira-cred"
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       },
       "orb": {
@@ -527,7 +527,7 @@
             }
           ]
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       },
       "pagerduty": {
@@ -537,7 +537,7 @@
           ],
           "Credential": "pagerduty-kaju"
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       },
       "pg-deployng": {
@@ -578,7 +578,7 @@
           ],
           "Credential": "posthog-kaju"
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       },
       "slack-avocet": {
@@ -590,7 +590,7 @@
           ],
           "Credential": "slack-avocet-cred"
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       },
       "slack-kaju": {
@@ -602,7 +602,7 @@
           ],
           "Credential": "slack-kaju-cred"
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       },
       "slack-mira": {
@@ -614,7 +614,7 @@
           ],
           "Credential": "slack-mira-cred"
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       },
       "smithery": {
@@ -624,7 +624,7 @@
           ],
           "Credential": "smithery-kaju"
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       },
       "stripe": {
@@ -634,7 +634,7 @@
           ],
           "Credential": "stripe-live-key"
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       },
       "telegram-divy": {
@@ -644,7 +644,7 @@
           ],
           "Credential": "telegram-divy-cred"
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       },
       "telegram-mira": {
@@ -654,7 +654,7 @@
           ],
           "Credential": "telegram-mira-cred"
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       }
     },
@@ -756,7 +756,7 @@
       "deno-deploy-default": {
         "body": {
           "name": "deno-deploy-default",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "deno-deploy"
           ],
@@ -768,7 +768,7 @@
       "deno-deploy-reads": {
         "body": {
           "name": "deno-deploy-reads",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "deno-deploy"
           ],
@@ -779,7 +779,7 @@
       "deno-deploy-reply-on-behalf": {
         "body": {
           "name": "deno-deploy-reply-on-behalf",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "deno-deploy"
           ],
@@ -797,7 +797,7 @@
       "deno-deploy-ticket-mutations": {
         "body": {
           "name": "deno-deploy-ticket-mutations",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "deno-deploy"
           ],
@@ -812,7 +812,7 @@
       "grafana-annotations-snapshots": {
         "body": {
           "name": "grafana-annotations-snapshots",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "grafana"
           ],
@@ -823,7 +823,7 @@
       "grafana-dashboard-writes": {
         "body": {
           "name": "grafana-dashboard-writes",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "grafana"
           ],
@@ -838,7 +838,7 @@
       "grafana-no-destructive-deletes": {
         "body": {
           "name": "grafana-no-destructive-deletes",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "grafana"
           ],
@@ -850,7 +850,7 @@
       "grafana-reads": {
         "body": {
           "name": "grafana-reads",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "grafana"
           ],
@@ -1063,7 +1063,7 @@
       "notion-archive-route": {
         "body": {
           "name": "notion-archive-route",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "notion"
           ],
@@ -1079,7 +1079,7 @@
       "notion-create-update": {
         "body": {
           "name": "notion-create-update",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "notion"
           ],
@@ -1090,7 +1090,7 @@
       "notion-deletes": {
         "body": {
           "name": "notion-deletes",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "notion"
           ],
@@ -1105,7 +1105,7 @@
       "notion-reads": {
         "body": {
           "name": "notion-reads",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "notion"
           ],
@@ -1116,7 +1116,7 @@
       "notion-search": {
         "body": {
           "name": "notion-search",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "notion"
           ],
@@ -1127,7 +1127,7 @@
       "orb-prod-no-deletes": {
         "body": {
           "name": "orb-prod-no-deletes",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "orb"
           ],
@@ -1140,7 +1140,7 @@
       "orb-prod-reads": {
         "body": {
           "name": "orb-prod-reads",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "orb"
           ],
@@ -1152,7 +1152,7 @@
       "orb-prod-writes": {
         "body": {
           "name": "orb-prod-writes",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "orb"
           ],
@@ -1168,7 +1168,7 @@
       "orb-test-allow-all": {
         "body": {
           "name": "orb-test-allow-all",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "orb"
           ],
@@ -1364,7 +1364,7 @@
       "slack-avocet-approve-reply-shape": {
         "body": {
           "name": "slack-avocet-approve-reply-shape",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "slack-avocet"
           ],
@@ -1379,7 +1379,7 @@
       "stripe-default": {
         "body": {
           "name": "stripe-default",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "stripe"
           ],
@@ -1390,7 +1390,7 @@
       "stripe-ephemeral-keys": {
         "body": {
           "name": "stripe-ephemeral-keys",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "stripe"
           ],
@@ -1402,7 +1402,7 @@
       "stripe-extra-scrutiny": {
         "body": {
           "name": "stripe-extra-scrutiny",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "stripe"
           ],
@@ -1418,7 +1418,7 @@
       "stripe-no-deletes": {
         "body": {
           "name": "stripe-no-deletes",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "stripe"
           ],
@@ -1430,7 +1430,7 @@
       "stripe-other-writes": {
         "body": {
           "name": "stripe-other-writes",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "stripe"
           ],
@@ -1445,7 +1445,7 @@
       "stripe-reads": {
         "body": {
           "name": "stripe-reads",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "stripe"
           ],

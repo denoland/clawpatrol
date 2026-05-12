@@ -873,7 +873,7 @@ func (w *webMux) apiProfiles(rw http.ResponseWriter, _ *http.Request) {
 // itself.
 type RuleSummary struct {
 	Name       string                `json:"name"`
-	Family     string                `json:"family"` // "https" | "sql" | "k8s"
+	Family     string                `json:"family"` // "http" | "sql" | "k8s"
 	Endpoint   string                `json:"endpoint"`
 	Profile    string                `json:"profile,omitempty"`
 	Priority   int                   `json:"priority,omitempty"`

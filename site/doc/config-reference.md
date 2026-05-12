@@ -412,7 +412,7 @@ endpoint "clickhouse_native" "example" {
 
 Is part of the clawpatrol plugin API.
 
-Family: `https`.
+Family: `http`.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -448,7 +448,7 @@ endpoint "kubernetes" "example" {}
 
 Is part of the clawpatrol plugin API.
 
-Family: `https`.
+Family: `http`.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
