@@ -117,6 +117,17 @@ rule "pg-secret-defense" {
 }
 ```
 
+For low-risk, high-volume operations (read-only requests, status-page polls) you can mark a rule `fire_and_forget = true`. The gateway allows the request immediately and emits the event under the `auto_allow` action so the dashboard surfaces it in a separate audit lane — no blocking wait, no approval fatigue. The flag only applies to explicitly whitelisted rules: it requires a positive `condition` and an allow-shaped outcome, so a catch-all or deny rule will never be fire-and-forget.
+
+```hcl
+rule "github-status-poll" {
+  endpoint        = github-api
+  condition       = "http.method == 'GET' && http.path == '/status'"
+  verdict         = "allow"
+  fire_and_forget = true
+}
+```
+
 ## modes
 
 Clawpatrol ships two control planes for the gateway-to-device tunnel. Pick one in `gateway.hcl`; `gateway.example.hcl` ships with WireGuard.

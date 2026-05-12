@@ -144,7 +144,7 @@ approver "llm_approver" "example" {
 
 Block syntax: `credential "<type>" "<name>" { ... }`
 
-Registered types: [`anthropic_manual_key`](#credential-anthropicmanualkey), [`anthropic_oauth_subscription`](#credential-anthropicoauthsubscription), [`aws_credential`](#credential-awscredential), [`bearer_token`](#credential-bearertoken), [`clickhouse_credential`](#credential-clickhousecredential), [`cookie_token`](#credential-cookietoken), [`discord_bot_token`](#credential-discordbottoken), [`gemini_api_key`](#credential-geminiapikey), [`github_oauth`](#credential-githuboauth), [`header_token`](#credential-headertoken), [`mtls_credential`](#credential-mtlscredential), [`notion_oauth`](#credential-notionoauth), [`openai_codex_oauth`](#credential-openaicodexoauth), [`postgres_credential`](#credential-postgrescredential), [`slack_tokens`](#credential-slacktokens), [`ssh`](#credential-ssh), [`tailscale`](#credential-tailscale), [`telegram_bot_token`](#credential-telegrambottoken).
+Registered types: [`anthropic_manual_key`](#credential-anthropicmanualkey), [`anthropic_oauth_subscription`](#credential-anthropicoauthsubscription), [`aws_credential`](#credential-awscredential), [`bearer_token`](#credential-bearertoken), [`clickhouse_credential`](#credential-clickhousecredential), [`cookie_token`](#credential-cookietoken), [`discord_bot_token`](#credential-discordbottoken), [`gemini_api_key`](#credential-geminiapikey), [`github_oauth`](#credential-githuboauth), [`google_gke_credential`](#credential-googlegkecredential), [`header_token`](#credential-headertoken), [`mtls_credential`](#credential-mtlscredential), [`notion_oauth`](#credential-notionoauth), [`openai_codex_oauth`](#credential-openaicodexoauth), [`postgres_credential`](#credential-postgrescredential), [`slack_tokens`](#credential-slacktokens), [`ssh`](#credential-ssh), [`tailscale`](#credential-tailscale), [`telegram_bot_token`](#credential-telegrambottoken).
 
 ### `credential "anthropic_manual_key" "<name>"`
 
@@ -232,6 +232,23 @@ _No configurable attributes._
 
 ```hcl
 credential "github_oauth" "example" {}
+```
+
+### `credential "google_gke_credential" "<name>"`
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `cluster` | `string` | yes |  |
+| `location` | `string` | yes |  |
+| `project` | `string` | yes |  |
+| `impersonate_service_account` | `string` | no |  |
+
+```hcl
+credential "google_gke_credential" "example" {
+  cluster = "example"
+  location = "example"
+  project = "example"
+}
 ```
 
 ### `credential "header_token" "<name>"`
@@ -519,6 +536,7 @@ been inferred from the endpoint refs.
 | `verdict` | `string` | no | The outcome when the rule matches. Set exactly one of `verdict` (`"allow"` / `"deny"`) or `approve`. |
 | `reason` | `string` | no |  |
 | `approve` | `[]ref(approver)` | no | A list of bare-name approver references. The approvers run in order; the request is allowed only if every stage approves. Set this *or* `verdict`, not both. |
+| `fire_and_forget` | `bool` | no | Short-circuits the approval wait for low-risk, high-volume operations: the request is allowed immediately and emitted under the "auto_allow" action so the dashboard can surface it in a separate audit lane. Only valid when paired with a positive (non-empty) condition AND an allow-shaped outcome — either `verdict = "allow"` or `approve = [...]` (in which case the approver chain is skipped at runtime, but the approvers still appear in the dashboard's audit entry so the operator sees who *would* have been asked). Cannot be set on a deny rule, and cannot be set on a catch-all (no condition). |
 
 ```hcl
 rule {}

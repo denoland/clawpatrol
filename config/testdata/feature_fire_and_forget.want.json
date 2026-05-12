@@ -1,0 +1,76 @@
+{
+  "policy": {
+    "approvers": {
+      "ops": {
+        "body": {
+          "Channel": "#ops",
+          "Credential": "",
+          "Timeout": 0,
+          "RequireApprovers": 0,
+          "Interactive": false,
+          "Classifier": "",
+          "Message": ""
+        },
+        "type": "human_approver"
+      }
+    },
+    "credentials": {
+      "pat": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "type": "bearer_token"
+      }
+    },
+    "endpoints": {
+      "github": {
+        "body": {
+          "Hosts": [
+            "api.github.com"
+          ],
+          "Credential": "pat"
+        },
+        "family": "http",
+        "type": "https"
+      }
+    },
+    "profiles": {
+      "default": {
+        "endpoints": [
+          "github"
+        ]
+      }
+    },
+    "rules": {
+      "github-reads-fast": {
+        "body": {
+          "name": "github-reads-fast",
+          "family": "http",
+          "endpoints": [
+            "github"
+          ],
+          "condition": "http.method in ['GET', 'HEAD']",
+          "reason": "read-only, low-risk",
+          "approve": [
+            {
+              "name": "ops"
+            }
+          ],
+          "fire_and_forget": true
+        }
+      },
+      "github-status": {
+        "body": {
+          "name": "github-status",
+          "family": "http",
+          "endpoints": [
+            "github"
+          ],
+          "condition": "http.path.startsWith('/status')",
+          "verdict": "allow",
+          "fire_and_forget": true
+        }
+      }
+    }
+  }
+}

@@ -305,7 +305,7 @@ rule "body-deny" {
 	ep := cp.Endpoints["api"]
 
 	req := &match.Request{
-		Family:     "https",
+		Family:     "http",
 		Method:     "POST",
 		Credential: "tok",
 		Body:       []byte("anything"),
@@ -320,6 +320,56 @@ rule "body-deny" {
 	}
 	if r.Outcome.Verdict != "allow" {
 		t.Errorf("verdict = %q, want allow (the credential rule reads no truncatable facets)", r.Outcome.Verdict)
+	}
+}
+
+// TestFireAndForgetCompiles confirms the `fire_and_forget = true`
+// HCL attribute survives Load → Build → Compile and lands on the
+// CompiledRule the dispatcher inspects. The HTTPS and conn-family
+// dispatchers branch on cr.Outcome.FireAndForget to skip the
+// approver wait, so loss of the bit between the rules plugin and
+// CompiledRule would silently re-enable the blocking approver path.
+func TestFireAndForgetCompiles(t *testing.T) {
+	cp := compileFixture(t, `
+credential "bearer_token" "pat" {}
+endpoint "https" "github" {
+  hosts      = ["api.github.com"]
+  credential = pat
+}
+approver "human_approver" "ops" { channel = "#ops" }
+profile "default" { endpoints = [github] }
+
+rule "fast-reads" {
+  endpoint        = github
+  condition       = "http.method == 'GET'"
+  approve         = [ops]
+  fire_and_forget = true
+}
+rule "writes" {
+  endpoint  = github
+  condition = "http.method == 'POST'"
+  approve   = [ops]
+}
+`)
+	ep := cp.Endpoints["github"]
+
+	get := runtime.MatchRequest(ep, &match.Request{Family: "http", Method: "GET"})
+	if get == nil || get.Name != "fast-reads" {
+		t.Fatalf("GET → %+v, want fast-reads", get)
+	}
+	if !get.Outcome.FireAndForget {
+		t.Errorf("fast-reads.Outcome.FireAndForget = false, want true")
+	}
+	if len(get.Outcome.Approve) == 0 {
+		t.Errorf("fast-reads approver list dropped during compile — operator audit lane needs it")
+	}
+
+	post := runtime.MatchRequest(ep, &match.Request{Family: "http", Method: "POST"})
+	if post == nil || post.Name != "writes" {
+		t.Fatalf("POST → %+v, want writes", post)
+	}
+	if post.Outcome.FireAndForget {
+		t.Errorf("writes rule should not be fire-and-forget — unset attribute defaulted true")
 	}
 }
 

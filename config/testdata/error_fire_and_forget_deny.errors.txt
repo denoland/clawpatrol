@@ -1,0 +1,1 @@
+error: error_fire_and_forget_deny.hcl:10:1: fire_and_forget on deny rule "github-blocked-deletes" — fire_and_forget can only be set on allow-shaped rules (`verdict = "allow"` or `approve = [...]`). A deny rule blocks traffic — there is nothing to auto-allow.

@@ -55,21 +55,34 @@ type RuleBody struct {
 	// approvers run in order; the request is allowed only if every
 	// stage approves. Set this *or* `verdict`, not both.
 	Approve cty.Value `hcl:"approve,optional"`
+
+	// FireAndForget short-circuits the approval wait for low-risk,
+	// high-volume operations: the request is allowed immediately and
+	// emitted under the "auto_allow" action so the dashboard can
+	// surface it in a separate audit lane. Only valid when paired
+	// with a positive (non-empty) condition AND an allow-shaped
+	// outcome — either `verdict = "allow"` or `approve = [...]` (in
+	// which case the approver chain is skipped at runtime, but the
+	// approvers still appear in the dashboard's audit entry so the
+	// operator sees who *would* have been asked). Cannot be set on a
+	// deny rule, and cannot be set on a catch-all (no condition).
+	FireAndForget bool `hcl:"fire_and_forget,optional"`
 }
 
 // Rule is the canonical, family-stamped record stored in
 // Policy.Rules[name].Body.
 type Rule struct {
-	Name       string                `json:"name"`
-	Family     string                `json:"family"` // "http" | "sql" | "k8s"
-	Endpoints  []string              `json:"endpoints"`
-	Priority   int                   `json:"priority,omitempty"`
-	Disabled   bool                  `json:"disabled,omitempty"`
-	Condition  string                `json:"condition,omitempty"`
-	Credential string                `json:"credential,omitempty"`
-	Verdict    string                `json:"verdict,omitempty"` // "allow" | "deny" | "" (when Approve is set)
-	Reason     string                `json:"reason,omitempty"`
-	Approve    []config.ApproveStage `json:"approve,omitempty"`
+	Name          string                `json:"name"`
+	Family        string                `json:"family"` // "http" | "sql" | "k8s"
+	Endpoints     []string              `json:"endpoints"`
+	Priority      int                   `json:"priority,omitempty"`
+	Disabled      bool                  `json:"disabled,omitempty"`
+	Condition     string                `json:"condition,omitempty"`
+	Credential    string                `json:"credential,omitempty"`
+	Verdict       string                `json:"verdict,omitempty"` // "allow" | "deny" | "" (when Approve is set)
+	Reason        string                `json:"reason,omitempty"`
+	Approve       []config.ApproveStage `json:"approve,omitempty"`
+	FireAndForget bool                  `json:"fire_and_forget,omitempty"`
 }
 
 // Compile lowers a built rule into the runtime-friendly *CompiledRule
@@ -92,9 +105,10 @@ func (r *Rule) Compile() (*config.CompiledRule, []string, error) {
 		Credential: r.Credential,
 		Matcher:    matcher,
 		Outcome: config.Outcome{
-			Verdict: r.Verdict,
-			Reason:  r.Reason,
-			Approve: r.Approve,
+			Verdict:       r.Verdict,
+			Reason:        r.Reason,
+			Approve:       r.Approve,
+			FireAndForget: r.FireAndForget,
 		},
 	}, r.Endpoints, nil
 }
@@ -220,6 +234,36 @@ func validate(body any, name string, ctx *config.BuildCtx) hcl.Diagnostics {
 		})
 	}
 
+	// fire_and_forget guardrails. The feature is deliberately
+	// restrictive — it auto-allows requests without human review, so
+	// the policy author has to opt every rule in explicitly and we
+	// reject the shapes that would let a fire-and-forget rule
+	// accidentally swallow traffic it shouldn't (catch-all, deny,
+	// no-outcome rules).
+	if rb.FireAndForget {
+		if rb.Condition == "" {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("fire_and_forget on catch-all rule %q", name),
+				Detail:   "fire_and_forget requires a positive `condition` — a catch-all (no condition) auto-allowing everything would defeat the gateway. Add a condition that whitelists the specific low-risk operations this rule covers.",
+				Subject:  &ctx.Block.DefRange,
+			})
+		}
+		if hasVerdict && rb.Verdict == "deny" {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("fire_and_forget on deny rule %q", name),
+				Detail:   "fire_and_forget can only be set on allow-shaped rules (`verdict = \"allow\"` or `approve = [...]`). A deny rule blocks traffic — there is nothing to auto-allow.",
+				Subject:  &ctx.Block.DefRange,
+			})
+		}
+		if !hasVerdict && !hasApprove {
+			// already flagged as "no outcome" above; the fire_and_forget
+			// requirement is implied — skip the second diagnostic to
+			// avoid noise.
+		}
+	}
+
 	return diags
 }
 
@@ -235,15 +279,16 @@ func build(body any, name string, ctx *config.BuildCtx) (any, hcl.Diagnostics) {
 	}
 
 	r := &Rule{
-		Name:       name,
-		Family:     fam,
-		Endpoints:  endpoints,
-		Priority:   rb.Priority,
-		Disabled:   rb.Disabled,
-		Condition:  rb.Condition,
-		Credential: rb.Credential,
-		Verdict:    rb.Verdict,
-		Reason:     rb.Reason,
+		Name:          name,
+		Family:        fam,
+		Endpoints:     endpoints,
+		Priority:      rb.Priority,
+		Disabled:      rb.Disabled,
+		Condition:     rb.Condition,
+		Credential:    rb.Credential,
+		Verdict:       rb.Verdict,
+		Reason:        rb.Reason,
+		FireAndForget: rb.FireAndForget,
 	}
 
 	// Approve chain.
@@ -347,6 +392,9 @@ func emitRule(body any, _ string, b *hclwrite.Body) {
 	}
 	if len(r.Approve) > 0 {
 		b.SetAttributeRaw("approve", approveToTokens(r.Approve))
+	}
+	if r.FireAndForget {
+		b.SetAttributeValue("fire_and_forget", cty.True)
 	}
 }
 

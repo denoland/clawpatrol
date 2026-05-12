@@ -642,6 +642,18 @@ func pgEvaluateInfo(ch *runtime.ConnHandle, info pgInfo, credName string, shadow
 	}
 	rule := cr.Name
 
+	// Fire-and-forget: skip the approver wait entirely and emit
+	// under "auto_allow" so the dashboard's audit lane still records
+	// the query. Validated at Load time to require a positive
+	// condition and an allow-shaped outcome.
+	if cr.Outcome.FireAndForget {
+		emit(ch, runtime.ConnEvent{
+			Action: "auto_allow", Reason: cr.Outcome.Reason,
+			Verb: info.Verb, Summary: summary, Facets: facets,
+		})
+		return "", ""
+	}
+
 	// Approve chain. ConnHandle.Approve dispatches through the
 	// host's HITL machinery (same one HTTPS uses) — the postgres
 	// runtime pauses on the synchronous return, just like the HTTP

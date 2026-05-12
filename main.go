@@ -1756,10 +1756,24 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			ev.Rule = cr.Name
 		}
 
-		// Approve chain — dispatch each stage to its approver
-		// runtime (config/plugins/approvers). All stages must
-		// allow; first deny short-circuits.
-		if cr != nil && len(cr.Outcome.Approve) > 0 {
+		// Fire-and-forget: low-risk, whitelisted operations that the
+		// policy author has explicitly opted out of the approval wait
+		// (`fire_and_forget = true` on the rule). Allow immediately
+		// and stamp ev.Action so the dashboard / JSONL surface the
+		// event in a separate audit lane. Approvers that *would* have
+		// been consulted appear in the end event for traceability,
+		// but we never call them — the whole point is to dodge the
+		// latency. Deny rules can't carry the flag (rejected at Load).
+		if cr != nil && cr.Outcome.FireAndForget {
+			log.Printf("auto-allow %s %s %s (rule %q)", host, req.Method, req.URL.Path, cr.Name)
+			ev.Action = "auto_allow"
+			if cr.Outcome.Reason != "" {
+				ev.Reason = cr.Outcome.Reason
+			}
+		} else if cr != nil && len(cr.Outcome.Approve) > 0 {
+			// Approve chain — dispatch each stage to its approver
+			// runtime (config/plugins/approvers). All stages must
+			// allow; first deny short-circuits.
 			v := g.runApproveChain(req.Context(), cr.Outcome.Approve, runApproveCtx{
 				AgentIP: agentAddr, Host: host, Method: req.Method, Path: req.URL.RequestURI(),
 				UA: req.Header.Get("User-Agent"), BodySample: string(matchBody), Reason: cr.Outcome.Reason,

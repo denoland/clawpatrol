@@ -1,0 +1,1 @@
+error: error_fire_and_forget_catchall.hcl:10:1: fire_and_forget on catch-all rule "github-firehose" — fire_and_forget requires a positive `condition` — a catch-all (no condition) auto-allowing everything would defeat the gateway. Add a condition that whitelists the specific low-risk operations this rule covers.

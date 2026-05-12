@@ -192,10 +192,17 @@ type CompiledRule struct {
 
 // Outcome captures a rule's verdict + (when applicable) approve chain.
 // Exactly one of Verdict and Approve is set after Build's validation.
+//
+// FireAndForget short-circuits the approval wait at runtime: the
+// dispatcher allows the request immediately and emits an "auto_allow"
+// event for the dashboard's separate audit lane. Only set on
+// allow-shaped rules with a positive condition (validated at Load
+// time by the rules plugin).
 type Outcome struct {
-	Verdict string // "allow" | "deny"
-	Reason  string
-	Approve []ApproveStage
+	Verdict       string // "allow" | "deny"
+	Reason        string
+	Approve       []ApproveStage
+	FireAndForget bool
 }
 
 // ApproveStage is one node in an approve = [...] chain — a bare-name

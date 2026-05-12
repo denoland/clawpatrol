@@ -860,6 +860,17 @@ func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName st
 	summary := chSummary(info)
 	rule := cr.Name
 
+	// Fire-and-forget: short-circuit any approver wait and emit
+	// "auto_allow" instead. Mirrors the HTTPS / postgres lanes so
+	// dashboards see one consistent action label.
+	if cr.Outcome.FireAndForget {
+		chEmit(ch, runtime.ConnEvent{
+			Action: "auto_allow", Reason: cr.Outcome.Reason,
+			Verb: info.Verb, Summary: summary, Facets: facets,
+		})
+		return "", ""
+	}
+
 	if len(cr.Outcome.Approve) > 0 {
 		if ch.Approve == nil {
 			chEmit(ch, runtime.ConnEvent{
