@@ -138,13 +138,19 @@ func init() {
 // activation reports `verb = "get"`.
 var lowercasedPaths = []string{"k8s.verb"}
 
+// Kubernetes Meta is derived entirely from the request URL + method,
+// not from buffered request bytes, so no k8s.* field is affected by
+// the wire frontends' inspection caps. Truncation can't bypass a k8s
+// rule.
+var truncatablePaths []string
+
 // NewMatcher compiles a CEL condition into a Matcher. An empty
 // condition is the catch-all match-everything case.
 func (Facet) NewMatcher(condition string) (match.Matcher, error) {
 	if condition == "" {
 		return match.PassThrough{}, nil
 	}
-	return match.CompileCondition(celEnv, condition, buildActivation, lowercasedPaths)
+	return match.CompileCondition(celEnv, condition, buildActivation, lowercasedPaths, truncatablePaths)
 }
 
 func buildActivation(req *match.Request) map[string]any {

@@ -40,6 +40,17 @@ func HostEndpoint(policy *config.CompiledPolicy, profile, host string) *config.C
 // are skipped. nil is returned when no rule fires — the caller then
 // applies the defaults.unknown_host policy (or the endpoint plugin's
 // own default).
+//
+// Truncated-request fail-close: when req.Truncated is set, a rule
+// whose matcher reports InspectsTruncatableFacet() == true is
+// auto-fired with a synthesized deny verdict — the matcher is NOT
+// called, because its CEL condition reads bytes the wire frontend
+// already discarded. Higher-priority rules that don't read truncated
+// facets still get to match normally; this only fails the rules
+// that would have been evaluating ghost bytes. The returned
+// CompiledRule keeps the original rule's identity (name / priority)
+// so logs still attribute the deny to the rule whose contract the
+// truncation broke.
 func MatchRequest(ep *config.CompiledEndpoint, req *match.Request) *config.CompiledRule {
 	if ep == nil {
 		return nil
@@ -59,14 +70,36 @@ func MatchRequest(ep *config.CompiledEndpoint, req *match.Request) *config.Compi
 		}
 		if r.Matcher == nil {
 			// Empty match = match-everything; produced by Compile
-			// for catch-all rules without a condition.
+			// for catch-all rules without a condition. A catch-all
+			// reads no facets, so it can't be poisoned by
+			// truncation — fire it as written even when
+			// req.Truncated.
 			return r
+		}
+		if req != nil && req.Truncated && r.Matcher.InspectsTruncatableFacet() {
+			return synthesizeTruncatedDeny(r)
 		}
 		if r.Matcher.Match(req) {
 			return r
 		}
 	}
 	return nil
+}
+
+// synthesizeTruncatedDeny returns a CompiledRule that mirrors r's
+// identity but forces a deny verdict with a fabricated reason. Used
+// by MatchRequest when a rule that reads a truncatable facet meets
+// a request whose facet bytes were capped at the wire — the rule's
+// match predicate can't be evaluated honestly, so we surface a
+// fail-closed deny attributed to the rule that owns the contract.
+func synthesizeTruncatedDeny(r *config.CompiledRule) *config.CompiledRule {
+	reason := "rule \"" + r.Name + "\" reads a request facet whose bytes were truncated by the gateway's inspection buffer; failing closed"
+	synth := *r
+	synth.Outcome = config.Outcome{
+		Verdict: "deny",
+		Reason:  reason,
+	}
+	return &synth
 }
 
 // ResolveCredential picks the credential entry that applies to req.

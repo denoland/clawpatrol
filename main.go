@@ -1597,17 +1597,40 @@ func (w *countWriter) Write(p []byte) (int, error) {
 const maxHTTPMatchBody = 1 << 20
 
 func bufferHTTPBodyForMatch(req *http.Request) []byte {
-	if req.Body == nil {
-		return nil
-	}
-	b, err := io.ReadAll(io.LimitReader(req.Body, maxHTTPMatchBody))
-	if err != nil {
-		return nil
-	}
-	// Re-attach the buffered prefix in front of the original stream,
-	// which may still contain bytes beyond maxHTTPMatchBody.
-	req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), req.Body))
+	b, _ := bufferHTTPBodyForMatchTruncated(req)
 	return b
+}
+
+// bufferHTTPBodyForMatchTruncated is bufferHTTPBodyForMatch with the
+// overflow signal exposed: it reads one byte past the cap to detect
+// truncation, then re-attaches whatever it pulled (cap + 1 byte) in
+// front of the original stream so upstream still receives the body
+// byte-for-byte. truncated is true iff the body extended beyond
+// maxHTTPMatchBody; callers stash this on match.Request.Truncated so
+// the dispatcher can fail-close rules that read http.body /
+// http.body_json.
+func bufferHTTPBodyForMatchTruncated(req *http.Request) (body []byte, truncated bool) {
+	if req.Body == nil {
+		return nil, false
+	}
+	b, err := io.ReadAll(io.LimitReader(req.Body, maxHTTPMatchBody+1))
+	if err != nil {
+		return nil, false
+	}
+	if len(b) > maxHTTPMatchBody {
+		// Pulled one byte past the cap — body is over-sized. Keep
+		// the cap-sized prefix as the matcher's view; re-attach the
+		// full read (including the probe byte) in front of the
+		// remaining stream so the upstream forward stays byte-exact.
+		req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), req.Body))
+		return b[:maxHTTPMatchBody], true
+	}
+	// Body fit inside the cap (or was exactly cap bytes). Re-attach
+	// what we read — req.Body may still hold bytes past it on a
+	// chunked / unknown-length stream that just hadn't surfaced
+	// before the ReadAll returned.
+	req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), req.Body))
+	return b, false
 }
 
 // mitmHTTPS handles an SNI-matched TLS connection for an HTTPS-family
@@ -1663,19 +1686,25 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		// `body_contains` match facet needs the body up-front; we
 		// don't know which yet, so for any POST/PUT/PATCH with a
 		// body we read up to 1 MiB and re-attach. Reads beyond 1 MiB
-		// stream through unbuffered (rare for agent traffic).
+		// stream through unbuffered (rare for agent traffic) but
+		// surface as Truncated=true so the dispatcher can fail-close
+		// any rule reading http.body / http.body_json — bytes past
+		// the cap aren't in matchBody and policy that needed them
+		// can't be honestly evaluated.
 		var matchBody []byte
+		var truncated bool
 		if req.Method == "POST" || req.Method == "PUT" || req.Method == "PATCH" {
-			matchBody = bufferHTTPBodyForMatch(req)
+			matchBody, truncated = bufferHTTPBodyForMatchTruncated(req)
 		}
 
 		mreq := &match.Request{
-			Family:  ep.Family,
-			Method:  req.Method,
-			URL:     req.URL,
-			Headers: req.Header,
-			Body:    matchBody,
-			PeerIP:  pip,
+			Family:    ep.Family,
+			Method:    req.Method,
+			URL:       req.URL,
+			Headers:   req.Header,
+			Body:      matchBody,
+			PeerIP:    pip,
+			Truncated: truncated,
 		}
 		fac := facet.Lookup(ep.Family)
 		if fac != nil {

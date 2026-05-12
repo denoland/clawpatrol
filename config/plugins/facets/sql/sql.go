@@ -129,13 +129,30 @@ func init() {
 // activation reports `verb = "select"`.
 var lowercasedPaths = []string{"sql.verb"}
 
+// truncatablePaths declares every SQL field, because the wire
+// frontends (postgres pgClientToServer, clickhouse_native
+// chHandleQuery) feed the matcher one piece of text — the raw
+// statement — and every CEL field (verb, tables, function,
+// statement) is derived from the same parsed bytes. When the
+// frontend caps the frame, all four fields are simultaneously
+// untrustworthy, so any condition reading any of them must fail
+// closed on a truncated request.
+//
+// Note credential is intentionally absent from the sql facet's CEL
+// view: it resolves off-wire (StartupMessage user / Hello
+// username), never from frame bytes, so a credential predicate on a
+// truncated request still evaluates correctly. The dispatcher
+// applies r.Credential before the matcher runs (config/runtime/
+// dispatch.go), and that path is unaffected by Truncated.
+var truncatablePaths = []string{"sql.verb", "sql.tables", "sql.function", "sql.statement"}
+
 // NewMatcher compiles a CEL condition into a Matcher. An empty
 // condition is the catch-all match-everything case.
 func (Facet) NewMatcher(condition string) (match.Matcher, error) {
 	if condition == "" {
 		return match.PassThrough{}, nil
 	}
-	return match.CompileCondition(celEnv, condition, buildActivation, lowercasedPaths)
+	return match.CompileCondition(celEnv, condition, buildActivation, lowercasedPaths, truncatablePaths)
 }
 
 func buildActivation(req *match.Request) map[string]any {

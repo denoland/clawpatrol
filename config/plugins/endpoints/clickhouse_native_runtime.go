@@ -33,6 +33,16 @@ import (
 // option without weakening the discriminator at the size-range gate.
 const chMaxCompressionBuffer = 16 * 1024 * 1024
 
+// chMaxQueryBody caps the SQL text exposed to the matcher from a
+// client Query packet. Anything past it is the truncated-frame
+// path: chHandleQuery surfaces Truncated=true on the dispatch and
+// trims q.Body to the cap so the matcher never operates on a partial
+// statement that could change verb / tables under it (SELECT… picks
+// up DROP… semantics if the SELECT was 1 MiB before the breakpoint).
+// 1 MiB is well above any realistic interactive query and matches
+// the postgres maxPgMessage cap.
+const chMaxQueryBody = 1 << 20
+
 // chProbeSlowPathDeadline bounds how long the probe's slow path is
 // willing to wait for the rest of a candidate frame header. Real frame
 // bytes follow the leading byte in the same TCP burst (the
@@ -396,7 +406,21 @@ func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chg
 		chEmitError(ch, "query-decode", err.Error())
 		return chgoproto.CompressionDisabled, true
 	}
-	verdict, reason := chEvaluateSQL(ctx, ch, q.Body, credName)
+	// Truncation gate. The matcher sees q.Body verbatim today; an
+	// oversized statement would let an attacker hide policy-relevant
+	// keywords past the matcher's effective look-ahead. We trim what
+	// the matcher sees and flag the request so the dispatcher
+	// fail-closes any rule that reads sql.* — but the bytes that
+	// would be forwarded to upstream are still q.Body in full,
+	// because the agent's compression-tracker on the next Data
+	// frame depends on the Query being emitted unmodified.
+	sqlForMatch := q.Body
+	truncated := false
+	if len(sqlForMatch) > chMaxQueryBody {
+		sqlForMatch = sqlForMatch[:chMaxQueryBody]
+		truncated = true
+	}
+	verdict, reason := chEvaluateSQL(ctx, ch, sqlForMatch, credName, truncated)
 	if verdict == "deny" {
 		if _, werr := ch.Conn.Write(chEncodeException(reason)); werr != nil {
 			// Agent gone — there's nothing left to keep alive.
@@ -678,7 +702,7 @@ func chRewindReader(head []byte, tail *chgoproto.Reader) *chgoproto.Reader {
 //
 //	("deny", reason) — matched rule denies, or approve rejected.
 //	("", "")         — no rule fires, or the matched rule allows.
-func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName string) (string, string) {
+func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName string, truncated bool) (string, string) {
 	info := parseChSQL(sql)
 	mreq := &match.Request{
 		Family:     "sql",
@@ -690,6 +714,7 @@ func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName st
 			Functions: info.Functions,
 			Statement: info.Statement,
 		},
+		Truncated: truncated,
 	}
 	var facets map[string]any
 	if f := facet.Lookup("sql"); f != nil {
