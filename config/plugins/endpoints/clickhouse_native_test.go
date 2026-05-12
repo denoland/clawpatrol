@@ -561,6 +561,86 @@ func TestChEvaluateSQLApproveChain(t *testing.T) {
 	})
 }
 
+// TestChAgentToServerStreamsOversizedQueryBody is the regression for
+// the matcher-buffer memory cap. The previous implementation called
+// q.DecodeAware up front, which materialised the entire SQL body into
+// q.Body before chMaxQueryBody could gate anything — a multi-GiB
+// statement would balloon the gateway's heap by a multi-GiB allocation
+// just to feed the matcher a 1 MiB prefix. The reworked path reads
+// at most chMaxQueryBody bytes into memory and splices the tail
+// straight through to upstream; this test pins both halves of that
+// contract: the matcher sees a `chMaxQueryBody`-byte head with
+// Truncated=true, and the forwarded packet still contains the full
+// body verbatim so upstream's compression context stays correct.
+func TestChAgentToServerStreamsOversizedQueryBody(t *testing.T) {
+	const revision = 54448
+	// chMaxQueryBody is 1 MiB; build a body that overshoots by a
+	// few bytes so the test is sensitive to off-by-one in the
+	// length-prefix / streaming-tail split. The leading bytes spell
+	// a recognisable head; the trailing bytes include a sentinel
+	// the matcher must NOT see (otherwise the cap is silently bypassed).
+	head := []byte("SELECT * FROM t WHERE x = '")
+	headPad := bytes.Repeat([]byte{'a'}, chMaxQueryBody-len(head))
+	tailSentinel := []byte("__TAIL_SENTINEL__")
+	body := append(append(append([]byte{}, head...), headPad...), tailSentinel...)
+	if len(body) <= chMaxQueryBody {
+		t.Fatalf("test body must exceed chMaxQueryBody (%d) to exercise streaming; got %d", chMaxQueryBody, len(body))
+	}
+
+	passThrough := &config.CompiledRule{
+		Name: "allow-all", Matcher: match.PassThrough{},
+		Outcome: config.Outcome{Verdict: "allow"},
+	}
+	ep := chBuildEndpoint(t, passThrough)
+	mock, _ := chNewMockHandle(t, ep)
+	defer func() { _ = mock.Conn.Close() }()
+
+	q := chgoproto.Query{
+		ID: "qid-big", Body: string(body),
+		Stage:       chgoproto.StageComplete,
+		Compression: chgoproto.CompressionEnabled,
+		Info: chgoproto.ClientInfo{
+			ProtocolVersion: revision, Major: 24, Minor: 8,
+			Interface:   chgoproto.InterfaceTCP,
+			Query:       chgoproto.ClientQueryInitial,
+			InitialUser: "alice",
+		},
+	}
+	var agentBuf chgoproto.Buffer
+	q.EncodeAware(&agentBuf, revision)
+
+	reader := chgoproto.NewReader(bytes.NewReader(agentBuf.Buf))
+	var upstream bytes.Buffer
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
+
+	out := upstream.Bytes()
+	if len(out) == 0 || chgoproto.ClientCode(out[0]) != chgoproto.ClientCodeQuery {
+		t.Fatalf("upstream first byte = %d, want ClientCodeQuery", out[0])
+	}
+	r := chgoproto.NewReader(bytes.NewReader(out[1:]))
+	var got chgoproto.Query
+	if err := got.DecodeAware(r, revision); err != nil {
+		t.Fatalf("decode upstream Query: %v", err)
+	}
+	if got.Body != string(body) {
+		t.Errorf("forwarded Body len = %d, want %d (full body must round-trip even though only the head is buffered)", len(got.Body), len(body))
+	}
+	if got.Compression != chgoproto.CompressionEnabled {
+		t.Errorf("forwarded Compression = %d, want Enabled", got.Compression)
+	}
+
+	if len(mock.events) != 1 {
+		t.Fatalf("expected 1 conn event, got %d: %+v", len(mock.events), mock.events)
+	}
+	stmt, _ := mock.events[0].Facets["statement"].(string)
+	if len(stmt) > chMaxQueryBody {
+		t.Errorf("matcher statement len = %d, want <= %d (oversized body must not reach the matcher)", len(stmt), chMaxQueryBody)
+	}
+	if strings.Contains(stmt, string(tailSentinel)) {
+		t.Errorf("matcher statement leaked the tail-sentinel — chMaxQueryBody cap bypassed")
+	}
+}
+
 // TestChAgentToServerForwardsQuery exercises the agent → server pump
 // end-to-end: build a Query packet on the "agent" side of an
 // in-memory pipe, run chAgentToServer with an upstream io.Writer

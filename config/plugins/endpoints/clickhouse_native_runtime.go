@@ -386,11 +386,20 @@ func chAgentToServer(ctx context.Context, ch *runtime.ConnHandle, agentReader *c
 }
 
 // chHandleQuery decodes one client Query packet, runs the SQL through
-// the matcher, and either forwards the re-encoded packet to upstream
-// (allow) or writes a server Exception to the agent (deny). The
-// agent's `compression` choice is preserved on the wire — the
-// gateway used to override it to Disabled, which silently corrupted
-// blocks from agents that originated with compression on.
+// the matcher, and either forwards the packet to upstream (allow) or
+// writes a server Exception to the agent (deny). The agent's
+// `compression` choice is preserved on the wire — the gateway used
+// to override it to Disabled, which silently corrupted blocks from
+// agents that originated with compression on.
+//
+// Body handling streams: chgoproto.Query.DecodeAware would materialise
+// the entire SQL string into q.Body before the truncation gate could
+// reject it, which lets a multi-GiB statement balloon the gateway's
+// heap before the matcher ever sees a byte. We walk the Query fields
+// by hand instead and read at most chMaxQueryBody bytes of the body
+// into memory; an oversized tail (and any trailing Parameters) is
+// either streamed straight through to upstream on allow, or drained
+// to /dev/null on deny so the wire stays aligned for the next packet.
 //
 // Returns (comp, fatal). `comp` is the agent's declared compression
 // for this Query and is ALWAYS surfaced (allow and deny alike) so
@@ -401,42 +410,163 @@ func chAgentToServer(ctx context.Context, ch *runtime.ConnHandle, agentReader *c
 // off the wire. `fatal` is true on a decode / transport failure
 // where the pump must tear the connection down.
 func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream io.Writer, revision int, credName string) (chgoproto.Compression, bool) {
-	var q chgoproto.Query
-	if err := q.DecodeAware(agentReader, revision); err != nil {
-		chEmitError(ch, "query-decode", err.Error())
+	// Build the forward-bound preamble (everything up to the body
+	// length prefix) as we decode each field. Re-encoding these small
+	// fields is cheap; the body is the only field whose size warrants
+	// streaming, and it follows the preamble in the wire layout.
+	var preamble chgoproto.Buffer
+	chgoproto.ClientCodeQuery.Encode(&preamble)
+
+	id, err := agentReader.Str()
+	if err != nil {
+		chEmitError(ch, "query-decode", "id: "+err.Error())
 		return chgoproto.CompressionDisabled, true
 	}
-	// Truncation gate. The matcher sees q.Body verbatim today; an
-	// oversized statement would let an attacker hide policy-relevant
-	// keywords past the matcher's effective look-ahead. We trim what
-	// the matcher sees and flag the request so the dispatcher
-	// fail-closes any rule that reads sql.* — but the bytes that
-	// would be forwarded to upstream are still q.Body in full,
-	// because the agent's compression-tracker on the next Data
-	// frame depends on the Query being emitted unmodified.
-	sqlForMatch := q.Body
-	truncated := false
-	if len(sqlForMatch) > chMaxQueryBody {
-		sqlForMatch = sqlForMatch[:chMaxQueryBody]
-		truncated = true
+	preamble.PutString(id)
+
+	if chgoproto.FeatureClientWriteInfo.In(revision) {
+		var info chgoproto.ClientInfo
+		if err := info.DecodeAware(agentReader, revision); err != nil {
+			chEmitError(ch, "query-decode", "client info: "+err.Error())
+			return chgoproto.CompressionDisabled, true
+		}
+		info.EncodeAware(&preamble, revision)
 	}
-	verdict, reason := chEvaluateSQL(ctx, ch, sqlForMatch, credName, truncated)
+
+	if !chgoproto.FeatureSettingsSerializedAsStrings.In(revision) {
+		chEmitError(ch, "query-decode", "unsupported settings format")
+		return chgoproto.CompressionDisabled, true
+	}
+	for {
+		var s chgoproto.Setting
+		if err := s.Decode(agentReader); err != nil {
+			chEmitError(ch, "query-decode", "setting: "+err.Error())
+			return chgoproto.CompressionDisabled, true
+		}
+		if s.Key == "" {
+			preamble.PutString("") // end-of-settings sentinel
+			break
+		}
+		s.Encode(&preamble)
+	}
+
+	if chgoproto.FeatureInterServerSecret.In(revision) {
+		secret, err := agentReader.Str()
+		if err != nil {
+			chEmitError(ch, "query-decode", "inter-server secret: "+err.Error())
+			return chgoproto.CompressionDisabled, true
+		}
+		preamble.PutString(secret)
+	}
+
+	if _, err := agentReader.UVarInt(); err != nil {
+		chEmitError(ch, "query-decode", "stage: "+err.Error())
+		return chgoproto.CompressionDisabled, true
+	}
+	// chgoproto.Query.EncodeAware hard-codes StageComplete on the wire
+	// regardless of what the agent sent; mirror that here so the
+	// forwarded packet stays byte-identical to what the upstream
+	// library would have emitted.
+	chgoproto.StageComplete.Encode(&preamble)
+
+	compU, err := agentReader.UVarInt()
+	if err != nil {
+		chEmitError(ch, "query-decode", "compression: "+err.Error())
+		return chgoproto.CompressionDisabled, true
+	}
+	compression := chgoproto.Compression(compU)
+	if !compression.IsACompression() {
+		chEmitError(ch, "query-decode", fmt.Sprintf("unknown compression %d", compU))
+		return chgoproto.CompressionDisabled, true
+	}
+	compression.Encode(&preamble)
+
+	// Body: read the length, then pull at most chMaxQueryBody bytes
+	// into memory. The rest stays on the wire until the verdict
+	// dictates whether to stream it through or drop it.
+	bodyLen, err := agentReader.StrLen()
+	if err != nil {
+		chEmitError(ch, "query-decode", "body length: "+err.Error())
+		return compression, true
+	}
+	truncated := bodyLen > chMaxQueryBody
+	headLen := bodyLen
+	if truncated {
+		headLen = chMaxQueryBody
+	}
+	head := make([]byte, headLen)
+	if err := agentReader.ReadFull(head); err != nil {
+		chEmitError(ch, "query-decode", "body head: "+err.Error())
+		return compression, true
+	}
+
+	verdict, reason := chEvaluateSQL(ctx, ch, string(head), credName, truncated)
 	if verdict == "deny" {
+		// Drain the rest of this Query off the wire so the pump can
+		// keep reading subsequent packets — same shape as the previous
+		// implementation (deny → write Exception → continue).
+		if truncated {
+			if _, derr := io.CopyN(io.Discard, agentReader, int64(bodyLen-headLen)); derr != nil {
+				chEmitError(ch, "query-drain", "body tail: "+derr.Error())
+				return compression, true
+			}
+		}
+		if chgoproto.FeatureParameters.In(revision) {
+			for {
+				var p chgoproto.Parameter
+				if perr := p.Decode(agentReader); perr != nil {
+					chEmitError(ch, "query-drain", "parameter: "+perr.Error())
+					return compression, true
+				}
+				if p.Key == "" {
+					break
+				}
+			}
+		}
 		if _, werr := ch.Conn.Write(chEncodeException(reason)); werr != nil {
 			// Agent gone — there's nothing left to keep alive.
-			return q.Compression, true
+			return compression, true
 		}
 		log.Printf("clickhouse_native %s deny %s: %s",
 			ch.Endpoint.Name, ch.PeerIP, reason)
-		return q.Compression, false
+		return compression, false
 	}
 
-	var b chgoproto.Buffer
-	q.EncodeAware(&b, revision)
-	if _, werr := upstream.Write(b.Buf); werr != nil {
-		return q.Compression, true
+	// Allow. Flush preamble + body-length + head, then splice the
+	// remaining body bytes from agent to upstream without bringing
+	// them into our heap. Parameters round-trip through the codec
+	// since their wire size is bounded by the settings layer above.
+	preamble.PutInt(bodyLen)
+	preamble.Buf = append(preamble.Buf, head...)
+	if _, werr := upstream.Write(preamble.Buf); werr != nil {
+		return compression, true
 	}
-	return q.Compression, false
+	if truncated {
+		if _, werr := io.CopyN(upstream, agentReader, int64(bodyLen-headLen)); werr != nil {
+			return compression, true
+		}
+	}
+
+	if chgoproto.FeatureParameters.In(revision) {
+		var paramBuf chgoproto.Buffer
+		for {
+			var p chgoproto.Parameter
+			if perr := p.Decode(agentReader); perr != nil {
+				chEmitError(ch, "query-decode", "parameter: "+perr.Error())
+				return compression, true
+			}
+			if p.Key == "" {
+				paramBuf.PutString("") // end-of-parameters sentinel
+				break
+			}
+			p.Encode(&paramBuf)
+		}
+		if _, werr := upstream.Write(paramBuf.Buf); werr != nil {
+			return compression, true
+		}
+	}
+
+	return compression, false
 }
 
 // chHandleData decodes one client Data packet (table-name header +
