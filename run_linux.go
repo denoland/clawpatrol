@@ -27,7 +27,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -61,7 +60,7 @@ func runRun(args []string) {
 		return
 	}
 
-	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	fs := newFlagSet("run", "clawpatrol run [--conf PATH] -- <cmd> [args...]")
 	confPath := fs.String("conf", defaultRunConf(), "path to wg conf written by `clawpatrol join`")
 	_ = fs.Parse(args)
 	cmd := fs.Args()

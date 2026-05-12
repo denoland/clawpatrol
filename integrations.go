@@ -7,7 +7,6 @@ package main
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -167,7 +166,7 @@ func readPeerAPIToken(caDir string) string {
 // overwrites the auth slot at MITM time, so the placeholder bytes
 // never reach the upstream.
 func runEnv(args []string) {
-	fs := flag.NewFlagSet("env", flag.ExitOnError)
+	fs := newFlagSet("env", "clawpatrol env [--ca-dir DIR]")
 	caDir := fs.String("ca-dir", defaultClawpatrolDir(), "directory containing ca.crt")
 	_ = fs.Parse(args)
 
