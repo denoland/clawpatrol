@@ -1,0 +1,53 @@
+{
+  "ca_dir": "/opt/clawpatrol/ca",
+  "listen": "0.0.0.0:8443",
+  "llm_fail_mode": "closed",
+  "policy": {
+    "credentials": {
+      "alice": {
+        "body": {},
+        "type": "anthropic_oauth_subscription"
+      },
+      "bob": {
+        "body": {},
+        "type": "anthropic_oauth_subscription"
+      },
+      "carol": {
+        "body": {},
+        "type": "anthropic_oauth_subscription"
+      }
+    },
+    "endpoints": {
+      "anthropic": {
+        "body": {
+          "Hosts": [
+            "api.anthropic.com"
+          ],
+          "Credential": "team"
+        },
+        "family": "http",
+        "type": "https"
+      }
+    },
+    "profiles": {
+      "default": {
+        "endpoints": [
+          "anthropic"
+        ]
+      }
+    },
+    "token_pools": {
+      "team": {
+        "body": {
+          "Credentials": [
+            "alice",
+            "bob",
+            "carol"
+          ],
+          "Strategy": "round_robin"
+        }
+      }
+    }
+  },
+  "unknown_host": "passthrough"
+}

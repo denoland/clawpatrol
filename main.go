@@ -1821,29 +1821,37 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		// verbatim and rely on policy alone.
 		var rewriteWSPayload wsPayloadRewriter
 		if cc := runtime.ResolveCredential(ep, mreq); cc != nil {
-			// Plugin.Runtime is a typed-nil sentinel used only for
-			// interface-compliance assertions; the actual decoded HCL
-			// values (BearerToken.IdempotencyKey, PostgresCredential.User,
-			// etc.) live on Body. Invoke methods through Body so the
-			// receiver is the real instance.
-			injector, wantsHTTP := cc.Credential.Body.(runtime.HTTPCredentialRuntime)
-			wsRewriter, wantsWS := cc.Credential.Body.(runtime.WebSocketCredentialRuntime)
-			if wantsHTTP || (wantsWS && isWSUpgrade(req)) {
-				sec, err := g.secrets.Get(cc.Credential.Symbol.Name, profile)
-				if err != nil {
-					log.Printf("secret %s/%s: %v — forwarding without injection", cc.Credential.Symbol.Name, profile, err)
-				} else if len(sec.Bytes) == 0 && len(sec.Extras) == 0 {
-					log.Printf("secret %s/%s: not configured (set CLAWPATROL_SECRET_%s)", cc.Credential.Symbol.Name, profile, secretEnvName(cc.Credential.Symbol.Name))
-				} else {
-					if wantsHTTP {
-						if err := injector.InjectHTTP(req.Context(), req, sec); err != nil {
-							log.Printf("inject %s: %v", cc.Credential.Symbol.Name, err)
+			// Pool bindings delegate to a member at request time.
+			// Resolve picks the underlying credential entity per the
+			// pool's strategy; everything downstream (interface
+			// dispatch, secret lookup) operates on that real
+			// credential. Singular bindings are unaffected.
+			ent := cc.Resolve(mreq)
+			if ent != nil {
+				// Plugin.Runtime is a typed-nil sentinel used only for
+				// interface-compliance assertions; the actual decoded HCL
+				// values (BearerToken.IdempotencyKey, PostgresCredential.User,
+				// etc.) live on Body. Invoke methods through Body so the
+				// receiver is the real instance.
+				injector, wantsHTTP := ent.Body.(runtime.HTTPCredentialRuntime)
+				wsRewriter, wantsWS := ent.Body.(runtime.WebSocketCredentialRuntime)
+				if wantsHTTP || (wantsWS && isWSUpgrade(req)) {
+					sec, err := g.secrets.Get(ent.Symbol.Name, profile)
+					if err != nil {
+						log.Printf("secret %s/%s: %v — forwarding without injection", ent.Symbol.Name, profile, err)
+					} else if len(sec.Bytes) == 0 && len(sec.Extras) == 0 {
+						log.Printf("secret %s/%s: not configured (set CLAWPATROL_SECRET_%s)", ent.Symbol.Name, profile, secretEnvName(ent.Symbol.Name))
+					} else {
+						if wantsHTTP {
+							if err := injector.InjectHTTP(req.Context(), req, sec); err != nil {
+								log.Printf("inject %s: %v", ent.Symbol.Name, err)
+							}
 						}
-					}
-					if wantsWS && isWSUpgrade(req) {
-						wsSec := sec
-						rewriteWSPayload = func(payload []byte) ([]byte, bool, error) {
-							return wsRewriter.RewriteWebSocketPayload(req.Context(), payload, wsSec)
+						if wantsWS && isWSUpgrade(req) {
+							wsSec := sec
+							rewriteWSPayload = func(payload []byte) ([]byte, bool, error) {
+								return wsRewriter.RewriteWebSocketPayload(req.Context(), payload, wsSec)
+							}
 						}
 					}
 				}

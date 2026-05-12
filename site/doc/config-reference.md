@@ -519,20 +519,22 @@ Registered types: [`kubernetes_port_forward`](#tunnel-kubernetesportforward), [`
 
 ### `tunnel "kubernetes_port_forward" "<name>"`
 
+Configures the tunnel runtime.
+
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `context` | `string` | no |  |
 | `namespace` | `string` | no |  |
-| `pod` | `string` | no |  |
+| `pod` | `string` | no | Exactly one of Pod / Service / Selector / Template must be set. |
 | `service` | `string` | no |  |
 | `selector` | `map[string]string` | no |  |
 | `template` | `string` | no |  |
-| `port` | `int` | yes |  |
-| `cleanup` | `string` | no |  |
-| `share` | `string` | no |  |
+| `port` | `int` | yes | The pod-side port the forwarder targets. For service mode it's the *service* port; kubectl resolves the matching targetPort. |
+| `cleanup` | `string` | no | Is meaningful only in template mode — controls whether the pod the plugin applied at Open is deleted on tunnel teardown. "delete" (default) is right for the common create-on- demand case; "keep" disables deletion. |
+| `share` | `string` | no | Framework-level common attrs. |
 | `keepalive` | `string` | no |  |
-| `via` | `string` | no |  |
-| `credential` | `string` | no |  |
+| `via` | `ref(tunnel)` | no |  |
+| `credential` | `ref(credential)` | no |  |
 
 ```hcl
 tunnel "kubernetes_port_forward" "example" {
@@ -542,6 +544,8 @@ tunnel "kubernetes_port_forward" "example" {
 
 ### `tunnel "local_command" "<name>"`
 
+Configures the tunnel runtime.
+
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `command` | `[]string` | yes |  |
@@ -549,10 +553,10 @@ tunnel "kubernetes_port_forward" "example" {
 | `ready_probe` | `string` | no |  |
 | `ready_timeout` | `string` | no |  |
 | `env` | `map[string]string` | no |  |
-| `share` | `string` | no |  |
+| `share` | `string` | no | Framework-level common attrs (share / keepalive / via / credential). Restated on every tunnel plugin's body so gohcl decodes them; the compile pass reads via TunnelCommonRead. |
 | `keepalive` | `string` | no |  |
-| `via` | `string` | no |  |
-| `credential` | `string` | no |  |
+| `via` | `ref(tunnel)` | no |  |
+| `credential` | `ref(credential)` | no |  |
 
 ```hcl
 tunnel "local_command" "example" {
@@ -563,14 +567,16 @@ tunnel "local_command" "example" {
 
 ### `tunnel "ssh_port_forward" "<name>"`
 
+Configures the tunnel runtime.
+
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `bastion` | `string` | no |  |
+| `bastion` | `string` | no | host:port; required when Via is unset |
 | `user` | `string` | yes |  |
-| `share` | `string` | no |  |
+| `share` | `string` | no | Framework-level common attrs. |
 | `keepalive` | `string` | no |  |
-| `via` | `string` | no |  |
-| `credential` | `string` | yes |  |
+| `via` | `ref(tunnel)` | no |  |
+| `credential` | `ref(credential)` | yes |  |
 
 ```hcl
 tunnel "ssh_port_forward" "example" {
@@ -581,6 +587,8 @@ tunnel "ssh_port_forward" "example" {
 
 ### `tunnel "tailscale" "<name>"`
 
+Configures the tunnel runtime.
+
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `authkey` | `string` | no |  |
@@ -588,12 +596,32 @@ tunnel "ssh_port_forward" "example" {
 | `hostname` | `string` | no |  |
 | `state_dir` | `string` | no |  |
 | `tags` | `[]string` | no |  |
-| `share` | `string` | no |  |
+| `share` | `string` | no | Framework-level common attrs. |
 | `keepalive` | `string` | no |  |
-| `via` | `string` | no |  |
-| `credential` | `string` | no |  |
+| `via` | `ref(tunnel)` | no |  |
+| `credential` | `ref(credential)` | no |  |
 
 ```hcl
 tunnel "tailscale" "example" {}
+```
+
+## `token_pool` blocks
+
+Block syntax: `token_pool "<name>" { ... }`
+
+### `token_pool "<name>"`
+
+The gohcl-tagged decode target for a `token_pool`
+block body.
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `credentials` | `[]ref(credential)` | yes | The bare-name list of credential blocks that make up the pool. All members must share one (kind, type) — the compile pass rejects cross-type pools because the dispatcher cannot meaningfully spread, say, an Anthropic and an OpenAI credential across the same endpoint. |
+| `strategy` | `string` | no | Decides which member services each request: `round_robin` (default) hands out members evenly via an atomic counter; `least_loaded` picks the member with the fewest in-process requests so far. |
+
+```hcl
+token_pool {
+  credentials = ["example"]
+}
 ```
 

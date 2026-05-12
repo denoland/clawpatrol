@@ -521,19 +521,35 @@ func (w *webMux) apiEnvPushdown(rw http.ResponseWriter, r *http.Request) {
 	// Endpoints in this profile, plus the credentials they bind.
 	// Credentials are emitted first (so credential-shaped
 	// placeholders win on duplicate names), endpoints second.
+	emitCredEnv := func(ent *config.Entity) {
+		if ent == nil || ent.Symbol == nil || credSeen[ent.Symbol.Name] {
+			return
+		}
+		credSeen[ent.Symbol.Name] = true
+		provider, ok := ent.Body.(config.EnvPushdownProvider)
+		if !ok {
+			return
+		}
+		for _, ev := range provider.EnvVars() {
+			add(ev.Name, ev.Value, ev.Description, ent.Plugin.Type)
+		}
+	}
 	for _, ep := range prof.Endpoints {
 		for _, cc := range ep.Credentials {
-			if cc == nil || cc.Credential == nil || credSeen[cc.Credential.Symbol.Name] {
+			if cc == nil {
 				continue
 			}
-			credSeen[cc.Credential.Symbol.Name] = true
-			provider, ok := cc.Credential.Body.(config.EnvPushdownProvider)
-			if !ok {
+			// Pool bindings expand to every member — env-pushdown
+			// runs once per unique credential so the agent sees the
+			// same placeholder regardless of which pool member ends
+			// up servicing the request (members share a Plugin.Type).
+			if cc.Pool != nil {
+				for _, m := range cc.Pool.Members {
+					emitCredEnv(m)
+				}
 				continue
 			}
-			for _, ev := range provider.EnvVars() {
-				add(ev.Name, ev.Value, ev.Description, cc.Credential.Plugin.Type)
-			}
+			emitCredEnv(cc.Credential)
 		}
 	}
 	for _, ep := range prof.Endpoints {
@@ -662,6 +678,7 @@ func (w *webMux) apiState(rw http.ResponseWriter, r *http.Request) {
 	state := map[string]any{
 		"whoami":           w.whoamiData(r),
 		"integrations":     w.statusList(r),
+		"pools":            w.poolsList(r),
 		"agents":           w.agentsList(),
 		"update":           currentUpdateBanner.Load(),
 		"read_only_config": w.g.readOnlyConfig,

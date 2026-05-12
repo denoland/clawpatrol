@@ -169,23 +169,26 @@ func (ClickhouseNativeEndpointRuntime) HandleConn(ctx context.Context, ch *runti
 	injected := false
 	credName := ""
 	if cc := chPickCredential(ch.Endpoint); cc != nil {
-		credName = cc.Credential.Symbol.Name
-		auth, ok := cc.Credential.Body.(runtime.ClickhouseAuthCredential)
-		if !ok {
-			chEmitError(ch, "credential-not-clickhouse-auth", cc.Credential.Symbol.Name)
-			return fmt.Errorf("clickhouse_native: credential %q does not implement ClickhouseAuthCredential",
-				cc.Credential.Symbol.Name)
+		credEnt := cc.Resolve(nil)
+		if credEnt == nil {
+			chEmitError(ch, "credential-resolve-nil", "")
+			return fmt.Errorf("clickhouse_native: credential resolve returned nil")
 		}
-		sec, secErr := ch.Secrets.Get(cc.Credential.Symbol.Name, ch.Profile)
+		credName = credEnt.Symbol.Name
+		auth, ok := credEnt.Body.(runtime.ClickhouseAuthCredential)
+		if !ok {
+			chEmitError(ch, "credential-not-clickhouse-auth", credName)
+			return fmt.Errorf("clickhouse_native: credential %q does not implement ClickhouseAuthCredential", credName)
+		}
+		sec, secErr := ch.Secrets.Get(credName, ch.Profile)
 		if secErr != nil {
-			chEmitError(ch, "secret-fetch", fmt.Sprintf("%s: %v", cc.Credential.Symbol.Name, secErr))
-			return fmt.Errorf("clickhouse_native: fetch secret %q: %w", cc.Credential.Symbol.Name, secErr)
+			chEmitError(ch, "secret-fetch", fmt.Sprintf("%s: %v", credName, secErr))
+			return fmt.Errorf("clickhouse_native: fetch secret %q: %w", credName, secErr)
 		}
 		realUser, realPassword := auth.ClickhouseAuth(sec)
 		if realUser == "" || realPassword == "" {
-			chEmitError(ch, "secret-empty", cc.Credential.Symbol.Name)
-			return fmt.Errorf("clickhouse_native: credential %q produced empty user or password",
-				cc.Credential.Symbol.Name)
+			chEmitError(ch, "secret-empty", credName)
+			return fmt.Errorf("clickhouse_native: credential %q produced empty user or password", credName)
 		}
 		before := hello.Username + "\x00" + hello.Password
 		hello.Username = realUser

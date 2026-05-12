@@ -206,27 +206,46 @@ func multiCredValidate(d any, name string, ctx *config.BuildCtx) hcl.Diagnostics
 	entries, parseDiags := parseCredentialList(raw, ctx.Block.DefRange)
 	diags = append(diags, parseDiags...)
 	for _, e := range entries {
-		if ctx.Symbols.Get(config.KindCredential, e.Credential) != nil {
+		if _, ok := resolveCredOrPool(ctx, e.Credential); ok {
 			continue
 		}
 		if alt := ctx.Symbols.GetAny(e.Credential); alt != nil {
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
 				Summary:  fmt.Sprintf("Wrong reference kind for %q", e.Credential),
-				Detail:   fmt.Sprintf("endpoint %q credentials list expects a credential but %q is a %s.", name, e.Credential, alt.Kind),
+				Detail:   fmt.Sprintf("endpoint %q credentials list expects a credential or token_pool but %q is a %s.", name, e.Credential, alt.Kind),
 				Subject:  &ctx.Block.DefRange,
 			})
 		} else {
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
 				Summary:  fmt.Sprintf("Unknown credential %q", e.Credential),
-				Detail:   fmt.Sprintf("endpoint %q credentials list references undeclared credential %q.", name, e.Credential),
+				Detail:   fmt.Sprintf("endpoint %q credentials list references undeclared credential or token_pool %q.", name, e.Credential),
 				Subject:  &ctx.Block.DefRange,
 			})
 		}
 	}
 	hcr.setCredentialEntries(entries)
 	return diags
+}
+
+// resolveCredOrPool checks the symbol table for a credential or token
+// pool with the given bare name. Used by validators that accept
+// either as the value of a `credential = ...` binding.
+//
+// Returns (kind, true) when a match is found. Caller decides how to
+// surface the diagnostic if neither matches.
+func resolveCredOrPool(ctx *config.BuildCtx, name string) (config.Kind, bool) {
+	if ctx == nil || ctx.Symbols == nil || name == "" {
+		return "", false
+	}
+	if ctx.Symbols.Get(config.KindCredential, name) != nil {
+		return config.KindCredential, true
+	}
+	if ctx.Symbols.Get(config.KindTokenPool, name) != nil {
+		return config.KindTokenPool, true
+	}
+	return "", false
 }
 
 // passthroughBuild is the Build hook for endpoint plugins that don't
@@ -236,15 +255,22 @@ func passthroughBuild(d any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics
 }
 
 // singularRef is the standard `credential = X` ref-spec used by every
-// endpoint plugin. Kind=KindCredential, Optional so deny-only
-// passthrough endpoints can omit it.
+// endpoint plugin. Kind=KindCredential plus AltKind=KindTokenPool so
+// the binding accepts either a credential bare-name or a token_pool
+// bare-name; the compile pass distinguishes the two and routes
+// accordingly. Optional so deny-only passthrough endpoints can omit it.
 //
 // `tunnel = X` is NOT here — that attribute is hoisted to the
 // framework level (see config.frameworkAttrsByKind) so plugins
 // don't have to declare it. The loader peels it off before gohcl
 // runs and stashes the resolved name on Entity.Framework.
 var singularRef = []config.RefSpec{
-	{Path: "Credential", Kind: config.KindCredential, Optional: true},
+	{
+		Path:     "Credential",
+		Kind:     config.KindCredential,
+		AltKinds: []config.Kind{config.KindTokenPool},
+		Optional: true,
+	},
 }
 
 // emitCredentialBinding writes either `credential = X` (singular) or

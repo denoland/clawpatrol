@@ -34,6 +34,7 @@ const (
 	KindPolicy     Kind = "policy"
 	KindProfile    Kind = "profile"
 	KindTunnel     Kind = "tunnel"
+	KindTokenPool  Kind = "token_pool"
 )
 
 // LabelCount returns how many labels a block of this kind carries
@@ -42,7 +43,7 @@ func (k Kind) LabelCount() int {
 	switch k {
 	case KindEndpoint, KindCredential, KindApprover, KindTunnel:
 		return 2 // first = type, second = name
-	case KindRule, KindPolicy, KindProfile:
+	case KindRule, KindPolicy, KindProfile, KindTokenPool:
 		return 1 // name
 	}
 	return 0
@@ -169,6 +170,14 @@ type RefSpec struct {
 	// Kind the resolved name must belong to.
 	Kind Kind
 
+	// AltKinds lists additional kinds the reference may resolve to.
+	// Used where one HCL field accepts more than one entity shape —
+	// e.g. an endpoint's `credential = X` may resolve to either a
+	// credential or a token_pool, both of which satisfy the
+	// "pick injection bytes" contract at request time. Resolution
+	// tries Kind first, then each AltKind in order.
+	AltKinds []Kind
+
 	// FamilyConstraint, when non-empty, requires the resolved entity's
 	// Family to be in this set. Used by rule plugins to require
 	// endpoints of a matching protocol family. Empty = any family.
@@ -177,4 +186,21 @@ type RefSpec struct {
 	// Optional means an empty/zero value at Path is fine. Required
 	// references that resolve to "" emit a diagnostic.
 	Optional bool
+}
+
+// matches reports whether sym satisfies this RefSpec's accepted-kind
+// set (Kind or any of AltKinds).
+func (s RefSpec) matches(sym *Symbol) bool {
+	if sym == nil {
+		return false
+	}
+	if sym.Kind == s.Kind {
+		return true
+	}
+	for _, k := range s.AltKinds {
+		if sym.Kind == k {
+			return true
+		}
+	}
+	return false
 }
