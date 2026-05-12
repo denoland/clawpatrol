@@ -207,6 +207,11 @@ type ConnEvent struct {
 	Summary string // human-readable one-liner for the event log
 	Bytes   int64  // approximate request size for billing / quotas
 	Facets  map[string]any
+	// Rule is the matched CompiledRule.Name, "" when no rule fired.
+	// The host's Emit closure copies it onto the dashboard Event so
+	// the action-fixture exporter can pin a downloaded action to a
+	// specific rule (doc/test.md §1.3).
+	Rule string
 }
 
 // Secret is what credential plugins receive at injection time. The
@@ -409,6 +414,23 @@ var ErrUnsupported = errors.New("plugin runtime not implemented")
 // calling it.
 type PlaceholderDetector interface {
 	DetectPlaceholder(req *Request, candidates []string) string
+}
+
+// SQLParser is the optional contract a SQL-family endpoint plugin's
+// runtime implements so a host that received a raw SQL string (rather
+// than a live wire-protocol frame) can populate `match.Request.Meta`
+// using the same parser the live dispatch path uses. The fixture
+// loader behind `clawpatrol test` reads only `"statement": "..."`
+// from each fixture and calls this to recover verb / tables /
+// functions before running rule matching, so the format stays
+// operator-friendly (doc/test.md §4).
+//
+// Implementations return the per-family `*sqlfacet.Meta` value the
+// SQL matcher expects on `match.Request.Meta`. Endpoints whose
+// runtime doesn't implement this aren't usable as SQL test
+// fixtures.
+type SQLParser interface {
+	ParseStatement(sql string) any
 }
 
 // Request is re-exported here so callers don't have to import

@@ -1260,7 +1260,8 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 				Mode: "pg", Family: ep.Family, Host: dstIP, AgentIP: agentPip,
 				Method: ev.Verb, Path: ev.Summary,
 				Action: ev.Action, Reason: ev.Reason,
-				Facets: ev.Facets,
+				Facets:   ev.Facets,
+				Endpoint: ep.Name, Rule: ev.Rule,
 			})
 		},
 		Approve: func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
@@ -1418,7 +1419,8 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 				Mode: mode, Family: ep.Family, Host: eventHost, AgentIP: agentPip,
 				Method: ev.Verb, Path: ev.Summary,
 				Action: ev.Action, Reason: ev.Reason,
-				Facets: ev.Facets,
+				Facets:   ev.Facets,
+				Endpoint: ep.Name, Rule: ev.Rule,
 			})
 		},
 		Approve: func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
@@ -1663,7 +1665,8 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			Family: ep.Family,
 			Host:   host,
 			Method: req.Method, Path: req.URL.Path,
-			AgentIP: agentAddr,
+			AgentIP:  agentAddr,
+			Endpoint: ep.Name,
 		}
 		if fac != nil {
 			ev.Facets = fac.Report(mreq)
@@ -1678,6 +1681,9 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		g.emit(startEv)
 
 		cr := runtime.MatchRequest(ep, mreq)
+		if cr != nil {
+			ev.Rule = cr.Name
+		}
 
 		// Approve chain — dispatch each stage to its approver
 		// runtime (config/plugins/approvers). All stages must
@@ -2080,6 +2086,8 @@ func main() {
 		runInitCA(os.Args[2:])
 	case "validate":
 		runValidate(os.Args[2:])
+	case "test":
+		runTest(os.Args[2:])
 	case "uninstall":
 		runUninstall(os.Args[2:])
 	case "status":
@@ -2165,6 +2173,7 @@ usage:
   clawpatrol env                         print shell exports for sourcing
   clawpatrol init-ca DIR                 generate a new CA in DIR
   clawpatrol validate <config.hcl>       parse + compile a config and exit
+  clawpatrol test <config> <path>        replay action fixtures against a candidate policy
   clawpatrol version`)
 	os.Exit(2)
 }
