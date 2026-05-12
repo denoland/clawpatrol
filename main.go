@@ -2044,6 +2044,14 @@ func main() {
 		runJoin(os.Args[2:])
 	case "run":
 		runRun(os.Args[2:])
+	case "relay-supervisor":
+		// internal: re-exec'd by `clawpatrol run` to host the auto-expose
+		// supervisor in the host netns. Hidden from usage.
+		runRelaySupervisor(os.Args[2:])
+	case "relay-worker":
+		// internal: re-exec'd from inside the agent netns to host the
+		// auto-expose worker. Hidden from usage.
+		runRelayWorker(os.Args[2:])
 	case "env":
 		runEnv(os.Args[2:])
 	case "init-ca":

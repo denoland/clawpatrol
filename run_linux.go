@@ -153,6 +153,22 @@ func runRun(args []string) {
 	_, _ = wgUpW.Write([]byte{1})
 	_ = wgUpW.Close()
 
+	// Second SCM_RIGHTS message from the child: [notify_fd, sup_sock] for
+	// the auto-expose relay. The child sends it once seccomp + socketpair
+	// are wired (see runRunChild). Absence (e.g., unsupported arch in the
+	// child) is non-fatal — webhooks just won't auto-expose.
+	if relayFDs, err := recvFDs(pSock, 2); err == nil {
+		notifyFile := os.NewFile(uintptr(relayFDs[0]), "seccomp-notify")
+		supSock := os.NewFile(uintptr(relayFDs[1]), "relay-sup-sock")
+		if _, serr := spawnRelaySupervisor(notifyFile, supSock); serr != nil {
+			fmt.Fprintf(os.Stderr, "⚠ auto-expose relay: %v (webhooks won't be reachable from host)\n", serr)
+		}
+		_ = notifyFile.Close()
+		_ = supSock.Close()
+	} else {
+		fmt.Fprintf(os.Stderr, "⚠ auto-expose relay: no fds from child: %v (webhooks won't be reachable from host)\n", err)
+	}
+
 	sigCh := make(chan os.Signal, 4)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
@@ -190,7 +206,8 @@ func runRunChild() {
 	if err := sendFD(cSock, tunFd); err != nil {
 		fail("send tun fd: %v", err)
 	}
-	_ = cSock.Close()
+	// Keep cSock open: we'll send a second SCM_RIGHTS message with the
+	// auto-expose relay fds once the netns is fully plumbed.
 	_ = unix.Close(tunFd)
 
 	one := make([]byte, 1)
@@ -244,6 +261,21 @@ func runRunChild() {
 		_ = bindResolv("nameserver 1.1.1.1\nnameserver 8.8.8.8\n")
 	}
 
+	// Auto-expose relay: install seccomp filter trapping listen(2), open
+	// the socketpair the supervisor and worker share, ship the supervisor
+	// end up to the top parent via SCM_RIGHTS, fork the worker as a child
+	// in this same userns+netns. Best-effort: on failure we close cSock
+	// without sending the second message and continue without auto-expose.
+	setupRelayInChild(cSock)
+	_ = cSock.Close()
+
+	// Allow same-uid sibling processes (the relay supervisor in the host
+	// netns) to pidfd_getfd this process's listen sockets under yama
+	// ptrace_scope=1. Best-effort: not strictly required when yama is
+	// permissive, just makes the supervisor's socket inspection work.
+	_, _, _ = unix.RawSyscall6(unix.SYS_PRCTL,
+		unix.PR_SET_PTRACER, ptraceAny, 0, 0, 0, 0)
+
 	// Clear ambient caps before exec so the user's command does not inherit
 	// CAP_NET_ADMIN. Mirrors clear_ambient_caps() in unclaw netns.rs.
 	if err := clearAmbientCaps(); err != nil {
@@ -264,6 +296,11 @@ func runRunChild() {
 const (
 	capNetAdmin = uintptr(12) // CAP_NET_ADMIN
 	capSysAdmin = uintptr(21) // CAP_SYS_ADMIN — needed for bind-mount in mnt ns
+
+	// PR_SET_PTRACER_ANY: any same-uid process may ptrace us. The relay
+	// supervisor uses this to pidfd_getfd our listen sockets through the
+	// yama LSM check.
+	ptraceAny = ^uintptr(0)
 )
 
 // clearAmbientCaps drops all ambient capabilities before exec'ing the user's
@@ -429,26 +466,52 @@ func sendFD(s *os.File, fd int) error {
 }
 
 func recvFD(s *os.File) (int, error) {
-	buf := make([]byte, 1)
-	oob := make([]byte, unix.CmsgSpace(4))
-	_, oobn, _, _, err := unix.Recvmsg(int(s.Fd()), buf, oob, 0)
+	fds, err := recvFDs(s, 1)
 	if err != nil {
 		return -1, err
+	}
+	return fds[0], nil
+}
+
+// sendFDs ships up to a handful of fds in a single SCM_RIGHTS message.
+// The payload byte distinguishes nothing in particular today; it exists
+// because sendmsg requires at least one byte of inline data on a stream
+// socket for the receiver to see the cmsg.
+func sendFDs(s *os.File, fds []int) error {
+	rights := unix.UnixRights(fds...)
+	return unix.Sendmsg(int(s.Fd()), []byte{1}, rights, nil, 0)
+}
+
+// recvFDs reads exactly n fds out of one SCM_RIGHTS message. Extras get
+// closed so we never leak; a short cmsg returns an error.
+func recvFDs(s *os.File, n int) ([]int, error) {
+	buf := make([]byte, 1)
+	oob := make([]byte, unix.CmsgSpace(4*n))
+	_, oobn, _, _, err := unix.Recvmsg(int(s.Fd()), buf, oob, 0)
+	if err != nil {
+		return nil, err
 	}
 	cmsgs, err := unix.ParseSocketControlMessage(oob[:oobn])
 	if err != nil {
-		return -1, err
+		return nil, err
 	}
 	for _, cmsg := range cmsgs {
 		fds, err := unix.ParseUnixRights(&cmsg)
-		if err == nil && len(fds) > 0 {
-			for _, x := range fds[1:] {
+		if err != nil || len(fds) == 0 {
+			continue
+		}
+		if len(fds) < n {
+			for _, x := range fds {
 				_ = unix.Close(x)
 			}
-			return fds[0], nil
+			return nil, fmt.Errorf("expected %d fds, got %d", n, len(fds))
 		}
+		for _, x := range fds[n:] {
+			_ = unix.Close(x)
+		}
+		return fds[:n], nil
 	}
-	return -1, fmt.Errorf("no SCM_RIGHTS fd")
+	return nil, fmt.Errorf("no SCM_RIGHTS fd")
 }
 
 func bindResolv(body string) error {
