@@ -31,8 +31,8 @@ in promiscuous mode — same shape as unclaw's `boringtun` + `smoltcp`
 
 ## What works (verified end-to-end on vultr)
 
-- `clawpatrol gateway -config gateway.hcl` boots WG endpoint on
-  UDP 51820, dashboard + MITM ride the same forwarder.
+- `clawpatrol gateway gateway.hcl` boots WG endpoint on UDP 51820,
+  dashboard + MITM ride the same forwarder.
 - Server keypair persisted at `<oauth_dir>/wg-server.key`. Pubkey
   derived via curve25519 at boot. Peer (pubkey → IP) map persisted
   at `<oauth_dir>/wg-peers.json`, replayed on every restart so
@@ -94,7 +94,7 @@ clawpatrol init-ca /opt/clawpatrol/ca
 
 iptables -I INPUT -p udp --dport 51820 -j ACCEPT
 iptables -I INPUT -p tcp --dport 8080 -j ACCEPT
-clawpatrol gateway -config /etc/clawpatrol/gateway.hcl
+clawpatrol gateway /etc/clawpatrol/gateway.hcl
 ```
 
 Connect Claude / GitHub / Codex via the dashboard at

@@ -74,12 +74,22 @@ clawpatrol claude            # equivalent to: clawpatrol run claude
 Start the proxy server directly (without the onboard wizard).
 
 ```bash
-clawpatrol gateway
+clawpatrol gateway <config.hcl> [--read-only-config]
 ```
 
-This starts the CONNECT proxy on port 8443 and the
-dashboard/API on port 8080. Useful for running clawpatrol as a
-persistent service or in Docker.
+The HCL config is required. To bootstrap one from scratch:
+
+```bash
+clawpatrol gateway init
+```
+
+This starts the CONNECT proxy on port 8443 and the dashboard/API on
+port 8080. Useful for running clawpatrol as a persistent service or
+in Docker. `--read-only-config` rejects dashboard writes to the
+config file — appropriate when the file is owned by a deploy
+pipeline.
+
+See [Config reference](config-reference) for the HCL grammar.
 
 ### `clawpatrol offboard`
 
@@ -104,9 +114,9 @@ and `--no-trust` are optional flags.
 clawpatrol join <gateway-url>
 ```
 
-### `clawpatrol --version`
+### `clawpatrol version`
 
-Print the version and exit. Also accepts `-V`.
+Print the version and exit. Also accepts `-v` and `--version`.
 
 ## Environment Variables
 
