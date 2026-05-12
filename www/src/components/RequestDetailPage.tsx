@@ -245,7 +245,9 @@ function Breadcrumbs({
       {requestId && (
         <>
           <span className="text-[13px] text-[#a3a3a3]">/</span>
-          <span className="text-[13px] text-[#525252] font-mono">{requestId.slice(0, 8)}</span>
+          <span className="text-[13px] text-[#525252] font-mono" title={requestId}>
+            {requestId.split("-").pop()}
+          </span>
         </>
       )}
     </nav>
