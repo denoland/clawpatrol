@@ -44,6 +44,13 @@ type CompiledPolicy struct {
 	Approvers   map[string]*Entity
 	Credentials map[string]*Entity
 	Policies    map[string]*PolicyText
+
+	// OIDC enrollment policy is compiled separately from endpoint
+	// routing: it targets profiles, not endpoints, and must never use
+	// single-tenant endpoint/profile fallbacks.
+	OIDCAudience            string
+	OIDCEnrollments         []*CompiledOIDCEnrollment
+	OIDCEnrollmentsByIssuer map[string][]*CompiledOIDCEnrollment
 }
 
 // CompiledProfile binds an identity to the endpoint set its requests
@@ -53,9 +60,34 @@ type CompiledPolicy struct {
 // lookup. CompiledEndpoint.Hosts keeps the operator-declared strings
 // unchanged.
 type CompiledProfile struct {
-	Name      string
-	Endpoints map[string]*CompiledEndpoint
-	HostIndex map[string]*CompiledEndpoint
+	Name               string
+	Endpoints          map[string]*CompiledEndpoint
+	HostIndex          map[string]*CompiledEndpoint
+	AllowEphemeralOIDC bool
+}
+
+// CompiledOIDCEnrollment is the runtime-friendly, profile-resolved form of
+// an OIDC enrollment block. It is intentionally separate from endpoint rules:
+// enrollment authorizes a new peer into a profile, not a request to an
+// endpoint.
+type CompiledOIDCEnrollment struct {
+	Name     string
+	Issuer   string
+	Profile  *CompiledProfile
+	TTL      time.Duration
+	MaxTTL   time.Duration
+	Match    map[string]any
+	Metadata map[string]any
+}
+
+// OIDCClaimRequest is the pure, already-verified claim shape consumed by the
+// runtime matcher. JWT parsing and signature verification live in a later
+// layer; this type only captures matching inputs.
+type OIDCClaimRequest struct {
+	Issuer          string
+	Audience        []string
+	AuthorizedParty string
+	Claims          map[string]any
 }
 
 // CompiledEndpoint flattens an endpoint plus the rules that target it.
@@ -217,17 +249,18 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 	}
 	p := gw.Policy
 	cp := &CompiledPolicy{
-		UnknownHost:    gw.UnknownHost,
-		LLMFailMode:    gw.LLMFailMode,
-		LLMCacheTTL:    gw.LLMCacheTTL,
-		HumanTimeout:   gw.HumanTimeout,
-		HumanOnTimeout: gw.HumanOnTimeout,
-		Profiles:       map[string]*CompiledProfile{},
-		Endpoints:      map[string]*CompiledEndpoint{},
-		Tunnels:        map[string]*CompiledTunnel{},
-		Approvers:      p.Approvers,
-		Credentials:    p.Credentials,
-		Policies:       p.Policies,
+		UnknownHost:             gw.UnknownHost,
+		LLMFailMode:             gw.LLMFailMode,
+		LLMCacheTTL:             gw.LLMCacheTTL,
+		HumanTimeout:            gw.HumanTimeout,
+		HumanOnTimeout:          gw.HumanOnTimeout,
+		Profiles:                map[string]*CompiledProfile{},
+		Endpoints:               map[string]*CompiledEndpoint{},
+		Tunnels:                 map[string]*CompiledTunnel{},
+		Approvers:               p.Approvers,
+		Credentials:             p.Credentials,
+		Policies:                p.Policies,
+		OIDCEnrollmentsByIssuer: map[string][]*CompiledOIDCEnrollment{},
 	}
 
 	// Compile tunnels first so endpoint compilation can resolve
@@ -284,9 +317,10 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 	// don't fork per profile.
 	for name, pr := range p.Profiles {
 		profile := &CompiledProfile{
-			Name:      name,
-			Endpoints: map[string]*CompiledEndpoint{},
-			HostIndex: map[string]*CompiledEndpoint{},
+			Name:               name,
+			Endpoints:          map[string]*CompiledEndpoint{},
+			HostIndex:          map[string]*CompiledEndpoint{},
+			AllowEphemeralOIDC: pr.AllowEphemeralOIDC,
 		}
 		for _, epName := range pr.Endpoints {
 			ce, ok := cp.Endpoints[epName]
@@ -317,6 +351,10 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 			}
 		}
 		cp.Profiles[name] = profile
+	}
+
+	if err := compileOIDCEnrollments(cp, p, gw.PublicURL); err != nil {
+		return nil, err
 	}
 
 	return cp, nil
