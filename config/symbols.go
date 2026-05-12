@@ -12,7 +12,7 @@ type Symbol struct {
 	Name   string
 	Kind   Kind
 	Type   string // "" for one-label kinds
-	Family string // for endpoints: "https"|"sql"|"k8s"; "" otherwise
+	Family string // for endpoints: "http"|"sql"|"k8s"; "" otherwise
 	Block  *hcl.Block
 }
 

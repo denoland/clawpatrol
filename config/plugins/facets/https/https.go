@@ -26,9 +26,9 @@ import (
 
 // HttpsFields is the CEL-facing view of an HTTPS request. Exposed
 // as the `http` variable in rule conditions (`http.method`,
-// `http.path`, `http.body_json`, etc.). The variable name is short
-// (`http`, not `https`) to keep conditions readable; the facet name
-// is `https` because the wire is TLS.
+// `http.path`, `http.body_json`, etc.). The facet name matches the
+// CEL variable (`http`); the endpoint plugin keeps the HCL label
+// `https` since that names the wire (TLS).
 //
 // BodyJson is *structpb.Value rather than `any` because cel-go's
 // NativeTypes converter drops interface-typed struct fields silently;
@@ -49,13 +49,11 @@ type HttpsFields struct {
 type Facet struct{}
 
 // Name reports the family identifier this facet handles.
-func (Facet) Name() string { return "https" }
+func (Facet) Name() string { return "http" }
 
 // EndpointFamilies enumerates endpoint families a rule of this facet
-// may attach to. Kubernetes endpoints are also `https`-family because
-// the kubernetes API is HTTPS-shaped; they get their k8s-specific
-// matchers through the k8s facet, not through http rules.
-func (Facet) EndpointFamilies() []string { return []string{"https"} }
+// may attach to.
+func (Facet) EndpointFamilies() []string { return []string{"http"} }
 
 // Transport reports the gateway-side dispatch handler this facet uses.
 func (Facet) Transport() string { return "https-mitm" }

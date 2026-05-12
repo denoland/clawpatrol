@@ -165,7 +165,7 @@ func init() {
 	config.Register(&config.Plugin{
 		Kind:     config.KindEndpoint,
 		Type:     "openai_codex_https",
-		Family:   "https",
+		Family:   "http",
 		New:      func() any { return &OpenAICodexHTTPSEndpoint{} },
 		Refs:     singularRef,
 		Validate: multiCredValidate,

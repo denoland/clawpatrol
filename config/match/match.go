@@ -19,7 +19,7 @@ import (
 // stashes any derived per-family metadata on Meta — its concrete type
 // is owned by the facet plugin, which type-asserts inside its matcher.
 type Request struct {
-	Family string // e.g. "https" | "sql" | "k8s" | future plugins
+	Family string // e.g. "http" | "sql" | "k8s" | future plugins
 
 	// Common
 	Credential string // bare-name reference of the credential the

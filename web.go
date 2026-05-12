@@ -1693,7 +1693,7 @@ type Event struct {
 	Direction string `json:"direction,omitempty"`
 
 	// Family identifies which protocol-family facet emitted this
-	// event ("https", "sql", "k8s", or a future plugin's name).
+	// event ("http", "sql", "k8s", or a future plugin's name).
 	// Persisted as a dedicated column on actions so analytics can
 	// filter by family; drives dashboard column selection via
 	// /api/facets. Empty for splice events and pre-migration rows.
