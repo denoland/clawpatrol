@@ -177,7 +177,7 @@ what the user pushed back on. The interactive flow already exists inside
 tsnet; the design just needs to expose its emitted URL to the dashboard and
 back its StateStore by sqlite instead of a filesystem dir.
 
-### Q4. Dashboard UX: new `NodeAuthFlowProvider`, not `OAuthFlowProvider`
+### Q4. Dashboard UX: new `TailscaleAuthProvider`, not `OAuthFlowProvider`
 
 - The dashboard's existing `OAuthFlowProvider` mechanism is the right shape
   (a credential surfacing a "Connect" affordance that opens a redirect) but
@@ -188,14 +188,17 @@ back its StateStore by sqlite instead of a filesystem dir.
   - `OAuthRegistry` stores per-owner tokens. Tailscale node identity is
     *gateway-wide* (one node per tunnel, shared across owners) — per-owner
     partitioning is actively wrong here.
-- Introduce `NodeAuthFlowProvider` in `config/`:
+- Introduce `TailscaleAuthProvider` in `config/plugins/tailscaleproto/`
+  (lives next to the `NodeIdentity` interface — both are the protocol-
+  specific contract between the tailscale tunnel/credential plugins and
+  the dashboard):
 
   ```go
-  type NodeAuthFlowProvider interface {
-      NodeAuthFlow() *NodeAuthIntegration
+  type TailscaleAuthProvider interface {
+      TailscaleAuth() *TailscaleAuthIntegration
   }
 
-  type NodeAuthIntegration struct {
+  type TailscaleAuthIntegration struct {
       // BeginURL is a dashboard-relative endpoint the frontend POSTs
       // to start (or re-fetch) the live auth URL. The handler reads
       // the runtime PendingNodeAuth registry and returns either the
@@ -208,7 +211,7 @@ back its StateStore by sqlite instead of a filesystem dir.
   ```
 
 - The dashboard's connect modal grows one branch: if a credential exposes
-  `NodeAuthFlow()`, render the "Connect" button against the live BeginURL
+  `TailscaleAuth()`, render the "Connect" button against the live BeginURL
   flow instead of the OAuthRegistry handshake.
 - Surfacing: per the user's UX ask, the integrations list rendered for a
   profile must include every credential referenced (directly or transitively)
@@ -290,7 +293,7 @@ keeps the change scoped and reviewable.
 2. **`config/plugins/credentials/tailscale.go`** — credential plugin (empty
    body). Implements `NodeIdentity.StateStore` returning a sqlite-backed
    `ipn.StateStore` that reads/writes through `runtime.SecretStore`.
-   Implements `NodeAuthFlowProvider` so the dashboard discovers the connect
+   Implements `TailscaleAuthProvider` so the dashboard discovers the connect
    affordance.
 3. **`config/plugins/credentials/tailscale_test.go`** — StateStore round-trip
    against an in-memory `SecretStore`; `NodeAuthFlow()` integration surfaces
@@ -307,7 +310,7 @@ keeps the change scoped and reviewable.
    on Dial.
 6. **Dashboard integration walker** — extend the profile-integrations
    resolver so it picks up credentials attached to tunnels (not just
-   endpoint-attached). Render `NodeAuthFlowProvider` credentials with the
+   endpoint-attached). Render `TailscaleAuthProvider` credentials with the
    live-URL Connect flow.
 7. **`doc/tailscale.md`** — operator-facing snippet leading with the
    credential shape; literal shape as a "Legacy" block.

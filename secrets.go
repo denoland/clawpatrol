@@ -34,6 +34,19 @@ func newGatewaySecretStore(db *sql.DB, oauth *OAuthRegistry) runtime.SecretStore
 	return &gatewaySecretStore{db: db, oauth: oauth, env: runtime.EnvSecretStore{}}
 }
 
+// SetCredentialSlot upserts one slot row into credential_secrets,
+// satisfying tailscaleproto.SecretWriter. The tsnet ipn.StateStore
+// round-trips machine key, node key, and login profile through here
+// on first-time node auth and on every state mutation thereafter.
+// Owner is the empty string for tailscale (node identity is gateway-
+// wide, not per-owner).
+func (s *gatewaySecretStore) SetCredentialSlot(name, owner, slot, value string) error {
+	if s.db == nil {
+		return fmt.Errorf("gateway secret store: no db")
+	}
+	return setCredentialSlot(s.db, name, owner, slot, value)
+}
+
 func (s *gatewaySecretStore) Get(name, owner string) (runtime.Secret, error) {
 	if s.db != nil {
 		sec, ok, err := readCredentialSecrets(s.db, name, owner)
