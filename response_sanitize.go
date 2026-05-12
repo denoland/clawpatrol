@@ -50,6 +50,14 @@ func stripAuthResponseHeaders(h http.Header) {
 // Connection / Upgrade and would break the 101 handshake — we
 // filter byte-verbatim here instead of round-tripping through
 // http.Response.
+//
+// Obs-fold continuation lines (deprecated RFC 7230 §3.2.4 — a line
+// beginning with SP / HTAB is folded into the preceding header's
+// value) are dropped together with their parent line when the
+// parent is an auth header. Otherwise the parent line would be
+// removed but the continuation kept, and the receiving HTTP parser
+// would re-attach the cookie bytes to whichever non-auth header
+// landed above them — including the status line.
 func stripAuthResponseHeadersRaw(headerBytes []byte) []byte {
 	const term = "\r\n\r\n"
 	if !bytes.HasSuffix(headerBytes, []byte(term)) {
@@ -58,17 +66,28 @@ func stripAuthResponseHeadersRaw(headerBytes []byte) []byte {
 	body := headerBytes[:len(headerBytes)-len(term)]
 	lines := bytes.Split(body, []byte("\r\n"))
 	kept := make([][]byte, 0, len(lines))
+	droppingFold := false
 	for i, line := range lines {
 		if i == 0 {
+			kept = append(kept, line)
+			droppingFold = false
+			continue
+		}
+		if len(line) > 0 && (line[0] == ' ' || line[0] == '\t') {
+			if droppingFold {
+				continue
+			}
 			kept = append(kept, line)
 			continue
 		}
 		if c := bytes.IndexByte(line, ':'); c >= 0 {
 			name := strings.TrimSpace(string(line[:c]))
 			if isAuthResponseHeader(name) {
+				droppingFold = true
 				continue
 			}
 		}
+		droppingFold = false
 		kept = append(kept, line)
 	}
 	out := bytes.Join(kept, []byte("\r\n"))
