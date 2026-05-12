@@ -18,6 +18,7 @@ import (
 	"tailscale.com/client/local"
 
 	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/plugins/tailscaleproto"
 )
 
 type Agent struct {
@@ -564,13 +565,31 @@ func shortHash(s string) string {
 }
 
 type IntegrationRow struct {
-	ID       string              `json:"id"`
-	Name     string              `json:"name"`
-	Type     string              `json:"type"` // credential plugin type
-	HasOAuth bool                `json:"has_oauth"`
-	OAuth    *OAuthIntegrationUI `json:"oauth,omitempty"`
-	Slots    []config.SecretSlot `json:"slots,omitempty"`
-	Owners   []Owner             `json:"owners"`
+	ID               string                 `json:"id"`
+	Name             string                 `json:"name"`
+	Type             string                 `json:"type"` // credential plugin type
+	HasOAuth         bool                   `json:"has_oauth"`
+	OAuth            *OAuthIntegrationUI    `json:"oauth,omitempty"`
+	Slots            []config.SecretSlot    `json:"slots,omitempty"`
+	Owners           []Owner                `json:"owners"`
+	HasTailscaleAuth bool                   `json:"has_tailscale_auth,omitempty"`
+	TailscaleAuth    *TailscaleAuthStatusUI `json:"tailscale_auth,omitempty"`
+}
+
+// TailscaleAuthStatusUI is the dashboard-facing slice of a
+// tailscale-node-auth credential's live state. Connected reflects
+// whether tsnet has persisted node identity for the credential
+// (gateway-wide; owner is always "" for tailscale). PendingURL is the
+// live Tailscale login URL emitted by tsnet when no identity is stored
+// yet — the dashboard's "Connect" button redirects to it. Endpoint
+// paths are surfaced so the dashboard renders the connect flow
+// without hard-coding the route layout.
+type TailscaleAuthStatusUI struct {
+	Connected     bool   `json:"connected"`
+	PendingURL    string `json:"pending_url,omitempty"`
+	ConnectURL    string `json:"connect_url"`
+	StatusURL     string `json:"status_url"`
+	DisconnectURL string `json:"disconnect_url"`
 }
 
 // OAuthIntegrationUI is the dashboard-facing slice of an
@@ -644,16 +663,36 @@ func (w *webMux) statusList(r *http.Request) []IntegrationRow {
 				}
 			}
 		}
+		if _, ok := ent.Body.(tailscaleproto.TailscaleAuthProvider); ok {
+			row.HasTailscaleAuth = true
+			present, _ := credentialSlotPresence(w.g.db, name, "")
+			row.TailscaleAuth = &TailscaleAuthStatusUI{
+				Connected:     len(present) > 0,
+				PendingURL:    tailscaleproto.Default.Get(name),
+				ConnectURL:    "/api/tailscale/connect?id=" + name,
+				StatusURL:     "/api/tailscale/status?id=" + name,
+				DisconnectURL: "/api/tailscale/disconnect?id=" + name,
+			}
+		}
 		out = append(out, row)
 	}
 	return out
 }
 
 // credentialsInProfile returns the set of credential bare names that
-// any endpoint in the given profile references. nil means "no filter
-// — return everything." Used by apiStatus and the device-page card
-// render so per-device views only show credentials the device's
-// profile actually uses.
+// any endpoint in the given profile references — directly via the
+// endpoint's `credential = ...` / `credentials = [...]` bindings, or
+// transitively via the credential attached to the endpoint's
+// `tunnel = ...`. nil means "no filter — return everything." Used by
+// apiStatus and the device-page card render so per-device views only
+// show credentials the device's profile actually uses.
+//
+// Walking tunnel-attached credentials in addition to endpoint-attached
+// ones lets the dashboard surface tunnel-bound auth (e.g. the tailscale
+// node-auth credential) on profiles whose endpoints reach upstream
+// through that tunnel — the operator clicks Connect on the same
+// integration card whether the credential is wired to the endpoint or
+// to the tunnel underneath it.
 func credentialsInProfile(policy *config.CompiledPolicy, profile string) map[string]bool {
 	if profile == "" || policy == nil {
 		return nil
@@ -667,6 +706,11 @@ func credentialsInProfile(policy *config.CompiledPolicy, profile string) map[str
 		for _, cb := range ep.Credentials {
 			if cb.Credential != nil {
 				out[cb.Credential.Symbol.Name] = true
+			}
+		}
+		for tun := ep.Tunnel; tun != nil; tun = tun.Via {
+			if tun.Credential != nil {
+				out[tun.Credential.Symbol.Name] = true
 			}
 		}
 	}
