@@ -1,13 +1,15 @@
+import { Button } from "./Button";
+
 export function Header() {
   return (
-    <nav class="w-full px-6 py-5 sm:px-8 sm:py-8 bg-navy-100">
-      <div className="max-w-6xl mx-auto flex flex-wrap justify-between gap-y-2 items-center">
+    <header class="sticky top-0 z-40 w-full py-5 bg-navy-100">
+      <nav className="max-w-6xl mx-auto px-6 sm:px-8 flex flex-wrap justify-between gap-y-2 items-center">
         <a
           href="/"
           class="text-2xl
         font-black font-display hover:text-rust"
         >
-          <img src="/cp-logo-test.svg" alt="" class="h-9 sm:h-12 w-auto" />
+          <img src="/claw-patrol-logo.svg" alt="" class="h-9 sm:h-12 w-auto" />
         </a>
         <div class="flex items-center gap-4 sm:gap-8 text-sm">
           <a
@@ -24,9 +26,10 @@ export function Header() {
           >
             GitHub
           </a>
-          <a
+          <Button
             href="/docs/getting-started/"
-            class="squircle-sm bg-console-dark text-canvas px-3 py-2 sm:px-4 sm:py-2.5 inline-flex items-center gap-2 font-mono hover:bg-rust transition-colors"
+            size="sm"
+            class="inline-flex items-center gap-2"
           >
             <svg
               width="14"
@@ -44,9 +47,9 @@ export function Header() {
               />
             </svg>
             Download
-          </a>
+          </Button>
         </div>
-      </div>
-    </nav>
+      </nav>
+    </header>
   );
 }

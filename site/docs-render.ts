@@ -173,7 +173,7 @@ export function renderDocPage(doc: Doc, docs: Doc[], extraHead = ""): string {
   ${topStripeHtml}
   <div class="max-w-6xl mx-auto px-8 py-20
     flex flex-col md:flex-row gap-10">
-    <aside class="md:w-56 shrink-0 md:sticky md:top-8
+    <aside class="md:w-56 shrink-0 md:sticky md:top-[calc(var(--header-height)+1rem)]
       md:self-start">
       ${sidebar(docs, doc.slug)}
     </aside>
