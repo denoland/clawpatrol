@@ -9,7 +9,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -2153,7 +2152,7 @@ func usage() {
 
 usage:
   clawpatrol gateway init [flags]        bootstrap a new gateway host
-  clawpatrol gateway [-config FILE]      run the gateway server
+  clawpatrol gateway [--config FILE]     run the gateway server
   clawpatrol join [flags] <gateway-url>  onboard this machine via wg device flow
                   --hostname NAME        device name to register (default: os.Hostname)
                   --profile NAME         suggest a profile for the approver
@@ -2187,7 +2186,7 @@ func runGateway(args []string) {
 		runGatewayInit(args[1:])
 		return
 	}
-	fs := flag.NewFlagSet("gateway", flag.ExitOnError)
+	fs := newFlagSet("gateway", "clawpatrol gateway [--config FILE] [--read-only-config]")
 	cfgPath := fs.String("config", "config.yaml", "config file")
 	readOnly := fs.Bool("read-only-config", false,
 		"reject dashboard writes to the HCL config file")

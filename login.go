@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -80,7 +79,7 @@ type tsPeer struct {
 // straight into the post-join setup (set exit-node, fetch CA, install
 // system trust) — single command, full setup.
 func runJoin(args []string) {
-	fs := flag.NewFlagSet("join", flag.ExitOnError)
+	fs := newFlagSet("join", "clawpatrol join [--hostname NAME] [--profile NAME] [--whole-machine] <gateway-url>")
 	gwName := fs.String("name", "clawpatrol", "exit-node hostname on the tailnet")
 	caOut := fs.String("ca-dir", defaultClawpatrolDir(), "where to store the fetched CA")
 	skipTrust := fs.Bool("no-trust", false, "fetch CA but skip system trust install (do it manually)")
@@ -182,7 +181,7 @@ func fetchCAHTTP(gateway, dst string) error {
 }
 
 func runLogin(args []string) {
-	fs := flag.NewFlagSet("login", flag.ExitOnError)
+	fs := newFlagSet("login", "clawpatrol login [--name NAME] [--ca-dir DIR] [--no-trust] [--no-exit-node]")
 	gwName := fs.String("name", "clawpatrol", "exit-node hostname to look for on the tailnet")
 	caOut := fs.String("ca-dir", defaultClawpatrolDir(), "where to store the fetched CA")
 	skipTrust := fs.Bool("no-trust", false, "fetch CA but skip system trust install (do it manually)")
@@ -1024,7 +1023,7 @@ func defaultGatewayDataDir() string {
 }
 
 func runGatewayInit(args []string) {
-	fs := flag.NewFlagSet("gateway init", flag.ExitOnError)
+	fs := newFlagSet("gateway init", "clawpatrol gateway init [--data-dir DIR] [--public-url URL] [--public-ip IP] [--wg-port PORT] [--dash-port PORT] [--tls-port PORT] [--subnet CIDR] [--no-firewall]")
 	dataDir := fs.String("data-dir", defaultGatewayDataDir(), "where to put gateway.hcl + CA + state")
 	publicURL := fs.String("public-url", "", "public dashboard URL (auto-detected from public IP if empty)")
 	publicIP := fs.String("public-ip", "", "public IP for the WG endpoint (auto-detected if empty)")
@@ -1259,13 +1258,14 @@ WantedBy=multi-user.target
 // trust, drops the per-user state dirs, and strips the shell-rc
 // env shim.
 func runUninstall(args []string) {
-	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)
+	fs := newFlagSet("uninstall", "clawpatrol uninstall [--keep-ca] [--keep-conf] [--yes]")
 	keepCA := fs.Bool("keep-ca", false, "keep ~/.clawpatrol + system trust")
 	keepConf := fs.Bool("keep-conf", false, "keep ~/.config/clawpatrol/wg.conf")
-	yes := fs.Bool("y", false, "skip the confirmation prompt")
+	yes := fs.Bool("yes", false, "skip the confirmation prompt")
+	yesShort := fs.Bool("y", false, "skip the confirmation prompt")
 	_ = fs.Parse(args)
 
-	if !*yes {
+	if !*yes && !*yesShort {
 		fmt.Print("Uninstall clawpatrol from this machine? [y/N] ")
 		var resp string
 		_, _ = fmt.Scanln(&resp)
