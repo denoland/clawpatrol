@@ -22,9 +22,8 @@ This page covers the operator's view: how to write a rule, what
 each facet does, and how rules behave in different situations.
 
 For the surrounding picture see
-[Architecture](/docs/architecture/) (request flow, where matching
-fits — including how endpoints claim requests) and
-[Gateway](/docs/gateway/) (the listener and dispatcher).
+[Architecture](/docs/architecture/) — request flow, where matching
+fits, how endpoints claim requests.
 
 
 ## Rule families
@@ -45,7 +44,7 @@ CEL variables (all optional in any given condition):
 
 | Variable | Type | Description |
 |----------|------|-------------|
-| `http.method` | `string` | HTTP verb, upper-case (`"GET"`, `"POST"`, …) |
+| `http.method` | `string` | HTTP verb. Lowercased at activation time; literal `'POST'` in rule source is normalized to `'post'` at compile time so either case works. |
 | `http.path` | `string` | Request path (no query string) |
 | `http.query` | `map<string, list<string>>` | Query parameters (multi-valued) |
 | `http.headers` | `map<string, list<string>>` | Request headers (multi-valued) |
@@ -222,7 +221,7 @@ accessed with dot notation. Common idioms:
 
 | Variable                      | Case sensitivity |
 |-------------------------------|------------------|
-| `http.method`                 | upper-case (normalized) |
+| `http.method`                 | lower-case (rule-source literals normalized at compile time) |
 | `http.path`, `http.query`, `http.headers`, `http.body` | as on the wire |
 | `sql.verb`                    | lower-case (normalized) |
 | `sql.tables`, `sql.function`  | lower-case (extracted from a lower-cased copy of the statement) |
@@ -396,7 +395,7 @@ policy "pg-secret-columns" {
 }
 
 rule "pg-secret-columns" {
-  endpoint  = pg-deployng
+  endpoint  = pg-deploy
   priority  = 100
   condition = "sql.verb == 'select' && sets.intersects(sql.tables, ['github_identities', 'tokens', 'domain_certificates', 'env_vars'])"
   approve   = [pg-secret-columns-judge, console-dba]
@@ -416,7 +415,7 @@ view without paging any channel.
 
 ```hcl
 rule "pg-banned-verbs" {
-  endpoints = [pg-deployng, pg-scheduler]
+  endpoints = [pg-deploy, pg-scheduler]
   condition = "sql.verb in ['drop', 'truncate', 'alter', 'grant', 'revoke', 'vacuum', 'create']"
   verdict   = "deny"
   reason    = "Schema changes / destructive DDL not permitted; use a migration PR"

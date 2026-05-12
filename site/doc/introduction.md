@@ -1,59 +1,72 @@
 # Introduction
 
-Claw Patrol is an open-source security proxy for AI agents. It sits
-between your agent and the internet, intercepting all network
-traffic. Agents never touch your API keys directly — Claw Patrol
-injects them into outgoing requests on the fly.
+Claw Patrol is a firewall for AI agents. It sits between your
+agents and the internet, decides what each request is allowed to
+do, and stamps real credentials onto the wire so the agent never
+holds them.
 
-## The Problem
+## The problem
 
-Your AI agent has every API key in plaintext. It talks to
-GitHub, Slack, Anthropic, and dozens of other services. You
-can't see what it's doing, what it costs, or where your
-credentials end up. One prompt injection and your secrets
-are exfiltrated.
+Your AI agent has every API key in plaintext. It talks to GitHub,
+Slack, Anthropic, Postgres, Kubernetes, and a dozen other services.
+You can't see what it's doing, what it's spending, or where your
+credentials end up. One prompt injection — or one model that
+hallucinates a `DELETE` — and your secrets exfiltrate or your
+production gets touched.
 
-## What Claw Patrol Does
+## What Claw Patrol gives you
 
-- **Secret injection.** Agents use placeholders. Claw Patrol
-  replaces them with real credentials before forwarding. Your
-  agent never sees the actual key.
-- **Full visibility.** Every request is logged — method, host,
-  headers, body, response, latency, LLM token usage and cost.
-- **Works with any agent.** Claude Code, Codex, OpenClaw, or
-  your own scripts. No code changes needed.
-- **Plugin system.** Built-in support for Anthropic, OpenAI,
-  GitHub, Slack, and more. Write your own plugins for custom
-  services.
+- **Allow / deny rules** on every outbound request, written in CEL
+  against typed facets (HTTP method, K8s verb, SQL statement).
+- **Human-in-the-loop approvals** for risky actions — defer
+  `kubectl apply -f production` to a Slack approval before the
+  request leaves.
+- **Secret injection** at the wire. Agents send placeholders
+  (`{{github_pat}}`); the gateway swaps them for the real token
+  in transit.
+- **Full audit log** — every request, verdict, latency, and LLM
+  token count — searchable in the dashboard, exportable as
+  fixtures for regression tests.
+- **Plugins** for the protocols agents actually use: HTTPS,
+  Postgres, ClickHouse, Kubernetes, SSH.
 
-## How It Works
+## How it fits
 
-Claw Patrol runs as a local proxy on your machine. On macOS, it
-uses a Network Extension to transparently intercept traffic
-from specific processes. On Linux, it uses a WireGuard tunnel
-inside a network namespace. Either way, the agent's traffic
-is routed through Claw Patrol without the agent knowing.
+Claw Patrol has two pieces:
+
+- A **gateway** — a single Go binary running on a host you control.
+  It holds the policy, the credentials, the audit log, and the
+  dashboard.
+- One or more **devices** — your laptop, a CI runner, a teammate's
+  workstation — that join the gateway over WireGuard. The device
+  captures the agent's outbound flows and tunnels them to the
+  gateway, which decides per request what to allow, what to deny,
+  what to gate behind a human, and what credential to stamp on.
 
 ```
-Agent  -->  Claw Patrol Proxy  -->  api.anthropic.com
-              |
-              +-- injects API key
-              +-- logs request
-              +-- tracks token usage
+Agent ─→ Device ──WireGuard──→ Gateway ──→ Upstream
+                                  │
+                                  ├ matches rule
+                                  ├ injects credential
+                                  └ logs the action
 ```
 
-## Open Source
+The agent never sees the real credential. The gateway never trusts
+the agent.
 
-Claw Patrol is fully open source (MIT). You can run it locally with
-no external dependencies — all data stays on your machine in
-a SQLite database.
+## Open source
 
-## Next Steps
+MIT. The gateway, the dashboard, and the plugins are all in one
+repo. All state lives in a single SQLite file on the gateway host —
+no cloud required. The binary phones home for an update check;
+disable with `CLAWPATROL_TELEMETRY=0` or `DO_NOT_TRACK=1`.
 
-- [Getting Started](/docs/getting-started/) — install and
-  onboard in 2 minutes
-- [CLI Reference](/docs/cli/) — all commands and options
-- [Plugin System](/docs/plugins/) — extend Claw Patrol for custom
-  services
-- [Approval Rules](/docs/approval-rules/) — gate outbound
-  actions: allow, deny, defer to a human or an LLM judge
+## Next
+
+- [Getting Started](/docs/getting-started/) — stand up a gateway
+  and join a device in 5 minutes.
+- [Architecture](/docs/architecture/) — how interception works.
+- [Approval rules](/docs/approval-rules/) — gating writes behind
+  a human or an LLM judge.
+- [Security model](/docs/security-model/) — what Claw Patrol does
+  and doesn't protect against.

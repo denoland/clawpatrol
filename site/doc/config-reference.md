@@ -528,9 +528,7 @@ endpoint "ssh" "example" {
 
 Block syntax: `rule "<name>" { ... }`
 
-Registered types: [``](#rule-).
-
-### `rule "" "<name>"`
+### `rule "<name>"`
 
 The gohcl-tagged decode target. The match predicate is
 family-agnostic at the HCL layer (just a CEL string); the facet's
@@ -551,5 +549,91 @@ been inferred from the endpoint refs.
 
 ```hcl
 rule {}
+```
+
+## `tunnel` blocks
+
+Block syntax: `tunnel "<type>" "<name>" { ... }`
+
+Registered types: [`kubernetes_port_forward`](#tunnel-kubernetesportforward), [`local_command`](#tunnel-localcommand), [`ssh_port_forward`](#tunnel-sshportforward), [`tailscale`](#tunnel-tailscale).
+
+### `tunnel "kubernetes_port_forward" "<name>"`
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `context` | `string` | no |  |
+| `namespace` | `string` | no |  |
+| `pod` | `string` | no |  |
+| `service` | `string` | no |  |
+| `selector` | `map[string]string` | no |  |
+| `template` | `string` | no |  |
+| `port` | `int` | yes |  |
+| `cleanup` | `string` | no |  |
+| `share` | `string` | no |  |
+| `keepalive` | `string` | no |  |
+| `via` | `string` | no |  |
+| `credential` | `string` | no |  |
+
+```hcl
+tunnel "kubernetes_port_forward" "example" {
+  port = 30
+}
+```
+
+### `tunnel "local_command" "<name>"`
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `command` | `[]string` | yes |  |
+| `listen` | `string` | yes |  |
+| `ready_probe` | `string` | no |  |
+| `ready_timeout` | `string` | no |  |
+| `env` | `map[string]string` | no |  |
+| `share` | `string` | no |  |
+| `keepalive` | `string` | no |  |
+| `via` | `string` | no |  |
+| `credential` | `string` | no |  |
+
+```hcl
+tunnel "local_command" "example" {
+  command = ["example"]
+  listen = "example"
+}
+```
+
+### `tunnel "ssh_port_forward" "<name>"`
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `bastion` | `string` | no |  |
+| `user` | `string` | yes |  |
+| `share` | `string` | no |  |
+| `keepalive` | `string` | no |  |
+| `via` | `string` | no |  |
+| `credential` | `string` | yes |  |
+
+```hcl
+tunnel "ssh_port_forward" "example" {
+  user = "example"
+  credential = example-credential
+}
+```
+
+### `tunnel "tailscale" "<name>"`
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `authkey` | `string` | no |  |
+| `control_url` | `string` | no |  |
+| `hostname` | `string` | no |  |
+| `state_dir` | `string` | no |  |
+| `tags` | `[]string` | no |  |
+| `share` | `string` | no |  |
+| `keepalive` | `string` | no |  |
+| `via` | `string` | no |  |
+| `credential` | `string` | no |  |
+
+```hcl
+tunnel "tailscale" "example" {}
 ```
 

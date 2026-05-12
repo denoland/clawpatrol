@@ -1,89 +1,62 @@
-# LLM Token Usage & Cost Tracking
+# LLM token tracking
 
-## Overview
+When an agent's request hits a known LLM endpoint, Claw Patrol
+parses the response, pulls model name + input/output token counts
+off it, and stores them on the agent's session. The dashboard
+shows per-session totals and a context-window progress bar.
 
-Claw Patrol extracts token usage from LLM API responses at proxy
-time, estimates cost via OpenRouter pricing data, and attaches
-the result to each request log. This enables cost tracking,
-cache hit analysis, and model usage breakdowns without post-hoc
-log parsing.
+There is no pricing, no USD cost, no OpenRouter integration —
+just tokens.
 
-## How It Works
+## What's parsed
 
-1. Response bodies are already captured for logging
-2. `extractTokenUsage()` checks if the upstream host is a
-   known LLM provider and parses the usage JSON
-3. Cost is computed using cached pricing from OpenRouter
-4. Token counts + cost are written to the configured
-   analytics store alongside the request
+| Endpoint | Hosts | Parser |
+|---|---|---|
+| Anthropic Messages | `*.anthropic.com` `/v1/messages` | `parseClaudeResponse` |
+| OpenAI Chat/Responses | `*.openai.com` `/v1/chat/completions`, `/v1/responses`, `/v1/completions` | `parseOpenAIResponse` |
+| ChatGPT Codex | `chatgpt.com` `/backend-api/codex/responses` | `parseOpenAIResponse` |
 
-Currently supported providers:
-- **OpenAI** (`*.openai.com`) — `usage.prompt_tokens`,
-  `completion_tokens`, `prompt_tokens_details.cached_tokens`
-- **Anthropic** (`*.anthropic.com`) — `usage.input_tokens`,
-  `output_tokens`, `cache_read_input_tokens`,
-  `cache_creation_input_tokens`
+Parsers handle both JSON responses and SSE streams; for streams
+the token totals accumulate as deltas arrive. Anthropic's cache
+tokens (`cache_creation_input_tokens`, `cache_read_input_tokens`)
+are folded into the input count.
 
-Extraction is zero-cost for non-LLM requests (hostname check
-short-circuits). Parse failures silently produce zeros.
+Token tracking is a pure side effect of the existing
+response-body capture — adds no latency to the agent's request.
 
-## Pricing via OpenRouter
+## What gets recorded
 
-Pricing data is fetched from OpenRouter's public API:
-```
-GET https://openrouter.ai/api/v1/models
-```
+Per agent session (`AgentRegistry.recordLLMUsage` in `agents.go`):
 
-No authentication required. Returns model pricing as USD per
-token in fields: `pricing.prompt`, `pricing.completion`,
-`pricing.input_cache_read`, `pricing.input_cache_write`.
+| Field | Source |
+|---|---|
+| `model` | Latest model seen on the session |
+| `tokens_in` | Sum of input + cache tokens across requests |
+| `tokens_out` | Sum of output tokens across requests |
+| `ctx_used` | `tokens_in + tokens_out` |
+| `ctx_max` | Looked up from a per-model table (`agents.go:ctxMaxFor`) |
+| `title` | Latest user message (lets you see what the agent is *currently* working on, not the first prompt) |
 
-The pricing cache refreshes every hour. If the fetch fails,
-the stale cache is used (or empty = $0 cost). Model lookup
-tries `{provider}/{model}` first (e.g. `openai/gpt-4o`),
-then the bare model name.
+Persistence is debounced — Codex's WS frames fire `recordLLMUsage`
+tens of times per second on a streaming response, so writes are
+coalesced to ~1/sec/session. The in-memory state is always
+authoritative.
 
-## Logged Fields
+## Source
 
-The following fields are attached to each request log and
-persisted to the SQLite analytics store.
+- `main.go` — `trackLLMUsage` dispatches by endpoint kind;
+  `parseClaudeResponse`, `parseOpenAIResponse` extract the fields.
+- `agents.go` — `recordLLMUsage` persists; `ctxMaxFor` maps
+  model → context-window size.
+- `integrations.go` — `MaxInputTokens` from the upstream models
+  list feeds `ctxMaxFor`.
 
-| Field | Description |
-| ----- | ----------- |
-| `LlmProvider` | `openai`, `anthropic`, or `""` |
-| `LlmModel` | Model ID from the response |
-| `LlmInputTokens` | Prompt / input tokens |
-| `LlmOutputTokens` | Completion / output tokens |
-| `LlmCacheReadTokens` | Tokens read from cache |
-| `LlmCacheCreationTokens` | Tokens written to cache |
-| `LlmCostUsd` | Estimated cost in USD |
+## What's missing on purpose
 
-See the `RequestRow` type in `src/analytics.ts` for the
-canonical definition.
-
-## Future: Plugin Response Hooks
-
-The current implementation uses hostname-based detection in
-`src/token_usage.ts`. A natural evolution is to add a
-response hook to the plugin system:
-
-```ts
-// IntegrationEndpoint (future)
-extractUsage?: (resp: Response, body: string) =>
-  TokenUsage | null;
-```
-
-This would move OpenAI/Anthropic extraction into their
-plugins and support custom/self-hosted LLMs via third-party
-plugins. The `extractTokenUsage()` function serves as a
-reference implementation.
-
-## Key Files
-
-| File | Purpose |
-| ---- | ------- |
-| `src/token_usage.ts` | Provider parsing + OpenRouter pricing |
-| `src/proxy.ts` | WireGuard proxy — calls extractTokenUsage |
-| `src/gateway.ts` | Gateway proxy — calls extractTokenUsage |
-| `src/analytics.ts` | `RequestRow` type and SQLite-backed query API |
-| `src/token_usage_test.ts` | Unit tests |
+- **Cost in USD.** Pricing data drifts faster than we want to
+  maintain. The token counts are accurate; multiply by your own
+  pricing if you need dollar figures.
+- **Per-request rows.** Token usage rolls up to the agent
+  session, not the individual request row in the audit log. If
+  you need per-request token counts, the response body is still
+  captured — re-parse downstream.

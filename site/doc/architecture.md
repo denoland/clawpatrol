@@ -144,7 +144,7 @@ Routes every byte the host emits through the gateway. The CLI
 calls `wg-quick up` against `/etc/wireguard/clawpatrol.conf` (the
 config has `AllowedIPs = 0.0.0.0/0, ::/0`), which uses the kernel
 WireGuard module to add the route and replace the default gateway.
-Reference: `login.go:wgQuickUp`, `wireguard.go`.
+Reference: `setup.go:wgQuickUp`, `wireguard.go`.
 
 - **Tunnel mechanism.** Kernel WireGuard via `wg-quick`. The kernel
   driver owns the tunnel lifetime; clawpatrol does not run a
