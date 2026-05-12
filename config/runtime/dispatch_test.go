@@ -1,6 +1,7 @@
 package runtime_test
 
 import (
+	"encoding/base64"
 	"net/http"
 	"testing"
 
@@ -262,6 +263,11 @@ profile "default" { endpoints = [ep] }
 	got := runtime.ResolveCredential(ep, mkReq("Bearer PH_prod"))
 	if got == nil || got.Credential.Symbol.Name != "prod" {
 		t.Errorf("Authorization=Bearer PH_prod should select prod, got %+v", got)
+	}
+	basicPlaceholder := base64.StdEncoding.EncodeToString([]byte("git-user:PH_test"))
+	got = runtime.ResolveCredential(ep, mkReq("Basic "+basicPlaceholder))
+	if got == nil || got.Credential.Symbol.Name != "test" {
+		t.Errorf("Authorization=Basic base64(git-user:PH_test) should select test, got %+v", got)
 	}
 	got = runtime.ResolveCredential(ep, mkReq("Bearer something-else"))
 	if got == nil || got.Credential.Symbol.Name != "fallback" {
