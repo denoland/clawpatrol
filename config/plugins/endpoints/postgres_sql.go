@@ -1,32 +1,34 @@
 package endpoints
 
 // SQL extractor for the postgres endpoint's matcher input. Parses
-// SQL via auxten/postgresql-parser (the pure-Go cockroach fork),
-// walks the AST to harvest tables / functions, and derives the verb
-// from each top-level statement node. Same shape as
-// clickhouse_native_sql.go so the SQL family matcher consumes both
-// endpoints' output without per-plugin special cases.
+// SQL via pgplex/pgparser (a pure-Go port of postgres' own gram.y
+// targeting REL_17_STABLE), walks the AST to harvest tables /
+// functions, and derives the verb from each top-level statement
+// node. Same shape as clickhouse_native_sql.go so the SQL family
+// matcher consumes both endpoints' output without per-plugin
+// special cases.
 //
 // Audit reference: denoland/clawpatrol#143 catalogues the regex
-// extractor's evasions. The AST path covers most of it for free —
-// the parser already knows about comments, string literals, quoted
-// identifiers, dollar quotes, and ;-separated batches.
+// extractor's evasions. pgplex/pgparser ports postgres' own
+// grammar, so the parse-tree path natively covers the full PG
+// surface — LOCK / VACUUM / ANALYZE / REINDEX / REFRESH
+// MATERIALIZED VIEW / CLUSTER / SET ROLE / SET SESSION
+// AUTHORIZATION / DO blocks / CALL all show up as their own AST
+// nodes. Comments, strings, dollar quotes, quoted identifiers,
+// and ;-separated batches are handled by the lexer.
 //
-// Fallback path: cockroach's grammar isn't postgres — LOCK / VACUUM
-// / ANALYZE / REINDEX / REFRESH MATERIALIZED VIEW / CLUSTER /
-// SET ROLE / SET SESSION AUTHORIZATION / DO blocks / CALL all
-// reject. For each such piece we run a tokenizer-driven sniff: it
-// surfaces the verb (including multi-word forms like "set role") and
-// re-parses DO block bodies so inner statements still walk the
-// matcher (audit §6.5). String / comment / dollar-quote handling in
-// the tokenizer keeps the fallback from generating ghost tables.
+// Fallback path: kicks in only when the parser rejects a piece
+// outright (genuine syntax errors, or truncated DDL shells like
+// `DROP;` / `SELECT;` that the audit §1.1 cases probe). The
+// sniff surfaces the first identifier as the verb so verb-keyed
+// CEL rules still fire on malformed input.
 
 import (
 	"sort"
 	"strings"
 
-	pgparser "github.com/auxten/postgresql-parser/pkg/sql/parser"
-	"github.com/auxten/postgresql-parser/pkg/sql/sem/tree"
+	"github.com/pgplex/pgparser/nodes"
+	"github.com/pgplex/pgparser/parser"
 )
 
 // ── Top-level entry points ────────────────────────────────────────────
@@ -44,30 +46,21 @@ func parseSQL(sql string) pgInfo {
 	return a[0].Outer
 }
 
-// analyseAll tokenises sql into top-level statements and returns one
-// analysedStmt per statement. Inner pgInfos surface CTE-hidden DML
+// analyseAll splits sql into top-level statements and returns one
+// analysedStmt per piece. Inner pgInfos surface CTE-hidden DML
 // (audit §1.2) and DO block bodies (§6.5) the matcher must see.
+//
+// We split on top-level `;` first and parse each piece in
+// isolation rather than handing the whole batch to parser.Parse —
+// pgplex returns bare Stmt nodes (not RawStmt-wrapped) so it
+// doesn't carry per-statement byte offsets, and splitting first
+// gives us a clean Statement string for each element of a
+// multi-statement Q payload.
 func analyseAll(sql string) []analysedStmt {
 	trimmed := strings.TrimSpace(sql)
 	if trimmed == "" {
 		return []analysedStmt{{Outer: pgInfo{}}}
 	}
-
-	// Fast path: whole input parses. The parser handles
-	// ;-separated statements natively — multi-statement Q payloads
-	// flow through as one Parse call.
-	if stmts, err := pgparser.Parse(trimmed); err == nil && len(stmts) > 0 {
-		out := make([]analysedStmt, 0, len(stmts))
-		for _, s := range stmts {
-			out = append(out, analyseAST(s))
-		}
-		return out
-	}
-
-	// Slow path: any single statement that the cockroach grammar
-	// rejects (PG-only DDL, DO blocks, CALL, SET ROLE) forces us to
-	// split by top-level `;` ourselves and retry parsing each piece.
-	// Pieces that still fail use the verb-sniff stub.
 	pieces := splitTopLevelStatements(trimmed)
 	out := make([]analysedStmt, 0, len(pieces))
 	for _, p := range pieces {
@@ -76,81 +69,203 @@ func analyseAll(sql string) []analysedStmt {
 	return out
 }
 
-// analysePiece runs one statement piece through the parser, falling
-// back to the verb-sniff stub when the cockroach grammar can't
-// represent it.
+// analysePiece parses one statement piece and builds its pgInfo.
+// Falls back to the verb-sniff stub when the grammar rejects the
+// piece (truncated DDL like `DROP;`, malformed input).
 func analysePiece(sql string) analysedStmt {
-	if stmts, err := pgparser.Parse(sql); err == nil && len(stmts) > 0 {
-		return analyseAST(stmts[0])
+	text := strings.TrimSpace(sql)
+	if root, err := parser.Parse(text); err == nil && root != nil && len(root.Items) > 0 {
+		if stmt := root.Items[0]; stmt != nil {
+			return analyseStmt(stmt, text)
+		}
 	}
-	return sniffStmt(sql)
+	return sniffStmt(text)
 }
 
 // ── AST walk ──────────────────────────────────────────────────────────
 
-// analyseAST builds pgInfo from a parsed statement node. Tables and
-// functions are collected via a recursive visit; CTE-hidden DML
-// surfaces as a shadow inner pgInfo.
-func analyseAST(stmt pgparser.Statement) analysedStmt {
-	info := pgInfo{Statement: stmt.SQL}
-	info.Verb = verbFromAST(stmt.AST)
-
-	c := &astCollector{tables: map[string]struct{}{}, funcs: map[string]struct{}{}}
-	c.visit(stmt.AST)
+// analyseStmt builds pgInfo from a parsed statement node. `source`
+// is the original (untrimmed-of-comments) piece text — used as the
+// Statement field so action fixtures / dashboard previews see
+// exactly what came off the wire.
+func analyseStmt(stmt nodes.Node, source string) analysedStmt {
+	info := pgInfo{Statement: source, Verb: verbFromNode(stmt)}
+	c := newAstCollector()
+	c.visit(stmt)
 	info.Tables = sortedKeys(c.tables)
 	info.Functions = sortedKeys(c.funcs)
-
 	return analysedStmt{Outer: info, Inner: c.inner}
 }
 
-// verbFromAST maps a parsed statement node to the lowercase verb the
-// SQL matcher expects. Postgres-specific verbs (and multi-word forms
-// like "set role") that the parser doesn't model are surfaced by the
-// sniff fallback; this path covers what the parser does model.
+// verbFromNode maps a parsed statement node to the lowercase verb
+// the SQL matcher expects. The AST node type carries enough
+// information that we don't need string-tag parsing; the exceptions
+// are TransactionStmt (BEGIN/COMMIT/ROLLBACK/SAVEPOINT/RELEASE
+// share a node) and VariableSetStmt (`SET ROLE` / `SET SESSION
+// AUTHORIZATION` get distinct verbs per audit §6.4).
 //
-// `*tree.Select` is preserved as "select" even when it carries a
-// `WITH` clause whose CTEs mutate — the inner mutation rides on
-// astCollector.inner as a shadow statement, matching the audit
-// §1.2 semantics.
-func verbFromAST(stmt tree.Statement) string {
-	tag := strings.ToLower(stmt.StatementTag())
-	// Statement tags are space-separated phrases ("DROP TABLE",
-	// "COMMENT ON TABLE", "EXPLAIN ANALYZE (DEBUG)"). For the SQL
-	// matcher's `verb` field we surface the first token so existing
-	// CEL rules like `sql.verb == "drop"` keep working, while
-	// multi-token forms ("comment on table") get the full tag for
-	// callers that want to gate the specific shape.
-	switch tag {
-	case "drop table", "drop view", "drop sequence", "drop index", "drop database", "drop role":
-		return strings.Fields(tag)[0]
-	case "create table", "create view", "create sequence", "create index", "create database",
-		"create role", "create schema", "create statistics", "create changefeed":
+// `*nodes.SelectStmt` is reported as "select" even when it carries
+// a `WITH` clause whose CTEs mutate — the inner mutation rides on
+// astCollector.inner as a shadow statement, matching audit §1.2.
+func verbFromNode(stmt nodes.Node) string {
+	switch n := stmt.(type) {
+	case *nodes.SelectStmt:
+		return "select"
+	case *nodes.InsertStmt:
+		return "insert"
+	case *nodes.UpdateStmt:
+		return "update"
+	case *nodes.DeleteStmt:
+		return "delete"
+	case *nodes.MergeStmt:
+		return "merge"
+	case *nodes.CreateStmt, *nodes.ViewStmt, *nodes.IndexStmt,
+		*nodes.CreateSeqStmt, *nodes.CreateSchemaStmt,
+		*nodes.CreateFunctionStmt, *nodes.CreateTrigStmt,
+		*nodes.CreateEnumStmt, *nodes.CreateDomainStmt,
+		*nodes.CreateTableAsStmt, *nodes.CreateRoleStmt,
+		*nodes.CreatedbStmt:
 		return "create"
-	case "alter table", "alter index", "alter sequence", "alter role":
+	case *nodes.DropStmt, *nodes.DropRoleStmt, *nodes.DropdbStmt:
+		return "drop"
+	case *nodes.AlterTableStmt, *nodes.AlterSeqStmt,
+		*nodes.AlterDomainStmt, *nodes.AlterEnumStmt,
+		*nodes.AlterRoleStmt, *nodes.AlterRoleSetStmt,
+		*nodes.AlterDatabaseStmt, *nodes.AlterDatabaseSetStmt,
+		*nodes.AlterObjectSchemaStmt, *nodes.AlterOwnerStmt,
+		*nodes.AlterFunctionStmt:
 		return "alter"
-	case "comment on table", "comment on column", "comment on database", "comment on index":
-		return "comment"
-	case "rename table", "rename column", "rename database", "rename index":
+	case *nodes.RenameStmt:
 		return "rename"
-	case "commit", "rollback", "begin", "savepoint", "release":
-		return tag
+	case *nodes.TruncateStmt:
+		return "truncate"
+	case *nodes.CommentStmt:
+		return "comment"
+	case *nodes.GrantStmt, *nodes.GrantRoleStmt:
+		return "grant"
+	case *nodes.CopyStmt:
+		return "copy"
+	case *nodes.VacuumStmt:
+		if !n.IsVacuumCmd {
+			return "analyze"
+		}
+		return "vacuum"
+	case *nodes.LockStmt:
+		return "lock"
+	case *nodes.RefreshMatViewStmt:
+		return "refresh"
+	case *nodes.ClusterStmt:
+		return "cluster"
+	case *nodes.ReindexStmt:
+		return "reindex"
+	case *nodes.DoStmt:
+		return "do"
+	case *nodes.CallStmt:
+		return "call"
+	case *nodes.ExplainStmt:
+		// Behaviour parity with the previous extractor: the inner
+		// statement determines what runs, but the outer verb stays
+		// "explain" so a rule that bans EXPLAIN itself still fires.
+		return "explain"
+	case *nodes.PrepareStmt:
+		return "prepare"
+	case *nodes.ExecuteStmt:
+		return "execute"
+	case *nodes.DeallocateStmt:
+		return "deallocate"
+	case *nodes.DeclareCursorStmt:
+		return "declare"
+	case *nodes.FetchStmt:
+		if n.Ismove {
+			return "move"
+		}
+		return "fetch"
+	case *nodes.ClosePortalStmt:
+		return "close"
+	case *nodes.ListenStmt:
+		return "listen"
+	case *nodes.UnlistenStmt:
+		return "unlisten"
+	case *nodes.NotifyStmt:
+		return "notify"
+	case *nodes.LoadStmt:
+		return "load"
+	case *nodes.CheckPointStmt:
+		return "checkpoint"
+	case *nodes.DiscardStmt:
+		return "discard"
+	case *nodes.ConstraintsSetStmt:
+		return "set"
+	case *nodes.TransactionStmt:
+		return transactionVerb(n)
+	case *nodes.VariableSetStmt:
+		return variableSetVerb(n)
+	case *nodes.VariableShowStmt:
+		return "show"
 	}
-	// Default: first token of the tag.
-	if i := strings.IndexByte(tag, ' '); i > 0 {
-		return tag[:i]
-	}
-	return tag
+	return ""
 }
 
-// astCollector walks an AST and records the tables and functions it
-// references. Statement-shaped nodes that the parser exposes
-// directly (DropTable.Names, Truncate.Tables, etc.) emit their table
-// targets at the case site; expressions recurse so subquery /
-// CTE-internal references show up too.
+// transactionVerb maps a TransactionStmt's Kind to the legacy
+// matcher vocabulary. BEGIN / START TRANSACTION both surface as
+// "begin" (the SQL keyword) so `verb == "begin"` rules don't have
+// to fork on synonym.
+func transactionVerb(n *nodes.TransactionStmt) string {
+	switch n.Kind {
+	case nodes.TRANS_STMT_BEGIN, nodes.TRANS_STMT_START:
+		return "begin"
+	case nodes.TRANS_STMT_COMMIT, nodes.TRANS_STMT_COMMIT_PREPARED:
+		return "commit"
+	case nodes.TRANS_STMT_ROLLBACK, nodes.TRANS_STMT_ROLLBACK_TO,
+		nodes.TRANS_STMT_ROLLBACK_PREPARED:
+		return "rollback"
+	case nodes.TRANS_STMT_SAVEPOINT:
+		return "savepoint"
+	case nodes.TRANS_STMT_RELEASE:
+		return "release"
+	case nodes.TRANS_STMT_PREPARE:
+		return "prepare"
+	}
+	return ""
+}
+
+// variableSetVerb mirrors the previous extractor's audit §6.4
+// surface for SET — identity changes get distinct multi-word verbs
+// so policy can target them without also catching benign
+// session-config SETs.
+func variableSetVerb(n *nodes.VariableSetStmt) string {
+	name := strings.ToLower(n.Name)
+	switch name {
+	case "role":
+		if n.IsLocal {
+			return "set local role"
+		}
+		return "set role"
+	case "session_authorization":
+		if n.IsLocal {
+			return "set local session authorization"
+		}
+		return "set session authorization"
+	}
+	return "set"
+}
+
+// astCollector walks an AST and records the tables and functions
+// it references. Statement-shaped nodes whose target table is in a
+// fixed slot (DropStmt.Objects, TruncateStmt.Relations,
+// VacuumStmt.Rels, etc.) emit at the case site; expressions
+// recurse so subquery / CTE-internal references show up too.
 type astCollector struct {
 	tables map[string]struct{}
 	funcs  map[string]struct{}
 	inner  []pgInfo
+}
+
+func newAstCollector() *astCollector {
+	return &astCollector{
+		tables: map[string]struct{}{},
+		funcs:  map[string]struct{}{},
+	}
 }
 
 func (c *astCollector) emitTable(name string) {
@@ -165,316 +280,418 @@ func (c *astCollector) emitTable(name string) {
 	}
 }
 
-// emitTablePattern surfaces a GRANT / REVOKE table target. Cockroach
-// models these as TablePatterns — either an UnresolvedName or a
-// pattern with a star — so we have to dispatch by concrete type
-// rather than going through the generic walker (which would also
-// pick up column references inside expressions).
-func (c *astCollector) emitTablePattern(p tree.TablePattern) {
-	switch t := p.(type) {
-	case *tree.UnresolvedName:
-		c.emitTable(unresolvedNameToString(t))
-	case *tree.TableName:
-		c.emitTableName(t)
-	}
-}
-
-func (c *astCollector) emitTableName(t *tree.TableName) {
-	if t == nil {
+// emitRangeVar surfaces a *RangeVar (the PG node for any direct
+// table reference). Schema-qualified names get both forms via
+// emitTable (§2.3). Quoted identifiers are preserved
+// case-sensitively because the lexer hands them through Relname
+// already unfolded (§2.4).
+func (c *astCollector) emitRangeVar(r *nodes.RangeVar) {
+	if r == nil || r.Relname == "" {
 		return
 	}
-	unq := string(t.TableName)
-	if t.ExplicitSchema && string(t.SchemaName) != "" {
-		c.emitTable(string(t.SchemaName) + "." + unq)
+	if r.Schemaname != "" {
+		c.emitTable(r.Schemaname + "." + r.Relname)
 	} else {
-		c.emitTable(unq)
+		c.emitTable(r.Relname)
 	}
 }
 
-func (c *astCollector) emitFunc(f *tree.FuncExpr) {
-	if f == nil || f.Func.FunctionReference == nil {
+// emitObjectName takes a List of String parts (the shape PG uses
+// for DropStmt.Objects / CommentStmt.Object on table-shaped
+// objects) and emits the joined name. Quoted identifiers are
+// preserved by the lexer in the String values directly.
+func (c *astCollector) emitObjectName(list *nodes.List) {
+	if list == nil {
 		return
 	}
-	name := strings.ToLower(strings.Trim(f.Func.String(), `"`))
+	parts := make([]string, 0, len(list.Items))
+	for _, it := range list.Items {
+		if s, ok := it.(*nodes.String); ok {
+			parts = append(parts, s.Str)
+		}
+	}
+	if len(parts) == 0 {
+		return
+	}
+	c.emitTable(strings.Join(parts, "."))
+}
+
+// funcCallName renders a FuncCall's Funcname list as a
+// dot-separated lowercase string. Returns "" when the call is a
+// special form we don't surface (e.g. coercion casts that the
+// grammar rewrites as FuncCall with an A_Star).
+func funcCallName(f *nodes.FuncCall) string {
+	if f == nil || f.Funcname == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(f.Funcname.Items))
+	for _, it := range f.Funcname.Items {
+		if s, ok := it.(*nodes.String); ok {
+			parts = append(parts, s.Str)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.ToLower(strings.Join(parts, "."))
+}
+
+func (c *astCollector) emitFunc(f *nodes.FuncCall) {
+	name := funcCallName(f)
 	if name == "" {
 		return
 	}
 	c.funcs[name] = struct{}{}
-	// Mirror table extraction: schema-qualified function names emit
-	// the unqualified leaf too so `function == "dblink"` matches
-	// `pg_catalog.dblink(...)`.
+	// Mirror table extraction: schema-qualified function names
+	// emit the unqualified leaf too so `function == "now"` matches
+	// `pg_catalog.now()`.
 	if i := strings.LastIndex(name, "."); i >= 0 && i+1 < len(name) {
 		c.funcs[name[i+1:]] = struct{}{}
 	}
 }
 
-// visit is a hand-rolled walker over the auxten/cockroach AST.
-// auxten ships a `walk` helper but its switch is incomplete for
-// DDL — DropTable, AlterTable, CreateTable, Truncate, CopyFrom,
-// CommentOnTable, Grant, Revoke, Insert, Update, Delete all land in
-// UnknownNodes. We hit them explicitly here.
-func (c *astCollector) visit(node interface{}) {
+// visit is a hand-rolled walker over the pgplex AST. The package
+// doesn't ship a generic Walk, so we dispatch by concrete node
+// type. Statement-level cases emit target tables at the case site
+// and recurse into the substructure that may carry more
+// references (subqueries, expressions, CTEs).
+func (c *astCollector) visit(node nodes.Node) {
 	if node == nil {
 		return
 	}
 	switch n := node.(type) {
 
+	// PG nests lists inside expression slots (ValuesLists is a
+	// List of Lists, row constructors carry Lists, etc.). Recurse
+	// through them so child nodes still hit the dispatch.
+	case *nodes.List:
+		c.visitList(n)
+
 	// ── Statement-level dispatch ──────────────────────────────────
-	case *tree.Select:
-		if n.With != nil {
-			c.visitCTEs(n.With)
+	case *nodes.SelectStmt:
+		if n.WithClause != nil {
+			c.visitCTEs(n.WithClause)
 		}
-		c.visit(n.Select)
-		c.visit(n.OrderBy)
-		c.visit(n.Limit)
-	case *tree.ParenSelect:
-		c.visit(n.Select)
-	case *tree.SelectClause:
-		for _, e := range n.Exprs {
-			c.visit(e)
+		c.visitList(n.TargetList)
+		c.visitList(n.FromClause)
+		c.visit(n.WhereClause)
+		c.visitList(n.GroupClause)
+		c.visit(n.HavingClause)
+		c.visitList(n.WindowClause)
+		c.visitList(n.ValuesLists)
+		c.visitList(n.SortClause)
+		c.visit(n.LimitOffset)
+		c.visit(n.LimitCount)
+		c.visitList(n.LockingClause)
+		c.visitList(n.DistinctClause)
+		if n.Larg != nil {
+			c.visit(n.Larg)
 		}
-		c.visit(&n.From)
-		if n.Where != nil {
-			c.visit(n.Where)
+		if n.Rarg != nil {
+			c.visit(n.Rarg)
 		}
-		if n.Having != nil {
-			c.visit(n.Having)
+
+	case *nodes.InsertStmt:
+		if n.WithClause != nil {
+			c.visitCTEs(n.WithClause)
 		}
-		for _, e := range n.GroupBy {
-			c.visit(e)
+		c.emitRangeVar(n.Relation)
+		c.visit(n.SelectStmt)
+		c.visitList(n.ReturningList)
+
+	case *nodes.UpdateStmt:
+		if n.WithClause != nil {
+			c.visitCTEs(n.WithClause)
 		}
-		for _, e := range n.DistinctOn {
-			c.visit(e)
+		c.emitRangeVar(n.Relation)
+		c.visitList(n.TargetList)
+		c.visit(n.WhereClause)
+		c.visitList(n.FromClause)
+		c.visitList(n.ReturningList)
+
+	case *nodes.DeleteStmt:
+		if n.WithClause != nil {
+			c.visitCTEs(n.WithClause)
 		}
-	case *tree.UnionClause:
-		c.visit(n.Left)
-		c.visit(n.Right)
-	case *tree.Insert:
-		if n.With != nil {
-			c.visitCTEs(n.With)
+		c.emitRangeVar(n.Relation)
+		c.visit(n.WhereClause)
+		c.visitList(n.UsingClause)
+		c.visitList(n.ReturningList)
+
+	case *nodes.MergeStmt:
+		if n.WithClause != nil {
+			c.visitCTEs(n.WithClause)
 		}
-		c.visit(n.Table)
-		c.visit(n.Rows)
-	case *tree.Update:
-		if n.With != nil {
-			c.visitCTEs(n.With)
-		}
-		c.visit(n.Table)
-		for _, ue := range n.Exprs {
-			c.visit(ue.Expr)
-		}
-		if n.From != nil {
-			for _, t := range n.From {
-				c.visit(t)
+		c.emitRangeVar(n.Relation)
+		c.visit(n.SourceRelation)
+		c.visit(n.JoinCondition)
+		c.visitList(n.MergeWhenClauses)
+		c.visitList(n.ReturningList)
+
+	// DDL with a single *RangeVar target.
+	case *nodes.CreateStmt:
+		c.emitRangeVar(n.Relation)
+	case *nodes.ViewStmt:
+		c.emitRangeVar(n.View)
+		c.visit(n.Query)
+	case *nodes.AlterTableStmt:
+		c.emitRangeVar(n.Relation)
+	case *nodes.CopyStmt:
+		c.emitRangeVar(n.Relation)
+		c.visit(n.Query)
+	case *nodes.RefreshMatViewStmt:
+		c.emitRangeVar(n.Relation)
+	case *nodes.ClusterStmt:
+		c.emitRangeVar(n.Relation)
+	case *nodes.ReindexStmt:
+		c.emitRangeVar(n.Relation)
+	case *nodes.LockStmt:
+		c.visitList(n.Relations)
+	case *nodes.TruncateStmt:
+		c.visitList(n.Relations)
+	case *nodes.VacuumStmt:
+		c.visitList(n.Rels)
+	case *nodes.VacuumRelation:
+		c.emitRangeVar(n.Relation)
+	case *nodes.AlterSeqStmt:
+		c.emitRangeVar(n.Sequence)
+	case *nodes.CreateSeqStmt:
+		c.emitRangeVar(n.Sequence)
+	case *nodes.RenameStmt:
+		// ALTER TABLE … RENAME, ALTER … RENAME COLUMN, etc. The
+		// Relation slot is set for table-shaped objects; for other
+		// kinds (constraints, types) it stays nil.
+		c.emitRangeVar(n.Relation)
+	case *nodes.AlterObjectSchemaStmt:
+		c.emitRangeVar(n.Relation)
+	case *nodes.AlterOwnerStmt:
+		c.emitRangeVar(n.Relation)
+
+	// DDL whose targets are name-lists (DropStmt-style).
+	case *nodes.DropStmt:
+		if isTableShaped(nodes.ObjectType(n.RemoveType)) {
+			for _, it := range listItems(n.Objects) {
+				if inner, ok := it.(*nodes.List); ok {
+					c.emitObjectName(inner)
+				}
 			}
 		}
-		if n.Where != nil {
-			c.visit(n.Where)
-		}
-	case *tree.Delete:
-		if n.With != nil {
-			c.visitCTEs(n.With)
-		}
-		c.visit(n.Table)
-		if n.Where != nil {
-			c.visit(n.Where)
-		}
-	case *tree.DropTable:
-		for i := range n.Names {
-			c.emitTableName(&n.Names[i])
-		}
-	case *tree.DropView:
-		for i := range n.Names {
-			c.emitTableName(&n.Names[i])
-		}
-	case *tree.DropSequence:
-		for i := range n.Names {
-			c.emitTableName(&n.Names[i])
-		}
-	case *tree.AlterTable:
-		c.emitTable(unresolvedToString(n.Table))
-	case *tree.CreateTable:
-		c.emitTableName(&n.Table)
-		if n.AsSource != nil {
-			c.visit(n.AsSource)
-		}
-	case *tree.CreateView:
-		c.emitTableName(&n.Name)
-		if n.AsSource != nil {
-			c.visit(n.AsSource)
-		}
-	case *tree.Truncate:
-		for i := range n.Tables {
-			c.emitTableName(&n.Tables[i])
-		}
-	case *tree.CommentOnTable:
-		c.emitTable(unresolvedToString(n.Table))
-	case *tree.CopyFrom:
-		c.emitTableName(&n.Table)
-	case *tree.Grant:
-		for _, tp := range n.Targets.Tables {
-			c.emitTablePattern(tp)
-		}
-	case *tree.Revoke:
-		for _, tp := range n.Targets.Tables {
-			c.emitTablePattern(tp)
-		}
-	case *tree.RenameTable:
-		c.visit(n.Name)
-		c.visit(n.NewName)
-	case *tree.Explain:
-		if n.Statement != nil {
-			c.visit(n.Statement)
+
+	// COMMENT ON TABLE / COMMENT ON COLUMN-on-table.
+	case *nodes.CommentStmt:
+		if isTableShaped(n.Objtype) {
+			if list, ok := n.Object.(*nodes.List); ok {
+				c.emitObjectName(list)
+			}
 		}
 
-	// ── Table-expression nodes ────────────────────────────────────
-	case *tree.From:
-		for _, t := range n.Tables {
-			c.visit(t)
+	// GRANT/REVOKE on tables.
+	case *nodes.GrantStmt:
+		if isTableShaped(n.Objtype) {
+			for _, it := range listItems(n.Objects) {
+				switch obj := it.(type) {
+				case *nodes.RangeVar:
+					c.emitRangeVar(obj)
+				case *nodes.List:
+					c.emitObjectName(obj)
+				}
+			}
 		}
-	case *tree.AliasedTableExpr:
-		c.visit(n.Expr)
-	case *tree.JoinTableExpr:
-		c.visit(n.Left)
-		c.visit(n.Right)
-		c.visit(n.Cond)
-	case *tree.OnJoinCond:
-		c.visit(n.Expr)
-	case *tree.ParenTableExpr:
-		c.visit(n.Expr)
-	case *tree.TableName:
-		c.emitTableName(n)
-	case tree.TableName:
-		c.emitTableName(&n)
-	case *tree.UnresolvedObjectName:
-		c.emitTable(unresolvedToString(n))
 
-	// ── Expressions ───────────────────────────────────────────────
-	case tree.SelectExpr:
-		c.visit(n.Expr)
-	case tree.SelectExprs:
-		for _, e := range n {
-			c.visit(e)
+	// EXPLAIN <stmt>, PREPARE <name> AS <stmt>, etc. — recurse so
+	// the inner statement's tables surface on the outer pgInfo.
+	case *nodes.ExplainStmt:
+		c.visit(n.Query)
+	case *nodes.PrepareStmt:
+		c.visit(n.Query)
+	case *nodes.DeclareCursorStmt:
+		c.visit(n.Query)
+	case *nodes.CreateTableAsStmt:
+		if n.Into != nil {
+			c.emitRangeVar(n.Into.Rel)
 		}
-	case *tree.Where:
-		c.visit(n.Expr)
-	case *tree.FuncExpr:
+		c.visit(n.Query)
+
+	// CALL <proc>(...) — the proc surfaces as a function so
+	// `function == "..."` rules still fire (audit §6.6).
+	case *nodes.CallStmt:
+		if n.Funccall != nil {
+			c.visit(n.Funccall)
+		}
+
+	// DO $$ ... $$ — re-tokenise and recursively analyse the body
+	// so inner DROPs reach the matcher (audit §6.5).
+	case *nodes.DoStmt:
+		if body := doBody(n); body != "" {
+			for _, a := range analyseAll(body) {
+				if a.Outer.Verb != "" {
+					c.inner = append(c.inner, a.Outer)
+				}
+				c.inner = append(c.inner, a.Inner...)
+			}
+		}
+
+	// ── FROM-side nodes ──────────────────────────────────────────
+	case *nodes.RangeVar:
+		c.emitRangeVar(n)
+	case *nodes.JoinExpr:
+		c.visit(n.Larg)
+		c.visit(n.Rarg)
+		c.visit(n.Quals)
+	case *nodes.RangeSubselect:
+		c.visit(n.Subquery)
+	case *nodes.RangeFunction:
+		c.visitList(n.Functions)
+	case *nodes.RangeTableSample:
+		c.visit(n.Relation)
+		c.visitList(n.Args)
+	case *nodes.FromExpr:
+		c.visitList(n.Fromlist)
+		c.visit(n.Quals)
+
+	// ── Expression nodes ─────────────────────────────────────────
+	case *nodes.ResTarget:
+		c.visit(n.Val)
+	case *nodes.A_Expr:
+		c.visit(n.Lexpr)
+		c.visit(n.Rexpr)
+	case *nodes.BoolExpr:
+		c.visitList(n.Args)
+	case *nodes.NullTest:
+		c.visit(n.Arg)
+	case *nodes.BooleanTest:
+		c.visit(n.Arg)
+	case *nodes.FuncCall:
 		c.emitFunc(n)
-		for _, e := range n.Exprs {
-			c.visit(e)
-		}
-		if n.Filter != nil {
-			c.visit(n.Filter)
-		}
-	case *tree.Subquery:
-		c.visit(n.Select)
-	case *tree.ComparisonExpr:
-		c.visit(n.Left)
-		c.visit(n.Right)
-	case *tree.BinaryExpr:
-		c.visit(n.Left)
-		c.visit(n.Right)
-	case *tree.AndExpr:
-		c.visit(n.Left)
-		c.visit(n.Right)
-	case *tree.OrExpr:
-		c.visit(n.Left)
-		c.visit(n.Right)
-	case *tree.NotExpr:
+		c.visitList(n.Args)
+		c.visit(n.AggFilter)
+		c.visit(n.Over)
+	case *nodes.SubLink:
+		c.visit(n.Testexpr)
+		c.visit(n.Subselect)
+	case *nodes.CaseExpr:
+		c.visit(n.Arg)
+		c.visitList(n.Args)
+		c.visit(n.Defresult)
+	case *nodes.CaseWhen:
 		c.visit(n.Expr)
-	case *tree.ParenExpr:
-		c.visit(n.Expr)
-	case *tree.CastExpr:
-		c.visit(n.Expr)
-	case *tree.AnnotateTypeExpr:
-		c.visit(n.Expr)
-	case *tree.CaseExpr:
-		c.visit(n.Expr)
-		for _, w := range n.Whens {
-			c.visit(w.Cond)
-			c.visit(w.Val)
-		}
-		c.visit(n.Else)
-	case *tree.CoalesceExpr:
-		for _, e := range n.Exprs {
-			c.visit(e)
-		}
-	case *tree.RangeCond:
-		c.visit(n.Left)
-		c.visit(n.From)
-		c.visit(n.To)
-	case *tree.Tuple:
-		for _, e := range n.Exprs {
-			c.visit(e)
-		}
-	case *tree.Array:
-		for _, e := range n.Exprs {
-			c.visit(e)
-		}
-	case *tree.UnaryExpr:
-		c.visit(n.Expr)
-	case *tree.ValuesClause:
-		for _, row := range n.Rows {
-			c.visit(row)
-		}
-	case tree.Exprs:
-		for _, e := range n {
-			c.visit(e)
-		}
+		c.visit(n.Result)
+	case *nodes.CoalesceExpr:
+		c.visitList(n.Args)
+	case *nodes.MinMaxExpr:
+		c.visitList(n.Args)
+	case *nodes.TypeCast:
+		c.visit(n.Arg)
+	case *nodes.CollateClause:
+		c.visit(n.Arg)
+	case *nodes.A_Indirection:
+		c.visit(n.Arg)
+		c.visitList(n.Indirection)
+	case *nodes.A_ArrayExpr:
+		c.visitList(n.Elements)
+	case *nodes.RowExpr:
+		c.visitList(n.Args)
+	case *nodes.NamedArgExpr:
+		c.visit(n.Arg)
+	case *nodes.SortBy:
+		c.visit(n.Node)
+	case *nodes.WindowDef:
+		c.visitList(n.PartitionClause)
+		c.visitList(n.OrderClause)
+	case *nodes.LockingClause:
+		c.visitList(n.LockedRels)
+	}
+}
+
+// visitList walks a *nodes.List, recursing into each item.
+// Safely handles nil — pgplex uses nil to mean "absent list".
+func (c *astCollector) visitList(list *nodes.List) {
+	if list == nil {
+		return
+	}
+	for _, it := range list.Items {
+		c.visit(it)
 	}
 }
 
 // visitCTEs surfaces the inner DML of WITH-CTEs as shadow
 // sub-statements (audit §1.2). The outer statement's verb stays
-// `with`/`select`/whatever; the inner verb (`delete`, `update`,
+// `select` / whatever; the inner verb (`delete`, `update`,
 // `insert`, `merge`) gets its own pgInfo so a rule keyed on the
 // mutating verb fires.
-func (c *astCollector) visitCTEs(w *tree.With) {
-	for _, cte := range w.CTEList {
-		if cte == nil || cte.Stmt == nil {
+func (c *astCollector) visitCTEs(w *nodes.WithClause) {
+	if w == nil || w.Ctes == nil {
+		return
+	}
+	for _, it := range w.Ctes.Items {
+		cte, ok := it.(*nodes.CommonTableExpr)
+		if !ok || cte == nil || cte.Ctequery == nil {
 			continue
 		}
-		// Each CTE inner is its own logical statement — recurse so
-		// nested CTEs surface too.
-		switch cte.Stmt.(type) {
-		case *tree.Insert, *tree.Update, *tree.Delete:
+		switch cte.Ctequery.(type) {
+		case *nodes.InsertStmt, *nodes.UpdateStmt,
+			*nodes.DeleteStmt, *nodes.MergeStmt:
 			info := pgInfo{
-				Verb:      strings.ToLower(strings.Fields(cte.Stmt.StatementTag())[0]),
-				Statement: tree.AsString(cte.Stmt),
+				Verb:      verbFromNode(cte.Ctequery),
+				Statement: cte.Ctename,
 			}
-			sub := &astCollector{tables: map[string]struct{}{}, funcs: map[string]struct{}{}}
-			sub.visit(cte.Stmt)
+			sub := newAstCollector()
+			sub.visit(cte.Ctequery)
 			info.Tables = sortedKeys(sub.tables)
 			info.Functions = sortedKeys(sub.funcs)
 			c.inner = append(c.inner, info)
 		}
-		// Continue walking the inner so its tables/functions show up
-		// in the outer pgInfo too (the regex extractor used to do
-		// this, and rules written before the audit may rely on it).
-		c.visit(cte.Stmt)
+		// Continue walking the inner so its tables / functions show
+		// up in the outer pgInfo too (rules written before the
+		// audit may rely on this — the regex extractor used to do
+		// it).
+		c.visit(cte.Ctequery)
 	}
 }
 
-func unresolvedToString(u *tree.UnresolvedObjectName) string {
-	if u == nil || u.NumParts == 0 {
-		return ""
+// listItems returns the list's items, or nil for a nil list. The
+// helper lets the visit switch read uniformly without nil checks
+// at every list-typed Objects field.
+func listItems(l *nodes.List) []nodes.Node {
+	if l == nil {
+		return nil
 	}
-	parts := make([]string, 0, u.NumParts)
-	for i := u.NumParts - 1; i >= 0; i-- {
-		parts = append(parts, u.Parts[i])
-	}
-	return strings.Join(parts, ".")
+	return l.Items
 }
 
-func unresolvedNameToString(u *tree.UnresolvedName) string {
-	if u == nil || u.NumParts == 0 || u.Star {
+// isTableShaped reports whether an ObjectType refers to a
+// table-shaped object (table / view / matview / sequence /
+// foreign table). DropStmt / CommentStmt / GrantStmt all share the
+// ObjectType enum so we centralise the check here.
+func isTableShaped(t nodes.ObjectType) bool {
+	switch t {
+	case nodes.OBJECT_TABLE, nodes.OBJECT_VIEW,
+		nodes.OBJECT_MATVIEW, nodes.OBJECT_SEQUENCE,
+		nodes.OBJECT_FOREIGN_TABLE:
+		return true
+	}
+	return false
+}
+
+// doBody extracts the BODY of a DO $$ … $$ block. The body lives
+// in a DefElem named "as" whose Arg is a *String. Returns "" when
+// the DO carries no body (unparseable input).
+func doBody(d *nodes.DoStmt) string {
+	if d == nil || d.Args == nil {
 		return ""
 	}
-	parts := make([]string, 0, u.NumParts)
-	for i := u.NumParts - 1; i >= 0; i-- {
-		parts = append(parts, u.Parts[i])
+	for _, it := range d.Args.Items {
+		de, ok := it.(*nodes.DefElem)
+		if !ok || de == nil {
+			continue
+		}
+		if strings.EqualFold(de.Defname, "as") {
+			if s, ok := de.Arg.(*nodes.String); ok {
+				return s.Str
+			}
+		}
 	}
-	return strings.Join(parts, ".")
+	return ""
 }
 
 func sortedKeys(m map[string]struct{}) []string {
@@ -491,17 +708,14 @@ func sortedKeys(m map[string]struct{}) []string {
 
 // ── Fallback: verb sniff for parser failures ──────────────────────────
 //
-// Cockroach's grammar rejects a chunk of postgres-specific syntax:
-// LOCK / VACUUM / ANALYZE / REINDEX / REFRESH MATERIALIZED VIEW /
-// CLUSTER (§2.1 long tail), SET ROLE / SET SESSION AUTHORIZATION /
-// SET LOCAL ROLE (§6.4), DO blocks (§6.5), CALL (§6.6), trailing-`;`
-// shells like `DROP;` / `SELECT;` (§1.1). For each piece the parser
-// rejected we run a token-driven sniff that surfaces the verb and
-// (where it's cheap) the primary table target.
+// pgplex's grammar covers postgres' full surface, so this path
+// fires only on genuinely broken input: trailing-`;` shells like
+// `DROP;` / `SELECT;` (audit §1.1), syntax errors, and the like.
+// The sniff surfaces the verb so verb-keyed CEL rules still fire.
 
 // sniffStmt is the fallback for one parser-rejected statement
-// piece. Produces a degraded pgInfo carrying at minimum the verb so
-// `verb`-keyed CEL rules keep working.
+// piece. Produces a degraded pgInfo carrying at minimum the verb
+// so `verb`-keyed CEL rules keep working.
 func sniffStmt(raw string) analysedStmt {
 	stmt := strings.TrimSpace(raw)
 	info := pgInfo{Statement: stmt}
@@ -587,12 +801,11 @@ func sniffVerbAndTables(toks []sniffTok) (string, []string, []pgInfo) {
 		}
 		return v, emitNext(i), nil
 	case "copy":
-		// COPY x [(cols)] FROM/TO ... — the parser rejects the
-		// file-path / TO stdout forms but the table target is the
+		// COPY x [(cols)] FROM/TO ... — the table target is the
 		// first identifier after COPY.
 		return v, emitNext(1), nil
 	case "do":
-		// DO $$ ... $$ — the parser rejects DO entirely; we
+		// DO $$ ... $$ — the parser rejected the whole DO; we
 		// re-tokenise the body and recurse so the inner DROP
 		// reaches the matcher (audit §6.5).
 		var body string
@@ -618,9 +831,9 @@ func sniffVerbAndTables(toks []sniffTok) (string, []string, []pgInfo) {
 	return v, nil, nil
 }
 
-// tableCandidates reads a (possibly schema-qualified) name starting
-// at toks[i] and returns the qualified + unqualified forms. Quoted
-// identifiers preserve case (§2.4).
+// tableCandidates reads a (possibly schema-qualified) name
+// starting at toks[i] and returns the qualified + unqualified
+// forms. Quoted identifiers preserve case (§2.4).
 func tableCandidates(toks []sniffTok, i int) []string {
 	if i >= len(toks) {
 		return nil
@@ -648,8 +861,8 @@ func tableCandidates(toks []sniffTok, i int) []string {
 }
 
 // isSniffNoise returns true for keywords that show up between a
-// verb and the table target — TABLE in `LOCK TABLE x`, IF EXISTS in
-// `DROP TABLE IF EXISTS x` (parser path), CONCURRENTLY, ONLY.
+// verb and the table target — TABLE in `LOCK TABLE x`, IF EXISTS
+// in `DROP TABLE IF EXISTS x`, CONCURRENTLY, ONLY.
 func isSniffNoise(v string) bool {
 	switch v {
 	case "table", "index", "view", "if", "exists", "not", "concurrently", "only":
@@ -685,8 +898,8 @@ type sniffTok struct {
 }
 
 // sniffTokens is a comment- and string-aware tokeniser for the
-// fallback path. Whitespace and comments are dropped; strings carry
-// their body text (so DO $$ ... $$ surfaces the inner SQL).
+// fallback path. Whitespace and comments are dropped; strings
+// carry their body text (so DO $$ ... $$ surfaces the inner SQL).
 func sniffTokens(s string) []sniffTok {
 	var out []sniffTok
 	i := 0
@@ -786,9 +999,9 @@ func isSniffIdentCont(c byte) bool {
 	return isSniffIdentStart(c) || (c >= '0' && c <= '9') || c == '$'
 }
 
-// readDollarQuote spots a $tag$ at s[i] and returns (tag, endIdx, true)
-// when the matching closing $tag$ is present. End is the byte index
-// *after* the closing tag.
+// readDollarQuote spots a $tag$ at s[i] and returns
+// (tag, endIdx, true) when the matching closing $tag$ is present.
+// End is the byte index *after* the closing tag.
 func readDollarQuote(s string, i int) (tag string, end int, ok bool) {
 	if i >= len(s) || s[i] != '$' {
 		return "", 0, false
@@ -813,11 +1026,11 @@ func readDollarQuote(s string, i int) (tag string, end int, ok bool) {
 	return tag, openerEnd + idx + len(closing), true
 }
 
-// splitTopLevelStatements partitions a SQL string at `;` characters
-// that aren't inside a string, dollar-quote, comment, or paren
-// group. Mirrors the parser's own scanner just well enough that
-// `SET ROLE admin; DROP TABLE users` splits even though the parser
-// itself rejected the whole input.
+// splitTopLevelStatements partitions a SQL string at `;`
+// characters that aren't inside a string, dollar-quote, comment,
+// or paren group. Mirrors the parser's own scanner just well
+// enough that `SET ROLE admin; DROP TABLE users` splits even when
+// the parser itself rejected the whole input.
 func splitTopLevelStatements(s string) []string {
 	var out []string
 	i, start := 0, 0
