@@ -22,7 +22,7 @@ var fakeTelegramRequestBodyToken = []byte("999999999:FAKE_REDACTED_TELEGRAM_TOKE
 
 type telegramRequestBodySecretStore struct{}
 
-func (telegramRequestBodySecretStore) Get(string, string) (runtime.Secret, error) {
+func (telegramRequestBodySecretStore) Get(string) (runtime.Secret, error) {
 	return runtime.Secret{Bytes: fakeTelegramRequestBodyToken}, nil
 }
 

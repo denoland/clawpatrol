@@ -2080,6 +2080,7 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 			Rule:         c.Rule,
 			ApproverName: st.Name,
 			AgentIP:      c.AgentIP,
+			Profile:      c.Profile,
 			Method:       c.Method,
 			Host:         c.Host,
 			Path:         c.Path,

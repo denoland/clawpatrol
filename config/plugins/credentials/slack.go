@@ -157,10 +157,10 @@ func (s *SlackTokens) NotifyHITL(_ context.Context, req runtime.ApproveRequest, 
 		}
 	}
 	ctx := []map[string]any{}
-	if req.AgentIP != "" {
+	if req.Profile != "" {
 		ctx = append(ctx, map[string]any{
 			"type": "mrkdwn",
-			"text": "agent `" + req.AgentIP + "`",
+			"text": "agent `" + req.Profile + "`",
 		})
 	}
 	if r := strings.TrimSpace(req.Reason); r != "" {
