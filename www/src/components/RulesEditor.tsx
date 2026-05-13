@@ -89,11 +89,11 @@ export function RulesEditor({ onClose, onSaved }: { onClose: () => void; onSaved
   return (
     <>
       <div
-        className="fixed inset-0 bg-black/30 flex items-center justify-center z-50"
+        className="fixed inset-0 bg-navy-950/30 flex items-center justify-center z-50"
         onClick={onClose}
       >
         <div
-          className="bg-white border border-[#e5e5e5] rounded-md shadow-2xl flex flex-col w-[820px] max-w-full max-h-[85vh]"
+          className="bg-canvas border border-[#e5e5e5] rounded-md shadow-2xl flex flex-col w-[820px] max-w-full max-h-[85vh]"
           onClick={(e) => e.stopPropagation()}
         >
           <div className="flex items-center px-4 py-3 border-b border-[#e5e5e5]">
@@ -114,7 +114,7 @@ export function RulesEditor({ onClose, onSaved }: { onClose: () => void; onSaved
 
           <form
             onSubmit={runAI}
-            className="flex items-center gap-2 px-4 py-2.5 border-t border-[#e5e5e5] bg-white"
+            className="flex items-center gap-2 px-4 py-2.5 border-t border-[#e5e5e5] bg-canvas"
           >
             <span className="text-[10px] uppercase tracking-[.09em] text-[#a3a3a3]">AI</span>
             <input
@@ -127,14 +127,14 @@ export function RulesEditor({ onClose, onSaved }: { onClose: () => void; onSaved
             <button
               type="submit"
               disabled={aiBusy || !aiPrompt.trim()}
-              className="text-[11px] px-3 py-1.5 border border-[#171717] text-[#171717] rounded hover:bg-[#171717] hover:text-white disabled:opacity-40"
+              className="text-[11px] px-3 py-1.5 border border-[#171717] text-[#171717] rounded hover:bg-[#171717] hover:text-canvas disabled:opacity-40"
             >
               {aiBusy ? "thinking…" : "apply"}
             </button>
           </form>
 
           <div className="flex items-center px-4 py-3 border-t border-[#e5e5e5] gap-3">
-            {err && <span className="text-[11px] text-red-600 break-all flex-1">{err}</span>}
+            {err && <span className="text-[11px] text-rust-700 break-all flex-1">{err}</span>}
             {okMsg && <span className="text-[11px] text-[#16a34a] flex-1">{okMsg}</span>}
             {!err && !okMsg && (
               <span className="text-[11px] text-[#a3a3a3] flex-1">
@@ -150,7 +150,7 @@ export function RulesEditor({ onClose, onSaved }: { onClose: () => void; onSaved
             <button
               onClick={save}
               disabled={!dirty || busy}
-              className="text-[11px] px-3 py-1.5 border border-[#171717] text-white bg-[#171717] rounded hover:bg-[#262626] disabled:opacity-40"
+              className="text-[11px] px-3 py-1.5 border border-[#171717] text-canvas bg-[#171717] rounded hover:bg-[#262626] disabled:opacity-40"
             >
               {busy ? "saving…" : "save"}
             </button>

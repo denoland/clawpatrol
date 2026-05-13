@@ -76,7 +76,7 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
       requestId={ev.id}
     >
       {/* header */}
-      <div className="bg-white border border-[#e5e5e5] rounded p-5 space-y-3">
+      <div className="bg-canvas border border-[#e5e5e5] rounded p-5 space-y-3">
         <div className="flex items-center gap-3 flex-wrap">
           <ModeIcon mode={ev.mode} />
           {verb && (
@@ -124,7 +124,7 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
       {isSQL ? (
         <SQLDetail ev={ev} />
       ) : hasSections ? (
-        <div className="bg-white border border-[#e5e5e5] rounded divide-y divide-[#e5e5e5]">
+        <div className="bg-canvas border border-[#e5e5e5] rounded divide-y divide-[#e5e5e5]">
           {hasFacets && (
             <Section title="Request">
               <Facets rows={facetFields} />
@@ -152,7 +152,7 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
           )}
         </div>
       ) : (
-        <div className="bg-white border border-[#e5e5e5] rounded px-5 py-4 text-[12px] text-[#a3a3a3]">
+        <div className="bg-canvas border border-[#e5e5e5] rounded px-5 py-4 text-[12px] text-[#a3a3a3]">
           No request/response body captured
           {ev.mode === "splice" && " (spliced connection)"}
         </div>
@@ -228,7 +228,7 @@ function SQLDetail({ ev }: { ev: EventRecord }) {
     facets.push({ label: "Functions", value: functions.map((s) => s.toUpperCase()).join(", ") });
   }
   return (
-    <div className="bg-white border border-[#e5e5e5] rounded divide-y divide-[#e5e5e5]">
+    <div className="bg-canvas border border-[#e5e5e5] rounded divide-y divide-[#e5e5e5]">
       {facets.length > 0 && (
         <Section title="Details">
           <div className="px-4 py-3 grid grid-cols-[100px_1fr] gap-y-1.5 gap-x-3 text-[12px]">
@@ -720,7 +720,7 @@ function fmtBytes(n: number): string {
 function ModeIcon({ mode }: { mode: string }) {
   if (mode === "mitm") {
     return (
-      <span title="MITM" className="flex-shrink-0">
+      <span title="MITM" className="shrink-0">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="#f6821f">
           <path d="M7 10V7a5 5 0 0 1 10 0v3h1a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h1Zm2 0h6V7a3 3 0 1 0-6 0v3Z" />
         </svg>
@@ -728,7 +728,7 @@ function ModeIcon({ mode }: { mode: string }) {
     );
   }
   return (
-    <span title="Splice" className="flex-shrink-0">
+    <span title="Splice" className="shrink-0">
       <svg
         width="14"
         height="14"

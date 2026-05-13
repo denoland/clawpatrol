@@ -19,8 +19,8 @@ export function ConfigSaveReview({
   );
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[60]">
-      <div className="bg-white border border-[#e5e5e5] rounded-md shadow-2xl flex flex-col w-[920px] max-w-[96vw] max-h-[88vh]">
+    <div className="fixed inset-0 bg-navy-950/40 flex items-center justify-center z-[60]">
+      <div className="bg-canvas border border-[#e5e5e5] rounded-md shadow-2xl flex flex-col w-[920px] max-w-[96vw] max-h-[88vh]">
         <div className="flex items-center px-4 py-3 border-b border-[#e5e5e5]">
           <div>
             <div className="text-[11px] uppercase tracking-[.12em] text-[#a3a3a3]">
@@ -63,7 +63,7 @@ export function ConfigSaveReview({
           <button
             onClick={onConfirm}
             disabled={busy || !preview.changed}
-            className="text-[11px] px-3 py-1.5 border border-[#171717] text-white bg-[#171717] rounded hover:bg-[#262626] disabled:opacity-40"
+            className="text-[11px] px-3 py-1.5 border border-[#171717] text-canvas bg-[#171717] rounded hover:bg-[#262626] disabled:opacity-40"
           >
             {busy ? "saving…" : "save changes"}
           </button>

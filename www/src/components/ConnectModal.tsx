@@ -113,11 +113,11 @@ export function ConnectModal({
 
   return (
     <div
-      className="fixed inset-0 bg-black/30 flex items-center justify-center z-50"
+      className="fixed inset-0 bg-navy-950/30 flex items-center justify-center z-50"
       onClick={onClose}
     >
       <div
-        className="bg-white border border-[#e5e5e5] rounded-md p-5 w-[520px] shadow-2xl"
+        className="bg-canvas border border-[#e5e5e5] rounded-md p-5 w-[520px] shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="text-[11px] uppercase tracking-[.12em] text-[#a3a3a3] mb-1">
@@ -141,7 +141,7 @@ export function ConnectModal({
               )}
             </div>
             <details className="border border-[#e5e5e5] rounded bg-[#fafafa] group">
-              <summary className="cursor-pointer list-none flex items-center gap-2 px-2 py-1.5 text-[11px] text-[#171717] hover:bg-white rounded">
+              <summary className="cursor-pointer list-none flex items-center gap-2 px-2 py-1.5 text-[11px] text-[#171717] hover:bg-canvas rounded">
                 <span className="inline-block w-3 text-[#a3a3a3] transition-transform group-open:rotate-90">
                   ›
                 </span>
@@ -167,7 +167,7 @@ export function ConnectModal({
                               "flex items-center gap-2 text-[11px] py-0.5 px-1 rounded " +
                               (isBase
                                 ? "text-[#a3a3a3]"
-                                : "text-[#171717] cursor-pointer hover:bg-white")
+                                : "text-[#171717] cursor-pointer hover:bg-canvas")
                             }
                           >
                             <input
@@ -197,7 +197,7 @@ export function ConnectModal({
                 ))}
               </div>
             </details>
-            {err && <div className="text-[11px] text-red-600 break-all">{err}</div>}
+            {err && <div className="text-[11px] text-rust-700 break-all">{err}</div>}
             <div className="flex gap-2 justify-end">
               <button
                 type="button"
@@ -209,7 +209,7 @@ export function ConnectModal({
               <button
                 type="button"
                 onClick={() => setStarted(true)}
-                className="text-[11px] px-3 py-1.5 bg-[#171717] text-white rounded"
+                className="text-[11px] px-3 py-1.5 bg-[#171717] text-canvas rounded"
               >
                 continue ({baseScopes.length + extras.size} scopes)
               </button>
@@ -227,7 +227,7 @@ export function ConnectModal({
               {start.user_code}
             </div>
             <div className="text-[11px] text-[#a3a3a3] text-center">waiting for approval…</div>
-            {err && <div className="text-[11px] text-red-600 break-all">{err}</div>}
+            {err && <div className="text-[11px] text-rust-700 break-all">{err}</div>}
             <div className="flex justify-end">
               <button
                 type="button"
@@ -253,7 +253,7 @@ export function ConnectModal({
                 className="w-full text-[12px] border border-[#e5e5e5] rounded px-2 py-2 focus:outline-none focus:border-[#171717] font-mono transition-colors"
                 autoFocus
               />
-              {err && <div className="text-[11px] text-red-600 mt-2 break-all">{err}</div>}
+              {err && <div className="text-[11px] text-rust-700 mt-2 break-all">{err}</div>}
               <div className="flex gap-2 mt-3 justify-end">
                 <button
                   type="button"
@@ -265,7 +265,7 @@ export function ConnectModal({
                 <button
                   type="submit"
                   disabled={busy || !code}
-                  className="text-[11px] px-3 py-1.5 bg-[#171717] text-white rounded disabled:bg-[#a3a3a3]"
+                  className="text-[11px] px-3 py-1.5 bg-[#171717] text-canvas rounded disabled:bg-[#a3a3a3]"
                 >
                   {busy ? "exchanging…" : "connect"}
                 </button>

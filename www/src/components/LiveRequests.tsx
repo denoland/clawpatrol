@@ -72,10 +72,10 @@ export function LiveRequests({
 
   return (
     <div
-      className="flex flex-col bg-white border border-[#e5e5e5] rounded overflow-hidden"
+      className="flex flex-col bg-canvas border border-[#e5e5e5] rounded overflow-hidden"
       style={{ height: height ?? "420px" }}
     >
-      <div className="flex items-center px-4 py-2.5 text-[10px] uppercase tracking-[.12em] text-[#a3a3a3] border-b border-[#e5e5e5] flex-shrink-0">
+      <div className="flex items-center px-4 py-2.5 text-[10px] uppercase tracking-[.12em] text-[#a3a3a3] border-b border-[#e5e5e5] shrink-0">
         <span>LIVE REQUESTS</span>
         <span className="ml-2 text-[#22c55e] tabular-nums flex items-center gap-1">
           <span className="w-1.5 h-1.5 rounded-full bg-[#22c55e] animate-pulse" />
@@ -212,14 +212,14 @@ function Row({ ev, schema }: { ev: RowState; schema: FacetSchema | undefined }) 
           " hover:bg-[#f9f9f9]"
         }
       >
-        <span className="text-[10px] tabular-nums text-[#a3a3a3] flex-shrink-0">{time}</span>
+        <span className="text-[10px] tabular-nums text-[#a3a3a3] shrink-0">{time}</span>
         <ModeIcon mode={ev.mode} />
         {verb && (
-          <span className="text-[10px] uppercase font-semibold text-[#525252] flex-shrink-0 w-[44px]">
+          <span className="text-[10px] uppercase font-semibold text-[#525252] shrink-0 w-[44px]">
             {verb}
           </span>
         )}
-        <span className={"text-[11px] tabular-nums flex-shrink-0 w-[36px] " + statusColor}>
+        <span className={"text-[11px] tabular-nums shrink-0 w-[36px] " + statusColor}>
           {inFlight ? <InFlightSpinner /> : status || "—"}
         </span>
         <span
@@ -230,7 +230,7 @@ function Row({ ev, schema }: { ev: RowState; schema: FacetSchema | undefined }) 
           {sep && <span> </span>}
           <span>{body}</span>
         </span>
-        <span className="text-[10px] tabular-nums text-[#a3a3a3] flex-shrink-0">
+        <span className="text-[10px] tabular-nums text-[#a3a3a3] shrink-0">
           {inFlight ? "…" : ev.ms + "ms"}
         </span>
       </div>
@@ -238,7 +238,7 @@ function Row({ ev, schema }: { ev: RowState; schema: FacetSchema | undefined }) 
         <div className="bg-[#fafafa] border-t border-[#f5f5f5] max-h-[180px] overflow-y-auto">
           {ev.frames!.map((f, i) => (
             <div key={i} className="px-4 py-1 flex items-start gap-2 text-[10px] font-mono">
-              <span className="text-[#a3a3a3] flex-shrink-0 w-[24px]">{f.direction}</span>
+              <span className="text-[#a3a3a3] shrink-0 w-[24px]">{f.direction}</span>
               <span className="text-[#525252] truncate" title={f.frame}>
                 {f.frame}
               </span>
@@ -272,7 +272,7 @@ function AnimatedDots() {
 function ModeIcon({ mode }: { mode: string }) {
   if (mode === "mitm") {
     return (
-      <span title="MITM — gateway decrypted, inspected, forwarded" className="flex-shrink-0">
+      <span title="MITM — gateway decrypted, inspected, forwarded" className="shrink-0">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="#f6821f">
           <path d="M7 10V7a5 5 0 0 1 10 0v3h1a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h1Zm2 0h6V7a3 3 0 1 0-6 0v3Z" />
         </svg>
@@ -280,7 +280,7 @@ function ModeIcon({ mode }: { mode: string }) {
     );
   }
   return (
-    <span title="Splice — gateway forwarded encrypted bytes untouched" className="flex-shrink-0">
+    <span title="Splice — gateway forwarded encrypted bytes untouched" className="shrink-0">
       <svg
         width="14"
         height="14"

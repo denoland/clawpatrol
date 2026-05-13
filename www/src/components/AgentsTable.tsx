@@ -22,7 +22,7 @@ export function AgentsTable({
   for (const i of integrations ?? []) byId.set(i.id, i);
   const stable = [...(agents ?? [])].sort((a, b) => a.ip.localeCompare(b.ip));
   return (
-    <table className="w-full table-fixed border-collapse bg-white" style={{ minWidth: 760 }}>
+    <table className="w-full table-fixed border-collapse bg-canvas" style={{ minWidth: 760 }}>
       <colgroup>
         <col style={{ width: 240 }} />
         <col style={{ width: 140 }} />
@@ -60,12 +60,12 @@ export function AgentsTable({
             >
               <Td>
                 <div className="flex items-center gap-1.5 min-w-0">
-                  <span className="w-[5px] h-[5px] rounded-full bg-[#22c55e] flex-shrink-0" />
+                  <span className="w-[5px] h-[5px] rounded-full bg-[#22c55e] shrink-0" />
                   <DeviceIcon
                     os={a.os}
                     hostname={a.hostname}
                     ua={a.ua}
-                    className="w-[13px] h-[13px] text-[#525252] flex-shrink-0"
+                    className="w-[13px] h-[13px] text-[#525252] shrink-0"
                   />
                   <span className="text-[13px] font-semibold text-[#171717] truncate">
                     {a.hostname || a.ip}
@@ -119,7 +119,7 @@ function Th({ children, className = "" }: { children: React.ReactNode; className
   return (
     <th
       className={
-        "px-3 sm:px-[14px] py-[9px] text-left text-[10px] uppercase tracking-[.12em] text-[#a3a3a3] font-medium bg-white " +
+        "px-3 sm:px-[14px] py-[9px] text-left text-[10px] uppercase tracking-[.12em] text-[#a3a3a3] font-medium bg-canvas " +
         className
       }
     >

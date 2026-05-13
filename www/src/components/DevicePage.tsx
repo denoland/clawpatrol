@@ -71,7 +71,7 @@ export function DevicePage({
           <span>/</span>
           <span className="text-[#525252]">{ip}</span>
         </nav>
-        <div className="bg-white border border-[#e5e5e5] rounded px-5 py-8 text-center text-[12px] text-[#a3a3a3]">
+        <div className="bg-canvas border border-[#e5e5e5] rounded px-5 py-8 text-center text-[12px] text-[#a3a3a3]">
           no agent with ip {ip}
         </div>
       </main>
@@ -174,7 +174,7 @@ export function DevicePage({
       </div>
 
       {/* device header card */}
-      <section className="bg-white border border-[#e5e5e5] rounded">
+      <section className="bg-canvas border border-[#e5e5e5] rounded">
         <div className="flex items-center gap-3 px-5 py-4 border-b border-[#e5e5e5]">
           <DeviceIcon
             os={a.os}
@@ -275,7 +275,7 @@ function ProfilePicker({
         </svg>
       </button>
       {open && (
-        <div className="absolute right-0 top-[calc(100%+6px)] z-20 min-w-[200px] bg-white border border-[#e5e5e5] rounded shadow-lg py-1">
+        <div className="absolute right-0 top-[calc(100%+6px)] z-20 min-w-[200px] bg-canvas border border-[#e5e5e5] rounded shadow-lg py-1">
           <div className="px-3 py-1.5 text-[10px] uppercase tracking-[.12em] text-[#a3a3a3] border-b border-[#f5f5f5]">
             choose profile
           </div>
@@ -299,7 +299,7 @@ function ProfilePicker({
                 >
                   <span
                     className={
-                      "w-[6px] h-[6px] rounded-full flex-shrink-0 " +
+                      "w-[6px] h-[6px] rounded-full shrink-0 " +
                       (active ? "bg-[#22c55e]" : "border border-[#e5e5e5]")
                     }
                   />
@@ -310,7 +310,7 @@ function ProfilePicker({
           )}
         </div>
       )}
-      {err && <div className="text-[10px] text-red-600 mt-1">{err}</div>}
+      {err && <div className="text-[10px] text-rust-700 mt-1">{err}</div>}
     </div>
   );
 }

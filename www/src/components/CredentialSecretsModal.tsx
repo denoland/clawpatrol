@@ -48,11 +48,11 @@ export function CredentialSecretsModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-navy-950/30"
       onClick={onClose}
     >
       <div
-        className="bg-white border border-[#e5e5e5] rounded shadow-lg w-full max-w-md p-5"
+        className="bg-canvas border border-[#e5e5e5] rounded shadow-lg w-full max-w-md p-5"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-4">
@@ -126,7 +126,7 @@ export function CredentialSecretsModal({
             <button
               onClick={save}
               disabled={saving}
-              className="text-[12px] px-3 py-1.5 bg-[#171717] text-white rounded hover:bg-[#404040] disabled:opacity-50"
+              className="text-[12px] px-3 py-1.5 bg-[#171717] text-canvas rounded hover:bg-[#404040] disabled:opacity-50"
             >
               {saving ? "Saving…" : mode === "update" ? "Update" : "Save"}
             </button>

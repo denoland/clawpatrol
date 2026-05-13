@@ -36,7 +36,7 @@ export function HITLBar() {
   if (pending.length === 0) return null;
 
   return (
-    <div className="bg-white border border-[#e5e5e5] rounded overflow-hidden">
+    <div className="bg-canvas border border-[#e5e5e5] rounded overflow-hidden">
       <div className="px-4 py-2.5 text-[10px] uppercase tracking-[.12em] text-[#a3a3a3] border-b border-[#e5e5e5] flex items-center">
         <span>PENDING APPROVALS</span>
         <span className="ml-2 text-[#ea580c] tabular-nums">● {pending.length}</span>
@@ -88,7 +88,7 @@ export function HITLBar() {
                     </button>
                     <button
                       onClick={() => decide(p.id, true)}
-                      className="text-[11px] px-3 py-1 bg-[#171717] text-white rounded hover:bg-[#000]"
+                      className="text-[11px] px-3 py-1 bg-[#171717] text-canvas rounded hover:bg-[#000]"
                     >
                       allow
                     </button>

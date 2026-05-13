@@ -138,7 +138,7 @@ export default function App() {
               </svg>
             </a>
           </div>
-          <section className="bg-white border border-[#e5e5e5] rounded overflow-hidden">
+          <section className="bg-canvas border border-[#e5e5e5] rounded overflow-hidden">
             <div className="overflow-x-auto">
               <AgentsTable
                 agents={agents}

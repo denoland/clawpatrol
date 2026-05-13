@@ -24,7 +24,7 @@ export function IntegrationStack({
         <span
           key={it.id}
           title={it.id}
-          className="rounded-full bg-white border border-[#e5e5e5] flex items-center justify-center overflow-hidden"
+          className="rounded-full bg-canvas border border-[#e5e5e5] flex items-center justify-center overflow-hidden"
           style={{
             width: size,
             height: size,

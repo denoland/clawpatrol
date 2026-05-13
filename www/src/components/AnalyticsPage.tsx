@@ -179,7 +179,7 @@ export function AnalyticsPage({ ip, agents }: { ip?: string; agents: Agent[] }) 
                 setFilterDevice(null);
                 setFilterHost(null);
               }}
-              className="ml-3 px-2 py-0.5 rounded text-[13px] border border-[#171717] bg-[#171717] text-white flex items-center gap-1.5 self-center"
+              className="ml-3 px-2 py-0.5 rounded text-[13px] border border-[#171717] bg-[#171717] text-canvas flex items-center gap-1.5 self-center"
             >
               {filterLabel}
               <span className="text-[10px]">&times;</span>
@@ -191,7 +191,7 @@ export function AnalyticsPage({ ip, agents }: { ip?: string; agents: Agent[] }) 
 
       <div
         className={
-          "bg-white border border-[#e5e5e5] rounded grid grid-cols-2 divide-x divide-[#e5e5e5] " +
+          "bg-canvas border border-[#e5e5e5] rounded grid grid-cols-2 divide-x divide-[#e5e5e5] " +
           (isGlobal ? "sm:grid-cols-4 lg:grid-cols-5" : "sm:grid-cols-4")
         }
       >
@@ -495,7 +495,7 @@ function LatencyChart({
   }, [filtered, colorBy, scale, range, agents, agentNames]);
 
   return (
-    <section className="bg-white border border-[#e5e5e5] rounded overflow-hidden">
+    <section className="bg-canvas border border-[#e5e5e5] rounded overflow-hidden">
       <header className="flex items-center justify-between px-4 py-2.5 border-b border-[#e5e5e5]">
         <span className="text-[10px] uppercase tracking-[.12em] text-[#a3a3a3]">Latency</span>
         <div className="flex items-center gap-3">
@@ -527,7 +527,7 @@ function Toggle<T extends string>({
           onClick={() => onChange(o)}
           className={
             "px-2 py-0.5 " +
-            (o === value ? "bg-[#171717] text-white" : "text-[#525252] hover:bg-[#fafafa]")
+            (o === value ? "bg-[#171717] text-canvas" : "text-[#525252] hover:bg-[#fafafa]")
           }
         >
           {o}
@@ -589,7 +589,7 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
   );
 
   return (
-    <section className="bg-white border border-[#e5e5e5] rounded overflow-hidden">
+    <section className="bg-canvas border border-[#e5e5e5] rounded overflow-hidden">
       <table className="w-full text-[11px]">
         <colgroup>
           <col />
@@ -675,7 +675,7 @@ function BarList({
   const max = items.length ? items[0].value : 0;
 
   return (
-    <section className="bg-white border border-[#e5e5e5] rounded overflow-hidden">
+    <section className="bg-canvas border border-[#e5e5e5] rounded overflow-hidden">
       <header className="px-4 py-2.5 border-b border-[#e5e5e5]">
         <span className="text-[10px] uppercase tracking-[.12em] text-[#a3a3a3]">{title}</span>
       </header>

@@ -43,7 +43,7 @@ export function Avatar({ user, size = 18 }: { user: string; size?: number }) {
   const c = colorFor(user || "?");
   return (
     <span
-      className="rounded-full inline-flex items-center justify-center text-white font-semibold"
+      className="rounded-full inline-flex items-center justify-center text-canvas font-semibold"
       style={{ width: size, height: size, background: c, fontSize: Math.round(size * 0.5) }}
     >
       {initial(user || "?")}

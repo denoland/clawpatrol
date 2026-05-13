@@ -33,8 +33,8 @@ export function RulesPanel({
   );
 
   return (
-    <div className="bg-white border border-[#e5e5e5] rounded">
-      {err && <div className="px-4 py-3 text-[11px] text-red-600">{err}</div>}
+    <div className="bg-canvas border border-[#e5e5e5] rounded">
+      {err && <div className="px-4 py-3 text-[11px] text-rust-700">{err}</div>}
       <Section
         title="Rules"
         rows={visible}
@@ -159,7 +159,7 @@ function RuleRow({ rule: r }: { rule: RuleSummary }) {
           {renderCondition(r)}
         </div>
       </div>
-      <div className="flex flex-col items-end gap-0.5 flex-shrink-0">
+      <div className="flex flex-col items-end gap-0.5 shrink-0">
         <span className="text-[11px] text-[#a3a3a3] truncate max-w-[160px]" title={r.name}>
           {r.name}
         </span>
@@ -205,7 +205,7 @@ function Verdict({ r }: { r: RuleSummary }) {
     allow: "bg-[#f0fdf4] border-[#bbf7d0] text-[#166534]",
     deny: "bg-[#fef2f2] border-[#fecaca] text-[#991b1b]",
   };
-  const cls = palette[verdict] ?? "bg-white border-[#e5e5e5] text-[#737373]";
+  const cls = palette[verdict] ?? "bg-canvas border-[#e5e5e5] text-[#737373]";
   return (
     <span className={"text-[10px] uppercase tracking-[.08em] px-1.5 py-0.5 rounded border " + cls}>
       {verdict}

@@ -13,11 +13,11 @@ export function AddDeviceModal({
 
   return (
     <div
-      className="fixed inset-0 bg-black/30 flex items-center justify-center z-50"
+      className="fixed inset-0 bg-navy-950/30 flex items-center justify-center z-50"
       onClick={onClose}
     >
       <div
-        className="bg-white border border-[#e5e5e5] rounded-md p-4 w-[600px] shadow-2xl space-y-3"
+        className="bg-canvas border border-[#e5e5e5] rounded-md p-4 w-[600px] shadow-2xl space-y-3"
         onClick={(e) => e.stopPropagation()}
       >
         <div>
@@ -45,7 +45,7 @@ function Step({ n, label, cmd }: { n: number; label: string; cmd: string }) {
   return (
     <div className="space-y-1">
       <div className="flex items-center gap-2">
-        <span className="w-[16px] h-[16px] rounded-full bg-[#171717] text-white text-[10px] font-semibold flex items-center justify-center flex-shrink-0">
+        <span className="w-[16px] h-[16px] rounded-full bg-[#171717] text-canvas text-[10px] font-semibold flex items-center justify-center shrink-0">
           {n}
         </span>
         <span className="text-[11px] text-[#525252]">{label}</span>
@@ -56,7 +56,7 @@ function Step({ n, label, cmd }: { n: number; label: string; cmd: string }) {
         </pre>
         <button
           onClick={copy}
-          className="absolute top-1 right-1 text-[10px] uppercase tracking-[.09em] px-1.5 py-0.5 bg-white border border-[#e5e5e5] rounded text-[#525252] hover:text-[#171717] hover:border-[#171717]"
+          className="absolute top-1 right-1 text-[10px] uppercase tracking-[.09em] px-1.5 py-0.5 bg-canvas border border-[#e5e5e5] rounded text-[#525252] hover:text-[#171717] hover:border-[#171717]"
         >
           {copied ? "copied" : "copy"}
         </button>

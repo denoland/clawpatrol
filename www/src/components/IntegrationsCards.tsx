@@ -134,7 +134,7 @@ export function IntegrationsCards({
         {overflow && (
           <button
             onClick={() => setAllOpen(true)}
-            className="flex items-center justify-center px-3 py-2.5 bg-white border border-dashed border-[#d4d4d4] rounded text-[12px] text-[#737373] hover:border-[#171717] hover:text-[#171717] transition-colors"
+            className="flex items-center justify-center px-3 py-2.5 bg-canvas border border-dashed border-[#d4d4d4] rounded text-[12px] text-[#737373] hover:border-[#171717] hover:text-[#171717] transition-colors"
           >
             + {hiddenCount} more
           </button>
@@ -189,7 +189,7 @@ function OwnerAvatar({
       <IntegrationIcon
         id={fallbackId}
         type={fallbackType}
-        className="w-[16px] h-[16px] flex-shrink-0"
+        className="w-[16px] h-[16px] shrink-0"
       />
     );
   }
@@ -198,7 +198,7 @@ function OwnerAvatar({
       src={src}
       alt=""
       onError={() => setBroken(true)}
-      className="w-[16px] h-[16px] flex-shrink-0 rounded-full object-cover"
+      className="w-[16px] h-[16px] shrink-0 rounded-full object-cover"
     />
   );
 }
@@ -237,7 +237,7 @@ function Card({
       disabled={!clickable && !connected}
       onClick={() => clickable && onConnect()}
       className={
-        "group relative flex flex-col items-start gap-2 px-3 py-2.5 bg-white border rounded text-left transition-colors " +
+        "group relative flex flex-col items-start gap-2 px-3 py-2.5 bg-canvas border rounded text-left transition-colors " +
         (connected
           ? "border-[#bbf7d0] bg-[#f0fdf4] " +
             (clickable ? "hover:border-[#16a34a] cursor-pointer" : "cursor-default")
@@ -250,7 +250,7 @@ function Card({
         {connected && i.avatar_url ? (
           <OwnerAvatar src={i.avatar_url} fallbackId={i.id} fallbackType={i.type} />
         ) : (
-          <IntegrationIcon id={i.id} type={i.type} className="w-[16px] h-[16px] flex-shrink-0" />
+          <IntegrationIcon id={i.id} type={i.type} className="w-[16px] h-[16px] shrink-0" />
         )}
         <span className="text-[12px] font-semibold text-[#171717] truncate" title={title}>
           {(() => {
@@ -258,7 +258,7 @@ function Card({
             return i.display_name ? `${withName} (${i.display_name})` : withName;
           })()}
         </span>
-        <span className="ml-auto flex items-center gap-1.5 flex-shrink-0">
+        <span className="ml-auto flex items-center gap-1.5 shrink-0">
           {connected && (
             <span
               onClick={(e) => {
@@ -305,11 +305,11 @@ function AllIntegrationsModal({
 }) {
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-navy-950/30"
       onClick={onClose}
     >
       <div
-        className="bg-white border border-[#e5e5e5] rounded shadow-lg w-full max-w-3xl max-h-[80vh] overflow-y-auto p-5"
+        className="bg-canvas border border-[#e5e5e5] rounded shadow-lg w-full max-w-3xl max-h-[80vh] overflow-y-auto p-5"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-4">
