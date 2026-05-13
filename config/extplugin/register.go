@@ -22,29 +22,77 @@ import (
 // the caller should attach the source range of the `plugin` block.
 func RegisterManifest(client *Client, resp *pb.ManifestResponse) hcl.Diagnostics {
 	var diags hcl.Diagnostics
+	// Up-front shape checks: empty names everywhere, reserved
+	// characters in the plugin's own name, etc. Catches the
+	// "manifest declares garbage" cases without waiting for an
+	// HCL block to use the type.
+	diags = append(diags, validateManifestShape(resp)...)
+	if diags.HasErrors() {
+		return diags
+	}
 	// Facets register first so endpoints below can bind to them by
 	// name. Endpoint Family values are taken verbatim — a plugin
 	// that wants to use a built-in facet (e.g. "http") sets
 	// Family="http"; one that ships its own facet sets
 	// Family="<own-name>". Collisions with built-in facets or
-	// across plugins fail loudly at registration; that's the
-	// plugin author's concern, not the framework's.
+	// across plugins surface as diagnostics from registerFacet.
 	for _, f := range resp.Facets {
-		registerFacet(f)
+		diags = append(diags, registerFacet(resp.Name, f)...)
 	}
 	for _, c := range resp.Credentials {
-		if d := registerCredential(client, resp.Name, c); d != nil {
-			diags = append(diags, d...)
-		}
+		diags = append(diags, registerCredential(client, resp.Name, c)...)
 	}
 	for _, t := range resp.Tunnels {
-		if d := registerTunnel(client, resp.Name, t); d != nil {
-			diags = append(diags, d...)
-		}
+		diags = append(diags, registerTunnel(client, resp.Name, t)...)
 	}
 	for _, e := range resp.Endpoints {
-		if d := registerEndpoint(client, resp.Name, e); d != nil {
-			diags = append(diags, d...)
+		diags = append(diags, registerEndpoint(client, resp.Name, e)...)
+	}
+	return diags
+}
+
+// validateManifestShape rejects manifests with empty / reserved
+// names before the per-type registers see them. The plugin
+// subprocess is already running by the time this runs (Manager.Start
+// already validated resp.Name is non-empty); this catches per-type
+// shape problems.
+func validateManifestShape(resp *pb.ManifestResponse) hcl.Diagnostics {
+	var diags hcl.Diagnostics
+	pluginName := resp.Name
+	for i, f := range resp.Facets {
+		if f.Name == "" {
+			diags = append(diags, &hcl.Diagnostic{Severity: hcl.DiagError,
+				Summary: fmt.Sprintf("Plugin %q manifest: facet #%d has empty name", pluginName, i)})
+			continue
+		}
+		for j, fld := range f.Fields {
+			if fld.Name == "" {
+				diags = append(diags, &hcl.Diagnostic{Severity: hcl.DiagError,
+					Summary: fmt.Sprintf("Plugin %q facet %q field #%d has empty name", pluginName, f.Name, j)})
+			}
+		}
+	}
+	for i, c := range resp.Credentials {
+		if c.TypeName == "" {
+			diags = append(diags, &hcl.Diagnostic{Severity: hcl.DiagError,
+				Summary: fmt.Sprintf("Plugin %q manifest: credential #%d has empty type_name", pluginName, i)})
+		}
+	}
+	for i, t := range resp.Tunnels {
+		if t.TypeName == "" {
+			diags = append(diags, &hcl.Diagnostic{Severity: hcl.DiagError,
+				Summary: fmt.Sprintf("Plugin %q manifest: tunnel #%d has empty type_name", pluginName, i)})
+		}
+	}
+	for i, e := range resp.Endpoints {
+		if e.TypeName == "" {
+			diags = append(diags, &hcl.Diagnostic{Severity: hcl.DiagError,
+				Summary: fmt.Sprintf("Plugin %q manifest: endpoint #%d has empty type_name", pluginName, i)})
+		}
+		if e.Family == "" {
+			diags = append(diags, &hcl.Diagnostic{Severity: hcl.DiagError,
+				Summary: fmt.Sprintf("Plugin %q endpoint %q has empty family", pluginName, e.TypeName),
+				Detail:  "Set Family to either a built-in facet (\"http\", \"sql\", \"k8s\") or to one of the plugin's own declared facet names so rules know which CEL env to use."})
 		}
 	}
 	return diags
