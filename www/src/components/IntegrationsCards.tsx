@@ -73,6 +73,16 @@ export function IntegrationsCards({
   const visible = overflow ? sorted.slice(0, VISIBLE_CAP - 1) : sorted;
   const hiddenCount = sorted.length - visible.length;
 
+  // Credentials are grouped by plugin type in the header (a single
+  // `github_oauth` cred reads as "GitHub"). When two creds share a
+  // type — e.g. one personal + one work GitHub OAuth — the type label
+  // alone collides, and the `(displayName)` suffix collides too when
+  // both are connected by the same OAuth user. Mark the duplicates so
+  // the card can also surface the credential name to disambiguate.
+  const typeCounts = new Map<string, number>();
+  for (const i of list) typeCounts.set(i.type, (typeCounts.get(i.type) ?? 0) + 1);
+  const isDup = (i: Integration) => (typeCounts.get(i.type) ?? 0) > 1;
+
   function handleConnect(i: Integration) {
     if (i.has_oauth) {
       onConnect(i.id, profile);
@@ -99,6 +109,7 @@ export function IntegrationsCards({
             key={i.id}
             integration={i}
             youKey={youKey}
+            showName={isDup(i)}
             onConnect={() => handleConnect(i)}
             onDisconnect={() => disconnect(i)}
           />
@@ -117,6 +128,7 @@ export function IntegrationsCards({
         <AllIntegrationsModal
           list={sorted}
           youKey={youKey}
+          isDup={isDup}
           onClose={() => setAllOpen(false)}
           onConnect={(i) => {
             setAllOpen(false);
@@ -174,11 +186,17 @@ function OwnerAvatar({
 function Card({
   integration: i,
   youKey,
+  showName,
   onConnect,
   onDisconnect,
 }: {
   integration: Integration;
   youKey: string;
+  // When the same plugin type is declared more than once, surface
+  // the credential's bare name in the header so two cards of the same
+  // type are visibly distinct even when both are OAuth-connected by
+  // the same user.
+  showName?: boolean;
   onConnect: () => void;
   onDisconnect: () => void;
 }) {
@@ -219,8 +237,9 @@ function Card({
           title={me?.display_name ?? i.id}
         >
           {(() => {
-            const label = TYPE_LABEL[i.type] ?? i.name;
-            return me?.display_name ? `${label} (${me.display_name})` : label;
+            const base = TYPE_LABEL[i.type] ?? i.name;
+            const withName = showName && base !== i.name ? `${base} · ${i.name}` : base;
+            return me?.display_name ? `${withName} (${me.display_name})` : withName;
           })()}
         </span>
         <span className="ml-auto flex items-center gap-1.5 flex-shrink-0">
@@ -261,12 +280,14 @@ function Card({
 function AllIntegrationsModal({
   list,
   youKey,
+  isDup,
   onClose,
   onConnect,
   onDisconnect,
 }: {
   list: Integration[];
   youKey: string;
+  isDup: (i: Integration) => boolean;
   onClose: () => void;
   onConnect: (i: Integration) => void;
   onDisconnect: (i: Integration) => void;
@@ -297,6 +318,7 @@ function AllIntegrationsModal({
               key={i.id}
               integration={i}
               youKey={youKey}
+              showName={isDup(i)}
               onConnect={() => onConnect(i)}
               onDisconnect={() => onDisconnect(i)}
             />
