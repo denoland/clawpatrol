@@ -61,10 +61,8 @@ func emitOperational(body *hclwrite.Body, gw *Gateway) {
 	setStr("info_listen", gw.InfoListen)
 	setStr("public_url", gw.PublicURL)
 	setStr("admin_email", gw.AdminEmail)
-	setStr("ca_dir", gw.CADir)
 	setStr("resolver", gw.Resolver)
 	setStr("log_path", gw.LogPath)
-	setStr("oauth_dir", gw.OAuthDir)
 	setStr("dashboard_secret", gw.DashboardSecret)
 	if gw.InsecureNoDashboardSecret {
 		body.SetAttributeValue("insecure_no_dashboard_secret", cty.BoolVal(true))

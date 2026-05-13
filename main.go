@@ -43,23 +43,15 @@ import (
 type JoinConfig = config.JoinConfig
 
 // resolveStateDir picks the directory where the gateway keeps its
-// sqlite DB. Priority: cfg.StateDir (new canonical name) →
-// cfg.OAuthDir (the historical name, kept for backwards compat) →
-// ${cfg.CADir}/../oauth (the original layout that put state next to
-// the CA materials).
+// sqlite DB. The HCL `state_dir` attribute is the only knob;
+// defaults to ${HOME}/.clawpatrol/state when unset.
 func resolveStateDir(cfg *config.Gateway) string {
 	if cfg.StateDir != "" {
 		return cfg.StateDir
 	}
-	if cfg.OAuthDir != "" {
-		return cfg.OAuthDir
-	}
-	if cfg.CADir != "" {
-		return filepath.Join(cfg.CADir, "..", "oauth")
-	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		log.Fatalf("state_dir / oauth_dir / ca_dir all unset and $HOME unavailable")
+		log.Fatalf("state_dir unset and $HOME unavailable")
 	}
 	return filepath.Join(home, ".clawpatrol", "state")
 }
@@ -265,17 +257,18 @@ func newUpstreamDialer(resolver string) *net.Dialer {
 }
 
 type Gateway struct {
-	cfg     *config.Gateway
-	cfgPath string // path the HCL config was loaded from
-	db      *sql.DB
-	policy  atomic.Pointer[config.CompiledPolicy]
-	certs   *CertCache
-	dialer  *net.Dialer
-	sink    *Sink
-	oauth   *OAuthRegistry
-	agents  *AgentRegistry
-	hitl    *HITLRegistry
-	onboard *onboardRegistry
+	cfg      *config.Gateway
+	cfgPath  string // path the HCL config was loaded from
+	stateDir string // resolved gateway state dir (sqlite + plugin blobs)
+	db       *sql.DB
+	policy   atomic.Pointer[config.CompiledPolicy]
+	certs    *CertCache
+	dialer   *net.Dialer
+	sink     *Sink
+	oauth    *OAuthRegistry
+	agents   *AgentRegistry
+	hitl     *HITLRegistry
+	onboard  *onboardRegistry
 	// readOnlyConfig, when set via --read-only-config, rejects every
 	// dashboard write that mutates cfgPath. The dashboard reads the
 	// flag from /api/state and hides its editor affordances; the
@@ -1418,7 +1411,7 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 		Profile:      profile,
 		PeerIP:       pip,
 		Secrets:      g.secrets,
-		CADir:        g.cfg.CADir,
+		StateDir:     g.stateDir,
 		DstPort:      dstPort,
 		UpstreamHost: hostname,
 		MintCert: func(host string) (*tls.Certificate, error) {
@@ -1862,11 +1855,11 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			signer, wantsSign := cc.Credential.Body.(runtime.HTTPRequestSigner)
 			wsRewriter, wantsWS := cc.Credential.Body.(runtime.WebSocketCredentialRuntime)
 			if wantsHTTP || wantsSign || (wantsWS && isWSUpgrade(req)) {
-				sec, err := g.secrets.Get(cc.Credential.Symbol.Name, profile)
+				sec, err := g.secrets.Get(cc.Credential.Symbol.Name)
 				if err != nil {
-					log.Printf("secret %s/%s: %v — forwarding without injection", cc.Credential.Symbol.Name, profile, err)
+					log.Printf("secret %s: %v — forwarding without injection", cc.Credential.Symbol.Name, err)
 				} else if len(sec.Bytes) == 0 && len(sec.Extras) == 0 {
-					log.Printf("secret %s/%s: not configured (set CLAWPATROL_SECRET_%s)", cc.Credential.Symbol.Name, profile, secretEnvName(cc.Credential.Symbol.Name))
+					log.Printf("secret %s: not configured (set CLAWPATROL_SECRET_%s)", cc.Credential.Symbol.Name, secretEnvName(cc.Credential.Symbol.Name))
 				} else {
 					// SignHTTPRequest takes precedence over InjectHTTP:
 					// signing schemes (SigV4) read the endpoint to
@@ -2096,7 +2089,7 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 			Endpoint:     c.Endpoint,
 			Rule:         c.Rule,
 			ApproverName: st.Name,
-			Profile:      c.Profile,
+			AgentIP:      c.AgentIP,
 			Method:       c.Method,
 			Host:         c.Host,
 			Path:         c.Path,
@@ -2201,8 +2194,8 @@ func canonicalPeerIP(ip string) string {
 	}
 	last := b[15]
 	// Use the configured wg subnet prefix to reconstruct the v4. Fall
-	// back to 10.55.0.0/24 — same default the gateway init wizard
-	// writes — when nothing's loaded yet (early-boot).
+	// back to 10.55.0.0/24 — same default the example config uses —
+	// when nothing's loaded yet (early-boot).
 	prefixV4 := defaultWGV4Prefix
 	if globalWG != nil && globalWG.serverIP.Is4() {
 		s := globalWG.serverIP.As4()
@@ -2212,9 +2205,9 @@ func canonicalPeerIP(ip string) string {
 	return v4.String()
 }
 
-// defaultWGV4Prefix matches the gateway init wizard's wg_subnet_cidr
-// default (10.55.0.0/24). Lets canonicalPeerIP work before the
-// WGServer is up.
+// defaultWGV4Prefix matches the example config's wg_subnet_cidr
+// (10.55.0.0/24). Lets canonicalPeerIP work before the WGServer is
+// up.
 var defaultWGV4Prefix = [3]byte{10, 55, 0}
 
 func printVersion() {
@@ -2229,7 +2222,6 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `clawpatrol — secret-injection MITM proxy for AI agents
 
 usage:
-  clawpatrol gateway init [flags]        bootstrap a new gateway host
   clawpatrol gateway <config.hcl>        run the gateway server
   clawpatrol join [flags] <gateway-url>  onboard this machine via wg device flow
                   --hostname NAME        device name to register (default: os.Hostname)
@@ -2249,26 +2241,18 @@ Documentation: https://clawpatrol.dev/docs/`)
 }
 
 // gatewayHelp is shown for `clawpatrol gateway -h` and any wrong
-// invocation. The pointer to `gateway init` + the config-reference
-// URL is the discoverability path for first-time users.
+// invocation. The example HCL + config-reference URL is the
+// discoverability path for first-time users.
 const gatewayHelp = `usage: clawpatrol gateway [--read-only-config] <config.hcl>
 
-The gateway needs an HCL policy file. To create one, run:
-  clawpatrol gateway init
-
-For the HCL reference, see:
+Start from gateway.example.hcl in the repo, or see the HCL reference:
   https://clawpatrol.dev/docs/config-reference`
 
 func runGateway(args []string) {
-	// `clawpatrol gateway init` is a one-shot setup wizard, distinct
-	// from `clawpatrol gateway <config.hcl>` which starts the daemon.
-	if len(args) > 0 && args[0] == "init" {
-		runGatewayInit(args[1:])
-		return
-	}
 	fs := flag.NewFlagSet("gateway", flag.ExitOnError)
 	readOnly := fs.Bool("read-only-config", false,
 		"reject dashboard writes to the HCL config file")
+	seedHook := devSeedAttach(fs)
 	fs.Usage = func() { fmt.Fprintln(os.Stderr, gatewayHelp) }
 	_ = fs.Parse(args)
 	rest := fs.Args()
@@ -2308,16 +2292,11 @@ func runGateway(args []string) {
 	if err != nil {
 		log.Fatalf("log: %v", err)
 	}
-	oauthDir := cfg.OAuthDir
-	if oauthDir == "" {
-		oauthDir = filepath.Join(cfg.CADir, "..", "oauth")
-	}
 	// OAuthRegistry seed list is empty for now — credential plugins
 	// own credential discovery in the new policy. The registry stays
 	// in place because per-owner token persistence + refresh logic
 	// is reused by the credential-plugin runtime bridge (lands when
 	// the credential injection path is wired into mitmHTTPS).
-	_ = oauthDir
 	oauthReg, err := NewOAuthRegistry(nil, db)
 	if err != nil {
 		log.Fatalf("oauth: %v", err)
@@ -2325,6 +2304,7 @@ func runGateway(args []string) {
 	g := &Gateway{
 		cfg:            cfg,
 		cfgPath:        cfgPath,
+		stateDir:       stateDir,
 		readOnlyConfig: *readOnly,
 		db:             db,
 		certs:          certs,
@@ -2339,7 +2319,7 @@ func runGateway(args []string) {
 		log.Printf("config: read-only mode (dashboard writes rejected)")
 	}
 	g.secrets = newGatewaySecretStore(db, oauthReg)
-	g.tunnels = NewTunnelManager(g.secrets, cfg.CADir)
+	g.tunnels = NewTunnelManager(g.secrets, stateDir)
 	registerOAuthCredentials(oauthReg, policy)
 	g.policy.Store(policy)
 	g.connIdx.Store(runtime.BuildConnIndex(policy))
@@ -2404,8 +2384,10 @@ func runGateway(args []string) {
 
 	startTelemetry(g)
 
+	seedHook.Run(context.Background(), g)
+
 	if cfg.InfoListen != "" {
-		mux := newWebMux(g, cfg.CADir, cfg.Join(), cfg.PublicURL)
+		mux := newWebMux(g, cfg.Join(), cfg.PublicURL)
 		go serveHTTPLogged("dashboard", cfg.InfoListen, mux)
 		printDashboardURL(cfg.InfoListen)
 	}
@@ -2428,7 +2410,7 @@ func runGateway(args []string) {
 			log.Fatalf("wireguard: %v", err)
 		}
 		setWGServer(wg)
-		dashMux := newWebMux(g, cfg.CADir, cfg.Join(), cfg.PublicURL)
+		dashMux := newWebMux(g, cfg.Join(), cfg.PublicURL)
 		dashPort := portOf(cfg.InfoListen)
 		tcpDispatch := func(c net.Conn, dstIP string, dstPort uint16) {
 			log.Printf("wg-fwd: %s:%d", dstIP, dstPort)

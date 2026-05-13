@@ -1,5 +1,4 @@
 {
-  "ca_dir": "/opt/clawpatrol/ca",
   "listen": "0.0.0.0:8443",
   "llm_fail_mode": "closed",
   "policy": {
@@ -10,7 +9,8 @@
           "Credential": "",
           "Timeout": 600,
           "RequireApprovers": 0,
-          "Interactive": false
+          "Interactive": false,
+          "Classifier": ""
         },
         "type": "human_approver"
       }

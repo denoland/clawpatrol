@@ -10,24 +10,13 @@ curl -fsSL https://clawpatrol.dev/install.sh | sh
 
 ## gateway
 
-Stand up a gateway with one command. It generates a CA, writes a config, opens the firewall ports, and drops a systemd unit.
+Copy [`gateway.example.hcl`](gateway.example.hcl) onto the gateway host, edit the operational fields (`listen`, `public_url`, `wg_endpoint`, `state_dir`, `dashboard_secret`, `admin_email`), open the firewall ports, and run:
 
 ```
-clawpatrol gateway init
-
-Detected public IP: gw.example.com
-├ Generated CA at /etc/clawpatrol/ca/ca.crt
-├ Wrote /etc/clawpatrol/gateway.hcl
-├ Opened udp/51820 + tcp/9080
-└ Wrote /etc/systemd/system/clawpatrol-gateway.service
-
-Dashboard: http://gw.example.com:9080
-Join command: clawpatrol join http://gw.example.com:9080
+clawpatrol gateway /opt/clawpatrol/gateway.hcl
 ```
 
-```
-systemctl enable --now clawpatrol-gateway
-```
+Under systemd, drop a unit that runs the same command and `systemctl enable --now` it. The CA is lazy-minted into sqlite under `state_dir` on first boot. See [Getting Started](site/doc/getting-started.md) for the walkthrough.
 
 ## device
 
@@ -130,7 +119,7 @@ rule "pg-secret-defense" {
 
 ## modes
 
-Clawpatrol ships two control planes for the gateway-to-device tunnel. Pick one when you run `gateway init`; the default is WireGuard.
+Clawpatrol ships two control planes for the gateway-to-device tunnel. Pick one in `gateway.hcl`; `gateway.example.hcl` ships with WireGuard.
 
 The WireGuard mode embeds a userspace WG endpoint inside the gateway. You only have to open one UDP port — there's no daemon, no `wg-quick`, and no kernel module on the gateway host. Devices run `clawpatrol join <gw>` and walk away with a per-machine WG conf.
 

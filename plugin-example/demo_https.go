@@ -34,7 +34,7 @@ type demoHTTPS struct {
 
 func demoHTTPSDef() pluginsdk.EndpointDef {
 	return pluginsdk.EndpointDef{
-		TypeName:    "demo_https",
+		TypeName:    "example_https",
 		Family:      "http", // bind to the built-in http facet
 		TLSMode:     pluginsdk.TLSTerminate,
 		RequiresVIP: true,

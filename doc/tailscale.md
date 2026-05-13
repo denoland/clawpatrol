@@ -58,7 +58,7 @@ public UDP port, no WireGuard keypair management, no subnet allocation
 | **Device IP** | Assigned by Tailscale control plane | Allocated from `wg_subnet_cidr` |
 | **Dashboard auth** | Tailscale user identity (no proxy needed) | Falls back to `admin_email`; needs auth proxy for multi-user |
 | **Client command** | `clawpatrol login` | `clawpatrol join <gw-url>` |
-| **State** | `state_dir` (tsnet) | `oauth_dir` (wg-server.key, wg-peers.json) |
+| **State** | `state_dir` — tsnet machine key + ipn state in sqlite | `state_dir` — WG server key, peer map, sessions in sqlite |
 
 ## Operator setup
 
@@ -66,13 +66,12 @@ public UDP port, no WireGuard keypair management, no subnet allocation
 # gateway VM — no public IP required, just outbound HTTPS
 curl -fsSL https://denoland.github.io/clawpatrol/install.sh | sh
 
-cat > /etc/clawpatrol/gateway.hcl <<'EOF'
+cat > /opt/clawpatrol/gateway.hcl <<'EOF'
 listen       = "0.0.0.0:8443"
 info_listen  = "0.0.0.0:8080"
 public_url   = "http://clawpatrol-gateway"    # tailnet hostname suffices
 admin_email  = "you@example.com"
-ca_dir       = "/opt/clawpatrol/ca"
-oauth_dir    = "/opt/clawpatrol/oauth"
+state_dir    = "/opt/clawpatrol/state"
 integrations = ["claude", "codex", "github"]
 
 control             = "tailscale"
@@ -96,7 +95,7 @@ export TS_OAUTH_CLIENT_SECRET=<secret>
 # Tag: tag:gateway (or any ACL-gated tag)
 export TS_AUTHKEY=tskey-auth-...
 
-clawpatrol gateway /etc/clawpatrol/gateway.hcl
+clawpatrol gateway /opt/clawpatrol/gateway.hcl
 ```
 
 Dashboard is reachable at `http://clawpatrol-gateway:8080` from any

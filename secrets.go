@@ -12,7 +12,7 @@ import (
 )
 
 // gatewaySecretStore is the SecretStore the gateway hands to
-// credential plugins. Lookup order per (credential name, owner):
+// credential plugins. Lookup order per credential name:
 //
 //  1. credential_secrets table — slot bytes the operator pasted into
 //     the dashboard (single-slot fills Bytes; multi-slot fills Extras).
@@ -39,18 +39,16 @@ func newGatewaySecretStore(db *sql.DB, oauth *OAuthRegistry) runtime.SecretStore
 // satisfying tailscaleproto.SecretWriter. The tsnet ipn.StateStore
 // round-trips machine key, node key, and login profile through here
 // on first-time node auth and on every state mutation thereafter.
-// Owner is the empty string for tailscale (node identity is gateway-
-// wide, not per-owner).
-func (s *gatewaySecretStore) SetCredentialSlot(name, owner, slot, value string) error {
+func (s *gatewaySecretStore) SetCredentialSlot(name, slot, value string) error {
 	if s.db == nil {
 		return fmt.Errorf("gateway secret store: no db")
 	}
-	return setCredentialSlot(s.db, name, owner, slot, value)
+	return setCredentialSlot(s.db, name, slot, value)
 }
 
-func (s *gatewaySecretStore) Get(name, owner string) (runtime.Secret, error) {
+func (s *gatewaySecretStore) Get(name string) (runtime.Secret, error) {
 	if s.db != nil {
-		sec, ok, err := readCredentialSecrets(s.db, name, owner)
+		sec, ok, err := readCredentialSecrets(s.db, name)
 		if err != nil {
 			return runtime.Secret{}, err
 		}
@@ -59,22 +57,22 @@ func (s *gatewaySecretStore) Get(name, owner string) (runtime.Secret, error) {
 		}
 	}
 	if s.oauth != nil {
-		if tok, err := s.oauth.Token(name, owner); err != nil {
+		if tok, err := s.oauth.Token(name); err != nil {
 			return runtime.Secret{}, err
 		} else if tok != "" {
 			return runtime.Secret{Kind: "oauth_bearer", Bytes: []byte(tok)}, nil
 		}
 	}
-	return s.env.Get(name, owner)
+	return s.env.Get(name)
 }
 
-// readCredentialSecrets fetches every slot persisted for (credential,
-// profile). Returns (Secret, true) when at least one slot exists. The
-// unnamed slot (slot = ”) fills Bytes; named slots fill Extras.
-func readCredentialSecrets(db *sql.DB, credential, profile string) (runtime.Secret, bool, error) {
+// readCredentialSecrets fetches every slot persisted for the named
+// credential. Returns (Secret, true) when at least one slot exists.
+// The unnamed slot (slot = "") fills Bytes; named slots fill Extras.
+func readCredentialSecrets(db *sql.DB, credential string) (runtime.Secret, bool, error) {
 	rows, err := db.Query(
-		`SELECT slot, value FROM credential_secrets WHERE credential = ? AND profile = ?`,
-		credential, profile,
+		`SELECT slot, value FROM credential_secrets WHERE credential = ?`,
+		credential,
 	)
 	if err != nil {
 		return runtime.Secret{}, false, err
@@ -100,46 +98,46 @@ func readCredentialSecrets(db *sql.DB, credential, profile string) (runtime.Secr
 	return sec, found, rows.Err()
 }
 
-// setCredentialSlot upserts one (credential, profile, slot) row.
-// Used by the dashboard's connect-credential endpoint.
-func setCredentialSlot(db *sql.DB, credential, profile, slot, value string) error {
+// setCredentialSlot upserts one (credential, slot) row. Used by the
+// dashboard's connect-credential endpoint.
+func setCredentialSlot(db *sql.DB, credential, slot, value string) error {
 	if db == nil {
 		return fmt.Errorf("no db")
 	}
 	_, err := db.Exec(
-		`INSERT INTO credential_secrets (credential, profile, slot, value, updated_ns)
-		 VALUES (?, ?, ?, ?, ?)
-		 ON CONFLICT(credential, profile, slot) DO UPDATE SET
+		`INSERT INTO credential_secrets (credential, slot, value, updated_ns)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(credential, slot) DO UPDATE SET
 		   value = excluded.value, updated_ns = excluded.updated_ns`,
-		credential, profile, slot, value, time.Now().UnixNano(),
+		credential, slot, value, time.Now().UnixNano(),
 	)
 	return err
 }
 
-// clearCredentialSecrets drops every slot for (credential, profile).
+// clearCredentialSecrets drops every slot for the named credential.
 // The dashboard's disconnect button calls this.
-func clearCredentialSecrets(db *sql.DB, credential, profile string) error {
+func clearCredentialSecrets(db *sql.DB, credential string) error {
 	if db == nil {
 		return nil
 	}
 	_, err := db.Exec(
-		`DELETE FROM credential_secrets WHERE credential = ? AND profile = ?`,
-		credential, profile,
+		`DELETE FROM credential_secrets WHERE credential = ?`,
+		credential,
 	)
 	return err
 }
 
-// credentialSlotPresence returns the set of slots persisted for
-// (credential, profile). Used by the dashboard to render per-slot
+// credentialSlotPresence returns the set of slots persisted for the
+// named credential. Used by the dashboard to render per-slot
 // "filled / empty" status without leaking the secret bytes.
-func credentialSlotPresence(db *sql.DB, credential, profile string) (map[string]bool, error) {
+func credentialSlotPresence(db *sql.DB, credential string) (map[string]bool, error) {
 	out := map[string]bool{}
 	if db == nil {
 		return out, nil
 	}
 	rows, err := db.Query(
-		`SELECT slot FROM credential_secrets WHERE credential = ? AND profile = ?`,
-		credential, profile,
+		`SELECT slot FROM credential_secrets WHERE credential = ?`,
+		credential,
 	)
 	if err != nil {
 		return out, err

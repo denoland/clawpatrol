@@ -17,8 +17,8 @@ import (
 // a deny message. The gateway does the logging.
 func demoEchoDef() pluginsdk.EndpointDef {
 	return pluginsdk.EndpointDef{
-		TypeName:    "demo_echo",
-		Family:      "echo", // SDK auto-namespaces to "example.echo"
+		TypeName:    "example_echo",
+		Family:      "example_echo",
 		TLSMode:     pluginsdk.TLSNone,
 		RequiresVIP: true,
 		Schema:      pluginsdk.Schema{},
@@ -41,7 +41,7 @@ func handleDemoEcho(ctx context.Context, conn *pluginsdk.Conn) error {
 			return err
 		}
 		clean := strings.TrimRight(line, "\r\n")
-		v, err := conn.Evaluate(ctx, "echo", map[string]any{"line": clean}, clean)
+		v, err := conn.Evaluate(ctx, "example_echo", map[string]any{"line": clean}, clean)
 		if err != nil {
 			return fmt.Errorf("evaluate %q: %w", clean, err)
 		}

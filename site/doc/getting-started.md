@@ -22,26 +22,73 @@ The installer drops a single binary in `~/.local/bin`. macOS and Linux
 on amd64/arm64 are supported. To build from source instead, set
 `CLAWPATROL_FROM_SOURCE=1` (requires Go and `gh auth login`).
 
-## Stand up a gateway
+## Configure the gateway
 
-On the server:
+On the server, pick a data directory (anywhere — `/opt/clawpatrol`,
+`/srv/clawpatrol`, your home), drop a copy of
+[`gateway.example.hcl`](https://github.com/denoland/clawpatrol/blob/main/gateway.example.hcl)
+into it, and edit the operational fields:
 
-```bash
-clawpatrol gateway init
+```hcl
+listen           = "0.0.0.0:8443"
+info_listen      = "0.0.0.0:9080"
+public_url       = "http://gw.example.com:9080"
+admin_email      = "you@example.com"
+dashboard_secret = "<long random string>"
+state_dir        = "/opt/clawpatrol/state"
+
+control        = "wireguard"
+wg_endpoint    = "gw.example.com:51820"
+wg_subnet_cidr = "10.55.0.0/24"
 ```
 
-This detects the public IP, generates a CA, writes
-`/etc/clawpatrol/gateway.hcl`, opens the firewall ports (`udp/51820` +
-`tcp/9080`), and drops a systemd unit. Start it:
+The CA is lazy-minted into sqlite under `state_dir` on first boot —
+nothing to pre-create besides the directory itself. See
+[Config reference](/docs/config-reference/) for the full HCL grammar
+and the rest of the credential / endpoint / rule blocks.
+
+## Run the gateway
+
+Open the WireGuard UDP port and the dashboard TCP port on the host
+firewall (e.g. `iptables -I INPUT -p udp --dport 51820 -j ACCEPT`,
+same for `tcp/9080`), then:
 
 ```bash
+clawpatrol gateway /opt/clawpatrol/gateway.hcl
+```
+
+The dashboard is at `http://<gateway-host>:9080`.
+
+### Under systemd
+
+Drop the following at `/etc/systemd/system/clawpatrol-gateway.service`,
+adjusting the three paths to wherever you put the binary and config:
+
+```ini
+[Unit]
+Description=clawpatrol gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/clawpatrol
+ExecStart=/usr/local/bin/clawpatrol gateway /opt/clawpatrol/gateway.hcl
+Restart=on-failure
+RestartSec=2
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Then:
+
+```bash
+systemctl daemon-reload
 systemctl enable --now clawpatrol-gateway
+journalctl -u clawpatrol-gateway -f       # tail the gateway log
 ```
-
-The dashboard is at `http://<gateway-host>:9080`. The `join` command
-printed by `gateway init` is what your devices will run.
-
-See [Config reference](/docs/config-reference/) for the full HCL grammar.
 
 ## Join a device
 

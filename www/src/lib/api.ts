@@ -1,15 +1,4 @@
-// Profile is per-device, not per-dashboard. The OAuth connect flow
-// picks which profile a credential lands under via an explicit query
-// param on /api/oauth/start; everything else is single-tenant.
 const api = fetch;
-
-export type Owner = {
-  owner: string;
-  connected: boolean;
-  expires_at?: number;
-  display_name?: string;
-  avatar_url?: string;
-};
 
 export type SecretSlot = {
   name: string;
@@ -39,6 +28,8 @@ export type TailscaleAuthStatusUI = {
   disconnect_url: string;
 };
 
+// Each credential carries one secret. The connection state lives
+// directly on the row; multi-tenant per-owner fan-out was removed.
 export type Integration = {
   id: string;
   name: string;
@@ -46,10 +37,10 @@ export type Integration = {
   has_oauth: boolean;
   oauth?: OAuthIntegrationUI | null;
   slots?: SecretSlot[] | null;
-  owners: Owner[] | null;
-  // Tailscale node-auth credentials surface their live state and the
-  // dashboard-relative endpoints the Connect button drives through.
-  // Node identity is gateway-wide, so owners is empty for these rows.
+  connected: boolean;
+  expires_at?: number;
+  display_name?: string;
+  avatar_url?: string;
   has_tailscale_auth?: boolean;
   tailscale_auth?: TailscaleAuthStatusUI | null;
 };
@@ -78,24 +69,20 @@ export async function tailscaleDisconnect(disconnectURL: string): Promise<void> 
   if (!r.ok) throw new Error(await r.text());
 }
 
-export async function setCredentialSlots(
-  id: string,
-  owner: string,
-  slots: Record<string, string>,
-): Promise<void> {
+export async function setCredentialSlots(id: string, slots: Record<string, string>): Promise<void> {
   const r = await fetch("/api/credentials/set", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id, owner, slots }),
+    body: JSON.stringify({ id, slots }),
   });
   if (!r.ok) throw new Error(await r.text());
 }
 
-export async function clearCredential(id: string, owner: string): Promise<void> {
+export async function clearCredential(id: string): Promise<void> {
   const r = await fetch("/api/credentials/clear", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id, owner }),
+    body: JSON.stringify({ id }),
   });
   if (!r.ok) throw new Error(await r.text());
 }
@@ -386,24 +373,18 @@ export async function getState(): Promise<StateResp> {
 }
 
 export type OAuthStartResp =
-  | { flow?: "auth_code"; auth_url: string; state: string; owner: string }
+  | { flow?: "auth_code"; auth_url: string; state: string }
   | {
       flow: "device";
       user_code: string;
       verification_uri: string;
       state: string;
-      owner: string;
       interval: number;
       expires_in: number;
     };
 
-export async function oauthStart(
-  id: string,
-  profile?: string,
-  extraScopes?: string[],
-): Promise<OAuthStartResp> {
+export async function oauthStart(id: string, extraScopes?: string[]): Promise<OAuthStartResp> {
   let qs = `id=${encodeURIComponent(id)}`;
-  if (profile) qs += `&profile=${encodeURIComponent(profile)}`;
   if (extraScopes && extraScopes.length > 0) {
     qs += `&extra_scopes=${encodeURIComponent(extraScopes.join(","))}`;
   }
@@ -414,7 +395,6 @@ export async function oauthStart(
 
 export async function oauthDevicePoll(state: string): Promise<{
   connected?: boolean;
-  owner?: string;
   error?: string;
   detail?: string;
   interval?: number;
@@ -426,11 +406,11 @@ export async function oauthDevicePoll(state: string): Promise<{
   return r.json();
 }
 
-export async function oauthRevoke(id: string, owner: string): Promise<void> {
+export async function oauthRevoke(id: string): Promise<void> {
   const r = await api("/api/oauth/revoke", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id, owner }),
+    body: JSON.stringify({ id }),
   });
   if (!r.ok) throw new Error(await r.text());
 }
@@ -527,7 +507,7 @@ export async function getAnalytics(params: {
 export async function oauthExchange(
   state: string,
   code: string,
-): Promise<{ connected: boolean; owner: string; expires: number }> {
+): Promise<{ connected: boolean; expires: number }> {
   const r = await api("/api/oauth/exchange", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

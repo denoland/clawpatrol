@@ -16,33 +16,12 @@ source instead (requires Go + `gh auth login`).
 
 ## Commands
 
-### `clawpatrol gateway init`
-
-One-shot setup wizard for a new gateway host. Detects the public IP,
-generates a CA, writes `gateway.hcl`, opens firewall ports, drops a
-systemd unit when systemd is around, and prints the next-step
-command.
-
-```bash
-clawpatrol gateway init [flags]
-```
-
-Flags (all optional, sensible defaults):
-
-| Flag | Default | Notes |
-|---|---|---|
-| `--data-dir DIR` | `/etc/clawpatrol` (root) or `~/.clawpatrol` | Where `gateway.hcl`, CA, and state live |
-| `--public-url URL` | auto-detected | Dashboard URL, used in onboarding QR codes |
-| `--public-ip IP` | auto-detected | Public IP for the WG endpoint |
-| `--wg-port N` | `51820` | WireGuard UDP port |
-| `--dash-port N` | `9080` | Dashboard / onboard HTTP port |
-| `--tls-port N` | `8443` | TLS gateway port (host-local; doesn't need to be public) |
-| `--subnet CIDR` | `10.55.0.0/24` | WireGuard subnet pool for devices |
-| `--no-firewall` | off | Skip iptables ACCEPT rules |
-
 ### `clawpatrol gateway`
 
-Run the gateway daemon against an HCL config.
+Run the gateway daemon against an HCL config. Start from
+[`gateway.example.hcl`](https://github.com/denoland/clawpatrol/blob/main/gateway.example.hcl)
+— see [Getting Started](/docs/getting-started/) for the operational
+fields you need to edit.
 
 ```bash
 clawpatrol gateway <config.hcl> [--read-only-config]
@@ -134,6 +113,20 @@ catch typos before they hit production.
 clawpatrol validate <config.hcl>
 ```
 
+`validate` runs the same load path the daemon does, so any
+[external plugin](plugins) referenced from the file is spawned and
+its manifest is checked. Beyond the HCL pipeline it also runs a
+schema-only pass that exercises every plugin-declared facet's CEL
+env and resolves every plugin endpoint's `Family` against the
+facet registry — catches authoring bugs (typo'd Family, invalid
+identifier in a facet name, …) the operator's HCL didn't happen to
+exercise. The success line names what loaded:
+
+```
+ok: gateway.hcl — 7 endpoints across 3 profile(s)
+  plugin "example" v0.1: 2 facet(s), 1 credential type(s), 1 tunnel type(s), 3 endpoint type(s)
+```
+
 ### `clawpatrol status`
 
 Report device install state — whether `join`/`login` ran, whether
@@ -186,19 +179,17 @@ device-side knobs:
 
 Where state lives, by role:
 
-**Gateway host** (set up by `gateway init`):
+**Gateway host** — the operator picks the location; nothing is
+hardcoded. A typical layout under `/opt/clawpatrol/`:
 
 ```
-/etc/clawpatrol/                (root) — or ~/.clawpatrol (non-root)
-  gateway.hcl                   HCL config (operator-edited)
-  oauth/clawpatrol.db           SQLite — everything else
+gateway.hcl              HCL config (operator-edited)
+state/clawpatrol.db      SQLite — everything else
 ```
 
-The sqlite DB holds the CA cert + key, WireGuard server key, SSH
-host keys, sessions, audit log, telemetry UUID, and DNS-VIP
-allocations. Path is configurable via the top-level `state_dir`
-attribute (defaults to `oauth/` next to `gateway.hcl` for
-historical layout compat).
+`state_dir` in the HCL points at the sqlite directory. The DB holds
+the CA cert + key, WireGuard server key, SSH host keys, sessions,
+audit log, telemetry UUID, and DNS-VIP allocations.
 
 **Device** (set up by `join` / `login`):
 

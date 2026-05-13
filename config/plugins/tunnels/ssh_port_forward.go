@@ -86,7 +86,7 @@ func (t *SSHPortForwardTunnel) Open(ctx context.Context, host runtime.TunnelHost
 	if !ok {
 		return nil, fmt.Errorf("ssh_port_forward: credential %q is not an ssh credential (got %T)", host.Credential.Name, host.Credential.Body)
 	}
-	sec, err := host.SecretStore.Get(host.Credential.Name, "")
+	sec, err := host.SecretStore.Get(host.Credential.Name)
 	if err != nil {
 		return nil, fmt.Errorf("ssh_port_forward: secret %q: %w", host.Credential.Name, err)
 	}

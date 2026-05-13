@@ -41,8 +41,8 @@ import (
 
 // TunnelManager is the single owner of every live tunnel instance.
 type TunnelManager struct {
-	secrets runtime.SecretStore
-	cadir   string
+	secrets  runtime.SecretStore
+	stateDir string
 
 	mu      sync.Mutex
 	entries map[mgrKey]*tunnelEntry
@@ -88,12 +88,12 @@ type tunnelEntry struct {
 
 // NewTunnelManager constructs an empty manager. SetPolicy must be
 // called once at boot to populate keepalive=always pins.
-func NewTunnelManager(secrets runtime.SecretStore, cadir string) *TunnelManager {
+func NewTunnelManager(secrets runtime.SecretStore, stateDir string) *TunnelManager {
 	return &TunnelManager{
-		secrets: secrets,
-		cadir:   cadir,
-		entries: map[mgrKey]*tunnelEntry{},
-		pinned:  map[mgrKey]func(){},
+		secrets:  secrets,
+		stateDir: stateDir,
+		entries:  map[mgrKey]*tunnelEntry{},
+		pinned:   map[mgrKey]func(){},
 	}
 }
 
@@ -151,7 +151,7 @@ func (m *TunnelManager) Acquire(ctx context.Context, ct *config.CompiledTunnel, 
 		host := runtime.TunnelHost{
 			Name:        ct.Name,
 			SecretStore: m.secrets,
-			CADir:       m.cadir,
+			StateDir:    m.stateDir,
 			Logger:      log.New(log.Writer(), "tunnel/"+ct.Name+": ", log.LstdFlags),
 		}
 		if ct.Credential != nil {

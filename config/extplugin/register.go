@@ -103,7 +103,6 @@ func validateManifestShape(resp *pb.ManifestResponse) hcl.Diagnostics {
 // =====================================================================
 
 func registerCredential(client *Client, pluginName string, decl *pb.CredentialDecl) hcl.Diagnostics {
-	typeName := pluginName + "." + decl.TypeName
 	spec, err := schemaToSpec(decl.Schema)
 	if err != nil {
 		return fail("plugin %q credential %q: %v", pluginName, decl.TypeName, err)
@@ -111,7 +110,7 @@ func registerCredential(client *Client, pluginName string, decl *pb.CredentialDe
 
 	plug := &config.Plugin{
 		Kind: config.KindCredential,
-		Type: typeName,
+		Type: decl.TypeName,
 		New:  func() any { return &dynamicCredentialBody{} },
 		DecodeBody: func(body hcl.Body, ctx *hcl.EvalContext, target any) hcl.Diagnostics {
 			b := target.(*dynamicCredentialBody)
@@ -144,8 +143,8 @@ func registerCredential(client *Client, pluginName string, decl *pb.CredentialDe
 		},
 		Emit: func(_ any, _ string, _ *hclwrite.Body) {},
 	}
-	if config.Lookup(plug.Kind, plug.Type) == nil {
-		config.Register(plug)
+	if d := registerOrCollide(plug, pluginName, "credential"); d != nil {
+		return d
 	}
 	return nil
 }
@@ -155,7 +154,6 @@ func registerCredential(client *Client, pluginName string, decl *pb.CredentialDe
 // =====================================================================
 
 func registerTunnel(client *Client, pluginName string, decl *pb.TunnelDecl) hcl.Diagnostics {
-	typeName := pluginName + "." + decl.TypeName
 	spec, err := schemaToSpec(decl.Schema)
 	if err != nil {
 		return fail("plugin %q tunnel %q: %v", pluginName, decl.TypeName, err)
@@ -164,7 +162,7 @@ func registerTunnel(client *Client, pluginName string, decl *pb.TunnelDecl) hcl.
 
 	plug := &config.Plugin{
 		Kind: config.KindTunnel,
-		Type: typeName,
+		Type: decl.TypeName,
 		New:  func() any { return &dynamicTunnelBody{adapter: adapter} },
 		DecodeBody: func(body hcl.Body, ctx *hcl.EvalContext, target any) hcl.Diagnostics {
 			b := target.(*dynamicTunnelBody)
@@ -202,8 +200,8 @@ func registerTunnel(client *Client, pluginName string, decl *pb.TunnelDecl) hcl.
 		Runtime: adapter,
 		Emit:    func(_ any, _ string, _ *hclwrite.Body) {},
 	}
-	if config.Lookup(plug.Kind, plug.Type) == nil {
-		config.Register(plug)
+	if d := registerOrCollide(plug, pluginName, "tunnel"); d != nil {
+		return d
 	}
 	return nil
 }
@@ -220,7 +218,6 @@ const (
 )
 
 func registerEndpoint(client *Client, pluginName string, decl *pb.EndpointDecl) hcl.Diagnostics {
-	typeName := pluginName + "." + decl.TypeName
 	spec, pluginAttrNames, err := endpointSpec(decl.Schema)
 	if err != nil {
 		return fail("plugin %q endpoint %q: %v", pluginName, decl.TypeName, err)
@@ -235,7 +232,7 @@ func registerEndpoint(client *Client, pluginName string, decl *pb.EndpointDecl) 
 
 	plug := &config.Plugin{
 		Kind:   config.KindEndpoint,
-		Type:   typeName,
+		Type:   decl.TypeName,
 		Family: decl.Family,
 		New: func() any {
 			return &dynamicEndpointBody{
@@ -312,9 +309,29 @@ func registerEndpoint(client *Client, pluginName string, decl *pb.EndpointDecl) 
 		Runtime: adapter,
 		Emit:    func(_ any, _ string, _ *hclwrite.Body) {},
 	}
-	if config.Lookup(plug.Kind, plug.Type) == nil {
-		config.Register(plug)
+	if d := registerOrCollide(plug, pluginName, "endpoint"); d != nil {
+		return d
 	}
+	return nil
+}
+
+// registerOrCollide installs plug in the config registry or returns
+// a diagnostic when something is already registered under the same
+// (Kind, Type). Naming is flat — plugin authors prefix their types
+// by convention, the way Terraform providers do (`aws_instance`,
+// `kubernetes_deployment`) — so a collision either means two plugins
+// picked the same type name or the plugin tried to shadow a
+// built-in (e.g. `https`). Both are operator-actionable; neither is
+// recoverable by the gateway.
+func registerOrCollide(plug *config.Plugin, pluginName, kindLabel string) hcl.Diagnostics {
+	if existing := config.Lookup(plug.Kind, plug.Type); existing != nil {
+		return hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Plugin %q %s type %q collides with an already-registered type", pluginName, kindLabel, plug.Type),
+			Detail:   "Type names live in one global registry — pick a different name (the convention is to prefix with the plugin slug, e.g. \"example_magic_token\"), or remove the conflicting registration.",
+		}}
+	}
+	config.Register(plug)
 	return nil
 }
 

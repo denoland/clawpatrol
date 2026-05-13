@@ -86,6 +86,21 @@ func (w *webMux) apiAddEphemeralPeer(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "missing pubkey", http.StatusBadRequest)
 		return
 	}
+	// Re-registration after gateway restart: pubkey already has an
+	// ephemeral row (kept across restarts so the WG trie survives).
+	// Skip IP allocation — restore the in-memory profile and return
+	// the existing IP so the client reconnects without re-joining.
+	var existingIP, existingParent string
+	if err := w.g.db.QueryRow(
+		"SELECT ip, parent_ip FROM wg_peers WHERE pubkey=? AND ephemeral=1",
+		pubkeyHex,
+	).Scan(&existingIP, &existingParent); err == nil && existingParent == parentIP {
+		profile := w.g.onboard.ProfileForIP(parentIP)
+		w.g.onboard.setEphemeralProfile(existingIP, parentIP, profile)
+		ip6 := wg6FromV4(netip.MustParseAddr(existingIP)).String()
+		writeJSON(rw, map[string]string{"ip": existingIP, "ip6": ip6})
+		return
+	}
 	ip, err := allocateEphemeralIP(w.ts.WGSubnetCIDR)
 	if err != nil {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)

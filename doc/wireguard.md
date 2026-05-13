@@ -33,10 +33,11 @@ in promiscuous mode — same shape as unclaw's `boringtun` + `smoltcp`
 
 - `clawpatrol gateway gateway.hcl` boots WG endpoint on UDP 51820,
   dashboard + MITM ride the same forwarder.
-- Server keypair persisted at `<oauth_dir>/wg-server.key`. Pubkey
-  derived via curve25519 at boot. Peer (pubkey → IP) map persisted
-  at `<oauth_dir>/wg-peers.json`, replayed on every restart so
-  existing clients survive gateway redeploys.
+- Server keypair persisted in the gateway's sqlite DB (see
+  migration `0008_gateway_state`). Pubkey derived via curve25519
+  at boot. Peer (pubkey → IP) map also lives in sqlite; both are
+  replayed on every restart so existing clients survive gateway
+  redeploys.
 - `clawpatrol join <gw>` runs once: prints user-code, opens
   dashboard URL, server mints a fresh keypair, allocates a /32 from
   the configured subnet, registers the peer with wireguard-go,
@@ -72,14 +73,13 @@ in promiscuous mode — same shape as unclaw's `boringtun` + `smoltcp`
 # on the gateway VM (real public IP needed)
 curl -fsSL https://denoland.github.io/clawpatrol/install.sh | sh
 
-cat > /etc/clawpatrol/gateway.hcl <<'EOF'
+cat > /opt/clawpatrol/gateway.hcl <<'EOF'
 listen       = "0.0.0.0:8443"
 info_listen  = "0.0.0.0:8080"
 public_url   = "http://your-gw.example.com:8080"
 admin_email  = "you@example.com"
-ca_dir       = "/opt/clawpatrol/ca"
 log_path     = "/opt/clawpatrol/gateway.log"
-oauth_dir    = "/opt/clawpatrol/oauth"
+state_dir    = "/opt/clawpatrol/state"
 integrations = ["claude", "codex", "github"]
 
 tailscale {
@@ -94,7 +94,7 @@ clawpatrol init-ca /opt/clawpatrol/ca
 
 iptables -I INPUT -p udp --dport 51820 -j ACCEPT
 iptables -I INPUT -p tcp --dport 8080 -j ACCEPT
-clawpatrol gateway /etc/clawpatrol/gateway.hcl
+clawpatrol gateway /opt/clawpatrol/gateway.hcl
 ```
 
 Connect Claude / GitHub / Codex via the dashboard at

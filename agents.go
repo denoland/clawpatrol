@@ -574,19 +574,21 @@ type IntegrationRow struct {
 	HasOAuth         bool                   `json:"has_oauth"`
 	OAuth            *OAuthIntegrationUI    `json:"oauth,omitempty"`
 	Slots            []config.SecretSlot    `json:"slots,omitempty"`
-	Owners           []Owner                `json:"owners"`
+	Connected        bool                   `json:"connected"`
+	ExpiresAt        int64                  `json:"expires_at,omitempty"`
+	DisplayName      string                 `json:"display_name,omitempty"`
+	AvatarURL        string                 `json:"avatar_url,omitempty"`
 	HasTailscaleAuth bool                   `json:"has_tailscale_auth,omitempty"`
 	TailscaleAuth    *TailscaleAuthStatusUI `json:"tailscale_auth,omitempty"`
 }
 
 // TailscaleAuthStatusUI is the dashboard-facing slice of a
 // tailscale-node-auth credential's live state. Connected reflects
-// whether tsnet has persisted node identity for the credential
-// (gateway-wide; owner is always "" for tailscale). PendingURL is the
-// live Tailscale login URL emitted by tsnet when no identity is stored
-// yet — the dashboard's "Connect" button redirects to it. Endpoint
-// paths are surfaced so the dashboard renders the connect flow
-// without hard-coding the route layout.
+// whether tsnet has persisted node identity for the credential.
+// PendingURL is the live Tailscale login URL emitted by tsnet when
+// no identity is stored yet — the dashboard's "Connect" button
+// redirects to it. Endpoint paths are surfaced so the dashboard
+// renders the connect flow without hard-coding the route layout.
 type TailscaleAuthStatusUI struct {
 	Connected     bool   `json:"connected"`
 	PendingURL    string `json:"pending_url,omitempty"`
@@ -601,14 +603,6 @@ type TailscaleAuthStatusUI struct {
 type OAuthIntegrationUI struct {
 	BaseScopes     []string                    `json:"base_scopes"`
 	OptionalScopes []config.OptionalScopeGroup `json:"optional_scopes,omitempty"`
-}
-
-type Owner struct {
-	Owner       string `json:"owner"`
-	Connected   bool   `json:"connected"`
-	ExpiresAt   int64  `json:"expires_at,omitempty"`
-	DisplayName string `json:"display_name,omitempty"`
-	AvatarURL   string `json:"avatar_url,omitempty"`
 }
 
 func (w *webMux) apiStatus(rw http.ResponseWriter, r *http.Request) {
@@ -635,7 +629,6 @@ func (w *webMux) statusList(r *http.Request) []IntegrationRow {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	selectedProfile, _ := w.credentialProfileKeyForRequest(r)
 	for _, name := range names {
 		ent := policy.Credentials[name]
 		row := IntegrationRow{ID: name, Name: name, Type: ent.Plugin.Type}
@@ -647,28 +640,24 @@ func (w *webMux) statusList(r *http.Request) []IntegrationRow {
 					OptionalScopes: flow.OptionalScopes,
 				}
 			}
-			for _, owner := range w.g.oauth.Owners(name) {
-				connected, exp := w.g.oauth.Status(name, owner)
-				o := Owner{Owner: owner, Connected: connected}
+			if connected, exp := w.g.oauth.Status(name); connected {
+				row.Connected = true
 				if !exp.IsZero() {
-					o.ExpiresAt = exp.Unix()
+					row.ExpiresAt = exp.Unix()
 				}
-				o.DisplayName, o.AvatarURL = w.g.oauth.Profile(name, owner)
-				row.Owners = append(row.Owners, o)
+				row.DisplayName, row.AvatarURL = w.g.oauth.Profile(name)
 			}
 		}
 		if sp, ok := ent.Body.(config.SecretSlotsProvider); ok {
 			row.Slots = sp.SecretSlots()
-			if selectedProfile != "" {
-				present, _ := credentialSlotPresence(w.g.db, name, selectedProfile)
-				if len(present) > 0 {
-					row.Owners = append(row.Owners, Owner{Owner: selectedProfile, Connected: true})
-				}
+			present, _ := credentialSlotPresence(w.g.db, name)
+			if len(present) > 0 {
+				row.Connected = true
 			}
 		}
 		if _, ok := ent.Body.(tailscaleproto.TailscaleAuthProvider); ok {
 			row.HasTailscaleAuth = true
-			present, _ := credentialSlotPresence(w.g.db, name, "")
+			present, _ := credentialSlotPresence(w.g.db, name)
 			row.TailscaleAuth = &TailscaleAuthStatusUI{
 				Connected:     len(present) > 0,
 				PendingURL:    tailscaleproto.Default.Get(name),
@@ -751,51 +740,40 @@ func (w *webMux) agentsList() []*Agent {
 		v4, v6 := w.onboard.ExternalIPs(a.IP)
 		a.ExternalIPv4, a.ExternalIPv6 = v4, v6
 	}
-	// enrich with connected integrations per agent's user. Re-run on
-	// every snapshot — caching by `Integrations != nil` would freeze
-	// the list at first sighting (a freshly-onboarded device whose
-	// user later connects Claude wouldn't reflect the new connection).
+	// Surface the legacy display owner on agents whose User column is
+	// still the tailnet "tagged-devices" stub, so the dashboard can
+	// render something more meaningful.
 	for _, a := range snap {
-		// Per-profile credentials: the agent's Integrations list
-		// reflects what the device's bound profile has connected. Falls
-		// back to the legacy per-user lookup for tailnet-control-mode
-		// installs that still bucket creds by login.
-		profile := w.onboard.ProfileForIP(a.IP)
-		if profile == "" {
-			if a.User == "" || a.User == "tagged-devices" {
-				if owner := w.onboard.OwnerForIP(a.IP); owner != "" {
-					a.User = owner
-				}
-			}
-			profile = a.User
-		}
-		if profile == "" {
-			continue
-		}
-		// Walk every declared credential — connected if either an
-		// OAuth token exists OR the operator pasted a secret slot via
-		// the dashboard. Was hardcoded to the claude/codex/github
-		// legacy trio, which silently hid every other credential type
-		// from the agents table.
-		var ids []string
-		if policy := w.g.Policy(); policy != nil {
-			names := make([]string, 0, len(policy.Credentials))
-			for name := range policy.Credentials {
-				names = append(names, name)
-			}
-			sort.Strings(names)
-			for _, name := range names {
-				if conn, _ := w.g.oauth.Status(name, profile); conn {
-					ids = append(ids, name)
-					continue
-				}
-				present, _ := credentialSlotPresence(w.g.db, name, profile)
-				if len(present) > 0 {
-					ids = append(ids, name)
-				}
+		if a.User == "" || a.User == "tagged-devices" {
+			if owner := w.onboard.OwnerForIP(a.IP); owner != "" {
+				a.User = owner
 			}
 		}
-		if ids != nil {
+	}
+	// Walk every declared credential — connected if either an OAuth
+	// token exists OR the operator pasted a secret slot via the
+	// dashboard. Credentials are global (one secret per credential),
+	// so the connected set is the same for every agent.
+	var ids []string
+	if policy := w.g.Policy(); policy != nil {
+		names := make([]string, 0, len(policy.Credentials))
+		for name := range policy.Credentials {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			if conn, _ := w.g.oauth.Status(name); conn {
+				ids = append(ids, name)
+				continue
+			}
+			present, _ := credentialSlotPresence(w.g.db, name)
+			if len(present) > 0 {
+				ids = append(ids, name)
+			}
+		}
+	}
+	if ids != nil {
+		for _, a := range snap {
 			a.Integrations = ids
 		}
 	}

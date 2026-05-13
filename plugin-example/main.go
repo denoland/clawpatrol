@@ -31,7 +31,7 @@ func main() {
 			// k8s) are reused as-is by setting the endpoint's
 			// Family to the facet's name — see demo_https.
 			{
-				Name: "smtp",
+				Name: "example_smtp",
 				Fields: []pluginsdk.FacetField{
 					{Name: "verb", Kind: pluginsdk.FacetString, Label: "Verb"},
 					// Optional fields are zero-filled by the gateway
@@ -51,7 +51,7 @@ func main() {
 			// Echo is a synthetic toy protocol with no built-in
 			// equivalent.
 			{
-				Name: "echo",
+				Name: "example_echo",
 				Fields: []pluginsdk.FacetField{
 					{Name: "line", Kind: pluginsdk.FacetString, Label: "Line"},
 				},

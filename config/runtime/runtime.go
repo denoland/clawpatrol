@@ -145,10 +145,12 @@ type ConnHandle struct {
 	Endpoint *config.CompiledEndpoint
 	Policy   *config.CompiledPolicy
 	// Profile is the device's profile name, looked up from peer IP
-	// before dispatch.
+	// before dispatch. Informational — the host uses it for logging
+	// and exposes it to external plugins; it is no longer keyed into
+	// credential lookups.
 	Profile string
-	// PeerIP is the agent's source IP, used as the "owner" key when
-	// fetching credentials from the secret store.
+	// PeerIP is the agent's source IP. Informational identifier of
+	// the originating peer.
 	PeerIP string
 	// Secrets is the host's SecretStore; plugins use it to fetch
 	// credential material at session-start time (postgres) or per
@@ -169,11 +171,12 @@ type ConnHandle struct {
 	// support HITL for this conn family — plugins must default to
 	// deny in that case.
 	Approve func(req ApproveCallRequest) ApproveVerdict
-	// CADir is the gateway's persistent state root (matches
-	// cfg.CADir). Kept on the handle for tunnel plugins (Tailscale's
-	// tsnet state dir is derived from it). Endpoint plugins should
-	// persist material through Blobs instead — see ConnHandle.Blobs.
-	CADir string
+	// StateDir is the gateway's persistent state root (matches
+	// cfg.StateDir). Kept on the handle for tunnel plugins
+	// (Tailscale's tsnet state dir is derived from it). Endpoint
+	// plugins should persist material through Blobs instead — see
+	// ConnHandle.Blobs.
+	StateDir string
 	// Blobs is the gateway's plugin-blob store. Endpoint plugins
 	// that need persistent bytes (SSH host keys, JWT signing keys)
 	// read / write through it instead of touching the filesystem.
@@ -281,6 +284,9 @@ type HITLTarget struct {
 	PendingID      string // pool's pending entry id
 	DashboardURL   string // for fallback dashboard link in non-interactive mode
 	ThreadTS       string // if set, post as a reply in this Slack thread
+	// Summary is an optional pre-computed classification. When non-nil,
+	// notifiers render a richer card instead of the generic method/path display.
+	Summary *HITLSummary
 }
 
 // ApproverRuntime evaluates one stage of an approve = [...] chain.
@@ -307,9 +313,10 @@ type ApproveRequest struct {
 	// approver should use against Pool / Secrets when it needs to
 	// disambiguate per-approver state.
 	ApproverName string
-	// Profile of the originating peer; SecretStore lookup key for
-	// per-profile credentials.
-	Profile string
+	// AgentIP is the WireGuard source IP of the originating peer.
+	// Approvers use it as a display label / log key; it carries no
+	// credential-lookup meaning.
+	AgentIP string
 	// Method / Host / Path / UA / BodySample carry the request shape
 	// for HITL prompts. Endpoint plugins fill these so approvers
 	// don't have to know the family-specific Request internals.
@@ -409,6 +416,23 @@ type HITLDecision struct {
 	Allow  bool
 	Reason string
 	By     string
+}
+
+// HITLSummary is an optional pre-computed classification from a
+// classifier LLM. When set on HITLTarget, notifiers build a richer
+// approval card instead of the generic method/path display.
+type HITLSummary struct {
+	TicketID       string `json:"ticket_id"`
+	Classification string `json:"classification"` // "Spam", "Legit", "Unclear", etc.
+	Confidence     int    `json:"confidence"`     // 0–100; 0 = not provided
+	Text           string `json:"summary"`
+}
+
+// HITLClassifier is the optional interface an approver plugin
+// implements to generate a HITLSummary before the HITL notification
+// is sent.
+type HITLClassifier interface {
+	Summarize(ctx context.Context, req ApproveRequest) (*HITLSummary, error)
 }
 
 // ErrUnsupported is returned by a plugin's runtime hook when the
