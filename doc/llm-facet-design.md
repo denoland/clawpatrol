@@ -1,14 +1,23 @@
 # `llm` facet family + per-provider LLM endpoint plugins — design
 
-Status: proposed. This doc is the design proposal for adding an `llm`
-facet family alongside `http` / `sql` / `k8s`, and shipping three
-per-provider HTTPS endpoint plugins (`anthropic`, `openai`,
-`openrouter`) whose actions carry both HTTP facets and LLM facets so
-existing HTTP rules keep firing and a new `llm`-family rule can match
-on provider / model / stream / tokens.
+Status: signed off. This doc is the agreed design for adding an
+`llm` facet family alongside `http` / `sql` / `k8s`, and shipping
+two new per-provider HTTPS endpoint plugins (`anthropic`,
+`openrouter`) plus extending the existing `openai_codex_https`
+plugin with LLM-family support. Actions carry both HTTP facets and
+LLM facets so existing HTTP rules keep firing and a new `llm`-
+family rule can match on provider / model / stream / tokens.
 
-The structural decision in [§3.1](#31-multi-family-per-action) is
-load-bearing. Sign-off on that section before implementation lands.
+Sign-off notes from the reviewer (PR #305 comment):
+
+- §3.1 multi-family shape: the request and the endpoint plugin
+  carry a single `families []string` set — no separate primary
+  `Family` + auxiliary `ExtraFamilies` split.
+- §3.4 per-provider plugins: do **not** ship a separate `openai`
+  plugin. Extend the existing `openai_codex_https` plugin so its
+  action carries both HTTP and LLM facets.
+- All other §3 design points are green-lit and implementation
+  proceeds as proposed.
 
 ---
 
@@ -25,9 +34,11 @@ coordinated changes:
    same request — an LLM endpoint's action carries both `http` and
    `llm` facets, so existing HTTP rules keep matching and new LLM
    rules become matchable.
-3. Three per-provider HTTPS endpoint plugins: `anthropic`, `openai`,
-   `openrouter`. Each parses the response (streaming + non-streaming)
-   to extract usage and populates the `llm` facet.
+3. Per-provider HTTPS endpoint coverage: two new plugins
+   (`anthropic`, `openrouter`) plus an LLM-family extension of the
+   existing `openai_codex_https` plugin. Each parses the response
+   (streaming + non-streaming) to extract usage and populates the
+   `llm` facet.
 
 ---
 
@@ -104,43 +115,51 @@ c. Type-assertion / bitmask over a `MultiFacetRequest` interface.
 
 **Proposal: take option (a), shaped concretely as:**
 
-1. Add `Metas map[string]any` to `match.Request` (or, equivalently, a
-   per-family struct holding `HTTP`, `SQL`, `K8s`, `LLM` pointer
-   fields — same effect, less reflection). The existing `Meta any`
-   field is removed; every site that reads `req.Meta.(*sql.Meta)`
-   becomes `req.Metas["sql"].(*sql.Meta)`. The change is mechanical
-   and contained — three call sites total (sql facet matcher, k8s
-   facet matcher, postgres/clickhouse runtimes that *set* Meta).
-2. Drop the single `Family string` field. Replace with the same set
-   of family slots — presence of a slot ≡ membership in the family
-   set. (Equivalent option: keep `Family` for the *primary* protocol
-   family, used for dashboard column selection and HITL labelling,
-   and treat the slot-presence set as the matcher set.)
-3. Endpoint plugins gain an optional `ExtraFamilies []string` field
-   on `config.Plugin`. The `anthropic` / `openai` / `openrouter`
-   plugins set `Family = "http"` and `ExtraFamilies = []string{"llm"}`.
-   The `https`, `kubernetes`, postgres, clickhouse endpoints keep
-   `ExtraFamilies` empty.
-4. `rules.go` family inference walks `Family ∪ ExtraFamilies` per
-   endpoint and intersects across the rule's endpoint set. A rule
-   whose endpoints all support family `X` is family-`X`. Ambiguity
-   (a rule attached only to LLM-bearing endpoints could be either
-   `http` or `llm`) is resolved by an explicit `family = "llm"`
-   attribute on the rule. Rules without `family` default to the
-   primary `Family` of the endpoint (so the existing fleet of HTTP
-   rules attached to a future `anthropic` endpoint continues to read
-   as HTTP without edits).
+1. Replace `Meta any` on `match.Request` with
+   `Metas map[string]any`. Every site that reads
+   `req.Meta.(*sql.Meta)` becomes `req.Metas["sql"].(*sql.Meta)`;
+   every site that sets `req.Meta = m` becomes
+   `req.Metas["sql"] = m`. The change is mechanical and contained.
+2. Replace `Family string` on `match.Request` with
+   `Families []string`. Presence in the set ≡ that family carries
+   metadata on the request. The HTTP-shaped fields (Method, URL,
+   Headers, Body) stay common-shared regardless of whether the
+   request is HTTP-only, LLM-bearing, or pure SQL.
+3. Replace `Family string` on `config.Plugin` with
+   `Families []string`. The `https`, `kubernetes`, `postgres`,
+   `clickhouse_native`, `clickhouse_https` endpoints declare a
+   single family in the slice. The `anthropic` / `openrouter`
+   plugins and the existing `openai_codex_https` plugin declare
+   `Families = []string{"http", "llm"}`. Endpoints that today
+   register `Family = "http"` migrate to
+   `Families = []string{"http"}` mechanically.
+4. `rules.go` family inference walks each endpoint's `Families`
+   and intersects across the rule's endpoint set. A rule whose
+   endpoints all support family `X` is family-`X`. Ambiguity (a
+   rule attached only to LLM-bearing endpoints could match `http`
+   or `llm`) is resolved by an explicit `family = "llm"` attribute
+   on the rule. Rules without `family` resolve to the unique
+   common family across the endpoint set; if more than one is
+   common and the rule omits `family`, validation rejects the
+   config with a diagnostic naming the candidate families.
 5. `MatchRequest` is unchanged: each rule's matcher already type-
    asserts against its own meta slot, so a rule whose family isn't
-   represented on the request will return `false` cleanly. (We could
-   add an early continue keyed on rule family ∉ request families set
-   as a perf optim, but it's not correctness-load-bearing.)
+   represented on the request will return `false` cleanly. (An
+   early-continue keyed on rule family ∉ request `Families` is an
+   optional perf optim, not correctness-load-bearing.)
 
 **Why (a) over (b) / (c).** `llm_rule` gets first-class status, the
 CEL env stays per-family (single variable per facet — `http`, `sql`,
-`k8s`, `llm`), no special-cased aux bag, no reflection-heavy
-type-assertion dispatch. The cost is a single field rename
-(`Meta any` → `Metas map[string]any`) touching ~6 sites.
+`k8s`, `llm`), no special-cased aux bag, no reflection-heavy type-
+assertion dispatch. The cost is one field rename per side:
+`Meta any` → `Metas map[string]any` and `Family string` →
+`Families []string`, touching ~6 sites total.
+
+**Naming note** (from the reviewer): a single `families` slice is
+preferred over a primary-`Family` + auxiliary-`ExtraFamilies` split.
+Both modelled the same set; the single-slice form keeps endpoint
+plugins, the request snapshot, and the rule-family resolver
+symmetrical and removes one degree of freedom.
 
 **Rejected: option (b)** would keep `Family string` singular and
 hide LLM facets behind `AuxFacets map[string]any`. That makes LLM
@@ -204,17 +223,19 @@ rules on v2 doesn't move the budget-enforcement timeline.
 
 ### 3.4 Per-provider plugin scope
 
-Each of `anthropic` / `openai` / `openrouter` is HTTPS underneath.
-Three shapes:
+Each LLM-bearing endpoint is HTTPS underneath. Three plugin shapes
+were on the table:
 
 - Sibling plugins (each a top-level endpoint type alongside `https`).
 - Subtype of `https` that delegates to an embedded HTTPSEndpoint.
 - A single `llm_endpoint` plugin parameterized by provider name.
 
-**Proposal: sibling plugins.** Matches the existing
+**Proposal: sibling plugins, scoped to two new types
+(`anthropic`, `openrouter`), plus an LLM-family extension to the
+existing `openai_codex_https` plugin.** Matches the existing
 `openai_codex_https` precedent (sibling of `https`, with its own
 `Runtime` for synthetic JWKS responses and `EnvVars` for codex JWT
-pushdown). Each provider plugin reuses the placeholder-detection
+pushdown). Each new plugin reuses the placeholder-detection
 behaviour of `HTTPSEndpointRuntime` (cred placeholder in
 `Authorization` header) by either embedding it or shipping an
 identical method.
@@ -226,7 +247,7 @@ plugin's `Runtime`:
 ```go
 // In config/runtime, alongside PlaceholderDetector / HTTPSyntheticResponder:
 type LLMResponseParser interface {
-    ParseLLMResponse(reqBody, respBody []byte) llm.Meta
+    ParseLLMResponse(reqBody, respBody []byte) *llm.Meta
 }
 ```
 
@@ -236,9 +257,11 @@ when present, calls it with the collected request + response bytes
 between `trackBuf` extraction and `emitEnd`. The parser populates the
 `llm` slot in `req.Metas` and the `Event.Facets["llm"]` map.
 
-The default `Hosts` for each plugin:
+The default `Hosts` for each LLM-bearing plugin:
 - `anthropic` → `["api.anthropic.com"]`
-- `openai` → `["api.openai.com"]`
+- `openai_codex_https` (existing) → keeps its current hosts
+  (`chatgpt.com` + the codex backchannel) and additionally declares
+  `Families = ["http", "llm"]` so its actions carry an `llm` slot.
 - `openrouter` → `["openrouter.ai"]`
 
 Hosts can still be overridden in HCL; defaults exist so the common
@@ -250,27 +273,27 @@ endpoint "anthropic" "claude" {
 }
 ```
 
-### 3.4.1 Naming: `codex` vs `openai`
+### 3.4.1 No separate `openai` plugin
 
-The bead names the OpenAI plugin `codex` but flags that the broader
-scope (OpenAI's responses/completions API, which also serves the
-OpenAI Codex CLI, gh Copilot, and custom OpenAI clients) is the
-defensible choice.
+The bead originally named an `openai` plugin distinct from the
+existing `openai_codex_https`. Per reviewer feedback, the OpenAI-
+shaped provider work happens **inside** `openai_codex_https` rather
+than in a new sibling plugin:
 
-**Proposal: name it `openai`, not `codex`.** Reasoning:
+- `openai_codex_https` keeps its current scope (codex CLI flow
+  against chatgpt.com with synthetic Agent Identity JWT pushdown)
+  and additionally implements `LLMResponseParser` for the OpenAI
+  responses/completions schema.
+- Its `config.Plugin` registration declares
+  `Families = []string{"http", "llm"}`. Actions through this
+  endpoint carry both an `http` and an `llm` facet.
+- No new `openai` plugin file/type is added.
 
-- `codex` already exists as `openai_codex_https`, scoped to the
-  *chatgpt.com* path that codex CLI uses under subscription auth.
-  Reusing the name for a *different* provider scope (api.openai.com)
-  would be confusing.
-- The new plugin's host is `api.openai.com` — naming it `openai`
-  matches the host and the credential family.
-- The existing `openai_codex_https` plugin stays as-is for the
-  chatgpt.com subscription flow. It can grow `LLMResponseParser`
-  later for consistency.
-
-If reviewers prefer `codex` to honour the bead's literal text, the
-plugin file/type name is a one-line change.
+If a future need arises to cover non-codex OpenAI traffic
+(`api.openai.com` direct calls outside the codex subscription flow),
+extending the `openai_codex_https` hosts list — or shipping a
+narrower second plugin then — stays open. v1 does not introduce
+that surface.
 
 ### 3.5 Facet shape for tokens (numeric vs bucketed)
 
@@ -418,9 +441,9 @@ Tracked for v2:
 
 ## 6. Acceptance criteria (re-stated from the bead)
 
-- An action passing through an `anthropic` / `openai` / `openrouter`
-  endpoint shows both HTTP facets *and* LLM facets on the dashboard
-  request detail page.
+- An action passing through an `anthropic` / `openai_codex_https` /
+  `openrouter` endpoint shows both HTTP facets *and* LLM facets on
+  the dashboard request detail page.
 - LLM facets include at minimum: provider, model, input tokens,
   output tokens, cache read tokens, cache write tokens, stop reason.
 - A rule with `family = "llm"` and `condition = "llm.model.matches(...)"`
@@ -432,14 +455,16 @@ Tracked for v2:
 
 ---
 
-## 7. Review focus
+## 7. Review status
 
-The structural decision in §3.1 is **load-bearing** — every other
-section assumes the multi-family-per-action shape it picks. Please
-sign off on §3.1 explicitly before Phase 3 commits land.
+Sign-off received on PR #305:
 
-Secondary points worth explicit thumbs-up:
+- §3.1 multi-family shape — approved with the single-`families`
+  slice form (no `Family` + `ExtraFamilies` split).
+- §3.4 per-provider scope — approved with the change that
+  `openai_codex_https` is extended in-place rather than shipping a
+  sibling `openai` plugin.
+- §3.3 (pre-flight-only v1) and all other §3 points — green-lit
+  as proposed.
 
-- §3.4.1 (`openai` vs `codex` naming)
-- §3.3 (pre-flight-only v1 — confirming that token-budget
-  enforcement waits for v2 is fine).
+Phase 3 implementation proceeds against this signed-off design.
