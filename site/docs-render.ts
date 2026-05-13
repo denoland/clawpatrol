@@ -1,8 +1,43 @@
 // Shared rendering used by both vite dev and build for the docs pages,
 // and by build-docs.ts to prerender the landing page.
 
-import hljs from "highlight.js";
+import hljs, { type HLJSApi, type LanguageFn } from "highlight.js";
 import { Marked } from "marked";
+
+// highlight.js doesn't ship an HCL grammar, so docs that use `hcl`
+// fences fall back to plain text. Register a minimal one — enough
+// to colourise the operator-facing examples in skill.md and friends.
+const hclLang: LanguageFn = (h: HLJSApi) => ({
+  name: "HCL",
+  aliases: ["terraform", "tf"],
+  case_insensitive: false,
+  keywords: {
+    keyword:
+      "approver credential endpoint policy profile rule tunnel " +
+      "device defaults",
+    literal: "true false null",
+    built_in: "var local module data resource",
+  },
+  contains: [
+    h.HASH_COMMENT_MODE,
+    h.C_LINE_COMMENT_MODE,
+    h.C_BLOCK_COMMENT_MODE,
+    h.QUOTE_STRING_MODE,
+    h.NUMBER_MODE,
+    {
+      // Heredoc: <<EOT … EOT  or  <<-EOT … EOT
+      className: "string",
+      begin: /<<-?\s*([A-Za-z_]\w*)/,
+      end: /^\s*\w+$/,
+    },
+    {
+      // Block label string (after a known keyword + space).
+      className: "type",
+      begin: /\b[a-z_][a-z0-9_]*\b(?=\s+"[^"]+"\s*"[^"]+"\s*\{)/,
+    },
+  ],
+});
+hljs.registerLanguage("hcl", hclLang);
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { h } from "preact";

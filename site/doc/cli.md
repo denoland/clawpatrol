@@ -165,11 +165,6 @@ your shell rc if you need them outside `clawpatrol run`.
 eval "$(clawpatrol env)"
 ```
 
-### `clawpatrol init-ca DIR`
-
-Generate a fresh CA into `DIR`. Used by `gateway init`; rarely
-needed standalone.
-
 ### `clawpatrol version`
 
 Print the version. Also accepts `-v` and `--version`.
@@ -194,13 +189,16 @@ Where state lives, by role:
 **Gateway host** (set up by `gateway init`):
 
 ```
-/etc/clawpatrol/          (root) — or ~/.clawpatrol (non-root)
-  gateway.hcl             HCL config
-  ca/ca.crt               Generated CA cert
-  ca/ca.key               Generated CA private key
-  oauth/clawpatrol.db     SQLite — devices, sessions, audit log
-  oauth/wg-server.key     WireGuard server private key
+/etc/clawpatrol/                (root) — or ~/.clawpatrol (non-root)
+  gateway.hcl                   HCL config (operator-edited)
+  oauth/clawpatrol.db           SQLite — everything else
 ```
+
+The sqlite DB holds the CA cert + key, WireGuard server key, SSH
+host keys, sessions, audit log, telemetry UUID, and DNS-VIP
+allocations. Path is configurable via the top-level `state_dir`
+attribute (defaults to `oauth/` next to `gateway.hcl` for
+historical layout compat).
 
 **Device** (set up by `join` / `login`):
 

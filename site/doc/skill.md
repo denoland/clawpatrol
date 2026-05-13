@@ -1,6 +1,6 @@
 ---
 name: claw-patrol
-title: Operating Claw Patrol
+title: Skill File
 description: Set up and operate Claw Patrol, a firewall for AI agents. Write the gateway HCL config (credentials, endpoints, rules, approvers, profiles), run the gateway, onboard devices, wrap agent commands with `clawpatrol run`. Use when the user wants to install or operate Claw Patrol, write or modify a `gateway.hcl` policy, add allow / deny / approve rules over HTTPS / Postgres / Kubernetes / ClickHouse / SSH traffic, gate agent actions behind a human or an LLM judge, or debug Claw Patrol behavior.
 ---
 
@@ -24,7 +24,7 @@ Agent ─→ Device ──WireGuard──→ Gateway ──→ Upstream
 
 Same binary, gateway + devices:
 
-```bash
+```
 curl -fsSL https://clawpatrol.dev/install.sh | sh
 ```
 
@@ -34,7 +34,7 @@ macOS / Linux on amd64 / arm64. Lands in `~/.local/bin/clawpatrol`.
 
 Bootstrap (once):
 
-```bash
+```
 clawpatrol gateway init
 ```
 
@@ -46,14 +46,14 @@ WireGuard.
 
 Then run:
 
-```bash
+```
 systemctl enable --now clawpatrol-gateway       # systemd
 clawpatrol gateway /etc/clawpatrol/gateway.hcl  # otherwise
 ```
 
 Validate or regression-test a policy change:
 
-```bash
+```
 clawpatrol validate gateway.hcl        # parse + compile
 clawpatrol test gateway.hcl fixtures/  # replay recorded actions
 ```
@@ -107,7 +107,7 @@ profile "default" { endpoints = [github] }
 | `info_listen` | Dashboard + API bind. |
 | `public_url` | Dashboard URL handed out at join time. |
 | `dashboard_secret` | Required (or `insecure_no_dashboard_secret = true` for local testing). |
-| `ca_dir` / `oauth_dir` | CA + SQLite state DB locations. |
+| `state_dir` | Directory holding `clawpatrol.db`. `ca_dir` / `oauth_dir` are legacy names kept for backwards compat. |
 | `control` | `"wireguard"` or `"tailscale"`. |
 | `wg_endpoint` / `wg_subnet_cidr` | WG listener + device subnet. |
 | `unknown_host` | `"passthrough"` (default) or `"deny"` for traffic no endpoint claims. |
@@ -290,7 +290,7 @@ without paging.
 
 ## Onboard a device
 
-```bash
+```
 clawpatrol join http://<gateway-host>:9080
 ```
 
@@ -308,7 +308,7 @@ Settings → Privacy & Security**.
 
 ## Run an agent
 
-```bash
+```
 clawpatrol run -- claude
 clawpatrol run -- gh pr create
 clawpatrol run -- psql 'host=db user=agent'
@@ -326,11 +326,15 @@ sees a normal network — no proxy URL, no CA bundle.
 **Gateway** (`/etc/clawpatrol/` root, or `~/.clawpatrol` non-root):
 
 ```
-gateway.hcl
-ca/ca.crt, ca/ca.key
-oauth/clawpatrol.db    # SQLite — devices, sessions, audit log
-oauth/wg-server.key
+gateway.hcl                  # operator-edited
+<state_dir>/clawpatrol.db    # everything else — CA material, WG keys,
+                             # devices, sessions, audit log
 ```
+
+`state_dir` defaults to `<data-dir>/oauth/` for `gateway init`-created
+hosts (legacy layout, still works). The CA cert + key, WireGuard
+server key, SSH host keys, telemetry UUID, and DNS-VIP allocations
+all live inside `clawpatrol.db` — nothing else on disk.
 
 **Device:**
 

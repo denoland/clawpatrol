@@ -1,7 +1,6 @@
 [
   "introduction",
   "getting-started",
-  "skill",
   "glossary",
   "architecture",
   "cli",
@@ -9,5 +8,6 @@
   "security-model",
   "approval-rules",
   "config-reference",
-  "competitors"
+  "competitors",
+  "skill"
 ]
