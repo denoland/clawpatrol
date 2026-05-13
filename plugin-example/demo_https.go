@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -16,23 +17,23 @@ import (
 	"github.com/denoland/clawpatrol/pluginsdk"
 )
 
-// demoHTTPS is the example plugin's HTTPS endpoint: gateway terminates
-// TLS on the agent side, hands plaintext bytes to the plugin, the
-// plugin parses HTTP, mutates the request (adds the magic-token
-// header upstream), forwards to the configured upstream, then
-// rewrites the response body by appending "bye!" before sending
-// back to the agent.
+// demoHTTPS is the example plugin's HTTPS endpoint. The gateway
+// terminates TLS on the agent side and hands the plaintext bytes to
+// the plugin. For each HTTP request, the plugin asks the gateway for
+// a verdict via Conn.Evaluate against the `webreq` facet — the
+// gateway evaluates rules, walks any approve chain, and logs the
+// action. On allow the plugin forwards upstream, injects the magic
+// header, and rewrites the response body by appending "bye!".
 type demoHTTPS struct {
 	// Upstream is a full URL: e.g. "http://127.0.0.1:8000". The
-	// plugin dials its host:port for every request and rewrites the
-	// outgoing request line accordingly.
+	// plugin dials its host:port for every request.
 	Upstream string `json:"upstream"`
 }
 
 func demoHTTPSDef() pluginsdk.EndpointDef {
 	return pluginsdk.EndpointDef{
 		TypeName:    "demo_https",
-		Family:      "stream",
+		Family:      "webreq", // SDK auto-namespaces to "example.webreq"
 		TLSMode:     pluginsdk.TLSTerminate,
 		RequiresVIP: true,
 		Schema: pluginsdk.Schema{Fields: []pluginsdk.SchemaField{
@@ -65,7 +66,6 @@ func handleDemoHTTPS(ctx context.Context, conn *pluginsdk.Conn) error {
 		return fmt.Errorf("parse upstream: %w", err)
 	}
 
-	// Recover the credential's HCL header_name + the secret value.
 	headerName := "X-Magic"
 	if len(conn.CredentialCanonicalConfig) > 0 {
 		var c magicToken
@@ -85,23 +85,58 @@ func handleDemoHTTPS(ctx context.Context, conn *pluginsdk.Conn) error {
 			return fmt.Errorf("read request: %w", err)
 		}
 
+		// Buffer the body so the gateway can pull it lazily as a
+		// stream while we still have it available for the upstream
+		// forward. Real-world plugins handling large bodies would
+		// use a tee-reader pattern; for the demo, ReadAll is
+		// adequate and the streaming protocol still lets the
+		// gateway decide whether to copy the bytes over IPC.
+		body, berr := io.ReadAll(req.Body)
+		_ = req.Body.Close()
+		if berr != nil {
+			return fmt.Errorf("read request body: %w", berr)
+		}
+
+		action := map[string]any{
+			"method": req.Method,
+			"host":   req.Host,
+			"path":   req.URL.RequestURI(),
+			"body":   pluginsdk.Stream(bytes.NewReader(body)),
+		}
+		summary := req.Method + " " + req.URL.RequestURI()
+		v, err := conn.Evaluate(ctx, "webreq", action, summary)
+		if err != nil {
+			return fmt.Errorf("evaluate %s: %w", summary, err)
+		}
+
+		switch v.Action {
+		case "allow", "hitl_allow":
+			// proceed
+		default:
+			if werr := writeDenyResponse(conn, req, v.Reason); werr != nil {
+				return fmt.Errorf("write deny: %w", werr)
+			}
+			if req.Close {
+				return nil
+			}
+			continue
+		}
+
+		req.Body = io.NopCloser(bytes.NewReader(body))
 		resp, ferr := forwardOneHTTPS(ctx, req, upstreamURL, headerName, tokenValue)
 		if ferr != nil {
+			// Operational failure (couldn't reach upstream / parse
+			// response). Not a verdict, but worth logging — the
+			// plugin tells the gateway via a non-policy audit emit.
 			conn.Emit(pluginsdk.ConnEvent{
 				Action:  "error",
 				Reason:  ferr.Error(),
 				Verb:    req.Method,
-				Summary: req.Method + " " + req.URL.RequestURI(),
+				Summary: summary,
 			})
 			return fmt.Errorf("forward: %w", ferr)
 		}
-		conn.Emit(pluginsdk.ConnEvent{
-			Action:  "allow",
-			Verb:    req.Method,
-			Summary: req.Method + " " + req.URL.RequestURI(),
-		})
 
-		// Append "bye!" to the response body before writing back.
 		if err := writeMutatedResponse(conn, resp); err != nil {
 			return fmt.Errorf("write response: %w", err)
 		}
@@ -109,6 +144,26 @@ func handleDemoHTTPS(ctx context.Context, conn *pluginsdk.Conn) error {
 			return nil
 		}
 	}
+}
+
+func writeDenyResponse(w io.Writer, req *http.Request, reason string) error {
+	if reason == "" {
+		reason = "policy denied"
+	}
+	body := []byte(reason + "\n")
+	resp := &http.Response{
+		Status:        "403 Forbidden",
+		StatusCode:    http.StatusForbidden,
+		Proto:         "HTTP/1.1",
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Request:       req,
+		Header:        http.Header{"Content-Type": []string{"text/plain; charset=utf-8"}},
+		Body:          io.NopCloser(bytes.NewReader(body)),
+		ContentLength: int64(len(body)),
+		Close:         true,
+	}
+	return resp.Write(w)
 }
 
 func forwardOneHTTPS(ctx context.Context, req *http.Request, upstream *url.URL, headerName, headerValue string) (*http.Response, error) {
@@ -136,9 +191,6 @@ func forwardOneHTTPS(ctx context.Context, req *http.Request, upstream *url.URL, 
 		return nil, fmt.Errorf("dial upstream %s: %w", host, err)
 	}
 
-	// Rewrite request: target = upstream.Host, add magic header,
-	// drop hop-by-hop. Strip RequestURI (http.Request.Write uses URL
-	// when RequestURI is empty).
 	out := req.Clone(ctx)
 	out.RequestURI = ""
 	out.URL.Scheme = upstream.Scheme
@@ -155,16 +207,14 @@ func forwardOneHTTPS(ctx context.Context, req *http.Request, upstream *url.URL, 
 		_ = c.Close()
 		return nil, fmt.Errorf("read upstream response: %w", err)
 	}
-	// Wrap body so it closes the upstream conn when drained.
 	resp.Body = &closingBody{ReadCloser: resp.Body, after: c.Close}
 	return resp, nil
 }
 
 // writeMutatedResponse appends "\nbye!\n" to the response body and
-// writes the result back to the agent connection. We force chunked
-// transfer encoding because we don't know the final length upfront
-// (the upstream might have used chunked or a fixed Content-Length;
-// either way our body is now longer).
+// writes the result back to the agent connection. Forces chunked
+// transfer encoding because the appended bytes invalidate any
+// upstream Content-Length.
 func writeMutatedResponse(w io.Writer, resp *http.Response) error {
 	resp.Body = io.NopCloser(io.MultiReader(resp.Body, strings.NewReader("\nbye!\n")))
 	resp.ContentLength = -1

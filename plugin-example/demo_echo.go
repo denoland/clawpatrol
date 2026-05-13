@@ -5,18 +5,20 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/denoland/clawpatrol/pluginsdk"
 )
 
-// demoEcho is the simplest of the three: plain TCP, no TLS. The
-// gateway hands the raw agent connection to the plugin; the plugin
-// reads lines and writes them back prefixed with the credential's
-// secret value. Demonstrates the non-TLS endpoint slot.
+// demoEcho is a plain-TCP echo endpoint. The gateway hands the raw
+// agent connection to the plugin; the plugin reads lines, asks the
+// gateway for a verdict via the `echo` facet, and either echoes the
+// line back (prefixed with the credential's secret) or replies with
+// a deny message. The gateway does the logging.
 func demoEchoDef() pluginsdk.EndpointDef {
 	return pluginsdk.EndpointDef{
 		TypeName:    "demo_echo",
-		Family:      "stream",
+		Family:      "echo", // SDK auto-namespaces to "example.echo"
 		TLSMode:     pluginsdk.TLSNone,
 		RequiresVIP: true,
 		Schema:      pluginsdk.Schema{},
@@ -24,7 +26,7 @@ func demoEchoDef() pluginsdk.EndpointDef {
 	}
 }
 
-func handleDemoEcho(_ context.Context, conn *pluginsdk.Conn) error {
+func handleDemoEcho(ctx context.Context, conn *pluginsdk.Conn) error {
 	prefix := string(conn.CredentialSecret)
 	if prefix == "" {
 		prefix = "echo"
@@ -38,9 +40,24 @@ func handleDemoEcho(_ context.Context, conn *pluginsdk.Conn) error {
 			}
 			return err
 		}
-		conn.Emit(pluginsdk.ConnEvent{Action: "allow", Verb: "echo", Summary: line[:len(line)-1]})
-		if _, err := fmt.Fprintf(conn, "%s: %s", prefix, line); err != nil {
-			return err
+		clean := strings.TrimRight(line, "\r\n")
+		v, err := conn.Evaluate(ctx, "echo", map[string]any{"line": clean}, clean)
+		if err != nil {
+			return fmt.Errorf("evaluate %q: %w", clean, err)
+		}
+		switch v.Action {
+		case "allow", "hitl_allow":
+			if _, err := fmt.Fprintf(conn, "%s: %s\n", prefix, clean); err != nil {
+				return err
+			}
+		default:
+			reason := v.Reason
+			if reason == "" {
+				reason = "denied"
+			}
+			if _, err := fmt.Fprintf(conn, "DENY: %s\n", reason); err != nil {
+				return err
+			}
 		}
 	}
 }

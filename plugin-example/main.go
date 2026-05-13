@@ -44,6 +44,21 @@ func main() {
 					{Name: "body", Kind: pluginsdk.FacetStream, Label: "Body", Optional: true},
 				},
 			},
+			{
+				Name: "webreq",
+				Fields: []pluginsdk.FacetField{
+					{Name: "method", Kind: pluginsdk.FacetString, Label: "Method"},
+					{Name: "host", Kind: pluginsdk.FacetString, Label: "Host"},
+					{Name: "path", Kind: pluginsdk.FacetString, Label: "Path"},
+					{Name: "body", Kind: pluginsdk.FacetStream, Label: "Body", Optional: true},
+				},
+			},
+			{
+				Name: "echo",
+				Fields: []pluginsdk.FacetField{
+					{Name: "line", Kind: pluginsdk.FacetString, Label: "Line"},
+				},
+			},
 		},
 	})
 }

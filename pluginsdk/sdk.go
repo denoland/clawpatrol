@@ -234,8 +234,20 @@ type Conn struct {
 }
 
 // Emit hands an audit event to the gateway. The gateway funnels it
-// through its existing event sink (dashboard SSE + JSONL log). No-op
-// when emit is nil (e.g. in unit tests).
+// through its existing event sink (dashboard SSE + JSONL log).
+//
+// Emit is for *non-policy* events only — operational failures,
+// session-level milestones (connect / disconnect), out-of-band
+// notices the dashboard should surface but that don't correspond
+// to a request the plugin asked the gateway to rule on. Use
+// Conn.Evaluate for anything where the verdict matters; the
+// gateway emits a derived ConnEvent for every Evaluate so plugins
+// don't double-log.
+//
+// In particular, do not call Emit with a hardcoded Action of
+// "allow" or "deny" — that fabricates a verdict no rule produced.
+//
+// No-op when emit is nil (e.g. in unit tests).
 func (c *Conn) Emit(ev ConnEvent) {
 	if c.emit != nil {
 		c.emit(ev)

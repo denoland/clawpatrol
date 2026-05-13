@@ -23,10 +23,11 @@ credential "example.magic_token" "demo_token" {
 
 tunnel "example.passthrough" "passthru" {}
 
-// HTTPS endpoint: gateway terminates TLS, plugin parses HTTP, adds
-// the credential's secret bytes as <header_name>: <token> to the
-// upstream request, then appends "\nbye!\n" to the response body
-// before sending it back to the agent.
+// HTTPS endpoint: gateway terminates TLS, plugin parses HTTP and
+// asks the gateway for a verdict on every request via the `webreq`
+// facet. On allow the plugin forwards upstream, injects the magic
+// header, and rewrites the response body by appending "\nbye!\n".
+// On deny the plugin replies 403 with the rule's reason.
 //
 // Set CLAWPATROL_SECRET_DEMO_TOKEN=hello in the environment, then
 // `curl -k https://demo.invalid/` against a local HTTP upstream
@@ -37,6 +38,19 @@ endpoint "example.demo_https" "demo-site" {
   credential = demo_token
   tunnel     = passthru
   upstream   = "http://127.0.0.1:8000"
+}
+
+rule "webreq-reads" {
+  endpoint  = demo-site
+  condition = "webreq.method in ['GET', 'HEAD']"
+  verdict   = "allow"
+}
+
+rule "webreq-writes-deny" {
+  endpoint  = demo-site
+  condition = "webreq.method in ['POST', 'PUT', 'PATCH', 'DELETE']"
+  verdict   = "deny"
+  reason    = "writes to demo upstream are not allowed"
 }
 
 // TLS-but-not-HTTPS endpoint: synthetic ESMTP-ish handshake.
@@ -90,11 +104,26 @@ rule "smtp-body-deny" {
   reason    = "body contains restricted token"
 }
 
-// Plain-TCP endpoint: no TLS at all. Plugin reads lines and echoes
-// them back prefixed with the credential secret.
+// Plain-TCP endpoint: no TLS at all. Plugin reads lines and asks
+// the gateway whether to echo each one (allow) or reject it (deny).
+// On allow the plugin echoes prefixed with the credential secret;
+// on deny it replies "DENY: <reason>".
 endpoint "example.demo_echo" "demo-echo" {
   hosts      = ["echo.invalid:7"]
   credential = demo_token
+}
+
+rule "echo-no-bad-words" {
+  endpoint  = demo-echo
+  condition = "!echo.line.contains('forbidden')"
+  verdict   = "allow"
+}
+
+rule "echo-deny-fallback" {
+  endpoint  = demo-echo
+  condition = "true"
+  verdict   = "deny"
+  reason    = "line contains a forbidden token"
 }
 
 profile "default" {
