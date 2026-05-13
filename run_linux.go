@@ -21,6 +21,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -155,7 +156,11 @@ func runRun(args []string) {
 	}
 
 	tunDev := newRawFDTun(tunFd)
-	logger := device.NewLogger(device.LogLevelError, "[clawpatrol run] ")
+	baseLogger := device.NewLogger(device.LogLevelError, "[clawpatrol run] ")
+	// Wrap the wireguard-go logger so the keypair-derivation failure
+	// short-circuits the watchdog poll loop — see denoland/orchid#45.
+	forceReset := make(chan struct{}, 1)
+	logger := wrapWGLogger(baseLogger, forceReset)
 	dev := device.NewDevice(tunDev, conn.NewDefaultBind(), logger)
 	if err := dev.IpcSet(buildWGIpc(cfg)); err != nil {
 		_ = child.Process.Kill()
@@ -166,6 +171,14 @@ func runRun(args []string) {
 		fail("wg up: %v", err)
 	}
 	defer dev.Close()
+
+	// Watchdog reruns the original IpcSet on a stuck handshake; that
+	// wipes the wireguard-go peer trie and triggers a fresh initiation.
+	wdCtx, wdCancel := context.WithCancel(context.Background())
+	defer wdCancel()
+	go runWGWatchdog(wdCtx, dev, baseLogger, forceReset, func() error {
+		return dev.IpcSet(buildWGIpc(cfg))
+	})
 
 	_, _ = wgUpW.Write([]byte{1})
 	_ = wgUpW.Close()
