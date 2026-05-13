@@ -26,7 +26,9 @@ package main
 // in the user's command (or its children) are what trigger the notify.
 
 import (
+	"bufio"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -35,6 +37,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -266,13 +270,37 @@ func runRelaySupervisor(_ []string) {
 }
 
 // peekAgentListener returns (port, bind_ip, family) for the socket fd
-// inside the agent. Uses pidfd_open + pidfd_getfd to duplicate the fd
-// into our table, then getsockname.
+// inside the agent. Tries two paths in order:
 //
-// pidfd_getfd needs PTRACE_MODE_ATTACH_REALCREDS — the agent child calls
-// prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY) before exec, which under
-// yama ptrace_scope=1 lets us, a same-uid sibling, succeed.
+//  1. pidfd_open + pidfd_getfd + getsockname — preferred (race-free, the
+//     socket fd is pinned via the dup'd reference for the lifetime of the
+//     call). Needs PTRACE_MODE_ATTACH_REALCREDS, which under yama
+//     ptrace_scope=1 means the tracee must have called
+//     prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY). The agent child does
+//     this before exec; PR_SET_PTRACER survives execve but is reset on
+//     fork(), so direct children of the user's command that exec a
+//     listener will skip this path.
+//
+//  2. /proc/<pid>/fd/<sockfd> readlink → inode, then scan
+//     /proc/<pid>/net/tcp{,6} for a listening socket with that inode.
+//     Only requires same-uid (we are), not ptrace. This covers
+//     fork-then-listen patterns (shell wrappers, supervisord-style
+//     launchers) that pidfd_getfd can't reach under yama.
 func peekAgentListener(pid, sockfd int) (uint16, net.IP, int, error) {
+	port, ip, family, pidfdErr := pidfdPeekListener(pid, sockfd)
+	if pidfdErr == nil {
+		return port, ip, family, nil
+	}
+	port, ip, family, procErr := procPeekListener(pid, sockfd)
+	if procErr == nil {
+		return port, ip, family, nil
+	}
+	return 0, nil, 0, fmt.Errorf("pidfd_getfd: %v; /proc fallback: %v", pidfdErr, procErr)
+}
+
+// pidfdPeekListener: open the agent as a pidfd, dup the socket fd over,
+// getsockname. Race-free but ptrace-gated.
+func pidfdPeekListener(pid, sockfd int) (uint16, net.IP, int, error) {
 	pidfd, _, e := unix.Syscall(unix.SYS_PIDFD_OPEN, uintptr(pid), 0, 0)
 	if e != 0 {
 		return 0, nil, 0, fmt.Errorf("pidfd_open(%d): %w", pid, e)
@@ -281,7 +309,7 @@ func peekAgentListener(pid, sockfd int) (uint16, net.IP, int, error) {
 
 	dupfd, _, e := unix.Syscall(unix.SYS_PIDFD_GETFD, pidfd, uintptr(sockfd), 0)
 	if e != 0 {
-		return 0, nil, 0, fmt.Errorf("pidfd_getfd(pid=%d, fd=%d): %w (yama ptrace_scope may block sibling inspection)", pid, sockfd, e)
+		return 0, nil, 0, fmt.Errorf("pidfd_getfd(pid=%d, fd=%d): %w", pid, sockfd, e)
 	}
 	defer unix.Close(int(dupfd))
 
@@ -296,6 +324,133 @@ func peekAgentListener(pid, sockfd int) (uint16, net.IP, int, error) {
 		return uint16(a.Port), net.IP(a.Addr[:]), unix.AF_INET6, nil
 	}
 	return 0, nil, 0, fmt.Errorf("unsupported sockaddr family")
+}
+
+// procPeekListener: read /proc/<pid>/fd/<sockfd> to get the socket inode,
+// then scan /proc/<pid>/net/tcp{,6} for the matching TCP_LISTEN row.
+//
+// /proc/<pid>/net/tcp is per-netns (the kernel resolves the symlink
+// against the target's net ns), so we see the agent's view — exactly
+// what we want. Same-uid is enough to read both paths; yama doesn't
+// apply.
+func procPeekListener(pid, sockfd int) (uint16, net.IP, int, error) {
+	link, err := os.Readlink(fmt.Sprintf("/proc/%d/fd/%d", pid, sockfd))
+	if err != nil {
+		return 0, nil, 0, fmt.Errorf("readlink /proc/%d/fd/%d: %w", pid, sockfd, err)
+	}
+	const prefix = "socket:["
+	if !strings.HasPrefix(link, prefix) || !strings.HasSuffix(link, "]") {
+		return 0, nil, 0, fmt.Errorf("not a socket fd: %q", link)
+	}
+	inode, err := strconv.ParseUint(link[len(prefix):len(link)-1], 10, 64)
+	if err != nil {
+		return 0, nil, 0, fmt.Errorf("parse inode %q: %w", link, err)
+	}
+
+	// IPv4 entries appear in /proc/<pid>/net/tcp, IPv6 in tcp6. Try v6
+	// first because dual-stack listeners (the common case for Go's
+	// net.Listen("tcp", ":port")) bind via AF_INET6 with a v4-mapped
+	// any address.
+	for _, t := range [...]struct {
+		path   string
+		family int
+		ipHex  int
+	}{
+		{fmt.Sprintf("/proc/%d/net/tcp6", pid), unix.AF_INET6, 32},
+		{fmt.Sprintf("/proc/%d/net/tcp", pid), unix.AF_INET, 8},
+	} {
+		port, ip, ok, err := scanProcNetTcp(t.path, inode, t.ipHex)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			// Surface IO errors but keep trying the other family.
+			fmt.Fprintf(os.Stderr, "[clawpatrol relay] read %s: %v\n", t.path, err)
+			continue
+		}
+		if ok {
+			return port, ip, t.family, nil
+		}
+	}
+	return 0, nil, 0, fmt.Errorf("no TCP_LISTEN row with inode %d in /proc/%d/net/tcp{,6}", inode, pid)
+}
+
+// scanProcNetTcp scans one /proc/<pid>/net/tcp{,6} file for a row whose
+// inode matches `wantInode` and whose state is TCP_LISTEN (0x0A). On
+// match, returns the parsed (port, ip). On miss, returns ok=false.
+func scanProcNetTcp(path string, wantInode uint64, ipHexLen int) (uint16, net.IP, bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, nil, false, err
+	}
+	defer func() { _ = f.Close() }()
+
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	headerSkipped := false
+	for sc.Scan() {
+		if !headerSkipped {
+			headerSkipped = true
+			continue
+		}
+		// Fields, 0-indexed:
+		//   0 sl  1 local_address  2 rem_address  3 st  4 tx/rx  ...
+		//   9 inode (1-extent count after the per-row ":" pieces)
+		// We split on whitespace; column 9 is the inode for both v4
+		// and v6 because the IP+port pair counts as one field each.
+		fields := strings.Fields(sc.Text())
+		if len(fields) < 10 {
+			continue
+		}
+		if fields[3] != "0A" { // TCP_LISTEN
+			continue
+		}
+		inode, err := strconv.ParseUint(fields[9], 10, 64)
+		if err != nil || inode != wantInode {
+			continue
+		}
+		local := fields[1]
+		sep := strings.IndexByte(local, ':')
+		if sep < 0 || len(local[:sep]) != ipHexLen {
+			return 0, nil, false, fmt.Errorf("malformed local_address %q in %s", local, path)
+		}
+		port64, err := strconv.ParseUint(local[sep+1:], 16, 16)
+		if err != nil {
+			return 0, nil, false, fmt.Errorf("parse port %q: %w", local[sep+1:], err)
+		}
+		ip, err := parseProcNetIPHex(local[:sep])
+		if err != nil {
+			return 0, nil, false, err
+		}
+		return uint16(port64), ip, true, nil
+	}
+	if err := sc.Err(); err != nil {
+		return 0, nil, false, err
+	}
+	return 0, nil, false, nil
+}
+
+// parseProcNetIPHex decodes the local_address IP component from
+// /proc/net/tcp{,6}.
+//
+// The kernel formats each 4-byte word of the address with %08X on the
+// __be32 storage — i.e., reads each network-order word as a host-endian
+// uint32 and prints it. On a little-endian host the bytes appear
+// reversed within each word vs. the network representation; on a
+// big-endian host they match it.
+//
+// Round-tripping via NativeEndian → BigEndian gives us the canonical
+// network-order bytes regardless of which we're running on.
+func parseProcNetIPHex(s string) (net.IP, error) {
+	if len(s) != 8 && len(s) != 32 {
+		return nil, fmt.Errorf("unexpected ip hex length %d", len(s))
+	}
+	buf, err := hex.DecodeString(s)
+	if err != nil {
+		return nil, fmt.Errorf("hex decode %q: %w", s, err)
+	}
+	for i := 0; i < len(buf); i += 4 {
+		word := binary.NativeEndian.Uint32(buf[i:])
+		binary.BigEndian.PutUint32(buf[i:], word)
+	}
+	return net.IP(buf), nil
 }
 
 // mirrorBindScope picks the host-side bind address: loopback if the agent

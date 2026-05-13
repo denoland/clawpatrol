@@ -301,16 +301,13 @@ func runRunChild() {
 
 	// Allow same-uid sibling processes (the relay supervisor in the host
 	// netns) to pidfd_getfd this process's listen sockets under yama
-	// ptrace_scope=1. Best-effort: not strictly required when yama is
-	// permissive, just makes the supervisor's socket inspection work.
-	//
-	// Known limitation: PR_SET_PTRACER is per-task and is not inherited
-	// across fork. If the wrapped command spawns a separate process that
-	// itself calls listen() (e.g., a shell wrapper that execs the real
-	// webhook server), yama under ptrace_scope=1 may block the
-	// supervisor's pidfd_getfd against that grandchild — we log a
-	// warning and skip auto-expose for that port. The agent's own
-	// listen() calls and any execve'd successor of this pid are covered.
+	// ptrace_scope=1. PR_SET_PTRACER survives execve but resets across
+	// fork(), so this only covers the agent's own listen() calls and
+	// any execve'd successor of this pid — fork descendants would lose
+	// it. The supervisor's peekAgentListener falls back to /proc-based
+	// inspection (same-uid, no ptrace) for that case, so this prctl is
+	// just a fast-path: when it works, we get the race-free pidfd path;
+	// when it doesn't, /proc still resolves the bound port.
 	if autoExpose {
 		_, _, _ = unix.RawSyscall6(unix.SYS_PRCTL,
 			unix.PR_SET_PTRACER, ptraceAny, 0, 0, 0, 0)
