@@ -115,8 +115,8 @@ func (m *Manager) Start(ctx context.Context, source string) (*Client, *pb.Manife
 }
 
 // LoadPlugins satisfies config.PluginLoader. Called from inside
-// config.LoadWithPluginLoader after the operational decode and
-// before pass-1 symbol building. For each plugin source: spawn the
+// config.Load after the operational decode and before pass-1
+// symbol building. For each plugin source: spawn the
 // subprocess, fetch the manifest, register virtual *config.Plugin
 // entries.
 //

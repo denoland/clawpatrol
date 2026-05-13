@@ -111,16 +111,11 @@ func newReqID() string {
 }
 
 // loadConfig parses the gateway HCL via the typed-block grammar and
-// compiles it into a runtime CompiledPolicy. When pluginMgr is
-// non-nil, any `plugin {}` block in the file spawns the named
-// subprocess and registers its declared types before policy
-// dispatch — Terraform-style external plugins.
-func loadConfig(path string, pluginMgr *extplugin.Manager) (*config.Gateway, *config.CompiledPolicy, error) {
-	var ploader config.PluginLoader
-	if pluginMgr != nil {
-		ploader = pluginMgr
-	}
-	gw, diags := config.LoadWithPluginLoader(path, ploader)
+// compiles it into a runtime CompiledPolicy. Plugin loading goes
+// through config's package-global PluginLoader, installed once at
+// process startup via config.SetPluginLoader.
+func loadConfig(path string) (*config.Gateway, *config.CompiledPolicy, error) {
+	gw, diags := config.Load(path)
 	if diags.HasErrors() {
 		return nil, nil, fmt.Errorf("%s", diags.Error())
 	}
@@ -307,10 +302,6 @@ type Gateway struct {
 	// transports memoizes one http.Transport per endpoint. Avoids the
 	// per-request allocation + idle-conn-pool reset of the old path.
 	transports sync.Map // *config.CompiledEndpoint -> *http.Transport
-	// pluginMgr supervises Terraform-style external plugin
-	// subprocesses. Lazily created on first config load that has
-	// `plugin {}` blocks; nil when no external plugins are in use.
-	pluginMgr *extplugin.Manager
 }
 
 // transportFor returns the cached http.Transport for ep, building it
@@ -406,7 +397,7 @@ func (g *Gateway) watchConfig(path string) {
 			continue
 		}
 		last = st.ModTime()
-		next, policy, err := loadConfig(path, g.pluginMgr)
+		next, policy, err := loadConfig(path)
 		if err != nil {
 			log.Printf("config reload: %v", err)
 			continue
@@ -2276,8 +2267,8 @@ func runGateway(args []string) {
 	cfgPath := rest[0]
 
 	startModelRefresh()
-	pluginMgr := extplugin.New(log.Default())
-	cfg, policy, err := loadConfig(cfgPath, pluginMgr)
+	config.SetPluginLoader(extplugin.New(log.Default()))
+	cfg, policy, err := loadConfig(cfgPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), "no such file") {
 			fmt.Fprintf(os.Stderr, "config file %q does not exist.\n\n%s\n", cfgPath, gatewayHelp)
@@ -2331,7 +2322,6 @@ func runGateway(args []string) {
 		agents:         NewAgentRegistry(),
 		hitl:           newHITLRegistry(sink),
 		onboard:        newOnboardRegistry(),
-		pluginMgr:      pluginMgr,
 	}
 	if *readOnly {
 		log.Printf("config: read-only mode (dashboard writes rejected)")

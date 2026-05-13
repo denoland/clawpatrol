@@ -17,18 +17,21 @@ import (
 // generated from the manifest while still giving rule authors the
 // usual `<facet>.<field>` selector syntax.
 //
-// The returned Matcher's activation builder pulls the action map out
-// of req.Meta (set by the EvaluateAction handler in the adapter)
-// and binds it under facetName so conditions like
-// `smtp.verb in ['MAIL','RCPT']` evaluate correctly.
-//
-// An empty condition yields a passthrough matcher — the same default
-// every built-in facet uses for empty rule conditions.
+// streamFields names the FACET_STREAM fields on the facet. They're
+// passed to match.CompileCondition as truncatablePaths so the
+// dispatcher's existing fail-closed-on-truncation gate applies to
+// plugin facets too: when the gateway's pullStream had to cap a
+// stream short of EOF, the EvaluateAction handler sets
+// Request.Truncated and runtime.MatchRequest auto-denies any rule
+// whose CEL condition reads the stream-typed bytes.
 //
 // The returned matcher additionally implements SubFieldReferencer
 // so the gateway adapter can decide, per evaluation, which
 // FACET_STREAM fields any rule on the endpoint will actually read.
-func newPluginFacetMatcher(facetName, condition string) (match.Matcher, error) {
+//
+// An empty condition yields a passthrough matcher — the same default
+// every built-in facet uses for empty rule conditions.
+func newPluginFacetMatcher(facetName, condition string, streamFields []string) (match.Matcher, error) {
 	if facetName == "" {
 		return nil, fmt.Errorf("plugin facet matcher: empty facet name")
 	}
@@ -48,7 +51,11 @@ func newPluginFacetMatcher(facetName, condition string) (match.Matcher, error) {
 		}
 		return map[string]any{facetName: m}
 	}
-	inner, err := match.CompileCondition(env, condition, buildAct, nil)
+	truncatable := make([]string, 0, len(streamFields))
+	for _, f := range streamFields {
+		truncatable = append(truncatable, facetName+"."+f)
+	}
+	inner, err := match.CompileCondition(env, condition, buildAct, nil, truncatable)
 	if err != nil {
 		return nil, err
 	}
@@ -70,6 +77,14 @@ type pluginMatcher struct {
 }
 
 func (m *pluginMatcher) Match(req *match.Request) bool { return m.inner.Match(req) }
+
+// InspectsTruncatableFacet forwards the inner CEL matcher's
+// answer. The dispatcher uses it together with Request.Truncated
+// to fail-close any rule that reads a stream-typed field on a
+// request the gateway had to cap mid-pull.
+func (m *pluginMatcher) InspectsTruncatableFacet() bool {
+	return m.inner.InspectsTruncatableFacet()
+}
 
 // References preserves whatever the inner matcher reports so the
 // gateway's existing body-buffering check (top-level identifier

@@ -32,6 +32,11 @@ type pluginFacet struct {
 	// declared optional. The adapter pre-fills missing entries
 	// with the kind-zero value before CEL evaluation.
 	optionalFields map[string]bool
+	// streamFields lists the FACET_STREAM field names. Passed to
+	// the CEL compiler as truncatablePaths so the dispatcher's
+	// fail-closed-on-truncation gate (req.Truncated +
+	// matcher.InspectsTruncatableFacet) applies to plugin facets.
+	streamFields []string
 }
 
 func (p *pluginFacet) Name() string                          { return p.name }
@@ -44,7 +49,7 @@ func (p *pluginFacet) PrepareRequest(*match.Request)         {}
 func (p *pluginFacet) Report(*match.Request) map[string]any  { return nil }
 
 func (p *pluginFacet) NewMatcher(condition string) (match.Matcher, error) {
-	return newPluginFacetMatcher(p.shortName, condition)
+	return newPluginFacetMatcher(p.shortName, condition, p.streamFields)
 }
 
 // registerFacet synthesizes a pluginFacet from a FacetDecl and
@@ -60,10 +65,14 @@ func registerFacet(pluginName string, decl *pb.FacetDecl) *pluginFacet {
 	}
 	kindByField := make(map[string]pb.FacetKind, len(decl.Fields))
 	optional := make(map[string]bool)
+	var streams []string
 	for _, f := range decl.Fields {
 		kindByField[f.Name] = f.Kind
 		if f.Optional {
 			optional[f.Name] = true
+		}
+		if f.Kind == pb.FacetKind_FACET_STREAM {
+			streams = append(streams, f.Name)
 		}
 	}
 	pf := &pluginFacet{
@@ -72,6 +81,7 @@ func registerFacet(pluginName string, decl *pb.FacetDecl) *pluginFacet {
 		reportFields:   protoFacetFieldsToSpec(decl.Fields),
 		kindByField:    kindByField,
 		optionalFields: optional,
+		streamFields:   streams,
 	}
 	facet.Register(pf)
 	return pf

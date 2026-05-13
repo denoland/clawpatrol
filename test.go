@@ -59,9 +59,8 @@ func testCmd(args []string) (stdout, stderr string, code int) {
 	}
 	cfgPath, target := args[0], args[1]
 
-	pluginMgr := extplugin.New(nil)
-	defer pluginMgr.Stop()
-	_, policy, err := loadConfig(cfgPath, pluginMgr)
+	config.SetPluginLoader(extplugin.New(nil))
+	_, policy, err := loadConfig(cfgPath)
 	if err != nil {
 		return "", fmt.Sprintf("load config: %v", err), 2
 	}

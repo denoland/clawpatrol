@@ -350,6 +350,7 @@ func handleEvaluate(ctx context.Context, ch *runtime.ConnHandle, ev *pb.Evaluate
 	// endpoint references the field, then pull StreamChunks from the
 	// plugin until the cap is met or eof. After pulling, send a
 	// StreamCancel so the plugin can drop its source reader.
+	var truncated bool
 	if pf != nil && len(ev.Streams) > 0 {
 		needed := streamFieldsNeeded(ch.Endpoint.Rules, pf.shortName)
 		for fieldName, handle := range ev.Streams {
@@ -360,7 +361,10 @@ func handleEvaluate(ctx context.Context, ch *runtime.ConnHandle, ev *pb.Evaluate
 			if needed[fieldName] {
 				cap = streamCapBytesForRule
 			}
-			data := pullStream(ctx, doSend, streamReply, handle, cap)
+			data, hit := pullStream(ctx, doSend, streamReply, handle, cap)
+			if hit {
+				truncated = true
+			}
 			// Always cancel after we've taken what we need so the
 			// plugin can release its source. Safe even if the stream
 			// already eof-ed; the SDK ignores cancels for handles
@@ -382,13 +386,17 @@ func handleEvaluate(ctx context.Context, ch *runtime.ConnHandle, ev *pb.Evaluate
 	}
 
 	// Build a match.Request rich enough for the matcher AND for the
-	// HITL prompt fields a human approver might render.
+	// HITL prompt fields a human approver might render. Truncated
+	// is set when at least one stream field hit its cap before
+	// EOF — runtime.MatchRequest's fail-closed gate then auto-denies
+	// any rule whose matcher reads a stream-typed field.
 	req := &match.Request{
-		Family: ch.Endpoint.Family,
-		PeerIP: ch.PeerIP,
-		Method: stringField(action, "verb"),
-		URL:    &url.URL{Host: ch.UpstreamHost, Path: ev.Summary},
-		Meta:   action,
+		Family:    ch.Endpoint.Family,
+		PeerIP:    ch.PeerIP,
+		Method:    stringField(action, "verb"),
+		URL:       &url.URL{Host: ch.UpstreamHost, Path: ev.Summary},
+		Meta:      action,
+		Truncated: truncated,
 	}
 
 	rule := runtime.MatchRequest(ch.Endpoint, req)
@@ -501,11 +509,13 @@ func streamFieldsNeeded(rules []*config.CompiledRule, facetShortName string) map
 
 // pullStream issues StreamRead requests against the plugin until
 // either the cap is reached or the stream eofs. Returns the bytes
-// collected (truncated to cap). Errors and read failures land here
-// as eof — the gateway logs whatever it got.
-func pullStream(ctx context.Context, doSend func(*pb.ConnMessage) error, streamReply func(handle string) <-chan *pb.StreamChunk, handle string, cap int) []byte {
+// collected and a truncated flag set when we stopped because of the
+// cap (and not because the stream eof'd). Errors and read failures
+// land here as eof, not truncation — we have no way to tell from
+// outside whether the plugin had more bytes to give.
+func pullStream(ctx context.Context, doSend func(*pb.ConnMessage) error, streamReply func(handle string) <-chan *pb.StreamChunk, handle string, cap int) (data []byte, truncated bool) {
 	if cap <= 0 {
-		return nil
+		return nil, false
 	}
 	out := make([]byte, 0, cap)
 	for len(out) < cap {
@@ -515,31 +525,37 @@ func pullStream(ctx context.Context, doSend func(*pb.ConnMessage) error, streamR
 		}
 		ch := streamReply(handle)
 		if ch == nil {
-			return out
+			return out, false
 		}
 		if err := doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_StreamRead{StreamRead: &pb.StreamRead{
 			Handle: handle, MaxBytes: uint32(want),
 		}}}); err != nil {
-			return out
+			return out, false
 		}
 		select {
 		case chunk, ok := <-ch:
 			if !ok || chunk == nil {
-				return out
+				return out, false
 			}
 			if n := cap - len(out); n < len(chunk.Payload) {
 				out = append(out, chunk.Payload[:n]...)
-				return out
+				// We stopped because cap was reached; the plugin
+				// might still have had more (`!chunk.Eof`) or
+				// might not (`chunk.Eof`). When the chunk itself
+				// signalled eof and exactly fit, no truncation —
+				// but we capped strictly less, so there's at
+				// least one buffered byte we threw away.
+				return out, true
 			}
 			out = append(out, chunk.Payload...)
 			if chunk.Eof {
-				return out
+				return out, false
 			}
 		case <-ctx.Done():
-			return out
+			return out, false
 		}
 	}
-	return out
+	return out, true
 }
 
 // zeroForKind returns the JSON-shaped zero value for a facet field

@@ -210,16 +210,42 @@ type PluginSource struct {
 	Source string `hcl:"source"`
 }
 
-// PluginLoader is the gateway-side hook that LoadWithPluginManager
-// calls before policy decoding. It spawns each declared plugin
-// subprocess and registers the manifest types in the global plugin
-// registry. Returning hcl.Diagnostics with errors aborts the load.
+// PluginLoader is the gateway-side hook the loader calls before
+// policy decoding. It spawns each declared plugin subprocess and
+// registers the manifest types in the global plugin registry.
+// Returning hcl.Diagnostics with errors aborts the load.
 //
 // Implemented by *extplugin.Manager — the package-cycle-safe seam
 // (config can't import extplugin since extplugin imports config).
 type PluginLoader interface {
 	LoadPlugins(specs []PluginSource) hcl.Diagnostics
 }
+
+// pluginLoader is the package-global hook every Load call uses.
+// main.go installs the real *extplugin.Manager via SetPluginLoader
+// at startup; the default is a no-op that quietly accepts configs
+// with no `plugin {}` blocks. Tests that exercise plugin loading
+// install their own loader the same way.
+var pluginLoader PluginLoader = noopPluginLoader{}
+
+// SetPluginLoader installs the loader used by every subsequent Load
+// / LoadBytes call. Pass nil to revert to the default no-op.
+func SetPluginLoader(p PluginLoader) {
+	if p == nil {
+		pluginLoader = noopPluginLoader{}
+		return
+	}
+	pluginLoader = p
+}
+
+// noopPluginLoader is the zero-cost default. Configs without
+// `plugin {}` blocks load identically against it; configs with
+// such blocks pass them through without spawning anything, which
+// then surfaces as an "unknown endpoint type" diagnostic for the
+// referencing endpoint blocks.
+type noopPluginLoader struct{}
+
+func (noopPluginLoader) LoadPlugins([]PluginSource) hcl.Diagnostics { return nil }
 
 // Profile is the lowered shape of a profile "<name>" {} block. Name
 // is the block's single label (set by the loader). Endpoints is the
@@ -241,18 +267,11 @@ type profileBody struct {
 // check diagnostics first — a non-nil Gateway can still carry errors
 // (some recovery is best-effort).
 //
-// Load ignores any `plugin {}` blocks in the file. Callers that
-// support external plugins should use LoadWithPluginLoader instead.
+// Plugin loading goes through the package-global PluginLoader
+// installed via SetPluginLoader. main.go installs the real
+// *extplugin.Manager once at startup; the default is a no-op so
+// non-plugin configs and tests need no setup.
 func Load(path string) (*Gateway, hcl.Diagnostics) {
-	return LoadWithPluginLoader(path, nil)
-}
-
-// LoadWithPluginLoader is Load with a hook for spawning Terraform-
-// style external plugins before policy decode. Pass nil to skip
-// plugin loading (matches Load's behaviour); pass a *extplugin.Manager
-// to spawn plugin subprocesses and register their declared types in
-// the plugin registry before pass-1 symbol building runs.
-func LoadWithPluginLoader(path string, ploader PluginLoader) (*Gateway, hcl.Diagnostics) {
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return nil, hcl.Diagnostics{{
@@ -261,22 +280,12 @@ func LoadWithPluginLoader(path string, ploader PluginLoader) (*Gateway, hcl.Diag
 			Detail:   err.Error(),
 		}}
 	}
-	return loadBytesInternal(src, path, ploader)
+	return LoadBytes(src, path)
 }
 
 // LoadBytes is Load over an in-memory buffer. Used by tests so
 // fixtures don't need to round-trip through the filesystem.
 func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
-	return loadBytesInternal(src, filename, nil)
-}
-
-// LoadBytesWithPluginLoader mirrors LoadBytes for callers that own a
-// plugin loader (typically tests of the external-plugin path).
-func LoadBytesWithPluginLoader(src []byte, filename string, ploader PluginLoader) (*Gateway, hcl.Diagnostics) {
-	return loadBytesInternal(src, filename, ploader)
-}
-
-func loadBytesInternal(src []byte, filename string, ploader PluginLoader) (*Gateway, hcl.Diagnostics) {
 	parser := hclparse.NewParser()
 	file, diags := parser.ParseHCL(src, filename)
 	if diags.HasErrors() {
@@ -304,13 +313,14 @@ func loadBytesInternal(src []byte, filename string, ploader PluginLoader) (*Gate
 	}
 
 	// Spawn external plugins before we look at policy blocks so the
-	// types they declare are visible to pass-1 symbol building.
-	if ploader != nil && len(gw.Plugins) > 0 {
-		if d := ploader.LoadPlugins(gw.Plugins); d.HasErrors() {
+	// types they declare are visible to pass-1 symbol building. The
+	// loader is package-global; see SetPluginLoader.
+	if len(gw.Plugins) > 0 {
+		d := pluginLoader.LoadPlugins(gw.Plugins)
+		if d.HasErrors() {
 			return gw, append(diags, d...)
-		} else {
-			diags = append(diags, d...)
 		}
+		diags = append(diags, d...)
 	}
 
 	diags = append(diags, validateOperational(gw)...)
