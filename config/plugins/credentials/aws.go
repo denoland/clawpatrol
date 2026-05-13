@@ -94,7 +94,7 @@ func mintEKSBearerToken(ctx context.Context, akid, secret, sessionToken, region,
 	}
 	presigner := sts.NewPresignClient(sts.NewFromConfig(cfg), func(o *sts.PresignOptions) {
 		o.ClientOptions = append(o.ClientOptions, func(co *sts.Options) {
-			co.APIOptions = append(co.APIOptions, eksClusterHeaderMiddleware(cluster))
+			co.APIOptions = append(co.APIOptions, eksPresignMiddleware(cluster))
 		})
 	})
 	out, err := presigner.PresignGetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
@@ -104,20 +104,32 @@ func mintEKSBearerToken(ctx context.Context, akid, secret, sessionToken, region,
 	return "k8s-aws-v1." + base64.RawURLEncoding.EncodeToString([]byte(out.URL)), nil
 }
 
-// eksClusterHeaderMiddleware stamps the `x-k8s-aws-id` header on the
-// outbound STS request before the SigV4 signer reads headers to build
-// the canonical request. The signer runs in the Finalize phase, so
-// adding the header in Build (After) guarantees it's signed.
-func eksClusterHeaderMiddleware(cluster string) func(*smithymiddleware.Stack) error {
+// eksPresignMiddleware stamps both the `x-k8s-aws-id` header (so the
+// canonical request includes the cluster scope EKS pins) and the
+// `X-Amz-Expires=60` query parameter required by aws-iam-authenticator
+// before the SigV4 signer reads headers / query to build the canonical
+// request. The SDK's PresignHTTP intentionally omits X-Amz-Expires;
+// aws-iam-authenticator (and EKS's webhook frontend) reject any
+// presigned URL whose query string has no expiration — the request
+// then comes back as 401 Unauthorized from the apiserver.
+//
+// The signer runs in Finalize, so mutating the request in Build
+// (After) guarantees both pieces are part of the signature.
+func eksPresignMiddleware(cluster string) func(*smithymiddleware.Stack) error {
 	return func(stack *smithymiddleware.Stack) error {
 		return stack.Build.Add(smithymiddleware.BuildMiddlewareFunc(
-			"clawpatrolEKSClusterHeader",
+			"clawpatrolEKSPresign",
 			func(ctx context.Context, in smithymiddleware.BuildInput, next smithymiddleware.BuildHandler) (smithymiddleware.BuildOutput, smithymiddleware.Metadata, error) {
 				r, ok := in.Request.(*smithyhttp.Request)
 				if !ok {
 					return smithymiddleware.BuildOutput{}, smithymiddleware.Metadata{}, fmt.Errorf("aws_credential: unexpected smithy request type %T", in.Request)
 				}
 				r.Header.Set("X-K8s-Aws-Id", cluster)
+				// aws-iam-authenticator caps presigned URL age at
+				// 60s; matching aws-cli's `eks get-token` shape.
+				q := r.URL.Query()
+				q.Set("X-Amz-Expires", "60")
+				r.URL.RawQuery = q.Encode()
 				return next.HandleBuild(ctx, in)
 			},
 		), smithymiddleware.After)

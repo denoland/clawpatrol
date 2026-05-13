@@ -71,6 +71,9 @@ func TestAWSCredentialSignHTTPRequestEmitsEKSBearer(t *testing.T) {
 	if got := q.Get("X-Amz-Credential"); !strings.HasPrefix(got, "AKIDEXAMPLE/") {
 		t.Errorf("X-Amz-Credential = %q, want prefix AKIDEXAMPLE/", got)
 	}
+	if got := q.Get("X-Amz-Expires"); got != "60" {
+		t.Errorf("X-Amz-Expires = %q, want 60 (aws-iam-authenticator rejects presigned URLs without an expiration)", got)
+	}
 }
 
 func TestAWSCredentialSignHTTPRequestRejectsNonEKSEndpoint(t *testing.T) {
