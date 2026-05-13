@@ -851,7 +851,9 @@ func (w *webMux) apiProfiles(rw http.ResponseWriter, _ *http.Request) {
 // RuleSummary is the JSON shape the dashboard renders for each rule.
 // It flattens a CompiledRule plus its enclosing endpoint and profile
 // context so the table view doesn't need to walk the policy graph
-// itself.
+// itself. FireAndForget mirrors the rule plugin's `fire_and_forget`
+// HCL attribute, surfaced so the rules panel can render the badge
+// alongside the verdict.
 type RuleSummary struct {
 	Name          string                `json:"name"`
 	Family        string                `json:"family"` // "http" | "sql" | "k8s"
