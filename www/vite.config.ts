@@ -11,7 +11,16 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      "/api": "http://localhost:8080",
+      "/api": {
+        target: "http://localhost:8080",
+        headers: {
+          // Local dev only: the gateway's tailnet gate trusts this
+          // header when the request comes from loopback, which lets
+          // `npm run dev` talk to the gateway without onboarding a
+          // real wg/tailnet device.
+          "Tailscale-User-Login": "dev@local",
+        },
+      },
     },
   },
 });

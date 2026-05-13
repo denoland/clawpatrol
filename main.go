@@ -2254,6 +2254,7 @@ func runGateway(args []string) {
 	fs := flag.NewFlagSet("gateway", flag.ExitOnError)
 	readOnly := fs.Bool("read-only-config", false,
 		"reject dashboard writes to the HCL config file")
+	seedHook := devSeedAttach(fs)
 	fs.Usage = func() { fmt.Fprintln(os.Stderr, gatewayHelp) }
 	_ = fs.Parse(args)
 	rest := fs.Args()
@@ -2387,6 +2388,8 @@ func runGateway(args []string) {
 	}
 
 	startTelemetry(g)
+
+	seedHook.Run(context.Background(), g)
 
 	if cfg.InfoListen != "" {
 		mux := newWebMux(g, cfg.CADir, cfg.Join(), cfg.PublicURL)
