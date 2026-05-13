@@ -604,11 +604,22 @@ func (s *WGServer) loadPeers() map[string]string {
 	if s.db == nil {
 		return out
 	}
-	// Ephemeral peers are owned by client processes that exit when the
-	// gateway restarts. Purge them so they don't accumulate in the WG
-	// trie or leak device rows via SetExternalIPs.
-	_, _ = s.db.Exec("DELETE FROM devices WHERE id IN (SELECT ip FROM wg_peers WHERE ephemeral=1)")
-	_, _ = s.db.Exec("DELETE FROM wg_peers WHERE ephemeral=1")
+	// Purge ephemeral peers whose parent device no longer exists — those
+	// are from crashed/killed `clawpatrol run` processes that never sent
+	// DELETE. Ephemeral peers with a live parent_ip survive so a gateway
+	// restart doesn't strand a still-running `clawpatrol run`.
+	_, _ = s.db.Exec(`
+		DELETE FROM devices WHERE id IN (
+			SELECT ip FROM wg_peers
+			WHERE ephemeral=1
+			AND parent_ip NOT IN (SELECT id FROM devices)
+		)
+	`)
+	_, _ = s.db.Exec(`
+		DELETE FROM wg_peers
+		WHERE ephemeral=1
+		AND parent_ip NOT IN (SELECT id FROM devices)
+	`)
 	rows, err := s.db.Query("SELECT pubkey, ip FROM wg_peers")
 	if err != nil {
 		return out
