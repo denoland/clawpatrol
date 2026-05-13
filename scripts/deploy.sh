@@ -59,13 +59,10 @@ say "build linux/amd64 (stripped)"
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -trimpath -o dist/gateway-linux-amd64 .
 ls -lh dist/gateway-linux-amd64 | awk '{print "  -- size:",$5}'
 
-# --- 2. ensure CA ---------------------------------------------------------
-if [[ ! -f ca/ca.crt ]]; then
-  say "init local CA"
-  go run . -init-ca ./ca
-fi
+# --- 2. render config + scripts ------------------------------------------
+# (CA is lazy-minted into the gateway's sqlite DB on first boot — no
+# need to pre-build CA material locally and ship it. PR #222.)
 
-# --- 3. render config + scripts ------------------------------------------
 # Default PUBLIC_URL prefers the funnel hostname (https://<host>.<tailnet>.ts.net).
 # Fall back to the raw IP only if funnel isn't enabled. We learn the
 # tailnet hostname after `tailscale up` so this is computed lazily on
@@ -118,9 +115,7 @@ HCL
 esac
 
 # v14 typed-block grammar: credentials + endpoints + profile, instead
-# of the legacy `integrations = [...]` shortcut. Operator-managed
-# device "<ip>" {} blocks land at the bottom of the file via the
-# dashboard's per-device editor.
+# of the legacy `integrations = [...]` shortcut.
 cat > dist/deno.hcl <<EOF
 listen      = "0.0.0.0:${PORT}"
 info_listen = "0.0.0.0:8080"
@@ -283,14 +278,12 @@ LimitNOFILE=65536
 WantedBy=multi-user.target
 EOF
 
-# --- 4. ship (skip identical via rsync checksum; temp-file-rename handles
+# --- 3. ship (skip identical via sha256; temp-file-rename handles
 #         the running-binary "Text file busy" trap automatically) --------
 say "ship to ${TARGET}:${REMOTE_DIR}"
-remote "mkdir -p ${REMOTE_DIR}/ca"
+remote "mkdir -p ${REMOTE_DIR}/ca ${REMOTE_DIR}/oauth"
 ship_if_changed dist/gateway-linux-amd64 "${REMOTE_DIR}/gateway"
 remote "chmod +x ${REMOTE_DIR}/gateway"
-ship_if_changed ca/ca.crt "${REMOTE_DIR}/ca/ca.crt"
-ship_if_changed ca/ca.key "${REMOTE_DIR}/ca/ca.key"
 ship_if_changed dist/deno.hcl "${REMOTE_DIR}/deno.hcl"
 ship_if_changed dist/remote-modules.sh "${REMOTE_DIR}/remote-modules.sh"
 ship_if_changed dist/remote-nft.sh "${REMOTE_DIR}/remote-nft.sh"
@@ -334,4 +327,4 @@ remote '
 
 say "done."
 echo "  client mac:  tailscale set --exit-node=${HOSTNAME_TAG}"
-echo "  trust CA:    sudo security add-trusted-cert -d -p ssl -k /Library/Keychains/System.keychain ca/ca.crt"
+echo "  trust CA:    clawpatrol login --name=${HOSTNAME_TAG}   # fetches CA from the running gateway"
