@@ -169,7 +169,8 @@ Is part of the clawpatrol plugin API.
 Schema is intentionally empty: access key id and secret access key
 (and optional session token) live in the secret store as named
 slots, filled via the dashboard or CLAWPATROL_SECRET_<NAME>_<SLOT>
-env vars. Service + region come from the endpoint at request time.
+env vars. Cluster + region come from the kubernetes endpoint at
+request time.
 
 _No configurable attributes._
 
@@ -335,26 +336,7 @@ credential "telegram_bot_token" "example" {}
 
 Block syntax: `endpoint "<type>" "<name>" { ... }`
 
-Registered types: [`aws`](#endpoint-aws), [`clickhouse_https`](#endpoint-clickhousehttps), [`clickhouse_native`](#endpoint-clickhousenative), [`https`](#endpoint-https), [`kubernetes`](#endpoint-kubernetes), [`openai_codex_https`](#endpoint-openaicodexhttps), [`postgres`](#endpoint-postgres), [`ssh`](#endpoint-ssh).
-
-### `endpoint "aws" "<name>"`
-
-Family: `http`.
-
-| Attribute | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `hosts` | `[]string` | yes |  |
-| `service` | `string` | yes |  |
-| `region` | `string` | yes |  |
-| `credential` | `ref(credential)` | no |  |
-
-```hcl
-endpoint "aws" "example" {
-  hosts = ["api.example.com"]
-  service = "example"
-  region = "example"
-}
-```
+Registered types: [`clickhouse_https`](#endpoint-clickhousehttps), [`clickhouse_native`](#endpoint-clickhousenative), [`https`](#endpoint-https), [`kubernetes`](#endpoint-kubernetes), [`openai_codex_https`](#endpoint-openaicodexhttps), [`postgres`](#endpoint-postgres), [`ssh`](#endpoint-ssh).
 
 ### `endpoint "clickhouse_https" "<name>"`
 
@@ -427,6 +409,15 @@ endpoint "https" "example" {
 
 ### `endpoint "kubernetes" "<name>"`
 
+Is part of the clawpatrol plugin API.
+
+ClusterName + Region are EKS auth parameters: when the bound
+credential is `aws_credential`, the gateway presigns an STS
+GetCallerIdentity URL scoped to (region, cluster_name) and stamps
+the result as a `k8s-aws-v1.<…>` bearer. Leave both unset for
+self-hosted clusters with a non-EKS credential (bearer_token,
+mtls_credential).
+
 Family: `k8s`.
 
 | Attribute | Type | Required | Description |
@@ -435,6 +426,8 @@ Family: `k8s`.
 | `server` | `string` | no |  |
 | `ca_cert` | `string` | no |  |
 | `description` | `string` | no |  |
+| `cluster_name` | `string` | no |  |
+| `region` | `string` | no |  |
 | `credential` | `ref(credential)` | no |  |
 
 ```hcl
