@@ -491,7 +491,7 @@ func devSeedStatus(r *rand.Rand, ep devSeedEndpoint) (int, string, string) {
 	case n < 99:
 		return 502, "error", "upstream 502"
 	default:
-		return 0, "deny", "policy: deny by default"
+		return 403, "deny", "policy: deny by default"
 	}
 }
 
