@@ -548,7 +548,11 @@ func (w *webMux) apiOnboardStart(rw http.ResponseWriter, r *http.Request) {
 }
 
 // apiOnboardLookup returns user_code session info for the dashboard
-// approval page. No secrets exposed (just code + age).
+// approval page. No secrets exposed (just code + age). Includes the
+// gateway's CA SHA-256 fingerprint so the approving operator can
+// compare it against what the CLI prints on the new device — out-
+// of-band confirmation that no on-path attacker substituted the CA
+// the CLI just fetched over plain HTTP.
 func (w *webMux) apiOnboardLookup(rw http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 	s := w.onboard.byUserCode(code)
@@ -557,9 +561,10 @@ func (w *webMux) apiOnboardLookup(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(rw, map[string]any{
-		"user_code":  s.userCode,
-		"approved":   s.approved,
-		"created_at": s.created.Unix(),
+		"user_code":      s.userCode,
+		"approved":       s.approved,
+		"created_at":     s.created.Unix(),
+		"ca_fingerprint": w.caFingerprint(),
 	})
 }
 

@@ -4,15 +4,18 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"database/sql"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"math/big"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -149,4 +152,40 @@ func mintAndStoreCA(db *sql.DB) (*CertCache, error) {
 		return nil, fmt.Errorf("ca insert: %w", err)
 	}
 	return parseCertCache(certPEM, keyPEM)
+}
+
+// caFingerprintFromCert returns the operator-readable SHA-256
+// fingerprint of the DER-encoded certificate, formatted as
+// uppercase hex byte pairs separated by colons (matches
+// `openssl x509 -fingerprint -sha256`). Surfaced on the CLI at
+// `clawpatrol join` and on the dashboard approval page so the
+// operator can confirm out-of-band that the CA the CLI fetched
+// over plain HTTP matches the one the gateway actually serves.
+func caFingerprintFromCert(cert *x509.Certificate) string {
+	sum := sha256.Sum256(cert.Raw)
+	enc := strings.ToUpper(hex.EncodeToString(sum[:]))
+	var b strings.Builder
+	b.Grow(len(enc) + len(enc)/2)
+	for i := 0; i < len(enc); i += 2 {
+		if i > 0 {
+			b.WriteByte(':')
+		}
+		b.WriteString(enc[i : i+2])
+	}
+	return b.String()
+}
+
+// caFingerprintFromPEM decodes the first PEM CERTIFICATE block
+// and returns its SHA-256 fingerprint in the colon-separated form
+// caFingerprintFromCert produces.
+func caFingerprintFromPEM(pemBytes []byte) (string, error) {
+	block, _ := pem.Decode(pemBytes)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return "", errors.New("expected PEM CERTIFICATE block")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", err
+	}
+	return caFingerprintFromCert(cert), nil
 }

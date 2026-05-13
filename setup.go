@@ -110,17 +110,25 @@ func runJoin(args []string) {
 				reason)
 		}
 	}
-	// Fetch CA + write shell rc BEFORE the VPN goes up. Once
-	// `wg-quick up` flips the default route through the gateway,
-	// reaching the gateway's public URL goes via the tunnel — which
-	// can't carry traffic until the gateway has internet egress
-	// configured (MASQUERADE etc). The CA is small + cheap and the
-	// onboard endpoints are reachable on the public path.
-	setup, err := postJoinSetup(gatewayURL, *caOut, *skipTrust)
+	// Fetch CA BEFORE the VPN goes up. Once `wg-quick up` flips
+	// the default route through the gateway, reaching the
+	// gateway's public URL goes via the tunnel — which can't
+	// carry traffic until the gateway has internet egress
+	// configured (MASQUERADE etc). The CA is small + cheap and
+	// the onboard endpoints are reachable on the public path.
+	//
+	// Trust install + shell-rc updates are deferred to
+	// finishJoinSetup, which runs only after the operator's
+	// dashboard approval click. Until that point an attacker
+	// on-path could have substituted the CA we just fetched
+	// over plain HTTP. The approval flow shows the gateway's
+	// real CA fingerprint on the dashboard; the operator
+	// compares it against what the CLI prints below.
+	setup, err := preJoinFetchCA(gatewayURL, *caOut)
 	if err != nil {
 		fail("ca fetch: %v", err)
 	}
-	wgMode, err := onboardViaDeviceFlow(gatewayURL, *wholeMachine, *profile, *hostname, setup)
+	wgMode, err := onboardViaDeviceFlow(gatewayURL, *wholeMachine, *profile, *hostname, &setup, *skipTrust)
 	if err != nil {
 		fail("join: %v", err)
 	}
@@ -139,25 +147,34 @@ func runJoin(args []string) {
 // renders a single coherent block instead of interleaving "✓ ca…" /
 // "⚠ shell rc…" lines around the device-flow output.
 type joinSetup struct {
-	caInstalled bool   // installed into system trust
-	caPath      string // on-disk path to the fetched cert
-	caHint      string // manual-trust hint when caInstalled == false
-	shellRC     bool   // shell rc updated with `eval "$(clawpatrol env)"`
+	caInstalled   bool   // installed into system trust
+	caPath        string // on-disk path to the fetched cert
+	caHint        string // manual-trust hint when caInstalled == false
+	caFingerprint string // SHA-256 of the fetched cert (operator-readable)
+	shellRC       bool   // shell rc updated with `eval "$(clawpatrol env)"`
 }
 
-// postJoinSetup downloads the gateway's CA, installs it into the
-// system trust store (best-effort), and appends the env shim to the
-// shell rc. Returns a summary the caller prints once the onboarding
-// flow completes.
-func postJoinSetup(gateway, caDir string, skipTrust bool) (joinSetup, error) {
+// preJoinFetchCA downloads the gateway's CA into caDir and computes
+// its SHA-256 fingerprint, but stops short of installing it into
+// the system trust store. Trust install + shell-rc updates land in
+// finishJoinSetup, which runs only once the operator has approved
+// the device on the dashboard.
+//
+// Splitting the flow this way puts the visual-fingerprint compare
+// in the loop: an on-path attacker who served a substitute CA over
+// plain HTTP loses because the dashboard surfaces the gateway's
+// real fingerprint and the operator can refuse to approve.
+func preJoinFetchCA(gateway, caDir string) (joinSetup, error) {
 	var s joinSetup
 	if err := os.MkdirAll(caDir, 0o700); err != nil {
 		return s, fmt.Errorf("mkdir %s: %w", caDir, err)
 	}
 	s.caPath = filepath.Join(caDir, "ca.crt")
-	if err := fetchCAHTTP(gateway, s.caPath); err != nil {
+	fp, err := fetchCAHTTP(gateway, s.caPath)
+	if err != nil {
 		return s, fmt.Errorf("fetch CA: %w", err)
 	}
+	s.caFingerprint = fp
 	// Persist the dashboard URL so subsequent `clawpatrol env` /
 	// `clawpatrol run` invocations can fetch the env push-down list
 	// from the gateway instead of iterating compiled-in plugins.
@@ -165,6 +182,18 @@ func postJoinSetup(gateway, caDir string, skipTrust bool) (joinSetup, error) {
 	// when this file is missing.
 	_ = os.WriteFile(filepath.Join(caDir, "gateway"),
 		[]byte(strings.TrimRight(gateway, "/")+"\n"), 0o644)
+	return s, nil
+}
+
+// finishJoinSetup runs the trust-install + shell-rc steps that
+// were held back from preJoinFetchCA. The caller invokes this
+// only after the operator's dashboard approval has confirmed the
+// CA fingerprint matches — so the CA we install can't be one
+// substituted by an on-path attacker at fetch time.
+func finishJoinSetup(s *joinSetup, skipTrust bool) {
+	if s.caPath == "" {
+		return
+	}
 	if !skipTrust {
 		if err := installCATrust(s.caPath); err != nil {
 			s.caHint = manualTrustHint(s.caPath)
@@ -177,25 +206,36 @@ func postJoinSetup(gateway, caDir string, skipTrust bool) (joinSetup, error) {
 	if err := installShellRC(); err == nil {
 		s.shellRC = true
 	}
-	return s, nil
 }
 
-func fetchCAHTTP(gateway, dst string) error {
+// fetchCAHTTP downloads the CA from gateway, writes it to dst,
+// and returns the SHA-256 fingerprint of the cert it received.
+// The fingerprint flows back to the CLI's stdout so the operator
+// can compare it against what the dashboard shows during the
+// approval step.
+func fetchCAHTTP(gateway, dst string) (string, error) {
 	url := strings.TrimRight(gateway, "/") + "/ca.crt"
 	c := &http.Client{Timeout: 10 * time.Second}
 	resp, err := c.Get(url)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("status %d", resp.StatusCode)
+		return "", fmt.Errorf("status %d", resp.StatusCode)
 	}
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return os.WriteFile(dst, b, 0o644)
+	fp, err := caFingerprintFromPEM(b)
+	if err != nil {
+		return "", fmt.Errorf("parse CA: %w", err)
+	}
+	if err := os.WriteFile(dst, b, 0o644); err != nil {
+		return "", err
+	}
+	return fp, nil
 }
 
 func runLogin(args []string) {
@@ -619,7 +659,14 @@ func wgAddressFromConf(conf string) string {
 // approver can still override it from the dashboard. hostname, when
 // non-empty, overrides os.Hostname() for the device name registered
 // with the gateway.
-func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname string, setup joinSetup) (bool, error) {
+//
+// setup carries the CA fetched by preJoinFetchCA. Once approval
+// lands, finishJoinSetup installs that CA into the system trust
+// store — the approval click is the operator's confirmation that
+// the fingerprint the dashboard showed matched what the CLI
+// printed, so the CA we install can't be one a MITM substituted
+// during the unauthenticated /ca.crt fetch.
+func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname string, setup *joinSetup, skipTrust bool) (bool, error) {
 	gateway = strings.TrimRight(gateway, "/")
 	cli := &http.Client{Timeout: 30 * time.Second}
 
@@ -667,6 +714,15 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	fmt.Printf("    %s\n", start.UserCode)
 	fmt.Println()
 	fmt.Println(start.VerifyURL)
+	// One-line CA fingerprint after the verify URL. The
+	// dashboard's approval page shows the same value next to
+	// the user_code — operator visually confirms they match
+	// before clicking approve, blocking an on-path swap of the
+	// CA the CLI just fetched over plain HTTP.
+	if setup != nil && setup.caFingerprint != "" {
+		fmt.Println()
+		fmt.Printf("CA fingerprint: %s\n", setup.caFingerprint)
+	}
 	fmt.Println()
 	tryOpen(start.VerifyURL)
 
@@ -713,6 +769,13 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		return false, fmt.Errorf("timed out waiting for approval")
 	}
 	fmt.Println("Approved.")
+	// Approval click ⇒ operator visually confirmed the CA
+	// fingerprint on the dashboard matched what the CLI
+	// printed. Only now is it safe to push the fetched CA
+	// into the system trust store. Doing this earlier would
+	// have meant trusting a CA the operator hadn't vouched
+	// for, which is exactly the on-path attack we're closing.
+	finishJoinSetup(setup, skipTrust)
 	// Persist the per-peer bearer the gateway minted alongside the
 	// wg conf. Lives next to ca.crt — same dir the env-pushdown
 	// fetcher reads. Best-effort; missing file means env-pushdown
@@ -774,7 +837,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		} else {
 			items = append(items, "Joined")
 		}
-		items = append(items, setupSummaryItems(setup)...)
+		items = append(items, setupSummaryItems(*setup)...)
 		printTreeItems(items)
 		fmt.Println()
 		if !wholeMachine {
@@ -853,7 +916,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		return false, nil
 	}
 	items := []string{"Joined tailnet as " + tailIP}
-	items = append(items, setupSummaryItems(setup)...)
+	items = append(items, setupSummaryItems(*setup)...)
 	printTreeItems(items)
 	fmt.Println()
 	fmt.Println("Installed! Try: claude")
