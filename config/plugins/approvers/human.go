@@ -46,6 +46,14 @@ type HumanApprover struct {
 	// metadata. Classifier failures are non-fatal — the generic card is
 	// used as fallback.
 	Classifier string `hcl:"classifier,optional"`
+	// Message is an optional Go-template-style string with {{var}}
+	// placeholders. When set, the expanded text replaces the default
+	// section body in the Slack (or other notifier) card. Supported
+	// vars mirror the CEL facet namespace: {{http.method}},
+	// {{http.path}}, {{k8s.verb}}, {{sql.tables}}, {{body_json.ticket}},
+	// {{profile}}, {{endpoint}}, {{reason}}, etc.
+	// Classifier (if also set) still runs; Message takes display precedence.
+	Message string `hcl:"message,optional"`
 }
 
 // HumanApproverChannel + HumanApproverCredential expose the fields
@@ -85,6 +93,10 @@ func (h *HumanApprover) Approve(ctx context.Context, req runtime.ApproveRequest)
 		ent, ok := req.Policy.Credentials[h.Credential]
 		if ok {
 			if notifier, ok := ent.Body.(runtime.HITLNotifier); ok {
+				var msg string
+				if h.Message != "" {
+					msg = expandMessage(h.Message, req)
+				}
 				target := runtime.HITLTarget{
 					CredentialName: h.Credential,
 					Channel:        h.Channel,
@@ -93,6 +105,7 @@ func (h *HumanApprover) Approve(ctx context.Context, req runtime.ApproveRequest)
 					DashboardURL:   req.DashboardURL,
 					ThreadTS:       req.ThreadTS,
 					Summary:        summary,
+					Message:        msg,
 				}
 				go func() {
 					if err := notifier.NotifyHITL(ctx, req, target); err != nil {
@@ -161,6 +174,9 @@ func init() {
 			}
 			if a.Classifier != "" {
 				config.SetIdent(b, "classifier", a.Classifier)
+			}
+			if a.Message != "" {
+				b.SetAttributeValue("message", cty.StringVal(a.Message))
 			}
 		},
 	})

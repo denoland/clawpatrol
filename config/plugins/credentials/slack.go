@@ -125,7 +125,14 @@ func (s *SlackTokens) NotifyHITL(_ context.Context, req runtime.ApproveRequest, 
 
 	title := slackTrunc(runtime.HITLTitle(req.Method, endpoint), 140)
 	var blocks []map[string]any
-	if s := target.Summary; s != nil {
+	switch {
+	case target.Message != "":
+		blocks = []map[string]any{
+			{"type": "header", "text": map[string]any{"type": "plain_text", "text": title}},
+			{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": slackTrunc(target.Message, 3000)}},
+		}
+	case target.Summary != nil:
+		s := target.Summary
 		headerText := s.TicketID
 		if headerText == "" {
 			headerText = title
@@ -140,7 +147,7 @@ func (s *SlackTokens) NotifyHITL(_ context.Context, req runtime.ApproveRequest, 
 			{"type": "header", "text": map[string]any{"type": "plain_text", "text": slackTrunc(headerText, 140)}},
 			{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": sectionText}},
 		}
-	} else {
+	default:
 		blocks = []map[string]any{
 			{"type": "header", "text": map[string]any{"type": "plain_text", "text": title}},
 			{"type": "section", "text": map[string]any{

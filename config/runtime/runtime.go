@@ -264,6 +264,10 @@ type HITLTarget struct {
 	// Summary is an optional pre-computed classification. When non-nil,
 	// notifiers render a richer card instead of the generic method/path display.
 	Summary *HITLSummary
+	// Message is an optional pre-expanded template string. When non-empty,
+	// notifiers use it as the section text, overriding the default path
+	// display and the Summary card.
+	Message string
 }
 
 // ApproverRuntime evaluates one stage of an approve = [...] chain.
