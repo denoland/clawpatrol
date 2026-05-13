@@ -17,7 +17,8 @@
           "Timeout": 600,
           "RequireApprovers": 0,
           "Interactive": false,
-          "Classifier": ""
+          "Classifier": "",
+          "Message": ""
         },
         "type": "human_approver"
       }

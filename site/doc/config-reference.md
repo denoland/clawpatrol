@@ -111,6 +111,7 @@ operator clicks approve/deny on the dashboard).
 | `require_approvers` | `int` | no |  |
 | `interactive` | `bool` | no | Toggles in-channel approve/deny buttons. Requires the referenced credential's signing_secret slot pasted via the dashboard AND Slack's Interactivity URL pointed at the gateway. Default false: message includes only an "Open dashboard" link. |
 | `classifier` | `ref(approver)` | no | Optionally references an llm_approver by name. When set, the approver calls the classifier's Summarize method before posting the HITL notification, enriching the Slack card with classification metadata. Classifier failures are non-fatal — the generic card is used as fallback. |
+| `message` | `string` | no | An optional Go-template-style string with {{var}} placeholders. When set, the expanded text replaces the default section body in the Slack (or other notifier) card. Supported vars mirror the CEL facet namespace: {{http.method}}, {{http.path}}, {{k8s.verb}}, {{sql.tables}}, {{body_json.ticket}}, {{profile}}, {{endpoint}}, {{reason}}, etc. Classifier (if also set) still runs; Message takes display precedence. |
 
 ```hcl
 approver "human_approver" "example" {
