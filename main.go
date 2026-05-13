@@ -26,10 +26,12 @@ import (
 	"time"
 
 	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/extplugin"
 	"github.com/denoland/clawpatrol/config/facet"
 	"github.com/denoland/clawpatrol/config/match"
 	_ "github.com/denoland/clawpatrol/config/plugins/all"
 	"github.com/denoland/clawpatrol/config/plugins/approvers"
+	"github.com/denoland/clawpatrol/config/plugins/endpoints"
 	"github.com/denoland/clawpatrol/config/runtime"
 	"github.com/denoland/clawpatrol/dnsvip"
 	"github.com/google/uuid"
@@ -39,6 +41,20 @@ import (
 // StartWGServer / newOnboarder / mintTailscaleAuthKey) can refer to
 // it as a bare name.
 type JoinConfig = config.JoinConfig
+
+// resolveStateDir picks the directory where the gateway keeps its
+// sqlite DB. The HCL `state_dir` attribute is the only knob;
+// defaults to ${HOME}/.clawpatrol/state when unset.
+func resolveStateDir(cfg *config.Gateway) string {
+	if cfg.StateDir != "" {
+		return cfg.StateDir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		log.Fatalf("state_dir unset and $HOME unavailable")
+	}
+	return filepath.Join(home, ".clawpatrol", "state")
+}
 
 // emit a terminal request event to both the SSE sink and OTel.
 // ev.Action and ev.Ms must be populated. Non-request events (e.g.
@@ -87,7 +103,9 @@ func newReqID() string {
 }
 
 // loadConfig parses the gateway HCL via the typed-block grammar and
-// compiles it into a runtime CompiledPolicy.
+// compiles it into a runtime CompiledPolicy. Plugin loading goes
+// through config's package-global PluginLoader, installed once at
+// process startup via config.SetPluginLoader.
 func loadConfig(path string) (*config.Gateway, *config.CompiledPolicy, error) {
 	gw, diags := config.Load(path)
 	if diags.HasErrors() {
@@ -239,17 +257,18 @@ func newUpstreamDialer(resolver string) *net.Dialer {
 }
 
 type Gateway struct {
-	cfg     *config.Gateway
-	cfgPath string // path the HCL config was loaded from
-	db      *sql.DB
-	policy  atomic.Pointer[config.CompiledPolicy]
-	certs   *CertCache
-	dialer  *net.Dialer
-	sink    *Sink
-	oauth   *OAuthRegistry
-	agents  *AgentRegistry
-	hitl    *HITLRegistry
-	onboard *onboardRegistry
+	cfg      *config.Gateway
+	cfgPath  string // path the HCL config was loaded from
+	stateDir string // resolved gateway state dir (sqlite + plugin blobs)
+	db       *sql.DB
+	policy   atomic.Pointer[config.CompiledPolicy]
+	certs    *CertCache
+	dialer   *net.Dialer
+	sink     *Sink
+	oauth    *OAuthRegistry
+	agents   *AgentRegistry
+	hitl     *HITLRegistry
+	onboard  *onboardRegistry
 	// readOnlyConfig, when set via --read-only-config, rejects every
 	// dashboard write that mutates cfgPath. The dashboard reads the
 	// flag from /api/state and hides its editor affordances; the
@@ -1392,7 +1411,7 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 		Profile:      profile,
 		PeerIP:       pip,
 		Secrets:      g.secrets,
-		CADir:        g.cfg.CADir,
+		StateDir:     g.stateDir,
 		DstPort:      dstPort,
 		UpstreamHost: hostname,
 		MintCert: func(host string) (*tls.Certificate, error) {
@@ -1574,17 +1593,40 @@ func (w *countWriter) Write(p []byte) (int, error) {
 const maxHTTPMatchBody = 1 << 20
 
 func bufferHTTPBodyForMatch(req *http.Request) []byte {
-	if req.Body == nil {
-		return nil
-	}
-	b, err := io.ReadAll(io.LimitReader(req.Body, maxHTTPMatchBody))
-	if err != nil {
-		return nil
-	}
-	// Re-attach the buffered prefix in front of the original stream,
-	// which may still contain bytes beyond maxHTTPMatchBody.
-	req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), req.Body))
+	b, _ := bufferHTTPBodyForMatchTruncated(req)
 	return b
+}
+
+// bufferHTTPBodyForMatchTruncated is bufferHTTPBodyForMatch with the
+// overflow signal exposed: it reads one byte past the cap to detect
+// truncation, then re-attaches whatever it pulled (cap + 1 byte) in
+// front of the original stream so upstream still receives the body
+// byte-for-byte. truncated is true iff the body extended beyond
+// maxHTTPMatchBody; callers stash this on match.Request.Truncated so
+// the dispatcher can fail-close rules that read http.body /
+// http.body_json.
+func bufferHTTPBodyForMatchTruncated(req *http.Request) (body []byte, truncated bool) {
+	if req.Body == nil {
+		return nil, false
+	}
+	b, err := io.ReadAll(io.LimitReader(req.Body, maxHTTPMatchBody+1))
+	if err != nil {
+		return nil, false
+	}
+	if len(b) > maxHTTPMatchBody {
+		// Pulled one byte past the cap — body is over-sized. Keep
+		// the cap-sized prefix as the matcher's view; re-attach the
+		// full read (including the probe byte) in front of the
+		// remaining stream so the upstream forward stays byte-exact.
+		req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), req.Body))
+		return b[:maxHTTPMatchBody], true
+	}
+	// Body fit inside the cap (or was exactly cap bytes). Re-attach
+	// what we read — req.Body may still hold bytes past it on a
+	// chunked / unknown-length stream that just hadn't surfaced
+	// before the ReadAll returned.
+	req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), req.Body))
+	return b, false
 }
 
 // mitmHTTPS handles an SNI-matched TLS connection for an HTTPS-family
@@ -1640,19 +1682,25 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		// `body_contains` match facet needs the body up-front; we
 		// don't know which yet, so for any POST/PUT/PATCH with a
 		// body we read up to 1 MiB and re-attach. Reads beyond 1 MiB
-		// stream through unbuffered (rare for agent traffic).
+		// stream through unbuffered (rare for agent traffic) but
+		// surface as Truncated=true so the dispatcher can fail-close
+		// any rule reading http.body / http.body_json — bytes past
+		// the cap aren't in matchBody and policy that needed them
+		// can't be honestly evaluated.
 		var matchBody []byte
+		var truncated bool
 		if req.Method == "POST" || req.Method == "PUT" || req.Method == "PATCH" {
-			matchBody = bufferHTTPBodyForMatch(req)
+			matchBody, truncated = bufferHTTPBodyForMatchTruncated(req)
 		}
 
 		mreq := &match.Request{
-			Family:  ep.Family,
-			Method:  req.Method,
-			URL:     req.URL,
-			Headers: req.Header,
-			Body:    matchBody,
-			PeerIP:  pip,
+			Family:    ep.Family,
+			Method:    req.Method,
+			URL:       req.URL,
+			Headers:   req.Header,
+			Body:      matchBody,
+			PeerIP:    pip,
+			Truncated: truncated,
 		}
 		fac := facet.Lookup(ep.Family)
 		if fac != nil {
@@ -1797,6 +1845,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		// Schema-only credential types leave Runtime nil; we pass through
 		// verbatim and rely on policy alone.
 		var rewriteWSPayload wsPayloadRewriter
+		var reqBodySecretRedactions []string
 		if cc := runtime.ResolveCredential(ep, mreq); cc != nil {
 			// Plugin.Runtime is a typed-nil sentinel used only for
 			// interface-compliance assertions; the actual decoded HCL
@@ -1806,13 +1855,14 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			injector, wantsHTTP := cc.Credential.Body.(runtime.HTTPCredentialRuntime)
 			wsRewriter, wantsWS := cc.Credential.Body.(runtime.WebSocketCredentialRuntime)
 			if wantsHTTP || (wantsWS && isWSUpgrade(req)) {
-				sec, err := g.secrets.Get(cc.Credential.Symbol.Name, profile)
+				sec, err := g.secrets.Get(cc.Credential.Symbol.Name)
 				if err != nil {
-					log.Printf("secret %s/%s: %v — forwarding without injection", cc.Credential.Symbol.Name, profile, err)
+					log.Printf("secret %s: %v — forwarding without injection", cc.Credential.Symbol.Name, err)
 				} else if len(sec.Bytes) == 0 && len(sec.Extras) == 0 {
-					log.Printf("secret %s/%s: not configured (set CLAWPATROL_SECRET_%s)", cc.Credential.Symbol.Name, profile, secretEnvName(cc.Credential.Symbol.Name))
+					log.Printf("secret %s: not configured (set CLAWPATROL_SECRET_%s)", cc.Credential.Symbol.Name, secretEnvName(cc.Credential.Symbol.Name))
 				} else {
 					if wantsHTTP {
+						reqBodySecretRedactions = appendCredentialSecretRedactions(reqBodySecretRedactions, sec)
 						if err := injector.InjectHTTP(req.Context(), req, sec); err != nil {
 							log.Printf("inject %s: %v", cc.Credential.Symbol.Name, err)
 						}
@@ -1898,7 +1948,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			ev.Reason = err.Error()
 			ev.Ms = time.Since(start).Milliseconds()
 			ev.ReqSha = reqS.sha()
-			ev.ReqBody = reqS.sample(req.Header.Get("Content-Encoding"))
+			ev.ReqBody = redactCredentialSample(reqS.sample(req.Header.Get("Content-Encoding")), reqBodySecretRedactions)
 			ev.In = reqS.n
 			g.emitEnd(ev)
 			return
@@ -1959,7 +2009,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		ev.In = reqS.n
 		ev.Out = respS.n
 		ev.ReqSha = reqS.sha()
-		ev.ReqBody = reqS.sample(req.Header.Get("Content-Encoding"))
+		ev.ReqBody = redactCredentialSample(reqS.sample(req.Header.Get("Content-Encoding")), reqBodySecretRedactions)
 		ev.RespSha = respS.sha()
 		ev.RespBody = respS.sample(resp.Header.Get("Content-Encoding"))
 		ev.Ms = time.Since(start).Milliseconds()
@@ -2029,6 +2079,7 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 			Endpoint:     c.Endpoint,
 			Rule:         c.Rule,
 			ApproverName: st.Name,
+			AgentIP:      c.AgentIP,
 			Profile:      c.Profile,
 			Method:       c.Method,
 			Host:         c.Host,
@@ -2082,8 +2133,6 @@ func main() {
 		runRun(os.Args[2:])
 	case "env":
 		runEnv(os.Args[2:])
-	case "init-ca":
-		runInitCA(os.Args[2:])
 	case "validate":
 		runValidate(os.Args[2:])
 	case "test":
@@ -2092,12 +2141,8 @@ func main() {
 		runUninstall(os.Args[2:])
 	case "status":
 		runStatus(os.Args[2:])
-	case "version":
-		v := buildVersion
-		if buildGitSHA != "" {
-			v += " (" + buildGitSHA + ")"
-		}
-		fmt.Println("clawpatrol", v)
+	case "version", "-v", "--version":
+		printVersion()
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -2140,8 +2185,8 @@ func canonicalPeerIP(ip string) string {
 	}
 	last := b[15]
 	// Use the configured wg subnet prefix to reconstruct the v4. Fall
-	// back to 10.55.0.0/24 — same default the gateway init wizard
-	// writes — when nothing's loaded yet (early-boot).
+	// back to 10.55.0.0/24 — same default the example config uses —
+	// when nothing's loaded yet (early-boot).
 	prefixV4 := defaultWGV4Prefix
 	if globalWG != nil && globalWG.serverIP.Is4() {
 		s := globalWG.serverIP.As4()
@@ -2151,17 +2196,24 @@ func canonicalPeerIP(ip string) string {
 	return v4.String()
 }
 
-// defaultWGV4Prefix matches the gateway init wizard's wg_subnet_cidr
-// default (10.55.0.0/24). Lets canonicalPeerIP work before the
-// WGServer is up.
+// defaultWGV4Prefix matches the example config's wg_subnet_cidr
+// (10.55.0.0/24). Lets canonicalPeerIP work before the WGServer is
+// up.
 var defaultWGV4Prefix = [3]byte{10, 55, 0}
+
+func printVersion() {
+	v := buildVersion
+	if buildGitSHA != "" {
+		v += " (" + buildGitSHA + ")"
+	}
+	fmt.Println("clawpatrol", v)
+}
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `clawpatrol — secret-injection MITM proxy for AI agents
 
 usage:
-  clawpatrol gateway init [flags]        bootstrap a new gateway host
-  clawpatrol gateway [-config FILE]      run the gateway server
+  clawpatrol gateway <config.hcl>        run the gateway server
   clawpatrol join [flags] <gateway-url>  onboard this machine via wg device flow
                   --hostname NAME        device name to register (default: os.Hostname)
                   --profile NAME         suggest a profile for the approver
@@ -2171,51 +2223,48 @@ usage:
   clawpatrol status                      report install + tunnel state
   clawpatrol uninstall                   remove local join state and tunnel config
   clawpatrol env                         print shell exports for sourcing
-  clawpatrol init-ca DIR                 generate a new CA in DIR
   clawpatrol validate <config.hcl>       parse + compile a config and exit
   clawpatrol test <config> <path>        replay action fixtures against a candidate policy
-  clawpatrol version`)
+  clawpatrol version | -v | --version    print version and exit
+
+Documentation: https://clawpatrol.dev/docs/`)
 	os.Exit(2)
 }
 
-func runInitCA(args []string) {
-	if len(args) != 1 || args[0] == "-h" || args[0] == "--help" {
-		fmt.Fprintln(os.Stderr, "usage: clawpatrol init-ca DIR")
-		os.Exit(2)
-	}
-	if err := writeCA(args[0]); err != nil {
-		log.Fatal(err)
-	}
-	fmt.Printf("wrote ca.crt + ca.key to %s\n", args[0])
-}
+// gatewayHelp is shown for `clawpatrol gateway -h` and any wrong
+// invocation. The example HCL + config-reference URL is the
+// discoverability path for first-time users.
+const gatewayHelp = `usage: clawpatrol gateway [--read-only-config] <config.hcl>
+
+Start from gateway.example.hcl in the repo, or see the HCL reference:
+  https://clawpatrol.dev/docs/config-reference`
 
 func runGateway(args []string) {
-	// `clawpatrol gateway init` is a one-shot setup wizard, distinct from
-	// `clawpatrol gateway -config …` which starts the long-running daemon.
-	if len(args) > 0 && args[0] == "init" {
-		runGatewayInit(args[1:])
-		return
-	}
 	fs := flag.NewFlagSet("gateway", flag.ExitOnError)
-	cfgPath := fs.String("config", "config.yaml", "config file")
 	readOnly := fs.Bool("read-only-config", false,
 		"reject dashboard writes to the HCL config file")
+	seedHook := devSeedAttach(fs)
+	fs.Usage = func() { fmt.Fprintln(os.Stderr, gatewayHelp) }
 	_ = fs.Parse(args)
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fmt.Fprintln(os.Stderr, gatewayHelp)
+		os.Exit(2)
+	}
+	cfgPath := rest[0]
 
 	startModelRefresh()
-	cfg, policy, err := loadConfig(*cfgPath)
+	config.SetPluginLoader(extplugin.New(log.Default()))
+	cfg, policy, err := loadConfig(cfgPath)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), "no such file") {
+			fmt.Fprintf(os.Stderr, "config file %q does not exist.\n\n%s\n", cfgPath, gatewayHelp)
+			os.Exit(2)
+		}
 		log.Fatalf("config: %v", err)
 	}
 	logDashboardSecretState(cfg)
-	certs, err := loadCA(cfg.CADir)
-	if err != nil {
-		log.Fatalf("ca: %v", err)
-	}
-	stateDir := cfg.OAuthDir
-	if stateDir == "" {
-		stateDir = filepath.Join(cfg.CADir, "..", "oauth")
-	}
+	stateDir := resolveStateDir(cfg)
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		log.Fatalf("state dir: %v", err)
 	}
@@ -2224,27 +2273,29 @@ func runGateway(args []string) {
 		log.Fatalf("db: %v", err)
 	}
 	setDB(db)
+	blobs := newGatewayBlobStore(db)
+	endpoints.SetBlobStore(blobs)
+	certs, err := loadOrMintCA(db)
+	if err != nil {
+		log.Fatalf("ca: %v", err)
+	}
 	sink, err := NewSink(db, 4096)
 	if err != nil {
 		log.Fatalf("log: %v", err)
-	}
-	oauthDir := cfg.OAuthDir
-	if oauthDir == "" {
-		oauthDir = filepath.Join(cfg.CADir, "..", "oauth")
 	}
 	// OAuthRegistry seed list is empty for now — credential plugins
 	// own credential discovery in the new policy. The registry stays
 	// in place because per-owner token persistence + refresh logic
 	// is reused by the credential-plugin runtime bridge (lands when
 	// the credential injection path is wired into mitmHTTPS).
-	_ = oauthDir
 	oauthReg, err := NewOAuthRegistry(nil, db)
 	if err != nil {
 		log.Fatalf("oauth: %v", err)
 	}
 	g := &Gateway{
 		cfg:            cfg,
-		cfgPath:        *cfgPath,
+		cfgPath:        cfgPath,
+		stateDir:       stateDir,
 		readOnlyConfig: *readOnly,
 		db:             db,
 		certs:          certs,
@@ -2259,7 +2310,7 @@ func runGateway(args []string) {
 		log.Printf("config: read-only mode (dashboard writes rejected)")
 	}
 	g.secrets = newGatewaySecretStore(db, oauthReg)
-	g.tunnels = NewTunnelManager(g.secrets, cfg.CADir)
+	g.tunnels = NewTunnelManager(g.secrets, stateDir)
 	registerOAuthCredentials(oauthReg, policy)
 	g.policy.Store(policy)
 	g.connIdx.Store(runtime.BuildConnIndex(policy))
@@ -2270,7 +2321,7 @@ func runGateway(args []string) {
 	// unconditionally so reloads that *add* an SSH endpoint don't
 	// have to re-init. Persists to <stateDir>/dnsvip.json so VIPs
 	// survive restarts.
-	dvip, err := dnsvip.New(stateDir, dnsvip.DefaultCIDR4, dnsvip.DefaultCIDR6)
+	dvip, err := dnsvip.New(db, dnsvip.DefaultCIDR4, dnsvip.DefaultCIDR6)
 	if err != nil {
 		log.Fatalf("dnsvip init: %v", err)
 	}
@@ -2279,7 +2330,7 @@ func runGateway(args []string) {
 		log.Fatalf("dnsvip build: %v", err)
 	}
 	log.Printf("policy: %d endpoints across %d profiles", len(policy.Endpoints), len(policy.Profiles))
-	go g.watchConfig(*cfgPath)
+	go g.watchConfig(cfgPath)
 	if err := g.onboard.Load(db); err != nil {
 		log.Fatalf("onboard load: %v", err)
 	}
@@ -2322,10 +2373,12 @@ func runGateway(args []string) {
 		log.Printf("otel: %v", err)
 	}
 
-	startTelemetry(g, stateDir)
+	startTelemetry(g)
+
+	seedHook.Run(context.Background(), g)
 
 	if cfg.InfoListen != "" {
-		mux := newWebMux(g, cfg.CADir, cfg.Join(), cfg.PublicURL)
+		mux := newWebMux(g, cfg.Join(), cfg.PublicURL)
 		go serveHTTPLogged("dashboard", cfg.InfoListen, mux)
 		printDashboardURL(cfg.InfoListen)
 	}
@@ -2343,12 +2396,12 @@ func runGateway(args []string) {
 	// No /etc/hosts hack needed on clients — agents resolve real
 	// hostnames via public DNS and the gateway intercepts at L3.
 	if strings.EqualFold(cfg.Control, "wireguard") {
-		wg, err := StartWGServer(cfg.Join(), stateDir)
+		wg, err := StartWGServer(cfg.Join())
 		if err != nil {
 			log.Fatalf("wireguard: %v", err)
 		}
 		setWGServer(wg)
-		dashMux := newWebMux(g, cfg.CADir, cfg.Join(), cfg.PublicURL)
+		dashMux := newWebMux(g, cfg.Join(), cfg.PublicURL)
 		dashPort := portOf(cfg.InfoListen)
 		tcpDispatch := func(c net.Conn, dstIP string, dstPort uint16) {
 			log.Printf("wg-fwd: %s:%d", dstIP, dstPort)

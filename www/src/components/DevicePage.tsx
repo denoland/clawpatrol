@@ -6,7 +6,6 @@ import {
   setDeviceProfile,
   type Agent,
   type Integration,
-  type Whoami,
 } from "../lib/api";
 import { fmtBytes } from "../lib/format";
 import { DeviceIcon } from "./Logos";
@@ -20,7 +19,6 @@ export function DevicePage({
   ip,
   agents,
   integrations,
-  whoami,
   readOnlyConfig,
   onBack,
   onConnect,
@@ -29,10 +27,9 @@ export function DevicePage({
   ip: string;
   agents: Agent[];
   integrations: Integration[];
-  whoami: Whoami | null;
   readOnlyConfig?: boolean;
   onBack: () => void;
-  onConnect: (id: string, profile?: string) => void;
+  onConnect: (id: string) => void;
   onRefresh: () => void;
 }) {
   const a = useMemo(() => agents.find((x) => x.ip === ip) ?? null, [agents, ip]);
@@ -221,13 +218,7 @@ export function DevicePage({
       <LiveRequests agentIP={a.ip} height="360px" />
 
       {/* integrations management for this user */}
-      <IntegrationsCards
-        list={allForUser}
-        whoami={whoami}
-        profile={a.profile}
-        onConnect={onConnect}
-        onRefresh={onRefresh}
-      />
+      <IntegrationsCards list={allForUser} onConnect={onConnect} onRefresh={onRefresh} />
 
       {/* rules — per-device scope (with global rules layered in) */}
       <RulesPanel deviceIP={a.ip} profile={a.profile} readOnly={readOnlyConfig} />

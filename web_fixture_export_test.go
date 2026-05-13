@@ -147,7 +147,7 @@ profile "default" { endpoints = [alpha, beta] }
 }
 
 // hitl_allow / hitl_deny collapse to "approve" in the fixture
-// (the chain is terminal — see doc/test.md). in_flight is a start
+// (the chain is terminal — see site/doc/clawpatrol-test.md). in_flight is a start
 // event and isn't exportable.
 func TestExporterEventActionMapping(t *testing.T) {
 	for _, action := range []string{"hitl_allow", "hitl_deny"} {
@@ -324,12 +324,12 @@ profile "default" { endpoints = [github] }
 }
 
 // passthrough fixtures parse fine but the runner rejects them at
-// replay (doc/test.md). Lock in both halves so a future change has
+// replay (site/doc/clawpatrol-test.md). Lock in both halves so a future change has
 // to pick one side intentionally.
 func TestRunnerRejectsPassthrough(t *testing.T) {
 	gw := gatewayWithPolicy(t, fixtureHCL)
-	body := `{"match":{"verdict":"passthrough","endpoint":"github"},` +
-		`"action":{"host":"api.github.com","http":{"method":"GET","path":"/x"}}}`
+	body := `{"action":{"host":"api.github.com","http":{"method":"GET","path":"/x"}},` +
+		`"match":{"verdict":"passthrough","endpoint":"github"}}`
 	tmp := filepath.Join(t.TempDir(), "pt.json")
 	if err := os.WriteFile(tmp, []byte(body), 0o644); err != nil {
 		t.Fatal(err)

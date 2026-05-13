@@ -10,7 +10,7 @@ package main
 // Each facet block carries ONLY that facet's CEL-visible fields —
 // the same vocabulary rules read in `condition = "<facet>.<field>"`.
 // Connection-level fields (host, credential, peer_ip) sit outside
-// the facet block on `action` itself. See doc/test.md.
+// the facet block on `action` itself. See site/doc/clawpatrol-test.md.
 
 import (
 	"encoding/base64"
@@ -27,14 +27,16 @@ import (
 	sqlfacet "github.com/denoland/clawpatrol/config/plugins/facets/sql"
 )
 
-// Fixture is the on-disk shape.
+// Fixture is the on-disk shape. Field order matters for marshalling:
+// `action` (what happened) reads first, `match` (what the runner
+// asserts about it) reads second.
 type Fixture struct {
-	Match  Match  `json:"match"`
 	Action Action `json:"action"`
+	Match  Match  `json:"match"`
 }
 
 // Match is what the rule engine produced (or what the runner
-// should assert). Approve is terminal — see doc/test.md.
+// should assert). Approve is terminal — see site/doc/clawpatrol-test.md.
 type Match struct {
 	Verdict  string `json:"verdict"` // allow | deny | approve | passthrough
 	Rule     string `json:"rule,omitempty"`
@@ -74,14 +76,14 @@ type K8sAction struct {
 }
 
 // SQLAction carries the `sql.*` CEL view. Only `statement` needs to
-// be set in practice; the loader derives verb / tables / function
+// be set in practice; the loader derives verb / tables / functions
 // via the endpoint's runtime.SQLParser. Explicit verb / tables /
-// function are accepted and take precedence over derivation.
+// functions are accepted and take precedence over derivation.
 type SQLAction struct {
 	Statement string   `json:"statement,omitempty"`
 	Verb      string   `json:"verb,omitempty"`
 	Tables    []string `json:"tables,omitempty"`
-	Function  []string `json:"function,omitempty"`
+	Functions []string `json:"functions,omitempty"`
 }
 
 var validVerdicts = map[string]bool{
@@ -321,7 +323,7 @@ func (f *Fixture) ToMatchRequest(family string, parseSQL func(string) any) (*mat
 		if stmt == "" {
 			break
 		}
-		// Derive verb / tables / function via SQLParser, then let
+		// Derive verb / tables / functions via SQLParser, then let
 		// any explicit fixture fields override. Keeps SQL fixtures
 		// hand-editable (one field) while accepting full structs.
 		if parseSQL == nil {
@@ -335,8 +337,8 @@ func (f *Fixture) ToMatchRequest(family string, parseSQL func(string) any) (*mat
 			if len(a.SQL.Tables) > 0 {
 				m.Tables = a.SQL.Tables
 			}
-			if len(a.SQL.Function) > 0 {
-				m.Functions = a.SQL.Function
+			if len(a.SQL.Functions) > 0 {
+				m.Functions = a.SQL.Functions
 			}
 		}
 		req.Meta = meta

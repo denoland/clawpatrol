@@ -10,13 +10,11 @@ import {
 export function ConnectModal({
   id,
   oauth,
-  profile,
   onClose,
   onDone,
 }: {
   id: string;
   oauth?: OAuthIntegrationUI | null;
-  profile?: string;
   onClose: () => void;
   onDone: () => void;
 }) {
@@ -38,7 +36,7 @@ export function ConnectModal({
   useEffect(() => {
     if (!started) return;
     const extraList = showsScopePicker ? Array.from(extras) : undefined;
-    oauthStart(id, profile, extraList)
+    oauthStart(id, extraList)
       .then((r) => {
         setStart(r);
         if (r.flow === "device") {
@@ -52,7 +50,7 @@ export function ConnectModal({
     // checklist is frozen once we kick off the OAuth flow, so don't
     // rerun this effect on later toggles.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, profile, started]);
+  }, [id, started]);
 
   // Stable ref to onDone — parent re-renders (App refreshes integrations
   // every 3s) reset the lambda otherwise, killing the polling interval
@@ -125,11 +123,6 @@ export function ConnectModal({
         <div className="text-[11px] uppercase tracking-[.12em] text-[#a3a3a3] mb-1">
           CONNECT {id}
         </div>
-        {start && "owner" in start && start.owner && (
-          <div className="text-[11px] text-[#737373] mb-3">
-            for <span className="text-[#171717] font-semibold">{start.owner}</span>
-          </div>
-        )}
         {done ? (
           <div className="py-6 text-center">
             <div className="text-[24px] mb-2">✓</div>

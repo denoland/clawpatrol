@@ -9,7 +9,7 @@ import (
 )
 
 func TestFixtureUnmarshalAcceptsMissingEndpoint(t *testing.T) {
-	body := `{"match":{"verdict":"allow"},"action":{"host":"api.github.com","http":{"method":"GET","path":"/user"}}}`
+	body := `{"action":{"host":"api.github.com","http":{"method":"GET","path":"/user"}},"match":{"verdict":"allow"}}`
 	var f Fixture
 	if err := json.Unmarshal([]byte(body), &f); err != nil {
 		t.Fatalf("endpoint should be optional, got %v", err)
@@ -23,7 +23,7 @@ func TestFixtureUnmarshalAcceptsMissingEndpoint(t *testing.T) {
 // at replay (see test.go) but the fixture format accepts it so old
 // exports don't fail to load.
 func TestFixtureUnmarshalAcceptsPassthrough(t *testing.T) {
-	body := `{"match":{"verdict":"passthrough"},"action":{"host":"x","http":{}}}`
+	body := `{"action":{"host":"x","http":{}},"match":{"verdict":"passthrough"}}`
 	var f Fixture
 	if err := json.Unmarshal([]byte(body), &f); err != nil {
 		t.Fatalf("passthrough should parse, got %v", err)
@@ -38,28 +38,28 @@ func TestFixtureUnmarshalRejections(t *testing.T) {
 		name, body, wantSubstr string
 	}{
 		{"zero families",
-			`{"match":{"verdict":"allow"},"action":{"host":"x"}}`,
+			`{"action":{"host":"x"},"match":{"verdict":"allow"}}`,
 			"exactly one of http/k8s/sql"},
 		{"two families",
-			`{"match":{"verdict":"allow"},"action":{"host":"x","http":{},"sql":{"statement":"select 1"}}}`,
+			`{"action":{"host":"x","http":{},"sql":{"statement":"select 1"}},"match":{"verdict":"allow"}}`,
 			"exactly one of http/k8s/sql"},
 		{"unknown key in family",
-			`{"match":{"verdict":"allow"},"action":{"host":"x","http":{"banana":1}}}`,
+			`{"action":{"host":"x","http":{"banana":1}},"match":{"verdict":"allow"}}`,
 			"banana"},
 		{"unknown top-level key",
-			`{"match":{"verdict":"allow"},"action":{"host":"x","http":{}},"novel":1}`,
+			`{"action":{"host":"x","http":{}},"match":{"verdict":"allow"},"novel":1}`,
 			"novel"},
 		{"unknown key in action",
-			`{"match":{"verdict":"allow"},"action":{"host":"x","http":{},"novel":1}}`,
+			`{"action":{"host":"x","http":{},"novel":1},"match":{"verdict":"allow"}}`,
 			"novel"},
 		{"body and body_b64 both set",
-			`{"match":{"verdict":"allow"},"action":{"host":"x","http":{"body":"hi","body_b64":"aGk="}}}`,
+			`{"action":{"host":"x","http":{"body":"hi","body_b64":"aGk="}},"match":{"verdict":"allow"}}`,
 			"mutually exclusive"},
 		{"sql without statement",
-			`{"match":{"verdict":"allow"},"action":{"host":"x","sql":{}}}`,
+			`{"action":{"host":"x","sql":{}},"match":{"verdict":"allow"}}`,
 			"statement is required"},
 		{"bad match.verdict",
-			`{"match":{"verdict":"maybe"},"action":{"host":"x","http":{}}}`,
+			`{"action":{"host":"x","http":{}},"match":{"verdict":"maybe"}}`,
 			"match.verdict"},
 		{"missing match",
 			`{"action":{"host":"x","http":{}}}`,

@@ -119,13 +119,26 @@ func init() {
 // activation reports `method = "post"`.
 var lowercasedPaths = []string{"http.method"}
 
+// truncatablePaths declares the HTTPS fields whose activation values
+// come from the request body the gateway buffered against its
+// inspection cap (maxHTTPMatchBody in main.go). A condition that
+// reads either field on a request whose body overflowed the cap can
+// no longer be evaluated faithfully — the dispatcher synthesizes a
+// deny instead of letting the matcher see a truncated prefix.
+//
+// Fields whose value is independent of the body (method, path,
+// query, headers) are intentionally absent: a rule like
+// `http.method == "GET"` still fires on its own predicate even when
+// the body was capped.
+var truncatablePaths = []string{"http.body", "http.body_json"}
+
 // NewMatcher compiles a CEL condition into a Matcher. An empty
 // condition is the catch-all match-everything case.
 func (Facet) NewMatcher(condition string) (match.Matcher, error) {
 	if condition == "" {
 		return match.PassThrough{}, nil
 	}
-	return match.CompileCondition(celEnv, condition, buildActivation, lowercasedPaths)
+	return match.CompileCondition(celEnv, condition, buildActivation, lowercasedPaths, truncatablePaths)
 }
 
 func buildActivation(req *match.Request) map[string]any {

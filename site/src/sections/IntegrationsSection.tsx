@@ -26,9 +26,7 @@ export function IntegrationsSection() {
           {INTEGRATIONS.map(({ name, id }) => (
             <a
               key={id}
-              href={`https://github.com/denoland/clawpatrol/tree/main/src/plugins/${id}`}
-              target="_blank"
-              rel="noopener noreferrer"
+              href="/docs/config-reference/#endpoint-blocks"
               class="flex flex-col items-center aspect-square
                 justify-between py-4 px-2 squircle-md
                 transition-transform hover:scale-[1.03] focus-visible:scale-[1.03]
@@ -52,8 +50,8 @@ export function IntegrationsSection() {
           — OR —
         </p>
         <div class="text-center mt-12 sm:mt-16 mb-8">
-          <Button href="/docs/plugins/" variant="normal" size="lg">
-            Write your own plugin in one TypeScript file{" "}
+          <Button href="/docs/config-reference/#endpoint-blocks" variant="normal" size="lg">
+            Explore the current Go/HCL plugin model{" "}
             <span class="ml-1" aria-hidden="true">
               &rarr;
             </span>

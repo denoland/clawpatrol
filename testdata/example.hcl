@@ -1,4 +1,4 @@
-// Sample config for `clawpatrol test` (see doc/test.md §5). Pair
+// Sample config for `clawpatrol test` (see site/doc/clawpatrol-test.md). Pair
 // with the *.json fixtures alongside it to verify the runner
 // end-to-end:
 //

@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"compress/flate"
 	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -29,7 +31,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/andybalholm/brotli"
 	"github.com/hashicorp/hcl/v2/hclwrite"
+	"github.com/klauspost/compress/zstd"
 
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/facet"
@@ -48,7 +52,6 @@ var errConfigRevisionConflict = errors.New("config revision conflict")
 
 type webMux struct {
 	g         *Gateway
-	caDir     string
 	ts        JoinConfig // for onboarding key minting
 	publicURL string
 	mu        sync.Mutex
@@ -183,8 +186,8 @@ func (w *webMux) skipsTailnetGate(path string) bool {
 	return w.authRequirementForPath(path) == authPublic
 }
 
-func newWebMux(g *Gateway, caDir string, ts JoinConfig, publicURL string) http.Handler {
-	w := &webMux{g: g, caDir: caDir, ts: ts, publicURL: publicURL, sessions: map[string]*oauthSession{}, onboard: g.onboard, previews: map[string]configPreviewToken{}}
+func newWebMux(g *Gateway, ts JoinConfig, publicURL string) http.Handler {
+	w := &webMux{g: g, ts: ts, publicURL: publicURL, sessions: map[string]*oauthSession{}, onboard: g.onboard, previews: map[string]configPreviewToken{}}
 	return w.handler()
 }
 
@@ -458,7 +461,6 @@ func (w *webMux) mountCredentialWebhooks(mux *http.ServeMux) {
 					Secrets:        w.g.secrets,
 					HITL:           w.g.hitl,
 					Policy:         w.g.Policy(),
-					Profiles:       orderedProfileNames(w.g.cfg.Policy),
 				}
 				handler(ctx, rw, r)
 			})
@@ -554,9 +556,15 @@ func (w *webMux) staticHandler() http.Handler {
 	return http.FileServer(http.FS(sub))
 }
 
-func (w *webMux) serveCA(rw http.ResponseWriter, r *http.Request) {
+func (w *webMux) serveCA(rw http.ResponseWriter, _ *http.Request) {
+	pemBytes := w.g.certs.CertPEM()
+	if len(pemBytes) == 0 {
+		http.Error(rw, "ca not initialized", http.StatusServiceUnavailable)
+		return
+	}
 	rw.Header().Set("Content-Type", "application/x-pem-file")
-	http.ServeFile(rw, r, w.caDir+"/ca.crt")
+	rw.Header().Set("Content-Length", strconv.Itoa(len(pemBytes)))
+	_, _ = rw.Write(pemBytes)
 }
 
 func (w *webMux) serveInfo(rw http.ResponseWriter, _ *http.Request) {
@@ -586,13 +594,13 @@ func (w *webMux) callerIdentity(r *http.Request) (user, device, displayHost stri
 	return who.UserProfile.LoginName, who.Node.StableID, who.Node.HostName
 }
 
-// credentialProfileKeyForRequest returns the credentials.profile key used when
-// dashboard requests read or write OAuth/secret rows. Prefer an explicit
-// profile selector, then the configured default policy profile. The remaining
-// fallbacks preserve legacy single-user/per-caller credential keys; they are
-// not necessarily declared policy profiles and must not be used as evidence
-// that the caller is authenticated.
-func (w *webMux) credentialProfileKeyForRequest(r *http.Request) (key, label string) {
+// selectedProfileForRequest returns the profile name a dashboard request
+// targets. Prefer an explicit profile selector, then the configured
+// default policy profile. The remaining fallbacks preserve legacy
+// single-user/per-caller keys; they are not necessarily declared policy
+// profiles and must not be used as evidence that the caller is
+// authenticated.
+func (w *webMux) selectedProfileForRequest(r *http.Request) (key, label string) {
 	if p := r.URL.Query().Get("profile"); p != "" {
 		return p, p
 	}
@@ -706,9 +714,9 @@ func serveState(rw http.ResponseWriter, r *http.Request, body []byte, tag string
 // declared credential ships (root view).
 
 // apiCredentialsSet persists one or more slot values for a non-OAuth
-// credential. Owner defaults to the caller's profile. Body shape:
+// credential. Body shape:
 //
-//	{ "id": "stripe-live", "owner": "default", "slots": { "": "sk_live_…" } }
+//	{ "id": "stripe-live", "slots": { "": "sk_live_…" } }
 //
 // Multi-slot credentials (mtls, slack tokens) pass multiple keys.
 // Empty values clear the slot.
@@ -719,7 +727,6 @@ func (w *webMux) apiCredentialsSet(rw http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		ID    string            `json:"id"`
-		Owner string            `json:"owner"`
 		Slots map[string]string `json:"slots"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -728,13 +735,6 @@ func (w *webMux) apiCredentialsSet(rw http.ResponseWriter, r *http.Request) {
 	}
 	if body.ID == "" {
 		http.Error(rw, "missing id", 400)
-		return
-	}
-	if body.Owner == "" {
-		body.Owner, _ = w.credentialProfileKeyForRequest(r)
-	}
-	if body.Owner == "" {
-		http.Error(rw, "missing owner", 400)
 		return
 	}
 	policy := w.g.policy.Load()
@@ -760,15 +760,15 @@ func (w *webMux) apiCredentialsSet(rw http.ResponseWriter, r *http.Request) {
 		if v == "" {
 			// Empty value = clear that slot specifically.
 			if _, err := w.g.db.Exec(
-				`DELETE FROM credential_secrets WHERE credential = ? AND profile = ? AND slot = ?`,
-				body.ID, body.Owner, slot,
+				`DELETE FROM credential_secrets WHERE credential = ? AND slot = ?`,
+				body.ID, slot,
 			); err != nil {
 				http.Error(rw, err.Error(), 500)
 				return
 			}
 			continue
 		}
-		if err := setCredentialSlot(w.g.db, body.ID, body.Owner, slot, v); err != nil {
+		if err := setCredentialSlot(w.g.db, body.ID, slot, v); err != nil {
 			http.Error(rw, err.Error(), 500)
 			return
 		}
@@ -776,7 +776,7 @@ func (w *webMux) apiCredentialsSet(rw http.ResponseWriter, r *http.Request) {
 	writeJSON(rw, map[string]any{"ok": true})
 }
 
-// apiCredentialsClear drops every slot for (id, owner). Disconnect
+// apiCredentialsClear drops every slot for the credential. Disconnect
 // button on the dashboard.
 func (w *webMux) apiCredentialsClear(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
@@ -784,8 +784,7 @@ func (w *webMux) apiCredentialsClear(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		ID    string `json:"id"`
-		Owner string `json:"owner"`
+		ID string `json:"id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(rw, err.Error(), 400)
@@ -795,10 +794,7 @@ func (w *webMux) apiCredentialsClear(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "missing id", 400)
 		return
 	}
-	if body.Owner == "" {
-		body.Owner, _ = w.credentialProfileKeyForRequest(r)
-	}
-	if err := clearCredentialSecrets(w.g.db, body.ID, body.Owner); err != nil {
+	if err := clearCredentialSecrets(w.g.db, body.ID); err != nil {
 		http.Error(rw, err.Error(), 500)
 		return
 	}
@@ -1223,12 +1219,7 @@ func (w *webMux) apiRulesAI(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "prompt required", 400)
 		return
 	}
-	owner, _ := w.credentialProfileKeyForRequest(r)
-	if owner == "" {
-		http.Error(rw, "profile required", http.StatusForbidden)
-		return
-	}
-	out, refused, err := generateRuleHCL(r.Context(), w.g, body.Agent, owner, body.Prompt, body.CurrentYAML, body.Scope)
+	out, refused, err := generateRuleHCL(r.Context(), w.g, body.Agent, body.Prompt, body.CurrentYAML, body.Scope)
 	if err != nil {
 		http.Error(rw, "ai: "+err.Error(), http.StatusBadGateway)
 		return
@@ -1427,8 +1418,8 @@ func (w *webMux) apiActionByID(
 }
 
 // writeActionFixture emits the Action JSON for `clawpatrol test`
-// (doc/test.md). 400s on events that pre-date endpoint tracking or
-// can't be mapped to a terminal verdict.
+// (site/doc/clawpatrol-test.md). 400s on events that pre-date
+// endpoint tracking or can't be mapped to a terminal verdict.
 func (w *webMux) writeActionFixture(rw http.ResponseWriter, ev *Event) {
 	policy := w.g.Policy()
 	if policy == nil {
@@ -1565,7 +1556,7 @@ func exportK8s(ev *Event) *K8sAction {
 }
 
 // exportSQL pulls the raw statement out of Event.Facets (set by
-// sqlfacet.Report). The loader re-derives verb / tables / function
+// sqlfacet.Report). The loader re-derives verb / tables / functions
 // from the statement via SQLParser at replay time.
 func exportSQL(ev *Event) *SQLAction {
 	stmt, _ := ev.Facets["statement"].(string)
@@ -1881,7 +1872,7 @@ type Event struct {
 	// matched CompiledRule.Name (empty when no rule fired). Populated
 	// at the existing dispatch sites so the action-fixture exporter
 	// can pin a downloaded action to a specific endpoint and assert
-	// the rule that produced its verdict (doc/test.md §1.3).
+	// the rule that produced its verdict (site/doc/clawpatrol-test.md).
 	Endpoint string `json:"endpoint,omitempty"`
 	Rule     string `json:"rule,omitempty"`
 }
@@ -2217,11 +2208,10 @@ func (s *sampler) sha() string {
 }
 
 // sample returns the audit-log preview of the captured body. When
-// encoding names a compression we know how to decode (currently only
-// gzip — the encoding most agents request via Accept-Encoding and
-// most upstreams reply with), the buffered prefix is decompressed
-// first so a JSON response doesn't get rendered as "binary:<hex>"
-// just because it's still on the wire as gzip.
+// encoding names a compression we know how to decode (gzip, br,
+// deflate, zstd), the buffered prefix is decompressed first so a
+// JSON response doesn't get rendered as "binary:<hex>" just because
+// it's still on the wire compressed.
 func (s *sampler) sample(encoding string) string {
 	if s.buf.Len() == 0 {
 		return ""
@@ -2234,21 +2224,46 @@ func (s *sampler) sample(encoding string) string {
 	return "binary:" + hex.EncodeToString(raw[:min(64, len(raw))])
 }
 
-// maybeDecode returns the decompressed prefix of buf when encoding is
-// gzip, or buf unchanged otherwise. The sampler captures at most cap
-// bytes, so the gzip stream is almost always truncated mid-block —
-// io.ReadAll returns whatever the reader managed before hitting
-// io.ErrUnexpectedEOF, which is exactly what we want for a preview.
+// maybeDecode returns the decompressed prefix of buf when encoding
+// is a compression scheme we recognise, or buf unchanged otherwise.
+// The sampler captures at most cap bytes, so the stream is almost
+// always truncated mid-block — io.ReadAll returns whatever the
+// reader managed before hitting EOF, which is what we want for a
+// preview.
 func maybeDecode(buf []byte, encoding string) []byte {
-	if !strings.EqualFold(strings.TrimSpace(encoding), "gzip") {
+	var r io.Reader
+	switch strings.ToLower(strings.TrimSpace(encoding)) {
+	case "gzip", "x-gzip":
+		zr, err := gzip.NewReader(bytes.NewReader(buf))
+		if err != nil {
+			return buf
+		}
+		defer func() { _ = zr.Close() }()
+		r = zr
+	case "br":
+		r = brotli.NewReader(bytes.NewReader(buf))
+	case "deflate":
+		// RFC 7230 says "deflate" is zlib-wrapped deflate, but some
+		// servers send raw deflate. Try zlib first, fall back to raw.
+		if zr, err := zlib.NewReader(bytes.NewReader(buf)); err == nil {
+			defer func() { _ = zr.Close() }()
+			r = zr
+		} else {
+			fr := flate.NewReader(bytes.NewReader(buf))
+			defer func() { _ = fr.Close() }()
+			r = fr
+		}
+	case "zstd":
+		zd, err := zstd.NewReader(bytes.NewReader(buf))
+		if err != nil {
+			return buf
+		}
+		defer zd.Close()
+		r = zd
+	default:
 		return buf
 	}
-	zr, err := gzip.NewReader(bytes.NewReader(buf))
-	if err != nil {
-		return buf
-	}
-	defer func() { _ = zr.Close() }()
-	out, _ := io.ReadAll(zr)
+	out, _ := io.ReadAll(r)
 	if len(out) == 0 {
 		return buf
 	}

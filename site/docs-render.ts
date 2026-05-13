@@ -1,8 +1,43 @@
 // Shared rendering used by both vite dev and build for the docs pages,
 // and by build-docs.ts to prerender the landing page.
 
-import hljs from "highlight.js";
+import hljs, { type HLJSApi, type LanguageFn } from "highlight.js";
 import { Marked } from "marked";
+
+// highlight.js doesn't ship an HCL grammar, so docs that use `hcl`
+// fences fall back to plain text. Register a minimal one — enough
+// to colourise the operator-facing examples in skill.md and friends.
+const hclLang: LanguageFn = (h: HLJSApi) => ({
+  name: "HCL",
+  aliases: ["terraform", "tf"],
+  case_insensitive: false,
+  keywords: {
+    keyword:
+      "approver credential endpoint policy profile rule tunnel " +
+      "device defaults",
+    literal: "true false null",
+    built_in: "var local module data resource",
+  },
+  contains: [
+    h.HASH_COMMENT_MODE,
+    h.C_LINE_COMMENT_MODE,
+    h.C_BLOCK_COMMENT_MODE,
+    h.QUOTE_STRING_MODE,
+    h.NUMBER_MODE,
+    {
+      // Heredoc: <<EOT … EOT  or  <<-EOT … EOT
+      className: "string",
+      begin: /<<-?\s*([A-Za-z_]\w*)/,
+      end: /^\s*\w+$/,
+    },
+    {
+      // Block label string (after a known keyword + space).
+      className: "type",
+      begin: /\b[a-z_][a-z0-9_]*\b(?=\s+"[^"]+"\s*"[^"]+"\s*\{)/,
+    },
+  ],
+});
+hljs.registerLanguage("hcl", hclLang);
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { h } from "preact";
@@ -208,17 +243,40 @@ export interface Doc {
   description: string;
 }
 
+// Strip a leading `---\n...\n---\n` YAML frontmatter block off a
+// markdown source. Only the simple SKILL.md shape is supported:
+// `key: value` lines, one per key, no nested structures. That's the
+// shape Anthropic's Agent Skills spec mandates, which is all we need
+// here — pulling in a real YAML parser for two fields would be
+// overkill.
+function parseFrontmatter(
+  raw: string,
+): { meta: Record<string, string>; body: string } {
+  if (!raw.startsWith("---\n")) return { meta: {}, body: raw };
+  const end = raw.indexOf("\n---\n", 4);
+  if (end < 0) return { meta: {}, body: raw };
+  const block = raw.slice(4, end);
+  const body = raw.slice(end + 5);
+  const meta: Record<string, string> = {};
+  for (const line of block.split("\n")) {
+    const m = line.match(/^([a-zA-Z_][\w-]*):\s*(.+)$/);
+    if (m) meta[m[1]] = m[2].trim();
+  }
+  return { meta, body };
+}
+
 export function loadDocs(docsDir: string): Doc[] {
   const toc = JSON.parse(
     readFileSync(join(docsDir, "toc.json"), "utf-8"),
   ) as string[];
   return toc.map((slug) => {
     const raw = readFileSync(join(docsDir, `${slug}.md`), "utf-8");
-    const h1 = raw.match(/^#\s+(.+)$/m);
-    const title = h1 ? h1[1] : slug.replace(/-/g, " ");
-    const html = marked.parse(raw, { async: false }) as string;
-    const description = extractDescription(
-      raw,
+    const { meta, body } = parseFrontmatter(raw);
+    const h1 = body.match(/^#\s+(.+)$/m);
+    const title = meta.title ?? (h1 ? h1[1] : slug.replace(/-/g, " "));
+    const html = marked.parse(body, { async: false }) as string;
+    const description = meta.description ?? extractDescription(
+      body,
       `${title} — Claw Patrol documentation.`,
     );
     return { slug, title, html, raw, description };

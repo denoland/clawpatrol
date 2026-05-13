@@ -34,9 +34,9 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
-// TailscaleCredential is part of the clawpatrol plugin API. The body
-// is intentionally empty — there is nothing for the operator to paste.
-// Per-tailnet selection (control_url, tags) lives on the tunnel block.
+// TailscaleCredential has no operator-facing fields — there is
+// nothing to paste. Per-tailnet selection (control_url, tags) lives
+// on the tunnel block instead.
 type TailscaleCredential struct{}
 
 // StateStore returns an ipn.StateStore that persists tsnet's identity
@@ -67,8 +67,7 @@ func (*TailscaleCredential) TailscaleAuth() *tailscaleproto.TailscaleAuthIntegra
 
 // secretStateStore adapts the gateway's credential_secrets store to
 // tsnet's ipn.StateStore. Every tsnet identity blob is one slot row;
-// slot name = the StateKey string. Owner is "" — node identity is
-// gateway-wide, not per-owner.
+// slot name = the StateKey string.
 type secretStateStore struct {
 	name   string
 	store  runtime.SecretStore
@@ -76,7 +75,7 @@ type secretStateStore struct {
 }
 
 func (s *secretStateStore) ReadState(id ipn.StateKey) ([]byte, error) {
-	sec, err := s.store.Get(s.name, "")
+	sec, err := s.store.Get(s.name)
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +86,7 @@ func (s *secretStateStore) ReadState(id ipn.StateKey) ([]byte, error) {
 }
 
 func (s *secretStateStore) WriteState(id ipn.StateKey, bs []byte) error {
-	return s.writer.SetCredentialSlot(s.name, "", string(id), string(bs))
+	return s.writer.SetCredentialSlot(s.name, string(id), string(bs))
 }
 
 func init() {

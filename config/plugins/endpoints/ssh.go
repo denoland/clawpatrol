@@ -22,10 +22,11 @@ package endpoints
 // that IP; when the conn lands on the VIP, dispatch consults the
 // VIP table to recover the hostname (and thus the endpoint).
 //
-// The gateway-side host key is per-endpoint, persisted under
-// <ca_dir>/ssh/<endpoint>.key (lazy-generated ed25519 on first use).
-// Operators add the printed fingerprint to their known_hosts so
-// `ssh user@hostname` doesn't prompt.
+// The gateway-side host key is per-endpoint, persisted in the host's
+// BlobStore under kind="ssh_host_key", name=<endpoint name>
+// (lazy-generated ed25519 on first use). Operators add the printed
+// fingerprint to their known_hosts so `ssh user@hostname` doesn't
+// prompt.
 
 import (
 	"bytes"
@@ -39,8 +40,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -149,8 +148,8 @@ func (rt *SSHEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHa
 	if ch.Endpoint == nil || ch.Endpoint.Family != "ssh" {
 		return fmt.Errorf("ssh runtime invoked on non-ssh endpoint %v", ch.Endpoint)
 	}
-	if ch.CADir == "" {
-		return fmt.Errorf("ssh runtime needs CADir to persist host keys; gateway hasn't set ca_dir")
+	if ch.Blobs == nil {
+		return fmt.Errorf("ssh runtime needs a BlobStore to persist host keys")
 	}
 	ep, ok := ch.Endpoint.Body.(*SSHEndpoint)
 	if !ok {
@@ -158,7 +157,7 @@ func (rt *SSHEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHa
 	}
 
 	// Step 1: load or mint the per-endpoint host key.
-	hostKey, err := rt.hostKeyFor(ch.Endpoint.Name, ch.CADir)
+	hostKey, err := rt.hostKeyFor(ch.Endpoint.Name, ch.Blobs)
 	if err != nil {
 		return fmt.Errorf("host key for endpoint %q: %w", ch.Endpoint.Name, err)
 	}
@@ -313,7 +312,7 @@ func (rt *SSHEndpointRuntime) upstreamClientConfig(ch *runtime.ConnHandle, cc *c
 	if !ok {
 		return nil, fmt.Errorf("does not implement sshproto.AuthCredential (use credential type \"ssh\")")
 	}
-	sec, err := ch.Secrets.Get(cc.Credential.Symbol.Name, ch.Profile)
+	sec, err := ch.Secrets.Get(cc.Credential.Symbol.Name)
 	if err != nil {
 		return nil, fmt.Errorf("fetch secret: %w", err)
 	}
@@ -541,27 +540,30 @@ func isProxyDroppedGlobalReq(name string) bool {
 
 // ── Host key persistence ──────────────────────────────────────────────
 
-func (rt *SSHEndpointRuntime) hostKeyFor(endpointName, caDir string) (ssh.Signer, error) {
+// SSHHostKeyKind is the BlobStore namespace for SSH endpoint host
+// keys. Exported so the gateway's legacy-state importer can address
+// the same rows when migrating on-disk <ca_dir>/ssh/<name>.key files
+// into sqlite on first boot.
+const SSHHostKeyKind = "ssh_host_key"
+
+func (rt *SSHEndpointRuntime) hostKeyFor(endpointName string, blobs runtime.BlobStore) (ssh.Signer, error) {
 	if v, ok := rt.keyCache.Load(endpointName); ok {
 		return v.(ssh.Signer), nil
 	}
-	dir := filepath.Join(caDir, "ssh")
-	path := filepath.Join(dir, safeFileName(endpointName)+".key")
 
-	if data, err := os.ReadFile(path); err == nil {
+	data, found, err := blobs.Get(SSHHostKeyKind, endpointName)
+	if err != nil {
+		return nil, fmt.Errorf("ssh host key get: %w", err)
+	}
+	if found {
 		signer, err := ssh.ParsePrivateKey(data)
 		if err != nil {
-			return nil, fmt.Errorf("parse %s: %w", path, err)
+			return nil, fmt.Errorf("parse host key for %q: %w", endpointName, err)
 		}
 		rt.keyCache.Store(endpointName, signer)
 		return signer, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
 	}
 
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, err
-	}
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
@@ -571,57 +573,17 @@ func (rt *SSHEndpointRuntime) hostKeyFor(endpointName, caDir string) (ssh.Signer
 		return nil, err
 	}
 	pemData := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
-	if err := writeFileAtomic(path, pemData, 0o600); err != nil {
-		return nil, err
+	if err := blobs.Put(SSHHostKeyKind, endpointName, pemData); err != nil {
+		return nil, fmt.Errorf("ssh host key put: %w", err)
 	}
 	signer, err := ssh.NewSignerFromKey(priv)
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("ssh: minted host key for endpoint %q at %s — fingerprint %s",
-		endpointName, path, ssh.FingerprintSHA256(signer.PublicKey()))
+	log.Printf("ssh: minted host key for endpoint %q — fingerprint %s",
+		endpointName, ssh.FingerprintSHA256(signer.PublicKey()))
 	rt.keyCache.Store(endpointName, signer)
 	return signer, nil
-}
-
-func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".sshkey-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Chmod(perm); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return err
-	}
-	return os.Rename(tmpName, path)
-}
-
-// safeFileName maps an endpoint name to a filesystem-safe form.
-// Endpoint names already follow HCL identifier rules so this is
-// belt-and-suspenders against future relaxations.
-func safeFileName(s string) string {
-	return strings.Map(func(r rune) rune {
-		switch {
-		case r >= 'a' && r <= 'z',
-			r >= 'A' && r <= 'Z',
-			r >= '0' && r <= '9',
-			r == '-', r == '_', r == '.':
-			return r
-		}
-		return '_'
-	}, s)
 }
 
 // pickUpstream picks the host:port from hosts that matches dstPort.

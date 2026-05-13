@@ -33,9 +33,17 @@ type ActivationBuilder func(req *Request) map[string]any
 // rule sources like `http.method == "POST"` keep working without any
 // per-match cost.
 //
+// truncatablePaths names the dotted identifier paths whose activation
+// values come from bytes a wire frontend may truncate at its
+// inspection cap (HTTPS body, SQL statement). CompileCondition walks
+// the AST and pre-computes a single bool: does this condition read
+// any of those paths? The result is exposed via
+// InspectsTruncatableFacet() so the dispatcher can fail-close on a
+// truncated request without re-walking the AST per match.
+//
 // Paths must be of the form "<var>.<field>" — single-level selection
 // off a top-level identifier. That's all the facets need today.
-func CompileCondition(env *cel.Env, condition string, buildAct ActivationBuilder, lowercasedPaths []string) (Matcher, error) {
+func CompileCondition(env *cel.Env, condition string, buildAct ActivationBuilder, lowercasedPaths, truncatablePaths []string) (Matcher, error) {
 	ast, issues := env.Compile(condition)
 	if issues != nil && issues.Err() != nil {
 		return nil, fmt.Errorf("cel compile: %w", issues.Err())
@@ -44,11 +52,19 @@ func CompileCondition(env *cel.Env, condition string, buildAct ActivationBuilder
 		return nil, fmt.Errorf("cel condition must yield bool, got %s", ast.OutputType())
 	}
 	if len(lowercasedPaths) > 0 {
-		paths, err := parseLowercasedPaths(lowercasedPaths)
+		paths, err := parsePaths(lowercasedPaths)
 		if err != nil {
 			return nil, err
 		}
 		normalizeWantLiterals(ast.NativeRep().Expr(), paths)
+	}
+	var inspectsTruncatable bool
+	if len(truncatablePaths) > 0 {
+		paths, err := parsePaths(truncatablePaths)
+		if err != nil {
+			return nil, err
+		}
+		inspectsTruncatable = referencesPath(ast.NativeRep().Expr(), paths)
 	}
 	prog, err := env.Program(ast)
 	if err != nil {
@@ -56,9 +72,10 @@ func CompileCondition(env *cel.Env, condition string, buildAct ActivationBuilder
 	}
 	refs := collectReferencedVars(ast.NativeRep().Expr())
 	return &celMatcher{
-		prog:     prog,
-		buildAct: buildAct,
-		refs:     refs,
+		prog:                prog,
+		buildAct:            buildAct,
+		refs:                refs,
+		inspectsTruncatable: inspectsTruncatable,
 	}, nil
 }
 
@@ -67,6 +84,12 @@ func CompileCondition(env *cel.Env, condition string, buildAct ActivationBuilder
 // this; the gateway uses it (via the CelReferences interface in the
 // runtime package) to decide whether body buffering is needed.
 func (m *celMatcher) References() map[string]bool { return m.refs }
+
+// InspectsTruncatableFacet reports whether the matcher's CEL
+// condition reads any of the truncatablePaths declared when the
+// matcher was compiled. Pre-computed at compile time so the
+// dispatcher's fail-closed check is O(1) per match.
+func (m *celMatcher) InspectsTruncatableFacet() bool { return m.inspectsTruncatable }
 
 // PassThrough is a Matcher that always returns true. Facets use it
 // for empty conditions (catch-all rules).
@@ -78,10 +101,17 @@ func (PassThrough) Match(*Request) bool { return true }
 // References reports no variable use.
 func (PassThrough) References() map[string]bool { return nil }
 
+// InspectsTruncatableFacet reports false: a catch-all rule has no
+// CEL condition, so by definition it reads nothing that could be
+// truncated. The dispatcher will fire it normally on a truncated
+// request — operators can still attach a default-deny verdict to it.
+func (PassThrough) InspectsTruncatableFacet() bool { return false }
+
 type celMatcher struct {
-	prog     cel.Program
-	buildAct ActivationBuilder
-	refs     map[string]bool
+	prog                cel.Program
+	buildAct            ActivationBuilder
+	refs                map[string]bool
+	inspectsTruncatable bool
 }
 
 func (m *celMatcher) Match(req *Request) bool {
@@ -159,23 +189,88 @@ func collectReferencedVars(e celast.Expr) map[string]bool {
 	return refs
 }
 
-// lowercasedPath is the parsed form of a "<var>.<field>" entry in the
-// lowercasedPaths argument to CompileCondition.
-type lowercasedPath struct {
+// celPath is the parsed form of a "<var>.<field>" entry shared by
+// the lowercasedPaths and truncatablePaths arguments to
+// CompileCondition.
+type celPath struct {
 	ident string
 	field string
 }
 
-func parseLowercasedPaths(paths []string) ([]lowercasedPath, error) {
-	out := make([]lowercasedPath, 0, len(paths))
+func parsePaths(paths []string) ([]celPath, error) {
+	out := make([]celPath, 0, len(paths))
 	for _, p := range paths {
 		ident, field, ok := strings.Cut(p, ".")
 		if !ok || ident == "" || field == "" || strings.Contains(field, ".") {
-			return nil, fmt.Errorf("lowercased path %q must be of the form \"<var>.<field>\"", p)
+			return nil, fmt.Errorf("cel path %q must be of the form \"<var>.<field>\"", p)
 		}
-		out = append(out, lowercasedPath{ident: ident, field: field})
+		out = append(out, celPath{ident: ident, field: field})
 	}
 	return out, nil
+}
+
+// referencesPath walks the AST and returns true when any node is a
+// single-level Select expression off a top-level Ident whose
+// (ident, field) matches any entry in paths. Used by CompileCondition
+// to detect whether a condition reads a truncation-affected field.
+func referencesPath(root celast.Expr, paths []celPath) bool {
+	if root == nil || len(paths) == 0 {
+		return false
+	}
+	var found bool
+	var walk func(celast.Expr)
+	walk = func(n celast.Expr) {
+		if found || n == nil {
+			return
+		}
+		switch n.Kind() {
+		case celast.SelectKind:
+			sel := n.AsSelect()
+			op := sel.Operand()
+			if op != nil && op.Kind() == celast.IdentKind {
+				ident := op.AsIdent()
+				field := sel.FieldName()
+				for _, p := range paths {
+					if p.ident == ident && p.field == field {
+						found = true
+						return
+					}
+				}
+			}
+			walk(sel.Operand())
+		case celast.CallKind:
+			c := n.AsCall()
+			if c.Target() != nil {
+				walk(c.Target())
+			}
+			for _, a := range c.Args() {
+				walk(a)
+			}
+		case celast.ListKind:
+			for _, el := range n.AsList().Elements() {
+				walk(el)
+			}
+		case celast.MapKind:
+			for _, en := range n.AsMap().Entries() {
+				me := en.AsMapEntry()
+				walk(me.Key())
+				walk(me.Value())
+			}
+		case celast.StructKind:
+			for _, f := range n.AsStruct().Fields() {
+				walk(f.AsStructField().Value())
+			}
+		case celast.ComprehensionKind:
+			c := n.AsComprehension()
+			walk(c.IterRange())
+			walk(c.AccuInit())
+			walk(c.LoopCondition())
+			walk(c.LoopStep())
+			walk(c.Result())
+		}
+	}
+	walk(root)
+	return found
 }
 
 // normalizeWantLiterals walks the AST and lowercases string literals
@@ -195,7 +290,7 @@ func parseLowercasedPaths(paths []string) ([]lowercasedPath, error) {
 // matches() is deliberately not normalized — its argument is a regex,
 // where case classes like `[A-Z]` are meaningful and the operator can
 // opt into case-insensitivity with `(?i)`.
-func normalizeWantLiterals(root celast.Expr, paths []lowercasedPath) {
+func normalizeWantLiterals(root celast.Expr, paths []celPath) {
 	if root == nil || len(paths) == 0 {
 		return
 	}
@@ -272,7 +367,7 @@ func normalizeWantLiterals(root celast.Expr, paths []lowercasedPath) {
 
 // matchesPath reports whether e is a single-level Select expression
 // off a top-level Ident whose (ident, field) matches any of paths.
-func matchesPath(e celast.Expr, paths []lowercasedPath) bool {
+func matchesPath(e celast.Expr, paths []celPath) bool {
 	if e == nil || e.Kind() != celast.SelectKind {
 		return false
 	}

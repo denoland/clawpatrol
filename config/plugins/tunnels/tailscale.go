@@ -51,16 +51,24 @@ import (
 
 // TailscaleTunnel configures the tunnel runtime.
 type TailscaleTunnel struct {
-	AuthKey    string   `hcl:"authkey,optional"`
-	ControlURL string   `hcl:"control_url,optional"`
-	Hostname   string   `hcl:"hostname,optional"`
-	StateDir   string   `hcl:"state_dir,optional"`
-	Tags       []string `hcl:"tags,optional"`
+	// AuthKey is the Tailscale auth key; env fallback is CLAWPATROL_TUNNEL_<NAME>_AUTHKEY.
+	AuthKey string `hcl:"authkey,optional"`
+	// ControlURL overrides the Tailscale control-plane URL.
+	ControlURL string `hcl:"control_url,optional"`
+	// Hostname is the tsnet node name; defaults to clawpatrol-tunnel-<name>.
+	Hostname string `hcl:"hostname,optional"`
+	// StateDir stores tsnet node state; defaults under the gateway CA directory.
+	StateDir string `hcl:"state_dir,optional"`
+	// Tags are Tailscale tags requested for the tsnet node.
+	Tags []string `hcl:"tags,optional"`
 
-	// Framework-level common attrs.
-	Share      string `hcl:"share,optional"`
-	Keepalive  string `hcl:"keepalive,optional"`
-	Via        string `hcl:"via,optional"`
+	// Share controls whether runtime instances are singleton, per-endpoint, or per-request.
+	Share string `hcl:"share,optional"`
+	// Keepalive keeps an idle tunnel runtime warm for the given duration.
+	Keepalive string `hcl:"keepalive,optional"`
+	// Via chains this tunnel through another tunnel.
+	Via string `hcl:"via,optional"`
+	// Credential references an optional credential block for the tunnel runtime.
 	Credential string `hcl:"credential,optional"`
 }
 
@@ -115,11 +123,11 @@ func (t *TailscaleTunnel) Open(ctx context.Context, host runtime.TunnelHost, _ r
 		return nil, fmt.Errorf("tailscale tunnel %q: no authkey (set HCL `authkey = ...`, env %s, or wire a `credential = ...` reference)", host.Name, envAuthKey(host.Name))
 	}
 	stateDir := t.StateDir
-	if stateDir == "" && host.CADir != "" {
-		stateDir = filepath.Join(host.CADir, "tunnels", "tailscale", host.Name)
+	if stateDir == "" && host.StateDir != "" {
+		stateDir = filepath.Join(host.StateDir, "tunnels", "tailscale", host.Name)
 	}
 	if stateDir == "" {
-		return nil, errors.New("tailscale tunnel: state_dir is required (HCL `state_dir = ...` or set the gateway's ca_dir so a default can be derived)")
+		return nil, errors.New("tailscale tunnel: state_dir is required (HCL `state_dir = ...` on the tunnel or the gateway)")
 	}
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return nil, fmt.Errorf("tailscale tunnel %q: state dir: %w", host.Name, err)

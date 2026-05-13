@@ -106,12 +106,12 @@ type TunnelHost struct {
 	// credentials expose a known shape).
 	Credential *TunnelCredential
 
-	// CADir is the gateway's persistent state root (cfg.CADir).
+	// StateDir is the gateway's persistent state root (cfg.StateDir).
 	// Tunnel plugins that need to persist material between policy
 	// reloads — e.g. tailscale tsnet's state directory — derive
-	// paths from this. Empty when the gateway hasn't been configured
-	// with one.
-	CADir string
+	// paths from this. Always non-empty (the host resolves a default
+	// when no explicit StateDir is configured).
+	StateDir string
 
 	// Logger is a per-tunnel logger pre-tagged with the tunnel name.
 	// Plugins should prefer it over package-level log.Printf so the

@@ -30,27 +30,26 @@ type (
 	OAuthIntegration = config.OAuthIntegration
 )
 
-// oauthState is one credential: tokens for a single (integration, owner).
-// Persisted in the credentials table; one row per (id, owner).
+// oauthState is one credential: tokens for a single integration.
+// Persisted in the credentials table; one row per id.
 type oauthState struct {
 	cfg         *oauth2.Config
 	source      oauth2.TokenSource
 	header      string
 	prefix      string
 	id          string
-	owner       string
 	displayName string // human-readable name (e.g. github login)
 	avatarURL   string // dashboard pfp
 	db          *sql.DB
 	mu          sync.Mutex
 }
 
-// OAuthRegistry holds all configured OAuth integrations and a per-owner
-// state map. Keyed by (integration_id, owner-string).
+// OAuthRegistry holds all configured OAuth integrations and one token
+// state per integration. Keyed by integration_id.
 type OAuthRegistry struct {
 	mu           sync.RWMutex
 	integrations map[string]*OAuthIntegration
-	states       map[string]*oauthState // key: id + "|" + owner
+	states       map[string]*oauthState // key: id
 	db           *sql.DB
 }
 
@@ -85,35 +84,20 @@ func (r *OAuthRegistry) IntegrationIDs() []string {
 	return ids
 }
 
-func stateKey(id, owner string) string { return id + "|" + owner }
-
-func (r *OAuthRegistry) get(id, owner string) *oauthState {
+func (r *OAuthRegistry) get(id string) *oauthState {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.states[stateKey(id, owner)]
+	return r.states[id]
 }
 
-func (r *OAuthRegistry) Owners(id string) []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	out := []string{}
-	for k, s := range r.states {
-		if s.id == id && s.source != nil {
-			_ = k
-			out = append(out, s.owner)
-		}
-	}
-	return out
-}
-
-// Inject sets the auth header on req using the (id, owner) credential.
+// Inject sets the auth header on req using the named credential.
 // Returns (overrode, err). overrode=false means no token yet; caller
 // may pass agent's existing header through, or fail.
-func (r *OAuthRegistry) Inject(id, owner string, req *http.Request) (bool, error) {
+func (r *OAuthRegistry) Inject(id string, req *http.Request) (bool, error) {
 	if id == "" {
 		return false, nil
 	}
-	s := r.get(id, owner)
+	s := r.get(id)
 	if s == nil || s.source == nil {
 		return false, nil
 	}
@@ -125,21 +109,21 @@ func (r *OAuthRegistry) Inject(id, owner string, req *http.Request) (bool, error
 	return true, nil
 }
 
-// Token returns the current access token for (id, owner) — refreshing
-// it through the underlying oauth2.TokenSource if it's stale. Empty
-// string + nil error means no token has been captured yet for this
-// owner; the caller decides between fail-closed and pass-through.
+// Token returns the current access token for the credential —
+// refreshing it through the underlying oauth2.TokenSource if it's
+// stale. Empty string + nil error means no token has been captured
+// yet; the caller decides between fail-closed and pass-through.
 //
 // Used by the runtime SecretStore bridge so credential plugins
 // (which know how to format Authorization / x-api-key / cookie)
 // can stamp the bytes onto the request — OAuthRegistry.Inject
 // hardcodes the header shape and predates the per-credential plugin
 // model.
-func (r *OAuthRegistry) Token(id, owner string) (string, error) {
+func (r *OAuthRegistry) Token(id string) (string, error) {
 	if id == "" {
 		return "", nil
 	}
-	s := r.get(id, owner)
+	s := r.get(id)
 	if s == nil || s.source == nil {
 		return "", nil
 	}
@@ -165,9 +149,9 @@ func (r *OAuthRegistry) Register(id string, def OAuthIntegration) {
 	r.integrations[id] = &def
 }
 
-// Status returns connected info for a given (id, owner).
-func (r *OAuthRegistry) Status(id, owner string) (connected bool, expiry time.Time) {
-	s := r.get(id, owner)
+// Status returns connected info for the named credential.
+func (r *OAuthRegistry) Status(id string) (connected bool, expiry time.Time) {
+	s := r.get(id)
 	if s == nil || s.source == nil {
 		return false, time.Time{}
 	}
@@ -179,11 +163,12 @@ func (r *OAuthRegistry) Status(id, owner string) (connected bool, expiry time.Ti
 }
 
 // Profile returns the (display_name, avatar_url) the dashboard
-// renders for this owner. Empty strings when no userinfo enricher ran
-// for this provider, when the row pre-dates 0003_credential_profile,
-// or when the userinfo fetch failed at exchange time.
-func (r *OAuthRegistry) Profile(id, owner string) (displayName, avatarURL string) {
-	s := r.get(id, owner)
+// renders for this credential. Empty strings when no userinfo
+// enricher ran for this provider, when the row pre-dates
+// 0003_credential_profile, or when the userinfo fetch failed at
+// exchange time.
+func (r *OAuthRegistry) Profile(id string) (displayName, avatarURL string) {
+	s := r.get(id)
 	if s == nil {
 		return "", ""
 	}
@@ -192,31 +177,31 @@ func (r *OAuthRegistry) Profile(id, owner string) (displayName, avatarURL string
 	return s.displayName, s.avatarURL
 }
 
-// Revoke deletes the (id, owner) credential and its DB row.
-func (r *OAuthRegistry) Revoke(id, owner string) {
+// Revoke deletes the credential's token and its DB row.
+func (r *OAuthRegistry) Revoke(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.states[stateKey(id, owner)]; !ok {
+	if _, ok := r.states[id]; !ok {
 		return
 	}
 	if r.db != nil {
-		_, _ = r.db.Exec("DELETE FROM credentials WHERE id=? AND profile=?", id, owner)
+		_, _ = r.db.Exec("DELETE FROM credentials WHERE id=?", id)
 	}
-	delete(r.states, stateKey(id, owner))
+	delete(r.states, id)
 }
 
 // Set stores tokens captured externally (browser auth flow callback).
-func (r *OAuthRegistry) Set(id, owner string, tok *oauth2.Token) error {
+func (r *OAuthRegistry) Set(id string, tok *oauth2.Token) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	it, ok := r.integrations[id]
 	if !ok {
 		return fmt.Errorf("unknown integration: %s", id)
 	}
-	s := r.states[stateKey(id, owner)]
+	s := r.states[id]
 	if s == nil {
-		s = newState(it, owner, r.db)
-		r.states[stateKey(id, owner)] = s
+		s = newState(it, r.db)
+		r.states[id] = s
 	}
 	s.setToken(tok)
 	if name, avatar := fetchOAuthProfile(id, tok.AccessToken); name != "" || avatar != "" {
@@ -269,7 +254,7 @@ func fetchOAuthProfile(id, accessToken string) (string, string) {
 	return "", ""
 }
 
-func newState(it *OAuthIntegration, owner string, db *sql.DB) *oauthState {
+func newState(it *OAuthIntegration, db *sql.DB) *oauthState {
 	cfg := &oauth2.Config{
 		ClientID:     resolveTemplate(it.OAuth.ClientID),
 		ClientSecret: resolveTemplate(it.OAuth.ClientSecret),
@@ -290,7 +275,6 @@ func newState(it *OAuthIntegration, owner string, db *sql.DB) *oauthState {
 		header: header,
 		prefix: prefix,
 		id:     it.ID,
-		owner:  owner,
 		db:     db,
 	}
 }
@@ -390,10 +374,10 @@ func (p *persistingSource) Token() (*oauth2.Token, error) {
 }
 
 // persistProfile updates the human-identity columns for this
-// (id, owner) row. Called after fetchOAuthProfile populates them post-
-// exchange. UPDATE-only — relies on persist() having INSERTed the
-// row first. Best-effort: a failed write surfaces only as missing
-// avatar on the dashboard.
+// credential's row. Called after fetchOAuthProfile populates them
+// post-exchange. UPDATE-only — relies on persist() having INSERTed
+// the row first. Best-effort: a failed write surfaces only as
+// missing avatar on the dashboard.
 func (s *oauthState) persistProfile(displayName, avatarURL string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -403,8 +387,8 @@ func (s *oauthState) persistProfile(displayName, avatarURL string) {
 	_, _ = s.db.Exec(`
 		UPDATE credentials
 		   SET display_name = ?, avatar_url = ?
-		 WHERE id = ? AND profile = ?
-	`, displayName, avatarURL, s.id, s.owner)
+		 WHERE id = ?
+	`, displayName, avatarURL, s.id)
 	s.displayName = displayName
 	s.avatarURL = avatarURL
 }
@@ -420,53 +404,53 @@ func (s *oauthState) persist(t *oauth2.Token) {
 		expiryNs = t.Expiry.UnixNano()
 	}
 	_, _ = s.db.Exec(`
-		INSERT INTO credentials (id, profile, access_token, token_type, refresh_token, expiry_ns, updated_ns)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id, profile) DO UPDATE SET
+		INSERT INTO credentials (id, access_token, token_type, refresh_token, expiry_ns, updated_ns)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
 			access_token  = excluded.access_token,
 			token_type    = excluded.token_type,
 			refresh_token = excluded.refresh_token,
 			expiry_ns     = excluded.expiry_ns,
 			updated_ns    = excluded.updated_ns
-	`, s.id, s.owner, t.AccessToken, t.TokenType, t.RefreshToken, expiryNs, time.Now().UnixNano())
+	`, s.id, t.AccessToken, t.TokenType, t.RefreshToken, expiryNs, time.Now().UnixNano())
 }
 
-// LoadFromDB rehydrates every (id, owner) credential row whose
-// integration is currently registered. Safe to call repeatedly —
-// re-running after registerOAuthCredentials picks up tokens for IDs
-// that were registered after NewOAuthRegistry's initial pass.
-// Idempotent: existing in-memory state for an (id, owner) is
-// overwritten with the DB-stored token.
+// LoadFromDB rehydrates every credential row whose integration is
+// currently registered. Safe to call repeatedly — re-running after
+// registerOAuthCredentials picks up tokens for IDs that were
+// registered after NewOAuthRegistry's initial pass. Idempotent:
+// existing in-memory state for an id is overwritten with the
+// DB-stored token.
 func (r *OAuthRegistry) LoadFromDB() error {
 	return r.loadFromDB()
 }
 
-// loadFromDB rehydrates every (id, owner) credential row whose
-// integration is still declared in r.integrations.
+// loadFromDB rehydrates every credential row whose integration is
+// still declared in r.integrations.
 func (r *OAuthRegistry) loadFromDB() error {
 	if r.db == nil {
 		return nil
 	}
-	rows, err := r.db.Query("SELECT id, profile, access_token, token_type, refresh_token, expiry_ns, display_name, avatar_url FROM credentials")
+	rows, err := r.db.Query("SELECT id, access_token, token_type, refresh_token, expiry_ns, display_name, avatar_url FROM credentials")
 	if err != nil {
 		return err
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var (
-			id, owner           string
+			id                  string
 			access, typ, refr   sql.NullString
 			expiryNs            sql.NullInt64
 			displayName, avatar sql.NullString
 		)
-		if err := rows.Scan(&id, &owner, &access, &typ, &refr, &expiryNs, &displayName, &avatar); err != nil {
+		if err := rows.Scan(&id, &access, &typ, &refr, &expiryNs, &displayName, &avatar); err != nil {
 			return err
 		}
 		it, ok := r.integrations[id]
 		if !ok {
 			continue
 		}
-		s := newState(it, owner, r.db)
+		s := newState(it, r.db)
 		tok := &oauth2.Token{
 			AccessToken:  access.String,
 			TokenType:    typ.String,
@@ -478,7 +462,7 @@ func (r *OAuthRegistry) loadFromDB() error {
 		s.setToken(tok)
 		s.displayName = displayName.String
 		s.avatarURL = avatar.String
-		r.states[stateKey(id, owner)] = s
+		r.states[id] = s
 	}
 	return rows.Err()
 }
@@ -488,7 +472,6 @@ type oauthSession struct {
 	state    string
 	cfg      *oauth2.Config
 	id       string
-	owner    string
 	created  time.Time
 }
 
@@ -549,11 +532,6 @@ func (w *webMux) apiOAuthStart(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "no oauth integration: "+id, 400)
 		return
 	}
-	owner, ownerLabel := w.credentialProfileKeyForRequest(r)
-	if owner == "" {
-		http.Error(rw, "could not determine profile", 400)
-		return
-	}
 	// User may opt into additional scopes (e.g. SSH/GPG key management
 	// for github_oauth) at connect time. Merge into base scopes so the
 	// declared defaults remain mandatory — narrowing scope at the UI
@@ -565,11 +543,11 @@ func (w *webMux) apiOAuthStart(rw http.ResponseWriter, r *http.Request) {
 	flow = &mergedFlow
 	// Branch: device flow vs auth-code+PKCE.
 	if flow.Flow == "device" {
-		w.startDeviceFlow(rw, id, flow, owner, ownerLabel)
+		w.startDeviceFlow(rw, id, flow)
 		return
 	}
 	if flow.Flow == "openai_device" {
-		w.startOpenAIDeviceFlow(rw, id, flow, owner, ownerLabel)
+		w.startOpenAIDeviceFlow(rw, id, flow)
 		return
 	}
 
@@ -589,14 +567,14 @@ func (w *webMux) apiOAuthStart(rw http.ResponseWriter, r *http.Request) {
 		oauth2.SetAuthURLParam("code_challenge_method", "S256"),
 	)
 	w.mu.Lock()
-	w.sessions[state] = &oauthSession{verifier: verifier, state: state, cfg: cfg, id: id, owner: owner, created: time.Now()}
+	w.sessions[state] = &oauthSession{verifier: verifier, state: state, cfg: cfg, id: id, created: time.Now()}
 	for k, s := range w.sessions {
 		if time.Since(s.created) > 10*time.Minute {
 			delete(w.sessions, k)
 		}
 	}
 	w.mu.Unlock()
-	writeJSON(rw, map[string]string{"auth_url": authURL, "state": state, "owner": ownerLabel})
+	writeJSON(rw, map[string]string{"auth_url": authURL, "state": state})
 }
 
 func (w *webMux) apiOAuthExchange(rw http.ResponseWriter, r *http.Request) {
@@ -639,17 +617,17 @@ func (w *webMux) apiOAuthExchange(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "token exchange: "+err.Error(), 400)
 		return
 	}
-	if err := w.g.oauth.Set(sess.id, sess.owner, tok); err != nil {
+	if err := w.g.oauth.Set(sess.id, tok); err != nil {
 		http.Error(rw, err.Error(), 500)
 		return
 	}
-	writeJSON(rw, map[string]any{"connected": true, "owner": sess.owner, "expires": tok.Expiry.Unix()})
+	writeJSON(rw, map[string]any{"connected": true, "expires": tok.Expiry.Unix()})
 }
 
 // startDeviceFlow kicks off OAuth device flow (RFC 8628). Returns
 // {user_code, verification_uri, device_code, interval} so the dashboard
 // can prompt the user to enter the code at the verification URI.
-func (w *webMux) startDeviceFlow(rw http.ResponseWriter, id string, it *OAuthIntegration, owner, ownerLabel string) {
+func (w *webMux) startDeviceFlow(rw http.ResponseWriter, id string, it *OAuthIntegration) {
 	form := url.Values{}
 	form.Set("client_id", resolveTemplate(it.OAuth.ClientID))
 	if len(it.OAuth.Scopes) > 0 {
@@ -685,7 +663,6 @@ func (w *webMux) startDeviceFlow(rw http.ResponseWriter, id string, it *OAuthInt
 	w.sessions[state] = &oauthSession{
 		state:    state,
 		id:       id,
-		owner:    owner,
 		created:  time.Now(),
 		verifier: dr.DeviceCode, // reuse field for device_code
 		cfg: &oauth2.Config{
@@ -701,7 +678,6 @@ func (w *webMux) startDeviceFlow(rw http.ResponseWriter, id string, it *OAuthInt
 		"verification_uri": dr.VerificationURI,
 		"interval":         dr.Interval,
 		"expires_in":       dr.ExpiresIn,
-		"owner":            ownerLabel,
 	})
 }
 
@@ -712,7 +688,7 @@ func (w *webMux) startDeviceFlow(rw http.ResponseWriter, id string, it *OAuthInt
 // session and fed to the poll handler. Verification URL is hardcoded
 // to https://auth.openai.com/codex/device since OpenAI's response
 // doesn't include one.
-func (w *webMux) startOpenAIDeviceFlow(rw http.ResponseWriter, id string, it *OAuthIntegration, owner, ownerLabel string) {
+func (w *webMux) startOpenAIDeviceFlow(rw http.ResponseWriter, id string, it *OAuthIntegration) {
 	clientID := resolveTemplate(it.OAuth.ClientID)
 	body, _ := json.Marshal(map[string]string{"client_id": clientID})
 	req, _ := http.NewRequest("POST", it.OAuth.DeviceURL, bytes.NewReader(body))
@@ -746,7 +722,6 @@ func (w *webMux) startOpenAIDeviceFlow(rw http.ResponseWriter, id string, it *OA
 	w.sessions[state] = &oauthSession{
 		state:   state,
 		id:      id,
-		owner:   owner,
 		created: time.Now(),
 		// Pack device_auth_id|user_code into verifier so pollDeviceFlow
 		// can split them; cfg.RedirectURL carries the codex-specific
@@ -776,7 +751,6 @@ func (w *webMux) startOpenAIDeviceFlow(rw http.ResponseWriter, id string, it *OA
 		"user_code":        dr.UserCode,
 		"verification_uri": "https://auth.openai.com/codex/device",
 		"interval":         interval,
-		"owner":            ownerLabel,
 	})
 }
 
@@ -862,11 +836,11 @@ func (w *webMux) pollOpenAIDeviceFlow(rw http.ResponseWriter, sess *oauthSession
 	w.mu.Lock()
 	delete(w.sessions, sess.state)
 	w.mu.Unlock()
-	if err := w.g.oauth.Set(sess.id, sess.owner, tok); err != nil {
+	if err := w.g.oauth.Set(sess.id, tok); err != nil {
 		http.Error(rw, err.Error(), 500)
 		return
 	}
-	writeJSON(rw, map[string]any{"connected": true, "owner": sess.owner})
+	writeJSON(rw, map[string]any{"connected": true})
 }
 
 // pollDeviceFlow exchanges device_code for a token. Called by the
@@ -928,11 +902,11 @@ func (w *webMux) pollDeviceFlow(rw http.ResponseWriter, sess *oauthSession) {
 	w.mu.Lock()
 	delete(w.sessions, sess.state)
 	w.mu.Unlock()
-	if err := w.g.oauth.Set(sess.id, sess.owner, tok); err != nil {
+	if err := w.g.oauth.Set(sess.id, tok); err != nil {
 		http.Error(rw, err.Error(), 500)
 		return
 	}
-	writeJSON(rw, map[string]any{"connected": true, "owner": sess.owner})
+	writeJSON(rw, map[string]any{"connected": true})
 }
 
 // exchangeOAuthCode finalizes an OAuth PKCE flow. Anthropic's token
@@ -1026,17 +1000,16 @@ func (w *webMux) apiOAuthRevoke(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		ID    string `json:"id"`
-		Owner string `json:"owner"`
+		ID string `json:"id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(rw, err.Error(), 400)
 		return
 	}
-	if body.ID == "" || body.Owner == "" {
-		http.Error(rw, "missing id or owner", 400)
+	if body.ID == "" {
+		http.Error(rw, "missing id", 400)
 		return
 	}
-	w.g.oauth.Revoke(body.ID, body.Owner)
+	w.g.oauth.Revoke(body.ID)
 	writeJSON(rw, map[string]bool{"ok": true})
 }

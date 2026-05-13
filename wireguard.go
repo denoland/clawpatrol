@@ -22,11 +22,14 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"expvar"
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -291,9 +294,10 @@ func setWGServer(s *WGServer) { globalWG = s }
 func setDB(d *sql.DB)         { globalDB = d }
 
 // StartWGServer brings up a userspace WG endpoint listening on
-// 0.0.0.0:<ListenPort>. Server private key is read from disk; if
-// missing, generated and persisted at <stateDir>/wg-server.key.
-func StartWGServer(ts JoinConfig, stateDir string) (*WGServer, error) {
+// 0.0.0.0:<ListenPort>. Server private key is read from the
+// wg_server_key sqlite row; if missing, generated and persisted on
+// first boot. Stable across restarts so onboarded peers keep working.
+func StartWGServer(ts JoinConfig) (*WGServer, error) {
 	if ts.WGSubnetCIDR == "" {
 		return nil, fmt.Errorf("wireguard: wg_subnet_cidr required")
 	}
@@ -304,7 +308,7 @@ func StartWGServer(ts JoinConfig, stateDir string) (*WGServer, error) {
 		}
 	}
 
-	priv, err := loadOrGenWGKey(stateDir + "/wg-server.key")
+	priv, err := loadOrGenWGServerKey(globalDB)
 	if err != nil {
 		return nil, err
 	}
@@ -602,11 +606,22 @@ func (s *WGServer) loadPeers() map[string]string {
 	if s.db == nil {
 		return out
 	}
-	// Ephemeral peers are owned by client processes that exit when the
-	// gateway restarts. Purge them so they don't accumulate in the WG
-	// trie or leak device rows via SetExternalIPs.
-	_, _ = s.db.Exec("DELETE FROM devices WHERE id IN (SELECT ip FROM wg_peers WHERE ephemeral=1)")
-	_, _ = s.db.Exec("DELETE FROM wg_peers WHERE ephemeral=1")
+	// Purge ephemeral peers whose parent device no longer exists — those
+	// are from crashed/killed `clawpatrol run` processes that never sent
+	// DELETE. Ephemeral peers with a live parent_ip survive so a gateway
+	// restart doesn't strand a still-running `clawpatrol run`.
+	_, _ = s.db.Exec(`
+		DELETE FROM devices WHERE id IN (
+			SELECT ip FROM wg_peers
+			WHERE ephemeral=1
+			AND parent_ip NOT IN (SELECT id FROM devices)
+		)
+	`)
+	_, _ = s.db.Exec(`
+		DELETE FROM wg_peers
+		WHERE ephemeral=1
+		AND parent_ip NOT IN (SELECT id FROM devices)
+	`)
 	rows, err := s.db.Query("SELECT pubkey, ip FROM wg_peers")
 	if err != nil {
 		return out
@@ -653,21 +668,47 @@ func (s *WGServer) RevokePeerByIP(ip string) {
 	_, _ = s.db.Exec("DELETE FROM wg_peers WHERE ip = ?", ip)
 }
 
-func loadOrGenWGKey(path string) (string, error) {
-	if b, err := os.ReadFile(path); err == nil {
-		return strings.TrimSpace(string(b)), nil
+// loadOrGenWGServerKey returns the gateway's WG server private key in
+// hex (the format wireguard-go's IpcSet expects). Reads from the
+// wg_server_key sqlite row; mints + persists on first call.
+func loadOrGenWGServerKey(db *sql.DB) (string, error) {
+	if db == nil {
+		return "", fmt.Errorf("wg server key: no db")
 	}
-	priv, err := wgGenPrivateHex()
+	var priv string
+	err := db.QueryRow(`SELECT priv_hex FROM wg_server_key WHERE id = 1`).Scan(&priv)
+	if err == nil {
+		return strings.TrimSpace(priv), nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("wg server key read: %w", err)
+	}
+	priv, err = wgGenPrivateHex()
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(strings.TrimSuffix(path, "/wg-server.key"), 0o700); err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(path, []byte(priv), 0o600); err != nil {
-		return "", err
+	if _, err := db.Exec(
+		`INSERT INTO wg_server_key (id, priv_hex, created_ns) VALUES (1, ?, ?)`,
+		priv, time.Now().UnixNano(),
+	); err != nil {
+		return "", fmt.Errorf("wg server key insert: %w", err)
 	}
 	return priv, nil
+}
+
+// importWGServerKey writes a pre-existing hex key into wg_server_key.
+// Used by the legacy-state importer to move the on-disk
+// wg-server.key into sqlite. Caller guards against double-insert.
+func importWGServerKey(db *sql.DB, privHex string) error {
+	privHex = strings.TrimSpace(privHex)
+	if _, err := wgPubFromPrivHex(privHex); err != nil {
+		return fmt.Errorf("validate legacy wg key: %w", err)
+	}
+	_, err := db.Exec(
+		`INSERT INTO wg_server_key (id, priv_hex, created_ns) VALUES (1, ?, ?)`,
+		privHex, time.Now().UnixNano(),
+	)
+	return err
 }
 
 func wgPubFromPrivHex(privHex string) (string, error) {
@@ -729,9 +770,62 @@ type wireguardOnboarder struct {
 	mu sync.Mutex
 }
 
+// wgClientEndpoint returns the host:port string clients should put in
+// their WireGuard `Endpoint =` line.
+//
+//   - port: parsed from wgEndpoint, falling back to 51820 when
+//     wgEndpoint is empty or omits a port.
+//   - host: if wgEndpoint specifies a non-wildcard host (anything
+//     other than empty / "0.0.0.0" / "::"), that host wins — the
+//     escape hatch for split-host deployments where the WG listener
+//     and the dashboard are on different IPs. Otherwise host is
+//     parsed from publicURL.
+//
+// Server-side, wgEndpoint's host is reserved for future
+// bind-to-interface support (wireguard-go's DefaultBind doesn't
+// support address-bound listening yet).
+func wgClientEndpoint(wgEndpoint, publicURL string) (string, error) {
+	port := 51820
+	var hostOverride string
+	if wgEndpoint != "" {
+		h, p, err := net.SplitHostPort(wgEndpoint)
+		if err != nil {
+			return "", fmt.Errorf("wg_endpoint %q: %w", wgEndpoint, err)
+		}
+		if p != "" {
+			n, err := strconv.Atoi(p)
+			if err != nil {
+				return "", fmt.Errorf("wg_endpoint port %q: %w", p, err)
+			}
+			port = n
+		}
+		if h != "" && h != "0.0.0.0" && h != "::" {
+			hostOverride = h
+		}
+	}
+	if hostOverride == "" {
+		if publicURL == "" {
+			return "", fmt.Errorf("cannot derive WG client endpoint: set public_url or pin a non-wildcard host in wg_endpoint")
+		}
+		u, err := url.Parse(publicURL)
+		if err != nil {
+			return "", fmt.Errorf("public_url %q: %w", publicURL, err)
+		}
+		hostOverride = u.Hostname()
+		if hostOverride == "" {
+			return "", fmt.Errorf("public_url %q has no host", publicURL)
+		}
+	}
+	return net.JoinHostPort(hostOverride, strconv.Itoa(port)), nil
+}
+
 func (w *wireguardOnboarder) MintKey(_ context.Context, reuseIP string) (string, string, string, error) {
-	if w.ts.WGEndpoint == "" || w.ts.WGSubnetCIDR == "" {
-		return "", "", "", fmt.Errorf("wireguard not configured (set tailscale.wg_endpoint, wg_subnet_cidr)")
+	if w.ts.WGSubnetCIDR == "" {
+		return "", "", "", fmt.Errorf("wireguard not configured (set wg_subnet_cidr)")
+	}
+	clientEndpoint, err := wgClientEndpoint(w.ts.WGEndpoint, w.ts.PublicURL)
+	if err != nil {
+		return "", "", "", err
 	}
 	if globalWG == nil {
 		return "", "", "", fmt.Errorf("wireguard server not started")
@@ -781,7 +875,7 @@ PublicKey = %s
 Endpoint = %s
 AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
-`, clientPrivB64, ip, ip6, serverPubB64, w.ts.WGEndpoint)
+`, clientPrivB64, ip, ip6, serverPubB64, clientEndpoint)
 	return conf, "wireguard://" + w.iface(), ip, nil
 }
 

@@ -1,5 +1,4 @@
 listen     = "0.0.0.0:8443"
-ca_dir     = "/opt/clawpatrol/ca"
 
 unknown_host  = "passthrough"
 llm_fail_mode = "closed"
