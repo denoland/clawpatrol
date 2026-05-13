@@ -2482,7 +2482,7 @@ func runGateway(args []string) {
 		log.Printf("wireguard promiscuous forwarder ready (any dst → :443=mitm, :5432=pg, :53=dns-vip, VIP=ssh|ch_native, :%d=dash, plugins=conn-index, else=relay)", dashPort)
 	}
 
-	ln, err := openListener(cfg)
+	ln, err := openListener(cfg, stateDir)
 	if err != nil {
 		log.Fatalf("listen: %v", err)
 	}
