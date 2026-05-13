@@ -25,7 +25,7 @@ endpoint "https" "github" {
 # from the agent's namespace.
 endpoint "postgres" "deploy-classic" {
   host       = "main-pg14.classic.example:5432"
-  database   = "deployng"
+  database   = "corp"
   tunnel     = csql-prod
   credential = github-pat
 }
