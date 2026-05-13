@@ -55,13 +55,7 @@ export function IntegrationStack({
         // except the first one after a needs-action group, which
         // anchors at zero so the two groups don't visually fuse.
         const margin =
-          i === 0
-            ? 0
-            : it.needsAction
-              ? 4
-              : prev?.needsAction
-                ? 6
-                : Math.round(-size * 0.35);
+          i === 0 ? 0 : it.needsAction ? 4 : prev?.needsAction ? 6 : Math.round(-size * 0.35);
         const clickable = it.needsAction && onItemClick;
         return (
           <span

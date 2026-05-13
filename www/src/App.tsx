@@ -204,11 +204,7 @@ export default function App() {
           onConsumePendingConnect={() => {
             // Drop the ?connect= once the device page has acted on it
             // so a reload doesn't reopen the modal.
-            window.history.replaceState(
-              null,
-              "",
-              "#/device/" + encodeURIComponent(route.ip),
-            );
+            window.history.replaceState(null, "", "#/device/" + encodeURIComponent(route.ip));
             setRoute(parseRoute());
           }}
         />

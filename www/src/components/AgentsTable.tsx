@@ -130,7 +130,11 @@ export function AgentsTable({
 // don't qualify — there's nothing actionable to do.
 function needsAction(it: Integration | undefined): boolean {
   if (!it) return false;
-  const hasAuthPath = !!(it.has_oauth || it.has_tailscale_auth || (it.slots && it.slots.length > 0));
+  const hasAuthPath = !!(
+    it.has_oauth ||
+    it.has_tailscale_auth ||
+    (it.slots && it.slots.length > 0)
+  );
   if (!hasAuthPath) return false;
   const connected = it.connected || (it.tailscale_auth?.connected ?? false);
   if (!connected) return true;

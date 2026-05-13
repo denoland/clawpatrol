@@ -79,9 +79,7 @@ export function HITLBar() {
                     <Button variant="outline" onClick={() => decide(p.id, false)}>
                       deny
                     </Button>
-                    <Button onClick={() => decide(p.id, true)}>
-                      allow
-                    </Button>
+                    <Button onClick={() => decide(p.id, true)}>allow</Button>
                   </div>
                 </Td>
               </tr>

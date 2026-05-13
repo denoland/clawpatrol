@@ -60,12 +60,7 @@ export function ConfigSaveReview({
         </pre>
 
         <div className="flex items-center gap-2 px-4 py-3 border-t border-canvas-dark">
-          <Button
-            variant="outline"
-            onClick={onCancel}
-            disabled={busy}
-            className="ml-auto"
-          >
+          <Button variant="outline" onClick={onCancel} disabled={busy} className="ml-auto">
             back to editor
           </Button>
           <Button onClick={onConfirm} disabled={busy || !preview.changed}>
