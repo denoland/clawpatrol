@@ -750,25 +750,15 @@ func (w *webMux) agentsList() []*Agent {
 			}
 		}
 	}
-	// Credentials are global (one secret per credential), but each
-	// agent's profile only references a subset of the declared
-	// credentials. Compute the connected set once across the whole
-	// policy, then surface only the entries that fall inside the
-	// agent's profile.
+	// Every credential the agent's profile references — connected or
+	// not. The dashboard renders the unconfigured ones with a red ring
+	// so operators can see at a glance which credentials still need
+	// attention. Connection state is joined client-side from the
+	// top-level Integration[] list (which already carries per-credential
+	// connected / expires_at / display_name / avatar_url).
 	policy := w.g.Policy()
 	if policy == nil {
 		return snap
-	}
-	connected := map[string]bool{}
-	for name := range policy.Credentials {
-		if conn, _ := w.g.oauth.Status(name); conn {
-			connected[name] = true
-			continue
-		}
-		present, _ := credentialSlotPresence(w.g.db, name)
-		if len(present) > 0 {
-			connected[name] = true
-		}
 	}
 	for _, a := range snap {
 		profile := w.onboard.ProfileForIP(a.IP)
@@ -777,7 +767,7 @@ func (w *webMux) agentsList() []*Agent {
 		}
 		allowed := credentialsInProfile(policy, profile)
 		if allowed == nil {
-			// No profile filter — fall back to the full connected set.
+			// No profile filter — surface every declared credential.
 			allowed = map[string]bool{}
 			for name := range policy.Credentials {
 				allowed[name] = true
@@ -785,9 +775,7 @@ func (w *webMux) agentsList() []*Agent {
 		}
 		ids := make([]string, 0, len(allowed))
 		for name := range allowed {
-			if connected[name] {
-				ids = append(ids, name)
-			}
+			ids = append(ids, name)
 		}
 		sort.Strings(ids)
 		a.Integrations = ids
