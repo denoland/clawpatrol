@@ -341,6 +341,17 @@ func checkDashboardSecret(r *http.Request, want string) bool {
 	return false
 }
 
+func safeDashboardLoginNext(next string) string {
+	if next == "" || strings.Contains(next, "\\") || strings.HasPrefix(next, "//") {
+		return "/"
+	}
+	u, err := url.Parse(next)
+	if err != nil || u.Scheme != "" || u.Host != "" || !strings.HasPrefix(u.Path, "/") {
+		return "/"
+	}
+	return next
+}
+
 // apiDashboardLogin renders a one-field form (GET) and validates +
 // sets the cp_dash cookie (POST). Plain HTML, no JS — keeps the
 // login surface small.
@@ -350,10 +361,7 @@ func (w *webMux) apiDashboardLogin(rw http.ResponseWriter, r *http.Request) {
 		http.Redirect(rw, r, "/", http.StatusFound)
 		return
 	}
-	next := r.URL.Query().Get("next")
-	if next == "" || !strings.HasPrefix(next, "/") {
-		next = "/"
-	}
+	next := safeDashboardLoginNext(r.URL.Query().Get("next"))
 	if r.Method == "POST" {
 		if err := r.ParseForm(); err != nil {
 			http.Error(rw, "bad form", 400)
