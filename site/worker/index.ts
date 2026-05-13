@@ -19,7 +19,15 @@ const RELEASES_URL =
   "https://api.github.com/repos/denoland/clawpatrol/releases/latest";
 
 // Temporary pre-launch gate. Remove once the site is public.
-const BASIC_AUTH_EXPECTED = "Basic " + btoa("preview:aruba");
+const BASIC_AUTH_PASSWORD = "aruba";
+
+function authorized(req: Request): boolean {
+  const h = req.headers.get("Authorization") ?? "";
+  if (!h.startsWith("Basic ")) return false;
+  const decoded = atob(h.slice(6));
+  const i = decoded.indexOf(":");
+  return i >= 0 && decoded.slice(i + 1) === BASIC_AUTH_PASSWORD;
+}
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -27,7 +35,7 @@ export default {
     if (url.pathname === "/api/telemetry/v1/check") {
       return handleCheck(req, env);
     }
-    if (req.headers.get("Authorization") !== BASIC_AUTH_EXPECTED) {
+    if (!authorized(req)) {
       return new Response("Authentication required", {
         status: 401,
         headers: {
