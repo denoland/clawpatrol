@@ -1,2 +1,1 @@
-error: Missing wg_subnet_cidr — control = "wireguard" requires wg_subnet_cidr (e.g. "10.55.0.0/24").
 error: WireGuard client dial target not configured — set public_url, or set wg_endpoint to a non-wildcard host:port (e.g. "gw.example.com:51820") — onboarded clients need one of these to know where to dial.

@@ -37,8 +37,7 @@ admin_email      = "you@example.com"
 dashboard_secret = "<long random string>"
 state_dir        = "/opt/clawpatrol/state"
 
-control        = "wireguard"
-wg_subnet_cidr = "10.55.0.0/24"
+control = "wireguard"
 ```
 
 The CA is lazy-minted into sqlite under `state_dir` on first boot —

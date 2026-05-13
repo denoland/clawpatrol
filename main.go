@@ -2193,9 +2193,11 @@ func canonicalPeerIP(ip string) string {
 	return v4.String()
 }
 
-// defaultWGV4Prefix matches the example config's wg_subnet_cidr
-// (10.55.0.0/24). Lets canonicalPeerIP work before the WGServer is
-// up.
+// defaultWGSubnetCIDR is the WireGuard peer subnet used when
+// wg_subnet_cidr is unset. defaultWGV4Prefix is the same /24
+// prefix in [3]byte form for canonicalPeerIP's early-boot path.
+const defaultWGSubnetCIDR = "10.55.0.0/24"
+
 var defaultWGV4Prefix = [3]byte{10, 55, 0}
 
 func printVersion() {

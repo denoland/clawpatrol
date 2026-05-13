@@ -398,13 +398,6 @@ func validateOperational(gw *Gateway) hcl.Diagnostics {
 	}
 
 	if strings.EqualFold(gw.Control, "wireguard") {
-		if gw.WGSubnetCIDR == "" {
-			diags = append(diags, &hcl.Diagnostic{
-				Severity: hcl.DiagError,
-				Summary:  "Missing wg_subnet_cidr",
-				Detail:   "control = \"wireguard\" requires wg_subnet_cidr (e.g. \"10.55.0.0/24\").",
-			})
-		}
 		// Clients dial host(public_url):port(wg_endpoint). Need a host
 		// from somewhere. wg_endpoint with a non-wildcard host is the
 		// escape hatch when public_url isn't reachable from clients

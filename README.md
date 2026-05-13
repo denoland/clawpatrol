@@ -135,6 +135,7 @@ oauth_client_id     = "{{secret:TS_OAUTH_CLIENT_ID}}"
 oauth_client_secret = "{{secret:TS_OAUTH_CLIENT_SECRET}}"
 tailscale_tags      = ["tag:client"]
 
-# wireguard-only:
-wg_subnet_cidr = "10.55.0.0/24"
+# wireguard mode has no required fields beyond control = "wireguard";
+# wg_subnet_cidr (default 10.55.0.0/24) and wg_endpoint
+# (default 0.0.0.0:51820) are optional overrides.
 ```
