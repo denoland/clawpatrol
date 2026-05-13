@@ -712,12 +712,10 @@ func indexByte(b []byte, c byte) int {
 
 // ── SQL extractor input for the matcher ───────────────────────────────
 //
-// The tokenizer + per-section extractors live in postgres_sql.go.
-// parseSQL produces the pgInfo for the first top-level statement so
-// the legacy ParseStatement plugin API stays single-statement; the
-// wire-protocol gateway uses analyseAll (postgres_sql.go) to walk
-// every statement (including CTE-hidden DML and DO bodies) the
-// matcher should see.
+// Tokenizer / extractor / fallback all live in postgres_sql.go. This
+// file owns the wire-protocol gateway types and the matcher
+// dispatch — see parseSQL / analyseAll over there for the SQL
+// inspection surface.
 
 type pgInfo struct {
 	Verb      string
@@ -726,16 +724,12 @@ type pgInfo struct {
 	Statement string
 }
 
-// parseSQL extracts verb / tables / functions / statement for the
-// first top-level statement in sql. Kept for the ParseStatement
-// plugin entry-point (action fixtures, dashboard previews) which
-// works on a single statement at a time.
-func parseSQL(sql string) pgInfo {
-	analysed := analyseAll(sql)
-	if len(analysed) == 0 {
-		return pgInfo{Statement: strings.TrimSpace(sql)}
-	}
-	return analysed[0].Outer
+// analysedStmt is one top-level statement's matcher input. Inner
+// surfaces statements the matcher should walk in addition to Outer:
+// CTE-hidden DML (audit §1.2) and DO body inner statements (§6.5).
+type analysedStmt struct {
+	Outer pgInfo
+	Inner []pgInfo
 }
 
 // Compile-time interface check — keeps PostgresEndpointRuntime in
