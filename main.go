@@ -2301,6 +2301,7 @@ func runGateway(args []string) {
 		}
 		log.Fatalf("config: %v", err)
 	}
+	enforceLocalModeBinds(cfg)
 	logDashboardSecretState(cfg)
 	stateDir := resolveStateDir(cfg)
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
@@ -2512,6 +2513,32 @@ func logHTTPServerExit(name, addr string, err error) {
 		return
 	}
 	log.Printf("%s http server on %s stopped: %v", name, addr, err)
+}
+
+// checkLocalModeBinds returns an error when control = "local" but a
+// listen address would reach off-host traffic. The config validator
+// catches the same shape at load time, but the runtime check is the
+// load-bearing one: a hand-edited gateway.hcl mustn't be able to
+// silently turn a local-mode install into a LAN-reachable one —
+// clawpatrol#193 (finding 4) flagged the prior absence of any such
+// check.
+func checkLocalModeBinds(cfg *config.Gateway) error {
+	if !strings.EqualFold(cfg.Control, "local") {
+		return nil
+	}
+	if cfg.Listen != "" && !config.IsLoopbackBind(cfg.Listen) {
+		return fmt.Errorf("refusing to bind listen=%q: control=\"local\" requires a loopback address (use 127.0.0.1 or ::1)", cfg.Listen)
+	}
+	if cfg.InfoListen != "" && !config.IsLoopbackBind(cfg.InfoListen) {
+		return fmt.Errorf("refusing to bind info_listen=%q: control=\"local\" requires a loopback address (use 127.0.0.1 or ::1)", cfg.InfoListen)
+	}
+	return nil
+}
+
+func enforceLocalModeBinds(cfg *config.Gateway) {
+	if err := checkLocalModeBinds(cfg); err != nil {
+		log.Fatalf("local mode: %v", err)
+	}
 }
 
 // portOf extracts the numeric port from a "host:port" or ":port" listen

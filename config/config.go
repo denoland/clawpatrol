@@ -13,6 +13,37 @@ import (
 	"github.com/zclconf/go-cty/cty"
 )
 
+// IsLoopbackBind reports whether a `host:port` (or `:port`) listen
+// string binds only to a loopback interface. A bare `:PORT`, `0.0.0.0`,
+// `::`, or any other unicast IP returns false — those reach the LAN.
+// Used by the local-mode runtime guard in main.go and by the config
+// validator. Exported because the runtime guard lives outside this
+// package.
+func IsLoopbackBind(addr string) bool {
+	if addr == "" {
+		return false
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		// Fall back to treating the input as a bare host — net.JoinHostPort
+		// roundtrips, but operator-written configs sometimes omit the port.
+		host = addr
+	}
+	if host == "" {
+		// `:PORT` binds all interfaces, not loopback.
+		return false
+	}
+	switch strings.ToLower(host) {
+	case "localhost", "ip6-localhost", "ip6-loopback":
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback()
+}
+
 // Gateway is the fully-loaded clawpatrol gateway config: every
 // singleton attribute at the top, plus a resolved policy.
 //
@@ -385,16 +416,41 @@ func validateOperational(gw *Gateway) hcl.Diagnostics {
 	var diags hcl.Diagnostics
 
 	switch strings.ToLower(gw.Control) {
-	case "", "wireguard", "tailscale":
+	case "", "wireguard", "tailscale", "local":
 		// ok
 	default:
 		diags = append(diags, &hcl.Diagnostic{
 			Severity: hcl.DiagError,
 			Summary:  "Invalid control value",
 			Detail: fmt.Sprintf(
-				"control = %q. Expected \"wireguard\", \"tailscale\", or omitted.",
+				"control = %q. Expected \"wireguard\", \"tailscale\", \"local\", or omitted.",
 				gw.Control),
 		})
+	}
+
+	// control = "local" puts the agent and the gateway on the same
+	// host, so the security model commits us to a loopback-only bind
+	// on both listeners. Catch the typo at load time; main.go enforces
+	// the same invariant at bind time as defense in depth.
+	if strings.EqualFold(gw.Control, "local") {
+		if gw.Listen != "" && !IsLoopbackBind(gw.Listen) {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Non-loopback listen in local mode",
+				Detail: fmt.Sprintf(
+					"control = \"local\" requires listen to bind to loopback only (127.0.0.1, ::1, or localhost), got %q.",
+					gw.Listen),
+			})
+		}
+		if gw.InfoListen != "" && !IsLoopbackBind(gw.InfoListen) {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Non-loopback info_listen in local mode",
+				Detail: fmt.Sprintf(
+					"control = \"local\" requires info_listen to bind to loopback only (127.0.0.1, ::1, or localhost), got %q.",
+					gw.InfoListen),
+			})
+		}
 	}
 
 	if strings.EqualFold(gw.Control, "wireguard") {

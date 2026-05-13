@@ -131,8 +131,13 @@ Passwordless `sudo` for the agent user defeats the entire model.
 ### Defense in depth
 
 Claw Patrol's proxy listener, HTTP API, and dashboard all bind to
-loopback only in local mode. UNIX user separation is doing the
-real work; loopback bind closes accidental network exposure.
+loopback only in local mode. Set `control = "local"` in
+`gateway.hcl` together with loopback `listen` / `info_listen`
+addresses; the gateway refuses to start with any non-loopback
+bind while `control = "local"` is set, so an operator editing
+the config by hand can't silently downgrade the install to a
+LAN-reachable one. UNIX user separation is doing the real work;
+loopback bind closes accidental network exposure.
 
 ### Pre-existing secrets on the host
 

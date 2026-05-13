@@ -1,0 +1,35 @@
+{
+  "control": "local",
+  "info_listen": "[::1]:8080",
+  "listen": "127.0.0.1:8443",
+  "policy": {
+    "credentials": {
+      "github-pat": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "type": "bearer_token"
+      }
+    },
+    "endpoints": {
+      "github": {
+        "body": {
+          "Hosts": [
+            "api.github.com"
+          ],
+          "Credential": "github-pat"
+        },
+        "family": "http",
+        "type": "https"
+      }
+    },
+    "profiles": {
+      "default": {
+        "endpoints": [
+          "github"
+        ]
+      }
+    }
+  },
+  "state_dir": "/var/lib/clawpatrol"
+}

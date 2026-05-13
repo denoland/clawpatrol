@@ -1,0 +1,2 @@
+error: Non-loopback listen in local mode — control = "local" requires listen to bind to loopback only (127.0.0.1, ::1, or localhost), got "0.0.0.0:8443".
+error: Non-loopback info_listen in local mode — control = "local" requires info_listen to bind to loopback only (127.0.0.1, ::1, or localhost), got "192.168.1.10:8080".
