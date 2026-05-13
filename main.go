@@ -1854,11 +1854,11 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			injector, wantsHTTP := cc.Credential.Body.(runtime.HTTPCredentialRuntime)
 			wsRewriter, wantsWS := cc.Credential.Body.(runtime.WebSocketCredentialRuntime)
 			if wantsHTTP || (wantsWS && isWSUpgrade(req)) {
-				sec, err := g.secrets.Get(cc.Credential.Symbol.Name, profile)
+				sec, err := g.secrets.Get(cc.Credential.Symbol.Name)
 				if err != nil {
-					log.Printf("secret %s/%s: %v — forwarding without injection", cc.Credential.Symbol.Name, profile, err)
+					log.Printf("secret %s: %v — forwarding without injection", cc.Credential.Symbol.Name, err)
 				} else if len(sec.Bytes) == 0 && len(sec.Extras) == 0 {
-					log.Printf("secret %s/%s: not configured (set CLAWPATROL_SECRET_%s)", cc.Credential.Symbol.Name, profile, secretEnvName(cc.Credential.Symbol.Name))
+					log.Printf("secret %s: not configured (set CLAWPATROL_SECRET_%s)", cc.Credential.Symbol.Name, secretEnvName(cc.Credential.Symbol.Name))
 				} else {
 					if wantsHTTP {
 						if err := injector.InjectHTTP(req.Context(), req, sec); err != nil {
@@ -2077,7 +2077,7 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 			Endpoint:     c.Endpoint,
 			Rule:         c.Rule,
 			ApproverName: st.Name,
-			Profile:      c.Profile,
+			AgentIP:      c.AgentIP,
 			Method:       c.Method,
 			Host:         c.Host,
 			Path:         c.Path,

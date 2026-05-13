@@ -186,7 +186,7 @@ func (ClickhouseNativeEndpointRuntime) HandleConn(ctx context.Context, ch *runti
 			return fmt.Errorf("clickhouse_native: credential %q does not implement ClickhouseAuthCredential",
 				cc.Credential.Symbol.Name)
 		}
-		sec, secErr := ch.Secrets.Get(cc.Credential.Symbol.Name, ch.Profile)
+		sec, secErr := ch.Secrets.Get(cc.Credential.Symbol.Name)
 		if secErr != nil {
 			chEmitError(ch, "secret-fetch", fmt.Sprintf("%s: %v", cc.Credential.Symbol.Name, secErr))
 			return fmt.Errorf("clickhouse_native: fetch secret %q: %w", cc.Credential.Symbol.Name, secErr)

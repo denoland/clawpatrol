@@ -237,7 +237,7 @@ func (PostgresEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnH
 		pgWriteError(ch.Conn, "credential plugin does not implement postgres auth")
 		return fmt.Errorf("credential %q has no PostgresAuth", cc.Credential.Symbol.Name)
 	}
-	sec, err := ch.Secrets.Get(cc.Credential.Symbol.Name, ch.Profile)
+	sec, err := ch.Secrets.Get(cc.Credential.Symbol.Name)
 	if err != nil {
 		pgWriteError(ch.Conn, "fetch secret: "+err.Error())
 		return err

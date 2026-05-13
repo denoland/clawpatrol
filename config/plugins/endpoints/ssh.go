@@ -312,7 +312,7 @@ func (rt *SSHEndpointRuntime) upstreamClientConfig(ch *runtime.ConnHandle, cc *c
 	if !ok {
 		return nil, fmt.Errorf("does not implement sshproto.AuthCredential (use credential type \"ssh\")")
 	}
-	sec, err := ch.Secrets.Get(cc.Credential.Symbol.Name, ch.Profile)
+	sec, err := ch.Secrets.Get(cc.Credential.Symbol.Name)
 	if err != nil {
 		return nil, fmt.Errorf("fetch secret: %w", err)
 	}

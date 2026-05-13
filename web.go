@@ -461,7 +461,6 @@ func (w *webMux) mountCredentialWebhooks(mux *http.ServeMux) {
 					Secrets:        w.g.secrets,
 					HITL:           w.g.hitl,
 					Policy:         w.g.Policy(),
-					Profiles:       orderedProfileNames(w.g.cfg.Policy),
 				}
 				handler(ctx, rw, r)
 			})
@@ -595,13 +594,13 @@ func (w *webMux) callerIdentity(r *http.Request) (user, device, displayHost stri
 	return who.UserProfile.LoginName, who.Node.StableID, who.Node.HostName
 }
 
-// credentialProfileKeyForRequest returns the credentials.profile key used when
-// dashboard requests read or write OAuth/secret rows. Prefer an explicit
-// profile selector, then the configured default policy profile. The remaining
-// fallbacks preserve legacy single-user/per-caller credential keys; they are
-// not necessarily declared policy profiles and must not be used as evidence
-// that the caller is authenticated.
-func (w *webMux) credentialProfileKeyForRequest(r *http.Request) (key, label string) {
+// selectedProfileForRequest returns the profile name a dashboard request
+// targets. Prefer an explicit profile selector, then the configured
+// default policy profile. The remaining fallbacks preserve legacy
+// single-user/per-caller keys; they are not necessarily declared policy
+// profiles and must not be used as evidence that the caller is
+// authenticated.
+func (w *webMux) selectedProfileForRequest(r *http.Request) (key, label string) {
 	if p := r.URL.Query().Get("profile"); p != "" {
 		return p, p
 	}
@@ -715,9 +714,9 @@ func serveState(rw http.ResponseWriter, r *http.Request, body []byte, tag string
 // declared credential ships (root view).
 
 // apiCredentialsSet persists one or more slot values for a non-OAuth
-// credential. Owner defaults to the caller's profile. Body shape:
+// credential. Body shape:
 //
-//	{ "id": "stripe-live", "owner": "default", "slots": { "": "sk_live_…" } }
+//	{ "id": "stripe-live", "slots": { "": "sk_live_…" } }
 //
 // Multi-slot credentials (mtls, slack tokens) pass multiple keys.
 // Empty values clear the slot.
@@ -728,7 +727,6 @@ func (w *webMux) apiCredentialsSet(rw http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		ID    string            `json:"id"`
-		Owner string            `json:"owner"`
 		Slots map[string]string `json:"slots"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -737,13 +735,6 @@ func (w *webMux) apiCredentialsSet(rw http.ResponseWriter, r *http.Request) {
 	}
 	if body.ID == "" {
 		http.Error(rw, "missing id", 400)
-		return
-	}
-	if body.Owner == "" {
-		body.Owner, _ = w.credentialProfileKeyForRequest(r)
-	}
-	if body.Owner == "" {
-		http.Error(rw, "missing owner", 400)
 		return
 	}
 	policy := w.g.policy.Load()
@@ -769,15 +760,15 @@ func (w *webMux) apiCredentialsSet(rw http.ResponseWriter, r *http.Request) {
 		if v == "" {
 			// Empty value = clear that slot specifically.
 			if _, err := w.g.db.Exec(
-				`DELETE FROM credential_secrets WHERE credential = ? AND profile = ? AND slot = ?`,
-				body.ID, body.Owner, slot,
+				`DELETE FROM credential_secrets WHERE credential = ? AND slot = ?`,
+				body.ID, slot,
 			); err != nil {
 				http.Error(rw, err.Error(), 500)
 				return
 			}
 			continue
 		}
-		if err := setCredentialSlot(w.g.db, body.ID, body.Owner, slot, v); err != nil {
+		if err := setCredentialSlot(w.g.db, body.ID, slot, v); err != nil {
 			http.Error(rw, err.Error(), 500)
 			return
 		}
@@ -785,7 +776,7 @@ func (w *webMux) apiCredentialsSet(rw http.ResponseWriter, r *http.Request) {
 	writeJSON(rw, map[string]any{"ok": true})
 }
 
-// apiCredentialsClear drops every slot for (id, owner). Disconnect
+// apiCredentialsClear drops every slot for the credential. Disconnect
 // button on the dashboard.
 func (w *webMux) apiCredentialsClear(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
@@ -793,8 +784,7 @@ func (w *webMux) apiCredentialsClear(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		ID    string `json:"id"`
-		Owner string `json:"owner"`
+		ID string `json:"id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(rw, err.Error(), 400)
@@ -804,10 +794,7 @@ func (w *webMux) apiCredentialsClear(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "missing id", 400)
 		return
 	}
-	if body.Owner == "" {
-		body.Owner, _ = w.credentialProfileKeyForRequest(r)
-	}
-	if err := clearCredentialSecrets(w.g.db, body.ID, body.Owner); err != nil {
+	if err := clearCredentialSecrets(w.g.db, body.ID); err != nil {
 		http.Error(rw, err.Error(), 500)
 		return
 	}
@@ -1232,12 +1219,7 @@ func (w *webMux) apiRulesAI(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "prompt required", 400)
 		return
 	}
-	owner, _ := w.credentialProfileKeyForRequest(r)
-	if owner == "" {
-		http.Error(rw, "profile required", http.StatusForbidden)
-		return
-	}
-	out, refused, err := generateRuleHCL(r.Context(), w.g, body.Agent, owner, body.Prompt, body.CurrentYAML, body.Scope)
+	out, refused, err := generateRuleHCL(r.Context(), w.g, body.Agent, body.Prompt, body.CurrentYAML, body.Scope)
 	if err != nil {
 		http.Error(rw, "ai: "+err.Error(), http.StatusBadGateway)
 		return

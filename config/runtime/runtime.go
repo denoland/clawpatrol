@@ -124,10 +124,12 @@ type ConnHandle struct {
 	Endpoint *config.CompiledEndpoint
 	Policy   *config.CompiledPolicy
 	// Profile is the device's profile name, looked up from peer IP
-	// before dispatch.
+	// before dispatch. Informational — the host uses it for logging
+	// and exposes it to external plugins; it is no longer keyed into
+	// credential lookups.
 	Profile string
-	// PeerIP is the agent's source IP, used as the "owner" key when
-	// fetching credentials from the secret store.
+	// PeerIP is the agent's source IP. Informational identifier of
+	// the originating peer.
 	PeerIP string
 	// Secrets is the host's SecretStore; plugins use it to fetch
 	// credential material at session-start time (postgres) or per
@@ -290,9 +292,10 @@ type ApproveRequest struct {
 	// approver should use against Pool / Secrets when it needs to
 	// disambiguate per-approver state.
 	ApproverName string
-	// Profile of the originating peer; SecretStore lookup key for
-	// per-profile credentials.
-	Profile string
+	// AgentIP is the WireGuard source IP of the originating peer.
+	// Approvers use it as a display label / log key; it carries no
+	// credential-lookup meaning.
+	AgentIP string
 	// Method / Host / Path / UA / BodySample carry the request shape
 	// for HITL prompts. Endpoint plugins fill these so approvers
 	// don't have to know the family-specific Request internals.

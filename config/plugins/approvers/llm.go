@@ -94,7 +94,7 @@ func (a *LLMApprover) Approve(ctx context.Context, req runtime.ApproveRequest) (
 	if !ok {
 		return runtime.ApproveVerdict{Decision: "deny", Reason: "credential " + a.Credential + " does not satisfy HTTPCredentialRuntime"}, nil
 	}
-	sec, err := req.Secrets.Get(a.Credential, req.Profile)
+	sec, err := req.Secrets.Get(a.Credential)
 	if err != nil {
 		return runtime.ApproveVerdict{Decision: "deny", Reason: "secret fetch: " + err.Error()}, nil
 	}
@@ -310,7 +310,7 @@ func (a *LLMApprover) Summarize(ctx context.Context, req runtime.ApproveRequest)
 	if !ok {
 		return nil, fmt.Errorf("credential %s does not satisfy HTTPCredentialRuntime", a.Credential)
 	}
-	sec, err := req.Secrets.Get(a.Credential, req.Profile)
+	sec, err := req.Secrets.Get(a.Credential)
 	if err != nil {
 		return nil, fmt.Errorf("secret fetch: %w", err)
 	}

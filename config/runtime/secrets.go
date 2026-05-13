@@ -13,19 +13,20 @@ import (
 var envParts = []string{"CA", "CERT", "KEY"}
 
 // SecretStore returns the secret material a credential plugin's
-// InjectHTTP / InjectPostgres needs at request time. Lookups are
-// keyed by the credential's bare name (e.g. "github-pat") plus the
-// owner — typically the agent's tailnet identity, so the same
-// credential type can hold per-user secrets.
+// InjectHTTP / InjectPostgres needs at request time. Lookup key is
+// the credential's bare name (e.g. "github-pat"). A credential
+// declared in HCL maps to exactly one secret — operators wanting
+// distinct material for two callers should declare two credentials
+// and bind each to its own endpoint.
 //
 // Implementations live outside the config package because the secret
 // store is a host concern, not a policy concern. The default env-var
-// store is lightweight enough for development; a follow-up wires the
+// store is lightweight enough for development; the gateway wires the
 // existing OAuthRegistry behind this interface for OAuth-flow
-// credentials (anthropic / codex / notion / etc.) so refresh + per-
-// owner persistence flow through the same path.
+// credentials (anthropic / codex / notion / etc.) so refresh + token
+// persistence flow through the same path.
 type SecretStore interface {
-	Get(name, owner string) (Secret, error)
+	Get(name string) (Secret, error)
 }
 
 // EnvSecretStore reads secret material from process env vars. Lookup
@@ -33,13 +34,10 @@ type SecretStore interface {
 // underscores. Returns an empty Secret (no error) when the var
 // isn't set so the dispatcher can decide between fail-closed and
 // passthrough at the policy level.
-//
-// Owner is ignored — env-var-backed stores are single-tenant. A
-// per-owner extension would key on `_<OWNER>` suffix.
 type EnvSecretStore struct{}
 
 // Get is part of the clawpatrol plugin API.
-func (EnvSecretStore) Get(name, _ string) (Secret, error) {
+func (EnvSecretStore) Get(name string) (Secret, error) {
 	if name == "" {
 		return Secret{}, fmt.Errorf("empty credential name")
 	}

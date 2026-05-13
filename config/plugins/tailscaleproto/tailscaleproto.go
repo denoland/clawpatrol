@@ -130,11 +130,8 @@ var Default = &PendingNodeAuth{}
 // side store implements it via the credential_secrets table. Other
 // stores (EnvSecretStore, in-memory test fakes) don't, and the
 // credential errors with a clear message at StateStore time.
-//
-// Owner is intentionally the empty string for tailscale state — node
-// identity is gateway-wide, not per-owner.
 type SecretWriter interface {
-	SetCredentialSlot(name, owner, slot, value string) error
+	SetCredentialSlot(name, slot, value string) error
 }
 
 // Teach the runtime's credential checker about NodeIdentity and the

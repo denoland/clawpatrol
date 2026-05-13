@@ -23,7 +23,7 @@ func newFakeStore() *fakeWritableStore {
 	return &fakeWritableStore{slots: map[string]map[string]string{}}
 }
 
-func (f *fakeWritableStore) Get(name, _ string) (runtime.Secret, error) {
+func (f *fakeWritableStore) Get(name string) (runtime.Secret, error) {
 	m, ok := f.slots[name]
 	if !ok {
 		return runtime.Secret{}, nil
@@ -35,7 +35,7 @@ func (f *fakeWritableStore) Get(name, _ string) (runtime.Secret, error) {
 	return sec, nil
 }
 
-func (f *fakeWritableStore) SetCredentialSlot(name, _, slot, value string) error {
+func (f *fakeWritableStore) SetCredentialSlot(name, slot, value string) error {
 	m, ok := f.slots[name]
 	if !ok {
 		m = map[string]string{}

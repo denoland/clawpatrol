@@ -45,7 +45,6 @@ export default function App() {
   const [update, setUpdate] = useState<UpdateBanner | null>(null);
   const [readOnlyConfig, setReadOnlyConfig] = useState(false);
   const [connectId, setConnectId] = useState<string | null>(null);
-  const [connectProfile, setConnectProfile] = useState<string | undefined>(undefined);
   const [showAddDevice, setShowAddDevice] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [route, setRoute] = useState(parseRoute());
@@ -161,13 +160,9 @@ export default function App() {
           ip={route.ip}
           agents={agents}
           integrations={integrations}
-          whoami={whoami}
           readOnlyConfig={readOnlyConfig}
           onBack={() => navigate("")}
-          onConnect={(id, profile) => {
-            setConnectId(id);
-            setConnectProfile(profile);
-          }}
+          onConnect={(id) => setConnectId(id)}
           onRefresh={refresh}
         />
       )}
@@ -185,14 +180,9 @@ export default function App() {
         <ConnectModal
           id={connectId}
           oauth={integrations.find((i) => i.id === connectId)?.oauth}
-          profile={connectProfile}
-          onClose={() => {
-            setConnectId(null);
-            setConnectProfile(undefined);
-          }}
+          onClose={() => setConnectId(null)}
           onDone={() => {
             setConnectId(null);
-            setConnectProfile(undefined);
             refresh();
           }}
         />

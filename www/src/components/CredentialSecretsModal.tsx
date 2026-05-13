@@ -13,12 +13,10 @@ import { setCredentialSlots } from "../lib/api";
 // re-pastes when rotating.
 export function CredentialSecretsModal({
   integration,
-  owner,
   onClose,
   onSaved,
 }: {
   integration: Integration;
-  owner: string;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -35,7 +33,7 @@ export function CredentialSecretsModal({
     setSaving(true);
     setErr(null);
     try {
-      await setCredentialSlots(integration.id, owner, values);
+      await setCredentialSlots(integration.id, values);
       onSaved();
       onClose();
     } catch (e) {

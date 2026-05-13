@@ -59,7 +59,7 @@ func (w *webMux) apiTailscaleConnect(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := tailscaleAuthResponse{ID: id}
-	present, _ := credentialSlotPresence(w.g.db, id, "")
+	present, _ := credentialSlotPresence(w.g.db, id)
 	switch {
 	case len(present) > 0:
 		resp.Connected = true
@@ -88,11 +88,10 @@ func (w *webMux) apiTailscaleStatus(rw http.ResponseWriter, r *http.Request) {
 	w.apiTailscaleConnect(rw, r)
 }
 
-// apiTailscaleDisconnect drops every stored slot for the credential
-// (owner = "" — tailscale node identity is gateway-wide). On the
-// next tunnel re-init, tsnet finds an empty StateStore and drives
-// the interactive login again. Hot-restart of the tunnel itself is
-// a follow-up; today the gateway-wide identity is reset and the next
+// apiTailscaleDisconnect drops every stored slot for the credential.
+// On the next tunnel re-init, tsnet finds an empty StateStore and
+// drives the interactive login again. Hot-restart of the tunnel
+// itself is a follow-up; today the identity is reset and the next
 // gateway boot picks it up.
 func (w *webMux) apiTailscaleDisconnect(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -116,7 +115,7 @@ func (w *webMux) apiTailscaleDisconnect(rw http.ResponseWriter, r *http.Request)
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := clearCredentialSecrets(w.g.db, body.ID, ""); err != nil {
+	if err := clearCredentialSecrets(w.g.db, body.ID); err != nil {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)
 		return
 	}

@@ -107,7 +107,7 @@ func (s *SlackTokens) NotifyHITL(_ context.Context, req runtime.ApproveRequest, 
 	if req.Secrets == nil {
 		return fmt.Errorf("no secret store on request")
 	}
-	sec, err := req.Secrets.Get(target.CredentialName, req.Profile)
+	sec, err := req.Secrets.Get(target.CredentialName)
 	if err != nil {
 		return fmt.Errorf("fetch credential %s: %w", target.CredentialName, err)
 	}
@@ -150,10 +150,10 @@ func (s *SlackTokens) NotifyHITL(_ context.Context, req runtime.ApproveRequest, 
 		}
 	}
 	ctx := []map[string]any{}
-	if req.Profile != "" {
+	if req.AgentIP != "" {
 		ctx = append(ctx, map[string]any{
 			"type": "mrkdwn",
-			"text": "agent `" + req.Profile + "`",
+			"text": "agent `" + req.AgentIP + "`",
 		})
 	}
 	if r := strings.TrimSpace(req.Reason); r != "" {
@@ -301,22 +301,12 @@ func slackInteractive(ctx runtime.WebhookCtx, rw http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Walk every (this credential, profile) signing_secret — secrets
-	// are per-profile in the dashboard, but Slack doesn't know which
-	// profile a click came from. First match wins.
 	verified := false
-	for _, prof := range append([]string{""}, ctx.Profiles...) {
-		sec, err := ctx.Secrets.Get(ctx.CredentialName, prof)
-		if err != nil {
-			continue
-		}
+	sec, secErr := ctx.Secrets.Get(ctx.CredentialName)
+	if secErr == nil {
 		signingSecret := sec.Extras["signing_secret"]
-		if signingSecret == "" {
-			continue
-		}
-		if verifySlackSig(signingSecret, ts, body, sig) {
+		if signingSecret != "" && verifySlackSig(signingSecret, ts, body, sig) {
 			verified = true
-			break
 		}
 	}
 	if !verified {

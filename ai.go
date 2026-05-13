@@ -174,19 +174,12 @@ operator sees a confusing error.`
 // to parse it returns an error instead, so the dashboard can show a
 // clean "AI returned invalid HCL" rather than splatting prose into
 // the editor.
-func generateRuleHCL(ctx context.Context, g *Gateway, agent, owner, prompt, currentHCL, scope string) (newHCL, refused string, err error) {
+func generateRuleHCL(ctx context.Context, g *Gateway, agent, prompt, currentHCL, scope string) (newHCL, refused string, err error) {
 	reg := g.oauth
 	if agent == "" {
 		for _, id := range []string{"claude", "codex"} {
-			if owners := reg.Owners(id); len(owners) > 0 {
-				for _, o := range owners {
-					if o == owner {
-						agent = id
-						break
-					}
-				}
-			}
-			if agent != "" {
+			if conn, _ := reg.Status(id); conn {
+				agent = id
 				break
 			}
 		}
@@ -202,9 +195,9 @@ func generateRuleHCL(ctx context.Context, g *Gateway, agent, owner, prompt, curr
 	var raw string
 	switch agent {
 	case "claude":
-		raw, err = callClaude(ctx, reg, owner, user)
+		raw, err = callClaude(ctx, reg, user)
 	case "codex":
-		raw, err = callCodex(ctx, reg, owner, user)
+		raw, err = callCodex(ctx, reg, user)
 	default:
 		return "", "", fmt.Errorf("unknown agent: %s", agent)
 	}
@@ -313,7 +306,7 @@ func scopeLabel(_ string) string { return "global" }
 // callClaude hits Anthropic's /v1/messages with the rule system prompt.
 // Uses the operator's OAuth credential — Inject() adds the Authorization
 // header to a freshly-built request.
-func callClaude(ctx context.Context, reg *OAuthRegistry, owner, user string) (string, error) {
+func callClaude(ctx context.Context, reg *OAuthRegistry, user string) (string, error) {
 	body, _ := json.Marshal(map[string]any{
 		"model":      "claude-haiku-4-5",
 		"max_tokens": 4096,
@@ -330,7 +323,7 @@ func callClaude(ctx context.Context, reg *OAuthRegistry, owner, user string) (st
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
-	if _, err := reg.Inject("claude", owner, req); err != nil {
+	if _, err := reg.Inject("claude", req); err != nil {
 		return "", err
 	}
 	resp, err := http.DefaultClient.Do(req)
@@ -362,7 +355,7 @@ func callClaude(ctx context.Context, reg *OAuthRegistry, owner, user string) (st
 // callCodex routes through the OpenAI Responses API. Mirrors callClaude
 // for the Codex OAuth integration. Uses gpt-5-mini (fast, cheap) for
 // rule generation.
-func callCodex(ctx context.Context, reg *OAuthRegistry, owner, user string) (string, error) {
+func callCodex(ctx context.Context, reg *OAuthRegistry, user string) (string, error) {
 	body, _ := json.Marshal(map[string]any{
 		"model": "gpt-5-mini",
 		"input": []map[string]any{
@@ -376,7 +369,7 @@ func callCodex(ctx context.Context, reg *OAuthRegistry, owner, user string) (str
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if _, err := reg.Inject("codex", owner, req); err != nil {
+	if _, err := reg.Inject("codex", req); err != nil {
 		return "", err
 	}
 	resp, err := http.DefaultClient.Do(req)

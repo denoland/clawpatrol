@@ -112,7 +112,7 @@ func (a *endpointAdapter) HandleConn(ctx context.Context, ch *runtime.ConnHandle
 		c := ch.Endpoint.Credentials[0].Credential
 		credName = c.Symbol.Name
 		credType = c.Symbol.Type
-		secret, err := ch.Secrets.Get(credName, ch.Profile)
+		secret, err := ch.Secrets.Get(credName)
 		if err == nil {
 			credSec = secret.Bytes
 			credExtra = secret.Extras
@@ -680,7 +680,7 @@ func (a *tunnelAdapter) Open(ctx context.Context, host runtime.TunnelHost, _ run
 		credExtra map[string]string
 	)
 	if host.Credential != nil {
-		secret, err := host.SecretStore.Get(host.Credential.Name, "")
+		secret, err := host.SecretStore.Get(host.Credential.Name)
 		if err == nil {
 			credSec = secret.Bytes
 			credExtra = secret.Extras

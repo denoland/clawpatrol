@@ -32,7 +32,7 @@ func (f *fakeSSHCred) SSHAuth(_ cruntime.Secret) (sshproto.Creds, error) {
 // the struct, not in the env.
 type fakeSecretStore struct{}
 
-func (fakeSecretStore) Get(_, _ string) (cruntime.Secret, error) {
+func (fakeSecretStore) Get(_ string) (cruntime.Secret, error) {
 	return cruntime.Secret{}, nil
 }
 
