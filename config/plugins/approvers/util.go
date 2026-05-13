@@ -20,7 +20,7 @@ func buildPending(req runtime.ApproveRequest) runtime.HITLPending {
 		family = req.Endpoint.Family
 	}
 	return runtime.HITLPending{
-		AgentIP:    req.Profile,
+		AgentIP:    req.AgentIP,
 		Host:       req.Host,
 		Method:     req.Method,
 		Path:       req.Path,

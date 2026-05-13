@@ -4,7 +4,8 @@
 	"compatibility_date": "2026-05-02",
 	"assets": {
 		"directory": "./dist",
-		"binding": "ASSETS"
+		"binding": "ASSETS",
+		"run_worker_first": true
 	},
 	"d1_databases": [
 		{

@@ -18,11 +18,30 @@ const MAX_BODY_BYTES = 4096;
 const RELEASES_URL =
   "https://api.github.com/repos/denoland/clawpatrol/releases/latest";
 
+// Temporary pre-launch gate. Remove once the site is public.
+const BASIC_AUTH_PASSWORD = "aruba";
+
+function authorized(req: Request): boolean {
+  const h = req.headers.get("Authorization") ?? "";
+  if (!h.startsWith("Basic ")) return false;
+  const decoded = atob(h.slice(6));
+  const i = decoded.indexOf(":");
+  return i >= 0 && decoded.slice(i + 1) === BASIC_AUTH_PASSWORD;
+}
+
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     if (url.pathname === "/api/telemetry/v1/check") {
       return handleCheck(req, env);
+    }
+    if (!authorized(req)) {
+      return new Response("Authentication required", {
+        status: 401,
+        headers: {
+          "WWW-Authenticate": 'Basic realm="clawpatrol", charset="UTF-8"',
+        },
+      });
     }
     return env.ASSETS.fetch(req);
   },

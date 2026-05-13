@@ -6,6 +6,7 @@ package endpoints
 // metadata HTTPS doesn't.
 
 import (
+	"encoding/base64"
 	"strings"
 
 	"github.com/hashicorp/hcl/v2/hclwrite"
@@ -42,9 +43,9 @@ func (e *HTTPSEndpoint) setCredentialEntries(es []CredentialEntry) { e.Credentia
 // HTTPSEndpointRuntime detects placeholders in an HTTP request's
 // Authorization header. Plain-substring scan rather than strict
 // equality because agents send placeholders embedded in
-// `Bearer <PH>` or `Basic <base64(<PH>:)>` shapes; we only need to
+// `Bearer <PH>` or `Basic <base64(user:<PH>)>` shapes; we only need to
 // recognize that the agent picked one of our placeholders, not parse
-// the auth scheme.
+// the auth scheme beyond safe Basic decoding.
 type HTTPSEndpointRuntime struct{}
 
 // DetectPlaceholder is part of the clawpatrol plugin API.
@@ -52,7 +53,9 @@ func (HTTPSEndpointRuntime) DetectPlaceholder(req *runtime.Request, candidates [
 	if req == nil || req.Headers == nil {
 		return ""
 	}
-	hay := req.Headers.Get("Authorization") + "\x00" + req.Headers.Get("Cookie")
+	hay := req.Headers.Get("Authorization") +
+		"\x00" + basicAuthPayload(req.Headers.Get("Authorization")) +
+		"\x00" + req.Headers.Get("Cookie")
 	for _, c := range candidates {
 		if c != "" && strings.Contains(hay, c) {
 			return c
@@ -61,12 +64,24 @@ func (HTTPSEndpointRuntime) DetectPlaceholder(req *runtime.Request, candidates [
 	return ""
 }
 
+func basicAuthPayload(authz string) string {
+	scheme, payload, ok := strings.Cut(authz, " ")
+	if !ok || !strings.EqualFold(scheme, "Basic") {
+		return ""
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(payload))
+	if err != nil {
+		return ""
+	}
+	return string(decoded)
+}
+
 func init() {
 	var _ runtime.PlaceholderDetector = HTTPSEndpointRuntime{}
 	config.Register(&config.Plugin{
 		Kind:     config.KindEndpoint,
 		Type:     "https",
-		Family:   "https",
+		Family:   "http",
 		New:      func() any { return &HTTPSEndpoint{} },
 		Refs:     singularRef,
 		Validate: multiCredValidate,

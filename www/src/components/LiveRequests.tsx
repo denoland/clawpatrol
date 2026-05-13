@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { type EventRecord, type FacetSchema } from "../lib/api";
 import { formatFacetValue, useFacets } from "../lib/facets";
+import { fmtTime } from "../lib/format";
 
 type RowState = EventRecord & { frames?: { direction: string; frame: string; ts: string }[] };
 
@@ -183,11 +184,7 @@ function Row({ ev, schema }: { ev: RowState; schema: FacetSchema | undefined }) 
         window.location.hash = `#/request/${ev.id}`;
       }
     : undefined;
-  const t = new Date(ev.ts);
-  const time =
-    t.toLocaleTimeString([], { hour12: false }) +
-    "." +
-    String(t.getMilliseconds()).padStart(3, "0");
+  const time = fmtTime(ev.ts);
   const inFlight = ev.phase === "start";
   const status = ev.status || 0;
   const statusColor = inFlight

@@ -1,5 +1,4 @@
 {
-  "ca_dir": "/opt/clawpatrol/ca",
   "listen": "0.0.0.0:8443",
   "policy": {
     "credentials": {
@@ -14,7 +13,7 @@
       "deploy-classic": {
         "body": {
           "Host": "main-pg14.classic.example:5432",
-          "Database": "deployng",
+          "Database": "corp",
           "SSLMode": "",
           "Credential": "github-pat"
         },
@@ -30,7 +29,7 @@
           ],
           "Credential": "github-pat"
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       }
     },
@@ -49,7 +48,7 @@
             "cloud_sql_proxy",
             "--enable_iam_login",
             "--instances",
-            "denosr-prod:us-central1:main-pg14=tcp:5432"
+            "example-project:us-central1:main-pg14=tcp:5432"
           ],
           "Listen": "127.0.0.1:5432",
           "ReadyProbe": "tcp",

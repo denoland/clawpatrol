@@ -18,9 +18,8 @@ blocks dispatch to plugins by their first label.
 # Top-level singletons — read by the gateway daemon at boot.
 # Listen / paths / public URL:
 listen      = "0.0.0.0:8443"
-ca_dir      = "/opt/clawpatrol/ca"
 log_path    = "/opt/clawpatrol/gateway.log"
-oauth_dir   = "/opt/clawpatrol/oauth"
+state_dir   = "/opt/clawpatrol/state"
 public_url  = "http://gateway.internal:8080"
 admin_email = "ops@example.com"
 
@@ -178,7 +177,7 @@ types, each constrained to a matching endpoint family:
 | Rule type | Endpoint families | Match facets |
 |-----------|------------------|-------------|
 | `http_rule` | `https` | `method` / `path` / `query` / `headers` / `body_json` / `body_contains` / `credential` |
-| `sql_rule` | `sql` | `verb` / `tables` / `function` / `statement` / `statement_regex` / `credential` |
+| `sql_rule` | `sql` | `verb` / `tables` / `functions` / `statement` / `statement_regex` / `credential` |
 | `k8s_rule` | `k8s` | `resource` / `verb` / `namespace` / `name` / `params` / `credential` |
 
 Rule body shape:

@@ -5,7 +5,7 @@
 // derived from the request snapshot, and which fields the family
 // contributes to the event/log reporting layer.
 //
-// Built-in facets (https, sql, k8s) live under config/plugins/facets/;
+// Built-in facets (http, sql, k8s) live under config/plugins/facets/;
 // each registers itself at init() via facet.Register. The rules
 // plugin (config/plugins/rules) and the request handler look facets up
 // by name through this registry rather than switching on family
@@ -27,9 +27,9 @@ import (
 // request handled by the gateway, so implementations must be
 // goroutine-safe (which is trivial when they hold no mutable state).
 type Runtime interface {
-	// Name returns the family identifier — "https", "sql", "k8s",
-	// and so on. Must match the Type used at registration and the
-	// `family` string carried on endpoints and rules.
+	// Name returns the family identifier — "http", "sql", "k8s",
+	// and so on. Must match the `family` string carried on endpoints
+	// and rules.
 	Name() string
 
 	// EndpointFamilies lists the endpoint families a rule of this

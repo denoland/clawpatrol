@@ -20,14 +20,16 @@ import (
 // attributes. Labeled blocks (`credential "x" "y" {}`, etc.) are the
 // things you have N of and dispatch to the plugin registry.
 type Gateway struct {
-	Listen          string `hcl:"listen,optional"`
-	InfoListen      string `hcl:"info_listen,optional"`
-	PublicURL       string `hcl:"public_url,optional"`
-	AdminEmail      string `hcl:"admin_email,optional"`
-	CADir           string `hcl:"ca_dir,optional"`
+	Listen     string `hcl:"listen,optional"`
+	InfoListen string `hcl:"info_listen,optional"`
+	PublicURL  string `hcl:"public_url,optional"`
+	AdminEmail string `hcl:"admin_email,optional"`
+	// StateDir is the directory holding clawpatrol.db (and anything
+	// else a plugin persists to disk under it). Defaults to
+	// ${HOME}/.clawpatrol/state when unset.
+	StateDir        string `hcl:"state_dir,optional"`
 	Resolver        string `hcl:"resolver,optional"`
 	LogPath         string `hcl:"log_path,optional"`
-	OAuthDir        string `hcl:"oauth_dir,optional"`
 	DashboardSecret string `hcl:"dashboard_secret,optional"`
 	// InsecureNoDashboardSecret opts out of dashboard auth. Required
 	// (alongside an empty DashboardSecret) for the gateway to serve
@@ -53,7 +55,6 @@ type Gateway struct {
 	AuthKey           string `hcl:"authkey,optional"`
 	ControlURL        string `hcl:"control_url,optional"`
 	Hostname          string `hcl:"hostname,optional"`
-	StateDir          string `hcl:"state_dir,optional"`
 	Control           string `hcl:"control,optional"`
 	OAuthClientID     string `hcl:"oauth_client_id,optional"`
 	OAuthClientSecret string `hcl:"oauth_client_secret,optional"`
@@ -71,6 +72,13 @@ type Gateway struct {
 	LLMCacheTTL    int    `hcl:"llm_cache_ttl,optional"`
 	HumanTimeout   int    `hcl:"human_timeout,optional"`
 	HumanOnTimeout string `hcl:"human_on_timeout,optional"`
+
+	// Plugins lists every `plugin "<name>" { source = "..." }` block
+	// at the top of the file. The loader spawns each subprocess
+	// (and registers its declared types) before running pass-1
+	// symbol building, so plugin-supplied (kind, type) pairs are
+	// available by the time policy blocks are dispatched.
+	Plugins []PluginSource `hcl:"plugin,block"`
 
 	// Policy holds the v14-grammar block contents. Populated after
 	// the operational decode by Load's pass-1 / pass-2 walk. Set to
@@ -183,6 +191,53 @@ type PolicyText struct {
 	Text string `hcl:"text"`
 }
 
+// PluginSource is a top-level `plugin "<name>" { source = "..." }`
+// declaration. Name is informational (the manifest name from the
+// subprocess wins for type namespacing); Source is a path to the
+// plugin binary. v1 only supports literal local paths; future
+// versions will add git-based fetching with a lockfile.
+type PluginSource struct {
+	Name   string `hcl:"name,label"`
+	Source string `hcl:"source"`
+}
+
+// PluginLoader is the gateway-side hook the loader calls before
+// policy decoding. It spawns each declared plugin subprocess and
+// registers the manifest types in the global plugin registry.
+// Returning hcl.Diagnostics with errors aborts the load.
+//
+// Implemented by *extplugin.Manager — the package-cycle-safe seam
+// (config can't import extplugin since extplugin imports config).
+type PluginLoader interface {
+	LoadPlugins(specs []PluginSource) hcl.Diagnostics
+}
+
+// pluginLoader is the package-global hook every Load call uses.
+// main.go installs the real *extplugin.Manager via SetPluginLoader
+// at startup; the default is a no-op that quietly accepts configs
+// with no `plugin {}` blocks. Tests that exercise plugin loading
+// install their own loader the same way.
+var pluginLoader PluginLoader = noopPluginLoader{}
+
+// SetPluginLoader installs the loader used by every subsequent Load
+// / LoadBytes call. Pass nil to revert to the default no-op.
+func SetPluginLoader(p PluginLoader) {
+	if p == nil {
+		pluginLoader = noopPluginLoader{}
+		return
+	}
+	pluginLoader = p
+}
+
+// noopPluginLoader is the zero-cost default. Configs without
+// `plugin {}` blocks load identically against it; configs with
+// such blocks pass them through without spawning anything, which
+// then surfaces as an "unknown endpoint type" diagnostic for the
+// referencing endpoint blocks.
+type noopPluginLoader struct{}
+
+func (noopPluginLoader) LoadPlugins([]PluginSource) hcl.Diagnostics { return nil }
+
 // Profile is the lowered shape of a profile "<name>" {} block. Name
 // is the block's single label (set by the loader). Endpoints is the
 // only body attribute; rules ride along automatically because they're
@@ -202,6 +257,11 @@ type profileBody struct {
 // Returns a populated *Gateway plus any diagnostics. Callers should
 // check diagnostics first — a non-nil Gateway can still carry errors
 // (some recovery is best-effort).
+//
+// Plugin loading goes through the package-global PluginLoader
+// installed via SetPluginLoader. main.go installs the real
+// *extplugin.Manager once at startup; the default is a no-op so
+// non-plugin configs and tests need no setup.
 func Load(path string) (*Gateway, hcl.Diagnostics) {
 	src, err := os.ReadFile(path)
 	if err != nil {
@@ -241,6 +301,17 @@ func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
 		Tunnels:     make(map[string]*Entity),
 		Policies:    make(map[string]*PolicyText),
 		Profiles:    make(map[string]*Profile),
+	}
+
+	// Spawn external plugins before we look at policy blocks so the
+	// types they declare are visible to pass-1 symbol building. The
+	// loader is package-global; see SetPluginLoader.
+	if len(gw.Plugins) > 0 {
+		d := pluginLoader.LoadPlugins(gw.Plugins)
+		if d.HasErrors() {
+			return gw, append(diags, d...)
+		}
+		diags = append(diags, d...)
 	}
 
 	diags = append(diags, validateOperational(gw)...)
@@ -466,7 +537,12 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 			fw, body, fwDiags := extractFramework(sym.Block.Body, kind, evalCtx, table)
 			diags = append(diags, fwDiags...)
 			target := plugin.New()
-			decodeDiags := dedupGohclDiags(gohcl.DecodeBody(body, evalCtx, target))
+			var decodeDiags hcl.Diagnostics
+			if plugin.DecodeBody != nil {
+				decodeDiags = plugin.DecodeBody(body, evalCtx, target)
+			} else {
+				decodeDiags = dedupGohclDiags(gohcl.DecodeBody(body, evalCtx, target))
+			}
 			diags = append(diags, decodeDiags...)
 			// When decode errors, the struct may be partially populated
 			// and feeding it through Validate / Build typically produces

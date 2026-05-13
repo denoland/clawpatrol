@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/ext"
@@ -25,9 +26,9 @@ import (
 
 // HttpsFields is the CEL-facing view of an HTTPS request. Exposed
 // as the `http` variable in rule conditions (`http.method`,
-// `http.path`, `http.body_json`, etc.). The variable name is short
-// (`http`, not `https`) to keep conditions readable; the facet name
-// is `https` because the wire is TLS.
+// `http.path`, `http.body_json`, etc.). The facet name matches the
+// CEL variable (`http`); the endpoint plugin keeps the HCL label
+// `https` since that names the wire (TLS).
 //
 // BodyJson is *structpb.Value rather than `any` because cel-go's
 // NativeTypes converter drops interface-typed struct fields silently;
@@ -48,13 +49,11 @@ type HttpsFields struct {
 type Facet struct{}
 
 // Name reports the family identifier this facet handles.
-func (Facet) Name() string { return "https" }
+func (Facet) Name() string { return "http" }
 
 // EndpointFamilies enumerates endpoint families a rule of this facet
-// may attach to. Kubernetes endpoints are also `https`-family because
-// the kubernetes API is HTTPS-shaped; they get their k8s-specific
-// matchers through the k8s facet, not through http rules.
-func (Facet) EndpointFamilies() []string { return []string{"https"} }
+// may attach to.
+func (Facet) EndpointFamilies() []string { return []string{"http"} }
 
 // Transport reports the gateway-side dispatch handler this facet uses.
 func (Facet) Transport() string { return "https-mitm" }
@@ -113,21 +112,44 @@ func init() {
 	facet.Register(Facet{})
 }
 
+// lowercasedPaths declares the HTTPS fields whose activation values
+// are always lowercase. CompileCondition uses this to normalize the
+// matching string literals in the rule source at compile time, so
+// `http.method == "POST"` matches a POST request even though the
+// activation reports `method = "post"`.
+var lowercasedPaths = []string{"http.method"}
+
+// truncatablePaths declares the HTTPS fields whose activation values
+// come from the request body the gateway buffered against its
+// inspection cap (maxHTTPMatchBody in main.go). A condition that
+// reads either field on a request whose body overflowed the cap can
+// no longer be evaluated faithfully — the dispatcher synthesizes a
+// deny instead of letting the matcher see a truncated prefix.
+//
+// Fields whose value is independent of the body (method, path,
+// query, headers) are intentionally absent: a rule like
+// `http.method == "GET"` still fires on its own predicate even when
+// the body was capped.
+var truncatablePaths = []string{"http.body", "http.body_json"}
+
 // NewMatcher compiles a CEL condition into a Matcher. An empty
 // condition is the catch-all match-everything case.
 func (Facet) NewMatcher(condition string) (match.Matcher, error) {
 	if condition == "" {
 		return match.PassThrough{}, nil
 	}
-	return match.CompileCondition(celEnv, condition, buildActivation)
+	return match.CompileCondition(celEnv, condition, buildActivation, lowercasedPaths, truncatablePaths)
 }
 
 func buildActivation(req *match.Request) map[string]any {
 	if req == nil {
 		return nil
 	}
+	// HTTP method is lowercased here (and declared in lowercasedPaths)
+	// so rules can write either "POST" or "post" — CompileCondition
+	// normalizes the want-side literals to lowercase at rule-load time.
 	f := &HttpsFields{
-		Method:  req.Method,
+		Method:  strings.ToLower(req.Method),
 		Path:    match.PathOf(req.URL),
 		Headers: mapToCEL(req.Headers),
 		Body:    string(req.Body),

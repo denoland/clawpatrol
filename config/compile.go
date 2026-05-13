@@ -64,7 +64,7 @@ type CompiledProfile struct {
 // Family.
 type CompiledEndpoint struct {
 	Name        string
-	Family      string // "https" | "sql" | "k8s"
+	Family      string // "http" | "sql" | "k8s"
 	Plugin      *Plugin
 	Body        any
 	Hosts       []string
@@ -385,7 +385,7 @@ func hasResolvableHostname(hosts []string) bool {
 }
 
 func bareHostAlias(ep *CompiledEndpoint, host string) (string, bool) {
-	if ep == nil || (ep.Family != "https" && ep.Family != "k8s") {
+	if ep == nil || (ep.Family != "http" && ep.Family != "k8s") {
 		return "", false
 	}
 	bare, port, err := net.SplitHostPort(host)

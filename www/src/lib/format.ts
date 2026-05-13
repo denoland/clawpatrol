@@ -38,6 +38,46 @@ export function shortModel(m?: string): string {
   return s;
 }
 
+function pad(n: number, width = 2): string {
+  return String(n).padStart(width, "0");
+}
+
+// fmtDateTime renders local time as `yyyy-MM-dd HH:mm:ss.SSS`. Used
+// everywhere a timestamp shows up in the UI — keeps the format
+// locale-independent. See AGENTS.md.
+export function fmtDateTime(t: string | number | Date): string {
+  const d = t instanceof Date ? t : new Date(t);
+  return (
+    d.getFullYear() +
+    "-" +
+    pad(d.getMonth() + 1) +
+    "-" +
+    pad(d.getDate()) +
+    " " +
+    pad(d.getHours()) +
+    ":" +
+    pad(d.getMinutes()) +
+    ":" +
+    pad(d.getSeconds()) +
+    "." +
+    pad(d.getMilliseconds(), 3)
+  );
+}
+
+// fmtTime renders local time as `HH:mm:ss.SSS` (date omitted).
+export function fmtTime(t: string | number | Date): string {
+  const d = t instanceof Date ? t : new Date(t);
+  return (
+    pad(d.getHours()) +
+    ":" +
+    pad(d.getMinutes()) +
+    ":" +
+    pad(d.getSeconds()) +
+    "." +
+    pad(d.getMilliseconds(), 3)
+  );
+}
+
 export function fmtExpiry(unix?: number): string {
   if (!unix) return "—";
   const sec = unix - Math.floor(Date.now() / 1000);

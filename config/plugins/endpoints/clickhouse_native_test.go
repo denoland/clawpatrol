@@ -17,6 +17,7 @@ import (
 
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/facet"
+	"github.com/denoland/clawpatrol/config/match"
 	"github.com/denoland/clawpatrol/config/runtime"
 
 	_ "github.com/denoland/clawpatrol/config/plugins/facets/sql"
@@ -420,6 +421,49 @@ func chNewMockHandle(t *testing.T, ep *config.CompiledEndpoint) (*chMockHandle, 
 	return mock, agentSide
 }
 
+// TestChEvaluateSQLTruncated pins the per-rule fail-closed dispatch
+// for clickhouse: a rule whose CEL reads sql.* synth-denies on a
+// truncated request; a credential-only rule still allows. The
+// truncation arrives via the new bool flag on chEvaluateSQL — set
+// by chHandleQuery when q.Body exceeds chMaxQueryBody.
+func TestChEvaluateSQLTruncated(t *testing.T) {
+	t.Run("verb rule synth-denies on truncated", func(t *testing.T) {
+		denySelect := chRuleSQL(t, "select-allow",
+			"sql.verb == 'select'", "allow", "", 100)
+		defaultDeny := &config.CompiledRule{
+			Name: "default-deny", Priority: -100,
+			Outcome: config.Outcome{Verdict: "deny", Reason: "no match"},
+		}
+		ep := chBuildEndpoint(t, denySelect, defaultDeny)
+
+		mock, _ := chNewMockHandle(t, ep)
+
+		verdict, reason := chEvaluateSQL(context.Background(), mock.ConnHandle, "SELECT 1", "ch-cred", true)
+		if verdict != "deny" {
+			t.Errorf("truncated SELECT verdict = %q, want deny (synth)", verdict)
+		}
+		if reason == "" {
+			t.Errorf("synth deny reason must not be empty")
+		}
+	})
+
+	t.Run("non-truncatable rule still allows on truncated", func(t *testing.T) {
+		passThrough := &config.CompiledRule{
+			Name:    "allow-all",
+			Matcher: match.PassThrough{},
+			Outcome: config.Outcome{Verdict: "allow"},
+		}
+		ep := chBuildEndpoint(t, passThrough)
+
+		mock, _ := chNewMockHandle(t, ep)
+
+		verdict, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "anything", "ch-cred", true)
+		if verdict != "" {
+			t.Errorf("truncated passthrough verdict = %q, want allow (empty)", verdict)
+		}
+	})
+}
+
 // TestChEvaluateSQLAllowsSelectDeniesInsert is the iter 2 acceptance
 // criterion in test form: a sql_rule with `verb = ["insert"]` /
 // `verdict = "deny"` denies an INSERT and lets a SELECT through. The
@@ -432,7 +476,7 @@ func TestChEvaluateSQLAllowsSelectDeniesInsert(t *testing.T) {
 
 	mock, _ := chNewMockHandle(t, ep)
 
-	verdict, reason := chEvaluateSQL(context.Background(), mock.ConnHandle, "INSERT INTO events VALUES (1)", "ch-cred")
+	verdict, reason := chEvaluateSQL(context.Background(), mock.ConnHandle, "INSERT INTO events VALUES (1)", "ch-cred", false)
 	if verdict != "deny" {
 		t.Errorf("INSERT verdict = %q, want deny", verdict)
 	}
@@ -440,7 +484,7 @@ func TestChEvaluateSQLAllowsSelectDeniesInsert(t *testing.T) {
 		t.Errorf("INSERT reason = %q, want %q", reason, "writes blocked")
 	}
 
-	verdict, _ = chEvaluateSQL(context.Background(), mock.ConnHandle, "SELECT 1", "ch-cred")
+	verdict, _ = chEvaluateSQL(context.Background(), mock.ConnHandle, "SELECT 1", "ch-cred", false)
 	if verdict != "" {
 		t.Errorf("SELECT verdict = %q, want allow (empty)", verdict)
 	}
@@ -488,7 +532,7 @@ func TestChEvaluateSQLApproveChain(t *testing.T) {
 	t.Run("approver allows", func(t *testing.T) {
 		mock, _ := chNewMockHandle(t, ep)
 		mock.Approve = chMockApprove("allow", "ok")
-		verdict, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred")
+		verdict, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", false)
 		if verdict != "" {
 			t.Errorf("approver allow → verdict %q, want empty", verdict)
 		}
@@ -499,7 +543,7 @@ func TestChEvaluateSQLApproveChain(t *testing.T) {
 	t.Run("approver denies", func(t *testing.T) {
 		mock, _ := chNewMockHandle(t, ep)
 		mock.Approve = chMockApprove("deny", "operator rejected")
-		verdict, reason := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred")
+		verdict, reason := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", false)
 		if verdict != "deny" || reason != "operator rejected" {
 			t.Errorf("verdict=%q reason=%q, want deny/operator rejected", verdict, reason)
 		}
@@ -510,11 +554,91 @@ func TestChEvaluateSQLApproveChain(t *testing.T) {
 	t.Run("missing Approve callback default-denies", func(t *testing.T) {
 		mock, _ := chNewMockHandle(t, ep)
 		mock.Approve = nil
-		verdict, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred")
+		verdict, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", false)
 		if verdict != "deny" {
 			t.Errorf("no Approve → verdict %q, want deny", verdict)
 		}
 	})
+}
+
+// TestChAgentToServerStreamsOversizedQueryBody is the regression for
+// the matcher-buffer memory cap. The previous implementation called
+// q.DecodeAware up front, which materialised the entire SQL body into
+// q.Body before chMaxQueryBody could gate anything — a multi-GiB
+// statement would balloon the gateway's heap by a multi-GiB allocation
+// just to feed the matcher a 1 MiB prefix. The reworked path reads
+// at most chMaxQueryBody bytes into memory and splices the tail
+// straight through to upstream; this test pins both halves of that
+// contract: the matcher sees a `chMaxQueryBody`-byte head with
+// Truncated=true, and the forwarded packet still contains the full
+// body verbatim so upstream's compression context stays correct.
+func TestChAgentToServerStreamsOversizedQueryBody(t *testing.T) {
+	const revision = 54448
+	// chMaxQueryBody is 1 MiB; build a body that overshoots by a
+	// few bytes so the test is sensitive to off-by-one in the
+	// length-prefix / streaming-tail split. The leading bytes spell
+	// a recognisable head; the trailing bytes include a sentinel
+	// the matcher must NOT see (otherwise the cap is silently bypassed).
+	head := []byte("SELECT * FROM t WHERE x = '")
+	headPad := bytes.Repeat([]byte{'a'}, chMaxQueryBody-len(head))
+	tailSentinel := []byte("__TAIL_SENTINEL__")
+	body := append(append(append([]byte{}, head...), headPad...), tailSentinel...)
+	if len(body) <= chMaxQueryBody {
+		t.Fatalf("test body must exceed chMaxQueryBody (%d) to exercise streaming; got %d", chMaxQueryBody, len(body))
+	}
+
+	passThrough := &config.CompiledRule{
+		Name: "allow-all", Matcher: match.PassThrough{},
+		Outcome: config.Outcome{Verdict: "allow"},
+	}
+	ep := chBuildEndpoint(t, passThrough)
+	mock, _ := chNewMockHandle(t, ep)
+	defer func() { _ = mock.Conn.Close() }()
+
+	q := chgoproto.Query{
+		ID: "qid-big", Body: string(body),
+		Stage:       chgoproto.StageComplete,
+		Compression: chgoproto.CompressionEnabled,
+		Info: chgoproto.ClientInfo{
+			ProtocolVersion: revision, Major: 24, Minor: 8,
+			Interface:   chgoproto.InterfaceTCP,
+			Query:       chgoproto.ClientQueryInitial,
+			InitialUser: "alice",
+		},
+	}
+	var agentBuf chgoproto.Buffer
+	q.EncodeAware(&agentBuf, revision)
+
+	reader := chgoproto.NewReader(bytes.NewReader(agentBuf.Buf))
+	var upstream bytes.Buffer
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
+
+	out := upstream.Bytes()
+	if len(out) == 0 || chgoproto.ClientCode(out[0]) != chgoproto.ClientCodeQuery {
+		t.Fatalf("upstream first byte = %d, want ClientCodeQuery", out[0])
+	}
+	r := chgoproto.NewReader(bytes.NewReader(out[1:]))
+	var got chgoproto.Query
+	if err := got.DecodeAware(r, revision); err != nil {
+		t.Fatalf("decode upstream Query: %v", err)
+	}
+	if got.Body != string(body) {
+		t.Errorf("forwarded Body len = %d, want %d (full body must round-trip even though only the head is buffered)", len(got.Body), len(body))
+	}
+	if got.Compression != chgoproto.CompressionEnabled {
+		t.Errorf("forwarded Compression = %d, want Enabled", got.Compression)
+	}
+
+	if len(mock.events) != 1 {
+		t.Fatalf("expected 1 conn event, got %d: %+v", len(mock.events), mock.events)
+	}
+	stmt, _ := mock.events[0].Facets["statement"].(string)
+	if len(stmt) > chMaxQueryBody {
+		t.Errorf("matcher statement len = %d, want <= %d (oversized body must not reach the matcher)", len(stmt), chMaxQueryBody)
+	}
+	if strings.Contains(stmt, string(tailSentinel)) {
+		t.Errorf("matcher statement leaked the tail-sentinel — chMaxQueryBody cap bypassed")
+	}
 }
 
 // TestChAgentToServerForwardsQuery exercises the agent → server pump

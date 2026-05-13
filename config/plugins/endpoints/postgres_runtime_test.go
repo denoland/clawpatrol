@@ -3,6 +3,7 @@ package endpoints
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"io"
 	"net"
 	"testing"
@@ -11,6 +12,9 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/denoland/clawpatrol/config"
+	_ "github.com/denoland/clawpatrol/config/plugins/credentials"
+	_ "github.com/denoland/clawpatrol/config/plugins/facets/sql"
+	_ "github.com/denoland/clawpatrol/config/plugins/rules"
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
@@ -329,6 +333,144 @@ func TestPgClientToServerReturnsOnContextCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("pgClientToServer did not return after context cancellation")
+	}
+}
+
+// pgEndpointFromHCL compiles a single postgres endpoint out of HCL
+// so the truncation tests can construct a real *CompiledEndpoint
+// whose rules carry CEL-backed matchers (their
+// InspectsTruncatableFacet() answers are what drive the fail-close
+// path). Plain literal CompiledEndpoints with nil matchers can't
+// exercise that surface.
+func pgEndpointFromHCL(t *testing.T, src string) *config.CompiledEndpoint {
+	t.Helper()
+	gw, diags := config.LoadBytes([]byte(src), "in.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	cp, err := config.Compile(gw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	for _, ep := range cp.Endpoints {
+		return ep
+	}
+	t.Fatalf("compileFixture produced no endpoints")
+	return nil
+}
+
+// TestPgClientToServerDeniesOversizeFrameWhenRuleReadsTruncatableFacet
+// pins the fail-closed path for postgres frame truncation. An agent
+// emits a Q with a declared length far past maxPgMessage; the
+// endpoint has a rule reading sql.verb so the dispatcher synthesizes
+// a deny. The gateway must (a) send ErrorResponse + ReadyForQuery to
+// the agent, (b) drain the oversized body bytes off the wire, (c)
+// write nothing to upstream.
+func TestPgClientToServerDeniesOversizeFrameWhenRuleReadsTruncatableFacet(t *testing.T) {
+	ep := pgEndpointFromHCL(t, `
+endpoint "postgres" "db" {
+  host     = "db.example.com:5432"
+  database = "app"
+}
+profile "default" { endpoints = [db] }
+
+rule "verb-allow" {
+  endpoint  = db
+  condition = "sql.verb == 'select'"
+  verdict   = "allow"
+}
+rule "default-deny" {
+  endpoint = db
+  priority = -100
+  verdict  = "deny"
+}
+`)
+
+	agent, gateway, upstream, upstreamPeer, cleanup := pgPumpTestPipes(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := &runtime.ConnHandle{Conn: gateway, Endpoint: ep}
+	go pgClientToServer(ctx, ch, upstream, "")
+
+	// Declare a Q frame whose length exceeds maxPgMessage. We send
+	// the header followed by a small "body" that exercises the
+	// drain path — the gateway must read past whatever we send for
+	// the declared length before signalling deny, but for the test
+	// we cap the wire so the drain hits its source-EOF cleanly.
+	oversize := uint32(maxPgMessage + 16)
+	header := []byte{'Q', 0, 0, 0, 0}
+	binary.BigEndian.PutUint32(header[1:5], oversize)
+	bodyPrefix := bytes.Repeat([]byte{'X'}, 8)
+	go func() {
+		_, _ = agent.Write(header)
+		_, _ = agent.Write(bodyPrefix)
+		// The remaining bytes the gateway will try to drain — fill
+		// them with deterministic noise so the drain has something
+		// to consume. We send exactly the declared remainder.
+		drain := int(oversize) - 4 - len(bodyPrefix)
+		_, _ = agent.Write(bytes.Repeat([]byte{'Y'}, drain))
+	}()
+
+	// ErrorResponse arrives on the agent side. Read at least its
+	// 5-byte header to unblock the deny path.
+	_ = readFullWithDeadline(t, agent, 5)
+
+	// Upstream must see zero bytes for this denied frame.
+	_ = upstreamPeer.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	buf := make([]byte, 1)
+	if n, err := upstreamPeer.Read(buf); err == nil || n != 0 {
+		t.Fatalf("upstream received bytes from denied oversize frame: n=%d err=%v", n, err)
+	}
+}
+
+// TestPgClientToServerForwardsOversizeFrameWhenNoRuleReadsTruncatableFacet
+// pins the OTHER half: an oversize Q frame on an endpoint whose
+// rules never touch sql.* is forwarded byte-for-byte to upstream.
+// The gateway can't inspect what it didn't buffer, but it must not
+// silently drop traffic the policy didn't ask it to drop.
+func TestPgClientToServerForwardsOversizeFrameWhenNoRuleReadsTruncatableFacet(t *testing.T) {
+	ep := pgEndpointFromHCL(t, `
+credential "bearer_token" "cred" {}
+endpoint "postgres" "db" {
+  host       = "db.example.com:5432"
+  database   = "app"
+  credential = cred
+}
+profile "default" { endpoints = [db] }
+
+rule "by-credential" {
+  endpoint   = db
+  credential = cred
+  verdict    = "allow"
+}
+`)
+
+	agent, gateway, upstream, upstreamPeer, cleanup := pgPumpTestPipes(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := &runtime.ConnHandle{Conn: gateway, Endpoint: ep}
+	go pgClientToServer(ctx, ch, upstream, "cred")
+
+	oversize := uint32(maxPgMessage + 8)
+	header := []byte{'Q', 0, 0, 0, 0}
+	binary.BigEndian.PutUint32(header[1:5], oversize)
+	bodyLen := int(oversize) - 4
+	body := bytes.Repeat([]byte{'Z'}, bodyLen)
+	go func() {
+		_, _ = agent.Write(header)
+		_, _ = agent.Write(body)
+	}()
+
+	got := readFullWithDeadline(t, upstreamPeer, 1+int(oversize))
+	if got[0] != 'Q' {
+		t.Fatalf("upstream byte[0] = %c, want Q", got[0])
+	}
+	if !bytes.Equal(got[5:], body) {
+		t.Fatalf("upstream body diverged: len=%d want=%d", len(got)-5, len(body))
 	}
 }
 

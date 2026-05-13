@@ -123,8 +123,24 @@ func (PostgresEndpointRuntime) DetectPlaceholder(req *runtime.Request, candidate
 	return ""
 }
 
+// ParseStatement satisfies runtime.SQLParser so the action-fixture
+// loader can populate match.Request.Meta from a raw statement using
+// the same regex extractor pgEvaluate uses on live wire traffic.
+// Returns *sqlfacet.Meta as `any` to keep the runtime interface free
+// of the facets-package import.
+func (PostgresEndpointRuntime) ParseStatement(sql string) any {
+	info := parseSQL(sql)
+	return &sqlfacet.Meta{
+		Verb:      info.Verb,
+		Tables:    info.Tables,
+		Functions: info.Functions,
+		Statement: info.Statement,
+	}
+}
+
 func init() {
 	var _ runtime.PlaceholderDetector = PostgresEndpointRuntime{}
+	var _ runtime.SQLParser = PostgresEndpointRuntime{}
 	config.Register(&config.Plugin{
 		Kind:     config.KindEndpoint,
 		Type:     "postgres",
@@ -221,7 +237,7 @@ func (PostgresEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnH
 		pgWriteError(ch.Conn, "credential plugin does not implement postgres auth")
 		return fmt.Errorf("credential %q has no PostgresAuth", cc.Credential.Symbol.Name)
 	}
-	sec, err := ch.Secrets.Get(cc.Credential.Symbol.Name, ch.Profile)
+	sec, err := ch.Secrets.Get(cc.Credential.Symbol.Name)
 	if err != nil {
 		pgWriteError(ch.Conn, "fetch secret: "+err.Error())
 		return err
@@ -355,6 +371,16 @@ func pgStartupParam(body []byte, key string) string {
 	return ""
 }
 
+// maxPgMessage caps the per-frame inspection buffer. Postgres encodes
+// length as int32, so an attacker can declare a multi-GiB Query and
+// force the gateway to either accumulate it (OOM) or forward it
+// uninspected. The wire pump refuses to buffer past this cap: Q / P
+// frames whose declared length exceeds it take the truncated-frame
+// path (pgHandleOversizeFrame), which lets the dispatcher fail-close
+// any rule that would have read the now-discarded statement bytes,
+// and otherwise streams the frame through unbuffered.
+const maxPgMessage = 1 << 20
+
 // pgClientToServer pumps the agent's outbound message stream to the
 // upstream, inspecting Query / Parse for policy.
 func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.Conn, credName string) {
@@ -381,6 +407,28 @@ func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.
 		if n > 0 {
 			buf = append(buf, tmp[:n]...)
 			for {
+				// Pre-framing length gate: peek the header before
+				// readPgMessage's "wait until the full frame is
+				// buffered" rule lets the accumulator grow without
+				// bound. Q and P are the only inspected frame types,
+				// so they're the only ones whose oversize bytes we
+				// refuse to buffer; all other types pass through the
+				// normal readPgMessage path with their natural
+				// length (no realistic non-inspected frame is
+				// hostile-sized in practice — Sync / Bind / Execute
+				// have bounded payloads).
+				if len(buf) >= 5 {
+					typ := buf[0]
+					length := binary.BigEndian.Uint32(buf[1:5])
+					if (typ == 'Q' || typ == 'P') && length > maxPgMessage {
+						nextBuf, ok := pgHandleOversizeFrame(ch, upstream, credName, buf, length)
+						if !ok {
+							return
+						}
+						buf = nextBuf
+						continue
+					}
+				}
 				msg, rest, ok := readPgMessage(buf)
 				if !ok {
 					break
@@ -407,6 +455,106 @@ func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.
 			return
 		}
 	}
+}
+
+// pgHandleOversizeFrame handles a Q or P frame whose declared length
+// exceeds maxPgMessage. buf holds the bytes we've already pulled off
+// the wire (at minimum the 5-byte header; possibly some payload too);
+// length is the value from the header. Returns (rest, true) on a
+// clean dispatch — rest is buf advanced past every byte that belongs
+// to this frame, so the caller resumes framing from the next packet
+// — or (nil, false) when the wire dies and the pump must tear down.
+//
+// Dispatch:
+//
+//   - Build a SQL match.Request with Truncated=true and empty
+//     Verb / Statement / Tables / Functions. The frontend can't
+//     parse SQL out of bytes it refused to buffer, and the
+//     dispatcher's job is to decide off the rule's truncatable-facet
+//     references, not off whatever prefix did fit.
+//   - runtime.MatchRequest walks the rule list. A rule whose CEL
+//     reads sql.* will be auto-synthesized to deny (config/runtime/
+//     dispatch.go); a rule that only reads credential or has no
+//     condition still matches normally.
+//
+// Then:
+//
+//   - Deny → drain remaining frame bytes from the wire, send
+//     ErrorResponse + ReadyForQuery to the agent (pgWriteDeny), do
+//     NOT touch upstream.
+//   - Allow / no match → forward every byte verbatim to upstream
+//     (the buffered prefix + the wire tail streamed through
+//     io.CopyN). The upstream sees a single oversize Q / P frame
+//     exactly as the agent emitted it; the gateway just declined to
+//     materialize the body in memory.
+//   - Approve chain → treated as deny. HITL can't make a decision
+//     on bytes that aren't there.
+func pgHandleOversizeFrame(ch *runtime.ConnHandle, upstream net.Conn, credName string, buf []byte, length uint32) ([]byte, bool) {
+	typ := buf[0]
+	totalWire := uint64(1) + uint64(length)
+	have := uint64(len(buf))
+	if have > totalWire {
+		have = totalWire
+	}
+	frameHave := buf[:have]
+	rest := buf[have:]
+	remaining := totalWire - have
+
+	mreq := &match.Request{
+		Family:     "sql",
+		PeerIP:     ch.PeerIP,
+		Credential: credName,
+		Meta:       &sqlfacet.Meta{},
+		Truncated:  true,
+	}
+	var facets map[string]any
+	if f := facet.Lookup("sql"); f != nil {
+		facets = f.Report(mreq)
+	}
+	cr := runtime.MatchRequest(ch.Endpoint, mreq)
+
+	deny, reason := false, ""
+	if cr != nil {
+		switch {
+		case len(cr.Outcome.Approve) > 0:
+			deny = true
+			reason = "approval required but request was truncated by inspection buffer"
+		case cr.Outcome.Verdict == "deny":
+			deny = true
+			reason = cr.Outcome.Reason
+			if reason == "" {
+				reason = "denied by policy"
+			}
+		}
+	}
+
+	summary := fmt.Sprintf("truncated frame typ=%c length=%d cap=%d", typ, length, maxPgMessage)
+	if deny {
+		if remaining > 0 {
+			if _, err := io.CopyN(io.Discard, ch.Conn, int64(remaining)); err != nil {
+				return nil, false
+			}
+		}
+		pgWriteDeny(ch.Conn, reason)
+		emit(ch, runtime.ConnEvent{
+			Action: "deny", Reason: reason, Summary: summary, Facets: facets,
+		})
+		log.Printf("pg-deny-truncated %s: %s", ch.PeerIP, reason)
+		return rest, true
+	}
+
+	if _, err := upstream.Write(frameHave); err != nil {
+		return nil, false
+	}
+	if remaining > 0 {
+		if _, err := io.CopyN(upstream, ch.Conn, int64(remaining)); err != nil {
+			return nil, false
+		}
+	}
+	emit(ch, runtime.ConnEvent{
+		Action: "allow-overflow", Summary: summary, Facets: facets,
+	})
+	return rest, true
 }
 
 // pgEvaluate runs the SQL through the endpoint's compiled rules and
@@ -455,6 +603,7 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 		})
 		return "", ""
 	}
+	rule := cr.Name
 
 	// Approve chain. ConnHandle.Approve dispatches through the
 	// host's HITL machinery (same one HTTPS uses) — the postgres
@@ -466,7 +615,7 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 		if ch.Approve == nil {
 			emit(ch, runtime.ConnEvent{
 				Action: "deny", Reason: "HITL not configured",
-				Verb: info.Verb, Summary: summary, Facets: facets,
+				Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
 			})
 			return "deny", "approval required but HITL is not configured"
 		}
@@ -481,12 +630,12 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 			}
 			emit(ch, runtime.ConnEvent{
 				Action: "hitl_deny", Reason: reason,
-				Verb: info.Verb, Summary: summary, Facets: facets,
+				Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
 			})
 			return "deny", reason
 		}
 		emit(ch, runtime.ConnEvent{
-			Action: "hitl_allow", Verb: info.Verb, Summary: summary, Facets: facets,
+			Action: "hitl_allow", Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
 		})
 		return "", ""
 	}
@@ -498,12 +647,12 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 		}
 		emit(ch, runtime.ConnEvent{
 			Action: "deny", Reason: reason,
-			Verb: info.Verb, Summary: summary, Facets: facets,
+			Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
 		})
 		return "deny", reason
 	}
 	emit(ch, runtime.ConnEvent{
-		Action: "allow", Verb: info.Verb, Summary: summary, Facets: facets,
+		Action: "allow", Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
 	})
 	return "", ""
 }

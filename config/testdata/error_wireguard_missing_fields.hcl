@@ -3,6 +3,5 @@
 # clients dial an unknown endpoint.
 
 listen = "0.0.0.0:8443"
-ca_dir = "/opt/clawpatrol/ca"
 
 control = "wireguard"

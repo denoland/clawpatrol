@@ -30,6 +30,17 @@ type HTTPCredentialRuntime interface {
 	InjectHTTP(ctx context.Context, req *http.Request, sec Secret) error
 }
 
+// WebSocketCredentialRuntime is the credential-plugin contract for
+// server-bound WebSocket text payloads that carry token placeholders.
+// The gateway calls this after decoding/unmasking a complete text frame
+// but before forwarding it upstream; implementations must return a new
+// plaintext payload and indicate whether the frame must be rebuilt.
+// Inspectors still receive the original placeholder-bearing payload so
+// real secrets are not emitted to logs or the dashboard.
+type WebSocketCredentialRuntime interface {
+	RewriteWebSocketPayload(ctx context.Context, payload []byte, sec Secret) ([]byte, bool, error)
+}
+
 // HTTPSyntheticResponder is the optional contract an endpoint
 // plugin's runtime implements when it needs to short-circuit certain
 // matched requests and return a synthetic response without forwarding
@@ -113,10 +124,12 @@ type ConnHandle struct {
 	Endpoint *config.CompiledEndpoint
 	Policy   *config.CompiledPolicy
 	// Profile is the device's profile name, looked up from peer IP
-	// before dispatch.
+	// before dispatch. Informational — the host uses it for logging
+	// and exposes it to external plugins; it is no longer keyed into
+	// credential lookups.
 	Profile string
-	// PeerIP is the agent's source IP, used as the "owner" key when
-	// fetching credentials from the secret store.
+	// PeerIP is the agent's source IP. Informational identifier of
+	// the originating peer.
 	PeerIP string
 	// Secrets is the host's SecretStore; plugins use it to fetch
 	// credential material at session-start time (postgres) or per
@@ -137,13 +150,17 @@ type ConnHandle struct {
 	// support HITL for this conn family — plugins must default to
 	// deny in that case.
 	Approve func(req ApproveCallRequest) ApproveVerdict
-	// CADir is the gateway's CA / persistent state root (matches
-	// cfg.CADir). Endpoint runtimes that need to persist material
-	// per endpoint — e.g. SSH host keys at <CADir>/ssh/<name>.key —
-	// derive paths from this. Empty when the gateway hasn't been
-	// configured with a CA dir; plugins that need persistence error
-	// out clearly in that case.
-	CADir string
+	// StateDir is the gateway's persistent state root (matches
+	// cfg.StateDir). Kept on the handle for tunnel plugins
+	// (Tailscale's tsnet state dir is derived from it). Endpoint
+	// plugins should persist material through Blobs instead — see
+	// ConnHandle.Blobs.
+	StateDir string
+	// Blobs is the gateway's plugin-blob store. Endpoint plugins
+	// that need persistent bytes (SSH host keys, JWT signing keys)
+	// read / write through it instead of touching the filesystem.
+	// The host backs it with a sqlite table; tests pass a fake.
+	Blobs BlobStore
 	// DstPort is the destination port the agent connection arrived
 	// on (post-VIP / direct dial). Endpoints whose host strings
 	// carry a non-default port (`hosts = ["x.com:22222"]`) consult
@@ -196,6 +213,11 @@ type ConnEvent struct {
 	Summary string // human-readable one-liner for the event log
 	Bytes   int64  // approximate request size for billing / quotas
 	Facets  map[string]any
+	// Rule is the matched CompiledRule.Name, "" when no rule fired.
+	// The host's Emit closure copies it onto the dashboard Event so
+	// the action-fixture exporter can pin a downloaded action to a
+	// specific rule (site/doc/clawpatrol-test.md).
+	Rule string
 }
 
 // Secret is what credential plugins receive at injection time. The
@@ -241,6 +263,9 @@ type HITLTarget struct {
 	PendingID      string // pool's pending entry id
 	DashboardURL   string // for fallback dashboard link in non-interactive mode
 	ThreadTS       string // if set, post as a reply in this Slack thread
+	// Summary is an optional pre-computed classification. When non-nil,
+	// notifiers render a richer card instead of the generic method/path display.
+	Summary *HITLSummary
 }
 
 // ApproverRuntime evaluates one stage of an approve = [...] chain.
@@ -267,9 +292,10 @@ type ApproveRequest struct {
 	// approver should use against Pool / Secrets when it needs to
 	// disambiguate per-approver state.
 	ApproverName string
-	// Profile of the originating peer; SecretStore lookup key for
-	// per-profile credentials.
-	Profile string
+	// AgentIP is the WireGuard source IP of the originating peer.
+	// Approvers use it as a display label / log key; it carries no
+	// credential-lookup meaning.
+	AgentIP string
 	// Method / Host / Path / UA / BodySample carry the request shape
 	// for HITL prompts. Endpoint plugins fill these so approvers
 	// don't have to know the family-specific Request internals.
@@ -351,7 +377,7 @@ type HITLPending struct {
 	// called. HITLEndpointLabel-derived: hostname for HTTPS, resource
 	// name for SQL / k8s where Host is a virtual IP.
 	Endpoint string `json:"endpoint,omitempty"`
-	// Family is the endpoint family ("https" | "sql" | "k8s") so the
+	// Family is the endpoint family ("http" | "sql" | "k8s") so the
 	// dashboard can pick a matching label for Path ("Query" /
 	// "Resource" / "Path"). Empty when no endpoint metadata is set.
 	Family     string    `json:"family,omitempty"`
@@ -369,6 +395,23 @@ type HITLDecision struct {
 	Allow  bool
 	Reason string
 	By     string
+}
+
+// HITLSummary is an optional pre-computed classification from a
+// classifier LLM. When set on HITLTarget, notifiers build a richer
+// approval card instead of the generic method/path display.
+type HITLSummary struct {
+	TicketID       string `json:"ticket_id"`
+	Classification string `json:"classification"` // "Spam", "Legit", "Unclear", etc.
+	Confidence     int    `json:"confidence"`     // 0–100; 0 = not provided
+	Text           string `json:"summary"`
+}
+
+// HITLClassifier is the optional interface an approver plugin
+// implements to generate a HITLSummary before the HITL notification
+// is sent.
+type HITLClassifier interface {
+	Summarize(ctx context.Context, req ApproveRequest) (*HITLSummary, error)
 }
 
 // ErrUnsupported is returned by a plugin's runtime hook when the
@@ -398,6 +441,23 @@ var ErrUnsupported = errors.New("plugin runtime not implemented")
 // calling it.
 type PlaceholderDetector interface {
 	DetectPlaceholder(req *Request, candidates []string) string
+}
+
+// SQLParser is the optional contract a SQL-family endpoint plugin's
+// runtime implements so a host that received a raw SQL string (rather
+// than a live wire-protocol frame) can populate `match.Request.Meta`
+// using the same parser the live dispatch path uses. The fixture
+// loader behind `clawpatrol test` reads only `"statement": "..."`
+// from each fixture and calls this to recover verb / tables /
+// functions before running rule matching, so the format stays
+// operator-friendly (site/doc/clawpatrol-test.md).
+//
+// Implementations return the per-family `*sqlfacet.Meta` value the
+// SQL matcher expects on `match.Request.Meta`. Endpoints whose
+// runtime doesn't implement this aren't usable as SQL test
+// fixtures.
+type SQLParser interface {
+	ParseStatement(sql string) any
 }
 
 // Request is re-exported here so callers don't have to import

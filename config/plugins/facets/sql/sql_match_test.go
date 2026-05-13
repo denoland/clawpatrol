@@ -27,6 +27,36 @@ func TestSQLMatcherVerbAndTables(t *testing.T) {
 	}
 }
 
+// TestSQLMatcherVerbCaseInsensitive locks in that a rule written as
+// `sql.verb == "SELECT"` matches a select statement even though the
+// activation normalizes the got value to lowercase. CompileCondition
+// lowercases the want-side string literals at rule-load time.
+func TestSQLMatcherVerbCaseInsensitive(t *testing.T) {
+	cases := []struct {
+		name      string
+		condition string
+		want      bool
+	}{
+		{"uppercase want", "sql.verb == 'SELECT'", true},
+		{"mixed-case want", "sql.verb == 'Select'", true},
+		{"lowercase want (already)", "sql.verb == 'select'", true},
+		{"upper-case list", "sql.verb in ['SELECT', 'INSERT']", true},
+		{"miss after normalization", "sql.verb == 'UPDATE'", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, err := facet.NewMatcher("sql", tc.condition)
+			if err != nil {
+				t.Fatalf("NewMatcher: %v", err)
+			}
+			req := &match.Request{Family: "sql", Meta: &sqlfacet.Meta{Verb: "select"}}
+			if got := m.Match(req); got != tc.want {
+				t.Errorf("Match=%v want %v (condition=%q)", got, tc.want, tc.condition)
+			}
+		})
+	}
+}
+
 func TestSQLMatcherStatementRegex(t *testing.T) {
 	m, err := facet.NewMatcher("sql", `sql.verb == 'select' && sql.statement.matches('(?i)\\b(secret|password|token)\\b')`)
 	if err != nil {

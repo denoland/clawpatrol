@@ -93,6 +93,62 @@ func TestBufferHTTPBodyForMatchKeepsFullLargeForwardingBody(t *testing.T) {
 	}
 }
 
+// TestBufferHTTPBodyForMatchTruncatedFlagsOverflow pins the overflow
+// signal the dispatcher needs to fail-close body-reading rules: an
+// exact-cap body must NOT report truncated (no bytes were dropped),
+// a one-byte-over body must, and the upstream forward must still
+// receive the full original body in either case.
+func TestBufferHTTPBodyForMatchTruncatedFlagsOverflow(t *testing.T) {
+	cases := []struct {
+		name          string
+		bodyLen       int
+		wantTruncated bool
+	}{
+		{"under cap", maxHTTPMatchBody / 2, false},
+		{"exact cap", maxHTTPMatchBody, false},
+		{"one byte over cap", maxHTTPMatchBody + 1, true},
+		{"well over cap", maxHTTPMatchBody + 4096, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := strings.Repeat("x", tc.bodyLen)
+			var upstreamLen int
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				upstreamLen = len(b)
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer upstream.Close()
+
+			req, err := http.NewRequest("POST", upstream.URL+"/x", strings.NewReader(body))
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+
+			match, truncated := bufferHTTPBodyForMatchTruncated(req)
+			if truncated != tc.wantTruncated {
+				t.Errorf("truncated = %v, want %v", truncated, tc.wantTruncated)
+			}
+			wantMatchLen := tc.bodyLen
+			if wantMatchLen > maxHTTPMatchBody {
+				wantMatchLen = maxHTTPMatchBody
+			}
+			if len(match) != wantMatchLen {
+				t.Errorf("match len = %d, want %d", len(match), wantMatchLen)
+			}
+
+			resp, err := http.DefaultTransport.RoundTrip(req)
+			if err != nil {
+				t.Fatalf("round trip: %v", err)
+			}
+			_ = resp.Body.Close()
+			if upstreamLen != tc.bodyLen {
+				t.Errorf("upstream got %d bytes, want %d (truncation must not drop bytes from the forwarded body)", upstreamLen, tc.bodyLen)
+			}
+		})
+	}
+}
+
 func TestBufferHTTPBodyForMatchStreamsUnknownLengthRemainder(t *testing.T) {
 	body := strings.Repeat("b", maxHTTPMatchBody) + "tail"
 	var upstreamBodyLen int

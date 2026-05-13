@@ -1,15 +1,4 @@
-// Profile is per-device, not per-dashboard. The OAuth connect flow
-// picks which profile a credential lands under via an explicit query
-// param on /api/oauth/start; everything else is single-tenant.
 const api = fetch;
-
-export type Owner = {
-  owner: string;
-  connected: boolean;
-  expires_at?: number;
-  display_name?: string;
-  avatar_url?: string;
-};
 
 export type SecretSlot = {
   name: string;
@@ -25,6 +14,22 @@ export type OAuthIntegrationUI = {
   optional_scopes?: OptionalScopeGroup[];
 };
 
+// TailscaleAuthStatusUI matches IntegrationRow.TailscaleAuth on the
+// server. The dashboard reads connect/disconnect endpoint paths off
+// the row instead of hardcoding /api/tailscale/* so backend route
+// changes don't need a coordinated frontend bump. pending_url, when
+// non-empty, is tsnet's live login URL — opening it in a new tab
+// completes the join.
+export type TailscaleAuthStatusUI = {
+  connected: boolean;
+  pending_url?: string;
+  connect_url: string;
+  status_url: string;
+  disconnect_url: string;
+};
+
+// Each credential carries one secret. The connection state lives
+// directly on the row; multi-tenant per-owner fan-out was removed.
 export type Integration = {
   id: string;
   name: string;
@@ -32,27 +37,52 @@ export type Integration = {
   has_oauth: boolean;
   oauth?: OAuthIntegrationUI | null;
   slots?: SecretSlot[] | null;
-  owners: Owner[] | null;
+  connected: boolean;
+  expires_at?: number;
+  display_name?: string;
+  avatar_url?: string;
+  has_tailscale_auth?: boolean;
+  tailscale_auth?: TailscaleAuthStatusUI | null;
 };
 
-export async function setCredentialSlots(
-  id: string,
-  owner: string,
-  slots: Record<string, string>,
-): Promise<void> {
+// tailscaleConnect asks the gateway for the live tsnet login URL.
+// Returns `{connected: true}` when the node is already joined.
+// tsnet mints a fresh URL per attempt — call this on every click
+// rather than caching.
+export async function tailscaleConnect(connectURL: string): Promise<{
+  id: string;
+  connected: boolean;
+  auth_url?: string;
+  pending_url?: string;
+  status: string;
+}> {
+  const r = await fetch(connectURL, { method: "POST" });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+// tailscaleDisconnect drops the persisted node identity. The
+// in-process tsnet node keeps running until gateway restart — the
+// next boot reruns the interactive flow.
+export async function tailscaleDisconnect(disconnectURL: string): Promise<void> {
+  const r = await fetch(disconnectURL, { method: "POST" });
+  if (!r.ok) throw new Error(await r.text());
+}
+
+export async function setCredentialSlots(id: string, slots: Record<string, string>): Promise<void> {
   const r = await fetch("/api/credentials/set", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id, owner, slots }),
+    body: JSON.stringify({ id, slots }),
   });
   if (!r.ok) throw new Error(await r.text());
 }
 
-export async function clearCredential(id: string, owner: string): Promise<void> {
+export async function clearCredential(id: string): Promise<void> {
   const r = await fetch("/api/credentials/clear", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id, owner }),
+    body: JSON.stringify({ id }),
   });
   if (!r.ok) throw new Error(await r.text());
 }
@@ -343,24 +373,18 @@ export async function getState(): Promise<StateResp> {
 }
 
 export type OAuthStartResp =
-  | { flow?: "auth_code"; auth_url: string; state: string; owner: string }
+  | { flow?: "auth_code"; auth_url: string; state: string }
   | {
       flow: "device";
       user_code: string;
       verification_uri: string;
       state: string;
-      owner: string;
       interval: number;
       expires_in: number;
     };
 
-export async function oauthStart(
-  id: string,
-  profile?: string,
-  extraScopes?: string[],
-): Promise<OAuthStartResp> {
+export async function oauthStart(id: string, extraScopes?: string[]): Promise<OAuthStartResp> {
   let qs = `id=${encodeURIComponent(id)}`;
-  if (profile) qs += `&profile=${encodeURIComponent(profile)}`;
   if (extraScopes && extraScopes.length > 0) {
     qs += `&extra_scopes=${encodeURIComponent(extraScopes.join(","))}`;
   }
@@ -371,7 +395,6 @@ export async function oauthStart(
 
 export async function oauthDevicePoll(state: string): Promise<{
   connected?: boolean;
-  owner?: string;
   error?: string;
   detail?: string;
   interval?: number;
@@ -383,11 +406,11 @@ export async function oauthDevicePoll(state: string): Promise<{
   return r.json();
 }
 
-export async function oauthRevoke(id: string, owner: string): Promise<void> {
+export async function oauthRevoke(id: string): Promise<void> {
   const r = await api("/api/oauth/revoke", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id, owner }),
+    body: JSON.stringify({ id }),
   });
   if (!r.ok) throw new Error(await r.text());
 }
@@ -426,7 +449,20 @@ export type EventRecord = {
   // method/path/status; SQL: verb/tables/...; k8s: verb/resource/...).
   family?: string;
   facets?: Record<string, unknown>;
+  // endpoint/rule are populated at dispatch time; needed by the
+  // Download action button (site/doc/clawpatrol-test.md).
+  endpoint?: string;
+  rule?: string;
 };
+
+// downloadActionFixture fetches the action reshaped as a
+// `clawpatrol test` fixture. Returns a Blob so the caller can
+// trigger a browser download.
+export async function downloadActionFixture(id: string): Promise<Blob> {
+  const r = await api(`/api/actions/${id}?fmt=fixture`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.blob();
+}
 
 // FacetSchema mirrors the JSON returned by GET /api/facets — the
 // dashboard fetches it once at boot and uses it to render
@@ -471,7 +507,7 @@ export async function getAnalytics(params: {
 export async function oauthExchange(
   state: string,
   code: string,
-): Promise<{ connected: boolean; owner: string; expires: number }> {
+): Promise<{ connected: boolean; expires: number }> {
   const r = await api("/api/oauth/exchange", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

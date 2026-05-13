@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -28,7 +31,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/andybalholm/brotli"
 	"github.com/hashicorp/hcl/v2/hclwrite"
+	"github.com/klauspost/compress/zstd"
 
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/facet"
@@ -47,7 +52,6 @@ var errConfigRevisionConflict = errors.New("config revision conflict")
 
 type webMux struct {
 	g         *Gateway
-	caDir     string
 	ts        JoinConfig // for onboarding key minting
 	publicURL string
 	mu        sync.Mutex
@@ -182,8 +186,8 @@ func (w *webMux) skipsTailnetGate(path string) bool {
 	return w.authRequirementForPath(path) == authPublic
 }
 
-func newWebMux(g *Gateway, caDir string, ts JoinConfig, publicURL string) http.Handler {
-	w := &webMux{g: g, caDir: caDir, ts: ts, publicURL: publicURL, sessions: map[string]*oauthSession{}, onboard: g.onboard, previews: map[string]configPreviewToken{}}
+func newWebMux(g *Gateway, ts JoinConfig, publicURL string) http.Handler {
+	w := &webMux{g: g, ts: ts, publicURL: publicURL, sessions: map[string]*oauthSession{}, onboard: g.onboard, previews: map[string]configPreviewToken{}}
 	return w.handler()
 }
 
@@ -228,6 +232,9 @@ func (w *webMux) routes() []webRoute {
 		{Method: http.MethodPost, Path: "/api/oauth/exchange", Auth: authDashboard, Handler: w.apiOAuthExchange},
 		{Method: http.MethodPost, Path: "/api/oauth/device-poll", Auth: authDashboard, Handler: w.apiOAuthDevicePoll},
 		{Method: http.MethodPost, Path: "/api/oauth/revoke", Auth: authDashboard, Handler: w.apiOAuthRevoke},
+		{Method: http.MethodPost, Path: "/api/tailscale/connect", Auth: authDashboard, Handler: w.apiTailscaleConnect},
+		{Method: http.MethodGet, Path: "/api/tailscale/status", Auth: authDashboard, Handler: w.apiTailscaleStatus},
+		{Method: http.MethodPost, Path: "/api/tailscale/disconnect", Auth: authDashboard, Handler: w.apiTailscaleDisconnect},
 		{Method: http.MethodPost, Path: "/api/credentials/set", Auth: authDashboard, Handler: w.apiCredentialsSet},
 		{Method: http.MethodPost, Path: "/api/credentials/clear", Auth: authDashboard, Handler: w.apiCredentialsClear},
 		{Method: http.MethodGet, Path: "/api/events", Auth: authDashboard, Handler: w.apiEventsSSE},
@@ -454,7 +461,6 @@ func (w *webMux) mountCredentialWebhooks(mux *http.ServeMux) {
 					Secrets:        w.g.secrets,
 					HITL:           w.g.hitl,
 					Policy:         w.g.Policy(),
-					Profiles:       orderedProfileNames(w.g.cfg.Policy),
 				}
 				handler(ctx, rw, r)
 			})
@@ -550,9 +556,15 @@ func (w *webMux) staticHandler() http.Handler {
 	return http.FileServer(http.FS(sub))
 }
 
-func (w *webMux) serveCA(rw http.ResponseWriter, r *http.Request) {
+func (w *webMux) serveCA(rw http.ResponseWriter, _ *http.Request) {
+	pemBytes := w.g.certs.CertPEM()
+	if len(pemBytes) == 0 {
+		http.Error(rw, "ca not initialized", http.StatusServiceUnavailable)
+		return
+	}
 	rw.Header().Set("Content-Type", "application/x-pem-file")
-	http.ServeFile(rw, r, w.caDir+"/ca.crt")
+	rw.Header().Set("Content-Length", strconv.Itoa(len(pemBytes)))
+	_, _ = rw.Write(pemBytes)
 }
 
 func (w *webMux) serveInfo(rw http.ResponseWriter, _ *http.Request) {
@@ -582,10 +594,13 @@ func (w *webMux) callerIdentity(r *http.Request) (user, device, displayHost stri
 	return who.UserProfile.LoginName, who.Node.StableID, who.Node.HostName
 }
 
-// targetOwnerForRequest returns the credential-bucket key selected by a
-// dashboard request. It is target/profile selection only; it must not be
-// used as evidence that the caller is authenticated.
-func (w *webMux) targetOwnerForRequest(r *http.Request) (key, label string) {
+// selectedProfileForRequest returns the profile name a dashboard request
+// targets. Prefer an explicit profile selector, then the configured
+// default policy profile. The remaining fallbacks preserve legacy
+// single-user/per-caller keys; they are not necessarily declared policy
+// profiles and must not be used as evidence that the caller is
+// authenticated.
+func (w *webMux) selectedProfileForRequest(r *http.Request) (key, label string) {
 	if p := r.URL.Query().Get("profile"); p != "" {
 		return p, p
 	}
@@ -603,13 +618,6 @@ func (w *webMux) targetOwnerForRequest(r *http.Request) (key, label string) {
 		return user, user
 	}
 	return host, host
-}
-
-// ownerForCaller is the legacy name for targetOwnerForRequest. Existing
-// handlers still use it to choose credential buckets; new authenticated
-// operator checks should consume principal from context instead.
-func (w *webMux) ownerForCaller(r *http.Request) (key, label string) {
-	return w.targetOwnerForRequest(r)
 }
 
 // whoamiData backs the whoami slice of /api/state. No HTTP handler —
@@ -706,9 +714,9 @@ func serveState(rw http.ResponseWriter, r *http.Request, body []byte, tag string
 // declared credential ships (root view).
 
 // apiCredentialsSet persists one or more slot values for a non-OAuth
-// credential. Owner defaults to the caller's profile. Body shape:
+// credential. Body shape:
 //
-//	{ "id": "stripe-live", "owner": "default", "slots": { "": "sk_live_…" } }
+//	{ "id": "stripe-live", "slots": { "": "sk_live_…" } }
 //
 // Multi-slot credentials (mtls, slack tokens) pass multiple keys.
 // Empty values clear the slot.
@@ -719,7 +727,6 @@ func (w *webMux) apiCredentialsSet(rw http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		ID    string            `json:"id"`
-		Owner string            `json:"owner"`
 		Slots map[string]string `json:"slots"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -728,13 +735,6 @@ func (w *webMux) apiCredentialsSet(rw http.ResponseWriter, r *http.Request) {
 	}
 	if body.ID == "" {
 		http.Error(rw, "missing id", 400)
-		return
-	}
-	if body.Owner == "" {
-		body.Owner, _ = w.ownerForCaller(r)
-	}
-	if body.Owner == "" {
-		http.Error(rw, "missing owner", 400)
 		return
 	}
 	policy := w.g.policy.Load()
@@ -760,15 +760,15 @@ func (w *webMux) apiCredentialsSet(rw http.ResponseWriter, r *http.Request) {
 		if v == "" {
 			// Empty value = clear that slot specifically.
 			if _, err := w.g.db.Exec(
-				`DELETE FROM credential_secrets WHERE credential = ? AND profile = ? AND slot = ?`,
-				body.ID, body.Owner, slot,
+				`DELETE FROM credential_secrets WHERE credential = ? AND slot = ?`,
+				body.ID, slot,
 			); err != nil {
 				http.Error(rw, err.Error(), 500)
 				return
 			}
 			continue
 		}
-		if err := setCredentialSlot(w.g.db, body.ID, body.Owner, slot, v); err != nil {
+		if err := setCredentialSlot(w.g.db, body.ID, slot, v); err != nil {
 			http.Error(rw, err.Error(), 500)
 			return
 		}
@@ -776,7 +776,7 @@ func (w *webMux) apiCredentialsSet(rw http.ResponseWriter, r *http.Request) {
 	writeJSON(rw, map[string]any{"ok": true})
 }
 
-// apiCredentialsClear drops every slot for (id, owner). Disconnect
+// apiCredentialsClear drops every slot for the credential. Disconnect
 // button on the dashboard.
 func (w *webMux) apiCredentialsClear(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
@@ -784,8 +784,7 @@ func (w *webMux) apiCredentialsClear(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		ID    string `json:"id"`
-		Owner string `json:"owner"`
+		ID string `json:"id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(rw, err.Error(), 400)
@@ -795,10 +794,7 @@ func (w *webMux) apiCredentialsClear(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "missing id", 400)
 		return
 	}
-	if body.Owner == "" {
-		body.Owner, _ = w.ownerForCaller(r)
-	}
-	if err := clearCredentialSecrets(w.g.db, body.ID, body.Owner); err != nil {
+	if err := clearCredentialSecrets(w.g.db, body.ID); err != nil {
 		http.Error(rw, err.Error(), 500)
 		return
 	}
@@ -1223,12 +1219,7 @@ func (w *webMux) apiRulesAI(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "prompt required", 400)
 		return
 	}
-	owner, _ := w.ownerForCaller(r)
-	if owner == "" {
-		http.Error(rw, "tailnet identity required", http.StatusForbidden)
-		return
-	}
-	out, refused, err := generateRuleHCL(r.Context(), w.g, body.Agent, owner, body.Prompt, body.CurrentYAML, body.Scope)
+	out, refused, err := generateRuleHCL(r.Context(), w.g, body.Agent, body.Prompt, body.CurrentYAML, body.Scope)
 	if err != nil {
 		http.Error(rw, "ai: "+err.Error(), http.StatusBadGateway)
 		return
@@ -1257,8 +1248,12 @@ func (w *webMux) apiHITLDecide(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, err.Error(), 400)
 		return
 	}
-	owner, _ := w.ownerForCaller(r)
-	ok := w.g.hitl.Decide(body.ID, runtime.HITLDecision{Allow: body.Allow, By: owner})
+	principal, ok := principalFromContext(r.Context())
+	if !ok {
+		http.Error(rw, "decision requires an authenticated operator", http.StatusForbidden)
+		return
+	}
+	ok = w.g.hitl.Decide(body.ID, runtime.HITLDecision{Allow: body.Allow, By: principal.Owner})
 	writeJSON(rw, map[string]bool{"ok": ok})
 }
 
@@ -1364,13 +1359,16 @@ func (w *webMux) apiActionByID(
 		reqHeaders  sql.NullString
 		respHeaders sql.NullString
 		extra       sql.NullString
+		endpoint    sql.NullString
+		rule        sql.NullString
 	)
 	err := w.g.db.QueryRow(`
 		SELECT ts_ns, mode, family, agent_ip, host, method, path,
 		       status, bytes_in, bytes_out, ms, action,
 		       reason, req_sha, resp_sha,
 		       req_body, resp_body,
-		       req_headers, resp_headers, extra
+		       req_headers, resp_headers, extra,
+		       endpoint, rule
 		FROM actions WHERE action_id = ?`, actionID,
 	).Scan(
 		&tsNs, &mode, &family, &agentIP, &e.Host,
@@ -1378,6 +1376,7 @@ func (w *webMux) apiActionByID(
 		&action, &reason, &reqSha, &respSha,
 		&reqBody, &respBody,
 		&reqHeaders, &respHeaders, &extra,
+		&endpoint, &rule,
 	)
 	if err == sql.ErrNoRows {
 		http.Error(rw, "not found", 404)
@@ -1409,7 +1408,175 @@ func (w *webMux) apiActionByID(
 	if extra.String != "" {
 		_ = json.Unmarshal([]byte(extra.String), &e.Facets)
 	}
+	e.Endpoint = endpoint.String
+	e.Rule = rule.String
+	if r.URL.Query().Get("fmt") == "fixture" {
+		w.writeActionFixture(rw, &e)
+		return
+	}
 	writeJSON(rw, e)
+}
+
+// writeActionFixture emits the Action JSON for `clawpatrol test`
+// (site/doc/clawpatrol-test.md). 400s on events that pre-date
+// endpoint tracking or can't be mapped to a terminal verdict.
+func (w *webMux) writeActionFixture(rw http.ResponseWriter, ev *Event) {
+	policy := w.g.Policy()
+	if policy == nil {
+		http.Error(rw, "policy not loaded", 503)
+		return
+	}
+	if ev.Endpoint == "" {
+		http.Error(rw, "action predates endpoint tracking; cannot export as fixture", 400)
+		return
+	}
+	ep := policy.Endpoints[ev.Endpoint]
+	if ep == nil {
+		http.Error(rw, fmt.Sprintf("endpoint %q no longer in policy", ev.Endpoint), 400)
+		return
+	}
+	m, ok := matchFromEvent(ev)
+	if !ok {
+		http.Error(rw, fmt.Sprintf("event action %q is not exportable as a fixture", ev.Action), 400)
+		return
+	}
+
+	fx := &Fixture{Match: m, Action: Action{PeerIP: ev.AgentIP}}
+	switch ep.Family {
+	case "http":
+		fx.Action.Host = ev.Host
+		fx.Action.HTTP = exportHTTP(ev)
+	case "k8s":
+		fx.Action.Host = ev.Host
+		fx.Action.K8s = exportK8s(ev)
+	case "sql":
+		sql := exportSQL(ev)
+		if sql == nil {
+			http.Error(rw, "sql action has no statement recorded; cannot export", 400)
+			return
+		}
+		// Host for SQL comes from the endpoint's HCL declaration —
+		// the recorded Event.Host is the dst IP / tunnel listener,
+		// not what the resolver scans against. For multi-host
+		// endpoints pick the first; the runner short-circuits on
+		// match.endpoint anyway, so host is informational here.
+		if len(ep.Hosts) > 0 {
+			fx.Action.Host = ep.Hosts[0]
+		}
+		fx.Action.SQL = sql
+	default:
+		http.Error(rw, fmt.Sprintf("endpoint family %q is not yet exportable", ep.Family), 501)
+		return
+	}
+
+	rw.Header().Set("Content-Type", "application/json")
+	rw.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.json"`, ev.ID))
+	enc := json.NewEncoder(rw)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(fx)
+}
+
+// matchFromEvent maps post-chain Event.Action onto the fixture's
+// terminal verdict vocabulary. hitl_* collapses to "approve".
+// Empty Event.Action maps to "allow" — that's the legacy default
+// for rows written before per-action verdicts were tracked.
+func matchFromEvent(ev *Event) (Match, bool) {
+	m := Match{Rule: ev.Rule, Endpoint: ev.Endpoint, Reason: ev.Reason}
+	switch ev.Action {
+	case "deny":
+		m.Verdict = "deny"
+	case "hitl_allow", "hitl_deny":
+		m.Verdict = "approve"
+	case "allow", "":
+		m.Verdict = "allow"
+	case "passthrough":
+		m.Verdict = "passthrough"
+	default:
+		return Match{}, false
+	}
+	return m, true
+}
+
+// exportHTTP populates the http.* CEL view from a recorded Event.
+// Host lives on Action (not in the http block) since `http.host`
+// isn't a CEL variable. Path comes straight from the recorded URL.
+func exportHTTP(ev *Event) *HTTPAction {
+	body, b64 := encodeBody([]byte(ev.ReqBody))
+	path, query := splitPathQuery(ev.Path)
+	return &HTTPAction{
+		Method:  ev.Method,
+		Path:    path,
+		Query:   query,
+		Headers: headersToMultiValue(ev.ReqHeaders),
+		Body:    body,
+		BodyB64: b64,
+	}
+}
+
+// splitPathQuery separates a recorded Event.Path (which may carry
+// `?query=...` already encoded) into path + parsed-query.
+func splitPathQuery(raw string) (string, map[string][]string) {
+	q := strings.IndexByte(raw, '?')
+	if q < 0 {
+		return raw, nil
+	}
+	vals, err := url.ParseQuery(raw[q+1:])
+	if err != nil || len(vals) == 0 {
+		return raw[:q], nil
+	}
+	return raw[:q], vals
+}
+
+// exportK8s recovers the parsed k8s tuple from Event.Facets, set
+// by the k8s facet's Report at live-dispatch time. Only CEL-visible
+// fields land in the k8s block.
+func exportK8s(ev *Event) *K8sAction {
+	a := &K8sAction{}
+	if v, ok := ev.Facets["verb"].(string); ok {
+		a.Verb = v
+	}
+	if v, ok := ev.Facets["resource"].(string); ok {
+		a.Resource = v
+	}
+	if v, ok := ev.Facets["namespace"].(string); ok {
+		a.Namespace = v
+	}
+	if v, ok := ev.Facets["name"].(string); ok {
+		a.Name = v
+	}
+	if p, ok := ev.Facets["params"].(map[string]any); ok {
+		a.Params = map[string]string{}
+		for k, val := range p {
+			if s, ok := val.(string); ok {
+				a.Params[k] = s
+			}
+		}
+	}
+	return a
+}
+
+// exportSQL pulls the raw statement out of Event.Facets (set by
+// sqlfacet.Report). The loader re-derives verb / tables / functions
+// from the statement via SQLParser at replay time.
+func exportSQL(ev *Event) *SQLAction {
+	stmt, _ := ev.Facets["statement"].(string)
+	if stmt == "" {
+		return nil
+	}
+	return &SQLAction{Statement: stmt}
+}
+
+// headersToMultiValue widens the Sink's single-value header map to
+// http.Header's multi-value shape.
+func headersToMultiValue(h map[string]string) map[string][]string {
+	if len(h) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(h))
+	for k, v := range h {
+		out[k] = []string{v}
+	}
+	return out
 }
 
 // apiAnalytics returns a randomly-sampled set of events for the
@@ -1689,7 +1856,7 @@ type Event struct {
 	Direction string `json:"direction,omitempty"`
 
 	// Family identifies which protocol-family facet emitted this
-	// event ("https", "sql", "k8s", or a future plugin's name).
+	// event ("http", "sql", "k8s", or a future plugin's name).
 	// Persisted as a dedicated column on actions so analytics can
 	// filter by family; drives dashboard column selection via
 	// /api/facets. Empty for splice events and pre-migration rows.
@@ -1700,6 +1867,14 @@ type Event struct {
 	// request. Keys correspond to the family's ReportFields().
 	// Serialised as JSON into the actions table's `extra` column.
 	Facets map[string]any `json:"facets,omitempty"`
+
+	// Endpoint is the dispatching CompiledEndpoint.Name; Rule is the
+	// matched CompiledRule.Name (empty when no rule fired). Populated
+	// at the existing dispatch sites so the action-fixture exporter
+	// can pin a downloaded action to a specific endpoint and assert
+	// the rule that produced its verdict (site/doc/clawpatrol-test.md).
+	Endpoint string `json:"endpoint,omitempty"`
+	Rule     string `json:"rule,omitempty"`
 }
 
 // eventPacket carries an event plus its marshaled JSON bytes. drain()
@@ -1753,7 +1928,8 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 	rows, err := db.Query(`
 		SELECT action_id, ts_ns, mode, family, agent_ip, host,
 		       method, path, status, bytes_in, bytes_out,
-		       ms, action, reason, req_sha, resp_sha, extra
+		       ms, action, reason, req_sha, resp_sha, extra,
+		       endpoint, rule
 		FROM actions ORDER BY id DESC LIMIT ?`, n)
 	if err != nil {
 		return nil, err
@@ -1778,11 +1954,14 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 			reqSha   sql.NullString
 			respSha  sql.NullString
 			extra    sql.NullString
+			endpoint sql.NullString
+			rule     sql.NullString
 		)
 		if err := rows.Scan(
 			&actionID, &tsNs, &mode, &family, &agentIP, &e.Host,
 			&method, &path, &status, &in, &ot, &ms,
 			&action, &reason, &reqSha, &respSha, &extra,
+			&endpoint, &rule,
 		); err != nil {
 			return nil, err
 		}
@@ -1790,6 +1969,8 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 		e.Ts = time.Unix(0, tsNs).UTC()
 		e.Mode = mode.String
 		e.Family = family.String
+		e.Endpoint = endpoint.String
+		e.Rule = rule.String
 		e.AgentIP = agentIP.String
 		e.Method = method.String
 		e.Path = path.String
@@ -1865,15 +2046,17 @@ func (s *Sink) drain() {
 				  method, path, status, bytes_in, bytes_out,
 				  ms, action, reason, req_sha, resp_sha,
 				  req_body, resp_body,
-				  req_headers, resp_headers, extra)
-				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+				  req_headers, resp_headers, extra,
+				  endpoint, rule)
+				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			`, e.ID, e.Ts.UnixNano(), e.Mode, e.Family, e.AgentIP,
 				e.Host, e.Method, e.Path, e.Status,
 				e.In, e.Out, e.Ms, e.Action, e.Reason,
 				e.ReqSha, e.RespSha,
 				e.ReqBody, e.RespBody,
 				string(rqhJSON), string(rshJSON),
-				string(extraJSON))
+				string(extraJSON),
+				e.Endpoint, e.Rule)
 		}
 
 		// Marshal once per event regardless of subscriber count. Old
@@ -2024,14 +2207,67 @@ func (s *sampler) sha() string {
 	return hex.EncodeToString(s.hash.Sum(nil))
 }
 
-func (s *sampler) sample() string {
+// sample returns the audit-log preview of the captured body. When
+// encoding names a compression we know how to decode (gzip, br,
+// deflate, zstd), the buffered prefix is decompressed first so a
+// JSON response doesn't get rendered as "binary:<hex>" just because
+// it's still on the wire compressed.
+func (s *sampler) sample(encoding string) string {
 	if s.buf.Len() == 0 {
 		return ""
 	}
-	if isPrintable(s.buf.Bytes()) {
-		return s.buf.String()
+	raw := s.buf.Bytes()
+	body := maybeDecode(raw, encoding)
+	if isPrintable(body) {
+		return string(body)
 	}
-	return "binary:" + hex.EncodeToString(s.buf.Bytes()[:min(64, s.buf.Len())])
+	return "binary:" + hex.EncodeToString(raw[:min(64, len(raw))])
+}
+
+// maybeDecode returns the decompressed prefix of buf when encoding
+// is a compression scheme we recognise, or buf unchanged otherwise.
+// The sampler captures at most cap bytes, so the stream is almost
+// always truncated mid-block — io.ReadAll returns whatever the
+// reader managed before hitting EOF, which is what we want for a
+// preview.
+func maybeDecode(buf []byte, encoding string) []byte {
+	var r io.Reader
+	switch strings.ToLower(strings.TrimSpace(encoding)) {
+	case "gzip", "x-gzip":
+		zr, err := gzip.NewReader(bytes.NewReader(buf))
+		if err != nil {
+			return buf
+		}
+		defer func() { _ = zr.Close() }()
+		r = zr
+	case "br":
+		r = brotli.NewReader(bytes.NewReader(buf))
+	case "deflate":
+		// RFC 7230 says "deflate" is zlib-wrapped deflate, but some
+		// servers send raw deflate. Try zlib first, fall back to raw.
+		if zr, err := zlib.NewReader(bytes.NewReader(buf)); err == nil {
+			defer func() { _ = zr.Close() }()
+			r = zr
+		} else {
+			fr := flate.NewReader(bytes.NewReader(buf))
+			defer func() { _ = fr.Close() }()
+			r = fr
+		}
+	case "zstd":
+		zd, err := zstd.NewReader(bytes.NewReader(buf))
+		if err != nil {
+			return buf
+		}
+		defer zd.Close()
+		r = zd
+	default:
+		return buf
+	}
+	out, _ := io.ReadAll(r)
+	if len(out) == 0 {
+		return buf
+	}
+	return out
 }
 
 func isPrintable(b []byte) bool {

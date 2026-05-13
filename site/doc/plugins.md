@@ -1,631 +1,261 @@
-# Plugin System
+# External plugins
 
-## Overview
+Most of the protocols Claw Patrol gates — HTTPS, Postgres, ClickHouse,
+SSH, Kubernetes — ship as **built-in** plugins compiled into the
+gateway binary. When you need to gate something the binary doesn't
+know about, you can ship an **external** plugin: a separate Go
+program the gateway spawns as a subprocess and talks to over gRPC,
+modeled on Terraform's provider design.
 
-Claw Patrol's functionality is extended through plugins. A plugin module is a
-TypeScript file (or npm package) that registers one or more typed plugins via
-a registration API.
+External plugins extend exactly the same registry the built-ins use.
+They can declare:
 
-There are two plugin types:
+- **Endpoint types** (the `endpoint "<type>" "<name>" { … }` block
+  in HCL) — own the wire protocol for one upstream class.
+- **Credential types** (`credential "<type>" "<name>" { … }`) —
+  describe a secret-bearing identity.
+- **Tunnel types** (`tunnel "<type>" "<name>" { … }`) — describe
+  how the gateway reaches the upstream when it isn't directly
+  routable.
+- **Facets** — protocol-family schemas with named fields. A facet
+  exposes the variables a CEL rule condition can read
+  (`example_smtp.verb`, `acme_webhook.signature`, …) and the
+  columns the dashboard renders against the request log. Plugins
+  that gate HTTPS reuse the built-in `http` facet; plugins for
+  genuinely new protocols ship their own.
 
-- **Integration plugins** -- intercept traffic for specific hostnames and
-  inject credentials. Each integration has its own config schema, dashboard
-  form layout, and endpoint handlers.
-- **Credential plugins** -- manage dynamic credentials (OAuth tokens,
-  device-code tokens) with login flows and automatic refresh.
+## Loading a plugin
 
-Source of truth: `src/plugins/types.ts`, `src/plugins/registry.ts`.
+Add a `plugin` block to the gateway HCL and reference its types
+the same way you reference built-ins:
 
----
+```hcl
+plugin "example" {
+  source = "./plugin-example/plugin-example"
+}
 
-## Plugin Module Format
+credential "example_magic_token" "demo_token" {}
 
-A plugin module's default export is either:
-
-### Object form (recommended)
-
-```typescript
-import { definePlugin } from "clawpatrol/plugins/types.ts";
-
-export default definePlugin({
-  id: "my-plugin",       // optional; used in log prefixes
-  name: "My Plugin",     // optional
-  version: "1.0.0",      // optional; informational
-  register(api) {
-    api.registerCredential({ ... });
-    api.registerIntegration({ ... });
-  },
-});
-```
-
-### Function form
-
-```typescript
-export default (api: Claw PatrolPluginApi) => {
-  api.registerIntegration({ ... });
-};
-```
-
-### Type definitions
-
-```typescript
-type Claw PatrolPluginModule =
-  | Claw PatrolPluginDefinition
-  | ((api: Claw PatrolPluginApi) => void | Promise<void>);
-
-interface Claw PatrolPluginDefinition {
-  id?: string;
-  name?: string;
-  version?: string;
-  register?: (api: Claw PatrolPluginApi) => void | Promise<void>;
+endpoint "example_smtp" "demo-mail" {
+  hosts      = ["mail.invalid:25"]
+  credential = demo_token
 }
 ```
 
-`definePlugin()` is an identity function that provides type inference. It has
-no runtime effect.
+The `name` label (`"example"`) is informational — it's the local
+identifier you'd use to refer to this plugin's source in tooling.
+The names that actually matter are the **type names** and
+**facet names** the plugin declares in its manifest. Both are flat
+strings living in one global registry per kind (one for endpoint
+types, one for credential types, one for tunnel types, one for
+facets, each shared with the built-ins). The gateway does **not**
+auto-namespace anything.
 
-A single module can register multiple plugins of different types by calling
-multiple `api.register*()` methods. For example, the OpenAI plugin registers
-both a credential plugin and an integration plugin.
+Plugin authors prefix their own names by convention — the way
+Terraform providers do (`aws_iam_role`, `kubernetes_deployment`):
+the SMTP endpoint in the example plugin is `example_smtp`,
+its credential is `example_magic_token`, its custom facet is
+also `example_smtp` (endpoint types and facets live in different
+registries, so reusing one name for the matched pair is fine and
+often clearer). A plugin that ships a name colliding *within* a
+registry — with a built-in (e.g. `https` endpoint type, `http`
+facet) or another plugin — fails at validate time with a clear
+diagnostic.
 
----
+## Writing a plugin
 
-## Plugin Registration API (`Claw PatrolPluginApi`)
+Plugins are ordinary Go programs. The author SDK lives at
+`github.com/denoland/clawpatrol/pluginsdk`; the canonical example
+is `plugin-example/` in the Claw Patrol repo.
 
-The `register` function receives an API object with these methods:
+```go
+package main
 
-```typescript
-interface Claw PatrolPluginApi {
-  /** Register an integration plugin. */
-  registerIntegration<C>(plugin: IntegrationPlugin<C>): void;
+import "github.com/denoland/clawpatrol/pluginsdk"
 
-  /** Register a credential plugin. */
-  registerCredential(plugin: CredentialPlugin): void;
-
-  /**
-   * Return a Zod schema for a credential-backed config field.
-   * The credential plugin must be registered first.
-   */
-  credentialField(credentialPluginId: string): ZodType;
-
-  /** Scoped logger. Messages are prefixed with the module ID. */
-  log: {
-    info(msg: string): void;
-    warn(msg: string): void;
-    error(msg: string): void;
-  };
+func main() {
+    pluginsdk.Run(&pluginsdk.Plugin{
+        Name:    "example",
+        Version: "0.1",
+        Credentials: []pluginsdk.CredentialDef{magicTokenDef()},
+        Endpoints:   []pluginsdk.EndpointDef{demoSMTPDef()},
+        Facets: []pluginsdk.FacetDef{{
+            Name: "example_smtp",
+            Fields: []pluginsdk.FacetField{
+                {Name: "verb", Kind: pluginsdk.FacetString, Label: "Verb"},
+                {Name: "mail_from", Kind: pluginsdk.FacetString, Label: "From", Optional: true},
+                {Name: "body", Kind: pluginsdk.FacetStream, Label: "Body", Optional: true},
+            },
+        }},
+    })
 }
 ```
 
-### Registration rules
+`pluginsdk.Run` blocks the process while the gateway is connected.
+Build with `go build` like any Go binary; deploy by setting
+`source = "<path>"` in the gateway HCL.
 
-- **Duplicate IDs are rejected.** If an integration or credential with the
-  same ID is already registered, the second registration is silently skipped
-  with a warning.
-- **Order matters for `credentialField()`.** The credential plugin must be
-  registered before any integration calls `api.credentialField("that-id")`.
-  Within a single module, register credentials first.
-- **Credential fields are auto-detected.** When an integration is registered,
-  the registry walks its `configSchema` looking for schemas returned by
-  `credentialField()`. Matches are merged into the integration's `credentials`
-  map automatically.
+### Endpoints own the connection
 
----
+For each accepted agent connection on a plugin endpoint, the
+gateway hands the plugin a `*pluginsdk.Conn` — a `net.Conn` plus
+the connection's profile / peer-IP / credential secret context.
+The plugin owns the byte stream from there on.
 
-## Integration Plugins
-
-```typescript
-interface IntegrationPlugin<C = any> {
-  id: string;
-  name: string;
-  description: string;
-  icon?: string;                     // SVG markup for the dashboard
-  configSchema: ZodType<C, any, any>;
-  configLayout?: LayoutItem[];
-  credentials?: Record<string, string>;  // field name -> credential plugin ID
-  endpoints: Endpoint<C>[];
+```go
+func handleSMTP(ctx context.Context, conn *pluginsdk.Conn) error {
+    // ... parse the protocol ...
 }
 ```
 
-### Endpoints (layered hook model)
+For `TLSMode: pluginsdk.TLSTerminate`, the gateway terminates TLS
+using its own CA before handing over the `Conn` — the plugin sees
+plaintext bytes and just speaks the inner protocol (HTTP, ESMTP,
+…). For `pluginsdk.TLSNone` the plugin gets the raw TCP socket.
 
-Each endpoint declares which hostnames to intercept and can hook into the
-connection at one or more layers:
+### Asking the gateway for a verdict
 
-```
-Client --[TCP]--> conn hook --[TLS terminate]--> tls hook --[HTTP parse]--> fetch hook
-                                                                              |
-                                                                        connect hook
-                                                                              |
-                                                                           Upstream
-```
+Plugins **must not decide allow/deny themselves.** They build a
+structured action and ask the gateway:
 
-**Inbound (peel layers):**
-- `conn` -- raw TCP stream from the client
-- `tls` -- plaintext stream after TLS termination
-- `fetch` -- parsed HTTP request/response
-
-**Outbound:**
-- `connect` -- upstream connection factory (called by `fn.fetch()`)
-
-Each hook is optional. The framework provides defaults:
-- No `conn`: terminate TLS, call `tls` hook
-- No `tls`: parse HTTP, call `fetch` hook per request
-- No `fetch`: `fn.fetch(req)` (passthrough)
-- No `connect`: default TLS connection to upstream
-- No hooks at all: transparent TCP pipe to upstream
-
-```typescript
-interface Endpoint<C = Record<string, unknown>> {
-  /** Whether this endpoint is active. Default: true. */
-  enabled?: (config: C) => boolean;
-  /** Hostnames this endpoint handles. */
-  domains: string[] | ((config: C) => string[]);
-  /** Port (default: 443). */
-  port?: number | ((config: C) => number);
-
-  /** Layer 1: raw TCP stream from client. */
-  conn?: (config: C, fn: EndpointFn, stream: DuplexStream, info: ConnInfo)
-    => Promise<void>;
-  /** Layer 2: plaintext stream after TLS termination. */
-  tls?: (config: C, fn: EndpointFn, stream: DuplexStream, info: ConnInfo)
-    => Promise<void>;
-  /** Layer 3: HTTP request/response. */
-  fetch?: (config: C, fn: EndpointFn, req: Request, info: ConnInfo)
-    => Response | Promise<Response>;
-  /** Upstream connection factory. Called by fn.fetch(). */
-  connect?: (config: C, fn: EndpointFn, info: ConnInfo)
-    => Promise<DuplexStream>;
-}
+```go
+verdict, err := conn.Evaluate(ctx, "example_smtp", map[string]any{
+    "verb":      "MAIL",
+    "mail_from": "alice@example.com",
+}, "MAIL FROM:<alice@example.com>")
 ```
 
-All hooks receive `config` first, `fn` second, then layer-specific inputs,
-then `info` last.
+The gateway:
 
-### The `fn` object
+1. Walks the matched endpoint's compiled rule list with the
+   action map bound to the named facet (so a rule like
+   `example_smtp.verb == "MAIL"` evaluates).
+2. Runs any approve chain (LLM judge, human approver) for rules
+   whose outcome is `approve = […]`.
+3. Logs the action onto the dashboard event stream with the
+   action map as the facet payload.
+4. Returns `verdict.Action` ("allow" / "deny" / "hitl_allow" /
+   "hitl_deny") plus reason and matched rule name.
 
-Provides methods for forwarding traffic and connecting upstream:
+The plugin then translates the verdict into whatever the protocol
+needs (250 vs 550 for SMTP, 200 vs 403 for HTTP, etc.).
 
-```typescript
-interface EndpointFn {
-  /** Forward an HTTP request upstream. Uses the connect hook if present. */
-  fetch(req: Request): Promise<Response>;
+`Conn.Emit` is for **non-policy** events only — operational
+failures, session-open/close milestones, anything where no rule
+fired. A hand-rolled `Action: "allow"` via Emit fabricates a
+verdict no rule produced; use `Evaluate` instead.
 
-  /** Open a raw TCP connection. */
-  connectTcp(addr: { hostname: string; port: number }): Promise<DuplexStream>;
+### Stream-typed facet fields
 
-  /** Open a TLS connection to an upstream server. */
-  connectTls(opts: TlsConnectOptions): Promise<DuplexStream>;
-}
+A facet field declared with `Kind: pluginsdk.FacetStream` is a
+lazy bytes value. The plugin offers the field as
+`pluginsdk.Stream(io.Reader)`:
 
-interface TlsConnectOptions {
-  hostname: string;
-  port?: number;
-  caCerts?: string[];  // custom CA certificates (PEM)
-  cert?: string;       // client certificate (PEM)
-  key?: string;        // client private key (PEM)
-}
+```go
+verdict, err := conn.Evaluate(ctx, "example_smtp", map[string]any{
+    "verb": "BODY",
+    "body": pluginsdk.Stream(bytes.NewReader(messageBody)),
+}, "BODY (4096 bytes)")
 ```
 
-When a `connect` hook is present, `fn.fetch()` uses it for upstream
-connections. When the `connect` hook returns TLS options (via
-`fn.connectTls()`), the framework extracts those options and applies them to
-the HTTP client directly.
+The gateway pulls bytes only as deeply as needed:
 
-### Supporting types
+- **No rule on the endpoint reads the field** → the gateway pulls
+  ~1 KiB just so the dashboard event log has a recognisable
+  prefix, then cancels the stream.
+- **At least one rule does** (e.g.
+  `example_smtp.body.contains("urgent")`) → the gateway pulls up
+  to ~1 MiB so the matcher sees the full value, then cancels.
 
-```typescript
-interface DuplexStream {
-  readable: ReadableStream<Uint8Array>;
-  writable: WritableStream<Uint8Array>;
-}
+When the plugin sees the cancel it can drop its source reader.
+Bodies that overflow the cap mark the request `Truncated`; any
+rule reading the truncated field is auto-denied (the dispatcher's
+fail-closed gate, same one that protects the built-in HTTPS body
+buffer).
 
-interface ConnInfo {
-  hostname: string;    // target hostname (from SNI or CONNECT)
-  port: number;        // target port
-  remoteAddr: string;  // client IP address
-}
-```
+### Optional facet fields
 
-### DNS entries (automatic)
+Fields marked `Optional: true` may be omitted from the action
+map. The gateway substitutes the kind-zero value (empty string,
+empty list, empty map, 0) before CEL evaluation, so rule
+conditions can reference them without `has()` guards.
 
-Endpoints with `port !== 443` automatically get DNS entries registered. The
-framework scans endpoint `domains` and `port` to build the DNS entry table.
-WireGuard clients querying DNS for matching hostnames receive a virtual IP
-from `10.78.0.0/16`. Connections to those VIPs are routed to the proxy via
-iptables DNAT. See [Architecture](/docs/architecture/) for details.
+### Reusing a built-in facet
 
-### Config schema
+A plugin endpoint that gates HTTPS doesn't need to redeclare a
+facet — set `Family: "http"` on the endpoint and shape the action
+map with the same keys the built-in `http` facet exposes
+(`method`, `path`, `headers`, `body`):
 
-Each integration declares a Zod schema that defines the config shape. This
-schema is used for validation, form generation, and defaults:
-
-```typescript
-const configSchema = z.object({
-  domains: z.array(z.string())
-    .default(["api.github.com"])
-    .describe("GitHub API hostnames to intercept"),
-  placeholder: z.string()
-    .default("CLAWPATROL_PLACEHOLDER_github")
-    .describe("Placeholder string agents use in Authorization header"),
-  token: z.string()
-    .describe("GitHub PAT (classic or fine-grained)"),
-});
-```
-
-### Config layout (`LayoutItem[]`)
-
-Controls how the config form is rendered in the dashboard. Without a layout,
-fields render in schema order with default widgets.
-
-```typescript
-type LayoutItem = string | LayoutObject;
-
-interface LayoutObject {
-  key?: string;                // config field path
-  type?: "fieldset";           // container type
-  title?: string;              // section title
-  expandable?: boolean;        // collapsible section
-  expanded?: boolean;          // initial state (default: false)
-  sensitive?: boolean;         // masked input
-  multiline?: boolean;         // textarea
-  items?: LayoutItem[];        // children (for fieldsets)
-  condition?: {                // conditional visibility
-    functionBody: string;      // JS receiving `model`, return true to show
-  };
-  description?: string;        // override schema description
-  placeholder?: string;        // input placeholder text
-}
-```
-
----
-
-## Credential Plugins
-
-A credential plugin manages dynamic credentials with login flows and
-optional automatic refresh.
-
-```typescript
-interface CredentialPlugin {
-  id: string;
-  label: string;
-  schema: ZodType;           // Zod schema for the credential data shape
-  flow?: AuthorizationCodeFlow | DeviceCodeFlow;
-  refresh?: (params: {
-    credential: Record<string, unknown>;
-    config: Record<string, unknown>;
-  }) => Promise<Record<string, unknown>>;
-  refreshMarginSeconds?: number;  // default: 300
-}
-```
-
-Two flow types are supported:
-
-### Authorization code flow (OAuth 2.0)
-
-Standard redirect-based OAuth. The dashboard shows a "Connect" button.
-
-```typescript
-interface AuthorizationCodeFlow {
-  type: "authorization-code";
-  authorizeUrl(params: {
-    config: Record<string, unknown>;
-    callbackUrl: string;
-    state: string;
-  }): string | Promise<string>;
-  exchangeCode(params: {
-    code: string;
-    config: Record<string, unknown>;
-    callbackUrl: string;
-  }): Promise<Record<string, unknown>>;
-}
-```
-
-### Device code flow (RFC 8628)
-
-For headless/device authentication. The dashboard shows a user code and
-verification URL, then polls until the user completes authentication.
-
-```typescript
-interface DeviceCodeFlow {
-  type: "device-code";
-  start(): Promise<{
-    deviceAuthId: string;
-    userCode: string;
-    verificationUrl: string;
-    interval: number;
-  }>;
-  poll(params: {
-    deviceAuthId: string;
-    userCode: string;
-  }): Promise<
-    | { status: "pending" }
-    | { status: "ok"; credential: Record<string, unknown> }
-  >;
-}
-```
-
-### Linking credentials to integrations
-
-Use `api.credentialField()` in the integration's config schema. The framework
-auto-detects credential fields, stores credentials separately from config, and
-merges credential data into config before calling endpoint handlers.
-
-```typescript
-register(api) {
-  // 1. Register credential plugin first
-  api.registerCredential({
-    id: "my-oauth",
-    label: "My Service OAuth",
-    schema: z.object({
-      access_token: z.string(),
-      refresh_token: z.string(),
-      expires_at: z.number(),
-    }),
-    flow: { type: "authorization-code", ... },
-    refresh: async ({ credential }) => { ... },
-  });
-
-  // 2. Use credentialField() in the integration schema
-  const configSchema = z.object({
-    domains: z.array(z.string()).default(["api.example.com"]),
-    auth: api.credentialField("my-oauth"),
-  });
-
-  // 3. Register the integration
-  api.registerIntegration({
-    id: "my-service",
-    configSchema,
-    endpoints: [{
-      domains: (config) => config.domains,
-      fetch: (config, fn, req) => {
-        // config.auth contains the credential data (merged by framework)
-        const token = config.auth?.access_token;
-        // ...
-      },
-    }],
-  });
-}
-```
-
-Static credentials (API keys) don't need credential plugins -- they remain
-as regular config fields.
-
----
-
-## Examples
-
-### Simple header injection (GitHub)
-
-```typescript
-endpoints: [{
-  domains: (config) => config.domains,
-  fetch: (config, fn, req) => {
-    const headers = new Headers(req.headers);
-    replacePlaceholder(headers, "authorization",
-      config.placeholder, config.token);
-    return fn.fetch(new Request(req, { headers }));
-  },
-}]
-```
-
-### TCP passthrough (GitHub SSH)
-
-An endpoint with no hooks -- the framework pipes TCP bidirectionally.
-
-```typescript
-endpoints: [
-  {
-    // HTTP interception
-    domains: (config) => config.domains,
-    fetch: (config, fn, req) => { ... },
-  },
-  {
-    // SSH passthrough -- port 22, no hooks needed
-    domains: ["github.com"],
-    port: 22,
-  },
-]
-```
-
-### mTLS upstream (Kubernetes)
-
-```typescript
-endpoints: [{
-  enabled: (config) => !!config.server,
-  domains: (config) => [config.server.trim()],
-  connect: (config, fn, info) =>
-    fn.connectTls({
-      hostname: info.hostname,
-      port: info.port,
-      caCerts: [config.ca_cert],
-      cert: config.client_cert,
-      key: config.client_key,
-    }),
-}]
-```
-
-### Binary protocol over TLS (ClickHouse native)
-
-```typescript
-endpoints: [{
-  enabled: (config) => config.enable_native,
-  domains: (config) => config.native_hosts,
-  port: (config) => config.native_port,
-  tls: async (config, fn, stream, info) => {
-    const { data, reader } = await readFirst(stream);
-    const hello = parseHello(data);
-
-    // Inject credentials
-    hello.username = config.username;
-    hello.password = config.password;
-
-    // Connect upstream and pipe
-    const upstream = await fn.connectTls({
-      hostname: info.hostname,
-      port: info.port,
-    });
-    await writeAll(upstream, serializeHello(hello));
-    await pipeBidi(reader, stream.writable, upstream);
-  },
-}]
-```
-
-### mTLS + HTTP credential injection (ClickHouse HTTPS)
-
-```typescript
-endpoints: [{
-  enabled: (config) => config.enable_https,
-  domains: (config) => config.https_hosts,
-  fetch: (config, fn, req) => {
-    const url = new URL(req.url);
-    const path = url.pathname + url.search;
-    const newPath = path
-      .replaceAll(config.user_placeholder, encodeURIComponent(config.username))
-      .replaceAll(config.pass_placeholder, encodeURIComponent(config.password));
-    return fn.fetch(new Request(new URL(newPath, url.origin), req));
-  },
-  connect: (config, fn, info) =>
-    fn.connectTls({
-      hostname: info.hostname,
-      port: info.port,
-      caCerts: config.server_ca_cert ? [config.server_ca_cert] : undefined,
-      cert: config.client_cert || undefined,
-      key: config.client_key || undefined,
-    }),
-}]
-```
-
-### OAuth credential plugin (OpenAI device-code)
-
-```typescript
-register(api) {
-  api.registerCredential({
-    id: "openai-oauth",
-    label: "OpenAI Account",
-    schema: z.object({
-      access_token: z.string(),
-      refresh_token: z.string(),
-      expires_at: z.number(),
-      account_id: z.string().optional(),
-    }),
-    flow: {
-      type: "device-code",
-      start: async () => {
-        // Start device auth flow with provider
-        const res = await fetch("https://auth.openai.com/.../usercode", ...);
-        const data = await res.json();
-        return {
-          deviceAuthId: data.device_auth_id,
-          userCode: data.user_code,
-          verificationUrl: "https://auth.openai.com/codex/device",
-          interval: data.interval || 5,
-        };
-      },
-      poll: async ({ deviceAuthId, userCode }) => {
-        // Poll for completion
-        const res = await fetch("https://auth.openai.com/.../token", ...);
-        if (res.status === 202) return { status: "pending" };
-        // Exchange code for tokens...
-        return { status: "ok", credential: { ... } };
-      },
+```go
+endpoint := pluginsdk.EndpointDef{
+    TypeName: "example_https",
+    Family:   "http", // bind to the built-in http facet
+    TLSMode:  pluginsdk.TLSTerminate,
+    HandleConn: func(ctx context.Context, conn *pluginsdk.Conn) error {
+        // ... parse one HTTP request from conn ...
+        verdict, _ := conn.Evaluate(ctx, "http", map[string]any{
+            "method":  req.Method,
+            "path":    req.URL.RequestURI(),
+            "headers": req.Header,
+            "body":    pluginsdk.Stream(req.Body),
+        }, req.Method+" "+req.URL.RequestURI())
+        // ... act on verdict ...
     },
-    refresh: async ({ credential }) => {
-      // Use refresh_token to get a new access_token
-      // ...
-      return { access_token: newToken, ... };
-    },
-    refreshMarginSeconds: 60,
-  });
-
-  const configSchema = z.object({
-    domains: z.array(z.string()).default(["api.openai.com"]),
-    placeholder: z.string().default("CLAWPATROL_PLACEHOLDER_openai"),
-    auth: api.credentialField("openai-oauth"),
-  });
-
-  api.registerIntegration({
-    id: "openai",
-    configSchema,
-    configLayout: ["domains", "placeholder"],
-    endpoints: [{
-      domains: (config) => config.domains,
-      fetch: (config, fn, req) => {
-        if (!config.auth?.access_token) return fn.fetch(req);
-        const headers = new Headers(req.headers);
-        replacePlaceholder(headers, "authorization",
-          config.placeholder, config.auth.access_token);
-        return fn.fetch(new Request(req, { headers }));
-      },
-    }],
-  });
 }
 ```
 
----
+Rules attached to this endpoint are written exactly the way they
+would be against any in-process HTTPS endpoint:
+`http.method == "POST"`, `http.body.contains("…")`, etc.
 
-## Loading and Installation
+## Validating a plugin config
 
-Plugins are loaded from two sources at startup:
+`clawpatrol validate` runs the same load path the daemon does, so
+every plugin referenced from the HCL is spawned and its manifest
+is checked. Beyond the HCL pipeline the validate command also runs
+a schema-only pass (`Manager.Verify`) that catches plugin
+authoring bugs even when the operator's HCL doesn't happen to
+exercise them:
 
-1. **Built-in plugins** -- compiled into the server (12 currently):
+- Every declared facet's CEL env is built eagerly (with a probe
+  condition), and facet / field names are checked against the
+  CEL identifier regex `[A-Za-z_][A-Za-z0-9_]*` — typos like
+  `bad-name` fail validate instead of silently breaking the first
+  rule that tries to use them.
+- Every plugin endpoint's `Family` is resolved against the facet
+  registry. A typo'd Family that no rule references would
+  otherwise just route every request to default-deny at runtime —
+  silent policy bypass — and now becomes a clean validate-time
+  error.
+- Manifests with empty type / facet / field names or empty
+  endpoint Family are rejected up front.
+- A plugin type or facet whose name collides with a built-in
+  (e.g. `https`, `http`) or with another plugin's registration
+  surfaces as a diagnostic instead of a panic.
 
-   | Plugin | Type | Auth mechanism |
-   |--------|------|----------------|
-   | `apikey` | Integration | Generic header injection |
-   | `anthropic` | Integration | `x-api-key` header |
-   | `clickhouse` | Integration | URL params + native protocol (`tls` hook) |
-   | `gemini` | Integration | Header injection |
-   | `github` | Integration | `Authorization` header + SSH passthrough (port 22) |
-   | `grafana` | Integration | `Authorization: Bearer` header |
-   | `kubernetes` | Integration | mTLS client certificates (`connect` hook) |
-   | `notion` | Credential + Integration | OAuth 2.0 authorization code |
-   | `openai` | Credential + Integration | OAuth 2.0 device code |
-   | `openrouter` | Integration | Header injection |
-   | `slack` | Integration | `Authorization` header |
-   | `telegram` | Integration | Header injection |
+The success line gains one summary row per loaded plugin so you
+can see what came up:
 
-2. **External plugins** -- `.ts` files in `data/plugins/`, loaded via
-   dynamic import after built-in plugins.
+```
+ok: gateway.hcl — 7 endpoints across 3 profile(s)
+  plugin "example" v0.1: 2 facet(s), 1 credential type(s), 1 tunnel type(s), 3 endpoint type(s)
+```
 
-Duplicate integration IDs are rejected with a warning.
+## See also
 
-On `SIGHUP`, endpoint and DNS caches are invalidated so config changes take
-effect without a full restart.
-
----
-
-## Configuration
-
-Integration plugins are configured through the dashboard:
-
-1. An admin creates an **integration** -- an instance of an integration plugin
-   with filled-in config values (e.g. a specific GitHub PAT)
-2. Integrations are assigned to **profiles**
-3. Agents are assigned to profiles, inheriting all the profile's integrations
-
-Multiple instances of the same plugin can coexist (e.g. two different GitHub
-PATs for different accounts).
-
-Config is validated against the integration's Zod schema on creation and
-update. Sensitive fields are masked in API responses.
-
-Dynamic credentials (OAuth tokens, etc.) are stored in a separate
-`credentials` table, not in the integration config. The framework loads
-and merges credential data into config before calling endpoint handlers,
-and proactively refreshes credentials before expiry.
-
----
-
-## Key Source Files
-
-| File | Purpose |
-| ---- | ------- |
-| `src/plugins/types.ts` | All type definitions |
-| `src/plugins/registry.ts` | Module loading and registration |
-| `src/plugins/endpoint-fn.ts` | `EndpointFn` implementation |
-| `src/plugins/*/index.ts` | Built-in plugin implementations |
-| `src/endpoints.ts` | Hostname-to-handler resolution |
-| `src/credentials.ts` | Credential storage, caching, and refresh |
-| `src/dns.ts` | DNS entry collection and virtual IP listeners |
-| `src/proxy.ts` | Hook invocation (tls, fetch) and traffic forwarding |
+- [`plugin-example/`](https://github.com/denoland/clawpatrol/tree/main/plugin-example)
+  — fully exercised plugin: `example_magic_token` credential,
+  `example_passthrough` tunnel, `example_https` endpoint
+  (binds to the built-in `http` facet), `example_smtp`
+  endpoint + matching `example_smtp` facet (optional + stream
+  fields), `example_echo` endpoint + matching `example_echo`
+  facet (plain TCP).
+- [`pluginsdk/`](https://github.com/denoland/clawpatrol/tree/main/pluginsdk)
+  — the author SDK package.
+- [`config/extplugin/proto/plugin.proto`](https://github.com/denoland/clawpatrol/tree/main/config/extplugin/proto)
+  — gRPC service definitions if you want to bypass the SDK.
+- [Approval rules](approval-rules) — how rule conditions and
+  approve chains are evaluated against a request.
+- [Config reference](config-reference) — the `plugin` block and
+  every other top-level setting.

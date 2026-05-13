@@ -11,7 +11,6 @@ import {
   saveConfigHCL,
   type ConfigSavePreview,
   type Integration,
-  type Whoami,
 } from "../lib/api";
 import { ConfigSaveReview } from "./ConfigSaveReview";
 import { HCLEditor } from "./HCLEditor";
@@ -19,15 +18,13 @@ import { IntegrationsCards } from "./IntegrationsCards";
 
 export function SettingsPage({
   integrations,
-  whoami,
   readOnlyConfig,
   onConnect,
   onRefresh,
 }: {
   integrations: Integration[];
-  whoami: Whoami | null;
   readOnlyConfig?: boolean;
-  onConnect: (id: string, profile?: string) => void;
+  onConnect: (id: string) => void;
   onRefresh: () => void;
 }) {
   return (
@@ -50,7 +47,6 @@ export function SettingsPage({
         ) : (
           <IntegrationsCards
             list={integrations}
-            whoami={whoami}
             showAll
             onConnect={onConnect}
             onRefresh={onRefresh}

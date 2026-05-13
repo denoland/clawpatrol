@@ -17,7 +17,7 @@ import (
 func httpReq(method, path string) *match.Request {
 	u, _ := url.Parse("https://example.com" + path)
 	return &match.Request{
-		Family:  "https",
+		Family:  "http",
 		Method:  method,
 		URL:     u,
 		Headers: http.Header{},
@@ -82,7 +82,7 @@ func TestHTTPMatcherMethodAndPath(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			m, err := facet.NewMatcher("https", tc.condition)
+			m, err := facet.NewMatcher("http", tc.condition)
 			if err != nil {
 				t.Fatalf("NewMatcher: %v", err)
 			}
@@ -93,8 +93,54 @@ func TestHTTPMatcherMethodAndPath(t *testing.T) {
 	}
 }
 
+// TestHTTPMatcherMethodCaseInsensitive locks in that the matcher
+// normalizes the want-side string literal of a method comparison to
+// lowercase at rule-load time. Without that normalization a rule
+// written as `http.method == "POST"` would silently never match,
+// because the activation always reports `method = "post"`.
+func TestHTTPMatcherMethodCaseInsensitive(t *testing.T) {
+	cases := []struct {
+		name      string
+		condition string
+		method    string
+		want      bool
+	}{
+		{"uppercase want, uppercase got", `http.method == 'POST'`, "POST", true},
+		{"uppercase want, lowercase got", `http.method == 'POST'`, "post", true},
+		{"lowercase want, uppercase got", `http.method == 'post'`, "POST", true},
+		{"mixed-case want, uppercase got", `http.method == 'Post'`, "POST", true},
+		{"!= uppercase, GET got",
+			`http.method != 'POST'`, "GET", true},
+		{"!= uppercase, POST got",
+			`http.method != 'POST'`, "POST", false},
+		{"in uppercase list, lowercase got",
+			`http.method in ['GET', 'POST']`, "post", true},
+		{"in uppercase list, miss",
+			`http.method in ['GET', 'POST']`, "PUT", false},
+		{"in mixed-case list",
+			`http.method in ['Get', 'Post', 'put']`, "POST", true},
+		{"startsWith uppercase",
+			`http.method.startsWith('PO')`, "POST", true},
+		{"endsWith uppercase",
+			`http.method.endsWith('ST')`, "POST", true},
+		{"reversed equality (literal LHS)",
+			`'POST' == http.method`, "POST", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, err := facet.NewMatcher("http", tc.condition)
+			if err != nil {
+				t.Fatalf("NewMatcher: %v", err)
+			}
+			if got := m.Match(httpReq(tc.method, "/x")); got != tc.want {
+				t.Errorf("Match=%v want %v (condition=%q method=%q)", got, tc.want, tc.condition, tc.method)
+			}
+		})
+	}
+}
+
 func TestHTTPMatcherBodyJSON(t *testing.T) {
-	m, err := facet.NewMatcher("https", "http.method == 'PATCH' && http.body_json.archived == true")
+	m, err := facet.NewMatcher("http", "http.method == 'PATCH' && http.body_json.archived == true")
 	if err != nil {
 		t.Fatal(err)
 	}

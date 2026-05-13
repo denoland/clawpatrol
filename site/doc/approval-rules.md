@@ -2,13 +2,13 @@
 
 Rules are how an operator decides what happens to a request:
 forward it, reject it, or route it through one or more
-**approvers** (a human approver who acts from the dashboard or
-Slack, an LLM approver that judges against a policy, or both in
-sequence) that must each allow before the request is forwarded. Each rule is a
-block in `gateway.hcl` that targets one or more
-[endpoints](/docs/glossary/#endpoint), describes which requests
-it applies to (the `condition` CEL expression), and declares the outcome
-(`verdict = "allow" / "deny"`, or `approve = [...]`).
+**approvers** — a human acting from the dashboard or Slack, an
+LLM judging against a policy, or both in sequence (every approver
+must allow). Each rule is a block in `gateway.hcl` that targets
+one or more [endpoints](/docs/glossary/#endpoint), describes
+which requests it applies to (the `condition` CEL expression),
+and declares the outcome (`verdict = "allow" / "deny"`, or
+`approve = [...]`).
 
 There is one rule kind. The rule's protocol **family** — `http`,
 `sql`, or `k8s` — is inferred from its endpoint(s) at load time and
@@ -22,9 +22,8 @@ This page covers the operator's view: how to write a rule, what
 each facet does, and how rules behave in different situations.
 
 For the surrounding picture see
-[Architecture](/docs/architecture/) (request flow, where matching
-fits — including how endpoints claim requests) and
-[Gateway](/docs/gateway/) (the listener and dispatcher).
+[Architecture](/docs/architecture/) — request flow, where matching
+fits, how endpoints claim requests.
 
 
 ## Rule families
@@ -45,7 +44,7 @@ CEL variables (all optional in any given condition):
 
 | Variable | Type | Description |
 |----------|------|-------------|
-| `http.method` | `string` | HTTP verb, upper-case (`"GET"`, `"POST"`, …) |
+| `http.method` | `string` | HTTP verb. Lowercased at activation time; literal `'POST'` in rule source is normalized to `'post'` at compile time so either case works. |
 | `http.path` | `string` | Request path (no query string) |
 | `http.query` | `map<string, list<string>>` | Query parameters (multi-valued) |
 | `http.headers` | `map<string, list<string>>` | Request headers (multi-valued) |
@@ -69,7 +68,7 @@ statement the agent sends.
 |----------|------|-------------|
 | `sql.verb` | `string` | First verb of the statement (lower-case: `"select"`, …) |
 | `sql.tables` | `list<string>` | Tables referenced by the statement |
-| `sql.function` | `list<string>` | Functions called by the statement |
+| `sql.functions` | `list<string>` | Functions called by the statement |
 | `sql.statement` | `string` | The full lower-cased statement text |
 
 ```hcl
@@ -79,10 +78,11 @@ condition = "sets.intersects(sql.tables, ['users', 'audit_log'])"
 condition = "sql.statement.matches('(?i)\\bpassword\\b')"
 ```
 
-`verb`, `tables`, and `function` are extracted by a best-effort
-lexer — see "Gotchas" below.
+`verb`, `tables`, and `functions` are extracted by a best-effort
+lexer over a lower-cased copy of the statement — see
+[Case sensitivity](#case-sensitivity-by-variable) below.
 
-`tables` and `function` are **multi-valued** facets: a single
+`tables` and `functions` are **multi-valued** facets: a single
 statement can name several tables (`SELECT ... FROM a JOIN b`) and
 call several functions. Use CEL's `in` operator for a single name
 (`'secrets' in sql.tables`) or `sets.intersects(...)` for an overlap
@@ -114,6 +114,11 @@ condition = "!k8s.resource.endsWith('/exec') && !k8s.resource.endsWith('/attach'
 A rule bound to `https` endpoints sees `http.*` only; a rule bound
 to `kubernetes` endpoints sees `k8s.*` only. Mixing families across
 a rule's `endpoints = [...]` is a load error.
+
+`ssh` endpoints exist but have no rule family yet — the gateway
+terminates auth and splices channels as opaque byte streams, emitting
+a single `allow` event at session start. Rules cannot gate anything
+inside an SSH session today.
 
 
 ## How to create a rule
@@ -172,7 +177,7 @@ Each endpoint plugin claims the requests it owns and emits an
 **action** in its family — `http` actions for HTTPS endpoints, `sql`
 actions for postgres / clickhouse, `k8s` actions for kubernetes.
 Each action populates the family's CEL variables (method/path/headers
-for HTTP, verb/tables/function for SQL, resource/verb/namespace for
+for HTTP, verb/tables/functions for SQL, resource/verb/namespace for
 k8s). The rule's `condition` is evaluated against those variables.
 
 How an endpoint claims a given connection (SNI peek, destination IP,
@@ -216,17 +221,20 @@ accessed with dot notation. Common idioms:
 
 | Variable                      | Case sensitivity |
 |-------------------------------|------------------|
-| `http.method`                 | upper-case (normalized) |
+| `http.method`                 | lower-case (rule-source literals normalized at compile time) |
 | `http.path`, `http.query`, `http.headers`, `http.body` | as on the wire |
 | `sql.verb`                    | lower-case (normalized) |
-| `sql.tables`, `sql.function`, `sql.statement` | lower-case (statement is lower-cased before extraction) |
+| `sql.tables`, `sql.functions` | lower-case (extracted from a lower-cased copy of the statement) |
+| `sql.statement`               | as on the wire (raw text, no case folding) |
 | `k8s.verb`                    | lower-case (normalized) |
 | `k8s.resource`, `k8s.namespace`, `k8s.name`, `k8s.params` | as on the wire |
 
-For SQL, the parser lower-cases the statement before extracting
-verbs, tables, and functions — so `'Users' in sql.tables` will never
-fire. Write literals in the same case the parser will produce
-(lower).
+For SQL, the parser lower-cases an internal copy of the statement
+before extracting verbs, tables, and functions — so
+`'Users' in sql.tables` will never fire. Write literals in the same
+case the parser will produce (lower). `sql.statement` itself is the
+raw on-the-wire text; match it case-blindly with a `(?i)` regex
+flag (`sql.statement.matches('(?i)\\bpassword\\b')`).
 
 ### `credential = X`
 
@@ -387,7 +395,7 @@ policy "pg-secret-columns" {
 }
 
 rule "pg-secret-columns" {
-  endpoint  = pg-deployng
+  endpoint  = pg-deploy
   priority  = 100
   condition = "sql.verb == 'select' && sets.intersects(sql.tables, ['github_identities', 'tokens', 'domain_certificates', 'env_vars'])"
   approve   = [pg-secret-columns-judge, console-dba]
@@ -407,7 +415,7 @@ view without paging any channel.
 
 ```hcl
 rule "pg-banned-verbs" {
-  endpoints = [pg-deployng, pg-scheduler]
+  endpoints = [pg-deploy, pg-scheduler]
   condition = "sql.verb in ['drop', 'truncate', 'alter', 'grant', 'revoke', 'vacuum', 'create']"
   verdict   = "deny"
   reason    = "Schema changes / destructive DDL not permitted; use a migration PR"

@@ -2,7 +2,7 @@
 
 A clawpatrol gateway config mixes **operational** fields (top-level
 plumbing) with **policy** blocks. Operational fields are top-level
-attributes; policy blocks (`approver`, `credential`, `endpoint`, `rule`)
+attributes; policy blocks (`approver`, `credential`, `tunnel`, `endpoint`, `rule`)
 dispatch to a plugin chosen by the block's first label.
 
 ## How to read this page
@@ -17,7 +17,7 @@ Each block section lists the attributes the loader accepts, with:
 - **Required** — `yes` if the loader rejects the block when the
   attribute is missing.
 
-Plugin-dispatched kinds (`approver`, `credential`, `endpoint`, `rule`)
+Plugin-dispatched kinds (`approver`, `credential`, `tunnel`, `endpoint`, `rule`)
 list one subsection per registered type.
 
 ## Top-level fields
@@ -30,10 +30,9 @@ Every singleton gateway attribute — listen addresses, paths, control-plane joi
 | `info_listen` | `string` | no |  |
 | `public_url` | `string` | no |  |
 | `admin_email` | `string` | no |  |
-| `ca_dir` | `string` | no |  |
+| `state_dir` | `string` | no | The directory holding clawpatrol.db (and anything else a plugin persists to disk under it). Defaults to ${HOME}/.clawpatrol/state when unset. |
 | `resolver` | `string` | no |  |
 | `log_path` | `string` | no |  |
-| `oauth_dir` | `string` | no |  |
 | `dashboard_secret` | `string` | no |  |
 | `insecure_no_dashboard_secret` | `bool` | no | Opts out of dashboard auth. Required (alongside an empty DashboardSecret) for the gateway to serve the dashboard at all — otherwise the secret gate replies with a misconfiguration page on every request. Verbose by design so you can't disable auth by accident. |
 | `telemetry` | `bool` | no | Opts in/out of the update-checker / anonymous usage ping (doc/telemetry.md). nil = default on; explicit `telemetry = false` silences the goroutine. Env vars CLAWPATROL_TELEMETRY=0 and DO_NOT_TRACK=1 also work. |
@@ -41,7 +40,6 @@ Every singleton gateway attribute — listen addresses, paths, control-plane joi
 | `authkey` | `string` | no |  |
 | `control_url` | `string` | no |  |
 | `hostname` | `string` | no |  |
-| `state_dir` | `string` | no |  |
 | `control` | `string` | no |  |
 | `oauth_client_id` | `string` | no |  |
 | `oauth_client_secret` | `string` | no |  |
@@ -55,6 +53,7 @@ Every singleton gateway attribute — listen addresses, paths, control-plane joi
 | `llm_cache_ttl` | `int` | no |  |
 | `human_timeout` | `int` | no |  |
 | `human_on_timeout` | `string` | no |  |
+| `plugin` | `block` | yes | Lists every `plugin "<name>" { source = "..." }` block at the top of the file. The loader spawns each subprocess (and registers its declared types) before running pass-1 symbol building, so plugin-supplied (kind, type) pairs are available by the time policy blocks are dispatched. |
 
 ## `policy "<name>" { ... }`
 
@@ -111,6 +110,7 @@ operator clicks approve/deny on the dashboard).
 | `timeout` | `int` | no |  |
 | `require_approvers` | `int` | no |  |
 | `interactive` | `bool` | no | Toggles in-channel approve/deny buttons. Requires the referenced credential's signing_secret slot pasted via the dashboard AND Slack's Interactivity URL pointed at the gateway. Default false: message includes only an "Open dashboard" link. |
+| `classifier` | `ref(approver)` | no | Optionally references an llm_approver by name. When set, the approver calls the classifier's Summarize method before posting the HITL notification, enriching the Slack card with classification metadata. Classifier failures are non-fatal — the generic card is used as fallback. |
 
 ```hcl
 approver "human_approver" "example" {
@@ -143,11 +143,9 @@ approver "llm_approver" "example" {
 
 Block syntax: `credential "<type>" "<name>" { ... }`
 
-Registered types: [`anthropic_manual_key`](#credential-anthropicmanualkey), [`anthropic_oauth_subscription`](#credential-anthropicoauthsubscription), [`aws_eks_credential`](#credential-awsekscredential), [`bearer_token`](#credential-bearertoken), [`clickhouse_credential`](#credential-clickhousecredential), [`cookie_token`](#credential-cookietoken), [`gemini_api_key`](#credential-geminiapikey), [`github_oauth`](#credential-githuboauth), [`header_token`](#credential-headertoken), [`mtls_credential`](#credential-mtlscredential), [`notion_oauth`](#credential-notionoauth), [`openai_codex_oauth`](#credential-openaicodexoauth), [`postgres_credential`](#credential-postgrescredential), [`slack_tokens`](#credential-slacktokens), [`ssh`](#credential-ssh), [`telegram_bot_token`](#credential-telegrambottoken).
+Registered types: [`anthropic_manual_key`](#credential-anthropicmanualkey), [`anthropic_oauth_subscription`](#credential-anthropicoauthsubscription), [`aws_eks_credential`](#credential-awsekscredential), [`bearer_token`](#credential-bearertoken), [`clickhouse_credential`](#credential-clickhousecredential), [`cookie_token`](#credential-cookietoken), [`discord_bot_token`](#credential-discordbottoken), [`gemini_api_key`](#credential-geminiapikey), [`github_oauth`](#credential-githuboauth), [`header_token`](#credential-headertoken), [`mtls_credential`](#credential-mtlscredential), [`notion_oauth`](#credential-notionoauth), [`openai_codex_oauth`](#credential-openaicodexoauth), [`postgres_credential`](#credential-postgrescredential), [`slack_tokens`](#credential-slacktokens), [`ssh`](#credential-ssh), [`tailscale`](#credential-tailscale), [`telegram_bot_token`](#credential-telegrambottoken).
 
 ### `credential "anthropic_manual_key" "<name>"`
-
-Is part of the clawpatrol plugin API.
 
 _No configurable attributes._
 
@@ -157,8 +155,6 @@ credential "anthropic_manual_key" "example" {}
 
 ### `credential "anthropic_oauth_subscription" "<name>"`
 
-Is part of the clawpatrol plugin API.
-
 _No configurable attributes._
 
 ```hcl
@@ -166,8 +162,6 @@ credential "anthropic_oauth_subscription" "example" {}
 ```
 
 ### `credential "aws_eks_credential" "<name>"`
-
-Is part of the clawpatrol plugin API.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -184,8 +178,6 @@ credential "aws_eks_credential" "example" {
 
 ### `credential "bearer_token" "<name>"`
 
-Is part of the clawpatrol plugin API.
-
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `idempotency_key` | `bool` | no |  |
@@ -195,8 +187,6 @@ credential "bearer_token" "example" {}
 ```
 
 ### `credential "clickhouse_credential" "<name>"`
-
-Is part of the clawpatrol plugin API.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -208,8 +198,6 @@ credential "clickhouse_credential" "example" {}
 
 ### `credential "cookie_token" "<name>"`
 
-Is part of the clawpatrol plugin API.
-
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `cookie_name` | `string` | no |  |
@@ -218,9 +206,17 @@ Is part of the clawpatrol plugin API.
 credential "cookie_token" "example" {}
 ```
 
-### `credential "gemini_api_key" "<name>"`
+### `credential "discord_bot_token" "<name>"`
 
-Is part of the clawpatrol plugin API.
+Injects Discord bot tokens for REST and Gateway SDK traffic.
+
+_No configurable attributes._
+
+```hcl
+credential "discord_bot_token" "example" {}
+```
+
+### `credential "gemini_api_key" "<name>"`
 
 _No configurable attributes._
 
@@ -230,8 +226,6 @@ credential "gemini_api_key" "example" {}
 
 ### `credential "github_oauth" "<name>"`
 
-Is part of the clawpatrol plugin API.
-
 _No configurable attributes._
 
 ```hcl
@@ -239,8 +233,6 @@ credential "github_oauth" "example" {}
 ```
 
 ### `credential "header_token" "<name>"`
-
-Is part of the clawpatrol plugin API.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -255,8 +247,6 @@ credential "header_token" "example" {
 
 ### `credential "mtls_credential" "<name>"`
 
-Is part of the clawpatrol plugin API.
-
 _No configurable attributes._
 
 ```hcl
@@ -264,8 +254,6 @@ credential "mtls_credential" "example" {}
 ```
 
 ### `credential "notion_oauth" "<name>"`
-
-Is part of the clawpatrol plugin API.
 
 _No configurable attributes._
 
@@ -275,8 +263,6 @@ credential "notion_oauth" "example" {}
 
 ### `credential "openai_codex_oauth" "<name>"`
 
-Is part of the clawpatrol plugin API.
-
 _No configurable attributes._
 
 ```hcl
@@ -284,8 +270,6 @@ credential "openai_codex_oauth" "example" {}
 ```
 
 ### `credential "postgres_credential" "<name>"`
-
-Is part of the clawpatrol plugin API.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -297,8 +281,6 @@ credential "postgres_credential" "example" {}
 
 ### `credential "slack_tokens" "<name>"`
 
-Is part of the clawpatrol plugin API.
-
 _No configurable attributes._
 
 ```hcl
@@ -307,17 +289,25 @@ credential "slack_tokens" "example" {}
 
 ### `credential "ssh" "<name>"`
 
-Is part of the clawpatrol plugin API.
-
 _No configurable attributes._
 
 ```hcl
 credential "ssh" "example" {}
 ```
 
-### `credential "telegram_bot_token" "<name>"`
+### `credential "tailscale" "<name>"`
 
-Is part of the clawpatrol plugin API.
+Has no operator-facing fields — there is
+nothing to paste. Per-tailnet selection (control_url, tags) lives
+on the tunnel block instead.
+
+_No configurable attributes._
+
+```hcl
+credential "tailscale" "example" {}
+```
+
+### `credential "telegram_bot_token" "<name>"`
 
 _No configurable attributes._
 
@@ -332,8 +322,6 @@ Block syntax: `endpoint "<type>" "<name>" { ... }`
 Registered types: [`clickhouse_https`](#endpoint-clickhousehttps), [`clickhouse_native`](#endpoint-clickhousenative), [`https`](#endpoint-https), [`kubernetes`](#endpoint-kubernetes), [`openai_codex_https`](#endpoint-openaicodexhttps), [`postgres`](#endpoint-postgres), [`ssh`](#endpoint-ssh).
 
 ### `endpoint "clickhouse_https" "<name>"`
-
-Is part of the clawpatrol plugin API.
 
 Family: `sql`.
 
@@ -388,9 +376,7 @@ endpoint "clickhouse_native" "example" {
 
 ### `endpoint "https" "<name>"`
 
-Is part of the clawpatrol plugin API.
-
-Family: `https`.
+Family: `http`.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -405,8 +391,6 @@ endpoint "https" "example" {
 ```
 
 ### `endpoint "kubernetes" "<name>"`
-
-Is part of the clawpatrol plugin API.
 
 Family: `k8s`.
 
@@ -424,9 +408,7 @@ endpoint "kubernetes" "example" {}
 
 ### `endpoint "openai_codex_https" "<name>"`
 
-Is part of the clawpatrol plugin API.
-
-Family: `https`.
+Family: `http`.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -506,9 +488,7 @@ endpoint "ssh" "example" {
 
 Block syntax: `rule "<name>" { ... }`
 
-Registered types: [``](#rule-).
-
-### `rule "" "<name>"`
+### `rule "<name>"`
 
 The gohcl-tagged decode target. The match predicate is
 family-agnostic at the HCL layer (just a CEL string); the facet's
@@ -529,5 +509,100 @@ been inferred from the endpoint refs.
 
 ```hcl
 rule {}
+```
+
+## `tunnel` blocks
+
+Block syntax: `tunnel "<type>" "<name>" { ... }`
+
+Registered types: [`kubernetes_port_forward`](#tunnel-kubernetesportforward), [`local_command`](#tunnel-localcommand), [`ssh_port_forward`](#tunnel-sshportforward), [`tailscale`](#tunnel-tailscale).
+
+### `tunnel "kubernetes_port_forward" "<name>"`
+
+Configures the tunnel runtime.
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `context` | `string` | no | Selects a kubeconfig context; empty uses the current context. |
+| `namespace` | `string` | no | Selects the Kubernetes namespace for kubectl commands. |
+| `pod` | `string` | no | Names an existing pod to port-forward to. Exactly one of pod, service, selector, or template must be set. |
+| `service` | `string` | no | Names a service to port-forward to. |
+| `selector` | `map[string]string` | no | Matches a ready pod to port-forward to. |
+| `template` | `string` | no | A pod manifest to apply and port-forward to. |
+| `port` | `int` | yes | The pod-side port the forwarder targets. For service mode it's the *service* port; kubectl resolves the matching targetPort. |
+| `cleanup` | `string` | no | Controls whether a template-created pod is deleted on tunnel teardown. "delete" (default) is right for the common create-on-demand case; "keep" disables deletion. |
+| `share` | `string` | no | Controls whether runtime instances are singleton, per-endpoint, or per-request. |
+| `keepalive` | `string` | no | Keeps an idle tunnel runtime warm for the given duration. |
+| `via` | `ref(tunnel)` | no | Chains kubectl access through another tunnel. |
+| `credential` | `ref(credential)` | no | References an optional credential block for Kubernetes access. |
+
+```hcl
+tunnel "kubernetes_port_forward" "example" {
+  port = 30
+}
+```
+
+### `tunnel "local_command" "<name>"`
+
+Configures the tunnel runtime.
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `command` | `[]string` | yes | The argv vector to spawn for the tunnel process. |
+| `listen` | `string` | yes | The local address the spawned command exposes. |
+| `ready_probe` | `string` | no | An optional TCP address to poll before the tunnel is ready. |
+| `ready_timeout` | `string` | no | Overrides the default readiness wait duration. |
+| `env` | `map[string]string` | no | Adds environment variables to the spawned command. |
+| `share` | `string` | no | Controls whether runtime instances are singleton, per-endpoint, or per-request. |
+| `keepalive` | `string` | no | Keeps an idle tunnel runtime warm for the given duration. |
+| `via` | `ref(tunnel)` | no | Chains this tunnel through another tunnel. |
+| `credential` | `ref(credential)` | no | References an optional credential block for the tunnel runtime. |
+
+```hcl
+tunnel "local_command" "example" {
+  command = ["example"]
+  listen = "example"
+}
+```
+
+### `tunnel "ssh_port_forward" "<name>"`
+
+Configures the tunnel runtime.
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `bastion` | `string` | no | The SSH server host:port; required when via is unset. |
+| `user` | `string` | yes | The SSH username for the bastion login. |
+| `share` | `string` | no | Controls whether runtime instances are singleton, per-endpoint, or per-request. |
+| `keepalive` | `string` | no | Keeps an idle tunnel runtime warm for the given duration. |
+| `via` | `ref(tunnel)` | no | Chains the SSH connection through another tunnel. |
+| `credential` | `ref(credential)` | yes | References an ssh credential block used for bastion authentication. |
+
+```hcl
+tunnel "ssh_port_forward" "example" {
+  bastion = "bastion.example:22"
+  user = "example"
+  credential = example-credential
+}
+```
+
+### `tunnel "tailscale" "<name>"`
+
+Configures the tunnel runtime.
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `authkey` | `string` | no | The Tailscale auth key; env fallback is CLAWPATROL_TUNNEL_<NAME>_AUTHKEY. |
+| `control_url` | `string` | no | Overrides the Tailscale control-plane URL. |
+| `hostname` | `string` | no | The tsnet node name; defaults to clawpatrol-tunnel-<name>. |
+| `state_dir` | `string` | no | Stores tsnet node state; defaults under the gateway CA directory. |
+| `tags` | `[]string` | no | Tailscale tags requested for the tsnet node. |
+| `share` | `string` | no | Controls whether runtime instances are singleton, per-endpoint, or per-request. |
+| `keepalive` | `string` | no | Keeps an idle tunnel runtime warm for the given duration. |
+| `via` | `ref(tunnel)` | no | Chains this tunnel through another tunnel. |
+| `credential` | `ref(credential)` | no | References an optional credential block for the tunnel runtime. |
+
+```hcl
+tunnel "tailscale" "example" {}
 ```
 

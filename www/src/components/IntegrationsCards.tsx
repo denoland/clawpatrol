@@ -1,9 +1,9 @@
 import * as React from "react";
 import { useState } from "react";
-import type { Integration, Whoami } from "../lib/api";
+import type { Integration } from "../lib/api";
 import { fmtExpiry } from "../lib/format";
 import { IntegrationIcon } from "./Logos";
-import { clearCredential, oauthRevoke } from "../lib/api";
+import { clearCredential, oauthRevoke, tailscaleConnect, tailscaleDisconnect } from "../lib/api";
 import { CredentialSecretsModal } from "./CredentialSecretsModal";
 
 // Display name by credential plugin type. Bare credential names
@@ -36,34 +36,27 @@ const VISIBLE_CAP = 4;
 
 export function IntegrationsCards({
   list,
-  whoami,
-  profile,
   showAll,
   onConnect,
   onRefresh,
 }: {
   list: Integration[];
-  whoami: Whoami | null;
-  profile?: string;
   // When true, render every card in the grid (no overflow button,
   // no "+ K more" modal). Used by the Settings page where the
-  // integrations row IS the page and there's space for the full list.
+  // credentials row IS the page and there's space for the full list.
   showAll?: boolean;
-  onConnect: (id: string, profile?: string) => void;
+  onConnect: (id: string) => void;
   onRefresh: () => void;
 }) {
-  const youKey = profile || whoami?.user || whoami?.host || "";
   const [editing, setEditing] = useState<Integration | null>(null);
   const [allOpen, setAllOpen] = useState(false);
 
-  // Sort: connected first (most relevant), then unconnected, then
-  // already-disabled ones (no auth path) — preserves declaration
-  // order within each bucket.
+  // Sort: connected first, then unconnected, then disabled (no auth
+  // path) — preserves declaration order within each bucket.
   const sorted = [...list].sort((a, b) => {
     const score = (i: Integration) => {
-      const me = (i.owners ?? []).find((o) => o.owner === youKey);
-      if (me?.connected) return 0;
-      if (i.has_oauth || (i.slots && i.slots.length > 0)) return 1;
+      if (i.connected || i.tailscale_auth?.connected) return 0;
+      if (i.has_oauth || i.has_tailscale_auth || (i.slots && i.slots.length > 0)) return 1;
       return 2;
     };
     return score(a) - score(b);
@@ -84,8 +77,30 @@ export function IntegrationsCards({
   const isDup = (i: Integration) => (typeCounts.get(i.type) ?? 0) > 1;
 
   function handleConnect(i: Integration) {
+    if (i.has_tailscale_auth && i.tailscale_auth) {
+      // tsnet mints the login URL per attempt — fetch fresh on every
+      // click. The handler returns connected:true if the node has
+      // already joined (covers a stale list view); otherwise we open
+      // the live URL in a new tab and let the next /api/state poll
+      // flip the card to "connected" once tsnet finishes joining.
+      tailscaleConnect(i.tailscale_auth.connect_url)
+        .then((r) => {
+          if (r.connected) {
+            onRefresh();
+            return;
+          }
+          const url = r.auth_url || r.pending_url;
+          if (url) {
+            window.open(url, "_blank", "noopener,noreferrer");
+          }
+        })
+        .catch(() => {
+          /* surfaced on the next refresh */
+        });
+      return;
+    }
     if (i.has_oauth) {
-      onConnect(i.id, profile);
+      onConnect(i.id);
       return;
     }
     if (i.slots && i.slots.length > 0) {
@@ -94,10 +109,14 @@ export function IntegrationsCards({
   }
 
   function disconnect(i: Integration) {
+    if (i.has_tailscale_auth && i.tailscale_auth) {
+      tailscaleDisconnect(i.tailscale_auth.disconnect_url).then(onRefresh);
+      return;
+    }
     if (i.has_oauth) {
-      oauthRevoke(i.id, youKey).then(onRefresh);
+      oauthRevoke(i.id).then(onRefresh);
     } else {
-      clearCredential(i.id, youKey).then(onRefresh);
+      clearCredential(i.id).then(onRefresh);
     }
   }
 
@@ -108,7 +127,6 @@ export function IntegrationsCards({
           <Card
             key={i.id}
             integration={i}
-            youKey={youKey}
             showName={isDup(i)}
             onConnect={() => handleConnect(i)}
             onDisconnect={() => disconnect(i)}
@@ -127,7 +145,6 @@ export function IntegrationsCards({
       {allOpen && (
         <AllIntegrationsModal
           list={sorted}
-          youKey={youKey}
           isDup={isDup}
           onClose={() => setAllOpen(false)}
           onConnect={(i) => {
@@ -141,7 +158,6 @@ export function IntegrationsCards({
       {editing && (
         <CredentialSecretsModal
           integration={editing}
-          owner={youKey}
           onClose={() => setEditing(null)}
           onSaved={onRefresh}
         />
@@ -185,13 +201,11 @@ function OwnerAvatar({
 
 function Card({
   integration: i,
-  youKey,
   showName,
   onConnect,
   onDisconnect,
 }: {
   integration: Integration;
-  youKey: string;
   // When the same plugin type is declared more than once, surface
   // the credential's bare name in the header so two cards of the same
   // type are visibly distinct even when both are OAuth-connected by
@@ -200,15 +214,14 @@ function Card({
   onConnect: () => void;
   onDisconnect: () => void;
 }) {
-  const me = (i.owners ?? []).find((o) => o.owner === youKey);
-  const connected = me?.connected ?? false;
+  const connected = i.connected || (i.tailscale_auth?.connected ?? false);
   const hasSlots = (i.slots?.length ?? 0) > 0;
-  const clickable = (i.has_oauth || hasSlots) && !connected;
+  const clickable = (i.has_oauth || i.has_tailscale_auth || hasSlots) && !connected;
   const subtitle = connected
-    ? me?.expires_at
-      ? "expires " + fmtExpiry(me.expires_at)
+    ? i.expires_at
+      ? "expires " + fmtExpiry(i.expires_at)
       : "connected"
-    : i.has_oauth
+    : i.has_oauth || i.has_tailscale_auth
       ? "click to connect"
       : hasSlots
         ? "paste secret"
@@ -227,19 +240,19 @@ function Card({
       }
     >
       <div className="flex items-center gap-2 w-full">
-        {connected && me?.avatar_url ? (
-          <OwnerAvatar src={me.avatar_url} fallbackId={i.id} fallbackType={i.type} />
+        {connected && i.avatar_url ? (
+          <OwnerAvatar src={i.avatar_url} fallbackId={i.id} fallbackType={i.type} />
         ) : (
           <IntegrationIcon id={i.id} type={i.type} className="w-[16px] h-[16px] flex-shrink-0" />
         )}
         <span
           className="text-[12px] font-semibold text-[#171717] truncate"
-          title={me?.display_name ?? i.id}
+          title={i.display_name ?? i.id}
         >
           {(() => {
             const base = TYPE_LABEL[i.type] ?? i.name;
             const withName = showName && base !== i.name ? `${base} · ${i.name}` : base;
-            return me?.display_name ? `${withName} (${me.display_name})` : withName;
+            return i.display_name ? `${withName} (${i.display_name})` : withName;
           })()}
         </span>
         <span className="ml-auto flex items-center gap-1.5 flex-shrink-0">
@@ -279,14 +292,12 @@ function Card({
 
 function AllIntegrationsModal({
   list,
-  youKey,
   isDup,
   onClose,
   onConnect,
   onDisconnect,
 }: {
   list: Integration[];
-  youKey: string;
   isDup: (i: Integration) => boolean;
   onClose: () => void;
   onConnect: (i: Integration) => void;
@@ -317,7 +328,6 @@ function AllIntegrationsModal({
             <Card
               key={i.id}
               integration={i}
-              youKey={youKey}
               showName={isDup(i)}
               onConnect={() => onConnect(i)}
               onDisconnect={() => onDisconnect(i)}

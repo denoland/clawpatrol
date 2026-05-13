@@ -87,7 +87,7 @@ export function ProtocolDepthSection() {
                 source={p.example}
                 class="block text-[12px] mt-2 font-mono
                   bg-navy-950 text-canvas/85 px-3 py-2 rounded-sm
-                  whitespace-pre overflow-x-auto"
+                  whitespace-pre overflow-x-auto [scrollbar-width:none]"
               />
             </li>
           ))}

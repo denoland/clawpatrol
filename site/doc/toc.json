@@ -1,17 +1,14 @@
 [
   "introduction",
   "getting-started",
-  "onboarding",
   "glossary",
   "architecture",
   "cli",
-  "gateway",
-  "plugins",
-  "token-usage",
-  "userspace-wireguard",
+  "clawpatrol-test",
   "security-model",
   "approval-rules",
+  "plugins",
   "config-reference",
-  "dev-setup",
-  "competitors"
+  "competitors",
+  "skill"
 ]
