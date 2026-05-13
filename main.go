@@ -1852,6 +1852,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		// Schema-only credential types leave Runtime nil; we pass through
 		// verbatim and rely on policy alone.
 		var rewriteWSPayload wsPayloadRewriter
+		var reqBodySecretRedactions []string
 		if cc := runtime.ResolveCredential(ep, mreq); cc != nil {
 			// Plugin.Runtime is a typed-nil sentinel used only for
 			// interface-compliance assertions; the actual decoded HCL
@@ -1868,6 +1869,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 					log.Printf("secret %s/%s: not configured (set CLAWPATROL_SECRET_%s)", cc.Credential.Symbol.Name, profile, secretEnvName(cc.Credential.Symbol.Name))
 				} else {
 					if wantsHTTP {
+						reqBodySecretRedactions = appendCredentialSecretRedactions(reqBodySecretRedactions, sec)
 						if err := injector.InjectHTTP(req.Context(), req, sec); err != nil {
 							log.Printf("inject %s: %v", cc.Credential.Symbol.Name, err)
 						}
@@ -1953,7 +1955,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			ev.Reason = err.Error()
 			ev.Ms = time.Since(start).Milliseconds()
 			ev.ReqSha = reqS.sha()
-			ev.ReqBody = reqS.sample(req.Header.Get("Content-Encoding"))
+			ev.ReqBody = redactCredentialSample(reqS.sample(req.Header.Get("Content-Encoding")), reqBodySecretRedactions)
 			ev.In = reqS.n
 			g.emitEnd(ev)
 			return
@@ -2014,7 +2016,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		ev.In = reqS.n
 		ev.Out = respS.n
 		ev.ReqSha = reqS.sha()
-		ev.ReqBody = reqS.sample(req.Header.Get("Content-Encoding"))
+		ev.ReqBody = redactCredentialSample(reqS.sample(req.Header.Get("Content-Encoding")), reqBodySecretRedactions)
 		ev.RespSha = respS.sha()
 		ev.RespBody = respS.sample(resp.Header.Get("Content-Encoding"))
 		ev.Ms = time.Since(start).Milliseconds()
