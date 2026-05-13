@@ -1,5 +1,5 @@
 import * as React from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Integration } from "../lib/api";
 import { clearCredential, oauthRevoke, tailscaleConnect, tailscaleDisconnect } from "../lib/api";
 import { credentialTypeLabel } from "../lib/credentialLabels";
@@ -23,6 +23,8 @@ export function IntegrationsCards({
   showAll,
   onConnect,
   onRefresh,
+  pendingConnect,
+  onConsumePendingConnect,
 }: {
   list: Integration[];
   // When true, render every card in the grid (no overflow button,
@@ -31,6 +33,12 @@ export function IntegrationsCards({
   showAll?: boolean;
   onConnect: (id: string) => void;
   onRefresh: () => void;
+  // A credential id the parent wants the connect flow auto-opened for.
+  // Set by the agents-table click-through (?connect=<id> on the
+  // device-page URL); cleared via onConsumePendingConnect once we've
+  // acted on it so a reload doesn't reopen the modal.
+  pendingConnect?: string;
+  onConsumePendingConnect?: () => void;
 }) {
   const [editing, setEditing] = useState<Integration | null>(null);
   const [allOpen, setAllOpen] = useState(false);
@@ -107,6 +115,21 @@ export function IntegrationsCards({
       setEditing(i);
     }
   }
+
+  // Auto-open the connect flow when navigated to via ?connect=<id>.
+  // Runs once per pendingConnect value; consuming the prop signals the
+  // parent to drop the query param from the URL so a reload doesn't
+  // reopen the same modal.
+  useEffect(() => {
+    if (!pendingConnect) return;
+    const target = list.find((i) => i.id === pendingConnect);
+    if (!target) return;
+    handleConnect(target);
+    onConsumePendingConnect?.();
+    // handleConnect / onConsume are stable per render; we deliberately
+    // re-run only when pendingConnect changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingConnect]);
 
   function disconnect(i: Integration) {
     if (i.has_tailscale_auth && i.tailscale_auth) {

@@ -10,10 +10,15 @@ export function AgentsTable({
   agents,
   integrations,
   onSelect,
+  onConnectCredential,
 }: {
   agents: Agent[];
   integrations?: Integration[];
   onSelect?: (ip: string) => void;
+  // Called when the operator clicks an unconfigured credential pill on
+  // an agent's row. The parent navigates to the device page with the
+  // connect flow pre-armed for that credential.
+  onConnectCredential?: (ip: string, id: string) => void;
 }) {
   // id → Integration lookup so the icon stack can pick the right
   // logo per credential type (postgres/slack/etc, not just the
@@ -102,8 +107,12 @@ export function AgentsTable({
                       id,
                       type: it?.type,
                       avatar_url: it?.avatar_url,
+                      needsAction: needsAction(it),
                     };
                   })}
+                  onItemClick={
+                    onConnectCredential ? (id) => onConnectCredential(a.ip, id) : undefined
+                  }
                 />
               </Td>
             </tr>
@@ -112,6 +121,21 @@ export function AgentsTable({
       </tbody>
     </table>
   );
+}
+
+// needsAction returns true when a declared credential is missing its
+// secret (not connected) or its OAuth token has already expired. The
+// dashboard flags these with a red ring + click-to-configure handler.
+// Credentials with no auth path (the rare "api key only" inert case)
+// don't qualify — there's nothing actionable to do.
+function needsAction(it: Integration | undefined): boolean {
+  if (!it) return false;
+  const hasAuthPath = !!(it.has_oauth || it.has_tailscale_auth || (it.slots && it.slots.length > 0));
+  if (!hasAuthPath) return false;
+  const connected = it.connected || (it.tailscale_auth?.connected ?? false);
+  if (!connected) return true;
+  if (it.expires_at && it.expires_at * 1000 < Date.now()) return true;
+  return false;
 }
 
 function Th({ children, className = "" }: { children: React.ReactNode; className?: string }) {
