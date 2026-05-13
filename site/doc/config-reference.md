@@ -320,7 +320,21 @@ credential "telegram_bot_token" "example" {}
 
 Block syntax: `endpoint "<type>" "<name>" { ... }`
 
-Registered types: [`clickhouse_https`](#endpoint-clickhousehttps), [`clickhouse_native`](#endpoint-clickhousenative), [`https`](#endpoint-https), [`kubernetes`](#endpoint-kubernetes), [`openai_codex_https`](#endpoint-openaicodexhttps), [`postgres`](#endpoint-postgres), [`ssh`](#endpoint-ssh).
+Registered types: [`anthropic`](#endpoint-anthropic), [`clickhouse_https`](#endpoint-clickhousehttps), [`clickhouse_native`](#endpoint-clickhousenative), [`https`](#endpoint-https), [`kubernetes`](#endpoint-kubernetes), [`openai_codex_https`](#endpoint-openaicodexhttps), [`openrouter`](#endpoint-openrouter), [`postgres`](#endpoint-postgres), [`ssh`](#endpoint-ssh).
+
+### `endpoint "anthropic" "<name>"`
+
+Families: `http`, `llm`.
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `hosts` | `[]string` | no |  |
+| `credential` | `ref(credential)` | no |  |
+| `credentials` | `[]credential` | no |  |
+
+```hcl
+endpoint "anthropic" "example" {}
+```
 
 ### `endpoint "clickhouse_https" "<name>"`
 
@@ -421,6 +435,20 @@ Families: `http`, `llm`.
 endpoint "openai_codex_https" "example" {
   hosts = ["api.example.com"]
 }
+```
+
+### `endpoint "openrouter" "<name>"`
+
+Families: `http`, `llm`.
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `hosts` | `[]string` | no |  |
+| `credential` | `ref(credential)` | no |  |
+| `credentials` | `[]credential` | no |  |
+
+```hcl
+endpoint "openrouter" "example" {}
 ```
 
 ### `endpoint "postgres" "<name>"`

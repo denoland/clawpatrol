@@ -419,6 +419,29 @@ type PlaceholderDetector interface {
 	DetectPlaceholder(req *Request, candidates []string) string
 }
 
+// LLMResponseParser is the optional contract a provider endpoint
+// plugin's runtime implements when its actions should carry LLM
+// facets (provider / model / token counts) alongside the HTTP ones.
+//
+// The dispatcher calls ParseLLMRequest before forwarding so pre-
+// flight fields (provider / model / stream) land on the action in
+// time to be matched by `llm_rule` conditions. After the response
+// stream completes — between the existing trackBuf extraction and
+// emitEnd — it calls ParseLLMResponse with the captured request and
+// response bytes. Streaming responses arrive as the concatenated
+// SSE byte stream; non-streaming responses arrive as the full JSON
+// body. Implementations distinguish based on bytes / content-type /
+// shape — they own that detail.
+//
+// Either method returns a nil *llm.Meta to opt out of LLM facets for
+// a given request (e.g. a non-API path the provider plugin doesn't
+// recognise); ParseLLMResponse is given the pre-flight Meta the
+// request set so it can amend in place rather than replace.
+type LLMResponseParser interface {
+	ParseLLMRequest(reqBody []byte) any
+	ParseLLMResponse(reqBody, respBody []byte, pre any) any
+}
+
 // SQLParser is the optional contract a SQL-family endpoint plugin's
 // runtime implements so a host that received a raw SQL string (rather
 // than a live wire-protocol frame) can populate `match.Request.Meta`

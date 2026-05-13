@@ -1752,6 +1752,18 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			f.PrepareRequest(mreq)
 		}
 
+		// Pre-flight LLM facet population. Endpoint plugins that
+		// implement LLMResponseParser extract provider / model /
+		// stream from the request body so `llm_rule` predicates can
+		// gate on those before the request forwards. Token counts
+		// land later, after the response stream completes.
+		llmParser, _ := ep.Plugin.Runtime.(runtime.LLMResponseParser)
+		if llmParser != nil {
+			if pre := llmParser.ParseLLMRequest(matchBody); pre != nil {
+				mreq.SetMeta("llm", pre)
+			}
+		}
+
 		ev := Event{
 			ID:     newReqID(),
 			Mode:   "mitm",
@@ -2002,7 +2014,13 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			return
 		}
 		var trackBuf *bytes.Buffer
-		if trackKind != "" && resp.StatusCode == 200 {
+		// Capture the response body for downstream parsers whenever
+		// either the OOB usage tracker (trackKind) or the llm facet
+		// (llmParser, set on endpoints carrying the "llm" family)
+		// needs it. Same gate for both — JSON / SSE Content-Type on
+		// a 200 — so streamed and non-streamed bodies feed both
+		// paths without duplicate captures.
+		if (trackKind != "" || llmParser != nil) && resp.StatusCode == 200 {
 			ct := resp.Header.Get("Content-Type")
 			if strings.Contains(ct, "json") || strings.Contains(ct, "event-stream") {
 				trackBuf = &bytes.Buffer{}
@@ -2036,17 +2054,36 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		writeErr := resp.Write(tc)
 		_ = rtDur
 		_ = resp.Body.Close()
-		if trackBuf != nil && g.agents != nil {
-			body := trackBuf.Bytes()
+		// Post-stream parses for the OOB tracking path and for the
+		// per-action llm facet share the same response bytes — read
+		// trackBuf once, ungzip once, then feed both.
+		var respBody []byte
+		if trackBuf != nil {
+			respBody = trackBuf.Bytes()
 			if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
-				if zr, err := gzip.NewReader(bytes.NewReader(body)); err == nil {
+				if zr, err := gzip.NewReader(bytes.NewReader(respBody)); err == nil {
 					if d, err := io.ReadAll(zr); err == nil {
-						body = d
+						respBody = d
 					}
 					_ = zr.Close()
 				}
 			}
-			g.trackLLMUsage(c, trackKind, req.URL.Path, trackedReqBody, body, sessionHint)
+		}
+		if trackBuf != nil && g.agents != nil {
+			g.trackLLMUsage(c, trackKind, req.URL.Path, trackedReqBody, respBody, sessionHint)
+		}
+		// llm facet post-flight enrichment. Endpoint plugins that
+		// implement LLMResponseParser amend the existing pre-flight
+		// Meta with token counts + stop_reason extracted from the
+		// (possibly streamed) response. Skip when no body was
+		// captured — happens for non-API paths or pre-trackBuf
+		// short-circuits.
+		if llmParser != nil && len(respBody) > 0 {
+			post := llmParser.ParseLLMResponse(matchBody, respBody, mreq.Meta("llm"))
+			if post != nil {
+				mreq.SetMeta("llm", post)
+			}
+			ev.Facets = mergeFacetReports(facets, mreq)
 		}
 
 		if ev.Action == "" {

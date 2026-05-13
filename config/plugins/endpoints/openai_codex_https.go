@@ -21,6 +21,8 @@ package endpoints
 //	}
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/ed25519"
@@ -42,6 +44,7 @@ import (
 	"github.com/zclconf/go-cty/cty"
 
 	"github.com/denoland/clawpatrol/config"
+	llmfacet "github.com/denoland/clawpatrol/config/plugins/facets/llm"
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
@@ -157,9 +160,145 @@ func jsonResp(req *http.Request, status int, body []byte) *http.Response {
 	return resp
 }
 
+// ParseLLMRequest extracts model + stream from a chatgpt.com codex
+// /backend-api/codex/responses POST body. Schema mirrors the OpenAI
+// Responses API: {"model":"...","stream":true,"input":[...]}. Empty
+// or non-JSON bodies return nil so the dispatcher skips llm facet
+// emission on non-API paths (e.g. the JWKS GET the synthetic
+// responder handles).
+func (OpenAICodexHTTPSEndpointRuntime) ParseLLMRequest(reqBody []byte) any {
+	if len(reqBody) == 0 {
+		return nil
+	}
+	var req struct {
+		Model  string `json:"model"`
+		Stream bool   `json:"stream"`
+	}
+	if err := json.Unmarshal(reqBody, &req); err != nil {
+		return nil
+	}
+	if req.Model == "" {
+		return nil
+	}
+	return &llmfacet.Meta{
+		Provider: "openai",
+		Model:    req.Model,
+		Stream:   req.Stream,
+	}
+}
+
+// ParseLLMResponse amends the pre-flight Meta with token counts and
+// stop_reason. The chatgpt.com codex path uses the OpenAI Responses
+// API — usage lands in a `response.completed` SSE event when
+// streaming, and inline as `usage` on the non-streamed body.
+func (OpenAICodexHTTPSEndpointRuntime) ParseLLMResponse(reqBody, respBody []byte, pre any) any {
+	m, _ := pre.(*llmfacet.Meta)
+	if m == nil {
+		m = &llmfacet.Meta{Provider: "openai"}
+	}
+	if len(respBody) == 0 {
+		return m
+	}
+	if isOpenAIResponsesSSE(respBody) {
+		fillFromOpenAIResponsesSSE(m, respBody)
+		return m
+	}
+	fillFromOpenAIResponsesJSON(m, respBody)
+	return m
+}
+
+func isOpenAIResponsesSSE(body []byte) bool {
+	trimmed := bytes.TrimLeft(body, " \t\r\n")
+	return bytes.HasPrefix(trimmed, []byte("event:")) || bytes.HasPrefix(trimmed, []byte("data:"))
+}
+
+// fillFromOpenAIResponsesJSON reads usage from a Responses API
+// non-streamed body:
+//
+//	{
+//	  "model": "...",
+//	  "status": "completed",
+//	  "usage": { "input_tokens": N, "output_tokens": N,
+//	             "input_tokens_details": { "cached_tokens": N } }
+//	}
+func fillFromOpenAIResponsesJSON(m *llmfacet.Meta, body []byte) {
+	var r openAIResponsesPayload
+	if err := json.Unmarshal(body, &r); err != nil {
+		return
+	}
+	mergeOpenAIResponses(m, &r)
+}
+
+// fillFromOpenAIResponsesSSE walks the streamed response. The
+// response.completed event carries the final usage block and status;
+// the parser merges any chunk that lifts one.
+func fillFromOpenAIResponsesSSE(m *llmfacet.Meta, body []byte) {
+	sc := bufio.NewScanner(bytes.NewReader(body))
+	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	for sc.Scan() {
+		line := sc.Text()
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		// Streamed events wrap the payload in
+		// {"type":"response.completed","response":{...}}; the
+		// non-wrapping case (some intermediate events) just sends
+		// the bare response object. Try both shapes; whichever
+		// decodes populates the Meta.
+		var wrapped struct {
+			Type     string                 `json:"type"`
+			Response openAIResponsesPayload `json:"response"`
+		}
+		if err := json.Unmarshal([]byte(payload), &wrapped); err == nil && wrapped.Type != "" {
+			mergeOpenAIResponses(m, &wrapped.Response)
+			continue
+		}
+		var bare openAIResponsesPayload
+		if err := json.Unmarshal([]byte(payload), &bare); err == nil {
+			mergeOpenAIResponses(m, &bare)
+		}
+	}
+}
+
+// openAIResponsesPayload is the subset of the OpenAI Responses API
+// (used by chatgpt.com's codex flow) that the LLM facet cares about.
+type openAIResponsesPayload struct {
+	Model  string `json:"model"`
+	Status string `json:"status"`
+	Usage  *struct {
+		InputTokens        int64 `json:"input_tokens"`
+		OutputTokens       int64 `json:"output_tokens"`
+		InputTokensDetails *struct {
+			CachedTokens int64 `json:"cached_tokens"`
+		} `json:"input_tokens_details"`
+	} `json:"usage"`
+}
+
+func mergeOpenAIResponses(m *llmfacet.Meta, r *openAIResponsesPayload) {
+	if m.Model == "" {
+		m.Model = r.Model
+	}
+	if r.Status != "" {
+		m.StopReason = r.Status
+	}
+	if r.Usage == nil {
+		return
+	}
+	m.InputTokens += r.Usage.InputTokens
+	m.OutputTokens += r.Usage.OutputTokens
+	if r.Usage.InputTokensDetails != nil {
+		m.CacheReadTokens += r.Usage.InputTokensDetails.CachedTokens
+	}
+}
+
 func init() {
 	var _ runtime.PlaceholderDetector = OpenAICodexHTTPSEndpointRuntime{}
 	var _ runtime.HTTPSyntheticResponder = OpenAICodexHTTPSEndpointRuntime{}
+	var _ runtime.LLMResponseParser = OpenAICodexHTTPSEndpointRuntime{}
 	config.Register(&config.Plugin{
 		Kind: config.KindEndpoint,
 		Type: "openai_codex_https",
