@@ -14,7 +14,7 @@ package tunnels
 //     ready_probe   = "tcp"            # tcp | none
 //     ready_timeout = "30s"
 //     share         = "singleton"      # default
-//     keepalive     = "always"         # default
+//     keepalive     = "5m"             # default
 //     env           = { GOOGLE_APPLICATION_CREDENTIALS = "/run/secrets/gcp.json" }
 //   }
 //

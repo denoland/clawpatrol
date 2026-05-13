@@ -621,13 +621,13 @@ func pluginType(p *Plugin) string {
 }
 
 // parseKeepalive turns the HCL keepalive string into (duration,
-// always, error). Empty defaults to "always" — once a tunnel is up,
-// it stays up until the policy changes. "always" pins the tunnel
-// up; "0" tears down immediately on idle; a duration arms an idle
-// timer.
+// always, error). Empty defaults to a 5m idle window. "always" pins
+// the tunnel up; "0" tears down immediately on idle.
 func parseKeepalive(s string) (time.Duration, bool, error) {
 	switch s {
-	case "", "always":
+	case "":
+		return 5 * time.Minute, false, nil
+	case "always":
 		return 0, true, nil
 	case "0":
 		return 0, false, nil
