@@ -144,7 +144,7 @@ approver "llm_approver" "example" {
 
 Block syntax: `credential "<type>" "<name>" { ... }`
 
-Registered types: [`anthropic_manual_key`](#credential-anthropicmanualkey), [`anthropic_oauth_subscription`](#credential-anthropicoauthsubscription), [`aws_eks_credential`](#credential-awsekscredential), [`bearer_token`](#credential-bearertoken), [`clickhouse_credential`](#credential-clickhousecredential), [`cookie_token`](#credential-cookietoken), [`discord_bot_token`](#credential-discordbottoken), [`gemini_api_key`](#credential-geminiapikey), [`github_oauth`](#credential-githuboauth), [`header_token`](#credential-headertoken), [`mtls_credential`](#credential-mtlscredential), [`notion_oauth`](#credential-notionoauth), [`openai_codex_oauth`](#credential-openaicodexoauth), [`postgres_credential`](#credential-postgrescredential), [`slack_tokens`](#credential-slacktokens), [`ssh`](#credential-ssh), [`tailscale`](#credential-tailscale), [`telegram_bot_token`](#credential-telegrambottoken).
+Registered types: [`anthropic_manual_key`](#credential-anthropicmanualkey), [`anthropic_oauth_subscription`](#credential-anthropicoauthsubscription), [`aws_credential`](#credential-awscredential), [`aws_eks_credential`](#credential-awsekscredential), [`bearer_token`](#credential-bearertoken), [`clickhouse_credential`](#credential-clickhousecredential), [`cookie_token`](#credential-cookietoken), [`discord_bot_token`](#credential-discordbottoken), [`gemini_api_key`](#credential-geminiapikey), [`github_oauth`](#credential-githuboauth), [`header_token`](#credential-headertoken), [`mtls_credential`](#credential-mtlscredential), [`notion_oauth`](#credential-notionoauth), [`openai_codex_oauth`](#credential-openaicodexoauth), [`postgres_credential`](#credential-postgrescredential), [`slack_tokens`](#credential-slacktokens), [`ssh`](#credential-ssh), [`tailscale`](#credential-tailscale), [`telegram_bot_token`](#credential-telegrambottoken).
 
 ### `credential "anthropic_manual_key" "<name>"`
 
@@ -160,6 +160,21 @@ _No configurable attributes._
 
 ```hcl
 credential "anthropic_oauth_subscription" "example" {}
+```
+
+### `credential "aws_credential" "<name>"`
+
+Is part of the clawpatrol plugin API.
+
+Schema is intentionally empty: access key id and secret access key
+(and optional session token) live in the secret store as named
+slots, filled via the dashboard or CLAWPATROL_SECRET_<NAME>_<SLOT>
+env vars. Service + region come from the endpoint at request time.
+
+_No configurable attributes._
+
+```hcl
+credential "aws_credential" "example" {}
 ```
 
 ### `credential "aws_eks_credential" "<name>"`
@@ -320,7 +335,26 @@ credential "telegram_bot_token" "example" {}
 
 Block syntax: `endpoint "<type>" "<name>" { ... }`
 
-Registered types: [`clickhouse_https`](#endpoint-clickhousehttps), [`clickhouse_native`](#endpoint-clickhousenative), [`https`](#endpoint-https), [`kubernetes`](#endpoint-kubernetes), [`openai_codex_https`](#endpoint-openaicodexhttps), [`postgres`](#endpoint-postgres), [`ssh`](#endpoint-ssh).
+Registered types: [`aws`](#endpoint-aws), [`clickhouse_https`](#endpoint-clickhousehttps), [`clickhouse_native`](#endpoint-clickhousenative), [`https`](#endpoint-https), [`kubernetes`](#endpoint-kubernetes), [`openai_codex_https`](#endpoint-openaicodexhttps), [`postgres`](#endpoint-postgres), [`ssh`](#endpoint-ssh).
+
+### `endpoint "aws" "<name>"`
+
+Family: `http`.
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `hosts` | `[]string` | yes |  |
+| `service` | `string` | yes |  |
+| `region` | `string` | yes |  |
+| `credential` | `ref(credential)` | no |  |
+
+```hcl
+endpoint "aws" "example" {
+  hosts = ["api.example.com"]
+  service = "example"
+  region = "example"
+}
+```
 
 ### `endpoint "clickhouse_https" "<name>"`
 

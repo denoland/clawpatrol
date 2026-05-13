@@ -123,6 +123,7 @@ how-to-inject parameters.
 | `postgres_credential` | postgres StartupMessage password swap |
 | `anthropic_manual_key` | `x-api-key: <secret>` |
 | `anthropic_oauth_subscription` | OAuth bearer + Anthropic beta gate |
+| `aws_credential` | SigV4-signed request (service / region come from the `aws` endpoint) |
 | `slack_tokens` / `telegram_bot_token` / `gemini_api_key` /<br>`openai_codex_oauth` / `notion_oauth` / `clickhouse_credential` /<br>`aws_eks_credential` | schema-only today (runtime stubs land in follow-ups) |
 
 mTLS env var convention:
@@ -138,10 +139,21 @@ Typed upstream binding. Built-in types map to protocol families:
 | Type | Family | Runtime status |
 |------|--------|----------------|
 | `https` | `https` | wired |
+| `aws` | `http` | wired (SigV4 signs with the bound `aws_credential`) |
 | `kubernetes` | `k8s` | wired (HTTPS underneath; mTLS supported) |
 | `postgres` | `sql` | wired (SSL refused; SQL matchers + approve chains) |
 | `clickhouse_https` | `sql` | schema-only |
 | `clickhouse_native` | `sql` | schema-only |
+
+`endpoint "aws"` carries `service` (e.g. `s3`, `dynamodb`) and
+`region` alongside `hosts`; the gateway hands both to `aws_credential`
+at request time so the SigV4 signing scope follows the deployment,
+not the access key. Operators paste `access_key_id` /
+`secret_access_key` (+ optional `session_token`) into the
+`aws_credential` slots; the agent issues unsigned (or
+placeholder-Authorization) requests and the gateway swaps in the
+fully signed Authorization, `X-Amz-Date`, and — for S3 — the
+`X-Amz-Content-Sha256` header.
 
 Credential binding has two shapes:
 
