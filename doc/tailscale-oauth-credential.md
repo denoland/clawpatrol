@@ -80,10 +80,10 @@ unchanged.
   package (config/runtime/checker.go).
 - **Closest template — dashboard "Connect" UX (with caveats):** the existing
   `OAuthFlowProvider` plugins (anthropic_oauth.go, github.go, openai_codex.go).
-  They drive per-owner browser redirects against an IdP and stash a per-owner
-  token in `OAuthRegistry`. Tailscale's case is *visually* identical from the
-  dashboard's POV ("click Connect, follow a redirect, come back authed"), but
-  the underlying primitive is wrong — see Q4.
+  They drive browser redirects against an IdP and stash a token in
+  `OAuthRegistry`. Tailscale's case is *visually* identical from the dashboard's
+  POV ("click Connect, follow a redirect, come back authed"), but the underlying
+  primitive is wrong — see Q4.
 
 ### Secret-store wiring (already in place)
 
@@ -185,9 +185,10 @@ back its StateStore by sqlite instead of a filesystem dir.
   - `OAuthFlow()` returns a *static* `OAuthIntegration` with hardcoded
     `AuthURL`/`TokenURL`/`Scopes`. Tailscale's URL is *dynamic*, minted by
     tsnet per attempt, and there is no clawpatrol-side token exchange.
-  - `OAuthRegistry` stores per-owner tokens. Tailscale node identity is
-    *gateway-wide* (one node per tunnel, shared across owners) — per-owner
-    partitioning is actively wrong here.
+  - `OAuthRegistry` stores a single OAuth access/refresh token per
+    credential. Tailscale's persistence shape is different — tsnet writes
+    a multi-slot identity bundle (machine key, node key, login profile)
+    through `ipn.StateStore`, and the registry has no notion of that.
 - Introduce `TailscaleAuthProvider` in `config/plugins/tailscaleproto/`
   (lives next to the `NodeIdentity` interface — both are the protocol-
   specific contract between the tailscale tunnel/credential plugins and
