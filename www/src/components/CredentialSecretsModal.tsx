@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Integration } from "../lib/api";
 import { setCredentialSlots } from "../lib/api";
+import { credentialTypeLabel } from "../lib/credentialLabels";
 
 // Modal that renders one input per declared SecretSlot for a non-OAuth
 // credential. Single-slot credentials (bearer / header / cookie / api
@@ -22,6 +23,7 @@ export function CredentialSecretsModal({
   onSaved: () => void;
 }) {
   const slots = integration.slots ?? [];
+  const label = credentialTypeLabel(integration.type, integration.name);
   const [values, setValues] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -54,8 +56,13 @@ export function CredentialSecretsModal({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-4">
-          <div className="text-[14px] font-semibold text-[#171717]">
-            {mode === "update" ? "Update" : "Connect"} {integration.name}
+          <div>
+            <div className="text-[14px] font-semibold text-[#171717]">
+              {mode === "update" ? "Update" : "Connect"} {label}
+            </div>
+            <div className="text-[11px] text-[#737373]">
+              <span className="font-mono">{integration.id}</span>
+            </div>
           </div>
           <button
             onClick={onClose}
@@ -71,6 +78,16 @@ export function CredentialSecretsModal({
               untouched slots blank to keep them unchanged.
             </p>
           )}
+          <dl className="grid grid-cols-[auto,minmax(0,1fr)] gap-x-3 gap-y-1 rounded border border-[#e5e5e5] bg-[#fafafa] px-3 py-2 text-[11px]">
+            <dt className="text-[#737373]">Credential</dt>
+            <dd className="min-w-0 truncate font-mono text-[#171717]" title={integration.id}>
+              {integration.id}
+            </dd>
+            <dt className="text-[#737373]">Type</dt>
+            <dd className="min-w-0 truncate text-[#171717]" title={integration.type}>
+              {label} <span className="font-mono text-[#737373]">({integration.type})</span>
+            </dd>
+          </dl>
           {slots.map((s) => (
             <label key={s.name} className="flex flex-col gap-1">
               <span className="text-[11px] uppercase tracking-[.08em] text-[#737373]">
