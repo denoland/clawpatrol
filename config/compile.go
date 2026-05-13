@@ -187,7 +187,17 @@ type CompiledRule struct {
 	Condition  string
 	Credential string
 	Matcher    match.Matcher
-	Outcome    Outcome
+	// Template is the original CEL source for the optional rule
+	// `template = "..."` attribute; kept alongside TemplateRenderer
+	// for dashboard / diagnostic consumers that want to inspect the
+	// expression. Empty when the rule has no template.
+	Template string
+	// TemplateRenderer is the compiled CEL program. nil when Template
+	// is empty (or when the facet doesn't support templates). The
+	// approval flow renders it once per request and falls back to the
+	// approver's default message on eval error.
+	TemplateRenderer match.Renderer
+	Outcome          Outcome
 }
 
 // Outcome captures a rule's verdict + (when applicable) approve chain.

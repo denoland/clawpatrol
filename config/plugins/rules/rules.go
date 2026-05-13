@@ -22,6 +22,7 @@ import (
 
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/facet"
+	"github.com/denoland/clawpatrol/config/match"
 )
 
 // RuleBody is the gohcl-tagged decode target. The match predicate is
@@ -55,6 +56,14 @@ type RuleBody struct {
 	// approvers run in order; the request is allowed only if every
 	// stage approves. Set this *or* `verdict`, not both.
 	Approve cty.Value `hcl:"approve,optional"`
+
+	// Template, when set, is a CEL string expression evaluated at
+	// approval time to produce the message body sent to a
+	// human_approver (Slack today, other channels later). The
+	// expression reads the same per-facet bindings as the matcher
+	// and must yield a string. Empty → the approver's default
+	// message format applies, unchanged.
+	Template string `hcl:"template,optional"`
 }
 
 // Rule is the canonical, family-stamped record stored in
@@ -70,6 +79,7 @@ type Rule struct {
 	Verdict    string                `json:"verdict,omitempty"` // "allow" | "deny" | "" (when Approve is set)
 	Reason     string                `json:"reason,omitempty"`
 	Approve    []config.ApproveStage `json:"approve,omitempty"`
+	Template   string                `json:"template,omitempty"`
 }
 
 // Compile lowers a built rule into the runtime-friendly *CompiledRule
@@ -84,13 +94,22 @@ func (r *Rule) Compile() (*config.CompiledRule, []string, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("condition: %w", err)
 	}
+	var renderer match.Renderer
+	if r.Template != "" {
+		renderer, err = facet.NewTemplate(r.Family, r.Template)
+		if err != nil {
+			return nil, nil, fmt.Errorf("template: %w", err)
+		}
+	}
 	return &config.CompiledRule{
-		Name:       r.Name,
-		Priority:   r.Priority,
-		Disabled:   r.Disabled,
-		Condition:  r.Condition,
-		Credential: r.Credential,
-		Matcher:    matcher,
+		Name:             r.Name,
+		Priority:         r.Priority,
+		Disabled:         r.Disabled,
+		Condition:        r.Condition,
+		Credential:       r.Credential,
+		Matcher:          matcher,
+		Template:         r.Template,
+		TemplateRenderer: renderer,
 		Outcome: config.Outcome{
 			Verdict: r.Verdict,
 			Reason:  r.Reason,
@@ -192,6 +211,20 @@ func validate(body any, name string, ctx *config.BuildCtx) hcl.Diagnostics {
 		}
 	}
 
+	// CEL template validation. Compiles against the same facet env
+	// as the matcher and must yield a string. Bad CEL, non-string
+	// output, and unknown bindings all surface here.
+	if rb.Template != "" && fam != "" {
+		if _, err := facet.NewTemplate(fam, rb.Template); err != nil {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("Invalid CEL template on rule %q", name),
+				Detail:   err.Error(),
+				Subject:  &ctx.Block.DefRange,
+			})
+		}
+	}
+
 	// Outcome: exactly one of verdict / approve.
 	hasVerdict := rb.Verdict != ""
 	hasApprove := !rb.Approve.IsNull() && rb.Approve.LengthInt() > 0
@@ -244,6 +277,7 @@ func build(body any, name string, ctx *config.BuildCtx) (any, hcl.Diagnostics) {
 		Credential: rb.Credential,
 		Verdict:    rb.Verdict,
 		Reason:     rb.Reason,
+		Template:   rb.Template,
 	}
 
 	// Approve chain.
@@ -347,6 +381,9 @@ func emitRule(body any, _ string, b *hclwrite.Body) {
 	}
 	if len(r.Approve) > 0 {
 		b.SetAttributeRaw("approve", approveToTokens(r.Approve))
+	}
+	if r.Template != "" {
+		b.SetAttributeValue("template", cty.StringVal(r.Template))
 	}
 }
 

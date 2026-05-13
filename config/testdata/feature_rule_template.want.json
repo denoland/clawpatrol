@@ -1,0 +1,61 @@
+{
+  "policy": {
+    "approvers": {
+      "ops": {
+        "body": {
+          "Channel": "#ops",
+          "Credential": "",
+          "Timeout": 0,
+          "RequireApprovers": 0,
+          "Interactive": false,
+          "Classifier": ""
+        },
+        "type": "human_approver"
+      }
+    },
+    "credentials": {
+      "github-pat": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "type": "bearer_token"
+      }
+    },
+    "endpoints": {
+      "github": {
+        "body": {
+          "Hosts": [
+            "api.github.com"
+          ],
+          "Credential": "github-pat"
+        },
+        "family": "http",
+        "type": "https"
+      }
+    },
+    "profiles": {
+      "default": {
+        "endpoints": [
+          "github"
+        ]
+      }
+    },
+    "rules": {
+      "github-writes": {
+        "body": {
+          "name": "github-writes",
+          "family": "http",
+          "endpoints": [
+            "github"
+          ],
+          "approve": [
+            {
+              "name": "ops"
+            }
+          ],
+          "template": "'agent wants ' + http.method + ' ' + http.path"
+        }
+      }
+    }
+  }
+}

@@ -59,6 +59,14 @@ func (p *pluginFacet) NewMatcher(condition string) (match.Matcher, error) {
 	return newPluginFacetMatcher(p.name, condition, p.streamFields)
 }
 
+// NewTemplate compiles a CEL string expression against the same
+// dyn-typed plugin facet env the matcher uses. Plugin-facet rules can
+// therefore set `template = '"saw " + <facet>.<field>'` and have it
+// render at HITL time with the same bindings the condition read.
+func (p *pluginFacet) NewTemplate(expression string) (match.Renderer, error) {
+	return newPluginFacetTemplate(p.name, expression)
+}
+
 // registerFacet synthesizes a pluginFacet from a FacetDecl and
 // installs it under the bare name from the decl. Returns a
 // diagnostic when the name collides with another already-registered

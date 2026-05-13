@@ -118,14 +118,78 @@ func (s *SlackTokens) NotifyHITL(_ context.Context, req runtime.ApproveRequest, 
 	if bot == "" {
 		return fmt.Errorf("credential %s has no bot token (paste via dashboard)", target.CredentialName)
 	}
-	link := strings.TrimRight(target.DashboardURL, "/") + "/#hitl/" + target.PendingID
+	title, blocks := buildSlackHITLBlocks(req, target)
+	body := map[string]any{
+		"channel": target.Channel,
+		"text":    "clawpatrol: " + title,
+		"blocks":  blocks,
+	}
+	if target.ThreadTS != "" {
+		body["thread_ts"] = target.ThreadTS
+	}
+	buf, _ := json.Marshal(body)
+	hreq, err := http.NewRequest("POST", "https://slack.com/api/chat.postMessage", bytes.NewReader(buf))
+	if err != nil {
+		return err
+	}
+	hreq.Header.Set("Authorization", "Bearer "+bot)
+	hreq.Header.Set("Content-Type", "application/json; charset=utf-8")
 
+	c := &http.Client{Timeout: 5 * time.Second}
+	resp, err := c.Do(hreq)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	var result struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal(respBody, &result)
+	if resp.StatusCode >= 400 || !result.OK {
+		log.Printf("slack notify %s: chat.postMessage failed: status=%d ok=%v error=%q",
+			req.ApproverName, resp.StatusCode, result.OK, result.Error)
+		return fmt.Errorf("slack chat.postMessage error: %s", result.Error)
+	}
+	return nil
+}
+
+// buildSlackHITLBlocks composes the Block Kit message for an
+// approval prompt. Returns the title (also used in the message's
+// fallback `text` field) and the block list. Three body-block
+// modes, picked in this order:
+//
+//  1. target.Message non-empty — rule-author rendered a `template`
+//     CEL expression. The result is sent verbatim as a single
+//     mrkdwn section; operator includes whatever Slack markup they
+//     want. Default header is kept so the prompt still announces
+//     "Approve <method> · <endpoint>".
+//  2. target.Summary set — classifier LLM produced a richer card;
+//     header text falls back to the ticket id when present.
+//  3. otherwise — default method/path body.
+//
+// Context (agent ip, reason), optional body sample, and the
+// approve/deny vs. dashboard-link action row are appended in every
+// mode.
+func buildSlackHITLBlocks(req runtime.ApproveRequest, target runtime.HITLTarget) (string, []map[string]any) {
+	link := strings.TrimRight(target.DashboardURL, "/") + "/#hitl/" + target.PendingID
 	endpoint := runtime.HITLEndpointLabel(req)
 	queryLabel := runtime.HITLQueryLabel(req.Endpoint)
-
 	title := slackTrunc(runtime.HITLTitle(req.Method, endpoint), 140)
+
 	var blocks []map[string]any
-	if s := target.Summary; s != nil {
+	switch {
+	case target.Message != "":
+		blocks = []map[string]any{
+			{"type": "header", "text": map[string]any{"type": "plain_text", "text": title}},
+			{"type": "section", "text": map[string]any{
+				"type": "mrkdwn",
+				"text": slackTrunc(target.Message, 2900),
+			}},
+		}
+	case target.Summary != nil:
+		s := target.Summary
 		headerText := s.TicketID
 		if headerText == "" {
 			headerText = title
@@ -140,7 +204,7 @@ func (s *SlackTokens) NotifyHITL(_ context.Context, req runtime.ApproveRequest, 
 			{"type": "header", "text": map[string]any{"type": "plain_text", "text": slackTrunc(headerText, 140)}},
 			{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": sectionText}},
 		}
-	} else {
+	default:
 		blocks = []map[string]any{
 			{"type": "header", "text": map[string]any{"type": "plain_text", "text": title}},
 			{"type": "section", "text": map[string]any{
@@ -149,7 +213,7 @@ func (s *SlackTokens) NotifyHITL(_ context.Context, req runtime.ApproveRequest, 
 			}},
 		}
 	}
-	ctx := []map[string]any{}
+	var ctx []map[string]any
 	if req.AgentIP != "" {
 		ctx = append(ctx, map[string]any{
 			"type": "mrkdwn",
@@ -207,41 +271,7 @@ func (s *SlackTokens) NotifyHITL(_ context.Context, req runtime.ApproveRequest, 
 			},
 		})
 	}
-
-	body := map[string]any{
-		"channel": target.Channel,
-		"text":    "clawpatrol: " + title,
-		"blocks":  blocks,
-	}
-	if target.ThreadTS != "" {
-		body["thread_ts"] = target.ThreadTS
-	}
-	buf, _ := json.Marshal(body)
-	hreq, err := http.NewRequest("POST", "https://slack.com/api/chat.postMessage", bytes.NewReader(buf))
-	if err != nil {
-		return err
-	}
-	hreq.Header.Set("Authorization", "Bearer "+bot)
-	hreq.Header.Set("Content-Type", "application/json; charset=utf-8")
-
-	c := &http.Client{Timeout: 5 * time.Second}
-	resp, err := c.Do(hreq)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	var result struct {
-		OK    bool   `json:"ok"`
-		Error string `json:"error"`
-	}
-	_ = json.Unmarshal(respBody, &result)
-	if resp.StatusCode >= 400 || !result.OK {
-		log.Printf("slack notify %s: chat.postMessage failed: status=%d ok=%v error=%q",
-			req.ApproverName, resp.StatusCode, result.OK, result.Error)
-		return fmt.Errorf("slack chat.postMessage error: %s", result.Error)
-	}
-	return nil
+	return title, blocks
 }
 
 func hitlClassificationEmoji(c string) string {

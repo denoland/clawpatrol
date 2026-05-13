@@ -1,9 +1,29 @@
 package runtime
 
 import (
+	"log"
+
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/match"
 )
+
+// RenderTemplate evaluates rule.TemplateRenderer against req, returning
+// the rendered approval message. Empty rule / no template / nil
+// request return "" silently. Eval failures log and return "" so the
+// caller falls back to the approver's default message format —
+// preferred over denying the request or surfacing CEL stack traces to
+// the operator.
+func RenderTemplate(rule *config.CompiledRule, req *match.Request) string {
+	if rule == nil || rule.TemplateRenderer == nil || req == nil {
+		return ""
+	}
+	s, err := rule.TemplateRenderer.Render(req)
+	if err != nil {
+		log.Printf("rule %q: template render: %v", rule.Name, err)
+		return ""
+	}
+	return s
+}
 
 // HostEndpoint resolves a profile + SNI/authority host to the endpoint
 // that owns it. Compile populates HostIndex with exact declared hosts

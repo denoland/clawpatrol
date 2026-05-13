@@ -98,6 +98,31 @@ func (m *pluginMatcher) References() map[string]bool {
 
 func (m *pluginMatcher) SubFieldRefs() map[string]bool { return m.subFieldRefs }
 
+// newPluginFacetTemplate compiles expression as a CEL string template
+// against the same dyn-typed env newPluginFacetMatcher builds. Used by
+// rules with a `template = "..."` attribute attached to a plugin
+// facet; the renderer evaluates against the same Meta map the matcher
+// reads, so templates can interpolate any sub-field the plugin emits.
+func newPluginFacetTemplate(facetName, expression string) (match.Renderer, error) {
+	if facetName == "" {
+		return nil, fmt.Errorf("plugin facet template: empty facet name")
+	}
+	env, err := cel.NewEnv(
+		cel.Variable(facetName, cel.MapType(cel.StringType, cel.DynType)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("plugin facet %q: cel env: %w", facetName, err)
+	}
+	buildAct := func(req *match.Request) map[string]any {
+		m, ok := req.Meta.(map[string]any)
+		if !ok {
+			return nil
+		}
+		return map[string]any{facetName: m}
+	}
+	return match.CompileTemplate(env, expression, buildAct)
+}
+
 // parseSubFieldRefs walks condition's AST and returns the set of
 // `<facet>.<field>` selector chains. Used to decide which stream
 // fields a rule will read at evaluation time. Best-effort — when

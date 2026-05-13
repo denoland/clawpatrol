@@ -155,6 +155,13 @@ func (Facet) NewMatcher(condition string) (match.Matcher, error) {
 	return match.CompileCondition(celEnv, condition, buildActivation, lowercasedPaths, truncatablePaths)
 }
 
+// NewTemplate compiles a CEL string expression into a Renderer.
+// Reuses the SQL activation builder so templates can read every
+// `sql.*` field the matcher can (`verb`, `tables`, `statement`, etc.).
+func (Facet) NewTemplate(expression string) (match.Renderer, error) {
+	return match.CompileTemplate(celEnv, expression, buildActivation)
+}
+
 func buildActivation(req *match.Request) map[string]any {
 	if req == nil {
 		return nil

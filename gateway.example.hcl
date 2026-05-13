@@ -285,6 +285,12 @@ rule "github-writes" {
   endpoint  = github-api
   condition = "http.method in ['POST', 'PUT', 'PATCH', 'DELETE']"
   approve   = [ops]
+  # Optional `template` lets the operator override the default Slack
+  # approval-prompt body with a CEL string expression. It reads the
+  # same per-facet bindings as the matcher and must yield a string.
+  # Compile-time errors (bad CEL, non-string output, unknown
+  # bindings) surface at policy load.
+  template = "'agent wants to ' + http.method + ' ' + http.path"
 }
 
 # Postgres — layered defense.

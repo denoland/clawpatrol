@@ -1,0 +1,1 @@
+error: error_invalid_template.hcl:14:1: Invalid CEL template on rule "github-writes" — cel template must yield string, got bool

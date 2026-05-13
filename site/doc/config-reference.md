@@ -506,6 +506,7 @@ been inferred from the endpoint refs.
 | `verdict` | `string` | no | The outcome when the rule matches. Set exactly one of `verdict` (`"allow"` / `"deny"`) or `approve`. |
 | `reason` | `string` | no |  |
 | `approve` | `[]ref(approver)` | no | A list of bare-name approver references. The approvers run in order; the request is allowed only if every stage approves. Set this *or* `verdict`, not both. |
+| `template` | `string` | no | Template, when set, is a CEL string expression evaluated at approval time to produce the message body sent to a human_approver (Slack today, other channels later). The expression reads the same per-facet bindings as the matcher and must yield a string. Empty → the approver's default message format applies, unchanged. |
 
 ```hcl
 rule {}

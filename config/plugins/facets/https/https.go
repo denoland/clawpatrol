@@ -141,6 +141,13 @@ func (Facet) NewMatcher(condition string) (match.Matcher, error) {
 	return match.CompileCondition(celEnv, condition, buildActivation, lowercasedPaths, truncatablePaths)
 }
 
+// NewTemplate compiles a CEL string expression into a Renderer.
+// Reuses the HTTPS activation builder so templates can read every
+// field the matcher can (`http.method`, `http.path`, headers, etc.).
+func (Facet) NewTemplate(expression string) (match.Renderer, error) {
+	return match.CompileTemplate(celEnv, expression, buildActivation)
+}
+
 func buildActivation(req *match.Request) map[string]any {
 	if req == nil {
 		return nil

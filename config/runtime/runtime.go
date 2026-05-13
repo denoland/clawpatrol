@@ -194,6 +194,12 @@ type ApproveCallRequest struct {
 	// Rule is the matched compiled rule (carries Reason for the
 	// dashboard's "why is this gated" line).
 	Rule *config.CompiledRule
+	// Request is the per-family request snapshot the matcher saw.
+	// Conn-family plugins (postgres / clickhouse / external) pass it
+	// through so the host's Approve callback can evaluate the rule's
+	// optional `template = "..."` CEL expression against the same
+	// bindings. Nil disables template rendering for this call.
+	Request *match.Request
 }
 
 // ConnEvent is the wire-protocol-agnostic event shape conn-family
@@ -266,6 +272,12 @@ type HITLTarget struct {
 	// Summary is an optional pre-computed classification. When non-nil,
 	// notifiers render a richer card instead of the generic method/path display.
 	Summary *HITLSummary
+	// Message is the operator-authored approval message rendered
+	// from the matched rule's `template = "..."` CEL expression.
+	// Empty → the notifier uses its default message format. When
+	// non-empty, notifiers render the string verbatim as the prompt
+	// body (operator includes any channel-specific markup).
+	Message string
 }
 
 // ApproverRuntime evaluates one stage of an approve = [...] chain.
@@ -309,6 +321,13 @@ type ApproveRequest struct {
 	// prompt as a reply in this Slack thread rather than top-level.
 	// Populated from the X-HITL-Thread-TS request header.
 	ThreadTS string
+
+	// Message is the rendered approval message — produced upstream
+	// by evaluating the matched rule's CEL template against the
+	// request snapshot. Empty when the rule has no template or
+	// rendering failed; the approver then falls back to its default
+	// message format and logs the failure (if any).
+	Message string
 
 	// Pool exposes the gateway's shared pending-approval list — the
 	// dashboard / Slack approvers use it to publish a pending entry

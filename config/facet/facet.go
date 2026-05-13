@@ -68,6 +68,13 @@ type Runtime interface {
 	// passthrough matcher.
 	NewMatcher(condition string) (match.Matcher, error)
 
+	// NewTemplate compiles a CEL string expression into a Renderer
+	// used by rules with an optional `template = "..."` attribute.
+	// The expression evaluates against the same activation as the
+	// matcher and must yield a string; any other output type is
+	// rejected at compile time.
+	NewTemplate(expression string) (match.Renderer, error)
+
 	// PrepareRequest is called by the gateway after building the
 	// request snapshot and before any matcher runs. The facet
 	// derives its Meta value from the request's existing fields
@@ -187,4 +194,14 @@ func NewMatcher(family, condition string) (match.Matcher, error) {
 		return nil, fmt.Errorf("unknown family %q (known: %v)", family, Names())
 	}
 	return r.NewMatcher(condition)
+}
+
+// NewTemplate dispatches to the named facet's NewTemplate. Mirrors
+// NewMatcher for the optional `template = "..."` rule attribute.
+func NewTemplate(family, expression string) (match.Renderer, error) {
+	r := Lookup(family)
+	if r == nil {
+		return nil, fmt.Errorf("unknown family %q (known: %v)", family, Names())
+	}
+	return r.NewTemplate(expression)
 }

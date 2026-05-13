@@ -93,6 +93,7 @@ func (h *HumanApprover) Approve(ctx context.Context, req runtime.ApproveRequest)
 					DashboardURL:   req.DashboardURL,
 					ThreadTS:       req.ThreadTS,
 					Summary:        summary,
+					Message:        req.Message,
 				}
 				go func() {
 					if err := notifier.NotifyHITL(ctx, req, target); err != nil {

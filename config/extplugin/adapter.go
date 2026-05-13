@@ -431,6 +431,7 @@ func handleEvaluate(ctx context.Context, ch *runtime.ConnHandle, ev *pb.Evaluate
 			Verb:    stringField(action, "verb"),
 			Summary: ev.Summary,
 			Rule:    rule,
+			Request: req,
 		})
 		verdict.Rule = rule.Name
 		verdict.Reason = v.Reason

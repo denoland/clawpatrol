@@ -621,7 +621,7 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 		}
 		v := ch.Approve(runtime.ApproveCallRequest{
 			Stages: cr.Outcome.Approve, Verb: info.Verb,
-			Summary: summary, Rule: cr,
+			Summary: summary, Rule: cr, Request: mreq,
 		})
 		if v.Decision != "allow" {
 			reason := v.Reason

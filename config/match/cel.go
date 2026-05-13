@@ -91,6 +91,72 @@ func (m *celMatcher) References() map[string]bool { return m.refs }
 // dispatcher's fail-closed check is O(1) per match.
 func (m *celMatcher) InspectsTruncatableFacet() bool { return m.inspectsTruncatable }
 
+// Renderer evaluates a CEL string expression against a Request and
+// returns the rendered text. Facets compile templates (the optional
+// `template = "..."` attribute on a `rule` block) through this
+// interface; the human-approval flow then renders the matched rule's
+// template to produce the message body sent to the operator.
+//
+// Render returns the empty string and an error when the CEL program
+// fails at evaluation time (despite passing load-time type-checks).
+// Callers fall back to the default approval message and log the error.
+type Renderer interface {
+	Render(req *Request) (string, error)
+}
+
+// CompileTemplate compiles a CEL expression source into a Renderer
+// that evaluates against the activation built by buildAct on each
+// call. The compiled expression must produce a string — any other
+// output type is rejected at compile time so a misconfigured rule
+// fails policy load rather than rendering garbage at approval time.
+//
+// Templates intentionally don't carry the lowercasedPaths /
+// truncatablePaths handling that matchers do: those are about
+// boolean-predicate semantics. A template renders text, and the
+// matcher-level truncation gate has already fail-closed any rule
+// whose match read truncated bytes before the approve chain runs.
+func CompileTemplate(env *cel.Env, expression string, buildAct ActivationBuilder) (Renderer, error) {
+	ast, issues := env.Compile(expression)
+	if issues != nil && issues.Err() != nil {
+		return nil, fmt.Errorf("cel compile: %w", issues.Err())
+	}
+	if ast.OutputType() != cel.StringType {
+		return nil, fmt.Errorf("cel template must yield string, got %s", ast.OutputType())
+	}
+	prog, err := env.Program(ast)
+	if err != nil {
+		return nil, fmt.Errorf("cel program: %w", err)
+	}
+	return &celRenderer{
+		prog:     prog,
+		buildAct: buildAct,
+	}, nil
+}
+
+type celRenderer struct {
+	prog     cel.Program
+	buildAct ActivationBuilder
+}
+
+func (r *celRenderer) Render(req *Request) (string, error) {
+	if r == nil || r.prog == nil {
+		return "", fmt.Errorf("nil template renderer")
+	}
+	act := r.buildAct(req)
+	if act == nil {
+		return "", fmt.Errorf("no activation for request")
+	}
+	out, _, err := r.prog.Eval(act)
+	if err != nil {
+		return "", err
+	}
+	s, ok := out.(types.String)
+	if !ok {
+		return "", fmt.Errorf("template eval returned %T, want string", out)
+	}
+	return string(s), nil
+}
+
 // PassThrough is a Matcher that always returns true. Facets use it
 // for empty conditions (catch-all rules).
 type PassThrough struct{}

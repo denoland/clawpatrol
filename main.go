@@ -1288,6 +1288,7 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 				AgentIP: agentPip, Host: dstIP, Method: req.Verb, Path: req.Summary,
 				Reason:   ifNotEmpty(req.Rule, func(r *config.CompiledRule) string { return r.Outcome.Reason }),
 				Endpoint: ep, Rule: req.Rule, Profile: profile,
+				Message: runtime.RenderTemplate(req.Rule, req.Request),
 			})
 		},
 	}
@@ -1447,6 +1448,7 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 				AgentIP: agentPip, Host: eventHost, Method: req.Verb, Path: req.Summary,
 				Reason:   ifNotEmpty(req.Rule, func(r *config.CompiledRule) string { return r.Outcome.Reason }),
 				Endpoint: ep, Rule: req.Rule, Profile: profile,
+				Message: runtime.RenderTemplate(req.Rule, req.Request),
 			})
 		},
 	}
@@ -1742,6 +1744,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				UA: req.Header.Get("User-Agent"), Reason: cr.Outcome.Reason,
 				ThreadTS: req.Header.Get("X-HITL-Thread-TS"),
 				Endpoint: ep, Rule: cr, Profile: profile,
+				Message: runtime.RenderTemplate(cr, mreq),
 			})
 			if v.Decision != "allow" {
 				reason := v.Reason
@@ -2050,6 +2053,11 @@ type runApproveCtx struct {
 	Endpoint   *config.CompiledEndpoint
 	Rule       *config.CompiledRule
 	Profile    string
+	// Message is the pre-rendered approval text from the matched
+	// rule's CEL template (config/plugins/rules: `template = "..."`).
+	// Empty when the rule has no template or rendering failed —
+	// approvers then fall back to their default message.
+	Message string
 }
 
 // runApproveChain dispatches each stage of an approve = [...] list to
@@ -2085,6 +2093,7 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 			BodySample:   c.BodySample,
 			Reason:       c.Reason,
 			ThreadTS:     c.ThreadTS,
+			Message:      c.Message,
 			Pool:         g.hitl,
 			Secrets:      g.secrets,
 			DashboardURL: g.cfg.PublicURL,
