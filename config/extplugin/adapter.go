@@ -3,14 +3,17 @@ package extplugin
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"net/url"
 	"sync"
 
 	pb "github.com/denoland/clawpatrol/config/extplugin/proto"
+	"github.com/denoland/clawpatrol/config/match"
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
@@ -152,18 +155,32 @@ func (a *endpointAdapter) HandleConn(ctx context.Context, ch *runtime.ConnHandle
 		return fmt.Errorf("extplugin: send ConnInit: %w", err)
 	}
 
-	return pumpConn(ctx, conn, stream, ch.Emit)
+	return pumpConn(ctx, conn, stream, ch)
 }
 
 // pumpConn runs two goroutines:
 //
 //	conn -> plugin: read agent bytes, send as ConnData frames.
-//	plugin -> conn: receive ConnData / ConnEvent / ConnClose;
-//	                write data to conn, forward events to ch.Emit,
-//	                quit on close.
+//	plugin -> conn: receive ConnData / ConnEvent / EvaluateAction /
+//	                ConnClose; write data to conn, forward events to
+//	                ch.Emit, dispatch evaluations through the
+//	                gateway's matcher + approve chain and reply with
+//	                an ActionVerdict.
 //
 // Returns the first non-nil error from either direction.
-func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnClient, emit func(runtime.ConnEvent)) error {
+//
+// gRPC client streams aren't safe for concurrent Send, so a single
+// sendMu serializes everything that writes to the stream — the data
+// pump, async event forwarding, the close on shutdown, and verdict
+// replies fired from per-evaluate goroutines.
+func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnClient, ch *runtime.ConnHandle) error {
+	var sendMu sync.Mutex
+	doSend := func(m *pb.ConnMessage) error {
+		sendMu.Lock()
+		defer sendMu.Unlock()
+		return stream.Send(m)
+	}
+
 	errCh := make(chan error, 2)
 
 	// agent -> plugin
@@ -172,7 +189,7 @@ func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnC
 		for {
 			n, err := conn.Read(buf)
 			if n > 0 {
-				if serr := stream.Send(&pb.ConnMessage{Kind: &pb.ConnMessage_Data{
+				if serr := doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Data{
 					Data: &pb.ConnData{Payload: append([]byte(nil), buf[:n]...)},
 				}}); serr != nil {
 					errCh <- serr
@@ -181,7 +198,7 @@ func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnC
 			}
 			if err != nil {
 				if errors.Is(err, io.EOF) {
-					_ = stream.Send(&pb.ConnMessage{Kind: &pb.ConnMessage_Close{Close: &pb.ConnClose{}}})
+					_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Close{Close: &pb.ConnClose{}}})
 					errCh <- nil
 				} else {
 					errCh <- err
@@ -210,16 +227,26 @@ func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnC
 					return
 				}
 			case *pb.ConnMessage_Event:
-				if emit != nil {
-					emit(runtime.ConnEvent{
+				if ch.Emit != nil {
+					var facets map[string]any
+					if len(k.Event.FacetsJson) > 0 {
+						_ = json.Unmarshal(k.Event.FacetsJson, &facets)
+					}
+					ch.Emit(runtime.ConnEvent{
 						Action:  k.Event.Action,
 						Reason:  k.Event.Reason,
 						Verb:    k.Event.Verb,
 						Summary: k.Event.Summary,
 						Bytes:   k.Event.BytesCount,
+						Facets:  facets,
 						Rule:    k.Event.Rule,
 					})
 				}
+			case *pb.ConnMessage_Evaluate:
+				// Run rule + approve chain off the recv loop so a
+				// HITL-blocking call doesn't stall data flow or
+				// other concurrent evaluations.
+				go handleEvaluate(ctx, ch, k.Evaluate, doSend)
 			case *pb.ConnMessage_Close:
 				errCh <- nil
 				return
@@ -238,6 +265,110 @@ func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnC
 		<-errCh
 		return ctx.Err()
 	}
+}
+
+// handleEvaluate runs one EvaluateAction call from the plugin
+// against the gateway's matcher + approve chain and ships the
+// resulting verdict back over the stream. Also emits a runtime
+// ConnEvent so the action lands on the dashboard event sink with
+// the action map as the facet payload — plugins don't need to
+// double-emit via Conn.Emit.
+func handleEvaluate(ctx context.Context, ch *runtime.ConnHandle, ev *pb.EvaluateAction, doSend func(*pb.ConnMessage) error) {
+	verdict := &pb.ActionVerdict{CallId: ev.CallId}
+
+	// Decode the action payload into a map so it can both feed the
+	// CEL activation and ride along on the audit event.
+	var action map[string]any
+	if len(ev.ActionJson) > 0 {
+		if err := json.Unmarshal(ev.ActionJson, &action); err != nil {
+			verdict.Action = "error"
+			verdict.Reason = fmt.Sprintf("malformed action_json: %v", err)
+			emitEvaluation(ch, ev, verdict, action)
+			_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Verdict{Verdict: verdict}})
+			return
+		}
+	}
+
+	// Build a match.Request rich enough for the matcher AND for the
+	// HITL prompt fields a human approver might render.
+	req := &match.Request{
+		Family: ch.Endpoint.Family,
+		PeerIP: ch.PeerIP,
+		Method: stringField(action, "verb"),
+		URL:    &url.URL{Host: ch.UpstreamHost, Path: ev.Summary},
+		Meta:   action,
+	}
+
+	rule := runtime.MatchRequest(ch.Endpoint, req)
+	switch {
+	case rule == nil:
+		// No rule matched — gateway's default-deny.
+		verdict.Action = "deny"
+		verdict.Reason = "no rule matched"
+	case len(rule.Outcome.Approve) > 0:
+		if ch.Approve == nil {
+			verdict.Action = "deny"
+			verdict.Reason = "rule requires approval but host has no approver wired"
+			verdict.Rule = rule.Name
+			break
+		}
+		v := ch.Approve(runtime.ApproveCallRequest{
+			Stages:  rule.Outcome.Approve,
+			Verb:    stringField(action, "verb"),
+			Summary: ev.Summary,
+			Rule:    rule,
+		})
+		verdict.Rule = rule.Name
+		verdict.Reason = v.Reason
+		switch v.Decision {
+		case "allow":
+			verdict.Action = "hitl_allow"
+		case "deny":
+			verdict.Action = "hitl_deny"
+		default:
+			verdict.Action = "hitl_deny"
+			if v.Reason == "" {
+				verdict.Reason = "approver returned no decision"
+			}
+		}
+	default:
+		verdict.Rule = rule.Name
+		if rule.Outcome.Verdict == "deny" {
+			verdict.Action = "deny"
+		} else {
+			verdict.Action = "allow"
+		}
+		verdict.Reason = rule.Outcome.Reason
+	}
+
+	emitEvaluation(ch, ev, verdict, action)
+	_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Verdict{Verdict: verdict}})
+}
+
+// emitEvaluation logs one EvaluateAction onto the gateway event
+// sink so the action shows up on the dashboard alongside built-in
+// facet events. Verb / Summary are pulled from the action so the
+// log line is human-readable; the action map rides as Facets.
+func emitEvaluation(ch *runtime.ConnHandle, ev *pb.EvaluateAction, verdict *pb.ActionVerdict, action map[string]any) {
+	if ch.Emit == nil {
+		return
+	}
+	ch.Emit(runtime.ConnEvent{
+		Action:  verdict.Action,
+		Reason:  verdict.Reason,
+		Verb:    stringField(action, "verb"),
+		Summary: ev.Summary,
+		Facets:  action,
+		Rule:    verdict.Rule,
+	})
+}
+
+func stringField(m map[string]any, key string) string {
+	if m == nil {
+		return ""
+	}
+	v, _ := m[key].(string)
+	return v
 }
 
 // =====================================================================

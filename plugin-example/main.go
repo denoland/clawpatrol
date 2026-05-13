@@ -25,5 +25,16 @@ func main() {
 			demoSMTPDef(),
 			demoEchoDef(),
 		},
+		Facets: []pluginsdk.FacetDef{
+			{
+				Name: "smtp",
+				Fields: []pluginsdk.FacetField{
+					{Name: "verb", Kind: pluginsdk.FacetString, Label: "Verb"},
+					{Name: "auth_user", Kind: pluginsdk.FacetString, Label: "User"},
+					{Name: "mail_from", Kind: pluginsdk.FacetString, Label: "From"},
+					{Name: "rcpt_to", Kind: pluginsdk.FacetStringList, Label: "Rcpt"},
+				},
+			},
+		},
 	})
 }

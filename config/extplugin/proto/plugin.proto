@@ -44,6 +44,30 @@ message ManifestResponse {
   repeated CredentialDecl credentials = 3;
   repeated TunnelDecl tunnels = 4;
   repeated EndpointDecl endpoints = 5;
+  repeated FacetDecl facets = 6;
+}
+
+// FacetDecl describes one protocol-family schema the plugin exports.
+// The gateway registers a facet.Runtime per declared facet so the
+// dashboard's /api/facets surfaces it and rules can compile CEL
+// conditions against the declared fields. The facet's name is
+// auto-namespaced by the gateway as "<plugin>.<name>".
+message FacetDecl {
+  string name = 1;
+  repeated FacetFieldDecl fields = 2;
+}
+
+message FacetFieldDecl {
+  string name = 1;
+  FacetKind kind = 2;
+  string label = 3;
+}
+
+enum FacetKind {
+  FACET_STRING      = 0;
+  FACET_STRING_LIST = 1;
+  FACET_STRING_MAP  = 2;
+  FACET_INT         = 3;
 }
 
 // Schema is a flat list of attributes the plugin's HCL block accepts.
@@ -136,11 +160,44 @@ service Endpoint {
 
 message ConnMessage {
   oneof kind {
-    ConnInit  init  = 1;
-    ConnData  data  = 2;
-    ConnClose close = 3;
-    ConnEvent event = 4;
+    ConnInit       init     = 1;
+    ConnData       data     = 2;
+    ConnClose      close    = 3;
+    ConnEvent      event    = 4;
+    EvaluateAction evaluate = 5;   // plugin -> gateway
+    ActionVerdict  verdict  = 6;   // gateway -> plugin
   }
+}
+
+// EvaluateAction asks the gateway to rule on one structured action
+// (a "request" in the policy sense — an SMTP command, a query, an
+// API call). The plugin sends the action's facet payload as JSON;
+// the gateway runs the matched endpoint's compiled rules + any
+// approve chain and replies with an ActionVerdict carrying the
+// same call_id so plugins can pipeline concurrent calls.
+message EvaluateAction {
+  // call_id is plugin-chosen and opaque; the gateway echoes it on
+  // the matching ActionVerdict.
+  string call_id = 1;
+  // facet_name is the namespaced facet name ("<plugin>.<facet>")
+  // whose schema action_json conforms to. Must match the endpoint's
+  // declared family for the gateway to route through the right
+  // CEL environment.
+  string facet_name = 2;
+  // action_json is a JSON object whose keys match the facet's
+  // declared field names; values are decoded as strings / arrays /
+  // ints per FacetFieldDecl.kind.
+  bytes action_json = 3;
+  // summary is a human-readable one-liner the dashboard / HITL
+  // prompt renders to describe what's being decided.
+  string summary = 4;
+}
+
+message ActionVerdict {
+  string call_id = 1;
+  string action  = 2;   // "allow" | "deny" | "hitl_allow" | "hitl_deny" | "error"
+  string reason  = 3;
+  string rule    = 4;   // matched rule name, or "" when no rule fired
 }
 
 message ConnInit {

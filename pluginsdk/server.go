@@ -119,6 +119,17 @@ func (s *server) Manifest(_ context.Context, _ *pb.ManifestRequest) (*pb.Manifes
 			RequiresVip: e.RequiresVIP,
 		})
 	}
+	for _, f := range s.plug.Facets {
+		fields := make([]*pb.FacetFieldDecl, 0, len(f.Fields))
+		for _, fld := range f.Fields {
+			fields = append(fields, &pb.FacetFieldDecl{
+				Name:  fld.Name,
+				Kind:  pb.FacetKind(fld.Kind),
+				Label: fld.Label,
+			})
+		}
+		resp.Facets = append(resp.Facets, &pb.FacetDecl{Name: f.Name, Fields: fields})
+	}
 	return resp, nil
 }
 
@@ -256,9 +267,18 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 		TunnelTypeName:            in.TunnelTypeName,
 		TunnelInstance:            in.TunnelInstance,
 	}
+	// sendMu serializes stream.Send across emit / evaluate / data
+	// pumps. gRPC server streams aren't safe for concurrent Send.
+	var sendMu sync.Mutex
+	doSend := func(m *pb.ConnMessage) error {
+		sendMu.Lock()
+		defer sendMu.Unlock()
+		return stream.Send(m)
+	}
+
 	conn.emit = func(ev ConnEvent) {
 		facets, _ := json.Marshal(ev.Facets)
-		_ = stream.Send(&pb.ConnMessage{Kind: &pb.ConnMessage_Event{Event: &pb.ConnEvent{
+		_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Event{Event: &pb.ConnEvent{
 			Action:     ev.Action,
 			Reason:     ev.Reason,
 			Verb:       ev.Verb,
@@ -269,10 +289,63 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 		}}})
 	}
 
+	// inflight tracks Conn.Evaluate calls awaiting an ActionVerdict
+	// from the gateway. The recv goroutine routes verdicts here by
+	// call_id; the Evaluate caller blocks on its channel until the
+	// gateway replies (or the conn closes).
+	var inflightMu sync.Mutex
+	inflight := map[string]chan *pb.ActionVerdict{}
+	var callSeq atomic.Uint64
+	conn.evaluate = func(ctx context.Context, facet string, action map[string]any, summary string) (Verdict, error) {
+		j, err := json.Marshal(action)
+		if err != nil {
+			return Verdict{}, fmt.Errorf("pluginsdk: marshal action: %w", err)
+		}
+		callID := fmt.Sprintf("c%d", callSeq.Add(1))
+		ch := make(chan *pb.ActionVerdict, 1)
+		inflightMu.Lock()
+		inflight[callID] = ch
+		inflightMu.Unlock()
+		defer func() {
+			inflightMu.Lock()
+			delete(inflight, callID)
+			inflightMu.Unlock()
+		}()
+		if err := doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Evaluate{Evaluate: &pb.EvaluateAction{
+			CallId:     callID,
+			FacetName:  facet,
+			ActionJson: j,
+			Summary:    summary,
+		}}}); err != nil {
+			return Verdict{}, fmt.Errorf("pluginsdk: send EvaluateAction: %w", err)
+		}
+		select {
+		case v := <-ch:
+			if v == nil {
+				return Verdict{}, errors.New("pluginsdk: connection closed before verdict")
+			}
+			return Verdict{Action: v.Action, Reason: v.Reason, Rule: v.Rule}, nil
+		case <-ctx.Done():
+			return Verdict{}, ctx.Err()
+		case <-closed:
+			return Verdict{}, errors.New("pluginsdk: connection closed before verdict")
+		}
+	}
+
 	// Goroutine: gateway -> recv channel
 	recvErr := make(chan error, 1)
 	go func() {
 		defer close(recv)
+		// On exit, fail any pending Evaluate calls so callers
+		// blocked on ch unblock instead of leaking goroutines.
+		defer func() {
+			inflightMu.Lock()
+			for id, ch := range inflight {
+				close(ch)
+				delete(inflight, id)
+			}
+			inflightMu.Unlock()
+		}()
 		for {
 			msg, err := stream.Recv()
 			if err != nil {
@@ -294,8 +367,19 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 			case *pb.ConnMessage_Close:
 				recvErr <- nil
 				return
+			case *pb.ConnMessage_Verdict:
+				inflightMu.Lock()
+				ch, ok := inflight[k.Verdict.CallId]
+				if ok {
+					delete(inflight, k.Verdict.CallId)
+				}
+				inflightMu.Unlock()
+				if ok {
+					ch <- k.Verdict
+				}
 			default:
-				// Ignore unexpected init / event from gateway.
+				// Unexpected init / event / evaluate from the gateway
+				// — ignore.
 			}
 		}
 	}()
@@ -306,7 +390,7 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 		for {
 			select {
 			case b := <-send:
-				if err := stream.Send(&pb.ConnMessage{Kind: &pb.ConnMessage_Data{
+				if err := doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Data{
 					Data: &pb.ConnData{Payload: b},
 				}}); err != nil {
 					sendErr <- err
@@ -328,11 +412,11 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 	// Best-effort final ConnClose (the gRPC layer may already be
 	// torn down; ignore the error).
 	if handleErr != nil {
-		_ = stream.Send(&pb.ConnMessage{Kind: &pb.ConnMessage_Close{
+		_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Close{
 			Close: &pb.ConnClose{Reason: handleErr.Error()},
 		}})
 	} else {
-		_ = stream.Send(&pb.ConnMessage{Kind: &pb.ConnMessage_Close{
+		_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Close{
 			Close: &pb.ConnClose{},
 		}})
 	}

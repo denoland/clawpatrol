@@ -35,7 +35,42 @@ type Plugin struct {
 	Credentials []CredentialDef
 	Tunnels     []TunnelDef
 	Endpoints   []EndpointDef
+	// Facets is the per-plugin schema list for protocol families the
+	// plugin's endpoints emit actions against. The gateway registers
+	// one facet.Runtime per FacetDef so the dashboard's /api/facets
+	// surfaces the schema and rules can compile CEL conditions
+	// against it (e.g. `smtp.verb == "MAIL"`). Names are auto-
+	// namespaced to "<plugin>.<facet>".
+	Facets []FacetDef
 }
+
+// FacetDef declares one protocol-family schema. Endpoints bind to a
+// declared facet by setting EndpointDef.Family to the facet's short
+// name; the SDK auto-namespaces it before forwarding to the gateway.
+type FacetDef struct {
+	Name   string
+	Fields []FacetField
+}
+
+// FacetField declares one column in the facet's schema. Kind tells
+// the dashboard how to format the value (single string, list of
+// strings, key/value map, integer); Label is the optional human-
+// readable column header (defaults to a title-cased Name).
+type FacetField struct {
+	Name  string
+	Kind  FacetKind
+	Label string
+}
+
+// FacetKind mirrors pb.FacetKind.
+type FacetKind int
+
+const (
+	FacetString     FacetKind = 0
+	FacetStringList FacetKind = 1
+	FacetStringMap  FacetKind = 2
+	FacetInt        FacetKind = 3
+)
 
 // CredentialDef declares one credential type. The plugin's endpoints
 // receive the credential's secret bytes via Conn.CredentialSecret;
@@ -162,7 +197,8 @@ type Conn struct {
 	TunnelTypeName string
 	TunnelInstance string
 
-	emit func(ConnEvent)
+	emit     func(ConnEvent)
+	evaluate func(ctx context.Context, facet string, action map[string]any, summary string) (Verdict, error)
 }
 
 // Emit hands an audit event to the gateway. The gateway funnels it
@@ -172,6 +208,38 @@ func (c *Conn) Emit(ev ConnEvent) {
 	if c.emit != nil {
 		c.emit(ev)
 	}
+}
+
+// Evaluate asks the gateway to rule on one structured action against
+// the endpoint's compiled rule list, walking any approve = [...]
+// chain along the way. The gateway also logs the action onto its
+// event stream with the action map as the facet payload, so plugin
+// authors don't need to call Emit separately.
+//
+// facet is the short facet name as declared in Plugin.Facets (the
+// SDK auto-namespaces it). action is a JSON-serializable map whose
+// keys match the facet's declared fields. summary is the one-liner
+// rendered on dashboard / HITL prompts.
+//
+// Safe to call concurrently from multiple goroutines on the same
+// Conn — the SDK matches verdicts to in-flight calls by call_id.
+func (c *Conn) Evaluate(ctx context.Context, facet string, action map[string]any, summary string) (Verdict, error) {
+	if c.evaluate == nil {
+		return Verdict{}, errors.New("pluginsdk: Conn.Evaluate not wired (running without a gateway?)")
+	}
+	return c.evaluate(ctx, facet, action, summary)
+}
+
+// Verdict is the gateway's decision on one EvaluateAction call.
+type Verdict struct {
+	// Action is "allow" | "deny" | "hitl_allow" | "hitl_deny" |
+	// "error". The plugin maps this onto whatever protocol-level
+	// response code makes sense (250/535 for SMTP, etc.).
+	Action string
+	Reason string
+	// Rule is the matched CompiledRule.Name, or "" when no rule
+	// matched (the gateway's default-deny took effect).
+	Rule string
 }
 
 // ConnEvent is the runtime.ConnEvent shape exposed to plugin code.

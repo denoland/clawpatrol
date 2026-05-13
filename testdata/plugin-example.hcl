@@ -40,11 +40,35 @@ endpoint "example.demo_https" "demo-site" {
 }
 
 // TLS-but-not-HTTPS endpoint: synthetic ESMTP-ish handshake.
-// Gateway terminates TLS, plugin reads lines and runs a tiny
-// AUTH PLAIN gate against the credential secret. No upstream.
+// Gateway terminates TLS; the plugin runs the protocol but asks
+// the gateway for an allow/deny on every command via Conn.Evaluate.
+// The plugin declares an `smtp` facet — the rules below target it
+// by writing CEL conditions against `smtp.verb`, `smtp.mail_from`,
+// `smtp.rcpt_to`, etc. The action map for each command also lands
+// on the dashboard event stream as the request's facet payload, so
+// the request log shows Verb / From / Rcpt / User columns.
 endpoint "example.demo_smtp" "demo-mail" {
   hosts      = ["mail.invalid:25"]
   credential = demo_token
+}
+
+rule "smtp-handshake" {
+  endpoint  = demo-mail
+  condition = "smtp.verb in ['EHLO', 'HELO', 'AUTH', 'QUIT']"
+  verdict   = "allow"
+}
+
+rule "smtp-internal-only" {
+  endpoint  = demo-mail
+  condition = "smtp.verb in ['MAIL', 'RCPT', 'DATA'] && smtp.mail_from.endsWith('@internal')"
+  verdict   = "allow"
+}
+
+rule "smtp-deny-external" {
+  endpoint  = demo-mail
+  condition = "smtp.verb in ['MAIL', 'RCPT', 'DATA']"
+  verdict   = "deny"
+  reason    = "external sender"
 }
 
 // Plain-TCP endpoint: no TLS at all. Plugin reads lines and echoes
