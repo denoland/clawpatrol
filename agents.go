@@ -750,32 +750,47 @@ func (w *webMux) agentsList() []*Agent {
 			}
 		}
 	}
-	// Walk every declared credential — connected if either an OAuth
-	// token exists OR the operator pasted a secret slot via the
-	// dashboard. Credentials are global (one secret per credential),
-	// so the connected set is the same for every agent.
-	var ids []string
-	if policy := w.g.Policy(); policy != nil {
-		names := make([]string, 0, len(policy.Credentials))
-		for name := range policy.Credentials {
-			names = append(names, name)
+	// Credentials are global (one secret per credential), but each
+	// agent's profile only references a subset of the declared
+	// credentials. Compute the connected set once across the whole
+	// policy, then surface only the entries that fall inside the
+	// agent's profile.
+	policy := w.g.Policy()
+	if policy == nil {
+		return snap
+	}
+	connected := map[string]bool{}
+	for name := range policy.Credentials {
+		if conn, _ := w.g.oauth.Status(name); conn {
+			connected[name] = true
+			continue
 		}
-		sort.Strings(names)
-		for _, name := range names {
-			if conn, _ := w.g.oauth.Status(name); conn {
-				ids = append(ids, name)
-				continue
-			}
-			present, _ := credentialSlotPresence(w.g.db, name)
-			if len(present) > 0 {
-				ids = append(ids, name)
-			}
+		present, _ := credentialSlotPresence(w.g.db, name)
+		if len(present) > 0 {
+			connected[name] = true
 		}
 	}
-	if ids != nil {
-		for _, a := range snap {
-			a.Integrations = ids
+	for _, a := range snap {
+		profile := w.onboard.ProfileForIP(a.IP)
+		if profile == "" {
+			continue
 		}
+		allowed := credentialsInProfile(policy, profile)
+		if allowed == nil {
+			// No profile filter — fall back to the full connected set.
+			allowed = map[string]bool{}
+			for name := range policy.Credentials {
+				allowed[name] = true
+			}
+		}
+		ids := make([]string, 0, len(allowed))
+		for name := range allowed {
+			if connected[name] {
+				ids = append(ids, name)
+			}
+		}
+		sort.Strings(ids)
+		a.Integrations = ids
 	}
 	return snap
 }
