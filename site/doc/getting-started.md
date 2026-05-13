@@ -1,11 +1,12 @@
 # Getting Started
 
-Claw Patrol has two pieces: a **gateway** that runs on a server you control
-and one or more **devices** (your laptop, a CI runner) that join the
-gateway and route agent traffic through it.
+Claw Patrol is a firewall for AI agents. It has two pieces: a
+**gateway** that runs on a server you control and one or more
+**devices** (your laptop, a CI runner) that join the gateway and
+route agent traffic through it.
 
-This guide walks the fast path: stand up a gateway, join your laptop,
-and run an agent.
+This guide walks the fast path: stand up a gateway, join your
+laptop, and run an agent.
 
 ## Install
 
@@ -21,26 +22,87 @@ The installer drops a single binary in `~/.local/bin`. macOS and Linux
 on amd64/arm64 are supported. To build from source instead, set
 `CLAWPATROL_FROM_SOURCE=1` (requires Go and `gh auth login`).
 
-## Stand up a gateway
+## Configure the gateway
 
-On the server:
+On the server, pick a data directory (anywhere — `/opt/clawpatrol`,
+`/srv/clawpatrol`, your home), drop a copy of
+[`gateway.example.hcl`](https://github.com/denoland/clawpatrol/blob/main/gateway.example.hcl)
+into it, and edit the operational fields:
 
-```bash
-clawpatrol gateway init
+```hcl
+listen           = "0.0.0.0:8443"
+info_listen      = "0.0.0.0:9080"
+public_url       = "http://gw.example.com:9080"
+admin_email      = "you@example.com"
+dashboard_secret = "<long random string>"
+state_dir        = "/opt/clawpatrol"
+
+control        = "wireguard"
+wg_subnet_cidr = "10.55.0.0/24"
 ```
 
-This detects the public IP, generates a CA, writes
-`/etc/clawpatrol/gateway.hcl`, opens the firewall ports (`udp/51820` +
-`tcp/9080`), and drops a systemd unit. Start it:
+The CA is lazy-minted into sqlite under `state_dir` on first boot —
+nothing to pre-create besides the directory itself. See
+[Config reference](/docs/config-reference/) for the full HCL grammar
+and the rest of the credential / endpoint / rule blocks.
+
+## Run the gateway
+
+Open the WireGuard UDP port and the dashboard TCP port on the host
+firewall (e.g. `iptables -I INPUT -p udp --dport 51820 -j ACCEPT`,
+same for `tcp/9080`), then:
 
 ```bash
+clawpatrol gateway /opt/clawpatrol/gateway.hcl
+```
+
+The dashboard is at `http://<gateway-host>:9080`.
+
+### Under systemd
+
+Create a dedicated service user so the gateway's state directory
+(CA private key, OAuth tokens, audit log) isn't readable by any
+human or agent on the box:
+
+```bash
+useradd --system --home /opt/clawpatrol --shell /usr/sbin/nologin clawpatrol
+chown -R clawpatrol:clawpatrol /opt/clawpatrol
+chmod 700 /opt/clawpatrol
+```
+
+Drop the following at `/etc/systemd/system/clawpatrol-gateway.service`,
+adjusting the three paths to wherever you put the binary and config:
+
+```ini
+[Unit]
+Description=clawpatrol gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=clawpatrol
+Group=clawpatrol
+WorkingDirectory=/opt/clawpatrol
+ExecStart=/usr/local/bin/clawpatrol gateway /opt/clawpatrol/gateway.hcl
+Restart=on-failure
+RestartSec=2
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Then:
+
+```bash
+systemctl daemon-reload
 systemctl enable --now clawpatrol-gateway
+journalctl -u clawpatrol-gateway -f       # tail the gateway log
 ```
 
-The dashboard is at `http://<gateway-host>:9080`. The `join` command
-printed by `gateway init` is what your devices will run.
-
-See [Gateway](/docs/gateway/) for the full HCL reference.
+If you skip the dedicated-user step, the gateway logs a warning at
+startup when `state_dir` or `clawpatrol.db` is readable beyond owner.
 
 ## Join a device
 
@@ -59,18 +121,16 @@ By default `join` sets up per-process routing: only commands you wrap
 with `clawpatrol run` go through the gateway. Pass `--whole-machine` if
 you want every packet on the host to route through it.
 
-On macOS, the first join prompts you to approve the Claw Patrol Network
-Extension in **System Settings → Privacy & Security**.
-
-See [Onboarding](/docs/onboarding/) for the full join flow.
+On macOS, the first join prompts you to approve the Claw Patrol
+Network Extension in **System Settings → Privacy & Security**.
 
 ## Run an agent
 
 Wrap any command with `clawpatrol run`:
 
 ```bash
-clawpatrol run claude
-clawpatrol run gh pr create
+clawpatrol run -- claude
+clawpatrol run -- gh pr create
 clawpatrol run -- psql 'host=db user=agent'
 ```
 
@@ -79,10 +139,39 @@ request against the rules in `gateway.hcl`, injects the configured
 credential, and forwards the request upstream. The agent never sees the
 real key.
 
+## Security notes
+
+A few footguns worth knowing about before you point an agent at a
+Claw Patrol gateway:
+
+- **Don't run agents on the gateway host.** `clawpatrol run` is for
+  client devices — the gateway's `state_dir` holds the CA private
+  key, OAuth tokens, and audit log. An agent running on the gateway
+  host can read those directly, with or without `clawpatrol run` in
+  front. The correct shape is: gateway on one box (small VPS, no
+  human logins, no developer tools); your laptop / CI runner joins
+  it over WireGuard. `clawpatrol run` prints a heads-up if it
+  detects a gateway state db in a common location.
+
+- **Lock down `state_dir`.** The gateway warns at startup when
+  `state_dir` or `clawpatrol.db` is readable beyond owner. The
+  systemd snippet above creates a dedicated `clawpatrol` service
+  user with mode-700 ownership; if you skip that, anyone with
+  shell access to the gateway host can read every credential.
+
+- **`clawpatrol join --whole-machine` is for client devices only.**
+  Running it on (or pointed at) the gateway host itself routes the
+  host's own traffic through its own WireGuard endpoint — a loop
+  that breaks DNS, outbound traffic from the gateway daemon, and
+  the dashboard's reachability. Per-process routing (the default
+  `clawpatrol join` + `clawpatrol run` shape) is also what most
+  people actually want on a multi-purpose laptop, so they don't
+  accidentally route every browser tab through the gateway.
+
 ## What's next
 
 - [Architecture](/docs/architecture/) — how interception works
 - [CLI](/docs/cli/) — full command reference
-- [Gateway](/docs/gateway/) — gateway config reference
+- [Config reference](/docs/config-reference/) — HCL grammar
 - [Approval rules](/docs/approval-rules/) — gating writes behind a human or LLM
 - [Security model](/docs/security-model/) — what Claw Patrol does and doesn't protect against

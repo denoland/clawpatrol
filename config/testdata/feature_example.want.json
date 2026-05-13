@@ -1,6 +1,5 @@
 {
   "admin_email": "test@example.com",
-  "ca_dir": "/opt/clawpatrol/ca",
   "control": "wireguard",
   "human_on_timeout": "deny",
   "human_timeout": 600,
@@ -9,7 +8,6 @@
   "llm_cache_ttl": 300,
   "llm_fail_mode": "closed",
   "log_path": "/opt/clawpatrol/gateway.log",
-  "oauth_dir": "/opt/clawpatrol/oauth",
   "policy": {
     "approvers": {
       "ops": {
@@ -18,7 +16,9 @@
           "Credential": "",
           "Timeout": 600,
           "RequireApprovers": 0,
-          "Interactive": false
+          "Interactive": false,
+          "Classifier": "",
+          "Message": ""
         },
         "type": "human_approver"
       }
@@ -40,7 +40,7 @@
           ],
           "Credential": "github-pat"
         },
-        "family": "https",
+        "family": "http",
         "type": "https"
       }
     },
@@ -55,7 +55,7 @@
       "github-reads": {
         "body": {
           "name": "github-reads",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "github"
           ],
@@ -66,7 +66,7 @@
       "github-writes": {
         "body": {
           "name": "github-writes",
-          "family": "https",
+          "family": "http",
           "endpoints": [
             "github"
           ],
@@ -81,7 +81,8 @@
     }
   },
   "public_url": "http://66.42.120.196:8080",
+  "state_dir": "/opt/clawpatrol/oauth",
   "unknown_host": "passthrough",
-  "wg_endpoint": "66.42.120.196:51820",
+  "wg_endpoint": "0.0.0.0:51820",
   "wg_subnet_cidr": "10.55.0.0/24"
 }

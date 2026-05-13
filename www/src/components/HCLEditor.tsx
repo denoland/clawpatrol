@@ -3,10 +3,10 @@
 // both the global gateway.hcl editor and the per-device fragment
 // editor.
 
-import RawEditor from "react-simple-code-editor";
 import Prism from "prismjs";
 import "prismjs/components/prism-hcl";
 import "prismjs/themes/prism.css";
+import RawEditor from "react-simple-code-editor";
 
 // react-simple-code-editor publishes a CommonJS bundle with a default export.
 // Newer Vite/Rolldown builds can preserve that as `{ default: Component }`,
@@ -35,7 +35,7 @@ export function HCLEditor({
       style={{
         fontFamily: "ui-monospace, SFMono-Regular, monospace",
         fontSize: 12,
-        background: "#fafafa",
+        background: "var(--color-canvas)",
         minHeight,
       }}
       className="flex-1"

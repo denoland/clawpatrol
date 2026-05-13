@@ -1,5 +1,6 @@
 .env
-.claude/
+.claude/*
+!.claude/CLAUDE.md
 ca/
 ts-state/
 dist/
@@ -23,3 +24,4 @@ macos/build/
 macos/netstack/libwgnetstack.a
 macos/netstack/libwgnetstack.h
 *.swp
+/plugin-example/plugin-example

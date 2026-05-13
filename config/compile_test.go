@@ -79,8 +79,8 @@ func TestCompile(t *testing.T) {
 			writes = r
 		}
 	}
-	getReq := &match.Request{Family: "https", Method: "GET"}
-	postReq := &match.Request{Family: "https", Method: "POST"}
+	getReq := &match.Request{Family: "http", Method: "GET"}
+	postReq := &match.Request{Family: "http", Method: "POST"}
 	if !reads.Matcher.Match(getReq) {
 		t.Errorf("github-reads should match GET")
 	}

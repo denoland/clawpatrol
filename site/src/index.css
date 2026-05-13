@@ -1,96 +1,54 @@
-@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@100..900&family=Sora:wght@100..800&display=swap");
 @import "./docs.css";
 @import "highlight.js/styles/atom-one-dark.css";
 @import "tailwindcss";
 
-/* Self-hosted families below. PT Mono, Outfit, and Sora are imported
-   above from Google Fonts so they ship with the CSS bundle (works on
-   /docs/ too). */
+/* Self-hosted families below. */
 
-/* AmsiPro (Stawix) — display family. Static weights, latin-basic subset. */
+/* Source Sans 3 (Adobe) — body family. Regular + Bold, each with an italic,
+   latin-basic subset. */
 @font-face {
-  font-family: "AmsiPro";
-  font-style: normal;
-  font-weight: 100;
-  font-display: swap;
-  src: url("/fonts/AmsiPro/AmsiPro-Thin.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "AmsiPro";
-  font-style: normal;
-  font-weight: 200;
-  font-display: swap;
-  src: url("/fonts/AmsiPro/AmsiPro-XLight.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "AmsiPro";
-  font-style: normal;
-  font-weight: 300;
-  font-display: swap;
-  src: url("/fonts/AmsiPro/AmsiPro-Light.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "AmsiPro";
+  font-family: "Source Sans 3";
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url("/fonts/AmsiPro/AmsiPro-Regular.woff2") format("woff2");
+  src: url("/fonts/source-sans-3/SourceSans3-Regular--latin_basic.woff2")
+    format("woff2");
   unicode-range:
     U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
     U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
     U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
-  font-family: "AmsiPro";
-  font-style: normal;
-  font-weight: 600;
+  font-family: "Source Sans 3";
+  font-style: italic;
+  font-weight: 400;
   font-display: swap;
-  src: url("/fonts/AmsiPro/AmsiPro-SemiBold.woff2") format("woff2");
+  src: url("/fonts/source-sans-3/SourceSans3-It--latin_basic.woff2")
+    format("woff2");
   unicode-range:
     U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
     U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
     U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
-  font-family: "AmsiPro";
+  font-family: "Source Sans 3";
   font-style: normal;
   font-weight: 700;
   font-display: swap;
-  src: url("/fonts/AmsiPro/AmsiPro-Bold.woff2") format("woff2");
+  src: url("/fonts/source-sans-3/SourceSans3-Bold--latin_basic.woff2")
+    format("woff2");
   unicode-range:
     U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
     U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
     U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
-  font-family: "AmsiPro";
-  font-style: normal;
-  font-weight: 900;
+  font-family: "Source Sans 3";
+  font-style: italic;
+  font-weight: 700;
   font-display: swap;
-  src: url("/fonts/AmsiPro/AmsiPro-Black.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "AmsiPro";
-  font-style: normal;
-  font-weight: 950;
-  font-display: swap;
-  src: url("/fonts/AmsiPro/AmsiPro-Ultra.woff2") format("woff2");
+  src: url("/fonts/source-sans-3/SourceSans3-BoldIt--latin_basic.woff2")
+    format("woff2");
   unicode-range:
     U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
     U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
@@ -293,7 +251,8 @@
   font-style: italic;
   font-weight: 600;
   font-display: swap;
-  src: url("/fonts/IBMPlexMono-SemiBoldItalic--latin_basic.woff2") format("woff2");
+  src: url("/fonts/IBMPlexMono-SemiBoldItalic--latin_basic.woff2")
+    format("woff2");
   unicode-range:
     U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
     U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
@@ -695,10 +654,12 @@ a.neu-raised:active {
   }
 }
 
-/* Wave-divider spread — back layer drifts up, front layer drifts down
-   as the user scrolls past the divider into the next section. Uses the
-   standalone `translate` property so it composes with `transform`-based
-   wave-drift instead of overriding it. */
+/* Wave-divider spread — all three layers drift upward at progressively
+   larger amounts (back smallest, front largest) as the user scrolls past
+   the divider into the next section, fanning the visible wave lines
+   apart. These animations run on the outer wrapper divs while wave-drift
+   (above) runs on the inner SVGs, so the two `transform`s never collide
+   on the same element. */
 @keyframes wave-spread-back {
   from {
     transform: translateY(0);
@@ -726,32 +687,9 @@ a.neu-raised:active {
   }
 }
 
-/* Integration tiles — each slides up into place and settles partway through
-   the viewport pass. Per-tile animation-range set inline for the stagger.
-   Uses CSS `translate` so hover `scale` transforms compose cleanly. */
-@keyframes tile-slide-up {
-  from {
-    opacity: 0;
-    translate: 0 30px;
-  }
-  to {
-    opacity: 1;
-    translate: 0 0;
-  }
-}
-
 @supports ((animation-timeline: view()) and (animation-range: 0% 100%)) {
   @media (prefers-reduced-motion: no-preference) {
     :root.has-sda {
-      .integration-tile {
-        opacity: 0;
-        animation-name: tile-slide-up;
-        animation-timeline: view();
-        animation-timing-function: ease-out;
-        animation-fill-mode: both;
-        /* animation-range set inline per tile for the staggered entrance */
-      }
-
       .wave-spread-back {
         animation-name: wave-spread-back;
         animation-range: contain 0% exit 100%;
@@ -782,15 +720,18 @@ a.neu-raised:active {
   }
 }
 
-/* Docs-specific styles live in /public/docs.css and are only loaded on
-   docs pages. */
+/* Docs-specific styles live in /src/docs.css and are imported at the
+   top of this file. They ship with the main CSS bundle but are scoped
+   to `.docs-content`, so they only paint inside the docs page wrapper. */
 
 /* `@theme static` emits every declared variable to :root regardless of
    whether a utility references it. Without `static`, unused shades (e.g.
    --color-rust-50 if nothing reads `bg-rust-50`) never get
    serialized, which broke the dev palette inspector. */
 @theme static {
-  /* Canvas + surfaces — three tiers, mirroring the ink scale. */
+  /* Canvas + surfaces — four tiers. canvas-light is pure white for
+     elevated surfaces that need to lift off the cream body. */
+  --color-canvas-light: #ffffff;
   --color-canvas: #fcfaf5;
   --color-canvas-muted: #f4efe6;
   --color-canvas-dark: #ebe5d8;
@@ -841,6 +782,38 @@ a.neu-raised:active {
   --color-butter-950: #412403;
   --color-butter: var(--color-butter-400);
 
+  /* ── Success — sage / moss green. Earthier and lower-saturation than
+        the crt-* terminal greens so it reads as "allow / OK" inside the
+        cream-canvas UI without going neon. Anchor at 500. ─────────────── */
+  --color-success-50: #f1f5e9;
+  --color-success-100: #dde9c5;
+  --color-success-200: #c0d595;
+  --color-success-300: #9cbb63;
+  --color-success-400: #7aa241;
+  --color-success-500: #5e8a3f;
+  --color-success-600: #4a6f30;
+  --color-success-700: #3c5827;
+  --color-success-800: #324522;
+  --color-success-900: #2a391f;
+  --color-success-950: #161e0c;
+  --color-success: var(--color-success-500);
+
+  /* ── Danger — brick red. Pulled toward earthy / wine rather than
+        fire-engine red so it sits next to rust without fighting it.
+        Used for deny verdicts, destructive actions, and errors. ────── */
+  --color-danger-50: #fbeded;
+  --color-danger-100: #f6d2d2;
+  --color-danger-200: #eaa8a8;
+  --color-danger-300: #d97777;
+  --color-danger-400: #c44e4e;
+  --color-danger-500: #a83232;
+  --color-danger-600: #8d2424;
+  --color-danger-700: #721d1d;
+  --color-danger-800: #5d1818;
+  --color-danger-900: #4a1515;
+  --color-danger-950: #260a0a;
+  --color-danger: var(--color-danger-500);
+
   /* Console — dark surface for terminal/CRT blocks; punchier green. */
   --color-console: #1a2820;
   --color-console-dark: #0c1410;
@@ -858,11 +831,14 @@ a.neu-raised:active {
 	   keeps the cool reading subtle, not tinted. */
   --color-text: #2c2e35;
   --color-text-muted: #62656d;
-  --color-text-subtle: #9d9ea7;
+  /* Bumped one stop darker (was #9d9ea7, 2.5:1 on canvas) so it clears
+     WCAG AA Large (3:1) on light surfaces. Still subtle on cream and
+     remains comfortably high-contrast on console-dark code blocks. */
+  --color-text-subtle: #82838c;
 
   --font-display: "Basic Sans", "Gazpacho", system-ui, serif;
   --font-sans:
-    "Sora", "Outfit", "Public Sans", "Eastman", "Courier New",
+    "Source Sans 3", "Public Sans", "Eastman", "Courier New",
     "American Typewriter", "Chronica Pro", "Basic Sans", system-ui, sans-serif;
   --font-mono:
     "IBM Plex Mono", "MonoLisa", "DankMono Nerd Font", "SF Mono", "Menlo",
@@ -888,6 +864,22 @@ a.neu-raised:active {
       font-size: 112.5%;
     }
     font-weight: 400;
+
+    /* Header geometry — tracks the sticky <Header /> dimensions.
+       Mobile: py-5 (40px total) + h-9 logo (36px) ≈ 76px, rounded to 5rem.
+       sm+:    py-5 (40px total) + h-12 logo (48px) ≈ 88px, rounded to 6rem.
+       The slight over-rounding gives sticky targets and anchored headings
+       a small buffer below the header. Used by html.scroll-padding-top
+       and the docs sidebar's sticky-top offset. */
+    --header-height: 5rem;
+
+    @media (min-width: 40rem) {
+      --header-height: 6rem;
+    }
+  }
+
+  html {
+    scroll-padding-top: calc(var(--header-height) + 1rem);
   }
 
   body {

@@ -1,5 +1,5 @@
 // Package sql is the SQL protocol-family facet. It owns the SQL CEL
-// environment (verb / tables / function / statement, exposed as
+// environment (verb / tables / functions / statement, exposed as
 // fields on the `sql` variable), the matcher that walks a parsed SQL
 // statement, the Meta type wire-frame frontends (postgres,
 // clickhouse) populate on match.Request.Meta, and the per-family
@@ -27,13 +27,13 @@ import (
 
 // SqlFields is the CEL-facing view of a SQL statement. Exposed as
 // the `sql` variable in rule conditions (`sql.verb`, `sql.tables`,
-// `sql.function`, `sql.statement`). The Go-level Function field is
-// named in singular to match the CEL field; the dashboard column
-// stays plural ("functions") for readability.
+// `sql.functions`, `sql.statement`). The plural `functions` matches
+// the multi-valued shape (a statement can reference multiple
+// functions) and parallels `tables`.
 type SqlFields struct {
 	Verb      string   `cel:"verb"`
 	Tables    []string `cel:"tables"`
-	Function  []string `cel:"function"`
+	Functions []string `cel:"functions"`
 	Statement string   `cel:"statement"`
 }
 
@@ -122,13 +122,37 @@ func init() {
 	facet.Register(Facet{})
 }
 
+// lowercasedPaths declares the SQL fields whose activation values
+// are always lowercase. CompileCondition uses this to normalize the
+// matching string literals in the rule source at compile time, so
+// `sql.verb == "SELECT"` matches a select statement even though the
+// activation reports `verb = "select"`.
+var lowercasedPaths = []string{"sql.verb"}
+
+// truncatablePaths declares every SQL field, because the wire
+// frontends (postgres pgClientToServer, clickhouse_native
+// chHandleQuery) feed the matcher one piece of text — the raw
+// statement — and every CEL field (verb, tables, functions,
+// statement) is derived from the same parsed bytes. When the
+// frontend caps the frame, all four fields are simultaneously
+// untrustworthy, so any condition reading any of them must fail
+// closed on a truncated request.
+//
+// Note credential is intentionally absent from the sql facet's CEL
+// view: it resolves off-wire (StartupMessage user / Hello
+// username), never from frame bytes, so a credential predicate on a
+// truncated request still evaluates correctly. The dispatcher
+// applies r.Credential before the matcher runs (config/runtime/
+// dispatch.go), and that path is unaffected by Truncated.
+var truncatablePaths = []string{"sql.verb", "sql.tables", "sql.functions", "sql.statement"}
+
 // NewMatcher compiles a CEL condition into a Matcher. An empty
 // condition is the catch-all match-everything case.
 func (Facet) NewMatcher(condition string) (match.Matcher, error) {
 	if condition == "" {
 		return match.PassThrough{}, nil
 	}
-	return match.CompileCondition(celEnv, condition, buildActivation)
+	return match.CompileCondition(celEnv, condition, buildActivation, lowercasedPaths, truncatablePaths)
 }
 
 func buildActivation(req *match.Request) map[string]any {
@@ -143,7 +167,7 @@ func buildActivation(req *match.Request) map[string]any {
 		"sql": &SqlFields{
 			Verb:      strings.ToLower(meta.Verb),
 			Tables:    coalesceList(meta.Tables),
-			Function:  coalesceList(meta.Functions),
+			Functions: coalesceList(meta.Functions),
 			Statement: meta.Statement,
 		},
 	}

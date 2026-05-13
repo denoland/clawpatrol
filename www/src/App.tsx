@@ -1,32 +1,38 @@
 import { useEffect, useState } from "react";
+import { AddDeviceModal } from "./components/AddDeviceModal";
 import { AgentsTable } from "./components/AgentsTable";
 import { AnalyticsPage } from "./components/AnalyticsPage";
 import { ConnectModal } from "./components/ConnectModal";
 import { DevicePage } from "./components/DevicePage";
+import { HITLBar } from "./components/HITLBar";
 import { LiveRequests } from "./components/LiveRequests";
 import { OnboardPage } from "./components/OnboardPage";
 import { RequestDetailPage } from "./components/RequestDetailPage";
-import { AddDeviceModal } from "./components/AddDeviceModal";
-import { SettingsModal } from "./components/SettingsModal";
-import { HITLBar } from "./components/HITLBar";
+import { SettingsPage } from "./components/SettingsPage";
 import { getState, type Agent, type Integration, type UpdateBanner, type Whoami } from "./lib/api";
 
 type Route =
   | { name: "main" }
-  | { name: "device"; ip: string }
+  | { name: "device"; ip: string; connect?: string }
   | { name: "analytics"; ip?: string }
   | { name: "onboard"; code: string }
-  | { name: "request"; id: string };
+  | { name: "request"; id: string }
+  | { name: "settings" };
 
 function parseRoute(): Route {
   // Strip query string before matching routes.
   const raw = window.location.hash;
   const qi = raw.indexOf("?");
   const h = qi < 0 ? raw : raw.slice(0, qi);
+  const params = qi >= 0 ? new URLSearchParams(raw.slice(qi + 1)) : null;
   if (h.startsWith("#/onboard/"))
-    return { name: "onboard", code: decodeURIComponent(h.slice("#/onboard/".length)) };
+    return {
+      name: "onboard",
+      code: decodeURIComponent(h.slice("#/onboard/".length)),
+    };
   const r = h.match(/^#\/request\/([^/]+)$/);
   if (r) return { name: "request", id: decodeURIComponent(r[1]) };
+  if (h === "#/settings") return { name: "settings" };
   if (h === "#/analytics") return { name: "analytics" };
   const a = h.match(/^#\/analytics\/([^/]+)$/);
   if (a) return { name: "analytics", ip: decodeURIComponent(a[1]) };
@@ -34,7 +40,12 @@ function parseRoute(): Route {
   const da = h.match(/^#\/device\/([^/]+)\/analytics$/);
   if (da) return { name: "analytics", ip: decodeURIComponent(da[1]) };
   const m = h.match(/^#\/device\/([^/]+)$/);
-  if (m) return { name: "device", ip: decodeURIComponent(m[1]) };
+  if (m)
+    return {
+      name: "device",
+      ip: decodeURIComponent(m[1]),
+      connect: params?.get("connect") ?? undefined,
+    };
   return { name: "main" };
 }
 
@@ -45,9 +56,7 @@ export default function App() {
   const [update, setUpdate] = useState<UpdateBanner | null>(null);
   const [readOnlyConfig, setReadOnlyConfig] = useState(false);
   const [connectId, setConnectId] = useState<string | null>(null);
-  const [connectProfile, setConnectProfile] = useState<string | undefined>(undefined);
   const [showAddDevice, setShowAddDevice] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
   const [route, setRoute] = useState(parseRoute());
 
   useEffect(() => {
@@ -89,24 +98,37 @@ export default function App() {
       {route.name === "main" ? (
         <main className="flex-1 mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-8 space-y-8">
           <div className="flex items-center gap-4">
-            <h1 className="font-serif text-[44px] sm:text-[56px] leading-none tracking-tight text-[#171717]">
-              clawpatrol
+            <h1>
+              <img src="/claw-patrol-logo.svg" alt="Claw Patrol" className="h-8 sm:h-10 w-auto" />
             </h1>
             <button
               onClick={() => setShowAddDevice(true)}
-              className="w-[36px] h-[36px] rounded-full border border-[#e5e5e5] text-[#525252] text-[22px] leading-none flex items-center justify-center hover:border-[#171717] hover:text-[#171717] transition-colors"
+              className="w-[36px] h-[36px] rounded-full border-2 border-navy text-navy flex items-center justify-center hover:bg-navy-100 transition-colors"
               title="add device"
+              aria-label="Add device"
             >
-              +
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M12 5v14M5 12h14" />
+              </svg>
             </button>
             <a
               href="#/analytics"
-              className="w-[36px] h-[36px] rounded-full border border-[#e5e5e5] text-[#525252] flex items-center justify-center hover:border-[#171717] hover:text-[#171717] transition-colors"
+              className="w-[36px] h-[36px] rounded-full border-2 border-navy text-navy flex items-center justify-center hover:bg-navy-100 transition-colors"
               title="analytics"
+              aria-label="Analytics"
             >
               <svg
-                width="16"
-                height="16"
+                width="18"
+                height="18"
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
@@ -118,14 +140,15 @@ export default function App() {
                 <path d="m7 16 4-8 4 4 4-6" />
               </svg>
             </a>
-            <button
-              onClick={() => setShowSettings(true)}
-              className="w-[36px] h-[36px] rounded-full border border-[#e5e5e5] text-[#525252] flex items-center justify-center hover:border-[#171717] hover:text-[#171717] transition-colors"
-              title="settings (gateway.hcl)"
+            <a
+              href="#/settings"
+              className="w-[36px] h-[36px] rounded-full border-2 border-navy text-navy flex items-center justify-center hover:bg-navy-100 transition-colors"
+              title="settings"
+              aria-label="Settings"
             >
               <svg
-                width="16"
-                height="16"
+                width="18"
+                height="18"
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
@@ -136,14 +159,19 @@ export default function App() {
                 <circle cx="12" cy="12" r="3" />
                 <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
               </svg>
-            </button>
+            </a>
           </div>
-          <section className="bg-white border border-[#e5e5e5] rounded overflow-hidden">
+          <section className="bg-canvas-light border-2 border-navy overflow-hidden">
             <div className="overflow-x-auto">
               <AgentsTable
                 agents={agents}
                 integrations={integrations}
                 onSelect={(ip) => navigate("#/device/" + encodeURIComponent(ip))}
+                onConnectCredential={(ip, id) =>
+                  navigate(
+                    "#/device/" + encodeURIComponent(ip) + "?connect=" + encodeURIComponent(id),
+                  )
+                }
               />
             </div>
           </section>
@@ -156,43 +184,41 @@ export default function App() {
         <RequestDetailPage id={route.id} agents={agents} />
       ) : route.name === "onboard" ? (
         <OnboardPage code={route.code} onBack={() => navigate("")} />
+      ) : route.name === "settings" ? (
+        <SettingsPage
+          integrations={integrations}
+          readOnlyConfig={readOnlyConfig}
+          onConnect={(id) => setConnectId(id)}
+          onRefresh={refresh}
+        />
       ) : (
         <DevicePage
           ip={route.ip}
           agents={agents}
           integrations={integrations}
-          whoami={whoami}
           readOnlyConfig={readOnlyConfig}
           onBack={() => navigate("")}
-          onConnect={(id, profile) => {
-            setConnectId(id);
-            setConnectProfile(profile);
-          }}
+          onConnect={(id) => setConnectId(id)}
           onRefresh={refresh}
+          pendingConnect={route.connect}
+          onConsumePendingConnect={() => {
+            // Drop the ?connect= once the device page has acted on it
+            // so a reload doesn't reopen the modal.
+            window.history.replaceState(null, "", "#/device/" + encodeURIComponent(route.ip));
+            setRoute(parseRoute());
+          }}
         />
       )}
       {showAddDevice && (
         <AddDeviceModal publicURL={whoami?.public_url} onClose={() => setShowAddDevice(false)} />
       )}
-      {showSettings && (
-        <SettingsModal
-          readOnly={readOnlyConfig}
-          onClose={() => setShowSettings(false)}
-          onSaved={refresh}
-        />
-      )}
       {connectId && (
         <ConnectModal
           id={connectId}
           oauth={integrations.find((i) => i.id === connectId)?.oauth}
-          profile={connectProfile}
-          onClose={() => {
-            setConnectId(null);
-            setConnectProfile(undefined);
-          }}
+          onClose={() => setConnectId(null)}
           onDone={() => {
             setConnectId(null);
-            setConnectProfile(undefined);
             refresh();
           }}
         />
@@ -209,7 +235,7 @@ function UpdateNotice({ update }: { update: UpdateBanner | null }) {
   );
   if (dismissed) return null;
   return (
-    <div className="bg-[#fef3c7] border-b border-[#fcd34d] px-4 sm:px-6 py-2 text-[12px] text-[#78350f] flex items-center justify-between gap-3">
+    <div className="bg-butter-100 border-b border-butter-300 px-4 sm:px-6 py-2 text-xs text-butter-900 flex items-center justify-between gap-3">
       <div className="flex-1">
         <span className="font-semibold">clawpatrol {update.latest}</span>
         {" available — "}
@@ -221,14 +247,14 @@ function UpdateNotice({ update }: { update: UpdateBanner | null }) {
         >
           release notes
         </a>
-        {update.advisory && <span className="ml-2 text-[#92400e]">({update.advisory})</span>}
+        {update.advisory && <span className="ml-2 text-rust-700">({update.advisory})</span>}
       </div>
       <button
         onClick={() => {
           localStorage.setItem(dismissKey, "1");
           setDismissed(true);
         }}
-        className="text-[#78350f] hover:text-[#171717] text-[14px] leading-none px-1"
+        className="text-butter-900 hover:text-text text-sm leading-none px-1"
         title="dismiss"
       >
         &times;

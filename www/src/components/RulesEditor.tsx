@@ -6,8 +6,10 @@ import {
   saveConfigHCL,
   type ConfigSavePreview,
 } from "../lib/api";
+import { Button } from "./Button";
 import { ConfigSaveReview } from "./ConfigSaveReview";
 import { HCLEditor } from "./HCLEditor";
+import { Modal } from "./Modal";
 
 // RulesEditor edits the whole gateway.hcl file. Validation runs
 // server-side; diagnostics surface in the err panel.
@@ -88,21 +90,20 @@ export function RulesEditor({ onClose, onSaved }: { onClose: () => void; onSaved
 
   return (
     <>
-      <div
-        className="fixed inset-0 bg-black/30 flex items-center justify-center z-50"
-        onClick={onClose}
-      >
-        <div
-          className="bg-white border border-[#e5e5e5] rounded-md shadow-2xl flex flex-col w-[820px] max-w-full max-h-[85vh]"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div className="flex items-center px-4 py-3 border-b border-[#e5e5e5]">
-            <div className="text-[11px] uppercase tracking-[.12em] text-[#a3a3a3]">
+      <Modal onClose={onClose} labelledBy="rules-editor-title">
+        <div className="bg-canvas-light border-2 border-navy rounded-md shadow-2xl overflow-hidden flex flex-col w-[820px] max-w-full max-h-[85vh]">
+          <div className="flex items-center px-4 py-3 bg-navy-100">
+            <h2
+              id="rules-editor-title"
+              className="text-xs uppercase tracking-[.12em] text-navy font-bold"
+            >
               EDIT GATEWAY.HCL
-            </div>
+            </h2>
             <button
+              type="button"
               onClick={onClose}
-              className="ml-auto text-[11px] px-2 py-1 text-[#a3a3a3] hover:text-[#171717]"
+              aria-label="Close"
+              className="ml-auto text-xl leading-none px-2 py-1 text-navy hover:text-text"
             >
               ✕
             </button>
@@ -114,49 +115,38 @@ export function RulesEditor({ onClose, onSaved }: { onClose: () => void; onSaved
 
           <form
             onSubmit={runAI}
-            className="flex items-center gap-2 px-4 py-2.5 border-t border-[#e5e5e5] bg-white"
+            className="flex items-center gap-2 px-4 py-2.5 border-t border-canvas-dark bg-canvas"
           >
-            <span className="text-[10px] uppercase tracking-[.09em] text-[#a3a3a3]">AI</span>
+            <span className="text-2xs uppercase tracking-[.09em] text-text-subtle">AI</span>
             <input
               type="text"
               value={aiPrompt}
               onChange={(e) => setAIPrompt(e.target.value)}
               placeholder='e.g. "deny POSTs to api.github.com" — uses connected Claude/Codex'
-              className="flex-1 text-[12px] border border-[#e5e5e5] rounded px-2 py-1.5 focus:outline-none focus:border-[#171717] transition-colors"
+              className="flex-1 text-xs border border-canvas-dark rounded px-2 py-1.5 focus:outline-none focus:border-text transition-colors"
             />
-            <button
-              type="submit"
-              disabled={aiBusy || !aiPrompt.trim()}
-              className="text-[11px] px-3 py-1.5 border border-[#171717] text-[#171717] rounded hover:bg-[#171717] hover:text-white disabled:opacity-40"
-            >
+            <Button type="submit" variant="outline" disabled={aiBusy || !aiPrompt.trim()}>
               {aiBusy ? "thinking…" : "apply"}
-            </button>
+            </Button>
           </form>
 
-          <div className="flex items-center px-4 py-3 border-t border-[#e5e5e5] gap-3">
-            {err && <span className="text-[11px] text-red-600 break-all flex-1">{err}</span>}
-            {okMsg && <span className="text-[11px] text-[#16a34a] flex-1">{okMsg}</span>}
+          <div className="flex items-center px-4 py-3 border-t border-canvas-dark gap-3">
+            {err && <span className="text-xs text-rust-700 break-all flex-1">{err}</span>}
+            {okMsg && <span className="text-xs text-success-600 flex-1">{okMsg}</span>}
             {!err && !okMsg && (
-              <span className="text-[11px] text-[#a3a3a3] flex-1">
+              <span className="text-xs text-text-subtle flex-1">
                 {dirty ? "unsaved changes" : "no changes"}
               </span>
             )}
-            <button
-              onClick={onClose}
-              className="text-[11px] px-3 py-1.5 border border-[#e5e5e5] text-[#737373] rounded hover:border-[#a3a3a3]"
-            >
+            <Button variant="outline" onClick={onClose}>
               close
-            </button>
-            <button
-              onClick={save}
-              disabled={!dirty || busy}
-              className="text-[11px] px-3 py-1.5 border border-[#171717] text-white bg-[#171717] rounded hover:bg-[#262626] disabled:opacity-40"
-            >
+            </Button>
+            <Button onClick={save} disabled={!dirty || busy}>
               {busy ? "saving…" : "save"}
-            </button>
+            </Button>
           </div>
         </div>
-      </div>
+      </Modal>
       {preview && (
         <ConfigSaveReview
           preview={preview}

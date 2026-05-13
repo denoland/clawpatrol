@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Button } from "./Button";
 
 export function OnboardPage({ code, onBack }: { code: string; onBack: () => void }) {
   const [status, setStatus] = useState<"idle" | "approving" | "approved" | "error">("idle");
@@ -32,42 +33,37 @@ export function OnboardPage({ code, onBack }: { code: string; onBack: () => void
 
   return (
     <main className="mx-auto w-full max-w-[640px] px-6 py-12 space-y-6">
-      <button onClick={onBack} className="text-[11px] text-[#737373] hover:text-[#171717]">
+      <button onClick={onBack} className="text-xs text-text-muted hover:text-text">
         ← back
       </button>
-      <h1 className="font-serif text-[36px] leading-none tracking-tight text-[#171717]">
-        add device
-      </h1>
+      <h1 className="font-serif text-4xl leading-none tracking-tight text-text">add device</h1>
 
-      {!info && !err && <div className="text-[12px] text-[#737373]">loading…</div>}
-      {err && <div className="text-[12px] text-[#dc2626]">{err}</div>}
+      {!info && !err && <div className="text-xs text-text-muted">loading…</div>}
+      {err && <div className="text-xs text-danger-500">{err}</div>}
 
       {info && (
-        <div className="bg-white border border-[#e5e5e5] rounded p-6 space-y-4">
+        <div className="bg-canvas-light border-2 border-navy p-6 space-y-4">
           <div>
-            <div className="text-[10px] uppercase tracking-[.12em] text-[#a3a3a3]">
+            <div className="text-2xs uppercase tracking-[.12em] text-text-subtle">
               code from CLI
             </div>
-            <div className="font-mono text-[28px] tracking-[.18em] text-[#171717] mt-1">
+            <div className="font-mono text-3xl tracking-[.18em] text-text mt-1">
               {info.user_code || code}
             </div>
           </div>
 
-          <div className="text-[11px] text-[#737373]">
+          <div className="text-xs text-text-muted">
             only approve if you typed this code on the new machine.
           </div>
 
           {status === "idle" && !info.approved && (
-            <button
-              onClick={approve}
-              className="w-full px-4 py-2 bg-[#171717] text-white rounded hover:bg-[#000] text-[13px]"
-            >
+            <Button size="md" onClick={approve} className="w-full">
               approve
-            </button>
+            </Button>
           )}
-          {status === "approving" && <div className="text-[12px] text-[#737373]">approving…</div>}
+          {status === "approving" && <div className="text-xs text-text-muted">approving…</div>}
           {(status === "approved" || info.approved) && (
-            <div className="text-[12px] text-[#16a34a]">
+            <div className="text-xs text-success-600">
               ✓ approved — return to the CLI on the new device
             </div>
           )}

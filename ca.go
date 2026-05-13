@@ -7,35 +7,53 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"database/sql"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"math/big"
 	"net"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 )
 
 type CertCache struct {
-	caCert *x509.Certificate
-	caKey  *ecdsa.PrivateKey
-	mu     sync.RWMutex
-	cache  map[string]*tls.Certificate
+	caCert    *x509.Certificate
+	caKey     *ecdsa.PrivateKey
+	caCertPEM []byte
+	mu        sync.RWMutex
+	cache     map[string]*tls.Certificate
 }
 
-func loadCA(dir string) (*CertCache, error) {
-	cb, err := os.ReadFile(filepath.Join(dir, "ca.crt"))
-	if err != nil {
-		return nil, fmt.Errorf("ca.crt: %w", err)
+// CertPEM returns the PEM-encoded root certificate. Safe to share
+// publicly — it never includes the private key.
+func (c *CertCache) CertPEM() []byte { return c.caCertPEM }
+
+// loadOrMintCA returns the gateway's MITM CA, materializing it on
+// first call. If the ca_material row is absent, mints a fresh
+// ECDSA-P256 key + self-signed cert (10y validity) and inserts.
+// Subsequent boots see the row and return the existing material —
+// the cert is stable across restarts so peers don't have to
+// reinstall the trust anchor.
+func loadOrMintCA(db *sql.DB) (*CertCache, error) {
+	if db == nil {
+		return nil, fmt.Errorf("ca: no db")
 	}
-	kb, err := os.ReadFile(filepath.Join(dir, "ca.key"))
-	if err != nil {
-		return nil, fmt.Errorf("ca.key: %w", err)
+	var certPEM, keyPEM []byte
+	err := db.QueryRow(`SELECT cert_pem, key_pem FROM ca_material WHERE id = 1`).
+		Scan(&certPEM, &keyPEM)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return mintAndStoreCA(db)
+	case err != nil:
+		return nil, fmt.Errorf("ca read: %w", err)
 	}
-	cblock, _ := pem.Decode(cb)
-	kblock, _ := pem.Decode(kb)
+	return parseCertCache(certPEM, keyPEM)
+}
+
+func parseCertCache(certPEM, keyPEM []byte) (*CertCache, error) {
+	cblock, _ := pem.Decode(certPEM)
+	kblock, _ := pem.Decode(keyPEM)
 	if cblock == nil || kblock == nil {
 		return nil, errors.New("bad pem")
 	}
@@ -47,7 +65,12 @@ func loadCA(dir string) (*CertCache, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &CertCache{caCert: cert, caKey: key, cache: map[string]*tls.Certificate{}}, nil
+	return &CertCache{
+		caCert:    cert,
+		caKey:     key,
+		caCertPEM: certPEM,
+		cache:     map[string]*tls.Certificate{},
+	}, nil
 }
 
 func (c *CertCache) mint(host string) (*tls.Certificate, error) {
@@ -90,13 +113,14 @@ func (c *CertCache) mint(host string) (*tls.Certificate, error) {
 	return t, nil
 }
 
-func writeCA(dir string) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
+// mintAndStoreCA generates fresh root material and persists it to the
+// ca_material row. Called automatically by loadOrMintCA when the row
+// is absent. Returns the parsed CertCache so the caller can use it
+// without a second DB round-trip.
+func mintAndStoreCA(db *sql.DB) (*CertCache, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	serial, _ := rand.Int(rand.Reader, big.NewInt(1<<62))
 	tmpl := &x509.Certificate{
@@ -110,19 +134,34 @@ func writeCA(dir string) error {
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	kb, err := x509.MarshalECPrivateKey(key)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "ca.crt"),
-		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644); err != nil {
-		return err
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kb})
+	if _, err := db.Exec(
+		`INSERT INTO ca_material (id, cert_pem, key_pem, created_ns) VALUES (1, ?, ?, ?)`,
+		certPEM, keyPEM, time.Now().UnixNano(),
+	); err != nil {
+		return nil, fmt.Errorf("ca insert: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "ca.key"),
-		pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kb}), 0o600); err != nil {
-		return err
+	return parseCertCache(certPEM, keyPEM)
+}
+
+// importCAFromPEM inserts pre-existing PEM material into ca_material.
+// Used by the legacy-state importer to move on-disk ca.crt + ca.key
+// into sqlite on first boot of a migrated gateway. Caller should
+// guard against double-insert by checking the row first.
+func importCAFromPEM(db *sql.DB, certPEM, keyPEM []byte) error {
+	if _, err := parseCertCache(certPEM, keyPEM); err != nil {
+		return fmt.Errorf("validate legacy ca: %w", err)
 	}
-	return nil
+	_, err := db.Exec(
+		`INSERT INTO ca_material (id, cert_pem, key_pem, created_ns) VALUES (1, ?, ?, ?)`,
+		certPEM, keyPEM, time.Now().UnixNano(),
+	)
+	return err
 }

@@ -3,7 +3,6 @@
 # silently drop the block.
 
 listen = "0.0.0.0:8443"
-ca_dir = "/opt/clawpatrol/ca"
 
 gateway {
   control     = "wireguard"

@@ -15,7 +15,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version: "1.23" }
+        with:
+          go-version-file: go.mod
       - uses: actions/setup-node@v4
         with: { node-version: "20" }
 
@@ -25,7 +26,7 @@ jobs:
           GOOS: linux
           GOARCH: amd64
           CGO_ENABLED: "0"
-        run: go build -tags ts_omit_identityfederation -ldflags "-s -w" -trimpath -o gateway .
+        run: go build -ldflags "-s -w" -trimpath -o gateway .
 
       - env:
           SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_KEY }}

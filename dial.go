@@ -94,7 +94,7 @@ func (g *Gateway) dialUpstream(ctx context.Context, network, addr, serverName st
 			if !ok {
 				continue
 			}
-			sec, err := g.secrets.Get(cc.Credential.Symbol.Name, profile)
+			sec, err := g.secrets.Get(cc.Credential.Symbol.Name)
 			if err != nil {
 				log.Printf("tls-secret %s: %v — dialing without client cert", cc.Credential.Symbol.Name, err)
 				break

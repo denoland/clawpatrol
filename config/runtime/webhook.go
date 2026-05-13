@@ -44,5 +44,4 @@ type WebhookCtx struct {
 	Secrets        SecretStore
 	HITL           HITLPool
 	Policy         *config.CompiledPolicy
-	Profiles       []string
 }

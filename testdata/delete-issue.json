@@ -1,0 +1,18 @@
+{
+  "action": {
+    "host": "api.github.com",
+    "http": {
+      "method": "DELETE",
+      "path":   "/repos/denoland/clawpatrol/issues/1",
+      "headers": {
+        "Authorization": ["***"]
+      }
+    }
+  },
+  "match": {
+    "verdict":  "deny",
+    "rule":     "github-writes",
+    "endpoint": "github",
+    "reason":   "writes go through PR review"
+  }
+}

@@ -6,7 +6,6 @@ import {
   setDeviceProfile,
   type Agent,
   type Integration,
-  type Whoami,
 } from "../lib/api";
 import { fmtBytes } from "../lib/format";
 import { DeviceIcon } from "./Logos";
@@ -20,20 +19,26 @@ export function DevicePage({
   ip,
   agents,
   integrations,
-  whoami,
   readOnlyConfig,
   onBack,
   onConnect,
   onRefresh,
+  pendingConnect,
+  onConsumePendingConnect,
 }: {
   ip: string;
   agents: Agent[];
   integrations: Integration[];
-  whoami: Whoami | null;
   readOnlyConfig?: boolean;
   onBack: () => void;
-  onConnect: (id: string, profile?: string) => void;
+  onConnect: (id: string) => void;
   onRefresh: () => void;
+  // When set, a credential id the page should auto-open the connect
+  // flow for on mount. Used by the agents-table click-through.
+  pendingConnect?: string;
+  // Called once the page has acted on pendingConnect, so the parent can
+  // clean the ?connect= out of the URL.
+  onConsumePendingConnect?: () => void;
 }) {
   const a = useMemo(() => agents.find((x) => x.ip === ip) ?? null, [agents, ip]);
   const [profiles, setProfiles] = useState<string[]>([]);
@@ -67,14 +72,14 @@ export function DevicePage({
   if (!a) {
     return (
       <main className="mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-5">
-        <nav className="text-[13px] text-[#a3a3a3] flex items-center gap-1.5 mb-3">
-          <a href="#/" className="hover:text-[#171717]">
+        <nav className="text-sm text-text-subtle flex items-center gap-1.5 mb-3">
+          <a href="#/" className="hover:text-text">
             clawpatrol
           </a>
           <span>/</span>
-          <span className="text-[#525252]">{ip}</span>
+          <span className="text-text-muted">{ip}</span>
         </nav>
-        <div className="bg-white border border-[#e5e5e5] rounded px-5 py-8 text-center text-[12px] text-[#a3a3a3]">
+        <div className="bg-canvas-light border-2 border-navy px-5 py-8 text-center text-xs text-text-subtle">
           no agent with ip {ip}
         </div>
       </main>
@@ -104,12 +109,12 @@ export function DevicePage({
   return (
     <main className="mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-5 space-y-5">
       <div className="flex items-center justify-between">
-        <nav className="text-[13px] text-[#a3a3a3] flex items-center gap-1.5">
-          <a href="#/" className="hover:text-[#171717]">
+        <nav className="text-sm text-text-subtle flex items-center gap-1.5">
+          <a href="#/" className="hover:text-text">
             clawpatrol
           </a>
           <span>/</span>
-          <span className="text-[#525252]">{dev.hostname || dev.ip}</span>
+          <span className="text-text-muted">{dev.hostname || dev.ip}</span>
         </nav>
         <div className="flex items-center gap-2">
           <ProfilePicker
@@ -134,7 +139,7 @@ export function DevicePage({
           <a
             href={`#/analytics/${encodeURIComponent(ip)}`}
             title="analytics"
-            className="w-[36px] h-[36px] rounded-full border border-[#e5e5e5] text-[#525252] flex items-center justify-center hover:border-[#171717] hover:text-[#171717] transition-colors"
+            className="w-[36px] h-[36px] rounded-full border border-canvas-dark text-text-muted flex items-center justify-center hover:border-text hover:text-text transition-colors"
           >
             <svg
               width="16"
@@ -154,7 +159,7 @@ export function DevicePage({
             type="button"
             onClick={remove}
             title="forget this device"
-            className="w-[36px] h-[36px] rounded-full border border-[#e5e5e5] text-[#525252] flex items-center justify-center hover:border-[#dc2626] hover:text-[#dc2626] transition-colors"
+            className="w-[36px] h-[36px] rounded-full border border-canvas-dark text-text-muted flex items-center justify-center hover:border-danger-500 hover:text-danger-500 transition-colors"
           >
             <svg
               width="16"
@@ -177,19 +182,17 @@ export function DevicePage({
       </div>
 
       {/* device header card */}
-      <section className="bg-white border border-[#e5e5e5] rounded">
-        <div className="flex items-center gap-3 px-5 py-4 border-b border-[#e5e5e5]">
+      <section className="bg-canvas-light border-2 border-navy">
+        <div className="flex items-center gap-3 px-5 py-4">
           <DeviceIcon
             os={a.os}
             hostname={a.hostname}
             ua={a.ua}
-            className="w-[18px] h-[18px] text-[#525252]"
+            className="w-[18px] h-[18px] text-text-muted"
           />
           <div className="min-w-0">
-            <div className="text-[15px] font-semibold text-[#171717] truncate">
-              {a.hostname || a.ip}
-            </div>
-            <div className="text-[11px] text-[#737373] truncate">
+            <div className="text-base font-semibold text-text truncate">{a.hostname || a.ip}</div>
+            <div className="text-xs text-text-muted truncate">
               {a.profile || "—"} ·{" "}
               {[a.external_ipv4, a.external_ipv6].filter(Boolean).join(" / ") || a.ip}
               {a.os && (
@@ -203,12 +206,12 @@ export function DevicePage({
           <div className="ml-auto flex items-center gap-3">
             <Sparkline data={a.activity} width={160} height={26} />
             <div className="text-right">
-              <div className="text-[10px] uppercase tracking-[.09em] text-[#a3a3a3]">TRAFFIC</div>
-              <div className="text-[12px] tabular-nums">{fmtBytes(total)}</div>
+              <div className="text-2xs uppercase tracking-[.09em] text-text-subtle">TRAFFIC</div>
+              <div className="text-xs tabular-nums">{fmtBytes(total)}</div>
             </div>
             <div className="text-right">
-              <div className="text-[10px] uppercase tracking-[.09em] text-[#a3a3a3]">REQS</div>
-              <div className="text-[12px] tabular-nums">{a.reqs}</div>
+              <div className="text-2xs uppercase tracking-[.09em] text-text-subtle">REQS</div>
+              <div className="text-xs tabular-nums">{a.reqs}</div>
             </div>
           </div>
         </div>
@@ -223,10 +226,10 @@ export function DevicePage({
       {/* integrations management for this user */}
       <IntegrationsCards
         list={allForUser}
-        whoami={whoami}
-        profile={a.profile}
         onConnect={onConnect}
         onRefresh={onRefresh}
+        pendingConnect={pendingConnect}
+        onConsumePendingConnect={onConsumePendingConnect}
       />
 
       {/* rules — per-device scope (with global rules layered in) */}
@@ -266,7 +269,7 @@ function ProfilePicker({
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
         title={`profile: ${current || "—"}`}
-        className="w-[36px] h-[36px] rounded-full border border-[#e5e5e5] text-[#525252] flex items-center justify-center hover:border-[#171717] hover:text-[#171717] transition-colors disabled:opacity-50"
+        className="w-[36px] h-[36px] rounded-full border border-canvas-dark text-text-muted flex items-center justify-center hover:border-text hover:text-text transition-colors disabled:opacity-50"
       >
         <svg
           width="16"
@@ -284,12 +287,12 @@ function ProfilePicker({
         </svg>
       </button>
       {open && (
-        <div className="absolute right-0 top-[calc(100%+6px)] z-20 min-w-[200px] bg-white border border-[#e5e5e5] rounded shadow-lg py-1">
-          <div className="px-3 py-1.5 text-[10px] uppercase tracking-[.12em] text-[#a3a3a3] border-b border-[#f5f5f5]">
+        <div className="absolute right-0 top-[calc(100%+6px)] z-20 min-w-[200px] bg-canvas-light border-2 border-navy rounded shadow-lg py-1">
+          <div className="px-3 py-1.5 text-2xs uppercase tracking-[.12em] text-text-subtle border-b border-canvas-muted">
             choose profile
           </div>
           {profiles.length === 0 ? (
-            <div className="px-3 py-2 text-[11px] text-[#a3a3a3]">no profiles</div>
+            <div className="px-3 py-2 text-xs text-text-subtle">no profiles</div>
           ) : (
             profiles.map((p) => {
               const active = p === current;
@@ -302,14 +305,14 @@ function ProfilePicker({
                     setOpen(false);
                   }}
                   className={
-                    "w-full text-left px-3 py-1.5 text-[12px] flex items-center gap-2 hover:bg-[#f5f5f5] " +
-                    (active ? "text-[#171717] font-medium" : "text-[#525252]")
+                    "w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-canvas-muted " +
+                    (active ? "text-text font-medium" : "text-text-muted")
                   }
                 >
                   <span
                     className={
-                      "w-[6px] h-[6px] rounded-full flex-shrink-0 " +
-                      (active ? "bg-[#22c55e]" : "border border-[#e5e5e5]")
+                      "w-[6px] h-[6px] rounded-full shrink-0 " +
+                      (active ? "bg-success-500" : "border border-canvas-dark")
                     }
                   />
                   <span className="truncate">{p}</span>
@@ -319,7 +322,7 @@ function ProfilePicker({
           )}
         </div>
       )}
-      {err && <div className="text-[10px] text-red-600 mt-1">{err}</div>}
+      {err && <div className="text-2xs text-rust-700 mt-1">{err}</div>}
     </div>
   );
 }

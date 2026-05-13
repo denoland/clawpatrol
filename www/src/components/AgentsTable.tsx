@@ -10,10 +10,15 @@ export function AgentsTable({
   agents,
   integrations,
   onSelect,
+  onConnectCredential,
 }: {
   agents: Agent[];
   integrations?: Integration[];
   onSelect?: (ip: string) => void;
+  // Called when the operator clicks an unconfigured credential pill on
+  // an agent's row. The parent navigates to the device page with the
+  // connect flow pre-armed for that credential.
+  onConnectCredential?: (ip: string, id: string) => void;
 }) {
   // id → Integration lookup so the icon stack can pick the right
   // logo per credential type (postgres/slack/etc, not just the
@@ -22,7 +27,7 @@ export function AgentsTable({
   for (const i of integrations ?? []) byId.set(i.id, i);
   const stable = [...(agents ?? [])].sort((a, b) => a.ip.localeCompare(b.ip));
   return (
-    <table className="w-full table-fixed border-collapse bg-white" style={{ minWidth: 760 }}>
+    <table className="w-full table-fixed border-collapse" style={{ minWidth: 760 }}>
       <colgroup>
         <col style={{ width: 240 }} />
         <col style={{ width: 140 }} />
@@ -31,21 +36,20 @@ export function AgentsTable({
         <col />
         <col style={{ width: 110 }} />
       </colgroup>
-      <thead>
-        <tr className="border-b border-[#e5e5e5]">
+      <thead className="bg-navy-100">
+        <tr>
           <Th>DEVICE</Th>
           <Th className="hidden md:table-cell">PROFILE</Th>
           <Th>ACTIVITY</Th>
           <Th className="text-right">REQS</Th>
           <Th className="hidden lg:table-cell">IP</Th>
           <Th>INTEGRATIONS</Th>
-          <Th className="w-[32px]">{""}</Th>
         </tr>
       </thead>
       <tbody>
         {stable.length === 0 && (
           <tr>
-            <td colSpan={7} className="px-5 py-8 text-center text-[11px] text-[#a3a3a3]">
+            <td colSpan={6} className="px-5 py-8 text-center text-xs text-text-subtle">
               It's empty in here
             </td>
           </tr>
@@ -56,39 +60,39 @@ export function AgentsTable({
             <tr
               key={a.ip}
               onClick={() => onSelect?.(a.ip)}
-              className="border-b border-[#f5f5f5] cursor-pointer hover:bg-[#f9f9f9] transition-colors"
+              className="border-b border-canvas-muted cursor-pointer hover:bg-navy-50 transition-colors"
             >
               <Td>
                 <div className="flex items-center gap-1.5 min-w-0">
-                  <span className="w-[5px] h-[5px] rounded-full bg-[#22c55e] flex-shrink-0" />
+                  <span className="w-[5px] h-[5px] rounded-full bg-success-500 shrink-0" />
                   <DeviceIcon
                     os={a.os}
                     hostname={a.hostname}
                     ua={a.ua}
-                    className="w-[13px] h-[13px] text-[#525252] flex-shrink-0"
+                    className="w-[13px] h-[13px] text-text-muted shrink-0"
                   />
-                  <span className="text-[13px] font-semibold text-[#171717] truncate">
+                  <span className="text-sm font-semibold text-text truncate">
                     {a.hostname || a.ip}
                   </span>
                 </div>
-                <div className="md:hidden text-[10px] text-[#a3a3a3] truncate mt-0.5">
+                <div className="md:hidden text-2xs text-text-subtle truncate mt-0.5">
                   {a.profile || "—"}
                 </div>
               </Td>
-              <Td className="hidden md:table-cell text-[11px] text-[#525252] truncate">
+              <Td className="hidden md:table-cell text-xs text-text-muted truncate">
                 {a.profile || "—"}
               </Td>
               <Td>
                 <div className="flex items-center gap-2">
                   <Sparkline data={a.activity} width={120} height={16} />
-                  <span className="text-[10px] text-[#737373] tabular-nums whitespace-nowrap">
+                  <span className="text-2xs text-text-muted tabular-nums whitespace-nowrap">
                     {fmtBytes(total)}
                   </span>
                 </div>
               </Td>
-              <Td className="text-[11px] text-[#525252] tabular-nums text-right">{a.reqs}</Td>
+              <Td className="text-xs text-text-muted tabular-nums text-right">{a.reqs}</Td>
               <Td
-                className="hidden lg:table-cell text-[11px] text-[#737373] tabular-nums truncate"
+                className="hidden lg:table-cell text-xs text-text-muted tabular-nums truncate"
                 title={
                   [a.external_ipv4, a.external_ipv6].filter(Boolean).join(" / ") || `wg ${a.ip}`
                 }
@@ -99,16 +103,16 @@ export function AgentsTable({
                 <IntegrationStack
                   items={(a.integrations ?? []).map((id) => {
                     const it = byId.get(id);
-                    // Pick the owner row matching this device's profile
-                    // so two profiles connected to different GH accounts
-                    // surface distinct avatars in their respective rows.
-                    const owner = it?.owners?.find((o) => o.owner === a.profile) ?? it?.owners?.[0];
                     return {
                       id,
                       type: it?.type,
-                      avatar_url: owner?.avatar_url,
+                      avatar_url: it?.avatar_url,
+                      needsAction: needsAction(it),
                     };
                   })}
+                  onItemClick={
+                    onConnectCredential ? (id) => onConnectCredential(a.ip, id) : undefined
+                  }
                 />
               </Td>
             </tr>
@@ -119,11 +123,30 @@ export function AgentsTable({
   );
 }
 
+// needsAction returns true when a declared credential is missing its
+// secret (not connected) or its OAuth token has already expired. The
+// dashboard flags these with a red ring + click-to-configure handler.
+// Credentials with no auth path (the rare "api key only" inert case)
+// don't qualify — there's nothing actionable to do.
+function needsAction(it: Integration | undefined): boolean {
+  if (!it) return false;
+  const hasAuthPath = !!(
+    it.has_oauth ||
+    it.has_tailscale_auth ||
+    (it.slots && it.slots.length > 0)
+  );
+  if (!hasAuthPath) return false;
+  const connected = it.connected || (it.tailscale_auth?.connected ?? false);
+  if (!connected) return true;
+  if (it.expires_at && it.expires_at * 1000 < Date.now()) return true;
+  return false;
+}
+
 function Th({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return (
     <th
       className={
-        "px-3 sm:px-[14px] py-[9px] text-left text-[10px] uppercase tracking-[.12em] text-[#a3a3a3] font-medium bg-white " +
+        "px-3 sm:px-[14px] py-[9px] text-left text-2xs uppercase tracking-[.12em] text-navy font-bold " +
         className
       }
     >

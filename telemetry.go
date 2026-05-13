@@ -11,7 +11,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -78,12 +77,12 @@ func telemetryEnabled(cfg *config.Gateway) bool {
 	return true
 }
 
-func startTelemetry(g *Gateway, stateDir string) {
+func startTelemetry(g *Gateway) {
 	if !telemetryEnabled(g.cfg) {
 		log.Printf("telemetry: disabled")
 		return
 	}
-	id, err := loadOrCreateInstanceID(stateDir)
+	id, err := loadOrCreateInstanceID(g.db)
 	if err != nil {
 		log.Printf("telemetry: %v; disabled", err)
 		return
@@ -270,18 +269,25 @@ func actionsCountIn1h(g *Gateway) (int64, int64, int64) {
 	return count.Int64, bytesIn.Int64, bytesOut.Int64
 }
 
-func loadOrCreateInstanceID(stateDir string) (string, error) {
-	path := filepath.Join(stateDir, "instance_id")
-	if b, err := os.ReadFile(path); err == nil {
-		s := strings.TrimSpace(string(b))
-		if s != "" {
-			return s, nil
+func loadOrCreateInstanceID(db *sql.DB) (string, error) {
+	if db == nil {
+		return "", fmt.Errorf("instance_id: no db")
+	}
+	var id string
+	err := db.QueryRow(`SELECT instance_id FROM telemetry_state WHERE id = 1`).Scan(&id)
+	if err == nil {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			return id, nil
 		}
-	} else if !errors.Is(err, os.ErrNotExist) {
+	} else if !errors.Is(err, sql.ErrNoRows) {
 		return "", fmt.Errorf("read instance_id: %w", err)
 	}
-	id := newReqID() // UUIDv7
-	if err := os.WriteFile(path, []byte(id+"\n"), 0o600); err != nil {
+	id = newReqID() // UUIDv7
+	if _, err := db.Exec(
+		`INSERT INTO telemetry_state (id, instance_id, created_ns) VALUES (1, ?, ?)`,
+		id, time.Now().UnixNano(),
+	); err != nil {
 		// Non-fatal: emit the ID this run, accept that the next
 		// restart will mint a new one and over-count by one.
 		log.Printf(
@@ -290,6 +296,20 @@ func loadOrCreateInstanceID(stateDir string) (string, error) {
 		)
 	}
 	return id, nil
+}
+
+// importTelemetryInstanceID writes a pre-existing UUIDv7 into
+// telemetry_state. Used by the legacy-state importer.
+func importTelemetryInstanceID(db *sql.DB, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("instance_id empty")
+	}
+	_, err := db.Exec(
+		`INSERT INTO telemetry_state (id, instance_id, created_ns) VALUES (1, ?, ?)`,
+		id, time.Now().UnixNano(),
+	)
+	return err
 }
 
 func shortID(s string) string {

@@ -1,4 +1,4 @@
-# Avocet rules (v14).
+# Example policy (v14).
 #
 # Same semantics as v13. The version-history comments at the top of v13
 # have been replaced with this documentation of what the format means
@@ -9,9 +9,9 @@
 # ║ 1. WHAT THIS FILE IS                                             ║
 # ╚══════════════════════════════════════════════════════════════════╝
 #
-# Avocet sits between an agent and the upstream services it talks to
-# (GitHub, Slack, Postgres, Kubernetes, Stripe, ...). For every request
-# the agent issues, Avocet does two things:
+# The gateway sits between an agent and the upstream services it talks
+# to (GitHub, Slack, Postgres, Kubernetes, Stripe, ...). For every
+# request the agent issues, the gateway does two things:
 #
 #   1. Inject the right credential into the request (replace a
 #      placeholder header / cookie / SQL password with a real secret).
@@ -19,9 +19,8 @@
 #      one or more approvers (LLM proctor and / or human-in-Slack).
 #
 # This file describes both jobs in one document. It is lowered to flat
-# tables in unclaw's SQLite store at load time (see the `tools/avocet-
-# config` lowerer); nothing in this file is interpreted at request
-# time, only the lowered rows are.
+# tables in the gateway's SQLite store at load time; nothing in this
+# file is interpreted at request time, only the lowered rows are.
 #
 #
 # ╔══════════════════════════════════════════════════════════════════╗
@@ -42,8 +41,8 @@
 #                                         (bearer_token, mtls_credential,
 #                                         postgres_credential, ...).
 #                                         The actual secret value lives
-#                                         in unclaw's credential store,
-#                                         keyed by name.
+#                                         in the gateway's credential
+#                                         store, keyed by name.
 #
 #   endpoint     "<type>" "<name>" {}     a typed upstream binding:
 #                                         hosts + connection config +
@@ -76,14 +75,14 @@
 #
 # References are bare names — no kind prefix, no type prefix:
 #
-#     endpoint    = pg-deployng              # not  postgres.pg-deployng
-#     credentials = [github-avocet-pat]      # not  credential.bearer_token...
+#     endpoint    = pg-corp                  # not  postgres.pg-corp
+#     credentials = [github-ops-pat]         # not  credential.bearer_token...
 #     approve     = [fast]                   # not  approver.llm_approver.fast
 #
-# The two-label declaration (`endpoint "https" "github-avocet"`)
-# carries type information for the loader's schema validation, but
-# reference syntax doesn't repeat it. The loader resolves a bare name
-# by looking across all kinds; collisions are a load error.
+# The two-label declaration (`endpoint "https" "github-ops"`) carries
+# type information for the loader's schema validation, but reference
+# syntax doesn't repeat it. The loader resolves a bare name by looking
+# across all kinds; collisions are a load error.
 #
 # Note: ClickHouse exposes two protocols (HTTPS API + native binary)
 # from the same upstream cluster, so two endpoints share the upstream:
@@ -99,13 +98,13 @@
 #
 #   (a) Singular, no-placeholder:
 #
-#         endpoint "https" "github-avocet" {
+#         endpoint "https" "github-ops" {
 #           hosts      = ["api.github.com", "github.com"]
-#           credential = github-avocet-pat
+#           credential = github-ops-pat
 #         }
 #
 #       The agent sends the request as-is (whatever Authorization
-#       header it has, or none); Avocet replaces it with the real
+#       header it has, or none); the gateway replaces it with the real
 #       secret before forwarding upstream. This is the common case.
 #
 #   (b) Multi-credential dispatch via placeholder:
@@ -120,11 +119,12 @@
 #
 #       The agent picks which credential it wants by sending the
 #       matching placeholder string in the Authorization header (or
-#       password field, for postgres). At inject time, Avocet swaps
-#       the placeholder for the matching credential's real secret.
-#       Used when the same upstream service has multiple credentials
-#       with materially different blast radius — orb test vs prod, or
-#       postgres ro vs rw — and the agent needs to declare which one.
+#       password field, for postgres). At inject time, the gateway
+#       swaps the placeholder for the matching credential's real
+#       secret. Used when the same upstream service has multiple
+#       credentials with materially different blast radius — orb test
+#       vs prod, or postgres ro vs rw — and the agent needs to declare
+#       which one.
 #
 # Equivalences:
 #
@@ -140,8 +140,8 @@
 # plugin-defined: HTTPS overwrites Authorization regardless of what the
 # agent sent; postgres swaps the agent's password for the real one.
 #
-# v14 has 3 multi-credential endpoints: anthropic-avocet (api-key +
-# oauth), orb (test + prod), pg-deployng (ro + rw). The other 28
+# v14 has 3 multi-credential endpoints: anthropic-ops (api-key +
+# oauth), orb (test + prod), pg-corp (ro + rw). The other 28
 # endpoints use the singular form.
 #
 # Why placeholders live on the binding, not the credential:
@@ -178,7 +178,7 @@
 #     duplication; no inheritance machinery.
 #   - Each rule has one obvious place. `grep '"k8s-no-secrets"'`
 #     finds it.
-#   - The data shape matches what unclaw stores (a flat
+#   - The data shape matches what the gateway stores (a flat
 #     `approval_rules` table scoped per integration), so no clever
 #     compilation step is required at load.
 #
@@ -222,10 +222,10 @@
 #     otherwise send everything to the lenient `billing` approver.
 #
 #   - Use a negative priority for catch-all / default-deny rules.
-#     Example: `deno-deploy-default` (priority -100) denies everything
-#     not matched by an earlier explicit rule. Negative priorities
-#     replace the older `catch_all = true` flag — same semantic, one
-#     dimension.
+#     Example: `support-console-default` (priority -100) denies
+#     everything not matched by an earlier explicit rule. Negative
+#     priorities replace the older `catch_all = true` flag — same
+#     semantic, one dimension.
 #
 # v14 distribution: 11 rules with positive priority (overrides),
 # 8 with negative priority (catch-alls), 35 at default 0.
@@ -238,12 +238,12 @@
 #
 #   https → http.method, http.path, http.query, http.headers,
 #           http.body, http.body_json
-#   sql   → sql.verb, sql.tables, sql.function, sql.statement
+#   sql   → sql.verb, sql.tables, sql.functions, sql.statement
 #   k8s   → k8s.verb, k8s.resource, k8s.namespace, k8s.name,
 #           k8s.params
 #
 # `verb` (sql, k8s) and `method` (http) are unary strings. `tables`
-# and `function` (sql) are list[string]; `query` and `headers`
+# and `functions` (sql) are list[string]; `query` and `headers`
 # (http) are map[string]list[string]; `params` (k8s) is
 # map[string]string. `body` is the raw request body as string;
 # `body_json` is its parsed-JSON shape (dyn).
@@ -257,9 +257,9 @@
 #     `http.body.contains('approve_')`.
 #   - Regex (for what globs and startsWith can't express):
 #     `sql.statement.matches('(?i)\\bsecret\\b')`.
-#   - List intersection (sql `tables` / `function` against a
+#   - List intersection (sql `tables` / `functions` against a
 #     deny-list):
-#     `sets.intersects(sql.function, ['pg_read_file', ...])`.
+#     `sets.intersects(sql.functions, ['pg_read_file', ...])`.
 #     The `sets` extension is registered on every facet env.
 #
 #
@@ -285,9 +285,9 @@
 #
 # Use cases this shape covers:
 #
-#   - LLM-then-human (deno-deploy reply-on-behalf): the content-safety
-#     LLM judge runs first, then a human in #agent-support.
-#   - LLM-only proctoring (pg-deployng-secret-columns): a column-level
+#   - LLM-then-human (support-console reply-on-behalf): the content-
+#     safety LLM judge runs first, then a human in #support.
+#   - LLM-only proctoring (pg-corp-secret-columns): a column-level
 #     read of sensitive tables goes through Claude with a
 #     domain-specific prompt.
 #   - Human-only (stripe-extra-scrutiny): a curated set of destructive
@@ -300,7 +300,7 @@
 #
 # A profile is just an endpoint membership list:
 #
-#     profile "kaju" { endpoints = [github-kaju, slack-kaju, ...] }
+#     profile "alice" { endpoints = [github-alice, slack-alice, ...] }
 #
 # Three observations:
 #
@@ -310,22 +310,22 @@
 #
 #   - Sharing is by reference. notion / grafana / ch-o11y-* / k8s-dev-*
 #     all appear in multiple profiles; they map to one row each in
-#     unclaw, with M:N joins to the listed profiles.
+#     the gateway store, with M:N joins to the listed profiles.
 #
-#   - Per-user variants are separate endpoints. `github-avocet`,
-#     `github-kaju`, `github-mira` all hit api.github.com but each
+#   - Per-user variants are separate endpoints. `github-ops`,
+#     `github-alice`, `github-bob` all hit api.github.com but each
 #     binds a different PAT. The profile names the right one.
 #
 # v14 has three profiles:
 #
-#   avocet — full ops coverage (Anthropic dual-cred, Stripe, Orb,
-#            console.deno.com, both postgres servers, all k8s
+#   ops    — full ops coverage (Anthropic dual-cred, Stripe, Orb,
+#            internal admin console, both postgres servers, all k8s
 #            clusters, ClickHouse, Notion, Grafana, Slack).
-#   kaju   — operational tools (per-user GitHub/Slack, plus
+#   alice  — operational tools (per-user GitHub/Slack, plus
 #            tool-specific APIs: Smithery, AMem, Checkly, PostHog,
-#            Honeycomb, PagerDuty, support.deno.com).
-#   mira   — light profile (her own GitHub/Slack/Telegram/Codex/Gemini
-#            plus shared access to divy's Codex OAuth).
+#            Honeycomb, PagerDuty, customer support helpdesk).
+#   bob    — light profile (his own GitHub/Slack/Telegram/Codex/Gemini
+#            plus shared access to carol's Codex OAuth).
 #
 #
 # ╔══════════════════════════════════════════════════════════════════╗
@@ -333,7 +333,7 @@
 # ╚══════════════════════════════════════════════════════════════════╝
 #
 # - Hosts include port when non-default:
-#     hosts = ["denoland.grafana.net", "localhost:8443"]
+#     hosts = ["grafana.example.com", "localhost:8443"]
 #   No separate `port` field. Default ports are plugin-defined (https
 #   → 443, postgres → 5432, clickhouse_https → 443, clickhouse_native
 #   → 9440, ...).
@@ -344,14 +344,14 @@
 #   Lives on the endpoint because it's per-server, not per-credential.
 #
 # - Kubernetes mTLS PEMs are referenced by filename:
-#     ca_cert = "<<file:k8s-dev-ams-ca.pem>>"
+#     ca_cert = "<<file:k8s-dev-iad-ca.pem>>"
 #   The loader inlines the PEM content from a sibling directory at
 #   load time. Keeps cert material out of this file.
 #
-# - EKS auth (k8s-eks-deployng-prod) uses an `aws_eks_credential`,
-#   which the kubernetes plugin understands as "fetch a fresh bearer
-#   token via aws eks get-token at request time" — cluster, region,
-#   and AWS profile name go on the credential.
+# - EKS auth (k8s-eks-corp-prod) uses an `aws_credential` bound to the
+#   kubernetes endpoint. The gateway presigns an STS GetCallerIdentity
+#   URL at request time and stamps the `k8s-aws-v1.<…>` bearer; cluster
+#   name and region live on the endpoint.
 
 unknown_host = "passthrough"
 llm_fail_mode = "closed"
@@ -366,7 +366,7 @@ human_on_timeout = "deny"
 #                     (postgres column-level reads, k8s exec content)
 #   content-safety  — Sonnet, used when the prompt requires reasoning
 #                     about user-visible content (Slack reply shape,
-#                     deno-deploy reply-on-behalf)
+#                     support-console reply-on-behalf)
 #
 # Human approvers are scoped per concern: support-ops, console-dba,
 # scheduler-ops, billing, billing-strict, observability, notion-archive.
@@ -375,43 +375,43 @@ human_on_timeout = "deny"
 
 approver "llm_approver" "slack-block-kit-shape-judge" {
   model      = "claude-sonnet-4-20250514"
-  credential = anthropic-avocet-sub
+  credential = anthropic-ops-sub
   policy     = slack-block-kit-shape
 }
 approver "llm_approver" "reply-content-judge" {
   model      = "claude-sonnet-4-20250514"
-  credential = anthropic-avocet-sub
+  credential = anthropic-ops-sub
   policy     = reply-content
 }
 approver "llm_approver" "pg-secret-columns-judge" {
   model      = "claude-haiku-4-5-20251001"
-  credential = anthropic-avocet-sub
+  credential = anthropic-ops-sub
   policy     = pg-secret-columns
 }
 approver "llm_approver" "pg-secret-named-defense-judge" {
   model      = "claude-haiku-4-5-20251001"
-  credential = anthropic-avocet-sub
+  credential = anthropic-ops-sub
   policy     = pg-secret-named-defense
 }
 approver "llm_approver" "k8s-exec-content-judge" {
   model      = "claude-haiku-4-5-20251001"
-  credential = anthropic-avocet-sub
+  credential = anthropic-ops-sub
   policy     = k8s-exec-content
 }
 
 approver "human_approver" "support-ops" {
-  channel = "#agent-support"
+  channel = "#support"
   timeout = 86400
 }
-approver "human_approver" "console-dba"    { channel = "#agent-db" }
-approver "human_approver" "scheduler-ops"  { channel = "#agent-db" }
+approver "human_approver" "console-dba"    { channel = "#db-approvals" }
+approver "human_approver" "scheduler-ops"  { channel = "#db-approvals" }
 approver "human_approver" "billing"        { channel = "#billing-approvals" }
 approver "human_approver" "billing-strict" {
   channel           = "#billing-approvals"
   require_approvers = 2
 }
 approver "human_approver" "observability"  { channel = "#observability" }
-approver "human_approver" "notion-archive" { channel = "#agent-notion" }
+approver "human_approver" "notion-archive" { channel = "#notion-approvals" }
 
 # ── Reusable LLM policy texts ───────────────────────
 #
@@ -496,46 +496,46 @@ policy "pg-secret-named-defense" {
 # ── Credentials ─────────────────────────────────────
 #
 # Every credential is a typed handle. The actual secret material is
-# stored separately in unclaw and looked up at inject time by name.
-# Credential blocks here only carry parameters that the plugin needs
-# in order to know HOW to inject (cookie name, postgres user,
+# stored separately in the gateway and looked up at inject time by
+# name. Credential blocks here only carry parameters that the plugin
+# needs in order to know HOW to inject (cookie name, postgres user,
 # stripe idempotency-key behaviour, EKS cluster info, header name
 # overrides, ...). They never hold the secret value itself.
 
-# avocet's anthropic — both an API key AND an OAuth subscription. The
+# ops' anthropic — both an API key AND an OAuth subscription. The
 # agent picks via placeholder; api-key is preferred for raw-API
 # usage, subscription is preferred for higher rate limits / cheaper
 # tokens during normal operation.
-credential "anthropic_manual_key" "anthropic-avocet-key" {
+credential "anthropic_manual_key" "anthropic-ops-key" {
 }
-credential "anthropic_oauth_subscription" "anthropic-avocet-sub" {
+credential "anthropic_oauth_subscription" "anthropic-ops-sub" {
 }
 
 # Per-user GitHub PATs. Same hosts (api.github.com, github.com) but
 # different secret per user — three endpoints, three credentials.
-credential "bearer_token" "github-avocet-pat" {}
-credential "bearer_token" "github-kaju-pat"   {}
-credential "bearer_token" "github-mira-pat"   {}
+credential "bearer_token" "github-ops-pat"   {}
+credential "bearer_token" "github-alice-pat" {}
+credential "bearer_token" "github-bob-pat"   {}
 
 # Slack tokens. The slack_tokens credential type bundles bot+app
 # tokens for a single workspace; Slack's plugin injects whichever is
 # appropriate for the destination API. One credential per workspace.
-credential "slack_tokens" "slack-avocet-cred" {}
-credential "slack_tokens" "slack-kaju-cred"   {}
-credential "slack_tokens" "slack-mira-cred"   {}
+credential "slack_tokens" "slack-ops-cred"   {}
+credential "slack_tokens" "slack-alice-cred" {}
+credential "slack_tokens" "slack-bob-cred"   {}
 
 # Telegram bot tokens.
-credential "telegram_bot_token" "telegram-divy-cred" {}
-credential "telegram_bot_token" "telegram-mira-cred" {}
+credential "telegram_bot_token" "telegram-carol-cred" {}
+credential "telegram_bot_token" "telegram-bob-cred"   {}
 
-# Gemini (mira only).
-credential "gemini_api_key" "gemini-mira-cred" {}
+# Gemini (bob only).
+credential "gemini_api_key" "gemini-bob-cred" {}
 
-# OpenAI Codex OAuth — divy's is shared between kaju and mira.
-credential "openai_codex_oauth" "openai-codex-divy-cred" {}
-credential "openai_codex_oauth" "openai-codex-mira-cred" {}
+# OpenAI Codex OAuth — carol's is shared between alice and bob.
+credential "openai_codex_oauth" "openai-codex-carol-cred" {}
+credential "openai_codex_oauth" "openai-codex-bob-cred"   {}
 
-# avocet-only.
+# ops-only.
 # `idempotency_key = true` on stripe-live-key tells the apikey plugin
 # to also stamp an Idempotency-Key header on writes, so the same
 # request retried by the agent doesn't cause double-charge.
@@ -544,48 +544,44 @@ credential "bearer_token" "stripe-live-key" {
 }
 credential "bearer_token" "orb-test-key" {}
 credential "bearer_token" "orb-prod-key" {}
-credential "cookie_token" "deno-deploy-pat" {
+credential "cookie_token" "support-console-pat" {
   cookie_name = "session"
 }
-credential "postgres_credential" "pg-deployng-ro" {
-  user        = "console_ro"
+credential "postgres_credential" "pg-corp-ro" {
+  user        = "corp_ro"
 }
-credential "postgres_credential" "pg-deployng-rw" {
-  user        = "console"
+credential "postgres_credential" "pg-corp-rw" {
+  user        = "corp_rw"
 }
 credential "postgres_credential" "pg-scheduler-cred" {
   user        = "scheduler"
 }
 
 # Shared (referenced by multiple profiles).
-credential "notion_oauth" "notion-deno" {}
+credential "notion_oauth" "notion-corp" {}
 credential "bearer_token" "grafana-token" {}
 credential "clickhouse_credential" "ch-o11y" {
-  user = "avocet"
+  user = "ops"
 }
-credential "mtls_credential" "k8s-dev-ams-mtls" {}
-credential "mtls_credential" "k8s-dev-ord-mtls" {}
-credential "aws_eks_credential" "k8s-eks-deployng-aws" {
-  cluster = "deployng-prod"
-  region  = "us-east-2"
-  profile = "deployng-console-prod"
-}
+credential "mtls_credential" "k8s-dev-iad-mtls" {}
+credential "mtls_credential" "k8s-dev-sfo-mtls" {}
+credential "aws_credential" "k8s-eks-corp-aws" {}
 
-# kaju's per-tool API tokens. These illustrate the variety of HTTP
+# alice's per-tool API tokens. These illustrate the variety of HTTP
 # auth shapes the bearer/header_token credentials cover:
 #   - bearer_token        → Authorization: Bearer <secret>
 #   - header_token        → custom header name + optional prefix
 #                           (honeycomb uses x-honeycomb-team raw;
 #                            pagerduty uses authorization: Token token=<secret>)
-credential "bearer_token" "smithery-kaju"     {}
-credential "bearer_token" "amem-kaju"         {}
-credential "bearer_token" "checkly-kaju"      {}
-credential "bearer_token" "posthog-kaju"      {}
-credential "bearer_token" "deno-support-kaju" {}
-credential "header_token" "honeycomb-kaju" {
+credential "bearer_token" "smithery-alice"  {}
+credential "bearer_token" "amem-alice"      {}
+credential "bearer_token" "checkly-alice"   {}
+credential "bearer_token" "posthog-alice"   {}
+credential "bearer_token" "helpdesk-alice"  {}
+credential "header_token" "honeycomb-alice" {
   header = "x-honeycomb-team"
 }
-credential "header_token" "pagerduty-kaju" {
+credential "header_token" "pagerduty-alice" {
   header = "authorization"
   prefix = "Token token="
 }
@@ -595,72 +591,72 @@ credential "header_token" "pagerduty-kaju" {
 # Endpoint blocks hold ONLY connection / credential info — no rules,
 # no defaults. Rules attach upward via top-level `rule {}` blocks.
 
-# Multi-account anthropic (avocet only). Two credential types
-# coexist behind a placeholder dispatch; the agent picks api-key vs
+# Multi-account anthropic (ops only). Two credential types coexist
+# behind a placeholder dispatch; the agent picks api-key vs
 # oauth-subscription per call.
-endpoint "https" "anthropic-avocet" {
+endpoint "https" "anthropic-ops" {
   hosts = ["api.anthropic.com"]
   credentials = [
-    { placeholder = "PH_anthropic_avocet_apikey", credential = anthropic-avocet-key },
-    { placeholder = "PH_anthropic_avocet_subscription", credential = anthropic-avocet-sub },
+    { placeholder = "PH_anthropic_ops_apikey", credential = anthropic-ops-key },
+    { placeholder = "PH_anthropic_ops_subscription", credential = anthropic-ops-sub },
   ]
 }
 
 # Per-user GitHub. Same hosts, different credentials → three
 # endpoints. Each profile names exactly one of these.
-endpoint "https" "github-avocet" {
+endpoint "https" "github-ops" {
   hosts       = ["api.github.com", "github.com"]
-  credential = github-avocet-pat
+  credential = github-ops-pat
 }
-endpoint "https" "github-kaju" {
+endpoint "https" "github-alice" {
   hosts       = ["api.github.com", "github.com"]
-  credential = github-kaju-pat
+  credential = github-alice-pat
 }
-endpoint "https" "github-mira" {
+endpoint "https" "github-bob" {
   hosts       = ["api.github.com", "github.com"]
-  credential = github-mira-pat
+  credential = github-bob-pat
 }
 
 # Per-user Slack.
-endpoint "https" "slack-avocet" {
+endpoint "https" "slack-ops" {
   hosts       = ["slack.com", "www.slack.com", "api.slack.com"]
-  credential = slack-avocet-cred
+  credential = slack-ops-cred
 }
-endpoint "https" "slack-kaju" {
+endpoint "https" "slack-alice" {
   hosts       = ["slack.com", "www.slack.com", "api.slack.com"]
-  credential = slack-kaju-cred
+  credential = slack-alice-cred
 }
-endpoint "https" "slack-mira" {
+endpoint "https" "slack-bob" {
   hosts       = ["slack.com", "www.slack.com", "api.slack.com"]
-  credential = slack-mira-cred
+  credential = slack-bob-cred
 }
 
 # Per-user Telegram / Codex / Gemini.
-endpoint "https" "telegram-divy" {
+endpoint "https" "telegram-carol" {
   hosts       = ["api.telegram.org"]
-  credential = telegram-divy-cred
+  credential = telegram-carol-cred
 }
-endpoint "https" "telegram-mira" {
+endpoint "https" "telegram-bob" {
   hosts       = ["api.telegram.org"]
-  credential = telegram-mira-cred
+  credential = telegram-bob-cred
 }
-endpoint "https" "gemini-mira" {
+endpoint "https" "gemini-bob" {
   hosts       = ["generativelanguage.googleapis.com"]
-  credential = gemini-mira-cred
+  credential = gemini-bob-cred
 }
-endpoint "https" "openai-codex-divy" {
+endpoint "https" "openai-codex-carol" {
   hosts       = ["chatgpt.com", "auth.openai.com"]
-  credential = openai-codex-divy-cred
+  credential = openai-codex-carol-cred
 }
-endpoint "https" "openai-codex-mira" {
+endpoint "https" "openai-codex-bob" {
   hosts       = ["chatgpt.com", "auth.openai.com"]
-  credential = openai-codex-mira-cred
+  credential = openai-codex-bob-cred
 }
 
-# avocet-only services.
-endpoint "https" "deno-deploy" {
-  hosts       = ["console.deno.com"]
-  credential = deno-deploy-pat
+# ops-only services.
+endpoint "https" "support-console" {
+  hosts       = ["admin.example.com"]
+  credential = support-console-pat
 }
 endpoint "https" "stripe" {
   hosts       = ["api.stripe.com"]
@@ -680,92 +676,94 @@ endpoint "https" "orb" {
 
 # Postgres. Network reachability is arranged out-of-band; tunnel
 # topology declarations land when the postgres runtime hooks ship.
-endpoint "postgres" "pg-deployng" {
-  host     = "deployng-prod.cluster-cnmc6k08siv7.us-east-2.rds.amazonaws.com:5432"
-  database = "deployng"
+endpoint "postgres" "pg-corp" {
+  host     = "corp-prod.cluster.example:5432"
+  database = "corp"
   # ro/rw dispatch via placeholder. Ro is the default for reads;
   # rw requires explicit selection AND human approval (see rules).
   credentials = [
-    { placeholder = "PH_pg_deployng_ro", credential = pg-deployng-ro },
-    { placeholder = "PH_pg_deployng_rw", credential = pg-deployng-rw },
+    { placeholder = "PH_pg_corp_ro", credential = pg-corp-ro },
+    { placeholder = "PH_pg_corp_rw", credential = pg-corp-rw },
   ]
 }
 endpoint "postgres" "pg-scheduler" {
-  host       = "scheduler-prod.cluster-cnmc6k08siv7.us-east-2.rds.amazonaws.com:5432"
+  host       = "scheduler-prod.cluster.example:5432"
   database   = "scheduler"
   credential = pg-scheduler-cred
 }
 
-endpoint "kubernetes" "k8s-eks-deployng-prod" {
-  hosts       = ["*.gr7.us-east-2.eks.amazonaws.com"]
-  description = "arn:aws:eks:us-east-2:050451385055:cluster/deployng-prod"
-  credential = k8s-eks-deployng-aws
+endpoint "kubernetes" "k8s-eks-corp-prod" {
+  hosts        = ["*.gr7.us-east-2.eks.amazonaws.com"]
+  description  = "arn:aws:eks:us-east-2:123456789012:cluster/corp-prod"
+  cluster_name = "corp-prod"
+  region       = "us-east-2"
+  credential   = k8s-eks-corp-aws
 }
 
 # Shared (multiple profiles).
 endpoint "https" "notion" {
   hosts       = ["api.notion.com", "mcp.notion.com"]
-  credential = notion-deno
+  credential = notion-corp
 }
 endpoint "https" "grafana" {
-  hosts       = ["denoland.grafana.net"]
+  hosts       = ["grafana.example.com"]
   credential = grafana-token
 }
 # ClickHouse exposes two protocols on the same upstream cluster.
 # Two endpoint rows, distinct names, one shared credential. Rules
 # can attach to both via `endpoints = [ch-o11y-https, ch-o11y-native]`.
 endpoint "clickhouse_https" "ch-o11y-https" {
-  hosts       = ["clickhouse-o11y.tail9a48e.ts.net", "ch-o11y.infra.deno-gcp.net"]
+  hosts       = ["clickhouse-o11y.example", "ch-o11y.internal.example"]
   credential = ch-o11y
 }
 endpoint "clickhouse_native" "ch-o11y-native" {
-  hosts       = ["clickhouse-o11y.tail9a48e.ts.net"]
+  hosts       = ["clickhouse-o11y.example"]
   credential = ch-o11y
 }
 # Self-hosted k8s clusters use mTLS. The CA cert is referenced by
 # filename and inlined at load time.
-endpoint "kubernetes" "k8s-dev-ams" {
-  server      = "209.250.247.66"
-  ca_cert     = "<<file:k8s-dev-ams-ca.pem>>"
-  description = "admin@net.deno-cluster.prod.vultr.ams"
-  credential = k8s-dev-ams-mtls
+endpoint "kubernetes" "k8s-dev-iad" {
+  server      = "198.51.100.10"
+  ca_cert     = "<<file:k8s-dev-iad-ca.pem>>"
+  description = "admin@dev-iad.example"
+  credential = k8s-dev-iad-mtls
 }
-endpoint "kubernetes" "k8s-dev-ord" {
-  server      = "216.128.145.115"
-  ca_cert     = "<<file:k8s-dev-ord-ca.pem>>"
-  description = "admin@net.deno-cluster.prod.vultr.ord"
-  credential = k8s-dev-ord-mtls
+endpoint "kubernetes" "k8s-dev-sfo" {
+  server      = "198.51.100.20"
+  ca_cert     = "<<file:k8s-dev-sfo-ca.pem>>"
+  description = "admin@dev-sfo.example"
+  credential = k8s-dev-sfo-mtls
 }
 
-# kaju's per-tool endpoints. One endpoint per upstream API; minimal
+# alice's per-tool endpoints. One endpoint per upstream API; minimal
 # rule coverage (most are passthrough with credential injection only).
 endpoint "https" "smithery" {
   hosts       = ["smithery.ai"]
-  credential = smithery-kaju
+  credential = smithery-alice
 }
 endpoint "https" "amem" {
   hosts       = ["api.amem.ai"]
-  credential = amem-kaju
+  credential = amem-alice
 }
 endpoint "https" "checkly" {
   hosts       = ["api.checklyhq.com"]
-  credential = checkly-kaju
+  credential = checkly-alice
 }
 endpoint "https" "posthog" {
   hosts       = ["us.i.posthog.com", "us.posthog.com"]
-  credential = posthog-kaju
+  credential = posthog-alice
 }
 endpoint "https" "honeycomb" {
   hosts       = ["api.honeycomb.io"]
-  credential = honeycomb-kaju
+  credential = honeycomb-alice
 }
 endpoint "https" "pagerduty" {
   hosts       = ["api.pagerduty.com"]
-  credential = pagerduty-kaju
+  credential = pagerduty-alice
 }
-endpoint "https" "kaju-deno-support" {
-  hosts       = ["support.deno.com"]
-  credential = deno-support-kaju
+endpoint "https" "alice-helpdesk" {
+  hosts       = ["helpdesk.example.com"]
+  credential = helpdesk-alice
 }
 
 # ── Rules ────────────────────────────────────────────
@@ -782,54 +780,54 @@ endpoint "https" "kaju-deno-support" {
 #   4. Default-priority rules for normal writes → human approval.
 #   5. Negative-priority catch-all denies anything that fell through.
 #
-# Only deno-deploy, stripe, and most postgres / k8s endpoints have an
-# explicit catch-all. Endpoints with simple shapes (notion, grafana,
-# slack-avocet, github-*) leave fall-through semantics to unclaw's
-# default behaviour.
+# Only support-console, stripe, and most postgres / k8s endpoints
+# have an explicit catch-all. Endpoints with simple shapes (notion,
+# grafana, slack-ops, github-*) leave fall-through semantics to the
+# gateway's default behaviour.
 
 # ── Slack ───────────────────────────────────────────
 #
-# Slack rules only target slack-avocet (the only profile with custom
+# Slack rules only target slack-ops (the only profile with custom
 # Slack rules). The single rule guards the support-team's outbound
 # email-by-Slack-button flow: messages containing approve_reply_*
 # action IDs go through an LLM proctor that verifies the Block Kit
 # shape matches what the human reviewer will see.
 
-rule "slack-avocet-approve-reply-shape" {
-  endpoint  = slack-avocet
+rule "slack-ops-approve-reply-shape" {
+  endpoint  = slack-ops
   condition = "http.method == 'POST' && http.path == '/api/chat.postMessage' && http.body.contains('approve_reply_')"
   approve   = [slack-block-kit-shape-judge]
 }
 
-# ── Deno Deploy ─────────────────────────────────────
+# ── Support console ─────────────────────────────────
 #
-# console.deno.com support flow. Reads are free. Two specific support-
-# ticket mutations route to the support-ops human approver. The
-# reply-on-behalf endpoint sends customer-visible email content, so
-# it goes through the content-safety LLM first (catches markdown,
+# admin.example.com support flow. Reads are free. Two specific
+# support-ticket mutations route to the support-ops human approver.
+# The reply-on-behalf endpoint sends customer-visible email content,
+# so it goes through the content-safety LLM first (catches markdown,
 # missing salutation, abusive content) and then support-ops human
 # approval. Everything else denies via the catch-all.
 
-rule "deno-deploy-reads" {
-  endpoint  = deno-deploy
+rule "support-console-reads" {
+  endpoint  = support-console
   condition = "http.method == 'GET'"
   verdict   = "allow"
 }
-rule "deno-deploy-ticket-mutations" {
-  endpoint  = deno-deploy
+rule "support-console-ticket-mutations" {
+  endpoint  = support-console
   condition = "http.method == 'POST' && http.path in ['/api/trpc/admin.supportTickets.markAsSpam', '/api/trpc/admin.supportTickets.updateStatus']"
   approve   = [support-ops]
 }
-rule "deno-deploy-reply-on-behalf" {
-  endpoint  = deno-deploy
+rule "support-console-reply-on-behalf" {
+  endpoint  = support-console
   condition = "http.method == 'POST' && http.path == '/api/trpc/admin.supportTickets.replyOnBehalf'"
   approve   = [reply-content-judge, support-ops]
 }
-rule "deno-deploy-default" {
-  endpoint = deno-deploy
+rule "support-console-default" {
+  endpoint = support-console
   priority = -100
   verdict  = "deny"
-  reason   = "console.deno.com mutations require an explicit approval rule"
+  reason   = "admin.example.com mutations require an explicit approval rule"
 }
 
 # ── Stripe ──────────────────────────────────────────
@@ -995,77 +993,77 @@ rule "clickhouse-default" {
 
 # ── Postgres — banned across all postgres endpoints ─
 #
-# These rules apply to BOTH pg-deployng and pg-scheduler — anything
+# These rules apply to BOTH pg-corp and pg-scheduler — anything
 # the agent should never be able to do regardless of which database.
 # DDL, dangerous functions, COPY ... PROGRAM, and the migrations
 # table are all blocked uniformly. Per-database rules follow.
 
 rule "pg-banned-verbs" {
-  endpoints = [pg-deployng, pg-scheduler]
+  endpoints = [pg-corp, pg-scheduler]
   condition = "sql.verb in ['drop', 'truncate', 'alter', 'grant', 'revoke', 'vacuum', 'create', 'comment', 'do']"
   verdict   = "deny"
   reason    = "Schema changes / destructive DDL not permitted; use a migration PR"
 }
 rule "pg-banned-functions" {
-  endpoints = [pg-deployng, pg-scheduler]
-  condition = "sets.intersects(sql.function, ['pg_terminate_backend', 'pg_cancel_backend', 'pg_read_file', 'pg_read_binary_file', 'lo_get']) || sql.function.exists(f, f.startsWith('dblink_'))"
+  endpoints = [pg-corp, pg-scheduler]
+  condition = "sets.intersects(sql.functions, ['pg_terminate_backend', 'pg_cancel_backend', 'pg_read_file', 'pg_read_binary_file', 'lo_get']) || sql.functions.exists(f, f.startsWith('dblink_'))"
   verdict   = "deny"
   reason    = "Disallowed function for agent access"
 }
 rule "pg-banned-copy-from" {
-  endpoints = [pg-deployng, pg-scheduler]
+  endpoints = [pg-corp, pg-scheduler]
   condition = "sql.statement.matches('(?is)copy.*from program')"
   verdict   = "deny"
   reason    = "COPY ... FROM PROGRAM is disallowed"
 }
 rule "pg-banned-copy-to" {
-  endpoints = [pg-deployng, pg-scheduler]
+  endpoints = [pg-corp, pg-scheduler]
   condition = "sql.statement.matches('(?is)copy.*to program')"
   verdict   = "deny"
   reason    = "COPY ... TO PROGRAM is disallowed"
 }
 rule "pg-no-migrations" {
-  endpoints = [pg-deployng, pg-scheduler]
+  endpoints = [pg-corp, pg-scheduler]
   condition = "'kysely_migration' in sql.tables"
   verdict   = "deny"
   reason    = "Migrations table is owned by the deploy pipeline"
 }
 
-# ── Postgres — pg-deployng-specific account rules ───
+# ── Postgres — pg-corp-specific account rules ───────
 #
-# pg-deployng has ro/rw credentials. The ro account is read-only by
+# pg-corp has ro/rw credentials. The ro account is read-only by
 # database grants too, but we deny writes here for fast feedback (no
 # need to round-trip to pg). Reads of sensitive tables (env vars,
 # tokens, certs) go through an LLM proctor that checks whether secret
 # columns are actually being projected — priority=100 so it overrides
-# pg-deployng-reads. Rw writes go to console-dba.
+# pg-corp-reads. Rw writes go to console-dba.
 
-rule "pg-deployng-ro-no-writes" {
-  endpoint   = pg-deployng
-  credential = pg-deployng-ro
+rule "pg-corp-ro-no-writes" {
+  endpoint   = pg-corp
+  credential = pg-corp-ro
   condition  = "sql.verb in ['insert', 'update', 'delete', 'merge', 'notify']"
   verdict    = "deny"
   reason     = "ro account is read-only — use the rw placeholder if you need to write"
 }
-rule "pg-deployng-secret-columns" {
-  endpoint  = pg-deployng
+rule "pg-corp-secret-columns" {
+  endpoint  = pg-corp
   priority  = 100
   condition = "sql.verb == 'select' && sets.intersects(sql.tables, ['github_identities', 'tokens', 'email_confirmations', 'authorizations', 'domain_certificates', 'database_instances', 'env_vars'])"
   approve   = [pg-secret-columns-judge]
 }
-rule "pg-deployng-rw-writes" {
-  endpoint   = pg-deployng
-  credential = pg-deployng-rw
+rule "pg-corp-rw-writes" {
+  endpoint   = pg-corp
+  credential = pg-corp-rw
   condition  = "sql.verb in ['insert', 'update', 'delete', 'merge', 'notify']"
   approve    = [console-dba]
 }
-rule "pg-deployng-reads" {
-  endpoint  = pg-deployng
+rule "pg-corp-reads" {
+  endpoint  = pg-corp
   condition = "sql.verb in ['select', 'show', 'explain']"
   verdict   = "allow"
 }
-rule "pg-deployng-default" {
-  endpoint = pg-deployng
+rule "pg-corp-default" {
+  endpoint = pg-corp
   priority = -100
   verdict  = "deny"
 }
@@ -1100,8 +1098,8 @@ rule "pg-scheduler-default" {
 
 # ── Kubernetes — base rules across all clusters ─────
 #
-# Applied uniformly to all three clusters (k8s-dev-ams, k8s-dev-ord,
-# k8s-eks-deployng-prod). The three high-priority rules at 1000
+# Applied uniformly to all three clusters (k8s-dev-iad, k8s-dev-sfo,
+# k8s-eks-corp-prod). The three high-priority rules at 1000
 # (no-secrets, no-interactive, no-portforward-non-debug) are
 # non-negotiable safety blocks: secret values can't leave via the
 # agent, interactive shells can't be policy-evaluated, and port-
@@ -1113,103 +1111,103 @@ rule "pg-scheduler-default" {
 # (the safety blocks above already restrict them appropriately).
 
 rule "k8s-no-secrets" {
-  endpoints = [k8s-dev-ams, k8s-dev-ord, k8s-eks-deployng-prod]
+  endpoints = [k8s-dev-iad, k8s-dev-sfo, k8s-eks-corp-prod]
   priority  = 1000
   condition = "k8s.resource == 'secrets'"
   verdict   = "deny"
   reason    = "Secret values must not leave the cluster via the agent"
 }
 rule "k8s-no-interactive" {
-  endpoints = [k8s-dev-ams, k8s-dev-ord, k8s-eks-deployng-prod]
+  endpoints = [k8s-dev-iad, k8s-dev-sfo, k8s-eks-corp-prod]
   priority  = 1000
   condition = "k8s.resource in ['pods/exec', 'pods/attach'] && k8s.params.stdin == 'true'"
   verdict   = "deny"
   reason    = "Interactive shells can't be evaluated by the rules engine"
 }
 rule "k8s-no-disruptive" {
-  endpoints = [k8s-dev-ams, k8s-dev-ord, k8s-eks-deployng-prod]
+  endpoints = [k8s-dev-iad, k8s-dev-sfo, k8s-eks-corp-prod]
   condition = "k8s.verb in ['drain', 'cordon', 'evict']"
   verdict   = "deny"
   reason    = "Cluster-disruptive operations are not allowed"
 }
 rule "k8s-no-portforward-non-debug" {
-  endpoints = [k8s-dev-ams, k8s-dev-ord, k8s-eks-deployng-prod]
+  endpoints = [k8s-dev-iad, k8s-dev-sfo, k8s-eks-corp-prod]
   priority  = 1000
   condition = "k8s.resource == 'pods/portforward' && !k8s.name.startsWith('debug-')"
   verdict   = "deny"
   reason    = "Port-forward only allowed to debug-* pods"
 }
 rule "k8s-no-mutations" {
-  endpoints = [k8s-dev-ams, k8s-dev-ord, k8s-eks-deployng-prod]
+  endpoints = [k8s-dev-iad, k8s-dev-sfo, k8s-eks-corp-prod]
   condition = "k8s.verb in ['create', 'update', 'patch', 'delete'] && !k8s.name.startsWith('debug-') && !k8s.resource.endsWith('/exec') && !k8s.resource.endsWith('/attach') && !k8s.resource.endsWith('/portforward')"
   verdict   = "deny"
   reason    = "Only debug-* pods may be created / modified / deleted"
 }
 rule "k8s-exec-content-check" {
-  endpoints = [k8s-dev-ams, k8s-dev-ord, k8s-eks-deployng-prod]
+  endpoints = [k8s-dev-iad, k8s-dev-sfo, k8s-eks-corp-prod]
   priority  = 500
   condition = "k8s.resource == 'pods/exec'"
   approve   = [k8s-exec-content-judge]
 }
 rule "k8s-allow-meta" {
-  endpoints = [k8s-dev-ams, k8s-dev-ord, k8s-eks-deployng-prod]
+  endpoints = [k8s-dev-iad, k8s-dev-sfo, k8s-eks-corp-prod]
   condition = "k8s.verb == 'meta'"
   verdict   = "allow"
 }
 rule "k8s-reads" {
-  endpoints = [k8s-dev-ams, k8s-dev-ord, k8s-eks-deployng-prod]
+  endpoints = [k8s-dev-iad, k8s-dev-sfo, k8s-eks-corp-prod]
   condition = "k8s.verb in ['get', 'list', 'watch']"
   verdict   = "allow"
 }
 rule "k8s-debug-pods" {
-  endpoints = [k8s-dev-ams, k8s-dev-ord, k8s-eks-deployng-prod]
+  endpoints = [k8s-dev-iad, k8s-dev-sfo, k8s-eks-corp-prod]
   condition = "k8s.verb in ['create', 'delete'] && k8s.resource == 'pods' && k8s.name.startsWith('debug-')"
   verdict   = "allow"
 }
 rule "k8s-exec-attach" {
-  endpoints = [k8s-dev-ams, k8s-dev-ord, k8s-eks-deployng-prod]
+  endpoints = [k8s-dev-iad, k8s-dev-sfo, k8s-eks-corp-prod]
   condition = "k8s.verb in ['create', 'get'] && k8s.resource in ['pods/exec', 'pods/attach', 'pods/portforward']"
   verdict   = "allow"
 }
 
 # ── Kubernetes — EKS-specific extras ────────────────
 #
-# Production-only blocks. Writes to runtime namespaces (console,
+# Production-only blocks. Writes to runtime namespaces (app,
 # kube-system, cert-manager, external-secrets, argocd, flux*) are
 # denied even for debug-* pods — those namespaces are managed by
-# GitOps. Some legacy configmaps in the console namespace still hold
+# GitOps. Some legacy configmaps in the app namespace still hold
 # cleartext secrets (named *-secrets or env-*); reads of those are
 # blocked even though configmaps reads are otherwise allowed.
 
 rule "k8s-eks-no-runtime-writes" {
-  endpoint  = k8s-eks-deployng-prod
+  endpoint  = k8s-eks-corp-prod
   priority  = 1000
-  condition = "k8s.verb in ['create', 'update', 'patch', 'delete'] && (k8s.namespace in ['console', 'kube-system', 'cert-manager', 'external-secrets', 'argocd'] || k8s.namespace.startsWith('flux'))"
+  condition = "k8s.verb in ['create', 'update', 'patch', 'delete'] && (k8s.namespace in ['app', 'kube-system', 'cert-manager', 'external-secrets', 'argocd'] || k8s.namespace.startsWith('flux'))"
   verdict   = "deny"
   reason    = "Writes to runtime namespaces would impact production"
 }
 rule "k8s-eks-no-legacy-secret-configmaps" {
-  endpoint  = k8s-eks-deployng-prod
+  endpoint  = k8s-eks-corp-prod
   priority  = 1000
-  condition = "k8s.verb in ['get', 'list'] && k8s.resource == 'configmaps' && k8s.namespace == 'console' && (k8s.name.endsWith('-secrets') || k8s.name.startsWith('env-'))"
+  condition = "k8s.verb in ['get', 'list'] && k8s.resource == 'configmaps' && k8s.namespace == 'app' && (k8s.name.endsWith('-secrets') || k8s.name.startsWith('env-'))"
   verdict   = "deny"
   reason    = "Some legacy configmaps still carry cleartext secrets"
 }
 
 # ── Kubernetes catch-alls (per cluster) ─────────────
 
-rule "k8s-dev-ams-default" {
-  endpoint = k8s-dev-ams
+rule "k8s-dev-iad-default" {
+  endpoint = k8s-dev-iad
   priority = -100
   verdict  = "deny"
 }
-rule "k8s-dev-ord-default" {
-  endpoint = k8s-dev-ord
+rule "k8s-dev-sfo-default" {
+  endpoint = k8s-dev-sfo
   priority = -100
   verdict  = "deny"
 }
 rule "k8s-eks-default" {
-  endpoint = k8s-eks-deployng-prod
+  endpoint = k8s-eks-corp-prod
   priority = -100
   verdict  = "deny"
 }
@@ -1221,61 +1219,61 @@ rule "k8s-eks-default" {
 # endpoints. Sharing happens by listing the same endpoint name from
 # multiple profiles.
 
-profile "avocet" {
+profile "ops" {
   endpoints = [
-    anthropic-avocet,
-    github-avocet,
-    slack-avocet,
-    deno-deploy,
+    anthropic-ops,
+    github-ops,
+    slack-ops,
+    support-console,
     stripe,
     orb,
     notion,
     grafana,
-    pg-deployng,
+    pg-corp,
     pg-scheduler,
-    k8s-dev-ams,
-    k8s-dev-ord,
-    k8s-eks-deployng-prod,
+    k8s-dev-iad,
+    k8s-dev-sfo,
+    k8s-eks-corp-prod,
     ch-o11y-https,
     ch-o11y-native,
   ]
 }
 
-profile "kaju" {
+profile "alice" {
   endpoints = [
-    github-kaju,
-    slack-kaju,
-    telegram-divy,
-    openai-codex-divy,
+    github-alice,
+    slack-alice,
+    telegram-carol,
+    openai-codex-carol,
 
-    # shared with avocet:
+    # shared with ops:
     notion,
     grafana,
     ch-o11y-https,
     ch-o11y-native,
-    k8s-dev-ams,
-    k8s-dev-ord,
+    k8s-dev-iad,
+    k8s-dev-sfo,
 
-    # kaju's per-tool API access:
+    # alice's per-tool API access:
     smithery,
     amem,
     checkly,
     posthog,
     honeycomb,
     pagerduty,
-    kaju-deno-support,
+    alice-helpdesk,
   ]
 }
 
-profile "mira" {
+profile "bob" {
   endpoints = [
-    github-mira,
-    slack-mira,
-    telegram-mira,
-    gemini-mira,
-    openai-codex-mira,
+    github-bob,
+    slack-bob,
+    telegram-bob,
+    gemini-bob,
+    openai-codex-bob,
 
-    # shared with kaju:
-    openai-codex-divy,
+    # shared with alice:
+    openai-codex-carol,
   ]
 }
