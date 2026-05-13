@@ -14,7 +14,7 @@
       "deploy-classic": {
         "body": {
           "Host": "main-pg14.classic.example:5432",
-          "Database": "deployng",
+          "Database": "corp",
           "SSLMode": "",
           "Credential": "github-pat"
         },
