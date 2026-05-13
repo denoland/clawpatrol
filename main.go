@@ -2182,8 +2182,8 @@ func canonicalPeerIP(ip string) string {
 	}
 	last := b[15]
 	// Use the configured wg subnet prefix to reconstruct the v4. Fall
-	// back to 10.55.0.0/24 — same default the gateway init wizard
-	// writes — when nothing's loaded yet (early-boot).
+	// back to 10.55.0.0/24 — same default the example config uses —
+	// when nothing's loaded yet (early-boot).
 	prefixV4 := defaultWGV4Prefix
 	if globalWG != nil && globalWG.serverIP.Is4() {
 		s := globalWG.serverIP.As4()
@@ -2193,9 +2193,9 @@ func canonicalPeerIP(ip string) string {
 	return v4.String()
 }
 
-// defaultWGV4Prefix matches the gateway init wizard's wg_subnet_cidr
-// default (10.55.0.0/24). Lets canonicalPeerIP work before the
-// WGServer is up.
+// defaultWGV4Prefix matches the example config's wg_subnet_cidr
+// (10.55.0.0/24). Lets canonicalPeerIP work before the WGServer is
+// up.
 var defaultWGV4Prefix = [3]byte{10, 55, 0}
 
 func printVersion() {
@@ -2210,7 +2210,6 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `clawpatrol — secret-injection MITM proxy for AI agents
 
 usage:
-  clawpatrol gateway init [flags]        bootstrap a new gateway host
   clawpatrol gateway <config.hcl>        run the gateway server
   clawpatrol join [flags] <gateway-url>  onboard this machine via wg device flow
                   --hostname NAME        device name to register (default: os.Hostname)
@@ -2230,23 +2229,14 @@ Documentation: https://clawpatrol.dev/docs/`)
 }
 
 // gatewayHelp is shown for `clawpatrol gateway -h` and any wrong
-// invocation. The pointer to `gateway init` + the config-reference
-// URL is the discoverability path for first-time users.
+// invocation. The example HCL + config-reference URL is the
+// discoverability path for first-time users.
 const gatewayHelp = `usage: clawpatrol gateway [--read-only-config] <config.hcl>
 
-The gateway needs an HCL policy file. To create one, run:
-  clawpatrol gateway init
-
-For the HCL reference, see:
+Start from gateway.example.hcl in the repo, or see the HCL reference:
   https://clawpatrol.dev/docs/config-reference`
 
 func runGateway(args []string) {
-	// `clawpatrol gateway init` is a one-shot setup wizard, distinct
-	// from `clawpatrol gateway <config.hcl>` which starts the daemon.
-	if len(args) > 0 && args[0] == "init" {
-		runGatewayInit(args[1:])
-		return
-	}
 	fs := flag.NewFlagSet("gateway", flag.ExitOnError)
 	readOnly := fs.Bool("read-only-config", false,
 		"reject dashboard writes to the HCL config file")

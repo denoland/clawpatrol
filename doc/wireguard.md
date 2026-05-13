@@ -73,7 +73,7 @@ in promiscuous mode — same shape as unclaw's `boringtun` + `smoltcp`
 # on the gateway VM (real public IP needed)
 curl -fsSL https://denoland.github.io/clawpatrol/install.sh | sh
 
-cat > /etc/clawpatrol/gateway.hcl <<'EOF'
+cat > /opt/clawpatrol/gateway.hcl <<'EOF'
 listen       = "0.0.0.0:8443"
 info_listen  = "0.0.0.0:8080"
 public_url   = "http://your-gw.example.com:8080"
@@ -94,7 +94,7 @@ clawpatrol init-ca /opt/clawpatrol/ca
 
 iptables -I INPUT -p udp --dport 51820 -j ACCEPT
 iptables -I INPUT -p tcp --dport 8080 -j ACCEPT
-clawpatrol gateway /etc/clawpatrol/gateway.hcl
+clawpatrol gateway /opt/clawpatrol/gateway.hcl
 ```
 
 Connect Claude / GitHub / Codex via the dashboard at

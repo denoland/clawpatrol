@@ -32,24 +32,18 @@ macOS / Linux on amd64 / arm64. Lands in `~/.local/bin/clawpatrol`.
 
 ## Run a gateway
 
-Bootstrap (once):
+Copy `gateway.example.hcl` from the repo onto the host (anywhere —
+the binary doesn't care; `/opt/clawpatrol/gateway.hcl` is a
+reasonable choice), edit the operational fields, open the firewall
+ports you picked, then:
 
 ```
-clawpatrol gateway init
+clawpatrol gateway /opt/clawpatrol/gateway.hcl
 ```
 
-Detects the public IP, generates a CA, writes
-`/etc/clawpatrol/gateway.hcl` (or `~/.clawpatrol/gateway.hcl` for
-non-root), opens firewall ports, drops a systemd unit. Default
-ports: `tcp/9080` dashboard, `tcp/8443` TLS gateway, `udp/51820`
-WireGuard.
-
-Then run:
-
-```
-systemctl enable --now clawpatrol-gateway       # systemd
-clawpatrol gateway /etc/clawpatrol/gateway.hcl  # otherwise
-```
+Default ports in the example: `tcp/9080` dashboard, `tcp/8443` TLS
+gateway, `udp/51820` WireGuard. Under systemd, drop a unit that
+runs the same command and `systemctl enable --now` it.
 
 Validate or regression-test a policy change:
 
@@ -323,7 +317,7 @@ sees a normal network — no proxy URL, no CA bundle.
 
 ## State layout
 
-**Gateway** (`/etc/clawpatrol/` root, or `~/.clawpatrol` non-root):
+**Gateway** — operator picks the path; nothing is hardcoded:
 
 ```
 gateway.hcl                  # operator-edited
@@ -331,10 +325,10 @@ gateway.hcl                  # operator-edited
                              # devices, sessions, audit log
 ```
 
-`state_dir` defaults to `<data-dir>/oauth/` for `gateway init`-created
-hosts (legacy layout, still works). The CA cert + key, WireGuard
-server key, SSH host keys, telemetry UUID, and DNS-VIP allocations
-all live inside `clawpatrol.db` — nothing else on disk.
+`state_dir` in the HCL points at the sqlite directory. The CA cert
++ key, WireGuard server key, SSH host keys, telemetry UUID, and
+DNS-VIP allocations all live inside `clawpatrol.db` — nothing else
+on disk.
 
 **Device:**
 
@@ -347,7 +341,7 @@ all live inside `clawpatrol.db` — nothing else on disk.
 
 | Error | Fix |
 |---|---|
-| `config file "X" does not exist` | Pass a real path or run `clawpatrol gateway init` first. |
+| `config file "X" does not exist` | Pass a real path. Copy `gateway.example.hcl` from the repo and edit it. |
 | `endpoint "X" not in compiled policy` | Fixture pins a stale endpoint name. Regenerate via dashboard "Download action". |
 | `host "X" is claimed by multiple endpoints` | Set `match.endpoint` in the fixture to disambiguate. |
 | `mixed-family endpoint set` | A rule's `endpoints` list mixes families (e.g. HTTPS + Postgres). Split the rule. |

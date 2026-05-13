@@ -66,7 +66,7 @@ public UDP port, no WireGuard keypair management, no subnet allocation
 # gateway VM — no public IP required, just outbound HTTPS
 curl -fsSL https://denoland.github.io/clawpatrol/install.sh | sh
 
-cat > /etc/clawpatrol/gateway.hcl <<'EOF'
+cat > /opt/clawpatrol/gateway.hcl <<'EOF'
 listen       = "0.0.0.0:8443"
 info_listen  = "0.0.0.0:8080"
 public_url   = "http://clawpatrol-gateway"    # tailnet hostname suffices
@@ -95,7 +95,7 @@ export TS_OAUTH_CLIENT_SECRET=<secret>
 # Tag: tag:gateway (or any ACL-gated tag)
 export TS_AUTHKEY=tskey-auth-...
 
-clawpatrol gateway /etc/clawpatrol/gateway.hcl
+clawpatrol gateway /opt/clawpatrol/gateway.hcl
 ```
 
 Dashboard is reachable at `http://clawpatrol-gateway:8080` from any

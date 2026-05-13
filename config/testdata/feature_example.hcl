@@ -1,8 +1,9 @@
 # clawpatrol gateway config.
 #
-# Drop in /etc/clawpatrol/gateway.hcl, edit, run:
+# Copy this file somewhere on the gateway host (e.g.
+# /opt/clawpatrol/gateway.hcl), edit the fields below, run:
 #
-#     clawpatrol gateway -config /etc/clawpatrol/gateway.hcl
+#     clawpatrol gateway -config /opt/clawpatrol/gateway.hcl
 #
 # Hot-reloadable: every policy block + admin_email. Listen ports /
 # state_dir / tailscale block need a restart.
