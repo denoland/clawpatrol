@@ -17,7 +17,7 @@ import (
 // a deny message. The gateway does the logging.
 func demoEchoDef() pluginsdk.EndpointDef {
 	return pluginsdk.EndpointDef{
-		TypeName:    "example_demo_echo",
+		TypeName:    "example_echo",
 		Family:      "example_echo",
 		TLSMode:     pluginsdk.TLSNone,
 		RequiresVIP: true,

@@ -7,7 +7,7 @@
 // Then run the gateway against this file. The plugin declares one
 // credential type (example_magic_token), one tunnel type
 // (example_passthrough), and three endpoint types
-// (example_demo_https, example_demo_smtp, example_demo_echo). Type
+// (example_https, example_smtp, example_echo). Type
 // and facet names are flat — Claw Patrol doesn't auto-prefix
 // anything. Plugin authors prefix their own names by convention,
 // the way Terraform providers do (`aws_iam_role`,
@@ -41,7 +41,7 @@ tunnel "example_passthrough" "passthru" {}
 // `curl -k https://demo.invalid/` against a local HTTP upstream
 // (e.g. `python3 -m http.server 8000`) — the upstream sees the
 // X-Magic header and curl prints the body with "bye!" appended.
-endpoint "example_demo_https" "demo-site" {
+endpoint "example_https" "demo-site" {
   hosts      = ["demo.invalid"]
   credential = demo_token
   tunnel     = passthru
@@ -70,7 +70,7 @@ rule "https-writes-deny" {
 // map for each command also lands on the dashboard event stream as
 // the request's facet payload, so the request log shows
 // Verb / From / Rcpt / User columns.
-endpoint "example_demo_smtp" "demo-mail" {
+endpoint "example_smtp" "demo-mail" {
   hosts      = ["mail.invalid:25"]
   credential = demo_token
 }
@@ -118,7 +118,7 @@ rule "smtp-body-deny" {
 // the gateway whether to echo each one (allow) or reject it (deny).
 // On allow the plugin echoes prefixed with the credential secret;
 // on deny it replies "DENY: <reason>".
-endpoint "example_demo_echo" "demo-echo" {
+endpoint "example_echo" "demo-echo" {
   hosts      = ["echo.invalid:7"]
   credential = demo_token
 }

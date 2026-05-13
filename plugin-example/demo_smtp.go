@@ -26,7 +26,7 @@ import (
 // check, not a policy check.
 func demoSMTPDef() pluginsdk.EndpointDef {
 	return pluginsdk.EndpointDef{
-		TypeName:    "example_demo_smtp",
+		TypeName:    "example_smtp",
 		Family:      "example_smtp",
 		TLSMode:     pluginsdk.TLSTerminate,
 		RequiresVIP: true,
