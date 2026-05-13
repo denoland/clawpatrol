@@ -1160,7 +1160,7 @@ func (g *Gateway) handle(raw net.Conn, dstIP string) {
 			pip := peerIP(c)
 			profile := g.profileFor(pip)
 			ep := runtime.HostEndpoint(g.Policy(), profile, dstIP)
-			if ep != nil && isHTTPSMITMFamily(ep.Family) {
+			if ep != nil && isHTTPSMITMFamily(ep.PrimaryFamily()) {
 				log.Printf("sni-fallback: %s → %s", dstIP, ep.Name)
 				g.mitmHTTPS(c, dstIP, ep)
 				return
@@ -1181,7 +1181,7 @@ func (g *Gateway) handle(raw net.Conn, dstIP string) {
 		g.splice(c, host)
 		return
 	}
-	if isHTTPSMITMFamily(ep.Family) {
+	if isHTTPSMITMFamily(ep.PrimaryFamily()) {
 		// Every facet whose Transport() is "https-mitm" — https and
 		// k8s today, future plugins tomorrow — terminates TLS here
 		// and runs the request loop through mitmHTTPS. The facet's
@@ -1195,7 +1195,7 @@ func (g *Gateway) handle(raw net.Conn, dstIP string) {
 	// not through SNI peek on 443. Anything that lands here is
 	// either an unknown family or a family without an HTTPS
 	// transport — splice through.
-	log.Printf("endpoint %s family %q: no https-mitm transport; passthrough", ep.Name, ep.Family)
+	log.Printf("endpoint %s families %v: no https-mitm transport; passthrough", ep.Name, ep.Families)
 	g.splice(c, host)
 }
 
@@ -1211,6 +1211,41 @@ func isHTTPSMITMFamily(family string) bool {
 	}
 	f := facet.Lookup(family)
 	return f != nil && f.Transport() == "https-mitm"
+}
+
+// lookupFacets resolves each family name in families to its registered
+// facet.Runtime, skipping unknown names silently (the rule loader's
+// validate pass would have caught those). Returned in input order so
+// the primary family's facet runs first.
+func lookupFacets(families []string) []facet.Runtime {
+	out := make([]facet.Runtime, 0, len(families))
+	for _, name := range families {
+		if f := facet.Lookup(name); f != nil {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// mergeFacetReports calls Report on each facet and merges the results
+// into a single flat map. Returns nil when every facet reports
+// nothing — avoids emitting an empty extra column in the action
+// log.
+func mergeFacetReports(facets []facet.Runtime, mreq *match.Request) map[string]any {
+	var out map[string]any
+	for _, f := range facets {
+		r := f.Report(mreq)
+		if len(r) == 0 {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]any, len(r))
+		}
+		for k, v := range r {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // handlePostgresConn dispatches an inbound 5432 connection to the
@@ -1283,7 +1318,7 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 				return
 			}
 			g.sink.Emit(Event{
-				Mode: "pg", Family: ep.Family, Host: dstIP, AgentIP: agentPip,
+				Mode: "pg", Family: ep.PrimaryFamily(), Host: dstIP, AgentIP: agentPip,
 				Method: ev.Verb, Path: ev.Summary,
 				Action: ev.Action, Reason: ev.Reason,
 				Facets:   ev.Facets,
@@ -1442,7 +1477,7 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 				return
 			}
 			g.sink.Emit(Event{
-				Mode: mode, Family: ep.Family, Host: eventHost, AgentIP: agentPip,
+				Mode: mode, Family: ep.PrimaryFamily(), Host: eventHost, AgentIP: agentPip,
 				Method: ev.Verb, Path: ev.Summary,
 				Action: ev.Action, Reason: ev.Reason,
 				Facets:   ev.Facets,
@@ -1701,7 +1736,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		}
 
 		mreq := &match.Request{
-			Family:    ep.Family,
+			Families:  ep.Families,
 			Method:    req.Method,
 			URL:       req.URL,
 			Headers:   req.Header,
@@ -1709,23 +1744,31 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			PeerIP:    pip,
 			Truncated: truncated,
 		}
-		fac := facet.Lookup(ep.Family)
-		if fac != nil {
-			fac.PrepareRequest(mreq)
+		// PrepareRequest each facet the endpoint participates in
+		// (http for the wire, llm for token-rich providers, etc.) so
+		// every facet's Meta slot is populated before matchers run.
+		facets := lookupFacets(ep.Families)
+		for _, f := range facets {
+			f.PrepareRequest(mreq)
 		}
 
 		ev := Event{
 			ID:     newReqID(),
 			Mode:   "mitm",
-			Family: ep.Family,
+			Family: ep.PrimaryFamily(),
 			Host:   host,
 			Method: req.Method, Path: req.URL.Path,
 			AgentIP:  agentAddr,
 			Endpoint: ep.Name,
 		}
-		if fac != nil {
-			ev.Facets = fac.Report(mreq)
-		}
+		// Each facet contributes its report payload into a flat
+		// Facets map. Names don't collide across families today
+		// (http.method, sql.verb, llm.model — distinct keys) so the
+		// dashboard can read them without prefix awareness; the
+		// merge keeps multi-family endpoints (an `anthropic` carrying
+		// http + llm facets) emitting both payloads onto the same
+		// action record.
+		ev.Facets = mergeFacetReports(facets, mreq)
 		// Emit start event so the dashboard renders the request as
 		// in-flight immediately. The end event with the same ID
 		// arrives when resp.Write finishes — long-poll / SSE / WS

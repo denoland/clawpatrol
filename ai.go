@@ -285,7 +285,7 @@ func availableSymbols(policy *config.CompiledPolicy) string {
 	}
 	endpoints := make([]string, 0, len(policy.Endpoints))
 	for name, ep := range policy.Endpoints {
-		endpoints = append(endpoints, fmt.Sprintf("%s (%s)", name, ep.Family))
+		endpoints = append(endpoints, fmt.Sprintf("%s (%s)", name, ep.PrimaryFamily()))
 	}
 	credentials := make([]string, 0, len(policy.Credentials))
 	for name, ent := range policy.Credentials {

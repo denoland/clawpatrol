@@ -409,7 +409,7 @@ endpoint "kubernetes" "example" {}
 
 ### `endpoint "openai_codex_https" "<name>"`
 
-Family: `http`.
+Families: `http`, `llm`.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -502,6 +502,7 @@ been inferred from the endpoint refs.
 | `endpoints` | `[]ref(endpoint)` | no |  |
 | `priority` | `int` | no |  |
 | `disabled` | `bool` | no |  |
+| `family` | `string` | no | Pins the facet whose CEL env the rule compiles against when the resolved endpoints carry more than one family. Single- family endpoint sets ignore it and infer from the endpoints. Empty + multi-family endpoints is a validation error. |
 | `condition` | `string` | no | A CEL expression evaluated against the family-specific variable set. An absent / empty condition matches everything — the catch-all pattern (`rule "X-default" { priority = -100; verdict = "deny" }`) relies on this. |
 | `credential` | `ref(credential)` | no | Credential, if set, is a bare-name reference to a credential block. The runtime treats it as an extra match predicate (request must have been dispatched against this credential) evaluated before the CEL expression. |
 | `verdict` | `string` | no | The outcome when the rule matches. Set exactly one of `verdict` (`"allow"` / `"deny"`) or `approve`. |

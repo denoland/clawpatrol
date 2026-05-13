@@ -75,12 +75,17 @@ type Plugin struct {
 	// references that must be resolved against the symbol table.
 	Refs []RefSpec
 
-	// Family classifies an endpoint's protocol so rule plugins can
-	// constrain which endpoints they target. Set on KindEndpoint
-	// plugins ("http" | "sql" | "k8s"). KindRule, with a single
-	// unified plugin, leaves these empty — family is inferred from
-	// the rule's resolved endpoints at validate/build time.
-	Family   string
+	// Families classifies an endpoint's protocol families so rule
+	// plugins can constrain which endpoints they target. Set on
+	// KindEndpoint plugins (e.g. ["http"], ["sql"], ["k8s"]). An
+	// endpoint may carry more than one family — an `anthropic`
+	// endpoint declares `["http", "llm"]` so HTTP rules and LLM
+	// rules both match against the same action. The first entry is
+	// the primary family (used for transport routing, HITL labelling,
+	// and the dashboard's Family column). KindRule, with a single
+	// unified plugin, leaves this empty — the families set is
+	// inferred from the rule's resolved endpoints at validate/build
+	// time.
 	Families []string
 
 	// Validate runs after gohcl decode and after Refs are resolved.

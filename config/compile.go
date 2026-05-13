@@ -61,10 +61,17 @@ type CompiledProfile struct {
 // CompiledEndpoint flattens an endpoint plus the rules that target it.
 // Body is whatever the endpoint plugin's Build returned (e.g.
 // *endpoints.HTTPSEndpoint) — runtime callers type-assert based on
-// Family.
+// the primary family.
 type CompiledEndpoint struct {
-	Name        string
-	Family      string // "http" | "sql" | "k8s"
+	Name string
+	// Families lists every protocol family this endpoint participates
+	// in. The first entry is the primary family (the underlying wire
+	// — used for transport dispatch, HITL labelling, and the
+	// dashboard's Family column). Additional entries are auxiliary
+	// facets attached to the same action: an `anthropic` endpoint
+	// declares `["http", "llm"]` so HTTP rules and LLM rules both
+	// match against the same request.
+	Families    []string
 	Plugin      *Plugin
 	Body        any
 	Hosts       []string
@@ -76,6 +83,33 @@ type CompiledEndpoint struct {
 	// Populated from the endpoint plugin's optional EndpointTunnel()
 	// accessor.
 	Tunnel *CompiledTunnel
+}
+
+// PrimaryFamily returns the first family on the endpoint, or "".
+// The primary family is the wire protocol the gateway dispatches
+// against (used by main.go's transport routing, the HITL prompt
+// label, and the dashboard's Family column). Auxiliary families
+// (e.g. `llm` on an `anthropic` endpoint) trail in Families[1:].
+func (ce *CompiledEndpoint) PrimaryFamily() string {
+	if ce == nil || len(ce.Families) == 0 {
+		return ""
+	}
+	return ce.Families[0]
+}
+
+// HasFamily reports whether the endpoint carries the named family in
+// any position. Used by rule dispatch to ask "does this endpoint
+// participate in family X?" without caring which position X holds.
+func (ce *CompiledEndpoint) HasFamily(name string) bool {
+	if ce == nil {
+		return false
+	}
+	for _, f := range ce.Families {
+		if f == name {
+			return true
+		}
+	}
+	return false
 }
 
 // RequiresVIP reports whether DNS-VIP allocation should claim this
@@ -324,10 +358,10 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 
 func compileEndpoint(name string, ent *Entity, p *Policy, cp *CompiledPolicy) (*CompiledEndpoint, error) {
 	ce := &CompiledEndpoint{
-		Name:   name,
-		Family: ent.Plugin.Family,
-		Plugin: ent.Plugin,
-		Body:   ent.Body,
+		Name:     name,
+		Families: ent.Plugin.Families,
+		Plugin:   ent.Plugin,
+		Body:     ent.Body,
 	}
 	// Hosts and credential refs live on the plugin's typed body.
 	// We cross-cut via a small interface so the compile pass doesn't
@@ -385,7 +419,11 @@ func hasResolvableHostname(hosts []string) bool {
 }
 
 func bareHostAlias(ep *CompiledEndpoint, host string) (string, bool) {
-	if ep == nil || (ep.Family != "http" && ep.Family != "k8s") {
+	if ep == nil {
+		return "", false
+	}
+	primary := ep.PrimaryFamily()
+	if primary != "http" && primary != "k8s" {
 		return "", false
 	}
 	bare, port, err := net.SplitHostPort(host)

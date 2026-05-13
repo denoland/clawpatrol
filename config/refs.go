@@ -113,8 +113,8 @@ func resolveRefs(decoded any, name string, plugin *Plugin, table *SymbolTable, b
 			}
 			if len(spec.FamilyConstraint) > 0 {
 				ok := false
-				for _, f := range spec.FamilyConstraint {
-					if sym.Family == f {
+				for _, want := range spec.FamilyConstraint {
+					if sym.HasFamily(want) {
 						ok = true
 						break
 					}
@@ -123,7 +123,7 @@ func resolveRefs(decoded any, name string, plugin *Plugin, table *SymbolTable, b
 					diags = append(diags, &hcl.Diagnostic{
 						Severity: hcl.DiagError,
 						Summary:  fmt.Sprintf("Incompatible endpoint family for %q", v.value),
-						Detail:   fmt.Sprintf("Rule %q (%s) accepts endpoint families %v but %q is family %q.", name, plugin.Type, spec.FamilyConstraint, v.value, sym.Family),
+						Detail:   fmt.Sprintf("Rule %q (%s) accepts endpoint families %v but %q has families %v.", name, plugin.Type, spec.FamilyConstraint, v.value, sym.Families),
 						Subject:  v.rangePtr,
 					})
 					continue

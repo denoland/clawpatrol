@@ -922,7 +922,7 @@ func (w *webMux) collectRuleSummaries(profileFilter string) []RuleSummary {
 			for _, r := range ep.Rules {
 				out = append(out, RuleSummary{
 					Name:       r.Name,
-					Family:     ep.Family,
+					Family:     ep.PrimaryFamily(),
 					Endpoint:   epName,
 					Profile:    profileName,
 					Priority:   r.Priority,

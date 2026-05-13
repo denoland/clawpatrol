@@ -114,7 +114,7 @@ func init() {
 	config.Register(&config.Plugin{
 		Kind:     config.KindEndpoint,
 		Type:     "ssh",
-		Family:   "ssh",
+		Families: []string{"ssh"},
 		New:      func() any { return &SSHEndpoint{} },
 		Refs:     singularRef,
 		Validate: multiCredValidate,
@@ -145,7 +145,7 @@ var (
 // HandleConn is part of the clawpatrol plugin API.
 func (rt *SSHEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHandle) error {
 	defer func() { _ = ch.Conn.Close() }()
-	if ch.Endpoint == nil || ch.Endpoint.Family != "ssh" {
+	if ch.Endpoint == nil || !ch.Endpoint.HasFamily("ssh") {
 		return fmt.Errorf("ssh runtime invoked on non-ssh endpoint %v", ch.Endpoint)
 	}
 	if ch.Blobs == nil {

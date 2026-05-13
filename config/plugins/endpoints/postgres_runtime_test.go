@@ -484,8 +484,8 @@ func TestPgEvaluateEmitsAllowOnNoMatch(t *testing.T) {
 	var events []runtime.ConnEvent
 	ch := &runtime.ConnHandle{
 		Endpoint: &config.CompiledEndpoint{
-			Name:   "pg-test",
-			Family: "sql",
+			Name:     "pg-test",
+			Families: []string{"sql"},
 			// Rules is nil — no rule will fire.
 		},
 		Emit: func(ev runtime.ConnEvent) { events = append(events, ev) },

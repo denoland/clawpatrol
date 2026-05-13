@@ -378,11 +378,11 @@ func TestChHostPort(t *testing.T) {
 func chBuildEndpoint(t *testing.T, rules ...*config.CompiledRule) *config.CompiledEndpoint {
 	t.Helper()
 	return &config.CompiledEndpoint{
-		Name:   "test-ch",
-		Family: "sql",
-		Body:   &ClickhouseNativeEndpoint{Hosts: []string{"ch.example:9000"}},
-		Hosts:  []string{"ch.example:9000"},
-		Rules:  rules,
+		Name:     "test-ch",
+		Families: []string{"sql"},
+		Body:     &ClickhouseNativeEndpoint{Hosts: []string{"ch.example:9000"}},
+		Hosts:    []string{"ch.example:9000"},
+		Rules:    rules,
 	}
 }
 

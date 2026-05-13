@@ -202,7 +202,7 @@ func TestMatchRequest(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req := &match.Request{Family: "http", Method: tc.method}
+			req := &match.Request{Families: []string{"http"}, Method: tc.method}
 			r := runtime.MatchRequest(ep, req)
 			if r == nil {
 				if tc.want != "" {
@@ -248,10 +248,8 @@ rule "default-deny" {
 	ep := cp.Endpoints["db"]
 
 	// Untruncated SELECT → allow fires normally.
-	req := &match.Request{
-		Family: "sql",
-		Meta:   newSQLMetaForVerb("select"),
-	}
+	req := &match.Request{Families: []string{"sql"}}
+	req.SetMeta("sql", newSQLMetaForVerb("select"))
 	r := runtime.MatchRequest(ep, req)
 	if r == nil || r.Name != "select-allow" || r.Outcome.Verdict != "allow" {
 		t.Fatalf("untruncated select: got %+v, want select-allow allow", r)
@@ -305,7 +303,7 @@ rule "body-deny" {
 	ep := cp.Endpoints["api"]
 
 	req := &match.Request{
-		Family:     "https",
+		Families:   []string{"http"},
 		Method:     "POST",
 		Credential: "tok",
 		Body:       []byte("anything"),
@@ -328,7 +326,7 @@ rule "body-deny" {
 func TestResolveCredentialSingular(t *testing.T) {
 	cp := compile(t)
 	ep := cp.Endpoints["github"]
-	got := runtime.ResolveCredential(ep, &match.Request{Family: "http", Headers: http.Header{}})
+	got := runtime.ResolveCredential(ep, &match.Request{Families: []string{"http"}, Headers: http.Header{}})
 	if got == nil || got.Credential.Symbol.Name != "pat" {
 		t.Errorf("singular credential resolution wrong: %+v", got)
 	}
@@ -368,7 +366,7 @@ profile "default" { endpoints = [ep] }
 		if authz != "" {
 			h.Set("Authorization", authz)
 		}
-		return &match.Request{Family: "http", Headers: h}
+		return &match.Request{Families: []string{"http"}, Headers: h}
 	}
 
 	got := runtime.ResolveCredential(ep, mkReq("Bearer PH_prod"))

@@ -176,18 +176,18 @@ func matchEquals(got, want Match) bool {
 func fixtureFamily(f *Fixture, ep *config.CompiledEndpoint) (string, error) {
 	switch {
 	case f.Action.HTTP != nil:
-		if ep.Family != "http" {
-			return "", fmt.Errorf("endpoint %q is family %q but fixture has http block", ep.Name, ep.Family)
+		if !ep.HasFamily("http") {
+			return "", fmt.Errorf("endpoint %q has families %v but fixture has http block", ep.Name, ep.Families)
 		}
 		return "http", nil
 	case f.Action.K8s != nil:
-		if ep.Family != "k8s" {
-			return "", fmt.Errorf("endpoint %q is family %q but fixture has k8s block", ep.Name, ep.Family)
+		if !ep.HasFamily("k8s") {
+			return "", fmt.Errorf("endpoint %q has families %v but fixture has k8s block", ep.Name, ep.Families)
 		}
 		return "k8s", nil
 	case f.Action.SQL != nil:
-		if ep.Family != "sql" {
-			return "", fmt.Errorf("endpoint %q is family %q but fixture has sql block", ep.Name, ep.Family)
+		if !ep.HasFamily("sql") {
+			return "", fmt.Errorf("endpoint %q has families %v but fixture has sql block", ep.Name, ep.Families)
 		}
 		return "sql", nil
 	}

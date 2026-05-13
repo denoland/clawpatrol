@@ -16,10 +16,17 @@ import (
 
 // Request is the family-tagged request snapshot passed to Matcher.Match.
 // The handler populates whichever family-specific fields apply and
-// stashes any derived per-family metadata on Meta — its concrete type
-// is owned by the facet plugin, which type-asserts inside its matcher.
+// stashes any derived per-family metadata on Metas — each entry's
+// concrete type is owned by the facet plugin that registered the
+// family name, and matchers type-assert inside their family's slot.
 type Request struct {
-	Family string // e.g. "http" | "sql" | "k8s" | future plugins
+	// Families lists every facet family that may match this request.
+	// The first entry is the primary family (the wire protocol the
+	// gateway dispatched against); subsequent entries are auxiliary
+	// facets attached to the same action. A rule's matcher uses its
+	// own family's slot in Metas and falls through cleanly when the
+	// slot is absent.
+	Families []string
 
 	// Common
 	Credential string // bare-name reference of the credential the
@@ -34,14 +41,15 @@ type Request struct {
 	Headers http.Header
 	Body    []byte // populated when at least one rule needed it
 
-	// Meta is the per-family derived metadata. The owning facet
-	// plugin sets the concrete type — *sql.Meta for SQL, *k8s.Meta
-	// for k8s, etc. — either via facet.Runtime.PrepareRequest
+	// Metas holds the per-family derived metadata keyed by family
+	// name. The owning facet plugin sets the concrete type —
+	// *sql.Meta under "sql", *k8s.Meta under "k8s", *llm.Meta under
+	// "llm", and so on — either via facet.Runtime.PrepareRequest
 	// (HTTPS-family handler) or directly from a wire-frame frontend
-	// (postgres/clickhouse). Matchers type-assert and fall through to
-	// "no match" when the assertion fails (e.g. an https-family rule
-	// running against a request whose Meta is *sql.Meta).
-	Meta any
+	// (postgres/clickhouse). Matchers type-assert against their own
+	// family's slot and fall through to "no match" when the slot is
+	// absent.
+	Metas map[string]any
 
 	// Truncated is set by a wire frontend when the bytes it could
 	// expose to the matcher were capped by a per-plugin inspection
@@ -52,6 +60,55 @@ type Request struct {
 	// rules that don't read the truncated facet still fire on their
 	// other predicates.
 	Truncated bool
+}
+
+// PrimaryFamily returns the first family on the request, or "" when
+// none has been set. The primary family is the wire protocol the
+// gateway dispatched against; auxiliary facet families trail in
+// Families[1:].
+func (r *Request) PrimaryFamily() string {
+	if r == nil || len(r.Families) == 0 {
+		return ""
+	}
+	return r.Families[0]
+}
+
+// HasFamily reports whether the request carries the named family in
+// any position. Matchers can use it to short-circuit before
+// type-asserting against Metas.
+func (r *Request) HasFamily(name string) bool {
+	if r == nil {
+		return false
+	}
+	for _, f := range r.Families {
+		if f == name {
+			return true
+		}
+	}
+	return false
+}
+
+// Meta returns the per-family metadata slot for the named family, or
+// nil when the request carries none. Use this from family matchers
+// instead of poking req.Metas directly so a nil map and a missing
+// key both fall through to "no match" cleanly.
+func (r *Request) Meta(family string) any {
+	if r == nil || r.Metas == nil {
+		return nil
+	}
+	return r.Metas[family]
+}
+
+// SetMeta stashes per-family metadata for the named family. Allocates
+// the map on first call so callers don't have to.
+func (r *Request) SetMeta(family string, m any) {
+	if r == nil {
+		return
+	}
+	if r.Metas == nil {
+		r.Metas = make(map[string]any, 2)
+	}
+	r.Metas[family] = m
 }
 
 // Matcher walks a Request and returns true when the rule's match

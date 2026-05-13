@@ -136,8 +136,11 @@ func dumpEntityMap(m map[string]*Entity) map[string]any {
 		if ent.Plugin.Type != "" {
 			row["type"] = ent.Plugin.Type
 		}
-		if ent.Plugin.Family != "" {
-			row["family"] = ent.Plugin.Family
+		if len(ent.Plugin.Families) > 0 {
+			row["family"] = ent.Plugin.Families[0]
+			if len(ent.Plugin.Families) > 1 {
+				row["families"] = ent.Plugin.Families
+			}
 		}
 		row["body"] = ent.Body
 		// Surface framework-level attrs (e.g. tunnel) at the entity

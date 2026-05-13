@@ -116,7 +116,7 @@ func chValidCompressedMethod(b byte) bool {
 //     pure copy past the Hello.
 func (ClickhouseNativeEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHandle) error {
 	defer func() { _ = ch.Conn.Close() }()
-	if ch.Endpoint == nil || ch.Endpoint.Family != "sql" {
+	if ch.Endpoint == nil || !ch.Endpoint.HasFamily("sql") {
 		err := fmt.Errorf("clickhouse_native runtime invoked on non-sql endpoint %v", ch.Endpoint)
 		chEmitError(ch, "wrong-family", "")
 		return err
@@ -835,17 +835,17 @@ func chRewindReader(head []byte, tail *chgoproto.Reader) *chgoproto.Reader {
 func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName string, truncated bool) (string, string) {
 	info := parseChSQL(sql)
 	mreq := &match.Request{
-		Family:     "sql",
+		Families:   []string{"sql"},
 		PeerIP:     ch.PeerIP,
 		Credential: credName,
-		Meta: &sqlfacet.Meta{
-			Verb:      info.Verb,
-			Tables:    info.Tables,
-			Functions: info.Functions,
-			Statement: info.Statement,
-		},
-		Truncated: truncated,
+		Truncated:  truncated,
 	}
+	mreq.SetMeta("sql", &sqlfacet.Meta{
+		Verb:      info.Verb,
+		Tables:    info.Tables,
+		Functions: info.Functions,
+		Statement: info.Statement,
+	})
 	var facets map[string]any
 	if f := facet.Lookup("sql"); f != nil {
 		facets = f.Report(mreq)

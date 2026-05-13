@@ -161,9 +161,15 @@ func init() {
 	var _ runtime.PlaceholderDetector = OpenAICodexHTTPSEndpointRuntime{}
 	var _ runtime.HTTPSyntheticResponder = OpenAICodexHTTPSEndpointRuntime{}
 	config.Register(&config.Plugin{
-		Kind:     config.KindEndpoint,
-		Type:     "openai_codex_https",
-		Family:   "http",
+		Kind: config.KindEndpoint,
+		Type: "openai_codex_https",
+		// The chatgpt.com codex flow is HTTPS underneath plus LLM-
+		// shaped — both http_rule (path / method / headers) and
+		// llm_rule (model glob, provider gate) match the same
+		// action. Family "http" is primary (https-mitm transport,
+		// dashboard column); "llm" rides as an auxiliary facet
+		// populated post-stream from the Responses API payload.
+		Families: []string{"http", "llm"},
 		New:      func() any { return &OpenAICodexHTTPSEndpoint{} },
 		Refs:     singularRef,
 		Validate: multiCredValidate,
