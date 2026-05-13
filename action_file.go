@@ -295,7 +295,7 @@ func stripPort(s string) string {
 // fixture take precedence over derivation.
 func (f *Fixture) ToMatchRequest(family string, parseSQL func(string) any) (*match.Request, error) {
 	a := &f.Action
-	req := &match.Request{Family: family, Credential: a.Credential, PeerIP: a.PeerIP}
+	req := &match.Request{Families: []string{family}, Credential: a.Credential, PeerIP: a.PeerIP}
 	switch {
 	case a.HTTP != nil:
 		req.Method = a.HTTP.Method
@@ -313,11 +313,11 @@ func (f *Fixture) ToMatchRequest(family string, parseSQL func(string) any) (*mat
 		}
 	case a.K8s != nil:
 		req.URL = &url.URL{Scheme: "https", Host: a.Host}
-		req.Meta = &k8sfacet.Meta{
+		req.SetMeta("k8s", &k8sfacet.Meta{
 			Verb: a.K8s.Verb, Resource: a.K8s.Resource,
 			Namespace: a.K8s.Namespace, Name: a.K8s.Name,
 			Params: a.K8s.Params,
-		}
+		})
 	case a.SQL != nil:
 		stmt := a.SQL.Statement
 		if stmt == "" {
@@ -341,7 +341,7 @@ func (f *Fixture) ToMatchRequest(family string, parseSQL func(string) any) (*mat
 				m.Functions = a.SQL.Functions
 			}
 		}
-		req.Meta = meta
+		req.SetMeta("sql", meta)
 	}
 	return req, nil
 }

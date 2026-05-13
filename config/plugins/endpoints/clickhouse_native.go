@@ -128,7 +128,7 @@ func init() {
 	config.Register(&config.Plugin{
 		Kind:     config.KindEndpoint,
 		Type:     "clickhouse_native",
-		Family:   "sql",
+		Families: []string{"sql"},
 		New:      func() any { return &ClickhouseNativeEndpoint{} },
 		Refs:     singularRef,
 		Runtime:  ClickhouseNativeEndpointRuntime{},

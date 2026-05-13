@@ -17,7 +17,7 @@ func TestSQLMatcherVerbAndTables(t *testing.T) {
 		Verb:   "select",
 		Tables: []string{"users", "github_identities"},
 	}
-	req := &match.Request{Family: "sql", Meta: meta}
+	req := &match.Request{Families: []string{"sql"}, Metas: map[string]any{"sql": meta}}
 	if !m.Match(req) {
 		t.Errorf("expected select on github_identities to match")
 	}
@@ -49,7 +49,7 @@ func TestSQLMatcherVerbCaseInsensitive(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewMatcher: %v", err)
 			}
-			req := &match.Request{Family: "sql", Meta: &sqlfacet.Meta{Verb: "select"}}
+			req := &match.Request{Families: []string{"sql"}, Metas: map[string]any{"sql": &sqlfacet.Meta{Verb: "select"}}}
 			if got := m.Match(req); got != tc.want {
 				t.Errorf("Match=%v want %v (condition=%q)", got, tc.want, tc.condition)
 			}
@@ -63,7 +63,7 @@ func TestSQLMatcherStatementRegex(t *testing.T) {
 		t.Fatal(err)
 	}
 	meta := &sqlfacet.Meta{Verb: "select", Statement: "SELECT secret FROM vault"}
-	req := &match.Request{Family: "sql", Meta: meta}
+	req := &match.Request{Families: []string{"sql"}, Metas: map[string]any{"sql": meta}}
 	if !m.Match(req) {
 		t.Errorf("expected regex hit on bare 'secret'")
 	}

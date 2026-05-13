@@ -9,7 +9,7 @@
 // HTTPS handler populates match.Request.Method/URL/Headers before
 // calling PrepareRequest. PrepareRequest then decomposes the URL
 // path into (verb, resource, namespace, name, params) and stashes
-// the result on req.Meta for the k8s matcher to read.
+// the result under req.Metas["k8s"] for the k8s matcher to read.
 package k8s
 
 import (
@@ -87,18 +87,18 @@ func (Facet) ReportFields() []facet.ReportFieldSpec {
 }
 
 // PrepareRequest derives the k8s Meta from the request URL and method
-// and stashes it on req.Meta. Called by the gateway before any
-// matcher runs for a k8s-family request.
+// and stashes it under req.Metas["k8s"]. Called by the gateway
+// before any matcher runs for a k8s-family request.
 func (Facet) PrepareRequest(req *match.Request) {
 	if req == nil || req.URL == nil {
 		return
 	}
-	req.Meta = parsePath(req.Method, req.URL.RequestURI())
+	req.SetMeta("k8s", parsePath(req.Method, req.URL.RequestURI()))
 }
 
 // Report extracts the k8s report fields from a request.
 func (Facet) Report(req *match.Request) map[string]any {
-	m, _ := req.Meta.(*Meta)
+	m, _ := req.Meta("k8s").(*Meta)
 	if m == nil {
 		return nil
 	}
@@ -157,7 +157,7 @@ func buildActivation(req *match.Request) map[string]any {
 	if req == nil {
 		return nil
 	}
-	meta, _ := req.Meta.(*Meta)
+	meta, _ := req.Meta("k8s").(*Meta)
 	if meta == nil {
 		return nil
 	}

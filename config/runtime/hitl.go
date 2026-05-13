@@ -21,7 +21,7 @@ import (
 func HITLEndpointLabel(req ApproveRequest) string {
 	ep := req.Endpoint
 	if ep != nil && req.Host != "" {
-		if f := facet.Lookup(ep.Family); f != nil && f.HostIsResource() {
+		if f := facet.Lookup(ep.PrimaryFamily()); f != nil && f.HostIsResource() {
 			return req.Host
 		}
 	}
@@ -37,7 +37,7 @@ func HITLEndpointLabel(req ApproveRequest) string {
 // a registered facet.
 func HITLQueryLabel(ep *config.CompiledEndpoint) string {
 	if ep != nil {
-		if f := facet.Lookup(ep.Family); f != nil {
+		if f := facet.Lookup(ep.PrimaryFamily()); f != nil {
 			if label := f.HITLQueryLabel(); label != "" {
 				return label
 			}

@@ -2,15 +2,16 @@
 // environment (verb / tables / functions / statement, exposed as
 // fields on the `sql` variable), the matcher that walks a parsed SQL
 // statement, the Meta type wire-frame frontends (postgres,
-// clickhouse) populate on match.Request.Meta, and the per-family
-// report fields the dashboard shows for a SQL query.
+// clickhouse) populate under match.Request.Metas["sql"], and the
+// per-family report fields the dashboard shows for a SQL query.
 //
 // SQL endpoints derive Meta themselves from the wire frame (the
 // postgres / clickhouse runtimes parse the Query message and stash
-// a *Meta on the request before dispatch), so PrepareRequest is a
-// no-op. The matcher type-asserts req.Meta to *Meta and fails the
-// match cleanly when the assertion fails — e.g. when an https-
-// family request accidentally reaches a sql rule.
+// a *Meta on the request before dispatch via req.SetMeta("sql", …)),
+// so PrepareRequest is a no-op. The matcher type-asserts the "sql"
+// slot to *Meta and fails the match cleanly when the slot is absent
+// or holds a different type — e.g. when an https-family request
+// accidentally reaches a sql rule.
 package sql
 
 import (
@@ -86,11 +87,11 @@ func (Facet) ReportFields() []facet.ReportFieldSpec {
 // directly from the wire frame.
 func (Facet) PrepareRequest(*match.Request) {}
 
-// Report extracts the SQL report fields from a request. When Meta
-// isn't a *Meta (e.g. a request that never ran through a SQL
-// frontend) the result is empty rather than panicking.
+// Report extracts the SQL report fields from a request. When the
+// sql slot isn't a *Meta (e.g. a request that never ran through a
+// SQL frontend) the result is empty rather than panicking.
 func (Facet) Report(req *match.Request) map[string]any {
-	m, _ := req.Meta.(*Meta)
+	m, _ := req.Meta("sql").(*Meta)
 	if m == nil {
 		return nil
 	}
@@ -159,7 +160,7 @@ func buildActivation(req *match.Request) map[string]any {
 	if req == nil {
 		return nil
 	}
-	meta, _ := req.Meta.(*Meta)
+	meta, _ := req.Meta("sql").(*Meta)
 	if meta == nil {
 		return nil
 	}

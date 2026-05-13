@@ -15,6 +15,7 @@ import (
 	// time.
 	_ "github.com/denoland/clawpatrol/config/plugins/facets/https"
 	_ "github.com/denoland/clawpatrol/config/plugins/facets/k8s"
+	_ "github.com/denoland/clawpatrol/config/plugins/facets/llm"
 	_ "github.com/denoland/clawpatrol/config/plugins/facets/sql"
 	_ "github.com/denoland/clawpatrol/config/plugins/rules"
 	_ "github.com/denoland/clawpatrol/config/plugins/tunnels"

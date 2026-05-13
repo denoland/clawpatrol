@@ -26,12 +26,12 @@ func (e *ClickhouseHTTPSEndpoint) EndpointCredentials() []config.CredBinding {
 
 func init() {
 	config.Register(&config.Plugin{
-		Kind:   config.KindEndpoint,
-		Type:   "clickhouse_https",
-		Family: "sql",
-		New:    func() any { return &ClickhouseHTTPSEndpoint{} },
-		Refs:   singularRef,
-		Build:  passthroughBuild,
+		Kind:     config.KindEndpoint,
+		Type:     "clickhouse_https",
+		Families: []string{"sql"},
+		New:      func() any { return &ClickhouseHTTPSEndpoint{} },
+		Refs:     singularRef,
+		Build:    passthroughBuild,
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			e := body.(*ClickhouseHTTPSEndpoint)
 			b.SetAttributeValue("hosts", config.StringListVal(e.Hosts))

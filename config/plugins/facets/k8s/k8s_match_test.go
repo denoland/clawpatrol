@@ -32,7 +32,7 @@ func TestK8sMatcherVerbCaseInsensitive(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewMatcher: %v", err)
 			}
-			req := &match.Request{Family: "k8s", Meta: &k8sfacet.Meta{Verb: tc.verb}}
+			req := &match.Request{Families: []string{"k8s"}, Metas: map[string]any{"k8s": &k8sfacet.Meta{Verb: tc.verb}}}
 			if got := m.Match(req); got != tc.want {
 				t.Errorf("Match=%v want %v (condition=%q)", got, tc.want, tc.condition)
 			}
@@ -59,7 +59,7 @@ func TestK8sMatcherNegationAndGlobs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req := &match.Request{Family: "k8s", Meta: tc.meta}
+			req := &match.Request{Families: []string{"k8s"}, Metas: map[string]any{"k8s": tc.meta}}
 			if got := m.Match(req); got != tc.want {
 				t.Errorf("Match=%v want %v", got, tc.want)
 			}
@@ -76,7 +76,7 @@ func TestK8sMatcherParams(t *testing.T) {
 		Verb: "create", Resource: "pods/exec", Name: "x",
 		Params: map[string]string{"stdin": "true"},
 	}
-	req := &match.Request{Family: "k8s", Meta: meta}
+	req := &match.Request{Families: []string{"k8s"}, Metas: map[string]any{"k8s": meta}}
 	if !m.Match(req) {
 		t.Errorf("expected interactive exec to match")
 	}
@@ -95,7 +95,7 @@ func TestK8sMatcherWatchVerbAndParams(t *testing.T) {
 	meta := &k8sfacet.Meta{
 		Verb: "watch", Resource: "pods", Params: map[string]string{"watch": "true"},
 	}
-	req := &match.Request{Family: "k8s", Meta: meta}
+	req := &match.Request{Families: []string{"k8s"}, Metas: map[string]any{"k8s": meta}}
 	if !m.Match(req) {
 		t.Errorf("expected watch pod list to match")
 	}

@@ -9,11 +9,35 @@ import (
 // Symbol is one entry in the flat namespace shared across all named
 // kinds (endpoint, credential, rule, approver, policy, profile).
 type Symbol struct {
-	Name   string
-	Kind   Kind
-	Type   string // "" for one-label kinds
-	Family string // for endpoints: "http"|"sql"|"k8s"; "" otherwise
-	Block  *hcl.Block
+	Name     string
+	Kind     Kind
+	Type     string // "" for one-label kinds
+	Families []string
+	Block    *hcl.Block
+}
+
+// PrimaryFamily returns the first family on the symbol, or "" when
+// the symbol carries none. The first entry is the protocol family
+// the dashboard / HITL / transport layers treat as canonical for the
+// underlying wire.
+func (s *Symbol) PrimaryFamily() string {
+	if s == nil || len(s.Families) == 0 {
+		return ""
+	}
+	return s.Families[0]
+}
+
+// HasFamily reports whether the symbol carries the named family.
+func (s *Symbol) HasFamily(name string) bool {
+	if s == nil {
+		return false
+	}
+	for _, f := range s.Families {
+		if f == name {
+			return true
+		}
+	}
+	return false
 }
 
 // Range is the block's declaration range — handy as a diagnostic
@@ -148,7 +172,8 @@ func buildSymbols(blocks hcl.Blocks) (*SymbolTable, hcl.Diagnostics) {
 			continue
 		}
 
-		var typ, name, family string
+		var typ, name string
+		var families []string
 		switch want {
 		case 1:
 			name = block.Labels[0]
@@ -165,16 +190,16 @@ func buildSymbols(blocks hcl.Blocks) (*SymbolTable, hcl.Diagnostics) {
 				// Still register the name so we don't cascade
 				// "unknown reference" errors for downstream rules.
 			} else {
-				family = plugin.Family
+				families = plugin.Families
 			}
 		}
 
 		sym := &Symbol{
-			Name:   name,
-			Kind:   kind,
-			Type:   typ,
-			Family: family,
-			Block:  block,
+			Name:     name,
+			Kind:     kind,
+			Type:     typ,
+			Families: families,
+			Block:    block,
 		}
 
 		// Global uniqueness across all kinds — names share one flat

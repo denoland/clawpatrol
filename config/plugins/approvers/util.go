@@ -17,7 +17,7 @@ func buildPending(req runtime.ApproveRequest) runtime.HITLPending {
 	now := time.Now()
 	family := ""
 	if req.Endpoint != nil {
-		family = req.Endpoint.Family
+		family = req.Endpoint.PrimaryFamily()
 	}
 	return runtime.HITLPending{
 		AgentIP:    req.Profile,

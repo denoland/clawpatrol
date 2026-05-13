@@ -1461,7 +1461,7 @@ func (w *webMux) writeActionFixture(rw http.ResponseWriter, ev *Event) {
 	}
 
 	fx := &Fixture{Match: m, Action: Action{PeerIP: ev.AgentIP}}
-	switch ep.Family {
+	switch ep.PrimaryFamily() {
 	case "http":
 		fx.Action.Host = ev.Host
 		fx.Action.HTTP = exportHTTP(ev)
@@ -1484,7 +1484,7 @@ func (w *webMux) writeActionFixture(rw http.ResponseWriter, ev *Event) {
 		}
 		fx.Action.SQL = sql
 	default:
-		http.Error(rw, fmt.Sprintf("endpoint family %q is not yet exportable", ep.Family), 501)
+		http.Error(rw, fmt.Sprintf("endpoint family %q is not yet exportable", ep.PrimaryFamily()), 501)
 		return
 	}
 

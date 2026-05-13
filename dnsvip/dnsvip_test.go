@@ -50,11 +50,11 @@ func fakePolicy(t *testing.T, hosts ...[]string) *config.CompiledPolicy {
 	for i, hh := range hosts {
 		name := "ep" + string(rune('A'+i))
 		p.Endpoints[name] = &config.CompiledEndpoint{
-			Name:   name,
-			Family: "ssh",
-			Plugin: &config.Plugin{Type: "ssh"},
-			Hosts:  hh,
-			Body:   testBody{hosts: hh},
+			Name:     name,
+			Families: []string{"ssh"},
+			Plugin:   &config.Plugin{Type: "ssh"},
+			Hosts:    hh,
+			Body:     testBody{hosts: hh},
 		}
 	}
 	return p
@@ -311,11 +311,11 @@ func TestRebuildResolvesDefaultPortForTLSEndpoint(t *testing.T) {
 		TLS:   true,
 	}
 	ep := &config.CompiledEndpoint{
-		Name:   "ch",
-		Family: "sql",
-		Plugin: &config.Plugin{Type: "clickhouse_native", Family: "sql"},
-		Body:   body,
-		Hosts:  body.EndpointHosts(),
+		Name:     "ch",
+		Families: []string{"sql"},
+		Plugin:   &config.Plugin{Type: "clickhouse_native", Families: []string{"sql"}},
+		Body:     body,
+		Hosts:    body.EndpointHosts(),
 	}
 	pol := &config.CompiledPolicy{
 		Endpoints: map[string]*config.CompiledEndpoint{"ch": ep},

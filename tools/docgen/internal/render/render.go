@@ -221,8 +221,12 @@ func (r *renderer) writePlugin(kind config.Kind, p *config.Plugin) {
 		r.out.WriteString("\n\n")
 	}
 
-	if kind == config.KindEndpoint && p.Family != "" {
-		fmt.Fprintf(&r.out, "Family: `%s`.\n\n", p.Family)
+	if kind == config.KindEndpoint && len(p.Families) > 0 {
+		if len(p.Families) == 1 {
+			fmt.Fprintf(&r.out, "Family: `%s`.\n\n", p.Families[0])
+		} else {
+			fmt.Fprintf(&r.out, "Families: %s.\n\n", joinTicked(p.Families))
+		}
 	}
 	if kind == config.KindRule && len(p.Families) > 0 {
 		fmt.Fprintf(&r.out, "Targets endpoints of family: %s.\n\n", joinTicked(p.Families))

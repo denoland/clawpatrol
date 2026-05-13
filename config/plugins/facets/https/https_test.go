@@ -17,10 +17,10 @@ import (
 func httpReq(method, path string) *match.Request {
 	u, _ := url.Parse("https://example.com" + path)
 	return &match.Request{
-		Family:  "http",
-		Method:  method,
-		URL:     u,
-		Headers: http.Header{},
+		Families: []string{"http"},
+		Method:   method,
+		URL:      u,
+		Headers:  http.Header{},
 	}
 }
 

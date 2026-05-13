@@ -110,7 +110,7 @@ func (PostgresEndpointRuntime) DetectPlaceholder(req *runtime.Request, candidate
 	if req == nil {
 		return ""
 	}
-	meta, _ := req.Meta.(*sqlfacet.Meta)
+	meta, _ := req.Meta("sql").(*sqlfacet.Meta)
 	if meta == nil {
 		return ""
 	}
@@ -144,7 +144,7 @@ func init() {
 	config.Register(&config.Plugin{
 		Kind:     config.KindEndpoint,
 		Type:     "postgres",
-		Family:   "sql",
+		Families: []string{"sql"},
 		New:      func() any { return &PostgresEndpoint{} },
 		Refs:     singularRef,
 		Validate: multiCredValidate,
@@ -182,7 +182,7 @@ const sslRequestCode = 80877103
 //  7. Bidirectional pump with per-query inspection.
 func (PostgresEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHandle) error {
 	defer func() { _ = ch.Conn.Close() }()
-	if ch.Endpoint == nil || ch.Endpoint.Family != "sql" {
+	if ch.Endpoint == nil || !ch.Endpoint.HasFamily("sql") {
 		return fmt.Errorf("postgres runtime invoked on non-sql endpoint %v", ch.Endpoint)
 	}
 
@@ -501,12 +501,12 @@ func pgHandleOversizeFrame(ch *runtime.ConnHandle, upstream net.Conn, credName s
 	remaining := totalWire - have
 
 	mreq := &match.Request{
-		Family:     "sql",
+		Families:   []string{"sql"},
 		PeerIP:     ch.PeerIP,
 		Credential: credName,
-		Meta:       &sqlfacet.Meta{},
 		Truncated:  true,
 	}
+	mreq.SetMeta("sql", &sqlfacet.Meta{})
 	var facets map[string]any
 	if f := facet.Lookup("sql"); f != nil {
 		facets = f.Report(mreq)
@@ -573,16 +573,16 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 	info := parseSQL(sql)
 	summary := pgSummary(info)
 	mreq := &match.Request{
-		Family:     "sql",
+		Families:   []string{"sql"},
 		PeerIP:     ch.PeerIP,
 		Credential: credName,
-		Meta: &sqlfacet.Meta{
-			Verb:      info.Verb,
-			Tables:    info.Tables,
-			Functions: info.Functions,
-			Statement: info.Statement,
-		},
 	}
+	mreq.SetMeta("sql", &sqlfacet.Meta{
+		Verb:      info.Verb,
+		Tables:    info.Tables,
+		Functions: info.Functions,
+		Statement: info.Statement,
+	})
 	// Per-family report payload — the same map the gateway will
 	// stash on Event.Facets so the dashboard renders sql_rule
 	// columns (verb / tables / functions / statement) directly
