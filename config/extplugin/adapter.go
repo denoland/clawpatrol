@@ -345,7 +345,8 @@ func handleEvaluate(ctx context.Context, ch *runtime.ConnHandle, ev *pb.Evaluate
 	// an action shaped to that facet's variables and the adapter
 	// maps it onto the typed match.Request fields the built-in
 	// matcher reads, instead of stashing the action in Meta.
-	pf := facetFor(ch.Endpoint.Family)
+	primaryFamily := ch.Endpoint.PrimaryFamily()
+	pf := facetFor(primaryFamily)
 
 	// Stream pulling: for each stream field present in ev.Streams,
 	// pull bytes until cap or EOF, then cancel. For plugin facets
@@ -401,15 +402,15 @@ func handleEvaluate(ctx context.Context, ch *runtime.ConnHandle, ev *pb.Evaluate
 	var req *match.Request
 	if pf != nil {
 		req = &match.Request{
-			Family:    ch.Endpoint.Family,
+			Families:  ch.Endpoint.Families,
 			PeerIP:    ch.PeerIP,
 			Method:    stringField(action, "verb"),
 			URL:       &url.URL{Host: ch.UpstreamHost, Path: ev.Summary},
-			Meta:      action,
 			Truncated: truncated,
 		}
+		req.SetMeta(primaryFamily, action)
 	} else {
-		req = builtinRequestFor(ch.Endpoint.Family, ch.PeerIP, ev.Summary, action, streamBytes)
+		req = builtinRequestFor(primaryFamily, ch.PeerIP, ev.Summary, action, streamBytes)
 		req.Truncated = truncated
 	}
 
@@ -499,9 +500,9 @@ func builtinRequestFor(family, peerIP, summary string, action map[string]any, st
 	switch family {
 	case "http":
 		req := &match.Request{
-			Family: family,
-			PeerIP: peerIP,
-			Method: stringField(action, "method"),
+			Families: []string{family},
+			PeerIP:   peerIP,
+			Method:   stringField(action, "method"),
 		}
 		// URL: prefer a full URL if the plugin sent one; otherwise
 		// build a path-only URL (the built-in http facet only reads
@@ -536,12 +537,13 @@ func builtinRequestFor(family, peerIP, summary string, action map[string]any, st
 		}
 		return req
 	}
-	return &match.Request{
-		Family: family,
-		PeerIP: peerIP,
-		URL:    &url.URL{Path: summary},
-		Meta:   action,
+	req := &match.Request{
+		Families: []string{family},
+		PeerIP:   peerIP,
+		URL:      &url.URL{Path: summary},
 	}
+	req.SetMeta(family, action)
+	return req
 }
 
 // facetFor looks up the synthesized *pluginFacet by namespaced name.

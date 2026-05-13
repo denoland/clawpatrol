@@ -234,9 +234,9 @@ func registerEndpoint(client *Client, pluginName string, decl *pb.EndpointDecl) 
 	}
 
 	plug := &config.Plugin{
-		Kind:   config.KindEndpoint,
-		Type:   typeName,
-		Family: decl.Family,
+		Kind:     config.KindEndpoint,
+		Type:     typeName,
+		Families: []string{decl.Family},
 		New: func() any {
 			return &dynamicEndpointBody{
 				adapter:      adapter,

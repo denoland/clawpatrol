@@ -45,7 +45,7 @@ func newPluginFacetMatcher(facetName, condition string, streamFields []string) (
 		return nil, fmt.Errorf("plugin facet %q: cel env: %w", facetName, err)
 	}
 	buildAct := func(req *match.Request) map[string]any {
-		m, ok := req.Meta.(map[string]any)
+		m, ok := req.Meta(facetName).(map[string]any)
 		if !ok {
 			return nil
 		}
