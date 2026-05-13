@@ -24,6 +24,14 @@ type pluginFacet struct {
 	// without colliding while rules stay readable.
 	shortName    string
 	reportFields []facet.ReportFieldSpec
+	// kindByField is the per-field kind, kept so the gateway
+	// adapter can identify FACET_STREAM fields (which need lazy
+	// pulling) and zero-fill optional missing fields.
+	kindByField map[string]pb.FacetKind
+	// optionalFields is the set of field names plugin authors
+	// declared optional. The adapter pre-fills missing entries
+	// with the kind-zero value before CEL evaluation.
+	optionalFields map[string]bool
 }
 
 func (p *pluginFacet) Name() string                          { return p.name }
@@ -42,17 +50,31 @@ func (p *pluginFacet) NewMatcher(condition string) (match.Matcher, error) {
 // registerFacet synthesizes a pluginFacet from a FacetDecl and
 // installs it under the namespaced name "<plugin>.<facet>". Idempotent
 // (skips re-registration on hot-reload).
-func registerFacet(pluginName string, decl *pb.FacetDecl) {
+func registerFacet(pluginName string, decl *pb.FacetDecl) *pluginFacet {
 	name := pluginName + "." + decl.Name
-	if facet.Lookup(name) != nil {
-		return
+	if existing := facet.Lookup(name); existing != nil {
+		if pf, ok := existing.(*pluginFacet); ok {
+			return pf
+		}
+		return nil
+	}
+	kindByField := make(map[string]pb.FacetKind, len(decl.Fields))
+	optional := make(map[string]bool)
+	for _, f := range decl.Fields {
+		kindByField[f.Name] = f.Kind
+		if f.Optional {
+			optional[f.Name] = true
+		}
 	}
 	pf := &pluginFacet{
-		name:         name,
-		shortName:    decl.Name,
-		reportFields: protoFacetFieldsToSpec(decl.Fields),
+		name:           name,
+		shortName:      decl.Name,
+		reportFields:   protoFacetFieldsToSpec(decl.Fields),
+		kindByField:    kindByField,
+		optionalFields: optional,
 	}
 	facet.Register(pf)
+	return pf
 }
 
 func protoFacetFieldsToSpec(in []*pb.FacetFieldDecl) []facet.ReportFieldSpec {

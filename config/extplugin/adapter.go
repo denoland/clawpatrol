@@ -12,7 +12,9 @@ import (
 	"net/url"
 	"sync"
 
+	"github.com/denoland/clawpatrol/config"
 	pb "github.com/denoland/clawpatrol/config/extplugin/proto"
+	"github.com/denoland/clawpatrol/config/facet"
 	"github.com/denoland/clawpatrol/config/match"
 	"github.com/denoland/clawpatrol/config/runtime"
 )
@@ -162,10 +164,11 @@ func (a *endpointAdapter) HandleConn(ctx context.Context, ch *runtime.ConnHandle
 //
 //	conn -> plugin: read agent bytes, send as ConnData frames.
 //	plugin -> conn: receive ConnData / ConnEvent / EvaluateAction /
-//	                ConnClose; write data to conn, forward events to
-//	                ch.Emit, dispatch evaluations through the
-//	                gateway's matcher + approve chain and reply with
-//	                an ActionVerdict.
+//	                StreamChunk / ConnClose; write data to conn,
+//	                forward events to ch.Emit, dispatch evaluations
+//	                through the gateway's matcher + approve chain
+//	                and reply with an ActionVerdict, route incoming
+//	                stream chunks to in-flight pullStream callers.
 //
 // Returns the first non-nil error from either direction.
 //
@@ -179,6 +182,27 @@ func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnC
 		sendMu.Lock()
 		defer sendMu.Unlock()
 		return stream.Send(m)
+	}
+
+	// streamReplies routes StreamChunk messages from the plugin to
+	// the per-evaluate goroutine that issued the matching
+	// StreamRead. One blocked pullStream call sits on the channel
+	// per outstanding read; arrivals push the chunk and the caller
+	// either accepts it or sends another StreamRead.
+	var streamMu sync.Mutex
+	streamReplies := map[string]chan *pb.StreamChunk{}
+	getStreamCh := func(handle string) chan *pb.StreamChunk {
+		streamMu.Lock()
+		defer streamMu.Unlock()
+		ch, ok := streamReplies[handle]
+		if !ok {
+			ch = make(chan *pb.StreamChunk, 1)
+			streamReplies[handle] = ch
+		}
+		return ch
+	}
+	streamReply := func(handle string) <-chan *pb.StreamChunk {
+		return getStreamCh(handle)
 	}
 
 	errCh := make(chan error, 2)
@@ -246,7 +270,17 @@ func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnC
 				// Run rule + approve chain off the recv loop so a
 				// HITL-blocking call doesn't stall data flow or
 				// other concurrent evaluations.
-				go handleEvaluate(ctx, ch, k.Evaluate, doSend)
+				go handleEvaluate(ctx, ch, k.Evaluate, doSend, streamReply)
+			case *pb.ConnMessage_StreamChunk:
+				replyCh := getStreamCh(k.StreamChunk.Handle)
+				select {
+				case replyCh <- k.StreamChunk:
+				default:
+					// pullStream uses a 1-buffer channel and does
+					// one read per StreamRead; a backed-up channel
+					// here means the caller already gave up on the
+					// stream. Drop the chunk.
+				}
 			case *pb.ConnMessage_Close:
 				errCh <- nil
 				return
@@ -267,13 +301,26 @@ func pumpConn(ctx context.Context, conn net.Conn, stream pb.Endpoint_HandleConnC
 	}
 }
 
+// streamCapBytesForRule is how many bytes the gateway pulls from a
+// stream-typed facet field when at least one rule on the endpoint
+// references it. CEL needs the full value to evaluate predicates
+// like `body.contains("foo")`, so this is also the upper bound on
+// the bytes the matcher sees.
+const streamCapBytesForRule = 1 << 20 // 1 MiB
+
+// streamCapBytesForLog is the smaller cap used when no rule
+// references the stream — just enough to record a recognisable
+// prefix on the dashboard event so an operator can eyeball what
+// went past.
+const streamCapBytesForLog = 1024
+
 // handleEvaluate runs one EvaluateAction call from the plugin
 // against the gateway's matcher + approve chain and ships the
 // resulting verdict back over the stream. Also emits a runtime
 // ConnEvent so the action lands on the dashboard event sink with
 // the action map as the facet payload — plugins don't need to
 // double-emit via Conn.Emit.
-func handleEvaluate(ctx context.Context, ch *runtime.ConnHandle, ev *pb.EvaluateAction, doSend func(*pb.ConnMessage) error) {
+func handleEvaluate(ctx context.Context, ch *runtime.ConnHandle, ev *pb.EvaluateAction, doSend func(*pb.ConnMessage) error, streamReply func(handle string) <-chan *pb.StreamChunk) {
 	verdict := &pb.ActionVerdict{CallId: ev.CallId}
 
 	// Decode the action payload into a map so it can both feed the
@@ -286,6 +333,51 @@ func handleEvaluate(ctx context.Context, ch *runtime.ConnHandle, ev *pb.Evaluate
 			emitEvaluation(ch, ev, verdict, action)
 			_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Verdict{Verdict: verdict}})
 			return
+		}
+	}
+	if action == nil {
+		action = map[string]any{}
+	}
+
+	// Look up the synthetic facet so we know which fields are
+	// stream-typed and which are optional. The endpoint's family is
+	// the namespaced facet name; facet.Lookup returns a *pluginFacet
+	// when the family was declared by a plugin.
+	pf := facetFor(ch.Endpoint.Family)
+
+	// Stream pulling: for each FACET_STREAM field present in
+	// ev.Streams, decide a cap based on whether any rule on the
+	// endpoint references the field, then pull StreamChunks from the
+	// plugin until the cap is met or eof. After pulling, send a
+	// StreamCancel so the plugin can drop its source reader.
+	if pf != nil && len(ev.Streams) > 0 {
+		needed := streamFieldsNeeded(ch.Endpoint.Rules, pf.shortName)
+		for fieldName, handle := range ev.Streams {
+			if pf.kindByField[fieldName] != pb.FacetKind_FACET_STREAM {
+				continue
+			}
+			cap := streamCapBytesForLog
+			if needed[fieldName] {
+				cap = streamCapBytesForRule
+			}
+			data := pullStream(ctx, doSend, streamReply, handle, cap)
+			// Always cancel after we've taken what we need so the
+			// plugin can release its source. Safe even if the stream
+			// already eof-ed; the SDK ignores cancels for handles
+			// it has already dropped.
+			_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_StreamCancel{StreamCancel: &pb.StreamCancel{Handle: handle}}})
+			action[fieldName] = string(data)
+		}
+	}
+
+	// Optional-field zero-fill so rule conditions can reference
+	// declared fields without `has()` guards.
+	if pf != nil {
+		for field := range pf.optionalFields {
+			if _, present := action[field]; present && action[field] != nil {
+				continue
+			}
+			action[field] = zeroForKind(pf.kindByField[field])
 		}
 	}
 
@@ -369,6 +461,104 @@ func stringField(m map[string]any, key string) string {
 	}
 	v, _ := m[key].(string)
 	return v
+}
+
+// facetFor looks up the synthesized *pluginFacet by namespaced name.
+// Returns nil when the family isn't a plugin facet (e.g. a built-in
+// or an endpoint with family=="stream" that didn't bind to a facet).
+func facetFor(family string) *pluginFacet {
+	if family == "" {
+		return nil
+	}
+	r := facet.Lookup(family)
+	if r == nil {
+		return nil
+	}
+	pf, _ := r.(*pluginFacet)
+	return pf
+}
+
+// streamFieldsNeeded returns the set of facet sub-fields any rule
+// on the endpoint will read from the activation. The matchers built
+// by newPluginFacetMatcher implement SubFieldReferencer; matchers
+// from other origins (an unlikely mix) are treated as referencing
+// every field, since we have no visibility into their AST.
+func streamFieldsNeeded(rules []*config.CompiledRule, facetShortName string) map[string]bool {
+	out := map[string]bool{}
+	for _, r := range rules {
+		ref, ok := r.Matcher.(SubFieldReferencer)
+		if !ok {
+			// Conservative: assume every field is read so we don't
+			// strip data a rule needs.
+			return nil
+		}
+		for f := range ref.SubFieldRefs() {
+			out[f] = true
+		}
+	}
+	return out
+}
+
+// pullStream issues StreamRead requests against the plugin until
+// either the cap is reached or the stream eofs. Returns the bytes
+// collected (truncated to cap). Errors and read failures land here
+// as eof — the gateway logs whatever it got.
+func pullStream(ctx context.Context, doSend func(*pb.ConnMessage) error, streamReply func(handle string) <-chan *pb.StreamChunk, handle string, cap int) []byte {
+	if cap <= 0 {
+		return nil
+	}
+	out := make([]byte, 0, cap)
+	for len(out) < cap {
+		want := cap - len(out)
+		if want > 32*1024 {
+			want = 32 * 1024
+		}
+		ch := streamReply(handle)
+		if ch == nil {
+			return out
+		}
+		if err := doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_StreamRead{StreamRead: &pb.StreamRead{
+			Handle: handle, MaxBytes: uint32(want),
+		}}}); err != nil {
+			return out
+		}
+		select {
+		case chunk, ok := <-ch:
+			if !ok || chunk == nil {
+				return out
+			}
+			if n := cap - len(out); n < len(chunk.Payload) {
+				out = append(out, chunk.Payload[:n]...)
+				return out
+			}
+			out = append(out, chunk.Payload...)
+			if chunk.Eof {
+				return out
+			}
+		case <-ctx.Done():
+			return out
+		}
+	}
+	return out
+}
+
+// zeroForKind returns the JSON-shaped zero value for a facet field
+// kind. Used to fill in optional fields the plugin omitted from the
+// action payload.
+func zeroForKind(k pb.FacetKind) any {
+	switch k {
+	case pb.FacetKind_FACET_STRING_LIST:
+		return []any{}
+	case pb.FacetKind_FACET_STRING_MAP:
+		return map[string]any{}
+	case pb.FacetKind_FACET_INT:
+		return float64(0)
+	default:
+		// FACET_STRING and FACET_STREAM both materialize as strings
+		// (the bytes from a stream are exposed as a string for
+		// CEL's built-in size / contains / startsWith / etc).
+		return ""
+	}
 }
 
 // =====================================================================

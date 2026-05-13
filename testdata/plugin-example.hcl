@@ -71,6 +71,25 @@ rule "smtp-deny-external" {
   reason    = "external sender"
 }
 
+// Body-content rule. References smtp.body, so the gateway pulls the
+// full message body (up to its 1 MiB cap) for BODY evaluations on
+// this endpoint. The handshake / MAIL / RCPT rules above don't
+// touch smtp.body, so the gateway only pulls a log-prefix when those
+// fire on a non-DATA verb — bodies on internal-allowed messages are
+// pulled in full only because of this rule.
+rule "smtp-body-no-secrets" {
+  endpoint  = demo-mail
+  condition = "smtp.verb == 'BODY' && !smtp.body.contains('SECRET')"
+  verdict   = "allow"
+}
+
+rule "smtp-body-deny" {
+  endpoint  = demo-mail
+  condition = "smtp.verb == 'BODY'"
+  verdict   = "deny"
+  reason    = "body contains restricted token"
+}
+
 // Plain-TCP endpoint: no TLS at all. Plugin reads lines and echoes
 // them back prefixed with the credential secret.
 endpoint "example.demo_echo" "demo-echo" {

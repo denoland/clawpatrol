@@ -61,6 +61,11 @@ message FacetFieldDecl {
   string name = 1;
   FacetKind kind = 2;
   string label = 3;
+  // optional fields may be omitted from EvaluateAction.action_json.
+  // The gateway substitutes a kind-zero value (empty string, empty
+  // list, empty map, 0) before CEL evaluation so rule conditions
+  // can reference them without `has()` guards.
+  bool optional = 4;
 }
 
 enum FacetKind {
@@ -68,6 +73,13 @@ enum FacetKind {
   FACET_STRING_LIST = 1;
   FACET_STRING_MAP  = 2;
   FACET_INT         = 3;
+  // FACET_STREAM is a lazy bytes value the plugin offers via a
+  // handle in EvaluateAction.streams. The gateway pulls chunks via
+  // StreamRead — fully when any endpoint rule references the
+  // field, otherwise just enough to log a prefix — and sends
+  // StreamCancel when it has what it needs. The plugin sees the
+  // cancel and can stop buffering.
+  FACET_STREAM      = 4;
 }
 
 // Schema is a flat list of attributes the plugin's HCL block accepts.
@@ -160,13 +172,39 @@ service Endpoint {
 
 message ConnMessage {
   oneof kind {
-    ConnInit       init     = 1;
-    ConnData       data     = 2;
-    ConnClose      close    = 3;
-    ConnEvent      event    = 4;
-    EvaluateAction evaluate = 5;   // plugin -> gateway
-    ActionVerdict  verdict  = 6;   // gateway -> plugin
+    ConnInit       init          = 1;
+    ConnData       data          = 2;
+    ConnClose      close         = 3;
+    ConnEvent      event         = 4;
+    EvaluateAction evaluate      = 5;   // plugin -> gateway
+    ActionVerdict  verdict       = 6;   // gateway -> plugin
+    StreamRead     stream_read   = 7;   // gateway -> plugin
+    StreamChunk    stream_chunk  = 8;   // plugin -> gateway
+    StreamCancel   stream_cancel = 9;   // gateway -> plugin
   }
+}
+
+// StreamRead asks the plugin for the next chunk of an open stream.
+// max_bytes is a hint; the plugin may return fewer bytes per chunk.
+message StreamRead {
+  string handle = 1;
+  uint32 max_bytes = 2;
+}
+
+// StreamChunk delivers one chunk of stream data. eof signals that no
+// more bytes will follow; the plugin needn't send a final empty
+// chunk — eof can ride on the last data-bearing chunk.
+message StreamChunk {
+  string handle = 1;
+  bytes payload = 2;
+  bool eof = 3;
+}
+
+// StreamCancel tells the plugin the gateway has read everything it
+// needs and the plugin can drop its end of the stream. The plugin
+// stops reading from its source io.Reader.
+message StreamCancel {
+  string handle = 1;
 }
 
 // EvaluateAction asks the gateway to rule on one structured action
@@ -185,12 +223,17 @@ message EvaluateAction {
   // CEL environment.
   string facet_name = 2;
   // action_json is a JSON object whose keys match the facet's
-  // declared field names; values are decoded as strings / arrays /
-  // ints per FacetFieldDecl.kind.
+  // declared scalar / list / map / int field names. Stream-typed
+  // fields appear in `streams` instead.
   bytes action_json = 3;
   // summary is a human-readable one-liner the dashboard / HITL
   // prompt renders to describe what's being decided.
   string summary = 4;
+  // streams maps each FACET_STREAM field name to a plugin-chosen
+  // handle. The gateway issues StreamRead(handle, max_bytes) until
+  // it has what it needs (full when a rule references the field,
+  // log-prefix only otherwise) and then StreamCancel(handle).
+  map<string, string> streams = 5;
 }
 
 message ActionVerdict {

@@ -123,9 +123,10 @@ func (s *server) Manifest(_ context.Context, _ *pb.ManifestRequest) (*pb.Manifes
 		fields := make([]*pb.FacetFieldDecl, 0, len(f.Fields))
 		for _, fld := range f.Fields {
 			fields = append(fields, &pb.FacetFieldDecl{
-				Name:  fld.Name,
-				Kind:  pb.FacetKind(fld.Kind),
-				Label: fld.Label,
+				Name:     fld.Name,
+				Kind:     pb.FacetKind(fld.Kind),
+				Label:    fld.Label,
+				Optional: fld.Optional,
 			})
 		}
 		resp.Facets = append(resp.Facets, &pb.FacetDecl{Name: f.Name, Fields: fields})
@@ -296,8 +297,48 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 	var inflightMu sync.Mutex
 	inflight := map[string]chan *pb.ActionVerdict{}
 	var callSeq atomic.Uint64
+
+	// streams holds active StreamValue readers keyed by handle. The
+	// recv goroutine fulfils gateway StreamRead requests by reading
+	// from the registered io.Reader and replying with StreamChunk;
+	// StreamCancel drops the entry so the plugin's source goroutine
+	// notices on the next read.
+	var streamsMu sync.Mutex
+	streams := map[string]*streamReg{}
+	var streamSeq atomic.Uint64
+
 	conn.evaluate = func(ctx context.Context, facet string, action map[string]any, summary string) (Verdict, error) {
-		j, err := json.Marshal(action)
+		// Pull StreamValue entries out of the action map, allocate a
+		// handle for each, register the reader, and replace the
+		// action-map entry with nil so the JSON payload is small.
+		// Stream entries roll up into EvaluateAction.streams instead.
+		actionForJSON := action
+		streamHandles := map[string]string(nil)
+		for k, v := range action {
+			sv, ok := v.(StreamValue)
+			if !ok {
+				continue
+			}
+			if streamHandles == nil {
+				// Lazy clone so we don't mutate the caller's map.
+				actionForJSON = make(map[string]any, len(action))
+				for kk, vv := range action {
+					if _, isStream := vv.(StreamValue); isStream {
+						actionForJSON[kk] = nil
+					} else {
+						actionForJSON[kk] = vv
+					}
+				}
+				streamHandles = map[string]string{}
+			}
+			handle := fmt.Sprintf("s%d", streamSeq.Add(1))
+			streamsMu.Lock()
+			streams[handle] = &streamReg{r: sv.R}
+			streamsMu.Unlock()
+			streamHandles[k] = handle
+		}
+
+		j, err := json.Marshal(actionForJSON)
 		if err != nil {
 			return Verdict{}, fmt.Errorf("pluginsdk: marshal action: %w", err)
 		}
@@ -310,12 +351,22 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 			inflightMu.Lock()
 			delete(inflight, callID)
 			inflightMu.Unlock()
+			// Drop any streams the gateway didn't explicitly cancel —
+			// the call is done, the readers are no longer interesting.
+			if len(streamHandles) > 0 {
+				streamsMu.Lock()
+				for _, h := range streamHandles {
+					delete(streams, h)
+				}
+				streamsMu.Unlock()
+			}
 		}()
 		if err := doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_Evaluate{Evaluate: &pb.EvaluateAction{
 			CallId:     callID,
 			FacetName:  facet,
 			ActionJson: j,
 			Summary:    summary,
+			Streams:    streamHandles,
 		}}}); err != nil {
 			return Verdict{}, fmt.Errorf("pluginsdk: send EvaluateAction: %w", err)
 		}
@@ -345,6 +396,12 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 				delete(inflight, id)
 			}
 			inflightMu.Unlock()
+			streamsMu.Lock()
+			for h, reg := range streams {
+				reg.cancel()
+				delete(streams, h)
+			}
+			streamsMu.Unlock()
 		}()
 		for {
 			msg, err := stream.Recv()
@@ -377,6 +434,19 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 				if ok {
 					ch <- k.Verdict
 				}
+			case *pb.ConnMessage_StreamRead:
+				// Read up to max_bytes from the registered reader and
+				// reply with one StreamChunk. Run in a goroutine so a
+				// slow reader doesn't stall verdict / data messages
+				// queued after this read on the same gRPC stream.
+				go serveStreamRead(k.StreamRead, &streamsMu, streams, doSend)
+			case *pb.ConnMessage_StreamCancel:
+				streamsMu.Lock()
+				if reg, ok := streams[k.StreamCancel.Handle]; ok {
+					reg.cancel()
+					delete(streams, k.StreamCancel.Handle)
+				}
+				streamsMu.Unlock()
 			default:
 				// Unexpected init / event / evaluate from the gateway
 				// — ignore.
@@ -421,6 +491,69 @@ func (s *server) HandleConn(stream pb.Endpoint_HandleConnServer) error {
 		}})
 	}
 	return handleErr
+}
+
+// streamReg holds one StreamValue's reader plus a cancel sentinel
+// the recv goroutine flips on StreamCancel. The serveStreamRead
+// helper checks cancelled before each read so a slow reader can't
+// re-enable a stream the gateway already abandoned.
+type streamReg struct {
+	r         io.Reader
+	mu        sync.Mutex
+	cancelled bool
+}
+
+func (s *streamReg) cancel() {
+	s.mu.Lock()
+	s.cancelled = true
+	s.mu.Unlock()
+	if c, ok := s.r.(io.Closer); ok {
+		_ = c.Close()
+	}
+}
+
+// serveStreamRead replies to one gateway StreamRead by reading from
+// the registered io.Reader and sending a single StreamChunk. eof is
+// set when the reader returns io.EOF or the stream was cancelled.
+// Errors get logged via a final eof chunk so the gateway doesn't
+// hang waiting for more.
+func serveStreamRead(req *pb.StreamRead, mu *sync.Mutex, streams map[string]*streamReg, doSend func(*pb.ConnMessage) error) {
+	mu.Lock()
+	reg, ok := streams[req.Handle]
+	mu.Unlock()
+	if !ok {
+		_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_StreamChunk{StreamChunk: &pb.StreamChunk{
+			Handle: req.Handle, Eof: true,
+		}}})
+		return
+	}
+	reg.mu.Lock()
+	if reg.cancelled {
+		reg.mu.Unlock()
+		_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_StreamChunk{StreamChunk: &pb.StreamChunk{
+			Handle: req.Handle, Eof: true,
+		}}})
+		return
+	}
+	reg.mu.Unlock()
+
+	max := int(req.MaxBytes)
+	if max <= 0 || max > 64*1024 {
+		max = 64 * 1024
+	}
+	buf := make([]byte, max)
+	n, err := reg.r.Read(buf)
+	chunk := &pb.StreamChunk{Handle: req.Handle, Payload: buf[:n]}
+	if err != nil {
+		// io.EOF or any read error is terminal. Forward what we got
+		// (may be 0 bytes) plus eof; the gateway treats both errors
+		// and EOF the same — the stream is done.
+		chunk.Eof = true
+		mu.Lock()
+		delete(streams, req.Handle)
+		mu.Unlock()
+	}
+	_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_StreamChunk{StreamChunk: chunk}})
 }
 
 // tunnelHandle is the SDK's record of one OpenTunnel call. The

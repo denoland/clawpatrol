@@ -41,6 +41,13 @@ const (
 	FacetKind_FACET_STRING_LIST FacetKind = 1
 	FacetKind_FACET_STRING_MAP  FacetKind = 2
 	FacetKind_FACET_INT         FacetKind = 3
+	// FACET_STREAM is a lazy bytes value the plugin offers via a
+	// handle in EvaluateAction.streams. The gateway pulls chunks via
+	// StreamRead — fully when any endpoint rule references the
+	// field, otherwise just enough to log a prefix — and sends
+	// StreamCancel when it has what it needs. The plugin sees the
+	// cancel and can stop buffering.
+	FacetKind_FACET_STREAM FacetKind = 4
 )
 
 // Enum value maps for FacetKind.
@@ -50,12 +57,14 @@ var (
 		1: "FACET_STRING_LIST",
 		2: "FACET_STRING_MAP",
 		3: "FACET_INT",
+		4: "FACET_STREAM",
 	}
 	FacetKind_value = map[string]int32{
 		"FACET_STRING":      0,
 		"FACET_STRING_LIST": 1,
 		"FACET_STRING_MAP":  2,
 		"FACET_INT":         3,
+		"FACET_STREAM":      4,
 	}
 )
 
@@ -360,10 +369,15 @@ func (x *FacetDecl) GetFields() []*FacetFieldDecl {
 }
 
 type FacetFieldDecl struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Kind          FacetKind              `protobuf:"varint,2,opt,name=kind,proto3,enum=clawpatrol.plugin.v1.FacetKind" json:"kind,omitempty"`
-	Label         string                 `protobuf:"bytes,3,opt,name=label,proto3" json:"label,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Kind  FacetKind              `protobuf:"varint,2,opt,name=kind,proto3,enum=clawpatrol.plugin.v1.FacetKind" json:"kind,omitempty"`
+	Label string                 `protobuf:"bytes,3,opt,name=label,proto3" json:"label,omitempty"`
+	// optional fields may be omitted from EvaluateAction.action_json.
+	// The gateway substitutes a kind-zero value (empty string, empty
+	// list, empty map, 0) before CEL evaluation so rule conditions
+	// can reference them without `has()` guards.
+	Optional      bool `protobuf:"varint,4,opt,name=optional,proto3" json:"optional,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -417,6 +431,13 @@ func (x *FacetFieldDecl) GetLabel() string {
 		return x.Label
 	}
 	return ""
+}
+
+func (x *FacetFieldDecl) GetOptional() bool {
+	if x != nil {
+		return x.Optional
+	}
+	return false
 }
 
 // Schema is a flat list of attributes the plugin's HCL block accepts.
@@ -907,6 +928,9 @@ type ConnMessage struct {
 	//	*ConnMessage_Event
 	//	*ConnMessage_Evaluate
 	//	*ConnMessage_Verdict
+	//	*ConnMessage_StreamRead
+	//	*ConnMessage_StreamChunk
+	//	*ConnMessage_StreamCancel
 	Kind          isConnMessage_Kind `protobuf_oneof:"kind"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1003,6 +1027,33 @@ func (x *ConnMessage) GetVerdict() *ActionVerdict {
 	return nil
 }
 
+func (x *ConnMessage) GetStreamRead() *StreamRead {
+	if x != nil {
+		if x, ok := x.Kind.(*ConnMessage_StreamRead); ok {
+			return x.StreamRead
+		}
+	}
+	return nil
+}
+
+func (x *ConnMessage) GetStreamChunk() *StreamChunk {
+	if x != nil {
+		if x, ok := x.Kind.(*ConnMessage_StreamChunk); ok {
+			return x.StreamChunk
+		}
+	}
+	return nil
+}
+
+func (x *ConnMessage) GetStreamCancel() *StreamCancel {
+	if x != nil {
+		if x, ok := x.Kind.(*ConnMessage_StreamCancel); ok {
+			return x.StreamCancel
+		}
+	}
+	return nil
+}
+
 type isConnMessage_Kind interface {
 	isConnMessage_Kind()
 }
@@ -1031,6 +1082,18 @@ type ConnMessage_Verdict struct {
 	Verdict *ActionVerdict `protobuf:"bytes,6,opt,name=verdict,proto3,oneof"` // gateway -> plugin
 }
 
+type ConnMessage_StreamRead struct {
+	StreamRead *StreamRead `protobuf:"bytes,7,opt,name=stream_read,json=streamRead,proto3,oneof"` // gateway -> plugin
+}
+
+type ConnMessage_StreamChunk struct {
+	StreamChunk *StreamChunk `protobuf:"bytes,8,opt,name=stream_chunk,json=streamChunk,proto3,oneof"` // plugin -> gateway
+}
+
+type ConnMessage_StreamCancel struct {
+	StreamCancel *StreamCancel `protobuf:"bytes,9,opt,name=stream_cancel,json=streamCancel,proto3,oneof"` // gateway -> plugin
+}
+
 func (*ConnMessage_Init) isConnMessage_Kind() {}
 
 func (*ConnMessage_Data) isConnMessage_Kind() {}
@@ -1042,6 +1105,176 @@ func (*ConnMessage_Event) isConnMessage_Kind() {}
 func (*ConnMessage_Evaluate) isConnMessage_Kind() {}
 
 func (*ConnMessage_Verdict) isConnMessage_Kind() {}
+
+func (*ConnMessage_StreamRead) isConnMessage_Kind() {}
+
+func (*ConnMessage_StreamChunk) isConnMessage_Kind() {}
+
+func (*ConnMessage_StreamCancel) isConnMessage_Kind() {}
+
+// StreamRead asks the plugin for the next chunk of an open stream.
+// max_bytes is a hint; the plugin may return fewer bytes per chunk.
+type StreamRead struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Handle        string                 `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
+	MaxBytes      uint32                 `protobuf:"varint,2,opt,name=max_bytes,json=maxBytes,proto3" json:"max_bytes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StreamRead) Reset() {
+	*x = StreamRead{}
+	mi := &file_plugin_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StreamRead) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StreamRead) ProtoMessage() {}
+
+func (x *StreamRead) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StreamRead.ProtoReflect.Descriptor instead.
+func (*StreamRead) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *StreamRead) GetHandle() string {
+	if x != nil {
+		return x.Handle
+	}
+	return ""
+}
+
+func (x *StreamRead) GetMaxBytes() uint32 {
+	if x != nil {
+		return x.MaxBytes
+	}
+	return 0
+}
+
+// StreamChunk delivers one chunk of stream data. eof signals that no
+// more bytes will follow; the plugin needn't send a final empty
+// chunk — eof can ride on the last data-bearing chunk.
+type StreamChunk struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Handle        string                 `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
+	Payload       []byte                 `protobuf:"bytes,2,opt,name=payload,proto3" json:"payload,omitempty"`
+	Eof           bool                   `protobuf:"varint,3,opt,name=eof,proto3" json:"eof,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StreamChunk) Reset() {
+	*x = StreamChunk{}
+	mi := &file_plugin_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StreamChunk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StreamChunk) ProtoMessage() {}
+
+func (x *StreamChunk) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StreamChunk.ProtoReflect.Descriptor instead.
+func (*StreamChunk) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *StreamChunk) GetHandle() string {
+	if x != nil {
+		return x.Handle
+	}
+	return ""
+}
+
+func (x *StreamChunk) GetPayload() []byte {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+func (x *StreamChunk) GetEof() bool {
+	if x != nil {
+		return x.Eof
+	}
+	return false
+}
+
+// StreamCancel tells the plugin the gateway has read everything it
+// needs and the plugin can drop its end of the stream. The plugin
+// stops reading from its source io.Reader.
+type StreamCancel struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Handle        string                 `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StreamCancel) Reset() {
+	*x = StreamCancel{}
+	mi := &file_plugin_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StreamCancel) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StreamCancel) ProtoMessage() {}
+
+func (x *StreamCancel) ProtoReflect() protoreflect.Message {
+	mi := &file_plugin_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StreamCancel.ProtoReflect.Descriptor instead.
+func (*StreamCancel) Descriptor() ([]byte, []int) {
+	return file_plugin_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *StreamCancel) GetHandle() string {
+	if x != nil {
+		return x.Handle
+	}
+	return ""
+}
 
 // EvaluateAction asks the gateway to rule on one structured action
 // (a "request" in the policy sense — an SMTP command, a query, an
@@ -1060,19 +1293,24 @@ type EvaluateAction struct {
 	// CEL environment.
 	FacetName string `protobuf:"bytes,2,opt,name=facet_name,json=facetName,proto3" json:"facet_name,omitempty"`
 	// action_json is a JSON object whose keys match the facet's
-	// declared field names; values are decoded as strings / arrays /
-	// ints per FacetFieldDecl.kind.
+	// declared scalar / list / map / int field names. Stream-typed
+	// fields appear in `streams` instead.
 	ActionJson []byte `protobuf:"bytes,3,opt,name=action_json,json=actionJson,proto3" json:"action_json,omitempty"`
 	// summary is a human-readable one-liner the dashboard / HITL
 	// prompt renders to describe what's being decided.
-	Summary       string `protobuf:"bytes,4,opt,name=summary,proto3" json:"summary,omitempty"`
+	Summary string `protobuf:"bytes,4,opt,name=summary,proto3" json:"summary,omitempty"`
+	// streams maps each FACET_STREAM field name to a plugin-chosen
+	// handle. The gateway issues StreamRead(handle, max_bytes) until
+	// it has what it needs (full when a rule references the field,
+	// log-prefix only otherwise) and then StreamCancel(handle).
+	Streams       map[string]string `protobuf:"bytes,5,rep,name=streams,proto3" json:"streams,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *EvaluateAction) Reset() {
 	*x = EvaluateAction{}
-	mi := &file_plugin_proto_msgTypes[13]
+	mi := &file_plugin_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1084,7 +1322,7 @@ func (x *EvaluateAction) String() string {
 func (*EvaluateAction) ProtoMessage() {}
 
 func (x *EvaluateAction) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[13]
+	mi := &file_plugin_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1097,7 +1335,7 @@ func (x *EvaluateAction) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EvaluateAction.ProtoReflect.Descriptor instead.
 func (*EvaluateAction) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{13}
+	return file_plugin_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *EvaluateAction) GetCallId() string {
@@ -1128,6 +1366,13 @@ func (x *EvaluateAction) GetSummary() string {
 	return ""
 }
 
+func (x *EvaluateAction) GetStreams() map[string]string {
+	if x != nil {
+		return x.Streams
+	}
+	return nil
+}
+
 type ActionVerdict struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	CallId        string                 `protobuf:"bytes,1,opt,name=call_id,json=callId,proto3" json:"call_id,omitempty"`
@@ -1140,7 +1385,7 @@ type ActionVerdict struct {
 
 func (x *ActionVerdict) Reset() {
 	*x = ActionVerdict{}
-	mi := &file_plugin_proto_msgTypes[14]
+	mi := &file_plugin_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1152,7 +1397,7 @@ func (x *ActionVerdict) String() string {
 func (*ActionVerdict) ProtoMessage() {}
 
 func (x *ActionVerdict) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[14]
+	mi := &file_plugin_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1165,7 +1410,7 @@ func (x *ActionVerdict) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ActionVerdict.ProtoReflect.Descriptor instead.
 func (*ActionVerdict) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{14}
+	return file_plugin_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ActionVerdict) GetCallId() string {
@@ -1228,7 +1473,7 @@ type ConnInit struct {
 
 func (x *ConnInit) Reset() {
 	*x = ConnInit{}
-	mi := &file_plugin_proto_msgTypes[15]
+	mi := &file_plugin_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1240,7 +1485,7 @@ func (x *ConnInit) String() string {
 func (*ConnInit) ProtoMessage() {}
 
 func (x *ConnInit) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[15]
+	mi := &file_plugin_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1253,7 +1498,7 @@ func (x *ConnInit) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnInit.ProtoReflect.Descriptor instead.
 func (*ConnInit) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{15}
+	return file_plugin_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ConnInit) GetEndpointTypeName() string {
@@ -1363,7 +1608,7 @@ type ConnData struct {
 
 func (x *ConnData) Reset() {
 	*x = ConnData{}
-	mi := &file_plugin_proto_msgTypes[16]
+	mi := &file_plugin_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1375,7 +1620,7 @@ func (x *ConnData) String() string {
 func (*ConnData) ProtoMessage() {}
 
 func (x *ConnData) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[16]
+	mi := &file_plugin_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1388,7 +1633,7 @@ func (x *ConnData) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnData.ProtoReflect.Descriptor instead.
 func (*ConnData) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{16}
+	return file_plugin_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ConnData) GetPayload() []byte {
@@ -1408,7 +1653,7 @@ type ConnClose struct {
 
 func (x *ConnClose) Reset() {
 	*x = ConnClose{}
-	mi := &file_plugin_proto_msgTypes[17]
+	mi := &file_plugin_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1420,7 +1665,7 @@ func (x *ConnClose) String() string {
 func (*ConnClose) ProtoMessage() {}
 
 func (x *ConnClose) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[17]
+	mi := &file_plugin_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1433,7 +1678,7 @@ func (x *ConnClose) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnClose.ProtoReflect.Descriptor instead.
 func (*ConnClose) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{17}
+	return file_plugin_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ConnClose) GetReason() string {
@@ -1464,7 +1709,7 @@ type ConnEvent struct {
 
 func (x *ConnEvent) Reset() {
 	*x = ConnEvent{}
-	mi := &file_plugin_proto_msgTypes[18]
+	mi := &file_plugin_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1476,7 +1721,7 @@ func (x *ConnEvent) String() string {
 func (*ConnEvent) ProtoMessage() {}
 
 func (x *ConnEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[18]
+	mi := &file_plugin_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1489,7 +1734,7 @@ func (x *ConnEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnEvent.ProtoReflect.Descriptor instead.
 func (*ConnEvent) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{18}
+	return file_plugin_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *ConnEvent) GetAction() string {
@@ -1555,7 +1800,7 @@ type OpenTunnelRequest struct {
 
 func (x *OpenTunnelRequest) Reset() {
 	*x = OpenTunnelRequest{}
-	mi := &file_plugin_proto_msgTypes[19]
+	mi := &file_plugin_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1567,7 +1812,7 @@ func (x *OpenTunnelRequest) String() string {
 func (*OpenTunnelRequest) ProtoMessage() {}
 
 func (x *OpenTunnelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[19]
+	mi := &file_plugin_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1580,7 +1825,7 @@ func (x *OpenTunnelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OpenTunnelRequest.ProtoReflect.Descriptor instead.
 func (*OpenTunnelRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{19}
+	return file_plugin_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *OpenTunnelRequest) GetTunnelTypeName() string {
@@ -1627,7 +1872,7 @@ type OpenTunnelResponse struct {
 
 func (x *OpenTunnelResponse) Reset() {
 	*x = OpenTunnelResponse{}
-	mi := &file_plugin_proto_msgTypes[20]
+	mi := &file_plugin_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1639,7 +1884,7 @@ func (x *OpenTunnelResponse) String() string {
 func (*OpenTunnelResponse) ProtoMessage() {}
 
 func (x *OpenTunnelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[20]
+	mi := &file_plugin_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1652,7 +1897,7 @@ func (x *OpenTunnelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OpenTunnelResponse.ProtoReflect.Descriptor instead.
 func (*OpenTunnelResponse) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{20}
+	return file_plugin_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *OpenTunnelResponse) GetHandle() string {
@@ -1671,7 +1916,7 @@ type CloseTunnelRequest struct {
 
 func (x *CloseTunnelRequest) Reset() {
 	*x = CloseTunnelRequest{}
-	mi := &file_plugin_proto_msgTypes[21]
+	mi := &file_plugin_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1683,7 +1928,7 @@ func (x *CloseTunnelRequest) String() string {
 func (*CloseTunnelRequest) ProtoMessage() {}
 
 func (x *CloseTunnelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[21]
+	mi := &file_plugin_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1696,7 +1941,7 @@ func (x *CloseTunnelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloseTunnelRequest.ProtoReflect.Descriptor instead.
 func (*CloseTunnelRequest) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{21}
+	return file_plugin_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *CloseTunnelRequest) GetHandle() string {
@@ -1714,7 +1959,7 @@ type CloseTunnelResponse struct {
 
 func (x *CloseTunnelResponse) Reset() {
 	*x = CloseTunnelResponse{}
-	mi := &file_plugin_proto_msgTypes[22]
+	mi := &file_plugin_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1726,7 +1971,7 @@ func (x *CloseTunnelResponse) String() string {
 func (*CloseTunnelResponse) ProtoMessage() {}
 
 func (x *CloseTunnelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[22]
+	mi := &file_plugin_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1739,7 +1984,7 @@ func (x *CloseTunnelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloseTunnelResponse.ProtoReflect.Descriptor instead.
 func (*CloseTunnelResponse) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{22}
+	return file_plugin_proto_rawDescGZIP(), []int{25}
 }
 
 type DialMessage struct {
@@ -1756,7 +2001,7 @@ type DialMessage struct {
 
 func (x *DialMessage) Reset() {
 	*x = DialMessage{}
-	mi := &file_plugin_proto_msgTypes[23]
+	mi := &file_plugin_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1768,7 +2013,7 @@ func (x *DialMessage) String() string {
 func (*DialMessage) ProtoMessage() {}
 
 func (x *DialMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[23]
+	mi := &file_plugin_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1781,7 +2026,7 @@ func (x *DialMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DialMessage.ProtoReflect.Descriptor instead.
 func (*DialMessage) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{23}
+	return file_plugin_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *DialMessage) GetKind() isDialMessage_Kind {
@@ -1851,7 +2096,7 @@ type DialInit struct {
 
 func (x *DialInit) Reset() {
 	*x = DialInit{}
-	mi := &file_plugin_proto_msgTypes[24]
+	mi := &file_plugin_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1863,7 +2108,7 @@ func (x *DialInit) String() string {
 func (*DialInit) ProtoMessage() {}
 
 func (x *DialInit) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[24]
+	mi := &file_plugin_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1876,7 +2121,7 @@ func (x *DialInit) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DialInit.ProtoReflect.Descriptor instead.
 func (*DialInit) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{24}
+	return file_plugin_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *DialInit) GetTunnelHandle() string {
@@ -1909,7 +2154,7 @@ type DialData struct {
 
 func (x *DialData) Reset() {
 	*x = DialData{}
-	mi := &file_plugin_proto_msgTypes[25]
+	mi := &file_plugin_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1921,7 +2166,7 @@ func (x *DialData) String() string {
 func (*DialData) ProtoMessage() {}
 
 func (x *DialData) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[25]
+	mi := &file_plugin_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1934,7 +2179,7 @@ func (x *DialData) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DialData.ProtoReflect.Descriptor instead.
 func (*DialData) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{25}
+	return file_plugin_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *DialData) GetPayload() []byte {
@@ -1953,7 +2198,7 @@ type DialClose struct {
 
 func (x *DialClose) Reset() {
 	*x = DialClose{}
-	mi := &file_plugin_proto_msgTypes[26]
+	mi := &file_plugin_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1965,7 +2210,7 @@ func (x *DialClose) String() string {
 func (*DialClose) ProtoMessage() {}
 
 func (x *DialClose) ProtoReflect() protoreflect.Message {
-	mi := &file_plugin_proto_msgTypes[26]
+	mi := &file_plugin_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1978,7 +2223,7 @@ func (x *DialClose) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DialClose.ProtoReflect.Descriptor instead.
 func (*DialClose) Descriptor() ([]byte, []int) {
-	return file_plugin_proto_rawDescGZIP(), []int{26}
+	return file_plugin_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *DialClose) GetReason() string {
@@ -2003,11 +2248,12 @@ const file_plugin_proto_rawDesc = "" +
 	"\x06facets\x18\x06 \x03(\v2\x1f.clawpatrol.plugin.v1.FacetDeclR\x06facets\"]\n" +
 	"\tFacetDecl\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12<\n" +
-	"\x06fields\x18\x02 \x03(\v2$.clawpatrol.plugin.v1.FacetFieldDeclR\x06fields\"o\n" +
+	"\x06fields\x18\x02 \x03(\v2$.clawpatrol.plugin.v1.FacetFieldDeclR\x06fields\"\x8b\x01\n" +
 	"\x0eFacetFieldDecl\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x123\n" +
 	"\x04kind\x18\x02 \x01(\x0e2\x1f.clawpatrol.plugin.v1.FacetKindR\x04kind\x12\x14\n" +
-	"\x05label\x18\x03 \x01(\tR\x05label\"C\n" +
+	"\x05label\x18\x03 \x01(\tR\x05label\x12\x1a\n" +
+	"\boptional\x18\x04 \x01(\bR\boptional\"C\n" +
 	"\x06Schema\x129\n" +
 	"\x06fields\x18\x01 \x03(\v2!.clawpatrol.plugin.v1.SchemaFieldR\x06fields\"^\n" +
 	"\vSchemaField\x12\x12\n" +
@@ -2044,22 +2290,40 @@ const file_plugin_proto_rawDesc = "" +
 	"\x06detail\x18\x03 \x01(\tR\x06detail\"\"\n" +
 	"\bSeverity\x12\t\n" +
 	"\x05ERROR\x10\x00\x12\v\n" +
-	"\aWARNING\x10\x01\"\xf8\x02\n" +
+	"\aWARNING\x10\x01\"\xd0\x04\n" +
 	"\vConnMessage\x124\n" +
 	"\x04init\x18\x01 \x01(\v2\x1e.clawpatrol.plugin.v1.ConnInitH\x00R\x04init\x124\n" +
 	"\x04data\x18\x02 \x01(\v2\x1e.clawpatrol.plugin.v1.ConnDataH\x00R\x04data\x127\n" +
 	"\x05close\x18\x03 \x01(\v2\x1f.clawpatrol.plugin.v1.ConnCloseH\x00R\x05close\x127\n" +
 	"\x05event\x18\x04 \x01(\v2\x1f.clawpatrol.plugin.v1.ConnEventH\x00R\x05event\x12B\n" +
 	"\bevaluate\x18\x05 \x01(\v2$.clawpatrol.plugin.v1.EvaluateActionH\x00R\bevaluate\x12?\n" +
-	"\averdict\x18\x06 \x01(\v2#.clawpatrol.plugin.v1.ActionVerdictH\x00R\averdictB\x06\n" +
-	"\x04kind\"\x83\x01\n" +
+	"\averdict\x18\x06 \x01(\v2#.clawpatrol.plugin.v1.ActionVerdictH\x00R\averdict\x12C\n" +
+	"\vstream_read\x18\a \x01(\v2 .clawpatrol.plugin.v1.StreamReadH\x00R\n" +
+	"streamRead\x12F\n" +
+	"\fstream_chunk\x18\b \x01(\v2!.clawpatrol.plugin.v1.StreamChunkH\x00R\vstreamChunk\x12I\n" +
+	"\rstream_cancel\x18\t \x01(\v2\".clawpatrol.plugin.v1.StreamCancelH\x00R\fstreamCancelB\x06\n" +
+	"\x04kind\"A\n" +
+	"\n" +
+	"StreamRead\x12\x16\n" +
+	"\x06handle\x18\x01 \x01(\tR\x06handle\x12\x1b\n" +
+	"\tmax_bytes\x18\x02 \x01(\rR\bmaxBytes\"Q\n" +
+	"\vStreamChunk\x12\x16\n" +
+	"\x06handle\x18\x01 \x01(\tR\x06handle\x12\x18\n" +
+	"\apayload\x18\x02 \x01(\fR\apayload\x12\x10\n" +
+	"\x03eof\x18\x03 \x01(\bR\x03eof\"&\n" +
+	"\fStreamCancel\x12\x16\n" +
+	"\x06handle\x18\x01 \x01(\tR\x06handle\"\x8c\x02\n" +
 	"\x0eEvaluateAction\x12\x17\n" +
 	"\acall_id\x18\x01 \x01(\tR\x06callId\x12\x1d\n" +
 	"\n" +
 	"facet_name\x18\x02 \x01(\tR\tfacetName\x12\x1f\n" +
 	"\vaction_json\x18\x03 \x01(\fR\n" +
 	"actionJson\x12\x18\n" +
-	"\asummary\x18\x04 \x01(\tR\asummary\"l\n" +
+	"\asummary\x18\x04 \x01(\tR\asummary\x12K\n" +
+	"\astreams\x18\x05 \x03(\v21.clawpatrol.plugin.v1.EvaluateAction.StreamsEntryR\astreams\x1a:\n" +
+	"\fStreamsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"l\n" +
 	"\rActionVerdict\x12\x17\n" +
 	"\acall_id\x18\x01 \x01(\tR\x06callId\x12\x16\n" +
 	"\x06action\x18\x02 \x01(\tR\x06action\x12\x16\n" +
@@ -2124,12 +2388,13 @@ const file_plugin_proto_rawDesc = "" +
 	"\bDialData\x12\x18\n" +
 	"\apayload\x18\x01 \x01(\fR\apayload\"#\n" +
 	"\tDialClose\x12\x16\n" +
-	"\x06reason\x18\x01 \x01(\tR\x06reason*Y\n" +
+	"\x06reason\x18\x01 \x01(\tR\x06reason*k\n" +
 	"\tFacetKind\x12\x10\n" +
 	"\fFACET_STRING\x10\x00\x12\x15\n" +
 	"\x11FACET_STRING_LIST\x10\x01\x12\x14\n" +
 	"\x10FACET_STRING_MAP\x10\x02\x12\r\n" +
-	"\tFACET_INT\x10\x03**\n" +
+	"\tFACET_INT\x10\x03\x12\x10\n" +
+	"\fFACET_STREAM\x10\x04**\n" +
 	"\aTLSMode\x12\f\n" +
 	"\bTLS_NONE\x10\x00\x12\x11\n" +
 	"\rTLS_TERMINATE\x10\x012\xb5\x01\n" +
@@ -2158,7 +2423,7 @@ func file_plugin_proto_rawDescGZIP() []byte {
 }
 
 var file_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
+var file_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
 var file_plugin_proto_goTypes = []any{
 	(FacetKind)(0),              // 0: clawpatrol.plugin.v1.FacetKind
 	(TLSMode)(0),                // 1: clawpatrol.plugin.v1.TLSMode
@@ -2176,22 +2441,26 @@ var file_plugin_proto_goTypes = []any{
 	(*BuildResponse)(nil),       // 13: clawpatrol.plugin.v1.BuildResponse
 	(*Diagnostic)(nil),          // 14: clawpatrol.plugin.v1.Diagnostic
 	(*ConnMessage)(nil),         // 15: clawpatrol.plugin.v1.ConnMessage
-	(*EvaluateAction)(nil),      // 16: clawpatrol.plugin.v1.EvaluateAction
-	(*ActionVerdict)(nil),       // 17: clawpatrol.plugin.v1.ActionVerdict
-	(*ConnInit)(nil),            // 18: clawpatrol.plugin.v1.ConnInit
-	(*ConnData)(nil),            // 19: clawpatrol.plugin.v1.ConnData
-	(*ConnClose)(nil),           // 20: clawpatrol.plugin.v1.ConnClose
-	(*ConnEvent)(nil),           // 21: clawpatrol.plugin.v1.ConnEvent
-	(*OpenTunnelRequest)(nil),   // 22: clawpatrol.plugin.v1.OpenTunnelRequest
-	(*OpenTunnelResponse)(nil),  // 23: clawpatrol.plugin.v1.OpenTunnelResponse
-	(*CloseTunnelRequest)(nil),  // 24: clawpatrol.plugin.v1.CloseTunnelRequest
-	(*CloseTunnelResponse)(nil), // 25: clawpatrol.plugin.v1.CloseTunnelResponse
-	(*DialMessage)(nil),         // 26: clawpatrol.plugin.v1.DialMessage
-	(*DialInit)(nil),            // 27: clawpatrol.plugin.v1.DialInit
-	(*DialData)(nil),            // 28: clawpatrol.plugin.v1.DialData
-	(*DialClose)(nil),           // 29: clawpatrol.plugin.v1.DialClose
-	nil,                         // 30: clawpatrol.plugin.v1.ConnInit.CredentialExtrasEntry
-	nil,                         // 31: clawpatrol.plugin.v1.OpenTunnelRequest.CredentialExtrasEntry
+	(*StreamRead)(nil),          // 16: clawpatrol.plugin.v1.StreamRead
+	(*StreamChunk)(nil),         // 17: clawpatrol.plugin.v1.StreamChunk
+	(*StreamCancel)(nil),        // 18: clawpatrol.plugin.v1.StreamCancel
+	(*EvaluateAction)(nil),      // 19: clawpatrol.plugin.v1.EvaluateAction
+	(*ActionVerdict)(nil),       // 20: clawpatrol.plugin.v1.ActionVerdict
+	(*ConnInit)(nil),            // 21: clawpatrol.plugin.v1.ConnInit
+	(*ConnData)(nil),            // 22: clawpatrol.plugin.v1.ConnData
+	(*ConnClose)(nil),           // 23: clawpatrol.plugin.v1.ConnClose
+	(*ConnEvent)(nil),           // 24: clawpatrol.plugin.v1.ConnEvent
+	(*OpenTunnelRequest)(nil),   // 25: clawpatrol.plugin.v1.OpenTunnelRequest
+	(*OpenTunnelResponse)(nil),  // 26: clawpatrol.plugin.v1.OpenTunnelResponse
+	(*CloseTunnelRequest)(nil),  // 27: clawpatrol.plugin.v1.CloseTunnelRequest
+	(*CloseTunnelResponse)(nil), // 28: clawpatrol.plugin.v1.CloseTunnelResponse
+	(*DialMessage)(nil),         // 29: clawpatrol.plugin.v1.DialMessage
+	(*DialInit)(nil),            // 30: clawpatrol.plugin.v1.DialInit
+	(*DialData)(nil),            // 31: clawpatrol.plugin.v1.DialData
+	(*DialClose)(nil),           // 32: clawpatrol.plugin.v1.DialClose
+	nil,                         // 33: clawpatrol.plugin.v1.EvaluateAction.StreamsEntry
+	nil,                         // 34: clawpatrol.plugin.v1.ConnInit.CredentialExtrasEntry
+	nil,                         // 35: clawpatrol.plugin.v1.OpenTunnelRequest.CredentialExtrasEntry
 }
 var file_plugin_proto_depIdxs = []int32{
 	9,  // 0: clawpatrol.plugin.v1.ManifestResponse.credentials:type_name -> clawpatrol.plugin.v1.CredentialDecl
@@ -2207,34 +2476,38 @@ var file_plugin_proto_depIdxs = []int32{
 	1,  // 10: clawpatrol.plugin.v1.EndpointDecl.tls_mode:type_name -> clawpatrol.plugin.v1.TLSMode
 	14, // 11: clawpatrol.plugin.v1.BuildResponse.diagnostics:type_name -> clawpatrol.plugin.v1.Diagnostic
 	2,  // 12: clawpatrol.plugin.v1.Diagnostic.severity:type_name -> clawpatrol.plugin.v1.Diagnostic.Severity
-	18, // 13: clawpatrol.plugin.v1.ConnMessage.init:type_name -> clawpatrol.plugin.v1.ConnInit
-	19, // 14: clawpatrol.plugin.v1.ConnMessage.data:type_name -> clawpatrol.plugin.v1.ConnData
-	20, // 15: clawpatrol.plugin.v1.ConnMessage.close:type_name -> clawpatrol.plugin.v1.ConnClose
-	21, // 16: clawpatrol.plugin.v1.ConnMessage.event:type_name -> clawpatrol.plugin.v1.ConnEvent
-	16, // 17: clawpatrol.plugin.v1.ConnMessage.evaluate:type_name -> clawpatrol.plugin.v1.EvaluateAction
-	17, // 18: clawpatrol.plugin.v1.ConnMessage.verdict:type_name -> clawpatrol.plugin.v1.ActionVerdict
-	30, // 19: clawpatrol.plugin.v1.ConnInit.credential_extras:type_name -> clawpatrol.plugin.v1.ConnInit.CredentialExtrasEntry
-	31, // 20: clawpatrol.plugin.v1.OpenTunnelRequest.credential_extras:type_name -> clawpatrol.plugin.v1.OpenTunnelRequest.CredentialExtrasEntry
-	27, // 21: clawpatrol.plugin.v1.DialMessage.init:type_name -> clawpatrol.plugin.v1.DialInit
-	28, // 22: clawpatrol.plugin.v1.DialMessage.data:type_name -> clawpatrol.plugin.v1.DialData
-	29, // 23: clawpatrol.plugin.v1.DialMessage.close:type_name -> clawpatrol.plugin.v1.DialClose
-	3,  // 24: clawpatrol.plugin.v1.Plugin.Manifest:input_type -> clawpatrol.plugin.v1.ManifestRequest
-	12, // 25: clawpatrol.plugin.v1.Plugin.Build:input_type -> clawpatrol.plugin.v1.BuildRequest
-	15, // 26: clawpatrol.plugin.v1.Endpoint.HandleConn:input_type -> clawpatrol.plugin.v1.ConnMessage
-	22, // 27: clawpatrol.plugin.v1.Tunnel.OpenTunnel:input_type -> clawpatrol.plugin.v1.OpenTunnelRequest
-	26, // 28: clawpatrol.plugin.v1.Tunnel.Dial:input_type -> clawpatrol.plugin.v1.DialMessage
-	24, // 29: clawpatrol.plugin.v1.Tunnel.CloseTunnel:input_type -> clawpatrol.plugin.v1.CloseTunnelRequest
-	4,  // 30: clawpatrol.plugin.v1.Plugin.Manifest:output_type -> clawpatrol.plugin.v1.ManifestResponse
-	13, // 31: clawpatrol.plugin.v1.Plugin.Build:output_type -> clawpatrol.plugin.v1.BuildResponse
-	15, // 32: clawpatrol.plugin.v1.Endpoint.HandleConn:output_type -> clawpatrol.plugin.v1.ConnMessage
-	23, // 33: clawpatrol.plugin.v1.Tunnel.OpenTunnel:output_type -> clawpatrol.plugin.v1.OpenTunnelResponse
-	26, // 34: clawpatrol.plugin.v1.Tunnel.Dial:output_type -> clawpatrol.plugin.v1.DialMessage
-	25, // 35: clawpatrol.plugin.v1.Tunnel.CloseTunnel:output_type -> clawpatrol.plugin.v1.CloseTunnelResponse
-	30, // [30:36] is the sub-list for method output_type
-	24, // [24:30] is the sub-list for method input_type
-	24, // [24:24] is the sub-list for extension type_name
-	24, // [24:24] is the sub-list for extension extendee
-	0,  // [0:24] is the sub-list for field type_name
+	21, // 13: clawpatrol.plugin.v1.ConnMessage.init:type_name -> clawpatrol.plugin.v1.ConnInit
+	22, // 14: clawpatrol.plugin.v1.ConnMessage.data:type_name -> clawpatrol.plugin.v1.ConnData
+	23, // 15: clawpatrol.plugin.v1.ConnMessage.close:type_name -> clawpatrol.plugin.v1.ConnClose
+	24, // 16: clawpatrol.plugin.v1.ConnMessage.event:type_name -> clawpatrol.plugin.v1.ConnEvent
+	19, // 17: clawpatrol.plugin.v1.ConnMessage.evaluate:type_name -> clawpatrol.plugin.v1.EvaluateAction
+	20, // 18: clawpatrol.plugin.v1.ConnMessage.verdict:type_name -> clawpatrol.plugin.v1.ActionVerdict
+	16, // 19: clawpatrol.plugin.v1.ConnMessage.stream_read:type_name -> clawpatrol.plugin.v1.StreamRead
+	17, // 20: clawpatrol.plugin.v1.ConnMessage.stream_chunk:type_name -> clawpatrol.plugin.v1.StreamChunk
+	18, // 21: clawpatrol.plugin.v1.ConnMessage.stream_cancel:type_name -> clawpatrol.plugin.v1.StreamCancel
+	33, // 22: clawpatrol.plugin.v1.EvaluateAction.streams:type_name -> clawpatrol.plugin.v1.EvaluateAction.StreamsEntry
+	34, // 23: clawpatrol.plugin.v1.ConnInit.credential_extras:type_name -> clawpatrol.plugin.v1.ConnInit.CredentialExtrasEntry
+	35, // 24: clawpatrol.plugin.v1.OpenTunnelRequest.credential_extras:type_name -> clawpatrol.plugin.v1.OpenTunnelRequest.CredentialExtrasEntry
+	30, // 25: clawpatrol.plugin.v1.DialMessage.init:type_name -> clawpatrol.plugin.v1.DialInit
+	31, // 26: clawpatrol.plugin.v1.DialMessage.data:type_name -> clawpatrol.plugin.v1.DialData
+	32, // 27: clawpatrol.plugin.v1.DialMessage.close:type_name -> clawpatrol.plugin.v1.DialClose
+	3,  // 28: clawpatrol.plugin.v1.Plugin.Manifest:input_type -> clawpatrol.plugin.v1.ManifestRequest
+	12, // 29: clawpatrol.plugin.v1.Plugin.Build:input_type -> clawpatrol.plugin.v1.BuildRequest
+	15, // 30: clawpatrol.plugin.v1.Endpoint.HandleConn:input_type -> clawpatrol.plugin.v1.ConnMessage
+	25, // 31: clawpatrol.plugin.v1.Tunnel.OpenTunnel:input_type -> clawpatrol.plugin.v1.OpenTunnelRequest
+	29, // 32: clawpatrol.plugin.v1.Tunnel.Dial:input_type -> clawpatrol.plugin.v1.DialMessage
+	27, // 33: clawpatrol.plugin.v1.Tunnel.CloseTunnel:input_type -> clawpatrol.plugin.v1.CloseTunnelRequest
+	4,  // 34: clawpatrol.plugin.v1.Plugin.Manifest:output_type -> clawpatrol.plugin.v1.ManifestResponse
+	13, // 35: clawpatrol.plugin.v1.Plugin.Build:output_type -> clawpatrol.plugin.v1.BuildResponse
+	15, // 36: clawpatrol.plugin.v1.Endpoint.HandleConn:output_type -> clawpatrol.plugin.v1.ConnMessage
+	26, // 37: clawpatrol.plugin.v1.Tunnel.OpenTunnel:output_type -> clawpatrol.plugin.v1.OpenTunnelResponse
+	29, // 38: clawpatrol.plugin.v1.Tunnel.Dial:output_type -> clawpatrol.plugin.v1.DialMessage
+	28, // 39: clawpatrol.plugin.v1.Tunnel.CloseTunnel:output_type -> clawpatrol.plugin.v1.CloseTunnelResponse
+	34, // [34:40] is the sub-list for method output_type
+	28, // [28:34] is the sub-list for method input_type
+	28, // [28:28] is the sub-list for extension type_name
+	28, // [28:28] is the sub-list for extension extendee
+	0,  // [0:28] is the sub-list for field type_name
 }
 
 func init() { file_plugin_proto_init() }
@@ -2249,8 +2522,11 @@ func file_plugin_proto_init() {
 		(*ConnMessage_Event)(nil),
 		(*ConnMessage_Evaluate)(nil),
 		(*ConnMessage_Verdict)(nil),
+		(*ConnMessage_StreamRead)(nil),
+		(*ConnMessage_StreamChunk)(nil),
+		(*ConnMessage_StreamCancel)(nil),
 	}
-	file_plugin_proto_msgTypes[23].OneofWrappers = []any{
+	file_plugin_proto_msgTypes[26].OneofWrappers = []any{
 		(*DialMessage_Init)(nil),
 		(*DialMessage_Data)(nil),
 		(*DialMessage_Close)(nil),
@@ -2261,7 +2537,7 @@ func file_plugin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_plugin_proto_rawDesc), len(file_plugin_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   29,
+			NumMessages:   33,
 			NumExtensions: 0,
 			NumServices:   3,
 		},

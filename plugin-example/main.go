@@ -30,9 +30,18 @@ func main() {
 				Name: "smtp",
 				Fields: []pluginsdk.FacetField{
 					{Name: "verb", Kind: pluginsdk.FacetString, Label: "Verb"},
-					{Name: "auth_user", Kind: pluginsdk.FacetString, Label: "User"},
-					{Name: "mail_from", Kind: pluginsdk.FacetString, Label: "From"},
-					{Name: "rcpt_to", Kind: pluginsdk.FacetStringList, Label: "Rcpt"},
+					// Optional fields are zero-filled by the gateway
+					// before CEL evaluation, so rules can reference
+					// them on every command without `has()` guards.
+					{Name: "auth_user", Kind: pluginsdk.FacetString, Label: "User", Optional: true},
+					{Name: "mail_from", Kind: pluginsdk.FacetString, Label: "From", Optional: true},
+					{Name: "rcpt_to", Kind: pluginsdk.FacetStringList, Label: "Rcpt", Optional: true},
+					// Stream field. The plugin offers the message
+					// body as a pluginsdk.Stream(io.Reader) on the
+					// EvaluateAction for the DATA command; the
+					// gateway pulls the full body when a rule reads
+					// it, otherwise just a log-prefix.
+					{Name: "body", Kind: pluginsdk.FacetStream, Label: "Body", Optional: true},
 				},
 			},
 		},

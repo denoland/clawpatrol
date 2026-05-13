@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 
 	pb "github.com/denoland/clawpatrol/config/extplugin/proto"
@@ -54,12 +55,19 @@ type FacetDef struct {
 
 // FacetField declares one column in the facet's schema. Kind tells
 // the dashboard how to format the value (single string, list of
-// strings, key/value map, integer); Label is the optional human-
-// readable column header (defaults to a title-cased Name).
+// strings, key/value map, integer, or lazy byte stream); Label is
+// the optional human-readable column header (defaults to a
+// title-cased Name).
+//
+// Optional fields may be omitted from the action map passed to
+// Conn.Evaluate; the gateway substitutes a kind-zero value before
+// CEL evaluation so rule conditions can reference them without
+// `has()` guards.
 type FacetField struct {
-	Name  string
-	Kind  FacetKind
-	Label string
+	Name     string
+	Kind     FacetKind
+	Label    string
+	Optional bool
 }
 
 // FacetKind mirrors pb.FacetKind.
@@ -70,7 +78,31 @@ const (
 	FacetStringList FacetKind = 1
 	FacetStringMap  FacetKind = 2
 	FacetInt        FacetKind = 3
+	// FacetStream is a lazy bytes value the plugin offers via
+	// pluginsdk.Stream(io.Reader) in the action map. The gateway
+	// pulls chunks on demand — the full payload (up to a cap) when
+	// any rule references the field, otherwise just enough to log
+	// a prefix — and cancels the stream when it has what it needs.
+	FacetStream FacetKind = 4
 )
+
+// Stream wraps an io.Reader so it can be passed as a value in the
+// action map of Conn.Evaluate. The SDK detects Stream values, swaps
+// them for handle markers in the JSON payload sent to the gateway,
+// and serves the gateway's StreamRead requests by reading from r in
+// the background. On StreamCancel (or conn shutdown) the SDK stops
+// reading; the plugin can use that as a hint to drop its own
+// upstream copy.
+//
+// Plugin authors who want to "rewind" a stream should buffer it
+// themselves (bytes.NewReader) before passing it here.
+func Stream(r io.Reader) StreamValue { return StreamValue{R: r} }
+
+// StreamValue is the wrapper returned by Stream. Exported so plugin
+// code can construct it directly when convenient.
+type StreamValue struct {
+	R io.Reader
+}
 
 // CredentialDef declares one credential type. The plugin's endpoints
 // receive the credential's secret bytes via Conn.CredentialSecret;

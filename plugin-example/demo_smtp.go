@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -106,9 +107,62 @@ func handleDemoSMTP(ctx context.Context, conn *pluginsdk.Conn) error {
 		if _, err := io.WriteString(conn, resp); err != nil {
 			return err
 		}
+
+		// DATA opens a separate body upload phase: reply 354, read
+		// lines until "\r\n.\r\n", then re-Evaluate with the body as
+		// a stream so the gateway can pull it (fully if a rule
+		// references smtp.body, otherwise just a log-prefix).
+		if verb == "DATA" && (v.Action == "allow" || v.Action == "hitl_allow") {
+			if _, err := io.WriteString(conn, "354 End data with <CR><LF>.<CR><LF>\r\n"); err != nil {
+				return err
+			}
+			body, derr := readSMTPData(br)
+			if derr != nil {
+				return derr
+			}
+			bodyAction := map[string]any{
+				"verb":      "BODY",
+				"auth_user": s.authUser,
+				"mail_from": s.mailFrom,
+				"rcpt_to":   s.rcptTo,
+				"body":      pluginsdk.Stream(bytes.NewReader(body)),
+			}
+			bv, err := conn.Evaluate(ctx, "smtp", bodyAction, fmt.Sprintf("BODY (%d bytes)", len(body)))
+			if err != nil {
+				return fmt.Errorf("evaluate body: %w", err)
+			}
+			if _, err := io.WriteString(conn, smtpReplyFor("BODY", bv)); err != nil {
+				return err
+			}
+		}
+
 		if verb == "QUIT" {
 			return nil
 		}
+	}
+}
+
+// readSMTPData drains the message body that follows DATA, stopping
+// at the SMTP terminator "\r\n.\r\n". Strips the dot-stuffing and
+// returns just the message bytes.
+func readSMTPData(br *bufio.Reader) ([]byte, error) {
+	var buf bytes.Buffer
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return buf.Bytes(), err
+		}
+		stripped := strings.TrimRight(line, "\r\n")
+		if stripped == "." {
+			return buf.Bytes(), nil
+		}
+		// RFC 5321: leading "." on a line is an escape for a line
+		// that actually starts with a dot.
+		if strings.HasPrefix(stripped, ".") {
+			stripped = stripped[1:]
+		}
+		buf.WriteString(stripped)
+		buf.WriteString("\r\n")
 	}
 }
 
@@ -122,6 +176,8 @@ func smtpReplyFor(verb string, v pluginsdk.Verdict) string {
 			return "235 2.7.0 Authentication successful\r\n"
 		case "QUIT":
 			return "221 Bye\r\n"
+		case "BODY":
+			return "250 2.0.0 Ok: queued\r\n"
 		default:
 			return "250 OK\r\n"
 		}
