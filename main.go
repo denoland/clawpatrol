@@ -1247,16 +1247,36 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 	agentPip := g.agentIPFor(c)
 
 	policy := g.Policy()
-	// Try the DNS-resolved IP index first — multi-postgres profiles
-	// dispatch correctly when each endpoint's hostname resolves to
-	// distinct IPs. When multiple endpoints share an IP (writer +
-	// readonly pointing at the same RDS), filter by the device's
-	// profile so the right one wins. Fall back to first-postgres-in-
-	// profile so single-database profiles work without DNS at all.
+	// Dispatch order:
+	//
+	//   1. dnsvip.LookupVIP — tunneled endpoints reach upstream via
+	//      a synthetic hostname routed through a VIP, and conn-index
+	//      intentionally skips them (would double-route past the
+	//      tunnel). Without this lookup, a tunneled postgres endpoint
+	//      lands in the firstPostgresEndpoint fallback below and the
+	//      gateway dials the wrong RDS / cloud-sql-proxy.
+	//   2. ConnIndex — non-tunneled endpoints indexed by DNS-resolved
+	//      upstream IP. Filtered by profile so writer / readonly
+	//      pointing at one RDS still picks the right one.
+	//   3. firstPostgresEndpoint — last-resort fallback so a
+	//      single-postgres profile works without DNS interception.
 	var ep *config.CompiledEndpoint
-	if idx := g.connIdx.Load(); idx != nil {
-		candidates := idx.Lookup(dstIP)
-		ep = pickEndpointForProfile(candidates, policy, profile)
+	if g.dnsvip != nil {
+		if _, hits := g.dnsvip.LookupVIP(dstIP); len(hits) > 0 {
+			cand := make([]*config.CompiledEndpoint, 0, len(hits))
+			for _, h := range hits {
+				if h.Endpoint != nil {
+					cand = append(cand, h.Endpoint)
+				}
+			}
+			ep = pickEndpointForProfile(cand, policy, profile)
+		}
+	}
+	if ep == nil {
+		if idx := g.connIdx.Load(); idx != nil {
+			candidates := idx.Lookup(dstIP)
+			ep = pickEndpointForProfile(candidates, policy, profile)
+		}
 	}
 	if ep == nil {
 		ep = firstPostgresEndpoint(policy, profile)
