@@ -7,16 +7,17 @@ import { setCredentialSlots } from "../lib/api";
 // key) get one input; multi-slot (mtls cert+key+ca, slack bot+app)
 // get one input per slot. PEM-shaped slots use a textarea.
 //
-// On Save, all filled slots are PUT through /api/credentials/set.
-// Empty slots clear that one slot. Doesn't fetch existing values
-// (we never read raw secrets back to the browser); operator
-// re-pastes when rotating.
+// On Save, touched slots are PUT through /api/credentials/set.
+// Empty touched slots clear that one slot. Untouched slots are omitted,
+// and existing values are never fetched back into the browser.
 export function CredentialSecretsModal({
   integration,
+  mode = "connect",
   onClose,
   onSaved,
 }: {
   integration: Integration;
+  mode?: "connect" | "update";
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -53,7 +54,9 @@ export function CredentialSecretsModal({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-4">
-          <div className="text-[14px] font-semibold text-[#171717]">Connect {integration.name}</div>
+          <div className="text-[14px] font-semibold text-[#171717]">
+            {mode === "update" ? "Update" : "Connect"} {integration.name}
+          </div>
           <button
             onClick={onClose}
             className="text-[#a3a3a3] hover:text-[#171717] text-[14px] leading-none"
@@ -62,6 +65,12 @@ export function CredentialSecretsModal({
           </button>
         </div>
         <div className="flex flex-col gap-3">
+          {mode === "update" && (
+            <p className="text-[11px] leading-relaxed text-[#737373]">
+              Existing secret values are not shown. Paste a new value to replace a slot; leave
+              untouched slots blank to keep them unchanged.
+            </p>
+          )}
           {slots.map((s) => (
             <label key={s.name} className="flex flex-col gap-1">
               <span className="text-[11px] uppercase tracking-[.08em] text-[#737373]">
@@ -102,7 +111,7 @@ export function CredentialSecretsModal({
               disabled={saving}
               className="text-[12px] px-3 py-1.5 bg-[#171717] text-white rounded hover:bg-[#404040] disabled:opacity-50"
             >
-              {saving ? "Saving…" : "Save"}
+              {saving ? "Saving…" : mode === "update" ? "Update" : "Save"}
             </button>
           </div>
         </div>
