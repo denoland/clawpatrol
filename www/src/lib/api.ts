@@ -160,6 +160,10 @@ export type RuleSummary = {
   // dispatched against. Empty when the rule doesn't filter on
   // credential.
   credential?: string;
+  // fire_and_forget: when true, this rule short-circuits the
+  // approve chain — matched requests are allowed synchronously
+  // and surfaced as `auto_allow` events for the audit log.
+  fire_and_forget?: boolean;
 };
 
 export async function getRules(): Promise<RuleSummary[]> {

@@ -222,6 +222,14 @@ function Row({ ev, schema }: { ev: RowState; schema: FacetSchema | undefined }) 
         <span className={"text-xs tabular-nums shrink-0 w-[36px] " + statusColor}>
           {inFlight ? <InFlightSpinner /> : status || "—"}
         </span>
+        {ev.action === "auto_allow" && (
+          <span
+            title="fire_and_forget rule matched: forwarded immediately, logged for audit"
+            className="text-[9px] uppercase tracking-[.06em] px-1 py-px rounded bg-blue-50 text-blue-800 shrink-0"
+          >
+            auto
+          </span>
+        )}
         <span className="text-xs text-text truncate flex-1 min-w-0" title={ev.host + sep + body}>
           <span className="text-text-muted">{ev.host}</span>
           {sep && <span> </span>}

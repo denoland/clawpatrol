@@ -157,6 +157,48 @@ rule "<name>" {
 | `approve`    | one of `verdict` / `approve` | List of approver bare names. Approvers run in order; **all must allow** for the request to proceed. |
 | `reason`     | optional                 | Surfaced to the agent on `deny` / approver-deny, and shown on the dashboard. |
 | `disabled`   | optional                 | Keeps the rule in source but suppresses it at compile time. |
+| `fire_and_forget` | optional            | Boolean. When `true` on an allow-shaped rule, the request forwards immediately and the event lands under `auto_allow` in the dashboard's audit log — no approver runs, no agent wait. Only valid with a non-empty `condition`; rejected on `verdict = "deny"` rules. |
+
+
+## Fire-and-forget allows
+
+For low-risk, high-volume calls (HTTP `GET`s to known APIs,
+read-only `SELECT`s) blocking on an approver chain is just latency
+and approval fatigue. Mark such rules with `fire_and_forget = true`:
+
+```hcl
+rule "github-reads" {
+  endpoint        = github
+  condition       = "http.method in ['GET', 'HEAD']"
+  verdict         = "allow"
+  fire_and_forget = true
+}
+```
+
+What changes when a fire-and-forget rule matches:
+
+- The request is forwarded synchronously; the agent never waits on
+  an operator or LLM judge.
+- The event is recorded with `action = "auto_allow"` (rather than
+  `allow`) so the dashboard can route it to a separate
+  "auto-allowed" audit lane while still preserving the full event
+  record.
+- Any `approve = [...]` chain configured on the rule is **not**
+  invoked at runtime — the whole point is to dodge the latency.
+  The configured approvers still appear on the audit entry so the
+  operator sees who would have been consulted.
+
+Guardrails (enforced at load time, so a config slip can't silently
+disable HITL on a sensitive endpoint):
+
+- `fire_and_forget` is rejected on `verdict = "deny"` rules — there
+  is nothing to auto-allow on a deny.
+- An empty `condition` is rejected — fire-and-forget needs a
+  positive whitelist predicate, never a catch-all.
+
+The LLM approver path is unaffected. A rule either fires and
+forgets (synchronous allow, no approver), or it doesn't (any
+configured `approve` chain — human or LLM — runs as usual).
 
 Naming: every named entity in `gateway.hcl` (approvers, credentials,
 endpoints, rules, profiles) shares **one flat namespace**. References

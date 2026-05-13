@@ -104,8 +104,21 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
         {(ev.action || ev.reason) && (
           <div className="flex items-center gap-2 text-xs">
             {ev.action && (
-              <Tag tone={ev.action === "deny" || ev.action === "hitl_deny" ? "danger" : "success"}>
-                {ev.action}
+              <Tag
+                tone={
+                  ev.action === "deny" || ev.action === "hitl_deny"
+                    ? "danger"
+                    : ev.action === "auto_allow"
+                      ? "info"
+                      : "success"
+                }
+                title={
+                  ev.action === "auto_allow"
+                    ? "fire_and_forget rule matched: forwarded synchronously, recorded for audit"
+                    : undefined
+                }
+              >
+                {ev.action === "auto_allow" ? "auto-allow" : ev.action}
               </Tag>
             )}
             {ev.reason && <span className="text-text-muted">{ev.reason}</span>}

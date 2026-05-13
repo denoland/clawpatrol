@@ -149,6 +149,14 @@ function RuleRow({ rule: r }: { rule: RuleSummary }) {
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
           <Verdict r={r} />
+          {r.fire_and_forget && (
+            <Tag
+              tone="info"
+              title="fire-and-forget: forwarded immediately, logged under auto_allow without blocking on approvers"
+            >
+              fire &amp; forget
+            </Tag>
+          )}
           {r.reason && (
             <span className="text-xs text-text-muted truncate" title={r.reason}>
               {r.reason}
