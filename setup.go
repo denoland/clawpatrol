@@ -100,6 +100,16 @@ func runJoin(args []string) {
 		fail("usage: clawpatrol join [--hostname NAME] [--profile NAME] [--whole-machine] <gateway-url>")
 	}
 	gatewayURL := rest[0]
+	if *wholeMachine {
+		if local, reason := isLocalGateway(gatewayURL); local {
+			fail("refusing --whole-machine join: gateway URL points at this host (%s).\n"+
+				"  Whole-machine routing on the gateway box itself creates a routing loop —\n"+
+				"  the gateway daemon's own outbound traffic would re-enter its own tunnel.\n"+
+				"  Drop --whole-machine and use `clawpatrol run` for per-process routing\n"+
+				"  on this host, or run `clawpatrol join` from a separate client device.",
+				reason)
+		}
+	}
 	// Fetch CA + write shell rc BEFORE the VPN goes up. Once
 	// `wg-quick up` flips the default route through the gateway,
 	// reaching the gateway's public URL goes via the tunnel — which
