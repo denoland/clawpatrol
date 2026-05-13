@@ -92,9 +92,6 @@ EOF
 
 mkdir -p /opt/clawpatrol
 
-# `clawpatrol init-ca` is gone — the CA is lazy-minted into the
-# gateway's sqlite DB on first boot.
-
 iptables -I INPUT -p udp --dport 51820 -j ACCEPT
 iptables -I INPUT -p tcp --dport 8080 -j ACCEPT
 clawpatrol gateway /etc/clawpatrol/gateway.hcl
