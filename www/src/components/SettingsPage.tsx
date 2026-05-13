@@ -1,9 +1,8 @@
-// Settings page — replaces the floating SettingsModal. OAuth
-// integrations are rendered at the top (canonical "connect Claude /
-// GitHub / Notion / …" surface); the gateway.hcl editor sits below.
-// Both sections existed before — this is purely a UI reorganisation
-// from "modal popped over whatever the user was looking at" to "real
-// routed page".
+// Settings page — replaces the floating SettingsModal. Credentials
+// declared in gateway.hcl are rendered at the top; the gateway.hcl
+// editor sits below. Both sections existed before — this is purely a
+// UI reorganisation from "modal popped over whatever the user was
+// looking at" to "real routed page".
 
 import { useEffect, useState } from "react";
 import {
@@ -31,8 +30,6 @@ export function SettingsPage({
   onConnect: (id: string, profile?: string) => void;
   onRefresh: () => void;
 }) {
-  const oauthIntegrations = integrations.filter((i) => i.has_oauth);
-
   return (
     <main className="mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-5 space-y-6">
       <nav className="text-[13px] text-[#a3a3a3] flex items-center gap-1.5">
@@ -44,15 +41,15 @@ export function SettingsPage({
       </nav>
 
       <section className="space-y-3">
-        <div className="text-[11px] uppercase tracking-[.12em] text-[#a3a3a3]">INTEGRATIONS</div>
-        {oauthIntegrations.length === 0 ? (
+        <div className="text-[11px] uppercase tracking-[.12em] text-[#a3a3a3]">CREDENTIALS</div>
+        {integrations.length === 0 ? (
           <div className="bg-white border border-[#e5e5e5] rounded px-4 py-6 text-[12px] text-[#a3a3a3]">
-            No OAuth integrations declared in gateway.hcl yet. Add a credential block whose plugin
-            advertises an OAuth flow to connect Anthropic / GitHub / Notion / etc. here.
+            No credentials declared in gateway.hcl yet. Add a credential block to connect Anthropic
+            / GitHub / Notion / Postgres / etc. here.
           </div>
         ) : (
           <IntegrationsCards
-            list={oauthIntegrations}
+            list={integrations}
             whoami={whoami}
             showAll
             onConnect={onConnect}
