@@ -13,16 +13,12 @@ import (
 // only ever consult Name / EndpointFamilies / ReportFields /
 // NewMatcher on this facet.
 type pluginFacet struct {
-	// name is the namespaced facet name ("<plugin>.<short>") —
-	// what facet.Register uses as the registry key and what
-	// endpoints set as their Family.
-	name string
-	// shortName is the plugin-author-supplied identifier used as
-	// the CEL variable in rule conditions. Built-in facets get the
-	// same identifier in both places (e.g. "k8s"); plugin facets
-	// keep them separate so two plugins can each export "smtp"
-	// without colliding while rules stay readable.
-	shortName    string
+	// name is the facet identifier — taken verbatim from the
+	// plugin's FacetDecl.Name. The same string is used as the
+	// facet registry key, the CEL variable in rule conditions
+	// (`name.field`), and the value endpoint plugins set as
+	// Family to bind to this facet.
+	name         string
 	reportFields []facet.ReportFieldSpec
 	// kindByField is the per-field kind, kept so the gateway
 	// adapter can identify FACET_STREAM fields (which need lazy
@@ -49,15 +45,17 @@ func (p *pluginFacet) PrepareRequest(*match.Request)         {}
 func (p *pluginFacet) Report(*match.Request) map[string]any  { return nil }
 
 func (p *pluginFacet) NewMatcher(condition string) (match.Matcher, error) {
-	return newPluginFacetMatcher(p.shortName, condition, p.streamFields)
+	return newPluginFacetMatcher(p.name, condition, p.streamFields)
 }
 
 // registerFacet synthesizes a pluginFacet from a FacetDecl and
-// installs it under the namespaced name "<plugin>.<facet>". Idempotent
-// (skips re-registration on hot-reload).
-func registerFacet(pluginName string, decl *pb.FacetDecl) *pluginFacet {
-	name := pluginName + "." + decl.Name
-	if existing := facet.Lookup(name); existing != nil {
+// installs it under the bare name from the decl. Idempotent across
+// hot-reloads (skips re-registration if a pluginFacet by that name
+// is already present); duplicate names from different plugins or a
+// collision with a built-in facet panic at startup so the operator
+// notices.
+func registerFacet(decl *pb.FacetDecl) *pluginFacet {
+	if existing := facet.Lookup(decl.Name); existing != nil {
 		if pf, ok := existing.(*pluginFacet); ok {
 			return pf
 		}
@@ -76,8 +74,7 @@ func registerFacet(pluginName string, decl *pb.FacetDecl) *pluginFacet {
 		}
 	}
 	pf := &pluginFacet{
-		name:           name,
-		shortName:      decl.Name,
+		name:           decl.Name,
 		reportFields:   protoFacetFieldsToSpec(decl.Fields),
 		kindByField:    kindByField,
 		optionalFields: optional,

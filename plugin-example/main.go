@@ -26,6 +26,10 @@ func main() {
 			demoEchoDef(),
 		},
 		Facets: []pluginsdk.FacetDef{
+			// SMTP isn't covered by any built-in facet, so the
+			// plugin defines its own. Built-in facets (http, sql,
+			// k8s) are reused as-is by setting the endpoint's
+			// Family to the facet's name — see demo_https.
 			{
 				Name: "smtp",
 				Fields: []pluginsdk.FacetField{
@@ -44,15 +48,8 @@ func main() {
 					{Name: "body", Kind: pluginsdk.FacetStream, Label: "Body", Optional: true},
 				},
 			},
-			{
-				Name: "webreq",
-				Fields: []pluginsdk.FacetField{
-					{Name: "method", Kind: pluginsdk.FacetString, Label: "Method"},
-					{Name: "host", Kind: pluginsdk.FacetString, Label: "Host"},
-					{Name: "path", Kind: pluginsdk.FacetString, Label: "Path"},
-					{Name: "body", Kind: pluginsdk.FacetStream, Label: "Body", Optional: true},
-				},
-			},
+			// Echo is a synthetic toy protocol with no built-in
+			// equivalent.
 			{
 				Name: "echo",
 				Fields: []pluginsdk.FacetField{

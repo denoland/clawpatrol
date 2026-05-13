@@ -20,10 +20,12 @@ import (
 // demoHTTPS is the example plugin's HTTPS endpoint. The gateway
 // terminates TLS on the agent side and hands the plaintext bytes to
 // the plugin. For each HTTP request, the plugin asks the gateway for
-// a verdict via Conn.Evaluate against the `webreq` facet — the
-// gateway evaluates rules, walks any approve chain, and logs the
-// action. On allow the plugin forwards upstream, injects the magic
-// header, and rewrites the response body by appending "bye!".
+// a verdict via Conn.Evaluate using the built-in `http` facet — so
+// rules can write the same `http.method` / `http.path` /
+// `http.body_json.<field>` predicates they'd write against any other
+// HTTPS endpoint, with no plugin-specific schema. On allow the
+// plugin forwards upstream, injects the magic header, and rewrites
+// the response body by appending "bye!".
 type demoHTTPS struct {
 	// Upstream is a full URL: e.g. "http://127.0.0.1:8000". The
 	// plugin dials its host:port for every request.
@@ -33,7 +35,7 @@ type demoHTTPS struct {
 func demoHTTPSDef() pluginsdk.EndpointDef {
 	return pluginsdk.EndpointDef{
 		TypeName:    "demo_https",
-		Family:      "webreq", // SDK auto-namespaces to "example.webreq"
+		Family:      "http", // bind to the built-in http facet
 		TLSMode:     pluginsdk.TLSTerminate,
 		RequiresVIP: true,
 		Schema: pluginsdk.Schema{Fields: []pluginsdk.SchemaField{
@@ -97,14 +99,25 @@ func handleDemoHTTPS(ctx context.Context, conn *pluginsdk.Conn) error {
 			return fmt.Errorf("read request body: %w", berr)
 		}
 
+		// Action keys mirror the built-in http facet's CEL surface:
+		// http.method, http.path, http.headers, http.body. The
+		// gateway adapter maps these onto the typed match.Request
+		// fields the built-in matcher reads — so a rule like
+		// `http.method == "GET"` works identically to a rule
+		// against the gateway's own HTTPS pipeline.
+		headers := map[string][]string(req.Header)
+		hdrAny := make(map[string]any, len(headers))
+		for k, v := range headers {
+			hdrAny[k] = v
+		}
 		action := map[string]any{
-			"method": req.Method,
-			"host":   req.Host,
-			"path":   req.URL.RequestURI(),
-			"body":   pluginsdk.Stream(bytes.NewReader(body)),
+			"method":  req.Method,
+			"path":    req.URL.RequestURI(),
+			"headers": hdrAny,
+			"body":    pluginsdk.Stream(bytes.NewReader(body)),
 		}
 		summary := req.Method + " " + req.URL.RequestURI()
-		v, err := conn.Evaluate(ctx, "webreq", action, summary)
+		v, err := conn.Evaluate(ctx, "http", action, summary)
 		if err != nil {
 			return fmt.Errorf("evaluate %s: %w", summary, err)
 		}

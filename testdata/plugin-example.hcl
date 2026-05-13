@@ -24,10 +24,14 @@ credential "example.magic_token" "demo_token" {
 tunnel "example.passthrough" "passthru" {}
 
 // HTTPS endpoint: gateway terminates TLS, plugin parses HTTP and
-// asks the gateway for a verdict on every request via the `webreq`
-// facet. On allow the plugin forwards upstream, injects the magic
-// header, and rewrites the response body by appending "\nbye!\n".
-// On deny the plugin replies 403 with the rule's reason.
+// asks the gateway for a verdict on every request via the built-in
+// `http` facet. The plugin reuses the gateway's stock HTTPS
+// matcher, so the rules below are written exactly the same way
+// they would be against any in-process HTTPS endpoint
+// (`http.method`, `http.path`, `http.body`, `http.body_json`).
+// On allow the plugin forwards upstream, injects the magic header,
+// and rewrites the response body by appending "\nbye!\n". On deny
+// it replies 403 with the rule's reason.
 //
 // Set CLAWPATROL_SECRET_DEMO_TOKEN=hello in the environment, then
 // `curl -k https://demo.invalid/` against a local HTTP upstream
@@ -40,15 +44,15 @@ endpoint "example.demo_https" "demo-site" {
   upstream   = "http://127.0.0.1:8000"
 }
 
-rule "webreq-reads" {
+rule "https-reads" {
   endpoint  = demo-site
-  condition = "webreq.method in ['GET', 'HEAD']"
+  condition = "http.method in ['GET', 'HEAD']"
   verdict   = "allow"
 }
 
-rule "webreq-writes-deny" {
+rule "https-writes-deny" {
   endpoint  = demo-site
-  condition = "webreq.method in ['POST', 'PUT', 'PATCH', 'DELETE']"
+  condition = "http.method in ['POST', 'PUT', 'PATCH', 'DELETE']"
   verdict   = "deny"
   reason    = "writes to demo upstream are not allowed"
 }

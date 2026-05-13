@@ -22,12 +22,15 @@ import (
 // the caller should attach the source range of the `plugin` block.
 func RegisterManifest(client *Client, resp *pb.ManifestResponse) hcl.Diagnostics {
 	var diags hcl.Diagnostics
-	// Facets first so endpoints declared below can reference them by
-	// short name when binding their family.
-	declaredFacets := map[string]bool{}
+	// Facets register first so endpoints below can bind to them by
+	// name. Endpoint Family values are taken verbatim — a plugin
+	// that wants to use a built-in facet (e.g. "http") sets
+	// Family="http"; one that ships its own facet sets
+	// Family="<own-name>". Collisions with built-in facets or
+	// across plugins fail loudly at registration; that's the
+	// plugin author's concern, not the framework's.
 	for _, f := range resp.Facets {
-		registerFacet(resp.Name, f)
-		declaredFacets[f.Name] = true
+		registerFacet(f)
 	}
 	for _, c := range resp.Credentials {
 		if d := registerCredential(client, resp.Name, c); d != nil {
@@ -40,12 +43,6 @@ func RegisterManifest(client *Client, resp *pb.ManifestResponse) hcl.Diagnostics
 		}
 	}
 	for _, e := range resp.Endpoints {
-		// Auto-namespace family when it references one of this
-		// plugin's declared facets by short name. Plugin authors
-		// write `Family: "smtp"`; the gateway sees `example.smtp`.
-		if declaredFacets[e.Family] {
-			e.Family = resp.Name + "." + e.Family
-		}
 		if d := registerEndpoint(client, resp.Name, e); d != nil {
 			diags = append(diags, d...)
 		}

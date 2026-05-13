@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"net/url"
 	"sync"
 
@@ -339,27 +340,32 @@ func handleEvaluate(ctx context.Context, ch *runtime.ConnHandle, ev *pb.Evaluate
 		action = map[string]any{}
 	}
 
-	// Look up the synthetic facet so we know which fields are
-	// stream-typed and which are optional. The endpoint's family is
-	// the namespaced facet name; facet.Lookup returns a *pluginFacet
-	// when the family was declared by a plugin.
+	// Look up the synthetic facet, if any. nil means the endpoint
+	// binds to a built-in facet (http / sql / k8s) — the plugin sent
+	// an action shaped to that facet's variables and the adapter
+	// maps it onto the typed match.Request fields the built-in
+	// matcher reads, instead of stashing the action in Meta.
 	pf := facetFor(ch.Endpoint.Family)
 
-	// Stream pulling: for each FACET_STREAM field present in
-	// ev.Streams, decide a cap based on whether any rule on the
-	// endpoint references the field, then pull StreamChunks from the
-	// plugin until the cap is met or eof. After pulling, send a
-	// StreamCancel so the plugin can drop its source reader.
+	// Stream pulling: for each stream field present in ev.Streams,
+	// pull bytes until cap or EOF, then cancel. For plugin facets
+	// the cap honours per-rule reference detection; for built-in
+	// facets we use the larger cap unconditionally (rules attached
+	// to built-in matchers don't expose a SubFieldReferencer yet).
 	var truncated bool
-	if pf != nil && len(ev.Streams) > 0 {
-		needed := streamFieldsNeeded(ch.Endpoint.Rules, pf.shortName)
+	streamBytes := map[string][]byte{}
+	if len(ev.Streams) > 0 {
+		var needed map[string]bool
+		if pf != nil {
+			needed = streamFieldsNeeded(ch.Endpoint.Rules, pf.name)
+		}
 		for fieldName, handle := range ev.Streams {
-			if pf.kindByField[fieldName] != pb.FacetKind_FACET_STREAM {
+			if pf != nil && pf.kindByField[fieldName] != pb.FacetKind_FACET_STREAM {
 				continue
 			}
-			cap := streamCapBytesForLog
-			if needed[fieldName] {
-				cap = streamCapBytesForRule
+			cap := streamCapBytesForRule
+			if pf != nil && !needed[fieldName] {
+				cap = streamCapBytesForLog
 			}
 			data, hit := pullStream(ctx, doSend, streamReply, handle, cap)
 			if hit {
@@ -370,12 +376,14 @@ func handleEvaluate(ctx context.Context, ch *runtime.ConnHandle, ev *pb.Evaluate
 			// already eof-ed; the SDK ignores cancels for handles
 			// it has already dropped.
 			_ = doSend(&pb.ConnMessage{Kind: &pb.ConnMessage_StreamCancel{StreamCancel: &pb.StreamCancel{Handle: handle}}})
+			streamBytes[fieldName] = data
 			action[fieldName] = string(data)
 		}
 	}
 
 	// Optional-field zero-fill so rule conditions can reference
-	// declared fields without `has()` guards.
+	// declared fields without `has()` guards. Plugin facets only —
+	// built-in facets have their own contract.
 	if pf != nil {
 		for field := range pf.optionalFields {
 			if _, present := action[field]; present && action[field] != nil {
@@ -390,13 +398,19 @@ func handleEvaluate(ctx context.Context, ch *runtime.ConnHandle, ev *pb.Evaluate
 	// is set when at least one stream field hit its cap before
 	// EOF — runtime.MatchRequest's fail-closed gate then auto-denies
 	// any rule whose matcher reads a stream-typed field.
-	req := &match.Request{
-		Family:    ch.Endpoint.Family,
-		PeerIP:    ch.PeerIP,
-		Method:    stringField(action, "verb"),
-		URL:       &url.URL{Host: ch.UpstreamHost, Path: ev.Summary},
-		Meta:      action,
-		Truncated: truncated,
+	var req *match.Request
+	if pf != nil {
+		req = &match.Request{
+			Family:    ch.Endpoint.Family,
+			PeerIP:    ch.PeerIP,
+			Method:    stringField(action, "verb"),
+			URL:       &url.URL{Host: ch.UpstreamHost, Path: ev.Summary},
+			Meta:      action,
+			Truncated: truncated,
+		}
+	} else {
+		req = builtinRequestFor(ch.Endpoint.Family, ch.PeerIP, ev.Summary, action, streamBytes)
+		req.Truncated = truncated
 	}
 
 	rule := runtime.MatchRequest(ch.Endpoint, req)
@@ -469,6 +483,65 @@ func stringField(m map[string]any, key string) string {
 	}
 	v, _ := m[key].(string)
 	return v
+}
+
+// builtinRequestFor maps an EvaluateAction's action map onto a
+// match.Request shaped the way a built-in facet's matcher expects.
+// Plugins that bind their endpoint's Family to a built-in facet
+// ("http", "sql", "k8s") send the action keyed by that facet's CEL
+// variables; the gateway translates here so the same matcher the
+// gateway's own pipeline runs sees a familiar Request.
+//
+// Only "http" is supported in v1. Other families fall back to a
+// permissive Meta-bag request — rules will likely not match, which
+// surfaces as the gateway's default-deny.
+func builtinRequestFor(family, peerIP, summary string, action map[string]any, streams map[string][]byte) *match.Request {
+	switch family {
+	case "http":
+		req := &match.Request{
+			Family: family,
+			PeerIP: peerIP,
+			Method: stringField(action, "method"),
+		}
+		// URL: prefer a full URL if the plugin sent one; otherwise
+		// build a path-only URL (the built-in http facet only reads
+		// Path + Query; Host isn't on the CEL surface).
+		if u := stringField(action, "url"); u != "" {
+			if pu, err := url.Parse(u); err == nil {
+				req.URL = pu
+			}
+		}
+		if req.URL == nil {
+			req.URL = &url.URL{Path: stringField(action, "path")}
+		}
+		if h, ok := action["headers"].(map[string]any); ok {
+			req.Headers = http.Header{}
+			for k, v := range h {
+				switch vv := v.(type) {
+				case []any:
+					for _, item := range vv {
+						if s, ok := item.(string); ok {
+							req.Headers.Add(k, s)
+						}
+					}
+				case string:
+					req.Headers.Set(k, vv)
+				}
+			}
+		}
+		if b, ok := streams["body"]; ok {
+			req.Body = b
+		} else if b, ok := action["body"].(string); ok {
+			req.Body = []byte(b)
+		}
+		return req
+	}
+	return &match.Request{
+		Family: family,
+		PeerIP: peerIP,
+		URL:    &url.URL{Path: summary},
+		Meta:   action,
+	}
 }
 
 // facetFor looks up the synthesized *pluginFacet by namespaced name.
