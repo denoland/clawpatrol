@@ -50,7 +50,11 @@ func endpointWantsClientCert(ep *config.CompiledEndpoint) bool {
 		return false
 	}
 	for _, cc := range ep.Credentials {
-		if _, ok := cc.Credential.Body.(runtime.TLSCredentialRuntime); ok {
+		ent := cc.Resolve(nil)
+		if ent == nil {
+			continue
+		}
+		if _, ok := ent.Body.(runtime.TLSCredentialRuntime); ok {
 			return true
 		}
 	}
@@ -87,20 +91,24 @@ func (g *Gateway) dialUpstream(ctx context.Context, network, addr, serverName st
 
 	if ep != nil {
 		for _, cc := range ep.Credentials {
+			ent := cc.Resolve(nil)
+			if ent == nil {
+				continue
+			}
 			// Body is the real decoded HCL instance; Plugin.Runtime
 			// is a typed-nil sentinel used only for interface-
 			// compliance assertions.
-			tlsRT, ok := cc.Credential.Body.(runtime.TLSCredentialRuntime)
+			tlsRT, ok := ent.Body.(runtime.TLSCredentialRuntime)
 			if !ok {
 				continue
 			}
-			sec, err := g.secrets.Get(cc.Credential.Symbol.Name, profile)
+			sec, err := g.secrets.Get(ent.Symbol.Name, profile)
 			if err != nil {
-				log.Printf("tls-secret %s: %v — dialing without client cert", cc.Credential.Symbol.Name, err)
+				log.Printf("tls-secret %s: %v — dialing without client cert", ent.Symbol.Name, err)
 				break
 			}
 			if err := tlsRT.ConfigureUpstreamTLS(cfg, sec); err != nil {
-				log.Printf("tls-configure %s: %v — dialing without client cert", cc.Credential.Symbol.Name, err)
+				log.Printf("tls-configure %s: %v — dialing without client cert", ent.Symbol.Name, err)
 				break
 			}
 			break

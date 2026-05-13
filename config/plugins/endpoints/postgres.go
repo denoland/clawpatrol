@@ -230,14 +230,23 @@ func (PostgresEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnH
 		pgWriteError(ch.Conn, "no credential bound to postgres endpoint")
 		return fmt.Errorf("no credential")
 	}
+	// Pool bindings delegate to a member at request time; Resolve
+	// returns the underlying credential entity that satisfies the
+	// PostgresAuth interface. Singular bindings return Credential
+	// directly.
+	credEnt := cc.Resolve(nil)
+	if credEnt == nil {
+		pgWriteError(ch.Conn, "credential resolved to nil entity")
+		return fmt.Errorf("credential resolve nil")
+	}
 	// Plugin.Runtime is a typed-nil sentinel used for interface
 	// dispatch checks; the actual decoded HCL value is on Body.
-	auth, ok := cc.Credential.Body.(runtime.PostgresAuthCredential)
+	auth, ok := credEnt.Body.(runtime.PostgresAuthCredential)
 	if !ok {
 		pgWriteError(ch.Conn, "credential plugin does not implement postgres auth")
-		return fmt.Errorf("credential %q has no PostgresAuth", cc.Credential.Symbol.Name)
+		return fmt.Errorf("credential %q has no PostgresAuth", credEnt.Symbol.Name)
 	}
-	sec, err := ch.Secrets.Get(cc.Credential.Symbol.Name, ch.Profile)
+	sec, err := ch.Secrets.Get(credEnt.Symbol.Name, ch.Profile)
 	if err != nil {
 		pgWriteError(ch.Conn, "fetch secret: "+err.Error())
 		return err
@@ -245,11 +254,11 @@ func (PostgresEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnH
 	realUser, realPassword := auth.PostgresAuth(sec)
 	if realUser == "" {
 		pgWriteError(ch.Conn, "postgres credential has no user — set `user = ...` in HCL")
-		return fmt.Errorf("credential %q missing user", cc.Credential.Symbol.Name)
+		return fmt.Errorf("credential %q missing user", credEnt.Symbol.Name)
 	}
 	if realPassword == "" {
-		pgWriteError(ch.Conn, fmt.Sprintf("postgres credential %q has no password — paste it via the dashboard", cc.Credential.Symbol.Name))
-		return fmt.Errorf("credential %q missing password", cc.Credential.Symbol.Name)
+		pgWriteError(ch.Conn, fmt.Sprintf("postgres credential %q has no password — paste it via the dashboard", credEnt.Symbol.Name))
+		return fmt.Errorf("credential %q missing password", credEnt.Symbol.Name)
 	}
 
 	// Step 4: dial upstream, optionally negotiate TLS, then send our
@@ -296,7 +305,7 @@ func (PostgresEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnH
 	// picked credential's bare name flows into match.Request.Credential
 	// so SQL rules with `match = { credential = pg-deployng-ro }`
 	// resolve against the right account.
-	credName := cc.Credential.Symbol.Name
+	credName := credEnt.Symbol.Name
 	done := make(chan struct{}, 2)
 	go func() {
 		_, _ = io.Copy(ch.Conn, upstream)

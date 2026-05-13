@@ -236,15 +236,21 @@ func passthroughBuild(d any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics
 }
 
 // singularRef is the standard `credential = X` ref-spec used by every
-// endpoint plugin. Kind=KindCredential, Optional so deny-only
-// passthrough endpoints can omit it.
+// endpoint plugin. The binding accepts any credential bare-name —
+// regular credentials inject their bytes directly, pool credentials
+// (`credential "pool" ...`) delegate to a member at request time.
+// Optional so deny-only passthrough endpoints can omit it.
 //
 // `tunnel = X` is NOT here — that attribute is hoisted to the
 // framework level (see config.frameworkAttrsByKind) so plugins
 // don't have to declare it. The loader peels it off before gohcl
 // runs and stashes the resolved name on Entity.Framework.
 var singularRef = []config.RefSpec{
-	{Path: "Credential", Kind: config.KindCredential, Optional: true},
+	{
+		Path:     "Credential",
+		Kind:     config.KindCredential,
+		Optional: true,
+	},
 }
 
 // emitCredentialBinding writes either `credential = X` (singular) or

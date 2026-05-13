@@ -66,6 +66,35 @@ endpoint "https" "github" {
   credential = github-pat
 }
 
+# Credential pools: declare a `credential "pool" "<name>"` to group N
+# same-(kind, type) credentials behind one logical handle so an
+# endpoint binding `credential = X` can reference the pool by name.
+# The dispatcher picks a member per the pool's strategy:
+#
+#   round_robin   atomic counter, even distribution (default)
+#   least_loaded  in-memory request count, fewest wins
+#
+# All members must be the same credential type (e.g. all
+# anthropic_oauth_subscription). Pooling is intra-operator only — every
+# member is a credential the operator controls; there is no marketplace
+# or cross-operator transfer. Provider terms-of-service may restrict
+# shared subscription use; the operator decides whether their use
+# qualifies.
+#
+# credential "anthropic_oauth_subscription" "claude-alice" {}
+# credential "anthropic_oauth_subscription" "claude-bob"   {}
+# credential "anthropic_oauth_subscription" "claude-carol" {}
+#
+# credential "pool" "claude-team" {
+#   credentials = [claude-alice, claude-bob, claude-carol]
+#   strategy    = "round_robin"
+# }
+#
+# endpoint "https" "anthropic" {
+#   hosts      = ["api.anthropic.com"]
+#   credential = claude-team
+# }
+
 # ClickHouse over the native protocol. `tls = true` enables TLS on
 # the upstream hop. `accept_invalid_certificate = true` (mirrors
 # clickhouse-client's flag) skips upstream cert validation — use for

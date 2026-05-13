@@ -710,10 +710,104 @@ func credentialsInProfile(policy *config.CompiledPolicy, profile string) map[str
 			if cb.Credential != nil {
 				out[cb.Credential.Symbol.Name] = true
 			}
+			// Pool bindings expand to every member — the dashboard's
+			// integration card renders one row per credential, so the
+			// pool's members must each appear in the allowed set.
+			if cb.Pool != nil {
+				for _, m := range cb.Pool.Members {
+					if m != nil && m.Symbol != nil {
+						out[m.Symbol.Name] = true
+					}
+				}
+			}
 		}
 		for tun := ep.Tunnel; tun != nil; tun = tun.Via {
 			if tun.Credential != nil {
 				out[tun.Credential.Symbol.Name] = true
+			}
+		}
+	}
+	return out
+}
+
+// PoolMemberRow is one member's view of a token pool's per-process
+// state. Requests is the in-memory pool counter (resets on gateway
+// restart); LastUseNs is the wall-clock nanosecond of the last
+// dispatch through this member (0 if never used).
+type PoolMemberRow struct {
+	Name      string `json:"name"`
+	Requests  uint64 `json:"requests"`
+	LastUseNs int64  `json:"last_use_ns,omitempty"`
+}
+
+// PoolRow is the dashboard-facing view of one pool credential. The
+// dashboard renders pools alongside (not inside) integrations because
+// they're a separate concept: a pool composes credentials, it isn't
+// itself a credential.
+type PoolRow struct {
+	Name       string          `json:"name"`
+	Strategy   string          `json:"strategy"`
+	PluginType string          `json:"plugin_type"`
+	Members    []PoolMemberRow `json:"members"`
+}
+
+// poolsList returns the pools slice for /api/state. Filtered by
+// profile when provided — only pools referenced (directly via
+// `credential = pool` or via `credentials = [...]` entries) by an
+// endpoint in the named profile come back. Unfiltered (empty profile)
+// returns every declared pool.
+func (w *webMux) poolsList(r *http.Request) []PoolRow {
+	out := []PoolRow{}
+	policy := w.g.policy.Load()
+	if policy == nil || len(policy.TokenPools) == 0 {
+		return out
+	}
+	profile := r.URL.Query().Get("profile")
+	allowed := poolsInProfile(policy, profile)
+
+	names := make([]string, 0, len(policy.TokenPools))
+	for name := range policy.TokenPools {
+		if allowed != nil && !allowed[name] {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		pool := policy.TokenPools[name]
+		row := PoolRow{
+			Name:       pool.Name,
+			Strategy:   string(pool.Strategy),
+			PluginType: pool.PluginType,
+		}
+		for _, ms := range pool.Stats() {
+			row.Members = append(row.Members, PoolMemberRow{
+				Name:      ms.Name,
+				Requests:  ms.Requests,
+				LastUseNs: ms.LastUseNs,
+			})
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+// poolsInProfile mirrors credentialsInProfile for token pools: returns
+// the bare-name set of pools any endpoint in profile references via
+// its credential bindings. nil means "no filter — return everything."
+func poolsInProfile(policy *config.CompiledPolicy, profile string) map[string]bool {
+	if profile == "" || policy == nil {
+		return nil
+	}
+	prof, ok := policy.Profiles[profile]
+	if !ok {
+		return map[string]bool{}
+	}
+	out := map[string]bool{}
+	for _, ep := range prof.Endpoints {
+		for _, cb := range ep.Credentials {
+			if cb.Pool != nil {
+				out[cb.Pool.Name] = true
 			}
 		}
 	}

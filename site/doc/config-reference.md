@@ -143,7 +143,7 @@ approver "llm_approver" "example" {
 
 Block syntax: `credential "<type>" "<name>" { ... }`
 
-Registered types: [`anthropic_manual_key`](#credential-anthropicmanualkey), [`anthropic_oauth_subscription`](#credential-anthropicoauthsubscription), [`aws_eks_credential`](#credential-awsekscredential), [`bearer_token`](#credential-bearertoken), [`clickhouse_credential`](#credential-clickhousecredential), [`cookie_token`](#credential-cookietoken), [`discord_bot_token`](#credential-discordbottoken), [`gemini_api_key`](#credential-geminiapikey), [`github_oauth`](#credential-githuboauth), [`header_token`](#credential-headertoken), [`mtls_credential`](#credential-mtlscredential), [`notion_oauth`](#credential-notionoauth), [`openai_codex_oauth`](#credential-openaicodexoauth), [`postgres_credential`](#credential-postgrescredential), [`slack_tokens`](#credential-slacktokens), [`ssh`](#credential-ssh), [`tailscale`](#credential-tailscale), [`telegram_bot_token`](#credential-telegrambottoken).
+Registered types: [`anthropic_manual_key`](#credential-anthropicmanualkey), [`anthropic_oauth_subscription`](#credential-anthropicoauthsubscription), [`aws_eks_credential`](#credential-awsekscredential), [`bearer_token`](#credential-bearertoken), [`clickhouse_credential`](#credential-clickhousecredential), [`cookie_token`](#credential-cookietoken), [`discord_bot_token`](#credential-discordbottoken), [`gemini_api_key`](#credential-geminiapikey), [`github_oauth`](#credential-githuboauth), [`header_token`](#credential-headertoken), [`mtls_credential`](#credential-mtlscredential), [`notion_oauth`](#credential-notionoauth), [`openai_codex_oauth`](#credential-openaicodexoauth), [`pool`](#credential-pool), [`postgres_credential`](#credential-postgrescredential), [`slack_tokens`](#credential-slacktokens), [`ssh`](#credential-ssh), [`tailscale`](#credential-tailscale), [`telegram_bot_token`](#credential-telegrambottoken).
 
 ### `credential "anthropic_manual_key" "<name>"`
 
@@ -267,6 +267,22 @@ _No configurable attributes._
 
 ```hcl
 credential "openai_codex_oauth" "example" {}
+```
+
+### `credential "pool" "<name>"`
+
+The gohcl-tagged decode target for a
+`credential "pool" "<name>"` block body.
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `credentials` | `[]ref(credential)` | yes | The bare-name list of credential blocks that make up the pool. All members must share one (kind, type) — the compile pass rejects cross-type pools because the dispatcher cannot meaningfully spread, say, an Anthropic and an OpenAI credential across the same endpoint. |
+| `strategy` | `string` | no | Decides which member services each request: `round_robin` (default) hands out members evenly via an atomic counter; `least_loaded` picks the member with the fewest in-process requests so far. |
+
+```hcl
+credential "pool" "example" {
+  credentials = ["example"]
+}
 ```
 
 ### `credential "postgres_credential" "<name>"`
@@ -519,20 +535,22 @@ Registered types: [`kubernetes_port_forward`](#tunnel-kubernetesportforward), [`
 
 ### `tunnel "kubernetes_port_forward" "<name>"`
 
+Configures the tunnel runtime.
+
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `context` | `string` | no |  |
 | `namespace` | `string` | no |  |
-| `pod` | `string` | no |  |
+| `pod` | `string` | no | Exactly one of Pod / Service / Selector / Template must be set. |
 | `service` | `string` | no |  |
 | `selector` | `map[string]string` | no |  |
 | `template` | `string` | no |  |
-| `port` | `int` | yes |  |
-| `cleanup` | `string` | no |  |
-| `share` | `string` | no |  |
+| `port` | `int` | yes | The pod-side port the forwarder targets. For service mode it's the *service* port; kubectl resolves the matching targetPort. |
+| `cleanup` | `string` | no | Is meaningful only in template mode — controls whether the pod the plugin applied at Open is deleted on tunnel teardown. "delete" (default) is right for the common create-on- demand case; "keep" disables deletion. |
+| `share` | `string` | no | Framework-level common attrs. |
 | `keepalive` | `string` | no |  |
-| `via` | `string` | no |  |
-| `credential` | `string` | no |  |
+| `via` | `ref(tunnel)` | no |  |
+| `credential` | `ref(credential)` | no |  |
 
 ```hcl
 tunnel "kubernetes_port_forward" "example" {
@@ -542,6 +560,8 @@ tunnel "kubernetes_port_forward" "example" {
 
 ### `tunnel "local_command" "<name>"`
 
+Configures the tunnel runtime.
+
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `command` | `[]string` | yes |  |
@@ -549,10 +569,10 @@ tunnel "kubernetes_port_forward" "example" {
 | `ready_probe` | `string` | no |  |
 | `ready_timeout` | `string` | no |  |
 | `env` | `map[string]string` | no |  |
-| `share` | `string` | no |  |
+| `share` | `string` | no | Framework-level common attrs (share / keepalive / via / credential). Restated on every tunnel plugin's body so gohcl decodes them; the compile pass reads via TunnelCommonRead. |
 | `keepalive` | `string` | no |  |
-| `via` | `string` | no |  |
-| `credential` | `string` | no |  |
+| `via` | `ref(tunnel)` | no |  |
+| `credential` | `ref(credential)` | no |  |
 
 ```hcl
 tunnel "local_command" "example" {
@@ -563,14 +583,16 @@ tunnel "local_command" "example" {
 
 ### `tunnel "ssh_port_forward" "<name>"`
 
+Configures the tunnel runtime.
+
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `bastion` | `string` | no |  |
+| `bastion` | `string` | no | host:port; required when Via is unset |
 | `user` | `string` | yes |  |
-| `share` | `string` | no |  |
+| `share` | `string` | no | Framework-level common attrs. |
 | `keepalive` | `string` | no |  |
-| `via` | `string` | no |  |
-| `credential` | `string` | yes |  |
+| `via` | `ref(tunnel)` | no |  |
+| `credential` | `ref(credential)` | yes |  |
 
 ```hcl
 tunnel "ssh_port_forward" "example" {
@@ -581,6 +603,8 @@ tunnel "ssh_port_forward" "example" {
 
 ### `tunnel "tailscale" "<name>"`
 
+Configures the tunnel runtime.
+
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `authkey` | `string` | no |  |
@@ -588,10 +612,10 @@ tunnel "ssh_port_forward" "example" {
 | `hostname` | `string` | no |  |
 | `state_dir` | `string` | no |  |
 | `tags` | `[]string` | no |  |
-| `share` | `string` | no |  |
+| `share` | `string` | no | Framework-level common attrs. |
 | `keepalive` | `string` | no |  |
-| `via` | `string` | no |  |
-| `credential` | `string` | no |  |
+| `via` | `ref(tunnel)` | no |  |
+| `credential` | `ref(credential)` | no |  |
 
 ```hcl
 tunnel "tailscale" "example" {}

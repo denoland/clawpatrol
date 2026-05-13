@@ -38,6 +38,17 @@ type CompiledPolicy struct {
 	// in their Tunnel field — same instance as the entry here.
 	Tunnels map[string]*CompiledTunnel
 
+	// TokenPools contains every `credential "pool" "<name>" {}` block,
+	// keyed by name. Pools are credentials with a `pool` type — the
+	// loader puts them in p.Credentials alongside every other
+	// credential; this map is the runtime-friendly subset that carries
+	// per-pool dispatch state. Endpoints whose `credential = X` binding
+	// resolves to a pool store the same pointer on their
+	// CompiledCredential.Pool field. Pool runtime state (round-robin
+	// counter, per-member request counts) lives on the
+	// CompiledTokenPool itself.
+	TokenPools map[string]*CompiledTokenPool
+
 	// Approvers / Policies / Credentials surface the same entities
 	// from the Policy struct under a runtime-friendly typed alias —
 	// they're pointers into the same Entity records, no copies.
@@ -155,10 +166,35 @@ const KeepaliveAlwaysSentinel = time.Duration(-1)
 // CompiledCredential expands an endpoint's `credential = X` or
 // `credentials = [...]` binding into a flat list. Each entry pairs a
 // dispatcher placeholder (empty for the singular / no-placeholder
-// fallback) with the credential entity.
+// fallback) with either a credential entity or a token pool. Exactly
+// one of Credential or Pool is non-nil.
+//
+// Pool entries are resolved at request time via Pool.Pick to a
+// concrete member entity that satisfies the existing credential
+// runtime interfaces; the dispatcher then proceeds along the
+// per-credential injection path unchanged.
 type CompiledCredential struct {
 	Placeholder string
 	Credential  *Entity
+	Pool        *CompiledTokenPool
+}
+
+// Resolve returns the credential entity that should service req. For
+// singular bindings this is just Credential; for pool bindings the
+// pool's strategy picks a member. Callers use the returned entity to
+// fetch secret bytes (Symbol.Name) and dispatch through the
+// credential plugin's runtime interface (Body type-assertion).
+//
+// Returns nil only when the binding is structurally empty (a
+// degenerate state the compile pass already rejects).
+func (cc *CompiledCredential) Resolve(req *match.Request) *Entity {
+	if cc == nil {
+		return nil
+	}
+	if cc.Pool != nil {
+		return cc.Pool.Pick(req)
+	}
+	return cc.Credential
 }
 
 // CredBinding is one (placeholder, credential bare-name) pair. Endpoint
@@ -225,6 +261,7 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 		Profiles:       map[string]*CompiledProfile{},
 		Endpoints:      map[string]*CompiledEndpoint{},
 		Tunnels:        map[string]*CompiledTunnel{},
+		TokenPools:     map[string]*CompiledTokenPool{},
 		Approvers:      p.Approvers,
 		Credentials:    p.Credentials,
 		Policies:       p.Policies,
@@ -233,6 +270,13 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 	// Compile tunnels first so endpoint compilation can resolve
 	// `tunnel = X` refs to a *CompiledTunnel.
 	if err := compileTunnels(cp, p); err != nil {
+		return nil, err
+	}
+
+	// Compile token pools after credentials are loaded but before
+	// endpoints, so endpoint binding resolution can substitute a
+	// pool reference for a credential reference.
+	if err := compileTokenPools(cp, p); err != nil {
 		return nil, err
 	}
 
@@ -342,6 +386,21 @@ func compileEndpoint(name string, ent *Entity, p *Policy, cp *CompiledPolicy) (*
 		credEnt, ok := p.Credentials[cb.Credential]
 		if !ok {
 			return nil, fmt.Errorf("credential %q not declared", cb.Credential)
+		}
+		// Pool-typed credentials lower into a CompiledTokenPool which
+		// resolves to a real underlying credential per the pool's
+		// strategy at request time. Everything downstream (injection,
+		// secret lookup) operates on the resolved member.
+		if credEnt.Plugin.Type == PoolCredentialType {
+			pool, ok := cp.TokenPools[cb.Credential]
+			if !ok {
+				return nil, fmt.Errorf("credential %q (pool) not compiled", cb.Credential)
+			}
+			ce.Credentials = append(ce.Credentials, &CompiledCredential{
+				Placeholder: cb.Placeholder,
+				Pool:        pool,
+			})
+			continue
 		}
 		ce.Credentials = append(ce.Credentials, &CompiledCredential{
 			Placeholder: cb.Placeholder,
@@ -640,4 +699,110 @@ func parseKeepalive(s string) (time.Duration, bool, error) {
 		return 0, false, fmt.Errorf("invalid keepalive %q: negative durations not allowed", s)
 	}
 	return d, false, nil
+}
+
+// TokenPoolBody is the cross-cut interface a pool credential
+// plugin's decoded body satisfies so the compile pass can lift its
+// members and strategy without depending on the plugin package. The
+// pool plugin owns the HCL schema; the compile pass owns the
+// resolution.
+type TokenPoolBody interface {
+	PoolMembers() []string
+	PoolStrategy() string
+}
+
+// PoolCredentialType is the credential plugin Type that identifies a
+// pool block. Credentials with this type lower into a
+// *CompiledTokenPool instead of going down the per-credential
+// injection path at request time.
+const PoolCredentialType = "pool"
+
+// compileTokenPools walks every `credential "pool" "<name>"` entity
+// and lowers it into a *CompiledTokenPool: resolves member bare-name
+// references against the credential map, validates strategy +
+// same-(kind, type) membership, and stashes the result on
+// cp.TokenPools.
+//
+// Errors here are policy-author bugs (unknown member, mixed types,
+// unknown strategy) — they surface as Compile() errors so the
+// gateway refuses to load a pool it can't dispatch.
+func compileTokenPools(cp *CompiledPolicy, p *Policy) error {
+	for name, ent := range p.Credentials {
+		if ent.Plugin.Type != PoolCredentialType {
+			continue
+		}
+		body, ok := ent.Body.(TokenPoolBody)
+		if !ok {
+			return fmt.Errorf("credential %q (pool): body type %T does not satisfy TokenPoolBody", name, ent.Body)
+		}
+		strategy, err := parsePoolStrategy(body.PoolStrategy())
+		if err != nil {
+			return fmt.Errorf("credential %q (pool): %w", name, err)
+		}
+		members := body.PoolMembers()
+		if len(members) < 2 {
+			return fmt.Errorf("credential %q (pool): needs at least 2 members (got %d) — a pool of one is just a credential", name, len(members))
+		}
+		resolved := make([]*Entity, 0, len(members))
+		var pluginType string
+		var pluginKind Kind
+		for _, mn := range members {
+			credEnt, ok := p.Credentials[mn]
+			if !ok {
+				return fmt.Errorf("credential %q (pool): member %q is not a declared credential", name, mn)
+			}
+			if credEnt.Plugin.Type == PoolCredentialType {
+				return fmt.Errorf("credential %q (pool): member %q is itself a pool — pools can only contain non-pool credentials", name, mn)
+			}
+			thisType := credEnt.Plugin.Type
+			thisKind := credEnt.Plugin.Kind
+			if pluginType == "" {
+				pluginType = thisType
+				pluginKind = thisKind
+			} else if thisType != pluginType || thisKind != pluginKind {
+				return fmt.Errorf(
+					"credential %q (pool): members must share one (kind, type) — saw %s/%s and %s/%s; pools are single-provider only",
+					name, pluginKind, pluginType, thisKind, thisType,
+				)
+			}
+			resolved = append(resolved, credEnt)
+		}
+		cp.TokenPools[name] = &CompiledTokenPool{
+			Name:       name,
+			Strategy:   strategy,
+			Members:    resolved,
+			PluginType: pluginType,
+		}
+	}
+	return nil
+}
+
+// parsePoolStrategy normalises and validates the operator's strategy
+// string. Empty defaults to round_robin (the v1 default chosen for
+// fairness when members have equal quota).
+func parsePoolStrategy(s string) (PoolStrategy, error) {
+	switch s {
+	case "":
+		return DefaultPoolStrategy, nil
+	case string(PoolStrategyRoundRobin):
+		return PoolStrategyRoundRobin, nil
+	case string(PoolStrategyLeastLoaded):
+		return PoolStrategyLeastLoaded, nil
+	case "exhaust_first":
+		// exhaust_first wants per-member failure tracking (so a
+		// 401/429 from member i moves dispatch to i+1) and v1 doesn't
+		// have a wired-up failure signal. Reject explicitly so an
+		// operator who picks it gets a clear "use round_robin or
+		// least_loaded for now" pointer instead of a silently
+		// degraded pool that always picks member 0.
+		return "", fmt.Errorf(
+			"strategy %q: exhaust_first is not implemented in v1 — it requires per-member failure tracking; use %q or %q",
+			s, PoolStrategyRoundRobin, PoolStrategyLeastLoaded,
+		)
+	default:
+		return "", fmt.Errorf(
+			"unknown pool strategy %q (want %q or %q)",
+			s, PoolStrategyRoundRobin, PoolStrategyLeastLoaded,
+		)
+	}
 }

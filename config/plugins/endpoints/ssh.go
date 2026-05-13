@@ -217,7 +217,11 @@ func (rt *SSHEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHa
 	}
 	upstreamCfg, err := rt.upstreamClientConfig(ch, cc, agentUser)
 	if err != nil {
-		return fmt.Errorf("ssh credential %q: %w", cc.Credential.Symbol.Name, err)
+		credName := "<unresolved>"
+		if e := cc.Resolve(nil); e != nil && e.Symbol != nil {
+			credName = e.Symbol.Name
+		}
+		return fmt.Errorf("ssh credential %q: %w", credName, err)
 	}
 
 	// Step 5: dial upstream and do the client handshake. DialUpstream
@@ -308,11 +312,15 @@ func pickSSHCredential(ep *config.CompiledEndpoint, agentUser string) *config.Co
 }
 
 func (rt *SSHEndpointRuntime) upstreamClientConfig(ch *runtime.ConnHandle, cc *config.CompiledCredential, agentUser string) (*ssh.ClientConfig, error) {
-	auth, ok := cc.Credential.Body.(sshproto.AuthCredential)
+	credEnt := cc.Resolve(nil)
+	if credEnt == nil {
+		return nil, fmt.Errorf("credential resolved to nil entity")
+	}
+	auth, ok := credEnt.Body.(sshproto.AuthCredential)
 	if !ok {
 		return nil, fmt.Errorf("does not implement sshproto.AuthCredential (use credential type \"ssh\")")
 	}
-	sec, err := ch.Secrets.Get(cc.Credential.Symbol.Name, ch.Profile)
+	sec, err := ch.Secrets.Get(credEnt.Symbol.Name, ch.Profile)
 	if err != nil {
 		return nil, fmt.Errorf("fetch secret: %w", err)
 	}
