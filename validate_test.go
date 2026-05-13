@@ -41,6 +41,51 @@ func TestValidateCmd(t *testing.T) {
 	}
 }
 
+// TestValidateCmdEmitsAllDiagnostics — when the HCL has multiple
+// independent errors, validate prints each one on its own line so the
+// user can fix them in a single editor round-trip. Regression: the
+// previous implementation called diags.Error() which prints only the
+// first error followed by "and N other diagnostic(s)".
+func TestValidateCmdEmitsAllDiagnostics(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "broken.hcl")
+	body := `listen      = "0.0.0.0:8443"
+info_listen = "0.0.0.0:9080"
+public_url  = "http://x:9080"
+ca_dir      = "/tmp/ca"
+log_path    = "/tmp/x.log"
+oauth_dir   = "/tmp/oauth"
+control        = "wireguard"
+wg_endpoint    = "1.2.3.4:51820"
+wg_subnet_cidr = "10.55.0.0/24"
+credential "anthropic_oauth_subscription" "claude" {}
+endpoint "https" "anthropic" {
+  hosts      = ["api.anthropic.com"]
+  credential = claude
+}
+profile "default" {
+  endpoints = [anthropic, missing-one, also-missing]
+}
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	msg, code := validateCmd([]string{path})
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (msg=%q)", code, msg)
+	}
+	// Both unknown-variable diagnostics must surface, not just one.
+	for _, want := range []string{"missing-one", "also-missing"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("msg missing %q\nfull:\n%s", want, msg)
+		}
+	}
+	// Must not be the truncated stock hcl.Diagnostics format.
+	if strings.Contains(msg, "other diagnostic") {
+		t.Errorf("unexpected truncation; msg = %q", msg)
+	}
+}
+
 // TestValidateCmdBadHCL covers syntactically broken HCL (parse error
 // before compile even gets a chance). Inline so the fixture set in
 // config/testdata stays focused on semantic checks.

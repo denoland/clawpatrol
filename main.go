@@ -2223,6 +2223,11 @@ usage:
                   --hostname NAME        device name to register (default: os.Hostname)
                   --profile NAME         suggest a profile for the approver
                   --whole-machine        bring up wg-quick (route all traffic)
+                  --no-trust             fetch the CA but skip installing it
+                                         into the system trust store; print a
+                                         manual-trust command instead (use on
+                                         distroless / read-only-rootfs hosts or
+                                         to vet the cert before trusting it)
   clawpatrol login                       onboard this machine (tailscale path)
   clawpatrol run -- <cmd> [args...]      route one process tree through gateway
   clawpatrol status                      report install + tunnel state

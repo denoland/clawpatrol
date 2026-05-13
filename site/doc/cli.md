@@ -69,9 +69,18 @@ clawpatrol join <gateway-url> [flags]
 | `--hostname NAME` | OS hostname | Device name registered with the gateway |
 | `--profile NAME` | gateway default | Profile to assign at approval time |
 | `--whole-machine` | off | Bring up `wg-quick` and route every packet through the gateway (default: persist conf only and use `clawpatrol run`) |
-| `--no-trust` | off | Fetch the CA but skip system trust install |
+| `--no-trust` | off | Fetch the CA into `~/.clawpatrol/ca.crt` but skip installing it into the system trust store. Use on distroless / read-only-rootfs hosts where `/usr/local/share/ca-certificates` isn't writable, or when policy requires a manual cert review. `clawpatrol join` prints the one-liner you can run later to trust the CA yourself. |
 | `--ca-dir DIR` | `~/.clawpatrol` | Where to store the fetched CA |
 | `--name NAME` | `clawpatrol` | Exit-node hostname (only used when the gateway is on Tailscale) |
+
+Run `clawpatrol join` as your normal user, **not** under `sudo`. The
+command sudo-elevates internally for the few steps that genuinely need
+root (CA trust install, optional `wg-quick`) and writes per-user state
+under `$HOME/.clawpatrol` and `$HOME/.config/clawpatrol`. Running the
+whole command via `sudo` would land those files in `/root` where the
+non-`sudo` shell can't read them, silently breaking the next
+`clawpatrol env` / `clawpatrol run`. The CLI refuses outright if it
+detects a sudo'd invocation.
 
 ### `clawpatrol login`
 

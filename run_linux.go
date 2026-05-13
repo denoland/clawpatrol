@@ -66,8 +66,10 @@ func runRun(args []string) {
 	// below collapse to `0 → 0`, and most distros refuse to put pid 0
 	// into a new user namespace at all (apparmor restrict-unpriv-userns
 	// on Ubuntu 24.04, kernel.unprivileged_userns_clone=0 elsewhere).
-	// The fallout used to surface as a misleading sysctl hint after
-	// child.Start() failed — catch it here with a clear message instead.
+	// Surface the friction up front with the same shared hint used by
+	// `join` / `login`. Bare-metal root (no SUDO_USER) still falls
+	// through and hits the post-clone failure path below.
+	refuseSudo("run")
 	if os.Geteuid() == 0 {
 		fail("run as your normal user; clawpatrol run uses unprivileged user namespaces which root cannot enter on this distro")
 	}
@@ -144,7 +146,7 @@ func runRun(args []string) {
 		if os.Geteuid() == 0 {
 			fail("clone: %v\n  hint: run as your normal user — clawpatrol run uses unprivileged user namespaces which root cannot enter on this distro", err)
 		}
-		fail("clone: %v\n  hint: this distro may have unprivileged user namespaces disabled.\n  enable: sudo sysctl -w kernel.unprivileged_userns_clone=1", err)
+		fail("clone: %v\n%s", err, userNSCloneHint())
 	}
 	_ = cSock.Close()
 	_ = wgUpR.Close()
@@ -453,17 +455,80 @@ func openTUN(name string) (int, error) {
 }
 
 func checkUserNS() {
+	// `kernel.unprivileged_userns_clone` is the older Debian/Ubuntu
+	// sysctl (Ubuntu ≤ 23.04). When present and 0, no unprivileged
+	// process can clone(CLONE_NEWUSER) — `clawpatrol run` can't even
+	// start its sandbox.
 	if b, err := os.ReadFile("/proc/sys/kernel/unprivileged_userns_clone"); err == nil {
 		if strings.TrimSpace(string(b)) == "0" {
 			fail("unprivileged user namespaces disabled.\n  fix: sudo sysctl -w kernel.unprivileged_userns_clone=1")
 		}
 	}
+	// Ubuntu 24.04 ships with AppArmor restricting unprivileged userns
+	// creation by default (LP#2046844 / kernel 6.8). The clone itself
+	// fails for binaries without an unconfined AppArmor profile, which
+	// includes ad-hoc downloads of `clawpatrol` in $HOME/.local/bin.
+	// The old sysctl doesn't exist on 24.04, so the only working escape
+	// hatch is to flip this one — point users at it explicitly instead
+	// of leaving them to puzzle through a stale hint.
 	if b, err := os.ReadFile("/proc/sys/kernel/apparmor_restrict_unprivileged_userns"); err == nil {
 		if strings.TrimSpace(string(b)) == "1" {
-			fmt.Fprintf(os.Stderr, "warning: AppArmor may block TUN in user namespaces.\n"+
-				"  if `clawpatrol run` fails: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0\n")
+			fmt.Fprintf(os.Stderr,
+				"warning: AppArmor restricts unprivileged user namespaces on this host.\n"+
+					"  if `clawpatrol run` fails with EPERM during clone:\n"+
+					"    sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0\n"+
+					"  (default on Ubuntu 24.04; persist via /etc/sysctl.d/)\n")
 		}
 	}
+}
+
+// userNSCloneHint builds the post-failure hint for a `clone()` that
+// EPERM'd at sandbox setup. Wraps the testable form so production
+// callers don't pass a probe.
+func userNSCloneHint() string {
+	return userNSCloneHintFrom(readSysctl)
+}
+
+// readSysctl is the production sysctl reader. Returns ("", false) on
+// any error so callers can treat "missing" and "unreadable" the same.
+func readSysctl(path string) (string, bool) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(b)), true
+}
+
+// userNSCloneHintFrom builds the post-failure hint for a `clone()`
+// EPERM. The right knob differs by distro:
+//
+//   - Ubuntu 24.04+ / kernel 6.8+: AppArmor blocks the clone; the
+//     `apparmor_restrict_unprivileged_userns` sysctl exists and is
+//     usually 1 (the default).
+//   - Older Ubuntu / Debian: `unprivileged_userns_clone` sysctl, often
+//     0 on hardened images.
+//   - Anywhere else: fall back to listing both so the operator can pick.
+//
+// Multi-line; caller passes through to fail(). probe returns
+// (value, exists). Split out from the wrapper so tests can fake
+// the sysctl tree without touching /proc.
+func userNSCloneHintFrom(probe func(string) (string, bool)) string {
+	const (
+		apparmor = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
+		clone    = "/proc/sys/kernel/unprivileged_userns_clone"
+	)
+	if v, ok := probe(apparmor); ok && v == "1" {
+		return "  hint: AppArmor is blocking unprivileged user namespaces (Ubuntu 24.04 default).\n" +
+			"  fix:  sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0\n" +
+			"        # persist in /etc/sysctl.d/99-clawpatrol.conf"
+	}
+	if v, ok := probe(clone); ok && v == "0" {
+		return "  hint: unprivileged user namespaces disabled on this kernel.\n" +
+			"  fix:  sudo sysctl -w kernel.unprivileged_userns_clone=1"
+	}
+	return "  hint: unprivileged user namespaces are blocked on this host.\n" +
+		"  Ubuntu 24.04: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0\n" +
+		"  Older Ubuntu/Debian: sudo sysctl -w kernel.unprivileged_userns_clone=1"
 }
 
 func sendFD(s *os.File, fd int) error {

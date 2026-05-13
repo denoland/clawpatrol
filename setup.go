@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -80,13 +82,7 @@ type tsPeer struct {
 // straight into the post-join setup (set exit-node, fetch CA, install
 // system trust) — single command, full setup.
 func runJoin(args []string) {
-	// `sudo clawpatrol join` lands wg.conf + api-token as root:root in
-	// /root/.config/clawpatrol, then the user's `clawpatrol run` (no
-	// sudo) can't read them. The CA-install step is the only piece that
-	// needs elevated rights, and runAsRoot() shells out to sudo on demand.
-	if os.Geteuid() == 0 && os.Getenv("SUDO_USER") != "" {
-		fail("don't run join under sudo — invoke as your normal user; I'll sudo internally for the CA install step")
-	}
+	refuseSudo("join")
 	fs := flag.NewFlagSet("join", flag.ExitOnError)
 	gwName := fs.String("name", "clawpatrol", "exit-node hostname on the tailnet")
 	caOut := fs.String("ca-dir", defaultClawpatrolDir(), "where to store the fetched CA")
@@ -189,6 +185,7 @@ func fetchCAHTTP(gateway, dst string) error {
 }
 
 func runLogin(args []string) {
+	refuseSudo("login")
 	fs := flag.NewFlagSet("login", flag.ExitOnError)
 	gwName := fs.String("name", "clawpatrol", "exit-node hostname to look for on the tailnet")
 	caOut := fs.String("ca-dir", defaultClawpatrolDir(), "where to store the fetched CA")
@@ -279,6 +276,15 @@ func runLogin(args []string) {
 	printTreeItems(items)
 	fmt.Println()
 	fmt.Println("Installed! Try: claude")
+	// Dashboard lives on the gateway peer in tailscale mode. `join`
+	// (which usually shells out into `login`) wrote the URL it called
+	// out to `caOut/gateway`; prefer that over guessing a port from
+	// the peer IP. If we're being invoked standalone (`login` without
+	// a prior `join`) the file won't exist — fall through silently
+	// rather than print something wrong.
+	if u := readGatewayURL(*caOut); u != "" {
+		printDashboardHint(u)
+	}
 }
 
 // installShellRC appends `eval "$(clawpatrol env)"` to the user's shell
@@ -777,6 +783,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 			}
 			fmt.Printf("Installed! All host traffic routes via the gateway (%s).\n", iface)
 		}
+		printDashboardHint(gateway)
 		if persistErr != nil {
 			fmt.Fprintf(os.Stderr, "⚠ persist user wg conf: %v\n", persistErr)
 		}
@@ -847,6 +854,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	printTreeItems(items)
 	fmt.Println()
 	fmt.Println("Installed! Try: claude")
+	printDashboardHint(gateway)
 	return false, nil
 }
 
@@ -861,6 +869,62 @@ func tryOpen(u string) {
 		return
 	}
 	_ = cmd.Start()
+}
+
+// printDashboardHint prints the dashboard URL and how to sign in. The
+// dashboard sits at the gateway's public URL; auth on the device side
+// is the tailnet membership / wg peer that join just registered, so
+// the user lands on the dashboard signed in without a separate
+// password step.
+func printDashboardHint(gateway string) {
+	url := strings.TrimRight(gateway, "/")
+	fmt.Println()
+	fmt.Printf("Dashboard: %s\n", url)
+	fmt.Println("           (auto-signed-in via the tunnel you just joined —")
+	fmt.Println("            no separate password; if the page 403s, make sure")
+	fmt.Println("            you're hitting it from this machine, not your laptop)")
+}
+
+// refuseSudo bails out when the user invoked `sudo clawpatrol <subcmd>`
+// (euid 0 AND SUDO_USER set), pointing them at the right invocation.
+//
+// Why: `clawpatrol join` (and friends) write per-user state under
+// $HOME/.clawpatrol and $HOME/.config/clawpatrol. Under sudo, HOME
+// resolves to /root on Ubuntu's default sudoers, so the device JSON,
+// fetched CA, and wg.conf all land in /root — invisible to the same
+// user without sudo, so the next `clawpatrol env` / `clawpatrol run`
+// silently re-runs onboarding or fails to find the conf. Surfaces a
+// loud error up front instead. `clawpatrol run` similarly relies on
+// unprivileged user namespaces (pid 0 can't enter one on most distros).
+//
+// True bare-metal root (no SUDO_USER) is allowed — common on servers
+// and containers where there's no other account.
+func refuseSudo(subcmd string) {
+	if msg, refuse := refuseSudoMessage(subcmd, os.Geteuid(), os.Getenv("SUDO_USER")); refuse {
+		fmt.Fprint(os.Stderr, msg)
+		os.Exit(2)
+	}
+}
+
+// refuseSudoMessage is the testable predicate behind refuseSudo.
+// Returns (message, true) when the caller should bail out with the
+// message; (_, false) otherwise. Split out so tests don't have to
+// shell out and capture os.Exit.
+func refuseSudoMessage(subcmd string, euid int, sudoUser string) (string, bool) {
+	if euid != 0 {
+		return "", false
+	}
+	if sudoUser == "" || sudoUser == "root" {
+		return "", false
+	}
+	return fmt.Sprintf(
+		"clawpatrol: don't run `clawpatrol %[1]s` under sudo.\n\n"+
+			"  Files would land in /root and your normal-user shell\n"+
+			"  wouldn't see them. Run it as your user; clawpatrol\n"+
+			"  will sudo for the few steps that need root (CA trust,\n"+
+			"  wg-quick). Try again as %[2]s:\n\n"+
+			"    clawpatrol %[1]s …\n",
+		subcmd, sudoUser), true
 }
 
 // runAsRoot prepends "sudo" only when the caller isn't already root
@@ -1069,6 +1133,15 @@ func runGatewayInit(args []string) {
 	}
 
 	// 3. write gateway.hcl ------------------------------------------------
+	// Generate a per-host random dashboard_secret so the starter HCL
+	// passes validation and the dashboard isn't accidentally open. The
+	// alternative — telling the user to edit `gateway.hcl` before the
+	// first `systemctl enable --now` — guarantees a "why won't the
+	// gateway start" support loop.
+	dashSecret, err := randomSecret(32)
+	if err != nil {
+		fail("generate dashboard_secret: %v", err)
+	}
 	cfgPath := filepath.Join(*dataDir, "gateway.hcl")
 	cfg := fmt.Sprintf(`# generated by clawpatrol gateway init
 listen      = "0.0.0.0:%d"
@@ -1077,6 +1150,10 @@ public_url  = "%s"
 ca_dir      = "%s"
 log_path    = "%s"
 oauth_dir   = "%s"
+
+# Per-install random; treat it like a bearer token (anyone who knows
+# it can sign approve/deny clicks on the dashboard).
+dashboard_secret = "%s"
 
 control        = "wireguard"
 wg_endpoint    = "%s:%d"
@@ -1108,16 +1185,19 @@ endpoint "https" "github-api" {
 }
 
 profile "default" {
-  endpoints = [anthropic, openai, github-api]
+  endpoints = [anthropic, openai-api, openai-chatgpt, github-api]
 }
 `,
 		*tlsPort, *dashPort, url,
 		filepath.Join(*dataDir, "ca"),
 		filepath.Join(*dataDir, "gateway.log"),
 		filepath.Join(*dataDir, "oauth"),
+		dashSecret,
 		ip, *wgPort, *subnet,
 	)
-	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
+	// gateway.hcl carries dashboard_secret in plaintext; 0o600 so it
+	// isn't world-readable when written as root.
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
 		fail("write %s: %v", cfgPath, err)
 	}
 
@@ -1159,6 +1239,18 @@ profile "default" {
 	fmt.Println()
 	fmt.Printf("Dashboard: %s\n", url)
 	fmt.Printf("Join command: clawpatrol join %s\n", url)
+}
+
+// randomSecret returns 2*n hex characters drawn from crypto/rand —
+// suitable for `dashboard_secret` in `gateway init`-emitted HCL.
+// 32 bytes → 64 hex chars; that's 256 bits of entropy, beyond what
+// a brute-force attacker could chew through against a single host.
+func randomSecret(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // detectPublicIP queries plain-text IP echo services. We validate
