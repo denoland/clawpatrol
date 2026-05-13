@@ -8,10 +8,12 @@ import { CredentialSecretsModal } from "./CredentialSecretsModal";
 import { IntegrationIcon } from "./Logos";
 import { Modal } from "./Modal";
 
-// Bare credential names often look like "pg-writer-cred" — useful as
-// identifiers, not as labels. The type maps to the recognizable brand /
-// protocol; the bare name is always rendered as metadata so operators
-// can still tell two same-type cards apart.
+// Card header format: `<plugin display name> · <credential bare name>`.
+// The bare name (the operator's HCL block name) is always present so
+// two same-type cards can be told apart at a glance, and so the
+// subtitle slot below the header is free for per-type contextual
+// information (OAuth identity, "Not connected", etc.) instead of
+// repeating the block name.
 
 // Cap on visible cards before the overflow button appears. The N-th
 // slot is replaced by "+ K more" so the row width stays predictable
@@ -57,16 +59,6 @@ export function IntegrationsCards({
   const overflow = !showAll && sorted.length > VISIBLE_CAP;
   const visible = overflow ? sorted.slice(0, VISIBLE_CAP - 1) : sorted;
   const hiddenCount = sorted.length - visible.length;
-
-  // Credentials are grouped by plugin type in the header (a single
-  // `github_oauth` cred reads as "GitHub"). When two creds share a
-  // type — e.g. one personal + one work GitHub OAuth — the type label
-  // alone collides, and the `(displayName)` suffix collides too when
-  // both are connected by the same OAuth user. Mark the duplicates so
-  // the card can also surface the credential name to disambiguate.
-  const typeCounts = new Map<string, number>();
-  for (const i of list) typeCounts.set(i.type, (typeCounts.get(i.type) ?? 0) + 1);
-  const isDup = (i: Integration) => (typeCounts.get(i.type) ?? 0) > 1;
 
   function handleConnect(i: Integration) {
     if (i.has_tailscale_auth && i.tailscale_auth) {
@@ -150,7 +142,6 @@ export function IntegrationsCards({
           <Card
             key={i.id}
             integration={i}
-            showName={isDup(i)}
             onConnect={() => handleConnect(i)}
             onDisconnect={() => disconnect(i)}
           />
@@ -168,7 +159,6 @@ export function IntegrationsCards({
       {allOpen && (
         <AllIntegrationsModal
           list={sorted}
-          isDup={isDup}
           onClose={() => setAllOpen(false)}
           onConnect={(i) => {
             setAllOpen(false);
@@ -225,16 +215,10 @@ function OwnerAvatar({
 
 function Card({
   integration: i,
-  showName,
   onConnect,
   onDisconnect,
 }: {
   integration: Integration;
-  // When the same plugin type is declared more than once, surface
-  // the credential's bare name in the header so two cards of the same
-  // type are visibly distinct even when both are OAuth-connected by
-  // the same user.
-  showName?: boolean;
   onConnect: () => void;
   onDisconnect: () => void;
 }) {
@@ -250,8 +234,16 @@ function Card({
       : hasSlots
         ? "paste secret"
         : "api key only";
-  const label = credentialTypeLabel(i.type, i.name);
-  const title = [label, `credential: ${i.id}`, `type: ${i.type}`, status].join("\n");
+  // Plugin display name (e.g. "GitHub", "Postgres"). Falls back to the
+  // raw HCL type key for unrecognised plugins rather than the bare
+  // credential name, which would produce `<name> · <name>` titles.
+  const label = credentialTypeLabel(i.type, i.type);
+  // Title is always `<displayName> · <name>` regardless of how many
+  // creds of this type are declared. The OAuth identity that used to
+  // suffix the title moves to the subtitle below.
+  const heading = `${label} · ${i.name}`;
+  const subtitle = contextualSubtitle(i, connected, hasSlots);
+  const title = [heading, `credential: ${i.id}`, `type: ${i.type}`, status].join("\n");
   return (
     <button
       disabled={!clickable && !connected}
@@ -268,10 +260,7 @@ function Card({
           <IntegrationIcon id={i.id} type={i.type} className="w-[16px] h-[16px] shrink-0" />
         )}
         <span className="text-xs font-semibold text-text truncate" title={title}>
-          {(() => {
-            const withName = showName && label !== i.name ? `${label} · ${i.name}` : label;
-            return i.display_name ? `${withName} (${i.display_name})` : withName;
-          })()}
+          {heading}
         </span>
         <span className="ml-auto flex items-center gap-1.5 shrink-0">
           {connected && (
@@ -294,9 +283,11 @@ function Card({
         </span>
       </div>
       <div className="w-full min-w-0 space-y-0.5">
-        <div className="text-2xs text-text-muted tabular-nums truncate" title={i.id}>
-          <span className="font-mono">{i.id}</span>
-        </div>
+        {subtitle && (
+          <div className="text-2xs text-text-muted truncate" title={subtitle}>
+            {subtitle}
+          </div>
+        )}
         <div className="text-2xs text-text-subtle tabular-nums truncate" title={status}>
           {status}
         </div>
@@ -305,15 +296,37 @@ function Card({
   );
 }
 
+// contextualSubtitle returns the per-credential-type hint shown below
+// the card title. Sources are all non-secret fields already on the
+// IntegrationRow payload — no secret material (token prefixes, raw
+// password hashes, etc.) is rendered. Returns "" to mean "omit the
+// subtitle slot entirely" (compact card).
+function contextualSubtitle(i: Integration, connected: boolean, hasSlots: boolean): string {
+  if (connected) {
+    // OAuth flows persist the connected account identity (email /
+    // username / workspace name) on the credential at connect time —
+    // that's what `display_name` is. Surface it directly when present.
+    if (i.display_name) return i.display_name;
+    // Manual / Tailscale / OAuth-without-identity: nothing useful to
+    // distinguish two same-type creds, fall back to a stable
+    // placeholder so the row still reads "configured".
+    if (hasSlots || i.has_tailscale_auth) return "Saved";
+    return "";
+  }
+  // Not connected: OAuth and Tailscale both await an explicit user
+  // action; manual creds with slots are simply unconfigured.
+  if (i.has_oauth || i.has_tailscale_auth) return "Not connected";
+  if (hasSlots) return "Not configured";
+  return "";
+}
+
 function AllIntegrationsModal({
   list,
-  isDup,
   onClose,
   onConnect,
   onDisconnect,
 }: {
   list: Integration[];
-  isDup: (i: Integration) => boolean;
   onClose: () => void;
   onConnect: (i: Integration) => void;
   onDisconnect: (i: Integration) => void;
@@ -342,7 +355,6 @@ function AllIntegrationsModal({
             <Card
               key={i.id}
               integration={i}
-              showName={isDup(i)}
               onConnect={() => onConnect(i)}
               onDisconnect={() => onDisconnect(i)}
             />
