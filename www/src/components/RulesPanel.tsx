@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { getRules, type RuleSummary } from "../lib/api";
 import { EditGlyph } from "./Logos";
 import { RulesEditor } from "./RulesEditor";
+import { Tag, type Tone } from "./Tag";
 
 // Rules panel. Profile-level rules only — device-specific overrides
 // are gone. The pencil opens gateway.hcl. Device pages pass `profile`
@@ -33,8 +34,8 @@ export function RulesPanel({
   );
 
   return (
-    <div className="bg-white border border-[#e5e5e5] rounded">
-      {err && <div className="px-4 py-3 text-[11px] text-red-600">{err}</div>}
+    <div className="bg-canvas-light border-2 border-navy">
+      {err && <div className="px-4 py-3 text-xs text-rust-700">{err}</div>}
       <Section
         title="Rules"
         rows={visible}
@@ -72,7 +73,11 @@ function Section({
   const groups = useMemo(() => {
     const m = new Map<string, { endpoint: string; family: string; rules: RuleSummary[] }>();
     for (const r of rows) {
-      const g = m.get(r.endpoint) ?? { endpoint: r.endpoint, family: r.family, rules: [] };
+      const g = m.get(r.endpoint) ?? {
+        endpoint: r.endpoint,
+        family: r.family,
+        rules: [],
+      };
       g.rules.push(r);
       m.set(r.endpoint, g);
     }
@@ -80,26 +85,24 @@ function Section({
   }, [rows]);
 
   return (
-    <div className="border-b border-[#e5e5e5] last:border-b-0">
-      <div className="flex items-center px-4 py-2.5 border-b border-[#e5e5e5]">
-        <div className="text-[11px] uppercase tracking-[.09em] text-[#a3a3a3] font-medium">
-          {title}
-        </div>
-        <span className="ml-2 text-[10px] text-[#a3a3a3] tabular-nums">
+    <div className="last:border-b-0">
+      <div className="flex items-center px-4 py-2.5 bg-navy-100">
+        <div className="text-xs uppercase tracking-[.09em] text-navy font-bold">{title}</div>
+        <span className="ml-2 text-2xs text-navy/70 tabular-nums">
           {rows.length} rule{rows.length === 1 ? "" : "s"}
         </span>
         {onEdit && (
           <button
             onClick={onEdit}
             title={editTitle ?? "edit"}
-            className="ml-auto p-1 text-[#a3a3a3] hover:text-[#171717] transition-colors"
+            className="ml-auto p-1 text-navy hover:text-text transition-colors"
           >
             <EditGlyph />
           </button>
         )}
       </div>
       {groups.length === 0 ? (
-        <div className="px-5 py-5 text-center text-[11px] text-[#a3a3a3]">
+        <div className="px-5 py-5 text-center text-xs text-text-subtle">
           {emptyHint ?? "no rules configured"}
         </div>
       ) : (
@@ -119,12 +122,12 @@ function EndpointGroup({
   group: { endpoint: string; family: string; rules: RuleSummary[] };
 }) {
   return (
-    <div className="border-b border-[#f5f5f5] last:border-b-0">
-      <div className="flex items-center gap-2 px-4 py-2 bg-[#fafafa]">
+    <div className="border-b border-canvas-muted last:border-b-0">
+      <div className="flex items-center gap-2 px-4 py-2 bg-navy-50">
         <FamilyDot family={group.family} />
-        <span className="text-[12px] font-mono text-[#171717]">{group.endpoint}</span>
-        <span className="text-[10px] text-[#a3a3a3]">{group.family}</span>
-        <span className="ml-auto text-[10px] text-[#737373] tabular-nums">
+        <span className="text-xs font-mono text-text">{group.endpoint}</span>
+        <span className="text-2xs text-navy/70">{group.family}</span>
+        <span className="ml-auto text-2xs text-navy/70 tabular-nums">
           {group.rules.length} rule{group.rules.length === 1 ? "" : "s"}
         </span>
       </div>
@@ -139,7 +142,7 @@ function RuleRow({ rule: r }: { rule: RuleSummary }) {
   return (
     <div
       className={
-        "flex items-start gap-3 px-4 py-2 border-t border-[#f5f5f5] hover:bg-[#fcfcfc] " +
+        "flex items-start gap-3 px-4 py-2 border-t border-canvas-muted hover:bg-navy-50 " +
         (r.disabled ? "opacity-50" : "")
       }
     >
@@ -147,24 +150,21 @@ function RuleRow({ rule: r }: { rule: RuleSummary }) {
         <div className="flex items-center gap-2 flex-wrap">
           <Verdict r={r} />
           {r.reason && (
-            <span className="text-[12px] text-[#525252] truncate" title={r.reason}>
+            <span className="text-xs text-text-muted truncate" title={r.reason}>
               {r.reason}
             </span>
           )}
         </div>
-        <div
-          className="text-[11px] text-[#737373] mt-1 font-mono truncate"
-          title={renderCondition(r)}
-        >
+        <div className="text-xs text-text-muted mt-1 font-mono truncate" title={renderCondition(r)}>
           {renderCondition(r)}
         </div>
       </div>
-      <div className="flex flex-col items-end gap-0.5 flex-shrink-0">
-        <span className="text-[11px] text-[#a3a3a3] truncate max-w-[160px]" title={r.name}>
+      <div className="flex flex-col items-end gap-0.5 shrink-0">
+        <span className="text-xs text-text-subtle truncate max-w-[160px]" title={r.name}>
           {r.name}
         </span>
         {(r.priority ?? 0) !== 0 && (
-          <span className="text-[10px] text-[#a3a3a3] tabular-nums">
+          <span className="text-2xs text-text-subtle tabular-nums">
             p{(r.priority ?? 0) > 0 ? "+" : ""}
             {r.priority}
           </span>
@@ -175,14 +175,19 @@ function RuleRow({ rule: r }: { rule: RuleSummary }) {
 }
 
 function FamilyDot({ family }: { family: string }) {
+  // Family dots are categorical — three brand anchors give a clean
+  // visual partition (cool / warm / accent) without overloading the
+  // semantic success/danger colors with category meaning.
   const palette: Record<string, string> = {
-    https: "bg-[#3b82f6]",
-    sql: "bg-[#f59e0b]",
-    k8s: "bg-[#8b5cf6]",
+    https: "bg-navy-400",
+    sql: "bg-butter-500",
+    k8s: "bg-rust-500",
   };
   return (
     <span
-      className={"inline-block w-[6px] h-[6px] rounded-full " + (palette[family] ?? "bg-[#a3a3a3]")}
+      className={
+        "inline-block w-[6px] h-[6px] rounded-full " + (palette[family] ?? "bg-text-subtle")
+      }
       title={family}
     />
   );
@@ -192,25 +197,14 @@ function Verdict({ r }: { r: RuleSummary }) {
   if (r.approve && r.approve.length > 0) {
     const names = r.approve.map((s) => s.name).join(" → ");
     return (
-      <span
-        className="text-[10px] uppercase tracking-[.08em] px-1.5 py-0.5 rounded border bg-[#fef9c3] border-[#fde68a] text-[#854d0e]"
-        title={names}
-      >
+      <Tag tone="warning" title={names}>
         approve
-      </span>
+      </Tag>
     );
   }
   const verdict = r.verdict || "allow";
-  const palette: Record<string, string> = {
-    allow: "bg-[#f0fdf4] border-[#bbf7d0] text-[#166534]",
-    deny: "bg-[#fef2f2] border-[#fecaca] text-[#991b1b]",
-  };
-  const cls = palette[verdict] ?? "bg-white border-[#e5e5e5] text-[#737373]";
-  return (
-    <span className={"text-[10px] uppercase tracking-[.08em] px-1.5 py-0.5 rounded border " + cls}>
-      {verdict}
-    </span>
-  );
+  const tones: Record<string, Tone> = { allow: "success", deny: "danger" };
+  return <Tag tone={tones[verdict] ?? "neutral"}>{verdict}</Tag>;
 }
 
 function renderCondition(r: RuleSummary): string {

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { decideHITL, getHITLPending, type HITLPending } from "../lib/api";
+import { Button } from "./Button";
 
 // HITL pending-approvals table. Polls /api/hitl/pending — list is
 // short-lived (60s default), so SSE plumbing isn't worth it.
@@ -36,10 +37,10 @@ export function HITLBar() {
   if (pending.length === 0) return null;
 
   return (
-    <div className="bg-white border border-[#e5e5e5] rounded overflow-hidden">
-      <div className="px-4 py-2.5 text-[10px] uppercase tracking-[.12em] text-[#a3a3a3] border-b border-[#e5e5e5] flex items-center">
+    <div className="bg-canvas-light border-2 border-navy overflow-hidden">
+      <div className="px-4 py-2.5 text-2xs uppercase tracking-[.12em] text-navy font-bold flex items-center bg-navy-100">
         <span>PENDING APPROVALS</span>
-        <span className="ml-2 text-[#ea580c] tabular-nums">● {pending.length}</span>
+        <span className="ml-2 text-rust-500 tabular-nums">● {pending.length}</span>
       </div>
       <table className="w-full table-fixed border-collapse">
         <colgroup>
@@ -59,39 +60,28 @@ export function HITLBar() {
             return (
               <tr
                 key={p.id}
-                className="border-b border-[#f5f5f5] last:border-b-0 hover:bg-[#f9f9f9]"
+                className="border-b border-canvas-muted last:border-b-0 hover:bg-navy-50"
               >
-                <Td className="text-[11px] text-[#525252] tabular-nums truncate">{p.agent_ip}</Td>
-                <Td className="text-[11px] uppercase font-semibold text-[#9a3412]">{p.method}</Td>
+                <Td className="text-xs text-text-muted tabular-nums truncate">{p.agent_ip}</Td>
+                <Td className="text-xs uppercase font-semibold text-rust-700">{p.method}</Td>
                 <Td>
-                  <span
-                    className="text-[12px] text-[#171717] truncate block"
-                    title={ep + sep + p.path}
-                  >
-                    <span className="text-[#737373]">
+                  <span className="text-xs text-text truncate block" title={ep + sep + p.path}>
+                    <span className="text-text-muted">
                       {ep}
                       {sep}
                     </span>
                     <span>{p.path}</span>
                   </span>
-                  {p.reason && (
-                    <div className="text-[10px] text-[#737373] truncate">{p.reason}</div>
-                  )}
+                  {p.reason && <div className="text-2xs text-text-muted truncate">{p.reason}</div>}
                 </Td>
                 <Td className="text-right">
                   <div className="flex gap-1.5 justify-end">
-                    <button
-                      onClick={() => decide(p.id, false)}
-                      className="text-[11px] px-3 py-1 border border-[#fecaca] text-[#991b1b] rounded hover:bg-[#fef2f2]"
-                    >
+                    <Button variant="outline" onClick={() => decide(p.id, false)}>
                       deny
-                    </button>
-                    <button
-                      onClick={() => decide(p.id, true)}
-                      className="text-[11px] px-3 py-1 bg-[#171717] text-white rounded hover:bg-[#000]"
-                    >
+                    </Button>
+                    <Button onClick={() => decide(p.id, true)}>
                       allow
-                    </button>
+                    </Button>
                   </div>
                 </Td>
               </tr>

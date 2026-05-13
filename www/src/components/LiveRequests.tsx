@@ -72,20 +72,20 @@ export function LiveRequests({
 
   return (
     <div
-      className="flex flex-col bg-white border border-[#e5e5e5] rounded overflow-hidden"
+      className="flex flex-col bg-canvas-light border-2 border-navy overflow-hidden"
       style={{ height: height ?? "420px" }}
     >
-      <div className="flex items-center px-4 py-2.5 text-[10px] uppercase tracking-[.12em] text-[#a3a3a3] border-b border-[#e5e5e5] flex-shrink-0">
+      <div className="flex items-center px-4 py-2.5 text-2xs uppercase tracking-[.12em] text-navy font-bold bg-navy-100 shrink-0">
         <span>LIVE REQUESTS</span>
-        <span className="ml-2 text-[#22c55e] tabular-nums flex items-center gap-1">
-          <span className="w-1.5 h-1.5 rounded-full bg-[#22c55e] animate-pulse" />
+        <span className="ml-2 text-success-500 tabular-nums flex items-center gap-1">
+          <span className="w-1.5 h-1.5 rounded-full bg-success-500 animate-pulse" />
           {events.length}
         </span>
       </div>
       <div className="flex-1 overflow-y-auto">
         {events.length === 0 ? (
-          <div className="px-5 py-8 text-center text-[11px] text-[#a3a3a3] flex items-center justify-center gap-2">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#22c55e] animate-pulse" />
+          <div className="px-5 py-8 text-center text-xs text-text-subtle flex items-center justify-center gap-2">
+            <span className="w-1.5 h-1.5 rounded-full bg-success-500 animate-pulse" />
             Waiting for requests
             <AnimatedDots />
           </div>
@@ -188,58 +188,55 @@ function Row({ ev, schema }: { ev: RowState; schema: FacetSchema | undefined }) 
   const inFlight = ev.phase === "start";
   const status = ev.status || 0;
   const statusColor = inFlight
-    ? "text-[#a3a3a3]"
+    ? "text-text-subtle"
     : status >= 500
-      ? "text-[#dc2626]"
+      ? "text-danger-500"
       : status >= 400
-        ? "text-[#ea580c]"
+        ? "text-rust-500"
         : status >= 300
-          ? "text-[#ca8a04]"
+          ? "text-butter-600"
           : status >= 200
-            ? "text-[#16a34a]"
-            : "text-[#737373]";
+            ? "text-success-600"
+            : "text-text-muted";
   const { verb, body } = rowDescriptors(ev, schema);
   const sep = body && !body.startsWith("/") ? " " : "";
   const hasFrames = (ev.frames?.length ?? 0) > 0;
   return (
-    <div className="border-b border-[#f5f5f5]">
+    <div className="border-b border-canvas-muted">
       <div
         onClick={onClick}
         className={
           "px-4 py-2 flex items-center gap-3 min-w-0 transition-colors" +
           (onClick ? " cursor-pointer" : "") +
           (inFlight ? " opacity-70" : "") +
-          " hover:bg-[#f9f9f9]"
+          " hover:bg-navy-50"
         }
       >
-        <span className="text-[10px] tabular-nums text-[#a3a3a3] flex-shrink-0">{time}</span>
+        <span className="text-2xs tabular-nums text-text-subtle shrink-0">{time}</span>
         <ModeIcon mode={ev.mode} />
         {verb && (
-          <span className="text-[10px] uppercase font-semibold text-[#525252] flex-shrink-0 w-[44px]">
+          <span className="text-2xs uppercase font-semibold text-text-muted shrink-0 w-[44px]">
             {verb}
           </span>
         )}
-        <span className={"text-[11px] tabular-nums flex-shrink-0 w-[36px] " + statusColor}>
+        <span className={"text-xs tabular-nums shrink-0 w-[36px] " + statusColor}>
           {inFlight ? <InFlightSpinner /> : status || "—"}
         </span>
-        <span
-          className="text-[12px] text-[#171717] truncate flex-1 min-w-0"
-          title={ev.host + sep + body}
-        >
-          <span className="text-[#737373]">{ev.host}</span>
+        <span className="text-xs text-text truncate flex-1 min-w-0" title={ev.host + sep + body}>
+          <span className="text-text-muted">{ev.host}</span>
           {sep && <span> </span>}
           <span>{body}</span>
         </span>
-        <span className="text-[10px] tabular-nums text-[#a3a3a3] flex-shrink-0">
+        <span className="text-2xs tabular-nums text-text-subtle shrink-0">
           {inFlight ? "…" : ev.ms + "ms"}
         </span>
       </div>
       {hasFrames && (
-        <div className="bg-[#fafafa] border-t border-[#f5f5f5] max-h-[180px] overflow-y-auto">
+        <div className="bg-canvas-muted border-t border-canvas-muted max-h-[180px] overflow-y-auto">
           {ev.frames!.map((f, i) => (
-            <div key={i} className="px-4 py-1 flex items-start gap-2 text-[10px] font-mono">
-              <span className="text-[#a3a3a3] flex-shrink-0 w-[24px]">{f.direction}</span>
-              <span className="text-[#525252] truncate" title={f.frame}>
+            <div key={i} className="px-4 py-1 flex items-start gap-2 text-2xs font-mono">
+              <span className="text-text-subtle shrink-0 w-[24px]">{f.direction}</span>
+              <span className="text-text-muted truncate" title={f.frame}>
                 {f.frame}
               </span>
             </div>
@@ -252,7 +249,7 @@ function Row({ ev, schema }: { ev: RowState; schema: FacetSchema | undefined }) 
 
 function InFlightSpinner() {
   return (
-    <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#a3a3a3] animate-pulse align-middle" />
+    <span className="inline-block w-1.5 h-1.5 rounded-full bg-text-subtle animate-pulse align-middle" />
   );
 }
 
@@ -272,21 +269,27 @@ function AnimatedDots() {
 function ModeIcon({ mode }: { mode: string }) {
   if (mode === "mitm") {
     return (
-      <span title="MITM — gateway decrypted, inspected, forwarded" className="flex-shrink-0">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="#f6821f">
+      <span
+        title="MITM — gateway decrypted, inspected, forwarded"
+        className="shrink-0 text-rust-400"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
           <path d="M7 10V7a5 5 0 0 1 10 0v3h1a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h1Zm2 0h6V7a3 3 0 1 0-6 0v3Z" />
         </svg>
       </span>
     );
   }
   return (
-    <span title="Splice — gateway forwarded encrypted bytes untouched" className="flex-shrink-0">
+    <span
+      title="Splice — gateway forwarded encrypted bytes untouched"
+      className="shrink-0 text-text-subtle"
+    >
       <svg
         width="14"
         height="14"
         viewBox="0 0 24 24"
         fill="none"
-        stroke="#a3a3a3"
+        stroke="currentColor"
         strokeWidth="2"
         strokeLinecap="round"
         strokeLinejoin="round"

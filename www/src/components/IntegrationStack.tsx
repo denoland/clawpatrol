@@ -16,7 +16,7 @@ export function IntegrationStack({
   items: { id: string; type?: string; avatar_url?: string }[];
   size?: number;
 }) {
-  if (!items?.length) return <span className="text-[10px] text-[#a3a3a3]">—</span>;
+  if (!items?.length) return <span className="text-2xs text-text-subtle">—</span>;
   const inner = Math.round(size * 0.6);
   return (
     <div className="flex items-center">
@@ -24,7 +24,7 @@ export function IntegrationStack({
         <span
           key={it.id}
           title={it.id}
-          className="rounded-full bg-white border border-[#e5e5e5] flex items-center justify-center overflow-hidden"
+          className="rounded-full bg-canvas border border-canvas-dark flex items-center justify-center overflow-hidden"
           style={{
             width: size,
             height: size,
@@ -41,7 +41,14 @@ export function IntegrationStack({
               inner={inner}
             />
           ) : (
-            <span style={{ width: inner, height: inner, display: "inline-flex", color: "#171717" }}>
+            <span
+              style={{
+                width: inner,
+                height: inner,
+                display: "inline-flex",
+                color: "var(--color-text)",
+              }}
+            >
               <IntegrationIcon id={it.id} type={it.type} className="w-full h-full" />
             </span>
           )}
@@ -67,7 +74,9 @@ function StackAvatar({
   const [broken, setBroken] = React.useState(false);
   if (broken) {
     return (
-      <span style={{ width: inner, height: inner, display: "inline-flex", color: "#171717" }}>
+      <span
+        style={{ width: inner, height: inner, display: "inline-flex", color: "var(--color-text)" }}
+      >
         <IntegrationIcon id={fallbackId} type={fallbackType} className="w-full h-full" />
       </span>
     );

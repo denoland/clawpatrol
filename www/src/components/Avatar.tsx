@@ -3,7 +3,19 @@
 
 import { useState } from "react";
 
-const PALETTE = ["#a78bfa", "#f87171", "#fbbf24", "#34d399", "#60a5fa", "#f472b6", "#facc15"];
+// Avatar background palette — categorical hash for "color this user is".
+// Tokenized variants of rust/butter/success/danger/navy give 7 hues
+// without dragging in extra one-off colors. Each is a CSS var() string
+// so theme tweaks in index.css propagate here.
+const PALETTE = [
+  "var(--color-rust-400)",
+  "var(--color-danger-400)",
+  "var(--color-butter-500)",
+  "var(--color-success-500)",
+  "var(--color-navy-400)",
+  "var(--color-rust-300)",
+  "var(--color-navy-300)",
+];
 
 function colorFor(s: string): string {
   let h = 0;
@@ -43,7 +55,7 @@ export function Avatar({ user, size = 18 }: { user: string; size?: number }) {
   const c = colorFor(user || "?");
   return (
     <span
-      className="rounded-full inline-flex items-center justify-center text-white font-semibold"
+      className="rounded-full inline-flex items-center justify-center text-canvas font-semibold"
       style={{ width: size, height: size, background: c, fontSize: Math.round(size * 0.5) }}
     >
       {initial(user || "?")}

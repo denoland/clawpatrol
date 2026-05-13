@@ -8,6 +8,8 @@ import {
 } from "../lib/api";
 import { formatFacetValue, useFacets } from "../lib/facets";
 import { fmtDateTime } from "../lib/format";
+import { Button } from "./Button";
+import { Tag } from "./Tag";
 
 export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] }) {
   const [ev, setEv] = useState<EventRecord | null>(null);
@@ -23,14 +25,14 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
   if (err) {
     return (
       <Shell>
-        <div className="text-[13px] text-[#dc2626]">{err}</div>
+        <div className="text-sm text-danger-500">{err}</div>
       </Shell>
     );
   }
   if (!ev) {
     return (
       <Shell>
-        <div className="text-[12px] text-[#a3a3a3]">Loading...</div>
+        <div className="text-xs text-text-subtle">Loading...</div>
       </Shell>
     );
   }
@@ -39,14 +41,14 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
   const status = ev.status || 0;
   const statusColor =
     status >= 500
-      ? "text-[#dc2626]"
+      ? "text-danger-500"
       : status >= 400
-        ? "text-[#ea580c]"
+        ? "text-rust-500"
         : status >= 300
-          ? "text-[#ca8a04]"
+          ? "text-butter-600"
           : status >= 200
-            ? "text-[#16a34a]"
-            : "text-[#737373]";
+            ? "text-success-600"
+            : "text-text-muted";
   const schema = ev.family ? byFamily[ev.family] : undefined;
   // SQL-family records come from the postgres / clickhouse_native
   // conn-family plugins. They populate Facets with verb / tables /
@@ -76,25 +78,23 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
       requestId={ev.id}
     >
       {/* header */}
-      <div className="bg-white border border-[#e5e5e5] rounded p-5 space-y-3">
+      <div className="bg-canvas-light border-2 border-navy p-5 space-y-3">
         <div className="flex items-center gap-3 flex-wrap">
           <ModeIcon mode={ev.mode} />
-          {verb && (
-            <span className="text-[12px] uppercase font-semibold text-[#525252]">{verb}</span>
-          )}
+          {verb && <span className="text-xs uppercase font-semibold text-text-muted">{verb}</span>}
           {!isSQL && (
-            <span className={"text-[13px] tabular-nums font-semibold " + statusColor}>
+            <span className={"text-sm tabular-nums font-semibold " + statusColor}>
               {status || "\u2014"}
             </span>
           )}
-          <span className="text-[13px] text-[#171717] break-all font-mono" title={fullUrl}>
+          <span className="text-sm text-text break-all font-mono" title={fullUrl}>
             {fullUrl}
           </span>
           <span className="ml-auto">
             <DownloadActionButton ev={ev} />
           </span>
         </div>
-        <div className="flex items-center gap-4 text-[11px] text-[#737373] flex-wrap">
+        <div className="flex items-center gap-4 text-xs text-text-muted flex-wrap">
           <span>{time}</span>
           <span>{ev.ms}ms</span>
           {ev.agent_ip && <span>{ev.agent_ip}</span>}
@@ -102,20 +102,13 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
           {ev.out != null && ev.out > 0 && <span>out: {fmtBytes(ev.out)}</span>}
         </div>
         {(ev.action || ev.reason) && (
-          <div className="flex items-center gap-2 text-[11px]">
+          <div className="flex items-center gap-2 text-xs">
             {ev.action && (
-              <span
-                className={
-                  "px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase " +
-                  (ev.action === "deny" || ev.action === "hitl_deny"
-                    ? "bg-[#fef2f2] text-[#dc2626]"
-                    : "bg-[#f0fdf4] text-[#16a34a]")
-                }
-              >
+              <Tag tone={ev.action === "deny" || ev.action === "hitl_deny" ? "danger" : "success"}>
                 {ev.action}
-              </span>
+              </Tag>
             )}
-            {ev.reason && <span className="text-[#737373]">{ev.reason}</span>}
+            {ev.reason && <span className="text-text-muted">{ev.reason}</span>}
           </div>
         )}
       </div>
@@ -124,7 +117,7 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
       {isSQL ? (
         <SQLDetail ev={ev} />
       ) : hasSections ? (
-        <div className="bg-white border border-[#e5e5e5] rounded divide-y divide-[#e5e5e5]">
+        <div className="bg-canvas-light border-2 border-navy divide-y divide-canvas-dark">
           {hasFacets && (
             <Section title="Request">
               <Facets rows={facetFields} />
@@ -152,7 +145,7 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
           )}
         </div>
       ) : (
-        <div className="bg-white border border-[#e5e5e5] rounded px-5 py-4 text-[12px] text-[#a3a3a3]">
+        <div className="bg-canvas-light border-2 border-navy px-5 py-4 text-xs text-text-subtle">
           No request/response body captured
           {ev.mode === "splice" && " (spliced connection)"}
         </div>
@@ -173,8 +166,8 @@ function DownloadActionButton({ ev }: { ev: EventRecord }) {
   if (!ev.endpoint) return null;
   if (ev.action === "in_flight") return null;
   return (
-    <button
-      type="button"
+    <Button
+      variant="outline"
       disabled={busy}
       onClick={async () => {
         setBusy(true);
@@ -195,15 +188,10 @@ function DownloadActionButton({ ev }: { ev: EventRecord }) {
           setBusy(false);
         }
       }}
-      className={
-        "text-[10px] uppercase tracking-wide px-2 py-1 rounded border " +
-        "border-[#e5e5e5] text-[#525252] hover:text-[#171717] hover:border-[#a3a3a3] " +
-        "disabled:opacity-50"
-      }
       title={err ?? "Download as a clawpatrol test fixture"}
     >
       {busy ? "Downloading…" : "Download action"}
-    </button>
+    </Button>
   );
 }
 
@@ -228,16 +216,16 @@ function SQLDetail({ ev }: { ev: EventRecord }) {
     facets.push({ label: "Functions", value: functions.map((s) => s.toUpperCase()).join(", ") });
   }
   return (
-    <div className="bg-white border border-[#e5e5e5] rounded divide-y divide-[#e5e5e5]">
+    <div className="bg-canvas-light border-2 border-navy divide-y divide-canvas-dark">
       {facets.length > 0 && (
         <Section title="Details">
-          <div className="px-4 py-3 grid grid-cols-[100px_1fr] gap-y-1.5 gap-x-3 text-[12px]">
+          <div className="px-4 py-3 grid grid-cols-[100px_1fr] gap-y-1.5 gap-x-3 text-xs">
             {facets.map((f) => (
               <div key={f.label} className="contents">
-                <div className="text-[10px] uppercase tracking-wider text-[#a3a3a3] pt-0.5">
+                <div className="text-2xs uppercase tracking-wider text-text-subtle pt-0.5">
                   {f.label}
                 </div>
-                <div className="text-[#171717] font-mono break-all">{f.value}</div>
+                <div className="text-text font-mono break-all">{f.value}</div>
               </div>
             ))}
           </div>
@@ -245,11 +233,11 @@ function SQLDetail({ ev }: { ev: EventRecord }) {
       )}
       <Section title="Statement">
         {statement ? (
-          <pre className="overflow-auto whitespace-pre-wrap break-all px-4 py-3 font-mono text-[11px] leading-relaxed text-[#171717]">
+          <pre className="overflow-auto whitespace-pre-wrap break-all px-4 py-3 font-mono text-xs leading-relaxed text-text">
             {statement}
           </pre>
         ) : (
-          <div className="px-4 py-3 text-[11px] text-[#a3a3a3]">(no parsed statement)</div>
+          <div className="px-4 py-3 text-xs text-text-subtle">(no parsed statement)</div>
         )}
       </Section>
     </div>
@@ -269,15 +257,15 @@ function Breadcrumbs({
 }) {
   return (
     <nav className="flex items-baseline gap-2">
-      <a href="#/" className="text-[13px] text-[#a3a3a3] hover:text-[#171717]">
+      <a href="#/" className="text-sm text-text-subtle hover:text-text">
         clawpatrol
       </a>
       {agentIP && (
         <>
-          <span className="text-[13px] text-[#a3a3a3]">/</span>
+          <span className="text-sm text-text-subtle">/</span>
           <a
             href={`#/device/${encodeURIComponent(agentIP)}`}
-            className="text-[13px] text-[#a3a3a3] hover:text-[#171717]"
+            className="text-sm text-text-subtle hover:text-text"
           >
             {agentName || agentIP}
           </a>
@@ -285,8 +273,8 @@ function Breadcrumbs({
       )}
       {requestId && (
         <>
-          <span className="text-[13px] text-[#a3a3a3]">/</span>
-          <span className="text-[13px] text-[#525252] font-mono" title={requestId}>
+          <span className="text-sm text-text-subtle">/</span>
+          <span className="text-sm text-text-muted font-mono" title={requestId}>
             {requestId.split("-").pop()}
           </span>
         </>
@@ -375,12 +363,12 @@ function facetDetailRows(
 // not secret material (credentials live in headers).
 function Facets({ rows }: { rows: Array<{ name: string; label: string; value: string }> }) {
   return (
-    <pre className="overflow-auto whitespace-pre-wrap break-all px-4 py-3 font-mono text-[11px] leading-relaxed">
+    <pre className="overflow-auto whitespace-pre-wrap break-all px-4 py-3 font-mono text-xs leading-relaxed">
       {rows.map((r) => (
         <div key={r.name}>
-          <span className="font-semibold text-[#171717]">{r.label}</span>
-          <span className="text-[#a3a3a3]">: </span>
-          <span className="text-[#525252]">{r.value}</span>
+          <span className="font-semibold text-text">{r.label}</span>
+          <span className="text-text-subtle">: </span>
+          <span className="text-text-muted">{r.value}</span>
         </div>
       ))}
     </pre>
@@ -390,10 +378,10 @@ function Facets({ rows }: { rows: Array<{ name: string; label: string; value: st
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <details open>
-      <summary className="cursor-pointer px-4 py-2.5 text-[10px] uppercase tracking-wider font-medium text-[#a3a3a3] hover:text-[#525252] select-none">
+      <summary className="cursor-pointer px-4 py-2.5 text-2xs uppercase tracking-wider font-bold text-navy bg-navy-100 hover:text-text select-none">
         {title}
       </summary>
-      <div className="border-t border-[#f5f5f5]">{children}</div>
+      <div>{children}</div>
     </details>
   );
 }
@@ -404,15 +392,15 @@ const SENSITIVE = /auth|token|secret|key|password|cookie/i;
 
 function Headers({ obj }: { obj: Record<string, string> }) {
   return (
-    <pre className="overflow-auto whitespace-pre-wrap break-all px-4 py-3 font-mono text-[11px] leading-relaxed">
+    <pre className="overflow-auto whitespace-pre-wrap break-all px-4 py-3 font-mono text-xs leading-relaxed">
       {Object.entries(obj).map(([k, v]) => (
         <div key={k}>
-          <span className="font-semibold text-[#171717]">{k}</span>
-          <span className="text-[#a3a3a3]">: </span>
+          <span className="font-semibold text-text">{k}</span>
+          <span className="text-text-subtle">: </span>
           {SENSITIVE.test(k) ? (
-            <span className="text-[#a3a3a3]">{"*".repeat(Math.min(v.length, 24))}</span>
+            <span className="text-text-subtle">{"*".repeat(Math.min(v.length, 24))}</span>
           ) : (
-            <span className="text-[#525252]">{v}</span>
+            <span className="text-text-muted">{v}</span>
           )}
         </div>
       ))}
@@ -537,39 +525,39 @@ function parseSSE(text: string): SseEvent[] | null {
 }
 
 function HttpBody({ text }: { text: string }) {
-  if (!text) return <div className="px-4 py-3 text-[11px] text-[#a3a3a3]">(empty)</div>;
+  if (!text) return <div className="px-4 py-3 text-xs text-text-subtle">(empty)</div>;
   const result = tryParseJSON(text);
   if (result) {
     return (
-      <div className="overflow-auto px-4 py-3 font-mono text-[11px] leading-relaxed">
+      <div className="overflow-auto px-4 py-3 font-mono text-xs leading-relaxed">
         <JsonNode value={result.parsed} />
-        {result.truncated && <div className="mt-2 text-[10px] text-[#a3a3a3]">(truncated)</div>}
+        {result.truncated && <div className="mt-2 text-2xs text-text-subtle">(truncated)</div>}
       </div>
     );
   }
   const sse = parseSSE(text);
   if (sse) {
     return (
-      <div className="overflow-auto px-4 py-3 font-mono text-[11px] leading-relaxed space-y-3">
+      <div className="overflow-auto px-4 py-3 font-mono text-xs leading-relaxed space-y-3">
         {sse.map((e, i) => {
           const dataJson = tryParseJSON(e.data);
           return (
             <div key={i}>
               {e.type && (
-                <div className="text-[10px] uppercase tracking-[.12em] text-[#a3a3a3] mb-1">
+                <div className="text-2xs uppercase tracking-[.12em] text-text-subtle mb-1">
                   event:{" "}
-                  <span className="normal-case tracking-normal text-[#525252]">{e.type}</span>
+                  <span className="normal-case tracking-normal text-text-muted">{e.type}</span>
                 </div>
               )}
               {dataJson ? (
                 <>
                   <JsonNode value={dataJson.parsed} />
                   {dataJson.truncated && (
-                    <div className="mt-1 text-[10px] text-[#a3a3a3]">(truncated)</div>
+                    <div className="mt-1 text-2xs text-text-subtle">(truncated)</div>
                   )}
                 </>
               ) : (
-                <pre className="whitespace-pre-wrap break-all text-[#525252]">{e.data}</pre>
+                <pre className="whitespace-pre-wrap break-all text-text-muted">{e.data}</pre>
               )}
             </div>
           );
@@ -578,7 +566,7 @@ function HttpBody({ text }: { text: string }) {
     );
   }
   return (
-    <pre className="overflow-auto whitespace-pre-wrap break-all px-4 py-3 font-mono text-[11px] text-[#525252]">
+    <pre className="overflow-auto whitespace-pre-wrap break-all px-4 py-3 font-mono text-xs text-text-muted">
       {text}
     </pre>
   );
@@ -590,13 +578,13 @@ const LONG_STRING = 120;
 
 function JsonNode({ value }: { value: unknown }) {
   if (value === null) {
-    return <span className="font-semibold text-[#a3a3a3]">null</span>;
+    return <span className="font-semibold text-text-subtle">null</span>;
   }
   if (typeof value === "boolean") {
-    return <span className="font-semibold text-[#7c3aed]">{String(value)}</span>;
+    return <span className="font-semibold text-rust-700">{String(value)}</span>;
   }
   if (typeof value === "number") {
-    return <span className="text-[#2563eb]">{String(value)}</span>;
+    return <span className="text-navy-500">{String(value)}</span>;
   }
   if (typeof value === "string") {
     return <StringNode value={value} />;
@@ -619,7 +607,7 @@ function JsonNode({ value }: { value: unknown }) {
       <Collapsible bracket={["{", "}"]} count={entries.length}>
         {entries.map(([k, v], i) => (
           <div key={k} className="pl-5">
-            <span className="text-[#be123c]">{JSON.stringify(k)}</span>
+            <span className="text-danger-700">{JSON.stringify(k)}</span>
             {": "}
             <JsonNode value={v} />
             {i < entries.length - 1 && ","}
@@ -637,13 +625,13 @@ function StringNode({ value }: { value: string }) {
   const [expanded, setExpanded] = useState(!long);
 
   if (!long) {
-    return <span className="text-[#15803d]">{raw}</span>;
+    return <span className="text-success-700">{raw}</span>;
   }
   if (!expanded) {
     return (
       <span>
-        <span className="text-[#15803d]">{raw.slice(0, LONG_STRING)}</span>
-        <button onClick={() => setExpanded(true)} className="ml-1 text-[#2563eb] hover:underline">
+        <span className="text-success-700">{raw.slice(0, LONG_STRING)}</span>
+        <button onClick={() => setExpanded(true)} className="ml-1 text-navy-500 hover:underline">
           +{raw.length - LONG_STRING} more
         </button>
       </span>
@@ -652,21 +640,21 @@ function StringNode({ value }: { value: string }) {
   const inner = raw.slice(1, -1);
   const lines = inner.split("\\n");
   return (
-    <span className="text-[#15803d]">
+    <span className="text-success-700">
       {'"'}
       {lines.map((line, i) => (
         <span key={i}>
           {line}
           {i < lines.length - 1 && (
             <>
-              <span className="text-[#a3a3a3]">\n</span>
+              <span className="text-text-subtle">\n</span>
               <br />
             </>
           )}
         </span>
       ))}
       {'"'}
-      <button onClick={() => setExpanded(false)} className="ml-1 text-[#2563eb] hover:underline">
+      <button onClick={() => setExpanded(false)} className="ml-1 text-navy-500 hover:underline">
         less
       </button>
     </span>
@@ -693,14 +681,14 @@ function Collapsible({
   }
   if (!open) {
     return (
-      <button onClick={() => setOpen(true)} className="text-[#a3a3a3] hover:text-[#525252]">
-        {bracket[0]} <span className="text-[#2563eb]">{count} items</span> {bracket[1]}
+      <button onClick={() => setOpen(true)} className="text-text-subtle hover:text-text-muted">
+        {bracket[0]} <span className="text-navy-500">{count} items</span> {bracket[1]}
       </button>
     );
   }
   return (
     <span>
-      <button onClick={() => setOpen(false)} className="hover:text-[#a3a3a3]">
+      <button onClick={() => setOpen(false)} className="hover:text-text-subtle">
         {bracket[0]}
       </button>
       {children}
@@ -720,21 +708,21 @@ function fmtBytes(n: number): string {
 function ModeIcon({ mode }: { mode: string }) {
   if (mode === "mitm") {
     return (
-      <span title="MITM" className="flex-shrink-0">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="#f6821f">
+      <span title="MITM" className="shrink-0 text-rust-400">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
           <path d="M7 10V7a5 5 0 0 1 10 0v3h1a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h1Zm2 0h6V7a3 3 0 1 0-6 0v3Z" />
         </svg>
       </span>
     );
   }
   return (
-    <span title="Splice" className="flex-shrink-0">
+    <span title="Splice" className="shrink-0 text-text-subtle">
       <svg
         width="14"
         height="14"
         viewBox="0 0 24 24"
         fill="none"
-        stroke="#a3a3a3"
+        stroke="currentColor"
         strokeWidth="2"
         strokeLinecap="round"
         strokeLinejoin="round"

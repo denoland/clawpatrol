@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { Button } from "./Button";
+import { Modal } from "./Modal";
 
 export function AddDeviceModal({
   publicURL,
@@ -12,25 +14,33 @@ export function AddDeviceModal({
   const joinCmd = `clawpatrol join ${url}`;
 
   return (
-    <div
-      className="fixed inset-0 bg-black/30 flex items-center justify-center z-50"
-      onClick={onClose}
-    >
-      <div
-        className="bg-white border border-[#e5e5e5] rounded-md p-4 w-[600px] shadow-2xl space-y-3"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div>
-          <div className="text-[11px] uppercase tracking-[.12em] text-[#a3a3a3]">add device</div>
-          <h2 className="font-serif text-[22px] leading-none tracking-tight text-[#171717] mt-1">
-            run on the new machine
+    <Modal onClose={onClose} labelledBy="add-device-title">
+      <div className="bg-canvas-light border-2 border-navy rounded-md shadow-2xl overflow-hidden w-[600px]">
+        <div className="flex items-center px-4 py-3 bg-navy-100">
+          <h2
+            id="add-device-title"
+            className="text-xs uppercase tracking-[.12em] text-navy font-bold"
+          >
+            ADD DEVICE
           </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="ml-auto text-xl leading-none px-2 py-1 text-navy hover:text-text"
+          >
+            ✕
+          </button>
         </div>
-
-        <Step n={1} label="install" cmd={installCmd} />
-        <Step n={2} label="join" cmd={joinCmd} />
+        <div className="p-4 space-y-6">
+          <h3 className="font-serif text-2xl leading-none tracking-tight text-text">
+            run on the new machine
+          </h3>
+          <Step n={1} label="install" cmd={installCmd} />
+          <Step n={2} label="join" cmd={joinCmd} />
+        </div>
       </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -45,21 +55,18 @@ function Step({ n, label, cmd }: { n: number; label: string; cmd: string }) {
   return (
     <div className="space-y-1">
       <div className="flex items-center gap-2">
-        <span className="w-[16px] h-[16px] rounded-full bg-[#171717] text-white text-[10px] font-semibold flex items-center justify-center flex-shrink-0">
+        <span className="w-[16px] h-[16px] rounded-full bg-navy text-canvas text-2xs font-semibold flex items-center justify-center shrink-0">
           {n}
         </span>
-        <span className="text-[11px] text-[#525252]">{label}</span>
+        <span className="text-xs text-text-muted">{label}</span>
       </div>
       <div className="relative">
-        <pre className="bg-[#fafafa] border border-[#e5e5e5] rounded px-2.5 py-1.5 text-[12px] font-mono text-[#171717] overflow-x-auto whitespace-pre">
+        <pre className="bg-navy rounded px-4 py-3 text-xs font-mono text-canvas overflow-x-auto whitespace-pre">
           {cmd}
         </pre>
-        <button
-          onClick={copy}
-          className="absolute top-1 right-1 text-[10px] uppercase tracking-[.09em] px-1.5 py-0.5 bg-white border border-[#e5e5e5] rounded text-[#525252] hover:text-[#171717] hover:border-[#171717]"
-        >
+        <Button variant="outline" onClick={copy} className="absolute top-1 right-1">
           {copied ? "copied" : "copy"}
-        </button>
+        </Button>
       </div>
     </div>
   );

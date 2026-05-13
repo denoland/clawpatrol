@@ -729,7 +729,9 @@ a.neu-raised:active {
    --color-rust-50 if nothing reads `bg-rust-50`) never get
    serialized, which broke the dev palette inspector. */
 @theme static {
-  /* Canvas + surfaces — three tiers, mirroring the ink scale. */
+  /* Canvas + surfaces — four tiers. canvas-light is pure white for
+     elevated surfaces that need to lift off the cream body. */
+  --color-canvas-light: #ffffff;
   --color-canvas: #fcfaf5;
   --color-canvas-muted: #f4efe6;
   --color-canvas-dark: #ebe5d8;
@@ -779,6 +781,38 @@ a.neu-raised:active {
   --color-butter-900: #6f4811;
   --color-butter-950: #412403;
   --color-butter: var(--color-butter-400);
+
+  /* ── Success — sage / moss green. Earthier and lower-saturation than
+        the crt-* terminal greens so it reads as "allow / OK" inside the
+        cream-canvas UI without going neon. Anchor at 500. ─────────────── */
+  --color-success-50: #f1f5e9;
+  --color-success-100: #dde9c5;
+  --color-success-200: #c0d595;
+  --color-success-300: #9cbb63;
+  --color-success-400: #7aa241;
+  --color-success-500: #5e8a3f;
+  --color-success-600: #4a6f30;
+  --color-success-700: #3c5827;
+  --color-success-800: #324522;
+  --color-success-900: #2a391f;
+  --color-success-950: #161e0c;
+  --color-success: var(--color-success-500);
+
+  /* ── Danger — brick red. Pulled toward earthy / wine rather than
+        fire-engine red so it sits next to rust without fighting it.
+        Used for deny verdicts, destructive actions, and errors. ────── */
+  --color-danger-50: #fbeded;
+  --color-danger-100: #f6d2d2;
+  --color-danger-200: #eaa8a8;
+  --color-danger-300: #d97777;
+  --color-danger-400: #c44e4e;
+  --color-danger-500: #a83232;
+  --color-danger-600: #8d2424;
+  --color-danger-700: #721d1d;
+  --color-danger-800: #5d1818;
+  --color-danger-900: #4a1515;
+  --color-danger-950: #260a0a;
+  --color-danger: var(--color-danger-500);
 
   /* Console — dark surface for terminal/CRT blocks; punchier green. */
   --color-console: #1a2820;
