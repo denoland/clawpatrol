@@ -22,8 +22,8 @@ import (
 func findGatewayStateLeak() string {
 	candidates := []string{
 		"/opt/clawpatrol/clawpatrol.db",
-		"/opt/clawpatrol/state/clawpatrol.db",   // legacy
-		"/opt/clawpatrol/oauth/clawpatrol.db",   // legacy
+		"/opt/clawpatrol/state/clawpatrol.db", // legacy
+		"/opt/clawpatrol/oauth/clawpatrol.db", // legacy
 		"/srv/clawpatrol/clawpatrol.db",
 		"/var/lib/clawpatrol/clawpatrol.db",
 	}
