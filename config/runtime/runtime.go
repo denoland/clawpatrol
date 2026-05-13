@@ -297,9 +297,13 @@ type ApproveRequest struct {
 	// disambiguate per-approver state.
 	ApproverName string
 	// AgentIP is the WireGuard source IP of the originating peer.
-	// Approvers use it as a display label / log key; it carries no
-	// credential-lookup meaning.
+	// Used as the HITLPending.AgentIP key and as a log identifier.
 	AgentIP string
+	// Profile is the tenant profile the originating peer is bound to
+	// (e.g. "avocet2"). Informational — approvers use it as a
+	// human-readable label in slack cards / log lines / message
+	// templates; it carries no credential-lookup meaning.
+	Profile string
 	// Method / Host / Path / UA / BodySample carry the request shape
 	// for HITL prompts. Endpoint plugins fill these so approvers
 	// don't have to know the family-specific Request internals.
