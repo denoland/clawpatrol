@@ -19,10 +19,10 @@ They can declare:
   routable.
 - **Facets** — protocol-family schemas with named fields. A facet
   exposes the variables a CEL rule condition can read
-  (`smtp.verb`, `webhook.signature`, …) and the columns the
-  dashboard renders against the request log. Plugins that gate
-  HTTPS reuse the built-in `http` facet; plugins for genuinely new
-  protocols ship their own.
+  (`example_smtp.verb`, `acme_webhook.signature`, …) and the
+  columns the dashboard renders against the request log. Plugins
+  that gate HTTPS reuse the built-in `http` facet; plugins for
+  genuinely new protocols ship their own.
 
 ## Loading a plugin
 
@@ -34,23 +34,30 @@ plugin "example" {
   source = "./plugin-example/plugin-example"
 }
 
-credential "example.magic_token" "demo_token" {}
+credential "example_magic_token" "demo_token" {}
 
-endpoint "example.demo_smtp" "demo-mail" {
+endpoint "example_demo_smtp" "demo-mail" {
   hosts      = ["mail.invalid:25"]
   credential = demo_token
 }
 ```
 
-The `name` label (`"example"`) is informational; the manifest the
-subprocess returns at startup is what binds. Type names are
-namespaced as `<plugin>.<type>` (`example.magic_token`,
-`example.demo_smtp`) so two plugins can ship a `magic_token` or
-`https` type without colliding. **Facet names are not
-namespaced** — they appear directly in rule conditions and live in
-a single global registry that plugins share with built-ins. A
-plugin that tries to declare a facet whose name already exists
-(e.g. `http`) fails at validate time.
+The `name` label (`"example"`) is informational — it's the local
+identifier you'd use to refer to this plugin's source in tooling.
+The names that actually matter are the **type names** and
+**facet names** the plugin declares in its manifest. Both are flat
+strings living in one global registry per kind (one for endpoint
+types, one for credential types, one for tunnel types, one for
+facets, each shared with the built-ins). The gateway does **not**
+auto-namespace anything.
+
+Plugin authors prefix their own names by convention — the way
+Terraform providers do (`aws_iam_role`, `kubernetes_deployment`):
+the SMTP endpoint in the example plugin is `example_demo_smtp`,
+its credential is `example_magic_token`, its custom facet is
+`example_smtp`. A plugin that ships a name colliding with a
+built-in (e.g. `https` endpoint type, `http` facet) or another
+plugin fails at validate time with a clear diagnostic.
 
 ## Writing a plugin
 
@@ -70,7 +77,7 @@ func main() {
         Credentials: []pluginsdk.CredentialDef{magicTokenDef()},
         Endpoints:   []pluginsdk.EndpointDef{demoSMTPDef()},
         Facets: []pluginsdk.FacetDef{{
-            Name: "smtp",
+            Name: "example_smtp",
             Fields: []pluginsdk.FacetField{
                 {Name: "verb", Kind: pluginsdk.FacetString, Label: "Verb"},
                 {Name: "mail_from", Kind: pluginsdk.FacetString, Label: "From", Optional: true},
@@ -109,7 +116,7 @@ Plugins **must not decide allow/deny themselves.** They build a
 structured action and ask the gateway:
 
 ```go
-verdict, err := conn.Evaluate(ctx, "smtp", map[string]any{
+verdict, err := conn.Evaluate(ctx, "example_smtp", map[string]any{
     "verb":      "MAIL",
     "mail_from": "alice@example.com",
 }, "MAIL FROM:<alice@example.com>")
@@ -119,7 +126,7 @@ The gateway:
 
 1. Walks the matched endpoint's compiled rule list with the
    action map bound to the named facet (so a rule like
-   `smtp.verb == "MAIL"` evaluates).
+   `example_smtp.verb == "MAIL"` evaluates).
 2. Runs any approve chain (LLM judge, human approver) for rules
    whose outcome is `approve = […]`.
 3. Logs the action onto the dashboard event stream with the
@@ -142,7 +149,7 @@ lazy bytes value. The plugin offers the field as
 `pluginsdk.Stream(io.Reader)`:
 
 ```go
-verdict, err := conn.Evaluate(ctx, "smtp", map[string]any{
+verdict, err := conn.Evaluate(ctx, "example_smtp", map[string]any{
     "verb": "BODY",
     "body": pluginsdk.Stream(bytes.NewReader(messageBody)),
 }, "BODY (4096 bytes)")
@@ -153,9 +160,9 @@ The gateway pulls bytes only as deeply as needed:
 - **No rule on the endpoint reads the field** → the gateway pulls
   ~1 KiB just so the dashboard event log has a recognisable
   prefix, then cancels the stream.
-- **At least one rule does** (e.g. `smtp.body.contains("urgent")`)
-  → the gateway pulls up to ~1 MiB so the matcher sees the full
-  value, then cancels.
+- **At least one rule does** (e.g.
+  `example_smtp.body.contains("urgent")`) → the gateway pulls up
+  to ~1 MiB so the matcher sees the full value, then cancels.
 
 When the plugin sees the cancel it can drop its source reader.
 Bodies that overflow the cap mark the request `Truncated`; any
@@ -179,7 +186,7 @@ map with the same keys the built-in `http` facet exposes
 
 ```go
 endpoint := pluginsdk.EndpointDef{
-    TypeName: "demo_https",
+    TypeName: "example_demo_https",
     Family:   "http", // bind to the built-in http facet
     TLSMode:  pluginsdk.TLSTerminate,
     HandleConn: func(ctx context.Context, conn *pluginsdk.Conn) error {
@@ -220,8 +227,9 @@ exercise them:
   error.
 - Manifests with empty type / facet / field names or empty
   endpoint Family are rejected up front.
-- A plugin facet whose name collides with a built-in (or another
-  plugin's) facet surfaces as a diagnostic instead of a panic.
+- A plugin type or facet whose name collides with a built-in
+  (e.g. `https`, `http`) or with another plugin's registration
+  surfaces as a diagnostic instead of a panic.
 
 The success line gains one summary row per loaded plugin so you
 can see what came up:
@@ -234,10 +242,11 @@ ok: gateway.hcl — 7 endpoints across 3 profile(s)
 ## See also
 
 - [`plugin-example/`](https://github.com/denoland/clawpatrol/tree/main/plugin-example)
-  — fully exercised plugin: `magic_token` credential,
-  `passthrough` tunnel, `demo_https` (built-in `http` facet),
-  `demo_smtp` (custom `smtp` facet with optional + stream
-  fields), `demo_echo` (plain TCP).
+  — fully exercised plugin: `example_magic_token` credential,
+  `example_passthrough` tunnel, `example_demo_https` (built-in
+  `http` facet), `example_demo_smtp` (custom `example_smtp`
+  facet with optional + stream fields), `example_demo_echo`
+  (plain TCP).
 - [`pluginsdk/`](https://github.com/denoland/clawpatrol/tree/main/pluginsdk)
   — the author SDK package.
 - [`config/extplugin/proto/plugin.proto`](https://github.com/denoland/clawpatrol/tree/main/config/extplugin/proto)
