@@ -17,7 +17,8 @@
           "Timeout": 600,
           "RequireApprovers": 0,
           "Interactive": false,
-          "Classifier": ""
+          "Classifier": "",
+          "Message": ""
         },
         "type": "human_approver"
       }
@@ -82,6 +83,6 @@
   "public_url": "http://66.42.120.196:8080",
   "state_dir": "/opt/clawpatrol/oauth",
   "unknown_host": "passthrough",
-  "wg_endpoint": "66.42.120.196:51820",
+  "wg_endpoint": "0.0.0.0:51820",
   "wg_subnet_cidr": "10.55.0.0/24"
 }

@@ -19,6 +19,7 @@
 package tailscaleproto
 
 import (
+	"context"
 	"sync"
 
 	"tailscale.com/ipn"
@@ -87,8 +88,9 @@ type TailscaleAuthIntegration struct {
 //
 // The zero value is usable. Safe for concurrent use.
 type PendingNodeAuth struct {
-	mu      sync.RWMutex
+	mu      sync.Mutex
 	pending map[string]string
+	waiters map[string][]chan struct{}
 }
 
 // Set parks the live login URL for credential `name`. The tunnel
@@ -105,15 +107,58 @@ func (p *PendingNodeAuth) Set(name, url string) {
 		return
 	}
 	p.pending[name] = url
+	for _, ch := range p.waiters[name] {
+		close(ch)
+	}
+	delete(p.waiters, name)
 }
 
 // Get returns the current pending login URL for credential `name`, or
 // "" when nothing is pending (either no auth in flight or the node
 // has finished joining).
 func (p *PendingNodeAuth) Get(name string) string {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	return p.pending[name]
+}
+
+// Wait blocks until a non-empty login URL is parked for credential
+// `name` and returns it, or returns "" when ctx is done first. If a
+// URL is already parked at call time, returns it immediately.
+//
+// Used by the dashboard's Connect handler when no URL is parked yet:
+// the handler force-acquires the tunnel (spinning up tsnet's IPN-bus
+// watcher) and then waits here for the watcher to park the URL.
+func (p *PendingNodeAuth) Wait(ctx context.Context, name string) string {
+	p.mu.Lock()
+	if u := p.pending[name]; u != "" {
+		p.mu.Unlock()
+		return u
+	}
+	ch := make(chan struct{})
+	if p.waiters == nil {
+		p.waiters = map[string][]chan struct{}{}
+	}
+	p.waiters[name] = append(p.waiters[name], ch)
+	p.mu.Unlock()
+	select {
+	case <-ch:
+		return p.Get(name)
+	case <-ctx.Done():
+		p.mu.Lock()
+		list := p.waiters[name]
+		for i, w := range list {
+			if w == ch {
+				p.waiters[name] = append(list[:i], list[i+1:]...)
+				break
+			}
+		}
+		if len(p.waiters[name]) == 0 {
+			delete(p.waiters, name)
+		}
+		p.mu.Unlock()
+		return ""
+	}
 }
 
 // Default is the process-wide PendingNodeAuth registry. The tunnel

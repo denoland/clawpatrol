@@ -1,33 +1,16 @@
 import * as React from "react";
 import { useState } from "react";
 import type { Integration } from "../lib/api";
-import { fmtExpiry } from "../lib/format";
-import { IntegrationIcon } from "./Logos";
 import { clearCredential, oauthRevoke, tailscaleConnect, tailscaleDisconnect } from "../lib/api";
+import { credentialTypeLabel } from "../lib/credentialLabels";
+import { fmtExpiry } from "../lib/format";
 import { CredentialSecretsModal } from "./CredentialSecretsModal";
+import { IntegrationIcon } from "./Logos";
 
-// Display name by credential plugin type. Bare credential names
-// often look like "pg-writer-cred" — useful as identifier, not as a
-// label. The type maps to the recognizable brand / protocol; the
-// bare name shows up as a subtitle so operators can still tell two
-// "Postgres" cards apart.
-const TYPE_LABEL: Record<string, string> = {
-  anthropic_oauth_subscription: "Claude",
-  anthropic_manual_key: "Claude (API key)",
-  openai_codex_oauth: "Codex",
-  github_oauth: "GitHub",
-  notion_oauth: "Notion",
-  postgres_credential: "Postgres",
-  clickhouse_credential: "ClickHouse",
-  mtls_credential: "mTLS",
-  slack_tokens: "Slack",
-  telegram_bot_token: "Telegram",
-  gemini_api_key: "Gemini",
-  aws_eks_credential: "AWS EKS",
-  bearer_token: "Bearer token",
-  header_token: "Header token",
-  cookie_token: "Cookie token",
-};
+// Bare credential names often look like "pg-writer-cred" — useful as
+// identifiers, not as labels. The type maps to the recognizable brand /
+// protocol; the bare name is always rendered as metadata so operators
+// can still tell two same-type cards apart.
 
 // Cap on visible cards before the overflow button appears. The N-th
 // slot is replaced by "+ K more" so the row width stays predictable
@@ -78,20 +61,36 @@ export function IntegrationsCards({
 
   function handleConnect(i: Integration) {
     if (i.has_tailscale_auth && i.tailscale_auth) {
-      // tsnet mints the login URL per attempt — fetch fresh on every
-      // click. The handler returns connected:true if the node has
-      // already joined (covers a stale list view); otherwise we open
-      // the live URL in a new tab and let the next /api/state poll
-      // flip the card to "connected" once tsnet finishes joining.
+      // The parked URL from /api/state is the same one /api/tailscale/connect
+      // would return — tsnet only mints a new one when the previous is
+      // consumed/expires. Open it *synchronously* inside the click handler
+      // so popup blockers treat it as user-initiated; calling window.open
+      // from inside a fetch.then() resolution is silently blocked by
+      // every modern browser, which is the "click closes the modal as a
+      // no-op" failure surfaced on PR #284.
+      const parked = i.tailscale_auth.pending_url;
+      if (parked) {
+        window.open(parked, "_blank", "noopener,noreferrer");
+      }
+      // Still POST so the "already joined" path flips the card to
+      // "connected" without waiting for the next /api/state poll, and
+      // so the operator sees a fresh URL on the next click if tsnet
+      // has emitted one since the last list refresh.
       tailscaleConnect(i.tailscale_auth.connect_url)
         .then((r) => {
           if (r.connected) {
             onRefresh();
             return;
           }
-          const url = r.auth_url || r.pending_url;
-          if (url) {
-            window.open(url, "_blank", "noopener,noreferrer");
+          // Fallback for the no-parked-URL case: tsnet may have parked
+          // a URL between /api/state and this POST. Open it now even
+          // though we're outside the click — better a popup-blocker
+          // warning than another silent no-op.
+          if (!parked) {
+            const url = r.auth_url || r.pending_url;
+            if (url) {
+              window.open(url, "_blank", "noopener,noreferrer");
+            }
           }
         })
         .catch(() => {
@@ -158,12 +157,17 @@ export function IntegrationsCards({
       {editing && (
         <CredentialSecretsModal
           integration={editing}
+          mode={isConnected(editing) ? "update" : "connect"}
           onClose={() => setEditing(null)}
           onSaved={onRefresh}
         />
       )}
     </>
   );
+}
+
+function isConnected(i: Integration) {
+  return i.connected || (i.tailscale_auth?.connected ?? false);
 }
 
 // OwnerAvatar renders the OAuth user's PFP (e.g. github avatar) with
@@ -214,10 +218,10 @@ function Card({
   onConnect: () => void;
   onDisconnect: () => void;
 }) {
-  const connected = i.connected || (i.tailscale_auth?.connected ?? false);
+  const connected = isConnected(i);
   const hasSlots = (i.slots?.length ?? 0) > 0;
-  const clickable = (i.has_oauth || i.has_tailscale_auth || hasSlots) && !connected;
-  const subtitle = connected
+  const clickable = i.has_oauth || hasSlots || (i.has_tailscale_auth && !connected);
+  const status = connected
     ? i.expires_at
       ? "expires " + fmtExpiry(i.expires_at)
       : "connected"
@@ -226,6 +230,8 @@ function Card({
       : hasSlots
         ? "paste secret"
         : "api key only";
+  const label = credentialTypeLabel(i.type, i.name);
+  const title = [label, `credential: ${i.id}`, `type: ${i.type}`, status].join("\n");
   return (
     <button
       disabled={!clickable && !connected}
@@ -233,7 +239,8 @@ function Card({
       className={
         "group relative flex flex-col items-start gap-2 px-3 py-2.5 bg-white border rounded text-left transition-colors " +
         (connected
-          ? "border-[#bbf7d0] bg-[#f0fdf4]"
+          ? "border-[#bbf7d0] bg-[#f0fdf4] " +
+            (clickable ? "hover:border-[#16a34a] cursor-pointer" : "cursor-default")
           : clickable
             ? "border-[#e5e5e5] hover:border-[#171717] cursor-pointer"
             : "border-[#e5e5e5] cursor-default")
@@ -245,13 +252,9 @@ function Card({
         ) : (
           <IntegrationIcon id={i.id} type={i.type} className="w-[16px] h-[16px] flex-shrink-0" />
         )}
-        <span
-          className="text-[12px] font-semibold text-[#171717] truncate"
-          title={i.display_name ?? i.id}
-        >
+        <span className="text-[12px] font-semibold text-[#171717] truncate" title={title}>
           {(() => {
-            const base = TYPE_LABEL[i.type] ?? i.name;
-            const withName = showName && base !== i.name ? `${base} · ${i.name}` : base;
+            const withName = showName && label !== i.name ? `${label} · ${i.name}` : label;
             return i.display_name ? `${withName} (${i.display_name})` : withName;
           })()}
         </span>
@@ -275,16 +278,13 @@ function Card({
           />
         </span>
       </div>
-      <div className="text-[10px] text-[#737373] tabular-nums w-full truncate" title={i.id}>
-        {/* Connected → show expiry / "connected". Otherwise show the
-            bare credential name so two same-type cards (pg-writer +
-            pg-readonly) are distinguishable; falls back to the status
-            text when type and name match (claude / codex / github). */}
-        {connected
-          ? subtitle
-          : TYPE_LABEL[i.type] && i.id !== (TYPE_LABEL[i.type] ?? "").toLowerCase()
-            ? i.id
-            : subtitle}
+      <div className="w-full min-w-0 space-y-0.5">
+        <div className="text-[10px] text-[#737373] tabular-nums truncate" title={i.id}>
+          <span className="font-mono">{i.id}</span>
+        </div>
+        <div className="text-[10px] text-[#a3a3a3] tabular-nums truncate" title={status}>
+          {status}
+        </div>
       </div>
     </button>
   );

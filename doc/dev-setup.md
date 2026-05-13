@@ -51,22 +51,24 @@ go run .
 
 ## Quick start
 
-Point `gateway init` at a local data directory, then run the gateway
-against the generated config:
+Copy the example config into a local data directory, edit the
+operational fields (listen ports, `public_url`, `wg_endpoint`,
+`state_dir`), then run:
 
 ```sh
-./clawpatrol gateway init --data-dir ./data
+mkdir -p ./data
+cp gateway.example.hcl ./data/gateway.hcl
+$EDITOR ./data/gateway.hcl
 ./clawpatrol gateway ./data/gateway.hcl
 ```
 
-`gateway init` defaults to these ports — change them with
-`--tls-port`, `--dash-port`, `--wg-port`:
+Ports used by the example:
 
-| What | Port | Source |
-|---|---|---|
-| Dashboard + HTTP API | `tcp/9080` | `--dash-port` |
-| TLS MITM listener | `tcp/8443` | `--tls-port` |
-| WireGuard listener | `udp/51820` | `--wg-port` |
+| What | Port |
+|---|---|
+| Dashboard + HTTP API | `tcp/9080` |
+| TLS MITM listener | `tcp/8443` |
+| WireGuard listener | `udp/51820` |
 
 Dashboard: <http://localhost:9080>.
 
