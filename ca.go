@@ -18,11 +18,16 @@ import (
 )
 
 type CertCache struct {
-	caCert *x509.Certificate
-	caKey  *ecdsa.PrivateKey
-	mu     sync.RWMutex
-	cache  map[string]*tls.Certificate
+	caCert    *x509.Certificate
+	caKey     *ecdsa.PrivateKey
+	caCertPEM []byte
+	mu        sync.RWMutex
+	cache     map[string]*tls.Certificate
 }
+
+// CertPEM returns the PEM-encoded root certificate. Safe to share
+// publicly — it never includes the private key.
+func (c *CertCache) CertPEM() []byte { return c.caCertPEM }
 
 // loadOrMintCA returns the gateway's MITM CA, materializing it on
 // first call. If the ca_material row is absent, mints a fresh
@@ -60,7 +65,12 @@ func parseCertCache(certPEM, keyPEM []byte) (*CertCache, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &CertCache{caCert: cert, caKey: key, cache: map[string]*tls.Certificate{}}, nil
+	return &CertCache{
+		caCert:    cert,
+		caKey:     key,
+		caCertPEM: certPEM,
+		cache:     map[string]*tls.Certificate{},
+	}, nil
 }
 
 func (c *CertCache) mint(host string) (*tls.Certificate, error) {

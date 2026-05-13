@@ -558,9 +558,15 @@ func (w *webMux) staticHandler() http.Handler {
 	return http.FileServer(http.FS(sub))
 }
 
-func (w *webMux) serveCA(rw http.ResponseWriter, r *http.Request) {
+func (w *webMux) serveCA(rw http.ResponseWriter, _ *http.Request) {
+	pemBytes := w.g.certs.CertPEM()
+	if len(pemBytes) == 0 {
+		http.Error(rw, "ca not initialized", http.StatusServiceUnavailable)
+		return
+	}
 	rw.Header().Set("Content-Type", "application/x-pem-file")
-	http.ServeFile(rw, r, w.caDir+"/ca.crt")
+	rw.Header().Set("Content-Length", strconv.Itoa(len(pemBytes)))
+	_, _ = rw.Write(pemBytes)
 }
 
 func (w *webMux) serveInfo(rw http.ResponseWriter, _ *http.Request) {
