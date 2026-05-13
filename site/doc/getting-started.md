@@ -57,9 +57,38 @@ same for `tcp/9080`), then:
 clawpatrol gateway /opt/clawpatrol/gateway.hcl
 ```
 
-Under systemd, drop a unit that runs the same command and
-`systemctl enable --now` it. The dashboard is at
-`http://<gateway-host>:9080`.
+The dashboard is at `http://<gateway-host>:9080`.
+
+### Under systemd
+
+Drop the following at `/etc/systemd/system/clawpatrol-gateway.service`,
+adjusting the three paths to wherever you put the binary and config:
+
+```ini
+[Unit]
+Description=clawpatrol gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/clawpatrol
+ExecStart=/usr/local/bin/clawpatrol gateway /opt/clawpatrol/gateway.hcl
+Restart=on-failure
+RestartSec=2
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Then:
+
+```bash
+systemctl daemon-reload
+systemctl enable --now clawpatrol-gateway
+journalctl -u clawpatrol-gateway -f       # tail the gateway log
+```
 
 ## Join a device
 
