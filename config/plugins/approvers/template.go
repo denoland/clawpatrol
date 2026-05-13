@@ -37,7 +37,7 @@ func expandMessage(tmpl string, req runtime.ApproveRequest) string {
 
 func buildTemplateVars(req runtime.ApproveRequest) map[string]string {
 	vars := map[string]string{
-		"profile":  req.Profile,
+		"profile":  req.AgentIP,
 		"host":     req.Host,
 		"endpoint": runtime.HITLEndpointLabel(req),
 		"reason":   req.Reason,
