@@ -48,30 +48,21 @@ type tsPeer struct {
 // straight into the post-join setup (set exit-node, fetch CA, install
 // system trust) — single command, full setup.
 func runJoin(args []string) {
-	fs := flag.NewFlagSet("join", flag.ExitOnError)
-	gwName := fs.String("name", "clawpatrol", "exit-node hostname on the tailnet")
-	caOut := fs.String("ca-dir", defaultClawpatrolDir(), "where to store the fetched CA")
-	skipTrust := fs.Bool("no-trust", false, "fetch CA but skip system trust install (do it manually)")
-	wholeMachine := fs.Bool("whole-machine", false, "bring up wg-quick to route ALL host traffic through the gateway (default: persist conf only, use `clawpatrol run` for per-process routing)")
-	profile := fs.String("profile", "", "profile to assign at approval time (defaults to the gateway's default profile if the approver doesn't pick one)")
-	hostname := fs.String("hostname", "", "device name to register with the gateway (defaults to os.Hostname)")
-	_ = fs.Parse(args)
-	rest := fs.Args()
-	if len(rest) != 1 || rest[0] == "" {
+	j, err := parseJoinFlags(args)
+	if err != nil {
 		fail("usage: clawpatrol join <gateway-url> [--hostname NAME] [--profile NAME] [--whole-machine]")
 	}
-	gatewayURL := rest[0]
 	// Fetch CA + write shell rc BEFORE the VPN goes up. Once
 	// `wg-quick up` flips the default route through the gateway,
 	// reaching the gateway's public URL goes via the tunnel — which
 	// can't carry traffic until the gateway has internet egress
 	// configured (MASQUERADE etc). The CA is small + cheap and the
 	// onboard endpoints are reachable on the public path.
-	setup, err := postJoinSetup(gatewayURL, *caOut, *skipTrust)
+	setup, err := postJoinSetup(j.gatewayURL, j.caOut, j.skipTrust)
 	if err != nil {
 		fail("ca fetch: %v", err)
 	}
-	wgMode, err := onboardViaDeviceFlow(gatewayURL, *wholeMachine, *profile, *hostname, setup)
+	wgMode, err := onboardViaDeviceFlow(j.gatewayURL, j.wholeMachine, j.profile, j.hostname, setup)
 	if err != nil {
 		fail("join: %v", err)
 	}
@@ -79,11 +70,85 @@ func runJoin(args []string) {
 		return
 	}
 	// Tailscale-specific path: exit-node + whois identity.
-	loginArgs := []string{"-name", *gwName, "-ca-dir", *caOut}
-	if *skipTrust {
+	loginArgs := []string{"-name", j.gwName, "-ca-dir", j.caOut}
+	if j.skipTrust {
 		loginArgs = append(loginArgs, "-no-trust")
 	}
 	runLogin(loginArgs)
+}
+
+// joinFlags holds the parsed `clawpatrol join` flags + positional URL.
+type joinFlags struct {
+	gatewayURL   string
+	gwName       string
+	caOut        string
+	skipTrust    bool
+	wholeMachine bool
+	profile      string
+	hostname     string
+}
+
+// parseJoinFlags accepts the gateway URL in any position. Go's stdlib
+// flag.Parse stops at the first non-flag token, so the documented form
+// `clawpatrol join <url> --profile X --hostname Y` would otherwise
+// leave --profile/--hostname in fs.Args() and the URL-position check
+// would reject it — the exact failure mode the orchid#38 reporter hit.
+func parseJoinFlags(args []string) (joinFlags, error) {
+	var j joinFlags
+	fs := flag.NewFlagSet("join", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.StringVar(&j.gwName, "name", "clawpatrol", "exit-node hostname on the tailnet")
+	fs.StringVar(&j.caOut, "ca-dir", defaultClawpatrolDir(), "where to store the fetched CA")
+	fs.BoolVar(&j.skipTrust, "no-trust", false, "fetch CA but skip system trust install (do it manually)")
+	fs.BoolVar(&j.wholeMachine, "whole-machine", false, "bring up wg-quick to route ALL host traffic through the gateway (default: persist conf only, use `clawpatrol run` for per-process routing)")
+	fs.StringVar(&j.profile, "profile", "", "profile to assign at approval time (defaults to the gateway's default profile if the approver doesn't pick one)")
+	fs.StringVar(&j.hostname, "hostname", "", "device name to register with the gateway (defaults to os.Hostname)")
+
+	flagArgs, positional := partitionFlagArgs(args, map[string]bool{
+		"no-trust":      true,
+		"whole-machine": true,
+	})
+	if err := fs.Parse(flagArgs); err != nil {
+		return j, err
+	}
+	if len(positional) != 1 || positional[0] == "" {
+		return j, fmt.Errorf("expected exactly one positional <gateway-url>, got %d", len(positional))
+	}
+	j.gatewayURL = positional[0]
+	return j, nil
+}
+
+// partitionFlagArgs splits args into a flag block and a positional
+// block so flag.Parse handles them correctly even when positionals are
+// interleaved with flags. boolFlags lists flags that take no value, so
+// the splitter doesn't consume the next arg as a value after a bool.
+// Anything after `--` is treated as positional.
+func partitionFlagArgs(args []string, boolFlags map[string]bool) (flags, positional []string) {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			positional = append(positional, args[i+1:]...)
+			break
+		}
+		if len(a) > 1 && a[0] == '-' {
+			flags = append(flags, a)
+			// `-flag=value` carries its value inline.
+			if strings.IndexByte(a, '=') >= 0 {
+				continue
+			}
+			name := strings.TrimLeft(a, "-")
+			if boolFlags[name] {
+				continue
+			}
+			if i+1 < len(args) {
+				i++
+				flags = append(flags, args[i])
+			}
+			continue
+		}
+		positional = append(positional, a)
+	}
+	return
 }
 
 // joinSetup carries the post-join side-effect status so the caller
