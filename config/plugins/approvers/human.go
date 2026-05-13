@@ -40,6 +40,20 @@ type HumanApprover struct {
 	// dashboard AND Slack's Interactivity URL pointed at the gateway.
 	// Default false: message includes only an "Open dashboard" link.
 	Interactive bool `hcl:"interactive,optional"`
+	// Classifier optionally references an llm_approver by name. When set,
+	// the approver calls the classifier's Summarize method before posting
+	// the HITL notification, enriching the Slack card with classification
+	// metadata. Classifier failures are non-fatal — the generic card is
+	// used as fallback.
+	Classifier string `hcl:"classifier,optional"`
+	// Message is an optional Go-template-style string with {{var}}
+	// placeholders. When set, the expanded text replaces the default
+	// section body in the Slack (or other notifier) card. Supported
+	// vars mirror the CEL facet namespace: {{http.method}},
+	// {{http.path}}, {{k8s.verb}}, {{sql.tables}}, {{body_json.ticket}},
+	// {{profile}}, {{endpoint}}, {{reason}}, etc.
+	// Classifier (if also set) still runs; Message takes display precedence.
+	Message string `hcl:"message,optional"`
 }
 
 // HumanApproverChannel + HumanApproverCredential expose the fields
@@ -62,10 +76,27 @@ func (h *HumanApprover) Approve(ctx context.Context, req runtime.ApproveRequest)
 	id, ch := req.Pool.Add(pending)
 	defer req.Pool.Discard(id)
 
+	var summary *runtime.HITLSummary
+	if h.Classifier != "" && req.Policy != nil {
+		if ent, ok := req.Policy.Approvers[h.Classifier]; ok {
+			if clf, ok := ent.Body.(runtime.HITLClassifier); ok {
+				if s, err := clf.Summarize(ctx, req); err == nil {
+					summary = s
+				} else {
+					log.Printf("human approver %s: classifier %q: %v", req.ApproverName, h.Classifier, err)
+				}
+			}
+		}
+	}
+
 	if h.Channel != "" && h.Credential != "" && req.Policy != nil {
 		ent, ok := req.Policy.Credentials[h.Credential]
 		if ok {
 			if notifier, ok := ent.Body.(runtime.HITLNotifier); ok {
+				var msg string
+				if h.Message != "" {
+					msg = expandMessage(h.Message, req)
+				}
 				target := runtime.HITLTarget{
 					CredentialName: h.Credential,
 					Channel:        h.Channel,
@@ -73,6 +104,8 @@ func (h *HumanApprover) Approve(ctx context.Context, req runtime.ApproveRequest)
 					PendingID:      id,
 					DashboardURL:   req.DashboardURL,
 					ThreadTS:       req.ThreadTS,
+					Summary:        summary,
+					Message:        msg,
 				}
 				go func() {
 					if err := notifier.NotifyHITL(ctx, req, target); err != nil {
@@ -121,6 +154,7 @@ func init() {
 		Runtime: (*HumanApprover)(nil),
 		Refs: []config.RefSpec{
 			{Path: "Credential", Kind: config.KindCredential, Optional: true},
+			{Path: "Classifier", Kind: config.KindApprover, Optional: true},
 		},
 		Build: func(d any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics) { return d, nil },
 		Emit: func(body any, _ string, b *hclwrite.Body) {
@@ -137,6 +171,12 @@ func init() {
 			}
 			if a.Interactive {
 				b.SetAttributeValue("interactive", cty.True)
+			}
+			if a.Classifier != "" {
+				config.SetIdent(b, "classifier", a.Classifier)
+			}
+			if a.Message != "" {
+				b.SetAttributeValue("message", cty.StringVal(a.Message))
 			}
 		},
 	})

@@ -24,7 +24,6 @@ var chSQLTrailerRE = regexp.MustCompile(`(?is)\s+(?:SETTINGS\s+.*|FORMAT\s+\S+\s
 
 type chSQLInfo struct {
 	Verb      string
-	Verbs     []string // outer verb of every parsed statement (multi-stmt)
 	Tables    []string
 	Functions []string
 	Statement string // raw, untrimmed — fed to statement / statement_regex matchers
@@ -50,25 +49,17 @@ func parseChSQL(sql string) chSQLInfo {
 	stmts, err := chparser.NewParser(parseInput).ParseStmts()
 	if err != nil || len(stmts) == 0 {
 		info.Verb = chSniffVerb(trimmed)
-		if info.Verb != "" {
-			info.Verbs = []string{info.Verb}
-		}
 		return info
 	}
 
-	// Multi-statement queries: the singular Verb tracks the first
-	// statement (legacy rule shape), while Verbs lists every
-	// statement's outer verb so rule writers can express
-	// `"drop" in sql.verbs` to catch a write hidden after a leading
-	// SELECT in a `;`-joined batch. Tables / functions are unioned
-	// across all statements so a rule that denies access to
-	// `secrets` still fires when `secrets` is the second statement
-	// in a "use db; select * from secrets" pair.
+	// Multi-statement queries: the verb tracks the first statement, but
+	// tables / functions are unioned across all of them so a rule that
+	// denies access to `secrets` still fires when `secrets` is the
+	// second statement in a "use db; select * from secrets" pair.
 	info.Verb = chVerbFromStmt(stmts[0])
 	tables := map[string]struct{}{}
 	funcs := map[string]struct{}{}
 	for _, stmt := range stmts {
-		info.Verbs = appendUnique(info.Verbs, chVerbFromStmt(stmt))
 		chparser.Walk(stmt, func(node chparser.Expr) bool {
 			switch n := node.(type) {
 			case *chparser.TableIdentifier:

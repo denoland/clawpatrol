@@ -1,723 +1,1122 @@
 package endpoints
 
-// SQL extractor for the postgres runtime's matcher input.
+// SQL extractor for the postgres endpoint's matcher input. Parses
+// SQL via pgplex/pgparser (a pure-Go port of postgres' own gram.y
+// targeting REL_17_STABLE), walks the AST to harvest tables /
+// functions, and derives the verb from each top-level statement
+// node. Same shape as clickhouse_native_sql.go so the SQL family
+// matcher consumes both endpoints' output without per-plugin
+// special cases.
 //
-// This is a hand-rolled tokenizer + lightweight walker rather than a
-// full Postgres parser — the matcher's predicates are coarse (verb /
-// tables / functions / statement glob) so a token-level extraction
-// gets the bypass-resistance we need without pulling in a CGO parser
-// (deploy builds with CGO_ENABLED=0).
+// Audit reference: denoland/clawpatrol#143 catalogues the regex
+// extractor's evasions. pgplex/pgparser ports postgres' own
+// grammar, so the parse-tree path natively covers the full PG
+// surface — LOCK / VACUUM / ANALYZE / REINDEX / REFRESH
+// MATERIALIZED VIEW / CLUSTER / SET ROLE / SET SESSION
+// AUTHORIZATION / DO blocks / CALL all show up as their own AST
+// nodes. Comments, strings, dollar quotes, quoted identifiers,
+// and ;-separated batches are handled by the lexer.
 //
-// What the lexer handles:
-//
-//   - '...' / E'...' / U&'...' / B'...' / X'...' strings — opaque
-//   - "..." quoted identifiers (preserve contents, lowercase for
-//     case-insensitive matching)
-//   - $tag$...$tag$ / $$...$$ dollar-quoted strings — opaque
-//   - -- line and /* ... */ block comments (block comments nest, per
-//     the postgres extension)
-//
-// What the walker harvests:
-//
-//   - Verb     — outer verb of the FIRST top-level statement
-//                (lowercased; CTE-unwrap: WITH ... <verb> ...
-//                surfaces <verb>, not "with")
-//   - Verbs    — every top-level statement's outer verb plus every
-//                inner verb reachable from WITH ... AS (...)
-//                bindings. The plural field lets rule writers match a
-//                write hidden after a leading SELECT or inside a CTE.
-//   - Tables   — table names following FROM / JOIN / INTO / UPDATE /
-//                TABLE / COPY, comma-continued FROM lists, recursive
-//                into subqueries and CTE bodies. CTE binding names
-//                are filtered out because they refer to the synthetic
-//                in-query relation, not a real table.
-//   - Functions — every identifier directly preceding an `(` token.
-//                 Intentionally overgreedy (the matcher consumes a
-//                 list and rule writers query specific names); now
-//                 bypass-resistant because strings/comments don't
-//                 leak idents into the stream.
-//
-// What it does NOT do: parse PL/pgSQL bodies inside DO $$...$$ /
-// CREATE FUNCTION bodies. Operators who care about those should rule
-// on `sql.verb == 'do'` or `'do' in sql.verbs` directly.
+// Fallback path: kicks in only when the parser rejects a piece
+// outright (genuine syntax errors, or truncated DDL shells like
+// `DROP;` / `SELECT;` that the audit §1.1 cases probe). The
+// sniff surfaces the first identifier as the verb so verb-keyed
+// CEL rules still fire on malformed input.
 
 import (
+	"sort"
 	"strings"
+
+	"github.com/pgplex/pgparser/nodes"
+	"github.com/pgplex/pgparser/parser"
 )
 
-type pgTokenKind uint8
+// ── Top-level entry points ────────────────────────────────────────────
 
-const (
-	pgTokIdent  pgTokenKind = iota // unquoted identifier or keyword
-	pgTokQIdent                    // "Quoted Identifier"
-	pgTokString                    // '...' / E'...' / $tag$...$tag$ — opaque to extraction
-	pgTokPunct                     // ( ) , ;
-	pgTokOp                        // operator / number / other char (.= etc.)
-)
-
-type pgToken struct {
-	kind  pgTokenKind
-	value string // original case; for tQIdent, the unescaped contents
-	lower string // ASCII-lowercased value; populated only for idents
+// parseSQL extracts a single pgInfo for the first top-level
+// statement in sql. Used by the ParseStatement plugin contract
+// (action fixtures, dashboard previews). For multi-statement
+// payloads the wire-protocol gateway calls analyseAll directly so
+// each statement walks the matcher.
+func parseSQL(sql string) pgInfo {
+	a := analyseAll(sql)
+	if len(a) == 0 {
+		return pgInfo{Statement: strings.TrimSpace(sql)}
+	}
+	return a[0].Outer
 }
 
-// pgTokenize walks sql char-by-char and emits structured tokens.
-// Strings, dollar-quoted strings, and comments are consumed without
-// emitting their contents, so identifier-shaped substrings hidden
-// inside them cannot leak into table or function extraction.
-func pgTokenize(sql string) []pgToken {
-	out := make([]pgToken, 0, 32)
-	n := len(sql)
-	i := 0
-	for i < n {
-		c := sql[i]
-		switch {
-		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
+// analyseAll splits sql into top-level statements and returns one
+// analysedStmt per piece. Inner pgInfos surface CTE-hidden DML
+// (audit §1.2) and DO block bodies (§6.5) the matcher must see.
+//
+// We split on top-level `;` first and parse each piece in
+// isolation rather than handing the whole batch to parser.Parse —
+// pgplex returns bare Stmt nodes (not RawStmt-wrapped) so it
+// doesn't carry per-statement byte offsets, and splitting first
+// gives us a clean Statement string for each element of a
+// multi-statement Q payload.
+func analyseAll(sql string) []analysedStmt {
+	trimmed := strings.TrimSpace(sql)
+	if trimmed == "" {
+		return []analysedStmt{{Outer: pgInfo{}}}
+	}
+	pieces := splitTopLevelStatements(trimmed)
+	out := make([]analysedStmt, 0, len(pieces))
+	for _, p := range pieces {
+		out = append(out, analysePiece(p))
+	}
+	return out
+}
+
+// analysePiece parses one statement piece and builds its pgInfo.
+// Falls back to the verb-sniff stub when the grammar rejects the
+// piece (truncated DDL like `DROP;`, malformed input).
+func analysePiece(sql string) analysedStmt {
+	text := strings.TrimSpace(sql)
+	if root, err := parser.Parse(text); err == nil && root != nil && len(root.Items) > 0 {
+		if stmt := root.Items[0]; stmt != nil {
+			return analyseStmt(stmt, text)
+		}
+	}
+	return sniffStmt(text)
+}
+
+// ── AST walk ──────────────────────────────────────────────────────────
+
+// analyseStmt builds pgInfo from a parsed statement node. `source`
+// is the original (untrimmed-of-comments) piece text — used as the
+// Statement field so action fixtures / dashboard previews see
+// exactly what came off the wire.
+func analyseStmt(stmt nodes.Node, source string) analysedStmt {
+	info := pgInfo{Statement: source, Verb: verbFromNode(stmt)}
+	c := newAstCollector()
+	c.visit(stmt)
+	info.Tables = sortedKeys(c.tables)
+	info.Functions = sortedKeys(c.funcs)
+	return analysedStmt{Outer: info, Inner: c.inner}
+}
+
+// verbFromNode maps a parsed statement node to the lowercase verb
+// the SQL matcher expects. The AST node type carries enough
+// information that we don't need string-tag parsing; the exceptions
+// are TransactionStmt (BEGIN/COMMIT/ROLLBACK/SAVEPOINT/RELEASE
+// share a node) and VariableSetStmt (`SET ROLE` / `SET SESSION
+// AUTHORIZATION` get distinct verbs per audit §6.4).
+//
+// `*nodes.SelectStmt` is reported as "select" even when it carries
+// a `WITH` clause whose CTEs mutate — the inner mutation rides on
+// astCollector.inner as a shadow statement, matching audit §1.2.
+func verbFromNode(stmt nodes.Node) string {
+	switch n := stmt.(type) {
+	case *nodes.SelectStmt:
+		return "select"
+	case *nodes.InsertStmt:
+		return "insert"
+	case *nodes.UpdateStmt:
+		return "update"
+	case *nodes.DeleteStmt:
+		return "delete"
+	case *nodes.MergeStmt:
+		return "merge"
+	case *nodes.CreateStmt, *nodes.ViewStmt, *nodes.IndexStmt,
+		*nodes.CreateSeqStmt, *nodes.CreateSchemaStmt,
+		*nodes.CreateFunctionStmt, *nodes.CreateTrigStmt,
+		*nodes.CreateEnumStmt, *nodes.CreateDomainStmt,
+		*nodes.CreateTableAsStmt, *nodes.CreateRoleStmt,
+		*nodes.CreatedbStmt:
+		return "create"
+	case *nodes.DropStmt, *nodes.DropRoleStmt, *nodes.DropdbStmt:
+		return "drop"
+	case *nodes.AlterTableStmt, *nodes.AlterSeqStmt,
+		*nodes.AlterDomainStmt, *nodes.AlterEnumStmt,
+		*nodes.AlterRoleStmt, *nodes.AlterRoleSetStmt,
+		*nodes.AlterDatabaseStmt, *nodes.AlterDatabaseSetStmt,
+		*nodes.AlterObjectSchemaStmt, *nodes.AlterOwnerStmt,
+		*nodes.AlterFunctionStmt:
+		return "alter"
+	case *nodes.RenameStmt:
+		return "rename"
+	case *nodes.TruncateStmt:
+		return "truncate"
+	case *nodes.CommentStmt:
+		return "comment"
+	case *nodes.GrantStmt, *nodes.GrantRoleStmt:
+		return "grant"
+	case *nodes.CopyStmt:
+		return "copy"
+	case *nodes.VacuumStmt:
+		if !n.IsVacuumCmd {
+			return "analyze"
+		}
+		return "vacuum"
+	case *nodes.LockStmt:
+		return "lock"
+	case *nodes.RefreshMatViewStmt:
+		return "refresh"
+	case *nodes.ClusterStmt:
+		return "cluster"
+	case *nodes.ReindexStmt:
+		return "reindex"
+	case *nodes.DoStmt:
+		return "do"
+	case *nodes.CallStmt:
+		return "call"
+	case *nodes.ExplainStmt:
+		// Behaviour parity with the previous extractor: the inner
+		// statement determines what runs, but the outer verb stays
+		// "explain" so a rule that bans EXPLAIN itself still fires.
+		return "explain"
+	case *nodes.PrepareStmt:
+		return "prepare"
+	case *nodes.ExecuteStmt:
+		return "execute"
+	case *nodes.DeallocateStmt:
+		return "deallocate"
+	case *nodes.DeclareCursorStmt:
+		return "declare"
+	case *nodes.FetchStmt:
+		if n.Ismove {
+			return "move"
+		}
+		return "fetch"
+	case *nodes.ClosePortalStmt:
+		return "close"
+	case *nodes.ListenStmt:
+		return "listen"
+	case *nodes.UnlistenStmt:
+		return "unlisten"
+	case *nodes.NotifyStmt:
+		return "notify"
+	case *nodes.LoadStmt:
+		return "load"
+	case *nodes.CheckPointStmt:
+		return "checkpoint"
+	case *nodes.DiscardStmt:
+		return "discard"
+	case *nodes.ConstraintsSetStmt:
+		return "set"
+	case *nodes.TransactionStmt:
+		return transactionVerb(n)
+	case *nodes.VariableSetStmt:
+		return variableSetVerb(n)
+	case *nodes.VariableShowStmt:
+		return "show"
+	}
+	return ""
+}
+
+// transactionVerb maps a TransactionStmt's Kind to the legacy
+// matcher vocabulary. BEGIN / START TRANSACTION both surface as
+// "begin" (the SQL keyword) so `verb == "begin"` rules don't have
+// to fork on synonym.
+func transactionVerb(n *nodes.TransactionStmt) string {
+	switch n.Kind {
+	case nodes.TRANS_STMT_BEGIN, nodes.TRANS_STMT_START:
+		return "begin"
+	case nodes.TRANS_STMT_COMMIT, nodes.TRANS_STMT_COMMIT_PREPARED:
+		return "commit"
+	case nodes.TRANS_STMT_ROLLBACK, nodes.TRANS_STMT_ROLLBACK_TO,
+		nodes.TRANS_STMT_ROLLBACK_PREPARED:
+		return "rollback"
+	case nodes.TRANS_STMT_SAVEPOINT:
+		return "savepoint"
+	case nodes.TRANS_STMT_RELEASE:
+		return "release"
+	case nodes.TRANS_STMT_PREPARE:
+		return "prepare"
+	}
+	return ""
+}
+
+// variableSetVerb mirrors the previous extractor's audit §6.4
+// surface for SET — identity changes get distinct multi-word verbs
+// so policy can target them without also catching benign
+// session-config SETs.
+func variableSetVerb(n *nodes.VariableSetStmt) string {
+	name := strings.ToLower(n.Name)
+	switch name {
+	case "role":
+		if n.IsLocal {
+			return "set local role"
+		}
+		return "set role"
+	case "session_authorization":
+		if n.IsLocal {
+			return "set local session authorization"
+		}
+		return "set session authorization"
+	}
+	return "set"
+}
+
+// astCollector walks an AST and records the tables and functions
+// it references. Statement-shaped nodes whose target table is in a
+// fixed slot (DropStmt.Objects, TruncateStmt.Relations,
+// VacuumStmt.Rels, etc.) emit at the case site; expressions
+// recurse so subquery / CTE-internal references show up too.
+type astCollector struct {
+	tables map[string]struct{}
+	funcs  map[string]struct{}
+	inner  []pgInfo
+}
+
+func newAstCollector() *astCollector {
+	return &astCollector{
+		tables: map[string]struct{}{},
+		funcs:  map[string]struct{}{},
+	}
+}
+
+func (c *astCollector) emitTable(name string) {
+	if name == "" {
+		return
+	}
+	c.tables[name] = struct{}{}
+	// §2.3: schema-qualified names emit the unqualified leaf as a
+	// second candidate so rules written either way fire.
+	if i := strings.LastIndex(name, "."); i >= 0 && i+1 < len(name) {
+		c.tables[name[i+1:]] = struct{}{}
+	}
+}
+
+// emitRangeVar surfaces a *RangeVar (the PG node for any direct
+// table reference). Schema-qualified names get both forms via
+// emitTable (§2.3). Quoted identifiers are preserved
+// case-sensitively because the lexer hands them through Relname
+// already unfolded (§2.4).
+func (c *astCollector) emitRangeVar(r *nodes.RangeVar) {
+	if r == nil || r.Relname == "" {
+		return
+	}
+	if r.Schemaname != "" {
+		c.emitTable(r.Schemaname + "." + r.Relname)
+	} else {
+		c.emitTable(r.Relname)
+	}
+}
+
+// emitObjectName takes a List of String parts (the shape PG uses
+// for DropStmt.Objects / CommentStmt.Object on table-shaped
+// objects) and emits the joined name. Quoted identifiers are
+// preserved by the lexer in the String values directly.
+func (c *astCollector) emitObjectName(list *nodes.List) {
+	if list == nil {
+		return
+	}
+	parts := make([]string, 0, len(list.Items))
+	for _, it := range list.Items {
+		if s, ok := it.(*nodes.String); ok {
+			parts = append(parts, s.Str)
+		}
+	}
+	if len(parts) == 0 {
+		return
+	}
+	c.emitTable(strings.Join(parts, "."))
+}
+
+// funcCallName renders a FuncCall's Funcname list as a
+// dot-separated lowercase string. Returns "" when the call is a
+// special form we don't surface (e.g. coercion casts that the
+// grammar rewrites as FuncCall with an A_Star).
+func funcCallName(f *nodes.FuncCall) string {
+	if f == nil || f.Funcname == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(f.Funcname.Items))
+	for _, it := range f.Funcname.Items {
+		if s, ok := it.(*nodes.String); ok {
+			parts = append(parts, s.Str)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.ToLower(strings.Join(parts, "."))
+}
+
+func (c *astCollector) emitFunc(f *nodes.FuncCall) {
+	name := funcCallName(f)
+	if name == "" {
+		return
+	}
+	c.funcs[name] = struct{}{}
+	// Mirror table extraction: schema-qualified function names
+	// emit the unqualified leaf too so `function == "now"` matches
+	// `pg_catalog.now()`.
+	if i := strings.LastIndex(name, "."); i >= 0 && i+1 < len(name) {
+		c.funcs[name[i+1:]] = struct{}{}
+	}
+}
+
+// visit is a hand-rolled walker over the pgplex AST. The package
+// doesn't ship a generic Walk, so we dispatch by concrete node
+// type. Statement-level cases emit target tables at the case site
+// and recurse into the substructure that may carry more
+// references (subqueries, expressions, CTEs).
+func (c *astCollector) visit(node nodes.Node) {
+	if node == nil {
+		return
+	}
+	switch n := node.(type) {
+
+	// PG nests lists inside expression slots (ValuesLists is a
+	// List of Lists, row constructors carry Lists, etc.). Recurse
+	// through them so child nodes still hit the dispatch.
+	case *nodes.List:
+		c.visitList(n)
+
+	// ── Statement-level dispatch ──────────────────────────────────
+	case *nodes.SelectStmt:
+		if n.WithClause != nil {
+			c.visitCTEs(n.WithClause)
+		}
+		c.visitList(n.TargetList)
+		c.visitList(n.FromClause)
+		c.visit(n.WhereClause)
+		c.visitList(n.GroupClause)
+		c.visit(n.HavingClause)
+		c.visitList(n.WindowClause)
+		c.visitList(n.ValuesLists)
+		c.visitList(n.SortClause)
+		c.visit(n.LimitOffset)
+		c.visit(n.LimitCount)
+		c.visitList(n.LockingClause)
+		c.visitList(n.DistinctClause)
+		if n.Larg != nil {
+			c.visit(n.Larg)
+		}
+		if n.Rarg != nil {
+			c.visit(n.Rarg)
+		}
+
+	case *nodes.InsertStmt:
+		if n.WithClause != nil {
+			c.visitCTEs(n.WithClause)
+		}
+		c.emitRangeVar(n.Relation)
+		c.visit(n.SelectStmt)
+		c.visitList(n.ReturningList)
+
+	case *nodes.UpdateStmt:
+		if n.WithClause != nil {
+			c.visitCTEs(n.WithClause)
+		}
+		c.emitRangeVar(n.Relation)
+		c.visitList(n.TargetList)
+		c.visit(n.WhereClause)
+		c.visitList(n.FromClause)
+		c.visitList(n.ReturningList)
+
+	case *nodes.DeleteStmt:
+		if n.WithClause != nil {
+			c.visitCTEs(n.WithClause)
+		}
+		c.emitRangeVar(n.Relation)
+		c.visit(n.WhereClause)
+		c.visitList(n.UsingClause)
+		c.visitList(n.ReturningList)
+
+	case *nodes.MergeStmt:
+		if n.WithClause != nil {
+			c.visitCTEs(n.WithClause)
+		}
+		c.emitRangeVar(n.Relation)
+		c.visit(n.SourceRelation)
+		c.visit(n.JoinCondition)
+		c.visitList(n.MergeWhenClauses)
+		c.visitList(n.ReturningList)
+
+	// DDL with a single *RangeVar target.
+	case *nodes.CreateStmt:
+		c.emitRangeVar(n.Relation)
+	case *nodes.ViewStmt:
+		c.emitRangeVar(n.View)
+		c.visit(n.Query)
+	case *nodes.AlterTableStmt:
+		c.emitRangeVar(n.Relation)
+	case *nodes.CopyStmt:
+		c.emitRangeVar(n.Relation)
+		c.visit(n.Query)
+	case *nodes.RefreshMatViewStmt:
+		c.emitRangeVar(n.Relation)
+	case *nodes.ClusterStmt:
+		c.emitRangeVar(n.Relation)
+	case *nodes.ReindexStmt:
+		c.emitRangeVar(n.Relation)
+	case *nodes.LockStmt:
+		c.visitList(n.Relations)
+	case *nodes.TruncateStmt:
+		c.visitList(n.Relations)
+	case *nodes.VacuumStmt:
+		c.visitList(n.Rels)
+	case *nodes.VacuumRelation:
+		c.emitRangeVar(n.Relation)
+	case *nodes.AlterSeqStmt:
+		c.emitRangeVar(n.Sequence)
+	case *nodes.CreateSeqStmt:
+		c.emitRangeVar(n.Sequence)
+	case *nodes.RenameStmt:
+		// ALTER TABLE … RENAME, ALTER … RENAME COLUMN, etc. The
+		// Relation slot is set for table-shaped objects; for other
+		// kinds (constraints, types) it stays nil.
+		c.emitRangeVar(n.Relation)
+	case *nodes.AlterObjectSchemaStmt:
+		c.emitRangeVar(n.Relation)
+	case *nodes.AlterOwnerStmt:
+		c.emitRangeVar(n.Relation)
+
+	// DDL whose targets are name-lists (DropStmt-style).
+	case *nodes.DropStmt:
+		if isTableShaped(nodes.ObjectType(n.RemoveType)) {
+			for _, it := range listItems(n.Objects) {
+				if inner, ok := it.(*nodes.List); ok {
+					c.emitObjectName(inner)
+				}
+			}
+		}
+
+	// COMMENT ON TABLE / COMMENT ON COLUMN-on-table.
+	case *nodes.CommentStmt:
+		if isTableShaped(n.Objtype) {
+			if list, ok := n.Object.(*nodes.List); ok {
+				c.emitObjectName(list)
+			}
+		}
+
+	// GRANT/REVOKE on tables.
+	case *nodes.GrantStmt:
+		if isTableShaped(n.Objtype) {
+			for _, it := range listItems(n.Objects) {
+				switch obj := it.(type) {
+				case *nodes.RangeVar:
+					c.emitRangeVar(obj)
+				case *nodes.List:
+					c.emitObjectName(obj)
+				}
+			}
+		}
+
+	// EXPLAIN <stmt>, PREPARE <name> AS <stmt>, etc. — recurse so
+	// the inner statement's tables surface on the outer pgInfo.
+	case *nodes.ExplainStmt:
+		c.visit(n.Query)
+	case *nodes.PrepareStmt:
+		c.visit(n.Query)
+	case *nodes.DeclareCursorStmt:
+		c.visit(n.Query)
+	case *nodes.CreateTableAsStmt:
+		if n.Into != nil {
+			c.emitRangeVar(n.Into.Rel)
+		}
+		c.visit(n.Query)
+
+	// CALL <proc>(...) — the proc surfaces as a function so
+	// `function == "..."` rules still fire (audit §6.6).
+	case *nodes.CallStmt:
+		if n.Funccall != nil {
+			c.visit(n.Funccall)
+		}
+
+	// DO $$ ... $$ — re-tokenise and recursively analyse the body
+	// so inner DROPs reach the matcher (audit §6.5).
+	case *nodes.DoStmt:
+		if body := doBody(n); body != "" {
+			for _, a := range analyseAll(body) {
+				if a.Outer.Verb != "" {
+					c.inner = append(c.inner, a.Outer)
+				}
+				c.inner = append(c.inner, a.Inner...)
+			}
+		}
+
+	// ── FROM-side nodes ──────────────────────────────────────────
+	case *nodes.RangeVar:
+		c.emitRangeVar(n)
+	case *nodes.JoinExpr:
+		c.visit(n.Larg)
+		c.visit(n.Rarg)
+		c.visit(n.Quals)
+	case *nodes.RangeSubselect:
+		c.visit(n.Subquery)
+	case *nodes.RangeFunction:
+		c.visitList(n.Functions)
+	case *nodes.RangeTableSample:
+		c.visit(n.Relation)
+		c.visitList(n.Args)
+	case *nodes.FromExpr:
+		c.visitList(n.Fromlist)
+		c.visit(n.Quals)
+
+	// ── Expression nodes ─────────────────────────────────────────
+	case *nodes.ResTarget:
+		c.visit(n.Val)
+	case *nodes.A_Expr:
+		c.visit(n.Lexpr)
+		c.visit(n.Rexpr)
+	case *nodes.BoolExpr:
+		c.visitList(n.Args)
+	case *nodes.NullTest:
+		c.visit(n.Arg)
+	case *nodes.BooleanTest:
+		c.visit(n.Arg)
+	case *nodes.FuncCall:
+		c.emitFunc(n)
+		c.visitList(n.Args)
+		c.visit(n.AggFilter)
+		c.visit(n.Over)
+	case *nodes.SubLink:
+		c.visit(n.Testexpr)
+		c.visit(n.Subselect)
+	case *nodes.CaseExpr:
+		c.visit(n.Arg)
+		c.visitList(n.Args)
+		c.visit(n.Defresult)
+	case *nodes.CaseWhen:
+		c.visit(n.Expr)
+		c.visit(n.Result)
+	case *nodes.CoalesceExpr:
+		c.visitList(n.Args)
+	case *nodes.MinMaxExpr:
+		c.visitList(n.Args)
+	case *nodes.TypeCast:
+		c.visit(n.Arg)
+	case *nodes.CollateClause:
+		c.visit(n.Arg)
+	case *nodes.A_Indirection:
+		c.visit(n.Arg)
+		c.visitList(n.Indirection)
+	case *nodes.A_ArrayExpr:
+		c.visitList(n.Elements)
+	case *nodes.RowExpr:
+		c.visitList(n.Args)
+	case *nodes.NamedArgExpr:
+		c.visit(n.Arg)
+	case *nodes.SortBy:
+		c.visit(n.Node)
+	case *nodes.WindowDef:
+		c.visitList(n.PartitionClause)
+		c.visitList(n.OrderClause)
+	case *nodes.LockingClause:
+		c.visitList(n.LockedRels)
+	}
+}
+
+// visitList walks a *nodes.List, recursing into each item.
+// Safely handles nil — pgplex uses nil to mean "absent list".
+func (c *astCollector) visitList(list *nodes.List) {
+	if list == nil {
+		return
+	}
+	for _, it := range list.Items {
+		c.visit(it)
+	}
+}
+
+// visitCTEs surfaces the inner DML of WITH-CTEs as shadow
+// sub-statements (audit §1.2). The outer statement's verb stays
+// `select` / whatever; the inner verb (`delete`, `update`,
+// `insert`, `merge`) gets its own pgInfo so a rule keyed on the
+// mutating verb fires.
+func (c *astCollector) visitCTEs(w *nodes.WithClause) {
+	if w == nil || w.Ctes == nil {
+		return
+	}
+	for _, it := range w.Ctes.Items {
+		cte, ok := it.(*nodes.CommonTableExpr)
+		if !ok || cte == nil || cte.Ctequery == nil {
+			continue
+		}
+		switch cte.Ctequery.(type) {
+		case *nodes.InsertStmt, *nodes.UpdateStmt,
+			*nodes.DeleteStmt, *nodes.MergeStmt:
+			info := pgInfo{
+				Verb:      verbFromNode(cte.Ctequery),
+				Statement: cte.Ctename,
+			}
+			sub := newAstCollector()
+			sub.visit(cte.Ctequery)
+			info.Tables = sortedKeys(sub.tables)
+			info.Functions = sortedKeys(sub.funcs)
+			c.inner = append(c.inner, info)
+		}
+		// Continue walking the inner so its tables / functions show
+		// up in the outer pgInfo too (rules written before the
+		// audit may rely on this — the regex extractor used to do
+		// it).
+		c.visit(cte.Ctequery)
+	}
+}
+
+// listItems returns the list's items, or nil for a nil list. The
+// helper lets the visit switch read uniformly without nil checks
+// at every list-typed Objects field.
+func listItems(l *nodes.List) []nodes.Node {
+	if l == nil {
+		return nil
+	}
+	return l.Items
+}
+
+// isTableShaped reports whether an ObjectType refers to a
+// table-shaped object (table / view / matview / sequence /
+// foreign table). DropStmt / CommentStmt / GrantStmt all share the
+// ObjectType enum so we centralise the check here.
+func isTableShaped(t nodes.ObjectType) bool {
+	switch t {
+	case nodes.OBJECT_TABLE, nodes.OBJECT_VIEW,
+		nodes.OBJECT_MATVIEW, nodes.OBJECT_SEQUENCE,
+		nodes.OBJECT_FOREIGN_TABLE:
+		return true
+	}
+	return false
+}
+
+// doBody extracts the BODY of a DO $$ … $$ block. The body lives
+// in a DefElem named "as" whose Arg is a *String. Returns "" when
+// the DO carries no body (unparseable input).
+func doBody(d *nodes.DoStmt) string {
+	if d == nil || d.Args == nil {
+		return ""
+	}
+	for _, it := range d.Args.Items {
+		de, ok := it.(*nodes.DefElem)
+		if !ok || de == nil {
+			continue
+		}
+		if strings.EqualFold(de.Defname, "as") {
+			if s, ok := de.Arg.(*nodes.String); ok {
+				return s.Str
+			}
+		}
+	}
+	return ""
+}
+
+func sortedKeys(m map[string]struct{}) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ── Fallback: verb sniff for parser failures ──────────────────────────
+//
+// pgplex's grammar covers postgres' full surface, so this path
+// fires only on genuinely broken input: trailing-`;` shells like
+// `DROP;` / `SELECT;` (audit §1.1), syntax errors, and the like.
+// The sniff surfaces the verb so verb-keyed CEL rules still fire.
+
+// sniffStmt is the fallback for one parser-rejected statement
+// piece. Produces a degraded pgInfo carrying at minimum the verb
+// so `verb`-keyed CEL rules keep working.
+func sniffStmt(raw string) analysedStmt {
+	stmt := strings.TrimSpace(raw)
+	info := pgInfo{Statement: stmt}
+	if stmt == "" {
+		return analysedStmt{Outer: info}
+	}
+	toks := sniffTokens(stmt)
+	if len(toks) == 0 {
+		return analysedStmt{Outer: info}
+	}
+	verb, tables, inner := sniffVerbAndTables(toks)
+	info.Verb = verb
+	info.Tables = tables
+	return analysedStmt{Outer: info, Inner: inner}
+}
+
+// sniffVerbAndTables walks a token slice and surfaces:
+//   - verb (multi-word forms collapsed for the common identity /
+//     identity-adjacent SETs)
+//   - tables targeted by the postgres DDL the parser rejects
+//   - inner shadow pgInfos for DO blocks (recursively parsed)
+func sniffVerbAndTables(toks []sniffTok) (string, []string, []pgInfo) {
+	if len(toks) == 0 || toks[0].kind != sniffIdent {
+		return "", nil, nil
+	}
+	v := strings.ToLower(toks[0].val)
+
+	emitNext := func(start int) []string {
+		for i := start; i < len(toks); i++ {
+			t := toks[i]
+			if t.kind == sniffIdent {
+				if isSniffNoise(strings.ToLower(t.val)) {
+					continue
+				}
+				return tableCandidates(toks, i)
+			}
+			if t.kind == sniffQIdent {
+				return tableCandidates(toks, i)
+			}
+		}
+		return nil
+	}
+
+	switch v {
+	case "set":
+		// SET ROLE / SET SESSION AUTHORIZATION / SET LOCAL ROLE /
+		// SET LOCAL SESSION AUTHORIZATION (audit §6.4). The
+		// statement-level identity changes get distinct verbs so a
+		// policy can target them without also catching benign
+		// session-config SETs.
+		if len(toks) >= 2 && toks[1].kind == sniffIdent {
+			next := strings.ToLower(toks[1].val)
+			switch next {
+			case "role":
+				return "set role", nil, nil
+			case "session":
+				if len(toks) >= 3 && toks[2].kind == sniffIdent && strings.ToLower(toks[2].val) == "authorization" {
+					return "set session authorization", nil, nil
+				}
+			case "local":
+				if len(toks) >= 3 && toks[2].kind == sniffIdent {
+					switch strings.ToLower(toks[2].val) {
+					case "role":
+						return "set local role", nil, nil
+					case "session":
+						if len(toks) >= 4 && toks[3].kind == sniffIdent && strings.ToLower(toks[3].val) == "authorization" {
+							return "set local session authorization", nil, nil
+						}
+					}
+				}
+			}
+		}
+	case "lock", "vacuum", "analyze", "analyse", "cluster", "reindex":
+		return v, emitNext(1), nil
+	case "refresh":
+		// REFRESH MATERIALIZED VIEW [CONCURRENTLY] x
+		i := 1
+		if i < len(toks) && toks[i].kind == sniffIdent && strings.ToLower(toks[i].val) == "materialized" {
 			i++
-		case c == '-' && i+1 < n && sql[i+1] == '-':
-			i += 2
-			for i < n && sql[i] != '\n' {
-				i++
+		}
+		if i < len(toks) && toks[i].kind == sniffIdent && strings.ToLower(toks[i].val) == "view" {
+			i++
+		}
+		return v, emitNext(i), nil
+	case "copy":
+		// COPY x [(cols)] FROM/TO ... — the table target is the
+		// first identifier after COPY.
+		return v, emitNext(1), nil
+	case "do":
+		// DO $$ ... $$ — the parser rejected the whole DO; we
+		// re-tokenise the body and recurse so the inner DROP
+		// reaches the matcher (audit §6.5).
+		var body string
+		for _, t := range toks {
+			if t.kind == sniffString {
+				body = t.val
+				break
 			}
-		case c == '/' && i+1 < n && sql[i+1] == '*':
-			depth := 1
-			i += 2
-			for i < n && depth > 0 {
-				if i+1 < n && sql[i] == '/' && sql[i+1] == '*' {
-					depth++
-					i += 2
-				} else if i+1 < n && sql[i] == '*' && sql[i+1] == '/' {
-					depth--
-					i += 2
-				} else {
-					i++
+		}
+		var inner []pgInfo
+		if body != "" {
+			for _, a := range analyseAll(body) {
+				if a.Outer.Verb != "" {
+					inner = append(inner, a.Outer)
 				}
+				inner = append(inner, a.Inner...)
 			}
-		case c == '\'':
-			i = pgScanString(sql, i+1, false)
-			out = append(out, pgToken{kind: pgTokString})
-		case (c == 'e' || c == 'E') && i+1 < n && sql[i+1] == '\'':
-			i = pgScanString(sql, i+2, true)
-			out = append(out, pgToken{kind: pgTokString})
-		case (c == 'u' || c == 'U') && i+2 < n && sql[i+1] == '&' && sql[i+2] == '\'':
-			i = pgScanString(sql, i+3, true)
-			out = append(out, pgToken{kind: pgTokString})
-		case (c == 'b' || c == 'B' || c == 'x' || c == 'X') && i+1 < n && sql[i+1] == '\'':
-			i = pgScanString(sql, i+2, false)
-			out = append(out, pgToken{kind: pgTokString})
-		case c == '"':
-			v, ni := pgScanQuotedIdent(sql, i+1)
-			out = append(out, pgToken{kind: pgTokQIdent, value: v, lower: strings.ToLower(v)})
-			i = ni
-		case c == '$':
-			if tag, after, ok := pgScanDollarTag(sql, i); ok {
-				closeAt := strings.Index(sql[after:], tag)
-				if closeAt < 0 {
-					i = n
-				} else {
-					i = after + closeAt + len(tag)
-				}
-				out = append(out, pgToken{kind: pgTokString})
-			} else {
-				// numeric parameter ($1, $2, ...) or stray '$' — opaque
-				j := i + 1
-				for j < n && sql[j] >= '0' && sql[j] <= '9' {
-					j++
-				}
-				if j == i+1 {
-					j++ // stray '$' on its own
-				}
-				out = append(out, pgToken{kind: pgTokOp, value: sql[i:j]})
-				i = j
-			}
-		case pgIsIdentStart(c):
-			j := i + 1
-			for j < n && pgIsIdentCont(sql[j]) {
+		}
+		return v, nil, inner
+	case "call":
+		return v, nil, nil
+	}
+	return v, nil, nil
+}
+
+// tableCandidates reads a (possibly schema-qualified) name
+// starting at toks[i] and returns the qualified + unqualified
+// forms. Quoted identifiers preserve case (§2.4).
+func tableCandidates(toks []sniffTok, i int) []string {
+	if i >= len(toks) {
+		return nil
+	}
+	t := toks[i]
+	if t.kind != sniffIdent && t.kind != sniffQIdent {
+		return nil
+	}
+	parts := []string{t.val}
+	for j := i + 1; j+1 < len(toks); j += 2 {
+		if toks[j].kind != sniffPunct || toks[j].val != "." {
+			break
+		}
+		nxt := toks[j+1]
+		if nxt.kind != sniffIdent && nxt.kind != sniffQIdent {
+			break
+		}
+		parts = append(parts, nxt.val)
+	}
+	full := strings.Join(parts, ".")
+	if len(parts) == 1 {
+		return []string{full}
+	}
+	return []string{full, parts[len(parts)-1]}
+}
+
+// isSniffNoise returns true for keywords that show up between a
+// verb and the table target — TABLE in `LOCK TABLE x`, IF EXISTS
+// in `DROP TABLE IF EXISTS x`, CONCURRENTLY, ONLY.
+func isSniffNoise(v string) bool {
+	switch v {
+	case "table", "index", "view", "if", "exists", "not", "concurrently", "only":
+		return true
+	}
+	return false
+}
+
+// ── Tokenizer for the sniff fallback ──────────────────────────────────
+//
+// Minimal token model — just enough to:
+//   - read the first identifier as the verb (skip comments and
+//     leading whitespace; trailing `;` does not contaminate it),
+//   - read multi-word verb prefixes (SET ROLE, SET SESSION
+//     AUTHORIZATION),
+//   - capture the table identifier after DDL keywords,
+//   - recognise dollar-quoted strings so DO bodies are pulled out
+//     intact.
+
+type sniffTokKind int
+
+const (
+	sniffIdent  sniffTokKind = iota // unquoted ident (case preserved)
+	sniffQIdent                     // quoted ident, case-sensitive
+	sniffString                     // string literal — body content only
+	sniffPunct                      // one-byte punctuation
+	sniffNumber
+)
+
+type sniffTok struct {
+	kind sniffTokKind
+	val  string
+}
+
+// sniffTokens is a comment- and string-aware tokeniser for the
+// fallback path. Whitespace and comments are dropped; strings
+// carry their body text (so DO $$ ... $$ surfaces the inner SQL).
+func sniffTokens(s string) []sniffTok {
+	var out []sniffTok
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		switch {
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v':
+			i++
+		case c == '-' && i+1 < len(s) && s[i+1] == '-':
+			j := i + 2
+			for j < len(s) && s[j] != '\n' {
 				j++
 			}
-			v := sql[i:j]
-			out = append(out, pgToken{kind: pgTokIdent, value: v, lower: strings.ToLower(v)})
 			i = j
-		case c == '(' || c == ')' || c == ',' || c == ';':
-			out = append(out, pgToken{kind: pgTokPunct, value: string(c)})
+		case c == '/' && i+1 < len(s) && s[i+1] == '*':
+			depth := 1
+			j := i + 2
+			for j < len(s) && depth > 0 {
+				if j+1 < len(s) && s[j] == '/' && s[j+1] == '*' {
+					depth++
+					j += 2
+				} else if j+1 < len(s) && s[j] == '*' && s[j+1] == '/' {
+					depth--
+					j += 2
+				} else {
+					j++
+				}
+			}
+			i = j
+		case c == '\'':
+			j := i + 1
+			for j < len(s) {
+				if s[j] == '\'' {
+					if j+1 < len(s) && s[j+1] == '\'' {
+						j += 2
+						continue
+					}
+					j++
+					break
+				}
+				j++
+			}
+			i = j
+		case c == '$':
+			if tag, end, ok := readDollarQuote(s, i); ok {
+				out = append(out, sniffTok{kind: sniffString, val: s[i+len(tag)+2 : end-len(tag)-2]})
+				i = end
+				continue
+			}
+			out = append(out, sniffTok{kind: sniffPunct, val: "$"})
 			i++
+		case c == '"':
+			j := i + 1
+			var sb strings.Builder
+			for j < len(s) {
+				if s[j] == '"' {
+					if j+1 < len(s) && s[j+1] == '"' {
+						sb.WriteByte('"')
+						j += 2
+						continue
+					}
+					j++
+					break
+				}
+				sb.WriteByte(s[j])
+				j++
+			}
+			out = append(out, sniffTok{kind: sniffQIdent, val: sb.String()})
+			i = j
+		case isSniffIdentStart(c):
+			j := i + 1
+			for j < len(s) && isSniffIdentCont(s[j]) {
+				j++
+			}
+			out = append(out, sniffTok{kind: sniffIdent, val: s[i:j]})
+			i = j
+		case c >= '0' && c <= '9':
+			j := i + 1
+			for j < len(s) && ((s[j] >= '0' && s[j] <= '9') || s[j] == '.') {
+				j++
+			}
+			out = append(out, sniffTok{kind: sniffNumber, val: s[i:j]})
+			i = j
 		default:
-			out = append(out, pgToken{kind: pgTokOp, value: string(c)})
+			out = append(out, sniffTok{kind: sniffPunct, val: string(c)})
 			i++
 		}
 	}
 	return out
 }
 
-// pgScanString advances past a single-quoted string starting at `from`
-// (one past the opening apostrophe). Doubled ” is a literal quote
-// that does NOT terminate. In E-strings, backslash escapes apply.
-// Returns the index just past the terminating apostrophe, or len(sql)
-// if the string never closes.
-func pgScanString(sql string, from int, eStyle bool) int {
-	n := len(sql)
-	i := from
-	for i < n {
-		c := sql[i]
-		if eStyle && c == '\\' && i+1 < n {
-			i += 2
-			continue
-		}
-		if c == '\'' {
-			if i+1 < n && sql[i+1] == '\'' {
-				i += 2
-				continue
-			}
-			return i + 1
-		}
-		i++
-	}
-	return n
+func isSniffIdentStart(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c >= 128
 }
 
-// pgScanQuotedIdent reads the body of a "..." quoted identifier
-// starting one past the opening ". Doubled "" is an embedded quote,
-// not a terminator.
-func pgScanQuotedIdent(sql string, from int) (string, int) {
-	n := len(sql)
-	var b strings.Builder
-	b.Grow(16)
-	i := from
-	for i < n {
-		c := sql[i]
-		if c == '"' {
-			if i+1 < n && sql[i+1] == '"' {
-				b.WriteByte('"')
-				i += 2
-				continue
-			}
-			return b.String(), i + 1
-		}
-		b.WriteByte(c)
-		i++
-	}
-	return b.String(), n
+func isSniffIdentCont(c byte) bool {
+	return isSniffIdentStart(c) || (c >= '0' && c <= '9') || c == '$'
 }
 
-// pgScanDollarTag inspects sql[i:] for a dollar-quote opener.
-// Returns the tag ("$tag$" or "$$"), the index just past it, and
-// ok=true when one is recognised. Numeric parameter refs ($1, $2...)
-// return ok=false.
-//
-// Tag characters follow Postgres's "unquoted SQL identifier" rule —
-// letter/digit/underscore — but NOT '$', because '$' is the tag
-// delimiter and including it here would let pgIsIdentCont swallow
-// the closing '$'.
-func pgScanDollarTag(sql string, i int) (string, int, bool) {
-	n := len(sql)
-	if i+1 >= n {
-		return "", 0, false
-	}
-	if sql[i+1] == '$' {
-		return "$$", i + 2, true
-	}
-	if !pgIsIdentStart(sql[i+1]) {
+// readDollarQuote spots a $tag$ at s[i] and returns
+// (tag, endIdx, true) when the matching closing $tag$ is present.
+// End is the byte index *after* the closing tag.
+func readDollarQuote(s string, i int) (tag string, end int, ok bool) {
+	if i >= len(s) || s[i] != '$' {
 		return "", 0, false
 	}
 	j := i + 1
-	for j < n && pgIsTagCont(sql[j]) {
+	for j < len(s) && isSniffIdentCont(s[j]) && s[j] != '$' {
 		j++
 	}
-	if j < n && sql[j] == '$' {
-		return sql[i : j+1], j + 1, true
+	if j >= len(s) || s[j] != '$' {
+		return "", 0, false
 	}
-	return "", 0, false
+	tag = s[i+1 : j]
+	openerEnd := j + 1
+	closing := "$" + tag + "$"
+	idx := strings.Index(s[openerEnd:], closing)
+	if idx < 0 {
+		// Unterminated dollar-quote — postgres errors here too;
+		// treat the rest of the input as the literal body so the
+		// extractor can still emit something.
+		return tag, len(s), true
+	}
+	return tag, openerEnd + idx + len(closing), true
 }
 
-func pgIsTagCont(c byte) bool {
-	return pgIsIdentStart(c) || (c >= '0' && c <= '9')
-}
-
-func pgIsIdentStart(c byte) bool {
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
-}
-
-func pgIsIdentCont(c byte) bool {
-	return pgIsIdentStart(c) || (c >= '0' && c <= '9') || c == '$'
-}
-
-// pgInfo is the structured view of a SQL query fed into the SQL
-// matcher.
-type pgInfo struct {
-	Verb      string
-	Verbs     []string // every statement's outer verb + CTE-body verbs
-	Tables    []string
-	Functions []string
-	Statement string
-}
-
-// parseSQL extracts verb / verbs / tables / functions / statement for
-// the SQL matcher. Replaces the legacy regex extractor whose
-// bypasses are catalogued in clawpatrol#143.
-func parseSQL(sql string) pgInfo {
-	sql = strings.TrimSpace(sql)
-	info := pgInfo{Statement: sql}
-	if sql == "" {
-		return info
-	}
-	toks := pgTokenize(sql)
-	stmts := pgSplitStatements(toks)
-
-	var tables []string
-	tableSeen := map[string]bool{}
-	addTable := func(name string) {
-		if name == "" || tableSeen[name] {
-			return
-		}
-		tableSeen[name] = true
-		tables = append(tables, name)
-	}
-
-	var functions []string
-	funcSeen := map[string]bool{}
-	addFunction := func(name string) {
-		if name == "" || funcSeen[name] {
-			return
-		}
-		funcSeen[name] = true
-		functions = append(functions, name)
-	}
-
-	cteNames := map[string]bool{}
-
-	for sidx, stmt := range stmts {
-		outer, allVerbs, ctes := pgVerbsAndCTEs(stmt)
-		for _, name := range ctes {
-			cteNames[name] = true
-		}
-		if sidx == 0 && outer != "" {
-			info.Verb = outer
-		}
-		for _, v := range allVerbs {
-			info.Verbs = appendUnique(info.Verbs, v)
-		}
-		pgExtractTables(stmt, addTable)
-		pgExtractFunctions(stmt, addFunction)
-	}
-
-	// CTE binding names shadow real relations only within the query;
-	// they shouldn't appear in `tables` because the matcher treats
-	// `tables` as "tables this query reads or writes" and a CTE name
-	// is a synthetic in-query alias for a sub-result.
-	if len(cteNames) > 0 {
-		filtered := tables[:0]
-		for _, t := range tables {
-			if cteNames[t] {
-				continue
-			}
-			filtered = append(filtered, t)
-		}
-		tables = filtered
-	}
-	if len(tables) > 0 {
-		info.Tables = tables
-	}
-	if len(functions) > 0 {
-		info.Functions = functions
-	}
-	if len(info.Verbs) == 0 && info.Verb != "" {
-		info.Verbs = []string{info.Verb}
-	}
-	return info
-}
-
-func appendUnique(xs []string, v string) []string {
-	if v == "" {
-		return xs
-	}
-	for _, x := range xs {
-		if x == v {
-			return xs
-		}
-	}
-	return append(xs, v)
-}
-
-// pgSplitStatements breaks the token stream at top-level (depth-0)
-// semicolons. Semicolons inside parens stay attached to the
-// surrounding statement.
-func pgSplitStatements(toks []pgToken) [][]pgToken {
-	var stmts [][]pgToken
-	var cur []pgToken
+// splitTopLevelStatements partitions a SQL string at `;`
+// characters that aren't inside a string, dollar-quote, comment,
+// or paren group. Mirrors the parser's own scanner just well
+// enough that `SET ROLE admin; DROP TABLE users` splits even when
+// the parser itself rejected the whole input.
+func splitTopLevelStatements(s string) []string {
+	var out []string
+	i, start := 0, 0
 	depth := 0
-	for _, t := range toks {
-		if t.kind == pgTokPunct {
-			switch t.value {
-			case "(":
-				depth++
-			case ")":
-				if depth > 0 {
-					depth--
+	for i < len(s) {
+		c := s[i]
+		switch {
+		case c == '-' && i+1 < len(s) && s[i+1] == '-':
+			j := i + 2
+			for j < len(s) && s[j] != '\n' {
+				j++
+			}
+			i = j
+		case c == '/' && i+1 < len(s) && s[i+1] == '*':
+			depthC := 1
+			j := i + 2
+			for j < len(s) && depthC > 0 {
+				if j+1 < len(s) && s[j] == '/' && s[j+1] == '*' {
+					depthC++
+					j += 2
+				} else if j+1 < len(s) && s[j] == '*' && s[j+1] == '/' {
+					depthC--
+					j += 2
+				} else {
+					j++
 				}
-			case ";":
-				if depth == 0 {
-					if len(cur) > 0 {
-						stmts = append(stmts, cur)
-						cur = nil
+			}
+			i = j
+		case c == '\'':
+			j := i + 1
+			for j < len(s) {
+				if s[j] == '\'' {
+					if j+1 < len(s) && s[j+1] == '\'' {
+						j += 2
+						continue
 					}
-					continue
+					j++
+					break
 				}
+				j++
 			}
-		}
-		cur = append(cur, t)
-	}
-	if len(cur) > 0 {
-		stmts = append(stmts, cur)
-	}
-	return stmts
-}
-
-// pgVerbsAndCTEs returns the outer verb of a statement (after
-// unwrapping any leading WITH ... AS (...) block), the list of all
-// reachable verbs (outer + every CTE-body's verbs, recursively), and
-// the list of CTE binding names introduced by the WITH clause.
-//
-//	WITH RECURSIVE x AS (DELETE FROM secrets RETURNING *) SELECT * FROM x
-//	→ outer="select", verbs=["select", "delete"], ctes=["x"]
-func pgVerbsAndCTEs(stmt []pgToken) (outer string, verbs []string, ctes []string) {
-	i := 0
-	if len(stmt) == 0 {
-		return "", nil, nil
-	}
-	if stmt[0].kind == pgTokIdent && stmt[0].lower == "with" {
-		i = 1
-		if i < len(stmt) && stmt[i].kind == pgTokIdent && stmt[i].lower == "recursive" {
-			i++
-		}
-		for i < len(stmt) {
-			if stmt[i].kind != pgTokIdent && stmt[i].kind != pgTokQIdent {
-				break
-			}
-			cteName := stmt[i].lower
-			ctes = append(ctes, cteName)
-			i++
-			// Optional column list
-			if i < len(stmt) && stmt[i].kind == pgTokPunct && stmt[i].value == "(" {
-				i = pgSkipBalanced(stmt, i)
-			}
-			// Expect AS
-			if i >= len(stmt) || stmt[i].kind != pgTokIdent || stmt[i].lower != "as" {
-				break
-			}
-			i++
-			// Optional NOT MATERIALIZED / MATERIALIZED
-			if i < len(stmt) && stmt[i].kind == pgTokIdent && stmt[i].lower == "not" {
-				i++
-			}
-			if i < len(stmt) && stmt[i].kind == pgTokIdent && stmt[i].lower == "materialized" {
-				i++
-			}
-			// Expect ( ... )
-			if i >= len(stmt) || stmt[i].kind != pgTokPunct || stmt[i].value != "(" {
-				break
-			}
-			start := i + 1
-			end := pgSkipBalanced(stmt, i)
-			inner := stmt[start : end-1]
-			if len(inner) > 0 {
-				innerOuter, innerVerbs, innerCTEs := pgVerbsAndCTEs(inner)
-				if innerOuter != "" {
-					verbs = appendUnique(verbs, innerOuter)
-				}
-				for _, v := range innerVerbs {
-					verbs = appendUnique(verbs, v)
-				}
-				ctes = append(ctes, innerCTEs...)
-			}
-			i = end
-			if i < len(stmt) && stmt[i].kind == pgTokPunct && stmt[i].value == "," {
-				i++
-				continue
-			}
-			break
-		}
-	}
-	for i < len(stmt) {
-		if stmt[i].kind == pgTokIdent {
-			outer = stmt[i].lower
-			break
-		}
-		i++
-	}
-	if outer != "" {
-		verbs = append([]string{outer}, verbs...)
-	}
-	return outer, verbs, ctes
-}
-
-// pgSkipBalanced consumes a balanced ( ... ) starting at stmt[start]
-// (which must be '('). Returns the index just past the matching ')'
-// or len(stmt) if the stream is unbalanced.
-func pgSkipBalanced(stmt []pgToken, start int) int {
-	depth := 0
-	for i := start; i < len(stmt); i++ {
-		if stmt[i].kind == pgTokPunct {
-			switch stmt[i].value {
-			case "(":
-				depth++
-			case ")":
-				depth--
-				if depth == 0 {
-					return i + 1
-				}
-			}
-		}
-	}
-	return len(stmt)
-}
-
-// Keyword sets used by the FROM-list walker.
-
-// clauseEndKeywords are reserved words that terminate a FROM-style
-// table list — once seen (outside of expect-table mode) we stop
-// pulling idents as tables.
-var clauseEndKeywords = map[string]bool{
-	"where": true, "group": true, "order": true, "limit": true,
-	"having": true, "union": true, "intersect": true, "except": true,
-	"returning": true, "fetch": true, "offset": true, "for": true,
-	"window": true, "set": true, "values": true,
-	"on": true, "using": true,
-	// COPY clause terminators
-	"to": true, "from": true, "program": true, "stdin": true, "stdout": true,
-}
-
-// joinModifiers are keywords that may appear between table refs in a
-// FROM list as part of a JOIN clause. They don't extract tables
-// themselves; they sit until JOIN itself appears.
-var joinModifiers = map[string]bool{
-	"inner": true, "outer": true, "left": true, "right": true,
-	"full": true, "cross": true, "natural": true, "lateral": true,
-}
-
-// reservedWordsAfterTable are keywords that may appear directly after
-// a table name but must NOT be consumed as bare aliases.
-var reservedWordsAfterTable = map[string]bool{
-	"as": true, "where": true, "group": true, "order": true,
-	"limit": true, "having": true, "union": true, "intersect": true,
-	"except": true, "returning": true, "fetch": true, "offset": true,
-	"for": true, "window": true, "set": true, "values": true,
-	"on": true, "using": true, "join": true, "inner": true,
-	"outer": true, "left": true, "right": true, "full": true,
-	"cross": true, "natural": true, "lateral": true, "to": true,
-	"from": true, "program": true, "stdin": true, "stdout": true,
-	"with": true, "into": true, "tablesample": true, "table": true,
-	"select": true, "delete": true, "update": true, "insert": true,
-	"truncate": true, "drop": true, "create": true, "alter": true,
-	"copy": true,
-}
-
-// tableIntroducer maps a keyword to how it introduces tables:
-//
-//	"from" — start a FROM clause (comma-list, JOINs, etc.)
-//	"one"  — next ident is a single table reference
-var tableIntroducer = map[string]string{
-	"from":   "from",
-	"join":   "one",
-	"update": "one",
-	"into":   "one",
-	"table":  "one",
-	"copy":   "one",
-}
-
-// pgExtractTables walks the token stream and reports table names via
-// emit. Recurses into parenthesised subqueries so writes hidden in a
-// subselect still surface.
-func pgExtractTables(stmt []pgToken, emit func(string)) {
-	pgExtractTablesIn(stmt, emit)
-}
-
-func pgExtractTablesIn(stmt []pgToken, emit func(string)) {
-	i := 0
-	for i < len(stmt) {
-		t := stmt[i]
-		if t.kind == pgTokPunct && t.value == "(" {
-			end := pgSkipBalanced(stmt, i)
-			if end > i+1 {
-				pgExtractTablesIn(stmt[i+1:end-1], emit)
-			}
-			i = end
-			continue
-		}
-		if t.kind == pgTokIdent {
-			intro, ok := tableIntroducer[t.lower]
-			if ok {
-				switch intro {
-				case "from":
-					i = pgConsumeFromList(stmt, i+1, emit)
-					continue
-				case "one":
-					i = pgConsumeTableRef(stmt, i+1, emit, false)
-					continue
-				}
-			}
-		}
-		i++
-	}
-}
-
-// pgConsumeFromList scans a FROM clause starting just past the FROM
-// keyword. Handles comma-joins, JOIN variants, ON/USING clauses, and
-// subquery sources. Returns the index where the FROM clause ended.
-func pgConsumeFromList(stmt []pgToken, start int, emit func(string)) int {
-	i := start
-	expectTable := true
-	for i < len(stmt) {
-		t := stmt[i]
-		switch t.kind {
-		case pgTokPunct:
-			switch t.value {
-			case "(":
-				end := pgSkipBalanced(stmt, i)
-				if end > i+1 {
-					pgExtractTablesIn(stmt[i+1:end-1], emit)
-				}
+			i = j
+		case c == '$':
+			if _, end, ok := readDollarQuote(s, i); ok {
 				i = end
-				expectTable = false
-				continue
-			case ",":
-				expectTable = true
-				i++
-				continue
-			case ")", ";":
-				return i
-			default:
-				i++
 				continue
 			}
-		case pgTokOp, pgTokString:
 			i++
-			continue
-		case pgTokIdent:
-			kw := t.lower
-			if !expectTable && clauseEndKeywords[kw] {
-				return i
-			}
-			if kw == "join" {
-				expectTable = true
-				i++
-				continue
-			}
-			if joinModifiers[kw] {
-				i++
-				continue
-			}
-			if kw == "as" {
-				i++
-				if i < len(stmt) && (stmt[i].kind == pgTokIdent || stmt[i].kind == pgTokQIdent) {
-					i++
+		case c == '"':
+			j := i + 1
+			for j < len(s) {
+				if s[j] == '"' {
+					if j+1 < len(s) && s[j+1] == '"' {
+						j += 2
+						continue
+					}
+					j++
+					break
 				}
-				expectTable = false
-				continue
+				j++
 			}
-			if expectTable {
-				i = pgConsumeTableRef(stmt, i, emit, true)
-				expectTable = false
-				continue
-			}
-			// Out-of-position ident inside a FROM list — likely a
-			// bare alias. Consume one token to move on.
+			i = j
+		case c == '(':
+			depth++
 			i++
-			continue
-		case pgTokQIdent:
-			if expectTable {
-				i = pgConsumeTableRef(stmt, i, emit, true)
-				expectTable = false
-				continue
+		case c == ')':
+			if depth > 0 {
+				depth--
 			}
 			i++
-			continue
+		case c == ';' && depth == 0:
+			piece := strings.TrimSpace(s[start:i])
+			if piece != "" {
+				out = append(out, piece)
+			}
+			i++
+			start = i
 		default:
 			i++
 		}
 	}
-	return i
-}
-
-// pgConsumeTableRef reads one table reference at stmt[i] — possibly
-// qualified (schema.table), quoted, a function call source, or a
-// parenthesised subquery. Skips an optional AS alias / bare alias.
-// `insideFromList` toggles bare-alias parsing (a JOIN target uses
-// the same rules but only inside a FROM list).
-//
-// Returns the index just past the reference + alias.
-func pgConsumeTableRef(stmt []pgToken, i int, emit func(string), insideFromList bool) int {
-	if i >= len(stmt) {
-		return i
+	if tail := strings.TrimSpace(s[start:]); tail != "" {
+		out = append(out, tail)
 	}
-	t := stmt[i]
-	switch t.kind {
-	case pgTokPunct:
-		if t.value == "(" {
-			end := pgSkipBalanced(stmt, i)
-			if end > i+1 {
-				pgExtractTablesIn(stmt[i+1:end-1], emit)
-			}
-			i = end
-			return pgSkipOptionalAlias(stmt, i, insideFromList)
-		}
-		return i
-	case pgTokQIdent:
-		emit(t.lower)
-		i++
-	case pgTokIdent:
-		name := t.lower
-		i++
-		for i+1 < len(stmt) && stmt[i].kind == pgTokOp && stmt[i].value == "." {
-			next := stmt[i+1]
-			if next.kind == pgTokIdent || next.kind == pgTokQIdent {
-				name = name + "." + next.lower
-				i += 2
-				continue
-			}
-			break
-		}
-		// Table-function source like generate_series(1,10): record
-		// the name AND skip the paren'd argument list. Idents inside
-		// would still be picked up as functions by the function pass,
-		// so we mark the call as the source table only.
-		if i < len(stmt) && stmt[i].kind == pgTokPunct && stmt[i].value == "(" {
-			emit(name)
-			end := pgSkipBalanced(stmt, i)
-			i = end
-		} else {
-			emit(name)
-		}
-	default:
-		i++
-		return i
+	if len(out) == 0 {
+		out = append(out, strings.TrimSpace(s))
 	}
-	return pgSkipOptionalAlias(stmt, i, insideFromList)
-}
-
-func pgSkipOptionalAlias(stmt []pgToken, i int, insideFromList bool) int {
-	if i < len(stmt) && stmt[i].kind == pgTokIdent && stmt[i].lower == "as" {
-		i++
-		if i < len(stmt) && (stmt[i].kind == pgTokIdent || stmt[i].kind == pgTokQIdent) {
-			i++
-		}
-		return i
-	}
-	if insideFromList && i < len(stmt) && stmt[i].kind == pgTokIdent && !reservedWordsAfterTable[stmt[i].lower] {
-		i++
-	}
-	return i
-}
-
-// pgExtractFunctions reports every identifier directly followed by
-// `(`. Overgreedy by design — the matcher consumes a list and rule
-// writers query specific names — but now bypass-resistant because
-// strings and comments cannot contribute to the token stream.
-func pgExtractFunctions(stmt []pgToken, emit func(string)) {
-	for i := 0; i+1 < len(stmt); i++ {
-		t := stmt[i]
-		next := stmt[i+1]
-		if t.kind == pgTokIdent && next.kind == pgTokPunct && next.value == "(" {
-			emit(t.lower)
-		}
-	}
+	return out
 }

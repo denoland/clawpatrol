@@ -341,66 +341,6 @@ deep metrics visualization.
 
 ---
 
-## httpjail
-
-> HTTP request filter and sandbox
-> https://github.com/coder/httpjail
-> Reviewed: v0.6.1
-
-### httpjail, Secret injection: false
-
-No mechanism for injecting credentials. Rule engines only
-evaluate requests and return allow/deny decisions. Environment
-variables are limited to TLS trust config and request
-metadata.
-
-- https://github.com/coder/httpjail
-- https://coder.github.io/httpjail/print.html
-
-### httpjail, All outbound traffic: false
-
-Intercepts HTTP and HTTPS only. On Linux uses network
-namespaces and iptables for ports 80/443. On macOS uses
-HTTP_PROXY env vars. Non-HTTP protocols (database connections,
-raw TCP, UDP) are not intercepted. Includes basic DNS
-exfiltration protection on Linux.
-
-- https://coder.github.io/httpjail/print.html
-
-### httpjail, Deep packet inspection: false
-
-Inspects only HTTP-level metadata: method, URL, host, scheme,
-path. No body or header inspection exposed to rule engines. No
-non-HTTP protocol parsing.
-
-- https://coder.github.io/httpjail/print.html
-
-### httpjail, Understands LLM traffic: false
-
-No LLM-specific features. Treats all HTTP requests
-identically. No awareness of LLM formats, token counting, or
-model identification.
-
-### httpjail, Rules: true
-
-Three evaluation engines: (1) JavaScript expressions via V8
-with access to request properties, supporting allow/deny with
-custom messages and body size limits; (2) shell scripts using
-exit codes; (3) line processor programs for stateful
-filtering. Default policy is deny-all.
-
-- https://coder.github.io/httpjail/print.html
-
-### httpjail, Analytics: false
-
-Basic request logging to a file (`--request-log`) in the
-format `<timestamp> <+/-> <METHOD> <URL>`. No aggregation,
-dashboards, metrics, or visualization.
-
-- https://coder.github.io/httpjail/print.html
-
----
-
 ## Agent Vault
 
 > Credential proxy and vault
@@ -465,72 +405,6 @@ aggregation dashboards.
 
 ---
 
-## Crab Trap
-
-> LLM-as-judge agent proxy
-> https://github.com/brexhq/CrabTrap
-> Reviewed: v0.0.1
-
-### Crab Trap, Secret injection: false
-
-Does not inject credentials. It is a security inspection
-proxy, not a credential broker. DESIGN.md states the LLM
-judge receives "the full HTTP request verbatim — headers and
-body are not sanitized or redacted."
-
-- https://github.com/brexhq/CrabTrap/blob/main/DESIGN.md
-
-### Crab Trap, All outbound traffic: false
-
-HTTP/HTTPS forward proxy only. Agents connect via
-`HTTP_PROXY`/`HTTPS_PROXY` env vars. No iptables/eBPF
-capture. WebSocket frames after initial HTTP upgrade are not
-inspected. Non-HTTP protocols are not handled.
-
-- https://github.com/brexhq/CrabTrap/blob/main/README.md
-- https://github.com/brexhq/CrabTrap/blob/main/DESIGN.md
-
-### Crab Trap, Deep packet inspection: false
-
-Operates strictly at the HTTP/HTTPS layer. No Postgres,
-Kubernetes, gRPC, or other application protocol parsing.
-
-- https://github.com/brexhq/CrabTrap/blob/main/IMPLEMENTATION.md
-
-### Crab Trap, Understands LLM traffic: false
-
-Does not parse LLM request/response formats. Treats all HTTP
-requests generically — the same approval pipeline applies
-regardless of destination. CrabTrap *uses* an LLM as a judge
-but does not *understand* LLM API traffic flowing through it.
-
-- https://github.com/brexhq/CrabTrap/blob/main/DESIGN.md
-
-### Crab Trap, Rules: true
-
-Two-tier policy system: static rules with deterministic URL
-pattern matching (prefix, exact, glob) and HTTP method
-filtering; then LLM judge evaluation against per-agent
-natural-language policies. Policies are versioned and stored
-in PostgreSQL. Configurable fallback mode and circuit breaker
-for LLM failures.
-
-- https://github.com/brexhq/CrabTrap/blob/main/README.md
-- https://github.com/brexhq/CrabTrap/blob/main/DESIGN.md
-
-### Crab Trap, Analytics: true
-
-Comprehensive audit logging to PostgreSQL with full request
-metadata. Web UI with audit trail viewer. Real-time SSE
-streaming of events. Eval system replays historical requests
-against policies. Optional OpenTelemetry/Prometheus metrics
-(approval counters, judge latency, circuit breaker gauges).
-
-- https://github.com/brexhq/CrabTrap/blob/main/docs/observability.md
-- https://github.com/brexhq/CrabTrap/blob/main/DESIGN.md
-
----
-
 ## Claw Patrol
 
 > Security proxy for AI agents
@@ -561,11 +435,11 @@ Understands Kubernetes API path semantics
 native protocol support. WebSocket frame parsing with
 permessage-deflate decompression.
 
-### Claw Patrol, Understands LLM traffic: true
+### Claw Patrol, Understands LLM traffic: false
 
-Tracks LLM token usage and costs for Anthropic, OpenAI, and
-Gemini. Parses streaming SSE responses for usage data. Records
-per-session model, token counts, and estimated cost.
+The gateway parses Anthropic and OpenAI response bodies for
+model + token counts internally, but doesn't surface that to
+users yet. Marking false until the dashboard exposes it.
 
 ### Claw Patrol, Rules: true
 
@@ -581,6 +455,6 @@ global.
 
 ### Claw Patrol, Analytics: true
 
-Dashboard with per-session request logging, LLM cost
-tracking, integration status, and real-time event streaming.
-SQLite-backed with configurable retention.
+Dashboard with per-session request logging, integration status,
+and real-time event streaming. SQLite-backed with configurable
+retention.

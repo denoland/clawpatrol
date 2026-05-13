@@ -107,7 +107,7 @@ func (s *SlackTokens) NotifyHITL(_ context.Context, req runtime.ApproveRequest, 
 	if req.Secrets == nil {
 		return fmt.Errorf("no secret store on request")
 	}
-	sec, err := req.Secrets.Get(target.CredentialName, req.Profile)
+	sec, err := req.Secrets.Get(target.CredentialName)
 	if err != nil {
 		return fmt.Errorf("fetch credential %s: %w", target.CredentialName, err)
 	}
@@ -124,12 +124,37 @@ func (s *SlackTokens) NotifyHITL(_ context.Context, req runtime.ApproveRequest, 
 	queryLabel := runtime.HITLQueryLabel(req.Endpoint)
 
 	title := slackTrunc(runtime.HITLTitle(req.Method, endpoint), 140)
-	blocks := []map[string]any{
-		{"type": "header", "text": map[string]any{"type": "plain_text", "text": title}},
-		{"type": "section", "text": map[string]any{
-			"type": "mrkdwn",
-			"text": "*" + queryLabel + "*\n```" + slackTrunc(req.Path, 800) + "```",
-		}},
+	var blocks []map[string]any
+	switch {
+	case target.Message != "":
+		blocks = []map[string]any{
+			{"type": "header", "text": map[string]any{"type": "plain_text", "text": title}},
+			{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": slackTrunc(target.Message, 3000)}},
+		}
+	case target.Summary != nil:
+		s := target.Summary
+		headerText := s.TicketID
+		if headerText == "" {
+			headerText = title
+		}
+		emoji := hitlClassificationEmoji(s.Classification)
+		classLine := emoji + " " + s.Classification
+		if s.Confidence > 0 {
+			classLine += fmt.Sprintf(" (%d%%)", s.Confidence)
+		}
+		sectionText := "*Classification:* " + classLine + "\n*Summary:* " + slackTrunc(s.Text, 500)
+		blocks = []map[string]any{
+			{"type": "header", "text": map[string]any{"type": "plain_text", "text": slackTrunc(headerText, 140)}},
+			{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": sectionText}},
+		}
+	default:
+		blocks = []map[string]any{
+			{"type": "header", "text": map[string]any{"type": "plain_text", "text": title}},
+			{"type": "section", "text": map[string]any{
+				"type": "mrkdwn",
+				"text": "*" + queryLabel + "*\n```" + slackTrunc(req.Path, 800) + "```",
+			}},
+		}
 	}
 	ctx := []map[string]any{}
 	if req.Profile != "" {
@@ -226,6 +251,17 @@ func (s *SlackTokens) NotifyHITL(_ context.Context, req runtime.ApproveRequest, 
 	return nil
 }
 
+func hitlClassificationEmoji(c string) string {
+	switch strings.ToLower(c) {
+	case "spam":
+		return ":no_entry_sign:"
+	case "legit", "legitimate":
+		return ":white_check_mark:"
+	default:
+		return ":question:"
+	}
+}
+
 func slackTrunc(s string, n int) string {
 	s = strings.TrimSpace(s)
 	if len(s) > n {
@@ -272,22 +308,12 @@ func slackInteractive(ctx runtime.WebhookCtx, rw http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Walk every (this credential, profile) signing_secret — secrets
-	// are per-profile in the dashboard, but Slack doesn't know which
-	// profile a click came from. First match wins.
 	verified := false
-	for _, prof := range append([]string{""}, ctx.Profiles...) {
-		sec, err := ctx.Secrets.Get(ctx.CredentialName, prof)
-		if err != nil {
-			continue
-		}
+	sec, secErr := ctx.Secrets.Get(ctx.CredentialName)
+	if secErr == nil {
 		signingSecret := sec.Extras["signing_secret"]
-		if signingSecret == "" {
-			continue
-		}
-		if verifySlackSig(signingSecret, ts, body, sig) {
+		if signingSecret != "" && verifySlackSig(signingSecret, ts, body, sig) {
 			verified = true
-			break
 		}
 	}
 	if !verified {

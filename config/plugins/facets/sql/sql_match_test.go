@@ -57,42 +57,6 @@ func TestSQLMatcherVerbCaseInsensitive(t *testing.T) {
 	}
 }
 
-// TestSQLMatcherVerbsList confirms `sql.verbs` is exposed to CEL and
-// that `"drop" in sql.verbs` fires on a multi-statement query whose
-// FIRST verb is the harmless SELECT — the canonical pre-#143 bypass
-// shape.
-func TestSQLMatcherVerbsList(t *testing.T) {
-	m, err := facet.NewMatcher("sql", `"drop" in sql.verbs`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	meta := &sqlfacet.Meta{Verb: "select", Verbs: []string{"select", "drop"}}
-	req := &match.Request{Family: "sql", Meta: meta}
-	if !m.Match(req) {
-		t.Errorf("expected `drop in sql.verbs` to match a select;drop batch")
-	}
-	meta.Verbs = []string{"select"}
-	if m.Match(req) {
-		t.Errorf("expected no match when sql.verbs has only select")
-	}
-}
-
-// TestSQLMatcherVerbsUppercaseTolerated guards the activation-side
-// case guarantee: meta.Verbs come from the extractor lower-cased, but
-// if a future endpoint ever populates them with mixed case the
-// activation path should still feed CEL lowercase values.
-func TestSQLMatcherVerbsUppercaseTolerated(t *testing.T) {
-	m, err := facet.NewMatcher("sql", `"insert" in sql.verbs`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	meta := &sqlfacet.Meta{Verb: "select", Verbs: []string{"SELECT", "INSERT"}}
-	req := &match.Request{Family: "sql", Meta: meta}
-	if !m.Match(req) {
-		t.Errorf("expected case-folded `insert in sql.verbs` match")
-	}
-}
-
 func TestSQLMatcherStatementRegex(t *testing.T) {
 	m, err := facet.NewMatcher("sql", `sql.verb == 'select' && sql.statement.matches('(?i)\\b(secret|password|token)\\b')`)
 	if err != nil {

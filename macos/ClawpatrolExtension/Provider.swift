@@ -353,7 +353,12 @@ class TransparentProxyProvider: NETransparentProxyProvider {
                                                 port, ebuf.baseAddress, Int32(ebuf.count))
                     }
                 }
-                if cid < 0 { continue }
+                if cid < 0 {
+                    let msg = String(cString: errBuf)
+                    os_log("udp_connect %{public}@:%d failed: %{public}@ — closing flow",
+                           log: log, type: .error, ip, port, msg)
+                    flow.closeReadWithError(nil); flow.closeWriteWithError(nil); return
+                }
                 _ = data.withUnsafeBytes { ptr -> Int32 in
                     wg_netstack_send(cid,
                                      UnsafeMutablePointer(mutating: ptr.baseAddress!.assumingMemoryBound(to: CChar.self)),
@@ -674,7 +679,10 @@ final class BypassUDP {
         BypassUDP.liveLock.unlock()
         // AF_INET6 dual-stack so v4-mapped addresses route correctly.
         sock = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP)
-        if sock < 0 { closeAll(); return }
+        if sock < 0 {
+            os_log("bypass: socket() failed errno=%d", log: log, type: .error, errno)
+            closeAll(); return
+        }
         var off: Int32 = 0
         setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, &off, socklen_t(MemoryLayout<Int32>.size))
         // Non-blocking + close-on-exec.
@@ -708,14 +716,20 @@ final class BypassUDP {
 
     private func sendOne(_ data: Data, to host: NWHostEndpoint) {
         var ss = sockaddr_storage()
-        guard fillSockaddr(&ss, host: host.hostname, port: host.port) else { return }
+        guard fillSockaddr(&ss, host: host.hostname, port: host.port) else {
+            os_log("bypass: fillSockaddr failed for %{public}@:%{public}@", log: log, type: .error, host.hostname, host.port)
+            return
+        }
         let slen = socklen_t(ss.ss_len)
-        withUnsafePointer(to: &ss) { ptr in
+        let n = withUnsafePointer(to: &ss) { ptr -> Int in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-                _ = data.withUnsafeBytes { buf in
+                data.withUnsafeBytes { buf in
                     sendto(self.sock, buf.baseAddress, buf.count, 0, sa, slen)
                 }
             }
+        }
+        if n < 0 {
+            os_log("bypass: sendto %{public}@:%{public}@ failed errno=%d", log: log, type: .error, host.hostname, host.port, errno)
         }
     }
 

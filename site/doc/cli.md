@@ -1,137 +1,201 @@
 # CLI Reference
 
-## Installation
+The `clawpatrol` binary is the unified entry point for both the
+gateway server and the client tools. Same binary, different
+subcommands.
+
+## Install
 
 ```bash
 curl -fsSL https://clawpatrol.dev/install.sh | sh
 ```
 
-The installer drops a single statically linked Go binary in
-`~/.local/bin`. The `clawpatrol` command is the unified entry point for
-both the proxy server and the client tools.
+Statically-linked Go binary, dropped in `~/.local/bin`. macOS and
+Linux on amd64 + arm64. Set `CLAWPATROL_FROM_SOURCE=1` to build from
+source instead (requires Go + `gh auth login`).
 
 ## Commands
 
-### `clawpatrol onboard`
-
-Interactive setup wizard. Starts a local proxy, scans for API
-keys, and configures your system.
-
-```bash
-clawpatrol onboard [--server URL]
-```
-
-Options:
-- `--server URL` — skip the gateway selector and connect to a
-  specific server (e.g. `--server https://gateway.example.com`)
-
-### `clawpatrol run`
-
-Run a command with its traffic routed through the proxy.
-
-```bash
-clawpatrol run [--name NAME] [--profile PROFILE] [--no-expose] [--sub-user] [--fs-access PATH]... <command> [args...]
-```
-
-Options:
-- `--name NAME` — session name (defaults to the command name)
-- `--profile PROFILE` — use a specific integration profile
-- `--no-expose` — don't tunnel the wrapped command's TCP
-  listeners back to the host (Linux only; default is to
-  auto-tunnel)
-- `--sub-user` — run the wrapped command under a subordinate
-  UID for filesystem isolation (Linux only; requires an
-  `/etc/subuid` entry). By default the command runs as the
-  calling user so it can read `~/.claude`, `~/.config`, git
-  credentials, ssh keys, and other per-user state. Opt into
-  `--sub-user` when you want the command sandboxed away from
-  your home directory.
-- `--fs-access PATH` — expose a host file or directory to the
-  wrapped command at the same absolute path (Linux only).
-  Repeatable. Only meaningful with `--sub-user`; otherwise the
-  wrapped command already runs as you and has native access.
-
-Examples:
-```bash
-clawpatrol run claude
-clawpatrol run --name my-agent python agent.py
-clawpatrol run --profile production gh pr create
-```
-
-The proxy injects API keys and logs all traffic for the
-duration of the command. When the command exits, the session
-ends.
-
-If you omit the `run` subcommand, clawpatrol treats the arguments
-as a wrapped command automatically:
-
-```bash
-clawpatrol claude            # equivalent to: clawpatrol run claude
-```
-
 ### `clawpatrol gateway`
 
-Start the proxy server directly (without the onboard wizard).
+Run the gateway daemon against an HCL config. Start from
+[`gateway.example.hcl`](https://github.com/denoland/clawpatrol/blob/main/gateway.example.hcl)
+— see [Getting Started](/docs/getting-started/) for the operational
+fields you need to edit.
 
 ```bash
-clawpatrol gateway
+clawpatrol gateway <config.hcl> [--read-only-config]
 ```
 
-This starts the CONNECT proxy on port 8443 and the
-dashboard/API on port 8080. Useful for running clawpatrol as a
-persistent service or in Docker.
-
-### `clawpatrol offboard`
-
-Remove clawpatrol from this machine.
-
-```bash
-clawpatrol offboard [-y] [--delete-data] [--keep-data]
-```
-
-Options:
-- `-y`, `--yes` — skip confirmation prompt
-- `--delete-data` — remove all data in `~/.clawpatrol`
-- `--keep-data` — keep data (don't ask)
+`--read-only-config` rejects dashboard writes to the HCL file —
+appropriate when the file is owned by a deploy pipeline. See
+[config-reference](config-reference) for the HCL grammar.
 
 ### `clawpatrol join`
 
-Register this device with an existing gateway. The URL is the only
-positional argument; `--hostname`, `--profile`, `--whole-machine`,
-and `--no-trust` are optional flags.
+Enroll the current device with a gateway. Prints a one-time code,
+opens the dashboard so an operator can confirm and assign a
+profile, persists the WireGuard conf, and installs the CA in your
+trust store. Falls back to the Tailscale path (see `login` below)
+when the gateway runs in Tailscale mode.
 
 ```bash
-clawpatrol join <gateway-url>
+clawpatrol join <gateway-url> [flags]
 ```
 
-### `clawpatrol --version`
-
-Print the version and exit. Also accepts `-V`.
-
-## Environment Variables
-
-| Variable | Default | Description |
+| Flag | Default | Notes |
 |---|---|---|
-| `CLAWPATROL_DATA` | `~/.clawpatrol` | Data directory (database, CA certs, keys) |
-| `CLAWPATROL_HOSTNAME` | — | Public hostname for the gateway |
-| `PROXY_PORT` | `8443` | CONNECT proxy listen port |
-| `API_PORT` | `8080` | Dashboard/API listen port |
-| `API_HOST` | `127.0.0.1` | Dashboard/API bind address |
-| `DEV_AUTH_EMAIL` | — | Skip OAuth, auto-login as this email |
-| `AUTH_PROVIDER` | — | Path to auth provider module |
-| `CLAWPATROL_SESSION_SECRET` | — | Session signing key |
-| `SITE_DIR` | — | Landing site directory for unauthenticated visitors |
-| `ANALYTICS_RETENTION_DAYS` | `7` | Days to retain request logs |
-| `ALLOWED_EMAIL_DOMAIN` | — | Restrict login to a specific email domain |
+| `--hostname NAME` | OS hostname | Device name registered with the gateway |
+| `--profile NAME` | gateway default | Profile to assign at approval time |
+| `--whole-machine` | off | Bring up `wg-quick` and route every packet through the gateway (default: persist conf only and use `clawpatrol run`) |
+| `--no-trust` | off | Fetch the CA but skip system trust install |
+| `--ca-dir DIR` | `~/.clawpatrol` | Where to store the fetched CA |
+| `--name NAME` | `clawpatrol` | Exit-node hostname (only used when the gateway is on Tailscale) |
 
-## Data Directory
+### `clawpatrol login`
 
-Claw Patrol stores all state in `~/.clawpatrol/` (or `$CLAWPATROL_DATA`):
+Tailscale-based onboarding alternative for fleets already on a
+tailnet. Joins the device to the tailnet, finds the gateway by its
+exit-node hostname, and installs the CA.
+
+```bash
+clawpatrol login [flags]
+```
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--name NAME` | `clawpatrol` | Exit-node hostname to look for on the tailnet |
+| `--no-trust` | off | Fetch the CA but skip system trust install |
+| `--no-exit-node` | off | Skip setting the tailscale exit-node (run manually) |
+
+### `clawpatrol run`
+
+Run a command with its traffic routed through the joined gateway.
+
+```bash
+clawpatrol run [--conf <path>] -- <command> [args...]
+```
+
+`--conf` points at the WG conf written by `clawpatrol join`; defaults
+to the standard location so you rarely need it. On Linux the wrapped
+command runs in an unprivileged user namespace with a private WG
+tunnel; on macOS the Network Extension does the capture.
+
+```bash
+clawpatrol run -- claude
+clawpatrol run -- gh pr create
+clawpatrol run -- psql 'host=db user=agent'
+```
+
+The agent sees a normal network — outbound flows just route through
+the gateway, which matches each request against the rules, injects
+the configured credential, and forwards.
+
+### `clawpatrol test`
+
+Replay recorded gateway actions against a candidate HCL policy and
+report verdict drift.
+
+```bash
+clawpatrol test <config.hcl> <fixture.json | fixture-dir>
+```
+
+See [`clawpatrol-test`](clawpatrol-test) for the fixture format and
+CI integration. Exit 0 = all match, 1 = drift, 2 = usage/config
+error.
+
+### `clawpatrol validate`
+
+Parse and compile a gateway HCL config, then exit. Use it in CI to
+catch typos before they hit production.
+
+```bash
+clawpatrol validate <config.hcl>
+```
+
+`validate` runs the same load path the daemon does, so any
+[external plugin](plugins) referenced from the file is spawned and
+its manifest is checked. Beyond the HCL pipeline it also runs a
+schema-only pass that exercises every plugin-declared facet's CEL
+env and resolves every plugin endpoint's `Family` against the
+facet registry — catches authoring bugs (typo'd Family, invalid
+identifier in a facet name, …) the operator's HCL didn't happen to
+exercise. The success line names what loaded:
+
+```
+ok: gateway.hcl — 7 endpoints across 3 profile(s)
+  plugin "example" v0.1: 2 facet(s), 1 credential type(s), 1 tunnel type(s), 3 endpoint type(s)
+```
+
+### `clawpatrol status`
+
+Report device install state — whether `join`/`login` ran, whether
+the CA is trusted, whether the WG conf or tailnet membership is
+healthy.
+
+```bash
+clawpatrol status
+```
+
+### `clawpatrol uninstall`
+
+Tear down everything `join` / `login` put on this machine — stops
+the macOS Network Extension, brings down the WG interface, removes
+the CA from system trust, drops per-user state dirs, strips the
+shell-rc.
+
+```bash
+clawpatrol uninstall [-y] [--keep-ca] [--keep-conf]
+```
+
+### `clawpatrol env`
+
+Print the shell exports clawpatrol injects when wrapping a command
+(`SSL_CERT_FILE`, credential-placeholder env vars). Source from
+your shell rc if you need them outside `clawpatrol run`.
+
+```bash
+eval "$(clawpatrol env)"
+```
+
+### `clawpatrol version`
+
+Print the version. Also accepts `-v` and `--version`.
+
+## Environment variables
+
+Most configuration lives in `gateway.hcl` on the gateway side. A few
+device-side knobs:
+
+| Variable | Effect |
+|---|---|
+| `CLAWPATROL_RUN_CONF` | Override the WG conf path `clawpatrol run` reads |
+| `CLAWPATROL_NO_ENV` | Skip the env pushdown (`SSL_CERT_FILE`, placeholders) when wrapping a command |
+| `CLAWPATROL_TELEMETRY` | `0` to disable telemetry (same as `DO_NOT_TRACK=1`) |
+| `DO_NOT_TRACK` | Standard opt-out, honored |
+| `TS_AUTHKEY` | Used by `clawpatrol login` to authenticate to Tailscale non-interactively |
+
+## Data directories
+
+Where state lives, by role:
+
+**Gateway host** — the operator picks the location; nothing is
+hardcoded. A typical layout under `/opt/clawpatrol/`:
+
+```
+gateway.hcl              HCL config (operator-edited)
+state/clawpatrol.db      SQLite — everything else
+```
+
+`state_dir` in the HCL points at the sqlite directory. The DB holds
+the CA cert + key, WireGuard server key, SSH host keys, sessions,
+audit log, telemetry UUID, and DNS-VIP allocations.
+
+**Device** (set up by `join` / `login`):
 
 ```
 ~/.clawpatrol/
-  clients.db          SQLite database (devices, sessions, integrations)
-  ca/                 Generated CA certificate and key
-  wg/                 WireGuard server keys
-  gateway.log         Gateway stdout/stderr (when run via launchd/systemd)
+  ca.crt                  Fetched gateway CA
+~/.config/clawpatrol/
+  wg.conf                 Per-device WireGuard config (join path)
 ```

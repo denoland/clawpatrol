@@ -26,14 +26,8 @@ func (g *Gateway) Dump() ([]byte, error) {
 	if g.AdminEmail != "" {
 		out["admin_email"] = g.AdminEmail
 	}
-	if g.CADir != "" {
-		out["ca_dir"] = g.CADir
-	}
 	if g.LogPath != "" {
 		out["log_path"] = g.LogPath
-	}
-	if g.OAuthDir != "" {
-		out["oauth_dir"] = g.OAuthDir
 	}
 	if g.Resolver != "" {
 		out["resolver"] = g.Resolver

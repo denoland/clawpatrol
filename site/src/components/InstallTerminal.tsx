@@ -1,13 +1,18 @@
 import { useState } from "preact/hooks";
 
-export const INSTALL_CMD =
-  "curl -fsSL https://clawpatrol.dev/install.sh | sh";
+export const INSTALL_CMD = "curl -fsSL https://clawpatrol.dev/install.sh | sh";
 
-// Flat install pill for the hero. The dramatic CRT lives in the CTA
-// section at the bottom; up here we want a single-line code line with
-// a copy button, sized to its contents and matching the cream/dark
-// page palette rather than competing with the heading.
-export function InstallTerminal() {
+type Variant = "compact" | "expanded";
+
+// Navy install pill with a copy button. Two sizes:
+//   • compact — used inline (e.g. hero column).
+//   • expanded — bigger padding and type for standalone use as a
+//     section's primary install affordance.
+export function InstallTerminal({
+  variant = "compact",
+}: {
+  variant?: Variant;
+}) {
   const [copied, setCopied] = useState(false);
 
   async function copy() {
@@ -21,17 +26,21 @@ export function InstallTerminal() {
     }
   }
 
+  const expanded = variant === "expanded";
+  const surface = expanded ? "pl-10 pr-8 py-8" : "pl-8 pr-6 py-6";
+  const codeSize = expanded ? "text-base" : "text-sm";
+
   return (
     <div
-      class="squircle-lg bg-console-dark inline-flex items-center
-        gap-3 pl-4 pr-3 py-3 max-w-full shadow-sm"
+      class={`squircle-lg bg-navy inline-flex items-center
+        gap-4 max-w-full shadow-sm ${surface}`}
     >
       <pre
-        class="font-mono text-sm text-canvas flex-1 min-w-0
+        class={`font-mono ${codeSize} text-canvas flex-1 min-w-0
           overflow-x-auto whitespace-nowrap leading-none
-          [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          [scrollbar-width:none] [&::-webkit-scrollbar]:hidden`}
       >
-        <span class="text-crt-dim">$ </span>{INSTALL_CMD}
+        {INSTALL_CMD}
       </pre>
       <button
         type="button"

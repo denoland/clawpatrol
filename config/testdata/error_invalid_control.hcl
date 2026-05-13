@@ -3,6 +3,5 @@
 # in a degraded fallback mode.
 
 listen = "0.0.0.0:8443"
-ca_dir = "/opt/clawpatrol/ca"
 
 control = "kubernetes"

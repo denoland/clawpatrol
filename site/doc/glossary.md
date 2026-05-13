@@ -37,17 +37,14 @@ script. The agent never holds real credentials; it sends
 "Agent" is the *who* of a request; [device](#device) is the *where it
 came from* used by the global config.
 
-### Device
-
-A network peer the gateway recognizes, keyed by source IP — typically
-a WireGuard tunnel address (`10.77.0.x`) or, on macOS, the IP the
-Network Extension uses. A device is bound to exactly one
-[profile](#profile), which determines which [endpoints](#endpoint)'
-rules apply to its traffic (traffic to hosts outside the profile
-falls through to `defaults.unknown_host`). The HCL
-`device "<ip>" { ... }` block (see
-[Configuration vocabulary](#configuration-vocabulary)) carries
-per-device rule overrides.
+A network peer the gateway recognizes, keyed by source IP —
+typically a WireGuard tunnel address inside the configured subnet
+(default `10.55.0.0/24`) or, on macOS, the IP the Network
+Extension uses. An operator assigns each device exactly one
+[profile](#profile) at approval time, which determines which
+[endpoints](#endpoint)' rules apply to its traffic. Traffic to
+hosts outside the profile falls through to the top-level
+`unknown_host` setting (default `passthrough`).
 
 ### Endpoint
 
@@ -96,10 +93,10 @@ A single named matchable property exposed to a [rule](#rule)'s CEL
 [`condition`](#cel-condition). Each protocol family exposes its own
 top-level struct-typed variable: `http.method` / `http.path` /
 `http.query` / `http.headers` / `http.body` / `http.body_json`;
-`sql.verb` / `sql.tables` / `sql.function` / `sql.statement`;
+`sql.verb` / `sql.tables` / `sql.functions` / `sql.statement`;
 `k8s.verb` / `k8s.resource` / `k8s.namespace` / `k8s.name` /
 `k8s.params`. Per-facet types vary — `method` and `verb` are scalar
-strings, `tables` / `function` are lists, `query` / `headers` /
+strings, `tables` / `functions` are lists, `query` / `headers` /
 `params` are maps, and `body_json` is parsed-JSON `dyn`.
 
 ### CEL condition
@@ -127,8 +124,8 @@ types: `llm_approver` (Claude / GPT proctor that reads a
 A named list of [endpoints](#endpoint) attached to a [device](#device).
 A profile names the endpoints whose [rules](#rule) apply to that
 device's traffic — it is not an allowlist. Traffic to hosts not
-covered by any profile endpoint falls through to
-`defaults.unknown_host` (default: `passthrough`). Profiles are how
+covered by any profile endpoint falls through to the top-level
+`unknown_host` setting (default `passthrough`). Profiles are how
 operators say "these are the endpoints I want to govern for this
 device."
 
@@ -217,9 +214,9 @@ An [approver](#approver) entity. First label = type (`llm_approver` /
 
 ### `policy "<name>" { text = "..." }`
 
-A reusable LLM proctor prompt. *Not* the global config — this is one
-block within it. Referenced from `approve = [{ name, policy = my-policy
-}, ...]` stages.
+A reusable LLM proctor prompt. Referenced from an `llm_approver`
+block's `policy = my-policy` field; the approver itself is then
+named in `approve = [my-judge]` on a rule.
 
 ### `credential "<type>" "<name>" { ... }`
 
@@ -245,15 +242,7 @@ inferred from `endpoint(s) =`. Body carries `endpoint(s) =`,
 A [profile](#profile). Single-label block — bare name, plus an
 endpoint-membership list.
 
-### `device "<ip>" { rule ... ... { ... } }`
-
-Per-device rule overrides — operator-edited from the dashboard's
-per-device rule editor, spliced into `gateway.hcl` as standalone
-blocks. Rules inside `device {}` reference the device's IP implicitly
-and get a +1000 priority bump so they win against profile rules.
-
 <!-- Implementation-level vocabulary (Plugin, Runtime, the
 HTTP/Postgres/TLS/Conn runtime interfaces, ConnIndex, the WG
 promiscuous forwarder, etc.) lives in the repo's internal
 doc/code-vocabulary.md, not here. -->
-

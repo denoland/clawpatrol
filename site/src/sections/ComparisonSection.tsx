@@ -120,10 +120,16 @@ export function ComparisonSection() {
         <table class="w-full text-sm font-sans">
           <thead>
             <tr class="border-b-2 border-navy-200">
-              <th class="text-left py-3 pr-2 sm:pr-4 font-medium font-display text-text-muted" />
+              <th
+                scope="col"
+                class="text-left py-3 pr-2 sm:pr-4 font-medium font-display text-text-muted"
+              >
+                <span class="sr-only">Product</span>
+              </th>
               {FEATURES.map((f) => (
                 <th
                   key={f}
+                  scope="col"
                   class="py-3 px-1.5 sm:px-3 font-medium
                      text-text-muted align-bottom
                     text-2xs uppercase tracking-widest"
@@ -141,8 +147,9 @@ export function ComparisonSection() {
                   row.highlight ? "bg-rust/20" : ""
                 }`}
               >
-                <td
-                  class={`py-3 px-2 sm:px-4 font-bold font-sans font
+                <th
+                  scope="row"
+                  class={`text-left py-3 px-2 sm:px-4 font-bold font-sans font
                     whitespace-nowrap ${
                       row.highlight ? "text-navy" : "text-navy-400"
                     }`}
@@ -154,18 +161,18 @@ export function ComparisonSection() {
                   >
                     {row.name}
                   </a>
-                  {/* <span
-                    class="hidden sm:block text-[11px]
-                    font-sans font-normal text-text-muted"
-                  >
-                    {row.desc}
-                  </span> */}
-                </td>
+                </th>
                 {row.checks.map((ok, i) => {
                   const anchor = slug(`${row.name} ${FEATURES[i]} ${ok}`);
+                  const label = `${row.name} ${
+                    ok ? "supports" : "does not support"
+                  } ${FEATURES[i]} — see details`;
                   return (
                     <td key={i} class="py-3 px-1.5 sm:px-3 text-center text-lg">
-                      <a href={`/docs/competitors/#${anchor}`}>
+                      <a
+                        href={`/docs/competitors/#${anchor}`}
+                        aria-label={label}
+                      >
                         {ok ? CHECK : CROSS}
                       </a>
                     </td>

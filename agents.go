@@ -18,6 +18,7 @@ import (
 	"tailscale.com/client/local"
 
 	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/plugins/tailscaleproto"
 )
 
 type Agent struct {
@@ -477,6 +478,9 @@ func (r *AgentRegistry) LoadSessions(db *sql.DB) {
 		if err := rows.Scan(&ip, &t, &id, &title, &model, &ti, &to, &cu, &cm, &reqs, &fa, &la); err != nil {
 			continue
 		}
+		if r.onboard != nil && !r.onboard.HasDevice(ip) {
+			continue // ephemeral peer purged on startup — skip orphaned sessions
+		}
 		a := r.agents[ip]
 		if a == nil {
 			now := time.Now().UTC()
@@ -564,13 +568,33 @@ func shortHash(s string) string {
 }
 
 type IntegrationRow struct {
-	ID       string              `json:"id"`
-	Name     string              `json:"name"`
-	Type     string              `json:"type"` // credential plugin type
-	HasOAuth bool                `json:"has_oauth"`
-	OAuth    *OAuthIntegrationUI `json:"oauth,omitempty"`
-	Slots    []config.SecretSlot `json:"slots,omitempty"`
-	Owners   []Owner             `json:"owners"`
+	ID               string                 `json:"id"`
+	Name             string                 `json:"name"`
+	Type             string                 `json:"type"` // credential plugin type
+	HasOAuth         bool                   `json:"has_oauth"`
+	OAuth            *OAuthIntegrationUI    `json:"oauth,omitempty"`
+	Slots            []config.SecretSlot    `json:"slots,omitempty"`
+	Connected        bool                   `json:"connected"`
+	ExpiresAt        int64                  `json:"expires_at,omitempty"`
+	DisplayName      string                 `json:"display_name,omitempty"`
+	AvatarURL        string                 `json:"avatar_url,omitempty"`
+	HasTailscaleAuth bool                   `json:"has_tailscale_auth,omitempty"`
+	TailscaleAuth    *TailscaleAuthStatusUI `json:"tailscale_auth,omitempty"`
+}
+
+// TailscaleAuthStatusUI is the dashboard-facing slice of a
+// tailscale-node-auth credential's live state. Connected reflects
+// whether tsnet has persisted node identity for the credential.
+// PendingURL is the live Tailscale login URL emitted by tsnet when
+// no identity is stored yet — the dashboard's "Connect" button
+// redirects to it. Endpoint paths are surfaced so the dashboard
+// renders the connect flow without hard-coding the route layout.
+type TailscaleAuthStatusUI struct {
+	Connected     bool   `json:"connected"`
+	PendingURL    string `json:"pending_url,omitempty"`
+	ConnectURL    string `json:"connect_url"`
+	StatusURL     string `json:"status_url"`
+	DisconnectURL string `json:"disconnect_url"`
 }
 
 // OAuthIntegrationUI is the dashboard-facing slice of an
@@ -579,14 +603,6 @@ type IntegrationRow struct {
 type OAuthIntegrationUI struct {
 	BaseScopes     []string                    `json:"base_scopes"`
 	OptionalScopes []config.OptionalScopeGroup `json:"optional_scopes,omitempty"`
-}
-
-type Owner struct {
-	Owner       string `json:"owner"`
-	Connected   bool   `json:"connected"`
-	ExpiresAt   int64  `json:"expires_at,omitempty"`
-	DisplayName string `json:"display_name,omitempty"`
-	AvatarURL   string `json:"avatar_url,omitempty"`
 }
 
 func (w *webMux) apiStatus(rw http.ResponseWriter, r *http.Request) {
@@ -613,7 +629,6 @@ func (w *webMux) statusList(r *http.Request) []IntegrationRow {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	selectedProfile, _ := w.credentialProfileKeyForRequest(r)
 	for _, name := range names {
 		ent := policy.Credentials[name]
 		row := IntegrationRow{ID: name, Name: name, Type: ent.Plugin.Type}
@@ -625,23 +640,30 @@ func (w *webMux) statusList(r *http.Request) []IntegrationRow {
 					OptionalScopes: flow.OptionalScopes,
 				}
 			}
-			for _, owner := range w.g.oauth.Owners(name) {
-				connected, exp := w.g.oauth.Status(name, owner)
-				o := Owner{Owner: owner, Connected: connected}
+			if connected, exp := w.g.oauth.Status(name); connected {
+				row.Connected = true
 				if !exp.IsZero() {
-					o.ExpiresAt = exp.Unix()
+					row.ExpiresAt = exp.Unix()
 				}
-				o.DisplayName, o.AvatarURL = w.g.oauth.Profile(name, owner)
-				row.Owners = append(row.Owners, o)
+				row.DisplayName, row.AvatarURL = w.g.oauth.Profile(name)
 			}
 		}
 		if sp, ok := ent.Body.(config.SecretSlotsProvider); ok {
 			row.Slots = sp.SecretSlots()
-			if selectedProfile != "" {
-				present, _ := credentialSlotPresence(w.g.db, name, selectedProfile)
-				if len(present) > 0 {
-					row.Owners = append(row.Owners, Owner{Owner: selectedProfile, Connected: true})
-				}
+			present, _ := credentialSlotPresence(w.g.db, name)
+			if len(present) > 0 {
+				row.Connected = true
+			}
+		}
+		if _, ok := ent.Body.(tailscaleproto.TailscaleAuthProvider); ok {
+			row.HasTailscaleAuth = true
+			present, _ := credentialSlotPresence(w.g.db, name)
+			row.TailscaleAuth = &TailscaleAuthStatusUI{
+				Connected:     len(present) > 0,
+				PendingURL:    tailscaleproto.Default.Get(name),
+				ConnectURL:    "/api/tailscale/connect?id=" + name,
+				StatusURL:     "/api/tailscale/status?id=" + name,
+				DisconnectURL: "/api/tailscale/disconnect?id=" + name,
 			}
 		}
 		out = append(out, row)
@@ -650,10 +672,19 @@ func (w *webMux) statusList(r *http.Request) []IntegrationRow {
 }
 
 // credentialsInProfile returns the set of credential bare names that
-// any endpoint in the given profile references. nil means "no filter
-// — return everything." Used by apiStatus and the device-page card
-// render so per-device views only show credentials the device's
-// profile actually uses.
+// any endpoint in the given profile references — directly via the
+// endpoint's `credential = ...` / `credentials = [...]` bindings, or
+// transitively via the credential attached to the endpoint's
+// `tunnel = ...`. nil means "no filter — return everything." Used by
+// apiStatus and the device-page card render so per-device views only
+// show credentials the device's profile actually uses.
+//
+// Walking tunnel-attached credentials in addition to endpoint-attached
+// ones lets the dashboard surface tunnel-bound auth (e.g. the tailscale
+// node-auth credential) on profiles whose endpoints reach upstream
+// through that tunnel — the operator clicks Connect on the same
+// integration card whether the credential is wired to the endpoint or
+// to the tunnel underneath it.
 func credentialsInProfile(policy *config.CompiledPolicy, profile string) map[string]bool {
 	if profile == "" || policy == nil {
 		return nil
@@ -667,6 +698,11 @@ func credentialsInProfile(policy *config.CompiledPolicy, profile string) map[str
 		for _, cb := range ep.Credentials {
 			if cb.Credential != nil {
 				out[cb.Credential.Symbol.Name] = true
+			}
+		}
+		for tun := ep.Tunnel; tun != nil; tun = tun.Via {
+			if tun.Credential != nil {
+				out[tun.Credential.Symbol.Name] = true
 			}
 		}
 	}
@@ -704,53 +740,57 @@ func (w *webMux) agentsList() []*Agent {
 		v4, v6 := w.onboard.ExternalIPs(a.IP)
 		a.ExternalIPv4, a.ExternalIPv6 = v4, v6
 	}
-	// enrich with connected integrations per agent's user. Re-run on
-	// every snapshot — caching by `Integrations != nil` would freeze
-	// the list at first sighting (a freshly-onboarded device whose
-	// user later connects Claude wouldn't reflect the new connection).
+	// Surface the legacy display owner on agents whose User column is
+	// still the tailnet "tagged-devices" stub, so the dashboard can
+	// render something more meaningful.
 	for _, a := range snap {
-		// Per-profile credentials: the agent's Integrations list
-		// reflects what the device's bound profile has connected. Falls
-		// back to the legacy per-user lookup for tailnet-control-mode
-		// installs that still bucket creds by login.
-		profile := w.onboard.ProfileForIP(a.IP)
-		if profile == "" {
-			if a.User == "" || a.User == "tagged-devices" {
-				if owner := w.onboard.OwnerForIP(a.IP); owner != "" {
-					a.User = owner
-				}
+		if a.User == "" || a.User == "tagged-devices" {
+			if owner := w.onboard.OwnerForIP(a.IP); owner != "" {
+				a.User = owner
 			}
-			profile = a.User
 		}
+	}
+	// Credentials are global (one secret per credential), but each
+	// agent's profile only references a subset of the declared
+	// credentials. Compute the connected set once across the whole
+	// policy, then surface only the entries that fall inside the
+	// agent's profile.
+	policy := w.g.Policy()
+	if policy == nil {
+		return snap
+	}
+	connected := map[string]bool{}
+	for name := range policy.Credentials {
+		if conn, _ := w.g.oauth.Status(name); conn {
+			connected[name] = true
+			continue
+		}
+		present, _ := credentialSlotPresence(w.g.db, name)
+		if len(present) > 0 {
+			connected[name] = true
+		}
+	}
+	for _, a := range snap {
+		profile := w.onboard.ProfileForIP(a.IP)
 		if profile == "" {
 			continue
 		}
-		// Walk every declared credential — connected if either an
-		// OAuth token exists OR the operator pasted a secret slot via
-		// the dashboard. Was hardcoded to the claude/codex/github
-		// legacy trio, which silently hid every other credential type
-		// from the agents table.
-		var ids []string
-		if policy := w.g.Policy(); policy != nil {
-			names := make([]string, 0, len(policy.Credentials))
+		allowed := credentialsInProfile(policy, profile)
+		if allowed == nil {
+			// No profile filter — fall back to the full connected set.
+			allowed = map[string]bool{}
 			for name := range policy.Credentials {
-				names = append(names, name)
-			}
-			sort.Strings(names)
-			for _, name := range names {
-				if conn, _ := w.g.oauth.Status(name, profile); conn {
-					ids = append(ids, name)
-					continue
-				}
-				present, _ := credentialSlotPresence(w.g.db, name, profile)
-				if len(present) > 0 {
-					ids = append(ids, name)
-				}
+				allowed[name] = true
 			}
 		}
-		if ids != nil {
-			a.Integrations = ids
+		ids := make([]string, 0, len(allowed))
+		for name := range allowed {
+			if connected[name] {
+				ids = append(ids, name)
+			}
 		}
+		sort.Strings(ids)
+		a.Integrations = ids
 	}
 	return snap
 }
@@ -826,7 +866,7 @@ func (w *webMux) apiProfiles(rw http.ResponseWriter, _ *http.Request) {
 // itself.
 type RuleSummary struct {
 	Name       string                `json:"name"`
-	Family     string                `json:"family"` // "https" | "sql" | "k8s"
+	Family     string                `json:"family"` // "http" | "sql" | "k8s"
 	Endpoint   string                `json:"endpoint"`
 	Profile    string                `json:"profile,omitempty"`
 	Priority   int                   `json:"priority,omitempty"`

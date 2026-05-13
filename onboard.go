@@ -70,6 +70,7 @@ type onboardRegistry struct {
 	ephemeralParentByIP  map[string]string // ephemeral IP → parent device IP
 	extV4ByIP            map[string]string
 	extV6ByIP            map[string]string
+	knownDeviceIPs       map[string]bool // all IPs present in devices table
 	db                   *sql.DB
 }
 
@@ -84,6 +85,7 @@ func newOnboardRegistry() *onboardRegistry {
 		ephemeralParentByIP:  map[string]string{},
 		extV4ByIP:            map[string]string{},
 		extV6ByIP:            map[string]string{},
+		knownDeviceIPs:       map[string]bool{},
 	}
 }
 
@@ -188,6 +190,7 @@ func (r *onboardRegistry) Load(db *sql.DB) error {
 		if err := rows.Scan(&ip, &name, &profile, &v4, &v6); err != nil {
 			return err
 		}
+		r.knownDeviceIPs[ip] = true
 		if name.Valid {
 			r.hostnameByIP[ip] = name.String
 		}
@@ -202,6 +205,14 @@ func (r *onboardRegistry) Load(db *sql.DB) error {
 		}
 	}
 	return rows.Err()
+}
+
+// HasDevice reports whether ip has a row in the devices table.
+// Used to filter out sessions from ephemeral peers that no longer exist.
+func (r *onboardRegistry) HasDevice(ip string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.knownDeviceIPs[ip]
 }
 
 // upsertLocked writes the in-memory tuple for ip into the devices row.
@@ -239,6 +250,7 @@ func (r *onboardRegistry) upsertLocked(ip string) {
 	`, ip, nullStr(r.hostnameByIP[ip]), nullStr(r.profileByIP[ip]),
 		nullStr(r.extV4ByIP[ip]), nullStr(r.extV6ByIP[ip]),
 		now, now)
+	r.knownDeviceIPs[ip] = true
 }
 
 func nullStr(s string) any {
@@ -564,7 +576,7 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "approval requires an authenticated operator", http.StatusForbidden)
 		return
 	}
-	owner, _ := w.credentialProfileKeyForRequest(r)
+	owner, _ := w.selectedProfileForRequest(r)
 	if owner == "" {
 		http.Error(rw, "approval requires a profile", http.StatusForbidden)
 		return

@@ -34,18 +34,10 @@ export function HeroSection() {
           <Button href="https://github.com/denoland/clawpatrol" size="lg">
             Get Started
           </Button>
-          <div class="mt-5 max-w-lg">
-            <InstallTerminal />
-          </div>
         </div>
 
         <div class="flex justify-center min-w-0">
-          <img
-            src="/clawpatrol.png"
-            alt="Claw Patrol mascot"
-            class="w-72 md:w-96 max-w-full
-              mix-blend-multiply"
-          />
+          <InstallTerminal />
         </div>
       </div>
     </section>

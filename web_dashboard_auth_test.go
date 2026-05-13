@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/denoland/clawpatrol/config"
@@ -33,5 +34,57 @@ func TestDashboardLoginGetDoesNotAcceptSecretQueryParam(t *testing.T) {
 	}
 	if cookies := rw.Result().Cookies(); len(cookies) != 0 {
 		t.Fatalf("GET /__login?secret=... set cookies: %+v", cookies)
+	}
+}
+
+func TestDashboardLoginRejectsProtocolRelativeNext(t *testing.T) {
+	tests := []struct {
+		name      string
+		queryNext string
+		want      string
+	}{
+		{
+			name:      "valid dashboard path",
+			queryNext: "/dashboard",
+			want:      "/dashboard",
+		},
+		{
+			name:      "protocol-relative URL",
+			queryNext: "//evil.example/path",
+			want:      "/",
+		},
+		{
+			name:      "encoded protocol-relative URL",
+			queryNext: "%2F%2Fevil.example%2Fpath",
+			want:      "/",
+		},
+		{
+			name:      "encoded backslash authority",
+			queryNext: "%2F%5C%5Cevil.example%2Fpath",
+			want:      "/",
+		},
+		{
+			name:      "absolute URL",
+			queryNext: "https%3A%2F%2Fevil.example%2Fpath",
+			want:      "/",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := &webMux{g: &Gateway{cfg: &config.Gateway{DashboardSecret: "s3cr3t"}}}
+			r := httptest.NewRequest(http.MethodPost, "/__login?next="+tt.queryNext, strings.NewReader("secret=s3cr3t"))
+			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rw := httptest.NewRecorder()
+
+			w.apiDashboardLogin(rw, r)
+
+			if rw.Code != http.StatusFound {
+				t.Fatalf("status = %d, want %d", rw.Code, http.StatusFound)
+			}
+			if got := rw.Result().Header.Get("Location"); got != tt.want {
+				t.Fatalf("Location = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

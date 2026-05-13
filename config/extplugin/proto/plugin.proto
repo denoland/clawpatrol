@@ -1,0 +1,358 @@
+// Plugin protocol v1 for clawpatrol's Terraform-style external plugins.
+//
+// One subprocess per plugin source. The gateway spawns the subprocess
+// via hashicorp/go-plugin, fetches its Manifest, and registers virtual
+// *config.Plugin entries for each declared (credential / tunnel /
+// endpoint) type. At request time the gateway hands inbound conns to
+// the plugin over the HandleConn bidi stream; endpoints that need an
+// upstream connection through a tunnel go through Dial.
+//
+// The plugin is responsible for parsing whatever protocol rides on
+// the bytes it receives. The gateway only optionally terminates TLS
+// before handing the bytes over.
+
+syntax = "proto3";
+
+package clawpatrol.plugin.v1;
+
+option go_package = "github.com/denoland/clawpatrol/config/extplugin/proto;extpluginpb";
+
+// =====================================================================
+// Manifest + Build
+// =====================================================================
+
+service Plugin {
+  // Manifest is called once on plugin startup. The plugin reports the
+  // credential / tunnel / endpoint types it provides plus their HCL
+  // schemas. The gateway converts each entry into a virtual
+  // *config.Plugin and registers it.
+  rpc Manifest(ManifestRequest) returns (ManifestResponse);
+
+  // Build is called once per HCL block during config load. The gateway
+  // sends the decoded block body as a JSON object; the plugin
+  // validates, normalizes, and returns canonical JSON that round-trips
+  // back to the plugin in ConnInit / OpenTunnelRequest. Diagnostics
+  // are reported back to the user with the block's source range.
+  rpc Build(BuildRequest) returns (BuildResponse);
+}
+
+message ManifestRequest {}
+
+message ManifestResponse {
+  string name = 1;
+  string version = 2;
+  repeated CredentialDecl credentials = 3;
+  repeated TunnelDecl tunnels = 4;
+  repeated EndpointDecl endpoints = 5;
+  repeated FacetDecl facets = 6;
+}
+
+// FacetDecl describes one protocol-family schema the plugin exports.
+// The gateway registers a facet.Runtime per declared facet so the
+// dashboard's /api/facets surfaces it and rules can compile CEL
+// conditions against the declared fields. The facet's name is
+// auto-namespaced by the gateway as "<plugin>.<name>".
+message FacetDecl {
+  string name = 1;
+  repeated FacetFieldDecl fields = 2;
+}
+
+message FacetFieldDecl {
+  string name = 1;
+  FacetKind kind = 2;
+  string label = 3;
+  // optional fields may be omitted from EvaluateAction.action_json.
+  // The gateway substitutes a kind-zero value (empty string, empty
+  // list, empty map, 0) before CEL evaluation so rule conditions
+  // can reference them without `has()` guards.
+  bool optional = 4;
+}
+
+enum FacetKind {
+  FACET_STRING      = 0;
+  FACET_STRING_LIST = 1;
+  FACET_STRING_MAP  = 2;
+  FACET_INT         = 3;
+  // FACET_STREAM is a lazy bytes value the plugin offers via a
+  // handle in EvaluateAction.streams. The gateway pulls chunks via
+  // StreamRead — fully when any endpoint rule references the
+  // field, otherwise just enough to log a prefix — and sends
+  // StreamCancel when it has what it needs. The plugin sees the
+  // cancel and can stop buffering.
+  FACET_STREAM      = 4;
+}
+
+// Schema is a flat list of attributes the plugin's HCL block accepts.
+// Nested blocks are not supported in v1.
+message Schema {
+  repeated SchemaField fields = 1;
+}
+
+message SchemaField {
+  string name = 1;
+  // type_string is a go-cty type string, e.g. "string", "bool",
+  // "number", "list(string)". The gateway decodes the HCL block
+  // against this synthesized cty.Object before marshaling to JSON.
+  string type_string = 2;
+  bool required = 3;
+}
+
+message CredentialDecl {
+  string type_name = 1;
+  Schema schema = 2;
+}
+
+message TunnelDecl {
+  string type_name = 1;
+  Schema schema = 2;
+}
+
+message EndpointDecl {
+  string type_name = 1;
+  Schema schema = 2;
+  // family is forwarded to *config.Plugin.Family. Plugin endpoints
+  // typically declare "stream" so rules can't accidentally target
+  // them with http.* / sql.* matchers.
+  string family = 3;
+  TLSMode tls_mode = 4;
+  bool requires_vip = 5;
+}
+
+enum TLSMode {
+  // No TLS handling on the inbound side. The plugin receives the raw
+  // TCP bytes.
+  TLS_NONE = 0;
+  // Gateway terminates TLS using its CA, then hands the plaintext
+  // bytes to the plugin via the HandleConn stream.
+  TLS_TERMINATE = 1;
+}
+
+message BuildRequest {
+  // kind is "credential", "tunnel", or "endpoint".
+  string kind = 1;
+  string type_name = 2;
+  string instance_name = 3;
+  // config_json is a JSON object: the HCL block body decoded against
+  // the plugin-declared schema, then marshaled via cty/json.
+  bytes config_json = 4;
+}
+
+message BuildResponse {
+  // canonical_json is the plugin's normalized form. The gateway
+  // treats it as opaque; it's only forwarded back to the plugin in
+  // ConnInit / OpenTunnelRequest.
+  bytes canonical_json = 1;
+  repeated Diagnostic diagnostics = 2;
+}
+
+message Diagnostic {
+  enum Severity {
+    ERROR = 0;
+    WARNING = 1;
+  }
+  Severity severity = 1;
+  string summary = 2;
+  string detail = 3;
+}
+
+// =====================================================================
+// Endpoint runtime
+// =====================================================================
+
+service Endpoint {
+  // HandleConn is a bidi stream owning one inbound agent connection.
+  //
+  // Gateway sends ConnInit first, then ConnData frames as bytes arrive
+  // from the agent. ConnClose from either side terminates the session.
+  //
+  // Plugin sends ConnData frames for bytes to write back to the agent,
+  // and may interleave ConnEvent messages (audit emits).
+  rpc HandleConn(stream ConnMessage) returns (stream ConnMessage);
+}
+
+message ConnMessage {
+  oneof kind {
+    ConnInit       init          = 1;
+    ConnData       data          = 2;
+    ConnClose      close         = 3;
+    ConnEvent      event         = 4;
+    EvaluateAction evaluate      = 5;   // plugin -> gateway
+    ActionVerdict  verdict       = 6;   // gateway -> plugin
+    StreamRead     stream_read   = 7;   // gateway -> plugin
+    StreamChunk    stream_chunk  = 8;   // plugin -> gateway
+    StreamCancel   stream_cancel = 9;   // gateway -> plugin
+  }
+}
+
+// StreamRead asks the plugin for the next chunk of an open stream.
+// max_bytes is a hint; the plugin may return fewer bytes per chunk.
+message StreamRead {
+  string handle = 1;
+  uint32 max_bytes = 2;
+}
+
+// StreamChunk delivers one chunk of stream data. eof signals that no
+// more bytes will follow; the plugin needn't send a final empty
+// chunk — eof can ride on the last data-bearing chunk.
+message StreamChunk {
+  string handle = 1;
+  bytes payload = 2;
+  bool eof = 3;
+}
+
+// StreamCancel tells the plugin the gateway has read everything it
+// needs and the plugin can drop its end of the stream. The plugin
+// stops reading from its source io.Reader.
+message StreamCancel {
+  string handle = 1;
+}
+
+// EvaluateAction asks the gateway to rule on one structured action
+// (a "request" in the policy sense — an SMTP command, a query, an
+// API call). The plugin sends the action's facet payload as JSON;
+// the gateway runs the matched endpoint's compiled rules + any
+// approve chain and replies with an ActionVerdict carrying the
+// same call_id so plugins can pipeline concurrent calls.
+message EvaluateAction {
+  // call_id is plugin-chosen and opaque; the gateway echoes it on
+  // the matching ActionVerdict.
+  string call_id = 1;
+  // facet_name is the namespaced facet name ("<plugin>.<facet>")
+  // whose schema action_json conforms to. Must match the endpoint's
+  // declared family for the gateway to route through the right
+  // CEL environment.
+  string facet_name = 2;
+  // action_json is a JSON object whose keys match the facet's
+  // declared scalar / list / map / int field names. Stream-typed
+  // fields appear in `streams` instead.
+  bytes action_json = 3;
+  // summary is a human-readable one-liner the dashboard / HITL
+  // prompt renders to describe what's being decided.
+  string summary = 4;
+  // streams maps each FACET_STREAM field name to a plugin-chosen
+  // handle. The gateway issues StreamRead(handle, max_bytes) until
+  // it has what it needs (full when a rule references the field,
+  // log-prefix only otherwise) and then StreamCancel(handle).
+  map<string, string> streams = 5;
+}
+
+message ActionVerdict {
+  string call_id = 1;
+  string action  = 2;   // "allow" | "deny" | "hitl_allow" | "hitl_deny" | "error"
+  string reason  = 3;
+  string rule    = 4;   // matched rule name, or "" when no rule fired
+}
+
+message ConnInit {
+  // Identifies which configured endpoint instance is being handled.
+  string endpoint_type_name = 1;
+  string endpoint_instance  = 2;
+  // canonical_json is the BuildResponse.canonical_json for this
+  // endpoint instance — the plugin's own normalized config.
+  bytes  endpoint_canonical_json = 3;
+
+  // Per-connection routing context.
+  string profile        = 4;
+  string peer_ip        = 5;
+  string upstream_host  = 6;  // hostname recovered from VIP table
+  uint32 dst_port       = 7;
+
+  // Bound credential. credential_secret is the secret material
+  // fetched by the gateway just-in-time from its secret store.
+  // Empty when the endpoint has no credential.
+  string credential_type_name = 8;
+  string credential_instance  = 9;
+  bytes  credential_canonical_json = 10;
+  bytes  credential_secret    = 11;
+  map<string,string> credential_extras = 12;
+
+  // Bound tunnel (optional). When set, the plugin can call Tunnel.Dial
+  // on the host side using this handle to reach the upstream. v1 does
+  // not implement reverse calls; the plugin uses its own net.Dial.
+  string tunnel_type_name = 13;
+  string tunnel_instance  = 14;
+}
+
+message ConnData {
+  bytes payload = 1;
+}
+
+message ConnClose {
+  // optional reason; empty for a clean close.
+  string reason = 1;
+}
+
+message ConnEvent {
+  // action mirrors runtime.ConnEvent.Action: "allow" | "deny" |
+  // "hitl_allow" | "hitl_deny" | "error".
+  string action  = 1;
+  string reason  = 2;
+  string verb    = 3;
+  string summary = 4;
+  int64  bytes_count = 5;
+  // facets_json is family-specific metadata. Treated as a JSON
+  // object by the gateway and copied to Event.Facets.
+  bytes  facets_json = 6;
+  // rule, when non-empty, is the CompiledRule.Name the plugin
+  // resolved internally. v1 plugins typically leave this empty.
+  string rule = 7;
+}
+
+// =====================================================================
+// Tunnel runtime
+// =====================================================================
+
+service Tunnel {
+  // OpenTunnel asks the plugin to bring up one tunnel instance.
+  // The plugin returns an opaque handle that the gateway uses in
+  // subsequent Dial / CloseTunnel calls.
+  rpc OpenTunnel(OpenTunnelRequest) returns (OpenTunnelResponse);
+
+  // Dial opens one upstream connection via an open tunnel. Bidi
+  // stream pumps bytes between gateway and tunneled upstream.
+  rpc Dial(stream DialMessage) returns (stream DialMessage);
+
+  // CloseTunnel tears down a tunnel handle.
+  rpc CloseTunnel(CloseTunnelRequest) returns (CloseTunnelResponse);
+}
+
+message OpenTunnelRequest {
+  string tunnel_type_name = 1;
+  string tunnel_instance  = 2;
+  bytes  canonical_json   = 3;
+  // Optional credential bound to the tunnel.
+  bytes  credential_secret = 4;
+  map<string,string> credential_extras = 5;
+}
+
+message OpenTunnelResponse {
+  string handle = 1;
+}
+
+message CloseTunnelRequest {
+  string handle = 1;
+}
+
+message CloseTunnelResponse {}
+
+message DialMessage {
+  oneof kind {
+    DialInit  init  = 1;
+    DialData  data  = 2;
+    DialClose close = 3;
+  }
+}
+
+message DialInit {
+  string tunnel_handle = 1;
+  string network       = 2;
+  string addr          = 3;
+}
+
+message DialData {
+  bytes payload = 1;
+}
+
+message DialClose {
+  string reason = 1;
+}

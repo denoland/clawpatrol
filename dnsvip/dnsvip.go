@@ -11,9 +11,9 @@
 // VIP is keyed to exactly one hostname.
 //
 // VIPs are stable across both restarts and policy reloads (persisted
-// to <state_dir>/dnsvip.json). When a hostname leaves policy its slot
-// is freed and reused by the next allocation, so the table doesn't
-// grow without bound across long-lived gateways.
+// to the dnsvip_allocations sqlite table). When a hostname leaves
+// policy its slot is freed and reused by the next allocation, so the
+// table doesn't grow without bound across long-lived gateways.
 //
 // The package depends on miekg/dns only for wire-format parsing and
 // serialisation; the server loops are hand-rolled because the
@@ -23,16 +23,13 @@ package dnsvip
 
 import (
 	"context"
+	"database/sql"
 	"encoding/binary"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/netip"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -88,25 +85,20 @@ var (
 const MaxID uint32 = 0xFFFE
 
 type entry struct {
-	ID       uint32     `json:"id"`
-	Hostname string     `json:"hostname"`
-	V4       netip.Addr `json:"v4"`
-	V6       netip.Addr `json:"v6"`
-}
-
-type persistFile struct {
-	Version int     `json:"version"`
-	Entries []entry `json:"entries"`
+	ID       uint32
+	Hostname string
+	V4       netip.Addr
+	V6       netip.Addr
 }
 
 // Allocator owns the hostname↔VIP table and serves DNS over the
-// netstack-supplied conns. Construction loads from disk; the gateway
+// netstack-supplied conns. Construction loads from sqlite; the gateway
 // calls RebuildFromPolicy on every policy load to reconcile
 // allocations against the current endpoint set.
 type Allocator struct {
-	statePath string
-	cidr4     netip.Prefix
-	cidr6     netip.Prefix
+	db    *sql.DB
+	cidr4 netip.Prefix
+	cidr6 netip.Prefix
 
 	mu        sync.RWMutex
 	byName    map[string]*entry        // hostname → entry
@@ -117,11 +109,14 @@ type Allocator struct {
 	used      map[uint32]struct{}      // ID set, for fast in-use check
 }
 
-// New constructs an allocator and loads any existing state from
-// stateDir/dnsvip.json. cidr4/cidr6 may be passed as zero-valued
-// netip.Prefix to use the package defaults. A non-existent state
-// file is fine — the allocator starts empty.
-func New(stateDir string, cidr4, cidr6 netip.Prefix) (*Allocator, error) {
+// New constructs an allocator and loads any existing state from the
+// dnsvip_allocations table. cidr4/cidr6 may be passed as zero-valued
+// netip.Prefix to use the package defaults. An empty table is fine —
+// the allocator starts empty.
+func New(db *sql.DB, cidr4, cidr6 netip.Prefix) (*Allocator, error) {
+	if db == nil {
+		return nil, fmt.Errorf("dnsvip: nil db")
+	}
 	if !cidr4.IsValid() {
 		cidr4 = DefaultCIDR4
 	}
@@ -135,7 +130,7 @@ func New(stateDir string, cidr4, cidr6 netip.Prefix) (*Allocator, error) {
 		return nil, fmt.Errorf("cidr6 must be IPv6: %s", cidr6)
 	}
 	a := &Allocator{
-		statePath: filepath.Join(stateDir, "dnsvip.json"),
+		db:        db,
 		cidr4:     cidr4,
 		cidr6:     cidr6,
 		byName:    map[string]*entry{},
@@ -151,66 +146,76 @@ func New(stateDir string, cidr4, cidr6 netip.Prefix) (*Allocator, error) {
 }
 
 func (a *Allocator) load() error {
-	data, err := os.ReadFile(a.statePath)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
+	rows, err := a.db.Query(`SELECT id, hostname, v4, v6 FROM dnsvip_allocations`)
 	if err != nil {
-		return fmt.Errorf("dnsvip: read %s: %w", a.statePath, err)
+		return fmt.Errorf("dnsvip: read: %w", err)
 	}
-	var f persistFile
-	if err := json.Unmarshal(data, &f); err != nil {
-		return fmt.Errorf("dnsvip: parse %s: %w", a.statePath, err)
-	}
-	for i := range f.Entries {
-		e := &f.Entries[i]
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var (
+			id           int64
+			host, v4, v6 string
+		)
+		if err := rows.Scan(&id, &host, &v4, &v6); err != nil {
+			return fmt.Errorf("dnsvip: scan: %w", err)
+		}
+		v4a, err := netip.ParseAddr(v4)
+		if err != nil {
+			log.Printf("dnsvip: dropping persisted entry %s — bad v4 %q: %v", host, v4, err)
+			continue
+		}
+		v6a, err := netip.ParseAddr(v6)
+		if err != nil {
+			log.Printf("dnsvip: dropping persisted entry %s — bad v6 %q: %v", host, v6, err)
+			continue
+		}
 		// Defensive: skip entries whose VIPs fall outside the
 		// configured CIDRs (operator changed the prefix between
 		// boots). They'll be reallocated fresh on next rebuild.
-		if !a.cidr4.Contains(e.V4) || !a.cidr6.Contains(e.V6) {
-			log.Printf("dnsvip: dropping persisted entry %s — VIP outside configured CIDRs", e.Hostname)
+		if !a.cidr4.Contains(v4a) || !a.cidr6.Contains(v6a) {
+			log.Printf("dnsvip: dropping persisted entry %s — VIP outside configured CIDRs", host)
 			continue
 		}
-		a.byName[e.Hostname] = e
-		a.byV4[e.V4] = e
-		a.byV6[e.V6] = e
+		e := &entry{ID: uint32(id), Hostname: host, V4: v4a, V6: v6a}
+		a.byName[host] = e
+		a.byV4[v4a] = e
+		a.byV6[v6a] = e
 		a.used[e.ID] = struct{}{}
 	}
-	return nil
+	return rows.Err()
 }
 
+// persistLocked rewrites the dnsvip_allocations table to match the
+// in-memory byName state. Wrapped in a tx so a crash mid-rebuild
+// leaves the previous table intact — same atomicity the old
+// rename-an-atomic-file path had.
 func (a *Allocator) persistLocked() error {
-	if a.statePath == "" {
+	if a.db == nil {
 		return nil
 	}
-	out := persistFile{Version: 1}
+	tx, err := a.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`DELETE FROM dnsvip_allocations`); err != nil {
+		return err
+	}
+	// Sort for determinism; aids replica diffing + log scanning.
+	entries := make([]*entry, 0, len(a.byName))
 	for _, e := range a.byName {
-		out.Entries = append(out.Entries, *e)
+		entries = append(entries, e)
 	}
-	sort.Slice(out.Entries, func(i, j int) bool { return out.Entries[i].ID < out.Entries[j].ID })
-	buf, err := json.MarshalIndent(out, "", "  ")
-	if err != nil {
-		return err
+	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
+	for _, e := range entries {
+		if _, err := tx.Exec(
+			`INSERT INTO dnsvip_allocations (id, hostname, v4, v6) VALUES (?, ?, ?, ?)`,
+			e.ID, e.Hostname, e.V4.String(), e.V6.String(),
+		); err != nil {
+			return err
+		}
 	}
-	dir := filepath.Dir(a.statePath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, "dnsvip-*.json.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(buf); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return err
-	}
-	return os.Rename(tmpName, a.statePath)
+	return tx.Commit()
 }
 
 // vipForID derives the (v4, v6) pair for an ID. v4 occupies the last

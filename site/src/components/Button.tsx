@@ -34,22 +34,31 @@ const variants: Record<Variant, string> = {
   outline: "border-2 border-navy text-text-muted " + "hover:bg-canvas-muted",
 };
 
-function Background() {
+const backgroundOffsets: Record<Size, string> = {
+  sm: "w-[calc(100%+3px)] h-[calc(100%+3px)] left-[2px] top-[2px]",
+  md: "w-[calc(100%+4px)] h-[calc(100%+4px)] left-[3px] top-[3px]",
+  lg: "w-[calc(100%+4px)] h-[calc(100%+4px)] left-1 top-1",
+};
+
+function Background({ size = "md" }: { size?: Size }) {
   return (
-    <div class="w-[calc(100%+4px)] h-[calc(100%+4px)] absolute left-1 top-1 bg-linear-to-r from-rust-300 to-rust-400 -z-10 group-hover:from-butter group-hover:to-rust-300  transition-colors duration-150" />
+    <div
+      class={`${backgroundOffsets[size]} absolute bg-linear-to-r from-rust-300 to-rust-400 -z-10 group-hover:from-butter group-hover:to-rust-300 transition-colors duration-150`}
+    />
   );
 }
 
 export function Button(props: ButtonProps) {
   const { variant = "normal", size = "md", class: className, children } = props;
   const cls = `${base} ${sizes[size]} ${variants[variant]} ${className ?? ""}`;
+  const showBackground = variant === "normal";
 
   if ("href" in props && props.href !== undefined) {
     const { variant: _v, size: _s, class: _c, children: _ch, ...rest } = props;
     return (
       <a class={cls} {...rest}>
         {children}
-        {variants.normal && <Background />}
+        {showBackground && <Background size={size} />}
       </a>
     );
   }
@@ -58,8 +67,7 @@ export function Button(props: ButtonProps) {
   return (
     <button type="button" class={cls} {...rest}>
       {children}
-      <Background />
-      {variants.normal && <Background />}
+      {showBackground && <Background size={size} />}
     </button>
   );
 }

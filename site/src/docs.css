@@ -1,5 +1,7 @@
-/* Docs-specific styles. Loaded only on /docs/* pages via a <link> tag
-   in docs-render.ts. Plain CSS — not processed by Tailwind. */
+/* Docs-specific styles. Imported from index.css, so they ship with
+   the main CSS bundle (and hot-reload in dev). All rules are nested
+   under `.docs-content`, so even though they're available everywhere,
+   they only paint inside the docs page wrapper. */
 
 .docs-content {
   h1,
@@ -161,7 +163,6 @@
   th {
     background: var(--color-navy-50);
     font-weight: 600;
-    /* line-height: 1; */
   }
 
   strong {

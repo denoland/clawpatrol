@@ -49,6 +49,7 @@ func (r *renderer) run() (string, error) {
 		config.KindCredential,
 		config.KindEndpoint,
 		config.KindRule,
+		config.KindTunnel,
 	} {
 		r.writeKind(kind)
 	}
@@ -60,7 +61,7 @@ func (r *renderer) writeHeader() {
 
 A clawpatrol gateway config mixes **operational** fields (top-level
 plumbing) with **policy** blocks. Operational fields are top-level
-attributes; policy blocks (` + "`approver`, `credential`, `endpoint`, `rule`" + `)
+attributes; policy blocks (` + "`approver`, `credential`, `tunnel`, `endpoint`, `rule`" + `)
 dispatch to a plugin chosen by the block's first label.
 
 ## How to read this page
@@ -75,7 +76,7 @@ Each block section lists the attributes the loader accepts, with:
 - **Required** — ` + "`yes`" + ` if the loader rejects the block when the
   attribute is missing.
 
-Plugin-dispatched kinds (` + "`approver`, `credential`, `endpoint`, `rule`" + `)
+Plugin-dispatched kinds (` + "`approver`, `credential`, `tunnel`, `endpoint`, `rule`" + `)
 list one subsection per registered type.
 
 `)
@@ -118,7 +119,13 @@ func stripIdentPrefix(doc, ident string) string {
 	}
 	first := rest[0]
 	if first >= 'a' && first <= 'z' {
-		return strings.ToUpper(rest[:1]) + rest[1:]
+		rest = strings.ToUpper(rest[:1]) + rest[1:]
+	}
+	// Drop the stub "Is part of the clawpatrol plugin API." sentence
+	// that's auto-generated as a placeholder doc-comment on plugin
+	// types. It conveys nothing to a reader of the HCL reference.
+	if rest == "Is part of the clawpatrol plugin API." {
+		return ""
 	}
 	return rest
 }
@@ -178,14 +185,18 @@ func (r *renderer) writeKind(kind config.Kind) {
 	syntax := kindSyntax(kind)
 	fmt.Fprintf(&r.out, "## `%s` blocks\n\n", kind)
 	fmt.Fprintf(&r.out, "Block syntax: `%s`\n\n", syntax)
-	fmt.Fprintf(&r.out, "Registered types: ")
-	for i, p := range plugins {
-		if i > 0 {
-			r.out.WriteString(", ")
+	// Single-label kinds with one registered plugin (rule today) have
+	// no type discriminator — skip the type-link line entirely.
+	if !(len(plugins) == 1 && plugins[0].Type == "") {
+		fmt.Fprintf(&r.out, "Registered types: ")
+		for i, p := range plugins {
+			if i > 0 {
+				r.out.WriteString(", ")
+			}
+			fmt.Fprintf(&r.out, "[`%s`](#%s-%s)", p.Type, kind, anchor(p.Type))
 		}
-		fmt.Fprintf(&r.out, "[`%s`](#%s-%s)", p.Type, kind, anchor(p.Type))
+		r.out.WriteString(".\n\n")
 	}
-	r.out.WriteString(".\n\n")
 
 	for _, p := range plugins {
 		r.writePlugin(kind, p)
@@ -193,7 +204,13 @@ func (r *renderer) writeKind(kind config.Kind) {
 }
 
 func (r *renderer) writePlugin(kind config.Kind, p *config.Plugin) {
-	fmt.Fprintf(&r.out, "### `%s \"%s\" \"<name>\"`\n\n", kind, p.Type)
+	// Plugins with an empty Type (rule today) take a single label —
+	// render `rule "<name>"`, not `rule "" "<name>"`.
+	if p.Type == "" {
+		fmt.Fprintf(&r.out, "### `%s \"<name>\"`\n\n", kind)
+	} else {
+		fmt.Fprintf(&r.out, "### `%s \"%s\" \"<name>\"`\n\n", kind, p.Type)
+	}
 
 	rt := pluginStructType(p)
 	pkgName := pkgNameOf(rt)
@@ -351,7 +368,7 @@ func (r *renderer) collectFields(pkgName, typeName string, rt reflect.Type) []fi
 func (r *renderer) fieldRefs(pkgName, typeName string) map[string]string {
 	out := map[string]string{}
 	for _, kind := range []config.Kind{
-		config.KindApprover, config.KindCredential, config.KindEndpoint, config.KindRule,
+		config.KindApprover, config.KindCredential, config.KindTunnel, config.KindEndpoint, config.KindRule,
 	} {
 		for _, p := range config.AllPlugins(kind) {
 			rt := pluginStructType(p)
@@ -406,7 +423,7 @@ func (r *renderer) writeExample(kind, typ string, rt reflect.Type, typed bool) {
 		head = kind
 	}
 
-	body := exampleBody(rt)
+	body := exampleBody(kind, typ, rt)
 	if strings.TrimSpace(body) == "" {
 		fmt.Fprintf(&r.out, "```hcl\n%s {}\n```\n\n", head)
 		return
@@ -414,8 +431,13 @@ func (r *renderer) writeExample(kind, typ string, rt reflect.Type, typed bool) {
 	fmt.Fprintf(&r.out, "```hcl\n%s {\n%s}\n```\n\n", head, body)
 }
 
-func exampleBody(rt reflect.Type) string {
+func exampleBody(kind, typ string, rt reflect.Type) string {
 	var sb strings.Builder
+	if kind == "tunnel" && typ == "ssh_port_forward" {
+		// bastion is optional in HCL because it can be replaced by via, but a
+		// standalone generated example needs one or the runtime rejects it.
+		fmt.Fprintln(&sb, `  bastion = "bastion.example:22"`)
+	}
 	for i := 0; i < rt.NumField(); i++ {
 		f := rt.Field(i)
 		if !f.IsExported() {

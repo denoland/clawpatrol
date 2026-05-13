@@ -17,7 +17,7 @@ import (
 func httpReq(method, path string) *match.Request {
 	u, _ := url.Parse("https://example.com" + path)
 	return &match.Request{
-		Family:  "https",
+		Family:  "http",
 		Method:  method,
 		URL:     u,
 		Headers: http.Header{},
@@ -82,7 +82,7 @@ func TestHTTPMatcherMethodAndPath(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			m, err := facet.NewMatcher("https", tc.condition)
+			m, err := facet.NewMatcher("http", tc.condition)
 			if err != nil {
 				t.Fatalf("NewMatcher: %v", err)
 			}
@@ -128,7 +128,7 @@ func TestHTTPMatcherMethodCaseInsensitive(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			m, err := facet.NewMatcher("https", tc.condition)
+			m, err := facet.NewMatcher("http", tc.condition)
 			if err != nil {
 				t.Fatalf("NewMatcher: %v", err)
 			}
@@ -140,7 +140,7 @@ func TestHTTPMatcherMethodCaseInsensitive(t *testing.T) {
 }
 
 func TestHTTPMatcherBodyJSON(t *testing.T) {
-	m, err := facet.NewMatcher("https", "http.method == 'PATCH' && http.body_json.archived == true")
+	m, err := facet.NewMatcher("http", "http.method == 'PATCH' && http.body_json.archived == true")
 	if err != nil {
 		t.Fatal(err)
 	}

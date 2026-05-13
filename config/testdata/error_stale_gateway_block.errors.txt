@@ -1,1 +1,1 @@
-error: error_stale_gateway_block.hcl:8:1: Unsupported block type — Blocks of type "gateway" are not expected here.
+error: error_stale_gateway_block.hcl:7:1: Unsupported block type — Blocks of type "gateway" are not expected here.

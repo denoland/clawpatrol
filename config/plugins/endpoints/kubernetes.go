@@ -12,11 +12,20 @@ import (
 )
 
 // KubernetesEndpoint is part of the clawpatrol plugin API.
+//
+// ClusterName + Region are EKS auth parameters: when the bound
+// credential is `aws_credential`, the gateway presigns an STS
+// GetCallerIdentity URL scoped to (region, cluster_name) and stamps
+// the result as a `k8s-aws-v1.<…>` bearer. Leave both unset for
+// self-hosted clusters with a non-EKS credential (bearer_token,
+// mtls_credential).
 type KubernetesEndpoint struct {
 	Hosts       []string `hcl:"hosts,optional"`
 	Server      string   `hcl:"server,optional"`
 	CACert      string   `hcl:"ca_cert,optional"`
 	Description string   `hcl:"description,optional"`
+	ClusterName string   `hcl:"cluster_name,optional"`
+	Region      string   `hcl:"region,optional"`
 	Credential  string   `hcl:"credential,optional"`
 }
 
@@ -45,6 +54,15 @@ func (e *KubernetesEndpoint) EndpointCredentials() []config.CredBinding {
 	return singleBinding(e.Credential)
 }
 
+// AWSEKSAuthParams is the contract the aws_credential plugin reads at
+// request time to mint an EKS bearer token. Kept narrow so a future
+// alternative k8s-on-AWS endpoint (e.g. one that wraps a different
+// auth flow) can satisfy the same shape without leaking
+// KubernetesEndpoint internals.
+func (e *KubernetesEndpoint) AWSEKSAuthParams() (cluster, region string) {
+	return e.ClusterName, e.Region
+}
+
 func init() {
 	config.Register(&config.Plugin{
 		Kind:   config.KindEndpoint,
@@ -66,6 +84,12 @@ func init() {
 			}
 			if e.Description != "" {
 				b.SetAttributeValue("description", cty.StringVal(e.Description))
+			}
+			if e.ClusterName != "" {
+				b.SetAttributeValue("cluster_name", cty.StringVal(e.ClusterName))
+			}
+			if e.Region != "" {
+				b.SetAttributeValue("region", cty.StringVal(e.Region))
 			}
 			if e.Credential != "" {
 				config.SetIdent(b, "credential", e.Credential)

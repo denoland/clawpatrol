@@ -21,6 +21,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -59,6 +60,16 @@ func runRun(args []string) {
 	if os.Getenv(runChildEnv) == "1" {
 		runRunChild()
 		return
+	}
+
+	// `sudo clawpatrol run` is doomed on this distro: the UidMappings
+	// below collapse to `0 → 0`, and most distros refuse to put pid 0
+	// into a new user namespace at all (apparmor restrict-unpriv-userns
+	// on Ubuntu 24.04, kernel.unprivileged_userns_clone=0 elsewhere).
+	// The fallout used to surface as a misleading sysctl hint after
+	// child.Start() failed — catch it here with a clear message instead.
+	if os.Geteuid() == 0 {
+		fail("run as your normal user; clawpatrol run uses unprivileged user namespaces which root cannot enter on this distro")
 	}
 
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
@@ -126,6 +137,13 @@ func runRun(args []string) {
 		AmbientCaps: []uintptr{capNetAdmin, capSysAdmin},
 	}
 	if err := child.Start(); err != nil {
+		// The EUID==0 short-circuit at the top of runRun should make this
+		// branch unreachable for root, but keep the check here in case
+		// future changes invert the order — the kernel-sysctl hint is
+		// misleading when the real cause is "user ran us under sudo".
+		if os.Geteuid() == 0 {
+			fail("clone: %v\n  hint: run as your normal user — clawpatrol run uses unprivileged user namespaces which root cannot enter on this distro", err)
+		}
 		fail("clone: %v\n  hint: this distro may have unprivileged user namespaces disabled.\n  enable: sudo sysctl -w kernel.unprivileged_userns_clone=1", err)
 	}
 	_ = cSock.Close()
@@ -138,7 +156,11 @@ func runRun(args []string) {
 	}
 
 	tunDev := newRawFDTun(tunFd)
-	logger := device.NewLogger(device.LogLevelError, "[clawpatrol run] ")
+	baseLogger := device.NewLogger(device.LogLevelError, "[clawpatrol run] ")
+	// Wrap the wireguard-go logger so the keypair-derivation failure
+	// short-circuits the watchdog poll loop — see denoland/orchid#45.
+	forceReset := make(chan struct{}, 1)
+	logger := wrapWGLogger(baseLogger, forceReset)
 	dev := device.NewDevice(tunDev, conn.NewDefaultBind(), logger)
 	if err := dev.IpcSet(buildWGIpc(cfg)); err != nil {
 		_ = child.Process.Kill()
@@ -149,6 +171,14 @@ func runRun(args []string) {
 		fail("wg up: %v", err)
 	}
 	defer dev.Close()
+
+	// Watchdog reruns the original IpcSet on a stuck handshake; that
+	// wipes the wireguard-go peer trie and triggers a fresh initiation.
+	wdCtx, wdCancel := context.WithCancel(context.Background())
+	defer wdCancel()
+	go runWGWatchdog(wdCtx, dev, baseLogger, forceReset, func() error {
+		return dev.IpcSet(buildWGIpc(cfg))
+	})
 
 	_, _ = wgUpW.Write([]byte{1})
 	_ = wgUpW.Close()

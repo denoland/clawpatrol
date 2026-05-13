@@ -1,33 +1,16 @@
 import * as React from "react";
 import { useState } from "react";
-import type { Integration, Whoami } from "../lib/api";
+import type { Integration } from "../lib/api";
+import { clearCredential, oauthRevoke, tailscaleConnect, tailscaleDisconnect } from "../lib/api";
+import { credentialTypeLabel } from "../lib/credentialLabels";
 import { fmtExpiry } from "../lib/format";
-import { IntegrationIcon } from "./Logos";
-import { clearCredential, oauthRevoke } from "../lib/api";
 import { CredentialSecretsModal } from "./CredentialSecretsModal";
+import { IntegrationIcon } from "./Logos";
 
-// Display name by credential plugin type. Bare credential names
-// often look like "pg-writer-cred" — useful as identifier, not as a
-// label. The type maps to the recognizable brand / protocol; the
-// bare name shows up as a subtitle so operators can still tell two
-// "Postgres" cards apart.
-const TYPE_LABEL: Record<string, string> = {
-  anthropic_oauth_subscription: "Claude",
-  anthropic_manual_key: "Claude (API key)",
-  openai_codex_oauth: "Codex",
-  github_oauth: "GitHub",
-  notion_oauth: "Notion",
-  postgres_credential: "Postgres",
-  clickhouse_credential: "ClickHouse",
-  mtls_credential: "mTLS",
-  slack_tokens: "Slack",
-  telegram_bot_token: "Telegram",
-  gemini_api_key: "Gemini",
-  aws_eks_credential: "AWS EKS",
-  bearer_token: "Bearer token",
-  header_token: "Header token",
-  cookie_token: "Cookie token",
-};
+// Bare credential names often look like "pg-writer-cred" — useful as
+// identifiers, not as labels. The type maps to the recognizable brand /
+// protocol; the bare name is always rendered as metadata so operators
+// can still tell two same-type cards apart.
 
 // Cap on visible cards before the overflow button appears. The N-th
 // slot is replaced by "+ K more" so the row width stays predictable
@@ -36,41 +19,87 @@ const VISIBLE_CAP = 4;
 
 export function IntegrationsCards({
   list,
-  whoami,
-  profile,
+  showAll,
   onConnect,
   onRefresh,
 }: {
   list: Integration[];
-  whoami: Whoami | null;
-  profile?: string;
-  onConnect: (id: string, profile?: string) => void;
+  // When true, render every card in the grid (no overflow button,
+  // no "+ K more" modal). Used by the Settings page where the
+  // credentials row IS the page and there's space for the full list.
+  showAll?: boolean;
+  onConnect: (id: string) => void;
   onRefresh: () => void;
 }) {
-  const youKey = profile || whoami?.user || whoami?.host || "";
   const [editing, setEditing] = useState<Integration | null>(null);
   const [allOpen, setAllOpen] = useState(false);
 
-  // Sort: connected first (most relevant), then unconnected, then
-  // already-disabled ones (no auth path) — preserves declaration
-  // order within each bucket.
+  // Sort: connected first, then unconnected, then disabled (no auth
+  // path) — preserves declaration order within each bucket.
   const sorted = [...list].sort((a, b) => {
     const score = (i: Integration) => {
-      const me = (i.owners ?? []).find((o) => o.owner === youKey);
-      if (me?.connected) return 0;
-      if (i.has_oauth || (i.slots && i.slots.length > 0)) return 1;
+      if (i.connected || i.tailscale_auth?.connected) return 0;
+      if (i.has_oauth || i.has_tailscale_auth || (i.slots && i.slots.length > 0)) return 1;
       return 2;
     };
     return score(a) - score(b);
   });
 
-  const overflow = sorted.length > VISIBLE_CAP;
+  const overflow = !showAll && sorted.length > VISIBLE_CAP;
   const visible = overflow ? sorted.slice(0, VISIBLE_CAP - 1) : sorted;
   const hiddenCount = sorted.length - visible.length;
 
+  // Credentials are grouped by plugin type in the header (a single
+  // `github_oauth` cred reads as "GitHub"). When two creds share a
+  // type — e.g. one personal + one work GitHub OAuth — the type label
+  // alone collides, and the `(displayName)` suffix collides too when
+  // both are connected by the same OAuth user. Mark the duplicates so
+  // the card can also surface the credential name to disambiguate.
+  const typeCounts = new Map<string, number>();
+  for (const i of list) typeCounts.set(i.type, (typeCounts.get(i.type) ?? 0) + 1);
+  const isDup = (i: Integration) => (typeCounts.get(i.type) ?? 0) > 1;
+
   function handleConnect(i: Integration) {
+    if (i.has_tailscale_auth && i.tailscale_auth) {
+      // The parked URL from /api/state is the same one /api/tailscale/connect
+      // would return — tsnet only mints a new one when the previous is
+      // consumed/expires. Open it *synchronously* inside the click handler
+      // so popup blockers treat it as user-initiated; calling window.open
+      // from inside a fetch.then() resolution is silently blocked by
+      // every modern browser, which is the "click closes the modal as a
+      // no-op" failure surfaced on PR #284.
+      const parked = i.tailscale_auth.pending_url;
+      if (parked) {
+        window.open(parked, "_blank", "noopener,noreferrer");
+      }
+      // Still POST so the "already joined" path flips the card to
+      // "connected" without waiting for the next /api/state poll, and
+      // so the operator sees a fresh URL on the next click if tsnet
+      // has emitted one since the last list refresh.
+      tailscaleConnect(i.tailscale_auth.connect_url)
+        .then((r) => {
+          if (r.connected) {
+            onRefresh();
+            return;
+          }
+          // Fallback for the no-parked-URL case: tsnet may have parked
+          // a URL between /api/state and this POST. Open it now even
+          // though we're outside the click — better a popup-blocker
+          // warning than another silent no-op.
+          if (!parked) {
+            const url = r.auth_url || r.pending_url;
+            if (url) {
+              window.open(url, "_blank", "noopener,noreferrer");
+            }
+          }
+        })
+        .catch(() => {
+          /* surfaced on the next refresh */
+        });
+      return;
+    }
     if (i.has_oauth) {
-      onConnect(i.id, profile);
+      onConnect(i.id);
       return;
     }
     if (i.slots && i.slots.length > 0) {
@@ -79,10 +108,14 @@ export function IntegrationsCards({
   }
 
   function disconnect(i: Integration) {
+    if (i.has_tailscale_auth && i.tailscale_auth) {
+      tailscaleDisconnect(i.tailscale_auth.disconnect_url).then(onRefresh);
+      return;
+    }
     if (i.has_oauth) {
-      oauthRevoke(i.id, youKey).then(onRefresh);
+      oauthRevoke(i.id).then(onRefresh);
     } else {
-      clearCredential(i.id, youKey).then(onRefresh);
+      clearCredential(i.id).then(onRefresh);
     }
   }
 
@@ -93,7 +126,7 @@ export function IntegrationsCards({
           <Card
             key={i.id}
             integration={i}
-            youKey={youKey}
+            showName={isDup(i)}
             onConnect={() => handleConnect(i)}
             onDisconnect={() => disconnect(i)}
           />
@@ -111,7 +144,7 @@ export function IntegrationsCards({
       {allOpen && (
         <AllIntegrationsModal
           list={sorted}
-          youKey={youKey}
+          isDup={isDup}
           onClose={() => setAllOpen(false)}
           onConnect={(i) => {
             setAllOpen(false);
@@ -124,13 +157,17 @@ export function IntegrationsCards({
       {editing && (
         <CredentialSecretsModal
           integration={editing}
-          owner={youKey}
+          mode={isConnected(editing) ? "update" : "connect"}
           onClose={() => setEditing(null)}
           onSaved={onRefresh}
         />
       )}
     </>
   );
+}
+
+function isConnected(i: Integration) {
+  return i.connected || (i.tailscale_auth?.connected ?? false);
 }
 
 // OwnerAvatar renders the OAuth user's PFP (e.g. github avatar) with
@@ -168,28 +205,33 @@ function OwnerAvatar({
 
 function Card({
   integration: i,
-  youKey,
+  showName,
   onConnect,
   onDisconnect,
 }: {
   integration: Integration;
-  youKey: string;
+  // When the same plugin type is declared more than once, surface
+  // the credential's bare name in the header so two cards of the same
+  // type are visibly distinct even when both are OAuth-connected by
+  // the same user.
+  showName?: boolean;
   onConnect: () => void;
   onDisconnect: () => void;
 }) {
-  const me = (i.owners ?? []).find((o) => o.owner === youKey);
-  const connected = me?.connected ?? false;
+  const connected = isConnected(i);
   const hasSlots = (i.slots?.length ?? 0) > 0;
-  const clickable = (i.has_oauth || hasSlots) && !connected;
-  const subtitle = connected
-    ? me?.expires_at
-      ? "expires " + fmtExpiry(me.expires_at)
+  const clickable = i.has_oauth || hasSlots || (i.has_tailscale_auth && !connected);
+  const status = connected
+    ? i.expires_at
+      ? "expires " + fmtExpiry(i.expires_at)
       : "connected"
-    : i.has_oauth
+    : i.has_oauth || i.has_tailscale_auth
       ? "click to connect"
       : hasSlots
         ? "paste secret"
         : "api key only";
+  const label = credentialTypeLabel(i.type, i.name);
+  const title = [label, `credential: ${i.id}`, `type: ${i.type}`, status].join("\n");
   return (
     <button
       disabled={!clickable && !connected}
@@ -197,25 +239,23 @@ function Card({
       className={
         "group relative flex flex-col items-start gap-2 px-3 py-2.5 bg-white border rounded text-left transition-colors " +
         (connected
-          ? "border-[#bbf7d0] bg-[#f0fdf4]"
+          ? "border-[#bbf7d0] bg-[#f0fdf4] " +
+            (clickable ? "hover:border-[#16a34a] cursor-pointer" : "cursor-default")
           : clickable
             ? "border-[#e5e5e5] hover:border-[#171717] cursor-pointer"
             : "border-[#e5e5e5] cursor-default")
       }
     >
       <div className="flex items-center gap-2 w-full">
-        {connected && me?.avatar_url ? (
-          <OwnerAvatar src={me.avatar_url} fallbackId={i.id} fallbackType={i.type} />
+        {connected && i.avatar_url ? (
+          <OwnerAvatar src={i.avatar_url} fallbackId={i.id} fallbackType={i.type} />
         ) : (
           <IntegrationIcon id={i.id} type={i.type} className="w-[16px] h-[16px] flex-shrink-0" />
         )}
-        <span
-          className="text-[12px] font-semibold text-[#171717] truncate"
-          title={me?.display_name ?? i.id}
-        >
+        <span className="text-[12px] font-semibold text-[#171717] truncate" title={title}>
           {(() => {
-            const label = TYPE_LABEL[i.type] ?? i.name;
-            return me?.display_name ? `${label} (${me.display_name})` : label;
+            const withName = showName && label !== i.name ? `${label} · ${i.name}` : label;
+            return i.display_name ? `${withName} (${i.display_name})` : withName;
           })()}
         </span>
         <span className="ml-auto flex items-center gap-1.5 flex-shrink-0">
@@ -238,16 +278,13 @@ function Card({
           />
         </span>
       </div>
-      <div className="text-[10px] text-[#737373] tabular-nums w-full truncate" title={i.id}>
-        {/* Connected → show expiry / "connected". Otherwise show the
-            bare credential name so two same-type cards (pg-writer +
-            pg-readonly) are distinguishable; falls back to the status
-            text when type and name match (claude / codex / github). */}
-        {connected
-          ? subtitle
-          : TYPE_LABEL[i.type] && i.id !== (TYPE_LABEL[i.type] ?? "").toLowerCase()
-            ? i.id
-            : subtitle}
+      <div className="w-full min-w-0 space-y-0.5">
+        <div className="text-[10px] text-[#737373] tabular-nums truncate" title={i.id}>
+          <span className="font-mono">{i.id}</span>
+        </div>
+        <div className="text-[10px] text-[#a3a3a3] tabular-nums truncate" title={status}>
+          {status}
+        </div>
       </div>
     </button>
   );
@@ -255,13 +292,13 @@ function Card({
 
 function AllIntegrationsModal({
   list,
-  youKey,
+  isDup,
   onClose,
   onConnect,
   onDisconnect,
 }: {
   list: Integration[];
-  youKey: string;
+  isDup: (i: Integration) => boolean;
   onClose: () => void;
   onConnect: (i: Integration) => void;
   onDisconnect: (i: Integration) => void;
@@ -291,7 +328,7 @@ function AllIntegrationsModal({
             <Card
               key={i.id}
               integration={i}
-              youKey={youKey}
+              showName={isDup(i)}
               onConnect={() => onConnect(i)}
               onDisconnect={() => onDisconnect(i)}
             />

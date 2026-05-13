@@ -24,7 +24,7 @@ func (c *fakeTLSCredential) ConfigureUpstreamTLS(_ *tls.Config, _ runtime.Secret
 
 type fakeSecretStore struct{}
 
-func (fakeSecretStore) Get(string, string) (runtime.Secret, error) {
+func (fakeSecretStore) Get(string) (runtime.Secret, error) {
 	return runtime.Secret{}, nil
 }
 

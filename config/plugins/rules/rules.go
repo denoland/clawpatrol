@@ -61,7 +61,7 @@ type RuleBody struct {
 // Policy.Rules[name].Body.
 type Rule struct {
 	Name       string                `json:"name"`
-	Family     string                `json:"family"` // "https" | "sql" | "k8s"
+	Family     string                `json:"family"` // "http" | "sql" | "k8s"
 	Endpoints  []string              `json:"endpoints"`
 	Priority   int                   `json:"priority,omitempty"`
 	Disabled   bool                  `json:"disabled,omitempty"`
