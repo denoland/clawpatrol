@@ -33,6 +33,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"runtime"
 	"sync"
 	"syscall"
@@ -564,20 +565,10 @@ func spawnRelayWorker(workerSock *os.File) (*exec.Cmd, error) {
 
 // --- misc helpers -----------------------------------------------------
 
-// ignoreSIGPIPE sets the disposition for SIGPIPE to SIG_IGN. The relay
-// processes write across socket pairs whose far end may close; an
-// unhandled SIGPIPE would kill the relay and starve the running webhook.
+// ignoreSIGPIPE sets the disposition for SIGPIPE to SIG_IGN via the
+// standard library. The relay processes write across socket pairs
+// whose far end may close; an unhandled SIGPIPE would kill the relay
+// and starve the running webhook.
 func ignoreSIGPIPE() {
-	// sigaction with sa_handler = SIG_IGN (==1).
-	var act struct {
-		Handler uintptr
-		Flags   uint64
-		Restore uintptr
-		Mask    [16]uint64 // oversized; kernel only reads sigsetsize bytes
-	}
-	act.Handler = 1
-	_, _, _ = unix.RawSyscall6(unix.SYS_RT_SIGACTION,
-		uintptr(unix.SIGPIPE),
-		uintptr(unsafe.Pointer(&act)),
-		0, 8, 0, 0)
+	signal.Ignore(syscall.SIGPIPE)
 }
