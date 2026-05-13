@@ -134,6 +134,20 @@ catch typos before they hit production.
 clawpatrol validate <config.hcl>
 ```
 
+`validate` runs the same load path the daemon does, so any
+[external plugin](plugins) referenced from the file is spawned and
+its manifest is checked. Beyond the HCL pipeline it also runs a
+schema-only pass that exercises every plugin-declared facet's CEL
+env and resolves every plugin endpoint's `Family` against the
+facet registry — catches authoring bugs (typo'd Family, invalid
+identifier in a facet name, …) the operator's HCL didn't happen to
+exercise. The success line names what loaded:
+
+```
+ok: gateway.hcl — 7 endpoints across 3 profile(s)
+  plugin "example" v0.1: 2 facet(s), 1 credential type(s), 1 tunnel type(s), 3 endpoint type(s)
+```
+
 ### `clawpatrol status`
 
 Report device install state — whether `join`/`login` ran, whether
