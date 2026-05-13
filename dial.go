@@ -85,6 +85,14 @@ func (g *Gateway) servePorts() {}
 func (g *Gateway) dialUpstream(ctx context.Context, network, addr, serverName string, ep *config.CompiledEndpoint, profile string) (net.Conn, error) {
 	cfg := &tls.Config{ServerName: serverName, NextProtos: []string{"http/1.1"}}
 
+	if ep != nil && ep.Body != nil {
+		if cfgr, ok := ep.Body.(runtime.EndpointTLSConfigurer); ok {
+			if err := cfgr.ConfigureUpstreamTLS(cfg); err != nil {
+				log.Printf("upstream tls %s: %v — dialing with default roots", serverName, err)
+			}
+		}
+	}
+
 	if ep != nil {
 		for _, cc := range ep.Credentials {
 			// Body is the real decoded HCL instance; Plugin.Runtime

@@ -5,6 +5,10 @@ package endpoints
 // time).
 
 import (
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
+
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
 
@@ -61,6 +65,28 @@ func (e *KubernetesEndpoint) EndpointCredentials() []config.CredBinding {
 // KubernetesEndpoint internals.
 func (e *KubernetesEndpoint) AWSEKSAuthParams() (cluster, region string) {
 	return e.ClusterName, e.Region
+}
+
+// ConfigureUpstreamTLS pins cfg.RootCAs to the cluster CA when the
+// endpoint declares one. EKS apiservers present a per-cluster CA
+// that the system trust store can't validate; the operator inlines
+// it via `ca_cert = <<file:cluster-ca.pem>>` (or the base64 from
+// `aws eks describe-cluster`). Self-hosted clusters whose
+// mtls_credential already supplies a `ca` slot leave this empty —
+// the credential's ConfigureUpstreamTLS runs next and wins.
+func (e *KubernetesEndpoint) ConfigureUpstreamTLS(cfg *tls.Config) error {
+	if e.CACert == "" {
+		return nil
+	}
+	pool := cfg.RootCAs
+	if pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM([]byte(e.CACert)) {
+		return errors.New("kubernetes endpoint ca_cert: no PEM blocks parsed")
+	}
+	cfg.RootCAs = pool
+	return nil
 }
 
 func init() {

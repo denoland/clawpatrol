@@ -123,6 +123,21 @@ type TLSCredentialRuntime interface {
 	ConfigureUpstreamTLS(cfg *tls.Config, sec Secret) error
 }
 
+// EndpointTLSConfigurer is the optional hook an endpoint plugin
+// implements when it carries upstream-TLS state that doesn't belong
+// on a credential — most commonly a cluster-scoped CA pin. The
+// kubernetes endpoint implements it to apply its ca_cert HCL field
+// to cfg.RootCAs before the upstream dial: EKS apiservers present
+// per-cluster CAs that no system trust store knows about, and the
+// aws_credential plugin handles bearer auth, not root verification.
+//
+// Called by dialUpstream before any credential's ConfigureUpstreamTLS,
+// so a credential can still override RootCAs / append Certificates
+// when it has good reason to.
+type EndpointTLSConfigurer interface {
+	ConfigureUpstreamTLS(cfg *tls.Config) error
+}
+
 // ConnEndpointRuntime owns request-time handling for protocols that
 // don't fit the http.Request model — postgres, clickhouse_native,
 // any future binary wire protocol. The plugin receives the agent
