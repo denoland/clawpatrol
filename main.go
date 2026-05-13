@@ -1739,9 +1739,9 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		if cr != nil && len(cr.Outcome.Approve) > 0 {
 			v := g.runApproveChain(req.Context(), cr.Outcome.Approve, runApproveCtx{
 				AgentIP: agentAddr, Host: host, Method: req.Method, Path: req.URL.RequestURI(),
-				UA: req.Header.Get("User-Agent"), Reason: cr.Outcome.Reason,
+				UA: req.Header.Get("User-Agent"), BodySample: string(matchBody), Reason: cr.Outcome.Reason,
 				ThreadTS: req.Header.Get("X-HITL-Thread-TS"),
-				Endpoint: ep, Rule: cr, Profile: profile,
+				Endpoint: ep, Rule: cr, Profile: profile, Request: mreq,
 			})
 			if v.Decision != "allow" {
 				reason := v.Reason
@@ -2065,6 +2065,7 @@ type runApproveCtx struct {
 	Endpoint   *config.CompiledEndpoint
 	Rule       *config.CompiledRule
 	Profile    string
+	Request    *match.Request
 }
 
 // runApproveChain dispatches each stage of an approve = [...] list to
@@ -2091,6 +2092,7 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 			Stage:        st,
 			Endpoint:     c.Endpoint,
 			Rule:         c.Rule,
+			Request:      c.Request,
 			ApproverName: st.Name,
 			AgentIP:      c.AgentIP,
 			Profile:      c.Profile,
