@@ -45,8 +45,15 @@ state_dir   = "/opt/clawpatrol/state"
 dashboard_secret = "change-me-to-a-long-random-string"
 
 control        = "wireguard"
-wg_endpoint    = "gw.example.com:51820"
 wg_subnet_cidr = "10.55.0.0/24"
+
+# wg_endpoint is optional. Server-side it's listen address + port
+# (default 0.0.0.0:51820). Clients dial `host(public_url):port`, so
+# you only set wg_endpoint when you need a different host for WG
+# than for the dashboard (split-host deployments) or a non-default
+# port. Examples:
+#   wg_endpoint = ":41820"            # default host, custom port
+#   wg_endpoint = "wg.example.com:51820"   # WG host != dashboard host
 
 # ── policy defaults ---------------------------------------------------
 

@@ -27,7 +27,9 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -768,9 +770,62 @@ type wireguardOnboarder struct {
 	mu sync.Mutex
 }
 
+// wgClientEndpoint returns the host:port string clients should put in
+// their WireGuard `Endpoint =` line.
+//
+//   - port: parsed from wgEndpoint, falling back to 51820 when
+//     wgEndpoint is empty or omits a port.
+//   - host: if wgEndpoint specifies a non-wildcard host (anything
+//     other than empty / "0.0.0.0" / "::"), that host wins — the
+//     escape hatch for split-host deployments where the WG listener
+//     and the dashboard are on different IPs. Otherwise host is
+//     parsed from publicURL.
+//
+// Server-side, wgEndpoint's host is reserved for future
+// bind-to-interface support (wireguard-go's DefaultBind doesn't
+// support address-bound listening yet).
+func wgClientEndpoint(wgEndpoint, publicURL string) (string, error) {
+	port := 51820
+	var hostOverride string
+	if wgEndpoint != "" {
+		h, p, err := net.SplitHostPort(wgEndpoint)
+		if err != nil {
+			return "", fmt.Errorf("wg_endpoint %q: %w", wgEndpoint, err)
+		}
+		if p != "" {
+			n, err := strconv.Atoi(p)
+			if err != nil {
+				return "", fmt.Errorf("wg_endpoint port %q: %w", p, err)
+			}
+			port = n
+		}
+		if h != "" && h != "0.0.0.0" && h != "::" {
+			hostOverride = h
+		}
+	}
+	if hostOverride == "" {
+		if publicURL == "" {
+			return "", fmt.Errorf("cannot derive WG client endpoint: set public_url or pin a non-wildcard host in wg_endpoint")
+		}
+		u, err := url.Parse(publicURL)
+		if err != nil {
+			return "", fmt.Errorf("public_url %q: %w", publicURL, err)
+		}
+		hostOverride = u.Hostname()
+		if hostOverride == "" {
+			return "", fmt.Errorf("public_url %q has no host", publicURL)
+		}
+	}
+	return net.JoinHostPort(hostOverride, strconv.Itoa(port)), nil
+}
+
 func (w *wireguardOnboarder) MintKey(_ context.Context, reuseIP string) (string, string, string, error) {
-	if w.ts.WGEndpoint == "" || w.ts.WGSubnetCIDR == "" {
-		return "", "", "", fmt.Errorf("wireguard not configured (set tailscale.wg_endpoint, wg_subnet_cidr)")
+	if w.ts.WGSubnetCIDR == "" {
+		return "", "", "", fmt.Errorf("wireguard not configured (set wg_subnet_cidr)")
+	}
+	clientEndpoint, err := wgClientEndpoint(w.ts.WGEndpoint, w.ts.PublicURL)
+	if err != nil {
+		return "", "", "", err
 	}
 	if globalWG == nil {
 		return "", "", "", fmt.Errorf("wireguard server not started")
@@ -820,7 +875,7 @@ PublicKey = %s
 Endpoint = %s
 AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
-`, clientPrivB64, ip, ip6, serverPubB64, w.ts.WGEndpoint)
+`, clientPrivB64, ip, ip6, serverPubB64, clientEndpoint)
 	return conf, "wireguard://" + w.iface(), ip, nil
 }
 

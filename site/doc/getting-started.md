@@ -38,7 +38,6 @@ dashboard_secret = "<long random string>"
 state_dir        = "/opt/clawpatrol/state"
 
 control        = "wireguard"
-wg_endpoint    = "gw.example.com:51820"
 wg_subnet_cidr = "10.55.0.0/24"
 ```
 

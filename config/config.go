@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -109,6 +110,10 @@ type JoinConfig struct {
 	WGEndpoint        string
 	WGServerPub       string
 	WGSubnetCIDR      string
+	// PublicURL is the operator-facing gateway URL. The WG onboarder
+	// uses its host as the default client dial target when
+	// WGEndpoint's host portion is wildcard / unset.
+	PublicURL string
 }
 
 // Join returns the join-related fields as a JoinConfig value bundle.
@@ -127,6 +132,7 @@ func (g *Gateway) Join() JoinConfig {
 		WGEndpoint:        g.WGEndpoint,
 		WGServerPub:       g.WGServerPub,
 		WGSubnetCIDR:      g.WGSubnetCIDR,
+		PublicURL:         g.PublicURL,
 	}
 }
 
@@ -399,11 +405,15 @@ func validateOperational(gw *Gateway) hcl.Diagnostics {
 				Detail:   "control = \"wireguard\" requires wg_subnet_cidr (e.g. \"10.55.0.0/24\").",
 			})
 		}
-		if gw.WGEndpoint == "" {
+		// Clients dial host(public_url):port(wg_endpoint). Need a host
+		// from somewhere. wg_endpoint with a non-wildcard host is the
+		// escape hatch when public_url isn't reachable from clients
+		// (split-host deployments).
+		if !hasWGDialTarget(gw.PublicURL, gw.WGEndpoint) {
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
-				Summary:  "Missing wg_endpoint",
-				Detail:   "control = \"wireguard\" requires wg_endpoint (e.g. \"gw.example.com:51820\") so onboarded clients know where to dial.",
+				Summary:  "WireGuard client dial target not configured",
+				Detail:   "set public_url, or set wg_endpoint to a non-wildcard host:port (e.g. \"gw.example.com:51820\") — onboarded clients need one of these to know where to dial.",
 			})
 		}
 	}
@@ -417,6 +427,24 @@ func validateOperational(gw *Gateway) hcl.Diagnostics {
 	}
 
 	return diags
+}
+
+// hasWGDialTarget reports whether the config provides a host clients
+// can dial for WireGuard. Either public_url is set (we use its host),
+// or wg_endpoint pins a non-wildcard host (the split-host escape
+// hatch).
+func hasWGDialTarget(publicURL, wgEndpoint string) bool {
+	if publicURL != "" {
+		return true
+	}
+	if wgEndpoint == "" {
+		return false
+	}
+	h, _, err := net.SplitHostPort(wgEndpoint)
+	if err != nil {
+		return false
+	}
+	return h != "" && h != "0.0.0.0" && h != "::"
 }
 
 // extractPolicyBlocks pulls every recognized top-level block out of
