@@ -123,11 +123,11 @@ func (t *TailscaleTunnel) Open(ctx context.Context, host runtime.TunnelHost, _ r
 		return nil, fmt.Errorf("tailscale tunnel %q: no authkey (set HCL `authkey = ...`, env %s, or wire a `credential = ...` reference)", host.Name, envAuthKey(host.Name))
 	}
 	stateDir := t.StateDir
-	if stateDir == "" && host.CADir != "" {
-		stateDir = filepath.Join(host.CADir, "tunnels", "tailscale", host.Name)
+	if stateDir == "" && host.StateDir != "" {
+		stateDir = filepath.Join(host.StateDir, "tunnels", "tailscale", host.Name)
 	}
 	if stateDir == "" {
-		return nil, errors.New("tailscale tunnel: state_dir is required (HCL `state_dir = ...` or set the gateway's ca_dir so a default can be derived)")
+		return nil, errors.New("tailscale tunnel: state_dir is required (HCL `state_dir = ...` on the tunnel or the gateway)")
 	}
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return nil, fmt.Errorf("tailscale tunnel %q: state dir: %w", host.Name, err)

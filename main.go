@@ -43,23 +43,15 @@ import (
 type JoinConfig = config.JoinConfig
 
 // resolveStateDir picks the directory where the gateway keeps its
-// sqlite DB. Priority: cfg.StateDir (new canonical name) →
-// cfg.OAuthDir (the historical name, kept for backwards compat) →
-// ${cfg.CADir}/../oauth (the original layout that put state next to
-// the CA materials).
+// sqlite DB. The HCL `state_dir` attribute is the only knob;
+// defaults to ${HOME}/.clawpatrol/state when unset.
 func resolveStateDir(cfg *config.Gateway) string {
 	if cfg.StateDir != "" {
 		return cfg.StateDir
 	}
-	if cfg.OAuthDir != "" {
-		return cfg.OAuthDir
-	}
-	if cfg.CADir != "" {
-		return filepath.Join(cfg.CADir, "..", "oauth")
-	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		log.Fatalf("state_dir / oauth_dir / ca_dir all unset and $HOME unavailable")
+		log.Fatalf("state_dir unset and $HOME unavailable")
 	}
 	return filepath.Join(home, ".clawpatrol", "state")
 }
@@ -265,17 +257,18 @@ func newUpstreamDialer(resolver string) *net.Dialer {
 }
 
 type Gateway struct {
-	cfg     *config.Gateway
-	cfgPath string // path the HCL config was loaded from
-	db      *sql.DB
-	policy  atomic.Pointer[config.CompiledPolicy]
-	certs   *CertCache
-	dialer  *net.Dialer
-	sink    *Sink
-	oauth   *OAuthRegistry
-	agents  *AgentRegistry
-	hitl    *HITLRegistry
-	onboard *onboardRegistry
+	cfg      *config.Gateway
+	cfgPath  string // path the HCL config was loaded from
+	stateDir string // resolved gateway state dir (sqlite + plugin blobs)
+	db       *sql.DB
+	policy   atomic.Pointer[config.CompiledPolicy]
+	certs    *CertCache
+	dialer   *net.Dialer
+	sink     *Sink
+	oauth    *OAuthRegistry
+	agents   *AgentRegistry
+	hitl     *HITLRegistry
+	onboard  *onboardRegistry
 	// readOnlyConfig, when set via --read-only-config, rejects every
 	// dashboard write that mutates cfgPath. The dashboard reads the
 	// flag from /api/state and hides its editor affordances; the
@@ -1418,7 +1411,7 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 		Profile:      profile,
 		PeerIP:       pip,
 		Secrets:      g.secrets,
-		CADir:        g.cfg.CADir,
+		StateDir:     g.stateDir,
 		DstPort:      dstPort,
 		UpstreamHost: hostname,
 		MintCert: func(host string) (*tls.Certificate, error) {
@@ -2296,16 +2289,11 @@ func runGateway(args []string) {
 	if err != nil {
 		log.Fatalf("log: %v", err)
 	}
-	oauthDir := cfg.OAuthDir
-	if oauthDir == "" {
-		oauthDir = filepath.Join(cfg.CADir, "..", "oauth")
-	}
 	// OAuthRegistry seed list is empty for now — credential plugins
 	// own credential discovery in the new policy. The registry stays
 	// in place because per-owner token persistence + refresh logic
 	// is reused by the credential-plugin runtime bridge (lands when
 	// the credential injection path is wired into mitmHTTPS).
-	_ = oauthDir
 	oauthReg, err := NewOAuthRegistry(nil, db)
 	if err != nil {
 		log.Fatalf("oauth: %v", err)
@@ -2313,6 +2301,7 @@ func runGateway(args []string) {
 	g := &Gateway{
 		cfg:            cfg,
 		cfgPath:        cfgPath,
+		stateDir:       stateDir,
 		readOnlyConfig: *readOnly,
 		db:             db,
 		certs:          certs,
@@ -2327,7 +2316,7 @@ func runGateway(args []string) {
 		log.Printf("config: read-only mode (dashboard writes rejected)")
 	}
 	g.secrets = newGatewaySecretStore(db, oauthReg)
-	g.tunnels = NewTunnelManager(g.secrets, cfg.CADir)
+	g.tunnels = NewTunnelManager(g.secrets, stateDir)
 	registerOAuthCredentials(oauthReg, policy)
 	g.policy.Store(policy)
 	g.connIdx.Store(runtime.BuildConnIndex(policy))
@@ -2393,7 +2382,7 @@ func runGateway(args []string) {
 	startTelemetry(g)
 
 	if cfg.InfoListen != "" {
-		mux := newWebMux(g, cfg.CADir, cfg.Join(), cfg.PublicURL)
+		mux := newWebMux(g, cfg.Join(), cfg.PublicURL)
 		go serveHTTPLogged("dashboard", cfg.InfoListen, mux)
 		printDashboardURL(cfg.InfoListen)
 	}
@@ -2416,7 +2405,7 @@ func runGateway(args []string) {
 			log.Fatalf("wireguard: %v", err)
 		}
 		setWGServer(wg)
-		dashMux := newWebMux(g, cfg.CADir, cfg.Join(), cfg.PublicURL)
+		dashMux := newWebMux(g, cfg.Join(), cfg.PublicURL)
 		dashPort := portOf(cfg.InfoListen)
 		tcpDispatch := func(c net.Conn, dstIP string, dstPort uint16) {
 			log.Printf("wg-fwd: %s:%d", dstIP, dstPort)

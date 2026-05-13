@@ -18,9 +18,8 @@ blocks dispatch to plugins by their first label.
 # Top-level singletons — read by the gateway daemon at boot.
 # Listen / paths / public URL:
 listen      = "0.0.0.0:8443"
-ca_dir      = "/opt/clawpatrol/ca"
 log_path    = "/opt/clawpatrol/gateway.log"
-oauth_dir   = "/opt/clawpatrol/oauth"
+state_dir   = "/opt/clawpatrol/state"
 public_url  = "http://gateway.internal:8080"
 admin_email = "ops@example.com"
 

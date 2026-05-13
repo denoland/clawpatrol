@@ -24,21 +24,12 @@ type Gateway struct {
 	InfoListen string `hcl:"info_listen,optional"`
 	PublicURL  string `hcl:"public_url,optional"`
 	AdminEmail string `hcl:"admin_email,optional"`
-	// CADir is the legacy path the gateway used to keep the CA cert
-	// + ssh host keys on disk. Kept for backwards compat so existing
-	// configs still parse and state_dir resolution can fall back to
-	// ${ca_dir}/../oauth. New deployments should set state_dir
-	// instead — the gateway keeps everything in sqlite.
-	CADir string `hcl:"ca_dir,optional"`
-	// StateDir is the directory holding clawpatrol.db. Falls back to
-	// OAuthDir (historical name) or ${CADir}/../oauth or
-	// ${HOME}/.clawpatrol/state, in that order.
-	StateDir string `hcl:"state_dir,optional"`
-	Resolver string `hcl:"resolver,optional"`
-	LogPath  string `hcl:"log_path,optional"`
-	// OAuthDir is the historical state directory name. Equivalent to
-	// state_dir and kept for backwards compat.
-	OAuthDir        string `hcl:"oauth_dir,optional"`
+	// StateDir is the directory holding clawpatrol.db (and anything
+	// else a plugin persists to disk under it). Defaults to
+	// ${HOME}/.clawpatrol/state when unset.
+	StateDir        string `hcl:"state_dir,optional"`
+	Resolver        string `hcl:"resolver,optional"`
+	LogPath         string `hcl:"log_path,optional"`
 	DashboardSecret string `hcl:"dashboard_secret,optional"`
 	// InsecureNoDashboardSecret opts out of dashboard auth. Required
 	// (alongside an empty DashboardSecret) for the gateway to serve

@@ -5,4 +5,3 @@
 
 listen      = "0.0.0.0:8443"
 info_listen = "0.0.0.0:8080"
-ca_dir      = "/opt/clawpatrol/ca"

@@ -58,7 +58,7 @@ public UDP port, no WireGuard keypair management, no subnet allocation
 | **Device IP** | Assigned by Tailscale control plane | Allocated from `wg_subnet_cidr` |
 | **Dashboard auth** | Tailscale user identity (no proxy needed) | Falls back to `admin_email`; needs auth proxy for multi-user |
 | **Client command** | `clawpatrol login` | `clawpatrol join <gw-url>` |
-| **State** | `state_dir` (tsnet) | `oauth_dir` (wg-server.key, wg-peers.json) |
+| **State** | `state_dir` — tsnet machine key + ipn state in sqlite | `state_dir` — WG server key, peer map, sessions in sqlite |
 
 ## Operator setup
 
@@ -71,8 +71,7 @@ listen       = "0.0.0.0:8443"
 info_listen  = "0.0.0.0:8080"
 public_url   = "http://clawpatrol-gateway"    # tailnet hostname suffices
 admin_email  = "you@example.com"
-ca_dir       = "/opt/clawpatrol/ca"
-oauth_dir    = "/opt/clawpatrol/oauth"
+state_dir    = "/opt/clawpatrol/state"
 integrations = ["claude", "codex", "github"]
 
 control             = "tailscale"

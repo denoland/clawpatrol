@@ -1,5 +1,4 @@
 {
-  "ca_dir": "/opt/clawpatrol/ca",
   "listen": "0.0.0.0:8443",
   "policy": {
     "credentials": {

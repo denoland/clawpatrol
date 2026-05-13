@@ -1,7 +1,8 @@
 // Package config loads and validates clawpatrol's HCL gateway config.
 //
-// The config has two layers. Operational fields (listen / ca_dir /
-// tailscale {} / ...) live at the top of the file and decode via
+// The config has two layers. Operational fields (listen /
+// state_dir / tailscale {} / ...) live at the top of the file and
+// decode via
 // gohcl into the Gateway struct. Policy blocks (defaults / approver /
 // policy / credential / endpoint / rule / profile) are dispatched to
 // plugins by their first label; each plugin owns its body schema, the

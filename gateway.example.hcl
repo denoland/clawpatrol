@@ -5,7 +5,7 @@
 #     clawpatrol gateway /etc/clawpatrol/gateway.hcl
 #
 # Hot-reloadable: every policy block + admin_email. Listen ports /
-# ca_dir / oauth_dir / tailscale block need a restart.
+# state_dir / tailscale block need a restart.
 #
 # Labeled blocks:
 #
@@ -29,8 +29,7 @@ listen      = "0.0.0.0:8443"
 info_listen = "0.0.0.0:8080"
 public_url  = "http://66.42.120.196:8080"
 admin_email = "test@example.com"
-ca_dir      = "/opt/clawpatrol/ca"
-oauth_dir   = "/opt/clawpatrol/oauth"
+state_dir   = "/opt/clawpatrol/oauth"
 
 # Dashboard auth — pick exactly one. The gateway refuses to serve the
 # dashboard / APIs until one of these is set, to avoid silently
@@ -110,12 +109,12 @@ rule "github-writes" {
 # the gateway recovers the hostname, terminates SSH on both halves,
 # and uses the credential below for upstream auth.
 #
-# VIPs are persisted under <state_dir>/dnsvip.json so they survive
-# restarts AND policy reloads — clients' cached DNS answers stay
-# valid through gateway hops. Each SSH endpoint also gets its own
-# persisted host key under <ca_dir>/ssh/<endpoint>.key on first use;
-# add the printed fingerprint to the user's known_hosts file (the
-# dashboard surfaces it per endpoint).
+# VIPs are persisted in sqlite so they survive restarts AND policy
+# reloads — clients' cached DNS answers stay valid through gateway
+# hops. Each SSH endpoint also gets its own persisted host key
+# (also in sqlite, via the plugin blob store) on first use; add the
+# printed fingerprint to the user's known_hosts file (the dashboard
+# surfaces it per endpoint).
 
 credential "ssh" "build-host-cred" {
   # private_key + (optional) passphrase + (optional) host_pubkey live

@@ -5,7 +5,7 @@
 #     clawpatrol gateway -config /etc/clawpatrol/gateway.hcl
 #
 # Hot-reloadable: every policy block + admin_email. Listen ports /
-# ca_dir / oauth_dir / tailscale block need a restart.
+# state_dir / tailscale block need a restart.
 #
 # Top-level kinds:
 #
@@ -31,9 +31,8 @@ listen           = "0.0.0.0:8443"
 info_listen      = "0.0.0.0:8080"
 public_url       = "http://66.42.120.196:8080"
 admin_email      = "test@example.com"
-ca_dir           = "/opt/clawpatrol/ca"
 log_path         = "/opt/clawpatrol/gateway.log"
-oauth_dir        = "/opt/clawpatrol/oauth"
+state_dir        = "/opt/clawpatrol/oauth"
 dashboard_secret = "test-secret"
 
 control        = "wireguard"

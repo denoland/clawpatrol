@@ -148,11 +148,12 @@ type ConnHandle struct {
 	// support HITL for this conn family — plugins must default to
 	// deny in that case.
 	Approve func(req ApproveCallRequest) ApproveVerdict
-	// CADir is the gateway's persistent state root (matches
-	// cfg.CADir). Kept on the handle for tunnel plugins (Tailscale's
-	// tsnet state dir is derived from it). Endpoint plugins should
-	// persist material through Blobs instead — see ConnHandle.Blobs.
-	CADir string
+	// StateDir is the gateway's persistent state root (matches
+	// cfg.StateDir). Kept on the handle for tunnel plugins
+	// (Tailscale's tsnet state dir is derived from it). Endpoint
+	// plugins should persist material through Blobs instead — see
+	// ConnHandle.Blobs.
+	StateDir string
 	// Blobs is the gateway's plugin-blob store. Endpoint plugins
 	// that need persistent bytes (SSH host keys, JWT signing keys)
 	// read / write through it instead of touching the filesystem.

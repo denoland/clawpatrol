@@ -25,7 +25,7 @@ func newOnboardAuthTestWebMuxForControl(control string) *webMux {
 		cfg:     cfg,
 		onboard: newOnboardRegistry(),
 	}
-	w := &webMux{g: g, caDir: "", ts: cfg.Join(), publicURL: "https://gateway.example.test", sessions: map[string]*oauthSession{}, onboard: g.onboard, previews: map[string]configPreviewToken{}}
+	w := &webMux{g: g, ts: cfg.Join(), publicURL: "https://gateway.example.test", sessions: map[string]*oauthSession{}, onboard: g.onboard, previews: map[string]configPreviewToken{}}
 	w.routeAuth = routeAuthIndex(w.routes())
 	return w
 }

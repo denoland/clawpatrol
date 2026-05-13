@@ -52,7 +52,6 @@ var errConfigRevisionConflict = errors.New("config revision conflict")
 
 type webMux struct {
 	g         *Gateway
-	caDir     string
 	ts        JoinConfig // for onboarding key minting
 	publicURL string
 	mu        sync.Mutex
@@ -187,8 +186,8 @@ func (w *webMux) skipsTailnetGate(path string) bool {
 	return w.authRequirementForPath(path) == authPublic
 }
 
-func newWebMux(g *Gateway, caDir string, ts JoinConfig, publicURL string) http.Handler {
-	w := &webMux{g: g, caDir: caDir, ts: ts, publicURL: publicURL, sessions: map[string]*oauthSession{}, onboard: g.onboard, previews: map[string]configPreviewToken{}}
+func newWebMux(g *Gateway, ts JoinConfig, publicURL string) http.Handler {
+	w := &webMux{g: g, ts: ts, publicURL: publicURL, sessions: map[string]*oauthSession{}, onboard: g.onboard, previews: map[string]configPreviewToken{}}
 	return w.handler()
 }
 

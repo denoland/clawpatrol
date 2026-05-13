@@ -1043,16 +1043,11 @@ func runGatewayInit(args []string) {
 	_ = fs.Parse(args)
 
 	// 1. data dir ----------------------------------------------------------
-	// The gateway lazy-mints its CA into sqlite on first boot, so
-	// there's nothing to pre-create here besides the state directory
-	// itself. ${dataDir}/ca is kept (empty for now) so the generated
-	// gateway.hcl's ca_dir path resolves to a real directory — the
-	// CA materials themselves live in the DB.
-	if err := os.MkdirAll(filepath.Join(*dataDir, "ca"), 0o700); err != nil {
-		fail("mkdir ca: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(*dataDir, "oauth"), 0o700); err != nil {
-		fail("mkdir oauth: %v", err)
+	// The gateway lazy-mints its CA into sqlite on first boot, so all
+	// we need is the state directory itself; the sqlite DB is created
+	// on demand.
+	if err := os.MkdirAll(filepath.Join(*dataDir, "state"), 0o700); err != nil {
+		fail("mkdir state: %v", err)
 	}
 
 	// 2. detect public IP if not given -------------------------------------
@@ -1074,9 +1069,8 @@ func runGatewayInit(args []string) {
 listen      = "0.0.0.0:%d"
 info_listen = "0.0.0.0:%d"
 public_url  = "%s"
-ca_dir      = "%s"
 log_path    = "%s"
-oauth_dir   = "%s"
+state_dir   = "%s"
 
 control        = "wireguard"
 wg_endpoint    = "%s:%d"
@@ -1112,9 +1106,8 @@ profile "default" {
 }
 `,
 		*tlsPort, *dashPort, url,
-		filepath.Join(*dataDir, "ca"),
 		filepath.Join(*dataDir, "gateway.log"),
-		filepath.Join(*dataDir, "oauth"),
+		filepath.Join(*dataDir, "state"),
 		ip, *wgPort, *subnet,
 	)
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
