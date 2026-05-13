@@ -26,8 +26,8 @@ import (
 // check, not a policy check.
 func demoSMTPDef() pluginsdk.EndpointDef {
 	return pluginsdk.EndpointDef{
-		TypeName:    "demo_smtp",
-		Family:      "smtp", // SDK auto-namespaces to "example.smtp"
+		TypeName:    "example_demo_smtp",
+		Family:      "example_smtp",
 		TLSMode:     pluginsdk.TLSTerminate,
 		RequiresVIP: true,
 		Schema:      pluginsdk.Schema{},
@@ -97,7 +97,7 @@ func handleDemoSMTP(ctx context.Context, conn *pluginsdk.Conn) error {
 			"mail_from": s.mailFrom,
 			"rcpt_to":   s.rcptTo,
 		}
-		v, err := conn.Evaluate(ctx, "smtp", action, cmd)
+		v, err := conn.Evaluate(ctx, "example_smtp", action, cmd)
 		if err != nil {
 			return fmt.Errorf("evaluate %q: %w", cmd, err)
 		}
@@ -127,7 +127,7 @@ func handleDemoSMTP(ctx context.Context, conn *pluginsdk.Conn) error {
 				"rcpt_to":   s.rcptTo,
 				"body":      pluginsdk.Stream(bytes.NewReader(body)),
 			}
-			bv, err := conn.Evaluate(ctx, "smtp", bodyAction, fmt.Sprintf("BODY (%d bytes)", len(body)))
+			bv, err := conn.Evaluate(ctx, "example_smtp", bodyAction, fmt.Sprintf("BODY (%d bytes)", len(body)))
 			if err != nil {
 				return fmt.Errorf("evaluate body: %w", err)
 			}

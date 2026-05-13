@@ -15,7 +15,7 @@ import (
 // many Dials.
 func passthroughDef() pluginsdk.TunnelDef {
 	return pluginsdk.TunnelDef{
-		TypeName: "passthrough",
+		TypeName: "example_passthrough",
 		Schema:   pluginsdk.Schema{},
 		Open: func(ctx context.Context, req pluginsdk.TunnelOpenRequest) (any, error) {
 			// No state to keep; the tunnel name itself is enough.

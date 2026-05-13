@@ -13,7 +13,7 @@ type magicToken struct {
 
 func magicTokenDef() pluginsdk.CredentialDef {
 	return pluginsdk.CredentialDef{
-		TypeName: "magic_token",
+		TypeName: "example_magic_token",
 		Schema: pluginsdk.Schema{Fields: []pluginsdk.SchemaField{
 			{Name: "header_name", TypeString: "string"},
 		}},
