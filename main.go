@@ -44,7 +44,9 @@ type JoinConfig = config.JoinConfig
 
 // resolveStateDir picks the directory where the gateway keeps its
 // sqlite DB. The HCL `state_dir` attribute is the only knob;
-// defaults to ${HOME}/.clawpatrol/state when unset.
+// defaults to ${HOME}/.clawpatrol when unset. The DB filename
+// (clawpatrol.db) coexists with the client-side ca.crt that lives
+// in the same dir on dev machines.
 func resolveStateDir(cfg *config.Gateway) string {
 	if cfg.StateDir != "" {
 		return cfg.StateDir
@@ -53,7 +55,7 @@ func resolveStateDir(cfg *config.Gateway) string {
 	if err != nil || home == "" {
 		log.Fatalf("state_dir unset and $HOME unavailable")
 	}
-	return filepath.Join(home, ".clawpatrol", "state")
+	return filepath.Join(home, ".clawpatrol")
 }
 
 // warnIfStateLooselyPermissioned logs a warning when state_dir or

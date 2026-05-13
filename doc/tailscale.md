@@ -71,7 +71,7 @@ listen       = "0.0.0.0:8443"
 info_listen  = "0.0.0.0:8080"
 public_url   = "http://clawpatrol-gateway"    # tailnet hostname suffices
 admin_email  = "you@example.com"
-state_dir    = "/opt/clawpatrol/state"
+state_dir    = "/opt/clawpatrol"
 integrations = ["claude", "codex", "github"]
 
 control             = "tailscale"

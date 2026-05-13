@@ -32,7 +32,7 @@ listen      = "0.0.0.0:8443"
 info_listen = "0.0.0.0:8080"
 public_url  = "https://gw.example.com"
 admin_email = "you@example.com"
-state_dir   = "/opt/clawpatrol/state"
+state_dir   = "/opt/clawpatrol"
 
 # Dashboard auth — pick exactly one. The gateway refuses to serve the
 # dashboard / APIs until one of these is set, to avoid silently

@@ -27,7 +27,7 @@ type Gateway struct {
 	AdminEmail string `hcl:"admin_email,optional"`
 	// StateDir is the directory holding clawpatrol.db (and anything
 	// else a plugin persists to disk under it). Defaults to
-	// ${HOME}/.clawpatrol/state when unset.
+	// ${HOME}/.clawpatrol when unset.
 	StateDir        string `hcl:"state_dir,optional"`
 	Resolver        string `hcl:"resolver,optional"`
 	LogPath         string `hcl:"log_path,optional"`

@@ -35,7 +35,7 @@ info_listen      = "0.0.0.0:9080"
 public_url       = "http://gw.example.com:9080"
 admin_email      = "you@example.com"
 dashboard_secret = "<long random string>"
-state_dir        = "/opt/clawpatrol/state"
+state_dir        = "/opt/clawpatrol"
 
 control        = "wireguard"
 wg_subnet_cidr = "10.55.0.0/24"
@@ -67,7 +67,7 @@ human or agent on the box:
 ```bash
 useradd --system --home /opt/clawpatrol --shell /usr/sbin/nologin clawpatrol
 chown -R clawpatrol:clawpatrol /opt/clawpatrol
-chmod 700 /opt/clawpatrol /opt/clawpatrol/state
+chmod 700 /opt/clawpatrol
 ```
 
 Drop the following at `/etc/systemd/system/clawpatrol-gateway.service`,

@@ -100,7 +100,7 @@ profile "default" { endpoints = [github] }
 | `info_listen` | Dashboard + API bind. |
 | `public_url` | Dashboard URL handed out at join time. |
 | `dashboard_secret` | Required (or `insecure_no_dashboard_secret = true` for local testing). |
-| `state_dir` | Directory holding `clawpatrol.db`. Defaults to `~/.clawpatrol/state`. |
+| `state_dir` | Directory holding `clawpatrol.db`. Defaults to `~/.clawpatrol`. |
 | `control` | `"wireguard"` or `"tailscale"`. |
 | `wg_endpoint` / `wg_subnet_cidr` | WG listener + device subnet. |
 | `unknown_host` | `"passthrough"` (default) or `"deny"` for traffic no endpoint claims. |

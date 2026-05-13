@@ -21,16 +21,17 @@ import (
 // user — see site/doc/getting-started.md.
 func findGatewayStateLeak() string {
 	candidates := []string{
-		"/opt/clawpatrol/state/clawpatrol.db",
-		"/opt/clawpatrol/oauth/clawpatrol.db",
-		"/srv/clawpatrol/state/clawpatrol.db",
-		"/var/lib/clawpatrol/state/clawpatrol.db",
+		"/opt/clawpatrol/clawpatrol.db",
+		"/opt/clawpatrol/state/clawpatrol.db",   // legacy
+		"/opt/clawpatrol/oauth/clawpatrol.db",   // legacy
+		"/srv/clawpatrol/clawpatrol.db",
+		"/var/lib/clawpatrol/clawpatrol.db",
 	}
 	if home, err := os.UserHomeDir(); err == nil {
 		candidates = append(candidates,
-			filepath.Join(home, ".clawpatrol/state/clawpatrol.db"),
 			filepath.Join(home, ".clawpatrol/clawpatrol.db"),
-			filepath.Join(home, ".clawpatrol/oauth/clawpatrol.db"),
+			filepath.Join(home, ".clawpatrol/state/clawpatrol.db"), // legacy
+			filepath.Join(home, ".clawpatrol/oauth/clawpatrol.db"), // legacy
 		)
 	}
 	for _, p := range candidates {

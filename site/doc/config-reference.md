@@ -30,7 +30,7 @@ Every singleton gateway attribute — listen addresses, paths, control-plane joi
 | `info_listen` | `string` | no |  |
 | `public_url` | `string` | no |  |
 | `admin_email` | `string` | no |  |
-| `state_dir` | `string` | no | The directory holding clawpatrol.db (and anything else a plugin persists to disk under it). Defaults to ${HOME}/.clawpatrol/state when unset. |
+| `state_dir` | `string` | no | The directory holding clawpatrol.db (and anything else a plugin persists to disk under it). Defaults to ${HOME}/.clawpatrol when unset. |
 | `resolver` | `string` | no |  |
 | `log_path` | `string` | no |  |
 | `dashboard_secret` | `string` | no |  |
