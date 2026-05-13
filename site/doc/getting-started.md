@@ -60,6 +60,16 @@ The dashboard is at `http://<gateway-host>:9080`.
 
 ### Under systemd
 
+Create a dedicated service user so the gateway's state directory
+(CA private key, OAuth tokens, audit log) isn't readable by any
+human or agent on the box:
+
+```bash
+useradd --system --home /opt/clawpatrol --shell /usr/sbin/nologin clawpatrol
+chown -R clawpatrol:clawpatrol /opt/clawpatrol
+chmod 700 /opt/clawpatrol /opt/clawpatrol/state
+```
+
 Drop the following at `/etc/systemd/system/clawpatrol-gateway.service`,
 adjusting the three paths to wherever you put the binary and config:
 
@@ -71,6 +81,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=clawpatrol
+Group=clawpatrol
 WorkingDirectory=/opt/clawpatrol
 ExecStart=/usr/local/bin/clawpatrol gateway /opt/clawpatrol/gateway.hcl
 Restart=on-failure
@@ -88,6 +100,9 @@ systemctl daemon-reload
 systemctl enable --now clawpatrol-gateway
 journalctl -u clawpatrol-gateway -f       # tail the gateway log
 ```
+
+If you skip the dedicated-user step, the gateway logs a warning at
+startup when `state_dir` or `clawpatrol.db` is readable beyond owner.
 
 ## Join a device
 
@@ -123,6 +138,35 @@ The gateway intercepts the wrapped process's HTTPS traffic, matches each
 request against the rules in `gateway.hcl`, injects the configured
 credential, and forwards the request upstream. The agent never sees the
 real key.
+
+## Security notes
+
+A few footguns worth knowing about before you point an agent at a
+Claw Patrol gateway:
+
+- **Don't run agents on the gateway host.** `clawpatrol run` is for
+  client devices — the gateway's `state_dir` holds the CA private
+  key, OAuth tokens, and audit log. An agent running on the gateway
+  host can read those directly, with or without `clawpatrol run` in
+  front. The correct shape is: gateway on one box (small VPS, no
+  human logins, no developer tools); your laptop / CI runner joins
+  it over WireGuard. `clawpatrol run` prints a heads-up if it
+  detects a gateway state db in a common location.
+
+- **Lock down `state_dir`.** The gateway warns at startup when
+  `state_dir` or `clawpatrol.db` is readable beyond owner. The
+  systemd snippet above creates a dedicated `clawpatrol` service
+  user with mode-700 ownership; if you skip that, anyone with
+  shell access to the gateway host can read every credential.
+
+- **`clawpatrol join --whole-machine` is for client devices only.**
+  Running it on (or pointed at) the gateway host itself routes the
+  host's own traffic through its own WireGuard endpoint — a loop
+  that breaks DNS, outbound traffic from the gateway daemon, and
+  the dashboard's reachability. Per-process routing (the default
+  `clawpatrol join` + `clawpatrol run` shape) is also what most
+  people actually want on a multi-purpose laptop, so they don't
+  accidentally route every browser tab through the gateway.
 
 ## What's next
 

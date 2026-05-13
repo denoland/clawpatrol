@@ -62,6 +62,8 @@ func runRun(args []string) {
 		return
 	}
 
+	warnIfOnGatewayHost()
+
 	// `sudo clawpatrol run` is doomed on this distro: the UidMappings
 	// below collapse to `0 → 0`, and most distros refuse to put pid 0
 	// into a new user namespace at all (apparmor restrict-unpriv-userns

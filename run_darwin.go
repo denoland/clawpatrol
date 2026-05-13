@@ -78,6 +78,8 @@ func sessionIPC(msg string) error {
 }
 
 func runRun(args []string) {
+	warnIfOnGatewayHost()
+
 	if _, err := os.Stat(macHelperPath); err != nil {
 		fail("Clawpatrol.app not installed. Build + install from macos/:\n" +
 			"  cd macos && ./install.sh\n" +
