@@ -36,7 +36,7 @@ plugin "example" {
 
 credential "example_magic_token" "demo_token" {}
 
-endpoint "example_demo_smtp" "demo-mail" {
+endpoint "example_smtp" "demo-mail" {
   hosts      = ["mail.invalid:25"]
   credential = demo_token
 }
@@ -53,11 +53,14 @@ auto-namespace anything.
 
 Plugin authors prefix their own names by convention — the way
 Terraform providers do (`aws_iam_role`, `kubernetes_deployment`):
-the SMTP endpoint in the example plugin is `example_demo_smtp`,
+the SMTP endpoint in the example plugin is `example_smtp`,
 its credential is `example_magic_token`, its custom facet is
-`example_smtp`. A plugin that ships a name colliding with a
-built-in (e.g. `https` endpoint type, `http` facet) or another
-plugin fails at validate time with a clear diagnostic.
+also `example_smtp` (endpoint types and facets live in different
+registries, so reusing one name for the matched pair is fine and
+often clearer). A plugin that ships a name colliding *within* a
+registry — with a built-in (e.g. `https` endpoint type, `http`
+facet) or another plugin — fails at validate time with a clear
+diagnostic.
 
 ## Writing a plugin
 
@@ -186,7 +189,7 @@ map with the same keys the built-in `http` facet exposes
 
 ```go
 endpoint := pluginsdk.EndpointDef{
-    TypeName: "example_demo_https",
+    TypeName: "example_https",
     Family:   "http", // bind to the built-in http facet
     TLSMode:  pluginsdk.TLSTerminate,
     HandleConn: func(ctx context.Context, conn *pluginsdk.Conn) error {
@@ -243,10 +246,11 @@ ok: gateway.hcl — 7 endpoints across 3 profile(s)
 
 - [`plugin-example/`](https://github.com/denoland/clawpatrol/tree/main/plugin-example)
   — fully exercised plugin: `example_magic_token` credential,
-  `example_passthrough` tunnel, `example_demo_https` (built-in
-  `http` facet), `example_demo_smtp` (custom `example_smtp`
-  facet with optional + stream fields), `example_demo_echo`
-  (plain TCP).
+  `example_passthrough` tunnel, `example_https` endpoint
+  (binds to the built-in `http` facet), `example_smtp`
+  endpoint + matching `example_smtp` facet (optional + stream
+  fields), `example_echo` endpoint + matching `example_echo`
+  facet (plain TCP).
 - [`pluginsdk/`](https://github.com/denoland/clawpatrol/tree/main/pluginsdk)
   — the author SDK package.
 - [`config/extplugin/proto/plugin.proto`](https://github.com/denoland/clawpatrol/tree/main/config/extplugin/proto)
