@@ -1,95 +1,54 @@
-@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@100..900&family=Sora:wght@100..800&display=swap");
 @import "./docs.css";
 @import "highlight.js/styles/atom-one-dark.css";
 @import "tailwindcss";
 
-/* Self-hosted families below. Outfit and Sora are imported above from
-   Google Fonts so they ship with the CSS bundle (works on /docs/ too). */
+/* Self-hosted families below. */
 
-/* AmsiPro (Stawix) — display family. Static weights, latin-basic subset. */
+/* Source Sans 3 (Adobe) — body family. Regular + Bold, each with an italic,
+   latin-basic subset. */
 @font-face {
-  font-family: "AmsiPro";
-  font-style: normal;
-  font-weight: 100;
-  font-display: swap;
-  src: url("/fonts/AmsiPro/AmsiPro-Thin.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "AmsiPro";
-  font-style: normal;
-  font-weight: 200;
-  font-display: swap;
-  src: url("/fonts/AmsiPro/AmsiPro-XLight.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "AmsiPro";
-  font-style: normal;
-  font-weight: 300;
-  font-display: swap;
-  src: url("/fonts/AmsiPro/AmsiPro-Light.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "AmsiPro";
+  font-family: "Source Sans 3";
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url("/fonts/AmsiPro/AmsiPro-Regular.woff2") format("woff2");
+  src: url("/fonts/source-sans-3/SourceSans3-Regular--latin_basic.woff2")
+    format("woff2");
   unicode-range:
     U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
     U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
     U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
-  font-family: "AmsiPro";
-  font-style: normal;
-  font-weight: 600;
+  font-family: "Source Sans 3";
+  font-style: italic;
+  font-weight: 400;
   font-display: swap;
-  src: url("/fonts/AmsiPro/AmsiPro-SemiBold.woff2") format("woff2");
+  src: url("/fonts/source-sans-3/SourceSans3-It--latin_basic.woff2")
+    format("woff2");
   unicode-range:
     U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
     U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
     U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
-  font-family: "AmsiPro";
+  font-family: "Source Sans 3";
   font-style: normal;
   font-weight: 700;
   font-display: swap;
-  src: url("/fonts/AmsiPro/AmsiPro-Bold.woff2") format("woff2");
+  src: url("/fonts/source-sans-3/SourceSans3-Bold--latin_basic.woff2")
+    format("woff2");
   unicode-range:
     U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
     U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
     U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
-  font-family: "AmsiPro";
-  font-style: normal;
-  font-weight: 900;
+  font-family: "Source Sans 3";
+  font-style: italic;
+  font-weight: 700;
   font-display: swap;
-  src: url("/fonts/AmsiPro/AmsiPro-Black.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "AmsiPro";
-  font-style: normal;
-  font-weight: 950;
-  font-display: swap;
-  src: url("/fonts/AmsiPro/AmsiPro-Ultra.woff2") format("woff2");
+  src: url("/fonts/source-sans-3/SourceSans3-BoldIt--latin_basic.woff2")
+    format("woff2");
   unicode-range:
     U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
     U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
@@ -845,7 +804,7 @@ a.neu-raised:active {
 
   --font-display: "Basic Sans", "Gazpacho", system-ui, serif;
   --font-sans:
-    "Sora", "Outfit", "Public Sans", "Eastman", "Courier New",
+    "Source Sans 3", "Public Sans", "Eastman", "Courier New",
     "American Typewriter", "Chronica Pro", "Basic Sans", system-ui, sans-serif;
   --font-mono:
     "IBM Plex Mono", "MonoLisa", "DankMono Nerd Font", "SF Mono", "Menlo",
