@@ -15,6 +15,17 @@
       "carol": {
         "body": {},
         "type": "anthropic_oauth_subscription"
+      },
+      "team": {
+        "body": {
+          "Credentials": [
+            "alice",
+            "bob",
+            "carol"
+          ],
+          "Strategy": "round_robin"
+        },
+        "type": "pool"
       }
     },
     "endpoints": {
@@ -34,18 +45,6 @@
         "endpoints": [
           "anthropic"
         ]
-      }
-    },
-    "token_pools": {
-      "team": {
-        "body": {
-          "Credentials": [
-            "alice",
-            "bob",
-            "carol"
-          ],
-          "Strategy": "round_robin"
-        }
       }
     }
   },

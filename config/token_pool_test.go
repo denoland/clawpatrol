@@ -24,7 +24,7 @@ credential "anthropic_oauth_subscription" "alice" {}
 credential "anthropic_oauth_subscription" "bob"   {}
 credential "anthropic_oauth_subscription" "carol" {}
 
-token_pool "team" {
+credential "pool" "team" {
   credentials = [alice, bob, carol]
   strategy    = "round_robin"
 }
@@ -133,7 +133,7 @@ admin_email = "you@example.com"
 credential "anthropic_oauth_subscription" "alice"  {}
 credential "openai_codex_oauth"            "bob"   {}
 
-token_pool "team" {
+credential "pool" "team" {
   credentials = [alice, bob]
 }
 
@@ -154,7 +154,7 @@ admin_email = "you@example.com"
 
 credential "anthropic_oauth_subscription" "alice" {}
 
-token_pool "solo" {
+credential "pool" "solo" {
   credentials = [alice]
 }
 
@@ -189,7 +189,7 @@ admin_email = "you@example.com"
 credential "anthropic_oauth_subscription" "alice" {}
 credential "anthropic_oauth_subscription" "bob"   {}
 
-token_pool "team" {
+credential "pool" "team" {
   credentials = [alice, ghost, bob]
 }
 

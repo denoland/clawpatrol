@@ -1,8 +1,16 @@
-// Package pools registers the single `token_pool` block kind. A pool
-// groups N same-(kind, type) credentials behind one logical handle so
-// an endpoint binding `credential = X` can reference the pool by name
+// Package pools registers the `pool` credential type. A pool groups
+// N same-(kind, type) credentials behind one logical handle so an
+// endpoint binding `credential = X` can reference the pool by name
 // and have the dispatcher spread requests across underlying members
 // per the pool's strategy.
+//
+// A pool is a credential — operators declare it with the standard
+// two-label form (`credential "pool" "<name>"`) so the gateway has
+// one top-level concept ("a credential") rather than two parallel
+// ones. The compile pass recognises the `pool` type and lowers it
+// into a runtime *CompiledTokenPool that picks a member at request
+// time; everything downstream (injection, secret lookup) operates on
+// the chosen member unchanged.
 //
 // Use case: an operator with multiple LLM subscription credentials
 // (e.g. one Claude OAuth per teammate) declares them as a pool and
@@ -26,9 +34,9 @@ import (
 	"github.com/denoland/clawpatrol/config"
 )
 
-// TokenPoolBody is the gohcl-tagged decode target for a `token_pool`
-// block body.
-type TokenPoolBody struct {
+// PoolCredential is the gohcl-tagged decode target for a
+// `credential "pool" "<name>"` block body.
+type PoolCredential struct {
 	// Credentials is the bare-name list of credential blocks that
 	// make up the pool. All members must share one (kind, type) —
 	// the compile pass rejects cross-type pools because the
@@ -46,17 +54,17 @@ type TokenPoolBody struct {
 // PoolMembers / PoolStrategy satisfy config.TokenPoolBody so the
 // compile pass can lift the lowered values without depending on this
 // package.
-func (b *TokenPoolBody) PoolMembers() []string { return b.Credentials }
-func (b *TokenPoolBody) PoolStrategy() string  { return b.Strategy }
+func (b *PoolCredential) PoolMembers() []string { return b.Credentials }
+func (b *PoolCredential) PoolStrategy() string  { return b.Strategy }
 
 func validate(d any, name string, ctx *config.BuildCtx) hcl.Diagnostics {
 	var diags hcl.Diagnostics
-	body := d.(*TokenPoolBody)
+	body := d.(*PoolCredential)
 
 	if len(body.Credentials) < 2 {
 		diags = append(diags, &hcl.Diagnostic{
 			Severity: hcl.DiagError,
-			Summary:  fmt.Sprintf("token_pool %q needs at least 2 members", name),
+			Summary:  fmt.Sprintf("credential %q (pool) needs at least 2 members", name),
 			Detail:   "A pool of one is just a credential. Reference the credential directly from the endpoint instead.",
 			Subject:  &ctx.Block.DefRange,
 		})
@@ -66,7 +74,7 @@ func validate(d any, name string, ctx *config.BuildCtx) hcl.Diagnostics {
 		if cn == "" {
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
-				Summary:  fmt.Sprintf("token_pool %q has empty member", name),
+				Summary:  fmt.Sprintf("credential %q (pool) has empty member", name),
 				Subject:  &ctx.Block.DefRange,
 			})
 			continue
@@ -74,13 +82,24 @@ func validate(d any, name string, ctx *config.BuildCtx) hcl.Diagnostics {
 		if seen[cn] {
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
-				Summary:  fmt.Sprintf("token_pool %q lists member %q twice", name, cn),
+				Summary:  fmt.Sprintf("credential %q (pool) lists member %q twice", name, cn),
 				Detail:   "Each credential may appear at most once in a pool — duplicate entries skew the strategy.",
 				Subject:  &ctx.Block.DefRange,
 			})
 			continue
 		}
 		seen[cn] = true
+		// Reject pool-of-pools at validate time so the diagnostic
+		// points at the offending block rather than the compile pass
+		// surfacing it later with less precise location info.
+		if sym := ctx.Symbols.Get(config.KindCredential, cn); sym != nil && sym.Type == config.PoolCredentialType {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("credential %q (pool) member %q is itself a pool", name, cn),
+				Detail:   "Pools can only contain non-pool credentials.",
+				Subject:  &ctx.Block.DefRange,
+			})
+		}
 	}
 
 	switch body.Strategy {
@@ -89,7 +108,7 @@ func validate(d any, name string, ctx *config.BuildCtx) hcl.Diagnostics {
 	case "exhaust_first":
 		diags = append(diags, &hcl.Diagnostic{
 			Severity: hcl.DiagError,
-			Summary:  fmt.Sprintf("token_pool %q: strategy %q not implemented", name, body.Strategy),
+			Summary:  fmt.Sprintf("credential %q (pool): strategy %q not implemented", name, body.Strategy),
 			Detail: "exhaust_first requires per-member failure tracking which v1 does not yet wire. " +
 				"Use round_robin (default) or least_loaded for now.",
 			Subject: &ctx.Block.DefRange,
@@ -97,7 +116,7 @@ func validate(d any, name string, ctx *config.BuildCtx) hcl.Diagnostics {
 	default:
 		diags = append(diags, &hcl.Diagnostic{
 			Severity: hcl.DiagError,
-			Summary:  fmt.Sprintf("token_pool %q: unknown strategy %q", name, body.Strategy),
+			Summary:  fmt.Sprintf("credential %q (pool): unknown strategy %q", name, body.Strategy),
 			Detail:   fmt.Sprintf("Known strategies: %q, %q.", config.PoolStrategyRoundRobin, config.PoolStrategyLeastLoaded),
 			Subject:  &ctx.Block.DefRange,
 		})
@@ -109,12 +128,12 @@ func build(d any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics) {
 	return d, nil
 }
 
-// emit serialises a built *TokenPoolBody back to HCL. Members are
+// emit serialises a built *PoolCredential back to HCL. Members are
 // emitted as bare-name idents so the file round-trips cleanly. Member
 // order is preserved from the decoded body — operators rely on it for
 // round_robin determinism.
 func emit(body any, _ string, b *hclwrite.Body) {
-	tb := body.(*TokenPoolBody)
+	tb := body.(*PoolCredential)
 	if len(tb.Credentials) > 0 {
 		config.SetIdentList(b, "credentials", tb.Credentials)
 	}
@@ -127,15 +146,16 @@ func emit(body any, _ string, b *hclwrite.Body) {
 	}
 }
 
-// Plugin returns the single config.Plugin that registers `token_pool`
-// as a one-label config.KindTokenPool. There is no Type label — the
-// dispatch behaviour is driven by the `strategy` attribute, not by a
-// kind/type pair.
+// Plugin returns the config.Plugin that registers `pool` as a
+// two-label credential type. The pool itself carries no
+// per-credential runtime — the compile pass lifts it into a
+// *CompiledTokenPool whose Pick() chooses a member at request time;
+// downstream injection runs against the chosen member's plugin.
 func Plugin() *config.Plugin {
 	return &config.Plugin{
-		Kind: config.KindTokenPool,
-		Type: "",
-		New:  func() any { return &TokenPoolBody{} },
+		Kind: config.KindCredential,
+		Type: config.PoolCredentialType,
+		New:  func() any { return &PoolCredential{} },
 		Refs: []config.RefSpec{
 			{Path: "Credentials[*]", Kind: config.KindCredential, Optional: false},
 		},

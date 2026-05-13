@@ -116,9 +116,6 @@ func dumpPolicy(p *Policy) map[string]any {
 	if v := dumpEntityMap(p.Tunnels); v != nil {
 		out["tunnels"] = v
 	}
-	if v := dumpEntityMap(p.TokenPools); v != nil {
-		out["token_pools"] = v
-	}
 	if v := dumpProfiles(p.Profiles); v != nil {
 		out["profiles"] = v
 	}

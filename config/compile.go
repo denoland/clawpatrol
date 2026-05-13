@@ -38,11 +38,15 @@ type CompiledPolicy struct {
 	// in their Tunnel field — same instance as the entry here.
 	Tunnels map[string]*CompiledTunnel
 
-	// TokenPools contains every declared token_pool, keyed by name.
-	// Endpoints whose `credential = X` binding resolves to a pool
-	// store the same pointer on their CompiledCredential.Pool field.
-	// Pool runtime state (round-robin counter, per-member request
-	// counts) lives on the CompiledTokenPool itself.
+	// TokenPools contains every `credential "pool" "<name>" {}` block,
+	// keyed by name. Pools are credentials with a `pool` type — the
+	// loader puts them in p.Credentials alongside every other
+	// credential; this map is the runtime-friendly subset that carries
+	// per-pool dispatch state. Endpoints whose `credential = X` binding
+	// resolves to a pool store the same pointer on their
+	// CompiledCredential.Pool field. Pool runtime state (round-robin
+	// counter, per-member request counts) lives on the
+	// CompiledTokenPool itself.
 	TokenPools map[string]*CompiledTokenPool
 
 	// Approvers / Policies / Credentials surface the same entities
@@ -379,20 +383,24 @@ func compileEndpoint(name string, ent *Entity, p *Policy, cp *CompiledPolicy) (*
 		ce.Hosts = extractHosts(ent.Body)
 	}
 	for _, cb := range extractCredentialBindings(ent.Body) {
-		// Bare-name binding may resolve to either a credential entity
-		// or a token pool — both share the flat namespace and both
-		// satisfy the "what credential bytes do we inject" contract
-		// (pools delegate at request time).
-		if pool, ok := cp.TokenPools[cb.Credential]; ok {
+		credEnt, ok := p.Credentials[cb.Credential]
+		if !ok {
+			return nil, fmt.Errorf("credential %q not declared", cb.Credential)
+		}
+		// Pool-typed credentials lower into a CompiledTokenPool which
+		// resolves to a real underlying credential per the pool's
+		// strategy at request time. Everything downstream (injection,
+		// secret lookup) operates on the resolved member.
+		if credEnt.Plugin.Type == PoolCredentialType {
+			pool, ok := cp.TokenPools[cb.Credential]
+			if !ok {
+				return nil, fmt.Errorf("credential %q (pool) not compiled", cb.Credential)
+			}
 			ce.Credentials = append(ce.Credentials, &CompiledCredential{
 				Placeholder: cb.Placeholder,
 				Pool:        pool,
 			})
 			continue
-		}
-		credEnt, ok := p.Credentials[cb.Credential]
-		if !ok {
-			return nil, fmt.Errorf("credential %q not declared", cb.Credential)
 		}
 		ce.Credentials = append(ce.Credentials, &CompiledCredential{
 			Placeholder: cb.Placeholder,
@@ -693,39 +701,47 @@ func parseKeepalive(s string) (time.Duration, bool, error) {
 	return d, false, nil
 }
 
-// TokenPoolBody is the cross-cut interface a token_pool plugin's
-// decoded body satisfies so the compile pass can lift its members and
-// strategy without depending on the plugin package. The pool plugin
-// owns the HCL schema; the compile pass owns the resolution.
+// TokenPoolBody is the cross-cut interface a pool credential
+// plugin's decoded body satisfies so the compile pass can lift its
+// members and strategy without depending on the plugin package. The
+// pool plugin owns the HCL schema; the compile pass owns the
+// resolution.
 type TokenPoolBody interface {
 	PoolMembers() []string
 	PoolStrategy() string
 }
 
-// compileTokenPools lowers every token_pool entity into a
-// *CompiledTokenPool: resolves member bare-name references against
-// the credential map, validates strategy + same-(kind, type)
-// membership, and stashes the result on cp.TokenPools.
+// PoolCredentialType is the credential plugin Type that identifies a
+// pool block. Credentials with this type lower into a
+// *CompiledTokenPool instead of going down the per-credential
+// injection path at request time.
+const PoolCredentialType = "pool"
+
+// compileTokenPools walks every `credential "pool" "<name>"` entity
+// and lowers it into a *CompiledTokenPool: resolves member bare-name
+// references against the credential map, validates strategy +
+// same-(kind, type) membership, and stashes the result on
+// cp.TokenPools.
 //
 // Errors here are policy-author bugs (unknown member, mixed types,
 // unknown strategy) — they surface as Compile() errors so the
 // gateway refuses to load a pool it can't dispatch.
 func compileTokenPools(cp *CompiledPolicy, p *Policy) error {
-	if len(p.TokenPools) == 0 {
-		return nil
-	}
-	for name, ent := range p.TokenPools {
+	for name, ent := range p.Credentials {
+		if ent.Plugin.Type != PoolCredentialType {
+			continue
+		}
 		body, ok := ent.Body.(TokenPoolBody)
 		if !ok {
-			return fmt.Errorf("token_pool %q: body type %T does not satisfy TokenPoolBody", name, ent.Body)
+			return fmt.Errorf("credential %q (pool): body type %T does not satisfy TokenPoolBody", name, ent.Body)
 		}
 		strategy, err := parsePoolStrategy(body.PoolStrategy())
 		if err != nil {
-			return fmt.Errorf("token_pool %q: %w", name, err)
+			return fmt.Errorf("credential %q (pool): %w", name, err)
 		}
 		members := body.PoolMembers()
 		if len(members) < 2 {
-			return fmt.Errorf("token_pool %q: needs at least 2 members (got %d) — a pool of one is just a credential", name, len(members))
+			return fmt.Errorf("credential %q (pool): needs at least 2 members (got %d) — a pool of one is just a credential", name, len(members))
 		}
 		resolved := make([]*Entity, 0, len(members))
 		var pluginType string
@@ -733,11 +749,10 @@ func compileTokenPools(cp *CompiledPolicy, p *Policy) error {
 		for _, mn := range members {
 			credEnt, ok := p.Credentials[mn]
 			if !ok {
-				if alt, exists := p.TokenPools[mn]; exists {
-					_ = alt
-					return fmt.Errorf("token_pool %q: member %q is itself a token_pool — pools can only contain credentials", name, mn)
-				}
-				return fmt.Errorf("token_pool %q: member %q is not a declared credential", name, mn)
+				return fmt.Errorf("credential %q (pool): member %q is not a declared credential", name, mn)
+			}
+			if credEnt.Plugin.Type == PoolCredentialType {
+				return fmt.Errorf("credential %q (pool): member %q is itself a pool — pools can only contain non-pool credentials", name, mn)
 			}
 			thisType := credEnt.Plugin.Type
 			thisKind := credEnt.Plugin.Kind
@@ -746,7 +761,7 @@ func compileTokenPools(cp *CompiledPolicy, p *Policy) error {
 				pluginKind = thisKind
 			} else if thisType != pluginType || thisKind != pluginKind {
 				return fmt.Errorf(
-					"token_pool %q: members must share one (kind, type) — saw %s/%s and %s/%s; pools are single-provider only",
+					"credential %q (pool): members must share one (kind, type) — saw %s/%s and %s/%s; pools are single-provider only",
 					name, pluginKind, pluginType, thisKind, thisType,
 				)
 			}

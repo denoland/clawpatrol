@@ -8,7 +8,7 @@ credential "anthropic_oauth_subscription" "alice" {}
 credential "anthropic_oauth_subscription" "bob"   {}
 credential "anthropic_oauth_subscription" "carol" {}
 
-token_pool "team" {
+credential "pool" "team" {
   credentials = [alice, bob, carol]
   strategy    = "round_robin"
 }

@@ -92,16 +92,6 @@ func resolveRefs(decoded any, name string, plugin *Plugin, table *SymbolTable, b
 			}
 			sym := table.Get(spec.Kind, v.value)
 			if sym == nil {
-				// AltKinds widens the accepted set — try each in turn
-				// before falling through to the wrong-kind diagnostic.
-				for _, alt := range spec.AltKinds {
-					if cand := table.Get(alt, v.value); cand != nil {
-						sym = cand
-						break
-					}
-				}
-			}
-			if sym == nil {
 				if alt := table.GetAny(v.value); alt != nil {
 					altRange := alt.Range()
 					diags = append(diags, &hcl.Diagnostic{

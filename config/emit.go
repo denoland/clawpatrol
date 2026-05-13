@@ -38,7 +38,6 @@ func Emit(gw *Gateway) ([]byte, error) {
 	emitGroup(body, p, KindApprover)
 	emitGroup(body, p, KindPolicy)
 	emitGroup(body, p, KindCredential)
-	emitGroup(body, p, KindTokenPool)
 	emitGroup(body, p, KindTunnel)
 	emitGroup(body, p, KindEndpoint)
 	emitGroup(body, p, KindRule)
@@ -152,12 +151,6 @@ func leftoverNames(p *Policy, kind Kind, emitted map[string]bool) []string {
 				out = append(out, n)
 			}
 		}
-	case KindTokenPool:
-		for n := range p.TokenPools {
-			if !emitted[n] {
-				out = append(out, n)
-			}
-		}
 	case KindProfile:
 		for n := range p.Profiles {
 			if !emitted[n] {
@@ -214,12 +207,6 @@ func emitOne(body *hclwrite.Body, p *Policy, kind Kind, name string) bool {
 			return false
 		}
 		emitEntityBlock(body, "tunnel", ent, name)
-	case KindTokenPool:
-		ent, ok := p.TokenPools[name]
-		if !ok {
-			return false
-		}
-		emitEntityBlock(body, "token_pool", ent, name)
 	case KindProfile:
 		pr, ok := p.Profiles[name]
 		if !ok {

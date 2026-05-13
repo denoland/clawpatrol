@@ -740,7 +740,7 @@ type PoolMemberRow struct {
 	LastUseNs int64  `json:"last_use_ns,omitempty"`
 }
 
-// PoolRow is the dashboard-facing view of one token_pool block. The
+// PoolRow is the dashboard-facing view of one pool credential. The
 // dashboard renders pools alongside (not inside) integrations because
 // they're a separate concept: a pool composes credentials, it isn't
 // itself a credential.

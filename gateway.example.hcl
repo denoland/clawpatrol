@@ -66,9 +66,10 @@ endpoint "https" "github" {
   credential = github-pat
 }
 
-# Token pools: pool N same-(kind, type) credentials behind one logical
-# handle so an endpoint binding `credential = X` can reference the pool
-# by name. The dispatcher picks a member per the pool's strategy:
+# Credential pools: declare a `credential "pool" "<name>"` to group N
+# same-(kind, type) credentials behind one logical handle so an
+# endpoint binding `credential = X` can reference the pool by name.
+# The dispatcher picks a member per the pool's strategy:
 #
 #   round_robin   atomic counter, even distribution (default)
 #   least_loaded  in-memory request count, fewest wins
@@ -84,7 +85,7 @@ endpoint "https" "github" {
 # credential "anthropic_oauth_subscription" "claude-bob"   {}
 # credential "anthropic_oauth_subscription" "claude-carol" {}
 #
-# token_pool "claude-team" {
+# credential "pool" "claude-team" {
 #   credentials = [claude-alice, claude-bob, claude-carol]
 #   strategy    = "round_robin"
 # }

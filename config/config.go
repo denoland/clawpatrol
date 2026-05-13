@@ -142,7 +142,6 @@ type Policy struct {
 	Endpoints   map[string]*Entity
 	Rules       map[string]*Entity
 	Tunnels     map[string]*Entity
-	TokenPools  map[string]*Entity
 
 	Policies map[string]*PolicyText
 	Profiles map[string]*Profile
@@ -250,7 +249,6 @@ func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
 		Endpoints:   make(map[string]*Entity),
 		Rules:       make(map[string]*Entity),
 		Tunnels:     make(map[string]*Entity),
-		TokenPools:  make(map[string]*Entity),
 		Policies:    make(map[string]*PolicyText),
 		Profiles:    make(map[string]*Profile),
 	}
@@ -378,7 +376,6 @@ func extractPolicyBlocks(body hcl.Body) (hcl.Blocks, hcl.Diagnostics) {
 			{Type: "policy", LabelNames: []string{"name"}},
 			{Type: "profile", LabelNames: []string{"name"}},
 			{Type: "tunnel", LabelNames: []string{"type", "name"}},
-			{Type: "token_pool", LabelNames: []string{"name"}},
 		},
 	}
 	content, diags := body.Content(schema)
@@ -465,10 +462,7 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 	// ordering — symbols are populated in pass 1 — but matching decode
 	// order to compile order keeps Order[] stable across the file's
 	// declaration sequence and avoids surprising readers.
-	// Token pools must decode AFTER credentials (they reference credential
-	// entities) but BEFORE endpoints (which may reference pools as their
-	// credential binding).
-	for _, kind := range []Kind{KindApprover, KindCredential, KindTunnel, KindTokenPool, KindEndpoint, KindRule} {
+	for _, kind := range []Kind{KindApprover, KindCredential, KindTunnel, KindEndpoint, KindRule} {
 		for _, sym := range table.byKind[kind] {
 			plugin := Lookup(sym.Kind, sym.Type)
 			if plugin == nil {
@@ -515,8 +509,6 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 				p.Credentials[sym.Name] = ent
 			case KindTunnel:
 				p.Tunnels[sym.Name] = ent
-			case KindTokenPool:
-				p.TokenPools[sym.Name] = ent
 			case KindEndpoint:
 				p.Endpoints[sym.Name] = ent
 			case KindRule:

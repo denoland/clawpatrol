@@ -50,7 +50,6 @@ func (r *renderer) run() (string, error) {
 		config.KindEndpoint,
 		config.KindRule,
 		config.KindTunnel,
-		config.KindTokenPool,
 	} {
 		r.writeKind(kind)
 	}
@@ -370,7 +369,7 @@ func (r *renderer) fieldRefs(pkgName, typeName string) map[string]string {
 	out := map[string]string{}
 	for _, kind := range []config.Kind{
 		config.KindApprover, config.KindCredential, config.KindEndpoint, config.KindRule,
-		config.KindTunnel, config.KindTokenPool,
+		config.KindTunnel,
 	} {
 		for _, p := range config.AllPlugins(kind) {
 			rt := pluginStructType(p)

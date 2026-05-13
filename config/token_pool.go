@@ -36,9 +36,10 @@ const (
 // the `strategy = ...` attribute.
 const DefaultPoolStrategy = PoolStrategyRoundRobin
 
-// CompiledTokenPool is the runtime-friendly view of a token_pool block.
-// Members are the resolved credential Entity records (in declaration
-// order); strategy decides which member services a given request.
+// CompiledTokenPool is the runtime-friendly view of a `credential
+// "pool" "<name>"` block. Members are the resolved credential Entity
+// records (in declaration order); strategy decides which member
+// services a given request.
 //
 // State is per-process and reference-stable across the pool's
 // lifetime — the round-robin counter and per-member request counts
