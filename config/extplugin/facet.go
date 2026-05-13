@@ -1,10 +1,21 @@
 package extplugin
 
 import (
+	"fmt"
+	"regexp"
+
 	pb "github.com/denoland/clawpatrol/config/extplugin/proto"
 	"github.com/denoland/clawpatrol/config/facet"
 	"github.com/denoland/clawpatrol/config/match"
+	"github.com/hashicorp/hcl/v2"
 )
+
+// validCELIdent matches the CEL identifier production: ASCII letter
+// or underscore, followed by letters / digits / underscores. Facet
+// names and field names appear directly in rule conditions
+// (`<facet>.<field>`), so anything outside this set means rules
+// can't be written against the facet at all.
+var validCELIdent = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // pluginFacet is the synthetic facet.Runtime the gateway registers
 // for each FacetDecl a plugin manifest carries. Data flows through
@@ -49,17 +60,45 @@ func (p *pluginFacet) NewMatcher(condition string) (match.Matcher, error) {
 }
 
 // registerFacet synthesizes a pluginFacet from a FacetDecl and
-// installs it under the bare name from the decl. Idempotent across
-// hot-reloads (skips re-registration if a pluginFacet by that name
-// is already present); duplicate names from different plugins or a
-// collision with a built-in facet panic at startup so the operator
-// notices.
-func registerFacet(decl *pb.FacetDecl) *pluginFacet {
-	if existing := facet.Lookup(decl.Name); existing != nil {
-		if pf, ok := existing.(*pluginFacet); ok {
-			return pf
+// installs it under the bare name from the decl. Returns a
+// diagnostic when the name collides with another already-registered
+// facet (built-in like "http", or another plugin's facet) so the
+// operator sees a clean error from `clawpatrol validate` instead of
+// a process panic from facet.Register.
+func registerFacet(pluginName string, decl *pb.FacetDecl) hcl.Diagnostics {
+	var diags hcl.Diagnostics
+	if !validCELIdent.MatchString(decl.Name) {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Plugin %q facet %q: name is not a valid CEL identifier", pluginName, decl.Name),
+			Detail:   "Facet names appear directly in rule conditions (`<facet>.<field>`); the name must match [A-Za-z_][A-Za-z0-9_]*.",
+		})
+	}
+	for _, f := range decl.Fields {
+		if f.Name == "" {
+			continue // already reported by validateManifestShape
 		}
-		return nil
+		if !validCELIdent.MatchString(f.Name) {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("Plugin %q facet %q field %q: name is not a valid CEL identifier", pluginName, decl.Name, f.Name),
+				Detail:   "Facet field names appear directly in rule conditions; must match [A-Za-z_][A-Za-z0-9_]*.",
+			})
+		}
+	}
+	if diags.HasErrors() {
+		return diags
+	}
+	if existing := facet.Lookup(decl.Name); existing != nil {
+		owner := "built-in"
+		if _, ok := existing.(*pluginFacet); ok {
+			owner = "another plugin"
+		}
+		return hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Plugin %q facet %q collides with existing %s facet", pluginName, decl.Name, owner),
+			Detail:   "Pick a different facet name in the plugin's manifest, or remove the duplicate registration.",
+		}}
 	}
 	kindByField := make(map[string]pb.FacetKind, len(decl.Fields))
 	optional := make(map[string]bool)
@@ -81,7 +120,7 @@ func registerFacet(decl *pb.FacetDecl) *pluginFacet {
 		streamFields:   streams,
 	}
 	facet.Register(pf)
-	return pf
+	return nil
 }
 
 func protoFacetFieldsToSpec(in []*pb.FacetFieldDecl) []facet.ReportFieldSpec {

@@ -7,10 +7,12 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"sort"
 	"sync"
 
 	"github.com/denoland/clawpatrol/config"
 	pb "github.com/denoland/clawpatrol/config/extplugin/proto"
+	"github.com/denoland/clawpatrol/config/facet"
 	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/go-plugin"
 	"github.com/hashicorp/hcl/v2"
@@ -101,6 +103,7 @@ func (m *Manager) Start(ctx context.Context, source string) (*Client, *pb.Manife
 		return nil, nil, fmt.Errorf("plugin %q: empty manifest name", source)
 	}
 	c.name = manifest.Name
+	c.manifest = manifest
 
 	m.mu.Lock()
 	if _, dup := m.plugins[manifest.Name]; dup {
@@ -162,6 +165,79 @@ func (m *Manager) LoadPlugins(specs []config.PluginSource) hcl.Diagnostics {
 	return diags
 }
 
+// Verify runs post-load schema validation against every spawned
+// plugin's manifest. Catches problems that wouldn't surface
+// otherwise until a rule happened to target a particular facet or
+// an HCL block happened to use a particular type:
+//
+//   - Each declared facet's CEL env is built eagerly (with a probe
+//     condition) so an invalid identifier in a facet or field name
+//     fails the validate command instead of waiting for a rule.
+//   - Each declared endpoint's Family is resolved against the
+//     facet registry (built-in or another plugin's). A typo in
+//     Family that no rule references would otherwise just silently
+//     route every request to default-deny at runtime.
+//
+// Returns hcl.Diagnostics with one entry per problem.
+func (m *Manager) Verify() hcl.Diagnostics {
+	var diags hcl.Diagnostics
+	for _, c := range m.Plugins() {
+		mf := c.Manifest()
+		if mf == nil {
+			continue
+		}
+		for _, f := range mf.Facets {
+			if _, err := newPluginFacetMatcher(f.Name, "true", facetStreamFieldNames(f)); err != nil {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  fmt.Sprintf("Plugin %q facet %q: invalid schema", mf.Name, f.Name),
+					Detail:   err.Error(),
+				})
+			}
+		}
+		for _, e := range mf.Endpoints {
+			if e.Family == "" {
+				continue // already reported by validateManifestShape
+			}
+			if facet.Lookup(e.Family) == nil {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  fmt.Sprintf("Plugin %q endpoint %q: family %q does not resolve", mf.Name, e.TypeName, e.Family),
+					Detail:   "Family must name a built-in facet (\"http\", \"sql\", \"k8s\") or one of this plugin's declared facets. Rules attached to this endpoint cannot compile against an unknown family.",
+				})
+			}
+		}
+	}
+	return diags
+}
+
+// facetStreamFieldNames extracts FACET_STREAM field names from a
+// FacetDecl — pulled out as a helper so Verify can build the same
+// CEL env newPluginFacetMatcher does at NewMatcher time.
+func facetStreamFieldNames(decl *pb.FacetDecl) []string {
+	var out []string
+	for _, f := range decl.Fields {
+		if f.Kind == pb.FacetKind_FACET_STREAM {
+			out = append(out, f.Name)
+		}
+	}
+	return out
+}
+
+// Plugins returns every loaded plugin's *Client, sorted by name.
+// Used by callers (clawpatrol validate, dashboard surfaces, etc.)
+// that want to enumerate manifests after LoadPlugins has run.
+func (m *Manager) Plugins() []*Client {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]*Client, 0, len(m.plugins))
+	for _, c := range m.plugins {
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
+	return out
+}
+
 // Stop tears down every spawned subprocess. Idempotent.
 func (m *Manager) Stop() {
 	m.mu.Lock()
@@ -177,6 +253,7 @@ func (m *Manager) Stop() {
 type Client struct {
 	name      string
 	source    string
+	manifest  *pb.ManifestResponse
 	gp        *plugin.Client
 	conn      *grpc.ClientConn
 	pluginCli pb.PluginClient
@@ -189,6 +266,11 @@ func (c *Client) Name() string { return c.name }
 
 // Source returns the binary path the manager was started with.
 func (c *Client) Source() string { return c.source }
+
+// Manifest returns the manifest the subprocess reported at startup.
+// Stable across the plugin's lifetime (manifests aren't refreshed
+// in v1).
+func (c *Client) Manifest() *pb.ManifestResponse { return c.manifest }
 
 // PluginRPC exposes the Build RPC; used by the registration helper.
 func (c *Client) PluginRPC() pb.PluginClient { return c.pluginCli }
