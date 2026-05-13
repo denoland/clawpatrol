@@ -16,7 +16,8 @@
           "Credential": "",
           "Timeout": 600,
           "RequireApprovers": 0,
-          "Interactive": false
+          "Interactive": false,
+          "Classifier": ""
         },
         "type": "human_approver"
       }

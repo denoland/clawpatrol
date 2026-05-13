@@ -110,6 +110,7 @@ operator clicks approve/deny on the dashboard).
 | `timeout` | `int` | no |  |
 | `require_approvers` | `int` | no |  |
 | `interactive` | `bool` | no | Toggles in-channel approve/deny buttons. Requires the referenced credential's signing_secret slot pasted via the dashboard AND Slack's Interactivity URL pointed at the gateway. Default false: message includes only an "Open dashboard" link. |
+| `classifier` | `ref(approver)` | no | Optionally references an llm_approver by name. When set, the approver calls the classifier's Summarize method before posting the HITL notification, enriching the Slack card with classification metadata. Classifier failures are non-fatal — the generic card is used as fallback. |
 
 ```hcl
 approver "human_approver" "example" {

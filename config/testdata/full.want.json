@@ -11,7 +11,8 @@
           "Credential": "",
           "Timeout": 0,
           "RequireApprovers": 0,
-          "Interactive": false
+          "Interactive": false,
+          "Classifier": ""
         },
         "type": "human_approver"
       },
@@ -21,7 +22,8 @@
           "Credential": "",
           "Timeout": 0,
           "RequireApprovers": 2,
-          "Interactive": false
+          "Interactive": false,
+          "Classifier": ""
         },
         "type": "human_approver"
       },
@@ -31,7 +33,8 @@
           "Credential": "",
           "Timeout": 0,
           "RequireApprovers": 0,
-          "Interactive": false
+          "Interactive": false,
+          "Classifier": ""
         },
         "type": "human_approver"
       },
@@ -49,7 +52,8 @@
           "Credential": "",
           "Timeout": 0,
           "RequireApprovers": 0,
-          "Interactive": false
+          "Interactive": false,
+          "Classifier": ""
         },
         "type": "human_approver"
       },
@@ -59,7 +63,8 @@
           "Credential": "",
           "Timeout": 0,
           "RequireApprovers": 0,
-          "Interactive": false
+          "Interactive": false,
+          "Classifier": ""
         },
         "type": "human_approver"
       },
@@ -93,7 +98,8 @@
           "Credential": "",
           "Timeout": 0,
           "RequireApprovers": 0,
-          "Interactive": false
+          "Interactive": false,
+          "Classifier": ""
         },
         "type": "human_approver"
       },
@@ -111,7 +117,8 @@
           "Credential": "",
           "Timeout": 86400,
           "RequireApprovers": 0,
-          "Interactive": false
+          "Interactive": false,
+          "Classifier": ""
         },
         "type": "human_approver"
       }
