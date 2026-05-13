@@ -3,15 +3,15 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>clawpatrol</title>
+    <title>Claw Patrol</title>
     <style>
       body {
         font:
           14px -apple-system,
           BlinkMacSystemFont,
           sans-serif;
-        background: #fafafa;
-        color: #171717;
+        background: #fcfaf5;
+        color: #2c2e35;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -31,6 +31,7 @@
         font-weight: 400;
         margin: 0 0 16px;
         letter-spacing: -0.01em;
+        color: #1f2a44;
       }
       label {
         display: block;
@@ -53,13 +54,13 @@
         outline: none;
       }
       input:focus {
-        border-color: #171717;
+        border-color: #d8531c;
       }
       button {
         margin-top: 12px;
         width: 100%;
         padding: 8px;
-        background: #171717;
+        background: #d8531c;
         color: #fff;
         border: 0;
         border-radius: 4px;
@@ -67,7 +68,7 @@
         cursor: pointer;
       }
       button:hover {
-        background: #000;
+        background: #b6420f;
       }
       .err {
         color: #dc2626;
@@ -78,7 +79,7 @@
   </head>
   <body>
     <form method="POST" action="/__login?next={{.Next}}">
-      <h1>clawpatrol</h1>
+      <h1>Claw Patrol</h1>
       {{if .Error}}
       <p class="err">{{.Error}}</p>
       {{end}}

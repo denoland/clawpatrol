@@ -69,7 +69,7 @@ export function DevicePage({
       <main className="mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-5">
         <nav className="text-[13px] text-[#a3a3a3] flex items-center gap-1.5 mb-3">
           <a href="#/" className="hover:text-[#171717]">
-            clawpatrol
+            Claw Patrol
           </a>
           <span>/</span>
           <span className="text-[#525252]">{ip}</span>
@@ -88,7 +88,7 @@ export function DevicePage({
   async function remove() {
     if (
       !confirm(
-        `Remove ${dev.hostname || dev.ip} from clawpatrol?\n\nThis clears the device's tracking + owner mapping. Tailscale node stays — remove from admin console if you want a hard kick.`,
+        `Remove ${dev.hostname || dev.ip} from Claw Patrol?\n\nThis clears the device's tracking + owner mapping. Tailscale node stays — remove from admin console if you want a hard kick.`,
       )
     )
       return;
@@ -106,7 +106,7 @@ export function DevicePage({
       <div className="flex items-center justify-between">
         <nav className="text-[13px] text-[#a3a3a3] flex items-center gap-1.5">
           <a href="#/" className="hover:text-[#171717]">
-            clawpatrol
+            Claw Patrol
           </a>
           <span>/</span>
           <span className="text-[#525252]">{dev.hostname || dev.ip}</span>

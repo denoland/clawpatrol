@@ -154,7 +154,7 @@ export function AnalyticsPage({ ip, agents }: { ip?: string; agents: Agent[] }) 
       <div className="flex items-baseline justify-between flex-wrap gap-3">
         <div className="flex items-baseline gap-2">
           <a href="#/" className="text-[13px] text-[#a3a3a3] hover:text-[#171717]">
-            clawpatrol
+            Claw Patrol
           </a>
           <span className="text-[13px] text-[#a3a3a3]">/</span>
           {deviceName ? (

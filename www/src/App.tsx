@@ -90,7 +90,7 @@ export default function App() {
         <main className="flex-1 mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-8 space-y-8">
           <div className="flex items-center gap-4">
             <h1 className="font-serif text-[44px] sm:text-[56px] leading-none tracking-tight text-[#171717]">
-              clawpatrol
+              Claw Patrol
             </h1>
             <button
               onClick={() => setShowAddDevice(true)}
@@ -211,7 +211,7 @@ function UpdateNotice({ update }: { update: UpdateBanner | null }) {
   return (
     <div className="bg-[#fef3c7] border-b border-[#fcd34d] px-4 sm:px-6 py-2 text-[12px] text-[#78350f] flex items-center justify-between gap-3">
       <div className="flex-1">
-        <span className="font-semibold">clawpatrol {update.latest}</span>
+        <span className="font-semibold">Claw Patrol {update.latest}</span>
         {" available — "}
         <a
           href={update.url}

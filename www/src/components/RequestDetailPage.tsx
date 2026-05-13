@@ -200,7 +200,7 @@ function DownloadActionButton({ ev }: { ev: EventRecord }) {
         "border-[#e5e5e5] text-[#525252] hover:text-[#171717] hover:border-[#a3a3a3] " +
         "disabled:opacity-50"
       }
-      title={err ?? "Download as a clawpatrol test fixture"}
+      title={err ?? "Download as a Claw Patrol test fixture"}
     >
       {busy ? "Downloading…" : "Download action"}
     </button>
@@ -270,7 +270,7 @@ function Breadcrumbs({
   return (
     <nav className="flex items-baseline gap-2">
       <a href="#/" className="text-[13px] text-[#a3a3a3] hover:text-[#171717]">
-        clawpatrol
+        Claw Patrol
       </a>
       {agentIP && (
         <>
