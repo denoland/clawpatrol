@@ -2243,12 +2243,18 @@ func (s *sampler) sample(encoding string) string {
 	return "binary:" + hex.EncodeToString(raw[:min(64, len(raw))])
 }
 
+const (
+	decodedSampleCap             = 4096
+	decodedSampleTruncatedMarker = "\n[decoded response sample truncated]"
+)
+
 // maybeDecode returns the decompressed prefix of buf when encoding
 // is a compression scheme we recognise, or buf unchanged otherwise.
 // The sampler captures at most cap bytes, so the stream is almost
-// always truncated mid-block — io.ReadAll returns whatever the
-// reader managed before hitting EOF, which is what we want for a
-// preview.
+// always truncated mid-block — decoders return whatever they managed
+// before hitting EOF, which is what we want for a preview. Decoded
+// output is capped separately because tiny compressed inputs can expand
+// far beyond the sampled wire bytes.
 func maybeDecode(buf []byte, encoding string) []byte {
 	var r io.Reader
 	switch strings.ToLower(strings.TrimSpace(encoding)) {
@@ -2282,9 +2288,12 @@ func maybeDecode(buf []byte, encoding string) []byte {
 	default:
 		return buf
 	}
-	out, _ := io.ReadAll(r)
+	out, _ := io.ReadAll(io.LimitReader(r, decodedSampleCap+1))
 	if len(out) == 0 {
 		return buf
+	}
+	if len(out) > decodedSampleCap {
+		out = append(out[:decodedSampleCap:decodedSampleCap], decodedSampleTruncatedMarker...)
 	}
 	return out
 }

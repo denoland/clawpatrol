@@ -135,6 +135,28 @@ func TestSamplerSampleZstd(t *testing.T) {
 	}
 }
 
+func TestMaybeDecodeCapsExpandedGzip(t *testing.T) {
+	const capBytes = 4096
+	const truncatedMarker = "\n[decoded response sample truncated]"
+
+	plain := strings.Repeat("a", capBytes*4)
+	compressed := gzipped(t, plain)
+	if len(compressed) >= capBytes {
+		t.Fatalf("test gzip payload should fit compressed sampler cap: %d >= %d", len(compressed), capBytes)
+	}
+
+	got := maybeDecode(compressed, "gzip")
+	if len(got) > capBytes+len(truncatedMarker) {
+		t.Fatalf("decoded gzip sample length = %d, want <= %d", len(got), capBytes+len(truncatedMarker))
+	}
+	if !bytes.HasSuffix(got, []byte(truncatedMarker)) {
+		t.Fatalf("decoded gzip sample should end with truncation marker %q; got suffix %q", truncatedMarker, string(got[max(0, len(got)-len(truncatedMarker)):]))
+	}
+	if gotPrefix := string(got[:capBytes]); gotPrefix != plain[:capBytes] {
+		t.Fatalf("decoded gzip prefix was not preserved")
+	}
+}
+
 func TestSamplerSamplePlaintext(t *testing.T) {
 	s := newSampler(4096)
 	_, _ = s.Write([]byte(`{"hello":"world"}`))
