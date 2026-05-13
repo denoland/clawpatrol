@@ -25,7 +25,7 @@ func TestSQLMatcherInspectsTruncatableFacet(t *testing.T) {
 	}{
 		{"verb only", "sql.verb == 'select'", true},
 		{"tables", "'users' in sql.tables", true},
-		{"function list", "'pg_terminate_backend' in sql.function", true},
+		{"functions list", "'pg_terminate_backend' in sql.functions", true},
 		{"statement contains", "sql.statement.contains('drop')", true},
 		{"statement regex", "sql.statement.matches('(?i)secret')", true},
 		{"compound with sql field", "sql.verb == 'select' && true", true},

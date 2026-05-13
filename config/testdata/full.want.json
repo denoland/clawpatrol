@@ -1210,7 +1210,7 @@
             "pg-deployng",
             "pg-scheduler"
           ],
-          "condition": "sets.intersects(sql.function, ['pg_terminate_backend', 'pg_cancel_backend', 'pg_read_file', 'pg_read_binary_file', 'lo_get']) || sql.function.exists(f, f.startsWith('dblink_'))",
+          "condition": "sets.intersects(sql.functions, ['pg_terminate_backend', 'pg_cancel_backend', 'pg_read_file', 'pg_read_binary_file', 'lo_get']) || sql.functions.exists(f, f.startsWith('dblink_'))",
           "verdict": "deny",
           "reason": "Disallowed function for agent access"
         }

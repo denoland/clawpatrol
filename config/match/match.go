@@ -61,7 +61,7 @@ type Request struct {
 // InspectsTruncatableFacet reports whether the matcher's compiled
 // condition reads any field of the request whose value could be
 // truncated by a wire frontend's inspection buffer (HTTPS body /
-// body_json, SQL verb / tables / function / statement). The
+// body_json, SQL verb / tables / functions / statement). The
 // dispatcher gates on this together with Request.Truncated to fail
 // closed on policy-bypass-by-truncation: a rule that asks about the
 // body of a request whose body was capped is auto-denied; a rule

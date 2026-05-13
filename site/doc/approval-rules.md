@@ -68,7 +68,7 @@ statement the agent sends.
 |----------|------|-------------|
 | `sql.verb` | `string` | First verb of the statement (lower-case: `"select"`, …) |
 | `sql.tables` | `list<string>` | Tables referenced by the statement |
-| `sql.function` | `list<string>` | Functions called by the statement |
+| `sql.functions` | `list<string>` | Functions called by the statement |
 | `sql.statement` | `string` | The full lower-cased statement text |
 
 ```hcl
@@ -78,11 +78,11 @@ condition = "sets.intersects(sql.tables, ['users', 'audit_log'])"
 condition = "sql.statement.matches('(?i)\\bpassword\\b')"
 ```
 
-`verb`, `tables`, and `function` are extracted by a best-effort
+`verb`, `tables`, and `functions` are extracted by a best-effort
 lexer over a lower-cased copy of the statement — see
 [Case sensitivity](#case-sensitivity-by-variable) below.
 
-`tables` and `function` are **multi-valued** facets: a single
+`tables` and `functions` are **multi-valued** facets: a single
 statement can name several tables (`SELECT ... FROM a JOIN b`) and
 call several functions. Use CEL's `in` operator for a single name
 (`'secrets' in sql.tables`) or `sets.intersects(...)` for an overlap
@@ -177,7 +177,7 @@ Each endpoint plugin claims the requests it owns and emits an
 **action** in its family — `http` actions for HTTPS endpoints, `sql`
 actions for postgres / clickhouse, `k8s` actions for kubernetes.
 Each action populates the family's CEL variables (method/path/headers
-for HTTP, verb/tables/function for SQL, resource/verb/namespace for
+for HTTP, verb/tables/functions for SQL, resource/verb/namespace for
 k8s). The rule's `condition` is evaluated against those variables.
 
 How an endpoint claims a given connection (SNI peek, destination IP,
@@ -224,7 +224,7 @@ accessed with dot notation. Common idioms:
 | `http.method`                 | lower-case (rule-source literals normalized at compile time) |
 | `http.path`, `http.query`, `http.headers`, `http.body` | as on the wire |
 | `sql.verb`                    | lower-case (normalized) |
-| `sql.tables`, `sql.function`  | lower-case (extracted from a lower-cased copy of the statement) |
+| `sql.tables`, `sql.functions` | lower-case (extracted from a lower-cased copy of the statement) |
 | `sql.statement`               | as on the wire (raw text, no case folding) |
 | `k8s.verb`                    | lower-case (normalized) |
 | `k8s.resource`, `k8s.namespace`, `k8s.name`, `k8s.params` | as on the wire |

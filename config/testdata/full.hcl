@@ -238,12 +238,12 @@
 #
 #   https → http.method, http.path, http.query, http.headers,
 #           http.body, http.body_json
-#   sql   → sql.verb, sql.tables, sql.function, sql.statement
+#   sql   → sql.verb, sql.tables, sql.functions, sql.statement
 #   k8s   → k8s.verb, k8s.resource, k8s.namespace, k8s.name,
 #           k8s.params
 #
 # `verb` (sql, k8s) and `method` (http) are unary strings. `tables`
-# and `function` (sql) are list[string]; `query` and `headers`
+# and `functions` (sql) are list[string]; `query` and `headers`
 # (http) are map[string]list[string]; `params` (k8s) is
 # map[string]string. `body` is the raw request body as string;
 # `body_json` is its parsed-JSON shape (dyn).
@@ -257,9 +257,9 @@
 #     `http.body.contains('approve_')`.
 #   - Regex (for what globs and startsWith can't express):
 #     `sql.statement.matches('(?i)\\bsecret\\b')`.
-#   - List intersection (sql `tables` / `function` against a
+#   - List intersection (sql `tables` / `functions` against a
 #     deny-list):
-#     `sets.intersects(sql.function, ['pg_read_file', ...])`.
+#     `sets.intersects(sql.functions, ['pg_read_file', ...])`.
 #     The `sets` extension is registered on every facet env.
 #
 #
@@ -1008,7 +1008,7 @@ rule "pg-banned-verbs" {
 }
 rule "pg-banned-functions" {
   endpoints = [pg-deployng, pg-scheduler]
-  condition = "sets.intersects(sql.function, ['pg_terminate_backend', 'pg_cancel_backend', 'pg_read_file', 'pg_read_binary_file', 'lo_get']) || sql.function.exists(f, f.startsWith('dblink_'))"
+  condition = "sets.intersects(sql.functions, ['pg_terminate_backend', 'pg_cancel_backend', 'pg_read_file', 'pg_read_binary_file', 'lo_get']) || sql.functions.exists(f, f.startsWith('dblink_'))"
   verdict   = "deny"
   reason    = "Disallowed function for agent access"
 }

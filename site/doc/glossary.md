@@ -93,10 +93,10 @@ A single named matchable property exposed to a [rule](#rule)'s CEL
 [`condition`](#cel-condition). Each protocol family exposes its own
 top-level struct-typed variable: `http.method` / `http.path` /
 `http.query` / `http.headers` / `http.body` / `http.body_json`;
-`sql.verb` / `sql.tables` / `sql.function` / `sql.statement`;
+`sql.verb` / `sql.tables` / `sql.functions` / `sql.statement`;
 `k8s.verb` / `k8s.resource` / `k8s.namespace` / `k8s.name` /
 `k8s.params`. Per-facet types vary — `method` and `verb` are scalar
-strings, `tables` / `function` are lists, `query` / `headers` /
+strings, `tables` / `functions` are lists, `query` / `headers` /
 `params` are maps, and `body_json` is parsed-JSON `dyn`.
 
 ### CEL condition

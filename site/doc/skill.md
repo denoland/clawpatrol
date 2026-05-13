@@ -196,7 +196,7 @@ Declaration order is the tiebreaker. Default-deny catch-all:
 | Variable | Type |
 |---|---|
 | `verb` | string (lowercased) — `'select'`, `'insert'`, `'drop'`, … |
-| `tables` / `function` | `list<string>` (lowercased) |
+| `tables` / `functions` | `list<string>` (lowercased) |
 | `statement` | string (raw SQL) |
 
 **`k8s.*`**

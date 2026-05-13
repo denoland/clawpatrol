@@ -220,7 +220,7 @@ facet's vocabulary — the same fields your CEL rule conditions read.
 ```
 
 For SQL, only `statement` is required — the runner derives `verb`,
-`tables`, and `function` from the SQL the same way the live
+`tables`, and `functions` from the SQL the same way the live
 dispatch path does. You can override them by adding explicit fields
 if you want to test the matcher's view directly.
 
@@ -285,7 +285,7 @@ of scope for replay.
 |-------|--------|
 | `http` | `method`, `path`, `query`, `headers`, `body`, `body_b64` |
 | `k8s`  | `verb`, `resource`, `namespace`, `name`, `params` |
-| `sql`  | `statement` (required); `verb`, `tables`, `function` (optional, derived from `statement` if omitted) |
+| `sql`  | `statement` (required); `verb`, `tables`, `functions` (optional, derived from `statement` if omitted) |
 
 Every field is optional except SQL's `statement`. Missing fields
 default to zero values — rules that match on them just return

@@ -76,14 +76,14 @@ type K8sAction struct {
 }
 
 // SQLAction carries the `sql.*` CEL view. Only `statement` needs to
-// be set in practice; the loader derives verb / tables / function
+// be set in practice; the loader derives verb / tables / functions
 // via the endpoint's runtime.SQLParser. Explicit verb / tables /
-// function are accepted and take precedence over derivation.
+// functions are accepted and take precedence over derivation.
 type SQLAction struct {
 	Statement string   `json:"statement,omitempty"`
 	Verb      string   `json:"verb,omitempty"`
 	Tables    []string `json:"tables,omitempty"`
-	Function  []string `json:"function,omitempty"`
+	Functions []string `json:"functions,omitempty"`
 }
 
 var validVerdicts = map[string]bool{
@@ -323,7 +323,7 @@ func (f *Fixture) ToMatchRequest(family string, parseSQL func(string) any) (*mat
 		if stmt == "" {
 			break
 		}
-		// Derive verb / tables / function via SQLParser, then let
+		// Derive verb / tables / functions via SQLParser, then let
 		// any explicit fixture fields override. Keeps SQL fixtures
 		// hand-editable (one field) while accepting full structs.
 		if parseSQL == nil {
@@ -337,8 +337,8 @@ func (f *Fixture) ToMatchRequest(family string, parseSQL func(string) any) (*mat
 			if len(a.SQL.Tables) > 0 {
 				m.Tables = a.SQL.Tables
 			}
-			if len(a.SQL.Function) > 0 {
-				m.Functions = a.SQL.Function
+			if len(a.SQL.Functions) > 0 {
+				m.Functions = a.SQL.Functions
 			}
 		}
 		req.Meta = meta

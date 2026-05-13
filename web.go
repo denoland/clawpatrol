@@ -1575,7 +1575,7 @@ func exportK8s(ev *Event) *K8sAction {
 }
 
 // exportSQL pulls the raw statement out of Event.Facets (set by
-// sqlfacet.Report). The loader re-derives verb / tables / function
+// sqlfacet.Report). The loader re-derives verb / tables / functions
 // from the statement via SQLParser at replay time.
 func exportSQL(ev *Event) *SQLAction {
 	stmt, _ := ev.Facets["statement"].(string)

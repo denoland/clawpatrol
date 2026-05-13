@@ -178,7 +178,7 @@ types, each constrained to a matching endpoint family:
 | Rule type | Endpoint families | Match facets |
 |-----------|------------------|-------------|
 | `http_rule` | `https` | `method` / `path` / `query` / `headers` / `body_json` / `body_contains` / `credential` |
-| `sql_rule` | `sql` | `verb` / `tables` / `function` / `statement` / `statement_regex` / `credential` |
+| `sql_rule` | `sql` | `verb` / `tables` / `functions` / `statement` / `statement_regex` / `credential` |
 | `k8s_rule` | `k8s` | `resource` / `verb` / `namespace` / `name` / `params` / `credential` |
 
 Rule body shape:

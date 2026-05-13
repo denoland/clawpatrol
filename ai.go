@@ -52,7 +52,7 @@ https endpoints:  http.method, http.path,
                   http.headers (map<string,list<string>>),
                   http.body (string), http.body_json (dyn)
 sql endpoints:    sql.verb (lower-case), sql.tables (list<string>),
-                  sql.function (list<string>), sql.statement (string)
+                  sql.functions (list<string>), sql.statement (string)
 k8s endpoints:    k8s.resource, k8s.verb (lower-case),
                   k8s.namespace, k8s.name,
                   k8s.params (map<string,string>)
