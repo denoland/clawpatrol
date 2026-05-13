@@ -13,12 +13,6 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: false
 
 jobs:
   build:
@@ -95,12 +89,9 @@ jobs:
   publish:
     needs: [build, macos-app]
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
-
       - name: resolve tag
         id: tag
         run: |
@@ -115,38 +106,23 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: assemble site
+      - name: create checksums
         run: |
-          TAG="${{ steps.tag.outputs.tag }}"
-          mkdir -p site/releases/${TAG}
-          cp artifacts/clawpatrol-* site/releases/${TAG}/
-          # macOS .app for `clawpatrol run` per-process tunnel;
-          # install.sh picks this up on darwin in addition to the Go
-          # binary. download-artifact's merge-multiple flattens, so
-          # the file lands directly under artifacts/.
-          if [ -f artifacts/Clawpatrol.app.tar.gz ]; then
-            cp artifacts/Clawpatrol.app.tar.gz site/releases/${TAG}/
-          fi
-          (cd site/releases/${TAG} \
-            && sha256sum clawpatrol-* Clawpatrol.app.tar.gz 2>/dev/null > SHA256SUMS \
+          cd artifacts
+          (sha256sum clawpatrol-* Clawpatrol.app.tar.gz 2>/dev/null > SHA256SUMS \
             || sha256sum clawpatrol-* > SHA256SUMS)
-          # `latest` mirror
-          cp -r site/releases/${TAG} site/releases/latest
-          cp install.sh site/install.sh
-          # Public site index — just enough so curl + browser both work.
-          cat > site/index.html <<HTML
-          <!doctype html><meta charset=utf-8><title>clawpatrol releases</title>
-          <h1>clawpatrol</h1>
-          <p>Install: <code>curl -fsSL https://denoland.github.io/clawpatrol/install.sh | sh</code></p>
-          <p>Latest binaries: <a href="releases/latest/">releases/latest/</a></p>
-          <p>This tag: <a href="releases/${TAG}/">releases/${TAG}/</a></p>
-          HTML
 
-      - uses: actions/configure-pages@v5
-
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: site
-
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      - name: create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "${TAG}" \
+            --title "${TAG}" \
+            --generate-notes \
+            artifacts/clawpatrol-* \
+            artifacts/SHA256SUMS
+          if [ -f artifacts/Clawpatrol.app.tar.gz ]; then
+            gh release upload "${TAG}" artifacts/Clawpatrol.app.tar.gz
+          fi
