@@ -30,6 +30,27 @@ type HTTPCredentialRuntime interface {
 	InjectHTTP(ctx context.Context, req *http.Request, sec Secret) error
 }
 
+// HTTPRequestSigner is the credential-plugin contract for HTTP auth
+// shapes whose signature spans the *whole request* (method, URL,
+// headers, body) and need parameters that live on the endpoint, not
+// the credential. AWS SigV4 is the canonical example: the signature
+// depends on the service + region declared on the endpoint, plus a
+// hash of the request body. HTTPCredentialRuntime.InjectHTTP only
+// gets the request, not the endpoint, so signing schemes that need
+// endpoint context implement this instead.
+//
+// SignHTTPRequest may consume and replace req.Body (typically reading
+// it in full to hash, then restoring with io.NopCloser); callers must
+// not assume the body is preserved verbatim.
+//
+// The endpoint argument is the endpoint plugin's decoded Body (the
+// same value as CompiledEndpoint.Body). The signer type-asserts it
+// against an interface that exposes the parameters it needs (e.g.
+// `AWSSigningParams() (service, region string)`).
+type HTTPRequestSigner interface {
+	SignHTTPRequest(ctx context.Context, req *http.Request, sec Secret, endpoint any) error
+}
+
 // WebSocketCredentialRuntime is the credential-plugin contract for
 // server-bound WebSocket text payloads that carry token placeholders.
 // The gateway calls this after decoding/unmasking a complete text frame

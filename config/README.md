@@ -122,7 +122,8 @@ how-to-inject parameters.
 | `postgres_credential` | postgres StartupMessage password swap |
 | `anthropic_manual_key` | `x-api-key: <secret>` |
 | `anthropic_oauth_subscription` | OAuth bearer + Anthropic beta gate |
-| `slack_tokens` / `telegram_bot_token` / `gemini_api_key` /<br>`openai_codex_oauth` / `notion_oauth` / `clickhouse_credential` /<br>`aws_eks_credential` | schema-only today (runtime stubs land in follow-ups) |
+| `aws_credential` | EKS bearer (`Authorization: Bearer k8s-aws-v1.<presigned STS GetCallerIdentity>`), scoped to the `kubernetes` endpoint's `cluster_name` + `region` |
+| `slack_tokens` / `telegram_bot_token` / `gemini_api_key` /<br>`openai_codex_oauth` / `notion_oauth` / `clickhouse_credential` | schema-only today (runtime stubs land in follow-ups) |
 
 mTLS env var convention:
 `CLAWPATROL_SECRET_<NAME>_CERT`,
@@ -137,10 +138,20 @@ Typed upstream binding. Built-in types map to protocol families:
 | Type | Family | Runtime status |
 |------|--------|----------------|
 | `https` | `https` | wired |
-| `kubernetes` | `k8s` | wired (HTTPS underneath; mTLS supported) |
+| `kubernetes` | `k8s` | wired (HTTPS underneath; mTLS or EKS bearer via `aws_credential`) |
 | `postgres` | `sql` | wired (SSL refused; SQL matchers + approve chains) |
 | `clickhouse_https` | `sql` | schema-only |
 | `clickhouse_native` | `sql` | schema-only |
+
+`endpoint "kubernetes"` accepts `cluster_name` + `region` for EKS
+deployments; the gateway hands both to `aws_credential` at request
+time, which presigns an STS `GetCallerIdentity` URL (with the
+`x-k8s-aws-id` header) and stamps the base64url-encoded
+`k8s-aws-v1.<url>` bearer on the kubernetes API request. Operators
+paste `access_key_id` / `secret_access_key` (+ optional
+`session_token`) into the `aws_credential` slots; the agent issues
+requests without auth and the gateway adds the Authorization header
+before forwarding.
 
 Credential binding has two shapes:
 

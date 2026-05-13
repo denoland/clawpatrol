@@ -41,11 +41,12 @@ func checkRuntime(p *config.Plugin) []string {
 	switch p.Kind {
 	case config.KindCredential:
 		_, http := p.Runtime.(HTTPCredentialRuntime)
+		_, signer := p.Runtime.(HTTPRequestSigner)
 		_, pg := p.Runtime.(PostgresCredentialRuntime)
 		_, pgAuth := p.Runtime.(PostgresAuthCredential)
 		_, chAuth := p.Runtime.(ClickhouseAuthCredential)
 		_, tlsR := p.Runtime.(TLSCredentialRuntime)
-		if http || pg || pgAuth || chAuth || tlsR {
+		if http || signer || pg || pgAuth || chAuth || tlsR {
 			return nil
 		}
 		for _, check := range extraCredChecks {

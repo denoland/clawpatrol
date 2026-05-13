@@ -1853,15 +1853,28 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			// etc.) live on Body. Invoke methods through Body so the
 			// receiver is the real instance.
 			injector, wantsHTTP := cc.Credential.Body.(runtime.HTTPCredentialRuntime)
+			signer, wantsSign := cc.Credential.Body.(runtime.HTTPRequestSigner)
 			wsRewriter, wantsWS := cc.Credential.Body.(runtime.WebSocketCredentialRuntime)
-			if wantsHTTP || (wantsWS && isWSUpgrade(req)) {
+			if wantsHTTP || wantsSign || (wantsWS && isWSUpgrade(req)) {
 				sec, err := g.secrets.Get(cc.Credential.Symbol.Name)
 				if err != nil {
 					log.Printf("secret %s: %v — forwarding without injection", cc.Credential.Symbol.Name, err)
 				} else if len(sec.Bytes) == 0 && len(sec.Extras) == 0 {
 					log.Printf("secret %s: not configured (set CLAWPATROL_SECRET_%s)", cc.Credential.Symbol.Name, secretEnvName(cc.Credential.Symbol.Name))
 				} else {
-					if wantsHTTP {
+					// SignHTTPRequest takes precedence over InjectHTTP:
+					// signing schemes (SigV4) read the endpoint to
+					// pick up service/region, span the whole request,
+					// and replace any auth headers the agent stamped.
+					// No built-in credential implements both, but the
+					// branch is harmless if one ever does.
+					switch {
+					case wantsSign:
+						reqBodySecretRedactions = appendCredentialSecretRedactions(reqBodySecretRedactions, sec)
+						if err := signer.SignHTTPRequest(req.Context(), req, sec, ep.Body); err != nil {
+							log.Printf("sign %s: %v", cc.Credential.Symbol.Name, err)
+						}
+					case wantsHTTP:
 						reqBodySecretRedactions = appendCredentialSecretRedactions(reqBodySecretRedactions, sec)
 						if err := injector.InjectHTTP(req.Context(), req, sec); err != nil {
 							log.Printf("inject %s: %v", cc.Credential.Symbol.Name, err)

@@ -207,12 +207,8 @@
         "type": "mtls_credential"
       },
       "k8s-eks-corp-aws": {
-        "body": {
-          "Cluster": "corp-prod",
-          "Region": "us-east-2",
-          "Profile": "corp-prod"
-        },
-        "type": "aws_eks_credential"
+        "body": {},
+        "type": "aws_credential"
       },
       "notion-corp": {
         "body": {},
@@ -452,6 +448,8 @@
           "Server": "198.51.100.10",
           "CACert": "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJAOcLE9eQ/Y7xMA0GCSqGSIb3DQEBCwUAMA8xDTALBgNVBAMMBHRl\nc3QwHhcNMjUwMTAxMDAwMDAwWhcNMzUwMTAxMDAwMDAwWjAPMQ0wCwYDVQQDDAR0\nZXN0MIGdMA0GCSqGSIb3DQEBAQUAA4GLADCBhwKBgQDZ5j4t2UE5nZ3Y1+Q4xY5e\nTESTING_PLACEHOLDER_CA_CERTIFICATE_DO_NOT_TRUST_THIS_BUNDLE_AAAA\nEVERYTHING_BELOW_THIS_LINE_IS_PADDING_FOR_TEST_FIXTURES_BBBBBBBB\nZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\nQIDAQABMA0GCSqGSIb3DQEBCwUAA4GBAFXfTESTPLACEHOLDERSIGNATUREAAAA\n-----END CERTIFICATE-----\n",
           "Description": "admin@dev-iad.example",
+          "ClusterName": "",
+          "Region": "",
           "Credential": "k8s-dev-iad-mtls"
         },
         "family": "k8s",
@@ -463,6 +461,8 @@
           "Server": "198.51.100.20",
           "CACert": "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJAOcLE9eQ/Y7xMA0GCSqGSIb3DQEBCwUAMA8xDTALBgNVBAMMBHRl\nc3QwHhcNMjUwMTAxMDAwMDAwWhcNMzUwMTAxMDAwMDAwWjAPMQ0wCwYDVQQDDAR0\nORD_TESTING_PLACEHOLDER_CA_CERTIFICATE_DO_NOT_TRUST_BUNDLE_AAAA\nEVERYTHING_BELOW_THIS_LINE_IS_PADDING_FOR_TEST_FIXTURES_BBBBBBBB\nZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\nQIDAQABMA0GCSqGSIb3DQEBCwUAA4GBAFXfTESTPLACEHOLDERSIGNATUREAAAA\n-----END CERTIFICATE-----\n",
           "Description": "admin@dev-sfo.example",
+          "ClusterName": "",
+          "Region": "",
           "Credential": "k8s-dev-sfo-mtls"
         },
         "family": "k8s",
@@ -476,6 +476,8 @@
           "Server": "",
           "CACert": "",
           "Description": "arn:aws:eks:us-east-2:123456789012:cluster/corp-prod",
+          "ClusterName": "corp-prod",
+          "Region": "us-east-2",
           "Credential": "k8s-eks-corp-aws"
         },
         "family": "k8s",

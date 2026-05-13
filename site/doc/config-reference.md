@@ -144,7 +144,7 @@ approver "llm_approver" "example" {
 
 Block syntax: `credential "<type>" "<name>" { ... }`
 
-Registered types: [`anthropic_manual_key`](#credential-anthropicmanualkey), [`anthropic_oauth_subscription`](#credential-anthropicoauthsubscription), [`aws_eks_credential`](#credential-awsekscredential), [`bearer_token`](#credential-bearertoken), [`clickhouse_credential`](#credential-clickhousecredential), [`cookie_token`](#credential-cookietoken), [`discord_bot_token`](#credential-discordbottoken), [`gemini_api_key`](#credential-geminiapikey), [`github_oauth`](#credential-githuboauth), [`header_token`](#credential-headertoken), [`mtls_credential`](#credential-mtlscredential), [`notion_oauth`](#credential-notionoauth), [`openai_codex_oauth`](#credential-openaicodexoauth), [`postgres_credential`](#credential-postgrescredential), [`slack_tokens`](#credential-slacktokens), [`ssh`](#credential-ssh), [`tailscale`](#credential-tailscale), [`telegram_bot_token`](#credential-telegrambottoken).
+Registered types: [`anthropic_manual_key`](#credential-anthropicmanualkey), [`anthropic_oauth_subscription`](#credential-anthropicoauthsubscription), [`aws_credential`](#credential-awscredential), [`bearer_token`](#credential-bearertoken), [`clickhouse_credential`](#credential-clickhousecredential), [`cookie_token`](#credential-cookietoken), [`discord_bot_token`](#credential-discordbottoken), [`gemini_api_key`](#credential-geminiapikey), [`github_oauth`](#credential-githuboauth), [`header_token`](#credential-headertoken), [`mtls_credential`](#credential-mtlscredential), [`notion_oauth`](#credential-notionoauth), [`openai_codex_oauth`](#credential-openaicodexoauth), [`postgres_credential`](#credential-postgrescredential), [`slack_tokens`](#credential-slacktokens), [`ssh`](#credential-ssh), [`tailscale`](#credential-tailscale), [`telegram_bot_token`](#credential-telegrambottoken).
 
 ### `credential "anthropic_manual_key" "<name>"`
 
@@ -162,19 +162,20 @@ _No configurable attributes._
 credential "anthropic_oauth_subscription" "example" {}
 ```
 
-### `credential "aws_eks_credential" "<name>"`
+### `credential "aws_credential" "<name>"`
 
-| Attribute | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `cluster` | `string` | yes |  |
-| `region` | `string` | yes |  |
-| `profile` | `string` | no |  |
+Is part of the clawpatrol plugin API.
+
+Schema is intentionally empty: access key id and secret access key
+(and optional session token) live in the secret store as named
+slots, filled via the dashboard or CLAWPATROL_SECRET_<NAME>_<SLOT>
+env vars. Cluster + region come from the kubernetes endpoint at
+request time.
+
+_No configurable attributes._
 
 ```hcl
-credential "aws_eks_credential" "example" {
-  cluster = "example"
-  region = "example"
-}
+credential "aws_credential" "example" {}
 ```
 
 ### `credential "bearer_token" "<name>"`
@@ -393,6 +394,15 @@ endpoint "https" "example" {
 
 ### `endpoint "kubernetes" "<name>"`
 
+Is part of the clawpatrol plugin API.
+
+ClusterName + Region are EKS auth parameters: when the bound
+credential is `aws_credential`, the gateway presigns an STS
+GetCallerIdentity URL scoped to (region, cluster_name) and stamps
+the result as a `k8s-aws-v1.<…>` bearer. Leave both unset for
+self-hosted clusters with a non-EKS credential (bearer_token,
+mtls_credential).
+
 Family: `k8s`.
 
 | Attribute | Type | Required | Description |
@@ -401,6 +411,8 @@ Family: `k8s`.
 | `server` | `string` | no |  |
 | `ca_cert` | `string` | no |  |
 | `description` | `string` | no |  |
+| `cluster_name` | `string` | no |  |
+| `region` | `string` | no |  |
 | `credential` | `ref(credential)` | no |  |
 
 ```hcl
