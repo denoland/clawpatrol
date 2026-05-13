@@ -200,12 +200,8 @@
         "type": "mtls_credential"
       },
       "k8s-eks-corp-aws": {
-        "body": {
-          "Cluster": "corp-prod",
-          "Region": "us-east-2",
-          "Profile": "corp-prod"
-        },
-        "type": "aws_eks_credential"
+        "body": {},
+        "type": "aws_credential"
       },
       "notion-corp": {
         "body": {},
@@ -473,8 +469,8 @@
           "Server": "",
           "CACert": "",
           "Description": "arn:aws:eks:us-east-2:123456789012:cluster/corp-prod",
-          "ClusterName": "",
-          "Region": "",
+          "ClusterName": "corp-prod",
+          "Region": "us-east-2",
           "Credential": "k8s-eks-corp-aws"
         },
         "family": "k8s",

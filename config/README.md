@@ -123,7 +123,7 @@ how-to-inject parameters.
 | `anthropic_manual_key` | `x-api-key: <secret>` |
 | `anthropic_oauth_subscription` | OAuth bearer + Anthropic beta gate |
 | `aws_credential` | EKS bearer (`Authorization: Bearer k8s-aws-v1.<presigned STS GetCallerIdentity>`), scoped to the `kubernetes` endpoint's `cluster_name` + `region` |
-| `slack_tokens` / `telegram_bot_token` / `gemini_api_key` /<br>`openai_codex_oauth` / `notion_oauth` / `clickhouse_credential` /<br>`aws_eks_credential` | schema-only today (runtime stubs land in follow-ups) |
+| `slack_tokens` / `telegram_bot_token` / `gemini_api_key` /<br>`openai_codex_oauth` / `notion_oauth` / `clickhouse_credential` | schema-only today (runtime stubs land in follow-ups) |
 
 mTLS env var convention:
 `CLAWPATROL_SECRET_<NAME>_CERT`,

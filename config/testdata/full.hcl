@@ -348,10 +348,10 @@
 #   The loader inlines the PEM content from a sibling directory at
 #   load time. Keeps cert material out of this file.
 #
-# - EKS auth (k8s-eks-corp-prod) uses an `aws_eks_credential`,
-#   which the kubernetes plugin understands as "fetch a fresh bearer
-#   token via aws eks get-token at request time" — cluster, region,
-#   and AWS profile name go on the credential.
+# - EKS auth (k8s-eks-corp-prod) uses an `aws_credential` bound to the
+#   kubernetes endpoint. The gateway presigns an STS GetCallerIdentity
+#   URL at request time and stamps the `k8s-aws-v1.<…>` bearer; cluster
+#   name and region live on the endpoint.
 
 unknown_host = "passthrough"
 llm_fail_mode = "closed"
@@ -565,11 +565,7 @@ credential "clickhouse_credential" "ch-o11y" {
 }
 credential "mtls_credential" "k8s-dev-iad-mtls" {}
 credential "mtls_credential" "k8s-dev-sfo-mtls" {}
-credential "aws_eks_credential" "k8s-eks-corp-aws" {
-  cluster = "corp-prod"
-  region  = "us-east-2"
-  profile = "corp-prod"
-}
+credential "aws_credential" "k8s-eks-corp-aws" {}
 
 # alice's per-tool API tokens. These illustrate the variety of HTTP
 # auth shapes the bearer/header_token credentials cover:
@@ -697,9 +693,11 @@ endpoint "postgres" "pg-scheduler" {
 }
 
 endpoint "kubernetes" "k8s-eks-corp-prod" {
-  hosts       = ["*.gr7.us-east-2.eks.amazonaws.com"]
-  description = "arn:aws:eks:us-east-2:123456789012:cluster/corp-prod"
-  credential = k8s-eks-corp-aws
+  hosts        = ["*.gr7.us-east-2.eks.amazonaws.com"]
+  description  = "arn:aws:eks:us-east-2:123456789012:cluster/corp-prod"
+  cluster_name = "corp-prod"
+  region       = "us-east-2"
+  credential   = k8s-eks-corp-aws
 }
 
 # Shared (multiple profiles).

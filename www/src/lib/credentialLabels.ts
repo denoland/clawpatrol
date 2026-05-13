@@ -10,7 +10,7 @@ export const CREDENTIAL_TYPE_LABEL: Record<string, string> = {
   slack_tokens: "Slack",
   telegram_bot_token: "Telegram",
   gemini_api_key: "Gemini",
-  aws_eks_credential: "AWS EKS",
+  aws_credential: "AWS",
   bearer_token: "Bearer token",
   header_token: "Header token",
   cookie_token: "Cookie token",
