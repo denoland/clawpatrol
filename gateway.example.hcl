@@ -44,18 +44,16 @@ state_dir   = "/opt/clawpatrol/state"
 #                                               # dashboard URL gets in
 dashboard_secret = "change-me-to-a-long-random-string"
 
-control = "wireguard"
+control        = "wireguard"
+wg_subnet_cidr = "10.55.0.0/24"
 
-# Optional WireGuard knobs (defaults shown):
-#
-#   wg_subnet_cidr = "10.55.0.0/24"  # /24 the gateway carves /32s
-#                                    # from for each onboarded peer
-#   wg_endpoint    = "0.0.0.0:51820" # listen address + port. Clients
-#                                    # dial host(public_url):port.
-#                                    # Pin a non-wildcard host for
-#                                    # split-host deployments
-#                                    # (wg.example.com:51820), or
-#                                    # change the port (":41820").
+# wg_endpoint is optional. Server-side it's listen address + port
+# (default 0.0.0.0:51820). Clients dial `host(public_url):port`, so
+# you only set wg_endpoint when you need a different host for WG
+# than for the dashboard (split-host deployments) or a non-default
+# port. Examples:
+#   wg_endpoint = ":41820"            # default host, custom port
+#   wg_endpoint = "wg.example.com:51820"   # WG host != dashboard host
 
 # ── policy defaults ---------------------------------------------------
 

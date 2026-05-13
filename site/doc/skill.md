@@ -65,7 +65,8 @@ are bare (`credential = github-pat`, never `credential.github-pat`).
 admin_email      = "you@example.com"
 dashboard_secret = "change-me-long-random"
 
-control = "wireguard"
+control        = "wireguard"
+wg_subnet_cidr = "10.55.0.0/24"
 
 credential "bearer_token" "github-pat" {}
 
@@ -101,7 +102,7 @@ profile "default" { endpoints = [github] }
 | `dashboard_secret` | Required (or `insecure_no_dashboard_secret = true` for local testing). |
 | `state_dir` | Directory holding `clawpatrol.db`. Defaults to `~/.clawpatrol/state`. |
 | `control` | `"wireguard"` or `"tailscale"`. |
-| `wg_endpoint` / `wg_subnet_cidr` | WG listener + device subnet (both optional; defaults `0.0.0.0:51820` and `10.55.0.0/24`). |
+| `wg_endpoint` / `wg_subnet_cidr` | WG listener + device subnet. |
 | `unknown_host` | `"passthrough"` (default) or `"deny"` for traffic no endpoint claims. |
 
 Full list: [Config reference](/docs/config-reference/#top-level-fields).

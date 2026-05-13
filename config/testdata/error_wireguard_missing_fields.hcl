@@ -1,7 +1,7 @@
-# control = "wireguard" requires a client dial target — either
-# public_url, or wg_endpoint with a non-wildcard host. wg_subnet_cidr
-# and wg_endpoint are otherwise optional (defaults 10.55.0.0/24 and
-# 0.0.0.0:51820).
+# control = "wireguard" requires wg_subnet_cidr, plus a client dial
+# target (either public_url or wg_endpoint with a non-wildcard host).
+# Without them StartWGServer fails at boot (subnet) or onboarding
+# clients dial an unknown endpoint.
 
 listen = "0.0.0.0:8443"
 

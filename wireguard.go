@@ -299,7 +299,7 @@ func setDB(d *sql.DB)         { globalDB = d }
 // first boot. Stable across restarts so onboarded peers keep working.
 func StartWGServer(ts JoinConfig) (*WGServer, error) {
 	if ts.WGSubnetCIDR == "" {
-		ts.WGSubnetCIDR = defaultWGSubnetCIDR
+		return nil, fmt.Errorf("wireguard: wg_subnet_cidr required")
 	}
 	listenPort := 51820
 	if ts.WGEndpoint != "" {

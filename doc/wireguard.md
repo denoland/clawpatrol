@@ -83,7 +83,8 @@ state_dir    = "/opt/clawpatrol/state"
 integrations = ["claude", "codex", "github"]
 
 tailscale {
-  control = "wireguard"
+  control        = "wireguard"
+  wg_subnet_cidr = "10.55.0.0/24"
 }
 EOF
 
