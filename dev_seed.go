@@ -137,14 +137,21 @@ func devSeedLive(ctx context.Context, g *Gateway) {
 	hitlTicker := time.NewTicker(30 * time.Second)
 	defer hitlTicker.Stop()
 	tracker := newLiveHITLTracker(g, 20)
+	// One reusable timer Reset each iteration. Go 1.23+ Stop/Reset no
+	// longer leak stale channel fires, so the non-timer select branches
+	// just Stop and the next iteration Resets cleanly.
+	timer := time.NewTimer(time.Hour)
+	timer.Stop()
+	defer timer.Stop()
 	for {
 		gap := 200 + r.Intn(1801)
-		timer := time.NewTimer(time.Duration(gap) * time.Millisecond)
+		timer.Reset(time.Duration(gap) * time.Millisecond)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return
 		case <-hitlTicker.C:
+			timer.Stop()
 			tracker.add(r, devices)
 		case <-timer.C:
 			g.sink.Emit(devSeedAction(r, devices, time.Now()))
@@ -558,21 +565,31 @@ func devSeedHeadersJSON(b []byte) string {
 }
 
 var devSeedHITLPrompts = []struct {
-	host, method, path, reason, body string
+	endpoint, host, method, path, ua, reason, body string
 }{
-	{"api.github.com", "POST", "/repos/denoland/clawpatrol/issues",
+	{devSeedKnownEndpointGithubAPI, "api.github.com", "POST",
+		"/repos/denoland/clawpatrol/issues",
+		"clawpatrol/0.1 github-cli/2.61",
 		"github-writes: human approval required",
 		`{"title":"clean up stale onboard rows","body":"Sweep onboard requests older than 24h..."}`},
-	{"api.github.com", "PATCH", "/repos/denoland/clawpatrol/pulls/240",
+	{devSeedKnownEndpointGithubAPI, "api.github.com", "PATCH",
+		"/repos/denoland/clawpatrol/pulls/240",
+		"clawpatrol/0.1 github-cli/2.61",
 		"github-writes: human approval required",
 		`{"state":"closed"}`},
-	{"api.github.com", "DELETE", "/repos/denoland/clawpatrol/issues/238/labels/bug",
+	{devSeedKnownEndpointGithubAPI, "api.github.com", "DELETE",
+		"/repos/denoland/clawpatrol/issues/238/labels/bug",
+		"clawpatrol/0.1 github-cli/2.61",
 		"github-writes: human approval required",
 		``},
-	{"hooks.slack.com", "POST", "/services/T0/B0/abc",
+	{"slack", "hooks.slack.com", "POST",
+		"/services/T0/B0/abc",
+		"clawpatrol/0.1 slack-sdk-go/1.4",
 		"slack: outbound webhook to public channel",
 		`{"text":"@here gateway proxy hit 5xx on 3 endpoints in the last 5m"}`},
-	{"api.openai.com", "POST", "/v1/chat/completions",
+	{"openai", "api.openai.com", "POST",
+		"/v1/chat/completions",
+		"clawpatrol/0.1 openai-python/2.1",
 		"openai: large prompt over policy size limit",
 		`{"model":"gpt-5","messages":[...20000 tokens elided...]}`},
 }
@@ -596,9 +613,9 @@ func devSeedAddHITL(g *Gateway, r *rand.Rand, devices []devSeedDevice, n int) st
 			Host:       p.host,
 			Method:     p.method,
 			Path:       p.path,
-			Endpoint:   devSeedKnownEndpointGithubAPI,
+			Endpoint:   p.endpoint,
 			Family:     "https",
-			UA:         "clawpatrol/0.1 github-cli/2.61",
+			UA:         p.ua,
 			BodySample: p.body,
 			Reason:     p.reason,
 			Approvers:  []string{"ops"},

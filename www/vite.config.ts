@@ -10,6 +10,14 @@ export default defineConfig({
     sourcemap: false,
   },
   server: {
+    // Bind the dev server to loopback explicitly. Pairs with the
+    // dev@local header below: the gateway trusts that header only
+    // from loopback, but the proxy hop is always loopback even when
+    // Vite itself binds 0.0.0.0 — so leaving host unbound would let
+    // any LAN caller reach our local gateway as dev@local. Override
+    // with `npm run dev -- --host …` when you actually want LAN
+    // access (you'd also want to drop the header below first).
+    host: "127.0.0.1",
     proxy: {
       "/api": {
         target: "http://localhost:8080",
