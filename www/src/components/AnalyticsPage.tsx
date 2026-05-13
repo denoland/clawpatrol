@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
 import * as Plot from "@observablehq/plot";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getAnalytics, type Agent, type EventRecord } from "../lib/api";
 
 const RANGES = ["1m", "5m", "15m", "30m", "1h", "6h", "24h"] as const;
@@ -52,8 +52,16 @@ function useQS<T extends string>(
 
 // --- page ---
 
-export function AnalyticsPage({ ip, agents }: { ip?: string; agents: Agent[] }) {
-  const deviceName = ip ? agents.find((a) => a.ip === ip)?.hostname || ip : undefined;
+export function AnalyticsPage({
+  ip,
+  agents,
+}: {
+  ip?: string;
+  agents: Agent[];
+}) {
+  const deviceName = ip
+    ? agents.find((a) => a.ip === ip)?.hostname || ip
+    : undefined;
   const [events, setEvents] = useState<EventRecord[]>([]);
   const [totalCount, setTotalCount] = useState(0);
   const [errorCount, setErrorCount] = useState(0);
@@ -137,9 +145,14 @@ export function AnalyticsPage({ ip, agents }: { ip?: string; agents: Agent[] }) 
       .map((e) => e.ms)
       .filter((m) => m > 0)
       .sort((a, b) => a - b);
-    const avg = lats.length ? Math.round(lats.reduce((a, b) => a + b, 0) / lats.length) : 0;
-    const p99 = lats.length ? lats[Math.min(Math.floor(lats.length * 0.99), lats.length - 1)] : 0;
-    const devices = new Set(filtered.map((e) => e.agent_ip).filter(Boolean)).size;
+    const avg = lats.length
+      ? Math.round(lats.reduce((a, b) => a + b, 0) / lats.length)
+      : 0;
+    const p99 = lats.length
+      ? lats[Math.min(Math.floor(lats.length * 0.99), lats.length - 1)]
+      : 0;
+    const devices = new Set(filtered.map((e) => e.agent_ip).filter(Boolean))
+      .size;
     if (hasFilter) {
       const errs = filtered.filter((e) => (e.status ?? 0) >= 400).length;
       const errPct = sampleN > 0 ? (errs / sampleN) * 100 : 0;
@@ -153,25 +166,28 @@ export function AnalyticsPage({ ip, agents }: { ip?: string; agents: Agent[] }) 
     <main className="flex-1 mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-8 space-y-8">
       <div className="flex items-baseline justify-between flex-wrap gap-3">
         <div className="flex items-baseline gap-2">
-          <a href="#/" className="text-[13px] text-[#a3a3a3] hover:text-[#171717]">
+          <a href="#/" className="text-sm text-text-subtle hover:text-text">
             clawpatrol
           </a>
-          <span className="text-[13px] text-[#a3a3a3]">/</span>
+          <span className="text-sm text-text-subtle">/</span>
           {deviceName ? (
             <>
               <a
                 href={`#/device/${encodeURIComponent(ip!)}`}
-                className="text-[13px] text-[#a3a3a3] hover:text-[#171717]"
+                className="text-sm text-text-subtle hover:text-text"
               >
                 {deviceName}
               </a>
-              <span className="text-[13px] text-[#a3a3a3]">/</span>
-              <a href="#/analytics" className="text-[13px] text-[#525252] hover:text-[#171717]">
+              <span className="text-sm text-text-subtle">/</span>
+              <a
+                href="#/analytics"
+                className="text-sm text-text-muted hover:text-text"
+              >
                 analytics
               </a>
             </>
           ) : (
-            <span className="text-[13px] text-[#525252]">analytics</span>
+            <span className="text-sm text-text-muted">analytics</span>
           )}
           {hasFilter && (
             <button
@@ -179,10 +195,10 @@ export function AnalyticsPage({ ip, agents }: { ip?: string; agents: Agent[] }) 
                 setFilterDevice(null);
                 setFilterHost(null);
               }}
-              className="ml-3 px-2 py-0.5 rounded text-[13px] border border-[#171717] bg-[#171717] text-canvas flex items-center gap-1.5 self-center"
+              className="ml-3 px-2 py-0.5 rounded text-sm border border-navy bg-navy text-canvas flex items-center gap-1.5 self-center"
             >
               {filterLabel}
-              <span className="text-[10px]">&times;</span>
+              <span className="text-2xs">&times;</span>
             </button>
           )}
         </div>
@@ -191,7 +207,7 @@ export function AnalyticsPage({ ip, agents }: { ip?: string; agents: Agent[] }) 
 
       <div
         className={
-          "bg-canvas border border-[#e5e5e5] rounded grid grid-cols-2 divide-x divide-[#e5e5e5] " +
+          "bg-canvas-light border-2 border-navy grid grid-cols-2 divide-x divide-canvas-dark " +
           (isGlobal ? "sm:grid-cols-4 lg:grid-cols-5" : "sm:grid-cols-4")
         }
       >
@@ -203,10 +219,17 @@ export function AnalyticsPage({ ip, agents }: { ip?: string; agents: Agent[] }) 
           value={stats.errPct ? stats.errPct.toFixed(1) + "%" : "0%"}
           tone={stats.errPct >= 5 ? "warn" : undefined}
         />
-        {isGlobal && <Stat label="Devices" value={stats.devices.toLocaleString()} />}
+        {isGlobal && (
+          <Stat label="Devices" value={stats.devices.toLocaleString()} />
+        )}
       </div>
 
-      <div className={"grid gap-4 " + (isGlobal ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1")}>
+      <div
+        className={
+          "grid gap-4 " +
+          (isGlobal ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1")
+        }
+      >
         {isGlobal && (
           <BarList
             title="Count by device"
@@ -232,7 +255,12 @@ export function AnalyticsPage({ ip, agents }: { ip?: string; agents: Agent[] }) 
         />
       </div>
 
-      <LatencyChart filtered={filtered} isGlobal={isGlobal} agents={agents} range={range} />
+      <LatencyChart
+        filtered={filtered}
+        isGlobal={isGlobal}
+        agents={agents}
+        range={range}
+      />
 
       <TopRoutes events={filtered} />
     </main>
@@ -244,14 +272,24 @@ function fmtMs(ms: number): string {
   return ms + "ms";
 }
 
-function Stat({ label, value, tone }: { label: string; value: string; tone?: "warn" }) {
+function Stat({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone?: "warn";
+}) {
   return (
     <div className="flex flex-col gap-1.5 px-5 py-4">
-      <span className="text-[10px] uppercase tracking-[.12em] text-[#a3a3a3]">{label}</span>
+      <span className="text-2xs uppercase tracking-[.12em] text-text-subtle">
+        {label}
+      </span>
       <span
         className={
-          "text-[22px] font-semibold leading-none tabular-nums tracking-tight " +
-          (tone === "warn" ? "text-[#b91c1c]" : "text-[#171717]")
+          "text-2xl font-semibold leading-none tabular-nums tracking-tight " +
+          (tone === "warn" ? "text-danger-600" : "text-text")
         }
       >
         {value}
@@ -272,9 +310,10 @@ function stableIndex(s: string, n: number): number {
   return ((h % n) + n) % n;
 }
 
-// 10 perceptually-distinct Tailwind-600 hues. The previous -700 set
-// had four near-blues that hashed-into clashes; Tableau-10 fixed the
-// distinctness but read as washed-out on white.
+// 10 perceptually-distinct categorical chart hues. Intentionally
+// outside the brand palette: rust + navy + butter only give us three
+// anchors, but the host-color hash needs 10+ to avoid clashes in dense
+// scatter plots. Charts are the one place we accept non-token colors.
 const PALETTE = [
   "#2563eb", // blue-600
   "#dc2626", // red-600
@@ -290,16 +329,20 @@ const PALETTE = [
 const hostColor = (s: string) => PALETTE[stableIndex(s, PALETTE.length)];
 // Offset by half the palette so the same string hashes to a maximally
 // different hue when used as a device vs. a host.
-const deviceColor = (s: string) => PALETTE[(stableIndex(s, PALETTE.length) + 5) % PALETTE.length];
+const deviceColor = (s: string) =>
+  PALETTE[(stableIndex(s, PALETTE.length) + 5) % PALETTE.length];
 
-// Status: Tailwind -700 (desaturated vs original -600). Used both in
-// scatter legend and EventRow status text.
+// HTTP status families, mapped to the brand semantic tokens. Hex
+// literals because Observable Plot serializes these directly into
+// SVG fill attributes and can't resolve `var(--color-…)`. Keep in
+// sync with --color-success / --color-butter / --color-rust /
+// --color-danger / --color-text-subtle in index.css.
 const STATUS_COLORS = {
-  "2xx": "#15803d",
-  "3xx": "#a16207",
-  "4xx": "#c2410c",
-  "5xx": "#b91c1c",
-  "—": "#a3a3a3",
+  "2xx": "#4a6f30", // success-600
+  "3xx": "#a47208", // butter-700
+  "4xx": "#b6420f", // rust-600
+  "5xx": "#8d2424", // danger-600
+  "—": "#82838c", // text-subtle
 } as const;
 
 // --- chart ---
@@ -316,7 +359,9 @@ function LatencyChart({
   range: Range;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  const colorOptions: ColorBy[] = isGlobal ? ["device", "host", "status"] : ["host", "status"];
+  const colorOptions: ColorBy[] = isGlobal
+    ? ["device", "host", "status"]
+    : ["host", "status"];
   const [colorBy, setColorBy] = useQS("color", colorOptions[0], colorOptions);
   const [scale, setScale] = useQS("scale", "log" as Scale, ["log", "linear"]);
 
@@ -348,7 +393,12 @@ function LatencyChart({
           : "\u2014",
       }));
 
-    const colorField = colorBy === "status" ? "status" : colorBy === "device" ? "device" : "host";
+    const colorField =
+      colorBy === "status"
+        ? "status"
+        : colorBy === "device"
+          ? "device"
+          : "host";
 
     const vals = [...new Set(dots.map((d) => d[colorField] as string))];
 
@@ -367,7 +417,9 @@ function LatencyChart({
           }
         : {
             domain: vals,
-            range: vals.map((v) => (colorBy === "device" ? deviceColor(v) : hostColor(v))),
+            range: vals.map((v) =>
+              colorBy === "device" ? deviceColor(v) : hostColor(v),
+            ),
             legend: true,
           };
 
@@ -382,7 +434,7 @@ function LatencyChart({
         background: "transparent",
         fontSize: "11px",
         fontFamily: "ui-sans-serif, system-ui, sans-serif",
-        color: "#525252",
+        color: "var(--color-text-muted)",
       },
       y: {
         type: scale,
@@ -407,8 +459,8 @@ function LatencyChart({
       marks: [
         // Soft grid: redraw with very light stroke (Plot's default
         // grid is too dark against the muted palette).
-        Plot.gridY({ stroke: "#f0f0f0", strokeWidth: 1 }),
-        Plot.gridX({ stroke: "#f5f5f5", strokeWidth: 1 }),
+        Plot.gridY({ stroke: "var(--color-canvas-dark)", strokeWidth: 1 }),
+        Plot.gridX({ stroke: "var(--color-canvas-muted)", strokeWidth: 1 }),
         // Dots: smaller radius, white stroke ring for separation in
         // dense clusters, lower opacity so density reads as shading.
         Plot.dot(dots, {
@@ -419,7 +471,8 @@ function LatencyChart({
           fillOpacity: 0.75,
           stroke: "white",
           strokeWidth: 0.5,
-          href: (d: (typeof dots)[0]) => (d.id ? `#/request/${d.id}` : undefined),
+          href: (d: (typeof dots)[0]) =>
+            d.id ? `#/request/${d.id}` : undefined,
           title: (d: (typeof dots)[0]) =>
             `${d.host}\n${d.device}\n${d.statusCode || "\u2014"} \u2022 ${d.ms}ms`,
         }),
@@ -441,7 +494,8 @@ function LatencyChart({
     chart.addEventListener("click", (evt) => {
       const a = (evt.target as Element).closest("a");
       const href =
-        a?.getAttribute("href") ?? a?.getAttributeNS("http://www.w3.org/1999/xlink", "href");
+        a?.getAttribute("href") ??
+        a?.getAttributeNS("http://www.w3.org/1999/xlink", "href");
       if (href?.startsWith("#/request/")) {
         evt.preventDefault();
         window.location.hash = href;
@@ -456,7 +510,9 @@ function LatencyChart({
     // with an inner `<svg fill="...">` and the value as a text node —
     // there are no aria-labels, so we read the color straight off the
     // swatch's SVG (same scale as the dots use).
-    const dotEls = chart.querySelectorAll<SVGCircleElement>("g[aria-label='dot'] circle");
+    const dotEls = chart.querySelectorAll<SVGCircleElement>(
+      "g[aria-label='dot'] circle",
+    );
     const setHighlight = (target: string | null) => {
       if (!target) {
         dotEls.forEach((c) => {
@@ -470,10 +526,14 @@ function LatencyChart({
     };
 
     const nameToIP =
-      colorBy === "device" ? new Map(agents.map((a) => [a.hostname || a.ip, a.ip])) : null;
+      colorBy === "device"
+        ? new Map(agents.map((a) => [a.hostname || a.ip, a.ip]))
+        : null;
 
     chart
-      .querySelectorAll<HTMLElement>("[class*='-swatch']:not([class*='-swatches'])")
+      .querySelectorAll<HTMLElement>(
+        "[class*='-swatch']:not([class*='-swatches'])",
+      )
       .forEach((el) => {
         const color = el.querySelector("svg")?.getAttribute("fill") ?? null;
         const label = el.textContent?.trim() ?? "";
@@ -495,12 +555,22 @@ function LatencyChart({
   }, [filtered, colorBy, scale, range, agents, agentNames]);
 
   return (
-    <section className="bg-canvas border border-[#e5e5e5] rounded overflow-hidden">
-      <header className="flex items-center justify-between px-4 py-2.5 border-b border-[#e5e5e5]">
-        <span className="text-[10px] uppercase tracking-[.12em] text-[#a3a3a3]">Latency</span>
+    <section className="bg-canvas-light border-2 border-navy overflow-hidden">
+      <header className="flex items-center justify-between px-4 py-2.5 bg-navy-100">
+        <span className="text-2xs uppercase tracking-[.12em] font-bold text-navy">
+          Latency
+        </span>
         <div className="flex items-center gap-3">
-          <Toggle options={colorOptions} value={colorBy} onChange={setColorBy} />
-          <Toggle options={["log", "linear"] as Scale[]} value={scale} onChange={setScale} />
+          <Toggle
+            options={colorOptions}
+            value={colorBy}
+            onChange={setColorBy}
+          />
+          <Toggle
+            options={["log", "linear"] as Scale[]}
+            value={scale}
+            onChange={setScale}
+          />
         </div>
       </header>
       <div ref={ref} className="p-4 min-h-[320px]" />
@@ -520,14 +590,16 @@ function Toggle<T extends string>({
   onChange: (v: T) => void;
 }) {
   return (
-    <div className="flex text-[10px] border border-[#e5e5e5] rounded overflow-hidden">
+    <div className="flex text-2xs border-2 border-navy squircle-sm overflow-hidden">
       {options.map((o) => (
         <button
           key={o}
           onClick={() => onChange(o)}
           className={
             "px-2 py-0.5 " +
-            (o === value ? "bg-[#171717] text-canvas" : "text-[#525252] hover:bg-[#fafafa]")
+            (o === value
+              ? "bg-navy text-canvas"
+              : "bg-canvas text-text-muted hover:bg-navy-100")
           }
         >
           {o}
@@ -580,7 +652,7 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
 
   const hdr = (label: string, field: "count" | "p99Ms") => (
     <th
-      className="px-3 sm:px-[14px] py-[9px] text-right text-[10px] font-medium uppercase tracking-[.12em] text-[#a3a3a3] cursor-pointer hover:text-[#525252] select-none"
+      className="px-3 sm:px-[14px] py-[9px] text-right text-2xs font-bold uppercase tracking-[.12em] text-navy cursor-pointer hover:text-navy-700 select-none"
       onClick={() => setSortBy(field)}
     >
       {label}
@@ -589,16 +661,16 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
   );
 
   return (
-    <section className="bg-canvas border border-[#e5e5e5] rounded overflow-hidden">
-      <table className="w-full text-[11px]">
+    <section className="bg-canvas-light border-2 border-navy overflow-hidden">
+      <table className="w-full text-xs">
         <colgroup>
           <col />
           <col className="w-[120px]" />
           <col className="w-[80px]" />
         </colgroup>
-        <thead>
-          <tr className="border-b border-[#e5e5e5]">
-            <th className="px-3 sm:px-[14px] py-[9px] text-left text-[10px] uppercase tracking-[.12em] text-[#a3a3a3] font-medium">
+        <thead className="bg-navy-100">
+          <tr>
+            <th className="px-3 sm:px-[14px] py-[9px] text-left text-2xs uppercase tracking-[.12em] text-navy font-bold">
               Top routes
             </th>
             {hdr("Reqs", "count")}
@@ -611,27 +683,29 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
             return (
               <tr
                 key={d.key}
-                className="border-b border-[#f5f5f5] hover:bg-[#f9f9f9] transition-colors"
+                className="border-b border-canvas-muted hover:bg-navy-50 transition-colors"
               >
                 <td
                   className="px-3 sm:px-[14px] py-[9px] font-mono align-middle break-all"
                   title={`${d.method} ${d.host}${d.path}`}
                 >
-                  <span className="text-[#a3a3a3]">{d.method}</span> {d.host}
-                  <span className="text-[#525252]">{d.path}</span>
+                  <span className="text-text-subtle">{d.method}</span> {d.host}
+                  <span className="text-text-muted">{d.path}</span>
                 </td>
                 <td className="px-3 sm:px-[14px] py-[9px] text-right whitespace-nowrap align-middle">
                   <div className="flex items-center justify-end gap-1.5">
-                    <div className="w-12 h-1.5 bg-[#f5f5f5] rounded-full">
+                    <div className="w-12 h-1.5 bg-canvas-muted rounded-full">
                       <div
-                        className="h-full bg-[#a3a3a3] rounded-full"
+                        className="h-full bg-text-subtle rounded-full"
                         style={{ width: `${pct}%` }}
                       />
                     </div>
-                    <span className="w-8 text-right tabular-nums">{d.count}</span>
+                    <span className="w-8 text-right tabular-nums">
+                      {d.count}
+                    </span>
                   </div>
                 </td>
-                <td className="px-3 sm:px-[14px] py-[9px] text-right text-[#525252] tabular-nums align-middle">
+                <td className="px-3 sm:px-[14px] py-[9px] text-right text-text-muted tabular-nums align-middle">
                   {fmtMs(d.p99Ms)}
                 </td>
               </tr>
@@ -639,7 +713,10 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
           })}
           {rows.length === 0 && (
             <tr>
-              <td colSpan={3} className="px-1 py-6 text-center text-[11px] text-[#a3a3a3]">
+              <td
+                colSpan={3}
+                className="px-1 py-6 text-center text-xs text-text-subtle"
+              >
                 No data in this time range
               </td>
             </tr>
@@ -675,38 +752,42 @@ function BarList({
   const max = items.length ? items[0].value : 0;
 
   return (
-    <section className="bg-canvas border border-[#e5e5e5] rounded overflow-hidden">
-      <header className="px-4 py-2.5 border-b border-[#e5e5e5]">
-        <span className="text-[10px] uppercase tracking-[.12em] text-[#a3a3a3]">{title}</span>
+    <section className="bg-canvas-light border-2 border-navy overflow-hidden">
+      <header className="px-4 py-2.5 bg-navy-100">
+        <span className="text-2xs uppercase tracking-[.12em] font-bold text-navy">
+          {title}
+        </span>
       </header>
       <div className="p-3 space-y-0.5">
         {items.slice(0, 10).map((item) => {
           const pct = max > 0 ? (item.value / max) * 100 : 0;
           const isActive = active === item.key;
+          // Non-colorFn fallback: brand-neutral bar fill via token var
+          // so the bar inherits any theme adjustment in index.css.
           const barColor = colorFn
             ? colorFn(item.key, item.label)
             : isActive
-              ? "#171717"
-              : "#525252";
+              ? "var(--color-text)"
+              : "var(--color-text-muted)";
           return (
             <div
               key={item.key}
               className={
                 "flex items-center gap-2 px-1 py-0.5 rounded cursor-pointer " +
-                (isActive ? "bg-[#f5f5f5]" : "hover:bg-[#fafafa]")
+                (isActive ? "bg-navy-50" : "hover:bg-navy-50")
               }
               onClick={onClickFn ? () => onClickFn(item.key) : undefined}
             >
               <span
                 className={
-                  "w-32 truncate text-[11px] " +
-                  (isActive ? "text-[#171717] font-semibold" : "text-[#525252]")
+                  "w-32 truncate text-xs " +
+                  (isActive ? "text-text font-semibold" : "text-text-muted")
                 }
                 title={item.label}
               >
                 {item.label}
               </span>
-              <div className="flex-1 h-2 bg-[#f5f5f5] rounded-full">
+              <div className="flex-1 h-2 bg-canvas-muted rounded-full">
                 <div
                   className="h-full rounded-full"
                   style={{
@@ -716,14 +797,14 @@ function BarList({
                   }}
                 />
               </div>
-              <span className="w-8 text-right text-[11px] text-[#a3a3a3] tabular-nums">
+              <span className="w-8 text-right text-xs text-text-subtle tabular-nums">
                 {item.value}
               </span>
             </div>
           );
         })}
         {items.length === 0 && (
-          <div className="py-4 text-center text-[11px] text-[#a3a3a3]">
+          <div className="py-4 text-center text-xs text-text-subtle">
             No data in this time range
           </div>
         )}

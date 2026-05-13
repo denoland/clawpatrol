@@ -6,6 +6,7 @@ import { credentialTypeLabel } from "../lib/credentialLabels";
 import { fmtExpiry } from "../lib/format";
 import { CredentialSecretsModal } from "./CredentialSecretsModal";
 import { IntegrationIcon } from "./Logos";
+import { Modal } from "./Modal";
 
 // Bare credential names often look like "pg-writer-cred" — useful as
 // identifiers, not as labels. The type maps to the recognizable brand /
@@ -134,7 +135,7 @@ export function IntegrationsCards({
         {overflow && (
           <button
             onClick={() => setAllOpen(true)}
-            className="flex items-center justify-center px-3 py-2.5 bg-canvas border border-dashed border-[#d4d4d4] rounded text-[12px] text-[#737373] hover:border-[#171717] hover:text-[#171717] transition-colors"
+            className="flex items-center justify-center px-3 py-2.5 bg-canvas-light border-2 border-dashed border-navy text-xs text-text-muted hover:bg-navy-50 hover:text-text transition-colors"
           >
             + {hiddenCount} more
           </button>
@@ -186,11 +187,7 @@ function OwnerAvatar({
   const [broken, setBroken] = React.useState(false);
   if (broken) {
     return (
-      <IntegrationIcon
-        id={fallbackId}
-        type={fallbackType}
-        className="w-[16px] h-[16px] shrink-0"
-      />
+      <IntegrationIcon id={fallbackId} type={fallbackType} className="w-[16px] h-[16px] shrink-0" />
     );
   }
   return (
@@ -237,13 +234,8 @@ function Card({
       disabled={!clickable && !connected}
       onClick={() => clickable && onConnect()}
       className={
-        "group relative flex flex-col items-start gap-2 px-3 py-2.5 bg-canvas border rounded text-left transition-colors " +
-        (connected
-          ? "border-[#bbf7d0] bg-[#f0fdf4] " +
-            (clickable ? "hover:border-[#16a34a] cursor-pointer" : "cursor-default")
-          : clickable
-            ? "border-[#e5e5e5] hover:border-[#171717] cursor-pointer"
-            : "border-[#e5e5e5] cursor-default")
+        "group relative flex flex-col items-start gap-2 px-3 py-2.5 bg-canvas-light border-2 border-navy text-left transition-colors " +
+        (clickable ? "cursor-pointer hover:bg-navy-50" : "cursor-default")
       }
     >
       <div className="flex items-center gap-2 w-full">
@@ -252,7 +244,7 @@ function Card({
         ) : (
           <IntegrationIcon id={i.id} type={i.type} className="w-[16px] h-[16px] shrink-0" />
         )}
-        <span className="text-[12px] font-semibold text-[#171717] truncate" title={title}>
+        <span className="text-xs font-semibold text-text truncate" title={title}>
           {(() => {
             const withName = showName && label !== i.name ? `${label} · ${i.name}` : label;
             return i.display_name ? `${withName} (${i.display_name})` : withName;
@@ -265,7 +257,7 @@ function Card({
                 e.stopPropagation();
                 onDisconnect();
               }}
-              className="opacity-0 group-hover:opacity-100 text-[11px] leading-none text-[#a3a3a3] hover:text-[#dc2626] transition-opacity cursor-pointer"
+              className="opacity-0 group-hover:opacity-100 text-xs leading-none text-text-subtle hover:text-danger-500 transition-opacity cursor-pointer"
               title="disconnect"
             >
               ✕
@@ -273,16 +265,16 @@ function Card({
           )}
           <span
             className={
-              "w-[6px] h-[6px] rounded-full " + (connected ? "bg-[#22c55e]" : "bg-[#d4d4d4]")
+              "w-[6px] h-[6px] rounded-full " + (connected ? "bg-success-500" : "bg-text-subtle")
             }
           />
         </span>
       </div>
       <div className="w-full min-w-0 space-y-0.5">
-        <div className="text-[10px] text-[#737373] tabular-nums truncate" title={i.id}>
+        <div className="text-2xs text-text-muted tabular-nums truncate" title={i.id}>
           <span className="font-mono">{i.id}</span>
         </div>
-        <div className="text-[10px] text-[#a3a3a3] tabular-nums truncate" title={status}>
+        <div className="text-2xs text-text-subtle tabular-nums truncate" title={status}>
           {status}
         </div>
       </div>
@@ -304,26 +296,25 @@ function AllIntegrationsModal({
   onDisconnect: (i: Integration) => void;
 }) {
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-navy-950/30"
-      onClick={onClose}
-    >
-      <div
-        className="bg-canvas border border-[#e5e5e5] rounded shadow-lg w-full max-w-3xl max-h-[80vh] overflow-y-auto p-5"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between mb-4">
-          <div className="text-[14px] font-semibold text-[#171717]">
+    <Modal onClose={onClose} labelledBy="all-integrations-title">
+      <div className="bg-canvas-light border-2 border-navy rounded shadow-lg overflow-hidden w-full max-w-3xl max-h-[80vh] flex flex-col">
+        <div className="flex items-center px-5 py-3 bg-navy-100">
+          <h2
+            id="all-integrations-title"
+            className="text-xs uppercase tracking-[.12em] text-navy font-bold"
+          >
             All integrations ({list.length})
-          </div>
+          </h2>
           <button
+            type="button"
             onClick={onClose}
-            className="text-[#a3a3a3] hover:text-[#171717] text-[14px] leading-none"
+            aria-label="Close"
+            className="ml-auto text-xl leading-none px-2 py-1 text-navy hover:text-text"
           >
             ✕
           </button>
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5">
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5 p-5 overflow-y-auto">
           {list.map((i) => (
             <Card
               key={i.id}
@@ -335,6 +326,6 @@ function AllIntegrationsModal({
           ))}
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

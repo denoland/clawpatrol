@@ -1,14 +1,14 @@
 import { useEffect, useState } from "react";
+import { AddDeviceModal } from "./components/AddDeviceModal";
 import { AgentsTable } from "./components/AgentsTable";
 import { AnalyticsPage } from "./components/AnalyticsPage";
 import { ConnectModal } from "./components/ConnectModal";
 import { DevicePage } from "./components/DevicePage";
+import { HITLBar } from "./components/HITLBar";
 import { LiveRequests } from "./components/LiveRequests";
 import { OnboardPage } from "./components/OnboardPage";
 import { RequestDetailPage } from "./components/RequestDetailPage";
-import { AddDeviceModal } from "./components/AddDeviceModal";
 import { SettingsPage } from "./components/SettingsPage";
-import { HITLBar } from "./components/HITLBar";
 import { getState, type Agent, type Integration, type UpdateBanner, type Whoami } from "./lib/api";
 
 type Route =
@@ -25,7 +25,10 @@ function parseRoute(): Route {
   const qi = raw.indexOf("?");
   const h = qi < 0 ? raw : raw.slice(0, qi);
   if (h.startsWith("#/onboard/"))
-    return { name: "onboard", code: decodeURIComponent(h.slice("#/onboard/".length)) };
+    return {
+      name: "onboard",
+      code: decodeURIComponent(h.slice("#/onboard/".length)),
+    };
   const r = h.match(/^#\/request\/([^/]+)$/);
   if (r) return { name: "request", id: decodeURIComponent(r[1]) };
   if (h === "#/settings") return { name: "settings" };
@@ -89,24 +92,37 @@ export default function App() {
       {route.name === "main" ? (
         <main className="flex-1 mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-8 space-y-8">
           <div className="flex items-center gap-4">
-            <h1 className="font-serif text-[44px] sm:text-[56px] leading-none tracking-tight text-[#171717]">
-              clawpatrol
+            <h1>
+              <img src="/claw-patrol-logo.svg" alt="Claw Patrol" className="h-8 sm:h-10 w-auto" />
             </h1>
             <button
               onClick={() => setShowAddDevice(true)}
-              className="w-[36px] h-[36px] rounded-full border border-[#e5e5e5] text-[#525252] text-[22px] leading-none flex items-center justify-center hover:border-[#171717] hover:text-[#171717] transition-colors"
+              className="w-[36px] h-[36px] rounded-full border-2 border-navy text-navy flex items-center justify-center hover:bg-navy-100 transition-colors"
               title="add device"
+              aria-label="Add device"
             >
-              +
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M12 5v14M5 12h14" />
+              </svg>
             </button>
             <a
               href="#/analytics"
-              className="w-[36px] h-[36px] rounded-full border border-[#e5e5e5] text-[#525252] flex items-center justify-center hover:border-[#171717] hover:text-[#171717] transition-colors"
+              className="w-[36px] h-[36px] rounded-full border-2 border-navy text-navy flex items-center justify-center hover:bg-navy-100 transition-colors"
               title="analytics"
+              aria-label="Analytics"
             >
               <svg
-                width="16"
-                height="16"
+                width="18"
+                height="18"
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
@@ -120,12 +136,13 @@ export default function App() {
             </a>
             <a
               href="#/settings"
-              className="w-[36px] h-[36px] rounded-full border border-[#e5e5e5] text-[#525252] flex items-center justify-center hover:border-[#171717] hover:text-[#171717] transition-colors"
+              className="w-[36px] h-[36px] rounded-full border-2 border-navy text-navy flex items-center justify-center hover:bg-navy-100 transition-colors"
               title="settings"
+              aria-label="Settings"
             >
               <svg
-                width="16"
-                height="16"
+                width="18"
+                height="18"
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
@@ -138,7 +155,7 @@ export default function App() {
               </svg>
             </a>
           </div>
-          <section className="bg-canvas border border-[#e5e5e5] rounded overflow-hidden">
+          <section className="bg-canvas-light border-2 border-navy overflow-hidden">
             <div className="overflow-x-auto">
               <AgentsTable
                 agents={agents}
@@ -200,7 +217,7 @@ function UpdateNotice({ update }: { update: UpdateBanner | null }) {
   );
   if (dismissed) return null;
   return (
-    <div className="bg-[#fef3c7] border-b border-[#fcd34d] px-4 sm:px-6 py-2 text-[12px] text-[#78350f] flex items-center justify-between gap-3">
+    <div className="bg-butter-100 border-b border-butter-300 px-4 sm:px-6 py-2 text-xs text-butter-900 flex items-center justify-between gap-3">
       <div className="flex-1">
         <span className="font-semibold">clawpatrol {update.latest}</span>
         {" available — "}
@@ -212,14 +229,14 @@ function UpdateNotice({ update }: { update: UpdateBanner | null }) {
         >
           release notes
         </a>
-        {update.advisory && <span className="ml-2 text-[#92400e]">({update.advisory})</span>}
+        {update.advisory && <span className="ml-2 text-rust-700">({update.advisory})</span>}
       </div>
       <button
         onClick={() => {
           localStorage.setItem(dismissKey, "1");
           setDismissed(true);
         }}
-        className="text-[#78350f] hover:text-[#171717] text-[14px] leading-none px-1"
+        className="text-butter-900 hover:text-text text-sm leading-none px-1"
         title="dismiss"
       >
         &times;

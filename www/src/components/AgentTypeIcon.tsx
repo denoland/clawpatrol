@@ -24,10 +24,10 @@ export function AgentTypeIcon({ type, className = "" }: { type?: string; classNa
   if (t === "shell")
     return (
       <svg
-        className={className}
+        className={className + " text-rust-700"}
         viewBox="0 0 24 24"
         fill="none"
-        stroke="#7c3aed"
+        stroke="currentColor"
         strokeWidth="2"
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -37,7 +37,7 @@ export function AgentTypeIcon({ type, className = "" }: { type?: string; classNa
       </svg>
     );
   return (
-    <svg className={className} viewBox="0 0 24 24" fill="#737373">
+    <svg className={className + " text-text-muted"} viewBox="0 0 24 24" fill="currentColor">
       <circle cx="12" cy="12" r="4" />
     </svg>
   );

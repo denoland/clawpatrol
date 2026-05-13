@@ -2,6 +2,8 @@ import { useState } from "react";
 import type { Integration } from "../lib/api";
 import { setCredentialSlots } from "../lib/api";
 import { credentialTypeLabel } from "../lib/credentialLabels";
+import { Button } from "./Button";
+import { Modal } from "./Modal";
 
 // Modal that renders one input per declared SecretSlot for a non-OAuth
 // credential. Single-slot credentials (bearer / header / cookie / api
@@ -47,59 +49,51 @@ export function CredentialSecretsModal({
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-navy-950/30"
-      onClick={onClose}
-    >
-      <div
-        className="bg-canvas border border-[#e5e5e5] rounded shadow-lg w-full max-w-md p-5"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <div className="text-[14px] font-semibold text-[#171717]">
-              {mode === "update" ? "Update" : "Connect"} {label}
-            </div>
-            <div className="text-[11px] text-[#737373]">
-              <span className="font-mono">{integration.id}</span>
-            </div>
-          </div>
+    <Modal onClose={onClose} labelledBy="credential-modal-title">
+      <div className="bg-canvas-light border-2 border-navy rounded shadow-lg overflow-hidden w-full max-w-md">
+        <div className="flex items-center px-5 py-3 bg-navy-100">
+          <h2
+            id="credential-modal-title"
+            className="text-xs uppercase tracking-[.12em] text-navy font-bold"
+          >
+            {mode === "update" ? "Update" : "Connect"} {label}
+          </h2>
           <button
+            type="button"
             onClick={onClose}
-            className="text-[#a3a3a3] hover:text-[#171717] text-[14px] leading-none"
+            aria-label="Close"
+            className="ml-auto text-xl leading-none px-2 py-1 text-navy hover:text-text"
           >
             ✕
           </button>
         </div>
-        <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-3 p-5">
           {mode === "update" && (
-            <p className="text-[11px] leading-relaxed text-[#737373]">
+            <p className="text-xs leading-relaxed text-text-muted">
               Existing secret values are not shown. Paste a new value to replace a slot; leave
               untouched slots blank to keep them unchanged.
             </p>
           )}
-          <dl className="grid grid-cols-[auto,minmax(0,1fr)] gap-x-3 gap-y-1 rounded border border-[#e5e5e5] bg-[#fafafa] px-3 py-2 text-[11px]">
-            <dt className="text-[#737373]">Credential</dt>
-            <dd className="min-w-0 truncate font-mono text-[#171717]" title={integration.id}>
+          <dl className="grid grid-cols-[auto,minmax(0,1fr)] gap-x-3 gap-y-1 rounded border border-canvas-dark bg-canvas-muted px-3 py-2 text-xs">
+            <dt className="text-text-muted">Credential</dt>
+            <dd className="min-w-0 truncate font-mono text-text" title={integration.id}>
               {integration.id}
             </dd>
-            <dt className="text-[#737373]">Type</dt>
-            <dd className="min-w-0 truncate text-[#171717]" title={integration.type}>
-              {label} <span className="font-mono text-[#737373]">({integration.type})</span>
+            <dt className="text-text-muted">Type</dt>
+            <dd className="min-w-0 truncate text-text" title={integration.type}>
+              {label} <span className="font-mono text-text-muted">({integration.type})</span>
             </dd>
           </dl>
           {slots.map((s) => (
             <label key={s.name} className="flex flex-col gap-1">
-              <span className="text-[11px] uppercase tracking-[.08em] text-[#737373]">
-                {s.label}
-              </span>
+              <span className="text-xs uppercase tracking-[.08em] text-text-muted">{s.label}</span>
               {s.multiline ? (
                 <textarea
                   rows={5}
                   value={values[s.name] ?? ""}
                   onChange={(e) => update(s.name, e.target.value)}
                   placeholder={s.description ?? ""}
-                  className="border border-[#e5e5e5] rounded px-2 py-1.5 text-[12px] font-mono focus:outline-none focus:border-[#171717]"
+                  className="border border-canvas-dark rounded px-2 py-1.5 text-xs font-mono focus:outline-none focus:border-text"
                 />
               ) : (
                 <input
@@ -107,32 +101,25 @@ export function CredentialSecretsModal({
                   value={values[s.name] ?? ""}
                   onChange={(e) => update(s.name, e.target.value)}
                   placeholder={s.description ?? ""}
-                  className="border border-[#e5e5e5] rounded px-2 py-1.5 text-[12px] focus:outline-none focus:border-[#171717]"
+                  className="border border-canvas-dark rounded px-2 py-1.5 text-xs focus:outline-none focus:border-text"
                 />
               )}
               {s.description && !s.multiline && (
-                <span className="text-[10px] text-[#a3a3a3]">{s.description}</span>
+                <span className="text-2xs text-text-subtle">{s.description}</span>
               )}
             </label>
           ))}
-          {err && <div className="text-[11px] text-[#dc2626]">{err}</div>}
+          {err && <div className="text-xs text-danger-500">{err}</div>}
           <div className="flex justify-end gap-2 mt-2">
-            <button
-              onClick={onClose}
-              className="text-[12px] px-3 py-1.5 border border-[#e5e5e5] text-[#737373] rounded hover:border-[#a3a3a3] hover:text-[#171717]"
-            >
+            <Button variant="outline" onClick={onClose}>
               Cancel
-            </button>
-            <button
-              onClick={save}
-              disabled={saving}
-              className="text-[12px] px-3 py-1.5 bg-[#171717] text-canvas rounded hover:bg-[#404040] disabled:opacity-50"
-            >
+            </Button>
+            <Button onClick={save} disabled={saving}>
               {saving ? "Saving…" : mode === "update" ? "Update" : "Save"}
-            </button>
+            </Button>
           </div>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }
