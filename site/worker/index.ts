@@ -35,6 +35,9 @@ export default {
     if (url.pathname === "/api/telemetry/v1/check") {
       return handleCheck(req, env);
     }
+    if (url.pathname === "/install.sh") {
+      return env.ASSETS.fetch(req);
+    }
     if (!authorized(req)) {
       return new Response("Authentication required", {
         status: 401,
