@@ -77,30 +77,38 @@ import (
 
 // KubernetesPortForwardTunnel configures the tunnel runtime.
 type KubernetesPortForwardTunnel struct {
-	Context   string `hcl:"context,optional"`
+	// Context selects a kubeconfig context; empty uses the current context.
+	Context string `hcl:"context,optional"`
+	// Namespace selects the Kubernetes namespace for kubectl commands.
 	Namespace string `hcl:"namespace,optional"`
 
-	// Exactly one of Pod / Service / Selector / Template must be set.
-	Pod      string            `hcl:"pod,optional"`
-	Service  string            `hcl:"service,optional"`
+	// Pod names an existing pod to port-forward to. Exactly one of pod,
+	// service, selector, or template must be set.
+	Pod string `hcl:"pod,optional"`
+	// Service names a service to port-forward to.
+	Service string `hcl:"service,optional"`
+	// Selector matches a ready pod to port-forward to.
 	Selector map[string]string `hcl:"selector,optional"`
-	Template string            `hcl:"template,optional"`
+	// Template is a pod manifest to apply and port-forward to.
+	Template string `hcl:"template,optional"`
 
 	// Port is the pod-side port the forwarder targets. For service
 	// mode it's the *service* port; kubectl resolves the matching
 	// targetPort.
 	Port int `hcl:"port"`
 
-	// Cleanup is meaningful only in template mode — controls whether
-	// the pod the plugin applied at Open is deleted on tunnel
-	// teardown. "delete" (default) is right for the common create-on-
-	// demand case; "keep" disables deletion.
+	// Cleanup controls whether a template-created pod is deleted on tunnel
+	// teardown. "delete" (default) is right for the common create-on-demand
+	// case; "keep" disables deletion.
 	Cleanup string `hcl:"cleanup,optional"`
 
-	// Framework-level common attrs.
-	Share      string `hcl:"share,optional"`
-	Keepalive  string `hcl:"keepalive,optional"`
-	Via        string `hcl:"via,optional"`
+	// Share controls whether runtime instances are singleton, per-endpoint, or per-request.
+	Share string `hcl:"share,optional"`
+	// Keepalive keeps an idle tunnel runtime warm for the given duration.
+	Keepalive string `hcl:"keepalive,optional"`
+	// Via chains kubectl access through another tunnel.
+	Via string `hcl:"via,optional"`
+	// Credential references an optional credential block for Kubernetes access.
 	Credential string `hcl:"credential,optional"`
 }
 

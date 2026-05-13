@@ -61,7 +61,7 @@ func (r *renderer) writeHeader() {
 
 A clawpatrol gateway config mixes **operational** fields (top-level
 plumbing) with **policy** blocks. Operational fields are top-level
-attributes; policy blocks (` + "`approver`, `credential`, `endpoint`, `rule`" + `)
+attributes; policy blocks (` + "`approver`, `credential`, `tunnel`, `endpoint`, `rule`" + `)
 dispatch to a plugin chosen by the block's first label.
 
 ## How to read this page
@@ -76,7 +76,7 @@ Each block section lists the attributes the loader accepts, with:
 - **Required** — ` + "`yes`" + ` if the loader rejects the block when the
   attribute is missing.
 
-Plugin-dispatched kinds (` + "`approver`, `credential`, `endpoint`, `rule`" + `)
+Plugin-dispatched kinds (` + "`approver`, `credential`, `tunnel`, `endpoint`, `rule`" + `)
 list one subsection per registered type.
 
 `)
@@ -368,7 +368,7 @@ func (r *renderer) collectFields(pkgName, typeName string, rt reflect.Type) []fi
 func (r *renderer) fieldRefs(pkgName, typeName string) map[string]string {
 	out := map[string]string{}
 	for _, kind := range []config.Kind{
-		config.KindApprover, config.KindCredential, config.KindEndpoint, config.KindRule,
+		config.KindApprover, config.KindCredential, config.KindTunnel, config.KindEndpoint, config.KindRule,
 	} {
 		for _, p := range config.AllPlugins(kind) {
 			rt := pluginStructType(p)
@@ -423,7 +423,7 @@ func (r *renderer) writeExample(kind, typ string, rt reflect.Type, typed bool) {
 		head = kind
 	}
 
-	body := exampleBody(rt)
+	body := exampleBody(kind, typ, rt)
 	if strings.TrimSpace(body) == "" {
 		fmt.Fprintf(&r.out, "```hcl\n%s {}\n```\n\n", head)
 		return
@@ -431,8 +431,13 @@ func (r *renderer) writeExample(kind, typ string, rt reflect.Type, typed bool) {
 	fmt.Fprintf(&r.out, "```hcl\n%s {\n%s}\n```\n\n", head, body)
 }
 
-func exampleBody(rt reflect.Type) string {
+func exampleBody(kind, typ string, rt reflect.Type) string {
 	var sb strings.Builder
+	if kind == "tunnel" && typ == "ssh_port_forward" {
+		// bastion is optional in HCL because it can be replaced by via, but a
+		// standalone generated example needs one or the runtime rejects it.
+		fmt.Fprintln(&sb, `  bastion = "bastion.example:22"`)
+	}
 	for i := 0; i < rt.NumField(); i++ {
 		f := rt.Field(i)
 		if !f.IsExported() {

@@ -45,18 +45,24 @@ import (
 
 // LocalCommandTunnel configures the tunnel runtime.
 type LocalCommandTunnel struct {
-	Command      []string          `hcl:"command"`
-	Listen       string            `hcl:"listen"`
-	ReadyProbe   string            `hcl:"ready_probe,optional"`
-	ReadyTimeout string            `hcl:"ready_timeout,optional"`
-	Env          map[string]string `hcl:"env,optional"`
+	// Command is the argv vector to spawn for the tunnel process.
+	Command []string `hcl:"command"`
+	// Listen is the local address the spawned command exposes.
+	Listen string `hcl:"listen"`
+	// ReadyProbe is an optional TCP address to poll before the tunnel is ready.
+	ReadyProbe string `hcl:"ready_probe,optional"`
+	// ReadyTimeout overrides the default readiness wait duration.
+	ReadyTimeout string `hcl:"ready_timeout,optional"`
+	// Env adds environment variables to the spawned command.
+	Env map[string]string `hcl:"env,optional"`
 
-	// Framework-level common attrs (share / keepalive / via /
-	// credential). Restated on every tunnel plugin's body so gohcl
-	// decodes them; the compile pass reads via TunnelCommonRead.
-	Share      string `hcl:"share,optional"`
-	Keepalive  string `hcl:"keepalive,optional"`
-	Via        string `hcl:"via,optional"`
+	// Share controls whether runtime instances are singleton, per-endpoint, or per-request.
+	Share string `hcl:"share,optional"`
+	// Keepalive keeps an idle tunnel runtime warm for the given duration.
+	Keepalive string `hcl:"keepalive,optional"`
+	// Via chains this tunnel through another tunnel.
+	Via string `hcl:"via,optional"`
+	// Credential references an optional credential block for the tunnel runtime.
 	Credential string `hcl:"credential,optional"`
 }
 
