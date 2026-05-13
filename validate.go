@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+
+	"github.com/denoland/clawpatrol/config/extplugin"
 )
 
 // runValidate is the CLI entry: print msg, exit with code.
@@ -25,7 +27,9 @@ func validateCmd(args []string) (string, int) {
 	if len(args) != 1 || args[0] == "-h" || args[0] == "--help" {
 		return "usage: clawpatrol validate <config.hcl>", 2
 	}
-	_, cp, err := loadConfig(args[0])
+	pluginMgr := extplugin.New(nil)
+	defer pluginMgr.Stop()
+	_, cp, err := loadConfig(args[0], pluginMgr)
 	if err != nil {
 		return fmt.Sprintf("%s: %v", args[0], err), 1
 	}

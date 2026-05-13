@@ -24,3 +24,4 @@ macos/build/
 macos/netstack/libwgnetstack.a
 macos/netstack/libwgnetstack.h
 *.swp
+/plugin-example/plugin-example

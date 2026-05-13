@@ -55,6 +55,7 @@ Every singleton gateway attribute — listen addresses, paths, control-plane joi
 | `llm_cache_ttl` | `int` | no |  |
 | `human_timeout` | `int` | no |  |
 | `human_on_timeout` | `string` | no |  |
+| `plugin` | `block` | yes | Lists every `plugin "<name>" { source = "..." }` block at the top of the file. The loader spawns each subprocess (and registers its declared types) before running pass-1 symbol building, so plugin-supplied (kind, type) pairs are available by the time policy blocks are dispatched. |
 
 ## `policy "<name>" { ... }`
 

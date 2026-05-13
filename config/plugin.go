@@ -56,8 +56,20 @@ type Plugin struct {
 	Type string
 
 	// New returns a fresh pointer to the plugin's gohcl-tagged config
-	// struct. The loader passes the result to gohcl.DecodeBody.
+	// struct. The loader passes the result to gohcl.DecodeBody, unless
+	// DecodeBody is set (see below).
 	New func() any
+
+	// DecodeBody, when set, replaces the loader's default
+	// gohcl.DecodeBody call. External plugins (config/extplugin) use
+	// this hook because their schema is only known at runtime — gohcl
+	// requires a statically-tagged Go struct, but an external plugin
+	// declares its attributes via a Manifest at startup. The hook
+	// receives the body that remains after framework-attr extraction
+	// and is responsible for populating target with the decoded
+	// attributes (typically by stashing a cty.Value). Built-in
+	// plugins leave this nil and rely on gohcl.
+	DecodeBody func(body hcl.Body, ctx *hcl.EvalContext, target any) hcl.Diagnostics
 
 	// Refs declares which fields on the decoded struct hold bare-name
 	// references that must be resolved against the symbol table.

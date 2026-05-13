@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/extplugin"
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
@@ -58,7 +59,9 @@ func testCmd(args []string) (stdout, stderr string, code int) {
 	}
 	cfgPath, target := args[0], args[1]
 
-	_, policy, err := loadConfig(cfgPath)
+	pluginMgr := extplugin.New(nil)
+	defer pluginMgr.Stop()
+	_, policy, err := loadConfig(cfgPath, pluginMgr)
 	if err != nil {
 		return "", fmt.Sprintf("load config: %v", err), 2
 	}

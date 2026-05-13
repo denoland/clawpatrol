@@ -82,6 +82,13 @@ type Gateway struct {
 	HumanTimeout   int    `hcl:"human_timeout,optional"`
 	HumanOnTimeout string `hcl:"human_on_timeout,optional"`
 
+	// Plugins lists every `plugin "<name>" { source = "..." }` block
+	// at the top of the file. The loader spawns each subprocess
+	// (and registers its declared types) before running pass-1
+	// symbol building, so plugin-supplied (kind, type) pairs are
+	// available by the time policy blocks are dispatched.
+	Plugins []PluginSource `hcl:"plugin,block"`
+
 	// Policy holds the v14-grammar block contents. Populated after
 	// the operational decode by Load's pass-1 / pass-2 walk. Set to
 	// a non-nil empty value if the file declared no policy blocks.
@@ -193,6 +200,27 @@ type PolicyText struct {
 	Text string `hcl:"text"`
 }
 
+// PluginSource is a top-level `plugin "<name>" { source = "..." }`
+// declaration. Name is informational (the manifest name from the
+// subprocess wins for type namespacing); Source is a path to the
+// plugin binary. v1 only supports literal local paths; future
+// versions will add git-based fetching with a lockfile.
+type PluginSource struct {
+	Name   string `hcl:"name,label"`
+	Source string `hcl:"source"`
+}
+
+// PluginLoader is the gateway-side hook that LoadWithPluginManager
+// calls before policy decoding. It spawns each declared plugin
+// subprocess and registers the manifest types in the global plugin
+// registry. Returning hcl.Diagnostics with errors aborts the load.
+//
+// Implemented by *extplugin.Manager — the package-cycle-safe seam
+// (config can't import extplugin since extplugin imports config).
+type PluginLoader interface {
+	LoadPlugins(specs []PluginSource) hcl.Diagnostics
+}
+
 // Profile is the lowered shape of a profile "<name>" {} block. Name
 // is the block's single label (set by the loader). Endpoints is the
 // only body attribute; rules ride along automatically because they're
@@ -212,7 +240,19 @@ type profileBody struct {
 // Returns a populated *Gateway plus any diagnostics. Callers should
 // check diagnostics first — a non-nil Gateway can still carry errors
 // (some recovery is best-effort).
+//
+// Load ignores any `plugin {}` blocks in the file. Callers that
+// support external plugins should use LoadWithPluginLoader instead.
 func Load(path string) (*Gateway, hcl.Diagnostics) {
+	return LoadWithPluginLoader(path, nil)
+}
+
+// LoadWithPluginLoader is Load with a hook for spawning Terraform-
+// style external plugins before policy decode. Pass nil to skip
+// plugin loading (matches Load's behaviour); pass a *extplugin.Manager
+// to spawn plugin subprocesses and register their declared types in
+// the plugin registry before pass-1 symbol building runs.
+func LoadWithPluginLoader(path string, ploader PluginLoader) (*Gateway, hcl.Diagnostics) {
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return nil, hcl.Diagnostics{{
@@ -221,12 +261,22 @@ func Load(path string) (*Gateway, hcl.Diagnostics) {
 			Detail:   err.Error(),
 		}}
 	}
-	return LoadBytes(src, path)
+	return loadBytesInternal(src, path, ploader)
 }
 
 // LoadBytes is Load over an in-memory buffer. Used by tests so
 // fixtures don't need to round-trip through the filesystem.
 func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
+	return loadBytesInternal(src, filename, nil)
+}
+
+// LoadBytesWithPluginLoader mirrors LoadBytes for callers that own a
+// plugin loader (typically tests of the external-plugin path).
+func LoadBytesWithPluginLoader(src []byte, filename string, ploader PluginLoader) (*Gateway, hcl.Diagnostics) {
+	return loadBytesInternal(src, filename, ploader)
+}
+
+func loadBytesInternal(src []byte, filename string, ploader PluginLoader) (*Gateway, hcl.Diagnostics) {
 	parser := hclparse.NewParser()
 	file, diags := parser.ParseHCL(src, filename)
 	if diags.HasErrors() {
@@ -251,6 +301,16 @@ func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
 		Tunnels:     make(map[string]*Entity),
 		Policies:    make(map[string]*PolicyText),
 		Profiles:    make(map[string]*Profile),
+	}
+
+	// Spawn external plugins before we look at policy blocks so the
+	// types they declare are visible to pass-1 symbol building.
+	if ploader != nil && len(gw.Plugins) > 0 {
+		if d := ploader.LoadPlugins(gw.Plugins); d.HasErrors() {
+			return gw, append(diags, d...)
+		} else {
+			diags = append(diags, d...)
+		}
 	}
 
 	diags = append(diags, validateOperational(gw)...)
@@ -476,7 +536,12 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 			fw, body, fwDiags := extractFramework(sym.Block.Body, kind, evalCtx, table)
 			diags = append(diags, fwDiags...)
 			target := plugin.New()
-			decodeDiags := dedupGohclDiags(gohcl.DecodeBody(body, evalCtx, target))
+			var decodeDiags hcl.Diagnostics
+			if plugin.DecodeBody != nil {
+				decodeDiags = plugin.DecodeBody(body, evalCtx, target)
+			} else {
+				decodeDiags = dedupGohclDiags(gohcl.DecodeBody(body, evalCtx, target))
+			}
 			diags = append(diags, decodeDiags...)
 			// When decode errors, the struct may be partially populated
 			// and feeding it through Validate / Build typically produces
