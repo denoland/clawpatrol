@@ -260,6 +260,9 @@ type HITLTarget struct {
 	PendingID      string // pool's pending entry id
 	DashboardURL   string // for fallback dashboard link in non-interactive mode
 	ThreadTS       string // if set, post as a reply in this Slack thread
+	// Summary is an optional pre-computed classification. When non-nil,
+	// notifiers render a richer card instead of the generic method/path display.
+	Summary *HITLSummary
 }
 
 // ApproverRuntime evaluates one stage of an approve = [...] chain.
@@ -388,6 +391,23 @@ type HITLDecision struct {
 	Allow  bool
 	Reason string
 	By     string
+}
+
+// HITLSummary is an optional pre-computed classification from a
+// classifier LLM. When set on HITLTarget, notifiers build a richer
+// approval card instead of the generic method/path display.
+type HITLSummary struct {
+	TicketID       string `json:"ticket_id"`
+	Classification string `json:"classification"` // "Spam", "Legit", "Unclear", etc.
+	Confidence     int    `json:"confidence"`     // 0–100; 0 = not provided
+	Text           string `json:"summary"`
+}
+
+// HITLClassifier is the optional interface an approver plugin
+// implements to generate a HITLSummary before the HITL notification
+// is sent.
+type HITLClassifier interface {
+	Summarize(ctx context.Context, req ApproveRequest) (*HITLSummary, error)
 }
 
 // ErrUnsupported is returned by a plugin's runtime hook when the

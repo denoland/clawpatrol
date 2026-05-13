@@ -35,6 +35,11 @@ Then a brief one-line reason on the second line.
 
 Be conservative — when the policy is ambiguous about whether the request is permitted, deny.`
 
+const llmClassifierSystem = `You are a request classifier. Analyze the request against the policy and return a JSON classification.
+
+Reply with JSON only — no markdown fences, no other text:
+{"ticket_id":"<ticket id from path or body, or empty string>","classification":"<label per policy>","confidence":<0-100>,"summary":"<one sentence>"}`
+
 // LLMApprover carries the model + the credential used to authenticate
 // the call to the model API + the policy text the model judges
 // against. Inline `policy` is a bare-name reference to a `policy
@@ -77,9 +82,9 @@ func (a *LLMApprover) Approve(ctx context.Context, req runtime.ApproveRequest) (
 	)
 	switch {
 	case strings.HasPrefix(a.Model, "claude-"):
-		hreq, decode = anthropicJudgeRequest(ctx, a.Model, user)
+		hreq, decode = anthropicJudgeRequest(ctx, a.Model, llmJudgeSystem, user)
 	case strings.HasPrefix(a.Model, "gpt-"), strings.HasPrefix(a.Model, "o"):
-		hreq, decode = openaiJudgeRequest(ctx, a.Model, user)
+		hreq, decode = openaiJudgeRequest(ctx, a.Model, llmJudgeSystem, user)
 	default:
 		return runtime.ApproveVerdict{Decision: "deny", Reason: "unknown model family: " + a.Model}, nil
 	}
@@ -186,11 +191,11 @@ func parseJudgeVerdict(text string) (string, string) {
 // anthropicJudgeRequest builds a /v1/messages call. The credential
 // plugin's InjectHTTP stamps Authorization + the OAuth beta header
 // when needed; we just frame the body.
-func anthropicJudgeRequest(ctx context.Context, model, user string) (*http.Request, func(io.Reader) (string, error)) {
+func anthropicJudgeRequest(ctx context.Context, model, system, user string) (*http.Request, func(io.Reader) (string, error)) {
 	body, _ := json.Marshal(map[string]any{
 		"model":      model,
 		"max_tokens": 512,
-		"system":     llmJudgeSystem,
+		"system":     system,
 		"messages": []map[string]any{
 			{"role": "user", "content": user},
 		},
@@ -222,11 +227,11 @@ func anthropicJudgeRequest(ctx context.Context, model, user string) (*http.Reque
 // openaiJudgeRequest builds a /v1/responses call (the modern GPT
 // API). Authorization is supplied by the credential plugin's
 // InjectHTTP.
-func openaiJudgeRequest(ctx context.Context, model, user string) (*http.Request, func(io.Reader) (string, error)) {
+func openaiJudgeRequest(ctx context.Context, model, system, user string) (*http.Request, func(io.Reader) (string, error)) {
 	body, _ := json.Marshal(map[string]any{
 		"model": model,
 		"input": []map[string]any{
-			{"role": "system", "content": []map[string]any{{"type": "input_text", "text": llmJudgeSystem}}},
+			{"role": "system", "content": []map[string]any{{"type": "input_text", "text": system}}},
 			{"role": "user", "content": []map[string]any{{"type": "input_text", "text": user}}},
 		},
 	})
@@ -257,6 +262,106 @@ func openaiJudgeRequest(ctx context.Context, model, user string) (*http.Request,
 	}
 	return req, decode
 }
+
+// Summarize implements runtime.HITLClassifier. It calls the LLM in
+// "summary mode" — sends the classifier system prompt and asks for a
+// structured JSON classification instead of an allow/deny verdict.
+// On parse failure or LLM error, returns nil, err so the caller can
+// fall back to the generic card.
+func (a *LLMApprover) Summarize(ctx context.Context, req runtime.ApproveRequest) (*runtime.HITLSummary, error) {
+	if a.Model == "" {
+		return nil, fmt.Errorf("llm classifier has no model")
+	}
+	if a.Credential == "" {
+		return nil, fmt.Errorf("llm classifier has no credential")
+	}
+	if req.Policy == nil {
+		return nil, fmt.Errorf("no policy on request")
+	}
+	var policyText string
+	if a.Policy != "" {
+		pt, ok := req.Policy.Policies[a.Policy]
+		if !ok {
+			return nil, fmt.Errorf("policy %s not declared", a.Policy)
+		}
+		policyText = pt.Text
+	}
+	if _, ok := req.Policy.Credentials[a.Credential]; !ok {
+		return nil, fmt.Errorf("credential %s not declared", a.Credential)
+	}
+
+	user := buildClassifierPrompt(req, policyText)
+
+	var (
+		hreq   *http.Request
+		decode func(io.Reader) (string, error)
+	)
+	switch {
+	case strings.HasPrefix(a.Model, "claude-"):
+		hreq, decode = anthropicJudgeRequest(ctx, a.Model, llmClassifierSystem, user)
+	case strings.HasPrefix(a.Model, "gpt-"), strings.HasPrefix(a.Model, "o"):
+		hreq, decode = openaiJudgeRequest(ctx, a.Model, llmClassifierSystem, user)
+	default:
+		return nil, fmt.Errorf("unknown model family: %s", a.Model)
+	}
+
+	credEnt := req.Policy.Credentials[a.Credential]
+	injector, ok := credEnt.Body.(runtime.HTTPCredentialRuntime)
+	if !ok {
+		return nil, fmt.Errorf("credential %s does not satisfy HTTPCredentialRuntime", a.Credential)
+	}
+	sec, err := req.Secrets.Get(a.Credential, req.Profile)
+	if err != nil {
+		return nil, fmt.Errorf("secret fetch: %w", err)
+	}
+	if err := injector.InjectHTTP(ctx, hreq, sec); err != nil {
+		return nil, fmt.Errorf("credential inject: %w", err)
+	}
+	c := &http.Client{Timeout: 30 * time.Second}
+	resp, err := c.Do(hreq)
+	if err != nil {
+		return nil, fmt.Errorf("llm call: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("llm http %d: %s", resp.StatusCode, string(body))
+	}
+	text, err := decode(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("llm response decode: %w", err)
+	}
+	text = strings.TrimSpace(text)
+	var summary runtime.HITLSummary
+	if err := json.Unmarshal([]byte(text), &summary); err != nil {
+		return nil, fmt.Errorf("classifier json parse: %w (raw: %s)", err, truncate(text, 200))
+	}
+	return &summary, nil
+}
+
+func buildClassifierPrompt(req runtime.ApproveRequest, policyText string) string {
+	var sb strings.Builder
+	sb.WriteString("Policy:\n")
+	if policyText != "" {
+		sb.WriteString(policyText)
+	} else if req.Reason != "" {
+		sb.WriteString(req.Reason)
+	} else {
+		sb.WriteString("(none)")
+	}
+	sb.WriteString("\n\nRequest:\n")
+	fmt.Fprintf(&sb, "  method: %s\n  host: %s\n  path: %s\n", req.Method, req.Host, req.Path)
+	if req.UA != "" {
+		fmt.Fprintf(&sb, "  user-agent: %s\n", req.UA)
+	}
+	if req.BodySample != "" {
+		fmt.Fprintf(&sb, "  body:\n%s\n", indent(truncate(req.BodySample, 4000), "    "))
+	}
+	return sb.String()
+}
+
+// compile-time assertion that LLMApprover satisfies HITLClassifier.
+var _ runtime.HITLClassifier = (*LLMApprover)(nil)
 
 func init() {
 	config.Register(&config.Plugin{

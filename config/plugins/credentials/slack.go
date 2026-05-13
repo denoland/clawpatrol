@@ -124,12 +124,30 @@ func (s *SlackTokens) NotifyHITL(_ context.Context, req runtime.ApproveRequest, 
 	queryLabel := runtime.HITLQueryLabel(req.Endpoint)
 
 	title := slackTrunc(runtime.HITLTitle(req.Method, endpoint), 140)
-	blocks := []map[string]any{
-		{"type": "header", "text": map[string]any{"type": "plain_text", "text": title}},
-		{"type": "section", "text": map[string]any{
-			"type": "mrkdwn",
-			"text": "*" + queryLabel + "*\n```" + slackTrunc(req.Path, 800) + "```",
-		}},
+	var blocks []map[string]any
+	if s := target.Summary; s != nil {
+		headerText := s.TicketID
+		if headerText == "" {
+			headerText = title
+		}
+		emoji := hitlClassificationEmoji(s.Classification)
+		classLine := emoji + " " + s.Classification
+		if s.Confidence > 0 {
+			classLine += fmt.Sprintf(" (%d%%)", s.Confidence)
+		}
+		sectionText := "*Classification:* " + classLine + "\n*Summary:* " + slackTrunc(s.Text, 500)
+		blocks = []map[string]any{
+			{"type": "header", "text": map[string]any{"type": "plain_text", "text": slackTrunc(headerText, 140)}},
+			{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": sectionText}},
+		}
+	} else {
+		blocks = []map[string]any{
+			{"type": "header", "text": map[string]any{"type": "plain_text", "text": title}},
+			{"type": "section", "text": map[string]any{
+				"type": "mrkdwn",
+				"text": "*" + queryLabel + "*\n```" + slackTrunc(req.Path, 800) + "```",
+			}},
+		}
 	}
 	ctx := []map[string]any{}
 	if req.Profile != "" {
@@ -224,6 +242,17 @@ func (s *SlackTokens) NotifyHITL(_ context.Context, req runtime.ApproveRequest, 
 		return fmt.Errorf("slack chat.postMessage error: %s", result.Error)
 	}
 	return nil
+}
+
+func hitlClassificationEmoji(c string) string {
+	switch strings.ToLower(c) {
+	case "spam":
+		return ":no_entry_sign:"
+	case "legit", "legitimate":
+		return ":white_check_mark:"
+	default:
+		return ":question:"
+	}
 }
 
 func slackTrunc(s string, n int) string {
