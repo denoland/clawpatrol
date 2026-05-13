@@ -141,12 +141,17 @@ export function IntegrationsCards({
       {editing && (
         <CredentialSecretsModal
           integration={editing}
+          mode={isConnected(editing) ? "update" : "connect"}
           onClose={() => setEditing(null)}
           onSaved={onRefresh}
         />
       )}
     </>
   );
+}
+
+function isConnected(i: Integration) {
+  return i.connected || (i.tailscale_auth?.connected ?? false);
 }
 
 // OwnerAvatar renders the OAuth user's PFP (e.g. github avatar) with
@@ -191,9 +196,9 @@ function Card({
   onConnect: () => void;
   onDisconnect: () => void;
 }) {
-  const connected = i.connected || (i.tailscale_auth?.connected ?? false);
+  const connected = isConnected(i);
   const hasSlots = (i.slots?.length ?? 0) > 0;
-  const clickable = (i.has_oauth || i.has_tailscale_auth || hasSlots) && !connected;
+  const clickable = i.has_oauth || hasSlots || (i.has_tailscale_auth && !connected);
   const subtitle = connected
     ? i.expires_at
       ? "expires " + fmtExpiry(i.expires_at)
@@ -210,7 +215,8 @@ function Card({
       className={
         "group relative flex flex-col items-start gap-2 px-3 py-2.5 bg-white border rounded text-left transition-colors " +
         (connected
-          ? "border-[#bbf7d0] bg-[#f0fdf4]"
+          ? "border-[#bbf7d0] bg-[#f0fdf4] " +
+            (clickable ? "hover:border-[#16a34a] cursor-pointer" : "cursor-default")
           : clickable
             ? "border-[#e5e5e5] hover:border-[#171717] cursor-pointer"
             : "border-[#e5e5e5] cursor-default")
