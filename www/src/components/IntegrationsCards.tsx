@@ -19,10 +19,15 @@ const VISIBLE_CAP = 4;
 
 export function IntegrationsCards({
   list,
+  showAll,
   onConnect,
   onRefresh,
 }: {
   list: Integration[];
+  // When true, render every card in the grid (no overflow button,
+  // no "+ K more" modal). Used by the Settings page where the
+  // credentials row IS the page and there's space for the full list.
+  showAll?: boolean;
   onConnect: (id: string) => void;
   onRefresh: () => void;
 }) {
@@ -40,9 +45,19 @@ export function IntegrationsCards({
     return score(a) - score(b);
   });
 
-  const overflow = sorted.length > VISIBLE_CAP;
+  const overflow = !showAll && sorted.length > VISIBLE_CAP;
   const visible = overflow ? sorted.slice(0, VISIBLE_CAP - 1) : sorted;
   const hiddenCount = sorted.length - visible.length;
+
+  // Credentials are grouped by plugin type in the header (a single
+  // `github_oauth` cred reads as "GitHub"). When two creds share a
+  // type — e.g. one personal + one work GitHub OAuth — the type label
+  // alone collides, and the `(displayName)` suffix collides too when
+  // both are connected by the same OAuth user. Mark the duplicates so
+  // the card can also surface the credential name to disambiguate.
+  const typeCounts = new Map<string, number>();
+  for (const i of list) typeCounts.set(i.type, (typeCounts.get(i.type) ?? 0) + 1);
+  const isDup = (i: Integration) => (typeCounts.get(i.type) ?? 0) > 1;
 
   function handleConnect(i: Integration) {
     if (i.has_tailscale_auth && i.tailscale_auth) {
@@ -111,6 +126,7 @@ export function IntegrationsCards({
           <Card
             key={i.id}
             integration={i}
+            showName={isDup(i)}
             onConnect={() => handleConnect(i)}
             onDisconnect={() => disconnect(i)}
           />
@@ -128,6 +144,7 @@ export function IntegrationsCards({
       {allOpen && (
         <AllIntegrationsModal
           list={sorted}
+          isDup={isDup}
           onClose={() => setAllOpen(false)}
           onConnect={(i) => {
             setAllOpen(false);
@@ -188,10 +205,16 @@ function OwnerAvatar({
 
 function Card({
   integration: i,
+  showName,
   onConnect,
   onDisconnect,
 }: {
   integration: Integration;
+  // When the same plugin type is declared more than once, surface
+  // the credential's bare name in the header so two cards of the same
+  // type are visibly distinct even when both are OAuth-connected by
+  // the same user.
+  showName?: boolean;
   onConnect: () => void;
   onDisconnect: () => void;
 }) {
@@ -230,7 +253,10 @@ function Card({
           <IntegrationIcon id={i.id} type={i.type} className="w-[16px] h-[16px] flex-shrink-0" />
         )}
         <span className="text-[12px] font-semibold text-[#171717] truncate" title={title}>
-          {i.display_name ? `${label} (${i.display_name})` : label}
+          {(() => {
+            const withName = showName && label !== i.name ? `${label} · ${i.name}` : label;
+            return i.display_name ? `${withName} (${i.display_name})` : withName;
+          })()}
         </span>
         <span className="ml-auto flex items-center gap-1.5 flex-shrink-0">
           {connected && (
@@ -266,11 +292,13 @@ function Card({
 
 function AllIntegrationsModal({
   list,
+  isDup,
   onClose,
   onConnect,
   onDisconnect,
 }: {
   list: Integration[];
+  isDup: (i: Integration) => boolean;
   onClose: () => void;
   onConnect: (i: Integration) => void;
   onDisconnect: (i: Integration) => void;
@@ -300,6 +328,7 @@ function AllIntegrationsModal({
             <Card
               key={i.id}
               integration={i}
+              showName={isDup(i)}
               onConnect={() => onConnect(i)}
               onDisconnect={() => onDisconnect(i)}
             />
