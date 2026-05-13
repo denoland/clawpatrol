@@ -66,7 +66,6 @@ admin_email      = "you@example.com"
 dashboard_secret = "change-me-long-random"
 
 control        = "wireguard"
-wg_endpoint    = "1.2.3.4:51820"
 wg_subnet_cidr = "10.55.0.0/24"
 
 credential "bearer_token" "github-pat" {}

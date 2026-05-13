@@ -136,6 +136,5 @@ oauth_client_secret = "{{secret:TS_OAUTH_CLIENT_SECRET}}"
 tailscale_tags      = ["tag:client"]
 
 # wireguard-only:
-wg_endpoint    = "gw.example.com:51820"
 wg_subnet_cidr = "10.55.0.0/24"
 ```

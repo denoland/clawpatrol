@@ -12,14 +12,35 @@ package main
 // secrets table — no tsnet state lives in this file.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
+	"time"
 
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/plugins/tailscaleproto"
 )
+
+// tailscaleConnectURLTimeout caps the apiTailscaleConnect wait for
+// tsnet's first BrowseToURL emission after the handler force-acquires
+// the tunnel. Long enough to cover cold-start (LocalClient init +
+// IPN-bus subscription + initial control-plane round trip); short
+// enough that a wedged tsnet returns awaiting_url instead of hanging
+// the dashboard request.
+const tailscaleConnectURLTimeout = 15 * time.Second
+
+// tailscaleConnectLoginWindow is how long the connect handler holds
+// its manager ref after returning the URL. Picks up the operator's
+// browser side of the join: redirect to login.tailscale.com, approve
+// the node, control-plane pushes the node-state back to our tsnet
+// instance via WatchIPNBus. If the manager would otherwise tear the
+// tunnel down on idle, this keeps tsnet alive long enough for the
+// handshake to finish; once joined, normal traffic acquires take
+// over.
+const tailscaleConnectLoginWindow = 5 * time.Minute
 
 type tailscaleAuthResponse struct {
 	ID         string `json:"id"`
@@ -44,6 +65,16 @@ type tailscaleAuthResponse struct {
 //   - "awaiting_url": the credential exists but tsnet hasn't emitted a
 //     URL yet (tunnel may still be initializing). The dashboard polls
 //     by re-POSTing to this endpoint or hitting /api/tailscale/status.
+//
+// Lazy-tunnel case: tunnels are normally opened only when traffic
+// flows through them (or pinned via `keepalive = "always"`), so a
+// freshly-booted gateway that has never dialled the upstream has no
+// running tsnet, no IPN-bus watcher, and nothing parked. When this
+// handler finds no URL and no stored state, it actively force-acquires
+// the first compiled tunnel that references the credential, blocks
+// briefly on the PendingNodeAuth notify path until the watcher emits,
+// and then holds the manager ref past response so the operator's
+// browser side of the login can complete.
 func (w *webMux) apiTailscaleConnect(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost && r.Method != http.MethodGet {
 		http.Error(rw, "POST or GET", http.StatusMethodNotAllowed)
@@ -54,7 +85,8 @@ func (w *webMux) apiTailscaleConnect(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "missing id", http.StatusBadRequest)
 		return
 	}
-	if _, err := lookupTailscaleAuth(w.g.policy.Load(), id); err != nil {
+	policy := w.g.policy.Load()
+	if _, err := lookupTailscaleAuth(policy, id); err != nil {
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -69,11 +101,86 @@ func (w *webMux) apiTailscaleConnect(rw http.ResponseWriter, r *http.Request) {
 			resp.AuthURL = u
 			resp.PendingURL = u
 			resp.Status = "pending"
+		} else if u := w.driveTailscaleLogin(r.Context(), policy, id); u != "" {
+			resp.AuthURL = u
+			resp.PendingURL = u
+			resp.Status = "pending"
 		} else {
 			resp.Status = "awaiting_url"
 		}
 	}
 	writeJSON(rw, resp)
+}
+
+// driveTailscaleLogin force-acquires the first compiled tunnel that
+// references credName so tsnet's IPN-bus watcher spins up and parks a
+// login URL, then waits up to tailscaleConnectURLTimeout for that URL
+// to appear. On success, schedules a background release that holds
+// the manager ref for tailscaleConnectLoginWindow so the operator has
+// time to complete the browser side of the login before idle teardown
+// fires. Returns "" if no tunnel matches, the acquire fails, or the
+// watcher doesn't park a URL within the wait window.
+func (w *webMux) driveTailscaleLogin(reqCtx context.Context, policy *config.CompiledPolicy, credName string) string {
+	if w.g.tunnels == nil {
+		return ""
+	}
+	ct := firstTunnelByCredential(policy, credName)
+	if ct == nil {
+		return ""
+	}
+	// The acquire/hold runs on a detached context: the request ctx
+	// fires as soon as we write the response body, but the operator's
+	// browser is about to redirect to login.tailscale.com and we need
+	// tsnet alive for the IPN-bus callback that completes the join.
+	holdCtx, holdCancel := context.WithCancel(context.Background())
+	_, release, err := w.g.tunnels.Acquire(holdCtx, ct, "")
+	if err != nil {
+		holdCancel()
+		return ""
+	}
+	waitCtx, waitCancel := context.WithTimeout(reqCtx, tailscaleConnectURLTimeout)
+	defer waitCancel()
+	u := tailscaleproto.Default.Wait(waitCtx, credName)
+	if u == "" {
+		release()
+		holdCancel()
+		return ""
+	}
+	go func() {
+		timer := time.NewTimer(tailscaleConnectLoginWindow)
+		defer timer.Stop()
+		<-timer.C
+		release()
+		holdCancel()
+	}()
+	return u
+}
+
+// firstTunnelByCredential returns the compiled tunnel whose
+// Credential reference resolves to credName, picking the
+// lexicographically-first match for determinism across concurrent
+// Connect clicks. Returns nil when no tunnel in the policy is bound
+// to that credential — caller treats this as "nothing to drive" and
+// falls back to awaiting_url.
+func firstTunnelByCredential(policy *config.CompiledPolicy, credName string) *config.CompiledTunnel {
+	if policy == nil {
+		return nil
+	}
+	names := make([]string, 0, len(policy.Tunnels))
+	for n := range policy.Tunnels {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		ct := policy.Tunnels[n]
+		if ct == nil || ct.Credential == nil || ct.Credential.Symbol == nil {
+			continue
+		}
+		if ct.Credential.Symbol.Name == credName {
+			return ct
+		}
+	}
+	return nil
 }
 
 // apiTailscaleStatus is the polling counterpart to /connect. Same

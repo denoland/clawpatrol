@@ -14,6 +14,7 @@ export const CREDENTIAL_TYPE_LABEL: Record<string, string> = {
   bearer_token: "Bearer token",
   header_token: "Header token",
   cookie_token: "Cookie token",
+  tailscale: "Tailscale",
 };
 
 export function credentialTypeLabel(type: string, fallback: string): string {

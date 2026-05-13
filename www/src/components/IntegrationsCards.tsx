@@ -46,20 +46,36 @@ export function IntegrationsCards({
 
   function handleConnect(i: Integration) {
     if (i.has_tailscale_auth && i.tailscale_auth) {
-      // tsnet mints the login URL per attempt — fetch fresh on every
-      // click. The handler returns connected:true if the node has
-      // already joined (covers a stale list view); otherwise we open
-      // the live URL in a new tab and let the next /api/state poll
-      // flip the card to "connected" once tsnet finishes joining.
+      // The parked URL from /api/state is the same one /api/tailscale/connect
+      // would return — tsnet only mints a new one when the previous is
+      // consumed/expires. Open it *synchronously* inside the click handler
+      // so popup blockers treat it as user-initiated; calling window.open
+      // from inside a fetch.then() resolution is silently blocked by
+      // every modern browser, which is the "click closes the modal as a
+      // no-op" failure surfaced on PR #284.
+      const parked = i.tailscale_auth.pending_url;
+      if (parked) {
+        window.open(parked, "_blank", "noopener,noreferrer");
+      }
+      // Still POST so the "already joined" path flips the card to
+      // "connected" without waiting for the next /api/state poll, and
+      // so the operator sees a fresh URL on the next click if tsnet
+      // has emitted one since the last list refresh.
       tailscaleConnect(i.tailscale_auth.connect_url)
         .then((r) => {
           if (r.connected) {
             onRefresh();
             return;
           }
-          const url = r.auth_url || r.pending_url;
-          if (url) {
-            window.open(url, "_blank", "noopener,noreferrer");
+          // Fallback for the no-parked-URL case: tsnet may have parked
+          // a URL between /api/state and this POST. Open it now even
+          // though we're outside the click — better a popup-blocker
+          // warning than another silent no-op.
+          if (!parked) {
+            const url = r.auth_url || r.pending_url;
+            if (url) {
+              window.open(url, "_blank", "noopener,noreferrer");
+            }
           }
         })
         .catch(() => {

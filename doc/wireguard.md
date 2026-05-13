@@ -84,7 +84,6 @@ integrations = ["claude", "codex", "github"]
 
 tailscale {
   control        = "wireguard"
-  wg_endpoint    = "your-gw.example.com:51820"
   wg_subnet_cidr = "10.55.0.0/24"
 }
 EOF

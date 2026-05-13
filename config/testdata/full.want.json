@@ -12,7 +12,8 @@
           "Timeout": 0,
           "RequireApprovers": 0,
           "Interactive": false,
-          "Classifier": ""
+          "Classifier": "",
+          "Message": ""
         },
         "type": "human_approver"
       },
@@ -23,7 +24,8 @@
           "Timeout": 0,
           "RequireApprovers": 2,
           "Interactive": false,
-          "Classifier": ""
+          "Classifier": "",
+          "Message": ""
         },
         "type": "human_approver"
       },
@@ -34,7 +36,8 @@
           "Timeout": 0,
           "RequireApprovers": 0,
           "Interactive": false,
-          "Classifier": ""
+          "Classifier": "",
+          "Message": ""
         },
         "type": "human_approver"
       },
@@ -53,7 +56,8 @@
           "Timeout": 0,
           "RequireApprovers": 0,
           "Interactive": false,
-          "Classifier": ""
+          "Classifier": "",
+          "Message": ""
         },
         "type": "human_approver"
       },
@@ -64,7 +68,8 @@
           "Timeout": 0,
           "RequireApprovers": 0,
           "Interactive": false,
-          "Classifier": ""
+          "Classifier": "",
+          "Message": ""
         },
         "type": "human_approver"
       },
@@ -99,7 +104,8 @@
           "Timeout": 0,
           "RequireApprovers": 0,
           "Interactive": false,
-          "Classifier": ""
+          "Classifier": "",
+          "Message": ""
         },
         "type": "human_approver"
       },
@@ -118,7 +124,8 @@
           "Timeout": 86400,
           "RequireApprovers": 0,
           "Interactive": false,
-          "Classifier": ""
+          "Classifier": "",
+          "Message": ""
         },
         "type": "human_approver"
       }

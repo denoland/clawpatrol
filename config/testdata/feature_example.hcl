@@ -37,7 +37,7 @@ state_dir        = "/opt/clawpatrol/oauth"
 dashboard_secret = "test-secret"
 
 control        = "wireguard"
-wg_endpoint    = "66.42.120.196:51820"
+wg_endpoint    = "0.0.0.0:51820"
 wg_subnet_cidr = "10.55.0.0/24"
 
 # ── policy --------------------------------------------------------------
