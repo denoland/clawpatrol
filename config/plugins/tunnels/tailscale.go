@@ -86,6 +86,29 @@ func (t *TailscaleTunnel) TunnelCommon() config.TunnelCommon {
 // tunnel block, shared by every endpoint that references it.
 func (*TailscaleTunnel) Sharing() runtime.TunnelSharing { return runtime.TunnelShareSingleton }
 
+// tunnelStateDir resolves the on-disk path passed to tsnet.Server.Dir.
+// Honours `state_dir = ...` on the tunnel block; otherwise carves
+// tunnels/tailscale/<name> out of the gateway's state_dir. The dir is
+// created 0700 because tsnet writes private node-state material here
+// (literal-authkey branch) and derp / logtail caches (both branches).
+//
+// Setting Dir explicitly keeps tsnet from consulting
+// $XDG_CONFIG_HOME / $HOME, which may be unset under hardened systemd
+// units, minimal containers, etc.
+func tunnelStateDir(t *TailscaleTunnel, host runtime.TunnelHost) (string, error) {
+	dir := t.StateDir
+	if dir == "" && host.StateDir != "" {
+		dir = filepath.Join(host.StateDir, "tunnels", "tailscale", host.Name)
+	}
+	if dir == "" {
+		return "", errors.New("tailscale tunnel: state_dir is required (HCL `state_dir = ...` on the tunnel or the gateway)")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("tailscale tunnel %q: state dir: %w", host.Name, err)
+	}
+	return dir, nil
+}
+
 // Open brings up an embedded tsnet node and returns a Tunnel whose
 // Dial routes through it. Two paths:
 //
@@ -122,15 +145,9 @@ func (t *TailscaleTunnel) Open(ctx context.Context, host runtime.TunnelHost, _ r
 	if authKey == "" {
 		return nil, fmt.Errorf("tailscale tunnel %q: no authkey (set HCL `authkey = ...`, env %s, or wire a `credential = ...` reference)", host.Name, envAuthKey(host.Name))
 	}
-	stateDir := t.StateDir
-	if stateDir == "" && host.StateDir != "" {
-		stateDir = filepath.Join(host.StateDir, "tunnels", "tailscale", host.Name)
-	}
-	if stateDir == "" {
-		return nil, errors.New("tailscale tunnel: state_dir is required (HCL `state_dir = ...` on the tunnel or the gateway)")
-	}
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		return nil, fmt.Errorf("tailscale tunnel %q: state dir: %w", host.Name, err)
+	stateDir, err := tunnelStateDir(t, host)
+	if err != nil {
+		return nil, err
 	}
 
 	srv := &tsnet.Server{
@@ -177,10 +194,21 @@ func (t *TailscaleTunnel) openWithCredential(ctx context.Context, host runtime.T
 		logger.Printf("tailscale/%s: literal authkey ignored — credential %q takes precedence", host.Name, host.Credential.Name)
 	}
 
+	// tsnet still wants a Dir even when Store carries the node
+	// identity — it caches derp maps, logtail buffers, etc. Leaving
+	// it unset makes tsnet fall back to $XDG_CONFIG_HOME / $HOME,
+	// which are absent under hardened systemd units and minimal
+	// container images.
+	dir, err := tunnelStateDir(t, host)
+	if err != nil {
+		return nil, err
+	}
+
 	srv := &tsnet.Server{
 		Hostname:   hostname,
 		ControlURL: t.ControlURL,
 		Store:      store,
+		Dir:        dir,
 		Logf:       func(f string, args ...any) { logger.Printf(f, args...) },
 	}
 
