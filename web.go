@@ -1348,22 +1348,22 @@ func (w *webMux) apiActionByID(
 		return
 	}
 	var (
-		e           Event
-		tsNs        int64
-		mode        sql.NullString
-		family      sql.NullString
-		agentIP     sql.NullString
-		method      sql.NullString
-		path        sql.NullString
-		status      sql.NullInt64
-		in, ot      sql.NullInt64
-		ms          sql.NullInt64
-		action      sql.NullString
-		reason      sql.NullString
-		reqSha      sql.NullString
-		respSha     sql.NullString
-		reqBody     sql.NullString
-		respBody    sql.NullString
+		e            Event
+		tsNs         int64
+		mode         sql.NullString
+		family       sql.NullString
+		agentIP      sql.NullString
+		method       sql.NullString
+		path         sql.NullString
+		status       sql.NullInt64
+		in, ot       sql.NullInt64
+		ms           sql.NullInt64
+		action       sql.NullString
+		reason       sql.NullString
+		reqSha       sql.NullString
+		respSha      sql.NullString
+		reqBody      sql.NullString
+		respBody     sql.NullString
 		reqHeaders   sql.NullString
 		respHeaders  sql.NullString
 		extra        sql.NullString
@@ -1847,35 +1847,35 @@ func writeJSON(rw http.ResponseWriter, v any) {
 // by the dashboard SSE stream and the on-disk event log).
 
 type Event struct {
-	Ts          time.Time         `json:"ts"`
-	ID          string            `json:"id,omitempty"`    // UUIDv7; correlates start/end/frame + DB key
-	Phase       string            `json:"phase,omitempty"` // "" (legacy/end), "start", "end", "frame"
-	Mode        string            `json:"mode"`
-	Agent       string            `json:"agent,omitempty"`
-	AgentIP     string            `json:"agent_ip,omitempty"`
-	Host        string            `json:"host"`
-	Method      string            `json:"method,omitempty"`
-	Path        string            `json:"path,omitempty"`
-	Status      int               `json:"status,omitempty"`
-	In          int64             `json:"in,omitempty"`
-	Out         int64             `json:"out,omitempty"`
-	Ms          int64             `json:"ms"`
-	Action      string            `json:"action,omitempty"`
-	Reason      string            `json:"reason,omitempty"`
+	Ts      time.Time `json:"ts"`
+	ID      string    `json:"id,omitempty"`    // UUIDv7; correlates start/end/frame + DB key
+	Phase   string    `json:"phase,omitempty"` // "" (legacy/end), "start", "end", "frame"
+	Mode    string    `json:"mode"`
+	Agent   string    `json:"agent,omitempty"`
+	AgentIP string    `json:"agent_ip,omitempty"`
+	Host    string    `json:"host"`
+	Method  string    `json:"method,omitempty"`
+	Path    string    `json:"path,omitempty"`
+	Status  int       `json:"status,omitempty"`
+	In      int64     `json:"in,omitempty"`
+	Out     int64     `json:"out,omitempty"`
+	Ms      int64     `json:"ms"`
+	Action  string    `json:"action,omitempty"`
+	Reason  string    `json:"reason,omitempty"`
 	// Approver* are populated when Action is "approved" / "denied":
 	// the approver entity's HCL block name, plugin type (human_approver
 	// / llm_approver / dashboard), and the approver-specific "By"
 	// string (Slack handle, llm:<model>, ...). All empty for rule-
 	// driven verdicts.
-	Approver     string `json:"approver,omitempty"`
-	ApproverType string `json:"approver_type,omitempty"`
-	ApproverBy   string `json:"approver_by,omitempty"`
-	ReqSha      string            `json:"req_sha,omitempty"`
-	ReqBody     string            `json:"req_body,omitempty"`
-	RespSha     string            `json:"resp_sha,omitempty"`
-	RespBody    string            `json:"resp_body,omitempty"`
-	ReqHeaders  map[string]string `json:"req_headers,omitempty"`
-	RespHeaders map[string]string `json:"resp_headers,omitempty"`
+	Approver     string            `json:"approver,omitempty"`
+	ApproverType string            `json:"approver_type,omitempty"`
+	ApproverBy   string            `json:"approver_by,omitempty"`
+	ReqSha       string            `json:"req_sha,omitempty"`
+	ReqBody      string            `json:"req_body,omitempty"`
+	RespSha      string            `json:"resp_sha,omitempty"`
+	RespBody     string            `json:"resp_body,omitempty"`
+	ReqHeaders   map[string]string `json:"req_headers,omitempty"`
+	RespHeaders  map[string]string `json:"resp_headers,omitempty"`
 	// Frame is set for Phase="frame" only — a single WS frame's text
 	// payload (truncated at sampleCap). Direction is "c→s" or "s→c"
 	// to disambiguate masked client frames from unmasked server frames.
