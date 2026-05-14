@@ -1,16 +1,16 @@
-import { useEffect, useMemo, useState } from "react";
-import { type Agent, type EventRecord, getAnalytics } from "../../lib/api";
+import * as Plot from "@observablehq/plot";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { type Agent, type EventRecord, getAnalytics, type LatencyDot } from "../../lib/api";
 import { Card } from "../cards/Card";
 import { PageHeader } from "../cards/PageHeader";
 
 type Range = "1h" | "24h" | "7d" | "30d";
 
-// Analytics — counts + top hosts / top devices. unclaw renders a
-// 9-panel canvas dashboard (Plot dot-charts, status-over-time,
-// latency grid, sizes grid, LLM cost-over-time) backed by
-// /api/analytics shapes clawpatrol doesn't expose. We project the
-// `events + by_device + by_host` clawpatrol returns into a much
-// simpler summary, and call out the missing series as gaps.
+// Analytics — counts + top hosts / top devices + latency dot plot
+// and histogram (mirrors unclaw's LatencySection). The /api/analytics
+// `dots` array is shaped to match unclaw's so the chart code is
+// effectively the same. LLM cost / decisions panels intentionally not
+// ported — they're out of scope here.
 export function V2AnalyticsPage({ agents }: { agents: Agent[] }) {
   const [range, setRange] = useState<Range>("24h");
   const [agentFilter, setAgentFilter] = useState("");
@@ -21,13 +21,14 @@ export function V2AnalyticsPage({ agents }: { agents: Agent[] }) {
     error_count: number;
     by_device: { key: string; count: number }[];
     by_host: { key: string; count: number }[];
+    dots: LatencyDot[];
   } | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancel = false;
     setLoading(true);
-    getAnalytics({ range, agent: agentFilter || undefined, limit: 500 })
+    getAnalytics({ range, agent: agentFilter || undefined, limit: 5000 })
       .then((d) => {
         if (!cancel) setData(d);
       })
@@ -82,6 +83,8 @@ export function V2AnalyticsPage({ agents }: { agents: Agent[] }) {
         <Stat label="Unique hosts" value={loading ? "…" : String(data?.by_host.length ?? 0)} />
       </div>
 
+      <LatencySection dots={data?.dots ?? []} agentLabel={agentLabel} />
+
       <div className="grid gap-6 lg:grid-cols-2">
         <Card title="Top devices" count={data?.by_device.length ?? 0} tight>
           {!data?.by_device.length ? (
@@ -113,21 +116,6 @@ export function V2AnalyticsPage({ agents }: { agents: Agent[] }) {
           )}
         </Card>
       </div>
-
-      <Card title="What's missing vs unclaw">
-        <div className="text-sm text-text-muted space-y-1">
-          <p>
-            clawpatrol's <code className="font-mono text-xs">/api/analytics</code> returns events
-            and aggregates by host/device, but doesn't expose unclaw's per-millisecond dot streams,
-            latency / size histograms, status-class-over-time, or LLM cost / token telemetry.
-          </p>
-          <p>
-            The canvas-based dot charts, gridded heatmaps, and LLM cost-over-time panels that
-            unclaw's <code className="font-mono text-xs">AnalyticsPage</code> renders would need new
-            backend endpoints to power. Out of scope for cl-r3e (no new endpoints).
-          </p>
-        </div>
-      </Card>
     </div>
   );
 }
@@ -145,4 +133,186 @@ function fmtCount(n: number): string {
   if (n < 1000) return String(n);
   if (n < 1_000_000) return (n / 1000).toFixed(n < 10_000 ? 1 : 0) + "k";
   return (n / 1_000_000).toFixed(1) + "M";
+}
+
+// --- Latency section (dot plot + histogram), ported from unclaw ---
+
+type ColorBy = "host" | "agent" | "status";
+
+const MS_TICKS = [0.1, 1, 10, 100, 1000, 10000];
+
+function fmtMs(v: number): string {
+  if (v >= 1000) return `${v / 1000}k`;
+  if (v < 1) return `${v}`;
+  return `${Math.round(v)}`;
+}
+
+function statusCls(s: number): string {
+  if (s < 300) return "2xx";
+  if (s < 400) return "3xx";
+  if (s < 500) return "4xx";
+  return "5xx";
+}
+
+function LatencySection({
+  dots: raw,
+  agentLabel,
+}: {
+  dots: LatencyDot[];
+  agentLabel: Map<string, string>;
+}) {
+  const [colorBy, setColorBy] = useState<ColorBy>("host");
+  const [logScale, setLogScale] = useState(true);
+
+  const dots = useMemo(
+    () =>
+      raw.map((d) => ({
+        t: new Date(d.t),
+        ms: Math.max(d.us / 1000, 0.1),
+        status: statusCls(d.status),
+        host: d.host,
+        agent: agentLabel.get(d.agent) ?? d.agent ?? "?",
+        id: d.id,
+      })),
+    [raw, agentLabel],
+  );
+  const logDots = useMemo(() => dots.map((d) => ({ ...d, logMs: Math.log10(d.ms) })), [dots]);
+
+  return (
+    <Card title="Response latency">
+      <div className="flex items-center gap-3 mb-3">
+        <Toggle
+          options={["log", "linear"] as const}
+          value={logScale ? "log" : "linear"}
+          onChange={(v) => setLogScale(v === "log")}
+        />
+        <div className="ml-auto">
+          <Toggle
+            options={["host", "agent", "status"] as const}
+            value={colorBy}
+            onChange={setColorBy}
+          />
+        </div>
+      </div>
+      {dots.length === 0 ? (
+        <div className="py-8 text-center text-sm text-text-muted">No data.</div>
+      ) : (
+        <>
+          <ObsPlot
+            render={(w) =>
+              Plot.dot(dots, {
+                x: "t",
+                y: "ms",
+                fill: colorBy,
+                r: 2,
+                fillOpacity: 0.5,
+                tip: true,
+              }).plot({
+                width: w,
+                height: 280,
+                x: { label: null },
+                y: {
+                  type: logScale ? "log" : "linear",
+                  label: "Duration (ms)",
+                  grid: true,
+                  nice: true,
+                  ...(logScale ? { ticks: MS_TICKS, tickFormat: fmtMs } : {}),
+                },
+                color: { legend: true },
+              })
+            }
+            deps={[dots, colorBy, logScale]}
+          />
+          <h4 className="text-[10px] font-medium uppercase text-text-muted mt-3 mb-1">
+            Latency histogram
+          </h4>
+          <ObsPlot
+            render={(w) =>
+              logScale
+                ? Plot.rectY(
+                    logDots,
+                    Plot.binX<Plot.RectYOptions>(
+                      { y: "count" },
+                      { x: "logMs", fill: colorBy, thresholds: 60, inset: 0, tip: true },
+                    ),
+                  ).plot({
+                    width: w,
+                    height: 160,
+                    x: {
+                      label: "Duration (ms)",
+                      ticks: MS_TICKS.map(Math.log10),
+                      tickFormat: (d: number) => fmtMs(Math.round(Math.pow(10, d))),
+                    },
+                    y: { label: null, grid: true },
+                    color: { legend: false },
+                  })
+                : Plot.rectY(
+                    dots,
+                    Plot.binX<Plot.RectYOptions>(
+                      { y: "count" },
+                      { x: "ms", fill: colorBy, thresholds: 40, inset: 0, tip: true },
+                    ),
+                  ).plot({
+                    width: w,
+                    height: 160,
+                    x: { label: "Duration (ms)" },
+                    y: { label: null, grid: true },
+                    color: { legend: false },
+                  })
+            }
+            deps={[logScale ? logDots : dots, colorBy, logScale]}
+          />
+        </>
+      )}
+    </Card>
+  );
+}
+
+function ObsPlot({
+  render,
+  deps,
+}: {
+  render: (w: number) => HTMLElement | SVGSVGElement;
+  deps: unknown[];
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!ref.current) return;
+    const w = ref.current.clientWidth || 800;
+    const el = render(w);
+    ref.current.replaceChildren(el);
+    return () => el.remove();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+  return <div ref={ref} />;
+}
+
+function Toggle<T extends string>({
+  options,
+  value,
+  onChange,
+}: {
+  options: readonly T[];
+  value: T;
+  onChange: (v: T) => void;
+}) {
+  return (
+    <div className="flex gap-0.5">
+      {options.map((o) => (
+        <button
+          key={o}
+          type="button"
+          onClick={() => onChange(o)}
+          className={
+            "px-2 py-0.5 text-[10px] font-medium " +
+            (o === value
+              ? "bg-text text-canvas-light"
+              : "bg-canvas-muted text-text-muted hover:bg-canvas-dark")
+          }
+        >
+          {o}
+        </button>
+      ))}
+    </div>
+  );
 }

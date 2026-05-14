@@ -466,6 +466,18 @@ export async function getFacets(): Promise<FacetSchema[]> {
   return body.facets ?? [];
 }
 
+// LatencyDot mirrors unclaw's /api/analytics `dots` shape — one
+// per-request point for the latency scatter / histogram. Times in
+// microseconds (matches unclaw) so the chart code can be shared.
+export type LatencyDot = {
+  t: string;
+  us: number;
+  status: number;
+  host: string;
+  agent: string;
+  id: string;
+};
+
 export async function getAnalytics(params: {
   range: string;
   agent?: string;
@@ -477,6 +489,7 @@ export async function getAnalytics(params: {
   error_count: number;
   by_device: Array<{ key: string; count: number }>;
   by_host: Array<{ key: string; count: number }>;
+  dots: LatencyDot[];
 }> {
   const p = new URLSearchParams({ range: params.range });
   if (params.agent) p.set("agent", params.agent);

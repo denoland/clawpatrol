@@ -1409,7 +1409,31 @@ func (w *webMux) apiAnalytics(
 		"error_count": errorCount.Int64,
 		"by_device":   byDevice,
 		"by_host":     byHost,
+		"dots":        analyticsDots(out),
 	})
+}
+
+// analyticsDots projects the sampled events into the slim per-request
+// shape used by the latency dot plot — mirrors unclaw's /api/analytics
+// `dots` field so the v2 dashboard can render the same chart without
+// reshaping the full EventRecord on the client. Rows with no recorded
+// duration are dropped; the dot plot would skip them anyway.
+func analyticsDots(events []Event) []map[string]any {
+	out := make([]map[string]any, 0, len(events))
+	for _, e := range events {
+		if e.Ms <= 0 {
+			continue
+		}
+		out = append(out, map[string]any{
+			"t":      e.Ts.Format(time.RFC3339Nano),
+			"us":     e.Ms * 1000,
+			"status": e.Status,
+			"host":   e.Host,
+			"agent":  e.AgentIP,
+			"id":     e.ID,
+		})
+	}
+	return out
 }
 
 // apiFacets returns every registered facet's reporting schema.
