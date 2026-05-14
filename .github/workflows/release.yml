@@ -2,6 +2,8 @@ name: release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
   workflow_dispatch:
@@ -51,11 +53,22 @@ jobs:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
           CGO_ENABLED: "0"
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
           SHA: ${{ github.sha }}
         run: |
           mkdir -p out
-          version="${TAG#v}"
+          # Tag pushes / workflow_dispatch get the (semver) tag, leading
+          # `v` stripped. Main pushes have no tag, so stamp
+          # `main-<short-sha>` so `clawpatrol version` still identifies
+          # the build.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ github.event.inputs.tag }}"
+            version="${tag#v}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            tag="${GITHUB_REF##*/}"
+            version="${tag#v}"
+          else
+            version="main-${SHA:0:7}"
+          fi
           go build \
             -ldflags "-s -w -X main.buildVersion=${version} -X main.buildGitSHA=${SHA}" \
             -trimpath \
@@ -74,9 +87,23 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: resolve release tag
+        id: rel
+        # plutil + sysextd require CFBundleShortVersionString to look
+        # numeric ("0.1.2"), so for main pushes synthesise a tag from
+        # github.run_number rather than passing the literal "main".
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ github.event.inputs.tag }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            tag="${GITHUB_REF##*/}"
+          else
+            tag="v0.0.${{ github.run_number }}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - name: build + sign + notarize Clawpatrol.app
         env:
-          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ steps.rel.outputs.tag }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -102,11 +129,19 @@ jobs:
 
       - name: resolve tag
         id: tag
+        # `tag` is the versioned directory name (empty for main pushes,
+        # which only refresh releases/latest/). `versioned=true` when a
+        # releases/<tag>/ copy should also be written.
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "versioned=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "tag=${GITHUB_REF##*/}" >> "$GITHUB_OUTPUT"
+            echo "versioned=true" >> "$GITHUB_OUTPUT"
           else
-            echo "tag=${GITHUB_REF##*/}" >> $GITHUB_OUTPUT
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "versioned=false" >> "$GITHUB_OUTPUT"
           fi
 
       - uses: actions/download-artifact@v4
@@ -117,29 +152,46 @@ jobs:
       - name: assemble site
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
-          mkdir -p site/releases/${TAG}
-          cp artifacts/clawpatrol-* site/releases/${TAG}/
+          VERSIONED="${{ steps.tag.outputs.versioned }}"
+          # Always populate releases/latest/. install.sh defaults to
+          # CLAWPATROL_VERSION=latest, so this is the path that gets
+          # exercised on every install.
+          mkdir -p site/releases/latest
+          cp artifacts/clawpatrol-* site/releases/latest/
           # macOS .app for `clawpatrol run` per-process tunnel;
           # install.sh picks this up on darwin in addition to the Go
           # binary. download-artifact's merge-multiple flattens, so
           # the file lands directly under artifacts/.
           if [ -f artifacts/Clawpatrol.app.tar.gz ]; then
-            cp artifacts/Clawpatrol.app.tar.gz site/releases/${TAG}/
+            cp artifacts/Clawpatrol.app.tar.gz site/releases/latest/
           fi
-          (cd site/releases/${TAG} \
+          (cd site/releases/latest \
             && sha256sum clawpatrol-* Clawpatrol.app.tar.gz 2>/dev/null > SHA256SUMS \
             || sha256sum clawpatrol-* > SHA256SUMS)
-          # `latest` mirror
-          cp -r site/releases/${TAG} site/releases/latest
+          # Tag pushes + workflow_dispatch also mirror to releases/<tag>/.
+          # Main pushes skip this — releases/latest/ is enough, no need
+          # to pollute the namespace with a releases/main/ directory.
+          if [ "$VERSIONED" = "true" ]; then
+            cp -r site/releases/latest "site/releases/${TAG}"
+          fi
           cp install.sh site/install.sh
           # Public site index — just enough so curl + browser both work.
-          cat > site/index.html <<HTML
+          if [ "$VERSIONED" = "true" ]; then
+            cat > site/index.html <<HTML
           <!doctype html><meta charset=utf-8><title>clawpatrol releases</title>
           <h1>clawpatrol</h1>
           <p>Install: <code>curl -fsSL https://denoland.github.io/clawpatrol/install.sh | sh</code></p>
           <p>Latest binaries: <a href="releases/latest/">releases/latest/</a></p>
           <p>This tag: <a href="releases/${TAG}/">releases/${TAG}/</a></p>
           HTML
+          else
+            cat > site/index.html <<HTML
+          <!doctype html><meta charset=utf-8><title>clawpatrol releases</title>
+          <h1>clawpatrol</h1>
+          <p>Install: <code>curl -fsSL https://denoland.github.io/clawpatrol/install.sh | sh</code></p>
+          <p>Latest binaries: <a href="releases/latest/">releases/latest/</a> (main @ ${GITHUB_SHA:0:7})</p>
+          HTML
+          fi
 
       - uses: actions/configure-pages@v5
 
