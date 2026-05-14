@@ -22,6 +22,12 @@ import (
 // field on chSQLInfo still carries the original SQL.
 var chSQLTrailerRE = regexp.MustCompile(`(?is)\s+(?:SETTINGS\s+.*|FORMAT\s+\S+\s*)$`)
 
+// chCTEInsertTargetRE captures the target table (and skips an optional
+// column list) of an `INSERT INTO X [(cols)]` clause. Anchored, since
+// the CTE+INSERT rewrite path calls it on a substring that begins at
+// the INSERT keyword position located by chFindTopLevelKeyword.
+var chCTEInsertTargetRE = regexp.MustCompile(`(?is)^INSERT\s+INTO\s+([A-Za-z_][A-Za-z0-9_.]*)\s*(?:\([^)]*\))?\s*`)
+
 type chSQLInfo struct {
 	Verb      string
 	Tables    []string
@@ -48,6 +54,24 @@ func parseChSQL(sql string) chSQLInfo {
 	parseInput := chSQLTrailerRE.ReplaceAllString(trimmed, "")
 	stmts, err := chparser.NewParser(parseInput).ParseStmts()
 	if err != nil || len(stmts) == 0 {
+		// AfterShip's parser refuses CTE-prefixed INSERTs
+		// (`WITH … INSERT INTO X SELECT …`), which are routine in
+		// ClickHouse analytics workloads. Detect that shape, strip
+		// the `INSERT INTO X [(cols)]` clause, and parse the
+		// residual `WITH … SELECT …`. We then graft the INSERT
+		// target onto the table set and pin the verb explicitly.
+		if rewritten, target, ok := chRewriteCTEInsert(parseInput); ok {
+			if rstmts, rerr := chparser.NewParser(rewritten).ParseStmts(); rerr == nil && len(rstmts) > 0 {
+				tables, funcs := chWalkSQL(rstmts)
+				if target != "" {
+					tables[strings.ToLower(target)] = struct{}{}
+				}
+				info.Verb = "insert"
+				info.Tables = chSortedKeys(tables)
+				info.Functions = chSortedKeys(funcs)
+				return info
+			}
+		}
 		info.Verb = chSniffVerb(trimmed)
 		return info
 	}
@@ -57,6 +81,16 @@ func parseChSQL(sql string) chSQLInfo {
 	// denies access to `secrets` still fires when `secrets` is the
 	// second statement in a "use db; select * from secrets" pair.
 	info.Verb = chVerbFromStmt(stmts[0])
+	tables, funcs := chWalkSQL(stmts)
+	info.Tables = chSortedKeys(tables)
+	info.Functions = chSortedKeys(funcs)
+	return info
+}
+
+// chWalkSQL walks every AST in stmts and collects the table refs and
+// function names the SQL matcher cares about. Pulled out so the CTE+INSERT
+// rewrite path doesn't have to duplicate the visitor.
+func chWalkSQL(stmts []chparser.Expr) (map[string]struct{}, map[string]struct{}) {
 	tables := map[string]struct{}{}
 	funcs := map[string]struct{}{}
 	for _, stmt := range stmts {
@@ -72,9 +106,168 @@ func parseChSQL(sql string) chSQLInfo {
 			return true
 		})
 	}
-	info.Tables = chSortedKeys(tables)
-	info.Functions = chSortedKeys(funcs)
-	return info
+	return tables, funcs
+}
+
+// chRewriteCTEInsert detects the `WITH … INSERT INTO X [(cols)] SELECT …`
+// shape (CTE-prefixed INSERT) and returns a parseable substitute that drops
+// just the `INSERT INTO X [(cols)]` clause, leaving the WITH block and the
+// trailing SELECT behind. Plus the captured target table.
+//
+// AfterShip's parser supports `WITH … SELECT …` and standalone
+// `INSERT … SELECT …` but not the union of the two; this rewrite is the
+// minimal transformation that lets the existing AST walker pull functions
+// and source tables out of the body while the caller patches the verb to
+// "insert" and adds the target.
+//
+// Returns ok=false when the input doesn't begin with WITH or no top-level
+// INSERT keyword can be located — in which case the caller falls through
+// to the verb-sniffing fallback.
+func chRewriteCTEInsert(sql string) (rewritten, target string, ok bool) {
+	if !chBeginsWithKeyword(sql, "WITH") {
+		return "", "", false
+	}
+	pos := chFindTopLevelKeyword(sql, "INSERT")
+	if pos < 0 {
+		return "", "", false
+	}
+	m := chCTEInsertTargetRE.FindStringSubmatchIndex(sql[pos:])
+	if m == nil {
+		return "", "", false
+	}
+	target = sql[pos+m[2] : pos+m[3]]
+	rewritten = sql[:pos] + sql[pos+m[1]:]
+	return rewritten, target, true
+}
+
+// chIsSQLWordChar reports whether c is part of a SQL identifier / keyword
+// token under the lexer's word-boundary rules. Kept narrow on purpose:
+// only ASCII alphanumerics and underscore — matches the keyword scanner's
+// expectations and avoids surprises on UTF-8 multibyte sequences.
+func chIsSQLWordChar(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9') || c == '_'
+}
+
+// chBeginsWithKeyword reports whether s starts with the SQL keyword kw,
+// skipping leading whitespace and SQL comments and requiring a word
+// boundary after the match. Case-insensitive. Used to guard the CTE+INSERT
+// rewrite to inputs that actually open with `WITH`, since rewriting any
+// parse failure that contains an INSERT keyword would corrupt unrelated
+// statements (e.g. `SELECT 1; INSERT INTO x VALUES (1)` should not become
+// `SELECT 1;` plus a phantom target).
+func chBeginsWithKeyword(s, kw string) bool {
+	i := chSkipWhitespaceAndComments(s, 0)
+	if i+len(kw) > len(s) {
+		return false
+	}
+	if !strings.EqualFold(s[i:i+len(kw)], kw) {
+		return false
+	}
+	if after := i + len(kw); after < len(s) && chIsSQLWordChar(s[after]) {
+		return false
+	}
+	return true
+}
+
+// chFindTopLevelKeyword returns the byte index of the first occurrence
+// of kw in s that sits at parenthesis depth zero and outside string
+// literals or SQL comments, with word boundaries on both sides.
+// Case-insensitive. Returns -1 if no such occurrence exists.
+//
+// Used by the CTE+INSERT rewrite to find the INSERT keyword that ends
+// the WITH block. A naive substring search would mis-fire on
+// `WITH x AS (SELECT 'INSERT INTO …') …` (string literal) or on
+// `WITH x AS (INSERT INTO …) …` (nested DML, paren depth > 0).
+func chFindTopLevelKeyword(s, kw string) int {
+	depth := 0
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		switch {
+		case c == '\'' || c == '"' || c == '`':
+			q := c
+			i++
+			for i < len(s) {
+				ch := s[i]
+				i++
+				if ch == q {
+					if i < len(s) && s[i] == q {
+						i++ // doubled-quote escape inside a literal
+						continue
+					}
+					break
+				}
+				if ch == '\\' && i < len(s) {
+					i++ // backslash escape (single-quoted strings)
+				}
+			}
+		case c == '-' && i+1 < len(s) && s[i+1] == '-':
+			for i < len(s) && s[i] != '\n' {
+				i++
+			}
+		case c == '/' && i+1 < len(s) && s[i+1] == '*':
+			i += 2
+			for i+1 < len(s) && (s[i] != '*' || s[i+1] != '/') {
+				i++
+			}
+			if i+1 < len(s) {
+				i += 2
+			} else {
+				i = len(s)
+			}
+		case c == '(':
+			depth++
+			i++
+		case c == ')':
+			if depth > 0 {
+				depth--
+			}
+			i++
+		case depth == 0 && chIsSQLWordChar(c) && (i == 0 || !chIsSQLWordChar(s[i-1])):
+			if i+len(kw) <= len(s) &&
+				strings.EqualFold(s[i:i+len(kw)], kw) &&
+				(i+len(kw) == len(s) || !chIsSQLWordChar(s[i+len(kw)])) {
+				return i
+			}
+			for i < len(s) && chIsSQLWordChar(s[i]) {
+				i++
+			}
+		default:
+			i++
+		}
+	}
+	return -1
+}
+
+// chSkipWhitespaceAndComments advances past ASCII whitespace and SQL
+// comments (`-- line` and `/* block */`) starting at i and returns the
+// next significant byte's index. Bounded by len(s).
+func chSkipWhitespaceAndComments(s string, i int) int {
+	for i < len(s) {
+		c := s[i]
+		switch {
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
+			i++
+		case c == '-' && i+1 < len(s) && s[i+1] == '-':
+			for i < len(s) && s[i] != '\n' {
+				i++
+			}
+		case c == '/' && i+1 < len(s) && s[i+1] == '*':
+			i += 2
+			for i+1 < len(s) && (s[i] != '*' || s[i+1] != '/') {
+				i++
+			}
+			if i+1 < len(s) {
+				i += 2
+			} else {
+				i = len(s)
+			}
+		default:
+			return i
+		}
+	}
+	return i
 }
 
 // chTableName renders a TableIdentifier as `db.table` or `table`
