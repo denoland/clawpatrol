@@ -78,12 +78,16 @@ type K8sAction struct {
 // SQLAction carries the `sql.*` CEL view. Only `statement` needs to
 // be set in practice; the loader derives verb / tables / functions
 // via the endpoint's runtime.SQLParser. Explicit verb / tables /
-// functions are accepted and take precedence over derivation.
+// functions / database are accepted and take precedence over
+// derivation. Database is session-scoped on the wire (postgres
+// StartupMessage, clickhouse Hello, clickhouse_https URL/header)
+// and not derivable from the statement text alone.
 type SQLAction struct {
 	Statement string   `json:"statement,omitempty"`
 	Verb      string   `json:"verb,omitempty"`
 	Tables    []string `json:"tables,omitempty"`
 	Functions []string `json:"functions,omitempty"`
+	Database  string   `json:"database,omitempty"`
 }
 
 var validVerdicts = map[string]bool{
@@ -339,6 +343,9 @@ func (f *Fixture) ToMatchRequest(family string, parseSQL func(string) any) (*mat
 			}
 			if len(a.SQL.Functions) > 0 {
 				m.Functions = a.SQL.Functions
+			}
+			if a.SQL.Database != "" {
+				m.Database = a.SQL.Database
 			}
 		}
 		req.Meta = meta

@@ -57,6 +57,40 @@ func TestSQLMatcherVerbCaseInsensitive(t *testing.T) {
 	}
 }
 
+// TestSQLMatcherDatabaseCaseSensitive pins the database facet's
+// case-sensitivity: postgres treats database names as identifiers, so
+// `sql.database == "Prod"` MUST distinguish "Prod" from "prod". The
+// existing `sql.verb` path normalizes both sides to lowercase; the
+// `sql.database` path deliberately does not.
+func TestSQLMatcherDatabaseCaseSensitive(t *testing.T) {
+	cases := []struct {
+		name      string
+		condition string
+		meta      sqlfacet.Meta
+		want      bool
+	}{
+		{"exact match", `sql.database == 'prod'`, sqlfacet.Meta{Database: "prod"}, true},
+		{"different case must miss", `sql.database == 'Prod'`, sqlfacet.Meta{Database: "prod"}, false},
+		{"mixed-case got matches mixed-case want", `sql.database == 'Prod'`, sqlfacet.Meta{Database: "Prod"}, true},
+		{"missing database does not match", `sql.database == 'prod'`, sqlfacet.Meta{}, false},
+		{"composed with verb", `sql.database == 'prod' && sql.verb == 'delete'`, sqlfacet.Meta{Database: "prod", Verb: "delete"}, true},
+		{"composed: wrong db", `sql.database == 'prod' && sql.verb == 'delete'`, sqlfacet.Meta{Database: "dev", Verb: "delete"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, err := facet.NewMatcher("sql", tc.condition)
+			if err != nil {
+				t.Fatalf("NewMatcher: %v", err)
+			}
+			meta := tc.meta
+			req := &match.Request{Family: "sql", Meta: &meta}
+			if got := m.Match(req); got != tc.want {
+				t.Errorf("Match=%v want %v (condition=%q meta=%+v)", got, tc.want, tc.condition, tc.meta)
+			}
+		})
+	}
+}
+
 func TestSQLMatcherStatementRegex(t *testing.T) {
 	m, err := facet.NewMatcher("sql", `sql.verb == 'select' && sql.statement.matches('(?i)\\b(secret|password|token)\\b')`)
 	if err != nil {

@@ -257,7 +257,7 @@ func (ClickhouseNativeEndpointRuntime) HandleConn(ctx context.Context, ch *runti
 	// stays a pure copy (decoded only far enough to forward the
 	// ServerHello and capture the revision). Agent → server is fully
 	// transcoded.
-	chRunSession(ctx, ch, agentReader, upstream, hello.ProtocolRevision, credName)
+	chRunSession(ctx, ch, agentReader, upstream, hello.ProtocolRevision, credName, hello.Database)
 	return nil
 }
 
@@ -279,7 +279,7 @@ func chUpstreamTLSConfig(host string, acceptInvalidCert bool) *tls.Config {
 // server Hello (forwarded verbatim to the agent), captures the
 // negotiated revision, then runs agent → server through the Query /
 // Data inspector while server → agent stays a pure passthrough.
-func chRunSession(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream net.Conn, clientRev int, credName string) {
+func chRunSession(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream net.Conn, clientRev int, credName, database string) {
 	upstreamReader := chgoproto.NewReader(upstream)
 	negotiatedRev, err := chReadAndForwardServerHello(upstreamReader, ch.Conn, clientRev)
 	if err != nil {
@@ -308,7 +308,7 @@ func chRunSession(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgo
 		return
 	}
 
-	chAgentToServer(ctx, ch, agentReader, upstream, negotiatedRev, credName)
+	chAgentToServer(ctx, ch, agentReader, upstream, negotiatedRev, credName, database)
 
 	if cw, ok := upstream.(interface{ CloseWrite() error }); ok {
 		_ = cw.CloseWrite()
@@ -342,7 +342,7 @@ func chRunSession(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgo
 // io.MultiReader. The pump swaps it in-place and dispatches as usual,
 // so the code-loop here doesn't need its own buffered-byte rewind
 // channel.
-func chAgentToServer(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream io.Writer, revision int, credName string) {
+func chAgentToServer(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream io.Writer, revision int, credName, database string) {
 	compression := chgoproto.CompressionDisabled
 	for {
 		code, err := agentReader.UInt8()
@@ -351,7 +351,7 @@ func chAgentToServer(ctx context.Context, ch *runtime.ConnHandle, agentReader *c
 		}
 		switch chgoproto.ClientCode(code) {
 		case chgoproto.ClientCodeQuery:
-			next, fatal := chHandleQuery(ctx, ch, agentReader, upstream, revision, credName)
+			next, fatal := chHandleQuery(ctx, ch, agentReader, upstream, revision, credName, database)
 			if fatal {
 				return
 			}
@@ -409,7 +409,7 @@ func chAgentToServer(ctx context.Context, ch *runtime.ConnHandle, agentReader *c
 // know which path (probe vs Block.Decode) to take when we read it
 // off the wire. `fatal` is true on a decode / transport failure
 // where the pump must tear the connection down.
-func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream io.Writer, revision int, credName string) (chgoproto.Compression, bool) {
+func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream io.Writer, revision int, credName, database string) (chgoproto.Compression, bool) {
 	// Build the forward-bound preamble (everything up to the body
 	// length prefix) as we decode each field. Re-encoding these small
 	// fields is cheap; the body is the only field whose size warrants
@@ -500,7 +500,7 @@ func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chg
 		return compression, true
 	}
 
-	verdict, reason := chEvaluateSQL(ctx, ch, string(head), credName, truncated)
+	verdict, reason := chEvaluateSQL(ctx, ch, string(head), credName, database, truncated)
 	if verdict == "deny" {
 		// Drain the rest of this Query off the wire so the pump can
 		// keep reading subsequent packets — same shape as the previous
@@ -832,7 +832,7 @@ func chRewindReader(head []byte, tail *chgoproto.Reader) *chgoproto.Reader {
 //
 //	("deny", reason) — matched rule denies, or approve rejected.
 //	("", "")         — no rule fires, or the matched rule allows.
-func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName string, truncated bool) (string, string) {
+func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName, database string, truncated bool) (string, string) {
 	info := parseChSQL(sql)
 	mreq := &match.Request{
 		Family:     "sql",
@@ -843,6 +843,7 @@ func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName st
 			Tables:    info.Tables,
 			Functions: info.Functions,
 			Statement: info.Statement,
+			Database:  database,
 		},
 		Truncated: truncated,
 	}

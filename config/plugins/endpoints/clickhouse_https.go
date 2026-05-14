@@ -5,6 +5,8 @@ package endpoints
 // so rules can target both via `endpoints = [ch-https, ch-native]`.
 
 import (
+	"net/http"
+
 	"github.com/hashicorp/hcl/v2/hclwrite"
 
 	"github.com/denoland/clawpatrol/config"
@@ -22,6 +24,31 @@ func (e *ClickhouseHTTPSEndpoint) EndpointHosts() []string { return e.Hosts }
 // EndpointCredentials is part of the clawpatrol plugin API.
 func (e *ClickhouseHTTPSEndpoint) EndpointCredentials() []config.CredBinding {
 	return singleBinding(e.Credential)
+}
+
+// clickhouseHTTPSDatabase extracts the session-scoped database name
+// from a clickhouse HTTPS request. ClickHouse accepts the target
+// database two ways: the `database` URL query parameter
+// (`POST /?database=foo`) or the `X-ClickHouse-Database` header. The
+// query parameter takes precedence when both are present — that
+// mirrors clickhouse-server's own resolution order. Returns "" when
+// neither is set; the matcher then sees an empty `sql.database`,
+// which won't satisfy a `sql.database == "..."` predicate.
+func clickhouseHTTPSDatabase(req *http.Request) string {
+	if req == nil {
+		return ""
+	}
+	if req.URL != nil {
+		if v := req.URL.Query().Get("database"); v != "" {
+			return v
+		}
+	}
+	if req.Header != nil {
+		if v := req.Header.Get("X-ClickHouse-Database"); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func init() {

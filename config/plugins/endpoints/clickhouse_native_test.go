@@ -421,6 +421,45 @@ func chNewMockHandle(t *testing.T, ep *config.CompiledEndpoint) (*chMockHandle, 
 	return mock, agentSide
 }
 
+// TestChEvaluateSQLThreadsDatabaseIntoMeta verifies that the
+// database argument to chEvaluateSQL — supplied by HandleConn from
+// the agent's Hello.Database — lands on the *sqlfacet.Meta the
+// matcher reads. Case-sensitive: "metrics" and "Metrics" are
+// distinct databases.
+func TestChEvaluateSQLThreadsDatabaseIntoMeta(t *testing.T) {
+	denyOnDB := chRuleSQL(t, "deny-metrics-drops",
+		`sql.database == "metrics" && sql.verb == "drop"`,
+		"deny", "metrics is locked", 100)
+	ep := chBuildEndpoint(t, denyOnDB)
+
+	t.Run("matches when database equal", func(t *testing.T) {
+		mock, _ := chNewMockHandle(t, ep)
+		verdict, reason := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "metrics", false)
+		if verdict != "deny" {
+			t.Errorf("DROP on metrics verdict = %q, want deny", verdict)
+		}
+		if reason != "metrics is locked" {
+			t.Errorf("reason = %q, want %q", reason, "metrics is locked")
+		}
+	})
+
+	t.Run("different case does not match", func(t *testing.T) {
+		mock, _ := chNewMockHandle(t, ep)
+		verdict, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "Metrics", false)
+		if verdict != "" {
+			t.Errorf("DROP on Metrics (mixed case) verdict = %q, want allow", verdict)
+		}
+	})
+
+	t.Run("empty database does not match", func(t *testing.T) {
+		mock, _ := chNewMockHandle(t, ep)
+		verdict, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "", false)
+		if verdict != "" {
+			t.Errorf("DROP with empty database verdict = %q, want allow", verdict)
+		}
+	})
+}
+
 // TestChEvaluateSQLTruncated pins the per-rule fail-closed dispatch
 // for clickhouse: a rule whose CEL reads sql.* synth-denies on a
 // truncated request; a credential-only rule still allows. The
@@ -438,7 +477,7 @@ func TestChEvaluateSQLTruncated(t *testing.T) {
 
 		mock, _ := chNewMockHandle(t, ep)
 
-		verdict, reason := chEvaluateSQL(context.Background(), mock.ConnHandle, "SELECT 1", "ch-cred", true)
+		verdict, reason := chEvaluateSQL(context.Background(), mock.ConnHandle, "SELECT 1", "ch-cred", "", true)
 		if verdict != "deny" {
 			t.Errorf("truncated SELECT verdict = %q, want deny (synth)", verdict)
 		}
@@ -457,7 +496,7 @@ func TestChEvaluateSQLTruncated(t *testing.T) {
 
 		mock, _ := chNewMockHandle(t, ep)
 
-		verdict, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "anything", "ch-cred", true)
+		verdict, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "anything", "ch-cred", "", true)
 		if verdict != "" {
 			t.Errorf("truncated passthrough verdict = %q, want allow (empty)", verdict)
 		}
@@ -476,7 +515,7 @@ func TestChEvaluateSQLAllowsSelectDeniesInsert(t *testing.T) {
 
 	mock, _ := chNewMockHandle(t, ep)
 
-	verdict, reason := chEvaluateSQL(context.Background(), mock.ConnHandle, "INSERT INTO events VALUES (1)", "ch-cred", false)
+	verdict, reason := chEvaluateSQL(context.Background(), mock.ConnHandle, "INSERT INTO events VALUES (1)", "ch-cred", "", false)
 	if verdict != "deny" {
 		t.Errorf("INSERT verdict = %q, want deny", verdict)
 	}
@@ -484,7 +523,7 @@ func TestChEvaluateSQLAllowsSelectDeniesInsert(t *testing.T) {
 		t.Errorf("INSERT reason = %q, want %q", reason, "writes blocked")
 	}
 
-	verdict, _ = chEvaluateSQL(context.Background(), mock.ConnHandle, "SELECT 1", "ch-cred", false)
+	verdict, _ = chEvaluateSQL(context.Background(), mock.ConnHandle, "SELECT 1", "ch-cred", "", false)
 	if verdict != "" {
 		t.Errorf("SELECT verdict = %q, want allow (empty)", verdict)
 	}
@@ -532,7 +571,7 @@ func TestChEvaluateSQLApproveChain(t *testing.T) {
 	t.Run("approver allows", func(t *testing.T) {
 		mock, _ := chNewMockHandle(t, ep)
 		mock.Approve = chMockApprove("allow", "ok")
-		verdict, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", false)
+		verdict, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "", false)
 		if verdict != "" {
 			t.Errorf("approver allow → verdict %q, want empty", verdict)
 		}
@@ -543,7 +582,7 @@ func TestChEvaluateSQLApproveChain(t *testing.T) {
 	t.Run("approver denies", func(t *testing.T) {
 		mock, _ := chNewMockHandle(t, ep)
 		mock.Approve = chMockApprove("deny", "operator rejected")
-		verdict, reason := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", false)
+		verdict, reason := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "", false)
 		if verdict != "deny" || reason != "operator rejected" {
 			t.Errorf("verdict=%q reason=%q, want deny/operator rejected", verdict, reason)
 		}
@@ -554,7 +593,7 @@ func TestChEvaluateSQLApproveChain(t *testing.T) {
 	t.Run("missing Approve callback default-denies", func(t *testing.T) {
 		mock, _ := chNewMockHandle(t, ep)
 		mock.Approve = nil
-		verdict, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", false)
+		verdict, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "", false)
 		if verdict != "deny" {
 			t.Errorf("no Approve → verdict %q, want deny", verdict)
 		}
@@ -611,7 +650,7 @@ func TestChAgentToServerStreamsOversizedQueryBody(t *testing.T) {
 
 	reader := chgoproto.NewReader(bytes.NewReader(agentBuf.Buf))
 	var upstream bytes.Buffer
-	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred", "")
 
 	out := upstream.Bytes()
 	if len(out) == 0 || chgoproto.ClientCode(out[0]) != chgoproto.ClientCodeQuery {
@@ -679,7 +718,7 @@ func TestChAgentToServerForwardsQuery(t *testing.T) {
 	reader := chgoproto.NewReader(bytes.NewReader(agentBuf.Buf))
 	var upstream bytes.Buffer
 
-	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred", "")
 
 	if upstream.Len() == 0 {
 		t.Fatal("upstream got no bytes")
@@ -741,7 +780,7 @@ func TestChHandleDataUncompressed(t *testing.T) {
 
 	reader := chgoproto.NewReader(bytes.NewReader(agentBuf.Buf))
 	var upstream bytes.Buffer
-	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred", "")
 
 	out := upstream.Bytes()
 	if len(out) == 0 || chgoproto.ClientCode(out[0]) != chgoproto.ClientCodeData {
@@ -816,7 +855,7 @@ func TestChHandleDataCompressedForwardsOpaquely(t *testing.T) {
 
 	reader := chgoproto.NewReader(bytes.NewReader(agentBuf.Buf))
 	var upstream bytes.Buffer
-	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred", "")
 
 	out := upstream.Bytes()
 
@@ -931,7 +970,7 @@ func TestChCompressedDataEventDropsRowsCols(t *testing.T) {
 
 	reader := chgoproto.NewReader(bytes.NewReader(agentBuf.Buf))
 	var upstream bytes.Buffer
-	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred", "")
 
 	summary := chCompressedDataEventSummary(t, mock.events)
 	wantBytes := fmt.Sprintf("bytes=%d", len(chunkBytes))
@@ -981,7 +1020,7 @@ func TestChProbeForwardsMultiChunkBlock(t *testing.T) {
 
 	reader := chgoproto.NewReader(bytes.NewReader(agentBuf.Buf))
 	var upstream bytes.Buffer
-	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred", "")
 
 	// Strip the Query frame + Data header; what's left must be both
 	// chunks concatenated, byte-for-byte.
@@ -1051,7 +1090,7 @@ func TestChProbeRewindsToNextQuery(t *testing.T) {
 
 	reader := chgoproto.NewReader(bytes.NewReader(agentBuf.Buf))
 	var upstream bytes.Buffer
-	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred", "")
 
 	r := chgoproto.NewReader(bytes.NewReader(upstream.Bytes()))
 	// Q1
@@ -1146,7 +1185,7 @@ func TestChAgentToServerDeniesQuery(t *testing.T) {
 		read <- append([]byte(nil), buf[:n]...)
 	}()
 
-	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred", "")
 
 	if upstream.Len() != 0 {
 		t.Errorf("denied query forwarded %d bytes upstream", upstream.Len())
@@ -1211,7 +1250,7 @@ func TestChAgentToServerMultiQueryDenyContinues(t *testing.T) {
 
 	reader := chgoproto.NewReader(bytes.NewReader(stream.Bytes()))
 	var upstream bytes.Buffer
-	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred", "")
 
 	// Upstream must contain q1 and q3 (q2 was denied → not forwarded).
 	r := chgoproto.NewReader(bytes.NewReader(upstream.Bytes()))

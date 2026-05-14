@@ -303,7 +303,7 @@ func (PostgresEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnH
 	}()
 	go func() {
 		defer func() { done <- struct{}{} }()
-		pgClientToServer(ctx, ch, upstream, credName)
+		pgClientToServer(ctx, ch, upstream, credName, database)
 	}()
 	<-done
 	return nil
@@ -381,8 +381,11 @@ func pgStartupParam(body []byte, key string) string {
 const maxPgMessage = 1 << 20
 
 // pgClientToServer pumps the agent's outbound message stream to the
-// upstream, inspecting Query / Parse for policy.
-func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.Conn, credName string) {
+// upstream, inspecting Query / Parse for policy. database is the
+// session-start database (from the agent's StartupMessage) and is
+// stamped on every match.Request.Meta the matcher sees; mid-session
+// changes via `\connect` / `USE` are not tracked in v1.
+func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.Conn, credName, database string) {
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -420,7 +423,7 @@ func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.
 					typ := buf[0]
 					length := binary.BigEndian.Uint32(buf[1:5])
 					if (typ == 'Q' || typ == 'P') && length > maxPgMessage {
-						nextBuf, ok := pgHandleOversizeFrame(ch, upstream, credName, buf, length)
+						nextBuf, ok := pgHandleOversizeFrame(ch, upstream, credName, database, buf, length)
 						if !ok {
 							return
 						}
@@ -436,7 +439,7 @@ func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.
 				if msg.typ == 'Q' || msg.typ == 'P' {
 					sql := pgExtractSQL(msg.typ, msg.payload)
 					if sql != "" {
-						verdict, reason := pgEvaluate(ch, sql, credName)
+						verdict, reason := pgEvaluate(ch, sql, credName, database)
 						if verdict == "deny" {
 							pgWriteDeny(ch.Conn, reason)
 							log.Printf("pg-deny %s: %s", ch.PeerIP, reason)
@@ -500,7 +503,7 @@ func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.
 //     materialize the body in memory.
 //   - Approve chain → treated as deny. HITL can't make a decision
 //     on bytes that aren't there.
-func pgHandleOversizeFrame(ch *runtime.ConnHandle, upstream net.Conn, credName string, buf []byte, length uint32) ([]byte, bool) {
+func pgHandleOversizeFrame(ch *runtime.ConnHandle, upstream net.Conn, credName, database string, buf []byte, length uint32) ([]byte, bool) {
 	typ := buf[0]
 	totalWire := uint64(1) + uint64(length)
 	have := uint64(len(buf))
@@ -515,7 +518,7 @@ func pgHandleOversizeFrame(ch *runtime.ConnHandle, upstream net.Conn, credName s
 		Family:     "sql",
 		PeerIP:     ch.PeerIP,
 		Credential: credName,
-		Meta:       &sqlfacet.Meta{},
+		Meta:       &sqlfacet.Meta{Database: database},
 		Truncated:  true,
 	}
 	var facets map[string]any
@@ -585,14 +588,14 @@ func pgHandleOversizeFrame(ch *runtime.ConnHandle, upstream net.Conn, credName s
 //
 //	("deny", reason) — first sub-statement to deny short-circuits.
 //	("", "")         — every sub-statement allowed or had no match.
-func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
+func pgEvaluate(ch *runtime.ConnHandle, sql, credName, database string) (string, string) {
 	for _, stmt := range analyseAll(sql) {
-		v, reason := pgEvaluateInfo(ch, stmt.Outer, credName, false)
+		v, reason := pgEvaluateInfo(ch, stmt.Outer, credName, database, false)
 		if v == "deny" {
 			return v, reason
 		}
 		for _, inner := range stmt.Inner {
-			v, reason := pgEvaluateInfo(ch, inner, credName, true)
+			v, reason := pgEvaluateInfo(ch, inner, credName, database, true)
 			if v == "deny" {
 				return v, reason
 			}
@@ -605,7 +608,7 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 // suppresses emission on allow / hitl_allow so synthesised
 // sub-statements don't pollute the dashboard; deny emissions still
 // fire either way (operators need to see *why* a batch was denied).
-func pgEvaluateInfo(ch *runtime.ConnHandle, info pgInfo, credName string, shadow bool) (string, string) {
+func pgEvaluateInfo(ch *runtime.ConnHandle, info pgInfo, credName, database string, shadow bool) (string, string) {
 	summary := pgSummary(info)
 	mreq := &match.Request{
 		Family:     "sql",
@@ -616,6 +619,7 @@ func pgEvaluateInfo(ch *runtime.ConnHandle, info pgInfo, credName string, shadow
 			Tables:    info.Tables,
 			Functions: info.Functions,
 			Statement: info.Statement,
+			Database:  database,
 		},
 	}
 	// Per-family report payload — the same map the gateway will
