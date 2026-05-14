@@ -21,3 +21,6 @@ linters:
 formatters:
   enable:
     - gofmt
+  settings:
+    gofmt:
+      simplify: true

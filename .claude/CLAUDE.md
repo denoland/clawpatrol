@@ -27,8 +27,10 @@ is fine — the rule is about dates and times.
 CI fails fast on unformatted code. Before pushing, run the same
 checks the lint job runs:
 
-- Go: `gofmt -l .` from the repo root. Empty output means clean;
-  any filename listed is a fail. Fix with `gofmt -w .`.
+- Go: `gofmt -s -l .` from the repo root. Empty output means clean;
+  any filename listed is a fail. Fix with `gofmt -s -w .`. The `-s`
+  flag also flags simplifications (e.g. `interface{}` → `any`,
+  redundant type declarations in composite literals).
 - Dashboard (TS/JS/HTML/JSON in `www/`):
   `cd www && npx oxfmt --check src index.html login.html package.json tsconfig.json vite.config.ts tailwind.config.js postcss.config.js`.
   Fix by dropping `--check`.
