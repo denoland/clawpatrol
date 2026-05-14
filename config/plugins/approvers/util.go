@@ -5,6 +5,8 @@
 package approvers
 
 import (
+	"context"
+	"errors"
 	"time"
 
 	"github.com/denoland/clawpatrol/config/runtime"
@@ -39,4 +41,22 @@ func decision(allow bool) string {
 		return "allow"
 	}
 	return "deny"
+}
+
+func cancelPending(pool runtime.HITLPool, id string, state runtime.HITLState, reason string) runtime.HITLResolveResult {
+	if canceler, ok := pool.(runtime.HITLPoolCanceler); ok {
+		return canceler.Cancel(id, state, reason)
+	}
+	pool.Discard(id)
+	return runtime.HITLResolveResult{OK: true, State: state, Reason: reason}
+}
+
+func hitlCancelStateForContext(err error) (runtime.HITLState, string) {
+	if errors.Is(err, context.Canceled) {
+		return runtime.HITLStateClientDisconnected, "original client connection closed before approval; upstream request was not sent"
+	}
+	if err != nil {
+		return runtime.HITLStateCanceled, err.Error()
+	}
+	return runtime.HITLStateCanceled, "approval canceled before a decision; upstream request was not sent"
 }

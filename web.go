@@ -1261,8 +1261,21 @@ func (w *webMux) apiHITLDecide(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "decision requires an authenticated operator", http.StatusForbidden)
 		return
 	}
-	ok = w.g.hitl.Decide(body.ID, runtime.HITLDecision{Allow: body.Allow, By: principal.Owner})
-	writeJSON(rw, map[string]bool{"ok": ok})
+	result := runtime.HITLResolveResult{State: runtime.HITLStateUnknown, Reason: "unknown or expired HITL request"}
+	decision := runtime.HITLDecision{Allow: body.Allow, By: principal.Owner}
+	if decider, ok := interface{}(w.g.hitl).(runtime.HITLPoolDecider); ok {
+		result = decider.DecideWithResult(body.ID, decision)
+	} else {
+		result.OK = w.g.hitl.Decide(body.ID, decision)
+		if result.OK {
+			if body.Allow {
+				result.State = runtime.HITLStateApproved
+			} else {
+				result.State = runtime.HITLStateDenied
+			}
+		}
+	}
+	writeJSON(rw, result)
 }
 
 func isLoopback(host string) bool {
@@ -2340,11 +2353,11 @@ func wrapBodySampler(rc io.ReadCloser, s *sampler) io.ReadCloser {
 	return teeReadCloser{r: io.TeeReader(rc, s), c: rc}
 }
 
-// HITL — human-in-the-loop request approval. Rules with `action: hitl`
-// pause the upstream call until an operator approves on the dashboard.
-// Decisions arrive over a per-request channel; the gateway times out
-// after Rule.HITLTimeout (default 60s). Notifier plugins (Slack,
-// web-push, etc.) are fired when an approval becomes pending.
+// HITL — human-in-the-loop request approval. Rules with `approve = [...]`
+// pause the upstream call until an operator approves on the dashboard,
+// Slack, or another notifier. Decisions arrive over a per-request
+// channel; the active request only remains resumable while the original
+// client connection/context is alive.
 
 // HITLPending and HITLDecision moved to config/runtime — declared
 // there so approver plugins can produce them without importing main.
@@ -2352,13 +2365,19 @@ func wrapBodySampler(rc io.ReadCloser, s *sampler) io.ReadCloser {
 // HITLRegistry is the pool of pending approvals + per-pending decision
 // channel. Approver runtimes (config/plugins/approvers) call Add to
 // publish a pending entry and select on the returned channel.
-// Dashboard's PUT /api/hitl/decide calls Decide(id, allow) to resolve.
+// Dashboard's POST /api/hitl/decide calls DecideWithResult(id, decision)
+// to resolve and receive operator-facing terminal-state details.
 //
-// Implements runtime.HITLPool via Add / Discard.
+// Implements runtime.HITLPool via Add / Discard and preserves recent
+// terminal states so stale Slack/dashboard prompts can explain whether
+// a request was already decided, timed out, or lost its client.
+const hitlTerminalTTL = 30 * time.Minute
+
 type HITLRegistry struct {
-	mu      sync.Mutex
-	pending map[string]*pendingEntry
-	sink    *Sink // SSE fan-out for the dashboard
+	mu       sync.Mutex
+	pending  map[string]*pendingEntry
+	terminal map[string]terminalHITLEntry
+	sink     *Sink // SSE fan-out for the dashboard
 }
 
 type pendingEntry struct {
@@ -2366,8 +2385,17 @@ type pendingEntry struct {
 	decision chan runtime.HITLDecision
 }
 
+type terminalHITLEntry struct {
+	result    runtime.HITLResolveResult
+	expiresAt time.Time
+}
+
 func newHITLRegistry(sink *Sink) *HITLRegistry {
-	return &HITLRegistry{pending: map[string]*pendingEntry{}, sink: sink}
+	return &HITLRegistry{
+		pending:  map[string]*pendingEntry{},
+		terminal: map[string]terminalHITLEntry{},
+		sink:     sink,
+	}
 }
 
 // Add publishes a pending entry and returns its assigned id + a
@@ -2383,7 +2411,9 @@ func (r *HITLRegistry) Add(p runtime.HITLPending) (string, <-chan runtime.HITLDe
 	}
 	ch := make(chan runtime.HITLDecision, 1)
 	r.mu.Lock()
+	r.pruneTerminalLocked(time.Now())
 	r.pending[p.ID] = &pendingEntry{p: p, decision: ch}
+	delete(r.terminal, p.ID)
 	r.mu.Unlock()
 	if r.sink != nil {
 		r.sink.Emit(Event{
@@ -2403,6 +2433,7 @@ func (r *HITLRegistry) Discard(id string) {
 func (r *HITLRegistry) List() []runtime.HITLPending {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.pruneTerminalLocked(time.Now())
 	out := make([]runtime.HITLPending, 0, len(r.pending))
 	for _, e := range r.pending {
 		out = append(out, e.p)
@@ -2413,16 +2444,73 @@ func (r *HITLRegistry) List() []runtime.HITLPending {
 // Decide fires the pending entry's channel. Returns false when the
 // id is unknown (already discarded / never existed).
 func (r *HITLRegistry) Decide(id string, d runtime.HITLDecision) bool {
-	r.mu.Lock()
-	e := r.pending[id]
-	r.mu.Unlock()
-	if e == nil {
-		return false
+	return r.DecideWithResult(id, d).OK
+}
+
+// DecideWithResult resolves a pending entry and records the terminal
+// state. Duplicate/stale clicks get the stored state back with OK=false.
+func (r *HITLRegistry) DecideWithResult(id string, d runtime.HITLDecision) runtime.HITLResolveResult {
+	state := runtime.HITLStateDenied
+	if d.Allow {
+		state = runtime.HITLStateApproved
+	}
+	reason := strings.TrimSpace(d.Reason)
+	if reason == "" {
+		verb := string(state)
+		if d.By != "" {
+			reason = fmt.Sprintf("%s by %s", verb, d.By)
+		} else {
+			reason = verb
+		}
+	}
+	e, result := r.resolve(id, state, reason)
+	if !result.OK {
+		return result
 	}
 	select {
 	case e.decision <- d:
-		return true
+		return result
 	default:
-		return false
+		return runtime.HITLResolveResult{OK: false, State: state, Reason: "pending request was already resolved"}
+	}
+}
+
+// Cancel resolves a pending entry without delivering a human decision.
+// It is used when the original synchronous request times out or the
+// client connection disappears before approval.
+func (r *HITLRegistry) Cancel(id string, state runtime.HITLState, reason string) runtime.HITLResolveResult {
+	if state == "" || state == runtime.HITLStatePending || state == runtime.HITLStateUnknown {
+		state = runtime.HITLStateCanceled
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = string(state)
+	}
+	_, result := r.resolve(id, state, reason)
+	return result
+}
+
+func (r *HITLRegistry) resolve(id string, state runtime.HITLState, reason string) (*pendingEntry, runtime.HITLResolveResult) {
+	now := time.Now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pruneTerminalLocked(now)
+	e := r.pending[id]
+	if e == nil {
+		if terminal, ok := r.terminal[id]; ok {
+			return nil, terminal.result
+		}
+		return nil, runtime.HITLResolveResult{OK: false, State: runtime.HITLStateUnknown, Reason: "unknown or expired HITL request"}
+	}
+	delete(r.pending, id)
+	terminal := runtime.HITLResolveResult{OK: false, State: state, Reason: reason}
+	r.terminal[id] = terminalHITLEntry{result: terminal, expiresAt: now.Add(hitlTerminalTTL)}
+	return e, runtime.HITLResolveResult{OK: true, State: state, Reason: reason}
+}
+
+func (r *HITLRegistry) pruneTerminalLocked(now time.Time) {
+	for id, entry := range r.terminal {
+		if !entry.expiresAt.After(now) {
+			delete(r.terminal, id)
+		}
 	}
 }

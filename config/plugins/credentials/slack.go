@@ -369,26 +369,64 @@ func applySlackInteractivePayload(ctx runtime.WebhookCtx, payload []byte) map[st
 		return map[string]any{"text": "missing pending id"}
 	}
 	allow := act.ActionID == "approve"
-	ok := ctx.HITL.Decide(act.Value, runtime.HITLDecision{Allow: allow, By: "slack:" + p.User.Name})
+	decision := runtime.HITLDecision{Allow: allow, By: "slack:" + p.User.Name}
+	result := runtime.HITLResolveResult{State: runtime.HITLStateUnknown, Reason: "unknown or expired HITL request"}
+	if decider, ok := ctx.HITL.(runtime.HITLPoolDecider); ok {
+		result = decider.DecideWithResult(act.Value, decision)
+	} else if ctx.HITL != nil {
+		result.OK = ctx.HITL.Decide(act.Value, decision)
+		if result.OK {
+			if allow {
+				result.State = runtime.HITLStateApproved
+			} else {
+				result.State = runtime.HITLStateDenied
+			}
+		}
+	}
 
-	var status string
-	if !ok {
-		status = "Already resolved or expired."
-	} else {
+	status := slackHITLStatus(result, allow, p.User.Name)
+	if result.OK {
 		verb := "approved"
-		emoji := ":white_check_mark:"
 		if !allow {
 			verb = "denied"
-			emoji = ":no_entry:"
 		}
 		log.Printf("slack-interactive: %s %s by %s", act.Value, verb, p.User.Name)
-		status = fmt.Sprintf("%s %s by <@%s>", emoji, verb, p.User.Name)
 	}
 
 	if p.ResponseURL != "" {
 		go postSlackResponseURL(p.ResponseURL, status, withStatusBlock(p.Message.Blocks, status))
 	}
 	return map[string]any{} // empty ack — real update flows via response_url
+}
+
+func slackHITLStatus(result runtime.HITLResolveResult, allow bool, user string) string {
+	if result.OK {
+		verb := "approved"
+		emoji := ":white_check_mark:"
+		if !allow {
+			verb = "denied"
+			emoji = ":no_entry:"
+		}
+		return fmt.Sprintf("%s %s by <@%s>", emoji, verb, user)
+	}
+
+	switch result.State {
+	case runtime.HITLStateClientDisconnected:
+		return ":warning: Request is no longer active. The original client connection closed before approval, so the upstream request was not sent."
+	case runtime.HITLStateTimedOut:
+		return ":hourglass_flowing_sand: Approval expired. The upstream request was not sent."
+	case runtime.HITLStateApproved:
+		return ":white_check_mark: This request was already approved."
+	case runtime.HITLStateDenied:
+		return ":no_entry: This request was already denied."
+	case runtime.HITLStateCanceled:
+		if result.Reason != "" {
+			return ":warning: Approval canceled. " + result.Reason
+		}
+		return ":warning: Approval canceled. The upstream request was not sent."
+	default:
+		return "Already resolved or expired."
+	}
 }
 
 // postSlackResponseURL fires the message-replace POST. Slack accepts

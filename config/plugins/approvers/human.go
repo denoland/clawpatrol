@@ -133,10 +133,14 @@ func (h *HumanApprover) Approve(ctx context.Context, req runtime.ApproveRequest)
 			By:       d.By,
 		}, nil
 	case <-timer.C:
+		reason := fmt.Sprintf("approver %q timed out after %s; upstream request was not sent", req.ApproverName, timeout)
+		cancelPending(req.Pool, id, runtime.HITLStateTimedOut, reason)
 		return runtime.ApproveVerdict{
-			Reason: fmt.Sprintf("approver %q timed out after %s", req.ApproverName, timeout),
+			Reason: reason,
 		}, nil
 	case <-ctx.Done():
+		state, reason := hitlCancelStateForContext(ctx.Err())
+		cancelPending(req.Pool, id, state, reason)
 		return runtime.ApproveVerdict{}, ctx.Err()
 	}
 }
