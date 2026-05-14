@@ -135,7 +135,16 @@ func loadConfig(path string) (*config.Gateway, *config.CompiledPolicy, error) {
 		return nil, nil, fmt.Errorf("%s", diags.Error())
 	}
 	if gw.Listen == "" {
-		gw.Listen = ":443"
+		if isTailscaleControlMode(gw.Control) {
+			// tsnet listener on the tailnet IP; 443 is the historical
+			// default and is unprivileged inside the tsnet stack.
+			gw.Listen = ":443"
+		} else {
+			// WireGuard mode: socket is loopback-only anyway (see
+			// tailscale.go's openListener). Use 8443 so the gateway can
+			// run rootless.
+			gw.Listen = "127.0.0.1:8443"
+		}
 	}
 	cp, err := config.Compile(gw)
 	if err != nil {

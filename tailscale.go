@@ -1,8 +1,18 @@
 // Gateway control-plane listener. When the operator's HCL sets the
 // top-level `authkey = "..."` (or TS_AUTHKEY is in the env), the
 // gateway joins a tailnet via an embedded tsnet.Server and accepts
-// agent traffic on its tailnet IP. Otherwise a plain TCP listener
-// on cfg.Listen is used.
+// agent traffic on its tailnet IP — this is the meaningful Listener
+// for tsnet-mode deployments.
+//
+// In WireGuard mode the listener is vestigial: agent TLS flows
+// through the WG netstack's promiscuous forwarder inside the tunnel
+// (main.go's tcpDispatch handles dst port 443), not through this
+// socket. We still open a loopback listener so g.handle is reachable
+// for in-process local debugging, but force the bind to 127.0.0.1
+// regardless of cfg.Listen — historically operators set this to
+// 0.0.0.0:8443, which combined with g.handle's "unknown SNI →
+// splice" fall-through turned the socket into an open TLS proxy
+// (security-review F-19).
 //
 // tsnet's dep tree is unconditionally compiled in — the tunnel
 // package's tailscale plugin already pulls it, so there's no
@@ -12,6 +22,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -44,7 +55,16 @@ func openListener(cfg *config.Gateway, stateDir string) (net.Listener, error) {
 		authKey = os.Getenv("TS_AUTHKEY")
 	}
 	if authKey == "" {
-		return net.Listen("tcp", cfg.Listen)
+		// WireGuard mode: bind loopback regardless of cfg.Listen's
+		// host portion. See the file-level comment.
+		host, port, err := net.SplitHostPort(cfg.Listen)
+		if err != nil || port == "" {
+			port = "8443"
+		}
+		if host != "" && host != "127.0.0.1" && host != "::1" {
+			log.Printf("WARNING: listen %q overridden to loopback in WireGuard mode; agent traffic flows through the WG tunnel, this socket is for local debugging only.", cfg.Listen)
+		}
+		return net.Listen("tcp", net.JoinHostPort("127.0.0.1", port))
 	}
 	hn := cfg.Hostname
 	if hn == "" {

@@ -30,7 +30,6 @@ On the server, pick a data directory (anywhere — `/opt/clawpatrol`,
 into it, and edit the operational fields:
 
 ```hcl
-listen           = "0.0.0.0:8443"
 info_listen      = "127.0.0.1:9080"   # bind the dashboard private — see below
 public_url       = "https://gw.example.com"
 admin_email      = "you@example.com"

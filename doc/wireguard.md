@@ -74,7 +74,6 @@ in promiscuous mode — same shape as unclaw's `boringtun` + `smoltcp`
 curl -fsSL https://denoland.github.io/clawpatrol/install.sh | sh
 
 cat > /opt/clawpatrol/gateway.hcl <<'EOF'
-listen       = "0.0.0.0:8443"
 info_listen  = "127.0.0.1:8080"
 public_url   = "http://your-gw.example.com:8080"
 admin_email  = "you@example.com"

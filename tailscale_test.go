@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,11 +40,10 @@ func TestGatewayTsnetDir_EmptyStateDir(t *testing.T) {
 	}
 }
 
-// TestOpenListener_NoAuthKey covers the plain-TCP fallback: when neither
-// authkey nor TS_AUTHKEY is set, openListener never touches tsnet, so it
-// should bind a plain TCP listener even with HOME and XDG_CONFIG_HOME
-// unset. This guards the env-independence guarantee for the most common
-// (non-Tailscale) deployment.
+// TestOpenListener_NoAuthKey covers the WireGuard-mode path: when
+// neither authkey nor TS_AUTHKEY is set, openListener binds loopback
+// regardless of cfg.Listen's host portion, and is unaffected by
+// HOME / XDG_CONFIG_HOME being unset (no tsnet path is reached).
 func TestOpenListener_NoAuthKey(t *testing.T) {
 	t.Setenv("HOME", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
@@ -54,6 +54,33 @@ func TestOpenListener_NoAuthKey(t *testing.T) {
 		t.Fatalf("openListener: %v", err)
 	}
 	defer func() { _ = ln.Close() }()
+	host, _, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("split addr: %v", err)
+	}
+	if host != "127.0.0.1" && host != "::1" {
+		t.Errorf("expected loopback bind in WG mode, got %s", host)
+	}
+}
+
+// TestOpenListener_NoAuthKey_PublicListenIsOverridden verifies that
+// an operator-set "0.0.0.0:0" still results in a loopback bind in
+// WireGuard mode — the F-19 open-proxy fix.
+func TestOpenListener_NoAuthKey_PublicListenIsOverridden(t *testing.T) {
+	t.Setenv("TS_AUTHKEY", "")
+	cfg := &config.Gateway{Listen: "0.0.0.0:0"}
+	ln, err := openListener(cfg, t.TempDir())
+	if err != nil {
+		t.Fatalf("openListener: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+	host, _, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("split addr: %v", err)
+	}
+	if host != "127.0.0.1" && host != "::1" {
+		t.Fatalf("expected loopback bind, got %s", host)
+	}
 }
 
 // TestOpenListener_EnvIndependent verifies that with an authkey set but

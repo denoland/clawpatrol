@@ -96,7 +96,7 @@ profile "default" { endpoints = [github] }
 | Field | Notes |
 |---|---|
 | `admin_email` | Required. |
-| `listen` | TLS gateway bind. Default `:443`. |
+| `listen` | TLS gateway bind. Meaningful only in Tailscale mode (tsnet listener); in WireGuard mode the agent path uses the WG tunnel and this socket is forced to loopback. |
 | `info_listen` | Dashboard + API bind. |
 | `public_url` | Dashboard URL handed out at join time. |
 | `dashboard_secret` | Required (or `insecure_no_dashboard_secret = true` for local testing). |

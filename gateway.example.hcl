@@ -28,11 +28,15 @@
 
 # ── operational --------------------------------------------------------
 
-listen      = "0.0.0.0:8443"
 info_listen = "127.0.0.1:8080"
 public_url  = "https://gw.example.com"
 admin_email = "you@example.com"
 state_dir   = "/opt/clawpatrol"
+
+# `listen` (TLS MITM listener) is omitted: in WireGuard mode the
+# gateway routes agent TLS through the WG netstack, not through this
+# socket. Set it only in Tailscale mode (where it's the tsnet
+# listener on the tailnet IP).
 
 # Dashboard auth — pick exactly one. The gateway refuses to serve the
 # dashboard / APIs until one of these is set, to avoid silently
