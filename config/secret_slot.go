@@ -26,3 +26,17 @@ type SecretSlot struct {
 type SecretSlotsProvider interface {
 	SecretSlots() []SecretSlot
 }
+
+// CardSubtitleProvider is the optional interface a credential plugin's
+// decoded body implements when its non-secret HCL fields carry an
+// account-level identity (Postgres / Clickhouse user, etc.) worth
+// surfacing as the dashboard card subtitle. Returning "" means "no
+// useful identity on the body" — the card then either shows the
+// OAuth display_name (for OAuth-flow credentials post-connect) or no
+// subtitle at all, rather than a misleading "Saved" placeholder.
+//
+// Called once per /api/state build, so implementations should be
+// pure (read body fields, return a short string).
+type CardSubtitleProvider interface {
+	CardSubtitle() string
+}

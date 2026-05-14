@@ -47,6 +47,10 @@ func (*ClickhouseCredential) SecretSlots() []config.SecretSlot {
 	return []config.SecretSlot{{Label: "ClickHouse password"}}
 }
 
+// CardSubtitle surfaces the configured ClickHouse user as the
+// dashboard card subtitle. Empty when the operator omitted `user`.
+func (c *ClickhouseCredential) CardSubtitle() string { return c.User }
+
 func init() {
 	var _ runtime.HTTPCredentialRuntime = (*ClickhouseCredential)(nil)
 	var _ runtime.ClickhouseAuthCredential = (*ClickhouseCredential)(nil)

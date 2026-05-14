@@ -224,7 +224,12 @@ func registerOAuthCredentials(reg *OAuthRegistry, policy *config.CompiledPolicy)
 		}
 		copied := *flow
 		copied.ID = name
-		reg.Register(name, copied)
+		// Optional: plugins that know how to enrich the token with a
+		// connected-account identity hand the host their fetcher here.
+		// nil for plugins that don't — the dashboard then renders the
+		// card without a subtitle (still has the green dot + status).
+		fetcher, _ := ent.Body.(config.OAuthProfileFetcher)
+		reg.Register(name, copied, fetcher)
 	}
 	if err := reg.LoadFromDB(); err != nil {
 		log.Printf("oauth: rehydrate from db: %v", err)

@@ -406,21 +406,15 @@ function Card({
 }
 
 // contextualSubtitle returns the per-credential-type hint shown below
-// the card title. Sources are all non-secret fields already on the
-// IntegrationRow payload — no secret material (token prefixes, raw
-// password hashes, etc.) is rendered. Returns "" to mean "omit the
-// subtitle slot entirely" (compact card).
+// the card title. For connected credentials the server resolves the
+// account identity (OAuth display_name, Postgres/Clickhouse user,
+// etc.) into `subtitle` — we surface that verbatim and otherwise
+// leave the slot empty (the green dot + status text already convey
+// "connected"). The unconnected hints are still synthesised here
+// because they depend on which connect path the card offers.
 function contextualSubtitle(i: Integration, connected: boolean, hasSlots: boolean): string {
   if (connected) {
-    // OAuth flows persist the connected account identity (email /
-    // username / workspace name) on the credential at connect time —
-    // that's what `display_name` is. Surface it directly when present.
-    if (i.display_name) return i.display_name;
-    // Manual / Tailscale / OAuth-without-identity: nothing useful to
-    // distinguish two same-type creds, fall back to a stable
-    // placeholder so the row still reads "configured".
-    if (hasSlots || i.has_tailscale_auth) return "Saved";
-    return "";
+    return i.subtitle ?? "";
   }
   // Not connected: OAuth and Tailscale both await an explicit user
   // action; manual creds with slots are simply unconfigured.

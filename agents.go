@@ -568,12 +568,20 @@ func shortHash(s string) string {
 }
 
 type IntegrationRow struct {
-	ID               string                 `json:"id"`
-	Name             string                 `json:"name"`
-	Type             string                 `json:"type"` // credential plugin type
-	HasOAuth         bool                   `json:"has_oauth"`
-	OAuth            *OAuthIntegrationUI    `json:"oauth,omitempty"`
-	Slots            []config.SecretSlot    `json:"slots,omitempty"`
+	ID       string              `json:"id"`
+	Name     string              `json:"name"`
+	Type     string              `json:"type"` // credential plugin type
+	HasOAuth bool                `json:"has_oauth"`
+	OAuth    *OAuthIntegrationUI `json:"oauth,omitempty"`
+	Slots    []config.SecretSlot `json:"slots,omitempty"`
+	// Subtitle is the plugin's account-level identity rendered under
+	// the card heading: the connected-OAuth display_name for
+	// OAuth-flow credentials post-connect, or the HCL-derived
+	// CardSubtitle for plugins like Postgres / Clickhouse that carry
+	// a user field on the body. Empty when the plugin has no useful
+	// identity to surface — the dashboard then omits the subtitle
+	// slot entirely rather than render a placeholder.
+	Subtitle         string                 `json:"subtitle,omitempty"`
 	Connected        bool                   `json:"connected"`
 	ExpiresAt        int64                  `json:"expires_at,omitempty"`
 	DisplayName      string                 `json:"display_name,omitempty"`
@@ -664,6 +672,18 @@ func (w *webMux) statusList(r *http.Request) []IntegrationRow {
 				ConnectURL:    "/api/tailscale/connect?id=" + name,
 				StatusURL:     "/api/tailscale/status?id=" + name,
 				DisconnectURL: "/api/tailscale/disconnect?id=" + name,
+			}
+		}
+		// Card subtitle: prefer the OAuth-supplied display_name when
+		// the credential is a connected OAuth flow; fall back to any
+		// HCL-derived identity (Postgres / Clickhouse user, etc.).
+		// Leaves Subtitle empty when neither source has anything to
+		// say — the dashboard then drops the subtitle slot rather
+		// than rendering a misleading "Saved" placeholder.
+		row.Subtitle = row.DisplayName
+		if row.Subtitle == "" {
+			if sp, ok := ent.Body.(config.CardSubtitleProvider); ok {
+				row.Subtitle = sp.CardSubtitle()
 			}
 		}
 		out = append(out, row)

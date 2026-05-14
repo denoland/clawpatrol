@@ -6,6 +6,7 @@ package credentials
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -71,6 +72,39 @@ func (*GitHubOAuth) EnvVars() []config.EnvVar {
 		{Name: "GH_TOKEN", Value: phGitHub, Description: "gh CLI"},
 		{Name: "GITHUB_TOKEN", Value: phGitHub, Description: "GitHub Actions / SDKs"},
 	}
+}
+
+// FetchOAuthProfile pulls the connected GitHub identity from
+// api.github.com/user so the dashboard can surface the login (or full
+// name, when set) as the card subtitle instead of an opaque
+// "connected" indicator. Best-effort: a network error, non-200, or
+// malformed body returns empty strings and the dashboard falls back
+// to no subtitle.
+func (*GitHubOAuth) FetchOAuthProfile(accessToken string) (string, string) {
+	req, _ := http.NewRequest("GET", "https://api.github.com/user", nil)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", ""
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		return "", ""
+	}
+	var u struct {
+		Login     string `json:"login"`
+		Name      string `json:"name"`
+		AvatarURL string `json:"avatar_url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&u); err != nil {
+		return "", ""
+	}
+	display := u.Login
+	if u.Name != "" {
+		display = u.Name
+	}
+	return display, u.AvatarURL
 }
 
 // OAuthFlow on GitHubOAuth returns the gh CLI's published OAuth

@@ -37,6 +37,12 @@ export type Integration = {
   has_oauth: boolean;
   oauth?: OAuthIntegrationUI | null;
   slots?: SecretSlot[] | null;
+  // subtitle is the server-resolved account identity rendered under
+  // the card heading — the OAuth display_name post-connect, the
+  // Postgres/Clickhouse user from HCL, etc. Empty when the plugin
+  // has no useful identity to surface; the dashboard then omits the
+  // subtitle slot rather than render a placeholder.
+  subtitle?: string;
   connected: boolean;
   expires_at?: number;
   display_name?: string;

@@ -50,14 +50,19 @@ type OAuthRegistry struct {
 	mu           sync.RWMutex
 	integrations map[string]*OAuthIntegration
 	states       map[string]*oauthState // key: id
-	db           *sql.DB
+	// profileFetchers keyed by credential id (== integration id at
+	// register time). Captured separately from the OAuth flow config
+	// so the host can call userinfo without re-walking the policy.
+	profileFetchers map[string]config.OAuthProfileFetcher
+	db              *sql.DB
 }
 
 func NewOAuthRegistry(items []OAuthIntegration, db *sql.DB) (*OAuthRegistry, error) {
 	r := &OAuthRegistry{
-		integrations: map[string]*OAuthIntegration{},
-		states:       map[string]*oauthState{},
-		db:           db,
+		integrations:    map[string]*OAuthIntegration{},
+		states:          map[string]*oauthState{},
+		profileFetchers: map[string]config.OAuthProfileFetcher{},
+		db:              db,
 	}
 	for i := range items {
 		r.integrations[items[i].ID] = &items[i]
@@ -138,8 +143,10 @@ func (r *OAuthRegistry) Token(id string) (string, error) {
 // gateway boot to register OAuth-flow credentials from the new
 // policy under their bare-name as the ID. Idempotent: re-registering
 // the same ID with an identical definition is a no-op; replacing one
-// with a different definition overwrites.
-func (r *OAuthRegistry) Register(id string, def OAuthIntegration) {
+// with a different definition overwrites. fetcher is optional — pass
+// nil for OAuth providers that don't (yet) know how to enrich the
+// token with the connected account's identity.
+func (r *OAuthRegistry) Register(id string, def OAuthIntegration, fetcher config.OAuthProfileFetcher) {
 	if id == "" {
 		return
 	}
@@ -147,6 +154,11 @@ func (r *OAuthRegistry) Register(id string, def OAuthIntegration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.integrations[id] = &def
+	if fetcher != nil {
+		r.profileFetchers[id] = fetcher
+	} else {
+		delete(r.profileFetchers, id)
+	}
 }
 
 // Status returns connected info for the named credential.
@@ -204,54 +216,12 @@ func (r *OAuthRegistry) Set(id string, tok *oauth2.Token) error {
 		r.states[id] = s
 	}
 	s.setToken(tok)
-	if name, avatar := fetchOAuthProfile(id, tok.AccessToken); name != "" || avatar != "" {
-		s.persistProfile(name, avatar)
+	if fetcher, ok := r.profileFetchers[id]; ok {
+		if name, avatar := fetcher.FetchOAuthProfile(tok.AccessToken); name != "" || avatar != "" {
+			s.persistProfile(name, avatar)
+		}
 	}
 	return nil
-}
-
-// OAuthProfile holds the human-identity bits we surface on the
-// dashboard (real name + avatar). Populated after a successful token
-// exchange by hitting the provider's userinfo endpoint.
-type OAuthProfile struct {
-	DisplayName string
-	AvatarURL   string
-}
-
-// fetchOAuthProfile returns the (display_name, avatar_url) for a
-// freshly-issued token. Per-provider — `github` hits api.github.com/
-// user; others currently return empty until their userinfo wiring
-// lands. Failure is non-fatal: profile metadata is decorative and
-// missing data falls back to the provider icon on the dashboard.
-func fetchOAuthProfile(id, accessToken string) (string, string) {
-	switch id {
-	case "github":
-		req, _ := http.NewRequest("GET", "https://api.github.com/user", nil)
-		req.Header.Set("Authorization", "Bearer "+accessToken)
-		req.Header.Set("Accept", "application/vnd.github+json")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return "", ""
-		}
-		defer func() { _ = resp.Body.Close() }()
-		if resp.StatusCode != 200 {
-			return "", ""
-		}
-		var u struct {
-			Login     string `json:"login"`
-			Name      string `json:"name"`
-			AvatarURL string `json:"avatar_url"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&u); err != nil {
-			return "", ""
-		}
-		display := u.Login
-		if u.Name != "" {
-			display = u.Name
-		}
-		return display, u.AvatarURL
-	}
-	return "", ""
 }
 
 func newState(it *OAuthIntegration, db *sql.DB) *oauthState {

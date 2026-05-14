@@ -30,6 +30,12 @@ func (*PostgresCredential) SecretSlots() []config.SecretSlot {
 	return []config.SecretSlot{{Label: "Postgres password"}}
 }
 
+// CardSubtitle surfaces the configured Postgres user as the dashboard
+// card subtitle so two same-host postgres credentials (e.g. a
+// read-only and a read-write user against the same DB) read apart at
+// a glance. Empty when the operator omitted `user` from the HCL.
+func (p *PostgresCredential) CardSubtitle() string { return p.User }
+
 func init() {
 	var _ runtime.PostgresAuthCredential = (*PostgresCredential)(nil)
 	config.Register(&config.Plugin{

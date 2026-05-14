@@ -65,3 +65,20 @@ type OptionalScope struct {
 type OAuthFlowProvider interface {
 	OAuthFlow() *OAuthIntegration
 }
+
+// OAuthProfileFetcher is the optional interface an OAuth-flow
+// credential plugin's body implements when it knows how to enrich a
+// freshly-issued access token with the connected account's identity
+// (display name + avatar). The host calls this once at exchange time
+// and persists the result on the credentials row; the dashboard
+// surfaces the display name as the card subtitle so two same-type
+// OAuth credentials can be told apart at a glance.
+//
+// Plugins that don't implement this leave the identity empty — the
+// dashboard then shows no subtitle (the green dot + status text still
+// indicate the connection state). Implementations should be
+// best-effort: a failed userinfo fetch returns ("", "") rather than
+// surfacing an error to the connect flow.
+type OAuthProfileFetcher interface {
+	FetchOAuthProfile(accessToken string) (displayName, avatarURL string)
+}
