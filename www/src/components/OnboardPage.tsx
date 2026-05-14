@@ -40,7 +40,7 @@ export function OnboardPage({ code, onBack }: { code: string; onBack: () => void
       <button onClick={onBack} className="text-xs text-text-muted hover:text-text">
         ← back
       </button>
-      <h1 className="font-serif text-4xl leading-none tracking-tight text-text">add device</h1>
+      <h1 className="text-4xl leading-none tracking-tight text-text">add device</h1>
 
       {!info && !err && <div className="text-xs text-text-muted">loading…</div>}
       {err && <div className="text-xs text-danger-500">{err}</div>}
@@ -48,9 +48,7 @@ export function OnboardPage({ code, onBack }: { code: string; onBack: () => void
       {info && (
         <div className="bg-canvas-light border-2 border-navy p-6 space-y-4">
           <div>
-            <div className="text-2xs uppercase tracking-[.12em] text-text-subtle">
-              code from CLI
-            </div>
+            <div className="text-2xs uppercase tracking-wider text-text-subtle">code from CLI</div>
             <div className="font-mono text-3xl tracking-[.18em] text-text mt-1">
               {info.user_code || code}
             </div>

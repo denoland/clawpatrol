@@ -75,8 +75,8 @@ export function LiveRequests({
       className="flex flex-col bg-canvas-light border-2 border-navy overflow-hidden"
       style={{ height: height ?? "420px" }}
     >
-      <div className="flex items-center px-4 py-2.5 text-2xs uppercase tracking-[.12em] text-navy font-bold bg-navy-100 shrink-0">
-        <span>LIVE REQUESTS</span>
+      <div className="flex items-center px-4 py-2.5 text-xs font-sans uppercase tracking-wider text-navy font-bold bg-navy-100 border-b border-navy shrink-0">
+        <span>Live requests</span>
         <span className="ml-2 text-success-500 tabular-nums flex items-center gap-1">
           <span className="w-1.5 h-1.5 rounded-full bg-success-500 animate-pulse" />
           {events.length}

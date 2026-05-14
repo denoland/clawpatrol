@@ -198,7 +198,7 @@ export function DevicePage({
               {a.os && (
                 <>
                   {" "}
-                  · <span className="uppercase tracking-[.08em]">{a.os}</span>
+                  · <span className="uppercase tracking-wider">{a.os}</span>
                 </>
               )}
             </div>
@@ -206,11 +206,11 @@ export function DevicePage({
           <div className="ml-auto flex items-center gap-3">
             <Sparkline data={a.activity} width={160} height={26} />
             <div className="text-right">
-              <div className="text-2xs uppercase tracking-[.09em] text-text-subtle">TRAFFIC</div>
+              <div className="text-2xs uppercase tracking-wider text-text-subtle">Traffic</div>
               <div className="text-xs tabular-nums">{fmtBytes(total)}</div>
             </div>
             <div className="text-right">
-              <div className="text-2xs uppercase tracking-[.09em] text-text-subtle">REQS</div>
+              <div className="text-2xs uppercase tracking-wider text-text-subtle">Reqs</div>
               <div className="text-xs tabular-nums">{a.reqs}</div>
             </div>
           </div>
@@ -288,7 +288,7 @@ function ProfilePicker({
       </button>
       {open && (
         <div className="absolute right-0 top-[calc(100%+6px)] z-20 min-w-[200px] bg-canvas-light border-2 border-navy rounded shadow-lg py-1">
-          <div className="px-3 py-1.5 text-2xs uppercase tracking-[.12em] text-text-subtle border-b border-canvas-muted">
+          <div className="px-3 py-1.5 text-2xs uppercase tracking-wider text-text-subtle border-b border-canvas-muted">
             choose profile
           </div>
           {profiles.length === 0 ? (

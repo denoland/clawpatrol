@@ -39,7 +39,7 @@ export function SettingsPage({
       </nav>
 
       <section className="space-y-3">
-        <h2 className="text-xs uppercase tracking-[.12em] text-navy font-bold">CREDENTIALS</h2>
+        <h2 className="text-xs uppercase tracking-wider text-navy font-bold">Credentials</h2>
         {integrations.length === 0 ? (
           <div className="bg-canvas-light border-2 border-navy px-4 py-6 text-xs text-text-subtle">
             No credentials declared in gateway.hcl yet. Add a credential block to connect Anthropic
@@ -116,9 +116,9 @@ function ConfigSection({ readOnly, onSaved }: { readOnly?: boolean; onSaved: () 
   return (
     <section className="space-y-3">
       <div className="bg-canvas-light border-2 border-navy overflow-hidden">
-        <div className="flex items-center px-4 py-3 bg-navy-100">
-          <h2 className="text-xs uppercase tracking-[.12em] text-navy font-bold">
-            CONFIGURATION · gateway.hcl
+        <div className="flex items-center px-4 py-3 bg-navy-100 border-b border-navy">
+          <h2 className="text-xs uppercase tracking-wider text-navy font-bold">
+            Configuration · gateway.hcl
             {readOnly && (
               <span className="ml-2 normal-case tracking-normal font-normal text-navy/70">
                 · read-only (--read-only-config)
@@ -129,15 +129,17 @@ function ConfigSection({ readOnly, onSaved }: { readOnly?: boolean; onSaved: () 
         <div className="overflow-auto">
           <HCLEditor value={text} onChange={setText} minHeight={420} readOnly={readOnly} />
         </div>
-        <div className="flex items-center gap-2 px-4 py-3 border-t border-canvas-dark">
-          {err && <div className="text-xs text-danger-500 truncate">{err}</div>}
-          {okMsg && <div className="text-xs text-success-600 truncate">{okMsg}</div>}
-          {!readOnly && (
-            <Button onClick={save} disabled={!dirty || busy} className="ml-auto">
-              {busy ? "saving…" : "save"}
-            </Button>
-          )}
-        </div>
+        {(err || okMsg || !readOnly) && (
+          <div className="flex items-center gap-2 px-4 py-3 border-t border-navy">
+            {err && <div className="text-xs text-danger-500 truncate">{err}</div>}
+            {okMsg && <div className="text-xs text-success-600 truncate">{okMsg}</div>}
+            {!readOnly && (
+              <Button onClick={save} disabled={!dirty || busy} className="ml-auto">
+                {busy ? "saving…" : "save"}
+              </Button>
+            )}
+          </div>
+        )}
       </div>
       {preview && (
         <ConfigSaveReview

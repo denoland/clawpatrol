@@ -86,8 +86,8 @@ function Section({
 
   return (
     <div className="last:border-b-0">
-      <div className="flex items-center px-4 py-2.5 bg-navy-100">
-        <div className="text-xs uppercase tracking-[.09em] text-navy font-bold">{title}</div>
+      <div className="flex items-center px-4 py-2.5 bg-navy-100 border-b border-navy">
+        <div className="text-xs uppercase tracking-wider text-navy font-bold">{title}</div>
         <span className="ml-2 text-2xs text-navy/70 tabular-nums">
           {rows.length} rule{rows.length === 1 ? "" : "s"}
         </span>

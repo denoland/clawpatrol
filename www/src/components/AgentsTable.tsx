@@ -36,14 +36,14 @@ export function AgentsTable({
         <col />
         <col style={{ width: 110 }} />
       </colgroup>
-      <thead className="bg-navy-100">
+      <thead className="bg-navy-100 border-b border-navy">
         <tr>
-          <Th>DEVICE</Th>
-          <Th className="hidden md:table-cell">PROFILE</Th>
-          <Th>ACTIVITY</Th>
-          <Th className="text-right">REQS</Th>
+          <Th>Device</Th>
+          <Th className="hidden md:table-cell">Profile</Th>
+          <Th>Activity</Th>
+          <Th className="text-right">Reqs</Th>
           <Th className="hidden lg:table-cell">IP</Th>
-          <Th>INTEGRATIONS</Th>
+          <Th>Integrations</Th>
         </tr>
       </thead>
       <tbody>
@@ -146,7 +146,7 @@ function Th({ children, className = "" }: { children: React.ReactNode; className
   return (
     <th
       className={
-        "px-3 sm:px-[14px] py-[9px] text-left text-2xs uppercase tracking-[.12em] text-navy font-bold " +
+        "px-3 sm:px-[14px] py-[9px] text-left text-xs font-sans uppercase tracking-wider text-navy font-bold " +
         className
       }
     >

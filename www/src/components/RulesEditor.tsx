@@ -90,61 +90,42 @@ export function RulesEditor({ onClose, onSaved }: { onClose: () => void; onSaved
 
   return (
     <>
-      <Modal onClose={onClose} labelledBy="rules-editor-title">
-        <div className="bg-canvas-light border-2 border-navy rounded-md shadow-2xl overflow-hidden flex flex-col w-[820px] max-w-full max-h-[85vh]">
-          <div className="flex items-center px-4 py-3 bg-navy-100">
-            <h2
-              id="rules-editor-title"
-              className="text-xs uppercase tracking-[.12em] text-navy font-bold"
-            >
-              EDIT GATEWAY.HCL
-            </h2>
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="Close"
-              className="ml-auto text-xl leading-none px-2 py-1 text-navy hover:text-text"
-            >
-              ✕
-            </button>
-          </div>
+      <Modal size="lg" title="Edit gateway.hcl" onClose={onClose}>
+        <div className="flex-1 overflow-auto">
+          <HCLEditor value={text} onChange={setText} minHeight={320} />
+        </div>
 
-          <div className="flex-1 overflow-auto">
-            <HCLEditor value={text} onChange={setText} minHeight={320} />
-          </div>
+        <form
+          onSubmit={runAI}
+          className="flex items-center gap-2 px-4 py-2.5 border-t border-navy bg-canvas"
+        >
+          <span className="text-2xs uppercase tracking-wider text-text-subtle">AI</span>
+          <input
+            type="text"
+            value={aiPrompt}
+            onChange={(e) => setAIPrompt(e.target.value)}
+            placeholder='e.g. "deny POSTs to api.github.com" — uses connected Claude/Codex'
+            className="flex-1 text-xs border border-canvas-dark rounded px-2 py-1.5 focus:outline-none focus:border-text transition-colors"
+          />
+          <Button type="submit" variant="outline" disabled={aiBusy || !aiPrompt.trim()}>
+            {aiBusy ? "thinking…" : "apply"}
+          </Button>
+        </form>
 
-          <form
-            onSubmit={runAI}
-            className="flex items-center gap-2 px-4 py-2.5 border-t border-canvas-dark bg-canvas"
-          >
-            <span className="text-2xs uppercase tracking-[.09em] text-text-subtle">AI</span>
-            <input
-              type="text"
-              value={aiPrompt}
-              onChange={(e) => setAIPrompt(e.target.value)}
-              placeholder='e.g. "deny POSTs to api.github.com" — uses connected Claude/Codex'
-              className="flex-1 text-xs border border-canvas-dark rounded px-2 py-1.5 focus:outline-none focus:border-text transition-colors"
-            />
-            <Button type="submit" variant="outline" disabled={aiBusy || !aiPrompt.trim()}>
-              {aiBusy ? "thinking…" : "apply"}
-            </Button>
-          </form>
-
-          <div className="flex items-center px-4 py-3 border-t border-canvas-dark gap-3">
-            {err && <span className="text-xs text-rust-700 break-all flex-1">{err}</span>}
-            {okMsg && <span className="text-xs text-success-600 flex-1">{okMsg}</span>}
-            {!err && !okMsg && (
-              <span className="text-xs text-text-subtle flex-1">
-                {dirty ? "unsaved changes" : "no changes"}
-              </span>
-            )}
-            <Button variant="outline" onClick={onClose}>
-              close
-            </Button>
-            <Button onClick={save} disabled={!dirty || busy}>
-              {busy ? "saving…" : "save"}
-            </Button>
-          </div>
+        <div className="flex items-center px-4 py-3 border-t border-navy gap-3">
+          {err && <span className="text-xs text-rust-700 break-all flex-1">{err}</span>}
+          {okMsg && <span className="text-xs text-success-600 flex-1">{okMsg}</span>}
+          {!err && !okMsg && (
+            <span className="text-xs text-text-subtle flex-1">
+              {dirty ? "unsaved changes" : "no changes"}
+            </span>
+          )}
+          <Button variant="outline" onClick={onClose}>
+            close
+          </Button>
+          <Button onClick={save} disabled={!dirty || busy}>
+            {busy ? "saving…" : "save"}
+          </Button>
         </div>
       </Modal>
       {preview && (

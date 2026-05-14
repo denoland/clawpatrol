@@ -124,6 +124,15 @@ export function IntegrationsCards({
   }, [pendingConnect]);
 
   function disconnect(i: Integration) {
+    const label = credentialTypeLabel(i.type, i.name);
+    const what = i.has_oauth
+      ? "revoke the OAuth token"
+      : i.has_tailscale_auth
+        ? "disconnect the Tailscale node"
+        : "clear the stored secrets";
+    if (!confirm(`Disconnect ${label} (${i.id})?\n\nThis will ${what}. You'll need to reconnect to use it again.`)) {
+      return;
+    }
     if (i.has_tailscale_auth && i.tailscale_auth) {
       tailscaleDisconnect(i.tailscale_auth.disconnect_url).then(onRefresh);
       return;
@@ -332,34 +341,16 @@ function AllIntegrationsModal({
   onDisconnect: (i: Integration) => void;
 }) {
   return (
-    <Modal onClose={onClose} labelledBy="all-integrations-title">
-      <div className="bg-canvas-light border-2 border-navy rounded shadow-lg overflow-hidden w-full max-w-3xl max-h-[80vh] flex flex-col">
-        <div className="flex items-center px-5 py-3 bg-navy-100">
-          <h2
-            id="all-integrations-title"
-            className="text-xs uppercase tracking-[.12em] text-navy font-bold"
-          >
-            All integrations ({list.length})
-          </h2>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="ml-auto text-xl leading-none px-2 py-1 text-navy hover:text-text"
-          >
-            ✕
-          </button>
-        </div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5 p-5 overflow-y-auto">
-          {list.map((i) => (
-            <Card
-              key={i.id}
-              integration={i}
-              onConnect={() => onConnect(i)}
-              onDisconnect={() => onDisconnect(i)}
-            />
-          ))}
-        </div>
+    <Modal size="lg" title={`All integrations (${list.length})`} onClose={onClose}>
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5 p-5 overflow-y-auto">
+        {list.map((i) => (
+          <Card
+            key={i.id}
+            integration={i}
+            onConnect={() => onConnect(i)}
+            onDisconnect={() => onDisconnect(i)}
+          />
+        ))}
       </div>
     </Modal>
   );

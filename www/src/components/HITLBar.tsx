@@ -41,8 +41,8 @@ export function HITLBar() {
 
   return (
     <div className="bg-canvas-light border-2 border-navy overflow-hidden">
-      <div className="px-4 py-2.5 text-2xs uppercase tracking-[.12em] text-navy font-bold flex items-center bg-navy-100">
-        <span>PENDING APPROVALS</span>
+      <div className="px-4 py-2.5 text-xs font-sans uppercase tracking-wider text-navy font-bold flex items-center bg-navy-100 border-b border-navy">
+        <span>Pending approvals</span>
         <span className="ml-2 text-rust-500 tabular-nums">● {pending.length}</span>
       </div>
       {notice && (

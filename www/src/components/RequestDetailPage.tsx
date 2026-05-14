@@ -406,7 +406,7 @@ function Facets({ rows }: { rows: Array<{ name: string; label: string; value: st
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <details open>
-      <summary className="cursor-pointer px-4 py-2.5 text-2xs uppercase tracking-wider font-bold text-navy bg-navy-100 hover:text-text select-none">
+      <summary className="cursor-pointer px-4 py-2.5 text-xs font-sans uppercase tracking-wider font-bold text-navy bg-navy-100 border-b border-navy hover:text-text select-none">
         {title}
       </summary>
       <div>{children}</div>
@@ -572,7 +572,7 @@ function HttpBody({ text }: { text: string }) {
           return (
             <div key={i}>
               {e.type && (
-                <div className="text-2xs uppercase tracking-[.12em] text-text-subtle mb-1">
+                <div className="text-2xs uppercase tracking-wider text-text-subtle mb-1">
                   event:{" "}
                   <span className="normal-case tracking-normal text-text-muted">{e.type}</span>
                 </div>

@@ -14,31 +14,13 @@ export function AddDeviceModal({
   const joinCmd = `clawpatrol join ${url}`;
 
   return (
-    <Modal onClose={onClose} labelledBy="add-device-title">
-      <div className="bg-canvas-light border-2 border-navy rounded-md shadow-2xl overflow-hidden w-[600px]">
-        <div className="flex items-center px-4 py-3 bg-navy-100">
-          <h2
-            id="add-device-title"
-            className="text-xs uppercase tracking-[.12em] text-navy font-bold"
-          >
-            ADD DEVICE
-          </h2>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="ml-auto text-xl leading-none px-2 py-1 text-navy hover:text-text"
-          >
-            ✕
-          </button>
-        </div>
-        <div className="p-4 space-y-6">
-          <h3 className="font-serif text-2xl leading-none tracking-tight text-text">
-            run on the new machine
-          </h3>
-          <Step n={1} label="install" cmd={installCmd} />
-          <Step n={2} label="join" cmd={joinCmd} />
-        </div>
+    <Modal title="Add device" onClose={onClose}>
+      <div className="p-4 space-y-6">
+        <h3 className="text-lg leading-none tracking-tight text-text font-sans">
+          Run the following on the new machine:
+        </h3>
+        <Step n={1} label="Install" cmd={installCmd} />
+        <Step n={2} label="Join" cmd={joinCmd} />
       </div>
     </Modal>
   );
@@ -58,13 +40,13 @@ function Step({ n, label, cmd }: { n: number; label: string; cmd: string }) {
         <span className="w-[16px] h-[16px] rounded-full bg-navy text-canvas text-2xs font-semibold flex items-center justify-center shrink-0">
           {n}
         </span>
-        <span className="text-xs text-text-muted">{label}</span>
+        <span className="text-sm text-text-muted font-sans">{label}</span>
       </div>
       <div className="relative">
-        <pre className="bg-navy rounded px-4 py-3 text-xs font-mono text-canvas overflow-x-auto whitespace-pre">
+        <pre className="bg-navy rounded px-4 py-4 text-xs font-mono text-canvas overflow-x-auto whitespace-pre">
           {cmd}
         </pre>
-        <Button variant="outline" onClick={copy} className="absolute top-1 right-1">
+        <Button variant="outline" onClick={copy} className="absolute top-2.5 right-1">
           {copied ? "copied" : "copy"}
         </Button>
       </div>

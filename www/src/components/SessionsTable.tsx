@@ -20,13 +20,13 @@ export function SessionsTable({ sessions: all }: { sessions: Session[] }) {
             <col style={{ width: 60 }} />
             <col style={{ width: 200 }} />
           </colgroup>
-          <thead className="bg-navy-100">
+          <thead className="bg-navy-100 border-b border-navy">
             <tr>
-              <Th>SESSION</Th>
-              <Th>ACTIVITY</Th>
-              <Th className="text-right">AGE</Th>
-              <Th className="text-right">REQS</Th>
-              <Th>MODEL/CTX</Th>
+              <Th>Session</Th>
+              <Th>Activity</Th>
+              <Th className="text-right">Age</Th>
+              <Th className="text-right">Reqs</Th>
+              <Th>Model/Ctx</Th>
             </tr>
           </thead>
           <tbody>
@@ -121,7 +121,7 @@ function Th({ children, className = "" }: { children: React.ReactNode; className
   return (
     <th
       className={
-        "px-3 sm:px-[14px] py-[9px] text-left text-2xs uppercase tracking-[.09em] text-navy font-bold " +
+        "px-3 sm:px-[14px] py-[9px] text-left text-xs font-sans uppercase tracking-wider text-navy font-bold " +
         className
       }
     >

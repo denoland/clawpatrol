@@ -259,6 +259,14 @@
     font: 14px/1.5 var(--font-sans);
     -webkit-font-smoothing: antialiased;
   }
+
+  /* Brand-colored focus ring. Overrides the browser default (blue
+     solid) with a 2px solid rust ring at 2px offset — visible
+     against the cream canvas and the navy-bordered cards. */
+  *:focus-visible {
+    outline: 2px solid var(--color-rust);
+    outline-offset: 2px;
+  }
 }
 
 ::-webkit-scrollbar {

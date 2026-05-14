@@ -209,7 +209,13 @@ var devSeedHostnames = []string{
 	"build-host-east", "build-host-west", "scratch-vm",
 }
 
-var devSeedProfiles = []string{"default", "default", "default", "ops-team", "ci-bot"}
+var devSeedProfiles = []string{
+	"default", "default", "default",
+	"ops-team", "ops-team",
+	"data-team",
+	"support",
+	"ci-bot",
+}
 
 func devSeedDevices(g *Gateway, r *rand.Rand, n int) ([]devSeedDevice, error) {
 	out := make([]devSeedDevice, 0, n)
@@ -254,15 +260,30 @@ func devSeedDevices(g *Gateway, r *rand.Rand, n int) ([]devSeedDevice, error) {
 
 func devSeedCredentials(db *sql.DB) error {
 	now := time.Now().UnixNano()
+	// Credentials are global (one row per id, no per-profile fan-out).
+	// The display_name + avatar attached to a credential is the
+	// connected-as identity surfaced anywhere that credential is
+	// referenced.
 	creds := []struct {
-		id, profile, display, avatar string
+		id, display, avatar string
 	}{
-		{"anthropic-tok", "default", "Jane Doe", "https://i.pravatar.cc/64?img=12"},
-		{"github-tok", "default", "octo-engineering", "https://avatars.githubusercontent.com/u/9919?s=64"},
-		{"openai-tok", "default", "", ""},
-		{"slack-tok", "default", "agent-ops", "https://i.pravatar.cc/64?img=33"},
-		{"github-tok", "ops-team", "ops-bot", "https://i.pravatar.cc/64?img=7"},
-		{"github-tok", "ci-bot", "ci-runner", "https://i.pravatar.cc/64?img=5"},
+		// Original bearer-token quartet
+		{"anthropic-tok", "Jane Doe", "https://i.pravatar.cc/64?img=12"},
+		{"github-tok", "octo-engineering", "https://avatars.githubusercontent.com/u/9919?s=64"},
+		{"openai-tok", "", ""},
+		{"slack-tok", "agent-ops", "https://i.pravatar.cc/64?img=33"},
+
+		// Brand-typed credentials so the dashboard renders proper logos
+		{"claude", "jane@example.com", "https://i.pravatar.cc/64?img=15"},
+		{"codex", "alex@example.com", "https://i.pravatar.cc/64?img=18"},
+		{"github", "octocat", "https://avatars.githubusercontent.com/u/583231?s=64"},
+		{"notion", "Engineering", ""},
+		{"gemini", "data@example.com", "https://i.pravatar.cc/64?img=27"},
+		{"slack-bot", "claw-patrol-bot", ""},
+		{"pg-writer", "writer", ""},
+		{"pg-readonly", "readonly", ""},
+		{"ch-analytics", "analytics", ""},
+		{"alerts-tg", "alerts-bot", ""},
 	}
 	tx, err := db.Begin()
 	if err != nil {
@@ -271,28 +292,30 @@ func devSeedCredentials(db *sql.DB) error {
 	for _, c := range creds {
 		if _, err := tx.Exec(`
 			INSERT INTO credentials
-			  (id, profile, access_token, token_type, refresh_token,
+			  (id, access_token, token_type, refresh_token,
 			   expiry_ns, updated_ns, display_name, avatar_url)
-			VALUES (?, ?, 'redacted-fake-token', 'Bearer', '', 0, ?, ?, ?)`,
-			c.id, c.profile, now,
+			VALUES (?, 'redacted-fake-token', 'Bearer', '', 0, ?, ?, ?)`,
+			c.id, now,
 			nullIfEmpty(c.display), nullIfEmpty(c.avatar)); err != nil {
 			_ = tx.Rollback()
 			return err
 		}
 	}
 	bearers := []struct {
-		credential, profile, slot, value string
+		credential, slot, value string
 	}{
-		{"anthropic-tok", "default", "", "sk-ant-fake-redacted"},
-		{"github-tok", "ci-bot", "", "ghp_fake_redacted"},
-		{"slack-tok", "default", "bot", "xoxb-fake-redacted"},
-		{"slack-tok", "default", "signing", "fake-signing-secret"},
+		{"anthropic-tok", "", "sk-ant-fake-redacted"},
+		{"github-tok", "", "ghp_fake_redacted"},
+		{"slack-tok", "bot", "xoxb-fake-redacted"},
+		{"slack-tok", "signing", "fake-signing-secret"},
+		{"gemini", "", "AIza-fake-redacted"},
+		{"alerts-tg", "", "1234567890:fake-tg-redacted"},
 	}
 	for _, b := range bearers {
 		if _, err := tx.Exec(`
-			INSERT INTO credential_secrets (credential, profile, slot, value, updated_ns)
-			VALUES (?, ?, ?, ?, ?)`,
-			b.credential, b.profile, b.slot, b.value, now); err != nil {
+			INSERT INTO credential_secrets (credential, slot, value, updated_ns)
+			VALUES (?, ?, ?, ?)`,
+			b.credential, b.slot, b.value, now); err != nil {
 			_ = tx.Rollback()
 			return err
 		}
