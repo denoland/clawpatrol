@@ -81,6 +81,26 @@ type Tunnel interface {
 	Close() error
 }
 
+// TunnelCredentialNamer is an optional interface a Tunnel implements
+// when its identity is owned by a named credential. The TunnelManager
+// uses it to route DisconnectCredential to matching live instances.
+type TunnelCredentialNamer interface {
+	// CredentialName returns the bare credential name that owns this
+	// tunnel's identity, or "" if the tunnel wasn't credential-driven.
+	CredentialName() string
+}
+
+// TunnelDisconnector is an optional interface a Tunnel implements when
+// it can perform a clean upstream sign-off (e.g. tsnet's LocalClient
+// Logout deregisters the node from the control plane) before the
+// manager calls Close. The manager invokes Disconnect first, then
+// force-evicts the entry. A Disconnect error is non-fatal — the caller
+// proceeds with the eviction so a stuck upstream doesn't pin local
+// state.
+type TunnelDisconnector interface {
+	Disconnect(ctx context.Context) error
+}
+
 // TunnelHost bundles host-side dependencies a tunnel plugin's Open
 // callback may need. Kept narrow so plugin packages don't have to
 // import the gateway main package.

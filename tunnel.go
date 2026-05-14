@@ -326,6 +326,78 @@ func (m *TunnelManager) SetPolicy(ctx context.Context, policy *config.CompiledPo
 	}
 }
 
+// DisconnectCredential force-evicts every live tunnel entry whose
+// runtime reports CredentialName() == credential. For each match, the
+// manager calls Disconnect (best-effort upstream sign-off — tsnet's
+// LocalClient Logout for the tailscale plugin) before Close, then
+// drops the entry from the in-flight map and any pinned slot. The
+// first Disconnect error is returned; eviction proceeds regardless so
+// the caller can follow up with a state wipe and the next Acquire
+// builds a fresh instance.
+//
+// Force-evicts in the sense that refcount is ignored: in-flight dials
+// holding a release closure will find the entry gone on next Release
+// (releaseEntry handles missing entries silently), and a subsequent
+// Acquire on the same (name, sharing-key) will re-Open from scratch.
+// Used by the dashboard's tailscale Disconnect handler so clearing
+// credential_secrets doesn't race a live tsnet that still holds the
+// node identity in memory.
+func (m *TunnelManager) DisconnectCredential(ctx context.Context, credential string) error {
+	if credential == "" {
+		return nil
+	}
+	type victim struct {
+		mk  mgrKey
+		ent *tunnelEntry
+	}
+	var matches []victim
+	m.mu.Lock()
+	for mk, e := range m.entries {
+		if e.tunnel == nil {
+			continue
+		}
+		cn, ok := e.tunnel.(runtime.TunnelCredentialNamer)
+		if !ok || cn.CredentialName() != credential {
+			continue
+		}
+		matches = append(matches, victim{mk: mk, ent: e})
+	}
+	m.mu.Unlock()
+
+	var firstErr error
+	for _, v := range matches {
+		if d, ok := v.ent.tunnel.(runtime.TunnelDisconnector); ok {
+			if err := d.Disconnect(ctx); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		m.mu.Lock()
+		cur, ok := m.entries[v.mk]
+		if !ok || cur != v.ent {
+			m.mu.Unlock()
+			continue
+		}
+		if cur.timer != nil {
+			cur.timer.Stop()
+			cur.timer = nil
+		}
+		delete(m.entries, v.mk)
+		// Drop the orphaned pin so the next SetPolicy reload (or any
+		// re-Acquire driven by the dashboard's Connect button) goes
+		// through a fresh Open against the now-empty StateStore.
+		delete(m.pinned, v.mk)
+		t, vr := cur.tunnel, cur.viaRelease
+		m.mu.Unlock()
+		if t != nil {
+			_ = t.Close()
+		}
+		if vr != nil {
+			vr()
+		}
+	}
+	return firstErr
+}
+
 // Close tears down every entry. Called at gateway shutdown.
 func (m *TunnelManager) Close() {
 	m.mu.Lock()

@@ -317,3 +317,143 @@ func TestManagerConcurrentAcquire(t *testing.T) {
 		}
 	}
 }
+
+// credTunnel is a fakeTunnel variant whose opened handle satisfies
+// runtime.TunnelCredentialNamer + runtime.TunnelDisconnector, so the
+// manager's DisconnectCredential path is exercised end-to-end.
+type credTunnel struct {
+	fakeTunnel
+	credential   string
+	disconnectCt atomic.Int32
+	disconnectEr error
+}
+
+func (c *credTunnel) Open(_ context.Context, _ runtime.TunnelHost, via runtime.Tunnel) (runtime.Tunnel, error) {
+	c.openCount.Add(1)
+	if c.openErr != nil {
+		return nil, c.openErr
+	}
+	return &credOpenedTunnel{parent: c, via: via}, nil
+}
+
+type credOpenedTunnel struct {
+	parent *credTunnel
+	via    runtime.Tunnel
+}
+
+func (t *credOpenedTunnel) Dial(_ context.Context, _, _ string) (net.Conn, error) {
+	t.parent.dialCount.Add(1)
+	_, b := net.Pipe()
+	return b, nil
+}
+
+func (t *credOpenedTunnel) Close() error {
+	t.parent.closeCount.Add(1)
+	return nil
+}
+
+func (t *credOpenedTunnel) CredentialName() string { return t.parent.credential }
+
+func (t *credOpenedTunnel) Disconnect(_ context.Context) error {
+	t.parent.disconnectCt.Add(1)
+	return t.parent.disconnectEr
+}
+
+func makeCredTunnel(name, credential string) (*config.CompiledTunnel, *credTunnel) {
+	body := &credTunnel{credential: credential}
+	return &config.CompiledTunnel{
+		Name:    name,
+		Plugin:  &config.Plugin{Kind: config.KindTunnel, Type: "fake_cred"},
+		Body:    body,
+		Sharing: runtime.TunnelShareSingleton,
+	}, body
+}
+
+// TestDisconnectCredential: matching entries get Disconnect-then-Close,
+// non-matching entries are untouched, and the next Acquire on the
+// evicted name builds a fresh runtime.
+func TestDisconnectCredential(t *testing.T) {
+	m := NewTunnelManager(runtime.EnvSecretStore{}, "")
+	ctA, fakeA := makeCredTunnel("tnA", "credX")
+	ctB, fakeB := makeCredTunnel("tnB", "credY")
+
+	_, relA, err := m.Acquire(context.Background(), ctA, "ep")
+	if err != nil {
+		t.Fatalf("acquire A: %v", err)
+	}
+	defer relA()
+	_, relB, err := m.Acquire(context.Background(), ctB, "ep")
+	if err != nil {
+		t.Fatalf("acquire B: %v", err)
+	}
+	defer relB()
+
+	if err := m.DisconnectCredential(context.Background(), "credX"); err != nil {
+		t.Fatalf("DisconnectCredential: %v", err)
+	}
+	if got := fakeA.disconnectCt.Load(); got != 1 {
+		t.Errorf("credX disconnect count = %d, want 1", got)
+	}
+	if got := fakeA.closeCount.Load(); got != 1 {
+		t.Errorf("credX close count = %d, want 1", got)
+	}
+	if got := fakeB.disconnectCt.Load(); got != 0 {
+		t.Errorf("credY disconnect count = %d, want 0 (non-matching)", got)
+	}
+	if got := fakeB.closeCount.Load(); got != 0 {
+		t.Errorf("credY close count = %d, want 0 (non-matching)", got)
+	}
+
+	// Re-Acquire on the evicted tunnel runs Open again — proves the
+	// entry was force-evicted regardless of the lingering release
+	// closure held by relA.
+	_, rel2, err := m.Acquire(context.Background(), ctA, "ep")
+	if err != nil {
+		t.Fatalf("re-acquire A: %v", err)
+	}
+	defer rel2()
+	if got := fakeA.openCount.Load(); got != 2 {
+		t.Errorf("credX openCount after evict+re-acquire = %d, want 2", got)
+	}
+}
+
+// TestDisconnectCredentialUnknown: a credential with no matching live
+// runtime is a silent no-op (no error, no Close calls).
+func TestDisconnectCredentialUnknown(t *testing.T) {
+	m := NewTunnelManager(runtime.EnvSecretStore{}, "")
+	ct, fake := makeCredTunnel("tn", "credX")
+	_, rel, err := m.Acquire(context.Background(), ct, "ep")
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	defer rel()
+	if err := m.DisconnectCredential(context.Background(), "nope"); err != nil {
+		t.Fatalf("DisconnectCredential: %v", err)
+	}
+	if got := fake.disconnectCt.Load(); got != 0 {
+		t.Errorf("disconnect count = %d, want 0", got)
+	}
+	if got := fake.closeCount.Load(); got != 0 {
+		t.Errorf("close count = %d, want 0", got)
+	}
+}
+
+// TestDisconnectCredentialErrorIsNonFatal: a Disconnect error surfaces
+// from the manager but eviction still completes — Close still ran.
+func TestDisconnectCredentialErrorIsNonFatal(t *testing.T) {
+	m := NewTunnelManager(runtime.EnvSecretStore{}, "")
+	ct, fake := makeCredTunnel("tn", "credX")
+	fake.disconnectEr = errors.New("boom")
+	_, rel, err := m.Acquire(context.Background(), ct, "ep")
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	defer rel()
+	err = m.DisconnectCredential(context.Background(), "credX")
+	if err == nil || err.Error() != "boom" {
+		t.Fatalf("DisconnectCredential err = %v, want boom", err)
+	}
+	if got := fake.closeCount.Load(); got != 1 {
+		t.Errorf("close count = %d, want 1 (evict proceeds past logout error)", got)
+	}
+}
