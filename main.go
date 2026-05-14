@@ -1233,12 +1233,11 @@ func isHTTPSMITMFamily(family string) bool {
 // postgres endpoint runtime. The dstIP comes from the WG forwarder —
 // agents resolve real RDS hostnames via public DNS and the gateway
 // intercepts at L3, so dstIP is the upstream RDS / postgres server
-// address. The endpoint is selected from the device's profile
-// (first postgres-family endpoint wins; multi-postgres profiles need
-// DNS-aware resolution, tracked as a follow-up).
-//
-// passthrough fallback when no endpoint applies, mirroring the
-// HTTPS handler's `unknown_host = passthrough` default.
+// address. The endpoint is selected from the device's profile via
+// dnsvip (tunneled endpoints) or ConnIndex (non-tunneled, dst-IP
+// indexed). An unclaimed dst — no endpoint declares this host — is
+// relayed verbatim so the connection fails on the real network
+// rather than being silently routed to an unrelated postgres.
 func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 	defer func() { _ = c.Close() }()
 	defer otelTrackConn("pg_relay")()
@@ -1252,14 +1251,15 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 	//   1. dnsvip.LookupVIP — tunneled endpoints reach upstream via
 	//      a synthetic hostname routed through a VIP, and conn-index
 	//      intentionally skips them (would double-route past the
-	//      tunnel). Without this lookup, a tunneled postgres endpoint
-	//      lands in the firstPostgresEndpoint fallback below and the
-	//      gateway dials the wrong RDS / cloud-sql-proxy.
+	//      tunnel).
 	//   2. ConnIndex — non-tunneled endpoints indexed by DNS-resolved
 	//      upstream IP. Filtered by profile so writer / readonly
 	//      pointing at one RDS still picks the right one.
-	//   3. firstPostgresEndpoint — last-resort fallback so a
-	//      single-postgres profile works without DNS interception.
+	//
+	// No third "pick any postgres endpoint" fallback: an unclaimed
+	// dst means no endpoint declares this host, and guessing routes
+	// the connection to an unrelated database (e.g. an RDS hostname
+	// silently terminating on a Cloud SQL tunnel).
 	var ep *config.CompiledEndpoint
 	if g.dnsvip != nil {
 		if _, hits := g.dnsvip.LookupVIP(dstIP); len(hits) > 0 {
@@ -1279,11 +1279,8 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 		}
 	}
 	if ep == nil {
-		ep = firstPostgresEndpoint(policy, profile)
-	}
-	if ep == nil {
-		// No postgres policy → relay verbatim. Closes when either
-		// side hangs up.
+		// No endpoint claims dstIP → relay verbatim. Closes when
+		// either side hangs up.
 		log.Printf("pg %s: no postgres endpoint in profile %q; relaying", dstIP, profile)
 		g.wgRelay(c, dstIP, 5432)
 		return
@@ -1511,10 +1508,6 @@ func (g *Gateway) handleDNSTCPConn(c net.Conn, dstIP string) {
 	g.dnsvip.ServeTCP(c, dstIP)
 }
 
-// firstPostgresEndpoint returns the first postgres-family endpoint in
-// the device's profile. Multi-postgres profiles need DNS-aware
-// matching against the WG forwarder's dstIP — tracked as follow-up;
-// the first-match heuristic covers the single-database common case.
 // pickEndpointForProfile takes ConnIndex.Lookup candidates and returns
 // the one whose name belongs to the device's profile. Returns nil when
 // none of them do — caller should refuse the connection rather than
@@ -1535,30 +1528,6 @@ func pickEndpointForProfile(candidates []*config.CompiledEndpoint, policy *confi
 	for _, c := range candidates {
 		if _, in := prof.Endpoints[c.Name]; in {
 			return c
-		}
-	}
-	return nil
-}
-
-func firstPostgresEndpoint(policy *config.CompiledPolicy, profile string) *config.CompiledEndpoint {
-	if policy == nil {
-		return nil
-	}
-	prof, ok := policy.Profiles[profile]
-	if !ok {
-		// Single-tenant fallback: scan every profile.
-		for _, p := range policy.Profiles {
-			for _, ep := range p.Endpoints {
-				if ep.Plugin.Type == "postgres" {
-					return ep
-				}
-			}
-		}
-		return nil
-	}
-	for _, ep := range prof.Endpoints {
-		if ep.Plugin.Type == "postgres" {
-			return ep
 		}
 	}
 	return nil

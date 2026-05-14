@@ -36,10 +36,10 @@ type ConnIndex struct {
 
 // BuildConnIndex walks every endpoint whose body implements ConnRouter
 // and resolves each declared host. DNS failures are logged + skipped;
-// the endpoint stays in the policy and the caller's per-profile
-// fallback (e.g. firstPostgresEndpoint) can still pick it up.
-// Resolution is best-effort with a short timeout to avoid stalling
-// boot when an upstream is unreachable.
+// the endpoint stays in the policy and a subsequent resolution attempt
+// (e.g. on policy reload) can still index it. Resolution is best-effort
+// with a short timeout to avoid stalling boot when an upstream is
+// unreachable.
 func BuildConnIndex(policy *config.CompiledPolicy) *ConnIndex {
 	idx := &ConnIndex{
 		byIP:   map[string][]*config.CompiledEndpoint{},
