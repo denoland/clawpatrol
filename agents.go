@@ -826,15 +826,7 @@ func (w *webMux) apiAgentProfile(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "missing ip or profile", 400)
 		return
 	}
-	names := orderedProfileNames(w.g.cfg.Policy)
-	known := false
-	for _, n := range names {
-		if n == profile {
-			known = true
-			break
-		}
-	}
-	if !known {
+	if !profileExists(w.g.cfg.Policy, profile) {
 		http.Error(rw, "unknown profile", 400)
 		return
 	}
