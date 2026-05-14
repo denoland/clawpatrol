@@ -1,4 +1,4 @@
-import type { Agent, Integration } from "../../lib/api";
+import type { Agent } from "../../lib/api";
 import { fmtAge, fmtBytes } from "../../lib/format";
 import { Card } from "../cards/Card";
 import { PageHeader } from "../cards/PageHeader";
@@ -14,15 +14,10 @@ import { PageHeader } from "../cards/PageHeader";
 // Agent keyed by IP. There's no "Awaiting approval" device list
 // because clawpatrol has no device-registration handshake to
 // gate on.
-export function V2DevicesPage({
-  agents,
-  integrations,
-}: {
-  agents: Agent[];
-  integrations: Integration[];
-}) {
-  const byId = new Map<string, Integration>();
-  for (const i of integrations) byId.set(i.id, i);
+//
+// Per-credential integration chips have moved to the Profiles page,
+// which is the right place to see what a device's profile binds.
+export function V2DevicesPage({ agents }: { agents: Agent[] }) {
   const sorted = [...agents].sort((a, b) => a.ip.localeCompare(b.ip));
 
   return (
@@ -48,7 +43,6 @@ export function V2DevicesPage({
                 <th className="px-4 py-2 font-medium text-right">Reqs</th>
                 <th className="px-4 py-2 font-medium text-right">In/Out</th>
                 <th className="px-4 py-2 font-medium">Last seen</th>
-                <th className="px-4 py-2 font-medium">Integrations</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-canvas-dark">
@@ -65,26 +59,6 @@ export function V2DevicesPage({
                     {fmtBytes(a.bytes_in)} / {fmtBytes(a.bytes_out)}
                   </td>
                   <td className="px-4 py-2 text-text-muted">{fmtAge(a.last_at)}</td>
-                  <td className="px-4 py-2">
-                    <div className="flex flex-wrap gap-1">
-                      {(a.integrations ?? []).slice(0, 6).map((id) => {
-                        const intg = byId.get(id);
-                        return (
-                          <span
-                            key={id}
-                            className={`text-[10px] px-1.5 py-0.5 rounded-full ${
-                              intg?.connected
-                                ? "bg-success-100 text-success-700"
-                                : "bg-canvas-dark text-text-muted"
-                            }`}
-                            title={intg ? `${intg.name} (${intg.type})` : id}
-                          >
-                            {intg?.name ?? id}
-                          </span>
-                        );
-                      })}
-                    </div>
-                  </td>
                 </tr>
               ))}
             </tbody>

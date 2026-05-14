@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { type Agent, type EventRecord, getAction, getAnalytics } from "../../lib/api";
+import {
+  type Agent,
+  decideHITL,
+  type EventRecord,
+  getAction,
+  getAnalytics,
+  type HITLPending,
+} from "../../lib/api";
 import { fmtDateTime } from "../../lib/format";
 import { Card } from "../cards/Card";
 import { PageHeader } from "../cards/PageHeader";
@@ -10,14 +17,25 @@ import { PageHeader } from "../cards/PageHeader";
 // and project the EventRecord rows. `?action=<id>` opens an
 // overlay detail.
 //
-// unclaw exposes per-action records with stages, costs, and reviewer
-// metadata. clawpatrol's EventRecord has approver / approver_type /
-// approver_by + endpoint + rule but no cost / token telemetry, so
-// the "LLM" and "Reviewer cost" columns from unclaw are dropped.
-export function V2ActionsPage({ agents, actionId }: { agents: Agent[]; actionId?: string }) {
+// Approval-pending requests live on /api/hitl/pending — a different
+// shape, but conceptually "actions waiting on a verdict." We weave
+// them in as highlighted rows at the top of the table with inline
+// approve/deny buttons; the old standalone Approvals page is gone.
+export function V2ActionsPage({
+  agents,
+  pending,
+  onRefresh,
+  actionId,
+}: {
+  agents: Agent[];
+  pending: HITLPending[];
+  onRefresh: () => void;
+  actionId?: string;
+}) {
   const [rows, setRows] = useState<EventRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [agentFilter, setAgentFilter] = useState<string>("");
+  const [busy, setBusy] = useState<string | null>(null);
 
   useEffect(() => {
     let cancel = false;
@@ -45,11 +63,31 @@ export function V2ActionsPage({ agents, actionId }: { agents: Agent[]; actionId?
     return m;
   }, [agents]);
 
+  const visiblePending = useMemo(() => {
+    if (!agentFilter) return pending;
+    return pending.filter((p) => p.agent_ip === agentFilter);
+  }, [pending, agentFilter]);
+
+  async function decide(id: string, allow: boolean) {
+    setBusy(id);
+    try {
+      await decideHITL(id, allow);
+      onRefresh();
+    } catch {
+      /* swallow */
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const pendCount = visiblePending.length;
+  const totalRows = pendCount + rows.length;
+
   return (
     <div className="mx-auto max-w-7xl">
       <PageHeader
         title="Actions"
-        subhead="Recent dispatched actions. Click a row to see headers, bodies, and the rule path."
+        subhead="Recent dispatched actions. Rows awaiting your verdict glow at the top — approve or deny inline."
       >
         <select
           value={agentFilter}
@@ -65,10 +103,15 @@ export function V2ActionsPage({ agents, actionId }: { agents: Agent[]; actionId?
         </select>
       </PageHeader>
 
-      <Card title={`Actions (24h)`} count={rows.length} tight>
+      <Card
+        title={`Actions (24h)`}
+        count={totalRows}
+        countAccent={pendCount > 0 ? `${pendCount} awaiting` : undefined}
+        tight
+      >
         {loading ? (
           <div className="px-4 py-8 text-center text-sm text-text-muted">Loading…</div>
-        ) : rows.length === 0 ? (
+        ) : totalRows === 0 ? (
           <div className="px-4 py-8 text-center text-sm text-text-muted">
             No actions in the last 24h.
           </div>
@@ -85,6 +128,56 @@ export function V2ActionsPage({ agents, actionId }: { agents: Agent[]; actionId?
               </tr>
             </thead>
             <tbody className="divide-y divide-canvas-dark">
+              {visiblePending.map((p) => {
+                const isBusy = busy === p.id;
+                return (
+                  <tr
+                    key={`pending-${p.id}`}
+                    className="bg-butter-100/40 border-l-4 border-l-butter-500"
+                  >
+                    <td className="px-4 py-2 font-mono text-xs whitespace-nowrap text-text-muted">
+                      {fmtDateTime(p.created_at)}
+                    </td>
+                    <td className="px-4 py-2 truncate max-w-[140px]">
+                      {p.agent_ip ? (agentLabel.get(p.agent_ip) ?? p.agent_ip) : "—"}
+                    </td>
+                    <td className="px-4 py-2 truncate max-w-[320px]">
+                      <span className="font-mono text-xs text-text-muted mr-1">{p.method}</span>
+                      {p.endpoint || p.host}
+                      {p.path && <span className="text-text-muted">{p.path}</span>}
+                      {p.reason && (
+                        <div className="text-[11px] text-text-muted italic mt-0.5">{p.reason}</div>
+                      )}
+                    </td>
+                    <td className="px-4 py-2">
+                      <span className="text-xs px-1.5 py-0.5 rounded-full bg-butter-100 text-butter-900 font-medium">
+                        awaiting
+                      </span>
+                    </td>
+                    <td className="px-4 py-2 text-text-muted">—</td>
+                    <td className="px-4 py-2">
+                      <div className="flex gap-1">
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={() => decide(p.id, true)}
+                          className="text-xs px-2 py-0.5 bg-success-500 text-canvas-light hover:bg-success-600 disabled:opacity-60"
+                        >
+                          Approve
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isBusy}
+                          onClick={() => decide(p.id, false)}
+                          className="text-xs px-2 py-0.5 border border-danger-500 text-danger-700 hover:bg-danger-100 disabled:opacity-60"
+                        >
+                          Deny
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
               {rows.slice(0, 200).map((e) => (
                 <tr
                   key={(e.id ?? "") + e.ts}

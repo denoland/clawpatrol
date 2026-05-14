@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { type Agent, listProfiles, type ProfileInfo } from "../../lib/api";
+import { type Agent, type Integration, listProfiles, type ProfileInfo } from "../../lib/api";
+import { IntegrationIcon } from "../../components/Logos";
 import { Card } from "../cards/Card";
 import { PageHeader } from "../cards/PageHeader";
 
@@ -9,7 +10,19 @@ import { PageHeader } from "../cards/PageHeader";
 // by endpoints / tunnels. Devices carry a `profile` field that pins
 // each one to a declared profile, so device counts join in
 // client-side.
-export function ProfilesPage({ agents }: { agents: Agent[] }) {
+//
+// Credentials render with their plugin-type icon (postgres logo for
+// postgres_credential, etc.) so an operator can scan the profile and
+// see at a glance what's wired in. A green border on the chip
+// signals the credential is currently connected; no border means
+// the secret hasn't been set or has been cleared.
+export function ProfilesPage({
+  agents,
+  integrations,
+}: {
+  agents: Agent[];
+  integrations: Integration[];
+}) {
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -26,6 +39,9 @@ export function ProfilesPage({ agents }: { agents: Agent[] }) {
     const key = a.profile || "(default)";
     countByProfile.set(key, (countByProfile.get(key) ?? 0) + 1);
   }
+
+  const integrationById = new Map<string, Integration>();
+  for (const i of integrations) integrationById.set(i.id, i);
 
   return (
     <div className="mx-auto max-w-7xl">
@@ -73,15 +89,32 @@ export function ProfilesPage({ agents }: { agents: Agent[] }) {
                     </div>
                   )}
                   {p.credentials.length > 0 && (
-                    <div className="mt-1 flex flex-wrap gap-1">
-                      {p.credentials.map((c) => (
-                        <span
-                          key={c}
-                          className="font-mono text-xs px-1.5 py-0.5 border border-canvas-dark text-text-muted"
-                        >
-                          {c}
-                        </span>
-                      ))}
+                    <div className="mt-2 flex flex-col gap-1">
+                      {p.credentials.map((c) => {
+                        const intg = integrationById.get(c);
+                        const connected = intg?.connected ?? false;
+                        return (
+                          <div
+                            key={c}
+                            className={`w-full flex items-center gap-3 px-3 py-2 bg-canvas border-2 ${
+                              connected ? "border-success-500" : "border-transparent"
+                            }`}
+                            title={connected ? "Connected" : "Not connected"}
+                          >
+                            <IntegrationIcon
+                              id={c}
+                              type={intg?.type}
+                              className="h-6 w-6 shrink-0"
+                            />
+                            <span className="font-medium text-sm truncate">{intg?.name ?? c}</span>
+                            {intg?.type && (
+                              <span className="text-[11px] text-text-muted font-mono ml-auto">
+                                {intg.type}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </li>

@@ -481,6 +481,7 @@ export type LatencyDot = {
 export async function getAnalytics(params: {
   range: string;
   agent?: string;
+  rule?: string;
   limit?: number;
 }): Promise<{
   events: EventRecord[];
@@ -493,6 +494,7 @@ export async function getAnalytics(params: {
 }> {
   const p = new URLSearchParams({ range: params.range });
   if (params.agent) p.set("agent", params.agent);
+  if (params.rule) p.set("rule", params.rule);
   if (params.limit) p.set("limit", String(params.limit));
   const r = await api(`/api/analytics?${p}`);
   if (!r.ok) throw new Error(await r.text());

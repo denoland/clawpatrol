@@ -1301,12 +1301,17 @@ func (w *webMux) apiAnalytics(
 		}
 	}
 	agent := q.Get("agent")
+	rule := q.Get("rule")
 
 	where := "ts_ns >= ?"
 	whereArgs := []any{cutoff}
 	if agent != "" {
 		where += " AND agent_ip = ?"
 		whereArgs = append(whereArgs, agent)
+	}
+	if rule != "" {
+		where += " AND rule = ?"
+		whereArgs = append(whereArgs, rule)
 	}
 
 	// Sort by the random suffix of action_id (UUIDv7, so the last
@@ -1316,7 +1321,8 @@ func (w *webMux) apiAnalytics(
 	query := `
 		SELECT action_id, ts_ns, mode, family, agent_ip, host,
 		       method, path, status, bytes_in, bytes_out,
-		       ms, action, reason, extra
+		       ms, action, reason, extra,
+		       endpoint, rule, approver, approver_type, approver_by
 		FROM actions
 		WHERE ` + where + `
 		ORDER BY COALESCE(substr(action_id, -8), CAST(ts_ns AS TEXT))
@@ -1331,25 +1337,31 @@ func (w *webMux) apiAnalytics(
 	out := make([]Event, 0, 256)
 	for rows.Next() {
 		var (
-			e        Event
-			actionID sql.NullString
-			tsNs     int64
-			mode     sql.NullString
-			family   sql.NullString
-			agentIP  sql.NullString
-			method   sql.NullString
-			path     sql.NullString
-			status   sql.NullInt64
-			in, ot   sql.NullInt64
-			ms       sql.NullInt64
-			action   sql.NullString
-			reason   sql.NullString
-			extra    sql.NullString
+			e            Event
+			actionID     sql.NullString
+			tsNs         int64
+			mode         sql.NullString
+			family       sql.NullString
+			agentIP      sql.NullString
+			method       sql.NullString
+			path         sql.NullString
+			status       sql.NullInt64
+			in, ot       sql.NullInt64
+			ms           sql.NullInt64
+			action       sql.NullString
+			reason       sql.NullString
+			extra        sql.NullString
+			endpoint     sql.NullString
+			ruleCol      sql.NullString
+			approver     sql.NullString
+			approverType sql.NullString
+			approverBy   sql.NullString
 		)
 		if err := rows.Scan(
 			&actionID, &tsNs, &mode, &family, &agentIP, &e.Host,
 			&method, &path, &status, &in, &ot, &ms,
 			&action, &reason, &extra,
+			&endpoint, &ruleCol, &approver, &approverType, &approverBy,
 		); err != nil {
 			http.Error(rw, err.Error(), 500)
 			return
@@ -1370,6 +1382,11 @@ func (w *webMux) apiAnalytics(
 		if extra.String != "" {
 			_ = json.Unmarshal([]byte(extra.String), &e.Facets)
 		}
+		e.Endpoint = endpoint.String
+		e.Rule = ruleCol.String
+		e.Approver = approver.String
+		e.ApproverType = approverType.String
+		e.ApproverBy = approverBy.String
 		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {

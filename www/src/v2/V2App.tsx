@@ -10,7 +10,6 @@ import { ConnectModal } from "../components/ConnectModal";
 import { V2Shell } from "./V2Shell";
 import { OverviewPage } from "./pages/OverviewPage";
 import { V2ActionsPage } from "./pages/ActionsPage";
-import { ApprovalsPage } from "./pages/ApprovalsPage";
 import { V2RulesPage } from "./pages/RulesPage";
 import { V2AnalyticsPage } from "./pages/AnalyticsPage";
 import { ProfilesPage } from "./pages/ProfilesPage";
@@ -20,7 +19,6 @@ import { V2SettingsPage } from "./pages/SettingsPage";
 export type V2Page =
   | "overview"
   | "actions"
-  | "approvals"
   | "rules"
   | "analytics"
   | "profiles"
@@ -59,10 +57,11 @@ export function parseV2Route(hash: string): V2Route | null {
   const actM = rest.match(/^\/actions\/([^/]+)$/);
   if (actM) return { page: "actions", actionId: decodeURIComponent(actM[1]) };
   const seg = rest.replace(/^\//, "").split("/")[0];
+  // Approvals were folded into the Actions page — keep old links working.
+  if (seg === "approvals") return { page: "actions" };
   const pages: V2Page[] = [
     "overview",
     "actions",
-    "approvals",
     "rules",
     "analytics",
     "profiles",
@@ -107,14 +106,15 @@ export function V2App({ route }: { route: V2Route }) {
       {route.page === "actions" && (
         <V2ActionsPage
           agents={agents}
+          pending={pending}
+          onRefresh={refresh}
           actionId={"actionId" in route ? route.actionId : undefined}
         />
       )}
-      {route.page === "approvals" && <ApprovalsPage pending={pending} onRefresh={refresh} />}
-      {route.page === "rules" && <V2RulesPage />}
+      {route.page === "rules" && <V2RulesPage agents={agents} />}
       {route.page === "analytics" && <V2AnalyticsPage agents={agents} />}
-      {route.page === "profiles" && <ProfilesPage agents={agents} />}
-      {route.page === "devices" && <V2DevicesPage agents={agents} integrations={integrations} />}
+      {route.page === "profiles" && <ProfilesPage agents={agents} integrations={integrations} />}
+      {route.page === "devices" && <V2DevicesPage agents={agents} />}
       {route.page === "settings" && (
         <V2SettingsPage
           integrations={integrations}

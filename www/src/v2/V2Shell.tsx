@@ -25,11 +25,10 @@ export function V2Shell({
 }) {
   const tabs: Tab[] = [
     { key: "overview", label: "Overview", href: "#/v2" },
-    { key: "actions", label: "Actions", href: "#/v2/actions" },
     {
-      key: "approvals",
-      label: "Approvals",
-      href: "#/v2/approvals",
+      key: "actions",
+      label: "Actions",
+      href: "#/v2/actions",
       badge: hitlCount,
       badgeKind: "warn",
     },
