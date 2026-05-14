@@ -46,7 +46,9 @@ export function IntegrationsCards({
   const [allOpen, setAllOpen] = useState(false);
 
   // Sort: connected first, then unconnected, then disabled (no auth
-  // path) — preserves declaration order within each bucket.
+  // path) — preserves declaration order within each bucket. Only used
+  // by the device-page row (compact + overflow). The Settings page
+  // (showAll) groups by plugin type instead — see groupedByType below.
   const sorted = [...list].sort((a, b) => {
     const score = (i: Integration) => {
       if (i.connected || i.tailscale_auth?.connected) return 0;
@@ -59,6 +61,12 @@ export function IntegrationsCards({
   const overflow = !showAll && sorted.length > VISIBLE_CAP;
   const visible = overflow ? sorted.slice(0, VISIBLE_CAP - 1) : sorted;
   const hiddenCount = sorted.length - visible.length;
+
+  // Settings-page grouping: cluster cards by plugin type, with each
+  // group labelled by display name + count and sorted alphabetically
+  // by display name. Within a group, sort by credential bare name so
+  // the layout is stable across refreshes.
+  const groupedByType = showAll ? groupByType(list) : null;
 
   function handleConnect(i: Integration) {
     if (i.has_tailscale_auth && i.tailscale_auth) {
@@ -137,24 +145,47 @@ export function IntegrationsCards({
 
   return (
     <>
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5">
-        {visible.map((i) => (
-          <Card
-            key={i.id}
-            integration={i}
-            onConnect={() => handleConnect(i)}
-            onDisconnect={() => disconnect(i)}
-          />
-        ))}
-        {overflow && (
-          <button
-            onClick={() => setAllOpen(true)}
-            className="flex items-center justify-center px-3 py-2.5 bg-canvas-light border-2 border-dashed border-navy text-xs text-text-muted hover:bg-navy-50 hover:text-text transition-colors"
-          >
-            + {hiddenCount} more
-          </button>
-        )}
-      </div>
+      {groupedByType ? (
+        <div className="space-y-5">
+          {groupedByType.map((g) => (
+            <div key={g.type} className="space-y-2">
+              <h3 className="text-2xs uppercase tracking-[.12em] text-text-muted font-bold flex items-baseline gap-1.5">
+                <span>{g.label}</span>
+                <span className="text-text-subtle font-normal">— {g.items.length}</span>
+              </h3>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5">
+                {g.items.map((i) => (
+                  <Card
+                    key={i.id}
+                    integration={i}
+                    onConnect={() => handleConnect(i)}
+                    onDisconnect={() => disconnect(i)}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5">
+          {visible.map((i) => (
+            <Card
+              key={i.id}
+              integration={i}
+              onConnect={() => handleConnect(i)}
+              onDisconnect={() => disconnect(i)}
+            />
+          ))}
+          {overflow && (
+            <button
+              onClick={() => setAllOpen(true)}
+              className="flex items-center justify-center px-3 py-2.5 bg-canvas-light border-2 border-dashed border-navy text-xs text-text-muted hover:bg-navy-50 hover:text-text transition-colors"
+            >
+              + {hiddenCount} more
+            </button>
+          )}
+        </div>
+      )}
 
       {allOpen && (
         <AllIntegrationsModal
@@ -182,6 +213,28 @@ export function IntegrationsCards({
 
 function isConnected(i: Integration) {
   return i.connected || (i.tailscale_auth?.connected ?? false);
+}
+
+type CredentialGroup = {
+  type: string;
+  label: string;
+  items: Integration[];
+};
+
+function groupByType(list: Integration[]): CredentialGroup[] {
+  const buckets = new Map<string, Integration[]>();
+  for (const i of list) {
+    const arr = buckets.get(i.type);
+    if (arr) arr.push(i);
+    else buckets.set(i.type, [i]);
+  }
+  return Array.from(buckets.entries())
+    .map(([type, items]) => ({
+      type,
+      label: credentialTypeLabel(type, type),
+      items: [...items].sort((a, b) => a.name.localeCompare(b.name)),
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label));
 }
 
 // OwnerAvatar renders the OAuth user's PFP (e.g. github avatar) with
