@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/denoland/clawpatrol/config/match"
@@ -294,8 +295,12 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 				continue
 			}
 			profile.Endpoints[epName] = ce
+			// DNS hostnames are case-insensitive; index lowercase
+			// so a SNI-peek lookup (TLS clients usually lowercase
+			// SNI on the wire) matches a config-declared host
+			// regardless of its casing.
 			for _, h := range ce.Hosts {
-				profile.HostIndex[h] = ce
+				profile.HostIndex[strings.ToLower(h)] = ce
 			}
 		}
 		// Add default-port TLS aliases only after every exact host is
@@ -310,6 +315,7 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 			}
 			for _, h := range ce.Hosts {
 				if bare, ok := bareHostAlias(ce, h); ok {
+					bare = strings.ToLower(bare)
 					if _, exists := profile.HostIndex[bare]; !exists {
 						profile.HostIndex[bare] = ce
 					}

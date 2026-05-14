@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"strings"
+
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/match"
 )
@@ -9,13 +11,16 @@ import (
 // that owns it. Compile populates HostIndex with exact declared hosts
 // plus bare-host aliases for HTTPS-family default-port declarations,
 // so a TLS SNI value like "api.example.com" can match an endpoint
-// declared as "api.example.com:443" without a runtime scan. Returns nil
-// when the profile doesn't bind any matching endpoint — the caller then
+// declared as "api.example.com:443" without a runtime scan. DNS
+// hostnames are case-insensitive; the lookup key is lowercased to
+// match the lowercase keys Compile inserts. Returns nil when the
+// profile doesn't bind any matching endpoint — the caller then
 // applies the defaults.unknown_host policy.
 func HostEndpoint(policy *config.CompiledPolicy, profile, host string) *config.CompiledEndpoint {
 	if policy == nil {
 		return nil
 	}
+	host = strings.ToLower(host)
 	prof, ok := policy.Profiles[profile]
 	if !ok {
 		// Single-tenant fallback: if no peer-to-profile mapping is

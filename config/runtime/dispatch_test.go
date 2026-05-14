@@ -80,6 +80,27 @@ func TestHostEndpoint(t *testing.T) {
 	}
 }
 
+// TestHostEndpointIsCaseInsensitive guards against a regression where a
+// config-declared uppercase host (common with EKS cluster apiservers,
+// e.g. "3F6827…GR7.us-east-2.eks.amazonaws.com") failed to match a
+// lowercase SNI value sent by TLS clients like curl. DNS hostnames are
+// case-insensitive; the lookup must be too.
+func TestHostEndpointIsCaseInsensitive(t *testing.T) {
+	cp := compileFixture(t, `
+endpoint "https" "eks" {
+  hosts = ["AB123.gr7.us-east-2.eks.amazonaws.com"]
+}
+profile "default" { endpoints = [eks] }
+`)
+
+	if got := runtime.HostEndpoint(cp, "default", "ab123.gr7.us-east-2.eks.amazonaws.com"); got == nil || got.Name != "eks" {
+		t.Fatalf("lowercase SNI against uppercase config: got %+v, want eks", got)
+	}
+	if got := runtime.HostEndpoint(cp, "default", "AB123.GR7.US-EAST-2.EKS.AMAZONAWS.COM"); got == nil || got.Name != "eks" {
+		t.Fatalf("uppercase lookup: got %+v, want eks", got)
+	}
+}
+
 func TestHostEndpointMatchesBareSNIForPortQualifiedHost(t *testing.T) {
 	cp := compileFixture(t, `
 endpoint "https" "api" {
