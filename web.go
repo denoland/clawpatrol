@@ -51,14 +51,15 @@ var loginTpl = template.Must(template.New("login").Parse(loginHTML))
 var errConfigRevisionConflict = errors.New("config revision conflict")
 
 type webMux struct {
-	g         *Gateway
-	ts        JoinConfig // for onboarding key minting
-	publicURL string
-	mu        sync.Mutex
-	sessions  map[string]*oauthSession
-	onboard   *onboardRegistry
-	previews  map[string]configPreviewToken
-	routeAuth map[string]authRequirement
+	g                 *Gateway
+	ts                JoinConfig // for onboarding key minting
+	publicURL         string
+	mu                sync.Mutex
+	sessions          map[string]*oauthSession
+	onboard           *onboardRegistry
+	previews          map[string]configPreviewToken
+	routeAuth         map[string]authRequirement
+	dashboardSessions map[string]dashboardSession
 
 	// stateCache: per-caller TTL'd memo for /api/state. RWMutex
 	// because reads vastly outnumber writes — every dashboard tab
@@ -71,6 +72,11 @@ type webMux struct {
 type configPreviewToken struct {
 	revision    string
 	contentHash string
+}
+
+type dashboardSession struct {
+	secretHash [32]byte
+	expires    time.Time
 }
 
 type authRequirement int
@@ -187,7 +193,7 @@ func (w *webMux) skipsTailnetGate(path string) bool {
 }
 
 func newWebMux(g *Gateway, ts JoinConfig, publicURL string) http.Handler {
-	w := &webMux{g: g, ts: ts, publicURL: publicURL, sessions: map[string]*oauthSession{}, onboard: g.onboard, previews: map[string]configPreviewToken{}}
+	w := &webMux{g: g, ts: ts, publicURL: publicURL, sessions: map[string]*oauthSession{}, onboard: g.onboard, previews: map[string]configPreviewToken{}, dashboardSessions: map[string]dashboardSession{}}
 	return w.handler()
 }
 
@@ -286,7 +292,7 @@ func (w *webMux) dashboardSecretGate(next http.Handler) http.Handler {
 			next.ServeHTTP(rw, r)
 			return
 		}
-		if checkDashboardSecret(r, secret) {
+		if w.checkDashboardAuth(r, secret) {
 			next.ServeHTTP(rw, r.WithContext(contextWithPrincipal(r.Context(), w.dashboardSecretPrincipal())))
 			return
 		}
@@ -330,10 +336,62 @@ func renderDashboardMisconfigured(rw http.ResponseWriter, r *http.Request) {
 </body></html>`)
 }
 
-func checkDashboardSecret(r *http.Request, want string) bool {
-	if c, err := r.Cookie("cp_dash"); err == nil && subtle.ConstantTimeCompare([]byte(c.Value), []byte(want)) == 1 {
+func (w *webMux) checkDashboardAuth(r *http.Request, want string) bool {
+	if w.checkDashboardSession(r, want) {
 		return true
 	}
+	return checkDashboardSecret(r, want)
+}
+
+func (w *webMux) checkDashboardSession(r *http.Request, want string) bool {
+	c, err := r.Cookie("cp_dash")
+	if err != nil || c.Value == "" {
+		return false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	sess, ok := w.dashboardSessions[c.Value]
+	if !ok {
+		return false
+	}
+	now := time.Now()
+	if now.After(sess.expires) || sess.secretHash != sha256.Sum256([]byte(want)) {
+		delete(w.dashboardSessions, c.Value)
+		return false
+	}
+	return true
+}
+
+func (w *webMux) newDashboardSession(want string) (string, time.Time, error) {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", time.Time{}, fmt.Errorf("dashboard session token: %w", err)
+	}
+	token := hex.EncodeToString(b[:])
+	expires := time.Now().Add(30 * 24 * time.Hour)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.dashboardSessions == nil {
+		w.dashboardSessions = map[string]dashboardSession{}
+	}
+	w.dashboardSessions[token] = dashboardSession{secretHash: sha256.Sum256([]byte(want)), expires: expires}
+	now := time.Now()
+	for k, sess := range w.dashboardSessions {
+		if now.After(sess.expires) {
+			delete(w.dashboardSessions, k)
+		}
+	}
+	return token, expires, nil
+}
+
+func dashboardCookieSecure(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+func checkDashboardSecret(r *http.Request, want string) bool {
 	if h := r.Header.Get("X-Clawpatrol-Secret"); h != "" && subtle.ConstantTimeCompare([]byte(h), []byte(want)) == 1 {
 		return true
 	}
@@ -371,12 +429,19 @@ func (w *webMux) apiDashboardLogin(rw http.ResponseWriter, r *http.Request) {
 			renderLogin(rw, next, "wrong secret", 401)
 			return
 		}
+		token, expires, err := w.newDashboardSession(want)
+		if err != nil {
+			http.Error(rw, "could not create dashboard session", http.StatusInternalServerError)
+			return
+		}
 		http.SetCookie(rw, &http.Cookie{
 			Name:     "cp_dash",
-			Value:    want,
+			Value:    token,
 			Path:     "/",
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
+			Secure:   dashboardCookieSecure(r),
+			Expires:  expires,
 			MaxAge:   30 * 24 * 3600, // 30d
 		})
 		http.Redirect(rw, r, next, http.StatusFound)
