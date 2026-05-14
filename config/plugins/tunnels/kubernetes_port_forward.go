@@ -54,12 +54,15 @@ package tunnels
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -77,7 +80,9 @@ import (
 
 // KubernetesPortForwardTunnel configures the tunnel runtime.
 type KubernetesPortForwardTunnel struct {
-	// Context selects a kubeconfig context; empty uses the current context.
+	// Context selects a kubeconfig context; empty uses the current
+	// context. Ignored when Server is set (the plugin builds its own
+	// per-tunnel kubeconfig).
 	Context string `hcl:"context,optional"`
 	// Namespace selects the Kubernetes namespace for kubectl commands.
 	Namespace string `hcl:"namespace,optional"`
@@ -102,6 +107,25 @@ type KubernetesPortForwardTunnel struct {
 	// case; "keep" disables deletion.
 	Cleanup string `hcl:"cleanup,optional"`
 
+	// Server is the Kubernetes apiserver URL. When set the plugin
+	// writes a per-tunnel kubeconfig (server + ca_cert + bearer minted
+	// from the bound credential) and invokes kubectl with --kubeconfig
+	// pointing at it; no external kubeconfig or KUBECONFIG env is
+	// needed. The Context field is then ignored.
+	Server string `hcl:"server,optional"`
+	// CACert is the cluster CA PEM. Supports `<<file:path.pem>>` for
+	// out-of-line storage; the loader inlines the file contents.
+	// Required when Server is set against EKS (the apiserver presents
+	// a per-cluster CA that no system trust store carries).
+	CACert string `hcl:"ca_cert,optional"`
+	// ClusterName is the EKS cluster name, used by an aws_credential
+	// to scope the STS presign (sets the X-K8s-Aws-Id header). Only
+	// meaningful alongside Server + an aws_credential.
+	ClusterName string `hcl:"cluster_name,optional"`
+	// Region is the AWS region the EKS cluster lives in; SigV4 needs
+	// it. Only meaningful alongside Server + an aws_credential.
+	Region string `hcl:"region,optional"`
+
 	// Share controls whether runtime instances are singleton, per-endpoint, or per-request.
 	Share string `hcl:"share,optional"`
 	// Keepalive keeps an idle tunnel runtime warm for the given duration.
@@ -110,6 +134,15 @@ type KubernetesPortForwardTunnel struct {
 	Via string `hcl:"via,optional"`
 	// Credential references an optional credential block for Kubernetes access.
 	Credential string `hcl:"credential,optional"`
+}
+
+// FileIncludeFields tells the loader to inline `<<file:NAME>>` markers
+// in ca_cert. Operators reference the cluster CA by filename so the
+// PEM stays out of the policy file.
+func (t *KubernetesPortForwardTunnel) FileIncludeFields() []config.FileIncludeField {
+	return []config.FileIncludeField{
+		{Get: func() string { return t.CACert }, Set: func(v string) { t.CACert = v }},
+	}
 }
 
 // TunnelCommon returns shared tunnel settings.
@@ -157,18 +190,109 @@ func (t *KubernetesPortForwardTunnel) Open(ctx context.Context, host runtime.Tun
 		ns:      ns,
 		cleanup: t.Cleanup != "keep",
 	}
+	if t.Server != "" {
+		path, err := t.writeKubeconfig(ctx, host)
+		if err != nil {
+			return nil, fmt.Errorf("kubernetes_port_forward/%s: %w", host.Name, err)
+		}
+		rt.kubeconfig = path
+		// Context (kubeconfig context name) is meaningless once we own
+		// the kubeconfig — clear it so kctlArgs doesn't double up with
+		// a --context flag.
+		rt.ctx = ""
+	}
 	target, err := t.resolveTarget(ctx, rt)
 	if err != nil {
 		rt.cleanupCreatedPod(context.Background())
+		rt.removeKubeconfig()
 		return nil, fmt.Errorf("kubernetes_port_forward/%s: %w", host.Name, err)
 	}
 	if err := rt.startPortForward(ctx, target, t.Port); err != nil {
 		rt.cleanupCreatedPod(context.Background())
+		rt.removeKubeconfig()
 		return nil, fmt.Errorf("kubernetes_port_forward/%s: %w", host.Name, err)
 	}
 	logger.Printf("kubernetes_port_forward/%s: forwarding %s/%s → %s",
 		host.Name, ns, target, rt.localAddr)
 	return rt, nil
+}
+
+// writeKubeconfig materialises a self-contained kubeconfig (server +
+// ca + bearer) backed by the bound credential, and returns the temp
+// file path. EKS bearer tokens have a 15-minute TTL (60s when minted
+// the way aws-cli does it), but kubectl's port-forward holds open one
+// authenticated session for its whole lifetime — the bearer's only
+// consumed at handshake, so a single mint per Open() is fine.
+func (t *KubernetesPortForwardTunnel) writeKubeconfig(ctx context.Context, host runtime.TunnelHost) (string, error) {
+	if t.CACert == "" {
+		return "", errors.New("`server` set without `ca_cert`; inline the cluster CA (or `<<file:cluster-ca.pem>>`) so kubectl can verify the apiserver")
+	}
+	if host.Credential == nil {
+		return "", errors.New("`server` is set but no `credential` is bound; kubectl can't authenticate")
+	}
+	minter, ok := host.Credential.Body.(runtime.EKSBearerMinter)
+	if !ok {
+		return "", fmt.Errorf("credential %q (%s) does not implement EKSBearerMinter — bind an `aws_credential`",
+			host.Credential.Name, host.Credential.Type)
+	}
+	if t.ClusterName == "" || t.Region == "" {
+		return "", errors.New("`server` is set against an EKS-auth credential, so `cluster_name` + `region` are required")
+	}
+	sec, err := host.SecretStore.Get(host.Credential.Name)
+	if err != nil {
+		return "", fmt.Errorf("fetch credential secret %q: %w", host.Credential.Name, err)
+	}
+	bearer, err := minter.MintEKSBearer(ctx, sec, t.Region, t.ClusterName)
+	if err != nil {
+		return "", fmt.Errorf("mint EKS bearer: %w", err)
+	}
+	yaml := buildEKSKubeconfig(t.Server, t.CACert, bearer)
+	dir := filepath.Join(host.StateDir, "tunnels", "kubernetes_port_forward")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	f, err := os.CreateTemp(dir, host.Name+"-kubeconfig-*.yaml")
+	if err != nil {
+		return "", fmt.Errorf("create kubeconfig temp: %w", err)
+	}
+	if _, err := f.Write([]byte(yaml)); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return "", fmt.Errorf("write kubeconfig: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(f.Name())
+		return "", fmt.Errorf("close kubeconfig: %w", err)
+	}
+	_ = os.Chmod(f.Name(), 0o600)
+	return f.Name(), nil
+}
+
+// buildEKSKubeconfig produces a minimal v1 kubeconfig with cluster
+// (server + inline CA) + user (static bearer) + matching context.
+// Cleartext bearer in a 0600 temp file is fine because the gateway
+// itself is the only consumer; nothing else on the host runs as the
+// same uid by design.
+func buildEKSKubeconfig(server, caPEM, bearer string) string {
+	enc := base64.StdEncoding.EncodeToString([]byte(caPEM))
+	return strings.Join([]string{
+		"apiVersion: v1",
+		"kind: Config",
+		"clusters:",
+		"- name: cluster",
+		"  cluster:",
+		"    server: " + server,
+		"    certificate-authority-data: " + enc,
+		"users:",
+		"- name: user",
+		"  user:",
+		"    token: " + bearer,
+		"contexts:",
+		"- name: ctx",
+		"  context: { cluster: cluster, user: user }",
+		"current-context: ctx",
+		"",
+	}, "\n")
 }
 
 // validateModes enforces exactly-one-of pod / service / selector /
@@ -204,7 +328,7 @@ func (t *KubernetesPortForwardTunnel) resolveTarget(ctx context.Context, rt *kub
 	case t.Service != "":
 		return "svc/" + t.Service, nil
 	case len(t.Selector) > 0:
-		name, err := pickReadyPod(ctx, rt.ctx, rt.ns, t.Selector)
+		name, err := pickReadyPod(ctx, rt.kubeconfig, rt.ctx, rt.ns, t.Selector)
 		if err != nil {
 			return "", err
 		}
@@ -227,8 +351,8 @@ func (t *KubernetesPortForwardTunnel) resolveTarget(ctx context.Context, rt *kub
 // --field-selector=status.phase=Running` and returns the first
 // match. Ready is approximated by Running; kubectl's port-forward
 // will fail loudly if the pod isn't actually accepting connections.
-func pickReadyPod(ctx context.Context, kctx, ns string, selector map[string]string) (string, error) {
-	args := kctlArgs(kctx, ns,
+func pickReadyPod(ctx context.Context, kubeconfig, kctx, ns string, selector map[string]string) (string, error) {
+	args := kctlArgs(kubeconfig, kctx, ns,
 		"get", "pods",
 		"-l", labelSelector(selector),
 		"--field-selector=status.phase=Running",
@@ -296,11 +420,15 @@ func labelSelector(m map[string]string) string {
 	return out
 }
 
-// kctlArgs prepends --context and --namespace flags (when set) to
-// the given kubectl arg vector.
-func kctlArgs(kctx, ns string, args ...string) []string {
+// kctlArgs prepends --kubeconfig / --context and --namespace flags
+// (when set) to the given kubectl arg vector. When kubeconfig is set
+// the plugin owns a per-tunnel config file, so --context isn't
+// emitted (the file's current-context is correct by construction).
+func kctlArgs(kubeconfig, kctx, ns string, args ...string) []string {
 	out := []string{}
-	if kctx != "" {
+	if kubeconfig != "" {
+		out = append(out, "--kubeconfig", kubeconfig)
+	} else if kctx != "" {
 		out = append(out, "--context", kctx)
 	}
 	if ns != "" {
@@ -330,8 +458,9 @@ type kubernetesPortForwardTunnel struct {
 	name   string
 	logger *log.Logger
 
-	ctx string // kubectl --context
-	ns  string
+	ctx        string // kubectl --context (skipped when kubeconfig is set)
+	kubeconfig string // kubectl --kubeconfig path, or "" to fall back to KUBECONFIG / ~/.kube/config
+	ns         string
 
 	// createdPod, if non-empty, is the name of a pod the plugin
 	// applied at Open and should delete on Close (when cleanup=true).
@@ -343,12 +472,26 @@ type kubernetesPortForwardTunnel struct {
 	once      sync.Once
 }
 
+// removeKubeconfig deletes the temp kubeconfig the plugin minted at
+// Open time, if any. No-op when the plugin used an external
+// kubeconfig (KUBECONFIG / ~/.kube/config / explicit context).
+func (t *kubernetesPortForwardTunnel) removeKubeconfig() {
+	if t.kubeconfig == "" {
+		return
+	}
+	path := t.kubeconfig
+	t.kubeconfig = ""
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		t.logger.Printf("kubernetes_port_forward/%s: remove kubeconfig %s: %v", t.name, path, err)
+	}
+}
+
 // applyAndWait shells out to `kubectl create -f -` + `kubectl wait
 // --for=condition=Ready`. Returns the resolved pod name (which may
 // differ from doc.name when `generateName` is used).
 func (t *kubernetesPortForwardTunnel) applyAndWait(ctx context.Context, doc *podDoc) (string, error) {
 	cmd := exec.CommandContext(ctx, "kubectl",
-		kctlArgs(t.ctx, t.ns, "create", "-f", "-", "-o", "name")...)
+		kctlArgs(t.kubeconfig, t.ctx, t.ns, "create", "-f", "-", "-o", "name")...)
 	cmd.Stdin = strings.NewReader(doc.raw)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
@@ -365,7 +508,7 @@ func (t *kubernetesPortForwardTunnel) applyAndWait(ctx context.Context, doc *pod
 	}
 	t.logger.Printf("kubernetes_port_forward/%s: created pod %s/%s", t.name, t.ns, name)
 
-	waitArgs := kctlArgs(t.ctx, t.ns,
+	waitArgs := kctlArgs(t.kubeconfig, t.ctx, t.ns,
 		"wait", "--for=condition=Ready", "pod/"+name, "--timeout=2m")
 	if _, err := runKubectl(ctx, waitArgs); err != nil {
 		return name, fmt.Errorf("pod %s/%s never became ready: %w", t.ns, name, err)
@@ -382,7 +525,7 @@ var portForwardReady = regexp.MustCompile(`Forwarding from 127\.0\.0\.1:(\d+) ->
 // on Close. We isolate the child in its own process group so we can
 // signal it (and any subprocesses) reliably.
 func (t *kubernetesPortForwardTunnel) startPortForward(ctx context.Context, target string, podPort int) error {
-	args := kctlArgs(t.ctx, t.ns,
+	args := kctlArgs(t.kubeconfig, t.ctx, t.ns,
 		"port-forward", target, fmt.Sprintf(":%d", podPort),
 		"--address=127.0.0.1")
 	cmd := exec.Command("kubectl", args...)
@@ -451,6 +594,7 @@ func (t *kubernetesPortForwardTunnel) Close() error {
 	t.once.Do(func() {
 		t.killPF()
 		t.cleanupCreatedPod(context.Background())
+		t.removeKubeconfig()
 	})
 	return nil
 }
@@ -464,7 +608,7 @@ func (t *kubernetesPortForwardTunnel) cleanupCreatedPod(ctx context.Context) {
 	t.logger.Printf("kubernetes_port_forward/%s: deleting pod %s/%s", t.name, t.ns, name)
 	delCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	args := kctlArgs(t.ctx, t.ns, "delete", "pod/"+name, "--wait=false")
+	args := kctlArgs(t.kubeconfig, t.ctx, t.ns, "delete", "pod/"+name, "--wait=false")
 	if _, err := runKubectl(delCtx, args); err != nil {
 		t.logger.Printf("kubernetes_port_forward/%s: delete pod failed: %v", t.name, err)
 	}
@@ -507,6 +651,18 @@ func init() {
 			}
 			if t.Port != 0 {
 				b.SetAttributeValue("port", cty.NumberIntVal(int64(t.Port)))
+			}
+			if t.Server != "" {
+				b.SetAttributeValue("server", cty.StringVal(t.Server))
+			}
+			if t.CACert != "" {
+				b.SetAttributeValue("ca_cert", cty.StringVal(t.CACert))
+			}
+			if t.ClusterName != "" {
+				b.SetAttributeValue("cluster_name", cty.StringVal(t.ClusterName))
+			}
+			if t.Region != "" {
+				b.SetAttributeValue("region", cty.StringVal(t.Region))
 			}
 			emitCommon(b, t.TunnelCommon())
 		},

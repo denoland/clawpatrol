@@ -553,7 +553,7 @@ Configures the tunnel runtime.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `context` | `string` | no | Selects a kubeconfig context; empty uses the current context. |
+| `context` | `string` | no | Selects a kubeconfig context; empty uses the current context. Ignored when Server is set (the plugin builds its own per-tunnel kubeconfig). |
 | `namespace` | `string` | no | Selects the Kubernetes namespace for kubectl commands. |
 | `pod` | `string` | no | Names an existing pod to port-forward to. Exactly one of pod, service, selector, or template must be set. |
 | `service` | `string` | no | Names a service to port-forward to. |
@@ -561,6 +561,10 @@ Configures the tunnel runtime.
 | `template` | `string` | no | A pod manifest to apply and port-forward to. |
 | `port` | `int` | yes | The pod-side port the forwarder targets. For service mode it's the *service* port; kubectl resolves the matching targetPort. |
 | `cleanup` | `string` | no | Controls whether a template-created pod is deleted on tunnel teardown. "delete" (default) is right for the common create-on-demand case; "keep" disables deletion. |
+| `server` | `string` | no | The Kubernetes apiserver URL. When set the plugin writes a per-tunnel kubeconfig (server + ca_cert + bearer minted from the bound credential) and invokes kubectl with --kubeconfig pointing at it; no external kubeconfig or KUBECONFIG env is needed. The Context field is then ignored. |
+| `ca_cert` | `string` | no | The cluster CA PEM. Supports `<<file:path.pem>>` for out-of-line storage; the loader inlines the file contents. Required when Server is set against EKS (the apiserver presents a per-cluster CA that no system trust store carries). |
+| `cluster_name` | `string` | no | The EKS cluster name, used by an aws_credential to scope the STS presign (sets the X-K8s-Aws-Id header). Only meaningful alongside Server + an aws_credential. |
+| `region` | `string` | no | The AWS region the EKS cluster lives in; SigV4 needs it. Only meaningful alongside Server + an aws_credential. |
 | `share` | `string` | no | Controls whether runtime instances are singleton, per-endpoint, or per-request. |
 | `keepalive` | `string` | no | Keeps an idle tunnel runtime warm for the given duration. |
 | `via` | `ref(tunnel)` | no | Chains kubectl access through another tunnel. |

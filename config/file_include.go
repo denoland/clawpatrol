@@ -25,7 +25,7 @@ import (
 // have field-precise positions at this layer.
 func expandFileIncludes(p *Policy, configDir string) hcl.Diagnostics {
 	var diags hcl.Diagnostics
-	for _, group := range []map[string]*Entity{p.Endpoints, p.Credentials, p.Approvers, p.Rules} {
+	for _, group := range []map[string]*Entity{p.Endpoints, p.Credentials, p.Approvers, p.Rules, p.Tunnels} {
 		for name, ent := range group {
 			fi, ok := ent.Body.(FileIncludable)
 			if !ok {

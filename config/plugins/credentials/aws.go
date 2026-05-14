@@ -46,7 +46,7 @@ type awsEKSParams interface {
 }
 
 // SignHTTPRequest is part of the clawpatrol plugin API.
-func (*AWSCredential) SignHTTPRequest(ctx context.Context, req *http.Request, sec runtime.Secret, endpoint any) error {
+func (c *AWSCredential) SignHTTPRequest(ctx context.Context, req *http.Request, sec runtime.Secret, endpoint any) error {
 	params, ok := endpoint.(awsEKSParams)
 	if !ok {
 		return errors.New("aws_credential: endpoint does not declare EKS auth params (use `endpoint \"kubernetes\"` with cluster_name + region)")
@@ -55,16 +55,27 @@ func (*AWSCredential) SignHTTPRequest(ctx context.Context, req *http.Request, se
 	if cluster == "" || region == "" {
 		return errors.New("aws_credential: kubernetes endpoint missing cluster_name / region")
 	}
-	akid, secret, token, err := awsCredentialMaterial(sec)
-	if err != nil {
-		return err
-	}
-	bearer, err := mintEKSBearerToken(ctx, akid, secret, token, region, cluster)
+	bearer, err := c.MintEKSBearer(ctx, sec, region, cluster)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+bearer)
 	return nil
+}
+
+// MintEKSBearer implements runtime.EKSBearerMinter — same code path
+// SignHTTPRequest uses, exported so the kubernetes_port_forward
+// tunnel can build a self-contained kubeconfig without a parallel
+// STS presign.
+func (*AWSCredential) MintEKSBearer(ctx context.Context, sec runtime.Secret, region, cluster string) (string, error) {
+	if cluster == "" || region == "" {
+		return "", errors.New("aws_credential: cluster + region are required to mint an EKS bearer")
+	}
+	akid, secret, token, err := awsCredentialMaterial(sec)
+	if err != nil {
+		return "", err
+	}
+	return mintEKSBearerToken(ctx, akid, secret, token, region, cluster)
 }
 
 // awsCredentialMaterial reads the three secret slots. access_key_id
@@ -150,6 +161,7 @@ func (*AWSCredential) SecretSlots() []config.SecretSlot {
 
 func init() {
 	var _ runtime.HTTPRequestSigner = (*AWSCredential)(nil)
+	var _ runtime.EKSBearerMinter = (*AWSCredential)(nil)
 	config.Register(&config.Plugin{
 		Kind:    config.KindCredential,
 		Type:    "aws_credential",
