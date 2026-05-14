@@ -577,7 +577,34 @@ func (w *webMux) serveCA(rw http.ResponseWriter, _ *http.Request) {
 
 func (w *webMux) serveInfo(rw http.ResponseWriter, _ *http.Request) {
 	rw.Header().Set("Content-Type", "application/json")
-	_, _ = fmt.Fprintf(rw, `{"clawpatrol":true,"version":"0.1"}`+"\n")
+	// Surface the CA fingerprint here so debug tools (and the
+	// dashboard's approval page) have a single public-readable
+	// liveness + identity endpoint. Same value the OnboardPage
+	// renders next to the user_code.
+	writeJSON(rw, map[string]any{
+		"clawpatrol":     true,
+		"version":        "0.1",
+		"ca_fingerprint": w.caFingerprint(),
+	})
+}
+
+// caFingerprint returns the SHA-256 fingerprint of the gateway's
+// in-memory CA certificate. Empty when the CA hasn't been minted
+// yet (test scaffolding or pre-init) so callers can fall through
+// without surfacing a parse error to the operator.
+func (w *webMux) caFingerprint() string {
+	if w.g == nil || w.g.certs == nil {
+		return ""
+	}
+	pemBytes := w.g.certs.CertPEM()
+	if len(pemBytes) == 0 {
+		return ""
+	}
+	fp, err := caFingerprintFromPEM(pemBytes)
+	if err != nil {
+		return ""
+	}
+	return fp
 }
 
 // callerIdentity resolves the (user, device) of the request peer via
