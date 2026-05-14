@@ -19,6 +19,7 @@ import (
 	"html/template"
 	"io"
 	"io/fs"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -1956,6 +1957,7 @@ type eventPacket struct {
 type Sink struct {
 	ch    chan Event
 	db    *sql.DB
+	audit AuditSink
 	drops atomic.Uint64
 	mu    sync.Mutex
 	subs  []chan eventPacket
@@ -1971,7 +1973,11 @@ type Sink struct {
 }
 
 func NewSink(db *sql.DB, buf int) (*Sink, error) {
-	s := &Sink{ch: make(chan Event, buf), db: db, recentCap: 500}
+	return NewSinkWithAudit(db, buf, nil)
+}
+
+func NewSinkWithAudit(db *sql.DB, buf int, audit AuditSink) (*Sink, error) {
+	s := &Sink{ch: make(chan Event, buf), db: db, audit: audit, recentCap: 500}
 	s.recent = make([]Event, s.recentCap)
 	if db != nil {
 		if seed, err := readTailEvents(db, s.recentCap); err == nil && len(seed) > 0 {
@@ -2142,6 +2148,11 @@ func (s *Sink) drain() {
 		raw, err := json.Marshal(e)
 		if err != nil {
 			continue
+		}
+		if persist && s.audit != nil {
+			if err := s.audit.WriteAuditEvent(e, raw); err != nil {
+				log.Printf("audit log: %v", err)
+			}
 		}
 		pkt := eventPacket{ev: e, raw: raw}
 

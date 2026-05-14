@@ -2343,7 +2343,11 @@ func runGateway(args []string) {
 	if err != nil {
 		log.Fatalf("ca: %v", err)
 	}
-	sink, err := NewSink(db, 4096)
+	auditSink, err := NewJSONLAuditSink(cfg.AuditLogPath)
+	if err != nil {
+		log.Fatalf("audit log: %v", err)
+	}
+	sink, err := NewSinkWithAudit(db, 4096, auditSink)
 	if err != nil {
 		log.Fatalf("log: %v", err)
 	}

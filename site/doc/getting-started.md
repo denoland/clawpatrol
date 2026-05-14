@@ -104,6 +104,21 @@ journalctl -u clawpatrol-gateway -f       # tail the gateway log
 If you skip the dedicated-user step, the gateway logs a warning at
 startup when `state_dir` or `clawpatrol.db` is readable beyond owner.
 
+For an append-only file audit trail, set `audit_log_path` in
+`gateway.hcl`:
+
+```hcl
+audit_log_path = "/opt/clawpatrol/audit/events.jsonl"
+```
+
+The file contains one persisted request event per JSON line. To keep a
+remote copy, point your normal log shipper at it, or periodically sync
+it to S3-compatible object storage, for example:
+
+```bash
+aws s3 cp /opt/clawpatrol/audit/events.jsonl s3://my-clawpatrol-audit/gateway/events.jsonl
+```
+
 ## Join a device
 
 On the machine you want to route through the gateway:

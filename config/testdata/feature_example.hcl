@@ -33,6 +33,7 @@ info_listen      = "0.0.0.0:8080"
 public_url       = "http://66.42.120.196:8080"
 admin_email      = "test@example.com"
 log_path         = "/opt/clawpatrol/gateway.log"
+audit_log_path   = "/opt/clawpatrol/audit/events.jsonl"
 state_dir        = "/opt/clawpatrol/oauth"
 dashboard_secret = "test-secret"
 

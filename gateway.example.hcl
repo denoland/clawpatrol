@@ -34,6 +34,10 @@ public_url  = "https://gw.example.com"
 admin_email = "you@example.com"
 state_dir   = "/opt/clawpatrol"
 
+# Optional append-only JSONL copy of persisted request events. Ship
+# this file to S3/object storage with your normal log forwarder.
+# audit_log_path = "/opt/clawpatrol/audit/events.jsonl"
+
 # Dashboard auth — pick exactly one. The gateway refuses to serve the
 # dashboard / APIs until one of these is set, to avoid silently
 # exposing it on a public network.

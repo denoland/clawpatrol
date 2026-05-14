@@ -29,6 +29,9 @@ func (g *Gateway) Dump() ([]byte, error) {
 	if g.LogPath != "" {
 		out["log_path"] = g.LogPath
 	}
+	if g.AuditLogPath != "" {
+		out["audit_log_path"] = g.AuditLogPath
+	}
 	if g.Resolver != "" {
 		out["resolver"] = g.Resolver
 	}
