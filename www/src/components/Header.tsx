@@ -43,13 +43,6 @@ export function Header({ whoami }: { whoami: Whoami | null }) {
             >
               <SettingsIcon />
             </a>
-            <a
-              href="#/v2"
-              className="ml-2 text-xs uppercase tracking-widest text-text-muted border border-navy px-2 py-1 hover:bg-navy hover:text-canvas-light transition-colors"
-              title="switch to v2 dashboard"
-            >
-              try v2
-            </a>
           </nav>
         </div>
       </header>
