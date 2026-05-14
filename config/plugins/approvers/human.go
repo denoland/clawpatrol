@@ -72,7 +72,9 @@ func (h *HumanApprover) Approve(ctx context.Context, req runtime.ApproveRequest)
 	if req.Pool == nil {
 		return runtime.ApproveVerdict{}, fmt.Errorf("human approver %q: no pool", req.ApproverName)
 	}
+	timeout := h.approvalTimeout(req.Policy)
 	pending := buildPending(req)
+	pending.ExpiresAt = pending.CreatedAt.Add(timeout)
 	id, ch := req.Pool.Add(pending)
 	defer req.Pool.Discard(id)
 
@@ -120,13 +122,6 @@ func (h *HumanApprover) Approve(ctx context.Context, req runtime.ApproveRequest)
 		}
 	}
 
-	timeout := time.Duration(h.Timeout) * time.Second
-	if timeout <= 0 {
-		timeout = time.Duration(req.Policy.HumanTimeout) * time.Second
-	}
-	if timeout <= 0 {
-		timeout = 10 * time.Minute
-	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
@@ -144,6 +139,17 @@ func (h *HumanApprover) Approve(ctx context.Context, req runtime.ApproveRequest)
 	case <-ctx.Done():
 		return runtime.ApproveVerdict{}, ctx.Err()
 	}
+}
+
+func (h *HumanApprover) approvalTimeout(policy *config.CompiledPolicy) time.Duration {
+	timeout := time.Duration(h.Timeout) * time.Second
+	if timeout <= 0 && policy != nil {
+		timeout = time.Duration(policy.HumanTimeout) * time.Second
+	}
+	if timeout <= 0 {
+		timeout = 10 * time.Minute
+	}
+	return timeout
 }
 
 func init() {
