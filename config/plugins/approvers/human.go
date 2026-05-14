@@ -127,20 +127,22 @@ func (h *HumanApprover) Approve(ctx context.Context, req runtime.ApproveRequest)
 
 	select {
 	case d := <-ch:
-		return runtime.ApproveVerdict{
-			Decision: decision(d.Allow),
-			Reason:   d.Reason,
-			By:       d.By,
-		}, nil
+		return verdictFromDecision(d), nil
 	case <-timer.C:
 		reason := fmt.Sprintf("approver %q timed out after %s; upstream request was not sent", req.ApproverName, timeout)
-		cancelPending(req.Pool, id, runtime.HITLStateTimedOut, reason)
+		result := cancelPending(req.Pool, id, runtime.HITLStateTimedOut, reason)
+		if verdict, ok := terminalDecisionVerdict(result, ch); ok {
+			return verdict, nil
+		}
 		return runtime.ApproveVerdict{
 			Reason: reason,
 		}, nil
 	case <-ctx.Done():
 		state, reason := hitlCancelStateForContext(ctx.Err())
-		cancelPending(req.Pool, id, state, reason)
+		result := cancelPending(req.Pool, id, state, reason)
+		if verdict, ok := terminalDecisionVerdict(result, ch); ok {
+			return verdict, nil
+		}
 		return runtime.ApproveVerdict{}, ctx.Err()
 	}
 }

@@ -49,6 +49,36 @@ func TestHITLRegistryDecideWithResultRecordsTerminalState(t *testing.T) {
 	}
 }
 
+func TestHITLRegistryCancelAfterDecisionKeepsApprovedTerminalState(t *testing.T) {
+	registry := newHITLRegistry(nil)
+	id, ch := registry.Add(runtime.HITLPending{
+		Host:      "api.example.test",
+		Method:    "POST",
+		Path:      "/v1/write",
+		CreatedAt: time.Now(),
+	})
+
+	result := registry.DecideWithResult(id, runtime.HITLDecision{Allow: true, By: "dashboard"})
+	if !result.OK {
+		t.Fatalf("DecideWithResult OK = false, want true: %#v", result)
+	}
+	cancel := registry.Cancel(id, runtime.HITLStateTimedOut, "timed out after approval")
+	if cancel.OK {
+		t.Fatalf("Cancel after decision OK = true, want false")
+	}
+	if cancel.State != runtime.HITLStateApproved {
+		t.Fatalf("Cancel after decision State = %q, want %q", cancel.State, runtime.HITLStateApproved)
+	}
+	select {
+	case decision := <-ch:
+		if !decision.Allow || decision.By != "dashboard" {
+			t.Fatalf("decision = %#v, want approved by dashboard", decision)
+		}
+	default:
+		t.Fatal("decision channel lost approval after stale cancel")
+	}
+}
+
 func TestHITLRegistryCancelRecordsClientDisconnected(t *testing.T) {
 	registry := newHITLRegistry(nil)
 	id, ch := registry.Add(runtime.HITLPending{

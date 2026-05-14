@@ -122,6 +122,29 @@ func TestHumanApproverTimeoutRecordsTimedOutTerminalState(t *testing.T) {
 	}
 }
 
+func TestTerminalDecisionVerdictUsesQueuedDecisionWhenCancelLosesRace(t *testing.T) {
+	ch := make(chan runtime.HITLDecision, 1)
+	ch <- runtime.HITLDecision{Allow: true, By: "operator", Reason: "approved in dashboard"}
+
+	verdict, ok := terminalDecisionVerdict(runtime.HITLResolveResult{
+		OK:     false,
+		State:  runtime.HITLStateApproved,
+		Reason: "approved by operator",
+	}, ch)
+	if !ok {
+		t.Fatal("terminalDecisionVerdict ok = false, want true for approved terminal state")
+	}
+	if verdict.Decision != "allow" {
+		t.Fatalf("Decision = %q, want allow", verdict.Decision)
+	}
+	if verdict.By != "operator" {
+		t.Fatalf("By = %q, want operator", verdict.By)
+	}
+	if verdict.Reason != "approved in dashboard" {
+		t.Fatalf("Reason = %q, want queued decision reason", verdict.Reason)
+	}
+}
+
 func TestHumanApproverContextCancelRecordsClientDisconnected(t *testing.T) {
 	pool := newCaptureHITLPool()
 	ctx, cancel := context.WithCancel(context.Background())

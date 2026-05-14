@@ -43,12 +43,37 @@ func decision(allow bool) string {
 	return "deny"
 }
 
+func verdictFromDecision(d runtime.HITLDecision) runtime.ApproveVerdict {
+	return runtime.ApproveVerdict{
+		Decision: decision(d.Allow),
+		Reason:   d.Reason,
+		By:       d.By,
+	}
+}
+
 func cancelPending(pool runtime.HITLPool, id string, state runtime.HITLState, reason string) runtime.HITLResolveResult {
 	if canceler, ok := pool.(runtime.HITLPoolCanceler); ok {
 		return canceler.Cancel(id, state, reason)
 	}
 	pool.Discard(id)
 	return runtime.HITLResolveResult{OK: true, State: state, Reason: reason}
+}
+
+func terminalDecisionVerdict(result runtime.HITLResolveResult, ch <-chan runtime.HITLDecision) (runtime.ApproveVerdict, bool) {
+	switch result.State {
+	case runtime.HITLStateApproved, runtime.HITLStateDenied:
+		select {
+		case d := <-ch:
+			return verdictFromDecision(d), true
+		default:
+		}
+		return runtime.ApproveVerdict{
+			Decision: decision(result.State == runtime.HITLStateApproved),
+			Reason:   result.Reason,
+		}, true
+	default:
+		return runtime.ApproveVerdict{}, false
+	}
 }
 
 func hitlCancelStateForContext(err error) (runtime.HITLState, string) {

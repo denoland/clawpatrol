@@ -2463,16 +2463,24 @@ func (r *HITLRegistry) DecideWithResult(id string, d runtime.HITLDecision) runti
 			reason = verb
 		}
 	}
-	e, result := r.resolve(id, state, reason)
-	if !result.OK {
-		return result
+	now := time.Now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pruneTerminalLocked(now)
+	e := r.pending[id]
+	if e == nil {
+		if terminal, ok := r.terminal[id]; ok {
+			return terminal.result
+		}
+		return runtime.HITLResolveResult{OK: false, State: runtime.HITLStateUnknown, Reason: "unknown or expired HITL request"}
 	}
-	select {
-	case e.decision <- d:
-		return result
-	default:
-		return runtime.HITLResolveResult{OK: false, State: state, Reason: "pending request was already resolved"}
+	e.decision <- d
+	delete(r.pending, id)
+	r.terminal[id] = terminalHITLEntry{
+		result:    runtime.HITLResolveResult{OK: false, State: state, Reason: reason},
+		expiresAt: now.Add(hitlTerminalTTL),
 	}
+	return runtime.HITLResolveResult{OK: true, State: state, Reason: reason}
 }
 
 // Cancel resolves a pending entry without delivering a human decision.

@@ -25,14 +25,13 @@ func (DashboardApprover) Approve(ctx context.Context, req runtime.ApproveRequest
 	defer req.Pool.Discard(id)
 	select {
 	case d := <-ch:
-		return runtime.ApproveVerdict{
-			Decision: decision(d.Allow),
-			Reason:   d.Reason,
-			By:       d.By,
-		}, nil
+		return verdictFromDecision(d), nil
 	case <-ctx.Done():
 		state, reason := hitlCancelStateForContext(ctx.Err())
-		cancelPending(req.Pool, id, state, reason)
+		result := cancelPending(req.Pool, id, state, reason)
+		if verdict, ok := terminalDecisionVerdict(result, ch); ok {
+			return verdict, nil
+		}
 		return runtime.ApproveVerdict{}, ctx.Err()
 	}
 }
