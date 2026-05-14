@@ -28,9 +28,12 @@ type Gateway struct {
 	// StateDir is the directory holding clawpatrol.db (and anything
 	// else a plugin persists to disk under it). Defaults to
 	// ${HOME}/.clawpatrol when unset.
-	StateDir        string `hcl:"state_dir,optional"`
-	Resolver        string `hcl:"resolver,optional"`
-	LogPath         string `hcl:"log_path,optional"`
+	StateDir string `hcl:"state_dir,optional"`
+	Resolver string `hcl:"resolver,optional"`
+	LogPath  string `hcl:"log_path,optional"`
+	// AuditLogPath enables an append-only JSONL copy of persisted
+	// request events, suitable for forwarding to object storage.
+	AuditLogPath    string `hcl:"audit_log_path,optional"`
 	DashboardSecret string `hcl:"dashboard_secret,optional"`
 	// InsecureNoDashboardSecret opts out of dashboard auth. Required
 	// (alongside an empty DashboardSecret) for the gateway to serve

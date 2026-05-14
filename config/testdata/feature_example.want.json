@@ -1,5 +1,6 @@
 {
   "admin_email": "test@example.com",
+  "audit_log_path": "/opt/clawpatrol/audit/events.jsonl",
   "control": "wireguard",
   "human_on_timeout": "deny",
   "human_timeout": 600,

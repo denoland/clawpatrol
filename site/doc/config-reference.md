@@ -33,6 +33,7 @@ Every singleton gateway attribute — listen addresses, paths, control-plane joi
 | `state_dir` | `string` | no | The directory holding clawpatrol.db (and anything else a plugin persists to disk under it). Defaults to ${HOME}/.clawpatrol when unset. |
 | `resolver` | `string` | no |  |
 | `log_path` | `string` | no |  |
+| `audit_log_path` | `string` | no | Enables an append-only JSONL copy of persisted request events, suitable for forwarding to object storage. |
 | `dashboard_secret` | `string` | no |  |
 | `insecure_no_dashboard_secret` | `bool` | no | Opts out of dashboard auth. Required (alongside an empty DashboardSecret) for the gateway to serve the dashboard at all — otherwise the secret gate replies with a misconfiguration page on every request. Verbose by design so you can't disable auth by accident. |
 | `telemetry` | `bool` | no | Opts in/out of the update-checker / anonymous usage ping (doc/telemetry.md). nil = default on; explicit `telemetry = false` silences the goroutine. Env vars CLAWPATROL_TELEMETRY=0 and DO_NOT_TRACK=1 also work. |
