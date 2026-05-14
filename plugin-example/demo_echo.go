@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -35,7 +36,7 @@ func handleDemoEcho(ctx context.Context, conn *pluginsdk.Conn) error {
 	for {
 		line, err := br.ReadString('\n')
 		if err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				return nil
 			}
 			return err

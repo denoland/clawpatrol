@@ -17,16 +17,16 @@ func passthroughDef() pluginsdk.TunnelDef {
 	return pluginsdk.TunnelDef{
 		TypeName: "example_passthrough",
 		Schema:   pluginsdk.Schema{},
-		Open: func(ctx context.Context, req pluginsdk.TunnelOpenRequest) (any, error) {
+		Open: func(_ context.Context, req pluginsdk.TunnelOpenRequest) (any, error) {
 			// No state to keep; the tunnel name itself is enough.
 			return req.TunnelInstance, nil
 		},
-		Dial: func(ctx context.Context, req pluginsdk.TunnelDialRequest, upstream net.Conn) error {
+		Dial: func(_ context.Context, req pluginsdk.TunnelDialRequest, upstream net.Conn) error {
 			c, err := net.Dial(req.Network, req.Addr)
 			if err != nil {
 				return err
 			}
-			defer c.Close()
+			defer func() { _ = c.Close() }()
 			done := make(chan struct{}, 2)
 			go func() { _, _ = io.Copy(c, upstream); done <- struct{}{} }()
 			go func() { _, _ = io.Copy(upstream, c); done <- struct{}{} }()

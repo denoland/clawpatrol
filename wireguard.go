@@ -696,21 +696,6 @@ func loadOrGenWGServerKey(db *sql.DB) (string, error) {
 	return priv, nil
 }
 
-// importWGServerKey writes a pre-existing hex key into wg_server_key.
-// Used by the legacy-state importer to move the on-disk
-// wg-server.key into sqlite. Caller guards against double-insert.
-func importWGServerKey(db *sql.DB, privHex string) error {
-	privHex = strings.TrimSpace(privHex)
-	if _, err := wgPubFromPrivHex(privHex); err != nil {
-		return fmt.Errorf("validate legacy wg key: %w", err)
-	}
-	_, err := db.Exec(
-		`INSERT INTO wg_server_key (id, priv_hex, created_ns) VALUES (1, ?, ?)`,
-		privHex, time.Now().UnixNano(),
-	)
-	return err
-}
-
 func wgPubFromPrivHex(privHex string) (string, error) {
 	priv, err := hex.DecodeString(strings.TrimSpace(privHex))
 	if err != nil || len(priv) != 32 {

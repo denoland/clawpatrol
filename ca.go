@@ -150,18 +150,3 @@ func mintAndStoreCA(db *sql.DB) (*CertCache, error) {
 	}
 	return parseCertCache(certPEM, keyPEM)
 }
-
-// importCAFromPEM inserts pre-existing PEM material into ca_material.
-// Used by the legacy-state importer to move on-disk ca.crt + ca.key
-// into sqlite on first boot of a migrated gateway. Caller should
-// guard against double-insert by checking the row first.
-func importCAFromPEM(db *sql.DB, certPEM, keyPEM []byte) error {
-	if _, err := parseCertCache(certPEM, keyPEM); err != nil {
-		return fmt.Errorf("validate legacy ca: %w", err)
-	}
-	_, err := db.Exec(
-		`INSERT INTO ca_material (id, cert_pem, key_pem, created_ns) VALUES (1, ?, ?, ?)`,
-		certPEM, keyPEM, time.Now().UnixNano(),
-	)
-	return err
-}

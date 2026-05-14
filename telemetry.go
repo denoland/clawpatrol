@@ -298,20 +298,6 @@ func loadOrCreateInstanceID(db *sql.DB) (string, error) {
 	return id, nil
 }
 
-// importTelemetryInstanceID writes a pre-existing UUIDv7 into
-// telemetry_state. Used by the legacy-state importer.
-func importTelemetryInstanceID(db *sql.DB, id string) error {
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return fmt.Errorf("instance_id empty")
-	}
-	_, err := db.Exec(
-		`INSERT INTO telemetry_state (id, instance_id, created_ns) VALUES (1, ?, ?)`,
-		id, time.Now().UnixNano(),
-	)
-	return err
-}
-
 func shortID(s string) string {
 	if len(s) > 8 {
 		return s[:8]

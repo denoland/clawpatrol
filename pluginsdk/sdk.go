@@ -74,10 +74,14 @@ type FacetField struct {
 type FacetKind int
 
 const (
-	FacetString     FacetKind = 0
+	// FacetString is a scalar string facet field.
+	FacetString FacetKind = 0
+	// FacetStringList is a repeated string facet field.
 	FacetStringList FacetKind = 1
-	FacetStringMap  FacetKind = 2
-	FacetInt        FacetKind = 3
+	// FacetStringMap is a string-to-string map facet field.
+	FacetStringMap FacetKind = 2
+	// FacetInt is an integer facet field.
+	FacetInt FacetKind = 3
 	// FacetStream is a lazy bytes value the plugin offers via
 	// pluginsdk.Stream(io.Reader) in the action map. The gateway
 	// pulls chunks on demand — the full payload (up to a cap) when

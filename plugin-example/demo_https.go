@@ -151,7 +151,11 @@ func handleDemoHTTPS(ctx context.Context, conn *pluginsdk.Conn) error {
 		}
 
 		if err := writeMutatedResponse(conn, resp); err != nil {
+			_ = resp.Body.Close()
 			return fmt.Errorf("write response: %w", err)
+		}
+		if err := resp.Body.Close(); err != nil {
+			return fmt.Errorf("close response body: %w", err)
 		}
 		if req.Close || resp.Close {
 			return nil
@@ -229,11 +233,15 @@ func forwardOneHTTPS(ctx context.Context, req *http.Request, upstream *url.URL, 
 // transfer encoding because the appended bytes invalidate any
 // upstream Content-Length.
 func writeMutatedResponse(w io.Writer, resp *http.Response) error {
-	resp.Body = io.NopCloser(io.MultiReader(resp.Body, strings.NewReader("\nbye!\n")))
-	resp.ContentLength = -1
-	resp.Header.Del("Content-Length")
-	resp.TransferEncoding = []string{"chunked"}
-	return resp.Write(w)
+	body := resp.Body
+	out := new(http.Response)
+	*out = *resp
+	out.Body = io.NopCloser(io.MultiReader(body, strings.NewReader("\nbye!\n")))
+	out.ContentLength = -1
+	out.Header = resp.Header.Clone()
+	out.Header.Del("Content-Length")
+	out.TransferEncoding = []string{"chunked"}
+	return out.Write(w)
 }
 
 type closingBody struct {

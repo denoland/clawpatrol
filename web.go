@@ -1439,7 +1439,7 @@ func (w *webMux) apiActionByID(
 func (w *webMux) writeActionFixture(rw http.ResponseWriter, ev *Event) {
 	policy := w.g.Policy()
 	if policy == nil {
-		http.Error(rw, "policy not loaded", 503)
+		http.Error(rw, "policy not loaded", http.StatusServiceUnavailable)
 		return
 	}
 	if ev.Endpoint == "" {
@@ -1481,7 +1481,7 @@ func (w *webMux) writeActionFixture(rw http.ResponseWriter, ev *Event) {
 		}
 		fx.Action.SQL = sql
 	default:
-		http.Error(rw, fmt.Sprintf("endpoint family %q is not yet exportable", ep.Family), 501)
+		http.Error(rw, fmt.Sprintf("endpoint family %q is not yet exportable", ep.Family), http.StatusNotImplemented)
 		return
 	}
 

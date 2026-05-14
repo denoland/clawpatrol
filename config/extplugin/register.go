@@ -345,10 +345,6 @@ func (b *dynamicEndpointBody) EndpointCredentials() []config.CredBinding {
 	return []config.CredBinding{{Credential: b.credentialName}}
 }
 
-// credentialName is the resolved credential bare-name, populated by
-// the synthesized DecodeBody.
-type endpointDecodeExtras struct{ credentialName string }
-
 func init() {
 	// Compile-time sanity: dynamicEndpointBody satisfies the
 	// reflective interface compile.go expects.

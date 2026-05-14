@@ -1,8 +1,6 @@
 package pluginsdk
 
 import (
-	"context"
-	"errors"
 	"io"
 	"net"
 	"sync"
@@ -28,10 +26,9 @@ type streamConn struct {
 	// closeFn tears down both directions. Idempotent.
 	closeFn func()
 
-	mu       sync.Mutex
-	closed   bool
-	readBuf  []byte
-	readDone <-chan struct{}
+	mu      sync.Mutex
+	closed  bool
+	readBuf []byte
 
 	rdMu       sync.Mutex
 	rdDeadline time.Time
@@ -104,10 +101,8 @@ func (c *streamConn) Write(p []byte) (int, error) {
 	c.mu.Unlock()
 	// Copy because the gRPC layer holds the slice asynchronously.
 	buf := append([]byte(nil), p...)
-	select {
-	case c.send <- buf:
-		return len(p), nil
-	}
+	c.send <- buf
+	return len(p), nil
 }
 
 // Close tears down both directions. Safe to call multiple times.
@@ -161,61 +156,3 @@ type errReadDeadline struct{}
 func (errReadDeadline) Error() string   { return "read deadline exceeded" }
 func (errReadDeadline) Timeout() bool   { return true }
 func (errReadDeadline) Temporary() bool { return true }
-
-// pumpFrames runs two goroutines that move bytes between an arbitrary
-// duplex byte source/sink and a streamConn. Returns when ctx is
-// cancelled, the conn is closed, or sink yields an error.
-func pumpFrames(ctx context.Context, conn net.Conn, recvFromPeer <-chan []byte, sendToPeer func([]byte) error, peerClosed <-chan struct{}) error {
-	errCh := make(chan error, 2)
-
-	// peer -> conn
-	go func() {
-		for {
-			select {
-			case b, ok := <-recvFromPeer:
-				if !ok {
-					errCh <- nil
-					return
-				}
-				if _, err := conn.Write(b); err != nil {
-					errCh <- err
-					return
-				}
-			case <-ctx.Done():
-				errCh <- ctx.Err()
-				return
-			case <-peerClosed:
-				errCh <- nil
-				return
-			}
-		}
-	}()
-
-	// conn -> peer
-	go func() {
-		buf := make([]byte, 32*1024)
-		for {
-			n, err := conn.Read(buf)
-			if n > 0 {
-				if perr := sendToPeer(append([]byte(nil), buf[:n]...)); perr != nil {
-					errCh <- perr
-					return
-				}
-			}
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					errCh <- nil
-				} else {
-					errCh <- err
-				}
-				return
-			}
-		}
-	}()
-
-	// Wait for either side to finish. The first non-nil error wins.
-	first := <-errCh
-	_ = conn.Close()
-	<-errCh
-	return first
-}

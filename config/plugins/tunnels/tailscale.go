@@ -164,7 +164,7 @@ func (t *TailscaleTunnel) Open(ctx context.Context, host runtime.TunnelHost, _ r
 // tailscaleproto.Default so the dashboard's Connect button can surface
 // it. On subsequent boots (state already in sqlite) tsnet joins in
 // seconds and the pending window is invisible to dependent endpoints.
-func (t *TailscaleTunnel) openWithCredential(ctx context.Context, host runtime.TunnelHost, hostname string, logger *log.Logger) (runtime.Tunnel, error) {
+func (t *TailscaleTunnel) openWithCredential(_ context.Context, host runtime.TunnelHost, hostname string, logger *log.Logger) (runtime.Tunnel, error) {
 	ni, ok := host.Credential.Body.(tailscaleproto.NodeIdentity)
 	if !ok {
 		return nil, fmt.Errorf("tailscale tunnel %q: credential %q is not a tailscale node identity (got %T)", host.Name, host.Credential.Name, host.Credential.Body)
@@ -317,7 +317,7 @@ func (t *tailscaleTunnelConn) watchLoginURL(ctx context.Context) {
 		}
 		return
 	}
-	defer watcher.Close()
+	defer func() { _ = watcher.Close() }()
 	for {
 		n, err := watcher.Next()
 		if err != nil {

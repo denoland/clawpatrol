@@ -49,56 +49,65 @@ func loadGoDocs() (*goDocs, error) {
 
 	fset := token.NewFileSet()
 	for _, dir := range dirs {
-		pkgs, err := parser.ParseDir(fset, dir, func(fi fs.FileInfo) bool {
-			n := fi.Name()
-			return strings.HasSuffix(n, ".go") && !strings.HasSuffix(n, "_test.go")
-		}, parser.ParseComments)
-		if err != nil {
-			return nil, fmt.Errorf("parse %s: %w", dir, err)
-		}
-		for _, pkg := range pkgs {
-			extractPkg(pkg, docs)
+		if err := filepath.WalkDir(dir, func(path string, de fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if de.IsDir() {
+				return nil
+			}
+			n := de.Name()
+			if !strings.HasSuffix(n, ".go") || strings.HasSuffix(n, "_test.go") {
+				return nil
+			}
+			file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+			if err != nil {
+				return fmt.Errorf("parse %s: %w", path, err)
+			}
+			extractFile(file, docs)
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("walk %s: %w", dir, err)
 		}
 	}
 	return docs, nil
 }
 
-func extractPkg(pkg *ast.Package, out *goDocs) {
-	for _, file := range pkg.Files {
-		for _, decl := range file.Decls {
-			gd, ok := decl.(*ast.GenDecl)
-			if !ok || gd.Tok != token.TYPE {
+func extractFile(file *ast.File, out *goDocs) {
+	pkgName := file.Name.Name
+	for _, decl := range file.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if !ok {
 				continue
 			}
-			for _, spec := range gd.Specs {
-				ts, ok := spec.(*ast.TypeSpec)
-				if !ok {
-					continue
-				}
-				st, ok := ts.Type.(*ast.StructType)
-				if !ok {
-					continue
-				}
-				typeKey := pkg.Name + "." + ts.Name.Name
-				doc := commentText(ts.Doc)
-				if doc == "" {
-					// Type doc may be on the GenDecl rather than
-					// the TypeSpec when the type is the only spec
-					// in the decl.
-					doc = commentText(gd.Doc)
-				}
-				if doc != "" {
-					out.types[typeKey] = doc
-				}
-				if st.Fields != nil {
-					for _, f := range st.Fields.List {
-						fieldDoc := commentText(f.Doc)
-						if fieldDoc == "" {
-							fieldDoc = commentText(f.Comment)
-						}
-						for _, name := range f.Names {
-							out.fields[typeKey+"."+name.Name] = fieldDoc
-						}
+			st, ok := ts.Type.(*ast.StructType)
+			if !ok {
+				continue
+			}
+			typeKey := pkgName + "." + ts.Name.Name
+			doc := commentText(ts.Doc)
+			if doc == "" {
+				// Type doc may be on the GenDecl rather than
+				// the TypeSpec when the type is the only spec
+				// in the decl.
+				doc = commentText(gd.Doc)
+			}
+			if doc != "" {
+				out.types[typeKey] = doc
+			}
+			if st.Fields != nil {
+				for _, f := range st.Fields.List {
+					fieldDoc := commentText(f.Doc)
+					if fieldDoc == "" {
+						fieldDoc = commentText(f.Comment)
+					}
+					for _, name := range f.Names {
+						out.fields[typeKey+"."+name.Name] = fieldDoc
 					}
 				}
 			}

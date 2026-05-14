@@ -61,7 +61,7 @@ func loggerWithLines() (*device.Logger, *[]string) {
 	var lines []string
 	l := &device.Logger{
 		Verbosef: device.DiscardLogf,
-		Errorf: func(format string, args ...any) {
+		Errorf: func(format string, _ ...any) {
 			lines = append(lines, format)
 		},
 	}

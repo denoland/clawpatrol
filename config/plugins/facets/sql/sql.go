@@ -25,12 +25,12 @@ import (
 	"github.com/denoland/clawpatrol/config/match"
 )
 
-// SqlFields is the CEL-facing view of a SQL statement. Exposed as
+// Fields is the CEL-facing view of a SQL statement. Exposed as
 // the `sql` variable in rule conditions (`sql.verb`, `sql.tables`,
 // `sql.functions`, `sql.statement`). The plural `functions` matches
 // the multi-valued shape (a statement can reference multiple
 // functions) and parallels `tables`.
-type SqlFields struct {
+type Fields struct {
 	Verb      string   `cel:"verb"`
 	Tables    []string `cel:"tables"`
 	Functions []string `cel:"functions"`
@@ -109,10 +109,10 @@ func init() {
 	env, err := cel.NewEnv(
 		ext.Sets(),
 		ext.NativeTypes(
-			reflect.TypeFor[SqlFields](),
+			reflect.TypeFor[Fields](),
 			ext.ParseStructTags(true),
 		),
-		cel.Variable("sql", cel.ObjectType("sql.SqlFields")),
+		cel.Variable("sql", cel.ObjectType("sql.Fields")),
 	)
 	if err != nil {
 		panic(fmt.Sprintf("sql facet: cel env: %v", err))
@@ -164,7 +164,7 @@ func buildActivation(req *match.Request) map[string]any {
 		return nil
 	}
 	return map[string]any{
-		"sql": &SqlFields{
+		"sql": &Fields{
 			Verb:      strings.ToLower(meta.Verb),
 			Tables:    coalesceList(meta.Tables),
 			Functions: coalesceList(meta.Functions),

@@ -187,7 +187,7 @@ func (r *renderer) writeKind(kind config.Kind) {
 	fmt.Fprintf(&r.out, "Block syntax: `%s`\n\n", syntax)
 	// Single-label kinds with one registered plugin (rule today) have
 	// no type discriminator — skip the type-link line entirely.
-	if !(len(plugins) == 1 && plugins[0].Type == "") {
+	if len(plugins) != 1 || plugins[0].Type != "" {
 		fmt.Fprintf(&r.out, "Registered types: ")
 		for i, p := range plugins {
 			if i > 0 {
@@ -237,7 +237,7 @@ func (r *renderer) writePlugin(kind config.Kind, p *config.Plugin) {
 // struct reflect.Type. New() returns a pointer to the body struct.
 func pluginStructType(p *config.Plugin) reflect.Type {
 	v := reflect.ValueOf(p.New())
-	if v.Kind() == reflect.Ptr {
+	if v.Kind() == reflect.Pointer {
 		v = v.Elem()
 	}
 	return v.Type()
@@ -392,7 +392,7 @@ func blockElemType(rt reflect.Type, fieldName string) reflect.Type {
 		return nil
 	}
 	t := f.Type
-	for t.Kind() == reflect.Ptr || t.Kind() == reflect.Slice {
+	for t.Kind() == reflect.Pointer || t.Kind() == reflect.Slice {
 		t = t.Elem()
 	}
 	if t.Kind() != reflect.Struct {
@@ -555,7 +555,7 @@ func formatGoType(t reflect.Type) string {
 		return "object"
 	}
 	switch t.Kind() {
-	case reflect.Ptr:
+	case reflect.Pointer:
 		return formatGoType(t.Elem())
 	case reflect.Slice:
 		return "[]" + formatGoType(t.Elem())

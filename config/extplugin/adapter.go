@@ -32,7 +32,6 @@ import (
 type endpointAdapter struct {
 	client      *Client
 	typeName    string
-	hosts       []string
 	tlsMode     pb.TLSMode
 	requiresVIP bool
 }
@@ -98,7 +97,7 @@ func (a *endpointAdapter) HandleConn(ctx context.Context, ch *runtime.ConnHandle
 		}
 		conn = tc
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Resolve credential secret.
 	var (
@@ -135,7 +134,7 @@ func (a *endpointAdapter) HandleConn(ctx context.Context, ch *runtime.ConnHandle
 	if err != nil {
 		return fmt.Errorf("extplugin: open HandleConn stream: %w", err)
 	}
-	defer stream.CloseSend()
+	defer func() { _ = stream.CloseSend() }()
 
 	// Send ConnInit.
 	init := &pb.ConnInit{
@@ -363,11 +362,11 @@ func handleEvaluate(ctx context.Context, ch *runtime.ConnHandle, ev *pb.Evaluate
 			if pf != nil && pf.kindByField[fieldName] != pb.FacetKind_FACET_STREAM {
 				continue
 			}
-			cap := streamCapBytesForRule
+			limit := streamCapBytesForRule
 			if pf != nil && !needed[fieldName] {
-				cap = streamCapBytesForLog
+				limit = streamCapBytesForLog
 			}
-			data, hit := pullStream(ctx, doSend, streamReply, handle, cap)
+			data, hit := pullStream(ctx, doSend, streamReply, handle, limit)
 			if hit {
 				truncated = true
 			}
@@ -564,7 +563,7 @@ func facetFor(family string) *pluginFacet {
 // by newPluginFacetMatcher implement SubFieldReferencer; matchers
 // from other origins (an unlikely mix) are treated as referencing
 // every field, since we have no visibility into their AST.
-func streamFieldsNeeded(rules []*config.CompiledRule, facetShortName string) map[string]bool {
+func streamFieldsNeeded(rules []*config.CompiledRule, _ string) map[string]bool {
 	out := map[string]bool{}
 	for _, r := range rules {
 		ref, ok := r.Matcher.(SubFieldReferencer)
@@ -586,13 +585,13 @@ func streamFieldsNeeded(rules []*config.CompiledRule, facetShortName string) map
 // cap (and not because the stream eof'd). Errors and read failures
 // land here as eof, not truncation — we have no way to tell from
 // outside whether the plugin had more bytes to give.
-func pullStream(ctx context.Context, doSend func(*pb.ConnMessage) error, streamReply func(handle string) <-chan *pb.StreamChunk, handle string, cap int) (data []byte, truncated bool) {
-	if cap <= 0 {
+func pullStream(ctx context.Context, doSend func(*pb.ConnMessage) error, streamReply func(handle string) <-chan *pb.StreamChunk, handle string, limit int) (data []byte, truncated bool) {
+	if limit <= 0 {
 		return nil, false
 	}
-	out := make([]byte, 0, cap)
-	for len(out) < cap {
-		want := cap - len(out)
+	out := make([]byte, 0, limit)
+	for len(out) < limit {
+		want := limit - len(out)
 		if want > 32*1024 {
 			want = 32 * 1024
 		}
@@ -610,7 +609,7 @@ func pullStream(ctx context.Context, doSend func(*pb.ConnMessage) error, streamR
 			if !ok || chunk == nil {
 				return out, false
 			}
-			if n := cap - len(out); n < len(chunk.Payload) {
+			if n := limit - len(out); n < len(chunk.Payload) {
 				out = append(out, chunk.Payload[:n]...)
 				// We stopped because cap was reached; the plugin
 				// might still have had more (`!chunk.Eof`) or

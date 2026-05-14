@@ -82,7 +82,7 @@ func (g *Gateway) servePorts() {}
 // falls back to plain TLS — the request still flows but the
 // upstream rejects it on cert-required endpoints. Operators see
 // the misconfiguration in the dashboard event log.
-func (g *Gateway) dialUpstream(ctx context.Context, network, addr, serverName string, ep *config.CompiledEndpoint, profile string) (net.Conn, error) {
+func (g *Gateway) dialUpstream(ctx context.Context, network, addr, serverName string, ep *config.CompiledEndpoint, _ string) (net.Conn, error) {
 	cfg := &tls.Config{ServerName: serverName, NextProtos: []string{"http/1.1"}}
 
 	if ep != nil && ep.Body != nil {

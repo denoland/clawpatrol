@@ -24,24 +24,24 @@ import (
 	"github.com/denoland/clawpatrol/config/match"
 )
 
-// HttpsFields is the CEL-facing view of an HTTPS request. Exposed
+// Fields is the CEL-facing view of an HTTPS request. Exposed
 // as the `http` variable in rule conditions (`http.method`,
 // `http.path`, `http.body_json`, etc.). The facet name matches the
 // CEL variable (`http`); the endpoint plugin keeps the HCL label
 // `https` since that names the wire (TLS).
 //
-// BodyJson is *structpb.Value rather than `any` because cel-go's
+// BodyJSON is *structpb.Value rather than `any` because cel-go's
 // NativeTypes converter drops interface-typed struct fields silently;
 // google.protobuf.Value gives the field the dyn-shape the operator
 // expects when writing `http.body_json.archived == true` style
 // predicates.
-type HttpsFields struct {
+type Fields struct {
 	Method   string              `cel:"method"`
 	Path     string              `cel:"path"`
 	Query    map[string][]string `cel:"query"`
 	Headers  map[string][]string `cel:"headers"`
 	Body     string              `cel:"body"`
-	BodyJson *structpb.Value     `cel:"body_json"`
+	BodyJSON *structpb.Value     `cel:"body_json"`
 }
 
 // Facet is the HTTPS facet Runtime. Singleton; held by the registry
@@ -99,10 +99,10 @@ func init() {
 	env, err := cel.NewEnv(
 		ext.Sets(),
 		ext.NativeTypes(
-			reflect.TypeFor[HttpsFields](),
+			reflect.TypeFor[Fields](),
 			ext.ParseStructTags(true),
 		),
-		cel.Variable("http", cel.ObjectType("https.HttpsFields")),
+		cel.Variable("http", cel.ObjectType("https.Fields")),
 	)
 	if err != nil {
 		panic(fmt.Sprintf("https facet: cel env: %v", err))
@@ -148,7 +148,7 @@ func buildActivation(req *match.Request) map[string]any {
 	// HTTP method is lowercased here (and declared in lowercasedPaths)
 	// so rules can write either "POST" or "post" — CompileCondition
 	// normalizes the want-side literals to lowercase at rule-load time.
-	f := &HttpsFields{
+	f := &Fields{
 		Method:  strings.ToLower(req.Method),
 		Path:    match.PathOf(req.URL),
 		Headers: mapToCEL(req.Headers),
@@ -164,7 +164,7 @@ func buildActivation(req *match.Request) map[string]any {
 	// limits. Empty body / parse error → an empty struct value, so
 	// `http.body_json.<field>` evaluates to null rather than blowing
 	// up at request time.
-	f.BodyJson = parseBodyJSON(req.Body)
+	f.BodyJSON = parseBodyJSON(req.Body)
 	return map[string]any{"http": f}
 }
 

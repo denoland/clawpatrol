@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -56,7 +57,7 @@ func handleDemoSMTP(ctx context.Context, conn *pluginsdk.Conn) error {
 	for {
 		line, err := br.ReadString('\n')
 		if err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				return nil
 			}
 			return err
@@ -158,9 +159,7 @@ func readSMTPData(br *bufio.Reader) ([]byte, error) {
 		}
 		// RFC 5321: leading "." on a line is an escape for a line
 		// that actually starts with a dot.
-		if strings.HasPrefix(stripped, ".") {
-			stripped = stripped[1:]
-		}
+		stripped = strings.TrimPrefix(stripped, ".")
 		buf.WriteString(stripped)
 		buf.WriteString("\r\n")
 	}

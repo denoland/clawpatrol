@@ -142,8 +142,7 @@ func runWGWatchdogLoop(ctx context.Context, c wgWatchdogConfig) {
 			continue
 		}
 
-		stuck := forced
-		if !stuck {
+		if !forced {
 			age := c.now().Sub(s.lastHandshake)
 			if age <= c.stuckTimeout {
 				lastTx = s.txBytes
@@ -156,7 +155,6 @@ func runWGWatchdogLoop(ctx context.Context, c wgWatchdogConfig) {
 				lastTx = s.txBytes
 				continue
 			}
-			stuck = true
 		}
 
 		age := "n/a"

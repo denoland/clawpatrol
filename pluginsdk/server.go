@@ -198,7 +198,7 @@ func (s *server) Build(_ context.Context, req *pb.BuildRequest) (*pb.BuildRespon
 			Summary:  fmt.Sprintf("plugin build failed for %s.%s %q", req.Kind, req.TypeName, req.InstanceName),
 			Detail:   err.Error(),
 		}}
-		return resp, nil
+		return resp, nil //nolint:nilerr // Build errors are returned as diagnostics in the successful gRPC response.
 	}
 
 	if built != nil {
@@ -209,7 +209,7 @@ func (s *server) Build(_ context.Context, req *pb.BuildRequest) (*pb.BuildRespon
 				Summary:  "plugin returned non-JSON-serializable canonical body",
 				Detail:   jerr.Error(),
 			}}
-			return resp, nil
+			return resp, nil //nolint:nilerr // JSON serialization errors are returned as diagnostics in the successful gRPC response.
 		}
 		resp.CanonicalJson = j
 	} else {
@@ -537,11 +537,11 @@ func serveStreamRead(req *pb.StreamRead, mu *sync.Mutex, streams map[string]*str
 	}
 	reg.mu.Unlock()
 
-	max := int(req.MaxBytes)
-	if max <= 0 || max > 64*1024 {
-		max = 64 * 1024
+	limit := int(req.MaxBytes)
+	if limit <= 0 || limit > 64*1024 {
+		limit = 64 * 1024
 	}
-	buf := make([]byte, max)
+	buf := make([]byte, limit)
 	n, err := reg.r.Read(buf)
 	chunk := &pb.StreamChunk{Handle: req.Handle, Payload: buf[:n]}
 	if err != nil {

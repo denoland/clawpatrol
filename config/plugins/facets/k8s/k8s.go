@@ -25,11 +25,11 @@ import (
 	"github.com/denoland/clawpatrol/config/match"
 )
 
-// K8sFields is the CEL-facing view of a kubernetes request. Exposed
+// Fields is the CEL-facing view of a kubernetes request. Exposed
 // as the `k8s` variable in rule conditions (`k8s.verb`,
 // `k8s.namespace`, etc.). Tag-driven field naming keeps the Go field
 // names idiomatic while preserving the on-the-wire CEL names.
-type K8sFields struct {
+type Fields struct {
 	Verb      string            `cel:"verb"`
 	Resource  string            `cel:"resource"`
 	Namespace string            `cel:"namespace"`
@@ -118,10 +118,10 @@ func init() {
 	env, err := cel.NewEnv(
 		ext.Sets(),
 		ext.NativeTypes(
-			reflect.TypeFor[K8sFields](),
+			reflect.TypeFor[Fields](),
 			ext.ParseStructTags(true),
 		),
-		cel.Variable("k8s", cel.ObjectType("k8s.K8sFields")),
+		cel.Variable("k8s", cel.ObjectType("k8s.Fields")),
 	)
 	if err != nil {
 		panic(fmt.Sprintf("k8s facet: cel env: %v", err))
@@ -166,7 +166,7 @@ func buildActivation(req *match.Request) map[string]any {
 		params = map[string]string{}
 	}
 	return map[string]any{
-		"k8s": &K8sFields{
+		"k8s": &Fields{
 			Verb:      strings.ToLower(meta.Verb),
 			Resource:  meta.Resource,
 			Namespace: meta.Namespace,
