@@ -453,40 +453,11 @@ func logDashboardSecretState(cfg *config.Gateway) {
 		log.Printf("dashboard auth: enabled (dashboard_secret set)")
 	case cfg.InsecureNoDashboardSecret:
 		log.Printf("dashboard auth: DISABLED via insecure_no_dashboard_secret — anyone who reaches the dashboard URL gets in")
+	case cfg.InfoListen != "" && !config.BindStringIsPublic(cfg.InfoListen):
+		log.Printf("dashboard auth: network-only (info_listen %q is privately bound; no app-layer secret required)", cfg.InfoListen)
 	default:
 		log.Printf("dashboard auth: MISCONFIGURED — gateway.hcl is missing both dashboard_secret and insecure_no_dashboard_secret; dashboard will refuse to serve until one is set")
 	}
-}
-
-// bindIsPublic reports whether a listen-address host portion would
-// expose the listener to the public internet. Returns true for:
-//   - empty host or "0.0.0.0" or "::" — bind on all interfaces
-//   - any IP literal that isn't loopback / RFC1918 / RFC4193 ULA /
-//     link-local / CGNAT (100.64.0.0/10, where Tailscale lives)
-//
-// Hostnames are treated conservatively as public — operators who
-// want to bind a tailnet hostname should resolve it themselves and
-// use the IP literal, or accept the warning.
-func bindIsPublic(host string) bool {
-	if host == "" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return true // hostname — can't tell, assume public
-	}
-	if ip.IsUnspecified() {
-		return true
-	}
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() {
-		return false
-	}
-	// CGNAT 100.64.0.0/10 — Tailscale's range, not covered by
-	// IsPrivate but private in practice.
-	if v4 := ip.To4(); v4 != nil && v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
-		return false
-	}
-	return true
 }
 
 // validateDashboardBindOrFatal refuses to boot if info_listen would
@@ -501,7 +472,7 @@ func validateDashboardBindOrFatal(cfg *config.Gateway, insecurePublic bool) {
 	if err != nil {
 		log.Fatalf("info_listen %q: %v", cfg.InfoListen, err)
 	}
-	public := bindIsPublic(host)
+	public := config.BindIsPublic(host)
 	if !public {
 		return
 	}

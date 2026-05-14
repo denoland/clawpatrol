@@ -238,19 +238,35 @@ func (w *webMux) routes() []webRoute {
 }
 
 // dashboardSecretGate requires every non-public request to carry the
-// configured dashboard_secret (cookie / header). Onboarding
-// + health endpoints stay open so brand-new clients can still join.
+// configured dashboard_secret (cookie / header). Onboarding +
+// health endpoints stay open so brand-new clients can still join.
 //
 // When dashboard_secret is empty, the gate's behavior depends on
-// insecure_no_dashboard_secret: if that's true, the gate is a no-op
-// (testing escape hatch); otherwise the gate refuses to serve and
-// every gated route returns a misconfiguration error so an open
-// dashboard isn't published by accident.
+// the listen address and explicit opt-outs:
+//   - info_listen bound private (loopback / RFC1918 / ULA / CGNAT /
+//     link-local): pass through. The network is the trust boundary;
+//     anyone who can reach the socket is implicitly trusted. In
+//     Tailscale control mode the tailnetGate downstream still picks
+//     up per-operator identity from whois.
+//   - insecure_no_dashboard_secret = true: pass through. Testing
+//     escape hatch — anyone on the network gets in.
+//   - otherwise: refuse to serve. validateDashboardBindOrFatal at
+//     boot keeps the gateway from getting here for public binds,
+//     so this branch fires only on misconfigured stacks (e.g.
+//     hostname-bound listener that resolves dynamically).
+//
 // credentialWebhookPrefix is the path prefix every plugin webhook
 // route mounts under. Public — credential plugins authenticate
 // callbacks via their own signature header (Slack signing secret,
 // etc.) so the dashboard secret gate skips the prefix.
 const credentialWebhookPrefix = "/api/cred/"
+
+// infoListenIsPrivate reports whether the dashboard is bound on a
+// private interface. When true, the network is the trust boundary
+// and the dashboard_secret app-layer check is redundant.
+func (w *webMux) infoListenIsPrivate() bool {
+	return !config.BindStringIsPublic(w.g.cfg.InfoListen)
+}
 
 func (w *webMux) dashboardSecretGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
@@ -260,7 +276,7 @@ func (w *webMux) dashboardSecretGate(next http.Handler) http.Handler {
 				next.ServeHTTP(rw, r)
 				return
 			}
-			if w.g.cfg.InsecureNoDashboardSecret {
+			if w.g.cfg.InsecureNoDashboardSecret || w.infoListenIsPrivate() {
 				next.ServeHTTP(rw, r.WithContext(contextWithPrincipal(r.Context(), w.dashboardSecretPrincipal())))
 				return
 			}
