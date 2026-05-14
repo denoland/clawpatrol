@@ -138,6 +138,22 @@ type EndpointTLSConfigurer interface {
 	ConfigureUpstreamTLS(cfg *tls.Config) error
 }
 
+// EKSBearerMinter is the credential-plugin contract for minting a
+// k8s-aws-v1.<…> bearer scoped to one (region, cluster) pair. The
+// kubernetes_port_forward tunnel uses this to materialise a temp
+// kubeconfig at Open time, so operators can drop the external
+// awscli + kubeconfig + KUBECONFIG-in-systemd glue: HCL declares the
+// cluster shape (server + ca_cert + cluster_name + region) and binds
+// an aws_credential that satisfies this interface; the tunnel mints,
+// writes, and cleans up the per-tunnel kubeconfig itself.
+//
+// The HTTPRequestSigner path (kubernetes endpoint, per-request HTTP
+// auth) calls the same underlying STS presigner — both shapes route
+// through one mint helper so signature semantics stay in sync.
+type EKSBearerMinter interface {
+	MintEKSBearer(ctx context.Context, sec Secret, region, cluster string) (string, error)
+}
+
 // ConnEndpointRuntime owns request-time handling for protocols that
 // don't fit the http.Request model — postgres, clickhouse_native,
 // any future binary wire protocol. The plugin receives the agent

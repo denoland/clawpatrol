@@ -1,6 +1,7 @@
 package tunnels
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -100,6 +101,44 @@ spec:
 `)
 	if err == nil {
 		t.Fatal("expected error for missing name")
+	}
+}
+
+// TestKctlArgsKubeconfigBeatsContext verifies that when a per-tunnel
+// kubeconfig is set, --context is suppressed: kubectl reads
+// `current-context` from the file we just wrote, so passing both
+// would either confuse it (--context unknown) or, worse, silently
+// flip back to a wrong context that happens to exist by name.
+func TestKctlArgsKubeconfigBeatsContext(t *testing.T) {
+	got := kctlArgs("/tmp/k.yaml", "ignored-context", "default", "get", "pods")
+	if got[0] != "--kubeconfig" || got[1] != "/tmp/k.yaml" {
+		t.Fatalf("args = %v, want --kubeconfig /tmp/k.yaml first", got)
+	}
+	for _, a := range got {
+		if a == "--context" {
+			t.Fatalf("args = %v, must not include --context when --kubeconfig is set", got)
+		}
+	}
+}
+
+// TestBuildEKSKubeconfig pins the shape kubectl will see when the
+// tunnel mints its own kubeconfig: cluster.server + base64'd
+// certificate-authority-data, user.token, single matching context,
+// current-context set.
+func TestBuildEKSKubeconfig(t *testing.T) {
+	out := buildEKSKubeconfig("https://eks.example", "ca-pem-bytes", "k8s-aws-v1.xxxx")
+	wantCA := "certificate-authority-data: " + base64.StdEncoding.EncodeToString([]byte("ca-pem-bytes"))
+	for _, want := range []string{
+		"apiVersion: v1",
+		"kind: Config",
+		"server: https://eks.example",
+		wantCA,
+		"token: k8s-aws-v1.xxxx",
+		"current-context: ctx",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("buildEKSKubeconfig missing %q\nfull output:\n%s", want, out)
+		}
 	}
 }
 
