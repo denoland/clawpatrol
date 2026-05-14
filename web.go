@@ -232,6 +232,7 @@ func (w *webMux) routes() []webRoute {
 		{Method: http.MethodPost, Path: "/api/oauth/exchange", Auth: authDashboard, Handler: w.apiOAuthExchange},
 		{Method: http.MethodPost, Path: "/api/oauth/device-poll", Auth: authDashboard, Handler: w.apiOAuthDevicePoll},
 		{Method: http.MethodPost, Path: "/api/oauth/revoke", Auth: authDashboard, Handler: w.apiOAuthRevoke},
+		{Method: http.MethodGet, Path: "/oauth/callback", Auth: authDashboard, Handler: w.serveOAuthCallback},
 		{Method: http.MethodPost, Path: "/api/tailscale/connect", Auth: authDashboard, Handler: w.apiTailscaleConnect},
 		{Method: http.MethodGet, Path: "/api/tailscale/status", Auth: authDashboard, Handler: w.apiTailscaleStatus},
 		{Method: http.MethodPost, Path: "/api/tailscale/disconnect", Auth: authDashboard, Handler: w.apiTailscaleDisconnect},

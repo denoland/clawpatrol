@@ -60,6 +60,34 @@ export function ConnectModal({
   const onDoneRef = useRef(onDone);
   onDoneRef.current = onDone;
 
+  // Auto-complete path: when the OAuth callback page in another tab
+  // POSTs /api/oauth/exchange successfully, it pings the BroadcastChannel
+  // so this modal can close itself instead of asking the user to copy
+  // the code into the input field below. Lazy `try` so older browsers
+  // without BroadcastChannel just fall back to the copy-paste UX.
+  useEffect(() => {
+    if (!start || start.flow === "device" || done) return;
+    let ch: BroadcastChannel | null = null;
+    try {
+      ch = new BroadcastChannel("oauth");
+      ch.onmessage = (e) => {
+        if (e.data?.type === "connected" && e.data?.state === start.state) {
+          setDone(true);
+          setTimeout(() => onDoneRef.current(), 800);
+        }
+      };
+    } catch {
+      /* no BroadcastChannel — copy-paste fallback still works */
+    }
+    return () => {
+      try {
+        ch?.close();
+      } catch {
+        /* no-op */
+      }
+    };
+  }, [start, done]);
+
   useEffect(() => {
     if (!start || start.flow !== "device") return;
     let cancelled = false;
