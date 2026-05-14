@@ -1,20 +1,16 @@
 import { useEffect, useState } from "react";
-import { type Agent, listProfiles } from "../../lib/api";
+import { type Agent, listProfiles, type ProfileInfo } from "../../lib/api";
 import { Card } from "../cards/Card";
 import { PageHeader } from "../cards/PageHeader";
 
-// Profiles — clawpatrol exposes profile names via /api/profiles
-// (a flat string[]) and agents carry a `profile` field that pins
-// each device to one. There's no named-profile object with
-// integrations / session counts / approver defaults the way unclaw
-// has, so the page is necessarily skinnier than unclaw's.
-//
-// Gap: unclaw's per-profile workspace (integrations list,
-// default LLM/Human approver pickers, session count) requires
-// profile metadata that clawpatrol's read API doesn't surface.
-// Renders as empty-state.
+// Profiles — /api/profiles returns one ProfileInfo per declared
+// profile: name, the endpoint set bound to it, an aggregated rule
+// count across those endpoints, and the credential names referenced
+// by endpoints / tunnels. Devices carry a `profile` field that pins
+// each one to a declared profile, so device counts join in
+// client-side.
 export function ProfilesPage({ agents }: { agents: Agent[] }) {
-  const [profiles, setProfiles] = useState<string[]>([]);
+  const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -25,8 +21,6 @@ export function ProfilesPage({ agents }: { agents: Agent[] }) {
       .finally(() => setLoading(false));
   }, []);
 
-  // Build a count of agents per profile so the empty-named-profile
-  // list still has something concrete to show.
   const countByProfile = new Map<string, number>();
   for (const a of agents) {
     const key = a.profile || "(default)";
@@ -37,7 +31,7 @@ export function ProfilesPage({ agents }: { agents: Agent[] }) {
     <div className="mx-auto max-w-7xl">
       <PageHeader
         title="Profiles"
-        subhead="Profiles declared in gateway.hcl. Devices inherit a profile; profile metadata (integrations, default approvers) isn't exposed by clawpatrol's API."
+        subhead="Profiles declared in gateway.hcl. Each lists the endpoints, rules, and credentials it binds — devices inherit one."
       />
 
       {loading && <div className="text-sm text-text-muted py-8">Loading profiles…</div>}
@@ -52,35 +46,49 @@ export function ProfilesPage({ agents }: { agents: Agent[] }) {
           <div className="px-4 py-8 text-center text-sm text-text-muted">No profiles declared.</div>
         ) : (
           <ul className="divide-y divide-canvas-dark">
-            {profiles.map((p) => (
-              <li key={p} className="px-4 py-3 flex items-center justify-between">
-                <div>
-                  <div className="font-medium">{p}</div>
-                  <div className="text-xs text-text-muted mt-0.5">
-                    {countByProfile.get(p) ?? 0} device
-                    {(countByProfile.get(p) ?? 0) === 1 ? "" : "s"}
+            {profiles.map((p) => {
+              const devices = countByProfile.get(p.name) ?? 0;
+              return (
+                <li key={p.name} className="px-4 py-3">
+                  <div className="flex items-center justify-between">
+                    <div className="font-medium">{p.name}</div>
+                    <span className="text-xs text-text-muted">read-only</span>
                   </div>
-                </div>
-                <span className="text-xs text-text-muted">read-only</span>
-              </li>
-            ))}
+                  <div className="text-xs text-text-muted mt-0.5">
+                    {devices} device{devices === 1 ? "" : "s"} · {p.endpoints.length} endpoint
+                    {p.endpoints.length === 1 ? "" : "s"} · {p.rule_count} rule
+                    {p.rule_count === 1 ? "" : "s"} · {p.credentials.length} credential
+                    {p.credentials.length === 1 ? "" : "s"}
+                  </div>
+                  {p.endpoints.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {p.endpoints.map((ep) => (
+                        <span
+                          key={ep}
+                          className="font-mono text-xs px-1.5 py-0.5 bg-canvas-dark text-text-muted"
+                        >
+                          {ep}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {p.credentials.length > 0 && (
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {p.credentials.map((c) => (
+                        <span
+                          key={c}
+                          className="font-mono text-xs px-1.5 py-0.5 border border-canvas-dark text-text-muted"
+                        >
+                          {c}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
-      </Card>
-
-      <Card title="Gap vs unclaw">
-        <div className="text-sm text-text-muted space-y-1">
-          <p>
-            unclaw's <code className="font-mono text-xs">/api/profiles</code> returns objects with
-            integration lists, session counts, and default LLM / Human approver pointers — the
-            profile page in unclaw is effectively a profile workspace.
-          </p>
-          <p>
-            clawpatrol's <code className="font-mono text-xs">/api/profiles</code> returns a flat
-            string list. Per cl-r3e we don't extend the backend, so this view is intentionally
-            spare.
-          </p>
-        </div>
       </Card>
     </div>
   );

@@ -52,7 +52,7 @@ export function DevicePage({
   const [profileCreds, setProfileCreds] = useState<Integration[] | null>(null);
   useEffect(() => {
     listProfiles()
-      .then(setProfiles)
+      .then((list) => setProfiles(list.map((p) => p.name)))
       .catch(() => setProfiles([]));
   }, []);
   const devProfile = a?.profile;

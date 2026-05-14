@@ -218,7 +218,14 @@ export async function getDeviceRulesHCL(ip: string): Promise<string> {
   return r.text();
 }
 
-export async function listProfiles(): Promise<string[]> {
+export type ProfileInfo = {
+  name: string;
+  endpoints: string[];
+  rule_count: number;
+  credentials: string[];
+};
+
+export async function listProfiles(): Promise<ProfileInfo[]> {
   const r = await api("/api/profiles");
   if (!r.ok) throw new Error(await r.text());
   return r.json();
