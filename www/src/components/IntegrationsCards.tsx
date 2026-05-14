@@ -130,7 +130,11 @@ export function IntegrationsCards({
       : i.has_tailscale_auth
         ? "disconnect the Tailscale node"
         : "clear the stored secrets";
-    if (!confirm(`Disconnect ${label} (${i.id})?\n\nThis will ${what}. You'll need to reconnect to use it again.`)) {
+    if (
+      !confirm(
+        `Disconnect ${label} (${i.id})?\n\nThis will ${what}. You'll need to reconnect to use it again.`,
+      )
+    ) {
       return;
     }
     if (i.has_tailscale_auth && i.tailscale_auth) {
