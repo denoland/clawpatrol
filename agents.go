@@ -594,12 +594,19 @@ type IntegrationRow struct {
 // dashboard renders the connect flow without hard-coding the route
 // layout.
 type TailscaleAuthStatusUI struct {
-	Connected     bool                          `json:"connected"`
-	State         tailscaleproto.NodeStateLabel `json:"state"`
-	PendingURL    string                        `json:"pending_url,omitempty"`
-	ConnectURL    string                        `json:"connect_url"`
-	StatusURL     string                        `json:"status_url"`
-	DisconnectURL string                        `json:"disconnect_url"`
+	Connected bool                          `json:"connected"`
+	State     tailscaleproto.NodeStateLabel `json:"state"`
+	// HasState is true when credential_secrets carries any rows for
+	// this credential — i.e. there's a persisted tsnet identity (or a
+	// fragment of one) that could be cleared by Disconnect. The
+	// dashboard renders the disconnect ✕ off this field rather than
+	// gating it on Connected, so an operator can reset a stuck
+	// identity even when tsnet has dropped out of Running.
+	HasState      bool   `json:"has_state,omitempty"`
+	PendingURL    string `json:"pending_url,omitempty"`
+	ConnectURL    string `json:"connect_url"`
+	StatusURL     string `json:"status_url"`
+	DisconnectURL string `json:"disconnect_url"`
 }
 
 // OAuthIntegrationUI is the dashboard-facing slice of an
@@ -673,6 +680,7 @@ func (w *webMux) statusList(r *http.Request) []IntegrationRow {
 			row.TailscaleAuth = &TailscaleAuthStatusUI{
 				Connected:     label == tailscaleproto.NodeStateRunning,
 				State:         dashboardTailscaleState(label, len(present) > 0),
+				HasState:      len(present) > 0,
 				PendingURL:    tailscaleproto.Default.Get(name),
 				ConnectURL:    "/api/tailscale/connect?id=" + name,
 				StatusURL:     "/api/tailscale/status?id=" + name,

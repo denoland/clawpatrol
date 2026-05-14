@@ -37,6 +37,11 @@ export type TailscaleNodeState =
 export type TailscaleAuthStatusUI = {
   connected: boolean;
   state: TailscaleNodeState;
+  // has_state is true when credential_secrets carries persisted
+  // identity bytes — even when `connected` is false. The card uses
+  // this to render the disconnect ✕ for stuck-but-not-running nodes
+  // so the operator can reset without bouncing the gateway.
+  has_state?: boolean;
   pending_url?: string;
   connect_url: string;
   status_url: string;

@@ -264,6 +264,13 @@ function Card({
   const connected = isConnected(i);
   const hasSlots = (i.slots?.length ?? 0) > 0;
   const clickable = i.has_oauth || hasSlots || (i.has_tailscale_auth && !connected);
+  // Tailscale identities can persist while the live node is *not*
+  // running (rejected machine key, expired auth, etc.) — the gateway
+  // exposes has_state in that window so the card can offer a Reset
+  // path. Without this the operator had to bounce the gateway to
+  // recover from a stuck registration.
+  const canReset = i.has_tailscale_auth && (i.tailscale_auth?.has_state ?? false);
+  const showDisconnect = connected || canReset;
   const status = connected
     ? i.expires_at
       ? "expires " + fmtExpiry(i.expires_at)
@@ -304,14 +311,14 @@ function Card({
           {heading}
         </span>
         <span className="ml-auto flex items-center gap-1.5 shrink-0">
-          {connected && (
+          {showDisconnect && (
             <span
               onClick={(e) => {
                 e.stopPropagation();
                 onDisconnect();
               }}
               className="opacity-0 group-hover:opacity-100 text-xs leading-none text-text-subtle hover:text-danger-500 transition-opacity cursor-pointer"
-              title="disconnect"
+              title={connected ? "disconnect" : "reset stored identity"}
             >
               ✕
             </span>
