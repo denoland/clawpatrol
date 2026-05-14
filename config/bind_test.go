@@ -1,4 +1,4 @@
-package main
+package config
 
 import "testing"
 
@@ -48,8 +48,8 @@ func TestBindIsPublic(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.host, func(t *testing.T) {
-			if got := bindIsPublic(tc.host); got != tc.want {
-				t.Errorf("bindIsPublic(%q) = %v, want %v", tc.host, got, tc.want)
+			if got := BindIsPublic(tc.host); got != tc.want {
+				t.Errorf("BindIsPublic(%q) = %v, want %v", tc.host, got, tc.want)
 			}
 		})
 	}

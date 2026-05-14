@@ -418,12 +418,17 @@ func validateOperational(gw *Gateway) hcl.Diagnostics {
 		}
 	}
 
+	// Public dashboard bind without auth = open admin console. Private
+	// bind (loopback / tailnet / VPN) is OK without an app-layer
+	// secret — the network is the trust boundary.
 	if gw.InfoListen != "" && gw.DashboardSecret == "" && !gw.InsecureNoDashboardSecret {
-		diags = append(diags, &hcl.Diagnostic{
-			Severity: hcl.DiagError,
-			Summary:  "Dashboard auth not configured",
-			Detail:   "info_listen is set but the dashboard has no auth: set dashboard_secret = \"<long random string>\", or set insecure_no_dashboard_secret = true to explicitly opt out.",
-		})
+		if BindStringIsPublic(gw.InfoListen) {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Dashboard auth not configured",
+				Detail:   "info_listen is publicly bound but the dashboard has no auth: set dashboard_secret = \"<long random string>\", bind info_listen to a private interface (loopback / tailnet / VPN), or set insecure_no_dashboard_secret = true to explicitly opt out.",
+			})
+		}
 	}
 
 	return diags

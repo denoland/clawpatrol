@@ -30,11 +30,10 @@ On the server, pick a data directory (anywhere — `/opt/clawpatrol`,
 into it, and edit the operational fields:
 
 ```hcl
-info_listen      = "127.0.0.1:9080"   # bind the dashboard private — see below
-public_url       = "https://gw.example.com"
-admin_email      = "you@example.com"
-dashboard_secret = "<long random string>"
-state_dir        = "/opt/clawpatrol"
+info_listen = "127.0.0.1:9080"   # bind the dashboard private — see below
+public_url  = "https://gw.example.com"
+admin_email = "you@example.com"
+state_dir   = "/opt/clawpatrol"
 
 control        = "wireguard"
 wg_subnet_cidr = "10.55.0.0/24"
@@ -42,14 +41,18 @@ wg_subnet_cidr = "10.55.0.0/24"
 
 **`info_listen` should bind privately.** The dashboard holds the
 credential vault — the gateway refuses to boot when `info_listen`
-is on a public interface (`0.0.0.0`, `::`, or a routable IP) without
-`dashboard_secret`. Recommended shapes:
+is publicly bound (`0.0.0.0`, `::`, or a routable IP) without
+`dashboard_secret`. When `info_listen` is on a private interface
+(loopback / RFC1918 / RFC4193 ULA / link-local / CGNAT including
+Tailscale's 100.64.0.0/10) the network IS the trust boundary —
+no `dashboard_secret` needed. Recommended shapes, ranked:
 
-- **`127.0.0.1:9080`** — loopback. Reach the dashboard via SSH
-  tunnel (`ssh -L 9080:127.0.0.1:9080 gateway-host`) or front it
-  with a local reverse proxy.
-- **A tailnet / VPN IP** — e.g. `100.x.x.x:9080`. Anyone on the
-  tailnet reaches it directly; nothing public.
+- **`127.0.0.1:9080`** — loopback. No `dashboard_secret` required.
+  Reach the dashboard via SSH tunnel (`ssh -L 9080:127.0.0.1:9080
+  gateway-host`) or front it with a local reverse proxy.
+- **A tailnet / VPN IP** — e.g. `100.x.x.x:9080`. No
+  `dashboard_secret` required. Tailscale whois attributes audit
+  events to each operator (see [Architecture](/docs/architecture/)).
 - **Public + `dashboard_secret`** — works if you really need it,
   but logs a warning. Pair with an auth proxy
   (Cloudflare Access, oauth2-proxy) before pointing real users

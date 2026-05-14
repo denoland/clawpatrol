@@ -38,15 +38,16 @@ state_dir   = "/opt/clawpatrol"
 # socket. Set it only in Tailscale mode (where it's the tsnet
 # listener on the tailnet IP).
 
-# Dashboard auth — pick exactly one. The gateway refuses to serve the
-# dashboard / APIs until one of these is set, to avoid silently
-# exposing it on a public network.
+# Dashboard auth — required only when info_listen is publicly bound.
+# With info_listen on a private interface (loopback / tailnet / VPN /
+# RFC1918 / ULA — the example above uses 127.0.0.1) the network IS
+# the trust boundary; no app-layer secret needed. Uncomment one of
+# these only if you change info_listen to a public address:
 #
 #   dashboard_secret = "<long random string>"   # production
 #   insecure_no_dashboard_secret = true         # testing only — anyone
 #                                               # who can reach the
 #                                               # dashboard URL gets in
-dashboard_secret = "change-me-to-a-long-random-string"
 
 control        = "wireguard"
 wg_subnet_cidr = "10.55.0.0/24"
