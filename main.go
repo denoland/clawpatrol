@@ -1426,7 +1426,35 @@ func (g *Gateway) handleVIPConn(c net.Conn, dstIP string, dstPort uint16) {
 		_ = c.Close()
 		return
 	}
-	g.dispatchConnEndpoint(c, dstIP, matchedPort, ep, hostname)
+	// Sibling candidates with the same plugin type — populated when the
+	// dispatcher sees more than one endpoint claiming this VIP and the
+	// plugin can re-pick after reading the protocol intro. Profile +
+	// port filter is applied here for the same reason it was for the
+	// primary pick above.
+	var candidates []*config.CompiledEndpoint
+	for _, h := range hits {
+		if h.Endpoint == nil || h.Endpoint.Plugin == nil {
+			continue
+		}
+		if h.Endpoint.Plugin.Type != ep.Plugin.Type {
+			continue
+		}
+		if profile != "" {
+			if prof, ok := policy.Profiles[profile]; ok {
+				if _, in := prof.Endpoints[h.Endpoint.Name]; !in {
+					continue
+				}
+			}
+		}
+		if dstPort != 0 && h.Port != 0 && dstPort != h.Port {
+			continue
+		}
+		candidates = append(candidates, h.Endpoint)
+	}
+	if len(candidates) <= 1 {
+		candidates = nil // single-endpoint host — plugin uses Endpoint directly
+	}
+	g.dispatchConnEndpoint(c, dstIP, matchedPort, ep, hostname, candidates)
 }
 
 // tryDirectIPConn is the post-VIP fallback that dispatches inbound
@@ -1459,16 +1487,46 @@ func (g *Gateway) tryDirectIPConn(c net.Conn, dstIP string, dstPort uint16) bool
 	if _, ok := ep.Plugin.Runtime.(runtime.ConnEndpointRuntime); !ok {
 		return false
 	}
-	g.dispatchConnEndpoint(c, dstIP, dstPort, ep, "")
+	// Sibling candidates: all endpoints the conn-index returned for
+	// this dst IP that share ep's plugin type and the device's
+	// profile. Same-IP siblings of a different plugin type can't
+	// co-claim this conn (the protocol-dispatch port already
+	// disambiguated them); endpoints outside the profile aren't
+	// reachable from this device.
+	var siblings []*config.CompiledEndpoint
+	prof, hasProf := policy.Profiles[profile]
+	for _, cnd := range candidates {
+		if cnd == nil || cnd.Plugin == nil {
+			continue
+		}
+		if cnd.Plugin.Type != ep.Plugin.Type {
+			continue
+		}
+		if profile != "" && hasProf {
+			if _, in := prof.Endpoints[cnd.Name]; !in {
+				continue
+			}
+		}
+		siblings = append(siblings, cnd)
+	}
+	if len(siblings) <= 1 {
+		siblings = nil
+	}
+	g.dispatchConnEndpoint(c, dstIP, dstPort, ep, "", siblings)
 	return true
 }
 
 // dispatchConnEndpoint hands one accepted conn to the endpoint's
 // ConnEndpointRuntime. Shared between handleVIPConn and
 // tryDirectIPConn; hostname is the agent-dialed name (set by the VIP
-// path, empty for direct-IP). Closes c on a runtime-mismatch fail
+// path, empty for direct-IP). When more than one endpoint of ep's
+// plugin type claims this dst, candidates is the full sibling set
+// (including ep) so a plugin that routes by an in-band field
+// (clickhouse_native's Hello.Database) can re-pick after reading the
+// protocol's intro packet. nil / single-entry candidates means the
+// dispatcher already settled. Closes c on a runtime-mismatch fail
 // path; otherwise the plugin owns the conn lifetime.
-func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16, ep *config.CompiledEndpoint, hostname string) {
+func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16, ep *config.CompiledEndpoint, hostname string, candidates []*config.CompiledEndpoint) {
 	connRT, ok := ep.Plugin.Runtime.(runtime.ConnEndpointRuntime)
 	if !ok {
 		log.Printf("conn dispatch: endpoint %q plugin lacks ConnEndpointRuntime", ep.Name)
@@ -1487,9 +1545,23 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 	if eventHost == "" {
 		eventHost = dstIP
 	}
-	ch := &runtime.ConnHandle{
+	// When the plugin can re-pick its endpoint from a candidate set
+	// (clickhouse_native by Hello.Database), the closures below must
+	// observe whatever ep the plugin landed on rather than the
+	// initial guess. Reading ch.Endpoint at call time covers both
+	// the no-re-pick case (single endpoint) and the post-intro
+	// switch. ch is wired in below.
+	var ch *runtime.ConnHandle
+	currentEP := func() *config.CompiledEndpoint {
+		if ch != nil && ch.Endpoint != nil {
+			return ch.Endpoint
+		}
+		return ep
+	}
+	ch = &runtime.ConnHandle{
 		Conn:         c,
 		Endpoint:     ep,
+		Candidates:   candidates,
 		Policy:       policy,
 		Profile:      profile,
 		PeerIP:       pip,
@@ -1511,28 +1583,30 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 			if addr == "" {
 				return nil, fmt.Errorf("conn dispatch: plugin gave empty upstream addr")
 			}
-			return g.dialThrough(ctx, ep, network, addr)
+			return g.dialThrough(ctx, currentEP(), network, addr)
 		},
 		Emit: func(ev runtime.ConnEvent) {
 			if g.sink == nil {
 				return
 			}
+			cep := currentEP()
 			g.sink.Emit(Event{
-				Mode: mode, Family: ep.Family, Host: eventHost, AgentIP: agentPip,
+				Mode: mode, Family: cep.Family, Host: eventHost, AgentIP: agentPip,
 				Method: ev.Verb, Path: ev.Summary,
 				Action: ev.Action, Reason: ev.Reason,
 				Facets:   ev.Facets,
-				Endpoint: ep.Name, Rule: ev.Rule,
+				Endpoint: cep.Name, Rule: ev.Rule,
 				Approver:     ev.Approver,
 				ApproverType: ev.ApproverType,
 				ApproverBy:   ev.ApproverBy,
 			})
 		},
 		Approve: func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
+			cep := currentEP()
 			return g.runApproveChain(context.Background(), req.Stages, runApproveCtx{
 				AgentIP: agentPip, Host: eventHost, Method: req.Verb, Path: req.Summary,
 				Reason:   ifNotEmpty(req.Rule, func(r *config.CompiledRule) string { return r.Outcome.Reason }),
-				Endpoint: ep, Rule: req.Rule, Profile: profile,
+				Endpoint: cep, Rule: req.Rule, Profile: profile,
 			})
 		},
 	}
