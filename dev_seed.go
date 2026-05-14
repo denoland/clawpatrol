@@ -468,11 +468,11 @@ func devSeedStatus(r *rand.Rand, ep devSeedEndpoint) (int, string, string) {
 	if ep.rule == "github-writes" {
 		switch n := r.Intn(100); {
 		case n < 75:
-			return 200, "hitl_allow", "approved by ops"
+			return 200, "approved", "approved by ops"
 		case n < 90:
-			return 403, "hitl_deny", "denied by ops"
+			return 403, "denied", "denied by ops"
 		default:
-			return 408, "hitl_deny", "timeout"
+			return 408, "denied", "timeout"
 		}
 	}
 	switch n := r.Intn(100); {

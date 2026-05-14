@@ -1319,8 +1319,11 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 				Mode: "pg", Family: ep.Family, Host: dstIP, AgentIP: agentPip,
 				Method: ev.Verb, Path: ev.Summary,
 				Action: ev.Action, Reason: ev.Reason,
-				Facets:   ev.Facets,
-				Endpoint: ep.Name, Rule: ev.Rule,
+				Facets:       ev.Facets,
+				Endpoint:     ep.Name, Rule: ev.Rule,
+				Approver:     ev.Approver,
+				ApproverType: ev.ApproverType,
+				ApproverBy:   ev.ApproverBy,
 			})
 		},
 		Approve: func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
@@ -1478,8 +1481,11 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 				Mode: mode, Family: ep.Family, Host: eventHost, AgentIP: agentPip,
 				Method: ev.Verb, Path: ev.Summary,
 				Action: ev.Action, Reason: ev.Reason,
-				Facets:   ev.Facets,
-				Endpoint: ep.Name, Rule: ev.Rule,
+				Facets:       ev.Facets,
+				Endpoint:     ep.Name, Rule: ev.Rule,
+				Approver:     ev.Approver,
+				ApproverType: ev.ApproverType,
+				ApproverBy:   ev.ApproverBy,
 			})
 		},
 		Approve: func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
@@ -1760,17 +1766,25 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				if reason == "" {
 					reason = "denied by approver"
 				}
-				log.Printf("hitl-deny %s %s %s: %s (by %s)", host, req.Method, req.URL.Path, reason, v.By)
+				log.Printf("denied %s %s %s: %s (by %s/%s/%s)",
+					host, req.Method, req.URL.Path, reason, v.ApproverType, v.ApproverName, v.By)
 				_, _ = fmt.Fprintf(tc, "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(reason), reason)
 				ev.Status = 403
-				ev.Action = "hitl_deny"
+				ev.Action = "denied"
+				ev.Approver = v.ApproverName
+				ev.ApproverType = v.ApproverType
+				ev.ApproverBy = v.By
 				ev.Reason = reason
 				ev.Ms = time.Since(start).Milliseconds()
 				g.emitEnd(ev)
 				return
 			}
-			log.Printf("hitl-allow %s %s %s by %s", host, req.Method, req.URL.Path, v.By)
-			ev.Action = "hitl_allow"
+			log.Printf("approved %s %s %s by %s/%s/%s",
+				host, req.Method, req.URL.Path, v.ApproverType, v.ApproverName, v.By)
+			ev.Action = "approved"
+			ev.Approver = v.ApproverName
+			ev.ApproverType = v.ApproverType
+			ev.ApproverBy = v.By
 		}
 
 		// Verdict.
@@ -2088,17 +2102,22 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 	policy := g.Policy()
 	for _, st := range stages {
 		var ar runtime.ApproverRuntime
+		approverType := ""
 		if st.Name == "dashboard" {
 			ar = approvers.DashboardApprover{}
+			approverType = "dashboard"
 		} else if policy != nil {
 			if ent, ok := policy.Approvers[st.Name]; ok {
 				if rt, ok := ent.Body.(runtime.ApproverRuntime); ok {
 					ar = rt
 				}
+				if ent.Plugin != nil {
+					approverType = ent.Plugin.Type
+				}
 			}
 		}
 		if ar == nil {
-			return runtime.ApproveVerdict{Decision: "deny", Reason: "approver " + st.Name + " not found", By: "gateway"}
+			return runtime.ApproveVerdict{Decision: "deny", Reason: "approver " + st.Name + " not found", By: "gateway", ApproverName: st.Name}
 		}
 		req := runtime.ApproveRequest{
 			Stage:        st,
@@ -2121,8 +2140,17 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 			Policy:       policy,
 		}
 		v, err := ar.Approve(ctx, req)
+		// Stamp the entity name + plugin type on every verdict so the
+		// dispatcher labels its `approved` / `denied` events with the
+		// deciding approver — runtimes don't have to remember.
+		if v.ApproverName == "" {
+			v.ApproverName = st.Name
+		}
+		if v.ApproverType == "" {
+			v.ApproverType = approverType
+		}
 		if err != nil {
-			return runtime.ApproveVerdict{Decision: "deny", Reason: err.Error(), By: "gateway"}
+			return runtime.ApproveVerdict{Decision: "deny", Reason: err.Error(), By: "gateway", ApproverName: v.ApproverName, ApproverType: v.ApproverType}
 		}
 		if v.Decision != "allow" {
 			if v.Decision == "" {

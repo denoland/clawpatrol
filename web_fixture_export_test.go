@@ -146,11 +146,12 @@ profile "default" { endpoints = [alpha, beta] }
 	}
 }
 
-// hitl_allow / hitl_deny collapse to "approve" in the fixture
-// (the chain is terminal — see site/doc/clawpatrol-test.md). in_flight is a start
+// approved / denied (and their pre-migration aliases hitl_allow /
+// hitl_deny) collapse to "approve" in the fixture (the chain is
+// terminal — see site/doc/clawpatrol-test.md). in_flight is a start
 // event and isn't exportable.
 func TestExporterEventActionMapping(t *testing.T) {
-	for _, action := range []string{"hitl_allow", "hitl_deny"} {
+	for _, action := range []string{"approved", "denied", "hitl_allow", "hitl_deny"} {
 		m, ok := matchFromEvent(&Event{Action: action, Rule: "r", Endpoint: "ep"})
 		if !ok || m.Verdict != "approve" {
 			t.Errorf("%s → (%+v, %v), want approve", action, m, ok)

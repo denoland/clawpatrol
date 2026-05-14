@@ -11,6 +11,29 @@ import { fmtDateTime } from "../lib/format";
 import { Button } from "./Button";
 import { Tag } from "./Tag";
 
+// isDenyAction matches every action label the dispatcher emits for a
+// "this request was blocked" outcome — legacy `deny` / `hitl_deny`
+// (pre-migration rows) and the post-migration `denied`.
+function isDenyAction(action: string): boolean {
+  return action === "deny" || action === "denied" || action === "hitl_deny";
+}
+
+// approverKindLabel humanises the plugin type the dispatcher records
+// on the event. Unknown values fall through verbatim so the dashboard
+// stays useful as plugin types evolve.
+function approverKindLabel(type?: string): string {
+  switch (type) {
+    case "llm_approver":
+      return "LLM";
+    case "human_approver":
+      return "human";
+    case "dashboard":
+      return "dashboard";
+    default:
+      return type || "approver";
+  }
+}
+
 export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] }) {
   const [ev, setEv] = useState<EventRecord | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -101,12 +124,17 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
           {ev.in != null && ev.in > 0 && <span>in: {fmtBytes(ev.in)}</span>}
           {ev.out != null && ev.out > 0 && <span>out: {fmtBytes(ev.out)}</span>}
         </div>
-        {(ev.action || ev.reason) && (
-          <div className="flex items-center gap-2 text-xs">
+        {(ev.action || ev.reason || ev.approver) && (
+          <div className="flex items-center gap-2 text-xs flex-wrap">
             {ev.action && (
-              <Tag tone={ev.action === "deny" || ev.action === "hitl_deny" ? "danger" : "success"}>
-                {ev.action}
-              </Tag>
+              <Tag tone={isDenyAction(ev.action) ? "danger" : "success"}>{ev.action}</Tag>
+            )}
+            {ev.approver && (
+              <span className="text-text-muted">
+                by <span className="text-text">{approverKindLabel(ev.approver_type)}</span>{" "}
+                <code>{ev.approver}</code>
+                {ev.approver_by && <span className="text-text-muted"> · {ev.approver_by}</span>}
+              </span>
             )}
             {ev.reason && <span className="text-text-muted">{ev.reason}</span>}
           </div>

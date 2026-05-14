@@ -1364,11 +1364,14 @@ func (w *webMux) apiActionByID(
 		respSha     sql.NullString
 		reqBody     sql.NullString
 		respBody    sql.NullString
-		reqHeaders  sql.NullString
-		respHeaders sql.NullString
-		extra       sql.NullString
-		endpoint    sql.NullString
-		rule        sql.NullString
+		reqHeaders   sql.NullString
+		respHeaders  sql.NullString
+		extra        sql.NullString
+		endpoint     sql.NullString
+		rule         sql.NullString
+		approver     sql.NullString
+		approverType sql.NullString
+		approverBy   sql.NullString
 	)
 	err := w.g.db.QueryRow(`
 		SELECT ts_ns, mode, family, agent_ip, host, method, path,
@@ -1376,7 +1379,8 @@ func (w *webMux) apiActionByID(
 		       reason, req_sha, resp_sha,
 		       req_body, resp_body,
 		       req_headers, resp_headers, extra,
-		       endpoint, rule
+		       endpoint, rule,
+		       approver, approver_type, approver_by
 		FROM actions WHERE action_id = ?`, actionID,
 	).Scan(
 		&tsNs, &mode, &family, &agentIP, &e.Host,
@@ -1385,6 +1389,7 @@ func (w *webMux) apiActionByID(
 		&reqBody, &respBody,
 		&reqHeaders, &respHeaders, &extra,
 		&endpoint, &rule,
+		&approver, &approverType, &approverBy,
 	)
 	if err == sql.ErrNoRows {
 		http.Error(rw, "not found", 404)
@@ -1418,6 +1423,9 @@ func (w *webMux) apiActionByID(
 	}
 	e.Endpoint = endpoint.String
 	e.Rule = rule.String
+	e.Approver = approver.String
+	e.ApproverType = approverType.String
+	e.ApproverBy = approverBy.String
 	if r.URL.Query().Get("fmt") == "fixture" {
 		w.writeActionFixture(rw, &e)
 		return
@@ -1493,7 +1501,10 @@ func matchFromEvent(ev *Event) (Match, bool) {
 	switch ev.Action {
 	case "deny":
 		m.Verdict = "deny"
-	case "hitl_allow", "hitl_deny":
+	case "approved", "denied", "hitl_allow", "hitl_deny":
+		// `approved` / `denied` is the post-rename label for an
+		// approve-chain verdict; `hitl_*` are kept for pre-migration
+		// fixtures so the test corpus still loads.
 		m.Verdict = "approve"
 	case "allow", "":
 		m.Verdict = "allow"
@@ -1851,6 +1862,14 @@ type Event struct {
 	Ms          int64             `json:"ms"`
 	Action      string            `json:"action,omitempty"`
 	Reason      string            `json:"reason,omitempty"`
+	// Approver* are populated when Action is "approved" / "denied":
+	// the approver entity's HCL block name, plugin type (human_approver
+	// / llm_approver / dashboard), and the approver-specific "By"
+	// string (Slack handle, llm:<model>, ...). All empty for rule-
+	// driven verdicts.
+	Approver     string `json:"approver,omitempty"`
+	ApproverType string `json:"approver_type,omitempty"`
+	ApproverBy   string `json:"approver_by,omitempty"`
 	ReqSha      string            `json:"req_sha,omitempty"`
 	ReqBody     string            `json:"req_body,omitempty"`
 	RespSha     string            `json:"resp_sha,omitempty"`
@@ -1937,7 +1956,8 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 		SELECT action_id, ts_ns, mode, family, agent_ip, host,
 		       method, path, status, bytes_in, bytes_out,
 		       ms, action, reason, req_sha, resp_sha, extra,
-		       endpoint, rule
+		       endpoint, rule,
+		       approver, approver_type, approver_by
 		FROM actions ORDER BY id DESC LIMIT ?`, n)
 	if err != nil {
 		return nil, err
@@ -1946,30 +1966,34 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 	out := make([]Event, 0, n)
 	for rows.Next() {
 		var (
-			e        Event
-			actionID sql.NullString
-			tsNs     int64
-			mode     sql.NullString
-			family   sql.NullString
-			agentIP  sql.NullString
-			method   sql.NullString
-			path     sql.NullString
-			status   sql.NullInt64
-			in, ot   sql.NullInt64
-			ms       sql.NullInt64
-			action   sql.NullString
-			reason   sql.NullString
-			reqSha   sql.NullString
-			respSha  sql.NullString
-			extra    sql.NullString
-			endpoint sql.NullString
-			rule     sql.NullString
+			e            Event
+			actionID     sql.NullString
+			tsNs         int64
+			mode         sql.NullString
+			family       sql.NullString
+			agentIP      sql.NullString
+			method       sql.NullString
+			path         sql.NullString
+			status       sql.NullInt64
+			in, ot       sql.NullInt64
+			ms           sql.NullInt64
+			action       sql.NullString
+			reason       sql.NullString
+			reqSha       sql.NullString
+			respSha      sql.NullString
+			extra        sql.NullString
+			endpoint     sql.NullString
+			rule         sql.NullString
+			approver     sql.NullString
+			approverType sql.NullString
+			approverBy   sql.NullString
 		)
 		if err := rows.Scan(
 			&actionID, &tsNs, &mode, &family, &agentIP, &e.Host,
 			&method, &path, &status, &in, &ot, &ms,
 			&action, &reason, &reqSha, &respSha, &extra,
 			&endpoint, &rule,
+			&approver, &approverType, &approverBy,
 		); err != nil {
 			return nil, err
 		}
@@ -1993,6 +2017,9 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 		if extra.String != "" {
 			_ = json.Unmarshal([]byte(extra.String), &e.Facets)
 		}
+		e.Approver = approver.String
+		e.ApproverType = approverType.String
+		e.ApproverBy = approverBy.String
 		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {
@@ -2055,8 +2082,9 @@ func (s *Sink) drain() {
 				  ms, action, reason, req_sha, resp_sha,
 				  req_body, resp_body,
 				  req_headers, resp_headers, extra,
-				  endpoint, rule)
-				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+				  endpoint, rule,
+				  approver, approver_type, approver_by)
+				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			`, e.ID, e.Ts.UnixNano(), e.Mode, e.Family, e.AgentIP,
 				e.Host, e.Method, e.Path, e.Status,
 				e.In, e.Out, e.Ms, e.Action, e.Reason,
@@ -2064,7 +2092,8 @@ func (s *Sink) drain() {
 				e.ReqBody, e.RespBody,
 				string(rqhJSON), string(rshJSON),
 				string(extraJSON),
-				e.Endpoint, e.Rule)
+				e.Endpoint, e.Rule,
+				e.Approver, e.ApproverType, e.ApproverBy)
 		}
 
 		// Marshal once per event regardless of subscriber count. Old

@@ -666,14 +666,16 @@ func pgEvaluateInfo(ch *runtime.ConnHandle, info pgInfo, credName string, shadow
 				reason = "denied by approver"
 			}
 			emit(ch, runtime.ConnEvent{
-				Action: "hitl_deny", Reason: reason,
+				Action: "denied", Reason: reason,
 				Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
+				Approver: v.ApproverName, ApproverType: v.ApproverType, ApproverBy: v.By,
 			})
 			return "deny", reason
 		}
 		if !shadow {
 			emit(ch, runtime.ConnEvent{
-				Action: "hitl_allow", Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
+				Action: "approved", Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
+				Approver: v.ApproverName, ApproverType: v.ApproverType, ApproverBy: v.By,
 			})
 		}
 		return "", ""

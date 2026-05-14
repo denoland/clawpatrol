@@ -259,7 +259,7 @@ type ApproveCallRequest struct {
 // dashboard doesn't have to round-trip through the legacy
 // Verb / Summary squashing.
 type ConnEvent struct {
-	Action  string // "allow" | "deny" | "hitl_allow" | "hitl_deny" | "error"
+	Action  string // "allow" | "deny" | "approved" | "denied" | "error"
 	Reason  string
 	Verb    string // SQL verb / k8s verb / etc.
 	Summary string // human-readable one-liner for the event log
@@ -270,6 +270,12 @@ type ConnEvent struct {
 	// the action-fixture exporter can pin a downloaded action to a
 	// specific rule (site/doc/clawpatrol-test.md).
 	Rule string
+	// Approver* mirror ApproveVerdict — set for Action=="approved" /
+	// "denied" so the dashboard can show which approver (and what
+	// kind: human / llm / dashboard) produced the verdict.
+	Approver     string
+	ApproverType string
+	ApproverBy   string
 }
 
 // Secret is what credential plugins receive at injection time. The
@@ -391,10 +397,18 @@ type ApproveRequest struct {
 // ApproveVerdict is what an approver returns. "" Decision means the
 // approver couldn't decide (timeout / error) — the caller falls back
 // to the configured fail mode.
+//
+// ApproverName / ApproverType identify which approver entity produced
+// the verdict. The dispatcher reads these to label the resulting
+// dashboard event with the deciding approver's kind (human / llm /
+// dashboard) and id (the HCL block name) — operators looking at a
+// `denied` row see *why* without having to drill into the rule.
 type ApproveVerdict struct {
-	Decision string // "allow" | "deny" | ""
-	Reason   string
-	By       string // who decided ("dashboard:<user>" / "slack:#chan" / "llm:<model>")
+	Decision     string // "allow" | "deny" | ""
+	Reason       string
+	By           string // who decided ("dashboard:<user>" / "slack:#chan" / "llm:<model>")
+	ApproverName string // HCL block name, e.g. "pg-staging-secret-columns-judge"
+	ApproverType string // plugin type, e.g. "llm_approver" / "human_approver" / "dashboard"
 }
 
 // HITLPool is the shared pending-approval surface the dashboard

@@ -453,6 +453,13 @@ export type EventRecord = {
   // Download action button (site/doc/clawpatrol-test.md).
   endpoint?: string;
   rule?: string;
+  // approver/* are populated when action is "approved" or "denied":
+  // the approver entity's HCL block name, plugin type
+  // (human_approver / llm_approver / dashboard) and the per-approver
+  // "by" string (slack handle, llm:<model>, ...).
+  approver?: string;
+  approver_type?: string;
+  approver_by?: string;
 };
 
 // downloadActionFixture fetches the action reshaped as a
