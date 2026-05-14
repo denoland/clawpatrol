@@ -38,6 +38,12 @@ import (
 // SlackTokens is part of the clawpatrol plugin API.
 type SlackTokens struct{}
 
+var (
+	slackPostMessageURL     = "https://slack.com/api/chat.postMessage"
+	slackHTTPClient         = &http.Client{Timeout: 5 * time.Second}
+	slackNotifyRetryBackoff = 500 * time.Millisecond
+)
+
 // InjectHTTP defaults to the bot token (xoxb-…) for chat.postMessage
 // etc. Slack admin endpoints (auth.test, admin.*, apps.*) prefer the
 // app token; if the operator declared one, use it for those paths.
@@ -103,7 +109,7 @@ func (*SlackTokens) SecretSlots() []config.SecretSlot {
 // When target.Interactive is true, the message includes Approve /
 // Deny buttons resolved by the gateway's /api/slack/interactive
 // HTTP handler. Otherwise, only an "Open dashboard" link.
-func (s *SlackTokens) NotifyHITL(_ context.Context, req runtime.ApproveRequest, target runtime.HITLTarget) error {
+func (s *SlackTokens) NotifyHITL(ctx context.Context, req runtime.ApproveRequest, target runtime.HITLTarget) error {
 	if req.Secrets == nil {
 		return fmt.Errorf("no secret store on request")
 	}
@@ -156,23 +162,23 @@ func (s *SlackTokens) NotifyHITL(_ context.Context, req runtime.ApproveRequest, 
 			}},
 		}
 	}
-	ctx := []map[string]any{}
+	contextBlocks := []map[string]any{}
 	if req.Profile != "" {
-		ctx = append(ctx, map[string]any{
+		contextBlocks = append(contextBlocks, map[string]any{
 			"type": "mrkdwn",
 			"text": "agent `" + req.Profile + "`",
 		})
 	}
 	if r := strings.TrimSpace(req.Reason); r != "" {
-		ctx = append(ctx, map[string]any{
+		contextBlocks = append(contextBlocks, map[string]any{
 			"type": "mrkdwn",
 			"text": "reason: " + slackTrunc(r, 200),
 		})
 	}
-	if len(ctx) > 0 {
+	if len(contextBlocks) > 0 {
 		blocks = append(blocks, map[string]any{
 			"type":     "context",
-			"elements": ctx,
+			"elements": contextBlocks,
 		})
 	}
 	if bs := strings.TrimSpace(req.BodySample); bs != "" {
@@ -224,19 +230,52 @@ func (s *SlackTokens) NotifyHITL(_ context.Context, req runtime.ApproveRequest, 
 		body["thread_ts"] = target.ThreadTS
 	}
 	buf, _ := json.Marshal(body)
-	hreq, err := http.NewRequest("POST", "https://slack.com/api/chat.postMessage", bytes.NewReader(buf))
-	if err != nil {
+	if err := slackPostHITLMessage(ctx, bot, buf); err != nil {
 		return err
 	}
-	hreq.Header.Set("Authorization", "Bearer "+bot)
-	hreq.Header.Set("Content-Type", "application/json; charset=utf-8")
+	return nil
+}
 
-	c := &http.Client{Timeout: 5 * time.Second}
-	resp, err := c.Do(hreq)
-	if err != nil {
-		return err
+func slackPostHITLMessage(ctx context.Context, bot string, buf []byte) error {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	defer func() { _ = resp.Body.Close() }()
+	var lastErr error
+	for attempt := 1; attempt <= 2; attempt++ {
+		hreq, err := http.NewRequestWithContext(ctx, "POST", slackPostMessageURL, bytes.NewReader(buf))
+		if err != nil {
+			return err
+		}
+		hreq.Header.Set("Authorization", "Bearer "+bot)
+		hreq.Header.Set("Content-Type", "application/json; charset=utf-8")
+
+		resp, err := slackHTTPClient.Do(hreq)
+		if err == nil {
+			lastErr = slackDecodePostMessageResponse(resp)
+			if closeErr := resp.Body.Close(); lastErr == nil && closeErr != nil {
+				lastErr = closeErr
+			}
+		} else {
+			lastErr = err
+		}
+		if lastErr == nil {
+			return nil
+		}
+		if attempt == 2 || !slackShouldRetryPostMessage(resp, err) {
+			return lastErr
+		}
+		log.Printf("slack notify: chat.postMessage failed on attempt %d, retrying once: %v", attempt, lastErr)
+		if err := slackWaitBeforeRetry(ctx, resp); err != nil {
+			return err
+		}
+	}
+	return lastErr
+}
+
+func slackDecodePostMessageResponse(resp *http.Response) error {
+	if resp == nil {
+		return fmt.Errorf("slack chat.postMessage error: missing response")
+	}
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	var result struct {
 		OK    bool   `json:"ok"`
@@ -244,11 +283,45 @@ func (s *SlackTokens) NotifyHITL(_ context.Context, req runtime.ApproveRequest, 
 	}
 	_ = json.Unmarshal(respBody, &result)
 	if resp.StatusCode >= 400 || !result.OK {
-		log.Printf("slack notify %s: chat.postMessage failed: status=%d ok=%v error=%q",
-			req.ApproverName, resp.StatusCode, result.OK, result.Error)
-		return fmt.Errorf("slack chat.postMessage error: %s", result.Error)
+		log.Printf("slack notify: chat.postMessage failed: status=%d ok=%v error=%q", resp.StatusCode, result.OK, result.Error)
+		if result.Error != "" {
+			return fmt.Errorf("slack chat.postMessage error: %s", result.Error)
+		}
+		return fmt.Errorf("slack chat.postMessage error: HTTP %d", resp.StatusCode)
 	}
 	return nil
+}
+
+func slackShouldRetryPostMessage(resp *http.Response, err error) bool {
+	if err != nil {
+		return true
+	}
+	if resp == nil {
+		return false
+	}
+	return resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
+}
+
+func slackWaitBeforeRetry(ctx context.Context, resp *http.Response) error {
+	backoff := slackNotifyRetryBackoff
+	if resp != nil {
+		if retryAfter := strings.TrimSpace(resp.Header.Get("Retry-After")); retryAfter != "" {
+			if seconds, err := strconv.Atoi(retryAfter); err == nil && seconds > 0 {
+				backoff = time.Duration(seconds) * time.Second
+			}
+		}
+	}
+	if backoff <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(backoff)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func hitlClassificationEmoji(c string) string {
