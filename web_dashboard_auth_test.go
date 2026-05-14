@@ -37,6 +37,76 @@ func TestDashboardLoginGetDoesNotAcceptSecretQueryParam(t *testing.T) {
 	}
 }
 
+func TestDashboardLoginMintsSessionCookie(t *testing.T) {
+	w := &webMux{g: &Gateway{cfg: &config.Gateway{DashboardSecret: "s3cr3t"}}}
+	r := httptest.NewRequest(http.MethodPost, "/__login?next=/api/state", strings.NewReader("secret=s3cr3t"))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rw := httptest.NewRecorder()
+
+	w.apiDashboardLogin(rw, r)
+
+	if rw.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d", rw.Code, http.StatusFound)
+	}
+	cookies := rw.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("cookies = %d, want 1", len(cookies))
+	}
+	cookie := cookies[0]
+	if cookie.Name != "cp_dash" {
+		t.Fatalf("cookie name = %q, want cp_dash", cookie.Name)
+	}
+	if cookie.Value == "s3cr3t" {
+		t.Fatal("dashboard session cookie contains dashboard_secret")
+	}
+	if !w.checkDashboardSession(requestWithCookie(cookie.Value), "s3cr3t") {
+		t.Fatal("minted dashboard session cookie was rejected")
+	}
+	if w.checkDashboardAuth(requestWithCookie("s3cr3t"), "s3cr3t") {
+		t.Fatal("dashboard_secret cookie was accepted as a session")
+	}
+	if w.checkDashboardSession(requestWithCookie("not-a-real-session"), "s3cr3t") {
+		t.Fatal("arbitrary dashboard session cookie was accepted")
+	}
+	if w.checkDashboardSession(requestWithCookie(cookie.Value), "rotated-secret") {
+		t.Fatal("dashboard session survived dashboard_secret rotation")
+	}
+}
+
+func TestDashboardHeaderSecretStillAuthenticates(t *testing.T) {
+	w := &webMux{g: &Gateway{cfg: &config.Gateway{DashboardSecret: "s3cr3t"}}}
+	r := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+	r.Header.Set("X-Clawpatrol-Secret", "s3cr3t")
+
+	if !w.checkDashboardAuth(r, "s3cr3t") {
+		t.Fatal("dashboard secret header was rejected")
+	}
+}
+
+func TestDashboardLoginSecureCookieForHTTPSProxy(t *testing.T) {
+	w := &webMux{g: &Gateway{cfg: &config.Gateway{DashboardSecret: "s3cr3t"}}}
+	r := httptest.NewRequest(http.MethodPost, "/__login", strings.NewReader("secret=s3cr3t"))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("X-Forwarded-Proto", "https")
+	rw := httptest.NewRecorder()
+
+	w.apiDashboardLogin(rw, r)
+
+	cookies := rw.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("cookies = %d, want 1", len(cookies))
+	}
+	if !cookies[0].Secure {
+		t.Fatal("dashboard cookie missing Secure flag for HTTPS proxy request")
+	}
+}
+
+func requestWithCookie(value string) *http.Request {
+	r := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+	r.AddCookie(&http.Cookie{Name: "cp_dash", Value: value})
+	return r
+}
+
 func TestDashboardLoginRejectsProtocolRelativeNext(t *testing.T) {
 	tests := []struct {
 		name      string
