@@ -383,8 +383,16 @@ const maxPgMessage = 1 << 20
 // pgClientToServer pumps the agent's outbound message stream to the
 // upstream, inspecting Query / Parse for policy. database is the
 // session-start database (from the agent's StartupMessage) and is
-// stamped on every match.Request.Meta the matcher sees; mid-session
-// changes via `\connect` / `USE` are not tracked in v1.
+// stamped on every match.Request.Meta the matcher sees.
+//
+// Postgres has no in-protocol way to swap the active database for an
+// open connection — there's no `USE db` analogue, and `SET database`
+// isn't a recognised setting. The psql `\connect newdb` meta-command
+// is handled entirely on the client: psql tears the current TCP
+// connection down and opens a fresh one whose StartupMessage carries
+// the new database. From this gateway's vantage that arrives as a
+// new ConnHandle, so the session-start value remains authoritative
+// for every Query / Parse frame on this connection.
 func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.Conn, credName, database string) {
 	done := make(chan struct{})
 	defer close(done)

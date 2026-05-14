@@ -27,6 +27,12 @@ type chSQLInfo struct {
 	Tables    []string
 	Functions []string
 	Statement string // raw, untrimmed — fed to statement / statement_regex matchers
+	// UseDatabase carries the target of a top-level `USE db` statement.
+	// The wire pump consults this after a matched-and-allowed Query so a
+	// session-scoped database tracker can swap to the new value and
+	// subsequent statements report the right `sql.database` to the
+	// matcher. Empty for non-USE statements.
+	UseDatabase string
 }
 
 // parseChSQL extracts verb / tables / functions / statement for the
@@ -57,6 +63,18 @@ func parseChSQL(sql string) chSQLInfo {
 	// denies access to `secrets` still fires when `secrets` is the
 	// second statement in a "use db; select * from secrets" pair.
 	info.Verb = chVerbFromStmt(stmts[0])
+	// `USE db` at the head of the packet is the wire-level signal that
+	// the agent wants subsequent statements interpreted against `db`.
+	// We surface the target so the wire pump can update session state
+	// after the matcher allows it through. Only the head statement
+	// counts — `USE` inside a CTE / subquery has no effect on session
+	// scope, and a `SELECT … ; USE other; …` chain leaves the session
+	// on `other` only because the trailing USE happens last, which the
+	// wire pump can't replay statement-by-statement (clickhouse-server
+	// either rejects multi-statement queries or runs them atomically).
+	if u, ok := stmts[0].(*chparser.UseStmt); ok && u != nil && u.Database != nil {
+		info.UseDatabase = u.Database.Name
+	}
 	tables := map[string]struct{}{}
 	funcs := map[string]struct{}{}
 	for _, stmt := range stmts {

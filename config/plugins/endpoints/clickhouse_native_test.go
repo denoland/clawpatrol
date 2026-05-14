@@ -225,6 +225,15 @@ func TestParseChSQL(t *testing.T) {
 			},
 		},
 		{
+			"use surfaces target database",
+			"USE metrics",
+			chSQLInfo{
+				Verb:        "use",
+				Statement:   "USE metrics",
+				UseDatabase: "metrics",
+			},
+		},
+		{
 			"empty sql preserved",
 			"",
 			chSQLInfo{},
@@ -434,7 +443,7 @@ func TestChEvaluateSQLThreadsDatabaseIntoMeta(t *testing.T) {
 
 	t.Run("matches when database equal", func(t *testing.T) {
 		mock, _ := chNewMockHandle(t, ep)
-		verdict, reason := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "metrics", false)
+		verdict, reason, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "metrics", false)
 		if verdict != "deny" {
 			t.Errorf("DROP on metrics verdict = %q, want deny", verdict)
 		}
@@ -445,7 +454,7 @@ func TestChEvaluateSQLThreadsDatabaseIntoMeta(t *testing.T) {
 
 	t.Run("different case does not match", func(t *testing.T) {
 		mock, _ := chNewMockHandle(t, ep)
-		verdict, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "Metrics", false)
+		verdict, _, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "Metrics", false)
 		if verdict != "" {
 			t.Errorf("DROP on Metrics (mixed case) verdict = %q, want allow", verdict)
 		}
@@ -453,7 +462,7 @@ func TestChEvaluateSQLThreadsDatabaseIntoMeta(t *testing.T) {
 
 	t.Run("empty database does not match", func(t *testing.T) {
 		mock, _ := chNewMockHandle(t, ep)
-		verdict, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "", false)
+		verdict, _, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "", false)
 		if verdict != "" {
 			t.Errorf("DROP with empty database verdict = %q, want allow", verdict)
 		}
@@ -477,7 +486,7 @@ func TestChEvaluateSQLTruncated(t *testing.T) {
 
 		mock, _ := chNewMockHandle(t, ep)
 
-		verdict, reason := chEvaluateSQL(context.Background(), mock.ConnHandle, "SELECT 1", "ch-cred", "", true)
+		verdict, reason, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "SELECT 1", "ch-cred", "", true)
 		if verdict != "deny" {
 			t.Errorf("truncated SELECT verdict = %q, want deny (synth)", verdict)
 		}
@@ -496,7 +505,7 @@ func TestChEvaluateSQLTruncated(t *testing.T) {
 
 		mock, _ := chNewMockHandle(t, ep)
 
-		verdict, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "anything", "ch-cred", "", true)
+		verdict, _, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "anything", "ch-cred", "", true)
 		if verdict != "" {
 			t.Errorf("truncated passthrough verdict = %q, want allow (empty)", verdict)
 		}
@@ -515,7 +524,7 @@ func TestChEvaluateSQLAllowsSelectDeniesInsert(t *testing.T) {
 
 	mock, _ := chNewMockHandle(t, ep)
 
-	verdict, reason := chEvaluateSQL(context.Background(), mock.ConnHandle, "INSERT INTO events VALUES (1)", "ch-cred", "", false)
+	verdict, reason, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "INSERT INTO events VALUES (1)", "ch-cred", "", false)
 	if verdict != "deny" {
 		t.Errorf("INSERT verdict = %q, want deny", verdict)
 	}
@@ -523,7 +532,7 @@ func TestChEvaluateSQLAllowsSelectDeniesInsert(t *testing.T) {
 		t.Errorf("INSERT reason = %q, want %q", reason, "writes blocked")
 	}
 
-	verdict, _ = chEvaluateSQL(context.Background(), mock.ConnHandle, "SELECT 1", "ch-cred", "", false)
+	verdict, _, _ = chEvaluateSQL(context.Background(), mock.ConnHandle, "SELECT 1", "ch-cred", "", false)
 	if verdict != "" {
 		t.Errorf("SELECT verdict = %q, want allow (empty)", verdict)
 	}
@@ -571,7 +580,7 @@ func TestChEvaluateSQLApproveChain(t *testing.T) {
 	t.Run("approver allows", func(t *testing.T) {
 		mock, _ := chNewMockHandle(t, ep)
 		mock.Approve = chMockApprove("allow", "ok")
-		verdict, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "", false)
+		verdict, _, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "", false)
 		if verdict != "" {
 			t.Errorf("approver allow → verdict %q, want empty", verdict)
 		}
@@ -582,7 +591,7 @@ func TestChEvaluateSQLApproveChain(t *testing.T) {
 	t.Run("approver denies", func(t *testing.T) {
 		mock, _ := chNewMockHandle(t, ep)
 		mock.Approve = chMockApprove("deny", "operator rejected")
-		verdict, reason := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "", false)
+		verdict, reason, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "", false)
 		if verdict != "deny" || reason != "operator rejected" {
 			t.Errorf("verdict=%q reason=%q, want deny/operator rejected", verdict, reason)
 		}
@@ -593,7 +602,7 @@ func TestChEvaluateSQLApproveChain(t *testing.T) {
 	t.Run("missing Approve callback default-denies", func(t *testing.T) {
 		mock, _ := chNewMockHandle(t, ep)
 		mock.Approve = nil
-		verdict, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "", false)
+		verdict, _, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "", false)
 		if verdict != "deny" {
 			t.Errorf("no Approve → verdict %q, want deny", verdict)
 		}
@@ -1193,6 +1202,167 @@ func TestChAgentToServerDeniesQuery(t *testing.T) {
 	got := <-read
 	if len(got) == 0 || chgoproto.ServerCode(got[0]) != chgoproto.ServerCodeException {
 		t.Errorf("agent did not receive Exception packet; first byte = %d", got[0])
+	}
+}
+
+// TestChAgentToServerUseDatabaseUpdatesSessionScope is the regression
+// for the v1-limitation closure: a `USE metrics` allowed by the
+// matcher must roll the session-tracked database forward so the very
+// next statement matches against `metrics` instead of the connect-
+// time database. The stream is `USE metrics; DROP TABLE events`,
+// with a rule that denies `sql.database == "metrics" && sql.verb ==
+// "drop"`. The pre-fix code reported the connect-time database for
+// every query, so the DROP slipped past the rule and reached
+// upstream; with USE-tracking the gateway denies it and the agent
+// receives an Exception.
+func TestChAgentToServerUseDatabaseUpdatesSessionScope(t *testing.T) {
+	const revision = 54448
+	rule := chRuleSQL(t, "lock-metrics",
+		`sql.database == "metrics" && sql.verb == "drop"`,
+		"deny", "metrics is locked", 100)
+	ep := chBuildEndpoint(t, rule)
+	mock, agentSide := chNewMockHandle(t, ep)
+	defer func() { _ = agentSide.Close() }()
+	defer func() { _ = mock.Conn.Close() }()
+
+	mkQuery := func(id, body string) []byte {
+		q := chgoproto.Query{
+			ID: id, Body: body,
+			Stage: chgoproto.StageComplete,
+			Info: chgoproto.ClientInfo{
+				ProtocolVersion: revision, Major: 24, Minor: 8,
+				Interface:   chgoproto.InterfaceTCP,
+				Query:       chgoproto.ClientQueryInitial,
+				InitialUser: "alice",
+			},
+		}
+		var b chgoproto.Buffer
+		q.EncodeAware(&b, revision)
+		return b.Buf
+	}
+
+	var stream bytes.Buffer
+	stream.Write(mkQuery("q1", "USE metrics"))
+	stream.Write(mkQuery("q2", "DROP TABLE events"))
+
+	agentBytes := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		n, _ := agentSide.Read(buf)
+		agentBytes <- append([]byte(nil), buf[:n]...)
+	}()
+
+	reader := chgoproto.NewReader(bytes.NewReader(stream.Bytes()))
+	var upstream bytes.Buffer
+	// Connect-time database is "default" — the rule must not fire on
+	// it; only after USE metrics rolls the tracker forward.
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred", "default")
+
+	r := chgoproto.NewReader(bytes.NewReader(upstream.Bytes()))
+	var bodies []string
+	for {
+		code, err := r.UInt8()
+		if err != nil {
+			break
+		}
+		if chgoproto.ClientCode(code) != chgoproto.ClientCodeQuery {
+			t.Fatalf("upstream packet code = %d, want ClientCodeQuery", code)
+		}
+		var q chgoproto.Query
+		if err := q.DecodeAware(r, revision); err != nil {
+			t.Fatalf("decode upstream Query: %v", err)
+		}
+		bodies = append(bodies, q.Body)
+	}
+	wantBodies := []string{"USE metrics"}
+	if diff := cmp.Diff(wantBodies, bodies); diff != "" {
+		t.Errorf("upstream Query bodies (-want +got):\n%s", diff)
+	}
+
+	exc := <-agentBytes
+	if len(exc) == 0 || chgoproto.ServerCode(exc[0]) != chgoproto.ServerCodeException {
+		t.Errorf("agent did not receive Exception for the DROP; first byte = %d", exc[0])
+	}
+
+	// Pin the per-statement meta: the USE event saw `default` (the
+	// pre-swap value), and the DROP event saw `metrics`.
+	var useEvent, dropEvent *runtime.ConnEvent
+	for i := range mock.events {
+		switch mock.events[i].Verb {
+		case "use":
+			useEvent = &mock.events[i]
+		case "drop":
+			dropEvent = &mock.events[i]
+		}
+	}
+	if useEvent == nil || dropEvent == nil {
+		t.Fatalf("expected use+drop events, got: %+v", mock.events)
+	}
+	if got, _ := useEvent.Facets["database"].(string); got != "default" {
+		t.Errorf("USE event database facet = %q, want %q (pre-swap)", got, "default")
+	}
+	if got, _ := dropEvent.Facets["database"].(string); got != "metrics" {
+		t.Errorf("DROP event database facet = %q, want %q (post-swap)", got, "metrics")
+	}
+}
+
+// TestChAgentToServerUseDatabaseStickyOnDeny verifies the denied-USE
+// path: a `USE metrics` rejected by the matcher must leave the
+// session's tracked database untouched, so the next statement still
+// reports the pre-USE value to the matcher. Without this, a denied
+// USE that the dashboard "knows" failed would still poison every
+// downstream `sql.database` predicate for the connection.
+func TestChAgentToServerUseDatabaseStickyOnDeny(t *testing.T) {
+	const revision = 54448
+	rule := chRuleSQL(t, "no-use-metrics",
+		`sql.verb == "use" && sql.statement == "USE metrics"`,
+		"deny", "use blocked", 100)
+	ep := chBuildEndpoint(t, rule)
+	mock, agentSide := chNewMockHandle(t, ep)
+	defer func() { _ = agentSide.Close() }()
+	defer func() { _ = mock.Conn.Close() }()
+
+	mkQuery := func(id, body string) []byte {
+		q := chgoproto.Query{
+			ID: id, Body: body,
+			Stage: chgoproto.StageComplete,
+			Info: chgoproto.ClientInfo{
+				ProtocolVersion: revision, Major: 24, Minor: 8,
+				Interface:   chgoproto.InterfaceTCP,
+				Query:       chgoproto.ClientQueryInitial,
+				InitialUser: "alice",
+			},
+		}
+		var b chgoproto.Buffer
+		q.EncodeAware(&b, revision)
+		return b.Buf
+	}
+
+	var stream bytes.Buffer
+	stream.Write(mkQuery("q1", "USE metrics"))
+	stream.Write(mkQuery("q2", "SELECT 1"))
+
+	// Drain the Exception the deny writes to the agent.
+	go func() {
+		buf := make([]byte, 4096)
+		_, _ = agentSide.Read(buf)
+	}()
+
+	reader := chgoproto.NewReader(bytes.NewReader(stream.Bytes()))
+	var upstream bytes.Buffer
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred", "default")
+
+	var selectEvent *runtime.ConnEvent
+	for i := range mock.events {
+		if mock.events[i].Verb == "select" {
+			selectEvent = &mock.events[i]
+		}
+	}
+	if selectEvent == nil {
+		t.Fatalf("expected select event after denied USE; got: %+v", mock.events)
+	}
+	if got, _ := selectEvent.Facets["database"].(string); got != "default" {
+		t.Errorf("SELECT database after denied USE = %q, want %q (USE must not roll forward on deny)", got, "default")
 	}
 }
 

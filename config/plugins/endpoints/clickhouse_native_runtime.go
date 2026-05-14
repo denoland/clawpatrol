@@ -344,6 +344,14 @@ func chRunSession(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgo
 // channel.
 func chAgentToServer(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream io.Writer, revision int, credName, database string) {
 	compression := chgoproto.CompressionDisabled
+	// sessionDB tracks the active database across the lifetime of this
+	// connection. It seeds from the agent's Hello.Database and rolls
+	// forward when chHandleQuery sees a `USE db` allowed through the
+	// matcher; subsequent Query packets stamp the new value into
+	// match.Request.Meta so a `sql.database == "..."` predicate sees
+	// the live target, not the connect-time one. Denied USE statements
+	// leave the value untouched — upstream never executed them.
+	sessionDB := database
 	for {
 		code, err := agentReader.UInt8()
 		if err != nil {
@@ -351,7 +359,7 @@ func chAgentToServer(ctx context.Context, ch *runtime.ConnHandle, agentReader *c
 		}
 		switch chgoproto.ClientCode(code) {
 		case chgoproto.ClientCodeQuery:
-			next, fatal := chHandleQuery(ctx, ch, agentReader, upstream, revision, credName, database)
+			next, fatal := chHandleQuery(ctx, ch, agentReader, upstream, revision, credName, &sessionDB)
 			if fatal {
 				return
 			}
@@ -409,7 +417,14 @@ func chAgentToServer(ctx context.Context, ch *runtime.ConnHandle, agentReader *c
 // know which path (probe vs Block.Decode) to take when we read it
 // off the wire. `fatal` is true on a decode / transport failure
 // where the pump must tear the connection down.
-func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream io.Writer, revision int, credName, database string) (chgoproto.Compression, bool) {
+// sessionDB is the connection-scoped database tracker maintained by
+// chAgentToServer. We accept it as a pointer so a `USE db` allowed
+// through the matcher updates the value in place and the next Query
+// the same connection emits sees the new database in its meta; a
+// nil pointer disables the tracking (used by tests that don't care
+// about session state and the truncated-frame path that has no SQL
+// to inspect).
+func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream io.Writer, revision int, credName string, sessionDB *string) (chgoproto.Compression, bool) {
 	// Build the forward-bound preamble (everything up to the body
 	// length prefix) as we decode each field. Re-encoding these small
 	// fields is cheap; the body is the only field whose size warrants
@@ -500,7 +515,11 @@ func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chg
 		return compression, true
 	}
 
-	verdict, reason := chEvaluateSQL(ctx, ch, string(head), credName, database, truncated)
+	database := ""
+	if sessionDB != nil {
+		database = *sessionDB
+	}
+	verdict, reason, nextDB := chEvaluateSQL(ctx, ch, string(head), credName, database, truncated)
 	if verdict == "deny" {
 		// Drain the rest of this Query off the wire so the pump can
 		// keep reading subsequent packets — same shape as the previous
@@ -566,6 +585,19 @@ func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chg
 		}
 	}
 
+	// Roll session state forward AFTER the bytes hit upstream. We can't
+	// know clickhouse-server's verdict on the USE from here — TCP
+	// success ≠ semantic success — but treating "upstream accepted the
+	// frame" as the commit point matches what the matcher saw: the
+	// rule said yes, so subsequent queries see the new database. If
+	// the server later rejects the USE the next statement evaluates
+	// against the wrong database for one round trip; that's acceptable
+	// because (a) the agent will see clickhouse-server's error and (b)
+	// the alternative — waiting for the server's ack — would require
+	// rearchitecting this pump into a request/response model.
+	if sessionDB != nil && nextDB != "" {
+		*sessionDB = nextDB
+	}
 	return compression, false
 }
 
@@ -830,10 +862,36 @@ func chRewindReader(head []byte, tail *chgoproto.Reader) *chgoproto.Reader {
 //
 // Returns:
 //
-//	("deny", reason) — matched rule denies, or approve rejected.
-//	("", "")         — no rule fires, or the matched rule allows.
-func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName, database string, truncated bool) (string, string) {
+//	verdict — "deny" if the matcher (or approver) rejected the
+//	          statement; "" otherwise (no rule fires / matched rule
+//	          allows / approver approved).
+//	reason  — non-empty when verdict == "deny".
+//	nextDB  — non-empty when the statement is a `USE db` the
+//	          matcher allowed: the caller updates the session's
+//	          tracked database so subsequent statements report the
+//	          new active database to the matcher. Empty on deny
+//	          (the upstream never executed the USE, so the session
+//	          stays on the old database).
+//
+// `database` is the database the matcher should see for THIS
+// statement (the session's current active database, before any
+// state change this statement might trigger). A USE that wants to
+// switch to "metrics" still evaluates with database = the pre-USE
+// session value — the rule decides whether the swap is allowed
+// based on the database the agent is leaving, not the one it's
+// entering. The new value only enters circulation on the next
+// statement.
+func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName, database string, truncated bool) (verdict, reason, nextDB string) {
 	info := parseChSQL(sql)
+	defer func() {
+		// Allow paths surface the USE target; deny paths leave nextDB
+		// empty because the upstream never sees the statement and the
+		// session's database must not drift to a value the policy
+		// rejected.
+		if verdict == "" && info.UseDatabase != "" {
+			nextDB = info.UseDatabase
+		}
+	}()
 	mreq := &match.Request{
 		Family:     "sql",
 		PeerIP:     ch.PeerIP,
@@ -856,7 +914,7 @@ func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName, d
 		chEmit(ch, runtime.ConnEvent{
 			Action: "allow", Verb: info.Verb, Summary: chSummary(info), Facets: facets,
 		})
-		return "", ""
+		return
 	}
 	summary := chSummary(info)
 	rule := cr.Name
@@ -867,45 +925,48 @@ func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName, d
 				Action: "deny", Reason: "HITL not configured",
 				Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
 			})
-			return "deny", "approval required but HITL is not configured"
+			verdict, reason = "deny", "approval required but HITL is not configured"
+			return
 		}
 		v := ch.Approve(runtime.ApproveCallRequest{
 			Stages: cr.Outcome.Approve, Verb: info.Verb,
 			Summary: summary, Rule: cr,
 		})
 		if v.Decision != "allow" {
-			reason := v.Reason
-			if reason == "" {
-				reason = "denied by approver"
+			r := v.Reason
+			if r == "" {
+				r = "denied by approver"
 			}
 			chEmit(ch, runtime.ConnEvent{
-				Action: "hitl_deny", Reason: reason,
+				Action: "hitl_deny", Reason: r,
 				Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
 			})
-			return "deny", reason
+			verdict, reason = "deny", r
+			return
 		}
 		chEmit(ch, runtime.ConnEvent{
 			Action: "hitl_allow", Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
 		})
-		return "", ""
+		return
 	}
 
 	if cr.Outcome.Verdict == "deny" {
-		reason := cr.Outcome.Reason
-		if reason == "" {
-			reason = "denied by policy"
+		r := cr.Outcome.Reason
+		if r == "" {
+			r = "denied by policy"
 		}
 		chEmit(ch, runtime.ConnEvent{
-			Action: "deny", Reason: reason,
+			Action: "deny", Reason: r,
 			Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
 		})
-		return "deny", reason
+		verdict, reason = "deny", r
+		return
 	}
 	chEmit(ch, runtime.ConnEvent{
 		Action: "allow", Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
 	})
 	_ = ctx
-	return "", ""
+	return
 }
 
 func chEmit(ch *runtime.ConnHandle, ev runtime.ConnEvent) {
