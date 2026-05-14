@@ -14,6 +14,20 @@ export type OAuthIntegrationUI = {
   optional_scopes?: OptionalScopeGroup[];
 };
 
+// TailscaleNodeState mirrors the stable wire labels emitted by the
+// backend's tailscaleproto.NodeStateLabel. `connected` is the boolean
+// shortcut (true iff state === "running"); the raw label lets the
+// card distinguish "awaiting authentication" from "starting" or
+// "stopped" without re-encoding the bool back into a state machine.
+export type TailscaleNodeState =
+  | "unknown"
+  | "needs_login"
+  | "needs_machine_auth"
+  | "starting"
+  | "running"
+  | "stopped"
+  | "in_use_other_user";
+
 // TailscaleAuthStatusUI matches IntegrationRow.TailscaleAuth on the
 // server. The dashboard reads connect/disconnect endpoint paths off
 // the row instead of hardcoding /api/tailscale/* so backend route
@@ -22,6 +36,7 @@ export type OAuthIntegrationUI = {
 // completes the join.
 export type TailscaleAuthStatusUI = {
   connected: boolean;
+  state: TailscaleNodeState;
   pending_url?: string;
   connect_url: string;
   status_url: string;

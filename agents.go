@@ -584,17 +584,22 @@ type IntegrationRow struct {
 
 // TailscaleAuthStatusUI is the dashboard-facing slice of a
 // tailscale-node-auth credential's live state. Connected reflects
-// whether tsnet has persisted node identity for the credential.
-// PendingURL is the live Tailscale login URL emitted by tsnet when
-// no identity is stored yet — the dashboard's "Connect" button
-// redirects to it. Endpoint paths are surfaced so the dashboard
-// renders the connect flow without hard-coding the route layout.
+// whether tsnet's BackendState is Running — not merely whether
+// identity bytes have been persisted, which can happen mid-auth
+// before the tailnet join completes. State carries the underlying
+// label so the card can distinguish "awaiting authentication" from
+// "starting" from "stopped". PendingURL is the live Tailscale login
+// URL emitted by tsnet during NeedsLogin — the dashboard's "Connect"
+// button redirects to it. Endpoint paths are surfaced so the
+// dashboard renders the connect flow without hard-coding the route
+// layout.
 type TailscaleAuthStatusUI struct {
-	Connected     bool   `json:"connected"`
-	PendingURL    string `json:"pending_url,omitempty"`
-	ConnectURL    string `json:"connect_url"`
-	StatusURL     string `json:"status_url"`
-	DisconnectURL string `json:"disconnect_url"`
+	Connected     bool                          `json:"connected"`
+	State         tailscaleproto.NodeStateLabel `json:"state"`
+	PendingURL    string                        `json:"pending_url,omitempty"`
+	ConnectURL    string                        `json:"connect_url"`
+	StatusURL     string                        `json:"status_url"`
+	DisconnectURL string                        `json:"disconnect_url"`
 }
 
 // OAuthIntegrationUI is the dashboard-facing slice of an
@@ -658,8 +663,16 @@ func (w *webMux) statusList(r *http.Request) []IntegrationRow {
 		if _, ok := ent.Body.(tailscaleproto.TailscaleAuthProvider); ok {
 			row.HasTailscaleAuth = true
 			present, _ := credentialSlotPresence(w.g.db, name)
+			label := tailscaleproto.DefaultStates.Get(name)
+			// Connected reads strictly from the live BackendState:
+			// persisted slots prove auth completed *at some point*, not
+			// that the node is currently joined. A gateway restart sees
+			// slots but Starting/NeedsLogin until tsnet finishes its
+			// boot — surfacing "connected" in that window misled the
+			// operator into thinking traffic could flow.
 			row.TailscaleAuth = &TailscaleAuthStatusUI{
-				Connected:     len(present) > 0,
+				Connected:     label == tailscaleproto.NodeStateRunning,
+				State:         dashboardTailscaleState(label, len(present) > 0),
 				PendingURL:    tailscaleproto.Default.Get(name),
 				ConnectURL:    "/api/tailscale/connect?id=" + name,
 				StatusURL:     "/api/tailscale/status?id=" + name,
@@ -669,6 +682,23 @@ func (w *webMux) statusList(r *http.Request) []IntegrationRow {
 		out = append(out, row)
 	}
 	return out
+}
+
+// dashboardTailscaleState narrows the live BackendState for the
+// card's display. When the watcher has never observed a transition
+// (the tunnel may still be lazy and tsnet hasn't been brought up
+// yet), persisted slots flip the fallback from "unknown" to
+// "stopped" — the identity is on disk but nothing is running.
+// Without persisted slots and no observed state, "unknown" is
+// honest: the operator hasn't connected yet either.
+func dashboardTailscaleState(label tailscaleproto.NodeStateLabel, hasPersistedSlots bool) tailscaleproto.NodeStateLabel {
+	if label != tailscaleproto.NodeStateUnknown {
+		return label
+	}
+	if hasPersistedSlots {
+		return tailscaleproto.NodeStateStopped
+	}
+	return tailscaleproto.NodeStateUnknown
 }
 
 // credentialsInProfile returns the set of credential bare names that

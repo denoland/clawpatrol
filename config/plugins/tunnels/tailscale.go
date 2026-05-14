@@ -191,10 +191,11 @@ func (t *TailscaleTunnel) openWithCredential(_ context.Context, host runtime.Tun
 	tc.cancelUp = cancelUp
 
 	// IPN-bus watcher: surfaces tsnet's dynamic login URL into the
-	// PendingNodeAuth side-channel so the dashboard's Connect button
-	// can redirect the operator. Returns when ctx fires or the server
-	// closes.
-	go tc.watchLoginURL(upCtx)
+	// PendingNodeAuth side-channel and pushes BackendState transitions
+	// into DefaultStates so the dashboard renders "Running" only when
+	// tsnet has actually joined the tailnet (not just when Up() began).
+	// Returns when ctx fires or the server closes.
+	go tc.watchIPNBus(upCtx)
 	go tc.runUp(upCtx)
 
 	return tc, nil
@@ -263,6 +264,7 @@ func (t *tailscaleTunnelConn) Close() error {
 		}
 		if t.credential != "" {
 			tailscaleproto.Default.Set(t.credential, "")
+			tailscaleproto.DefaultStates.Set(t.credential, tailscaleproto.NodeStateUnknown)
 		}
 		if t.srv != nil {
 			err = t.srv.Close()
@@ -294,12 +296,15 @@ func (t *tailscaleTunnelConn) runUp(ctx context.Context) {
 	close(t.joined)
 }
 
-// watchLoginURL drains the IPN bus for BrowseToURL notifications and
-// parks them in the package-level PendingNodeAuth registry so the
-// dashboard's Connect button can redirect the operator. Multiple
-// watchers on the same bus are fine — Up() runs its own watcher in
-// parallel for the Running-state transition.
-func (t *tailscaleTunnelConn) watchLoginURL(ctx context.Context) {
+// watchIPNBus drains the IPN bus for BrowseToURL notifications and
+// State transitions. URLs go into the package-level PendingNodeAuth
+// registry (so the dashboard's Connect button can redirect the
+// operator); state labels go into DefaultStates (so the credential
+// card renders "Connected" only when tsnet has actually reached the
+// Running state, not just when Up() began). Multiple watchers on the
+// same bus are fine — Up() runs its own watcher in parallel for the
+// Running-state transition.
+func (t *tailscaleTunnelConn) watchIPNBus(ctx context.Context) {
 	if t.credential == "" {
 		return
 	}
@@ -326,6 +331,16 @@ func (t *tailscaleTunnelConn) watchLoginURL(ctx context.Context) {
 		if n.BrowseToURL != nil {
 			tailscaleproto.Default.Set(t.credential, *n.BrowseToURL)
 			t.logger.Printf("tailscale/%s: login URL pending — visit dashboard to Connect credential %q", t.name, t.credential)
+		}
+		if n.State != nil {
+			label := tailscaleproto.LabelFromIPNState(*n.State)
+			tailscaleproto.DefaultStates.Set(t.credential, label)
+			// Once the node is Running, no auth URL is in flight —
+			// drop any stale parked URL so the dashboard doesn't
+			// keep offering a click-through that's already complete.
+			if *n.State == ipn.Running {
+				tailscaleproto.Default.Set(t.credential, "")
+			}
 		}
 	}
 }

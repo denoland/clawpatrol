@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"tailscale.com/ipn"
 
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/plugins/tailscaleproto"
@@ -155,4 +158,115 @@ func TestPendingNodeAuthWaitCtxDone(t *testing.T) {
 	if got := p.Wait(ctx, "c"); got != "" {
 		t.Fatalf("Wait returned %q, want empty string when ctx expires before Set", got)
 	}
+}
+
+func TestDashboardTailscaleStateRespectsLive(t *testing.T) {
+	cases := []struct {
+		name      string
+		label     tailscaleproto.NodeStateLabel
+		slots     bool
+		want      tailscaleproto.NodeStateLabel
+		connected bool
+	}{
+		{"running with slots", tailscaleproto.NodeStateRunning, true, tailscaleproto.NodeStateRunning, true},
+		{"running no slots", tailscaleproto.NodeStateRunning, false, tailscaleproto.NodeStateRunning, true},
+		{"starting overrides slots", tailscaleproto.NodeStateStarting, true, tailscaleproto.NodeStateStarting, false},
+		{"needs login with slots", tailscaleproto.NodeStateNeedsLogin, true, tailscaleproto.NodeStateNeedsLogin, false},
+		{"unknown with slots maps to stopped", tailscaleproto.NodeStateUnknown, true, tailscaleproto.NodeStateStopped, false},
+		{"unknown no slots stays unknown", tailscaleproto.NodeStateUnknown, false, tailscaleproto.NodeStateUnknown, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := dashboardTailscaleState(tc.label, tc.slots)
+			if got != tc.want {
+				t.Fatalf("dashboardTailscaleState(%q, slots=%v) = %q, want %q", tc.label, tc.slots, got, tc.want)
+			}
+			if connected := tc.label == tailscaleproto.NodeStateRunning; connected != tc.connected {
+				t.Fatalf("connected = %v, want %v", connected, tc.connected)
+			}
+		})
+	}
+}
+
+func TestLabelFromIPNStateMapping(t *testing.T) {
+	cases := []struct {
+		in   ipn.State
+		want tailscaleproto.NodeStateLabel
+	}{
+		{ipn.NoState, tailscaleproto.NodeStateUnknown},
+		{ipn.InUseOtherUser, tailscaleproto.NodeStateInUseOtherUser},
+		{ipn.NeedsLogin, tailscaleproto.NodeStateNeedsLogin},
+		{ipn.NeedsMachineAuth, tailscaleproto.NodeStateNeedsMachAuth},
+		{ipn.Stopped, tailscaleproto.NodeStateStopped},
+		{ipn.Starting, tailscaleproto.NodeStateStarting},
+		{ipn.Running, tailscaleproto.NodeStateRunning},
+	}
+	for _, tc := range cases {
+		if got := tailscaleproto.LabelFromIPNState(tc.in); got != tc.want {
+			t.Fatalf("LabelFromIPNState(%v) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestNodeStatesSetGet(t *testing.T) {
+	r := &tailscaleproto.NodeStates{}
+	if got := r.Get("c"); got != tailscaleproto.NodeStateUnknown {
+		t.Fatalf("Get before Set = %q, want unknown", got)
+	}
+	r.Set("c", tailscaleproto.NodeStateStarting)
+	if got := r.Get("c"); got != tailscaleproto.NodeStateStarting {
+		t.Fatalf("Get after Set = %q, want starting", got)
+	}
+	r.Set("c", tailscaleproto.NodeStateRunning)
+	if got := r.Get("c"); got != tailscaleproto.NodeStateRunning {
+		t.Fatalf("Get after second Set = %q, want running", got)
+	}
+	r.Set("c", tailscaleproto.NodeStateUnknown)
+	if got := r.Get("c"); got != tailscaleproto.NodeStateUnknown {
+		t.Fatalf("Get after clearing = %q, want unknown", got)
+	}
+}
+
+func TestApiTailscaleConnectRunningStateMarksConnected(t *testing.T) {
+	// A credential whose live tsnet state is Running should drive the
+	// connect endpoint into the "connected" branch — no auth URL fetch
+	// is attempted, the operator doesn't have anything to click.
+	defer tailscaleproto.DefaultStates.Set("live-cred", tailscaleproto.NodeStateUnknown)
+	tailscaleproto.DefaultStates.Set("live-cred", tailscaleproto.NodeStateRunning)
+
+	g := &Gateway{}
+	credEnt := &config.Entity{
+		Plugin: &config.Plugin{Type: "tailscale_credential"},
+		Body:   stubTailscaleCred{},
+	}
+	g.policy.Store(&config.CompiledPolicy{
+		Credentials: map[string]*config.Entity{"live-cred": credEnt},
+	})
+	w := &webMux{g: g}
+	r := httptest.NewRequest(http.MethodPost, "/api/tailscale/connect?id=live-cred", nil)
+	rw := httptest.NewRecorder()
+	w.apiTailscaleConnect(rw, r)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %q, want 200", rw.Code, rw.Body.String())
+	}
+	var resp tailscaleAuthResponse
+	if err := json.NewDecoder(rw.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !resp.Connected || resp.Status != "connected" {
+		t.Fatalf("response = %+v, want Connected=true Status=connected", resp)
+	}
+	if resp.State != tailscaleproto.NodeStateRunning {
+		t.Fatalf("response.State = %q, want running", resp.State)
+	}
+}
+
+// stubTailscaleCred satisfies tailscaleproto.TailscaleAuthProvider so
+// lookupTailscaleAuth's type assertion succeeds without dragging in the
+// real credential plugin (which would pull the gateway's full secret-
+// store wiring).
+type stubTailscaleCred struct{}
+
+func (stubTailscaleCred) TailscaleAuth() *tailscaleproto.TailscaleAuthIntegration {
+	return &tailscaleproto.TailscaleAuthIntegration{}
 }

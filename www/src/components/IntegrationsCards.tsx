@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useEffect, useState } from "react";
-import type { Integration } from "../lib/api";
+import type { Integration, TailscaleNodeState } from "../lib/api";
 import { clearCredential, oauthRevoke, tailscaleConnect, tailscaleDisconnect } from "../lib/api";
 import { credentialTypeLabel } from "../lib/credentialLabels";
 import { fmtExpiry } from "../lib/format";
@@ -184,6 +184,32 @@ function isConnected(i: Integration) {
   return i.connected || (i.tailscale_auth?.connected ?? false);
 }
 
+// tailscaleStatusLabel renders the credential card's bottom-row hint
+// when the credential is *not* connected — the connected branch is
+// handled directly by Card. Maps each NodeStateLabel onto the operator-
+// facing phrasing the bead specified: NeedsLogin / NeedsMachineAuth
+// surfaces the auth URL via the existing card-click handler, so the
+// label says "awaiting authentication" to make the action obvious.
+function tailscaleStatusLabel(state: TailscaleNodeState | undefined): string {
+  switch (state) {
+    case "needs_login":
+    case "needs_machine_auth":
+      return "awaiting authentication";
+    case "starting":
+      return "starting";
+    case "stopped":
+      return "stopped";
+    case "in_use_other_user":
+      return "error: in use by another user";
+    case "running":
+      // Defensive fallback; `connected` short-circuits the running
+      // branch in Card before this helper runs.
+      return "connected";
+    default:
+      return "click to connect";
+  }
+}
+
 // OwnerAvatar renders the OAuth user's PFP (e.g. github avatar) with
 // the provider icon as fallback when the image 404s or the host
 // blocks hotlinking. Failure flips to icon via state, not just an
@@ -229,11 +255,13 @@ function Card({
     ? i.expires_at
       ? "expires " + fmtExpiry(i.expires_at)
       : "connected"
-    : i.has_oauth || i.has_tailscale_auth
-      ? "click to connect"
-      : hasSlots
-        ? "paste secret"
-        : "api key only";
+    : i.has_tailscale_auth
+      ? tailscaleStatusLabel(i.tailscale_auth?.state)
+      : i.has_oauth
+        ? "click to connect"
+        : hasSlots
+          ? "paste secret"
+          : "api key only";
   // Plugin display name (e.g. "GitHub", "Postgres"). Falls back to the
   // raw HCL type key for unrecognised plugins rather than the bare
   // credential name, which would produce `<name> · <name>` titles.
@@ -313,9 +341,19 @@ function contextualSubtitle(i: Integration, connected: boolean, hasSlots: boolea
     if (hasSlots || i.has_tailscale_auth) return "Saved";
     return "";
   }
-  // Not connected: OAuth and Tailscale both await an explicit user
-  // action; manual creds with slots are simply unconfigured.
-  if (i.has_oauth || i.has_tailscale_auth) return "Not connected";
+  // Not connected: OAuth awaits an explicit user action. Tailscale's
+  // hint depends on whether tsnet is mid-auth — "Awaiting
+  // authentication" makes the click-to-open-URL flow legible to the
+  // operator, whereas "Not connected" reads as a dead-end.
+  if (i.has_tailscale_auth) {
+    const s = i.tailscale_auth?.state;
+    if (s === "needs_login" || s === "needs_machine_auth") return "Awaiting authentication";
+    if (s === "starting") return "Starting";
+    if (s === "stopped") return "Stopped";
+    if (s === "in_use_other_user") return "In use by another user";
+    return "Not connected";
+  }
+  if (i.has_oauth) return "Not connected";
   if (hasSlots) return "Not configured";
   return "";
 }

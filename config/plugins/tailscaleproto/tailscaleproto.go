@@ -169,6 +169,98 @@ func (p *PendingNodeAuth) Wait(ctx context.Context, name string) string {
 // multiple gateway instances in one process can scope it.
 var Default = &PendingNodeAuth{}
 
+// NodeStateLabel is the dashboard-facing label for a tsnet node's
+// BackendState. Stable strings (not the numeric ipn.State constants)
+// so JSON consumers don't break if tailscale.com renumbers the enum.
+type NodeStateLabel string
+
+const (
+	NodeStateUnknown        NodeStateLabel = "unknown"
+	NodeStateNeedsLogin     NodeStateLabel = "needs_login"
+	NodeStateNeedsMachAuth  NodeStateLabel = "needs_machine_auth"
+	NodeStateStarting       NodeStateLabel = "starting"
+	NodeStateRunning        NodeStateLabel = "running"
+	NodeStateStopped        NodeStateLabel = "stopped"
+	NodeStateInUseOtherUser NodeStateLabel = "in_use_other_user"
+)
+
+// LabelFromIPNState projects an ipn.State onto the stable wire label.
+// NoState (the pre-init zero value) maps to "unknown" — the watcher
+// hasn't observed a state transition yet.
+func LabelFromIPNState(s ipn.State) NodeStateLabel {
+	switch s {
+	case ipn.NeedsLogin:
+		return NodeStateNeedsLogin
+	case ipn.NeedsMachineAuth:
+		return NodeStateNeedsMachAuth
+	case ipn.Starting:
+		return NodeStateStarting
+	case ipn.Running:
+		return NodeStateRunning
+	case ipn.Stopped:
+		return NodeStateStopped
+	case ipn.InUseOtherUser:
+		return NodeStateInUseOtherUser
+	default:
+		return NodeStateUnknown
+	}
+}
+
+// NodeStates tracks the latest observed tsnet BackendState per
+// credential bare name. The tunnel's IPN-bus watcher writes here on
+// every State transition; the dashboard reads here to render the
+// credential card's live status. Keyed on the credential rather than
+// the tunnel because tsnet node identity is gateway-wide (one node per
+// credential, shared by every tunnel referencing it).
+//
+// Distinct from PendingNodeAuth on purpose: the auth URL is a transient
+// side-effect of the NeedsLogin state, but transitions like
+// Starting → Running carry no URL. Storing them as a single sum type
+// would couple the two state machines awkwardly; two registries lets
+// each evolve independently.
+//
+// The zero value is usable. Safe for concurrent use.
+type NodeStates struct {
+	mu     sync.Mutex
+	states map[string]NodeStateLabel
+}
+
+// Set records the latest state label for credential `name`. The
+// tunnel calls this for every Notify.State transition observed on
+// the IPN bus. Passing NodeStateUnknown clears the entry (used when
+// the tunnel closes or the credential is disconnected).
+func (r *NodeStates) Set(name string, label NodeStateLabel) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.states == nil {
+		r.states = map[string]NodeStateLabel{}
+	}
+	if label == NodeStateUnknown {
+		delete(r.states, name)
+		return
+	}
+	r.states[name] = label
+}
+
+// Get returns the latest state label for credential `name`, or
+// NodeStateUnknown when nothing has been recorded yet (typically:
+// the tunnel hasn't been acquired so tsnet hasn't started).
+func (r *NodeStates) Get(name string) NodeStateLabel {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.states == nil {
+		return NodeStateUnknown
+	}
+	if s, ok := r.states[name]; ok {
+		return s
+	}
+	return NodeStateUnknown
+}
+
+// DefaultStates is the process-wide NodeStates registry. Mirrors the
+// Default PendingNodeAuth pattern: tunnel writes, dashboard reads.
+var DefaultStates = &NodeStates{}
+
 // SecretWriter is the optional interface a runtime.SecretStore
 // implementation satisfies when it can persist slot bytes. The
 // tailscale credential's StateStore type-asserts to this; the gateway-

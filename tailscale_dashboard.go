@@ -43,11 +43,12 @@ const tailscaleConnectURLTimeout = 15 * time.Second
 const tailscaleConnectLoginWindow = 5 * time.Minute
 
 type tailscaleAuthResponse struct {
-	ID         string `json:"id"`
-	Connected  bool   `json:"connected"`
-	AuthURL    string `json:"auth_url,omitempty"`
-	PendingURL string `json:"pending_url,omitempty"`
-	Status     string `json:"status"` // "connected" | "pending" | "awaiting_url"
+	ID         string                        `json:"id"`
+	Connected  bool                          `json:"connected"`
+	State      tailscaleproto.NodeStateLabel `json:"state"`
+	AuthURL    string                        `json:"auth_url,omitempty"`
+	PendingURL string                        `json:"pending_url,omitempty"`
+	Status     string                        `json:"status"` // "connected" | "pending" | "awaiting_url"
 }
 
 // apiTailscaleConnect returns the live tsnet login URL for the
@@ -91,9 +92,14 @@ func (w *webMux) apiTailscaleConnect(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := tailscaleAuthResponse{ID: id}
-	present, _ := credentialSlotPresence(w.g.db, id)
+	label := tailscaleproto.DefaultStates.Get(id)
+	resp.State = label
 	switch {
-	case len(present) > 0:
+	case label == tailscaleproto.NodeStateRunning:
+		// Live tsnet has joined the tailnet — no operator click
+		// needed. Persisted slots alone (the previous "connected"
+		// gate) are not enough: they can exist while tsnet is still
+		// Starting or even in NeedsLogin after a state reset.
 		resp.Connected = true
 		resp.Status = "connected"
 	default:
