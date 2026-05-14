@@ -91,13 +91,18 @@ function ConfigSection({ readOnly, onSaved }: { readOnly?: boolean; onSaved: () 
     }
   }
 
-  async function confirmSave() {
+  async function confirmSave(confirmHighRisk: boolean) {
     if (!preview) return;
     setBusy(true);
     setErr(null);
     setOkMsg(null);
     try {
-      const r = await saveConfigHCL(preview.formatted, preview.revision, preview.preview_token);
+      const r = await saveConfigHCL(
+        preview.formatted,
+        preview.revision,
+        preview.preview_token,
+        confirmHighRisk,
+      );
       setText(preview.formatted);
       setOriginal(preview.formatted);
       setPreview(null);

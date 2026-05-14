@@ -178,3 +178,12 @@ Claw Patrol does not defend against:
   separation;
 - supply-chain compromise of the binary or its build toolchain;
 - cross-user side channels (shared-CPU timing, etc.).
+
+## Production hardening
+
+The defaults are tuned for first-boot ergonomics. For production —
+in particular limiting the blast radius of a `dashboard_secret`
+leak — see [Security hardening](./security-hardening.md):
+`--allow-tunnels`, the high-risk confirm gate on `local_command`
+additions, `--read-only-config`, and recommended systemd
+sandboxing.
