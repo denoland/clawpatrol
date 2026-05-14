@@ -396,6 +396,20 @@ func defaultProfileName(p *config.Policy) string {
 	return ""
 }
 
+// profileExists reports whether name is a declared profile in the
+// compiled policy. The onboarding endpoints use this to reject
+// arbitrary `?profile=` strings before they get stored on a device
+// row; runtime dispatch then never sees devices pinned to undeclared
+// profiles. Empty name returns false — callers should fall back to
+// defaultProfileName instead of asking "is empty a profile".
+func profileExists(p *config.Policy, name string) bool {
+	if p == nil || name == "" {
+		return false
+	}
+	_, ok := p.Profiles[name]
+	return ok
+}
+
 // watchConfig polls the config file's mtime every 3s. On change it
 // re-decodes the HCL and atomically swaps in the new rules + admin_email
 // + integrations list. Listen ports / CA dir / OAuth dir / Tailscale

@@ -506,7 +506,6 @@ func (w *webMux) apiOnboardStart(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "POST", http.StatusMethodNotAllowed)
 		return
 	}
-	s := w.onboard.start()
 	// CLI passes its os.Hostname() so the dashboard shows a real
 	// device name instead of just the WG-side IP. Optional — we still
 	// fall back gracefully when missing.
@@ -514,7 +513,16 @@ func (w *webMux) apiOnboardStart(rw http.ResponseWriter, r *http.Request) {
 	// `clawpatrol join --profile X` forwards X here so the approver
 	// doesn't have to pick it manually. Stored as the session-level
 	// suggestion; the dashboard's approve call can still override.
+	// Validate against declared policy profiles BEFORE allocating a
+	// session so a typo never reaches AssignProfile / dispatch — runtime
+	// silently falls back to walking every profile when it sees an
+	// undeclared name, which masks the typo as confusing routing.
 	prof := strings.TrimSpace(r.URL.Query().Get("profile"))
+	if prof != "" && !profileExists(w.g.cfg.Policy, prof) {
+		http.Error(rw, "unknown profile", http.StatusBadRequest)
+		return
+	}
+	s := w.onboard.start()
 	if hn != "" || prof != "" {
 		w.onboard.mu.Lock()
 		if hn != "" {
@@ -560,11 +568,17 @@ func (w *webMux) apiOnboardLookup(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "unknown or expired code", 404)
 		return
 	}
+	w.onboard.mu.Lock()
+	hostname := s.hostname
+	suggestedProfile := s.profile
+	w.onboard.mu.Unlock()
 	writeJSON(rw, map[string]any{
-		"user_code":      s.userCode,
-		"approved":       s.approved,
-		"created_at":     s.created.Unix(),
-		"ca_fingerprint": w.caFingerprint(),
+		"user_code":         s.userCode,
+		"approved":          s.approved,
+		"created_at":        s.created.Unix(),
+		"ca_fingerprint":    w.caFingerprint(),
+		"hostname":          hostname,
+		"suggested_profile": suggestedProfile,
 	})
 }
 
@@ -595,9 +609,20 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 	// Operator picks which profile this device joins. Priority:
 	// dashboard query param → CLI suggestion stashed at /start time →
 	// profile named "default" → first profile in source order.
+	// Any explicit choice (dashboard or CLI suggestion) must name a
+	// declared policy profile — the default fallback can't fail
+	// because defaultProfileName returns "" on empty policy.
 	profile := r.URL.Query().Get("profile")
+	if profile != "" && !profileExists(w.g.cfg.Policy, profile) {
+		http.Error(rw, "unknown profile", http.StatusBadRequest)
+		return
+	}
 	if profile == "" {
 		profile = s.profile
+	}
+	if profile != "" && !profileExists(w.g.cfg.Policy, profile) {
+		http.Error(rw, "unknown profile", http.StatusBadRequest)
+		return
 	}
 	if profile == "" {
 		profile = defaultProfileName(w.g.cfg.Policy)

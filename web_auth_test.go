@@ -19,7 +19,16 @@ func newOnboardAuthTestWebMuxForControl(control string) *webMux {
 	cfg := &config.Gateway{
 		DashboardSecret: authTestDashboardCredential,
 		Control:         control,
-		Policy:          &config.Policy{},
+		// Declare a "default" profile so profileExists accepts the
+		// `?profile=default` strings these tests pass; without it,
+		// the onboarding handlers would 400 before reaching the
+		// auth/handler logic the tests are actually exercising.
+		Policy: &config.Policy{
+			Profiles: map[string]*config.Profile{
+				"default": {Name: "default"},
+			},
+			Order: []string{"default"},
+		},
 	}
 	g := &Gateway{
 		cfg:     cfg,

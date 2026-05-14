@@ -8,6 +8,8 @@ export function OnboardPage({ code, onBack }: { code: string; onBack: () => void
     user_code?: string;
     approved?: boolean;
     ca_fingerprint?: string;
+    hostname?: string;
+    suggested_profile?: string;
   } | null>(null);
 
   useEffect(() => {
@@ -20,6 +22,10 @@ export function OnboardPage({ code, onBack }: { code: string; onBack: () => void
   async function approve() {
     setStatus("approving");
     try {
+      // The CLI's --profile suggestion is already stashed on the
+      // session at /start time, so a no-profile approve here lets
+      // the server apply that suggestion. The operator can still
+      // override by passing a different ?profile= here.
       const r = await fetch("/api/onboard/approve?code=" + encodeURIComponent(code), {
         method: "POST",
       });
@@ -59,6 +65,23 @@ export function OnboardPage({ code, onBack }: { code: string; onBack: () => void
           <div className="text-xs text-text-muted">
             only approve if you typed this code on the new machine.
           </div>
+
+          {(info.hostname || info.suggested_profile) && (
+            <dl className="text-xs grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+              {info.hostname && (
+                <>
+                  <dt className="text-text-subtle uppercase tracking-[.08em]">hostname</dt>
+                  <dd className="font-mono text-text">{info.hostname}</dd>
+                </>
+              )}
+              {info.suggested_profile && (
+                <>
+                  <dt className="text-text-subtle uppercase tracking-[.08em]">profile</dt>
+                  <dd className="font-mono text-text">{info.suggested_profile}</dd>
+                </>
+              )}
+            </dl>
+          )}
 
           {info.ca_fingerprint && (
             <details className="text-[11px] text-[#737373]">
