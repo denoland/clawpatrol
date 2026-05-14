@@ -205,6 +205,12 @@ export type ConfigSavePreview = {
   bytes: number;
   revision: string;
   preview_token: string;
+  // Names of newly-introduced `tunnel "local_command" "..."` blocks
+  // (or other risky tunnel types) compared to the on-disk gateway.hcl.
+  // Empty when the draft introduces no new high-risk tunnels. The save
+  // endpoint refuses to commit a draft with non-empty additions unless
+  // the request body sets `confirm_high_risk: true`.
+  high_risk_additions?: string[] | null;
 };
 
 export type ConfigSaveResult = {
@@ -227,6 +233,7 @@ export async function saveConfigHCL(
   content: string,
   expectedRevision: string,
   previewToken: string,
+  confirmHighRisk = false,
 ): Promise<ConfigSaveResult> {
   const r = await api("/api/config/save", {
     method: "POST",
@@ -235,6 +242,7 @@ export async function saveConfigHCL(
       content,
       expected_revision: expectedRevision,
       preview_token: previewToken,
+      confirm_high_risk: confirmHighRisk,
     }),
   });
   if (!r.ok) throw new Error(await r.text());

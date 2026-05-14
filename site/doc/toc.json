@@ -6,6 +6,7 @@
   "cli",
   "clawpatrol-test",
   "security-model",
+  "security-hardening",
   "approval-rules",
   "plugins",
   "config-reference",

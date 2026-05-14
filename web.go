@@ -897,6 +897,12 @@ func (w *webMux) apiConfigPreview(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, err.Error(), 400)
 		return
 	}
+	if disallowed := disallowedTunnelTypesInHCL(formatted, w.g.allowTunnels); len(disallowed) > 0 {
+		http.Error(rw,
+			"tunnel types not permitted by --allow-tunnels: "+strings.Join(disallowed, ", "),
+			http.StatusForbidden)
+		return
+	}
 	w.mu.Lock()
 	var current []byte
 	var rev string
@@ -923,13 +929,14 @@ func (w *webMux) apiConfigPreview(rw http.ResponseWriter, r *http.Request) {
 	}
 	w.mu.Unlock()
 	writeJSON(rw, map[string]any{
-		"ok":            true,
-		"formatted":     string(formatted),
-		"diff":          unifiedDiff("gateway.hcl", "formatted draft", string(current), string(formatted)),
-		"changed":       !bytes.Equal(current, formatted),
-		"bytes":         len(formatted),
-		"revision":      rev,
-		"preview_token": token,
+		"ok":                  true,
+		"formatted":           string(formatted),
+		"diff":                unifiedDiff("gateway.hcl", "formatted draft", string(current), string(formatted)),
+		"changed":             !bytes.Equal(current, formatted),
+		"bytes":               len(formatted),
+		"revision":            rev,
+		"preview_token":       token,
+		"high_risk_additions": riskyTunnelDiff(current, formatted),
 	})
 }
 
@@ -946,6 +953,13 @@ func (w *webMux) apiConfigSave(rw http.ResponseWriter, r *http.Request) {
 		Content          string `json:"content"`
 		ExpectedRevision string `json:"expected_revision"`
 		PreviewToken     string `json:"preview_token"`
+		// ConfirmHighRisk acknowledges that the save introduces new
+		// tunnel blocks of risky types (today: local_command, which
+		// spawns OS processes — denoland/orchid F-4). Without this
+		// flag, /api/config/save rejects high-risk additions with
+		// 412 so a leaked dashboard secret can't quietly add an
+		// RCE-shaped tunnel without operator review.
+		ConfirmHighRisk bool `json:"confirm_high_risk"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
 		http.Error(rw, err.Error(), 400)
@@ -964,6 +978,12 @@ func (w *webMux) apiConfigSave(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, err.Error(), 400)
 		return
 	}
+	if disallowed := disallowedTunnelTypesInHCL(formatted, w.g.allowTunnels); len(disallowed) > 0 {
+		http.Error(rw,
+			"tunnel types not permitted by --allow-tunnels: "+strings.Join(disallowed, ", "),
+			http.StatusForbidden)
+		return
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	preview, ok := w.configPreviewTokens()[body.PreviewToken]
@@ -975,6 +995,9 @@ func (w *webMux) apiConfigSave(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "preview token does not match reviewed content", http.StatusPreconditionFailed)
 		return
 	}
+	// Recompute the risky-tunnel diff at save time against the
+	// current on-disk content so a stale confirm doesn't smuggle
+	// through additions the operator never reviewed.
 	if err := withConfigFileLock(w.g.cfgPath, func() error {
 		currentRev, err := fileRevision(w.g.cfgPath)
 		if err != nil {
@@ -982,6 +1005,13 @@ func (w *webMux) apiConfigSave(rw http.ResponseWriter, r *http.Request) {
 		}
 		if body.ExpectedRevision != currentRev {
 			return errConfigRevisionConflict
+		}
+		currentOnDisk, err := os.ReadFile(w.g.cfgPath)
+		if err != nil {
+			return err
+		}
+		if adds := riskyTunnelDiff(currentOnDisk, formatted); len(adds) > 0 && !body.ConfirmHighRisk {
+			return errHighRiskNotConfirmed{names: adds}
 		}
 		if err := writeConfigAtomically(w.g.cfgPath, formatted); err != nil {
 			return err
@@ -993,10 +1023,32 @@ func (w *webMux) apiConfigSave(rw http.ResponseWriter, r *http.Request) {
 			http.Error(rw, "gateway.hcl changed since preview; reload before saving", http.StatusConflict)
 			return
 		}
+		var hr errHighRiskNotConfirmed
+		if errors.As(err, &hr) {
+			rw.Header().Set("Content-Type", "application/json")
+			rw.WriteHeader(http.StatusPreconditionFailed)
+			_ = json.NewEncoder(rw).Encode(map[string]any{
+				"ok":                  false,
+				"error":               hr.Error(),
+				"high_risk_additions": hr.names,
+			})
+			return
+		}
 		http.Error(rw, err.Error(), 500)
 		return
 	}
 	writeJSON(rw, map[string]any{"ok": true, "bytes": len(formatted), "revision": revisionForBytes(formatted)})
+}
+
+// errHighRiskNotConfirmed is returned from inside the configFileLock
+// closure when /api/config/save would introduce a new risky tunnel
+// block (today: local_command) without confirm_high_risk=true. Caller
+// surfaces the names so the dashboard can show which blocks demand a
+// re-review.
+type errHighRiskNotConfirmed struct{ names []string }
+
+func (e errHighRiskNotConfirmed) Error() string {
+	return "save introduces high-risk tunnel blocks without confirm_high_risk: " + strings.Join(e.names, ", ")
 }
 
 func validateAndFormatConfig(body []byte) ([]byte, error) {

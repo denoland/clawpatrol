@@ -297,6 +297,13 @@ type Gateway struct {
 	// flag from /api/state and hides its editor affordances; the
 	// server enforces it regardless of UI state.
 	readOnlyConfig bool
+	// allowTunnels, when non-empty, is the closed set of tunnel
+	// plugin types the gateway will accept — at boot and through
+	// every dashboard config save. nil/empty means "no restriction"
+	// (current default). Set via --allow-tunnels=ssh_command,…;
+	// recommended in production to exclude local_command (see
+	// doc/security-hardening.md).
+	allowTunnels map[string]bool
 	// secrets hands credential plugins the secret bytes they inject
 	// at request time. Default env-var-backed; OAuth-flow credentials
 	// land via a follow-up bridge that delegates to OAuthRegistry.
@@ -2297,15 +2304,21 @@ Documentation: https://clawpatrol.dev/docs/`)
 // gatewayHelp is shown for `clawpatrol gateway -h` and any wrong
 // invocation. The example HCL + config-reference URL is the
 // discoverability path for first-time users.
-const gatewayHelp = `usage: clawpatrol gateway [--read-only-config] <config.hcl>
+const gatewayHelp = `usage: clawpatrol gateway [--read-only-config] [--allow-tunnels=type,type,...] <config.hcl>
 
 Start from gateway.example.hcl in the repo, or see the HCL reference:
-  https://clawpatrol.dev/docs/config-reference`
+  https://clawpatrol.dev/docs/config-reference
+
+Security hardening: see doc/security-hardening.md for guidance on
+--allow-tunnels (deny local_command in production) and systemd
+sandboxing.`
 
 func runGateway(args []string) {
 	fs := flag.NewFlagSet("gateway", flag.ExitOnError)
 	readOnly := fs.Bool("read-only-config", false,
 		"reject dashboard writes to the HCL config file")
+	allowTunnels := fs.String("allow-tunnels", "",
+		"comma-separated tunnel plugin types accepted at boot + dashboard save; empty = no restriction")
 	seedHook := devSeedAttach(fs)
 	fs.Usage = func() { fmt.Fprintln(os.Stderr, gatewayHelp) }
 	_ = fs.Parse(args)
@@ -2356,11 +2369,16 @@ func runGateway(args []string) {
 	if err != nil {
 		log.Fatalf("oauth: %v", err)
 	}
+	allowSet := parseAllowTunnels(*allowTunnels)
+	if disallowed := disallowedTunnelTypes(cfg.Policy, allowSet); len(disallowed) > 0 {
+		log.Fatalf("config: tunnel types not permitted by --allow-tunnels: %s", strings.Join(disallowed, ", "))
+	}
 	g := &Gateway{
 		cfg:            cfg,
 		cfgPath:        cfgPath,
 		stateDir:       stateDir,
 		readOnlyConfig: *readOnly,
+		allowTunnels:   allowSet,
 		db:             db,
 		certs:          certs,
 		dialer:         newUpstreamDialer(cfg.Resolver),
