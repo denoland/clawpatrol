@@ -16,9 +16,11 @@ package main
 import (
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -44,11 +46,34 @@ func OpenDB(path string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("sqlite ping: %w", err)
 	}
+	// Tighten file modes after the sqlite driver creates them. The
+	// driver creates files at process-umask (commonly 0644), but the
+	// DB holds the CA private key, OAuth tokens, and audit log —
+	// owner-only is the only correct mode. Idempotent: catches both
+	// fresh creates and existing files inherited from older installs.
+	// Mitigates security-review F-24.
+	tightenDBPerms(path)
 	if err := migrate(db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	return db, nil
+}
+
+// tightenDBPerms chmods the sqlite db file plus its WAL/SHM
+// sidecars to 0600. Called after sql.Open + db.Ping. Missing files
+// are skipped (the WAL/SHM may not exist yet on fresh boots). Any
+// chmod failure is logged but doesn't block startup — the
+// warnIfStateLooselyPermissioned tripwire in main.go logs a follow-
+// up warning if the mode doesn't stick.
+func tightenDBPerms(dbPath string) {
+	for _, p := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		err := os.Chmod(p, 0o600)
+		if err == nil || errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		log.Printf("warning: chmod %s 0600: %v", p, err)
+	}
 }
 
 // migrate applies any unapplied .sql files from migrations/sqlite/.
