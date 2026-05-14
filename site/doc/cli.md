@@ -24,11 +24,12 @@ Run the gateway daemon against an HCL config. Start from
 fields you need to edit.
 
 ```bash
-clawpatrol gateway <config.hcl> [--read-only-config]
+clawpatrol gateway <config.hcl>
 ```
 
-`--read-only-config` rejects dashboard writes to the HCL file —
-appropriate when the file is owned by a deploy pipeline. See
+The gateway is read-only-config — the dashboard surfaces the running
+HCL for reading but never writes it. Push edits via your own deploy
+script (typically SSH from a config repo). See
 [config-reference](config-reference) for the HCL grammar.
 
 ### `clawpatrol join`

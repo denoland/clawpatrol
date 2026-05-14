@@ -35,7 +35,6 @@ func newFingerprintWebMux(t *testing.T) (*webMux, string) {
 		publicURL: "https://gateway.example.test",
 		sessions:  map[string]*oauthSession{},
 		onboard:   g.onboard,
-		previews:  map[string]configPreviewToken{},
 	}
 	w.routeAuth = routeAuthIndex(w.routes())
 	want, err := caFingerprintFromPEM(certPEM)

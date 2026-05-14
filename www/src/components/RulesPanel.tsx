@@ -1,31 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 import { getRules, type RuleSummary } from "../lib/api";
-import { EditGlyph } from "./Logos";
-import { RulesEditor } from "./RulesEditor";
 import { Tag, type Tone } from "./Tag";
 
 // Rules panel. Profile-level rules only — device-specific overrides
-// are gone. The pencil opens gateway.hcl. Device pages pass `profile`
-// so the listing filters to the device's profile.
-export function RulesPanel({
-  profile,
-  readOnly,
-}: {
-  deviceIP?: string;
-  profile?: string;
-  readOnly?: boolean;
-}) {
+// are gone. Display-only — operators edit gateway.hcl out-of-band and
+// push via SSH. Device pages pass `profile` so the listing filters to
+// the device's profile.
+export function RulesPanel({ profile }: { deviceIP?: string; profile?: string }) {
   const [rows, setRows] = useState<RuleSummary[]>([]);
   const [err, setErr] = useState<string | null>(null);
-  const [editing, setEditing] = useState(false);
 
-  function reload() {
+  useEffect(() => {
     getRules()
       .then((r) => setRows(r ?? []))
       .catch((e) => setErr(String(e)));
-  }
-  useEffect(() => {
-    reload();
   }, []);
 
   const visible = useMemo(
@@ -36,21 +24,7 @@ export function RulesPanel({
   return (
     <div className="bg-canvas-light border-2 border-navy">
       {err && <div className="px-4 py-3 text-xs text-rust-700">{err}</div>}
-      <Section
-        title="Rules"
-        rows={visible}
-        onEdit={readOnly ? undefined : () => setEditing(true)}
-        editTitle="edit gateway.hcl"
-      />
-      {editing && (
-        <RulesEditor
-          onClose={() => setEditing(false)}
-          onSaved={() => {
-            reload();
-            setEditing(false);
-          }}
-        />
-      )}
+      <Section title="Rules" rows={visible} />
     </div>
   );
 }
@@ -58,14 +32,10 @@ export function RulesPanel({
 function Section({
   title,
   rows,
-  onEdit,
-  editTitle,
   emptyHint,
 }: {
   title: string;
   rows: RuleSummary[];
-  onEdit?: () => void;
-  editTitle?: string;
   emptyHint?: string;
 }) {
   // Group by endpoint. Server already sorts rules within an endpoint
@@ -91,15 +61,6 @@ function Section({
         <span className="ml-2 text-2xs text-navy/70 tabular-nums">
           {rows.length} rule{rows.length === 1 ? "" : "s"}
         </span>
-        {onEdit && (
-          <button
-            onClick={onEdit}
-            title={editTitle ?? "edit"}
-            className="ml-auto p-1 text-navy hover:text-text transition-colors"
-          >
-            <EditGlyph />
-          </button>
-        )}
       </div>
       {groups.length === 0 ? (
         <div className="px-5 py-5 text-center text-xs text-text-subtle">

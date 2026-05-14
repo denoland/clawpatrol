@@ -292,11 +292,6 @@ type Gateway struct {
 	agents   *AgentRegistry
 	hitl     *HITLRegistry
 	onboard  *onboardRegistry
-	// readOnlyConfig, when set via --read-only-config, rejects every
-	// dashboard write that mutates cfgPath. The dashboard reads the
-	// flag from /api/state and hides its editor affordances; the
-	// server enforces it regardless of UI state.
-	readOnlyConfig bool
 	// secrets hands credential plugins the secret bytes they inject
 	// at request time. Default env-var-backed; OAuth-flow credentials
 	// land via a follow-up bridge that delegates to OAuthRegistry.
@@ -2297,15 +2292,13 @@ Documentation: https://clawpatrol.dev/docs/`)
 // gatewayHelp is shown for `clawpatrol gateway -h` and any wrong
 // invocation. The example HCL + config-reference URL is the
 // discoverability path for first-time users.
-const gatewayHelp = `usage: clawpatrol gateway [--read-only-config] <config.hcl>
+const gatewayHelp = `usage: clawpatrol gateway <config.hcl>
 
 Start from gateway.example.hcl in the repo, or see the HCL reference:
   https://clawpatrol.dev/docs/config-reference`
 
 func runGateway(args []string) {
 	fs := flag.NewFlagSet("gateway", flag.ExitOnError)
-	readOnly := fs.Bool("read-only-config", false,
-		"reject dashboard writes to the HCL config file")
 	seedHook := devSeedAttach(fs)
 	fs.Usage = func() { fmt.Fprintln(os.Stderr, gatewayHelp) }
 	_ = fs.Parse(args)
@@ -2357,22 +2350,19 @@ func runGateway(args []string) {
 		log.Fatalf("oauth: %v", err)
 	}
 	g := &Gateway{
-		cfg:            cfg,
-		cfgPath:        cfgPath,
-		stateDir:       stateDir,
-		readOnlyConfig: *readOnly,
-		db:             db,
-		certs:          certs,
-		dialer:         newUpstreamDialer(cfg.Resolver),
-		sink:           sink,
-		oauth:          oauthReg,
-		agents:         NewAgentRegistry(),
-		hitl:           newHITLRegistry(sink),
-		onboard:        newOnboardRegistry(),
+		cfg:      cfg,
+		cfgPath:  cfgPath,
+		stateDir: stateDir,
+		db:       db,
+		certs:    certs,
+		dialer:   newUpstreamDialer(cfg.Resolver),
+		sink:     sink,
+		oauth:    oauthReg,
+		agents:   NewAgentRegistry(),
+		hitl:     newHITLRegistry(sink),
+		onboard:  newOnboardRegistry(),
 	}
-	if *readOnly {
-		log.Printf("config: read-only mode (dashboard writes rejected)")
-	}
+	log.Printf("config: read-only (the dashboard cannot edit gateway.hcl)")
 	g.secrets = newGatewaySecretStore(db, oauthReg)
 	g.tunnels = NewTunnelManager(g.secrets, stateDir)
 	registerOAuthCredentials(oauthReg, policy)

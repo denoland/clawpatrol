@@ -197,50 +197,6 @@ export async function getConfigHCL(): Promise<string> {
   return r.text();
 }
 
-export type ConfigSavePreview = {
-  ok: boolean;
-  formatted: string;
-  diff: string;
-  changed: boolean;
-  bytes: number;
-  revision: string;
-  preview_token: string;
-};
-
-export type ConfigSaveResult = {
-  ok: boolean;
-  bytes: number;
-  revision: string;
-};
-
-export async function previewConfigHCL(hcl: string): Promise<ConfigSavePreview> {
-  const r = await api("/api/config/preview", {
-    method: "POST",
-    headers: { "Content-Type": "text/plain" },
-    body: hcl,
-  });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
-}
-
-export async function saveConfigHCL(
-  content: string,
-  expectedRevision: string,
-  previewToken: string,
-): Promise<ConfigSaveResult> {
-  const r = await api("/api/config/save", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      content,
-      expected_revision: expectedRevision,
-      preview_token: previewToken,
-    }),
-  });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
-}
-
 export async function getDeviceRulesHCL(ip: string): Promise<string> {
   const r = await api(`/api/rules/device?ip=${encodeURIComponent(ip)}&format=hcl`);
   if (!r.ok) throw new Error(await r.text());
@@ -314,21 +270,6 @@ export async function decideHITL(id: string, allow: boolean): Promise<HITLResolv
   return r.json();
 }
 
-export async function aiEditRules(
-  prompt: string,
-  currentYAML: string,
-  scope: "global" | "device",
-  agent?: string,
-): Promise<{ yaml: string; refused?: string }> {
-  const r = await api("/api/rules/ai", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, current_yaml: currentYAML, scope, agent: agent ?? "" }),
-  });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
-}
-
 export type Whoami = {
   user: string;
   device: string;
@@ -368,10 +309,6 @@ type StateResp = {
   integrations: Integration[];
   agents: Agent[];
   update?: UpdateBanner | null;
-  // When true, the gateway was launched with --read-only-config and
-  // will reject /api/config/preview + /api/config/save with 403. The
-  // dashboard hides its editor affordances to match.
-  read_only_config?: boolean;
 };
 let lastStateTag = "";
 let lastState: StateResp | null = null;
