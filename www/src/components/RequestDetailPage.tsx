@@ -9,6 +9,8 @@ import {
 import { formatFacetValue, useFacets } from "../lib/facets";
 import { fmtDateTime } from "../lib/format";
 import { Button } from "./Button";
+import { Main } from "./Main";
+import { PageTitle, type Crumb } from "./PageTitle";
 import { Tag } from "./Tag";
 
 // isDenyAction matches every action label the dispatcher emits for a
@@ -274,43 +276,6 @@ function SQLDetail({ ev }: { ev: EventRecord }) {
 
 // --- layout ---
 
-function Breadcrumbs({
-  agentIP,
-  agentName,
-  requestId,
-}: {
-  agentIP?: string;
-  agentName?: string;
-  requestId?: string;
-}) {
-  return (
-    <nav className="flex items-baseline gap-2">
-      <a href="#/" className="text-sm text-text-subtle hover:text-text">
-        clawpatrol
-      </a>
-      {agentIP && (
-        <>
-          <span className="text-sm text-text-subtle">/</span>
-          <a
-            href={`#/device/${encodeURIComponent(agentIP)}`}
-            className="text-sm text-text-subtle hover:text-text"
-          >
-            {agentName || agentIP}
-          </a>
-        </>
-      )}
-      {requestId && (
-        <>
-          <span className="text-sm text-text-subtle">/</span>
-          <span className="text-sm text-text-muted font-mono" title={requestId}>
-            {requestId.split("-").pop()}
-          </span>
-        </>
-      )}
-    </nav>
-  );
-}
-
 function Shell({
   children,
   agentIP,
@@ -322,11 +287,24 @@ function Shell({
   agentName?: string;
   requestId?: string;
 }) {
+  const trail: Crumb[] = [{ label: "clawpatrol", href: "#/" }];
+  if (agentIP) {
+    trail.push({ label: agentName || agentIP, href: `#/device/${encodeURIComponent(agentIP)}` });
+  }
+  if (requestId) {
+    trail.push({
+      label: (
+        <span className="font-mono" title={requestId}>
+          {requestId.split("-").pop()}
+        </span>
+      ),
+    });
+  }
   return (
-    <main className="mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-5 space-y-5">
-      <Breadcrumbs agentIP={agentIP} agentName={agentName} requestId={requestId} />
+    <Main>
+      <PageTitle trail={trail} />
       {children}
-    </main>
+    </Main>
   );
 }
 

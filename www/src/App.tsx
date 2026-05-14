@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { AddDeviceModal } from "./components/AddDeviceModal";
 import { AgentsTable } from "./components/AgentsTable";
 import { AnalyticsPage } from "./components/AnalyticsPage";
 import { ConnectModal } from "./components/ConnectModal";
 import { DevicePage } from "./components/DevicePage";
+import { Header } from "./components/Header";
 import { HITLBar } from "./components/HITLBar";
 import { LiveRequests } from "./components/LiveRequests";
+import { Main } from "./components/Main";
 import { OnboardPage } from "./components/OnboardPage";
 import { RequestDetailPage } from "./components/RequestDetailPage";
 import { SettingsPage } from "./components/SettingsPage";
@@ -55,7 +56,6 @@ export default function App() {
   const [whoami, setWhoami] = useState<Whoami | null>(null);
   const [update, setUpdate] = useState<UpdateBanner | null>(null);
   const [connectId, setConnectId] = useState<string | null>(null);
-  const [showAddDevice, setShowAddDevice] = useState(false);
   const [route, setRoute] = useState(parseRoute());
 
   useEffect(() => {
@@ -93,72 +93,9 @@ export default function App() {
   return (
     <div className="flex flex-col min-h-screen">
       <UpdateNotice update={update} />
+      <Header whoami={whoami} />
       {route.name === "main" ? (
-        <main className="flex-1 mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-8 space-y-8">
-          <div className="flex items-center gap-4">
-            <h1>
-              <img src="/claw-patrol-logo.svg" alt="Claw Patrol" className="h-8 sm:h-10 w-auto" />
-            </h1>
-            <button
-              onClick={() => setShowAddDevice(true)}
-              className="w-[36px] h-[36px] rounded-full border-2 border-navy text-navy flex items-center justify-center hover:bg-navy-100 transition-colors"
-              title="add device"
-              aria-label="Add device"
-            >
-              <svg
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M12 5v14M5 12h14" />
-              </svg>
-            </button>
-            <a
-              href="#/analytics"
-              className="w-[36px] h-[36px] rounded-full border-2 border-navy text-navy flex items-center justify-center hover:bg-navy-100 transition-colors"
-              title="analytics"
-              aria-label="Analytics"
-            >
-              <svg
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M3 3v18h18" />
-                <path d="m7 16 4-8 4 4 4-6" />
-              </svg>
-            </a>
-            <a
-              href="#/settings"
-              className="w-[36px] h-[36px] rounded-full border-2 border-navy text-navy flex items-center justify-center hover:bg-navy-100 transition-colors"
-              title="settings"
-              aria-label="Settings"
-            >
-              <svg
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <circle cx="12" cy="12" r="3" />
-                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-              </svg>
-            </a>
-          </div>
+        <Main>
           <section className="bg-canvas-light border-2 border-navy overflow-hidden">
             <div className="overflow-x-auto">
               <AgentsTable
@@ -175,13 +112,13 @@ export default function App() {
           </section>
           <HITLBar />
           <LiveRequests height="420px" />
-        </main>
+        </Main>
       ) : route.name === "analytics" ? (
         <AnalyticsPage ip={route.ip} agents={agents} />
       ) : route.name === "request" ? (
         <RequestDetailPage id={route.id} agents={agents} />
       ) : route.name === "onboard" ? (
-        <OnboardPage code={route.code} onBack={() => navigate("")} />
+        <OnboardPage code={route.code} />
       ) : route.name === "settings" ? (
         <SettingsPage
           integrations={integrations}
@@ -204,9 +141,6 @@ export default function App() {
             setRoute(parseRoute());
           }}
         />
-      )}
-      {showAddDevice && (
-        <AddDeviceModal publicURL={whoami?.public_url} onClose={() => setShowAddDevice(false)} />
       )}
       {connectId && (
         <ConnectModal

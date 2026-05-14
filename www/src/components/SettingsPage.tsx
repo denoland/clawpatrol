@@ -7,6 +7,8 @@ import { useEffect, useState } from "react";
 import { getConfigHCL, type Integration } from "../lib/api";
 import { HCLEditor } from "./HCLEditor";
 import { IntegrationsCards } from "./IntegrationsCards";
+import { Main } from "./Main";
+import { PageTitle } from "./PageTitle";
 
 export function SettingsPage({
   integrations,
@@ -18,14 +20,8 @@ export function SettingsPage({
   onRefresh: () => void;
 }) {
   return (
-    <main className="mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-5 space-y-6">
-      <nav className="text-sm text-text-subtle flex items-center gap-1.5">
-        <a href="#/" className="hover:text-text">
-          clawpatrol
-        </a>
-        <span>/</span>
-        <span className="text-text-muted">settings</span>
-      </nav>
+    <Main>
+      <PageTitle trail={[{ label: "clawpatrol", href: "#/" }, { label: "settings" }]} />
 
       <section className="space-y-3">
         <h2 className="text-xs uppercase tracking-wider text-navy font-bold">Credentials</h2>
@@ -45,7 +41,7 @@ export function SettingsPage({
       </section>
 
       <ConfigSection />
-    </main>
+    </Main>
   );
 }
 

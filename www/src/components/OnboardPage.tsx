@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { Button } from "./Button";
+import { Main } from "./Main";
+import { PageTitle } from "./PageTitle";
 
-export function OnboardPage({ code, onBack }: { code: string; onBack: () => void }) {
+export function OnboardPage({ code }: { code: string }) {
   const [status, setStatus] = useState<"idle" | "approving" | "approved" | "error">("idle");
   const [err, setErr] = useState("");
   const [info, setInfo] = useState<{
@@ -36,52 +38,55 @@ export function OnboardPage({ code, onBack }: { code: string; onBack: () => void
   }
 
   return (
-    <main className="mx-auto w-full max-w-[640px] px-6 py-12 space-y-6">
-      <button onClick={onBack} className="text-xs text-text-muted hover:text-text">
-        ← back
-      </button>
-      <h1 className="text-4xl leading-none tracking-tight text-text">add device</h1>
+    <Main centered>
+      <PageTitle trail={[{ label: "clawpatrol", href: "#/" }, { label: "add device" }]} />
 
-      {!info && !err && <div className="text-xs text-text-muted">loading…</div>}
-      {err && <div className="text-xs text-danger-500">{err}</div>}
+      <div className="flex-1 flex items-center justify-center py-8">
+        <div className="w-full max-w-[480px] space-y-5">
+          {!info && !err && <div className="text-xs text-text-muted">loading…</div>}
+          {err && <div className="text-xs text-danger-500">{err}</div>}
 
-      {info && (
-        <div className="bg-canvas-light border-2 border-navy p-6 space-y-4">
-          <div>
-            <div className="text-2xs uppercase tracking-wider text-text-subtle">code from CLI</div>
-            <div className="font-mono text-3xl tracking-[.18em] text-text mt-1">
-              {info.user_code || code}
-            </div>
-          </div>
-
-          <div className="text-xs text-text-muted">
-            only approve if you typed this code on the new machine.
-          </div>
-
-          {info.ca_fingerprint && (
-            <details className="text-[11px] text-[#737373]">
-              <summary className="cursor-pointer hover:text-[#171717]">
-                CA fingerprint — should match `CA fingerprint:` line on the CLI
-              </summary>
-              <div className="font-mono text-[10px] mt-1 break-all text-[#525252] select-all">
-                {info.ca_fingerprint}
+          {info && (
+            <div className="bg-canvas-light border-2 border-navy p-6 space-y-4">
+              <div>
+                <div className="text-2xs uppercase tracking-wider text-text-subtle">
+                  code from CLI
+                </div>
+                <div className="font-mono text-3xl tracking-[.18em] text-text mt-1">
+                  {info.user_code || code}
+                </div>
               </div>
-            </details>
-          )}
 
-          {status === "idle" && !info.approved && (
-            <Button size="md" onClick={approve} className="w-full">
-              approve
-            </Button>
-          )}
-          {status === "approving" && <div className="text-xs text-text-muted">approving…</div>}
-          {(status === "approved" || info.approved) && (
-            <div className="text-xs text-success-600">
-              ✓ approved — return to the CLI on the new device
+              <div className="text-xs text-text-muted">
+                only approve if you typed this code on the new machine.
+              </div>
+
+              {info.ca_fingerprint && (
+                <details className="text-[11px] text-[#737373]">
+                  <summary className="cursor-pointer hover:text-[#171717]">
+                    CA fingerprint — should match `CA fingerprint:` line on the CLI
+                  </summary>
+                  <div className="font-mono text-[10px] mt-1 break-all text-[#525252] select-all">
+                    {info.ca_fingerprint}
+                  </div>
+                </details>
+              )}
+
+              {status === "idle" && !info.approved && (
+                <Button size="md" onClick={approve} className="w-full">
+                  approve
+                </Button>
+              )}
+              {status === "approving" && <div className="text-xs text-text-muted">approving…</div>}
+              {(status === "approved" || info.approved) && (
+                <div className="text-xs text-success-600">
+                  ✓ approved — return to the CLI on the new device
+                </div>
+              )}
             </div>
           )}
         </div>
-      )}
-    </main>
+      </div>
+    </Main>
   );
 }

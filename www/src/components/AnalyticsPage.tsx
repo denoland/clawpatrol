@@ -1,6 +1,8 @@
 import * as Plot from "@observablehq/plot";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getAnalytics, type Agent, type EventRecord } from "../lib/api";
+import { Main } from "./Main";
+import { PageTitle, type Crumb } from "./PageTitle";
 import { Tag } from "./Tag";
 
 const RANGES = ["1m", "5m", "15m", "30m", "1h", "6h", "24h"] as const;
@@ -150,46 +152,35 @@ export function AnalyticsPage({ ip, agents }: { ip?: string; agents: Agent[] }) 
     return { n: totalCount, avg, p99, errPct, devices };
   })();
 
+  const trail: Crumb[] = [{ label: "clawpatrol", href: "#/" }];
+  if (deviceName) {
+    trail.push({ label: deviceName, href: `#/device/${encodeURIComponent(ip!)}` });
+  }
+  trail.push({ label: "analytics" });
+
   return (
-    <main className="flex-1 mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-8 space-y-8">
-      <div className="flex items-baseline justify-between flex-wrap gap-3">
-        <div className="flex items-baseline gap-2">
-          <a href="#/" className="text-sm text-text-subtle hover:text-text">
-            clawpatrol
-          </a>
-          <span className="text-sm text-text-subtle">/</span>
-          {deviceName ? (
-            <>
-              <a
-                href={`#/device/${encodeURIComponent(ip!)}`}
-                className="text-sm text-text-subtle hover:text-text"
+    <Main>
+      <PageTitle
+        trail={trail}
+        actions={
+          <>
+            {hasFilter && (
+              <Tag
+                tone="info"
+                dismissible
+                onClick={() => {
+                  setFilterDevice(null);
+                  setFilterHost(null);
+                }}
+                className="normal-case"
               >
-                {deviceName}
-              </a>
-              <span className="text-sm text-text-subtle">/</span>
-              <a href="#/analytics" className="text-sm text-text-muted hover:text-text">
-                analytics
-              </a>
-            </>
-          ) : (
-            <span className="text-sm text-text-muted">analytics</span>
-          )}
-          {hasFilter && (
-            <Tag
-              tone="info"
-              dismissible
-              onClick={() => {
-                setFilterDevice(null);
-                setFilterHost(null);
-              }}
-              className="ml-3 self-center normal-case"
-            >
-              {filterLabel}
-            </Tag>
-          )}
-        </div>
-        <Toggle options={[...RANGES]} value={range} onChange={setRange} />
-      </div>
+                {filterLabel}
+              </Tag>
+            )}
+            <Toggle options={[...RANGES]} value={range} onChange={setRange} />
+          </>
+        }
+      />
 
       <div
         className={
@@ -237,7 +228,7 @@ export function AnalyticsPage({ ip, agents }: { ip?: string; agents: Agent[] }) 
       <LatencyChart filtered={filtered} isGlobal={isGlobal} agents={agents} range={range} />
 
       <TopRoutes events={filtered} />
-    </main>
+    </Main>
   );
 }
 

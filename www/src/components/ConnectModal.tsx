@@ -161,7 +161,7 @@ export function ConnectModal({
                 <>no scopes are requested by default.</>
               )}
             </div>
-            <details className="border border-canvas-dark rounded bg-canvas-muted group">
+            <details className="border border-rust-100 rounded bg-rust-50 group">
               <summary className="cursor-pointer list-none flex items-center gap-2 px-2 py-1.5 text-xs text-text hover:bg-canvas rounded">
                 <span className="inline-block w-3 text-text-subtle transition-transform group-open:rotate-90">
                   ›
@@ -171,7 +171,7 @@ export function ConnectModal({
                   {extras.size > 0 ? `${extras.size} selected` : "optional"}
                 </span>
               </summary>
-              <div className="max-h-[300px] overflow-y-auto p-2 space-y-3 border-t border-navy">
+              <div className="max-h-[300px] overflow-y-auto p-2 space-y-3 border-t border-rust-100">
                 {optionalGroups.map((g) => (
                   <div key={g.title}>
                     <div className="text-2xs uppercase tracking-wider text-text-subtle mb-1">
@@ -236,7 +236,7 @@ export function ConnectModal({
               browser opened to <code className="text-text">{start.verification_uri}</code>. enter
               this code:
             </div>
-            <div className="font-mono text-3xl tracking-[.18em] text-text text-center py-3 bg-canvas-muted border border-canvas-dark rounded select-all">
+            <div className="font-mono text-3xl tracking-[.18em] text-text text-center py-3 bg-rust-50 border border-rust-100 rounded select-all">
               {start.user_code}
             </div>
             <div className="text-xs text-text-subtle text-center">waiting for approval…</div>

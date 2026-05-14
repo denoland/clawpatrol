@@ -9,11 +9,13 @@ import {
 } from "../lib/api";
 import { fmtBytes } from "../lib/format";
 import { DeviceIcon } from "./Logos";
-import { Sparkline } from "./Sparkline";
-import { LiveRequests } from "./LiveRequests";
-import { RulesPanel } from "./RulesPanel";
 import { IntegrationsCards } from "./IntegrationsCards";
+import { LiveRequests } from "./LiveRequests";
+import { Main } from "./Main";
+import { PageTitle } from "./PageTitle";
+import { RulesPanel } from "./RulesPanel";
 import { SessionsTable } from "./SessionsTable";
+import { Sparkline } from "./Sparkline";
 
 export function DevicePage({
   ip,
@@ -69,18 +71,12 @@ export function DevicePage({
   }, [devProfile, integrations]);
   if (!a) {
     return (
-      <main className="mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-5">
-        <nav className="text-sm text-text-subtle flex items-center gap-1.5 mb-3">
-          <a href="#/" className="hover:text-text">
-            clawpatrol
-          </a>
-          <span>/</span>
-          <span className="text-text-muted">{ip}</span>
-        </nav>
+      <Main>
+        <PageTitle trail={[{ label: "clawpatrol", href: "#/" }, { label: ip }]} />
         <div className="bg-canvas-light border-2 border-navy px-5 py-8 text-center text-xs text-text-subtle">
           no agent with ip {ip}
         </div>
-      </main>
+      </Main>
     );
   }
 
@@ -105,79 +101,75 @@ export function DevicePage({
   }
 
   return (
-    <main className="mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-5 space-y-5">
-      <div className="flex items-center justify-between">
-        <nav className="text-sm text-text-subtle flex items-center gap-1.5">
-          <a href="#/" className="hover:text-text">
-            clawpatrol
-          </a>
-          <span>/</span>
-          <span className="text-text-muted">{dev.hostname || dev.ip}</span>
-        </nav>
-        <div className="flex items-center gap-2">
-          <ProfilePicker
-            current={a.profile ?? ""}
-            profiles={profiles}
-            saving={profileSaving}
-            err={profileErr}
-            onPick={async (next) => {
-              if (!next || next === a.profile) return;
-              setProfileSaving(true);
-              setProfileErr(null);
-              try {
-                await setDeviceProfile(a.ip, next);
-                onRefresh();
-              } catch (err: any) {
-                setProfileErr(String(err.message ?? err));
-              } finally {
-                setProfileSaving(false);
-              }
-            }}
-          />
-          <a
-            href={`#/analytics/${encodeURIComponent(ip)}`}
-            title="analytics"
-            className="w-[36px] h-[36px] rounded-full border border-canvas-dark text-text-muted flex items-center justify-center hover:border-text hover:text-text transition-colors"
-          >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
+    <Main>
+      <PageTitle
+        trail={[{ label: "clawpatrol", href: "#/" }, { label: dev.hostname || dev.ip }]}
+        actions={
+          <>
+            <ProfilePicker
+              current={a.profile ?? ""}
+              profiles={profiles}
+              saving={profileSaving}
+              err={profileErr}
+              onPick={async (next) => {
+                if (!next || next === a.profile) return;
+                setProfileSaving(true);
+                setProfileErr(null);
+                try {
+                  await setDeviceProfile(a.ip, next);
+                  onRefresh();
+                } catch (err: any) {
+                  setProfileErr(String(err.message ?? err));
+                } finally {
+                  setProfileSaving(false);
+                }
+              }}
+            />
+            <a
+              href={`#/analytics/${encodeURIComponent(ip)}`}
+              title="analytics"
+              className="w-[36px] h-[36px] rounded-full border border-canvas-dark text-text-muted flex items-center justify-center hover:border-text hover:text-text transition-colors"
             >
-              <path d="M3 3v18h18" />
-              <path d="m7 16 4-8 4 4 4-6" />
-            </svg>
-          </a>
-          <button
-            type="button"
-            onClick={remove}
-            title="forget this device"
-            className="w-[36px] h-[36px] rounded-full border border-canvas-dark text-text-muted flex items-center justify-center hover:border-danger-500 hover:text-danger-500 transition-colors"
-          >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M3 3v18h18" />
+                <path d="m7 16 4-8 4 4 4-6" />
+              </svg>
+            </a>
+            <button
+              type="button"
+              onClick={remove}
+              title="forget this device"
+              className="w-[36px] h-[36px] rounded-full border border-canvas-dark text-text-muted flex items-center justify-center hover:border-danger-500 hover:text-danger-500 transition-colors"
             >
-              <path d="M3 6h18" />
-              <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-              <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
-              <path d="M10 11v6" />
-              <path d="M14 11v6" />
-            </svg>
-          </button>
-        </div>
-      </div>
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M3 6h18" />
+                <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                <path d="M10 11v6" />
+                <path d="M14 11v6" />
+              </svg>
+            </button>
+          </>
+        }
+      />
 
       {/* device header card */}
       <section className="bg-canvas-light border-2 border-navy">
@@ -232,7 +224,7 @@ export function DevicePage({
 
       {/* rules — per-device scope (with global rules layered in) */}
       <RulesPanel deviceIP={a.ip} profile={a.profile} />
-    </main>
+    </Main>
   );
 }
 

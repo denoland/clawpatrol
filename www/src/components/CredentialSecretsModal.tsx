@@ -61,7 +61,7 @@ export function CredentialSecretsModal({
             untouched slots blank to keep them unchanged.
           </p>
         )}
-        <dl className="grid grid-cols-[auto,minmax(0,1fr)] gap-x-3 gap-y-1 rounded border border-canvas-dark bg-canvas-muted px-3 py-2 text-xs">
+        <dl className="grid grid-cols-[auto,minmax(0,1fr)] gap-x-3 gap-y-1 rounded border border-rust-100 bg-rust-50 px-3 py-2 text-xs">
           <dt className="text-text-muted font-bold font-sans">Credential</dt>
           <dd className="min-w-0 truncate font-mono text-text" title={integration.id}>
             {integration.id}
