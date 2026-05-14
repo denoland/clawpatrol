@@ -289,13 +289,29 @@ export async function getHITLPending(): Promise<HITLPending[]> {
   return r.json();
 }
 
-export async function decideHITL(id: string, allow: boolean): Promise<void> {
+export type HITLState =
+  | "pending"
+  | "approved"
+  | "denied"
+  | "timed_out"
+  | "client_disconnected"
+  | "canceled"
+  | "unknown";
+
+export type HITLResolveResult = {
+  ok: boolean;
+  state: HITLState;
+  reason?: string;
+};
+
+export async function decideHITL(id: string, allow: boolean): Promise<HITLResolveResult> {
   const r = await api("/api/hitl/decide", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ id, allow }),
   });
   if (!r.ok) throw new Error(await r.text());
+  return r.json();
 }
 
 export async function aiEditRules(

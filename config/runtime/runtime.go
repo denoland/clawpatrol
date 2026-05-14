@@ -424,10 +424,11 @@ type HITLPool interface {
 	// Add publishes a pending entry. Returns the assigned id (used
 	// by Decide) and a channel that fires exactly once when the
 	// pool gets a verdict. Caller must select on ctx.Done() too;
-	// if ctx fires first, call Discard(id) to clean up.
+	// when ctx fires first, prefer HITLPoolCanceler.Cancel so stale
+	// prompts can explain why the upstream request was not sent.
 	Add(p HITLPending) (id string, decision <-chan HITLDecision)
-	// Discard drops a pending entry without a decision. Use when
-	// the caller's context expires before the channel fires.
+	// Discard drops a pending entry without recording terminal state.
+	// Use only for compatibility or best-effort cleanup after resolve.
 	Discard(id string)
 	// Decide resolves a pending entry — used by webhook handlers
 	// (Slack interactive callback, future Discord etc.) to forward
@@ -435,6 +436,45 @@ type HITLPool interface {
 	// /api/hitl/decide writes to. Returns false when the id is
 	// unknown (already resolved or expired).
 	Decide(id string, d HITLDecision) bool
+}
+
+// HITLPoolDecider is implemented by pools that can explain why a
+// decision was accepted or rejected. Callers should prefer this over
+// Decide when rendering operator-facing stale-click messages.
+type HITLPoolDecider interface {
+	DecideWithResult(id string, d HITLDecision) HITLResolveResult
+}
+
+// HITLPoolCanceler is implemented by pools that preserve a short-lived
+// terminal state when a synchronous HITL request ends without a human
+// decision (timeout, client disconnect, gateway cancellation).
+type HITLPoolCanceler interface {
+	Cancel(id string, state HITLState, reason string) HITLResolveResult
+}
+
+// HITLState names the lifecycle state of a human approval prompt.
+type HITLState string
+
+// HITL terminal states exposed to dashboard and Slack stale-click handlers.
+const (
+	HITLStatePending            HITLState = "pending"
+	HITLStateApproved           HITLState = "approved"
+	HITLStateDenied             HITLState = "denied"
+	HITLStateTimedOut           HITLState = "timed_out"
+	HITLStateClientDisconnected HITLState = "client_disconnected"
+	HITLStateCanceled           HITLState = "canceled"
+	HITLStateUnknown            HITLState = "unknown"
+)
+
+// HITLResolveResult is returned by structured HITL resolution APIs.
+// OK means this call transitioned an active pending request. State and
+// Reason are still populated for stale/duplicate decisions so Slack and
+// the dashboard can distinguish timed-out, disconnected, and already
+// decided prompts instead of showing a generic expired message.
+type HITLResolveResult struct {
+	OK     bool      `json:"ok"`
+	State  HITLState `json:"state"`
+	Reason string    `json:"reason,omitempty"`
 }
 
 // HITLPending mirrors the dashboard's pending-approval shape. Stays
