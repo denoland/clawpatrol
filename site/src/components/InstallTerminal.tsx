@@ -27,8 +27,8 @@ export function InstallTerminal({
   }
 
   const expanded = variant === "expanded";
-  const surface = expanded ? "pl-10 pr-8 py-8" : "pl-8 pr-6 py-6";
-  const codeSize = expanded ? "text-base" : "text-sm";
+  const surface = expanded ? "pl-10 pr-8 py-8" : "pl-6 pr-4 py-5";
+  const codeSize = expanded ? "text-base" : "text-[12px]";
 
   return (
     <div

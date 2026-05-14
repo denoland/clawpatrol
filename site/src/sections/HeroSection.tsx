@@ -1,4 +1,4 @@
-import { Button } from "../components/Button";
+import { FlowDiagram } from "../components/FlowDiagram";
 import { InstallTerminal } from "../components/InstallTerminal";
 
 export function HeroSection() {
@@ -24,20 +24,17 @@ export function HeroSection() {
             class="mb-10 max-w-lg
             text-text-muted"
           >
-            An agent stuck in a sandbox is a toy. Handing it your prod keys is
-            reckless. Claw Patrol sits at the only universal checkpoint — the
-            network — between your agents and real systems. Every outbound
-            action runs against rules you write in HCL. Risky ones get a human
-            in Slack or an LLM judge. Secrets live in the proxy, not the agent.
-            Works with Claude Code, Codex, or any agent — no code changes.
+            An agent stuck in a sandbox is a toy. Handing it your prod keys is reckless. Claw Patrol
+            sits at the only universal checkpoint — the network — between your agents and real
+            systems. Every outbound action runs against rules you write in HCL. Risky ones get a
+            human in Slack or an LLM judge. Secrets live in the proxy, not the agent. Works with
+            Claude Code, Codex, or any agent — no code changes.
           </p>
-          <Button href="https://github.com/denoland/clawpatrol" size="lg">
-            Get Started
-          </Button>
+          <InstallTerminal />
         </div>
 
         <div class="flex justify-center min-w-0">
-          <InstallTerminal />
+          <FlowDiagram />
         </div>
       </div>
     </section>
