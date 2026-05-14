@@ -31,6 +31,8 @@ func (DashboardApprover) Approve(ctx context.Context, req runtime.ApproveRequest
 			By:       d.By,
 		}, nil
 	case <-ctx.Done():
+		state, reason := hitlCancelStateForContext(ctx.Err())
+		cancelPending(req.Pool, id, state, reason)
 		return runtime.ApproveVerdict{}, ctx.Err()
 	}
 }
