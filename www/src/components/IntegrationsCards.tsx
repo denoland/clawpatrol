@@ -62,11 +62,13 @@ export function IntegrationsCards({
   const visible = overflow ? sorted.slice(0, VISIBLE_CAP - 1) : sorted;
   const hiddenCount = sorted.length - visible.length;
 
-  // Settings-page grouping: cluster cards by plugin type, with each
-  // group labelled by display name + count and sorted alphabetically
-  // by display name. Within a group, sort by credential bare name so
-  // the layout is stable across refreshes.
-  const groupedByType = showAll ? groupByType(list) : null;
+  // Settings-page grouping: split by connection state first
+  // (Connected / Not Configured) and then cluster by plugin type
+  // within each state. The two state sections stack vertically; the
+  // per-type boxes inside each section flow horizontally and wrap on
+  // overflow so a long credential catalog scans like a grid of
+  // labelled clusters rather than a vertical ladder.
+  const groupedByStatus = showAll ? groupByStatusThenType(list) : null;
 
   function handleConnect(i: Integration) {
     if (i.has_tailscale_auth && i.tailscale_auth) {
@@ -145,25 +147,39 @@ export function IntegrationsCards({
 
   return (
     <>
-      {groupedByType ? (
-        <div className="space-y-5">
-          {groupedByType.map((g) => (
-            <div key={g.type} className="space-y-2">
+      {groupedByStatus ? (
+        <div className="space-y-6">
+          {groupedByStatus.map((section) => (
+            <section key={section.status} className="space-y-2.5">
               <h3 className="text-2xs uppercase tracking-[.12em] text-text-muted font-bold flex items-baseline gap-1.5">
-                <span>{g.label}</span>
-                <span className="text-text-subtle font-normal">— {g.items.length}</span>
+                <span>{section.label}</span>
+                <span className="text-text-subtle font-normal">— {section.total}</span>
               </h3>
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5">
-                {g.items.map((i) => (
-                  <Card
-                    key={i.id}
-                    integration={i}
-                    onConnect={() => handleConnect(i)}
-                    onDisconnect={() => disconnect(i)}
-                  />
+              <div className="flex flex-wrap gap-3">
+                {section.types.map((g) => (
+                  <div
+                    key={g.type}
+                    className="border-2 border-navy bg-canvas-light px-3 py-2.5 space-y-2"
+                  >
+                    <div className="text-2xs uppercase tracking-[.12em] text-text-subtle font-semibold flex items-baseline gap-1.5">
+                      <span>{g.label}</span>
+                      <span className="font-normal">— {g.items.length}</span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {g.items.map((i) => (
+                        <div key={i.id} className="w-44">
+                          <Card
+                            integration={i}
+                            onConnect={() => handleConnect(i)}
+                            onDisconnect={() => disconnect(i)}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 ))}
               </div>
-            </div>
+            </section>
           ))}
         </div>
       ) : (
@@ -220,6 +236,46 @@ type CredentialGroup = {
   label: string;
   items: Integration[];
 };
+
+type StatusSection = {
+  status: "connected" | "unconfigured";
+  label: string;
+  total: number;
+  types: CredentialGroup[];
+};
+
+// groupByStatusThenType splits the credential list into Connected /
+// Not Configured sections and clusters each section by plugin type.
+// Empty sections are dropped so a fully-connected (or fully-empty)
+// catalog doesn't render a stub heading. The unconfigured bucket
+// also catches credentials with no auth path at all — from the
+// operator's point of view those are equally "not yet usable".
+function groupByStatusThenType(list: Integration[]): StatusSection[] {
+  const connected: Integration[] = [];
+  const unconfigured: Integration[] = [];
+  for (const i of list) {
+    if (isConnected(i)) connected.push(i);
+    else unconfigured.push(i);
+  }
+  const sections: StatusSection[] = [];
+  if (connected.length > 0) {
+    sections.push({
+      status: "connected",
+      label: "Connected",
+      total: connected.length,
+      types: groupByType(connected),
+    });
+  }
+  if (unconfigured.length > 0) {
+    sections.push({
+      status: "unconfigured",
+      label: "Not configured",
+      total: unconfigured.length,
+      types: groupByType(unconfigured),
+    });
+  }
+  return sections;
+}
 
 function groupByType(list: Integration[]): CredentialGroup[] {
   const buckets = new Map<string, Integration[]>();
@@ -302,7 +358,7 @@ function Card({
       disabled={!clickable && !connected}
       onClick={() => clickable && onConnect()}
       className={
-        "group relative flex flex-col items-start gap-2 px-3 py-2.5 bg-canvas-light border-2 border-navy text-left transition-colors " +
+        "group relative w-full flex flex-col items-start gap-2 px-3 py-2.5 bg-canvas-light border-2 border-navy text-left transition-colors " +
         (clickable ? "cursor-pointer hover:bg-navy-50" : "cursor-default")
       }
     >
