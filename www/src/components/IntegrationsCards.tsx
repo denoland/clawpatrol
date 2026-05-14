@@ -155,15 +155,12 @@ export function IntegrationsCards({
                 <span>{section.label}</span>
                 <span className="text-text-subtle font-normal">— {section.total}</span>
               </h3>
-              <div className="flex flex-wrap gap-3">
+              <div className="flex flex-wrap gap-x-6 gap-y-4">
                 {section.types.map((g) => (
-                  <div
-                    key={g.type}
-                    className="border-2 border-navy bg-canvas-light px-3 py-2.5 space-y-2"
-                  >
-                    <div className="text-2xs uppercase tracking-[.12em] text-text-subtle font-semibold flex items-baseline gap-1.5">
+                  <div key={g.type} className="space-y-1.5">
+                    <div className="text-2xs uppercase tracking-[.12em] text-text-subtle flex items-baseline gap-1.5">
                       <span>{g.label}</span>
-                      <span className="font-normal">— {g.items.length}</span>
+                      <span>— {g.items.length}</span>
                     </div>
                     <div className="flex flex-wrap gap-2">
                       {g.items.map((i) => (
