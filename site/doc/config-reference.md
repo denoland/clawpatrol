@@ -236,19 +236,10 @@ credential "github_oauth" "example" {}
 
 ### `credential "google_gke_credential" "<name>"`
 
-| Attribute | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `cluster` | `string` | yes |  |
-| `location` | `string` | yes |  |
-| `project` | `string` | yes |  |
-| `impersonate_service_account` | `string` | no |  |
+_No configurable attributes._
 
 ```hcl
-credential "google_gke_credential" "example" {
-  cluster = "example"
-  location = "example"
-  project = "example"
-}
+credential "google_gke_credential" "example" {}
 ```
 
 ### `credential "header_token" "<name>"`
