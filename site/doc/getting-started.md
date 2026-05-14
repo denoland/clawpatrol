@@ -31,8 +31,8 @@ into it, and edit the operational fields:
 
 ```hcl
 listen           = "0.0.0.0:8443"
-info_listen      = "0.0.0.0:9080"
-public_url       = "http://gw.example.com:9080"
+info_listen      = "127.0.0.1:9080"   # bind the dashboard private — see below
+public_url       = "https://gw.example.com"
 admin_email      = "you@example.com"
 dashboard_secret = "<long random string>"
 state_dir        = "/opt/clawpatrol"
@@ -41,6 +41,21 @@ control        = "wireguard"
 wg_subnet_cidr = "10.55.0.0/24"
 ```
 
+**`info_listen` should bind privately.** The dashboard holds the
+credential vault — the gateway refuses to boot when `info_listen`
+is on a public interface (`0.0.0.0`, `::`, or a routable IP) without
+`dashboard_secret`. Recommended shapes:
+
+- **`127.0.0.1:9080`** — loopback. Reach the dashboard via SSH
+  tunnel (`ssh -L 9080:127.0.0.1:9080 gateway-host`) or front it
+  with a local reverse proxy.
+- **A tailnet / VPN IP** — e.g. `100.x.x.x:9080`. Anyone on the
+  tailnet reaches it directly; nothing public.
+- **Public + `dashboard_secret`** — works if you really need it,
+  but logs a warning. Pair with an auth proxy
+  (Cloudflare Access, oauth2-proxy) before pointing real users
+  at it.
+
 The CA is lazy-minted into sqlite under `state_dir` on first boot —
 nothing to pre-create besides the directory itself. See
 [Config reference](/docs/config-reference/) for the full HCL grammar
@@ -48,15 +63,19 @@ and the rest of the credential / endpoint / rule blocks.
 
 ## Run the gateway
 
-Open the WireGuard UDP port and the dashboard TCP port on the host
-firewall (e.g. `iptables -I INPUT -p udp --dport 51820 -j ACCEPT`,
-same for `tcp/9080`), then:
+Open the WireGuard UDP port on the host firewall —
+`iptables -I INPUT -p udp --dport 51820 -j ACCEPT`. Leave the
+dashboard port closed to the public internet; reach it via the
+private bind you chose above.
 
 ```bash
 clawpatrol gateway /opt/clawpatrol/gateway.hcl
 ```
 
-The dashboard is at `http://<gateway-host>:9080`.
+For a loopback bind, reach the dashboard from your laptop with
+`ssh -L 9080:127.0.0.1:9080 gateway-host` and open
+`http://127.0.0.1:9080`. For a tailnet bind, just open the tailnet
+URL.
 
 ### Under systemd
 

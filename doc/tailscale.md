@@ -68,7 +68,7 @@ curl -fsSL https://denoland.github.io/clawpatrol/install.sh | sh
 
 cat > /opt/clawpatrol/gateway.hcl <<'EOF'
 listen       = "0.0.0.0:8443"
-info_listen  = "0.0.0.0:8080"
+info_listen  = "127.0.0.1:8080"
 public_url   = "http://clawpatrol-gateway"    # tailnet hostname suffices
 admin_email  = "you@example.com"
 state_dir    = "/opt/clawpatrol"

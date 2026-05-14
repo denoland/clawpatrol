@@ -29,7 +29,7 @@
 # ── operational --------------------------------------------------------
 
 listen      = "0.0.0.0:8443"
-info_listen = "0.0.0.0:8080"
+info_listen = "127.0.0.1:8080"
 public_url  = "https://gw.example.com"
 admin_email = "you@example.com"
 state_dir   = "/opt/clawpatrol"

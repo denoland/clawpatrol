@@ -449,6 +449,71 @@ func logDashboardSecretState(cfg *config.Gateway) {
 	}
 }
 
+// bindIsPublic reports whether a listen-address host portion would
+// expose the listener to the public internet. Returns true for:
+//   - empty host or "0.0.0.0" or "::" — bind on all interfaces
+//   - any IP literal that isn't loopback / RFC1918 / RFC4193 ULA /
+//     link-local / CGNAT (100.64.0.0/10, where Tailscale lives)
+//
+// Hostnames are treated conservatively as public — operators who
+// want to bind a tailnet hostname should resolve it themselves and
+// use the IP literal, or accept the warning.
+func bindIsPublic(host string) bool {
+	if host == "" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return true // hostname — can't tell, assume public
+	}
+	if ip.IsUnspecified() {
+		return true
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() {
+		return false
+	}
+	// CGNAT 100.64.0.0/10 — Tailscale's range, not covered by
+	// IsPrivate but private in practice.
+	if v4 := ip.To4(); v4 != nil && v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
+		return false
+	}
+	return true
+}
+
+// validateDashboardBindOrFatal refuses to boot if info_listen would
+// expose the dashboard publicly with no authentication. The escape
+// hatch is the --insecure-public-dashboard CLI flag — verbose by
+// design so it can't be set by accident.
+func validateDashboardBindOrFatal(cfg *config.Gateway, insecurePublic bool) {
+	if cfg.InfoListen == "" {
+		return
+	}
+	host, _, err := net.SplitHostPort(cfg.InfoListen)
+	if err != nil {
+		log.Fatalf("info_listen %q: %v", cfg.InfoListen, err)
+	}
+	public := bindIsPublic(host)
+	if !public {
+		return
+	}
+	if insecurePublic {
+		log.Printf("WARNING: info_listen %q is publicly bound (--insecure-public-dashboard acknowledged)", cfg.InfoListen)
+		return
+	}
+	if cfg.DashboardSecret != "" {
+		log.Printf("WARNING: info_listen %q is publicly bound — dashboard is reachable from the internet. Use a private bind (loopback / tailnet / VPN) or front it with an auth proxy on the host.", cfg.InfoListen)
+		return
+	}
+	log.Fatalf(
+		"refusing to start: info_listen %q binds to a public interface and dashboard_secret is unset.\n"+
+			"  The dashboard would be reachable from anywhere without authentication.\n"+
+			"  Fix one of:\n"+
+			"    - bind info_listen to a private interface (loopback, RFC1918, ULA, tailnet/CGNAT)\n"+
+			"    - set dashboard_secret in gateway.hcl\n"+
+			"    - pass --insecure-public-dashboard if you really mean it (testing only)",
+		cfg.InfoListen)
+}
+
 // trackCodexWSUsage parses a single WebSocket text-frame payload from
 // chatgpt.com/codex traffic. Codex sends JSON envelopes containing the
 // user prompt (client→server) and usage info (server→client). Sessions
@@ -2299,6 +2364,8 @@ Start from gateway.example.hcl in the repo, or see the HCL reference:
 
 func runGateway(args []string) {
 	fs := flag.NewFlagSet("gateway", flag.ExitOnError)
+	insecurePublicDashboard := fs.Bool("insecure-public-dashboard", false,
+		"allow info_listen to bind on a public interface without dashboard_secret (testing only)")
 	seedHook := devSeedAttach(fs)
 	fs.Usage = func() { fmt.Fprintln(os.Stderr, gatewayHelp) }
 	_ = fs.Parse(args)
@@ -2320,6 +2387,7 @@ func runGateway(args []string) {
 		log.Fatalf("config: %v", err)
 	}
 	logDashboardSecretState(cfg)
+	validateDashboardBindOrFatal(cfg, *insecurePublicDashboard)
 	stateDir := resolveStateDir(cfg)
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		log.Fatalf("state dir: %v", err)
