@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"time"
@@ -195,11 +196,19 @@ func (w *webMux) apiTailscaleStatus(rw http.ResponseWriter, r *http.Request) {
 	w.apiTailscaleConnect(rw, r)
 }
 
-// apiTailscaleDisconnect drops every stored slot for the credential.
-// On the next tunnel re-init, tsnet finds an empty StateStore and
-// drives the interactive login again. Hot-restart of the tunnel
-// itself is a follow-up; today the identity is reset and the next
-// gateway boot picks it up.
+// apiTailscaleDisconnect drops every stored slot for the credential
+// AND signs the live tsnet node out of the control plane / evicts its
+// runtime from the tunnel manager. Order matters: Logout first (needs
+// a live tsnet), then close + evict, then wipe credential_secrets, then
+// clear the parked login URL. Wiping the store while tsnet is still
+// resident lets its in-memory (mkey, nkey) pair race the cleared
+// persistence layer — the reconnect loop then mints a fresh machine
+// key, re-presents the still-cached node key under it, and earns a
+// 403 "bad machine key" from control in a tight backoff loop.
+//
+// Logout is best-effort: a transient upstream failure still lets the
+// local wipe proceed, leaving at most a stale node entry on
+// tailscale.com that the operator can clean up out of band.
 func (w *webMux) apiTailscaleDisconnect(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(rw, "POST", http.StatusMethodNotAllowed)
@@ -221,6 +230,13 @@ func (w *webMux) apiTailscaleDisconnect(rw http.ResponseWriter, r *http.Request)
 	if _, err := lookupTailscaleAuth(w.g.policy.Load(), body.ID); err != nil {
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 		return
+	}
+	if w.g.tunnels != nil {
+		logoutCtx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		if err := w.g.tunnels.DisconnectCredential(logoutCtx, body.ID); err != nil {
+			log.Printf("tailscale credential %q: logout: %v (proceeding with local wipe)", body.ID, err)
+		}
+		cancel()
 	}
 	if err := clearCredentialSecrets(w.g.db, body.ID); err != nil {
 		http.Error(rw, err.Error(), http.StatusInternalServerError)

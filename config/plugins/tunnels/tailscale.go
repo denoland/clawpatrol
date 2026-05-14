@@ -283,6 +283,35 @@ func (t *tailscaleTunnelConn) Dial(ctx context.Context, network, addr string) (n
 	}
 }
 
+// CredentialName implements runtime.TunnelCredentialNamer so the
+// TunnelManager can route a credential-targeted disconnect to this
+// live runtime. Empty for the literal-authkey path — there's no
+// credential identity to sign out.
+func (t *tailscaleTunnelConn) CredentialName() string { return t.credential }
+
+// Disconnect implements runtime.TunnelDisconnector: signs the tsnet
+// node out of the control plane before the manager evicts the entry.
+//
+// Without this, the dashboard's Disconnect button only wipes the
+// secret store; the in-process tsnet keeps its (mkey, nkey) pair
+// resident and registered. tsnet's reconnect / key-rotation loop then
+// re-enters initMachineKeyLocked, finds the cleared store, mints a
+// fresh machine key, and tries to register the still-cached node key
+// under it — control answers 403 "bad machine key" in a tight backoff
+// loop. Logging out first deregisters the node upstream so the next
+// boot's fresh keys join a clean slate.
+func (t *tailscaleTunnelConn) Disconnect(ctx context.Context) error {
+	srv := t.srv
+	if srv == nil {
+		return nil
+	}
+	lc, err := srv.LocalClient()
+	if err != nil {
+		return fmt.Errorf("tailscale tunnel %q: local client: %w", t.name, err)
+	}
+	return lc.Logout(ctx)
+}
+
 func (t *tailscaleTunnelConn) Close() error {
 	var err error
 	t.once.Do(func() {
