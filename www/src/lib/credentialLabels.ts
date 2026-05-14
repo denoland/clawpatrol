@@ -4,6 +4,7 @@ export const CREDENTIAL_TYPE_LABEL: Record<string, string> = {
   openai_codex_oauth: "Codex",
   github_oauth: "GitHub",
   notion_oauth: "Notion",
+  notion_mcp_oauth: "Notion (MCP)",
   postgres_credential: "Postgres",
   clickhouse_credential: "ClickHouse",
   mtls_credential: "mTLS",
