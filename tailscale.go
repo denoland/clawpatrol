@@ -21,12 +21,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 
+	"tailscale.com/ipn"
 	"tailscale.com/tsnet"
 
 	"github.com/denoland/clawpatrol/config"
@@ -80,9 +83,46 @@ func openListener(cfg *config.Gateway, stateDir string) (net.Listener, error) {
 		ControlURL: cfg.ControlURL,
 		Dir:        dir,
 	}
+	if err := advertiseGatewayExitNode(s); err != nil {
+		log.Printf("tsnet: advertise exit node: %v (gateway will not appear in `tailscale exit-node list` until this is resolved; tailnet admin still has to approve the routes)", err)
+	}
 	port := cfg.Listen
 	if port == "" {
 		port = ":443"
 	}
 	return s.Listen("tcp", port)
+}
+
+// advertiseGatewayExitNode tells the embedded tsnet node to advertise
+// itself as an exit node (`0.0.0.0/0` and `::/0` subnet routes), the
+// in-process equivalent of `tailscale set --advertise-exit-node`. The
+// tailnet admin still has to approve the advertised routes in the
+// admin console before peers can select this node — advertising just
+// registers the intent.
+//
+// Wiring this here keeps `clawpatrol run` (which targets the gateway
+// via `ExitNodeIP`) symmetric with `clawpatrol gateway`: both sides
+// of the tsnet path are configured by the gateway operator's HCL,
+// no out-of-band `tailscale` CLI call needed.
+func advertiseGatewayExitNode(s *tsnet.Server) error {
+	if err := s.Start(); err != nil {
+		return fmt.Errorf("tsnet start: %w", err)
+	}
+	lc, err := s.LocalClient()
+	if err != nil {
+		return fmt.Errorf("tsnet local client: %w", err)
+	}
+	_, err = lc.EditPrefs(context.Background(), &ipn.MaskedPrefs{
+		AdvertiseRoutesSet: true,
+		Prefs: ipn.Prefs{
+			AdvertiseRoutes: []netip.Prefix{
+				netip.MustParsePrefix("0.0.0.0/0"),
+				netip.MustParsePrefix("::/0"),
+			},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("edit prefs: %w", err)
+	}
+	return nil
 }

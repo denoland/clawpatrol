@@ -31,6 +31,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -78,10 +79,15 @@ func runRun(args []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	confPath := fs.String("conf", defaultRunConf(), "path to wg conf written by `clawpatrol join`")
 	noAutoExpose := fs.Bool("no-auto-expose", false, "disable the seccomp relay that mirrors TCP listeners inside the netns back to the host")
+	tsnetAuthKey := fs.String("tsnet-authkey", os.Getenv("CLAWPATROL_RUN_TSNET_AUTHKEY"), "tailscale authkey for the embedded tsnet client (selects tsnet path; otherwise the WG `wg.conf` path is used)")
+	tsnetExitNode := fs.String("tsnet-exit-node", os.Getenv("CLAWPATROL_RUN_TSNET_EXIT_NODE"), "tailscale exit-node hostname or IP — required with --tsnet-authkey")
+	tsnetControlURL := fs.String("tsnet-control-url", os.Getenv("CLAWPATROL_RUN_TSNET_CONTROL_URL"), "override tailscale control-plane URL")
+	tsnetHostname := fs.String("tsnet-hostname", os.Getenv("CLAWPATROL_RUN_TSNET_HOSTNAME"), "tailscale hostname for the embedded tsnet client (default: clawpatrol-run-<pid>)")
+	tsnetStateDir := fs.String("tsnet-state-dir", os.Getenv("CLAWPATROL_RUN_TSNET_STATE_DIR"), "tsnet state dir (default: <clawpatrol-dir>/run-tsnet)")
 	_ = fs.Parse(args)
 	cmd := fs.Args()
 	if len(cmd) == 0 {
-		fail("usage: clawpatrol run [--conf <path>] [--no-auto-expose] -- <cmd> [args...]")
+		fail("usage: clawpatrol run [--conf <path>] [--no-auto-expose] [--tsnet-authkey KEY --tsnet-exit-node NAME-OR-IP] -- <cmd> [args...]")
 	}
 	// Honour both the flag and the env var so children re-execed by this
 	// process see the same setting without round-tripping the flag.
@@ -90,9 +96,24 @@ func runRun(args []string) {
 	}
 	autoExpose := os.Getenv(runNoAutoExposeEnv) != "1"
 
-	cfg, err := parseRunConf(*confPath)
-	if err != nil {
-		fail("conf %s: %v\n  hint: run `clawpatrol join <gw>` first", *confPath, err)
+	useTsnet := *tsnetAuthKey != ""
+	var cfg *runConf
+	if useTsnet {
+		if *tsnetExitNode == "" {
+			fail("tsnet path: --tsnet-exit-node (or CLAWPATROL_RUN_TSNET_EXIT_NODE) is required when --tsnet-authkey is set")
+		}
+		if *tsnetHostname == "" {
+			*tsnetHostname = fmt.Sprintf("clawpatrol-run-%d", os.Getpid())
+		}
+		if *tsnetStateDir == "" {
+			*tsnetStateDir = defaultTsnetStateDir()
+		}
+	} else {
+		var err error
+		cfg, err = parseRunConf(*confPath)
+		if err != nil {
+			fail("conf %s: %v\n  hint: run `clawpatrol join <gw>` first, or use the tsnet path via --tsnet-authkey", *confPath, err)
+		}
 	}
 
 	checkUserNS()
@@ -102,9 +123,12 @@ func runRun(args []string) {
 
 	// Allocate a per-run ephemeral WireGuard identity so concurrent
 	// `clawpatrol run` invocations on the same machine don't share a
-	// keypair and fight over the gateway's WG session.
-	cleanupEphemeral, _ := ephemeralPeer(cfg)
-	defer cleanupEphemeral()
+	// keypair and fight over the gateway's WG session. Only meaningful
+	// for the WG path — tsnet does its own per-node identity via Dir.
+	if !useTsnet {
+		cleanupEphemeral, _ := ephemeralPeer(cfg)
+		defer cleanupEphemeral()
+	}
 
 	// socketpair: TUN fd handoff (child→parent) via SCM_RIGHTS.
 	// pipe: parent signals child "WG is up, finish setup".
@@ -165,32 +189,69 @@ func runRun(args []string) {
 		fail("recv tun fd: %v", err)
 	}
 
-	tunDev := newRawFDTun(tunFd)
-	baseLogger := device.NewLogger(device.LogLevelError, "[clawpatrol run] ")
-	// Wrap the wireguard-go logger so the keypair-derivation failure
-	// short-circuits the watchdog poll loop — see denoland/orchid#45.
-	forceReset := make(chan struct{}, 1)
-	logger := wrapWGLogger(baseLogger, forceReset)
-	dev := device.NewDevice(tunDev, conn.NewDefaultBind(), logger)
-	if err := dev.IpcSet(buildWGIpc(cfg)); err != nil {
-		_ = child.Process.Kill()
-		fail("wg ipc: %v", err)
-	}
-	if err := dev.Up(); err != nil {
-		_ = child.Process.Kill()
-		fail("wg up: %v", err)
-	}
-	defer dev.Close()
+	// Bring the parent-side stack up around tunFd. Both branches end
+	// up writing the netns-side address line ("v4/32, v6/128") to the
+	// child via wgUpW, then closing the pipe to release the child's
+	// blocking read.
+	var addrLine string
+	if useTsnet {
+		stdLogger := log.New(os.Stderr, "[clawpatrol run tsnet] ", log.LstdFlags)
+		tsCtx, tsCancel := context.WithCancel(context.Background())
+		defer tsCancel()
+		al, cleanup, err := runTsnetParent(tsCtx, tunFd, tsnetRunOpts{
+			authKey:    *tsnetAuthKey,
+			controlURL: *tsnetControlURL,
+			hostname:   *tsnetHostname,
+			exitNode:   *tsnetExitNode,
+			stateDir:   *tsnetStateDir,
+		}, stdLogger)
+		if err != nil {
+			_ = child.Process.Kill()
+			fail("tsnet: %v", err)
+		}
+		defer cleanup()
+		addrLine = al
+	} else {
+		tunDev := newRawFDTun(tunFd)
+		baseLogger := device.NewLogger(device.LogLevelError, "[clawpatrol run] ")
+		// Wrap the wireguard-go logger so the keypair-derivation failure
+		// short-circuits the watchdog poll loop — see denoland/orchid#45.
+		forceReset := make(chan struct{}, 1)
+		logger := wrapWGLogger(baseLogger, forceReset)
+		dev := device.NewDevice(tunDev, conn.NewDefaultBind(), logger)
+		if err := dev.IpcSet(buildWGIpc(cfg)); err != nil {
+			_ = child.Process.Kill()
+			fail("wg ipc: %v", err)
+		}
+		if err := dev.Up(); err != nil {
+			_ = child.Process.Kill()
+			fail("wg up: %v", err)
+		}
+		defer dev.Close()
 
-	// Watchdog reruns the original IpcSet on a stuck handshake; that
-	// wipes the wireguard-go peer trie and triggers a fresh initiation.
-	wdCtx, wdCancel := context.WithCancel(context.Background())
-	defer wdCancel()
-	go runWGWatchdog(wdCtx, dev, baseLogger, forceReset, func() error {
-		return dev.IpcSet(buildWGIpc(cfg))
-	})
+		// Watchdog reruns the original IpcSet on a stuck handshake; that
+		// wipes the wireguard-go peer trie and triggers a fresh initiation.
+		wdCtx, wdCancel := context.WithCancel(context.Background())
+		defer wdCancel()
+		go runWGWatchdog(wdCtx, dev, baseLogger, forceReset, func() error {
+			return dev.IpcSet(buildWGIpc(cfg))
+		})
 
-	_, _ = wgUpW.Write([]byte{1})
+		addrLine = cfg.Address
+	}
+
+	// Length-prefixed payload (1 length byte + N address bytes). Empty
+	// payload means "child should fall back to env-derived addresses"
+	// — current callers always send something, but the byte stays cheap
+	// and keeps the framing simple.
+	if len(addrLine) > 255 {
+		_ = child.Process.Kill()
+		fail("addr line too long (%d bytes)", len(addrLine))
+	}
+	if _, err := wgUpW.Write(append([]byte{byte(len(addrLine))}, []byte(addrLine)...)); err != nil {
+		_ = child.Process.Kill()
+		fail("write addr to child: %v", err)
+	}
 	_ = wgUpW.Close()
 
 	// Second SCM_RIGHTS message from the child: [notify_fd, sup_sock] for
@@ -269,22 +330,35 @@ func runRunChild() {
 	// auto-expose relay fds once the netns is fully plumbed.
 	_ = unix.Close(tunFd)
 
-	one := make([]byte, 1)
-	if _, err := io.ReadFull(wgUpR, one); err != nil {
+	// Parent sends a 1-byte length followed by the address line. The
+	// fallback to wg.conf / CLAWPATROL_EPHEMERAL_ADDR only fires when
+	// the parent explicitly leaves the payload empty.
+	lenBuf := make([]byte, 1)
+	if _, err := io.ReadFull(wgUpR, lenBuf); err != nil {
 		fail("wait wg-up: %v", err)
+	}
+	var addrSource string
+	if n := int(lenBuf[0]); n > 0 {
+		buf := make([]byte, n)
+		if _, err := io.ReadFull(wgUpR, buf); err != nil {
+			fail("read addr from parent: %v", err)
+		}
+		addrSource = string(buf)
 	}
 	_ = wgUpR.Close()
 
-	cfg := mustParseRunConf(os.Getenv("CLAWPATROL_RUN_CONF"))
-	// CLAWPATROL_EPHEMERAL_ADDR overrides cfg.Address when the parent
-	// successfully registered an ephemeral WG identity for this run.
-	addrSource := cfg.Address
-	if ea := os.Getenv("CLAWPATROL_EPHEMERAL_ADDR"); ea != "" {
-		addrSource = ea
+	if addrSource == "" {
+		cfg := mustParseRunConf(os.Getenv("CLAWPATROL_RUN_CONF"))
+		// CLAWPATROL_EPHEMERAL_ADDR overrides cfg.Address when the parent
+		// successfully registered an ephemeral WG identity for this run.
+		addrSource = cfg.Address
+		if ea := os.Getenv("CLAWPATROL_EPHEMERAL_ADDR"); ea != "" {
+			addrSource = ea
+		}
 	}
 	addrs := splitWGAddresses(addrSource)
 	if len(addrs) == 0 {
-		fail("wg conf: empty Address")
+		fail("empty netns address")
 	}
 	steps := [][]string{
 		{"ip", "link", "set", "lo", "up"},
