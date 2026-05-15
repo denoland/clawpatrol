@@ -1228,15 +1228,49 @@ func exportK8s(ev *Event) *K8sAction {
 	return a
 }
 
-// exportSQL pulls the raw statement out of Event.Facets (set by
-// sqlfacet.Report). The loader re-derives verb / tables / functions
-// from the statement via SQLParser at replay time.
+// exportSQL pulls the SQL facet fields out of Event.Facets (set by
+// sqlfacet.Report). Statement is required; verb / tables / functions
+// / database are emitted when the recorded facets supply them so the
+// downloaded fixture mirrors what the dashboard renders and stays
+// self-contained for `clawpatrol test` (the loader still tolerates
+// missing facets — the SQLParser re-derives them at replay).
 func exportSQL(ev *Event) *SQLAction {
 	stmt, _ := ev.Facets["statement"].(string)
 	if stmt == "" {
 		return nil
 	}
-	return &SQLAction{Statement: stmt}
+	a := &SQLAction{Statement: stmt}
+	if v, ok := ev.Facets["verb"].(string); ok {
+		a.Verb = v
+	}
+	a.Tables = stringSliceFromFacet(ev.Facets["tables"])
+	a.Functions = stringSliceFromFacet(ev.Facets["functions"])
+	if v, ok := ev.Facets["database"].(string); ok {
+		a.Database = v
+	}
+	return a
+}
+
+// stringSliceFromFacet narrows a JSON-unmarshalled facet list into
+// []string. Event.Facets is decoded as map[string]any, so list-typed
+// facets land as []any.
+func stringSliceFromFacet(v any) []string {
+	raw, ok := v.([]any)
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, x := range raw {
+		s, ok := x.(string)
+		if !ok {
+			continue
+		}
+		out = append(out, s)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // headersToMultiValue widens the Sink's single-value header map to

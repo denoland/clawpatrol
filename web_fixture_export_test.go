@@ -200,6 +200,105 @@ profile "default" { endpoints = [pg] }
 	}
 }
 
+// SQL exporter must include verb / tables / functions / database
+// when the recorded facets supply them — the dashboard's request
+// detail view already renders these, and `clawpatrol test` fixtures
+// are supposed to be self-contained (cl-m6wv).
+func TestExporterSQLEmitsAllFacets(t *testing.T) {
+	const hcl = `
+admin_email = "x@example.com"
+credential "postgres_credential" "pg-cred" { user = "agent" }
+endpoint "postgres" "pg" {
+  host       = "pg.internal:5432"
+  database   = "postgres"
+  credential = pg-cred
+}
+profile "default" { endpoints = [pg] }
+`
+	w := &webMux{g: gatewayWithPolicy(t, hcl)}
+	// Facets shaped as if reloaded from the events table (JSON
+	// round-trip turns []string into []any).
+	ev := &Event{
+		ID: "evt-sql-facets", Mode: "pg", Family: "sql",
+		Host: "10.0.0.5", Action: "allow", Endpoint: "pg",
+		Rule: "pg-reads",
+		Facets: map[string]any{
+			"statement": "SELECT count(*) FROM users",
+			"verb":      "select",
+			"tables":    []any{"users"},
+			"functions": []any{"count"},
+			"database":  "prod",
+		},
+	}
+	rw := httptest.NewRecorder()
+	w.writeActionFixture(rw, ev)
+	if rw.Code != 200 {
+		t.Fatalf("status=%d body=%s", rw.Code, rw.Body.String())
+	}
+	var f Fixture
+	if err := json.Unmarshal(rw.Body.Bytes(), &f); err != nil {
+		t.Fatalf("reparse: %v\nbody=%s", err, rw.Body.String())
+	}
+	if f.Action.SQL == nil {
+		t.Fatal("expected sql block")
+	}
+	sql := f.Action.SQL
+	if sql.Statement != "SELECT count(*) FROM users" {
+		t.Errorf("statement=%q", sql.Statement)
+	}
+	if sql.Verb != "select" {
+		t.Errorf("verb=%q want select", sql.Verb)
+	}
+	if len(sql.Tables) != 1 || sql.Tables[0] != "users" {
+		t.Errorf("tables=%v want [users]", sql.Tables)
+	}
+	if len(sql.Functions) != 1 || sql.Functions[0] != "count" {
+		t.Errorf("functions=%v want [count]", sql.Functions)
+	}
+	if sql.Database != "prod" {
+		t.Errorf("database=%q want prod", sql.Database)
+	}
+}
+
+// Older recordings (or wire frames that never produced verb / tables
+// / functions / database) still export cleanly with only statement —
+// fixture stays additive (cl-m6wv).
+func TestExporterSQLStatementOnlyBackcompat(t *testing.T) {
+	const hcl = `
+admin_email = "x@example.com"
+credential "postgres_credential" "pg-cred" { user = "agent" }
+endpoint "postgres" "pg" {
+  host       = "pg.internal:5432"
+  database   = "postgres"
+  credential = pg-cred
+}
+profile "default" { endpoints = [pg] }
+`
+	w := &webMux{g: gatewayWithPolicy(t, hcl)}
+	ev := &Event{
+		ID: "evt-sql-bare", Mode: "pg", Family: "sql",
+		Host: "10.0.0.5", Action: "allow", Endpoint: "pg",
+		Rule:   "pg-reads",
+		Facets: map[string]any{"statement": "SELECT 1"},
+	}
+	rw := httptest.NewRecorder()
+	w.writeActionFixture(rw, ev)
+	if rw.Code != 200 {
+		t.Fatalf("status=%d body=%s", rw.Code, rw.Body.String())
+	}
+	var f Fixture
+	if err := json.Unmarshal(rw.Body.Bytes(), &f); err != nil {
+		t.Fatalf("reparse: %v\nbody=%s", err, rw.Body.String())
+	}
+	if f.Action.SQL == nil || f.Action.SQL.Statement != "SELECT 1" {
+		t.Errorf("sql=%+v want statement=SELECT 1", f.Action.SQL)
+	}
+	if f.Action.SQL.Verb != "" || len(f.Action.SQL.Tables) != 0 ||
+		len(f.Action.SQL.Functions) != 0 || f.Action.SQL.Database != "" {
+		t.Errorf("expected empty derived fields, got %+v", f.Action.SQL)
+	}
+}
+
 func TestExporterSQLRejectsMissingStatement(t *testing.T) {
 	const hcl = `
 admin_email = "x@example.com"
