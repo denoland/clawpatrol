@@ -94,12 +94,32 @@ func runJoin(args []string) {
 	wholeMachine := fs.Bool("whole-machine", false, "bring up wg-quick to route ALL host traffic through the gateway (default: persist conf only, use `clawpatrol run` for per-process routing)")
 	profile := fs.String("profile", "", "profile to assign at approval time (defaults to the gateway's default profile if the approver doesn't pick one)")
 	hostname := fs.String("hostname", "", "device name to register with the gateway (defaults to os.Hostname)")
+	tsnetAuthKey := fs.String("tsnet-authkey", "", "tailscale authkey for the embedded tsnet client (selects tsnet onboarding; one-shot, not persisted to disk)")
+	tsnetExitNode := fs.String("tsnet-exit-node", "", "tailscale exit-node hostname or IP for the embedded tsnet client (required with --tsnet-authkey)")
+	tsnetControlURL := fs.String("tsnet-control-url", "", "override tailscale control-plane URL (Headscale etc.)")
+	tsnetHostname := fs.String("tsnet-hostname", "", "tailscale hostname for the embedded tsnet client (default: clawpatrol-<os.Hostname>)")
 	_ = fs.Parse(reorderJoinArgsForFlagParse(args))
 	rest := fs.Args()
 	if len(rest) != 1 || rest[0] == "" {
-		fail("usage: clawpatrol join [--hostname NAME] [--profile NAME] [--whole-machine] <gateway-url>")
+		fail("usage: clawpatrol join [--hostname NAME] [--profile NAME] [--whole-machine] [--tsnet-authkey KEY --tsnet-exit-node NAME-OR-IP] <gateway-url>")
 	}
 	gatewayURL := rest[0]
+	if *tsnetAuthKey != "" {
+		if *wholeMachine {
+			fail("--tsnet-authkey is incompatible with --whole-machine (tsnet-mode clients reach the gateway via tailnet, not wg-quick)")
+		}
+		if *tsnetExitNode == "" {
+			fail("--tsnet-exit-node is required with --tsnet-authkey (gateway's tailnet hostname or IP)")
+		}
+		runJoinTsnet(gatewayURL, *caOut, *skipTrust, tsnetJoinOpts{
+			authKey:    *tsnetAuthKey,
+			exitNode:   *tsnetExitNode,
+			controlURL: *tsnetControlURL,
+			hostname:   *tsnetHostname,
+			clientDir:  filepath.Join(*caOut, tsnetClientDir),
+		})
+		return
+	}
 	if *wholeMachine {
 		if local, reason := isLocalGateway(gatewayURL); local {
 			fail("refusing --whole-machine join: gateway URL points at this host (%s).\n"+
@@ -141,6 +161,34 @@ func runJoin(args []string) {
 		loginArgs = append(loginArgs, "-no-trust")
 	}
 	runLogin(loginArgs)
+}
+
+// runJoinTsnet handles the tsnet branch of `clawpatrol join`. The
+// flow skips the gateway-side device-flow / WG onboard entirely —
+// tsnet clients are recognised by the gateway via tailnet identity,
+// not a registered WG peer — so this is just CA fetch + tsnet
+// validate + persist.
+func runJoinTsnet(gatewayURL, caDir string, skipTrust bool, opts tsnetJoinOpts) {
+	setup, err := preJoinFetchCA(gatewayURL, caDir)
+	if err != nil {
+		fail("ca fetch: %v", err)
+	}
+	if err := runTsnetJoin(opts); err != nil {
+		fail("tsnet join: %v", err)
+	}
+	if err := persistTsnetJoinConfig(caDir, opts); err != nil {
+		fail("persist tsnet config: %v", err)
+	}
+	finishJoinSetup(&setup, skipTrust)
+	fmt.Println("Joined tailnet via embedded tsnet client.")
+	fmt.Printf("  exit-node: %s\n", opts.exitNode)
+	fmt.Printf("  state dir: %s\n", opts.clientDir)
+	if setup.caInstalled {
+		fmt.Println("  CA installed into system trust store.")
+	} else if setup.caHint != "" {
+		fmt.Println(setup.caHint)
+	}
+	fmt.Println("Run agents via `clawpatrol run -- <cmd> [args...]`.")
 }
 
 // joinSetup carries the post-join side-effect status so the caller

@@ -21,48 +21,40 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net/netip"
 	"os"
-	"path/filepath"
-	"strings"
 
 	tstun "github.com/tailscale/wireguard-go/tun"
-	"tailscale.com/ipn"
-	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tsnet"
 )
 
 type tsnetRunOpts struct {
-	authKey    string
 	controlURL string
 	hostname   string
 	exitNode   string // hostname or IP of the gateway exit node
-	stateDir   string
+	stateDir   string // populated by `clawpatrol join`; carries node identity
 }
 
 // runTsnetParent brings up the embedded tsnet node bound to tunFd
 // (handed up from the namespaced child), points it at the operator's
 // gateway as an exit node, and returns the netns-side address line
 // (`v4/32, v6/128`) the child must `ip addr add` plus a cleanup that
-// tears tsnet down.
+// tears tsnet down. Node identity comes from opts.stateDir, which
+// `clawpatrol join` seeded with the one-shot authkey — no authkey is
+// needed at run time.
 func runTsnetParent(ctx context.Context, tunFd int, opts tsnetRunOpts, logger *log.Logger) (addrLine string, cleanup func(), err error) {
-	if opts.authKey == "" {
-		return "", nil, errors.New("tsnet: empty authkey")
-	}
 	if opts.exitNode == "" {
-		return "", nil, errors.New("tsnet: --tsnet-exit-node is required (gateway hostname or tailnet IP)")
+		return "", nil, errors.New("tsnet: empty exit-node (run `clawpatrol join --tsnet-authkey ... --tsnet-exit-node ...`)")
 	}
 	if opts.stateDir == "" {
 		return "", nil, errors.New("tsnet: empty state dir")
 	}
-	if err := os.MkdirAll(opts.stateDir, 0o700); err != nil {
-		return "", nil, fmt.Errorf("tsnet state dir: %w", err)
+	if _, err := os.Stat(opts.stateDir); err != nil {
+		return "", nil, fmt.Errorf("tsnet state dir %s: %w (run `clawpatrol join --tsnet-authkey ... --tsnet-exit-node ...` first)", opts.stateDir, err)
 	}
 
 	tunDev := newTsnetFDTun(tunFd)
 	srv := &tsnet.Server{
 		Hostname:   opts.hostname,
-		AuthKey:    opts.authKey,
 		ControlURL: opts.controlURL,
 		Dir:        opts.stateDir,
 		Tun:        tunDev,
@@ -109,63 +101,6 @@ func runTsnetParent(ctx context.Context, tunFd int, opts tsnetRunOpts, logger *l
 	addrLine = joinAddrs(parts)
 	logger.Printf("tsnet: joined as %q (%s); exit-node=%s", srv.Hostname, addrLine, opts.exitNode)
 	return addrLine, closer, nil
-}
-
-// exitNodePrefs resolves the operator's --tsnet-exit-node value to an
-// IP and packages it as a MaskedPrefs. IP literals go straight in;
-// anything else is matched (case-insensitively) against peer Hostname
-// / DNSName. We surface a clear error when the gateway isn't visible
-// yet so the operator hits a real failure ("no peer matched") rather
-// than silently routing in the clear.
-func exitNodePrefs(status *ipnstate.Status, exitNode string) (*ipn.MaskedPrefs, error) {
-	if ip, err := netip.ParseAddr(exitNode); err == nil {
-		return &ipn.MaskedPrefs{
-			ExitNodeIPSet: true,
-			Prefs:         ipn.Prefs{ExitNodeIP: ip},
-		}, nil
-	}
-	want := strings.ToLower(strings.TrimSuffix(exitNode, "."))
-	for _, p := range status.Peer {
-		if p == nil {
-			continue
-		}
-		dns := strings.ToLower(strings.TrimSuffix(p.DNSName, "."))
-		host := strings.ToLower(p.HostName)
-		// MagicDNS DNSNames look like "host.tail-xxxx.ts.net"; an
-		// operator supplying just "host" should still match.
-		if want == host || want == dns || strings.HasPrefix(dns, want+".") {
-			if len(p.TailscaleIPs) == 0 {
-				return nil, fmt.Errorf("tsnet exit-node %q matched peer but it has no tailnet IP yet", exitNode)
-			}
-			return &ipn.MaskedPrefs{
-				ExitNodeIPSet: true,
-				Prefs:         ipn.Prefs{ExitNodeIP: p.TailscaleIPs[0]},
-			}, nil
-		}
-	}
-	return nil, fmt.Errorf("tsnet exit-node %q: no peer matched (peer must be online and visible to this tailnet)", exitNode)
-}
-
-func joinAddrs(parts []string) string {
-	switch len(parts) {
-	case 0:
-		return ""
-	case 1:
-		return parts[0]
-	default:
-		out := parts[0]
-		for _, p := range parts[1:] {
-			out += ", " + p
-		}
-		return out
-	}
-}
-
-// defaultTsnetStateDir places per-run tsnet state under the user's
-// clawpatrol dir so credentials persist across `clawpatrol run`
-// invocations and the second run is a fast warm-cache join.
-func defaultTsnetStateDir() string {
-	return filepath.Join(defaultClawpatrolDir(), "run-tsnet")
 }
 
 // --- TUN adapter for tailscale's wireguard-go fork ----------------

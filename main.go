@@ -2395,10 +2395,10 @@ usage:
                   --hostname NAME        device name to register (default: os.Hostname)
                   --profile NAME         suggest a profile for the approver
                   --whole-machine        bring up wg-quick (route all traffic)
+                  --tsnet-authkey KEY    onboard via embedded tsnet client (skips wg/host-tailscale)
+                  --tsnet-exit-node NAME gateway tailnet hostname or IP (required with --tsnet-authkey)
   clawpatrol login                       onboard this machine (tailscale path)
-  clawpatrol run -- <cmd> [args...]      route one process tree through gateway (WG via wg.conf)
-                  --tsnet-authkey KEY    use embedded tsnet client instead of WG
-                  --tsnet-exit-node NAME tailscale exit-node hostname or IP (required with --tsnet-authkey)
+  clawpatrol run -- <cmd> [args...]      route one process tree through gateway
   clawpatrol status                      report install + tunnel state
   clawpatrol uninstall                   remove local join state and tunnel config
   clawpatrol env                         print shell exports for sourcing

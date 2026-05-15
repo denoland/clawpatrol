@@ -79,15 +79,10 @@ func runRun(args []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	confPath := fs.String("conf", defaultRunConf(), "path to wg conf written by `clawpatrol join`")
 	noAutoExpose := fs.Bool("no-auto-expose", false, "disable the seccomp relay that mirrors TCP listeners inside the netns back to the host")
-	tsnetAuthKey := fs.String("tsnet-authkey", os.Getenv("CLAWPATROL_RUN_TSNET_AUTHKEY"), "tailscale authkey for the embedded tsnet client (selects tsnet path; otherwise the WG `wg.conf` path is used)")
-	tsnetExitNode := fs.String("tsnet-exit-node", os.Getenv("CLAWPATROL_RUN_TSNET_EXIT_NODE"), "tailscale exit-node hostname or IP — required with --tsnet-authkey")
-	tsnetControlURL := fs.String("tsnet-control-url", os.Getenv("CLAWPATROL_RUN_TSNET_CONTROL_URL"), "override tailscale control-plane URL")
-	tsnetHostname := fs.String("tsnet-hostname", os.Getenv("CLAWPATROL_RUN_TSNET_HOSTNAME"), "tailscale hostname for the embedded tsnet client (default: clawpatrol-run-<pid>)")
-	tsnetStateDir := fs.String("tsnet-state-dir", os.Getenv("CLAWPATROL_RUN_TSNET_STATE_DIR"), "tsnet state dir (default: <clawpatrol-dir>/run-tsnet)")
 	_ = fs.Parse(args)
 	cmd := fs.Args()
 	if len(cmd) == 0 {
-		fail("usage: clawpatrol run [--conf <path>] [--no-auto-expose] [--tsnet-authkey KEY --tsnet-exit-node NAME-OR-IP] -- <cmd> [args...]")
+		fail("usage: clawpatrol run [--conf <path>] [--no-auto-expose] -- <cmd> [args...]")
 	}
 	// Honour both the flag and the env var so children re-execed by this
 	// process see the same setting without round-tripping the flag.
@@ -96,23 +91,17 @@ func runRun(args []string) {
 	}
 	autoExpose := os.Getenv(runNoAutoExposeEnv) != "1"
 
-	useTsnet := *tsnetAuthKey != ""
+	// `clawpatrol join --tsnet-authkey ...` persists node identity
+	// + exit-node config under defaultClawpatrolDir; presence of
+	// that bundle picks the tsnet path automatically. Operators
+	// that joined via the WG device-flow stay on the wg.conf path.
+	tsOpts, useTsnet := loadTsnetJoinConfig(defaultClawpatrolDir())
 	var cfg *runConf
-	if useTsnet {
-		if *tsnetExitNode == "" {
-			fail("tsnet path: --tsnet-exit-node (or CLAWPATROL_RUN_TSNET_EXIT_NODE) is required when --tsnet-authkey is set")
-		}
-		if *tsnetHostname == "" {
-			*tsnetHostname = fmt.Sprintf("clawpatrol-run-%d", os.Getpid())
-		}
-		if *tsnetStateDir == "" {
-			*tsnetStateDir = defaultTsnetStateDir()
-		}
-	} else {
+	if !useTsnet {
 		var err error
 		cfg, err = parseRunConf(*confPath)
 		if err != nil {
-			fail("conf %s: %v\n  hint: run `clawpatrol join <gw>` first, or use the tsnet path via --tsnet-authkey", *confPath, err)
+			fail("conf %s: %v\n  hint: run `clawpatrol join <gw>` first (or `clawpatrol join --tsnet-authkey KEY --tsnet-exit-node NAME <gw>` for the tsnet path)", *confPath, err)
 		}
 	}
 
@@ -124,7 +113,8 @@ func runRun(args []string) {
 	// Allocate a per-run ephemeral WireGuard identity so concurrent
 	// `clawpatrol run` invocations on the same machine don't share a
 	// keypair and fight over the gateway's WG session. Only meaningful
-	// for the WG path — tsnet does its own per-node identity via Dir.
+	// for the WG path — tsnet reuses the join-time node identity via
+	// the persisted state dir.
 	if !useTsnet {
 		cleanupEphemeral, _ := ephemeralPeer(cfg)
 		defer cleanupEphemeral()
@@ -199,11 +189,10 @@ func runRun(args []string) {
 		tsCtx, tsCancel := context.WithCancel(context.Background())
 		defer tsCancel()
 		al, cleanup, err := runTsnetParent(tsCtx, tunFd, tsnetRunOpts{
-			authKey:    *tsnetAuthKey,
-			controlURL: *tsnetControlURL,
-			hostname:   *tsnetHostname,
-			exitNode:   *tsnetExitNode,
-			stateDir:   *tsnetStateDir,
+			controlURL: tsOpts.controlURL,
+			hostname:   tsOpts.hostname,
+			exitNode:   tsOpts.exitNode,
+			stateDir:   tsOpts.clientDir,
 		}, stdLogger)
 		if err != nil {
 			_ = child.Process.Kill()
