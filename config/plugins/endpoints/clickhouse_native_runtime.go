@@ -172,41 +172,6 @@ func (ClickhouseNativeEndpointRuntime) HandleConn(ctx context.Context, ch *runti
 		return fmt.Errorf("read hello: %w", err)
 	}
 
-	// Step 1.5: when more than one clickhouse_native endpoint claims
-	// this host (per-database routing), pick the endpoint whose
-	// `database` field matches Hello.Database. Specific beats
-	// catch-all (Database == ""); the compile pass already rejected
-	// two specifics on the same database or two catch-alls on the
-	// same host, so the choice is unambiguous. The dispatcher set
-	// ch.Endpoint to one of the candidates as an initial guess; we
-	// overwrite with the protocol-correct pick so downstream wiring
-	// (credential, rules, event Endpoint name) reflects the actual
-	// claim.
-	if len(ch.Candidates) > 1 {
-		picked := pickClickhouseNativeByDatabase(ch.Candidates, hello.Database)
-		if picked == nil {
-			chEmitError(ch, "no-endpoint-for-database", hello.Database)
-			return fmt.Errorf("clickhouse_native: no endpoint on host %q claims database %q", ch.UpstreamHost, hello.Database)
-		}
-		if picked != ch.Endpoint {
-			ch.Endpoint = picked
-			pickedEp, pickedOk := picked.Body.(*ClickhouseNativeEndpoint)
-			if !pickedOk {
-				err := fmt.Errorf("clickhouse_native runtime invoked on non-native endpoint %v", picked)
-				chEmitError(ch, "wrong-endpoint-type", picked.Name)
-				return err
-			}
-			chEp = pickedEp
-			// chPickUpstream depends on the picked endpoint's Hosts
-			// (and its default port); rebuild the upstream addr.
-			upstreamAddr = chPickUpstream(ch.Endpoint.Hosts, ch.UpstreamHost, ch.DstPort, chEp.port())
-			if upstreamAddr == "" {
-				chEmitError(ch, "no-host", ch.Endpoint.Name)
-				return fmt.Errorf("clickhouse_native endpoint %q has no host", ch.Endpoint.Name)
-			}
-		}
-	}
-
 	// Step 2: resolve credential and inject. Single-credential native
 	// endpoints today; multi-credential dispatch via placeholder lands
 	// when SQL parsing does in iter 2.

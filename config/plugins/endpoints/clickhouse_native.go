@@ -44,18 +44,11 @@ import (
 // same name: when true and tls is on, the gateway skips upstream cert
 // validation. Use for self-hosted ClickHouse fronted by a private CA.
 // Default false keeps full validation against system roots.
-// Database, when set, restricts this endpoint to connections whose
-// agent-declared database (Hello.Database) equals the configured
-// value. Unset = catch-all: the endpoint claims connections to its
-// host regardless of database, which preserves the v1 single-endpoint
-// behavior. Specific beats catch-all when both are bound to the same
-// host (the dispatcher reads Hello before picking).
 type ClickhouseNativeEndpoint struct {
 	Hosts                    []string `hcl:"hosts"`
 	Port                     int      `hcl:"port,optional"`
 	TLS                      bool     `hcl:"tls,optional"`
 	AcceptInvalidCertificate bool     `hcl:"accept_invalid_certificate,optional"`
-	Database                 string   `hcl:"database,optional"`
 	Credential               string   `hcl:"credential,optional"`
 }
 
@@ -82,12 +75,6 @@ func (e *ClickhouseNativeEndpoint) EndpointHosts() []string {
 func (e *ClickhouseNativeEndpoint) EndpointCredentials() []config.CredBinding {
 	return singleBinding(e.Credential)
 }
-
-// DispatchDatabase opts the endpoint into the compile-time
-// database-routing uniqueness check (config.DatabaseRouter). The
-// runtime reads the value via the same accessor when picking among
-// candidate endpoints that share a host.
-func (e *ClickhouseNativeEndpoint) DispatchDatabase() string { return e.Database }
 
 // RequiresVIP opts the endpoint into DNS-VIP interception. The wire
 // protocol carries no SNI / Host header, so the gateway can't
@@ -159,51 +146,11 @@ func init() {
 			if e.AcceptInvalidCertificate {
 				b.SetAttributeValue("accept_invalid_certificate", cty.BoolVal(true))
 			}
-			if e.Database != "" {
-				b.SetAttributeValue("database", cty.StringVal(e.Database))
-			}
 			if e.Credential != "" {
 				config.SetIdent(b, "credential", e.Credential)
 			}
 		},
 	})
-}
-
-// pickClickhouseNativeByDatabase chooses an endpoint from a set of
-// clickhouse_native candidates whose Database fields disagree.
-// Candidates are the same-host siblings the dispatcher saw at
-// dispatch time; database is Hello.Database read from the agent's
-// session-startup packet. Precedence: a candidate whose Database
-// equals database wins; otherwise the catch-all (Database == "")
-// wins. Returns nil when the input is empty OR when there is no
-// catch-all and no specific match — the dispatcher then refuses the
-// connection rather than silently routing through an unrelated
-// endpoint. The compile pass already rejected duplicate (host,
-// Database) pairs, so the picked endpoint is unambiguous.
-func pickClickhouseNativeByDatabase(candidates []*config.CompiledEndpoint, database string) *config.CompiledEndpoint {
-	if len(candidates) == 0 {
-		return nil
-	}
-	var catchAll *config.CompiledEndpoint
-	for _, c := range candidates {
-		if c == nil {
-			continue
-		}
-		body, ok := c.Body.(*ClickhouseNativeEndpoint)
-		if !ok {
-			continue
-		}
-		if body.Database == "" {
-			if catchAll == nil {
-				catchAll = c
-			}
-			continue
-		}
-		if body.Database == database {
-			return c
-		}
-	}
-	return catchAll
 }
 
 // validateClickhouseNativeEndpoint rejects accept_invalid_certificate

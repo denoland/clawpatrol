@@ -233,15 +233,6 @@ type ConnHandle struct {
 	// SNI the client sent. nil when the dispatcher can't mint
 	// (gateway has no CA).
 	MintCert func(host string) (*tls.Certificate, error)
-	// Candidates is the full set of endpoints (same plugin type) the
-	// dispatcher saw as eligible for this connection's dst — populated
-	// only when more than one endpoint matched the host. Plugins that
-	// route by an in-band field (clickhouse_native picks among multiple
-	// endpoints on the same host by Hello.Database) use it to re-pick
-	// the right endpoint after reading the protocol's intro packet.
-	// Empty / nil means the dispatcher already settled on Endpoint and
-	// the plugin should service the connection through it directly.
-	Candidates []*config.CompiledEndpoint
 }
 
 // ApproveCallRequest is what a ConnEndpointRuntime hands to

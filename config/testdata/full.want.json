@@ -351,7 +351,6 @@
             "clickhouse-o11y.example",
             "ch-o11y.internal.example"
           ],
-          "Database": "",
           "Credential": "ch-o11y"
         },
         "family": "sql",
@@ -365,7 +364,6 @@
           "Port": 0,
           "TLS": false,
           "AcceptInvalidCertificate": false,
-          "Database": "",
           "Credential": "ch-o11y"
         },
         "family": "sql",

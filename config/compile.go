@@ -248,13 +248,6 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 		cp.Endpoints[name] = ce
 	}
 
-	// Cross-endpoint invariants. Per-endpoint Validate runs during
-	// Load (block-local); this pass enforces the rules that need to
-	// see two endpoint records side-by-side.
-	if err := validateDatabaseRouting(cp); err != nil {
-		return nil, err
-	}
-
 	// Compile rules and attach to each endpoint they target. The
 	// rule plugin owns the lowering (its CompileRule callback) so
 	// match.Matcher construction lives next to the rule's schema,
@@ -631,98 +624,6 @@ func pluginType(p *Plugin) string {
 		return ""
 	}
 	return p.Type
-}
-
-// DatabaseRouter is the optional interface an endpoint body
-// implements to opt into per-database dispatch routing. The
-// dispatcher uses DispatchDatabase to decide which endpoint claims
-// a connection when several endpoints of the same plugin type bind
-// to the same host. Implementers return their configured Database
-// string (empty == catch-all). The compile pass enforces uniqueness
-// across endpoints — see validateDatabaseRouting.
-type DatabaseRouter interface {
-	DispatchDatabase() string
-}
-
-// validateDatabaseRouting enforces uniqueness for endpoint bodies
-// that satisfy DatabaseRouter. When two endpoints of the same plugin
-// type bind to the same host, the dispatcher reads the agent-declared
-// database off the wire and picks the endpoint whose Database equals
-// it; a Database-less endpoint is the catch-all for that host.
-// Ambiguous shapes the dispatcher couldn't resolve without
-// coin-flipping are rejected here so the operator finds out at
-// policy load instead of from a connection that silently routed
-// through the wrong credential:
-//
-//   - two specifics with identical (plugin, host, Database): which
-//     credential should claim a connection to that database?
-//   - two catch-alls on the same (plugin, host): which credential
-//     should claim a connection whose database didn't match any
-//     specific?
-//
-// A specific + a catch-all on the same host is allowed — specific
-// wins.
-func validateDatabaseRouting(cp *CompiledPolicy) error {
-	if cp == nil {
-		return nil
-	}
-	// Key: pluginType + "\x00" + host + "\x00" + database. Value:
-	// the endpoint name that already claimed it. Empty Database is
-	// the catch-all slot; the same key shape catches catch-all dupes
-	// because the database segment is empty for both.
-	seen := make(map[string]string)
-	// Stable iteration so the error message is deterministic when
-	// multiple conflicts could fire — important for test goldens.
-	names := make([]string, 0, len(cp.Endpoints))
-	for n := range cp.Endpoints {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		ce := cp.Endpoints[name]
-		if ce == nil || ce.Plugin == nil {
-			continue
-		}
-		dr, ok := ce.Body.(DatabaseRouter)
-		if !ok {
-			continue
-		}
-		db := dr.DispatchDatabase()
-		for _, hp := range ce.Hosts {
-			host := normalizeRoutingHost(hp)
-			if host == "" {
-				continue
-			}
-			key := ce.Plugin.Type + "\x00" + host + "\x00" + db
-			if prior, dup := seen[key]; dup {
-				if db == "" {
-					return fmt.Errorf(
-						"endpoint %q (%s): host %q is already claimed by catch-all endpoint %q; two %s endpoints on the same host without a database field are ambiguous — give one of them `database = \"...\"`",
-						name, ce.Plugin.Type, host, prior, ce.Plugin.Type)
-				}
-				return fmt.Errorf(
-					"endpoint %q (%s): database %q on host %q is already claimed by endpoint %q; two %s endpoints can't share the same (host, database) pair",
-					name, ce.Plugin.Type, db, host, prior, ce.Plugin.Type)
-			}
-			seen[key] = name
-		}
-	}
-	return nil
-}
-
-// normalizeRoutingHost strips an optional :port suffix so the
-// dispatch-time host comparison treats `clickhouse.example:9000` and
-// `clickhouse.example` as the same host. Database routing is
-// host-scoped; the port disambiguates which protocol claims the
-// listener, not which database the connection is for.
-func normalizeRoutingHost(hp string) string {
-	if hp == "" {
-		return ""
-	}
-	if h, _, err := net.SplitHostPort(hp); err == nil {
-		return strings.ToLower(h)
-	}
-	return strings.ToLower(hp)
 }
 
 // parseKeepalive turns the HCL keepalive string into (duration,
