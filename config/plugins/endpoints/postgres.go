@@ -379,8 +379,9 @@ const maxPgMessage = 1 << 20
 
 // pgClientToServer pumps the agent's outbound message stream to the
 // upstream, inspecting Query / Parse for policy. database is the
-// session-start database (from the agent's StartupMessage) and is
-// stamped on every match.Request.Meta the matcher sees.
+// session-start database (StartupMessage `database`, or the `user`
+// fallback per pg convention) — propagated into match.Request.Database
+// on every per-Query request so rules can match on `sql.database`.
 //
 // Postgres has no in-protocol way to swap the active database for an
 // open connection — there's no `USE db` analogue, and `SET database`
@@ -523,7 +524,8 @@ func pgHandleOversizeFrame(ch *runtime.ConnHandle, upstream net.Conn, credName, 
 		Family:     "sql",
 		PeerIP:     ch.PeerIP,
 		Credential: credName,
-		Meta:       &sqlfacet.Meta{Database: database},
+		Database:   database,
+		Meta:       &sqlfacet.Meta{},
 		Truncated:  true,
 	}
 	var facets map[string]any
@@ -619,6 +621,7 @@ func pgEvaluateInfo(ch *runtime.ConnHandle, info pgInfo, credName, database stri
 		Family:     "sql",
 		PeerIP:     ch.PeerIP,
 		Credential: credName,
+		Database:   database,
 		Meta: &sqlfacet.Meta{
 			Verb:      info.Verb,
 			Tables:    info.Tables,

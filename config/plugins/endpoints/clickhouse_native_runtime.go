@@ -279,6 +279,11 @@ func chUpstreamTLSConfig(host string, acceptInvalidCert bool) *tls.Config {
 // server Hello (forwarded verbatim to the agent), captures the
 // negotiated revision, then runs agent → server through the Query /
 // Data inspector while server → agent stays a pure passthrough.
+// database is the agent-declared target database (Hello.Database) —
+// propagated into every per-Query match.Request.Database so rules
+// can match on `sql.database`. Connection-scoped state in
+// chAgentToServer rolls the value forward when an allowed `USE db`
+// switches the active database.
 func chRunSession(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream net.Conn, clientRev int, credName, database string) {
 	upstreamReader := chgoproto.NewReader(upstream)
 	negotiatedRev, err := chReadAndForwardServerHello(upstreamReader, ch.Conn, clientRev)
@@ -896,6 +901,7 @@ func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName, d
 		Family:     "sql",
 		PeerIP:     ch.PeerIP,
 		Credential: credName,
+		Database:   database,
 		Meta: &sqlfacet.Meta{
 			Verb:      info.Verb,
 			Tables:    info.Tables,

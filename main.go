@@ -1760,6 +1760,13 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			PeerIP:    pip,
 			Truncated: truncated,
 		}
+		// clickhouse_https carries the agent-declared database in
+		// `?database=` or `X-ClickHouse-Database` (query wins). Other
+		// HTTPS-family endpoints don't have a database concept; leave
+		// mreq.Database empty for them.
+		if ep.Plugin != nil && ep.Plugin.Type == "clickhouse_https" {
+			mreq.Database = endpoints.ClickhouseHTTPSDatabaseFromRequest(req)
+		}
 		fac := facet.Lookup(ep.Family)
 		if fac != nil {
 			fac.PrepareRequest(mreq)
