@@ -124,6 +124,40 @@ func (w *webMux) apiAddEphemeralPeer(rw http.ResponseWriter, r *http.Request) {
 	writeJSON(rw, map[string]string{"ip": ip, "ip6": ip6})
 }
 
+// apiEphemeralTsnetPeer handles POST /api/peer/ephemeral/tsnet.
+// Mints a single-use ephemeral Tailscale auth key for `clawpatrol run`
+// in Tailscale mode. The caller spins up a tsnet.Server per invocation
+// (no system Tailscale required). Auth: per-peer Bearer token.
+func (w *webMux) apiEphemeralTsnetPeer(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(rw, "POST", http.StatusMethodNotAllowed)
+		return
+	}
+	token := bearerFromAuthHeader(r.Header.Get("Authorization"))
+	if peerIPForAPIToken(w.g.db, token) == "" {
+		http.Error(rw, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if !isTailscaleControlMode(w.ts.Control) {
+		http.Error(rw, "not in tailscale mode", http.StatusBadRequest)
+		return
+	}
+	authKey, err := mintTailscaleAuthKey(r.Context(), w.ts, true)
+	if err != nil {
+		http.Error(rw, "mint key: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	gwHost := w.ts.Hostname
+	if gwHost == "" {
+		gwHost = "clawpatrol-gateway"
+	}
+	writeJSON(rw, map[string]string{
+		"auth_key":     authKey,
+		"control_url":  w.ts.ControlURL,
+		"gateway_host": gwHost,
+	})
+}
+
 // apiRemoveEphemeralPeer handles DELETE /api/peer/ephemeral?pubkey=<hex>.
 // Only the parent device (identified by bearer token) may remove its
 // own ephemeral peers.

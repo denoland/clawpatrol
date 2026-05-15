@@ -50,6 +50,7 @@ import (
 const (
 	runChildEnv        = "CLAWPATROL_RUN_CHILD"
 	runNoAutoExposeEnv = "CLAWPATROL_RUN_NO_AUTO_EXPOSE"
+	runTsnetChildEnv   = "CLAWPATROL_RUN_TSNET_CHILD"
 	tunIfName          = "wg0"
 	tunMTU             = 1420
 )
@@ -62,8 +63,18 @@ func runRun(args []string) {
 		runRunChild()
 		return
 	}
+	if os.Getenv(runTsnetChildEnv) == "1" {
+		runRunTsnetChild()
+		return
+	}
 
 	warnIfOnGatewayHost()
+
+	// Check for Tailscale mode — uses ephemeral tsnet instead of WireGuard.
+	if mode := strings.TrimSpace(readFileSilent(filepath.Join(defaultClawpatrolDir(), "mode"))); mode == "tailscale" {
+		runRunTsnet(args)
+		return
+	}
 
 	// `sudo clawpatrol run` is doomed on this distro: the UidMappings
 	// below collapse to `0 → 0`, and most distros refuse to put pid 0
@@ -741,16 +752,6 @@ func gatewayHTTPClient(caPath string) (*http.Client, error) {
 			TLSClientConfig: &tls.Config{RootCAs: roots},
 		},
 	}, nil
-}
-
-// readFileSilent reads a file and returns its contents as a string,
-// or empty on any error.
-func readFileSilent(path string) string {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return string(b)
 }
 
 // --- helpers ---------------------------------------------------------

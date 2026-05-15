@@ -2628,15 +2628,83 @@ func runGateway(args []string) {
 	log.Printf("gateway listening on %s, %d endpoints across %d profiles",
 		ln.Addr(), len(policy.Endpoints), len(policy.Profiles))
 
+	// In Tailscale mode, `clawpatrol run` clients prepend a HAProxy PROXY v1
+	// header carrying the original 4-tuple so we can dispatch by dst port/IP
+	// exactly like the WG promiscuous forwarder. Peek the first bytes: if the
+	// connection starts with "PROXY " use full dispatch; otherwise fall through
+	// to g.handle (direct dashboard access, curl health checks, etc.).
+	tsnetDashMux := newWebMux(g, cfg.Join(), cfg.PublicURL)
+	tsnetDashPort := portOf(cfg.InfoListen)
 	for {
 		c, err := ln.Accept()
 		if err != nil {
 			log.Printf("accept: %v", err)
 			continue
 		}
-		go g.handle(c, "")
+		go func(c net.Conn) {
+			dstIP, dstPort, conn, err := readProxyHeader(c)
+			if err != nil {
+				_ = c.Close()
+				return
+			}
+			if dstPort == 0 {
+				g.handle(conn, "")
+				return
+			}
+			switch {
+			case dstPort == 443:
+				g.handle(conn, dstIP)
+			case dstPort == 5432:
+				g.handlePostgresConn(conn, dstIP)
+			case dstPort == 53:
+				g.handleDNSTCPConn(conn, dstIP)
+			case g.dnsvip.IsVIP(dstIP):
+				g.handleVIPConn(conn, dstIP, dstPort)
+			case tsnetDashPort != 0 && int(dstPort) == tsnetDashPort:
+				_ = http.Serve(&oneShotListener{c: conn}, tsnetDashMux)
+			default:
+				if g.tryDirectIPConn(conn, dstIP, dstPort) {
+					return
+				}
+				g.wgRelay(conn, dstIP, int(dstPort))
+			}
+		}(c)
 	}
 }
+
+// readProxyHeader peeks at c for a HAProxy PROXY v1 line.
+// If "PROXY TCP4 srcIP dstIP srcPort dstPort\r\n" is present it is consumed
+// and the original dst IP/port returned. If absent, dstPort==0 and the conn
+// is returned with all peeked bytes still readable.
+func readProxyHeader(c net.Conn) (dstIP string, dstPort uint16, conn net.Conn, _ error) {
+	br := bufio.NewReaderSize(c, 128)
+	hdr, err := br.Peek(5)
+	bc := &bufferedConn{Reader: br, Conn: c}
+	if err != nil || string(hdr) != "PROXY" {
+		return "", 0, bc, nil
+	}
+	line, err := br.ReadString('\n')
+	if err != nil {
+		return "", 0, nil, fmt.Errorf("proxy header read: %w", err)
+	}
+	// "PROXY TCP4 srcIP dstIP srcPort dstPort\r\n"
+	fields := strings.Fields(strings.TrimRight(line, "\r\n"))
+	if len(fields) != 6 {
+		return "", 0, nil, fmt.Errorf("malformed proxy header: %q", line)
+	}
+	port, err := strconv.ParseUint(fields[5], 10, 16)
+	if err != nil {
+		return "", 0, nil, fmt.Errorf("proxy header port: %w", err)
+	}
+	return fields[3], uint16(port), bc, nil
+}
+
+type bufferedConn struct {
+	*bufio.Reader
+	net.Conn
+}
+
+func (b *bufferedConn) Read(p []byte) (int, error) { return b.Reader.Read(p) }
 
 func serveHTTPLogged(name, addr string, handler http.Handler) {
 	if err := http.ListenAndServe(addr, handler); err != nil {

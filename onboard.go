@@ -414,7 +414,7 @@ func newOnboarder(ts JoinConfig) Onboarder {
 type tailscaleOnboarder struct{ ts JoinConfig }
 
 func (t *tailscaleOnboarder) MintKey(ctx context.Context, _ string) (string, string, string, error) {
-	k, err := mintTailscaleAuthKey(ctx, t.ts)
+	k, err := mintTailscaleAuthKey(ctx, t.ts, false)
 	// Tailscale assigns peer IPs from the tailnet — we don't know the
 	// new device's IP at mint time, so claim happens later via /api/
 	// onboard/claim from the CLI once `tailscale up` succeeds.
@@ -422,9 +422,10 @@ func (t *tailscaleOnboarder) MintKey(ctx context.Context, _ string) (string, str
 }
 
 // mintTailscaleAuthKey calls Tailscale's OAuth + auth-key API to create
-// a single-use, non-ephemeral auth key the new client can use to join
-// the tailnet exactly once.
-func mintTailscaleAuthKey(ctx context.Context, ts JoinConfig) (string, error) {
+// a single-use auth key the new client can use to join the tailnet
+// exactly once. ephemeral controls whether the key creates an ephemeral
+// node (auto-removed when it disconnects) or a persistent one.
+func mintTailscaleAuthKey(ctx context.Context, ts JoinConfig, ephemeral bool) (string, error) {
 	clientID := resolveTemplate(ts.OAuthClientID)
 	clientSecret := resolveTemplate(ts.OAuthClientSecret)
 	if clientID == "" || clientSecret == "" {
@@ -468,7 +469,7 @@ func mintTailscaleAuthKey(ctx context.Context, ts JoinConfig) (string, error) {
 			"devices": map[string]any{
 				"create": map[string]any{
 					"reusable":      false,
-					"ephemeral":     false,
+					"ephemeral":     ephemeral,
 					"preauthorized": true,
 					"tags":          tags,
 				},
@@ -728,10 +729,21 @@ func (w *webMux) apiOnboardPoll(rw http.ResponseWriter, r *http.Request) {
 		writeJSON(rw, map[string]string{"error": "slow_down"})
 		return
 	}
-	writeJSON(rw, map[string]any{
+	resp := map[string]any{
 		"auth_key":     s.authKey,
 		"api_token":    s.apiToken,
 		"approved_by":  s.owner,
 		"login_server": s.loginServer, // empty = Tailscale Inc default
-	})
+	}
+	// In Tailscale mode include gateway_host and control_url so the
+	// client can write mode marker files for `clawpatrol run`.
+	if s.loginServer == "" {
+		gwHost := w.ts.Hostname
+		if gwHost == "" {
+			gwHost = "clawpatrol-gateway"
+		}
+		resp["gateway_host"] = gwHost
+		resp["control_url"] = w.ts.ControlURL
+	}
+	writeJSON(rw, resp)
 }

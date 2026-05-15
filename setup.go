@@ -544,6 +544,16 @@ func defaultClawpatrolDir() string {
 	return filepath.Join(home, ".clawpatrol")
 }
 
+// readFileSilent reads a file and returns its contents as a string,
+// or empty on any error.
+func readFileSilent(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
 func fail(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, "clawpatrol: "+format+"\n", a...)
 	os.Exit(2)
@@ -744,6 +754,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 
 	stopSpin := startSpinner("Waiting for approval")
 	authKey, loginServer, apiToken := "", "", ""
+	var tailnetGWHost, tailnetControlURL string
 	for time.Now().Before(deadline) {
 		time.Sleep(interval)
 		pr, err := cli.Post(gateway+"/api/onboard/poll?device_code="+start.DeviceCode, "application/json", nil)
@@ -757,6 +768,8 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 			authKey = k
 			loginServer = pv["login_server"]
 			apiToken = pv["api_token"]
+			tailnetGWHost = pv["gateway_host"]
+			tailnetControlURL = pv["control_url"]
 			break
 		}
 		if e := pv["error"]; e != "" && e != "authorization_pending" && e != "slow_down" {
@@ -920,6 +933,17 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	printTreeItems(items)
 	fmt.Println()
 	fmt.Println("Installed! Try: claude")
+
+	// Write mode marker files so `clawpatrol run` can detect Tailscale mode.
+	clawDir := filepath.Dir(setup.caPath)
+	_ = os.WriteFile(filepath.Join(clawDir, "mode"), []byte("tailscale\n"), 0o600)
+	if tailnetGWHost != "" {
+		_ = os.WriteFile(filepath.Join(clawDir, "tailnet-gateway"), []byte(tailnetGWHost+"\n"), 0o600)
+	}
+	if tailnetControlURL != "" {
+		_ = os.WriteFile(filepath.Join(clawDir, "control-url"), []byte(tailnetControlURL+"\n"), 0o600)
+	}
+
 	return false, nil
 }
 
