@@ -208,7 +208,7 @@ func TestPgClientToServerForwardsQueryMessage(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "", "")
+	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "", "", nil)
 
 	wire := serializePgMessage(pgMessage{typ: 'Q', payload: []byte("SELECT 1\x00")})
 	go func() { _, _ = agent.Write(wire) }()
@@ -231,7 +231,7 @@ func TestPgClientToServerDeniesQueryMessage(t *testing.T) {
 			Outcome: config.Outcome{Verdict: "deny", Reason: "blocked"},
 		}}},
 	}
-	go pgClientToServer(ctx, ch, upstream, "", "")
+	go pgClientToServer(ctx, ch, upstream, "", "", nil)
 
 	wire := serializePgMessage(pgMessage{typ: 'Q', payload: []byte("DROP TABLE users\x00")})
 	go func() { _, _ = agent.Write(wire) }()
@@ -250,7 +250,7 @@ func TestPgClientToServerForwardsNonInspectedMessage(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "", "")
+	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "", "", nil)
 
 	wire := serializePgMessage(pgMessage{typ: 'B', payload: []byte("portal\x00stmt\x00\x00\x00")})
 	go func() { _, _ = agent.Write(wire) }()
@@ -267,7 +267,7 @@ func TestPgClientToServerForwardsPartialFrame(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "", "")
+	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "", "", nil)
 
 	wire := serializePgMessage(pgMessage{typ: 'Q', payload: []byte("SELECT 1\x00")})
 	go func() {
@@ -288,7 +288,7 @@ func TestPgClientToServerForwardsMultipleFramesFromOneRead(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "", "")
+	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "", "", nil)
 
 	q := serializePgMessage(pgMessage{typ: 'Q', payload: []byte("SELECT 1\x00")})
 	syncMsg := serializePgMessage(pgMessage{typ: 'S'})
@@ -335,7 +335,7 @@ func TestPgClientToServerReturnsOnContextCancel(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "", "")
+		pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "", "", nil)
 	}()
 
 	cancel()
@@ -402,7 +402,7 @@ rule "default-deny" {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ch := &runtime.ConnHandle{Conn: gateway, Endpoint: ep}
-	go pgClientToServer(ctx, ch, upstream, "", "")
+	go pgClientToServer(ctx, ch, upstream, "", "", nil)
 
 	// Declare a Q frame whose length exceeds maxPgMessage. We send
 	// the header followed by a small "body" that exercises the
@@ -463,7 +463,7 @@ rule "by-credential" {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ch := &runtime.ConnHandle{Conn: gateway, Endpoint: ep}
-	go pgClientToServer(ctx, ch, upstream, "cred", "")
+	go pgClientToServer(ctx, ch, upstream, "cred", "", nil)
 
 	oversize := uint32(maxPgMessage + 8)
 	header := []byte{'Q', 0, 0, 0, 0}
@@ -645,7 +645,7 @@ func TestPgEvaluate_Audit143(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ch := denyAll(denyRule("blocked"))
-			v, _ := pgEvaluate(ch, tc.sql, "", "")
+			v, _ := pgEvaluate(ch, tc.sql, "", "", nil)
 			if v != "deny" {
 				t.Errorf("pgEvaluate(%q) verdict = %q, want deny", tc.sql, v)
 			}
@@ -670,7 +670,7 @@ func TestPgClientToServerDeniesFunctionCall(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "", "")
+	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "", "", nil)
 
 	wire := serializePgMessage(pgMessage{typ: 'F', payload: []byte{0, 0, 0, 1, 0, 0}})
 	go func() { _, _ = agent.Write(wire) }()
@@ -699,7 +699,7 @@ func TestPgEvaluateEmitsAllowOnNoMatch(t *testing.T) {
 		},
 		Emit: func(ev runtime.ConnEvent) { events = append(events, ev) },
 	}
-	if v, _ := pgEvaluate(ch, "SELECT 1", "", ""); v != "" {
+	if v, _ := pgEvaluate(ch, "SELECT 1", "", "", nil); v != "" {
 		t.Errorf("verdict %q, want empty (allow)", v)
 	}
 	if len(events) != 1 {
@@ -774,16 +774,16 @@ func TestPgEvaluateThreadsDatabaseIntoMeta(t *testing.T) {
 	}
 	ch := &runtime.ConnHandle{Endpoint: ep, Emit: func(runtime.ConnEvent) {}}
 
-	if v, _ := pgEvaluate(ch, "DELETE FROM users", "", "Prod"); v != "deny" {
+	if v, _ := pgEvaluate(ch, "DELETE FROM users", "", "Prod", nil); v != "deny" {
 		t.Errorf("DELETE on Prod verdict = %q, want deny", v)
 	}
-	if v, _ := pgEvaluate(ch, "DELETE FROM users", "", "prod"); v != "" {
+	if v, _ := pgEvaluate(ch, "DELETE FROM users", "", "prod", nil); v != "" {
 		t.Errorf("DELETE on prod (lowercase) verdict = %q, want allow", v)
 	}
-	if v, _ := pgEvaluate(ch, "DELETE FROM users", "", ""); v != "" {
+	if v, _ := pgEvaluate(ch, "DELETE FROM users", "", "", nil); v != "" {
 		t.Errorf("DELETE with empty database verdict = %q, want allow", v)
 	}
-	if v, _ := pgEvaluate(ch, "SELECT 1", "", "Prod"); v != "" {
+	if v, _ := pgEvaluate(ch, "SELECT 1", "", "Prod", nil); v != "" {
 		t.Errorf("SELECT on Prod verdict = %q, want allow (verb mismatch)", v)
 	}
 }

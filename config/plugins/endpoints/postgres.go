@@ -190,7 +190,11 @@ func (PostgresEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnH
 		return fmt.Errorf("postgres endpoint %q has no host", ch.Endpoint.Name)
 	}
 
-	// Step 1: agent's first 8 bytes — SSLRequest or StartupMessage.
+	// Step 1: agent's first 8 bytes — SSLRequest, StartupMessage, or
+	// CancelRequest. CancelRequest arrives on a brand-new TCP
+	// connection (postgres does not multiplex cancel onto the existing
+	// session); we route it to the cancel registry instead of trying
+	// to perform a startup.
 	hdr := make([]byte, 8)
 	if _, err := io.ReadFull(ch.Conn, hdr); err != nil {
 		return nil
@@ -198,12 +202,19 @@ func (PostgresEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnH
 	length := binary.BigEndian.Uint32(hdr[:4])
 	code := binary.BigEndian.Uint32(hdr[4:8])
 	var startupHead []byte
-	if length == 8 && code == sslRequestCode {
+	switch {
+	case length == pgCancelRequestLen && code == pgCancelRequestCode:
+		dial := func(network, addr string) (net.Conn, error) {
+			return ch.DialUpstream(ctx, network, addr)
+		}
+		_ = pgHandleCancelRequest(ch.Conn, pgCancelReg, dial)
+		return nil
+	case length == 8 && code == sslRequestCode:
 		if _, err := ch.Conn.Write([]byte{'N'}); err != nil {
 			return nil
 		}
 		startupHead = nil
-	} else {
+	default:
 		startupHead = hdr // actually the start of the StartupMessage
 	}
 
@@ -287,6 +298,29 @@ func (PostgresEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnH
 		pgWriteError(ch.Conn, "upstream auth: "+err.Error())
 		return err
 	}
+
+	// Mint a synthetic BackendKeyData for the agent. The upstream's
+	// real (pid, key) stays on the cancel-registry entry; the agent
+	// only ever sees the synth pair. A subsequent CancelRequest using
+	// the synth (pid, key) routes back to *this* session via the
+	// registry (parked → abort approval; not parked → forward upstream
+	// using the real key).
+	synthPID, synthKey, keyErr := pgGenerateBackendKey()
+	var entry *pgCancelEntry
+	if keyErr == nil {
+		swapped, upstreamPID, upstreamKey, ok := pgSwapBackendKeyData(postAuth, synthPID, synthKey)
+		if ok {
+			postAuth = swapped
+			entry = &pgCancelEntry{
+				upstreamAddr: upstreamAddr,
+				upstreamPID:  upstreamPID,
+				upstreamKey:  upstreamKey,
+			}
+			pgCancelReg.register(synthPID, synthKey, entry)
+			defer pgCancelReg.unregister(synthPID, synthKey)
+		}
+	}
+
 	if err := pgWriteAuthOK(ch.Conn, postAuth); err != nil {
 		return nil
 	}
@@ -303,7 +337,7 @@ func (PostgresEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnH
 	}()
 	go func() {
 		defer func() { done <- struct{}{} }()
-		pgClientToServer(ctx, ch, upstream, credName, database)
+		pgClientToServer(ctx, ch, upstream, credName, database, entry)
 	}()
 	<-done
 	return nil
@@ -393,7 +427,7 @@ const maxPgMessage = 1 << 20
 // the new database. From this gateway's vantage that arrives as a
 // new ConnHandle, so the session-start value remains authoritative
 // for every Query / Parse frame on this connection.
-func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.Conn, credName, database string) {
+func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.Conn, credName, database string, cancelEntry *pgCancelEntry) {
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -447,7 +481,7 @@ func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.
 				if msg.typ == 'Q' || msg.typ == 'P' {
 					sql := pgExtractSQL(msg.typ, msg.payload)
 					if sql != "" {
-						verdict, reason := pgEvaluate(ch, sql, credName, database)
+						verdict, reason := pgEvaluate(ch, sql, credName, database, cancelEntry)
 						if verdict == "deny" {
 							pgWriteDeny(ch.Conn, reason)
 							log.Printf("pg-deny %s: %s", ch.PeerIP, reason)
@@ -596,14 +630,14 @@ func pgHandleOversizeFrame(ch *runtime.ConnHandle, upstream net.Conn, credName, 
 //
 //	("deny", reason) — first sub-statement to deny short-circuits.
 //	("", "")         — every sub-statement allowed or had no match.
-func pgEvaluate(ch *runtime.ConnHandle, sql, credName, database string) (string, string) {
+func pgEvaluate(ch *runtime.ConnHandle, sql, credName, database string, cancelEntry *pgCancelEntry) (string, string) {
 	for _, stmt := range analyseAll(sql) {
-		v, reason := pgEvaluateInfo(ch, stmt.Outer, credName, database, false)
+		v, reason := pgEvaluateInfo(ch, stmt.Outer, credName, database, false, cancelEntry)
 		if v == "deny" {
 			return v, reason
 		}
 		for _, inner := range stmt.Inner {
-			v, reason := pgEvaluateInfo(ch, inner, credName, database, true)
+			v, reason := pgEvaluateInfo(ch, inner, credName, database, true, cancelEntry)
 			if v == "deny" {
 				return v, reason
 			}
@@ -616,7 +650,7 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName, database string) (string,
 // suppresses emission on allow / hitl_allow so synthesised
 // sub-statements don't pollute the dashboard; deny emissions still
 // fire either way (operators need to see *why* a batch was denied).
-func pgEvaluateInfo(ch *runtime.ConnHandle, info pgInfo, credName, database string, shadow bool) (string, string) {
+func pgEvaluateInfo(ch *runtime.ConnHandle, info pgInfo, credName, database string, shadow bool, cancelEntry *pgCancelEntry) (string, string) {
 	summary := pgSummary(info)
 	mreq := &match.Request{
 		Family:     "sql",
@@ -668,13 +702,30 @@ func pgEvaluateInfo(ch *runtime.ConnHandle, info pgInfo, credName, database stri
 			})
 			return "deny", "approval required but HITL is not configured"
 		}
+		var parkCancel chan struct{}
+		if cancelEntry != nil {
+			parkCancel = make(chan struct{})
+			cancelEntry.markParked(parkCancel)
+		}
 		v := ch.Approve(runtime.ApproveCallRequest{
 			Stages: cr.Outcome.Approve, Verb: info.Verb,
 			Summary: summary, Rule: cr,
+			Cancel: parkCancel,
 		})
-		if v.Decision != "allow" {
+		canceled := false
+		if cancelEntry != nil {
+			cancelEntry.markUnparked()
+			select {
+			case <-parkCancel:
+				canceled = true
+			default:
+			}
+		}
+		if canceled || v.Decision != "allow" {
 			reason := v.Reason
-			if reason == "" {
+			if canceled {
+				reason = "canceled by agent"
+			} else if reason == "" {
 				reason = "denied by approver"
 			}
 			emit(ch, runtime.ConnEvent{

@@ -1367,7 +1367,9 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 			})
 		},
 		Approve: func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
-			return g.runApproveChain(context.Background(), req.Stages, runApproveCtx{
+			ctx, cancel := approveCancelCtx(req.Cancel)
+			defer cancel()
+			return g.runApproveChain(ctx, req.Stages, runApproveCtx{
 				AgentIP: agentPip, Host: dstIP, Method: req.Verb, Path: req.Summary,
 				Reason:   ifNotEmpty(req.Rule, func(r *config.CompiledRule) string { return r.Outcome.Reason }),
 				Endpoint: ep, Rule: req.Rule, Profile: profile,
@@ -1603,7 +1605,9 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 		},
 		Approve: func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
 			cep := currentEP()
-			return g.runApproveChain(context.Background(), req.Stages, runApproveCtx{
+			ctx, cancel := approveCancelCtx(req.Cancel)
+			defer cancel()
+			return g.runApproveChain(ctx, req.Stages, runApproveCtx{
 				AgentIP: agentPip, Host: eventHost, Method: req.Verb, Path: req.Summary,
 				Reason:   ifNotEmpty(req.Rule, func(r *config.CompiledRule) string { return r.Outcome.Reason }),
 				Endpoint: cep, Rule: req.Rule, Profile: profile,
@@ -2277,6 +2281,28 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 		}
 	}
 	return runtime.ApproveVerdict{Decision: "allow"}
+}
+
+// approveCancelCtx derives an approval-chain context that fires when
+// the endpoint plugin closes its Cancel channel. Plugins use it to
+// abort a parked approval in response to an agent-issued cancel (a
+// postgres CancelRequest on a separate connection, a clickhouse_native
+// ClientCancel packet read off the agent socket). cancel must be
+// invoked when the chain returns so the watcher goroutine exits even
+// when the channel is never closed.
+func approveCancelCtx(cancelCh <-chan struct{}) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	if cancelCh == nil {
+		return ctx, cancel
+	}
+	go func() {
+		select {
+		case <-cancelCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
 }
 
 // ifNotEmpty returns f(v) when v != nil, else "".
