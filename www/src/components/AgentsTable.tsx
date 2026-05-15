@@ -4,37 +4,27 @@ import type { Agent, Integration } from "../lib/api";
 import { fmtBytes } from "../lib/format";
 import { DeviceIcon } from "./Logos";
 import { Sparkline } from "./Sparkline";
-import { IntegrationStack } from "./IntegrationStack";
 
 export function AgentsTable({
   agents,
   integrations,
   onSelect,
-  onConnectCredential,
 }: {
   agents: Agent[];
   integrations?: Integration[];
   onSelect?: (ip: string) => void;
-  // Called when the operator clicks an unconfigured credential pill on
-  // an agent's row. The parent navigates to the device page with the
-  // connect flow pre-armed for that credential.
-  onConnectCredential?: (ip: string, id: string) => void;
 }) {
-  // id → Integration lookup so the icon stack can pick the right
-  // logo per credential type (postgres/slack/etc, not just the
-  // hardcoded claude/codex/github trio).
   const byId = new Map<string, Integration>();
   for (const i of integrations ?? []) byId.set(i.id, i);
   const stable = [...(agents ?? [])].sort((a, b) => a.ip.localeCompare(b.ip));
   return (
-    <table className="w-full table-fixed border-collapse" style={{ minWidth: 760 }}>
+    <table className="w-full table-fixed border-collapse" style={{ minWidth: 650 }}>
       <colgroup>
         <col style={{ width: 240 }} />
         <col style={{ width: 140 }} />
         <col style={{ width: 200 }} />
         <col style={{ width: 60 }} />
         <col />
-        <col style={{ width: 110 }} />
       </colgroup>
       <thead className="bg-navy-100 border-b border-navy">
         <tr>
@@ -43,19 +33,23 @@ export function AgentsTable({
           <Th>Activity</Th>
           <Th className="text-right">Reqs</Th>
           <Th className="hidden lg:table-cell">IP</Th>
-          <Th>Integrations</Th>
         </tr>
       </thead>
       <tbody>
         {stable.length === 0 && (
           <tr>
-            <td colSpan={6} className="px-5 py-8 text-center text-xs text-text-subtle">
+            <td colSpan={5} className="px-5 py-8 text-center text-xs text-text-subtle">
               It's empty in here
             </td>
           </tr>
         )}
         {stable.map((a) => {
           const total = a.bytes_in + a.bytes_out;
+          const needs = (a.integrations ?? []).filter((id) => needsAction(byId.get(id)));
+          const flagged = needs.length > 0;
+          const dotTitle = flagged
+            ? `${needs.length} integration${needs.length === 1 ? "" : "s"} need setup: ${needs.join(", ")}`
+            : "";
           return (
             <tr
               key={a.ip}
@@ -64,7 +58,13 @@ export function AgentsTable({
             >
               <Td>
                 <div className="flex items-center gap-1.5 min-w-0">
-                  <span className="w-[5px] h-[5px] rounded-full bg-success-500 shrink-0" />
+                  <span
+                    title={dotTitle}
+                    className={
+                      "w-[5px] h-[5px] rounded-full shrink-0 " +
+                      (flagged ? "bg-danger-500" : "bg-success-500")
+                    }
+                  />
                   <DeviceIcon
                     os={a.os}
                     hostname={a.hostname}
@@ -99,22 +99,6 @@ export function AgentsTable({
               >
                 {a.external_ipv4 || a.external_ipv6 || a.ip}
               </Td>
-              <Td>
-                <IntegrationStack
-                  items={(a.integrations ?? []).map((id) => {
-                    const it = byId.get(id);
-                    return {
-                      id,
-                      type: it?.type,
-                      avatar_url: it?.avatar_url,
-                      needsAction: needsAction(it),
-                    };
-                  })}
-                  onItemClick={
-                    onConnectCredential ? (id) => onConnectCredential(a.ip, id) : undefined
-                  }
-                />
-              </Td>
             </tr>
           );
         })}
@@ -124,8 +108,7 @@ export function AgentsTable({
 }
 
 // needsAction returns true when a declared credential is missing its
-// secret (not connected) or its OAuth token has already expired. The
-// dashboard flags these with a red ring + click-to-configure handler.
+// secret (not connected) or its OAuth token has already expired.
 // Credentials with no auth path (the rare "api key only" inert case)
 // don't qualify — there's nothing actionable to do.
 function needsAction(it: Integration | undefined): boolean {
