@@ -232,7 +232,7 @@ func parseCredentialList(raw cty.Value, blockRange hcl.Range) ([]CredentialEntry
 			} else {
 				diags = append(diags, &hcl.Diagnostic{
 					Severity: hcl.DiagError,
-					Summary:  fmt.Sprintf("duplicate credentials dispatch constraint %s", sig),
+					Summary:  fmt.Sprintf("duplicate credentials dispatch constraint: %s", credentialEntryHumanSig(e)),
 					Detail:   "Two entries with the same (placeholder, databases) constraint claim the same requests.",
 					Subject:  &blockRange,
 				})
@@ -241,6 +241,30 @@ func parseCredentialList(raw cty.Value, blockRange hcl.Range) ([]CredentialEntry
 		seen[sig] = true
 	}
 	return out, diags
+}
+
+// credentialEntryHumanSig formats a credential entry's constraint
+// set for diagnostics. Mirrors the HCL the operator would have
+// typed: e.g. `placeholder = "PH_ro", database = "prod"` for a
+// two-constraint entry, or `databases = ["dev","qa"]` for a list.
+func credentialEntryHumanSig(e CredentialEntry) string {
+	var parts []string
+	if e.Placeholder != "" {
+		parts = append(parts, fmt.Sprintf("placeholder = %q", e.Placeholder))
+	}
+	switch len(e.Databases) {
+	case 0:
+		// nothing
+	case 1:
+		parts = append(parts, fmt.Sprintf("database = %q", e.Databases[0]))
+	default:
+		quoted := make([]string, len(e.Databases))
+		for i, d := range e.Databases {
+			quoted[i] = fmt.Sprintf("%q", d)
+		}
+		parts = append(parts, fmt.Sprintf("databases = [%s]", strings.Join(quoted, ", ")))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // credentialEntrySignature is the constraint key used to detect
