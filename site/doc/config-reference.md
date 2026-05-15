@@ -471,7 +471,6 @@ Family: `sql`.
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `host` | `string` | yes |  |
-| `database` | `string` | yes |  |
 | `sslmode` | `string` | no |  |
 | `credential` | `ref(credential)` | no |  |
 | `credentials` | `[]credential` | no |  |
@@ -479,7 +478,6 @@ Family: `sql`.
 ```hcl
 endpoint "postgres" "example" {
   host = "db.internal:5432"
-  database = "appdb"
 }
 ```
 

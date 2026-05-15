@@ -171,7 +171,6 @@ admin_email = "x@example.com"
 credential "postgres_credential" "pg-cred" { user = "agent" }
 endpoint "postgres" "pg" {
   host       = "pg.internal:5432"
-  database   = "postgres"
   credential = pg-cred
 }
 profile "default" { endpoints = [pg] }
@@ -206,7 +205,6 @@ admin_email = "x@example.com"
 credential "postgres_credential" "pg-cred" { user = "agent" }
 endpoint "postgres" "pg" {
   host       = "pg.internal:5432"
-  database   = "postgres"
   credential = pg-cred
 }
 profile "default" { endpoints = [pg] }

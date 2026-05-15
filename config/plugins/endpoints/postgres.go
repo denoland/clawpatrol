@@ -8,7 +8,6 @@ package endpoints
 //
 //   endpoint "postgres" "writer" {
 //     host       = "db.example.com:5432"
-//     database   = "postgres"
 //     sslmode    = "prefer"        // disable | prefer | require | verify-full
 //     credential = pg-writer-cred
 //   }
@@ -70,7 +69,6 @@ import (
 // encrypts the path.
 type PostgresEndpoint struct {
 	Host           string    `hcl:"host"`
-	Database       string    `hcl:"database"`
 	SSLMode        string    `hcl:"sslmode,optional"`
 	Credential     string    `hcl:"credential,optional"`
 	CredentialsRaw cty.Value `hcl:"credentials,optional" json:"-"`
@@ -152,7 +150,6 @@ func init() {
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			e := body.(*PostgresEndpoint)
 			b.SetAttributeValue("host", cty.StringVal(e.Host))
-			b.SetAttributeValue("database", cty.StringVal(e.Database))
 			emitCredentialBinding(b, e.Credential, e.Credentials, "placeholder")
 		},
 	})

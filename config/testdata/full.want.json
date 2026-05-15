@@ -549,7 +549,6 @@
       "pg-corp": {
         "body": {
           "Host": "corp-prod.cluster.example:5432",
-          "Database": "corp",
           "SSLMode": "",
           "Credential": "",
           "Credentials": [
@@ -569,7 +568,6 @@
       "pg-scheduler": {
         "body": {
           "Host": "scheduler-prod.cluster.example:5432",
-          "Database": "scheduler",
           "SSLMode": "",
           "Credential": "pg-scheduler-cred"
         },

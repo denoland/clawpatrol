@@ -7,7 +7,6 @@ endpoint "https" "github" {
 }
 endpoint "postgres" "db" {
   host       = "db.example.com:5432"
-  database   = "app"
   credential = pg
 }
 

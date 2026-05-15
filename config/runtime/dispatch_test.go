@@ -174,8 +174,7 @@ profile "default" { endpoints = [api] }
 func TestHostEndpointDoesNotAliasNonHTTPFamilies(t *testing.T) {
 	cp := compileFixture(t, `
 endpoint "postgres" "db" {
-  host     = "db.example.com:5432"
-  database = "app"
+  host = "db.example.com:5432"
 }
 profile "default" { endpoints = [db] }
 `)
@@ -194,8 +193,7 @@ endpoint "https" "api" {
   hosts = ["api.example.com:443"]
 }
 endpoint "postgres" "db" {
-  host     = "api.example.com:443"
-  database = "app"
+  host = "api.example.com:443"
 }
 profile "default" { endpoints = [api, db] }
 `)
@@ -249,8 +247,7 @@ func TestMatchRequest(t *testing.T) {
 func TestMatchRequestTruncated(t *testing.T) {
 	cp := compileFixture(t, `
 endpoint "postgres" "db" {
-  host     = "db.example.com:5432"
-  database = "app"
+  host = "db.example.com:5432"
 }
 profile "default" { endpoints = [db] }
 

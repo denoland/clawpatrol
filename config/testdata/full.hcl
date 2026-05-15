@@ -677,8 +677,7 @@ endpoint "https" "orb" {
 # Postgres. Network reachability is arranged out-of-band; tunnel
 # topology declarations land when the postgres runtime hooks ship.
 endpoint "postgres" "pg-corp" {
-  host     = "corp-prod.cluster.example:5432"
-  database = "corp"
+  host = "corp-prod.cluster.example:5432"
   # ro/rw dispatch via placeholder. Ro is the default for reads;
   # rw requires explicit selection AND human approval (see rules).
   credentials = [
@@ -688,7 +687,6 @@ endpoint "postgres" "pg-corp" {
 }
 endpoint "postgres" "pg-scheduler" {
   host       = "scheduler-prod.cluster.example:5432"
-  database   = "scheduler"
   credential = pg-scheduler-cred
 }
 

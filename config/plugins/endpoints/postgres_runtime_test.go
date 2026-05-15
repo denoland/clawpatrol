@@ -379,8 +379,7 @@ func pgEndpointFromHCL(t *testing.T, src string) *config.CompiledEndpoint {
 func TestPgClientToServerDeniesOversizeFrameWhenRuleReadsTruncatableFacet(t *testing.T) {
 	ep := pgEndpointFromHCL(t, `
 endpoint "postgres" "db" {
-  host     = "db.example.com:5432"
-  database = "app"
+  host = "db.example.com:5432"
 }
 profile "default" { endpoints = [db] }
 
@@ -445,7 +444,6 @@ func TestPgClientToServerForwardsOversizeFrameWhenNoRuleReadsTruncatableFacet(t 
 credential "bearer_token" "cred" {}
 endpoint "postgres" "db" {
   host       = "db.example.com:5432"
-  database   = "app"
   credential = cred
 }
 profile "default" { endpoints = [db] }
