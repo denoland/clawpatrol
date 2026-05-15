@@ -215,6 +215,9 @@ func emitOne(body *hclwrite.Body, p *Policy, kind Kind, name string) bool {
 		if len(pr.Endpoints) > 0 {
 			SetIdentList(b, "endpoints", pr.Endpoints)
 		}
+		if pr.HITLAsyncGrants {
+			b.SetAttributeValue("hitl_async_grants", cty.True)
+		}
 	default:
 		return false
 	}

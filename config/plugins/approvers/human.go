@@ -35,6 +35,13 @@ type HumanApprover struct {
 	Credential       string `hcl:"credential,optional"`
 	Timeout          int    `hcl:"timeout,optional"`
 	RequireApprovers int    `hcl:"require_approvers,optional"`
+	// SyncWaitTimeout is the HTTP hold budget before an async-capable
+	// HITL request returns 202 and moves to polling/retry-grant mode.
+	SyncWaitTimeout string `hcl:"sync_wait_timeout,optional" json:"sync_wait_timeout,omitempty"`
+	// AsyncGrant configures v1 HITL async retry grants for this approver.
+	// The nested block must set enabled = true, and the active profile must
+	// also set hitl_async_grants = true, before async behavior is effective.
+	AsyncGrant *config.HITLAsyncGrantConfig `hcl:"async_grant,block" json:"async_grant,omitempty"`
 	// Interactive toggles in-channel approve/deny buttons. Requires the
 	// referenced credential's signing_secret slot pasted via the
 	// dashboard AND Slack's Interactivity URL pointed at the gateway.
@@ -66,6 +73,42 @@ func (h *HumanApprover) HumanApproverCredential() string { return h.Credential }
 
 // HumanApproverInteractive is part of the clawpatrol plugin API.
 func (h *HumanApprover) HumanApproverInteractive() bool { return h.Interactive }
+
+// HITLAsyncGrantEnabled exposes the async opt-in to config-level cross validation.
+func (h *HumanApprover) HITLAsyncGrantEnabled() bool {
+	return h != nil && h.AsyncGrant != nil && h.AsyncGrant.Enabled
+}
+
+// HITLSyncWaitTimeout returns the parsed synchronous hold budget.
+func (h *HumanApprover) HITLSyncWaitTimeout() time.Duration {
+	if h == nil || h.SyncWaitTimeout == "" {
+		return 0
+	}
+	d, _ := time.ParseDuration(h.SyncWaitTimeout)
+	return d
+}
+
+// HITLAsyncApprovalTTL returns the async pending approval lifetime.
+func (h *HumanApprover) HITLAsyncApprovalTTL() time.Duration {
+	d, _ := h.AsyncGrant.ApprovalTTLDuration()
+	return d
+}
+
+// HITLAsyncApprovedRetryTTL returns the post-approval retry grant lifetime.
+func (h *HumanApprover) HITLAsyncApprovedRetryTTL() time.Duration {
+	d, _ := h.AsyncGrant.ApprovedRetryTTLDuration()
+	return d
+}
+
+// HITLAsyncMaxBodyBytes returns the raw-body fingerprinting size limit.
+func (h *HumanApprover) HITLAsyncMaxBodyBytes() int64 {
+	return h.AsyncGrant.MaxBodyBytesValue()
+}
+
+// HITLAsyncFingerprintBody returns the v1 request fingerprint mode.
+func (h *HumanApprover) HITLAsyncFingerprintBody() string {
+	return h.AsyncGrant.FingerprintBodyValue()
+}
 
 // Approve is part of the clawpatrol plugin API.
 func (h *HumanApprover) Approve(ctx context.Context, req runtime.ApproveRequest) (runtime.ApproveVerdict, error) {
@@ -168,6 +211,10 @@ func init() {
 			{Path: "Credential", Kind: config.KindCredential, Optional: true},
 			{Path: "Classifier", Kind: config.KindApprover, Optional: true},
 		},
+		Validate: func(d any, name string, _ *config.BuildCtx) hcl.Diagnostics {
+			a := d.(*HumanApprover)
+			return config.ValidateHITLAsyncGrant(name, a.SyncWaitTimeout, a.AsyncGrant)
+		},
 		Build: func(d any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics) { return d, nil },
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			a := body.(*HumanApprover)
@@ -180,6 +227,27 @@ func init() {
 			}
 			if a.RequireApprovers != 0 {
 				b.SetAttributeValue("require_approvers", cty.NumberIntVal(int64(a.RequireApprovers)))
+			}
+			if a.SyncWaitTimeout != "" {
+				b.SetAttributeValue("sync_wait_timeout", cty.StringVal(a.SyncWaitTimeout))
+			}
+			if a.AsyncGrant != nil {
+				ag := b.AppendNewBlock("async_grant", nil).Body()
+				if a.AsyncGrant.Enabled {
+					ag.SetAttributeValue("enabled", cty.True)
+				}
+				if a.AsyncGrant.ApprovalTTL != "" {
+					ag.SetAttributeValue("approval_ttl", cty.StringVal(a.AsyncGrant.ApprovalTTL))
+				}
+				if a.AsyncGrant.ApprovedRetryTTL != "" {
+					ag.SetAttributeValue("approved_retry_ttl", cty.StringVal(a.AsyncGrant.ApprovedRetryTTL))
+				}
+				if a.AsyncGrant.FingerprintBody != "" {
+					ag.SetAttributeValue("fingerprint_body", cty.StringVal(a.AsyncGrant.FingerprintBody))
+				}
+				if a.AsyncGrant.MaxBodyBytes != nil {
+					ag.SetAttributeValue("max_body_bytes", cty.NumberIntVal(int64(*a.AsyncGrant.MaxBodyBytes)))
+				}
 			}
 			if a.Interactive {
 				b.SetAttributeValue("interactive", cty.True)

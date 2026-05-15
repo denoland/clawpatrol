@@ -54,9 +54,10 @@ type CompiledPolicy struct {
 // lookup. CompiledEndpoint.Hosts keeps the operator-declared strings
 // unchanged.
 type CompiledProfile struct {
-	Name      string
-	Endpoints map[string]*CompiledEndpoint
-	HostIndex map[string]*CompiledEndpoint
+	Name            string
+	Endpoints       map[string]*CompiledEndpoint
+	HostIndex       map[string]*CompiledEndpoint
+	HITLAsyncGrants bool
 }
 
 // CompiledEndpoint flattens an endpoint plus the rules that target it.
@@ -292,9 +293,10 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 	// don't fork per profile.
 	for name, pr := range p.Profiles {
 		profile := &CompiledProfile{
-			Name:      name,
-			Endpoints: map[string]*CompiledEndpoint{},
-			HostIndex: map[string]*CompiledEndpoint{},
+			Name:            name,
+			Endpoints:       map[string]*CompiledEndpoint{},
+			HostIndex:       map[string]*CompiledEndpoint{},
+			HITLAsyncGrants: pr.HITLAsyncGrants,
 		}
 		for _, epName := range pr.Endpoints {
 			ce, ok := cp.Endpoints[epName]

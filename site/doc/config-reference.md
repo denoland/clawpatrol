@@ -28,7 +28,7 @@ Every singleton gateway attribute — listen addresses, paths, control-plane joi
 |-----------|------|----------|-------------|
 | `listen` | `string` | no |  |
 | `info_listen` | `string` | no |  |
-| `public_url` | `string` | no |  |
+| `public_url` | `string` | no | The canonical externally reachable gateway URL used for generated control-plane links such as WireGuard join targets and async HITL status URLs. Runtime code normalizes away trailing slashes. |
 | `admin_email` | `string` | no |  |
 | `state_dir` | `string` | no | The directory holding clawpatrol.db (and anything else a plugin persists to disk under it). Defaults to ${HOME}/.clawpatrol when unset. |
 | `resolver` | `string` | no |  |
@@ -80,10 +80,12 @@ Names a set of endpoints. Profiles bind to dashboard owners; an owner's profile 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `endpoints` | `[]ref(endpoint)` | yes | Bare-name endpoint references included in this profile. |
+| `hitl_async_grants` | `bool` | no | Explicit opt-in for agent-aware async HITL retry grants on this profile. Async behavior still also requires an approver with `async_grant.enabled = true`. |
 
 ```hcl
 profile "default" {
-  endpoints = [github, postgres-prod]
+  endpoints          = [github, postgres-prod]
+  hitl_async_grants = true
 }
 ```
 
@@ -109,9 +111,25 @@ operator clicks approve/deny on the dashboard).
 | `credential` | `ref(credential)` | no |  |
 | `timeout` | `int` | no |  |
 | `require_approvers` | `int` | no |  |
+| `sync_wait_timeout` | `string` | no | The HTTP hold budget before an async-capable HITL request returns 202 and moves to polling/retry-grant mode. |
+| `async_grant` | `block` | no | Configures v1 HITL async retry grants for this approver. The nested block must set enabled = true, and the active profile must also set hitl_async_grants = true, before async behavior is effective. |
 | `interactive` | `bool` | no | Toggles in-channel approve/deny buttons. Requires the referenced credential's signing_secret slot pasted via the dashboard AND Slack's Interactivity URL pointed at the gateway. Default false: message includes only an "Open dashboard" link. |
 | `classifier` | `ref(approver)` | no | Optionally references an llm_approver by name. When set, the approver calls the classifier's Summarize method before posting the HITL notification, enriching the Slack card with classification metadata. Classifier failures are non-fatal — the generic card is used as fallback. |
 | `message` | `string` | no | An optional Go-template-style string with {{var}} placeholders. When set, the expanded text replaces the default section body in the Slack (or other notifier) card. Supported vars mirror the CEL facet namespace: {{http.method}}, {{http.path}}, {{k8s.verb}}, {{sql.tables}}, {{body_json.ticket}}, {{profile}}, {{endpoint}}, {{reason}}, etc. Classifier (if also set) still runs; Message takes display precedence. |
+
+**Nested block `async_grant {}`:**
+
+The optional nested `async_grant { ... }`
+block shared by async-capable HITL approvers. It is schema-only here;
+runtime execution lives in the gateway and endpoint layers.
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `enabled` | `bool` | no | Explicitly opts this approver into async retry-grant mode. The active profile must also set hitl_async_grants = true. |
+| `approval_ttl` | `string` | no | Human approval lifetime after the original sync wait falls back to a 202 response. |
+| `approved_retry_ttl` | `string` | no | Post-approval retry grant lifetime for the client to retry. |
+| `fingerprint_body` | `string` | no | Request-body fingerprinting mode. V1 supports only "raw". |
+| `max_body_bytes` | `int` | no | Maximum request body size eligible for async raw-body fingerprinting. |
 
 ```hcl
 approver "human_approver" "example" {
