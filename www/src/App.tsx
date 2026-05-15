@@ -14,18 +14,14 @@ import { getState, type Agent, type Integration, type UpdateBanner, type Whoami 
 
 type Route =
   | { name: "main" }
-  | { name: "device"; ip: string; connect?: string }
+  | { name: "device"; ip: string }
   | { name: "analytics"; ip?: string }
   | { name: "onboard"; code: string }
   | { name: "request"; id: string }
   | { name: "settings" };
 
 function parseRoute(): Route {
-  // Strip query string before matching routes.
-  const raw = window.location.hash;
-  const qi = raw.indexOf("?");
-  const h = qi < 0 ? raw : raw.slice(0, qi);
-  const params = qi >= 0 ? new URLSearchParams(raw.slice(qi + 1)) : null;
+  const h = window.location.hash;
   if (h.startsWith("#/onboard/"))
     return {
       name: "onboard",
@@ -41,12 +37,7 @@ function parseRoute(): Route {
   const da = h.match(/^#\/device\/([^/]+)\/analytics$/);
   if (da) return { name: "analytics", ip: decodeURIComponent(da[1]) };
   const m = h.match(/^#\/device\/([^/]+)$/);
-  if (m)
-    return {
-      name: "device",
-      ip: decodeURIComponent(m[1]),
-      connect: params?.get("connect") ?? undefined,
-    };
+  if (m) return { name: "device", ip: decodeURIComponent(m[1]) };
   return { name: "main" };
 }
 
@@ -102,11 +93,6 @@ export default function App() {
                 agents={agents}
                 integrations={integrations}
                 onSelect={(ip) => navigate("#/device/" + encodeURIComponent(ip))}
-                onConnectCredential={(ip, id) =>
-                  navigate(
-                    "#/device/" + encodeURIComponent(ip) + "?connect=" + encodeURIComponent(id),
-                  )
-                }
               />
             </div>
           </section>
@@ -133,13 +119,6 @@ export default function App() {
           onBack={() => navigate("")}
           onConnect={(id) => setConnectId(id)}
           onRefresh={refresh}
-          pendingConnect={route.connect}
-          onConsumePendingConnect={() => {
-            // Drop the ?connect= once the device page has acted on it
-            // so a reload doesn't reopen the modal.
-            window.history.replaceState(null, "", "#/device/" + encodeURIComponent(route.ip));
-            setRoute(parseRoute());
-          }}
         />
       )}
       {connectId && (
