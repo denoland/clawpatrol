@@ -347,6 +347,7 @@ Family: `sql`.
 |-----------|------|----------|-------------|
 | `hosts` | `[]string` | yes |  |
 | `credential` | `ref(credential)` | no |  |
+| `credentials` | `[]credential` | no |  |
 
 ```hcl
 endpoint "clickhouse_https" "example" {
@@ -385,6 +386,7 @@ Family: `sql`.
 | `tls` | `bool` | no |  |
 | `accept_invalid_certificate` | `bool` | no |  |
 | `credential` | `ref(credential)` | no |  |
+| `credentials` | `[]credential` | no |  |
 
 ```hcl
 endpoint "clickhouse_native" "example" {
