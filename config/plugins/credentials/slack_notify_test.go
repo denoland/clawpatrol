@@ -129,6 +129,70 @@ func TestSlackNotifyHITLRetriesOnceAfterTransportTimeout(t *testing.T) {
 	}
 }
 
+func TestSlackNotifyHITLExplainsAsyncRetryGrantApproval(t *testing.T) {
+	var body struct {
+		Blocks []map[string]any `json:"blocks"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode Slack payload: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	oldURL := slackPostMessageURL
+	oldClient := slackHTTPClient
+	oldBackoff := slackNotifyRetryBackoff
+	slackPostMessageURL = server.URL
+	slackHTTPClient = server.Client()
+	slackNotifyRetryBackoff = 0
+	defer func() {
+		slackPostMessageURL = oldURL
+		slackHTTPClient = oldClient
+		slackNotifyRetryBackoff = oldBackoff
+	}()
+
+	err := (&SlackTokens{}).NotifyHITL(context.Background(), runtime.ApproveRequest{
+		Secrets: testSecretStore{
+			"slack-avocet": {Extras: map[string]string{"bot": "xoxb-test"}},
+		},
+		Method: "POST",
+		Host:   "console.deno.com",
+		Path:   "/api/admin.supportTickets.updateStatus",
+	}, runtime.HITLTarget{
+		CredentialName: "slack-avocet",
+		Channel:        "C123",
+		PendingID:      "pending-123",
+		Interactive:    true,
+		OperationState: runtime.HITLOperationStatePendingApproval,
+		ApprovalEffect: runtime.HITLApprovalEffectCreateRetryGrant,
+		UpstreamCalled: false,
+	})
+	if err != nil {
+		t.Fatalf("NotifyHITL returned error: %v", err)
+	}
+
+	buf, err := json.Marshal(body.Blocks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(buf)
+	for _, want := range []string{
+		"Upstream has not been called",
+		"Approve will not send the request upstream now",
+		"Approve will allow the client to retry the same request once",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Slack blocks = %s, want substring %q", text, want)
+		}
+	}
+	if strings.Contains(text, "send this request upstream immediately") {
+		t.Fatalf("Slack blocks used sync-waiting copy for async retry grant: %s", text)
+	}
+}
+
 func TestSlackNotifyHITLDoesNotRetryNonTransientSlackError(t *testing.T) {
 	var attempts int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

@@ -245,6 +245,10 @@ export type HITLPending = {
   host: string;
   method: string;
   path: string;
+  operation_state?: HITLOperationState;
+  approval_effect?: HITLApprovalEffect;
+  upstream_called?: boolean;
+  approval_message?: string;
   // Operator-readable endpoint identifier (hostname for HTTPS,
   // resource name for SQL/k8s where host is a virtual IP).
   // Computed server-side; falls back to host when unset.
@@ -258,6 +262,19 @@ export type HITLPending = {
   created_at: string;
   expires_at: string;
 };
+
+export type HITLOperationState =
+  | "sync_waiting"
+  | "pending_approval"
+  | "approved_waiting_for_retry"
+  | "denied"
+  | "expired"
+  | "executing_upstream"
+  | "upstream_succeeded"
+  | "upstream_failed"
+  | "client_disconnected";
+
+export type HITLApprovalEffect = "execute_upstream" | "create_retry_grant";
 
 export async function getHITLPending(): Promise<HITLPending[]> {
   const r = await api("/api/hitl/pending");

@@ -21,7 +21,7 @@ func buildPending(req runtime.ApproveRequest) runtime.HITLPending {
 	if req.Endpoint != nil {
 		family = req.Endpoint.Family
 	}
-	return runtime.HITLPending{
+	pending := runtime.HITLPending{
 		AgentIP:    req.AgentIP,
 		Host:       req.Host,
 		Method:     req.Method,
@@ -34,6 +34,8 @@ func buildPending(req runtime.ApproveRequest) runtime.HITLPending {
 		Approvers:  []string{req.ApproverName},
 		CreatedAt:  now,
 	}
+	runtime.NormalizeHITLPendingApproval(&pending)
+	return pending
 }
 
 func decision(allow bool) string {
