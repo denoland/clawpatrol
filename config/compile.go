@@ -154,22 +154,25 @@ type CompiledTunnel struct {
 const KeepaliveAlwaysSentinel = time.Duration(-1)
 
 // CompiledCredential expands an endpoint's `credential = X` or
-// `credentials = [...]` binding into a flat list. Each entry pairs a
-// dispatcher placeholder (empty for the singular / no-placeholder
-// fallback) with the credential entity.
+// `credentials = [...]` binding into a flat list. Each entry carries
+// up to two dispatch constraints — a placeholder string (matched by
+// the endpoint's PlaceholderDetector) and a list of databases
+// (matched against match.Request.Database). Both empty = catchall.
 type CompiledCredential struct {
 	Placeholder string
+	Databases   []string
 	Credential  *Entity
 }
 
-// CredBinding is one (placeholder, credential bare-name) pair. Endpoint
-// plugins return these via the EndpointCredentials() interface so the
-// compile pass can resolve credential names against the symbol table
-// without knowing each endpoint type. Named (rather than anonymous)
-// type is what lets every endpoint impl reuse the same return type
-// without restating the field set.
+// CredBinding is one (placeholder, databases, credential bare-name)
+// triple. Endpoint plugins return these via the EndpointCredentials()
+// interface so the compile pass can resolve credential names against
+// the symbol table without knowing each endpoint type. Named (rather
+// than anonymous) type is what lets every endpoint impl reuse the
+// same return type without restating the field set.
 type CredBinding struct {
 	Placeholder string
+	Databases   []string
 	Credential  string
 }
 
@@ -351,6 +354,7 @@ func compileEndpoint(name string, ent *Entity, p *Policy, cp *CompiledPolicy) (*
 		}
 		ce.Credentials = append(ce.Credentials, &CompiledCredential{
 			Placeholder: cb.Placeholder,
+			Databases:   cb.Databases,
 			Credential:  credEnt,
 		})
 	}
