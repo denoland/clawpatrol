@@ -50,8 +50,9 @@ import (
 const (
 	runChildEnv        = "CLAWPATROL_RUN_CHILD"
 	runNoAutoExposeEnv = "CLAWPATROL_RUN_NO_AUTO_EXPOSE"
-	tunIfName          = "wg0"
-	tunMTU             = 1420
+	tunIfName = "wg0"
+	// IPv6 minimum MTU (RFC 8200). See wgTunMTU comment in wireguard.go.
+	tunMTU = 1280
 )
 
 // runRun is `clawpatrol run`. Re-execs self in new user+net+mnt namespaces

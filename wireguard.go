@@ -53,6 +53,18 @@ import (
 	"gvisor.dev/gvisor/pkg/waiter"
 )
 
+// wgTunMTU is the IP MTU of every clawpatrol-WG tunnel — server-side
+// netstack, issued wg.conf, Linux per-process TUN, macOS netstack
+// client. 1280 is the IPv6 minimum MTU (RFC 8200) — Linux refuses
+// `ip addr add <v6>/128 dev wg0` if MTU is lower, so 1220 (the
+// "fits-in-Tailscale's-underlay-without-fragmentation" sweet spot)
+// is unreachable while we still issue Address = .../128 in wg.conf.
+// 1280 instead: full IPv6 support, slight IP-layer fragmentation
+// when running over Tailscale (outer encap = 1340 > 1280), but
+// fragmenting on a local TUN is cheap. Empirically 1280 keeps bulk
+// throughput acceptable where 1420 collapses to <2 KB/s.
+const wgTunMTU = 1280
+
 // netTun is our own wireguard-go tun.Device backed by a gVisor stack +
 // channel.Endpoint. Can't use golang.zx2c4.com/wireguard/tun/netstack
 // because it builds the stack with HandleLocal=true; combined with
@@ -320,7 +332,7 @@ func StartWGServer(ts JoinConfig) (*WGServer, error) {
 	serverIP := prefix.Addr().Next() // x.x.x.1
 	serverIP6 := wg6FromV4(serverIP) // fd77::<last-octet>
 
-	tun, err := newNetTUN(serverIP, serverIP6, 1420)
+	tun, err := newNetTUN(serverIP, serverIP6, wgTunMTU)
 	if err != nil {
 		return nil, err
 	}
@@ -852,6 +864,7 @@ func (w *wireguardOnboarder) MintKey(_ context.Context, reuseIP string) (string,
 	conf := fmt.Sprintf(`[Interface]
 PrivateKey = %s
 Address = %s/32, %s/128
+MTU = %d
 PostUp = cp /etc/resolv.conf /etc/resolv.conf.clawpatrol.bak 2>/dev/null; printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
 PostDown = mv /etc/resolv.conf.clawpatrol.bak /etc/resolv.conf 2>/dev/null || true
 
@@ -860,7 +873,7 @@ PublicKey = %s
 Endpoint = %s
 AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
-`, clientPrivB64, ip, ip6, serverPubB64, clientEndpoint)
+`, clientPrivB64, ip, ip6, wgTunMTU, serverPubB64, clientEndpoint)
 	return conf, "wireguard://" + w.iface(), ip, nil
 }
 
