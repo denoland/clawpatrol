@@ -50,7 +50,7 @@ import (
 const (
 	runChildEnv        = "CLAWPATROL_RUN_CHILD"
 	runNoAutoExposeEnv = "CLAWPATROL_RUN_NO_AUTO_EXPOSE"
-	tunIfName = "wg0"
+	tunIfName          = "wg0"
 	// Match wgTunMTU in wireguard.go (1220 — fits Tailscale's
 	// 1280-byte underlay after WG/UDP/IP encap). v6 unavailable; see
 	// the comment over there.
