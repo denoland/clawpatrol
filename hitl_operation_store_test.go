@@ -31,7 +31,7 @@ func TestHITLOperationStoreCreatesMetadataOnlyOperation(t *testing.T) {
 		RedactedQuery:       "?account=[redacted]",
 		RedactedHeadersJSON: `{"content-type":"application/json"}`,
 		AuthBindingID:       "credential:api:v1",
-		FingerprintVersion:  "raw-body-hmac-v1",
+		FingerprintVersion:  HITLFingerprintVersionV1,
 		HMACKeyID:           "hitl-hmac:v1",
 		RequestFingerprint:  "hmac-sha256:abcdef",
 		CreatedAt:           now,
@@ -102,7 +102,7 @@ func TestHITLOperationStoreRejectsUnknownState(t *testing.T) {
 		Host:               "api.example.test",
 		RedactedPath:       "/v1/write",
 		AuthBindingID:      "credential:api:v1",
-		FingerprintVersion: "raw-body-hmac-v1",
+		FingerprintVersion: HITLFingerprintVersionV1,
 		HMACKeyID:          "hitl-hmac:v1",
 		RequestFingerprint: "hmac-sha256:abcdef",
 		CreatedAt:          now,
@@ -190,24 +190,65 @@ func TestHITLOperationStoreConsumeRetryGrantIsOneShotAndMismatchSafe(t *testing.
 		RetryExpiresAt:    now.Add(5 * time.Minute),
 	})
 
-	_, err := store.ConsumeRetryGrant(ctx, HITLRetryGrantConsume{
-		ID:                 op.ID,
-		ProfileID:          "agent",
-		PrincipalID:        "peer:100.64.0.2",
-		AuthBindingID:      "credential:other:v1",
-		RequestFingerprint: op.RequestFingerprint,
-		ConsumedBy:         "peer:100.64.0.2",
-		Now:                now,
-	})
-	if !errors.Is(err, ErrHITLRetryMismatch) {
-		t.Fatalf("mismatched auth binding err = %v, want ErrHITLRetryMismatch", err)
-	}
-	unchanged, err := store.GetForPrincipal(ctx, op.ID, "agent", "peer:100.64.0.2")
-	if err != nil {
-		t.Fatalf("reload after mismatch: %v", err)
-	}
-	if unchanged.State != HITLOperationStateApprovedWaitingForRetry || unchanged.GrantConsumedAt != nil {
-		t.Fatalf("mismatch consumed or changed grant: %#v", unchanged)
+	for _, tc := range []struct {
+		name               string
+		authBindingID      string
+		fingerprintVersion string
+		hmacKeyID          string
+		requestFingerprint string
+	}{
+		{
+			name:               "auth binding",
+			authBindingID:      "credential:other:v1",
+			fingerprintVersion: op.FingerprintVersion,
+			hmacKeyID:          op.HMACKeyID,
+			requestFingerprint: op.RequestFingerprint,
+		},
+		{
+			name:               "fingerprint version",
+			authBindingID:      op.AuthBindingID,
+			fingerprintVersion: "v2",
+			hmacKeyID:          op.HMACKeyID,
+			requestFingerprint: op.RequestFingerprint,
+		},
+		{
+			name:               "hmac key id",
+			authBindingID:      op.AuthBindingID,
+			fingerprintVersion: op.FingerprintVersion,
+			hmacKeyID:          "hitl-hmac:v2",
+			requestFingerprint: op.RequestFingerprint,
+		},
+		{
+			name:               "request fingerprint",
+			authBindingID:      op.AuthBindingID,
+			fingerprintVersion: op.FingerprintVersion,
+			hmacKeyID:          op.HMACKeyID,
+			requestFingerprint: "hmac-sha256:other",
+		},
+	} {
+		t.Run("mismatched "+tc.name, func(t *testing.T) {
+			_, err := store.ConsumeRetryGrant(ctx, HITLRetryGrantConsume{
+				ID:                 op.ID,
+				ProfileID:          "agent",
+				PrincipalID:        "peer:100.64.0.2",
+				AuthBindingID:      tc.authBindingID,
+				FingerprintVersion: tc.fingerprintVersion,
+				HMACKeyID:          tc.hmacKeyID,
+				RequestFingerprint: tc.requestFingerprint,
+				ConsumedBy:         "peer:100.64.0.2",
+				Now:                now,
+			})
+			if !errors.Is(err, ErrHITLRetryMismatch) {
+				t.Fatalf("mismatched %s err = %v, want ErrHITLRetryMismatch", tc.name, err)
+			}
+			unchanged, err := store.GetForPrincipal(ctx, op.ID, "agent", "peer:100.64.0.2")
+			if err != nil {
+				t.Fatalf("reload after mismatch: %v", err)
+			}
+			if unchanged.State != HITLOperationStateApprovedWaitingForRetry || unchanged.GrantConsumedAt != nil {
+				t.Fatalf("mismatch consumed or changed grant: %#v", unchanged)
+			}
+		})
 	}
 
 	consumed, err := store.ConsumeRetryGrant(ctx, HITLRetryGrantConsume{
@@ -215,6 +256,8 @@ func TestHITLOperationStoreConsumeRetryGrantIsOneShotAndMismatchSafe(t *testing.
 		ProfileID:          "agent",
 		PrincipalID:        "peer:100.64.0.2",
 		AuthBindingID:      op.AuthBindingID,
+		FingerprintVersion: op.FingerprintVersion,
+		HMACKeyID:          op.HMACKeyID,
 		RequestFingerprint: op.RequestFingerprint,
 		ConsumedBy:         "peer:100.64.0.2",
 		Now:                now.Add(time.Second),
@@ -240,6 +283,8 @@ func TestHITLOperationStoreConsumeRetryGrantIsOneShotAndMismatchSafe(t *testing.
 		ProfileID:          "agent",
 		PrincipalID:        "peer:100.64.0.2",
 		AuthBindingID:      op.AuthBindingID,
+		FingerprintVersion: op.FingerprintVersion,
+		HMACKeyID:          op.HMACKeyID,
 		RequestFingerprint: op.RequestFingerprint,
 		ConsumedBy:         "peer:100.64.0.2",
 		Now:                now.Add(2 * time.Second),
@@ -276,7 +321,7 @@ func createTestHITLOperation(t *testing.T, store *HITLOperationStore, overrides 
 		RedactedQuery:       "",
 		RedactedHeadersJSON: `{"content-type":"application/json"}`,
 		AuthBindingID:       "credential:api:v1",
-		FingerprintVersion:  "raw-body-hmac-v1",
+		FingerprintVersion:  HITLFingerprintVersionV1,
 		HMACKeyID:           "hitl-hmac:v1",
 		RequestFingerprint:  "hmac-sha256:abcdef",
 		CreatedAt:           now,

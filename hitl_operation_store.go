@@ -79,6 +79,8 @@ type HITLRetryGrantConsume struct {
 	ProfileID          string
 	PrincipalID        string
 	AuthBindingID      string
+	FingerprintVersion string
+	HMACKeyID          string
 	RequestFingerprint string
 	ConsumedBy         string
 	Now                time.Time
@@ -216,7 +218,7 @@ func (s *HITLOperationStore) ConsumeRetryGrant(ctx context.Context, in HITLRetry
 	if s == nil || s.db == nil {
 		return HITLOperation{}, fmt.Errorf("%w: nil store", ErrHITLOperationStoreInvalid)
 	}
-	if in.ID == "" || in.ProfileID == "" || in.PrincipalID == "" || in.Now.IsZero() {
+	if in.ID == "" || in.ProfileID == "" || in.PrincipalID == "" || in.AuthBindingID == "" || in.FingerprintVersion == "" || in.HMACKeyID == "" || in.RequestFingerprint == "" || in.ConsumedBy == "" || in.Now.IsZero() {
 		return HITLOperation{}, fmt.Errorf("%w: incomplete retry consume", ErrHITLOperationStoreInvalid)
 	}
 	op, err := s.GetForPrincipal(ctx, in.ID, in.ProfileID, in.PrincipalID)
@@ -232,7 +234,7 @@ func (s *HITLOperationStore) ConsumeRetryGrant(ctx context.Context, in HITLRetry
 	if op.RetryExpiresAt == nil || !in.Now.Before(*op.RetryExpiresAt) {
 		return HITLOperation{}, ErrHITLRetryExpired
 	}
-	if op.AuthBindingID != in.AuthBindingID || op.RequestFingerprint != in.RequestFingerprint {
+	if op.AuthBindingID != in.AuthBindingID || op.FingerprintVersion != in.FingerprintVersion || op.HMACKeyID != in.HMACKeyID || op.RequestFingerprint != in.RequestFingerprint {
 		return HITLOperation{}, ErrHITLRetryMismatch
 	}
 	res, err := s.db.ExecContext(ctx, `
@@ -246,9 +248,11 @@ WHERE id = ?
   AND grant_consumed_ns IS NULL
   AND retry_expires_ns > ?
   AND auth_binding_id = ?
+  AND fingerprint_version = ?
+  AND hmac_key_id = ?
   AND request_fingerprint = ?`,
 		string(HITLOperationStateExecutingUpstream), timeNS(in.Now), in.ConsumedBy,
-		in.ID, in.ProfileID, in.PrincipalID, string(HITLOperationStateApprovedWaitingForRetry), op.Version, timeNS(in.Now), in.AuthBindingID, in.RequestFingerprint,
+		in.ID, in.ProfileID, in.PrincipalID, string(HITLOperationStateApprovedWaitingForRetry), op.Version, timeNS(in.Now), in.AuthBindingID, in.FingerprintVersion, in.HMACKeyID, in.RequestFingerprint,
 	)
 	if err != nil {
 		return HITLOperation{}, err
@@ -271,7 +275,7 @@ WHERE id = ?
 		if latest.RetryExpiresAt == nil || !in.Now.Before(*latest.RetryExpiresAt) {
 			return HITLOperation{}, ErrHITLRetryExpired
 		}
-		if latest.AuthBindingID != in.AuthBindingID || latest.RequestFingerprint != in.RequestFingerprint {
+		if latest.AuthBindingID != in.AuthBindingID || latest.FingerprintVersion != in.FingerprintVersion || latest.HMACKeyID != in.HMACKeyID || latest.RequestFingerprint != in.RequestFingerprint {
 			return HITLOperation{}, ErrHITLRetryMismatch
 		}
 		return HITLOperation{}, ErrHITLOperationConflict
