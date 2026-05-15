@@ -20,7 +20,6 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/cityhash102"
 	chproto "github.com/ClickHouse/clickhouse-go/v2/lib/proto"
 
-	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/facet"
 	"github.com/denoland/clawpatrol/config/match"
 	sqlfacet "github.com/denoland/clawpatrol/config/plugins/facets/sql"
@@ -178,7 +177,18 @@ func (ClickhouseNativeEndpointRuntime) HandleConn(ctx context.Context, ch *runti
 	claimedUser := hello.Username
 	injected := false
 	credName := ""
-	if cc := chPickCredential(ch.Endpoint); cc != nil {
+	// Build a partial match.Request for credential dispatch. The
+	// ClickhouseNativeEndpointRuntime's PlaceholderDetector scans
+	// Meta.Statement for a placeholder substring; the agent's
+	// Hello.Username + NUL + Hello.Password gives it both fields to
+	// search. Database is the agent-declared target so any
+	// `database`/`databases` constraint can filter on it.
+	credReq := &match.Request{
+		Family:   "sql",
+		Database: hello.Database,
+		Meta:     &sqlfacet.Meta{Statement: hello.Username + "\x00" + hello.Password},
+	}
+	if cc := runtime.ResolveCredential(ch.Endpoint, credReq); cc != nil {
 		credName = cc.Credential.Symbol.Name
 		auth, ok := cc.Credential.Body.(runtime.ClickhouseAuthCredential)
 		if !ok {
@@ -999,16 +1009,6 @@ func chEmitError(ch *runtime.ConnHandle, reason, detail string) {
 		Reason:  reason,
 		Summary: summary,
 	})
-}
-
-// chPickCredential returns the (only) credential bound to the
-// endpoint, or nil. Multi-credential dispatch by placeholder will
-// move into the SQL-parsing iteration.
-func chPickCredential(ep *config.CompiledEndpoint) *config.CompiledCredential {
-	if ep == nil || len(ep.Credentials) == 0 {
-		return nil
-	}
-	return ep.Credentials[0]
 }
 
 // chPickUpstream resolves the upstream addr the plugin should dial.

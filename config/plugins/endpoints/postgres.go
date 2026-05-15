@@ -221,7 +221,17 @@ func (PostgresEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnH
 	// credential. Single-credential endpoints fall through to the
 	// only entry.
 	agentUser := pgStartupParam(startupBody, "user")
-	cc := pgResolveCredential(ch.Endpoint, agentUser)
+	// Build a partial match.Request for credential dispatch. The
+	// PostgresEndpointRuntime's PlaceholderDetector scans
+	// Meta.Statement for a placeholder substring; Database is the
+	// agent-declared target so any `database`/`databases` constraint
+	// on a credential entry can filter against it.
+	credReq := &match.Request{
+		Family:   "sql",
+		Database: database,
+		Meta:     &sqlfacet.Meta{Statement: agentUser},
+	}
+	cc := runtime.ResolveCredential(ch.Endpoint, credReq)
 	if cc == nil {
 		pgWriteError(ch.Conn, "no credential bound to postgres endpoint")
 		return fmt.Errorf("no credential")
@@ -726,35 +736,6 @@ func pgWriteDeny(conn net.Conn, reason string) {
 	// Z (ReadyForQuery) — 5 bytes total: 'Z' + length(5) + 'I'.
 	ready := []byte{'Z', 0, 0, 0, 5, 'I'}
 	_, _ = conn.Write(append(msg, ready...))
-}
-
-// pgResolveCredential picks the credential entry for this connection.
-//
-// Single-binding endpoints (one entry, no placeholder) return that
-// entry. Multi-credential endpoints dispatch on the agent-supplied
-// StartupMessage user field — exact match against each entry's
-// placeholder. Trailing no-placeholder entry is the fallback when no
-// placeholder matched.
-//
-// Returns nil only when the endpoint declared zero credentials.
-func pgResolveCredential(ep *config.CompiledEndpoint, agentUser string) *config.CompiledCredential {
-	if ep == nil || len(ep.Credentials) == 0 {
-		return nil
-	}
-	if len(ep.Credentials) == 1 && ep.Credentials[0].Placeholder == "" {
-		return ep.Credentials[0]
-	}
-	var fallback *config.CompiledCredential
-	for _, c := range ep.Credentials {
-		if c.Placeholder == "" {
-			fallback = c
-			continue
-		}
-		if agentUser == c.Placeholder {
-			return c
-		}
-	}
-	return fallback
 }
 
 // pgWriteError sends an ErrorResponse during the pre-auth phase
