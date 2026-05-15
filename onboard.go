@@ -699,7 +699,14 @@ func (w *webMux) apiOnboardClaim(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("onboard claim: %s → %s (hostname=%q)", host, owner, hostname)
-	writeJSON(rw, map[string]string{"owner": owner, "ip": host})
+	resp := map[string]string{"owner": owner, "ip": host}
+	// Mint the per-peer bearer the client uses for gated API calls
+	// (env-pushdown, ephemeral tsnet key). In Tailscale mode the peer IP
+	// isn't known at approve time, so we mint it here instead.
+	if token, err := mintAndPersistPeerAPIToken(w.g.db, host); err == nil {
+		resp["api_token"] = token
+	}
+	writeJSON(rw, resp)
 }
 
 // apiOnboardPoll is hit by the CLI to retrieve the auth key once

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -215,7 +216,15 @@ func finishJoinSetup(s *joinSetup, skipTrust bool) {
 // approval step.
 func fetchCAHTTP(gateway, dst string) (string, error) {
 	url := strings.TrimRight(gateway, "/") + "/ca.crt"
-	c := &http.Client{Timeout: 10 * time.Second}
+	// InsecureSkipVerify is intentional here: we haven't yet fetched the CA
+	// that signed the gateway's cert, so we can't verify it. The admin confirms
+	// the fingerprint out-of-band (shown in the UI at join time) — TOFU.
+	c := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+		},
+	}
 	resp, err := c.Get(url)
 	if err != nil {
 		return "", err
@@ -678,7 +687,14 @@ func wgAddressFromConf(conf string) string {
 // during the unauthenticated /ca.crt fetch.
 func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname string, setup *joinSetup, skipTrust bool) (bool, error) {
 	gateway = strings.TrimRight(gateway, "/")
-	cli := &http.Client{Timeout: 30 * time.Second}
+	// CA is unverified until the admin confirms the fingerprint at approval time
+	// (TOFU). Use InsecureSkipVerify throughout the join handshake.
+	cli := &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+		},
+	}
 
 	hn := hostname
 	if hn == "" {
@@ -892,7 +908,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 
 	// 4b. tailscale up — set --operator on linux so future
 	// `tailscale set/serve/funnel` calls don't need sudo.
-	upArgs := []string{tscli, "up", "--authkey=" + authKey, "--accept-routes", "--accept-dns=false"}
+	upArgs := []string{tscli, "up", "--reset", "--authkey=" + authKey, "--accept-routes", "--accept-dns=false"}
 	if runtime.GOOS == "linux" {
 		if u := os.Getenv("USER"); u != "" {
 			upArgs = append(upArgs, "--operator="+u)
@@ -927,6 +943,13 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		body, _ := io.ReadAll(io.LimitReader(cr.Body, 400))
 		fmt.Fprintf(os.Stderr, "⚠ onboard claim %d: %s\n", cr.StatusCode, string(body))
 		return false, nil
+	}
+	var claimResp map[string]string
+	if err := json.NewDecoder(cr.Body).Decode(&claimResp); err == nil {
+		if tok := claimResp["api_token"]; tok != "" {
+			_ = os.WriteFile(filepath.Join(filepath.Dir(setup.caPath), "api-token"),
+				[]byte(tok+"\n"), 0o600)
+		}
 	}
 	items := []string{"Joined tailnet as " + tailIP}
 	items = append(items, setupSummaryItems(*setup)...)

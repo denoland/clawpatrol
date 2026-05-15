@@ -1667,6 +1667,45 @@ func (g *Gateway) splice(c net.Conn, host string) {
 	g.emit(Event{Mode: "splice", Host: host, AgentIP: agentAddr, Action: "allow", In: in, Out: out, Ms: time.Since(start).Milliseconds()})
 }
 
+// serveTSNetDirect handles a direct (non-PROXY) TLS connection in tsnet mode.
+// These come from admins opening the dashboard, clawpatrol join, etc. We
+// terminate TLS using our CA (minting a cert for whatever SNI the client
+// sends) and then serve the dashboard HTTP mux over the decrypted connection.
+func (g *Gateway) serveTSNetDirect(c net.Conn, mux http.Handler) {
+	defer func() { _ = c.Close() }()
+	host, prefix, err := peekSNI(c)
+	conn := wrapPeek(c, prefix)
+	if err != nil {
+		// No SNI — client connected via IP literal (common during `clawpatrol join`
+		// before the CA is trusted). Fall back to the server-side IP so mint() can
+		// produce a cert with an IP SAN that Go's TLS stack will accept.
+		if local := c.LocalAddr().String(); local != "" {
+			if h, _, splitErr := net.SplitHostPort(local); splitErr == nil {
+				host = h
+			}
+		}
+		if host == "" {
+			log.Printf("tsnet-direct: sni: %v (no fallback)", err)
+			return
+		}
+	}
+	cert, err := g.certs.mint(host)
+	if err != nil {
+		log.Printf("tsnet-direct: mint %s: %v", host, err)
+		return
+	}
+	tc := tls.Server(conn, &tls.Config{
+		Certificates: []tls.Certificate{*cert},
+		NextProtos:   []string{"http/1.1"},
+	})
+	if err := tc.Handshake(); err != nil {
+		log.Printf("tsnet-direct: tls %s: %v", host, err)
+		return
+	}
+	defer func() { _ = tc.Close() }()
+	_ = http.Serve(&oneShotListener{c: tc}, mux)
+}
+
 func pipeProgress(a, b net.Conn, onTick func(rx, tx int64)) (rx, tx int64) {
 	var rxC, txC atomic.Int64
 	done := make(chan struct{}, 2)
@@ -2631,8 +2670,8 @@ func runGateway(args []string) {
 	// In Tailscale mode, `clawpatrol run` clients prepend a HAProxy PROXY v1
 	// header carrying the original 4-tuple so we can dispatch by dst port/IP
 	// exactly like the WG promiscuous forwarder. Peek the first bytes: if the
-	// connection starts with "PROXY " use full dispatch; otherwise fall through
-	// to g.handle (direct dashboard access, curl health checks, etc.).
+	// connection starts with "PROXY " use full dispatch; otherwise it is a
+	// direct admin/dashboard TLS connection — terminate TLS and serve the mux.
 	tsnetDashMux := newWebMux(g, cfg.Join(), cfg.PublicURL)
 	tsnetDashPort := portOf(cfg.InfoListen)
 	for {
@@ -2648,7 +2687,9 @@ func runGateway(args []string) {
 				return
 			}
 			if dstPort == 0 {
-				g.handle(conn, "")
+				// Direct connection (no PROXY header): admin dashboard, curl,
+				// clawpatrol join, etc. Terminate TLS using our CA and serve HTTP.
+				g.serveTSNetDirect(conn, tsnetDashMux)
 				return
 			}
 			switch {

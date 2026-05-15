@@ -269,7 +269,9 @@ func runRunTsnetChild() {
 	}
 
 	if os.Getenv("CLAWPATROL_RUN_KEEP_RESOLV") != "1" {
-		_ = bindResolv("nameserver 1.1.1.1\nnameserver 8.8.8.8\n")
+		// options use-vc forces DNS over TCP — the gVisor netstack only handles
+		// TCP, so UDP DNS queries would silently drop without this option.
+		_ = bindResolv("nameserver 1.1.1.1\nnameserver 8.8.8.8\noptions use-vc\n")
 	}
 
 	autoExpose := os.Getenv(runNoAutoExposeEnv) != "1"
@@ -471,24 +473,32 @@ func tsnetBiRelay(a, b net.Conn) {
 func waitTsnetUp(s *tsnet.Server) (netip.Addr, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	if err := s.Up(ctx); err != nil {
+	// s.Up blocks until Running; the returned status already has TailscaleIPs.
+	upSt, err := s.Up(ctx)
+	if err != nil {
 		return netip.Addr{}, fmt.Errorf("tsnet up: %w", err)
 	}
-	lc, err := s.LocalClient()
-	if err != nil {
-		return netip.Addr{}, fmt.Errorf("local client: %w", err)
-	}
-	st, err := lc.Status(ctx)
-	if err != nil {
-		return netip.Addr{}, fmt.Errorf("status: %w", err)
-	}
-	for _, ip := range st.Self.TailscaleIPs {
+	for _, ip := range upSt.Self.TailscaleIPs {
 		if ip.Is4() {
 			return ip, nil
 		}
 	}
-	if len(st.Self.TailscaleIPs) > 0 {
-		return st.Self.TailscaleIPs[0], nil
+	// Fallback: query LocalClient (should rarely be needed).
+	lc, err := s.LocalClient()
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("local client: %w", err)
+	}
+	lcSt, err := lc.Status(ctx)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("status: %w", err)
+	}
+	for _, ip := range lcSt.Self.TailscaleIPs {
+		if ip.Is4() {
+			return ip, nil
+		}
+	}
+	if len(lcSt.Self.TailscaleIPs) > 0 {
+		return lcSt.Self.TailscaleIPs[0], nil
 	}
 	return netip.Addr{}, fmt.Errorf("no tailnet IPs assigned")
 }

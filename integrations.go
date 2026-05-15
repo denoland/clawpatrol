@@ -6,6 +6,8 @@ package main
 // model's max input window.
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -83,6 +85,24 @@ func envPushdownVars(caPath string) ([]pushdownEnvVar, error) {
 	return append(out, vars...), nil
 }
 
+// gatewayClient returns an http.Client that trusts the gateway's CA cert
+// at caDir/ca.crt in addition to the system pool.
+func gatewayClient(caDir string) *http.Client {
+	roots, _ := x509.SystemCertPool()
+	if roots == nil {
+		roots = x509.NewCertPool()
+	}
+	if pem, err := os.ReadFile(filepath.Join(caDir, "ca.crt")); err == nil {
+		roots.AppendCertsFromPEM(pem)
+	}
+	return &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{RootCAs: roots},
+		},
+	}
+}
+
 // fetchEnvPushdownFromGateway hits the gateway's /api/env-pushdown
 // endpoint and returns its declared push-down vars. Authenticated
 // with the per-peer bearer `clawpatrol join` persisted at
@@ -99,7 +119,7 @@ func fetchEnvPushdownFromGateway(caDir string) ([]pushdownEnvVar, error) {
 		return nil, fmt.Errorf("peer api token not persisted (run `clawpatrol join` first)")
 	}
 	url := strings.TrimRight(gw, "/") + "/api/env-pushdown"
-	cli := &http.Client{Timeout: 5 * time.Second}
+	cli := gatewayClient(caDir)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build %s: %w", url, err)
