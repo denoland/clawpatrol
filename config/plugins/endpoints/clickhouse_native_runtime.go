@@ -14,6 +14,7 @@ import (
 	"log"
 	"net"
 	"strconv"
+	"sync"
 	"time"
 
 	chgoproto "github.com/ClickHouse/ch-go/proto"
@@ -394,7 +395,7 @@ func chAgentToServer(ctx context.Context, ch *runtime.ConnHandle, agentReader *c
 		}
 		switch chgoproto.ClientCode(code) {
 		case chgoproto.ClientCodeQuery:
-			next, fatal := chHandleQuery(ctx, ch, agentReader, upstream, revision, credName, &sessionDB)
+			next, rewound, fatal := chHandleQuery(ctx, ch, agentReader, upstream, revision, credName, &sessionDB)
 			if fatal {
 				return
 			}
@@ -405,6 +406,13 @@ func chAgentToServer(ctx context.Context, ch *runtime.ConnHandle, agentReader *c
 			// us reading a compressed frame as an uncompressed Block,
 			// which surfaces as a "data-block-decode" boolean error.
 			compression = next
+			if rewound != nil {
+				// The approval-cancel peek consumed a byte that
+				// turned out NOT to be a ClientCancel; prepend it
+				// back onto the agent stream so the next code-loop
+				// iteration sees the start of the next packet.
+				agentReader = rewound
+			}
 		case chgoproto.ClientCodeData:
 			rewound, ok := chHandleData(ch, agentReader, upstream, revision, compression)
 			if !ok {
@@ -459,7 +467,7 @@ func chAgentToServer(ctx context.Context, ch *runtime.ConnHandle, agentReader *c
 // nil pointer disables the tracking (used by tests that don't care
 // about session state and the truncated-frame path that has no SQL
 // to inspect).
-func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream io.Writer, revision int, credName string, sessionDB *string) (chgoproto.Compression, bool) {
+func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chgoproto.Reader, upstream io.Writer, revision int, credName string, sessionDB *string) (chgoproto.Compression, *chgoproto.Reader, bool) {
 	// Build the forward-bound preamble (everything up to the body
 	// length prefix) as we decode each field. Re-encoding these small
 	// fields is cheap; the body is the only field whose size warrants
@@ -470,7 +478,7 @@ func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chg
 	id, err := agentReader.Str()
 	if err != nil {
 		chEmitError(ch, "query-decode", "id: "+err.Error())
-		return chgoproto.CompressionDisabled, true
+		return chgoproto.CompressionDisabled, nil, true
 	}
 	preamble.PutString(id)
 
@@ -478,20 +486,20 @@ func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chg
 		var info chgoproto.ClientInfo
 		if err := info.DecodeAware(agentReader, revision); err != nil {
 			chEmitError(ch, "query-decode", "client info: "+err.Error())
-			return chgoproto.CompressionDisabled, true
+			return chgoproto.CompressionDisabled, nil, true
 		}
 		info.EncodeAware(&preamble, revision)
 	}
 
 	if !chgoproto.FeatureSettingsSerializedAsStrings.In(revision) {
 		chEmitError(ch, "query-decode", "unsupported settings format")
-		return chgoproto.CompressionDisabled, true
+		return chgoproto.CompressionDisabled, nil, true
 	}
 	for {
 		var s chgoproto.Setting
 		if err := s.Decode(agentReader); err != nil {
 			chEmitError(ch, "query-decode", "setting: "+err.Error())
-			return chgoproto.CompressionDisabled, true
+			return chgoproto.CompressionDisabled, nil, true
 		}
 		if s.Key == "" {
 			preamble.PutString("") // end-of-settings sentinel
@@ -504,14 +512,14 @@ func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chg
 		secret, err := agentReader.Str()
 		if err != nil {
 			chEmitError(ch, "query-decode", "inter-server secret: "+err.Error())
-			return chgoproto.CompressionDisabled, true
+			return chgoproto.CompressionDisabled, nil, true
 		}
 		preamble.PutString(secret)
 	}
 
 	if _, err := agentReader.UVarInt(); err != nil {
 		chEmitError(ch, "query-decode", "stage: "+err.Error())
-		return chgoproto.CompressionDisabled, true
+		return chgoproto.CompressionDisabled, nil, true
 	}
 	// chgoproto.Query.EncodeAware hard-codes StageComplete on the wire
 	// regardless of what the agent sent; mirror that here so the
@@ -522,12 +530,12 @@ func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chg
 	compU, err := agentReader.UVarInt()
 	if err != nil {
 		chEmitError(ch, "query-decode", "compression: "+err.Error())
-		return chgoproto.CompressionDisabled, true
+		return chgoproto.CompressionDisabled, nil, true
 	}
 	compression := chgoproto.Compression(compU)
 	if !compression.IsACompression() {
 		chEmitError(ch, "query-decode", fmt.Sprintf("unknown compression %d", compU))
-		return chgoproto.CompressionDisabled, true
+		return chgoproto.CompressionDisabled, nil, true
 	}
 	compression.Encode(&preamble)
 
@@ -537,7 +545,7 @@ func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chg
 	bodyLen, err := agentReader.StrLen()
 	if err != nil {
 		chEmitError(ch, "query-decode", "body length: "+err.Error())
-		return compression, true
+		return compression, nil, true
 	}
 	truncated := bodyLen > chMaxQueryBody
 	headLen := bodyLen
@@ -547,14 +555,30 @@ func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chg
 	head := make([]byte, headLen)
 	if err := agentReader.ReadFull(head); err != nil {
 		chEmitError(ch, "query-decode", "body head: "+err.Error())
-		return compression, true
+		return compression, nil, true
 	}
 
 	database := ""
 	if sessionDB != nil {
 		database = *sessionDB
 	}
-	verdict, reason, nextDB := chEvaluateSQL(ctx, ch, string(head), credName, database, truncated)
+	// Wrap ch.Approve with a peek loop that watches the agent
+	// connection for an in-band ClientCancel while the approver chain
+	// blocks. Any non-cancel byte the peek consumes survives via the
+	// rewound reader the state struct carries; chAgentToServer swaps
+	// it in place of agentReader so the next packet sees the byte we
+	// read.
+	approveSt := &chApproveCancelState{agentReader: agentReader, ch: ch}
+	verdict, reason, nextDB := chEvaluateSQL(ctx, ch, string(head), credName, database, truncated, approveSt.run)
+	rewound := approveSt.rewound
+	if approveSt.canceled {
+		// The agent issued a ClientCancel while we were parked. Force
+		// the verdict to deny so the agent sees a terminating
+		// Exception (and the pump doesn't try to ship Data blocks
+		// that follow the canceled Query to upstream).
+		verdict, reason = "deny", "canceled by agent"
+		rewound = nil
+	}
 	if verdict == "deny" {
 		// Drain the rest of this Query off the wire so the pump can
 		// keep reading subsequent packets — same shape as the previous
@@ -562,7 +586,7 @@ func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chg
 		if truncated {
 			if _, derr := io.CopyN(io.Discard, agentReader, int64(bodyLen-headLen)); derr != nil {
 				chEmitError(ch, "query-drain", "body tail: "+derr.Error())
-				return compression, true
+				return compression, nil, true
 			}
 		}
 		if chgoproto.FeatureParameters.In(revision) {
@@ -570,7 +594,7 @@ func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chg
 				var p chgoproto.Parameter
 				if perr := p.Decode(agentReader); perr != nil {
 					chEmitError(ch, "query-drain", "parameter: "+perr.Error())
-					return compression, true
+					return compression, nil, true
 				}
 				if p.Key == "" {
 					break
@@ -579,11 +603,11 @@ func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chg
 		}
 		if _, werr := ch.Conn.Write(chEncodeException(reason)); werr != nil {
 			// Agent gone — there's nothing left to keep alive.
-			return compression, true
+			return compression, nil, true
 		}
 		log.Printf("clickhouse_native %s deny %s: %s",
 			ch.Endpoint.Name, ch.PeerIP, reason)
-		return compression, false
+		return compression, rewound, false
 	}
 
 	// Allow. Flush preamble + body-length + head, then splice the
@@ -593,11 +617,11 @@ func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chg
 	preamble.PutInt(bodyLen)
 	preamble.Buf = append(preamble.Buf, head...)
 	if _, werr := upstream.Write(preamble.Buf); werr != nil {
-		return compression, true
+		return compression, nil, true
 	}
 	if truncated {
 		if _, werr := io.CopyN(upstream, agentReader, int64(bodyLen-headLen)); werr != nil {
-			return compression, true
+			return compression, nil, true
 		}
 	}
 
@@ -607,7 +631,7 @@ func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chg
 			var p chgoproto.Parameter
 			if perr := p.Decode(agentReader); perr != nil {
 				chEmitError(ch, "query-decode", "parameter: "+perr.Error())
-				return compression, true
+				return compression, nil, true
 			}
 			if p.Key == "" {
 				paramBuf.PutString("") // end-of-parameters sentinel
@@ -616,7 +640,7 @@ func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chg
 			p.Encode(&paramBuf)
 		}
 		if _, werr := upstream.Write(paramBuf.Buf); werr != nil {
-			return compression, true
+			return compression, nil, true
 		}
 	}
 
@@ -633,7 +657,7 @@ func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chg
 	if sessionDB != nil && nextDB != "" {
 		*sessionDB = nextDB
 	}
-	return compression, false
+	return compression, rewound, false
 }
 
 // chHandleData decodes one client Data packet (table-name header +
@@ -916,7 +940,10 @@ func chRewindReader(head []byte, tail *chgoproto.Reader) *chgoproto.Reader {
 // based on the database the agent is leaving, not the one it's
 // entering. The new value only enters circulation on the next
 // statement.
-func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName, database string, truncated bool) (verdict, reason, nextDB string) {
+func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName, database string, truncated bool, approveFn func(runtime.ApproveCallRequest) runtime.ApproveVerdict) (verdict, reason, nextDB string) {
+	if approveFn == nil && ch != nil {
+		approveFn = ch.Approve
+	}
 	info := parseChSQL(sql)
 	defer func() {
 		// Allow paths surface the USE target; deny paths leave nextDB
@@ -955,7 +982,7 @@ func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName, d
 	rule := cr.Name
 
 	if len(cr.Outcome.Approve) > 0 {
-		if ch.Approve == nil {
+		if ch.Approve == nil || approveFn == nil {
 			chEmit(ch, runtime.ConnEvent{
 				Action: "deny", Reason: "HITL not configured",
 				Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
@@ -963,7 +990,7 @@ func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName, d
 			verdict, reason = "deny", "approval required but HITL is not configured"
 			return
 		}
-		v := ch.Approve(runtime.ApproveCallRequest{
+		v := approveFn(runtime.ApproveCallRequest{
 			Stages: cr.Outcome.Approve, Verb: info.Verb,
 			Summary: summary, Rule: cr,
 		})
@@ -1008,6 +1035,105 @@ func chEmit(ch *runtime.ConnHandle, ev runtime.ConnEvent) {
 	if ch != nil && ch.Emit != nil {
 		ch.Emit(ev)
 	}
+}
+
+// chApproveCancelState owns the in-band ClientCancel watcher for a
+// single Query packet's parked-approval window. While ch.Approve
+// blocks, a goroutine reads one byte from the agent reader: if it's
+// ClientCodeCancel, the watcher fires ApproveCallRequest.Cancel so
+// the approver chain returns immediately; otherwise the byte was the
+// start of the next packet (a Data block following INSERT, typically)
+// and the state struct surfaces a rewound reader so chAgentToServer
+// can prepend the byte back onto the stream after Query handling
+// finishes. SetReadDeadline interrupts a blocked peek read once the
+// approver chain has returned, so we never wait indefinitely on a
+// session whose user never pressed Ctrl+C.
+type chApproveCancelState struct {
+	agentReader *chgoproto.Reader
+	ch          *runtime.ConnHandle
+	rewound     *chgoproto.Reader
+	canceled    bool
+}
+
+// chPeekDeadlineEpsilon is how far into the past SetReadDeadline is
+// nudged when we want to immediately interrupt any blocked peek read
+// without race-windowing a subsequent legitimate read.
+var chPeekDeadlineEpsilon = -time.Second
+
+// run wraps ch.Approve. It spawns a goroutine that reads one byte
+// off agentReader and, depending on the byte, closes a cancel
+// channel handed to the approver or marks the byte for rewind.
+// Returns the approver's verdict.
+func (s *chApproveCancelState) run(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
+	if s.ch == nil || s.ch.Approve == nil || s.agentReader == nil {
+		// Defensive — chEvaluateSQL already requires ch.Approve non-nil
+		// before constructing an ApproveCallRequest, but a nil
+		// agentReader would deadlock the peek goroutine. Fall back to
+		// the plain approve path so tests that don't wire the watcher
+		// keep working.
+		if s.ch != nil && s.ch.Approve != nil {
+			return s.ch.Approve(req)
+		}
+		return runtime.ApproveVerdict{Decision: "deny", Reason: "approve unwired"}
+	}
+	cancelCh := make(chan struct{})
+	var cancelOnce sync.Once
+	fireCancel := func() {
+		cancelOnce.Do(func() {
+			close(cancelCh)
+		})
+	}
+	req.Cancel = cancelCh
+
+	type peekResult struct {
+		b   byte
+		err error
+	}
+	peekDone := make(chan peekResult, 1)
+	go func() {
+		b, err := s.agentReader.UInt8()
+		if err == nil && chgoproto.ClientCode(b) == chgoproto.ClientCodeCancel {
+			// Trip the approver immediately so it returns without
+			// waiting for the test / operator to act on the (now
+			// stale) HITL prompt.
+			s.canceled = true
+			fireCancel()
+		}
+		peekDone <- peekResult{b, err}
+	}()
+
+	verdict := s.ch.Approve(req)
+
+	// Unblock the peek goroutine if it's still waiting on the wire.
+	// SetReadDeadline on a chgoproto.Reader's underlying net.Conn
+	// kicks any pending Read out with ErrDeadlineExceeded; we then
+	// restore the zero deadline so subsequent packets read normally.
+	conn, ok := s.ch.Conn.(net.Conn)
+	if ok {
+		_ = conn.SetReadDeadline(time.Now().Add(chPeekDeadlineEpsilon))
+	}
+	result := <-peekDone
+	if ok {
+		_ = conn.SetReadDeadline(time.Time{})
+	}
+
+	if result.err != nil {
+		// Make sure we don't leak the cancel chan in the closed-but-
+		// uncanceled state; the approver already returned.
+		return verdict
+	}
+	if chgoproto.ClientCode(result.b) == chgoproto.ClientCodeCancel {
+		s.canceled = true
+		fireCancel()
+		return verdict
+	}
+	// Non-cancel byte → prepend it back onto the reader so
+	// chAgentToServer's next iteration treats it as the leading byte
+	// of the next packet. The most common case is ClientCodeData
+	// following an INSERT Query: the agent emits Data blocks
+	// optimistically while we're parked.
+	s.rewound = chRewindReader([]byte{result.b}, s.agentReader)
+	return verdict
 }
 
 // chEmitError emits a structured error ConnEvent if the host wired

@@ -443,7 +443,7 @@ func TestChEvaluateSQLThreadsDatabaseIntoMeta(t *testing.T) {
 
 	t.Run("matches when database equal", func(t *testing.T) {
 		mock, _ := chNewMockHandle(t, ep)
-		verdict, reason, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "metrics", false)
+		verdict, reason, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "metrics", false, nil)
 		if verdict != "deny" {
 			t.Errorf("DROP on metrics verdict = %q, want deny", verdict)
 		}
@@ -454,7 +454,7 @@ func TestChEvaluateSQLThreadsDatabaseIntoMeta(t *testing.T) {
 
 	t.Run("different case does not match", func(t *testing.T) {
 		mock, _ := chNewMockHandle(t, ep)
-		verdict, _, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "Metrics", false)
+		verdict, _, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "Metrics", false, nil)
 		if verdict != "" {
 			t.Errorf("DROP on Metrics (mixed case) verdict = %q, want allow", verdict)
 		}
@@ -462,7 +462,7 @@ func TestChEvaluateSQLThreadsDatabaseIntoMeta(t *testing.T) {
 
 	t.Run("empty database does not match", func(t *testing.T) {
 		mock, _ := chNewMockHandle(t, ep)
-		verdict, _, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "", false)
+		verdict, _, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "", false, nil)
 		if verdict != "" {
 			t.Errorf("DROP with empty database verdict = %q, want allow", verdict)
 		}
@@ -486,7 +486,7 @@ func TestChEvaluateSQLTruncated(t *testing.T) {
 
 		mock, _ := chNewMockHandle(t, ep)
 
-		verdict, reason, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "SELECT 1", "ch-cred", "", true)
+		verdict, reason, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "SELECT 1", "ch-cred", "", true, nil)
 		if verdict != "deny" {
 			t.Errorf("truncated SELECT verdict = %q, want deny (synth)", verdict)
 		}
@@ -505,7 +505,7 @@ func TestChEvaluateSQLTruncated(t *testing.T) {
 
 		mock, _ := chNewMockHandle(t, ep)
 
-		verdict, _, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "anything", "ch-cred", "", true)
+		verdict, _, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "anything", "ch-cred", "", true, nil)
 		if verdict != "" {
 			t.Errorf("truncated passthrough verdict = %q, want allow (empty)", verdict)
 		}
@@ -524,7 +524,7 @@ func TestChEvaluateSQLAllowsSelectDeniesInsert(t *testing.T) {
 
 	mock, _ := chNewMockHandle(t, ep)
 
-	verdict, reason, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "INSERT INTO events VALUES (1)", "ch-cred", "", false)
+	verdict, reason, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "INSERT INTO events VALUES (1)", "ch-cred", "", false, nil)
 	if verdict != "deny" {
 		t.Errorf("INSERT verdict = %q, want deny", verdict)
 	}
@@ -532,7 +532,7 @@ func TestChEvaluateSQLAllowsSelectDeniesInsert(t *testing.T) {
 		t.Errorf("INSERT reason = %q, want %q", reason, "writes blocked")
 	}
 
-	verdict, _, _ = chEvaluateSQL(context.Background(), mock.ConnHandle, "SELECT 1", "ch-cred", "", false)
+	verdict, _, _ = chEvaluateSQL(context.Background(), mock.ConnHandle, "SELECT 1", "ch-cred", "", false, nil)
 	if verdict != "" {
 		t.Errorf("SELECT verdict = %q, want allow (empty)", verdict)
 	}
@@ -580,7 +580,7 @@ func TestChEvaluateSQLApproveChain(t *testing.T) {
 	t.Run("approver allows", func(t *testing.T) {
 		mock, _ := chNewMockHandle(t, ep)
 		mock.Approve = chMockApprove("allow", "ok")
-		verdict, _, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "", false)
+		verdict, _, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "", false, nil)
 		if verdict != "" {
 			t.Errorf("approver allow → verdict %q, want empty", verdict)
 		}
@@ -591,7 +591,7 @@ func TestChEvaluateSQLApproveChain(t *testing.T) {
 	t.Run("approver denies", func(t *testing.T) {
 		mock, _ := chNewMockHandle(t, ep)
 		mock.Approve = chMockApprove("deny", "operator rejected")
-		verdict, reason, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "", false)
+		verdict, reason, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "", false, nil)
 		if verdict != "deny" || reason != "operator rejected" {
 			t.Errorf("verdict=%q reason=%q, want deny/operator rejected", verdict, reason)
 		}
@@ -602,7 +602,7 @@ func TestChEvaluateSQLApproveChain(t *testing.T) {
 	t.Run("missing Approve callback default-denies", func(t *testing.T) {
 		mock, _ := chNewMockHandle(t, ep)
 		mock.Approve = nil
-		verdict, _, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "", false)
+		verdict, _, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "", false, nil)
 		if verdict != "deny" {
 			t.Errorf("no Approve → verdict %q, want deny", verdict)
 		}

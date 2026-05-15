@@ -255,6 +255,17 @@ type ApproveCallRequest struct {
 	// Rule is the matched compiled rule (carries Reason for the
 	// dashboard's "why is this gated" line).
 	Rule *config.CompiledRule
+	// Cancel, when non-nil, lets the endpoint plugin abort a parked
+	// approval from outside the synchronous call. The host derives a
+	// cancellable context from this channel and propagates ctx.Done()
+	// to every approver in the chain. Closing the channel makes the
+	// in-flight approver return early; the chain then yields a non-
+	// allow verdict (typically Decision=="deny", Reason carries the
+	// cancel cause). Postgres uses this to honor an agent-issued
+	// CancelRequest on a separate connection; clickhouse_native uses
+	// it to honor a ClientCancel packet read off the agent socket
+	// while the inspector is parked waiting for approval.
+	Cancel <-chan struct{}
 }
 
 // ConnEvent is the wire-protocol-agnostic event shape conn-family
