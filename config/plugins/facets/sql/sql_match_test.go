@@ -91,6 +91,53 @@ func TestSQLMatcherDatabaseCaseSensitive(t *testing.T) {
 	}
 }
 
+// TestSQLMatcherDatabaseSources exercises both sources of
+// sql.database — the req-level field (set by the protocol runtime
+// alongside Meta) and the meta.Database fallback. Either path must
+// satisfy a rule reading sql.database; req wins when both are set.
+func TestSQLMatcherDatabaseSources(t *testing.T) {
+	m, err := facet.NewMatcher("sql", "sql.database == 'prod'")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		req  *match.Request
+		want bool
+	}{
+		{"req.Database matches", &match.Request{Family: "sql", Database: "prod", Meta: &sqlfacet.Meta{}}, true},
+		{"meta.Database matches when req empty", &match.Request{Family: "sql", Meta: &sqlfacet.Meta{Database: "prod"}}, true},
+		{"req beats meta", &match.Request{Family: "sql", Database: "prod", Meta: &sqlfacet.Meta{Database: "dev"}}, true},
+		{"req mismatch loses", &match.Request{Family: "sql", Database: "dev", Meta: &sqlfacet.Meta{}}, false},
+		{"both empty loses", &match.Request{Family: "sql", Meta: &sqlfacet.Meta{}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := m.Match(tc.req); got != tc.want {
+				t.Errorf("Match=%v want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSQLMatcherDatabaseSurvivesTruncation confirms that a rule
+// reading only sql.database is NOT auto-denied by the truncation
+// fail-close path, because database resolves off-wire and is
+// unaffected by the inspection-buffer cap.
+func TestSQLMatcherDatabaseSurvivesTruncation(t *testing.T) {
+	m, err := facet.NewMatcher("sql", "sql.database == 'prod'")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.InspectsTruncatableFacet() {
+		t.Errorf("a rule reading only sql.database must not be flagged truncatable")
+	}
+	req := &match.Request{Family: "sql", Database: "prod", Truncated: true, Meta: &sqlfacet.Meta{}}
+	if !m.Match(req) {
+		t.Errorf("truncated request with database=prod should still match")
+	}
+}
+
 func TestSQLMatcherStatementRegex(t *testing.T) {
 	m, err := facet.NewMatcher("sql", `sql.verb == 'select' && sql.statement.matches('(?i)\\b(secret|password|token)\\b')`)
 	if err != nil {

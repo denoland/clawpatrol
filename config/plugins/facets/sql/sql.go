@@ -54,6 +54,9 @@ type Meta struct {
 	// treats database names as identifiers. Mid-session changes
 	// (postgres `\connect`, `USE` in dialects that support it) are
 	// not tracked in v1; the session-start value is canonical.
+	// The activation builder also pulls it from req.Database (req
+	// wins when both set), letting the protocol runtime wire either
+	// source.
 }
 
 // Facet is the SQL facet Runtime. Singleton.
@@ -108,8 +111,23 @@ func (Facet) Report(req *match.Request) map[string]any {
 		"tables":    m.Tables,
 		"functions": m.Functions,
 		"statement": m.Statement,
-		"database":  m.Database,
+		"database":  databaseOf(req, m),
 	}
+}
+
+// databaseOf returns the request's database, preferring the
+// req-level field (set by the protocol runtime alongside Meta) and
+// falling back to meta.Database when req-level isn't set. Two-source
+// shape lets the protocol runtimes wire only one of them and still
+// have the dashboard / matcher see the value.
+func databaseOf(req *match.Request, m *Meta) string {
+	if req != nil && req.Database != "" {
+		return req.Database
+	}
+	if m != nil {
+		return m.Database
+	}
+	return ""
 }
 
 // celEnv is the SQL CEL environment. Built once at init.
@@ -148,12 +166,14 @@ var lowercasedPaths = []string{"sql.verb"}
 // untrustworthy, so any condition reading any of them must fail
 // closed on a truncated request.
 //
-// Note credential is intentionally absent from the sql facet's CEL
-// view: it resolves off-wire (StartupMessage user / Hello
-// username), never from frame bytes, so a credential predicate on a
-// truncated request still evaluates correctly. The dispatcher
-// applies r.Credential before the matcher runs (config/runtime/
-// dispatch.go), and that path is unaffected by Truncated.
+// Note credential and database are intentionally absent: they
+// resolve off-wire (StartupMessage user / database, Hello username
+// / database, HTTPS query+header), never from frame bytes, so
+// predicates on either still evaluate correctly on a truncated
+// request. The dispatcher applies r.Credential before the matcher
+// runs (config/runtime/dispatch.go), and the database value flows
+// through req.Database / meta.Database which the wire frontend
+// populates before any SQL bytes are read.
 var truncatablePaths = []string{"sql.verb", "sql.tables", "sql.functions", "sql.statement"}
 
 // NewMatcher compiles a CEL condition into a Matcher. An empty
@@ -179,7 +199,7 @@ func buildActivation(req *match.Request) map[string]any {
 			Tables:    coalesceList(meta.Tables),
 			Functions: coalesceList(meta.Functions),
 			Statement: meta.Statement,
-			Database:  meta.Database,
+			Database:  databaseOf(req, meta),
 		},
 	}
 }
