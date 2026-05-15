@@ -70,12 +70,14 @@ statement the agent sends.
 | `sql.tables` | `list<string>` | Tables referenced by the statement |
 | `sql.functions` | `list<string>` | Functions called by the statement |
 | `sql.statement` | `string` | The full lower-cased statement text |
+| `sql.database` | `string` | Agent-declared target database. Postgres reads it from the StartupMessage `database` (with `user` fallback). clickhouse_native reads `Hello.Database`. clickhouse_https reads `?database=` query first, then `X-ClickHouse-Database` header. Empty when neither set. |
 
 ```hcl
 condition = "sql.verb in ['select', 'show', 'explain']"
 condition = "'secrets' in sql.tables"
 condition = "sets.intersects(sql.tables, ['users', 'audit_log'])"
 condition = "sql.statement.matches('(?i)\\bpassword\\b')"
+condition = "sql.database == 'prod'"
 ```
 
 `verb`, `tables`, and `functions` are extracted by a best-effort
@@ -226,6 +228,7 @@ accessed with dot notation. Common idioms:
 | `sql.verb`                    | lower-case (normalized) |
 | `sql.tables`, `sql.functions` | lower-case (extracted from a lower-cased copy of the statement) |
 | `sql.statement`               | as on the wire (raw text, no case folding) |
+| `sql.database`                | as on the wire (StartupMessage / Hello / HTTP query+header) |
 | `k8s.verb`                    | lower-case (normalized) |
 | `k8s.resource`, `k8s.namespace`, `k8s.name`, `k8s.params` | as on the wire |
 
@@ -371,6 +374,41 @@ The top-level `credential = orb-prod-key` fires when the request was
 *dispatched against* that credential — i.e. the agent embedded
 `PH_orb_prod` in the `Authorization: Bearer ...` slot. The matcher
 does not look at the request body for the placeholder.
+
+### Multi-credential endpoint dispatched by database
+
+For SQL endpoints (postgres, clickhouse_native, clickhouse_https), a
+credential entry can claim only requests against specific databases
+via `database = "X"` or `databases = ["X","Y"]`. Combine with
+`placeholder = "..."` for two-axis dispatch (e.g. read-only credential
+against prod):
+
+```hcl
+credential "clickhouse_credential" "ch-dev"  {}
+credential "clickhouse_credential" "ch-prod" {}
+
+endpoint "clickhouse_native" "ch-o11y" {
+  hosts = ["clickhouse-o11y.example"]
+  credentials = [
+    { database  = "prod",        credential = ch-prod },
+    { databases = ["dev", "qa"], credential = ch-dev  },
+  ]
+}
+
+rule "ch-prod-readonly" {
+  endpoint   = ch-o11y
+  credential = ch-prod
+  condition  = "sql.verb in ['select', 'show', 'explain']"
+  verdict    = "allow"
+}
+```
+
+An entry matches iff every constraint it declares is satisfied
+(placeholder match AND database match). Among matches the
+**most-specific** (highest constraint count) wins. Conflicting
+constraint signatures are rejected at policy load — see the
+`error_credentials_*` test fixtures for the diagnostics. An entry
+with no constraints is the catchall; only one is allowed per list.
 
 ### LLM proctor → human approver chain
 

@@ -155,6 +155,14 @@ looks at the incoming request, picks the matching credential, and
 substitutes the real secret. The agent never holds the real key —
 only the placeholder.
 
+A credential entry can also (or instead) carry `database = "X"` /
+`databases = ["X","Y"]` to claim only requests against specific
+databases. The two constraints compose: an entry matches iff every
+constraint it declares is satisfied, and the most-specific match
+wins. Rules can read the agent-declared database via the
+`sql.database` CEL field for SQL endpoints (postgres,
+clickhouse_native, clickhouse_https).
+
 ### Secret store
 
 The gateway-side source of secret bytes. Default backend: environment
