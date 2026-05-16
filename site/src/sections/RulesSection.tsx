@@ -4,41 +4,11 @@ import { snippet } from "../lib/example";
 import rulesSrc from "../../examples/rules-block.hcl?raw";
 
 /* ──────────────────────────────────────────────────────────────────────
-   The "rules" pillar — the centerpiece of the new landing page.
-   Frames the policy engine + dual-approver model (LLM judge + human review)
-   with a real HCL snippet and a 4-up decision matrix.
+   The "rules" pillar — frames the policy engine with a real HCL
+   snippet. The deferred verdicts (LLM judge, human approval) are
+   covered next door in ApproversSection, so this section stays
+   focused on rule authoring.
    ──────────────────────────────────────────────────────────────────── */
-
-const DECISIONS: { label: string; verdict: string; body: string }[] = [
-  {
-    label: "Allow",
-    verdict: "allow",
-    body:
-      "Boring requests pass through with no overhead. " +
-      "Read-only GETs, internal hosts, anything you've green-lit.",
-  },
-  {
-    label: "Deny",
-    verdict: "deny",
-    body:
-      "Hard stop. Returns a reason to the agent so it knows why. " +
-      "DROP TABLE on prod. Writes to repos you didn't authorize.",
-  },
-  {
-    label: "LLM judge",
-    verdict: "require_llm",
-    body:
-      "Cheap, automated review. Hand the request to an LLM " +
-      "with your custom prompt — it reads the payload and votes.",
-  },
-  {
-    label: "Human In The Loop",
-    verdict: "require_human",
-    body:
-      "Park the request. Ping Slack, the dashboard, or your own " +
-      "webhook. Resume on approval. Time out closed if no one's home.",
-  },
-];
 
 function RuleCodeBlock() {
   return (
@@ -51,20 +21,13 @@ function RuleCodeBlock() {
   );
 }
 
-const colorClasses = [
-  "bg-rust-100",
-  "bg-navy-100",
-  "bg-butter-100",
-  "bg-canvas",
-];
-
 export function RulesSection() {
   return (
     <section class="bg-canvas-muted py-24 sm:py-32">
       <div class="max-w-6xl mx-auto px-6 sm:px-8">
         <SectionLabel>Approval rules</SectionLabel>
 
-        <div class="grid grid-cols-1 lg:grid-cols-[2fr_3fr] gap-8 lg:gap-16 xl:gap-32 items-start mb-20">
+        <div class="grid grid-cols-1 lg:grid-cols-[2fr_3fr] gap-8 lg:gap-16 xl:gap-32 items-start">
           <div class="min-w-0">
             <h3 class="text-4xl sm:text-5xl md:text-6xl lg:text-[3.25rem] font-display font-bold text-balance mb-6 text-text">
               You write the rules.{" "}
@@ -82,37 +45,6 @@ export function RulesSection() {
             </p>
           </div>
           <RuleCodeBlock />
-        </div>
-
-        <div>
-          <p class="text-xs uppercase tracking-[0.25em]  font-bold text-text-muted mb-5">
-            Four verdicts. Mix freely.
-          </p>
-          <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {DECISIONS.map((d, i) => (
-              <div
-                key={d.verdict}
-                class="bg-transparent relative squircle-sm p-6"
-              >
-                <div className=" absolute w-full h-full border-navy border-2 squircle-sm inset-0 z-10"></div>
-                <div class="flex items-baseline justify-between mb-3 relative z-10">
-                  <h4 class="text-xl font-display font-bold text-text">
-                    {d.label}
-                  </h4>
-                  <code class="text-[10px] font-mono text-text-subtle">
-                    {d.verdict}
-                  </code>
-                </div>
-                <p class="text-sm relative z-10 text-text-muted">{d.body}</p>
-                <div
-                  className={
-                    `isolate absolute w-full h-full squircle-sm top-1.5 left-2 z-0 ` +
-                    colorClasses[i]
-                  }
-                ></div>
-              </div>
-            ))}
-          </div>
         </div>
       </div>
     </section>
