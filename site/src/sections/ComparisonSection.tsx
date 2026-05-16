@@ -2,8 +2,10 @@ import { SectionLabel } from "../components/SectionLabel";
 
 type Player = { name: string; url: string };
 type Group = { label?: string; players: Player[] };
+type Scope = "covered" | "complement";
 type Category = {
   title: string;
+  scope: Scope;
   groups: Group[];
   gap: string;
 };
@@ -11,9 +13,10 @@ type Category = {
 const CATEGORIES: Category[] = [
   {
     title: "Watch the LLM call",
+    scope: "complement",
     groups: [
       {
-        label: "Routing & observability",
+        label: "LLM Gateways",
         players: [
           { name: "Helicone", url: "https://helicone.ai" },
           { name: "Portkey", url: "https://portkey.ai" },
@@ -49,6 +52,7 @@ const CATEGORIES: Category[] = [
   },
   {
     title: "Watch the tool call",
+    scope: "covered",
     groups: [
       {
         players: [
@@ -61,10 +65,13 @@ const CATEGORIES: Category[] = [
         ],
       },
     ],
-    gap: "URLs and body bytes only. DROP TABLE and SELECT 1 look the same.",
+    gap:
+      "HTTP only. Non-HTTP protocols like Postgres, k8s, and SSH bypass " +
+      "them entirely.",
   },
   {
     title: "Sandbox the process",
+    scope: "complement",
     groups: [
       {
         players: [
@@ -72,7 +79,7 @@ const CATEGORIES: Category[] = [
             name: "NVIDIA OpenShell",
             url: "https://github.com/NVIDIA/OpenShell",
           },
-          { name: "Agents.sh", url: "https://www.agentsh.org/" },
+          { name: "agentsh", url: "https://www.agentsh.org/" },
         ],
       },
     ],
@@ -80,6 +87,7 @@ const CATEGORIES: Category[] = [
   },
   {
     title: "Hold the keys",
+    scope: "covered",
     groups: [
       {
         players: [
@@ -106,6 +114,11 @@ const COLOR_CLASSES = [
   "bg-butter-100",
   "bg-canvas",
 ];
+
+const SCOPE_LABEL: Record<Scope, string> = {
+  covered: "claw patrol covers this",
+  complement: "complementary",
+};
 
 export function ComparisonSection() {
   return (
@@ -138,13 +151,22 @@ export function ComparisonSection() {
 function CategoryCard(
   { category: c, colorClass }: { category: Category; colorClass: string },
 ) {
+  const scopeClass = c.scope === "covered"
+    ? "text-rust-700"
+    : "text-text-subtle";
   return (
     <div class="bg-transparent relative squircle-sm p-6 flex flex-col">
       <div class="absolute w-full h-full border-navy border-2 squircle-sm inset-0 z-10" />
       <div class="relative z-10 flex-1">
-        <h4 class="text-xl font-display font-bold text-text mb-4">
+        <h4 class="text-xl font-display font-bold text-text mb-1">
           {c.title}
         </h4>
+        <div
+          class={"font-mono uppercase tracking-wider text-[10px] mb-4 " +
+            scopeClass}
+        >
+          {SCOPE_LABEL[c.scope]}
+        </div>
         <div class="space-y-3">
           {c.groups.map((g, i) => (
             <div key={g.label ?? i}>
@@ -200,10 +222,11 @@ function SynthesisCard() {
         </h4>
       </div>
       <p class="text-text text-[15px] sm:text-base max-w-3xl leading-relaxed">
-        Parses Postgres, Kubernetes, ClickHouse, HTTPS, and SSH at the protocol
-        layer, so rules can match a SQL verb or a k8s resource directly. Holds
-        the secrets, routes risky calls to a human or an LLM judge, records
-        every byte. One declarative config across every service.
+        Covers two of the four. Watches the tool call at the protocol layer
+        (Postgres, Kubernetes, ClickHouse, HTTPS, SSH) so rules match SQL
+        verbs and k8s resources directly. Holds the secrets. Routes risky
+        calls to a human or an LLM judge and records every byte. For LLM
+        observability or process sandboxing, layer in a complementary tool.
       </p>
     </div>
   );
