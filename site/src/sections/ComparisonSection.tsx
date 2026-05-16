@@ -153,17 +153,18 @@ function CategoryCard(
                   {g.label}
                 </div>
               )}
-              <div class="space-y-0.5">
-                {g.players.map((p) => (
-                  <div key={p.name}>
+              <div class="text-[14px] text-text leading-relaxed">
+                {g.players.map((p, j) => (
+                  <span key={p.name}>
+                    {j > 0 && <span class="text-text-subtle"> · </span>}
                     <a
                       href={p.url}
-                      class="text-[14px] font-medium text-text hover:text-rust
-                        hover:underline underline-offset-2 transition-colors"
+                      class="font-medium hover:text-rust hover:underline
+                        underline-offset-2 transition-colors"
                     >
                       {p.name}
                     </a>
-                  </div>
+                  </span>
                 ))}
               </div>
             </div>
