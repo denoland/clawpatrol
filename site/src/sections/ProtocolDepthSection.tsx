@@ -1,9 +1,7 @@
 import { HclCode } from "../components/HclCode";
 import { SectionLabel } from "../components/SectionLabel";
 import { snippet } from "../lib/example";
-import httpsSrc from "../../examples/protocol-https.hcl?raw";
-import sqlSrc from "../../examples/protocol-sql.hcl?raw";
-import k8sSrc from "../../examples/protocol-k8s.hcl?raw";
+import { protocol_https, protocol_k8s, protocol_sql } from "../lib/examples";
 
 /* ──────────────────────────────────────────────────────────────────────
    Multi-protocol depth — sells the idea that the gateway doesn't just
@@ -22,21 +20,21 @@ const PROTOCOLS: {
     body:
       "Method, path, headers, body. Any host, any service. " +
       "Hostname matching is implicit via the endpoint scope.",
-    example: snippet(httpsSrc),
+    example: snippet(protocol_https),
   },
   {
     name: "SQL",
     body:
       "Postgres and ClickHouse traffic parsed verb-by-verb. " +
       "Match SELECT, INSERT, DROP. Inspect tables and statement text.",
-    example: snippet(sqlSrc),
+    example: snippet(protocol_sql),
   },
   {
     name: "Kubernetes",
     body:
       "API calls to kube-apiserver. Match by namespace, resource, " +
       "and verb — protect prod from accidental kubectl delete.",
-    example: snippet(k8sSrc),
+    example: snippet(protocol_k8s),
   },
 ];
 

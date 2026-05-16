@@ -1,7 +1,7 @@
 import { HclCode } from "../components/HclCode";
 import { SectionLabel } from "../components/SectionLabel";
 import { snippet } from "../lib/example";
-import rulesSrc from "../../examples/rules-block.hcl?raw";
+import { rules_block } from "../lib/examples";
 
 /* ──────────────────────────────────────────────────────────────────────
    The "rules" pillar — frames the policy engine with a real HCL
@@ -13,7 +13,7 @@ import rulesSrc from "../../examples/rules-block.hcl?raw";
 function RuleCodeBlock() {
   return (
     <HclCode
-      source={snippet(rulesSrc)}
+      source={snippet(rules_block)}
       class="min-w-0 text-[13px] sm:text-sm font-mono
         bg-navy text-canvas/85 squircle-md p-6 overflow-x-auto
         border border-navy-700 whitespace-pre"

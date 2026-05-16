@@ -2,8 +2,7 @@ import type { ComponentChildren } from "preact";
 import { HclCode } from "../components/HclCode";
 import { SectionLabel } from "../components/SectionLabel";
 import { snippet } from "../lib/example";
-import llmSrc from "../../examples/approver-llm.hcl?raw";
-import humanSrc from "../../examples/approver-human.hcl?raw";
+import { approver_human, approver_llm } from "../lib/examples";
 
 /* ──────────────────────────────────────────────────────────────────────
    Approvers — deepens the `require_llm` and `require_human` verdicts
@@ -17,8 +16,8 @@ import humanSrc from "../../examples/approver-human.hcl?raw";
         for both: incoming → response → verdict pill
    ──────────────────────────────────────────────────────────────────── */
 
-const LLM_CONFIG = snippet(llmSrc);
-const HUMAN_CONFIG = snippet(humanSrc);
+const LLM_CONFIG = snippet(approver_llm);
+const HUMAN_CONFIG = snippet(approver_human);
 
 /* ── Shared diagram primitives ─────────────────────────────────────── */
 
