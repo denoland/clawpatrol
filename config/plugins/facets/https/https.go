@@ -110,10 +110,11 @@ func init() {
 // honestly, so the dispatcher synthesizes a deny. Fields whose value
 // is body-independent (method, path, query, headers) are
 // intentionally absent — `http.method == "GET"` still fires on its
-// own predicate even when the body was capped. Because k8s inherits
-// http via the containment registry, k8s rules referencing http.body
-// also fail-close on truncation; the truncatable-fields registry
-// follows automatically.
+// own predicate even when the body was capped. Because the k8s
+// family composes the http facet alongside its own, a k8s_rule that
+// references http.body also fail-closes on truncation; the
+// truncatable-fields registry follows from the composition with no
+// per-family plumbing.
 func (Facet) CELContrib() facet.CELContrib {
 	return facet.CELContrib{
 		EnvOptions: []cel.EnvOption{
@@ -130,9 +131,9 @@ func (Facet) CELContrib() facet.CELContrib {
 }
 
 // NewMatcher compiles a CEL condition into a Matcher. Delegates to
-// the package-level composer so contributions from any ancestor
-// family are layered in too (none today for http, since http sits at
-// the root of the containment registry).
+// the package-level composer so every facet the http family composes
+// layers in (only the http facet itself today — the http family
+// doesn't compose any other facet).
 func (f Facet) NewMatcher(condition string) (match.Matcher, error) {
 	m, _, err := facet.Compose(f.Name(), condition)
 	return m, err

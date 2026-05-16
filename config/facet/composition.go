@@ -16,9 +16,9 @@ import (
 // needs for case-normalization and truncation-fail-close.
 //
 // Built-in facets return their own contribution via CELContributor.
-// Family-containment composition (a k8s_rule referencing http.method)
-// is performed in Compose by unioning the contribs of the rule's
-// family and every ancestor declared in the containment registry.
+// Composition (a k8s_rule referencing http.method) is performed in
+// Compose by unioning the contribs of every facet the rule's family
+// declares in the family→facets registry.
 //
 // EnvOptions must NOT include shared libraries that every CEL env in
 // the gateway uses (e.g. ext.Sets): Compose installs those once at
@@ -37,75 +37,62 @@ type CELContrib struct {
 }
 
 // CELContributor is the optional interface a Runtime implements when
-// it can be composed into another facet's CEL env via the
-// family-containment registry. Built-in facets (http, sql, k8s) all
+// it can be composed into another family's CEL env via the
+// family→facets registry. Built-in facets (http, sql, k8s) all
 // implement it; plugin facets (config/extplugin) don't — they fall
 // back to their own NewMatcher.
 type CELContributor interface {
 	CELContrib() CELContrib
 }
 
-// parents declares family-containment: each entry maps a family to
-// the families whose facets it inherits. A rule of the inheriting
-// family can reference any facet field its ancestors define, because
-// actions of the inheriting family carry the ancestor's bindings too
-// (a k8s action is an HTTPS request underneath, so it populates
-// http.* as well as k8s.*).
+// families declares which facets each action family composes onto an
+// action. An action of family X carries the bindings of every facet
+// X lists, in order; a rule of family X can reference any of those
+// facets in its CEL condition.
 //
-// The relation is one-way: http.* fields are visible to k8s rules,
-// but k8s.* fields are NOT visible to http rules. Containment is
-// declared at the family layer and the matcher composer takes care
-// of the rest — no per-rule plumbing.
+// There is no parent relationship — k8s does not "inherit from" http.
+// Both the http and k8s families happen to add the http facet to
+// their actions, because a kubernetes API call is an HTTPS request
+// underneath and carries http.method / http.path / http.headers /
+// http.body / http.body_json on the request snapshot. The k8s family
+// adds its own k8s facet on top.
+//
+// Containment is implicit in the asymmetry: an http_rule can't read
+// k8s.* because the http family doesn't compose the k8s facet, not
+// because of a directional inheritance rule. SQL families don't
+// compose http for the same reason — postgres / clickhouse_native
+// wire is binary, not HTTPS.
 //
 // Adding a new family that wraps HTTPS (e.g. llm, future
-// clickhouse_https sql-over-http) is a single edit here.
-var parents = map[string][]string{
-	"k8s": {"http"},
+// clickhouse_https sql-over-http) is a single edit here: list the
+// facets it adds to its actions in the order they activate.
+var families = map[string][]string{
+	"http": {"http"},
+	"sql":  {"sql"},
+	"k8s":  {"http", "k8s"},
 }
 
-// Parents returns the direct parents declared for family — the
-// facets whose CEL bindings a rule of this family inherits. Nil
-// when family has no declared parents.
-func Parents(family string) []string {
-	ps := parents[family]
-	if len(ps) == 0 {
-		return nil
+// Facets returns the facets family composes onto an action, in
+// activation order. For a family with no explicit entry the result
+// falls back to [family] — a family adds at least its own eponymous
+// facet — so callers (extplugin facets that ship a Runtime but no
+// composition entry) still resolve cleanly.
+func Facets(family string) []string {
+	fs := families[family]
+	if len(fs) == 0 {
+		return []string{family}
 	}
-	out := make([]string, len(ps))
-	copy(out, ps)
-	return out
-}
-
-// Ancestors returns family's transitive parents in dependency-first
-// order: each parent's own ancestors precede the parent. The result
-// is dedupe'd and excludes family itself. Compose iterates this list
-// to layer ancestor contributions in front of the leaf's; with one
-// ancestor today the ordering is mostly a style choice, but it gives
-// a deterministic shape if multi-parent containment lands later.
-func Ancestors(family string) []string {
-	var out []string
-	seen := map[string]bool{}
-	var visit func(string)
-	visit = func(f string) {
-		for _, p := range parents[f] {
-			if seen[p] {
-				continue
-			}
-			visit(p)
-			seen[p] = true
-			out = append(out, p)
-		}
-	}
-	visit(family)
+	out := make([]string, len(fs))
+	copy(out, fs)
 	return out
 }
 
 // Compose builds a Matcher for family + condition by unioning the
-// CEL contributions of family and every ancestor in the containment
-// registry. Returns ok=false when family or any ancestor doesn't
-// implement CELContributor — the caller (NewMatcher) then falls back
-// to Runtime.NewMatcher, which is how plugin facets keep working
-// (their env is declared dynamically, not via CELContrib).
+// CEL contributions of every facet the family composes. Returns
+// ok=false when any of those facets doesn't implement CELContributor
+// — the caller (NewMatcher) then falls back to Runtime.NewMatcher,
+// which is how plugin facets keep working (their env is declared
+// dynamically, not via CELContrib).
 //
 // When ok=true and err=nil the returned Matcher is ready for use.
 // An empty condition short-circuits to PassThrough; the env is still
@@ -156,13 +143,11 @@ func Compose(family, condition string) (m match.Matcher, ok bool, err error) {
 	return cm, true, nil
 }
 
-// contributors collects the CELContrib for family and every ancestor
-// in dependency-first order (ancestors before the leaf). Returns
-// ok=false when any required facet isn't registered or doesn't
-// implement CELContributor.
+// contributors collects the CELContrib for every facet family
+// composes, in activation order. Returns ok=false when any required
+// facet isn't registered or doesn't implement CELContributor.
 func contributors(family string) ([]CELContrib, bool) {
-	names := Ancestors(family)
-	names = append(names, family)
+	names := Facets(family)
 	out := make([]CELContrib, 0, len(names))
 	for _, n := range names {
 		r := Lookup(n)

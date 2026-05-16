@@ -171,8 +171,9 @@ func (Facet) CELContrib() facet.CELContrib {
 }
 
 // NewMatcher compiles a CEL condition into a Matcher. Delegates to
-// the package-level composer (sql has no ancestor families today —
-// SQL wire protocols are binary, not HTTPS).
+// the package-level composer (the sql family composes only its own
+// sql facet today — postgres / clickhouse_native wire protocols are
+// binary, not HTTPS, so there is no http facet to add).
 func (f Facet) NewMatcher(condition string) (match.Matcher, error) {
 	m, _, err := facet.Compose(f.Name(), condition)
 	return m, err

@@ -113,19 +113,21 @@ condition = "!k8s.name.startsWith('debug-')"
 condition = "!k8s.resource.endsWith('/exec') && !k8s.resource.endsWith('/attach')"
 ```
 
-A kubernetes request is HTTPS underneath, so a `kubernetes`-endpoint
-rule **also** sees the full `http.*` facet set (method, path, query,
-headers, body, body_json) in addition to `k8s.*`. The
-family-containment relation is one-way: `kubernetes` rules can
-reference `http.*`, but `https` rules cannot reference `k8s.*`. The
-same fail-closed-on-truncation contract that applies to `http.body`
-/ `http.body_json` for an `https` rule applies to a `kubernetes`
-rule that reads them — when the gateway's inspection buffer caps the
+A kubernetes request is HTTPS underneath, so the `k8s` family
+composes both the `http` and `k8s` facets onto its actions: a
+`kubernetes`-endpoint rule sees the full `http.*` facet set (method,
+path, query, headers, body, body_json) in addition to `k8s.*`. The
+asymmetry — `https` rules cannot reference `k8s.*` — is just that
+the `http` family only composes the `http` facet; there is no
+parent-child relation between the families. The same
+fail-closed-on-truncation contract that applies to `http.body` /
+`http.body_json` for an `https` rule applies to a `kubernetes` rule
+that reads them — when the gateway's inspection buffer caps the
 body, the dispatcher synthesizes a deny rather than letting the
 matcher see a truncated prefix.
 
 ```hcl
-# k8s rule mixing native k8s.* fields with inherited http.* fields:
+# k8s rule mixing native k8s.* fields with composed http.* fields:
 rule "no-large-secret-creates" {
   endpoint  = my-cluster
   condition = "k8s.verb == 'create' && k8s.resource == 'secrets' && http.body.contains('BEGIN PRIVATE KEY')"

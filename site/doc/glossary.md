@@ -99,21 +99,31 @@ top-level struct-typed variable: `http.method` / `http.path` /
 strings, `tables` / `functions` are lists, `query` / `headers` /
 `params` are maps, and `body_json` is parsed-JSON `dyn`.
 
-### Family containment
+### Facet composition
 
-The one-way "facet X also inherits Y" relation between protocol
-families. A request of family X is *also* of every ancestor family
-Y in its containment chain, so a rule of family X can reference any
-facet field X or one of its ancestors defines.
+An action family declares which [facets](#facet) it adds to its
+actions. A rule of family X can reference any facet X composes —
+nothing more. There is no parent-child relationship between
+families; some families just happen to add the same facet.
 
-Today the only containment edge is `k8s → http`: a kubernetes API
-call is an HTTPS request underneath, so a `kubernetes`-endpoint rule
-sees `http.method` / `http.path` / `http.headers` / `http.body` /
-`http.body_json` in addition to its native `k8s.verb` /
-`k8s.resource` / … . The relation is strict: `http` rules do *not*
-see `k8s.*`, because an HTTPS-endpoint request has no k8s-shaped
-metadata. SQL families (`postgres`, `clickhouse_native`) don't
-inherit `http` either — their wire protocols are binary, not HTTPS.
+Today:
+
+| Family | Composes facets |
+|--------|------------------|
+| `http` | `http`           |
+| `sql`  | `sql`            |
+| `k8s`  | `http`, `k8s`    |
+
+The `k8s` family adds the `http` facet alongside its own because a
+kubernetes API call is an HTTPS request underneath and carries
+`http.method` / `http.path` / `http.headers` / `http.body` /
+`http.body_json` on the request snapshot. A `kubernetes`-endpoint
+rule therefore sees both the `k8s.*` and `http.*` field sets.
+
+The asymmetry — `http` rules can't read `k8s.*`, SQL rules can't
+read `http.*` — is just the inverse: those families don't compose
+the missing facet. `http` actions carry no k8s metadata; SQL wire
+(postgres, clickhouse_native) is binary, not HTTPS.
 
 ### CEL condition
 

@@ -10,11 +10,13 @@ import (
 	k8sfacet "github.com/denoland/clawpatrol/config/plugins/facets/k8s"
 )
 
-// TestK8sMatcherInheritsHTTPFacets locks in family-containment: a
+// TestK8sMatcherComposesHTTPFacets locks in facet composition: a
 // k8s_rule can reference http.* fields (method, path, headers) in
-// addition to its native k8s.* fields, because a k8s action is an
-// HTTPS request underneath and carries both sets of bindings.
-func TestK8sMatcherInheritsHTTPFacets(t *testing.T) {
+// addition to its native k8s.* fields, because the k8s family
+// composes both the http and k8s facets onto a k8s action (a
+// kubernetes API call is an HTTPS request underneath and carries
+// both sets of bindings).
+func TestK8sMatcherComposesHTTPFacets(t *testing.T) {
 	cases := []struct {
 		name      string
 		condition string
@@ -67,9 +69,9 @@ func TestK8sMatcherInheritsHTTPFacets(t *testing.T) {
 	}
 }
 
-// TestK8sMatcherRejectsSqlFacets locks in one-way containment: a
-// k8s_rule referencing sql.* fields fails to compile, because sql is
-// not in k8s's ancestor chain.
+// TestK8sMatcherRejectsSqlFacets locks in that composition is
+// explicit: a k8s_rule referencing sql.* fails to compile, because
+// the k8s family does not compose the sql facet.
 func TestK8sMatcherRejectsSqlFacets(t *testing.T) {
 	_, err := facet.NewMatcher("k8s", "sql.verb == 'select'")
 	if err == nil {
@@ -77,10 +79,10 @@ func TestK8sMatcherRejectsSqlFacets(t *testing.T) {
 	}
 }
 
-// TestHTTPMatcherRejectsK8sFacets locks in that containment is
-// one-way: an http_rule referencing k8s.* fails to compile, because
-// http sits at the root of the containment registry and inherits
-// from nothing.
+// TestHTTPMatcherRejectsK8sFacets locks in that composition is
+// explicit: an http_rule referencing k8s.* fails to compile, because
+// the http family composes only the http facet — k8s.* fields are
+// only visible to families that explicitly add the k8s facet.
 func TestHTTPMatcherRejectsK8sFacets(t *testing.T) {
 	_, err := facet.NewMatcher("http", "k8s.verb == 'create'")
 	if err == nil {
@@ -89,10 +91,10 @@ func TestHTTPMatcherRejectsK8sFacets(t *testing.T) {
 }
 
 // TestK8sMatcherBodyTruncationFailsClosed locks in that http.body /
-// http.body_json inherit the truncatable-fail-closed contract for
-// k8s rules too: a k8s rule whose CEL condition reads either should
-// report InspectsTruncatableFacet() == true, so the dispatcher can
-// synthesize a deny on a truncated request.
+// http.body_json carry their truncatable-fail-closed contract into
+// the k8s family via composition: a k8s rule whose CEL condition
+// reads either should report InspectsTruncatableFacet() == true, so
+// the dispatcher can synthesize a deny on a truncated request.
 func TestK8sMatcherBodyTruncationFailsClosed(t *testing.T) {
 	m, err := facet.NewMatcher("k8s", "http.body.contains('secret')")
 	if err != nil {

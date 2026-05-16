@@ -23,9 +23,11 @@ import (
 	"github.com/denoland/clawpatrol/config/facet"
 	"github.com/denoland/clawpatrol/config/match"
 
-	// Family-containment parent: k8s actions carry http.* bindings
-	// alongside their native k8s.* fields, and facet.Compose pulls
-	// the http facet's CELContrib in when building a k8s rule's env.
+	// Composed facet: the k8s family adds both the http and k8s
+	// facets to its actions (a kubernetes API call is an HTTPS
+	// request underneath, so it carries http.* bindings alongside
+	// its native k8s.* fields), and facet.Compose pulls in the http
+	// facet's CELContrib when building a k8s rule's env.
 	// Blank-importing https here guarantees its init() (which calls
 	// facet.Register) has run before the first k8s rule compiles —
 	// otherwise direct k8s-package imports (tests, downstream code)
@@ -131,9 +133,9 @@ func init() {
 // k8s Meta is derived entirely from the request URL + method, not
 // from buffered request bytes, so no k8s.* field is truncatable.
 // Body-affected fields the k8s rule can reach travel through the
-// http parent in the family-containment registry — http.body and
-// http.body_json fail-close on truncation for k8s rules too, without
-// any per-facet plumbing here.
+// http facet the k8s family composes alongside its own — http.body
+// and http.body_json fail-close on truncation for k8s rules too,
+// without any per-facet plumbing here.
 func (Facet) CELContrib() facet.CELContrib {
 	return facet.CELContrib{
 		EnvOptions: []cel.EnvOption{
@@ -149,9 +151,10 @@ func (Facet) CELContrib() facet.CELContrib {
 }
 
 // NewMatcher compiles a CEL condition into a Matcher. Delegates to
-// the package-level composer so contributions from ancestor families
-// (http) layer in too — a k8s_rule can reference http.method etc. in
-// addition to k8s.verb.
+// the package-level composer so every facet the k8s family composes
+// layers in — a k8s_rule can reference http.method etc. in addition
+// to k8s.verb because the k8s family adds the http facet alongside
+// its own.
 func (f Facet) NewMatcher(condition string) (match.Matcher, error) {
 	m, _, err := facet.Compose(f.Name(), condition)
 	return m, err
