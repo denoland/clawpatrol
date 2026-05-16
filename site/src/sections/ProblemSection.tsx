@@ -13,11 +13,11 @@ const PROBLEMS = [
   {
     title: "Granting access doesn't gate actions",
     body:
-      "OAuth scopes grant the agent broad permission inside a " +
-      "service: any action the scope allows. A prompt-injected " +
-      "agent will use that permission against you. You need to " +
-      "check what each request does, not just whether the agent " +
-      "is allowed to send something.",
+      "OAuth scopes, API keys, IAM roles, k8s RBAC: every " +
+      "service has its own access model, and configuring each " +
+      "correctly is its own project. Even when you get it right, " +
+      "a prompt-injected agent will exploit whatever access you " +
+      "granted.",
   },
   {
     title: "You can't see what your agents do",
