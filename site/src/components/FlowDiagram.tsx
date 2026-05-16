@@ -162,31 +162,22 @@ function Risers({ count }: { count: number }) {
 }
 
 function CenterNode({ label, sub }: { label: string; sub: string }) {
-  // The proxy. Icon sits in a light puck so its dark-navy fill stays
-  // visible against the navy node behind it; references the same
-  // public asset the header uses (no inline SVG duplication).
+  // Light surface keyed to the header's bg-navy-100 so the proxy node
+  // reads as the same brand surface; full Claw Patrol logo (icon +
+  // wordmark) is the same public asset the header uses.
   return (
     <div
-      class="squircle-md w-full bg-navy text-canvas border border-navy
+      class="squircle-md w-full bg-navy-100 text-text border border-navy
         px-5 py-5 text-center"
     >
-      <div class="flex items-center justify-center gap-2">
-        <span
-          class="bg-canvas rounded-full w-7 h-7 flex items-center
-            justify-center shrink-0"
-        >
-          <img
-            src="/claw-patrol-icon.svg"
-            alt=""
-            class="w-5 h-5"
-            aria-hidden="true"
-          />
-        </span>
-        <div class="font-display font-bold text-xl leading-none">{label}</div>
-      </div>
+      <img
+        src="/claw-patrol-logo.svg"
+        alt={label}
+        class="h-10 sm:h-12 w-auto mx-auto"
+      />
       <div
         class="font-mono text-[11px] uppercase tracking-wider mt-2
-          text-canvas/65"
+          text-text-muted"
       >
         {sub}
       </div>
