@@ -24,9 +24,9 @@ export function HeroSection() {
             class="mb-10 max-w-lg
             text-text-muted"
           >
-            Plugins parse each protocol — SQL, Kubernetes, HTTPS, SSH — so your rules match on
-            semantics, not URLs. Block <code>DROP TABLE</code>. Route{" "}
-            <code>kubectl delete pod</code> to a human in Slack. Let an LLM judge whether a{" "}
+            You write the rules. Plugins parse each protocol (SQL, Kubernetes, HTTPS, SSH) so they
+            can match on semantics, not URLs: block <code>DROP TABLE</code>, require human approval
+            for <code>kubectl delete pod</code>, or have an LLM judge whether a{" "}
             <code>SELECT</code> leaks secrets. Secrets stay in the proxy, never the agent.
           </p>
           <InstallTerminal />
