@@ -117,10 +117,6 @@ export function ComparisonSection() {
         <div class="max-w-max">
           <SectionLabel>How it compares</SectionLabel>
         </div>
-        <p class="max-w-2xl mb-8 sm:mb-10 text-base text-text-muted">
-          Other tools watch the surface. Claw Patrol parses the protocol. Rules
-          match SQL verbs, k8s resources, and HTTP methods directly.
-        </p>
         <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6 sm:mb-8">
           {CATEGORIES.map((c, i) => (
             <CategoryCard

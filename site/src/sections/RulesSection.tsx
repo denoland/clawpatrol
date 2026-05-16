@@ -1,4 +1,7 @@
+import { HclCode } from "../components/HclCode";
 import { SectionLabel } from "../components/SectionLabel";
+import { snippet } from "../lib/example";
+import rulesSrc from "../../examples/rules-block.hcl?raw";
 
 /* ──────────────────────────────────────────────────────────────────────
    The "rules" pillar — the centerpiece of the new landing page.
@@ -38,70 +41,13 @@ const DECISIONS: { label: string; verdict: string; body: string }[] = [
 ];
 
 function RuleCodeBlock() {
-  /* Hand-tinted pseudo-syntax-highlighted HCL. Avoids pulling in a
-     full highlighter for one snippet. */
   return (
-    <pre
-      class="min-w-0 text-[13px] sm:text-sm  font-mono
+    <HclCode
+      source={snippet(rulesSrc)}
+      class="min-w-0 text-[13px] sm:text-sm font-mono
         bg-navy text-canvas/85 squircle-md p-6 overflow-x-auto
-        border border-navy-700"
-    >
-      <code>
-        <span class="text-text-subtle">
-          # Block destructive SQL on prod{"\n"}
-        </span>
-        <span class="text-rust-300">rule</span>{" "}
-        <span class="text-butter-300">"no-prod-drops"</span>
-        {" {\n"}
-        {"  "}
-        <span class="text-rust-300">endpoint</span>
-        {"  = pg-prod\n"}
-        {"  "}
-        <span class="text-rust-300">condition</span>
-        {" = "}
-        <span class="text-butter-300">"sql.verb in ['drop', 'truncate']"</span>
-        {"\n  "}
-        <span class="text-rust-300">verdict</span>
-        {"   = "}
-        <span class="text-butter-300">"deny"</span>
-        {"\n}\n\n"}
-        <span class="text-text-subtle">
-          # Slack-approve any GitHub write{"\n"}
-        </span>
-        <span class="text-rust-300">rule</span>{" "}
-        <span class="text-butter-300">"github-writes"</span>
-        {" {\n"}
-        {"  "}
-        <span class="text-rust-300">endpoint</span>
-        {"  = github-api\n"}
-        {"  "}
-        <span class="text-rust-300">condition</span>
-        {" = "}
-        <span class="text-butter-300">
-          "http.method in ['POST', 'PUT', 'DELETE']"
-        </span>
-        {"\n  "}
-        <span class="text-rust-300">approve</span>
-        {"   = [ops]\n"}
-        {"}\n\n"}
-        <span class="text-text-subtle">
-          # Hand sensitive reads to an LLM judge{"\n"}
-        </span>
-        <span class="text-rust-300">approver</span>{" "}
-        <span class="text-butter-300">"llm_approver"</span>{" "}
-        <span class="text-butter-300">"secret-judge"</span>
-        {" {\n"}
-        {"  "}
-        <span class="text-rust-300">model</span>
-        {"  = "}
-        <span class="text-butter-300">"claude-haiku-4-5"</span>
-        {"\n  "}
-        <span class="text-rust-300">policy</span>
-        {" = "}
-        <span class="text-butter-300">"reject changes with bad words"</span>
-        {"\n}"}
-      </code>
-    </pre>
+        border border-navy-700 whitespace-pre"
+    />
   );
 }
 

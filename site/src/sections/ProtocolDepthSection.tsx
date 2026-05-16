@@ -1,5 +1,9 @@
 import { HclCode } from "../components/HclCode";
 import { SectionLabel } from "../components/SectionLabel";
+import { snippet } from "../lib/example";
+import httpsSrc from "../../examples/protocol-https.hcl?raw";
+import sqlSrc from "../../examples/protocol-sql.hcl?raw";
+import k8sSrc from "../../examples/protocol-k8s.hcl?raw";
 
 /* ──────────────────────────────────────────────────────────────────────
    Multi-protocol depth — sells the idea that the gateway doesn't just
@@ -18,36 +22,21 @@ const PROTOCOLS: {
     body:
       "Method, path, headers, body. Any host, any service. " +
       "Hostname matching is implicit via the endpoint scope.",
-    example: `rule "github-no-repo-delete" {
-  endpoint  = github-api
-  condition = "http.method == 'DELETE' && http.path.startsWith('/repos/')"
-  verdict   = "deny"
-  reason    = "deleting repos is not allowed"
-}`,
+    example: snippet(httpsSrc),
   },
   {
     name: "SQL",
     body:
       "Postgres and ClickHouse traffic parsed verb-by-verb. " +
       "Match SELECT, INSERT, DROP. Inspect tables and statement text.",
-    example: `rule "no-ddl" {
-  endpoint  = pg-writer
-  condition = "sql.verb in ['drop', 'truncate', 'alter']"
-  verdict   = "deny"
-  reason    = "no DDL"
-}`,
+    example: snippet(sqlSrc),
   },
   {
     name: "Kubernetes",
     body:
       "API calls to kube-apiserver. Match by namespace, resource, " +
       "and verb — protect prod from accidental kubectl delete.",
-    example: `rule "no-secrets" {
-  endpoints = [k8s-dev-ams, k8s-dev-ord]
-  condition = "k8s.resource == 'secrets'"
-  verdict   = "deny"
-  reason    = "Secret values must not leave the cluster"
-}`,
+    example: snippet(k8sSrc),
   },
 ];
 
