@@ -324,14 +324,46 @@ type Gateway struct {
 	transports sync.Map // *config.CompiledEndpoint -> *http.Transport
 }
 
-// transportFor returns the cached http.Transport for ep, building it
-// on first use. dialBrowserTLS for Cloudflare-fronted hosts; mTLS
-// endpoints stay on dialUpstream so credential plugins run.
-func (g *Gateway) transportFor(ep *config.CompiledEndpoint) *http.Transport {
-	if v, ok := g.transports.Load(ep); ok {
-		return v.(*http.Transport)
+// transportFor returns the cached http.Transport for a current endpoint,
+// building it on first use. If an in-flight connection still references an
+// endpoint pointer from a previous policy generation, return an uncached
+// transport and a release function instead of re-inserting the stale pointer.
+// dialBrowserTLS for Cloudflare-fronted hosts; mTLS endpoints stay on
+// dialUpstream so credential plugins run.
+func (g *Gateway) transportFor(ep *config.CompiledEndpoint) (*http.Transport, func()) {
+	if !g.endpointInCurrentPolicy(ep) {
+		tr := g.newTransport(ep)
+		return tr, tr.CloseIdleConnections
 	}
-	tr := &http.Transport{
+	tr := g.newTransport(ep)
+	actual, _ := g.transports.LoadOrStore(ep, tr)
+	actualTransport := actual.(*http.Transport)
+	if actualTransport != tr {
+		tr.CloseIdleConnections()
+	}
+	if !g.endpointInCurrentPolicy(ep) {
+		g.transports.Delete(ep)
+		actualTransport.CloseIdleConnections()
+		return actualTransport, actualTransport.CloseIdleConnections
+	}
+	return actualTransport, func() {}
+}
+
+func (g *Gateway) endpointInCurrentPolicy(ep *config.CompiledEndpoint) bool {
+	policy := g.Policy()
+	if policy == nil {
+		return true
+	}
+	for _, current := range policy.Endpoints {
+		if current == ep {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *Gateway) newTransport(ep *config.CompiledEndpoint) *http.Transport {
+	return &http.Transport{
 		DialContext: g.dialer.DialContext,
 		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			h, _, err := net.SplitHostPort(addr)
@@ -349,8 +381,29 @@ func (g *Gateway) transportFor(ep *config.CompiledEndpoint) *http.Transport {
 		MaxIdleConns:        128,
 		MaxIdleConnsPerHost: 8,
 	}
-	actual, _ := g.transports.LoadOrStore(ep, tr)
-	return actual.(*http.Transport)
+}
+
+func (g *Gateway) pruneTransports(policy *config.CompiledPolicy) {
+	live := map[*config.CompiledEndpoint]struct{}{}
+	if policy != nil {
+		for _, ep := range policy.Endpoints {
+			live[ep] = struct{}{}
+		}
+	}
+	g.transports.Range(func(key, value any) bool {
+		ep, ok := key.(*config.CompiledEndpoint)
+		if !ok {
+			return true
+		}
+		if _, keep := live[ep]; keep {
+			return true
+		}
+		g.transports.Delete(key)
+		if tr, ok := value.(*http.Transport); ok {
+			tr.CloseIdleConnections()
+		}
+		return true
+	})
 }
 
 // Policy returns the current snapshot of the lowered runtime policy.
@@ -423,6 +476,7 @@ func (g *Gateway) watchConfig(path string) {
 			continue
 		}
 		g.policy.Store(policy)
+		g.pruneTransports(policy)
 		registerOAuthCredentials(g.oauth, policy)
 		g.connIdx.Store(runtime.BuildConnIndex(policy))
 		if g.tunnels != nil {
@@ -1719,7 +1773,8 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 	// which threw away the idle-conn pool and racked up ~10KB of
 	// internal map allocations per request. Per-endpoint cache lets
 	// repeat requests to the same upstream reuse keep-alives.
-	transport := g.transportFor(ep)
+	transport, releaseTransport := g.transportFor(ep)
+	defer releaseTransport()
 
 	br := bufio.NewReader(tc)
 	for {
