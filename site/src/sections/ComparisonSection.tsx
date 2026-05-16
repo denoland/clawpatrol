@@ -2,10 +2,8 @@ import { SectionLabel } from "../components/SectionLabel";
 
 type Player = { name: string; url: string };
 type Group = { label?: string; players: Player[] };
-type Scope = "covered" | "complement";
 type Category = {
   title: string;
-  scope: Scope;
   groups: Group[];
   gap: string;
 };
@@ -13,7 +11,6 @@ type Category = {
 const CATEGORIES: Category[] = [
   {
     title: "Watch the LLM call",
-    scope: "complement",
     groups: [
       {
         label: "LLM Gateways",
@@ -52,7 +49,6 @@ const CATEGORIES: Category[] = [
   },
   {
     title: "Watch the tool call",
-    scope: "covered",
     groups: [
       {
         players: [
@@ -71,7 +67,6 @@ const CATEGORIES: Category[] = [
   },
   {
     title: "Sandbox the process",
-    scope: "complement",
     groups: [
       {
         players: [
@@ -87,7 +82,6 @@ const CATEGORIES: Category[] = [
   },
   {
     title: "Hold the keys",
-    scope: "covered",
     groups: [
       {
         players: [
@@ -114,11 +108,6 @@ const COLOR_CLASSES = [
   "bg-butter-100",
   "bg-canvas",
 ];
-
-const SCOPE_LABEL: Record<Scope, string> = {
-  covered: "claw patrol covers this",
-  complement: "complementary",
-};
 
 export function ComparisonSection() {
   return (
@@ -151,42 +140,32 @@ export function ComparisonSection() {
 function CategoryCard(
   { category: c, colorClass }: { category: Category; colorClass: string },
 ) {
-  const scopeClass = c.scope === "covered"
-    ? "text-rust-700"
-    : "text-text-subtle";
   return (
     <div class="bg-transparent relative squircle-sm p-6 flex flex-col">
       <div class="absolute w-full h-full border-navy border-2 squircle-sm inset-0 z-10" />
       <div class="relative z-10 flex-1">
-        <h4 class="text-xl font-display font-bold text-text mb-1">
+        <h4 class="text-xl font-display font-bold text-text mb-4">
           {c.title}
         </h4>
-        <div
-          class={"font-mono uppercase tracking-wider text-[10px] mb-4 " +
-            scopeClass}
-        >
-          {SCOPE_LABEL[c.scope]}
-        </div>
         <div class="space-y-3">
           {c.groups.map((g, i) => (
             <div key={g.label ?? i}>
               {g.label && (
-                <div class="text-text-subtle font-mono uppercase tracking-wider text-2xs mb-1">
+                <div class="text-text-subtle font-mono uppercase tracking-wider text-2xs mb-1.5">
                   {g.label}
                 </div>
               )}
-              <div class="text-[14px] text-text leading-relaxed">
-                {g.players.map((p, j) => (
-                  <span key={p.name}>
-                    {j > 0 && <span class="text-text-subtle"> · </span>}
+              <div class="space-y-0.5">
+                {g.players.map((p) => (
+                  <div key={p.name}>
                     <a
                       href={p.url}
-                      class="font-medium hover:text-rust hover:underline
-                        underline-offset-2 transition-colors"
+                      class="text-[14px] font-medium text-text hover:text-rust
+                        hover:underline underline-offset-2 transition-colors"
                     >
                       {p.name}
                     </a>
-                  </span>
+                  </div>
                 ))}
               </div>
             </div>
@@ -222,11 +201,11 @@ function SynthesisCard() {
         </h4>
       </div>
       <p class="text-text text-[15px] sm:text-base max-w-3xl leading-relaxed">
-        Covers two of the four. Watches the tool call at the protocol layer
-        (Postgres, Kubernetes, ClickHouse, HTTPS, SSH) so rules match SQL
-        verbs and k8s resources directly. Holds the secrets. Routes risky
-        calls to a human or an LLM judge and records every byte. For LLM
-        observability or process sandboxing, layer in a complementary tool.
+        Watches the tool call at the protocol layer (Postgres, Kubernetes,
+        ClickHouse, HTTPS, SSH), so rules match SQL verbs and k8s resources
+        directly. Holds the secrets. Routes risky calls to a human or an LLM
+        judge. Records every byte. Doesn't try to be an LLM gateway or a
+        process sandbox; use a specialized tool if you need those.
       </p>
     </div>
   );
