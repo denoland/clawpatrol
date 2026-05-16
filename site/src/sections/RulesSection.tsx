@@ -54,7 +54,7 @@ export function RulesSection() {
         </div>
 
         <p class="text-xs uppercase tracking-[0.25em] font-display font-bold text-rust-300 mb-10 text-center">
-          Match anything in the packet, at any layer of abstraction
+          Match anything on the wire
         </p>
 
         <div class="space-y-10 lg:space-y-14">
