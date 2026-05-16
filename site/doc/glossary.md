@@ -72,8 +72,8 @@ One unit of agent work the gateway sees and applies policy to — one
 HTTP call, one SQL query, one `kubectl` invocation, one SSH command.
 Each action targets an [endpoint](#endpoint), is gated by the matching
 [rule](#rule)'s [outcome](#outcome), and surfaces in the dashboard's
-live request feed (record kinds: `http`, `sql`, `k8s`, `ssh`) with its
-own detail page. "Action" is the operator-visible concept of "the
+live request feed (action [families](#facet): `http`, `sql`, `k8s`,
+`ssh`) with its own detail page. "Action" is the operator-visible concept of "the
 thing the agent did."
 
 ### Rule
