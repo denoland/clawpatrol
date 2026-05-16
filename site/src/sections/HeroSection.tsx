@@ -18,15 +18,16 @@ export function HeroSection() {
                mb-8 font-display text-balance
               text-text"
           >
-            Let your agents read prod. Lock down the writes.
+            Give your agents read access. Gate the writes.
           </h1>
           <p
             class="mb-10 max-w-lg
             text-text-muted"
           >
-            Claw Patrol inspects every outbound call — SQL, the Kubernetes API, HTTP semantics.
-            Reads pass through. Writes run against rules you write in HCL, with risky ones routed to
-            a human in Slack. Secrets live in the proxy, not the agent.
+            Plugins parse each protocol — SQL, Kubernetes, HTTPS, SSH — so your rules match on
+            semantics, not URLs. Block <code>DROP TABLE</code>. Route{" "}
+            <code>kubectl delete pod</code> to a human in Slack. Let an LLM judge whether a{" "}
+            <code>SELECT</code> leaks secrets. Secrets stay in the proxy, never the agent.
           </p>
           <InstallTerminal />
         </div>
