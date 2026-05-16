@@ -3,5 +3,5 @@
 // transformIndexHtml hook, and docs-render.ts uses SITE_TITLE for the
 // prerender meta tags. Change here, both surfaces update.
 
-export const HERO_H1 = "Security proxy for agents";
+export const HERO_H1 = "The security firewall for agents";
 export const SITE_TITLE = `Claw Patrol - ${HERO_H1}`;

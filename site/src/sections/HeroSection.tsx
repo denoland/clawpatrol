@@ -22,19 +22,18 @@ export function HeroSection() {
             {HERO_H1}
           </h1>
           <p
-            class="text-xl sm:text-2xl mb-6 max-w-lg font-display
+            class="text-xl sm:text-2xl mb-4 max-w-lg font-display
             font-semibold text-text text-balance"
           >
-            Read access to any service. Gate the writes.
+            Sleep easy while your agents have access to prod.
           </p>
           <p
             class="mb-10 max-w-lg
             text-text-muted"
           >
-            You write the rules. Plugins parse each protocol (SQL, Kubernetes, HTTPS, SSH, …) so they
-            can match on semantics, not URLs: block <code>DROP TABLE</code>, require human approval
-            for <code>kubectl delete pod</code>, or have an LLM judge whether a{" "}
-            <code>SELECT</code> leaks secrets. Secrets stay in the proxy, never the agent.
+            Claw Patrol holds your credentials, parses every protocol at the wire, and gates each
+            action with rules you write. Block <code>DROP TABLE</code>. Gate{" "}
+            <code>kubectl delete pod</code>. Send POSTs to GitHub through an LLM judge.
           </p>
           <InstallTerminal />
         </div>
