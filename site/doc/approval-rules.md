@@ -316,14 +316,6 @@ rules in priority order as usual. For each rule:
   so logs and dashboards still attribute the deny to the rule whose
   contract the truncation broke.
 
-The truncatable-facet set is family-specific:
-
-| Family | Truncatable facets | Non-truncatable facets |
-|--------|---------------------|-------------------------|
-| `http` | `http.body`, `http.body_json` | `http.method`, `http.path`, `http.query`, `http.headers` |
-| `sql`  | `sql.verb`, `sql.tables`, `sql.functions`, `sql.statement` | `sql.database` (resolved off StartupMessage / `Hello` / URL+header, not the frame body) |
-| `k8s`  | — | `k8s.verb`, `k8s.resource`, `k8s.namespace`, `k8s.name`, `k8s.params` (all derived from URL + method) |
-
 `credential` (the top-level rule attribute) is always non-truncatable
 — it's resolved off the connection's authenticated identity. The
 upshot: a method-only or credential-only rule on an `https` endpoint
