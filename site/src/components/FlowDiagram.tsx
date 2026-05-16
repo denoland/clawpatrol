@@ -173,7 +173,7 @@ function CenterNode({ label, sub }: { label: string; sub: string }) {
       <img
         src="/claw-patrol-logo.svg"
         alt={label}
-        class="h-10 sm:h-12 w-auto mx-auto"
+        class="h-8 sm:h-10 w-auto mx-auto"
       />
       <div
         class="font-mono text-[11px] uppercase tracking-wider mt-2
