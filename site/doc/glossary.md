@@ -80,31 +80,44 @@ thing the agent did."
 
 One policy decision targeting one or more [endpoints](#endpoint). A
 rule has a CEL [`condition`](#cel-condition) string that matches against
-the [facets](#facet) of the rule's protocol family (inferred from its
-endpoints), an optional `credential` predicate, and an [outcome](#outcome)
-— either a literal `verdict` or an `approve = [...]` chain. Rules are
-one HCL block kind (`rule "<name>" { ... }`); the family is inferred
-from the endpoint(s) at load time, and mixed-family endpoint sets are
-a load error.
+the [facet fields](#facet-field) of the rule's [facet](#facet)
+(inferred from its endpoints), an optional `credential` predicate, and
+an [outcome](#outcome) — either a literal `verdict` or an
+`approve = [...]` chain. Rules are one HCL block kind
+(`rule "<name>" { ... }`); the facet is inferred from the endpoint(s)
+at load time, and mixed-facet endpoint sets are a load error.
 
 ### Facet
 
-A single named matchable property exposed to a [rule](#rule)'s CEL
-[`condition`](#cel-condition). Each protocol family exposes its own
-top-level struct-typed variable: `http.method` / `http.path` /
-`http.query` / `http.headers` / `http.body` / `http.body_json`;
-`sql.verb` / `sql.tables` / `sql.functions` / `sql.statement`;
-`k8s.verb` / `k8s.resource` / `k8s.namespace` / `k8s.name` /
-`k8s.params`. Per-facet types vary — `method` and `verb` are scalar
-strings, `tables` / `functions` are lists, `query` / `headers` /
-`params` are maps, and `body_json` is parsed-JSON `dyn`.
+*Alias: **Family**.* The protocol class an [action](#action) belongs
+to. An action belongs to exactly one facet; built-in facets are `http`,
+`sql`, `ssh`, and `k8s`. A [rule](#rule)'s facet is inferred from its
+endpoint(s) at load time, and mixed-facet endpoint sets are a load
+error. Each facet exposes its own set of named matchable
+[fields](#facet-field) to a rule's CEL [`condition`](#cel-condition).
+
+### Facet field
+
+*Alias: **Family field**.* A single named matchable property a
+[facet](#facet) exposes to a [rule](#rule)'s CEL
+[`condition`](#cel-condition), addressed as `<facet>.<field>` in CEL.
+Each facet defines its own group of fields — for example, the `sql`
+facet has `sql.verb`, `sql.functions`, `sql.tables`, `sql.statement`,
+and `sql.database`; the `http` facet has `http.method`, `http.path`,
+`http.query`, `http.headers`, `http.body`, and `http.body_json`; the
+`k8s` facet has `k8s.verb`, `k8s.resource`, `k8s.namespace`,
+`k8s.name`, and `k8s.params`. Per-field types vary — `method` and
+`verb` are scalar strings, `tables` / `functions` are lists,
+`query` / `headers` / `params` are maps, and `body_json` is parsed-JSON
+`dyn`.
 
 ### CEL condition
 
 The boolean expression a [rule](#rule)'s `condition = "..."` field
 carries. CEL ([Common Expression Language](https://github.com/google/cel-spec))
-is evaluated against the [facets](#facet) of the rule's inferred
-family. Idioms: equality / membership (`http.method == 'POST'`,
+is evaluated against the [facet fields](#facet-field) of the rule's
+inferred [facet](#facet). Idioms: equality / membership
+(`http.method == 'POST'`,
 `sql.verb in ['select', 'show']`), prefix / suffix / substring
 (`k8s.name.startsWith('debug-')`, `http.body.contains('secret')`),
 regex (`sql.statement.matches('(?i)\\bpassword\\b')`), list overlap
