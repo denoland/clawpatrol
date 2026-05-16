@@ -3,13 +3,6 @@ import { SectionLabel } from "../components/SectionLabel";
 import { snippet } from "../lib/example";
 import { protocol_https, protocol_k8s, protocol_sql } from "../lib/examples";
 
-/* ──────────────────────────────────────────────────────────────────────
-   The rules pillar — combines the previous RulesSection (authorship
-   framing, hot reload) with ProtocolDepthSection (3-up per-protocol
-   examples) into one dark-navy section that does both jobs. The
-   landing page previously had two sections covering this ground.
-   ──────────────────────────────────────────────────────────────────── */
-
 const PROTOCOLS: {
   name: string;
   body: string;
@@ -18,22 +11,25 @@ const PROTOCOLS: {
   {
     name: "HTTPS",
     body:
-      "Method, path, headers, body. Any host, any service. " +
-      "Hostname matching is implicit via the endpoint scope.",
+      "Method, path, headers, body. Any host, any service. Match an " +
+      "HTTP request shape, route it through an LLM judge before it " +
+      "goes out.",
     example: snippet(protocol_https),
   },
   {
     name: "SQL",
     body:
-      "Postgres and ClickHouse traffic parsed verb-by-verb. " +
-      "Match SELECT, INSERT, DROP. Inspect tables and statement text.",
+      "Postgres and ClickHouse traffic parsed verb-by-verb. Match by " +
+      "SQL verb, table, function name, even substrings of the " +
+      "statement itself.",
     example: snippet(protocol_sql),
   },
   {
     name: "Kubernetes",
     body:
       "API calls to kube-apiserver. Match by namespace, resource, " +
-      "and verb — protect prod from accidental kubectl delete.",
+      "verb, and name. Catch destructive verbs on the wrong cluster, " +
+      "or hand exec commands to an LLM.",
     example: snippet(protocol_k8s),
   },
 ];
@@ -49,7 +45,7 @@ export function RulesSection() {
             You write the rules.{" "}
             <span class="text-rust">Claw Patrol enforces them.</span>
           </h3>
-          <p class="text-base  text-canvas/70">
+          <p class="text-base text-canvas/70">
             Every outbound request runs through a rule engine before it leaves
             your machine. Match on HTTP method, SQL verb, k8s resource,
             plugin-defined facets — not just URLs. Edits are hot: save a rule
@@ -57,29 +53,35 @@ export function RulesSection() {
           </p>
         </div>
 
-        <p class="text-xs uppercase tracking-[0.25em] font-display font-bold text-rust-300 mb-5 text-center">
+        <p class="text-xs uppercase tracking-[0.25em] font-display font-bold text-rust-300 mb-10 text-center">
           Match anything in the action
         </p>
-        <ul class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+
+        <div class="space-y-10 lg:space-y-14">
           {PROTOCOLS.map((p) => (
-            <li
+            <div
               key={p.name}
-              class="min-w-0 bg-navy squircle-lg p-6
-                flex flex-col gap-4"
+              class="grid grid-cols-1 lg:grid-cols-[1fr_2fr] gap-6 lg:gap-12 items-start"
             >
-              <h4 class="text-3xl font-display font-bold text-canvas">
-                {p.name}
-              </h4>
-              <p class="text-sm  text-canvas/70">{p.body}</p>
+              <div class="min-w-0">
+                <h4 class="text-3xl font-display font-bold text-canvas mb-3">
+                  {p.name}
+                </h4>
+                <p class="text-base text-canvas/70 max-w-sm">{p.body}</p>
+              </div>
               <HclCode
                 source={p.example}
-                class="block text-[12px] mt-2 font-mono
-                  bg-navy-950 text-canvas/85 px-3 py-2 rounded-sm
-                  whitespace-pre overflow-x-auto [scrollbar-width:none]"
+                class="min-w-0 text-[13px] sm:text-sm font-mono leading-relaxed
+                  bg-navy-950 text-canvas/85 squircle-md p-5 sm:p-6
+                  overflow-x-auto whitespace-pre border border-navy-800"
               />
-            </li>
+            </div>
           ))}
-        </ul>
+        </div>
+
+        <p class="mt-14 text-sm text-canvas/55 text-center max-w-xl mx-auto">
+          Plus SSH commands, ClickHouse queries, and any plugin you write.
+        </p>
       </div>
     </section>
   );
