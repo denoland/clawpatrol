@@ -354,9 +354,10 @@ driver doesn't disconnect:
 ### Why fail-closed
 
 A truncated body might contain content that *would* have triggered a
-deny rule the gateway can't see, so refusing is the safe default.
-Operators who hit the cap on legitimate traffic need the constant
-raised in source.
+deny rule the gateway can't see, so refusing is the safe default. If
+legitimate traffic is expected to exceed the cap, write the rules
+against non-truncatable facets only (see the table above) — those
+rules still match on a truncated request and won't auto-deny.
 
 
 ## Examples
