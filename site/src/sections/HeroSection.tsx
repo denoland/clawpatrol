@@ -1,6 +1,12 @@
 import { FlowDiagram } from "../components/FlowDiagram";
 import { InstallTerminal } from "../components/InstallTerminal";
-import { HERO_H1 } from "../copy";
+
+// Single source of truth for the hero H1 and the page <title>.
+// vite.config.ts uses SITE_TITLE in a transformIndexHtml hook, and
+// docs-render.ts uses SITE_TITLE for prerender meta tags. Change
+// here and all three surfaces stay in lockstep.
+export const HERO_H1 = "The security firewall for agents";
+export const SITE_TITLE = `Claw Patrol - ${HERO_H1}`;
 
 export function HeroSection() {
   return (
@@ -31,9 +37,9 @@ export function HeroSection() {
             class="mb-10 max-w-lg
             text-text-muted"
           >
-            Claw Patrol holds your credentials, parses every protocol at the wire, and gates each
-            action with rules you write. Block <code>DROP TABLE</code>. Gate{" "}
-            <code>kubectl delete pod</code>. Send POSTs to GitHub through an LLM judge.
+            Claw Patrol holds agent credentials, parses their traffic at the wire, and gates
+            actions they take with rules you write. Block <code>DROP TABLE</code>. Have a human approve{" "}
+            <code>kubectl delete pod</code>. Have an LLM judge review support responses.
           </p>
           <InstallTerminal />
         </div>

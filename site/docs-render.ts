@@ -46,7 +46,7 @@ import { Footer } from "./src/components/Footer";
 import { Header } from "./src/components/Header";
 import { Landing } from "./src/Landing";
 import { Stripe } from "./src/components/Stripe";
-import { SITE_TITLE } from "./src/copy";
+import { SITE_TITLE } from "./src/sections/HeroSection";
 
 export const SITE_ORIGIN = "https://clawpatrol.dev";
 export const DEFAULT_OG_IMAGE = `${SITE_ORIGIN}/clawpatrol.png`;
