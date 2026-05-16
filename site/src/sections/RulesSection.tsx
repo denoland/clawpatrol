@@ -79,8 +79,14 @@ export function RulesSection() {
           ))}
         </div>
 
-        <p class="mt-14 text-sm text-canvas/55 text-center max-w-xl mx-auto">
-          Plus SSH commands, ClickHouse queries, and any plugin you write.
+        <p class="mt-14 text-sm text-canvas/70 text-center max-w-xl mx-auto">
+          Extend Claw Patrol with your own protocol plugins.{" "}
+          <a
+            href="/docs/plugins/"
+            class="text-rust-300 hover:text-rust-200 underline underline-offset-4"
+          >
+            Read more →
+          </a>
         </p>
       </div>
     </section>
