@@ -6,7 +6,6 @@ type Category = {
   title: string;
   groups: Group[];
   gap: string;
-  note?: string;
 };
 
 const CATEGORIES: Category[] = [
@@ -78,9 +77,6 @@ const CATEGORIES: Category[] = [
       },
     ],
     gap: "Confines what the agent can touch, not whether each action makes sense.",
-    note:
-      "Complementary to Claw Patrol. Most agents already run in their own " +
-      "VM; if yours doesn't, layer an OS sandbox underneath.",
   },
   {
     title: "Hold the keys",
@@ -104,9 +100,6 @@ const CATEGORIES: Category[] = [
   },
 ];
 
-// Offset colored backgrounds matching the rules section's four-verdict
-// cards. Each card gets a different tint; the navy-bordered frame sits
-// in front, the colored block peeks out from the bottom-right.
 const COLOR_CLASSES = [
   "bg-rust-100",
   "bg-navy-100",
@@ -129,7 +122,11 @@ export function ComparisonSection() {
         </p>
         <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6 sm:mb-8">
           {CATEGORIES.map((c, i) => (
-            <CategoryCard key={c.title} category={c} colorClass={COLOR_CLASSES[i]} />
+            <CategoryCard
+              key={c.title}
+              category={c}
+              colorClass={COLOR_CLASSES[i]}
+            />
           ))}
         </div>
         <SynthesisCard />
@@ -142,13 +139,13 @@ function CategoryCard(
   { category: c, colorClass }: { category: Category; colorClass: string },
 ) {
   return (
-    <div class="bg-transparent relative squircle-sm p-6">
+    <div class="bg-transparent relative squircle-sm p-6 flex flex-col">
       <div class="absolute w-full h-full border-navy border-2 squircle-sm inset-0 z-10" />
-      <div class="relative z-10">
+      <div class="relative z-10 flex-1">
         <h4 class="text-xl font-display font-bold text-text mb-4">
           {c.title}
         </h4>
-        <div class="space-y-3 mb-4">
+        <div class="space-y-3">
           {c.groups.map((g, i) => (
             <div key={g.label ?? i}>
               {g.label && (
@@ -173,13 +170,13 @@ function CategoryCard(
             </div>
           ))}
         </div>
-        <p class="text-text-muted text-[13px] italic border-l-2 border-navy-300 pl-3 mb-3">
-          {c.gap}
-        </p>
-        {c.note && (
-          <p class="text-text text-[13px] font-medium">{c.note}</p>
-        )}
       </div>
+      <p
+        class="relative z-10 border-t border-navy/30 pt-3 mt-4
+          text-text-muted text-[12px] italic"
+      >
+        {c.gap}
+      </p>
       <div
         class={"isolate absolute w-full h-full squircle-sm top-1.5 left-2 z-0 " +
           colorClass}
@@ -190,22 +187,19 @@ function CategoryCard(
 
 function SynthesisCard() {
   return (
-    <div
-      class="p-8 sm:p-12 squircle-md
-        bg-rust-200 border-2 border-navy"
-    >
-      <div class="flex items-center gap-3 mb-4">
+    <div class="p-6 sm:p-8 squircle-md bg-rust-200 border-2 border-navy">
+      <div class="flex items-center gap-3 mb-3">
         <img
           src="/claw-patrol-icon.svg"
           alt=""
-          class="w-10 h-10"
+          class="w-8 h-8"
           aria-hidden="true"
         />
-        <h4 class="font-display font-bold text-3xl sm:text-4xl text-text">
+        <h4 class="font-display font-bold text-2xl sm:text-3xl text-text">
           Claw Patrol
         </h4>
       </div>
-      <p class="text-text text-base sm:text-lg max-w-3xl leading-relaxed">
+      <p class="text-text text-[15px] sm:text-base max-w-3xl leading-relaxed">
         Parses Postgres, Kubernetes, ClickHouse, HTTPS, and SSH at the protocol
         layer, so rules can match a SQL verb or a k8s resource directly. Holds
         the secrets, routes risky calls to a human or an LLM judge, records
