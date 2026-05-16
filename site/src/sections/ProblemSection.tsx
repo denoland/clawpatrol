@@ -4,27 +4,29 @@ const PROBLEMS = [
   {
     title: "Your agent shouldn't see secrets",
     body:
-      "Every API key in the agent's env is one you've handed over. " +
-      "If the process is compromised (and prompts can compromise " +
-      "it), the keys leak with it. Rotation is hard. Per-action " +
-      "auditing is impossible.",
+      "Every API key in the agent's env is one you've handed " +
+      "over. If the process is compromised (and prompts can " +
+      "compromise it), the keys leak with it. Rotation is hard, " +
+      "and you can't easily revoke a single action's worth of " +
+      "access.",
   },
   {
     title: "Granting access doesn't gate actions",
     body:
       "OAuth scopes grant the agent broad permission inside a " +
       "service: any action the scope allows. A prompt-injected " +
-      "agent will use it against you. And every service has its " +
-      "own scope model, leaving no single place to gate actions " +
-      "across the stack.",
+      "agent will use that permission against you. You need to " +
+      "check what each request does, not just whether the agent " +
+      "is allowed to send something.",
   },
   {
     title: "You can't see what your agents do",
     body:
-      "A fleet of agents making thousands of requests across dozens " +
-      "of services leaves no shared trace. Debugging \"what did my " +
-      "agent just do?\" means per-service log spelunking. There's " +
-      "no single place to watch them.",
+      "A fleet of agents making thousands of requests across " +
+      "dozens of services leaves no shared trace. Debugging " +
+      "\"what did my agent just do?\" means per-service log " +
+      "spelunking, and by the time you notice the bad request, " +
+      "it's already gone through.",
   },
 ];
 
