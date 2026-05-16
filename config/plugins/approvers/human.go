@@ -11,6 +11,7 @@ package approvers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -119,7 +120,12 @@ func (h *HumanApprover) Approve(ctx context.Context, req runtime.ApproveRequest)
 	pending := buildPending(req)
 	pending.ExpiresAt = pending.CreatedAt.Add(timeout)
 	id, ch := req.Pool.Add(pending)
-	defer req.Pool.Discard(id)
+	discardOnReturn := true
+	defer func() {
+		if discardOnReturn {
+			req.Pool.Discard(id)
+		}
+	}()
 
 	var summary *runtime.HITLSummary
 	if h.Classifier != "" && req.Policy != nil {
@@ -185,6 +191,23 @@ func (h *HumanApprover) Approve(ctx context.Context, req runtime.ApproveRequest)
 			Reason: reason,
 		}, nil
 	case <-ctx.Done():
+		if req.AsyncPendingOnSyncTimeout && errors.Is(ctx.Err(), context.DeadlineExceeded) && req.AsyncOperationID != "" {
+			reason := fmt.Sprintf("approver %q sync wait timed out; upstream request was not sent and async approval remains pending", req.ApproverName)
+			if updater, ok := req.Pool.(runtime.HITLPoolUpdater); ok {
+				updated := updater.Update(id, func(p *runtime.HITLPending) {
+					p.OperationID = req.AsyncOperationID
+					p.OperationState = runtime.HITLOperationStatePendingApproval
+					p.ApprovalEffect = runtime.HITLApprovalEffectCreateRetryGrant
+					p.UpstreamCalled = false
+					p.ApprovalMessage = ""
+					runtime.NormalizeHITLPendingApproval(p)
+				})
+				if updated {
+					discardOnReturn = false
+					return runtime.ApproveVerdict{Decision: runtime.ApproveDecisionAsyncPending, Reason: reason}, nil
+				}
+			}
+		}
 		state, reason := hitlCancelStateForContext(ctx.Err())
 		result := cancelPending(req.Pool, id, state, reason)
 		if verdict, ok := terminalDecisionVerdict(result, ch); ok {

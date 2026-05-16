@@ -2235,10 +2235,11 @@ func wrapBodySampler(rc io.ReadCloser, s *sampler) io.ReadCloser {
 const hitlTerminalTTL = 30 * time.Minute
 
 type HITLRegistry struct {
-	mu       sync.Mutex
-	pending  map[string]*pendingEntry
-	terminal map[string]terminalHITLEntry
-	sink     *Sink // SSE fan-out for the dashboard
+	mu                 sync.Mutex
+	pending            map[string]*pendingEntry
+	terminal           map[string]terminalHITLEntry
+	sink               *Sink // SSE fan-out for the dashboard
+	asyncGrantResolver func(operationID string, d runtime.HITLDecision) runtime.HITLResolveResult
 }
 
 type pendingEntry struct {
@@ -2291,6 +2292,21 @@ func (r *HITLRegistry) Discard(id string) {
 	r.mu.Unlock()
 }
 
+func (r *HITLRegistry) Update(id string, mutate func(*runtime.HITLPending)) bool {
+	if mutate == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e := r.pending[id]
+	if e == nil {
+		return false
+	}
+	mutate(&e.p)
+	runtime.NormalizeHITLPendingApproval(&e.p)
+	return true
+}
+
 func (r *HITLRegistry) List() []runtime.HITLPending {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -2326,14 +2342,30 @@ func (r *HITLRegistry) DecideWithResult(id string, d runtime.HITLDecision) runti
 	}
 	now := time.Now()
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.pruneTerminalLocked(now)
 	e := r.pending[id]
 	if e == nil {
 		if terminal, ok := r.terminal[id]; ok {
+			r.mu.Unlock()
 			return terminal.result
 		}
+		r.mu.Unlock()
 		return runtime.HITLResolveResult{OK: false, State: runtime.HITLStateUnknown, Reason: "unknown or expired HITL request"}
+	}
+	if e.p.OperationID != "" && e.p.OperationState == runtime.HITLOperationStatePendingApproval && e.p.ApprovalEffect == runtime.HITLApprovalEffectCreateRetryGrant {
+		resolver := r.asyncGrantResolver
+		if resolver == nil {
+			r.mu.Unlock()
+			return runtime.HITLResolveResult{OK: false, State: runtime.HITLStateUnknown, Reason: "async HITL retry-grant resolver is unavailable"}
+		}
+		delete(r.pending, id)
+		r.mu.Unlock()
+
+		result := resolver(e.p.OperationID, d)
+		r.mu.Lock()
+		r.terminal[id] = terminalHITLEntry{result: staleHITLResolveResult(result), expiresAt: now.Add(hitlTerminalTTL)}
+		r.mu.Unlock()
+		return result
 	}
 	e.decision <- d
 	delete(r.pending, id)
@@ -2341,7 +2373,13 @@ func (r *HITLRegistry) DecideWithResult(id string, d runtime.HITLDecision) runti
 		result:    runtime.HITLResolveResult{OK: false, State: state, Reason: reason},
 		expiresAt: now.Add(hitlTerminalTTL),
 	}
+	r.mu.Unlock()
 	return runtime.HITLResolveResult{OK: true, State: state, Reason: reason}
+}
+
+func staleHITLResolveResult(result runtime.HITLResolveResult) runtime.HITLResolveResult {
+	result.OK = false
+	return result
 }
 
 // Cancel resolves a pending entry without delivering a human decision.

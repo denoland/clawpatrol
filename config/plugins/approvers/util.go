@@ -22,17 +22,18 @@ func buildPending(req runtime.ApproveRequest) runtime.HITLPending {
 		family = req.Endpoint.Family
 	}
 	pending := runtime.HITLPending{
-		AgentIP:    req.AgentIP,
-		Host:       req.Host,
-		Method:     req.Method,
-		Path:       req.Path,
-		Endpoint:   runtime.HITLEndpointLabel(req),
-		Family:     family,
-		UA:         req.UA,
-		BodySample: req.BodySample,
-		Reason:     req.Reason,
-		Approvers:  []string{req.ApproverName},
-		CreatedAt:  now,
+		OperationID: req.AsyncOperationID,
+		AgentIP:     req.AgentIP,
+		Host:        req.Host,
+		Method:      req.Method,
+		Path:        req.Path,
+		Endpoint:    runtime.HITLEndpointLabel(req),
+		Family:      family,
+		UA:          req.UA,
+		BodySample:  req.BodySample,
+		Reason:      req.Reason,
+		Approvers:   []string{req.ApproverName},
+		CreatedAt:   now,
 	}
 	runtime.NormalizeHITLPendingApproval(&pending)
 	return pending

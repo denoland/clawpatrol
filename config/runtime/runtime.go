@@ -383,6 +383,11 @@ type ApproveRequest struct {
 	// prompt as a reply in this Slack thread rather than top-level.
 	// Populated from the X-HITL-Thread-TS request header.
 	ThreadTS string
+	// AsyncOperationID binds the prompt to a durable async operation.
+	// If AsyncPendingOnSyncTimeout is true and ctx hits DeadlineExceeded,
+	// human_approver leaves the prompt pending and returns async_pending.
+	AsyncOperationID          string
+	AsyncPendingOnSyncTimeout bool
 
 	// Pool exposes the gateway's shared pending-approval list — the
 	// dashboard / Slack approvers use it to publish a pending entry
@@ -411,8 +416,10 @@ type ApproveRequest struct {
 // dashboard event with the deciding approver's kind (human / llm /
 // dashboard) and id (the HCL block name) — operators looking at a
 // `denied` row see *why* without having to drill into the rule.
+const ApproveDecisionAsyncPending = "async_pending"
+
 type ApproveVerdict struct {
-	Decision     string // "allow" | "deny" | ""
+	Decision     string // "allow" | "deny" | "async_pending" | ""
 	Reason       string
 	By           string // who decided ("dashboard:<user>" / "slack:#chan" / "llm:<model>")
 	ApproverName string // HCL block name, e.g. "pg-staging-secret-columns-judge"
@@ -458,6 +465,19 @@ type HITLPoolDecider interface {
 // decision (timeout, client disconnect, gateway cancellation).
 type HITLPoolCanceler interface {
 	Cancel(id string, state HITLState, reason string) HITLResolveResult
+}
+
+// HITLPoolUpdater is implemented by pools that can update operator-facing
+// safety-copy metadata for an existing pending prompt without resolving it.
+type HITLPoolUpdater interface {
+	Update(id string, mutate func(*HITLPending)) bool
+}
+
+// HITLPoolAsyncGrantResolver lets pools bind a pending human decision to a
+// durable async operation. Implementations must not execute upstream here;
+// approval only moves the operation to a retry-grant state.
+type HITLPoolAsyncGrantResolver interface {
+	ResolveAsyncHITLGrant(operationID string, d HITLDecision) HITLResolveResult
 }
 
 // HITLState names the lifecycle state of a human approval prompt.
@@ -518,11 +538,12 @@ type HITLResolveResult struct {
 // tags match the dashboard's existing field names — that endpoint is
 // public API to the in-tree React UI.
 type HITLPending struct {
-	ID      string `json:"id"`
-	AgentIP string `json:"agent_ip"`
-	Host    string `json:"host"`
-	Method  string `json:"method"`
-	Path    string `json:"path"`
+	ID          string `json:"id"`
+	OperationID string `json:"operation_id,omitempty"`
+	AgentIP     string `json:"agent_ip"`
+	Host        string `json:"host"`
+	Method      string `json:"method"`
+	Path        string `json:"path"`
 	// OperationState and ApprovalEffect are safety-boundary display
 	// metadata. They let dashboard/Slack copy distinguish the initial
 	// synchronous wait (approval forwards upstream immediately) from async

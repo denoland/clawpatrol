@@ -1801,14 +1801,61 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		// Approve chain — dispatch each stage to its approver
 		// runtime (config/plugins/approvers). All stages must
 		// allow; first deny short-circuits.
+		var asyncOp HITLOperation
+		var asyncSyncWait time.Duration
 		if cr != nil && len(cr.Outcome.Approve) > 0 {
+			if approverID, asyncApprover, ok := g.asyncHumanApproverFor(cr.Outcome.Approve); ok {
+				start, started, err := g.maybeStartAsyncHITLOperation(req.Context(), hitlAsyncOperationInput{
+					ProfileID:   profile,
+					PrincipalID: hitlPeerPrincipalID(agentAddr),
+					Endpoint:    ep,
+					Rule:        cr,
+					ApproverID:  approverID,
+					Approver:    asyncApprover,
+					MatchReq:    mreq,
+					HTTPRequest: req,
+					RawBody:     matchBody,
+					Truncated:   truncated,
+					Now:         time.Now().UTC(),
+				})
+				if err != nil {
+					log.Printf("hitl async operation start %s %s: %v", host, req.URL.Path, err)
+				} else if started {
+					asyncOp = start.Operation
+					asyncSyncWait = start.SyncWaitTimeout
+				}
+			}
 			v := g.runApproveChain(req.Context(), cr.Outcome.Approve, runApproveCtx{
 				AgentIP: agentAddr, Host: host, Method: req.Method, Path: req.URL.RequestURI(),
 				UA: req.Header.Get("User-Agent"), BodySample: string(matchBody), Reason: cr.Outcome.Reason,
 				ThreadTS: req.Header.Get("X-HITL-Thread-TS"),
 				Endpoint: ep, Rule: cr, Profile: profile, Request: mreq,
+				AsyncOperationID: asyncOp.ID, AsyncPendingOnSyncTimeout: asyncOp.ID != "", AsyncSyncWaitTimeout: asyncSyncWait,
 			})
 			if v.Decision != "allow" {
+				if v.Decision == runtime.ApproveDecisionAsyncPending && asyncOp.ID != "" {
+					updated, err := g.transitionAsyncHITLOperation(req.Context(), asyncOp, HITLOperationStatePendingApproval, "")
+					if err != nil {
+						log.Printf("hitl async operation pending %s: %v", asyncOp.ID, err)
+					} else {
+						asyncOp = updated
+					}
+					writeHITLOperationAcceptedToConn(tc, asyncOp, g.cfg.PublicURL)
+					ev.Status = http.StatusAccepted
+					ev.Action = "hitl_async_pending"
+					ev.Approver = v.ApproverName
+					ev.ApproverType = v.ApproverType
+					ev.ApproverBy = v.By
+					ev.Reason = v.Reason
+					ev.Ms = time.Since(start).Milliseconds()
+					g.emitEnd(ev)
+					return
+				}
+				if asyncOp.ID != "" {
+					if _, err := g.transitionAsyncHITLOperation(req.Context(), asyncOp, HITLOperationStateDenied, v.Reason); err != nil {
+						log.Printf("hitl async operation deny %s: %v", asyncOp.ID, err)
+					}
+				}
 				reason := v.Reason
 				if reason == "" {
 					reason = "denied by approver"
@@ -1825,6 +1872,13 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				ev.Ms = time.Since(start).Milliseconds()
 				g.emitEnd(ev)
 				return
+			}
+			if asyncOp.ID != "" {
+				if updated, err := g.transitionAsyncHITLOperation(req.Context(), asyncOp, HITLOperationStateExecutingUpstream, ""); err != nil {
+					log.Printf("hitl async operation executing %s: %v", asyncOp.ID, err)
+				} else {
+					asyncOp = updated
+				}
 			}
 			log.Printf("approved %s %s %s by %s/%s/%s",
 				host, req.Method, req.URL.Path, v.ApproverType, v.ApproverName, v.By)
@@ -2027,6 +2081,11 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		resp, err := transport.RoundTrip(req.WithContext(context.WithValue(req.Context(), profileCtxKey{}, profile)))
 		rtDur := time.Since(rtStart)
 		if err != nil {
+			if asyncOp.ID != "" {
+				if _, trErr := g.transitionAsyncHITLOperation(req.Context(), asyncOp, HITLOperationStateUpstreamFailed, hitlAsyncFailureReason(err)); trErr != nil {
+					log.Printf("hitl async operation upstream failed %s: %v", asyncOp.ID, trErr)
+				}
+			}
 			log.Printf("mitm upstream %s %s: %v", host, req.URL.Path, err)
 			_, _ = fmt.Fprintf(tc, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
 			ev.Status = 502
@@ -2090,6 +2149,17 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		if ev.Action == "" {
 			ev.Action = "allow"
 		}
+		if asyncOp.ID != "" {
+			to := HITLOperationStateUpstreamSucceeded
+			lastErr := ""
+			if writeErr != nil {
+				to = HITLOperationStateUpstreamFailed
+				lastErr = hitlAsyncFailureReason(writeErr)
+			}
+			if _, err := g.transitionAsyncHITLOperation(req.Context(), asyncOp, to, lastErr); err != nil {
+				log.Printf("hitl async operation upstream terminal %s: %v", asyncOp.ID, err)
+			}
+		}
 		ev.Status = resp.StatusCode
 		ev.ReqHeaders = flatHeaders(req.Header)
 		ev.In = reqS.n
@@ -2127,18 +2197,21 @@ func secretEnvName(credName string) string {
 // runApproveCtx is the context blob the dispatcher passes per stage —
 // HITL prompt fields + the matching rule + the device's profile.
 type runApproveCtx struct {
-	AgentIP    string
-	Host       string
-	Method     string
-	Path       string
-	UA         string
-	BodySample string
-	Reason     string
-	ThreadTS   string
-	Endpoint   *config.CompiledEndpoint
-	Rule       *config.CompiledRule
-	Profile    string
-	Request    *match.Request
+	AgentIP                   string
+	Host                      string
+	Method                    string
+	Path                      string
+	UA                        string
+	BodySample                string
+	Reason                    string
+	ThreadTS                  string
+	Endpoint                  *config.CompiledEndpoint
+	Rule                      *config.CompiledRule
+	Profile                   string
+	Request                   *match.Request
+	AsyncOperationID          string
+	AsyncPendingOnSyncTimeout bool
+	AsyncSyncWaitTimeout      time.Duration
 }
 
 // runApproveChain dispatches each stage of an approve = [...] list to
@@ -2166,25 +2239,32 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 		if ar == nil {
 			return runtime.ApproveVerdict{Decision: "deny", Reason: "approver " + st.Name + " not found", By: "gateway", ApproverName: st.Name}
 		}
+		if c.AsyncPendingOnSyncTimeout && c.AsyncSyncWaitTimeout > 0 && c.AsyncOperationID != "" {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, c.AsyncSyncWaitTimeout)
+			defer cancel()
+		}
 		req := runtime.ApproveRequest{
-			Stage:        st,
-			Endpoint:     c.Endpoint,
-			Rule:         c.Rule,
-			Request:      c.Request,
-			ApproverName: st.Name,
-			AgentIP:      c.AgentIP,
-			Profile:      c.Profile,
-			Method:       c.Method,
-			Host:         c.Host,
-			Path:         c.Path,
-			UA:           c.UA,
-			BodySample:   c.BodySample,
-			Reason:       c.Reason,
-			ThreadTS:     c.ThreadTS,
-			Pool:         g.hitl,
-			Secrets:      g.secrets,
-			DashboardURL: g.cfg.PublicURL,
-			Policy:       policy,
+			Stage:                     st,
+			Endpoint:                  c.Endpoint,
+			Rule:                      c.Rule,
+			Request:                   c.Request,
+			ApproverName:              st.Name,
+			AgentIP:                   c.AgentIP,
+			Profile:                   c.Profile,
+			Method:                    c.Method,
+			Host:                      c.Host,
+			Path:                      c.Path,
+			UA:                        c.UA,
+			BodySample:                c.BodySample,
+			Reason:                    c.Reason,
+			ThreadTS:                  c.ThreadTS,
+			AsyncOperationID:          c.AsyncOperationID,
+			AsyncPendingOnSyncTimeout: c.AsyncPendingOnSyncTimeout,
+			Pool:                      g.hitl,
+			Secrets:                   g.secrets,
+			DashboardURL:              g.cfg.PublicURL,
+			Policy:                    policy,
 		}
 		v, err := ar.Approve(ctx, req)
 		// Stamp the entity name + plugin type on every verdict so the
@@ -2419,6 +2499,7 @@ func runGateway(args []string) {
 	}
 	log.Printf("config: read-only (the dashboard cannot edit gateway.hcl)")
 	g.secrets = newGatewaySecretStore(db, oauthReg)
+	g.hitl.asyncGrantResolver = g.resolveAsyncHITLGrant
 	g.tunnels = NewTunnelManager(g.secrets, stateDir)
 	registerOAuthCredentials(oauthReg, policy)
 	g.policy.Store(policy)
