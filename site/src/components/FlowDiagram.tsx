@@ -52,7 +52,7 @@ function ProductionNode() {
         class="font-mono text-[11px] uppercase tracking-wider mt-2
           text-text-muted text-balance"
       >
-        postgres · clickhouse · k8s · github · slack · notion · …
+        postgres · clickhouse · k8s · aws · gcp · github · slack · notion · …
       </div>
     </div>
   );

@@ -20,13 +20,12 @@ const PROBLEMS = [
       "granted.",
   },
   {
-    title: "You can't see what your agents do",
+    title: "Logs don't capture the action",
     body:
-      "A fleet of agents making thousands of requests across " +
-      "dozens of services leaves no shared trace. Debugging " +
-      "\"what did my agent just do?\" means per-service log " +
-      "spelunking, and by the time you notice the bad request, " +
-      "it's already gone through.",
+      "Reconstructing what an agent did means stitching together " +
+      "per-service logs, which usually don't capture the actual " +
+      "request payload. And by the time you notice the bad " +
+      "action, it's already gone through.",
   },
 ];
 
