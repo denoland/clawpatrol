@@ -14,7 +14,6 @@
 package sql
 
 import (
-	"fmt"
 	"reflect"
 	"strings"
 
@@ -130,41 +129,23 @@ func databaseOf(req *match.Request, m *Meta) string {
 	return ""
 }
 
-// celEnv is the SQL CEL environment. Built once at init.
-var celEnv *cel.Env
-
 func init() {
-	env, err := cel.NewEnv(
-		ext.Sets(),
-		ext.NativeTypes(
-			reflect.TypeFor[Fields](),
-			ext.ParseStructTags(true),
-		),
-		cel.Variable("sql", cel.ObjectType("sql.Fields")),
-	)
-	if err != nil {
-		panic(fmt.Sprintf("sql facet: cel env: %v", err))
-	}
-	celEnv = env
-
 	facet.Register(Facet{})
 }
 
-// lowercasedPaths declares the SQL fields whose activation values
-// are always lowercase. CompileCondition uses this to normalize the
-// matching string literals in the rule source at compile time, so
-// `sql.verb == "SELECT"` matches a select statement even though the
-// activation reports `verb = "select"`.
-var lowercasedPaths = []string{"sql.verb"}
-
-// truncatablePaths declares every SQL field, because the wire
-// frontends (postgres pgClientToServer, clickhouse_native
-// chHandleQuery) feed the matcher one piece of text — the raw
-// statement — and every CEL field (verb, tables, functions,
-// statement) is derived from the same parsed bytes. When the
-// frontend caps the frame, all four fields are simultaneously
-// untrustworthy, so any condition reading any of them must fail
-// closed on a truncated request.
+// CELContrib declares the SQL facet's CEL contribution: the `sql`
+// variable backed by Fields and the path lists CompileCondition needs.
+//
+// lowercasedPaths: sql.verb's activation value is lowercased so
+// rules written as `sql.verb == "SELECT"` match a select statement.
+//
+// truncatablePaths: every SQL field, because the wire frontends
+// (postgres pgClientToServer, clickhouse_native chHandleQuery) feed
+// the matcher one piece of text — the raw statement — and every
+// CEL field (verb, tables, functions, statement) is derived from
+// the same parsed bytes. When the frontend caps the frame, all four
+// are simultaneously untrustworthy, so any condition reading any of
+// them must fail closed on a truncated request.
 //
 // Note credential and database are intentionally absent: they
 // resolve off-wire (StartupMessage user / database, Hello username
@@ -174,34 +155,45 @@ var lowercasedPaths = []string{"sql.verb"}
 // runs (config/runtime/dispatch.go), and the database value flows
 // through req.Database / meta.Database which the wire frontend
 // populates before any SQL bytes are read.
-var truncatablePaths = []string{"sql.verb", "sql.tables", "sql.functions", "sql.statement"}
-
-// NewMatcher compiles a CEL condition into a Matcher. An empty
-// condition is the catch-all match-everything case.
-func (Facet) NewMatcher(condition string) (match.Matcher, error) {
-	if condition == "" {
-		return match.PassThrough{}, nil
+func (Facet) CELContrib() facet.CELContrib {
+	return facet.CELContrib{
+		EnvOptions: []cel.EnvOption{
+			ext.NativeTypes(
+				reflect.TypeFor[Fields](),
+				ext.ParseStructTags(true),
+			),
+			cel.Variable("sql", cel.ObjectType("sql.Fields")),
+		},
+		AddActivation:    addActivation,
+		LowercasedPaths:  []string{"sql.verb"},
+		TruncatablePaths: []string{"sql.verb", "sql.tables", "sql.functions", "sql.statement"},
 	}
-	return match.CompileCondition(celEnv, condition, buildActivation, lowercasedPaths, truncatablePaths)
 }
 
-func buildActivation(req *match.Request) map[string]any {
+// NewMatcher compiles a CEL condition into a Matcher. Delegates to
+// the package-level composer (sql has no ancestor families today —
+// SQL wire protocols are binary, not HTTPS).
+func (f Facet) NewMatcher(condition string) (match.Matcher, error) {
+	m, _, err := facet.Compose(f.Name(), condition)
+	return m, err
+}
+
+func addActivation(req *match.Request, act map[string]any) bool {
 	if req == nil {
-		return nil
+		return false
 	}
 	meta, _ := req.Meta.(*Meta)
 	if meta == nil {
-		return nil
+		return false
 	}
-	return map[string]any{
-		"sql": &Fields{
-			Verb:      strings.ToLower(meta.Verb),
-			Tables:    coalesceList(meta.Tables),
-			Functions: coalesceList(meta.Functions),
-			Statement: meta.Statement,
-			Database:  databaseOf(req, meta),
-		},
+	act["sql"] = &Fields{
+		Verb:      strings.ToLower(meta.Verb),
+		Tables:    coalesceList(meta.Tables),
+		Functions: coalesceList(meta.Functions),
+		Statement: meta.Statement,
+		Database:  databaseOf(req, meta),
 	}
+	return true
 }
 
 func coalesceList(xs []string) []string {

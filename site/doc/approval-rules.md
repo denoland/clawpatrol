@@ -113,9 +113,29 @@ condition = "!k8s.name.startsWith('debug-')"
 condition = "!k8s.resource.endsWith('/exec') && !k8s.resource.endsWith('/attach')"
 ```
 
-A rule bound to `https` endpoints sees `http.*` only; a rule bound
-to `kubernetes` endpoints sees `k8s.*` only. Mixing families across
-a rule's `endpoints = [...]` is a load error.
+A kubernetes request is HTTPS underneath, so a `kubernetes`-endpoint
+rule **also** sees the full `http.*` facet set (method, path, query,
+headers, body, body_json) in addition to `k8s.*`. The
+family-containment relation is one-way: `kubernetes` rules can
+reference `http.*`, but `https` rules cannot reference `k8s.*`. The
+same fail-closed-on-truncation contract that applies to `http.body`
+/ `http.body_json` for an `https` rule applies to a `kubernetes`
+rule that reads them — when the gateway's inspection buffer caps the
+body, the dispatcher synthesizes a deny rather than letting the
+matcher see a truncated prefix.
+
+```hcl
+# k8s rule mixing native k8s.* fields with inherited http.* fields:
+rule "no-large-secret-creates" {
+  endpoint  = my-cluster
+  condition = "k8s.verb == 'create' && k8s.resource == 'secrets' && http.body.contains('BEGIN PRIVATE KEY')"
+  verdict   = "deny"
+  reason    = "secrets with embedded private keys must go through CI"
+}
+```
+
+A rule bound to `https` endpoints sees `http.*` only. Mixing
+families across a rule's `endpoints = [...]` is a load error.
 
 `ssh` endpoints exist but have no rule family yet — the gateway
 terminates auth and splices channels as opaque byte streams, emitting

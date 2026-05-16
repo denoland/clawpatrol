@@ -13,7 +13,6 @@
 package k8s
 
 import (
-	"fmt"
 	"net/url"
 	"reflect"
 	"strings"
@@ -23,6 +22,15 @@ import (
 
 	"github.com/denoland/clawpatrol/config/facet"
 	"github.com/denoland/clawpatrol/config/match"
+
+	// Family-containment parent: k8s actions carry http.* bindings
+	// alongside their native k8s.* fields, and facet.Compose pulls
+	// the http facet's CELContrib in when building a k8s rule's env.
+	// Blank-importing https here guarantees its init() (which calls
+	// facet.Register) has run before the first k8s rule compiles —
+	// otherwise direct k8s-package imports (tests, downstream code)
+	// silently produce a nil matcher.
+	_ "github.com/denoland/clawpatrol/config/plugins/facets/https"
 )
 
 // Fields is the CEL-facing view of a kubernetes request. Exposed
@@ -111,69 +119,64 @@ func (Facet) Report(req *match.Request) map[string]any {
 	}
 }
 
-// celEnv is the k8s CEL environment. Built once at init.
-var celEnv *cel.Env
-
 func init() {
-	env, err := cel.NewEnv(
-		ext.Sets(),
-		ext.NativeTypes(
-			reflect.TypeFor[Fields](),
-			ext.ParseStructTags(true),
-		),
-		cel.Variable("k8s", cel.ObjectType("k8s.Fields")),
-	)
-	if err != nil {
-		panic(fmt.Sprintf("k8s facet: cel env: %v", err))
-	}
-	celEnv = env
-
 	facet.Register(Facet{})
 }
 
-// lowercasedPaths declares the k8s fields whose activation values
-// are always lowercase. CompileCondition uses this to normalize the
-// matching string literals in the rule source at compile time, so
-// `k8s.verb == "GET"` matches a get request even though the
-// activation reports `verb = "get"`.
-var lowercasedPaths = []string{"k8s.verb"}
-
-// Kubernetes Meta is derived entirely from the request URL + method,
-// not from buffered request bytes, so no k8s.* field is affected by
-// the wire frontends' inspection caps. Truncation can't bypass a k8s
-// rule.
-var truncatablePaths []string
-
-// NewMatcher compiles a CEL condition into a Matcher. An empty
-// condition is the catch-all match-everything case.
-func (Facet) NewMatcher(condition string) (match.Matcher, error) {
-	if condition == "" {
-		return match.PassThrough{}, nil
+// CELContrib declares the k8s facet's CEL contribution: the `k8s`
+// variable backed by Fields, the activation builder that snapshots
+// the parsed Meta into one, and the lowercased-paths list for k8s
+// .verb.
+//
+// k8s Meta is derived entirely from the request URL + method, not
+// from buffered request bytes, so no k8s.* field is truncatable.
+// Body-affected fields the k8s rule can reach travel through the
+// http parent in the family-containment registry — http.body and
+// http.body_json fail-close on truncation for k8s rules too, without
+// any per-facet plumbing here.
+func (Facet) CELContrib() facet.CELContrib {
+	return facet.CELContrib{
+		EnvOptions: []cel.EnvOption{
+			ext.NativeTypes(
+				reflect.TypeFor[Fields](),
+				ext.ParseStructTags(true),
+			),
+			cel.Variable("k8s", cel.ObjectType("k8s.Fields")),
+		},
+		AddActivation:   addActivation,
+		LowercasedPaths: []string{"k8s.verb"},
 	}
-	return match.CompileCondition(celEnv, condition, buildActivation, lowercasedPaths, truncatablePaths)
 }
 
-func buildActivation(req *match.Request) map[string]any {
+// NewMatcher compiles a CEL condition into a Matcher. Delegates to
+// the package-level composer so contributions from ancestor families
+// (http) layer in too — a k8s_rule can reference http.method etc. in
+// addition to k8s.verb.
+func (f Facet) NewMatcher(condition string) (match.Matcher, error) {
+	m, _, err := facet.Compose(f.Name(), condition)
+	return m, err
+}
+
+func addActivation(req *match.Request, act map[string]any) bool {
 	if req == nil {
-		return nil
+		return false
 	}
 	meta, _ := req.Meta.(*Meta)
 	if meta == nil {
-		return nil
+		return false
 	}
 	params := meta.Params
 	if params == nil {
 		params = map[string]string{}
 	}
-	return map[string]any{
-		"k8s": &Fields{
-			Verb:      strings.ToLower(meta.Verb),
-			Resource:  meta.Resource,
-			Namespace: meta.Namespace,
-			Name:      meta.Name,
-			Params:    params,
-		},
+	act["k8s"] = &Fields{
+		Verb:      strings.ToLower(meta.Verb),
+		Resource:  meta.Resource,
+		Namespace: meta.Namespace,
+		Name:      meta.Name,
+		Params:    params,
 	}
+	return true
 }
 
 // parsePath best-effort decomposes a Kubernetes API request into the

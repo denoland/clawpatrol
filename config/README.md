@@ -185,11 +185,17 @@ config file's directory).
 One policy decision targeting one or more endpoints. Three rule
 types, each constrained to a matching endpoint family:
 
-| Rule type | Endpoint families | Match facets |
-|-----------|------------------|-------------|
-| `http_rule` | `https` | `method` / `path` / `query` / `headers` / `body_json` / `body_contains` / `credential` |
-| `sql_rule` | `sql` | `verb` / `tables` / `functions` / `statement` / `statement_regex` / `credential` |
-| `k8s_rule` | `k8s` | `resource` / `verb` / `namespace` / `name` / `params` / `credential` |
+| Rule type | Endpoint families | Native match facets | Inherited |
+|-----------|------------------|-------------|-------------|
+| `http_rule` | `https` | `method` / `path` / `query` / `headers` / `body_json` / `body_contains` / `credential` | — |
+| `sql_rule` | `sql` | `verb` / `tables` / `functions` / `statement` / `statement_regex` / `credential` | — |
+| `k8s_rule` | `k8s` | `resource` / `verb` / `namespace` / `name` / `params` / `credential` | every `http_rule` facet (a k8s call is HTTPS underneath) |
+
+Family containment is one-way: a `k8s_rule` can reference `http.*`
+fields in addition to its native `k8s.*` set, but an `http_rule`
+cannot reference `k8s.*` (an HTTPS-endpoint request has no k8s
+metadata). SQL rules do not inherit `http.*` — postgres /
+clickhouse_native wire protocols are binary, not HTTPS.
 
 Rule body shape:
 
