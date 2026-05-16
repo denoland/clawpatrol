@@ -79,6 +79,20 @@ For a loopback bind, reach the dashboard from your laptop with
 `http://127.0.0.1:9080`. For a tailnet bind, just open the tailnet
 URL.
 
+### Put the dashboard on an unlisted host
+
+For internet-reachable gateways, run Claw Patrol on a VM dedicated to
+the gateway and publish the dashboard at a high-entropy hostname, for
+example `https://cp-7v4m9k2q.example.com`. Set `public_url` to that
+full URL, keep `dashboard_secret` enabled, and point `wg_endpoint` at a
+separate stable WireGuard host or port if needed.
+
+Treat the hostname as exposure reduction, not authentication: do not
+link to it from public pages, disable directory listings / default
+landing pages on any reverse proxy, add `X-Robots-Tag: noindex` if your
+proxy can, and avoid reusing the VM for sites that may be indexed. The
+dashboard secret and host firewall remain the security controls.
+
 ### Under systemd
 
 Create a dedicated service user so the gateway's state directory
