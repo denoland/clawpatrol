@@ -1831,7 +1831,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		hitlRetryBypassedApproval := false
 		var hitlRetryConsumedOperation *HITLOperation
 		if retryOperationID != "" {
-			principalID := hitlPeerPrincipalID(pip)
+			principalID := hitlPeerPrincipalID(agentAddr)
 			consumed, err := g.consumeHITLRetryGrantForRequest(req.Context(), hitlRetryRelayInput{
 				OperationID: retryOperationID,
 				ProfileID:   profile,

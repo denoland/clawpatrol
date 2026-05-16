@@ -161,6 +161,30 @@ func TestHITLRetryRelayFingerprintsRetryBodyForDeleteRequests(t *testing.T) {
 	}
 }
 
+func TestHITLRetryRelayUsesRemappedAgentPrincipal(t *testing.T) {
+	h := newHITLRetryRelayHarness(t)
+	requestBody := `{"resource":"example","approved":true}`
+	parentIP := "100.64.0.10"
+	h.gateway.onboard = newOnboardRegistry()
+	h.gateway.onboard.setEphemeralProfile(hitlRetryRelayTestPeerIP, parentIP, hitlRetryRelayTestProfile)
+	op := h.createApprovedRetryOperationForMethodAndPrincipal(t, "hitl_op_retry_ephemeral", http.MethodPost, requestBody, hitlPeerPrincipalID(parentIP))
+
+	resp := h.sendRetryRequest(t, op.ID, requestBody)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("ephemeral retry status = %d, body = %q; want upstream 200", resp.StatusCode, resp.Body)
+	}
+	if calls := h.approver.calls.Load(); calls != 0 {
+		t.Fatalf("approve chain calls after remapped retry = %d, want 0", calls)
+	}
+	consumed, err := h.store.GetForPrincipal(context.Background(), op.ID, hitlRetryRelayTestProfile, hitlPeerPrincipalID(parentIP))
+	if err != nil {
+		t.Fatalf("GetForPrincipal parent: %v", err)
+	}
+	if consumed.GrantConsumedBy != hitlPeerPrincipalID(parentIP) {
+		t.Fatalf("GrantConsumedBy = %q, want %q", consumed.GrantConsumedBy, hitlPeerPrincipalID(parentIP))
+	}
+}
+
 type hitlRetryRelayResponse struct {
 	StatusCode int
 	Body       string
@@ -307,13 +331,18 @@ func (h *hitlRetryRelayHarness) createApprovedRetryOperation(t *testing.T, id, r
 
 func (h *hitlRetryRelayHarness) createApprovedRetryOperationForMethod(t *testing.T, id, method, requestBody string) HITLOperation {
 	t.Helper()
-	fp := h.fingerprintForMethodAndBody(t, method, requestBody)
+	return h.createApprovedRetryOperationForMethodAndPrincipal(t, id, method, requestBody, hitlPeerPrincipalID(hitlRetryRelayTestPeerIP))
+}
+
+func (h *hitlRetryRelayHarness) createApprovedRetryOperationForMethodAndPrincipal(t *testing.T, id, method, requestBody, principalID string) HITLOperation {
+	t.Helper()
+	fp := h.fingerprintForMethodBodyAndPrincipal(t, method, requestBody, principalID)
 	now := time.Now().UTC()
 	op, err := h.store.Create(context.Background(), HITLOperationCreate{
 		ID:                  id,
 		State:               HITLOperationStateApprovedWaitingForRetry,
 		ProfileID:           hitlRetryRelayTestProfile,
-		PrincipalID:         hitlPeerPrincipalID(hitlRetryRelayTestPeerIP),
+		PrincipalID:         principalID,
 		EndpointID:          hitlRetryRelayTestEndpoint,
 		ApprovalRuleID:      hitlRetryRelayTestRule,
 		ApproverID:          hitlRetryRelayTestApprover,
@@ -344,10 +373,15 @@ func (h *hitlRetryRelayHarness) fingerprintForBody(t *testing.T, requestBody str
 
 func (h *hitlRetryRelayHarness) fingerprintForMethodAndBody(t *testing.T, method, requestBody string) HITLRequestFingerprintResult {
 	t.Helper()
+	return h.fingerprintForMethodBodyAndPrincipal(t, method, requestBody, hitlPeerPrincipalID(hitlRetryRelayTestPeerIP))
+}
+
+func (h *hitlRetryRelayHarness) fingerprintForMethodBodyAndPrincipal(t *testing.T, method, requestBody, principalID string) HITLRequestFingerprintResult {
+	t.Helper()
 	result, err := ComputeHITLRequestFingerprint(HITLRequestFingerprintInput{
 		Key:            h.fingerprint,
 		ProfileID:      hitlRetryRelayTestProfile,
-		PrincipalID:    hitlPeerPrincipalID(hitlRetryRelayTestPeerIP),
+		PrincipalID:    principalID,
 		EndpointID:     hitlRetryRelayTestEndpoint,
 		ApprovalRuleID: hitlRetryRelayTestRule,
 		Method:         method,
