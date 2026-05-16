@@ -18,17 +18,15 @@ export function HeroSection() {
                mb-8 font-display text-balance
               text-text"
           >
-            Let your agents into production.
+            Let your agents read prod. Lock down the writes.
           </h1>
           <p
             class="mb-10 max-w-lg
             text-text-muted"
           >
-            An agent stuck in a sandbox is a toy. Handing it your prod keys is reckless. Claw Patrol
-            sits at the only universal checkpoint — the network — between your agents and real
-            systems. Every outbound action runs against rules you write in HCL. Risky ones get a
-            human in Slack or an LLM judge. Secrets live in the proxy, not the agent. Works with
-            Claude Code, Codex, or any agent — no code changes.
+            Claw Patrol inspects every outbound call — SQL, the Kubernetes API, HTTP semantics.
+            Reads pass through. Writes run against rules you write in HCL, with risky ones routed to
+            a human in Slack. Secrets live in the proxy, not the agent.
           </p>
           <InstallTerminal />
         </div>
