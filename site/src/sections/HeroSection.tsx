@@ -25,7 +25,7 @@ export function HeroSection() {
             class="text-xl sm:text-2xl mb-6 max-w-lg font-display
             font-semibold text-text text-balance"
           >
-            Give your agents read access to any service. Gate the writes.
+            Read access to any service. Gate the writes.
           </p>
           <p
             class="mb-10 max-w-lg

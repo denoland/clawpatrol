@@ -14,21 +14,26 @@ export function SectionLabel({ children }: { children: string }) {
   );
 }
 
+// Six skewed slashes rendered as explicit SVG parallelograms so every
+// stripe has identical width. The previous repeating-linear-gradient
+// + skewX combo clipped the edge stripes thinner than the middle ones
+// because the gradient was painted into a rectangular bitmap before
+// the skew, and the slanted edges of the resulting parallelogram
+// trimmed those stripes at subpixel boundaries.
 const Stripes = () => (
-  <div
-    class="h-4 w-12"
-    style={{
-      background:
-        "repeating-linear-gradient(" +
-        "90deg," +
-        `transparent,` +
-        `transparent 2px,` +
-        `var(--color-rust) 2px,` +
-        `var(--color-rust) 6px,` +
-        `transparent 6px,` +
-        `transparent 8px` +
-        ")",
-      transform: `skewX(-20deg)`,
-    }}
-  />
+  <svg
+    width="48"
+    height="16"
+    viewBox="0 0 48 16"
+    class="text-rust"
+    aria-hidden="true"
+  >
+    {[0, 8, 16, 24, 32, 40].map((x) => (
+      <path
+        key={x}
+        d={`M ${x + 4} 0 L ${x + 8} 0 L ${x + 4} 16 L ${x} 16 Z`}
+        fill="currentColor"
+      />
+    ))}
+  </svg>
 );
