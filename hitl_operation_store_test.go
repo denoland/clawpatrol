@@ -294,6 +294,291 @@ func TestHITLOperationStoreConsumeRetryGrantIsOneShotAndMismatchSafe(t *testing.
 	}
 }
 
+func TestHITLOperationStoreMaintenanceExpiresDueOperations(t *testing.T) {
+	db := openHITLOperationTestDB(t)
+	store := NewHITLOperationStore(db)
+	ctx := context.Background()
+	now := time.Unix(1_700_000_300, 0).UTC()
+	retention := 24 * time.Hour
+
+	pendingExpired := createTestHITLOperation(t, store, HITLOperationCreate{
+		ID:                "hitl_op_pending_expired",
+		State:             HITLOperationStatePendingApproval,
+		CreatedAt:         now.Add(-30 * time.Minute),
+		SyncWaitDeadline:  now.Add(-29 * time.Minute),
+		ApprovalExpiresAt: now.Add(-time.Second),
+	})
+	pendingFuture := createTestHITLOperation(t, store, HITLOperationCreate{
+		ID:                "hitl_op_pending_future",
+		State:             HITLOperationStatePendingApproval,
+		CreatedAt:         now.Add(-time.Minute),
+		SyncWaitDeadline:  now.Add(-30 * time.Second),
+		ApprovalExpiresAt: now.Add(time.Minute),
+	})
+	retryExpired := createTestHITLOperation(t, store, HITLOperationCreate{
+		ID:                "hitl_op_retry_expired",
+		State:             HITLOperationStateApprovedWaitingForRetry,
+		CreatedAt:         now.Add(-30 * time.Minute),
+		SyncWaitDeadline:  now.Add(-29 * time.Minute),
+		ApprovalExpiresAt: now.Add(time.Minute),
+		RetryExpiresAt:    now.Add(-time.Second),
+	})
+	retryFuture := createTestHITLOperation(t, store, HITLOperationCreate{
+		ID:                "hitl_op_retry_future",
+		State:             HITLOperationStateApprovedWaitingForRetry,
+		CreatedAt:         now.Add(-30 * time.Minute),
+		SyncWaitDeadline:  now.Add(-29 * time.Minute),
+		ApprovalExpiresAt: now.Add(time.Minute),
+		RetryExpiresAt:    now.Add(time.Minute),
+	})
+
+	result, err := store.ExpireDueOperations(ctx, now, retention)
+	if err != nil {
+		t.Fatalf("ExpireDueOperations: %v", err)
+	}
+	if result.PendingApprovalExpired != 1 || result.ApprovedRetryExpired != 1 {
+		t.Fatalf("ExpireDueOperations result = %#v, want one pending and one retry expiration", result)
+	}
+
+	assertExpired := func(t *testing.T, op HITLOperation, wantReason string) {
+		t.Helper()
+		loaded, err := store.GetForPrincipal(ctx, op.ID, op.ProfileID, op.PrincipalID)
+		if err != nil {
+			t.Fatalf("GetForPrincipal(%s): %v", op.ID, err)
+		}
+		if loaded.State != HITLOperationStateExpired {
+			t.Fatalf("%s state = %q, want expired", op.ID, loaded.State)
+		}
+		if loaded.ExpiredReason != wantReason {
+			t.Fatalf("%s ExpiredReason = %q, want %q", op.ID, loaded.ExpiredReason, wantReason)
+		}
+		if loaded.TerminalAt == nil || !loaded.TerminalAt.Equal(now) {
+			t.Fatalf("%s TerminalAt = %v, want %v", op.ID, loaded.TerminalAt, now)
+		}
+		if loaded.TerminalRetentionExpiresAt == nil || !loaded.TerminalRetentionExpiresAt.Equal(now.Add(retention)) {
+			t.Fatalf("%s TerminalRetentionExpiresAt = %v, want %v", op.ID, loaded.TerminalRetentionExpiresAt, now.Add(retention))
+		}
+		if loaded.UpstreamCalled {
+			t.Fatalf("%s UpstreamCalled = true, want false for expiry", op.ID)
+		}
+	}
+	assertExpired(t, pendingExpired, "approval_ttl_expired")
+	assertExpired(t, retryExpired, "approved_retry_ttl_expired")
+
+	for _, op := range []HITLOperation{pendingFuture, retryFuture} {
+		loaded, err := store.GetForPrincipal(ctx, op.ID, op.ProfileID, op.PrincipalID)
+		if err != nil {
+			t.Fatalf("GetForPrincipal(%s): %v", op.ID, err)
+		}
+		if loaded.State != op.State {
+			t.Fatalf("%s state = %q, want unchanged %q", op.ID, loaded.State, op.State)
+		}
+	}
+}
+
+func TestHITLOperationStoreMaintenanceRecoversStaleStartupStates(t *testing.T) {
+	db := openHITLOperationTestDB(t)
+	store := NewHITLOperationStore(db)
+	ctx := context.Background()
+	now := time.Unix(1_700_000_400, 0).UTC()
+	retention := 24 * time.Hour
+
+	staleSync := createTestHITLOperation(t, store, HITLOperationCreate{
+		ID:                "hitl_op_stale_sync",
+		State:             HITLOperationStateSyncWaiting,
+		CreatedAt:         now.Add(-10 * time.Minute),
+		SyncWaitDeadline:  now.Add(-9 * time.Minute),
+		ApprovalExpiresAt: now.Add(5 * time.Minute),
+	})
+	freshSync := createTestHITLOperation(t, store, HITLOperationCreate{
+		ID:                "hitl_op_fresh_sync",
+		State:             HITLOperationStateSyncWaiting,
+		CreatedAt:         now.Add(-time.Second),
+		SyncWaitDeadline:  now.Add(time.Minute),
+		ApprovalExpiresAt: now.Add(5 * time.Minute),
+	})
+	executing := createTestHITLOperation(t, store, HITLOperationCreate{
+		ID:                "hitl_op_executing",
+		State:             HITLOperationStateExecutingUpstream,
+		CreatedAt:         now.Add(-10 * time.Minute),
+		SyncWaitDeadline:  now.Add(-9 * time.Minute),
+		ApprovalExpiresAt: now.Add(5 * time.Minute),
+	})
+
+	result, err := store.RecoverStaleInProgressOperations(ctx, now, retention)
+	if err != nil {
+		t.Fatalf("RecoverStaleInProgressOperations: %v", err)
+	}
+	if result.SyncWaitingRecovered != 1 || result.ExecutingRecovered != 1 {
+		t.Fatalf("RecoverStaleInProgressOperations result = %#v, want one sync and one executing recovery", result)
+	}
+
+	loadedSync, err := store.GetForPrincipal(ctx, staleSync.ID, staleSync.ProfileID, staleSync.PrincipalID)
+	if err != nil {
+		t.Fatalf("GetForPrincipal(stale sync): %v", err)
+	}
+	if loadedSync.State != HITLOperationStateClientDisconnected || loadedSync.UpstreamCalled {
+		t.Fatalf("stale sync = %#v, want client_disconnected without upstream call", loadedSync)
+	}
+
+	loadedExecuting, err := store.GetForPrincipal(ctx, executing.ID, executing.ProfileID, executing.PrincipalID)
+	if err != nil {
+		t.Fatalf("GetForPrincipal(executing): %v", err)
+	}
+	if loadedExecuting.State != HITLOperationStateUpstreamFailed || !loadedExecuting.UpstreamCalled || loadedExecuting.LastError == "" {
+		t.Fatalf("executing = %#v, want upstream_failed with upstream_called and diagnostic", loadedExecuting)
+	}
+
+	loadedFresh, err := store.GetForPrincipal(ctx, freshSync.ID, freshSync.ProfileID, freshSync.PrincipalID)
+	if err != nil {
+		t.Fatalf("GetForPrincipal(fresh sync): %v", err)
+	}
+	if loadedFresh.State != HITLOperationStateSyncWaiting {
+		t.Fatalf("fresh sync state = %q, want unchanged sync_waiting", loadedFresh.State)
+	}
+}
+
+func TestHITLOperationStartupMaintenanceRunsRecoveryExpiryAndPurge(t *testing.T) {
+	db := openHITLOperationTestDB(t)
+	store := NewHITLOperationStore(db)
+	ctx := context.Background()
+	now := time.Now().Add(-time.Hour).UTC()
+
+	staleSync := createTestHITLOperation(t, store, HITLOperationCreate{
+		ID:                "hitl_op_startup_stale_sync",
+		State:             HITLOperationStateSyncWaiting,
+		CreatedAt:         now.Add(-10 * time.Minute),
+		SyncWaitDeadline:  now.Add(-9 * time.Minute),
+		ApprovalExpiresAt: now.Add(5 * time.Minute),
+	})
+	duePending := createTestHITLOperation(t, store, HITLOperationCreate{
+		ID:                "hitl_op_startup_due_pending",
+		State:             HITLOperationStatePendingApproval,
+		CreatedAt:         now.Add(-30 * time.Minute),
+		SyncWaitDeadline:  now.Add(-29 * time.Minute),
+		ApprovalExpiresAt: now.Add(-time.Minute),
+	})
+	oldTerminal := createTestHITLOperation(t, store, HITLOperationCreate{
+		ID:                "hitl_op_startup_old_terminal",
+		State:             HITLOperationStatePendingApproval,
+		CreatedAt:         now.Add(-48 * time.Hour),
+		SyncWaitDeadline:  now.Add(-48 * time.Hour),
+		ApprovalExpiresAt: now.Add(-47 * time.Hour),
+	})
+	_, err := store.Transition(ctx, HITLOperationTransition{
+		ID:                         oldTerminal.ID,
+		FromState:                  HITLOperationStatePendingApproval,
+		ToState:                    HITLOperationStateExpired,
+		ExpectedVersion:            oldTerminal.Version,
+		Now:                        now.Add(-25 * time.Hour),
+		ExpiredReason:              "approval_ttl_expired",
+		TerminalRetentionExpiresAt: now.Add(-time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("transition old terminal: %v", err)
+	}
+
+	result, err := runHITLOperationStartupMaintenance(ctx, db)
+	if err != nil {
+		t.Fatalf("runHITLOperationStartupMaintenance: %v", err)
+	}
+	if result.SyncWaitingRecovered != 1 || result.PendingApprovalExpired != 1 || result.PurgedTerminal != 1 {
+		t.Fatalf("runHITLOperationStartupMaintenance result = %#v, want recovery, expiry, and purge", result)
+	}
+
+	loadedSync, err := store.GetForPrincipal(ctx, staleSync.ID, staleSync.ProfileID, staleSync.PrincipalID)
+	if err != nil {
+		t.Fatalf("GetForPrincipal(stale sync): %v", err)
+	}
+	if loadedSync.State != HITLOperationStateClientDisconnected {
+		t.Fatalf("stale sync state = %q, want client_disconnected", loadedSync.State)
+	}
+	loadedPending, err := store.GetForPrincipal(ctx, duePending.ID, duePending.ProfileID, duePending.PrincipalID)
+	if err != nil {
+		t.Fatalf("GetForPrincipal(due pending): %v", err)
+	}
+	if loadedPending.State != HITLOperationStateExpired {
+		t.Fatalf("due pending state = %q, want expired", loadedPending.State)
+	}
+	_, err = store.GetForPrincipal(ctx, oldTerminal.ID, oldTerminal.ProfileID, oldTerminal.PrincipalID)
+	if !errors.Is(err, ErrHITLOperationNotFound) {
+		t.Fatalf("old terminal err = %v, want ErrHITLOperationNotFound", err)
+	}
+}
+
+func TestHITLOperationStoreMaintenancePurgesTerminalOperations(t *testing.T) {
+	db := openHITLOperationTestDB(t)
+	store := NewHITLOperationStore(db)
+	ctx := context.Background()
+	now := time.Unix(1_700_000_500, 0).UTC()
+
+	oldTerminal := createTestHITLOperation(t, store, HITLOperationCreate{
+		ID:                "hitl_op_old_terminal",
+		State:             HITLOperationStatePendingApproval,
+		CreatedAt:         now.Add(-48 * time.Hour),
+		SyncWaitDeadline:  now.Add(-48 * time.Hour),
+		ApprovalExpiresAt: now.Add(-47 * time.Hour),
+	})
+	_, err := store.Transition(ctx, HITLOperationTransition{
+		ID:                         oldTerminal.ID,
+		FromState:                  HITLOperationStatePendingApproval,
+		ToState:                    HITLOperationStateExpired,
+		ExpectedVersion:            oldTerminal.Version,
+		Now:                        now.Add(-25 * time.Hour),
+		ExpiredReason:              "approval_ttl_expired",
+		TerminalRetentionExpiresAt: now.Add(-time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("transition old terminal: %v", err)
+	}
+
+	keptTerminal := createTestHITLOperation(t, store, HITLOperationCreate{
+		ID:                "hitl_op_kept_terminal",
+		State:             HITLOperationStatePendingApproval,
+		CreatedAt:         now.Add(-48 * time.Hour),
+		SyncWaitDeadline:  now.Add(-48 * time.Hour),
+		ApprovalExpiresAt: now.Add(-47 * time.Hour),
+	})
+	_, err = store.Transition(ctx, HITLOperationTransition{
+		ID:                         keptTerminal.ID,
+		FromState:                  HITLOperationStatePendingApproval,
+		ToState:                    HITLOperationStateExpired,
+		ExpectedVersion:            keptTerminal.Version,
+		Now:                        now.Add(-time.Hour),
+		ExpiredReason:              "approval_ttl_expired",
+		TerminalRetentionExpiresAt: now.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("transition kept terminal: %v", err)
+	}
+
+	pending := createTestHITLOperation(t, store, HITLOperationCreate{
+		ID:                "hitl_op_pending_not_purged",
+		State:             HITLOperationStatePendingApproval,
+		CreatedAt:         now.Add(-time.Minute),
+		SyncWaitDeadline:  now.Add(-30 * time.Second),
+		ApprovalExpiresAt: now.Add(time.Minute),
+	})
+
+	purged, err := store.PurgeTerminalOperations(ctx, now)
+	if err != nil {
+		t.Fatalf("PurgeTerminalOperations: %v", err)
+	}
+	if purged != 1 {
+		t.Fatalf("PurgeTerminalOperations purged = %d, want 1", purged)
+	}
+
+	_, err = store.GetForPrincipal(ctx, oldTerminal.ID, oldTerminal.ProfileID, oldTerminal.PrincipalID)
+	if !errors.Is(err, ErrHITLOperationNotFound) {
+		t.Fatalf("old terminal err = %v, want ErrHITLOperationNotFound", err)
+	}
+	for _, op := range []HITLOperation{keptTerminal, pending} {
+		if _, err := store.GetForPrincipal(ctx, op.ID, op.ProfileID, op.PrincipalID); err != nil {
+			t.Fatalf("operation %s should remain: %v", op.ID, err)
+		}
+	}
+}
+
 func openHITLOperationTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := OpenDB(filepath.Join(t.TempDir(), "clawpatrol.db"))

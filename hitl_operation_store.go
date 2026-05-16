@@ -86,6 +86,14 @@ type HITLRetryGrantConsume struct {
 	Now                time.Time
 }
 
+type HITLOperationMaintenanceResult struct {
+	PendingApprovalExpired int64
+	ApprovedRetryExpired   int64
+	SyncWaitingRecovered   int64
+	ExecutingRecovered     int64
+	PurgedTerminal         int64
+}
+
 type HITLOperation struct {
 	ID                         string
 	State                      HITLOperationState
@@ -212,6 +220,110 @@ func (s *HITLOperationStore) Transition(ctx context.Context, tr HITLOperationTra
 		return HITLOperation{}, ErrHITLOperationConflict
 	}
 	return s.get(ctx, tr.ID)
+}
+
+func (s *HITLOperationStore) ExpireDueOperations(ctx context.Context, now time.Time, terminalRetention time.Duration) (HITLOperationMaintenanceResult, error) {
+	if s == nil || s.db == nil {
+		return HITLOperationMaintenanceResult{}, fmt.Errorf("%w: nil store", ErrHITLOperationStoreInvalid)
+	}
+	if now.IsZero() {
+		return HITLOperationMaintenanceResult{}, fmt.Errorf("%w: missing maintenance time", ErrHITLOperationStoreInvalid)
+	}
+	retentionExpires := now
+	if terminalRetention > 0 {
+		retentionExpires = now.Add(terminalRetention)
+	}
+	var out HITLOperationMaintenanceResult
+	changed, err := s.updateTerminalByDeadline(ctx, HITLOperationStatePendingApproval, "approval_expires_ns", now, retentionExpires, "approval_ttl_expired", false, "")
+	if err != nil {
+		return HITLOperationMaintenanceResult{}, err
+	}
+	out.PendingApprovalExpired = changed
+	changed, err = s.updateTerminalByDeadline(ctx, HITLOperationStateApprovedWaitingForRetry, "retry_expires_ns", now, retentionExpires, "approved_retry_ttl_expired", false, "")
+	if err != nil {
+		return HITLOperationMaintenanceResult{}, err
+	}
+	out.ApprovedRetryExpired = changed
+	return out, nil
+}
+
+func (s *HITLOperationStore) RecoverStaleInProgressOperations(ctx context.Context, now time.Time, terminalRetention time.Duration) (HITLOperationMaintenanceResult, error) {
+	if s == nil || s.db == nil {
+		return HITLOperationMaintenanceResult{}, fmt.Errorf("%w: nil store", ErrHITLOperationStoreInvalid)
+	}
+	if now.IsZero() {
+		return HITLOperationMaintenanceResult{}, fmt.Errorf("%w: missing maintenance time", ErrHITLOperationStoreInvalid)
+	}
+	retentionExpires := now
+	if terminalRetention > 0 {
+		retentionExpires = now.Add(terminalRetention)
+	}
+	var out HITLOperationMaintenanceResult
+	changed, err := s.updateTerminalByDeadline(ctx, HITLOperationStateSyncWaiting, "sync_wait_deadline_ns", now, retentionExpires, "", false, "")
+	if err != nil {
+		return HITLOperationMaintenanceResult{}, err
+	}
+	out.SyncWaitingRecovered = changed
+	changed, err = s.updateTerminalState(ctx, HITLOperationStateExecutingUpstream, HITLOperationStateUpstreamFailed, now, retentionExpires, "", true, "gateway restarted while HITL operation was executing upstream")
+	if err != nil {
+		return HITLOperationMaintenanceResult{}, err
+	}
+	out.ExecutingRecovered = changed
+	return out, nil
+}
+
+func (s *HITLOperationStore) PurgeTerminalOperations(ctx context.Context, now time.Time) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, fmt.Errorf("%w: nil store", ErrHITLOperationStoreInvalid)
+	}
+	if now.IsZero() {
+		return 0, fmt.Errorf("%w: missing maintenance time", ErrHITLOperationStoreInvalid)
+	}
+	res, err := s.db.ExecContext(ctx, `DELETE FROM hitl_operations
+WHERE state IN (?, ?, ?, ?, ?)
+  AND terminal_retention_expires_ns IS NOT NULL
+  AND terminal_retention_expires_ns <= ?`,
+		string(HITLOperationStateDenied), string(HITLOperationStateExpired), string(HITLOperationStateUpstreamSucceeded), string(HITLOperationStateUpstreamFailed), string(HITLOperationStateClientDisconnected), timeNS(now),
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func (s *HITLOperationStore) updateTerminalByDeadline(ctx context.Context, from HITLOperationState, deadlineColumn string, now, retentionExpires time.Time, expiredReason string, upstreamCalled bool, lastError string) (int64, error) {
+	to := HITLOperationStateExpired
+	if from == HITLOperationStateSyncWaiting {
+		to = HITLOperationStateClientDisconnected
+	}
+	return s.updateTerminalStateWhere(ctx, from, to, now, retentionExpires, expiredReason, upstreamCalled, lastError, deadlineColumn+" IS NOT NULL AND "+deadlineColumn+" <= ?", timeNS(now))
+}
+
+func (s *HITLOperationStore) updateTerminalState(ctx context.Context, from, to HITLOperationState, now, retentionExpires time.Time, expiredReason string, upstreamCalled bool, lastError string) (int64, error) {
+	return s.updateTerminalStateWhere(ctx, from, to, now, retentionExpires, expiredReason, upstreamCalled, lastError, "1 = 1")
+}
+
+func (s *HITLOperationStore) updateTerminalStateWhere(ctx context.Context, from, to HITLOperationState, now, retentionExpires time.Time, expiredReason string, upstreamCalled bool, lastError string, extraWhere string, extraArgs ...any) (int64, error) {
+	sets := []string{"state = ?", "version = version + 1", "terminal_ns = ?", "terminal_retention_expires_ns = ?"}
+	args := []any{string(to), timeNS(now), timeNS(retentionExpires)}
+	if expiredReason != "" {
+		sets = append(sets, "expired_reason = ?")
+		args = append(args, expiredReason)
+	}
+	if upstreamCalled {
+		sets = append(sets, "upstream_called = 1")
+	}
+	if lastError != "" {
+		sets = append(sets, "last_error = ?")
+		args = append(args, lastError)
+	}
+	args = append(args, string(from))
+	args = append(args, extraArgs...)
+	res, err := s.db.ExecContext(ctx, `UPDATE hitl_operations SET `+strings.Join(sets, ", ")+` WHERE state = ? AND `+extraWhere, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 func (s *HITLOperationStore) ConsumeRetryGrant(ctx context.Context, in HITLRetryGrantConsume) (HITLOperation, error) {

@@ -58,6 +58,33 @@ func resolveStateDir(cfg *config.Gateway) string {
 	return filepath.Join(home, ".clawpatrol")
 }
 
+const hitlOperationTerminalRetention = 7 * 24 * time.Hour
+
+func runHITLOperationStartupMaintenance(ctx context.Context, db *sql.DB) (HITLOperationMaintenanceResult, error) {
+	store := NewHITLOperationStore(db)
+	now := time.Now().UTC()
+	retention := hitlOperationTerminalRetention
+	var out HITLOperationMaintenanceResult
+	recovered, err := store.RecoverStaleInProgressOperations(ctx, now, retention)
+	if err != nil {
+		return HITLOperationMaintenanceResult{}, err
+	}
+	out.SyncWaitingRecovered = recovered.SyncWaitingRecovered
+	out.ExecutingRecovered = recovered.ExecutingRecovered
+	expired, err := store.ExpireDueOperations(ctx, now, retention)
+	if err != nil {
+		return HITLOperationMaintenanceResult{}, err
+	}
+	out.PendingApprovalExpired = expired.PendingApprovalExpired
+	out.ApprovedRetryExpired = expired.ApprovedRetryExpired
+	purged, err := store.PurgeTerminalOperations(ctx, now)
+	if err != nil {
+		return HITLOperationMaintenanceResult{}, err
+	}
+	out.PurgedTerminal = purged
+	return out, nil
+}
+
 // warnIfStateLooselyPermissioned logs a warning when state_dir or
 // clawpatrol.db is readable by group / others. The sqlite db holds
 // the CA private key, OAuth tokens, and audit log — anything not
@@ -2382,6 +2409,11 @@ func runGateway(args []string) {
 	db, err := OpenDB(filepath.Join(stateDir, "clawpatrol.db"))
 	if err != nil {
 		log.Fatalf("db: %v", err)
+	}
+	if result, err := runHITLOperationStartupMaintenance(context.Background(), db); err != nil {
+		log.Fatalf("hitl operation maintenance: %v", err)
+	} else if result.PendingApprovalExpired != 0 || result.ApprovedRetryExpired != 0 || result.SyncWaitingRecovered != 0 || result.ExecutingRecovered != 0 || result.PurgedTerminal != 0 {
+		log.Printf("hitl operation maintenance: expired pending=%d retry=%d recovered sync=%d executing=%d purged=%d", result.PendingApprovalExpired, result.ApprovedRetryExpired, result.SyncWaitingRecovered, result.ExecutingRecovered, result.PurgedTerminal)
 	}
 	warnIfStateLooselyPermissioned(stateDir)
 	setDB(db)
