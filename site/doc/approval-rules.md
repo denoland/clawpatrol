@@ -272,6 +272,103 @@ default-deny. Add a `priority = -100, verdict = "deny"` catch-all
 per endpoint to invert this.
 
 
+## Inspection-buffer overflow
+
+Every wire frontend caps how much of a request body / SQL statement
+it will buffer for rule matching. Past the cap the request is
+**truncated**, and rules whose CEL condition would have read the
+truncated bytes are auto-fired to deny — fail-closed, because a
+truncated body might have contained content that *would* have
+triggered a deny rule the gateway can't see.
+
+### What the limits are
+
+| Frontend | Cap | Constant | Source |
+|----------|-----|----------|--------|
+| HTTPS (incl. `kubernetes`, `clickhouse_https`) | 1 MiB request body | `maxHTTPMatchBody` | `main.go` |
+| `postgres` per Query / Parse frame | 1 MiB statement | `maxPgMessage` | `config/plugins/endpoints/postgres.go` |
+| `clickhouse_native` per Query body | 1 MiB statement | `chMaxQueryBody` | `config/plugins/endpoints/clickhouse_native_runtime.go` |
+
+Each cap is a per-plugin compile-time constant. There is no HCL
+knob to raise it today.
+
+### What happens on overflow
+
+The frontend reads up to the cap, marks the request `Truncated`,
+and runs rule dispatch as usual. The dispatcher rewrites the
+verdict per rule:
+
+- A rule whose CEL reads a **truncatable facet** — see table below
+  — is auto-fired with a synthesized deny. The matcher is not
+  called; its predicate would have been evaluating ghost bytes.
+  The deny `reason` is:
+
+  ```
+  rule "<name>" reads a request facet whose bytes were truncated by the gateway's inspection buffer; failing closed
+  ```
+
+  attributed to the rule whose contract the truncation broke
+  (logs / dashboard show that rule's name).
+
+- A rule whose CEL reads only **non-truncatable facets** (or has
+  no condition at all) still matches normally. A `priority = -100,
+  verdict = "deny"` catch-all is non-truncatable and still fires.
+  A `http.method == 'POST'` rule on a 2 MiB body still evaluates
+  honestly.
+
+- For `postgres` and `clickhouse_native`: a rule with an
+  `approve = [...]` chain on a truncated request is treated as
+  deny (`approval required but request was truncated by inspection
+  buffer` — postgres oversize path). HITL can't decide on bytes
+  that aren't on the wire.
+
+The rest of the request body is drained on deny so the agent's
+session stays alive for the next request.
+
+#### Truncatable facets, by family
+
+| Family | Truncatable on overflow | Unaffected |
+|--------|-------------------------|------------|
+| `http` | `http.body`, `http.body_json` | `http.method`, `http.path`, `http.query`, `http.headers` |
+| `sql`  | `sql.verb`, `sql.tables`, `sql.functions`, `sql.statement` | `sql.database` (read from StartupMessage / Hello / HTTP query+header, not from the inspected body) |
+| `k8s`  | *none* | every k8s facet is derived from the request URL + method, so the body cap can't bypass a k8s rule |
+
+The SQL family lists every parsed field because they all ride on
+the same lexer pass over the statement bytes — a truncated tail
+could change the verb under the matcher (a long `SELECT` whose
+overflow contains `; DROP TABLE …`).
+
+### Per-protocol deny shape
+
+The synthesized deny is delivered using the same shape each plugin
+uses for a normal `verdict = "deny"`, so dashboards, logs, and
+agents see a familiar verdict:
+
+- **HTTPS / `kubernetes` / `clickhouse_https`** — `HTTP/1.1 403
+  Forbidden`, `Content-Type: text/plain`, reason in the body,
+  `Connection: close`.
+- **`postgres`** — `ErrorResponse` frame carrying the reason +
+  `ReadyForQuery`. The session survives; the next Query / Parse
+  goes through normally.
+- **`clickhouse_native`** — `ServerException` (code 2) carrying
+  the reason. The session survives; the next Query goes through
+  normally.
+
+### Why fail-closed
+
+A truncated body might contain content that *would* have triggered
+a deny rule. The safe default is to refuse the request rather than
+forward partially-inspected bytes. Operators who legitimately need
+to send larger bodies should request the cap be raised (per-plugin
+constant; not operator-tunable today).
+
+The cap-raising work is tracked in
+[denoland/clawpatrol#386](https://github.com/denoland/clawpatrol/issues/386)
+— the postgres streaming-parse investigation concluded that
+streaming wasn't worth the complexity and recommended raising the
+1 MiB cap instead. This section will need updating if that lands.
+
+
 ## Examples
 
 ### Allow / deny pair (HTTP)
