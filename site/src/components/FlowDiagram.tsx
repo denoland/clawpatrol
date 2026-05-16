@@ -10,7 +10,7 @@ export function FlowDiagram() {
       role="img"
       aria-label="Many agents on the bottom send requests through Claw Patrol to many destinations on top"
     >
-      <InternetNode />
+      <ProductionNode />
 
       <Riser />
 
@@ -39,14 +39,14 @@ function CardRow({ children }: { children: ComponentChildren }) {
   );
 }
 
-function InternetNode() {
+function ProductionNode() {
   return (
     <div
       class="squircle-md w-full bg-canvas border border-navy-200
         text-text px-5 py-5 text-center"
     >
       <div class="font-display font-bold text-xl leading-none">
-        The Internet
+        Production
       </div>
       <div
         class="font-mono text-[11px] uppercase tracking-wider mt-2
