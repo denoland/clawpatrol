@@ -58,6 +58,7 @@ const CATEGORIES: Category[] = [
             url: "https://www.prompt.security",
           },
           { name: "httpjail", url: "https://github.com/coder/httpjail" },
+          { name: "proxyline", url: "https://proxyline.dev/" },
         ],
       },
     ],

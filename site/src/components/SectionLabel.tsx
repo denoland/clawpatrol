@@ -21,9 +21,11 @@ const Stripes = () => (
       background:
         "repeating-linear-gradient(" +
         "90deg," +
-        `var(--color-rust),` +
-        `var(--color-rust) 4px,` +
-        `transparent 4px,` +
+        `transparent,` +
+        `transparent 2px,` +
+        `var(--color-rust) 2px,` +
+        `var(--color-rust) 6px,` +
+        `transparent 6px,` +
         `transparent 8px` +
         ")",
       transform: `skewX(-20deg)`,
