@@ -1,100 +1,125 @@
 import { SectionLabel } from "../components/SectionLabel";
 
-const CHECK = (
-  <span className="mx-auto flex items-center justify-center text-center w-6 h-4.5 p-1.5 rounded-[100%] squircle-xl bg-rust align-[-0.08em]">
-    <svg
-      viewBox="0 0 24 24"
-      class=" text-canvas w-full h-auto"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="3"
-      stroke-linecap="square"
-      stroke-linejoin="miter"
-      aria-hidden="true"
-    >
-      <path d="M4 12.5 L10 18.5 L20 6.5" />
-    </svg>
-  </span>
-);
-const CROSS = <span class="text-lg text-text-subtle">&#10005;</span>;
+type Player = { name: string; url: string };
+type Group = { label?: string; players: Player[] };
+type Category = {
+  title: string;
+  body: string;
+  note?: string;
+  groups: Group[];
+};
 
-function slug(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^\w\s-]/g, "")
-    .replace(/\s+/g, "-");
-}
-
-const FEATURES = [
-  "Secret injection",
-  "All outbound traffic",
-  "Deep packet inspection",
-  "Understands LLM traffic",
-  "Rules",
-  "Analytics",
-] as const;
-
-const ROWS: {
-  name: string;
-  desc: string;
-  url: string;
-  checks: boolean[];
-  highlight?: boolean;
-}[] = [
+const CATEGORIES: Category[] = [
   {
-    name: "Helicone",
-    desc: "AI gateway and observability",
-    url: "https://helicone.ai",
-    checks: [false, false, false, true, false, true],
+    title: "Watch the LLM call",
+    body:
+      "Sit between the agent and the model. Some focus on routing " +
+      "and observability: picking the cheapest provider, retrying " +
+      "on failure, tracking tokens. Others focus on content: " +
+      "scanning prompts and responses for injection or PII. Both " +
+      "lenses watch the conversation itself; what the agent does " +
+      "after the LLM replies lives outside their view.",
+    groups: [
+      {
+        label: "Routing & observability",
+        players: [
+          { name: "Helicone", url: "https://helicone.ai" },
+          { name: "Portkey", url: "https://portkey.ai" },
+          { name: "LiteLLM", url: "https://github.com/BerriAI/litellm" },
+          { name: "OpenRouter", url: "https://openrouter.ai" },
+          {
+            name: "agentgateway",
+            url: "https://github.com/agentgateway/agentgateway",
+          },
+        ],
+      },
+      {
+        label: "Content guardrails",
+        players: [
+          {
+            name: "NeMo Guardrails",
+            url: "https://github.com/NVIDIA/NeMo-Guardrails",
+          },
+          { name: "Lakera Guard", url: "https://www.lakera.ai/lakera-guard" },
+          {
+            name: "Google Model Armor",
+            url:
+              "https://cloud.google.com/security-command-center/docs/model-armor-overview",
+          },
+          {
+            name: "AWS Bedrock Guardrails",
+            url: "https://aws.amazon.com/bedrock/guardrails/",
+          },
+        ],
+      },
+    ],
   },
   {
-    name: "Portkey",
-    desc: "AI gateway, guardrails, observability",
-    url: "https://portkey.ai",
-    checks: [false, false, false, true, true, true],
+    title: "Watch the tool call",
+    body:
+      "Sit between the agent and the world, inspecting outbound " +
+      "HTTP. They use static rules, JavaScript expressions, or an " +
+      "LLM judge. All see the same surface: URL, method, and " +
+      "request body. The body is opaque, so a Postgres DROP TABLE " +
+      "and a SELECT 1 reach them as the same shape of HTTPS call.",
+    groups: [
+      {
+        players: [
+          { name: "Crab Trap", url: "https://github.com/brexhq/CrabTrap" },
+          {
+            name: "Prompt Security MCP Gateway",
+            url: "https://www.prompt.security",
+          },
+          { name: "httpjail", url: "https://github.com/coder/httpjail" },
+        ],
+      },
+    ],
   },
   {
-    name: "LiteLLM",
-    desc: "Unified API for 100+ LLMs",
-    url: "https://github.com/BerriAI/litellm",
-    checks: [false, false, false, true, true, true],
+    title: "Sandbox the process",
+    body:
+      "Run the agent inside a container or microVM with policies " +
+      "on filesystem, syscalls, and egress. Useful for limiting " +
+      "blast radius if the agent process is compromised or strays. " +
+      "They constrain what the agent can touch, not whether each " +
+      "action makes sense for the task.",
+    note:
+      "Complementary to Claw Patrol. Most agents already run on " +
+      "their own VM; if yours doesn't, an OS sandbox is a sensible " +
+      "layer underneath.",
+    groups: [
+      {
+        players: [
+          {
+            name: "NVIDIA OpenShell",
+            url: "https://github.com/NVIDIA/OpenShell",
+          },
+        ],
+      },
+    ],
   },
   {
-    name: "agentgateway",
-    desc: "Agentic proxy for AI and MCP",
-    url: "https://github.com/agentgateway/agentgateway",
-    checks: [false, false, false, true, true, true],
-  },
-  {
-    name: "Clawvisor",
-    desc: "API gateway for agent authorization",
-    url: "https://github.com/clawvisor/clawvisor",
-    checks: [true, false, false, false, true, true],
-  },
-  {
-    name: "httpjail",
-    desc: "HTTP request filter and sandbox",
-    url: "https://github.com/coder/httpjail",
-    checks: [false, false, false, false, true, false],
-  },
-  {
-    name: "Agent Vault",
-    desc: "Credential proxy and vault",
-    url: "https://github.com/Infisical/agent-vault",
-    checks: [true, false, false, false, true, true],
-  },
-  {
-    name: "Crab Trap",
-    desc: "LLM-as-judge agent proxy",
-    url: "https://github.com/brexhq/CrabTrap",
-    checks: [false, false, false, false, true, true],
-  },
-  {
-    name: "Claw Patrol",
-    desc: "Security proxy for AI agents",
-    url: "https://github.com/denoland/clawpatrol",
-    checks: [true, true, true, true, true, true],
-    highlight: true,
+    title: "Hold the keys",
+    body:
+      "Store credentials outside the agent and attach them at " +
+      "request time. The agent never sees a real key, which limits " +
+      "damage from a compromised process or a leaked log. The " +
+      "request content itself passes through: whatever the agent " +
+      "asks for after authentication, it gets.",
+    groups: [
+      {
+        players: [
+          {
+            name: "Agent Vault",
+            url: "https://github.com/Infisical/agent-vault",
+          },
+          {
+            name: "Clawvisor",
+            url: "https://github.com/clawvisor/clawvisor",
+          },
+        ],
+      },
+    ],
   },
 ];
 
@@ -106,83 +131,74 @@ export function ComparisonSection() {
         <SectionLabel>How it compares</SectionLabel>
       </div>
       <h3 class="text-3xl sm:text-4xl lg:text-5xl font-display font-bold text-balance">
-        More than a gateway, more than a sandbox
+        Most tools watch one boundary.
       </h3>
-      <p class=" max-w-2xl mb-12 sm:mb-16 text-base  text-text-muted mt-6 sm:mt-8">
-        Many teams have attacked this problem — credential vaults, LLM gateways,
-        sandboxes — but most stop at the surface. Hiding a key isn't enough if
-        the agent can still DROP TABLE or exfiltrate data through an allowed
-        API. Real security means deep inspection: constraining which SQL queries
-        run, which endpoints get called, what payloads look like. Claw Patrol
-        goes that deep.
+      <p class="max-w-2xl mb-12 sm:mb-16 text-base text-text-muted mt-6 sm:mt-8">
+        Many teams have attacked this problem, each watching a different
+        boundary. Most stop at the surface. Claw Patrol watches the protocol
+        underneath, where SQL verbs and k8s resources are facts your rules
+        can match on.
       </p>
-      <div class="overflow-x-auto -mx-6 px-6 sm:mx-0 sm:px-0">
-        <table class="w-full text-sm font-sans">
-          <thead>
-            <tr class="border-b-2 border-navy-200">
-              <th
-                scope="col"
-                class="text-left py-3 pr-2 sm:pr-4 font-medium font-display text-text-muted"
-              >
-                <span class="sr-only">Product</span>
-              </th>
-              {FEATURES.map((f) => (
-                <th
-                  key={f}
-                  scope="col"
-                  class="py-3 px-1.5 sm:px-3 font-medium
-                     text-text-muted align-bottom
-                    text-2xs uppercase tracking-widest"
-                >
-                  {f}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {ROWS.map((row) => (
-              <tr
-                key={row.name}
-                class={`border-b border-navy-200/50 ${
-                  row.highlight ? "bg-rust/20" : ""
-                }`}
-              >
-                <th
-                  scope="row"
-                  class={`text-left py-3 px-2 sm:px-4 font-bold font-sans font
-                    whitespace-nowrap ${
-                      row.highlight ? "text-navy" : "text-navy-400"
-                    }`}
-                >
-                  <a
-                    href={row.url}
-                    class="underline underline-offset-4
-                      hover:text-text transition-colors"
-                  >
-                    {row.name}
-                  </a>
-                </th>
-                {row.checks.map((ok, i) => {
-                  const anchor = slug(`${row.name} ${FEATURES[i]} ${ok}`);
-                  const label = `${row.name} ${
-                    ok ? "supports" : "does not support"
-                  } ${FEATURES[i]} — see details`;
-                  return (
-                    <td key={i} class="py-3 px-1.5 sm:px-3 text-center text-lg">
-                      <a
-                        href={`/docs/competitors/#${anchor}`}
-                        aria-label={label}
-                      >
-                        {ok ? CHECK : CROSS}
-                      </a>
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div class="grid md:grid-cols-2 gap-4 sm:gap-6">
+        {CATEGORIES.map((c) => <CategoryCard key={c.title} category={c} />)}
       </div>
+      <SynthesisCard />
     </section>
+  );
+}
+
+function CategoryCard({ category: c }: { category: Category }) {
+  return (
+    <div class="p-6 sm:p-8 bg-canvas-light border border-navy-200 squircle-md">
+      <h4 class="font-display font-bold text-xl mb-3 text-text">{c.title}</h4>
+      <p class="text-text-muted text-[15px] mb-4">{c.body}</p>
+      {c.note && (
+        <p class="text-text-subtle text-[14px] italic mb-4">{c.note}</p>
+      )}
+      <div class="space-y-3">
+        {c.groups.map((g, i) => (
+          <div key={g.label ?? i}>
+            {g.label && (
+              <div class="text-text-subtle font-mono uppercase tracking-wider text-2xs mb-1">
+                {g.label}
+              </div>
+            )}
+            <div class="text-[14px] text-text-muted">
+              {g.players.map((p, j) => (
+                <span key={p.name}>
+                  {j > 0 && <span class="text-text-subtle"> · </span>}
+                  <a
+                    href={p.url}
+                    class="underline underline-offset-2 hover:text-rust"
+                  >
+                    {p.name}
+                  </a>
+                </span>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SynthesisCard() {
+  return (
+    <div
+      class="mt-6 sm:mt-8 p-6 sm:p-10 squircle-md
+        bg-rust/10 border-2 border-rust/40"
+    >
+      <h4 class="font-display font-bold text-2xl sm:text-3xl mb-4 text-text">
+        Claw Patrol
+      </h4>
+      <p class="text-text text-base sm:text-lg max-w-3xl">
+        Sees what the others don't. Parses Postgres, Kubernetes, ClickHouse,
+        HTTPS, and SSH at the protocol layer, so rules can match a SQL verb
+        or a k8s resource directly. Holds the secrets and injects them at
+        request time. Routes risky calls to a human or an LLM judge.
+        Records every byte. One declarative config across every service.
+      </p>
+    </div>
   );
 }
