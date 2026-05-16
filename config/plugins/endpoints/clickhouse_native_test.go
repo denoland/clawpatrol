@@ -1518,3 +1518,211 @@ func TestClickhousePickUpstream(t *testing.T) {
 		}
 	}
 }
+
+// TestChAgentToServerForwardsQueryWithParameters pins the modern-
+// protocol Query + Parameters round-trip. The Parameters block sits
+// after the body on the wire when revision >= FeatureParameters
+// (54459); chHandleQuery must drain it pre-approval so the
+// approval-cancel peek doesn't consume the leading byte. The first
+// parameter key is deliberately 3 chars long — its UVarInt key
+// length is 0x03, identical to ClientCodeCancel: with the older
+// post-approval peek the byte would corrupt the re-encoded Parameters
+// block AND risk a spurious cancel.
+func TestChAgentToServerForwardsQueryWithParameters(t *testing.T) {
+	const revision = chMaxProtocolRev
+
+	rule := &config.CompiledRule{
+		Name: "allow-all", Matcher: match.PassThrough{},
+		Outcome: config.Outcome{Verdict: "allow"},
+	}
+	ep := chBuildEndpoint(t, rule)
+	mock, _ := chNewMockHandle(t, ep)
+	defer func() { _ = mock.Conn.Close() }()
+
+	q := chgoproto.Query{
+		ID:    "qid-params",
+		Body:  "SELECT {p:String}",
+		Stage: chgoproto.StageComplete,
+		Info: chgoproto.ClientInfo{
+			ProtocolVersion: revision, Major: 24, Minor: 8,
+			Interface:   chgoproto.InterfaceTCP,
+			Query:       chgoproto.ClientQueryInitial,
+			InitialUser: "alice",
+		},
+		Parameters: []chgoproto.Parameter{
+			// 3-character key → UVarInt leading byte = 0x03,
+			// which collides with ClientCodeCancel.
+			{Key: "abc", Value: "hello"},
+			{Key: "second", Value: "world"},
+		},
+	}
+	var agentBuf chgoproto.Buffer
+	q.EncodeAware(&agentBuf, revision)
+
+	reader := chgoproto.NewReader(bytes.NewReader(agentBuf.Buf))
+	var upstream bytes.Buffer
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred", "")
+
+	out := upstream.Bytes()
+	if len(out) == 0 || chgoproto.ClientCode(out[0]) != chgoproto.ClientCodeQuery {
+		t.Fatalf("upstream first byte = %d, want ClientCodeQuery", out[0])
+	}
+	r := chgoproto.NewReader(bytes.NewReader(out[1:]))
+	var got chgoproto.Query
+	if err := got.DecodeAware(r, revision); err != nil {
+		t.Fatalf("decode upstream Query: %v", err)
+	}
+	if got.Body != q.Body {
+		t.Errorf("Body = %q, want %q", got.Body, q.Body)
+	}
+	if diff := cmp.Diff(q.Parameters, got.Parameters); diff != "" {
+		t.Errorf("Parameters round-trip mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestChAgentToServerDeniesQueryWithParameters pins the deny-path
+// drain when Parameters follow the body on a modern-protocol Query.
+// A denied Query must consume Parameters off the wire so the pump
+// sees the next packet's leading byte cleanly on the next iteration.
+// The stream is q1 (denied DROP with Parameters) → q2 (allowed
+// SELECT); the pump must surface q2 to upstream and write exactly
+// one Exception to the agent.
+func TestChAgentToServerDeniesQueryWithParameters(t *testing.T) {
+	const revision = chMaxProtocolRev
+
+	rule := chRuleSQL(t, "deny-drop",
+		"sql.verb == 'drop'", "deny", "drops blocked", 100)
+	ep := chBuildEndpoint(t, rule)
+	mock, agentSide := chNewMockHandle(t, ep)
+	defer func() { _ = agentSide.Close() }()
+	defer func() { _ = mock.Conn.Close() }()
+
+	mkQuery := func(id, body string, params []chgoproto.Parameter) []byte {
+		q := chgoproto.Query{
+			ID: id, Body: body,
+			Stage: chgoproto.StageComplete,
+			Info: chgoproto.ClientInfo{
+				ProtocolVersion: revision, Major: 24, Minor: 8,
+				Interface:   chgoproto.InterfaceTCP,
+				Query:       chgoproto.ClientQueryInitial,
+				InitialUser: "alice",
+			},
+			Parameters: params,
+		}
+		var b chgoproto.Buffer
+		q.EncodeAware(&b, revision)
+		return b.Buf
+	}
+
+	var stream bytes.Buffer
+	stream.Write(mkQuery("q1", "DROP TABLE events", []chgoproto.Parameter{
+		{Key: "abc", Value: "ignored"}, // 3-char key → 0x03 lead byte
+	}))
+	stream.Write(mkQuery("q2", "SELECT 1", nil))
+
+	agentBytes := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		n, _ := agentSide.Read(buf)
+		agentBytes <- append([]byte(nil), buf[:n]...)
+	}()
+
+	reader := chgoproto.NewReader(bytes.NewReader(stream.Bytes()))
+	var upstream bytes.Buffer
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred", "")
+
+	r := chgoproto.NewReader(bytes.NewReader(upstream.Bytes()))
+	var bodies []string
+	for {
+		code, err := r.UInt8()
+		if err != nil {
+			break
+		}
+		if chgoproto.ClientCode(code) != chgoproto.ClientCodeQuery {
+			t.Fatalf("upstream packet code = %d, want ClientCodeQuery (wire alignment lost)", code)
+		}
+		var q chgoproto.Query
+		if err := q.DecodeAware(r, revision); err != nil {
+			t.Fatalf("decode upstream Query: %v", err)
+		}
+		bodies = append(bodies, q.Body)
+	}
+	wantBodies := []string{"SELECT 1"}
+	if diff := cmp.Diff(wantBodies, bodies); diff != "" {
+		t.Errorf("upstream Query bodies (-want +got):\n%s", diff)
+	}
+
+	exc := <-agentBytes
+	if len(exc) == 0 || chgoproto.ServerCode(exc[0]) != chgoproto.ServerCodeException {
+		t.Errorf("agent did not receive Exception; first byte = %d", exc[0])
+	}
+}
+
+// TestChApproveCancelStateHITLAllowWithParameters verifies that an
+// HITL approval that allows a Query whose body is followed by a
+// Parameters block does NOT mis-fire as canceled, even when a
+// parameter key's UVarInt length byte equals ClientCodeCancel (0x03).
+// chHandleQuery now drains Parameters before invoking approval, so
+// the peek goroutine sees a true packet boundary (nothing more on
+// the wire until the next packet) — not the Parameters lead byte.
+func TestChApproveCancelStateHITLAllowWithParameters(t *testing.T) {
+	const revision = chMaxProtocolRev
+
+	approveCondition := "sql.verb == 'drop'"
+	approveRule := &config.CompiledRule{
+		Name:      "approve-drops",
+		Condition: approveCondition,
+		Outcome: config.Outcome{
+			Approve: []config.ApproveStage{{Name: "human"}},
+		},
+	}
+	m, err := facet.NewMatcher("sql", approveCondition)
+	if err != nil {
+		t.Fatalf("matcher: %v", err)
+	}
+	approveRule.Matcher = m
+	ep := chBuildEndpoint(t, approveRule)
+	mock, _ := chNewMockHandle(t, ep)
+	defer func() { _ = mock.Conn.Close() }()
+	mock.Approve = chMockApprove("allow", "ok")
+
+	q := chgoproto.Query{
+		ID: "qid-hitl", Body: "DROP TABLE events",
+		Stage: chgoproto.StageComplete,
+		Info: chgoproto.ClientInfo{
+			ProtocolVersion: revision, Major: 24, Minor: 8,
+			Interface:   chgoproto.InterfaceTCP,
+			Query:       chgoproto.ClientQueryInitial,
+			InitialUser: "alice",
+		},
+		Parameters: []chgoproto.Parameter{
+			{Key: "abc", Value: "v"}, // 0x03 leading byte — would have been a false cancel.
+		},
+	}
+	var agentBuf chgoproto.Buffer
+	q.EncodeAware(&agentBuf, revision)
+
+	reader := chgoproto.NewReader(bytes.NewReader(agentBuf.Buf))
+	var upstream bytes.Buffer
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred", "")
+
+	out := upstream.Bytes()
+	if len(out) == 0 || chgoproto.ClientCode(out[0]) != chgoproto.ClientCodeQuery {
+		t.Fatalf("upstream first byte = %d, want ClientCodeQuery — HITL allow forwarded nothing", out[0])
+	}
+	r := chgoproto.NewReader(bytes.NewReader(out[1:]))
+	var got chgoproto.Query
+	if err := got.DecodeAware(r, revision); err != nil {
+		t.Fatalf("decode upstream Query: %v", err)
+	}
+	if diff := cmp.Diff(q.Parameters, got.Parameters); diff != "" {
+		t.Errorf("Parameters mismatch after HITL allow (-want +got):\n%s", diff)
+	}
+	// hitl_allow event proves the approver ran; if the peek had
+	// mis-fired as canceled, chEvaluateSQL would have emitted a
+	// "canceled" event and chHandleQuery would have skipped the
+	// upstream write.
+	if len(mock.events) == 0 || mock.events[0].Action != "hitl_allow" {
+		t.Errorf("expected hitl_allow event, got: %+v", mock.events)
+	}
+}

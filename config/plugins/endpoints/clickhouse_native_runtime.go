@@ -562,13 +562,53 @@ func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chg
 	if sessionDB != nil {
 		database = *sessionDB
 	}
+
+	// Drain the Parameters block off the wire BEFORE invoking
+	// approval so the peek goroutine in chApproveCancelState.run sees
+	// a true packet boundary. If we left it for the post-approval
+	// re-encode, the peek's UInt8() would consume the leading byte of
+	// the Parameters block — corrupting both the deny drain and the
+	// allow re-encode, AND risking a false ClientCancel detection
+	// when that byte happens to equal 0x03 (e.g. the UVarInt key
+	// length of a 3-character parameter name).
+	//
+	// Truncated queries are excepted: the body tail still sits ahead
+	// of Parameters on the wire and buffering a multi-MiB tail isn't
+	// safe. For those we disable the peek entirely (see the approveSt
+	// wiring below) and decode Parameters inline on the allow path —
+	// the cancel-during-approval loss for queries with > chMaxQueryBody
+	// SQL bodies is acceptable, and matches the pre-existing
+	// behaviour on that path (the old peek was off-by-one there too).
+	var paramBuf chgoproto.Buffer
+	paramsPreEncoded := false
+	if !truncated && chgoproto.FeatureParameters.In(revision) {
+		for {
+			var p chgoproto.Parameter
+			if perr := p.Decode(agentReader); perr != nil {
+				chEmitError(ch, "query-decode", "parameter: "+perr.Error())
+				return compression, nil, true
+			}
+			if p.Key == "" {
+				paramBuf.PutString("") // end-of-parameters sentinel
+				break
+			}
+			p.Encode(&paramBuf)
+		}
+		paramsPreEncoded = true
+	}
+
 	// Wrap ch.Approve with a peek loop that watches the agent
 	// connection for an in-band ClientCancel while the approver chain
 	// blocks. Any non-cancel byte the peek consumes survives via the
 	// rewound reader the state struct carries; chAgentToServer swaps
 	// it in place of agentReader so the next packet sees the byte we
-	// read.
-	approveSt := &chApproveCancelState{agentReader: agentReader, ch: ch}
+	// read. For truncated queries we leave agentReader unset so
+	// state.run falls through to plain ch.Approve (the body tail
+	// would otherwise feed the peek a mid-packet byte).
+	approveSt := &chApproveCancelState{ch: ch}
+	if !truncated {
+		approveSt.agentReader = agentReader
+	}
 	verdict, reason, nextDB := chEvaluateSQL(ctx, ch, string(head), credName, database, truncated, approveSt.run)
 	rewound := approveSt.rewound
 	if approveSt.canceled {
@@ -582,22 +622,24 @@ func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chg
 	if verdict == "deny" || verdict == "canceled" {
 		// Drain the rest of this Query off the wire so the pump can
 		// keep reading subsequent packets — same shape as the previous
-		// implementation (deny → write Exception → continue).
+		// implementation (deny → write Exception → continue). For
+		// !truncated, Parameters were already drained pre-approval
+		// and the buffered paramBuf is simply dropped.
 		if truncated {
 			if _, derr := io.CopyN(io.Discard, agentReader, int64(bodyLen-headLen)); derr != nil {
 				chEmitError(ch, "query-drain", "body tail: "+derr.Error())
 				return compression, nil, true
 			}
-		}
-		if chgoproto.FeatureParameters.In(revision) {
-			for {
-				var p chgoproto.Parameter
-				if perr := p.Decode(agentReader); perr != nil {
-					chEmitError(ch, "query-drain", "parameter: "+perr.Error())
-					return compression, nil, true
-				}
-				if p.Key == "" {
-					break
+			if chgoproto.FeatureParameters.In(revision) {
+				for {
+					var p chgoproto.Parameter
+					if perr := p.Decode(agentReader); perr != nil {
+						chEmitError(ch, "query-drain", "parameter: "+perr.Error())
+						return compression, nil, true
+					}
+					if p.Key == "" {
+						break
+					}
 				}
 			}
 		}
@@ -626,18 +668,21 @@ func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chg
 	}
 
 	if chgoproto.FeatureParameters.In(revision) {
-		var paramBuf chgoproto.Buffer
-		for {
-			var p chgoproto.Parameter
-			if perr := p.Decode(agentReader); perr != nil {
-				chEmitError(ch, "query-decode", "parameter: "+perr.Error())
-				return compression, nil, true
+		if !paramsPreEncoded {
+			// Truncated path: Parameters still on the wire after the
+			// body tail. Decode + re-encode inline.
+			for {
+				var p chgoproto.Parameter
+				if perr := p.Decode(agentReader); perr != nil {
+					chEmitError(ch, "query-decode", "parameter: "+perr.Error())
+					return compression, nil, true
+				}
+				if p.Key == "" {
+					paramBuf.PutString("") // end-of-parameters sentinel
+					break
+				}
+				p.Encode(&paramBuf)
 			}
-			if p.Key == "" {
-				paramBuf.PutString("") // end-of-parameters sentinel
-				break
-			}
-			p.Encode(&paramBuf)
 		}
 		if _, werr := upstream.Write(paramBuf.Buf); werr != nil {
 			return compression, nil, true
