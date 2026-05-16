@@ -2,15 +2,6 @@ import { SectionLabel } from "../components/SectionLabel";
 
 const PROBLEMS = [
   {
-    title: "Your agent shouldn't see secrets",
-    body:
-      "Every API key in the agent's env is one you've handed " +
-      "over. If the process is compromised (and prompts can " +
-      "compromise it), the keys leak with it. Rotation is hard, " +
-      "and you can't easily revoke a single action's worth of " +
-      "access.",
-  },
-  {
     title: "Granting access doesn't gate actions",
     body:
       "OAuth scopes, API keys, IAM roles, k8s RBAC: every " +
@@ -18,6 +9,15 @@ const PROBLEMS = [
       "correctly is its own project. Even when you get it right, " +
       "a prompt-injected agent will exploit whatever access you " +
       "granted.",
+  },
+  {
+    title: "Your agent shouldn't see secrets",
+    body:
+      "Every API key in the agent's env is one you've handed " +
+      "over. If the process is compromised (and prompts can " +
+      "compromise it), the keys leak with it. Rotation is hard, " +
+      "and you can't easily revoke a single action's worth of " +
+      "access.",
   },
   {
     title: "Logs don't capture the action",
