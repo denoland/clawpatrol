@@ -70,33 +70,39 @@ See [Configuration vocabulary](#configuration-vocabulary).
 
 One unit of agent work the gateway sees and applies policy to — one
 HTTP call, one SQL query, one `kubectl` invocation, one SSH command.
-Each action targets an [endpoint](#endpoint), is gated by the matching
-[rule](#rule)'s [outcome](#outcome), and surfaces in the dashboard's
-live request feed (action [families](#family): `http`, `sql`, `k8s`,
-`ssh`) with its own detail page. "Action" is the operator-visible concept of "the
-thing the agent did."
+Every action belongs to exactly one [family](#family) — the protocol
+class (`http`, `sql`, `ssh`, `k8s`) the gateway used to intercept it —
+and that family fixes the data the gateway extracts from the wire and
+exposes to policy. The action targets one [endpoint](#endpoint), the
+matching [rule](#rule)'s [outcome](#outcome) gates it, and it surfaces
+in the dashboard's live request feed with its own detail page.
+"Action" is the operator-visible concept of "the thing the agent did."
 
 ### Rule
 
 One policy decision targeting one or more [endpoints](#endpoint). A
 rule has a CEL [`condition`](#cel-condition) string that matches against
-the [facet fields](#facet-field) the rule's [family](#family) exposes
-(inferred from its endpoints), an optional `credential` predicate, and
-an [outcome](#outcome) — either a literal `verdict` or an
-`approve = [...]` chain. Rules are one HCL block kind
-(`rule "<name>" { ... }`); the family is inferred from the endpoint(s)
-at load time, and mixed-family endpoint sets are a load error.
+the [facet fields](#facet-field) those endpoints' [family](#family)
+exposes, an optional `credential` predicate, and an [outcome](#outcome)
+— either a literal `verdict` or an `approve = [...]` chain. All
+endpoints listed by one rule must share a family — mixed-family
+endpoint sets are a load error — so that the CEL condition sees a
+single, well-defined set of facet fields. Rules are one HCL block
+kind (`rule "<name>" { ... }`).
 
 ### Family
 
 The protocol class an [action](#action) belongs to. An action belongs
 to exactly one family; built-in families are `http`, `sql`, `ssh`, and
-`k8s`. A [rule](#rule)'s family is inferred from its endpoint(s) at
-load time, and mixed-family endpoint sets are a load error. Each
-family includes one or more [facets](#facet) into the action's data:
-the `sql` family includes the `sql` facet; the `http` family includes
-the `http` facet; the `k8s` family includes both the `http` facet
-(k8s traffic is HTTPS on the wire) and the `k8s` facet.
+`k8s`. An [endpoint](#endpoint)'s type carries an implied family — an
+`https` endpoint accepts `http` actions, a `postgres` endpoint accepts
+`sql` actions — and that propagates to [rules](#rule): all endpoints
+listed by one rule must share a family, so the rule's CEL condition
+sees a single, well-defined set of facet fields. Each family includes
+one or more [facets](#facet) into the action's data: the `sql` family
+includes the `sql` facet; the `http` family includes the `http` facet;
+the `k8s` family includes both the `http` facet (k8s traffic is HTTPS
+on the wire) and the `k8s` facet.
 
 ### Facet
 
@@ -127,8 +133,8 @@ parsed-JSON `dyn`.
 
 The boolean expression a [rule](#rule)'s `condition = "..."` field
 carries. CEL ([Common Expression Language](https://github.com/google/cel-spec))
-is evaluated against the [facet fields](#facet-field) the rule's
-inferred [family](#family) exposes. Idioms: equality / membership
+is evaluated against the [facet fields](#facet-field) exposed by the
+[family](#family) of the rule's endpoints. Idioms: equality / membership
 (`http.method == 'POST'`,
 `sql.verb in ['select', 'show']`), prefix / suffix / substring
 (`k8s.name.startsWith('debug-')`, `http.body.contains('secret')`),
