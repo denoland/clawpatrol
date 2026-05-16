@@ -24,7 +24,7 @@ export function HeroSection() {
             class="mb-10 max-w-lg
             text-text-muted"
           >
-            You write the rules. Plugins parse each protocol (SQL, Kubernetes, HTTPS, SSH) so they
+            You write the rules. Plugins parse each protocol (SQL, Kubernetes, HTTPS, SSH, …) so they
             can match on semantics, not URLs: block <code>DROP TABLE</code>, require human approval
             for <code>kubectl delete pod</code>, or have an LLM judge whether a{" "}
             <code>SELECT</code> leaks secrets. Secrets stay in the proxy, never the agent.
