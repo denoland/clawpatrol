@@ -25,7 +25,7 @@ export function FlowDiagram() {
         <Card name="Claude" icon="/icons/anthropic.svg" />
         <Card name="Codex" icon="/icons/openai.svg" />
         <Card name="OpenClaw" icon="/icons/openclaw.svg" />
-        <Card name="Other agents" />
+        <Card name="Others" />
       </CardRow>
     </div>
   );
