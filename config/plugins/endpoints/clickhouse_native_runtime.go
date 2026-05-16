@@ -572,14 +572,14 @@ func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chg
 	verdict, reason, nextDB := chEvaluateSQL(ctx, ch, string(head), credName, database, truncated, approveSt.run)
 	rewound := approveSt.rewound
 	if approveSt.canceled {
-		// The agent issued a ClientCancel while we were parked. Force
-		// the verdict to deny so the agent sees a terminating
-		// Exception (and the pump doesn't try to ship Data blocks
-		// that follow the canceled Query to upstream).
-		verdict, reason = "deny", "canceled by agent"
+		// The agent issued a ClientCancel while we were parked.
+		// chEvaluateSQL already surfaced verdict="canceled" + a
+		// "canceled" ConnEvent via approveSt.run. Drop any rewound
+		// byte: the pump must not ship Data blocks the agent queued
+		// behind the now-canceled Query to upstream.
 		rewound = nil
 	}
-	if verdict == "deny" {
+	if verdict == "deny" || verdict == "canceled" {
 		// Drain the rest of this Query off the wire so the pump can
 		// keep reading subsequent packets — same shape as the previous
 		// implementation (deny → write Exception → continue).
@@ -605,8 +605,8 @@ func chHandleQuery(ctx context.Context, ch *runtime.ConnHandle, agentReader *chg
 			// Agent gone — there's nothing left to keep alive.
 			return compression, nil, true
 		}
-		log.Printf("clickhouse_native %s deny %s: %s",
-			ch.Endpoint.Name, ch.PeerIP, reason)
+		log.Printf("clickhouse_native %s %s %s: %s",
+			ch.Endpoint.Name, verdict, ch.PeerIP, reason)
 		return compression, rewound, false
 	}
 
@@ -994,6 +994,22 @@ func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName, d
 			Stages: cr.Outcome.Approve, Verb: info.Verb,
 			Summary: summary, Rule: cr,
 		})
+		if v.Decision == "canceled" {
+			// Agent canceled mid-approval — distinct Action so the
+			// dashboard's deny-reason filter doesn't conflate agent
+			// Ctrl+C with operator HITL denies. No approver fields:
+			// no human / LLM produced this outcome.
+			r := v.Reason
+			if r == "" {
+				r = "canceled by agent"
+			}
+			chEmit(ch, runtime.ConnEvent{
+				Action: "canceled", Reason: r,
+				Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
+			})
+			verdict, reason = "canceled", r
+			return
+		}
 		if v.Decision != "allow" {
 			r := v.Reason
 			if r == "" {
@@ -1063,7 +1079,10 @@ var chPeekDeadlineEpsilon = -time.Second
 // run wraps ch.Approve. It spawns a goroutine that reads one byte
 // off agentReader and, depending on the byte, closes a cancel
 // channel handed to the approver or marks the byte for rewind.
-// Returns the approver's verdict.
+// Returns the approver's verdict, except on agent cancel where it
+// substitutes Decision="canceled" so chEvaluateSQL can emit a
+// distinct Action and the dashboard can tell an agent Ctrl+C apart
+// from an operator HITL deny.
 func (s *chApproveCancelState) run(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
 	if s.ch == nil || s.ch.Approve == nil || s.agentReader == nil {
 		// Defensive — chEvaluateSQL already requires ch.Approve non-nil
@@ -1125,7 +1144,7 @@ func (s *chApproveCancelState) run(req runtime.ApproveCallRequest) runtime.Appro
 	if chgoproto.ClientCode(result.b) == chgoproto.ClientCodeCancel {
 		s.canceled = true
 		fireCancel()
-		return verdict
+		return runtime.ApproveVerdict{Decision: "canceled", Reason: "canceled by agent"}
 	}
 	// Non-cancel byte → prepend it back onto the reader so
 	// chAgentToServer's next iteration treats it as the leading byte

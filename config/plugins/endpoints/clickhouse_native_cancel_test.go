@@ -165,10 +165,11 @@ func TestChApproveCancelStateNoByteCleanReturn(t *testing.T) {
 }
 
 // TestChEvaluateSQLCancelDuringApprovalReturnsAllowVerdict pins the
-// fact that chEvaluateSQL still returns the approver's verdict — the
-// "canceled by agent" reason is overlaid by chHandleQuery once it
-// inspects approveSt.canceled. Keeping chEvaluateSQL's contract
-// minimal here prevents surprising the existing non-cancel tests.
+// fact that chEvaluateSQL passes through the approver's verdict on
+// the happy path. The cancel-during-approval path lives in
+// approveSt.run, which substitutes Decision="canceled" and lets
+// chEvaluateSQL emit a distinct "canceled" Action — covered
+// separately so the non-cancel tests stay simple.
 func TestChEvaluateSQLCancelDuringApprovalReturnsAllowVerdict(t *testing.T) {
 	approveCondition := "sql.verb == 'drop'"
 	approveRule := &config.CompiledRule{

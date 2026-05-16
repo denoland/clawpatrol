@@ -279,7 +279,7 @@ type ApproveCallRequest struct {
 // dashboard doesn't have to round-trip through the legacy
 // Verb / Summary squashing.
 type ConnEvent struct {
-	Action  string // "allow" | "deny" | "approved" | "denied" | "error"
+	Action  string // "allow" | "deny" | "approved" | "denied" | "canceled" | "error"
 	Reason  string
 	Verb    string // SQL verb / k8s verb / etc.
 	Summary string // human-readable one-liner for the event log

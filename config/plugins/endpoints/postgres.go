@@ -482,9 +482,9 @@ func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.
 					sql := pgExtractSQL(msg.typ, msg.payload)
 					if sql != "" {
 						verdict, reason := pgEvaluate(ch, sql, credName, database, cancelEntry)
-						if verdict == "deny" {
+						if verdict == "deny" || verdict == "canceled" {
 							pgWriteDeny(ch.Conn, reason)
-							log.Printf("pg-deny %s: %s", ch.PeerIP, reason)
+							log.Printf("pg-%s %s: %s", verdict, ch.PeerIP, reason)
 							continue
 						}
 					}
@@ -628,17 +628,20 @@ func pgHandleOversizeFrame(ch *runtime.ConnHandle, upstream net.Conn, credName, 
 //
 // Returns:
 //
-//	("deny", reason) — first sub-statement to deny short-circuits.
-//	("", "")         — every sub-statement allowed or had no match.
+//	("deny", reason)     — first sub-statement to deny short-circuits.
+//	("canceled", reason) — agent canceled mid-approval; treated as a
+//	                       wire-deny by the caller but reported to the
+//	                       dashboard with a distinct Action.
+//	("", "")             — every sub-statement allowed or had no match.
 func pgEvaluate(ch *runtime.ConnHandle, sql, credName, database string, cancelEntry *pgCancelEntry) (string, string) {
 	for _, stmt := range analyseAll(sql) {
 		v, reason := pgEvaluateInfo(ch, stmt.Outer, credName, database, false, cancelEntry)
-		if v == "deny" {
+		if v == "deny" || v == "canceled" {
 			return v, reason
 		}
 		for _, inner := range stmt.Inner {
 			v, reason := pgEvaluateInfo(ch, inner, credName, database, true, cancelEntry)
-			if v == "deny" {
+			if v == "deny" || v == "canceled" {
 				return v, reason
 			}
 		}
@@ -721,11 +724,22 @@ func pgEvaluateInfo(ch *runtime.ConnHandle, info pgInfo, credName, database stri
 			default:
 			}
 		}
-		if canceled || v.Decision != "allow" {
+		if canceled {
+			// Agent canceled mid-approval. Emit a distinct "canceled"
+			// action — and return a "canceled" verdict — so the
+			// dashboard's deny-rate / SLO metrics don't conflate an
+			// agent Ctrl+C with an operator HITL deny. The approver
+			// fields stay empty: no human / LLM rendered a decision.
+			reason := "canceled by agent"
+			emit(ch, runtime.ConnEvent{
+				Action: "canceled", Reason: reason,
+				Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
+			})
+			return "canceled", reason
+		}
+		if v.Decision != "allow" {
 			reason := v.Reason
-			if canceled {
-				reason = "canceled by agent"
-			} else if reason == "" {
+			if reason == "" {
 				reason = "denied by approver"
 			}
 			emit(ch, runtime.ConnEvent{
