@@ -4,36 +4,57 @@ import { SectionLabel } from "../components/SectionLabel";
    `clawpatrol test` — regression-test CLI for policy changes. Replays
    recorded actions against a candidate config and asserts the verdicts
    still match. Drops into CI as a single binary; no gateway, no auth.
+   The terminal output below is real: run against deno.hcl with one
+   verdict flipped on the k8s-no-secrets rule.
    ──────────────────────────────────────────────────────────────────── */
 
 function TestOutput() {
+  const ok = (path: string) => (
+    <>
+      ok   {path}
+      {"\n"}
+    </>
+  );
   return (
     <pre
-      class="min-w-0 text-[13px] sm:text-sm font-mono leading-relaxed
+      class="min-w-0 text-[12.5px] sm:text-[13px] font-mono leading-relaxed
         bg-navy text-canvas/85 squircle-md p-6 overflow-x-auto
         border border-navy-700"
     >
       <code>
         <span class="text-canvas/40">$ </span>
-        clawpatrol test github.hcl fixtures/
+        clawpatrol test deno.hcl tests/
         {"\n"}
+        {ok("tests/anthropic-implicit-allow.json")}
+        {ok("tests/clickhouse-default-deny.json")}
+        {ok("tests/clickhouse-read.json")}
+        {ok("tests/deno-com-require-approval.json")}
+        {ok("tests/deno-deploy-read.json")}
+        {ok("tests/github-api-implicit-allow.json")}
+        {ok("tests/k8s-allow-meta.json")}
+        {ok("tests/k8s-debug-pods.json")}
+        {ok("tests/k8s-default-deny.json")}
         <span class="text-rust-300 font-bold">FAIL</span>
-        {" fixtures/get-user.json\n"}
+        {" tests/k8s-no-secrets.json\n"}
         {"  "}
-        <span class="text-canvas/60">want</span>
-        {" verdict="}
-        <span class="text-butter-300">"allow"</span>
-        {"  rule="}
-        <span class="text-butter-300">"github-reads"</span>
-        {"\n"}
-        {"  "}
-        <span class="text-canvas/60">got </span>
+        <span class="text-canvas/55">want</span>
         {" verdict="}
         <span class="text-butter-300">"deny"</span>
-        {"   rule="}
-        <span class="text-butter-300">"github-reads"</span>
+        {"       rule="}
+        <span class="text-butter-300">"k8s-no-secrets"</span>
+        {"\n  "}
+        <span class="text-canvas/55">got </span>
+        {" verdict="}
+        <span class="text-butter-300">"allow"</span>
+        {"      rule="}
+        <span class="text-butter-300">"k8s-no-secrets"</span>
         {"\n"}
-        1 action(s) checked,{" "}
+        {ok("tests/k8s-reads.json")}
+        {ok("tests/orb-avocet2-immutable-operations-allow.json")}
+        {ok("tests/pg-staging-banned-functions.json")}
+        {ok("tests/pg-staging-default-deny.json")}
+        {ok("tests/pg-staging-reads.json")}
+        36 action(s) checked,{" "}
         <span class="text-rust-300">1 mismatch(es)</span>
       </code>
     </pre>

@@ -1,4 +1,5 @@
 import { Layout } from "./Layout";
+import { Wave } from "./components/Wave";
 import { AnalyticsSection } from "./sections/AnalyticsSection";
 import { ApproversSection } from "./sections/ApproversSection";
 import { ComparisonSection } from "./sections/ComparisonSection";
@@ -13,9 +14,13 @@ export function Landing() {
     <Layout>
       <HeroSection />
       <ProblemSection />
+      <Wave
+        topColor="var(--color-canvas)"
+        bottomColor="var(--color-navy-600)"
+      />
       <RulesSection />
-      <TestSection />
       <ApproversSection />
+      <TestSection />
       <AnalyticsSection />
       <ComparisonSection />
       <CtaSection />
