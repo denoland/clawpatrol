@@ -73,6 +73,7 @@ const CATEGORIES: Category[] = [
             name: "NVIDIA OpenShell",
             url: "https://github.com/NVIDIA/OpenShell",
           },
+          { name: "Agents.sh", url: "https://www.agentsh.org/" },
         ],
       },
     ],
@@ -103,10 +104,20 @@ const CATEGORIES: Category[] = [
   },
 ];
 
+// Offset colored backgrounds matching the rules section's four-verdict
+// cards. Each card gets a different tint; the navy-bordered frame sits
+// in front, the colored block peeks out from the bottom-right.
+const COLOR_CLASSES = [
+  "bg-rust-100",
+  "bg-navy-100",
+  "bg-butter-100",
+  "bg-canvas",
+];
+
 export function ComparisonSection() {
   return (
     <section class="bg-canvas-muted py-24 sm:py-32">
-      <div class="max-w-5xl mx-auto px-6 sm:px-8">
+      <div class="max-w-6xl mx-auto px-6 sm:px-8">
         <div class="max-w-max">
           <SectionLabel>How it compares</SectionLabel>
         </div>
@@ -116,8 +127,10 @@ export function ComparisonSection() {
           underneath, where SQL verbs and k8s resources are facts your rules
           can match on.
         </p>
-        <div class="grid md:grid-cols-2 gap-4 sm:gap-6">
-          {CATEGORIES.map((c) => <CategoryCard key={c.title} category={c} />)}
+        <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6 sm:mb-8">
+          {CATEGORIES.map((c, i) => (
+            <CategoryCard key={c.title} category={c} colorClass={COLOR_CLASSES[i]} />
+          ))}
         </div>
         <SynthesisCard />
       </div>
@@ -125,44 +138,52 @@ export function ComparisonSection() {
   );
 }
 
-function CategoryCard({ category: c }: { category: Category }) {
+function CategoryCard(
+  { category: c, colorClass }: { category: Category; colorClass: string },
+) {
   return (
-    <div
-      class="p-6 sm:p-8 bg-canvas squircle-md
-        border border-navy-200 border-t-2 border-t-rust-300"
-    >
-      <h4 class="font-display font-bold text-xl mb-4 text-text">{c.title}</h4>
-      <div class="space-y-3 mb-4">
-        {c.groups.map((g, i) => (
-          <div key={g.label ?? i}>
-            {g.label && (
-              <div class="text-text-subtle font-mono uppercase tracking-wider text-2xs mb-1">
-                {g.label}
+    <div class="bg-transparent relative squircle-sm p-6">
+      <div class="absolute w-full h-full border-navy border-2 squircle-sm inset-0 z-10" />
+      <div class="relative z-10">
+        <h4 class="text-xl font-display font-bold text-text mb-4">
+          {c.title}
+        </h4>
+        <div class="space-y-3 mb-4">
+          {c.groups.map((g, i) => (
+            <div key={g.label ?? i}>
+              {g.label && (
+                <div class="text-text-subtle font-mono uppercase tracking-wider text-2xs mb-1">
+                  {g.label}
+                </div>
+              )}
+              <div class="text-[14px] text-text leading-relaxed">
+                {g.players.map((p, j) => (
+                  <span key={p.name}>
+                    {j > 0 && <span class="text-text-subtle"> · </span>}
+                    <a
+                      href={p.url}
+                      class="font-medium hover:text-rust hover:underline
+                        underline-offset-2 transition-colors"
+                    >
+                      {p.name}
+                    </a>
+                  </span>
+                ))}
               </div>
-            )}
-            <div class="text-[15px] text-text leading-relaxed">
-              {g.players.map((p, j) => (
-                <span key={p.name}>
-                  {j > 0 && <span class="text-text-subtle"> · </span>}
-                  <a
-                    href={p.url}
-                    class="font-medium hover:text-rust hover:underline
-                      underline-offset-2 transition-colors"
-                  >
-                    {p.name}
-                  </a>
-                </span>
-              ))}
             </div>
-          </div>
-        ))}
+          ))}
+        </div>
+        <p class="text-text-muted text-[13px] italic border-l-2 border-navy-300 pl-3 mb-3">
+          {c.gap}
+        </p>
+        {c.note && (
+          <p class="text-text text-[13px] font-medium">{c.note}</p>
+        )}
       </div>
-      <p class="text-text-muted text-[14px] italic border-l-2 border-rust-200 pl-3">
-        {c.gap}
-      </p>
-      {c.note && (
-        <p class="text-text text-[14px] font-medium mt-3">{c.note}</p>
-      )}
+      <div
+        class={"isolate absolute w-full h-full squircle-sm top-1.5 left-2 z-0 " +
+          colorClass}
+      />
     </div>
   );
 }
@@ -170,8 +191,8 @@ function CategoryCard({ category: c }: { category: Category }) {
 function SynthesisCard() {
   return (
     <div
-      class="mt-6 sm:mt-8 p-8 sm:p-12 squircle-md
-        bg-rust-100 border-2 border-rust-300"
+      class="p-8 sm:p-12 squircle-md
+        bg-rust-200 border-2 border-navy"
     >
       <div class="flex items-center gap-3 mb-4">
         <img
