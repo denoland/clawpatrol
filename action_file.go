@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -327,22 +328,31 @@ func (f *Fixture) ToMatchRequest(family string, parseSQL func(string) any) (*mat
 		if stmt == "" {
 			break
 		}
-		// Derive verb / tables / functions via SQLParser, then let
-		// any explicit fixture fields override. Keeps SQL fixtures
-		// hand-editable (one field) while accepting full structs.
 		if parseSQL == nil {
 			return nil, fmt.Errorf("sql: endpoint runtime does not implement SQLParser")
 		}
+		// Parser is authoritative for verb / tables / functions —
+		// they're derivable from the statement. If a fixture also
+		// declares them, they must agree; otherwise the rule
+		// evaluator would silently see a fiction. database isn't
+		// in the statement (PG StartupMessage / CH session), so it
+		// stays a fixture-provided override.
 		meta := parseSQL(stmt)
 		if m, ok := meta.(*sqlfacet.Meta); ok {
-			if a.SQL.Verb != "" {
-				m.Verb = a.SQL.Verb
+			if a.SQL.Verb != "" && !strings.EqualFold(a.SQL.Verb, m.Verb) {
+				return nil, fmt.Errorf(
+					"sql.verb mismatch: fixture=%q parser=%q (statement=%q)",
+					a.SQL.Verb, m.Verb, stmt)
 			}
-			if len(a.SQL.Tables) > 0 {
-				m.Tables = a.SQL.Tables
+			if len(a.SQL.Tables) > 0 && !sameStringSet(a.SQL.Tables, m.Tables) {
+				return nil, fmt.Errorf(
+					"sql.tables mismatch: fixture=%v parser=%v (statement=%q)",
+					a.SQL.Tables, m.Tables, stmt)
 			}
-			if len(a.SQL.Functions) > 0 {
-				m.Functions = a.SQL.Functions
+			if len(a.SQL.Functions) > 0 && !sameStringSet(a.SQL.Functions, m.Functions) {
+				return nil, fmt.Errorf(
+					"sql.functions mismatch: fixture=%v parser=%v (statement=%q)",
+					a.SQL.Functions, m.Functions, stmt)
 			}
 			if a.SQL.Database != "" {
 				m.Database = a.SQL.Database
@@ -351,4 +361,23 @@ func (f *Fixture) ToMatchRequest(family string, parseSQL func(string) any) (*mat
 		req.Meta = meta
 	}
 	return req, nil
+}
+
+// sameStringSet treats two []string as equal-as-sets. Used to compare
+// fixture-declared table/function lists against the parser's output:
+// order is incidental, presence is what matters for rule matching.
+func sameStringSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	a_ := append([]string(nil), a...)
+	b_ := append([]string(nil), b...)
+	sort.Strings(a_)
+	sort.Strings(b_)
+	for i := range a_ {
+		if a_[i] != b_[i] {
+			return false
+		}
+	}
+	return true
 }

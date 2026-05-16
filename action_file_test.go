@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/denoland/clawpatrol/config"
+	sqlfacet "github.com/denoland/clawpatrol/config/plugins/facets/sql"
 )
 
 func TestFixtureUnmarshalAcceptsMissingEndpoint(t *testing.T) {
@@ -102,6 +103,99 @@ func TestMatchFromCompiledRule(t *testing.T) {
 			got := MatchFromCompiledRule(tc.cr, ep)
 			if got != tc.want {
 				t.Fatalf("got %+v want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// SQL fixture's verb / tables / functions must agree with what the
+// parser derives from `statement`. Disagreement = either a stale
+// fixture or a parser bug, and the rule evaluator must not silently
+// see a fiction either way.
+func TestFixtureSQLStrictAgainstParser(t *testing.T) {
+	mkFixture := func(sql SQLAction) *Fixture {
+		return &Fixture{Action: Action{Host: "pg.internal:5432", SQL: &sql}}
+	}
+	// Fake parser: pretends the statement is `SELECT count(*) FROM users`
+	// regardless of input, so the assertions below have a known truth.
+	parser := func(string) any {
+		return &sqlfacet.Meta{
+			Verb: "select", Tables: []string{"users"},
+			Functions: []string{"count"}, Statement: "stub",
+		}
+	}
+
+	cases := []struct {
+		name    string
+		sql     SQLAction
+		wantErr string // substring; "" = expect success
+	}{
+		{
+			name: "all-derived-only",
+			sql:  SQLAction{Statement: "SELECT count(*) FROM users"},
+		},
+		{
+			name: "matching-verb-and-tables",
+			sql: SQLAction{
+				Statement: "SELECT count(*) FROM users",
+				Verb:      "select",
+				Tables:    []string{"users"},
+				Functions: []string{"count"},
+			},
+		},
+		{
+			name: "tables-reordered-still-ok", // set semantics
+			sql: SQLAction{
+				Statement: "x",
+				Tables:    []string{"users"},
+			},
+		},
+		{
+			name: "verb-mismatch",
+			sql: SQLAction{
+				Statement: "SELECT count(*) FROM users",
+				Verb:      "delete",
+			},
+			wantErr: "sql.verb mismatch",
+		},
+		{
+			name: "tables-mismatch",
+			sql: SQLAction{
+				Statement: "SELECT count(*) FROM users",
+				Tables:    []string{"secrets"},
+			},
+			wantErr: "sql.tables mismatch",
+		},
+		{
+			name: "functions-mismatch",
+			sql: SQLAction{
+				Statement: "SELECT count(*) FROM users",
+				Functions: []string{"sum"},
+			},
+			wantErr: "sql.functions mismatch",
+		},
+		{
+			name: "database-allowed-as-override", // parser can't see it
+			sql: SQLAction{
+				Statement: "SELECT count(*) FROM users",
+				Database:  "prod",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := mkFixture(tc.sql).ToMatchRequest("sql", parser)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error %q does not contain %q", err, tc.wantErr)
 			}
 		})
 	}
