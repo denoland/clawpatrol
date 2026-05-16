@@ -5,7 +5,6 @@ import { ApproversSection } from "./sections/ApproversSection";
 import { ComparisonSection } from "./sections/ComparisonSection";
 import { CtaSection } from "./sections/CtaSection";
 import { HeroSection } from "./sections/HeroSection";
-import { IntegrationsSection } from "./sections/IntegrationsSection";
 import { ProblemSection } from "./sections/ProblemSection";
 import { ProtocolDepthSection } from "./sections/ProtocolDepthSection";
 import { RulesSection } from "./sections/RulesSection";
@@ -25,7 +24,6 @@ export function Landing() {
       <ProtocolDepthSection />
       <AnalyticsSection />
       <ComparisonSection />
-      <IntegrationsSection />
       <CtaSection />
     </Layout>
   );
