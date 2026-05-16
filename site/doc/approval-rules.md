@@ -281,11 +281,11 @@ byte-for-byte. What's bounded is the matcher's view of it. The
 frontend flags the request as truncated, and the dispatcher
 fails-closed per rule.
 
-| Endpoint | Inspected slice | Cap | Source constant |
-|----------|-----------------|-----|------------------|
-| `https`, `kubernetes`, `clickhouse_https` | request body on `POST` / `PUT` / `PATCH` | 1 MiB | `maxHTTPMatchBody` (`main.go`) |
-| `postgres` | `Query` (`Q`) and `Parse` (`P`) frame | 1 MiB | `maxPgMessage` (`config/plugins/endpoints/postgres.go`) |
-| `clickhouse_native` | `Query` packet body | 1 MiB | `chMaxQueryBody` (`config/plugins/endpoints/clickhouse_native_runtime.go`) |
+| Endpoint | Inspected slice | Cap |
+|----------|-----------------|-----|
+| `https`, `kubernetes`, `clickhouse_https` | request body on `POST` / `PUT` / `PATCH` | 1 MiB |
+| `postgres` | `Query` (`Q`) and `Parse` (`P`) frame | 1 MiB |
+| `clickhouse_native` | `Query` packet body | 1 MiB |
 
 The caps are per-plugin constants in the gateway source — **not
 operator-tunable** today, and not surfaced in `gateway.hcl`. Header
