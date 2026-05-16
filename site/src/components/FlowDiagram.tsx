@@ -52,7 +52,7 @@ function InternetNode() {
         class="font-mono text-[11px] uppercase tracking-wider mt-2
           text-text-muted text-balance"
       >
-        postgres · clickhouse · k8s · slack · notion · internal apis · …
+        postgres · clickhouse · k8s · github · slack · notion · …
       </div>
     </div>
   );
