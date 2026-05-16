@@ -14,11 +14,9 @@ const CATEGORIES: Category[] = [
     title: "Watch the LLM call",
     body:
       "Sit between the agent and the model. Some focus on routing " +
-      "and observability: picking the cheapest provider, retrying " +
-      "on failure, tracking tokens. Others focus on content: " +
-      "scanning prompts and responses for injection or PII. Both " +
-      "lenses watch the conversation itself; what the agent does " +
-      "after the LLM replies lives outside their view.",
+      "and observability; others on content (injection, PII). " +
+      "Either way they watch the conversation; what the agent " +
+      "does after the LLM replies lives outside their view.",
     groups: [
       {
         label: "Routing & observability",
@@ -58,10 +56,10 @@ const CATEGORIES: Category[] = [
     title: "Watch the tool call",
     body:
       "Sit between the agent and the world, inspecting outbound " +
-      "HTTP. They use static rules, JavaScript expressions, or an " +
-      "LLM judge. All see the same surface: URL, method, and " +
-      "request body. The body is opaque, so a Postgres DROP TABLE " +
-      "and a SELECT 1 reach them as the same shape of HTTPS call.",
+      "HTTP via static rules, JavaScript expressions, or an LLM " +
+      "judge. All see the same surface (URL, method, body bytes), " +
+      "so a Postgres DROP TABLE and a SELECT 1 reach them as the " +
+      "same shape of HTTPS call.",
     groups: [
       {
         players: [
@@ -79,10 +77,9 @@ const CATEGORIES: Category[] = [
     title: "Sandbox the process",
     body:
       "Run the agent inside a container or microVM with policies " +
-      "on filesystem, syscalls, and egress. Useful for limiting " +
-      "blast radius if the agent process is compromised or strays. " +
-      "They constrain what the agent can touch, not whether each " +
-      "action makes sense for the task.",
+      "on filesystem, syscalls, and egress. They constrain what " +
+      "the agent can touch, not whether each action makes sense " +
+      "for the task.",
     note:
       "Complementary to Claw Patrol. Most agents already run on " +
       "their own VM; if yours doesn't, an OS sandbox is a sensible " +
@@ -102,10 +99,9 @@ const CATEGORIES: Category[] = [
     title: "Hold the keys",
     body:
       "Store credentials outside the agent and attach them at " +
-      "request time. The agent never sees a real key, which limits " +
-      "damage from a compromised process or a leaked log. The " +
-      "request content itself passes through: whatever the agent " +
-      "asks for after authentication, it gets.",
+      "request time. The agent never sees a real key, which " +
+      "limits damage from a compromised process. The request " +
+      "content itself passes through, whatever the agent asks for.",
     groups: [
       {
         players: [
@@ -125,35 +121,39 @@ const CATEGORIES: Category[] = [
 
 export function ComparisonSection() {
   return (
-    <section class="max-w-5xl mx-auto px-6 sm:px-8 pt-8 pb-20 sm:pb-28 border-t border-navy-200/50">
-      <div class="pt-16 sm:pt-28" />
-      <div class="max-w-max">
-        <SectionLabel>How it compares</SectionLabel>
+    <section class="bg-canvas-muted py-24 sm:py-32">
+      <div class="max-w-5xl mx-auto px-6 sm:px-8">
+        <div class="max-w-max">
+          <SectionLabel>How it compares</SectionLabel>
+        </div>
+        <h3 class="text-3xl sm:text-4xl lg:text-5xl font-display font-bold text-balance">
+          Most tools watch one boundary.
+        </h3>
+        <p class="max-w-2xl mb-12 sm:mb-16 text-base text-text-muted mt-6 sm:mt-8">
+          Many teams have attacked this problem, each watching a different
+          boundary. Most stop at the surface. Claw Patrol watches the protocol
+          underneath, where SQL verbs and k8s resources are facts your rules
+          can match on.
+        </p>
+        <div class="grid md:grid-cols-2 gap-4 sm:gap-6">
+          {CATEGORIES.map((c) => <CategoryCard key={c.title} category={c} />)}
+        </div>
+        <SynthesisCard />
       </div>
-      <h3 class="text-3xl sm:text-4xl lg:text-5xl font-display font-bold text-balance">
-        Most tools watch one boundary.
-      </h3>
-      <p class="max-w-2xl mb-12 sm:mb-16 text-base text-text-muted mt-6 sm:mt-8">
-        Many teams have attacked this problem, each watching a different
-        boundary. Most stop at the surface. Claw Patrol watches the protocol
-        underneath, where SQL verbs and k8s resources are facts your rules
-        can match on.
-      </p>
-      <div class="grid md:grid-cols-2 gap-4 sm:gap-6">
-        {CATEGORIES.map((c) => <CategoryCard key={c.title} category={c} />)}
-      </div>
-      <SynthesisCard />
     </section>
   );
 }
 
 function CategoryCard({ category: c }: { category: Category }) {
   return (
-    <div class="p-6 sm:p-8 bg-canvas-light border border-navy-200 squircle-md">
+    <div
+      class="p-6 sm:p-8 bg-canvas squircle-md
+        border border-navy-200 border-t-2 border-t-rust-300"
+    >
       <h4 class="font-display font-bold text-xl mb-3 text-text">{c.title}</h4>
       <p class="text-text-muted text-[15px] mb-4">{c.body}</p>
       {c.note && (
-        <p class="text-text-subtle text-[14px] italic mb-4">{c.note}</p>
+        <p class="text-text text-[14px] font-medium mb-4">{c.note}</p>
       )}
       <div class="space-y-3">
         {c.groups.map((g, i) => (
@@ -163,13 +163,14 @@ function CategoryCard({ category: c }: { category: Category }) {
                 {g.label}
               </div>
             )}
-            <div class="text-[14px] text-text-muted">
+            <div class="text-[15px] text-text leading-relaxed">
               {g.players.map((p, j) => (
                 <span key={p.name}>
                   {j > 0 && <span class="text-text-subtle"> · </span>}
                   <a
                     href={p.url}
-                    class="underline underline-offset-2 hover:text-rust"
+                    class="font-medium hover:text-rust hover:underline
+                      underline-offset-2 transition-colors"
                   >
                     {p.name}
                   </a>
@@ -186,13 +187,21 @@ function CategoryCard({ category: c }: { category: Category }) {
 function SynthesisCard() {
   return (
     <div
-      class="mt-6 sm:mt-8 p-6 sm:p-10 squircle-md
-        bg-rust/10 border-2 border-rust/40"
+      class="mt-6 sm:mt-8 p-8 sm:p-12 squircle-md
+        bg-rust-100 border-2 border-rust-300"
     >
-      <h4 class="font-display font-bold text-2xl sm:text-3xl mb-4 text-text">
-        Claw Patrol
-      </h4>
-      <p class="text-text text-base sm:text-lg max-w-3xl">
+      <div class="flex items-center gap-3 mb-4">
+        <img
+          src="/claw-patrol-icon.svg"
+          alt=""
+          class="w-10 h-10"
+          aria-hidden="true"
+        />
+        <h4 class="font-display font-bold text-3xl sm:text-4xl text-text">
+          Claw Patrol
+        </h4>
+      </div>
+      <p class="text-text text-base sm:text-lg max-w-3xl leading-relaxed">
         Sees what the others don't. Parses Postgres, Kubernetes, ClickHouse,
         HTTPS, and SSH at the protocol layer, so rules can match a SQL verb
         or a k8s resource directly. Holds the secrets and injects them at
