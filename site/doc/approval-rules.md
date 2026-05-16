@@ -281,11 +281,13 @@ byte-for-byte. What's bounded is the matcher's view of it. The
 frontend flags the request as truncated, and the dispatcher
 fails-closed per rule.
 
-| Endpoint | Inspected slice | Cap |
-|----------|-----------------|-----|
-| `https`, `kubernetes`, `clickhouse_https` | request body on `POST` / `PUT` / `PATCH` | 1 MiB |
-| `postgres` | `Query` (`Q`) and `Parse` (`P`) frame | 1 MiB |
-| `clickhouse_native` | `Query` packet body | 1 MiB |
+| Endpoint | Inspected slice | Cap | Truncatable facets |
+|----------|-----------------|-----|--------------------|
+| `https` | request body on `POST` / `PUT` / `PATCH` | 1 MiB | `http.body`, `http.body_json` |
+| `kubernetes` | request body on `POST` / `PUT` / `PATCH` | 1 MiB | *(none — every `k8s.*` facet is derived from the URL and method)* |
+| `clickhouse_https` | request body on `POST` / `PUT` / `PATCH` | 1 MiB | `sql.verb`, `sql.tables`, `sql.functions`, `sql.statement` |
+| `postgres` | `Query` (`Q`) and `Parse` (`P`) frame | 1 MiB | `sql.verb`, `sql.tables`, `sql.functions`, `sql.statement` |
+| `clickhouse_native` | `Query` packet body | 1 MiB | `sql.verb`, `sql.tables`, `sql.functions`, `sql.statement` |
 
 The caps are per-plugin constants in the gateway source — **not
 operator-tunable** today, and not surfaced in `gateway.hcl`. Header
