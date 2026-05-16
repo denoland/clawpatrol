@@ -31,7 +31,7 @@ const PROBLEMS = [
 
 export function ProblemSection() {
   return (
-    <section class="max-w-5xl mx-auto px-6 sm:px-8 pt-20 pb-16 sm:pt-32 sm:pb-28 border-t border-navy-200/50">
+    <section class="max-w-5xl mx-auto px-6 sm:px-8 pt-20 pb-16 sm:pt-32 sm:pb-28">
       <SectionLabel>The problem</SectionLabel>
       <div class="max-w-2xl mx-auto space-y-12 sm:space-y-20">
         {PROBLEMS.map(({ title, body }, i) => (
