@@ -356,10 +356,7 @@ driver doesn't disconnect:
 A truncated body might contain content that *would* have triggered a
 deny rule the gateway can't see, so refusing is the safe default.
 Operators who hit the cap on legitimate traffic need the constant
-raised in source — for SQL specifically,
-[denoland/clawpatrol#386](https://github.com/denoland/clawpatrol/issues/386)
-tracks a streaming-parse rework that could lift the `sql_rule` cap;
-this section will need updating when that lands.
+raised in source.
 
 
 ## Examples
