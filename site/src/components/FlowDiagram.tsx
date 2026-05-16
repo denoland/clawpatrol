@@ -16,7 +16,7 @@ export function FlowDiagram() {
 
       <CenterNode
         label="Claw Patrol"
-        sub="rules · approvals · credentials"
+        sub="rules · approvals · credentials · audit"
       />
 
       <Risers count={4} />
