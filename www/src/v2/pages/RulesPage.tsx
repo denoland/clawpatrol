@@ -80,13 +80,18 @@ export function V2RulesPage({ agents }: { agents: Agent[] }) {
     return rules.filter((r) => (r.profile || "(default)") === selected);
   }, [rules, selected]);
 
-  // Group by family within the selected profile.
-  const byFamily = new Map<string, RuleSummary[]>();
+  // Group by endpoint within the selected profile. An operator
+  // reading the page asks "what governs api.github.com?" not
+  // "what governs the https family?" — grouping mirrors that
+  // mental model. Rules without an endpoint (catch-alls) bucket
+  // under "(no endpoint)".
+  const byEndpoint = new Map<string, RuleSummary[]>();
   for (const r of filtered) {
-    const k = r.family || "other";
-    if (!byFamily.has(k)) byFamily.set(k, []);
-    byFamily.get(k)!.push(r);
+    const k = r.endpoint || "(no endpoint)";
+    if (!byEndpoint.has(k)) byEndpoint.set(k, []);
+    byEndpoint.get(k)!.push(r);
   }
+  const endpointGroups = [...byEndpoint.entries()].sort(([a], [b]) => a.localeCompare(b));
 
   return (
     <div className="mx-auto max-w-7xl">
@@ -123,14 +128,13 @@ export function V2RulesPage({ agents }: { agents: Agent[] }) {
         </Card>
       )}
 
-      {[...byFamily.entries()].map(([family, rs]) => (
-        <Card key={family} title={family.toUpperCase()} count={rs.length} tight>
+      {endpointGroups.map(([endpoint, rs]) => (
+        <Card key={endpoint} title={endpoint} count={rs.length} tight>
           <table className="w-full text-sm">
             <thead className="bg-canvas-muted text-left text-text-muted text-xs uppercase tracking-wider">
               <tr>
                 <th className="px-4 py-2 font-medium w-6"></th>
                 <th className="px-4 py-2 font-medium">Name</th>
-                <th className="px-4 py-2 font-medium">Endpoint</th>
                 <th className="px-4 py-2 font-medium">Verdict</th>
                 <th className="px-4 py-2 font-medium text-right">Priority</th>
                 <th className="px-4 py-2 font-medium">Condition</th>
@@ -212,7 +216,6 @@ function RuleRow({ rule: r, agents }: { rule: RuleSummary; agents: Agent[] }) {
       >
         <td className="px-4 py-2 text-text-muted text-xs select-none">{open ? "▾" : "▸"}</td>
         <td className="px-4 py-2 font-medium">{r.name}</td>
-        <td className="px-4 py-2 font-mono text-xs">{r.endpoint}</td>
         <td className="px-4 py-2">
           {r.verdict ? (
             <Verdict v={r.verdict} />
@@ -231,7 +234,7 @@ function RuleRow({ rule: r, agents }: { rule: RuleSummary; agents: Agent[] }) {
       </tr>
       {open && (
         <tr className="bg-canvas-muted/50">
-          <td colSpan={6} className="px-4 py-3">
+          <td colSpan={5} className="px-4 py-3">
             {loading && <div className="text-xs text-text-muted">Loading decisions…</div>}
             {loadErr && <div className="text-xs text-danger-700">Failed to load: {loadErr}</div>}
             {!loading && !loadErr && events && events.length === 0 && (

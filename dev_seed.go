@@ -345,7 +345,18 @@ var (
 	devSeedClaudeModels = []string{"claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"}
 	devSeedOpenAIModels = []string{"gpt-5", "gpt-5-mini", "o3", "gpt-4.1"}
 	devSeedCodexModels  = []string{"gpt-5-codex", "gpt-5-codex-mini"}
+	devSeedApprovers    = []string{"alex@deno.com", "jamie@deno.com", "robin@deno.com", "morgan@deno.com"}
 )
+
+// devSeedNullable returns nil for empty strings so sqlite stores
+// NULL (matching the prod sink path, which leaves these columns
+// unset when no approver was involved).
+func devSeedNullable(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
 
 func devSeedSessions(g *Gateway, r *rand.Rand, devices []devSeedDevice, n int) error {
 	tx, err := g.db.Begin()
@@ -467,6 +478,11 @@ func devSeedAction(r *rand.Rand, devices []devSeedDevice, ts time.Time) Event {
 		Family:   ep.family,
 		Facets:   map[string]any{"method": method, "path": path},
 	}
+	if verdict == "approved" || verdict == "denied" {
+		ev.Approver = "ops"
+		ev.ApproverType = "human_approver"
+		ev.ApproverBy = devSeedApprovers[r.Intn(len(devSeedApprovers))]
+	}
 	if r.Intn(20) == 0 {
 		ev.ReqSha = devSeedHex(r, 32)
 		ev.RespSha = devSeedHex(r, 32)
@@ -555,8 +571,8 @@ func devSeedActions(g *Gateway, r *rand.Rand, devices []devSeedDevice, count int
 				   ms, action, reason, req_sha, resp_sha,
 				   req_body, resp_body,
 				   req_headers, resp_headers, extra,
-				   endpoint, rule)
-				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+				   endpoint, rule, approver, approver_type, approver_by)
+				VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 				ev.ID, ev.Ts.UnixNano(), ev.Mode, ev.Family, ev.AgentIP,
 				ev.Host, ev.Method, ev.Path, ev.Status,
 				ev.In, ev.Out, ev.Ms, ev.Action, ev.Reason,
@@ -565,6 +581,7 @@ func devSeedActions(g *Gateway, r *rand.Rand, devices []devSeedDevice, count int
 				devSeedHeadersJSON(rqhJSON), devSeedHeadersJSON(rshJSON),
 				string(extraJSON),
 				ev.Endpoint, ev.Rule,
+				devSeedNullable(ev.Approver), devSeedNullable(ev.ApproverType), devSeedNullable(ev.ApproverBy),
 			); err != nil {
 				_ = tx.Rollback()
 				return err
