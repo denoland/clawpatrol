@@ -54,7 +54,7 @@ A typed upstream binding — a name, a protocol family
 the unit a [device](#device)'s [profile](#profile) lists, and the unit
 a [rule](#rule) attaches to. Built-in types: `https`, `kubernetes`,
 `postgres`, `clickhouse_https`, `clickhouse_native`. See
-[Configuration vocabulary](#configuration-vocabulary).
+[HCL config reference](/docs/config-reference/#endpoint-blocks).
 
 ### Credential
 
@@ -64,7 +64,7 @@ secret bytes live in the gateway's [secret store](#secret-store) and
 are fetched at injection time. Built-in shapes include `bearer_token`,
 `cookie_token`, `header_token`, `mtls_credential`,
 `postgres_credential`, `anthropic_manual_key`, and the OAuth variants.
-See [Configuration vocabulary](#configuration-vocabulary).
+See [HCL config reference](/docs/config-reference/#credential-blocks).
 
 ### Action
 
@@ -116,7 +116,7 @@ rule's endpoints see.
 
 An entity that arbitrates an `approve = [...]` chain stage. Built-in
 types: `llm_approver` (Claude / GPT proctor that reads a
-[`policy {}` block](#configuration-vocabulary) prompt) and
+[`policy {}` block](/docs/config-reference/#policy-name-) prompt) and
 `human_approver` (Slack / dashboard, with optional N-of-N quorum).
 
 ### Profile
@@ -198,59 +198,3 @@ agent. SCRAM is designed to defeat a passive password swap, so the
 gateway has to *be* one of the peers — hence "offload" rather than
 "forward."
 
-## Configuration vocabulary
-
-The HCL-level vocabulary an operator writes. Every named entity shares
-**one flat namespace** — names are globally unique across all kinds —
-and references are bare names (`endpoint = pg-writer`, never
-`postgres.pg-writer`). The two-label `kind "type" "name" { ... }` shape
-carries type information for schema dispatch; reference syntax doesn't
-repeat it. See [`config/README.md`](../../config/README.md) for the
-authoritative grammar.
-
-### Policy defaults (top-level)
-
-Top-level singleton attributes — not a block. Global fallbacks:
-`unknown_host` (passthrough vs. deny), `llm_fail_mode`,
-`llm_cache_ttl`, `human_timeout`, `human_on_timeout`. Every plugin can
-read these from `BuildCtx` / the compiled policy on `ApproveRequest`.
-
-### `approver "<type>" "<name>" { ... }`
-
-An [approver](#approver) entity. First label = type (`llm_approver` /
-`human_approver`); second = bare name used in `approve = [...]`.
-
-### `policy "<name>" { text = "..." }`
-
-A reusable LLM proctor prompt. Referenced from an `llm_approver`
-block's `policy = my-policy` field; the approver itself is then
-named in `approve = [my-judge]` on a rule.
-
-### `credential "<type>" "<name>" { ... }`
-
-A [credential](#credential) entity. First label = type (`bearer_token`,
-`mtls_credential`, `postgres_credential`, ...); second = bare name.
-
-### `endpoint "<type>" "<name>" { ... }`
-
-An [endpoint](#endpoint) entity. First label = endpoint type
-(`https` / `kubernetes` / `postgres` / `clickhouse_*`); second = bare
-name. Family-specific fields: `hosts` (for `https`), `host` + `database`
-(for `postgres`), `server` + `ca_cert` (for `kubernetes`).
-
-### `rule "<name>" { ... }`
-
-A [rule](#rule). One label — the bare name. The protocol family is
-inferred from `endpoint(s) =`. Body carries `endpoint(s) =`,
-`priority`, an optional `credential =` predicate, an optional CEL
-`condition = "..."`, and either `verdict` or `approve`.
-
-### `profile "<name>" { endpoints = [...] }`
-
-A [profile](#profile). Single-label block — bare name, plus an
-endpoint-membership list.
-
-<!-- Implementation-level vocabulary (Plugin, Runtime, the
-HTTP/Postgres/TLS/Conn runtime interfaces, ConnIndex, the WG
-promiscuous forwarder, etc.) lives in the repo's internal
-doc/code-vocabulary.md, not here. -->
