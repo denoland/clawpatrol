@@ -2,6 +2,23 @@ import { defineConfig, type Plugin } from "vite";
 import preact from "@preact/preset-vite";
 import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "node:path";
+import { SITE_TITLE } from "./src/copy";
+
+// Keep <title> in sync with HeroSection's H1. The constant lives in
+// src/copy.ts so HeroSection imports it directly; this plugin rewrites
+// index.html's <title> at dev-server time and at build time so static
+// crawlers see the same string.
+function injectTitle(): Plugin {
+  return {
+    name: "inject-title",
+    transformIndexHtml(html) {
+      return html.replace(
+        /<title>.*?<\/title>/,
+        `<title>${SITE_TITLE}</title>`,
+      );
+    },
+  };
+}
 
 function serveDocsInDev(): Plugin {
   return {
@@ -90,5 +107,11 @@ function reloadDocsOnChange(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [preact(), tailwindcss(), serveDocsInDev(), reloadDocsOnChange()],
+  plugins: [
+    preact(),
+    tailwindcss(),
+    injectTitle(),
+    serveDocsInDev(),
+    reloadDocsOnChange(),
+  ],
 });

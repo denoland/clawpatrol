@@ -46,6 +46,7 @@ import { Footer } from "./src/components/Footer";
 import { Header } from "./src/components/Header";
 import { Landing } from "./src/Landing";
 import { Stripe } from "./src/components/Stripe";
+import { SITE_TITLE } from "./src/copy";
 
 export const SITE_ORIGIN = "https://clawpatrol.dev";
 export const DEFAULT_OG_IMAGE = `${SITE_ORIGIN}/clawpatrol.png`;
@@ -386,7 +387,7 @@ export function renderDocPage(
 export function prerenderLandingHtml(viteIndexHtml: string): string {
   const landingHtml = renderHtml(Landing);
   const meta = renderMetaTags({
-    title: "Claw Patrol — The security proxy for AI agents",
+    title: SITE_TITLE,
     description: LANDING_DESCRIPTION,
     url: `${SITE_ORIGIN}/`,
     type: "website",

@@ -1,5 +1,6 @@
 import { FlowDiagram } from "../components/FlowDiagram";
 import { InstallTerminal } from "../components/InstallTerminal";
+import { HERO_H1 } from "../copy";
 
 export function HeroSection() {
   return (
@@ -15,11 +16,17 @@ export function HeroSection() {
           <h1
             class="text-4xl sm:text-5xl md:text-6xl md:text-[4rem]
               font-bold
-               mb-8 font-display text-balance
+               mb-4 font-display text-balance
               text-text"
           >
-            Give your agents read access. Gate the writes.
+            {HERO_H1}
           </h1>
+          <p
+            class="text-xl sm:text-2xl mb-6 max-w-lg font-display
+            font-semibold text-text text-balance"
+          >
+            Give your agents read access. Gate the writes.
+          </p>
           <p
             class="mb-10 max-w-lg
             text-text-muted"
