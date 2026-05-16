@@ -272,6 +272,96 @@ default-deny. Add a `priority = -100, verdict = "deny"` catch-all
 per endpoint to invert this.
 
 
+## Inspection-buffer overflow
+
+To bound memory, the wire frontends cap how much of each request they
+buffer for the matcher. A request that exceeds its cap is **not**
+dropped on the floor — the frame still forwards to upstream
+byte-for-byte. What's bounded is the matcher's view of it. The
+frontend flags the request as truncated, and the dispatcher
+fails-closed per rule.
+
+| Endpoint | Inspected slice | Cap | Source constant |
+|----------|-----------------|-----|------------------|
+| `https`, `kubernetes`, `clickhouse_https` | request body on `POST` / `PUT` / `PATCH` | 1 MiB | `maxHTTPMatchBody` (`main.go`) |
+| `postgres` | `Query` (`Q`) and `Parse` (`P`) frame | 1 MiB | `maxPgMessage` (`config/plugins/endpoints/postgres.go`) |
+| `clickhouse_native` | `Query` packet body | 1 MiB | `chMaxQueryBody` (`config/plugins/endpoints/clickhouse_native_runtime.go`) |
+
+The caps are per-plugin constants in the gateway source — **not
+operator-tunable** today, and not surfaced in `gateway.hcl`. Header
+and URL bytes are bounded separately by `net/http`'s defaults and
+aren't covered here; the `ssh` endpoint has no rule family, so no
+inspection cap.
+
+### Per-rule fail-closed
+
+When a request overflows its cap, the dispatcher walks the endpoint's
+rules in priority order as usual. For each rule:
+
+- **Catch-all rule** (no `condition`): fires as written. A truncated
+  body can't poison a rule that reads nothing.
+- **Rule whose CEL reads no truncatable facet** (e.g.
+  `http.method == 'GET'`, `credential = X`, any `k8s.*` predicate):
+  the matcher runs normally — the truncated bytes are irrelevant to
+  its decision.
+- **Rule whose CEL reads a truncatable facet**: the matcher is **not**
+  called. The dispatcher synthesizes a deny attributed to that rule,
+  with this exact reason:
+
+  ```
+  rule "<name>" reads a request facet whose bytes were truncated by the gateway's inspection buffer; failing closed
+  ```
+
+  The synthesized rule keeps the original rule's name and priority,
+  so logs and dashboards still attribute the deny to the rule whose
+  contract the truncation broke.
+
+The truncatable-facet set is family-specific:
+
+| Family | Truncatable facets | Non-truncatable facets |
+|--------|---------------------|-------------------------|
+| `http` | `http.body`, `http.body_json` | `http.method`, `http.path`, `http.query`, `http.headers` |
+| `sql`  | `sql.verb`, `sql.tables`, `sql.functions`, `sql.statement` | `sql.database` (resolved off StartupMessage / `Hello` / URL+header, not the frame body) |
+| `k8s`  | — | `k8s.verb`, `k8s.resource`, `k8s.namespace`, `k8s.name`, `k8s.params` (all derived from URL + method) |
+
+`credential` (the top-level rule attribute) is always non-truncatable
+— it's resolved off the connection's authenticated identity. The
+upshot: a method-only or credential-only rule on an `https` endpoint
+still fires on a 2 MiB body, but a `http.body_json.field == "x"` rule
+auto-denies.
+
+A matched rule with `approve = [...]` on a truncated postgres frame
+is forced to deny without paging the approver (HITL can't reason about
+bytes that aren't there); the postgres frontend surfaces this with the
+reason `"approval required but request was truncated by inspection
+buffer"`.
+
+### How the deny reaches the agent
+
+Each protocol synthesizes the deny in its native shape so the agent's
+driver doesn't disconnect:
+
+- **`https`, `kubernetes`, `clickhouse_https`** — `HTTP/1.1 403
+  Forbidden`, `Content-Type: text/plain`, reason in the body,
+  `Connection: close`.
+- **`postgres`** — `ErrorResponse` (severity `ERROR`, SQLSTATE
+  `42501`, message = reason), followed by `ReadyForQuery` in idle
+  state. The session stays open; the agent can run the next query.
+- **`clickhouse_native`** — server `Exception` packet with the
+  reason. The unread tail of the oversize `Query` body is drained off
+  the wire so the next packet frames correctly.
+
+### Why fail-closed
+
+A truncated body might contain content that *would* have triggered a
+deny rule the gateway can't see, so refusing is the safe default.
+Operators who hit the cap on legitimate traffic need the constant
+raised in source — for SQL specifically,
+[denoland/clawpatrol#386](https://github.com/denoland/clawpatrol/issues/386)
+tracks a streaming-parse rework that could lift the `sql_rule` cap;
+this section will need updating when that lands.
+
+
 ## Examples
 
 ### Allow / deny pair (HTTP)
