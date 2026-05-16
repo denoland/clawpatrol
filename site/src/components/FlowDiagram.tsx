@@ -162,14 +162,28 @@ function Risers({ count }: { count: number }) {
 }
 
 function CenterNode({ label, sub }: { label: string; sub: string }) {
-  // The proxy. Navy surface and centered type carry the emphasis;
-  // no icon needed.
+  // The proxy. Icon sits in a light puck so its dark-navy fill stays
+  // visible against the navy node behind it; references the same
+  // public asset the header uses (no inline SVG duplication).
   return (
     <div
       class="squircle-md w-full bg-navy text-canvas border border-navy
         px-5 py-5 text-center"
     >
-      <div class="font-display font-bold text-xl leading-none">{label}</div>
+      <div class="flex items-center justify-center gap-2">
+        <span
+          class="bg-canvas rounded-full w-7 h-7 flex items-center
+            justify-center shrink-0"
+        >
+          <img
+            src="/claw-patrol-icon.svg"
+            alt=""
+            class="w-5 h-5"
+            aria-hidden="true"
+          />
+        </span>
+        <div class="font-display font-bold text-xl leading-none">{label}</div>
+      </div>
       <div
         class="font-mono text-[11px] uppercase tracking-wider mt-2
           text-canvas/65"
