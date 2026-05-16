@@ -1,52 +1,19 @@
 import { SectionLabel } from "../components/SectionLabel";
 
-const PROBLEMS = [
-  {
-    title: "Agents are stuck without access",
-    body:
-      "An agent that can only edit files in a sandbox is a toy. The " +
-      "work that matters — running a migration, replying to a " +
-      "customer, fixing a deploy — lives behind API calls. But every " +
-      "credential you hand the agent is one you've given away.",
-  },
-  {
-    title: "Prompt injection turns every input into instructions",
-    body:
-      "Tool outputs, RAG hits, MCP responses, file contents the agent " +
-      "reads — any of it can hide instructions the model will follow. " +
-      "You can't audit the model's intent. The only thing you can " +
-      "constrain is what leaves the machine.",
-  },
-  {
-    title: "Today's options are no-access or YOLO",
-    body:
-      "API keys in env vars, broad OAuth scopes, no checkpoint " +
-      "between intent and damage. By the time you notice the agent " +
-      "ran DROP TABLE on prod, the table is gone — and you have no " +
-      "record of who decided what.",
-  },
-];
-
 export function ProblemSection() {
   return (
     <section class="max-w-5xl mx-auto px-6 sm:px-8 pt-20 pb-16 sm:pt-32 sm:pb-28 border-t border-navy-200/50">
       <SectionLabel>The problem</SectionLabel>
-      <div class="max-w-2xl mx-auto space-y-12 sm:space-y-20">
-        {PROBLEMS.map(({ title, body }, i) => (
-          <div key={title} class="grid grid-cols-[auto_1fr] gap-3 sm:gap-6">
-            <div class="flex items-center justify-center min-w-10 sm:min-w-16">
-              <span class="text-5xl sm:text-7xl font-bold font-display  select-none text-rust">
-                {i + 1}
-              </span>
-            </div>
-            <div class="py-1">
-              <h3 class="text-2xl sm:text-3xl font-display font-bold text-console-dark mb-3">
-                {title}
-              </h3>
-              <p class="text-base  text-text-muted">{body}</p>
-            </div>
-          </div>
-        ))}
+      <div class="max-w-3xl mx-auto">
+        <h3 class="text-3xl sm:text-4xl lg:text-5xl font-display font-bold text-console-dark text-center text-balance mb-8">
+          You can't audit what the agent thinks. Only what leaves it.
+        </h3>
+        <p class="text-base text-text-muted text-center max-w-2xl mx-auto">
+          Tool outputs, RAG hits, MCP responses, files the agent reads: any can hide instructions
+          the model will follow. The model's intent isn't auditable; its egress is. Today's
+          alternatives are API keys in env vars and broad OAuth scopes, with no checkpoint between
+          intent and damage.
+        </p>
       </div>
     </section>
   );
