@@ -146,13 +146,25 @@ var lowercasedPaths = []string{"sql.verb"}
 // dispatch.go), and that path is unaffected by Truncated.
 var truncatablePaths = []string{"sql.verb", "sql.tables", "sql.functions", "sql.statement"}
 
+// unparseablePaths declares the SQL fields a wire frontend's parser
+// derives from the Query bytes — verb, tables, functions. When the
+// parser refuses the input, the frontend leaves these zero and sets
+// req.Unparseable=true; the dispatcher then auto-denies any rule
+// whose CEL reads one of these paths (see runtime/dispatch.go).
+//
+// sql.statement is intentionally absent: the frontend populates it
+// with the raw bytes regardless of parse success, so a rule keyed on
+// `sql.statement` / `sql.statement.matches(...)` can still evaluate
+// honestly on an unparseable request.
+var unparseablePaths = []string{"sql.verb", "sql.tables", "sql.functions"}
+
 // NewMatcher compiles a CEL condition into a Matcher. An empty
 // condition is the catch-all match-everything case.
 func (Facet) NewMatcher(condition string) (match.Matcher, error) {
 	if condition == "" {
 		return match.PassThrough{}, nil
 	}
-	return match.CompileCondition(celEnv, condition, buildActivation, lowercasedPaths, truncatablePaths)
+	return match.CompileCondition(celEnv, condition, buildActivation, lowercasedPaths, truncatablePaths, unparseablePaths)
 }
 
 func buildActivation(req *match.Request) map[string]any {

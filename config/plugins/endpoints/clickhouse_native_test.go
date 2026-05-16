@@ -162,7 +162,7 @@ func TestChHelloRejectsServerExceptionPacket(t *testing.T) {
 // statement type, table refs walked out of FROM/JOIN/INTO/DROP TABLE,
 // trailing FORMAT/SETTINGS chopped before the AST parser sees them
 // (the parser doesn't accept those in every position the server
-// does), and the parser-failure fallback.
+// does).
 func TestParseChSQL(t *testing.T) {
 	cases := []struct {
 		name string
@@ -232,175 +232,77 @@ func TestParseChSQL(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := parseChSQL(tc.sql)
+			got, unparseable := parseChSQL(tc.sql)
 			if diff := cmp.Diff(tc.want, got); diff != "" {
 				t.Errorf("parseChSQL mismatch (-want +got):\n%s", diff)
+			}
+			if unparseable {
+				t.Errorf("unparseable=true on a query the parser should accept")
 			}
 		})
 	}
 }
 
-// TestParseChSQLCTEInsert is the regression for the user-reported
-// analytics shape (`WITH … INSERT INTO X SELECT …`). AfterShip's parser
-// refuses this exact syntax; before the rewrite path was added we
-// returned verb="with" with empty tables and functions, which silently
-// disabled every write-gating rule. The rewrite strips the
-// `INSERT INTO X [(cols)]` clause, parses the residual `WITH … SELECT`,
-// and grafts the target onto the table list — verb is pinned to
-// "insert" so policy rules that gate writes still fire.
-func TestParseChSQLCTEInsert(t *testing.T) {
-	sql := `WITH
+// TestParseChSQLUnparseable pins the contract change: when AfterShip's
+// parser refuses the input, parseChSQL now returns Statement-only +
+// unparseable=true. No verb sniff, no shape-specific rewrite — the
+// dispatcher's fail-closed-on-unparseable gate (config/runtime/
+// dispatch.go) is what surfaces a deny on rules that key on
+// parser-derived facets.
+//
+// Inputs cover the two failure shapes that motivated the change:
+//   - CTE-prefixed INSERT (the user-reported analytics workload, which
+//     AfterShip's grammar doesn't admit).
+//   - Exotic SYSTEM command the AST parser bails on.
+//
+// Both must produce the same shape — the whole point of the generic
+// contract is that "parser failed" is one thing, not a per-shape
+// special case.
+func TestParseChSQLUnparseable(t *testing.T) {
+	cases := []struct {
+		name string
+		sql  string
+	}{
+		{
+			name: "cte-prefixed insert",
+			sql: "WITH cte AS (SELECT id FROM src) " +
+				"INSERT INTO dst SELECT id FROM cte",
+		},
+		{
+			name: "user-reported analytics payload",
+			sql: `WITH
     filtered_events AS (
         SELECT toDate(event_time) AS event_date, user_id, event_type,
                revenue, event_time
         FROM raw_events
-        WHERE event_time >= '2026-05-01 00:00:00'
-          AND event_time <  '2026-05-02 00:00:00'
-          AND event_type IN ('purchase', 'click', 'view')
-    ),
-    revenue_per_user AS (
-        SELECT event_date, user_id, sum(revenue) AS total_revenue
-        FROM filtered_events
-        WHERE event_type = 'purchase'
-        GROUP BY event_date, user_id
     )
-INSERT INTO daily_user_metrics
-    (event_date, user_id, total_events, total_revenue, first_event_at)
-SELECT
-    fe.event_date, fe.user_id, count() AS total_events,
-    any(rpu.total_revenue) AS total_revenue,
-    min(fe.event_time) AS first_event_at
-FROM filtered_events AS fe
-LEFT JOIN revenue_per_user AS rpu
-    ON fe.user_id = rpu.user_id AND fe.event_date = rpu.event_date
-GROUP BY fe.event_date, fe.user_id;`
-
-	got := parseChSQL(sql)
-	if got.Verb != "insert" {
-		t.Errorf("Verb = %q, want insert", got.Verb)
-	}
-	wantTables := map[string]bool{
-		"daily_user_metrics": true,
-		"raw_events":         true,
-		"filtered_events":    true,
-		"revenue_per_user":   true,
-	}
-	for _, tbl := range got.Tables {
-		if !wantTables[tbl] {
-			t.Errorf("unexpected table %q in %v", tbl, got.Tables)
-		}
-		delete(wantTables, tbl)
-	}
-	for tbl := range wantTables {
-		t.Errorf("missing table %q in %v", tbl, got.Tables)
-	}
-	wantFuncs := map[string]bool{
-		"todate": true, "sum": true, "count": true, "any": true, "min": true,
-	}
-	for _, fn := range got.Functions {
-		delete(wantFuncs, fn)
-	}
-	for fn := range wantFuncs {
-		t.Errorf("missing function %q in %v", fn, got.Functions)
-	}
-	if got.Statement != sql {
-		t.Errorf("Statement mutated; want full original SQL preserved")
-	}
-}
-
-// TestParseChSQLCTEInsertSimple pins the minimal CTE+INSERT shape — one
-// CTE, no column list on the target — separate from the user-reported
-// payload so a regression in the simple case is easy to localise.
-func TestParseChSQLCTEInsertSimple(t *testing.T) {
-	sql := "WITH cte AS (SELECT id FROM src) INSERT INTO dst SELECT id FROM cte"
-	got := parseChSQL(sql)
-	if got.Verb != "insert" {
-		t.Errorf("Verb = %q, want insert", got.Verb)
-	}
-	want := []string{"cte", "dst", "src"}
-	if diff := cmp.Diff(want, got.Tables); diff != "" {
-		t.Errorf("Tables mismatch (-want +got):\n%s", diff)
-	}
-}
-
-// TestChFindTopLevelKeyword pins the keyword scanner's contract — the
-// piece that decides where to splice the rewrite. The rewrite mustn't
-// match an INSERT keyword that's inside a string literal, inside a
-// comment, or nested inside a CTE subquery (paren depth > 0).
-func TestChFindTopLevelKeyword(t *testing.T) {
-	cases := []struct {
-		name string
-		s    string
-		kw   string
-		want int
-	}{
-		{
-			name: "simple top-level match",
-			s:    "WITH x AS (SELECT 1) INSERT INTO t SELECT 1",
-			kw:   "INSERT",
-			want: 21,
+INSERT INTO daily_user_metrics (event_date, user_id)
+SELECT fe.event_date, fe.user_id FROM filtered_events AS fe`,
 		},
 		{
-			name: "string literal hides keyword",
-			s:    "WITH x AS (SELECT 'INSERT INTO fake') SELECT 1",
-			kw:   "INSERT",
-			want: -1,
-		},
-		{
-			name: "line comment hides keyword",
-			s:    "WITH x AS (SELECT 1) -- INSERT INTO fake\nSELECT 1",
-			kw:   "INSERT",
-			want: -1,
-		},
-		{
-			name: "block comment hides keyword",
-			s:    "WITH x AS (/* INSERT INTO fake */ SELECT 1) SELECT 1",
-			kw:   "INSERT",
-			want: -1,
-		},
-		{
-			name: "nested paren hides keyword",
-			s:    "WITH x AS (INSERT INTO nested) SELECT 1",
-			kw:   "INSERT",
-			want: -1,
-		},
-		{
-			name: "case-insensitive match",
-			s:    "WITH x AS (SELECT 1) insert into t SELECT 1",
-			kw:   "INSERT",
-			want: 21,
-		},
-		{
-			name: "word-boundary: 'INSERTED' does not match",
-			s:    "SELECT INSERTED FROM t",
-			kw:   "INSERT",
-			want: -1,
+			name: "exotic system command",
+			sql:  "SYSTEM ${{not_a_real_thing}}",
 		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := chFindTopLevelKeyword(c.s, c.kw); got != c.want {
-				t.Errorf("chFindTopLevelKeyword(%q, %q) = %d, want %d",
-					c.s, c.kw, got, c.want)
+			got, unparseable := parseChSQL(c.sql)
+			if !unparseable {
+				t.Fatalf("unparseable=false, want true (parser must refuse the input)")
+			}
+			if got.Verb != "" {
+				t.Errorf("Verb=%q, want \"\" (parser-derived facets must be zero on unparseable)", got.Verb)
+			}
+			if len(got.Tables) != 0 {
+				t.Errorf("Tables=%v, want empty", got.Tables)
+			}
+			if len(got.Functions) != 0 {
+				t.Errorf("Functions=%v, want empty", got.Functions)
+			}
+			if got.Statement != c.sql {
+				t.Errorf("Statement must round-trip verbatim; got %q want %q", got.Statement, c.sql)
 			}
 		})
-	}
-}
-
-// TestParseChSQLVerbFallback covers the parser-failure path: when
-// AfterShip's parser rejects the syntax (some ALTER permutations,
-// non-standard system commands, …) we still surface a verb sniffed
-// from the first keyword so verb-based rules keep firing.
-func TestParseChSQLVerbFallback(t *testing.T) {
-	// Construct an input the AST parser will refuse but the sniffer
-	// can still produce "system" out of.
-	sql := "SYSTEM ${{not_a_real_thing}}"
-	got := parseChSQL(sql)
-	if got.Verb != "system" {
-		t.Errorf("fallback verb = %q, want system", got.Verb)
-	}
-	if got.Statement != sql {
-		t.Errorf("fallback dropped Statement: %q", got.Statement)
 	}
 }
 
@@ -609,6 +511,41 @@ func TestChEvaluateSQLTruncated(t *testing.T) {
 			t.Errorf("truncated passthrough verdict = %q, want allow (empty)", verdict)
 		}
 	})
+}
+
+// TestChEvaluateSQLCTEInsertSynthDenies is the regression for the
+// user-reported issue (PR #407 thread): a `WITH … INSERT INTO X
+// SELECT …` query that AfterShip's parser refuses must still be
+// denied when an `sql.verb == 'insert'` rule is on the endpoint. The
+// path is now generic — parser fails → req.Unparseable=true → the
+// verb rule synth-denies via the dispatcher's fail-closed gate. No
+// CTE-specific rewrite, no verb-sniffing.
+func TestChEvaluateSQLCTEInsertSynthDenies(t *testing.T) {
+	denyInsert := chRuleSQL(t, "deny-insert",
+		"sql.verb == 'insert'", "deny", "writes blocked", 100)
+	ep := chBuildEndpoint(t, denyInsert)
+	mock, _ := chNewMockHandle(t, ep)
+
+	sql := "WITH cte AS (SELECT id FROM src) INSERT INTO dst SELECT id FROM cte"
+	verdict, reason := chEvaluateSQL(context.Background(), mock.ConnHandle, sql, "ch-cred", false)
+	if verdict != "deny" {
+		t.Errorf("CTE+INSERT verdict = %q, want deny (via synth on Unparseable)", verdict)
+	}
+	if reason == "" {
+		t.Errorf("synth deny reason must be non-empty")
+	}
+	if len(mock.events) != 1 {
+		t.Fatalf("expected 1 conn event, got %d", len(mock.events))
+	}
+	if mock.events[0].Action != "deny" {
+		t.Errorf("event action = %q, want deny", mock.events[0].Action)
+	}
+	// The event's verb is empty because the parser couldn't derive
+	// one — surfaces honestly rather than the misleading "with" that
+	// the old verb-sniff fallback produced.
+	if mock.events[0].Verb != "" {
+		t.Errorf("event verb = %q, want \"\" (parser-derived facets are zero on unparseable)", mock.events[0].Verb)
+	}
 }
 
 // TestChEvaluateSQLAllowsSelectDeniesInsert is the iter 2 acceptance

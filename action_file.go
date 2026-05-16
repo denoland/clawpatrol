@@ -291,9 +291,13 @@ func stripPort(s string) string {
 
 // ToMatchRequest builds the match.Request the rule engine sees.
 // For SQL fixtures with only `statement` set, parseSQL is called
-// to derive verb / tables / function. Explicit fields on the
-// fixture take precedence over derivation.
-func (f *Fixture) ToMatchRequest(family string, parseSQL func(string) any) (*match.Request, error) {
+// to derive verb / tables / function plus the unparseable flag.
+// Explicit fields on the fixture take precedence over derivation;
+// the unparseable flag is propagated to match.Request.Unparseable
+// only when no explicit verb/tables/functions override the parser
+// (since an explicit override means the fixture author was telling
+// us the facets, regardless of what the parser thought).
+func (f *Fixture) ToMatchRequest(family string, parseSQL func(string) (any, bool)) (*match.Request, error) {
 	a := &f.Action
 	req := &match.Request{Family: family, Credential: a.Credential, PeerIP: a.PeerIP}
 	switch {
@@ -329,19 +333,23 @@ func (f *Fixture) ToMatchRequest(family string, parseSQL func(string) any) (*mat
 		if parseSQL == nil {
 			return nil, fmt.Errorf("sql: endpoint runtime does not implement SQLParser")
 		}
-		meta := parseSQL(stmt)
+		meta, unparseable := parseSQL(stmt)
 		if m, ok := meta.(*sqlfacet.Meta); ok {
 			if a.SQL.Verb != "" {
 				m.Verb = a.SQL.Verb
+				unparseable = false
 			}
 			if len(a.SQL.Tables) > 0 {
 				m.Tables = a.SQL.Tables
+				unparseable = false
 			}
 			if len(a.SQL.Functions) > 0 {
 				m.Functions = a.SQL.Functions
+				unparseable = false
 			}
 		}
 		req.Meta = meta
+		req.Unparseable = unparseable
 	}
 	return req, nil
 }

@@ -833,7 +833,7 @@ func chRewindReader(head []byte, tail *chgoproto.Reader) *chgoproto.Reader {
 //	("deny", reason) — matched rule denies, or approve rejected.
 //	("", "")         — no rule fires, or the matched rule allows.
 func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName string, truncated bool) (string, string) {
-	info := parseChSQL(sql)
+	info, unparseable := parseChSQL(sql)
 	mreq := &match.Request{
 		Family:     "sql",
 		PeerIP:     ch.PeerIP,
@@ -844,7 +844,8 @@ func chEvaluateSQL(ctx context.Context, ch *runtime.ConnHandle, sql, credName st
 			Functions: info.Functions,
 			Statement: info.Statement,
 		},
-		Truncated: truncated,
+		Truncated:   truncated,
+		Unparseable: unparseable,
 	}
 	var facets map[string]any
 	if f := facet.Lookup("sql"); f != nil {

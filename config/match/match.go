@@ -52,6 +52,23 @@ type Request struct {
 	// rules that don't read the truncated facet still fire on their
 	// other predicates.
 	Truncated bool
+
+	// Unparseable is set by a wire frontend when its SQL parser
+	// refuses the Query bytes outright (the statement is still on
+	// Meta.Statement, but Verb / Tables / Functions are left zero
+	// because the parser couldn't derive them). The dispatcher reads
+	// it together with each rule's InspectsUnparseableFacet() to
+	// synthesize a fail-closed deny on any rule whose CEL condition
+	// references a parser-derived SQL facet that wasn't populated —
+	// rules keyed only on connection-level facets (credential,
+	// peer_ip) or on the raw statement still fire normally.
+	//
+	// Differs from Truncated in two ways: (a) the statement text
+	// IS populated when Unparseable=true, so `sql.statement` rules
+	// continue to evaluate honestly; (b) the trigger is parser
+	// rejection, not byte-cap truncation, so wire frontends with
+	// no parser leave it false.
+	Unparseable bool
 }
 
 // Matcher walks a Request and returns true when the rule's match
@@ -70,6 +87,15 @@ type Request struct {
 type Matcher interface {
 	Match(req *Request) bool
 	InspectsTruncatableFacet() bool
+	// InspectsUnparseableFacet reports whether the matcher's compiled
+	// condition reads any field of the request whose value the
+	// frontend's parser would leave zero on parse failure (SQL verb,
+	// tables, functions). The dispatcher gates on this together with
+	// Request.Unparseable to fail closed on policy-bypass-by-unparser:
+	// a rule that asks about the verb of a query the parser rejected
+	// is auto-denied; a rule that only reads the raw statement or
+	// the credential is allowed to run its own Match.
+	InspectsUnparseableFacet() bool
 }
 
 // PathOf returns the URL's path, or "" when u is nil. Common enough

@@ -112,14 +112,14 @@ type ClickhouseNativeEndpointRuntime struct{}
 // ParseStatement satisfies runtime.SQLParser so the action-fixture
 // loader can populate match.Request.Meta from a raw statement using
 // the same AST extractor live dispatch uses.
-func (ClickhouseNativeEndpointRuntime) ParseStatement(sql string) any {
-	info := parseChSQL(sql)
+func (ClickhouseNativeEndpointRuntime) ParseStatement(sql string) (any, bool) {
+	info, unparseable := parseChSQL(sql)
 	return &sqlfacet.Meta{
 		Verb:      info.Verb,
 		Tables:    info.Tables,
 		Functions: info.Functions,
 		Statement: info.Statement,
-	}
+	}, unparseable
 }
 
 func init() {

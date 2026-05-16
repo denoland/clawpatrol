@@ -127,14 +127,19 @@ func (PostgresEndpointRuntime) DetectPlaceholder(req *runtime.Request, candidate
 // the same regex extractor pgEvaluate uses on live wire traffic.
 // Returns *sqlfacet.Meta as `any` to keep the runtime interface free
 // of the facets-package import.
-func (PostgresEndpointRuntime) ParseStatement(sql string) any {
+func (PostgresEndpointRuntime) ParseStatement(sql string) (any, bool) {
 	info := parseSQL(sql)
+	// Postgres hasn't adopted the Unparseable contract yet — the
+	// parser-failure path sniffs verb / tables from a token scanner
+	// rather than reporting "parser refused, fields zero, set the
+	// flag." Until the follow-up bead migrates that path, fixtures
+	// always see unparseable=false on the postgres runtime.
 	return &sqlfacet.Meta{
 		Verb:      info.Verb,
 		Tables:    info.Tables,
 		Functions: info.Functions,
 		Statement: info.Statement,
-	}
+	}, false
 }
 
 func init() {

@@ -150,7 +150,9 @@ func (Facet) NewMatcher(condition string) (match.Matcher, error) {
 	if condition == "" {
 		return match.PassThrough{}, nil
 	}
-	return match.CompileCondition(celEnv, condition, buildActivation, lowercasedPaths, truncatablePaths)
+	// k8s has no parser; the Unparseable gate is a no-op for k8s
+	// rules. nil unparseablePaths skips the AST pre-walk.
+	return match.CompileCondition(celEnv, condition, buildActivation, lowercasedPaths, truncatablePaths, nil)
 }
 
 func buildActivation(req *match.Request) map[string]any {

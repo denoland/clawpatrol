@@ -659,6 +659,7 @@ type passThrough struct{}
 
 func (passThrough) Match(*match.Request) bool      { return true }
 func (passThrough) InspectsTruncatableFacet() bool { return false }
+func (passThrough) InspectsUnparseableFacet() bool { return false }
 
 // TestPgClientToServerDeniesFunctionCall closes §4.1's FunctionCall
 // blind spot: the legacy 'F' fast-path carries no SQL text, so the

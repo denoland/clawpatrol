@@ -141,7 +141,7 @@ func runOneFixture(policy *config.CompiledPolicy, path string) (bool, string, er
 		return false, "", err
 	}
 
-	var parseSQL func(string) any
+	var parseSQL func(string) (any, bool)
 	if p, ok := ep.Plugin.Runtime.(runtime.SQLParser); ok {
 		parseSQL = p.ParseStatement
 	}

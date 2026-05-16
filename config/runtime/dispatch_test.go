@@ -344,6 +344,241 @@ rule "body-deny" {
 	}
 }
 
+// newSQLMetaWithStatement builds a *sqlfacet.Meta carrying just the
+// raw statement — the shape parseChSQL hands the matcher on an
+// unparseable Query (verb / tables / functions are zero).
+func newSQLMetaWithStatement(stmt string) *sqlfacet.Meta {
+	return &sqlfacet.Meta{Statement: stmt}
+}
+
+// TestMatchRequestUnparseable_StatementRuleAllowsOnUnparseable pins
+// the high-priority statement-only happy path: a rule that reads only
+// `sql.statement` runs normally on Unparseable=true and its verdict
+// applies (here, allow). No synthesized deny is emitted because the
+// statement text IS populated when the parser fails — only verb /
+// tables / functions are zero.
+func TestMatchRequestUnparseable_StatementRuleAllowsOnUnparseable(t *testing.T) {
+	cp := compileFixture(t, `
+endpoint "clickhouse_native" "ch" { hosts = ["ch.example:9000"] }
+profile "default" { endpoints = [ch] }
+
+rule "allow-known-shape" {
+  endpoint  = ch
+  condition = "sql.statement.contains('daily_user_metrics')"
+  priority  = 100
+  verdict   = "allow"
+}
+rule "verb-deny" {
+  endpoint  = ch
+  condition = "sql.verb == 'insert'"
+  priority  = 50
+  verdict   = "deny"
+  reason    = "writes blocked"
+}
+`)
+	ep := cp.Endpoints["ch"]
+
+	req := &match.Request{
+		Family:      "sql",
+		Meta:        newSQLMetaWithStatement("WITH … INSERT INTO daily_user_metrics …"),
+		Unparseable: true,
+	}
+	r := runtime.MatchRequest(ep, req)
+	if r == nil {
+		t.Fatalf("got nil, want allow-known-shape")
+	}
+	if r.Name != "allow-known-shape" || r.Outcome.Verdict != "allow" {
+		t.Errorf("got rule=%q verdict=%q, want allow-known-shape/allow (statement rule must evaluate honestly on Unparseable)",
+			r.Name, r.Outcome.Verdict)
+	}
+}
+
+// TestMatchRequestUnparseable_VerbRuleSynthDeniesOnUnparseable pins
+// the fail-closed core: a higher-priority statement rule that does
+// NOT match the request falls through; the next rule references
+// `sql.verb` which is zero because the parser refused → synthesize a
+// deny attributed to that rule. The synthesized verdict and reason
+// must replace the rule's original Outcome (which was allow).
+func TestMatchRequestUnparseable_VerbRuleSynthDeniesOnUnparseable(t *testing.T) {
+	cp := compileFixture(t, `
+endpoint "clickhouse_native" "ch" { hosts = ["ch.example:9000"] }
+profile "default" { endpoints = [ch] }
+
+rule "allow-statement-prefix" {
+  endpoint  = ch
+  condition = "sql.statement.startsWith('SELECT')"
+  priority  = 100
+  verdict   = "allow"
+}
+rule "verb-allow" {
+  endpoint  = ch
+  condition = "sql.verb == 'insert'"
+  priority  = 50
+  verdict   = "allow"
+}
+`)
+	ep := cp.Endpoints["ch"]
+
+	req := &match.Request{
+		Family:      "sql",
+		Meta:        newSQLMetaWithStatement("WITH cte AS (...) INSERT INTO dst SELECT id FROM cte"),
+		Unparseable: true,
+	}
+	r := runtime.MatchRequest(ep, req)
+	if r == nil {
+		t.Fatalf("got nil, want synth deny attributed to verb-allow")
+	}
+	if r.Name != "verb-allow" {
+		t.Errorf("synth deny should preserve the original rule name; got %q want verb-allow", r.Name)
+	}
+	if r.Outcome.Verdict != "deny" {
+		t.Errorf("verdict = %q, want deny (synthesized — rule references unset sql.verb on Unparseable request)",
+			r.Outcome.Verdict)
+	}
+	if r.Outcome.Reason == "" {
+		t.Errorf("synth deny reason must be non-empty")
+	}
+}
+
+// TestMatchRequestUnparseable_OnlyParserFacetsSynthDenyFromHighestPriority
+// covers the "only verb/tables/functions rules" scenario from the user
+// spec: no statement-only rule covers the Unparseable request, every
+// rule references a parser-derived facet → the highest-priority rule
+// synth-denies. Lower-priority rules don't get a chance.
+func TestMatchRequestUnparseable_OnlyParserFacetsSynthDenyFromHighestPriority(t *testing.T) {
+	cp := compileFixture(t, `
+endpoint "clickhouse_native" "ch" { hosts = ["ch.example:9000"] }
+profile "default" { endpoints = [ch] }
+
+rule "deny-writes" {
+  endpoint  = ch
+  condition = "sql.verb in ['insert', 'update', 'delete']"
+  priority  = 100
+  verdict   = "deny"
+  reason    = "writes blocked"
+}
+rule "tables-deny" {
+  endpoint  = ch
+  condition = "'secrets' in sql.tables"
+  priority  = 50
+  verdict   = "deny"
+  reason    = "secrets denied"
+}
+`)
+	ep := cp.Endpoints["ch"]
+
+	req := &match.Request{
+		Family:      "sql",
+		Meta:        newSQLMetaWithStatement("WITH cte AS (...) INSERT INTO dst SELECT * FROM cte"),
+		Unparseable: true,
+	}
+	r := runtime.MatchRequest(ep, req)
+	if r == nil {
+		t.Fatalf("got nil, want synth deny from deny-writes (highest priority)")
+	}
+	if r.Name != "deny-writes" {
+		t.Errorf("synth deny should fire on the highest-priority parser-facet rule; got %q want deny-writes", r.Name)
+	}
+	if r.Outcome.Verdict != "deny" {
+		t.Errorf("verdict = %q, want deny", r.Outcome.Verdict)
+	}
+}
+
+// TestMatchRequestUnparseable_NoRulesFallsThrough covers the
+// "no sql_rule on the endpoint at all" carve-out: an Unparseable
+// request must NOT auto-deny on its own — the synthesized deny only
+// fires when an existing rule references an unset facet. With no
+// rules attached the dispatcher returns nil and the caller's default
+// (passthrough / defaults.unknown_host) applies.
+func TestMatchRequestUnparseable_NoRulesFallsThrough(t *testing.T) {
+	cp := compileFixture(t, `
+endpoint "clickhouse_native" "ch" { hosts = ["ch.example:9000"] }
+profile "default" { endpoints = [ch] }
+`)
+	ep := cp.Endpoints["ch"]
+
+	req := &match.Request{
+		Family:      "sql",
+		Meta:        newSQLMetaWithStatement("WITH cte AS (...) INSERT INTO dst SELECT id FROM cte"),
+		Unparseable: true,
+	}
+	r := runtime.MatchRequest(ep, req)
+	if r != nil {
+		t.Errorf("expected nil (no rule fires; caller applies its default), got %+v", r)
+	}
+}
+
+// TestMatchRequestUnparseable_ParseableUnaffected pins that the
+// Unparseable gate is a no-op when Unparseable=false — a parseable
+// query against the same rule set behaves as before. Mirrors the
+// equivalent assertion on the Truncated side.
+func TestMatchRequestUnparseable_ParseableUnaffected(t *testing.T) {
+	cp := compileFixture(t, `
+endpoint "clickhouse_native" "ch" { hosts = ["ch.example:9000"] }
+profile "default" { endpoints = [ch] }
+
+rule "verb-allow-select" {
+  endpoint  = ch
+  condition = "sql.verb == 'select'"
+  verdict   = "allow"
+}
+`)
+	ep := cp.Endpoints["ch"]
+
+	req := &match.Request{
+		Family: "sql",
+		Meta:   &sqlfacet.Meta{Verb: "select", Statement: "SELECT 1"},
+	}
+	r := runtime.MatchRequest(ep, req)
+	if r == nil || r.Name != "verb-allow-select" || r.Outcome.Verdict != "allow" {
+		t.Errorf("parseable SELECT got %+v, want verb-allow-select/allow", r)
+	}
+}
+
+// TestMatchRequestUnparseable_CredentialOnlyRuleStillAllows is the
+// Unparseable analogue of the Truncated/credential test: a rule that
+// reads zero parser-derived facets (here, only the credential pin)
+// must still fire normally on an Unparseable request. The
+// fail-closed gate keys on `InspectsUnparseableFacet()`, and that
+// returns false for a connection-only rule.
+func TestMatchRequestUnparseable_CredentialOnlyRuleStillAllows(t *testing.T) {
+	cp := compileFixture(t, `
+credential "bearer_token" "tok" {}
+endpoint "clickhouse_native" "ch" {
+  hosts      = ["ch.example:9000"]
+  credential = tok
+}
+profile "default" { endpoints = [ch] }
+
+rule "by-credential" {
+  endpoint   = ch
+  credential = tok
+  verdict    = "allow"
+}
+rule "verb-deny" {
+  endpoint  = ch
+  condition = "sql.verb == 'insert'"
+  priority  = -50
+  verdict   = "deny"
+}
+`)
+	ep := cp.Endpoints["ch"]
+
+	req := &match.Request{
+		Family:      "sql",
+		Credential:  "tok",
+		Meta:        newSQLMetaWithStatement("WITH cte AS (...) INSERT INTO dst SELECT id FROM cte"),
+		Unparseable: true,
+	}
+	r := runtime.MatchRequest(ep, req)
+	if r == nil {
+		t.Fatalf("got nil, want by-credential allow")
+	}
+	if r.Name != "by-credential" || r.Outcome.Verdict != "allow" {
+		t.Errorf("got %+v, want by-credential/allow (credential-only rule reads no parser facet)", r)
+	}
+}
+
 // TestResolveCredentialSingular: one credential, no placeholder →
 // returned without consulting the endpoint plugin's detector.
 func TestResolveCredentialSingular(t *testing.T) {

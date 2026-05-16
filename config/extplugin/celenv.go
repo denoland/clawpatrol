@@ -55,7 +55,12 @@ func newPluginFacetMatcher(facetName, condition string, streamFields []string) (
 	for _, f := range streamFields {
 		truncatable = append(truncatable, facetName+"."+f)
 	}
-	inner, err := match.CompileCondition(env, condition, buildAct, nil, truncatable)
+	// Plugin facets have no parser stage on the gateway — their action
+	// payload is decoded JSON, validated by the plugin itself, not
+	// parsed by a grammar that could refuse the bytes. Pass nil for
+	// unparseablePaths so the Unparseable gate is a no-op for plugin
+	// facet matchers.
+	inner, err := match.CompileCondition(env, condition, buildAct, nil, truncatable, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -85,6 +90,11 @@ func (m *pluginMatcher) Match(req *match.Request) bool { return m.inner.Match(re
 func (m *pluginMatcher) InspectsTruncatableFacet() bool {
 	return m.inner.InspectsTruncatableFacet()
 }
+
+// InspectsUnparseableFacet always returns false: plugin facets have
+// no parser failure mode (see newPluginFacetMatcher's nil unparseable
+// path), so the Unparseable gate is structurally a no-op here.
+func (m *pluginMatcher) InspectsUnparseableFacet() bool { return false }
 
 // References preserves whatever the inner matcher reports so the
 // gateway's existing body-buffering check (top-level identifier
