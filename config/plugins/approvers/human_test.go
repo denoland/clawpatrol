@@ -3,6 +3,7 @@ package approvers
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -73,6 +74,22 @@ func TestHumanApproverPendingExpirationUsesPolicyTimeoutFallback(t *testing.T) {
 func TestHumanApproverPendingExpirationUsesDefaultTimeoutFallback(t *testing.T) {
 	pending := captureHumanPending(t, &HumanApprover{}, nil)
 	assertPendingLifetime(t, pending, 10*time.Minute)
+}
+
+func TestHumanApproverPendingIncludesSyncApprovalGuidance(t *testing.T) {
+	pending := captureHumanPending(t, &HumanApprover{Timeout: 17}, &config.CompiledPolicy{HumanTimeout: 600})
+	if pending.OperationState != runtime.HITLOperationStateSyncWaiting {
+		t.Fatalf("OperationState = %q, want %q", pending.OperationState, runtime.HITLOperationStateSyncWaiting)
+	}
+	if pending.ApprovalEffect != runtime.HITLApprovalEffectExecuteUpstream {
+		t.Fatalf("ApprovalEffect = %q, want %q", pending.ApprovalEffect, runtime.HITLApprovalEffectExecuteUpstream)
+	}
+	if pending.UpstreamCalled {
+		t.Fatal("UpstreamCalled = true, want false before approval")
+	}
+	if !strings.Contains(pending.ApprovalMessage, "send this request upstream immediately") {
+		t.Fatalf("ApprovalMessage = %q, want immediate upstream guidance", pending.ApprovalMessage)
+	}
 }
 
 func TestHumanApproverTimeoutRecordsTimedOutTerminalState(t *testing.T) {
