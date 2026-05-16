@@ -1739,15 +1739,18 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		// Body buffering. Any rule with a `body_json` or
 		// `body_contains` match facet needs the body up-front; we
 		// don't know which yet, so for any POST/PUT/PATCH with a
-		// body we read up to 1 MiB and re-attach. Reads beyond 1 MiB
-		// stream through unbuffered (rare for agent traffic) but
-		// surface as Truncated=true so the dispatcher can fail-close
-		// any rule reading http.body / http.body_json — bytes past
-		// the cap aren't in matchBody and policy that needed them
-		// can't be honestly evaluated.
+		// body we read up to 1 MiB and re-attach. Retry-grant
+		// requests additionally buffer regardless of method: the
+		// one-shot grant fingerprint is a same-request check, so a
+		// body-bearing DELETE/GET must bind the exact bytes that will
+		// continue to upstream. Reads beyond 1 MiB stream through
+		// unbuffered (rare for agent traffic) but surface as
+		// Truncated=true so the dispatcher/retry relay can fail-close
+		// any path that needed the complete body.
 		var matchBody []byte
 		var truncated bool
-		if req.Method == "POST" || req.Method == "PUT" || req.Method == "PATCH" {
+		retryOperationID := strings.TrimSpace(req.Header.Get(hitlRetryOperationHeader))
+		if req.Method == "POST" || req.Method == "PUT" || req.Method == "PATCH" || retryOperationID != "" {
 			matchBody, truncated = bufferHTTPBodyForMatchTruncated(req)
 		}
 
@@ -1798,12 +1801,47 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			ev.Rule = cr.Name
 		}
 
+		hitlRetryBypassedApproval := false
+		var hitlRetryConsumedOperation *HITLOperation
+		if retryOperationID != "" {
+			principalID := hitlPeerPrincipalID(pip)
+			consumed, err := g.consumeHITLRetryGrantForRequest(req.Context(), hitlRetryRelayInput{
+				OperationID: retryOperationID,
+				ProfileID:   profile,
+				PrincipalID: principalID,
+				Endpoint:    ep,
+				Rule:        cr,
+				MatchReq:    mreq,
+				HTTPRequest: req,
+				RawBody:     matchBody,
+				Truncated:   truncated,
+			})
+			if err != nil {
+				status, contentType, body := hitlRetryRelayFailure(err)
+				log.Printf("hitl retry rejected %s %s %s operation %q: %v", host, req.Method, req.URL.Path, retryOperationID, err)
+				_, _ = fmt.Fprintf(tc, "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", status, http.StatusText(status), contentType, len(body), body)
+				ev.Status = status
+				ev.Action = "hitl_retry_rejected"
+				ev.Reason = hitlRetryMismatchErrorValue
+				if status == http.StatusNotFound {
+					ev.Reason = hitlOperationNotFoundErrorValue
+				}
+				ev.Ms = time.Since(start).Milliseconds()
+				g.emitEnd(ev)
+				return
+			}
+			hitlRetryConsumedOperation = &consumed
+			hitlRetryBypassedApproval = true
+			ev.Action = "hitl_retry_approved"
+			log.Printf("hitl retry approved %s %s %s operation %q by %s", host, req.Method, req.URL.Path, retryOperationID, principalID)
+		}
+
 		// Approve chain — dispatch each stage to its approver
 		// runtime (config/plugins/approvers). All stages must
 		// allow; first deny short-circuits.
 		var asyncOp HITLOperation
 		var asyncSyncWait time.Duration
-		if cr != nil && len(cr.Outcome.Approve) > 0 {
+		if cr != nil && len(cr.Outcome.Approve) > 0 && !hitlRetryBypassedApproval {
 			if approverID, asyncApprover, ok := g.asyncHumanApproverFor(cr.Outcome.Approve); ok {
 				start, started, err := g.maybeStartAsyncHITLOperation(req.Context(), hitlAsyncOperationInput{
 					ProfileID:   profile,
@@ -1895,6 +1933,11 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				reason = "denied by policy"
 			}
 			log.Printf("deny %s %s %s: %s (rule %q)", host, req.Method, req.URL.Path, reason, cr.Name)
+			if hitlRetryConsumedOperation != nil {
+				if err := g.transitionConsumedHITLRetryGrant(context.Background(), *hitlRetryConsumedOperation, HITLOperationStateUpstreamFailed, reason); err != nil {
+					log.Printf("hitl retry transition %s to %s: %v", hitlRetryConsumedOperation.ID, HITLOperationStateUpstreamFailed, err)
+				}
+			}
 			_, _ = fmt.Fprintf(tc, "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(reason), reason)
 			ev.Status = 403
 			ev.Action = "deny"
@@ -1916,6 +1959,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		req.URL.Host = host
 		req.Host = host
 		req.RequestURI = ""
+		req.Header.Del(hitlRetryOperationHeader)
 		if !isWSUpgrade(req) {
 			for _, h := range []string{
 				"Connection", "Keep-Alive", "Proxy-Authenticate",
@@ -1953,8 +1997,20 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				// an upstream lookup can't accidentally leak them.
 				stripAuthResponseHeaders(r.Header)
 				stripAuthResponseHeaders(r.Trailer)
-				if err := r.Write(tc); err != nil {
-					log.Printf("synth write %s %s: %v", host, req.URL.Path, err)
+				writeErr := r.Write(tc)
+				if hitlRetryConsumedOperation != nil {
+					toState := HITLOperationStateUpstreamSucceeded
+					lastErr := ""
+					if writeErr != nil {
+						toState = HITLOperationStateUpstreamFailed
+						lastErr = writeErr.Error()
+					}
+					if err := g.transitionConsumedHITLRetryGrant(context.Background(), *hitlRetryConsumedOperation, toState, lastErr); err != nil {
+						log.Printf("hitl retry transition %s to %s: %v", hitlRetryConsumedOperation.ID, toState, err)
+					}
+				}
+				if writeErr != nil {
+					log.Printf("synth write %s %s: %v", host, req.URL.Path, writeErr)
 				}
 				ev.Ms = time.Since(start).Milliseconds()
 				g.emitEnd(ev)
@@ -2048,6 +2104,11 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				})
 			}
 			g.handleWSUpgrade(tc, br, req, host, frameEmit, ep, profile, rewriteWSPayload)
+			if hitlRetryConsumedOperation != nil {
+				if err := g.transitionConsumedHITLRetryGrant(context.Background(), *hitlRetryConsumedOperation, HITLOperationStateUpstreamSucceeded, ""); err != nil {
+					log.Printf("hitl retry transition %s to %s: %v", hitlRetryConsumedOperation.ID, HITLOperationStateUpstreamSucceeded, err)
+				}
+			}
 			ev.Status = 101
 			ev.Ms = time.Since(start).Milliseconds()
 			g.emitEnd(ev)
@@ -2087,6 +2148,11 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				}
 			}
 			log.Printf("mitm upstream %s %s: %v", host, req.URL.Path, err)
+			if hitlRetryConsumedOperation != nil {
+				if transitionErr := g.transitionConsumedHITLRetryGrant(context.Background(), *hitlRetryConsumedOperation, HITLOperationStateUpstreamFailed, err.Error()); transitionErr != nil {
+					log.Printf("hitl retry transition %s to %s: %v", hitlRetryConsumedOperation.ID, HITLOperationStateUpstreamFailed, transitionErr)
+				}
+			}
 			_, _ = fmt.Fprintf(tc, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
 			ev.Status = 502
 			ev.Action = "error"
@@ -2144,6 +2210,18 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				}
 			}
 			g.trackLLMUsage(c, trackKind, req.URL.Path, trackedReqBody, body, sessionHint)
+		}
+
+		if hitlRetryConsumedOperation != nil {
+			toState := HITLOperationStateUpstreamSucceeded
+			lastErr := ""
+			if writeErr != nil {
+				toState = HITLOperationStateUpstreamFailed
+				lastErr = writeErr.Error()
+			}
+			if err := g.transitionConsumedHITLRetryGrant(context.Background(), *hitlRetryConsumedOperation, toState, lastErr); err != nil {
+				log.Printf("hitl retry transition %s to %s: %v", hitlRetryConsumedOperation.ID, toState, err)
+			}
 		}
 
 		if ev.Action == "" {
