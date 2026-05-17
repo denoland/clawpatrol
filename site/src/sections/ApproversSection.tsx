@@ -172,7 +172,7 @@ export function ApproversSection() {
           </h3>
           <p class="text-base  text-text-muted">
             Defer the ambiguous requests. A model with your prompt, or a person
-            in Slack — you decide which one runs when.
+            in Slack. You decide which one runs when.
           </p>
         </div>
 

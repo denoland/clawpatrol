@@ -46,10 +46,10 @@ export function RulesSection() {
             <span class="text-rust">Claw Patrol enforces them.</span>
           </h3>
           <p class="text-base text-canvas/70">
-            Every outbound request runs through a rule engine before it leaves
-            your machine. Match on HTTP method, SQL verb, k8s resource,
-            plugin-defined facets — not just URLs. Edits are hot: save a rule
-            in the dashboard, the next request sees it.
+            Every outbound request runs through a rule engine before it
+            reaches its destination. Match on HTTP method, SQL verb, k8s
+            resource, plugin-defined facets; not just URLs. Edits are hot:
+            save a rule in the dashboard, the next request sees it.
           </p>
         </div>
 
