@@ -2100,6 +2100,17 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			}
 		}
 
+		// env_pushdown { } URL + header substitution. Operator-declared
+		// SecretRef entries are handed to the agent as unique placeholder
+		// bytes (so the real secret never sits in the agent's
+		// /proc/<pid>/environ); on outbound HTTP the gateway swaps
+		// placeholder → resolved secret. Runs AFTER per-credential
+		// InjectHTTP so an explicit credential plugin still wins on
+		// shared header slots. Body substitution is deferred until
+		// after the request-body sampler wrap (below) so the dashboard
+		// sample captures pre-substitution bytes.
+		g.applyEnvPushdownURLHeaders(req, profile)
+
 		// WebSocket upgrade. http.Transport.RoundTrip mangles the
 		// 101 response and Cloudflare's WAF rejects unexpectedly modified
 		// frames, so we hand off to a raw byte bridge. Frames remain
@@ -2164,6 +2175,14 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		if req.Body != nil {
 			req.Body = wrapBodySampler(req.Body, reqS)
 		}
+
+		// env_pushdown body substitution. Runs AFTER the body-sampler
+		// wrap above so the dashboard's request-body sample captures
+		// the original placeholder bytes (not the resolved secret).
+		// The wrapped sampler reads through to the real body during
+		// the substitution buffer fill; the substituted bytes are
+		// re-attached as req.Body for RoundTrip.
+		g.applyEnvPushdownBody(req, profile)
 
 		rtStart := time.Now()
 		resp, err := transport.RoundTrip(req.WithContext(context.WithValue(req.Context(), profileCtxKey{}, profile)))
@@ -2518,6 +2537,7 @@ usage:
   clawpatrol status                      report install + tunnel state
   clawpatrol uninstall                   remove local join state and tunnel config
   clawpatrol env                         print shell exports for sourcing
+                  [--list]               print a redacted listing instead
   clawpatrol validate <config.hcl>       parse + compile a config and exit
   clawpatrol test <config> <path>        replay action fixtures against a candidate policy
   clawpatrol version | -v | --version    print version and exit

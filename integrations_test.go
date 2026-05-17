@@ -115,7 +115,10 @@ func TestFetchEnvPushdownErrors(t *testing.T) {
 func TestEnvPushdownVarsServerDriven(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"vars": []map[string]string{{"name": "CODEX_ACCESS_TOKEN", "value": "from-server"}},
+			"vars": []map[string]any{
+				{"name": "CODEX_ACCESS_TOKEN", "value": "from-server"},
+				{"name": "OPENAI_API_KEY", "value": "ph-openai", "plugin_type": "env_pushdown:secret", "sensitive": true},
+			},
 		})
 	}))
 	defer srv.Close()
@@ -130,7 +133,7 @@ func TestEnvPushdownVarsServerDriven(t *testing.T) {
 	if err != nil {
 		t.Fatalf("envPushdownVars: %v", err)
 	}
-	hasSSL, hasCodex := false, false
+	hasSSL, hasCodex, hasSensitive := false, false, false
 	for _, ev := range got {
 		if ev.Name == "SSL_CERT_FILE" && ev.Value == caPath {
 			hasSSL = true
@@ -138,12 +141,32 @@ func TestEnvPushdownVarsServerDriven(t *testing.T) {
 		if ev.Name == "CODEX_ACCESS_TOKEN" && ev.Value == "from-server" {
 			hasCodex = true
 		}
+		if ev.Name == "OPENAI_API_KEY" && ev.Sensitive {
+			hasSensitive = true
+		}
 	}
 	if !hasSSL {
 		t.Errorf("missing SSL_CERT_FILE")
 	}
 	if !hasCodex {
 		t.Errorf("missing CODEX_ACCESS_TOKEN from server")
+	}
+	if !hasSensitive {
+		t.Errorf("Sensitive flag not propagated from server")
+	}
+}
+
+// TestRedactEnvValueHidesAllBytes confirms the redaction marker
+// returned by `clawpatrol env --list` doesn't leak a prefix /
+// suffix / length of the original secret. Operators occasionally
+// paste the listing into chat for triage and any partial leak ages
+// poorly.
+func TestRedactEnvValueHidesAllBytes(t *testing.T) {
+	for _, in := range []string{"", "x", "sk-ant-oat01-abcdef-1234567890"} {
+		got := redactEnvValue(in)
+		if got != "<redacted>" {
+			t.Errorf("redactEnvValue(%q) = %q, want %q", in, got, "<redacted>")
+		}
 	}
 }
 

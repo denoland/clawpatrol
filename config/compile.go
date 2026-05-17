@@ -45,6 +45,13 @@ type CompiledPolicy struct {
 	Approvers   map[string]*Entity
 	Credentials map[string]*Entity
 	Policies    map[string]*PolicyText
+
+	// EnvPushdown is the operator-declared env_pushdown { } entries
+	// in source-declaration order. The MITM HTTPS path walks this
+	// to substitute SecretRef-form placeholders with the real secret
+	// bytes; the dashboard API serves a placeholder-only projection
+	// to `clawpatrol env` / `clawpatrol run` clients.
+	EnvPushdown []*EnvPushdownEntry
 }
 
 // CompiledProfile binds an identity to the endpoint set its requests
@@ -233,6 +240,7 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 		Approvers:      p.Approvers,
 		Credentials:    p.Credentials,
 		Policies:       p.Policies,
+		EnvPushdown:    gw.EnvPushdown,
 	}
 
 	// Compile tunnels first so endpoint compilation can resolve

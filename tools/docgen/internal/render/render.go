@@ -41,6 +41,7 @@ type renderer struct {
 func (r *renderer) run() (string, error) {
 	r.writeHeader()
 	r.writeOperational()
+	r.writeEnvPushdown()
 	r.writeFixedKind("policy", "config", "PolicyText", `policy "<name>"`)
 	r.writeProfile()
 
@@ -134,6 +135,22 @@ func (r *renderer) writeOperational() {
 	r.out.WriteString("## Top-level fields\n\n")
 	r.out.WriteString("Every singleton gateway attribute — listen addresses, paths, control-plane joining, WireGuard endpoint, and policy fallbacks — is set directly at the top of `gateway.hcl`. Labeled blocks (`policy`, `profile`, `approver`, `credential`, `endpoint`, `rule`, `tunnel`) are documented in their own sections.\n\n")
 	r.writeStructTable("config", "Gateway", reflect.TypeOf(config.Gateway{}))
+}
+
+// writeEnvPushdown documents the env_pushdown { } block. The block
+// body isn't a struct (operators declare arbitrary NAME = { ... }
+// attributes), so we render the schema manually rather than via
+// writeStructTable.
+func (r *renderer) writeEnvPushdown() {
+	r.out.WriteString("## `env_pushdown { ... }`\n\n")
+	r.out.WriteString("Operator-declared env vars to inject into agent processes, beyond the per-credential placeholders that come from credential plugins' `EnvVars()` implementations.\n\n")
+	r.out.WriteString("Each entry maps an env var NAME to an object with **exactly one** of `secret = \"<credential-name>\"` or `value = \"<literal>\"`, plus an optional `description = \"...\"`:\n\n")
+	r.out.WriteString("```hcl\nenv_pushdown {\n  OPENAI_API_KEY    = { secret = \"openai_key\", description = \"openai SDKs\" }\n  AWS_ACCESS_KEY_ID = { secret = \"aws_access\" }\n  AWS_REGION        = { value  = \"us-east-1\" }\n}\n```\n\n")
+	r.out.WriteString("**Secret form** (`secret = \"<credential-name>\"`):\n")
+	r.out.WriteString("The named credential's bytes are resolved from the secret store at request time. The agent process's environment receives a unique placeholder string (not the real secret), so the secret never sits in `/proc/<agent>/environ`. The MITM HTTPS path swaps the placeholder for the resolved secret bytes on outbound URL / headers / body before forwarding upstream.\n\n")
+	r.out.WriteString("**Value form** (`value = \"<literal>\"`):\n")
+	r.out.WriteString("The literal string is injected verbatim into the agent's environment. Use for non-sensitive declarations (`AWS_REGION = \"us-east-1\"`) or when an SDK requires the real bytes in the env and MITM substitution isn't viable (e.g. AWS request signing, which HMACs over the secret before the request leaves the SDK).\n\n")
+	r.out.WriteString("Env-var names must match the POSIX identifier syntax `[A-Za-z_][A-Za-z0-9_]*`. Duplicate names across declarations are a load error.\n\n")
 }
 
 // writeFixedKind documents a one-label kind with a fixed, non-plugin
@@ -331,6 +348,13 @@ func (r *renderer) collectFields(pkgName, typeName string, rt reflect.Type) []fi
 		parts := strings.Split(hclTag, ",")
 		name := parts[0]
 		opts := parts[1:]
+		// Fields whose name is "-" (with or without ,optional) are
+		// post-decode only (Policy *Policy `hcl:"-"`, EnvPushdown
+		// `hcl:"-,optional"` etc.) — they don't surface in the HCL
+		// schema and shouldn't appear in the generated reference.
+		if name == "-" {
+			continue
+		}
 		if hasOpt(opts, "remain") || hasOpt(opts, "label") {
 			continue
 		}

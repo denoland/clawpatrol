@@ -1,0 +1,1 @@
+error: error_env_pushdown_both.hcl:5:9: env_pushdown entry sets both `secret` and `value` — BAD must use exactly one of `secret = "<credential>"` or `value = "<literal>"`.

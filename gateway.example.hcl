@@ -68,6 +68,37 @@ llm_cache_ttl    = 300
 human_timeout    = 600
 human_on_timeout = "deny"
 
+# ── env push-down -----------------------------------------------------
+#
+# Generalized env push-down. Each NAME is an env var the gateway
+# stamps into every connected agent's process environment, via
+# `clawpatrol env` / `clawpatrol run`. Two forms:
+#
+#   { secret = "<name>" }  resolve at request time via the credential
+#                          store (CLAWPATROL_SECRET_<NAME> by default,
+#                          or whatever the dashboard / OAuth registry
+#                          contains). The agent's env holds a unique
+#                          placeholder, NEVER the real bytes — the
+#                          gateway swaps placeholder → real secret on
+#                          outbound MITM HTTPS traffic so the secret
+#                          never sits in /proc/<agent>/environ.
+#   { value  = "..." }     inject the literal verbatim. Use for non-
+#                          sensitive declarations (region / endpoint
+#                          overrides) or when the SDK signs over the
+#                          secret (AWS, GCP) and MITM swap can't
+#                          recover the request body.
+#
+# `clawpatrol env`        prints `export NAME=...` shell lines
+#                         (placeholders + CA-bundle paths).
+# `clawpatrol env --list` prints a human-readable listing with
+#                         sensitive values redacted.
+#
+# env_pushdown {
+#   OPENAI_API_KEY    = { secret = "openai_key", description = "OpenAI SDKs" }
+#   AWS_ACCESS_KEY_ID = { secret = "aws_access" }
+#   AWS_REGION        = { value  = "us-east-1" }
+# }
+
 # ── credentials -------------------------------------------------------
 #
 # One per upstream secret. The body lists only injection parameters;
