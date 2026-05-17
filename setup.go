@@ -307,8 +307,15 @@ func runLogin(args []string) {
 	// On Linux, `tailscale set` requires sudo unless --operator=$USER
 	// was passed to `tailscale up`. tsSet handles either case.
 	if !*skipExitNode {
-		if err := tsSet(tscli, "--exit-node="+*gwName); err != nil {
+		if err := tsSet(tscli, "--exit-node="+*gwName, "--accept-dns=false"); err != nil {
 			fail("tailscale set --exit-node=%s: %v", *gwName, err)
+		}
+		// With accept-dns=false, Tailscale stops managing /etc/resolv.conf but
+		// leaves whatever nameserver was there (often 100.100.100.100). Once the
+		// exit-node is active, that address is unreachable from the client, so
+		// DNS breaks. Write a public fallback so lookups work through the exit-node.
+		if runtime.GOOS == "linux" {
+			fixResolvConf()
 		}
 	}
 
@@ -546,6 +553,54 @@ func manualTrustHint(caPath string) string {
 		return fmt.Sprintf("sudo cp %s /usr/local/share/ca-certificates/clawpatrol.crt && sudo update-ca-certificates", caPath)
 	}
 	return "manually add " + caPath + " to your system trust store"
+}
+
+// fixResolvConf ensures /etc/resolv.conf has a working public nameserver after
+// Tailscale DNS management is disabled (--accept-dns=false). When exit-node is
+// active, 100.100.100.100 (the Tailscale magic DNS address) is unreachable from
+// the client, so any resolver pointing there breaks silently. Best-effort: if we
+// can't write the file (e.g. no sudo), the caller should warn the user.
+func fixResolvConf() {
+	const path = "/etc/resolv.conf"
+	cur, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ resolv.conf: read: %v\n", err)
+		return
+	}
+	// If no Tailscale magic DNS address is present, leave the file alone.
+	if !strings.Contains(string(cur), "100.100.100.100") {
+		return
+	}
+	// Replace Tailscale DNS with a public resolver. Use a temp file + rename
+	// to avoid truncating the live file mid-write.
+	tmp, err := os.CreateTemp("/etc", ".resolv.conf.*")
+	if err != nil {
+		// Might need root — fall back to a sudo tee approach.
+		cmd := exec.Command("sudo", "tee", path)
+		cmd.Stdin = strings.NewReader("nameserver 8.8.8.8\nnameserver 8.8.4.4\n")
+		if out, err2 := cmd.CombinedOutput(); err2 != nil {
+			fmt.Fprintf(os.Stderr, "⚠ resolv.conf: fix DNS: %v: %s\n", err2, out)
+		} else {
+			fmt.Println("Updated /etc/resolv.conf → 8.8.8.8 (Tailscale DNS disabled)")
+		}
+		return
+	}
+	if _, err := tmp.WriteString("nameserver 8.8.8.8\nnameserver 8.8.4.4\n"); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+		return
+	}
+	_ = tmp.Close()
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		// Rename across /etc may fail without root.
+		cmd := exec.Command("sudo", "mv", tmp.Name(), path)
+		if out, err2 := cmd.CombinedOutput(); err2 != nil {
+			fmt.Fprintf(os.Stderr, "⚠ resolv.conf: %v: %s\n", err2, out)
+			_ = os.Remove(tmp.Name())
+			return
+		}
+	}
+	fmt.Println("Updated /etc/resolv.conf → 8.8.8.8 (Tailscale DNS disabled)")
 }
 
 func defaultClawpatrolDir() string {

@@ -55,6 +55,16 @@ func openListener(cfg *config.Gateway, stateDir string) (net.Listener, error) {
 		authKey = os.Getenv("TS_AUTHKEY")
 	}
 	if authKey == "" {
+		if isTailscaleControlMode(cfg.Control) {
+			// System Tailscale is already running on this host; listen on
+			// whatever cfg.Listen says (typically the tailnet IP:port set by
+			// the operator). Ephemeral tsnet clients reach us over the mesh.
+			addr := cfg.Listen
+			if addr == "" {
+				addr = ":8443"
+			}
+			return net.Listen("tcp", addr)
+		}
 		// WireGuard mode: bind loopback regardless of cfg.Listen's
 		// host portion. See the file-level comment.
 		host, port, err := net.SplitHostPort(cfg.Listen)

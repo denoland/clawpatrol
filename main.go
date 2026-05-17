@@ -2670,10 +2670,15 @@ func runGateway(args []string) {
 	// In Tailscale mode, `clawpatrol run` clients prepend a HAProxy PROXY v1
 	// header carrying the original 4-tuple so we can dispatch by dst port/IP
 	// exactly like the WG promiscuous forwarder. Peek the first bytes: if the
-	// connection starts with "PROXY " use full dispatch; otherwise it is a
-	// direct admin/dashboard TLS connection — terminate TLS and serve the mux.
+	// connection starts with "PROXY " use full dispatch; otherwise check
+	// SO_ORIGINAL_DST (set by iptables REDIRECT for exit-node traffic); if
+	// neither is present it is a direct admin/dashboard connection.
 	tsnetDashMux := newWebMux(g, cfg.Join(), cfg.PublicURL)
 	tsnetDashPort := portOf(cfg.InfoListen)
+	listenPort := portOf(ln.Addr().String())
+	if isTailscaleControlMode(cfg.Control) {
+		installExitNodeRedirect(listenPort)
+	}
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -2681,16 +2686,24 @@ func runGateway(args []string) {
 			continue
 		}
 		go func(c net.Conn) {
+			// Capture SO_ORIGINAL_DST before any buffering (iptables REDIRECT path).
+			origIP, origPort, hasOrigDst := originalDst(c)
+
 			dstIP, dstPort, conn, err := readProxyHeader(c)
 			if err != nil {
 				_ = c.Close()
 				return
 			}
 			if dstPort == 0 {
-				// Direct connection (no PROXY header): admin dashboard, curl,
-				// clawpatrol join, etc. Terminate TLS using our CA and serve HTTP.
-				g.serveTSNetDirect(conn, tsnetDashMux)
-				return
+				// No PROXY header. Check SO_ORIGINAL_DST: if the connection was
+				// iptables-redirected (exit-node MITM), origPort != listenPort.
+				if hasOrigDst && listenPort != 0 && int(origPort) != listenPort {
+					dstIP, dstPort = origIP, origPort
+				} else {
+					// Direct connection: admin dashboard, curl, clawpatrol join, etc.
+					g.serveTSNetDirect(conn, tsnetDashMux)
+					return
+				}
 			}
 			switch {
 			case dstPort == 443:
