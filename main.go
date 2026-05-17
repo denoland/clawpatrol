@@ -2809,6 +2809,7 @@ func runGateway(args []string) {
 	g.listenPort = listenPort
 	if isTailscaleControlMode(cfg.Control) {
 		installExitNodeRedirect(listenPort, g.connIdx.Load().ConnPorts())
+		startUDPDNSListener(listenPort, g.dnsvip)
 	}
 	for {
 		c, err := ln.Accept()
