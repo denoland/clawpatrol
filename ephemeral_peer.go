@@ -151,10 +151,17 @@ func (w *webMux) apiEphemeralTsnetPeer(rw http.ResponseWriter, r *http.Request) 
 	if gwHost == "" {
 		gwHost = "clawpatrol-gateway"
 	}
+	// Expose the tailnet port so clawpatrol run can dial the right port.
+	// cfg.Listen may be "host:port" or ":port"; extract the port only.
+	_, gwPort, _ := net.SplitHostPort(w.g.cfg.Listen)
+	if gwPort == "" {
+		gwPort = "443"
+	}
 	writeJSON(rw, map[string]string{
 		"auth_key":     authKey,
 		"control_url":  w.ts.ControlURL,
 		"gateway_host": gwHost,
+		"gateway_port": gwPort,
 	})
 }
 
