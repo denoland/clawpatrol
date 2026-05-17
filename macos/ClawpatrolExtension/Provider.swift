@@ -36,18 +36,68 @@ private let parentBundleID = "dev.clawpatrol.app"
 
 class TransparentProxyProvider: NETransparentProxyProvider {
     private var wholeMachine = false
+    private var tsnetMode = false
 
     override func startProxy(options: [String: Any]?,
                              completionHandler: @escaping (Error?) -> Void) {
         os_log("startProxy", log: log, type: .info)
         guard let proto = protocolConfiguration as? NETunnelProviderProtocol,
-              let conf = proto.providerConfiguration?["wg-conf"] as? String, !conf.isEmpty else {
+              let cfg = proto.providerConfiguration else {
+            completionHandler(NSError(domain: "clawpatrol", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "missing providerConfiguration"]))
+            return
+        }
+        let mode = cfg["mode"] as? String ?? ""
+        wholeMachine = (mode == "whole-machine")
+        tsnetMode = (mode == "tailscale")
+
+        if tsnetMode {
+            guard let authKey = cfg["tsnet-auth-key"] as? String, !authKey.isEmpty,
+                  let controlURL = cfg["tsnet-control-url"] as? String,
+                  let gwHost = cfg["tsnet-gateway-host"] as? String, !gwHost.isEmpty,
+                  let gwPort = cfg["tsnet-gateway-port"] as? String, !gwPort.isEmpty else {
+                completionHandler(NSError(domain: "clawpatrol", code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "missing tsnet config fields"]))
+                return
+            }
+            os_log("startProxy: tsnet mode — joining tailnet", log: log, type: .info)
+            DispatchQueue.global(qos: .userInitiated).async {
+                var errBuf = [CChar](repeating: 0, count: 512)
+                let rc = authKey.withCString { akC in
+                    controlURL.withCString { cuC in
+                        gwHost.withCString { ghC in
+                            gwPort.withCString { gpC in
+                                errBuf.withUnsafeMutableBufferPointer { ebuf in
+                                    ts_netstack_init(UnsafeMutablePointer(mutating: akC),
+                                                     UnsafeMutablePointer(mutating: cuC),
+                                                     UnsafeMutablePointer(mutating: ghC),
+                                                     UnsafeMutablePointer(mutating: gpC),
+                                                     ebuf.baseAddress, Int32(ebuf.count))
+                                }
+                            }
+                        }
+                    }
+                }
+                DispatchQueue.main.async {
+                    if rc != 0 {
+                        let msg = String(cString: errBuf)
+                        os_log("ts_netstack_init: %{public}@", log: log, type: .error, msg)
+                        completionHandler(NSError(domain: "clawpatrol", code: 2,
+                            userInfo: [NSLocalizedDescriptionKey: "tsnet: \(msg)"]))
+                        return
+                    }
+                    self.startSessionListener()
+                    self.startSessionReaper()
+                    self.applyNetworkSettings(completionHandler: completionHandler)
+                }
+            }
+            return
+        }
+
+        guard let conf = cfg["wg-conf"] as? String, !conf.isEmpty else {
             completionHandler(NSError(domain: "clawpatrol", code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "missing or empty wg-conf"]))
             return
-        }
-        if let mode = proto.providerConfiguration?["mode"] as? String {
-            wholeMachine = (mode == "whole-machine")
         }
 
         // Spin up the userspace WG device + gVisor netstack.
@@ -152,7 +202,11 @@ class TransparentProxyProvider: NETransparentProxyProvider {
 
     override func stopProxy(with reason: NEProviderStopReason,
                             completionHandler: @escaping () -> Void) {
-        wg_netstack_close()
+        if tsnetMode {
+            ts_netstack_close()
+        } else {
+            wg_netstack_close()
+        }
         completionHandler()
     }
 
@@ -225,13 +279,16 @@ class TransparentProxyProvider: NETransparentProxyProvider {
                 flow.closeReadWithError(err); flow.closeWriteWithError(err); return
             }
             var errBuf = [CChar](repeating: 0, count: 256)
+            let connectFn: (UnsafeMutablePointer<CChar>, Int32, Int32, UnsafeMutablePointer<CChar>?, Int32) -> Int64
+            if self.tsnetMode {
+                connectFn = { h, p, t, eb, el in ts_netstack_tcp_connect(h, p, t, eb, el) }
+            } else {
+                connectFn = { h, p, t, eb, el in wg_netstack_tcp_connect(h, p, t, eb, el) }
+            }
             let cid = ip.withCString { hostC in
                 errBuf.withUnsafeMutableBufferPointer { ebuf in
-                    // 15s: covers one WG keepalive cycle (≤10s) + handshake
-                    // (~2s). Fails fast if gateway is unreachable rather than
-                    // blocking the flow indefinitely (whole-machine wake stall).
-                    wg_netstack_tcp_connect(UnsafeMutablePointer(mutating: hostC),
-                                            port, 15000, ebuf.baseAddress, Int32(ebuf.count))
+                    connectFn(UnsafeMutablePointer(mutating: hostC), port, 15000,
+                              ebuf.baseAddress, Int32(ebuf.count))
                 }
             }
             if cid < 0 {
@@ -391,15 +448,20 @@ class TransparentProxyProvider: NETransparentProxyProvider {
         }
     }
 
-    /// Resolve hostname → IPv4 via the WG tunnel (1.1.1.1:53 over
-    /// netstack). Already-IP literals short-circuit on the Go side.
-    /// Returns nil if lookup times out / fails.
+    /// Resolve hostname → IPv4. In WG mode, routes through the tunnel
+    /// (1.1.1.1:53 via netstack). In tsnet mode, uses system DNS.
+    /// Already-IP literals short-circuit on the Go side in both cases.
     private func resolveIPv4(_ s: String) -> String? {
         var outBuf = [CChar](repeating: 0, count: 256)
         let rc = s.withCString { hostC in
             outBuf.withUnsafeMutableBufferPointer { ebuf in
-                wg_netstack_resolve(UnsafeMutablePointer(mutating: hostC),
-                                    ebuf.baseAddress, Int32(ebuf.count))
+                if tsnetMode {
+                    return ts_netstack_resolve(UnsafeMutablePointer(mutating: hostC),
+                                               ebuf.baseAddress, Int32(ebuf.count))
+                } else {
+                    return wg_netstack_resolve(UnsafeMutablePointer(mutating: hostC),
+                                               ebuf.baseAddress, Int32(ebuf.count))
+                }
             }
         }
         if rc != 0 { return nil }
@@ -553,7 +615,13 @@ private func serviceSessionClient(_ fd: Int32) {
             pending = String(pending[pending.index(after: nl)...])
             let parts = line.split(separator: " ", maxSplits: 1).map(String.init)
             var reply = "err\n"
-            if parts.count == 2, let pid = pid_t(parts[1]) {
+            if parts.count == 1 && parts[0] == "gettsip" {
+                var ipBuf = [CChar](repeating: 0, count: 64)
+                let rc = ipBuf.withUnsafeMutableBufferPointer { p in
+                    ts_netstack_get_ip(p.baseAddress, Int32(p.count))
+                }
+                reply = rc == 0 ? "tsip \(String(cString: ipBuf))\n" : "err\n"
+            } else if parts.count == 2, let pid = pid_t(parts[1]) {
                 switch parts[0] {
                 case "register":   sessionRegister(pid);   reply = "ok\n"
                 case "unregister": sessionUnregister(pid); reply = "ok\n"

@@ -22,8 +22,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -737,23 +735,6 @@ func ephemeralPeer(cfg *runConf) (cleanup func(), err error) {
 		if dr, derr := client.Do(dreq); derr == nil {
 			_ = dr.Body.Close()
 		}
-	}, nil
-}
-
-// gatewayHTTPClient builds an http.Client that trusts caPath in addition
-// to system roots.
-func gatewayHTTPClient(caPath string) (*http.Client, error) {
-	roots, err := x509.SystemCertPool()
-	if err != nil {
-		roots = x509.NewCertPool()
-	}
-	if pem, err := os.ReadFile(caPath); err == nil {
-		roots.AppendCertsFromPEM(pem)
-	}
-	return &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{RootCAs: roots},
-		},
 	}, nil
 }
 

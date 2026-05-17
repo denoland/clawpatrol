@@ -81,11 +81,9 @@ func sessionIPC(msg string) error {
 func runRun(args []string) {
 	warnIfOnGatewayHost()
 
-	// Tailscale mode is not yet supported on macOS via clawpatrol run.
 	if mode := strings.TrimSpace(readFileSilent(filepath.Join(defaultClawpatrolDir(), "mode"))); mode == "tailscale" {
-		fail("clawpatrol run in Tailscale mode is not yet supported on macOS.\n" +
-			"  To use per-process tunneling, rejoin with WireGuard mode:\n" +
-			"  clawpatrol leave && clawpatrol join <gateway> --mode=wireguard")
+		runRunTsnet(args)
+		return
 	}
 
 	if _, err := os.Stat(macHelperPath); err != nil {
