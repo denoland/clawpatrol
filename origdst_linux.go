@@ -1,5 +1,48 @@
 //go:build linux
 
+// Exit-node MITM via SO_ORIGINAL_DST
+//
+// Problem: Tailscale's built-in exit-node feature routes all client traffic
+// through this machine and out to the internet — but it does so transparently.
+// The kernel forwards packets without any userspace process seeing the payload,
+// so there is no hook for credential injection, policy enforcement, or logging.
+// Tailscale itself provides no API to intercept exit-node traffic.
+//
+// Solution: run this gateway process on the same machine as the Tailscale exit
+// node and bend the packet path so that specific TCP/UDP flows hit the gateway's
+// listener before the kernel forwards them outbound.
+//
+// How it works:
+//
+//  1. iptables/ip6tables PREROUTING REDIRECT (or nftables equivalent) rewrites
+//     the destination of matching packets arriving on tailscale0 to
+//     127.0.0.1:<listenPort>. The kernel records the pre-NAT destination in the
+//     conntrack table but delivers the SYN to the gateway's own listen socket.
+//
+//  2. SO_ORIGINAL_DST getsockopt on the accepted TCP conn (or IP_RECVORIGDSTADDR
+//     ancdata on UDP) reads that conntrack entry, recovering the IP:port the
+//     client originally dialed (e.g., api.openai.com:443 or 10.78.0.1:22).
+//
+//  3. The accept loop dispatches on the recovered destination exactly as the
+//     WireGuard promiscuous forwarder does: port 443 → HTTPS MITM, port 5432 →
+//     Postgres, dnsvip VIP → SSH, ConnRouter ports → binary protocol endpoints.
+//
+//  4. DNS (port 53) is intercepted so the dnsvip allocator can answer A/AAAA
+//     queries for SSH-endpoint hostnames with virtual IPs, enabling the VIP→SSH
+//     dispatch path that the WireGuard mode uses. Non-VIP names are forwarded
+//     upstream to whatever DNS server the client was originally querying.
+//
+//  5. UDP on non-DNS intercepted ports (443, 5432, …) is REJECT-ed with
+//     ICMP port-unreachable. QUIC (HTTP/3) uses UDP/443 and cannot be
+//     REDIRECT-ed by iptables (UDP is connectionless, no conntrack SYN state).
+//     The ICMP rejection forces clients to fall back to TCP, which the REDIRECT
+//     rule catches. This matches WireGuard mode where the tun interface captures
+//     all traffic and UDP 443 simply has no handler.
+//
+// Without these rules the exit node behaves like a plain NAT gateway: traffic
+// leaves with the gateway's public IP but the gateway process never sees it,
+// so no credentials are injected and no policies are enforced.
+
 package main
 
 import (

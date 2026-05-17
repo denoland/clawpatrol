@@ -7,13 +7,37 @@ package main
 // gVisor's TCP stack. No system-wide Tailscale required — tsnet runs
 // entirely in-process.
 //
+// Why PROXY headers instead of the exit-node iptables REDIRECT path
+// (origdst_linux.go):
+//
+// The exit-node REDIRECT path intercepts traffic from Tailscale exit-node
+// clients — machines that have configured this gateway as their exit node via
+// `tailscale set --exit-node=<gw>`. In that model, client traffic arrives on
+// the gateway's tailscale0 interface and iptables diverts it to the gateway
+// listener before kernel forwarding.
+//
+// `clawpatrol run` clients are NOT exit-node clients. The child process runs
+// in its own network namespace with a gVisor TCP/IP stack as the default
+// route. Each TCP connection the child makes is intercepted by gVisor and
+// dialed out via tsnet directly to the gateway node over the tailnet — a
+// peer-to-peer connection, not exit-node-forwarded traffic. The connection
+// arrives at the gateway's TCP listener as a direct tailnet connection from
+// the ephemeral node's 100.x.x.x; iptables REDIRECT on tailscale0 does not
+// apply because the traffic is delivered to the gateway's own address, not
+// forwarded onward.
+//
+// The PROXY header carries the original 4-tuple (srcIP, dstIP, srcPort,
+// dstPort) so the gateway accept loop recovers what the child process was
+// actually trying to reach (e.g., api.openai.com:443) and dispatches it
+// identically to the WireGuard and exit-node paths.
+//
 // Flow:
 //  1. POST /api/peer/ephemeral/tsnet → ephemeral Tailscale auth key
 //  2. tsnet.Server{Ephemeral: true} joins the gateway's tailnet
 //  3. Child in new user+net+mnt ns creates TUN, sends fd via SCM_RIGHTS
 //  4. gVisor netstack reads from TUN, promiscuous TCP forwarder
-//  5. Each TCP connection → tsnet.Dial(gwHost:originalPort)
-//  6. Child IP = tsnet 100.x.x.x, default route via TUN
+//  5. Each TCP connection → tsnet.Dial(gwHost:443) + HAProxy PROXY v1 header
+//  6. Gateway recovers original dst from PROXY header, dispatches normally
 
 import (
 	"context"
