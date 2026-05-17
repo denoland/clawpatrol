@@ -81,16 +81,27 @@ func installExitNodeRedirect(listenPort int) {
 	portStr := strconv.Itoa(listenPort)
 	ports := []string{"443", "5432"}
 	for _, dport := range ports {
-		args := []string{"-t", "nat", "-i", "tailscale0", "-p", "tcp", "--dport", dport, "-j", "REDIRECT", "--to-port", portStr}
-		check := exec.Command("iptables", append([]string{"-C", "PREROUTING"}, args...)...)
-		if check.Run() == nil {
-			continue // already installed
+		// TCP: REDIRECT to our listen port so SO_ORIGINAL_DST can recover the dst.
+		tcpArgs := []string{"-t", "nat", "-i", "tailscale0", "-p", "tcp", "--dport", dport, "-j", "REDIRECT", "--to-port", portStr}
+		if exec.Command("iptables", append([]string{"-C", "PREROUTING"}, tcpArgs...)...).Run() != nil {
+			insert := exec.Command("iptables", append([]string{"-I", "PREROUTING", "1"}, tcpArgs...)...)
+			if out, err := insert.CombinedOutput(); err != nil {
+				log.Printf("exit-node redirect: iptables tcp dport %s: %v: %s", dport, err, out)
+			} else {
+				log.Printf("exit-node redirect: installed iptables REDIRECT tcp/%s → %s", dport, portStr)
+			}
 		}
-		insert := exec.Command("iptables", append([]string{"-I", "PREROUTING", "1"}, args...)...)
-		if out, err := insert.CombinedOutput(); err != nil {
-			log.Printf("exit-node redirect: iptables dport %s: %v: %s", dport, err, out)
-		} else {
-			log.Printf("exit-node redirect: installed iptables REDIRECT port %s → %s", dport, portStr)
+		// UDP: REJECT so QUIC/HTTP3 fails fast and clients fall back to TCP.
+		// Without this, UDP 443 bypasses MITM — on par with WireGuard mode which
+		// captures all traffic on the tun interface.
+		udpArgs := []string{"-i", "tailscale0", "-p", "udp", "--dport", dport, "-j", "REJECT", "--reject-with", "icmp-port-unreachable"}
+		if exec.Command("iptables", append([]string{"-C", "FORWARD"}, udpArgs...)...).Run() != nil {
+			insert := exec.Command("iptables", append([]string{"-I", "FORWARD", "1"}, udpArgs...)...)
+			if out, err := insert.CombinedOutput(); err != nil {
+				log.Printf("exit-node redirect: iptables udp dport %s: %v: %s", dport, err, out)
+			} else {
+				log.Printf("exit-node redirect: installed iptables REJECT udp/%s (force TCP fallback)", dport)
+			}
 		}
 	}
 }
