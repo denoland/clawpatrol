@@ -531,6 +531,13 @@ func (a *Allocator) handleWire(in []byte, dstIP string) []byte {
 	return out
 }
 
+// HandlePacket processes a single raw DNS wire-format datagram and returns
+// the response datagram ready to send, or nil on parse error. Used by the
+// exit-node UDP DNS listener; callers write the returned bytes directly.
+func (a *Allocator) HandlePacket(in []byte, origDstIP string) []byte {
+	return a.handleWire(in, origDstIP)
+}
+
 // handleQuery is the actual responder. Splits intercepted from
 // non-intercepted: if any question targets a known VIP-hostname we
 // answer locally; otherwise we forward the entire message to dstIP
