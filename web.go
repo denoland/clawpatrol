@@ -240,6 +240,7 @@ func (w *webMux) routes() []webRoute {
 		{Method: http.MethodGet, Path: "/api/env-pushdown", Auth: authSelfAuthenticating, Handler: w.apiEnvPushdown},
 		{Method: http.MethodPost, Path: "/api/peer/ephemeral", Auth: authSelfAuthenticating, Handler: w.apiEphemeralPeer},
 		{Method: http.MethodPost, Path: "/api/peer/ephemeral/tsnet", Auth: authSelfAuthenticating, Handler: w.apiEphemeralTsnetPeer},
+		{Method: http.MethodPost, Path: "/api/peer/ephemeral/tsnet/register", Auth: authSelfAuthenticating, Handler: w.apiRegisterEphemeralTsnetIP},
 		{Method: http.MethodGet, Path: "/__login", Auth: authTailnetOperator, Handler: w.apiDashboardLogin},
 	}
 }

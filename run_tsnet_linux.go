@@ -112,6 +112,12 @@ func runRunTsnet(args []string) {
 	}
 	_ = os.Setenv("CLAWPATROL_TS_ADDR", tsIP.String())
 
+	// Register ephemeral tsnet IP with gateway so profile dispatch uses
+	// the right credentials (same as ephemeral WG peer registration).
+	if rerr := registerEphemeralTsnetIP(gwURL, token, filepath.Join(dir, "ca.crt"), tsIP.String()); rerr != nil {
+		fmt.Fprintf(os.Stderr, "warning: tsnet profile registration: %v (will use default profile)\n", rerr)
+	}
+
 	// 3. IPC channels: TUN fd handoff + wg-up pipe (same plumbing as WG mode).
 	sp, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
@@ -534,4 +540,29 @@ func fetchEphemeralTsnetKey(gwURL, token, caPath string) (string, error) {
 		return "", fmt.Errorf("empty auth_key in response")
 	}
 	return result.AuthKey, nil
+}
+
+// registerEphemeralTsnetIP tells the gateway which 100.x.x.x tailnet IP this
+// ephemeral tsnet run session got, so the gateway maps it to the parent
+// device's profile for credential dispatch.
+func registerEphemeralTsnetIP(gwURL, token, caPath, tsIP string) error {
+	client, err := gatewayHTTPClient(caPath)
+	if err != nil {
+		return fmt.Errorf("http client: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, gwURL+"/api/peer/ephemeral/tsnet/register?ip="+tsIP, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return fmt.Errorf("gateway %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
 }
