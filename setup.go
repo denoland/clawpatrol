@@ -272,6 +272,9 @@ func runLogin(args []string) {
 		} else {
 			sshPinned = true
 		}
+		if err := exemptPublicIPFromExitNode(); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠ couldn't protect public IP inbound traffic: %v\n", err)
+		}
 	}
 
 	tscli, err := tailscaleBin()
@@ -422,6 +425,71 @@ func exemptSSHFromExitNode(_ string) error {
 		if err := c.Run(); err != nil {
 			return fmt.Errorf("ip rule: %w", err)
 		}
+	}
+	return nil
+}
+
+// exemptPublicIPFromExitNode ensures reply traffic for this machine's public
+// IP address routes via the main table (direct interface) rather than the
+// Tailscale exit-node. Without this, inbound TCP connections (HTTPS, etc.)
+// receive SYN-ACKs from the exit-node's public IP instead of the machine's
+// own IP, breaking every server that binds to the public interface.
+//
+// The fix is a single high-priority policy-routing rule:
+//
+//	ip rule add from <public-ip> lookup main priority 100
+//
+// Idempotent. Also writes a networkd-dispatcher script so the rule survives
+// reboots (Tailscale's own routing rules are re-installed on every boot, so
+// we have to be too).
+func exemptPublicIPFromExitNode() error {
+	// Find the primary public IPv4: source addr used for the default route.
+	out, err := exec.Command("ip", "-o", "route", "get", "1.1.1.1").Output()
+	if err != nil {
+		return fmt.Errorf("ip route get: %w", err)
+	}
+	// output: "1.1.1.1 via ... dev eth0 src 203.0.113.5 ..."
+	pubIP := ""
+	fields := strings.Fields(string(out))
+	for i, f := range fields {
+		if f == "src" && i+1 < len(fields) {
+			pubIP = fields[i+1]
+			break
+		}
+	}
+	if pubIP == "" || strings.HasPrefix(pubIP, "100.") || pubIP == "127.0.0.1" {
+		return fmt.Errorf("could not determine public IP (got %q)", pubIP)
+	}
+
+	// Add ip rule idempotently.
+	existing, _ := exec.Command("ip", "rule", "show").Output()
+	if !strings.Contains(string(existing), pubIP) {
+		c := exec.Command("sudo", "ip", "rule", "add", "from", pubIP, "lookup", "main", "priority", "100")
+		c.Stderr = os.Stderr
+		if err := c.Run(); err != nil {
+			return fmt.Errorf("ip rule add: %w", err)
+		}
+	}
+
+	// Persist via networkd-dispatcher so the rule survives reboots.
+	dir := "/etc/networkd-dispatcher/routable.d"
+	_ = exec.Command("sudo", "mkdir", "-p", dir).Run()
+	script := fmt.Sprintf("#!/bin/sh\n# clawpatrol: keep public IP replies on direct path (not exit-node)\nip rule show | grep -q '%s' || ip rule add from %s lookup main priority 100\n", pubIP, pubIP)
+	tmp, err := os.CreateTemp("", "clawpatrol-routing-*")
+	if err != nil {
+		return err
+	}
+	if _, err := tmp.WriteString(script); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	_ = tmp.Close()
+	dst := dir + "/50-clawpatrol-public-ip"
+	c := exec.Command("sudo", "sh", "-c", fmt.Sprintf("mv %s %s && chmod +x %s", tmp.Name(), dst, dst))
+	c.Stderr = os.Stderr
+	if err := c.Run(); err != nil {
+		_ = os.Remove(tmp.Name())
+		return fmt.Errorf("install routing script: %w", err)
 	}
 	return nil
 }
