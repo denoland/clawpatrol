@@ -151,11 +151,51 @@ func (w *webMux) apiEphemeralTsnetPeer(rw http.ResponseWriter, r *http.Request) 
 	if gwHost == "" {
 		gwHost = "clawpatrol-gateway"
 	}
+	// Expose the tailnet port so clawpatrol run can dial the right port.
+	// cfg.Listen may be "host:port" or ":port"; extract the port only.
+	_, gwPort, _ := net.SplitHostPort(w.g.cfg.Listen)
+	if gwPort == "" {
+		gwPort = "443"
+	}
 	writeJSON(rw, map[string]string{
 		"auth_key":     authKey,
 		"control_url":  w.ts.ControlURL,
 		"gateway_host": gwHost,
+		"gateway_port": gwPort,
 	})
+}
+
+// apiRegisterEphemeralTsnetIP handles POST /api/peer/ephemeral/tsnet/register.
+// Called by `clawpatrol run` (tsnet mode) immediately after the ephemeral tsnet
+// node joins and learns its 100.x.x.x address. Binds the ephemeral tailnet IP
+// to the parent device's profile so dispatch from that IP uses the right credentials.
+func (w *webMux) apiRegisterEphemeralTsnetIP(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(rw, "POST", http.StatusMethodNotAllowed)
+		return
+	}
+	token := bearerFromAuthHeader(r.Header.Get("Authorization"))
+	parentIP := peerIPForAPIToken(w.g.db, token)
+	if parentIP == "" {
+		http.Error(rw, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	tsnetIP := r.URL.Query().Get("ip")
+	if tsnetIP == "" {
+		http.Error(rw, "missing ip", http.StatusBadRequest)
+		return
+	}
+	if _, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(tsnetIP, "1")); err != nil {
+		http.Error(rw, "invalid ip", http.StatusBadRequest)
+		return
+	}
+	if w.g.onboard == nil {
+		rw.WriteHeader(http.StatusNoContent)
+		return
+	}
+	profile := w.g.onboard.ProfileForIP(parentIP)
+	w.g.onboard.setEphemeralProfile(tsnetIP, parentIP, profile)
+	rw.WriteHeader(http.StatusNoContent)
 }
 
 // apiRemoveEphemeralPeer handles DELETE /api/peer/ephemeral?pubkey=<hex>.

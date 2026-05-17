@@ -7,13 +7,37 @@ package main
 // gVisor's TCP stack. No system-wide Tailscale required — tsnet runs
 // entirely in-process.
 //
+// Why PROXY headers instead of the exit-node iptables REDIRECT path
+// (origdst_linux.go):
+//
+// The exit-node REDIRECT path intercepts traffic from Tailscale exit-node
+// clients — machines that have configured this gateway as their exit node via
+// `tailscale set --exit-node=<gw>`. In that model, client traffic arrives on
+// the gateway's tailscale0 interface and iptables diverts it to the gateway
+// listener before kernel forwarding.
+//
+// `clawpatrol run` clients are NOT exit-node clients. The child process runs
+// in its own network namespace with a gVisor TCP/IP stack as the default
+// route. Each TCP connection the child makes is intercepted by gVisor and
+// dialed out via tsnet directly to the gateway node over the tailnet — a
+// peer-to-peer connection, not exit-node-forwarded traffic. The connection
+// arrives at the gateway's TCP listener as a direct tailnet connection from
+// the ephemeral node's 100.x.x.x; iptables REDIRECT on tailscale0 does not
+// apply because the traffic is delivered to the gateway's own address, not
+// forwarded onward.
+//
+// The PROXY header carries the original 4-tuple (srcIP, dstIP, srcPort,
+// dstPort) so the gateway accept loop recovers what the child process was
+// actually trying to reach (e.g., api.openai.com:443) and dispatches it
+// identically to the WireGuard and exit-node paths.
+//
 // Flow:
 //  1. POST /api/peer/ephemeral/tsnet → ephemeral Tailscale auth key
 //  2. tsnet.Server{Ephemeral: true} joins the gateway's tailnet
 //  3. Child in new user+net+mnt ns creates TUN, sends fd via SCM_RIGHTS
 //  4. gVisor netstack reads from TUN, promiscuous TCP forwarder
-//  5. Each TCP connection → tsnet.Dial(gwHost:originalPort)
-//  6. Child IP = tsnet 100.x.x.x, default route via TUN
+//  5. Each TCP connection → tsnet.Dial(gwHost:gwPort) + HAProxy PROXY v1 header
+//  6. Gateway recovers original dst from PROXY header, dispatches normally
 
 import (
 	"context"
@@ -82,7 +106,7 @@ func runRunTsnet(args []string) {
 	}
 
 	// 1. Mint ephemeral tsnet auth key.
-	authKey, err := fetchEphemeralTsnetKey(gwURL, token, filepath.Join(dir, "ca.crt"))
+	authKey, gwPort, err := fetchEphemeralTsnetKey(gwURL, token, filepath.Join(dir, "ca.crt"))
 	if err != nil {
 		fail("mint tsnet key: %v", err)
 	}
@@ -111,6 +135,12 @@ func runRunTsnet(args []string) {
 		fail("tsnet join: %v", err)
 	}
 	_ = os.Setenv("CLAWPATROL_TS_ADDR", tsIP.String())
+
+	// Register ephemeral tsnet IP with gateway so profile dispatch uses
+	// the right credentials (same as ephemeral WG peer registration).
+	if rerr := registerEphemeralTsnetIP(gwURL, token, filepath.Join(dir, "ca.crt"), tsIP.String()); rerr != nil {
+		fmt.Fprintf(os.Stderr, "warning: tsnet profile registration: %v (will use default profile)\n", rerr)
+	}
 
 	// 3. IPC channels: TUN fd handoff + wg-up pipe (same plumbing as WG mode).
 	sp, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
@@ -174,7 +204,7 @@ func runRunTsnet(args []string) {
 	// 7. TCP forwarder: every connection → tsnet → gateway.
 	// We forward to gwHost:originalPort so the gateway can route by port
 	// (port 443 → HTTPS MITM; other ports forwarded if gateway listens).
-	enableTsnetTCPForwarder(gvStack, tsServer, gwHost)
+	enableTsnetTCPForwarder(gvStack, tsServer, gwHost, gwPort)
 
 	// 8. Signal child: bridge is up.
 	_, _ = wgUpW.Write([]byte{1})
@@ -404,12 +434,12 @@ func startTunBridge(tunFile *os.File, ep *channel.Endpoint) {
 }
 
 // enableTsnetTCPForwarder installs a promiscuous TCP forwarder on s.
-// Every connection is forwarded to gwHost:443 via tsnet. A HAProxy PROXY v1
+// Every connection is forwarded to gwHost:gwPort via tsnet. A HAProxy PROXY v1
 // header is written before the payload carrying the original 4-tuple so the
 // gateway can dispatch by original dst IP/port (PostgreSQL, ClickHouse, etc.)
 // instead of only being able to route by SNI on port 443.
-func enableTsnetTCPForwarder(s *stack.Stack, ts *tsnet.Server, gwHost string) {
-	gwAddr := net.JoinHostPort(gwHost, "443")
+func enableTsnetTCPForwarder(s *stack.Stack, ts *tsnet.Server, gwHost, gwPort string) {
+	gwAddr := net.JoinHostPort(gwHost, gwPort)
 	fwd := tcp.NewForwarder(s, 1<<20, 16384, func(req *tcp.ForwarderRequest) {
 		id := req.ID()
 		// PROXY TCP4 srcIP dstIP srcPort dstPort
@@ -504,34 +534,65 @@ func waitTsnetUp(s *tsnet.Server) (netip.Addr, error) {
 }
 
 // fetchEphemeralTsnetKey calls POST /api/peer/ephemeral/tsnet on the
-// gateway to obtain a single-use ephemeral Tailscale auth key.
-func fetchEphemeralTsnetKey(gwURL, token, caPath string) (string, error) {
-	client, err := gatewayHTTPClient(caPath)
-	if err != nil {
-		return "", fmt.Errorf("http client: %w", err)
+// gateway to obtain a single-use ephemeral Tailscale auth key and the
+// tailnet port the gateway is listening on. gwPort defaults to "443" if
+// the gateway omits it (old gateway versions).
+func fetchEphemeralTsnetKey(gwURL, token, caPath string) (authKey, gwPort string, err error) {
+	client, ferr := gatewayHTTPClient(caPath)
+	if ferr != nil {
+		return "", "", fmt.Errorf("http client: %w", ferr)
 	}
-	req, err := http.NewRequest(http.MethodPost, gwURL+"/api/peer/ephemeral/tsnet", nil)
-	if err != nil {
-		return "", err
+	req, ferr := http.NewRequest(http.MethodPost, gwURL+"/api/peer/ephemeral/tsnet", nil)
+	if ferr != nil {
+		return "", "", ferr
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
+	resp, ferr := client.Do(req)
+	if ferr != nil {
+		return "", "", ferr
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return "", fmt.Errorf("gateway %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return "", "", fmt.Errorf("gateway %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	var result struct {
-		AuthKey string `json:"auth_key"`
+		AuthKey     string `json:"auth_key"`
+		GatewayPort string `json:"gateway_port"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
+	if ferr := json.NewDecoder(resp.Body).Decode(&result); ferr != nil {
+		return "", "", ferr
 	}
 	if result.AuthKey == "" {
-		return "", fmt.Errorf("empty auth_key in response")
+		return "", "", fmt.Errorf("empty auth_key in response")
 	}
-	return result.AuthKey, nil
+	if result.GatewayPort == "" {
+		result.GatewayPort = "443"
+	}
+	return result.AuthKey, result.GatewayPort, nil
+}
+
+// registerEphemeralTsnetIP tells the gateway which 100.x.x.x tailnet IP this
+// ephemeral tsnet run session got, so the gateway maps it to the parent
+// device's profile for credential dispatch.
+func registerEphemeralTsnetIP(gwURL, token, caPath, tsIP string) error {
+	client, err := gatewayHTTPClient(caPath)
+	if err != nil {
+		return fmt.Errorf("http client: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, gwURL+"/api/peer/ephemeral/tsnet/register?ip="+tsIP, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return fmt.Errorf("gateway %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
 }

@@ -118,15 +118,18 @@ func runJoin(args []string) {
 	// configured (MASQUERADE etc). The CA is small + cheap and
 	// the onboard endpoints are reachable on the public path.
 	//
+	// In Tailscale control mode the gateway intentionally does not
+	// expose /ca.crt on its public Funnel path — the CA is only
+	// reachable over the tailnet (security: no TOFU over plain
+	// internet). A 404 here means we're talking to a Tailscale-mode
+	// gateway; runLogin (called below after onboard + Tailscale join)
+	// fetches the CA from the peer's tailnet IP instead.
+	//
 	// Trust install + shell-rc updates are deferred to
 	// finishJoinSetup, which runs only after the operator's
-	// dashboard approval click. Until that point an attacker
-	// on-path could have substituted the CA we just fetched
-	// over plain HTTP. The approval flow shows the gateway's
-	// real CA fingerprint on the dashboard; the operator
-	// compares it against what the CLI prints below.
+	// dashboard approval click.
 	setup, err := preJoinFetchCA(gatewayURL, *caOut)
-	if err != nil {
+	if err != nil && !isCaNotExposed(err) {
 		fail("ca fetch: %v", err)
 	}
 	wgMode, err := onboardViaDeviceFlow(gatewayURL, *wholeMachine, *profile, *hostname, &setup, *skipTrust)
@@ -155,6 +158,13 @@ type joinSetup struct {
 	shellRC       bool   // shell rc updated with `eval "$(clawpatrol env)"`
 }
 
+// isCaNotExposed returns true when the gateway deliberately did not expose
+// /ca.crt on its public path (Tailscale control mode). The CA will be
+// fetched securely over the tailnet by runLogin after Tailscale join.
+func isCaNotExposed(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "status 404")
+}
+
 // preJoinFetchCA downloads the gateway's CA into caDir and computes
 // its SHA-256 fingerprint, but stops short of installing it into
 // the system trust store. Trust install + shell-rc updates land in
@@ -170,19 +180,17 @@ func preJoinFetchCA(gateway, caDir string) (joinSetup, error) {
 	if err := os.MkdirAll(caDir, 0o700); err != nil {
 		return s, fmt.Errorf("mkdir %s: %w", caDir, err)
 	}
+	// Persist the dashboard URL before the CA fetch so subsequent
+	// `clawpatrol env` / `clawpatrol run` invocations work even when
+	// the CA fetch is deferred (Tailscale mode, 404 on /ca.crt).
+	_ = os.WriteFile(filepath.Join(caDir, "gateway"),
+		[]byte(strings.TrimRight(gateway, "/")+"\n"), 0o644)
 	s.caPath = filepath.Join(caDir, "ca.crt")
 	fp, err := fetchCAHTTP(gateway, s.caPath)
 	if err != nil {
 		return s, fmt.Errorf("fetch CA: %w", err)
 	}
 	s.caFingerprint = fp
-	// Persist the dashboard URL so subsequent `clawpatrol env` /
-	// `clawpatrol run` invocations can fetch the env push-down list
-	// from the gateway instead of iterating compiled-in plugins.
-	// Best-effort; the read side falls back to local enumeration
-	// when this file is missing.
-	_ = os.WriteFile(filepath.Join(caDir, "gateway"),
-		[]byte(strings.TrimRight(gateway, "/")+"\n"), 0o644)
 	return s, nil
 }
 
@@ -193,6 +201,12 @@ func preJoinFetchCA(gateway, caDir string) (joinSetup, error) {
 // substituted by an on-path attacker at fetch time.
 func finishJoinSetup(s *joinSetup, skipTrust bool) {
 	if s.caPath == "" {
+		return
+	}
+	if _, err := os.Stat(s.caPath); err != nil {
+		// CA not fetched yet (Tailscale mode defers to runLogin). Skip
+		// trust install; runLogin will fetch + install from the tailnet.
+		installShellRC() //nolint:errcheck
 		return
 	}
 	if !skipTrust {
