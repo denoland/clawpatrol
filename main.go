@@ -2677,7 +2677,7 @@ func runGateway(args []string) {
 	tsnetDashPort := portOf(cfg.InfoListen)
 	listenPort := portOf(ln.Addr().String())
 	if isTailscaleControlMode(cfg.Control) {
-		installExitNodeRedirect(listenPort)
+		installExitNodeRedirect(listenPort, g.connIdx.Load().ConnPorts())
 	}
 	for {
 		c, err := ln.Accept()

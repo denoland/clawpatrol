@@ -62,7 +62,7 @@ func originalDst(c net.Conn) (ip string, port uint16, ok bool) {
 // Idempotent: each rule is checked with -C before insertion. Failures are
 // logged but not fatal; operators can install the rules manually if the
 // process lacks CAP_NET_ADMIN.
-func installExitNodeRedirect(listenPort int) {
+func installExitNodeRedirect(listenPort int, extraPorts []string) {
 	if listenPort == 0 {
 		return
 	}
@@ -79,7 +79,16 @@ func installExitNodeRedirect(listenPort int) {
 	}
 
 	portStr := strconv.Itoa(listenPort)
+	// Always intercept HTTPS and Postgres; add any other ports declared by
+	// ConnRouter endpoints (clickhouse_native 9000/9440, etc.).
+	seen := map[string]bool{"443": true, "5432": true}
 	ports := []string{"443", "5432"}
+	for _, p := range extraPorts {
+		if !seen[p] {
+			seen[p] = true
+			ports = append(ports, p)
+		}
+	}
 	for _, dport := range ports {
 		// TCP: REDIRECT to our listen port so SO_ORIGINAL_DST can recover the dst.
 		tcpArgs := []string{"-t", "nat", "-i", "tailscale0", "-p", "tcp", "--dport", dport, "-j", "REDIRECT", "--to-port", portStr}
