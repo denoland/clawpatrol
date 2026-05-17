@@ -1100,13 +1100,21 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 
 	// 4b. tailscale up — set --operator on linux so future
 	// `tailscale set/serve/funnel` calls don't need sudo.
-	upArgs := []string{tscli, "up", "--reset", "--authkey=" + authKey, "--accept-routes", "--accept-dns=false"}
+	// On macOS the App Store Tailscale daemon handles auth via the
+	// menu-bar app; running `sudo tailscale up` crashes with a
+	// BundleIdentifiers fatal error. Run without sudo on non-Linux.
+	upArgs := []string{"up", "--reset", "--authkey=" + authKey, "--accept-routes", "--accept-dns=false"}
 	if runtime.GOOS == "linux" {
 		if u := os.Getenv("USER"); u != "" {
 			upArgs = append(upArgs, "--operator="+u)
 		}
 	}
-	cmd := exec.Command("sudo", upArgs...)
+	var cmd *exec.Cmd
+	if runtime.GOOS == "linux" {
+		cmd = exec.Command("sudo", append([]string{tscli}, upArgs...)...)
+	} else {
+		cmd = exec.Command(tscli, upArgs...)
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {

@@ -526,11 +526,15 @@ func (w *webMux) apiOnboardStart(rw http.ResponseWriter, r *http.Request) {
 		}
 		w.onboard.mu.Unlock()
 	}
-	// Prefer the operator-configured public_url so brand-new clients
-	// see a real URL. Fall back to the request's Host header for
-	// dev / direct-IP setups. Tailscale Funnel hostnames (*.ts.net)
-	// are always HTTPS, so detect those explicitly.
+	// Build the verify URL that points at the dashboard approval page.
+	// public_url may be a Tailscale Funnel endpoint (*.ts.net) that only
+	// exposes /api/cred/ and /api/onboard/ — not the dashboard UI at /#/.
+	// In that case, use info_listen instead so the approving operator
+	// gets a URL they can actually reach from the tailnet.
 	verifyURL := w.publicURL
+	if strings.Contains(verifyURL, ".ts.net") && w.g.cfg.InfoListen != "" {
+		verifyURL = "http://" + w.g.cfg.InfoListen
+	}
 	if verifyURL == "" {
 		scheme := "http"
 		if strings.HasSuffix(r.Host, ".ts.net") || r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
