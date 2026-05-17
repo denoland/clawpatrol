@@ -9,7 +9,7 @@ const PROTOCOLS: {
   example: string;
 }[] = [
   {
-    name: "HTTPS",
+    name: "HTTP",
     body:
       "Method, path, headers, body. Any host, any service. Match an " +
       "HTTP request shape, route it through an LLM judge before it " +
@@ -20,7 +20,7 @@ const PROTOCOLS: {
     name: "SQL",
     body:
       "Postgres and ClickHouse traffic parsed verb-by-verb. Match by " +
-      "SQL verb, table, function name, even substrings of the " +
+      "SQL verb, table, function name, and substrings of the " +
       "statement itself.",
     example: snippet(protocol_sql),
   },
@@ -42,7 +42,7 @@ export function RulesSection() {
 
         <div class="max-w-3xl mx-auto text-center mb-16">
           <h3 class="text-4xl sm:text-5xl md:text-6xl font-display font-bold text-balance mb-5">
-            You write the rules.{" "}
+            You write access rules in HCL.{" "}
             <span class="text-rust">Claw Patrol enforces them.</span>
           </h3>
           <p class="text-base text-canvas/70">

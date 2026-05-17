@@ -6,26 +6,20 @@ const PROBLEMS = [
     body:
       "OAuth scopes, API keys, IAM roles, k8s RBAC: every " +
       "service has its own access model, and configuring each " +
-      "correctly is its own project. Even when you get it right, " +
-      "a prompt-injected agent will exploit whatever access you " +
-      "granted.",
+      "correctly is its own project.",
   },
   {
     title: "Your agent shouldn't see secrets",
     body:
-      "Every API key in the agent's env is one you've handed " +
-      "over. If the process is compromised (and prompts can " +
-      "compromise it), the keys leak with it. Rotation is hard, " +
-      "and you can't easily revoke a single action's worth of " +
-      "access.",
+      "If the agent is compromised (prompt " +
+      "injection), the keys leak with it.",
   },
   {
     title: "Logs don't capture the action",
     body:
       "Reconstructing what an agent did means stitching together " +
-      "per-service logs, which usually don't capture the actual " +
-      "request payload. And by the time you notice the bad " +
-      "action, it's already gone through.",
+      "per-service logs. When you have a fleet of agents this becomes " +
+      "particularly troublesome.",
   },
 ];
 
