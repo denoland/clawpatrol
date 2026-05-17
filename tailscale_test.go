@@ -48,7 +48,7 @@ func TestOpenListener_NoAuthKey(t *testing.T) {
 	t.Setenv("HOME", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("TS_AUTHKEY", "")
-	cfg := &config.Gateway{Listen: "127.0.0.1:0"}
+	cfg := &config.Gateway{Control: "wireguard", Listen: "127.0.0.1:0"}
 	ln, err := openListener(cfg, t.TempDir())
 	if err != nil {
 		t.Fatalf("openListener: %v", err)
@@ -65,10 +65,12 @@ func TestOpenListener_NoAuthKey(t *testing.T) {
 
 // TestOpenListener_NoAuthKey_PublicListenIsOverridden verifies that
 // an operator-set "0.0.0.0:0" still results in a loopback bind in
-// WireGuard mode — the F-19 open-proxy fix.
+// WireGuard mode — the F-19 open-proxy fix. Tailscale system-mode
+// intentionally respects cfg.Listen as-is (the operator binds the
+// tailnet IP directly); this test is WG-specific.
 func TestOpenListener_NoAuthKey_PublicListenIsOverridden(t *testing.T) {
 	t.Setenv("TS_AUTHKEY", "")
-	cfg := &config.Gateway{Listen: "0.0.0.0:0"}
+	cfg := &config.Gateway{Control: "wireguard", Listen: "0.0.0.0:0"}
 	ln, err := openListener(cfg, t.TempDir())
 	if err != nil {
 		t.Fatalf("openListener: %v", err)
