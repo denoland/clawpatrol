@@ -322,6 +322,8 @@ type Gateway struct {
 	// transports memoizes one http.Transport per endpoint. Avoids the
 	// per-request allocation + idle-conn-pool reset of the old path.
 	transports sync.Map // *config.CompiledEndpoint -> *http.Transport
+	// listenPort is set once at startup; watchConfig reads it to reinstall iptables rules on reload.
+	listenPort int
 }
 
 // transportFor returns the cached http.Transport for ep, building it
@@ -424,7 +426,11 @@ func (g *Gateway) watchConfig(path string) {
 		}
 		g.policy.Store(policy)
 		registerOAuthCredentials(g.oauth, policy)
-		g.connIdx.Store(runtime.BuildConnIndex(policy))
+		newConnIdx := runtime.BuildConnIndex(policy)
+		g.connIdx.Store(newConnIdx)
+		if isTailscaleControlMode(g.cfg.Control) && g.listenPort != 0 {
+			installExitNodeRedirect(g.listenPort, newConnIdx.ConnPorts())
+		}
 		if g.tunnels != nil {
 			g.tunnels.SetPolicy(context.Background(), policy)
 		}
@@ -2676,6 +2682,7 @@ func runGateway(args []string) {
 	tsnetDashMux := newWebMux(g, cfg.Join(), cfg.PublicURL)
 	tsnetDashPort := portOf(cfg.InfoListen)
 	listenPort := portOf(ln.Addr().String())
+	g.listenPort = listenPort
 	if isTailscaleControlMode(cfg.Control) {
 		installExitNodeRedirect(listenPort, g.connIdx.Load().ConnPorts())
 	}

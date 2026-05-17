@@ -79,10 +79,13 @@ func installExitNodeRedirect(listenPort int, extraPorts []string) {
 	}
 
 	portStr := strconv.Itoa(listenPort)
-	// Always intercept HTTPS and Postgres; add any other ports declared by
+	// Always intercept HTTPS, Postgres, and DNS; add any other ports declared by
 	// ConnRouter endpoints (clickhouse_native 9000/9440, etc.).
-	seen := map[string]bool{"443": true, "5432": true}
-	ports := []string{"443", "5432"}
+	// Port 53 is TCP-only: UDP DNS is left unREJECTed so exit-node clients that
+	// use UDP DNS still get real resolution; VIP names resolve via TCP DNS.
+	seen := map[string]bool{"53": true, "443": true, "5432": true}
+	tcpOnly := map[string]bool{"53": true} // no UDP REJECT for DNS
+	ports := []string{"53", "443", "5432"}
 	for _, p := range extraPorts {
 		if !seen[p] {
 			seen[p] = true
@@ -99,6 +102,9 @@ func installExitNodeRedirect(listenPort int, extraPorts []string) {
 			} else {
 				log.Printf("exit-node redirect: installed iptables REDIRECT tcp/%s → %s", dport, portStr)
 			}
+		}
+		if tcpOnly[dport] {
+			continue
 		}
 		// UDP: REJECT so QUIC/HTTP3 fails fast and clients fall back to TCP.
 		// Without this, UDP 443 bypasses MITM — on par with WireGuard mode which
