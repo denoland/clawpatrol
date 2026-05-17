@@ -318,7 +318,7 @@ func runLogin(args []string) {
 		// exit-node is active, that address is unreachable from the client, so
 		// DNS breaks. Write a public fallback so lookups work through the exit-node.
 		if runtime.GOOS == "linux" {
-			fixResolvConf()
+			fixResolvConf(st.MagicDNSSuffix)
 		}
 	}
 
@@ -626,49 +626,104 @@ func manualTrustHint(caPath string) string {
 // fixResolvConf ensures /etc/resolv.conf has a working public nameserver after
 // Tailscale DNS management is disabled (--accept-dns=false). When exit-node is
 // active, 100.100.100.100 (the Tailscale magic DNS address) is unreachable from
-// the client, so any resolver pointing there breaks silently. Best-effort: if we
-// can't write the file (e.g. no sudo), the caller should warn the user.
-func fixResolvConf() {
-	const path = "/etc/resolv.conf"
-	cur, err := os.ReadFile(path)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "⚠ resolv.conf: read: %v\n", err)
+// the client, so any resolver pointing there breaks silently.
+//
+// If systemd-resolved is running, configure split DNS: public names go to 8.8.8.8
+// via the default interface, and MagicDNS names (*.ts.net, *.tailnet suffix) still
+// resolve via 100.100.100.100 on tailscale0. This preserves peer name resolution
+// while keeping public DNS working through the exit-node.
+//
+// Falls back to writing 8.8.8.8 directly into resolv.conf when systemd-resolved
+// is not available. Best-effort; logs warnings on failure.
+func fixResolvConf(magicDNSSuffix string) {
+	if fixResolvConfSplitDNS(magicDNSSuffix) {
 		return
 	}
-	// If no Tailscale magic DNS address is present, leave the file alone.
+	// Fallback: plain resolv.conf replace.
+	const path = "/etc/resolv.conf"
+	cur, _ := os.ReadFile(path)
 	if !strings.Contains(string(cur), "100.100.100.100") {
 		return
 	}
-	// Replace Tailscale DNS with a public resolver. Use a temp file + rename
-	// to avoid truncating the live file mid-write.
-	tmp, err := os.CreateTemp("/etc", ".resolv.conf.*")
-	if err != nil {
-		// Might need root — fall back to a sudo tee approach.
-		cmd := exec.Command("sudo", "tee", path)
-		cmd.Stdin = strings.NewReader("nameserver 8.8.8.8\nnameserver 8.8.4.4\n")
-		if out, err2 := cmd.CombinedOutput(); err2 != nil {
-			fmt.Fprintf(os.Stderr, "⚠ resolv.conf: fix DNS: %v: %s\n", err2, out)
-		} else {
-			fmt.Println("Updated /etc/resolv.conf → 8.8.8.8 (Tailscale DNS disabled)")
+	writeResolv := func(content string) bool {
+		tmp, err := os.CreateTemp("/etc", ".resolv.conf.*")
+		if err != nil {
+			cmd := exec.Command("sudo", "tee", path)
+			cmd.Stdin = strings.NewReader(content)
+			out, err2 := cmd.CombinedOutput()
+			if err2 != nil {
+				fmt.Fprintf(os.Stderr, "⚠ resolv.conf: %v: %s\n", err2, out)
+				return false
+			}
+			return true
 		}
-		return
-	}
-	if _, err := tmp.WriteString("nameserver 8.8.8.8\nnameserver 8.8.4.4\n"); err != nil {
+		_, _ = tmp.WriteString(content)
 		_ = tmp.Close()
-		_ = os.Remove(tmp.Name())
-		return
+		if err := os.Rename(tmp.Name(), path); err != nil {
+			cmd := exec.Command("sudo", "mv", tmp.Name(), path)
+			if out, err2 := cmd.CombinedOutput(); err2 != nil {
+				fmt.Fprintf(os.Stderr, "⚠ resolv.conf: %v: %s\n", err2, out)
+				_ = os.Remove(tmp.Name())
+				return false
+			}
+		}
+		return true
 	}
-	_ = tmp.Close()
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		// Rename across /etc may fail without root.
-		cmd := exec.Command("sudo", "mv", tmp.Name(), path)
-		if out, err2 := cmd.CombinedOutput(); err2 != nil {
-			fmt.Fprintf(os.Stderr, "⚠ resolv.conf: %v: %s\n", err2, out)
-			_ = os.Remove(tmp.Name())
-			return
+	if writeResolv("nameserver 8.8.8.8\nnameserver 8.8.4.4\n") {
+		fmt.Println("Updated /etc/resolv.conf → 8.8.8.8 (Tailscale DNS disabled)")
+	}
+}
+
+// fixResolvConfSplitDNS configures systemd-resolved for split DNS: public names
+// via 8.8.8.8 on the default interface, Tailscale MagicDNS names via
+// 100.100.100.100 on tailscale0. Returns true on success.
+func fixResolvConfSplitDNS(magicDNSSuffix string) bool {
+	if exec.Command("systemctl", "is-active", "--quiet", "systemd-resolved").Run() != nil {
+		return false
+	}
+	domains := "ts.net"
+	if magicDNSSuffix != "" && magicDNSSuffix != "ts.net" {
+		domains = magicDNSSuffix + " ts.net"
+	}
+	// Detect the primary public interface from the default route.
+	primaryIface := "enp1s0"
+	if out, err := exec.Command("ip", "-o", "route", "get", "1.1.1.1").Output(); err == nil {
+		for i, f := range strings.Fields(string(out)) {
+			if f == "dev" && i+1 < len(strings.Fields(string(out))) {
+				primaryIface = strings.Fields(string(out))[i+1]
+				break
+			}
 		}
 	}
-	fmt.Println("Updated /etc/resolv.conf → 8.8.8.8 (Tailscale DNS disabled)")
+	cmds := [][]string{
+		{"resolvectl", "dns", "tailscale0", "100.100.100.100"},
+		{"resolvectl", "domain", "tailscale0", domains},
+		{"resolvectl", "dns", primaryIface, "8.8.8.8", "8.8.4.4"},
+		{"ln", "-sf", "/run/systemd/resolve/stub-resolv.conf", "/etc/resolv.conf"},
+	}
+	for _, args := range cmds {
+		c := exec.Command("sudo", args...)
+		c.Stderr = os.Stderr
+		if err := c.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠ split DNS: %v: %v\n", args[0], err)
+			return false
+		}
+	}
+	// Persist via networkd-dispatcher.
+	script := fmt.Sprintf("#!/bin/sh\n# clawpatrol: split DNS for Tailscale exit-node\n"+
+		"resolvectl dns tailscale0 100.100.100.100 2>/dev/null\n"+
+		"resolvectl domain tailscale0 %s 2>/dev/null\n"+
+		"resolvectl dns %s 8.8.8.8 8.8.4.4 2>/dev/null\n", domains, primaryIface)
+	const dst = "/etc/networkd-dispatcher/routable.d/51-clawpatrol-dns"
+	tmp, err := os.CreateTemp("", "clawpatrol-dns-*")
+	if err == nil {
+		_, _ = tmp.WriteString(script)
+		_ = tmp.Close()
+		_ = exec.Command("sudo", "sh", "-c",
+			fmt.Sprintf("mv %s %s && chmod +x %s", tmp.Name(), dst, dst)).Run()
+	}
+	fmt.Printf("Configured split DNS: %s → 100.100.100.100, public → 8.8.8.8\n", domains)
+	return true
 }
 
 func defaultClawpatrolDir() string {
