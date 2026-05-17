@@ -6,9 +6,16 @@ import * as Plot from "@observablehq/plot";
 
 const MS_TICKS = [0.1, 1, 10, 100, 1000, 10000];
 const PALETTE = [
-  "#4269d0", "#efb118", "#ff725c", "#6cc5b0",
-  "#3ca951", "#ff8ab7", "#a463f2", "#97bbf5",
-  "#9c6b4e", "#9498a0",
+  "#4269d0",
+  "#efb118",
+  "#ff725c",
+  "#6cc5b0",
+  "#3ca951",
+  "#ff8ab7",
+  "#a463f2",
+  "#97bbf5",
+  "#9c6b4e",
+  "#9498a0",
 ];
 const STATUS_COLORS = {
   domain: ["2xx", "3xx", "4xx", "5xx"],
@@ -38,25 +45,19 @@ type Dot = {
   logMs: number;
 };
 
-export function renderChart(
-  container: HTMLElement,
-  rawData: [string, number, number, string][],
-) {
-  const allDots: Dot[] = rawData.map(
-    ([t, us, status, host]) => {
-      const ms = Math.max(us / 1000, 0.1);
-      return {
-        t: new Date(t),
-        ms,
-        host,
-        status: statusCls(status),
-        logMs: Math.log10(ms),
-      };
-    },
-  );
+export function renderChart(container: HTMLElement, rawData: [string, number, number, string][]) {
+  const allDots: Dot[] = rawData.map(([t, us, status, host]) => {
+    const ms = Math.max(us / 1000, 0.1);
+    return {
+      t: new Date(t),
+      ms,
+      host,
+      status: statusCls(status),
+      logMs: Math.log10(ms),
+    };
+  });
 
-  const allHosts = [...new Set(allDots.map((d) => d.host))]
-    .sort();
+  const allHosts = [...new Set(allDots.map((d) => d.host))].sort();
 
   let colorBy: ColorBy = "host";
   const activeHosts = new Set<string>();
@@ -74,20 +75,19 @@ export function renderChart(
     // When one or more hosts are active, dim the others instead of filtering
     // them out — the dataset stays intact, only the highlight shifts.
     const hasSelection = activeHosts.size > 0;
-    const dotOpacity = (d: Dot) =>
-      !hasSelection || activeHosts.has(d.host) ? 0.75 : 0.22;
+    const dotOpacity = (d: Dot) => (!hasSelection || activeHosts.has(d.host) ? 0.75 : 0.22);
     const colors = getColors(colorBy);
     const w = container.clientWidth || 800;
 
     container.innerHTML = "";
 
     // --- Toolbar ---
-    const toolbar = el("div",
-      "flex items-center gap-3 mb-2 flex-wrap");
+    const toolbar = el("div", "flex items-center gap-3 mb-2 flex-wrap");
 
-    const title = el("span",
-      "text-[11px] font-semibold uppercase " +
-      "tracking-wider text-navy-200");
+    const title = el(
+      "span",
+      "text-[11px] font-semibold uppercase " + "tracking-wider text-navy-200",
+    );
     title.textContent = "RESPONSE LATENCY";
     toolbar.appendChild(title);
 
@@ -105,10 +105,12 @@ export function renderChart(
     if (hasSelection) {
       const pills = el("div", "flex flex-wrap gap-1.5 mb-2");
       for (const host of activeHosts) {
-        const pill = el("button",
+        const pill = el(
+          "button",
           "inline-flex items-center gap-1 px-2 py-0.5 " +
-          "text-xs bg-navy-200/20 text-navy-200 " +
-          "rounded cursor-pointer");
+            "text-xs bg-navy-200/20 text-navy-200 " +
+            "rounded cursor-pointer",
+        );
         pill.textContent = `${host} ✕`;
         (pill as HTMLButtonElement).onclick = () => {
           activeHosts.delete(host);
@@ -117,9 +119,11 @@ export function renderChart(
         pills.appendChild(pill);
       }
       if (activeHosts.size > 1) {
-        const clear = el("button",
+        const clear = el(
+          "button",
           "inline-flex items-center px-2 py-0.5 " +
-          "text-xs text-navy-200/60 hover:text-navy-200 cursor-pointer");
+            "text-xs text-navy-200/60 hover:text-navy-200 cursor-pointer",
+        );
         clear.textContent = "clear all";
         (clear as HTMLButtonElement).onclick = () => {
           activeHosts.clear();
@@ -152,9 +156,7 @@ export function renderChart(
         label: "\u2191 Duration (ms)",
         grid: true,
         nice: true,
-        ...(logScale
-          ? { ticks: MS_TICKS, tickFormat: fmtMs }
-          : {}),
+        ...(logScale ? { ticks: MS_TICKS, tickFormat: fmtMs } : {}),
       },
       color: { ...colors, legend: true },
       style: {
@@ -167,9 +169,7 @@ export function renderChart(
     // like "plot-abc123-swatch" on each <span>; use [class$="-swatch"] so we
     // don't also match the container ("-swatches") or wrap ("-swatches-wrap"),
     // which would yank in the injected <style> block and every label.
-    const swatches = scatter.querySelectorAll<HTMLElement>(
-      '[class$="-swatch"]',
-    );
+    const swatches = scatter.querySelectorAll<HTMLElement>('[class$="-swatch"]');
     swatches.forEach((swatch) => {
       const label = swatch.textContent?.trim() ?? "";
       swatch.style.cursor = "pointer";
@@ -191,9 +191,10 @@ export function renderChart(
     container.appendChild(scatter);
 
     // --- Histogram ---
-    const histTitle = el("div",
-      "text-[11px] font-semibold uppercase " +
-      "tracking-wider text-navy-200 mt-4 mb-1");
+    const histTitle = el(
+      "div",
+      "text-[11px] font-semibold uppercase " + "tracking-wider text-navy-200 mt-4 mb-1",
+    );
     histTitle.textContent = "LATENCY HISTOGRAM";
     container.appendChild(histTitle);
 
@@ -221,12 +222,7 @@ export function renderChart(
             Plot.binX({ y: "count" }, binOpts({ tip: true })),
           ),
         ]
-      : [
-          Plot.rectY(
-            allDots,
-            Plot.binX({ y: "count" }, binOpts({ tip: true })),
-          ),
-        ];
+      : [Plot.rectY(allDots, Plot.binX({ y: "count" }, binOpts({ tip: true })))];
 
     const hist = Plot.plot({
       marks: histMarks,
@@ -269,23 +265,19 @@ function el(tag: string, className: string) {
   return e;
 }
 
-function btnGroup(
-  options: string[],
-  active: string,
-  onChange: (v: string) => void,
-) {
+function btnGroup(options: string[], active: string, onChange: (v: string) => void) {
   const group = el("div", "flex gap-0.5");
   for (const opt of options) {
-    const btn = el("button",
+    const btn = el(
+      "button",
       `px-2 py-0.5 text-[10px] font-medium ${
         opt === active
           ? "bg-navy-200 text-console-dark"
-          : "bg-console-dark/50 text-navy-200/60 " +
-            "hover:text-navy-200"
-      }`);
+          : "bg-console-dark/50 text-navy-200/60 " + "hover:text-navy-200"
+      }`,
+    );
     btn.textContent = opt;
-    (btn as HTMLButtonElement).onclick = () =>
-      onChange(opt);
+    (btn as HTMLButtonElement).onclick = () => onChange(opt);
     group.appendChild(btn);
   }
   return group;

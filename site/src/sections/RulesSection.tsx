@@ -42,14 +42,12 @@ export function RulesSection() {
 
         <div class="max-w-3xl mx-auto text-center mb-16">
           <h3 class="text-4xl sm:text-5xl md:text-6xl font-display font-bold text-balance mb-5">
-            You write access rules in HCL.{" "}
-            <span class="text-rust">Claw Patrol enforces them.</span>
+            You write access rules in HCL. <span class="text-rust">Claw Patrol enforces them.</span>
           </h3>
           <p class="text-base text-canvas/70">
-            Every outbound request runs through a rule engine before it
-            reaches its destination. Match on HTTP method, SQL verb, k8s
-            resource, plugin-defined facets; not just URLs. Edits are hot:
-            save a rule in the dashboard, the next request sees it.
+            Every outbound request runs through a rule engine before it reaches its destination.
+            Match on HTTP method, SQL verb, k8s resource, plugin-defined facets; not just URLs.
+            Edits are hot: save a rule in the dashboard, the next request sees it.
           </p>
         </div>
 
@@ -64,9 +62,7 @@ export function RulesSection() {
               class="grid grid-cols-1 lg:grid-cols-[1fr_2fr] gap-6 lg:gap-12 items-start"
             >
               <div class="min-w-0">
-                <h4 class="text-3xl font-display font-bold text-canvas mb-3">
-                  {p.name}
-                </h4>
+                <h4 class="text-3xl font-display font-bold text-canvas mb-3">{p.name}</h4>
                 <p class="text-base text-canvas/70 max-w-sm">{p.body}</p>
               </div>
               <HclCode

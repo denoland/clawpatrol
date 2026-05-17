@@ -51,8 +51,7 @@ export function DeploySection() {
         <SectionLabel>Run it</SectionLabel>
         <div class="max-w-3xl mx-auto text-center mb-12 sm:mb-16">
           <h3 class="text-3xl sm:text-4xl lg:text-5xl font-display font-bold text-balance mb-5 text-text">
-            Wrap one agent{" "}
-            <span class="text-rust">or a whole machine.</span>
+            Wrap one agent <span class="text-rust">or a whole machine.</span>
           </h3>
         </div>
 
@@ -63,9 +62,7 @@ export function DeploySection() {
               class="bg-canvas border border-navy-200 squircle-md
                 p-6 flex flex-col gap-4"
             >
-              <h4 class="text-xl font-display font-bold text-text">
-                {m.title}
-              </h4>
+              <h4 class="text-xl font-display font-bold text-text">{m.title}</h4>
               <Terminal source={m.command} />
               <p class="text-sm text-text-muted">{m.body}</p>
             </div>

@@ -15,10 +15,7 @@ export function Landing() {
     <Layout>
       <HeroSection />
       <ProblemSection />
-      <Wave
-        topColor="var(--color-canvas)"
-        bottomColor="var(--color-navy-600)"
-      />
+      <Wave topColor="var(--color-canvas)" bottomColor="var(--color-navy-600)" />
       <RulesSection />
       <ApproversSection />
       <TestSection />
