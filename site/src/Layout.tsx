@@ -14,11 +14,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
       </a>
       <Header />
       <Stripe color1="var(--color-navy-100)" />
-      <main
-        id="main"
-        tabindex={-1}
-        class="focus:outline-none focus-visible:outline-none"
-      >
+      <main id="main" tabindex={-1} class="focus:outline-none focus-visible:outline-none">
         {children}
       </main>
       <Stripe color1="var(--color-navy)" />

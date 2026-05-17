@@ -27,18 +27,8 @@ export function Header() {
           >
             GitHub
           </a>
-          <Button
-            href="/docs/getting-started/"
-            size="sm"
-            class="inline-flex items-center gap-2"
-          >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 14 14"
-              fill="none"
-              aria-hidden="true"
-            >
+          <Button href="/docs/getting-started/" size="sm" class="inline-flex items-center gap-2">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
               <path
                 d="M7 1.5v7.25m0 0L4 5.75m3 3 3-3M2.25 12h9.5"
                 stroke="currentColor"

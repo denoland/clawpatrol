@@ -37,8 +37,8 @@ export function HeroSection() {
             class="mb-10 max-w-lg
             text-text-muted"
           >
-            Claw Patrol holds agent credentials, parses their traffic at the wire, and gates
-            actions they take with rules you write. Block <code>DROP TABLE</code>. Have a human approve{" "}
+            Claw Patrol holds agent credentials, parses their traffic at the wire, and gates actions
+            they take with rules you write. Block <code>DROP TABLE</code>. Have a human approve{" "}
             <code>kubectl delete pod</code>. Keep an audit log of every action.
           </p>
           <InstallTerminal />

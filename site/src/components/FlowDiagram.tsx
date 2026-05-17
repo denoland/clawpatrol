@@ -14,10 +14,7 @@ export function FlowDiagram() {
 
       <Riser />
 
-      <CenterNode
-        label="Claw Patrol"
-        sub="rules · approvals · credentials · analytics"
-      />
+      <CenterNode label="Claw Patrol" sub="rules approvals credentials analytics" />
 
       <Risers count={4} />
 
@@ -34,9 +31,7 @@ export function FlowDiagram() {
 function CardRow({ children }: { children: ComponentChildren }) {
   // pr-2 / pb-2 reserves room for the stacked-card shadows so they
   // don't touch the column edge or the arrows below.
-  return (
-    <div class="grid grid-cols-4 gap-3 w-full pr-2 pb-2">{children}</div>
-  );
+  return <div class="grid grid-cols-4 gap-3 w-full pr-2 pb-2">{children}</div>;
 }
 
 function ProductionNode() {
@@ -45,14 +40,12 @@ function ProductionNode() {
       class="squircle-md w-full bg-canvas border border-navy-200
         text-text px-5 py-5 text-center"
     >
-      <div class="font-display font-bold text-xl leading-none">
-        Production
-      </div>
+      <div class="font-display font-bold text-xl leading-none">Production</div>
       <div
         class="font-mono text-[11px] uppercase tracking-wider mt-2
           text-text-muted text-balance"
       >
-        postgres · clickhouse · k8s · aws · gcp · github · slack · notion · …
+        postgres clickhouse kubernetes aws gcp github slack vultr whatever
       </div>
     </div>
   );
@@ -61,13 +54,7 @@ function ProductionNode() {
 function Riser() {
   return (
     <div class="w-full flex justify-center my-2">
-      <svg
-        width="16"
-        height="28"
-        viewBox="0 0 16 28"
-        class="text-navy-300"
-        aria-hidden="true"
-      >
+      <svg width="16" height="28" viewBox="0 0 16 28" class="text-navy-300" aria-hidden="true">
         <path
           d="M 8 28 V 5"
           stroke="currentColor"
@@ -104,16 +91,7 @@ function Card({ name, icon }: { name: string; icon?: string }) {
         px-2 py-3 bg-canvas border border-navy-200 min-w-0"
       style={{ boxShadow: stack }}
     >
-      {icon ? (
-        <img
-          src={icon}
-          alt=""
-          class="w-6 h-6"
-          aria-hidden="true"
-        />
-      ) : (
-        <RobotGlyph />
-      )}
+      {icon ? <img src={icon} alt="" class="w-6 h-6" aria-hidden="true" /> : <RobotGlyph />}
       <div
         class="font-display font-semibold text-[11.5px] text-text-muted
           leading-tight text-center text-balance"
@@ -170,11 +148,7 @@ function CenterNode({ label, sub }: { label: string; sub: string }) {
       class="squircle-md w-full bg-navy-100 text-text border border-navy
         px-5 py-5 text-center"
     >
-      <img
-        src="/claw-patrol-logo.svg"
-        alt={label}
-        class="h-8 sm:h-10 w-auto mx-auto"
-      />
+      <img src="/claw-patrol-logo.svg" alt={label} class="h-8 sm:h-10 w-auto mx-auto" />
       <div
         class="font-mono text-[11px] uppercase tracking-wider mt-2
           text-text-muted"

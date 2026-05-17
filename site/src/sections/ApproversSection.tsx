@@ -29,15 +29,8 @@ function DiagramFrame({ children }: { children: ComponentChildren }) {
   );
 }
 
-function VerdictPill({
-  label,
-  kind = "deny",
-}: {
-  label: string;
-  kind?: "deny" | "allow";
-}) {
-  const styles =
-    kind === "allow" ? "bg-rust text-text" : "bg-navy-700 text-canvas";
+function VerdictPill({ label, kind = "deny" }: { label: string; kind?: "deny" | "allow" }) {
+  const styles = kind === "allow" ? "bg-rust text-text" : "bg-navy-700 text-canvas";
   return (
     <div class="flex justify-center">
       <span
@@ -56,9 +49,7 @@ function LlmDiagram() {
   return (
     <DiagramFrame>
       <div class="bg-canvas squircle-sm px-3 py-2 font-mono text-[12px] ">
-        <div class="text-text-subtle text-[10px] uppercase tracking-[0.18em] mb-1">
-          incoming
-        </div>
+        <div class="text-text-subtle text-[10px] uppercase tracking-[0.18em] mb-1">incoming</div>
         <code class="text-text">
           POST /tickets/reply {"{ "}body: "RTFM you moron"{" }"}
         </code>
@@ -69,8 +60,7 @@ function LlmDiagram() {
           AI
         </div>
         <div class="bg-canvas border border-rust-100 squircle-sm px-3 py-2 text-[12px]  text-text-muted">
-          Reply body contains banned term{" "}
-          <code class="text-text font-mono">moron</code>.
+          Reply body contains banned term <code class="text-text font-mono">moron</code>.
         </div>
       </div>
 
@@ -153,9 +143,7 @@ function ApproverCard({
 function OrDivider() {
   return (
     <div class="flex justify-center lg:self-center">
-      <span class="font-display font-black uppercase text-rust text-2xl">
-        - or -
-      </span>
+      <span class="font-display font-black uppercase text-rust text-2xl">- or -</span>
     </div>
   );
 }
@@ -171,8 +159,8 @@ export function ApproversSection() {
             Humans, models, <span class="text-rust">your call</span>
           </h3>
           <p class="text-base  text-text-muted">
-            Defer the ambiguous requests. A model with your prompt, or a person
-            in Slack — you decide which one runs when.
+            Defer the ambiguous requests. A model with your prompt, or a person in Slack. You decide
+            which one runs when.
           </p>
         </div>
 

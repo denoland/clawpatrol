@@ -21,19 +21,9 @@ export function SectionLabel({ children }: { children: string }) {
 // the skew, and the slanted edges of the resulting parallelogram
 // trimmed those stripes at subpixel boundaries.
 const Stripes = () => (
-  <svg
-    width="48"
-    height="16"
-    viewBox="0 0 48 16"
-    class="text-rust"
-    aria-hidden="true"
-  >
+  <svg width="48" height="16" viewBox="0 0 48 16" class="text-rust" aria-hidden="true">
     {[0, 8, 16, 24, 32, 40].map((x) => (
-      <path
-        key={x}
-        d={`M ${x + 4} 0 L ${x + 8} 0 L ${x + 4} 16 L ${x} 16 Z`}
-        fill="currentColor"
-      />
+      <path key={x} d={`M ${x + 4} 0 L ${x + 8} 0 L ${x + 4} 16 L ${x} 16 Z`} fill="currentColor" />
     ))}
   </svg>
 );
