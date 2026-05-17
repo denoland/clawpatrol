@@ -17,8 +17,9 @@ import (
 )
 
 const (
-	soOriginalDst     = 80 // SO_ORIGINAL_DST / IP6T_SO_ORIGINAL_DST (linux/in.h, linux/netfilter_ipv6/ip6_tables.h)
-	ipRecvOrigDstAddr = 20 // IP_RECVORIGDSTADDR (linux/in.h) — ancillary per-datagram original dst
+	soOriginalDst       = 80 // SO_ORIGINAL_DST / IP6T_SO_ORIGINAL_DST (linux/in.h, linux/netfilter_ipv6/ip6_tables.h)
+	ipRecvOrigDstAddr   = 20 // IP_RECVORIGDSTADDR / IP_ORIGDSTADDR (linux/in.h)
+	ipv6RecvOrigDstAddr = 74 // IPV6_RECVORIGDSTADDR / IPV6_ORIGDSTADDR (linux/in6.h)
 )
 
 // originalDst returns the pre-NAT destination of c when the connection was
@@ -76,27 +77,32 @@ func originalDst(c net.Conn) (ip string, port uint16, ok bool) {
 	return "", 0, false
 }
 
-// startUDPDNSListener binds a UDP socket on port and serves DNS queries.
-// iptables PREROUTING REDIRECT sends port-53 UDP from tailscale0 here;
-// IP_RECVORIGDSTADDR recovers the DNS server the client was reaching so
-// dnsvip can forward non-VIP names to the right upstream.
+// startUDPDNSListener binds UDP sockets (IPv4 and IPv6) on port and serves
+// DNS queries redirected by iptables/ip6tables PREROUTING REDIRECT.
+// IP_RECVORIGDSTADDR / IPV6_RECVORIGDSTADDR recover the DNS server the client
+// was reaching so dnsvip can forward non-VIP names to the right upstream.
 func startUDPDNSListener(port int, dvip *dnsvip.Allocator) {
 	if port == 0 || dvip == nil {
 		return
 	}
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{Port: port})
+	startUDPDNSListenerFamily("udp4", syscall.IPPROTO_IP, ipRecvOrigDstAddr, port, dvip)
+	startUDPDNSListenerFamily("udp6", syscall.IPPROTO_IPV6, ipv6RecvOrigDstAddr, port, dvip)
+}
+
+func startUDPDNSListenerFamily(network string, level, opt, port int, dvip *dnsvip.Allocator) {
+	conn, err := net.ListenUDP(network, &net.UDPAddr{Port: port})
 	if err != nil {
-		log.Printf("udp dns listener: %v", err)
+		log.Printf("udp dns %s listener: %v", network, err)
 		return
 	}
 	if rc, err := conn.SyscallConn(); err == nil {
 		_ = rc.Control(func(fd uintptr) {
-			if err := syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IP, ipRecvOrigDstAddr, 1); err != nil {
-				log.Printf("udp dns: IP_RECVORIGDSTADDR: %v", err)
+			if err := syscall.SetsockoptInt(int(fd), level, opt, 1); err != nil {
+				log.Printf("udp dns %s: RECVORIGDSTADDR: %v", network, err)
 			}
 		})
 	}
-	log.Printf("udp dns listener ready on :%d", port)
+	log.Printf("udp dns %s listener ready on :%d", network, port)
 	go func() {
 		defer func() { _ = conn.Close() }()
 		buf := make([]byte, 4096)
@@ -105,7 +111,7 @@ func startUDPDNSListener(port int, dvip *dnsvip.Allocator) {
 			n, oobn, _, addr, err := conn.ReadMsgUDP(buf, oob)
 			if err != nil {
 				if !isNetClosedError(err) {
-					log.Printf("udp dns: recv: %v", err)
+					log.Printf("udp dns %s: recv: %v", network, err)
 				}
 				return
 			}
@@ -120,17 +126,24 @@ func startUDPDNSListener(port int, dvip *dnsvip.Allocator) {
 }
 
 // parseUDPOrigDstIP extracts the original destination IP from recvmsg
-// ancillary data (IP_ORIGDSTADDR cmsg). Returns "" if not present.
+// ancillary data (IP_ORIGDSTADDR or IPV6_ORIGDSTADDR cmsg). Returns "" if absent.
 func parseUDPOrigDstIP(oob []byte) string {
 	msgs, err := syscall.ParseSocketControlMessage(oob)
 	if err != nil {
 		return ""
 	}
 	for _, m := range msgs {
-		if m.Header.Level == syscall.IPPROTO_IP && m.Header.Type == ipRecvOrigDstAddr {
+		switch {
+		case m.Header.Level == syscall.IPPROTO_IP && m.Header.Type == ipRecvOrigDstAddr:
 			if len(m.Data) >= syscall.SizeofSockaddrInet4 {
 				var sa syscall.RawSockaddrInet4
 				copy((*[syscall.SizeofSockaddrInet4]byte)(unsafe.Pointer(&sa))[:], m.Data)
+				return net.IP(sa.Addr[:]).String()
+			}
+		case m.Header.Level == syscall.IPPROTO_IPV6 && m.Header.Type == ipv6RecvOrigDstAddr:
+			if len(m.Data) >= syscall.SizeofSockaddrInet6 {
+				var sa syscall.RawSockaddrInet6
+				copy((*[syscall.SizeofSockaddrInet6]byte)(unsafe.Pointer(&sa))[:], m.Data)
 				return net.IP(sa.Addr[:]).String()
 			}
 		}
@@ -212,8 +225,12 @@ func installIPTables(portStr string, tcpPorts, udpDNSPorts, udpRejectPorts []str
 				}
 			}
 		}
+		rejectWith := "icmp-port-unreachable"
+		if bin == "ip6tables" {
+			rejectWith = "icmp6-port-unreachable"
+		}
 		for _, dport := range udpRejectPorts {
-			args := []string{"-i", "tailscale0", "-p", "udp", "--dport", dport, "-j", "REJECT", "--reject-with", "icmp-port-unreachable"}
+			args := []string{"-i", "tailscale0", "-p", "udp", "--dport", dport, "-j", "REJECT", "--reject-with", rejectWith}
 			if exec.Command(bin, append([]string{"-C", "FORWARD"}, args...)...).Run() != nil {
 				if out, err := exec.Command(bin, append([]string{"-I", "FORWARD", "1"}, args...)...).CombinedOutput(); err != nil {
 					log.Printf("exit-node redirect: %s REJECT udp/%s: %v: %s", bin, dport, err, out)
