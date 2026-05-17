@@ -48,7 +48,7 @@ export function DeploySection() {
   return (
     <section class="bg-canvas-muted py-24 sm:py-32">
       <div class="max-w-6xl mx-auto px-6 sm:px-8">
-        <SectionLabel>Deploy</SectionLabel>
+        <SectionLabel>Run it</SectionLabel>
         <div class="max-w-3xl mx-auto text-center mb-12 sm:mb-16">
           <h3 class="text-3xl sm:text-4xl lg:text-5xl font-display font-bold text-balance mb-5 text-text">
             Wrap one agent{" "}
