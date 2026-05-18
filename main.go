@@ -2800,6 +2800,15 @@ func runGateway(args []string) {
 	// exactly like the WG promiscuous forwarder. Peek the first bytes: if the
 	// connection starts with "PROXY " use full dispatch; otherwise it is a
 	// direct admin/dashboard connection.
+	if tsnetServer != nil && cfg.Funnel && cfg.PublicURL == "" {
+		// Auto-derive public_url from the tsnet cert domain so that
+		// join responses, HITL status links, and OAuth redirect URIs use
+		// the correct internet-reachable URL when funnel = true.
+		if domain := tsnetCertDomain(tsnetServer); domain != "" {
+			cfg.PublicURL = domain
+			log.Printf("tsnet: funnel public_url auto-derived: %s", cfg.PublicURL)
+		}
+	}
 	tsnetDashMux := newWebMux(g, cfg.Join(), cfg.PublicURL)
 	tsnetDashPort := portOf(cfg.InfoListen)
 	if tsnetServer != nil {
@@ -2818,6 +2827,9 @@ func runGateway(args []string) {
 				go http.Serve(tsnetInfoLn, tsnetDashMux)
 				log.Printf("tsnet: info/dashboard also listening on tsnet :%d", infoPort)
 			}
+		}
+		if cfg.Funnel {
+			startFunnelListener(tsnetServer, tsnetDashMux)
 		}
 		// Intercept all TCP forwarded through this exit node (whole-machine
 		// clients). dst is the original internet destination — same dispatch

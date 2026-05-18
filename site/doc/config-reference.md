@@ -41,6 +41,7 @@ Every singleton gateway attribute — listen addresses, paths, control-plane joi
 | `control_url` | `string` | no |  |
 | `hostname` | `string` | no |  |
 | `control` | `string` | no |  |
+| `funnel` | `bool` | no | Enables Tailscale Funnel on the embedded tsnet node so that join, webhook, and CA endpoints are reachable from the internet via the node's HTTPS cert domain (e.g. clawpatrol-gateway.ts.net:443). Only meaningful in tsnet control mode (authkey set). Tailscale's HTTPS must be enabled for the tailnet; if public_url is unset the gateway will derive it from the tsnet cert domain at startup. |
 | `oauth_client_id` | `string` | no |  |
 | `oauth_client_secret` | `string` | no |  |
 | `tailscale_tags` | `[]string` | no | The Tailscale device-tag list applied to keys the gateway mints for onboarded clients (`tag:client` etc.). Tailscale-only — ignored in WireGuard mode. |

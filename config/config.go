@@ -56,10 +56,17 @@ type Gateway struct {
 	// Format accepts time.ParseDuration strings ("30m", "168h", etc.).
 	SessionKeep string `hcl:"session_keep,optional"`
 
-	AuthKey           string `hcl:"authkey,optional"`
-	ControlURL        string `hcl:"control_url,optional"`
-	Hostname          string `hcl:"hostname,optional"`
-	Control           string `hcl:"control,optional"`
+	AuthKey    string `hcl:"authkey,optional"`
+	ControlURL string `hcl:"control_url,optional"`
+	Hostname   string `hcl:"hostname,optional"`
+	Control    string `hcl:"control,optional"`
+	// Funnel enables Tailscale Funnel on the embedded tsnet node so that
+	// join, webhook, and CA endpoints are reachable from the internet via
+	// the node's HTTPS cert domain (e.g. clawpatrol-gateway.ts.net:443).
+	// Only meaningful in tsnet control mode (authkey set). Tailscale's
+	// HTTPS must be enabled for the tailnet; if public_url is unset the
+	// gateway will derive it from the tsnet cert domain at startup.
+	Funnel            bool   `hcl:"funnel,optional"`
 	OAuthClientID     string `hcl:"oauth_client_id,optional"`
 	OAuthClientSecret string `hcl:"oauth_client_secret,optional"`
 	// TailscaleTags is the Tailscale device-tag list applied to keys

@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -114,6 +115,39 @@ func openListener(cfg *config.Gateway, stateDir string) (*tsnet.Server, net.List
 	// LocalClient is available. Async to avoid blocking runGateway.
 	go advertiseExitRoutes(s)
 	return s, ln, nil
+}
+
+// startFunnelListener opens a Tailscale Funnel listener on :443 (internet
+// → tsnet, FunnelOnly so tailnet connections still go to the normal
+// MITM listener). Serves mux — the existing web mux already enforces
+// per-route auth so only authPublic / authSelfAuthenticating routes are
+// accessible without credentials. Non-fatal: if Funnel isn't enabled
+// for the tailnet the error is logged and the gateway continues without
+// internet exposure.
+func startFunnelListener(s *tsnet.Server, mux http.Handler) {
+	ln, err := s.ListenFunnel("tcp", ":443", tsnet.FunnelOnly())
+	if err != nil {
+		log.Printf("tsnet: funnel :443: %v (join/webhook/CA endpoints not internet-reachable; enable Funnel for this node in the Tailscale admin console)", err)
+		return
+	}
+	log.Printf("tsnet: Funnel listening on :443 — join/webhook/CA reachable from internet")
+	go func() { _ = http.Serve(ln, mux) }()
+}
+
+// tsnetCertDomain returns the first HTTPS cert domain for the embedded
+// tsnet node (e.g. "clawpatrol-gateway.ts.net"), or "" if not available.
+// Used to auto-populate public_url when funnel = true and public_url is
+// not set in gateway.hcl.
+func tsnetCertDomain(s *tsnet.Server) string {
+	lc, err := s.LocalClient()
+	if err != nil {
+		return ""
+	}
+	st, err := lc.StatusWithoutPeers(context.Background())
+	if err != nil || len(st.CertDomains) == 0 {
+		return ""
+	}
+	return "https://" + st.CertDomains[0]
 }
 
 // advertiseExitRoutes calls EditPrefs to make this tsnet node an exit
