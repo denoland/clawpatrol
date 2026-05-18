@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hashicorp/hcl/v2/hclwrite"
 	"tailscale.com/client/local"
 
 	"github.com/denoland/clawpatrol/config"
@@ -125,6 +126,15 @@ func NewAgentRegistry() *AgentRegistry {
 	}
 	go r.sampleLoop()
 	return r
+}
+
+// SetLocalClient replaces the default system-tailscaled LocalClient with
+// the one from an embedded tsnet.Server. Call after tsnet is up so that
+// whois lookups resolve against the tsnet peer table, not the host daemon.
+func (r *AgentRegistry) SetLocalClient(lc *local.Client) {
+	r.mu.Lock()
+	r.lc = lc
+	r.mu.Unlock()
 }
 
 // sampleLoop runs once per second, computes bytes/sec delta per agent,
@@ -290,28 +300,6 @@ func (r *AgentRegistry) fillIdentity(ip string) {
 	}
 	if who.UserProfile != nil {
 		a.User = who.UserProfile.LoginName
-	}
-}
-
-func printDashboardURL(listen string) {
-	port := listen
-	if i := strings.LastIndex(port, ":"); i >= 0 {
-		port = port[i:]
-	}
-	lc := &local.Client{}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	st, err := lc.Status(ctx)
-	if err != nil || st == nil || st.Self == nil {
-		log.Printf("dashboard: http://0.0.0.0%s", port)
-		return
-	}
-	hostName := st.Self.HostName
-	if st.CurrentTailnet != nil && st.CurrentTailnet.MagicDNSSuffix != "" && hostName != "" {
-		log.Printf("dashboard: http://%s.%s%s", hostName, st.CurrentTailnet.MagicDNSSuffix, port)
-	}
-	if len(st.Self.TailscaleIPs) > 0 {
-		log.Printf("dashboard: http://%s%s", st.Self.TailscaleIPs[0], port)
 	}
 }
 
@@ -580,6 +568,29 @@ type IntegrationRow struct {
 	AvatarURL        string                 `json:"avatar_url,omitempty"`
 	HasTailscaleAuth bool                   `json:"has_tailscale_auth,omitempty"`
 	TailscaleAuth    *TailscaleAuthStatusUI `json:"tailscale_auth,omitempty"`
+
+	// Profiles is the sorted list of profile names that route any
+	// endpoint or tunnel binding this credential. Empty when the
+	// credential is declared but no profile references it.
+	Profiles []string `json:"profiles,omitempty"`
+	// Endpoints is the sorted list of endpoint names whose `credential`
+	// / `credentials` binding (directly or transitively via the
+	// endpoint's tunnel) resolves to this credential.
+	Endpoints []string `json:"endpoints,omitempty"`
+	// Config exposes the operator-set HCL block attributes for the
+	// credential (e.g. `user = "postgres"`) keyed by attribute name.
+	// Values are the raw HCL token text (quoted strings included).
+	// Never contains secret material — secret bytes live in the
+	// secrets store, not in the HCL block.
+	Config map[string]string `json:"config,omitempty"`
+	// UpdatedAt is the Unix-seconds timestamp of the most recent
+	// persistence event for this credential — the max of
+	// credential_secrets.updated_ns and the OAuth row's updated_ns.
+	// Zero when neither store has a row (declared-only credential).
+	// The dashboard sorts the per-type details table by this so the
+	// most recently connected credential surfaces at the top of the
+	// non-pending rows.
+	UpdatedAt int64 `json:"updated_at,omitempty"`
 }
 
 // TailscaleAuthStatusUI is the dashboard-facing slice of a
@@ -594,12 +605,19 @@ type IntegrationRow struct {
 // dashboard renders the connect flow without hard-coding the route
 // layout.
 type TailscaleAuthStatusUI struct {
-	Connected     bool                          `json:"connected"`
-	State         tailscaleproto.NodeStateLabel `json:"state"`
-	PendingURL    string                        `json:"pending_url,omitempty"`
-	ConnectURL    string                        `json:"connect_url"`
-	StatusURL     string                        `json:"status_url"`
-	DisconnectURL string                        `json:"disconnect_url"`
+	Connected bool                          `json:"connected"`
+	State     tailscaleproto.NodeStateLabel `json:"state"`
+	// HasState is true when credential_secrets carries any rows for
+	// this credential — i.e. there's a persisted tsnet identity (or a
+	// fragment of one) that could be cleared by Disconnect. The
+	// dashboard renders the disconnect ✕ off this field rather than
+	// gating it on Connected, so an operator can reset a stuck
+	// identity even when tsnet has dropped out of Running.
+	HasState      bool   `json:"has_state,omitempty"`
+	PendingURL    string `json:"pending_url,omitempty"`
+	ConnectURL    string `json:"connect_url"`
+	StatusURL     string `json:"status_url"`
+	DisconnectURL string `json:"disconnect_url"`
 }
 
 // OAuthIntegrationUI is the dashboard-facing slice of an
@@ -673,13 +691,99 @@ func (w *webMux) statusList(r *http.Request) []IntegrationRow {
 			row.TailscaleAuth = &TailscaleAuthStatusUI{
 				Connected:     label == tailscaleproto.NodeStateRunning,
 				State:         dashboardTailscaleState(label, len(present) > 0),
+				HasState:      len(present) > 0,
 				PendingURL:    tailscaleproto.Default.Get(name),
 				ConnectURL:    "/api/tailscale/connect?id=" + name,
 				StatusURL:     "/api/tailscale/status?id=" + name,
 				DisconnectURL: "/api/tailscale/disconnect?id=" + name,
 			}
 		}
+		row.Profiles, row.Endpoints = credentialBindings(policy, name)
+		row.Config = credentialConfig(ent, name)
+		row.UpdatedAt = credentialUpdatedAt(w.g.db, name)
 		out = append(out, row)
+	}
+	return out
+}
+
+// credentialBindings reports every profile + endpoint that references
+// the named credential, walking endpoint.Credentials AND the chain of
+// tunnels the endpoint dials through. The dashboard's details table
+// renders one column for profiles and one for endpoints so an
+// operator can see at a glance where a credential is in play.
+func credentialBindings(policy *config.CompiledPolicy, credName string) (profiles, endpoints []string) {
+	if policy == nil {
+		return nil, nil
+	}
+	epSet := map[string]bool{}
+	for epName, ep := range policy.Endpoints {
+		if endpointBindsCredential(ep, credName) {
+			epSet[epName] = true
+		}
+	}
+	if len(epSet) > 0 {
+		endpoints = make([]string, 0, len(epSet))
+		for n := range epSet {
+			endpoints = append(endpoints, n)
+		}
+		sort.Strings(endpoints)
+	}
+	profSet := map[string]bool{}
+	for pname, prof := range policy.Profiles {
+		for epName, ep := range prof.Endpoints {
+			if epSet[epName] || endpointBindsCredential(ep, credName) {
+				profSet[pname] = true
+				break
+			}
+		}
+	}
+	if len(profSet) > 0 {
+		profiles = make([]string, 0, len(profSet))
+		for n := range profSet {
+			profiles = append(profiles, n)
+		}
+		sort.Strings(profiles)
+	}
+	return profiles, endpoints
+}
+
+func endpointBindsCredential(ep *config.CompiledEndpoint, credName string) bool {
+	if ep == nil {
+		return false
+	}
+	for _, cb := range ep.Credentials {
+		if cb.Credential != nil && cb.Credential.Symbol.Name == credName {
+			return true
+		}
+	}
+	for tun := ep.Tunnel; tun != nil; tun = tun.Via {
+		if tun.Credential != nil && tun.Credential.Symbol.Name == credName {
+			return true
+		}
+	}
+	return false
+}
+
+// credentialConfig surfaces the operator-set HCL attributes on a
+// credential block (`user = "x"`, `region = "us-east-1"`, …). Built
+// by replaying the plugin's Emit hook into a throwaway hclwrite Body
+// and harvesting the attributes back out — secret bytes never live
+// in the HCL block (they're in the secrets store), so this is safe
+// to render as-is. Returns nil when the plugin emits no attributes.
+func credentialConfig(ent *config.Entity, name string) map[string]string {
+	if ent == nil || ent.Plugin == nil || ent.Plugin.Emit == nil {
+		return nil
+	}
+	file := hclwrite.NewEmptyFile()
+	ent.Plugin.Emit(ent.Body, name, file.Body())
+	attrs := file.Body().Attributes()
+	if len(attrs) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(attrs))
+	for n, a := range attrs {
+		raw := string(a.Expr().BuildTokens(nil).Bytes())
+		out[n] = strings.TrimSpace(raw)
 	}
 	return out
 }

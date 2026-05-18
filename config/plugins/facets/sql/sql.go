@@ -27,14 +27,15 @@ import (
 
 // Fields is the CEL-facing view of a SQL statement. Exposed as
 // the `sql` variable in rule conditions (`sql.verb`, `sql.tables`,
-// `sql.functions`, `sql.statement`). The plural `functions` matches
-// the multi-valued shape (a statement can reference multiple
-// functions) and parallels `tables`.
+// `sql.functions`, `sql.statement`, `sql.database`). The plural
+// `functions` matches the multi-valued shape (a statement can
+// reference multiple functions) and parallels `tables`.
 type Fields struct {
 	Verb      string   `cel:"verb"`
 	Tables    []string `cel:"tables"`
 	Functions []string `cel:"functions"`
 	Statement string   `cel:"statement"`
+	Database  string   `cel:"database"`
 }
 
 // Meta carries the per-request SQL fields the matcher reads. The
@@ -46,6 +47,16 @@ type Meta struct {
 	Functions []string // unqualified function names called
 	Statement string   // the raw text — exposed for `statement` /
 	// `statement_regex` matchers
+	Database string // session-scoped database name; postgres
+	// StartupMessage `database`, clickhouse_native Hello
+	// `default_database`, clickhouse_https `?database` query param
+	// or `X-ClickHouse-Database` header. Case-sensitive — postgres
+	// treats database names as identifiers. Mid-session changes
+	// (postgres `\connect`, `USE` in dialects that support it) are
+	// not tracked in v1; the session-start value is canonical.
+	// The activation builder also pulls it from req.Database (req
+	// wins when both set), letting the protocol runtime wire either
+	// source.
 }
 
 // Facet is the SQL facet Runtime. Singleton.
@@ -79,6 +90,7 @@ func (Facet) ReportFields() []facet.ReportFieldSpec {
 		{Name: "tables", Kind: facet.ReportStringList, Label: "Tables"},
 		{Name: "functions", Kind: facet.ReportStringList, Label: "Functions"},
 		{Name: "statement", Kind: facet.ReportString, Label: "Statement"},
+		{Name: "database", Kind: facet.ReportString, Label: "Database"},
 	}
 }
 
@@ -99,7 +111,23 @@ func (Facet) Report(req *match.Request) map[string]any {
 		"tables":    m.Tables,
 		"functions": m.Functions,
 		"statement": m.Statement,
+		"database":  databaseOf(req, m),
 	}
+}
+
+// databaseOf returns the request's database, preferring the
+// req-level field (set by the protocol runtime alongside Meta) and
+// falling back to meta.Database when req-level isn't set. Two-source
+// shape lets the protocol runtimes wire only one of them and still
+// have the dashboard / matcher see the value.
+func databaseOf(req *match.Request, m *Meta) string {
+	if req != nil && req.Database != "" {
+		return req.Database
+	}
+	if m != nil {
+		return m.Database
+	}
+	return ""
 }
 
 // celEnv is the SQL CEL environment. Built once at init.
@@ -138,13 +166,27 @@ var lowercasedPaths = []string{"sql.verb"}
 // untrustworthy, so any condition reading any of them must fail
 // closed on a truncated request.
 //
-// Note credential is intentionally absent from the sql facet's CEL
-// view: it resolves off-wire (StartupMessage user / Hello
-// username), never from frame bytes, so a credential predicate on a
-// truncated request still evaluates correctly. The dispatcher
-// applies r.Credential before the matcher runs (config/runtime/
-// dispatch.go), and that path is unaffected by Truncated.
+// Note credential and database are intentionally absent: they
+// resolve off-wire (StartupMessage user / database, Hello username
+// / database, HTTPS query+header), never from frame bytes, so
+// predicates on either still evaluate correctly on a truncated
+// request. The dispatcher applies r.Credential before the matcher
+// runs (config/runtime/dispatch.go), and the database value flows
+// through req.Database / meta.Database which the wire frontend
+// populates before any SQL bytes are read.
 var truncatablePaths = []string{"sql.verb", "sql.tables", "sql.functions", "sql.statement"}
+
+// unparseablePaths declares the SQL fields a wire frontend's parser
+// derives from the Query bytes — verb, tables, functions. When the
+// parser refuses the input, the frontend leaves these zero and sets
+// req.Unparseable=true; the dispatcher then auto-denies any rule
+// whose CEL reads one of these paths (see runtime/dispatch.go).
+//
+// sql.statement is intentionally absent: the frontend populates it
+// with the raw bytes regardless of parse success, so a rule keyed on
+// `sql.statement` / `sql.statement.matches(...)` can still evaluate
+// honestly on an unparseable request.
+var unparseablePaths = []string{"sql.verb", "sql.tables", "sql.functions"}
 
 // NewMatcher compiles a CEL condition into a Matcher. An empty
 // condition is the catch-all match-everything case.
@@ -152,7 +194,7 @@ func (Facet) NewMatcher(condition string) (match.Matcher, error) {
 	if condition == "" {
 		return match.PassThrough{}, nil
 	}
-	return match.CompileCondition(celEnv, condition, buildActivation, lowercasedPaths, truncatablePaths)
+	return match.CompileCondition(celEnv, condition, buildActivation, lowercasedPaths, truncatablePaths, unparseablePaths)
 }
 
 func buildActivation(req *match.Request) map[string]any {
@@ -169,6 +211,7 @@ func buildActivation(req *match.Request) map[string]any {
 			Tables:    coalesceList(meta.Tables),
 			Functions: coalesceList(meta.Functions),
 			Statement: meta.Statement,
+			Database:  databaseOf(req, meta),
 		},
 	}
 }

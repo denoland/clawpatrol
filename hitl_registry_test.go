@@ -12,6 +12,42 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
+func TestHITLRegistryAsyncPendingApprovalCreatesRetryGrantInsteadOfSendingChannelDecision(t *testing.T) {
+	registry := newHITLRegistry(nil)
+	var gotOp string
+	var gotDecision runtime.HITLDecision
+	registry.asyncGrantResolver = func(operationID string, d runtime.HITLDecision) runtime.HITLResolveResult {
+		gotOp = operationID
+		gotDecision = d
+		return runtime.HITLResolveResult{OK: true, State: runtime.HITLStateApproved, Reason: "retry grant created"}
+	}
+	id, ch := registry.Add(runtime.HITLPending{
+		OperationID:    "op_123",
+		OperationState: runtime.HITLOperationStatePendingApproval,
+		ApprovalEffect: runtime.HITLApprovalEffectCreateRetryGrant,
+		Host:           "api.example.test",
+		Method:         "POST",
+		Path:           "/v1/write",
+		CreatedAt:      time.Now(),
+	})
+
+	result := registry.DecideWithResult(id, runtime.HITLDecision{Allow: true, By: "dashboard"})
+	if !result.OK {
+		t.Fatalf("DecideWithResult OK = false, want true: %#v", result)
+	}
+	if gotOp != "op_123" {
+		t.Fatalf("async resolver operationID = %q, want op_123", gotOp)
+	}
+	if !gotDecision.Allow || gotDecision.By != "dashboard" {
+		t.Fatalf("async resolver decision = %#v, want dashboard approval", gotDecision)
+	}
+	select {
+	case decision := <-ch:
+		t.Fatalf("decision channel received %#v; async pending approval must not execute upstream directly", decision)
+	default:
+	}
+}
+
 func TestHITLRegistryDecideWithResultRecordsTerminalState(t *testing.T) {
 	registry := newHITLRegistry(nil)
 	id, ch := registry.Add(runtime.HITLPending{

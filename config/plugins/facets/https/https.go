@@ -138,7 +138,12 @@ func (Facet) NewMatcher(condition string) (match.Matcher, error) {
 	if condition == "" {
 		return match.PassThrough{}, nil
 	}
-	return match.CompileCondition(celEnv, condition, buildActivation, lowercasedPaths, truncatablePaths)
+	// HTTPS has no parser-failure mode: every facet (method, headers,
+	// body, body_json) is decoded directly from the wire, not derived
+	// by a parser that could refuse the input. Pass nil for
+	// unparseablePaths so the dispatcher's Unparseable gate is a no-op
+	// for HTTPS rules.
+	return match.CompileCondition(celEnv, condition, buildActivation, lowercasedPaths, truncatablePaths, nil)
 }
 
 func buildActivation(req *match.Request) map[string]any {

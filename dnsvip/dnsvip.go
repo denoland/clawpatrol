@@ -370,12 +370,13 @@ func collectRequiredHosts(policy *config.CompiledPolicy) map[string][]EndpointHi
 }
 
 // defaultPortFor returns the default port for a VIP-needing endpoint
-// when its host string omits one. SSH is the only RequiresVIP plugin
-// today; future plugins can extend the switch.
+// when its host string omits one.
 func defaultPortFor(ep *config.CompiledEndpoint) uint16 {
 	switch ep.Plugin.Type {
 	case "ssh":
 		return 22
+	case "postgres":
+		return 5432
 	}
 	return 0
 }
@@ -529,6 +530,13 @@ func (a *Allocator) handleWire(in []byte, dstIP string) []byte {
 		return nil
 	}
 	return out
+}
+
+// HandlePacket processes a single raw DNS wire-format datagram and returns
+// the response datagram ready to send, or nil on parse error. Used by the
+// exit-node UDP DNS listener; callers write the returned bytes directly.
+func (a *Allocator) HandlePacket(in []byte, origDstIP string) []byte {
+	return a.handleWire(in, origDstIP)
 }
 
 // handleQuery is the actual responder. Splits intercepted from

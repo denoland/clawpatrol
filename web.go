@@ -12,6 +12,7 @@ import (
 	"embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash"
 	"html/template"
@@ -140,7 +141,7 @@ func routeAuthIndex(routes []webRoute) map[string]authRequirement {
 }
 
 func (w *webMux) authRequirementForPath(path string) authRequirement {
-	if strings.HasPrefix(path, credentialWebhookPrefix) {
+	if strings.HasPrefix(path, credentialWebhookPrefix) || strings.HasPrefix(path, hitlOperationStatusPrefix) {
 		return authSelfAuthenticating
 	}
 	if w.routeAuth != nil {
@@ -170,7 +171,11 @@ func (w *webMux) mayUseTailnetInsteadOfDashboard(path string) bool {
 }
 
 func (w *webMux) skipsTailnetGate(path string) bool {
-	return w.authRequirementForPath(path) == authPublic
+	req := w.authRequirementForPath(path)
+	// authPublic needs no gate. authSelfAuthenticating routes carry their
+	// own proof (Bearer token, webhook signature) — the tailnet gate would
+	// block tag:client devices that have no Tailscale user identity.
+	return req == authPublic || req == authSelfAuthenticating
 }
 
 func newWebMux(g *Gateway, ts JoinConfig, publicURL string) http.Handler {
@@ -212,6 +217,7 @@ func (w *webMux) routes() []webRoute {
 		{Method: http.MethodGet, Path: "/api/config", Auth: authDashboard, Handler: w.apiConfig},
 		{Method: http.MethodGet, Path: "/api/hitl/pending", Auth: authDashboard, Handler: w.apiHITLPending},
 		{Method: http.MethodPost, Path: "/api/hitl/decide", Auth: authDashboard, Handler: w.apiHITLDecide},
+		{Method: http.MethodGet, Path: hitlOperationStatusPrefix, Auth: authSelfAuthenticating, Handler: w.apiHITLOperationStatus},
 		{Method: http.MethodPost, Path: "/api/oauth/start", Auth: authDashboard, Handler: w.apiOAuthStart},
 		{Method: http.MethodPost, Path: "/api/oauth/exchange", Auth: authDashboard, Handler: w.apiOAuthExchange},
 		{Method: http.MethodPost, Path: "/api/oauth/device-poll", Auth: authDashboard, Handler: w.apiOAuthDevicePoll},
@@ -233,6 +239,7 @@ func (w *webMux) routes() []webRoute {
 		{Method: http.MethodPost, Path: "/api/onboard/claim", Auth: authPublic, Handler: w.apiOnboardClaim},
 		{Method: http.MethodGet, Path: "/api/env-pushdown", Auth: authSelfAuthenticating, Handler: w.apiEnvPushdown},
 		{Method: http.MethodPost, Path: "/api/peer/ephemeral", Auth: authSelfAuthenticating, Handler: w.apiEphemeralPeer},
+		{Method: http.MethodPost, Path: "/api/peer/ephemeral/tsnet/register", Auth: authSelfAuthenticating, Handler: w.apiRegisterEphemeralTsnetIP},
 		{Method: http.MethodGet, Path: "/__login", Auth: authTailnetOperator, Handler: w.apiDashboardLogin},
 	}
 }
@@ -260,6 +267,14 @@ func (w *webMux) routes() []webRoute {
 // callbacks via their own signature header (Slack signing secret,
 // etc.) so the dashboard secret gate skips the prefix.
 const credentialWebhookPrefix = "/api/cred/"
+
+const (
+	hitlOperationStatusPrefix       = "/api/hitl/operations/"
+	hitlOperationStatusSuffix       = "/status"
+	hitlRetryOperationHeader        = "Clawpatrol-HITL-Operation"
+	hitlDefaultRetryAfterSeconds    = 5
+	hitlOperationNotFoundErrorValue = "hitl_operation_not_found"
+)
 
 // infoListenIsPrivate reports whether the dashboard is bound on a
 // private interface. When true, the network is the trust boundary
@@ -553,6 +568,182 @@ func (w *webMux) apiEnvPushdown(rw http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(rw, map[string]any{"vars": out})
+}
+
+func (w *webMux) apiHITLOperationStatus(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(rw, http.MethodGet, http.StatusMethodNotAllowed)
+		return
+	}
+	token := bearerFromAuthHeader(r.Header.Get("Authorization"))
+	peerIP := peerIPForAPIToken(w.g.db, token)
+	if peerIP == "" {
+		http.Error(rw, "unknown or missing peer api token", http.StatusUnauthorized)
+		return
+	}
+
+	operationID, ok := hitlOperationIDFromStatusPath(r.URL.Path)
+	if !ok {
+		writeHITLOperationNotFound(rw)
+		return
+	}
+	profileID := w.g.profileFor(peerIP)
+	principalID := hitlPeerPrincipalID(peerIP)
+	op, err := NewHITLOperationStore(w.g.db).GetForPrincipal(r.Context(), operationID, profileID, principalID)
+	if errors.Is(err, ErrHITLOperationNotFound) {
+		writeHITLOperationNotFound(rw)
+		return
+	}
+	if err != nil {
+		http.Error(rw, "load hitl operation", http.StatusInternalServerError)
+		return
+	}
+	writeHITLOperationStatus(rw, op, w.hitlPublicURL())
+}
+
+func (w *webMux) hitlPublicURL() string {
+	if w.publicURL != "" {
+		return w.publicURL
+	}
+	if w.g != nil && w.g.cfg != nil {
+		return w.g.cfg.PublicURL
+	}
+	return ""
+}
+
+func hitlOperationIDFromStatusPath(path string) (string, bool) {
+	if !strings.HasPrefix(path, hitlOperationStatusPrefix) {
+		return "", false
+	}
+	rest := strings.TrimPrefix(path, hitlOperationStatusPrefix)
+	if !strings.HasSuffix(rest, hitlOperationStatusSuffix) {
+		return "", false
+	}
+	rawID := strings.TrimSuffix(rest, hitlOperationStatusSuffix)
+	if rawID == "" || strings.Contains(rawID, "/") {
+		return "", false
+	}
+	id, err := url.PathUnescape(rawID)
+	if err != nil || id == "" || strings.Contains(id, "/") {
+		return "", false
+	}
+	return id, true
+}
+
+func hitlPeerPrincipalID(peerIP string) string {
+	return "peer:" + peerIP
+}
+
+func writeHITLOperationAccepted(rw http.ResponseWriter, op HITLOperation, publicURL string) {
+	statusURL := hitlOperationStatusURL(publicURL, op.ID)
+	rw.Header().Set("Location", statusURL)
+	rw.Header().Set("Retry-After", strconv.Itoa(hitlDefaultRetryAfterSeconds))
+	writeHITLOperationResponse(rw, http.StatusAccepted, op, statusURL)
+}
+
+func writeHITLOperationStatus(rw http.ResponseWriter, op HITLOperation, publicURL string) {
+	statusURL := hitlOperationStatusURL(publicURL, op.ID)
+	writeHITLOperationResponse(rw, http.StatusOK, op, statusURL)
+}
+
+func writeHITLOperationResponse(rw http.ResponseWriter, status int, op HITLOperation, statusURL string) {
+	upstreamCalled := hitlOperationUpstreamCalled(op)
+	rw.Header().Set("Content-Type", "application/json")
+	rw.Header().Set("Clawpatrol-HITL-State", string(op.State))
+	rw.Header().Set("Clawpatrol-Upstream-Called", strconv.FormatBool(upstreamCalled))
+	if op.State == HITLOperationStatePendingApproval || op.State == HITLOperationStateSyncWaiting {
+		rw.Header().Set("Retry-After", strconv.Itoa(hitlDefaultRetryAfterSeconds))
+	}
+	body := hitlOperationStatusBody(op, statusURL, upstreamCalled)
+	rw.WriteHeader(status)
+	_ = json.NewEncoder(rw).Encode(body)
+}
+
+func hitlOperationStatusBody(op HITLOperation, statusURL string, upstreamCalled bool) map[string]any {
+	body := map[string]any{
+		"operation_id":    op.ID,
+		"state":           string(op.State),
+		"status_url":      statusURL,
+		"upstream_called": upstreamCalled,
+		"terminal":        isTerminalHITLOperationState(op.State),
+		"message":         hitlOperationStatusMessage(op.State),
+	}
+
+	switch op.State {
+	case HITLOperationStateSyncWaiting, HITLOperationStatePendingApproval:
+		body["retry_original_request"] = true
+		if !op.ApprovalExpiresAt.IsZero() {
+			body["approval_expires_at"] = op.ApprovalExpiresAt.UTC().Format(time.RFC3339Nano)
+		}
+	case HITLOperationStateApprovedWaitingForRetry:
+		body["retry_original_request"] = true
+		body["retry_header_name"] = hitlRetryOperationHeader
+		body["retry_header_value"] = op.ID
+		if op.RetryExpiresAt != nil {
+			body["retry_expires_at"] = op.RetryExpiresAt.UTC().Format(time.RFC3339Nano)
+		}
+	case HITLOperationStateExpired:
+		if op.ExpiredReason != "" {
+			body["expired_reason"] = op.ExpiredReason
+		}
+	case HITLOperationStateUpstreamSucceeded, HITLOperationStateUpstreamFailed:
+		if op.TerminalAt != nil {
+			body["completed_at"] = op.TerminalAt.UTC().Format(time.RFC3339Nano)
+		}
+	}
+	return body
+}
+
+func hitlOperationStatusMessage(state HITLOperationState) string {
+	switch state {
+	case HITLOperationStateSyncWaiting:
+		return "This request is waiting for human approval. Claw Patrol has not called the upstream service yet."
+	case HITLOperationStatePendingApproval:
+		return "This request is waiting for human approval. Claw Patrol has not called the upstream service, so no upstream side effect has been executed. Poll status_url until the state changes. If the state becomes approved_waiting_for_retry, retry the same original request with Clawpatrol-HITL-Operation before retry_expires_at."
+	case HITLOperationStateApprovedWaitingForRetry:
+		return "Human approval has been granted. Claw Patrol has not called upstream yet. Retry the same original request with Clawpatrol-HITL-Operation before retry_expires_at to execute it."
+	case HITLOperationStateDenied:
+		return "Human approval was denied. Claw Patrol did not call upstream."
+	case HITLOperationStateExpired:
+		return "Human approval or retry time expired. Claw Patrol did not call upstream."
+	case HITLOperationStateExecutingUpstream:
+		return "The approved retry is being forwarded upstream now."
+	case HITLOperationStateUpstreamSucceeded:
+		return "The approved request completed upstream."
+	case HITLOperationStateUpstreamFailed:
+		return "The approved retry reached the forwarding attempt, but Claw Patrol could not confirm success."
+	case HITLOperationStateClientDisconnected:
+		return "The original client connection closed before Claw Patrol could return an async polling handle. Upstream was not called."
+	default:
+		return "HITL operation status is available."
+	}
+}
+
+func hitlOperationUpstreamCalled(op HITLOperation) bool {
+	if op.UpstreamCalled {
+		return true
+	}
+	switch op.State {
+	case HITLOperationStateExecutingUpstream, HITLOperationStateUpstreamSucceeded, HITLOperationStateUpstreamFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func hitlOperationStatusURL(publicURL, operationID string) string {
+	base := strings.TrimRight(publicURL, "/")
+	path := hitlOperationStatusPrefix + url.PathEscape(operationID) + hitlOperationStatusSuffix
+	if base == "" {
+		return path
+	}
+	return base + path
+}
+
+func writeHITLOperationNotFound(rw http.ResponseWriter) {
+	rw.Header().Set("Content-Type", "application/json")
+	rw.WriteHeader(http.StatusNotFound)
+	_ = json.NewEncoder(rw).Encode(map[string]any{"error": hitlOperationNotFoundErrorValue})
 }
 
 func (w *webMux) staticHandler() http.Handler {
@@ -1228,15 +1419,49 @@ func exportK8s(ev *Event) *K8sAction {
 	return a
 }
 
-// exportSQL pulls the raw statement out of Event.Facets (set by
-// sqlfacet.Report). The loader re-derives verb / tables / functions
-// from the statement via SQLParser at replay time.
+// exportSQL pulls the SQL facet fields out of Event.Facets (set by
+// sqlfacet.Report). Statement is required; verb / tables / functions
+// / database are emitted when the recorded facets supply them so the
+// downloaded fixture mirrors what the dashboard renders and stays
+// self-contained for `clawpatrol test` (the loader still tolerates
+// missing facets — the SQLParser re-derives them at replay).
 func exportSQL(ev *Event) *SQLAction {
 	stmt, _ := ev.Facets["statement"].(string)
 	if stmt == "" {
 		return nil
 	}
-	return &SQLAction{Statement: stmt}
+	a := &SQLAction{Statement: stmt}
+	if v, ok := ev.Facets["verb"].(string); ok {
+		a.Verb = v
+	}
+	a.Tables = stringSliceFromFacet(ev.Facets["tables"])
+	a.Functions = stringSliceFromFacet(ev.Facets["functions"])
+	if v, ok := ev.Facets["database"].(string); ok {
+		a.Database = v
+	}
+	return a
+}
+
+// stringSliceFromFacet narrows a JSON-unmarshalled facet list into
+// []string. Event.Facets is decoded as map[string]any, so list-typed
+// facets land as []any.
+func stringSliceFromFacet(v any) []string {
+	raw, ok := v.([]any)
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, x := range raw {
+		s, ok := x.(string)
+		if !ok {
+			continue
+		}
+		out = append(out, s)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // headersToMultiValue widens the Sink's single-value header map to
@@ -2056,10 +2281,11 @@ func wrapBodySampler(rc io.ReadCloser, s *sampler) io.ReadCloser {
 const hitlTerminalTTL = 30 * time.Minute
 
 type HITLRegistry struct {
-	mu       sync.Mutex
-	pending  map[string]*pendingEntry
-	terminal map[string]terminalHITLEntry
-	sink     *Sink // SSE fan-out for the dashboard
+	mu                 sync.Mutex
+	pending            map[string]*pendingEntry
+	terminal           map[string]terminalHITLEntry
+	sink               *Sink // SSE fan-out for the dashboard
+	asyncGrantResolver func(operationID string, d runtime.HITLDecision) runtime.HITLResolveResult
 }
 
 type pendingEntry struct {
@@ -2112,6 +2338,21 @@ func (r *HITLRegistry) Discard(id string) {
 	r.mu.Unlock()
 }
 
+func (r *HITLRegistry) Update(id string, mutate func(*runtime.HITLPending)) bool {
+	if mutate == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e := r.pending[id]
+	if e == nil {
+		return false
+	}
+	mutate(&e.p)
+	runtime.NormalizeHITLPendingApproval(&e.p)
+	return true
+}
+
 func (r *HITLRegistry) List() []runtime.HITLPending {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -2147,14 +2388,30 @@ func (r *HITLRegistry) DecideWithResult(id string, d runtime.HITLDecision) runti
 	}
 	now := time.Now()
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.pruneTerminalLocked(now)
 	e := r.pending[id]
 	if e == nil {
 		if terminal, ok := r.terminal[id]; ok {
+			r.mu.Unlock()
 			return terminal.result
 		}
+		r.mu.Unlock()
 		return runtime.HITLResolveResult{OK: false, State: runtime.HITLStateUnknown, Reason: "unknown or expired HITL request"}
+	}
+	if e.p.OperationID != "" && e.p.OperationState == runtime.HITLOperationStatePendingApproval && e.p.ApprovalEffect == runtime.HITLApprovalEffectCreateRetryGrant {
+		resolver := r.asyncGrantResolver
+		if resolver == nil {
+			r.mu.Unlock()
+			return runtime.HITLResolveResult{OK: false, State: runtime.HITLStateUnknown, Reason: "async HITL retry-grant resolver is unavailable"}
+		}
+		delete(r.pending, id)
+		r.mu.Unlock()
+
+		result := resolver(e.p.OperationID, d)
+		r.mu.Lock()
+		r.terminal[id] = terminalHITLEntry{result: staleHITLResolveResult(result), expiresAt: now.Add(hitlTerminalTTL)}
+		r.mu.Unlock()
+		return result
 	}
 	e.decision <- d
 	delete(r.pending, id)
@@ -2162,7 +2419,13 @@ func (r *HITLRegistry) DecideWithResult(id string, d runtime.HITLDecision) runti
 		result:    runtime.HITLResolveResult{OK: false, State: state, Reason: reason},
 		expiresAt: now.Add(hitlTerminalTTL),
 	}
+	r.mu.Unlock()
 	return runtime.HITLResolveResult{OK: true, State: state, Reason: reason}
+}
+
+func staleHITLResolveResult(result runtime.HITLResolveResult) runtime.HITLResolveResult {
+	result.OK = false
+	return result
 }
 
 // Cancel resolves a pending entry without delivering a human decision.

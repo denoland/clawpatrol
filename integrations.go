@@ -6,10 +6,14 @@ package main
 // model's max input window.
 
 import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -83,6 +87,34 @@ func envPushdownVars(caPath string) ([]pushdownEnvVar, error) {
 	return append(out, vars...), nil
 }
 
+// gatewayDialOverride lets callers (e.g. clawpatrol run in tsnet mode)
+// swap in a tsnet.Server-backed DialContext so HTTP calls to tailnet IPs
+// route through the in-process tsnet stack instead of the host network
+// (which has no tailnet route).
+var gatewayDialOverride func(ctx context.Context, network, addr string) (net.Conn, error)
+
+// gatewayClient returns an http.Client that trusts the gateway's CA cert
+// at caDir/ca.crt in addition to the system pool.
+func gatewayClient(caDir string) *http.Client {
+	roots, _ := x509.SystemCertPool()
+	if roots == nil {
+		roots = x509.NewCertPool()
+	}
+	if pem, err := os.ReadFile(filepath.Join(caDir, "ca.crt")); err == nil {
+		roots.AppendCertsFromPEM(pem)
+	}
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: roots},
+	}
+	if gatewayDialOverride != nil {
+		tr.DialContext = gatewayDialOverride
+	}
+	return &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: tr,
+	}
+}
+
 // fetchEnvPushdownFromGateway hits the gateway's /api/env-pushdown
 // endpoint and returns its declared push-down vars. Authenticated
 // with the per-peer bearer `clawpatrol join` persisted at
@@ -90,7 +122,14 @@ func envPushdownVars(caPath string) ([]pushdownEnvVar, error) {
 // persisted, the network call fails, or the server returned
 // non-200.
 func fetchEnvPushdownFromGateway(caDir string) ([]pushdownEnvVar, error) {
-	gw := readGatewayURL(caDir)
+	// env-pushdown is tailnet-only — Funnel must NOT expose peer-token
+	// endpoints to the internet. Use the tailnet-direct URL; in per-process
+	// tsnet mode this means applyEnvPushdown must be called AFTER tsnet
+	// has joined.
+	gw := readTailnetURL(caDir)
+	if gw == "" {
+		gw = readGatewayURL(caDir)
+	}
 	if gw == "" {
 		return nil, fmt.Errorf("gateway URL not persisted (run `clawpatrol join` first)")
 	}
@@ -99,7 +138,7 @@ func fetchEnvPushdownFromGateway(caDir string) ([]pushdownEnvVar, error) {
 		return nil, fmt.Errorf("peer api token not persisted (run `clawpatrol join` first)")
 	}
 	url := strings.TrimRight(gw, "/") + "/api/env-pushdown"
-	cli := &http.Client{Timeout: 5 * time.Second}
+	cli := gatewayClient(caDir)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build %s: %w", url, err)
@@ -144,6 +183,18 @@ func fetchEnvPushdownFromGateway(caDir string) ([]pushdownEnvVar, error) {
 // or unreadable.
 func readGatewayURL(caDir string) string {
 	b, err := os.ReadFile(filepath.Join(caDir, "gateway"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// readTailnetURL returns the tailnet-direct API URL persisted at join
+// time (http://<peer-ip>:8080). Prefer this over readGatewayURL for
+// peer API calls — the public join URL may be Funnel-proxied and not
+// expose endpoints like /api/peer/ephemeral/tsnet or /api/env-pushdown.
+func readTailnetURL(caDir string) string {
+	b, err := os.ReadFile(filepath.Join(caDir, "tailnet-url"))
 	if err != nil {
 		return ""
 	}

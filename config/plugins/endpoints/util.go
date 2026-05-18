@@ -17,6 +17,8 @@ package endpoints
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
@@ -27,23 +29,32 @@ import (
 )
 
 // CredentialEntry is one row inside an endpoint's credentials list.
-// Placeholder is empty for the no-placeholder fallback entry — see
-// the v14 mixing rule (a trailing entry without `placeholder` is the
-// fallback when no agent-provided placeholder matches).
+// Each entry carries up to two dispatch constraints — `Placeholder`
+// (matched against the agent's wire-level discriminator string by a
+// PlaceholderDetector) and `Databases` (matched against the
+// agent-declared target database). Empty Placeholder = no
+// placeholder constraint; empty Databases = no database constraint;
+// an entry with both empty is the catch-all that matches whatever
+// no other entry claimed.
 type CredentialEntry struct {
-	Placeholder string `json:"placeholder,omitempty"`
-	Credential  string `json:"credential"`
+	Placeholder string   `json:"placeholder,omitempty"`
+	Databases   []string `json:"databases,omitempty"`
+	Credential  string   `json:"credential"`
 }
 
 // bindings flattens (singular, list) into the runtime's CredBinding
-// form. Singular collapses to one entry with empty placeholder.
+// form. Singular collapses to one entry with no constraints.
 func bindings(single string, list []CredentialEntry) []config.CredBinding {
 	if single != "" && len(list) == 0 {
 		return []config.CredBinding{{Credential: single}}
 	}
 	out := make([]config.CredBinding, 0, len(list))
 	for _, e := range list {
-		out = append(out, config.CredBinding{Placeholder: e.Placeholder, Credential: e.Credential})
+		out = append(out, config.CredBinding{
+			Placeholder: e.Placeholder,
+			Databases:   e.Databases,
+			Credential:  e.Credential,
+		})
 	}
 	return out
 }
@@ -88,13 +99,22 @@ func validateBinding(decoded any, kind string, name string, blockRange hcl.Range
 
 // parseCredentialList walks a raw cty.Value list of objects into
 // typed CredentialEntry values. Each object must have a "credential"
-// attribute; the dispatch key is optional and may be spelled either
-// "placeholder" (postgres / https flavour — the agent's wire-level
-// discriminator string) or "user" (ssh — the agent's username),
-// whichever reads more naturally for the protocol. Both forms compile
-// to the same CredentialEntry.Placeholder field. Specifying both on
-// one entry is an error. Within a list there must be at most one
-// fallback entry (no dispatch key) and no duplicate dispatch values.
+// attribute; dispatch constraints are optional and may be any
+// combination of:
+//
+//   - placeholder (string): the agent's wire-level discriminator
+//     string. Spelled "placeholder" (postgres / https / clickhouse) or
+//     "user" (ssh) — both compile to the same CredentialEntry.Placeholder
+//     field. Specifying both on one entry is an error.
+//   - database (string) or databases (list of strings): the
+//     agent-declared target database the entry claims. Both spellings
+//     compile to CredentialEntry.Databases; specifying both on one
+//     entry is an error.
+//
+// An entry with NO constraints is the catchall (matches whatever
+// no other entry claimed). The constraint signature
+// `(placeholder, sorted-databases)` must be unique within a list, and
+// only one catchall is allowed.
 func parseCredentialList(raw cty.Value, blockRange hcl.Range) ([]CredentialEntry, hcl.Diagnostics) {
 	if raw.IsNull() {
 		return nil, nil
@@ -117,7 +137,7 @@ func parseCredentialList(raw cty.Value, blockRange hcl.Range) ([]CredentialEntry
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
 				Summary:  "credentials list element must be an object",
-				Detail:   fmt.Sprintf("Got %s; expected `{ placeholder|user = ..., credential = ... }`.", t.FriendlyName()),
+				Detail:   fmt.Sprintf("Got %s; expected `{ placeholder|user|database|databases = ..., credential = ... }`.", t.FriendlyName()),
 				Subject:  &blockRange,
 			})
 			continue
@@ -160,34 +180,102 @@ func parseCredentialList(raw cty.Value, blockRange hcl.Range) ([]CredentialEntry
 				entry.Placeholder = uv.AsString()
 			}
 		}
+		hasDatabase := false
+		if t.HasAttribute("database") {
+			dv := el.GetAttr("database")
+			if !dv.IsNull() && dv.Type() == cty.String && dv.AsString() != "" {
+				entry.Databases = []string{dv.AsString()}
+				hasDatabase = true
+			}
+		}
+		if t.HasAttribute("databases") {
+			dsv := el.GetAttr("databases")
+			if !dsv.IsNull() && (dsv.Type().IsTupleType() || dsv.Type().IsListType()) && dsv.LengthInt() > 0 {
+				if hasDatabase {
+					diags = append(diags, &hcl.Diagnostic{
+						Severity: hcl.DiagError,
+						Summary:  "credentials entry has both `database` and `databases`",
+						Detail:   "Pick one — `database` is the single-value form, `databases` the list form.",
+						Subject:  &blockRange,
+					})
+					continue
+				}
+				dbs := make([]string, 0, dsv.LengthInt())
+				dit := dsv.ElementIterator()
+				for dit.Next() {
+					_, dv := dit.Element()
+					if dv.Type() == cty.String && dv.AsString() != "" {
+						dbs = append(dbs, dv.AsString())
+					}
+				}
+				entry.Databases = dbs
+			}
+		}
 		out = append(out, entry)
 	}
-	// Enforce: at most one fallback entry; no duplicate dispatch keys.
+	// Enforce: each entry's constraint signature must be unique, and
+	// at most one catchall (entry with no constraints) is allowed.
+	// Signature combines placeholder + sorted-databases so two entries
+	// scoped identically can't quietly mask each other; runtime
+	// dispatch then has a unique most-specific match for any input.
 	seen := map[string]bool{}
-	fallbacks := 0
 	for _, e := range out {
-		if e.Placeholder == "" {
-			fallbacks++
-			continue
+		sig := credentialEntrySignature(e)
+		if seen[sig] {
+			if e.Placeholder == "" && len(e.Databases) == 0 {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "credentials list has more than one catchall entry",
+					Detail:   "An entry with no `placeholder`/`user`/`database`/`databases` is the catchall; only one is allowed.",
+					Subject:  &blockRange,
+				})
+			} else {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  fmt.Sprintf("duplicate credentials dispatch constraint: %s", credentialEntryHumanSig(e)),
+					Detail:   "Two entries with the same (placeholder, databases) constraint claim the same requests.",
+					Subject:  &blockRange,
+				})
+			}
 		}
-		if seen[e.Placeholder] {
-			diags = append(diags, &hcl.Diagnostic{
-				Severity: hcl.DiagError,
-				Summary:  fmt.Sprintf("duplicate credentials dispatch key %q", e.Placeholder),
-				Subject:  &blockRange,
-			})
-		}
-		seen[e.Placeholder] = true
-	}
-	if fallbacks > 1 {
-		diags = append(diags, &hcl.Diagnostic{
-			Severity: hcl.DiagError,
-			Summary:  "credentials list has more than one fallback entry",
-			Detail:   "An entry without `placeholder`/`user` is the catchall; only one is allowed.",
-			Subject:  &blockRange,
-		})
+		seen[sig] = true
 	}
 	return out, diags
+}
+
+// credentialEntryHumanSig formats a credential entry's constraint
+// set for diagnostics. Mirrors the HCL the operator would have
+// typed: e.g. `placeholder = "PH_ro", database = "prod"` for a
+// two-constraint entry, or `databases = ["dev","qa"]` for a list.
+func credentialEntryHumanSig(e CredentialEntry) string {
+	var parts []string
+	if e.Placeholder != "" {
+		parts = append(parts, fmt.Sprintf("placeholder = %q", e.Placeholder))
+	}
+	switch len(e.Databases) {
+	case 0:
+		// nothing
+	case 1:
+		parts = append(parts, fmt.Sprintf("database = %q", e.Databases[0]))
+	default:
+		quoted := make([]string, len(e.Databases))
+		for i, d := range e.Databases {
+			quoted[i] = fmt.Sprintf("%q", d)
+		}
+		parts = append(parts, fmt.Sprintf("databases = [%s]", strings.Join(quoted, ", ")))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// credentialEntrySignature is the constraint key used to detect
+// duplicates. Sort the database list so order doesn't change the
+// signature; placeholder + databases are joined with a NUL so a
+// hypothetical placeholder like "x,y" can't collide with a
+// databases=["x","y"] entry.
+func credentialEntrySignature(e CredentialEntry) string {
+	dbs := append([]string(nil), e.Databases...)
+	sort.Strings(dbs)
+	return e.Placeholder + "\x00" + strings.Join(dbs, "\x00")
 }
 
 // multiCredValidate is the shared Validate hook for endpoint plugins
@@ -276,6 +364,36 @@ func emitCredentialBinding(b *hclwrite.Body, single string, list []CredentialEnt
 				&hclwrite.Token{Type: hclsyntax.TokenOQuote, Bytes: []byte(`"`)},
 				&hclwrite.Token{Type: hclsyntax.TokenQuotedLit, Bytes: []byte(e.Placeholder)},
 				&hclwrite.Token{Type: hclsyntax.TokenCQuote, Bytes: []byte(`"`)},
+				&hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(",")},
+			)
+		}
+		switch len(e.Databases) {
+		case 0:
+			// no database constraint
+		case 1:
+			tokens = append(tokens,
+				&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(" database = ")},
+				&hclwrite.Token{Type: hclsyntax.TokenOQuote, Bytes: []byte(`"`)},
+				&hclwrite.Token{Type: hclsyntax.TokenQuotedLit, Bytes: []byte(e.Databases[0])},
+				&hclwrite.Token{Type: hclsyntax.TokenCQuote, Bytes: []byte(`"`)},
+				&hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(",")},
+			)
+		default:
+			tokens = append(tokens,
+				&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(" databases = [")},
+			)
+			for i, db := range e.Databases {
+				if i > 0 {
+					tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(", ")})
+				}
+				tokens = append(tokens,
+					&hclwrite.Token{Type: hclsyntax.TokenOQuote, Bytes: []byte(`"`)},
+					&hclwrite.Token{Type: hclsyntax.TokenQuotedLit, Bytes: []byte(db)},
+					&hclwrite.Token{Type: hclsyntax.TokenCQuote, Bytes: []byte(`"`)},
+				)
+			}
+			tokens = append(tokens,
+				&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte("]")},
 				&hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(",")},
 			)
 		}

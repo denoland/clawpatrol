@@ -8,11 +8,7 @@ type Variant = "compact" | "expanded";
 //   • compact — used inline (e.g. hero column).
 //   • expanded — bigger padding and type for standalone use as a
 //     section's primary install affordance.
-export function InstallTerminal({
-  variant = "compact",
-}: {
-  variant?: Variant;
-}) {
+export function InstallTerminal({ variant = "compact" }: { variant?: Variant }) {
   const [copied, setCopied] = useState(false);
 
   async function copy() {

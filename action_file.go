@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -78,12 +79,16 @@ type K8sAction struct {
 // SQLAction carries the `sql.*` CEL view. Only `statement` needs to
 // be set in practice; the loader derives verb / tables / functions
 // via the endpoint's runtime.SQLParser. Explicit verb / tables /
-// functions are accepted and take precedence over derivation.
+// functions / database are accepted and take precedence over
+// derivation. Database is session-scoped on the wire (postgres
+// StartupMessage, clickhouse Hello, clickhouse_https URL/header)
+// and not derivable from the statement text alone.
 type SQLAction struct {
 	Statement string   `json:"statement,omitempty"`
 	Verb      string   `json:"verb,omitempty"`
 	Tables    []string `json:"tables,omitempty"`
 	Functions []string `json:"functions,omitempty"`
+	Database  string   `json:"database,omitempty"`
 }
 
 var validVerdicts = map[string]bool{
@@ -291,9 +296,13 @@ func stripPort(s string) string {
 
 // ToMatchRequest builds the match.Request the rule engine sees.
 // For SQL fixtures with only `statement` set, parseSQL is called
-// to derive verb / tables / function. Explicit fields on the
-// fixture take precedence over derivation.
-func (f *Fixture) ToMatchRequest(family string, parseSQL func(string) any) (*match.Request, error) {
+// to derive verb / tables / function plus the unparseable flag.
+// Explicit fields on the fixture take precedence over derivation;
+// the unparseable flag is propagated to match.Request.Unparseable
+// only when no explicit verb/tables/functions override the parser
+// (since an explicit override means the fixture author was telling
+// us the facets, regardless of what the parser thought).
+func (f *Fixture) ToMatchRequest(family string, parseSQL func(string) (any, bool)) (*match.Request, error) {
 	a := &f.Action
 	req := &match.Request{Family: family, Credential: a.Credential, PeerIP: a.PeerIP}
 	switch {
@@ -323,25 +332,79 @@ func (f *Fixture) ToMatchRequest(family string, parseSQL func(string) any) (*mat
 		if stmt == "" {
 			break
 		}
-		// Derive verb / tables / functions via SQLParser, then let
-		// any explicit fixture fields override. Keeps SQL fixtures
-		// hand-editable (one field) while accepting full structs.
 		if parseSQL == nil {
 			return nil, fmt.Errorf("sql: endpoint runtime does not implement SQLParser")
 		}
-		meta := parseSQL(stmt)
+		// Parser is authoritative for verb / tables / functions —
+		// they're derivable from the statement. If a fixture also
+		// declares them, they must agree; otherwise the rule
+		// evaluator would silently see a fiction. database isn't
+		// in the statement (PG StartupMessage / CH session), so it
+		// stays a fixture-provided override.
+		//
+		// When the parser couldn't extract a facet (unparseable
+		// statement, or the parser produced no value for that
+		// facet) a fixture override fills it in instead of
+		// requiring agreement: the fixture is then asserting what
+		// the parser failed to derive, which also clears the
+		// unparseable flag for the rule evaluator.
+		meta, unparseable := parseSQL(stmt)
 		if m, ok := meta.(*sqlfacet.Meta); ok {
 			if a.SQL.Verb != "" {
-				m.Verb = a.SQL.Verb
+				if m.Verb == "" {
+					m.Verb = a.SQL.Verb
+					unparseable = false
+				} else if !strings.EqualFold(a.SQL.Verb, m.Verb) {
+					return nil, fmt.Errorf(
+						"sql.verb mismatch: fixture=%q parser=%q (statement=%q)",
+						a.SQL.Verb, m.Verb, stmt)
+				}
 			}
 			if len(a.SQL.Tables) > 0 {
-				m.Tables = a.SQL.Tables
+				if len(m.Tables) == 0 {
+					m.Tables = a.SQL.Tables
+					unparseable = false
+				} else if !sameStringSet(a.SQL.Tables, m.Tables) {
+					return nil, fmt.Errorf(
+						"sql.tables mismatch: fixture=%v parser=%v (statement=%q)",
+						a.SQL.Tables, m.Tables, stmt)
+				}
 			}
 			if len(a.SQL.Functions) > 0 {
-				m.Functions = a.SQL.Functions
+				if len(m.Functions) == 0 {
+					m.Functions = a.SQL.Functions
+					unparseable = false
+				} else if !sameStringSet(a.SQL.Functions, m.Functions) {
+					return nil, fmt.Errorf(
+						"sql.functions mismatch: fixture=%v parser=%v (statement=%q)",
+						a.SQL.Functions, m.Functions, stmt)
+				}
+			}
+			if a.SQL.Database != "" {
+				m.Database = a.SQL.Database
 			}
 		}
 		req.Meta = meta
+		req.Unparseable = unparseable
 	}
 	return req, nil
+}
+
+// sameStringSet treats two []string as equal-as-sets. Used to compare
+// fixture-declared table/function lists against the parser's output:
+// order is incidental, presence is what matters for rule matching.
+func sameStringSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	a_ := append([]string(nil), a...)
+	b_ := append([]string(nil), b...)
+	sort.Strings(a_)
+	sort.Strings(b_)
+	for i := range a_ {
+		if a_[i] != b_[i] {
+			return false
+		}
+	}
+	return true
 }

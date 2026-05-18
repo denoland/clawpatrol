@@ -41,9 +41,19 @@ type ActivationBuilder func(req *Request) map[string]any
 // InspectsTruncatableFacet() so the dispatcher can fail-close on a
 // truncated request without re-walking the AST per match.
 //
+// unparseablePaths names the dotted identifier paths whose activation
+// values are derived by a frontend's parser and therefore left zero
+// when the parser refuses the input (SQL verb / tables / functions).
+// Pre-computed the same way as truncatablePaths and exposed via
+// InspectsUnparseableFacet() so the dispatcher can fail-close on an
+// unparseable request without re-walking the AST per match. The
+// raw statement text is intentionally NOT in this set — it's still
+// populated when the parser fails, so rules that key only on
+// `<facet>.statement` keep evaluating honestly.
+//
 // Paths must be of the form "<var>.<field>" — single-level selection
 // off a top-level identifier. That's all the facets need today.
-func CompileCondition(env *cel.Env, condition string, buildAct ActivationBuilder, lowercasedPaths, truncatablePaths []string) (Matcher, error) {
+func CompileCondition(env *cel.Env, condition string, buildAct ActivationBuilder, lowercasedPaths, truncatablePaths, unparseablePaths []string) (Matcher, error) {
 	ast, issues := env.Compile(condition)
 	if issues != nil && issues.Err() != nil {
 		return nil, fmt.Errorf("cel compile: %w", issues.Err())
@@ -66,6 +76,14 @@ func CompileCondition(env *cel.Env, condition string, buildAct ActivationBuilder
 		}
 		inspectsTruncatable = referencesPath(ast.NativeRep().Expr(), paths)
 	}
+	var inspectsUnparseable bool
+	if len(unparseablePaths) > 0 {
+		paths, err := parsePaths(unparseablePaths)
+		if err != nil {
+			return nil, err
+		}
+		inspectsUnparseable = referencesPath(ast.NativeRep().Expr(), paths)
+	}
 	prog, err := env.Program(ast)
 	if err != nil {
 		return nil, fmt.Errorf("cel program: %w", err)
@@ -76,6 +94,7 @@ func CompileCondition(env *cel.Env, condition string, buildAct ActivationBuilder
 		buildAct:            buildAct,
 		refs:                refs,
 		inspectsTruncatable: inspectsTruncatable,
+		inspectsUnparseable: inspectsUnparseable,
 	}, nil
 }
 
@@ -90,6 +109,12 @@ func (m *celMatcher) References() map[string]bool { return m.refs }
 // matcher was compiled. Pre-computed at compile time so the
 // dispatcher's fail-closed check is O(1) per match.
 func (m *celMatcher) InspectsTruncatableFacet() bool { return m.inspectsTruncatable }
+
+// InspectsUnparseableFacet reports whether the matcher's CEL
+// condition reads any of the unparseablePaths declared when the
+// matcher was compiled. Mirror of InspectsTruncatableFacet for the
+// parser-failure gate; see CompileCondition.
+func (m *celMatcher) InspectsUnparseableFacet() bool { return m.inspectsUnparseable }
 
 // PassThrough is a Matcher that always returns true. Facets use it
 // for empty conditions (catch-all rules).
@@ -107,11 +132,17 @@ func (PassThrough) References() map[string]bool { return nil }
 // request — operators can still attach a default-deny verdict to it.
 func (PassThrough) InspectsTruncatableFacet() bool { return false }
 
+// InspectsUnparseableFacet reports false: a catch-all rule reads no
+// parser-derived facet, so an unparseable request can still match it
+// normally. Same reasoning as InspectsTruncatableFacet.
+func (PassThrough) InspectsUnparseableFacet() bool { return false }
+
 type celMatcher struct {
 	prog                cel.Program
 	buildAct            ActivationBuilder
 	refs                map[string]bool
 	inspectsTruncatable bool
+	inspectsUnparseable bool
 }
 
 func (m *celMatcher) Match(req *Request) bool {

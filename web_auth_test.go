@@ -142,7 +142,7 @@ func TestRouteAuthRequirementsDocumentOnboardingBoundary(t *testing.T) {
 		{path: "/api/onboard/lookup", want: authTailnetOperator, wantDashboardPublic: true, wantTailnetPublic: false},
 		{path: "/api/onboard/approve", want: authDashboardOrTailnetOperator, wantDashboardPublic: false, wantTailnetPublic: false},
 		{path: "/api/config/save", want: authDashboard, wantDashboardPublic: false, wantTailnetPublic: false},
-		{path: "/api/env-pushdown", want: authSelfAuthenticating, wantDashboardPublic: true, wantTailnetPublic: false},
+		{path: "/api/env-pushdown", want: authSelfAuthenticating, wantDashboardPublic: true, wantTailnetPublic: true},
 		{path: "/info", want: authPublic, wantDashboardPublic: true, wantTailnetPublic: true},
 		{path: "/ca.crt", want: authPublic, wantDashboardPublic: true, wantTailnetPublic: true},
 	}
@@ -170,8 +170,8 @@ func TestCredentialWebhookPrefixAuthPolicyIsSelfAuthenticating(t *testing.T) {
 	if !w.skipsDashboardSecret(path) {
 		t.Fatalf("credential webhook should not require dashboard secret")
 	}
-	if w.skipsTailnetGate(path) {
-		t.Fatalf("credential webhook tailnet behavior should remain gated in tailscale mode")
+	if !w.skipsTailnetGate(path) {
+		t.Fatalf("credential webhook should skip tailnet gate: self-authenticating via HMAC, not Tailscale identity")
 	}
 }
 

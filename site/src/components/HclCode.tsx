@@ -78,15 +78,15 @@ const CLASS: Record<Tok["kind"], string> = {
   txt: "",
 };
 
-export function HclCode(
-  { source, class: cls }: { source: string; class?: string },
-) {
+export function HclCode({ source, class: cls }: { source: string; class?: string }) {
   const toks = tokenize(source);
   return (
     <pre class={cls ?? ""}>
       <code>
         {toks.map((t, i) => (
-          <span key={i} class={CLASS[t.kind]}>{t.text}</span>
+          <span key={i} class={CLASS[t.kind]}>
+            {t.text}
+          </span>
         ))}
       </code>
     </pre>

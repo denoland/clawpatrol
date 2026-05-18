@@ -22,8 +22,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -50,8 +48,12 @@ import (
 const (
 	runChildEnv        = "CLAWPATROL_RUN_CHILD"
 	runNoAutoExposeEnv = "CLAWPATROL_RUN_NO_AUTO_EXPOSE"
+	runTsnetChildEnv   = "CLAWPATROL_RUN_TSNET_CHILD"
 	tunIfName          = "wg0"
-	tunMTU             = 1420
+	// Match wgTunMTU in wireguard.go (1220 — fits Tailscale's
+	// 1280-byte underlay after WG/UDP/IP encap). v6 unavailable; see
+	// the comment over there.
+	tunMTU = 1220
 )
 
 // runRun is `clawpatrol run`. Re-execs self in new user+net+mnt namespaces
@@ -62,8 +64,18 @@ func runRun(args []string) {
 		runRunChild()
 		return
 	}
+	if os.Getenv(runTsnetChildEnv) == "1" {
+		runRunTsnetChild()
+		return
+	}
 
 	warnIfOnGatewayHost()
+
+	// Check for Tailscale mode — uses ephemeral tsnet instead of WireGuard.
+	if mode := strings.TrimSpace(readFileSilent(filepath.Join(defaultClawpatrolDir(), "mode"))); mode == "tailscale" {
+		runRunTsnet(args)
+		return
+	}
 
 	// `sudo clawpatrol run` is doomed on this distro: the UidMappings
 	// below collapse to `0 → 0`, and most distros refuse to put pid 0
@@ -710,7 +722,7 @@ func ephemeralPeer(cfg *runConf) (cleanup func(), err error) {
 	}
 
 	cfg.PrivateKey = privB64
-	cfg.Address = result.IP + "/32, " + result.IP6 + "/128"
+	cfg.Address = result.IP + "/32"
 	_ = os.Setenv("CLAWPATROL_EPHEMERAL_ADDR", cfg.Address)
 
 	return func() {
@@ -724,33 +736,6 @@ func ephemeralPeer(cfg *runConf) (cleanup func(), err error) {
 			_ = dr.Body.Close()
 		}
 	}, nil
-}
-
-// gatewayHTTPClient builds an http.Client that trusts caPath in addition
-// to system roots.
-func gatewayHTTPClient(caPath string) (*http.Client, error) {
-	roots, err := x509.SystemCertPool()
-	if err != nil {
-		roots = x509.NewCertPool()
-	}
-	if pem, err := os.ReadFile(caPath); err == nil {
-		roots.AppendCertsFromPEM(pem)
-	}
-	return &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{RootCAs: roots},
-		},
-	}, nil
-}
-
-// readFileSilent reads a file and returns its contents as a string,
-// or empty on any error.
-func readFileSilent(path string) string {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return string(b)
 }
 
 // --- helpers ---------------------------------------------------------

@@ -7,11 +7,7 @@ type WaveArgs = {
   height?: string;
 };
 
-export function Wave({
-  topColor,
-  bottomColor,
-  height = "h-32",
-}: WaveArgs) {
+export function Wave({ topColor, bottomColor, height = "h-32" }: WaveArgs) {
   return (
     <div
       class={`relative w-full overflow-clip ${height}`}

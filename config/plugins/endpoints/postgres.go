@@ -8,7 +8,6 @@ package endpoints
 //
 //   endpoint "postgres" "writer" {
 //     host       = "db.example.com:5432"
-//     database   = "postgres"
 //     sslmode    = "prefer"        // disable | prefer | require | verify-full
 //     credential = pg-writer-cred
 //   }
@@ -70,7 +69,6 @@ import (
 // encrypts the path.
 type PostgresEndpoint struct {
 	Host           string    `hcl:"host"`
-	Database       string    `hcl:"database"`
 	SSLMode        string    `hcl:"sslmode,optional"`
 	Credential     string    `hcl:"credential,optional"`
 	CredentialsRaw cty.Value `hcl:"credentials,optional" json:"-"`
@@ -92,6 +90,15 @@ func (e *PostgresEndpoint) EndpointCredentials() []config.CredBinding {
 // The compile pass skips this entry for tunneled endpoints: those
 // route through the VIP path, not real-IP dispatch.
 func (e *PostgresEndpoint) ConnRouteHosts() []string { return []string{e.Host} }
+
+// RequiresVIP opts the endpoint into DNS-VIP interception. Without a
+// VIP, clients in Tailscale exit-node mode can't reach postgres: the
+// real upstream IP is often RFC1918, and Tailscale exit-nodes do not
+// forward RFC1918 traffic (only public IPs and the tailnet's own
+// fd78::/64 VIP range reach the gateway's iptables REDIRECT). The VIP
+// guarantees a routable address (IPv6 fd78::N) regardless of the real
+// upstream IP family or prefix.
+func (e *PostgresEndpoint) RequiresVIP() bool { return true }
 
 func (e *PostgresEndpoint) credentialAndRaw() (string, cty.Value) {
 	return e.Credential, e.CredentialsRaw
@@ -124,17 +131,20 @@ func (PostgresEndpointRuntime) DetectPlaceholder(req *runtime.Request, candidate
 
 // ParseStatement satisfies runtime.SQLParser so the action-fixture
 // loader can populate match.Request.Meta from a raw statement using
-// the same regex extractor pgEvaluate uses on live wire traffic.
+// the same AST extractor pgEvaluate uses on live wire traffic.
 // Returns *sqlfacet.Meta as `any` to keep the runtime interface free
-// of the facets-package import.
-func (PostgresEndpointRuntime) ParseStatement(sql string) any {
-	info := parseSQL(sql)
+// of the facets-package import. The bool mirrors the Unparseable
+// contract — true when pgplex refused the bytes; the fixture loader
+// then sets match.Request.Unparseable so the dispatcher's fail-closed
+// gate evaluates the test request the same way live dispatch would.
+func (PostgresEndpointRuntime) ParseStatement(sql string) (any, bool) {
+	info, unparseable := parseSQL(sql)
 	return &sqlfacet.Meta{
 		Verb:      info.Verb,
 		Tables:    info.Tables,
 		Functions: info.Functions,
 		Statement: info.Statement,
-	}
+	}, unparseable
 }
 
 func init() {
@@ -152,7 +162,6 @@ func init() {
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			e := body.(*PostgresEndpoint)
 			b.SetAttributeValue("host", cty.StringVal(e.Host))
-			b.SetAttributeValue("database", cty.StringVal(e.Database))
 			emitCredentialBinding(b, e.Credential, e.Credentials, "placeholder")
 		},
 	})
@@ -224,7 +233,17 @@ func (PostgresEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnH
 	// credential. Single-credential endpoints fall through to the
 	// only entry.
 	agentUser := pgStartupParam(startupBody, "user")
-	cc := pgResolveCredential(ch.Endpoint, agentUser)
+	// Build a partial match.Request for credential dispatch. The
+	// PostgresEndpointRuntime's PlaceholderDetector scans
+	// Meta.Statement for a placeholder substring; Database is the
+	// agent-declared target so any `database`/`databases` constraint
+	// on a credential entry can filter against it.
+	credReq := &match.Request{
+		Family:   "sql",
+		Database: database,
+		Meta:     &sqlfacet.Meta{Statement: agentUser},
+	}
+	cc := runtime.ResolveCredential(ch.Endpoint, credReq)
 	if cc == nil {
 		pgWriteError(ch.Conn, "no credential bound to postgres endpoint")
 		return fmt.Errorf("no credential")
@@ -303,7 +322,7 @@ func (PostgresEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnH
 	}()
 	go func() {
 		defer func() { done <- struct{}{} }()
-		pgClientToServer(ctx, ch, upstream, credName)
+		pgClientToServer(ctx, ch, upstream, credName, database)
 	}()
 	<-done
 	return nil
@@ -381,8 +400,20 @@ func pgStartupParam(body []byte, key string) string {
 const maxPgMessage = 1 << 20
 
 // pgClientToServer pumps the agent's outbound message stream to the
-// upstream, inspecting Query / Parse for policy.
-func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.Conn, credName string) {
+// upstream, inspecting Query / Parse for policy. database is the
+// session-start database (StartupMessage `database`, or the `user`
+// fallback per pg convention) — propagated into match.Request.Database
+// on every per-Query request so rules can match on `sql.database`.
+//
+// Postgres has no in-protocol way to swap the active database for an
+// open connection — there's no `USE db` analogue, and `SET database`
+// isn't a recognised setting. The psql `\connect newdb` meta-command
+// is handled entirely on the client: psql tears the current TCP
+// connection down and opens a fresh one whose StartupMessage carries
+// the new database. From this gateway's vantage that arrives as a
+// new ConnHandle, so the session-start value remains authoritative
+// for every Query / Parse frame on this connection.
+func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.Conn, credName, database string) {
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -420,7 +451,7 @@ func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.
 					typ := buf[0]
 					length := binary.BigEndian.Uint32(buf[1:5])
 					if (typ == 'Q' || typ == 'P') && length > maxPgMessage {
-						nextBuf, ok := pgHandleOversizeFrame(ch, upstream, credName, buf, length)
+						nextBuf, ok := pgHandleOversizeFrame(ch, upstream, credName, database, buf, length)
 						if !ok {
 							return
 						}
@@ -436,7 +467,7 @@ func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.
 				if msg.typ == 'Q' || msg.typ == 'P' {
 					sql := pgExtractSQL(msg.typ, msg.payload)
 					if sql != "" {
-						verdict, reason := pgEvaluate(ch, sql, credName)
+						verdict, reason := pgEvaluate(ch, sql, credName, database)
 						if verdict == "deny" {
 							pgWriteDeny(ch.Conn, reason)
 							log.Printf("pg-deny %s: %s", ch.PeerIP, reason)
@@ -500,7 +531,7 @@ func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.
 //     materialize the body in memory.
 //   - Approve chain → treated as deny. HITL can't make a decision
 //     on bytes that aren't there.
-func pgHandleOversizeFrame(ch *runtime.ConnHandle, upstream net.Conn, credName string, buf []byte, length uint32) ([]byte, bool) {
+func pgHandleOversizeFrame(ch *runtime.ConnHandle, upstream net.Conn, credName, database string, buf []byte, length uint32) ([]byte, bool) {
 	typ := buf[0]
 	totalWire := uint64(1) + uint64(length)
 	have := uint64(len(buf))
@@ -515,6 +546,7 @@ func pgHandleOversizeFrame(ch *runtime.ConnHandle, upstream net.Conn, credName s
 		Family:     "sql",
 		PeerIP:     ch.PeerIP,
 		Credential: credName,
+		Database:   database,
 		Meta:       &sqlfacet.Meta{},
 		Truncated:  true,
 	}
@@ -585,14 +617,16 @@ func pgHandleOversizeFrame(ch *runtime.ConnHandle, upstream net.Conn, credName s
 //
 //	("deny", reason) — first sub-statement to deny short-circuits.
 //	("", "")         — every sub-statement allowed or had no match.
-func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
+func pgEvaluate(ch *runtime.ConnHandle, sql, credName, database string) (string, string) {
 	for _, stmt := range analyseAll(sql) {
-		v, reason := pgEvaluateInfo(ch, stmt.Outer, credName, false)
+		v, reason := pgEvaluateInfo(ch, stmt.Outer, credName, database, false, stmt.Unparseable)
 		if v == "deny" {
 			return v, reason
 		}
+		// Inner statements (CTE-hidden DML, DO bodies) only exist on
+		// pieces the parser accepted, so they always run parseable.
 		for _, inner := range stmt.Inner {
-			v, reason := pgEvaluateInfo(ch, inner, credName, true)
+			v, reason := pgEvaluateInfo(ch, inner, credName, database, true, false)
 			if v == "deny" {
 				return v, reason
 			}
@@ -605,18 +639,24 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 // suppresses emission on allow / hitl_allow so synthesised
 // sub-statements don't pollute the dashboard; deny emissions still
 // fire either way (operators need to see *why* a batch was denied).
-func pgEvaluateInfo(ch *runtime.ConnHandle, info pgInfo, credName string, shadow bool) (string, string) {
+// unparseable propagates onto match.Request so the dispatcher's
+// fail-closed-on-Unparseable gate auto-denies any rule reading
+// verb / tables / functions for a piece pgplex refused.
+func pgEvaluateInfo(ch *runtime.ConnHandle, info pgInfo, credName, database string, shadow, unparseable bool) (string, string) {
 	summary := pgSummary(info)
 	mreq := &match.Request{
 		Family:     "sql",
 		PeerIP:     ch.PeerIP,
 		Credential: credName,
+		Database:   database,
 		Meta: &sqlfacet.Meta{
 			Verb:      info.Verb,
 			Tables:    info.Tables,
 			Functions: info.Functions,
 			Statement: info.Statement,
+			Database:  database,
 		},
+		Unparseable: unparseable,
 	}
 	// Per-family report payload — the same map the gateway will
 	// stash on Event.Facets so the dashboard renders sql_rule
@@ -714,35 +754,6 @@ func pgWriteDeny(conn net.Conn, reason string) {
 	// Z (ReadyForQuery) — 5 bytes total: 'Z' + length(5) + 'I'.
 	ready := []byte{'Z', 0, 0, 0, 5, 'I'}
 	_, _ = conn.Write(append(msg, ready...))
-}
-
-// pgResolveCredential picks the credential entry for this connection.
-//
-// Single-binding endpoints (one entry, no placeholder) return that
-// entry. Multi-credential endpoints dispatch on the agent-supplied
-// StartupMessage user field — exact match against each entry's
-// placeholder. Trailing no-placeholder entry is the fallback when no
-// placeholder matched.
-//
-// Returns nil only when the endpoint declared zero credentials.
-func pgResolveCredential(ep *config.CompiledEndpoint, agentUser string) *config.CompiledCredential {
-	if ep == nil || len(ep.Credentials) == 0 {
-		return nil
-	}
-	if len(ep.Credentials) == 1 && ep.Credentials[0].Placeholder == "" {
-		return ep.Credentials[0]
-	}
-	var fallback *config.CompiledCredential
-	for _, c := range ep.Credentials {
-		if c.Placeholder == "" {
-			fallback = c
-			continue
-		}
-		if agentUser == c.Placeholder {
-			return c
-		}
-	}
-	return fallback
 }
 
 // pgWriteError sends an ErrorResponse during the pre-auth phase
@@ -861,9 +872,18 @@ type pgInfo struct {
 // analysedStmt is one top-level statement's matcher input. Inner
 // surfaces statements the matcher should walk in addition to Outer:
 // CTE-hidden DML (audit §1.2) and DO body inner statements (§6.5).
+//
+// Unparseable mirrors match.Request.Unparseable for this piece — set
+// when pgplex's grammar refuses the bytes outright. The wire-protocol
+// gateway propagates the flag onto each per-statement match.Request,
+// so the dispatcher's fail-closed-on-Unparseable gate auto-denies any
+// rule whose CEL reads verb / tables / functions on a piece the
+// parser couldn't analyse. Statement text is preserved either way,
+// so `sql.statement.contains(...)` rules still evaluate honestly.
 type analysedStmt struct {
-	Outer pgInfo
-	Inner []pgInfo
+	Outer       pgInfo
+	Inner       []pgInfo
+	Unparseable bool
 }
 
 // Compile-time interface check — keeps PostgresEndpointRuntime in

@@ -10,14 +10,11 @@ export function FlowDiagram() {
       role="img"
       aria-label="Many agents on the bottom send requests through Claw Patrol to many destinations on top"
     >
-      <InternetNode />
+      <ProductionNode />
 
       <Riser />
 
-      <CenterNode
-        label="Claw Patrol"
-        sub="rules · approvals · credentials"
-      />
+      <CenterNode label="Claw Patrol" sub="rules approvals credentials analytics" />
 
       <Risers count={4} />
 
@@ -25,7 +22,7 @@ export function FlowDiagram() {
         <Card name="Claude" icon="/icons/anthropic.svg" />
         <Card name="Codex" icon="/icons/openai.svg" />
         <Card name="OpenClaw" icon="/icons/openclaw.svg" />
-        <Card name="Other agents" />
+        <Card name="Others" />
       </CardRow>
     </div>
   );
@@ -34,25 +31,21 @@ export function FlowDiagram() {
 function CardRow({ children }: { children: ComponentChildren }) {
   // pr-2 / pb-2 reserves room for the stacked-card shadows so they
   // don't touch the column edge or the arrows below.
-  return (
-    <div class="grid grid-cols-4 gap-3 w-full pr-2 pb-2">{children}</div>
-  );
+  return <div class="grid grid-cols-4 gap-3 w-full pr-2 pb-2">{children}</div>;
 }
 
-function InternetNode() {
+function ProductionNode() {
   return (
     <div
       class="squircle-md w-full bg-canvas border border-navy-200
         text-text px-5 py-5 text-center"
     >
-      <div class="font-display font-bold text-xl leading-none">
-        The Internet
-      </div>
+      <div class="font-display font-bold text-xl leading-none">Production</div>
       <div
         class="font-mono text-[11px] uppercase tracking-wider mt-2
           text-text-muted text-balance"
       >
-        stripe · postgres · clickhouse · slack · internal apis · …
+        postgres clickhouse kubernetes aws gcp github slack vultr whatever
       </div>
     </div>
   );
@@ -61,13 +54,7 @@ function InternetNode() {
 function Riser() {
   return (
     <div class="w-full flex justify-center my-2">
-      <svg
-        width="16"
-        height="28"
-        viewBox="0 0 16 28"
-        class="text-navy-300"
-        aria-hidden="true"
-      >
+      <svg width="16" height="28" viewBox="0 0 16 28" class="text-navy-300" aria-hidden="true">
         <path
           d="M 8 28 V 5"
           stroke="currentColor"
@@ -104,16 +91,7 @@ function Card({ name, icon }: { name: string; icon?: string }) {
         px-2 py-3 bg-canvas border border-navy-200 min-w-0"
       style={{ boxShadow: stack }}
     >
-      {icon ? (
-        <img
-          src={icon}
-          alt=""
-          class="w-6 h-6"
-          aria-hidden="true"
-        />
-      ) : (
-        <RobotGlyph />
-      )}
+      {icon ? <img src={icon} alt="" class="w-6 h-6" aria-hidden="true" /> : <RobotGlyph />}
       <div
         class="font-display font-semibold text-[11.5px] text-text-muted
           leading-tight text-center text-balance"
@@ -162,17 +140,18 @@ function Risers({ count }: { count: number }) {
 }
 
 function CenterNode({ label, sub }: { label: string; sub: string }) {
-  // The proxy. Navy surface and centered type carry the emphasis;
-  // no icon needed.
+  // Light surface keyed to the header's bg-navy-100 so the proxy node
+  // reads as the same brand surface; full Claw Patrol logo (icon +
+  // wordmark) is the same public asset the header uses.
   return (
     <div
-      class="squircle-md w-full bg-navy text-canvas border border-navy
+      class="squircle-md w-full bg-navy-100 text-text border border-navy
         px-5 py-5 text-center"
     >
-      <div class="font-display font-bold text-xl leading-none">{label}</div>
+      <img src="/claw-patrol-logo.svg" alt={label} class="h-8 sm:h-10 w-auto mx-auto" />
       <div
         class="font-mono text-[11px] uppercase tracking-wider mt-2
-          text-canvas/65"
+          text-text-muted"
       >
         {sub}
       </div>

@@ -37,6 +37,11 @@ export type TailscaleNodeState =
 export type TailscaleAuthStatusUI = {
   connected: boolean;
   state: TailscaleNodeState;
+  // has_state is true when credential_secrets carries persisted
+  // identity bytes — even when `connected` is false. The card uses
+  // this to render the disconnect ✕ for stuck-but-not-running nodes
+  // so the operator can reset without bouncing the gateway.
+  has_state?: boolean;
   pending_url?: string;
   connect_url: string;
   status_url: string;
@@ -58,6 +63,20 @@ export type Integration = {
   avatar_url?: string;
   has_tailscale_auth?: boolean;
   tailscale_auth?: TailscaleAuthStatusUI | null;
+  // Profiles routing requests through any endpoint that binds this
+  // credential (directly or via a tunnel). Sorted by name.
+  profiles?: string[];
+  // Endpoints that bind this credential. Sorted by name.
+  endpoints?: string[];
+  // Operator-set HCL block attributes (`user`, `region`, …). Values
+  // are the raw HCL token text (quoted strings included). Never
+  // includes secret material.
+  config?: Record<string, string>;
+  // Unix seconds of the most recent connect/update on this
+  // credential (max across the OAuth and per-slot secret stores).
+  // Zero/undefined for declared-only credentials that have never
+  // been touched.
+  updated_at?: number;
 };
 
 // tailscaleConnect asks the gateway for the live tsnet login URL.
@@ -247,6 +266,10 @@ export type HITLPending = {
   host: string;
   method: string;
   path: string;
+  operation_state?: HITLOperationState;
+  approval_effect?: HITLApprovalEffect;
+  upstream_called?: boolean;
+  approval_message?: string;
   // Operator-readable endpoint identifier (hostname for HTTPS,
   // resource name for SQL/k8s where host is a virtual IP).
   // Computed server-side; falls back to host when unset.
@@ -260,6 +283,19 @@ export type HITLPending = {
   created_at: string;
   expires_at: string;
 };
+
+export type HITLOperationState =
+  | "sync_waiting"
+  | "pending_approval"
+  | "approved_waiting_for_retry"
+  | "denied"
+  | "expired"
+  | "executing_upstream"
+  | "upstream_succeeded"
+  | "upstream_failed"
+  | "client_disconnected";
+
+export type HITLApprovalEffect = "execute_upstream" | "create_retry_grant";
 
 export async function getHITLPending(): Promise<HITLPending[]> {
   const r = await api("/api/hitl/pending");

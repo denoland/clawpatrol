@@ -187,6 +187,12 @@ func (s *SlackTokens) NotifyHITL(ctx context.Context, req runtime.ApproveRequest
 			"text": map[string]any{"type": "mrkdwn", "text": "*Body*\n```" + slackTrunc(bs, 1000) + "```"},
 		})
 	}
+	if guidance := slackHITLApprovalGuidance(target); guidance != "" {
+		blocks = append(blocks, map[string]any{
+			"type": "section",
+			"text": map[string]any{"type": "mrkdwn", "text": slackTrunc(guidance, 1000)},
+		})
+	}
 	if target.Interactive {
 		blocks = append(blocks, map[string]any{
 			"type": "actions",
@@ -234,6 +240,25 @@ func (s *SlackTokens) NotifyHITL(ctx context.Context, req runtime.ApproveRequest
 		return err
 	}
 	return nil
+}
+
+func slackHITLApprovalGuidance(target runtime.HITLTarget) string {
+	message := strings.TrimSpace(target.ApprovalMessage)
+	if message != "" {
+		return message
+	}
+	if target.OperationState == "" && target.ApprovalEffect == "" && !target.UpstreamCalled {
+		return ""
+	}
+	state := target.OperationState
+	if state == "" {
+		state = runtime.HITLOperationStateSyncWaiting
+	}
+	effect := target.ApprovalEffect
+	if effect == "" {
+		effect = runtime.HITLApprovalEffectForOperationState(state)
+	}
+	return runtime.HITLApprovalMessage(state, effect, target.UpstreamCalled)
 }
 
 func slackPostHITLMessage(ctx context.Context, bot string, buf []byte) error {

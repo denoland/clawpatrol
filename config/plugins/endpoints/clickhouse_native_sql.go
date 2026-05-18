@@ -27,29 +27,43 @@ type chSQLInfo struct {
 	Tables    []string
 	Functions []string
 	Statement string // raw, untrimmed — fed to statement / statement_regex matchers
+	// UseDatabase carries the target of a top-level `USE db` statement.
+	// The wire pump consults this after a matched-and-allowed Query so a
+	// session-scoped database tracker can swap to the new value and
+	// subsequent statements report the right `sql.database` to the
+	// matcher. Empty for non-USE statements.
+	UseDatabase string
 }
 
 // parseChSQL extracts verb / tables / functions / statement for the
-// SQL matcher.
+// SQL matcher. The second return is the unparseable flag — true when
+// the AST parser refused the input.
 //
-// On parser failure we fall back to a degraded `chSQLInfo` carrying
-// only `Statement` plus a best-effort verb sniffed from the first
-// keyword. Forwarding `Statement` keeps `statement_regex` rules live
-// even on syntactically odd inputs the AST parser rejects, which
-// matters because those are exactly the queries an operator most
-// likely wants to match on.
-func parseChSQL(sql string) chSQLInfo {
+// Contract (mirrors the Truncated shape — see match.Request.Unparseable):
+//
+//   - Parse succeeds → unparseable=false, every facet populated.
+//   - Parse fails    → unparseable=true,  only Statement populated
+//     (Verb/Tables/Functions left zero). The runtime stashes the
+//     flag on match.Request.Unparseable, and the dispatcher synth-
+//     denies any rule whose CEL reads the unset facets.
+//
+// No verb-sniffing or shape-specific rewrites: any input the parser
+// refuses (CTE-prefixed INSERTs, exotic system commands, syntax
+// errors) goes down the same fail-closed path. That keeps the
+// contract operators reason about consistent across query shapes
+// and avoids silently-disabled write gates when the sniff happens
+// to extract a less-restrictive verb than the real intent.
+func parseChSQL(sql string) (chSQLInfo, bool) {
 	info := chSQLInfo{Statement: sql}
 	trimmed := strings.TrimSpace(sql)
 	if trimmed == "" {
-		return info
+		return info, false
 	}
 
 	parseInput := chSQLTrailerRE.ReplaceAllString(trimmed, "")
 	stmts, err := chparser.NewParser(parseInput).ParseStmts()
 	if err != nil || len(stmts) == 0 {
-		info.Verb = chSniffVerb(trimmed)
-		return info
+		return info, true
 	}
 
 	// Multi-statement queries: the verb tracks the first statement, but
@@ -57,6 +71,27 @@ func parseChSQL(sql string) chSQLInfo {
 	// denies access to `secrets` still fires when `secrets` is the
 	// second statement in a "use db; select * from secrets" pair.
 	info.Verb = chVerbFromStmt(stmts[0])
+	// `USE db` at the head of the packet is the wire-level signal that
+	// the agent wants subsequent statements interpreted against `db`.
+	// We surface the target so the wire pump can update session state
+	// after the matcher allows it through. Only the head statement
+	// counts — `USE` inside a CTE / subquery has no effect on session
+	// scope, and a `SELECT … ; USE other; …` chain leaves the session
+	// on `other` only because the trailing USE happens last, which the
+	// wire pump can't replay statement-by-statement (clickhouse-server
+	// either rejects multi-statement queries or runs them atomically).
+	if u, ok := stmts[0].(*chparser.UseStmt); ok && u != nil && u.Database != nil {
+		info.UseDatabase = u.Database.Name
+	}
+	tables, funcs := chWalkSQL(stmts)
+	info.Tables = chSortedKeys(tables)
+	info.Functions = chSortedKeys(funcs)
+	return info, false
+}
+
+// chWalkSQL walks every AST in stmts and collects the table refs and
+// function names the SQL matcher cares about.
+func chWalkSQL(stmts []chparser.Expr) (map[string]struct{}, map[string]struct{}) {
 	tables := map[string]struct{}{}
 	funcs := map[string]struct{}{}
 	for _, stmt := range stmts {
@@ -72,9 +107,7 @@ func parseChSQL(sql string) chSQLInfo {
 			return true
 		})
 	}
-	info.Tables = chSortedKeys(tables)
-	info.Functions = chSortedKeys(funcs)
-	return info
+	return tables, funcs
 }
 
 // chTableName renders a TableIdentifier as `db.table` or `table`
@@ -157,94 +190,6 @@ func chFirstUpperBoundary(s string) int {
 	return 0
 }
 
-// chSniffVerb is the parser-failure fallback: lowercase the first
-// alphabetic run and return it. Keeps `verb=` rules functional when
-// the AST parser bails — at the cost of correctness on exotic syntax,
-// which the matcher would have struggled with anyway.
-func chSniffVerb(s string) string {
-	body := chStripSQLComments(s)
-	body = strings.TrimSpace(body)
-	for i := 0; i < len(body); i++ {
-		c := body[i]
-		isLetter := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-		if !isLetter {
-			continue
-		}
-		j := i
-		for j < len(body) {
-			cj := body[j]
-			isAlnum := (cj >= 'a' && cj <= 'z') || (cj >= 'A' && cj <= 'Z') || (cj >= '0' && cj <= '9') || cj == '_'
-			if !isAlnum {
-				break
-			}
-			j++
-		}
-		return strings.ToLower(body[i:j])
-	}
-	return ""
-}
-
-// chStripSQLComments removes -- line comments and /* … */ block
-// comments. Comments inside quoted string literals are preserved so
-// the lexer doesn't accidentally truncate a SQL string that contains
-// "--" or "/*". Used by the parser-failure fallback path.
-func chStripSQLComments(s string) string {
-	var out strings.Builder
-	out.Grow(len(s))
-	i := 0
-	for i < len(s) {
-		c := s[i]
-		switch c {
-		case '\'', '"', '`':
-			q := c
-			out.WriteByte(c)
-			i++
-			for i < len(s) {
-				ch := s[i]
-				out.WriteByte(ch)
-				i++
-				if ch == q {
-					if i < len(s) && s[i] == q {
-						out.WriteByte(s[i])
-						i++
-						continue
-					}
-					break
-				}
-			}
-		case '-':
-			if i+1 < len(s) && s[i+1] == '-' {
-				for i < len(s) && s[i] != '\n' {
-					i++
-				}
-				continue
-			}
-			out.WriteByte(c)
-			i++
-		case '/':
-			if i+1 < len(s) && s[i+1] == '*' {
-				i += 2
-				for i+1 < len(s) && (s[i] != '*' || s[i+1] != '/') {
-					i++
-				}
-				if i+1 < len(s) {
-					i += 2
-				} else {
-					i = len(s)
-				}
-				out.WriteByte(' ')
-				continue
-			}
-			out.WriteByte(c)
-			i++
-		default:
-			out.WriteByte(c)
-			i++
-		}
-	}
-	return out.String()
-}
-
 // chSortedKeys returns the keys of m in stable lexical order. Map
 // iteration order is randomized in Go, so without sorting the matcher
 // would see jittery `tables=[...]` output run-to-run, breaking
@@ -270,7 +215,15 @@ func chSortedKeys(m map[string]struct{}) []string {
 // shape consistent across SQL families so the dashboard's filter UI
 // doesn't need per-plugin special cases.
 func chSummary(info chSQLInfo) string {
-	parts := []string{strings.ToUpper(info.Verb)}
+	var parts []string
+	if info.Verb != "" {
+		parts = append(parts, strings.ToUpper(info.Verb))
+	} else {
+		// Unparseable query — surface the marker so dashboard event
+		// cards / HITL prompts read "UNPARSEABLE <stmt>" rather than
+		// a leading-blank " <stmt>".
+		parts = append(parts, "UNPARSEABLE")
+	}
 	if len(info.Tables) > 0 {
 		parts = append(parts, "tables=["+strings.Join(info.Tables, ",")+"]")
 	}

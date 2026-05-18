@@ -24,8 +24,6 @@ export function DevicePage({
   onBack,
   onConnect,
   onRefresh,
-  pendingConnect,
-  onConsumePendingConnect,
 }: {
   ip: string;
   agents: Agent[];
@@ -33,12 +31,6 @@ export function DevicePage({
   onBack: () => void;
   onConnect: (id: string) => void;
   onRefresh: () => void;
-  // When set, a credential id the page should auto-open the connect
-  // flow for on mount. Used by the agents-table click-through.
-  pendingConnect?: string;
-  // Called once the page has acted on pendingConnect, so the parent can
-  // clean the ?connect= out of the URL.
-  onConsumePendingConnect?: () => void;
 }) {
   const a = useMemo(() => agents.find((x) => x.ip === ip) ?? null, [agents, ip]);
   const [profiles, setProfiles] = useState<string[]>([]);
@@ -214,13 +206,7 @@ export function DevicePage({
       <LiveRequests agentIP={a.ip} height="360px" />
 
       {/* integrations management for this user */}
-      <IntegrationsCards
-        list={allForUser}
-        onConnect={onConnect}
-        onRefresh={onRefresh}
-        pendingConnect={pendingConnect}
-        onConsumePendingConnect={onConsumePendingConnect}
-      />
+      <IntegrationsCards list={allForUser} onConnect={onConnect} onRefresh={onRefresh} />
 
       {/* rules — per-device scope (with global rules layered in) */}
       <RulesPanel deviceIP={a.ip} profile={a.profile} />

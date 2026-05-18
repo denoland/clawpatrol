@@ -342,9 +342,8 @@ tunnel "local_command" "t" {
   listen  = "127.0.0.1:1"
 }
 endpoint "postgres" "ipliteral" {
-  host     = "10.0.0.5:5432"
-  database = "x"
-  tunnel   = t
+  host   = "10.0.0.5:5432"
+  tunnel = t
 }
 `)
 	gw, diags := config.LoadBytes(src, "ipliteral.hcl")

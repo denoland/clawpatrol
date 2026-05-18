@@ -56,6 +56,21 @@ func HostEndpoint(policy *config.CompiledPolicy, profile, host string) *config.C
 // CompiledRule keeps the original rule's identity (name / priority)
 // so logs still attribute the deny to the rule whose contract the
 // truncation broke.
+//
+// Unparseable-request fail-close: same shape as the truncated path,
+// but keyed on req.Unparseable + InspectsUnparseableFacet(). When a
+// frontend's parser refused the inbound bytes, the parser-derived
+// facets (e.g. for SQL: verb / tables / functions) are zero on the
+// request; a rule that reads any of them on an Unparseable request
+// would be evaluating zero values that don't reflect the actual
+// payload, so it synthesizes a deny instead. Rules that read only
+// the raw payload (e.g. sql.statement), the credential, or the
+// peer IP still get a normal Match call — those facets are populated
+// regardless of parse success. Rule priority is walked first, so a
+// higher-priority payload-only rule that matches keeps its verdict;
+// an unparseable request only triggers the synthesized deny when no
+// higher-priority rule covers it AND a lower-priority rule references
+// an unset parser facet.
 func MatchRequest(ep *config.CompiledEndpoint, req *match.Request) *config.CompiledRule {
 	if ep == nil {
 		return nil
@@ -84,6 +99,9 @@ func MatchRequest(ep *config.CompiledEndpoint, req *match.Request) *config.Compi
 		if req != nil && req.Truncated && r.Matcher.InspectsTruncatableFacet() {
 			return synthesizeTruncatedDeny(r)
 		}
+		if req != nil && req.Unparseable && r.Matcher.InspectsUnparseableFacet() {
+			return synthesizeUnparseableDeny(r)
+		}
 		if r.Matcher.Match(req) {
 			return r
 		}
@@ -107,45 +125,101 @@ func synthesizeTruncatedDeny(r *config.CompiledRule) *config.CompiledRule {
 	return &synth
 }
 
+// synthesizeUnparseableDeny mirrors synthesizeTruncatedDeny for the
+// parser-failure gate. The reason names the rule whose contract the
+// unparseable-request case broke, so logs / dashboard cards attribute
+// the synthesized deny to the matching rule rather than to an opaque
+// "unparseable" line item. The string is intentionally generic across
+// facet families: any plugin whose parser refused its inbound bytes
+// (SQL today; an external rule plugin tomorrow) routes through here.
+func synthesizeUnparseableDeny(r *config.CompiledRule) *config.CompiledRule {
+	reason := "rule \"" + r.Name + "\" references a facet that the gateway's parser could not derive from the unparseable request; failing closed"
+	synth := *r
+	synth.Outcome = config.Outcome{
+		Verdict: "deny",
+		Reason:  reason,
+	}
+	return &synth
+}
+
 // ResolveCredential picks the credential entry that applies to req.
 //
-// Single-binding endpoints (`credential = X`) short-circuit and
-// return the only entry. Multi-credential endpoints
-// (`credentials = [...]`) ask the endpoint plugin's runtime — via
-// the PlaceholderDetector interface — which placeholder string the
-// agent embedded in the request, then match that against the
-// configured placeholders. The trailing no-placeholder entry is the
-// fallback when no agent-side placeholder matched.
+// Multi-credential endpoints (`credentials = [...]`) carry up to
+// two dispatch constraints per entry: a placeholder string (matched
+// against whatever the endpoint plugin's PlaceholderDetector pulled
+// off the request) and a database list (matched against
+// req.Database). An entry matches iff every constraint it declares
+// is satisfied. Among matching entries the most-specific (highest
+// number of declared constraints) wins; compile-time validation
+// guarantees uniqueness of constraint signatures so equal-specificity
+// ties are impossible at runtime — but if one ever shows up we
+// return nil rather than silently mis-routing.
 //
-// Returns nil only when an endpoint declares no credentials at all.
-// The endpoint plugin then decides what to do (default-deny vs.
-// forward-unauthenticated).
+// Single-binding endpoints (`credential = X`) short-circuit: the
+// only entry has no constraints and matches anything.
+//
+// Returns nil when no entry matches, or when the endpoint declares
+// no credentials at all. The endpoint plugin then decides what to
+// do (default-deny vs forward-unauthenticated).
 func ResolveCredential(ep *config.CompiledEndpoint, req *match.Request) *config.CompiledCredential {
 	if ep == nil || len(ep.Credentials) == 0 {
 		return nil
 	}
-	if len(ep.Credentials) == 1 && ep.Credentials[0].Placeholder == "" {
+	if len(ep.Credentials) == 1 && ep.Credentials[0].Placeholder == "" && len(ep.Credentials[0].Databases) == 0 {
 		return ep.Credentials[0]
 	}
-	var fallback *config.CompiledCredential
 	candidates := make([]string, 0, len(ep.Credentials))
 	for _, c := range ep.Credentials {
-		if c.Placeholder == "" {
-			fallback = c
-			continue
+		if c.Placeholder != "" {
+			candidates = append(candidates, c.Placeholder)
 		}
-		candidates = append(candidates, c.Placeholder)
 	}
 	var sent string
 	if det, ok := ep.Plugin.Runtime.(PlaceholderDetector); ok && req != nil && len(candidates) > 0 {
 		sent = det.DetectPlaceholder(req, candidates)
 	}
-	if sent != "" {
-		for _, c := range ep.Credentials {
-			if c.Placeholder == sent {
-				return c
-			}
+	var database string
+	if req != nil {
+		database = req.Database
+	}
+	var best *config.CompiledCredential
+	bestSpecificity := -1
+	tiedAtBest := false
+	for _, c := range ep.Credentials {
+		phMatch := c.Placeholder == "" || c.Placeholder == sent
+		dbMatch := len(c.Databases) == 0 || containsString(c.Databases, database)
+		if !phMatch || !dbMatch {
+			continue
+		}
+		spec := 0
+		if c.Placeholder != "" {
+			spec++
+		}
+		if len(c.Databases) > 0 {
+			spec++
+		}
+		switch {
+		case spec > bestSpecificity:
+			best = c
+			bestSpecificity = spec
+			tiedAtBest = false
+		case spec == bestSpecificity:
+			tiedAtBest = true
 		}
 	}
-	return fallback
+	if tiedAtBest {
+		// Compile-time validation should have ruled this out; refuse
+		// to guess.
+		return nil
+	}
+	return best
+}
+
+func containsString(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
 }

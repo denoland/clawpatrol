@@ -162,7 +162,7 @@ func TestChHelloRejectsServerExceptionPacket(t *testing.T) {
 // statement type, table refs walked out of FROM/JOIN/INTO/DROP TABLE,
 // trailing FORMAT/SETTINGS chopped before the AST parser sees them
 // (the parser doesn't accept those in every position the server
-// does), and the parser-failure fallback.
+// does).
 func TestParseChSQL(t *testing.T) {
 	cases := []struct {
 		name string
@@ -225,6 +225,15 @@ func TestParseChSQL(t *testing.T) {
 			},
 		},
 		{
+			"use surfaces target database",
+			"USE metrics",
+			chSQLInfo{
+				Verb:        "use",
+				Statement:   "USE metrics",
+				UseDatabase: "metrics",
+			},
+		},
+		{
 			"empty sql preserved",
 			"",
 			chSQLInfo{},
@@ -232,28 +241,77 @@ func TestParseChSQL(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := parseChSQL(tc.sql)
+			got, unparseable := parseChSQL(tc.sql)
 			if diff := cmp.Diff(tc.want, got); diff != "" {
 				t.Errorf("parseChSQL mismatch (-want +got):\n%s", diff)
+			}
+			if unparseable {
+				t.Errorf("unparseable=true on a query the parser should accept")
 			}
 		})
 	}
 }
 
-// TestParseChSQLVerbFallback covers the parser-failure path: when
-// AfterShip's parser rejects the syntax (some ALTER permutations,
-// non-standard system commands, …) we still surface a verb sniffed
-// from the first keyword so verb-based rules keep firing.
-func TestParseChSQLVerbFallback(t *testing.T) {
-	// Construct an input the AST parser will refuse but the sniffer
-	// can still produce "system" out of.
-	sql := "SYSTEM ${{not_a_real_thing}}"
-	got := parseChSQL(sql)
-	if got.Verb != "system" {
-		t.Errorf("fallback verb = %q, want system", got.Verb)
+// TestParseChSQLUnparseable pins the contract change: when AfterShip's
+// parser refuses the input, parseChSQL now returns Statement-only +
+// unparseable=true. No verb sniff, no shape-specific rewrite — the
+// dispatcher's fail-closed-on-unparseable gate (config/runtime/
+// dispatch.go) is what surfaces a deny on rules that key on
+// parser-derived facets.
+//
+// Inputs cover the two failure shapes that motivated the change:
+//   - CTE-prefixed INSERT (the user-reported analytics workload, which
+//     AfterShip's grammar doesn't admit).
+//   - Exotic SYSTEM command the AST parser bails on.
+//
+// Both must produce the same shape — the whole point of the generic
+// contract is that "parser failed" is one thing, not a per-shape
+// special case.
+func TestParseChSQLUnparseable(t *testing.T) {
+	cases := []struct {
+		name string
+		sql  string
+	}{
+		{
+			name: "cte-prefixed insert",
+			sql: "WITH cte AS (SELECT id FROM src) " +
+				"INSERT INTO dst SELECT id FROM cte",
+		},
+		{
+			name: "user-reported analytics payload",
+			sql: `WITH
+    filtered_events AS (
+        SELECT toDate(event_time) AS event_date, user_id, event_type,
+               revenue, event_time
+        FROM raw_events
+    )
+INSERT INTO daily_user_metrics (event_date, user_id)
+SELECT fe.event_date, fe.user_id FROM filtered_events AS fe`,
+		},
+		{
+			name: "exotic system command",
+			sql:  "SYSTEM ${{not_a_real_thing}}",
+		},
 	}
-	if got.Statement != sql {
-		t.Errorf("fallback dropped Statement: %q", got.Statement)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, unparseable := parseChSQL(c.sql)
+			if !unparseable {
+				t.Fatalf("unparseable=false, want true (parser must refuse the input)")
+			}
+			if got.Verb != "" {
+				t.Errorf("Verb=%q, want \"\" (parser-derived facets must be zero on unparseable)", got.Verb)
+			}
+			if len(got.Tables) != 0 {
+				t.Errorf("Tables=%v, want empty", got.Tables)
+			}
+			if len(got.Functions) != 0 {
+				t.Errorf("Functions=%v, want empty", got.Functions)
+			}
+			if got.Statement != c.sql {
+				t.Errorf("Statement must round-trip verbatim; got %q want %q", got.Statement, c.sql)
+			}
+		})
 	}
 }
 
@@ -421,6 +479,45 @@ func chNewMockHandle(t *testing.T, ep *config.CompiledEndpoint) (*chMockHandle, 
 	return mock, agentSide
 }
 
+// TestChEvaluateSQLThreadsDatabaseIntoMeta verifies that the
+// database argument to chEvaluateSQL — supplied by HandleConn from
+// the agent's Hello.Database — lands on the *sqlfacet.Meta the
+// matcher reads. Case-sensitive: "metrics" and "Metrics" are
+// distinct databases.
+func TestChEvaluateSQLThreadsDatabaseIntoMeta(t *testing.T) {
+	denyOnDB := chRuleSQL(t, "deny-metrics-drops",
+		`sql.database == "metrics" && sql.verb == "drop"`,
+		"deny", "metrics is locked", 100)
+	ep := chBuildEndpoint(t, denyOnDB)
+
+	t.Run("matches when database equal", func(t *testing.T) {
+		mock, _ := chNewMockHandle(t, ep)
+		verdict, reason, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "metrics", false)
+		if verdict != "deny" {
+			t.Errorf("DROP on metrics verdict = %q, want deny", verdict)
+		}
+		if reason != "metrics is locked" {
+			t.Errorf("reason = %q, want %q", reason, "metrics is locked")
+		}
+	})
+
+	t.Run("different case does not match", func(t *testing.T) {
+		mock, _ := chNewMockHandle(t, ep)
+		verdict, _, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "Metrics", false)
+		if verdict != "" {
+			t.Errorf("DROP on Metrics (mixed case) verdict = %q, want allow", verdict)
+		}
+	})
+
+	t.Run("empty database does not match", func(t *testing.T) {
+		mock, _ := chNewMockHandle(t, ep)
+		verdict, _, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "", false)
+		if verdict != "" {
+			t.Errorf("DROP with empty database verdict = %q, want allow", verdict)
+		}
+	})
+}
+
 // TestChEvaluateSQLTruncated pins the per-rule fail-closed dispatch
 // for clickhouse: a rule whose CEL reads sql.* synth-denies on a
 // truncated request; a credential-only rule still allows. The
@@ -438,7 +535,7 @@ func TestChEvaluateSQLTruncated(t *testing.T) {
 
 		mock, _ := chNewMockHandle(t, ep)
 
-		verdict, reason := chEvaluateSQL(context.Background(), mock.ConnHandle, "SELECT 1", "ch-cred", true)
+		verdict, reason, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "SELECT 1", "ch-cred", "", true)
 		if verdict != "deny" {
 			t.Errorf("truncated SELECT verdict = %q, want deny (synth)", verdict)
 		}
@@ -457,11 +554,46 @@ func TestChEvaluateSQLTruncated(t *testing.T) {
 
 		mock, _ := chNewMockHandle(t, ep)
 
-		verdict, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "anything", "ch-cred", true)
+		verdict, _, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "anything", "ch-cred", "", true)
 		if verdict != "" {
 			t.Errorf("truncated passthrough verdict = %q, want allow (empty)", verdict)
 		}
 	})
+}
+
+// TestChEvaluateSQLCTEInsertSynthDenies is the regression for the
+// user-reported issue (PR #407 thread): a `WITH … INSERT INTO X
+// SELECT …` query that AfterShip's parser refuses must still be
+// denied when an `sql.verb == 'insert'` rule is on the endpoint. The
+// path is now generic — parser fails → req.Unparseable=true → the
+// verb rule synth-denies via the dispatcher's fail-closed gate. No
+// CTE-specific rewrite, no verb-sniffing.
+func TestChEvaluateSQLCTEInsertSynthDenies(t *testing.T) {
+	denyInsert := chRuleSQL(t, "deny-insert",
+		"sql.verb == 'insert'", "deny", "writes blocked", 100)
+	ep := chBuildEndpoint(t, denyInsert)
+	mock, _ := chNewMockHandle(t, ep)
+
+	sql := "WITH cte AS (SELECT id FROM src) INSERT INTO dst SELECT id FROM cte"
+	verdict, reason, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, sql, "ch-cred", "", false)
+	if verdict != "deny" {
+		t.Errorf("CTE+INSERT verdict = %q, want deny (via synth on Unparseable)", verdict)
+	}
+	if reason == "" {
+		t.Errorf("synth deny reason must be non-empty")
+	}
+	if len(mock.events) != 1 {
+		t.Fatalf("expected 1 conn event, got %d", len(mock.events))
+	}
+	if mock.events[0].Action != "deny" {
+		t.Errorf("event action = %q, want deny", mock.events[0].Action)
+	}
+	// The event's verb is empty because the parser couldn't derive
+	// one — surfaces honestly rather than the misleading "with" that
+	// the old verb-sniff fallback produced.
+	if mock.events[0].Verb != "" {
+		t.Errorf("event verb = %q, want \"\" (parser-derived facets are zero on unparseable)", mock.events[0].Verb)
+	}
 }
 
 // TestChEvaluateSQLAllowsSelectDeniesInsert is the iter 2 acceptance
@@ -476,7 +608,7 @@ func TestChEvaluateSQLAllowsSelectDeniesInsert(t *testing.T) {
 
 	mock, _ := chNewMockHandle(t, ep)
 
-	verdict, reason := chEvaluateSQL(context.Background(), mock.ConnHandle, "INSERT INTO events VALUES (1)", "ch-cred", false)
+	verdict, reason, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "INSERT INTO events VALUES (1)", "ch-cred", "", false)
 	if verdict != "deny" {
 		t.Errorf("INSERT verdict = %q, want deny", verdict)
 	}
@@ -484,7 +616,7 @@ func TestChEvaluateSQLAllowsSelectDeniesInsert(t *testing.T) {
 		t.Errorf("INSERT reason = %q, want %q", reason, "writes blocked")
 	}
 
-	verdict, _ = chEvaluateSQL(context.Background(), mock.ConnHandle, "SELECT 1", "ch-cred", false)
+	verdict, _, _ = chEvaluateSQL(context.Background(), mock.ConnHandle, "SELECT 1", "ch-cred", "", false)
 	if verdict != "" {
 		t.Errorf("SELECT verdict = %q, want allow (empty)", verdict)
 	}
@@ -532,7 +664,7 @@ func TestChEvaluateSQLApproveChain(t *testing.T) {
 	t.Run("approver allows", func(t *testing.T) {
 		mock, _ := chNewMockHandle(t, ep)
 		mock.Approve = chMockApprove("allow", "ok")
-		verdict, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", false)
+		verdict, _, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "", false)
 		if verdict != "" {
 			t.Errorf("approver allow → verdict %q, want empty", verdict)
 		}
@@ -543,7 +675,7 @@ func TestChEvaluateSQLApproveChain(t *testing.T) {
 	t.Run("approver denies", func(t *testing.T) {
 		mock, _ := chNewMockHandle(t, ep)
 		mock.Approve = chMockApprove("deny", "operator rejected")
-		verdict, reason := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", false)
+		verdict, reason, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "", false)
 		if verdict != "deny" || reason != "operator rejected" {
 			t.Errorf("verdict=%q reason=%q, want deny/operator rejected", verdict, reason)
 		}
@@ -554,7 +686,7 @@ func TestChEvaluateSQLApproveChain(t *testing.T) {
 	t.Run("missing Approve callback default-denies", func(t *testing.T) {
 		mock, _ := chNewMockHandle(t, ep)
 		mock.Approve = nil
-		verdict, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", false)
+		verdict, _, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, "DROP TABLE events", "ch-cred", "", false)
 		if verdict != "deny" {
 			t.Errorf("no Approve → verdict %q, want deny", verdict)
 		}
@@ -611,7 +743,7 @@ func TestChAgentToServerStreamsOversizedQueryBody(t *testing.T) {
 
 	reader := chgoproto.NewReader(bytes.NewReader(agentBuf.Buf))
 	var upstream bytes.Buffer
-	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred", "")
 
 	out := upstream.Bytes()
 	if len(out) == 0 || chgoproto.ClientCode(out[0]) != chgoproto.ClientCodeQuery {
@@ -679,7 +811,7 @@ func TestChAgentToServerForwardsQuery(t *testing.T) {
 	reader := chgoproto.NewReader(bytes.NewReader(agentBuf.Buf))
 	var upstream bytes.Buffer
 
-	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred", "")
 
 	if upstream.Len() == 0 {
 		t.Fatal("upstream got no bytes")
@@ -741,7 +873,7 @@ func TestChHandleDataUncompressed(t *testing.T) {
 
 	reader := chgoproto.NewReader(bytes.NewReader(agentBuf.Buf))
 	var upstream bytes.Buffer
-	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred", "")
 
 	out := upstream.Bytes()
 	if len(out) == 0 || chgoproto.ClientCode(out[0]) != chgoproto.ClientCodeData {
@@ -816,7 +948,7 @@ func TestChHandleDataCompressedForwardsOpaquely(t *testing.T) {
 
 	reader := chgoproto.NewReader(bytes.NewReader(agentBuf.Buf))
 	var upstream bytes.Buffer
-	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred", "")
 
 	out := upstream.Bytes()
 
@@ -931,7 +1063,7 @@ func TestChCompressedDataEventDropsRowsCols(t *testing.T) {
 
 	reader := chgoproto.NewReader(bytes.NewReader(agentBuf.Buf))
 	var upstream bytes.Buffer
-	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred", "")
 
 	summary := chCompressedDataEventSummary(t, mock.events)
 	wantBytes := fmt.Sprintf("bytes=%d", len(chunkBytes))
@@ -981,7 +1113,7 @@ func TestChProbeForwardsMultiChunkBlock(t *testing.T) {
 
 	reader := chgoproto.NewReader(bytes.NewReader(agentBuf.Buf))
 	var upstream bytes.Buffer
-	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred", "")
 
 	// Strip the Query frame + Data header; what's left must be both
 	// chunks concatenated, byte-for-byte.
@@ -1051,7 +1183,7 @@ func TestChProbeRewindsToNextQuery(t *testing.T) {
 
 	reader := chgoproto.NewReader(bytes.NewReader(agentBuf.Buf))
 	var upstream bytes.Buffer
-	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred", "")
 
 	r := chgoproto.NewReader(bytes.NewReader(upstream.Bytes()))
 	// Q1
@@ -1146,7 +1278,7 @@ func TestChAgentToServerDeniesQuery(t *testing.T) {
 		read <- append([]byte(nil), buf[:n]...)
 	}()
 
-	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred", "")
 
 	if upstream.Len() != 0 {
 		t.Errorf("denied query forwarded %d bytes upstream", upstream.Len())
@@ -1154,6 +1286,167 @@ func TestChAgentToServerDeniesQuery(t *testing.T) {
 	got := <-read
 	if len(got) == 0 || chgoproto.ServerCode(got[0]) != chgoproto.ServerCodeException {
 		t.Errorf("agent did not receive Exception packet; first byte = %d", got[0])
+	}
+}
+
+// TestChAgentToServerUseDatabaseUpdatesSessionScope is the regression
+// for the v1-limitation closure: a `USE metrics` allowed by the
+// matcher must roll the session-tracked database forward so the very
+// next statement matches against `metrics` instead of the connect-
+// time database. The stream is `USE metrics; DROP TABLE events`,
+// with a rule that denies `sql.database == "metrics" && sql.verb ==
+// "drop"`. The pre-fix code reported the connect-time database for
+// every query, so the DROP slipped past the rule and reached
+// upstream; with USE-tracking the gateway denies it and the agent
+// receives an Exception.
+func TestChAgentToServerUseDatabaseUpdatesSessionScope(t *testing.T) {
+	const revision = 54448
+	rule := chRuleSQL(t, "lock-metrics",
+		`sql.database == "metrics" && sql.verb == "drop"`,
+		"deny", "metrics is locked", 100)
+	ep := chBuildEndpoint(t, rule)
+	mock, agentSide := chNewMockHandle(t, ep)
+	defer func() { _ = agentSide.Close() }()
+	defer func() { _ = mock.Conn.Close() }()
+
+	mkQuery := func(id, body string) []byte {
+		q := chgoproto.Query{
+			ID: id, Body: body,
+			Stage: chgoproto.StageComplete,
+			Info: chgoproto.ClientInfo{
+				ProtocolVersion: revision, Major: 24, Minor: 8,
+				Interface:   chgoproto.InterfaceTCP,
+				Query:       chgoproto.ClientQueryInitial,
+				InitialUser: "alice",
+			},
+		}
+		var b chgoproto.Buffer
+		q.EncodeAware(&b, revision)
+		return b.Buf
+	}
+
+	var stream bytes.Buffer
+	stream.Write(mkQuery("q1", "USE metrics"))
+	stream.Write(mkQuery("q2", "DROP TABLE events"))
+
+	agentBytes := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		n, _ := agentSide.Read(buf)
+		agentBytes <- append([]byte(nil), buf[:n]...)
+	}()
+
+	reader := chgoproto.NewReader(bytes.NewReader(stream.Bytes()))
+	var upstream bytes.Buffer
+	// Connect-time database is "default" — the rule must not fire on
+	// it; only after USE metrics rolls the tracker forward.
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred", "default")
+
+	r := chgoproto.NewReader(bytes.NewReader(upstream.Bytes()))
+	var bodies []string
+	for {
+		code, err := r.UInt8()
+		if err != nil {
+			break
+		}
+		if chgoproto.ClientCode(code) != chgoproto.ClientCodeQuery {
+			t.Fatalf("upstream packet code = %d, want ClientCodeQuery", code)
+		}
+		var q chgoproto.Query
+		if err := q.DecodeAware(r, revision); err != nil {
+			t.Fatalf("decode upstream Query: %v", err)
+		}
+		bodies = append(bodies, q.Body)
+	}
+	wantBodies := []string{"USE metrics"}
+	if diff := cmp.Diff(wantBodies, bodies); diff != "" {
+		t.Errorf("upstream Query bodies (-want +got):\n%s", diff)
+	}
+
+	exc := <-agentBytes
+	if len(exc) == 0 || chgoproto.ServerCode(exc[0]) != chgoproto.ServerCodeException {
+		t.Errorf("agent did not receive Exception for the DROP; first byte = %d", exc[0])
+	}
+
+	// Pin the per-statement meta: the USE event saw `default` (the
+	// pre-swap value), and the DROP event saw `metrics`.
+	var useEvent, dropEvent *runtime.ConnEvent
+	for i := range mock.events {
+		switch mock.events[i].Verb {
+		case "use":
+			useEvent = &mock.events[i]
+		case "drop":
+			dropEvent = &mock.events[i]
+		}
+	}
+	if useEvent == nil || dropEvent == nil {
+		t.Fatalf("expected use+drop events, got: %+v", mock.events)
+	}
+	if got, _ := useEvent.Facets["database"].(string); got != "default" {
+		t.Errorf("USE event database facet = %q, want %q (pre-swap)", got, "default")
+	}
+	if got, _ := dropEvent.Facets["database"].(string); got != "metrics" {
+		t.Errorf("DROP event database facet = %q, want %q (post-swap)", got, "metrics")
+	}
+}
+
+// TestChAgentToServerUseDatabaseStickyOnDeny verifies the denied-USE
+// path: a `USE metrics` rejected by the matcher must leave the
+// session's tracked database untouched, so the next statement still
+// reports the pre-USE value to the matcher. Without this, a denied
+// USE that the dashboard "knows" failed would still poison every
+// downstream `sql.database` predicate for the connection.
+func TestChAgentToServerUseDatabaseStickyOnDeny(t *testing.T) {
+	const revision = 54448
+	rule := chRuleSQL(t, "no-use-metrics",
+		`sql.verb == "use" && sql.statement == "USE metrics"`,
+		"deny", "use blocked", 100)
+	ep := chBuildEndpoint(t, rule)
+	mock, agentSide := chNewMockHandle(t, ep)
+	defer func() { _ = agentSide.Close() }()
+	defer func() { _ = mock.Conn.Close() }()
+
+	mkQuery := func(id, body string) []byte {
+		q := chgoproto.Query{
+			ID: id, Body: body,
+			Stage: chgoproto.StageComplete,
+			Info: chgoproto.ClientInfo{
+				ProtocolVersion: revision, Major: 24, Minor: 8,
+				Interface:   chgoproto.InterfaceTCP,
+				Query:       chgoproto.ClientQueryInitial,
+				InitialUser: "alice",
+			},
+		}
+		var b chgoproto.Buffer
+		q.EncodeAware(&b, revision)
+		return b.Buf
+	}
+
+	var stream bytes.Buffer
+	stream.Write(mkQuery("q1", "USE metrics"))
+	stream.Write(mkQuery("q2", "SELECT 1"))
+
+	// Drain the Exception the deny writes to the agent.
+	go func() {
+		buf := make([]byte, 4096)
+		_, _ = agentSide.Read(buf)
+	}()
+
+	reader := chgoproto.NewReader(bytes.NewReader(stream.Bytes()))
+	var upstream bytes.Buffer
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred", "default")
+
+	var selectEvent *runtime.ConnEvent
+	for i := range mock.events {
+		if mock.events[i].Verb == "select" {
+			selectEvent = &mock.events[i]
+		}
+	}
+	if selectEvent == nil {
+		t.Fatalf("expected select event after denied USE; got: %+v", mock.events)
+	}
+	if got, _ := selectEvent.Facets["database"].(string); got != "default" {
+		t.Errorf("SELECT database after denied USE = %q, want %q (USE must not roll forward on deny)", got, "default")
 	}
 }
 
@@ -1211,7 +1504,7 @@ func TestChAgentToServerMultiQueryDenyContinues(t *testing.T) {
 
 	reader := chgoproto.NewReader(bytes.NewReader(stream.Bytes()))
 	var upstream bytes.Buffer
-	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred")
+	chAgentToServer(context.Background(), mock.ConnHandle, reader, &upstream, revision, "ch-cred", "")
 
 	// Upstream must contain q1 and q3 (q2 was denied → not forwarded).
 	r := chgoproto.NewReader(bytes.NewReader(upstream.Bytes()))

@@ -66,8 +66,7 @@ export function TypeBlock({
           {line.split("").map((ch, i) => {
             const globalIdx = charIndex++;
             const charStart = startPct + (globalIdx / totalChars) * range;
-            const charEnd =
-              startPct + ((globalIdx + 1) / totalChars) * range;
+            const charEnd = startPct + ((globalIdx + 1) / totalChars) * range;
             return (
               <span
                 key={i}
