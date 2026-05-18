@@ -86,8 +86,8 @@ class TransparentProxyProvider: NETransparentProxyProvider {
                             userInfo: [NSLocalizedDescriptionKey: "tsnet: \(msg)"]))
                         return
                     }
-                    self.startSessionListener()
-                    self.startSessionReaper()
+                    startSessionListener()
+                    startSessionReaper()
                     self.applyNetworkSettings(completionHandler: completionHandler)
                 }
             }

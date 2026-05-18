@@ -2821,7 +2821,7 @@ func runGateway(args []string) {
 			// Capture SO_ORIGINAL_DST before any buffering (iptables REDIRECT path).
 			origIP, origPort, hasOrigDst := originalDst(c)
 
-			dstIP, dstPort, isUDP, conn, err := readProxyHeader(c)
+			dstIP, dstPort, conn, err := readProxyHeader(c)
 			if err != nil {
 				_ = c.Close()
 				return
@@ -2836,18 +2836,6 @@ func runGateway(args []string) {
 					g.serveTSNetDirect(conn, tsnetDashMux)
 					return
 				}
-			}
-			// PROXY UDP4: length-framed datagram relay over the TCP carrier.
-			// Port 53 goes to the DNS VIP handler (RFC 1035 TCP framing is
-			// identical to our [uint16 len][payload] framing). Other ports
-			// get a raw UDP socket relay.
-			if isUDP {
-				if dstPort == 53 {
-					g.handleDNSTCPConn(conn, dstIP)
-				} else {
-					relayUDPOverTCP(conn, dstIP, int(dstPort))
-				}
-				return
 			}
 			switch {
 			case dstPort == 443:
@@ -2871,86 +2859,30 @@ func runGateway(args []string) {
 }
 
 // readProxyHeader peeks at c for a HAProxy PROXY v1 line.
-// If "PROXY TCP4/UDP4 srcIP dstIP srcPort dstPort\r\n" is present it is
-// consumed and the original dst IP/port returned. isUDP is true for UDP4.
-// If absent, dstPort==0 and the conn is returned with all peeked bytes still readable.
-func readProxyHeader(c net.Conn) (dstIP string, dstPort uint16, isUDP bool, conn net.Conn, _ error) {
+// If "PROXY TCP4 srcIP dstIP srcPort dstPort\r\n" is present it is consumed
+// and the original dst IP/port returned. If absent, dstPort==0 and the conn
+// is returned with all peeked bytes still readable.
+func readProxyHeader(c net.Conn) (dstIP string, dstPort uint16, conn net.Conn, _ error) {
 	br := bufio.NewReaderSize(c, 128)
 	hdr, err := br.Peek(5)
 	bc := &bufferedConn{Reader: br, Conn: c}
 	if err != nil || string(hdr) != "PROXY" {
-		return "", 0, false, bc, nil
+		return "", 0, bc, nil
 	}
 	line, err := br.ReadString('\n')
 	if err != nil {
-		return "", 0, false, nil, fmt.Errorf("proxy header read: %w", err)
+		return "", 0, nil, fmt.Errorf("proxy header read: %w", err)
 	}
-	// "PROXY TCP4/UDP4 srcIP dstIP srcPort dstPort\r\n"
+	// "PROXY TCP4 srcIP dstIP srcPort dstPort\r\n"
 	fields := strings.Fields(strings.TrimRight(line, "\r\n"))
 	if len(fields) != 6 {
-		return "", 0, false, nil, fmt.Errorf("malformed proxy header: %q", line)
+		return "", 0, nil, fmt.Errorf("malformed proxy header: %q", line)
 	}
 	port, err := strconv.ParseUint(fields[5], 10, 16)
 	if err != nil {
-		return "", 0, false, nil, fmt.Errorf("proxy header port: %w", err)
+		return "", 0, nil, fmt.Errorf("proxy header port: %w", err)
 	}
-	return fields[3], uint16(port), fields[1] == "UDP4", bc, nil
-}
-
-// relayUDPOverTCP reads length-prefixed datagrams from the TCP conn,
-// sends each as a real UDP datagram to dstIP:dstPort, and writes
-// responses back as length-prefixed frames. Used for tsnet UDP relay:
-// the NE has no native UDP tunnel but tsnet gives us TCP to the gateway.
-//
-// Framing (both directions): [uint16 big-endian length][payload].
-// This is identical to RFC 1035 DNS-over-TCP — so handleDNSTCPConn
-// can be called directly for port 53 without going through here.
-func relayUDPOverTCP(c net.Conn, dstIP string, dstPort int) {
-	udpAddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", dstIP, dstPort))
-	if err != nil {
-		return
-	}
-	udpConn, err := net.DialUDP("udp4", nil, udpAddr)
-	if err != nil {
-		return
-	}
-	defer func() { _ = udpConn.Close() }()
-	defer func() { _ = c.Close() }()
-
-	// client → upstream UDP
-	go func() {
-		lbuf := make([]byte, 2)
-		buf := make([]byte, 65535)
-		for {
-			if _, err := io.ReadFull(c, lbuf); err != nil {
-				return
-			}
-			n := int(lbuf[0])<<8 | int(lbuf[1])
-			if n == 0 || n > len(buf) {
-				return
-			}
-			if _, err := io.ReadFull(c, buf[:n]); err != nil {
-				return
-			}
-			_, _ = udpConn.Write(buf[:n])
-		}
-	}()
-
-	// upstream UDP → client
-	buf := make([]byte, 65535)
-	lbuf := make([]byte, 2)
-	for {
-		_ = udpConn.SetReadDeadline(time.Now().Add(30 * time.Second))
-		n, err := udpConn.Read(buf)
-		if err != nil {
-			return
-		}
-		lbuf[0] = byte(n >> 8)
-		lbuf[1] = byte(n)
-		if _, err := c.Write(append(lbuf[:2:2], buf[:n]...)); err != nil {
-			return
-		}
-	}
+	return fields[3], uint16(port), bc, nil
 }
 
 type bufferedConn struct {
