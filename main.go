@@ -35,6 +35,7 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 	"github.com/denoland/clawpatrol/dnsvip"
 	"github.com/google/uuid"
+	"tailscale.com/client/local"
 )
 
 // JoinConfig aliases config.JoinConfig so call sites (newWebMux /
@@ -358,6 +359,11 @@ type Gateway struct {
 	// resolves a conflict. Included in onboard join responses as
 	// gateway_host so clawpatrol-run peer lookups succeed.
 	tailscaleHostname string
+	// tsnetLC is the embedded tsnet's LocalClient. Used to resolve a
+	// peer's full address set (e.g. IPv4 → IPv6 ULA) when seeding
+	// profile mappings — tsnet whole-machine traffic arrives on the
+	// IPv6 ULA, so the IPv4 entry alone isn't enough.
+	tsnetLC *local.Client
 }
 
 // transportFor returns the cached http.Transport for ep, building it
@@ -404,8 +410,54 @@ func (g *Gateway) profileFor(peerIP string) string {
 		if p := g.onboard.ProfileForIP(peerIP); p != "" {
 			return p
 		}
+		// Lazy IPv6 → IPv4 resolution: whole-machine tsnet traffic
+		// often arrives on the peer's fd7a:115c:a1e0::/48 ULA. If the
+		// onboard table only has the IPv4 entry (peers registered
+		// before seedTsnetIPv6Alias existed), resolve via tsnet WhoIs
+		// once and stamp the alias.
+		if g.tsnetLC != nil && strings.HasPrefix(peerIP, "fd7a:") {
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+			if w, err := g.tsnetLC.WhoIs(ctx, net.JoinHostPort(peerIP, "0")); err == nil && w != nil && w.Node != nil {
+				for _, addr := range w.Node.Addresses {
+					ip := addr.Addr()
+					if !ip.Is4() {
+						continue
+					}
+					if p := g.onboard.ProfileForIP(ip.String()); p != "" {
+						g.onboard.RegisterIPAlias(peerIP, ip.String())
+						return p
+					}
+				}
+			}
+		}
 	}
 	return defaultProfileName(g.cfg.Policy)
+}
+
+// seedTsnetIPv6Alias resolves peerIP (IPv4) to the peer's IPv6 ULA via
+// tsnet WhoIs and mirrors the same profile mapping onto the v6 in the
+// onboard registry. Whole-machine tsnet traffic frequently arrives on
+// the fd7a:115c:a1e0::/48 ULA rather than the 100.x IPv4 — without
+// the alias profileFor falls back to "default" and dispatch misses
+// every endpoint declared on the actual profile.
+func (g *Gateway) seedTsnetIPv6Alias(peerIP string) {
+	if g.tsnetLC == nil || g.onboard == nil || peerIP == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	w, err := g.tsnetLC.WhoIs(ctx, net.JoinHostPort(peerIP, "0"))
+	if err != nil || w == nil || w.Node == nil {
+		return
+	}
+	for _, addr := range w.Node.Addresses {
+		ip := addr.Addr()
+		if !ip.Is6() {
+			continue
+		}
+		g.onboard.RegisterIPAlias(ip.String(), peerIP)
+	}
 }
 
 // agentIPFor returns the IP to use for traffic attribution. Ephemeral
@@ -1669,6 +1721,30 @@ func (g *Gateway) serveTSNetDirect(c net.Conn, mux http.Handler) {
 	_ = http.Serve(&oneShotListener{c: tc}, mux)
 }
 
+// serveTsnetDNSUDP pumps UDP/53 datagrams from the tsnet listener
+// through dnsvip.HandlePacket. Used for whole-machine exit-node
+// clients so the gateway allocates VIPs for intercepted hostnames
+// before the client's TCP follow-up arrives.
+func serveTsnetDNSUDP(pc net.PacketConn, vip *dnsvip.Allocator) {
+	defer func() { _ = pc.Close() }()
+	buf := make([]byte, 4<<10)
+	for {
+		n, src, err := pc.ReadFrom(buf)
+		if err != nil {
+			return
+		}
+		dstIP := ""
+		if la, ok := pc.LocalAddr().(*net.UDPAddr); ok && la.IP != nil {
+			dstIP = la.IP.String()
+		}
+		resp := vip.HandlePacket(buf[:n], dstIP)
+		if resp == nil {
+			continue
+		}
+		_, _ = pc.WriteTo(resp, src)
+	}
+}
+
 func pipeProgress(a, b net.Conn, onTick func(rx, tx int64)) (rx, tx int64) {
 	var rxC, txC atomic.Int64
 	done := make(chan struct{}, 2)
@@ -2863,6 +2939,7 @@ func runGateway(args []string) {
 		// work on machines without a system tailscaled daemon.
 		if lc, err := tsnetServer.LocalClient(); err == nil {
 			g.agents.SetLocalClient(lc)
+			g.tsnetLC = lc
 		} else {
 			log.Printf("tsnet: LocalClient for whois: %v", err)
 		}
@@ -2879,6 +2956,33 @@ func runGateway(args []string) {
 		}
 		if cfg.Funnel {
 			startFunnelListener(tsnetServer, tsnetDashMux)
+		}
+		// UDP/53 DNS server on the tsnet node. Whole-machine clients with
+		// the gateway as exit-node send DNS via UDP/53 to the gateway's
+		// tailnet IP; dnsvip allocates a VIP per intercepted hostname so
+		// the subsequent TCP connection has a VIP the gateway recognises
+		// and dispatches. WG mode's promiscuous forwarder caught this
+		// already; tsnet exit-node needs an explicit listener.
+		//
+		// ListenPacket requires a concrete IP (not the wildcard). Wait
+		// for the tailnet IP to be assigned, then bind there.
+		if g.dnsvip != nil {
+			go func() {
+				for i := 0; i < 60 && g.tailscaleIP == ""; i++ {
+					time.Sleep(500 * time.Millisecond)
+				}
+				if g.tailscaleIP == "" {
+					log.Printf("tsnet: dnsvip UDP listener skipped — no tailscale IP")
+					return
+				}
+				pc, err := tsnetServer.ListenPacket("udp", g.tailscaleIP+":53")
+				if err != nil {
+					log.Printf("tsnet: udp %s:53 (dns): %v", g.tailscaleIP, err)
+					return
+				}
+				log.Printf("tsnet: dnsvip UDP listener on %s:53", g.tailscaleIP)
+				serveTsnetDNSUDP(pc, g.dnsvip)
+			}()
 		}
 		// Intercept all TCP forwarded through this exit node (whole-machine
 		// clients). dst is the original internet destination — same dispatch

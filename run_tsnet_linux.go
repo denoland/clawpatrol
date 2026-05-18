@@ -3,33 +3,28 @@
 package main
 
 // `clawpatrol run` in Tailscale mode. Spins up an ephemeral tsnet.Server
-// per invocation and bridges the child's netns TUN to the gateway via
-// gVisor's TCP stack. No system-wide Tailscale required — tsnet runs
-// entirely in-process.
+// per invocation — fresh node identity each time, auto-removed on
+// disconnect by Tailscale (ephemeral=true). Mirrors macOS NE
+// (macos/netstack/wgnetstack.go) + WG-mode ephemeralPeer flow so
+// concurrent `clawpatrol run` invocations on one machine don't fight
+// over a shared state lock.
 //
-// Why PROXY headers:
-//
-// `clawpatrol run` clients are NOT exit-node clients. The child process runs
-// in its own network namespace with a gVisor TCP/IP stack as the default
-// route. Each TCP connection the child makes is intercepted by gVisor and
-// dialed out via tsnet directly to the gateway node over the tailnet — a
-// peer-to-peer connection. The connection arrives at the gateway's TCP
-// listener as a direct tailnet connection from the ephemeral node's 100.x.x.x.
-// The PROXY header carries the original 4-tuple so the gateway dispatches it
-// the same way as WireGuard and whole-machine exit-node paths.
-//
-// The PROXY header carries the original 4-tuple (srcIP, dstIP, srcPort,
-// dstPort) so the gateway accept loop recovers what the child process was
-// actually trying to reach (e.g., api.openai.com:443) and dispatches it
-// identically to the WireGuard and exit-node paths.
+// The auth key persisted at join is reusable + ephemeral=true, so each
+// run consumes the same key but spawns a distinct tailnet node.
 //
 // Flow:
-//  1. POST /api/peer/ephemeral/tsnet → ephemeral Tailscale auth key
-//  2. tsnet.Server{Ephemeral: true} joins the gateway's tailnet
-//  3. Child in new user+net+mnt ns creates TUN, sends fd via SCM_RIGHTS
-//  4. gVisor netstack reads from TUN, promiscuous TCP forwarder
-//  5. Each TCP connection → tsnet.Dial(gwHost:gwPort) + HAProxy PROXY v1 header
-//  6. Gateway recovers original dst from PROXY header, dispatches normally
+//  1. Read persisted reusable+ephemeral auth_key from ~/.clawpatrol/.
+//  2. tsnet.Server{Ephemeral: true, Dir: MkdirTemp(...)} joins the
+//     gateway's tailnet under a fresh hostname.
+//  3. Register the new tailnet IP with the gateway — register handler
+//     attributes traffic back to the parent device via
+//     ephemeralParentByIP so the dashboard shows ONE row per machine.
+//  4. Child in a new user+net+mnt ns creates the TUN, sends fd via
+//     SCM_RIGHTS.
+//  5. gVisor TCP forwarder dials gateway via tsnet + HAProxy PROXY v1
+//     header carrying original src/dst/ports.
+//  6. Gateway recovers original dst from the PROXY header and
+//     dispatches like WireGuard / exit-node paths.
 
 import (
 	"context"
@@ -104,28 +99,29 @@ func runRunTsnet(args []string) {
 	if authKey == "" {
 		fail("tsnet run: missing tsnet-auth-key in %s (re-run `clawpatrol join`)", dir)
 	}
-	// Gateway port for direct-dial fallback (rarely used; tsnet exit-node
-	// routing is the normal path). Default 443.
-	gwPort := "443"
+	// Gateway agent port (where the MITM listener lives). Tsnet Funnel
+	// owns :443, so the listener is typically :8443. Persisted at join.
+	gwPort := strings.TrimSpace(readFileSilent(filepath.Join(dir, "gateway-port")))
+	if gwPort == "" {
+		gwPort = "443"
+	}
 
-	// 2. Spin up tsnet.Server with PERSISTENT state — same node identity
-	// (same tailnet IP, same hostname) across `clawpatrol run` invocations
-	// so the gateway sees ONE device per machine, not a new ephemeral
-	// node per run. The reusable auth key is only consumed on first
-	// startup; subsequent runs load saved state and skip the login.
-	stateDir := filepath.Join(dir, "tsnet")
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+	// 2. Spin up an ephemeral tsnet.Server per invocation. tmpdir state
+	// + Ephemeral:true means each run is a fresh tailnet node, freed
+	// automatically when this process exits. Concurrent runs on the same
+	// host don't collide on tsnet's exclusive state lock.
+	stateDir, err := os.MkdirTemp("", "clawpatrol-tsnet-*")
+	if err != nil {
 		fail("tsnet state dir: %v", err)
 	}
-	hn, _ := os.Hostname()
-	if hn == "" {
-		hn = fmt.Sprintf("clawpatrol-%d", os.Getpid())
-	}
+	defer func() { _ = os.RemoveAll(stateDir) }()
+	hn := fmt.Sprintf("clawpatrol-run-%d", os.Getpid())
 	tsServer := &tsnet.Server{
 		Hostname:   hn,
 		AuthKey:    authKey,
 		ControlURL: controlURL,
 		Dir:        stateDir,
+		Ephemeral:  true,
 		Logf:       func(string, ...any) {},
 	}
 	defer func() { _ = tsServer.Close() }()

@@ -144,7 +144,15 @@ func runJoin(args []string) {
 	// Skipped for per-process tsnet mode and for macOS (where the NE
 	// extension owns routing — never system tailscale).
 	if *wholeMachine && runtime.GOOS == "linux" {
-		loginArgs := []string{"-name", *gwName, "-ca-dir", *caOut}
+		// Use the actual registered tsnet node name as the exit-node
+		// target, not the --name default. onboardViaDeviceFlow's
+		// whole-machine branch persists this at tailnet-gateway.
+		exitNode := *gwName
+		gwHostFile := strings.TrimSpace(readFileSilent(filepath.Join(*caOut, "tailnet-gateway")))
+		if gwHostFile != "" {
+			exitNode = gwHostFile
+		}
+		loginArgs := []string{"-name", exitNode, "-ca-dir", *caOut}
 		if *skipTrust {
 			loginArgs = append(loginArgs, "-no-trust")
 		}
@@ -587,7 +595,20 @@ func tailscaleStatus(bin string) (*tsStatus, error) {
 	return &s, nil
 }
 
+// findPeerByName looks up a peer by its tailnet-unique short name. Multiple
+// peers may share HostName (Tailscale uses the value the node reports at
+// registration — unchanged by name collisions), so prefer matching the
+// first label of DNSName which Tailscale disambiguates with "-1", "-2"…
 func findPeerByName(s *tsStatus, name string) *tsPeer {
+	for _, p := range s.Peer {
+		short := p.DNSName
+		if i := strings.IndexByte(short, '.'); i > 0 {
+			short = short[:i]
+		}
+		if short == name {
+			return p
+		}
+	}
 	for _, p := range s.Peer {
 		if p.HostName == name {
 			return p
@@ -893,6 +914,9 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	if profile != "" {
 		q.Set("profile", profile)
 	}
+	if wholeMachine {
+		q.Set("whole_machine", "1")
+	}
 	startURL := gateway + "/api/onboard/start"
 	if encoded := q.Encode(); encoded != "" {
 		startURL += "?" + encoded
@@ -953,7 +977,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 
 	stopSpin := startSpinner("Waiting for approval")
 	authKey, loginServer, apiToken := "", "", ""
-	var tailnetGWHost, tailnetControlURL, gatewayIP, caPEM string
+	var tailnetGWHost, tailnetControlURL, gatewayIP, gatewayPort, caPEM string
 	for time.Now().Before(deadline) {
 		time.Sleep(interval)
 		pr, err := cli.Post(gateway+"/api/onboard/poll?device_code="+start.DeviceCode, "application/json", nil)
@@ -970,6 +994,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 			tailnetGWHost = pv["gateway_host"]
 			tailnetControlURL = pv["control_url"]
 			gatewayIP = pv["gateway_ip"]
+			gatewayPort = pv["gateway_port"]
 			caPEM = pv["ca_pem"]
 			break
 		}
@@ -1119,6 +1144,9 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		// start a fresh ephemeral tsnet node without a Funnel-exposed
 		// peer-API call (which we intentionally block).
 		_ = os.WriteFile(filepath.Join(clawDir, "tsnet-auth-key"), []byte(authKey+"\n"), 0o600)
+		if gatewayPort != "" {
+			_ = os.WriteFile(filepath.Join(clawDir, "gateway-port"), []byte(gatewayPort+"\n"), 0o600)
+		}
 		items := []string{"Joined (tsnet mode — ephemeral node joins tailnet at run time)"}
 		items = append(items, setupSummaryItems(*setup)...)
 		printTreeItems(items)

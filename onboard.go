@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -53,6 +54,11 @@ type onboardSession struct {
 	profile     string // profile assigned at approval time
 	hostname    string // client-supplied (os.Hostname) at /api/onboard/start
 	apiToken    string // per-peer bearer for gated client API calls (env-pushdown)
+	// wholeMachine: client asked at /start to install a persistent tailnet
+	// node (system tailscale on linux, NE-routed on macOS) rather than
+	// per-process tsnet. Determines whether the minted auth key is
+	// ephemeral (per-process) or not (whole-machine).
+	wholeMachine bool
 }
 
 // onboardRegistry persists onboarded peers in the `devices` table,
@@ -152,6 +158,16 @@ func (r *onboardRegistry) AssignProfile(ip, profile string) {
 	defer r.mu.Unlock()
 	r.profileByIP[ip] = profile
 	r.upsertLocked(ip)
+}
+
+// assignProfileMemOnly records the profile mapping in memory without
+// upserting a devices row. Used for synthetic placeholder IDs (e.g.
+// `tsnet-<hostname>` between approve and the first `clawpatrol run`
+// register call) where we don't want a ghost dashboard row.
+func (r *onboardRegistry) assignProfileMemOnly(ip, profile string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.profileByIP[ip] = profile
 }
 
 // setEphemeralProfile pins an ephemeral peer to a profile and records
@@ -424,7 +440,7 @@ type Onboarder interface {
 	// non-empty, is the IP the server allocated for this peer — the
 	// caller registers it in the onboard registry so per-user OAuth
 	// lookup works without a separate claim round-trip from the CLI.
-	MintKey(ctx context.Context, reuseIP string) (authKey, loginServer, peerIP string, err error)
+	MintKey(ctx context.Context, reuseIP string, wholeMachine bool) (authKey, loginServer, peerIP string, err error)
 }
 
 func newOnboarder(ts JoinConfig) Onboarder {
@@ -438,21 +454,21 @@ func newOnboarder(ts JoinConfig) Onboarder {
 
 type tailscaleOnboarder struct{ ts JoinConfig }
 
-func (t *tailscaleOnboarder) MintKey(ctx context.Context, _ string) (string, string, string, error) {
-	// Reusable, non-ephemeral, long-lived key. Persistent so the device
-	// keeps the same tailnet IP across `clawpatrol run` invocations
-	// (gateway sees ONE device per machine, like WG mode). Reusable so
-	// the key still works if the client's tsnet state is wiped and the
-	// machine has to re-register.
-	k, err := mintTailscaleAuthKey(ctx, t.ts)
+func (t *tailscaleOnboarder) MintKey(ctx context.Context, _ string, wholeMachine bool) (string, string, string, error) {
+	// Per-process tsnet (default): ephemeral=true so each `clawpatrol run`
+	// gets a fresh node that auto-cleans on exit (matches macOS NE +
+	// WG-mode ephemeralPeer). Whole-machine: ephemeral=false so the
+	// system tailscale node persists across reboots.
+	k, err := mintTailscaleAuthKey(ctx, t.ts, !wholeMachine)
 	return k, "", "", err
 }
 
 // mintTailscaleAuthKey calls Tailscale's OAuth + auth-key API to mint
-// a reusable, non-ephemeral, long-lived auth key. Reusable so the same
-// key can rebuild client state after a wipe; non-ephemeral so each
-// device keeps a stable tailnet identity across reconnects.
-func mintTailscaleAuthKey(ctx context.Context, ts JoinConfig) (string, error) {
+// a reusable auth key. ephemeral=true makes each registered node
+// auto-disappear on disconnect (used by per-process tsnet runs);
+// ephemeral=false keeps the node registered across reconnects (used
+// by whole-machine joins).
+func mintTailscaleAuthKey(ctx context.Context, ts JoinConfig, ephemeral bool) (string, error) {
 	clientID := resolveTemplate(ts.OAuthClientID)
 	clientSecret := resolveTemplate(ts.OAuthClientSecret)
 	if clientID == "" || clientSecret == "" {
@@ -496,7 +512,7 @@ func mintTailscaleAuthKey(ctx context.Context, ts JoinConfig) (string, error) {
 			"devices": map[string]any{
 				"create": map[string]any{
 					"reusable":      true,
-					"ephemeral":     false,
+					"ephemeral":     ephemeral,
 					"preauthorized": true,
 					"tags":          tags,
 				},
@@ -543,7 +559,11 @@ func (w *webMux) apiOnboardStart(rw http.ResponseWriter, r *http.Request) {
 	// doesn't have to pick it manually. Stored as the session-level
 	// suggestion; the dashboard's approve call can still override.
 	prof := strings.TrimSpace(r.URL.Query().Get("profile"))
-	if hn != "" || prof != "" {
+	// `clawpatrol join --whole-machine` → persistent tailnet node
+	// (auth key minted with ephemeral=false). Default = per-process
+	// tsnet (ephemeral=true), matching macOS NE behavior.
+	wm := r.URL.Query().Get("whole_machine") == "1"
+	if hn != "" || prof != "" || wm {
 		w.onboard.mu.Lock()
 		if hn != "" {
 			s.hostname = hn
@@ -551,6 +571,7 @@ func (w *webMux) apiOnboardStart(rw http.ResponseWriter, r *http.Request) {
 		if prof != "" {
 			s.profile = prof
 		}
+		s.wholeMachine = wm
 		w.onboard.mu.Unlock()
 	}
 	// Build the verify URL that points at the dashboard approval page.
@@ -660,7 +681,7 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		key, loginServer, peerIP, err := newOnboarder(w.ts).MintKey(ctx, reuseIP)
+		key, loginServer, peerIP, err := newOnboarder(w.ts).MintKey(ctx, reuseIP, s.wholeMachine)
 		w.onboard.mu.Lock()
 		if err != nil {
 			s.err = err.Error()
@@ -697,23 +718,26 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 			} else {
 				log.Printf("api-token mint for %s: %v", peerIP, perr)
 			}
-		} else if loginServer == "" {
-			// Tailscale tsnet mode: parent device's tailnet IP isn't
-			// known at approve time. Mint api-token against a synthetic
-			// device identity derived from device_code and persist the
-			// profile mapping. The real device row is seeded at
-			// `clawpatrol run` register time using the actual tailnet
-			// IP + hostname, and the synthetic row is dropped there.
-			deviceID := "tsnet:" + dc
-			if profile != "" {
-				w.onboard.AssignProfile(deviceID, profile)
+		} else if loginServer == "" && !s.wholeMachine {
+			// Per-process tsnet mode: no devices row yet — the first
+			// `clawpatrol run` register call promotes its ephemeral
+			// tailnet IP to the device's parent row. Hold the profile
+			// in memory only against a synthetic placeholder and bind
+			// the api-token to it; both get repointed at register time.
+			s2 := w.onboard.byDeviceCode(dc)
+			parentID := "tsnet-" + dc
+			if s2 != nil && s2.hostname != "" {
+				parentID = "tsnet-" + s2.hostname
 			}
-			if token, perr := mintAndPersistPeerAPIToken(w.g.db, deviceID); perr == nil {
+			if profile != "" {
+				w.onboard.assignProfileMemOnly(parentID, profile)
+			}
+			if token, perr := mintAndPersistPeerAPIToken(w.g.db, parentID); perr == nil {
 				w.onboard.mu.Lock()
 				s.apiToken = token
 				w.onboard.mu.Unlock()
 			} else {
-				log.Printf("api-token mint for %s: %v", deviceID, perr)
+				log.Printf("api-token mint for %s: %v", parentID, perr)
 			}
 		}
 	}()
@@ -754,6 +778,10 @@ func (w *webMux) apiOnboardClaim(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("onboard claim: %s → %s (hostname=%q)", host, owner, hostname)
+	// Mirror profile mapping onto the peer's IPv6 ULA — whole-machine
+	// tsnet traffic frequently arrives on fd7a:115c:a1e0::/48 not the
+	// 100.x IPv4 that claim() registered.
+	w.g.seedTsnetIPv6Alias(host)
 	resp := map[string]string{"owner": owner, "ip": host}
 	// Mint the per-peer bearer the client uses for gated API calls
 	// (env-pushdown, ephemeral tsnet key). In Tailscale mode the peer IP
@@ -816,6 +844,16 @@ func (w *webMux) apiOnboardPoll(rw http.ResponseWriter, r *http.Request) {
 		resp["control_url"] = w.ts.ControlURL
 		if w.g != nil && w.g.tailscaleIP != "" {
 			resp["gateway_ip"] = w.g.tailscaleIP
+		}
+		// Tailscale Funnel owns :443 on the tsnet node, so cfg.Listen
+		// for the agent listener is usually :8443. Communicate it so
+		// `clawpatrol run` dials the right port.
+		if w.g != nil {
+			_, port, _ := net.SplitHostPort(w.g.cfg.Listen)
+			if port == "" {
+				port = "443"
+			}
+			resp["gateway_port"] = port
 		}
 		// CA cert delivered over the approved Funnel/onboard channel —
 		// the gateway's /ca.crt is intentionally not exposed publicly
