@@ -418,7 +418,7 @@ func (g *Gateway) profileFor(peerIP string) string {
 		if g.tsnetLC != nil && strings.HasPrefix(peerIP, "fd7a:") {
 			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 			defer cancel()
-			if w, err := g.tsnetLC.WhoIs(ctx, peerIP+":0"); err == nil && w != nil && w.Node != nil {
+			if w, err := g.tsnetLC.WhoIs(ctx, net.JoinHostPort(peerIP, "0")); err == nil && w != nil && w.Node != nil {
 				for _, addr := range w.Node.Addresses {
 					ip := addr.Addr()
 					if !ip.Is4() {
@@ -447,7 +447,7 @@ func (g *Gateway) seedTsnetIPv6Alias(peerIP string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	w, err := g.tsnetLC.WhoIs(ctx, peerIP+":0")
+	w, err := g.tsnetLC.WhoIs(ctx, net.JoinHostPort(peerIP, "0"))
 	if err != nil || w == nil || w.Node == nil {
 		return
 	}
