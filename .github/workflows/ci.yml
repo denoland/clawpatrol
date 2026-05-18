@@ -13,7 +13,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: cd www && npm ci && npm run build
+      - run: cd cmd/clawpatrol/www && npm ci && npm run build
 
   test:
     runs-on: ubuntu-latest
@@ -35,12 +35,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: cd www && npm ci && npm run format:check && npm run lint:github && npm run build
+      - run: cd cmd/clawpatrol/www && npm ci && npm run format:check && npm run lint:github && npm run build
       - run: gofmt -l . && test -z "$(gofmt -l .)"
       - run: go test ./...
       - name: validate landing-page HCL examples
         run: |
-          go build -o /tmp/clawpatrol .
+          go build -o /tmp/clawpatrol ./cmd/clawpatrol
           for f in site/examples/*.hcl; do
             echo "validating $f"
             /tmp/clawpatrol validate "$f"

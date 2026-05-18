@@ -42,7 +42,7 @@ jobs:
 
       - name: build dashboard
         run: |
-          cd www
+          cd cmd/clawpatrol/www
           npm ci --no-audit --no-fund
           npm run build
 
@@ -59,7 +59,7 @@ jobs:
           go build \
             -ldflags "-s -w -X main.buildVersion=${version} -X main.buildGitSHA=${SHA}" \
             -trimpath \
-            -o out/clawpatrol-${{ matrix.os }}-${{ matrix.arch }} .
+            -o out/clawpatrol-${{ matrix.os }}-${{ matrix.arch }} ./cmd/clawpatrol
 
       - uses: actions/upload-artifact@v4
         with:
