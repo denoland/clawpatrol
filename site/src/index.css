@@ -4,457 +4,91 @@
 
 /* Self-hosted families below. */
 
-/* Source Sans 3 (Adobe) — body family. Regular + Bold, each with an italic,
-   latin-basic subset. */
+/* Funnel Sans — body family (candidate). Variable wght (300–800),
+   latin-basic subset. Same designer as Funnel Display. No italic
+   variant on Google Fonts — browser synthesizes oblique. */
 @font-face {
-  font-family: "Source Sans 3";
+  font-family: "Funnel Sans";
+  font-style: normal;
+  font-weight: 300 800;
+  font-display: swap;
+  src: url("/fonts/funnel-sans/FunnelSans-Variable--latin_basic.woff2")
+    format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+
+/* Funnel Display — display family. Variable wght (300–800),
+   latin-basic subset. Newer Google Fonts release; designed
+   specifically for display use with a slight humanist tension in the
+   joins. */
+@font-face {
+  font-family: "Funnel Display";
+  font-style: normal;
+  font-weight: 300 800;
+  font-display: swap;
+  src: url("/fonts/funnel-display/FunnelDisplay-Variable--latin_basic.woff2")
+    format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+
+/* Iosevka Extended — code/mono family. Static cuts (Regular + Italic
+   + Bold + BoldItalic), latin-basic subset (extracted from PkgTTF-
+   Iosevka, then subsetted locally with pyftsubset → ~90 KB each). The
+   wider sibling of default Iosevka — proportions closer to typical
+   monos but with the same distinctive Iosevka letterforms. */
+@font-face {
+  font-family: "Iosevka Extended";
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url("/fonts/source-sans-3/SourceSans3-Regular--latin_basic.woff2") format("woff2");
+  src: url("/fonts/iosevka-extended/IosevkaExtended-400-Normal--latin_basic.woff2")
+    format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
-  font-family: "Source Sans 3";
+  font-family: "Iosevka Extended";
   font-style: italic;
   font-weight: 400;
   font-display: swap;
-  src: url("/fonts/source-sans-3/SourceSans3-It--latin_basic.woff2") format("woff2");
+  src: url("/fonts/iosevka-extended/IosevkaExtended-400-Italic--latin_basic.woff2")
+    format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
-  font-family: "Source Sans 3";
+  font-family: "Iosevka Extended";
   font-style: normal;
   font-weight: 700;
   font-display: swap;
-  src: url("/fonts/source-sans-3/SourceSans3-Bold--latin_basic.woff2") format("woff2");
+  src: url("/fonts/iosevka-extended/IosevkaExtended-700-Normal--latin_basic.woff2")
+    format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
-  font-family: "Source Sans 3";
+  font-family: "Iosevka Extended";
   font-style: italic;
   font-weight: 700;
   font-display: swap;
-  src: url("/fonts/source-sans-3/SourceSans3-BoldIt--latin_basic.woff2") format("woff2");
+  src: url("/fonts/iosevka-extended/IosevkaExtended-700-Italic--latin_basic.woff2")
+    format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-
-/* Gazpacho — display serif. Static cuts, latin-basic subset. */
-@font-face {
-  font-family: "Gazpacho";
-  font-style: normal;
-  font-weight: 100;
-  font-display: swap;
-  src: url("/fonts/gazpacho/Gazpacho-Thin.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Gazpacho";
-  font-style: normal;
-  font-weight: 300;
-  font-display: swap;
-  src: url("/fonts/gazpacho/Gazpacho-Light.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Gazpacho";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url("/fonts/gazpacho/Gazpacho-Regular.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Gazpacho";
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url("/fonts/gazpacho/Gazpacho-Medium.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Gazpacho";
-  font-style: normal;
-  font-weight: 700;
-  font-display: swap;
-  src: url("/fonts/gazpacho/Gazpacho-Bold.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Gazpacho";
-  font-style: normal;
-  font-weight: 800;
-  font-display: swap;
-  src: url("/fonts/gazpacho/Gazpacho-Heavy.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Gazpacho";
-  font-style: normal;
-  font-weight: 900;
-  font-display: swap;
-  src: url("/fonts/gazpacho/Gazpacho-Black.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Gazpacho";
-  font-style: italic;
-  font-weight: 100;
-  font-display: swap;
-  src: url("/fonts/gazpacho/GazpachoItalic-Thin.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Gazpacho";
-  font-style: italic;
-  font-weight: 300;
-  font-display: swap;
-  src: url("/fonts/gazpacho/GazpachoItalic-Light.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Gazpacho";
-  font-style: italic;
-  font-weight: 400;
-  font-display: swap;
-  src: url("/fonts/gazpacho/GazpachoItalic-Regular.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Gazpacho";
-  font-style: italic;
-  font-weight: 500;
-  font-display: swap;
-  src: url("/fonts/gazpacho/GazpachoItalic-Medium.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Gazpacho";
-  font-style: italic;
-  font-weight: 700;
-  font-display: swap;
-  src: url("/fonts/gazpacho/GazpachoItalic-Bold.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Gazpacho";
-  font-style: italic;
-  font-weight: 800;
-  font-display: swap;
-  src: url("/fonts/gazpacho/GazpachoItalic-Heavy.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Gazpacho";
-  font-style: italic;
-  font-weight: 900;
-  font-display: swap;
-  src: url("/fonts/gazpacho/GazpachoItalic-Black.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-
-/* IBM Plex Mono — code/mono family. Two weights (Regular 400, SemiBold
-   600), latin-basic subset. */
-@font-face {
-  font-family: "IBM Plex Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url("/fonts/IBMPlexMono-Regular--latin_basic.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "IBM Plex Mono";
-  font-style: normal;
-  font-weight: 600;
-  font-display: swap;
-  src: url("/fonts/IBMPlexMono-SemiBold--latin_basic.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "IBM Plex Mono";
-  font-style: italic;
-  font-weight: 400;
-  font-display: swap;
-  src: url("/fonts/IBMPlexMono-Italic--latin_basic.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "IBM Plex Mono";
-  font-style: italic;
-  font-weight: 600;
-  font-display: swap;
-  src: url("/fonts/IBMPlexMono-SemiBoldItalic--latin_basic.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-
-/* Basic Sans (Latinotype) — body family. Static cuts, latin-basic subset. */
-@font-face {
-  font-family: "Basic Sans";
-  ascent-override: 87.9%;
-  descent-override: 18.9%;
-  line-gap-override: 0%;
-  font-style: normal;
-  font-weight: 100;
-  font-display: swap;
-  src: url("/fonts/basic-sans/BasicSans-Thin.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Basic Sans";
-  ascent-override: 87.9%;
-  descent-override: 18.9%;
-  line-gap-override: 0%;
-  font-style: italic;
-  font-weight: 100;
-  font-display: swap;
-  src: url("/fonts/basic-sans/BasicSans-ThinIt.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Basic Sans";
-  ascent-override: 87.9%;
-  descent-override: 18.9%;
-  line-gap-override: 0%;
-  font-style: normal;
-  font-weight: 200;
-  font-display: swap;
-  src: url("/fonts/basic-sans/BasicSans-ExtraLight.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Basic Sans";
-  ascent-override: 87.9%;
-  descent-override: 18.9%;
-  line-gap-override: 0%;
-  font-style: italic;
-  font-weight: 200;
-  font-display: swap;
-  src: url("/fonts/basic-sans/BasicSans-ExtraLightIt.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Basic Sans";
-  ascent-override: 87.9%;
-  descent-override: 18.9%;
-  line-gap-override: 0%;
-  font-style: normal;
-  font-weight: 300;
-  font-display: swap;
-  src: url("/fonts/basic-sans/BasicSans-Light.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Basic Sans";
-  ascent-override: 87.9%;
-  descent-override: 18.9%;
-  line-gap-override: 0%;
-  font-style: italic;
-  font-weight: 300;
-  font-display: swap;
-  src: url("/fonts/basic-sans/BasicSans-LightIt.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Basic Sans";
-  ascent-override: 87.9%;
-  descent-override: 18.9%;
-  line-gap-override: 0%;
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url("/fonts/basic-sans/BasicSans-Regular.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Basic Sans";
-  ascent-override: 87.9%;
-  descent-override: 18.9%;
-  line-gap-override: 0%;
-  font-style: italic;
-  font-weight: 400;
-  font-display: swap;
-  src: url("/fonts/basic-sans/BasicSans-RegularIt.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Basic Sans";
-  ascent-override: 87.9%;
-  descent-override: 18.9%;
-  line-gap-override: 0%;
-  font-style: normal;
-  font-weight: 600;
-  font-display: swap;
-  src: url("/fonts/basic-sans/BasicSans-SemiBold.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Basic Sans";
-  ascent-override: 87.9%;
-  descent-override: 18.9%;
-  line-gap-override: 0%;
-  font-style: italic;
-  font-weight: 600;
-  font-display: swap;
-  src: url("/fonts/basic-sans/BasicSans-SemiBoldIt.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Basic Sans";
-  ascent-override: 87.9%;
-  descent-override: 18.9%;
-  line-gap-override: 0%;
-  font-style: normal;
-  font-weight: 700;
-  font-display: swap;
-  src: url("/fonts/basic-sans/BasicSans-Bold.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Basic Sans";
-  ascent-override: 87.9%;
-  descent-override: 18.9%;
-  line-gap-override: 0%;
-  font-style: italic;
-  font-weight: 700;
-  font-display: swap;
-  src: url("/fonts/basic-sans/BasicSans-BoldIt.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Basic Sans";
-  ascent-override: 87.9%;
-  descent-override: 18.9%;
-  line-gap-override: 0%;
-  font-style: normal;
-  font-weight: 900;
-  font-display: swap;
-  src: url("/fonts/basic-sans/BasicSans-Black.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Basic Sans";
-  ascent-override: 87.9%;
-  descent-override: 18.9%;
-  line-gap-override: 0%;
-  font-style: italic;
-  font-weight: 900;
-  font-display: swap;
-  src: url("/fonts/basic-sans/BasicSans-BlackIt.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-
-@utility neu-raised {
-  --neu-bg: var(--color-canvas);
-  --neu-face: var(--neu-bg);
-  --bg-shadow: color-mix(in oklch, var(--neu-bg), black 60%);
-  --bg-highlight: color-mix(in oklch, var(--neu-bg), white 60%);
-  --face-highlight: color-mix(in oklch, var(--neu-face), white 50%);
-  --face-highlight-opacity: 100%;
-  --bg-highlight-opacity: 80%;
-  --bg-shadow-opacity: 6%;
-
-  border: 1.5px solid var(--neu-face);
-  box-shadow:
-    /* Outer shadows — cast onto the background surface */
-    -8px -12px 24px
-      color-mix(in oklch, var(--bg-highlight) var(--bg-highlight-opacity), transparent),
-    -6px -8px 16px color-mix(in oklch, var(--bg-highlight) var(--bg-highlight-opacity), transparent),
-    2px 3px 2px color-mix(in oklch, var(--bg-shadow) var(--bg-shadow-opacity), transparent),
-    4px 3px 6px 4px color-mix(in oklch, var(--bg-shadow) var(--bg-shadow-opacity), transparent),
-    10px 8px 16px color-mix(in oklch, var(--bg-shadow) var(--bg-shadow-opacity), transparent),
-    8px 6px 12px 2px color-mix(in oklch, var(--bg-shadow) var(--bg-shadow-opacity), transparent),
-    2px 3px 1px 2px color-mix(in oklch, var(--neu-face) 90%, transparent),
-    /* Inner scoop — on the element's own "face," i.e., the element's bg */ inset 2px 2px 3px -1px
-      color-mix(in oklch, var(--face-highlight) var(--face-highlight-opacity), transparent);
-}
-
-/* Pressed-in variant — same shadow directions, reduced distances so the button
-   sits closer to the surface (slightly squished, still raised) */
-a.neu-raised:active {
-  transform: translate(0.125rem, 0.125rem);
-  box-shadow:
-    -4px -6px 12px color-mix(in oklch, var(--bg-highlight) var(--bg-highlight-opacity), transparent),
-    -3px -4px 8px color-mix(in oklch, var(--bg-highlight) var(--bg-highlight-opacity), transparent),
-    1px 2px 1px color-mix(in oklch, var(--bg-shadow) var(--bg-shadow-opacity), transparent),
-    2px 2px 3px 2px color-mix(in oklch, var(--bg-shadow) var(--bg-shadow-opacity), transparent),
-    5px 4px 8px color-mix(in oklch, var(--bg-shadow) var(--bg-shadow-opacity), transparent),
-    4px 3px 6px 1px color-mix(in oklch, var(--bg-shadow) var(--bg-shadow-opacity), transparent),
-    1px 2px 1px 1px color-mix(in oklch, var(--neu-face) 90%, transparent),
-    inset 1px 1px 2px -1px
-      color-mix(in oklch, var(--face-highlight) var(--face-highlight-opacity), transparent);
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
 }
 
 @keyframes crt-refresh {
@@ -492,22 +126,22 @@ a.neu-raised:active {
 
 @utility squircle-sm {
   corner-shape: squircle;
-  border-radius: 0.75rem;
+  border-radius: 0.5rem;
 }
 
 @utility squircle-md {
   corner-shape: squircle;
-  border-radius: 1.25rem;
+  border-radius: 0.75rem;
 }
 
 @utility squircle-lg {
   corner-shape: squircle;
-  border-radius: 2rem;
+  border-radius: 1.25rem;
 }
 
 @utility squircle-xl {
   corner-shape: squircle;
-  border-radius: 4.5rem;
+  border-radius: 2rem;
 }
 
 @utility squircle-full {
@@ -517,97 +151,19 @@ a.neu-raised:active {
 
 @supports not (corner-shape: squircle) {
   .squircle-sm {
-    border-radius: 0.375rem;
+    border-radius: 0.25rem;
   }
   .squircle-md {
-    border-radius: 0.5rem;
+    border-radius: 0.375rem;
   }
   .squircle-lg {
-    border-radius: 0.5rem;
+    border-radius: 0.625rem;
   }
   .squircle-xl {
-    border-radius: 1.5rem;
+    border-radius: 1rem;
   }
   .squircle-full {
-    border-radius: 0.75rem;
-  }
-}
-
-/* Wave divider — slow horizontal drift. The SVG path is two full wave
-   periods wide and the element is 200% width; sliding by -50% lands on
-   an identical pattern, so the loop is seamless. */
-@keyframes wave-drift {
-  from {
-    transform: translateX(0);
-  }
-  to {
-    transform: translateX(-50%);
-  }
-}
-
-/* Wave-divider spread — all three layers drift upward at progressively
-   larger amounts (back smallest, front largest) as the user scrolls past
-   the divider into the next section, fanning the visible wave lines
-   apart. These animations run on the outer wrapper divs while wave-drift
-   (above) runs on the inner SVGs, so the two `transform`s never collide
-   on the same element. */
-@keyframes wave-spread-back {
-  from {
-    transform: translateY(0);
-  }
-  to {
-    transform: translateY(-12px);
-  }
-}
-
-@keyframes wave-spread-mid {
-  from {
-    transform: translateY(0);
-  }
-  to {
-    transform: translateY(-26px);
-  }
-}
-
-@keyframes wave-spread-front {
-  from {
-    transform: translateY(0);
-  }
-  to {
-    transform: translateY(-40px);
-  }
-}
-
-@supports ((animation-timeline: view()) and (animation-range: 0% 100%)) {
-  @media (prefers-reduced-motion: no-preference) {
-    :root.has-sda {
-      .wave-spread-back {
-        animation-name: wave-spread-back;
-        animation-range: contain 0% exit 100%;
-        animation-timing-function: linear;
-        animation-fill-mode: both;
-        animation-duration: 1ms;
-        animation-timeline: view();
-      }
-
-      .wave-spread-mid {
-        animation-name: wave-spread-mid;
-        animation-range: contain 0% exit 100%;
-        animation-timing-function: linear;
-        animation-fill-mode: both;
-        animation-duration: 1ms;
-        animation-timeline: view();
-      }
-
-      .wave-spread-front {
-        animation-name: wave-spread-front;
-        animation-range: contain 0% exit 100%;
-        animation-timing-function: linear;
-        animation-fill-mode: both;
-        animation-duration: 1ms;
-        animation-timeline: view();
-      }
-    }
+    border-radius: 0.5rem;
   }
 }
 
@@ -620,15 +176,38 @@ a.neu-raised:active {
    --color-rust-50 if nothing reads `bg-rust-50`) never get
    serialized, which broke the dev palette inspector. */
 @theme static {
-  /* Canvas + surfaces — four tiers. canvas-light is pure white for
-     elevated surfaces that need to lift off the cream body. */
-  --color-canvas-light: #ffffff;
-  --color-canvas: #fcfaf5;
-  --color-canvas-muted: #f4efe6;
-  --color-canvas-dark: #ebe5d8;
+  /* Canvas — full warm-paper scale (50–950). Light end is the cream
+     body; medium tiers are usable as tan/khaki accents; deep tiers
+     read as warm coffee/near-black, useful for borders, secondary
+     surfaces, and inverted regions. Hue ~38°, low saturation so it
+     sits next to rust without competing.
 
-  /* ── Persimmon — primary brand orange. Anchored at the mascot's
-	      rust overall color (#d8531c) to harmonize with the illustration. */
+     Semantic aliases preserved for backward compat:
+       --color-canvas-light = pure white (elevated surfaces)
+       --color-canvas       = canvas-100 (body bg)
+       --color-canvas-muted = canvas-200
+       --color-canvas-dark  = canvas-300 */
+  --color-canvas-50: #fdfbf6;
+  --color-canvas-100: #fbf8f1;
+  --color-canvas-200: #f2ede2;
+  --color-canvas-300: #e7e0d0;
+  --color-canvas-400: #cdc1a8;
+  --color-canvas-500: #ad9f7f;
+  --color-canvas-600: #85795a;
+  --color-canvas-700: #5d543f;
+  --color-canvas-800: #3a342a;
+  --color-canvas-900: #221f19;
+  --color-canvas-950: #11100d;
+  --color-canvas-light: #ffffff;
+  --color-canvas: var(--color-canvas-100);
+  --color-canvas-muted: var(--color-canvas-200);
+  --color-canvas-dark: var(--color-canvas-300);
+
+  /* ── Persimmon — primary brand orange. The full scale is anchored at
+        the mascot's burnt-rust (#d8531c), and `--color-rust` now points
+        at that same 500 step (was 400). One stop deeper than before:
+        burnt instead of juicy, so the default accent reads
+        authoritative rather than candy. */
   --color-rust-50: #fcf3ec;
   --color-rust-100: #fce0c9;
   --color-rust-200: #f8c294;
@@ -640,7 +219,7 @@ a.neu-raised:active {
   --color-rust-800: #732a10;
   --color-rust-900: #5d2412;
   --color-rust-950: #2e0e05;
-  --color-rust: var(--color-rust-400);
+  --color-rust: var(--color-rust-500);
 
   /* ── Cornflower — secondary blue. Anchored at the mascot's deep
 	      hoodie navy (#1f2a44). Lighter shades stay usable as soft
@@ -658,8 +237,11 @@ a.neu-raised:active {
   --color-navy-950: #050810;
   --color-navy: var(--color-navy-500);
 
-  /* ── Butter — accent yellow. Pure yellow is naturally light, so
-	      the brand-bright anchor sits at 400, not 500. ────────────── */
+  /* ── Butter — accent yellow, demoted toward amber/caution. Bright
+        yellow at 400 (#ffd93d) read kid-TV next to the rest of the
+        palette, so `--color-butter` now points at the amber 500
+        (#f5b80c). Use butter for warning/pending states; the brand
+        accent role belongs to rust. */
   --color-butter-50: #fffdec;
   --color-butter-100: #fff8c4;
   --color-butter-200: #fff088;
@@ -671,7 +253,7 @@ a.neu-raised:active {
   --color-butter-800: #84580f;
   --color-butter-900: #6f4811;
   --color-butter-950: #412403;
-  --color-butter: var(--color-butter-400);
+  --color-butter: var(--color-butter-500);
 
   /* ── Success — sage / moss green. Earthier and lower-saturation than
         the crt-* terminal greens so it reads as "allow / OK" inside the
@@ -727,18 +309,12 @@ a.neu-raised:active {
      remains comfortably high-contrast on console-dark code blocks. */
   --color-text-subtle: #82838c;
 
-  --font-display: "Basic Sans", "Gazpacho", system-ui, serif;
-  --font-sans:
-    "Source Sans 3", "Public Sans", "Eastman", "Courier New", "American Typewriter", "Chronica Pro",
-    "Basic Sans", system-ui, sans-serif;
+  --font-display: "Funnel Display", system-ui, sans-serif;
+  --font-sans: "Funnel Sans", system-ui, -apple-system, sans-serif;
   --font-mono:
-    "IBM Plex Mono", "MonoLisa", "DankMono Nerd Font", "SF Mono", "Menlo", ui-monospace, monospace;
+    "Iosevka Extended", "MonoLisa", "SF Mono", "Menlo", ui-monospace, monospace;
 
   --breakpoint-xs: 32rem;
-
-  --animate-wave-drift: wave-drift 37s linear infinite;
-  --animate-wave-drift-medium: wave-drift 27s linear infinite;
-  --animate-wave-drift-slow: wave-drift 21s linear infinite;
 
   --text-2xs: 0.625rem;
 
@@ -773,11 +349,21 @@ a.neu-raised:active {
   }
 
   body {
-    line-height: 1.7;
+    line-height: 1.5;
+    /* No-op for the current fonts (Funnel Display/Sans are wght-only
+       variable); kept so a future opsz-axis face engages automatically. */
+    font-optical-sizing: auto;
   }
 
   a {
     text-decoration-thickness: 1px;
+  }
+
+  pre {
+    scrollbar-width: none;
+  }
+  pre::-webkit-scrollbar {
+    display: none;
   }
 
   *:focus-visible {

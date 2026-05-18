@@ -7,36 +7,29 @@
     <style>
       /* ── Minimal subset of the dashboard's design tokens ─────────
          Only the values used on this page; mirrors www/src/index.css.
-         Source Sans 3 regular + bold is the only family loaded here —
-         no display serif, no mono — keeping the login bundle small. */
+         Funnel Sans (variable) is the only family loaded here — no
+         mono — keeping the login bundle small. */
       @font-face {
-        font-family: "Source Sans 3";
+        font-family: "Funnel Sans";
         font-style: normal;
-        font-weight: 400;
+        font-weight: 300 800;
         font-display: swap;
-        src: url("/fonts/source-sans-3/SourceSans3-Regular--latin_basic.woff2") format("woff2");
-      }
-      @font-face {
-        font-family: "Source Sans 3";
-        font-style: normal;
-        font-weight: 700;
-        font-display: swap;
-        src: url("/fonts/source-sans-3/SourceSans3-Bold--latin_basic.woff2") format("woff2");
+        src: url("/fonts/funnel-sans/FunnelSans-Variable--latin_basic.woff2") format("woff2");
       }
 
       :root {
-        --color-canvas: #fcfaf5;
+        --color-canvas: #fbf8f1;
         --color-canvas-light: #ffffff;
         --color-navy: #1f2a44;
         --color-navy-100: #d6dde9;
         --color-navy-900: #0a0f1c;
-        --color-rust: #e87632;
+        --color-rust: #d8531c;
         --color-rust-300: #f29e5a;
         --color-text: #2c2e35;
         --color-text-muted: #62656d;
         --color-text-subtle: #82838c;
         --color-danger: #a83232;
-        --font-sans: "Source Sans 3", "Public Sans", system-ui, -apple-system, sans-serif;
+        --font-sans: "Funnel Sans", system-ui, -apple-system, sans-serif;
       }
 
       *,

@@ -19,7 +19,7 @@ type ButtonElProps = CommonProps &
 type ButtonProps = AnchorProps | ButtonElProps;
 
 const base =
-  "inline-block font-sans font-semibold uppercase tracking-wider cursor-pointer " +
+  "inline-block font-mono font-semibold uppercase tracking-wider cursor-pointer " +
   "transition-colors outline-2 outline-navy -outline-offset-2 " +
   "disabled:cursor-not-allowed";
 

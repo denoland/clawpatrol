@@ -1,4 +1,5 @@
 import { SectionLabel } from "../components/SectionLabel";
+import { TerminalFrame } from "../components/TerminalFrame";
 
 /* ──────────────────────────────────────────────────────────────────────
    Run — three real CLI invocations that map to the three deployment
@@ -34,13 +35,11 @@ const MODES: { title: string; command: string; body: string }[] = [
 
 function Terminal({ source }: { source: string }) {
   return (
-    <pre
-      class="text-[13px] font-mono leading-relaxed
-        bg-navy text-canvas/85 squircle-md px-4 py-3
-        overflow-x-auto border border-navy-700 whitespace-pre"
-    >
-      <code>{source}</code>
-    </pre>
+    <TerminalFrame class="block px-4 py-3">
+      <pre class="text-xs font-mono leading-relaxed text-canvas overflow-x-auto whitespace-pre">
+        <code>{source}</code>
+      </pre>
+    </TerminalFrame>
   );
 }
 
@@ -50,12 +49,12 @@ export function RunSection() {
       <div class="max-w-6xl mx-auto px-6 sm:px-8">
         <SectionLabel>Run it</SectionLabel>
         <div class="max-w-3xl mx-auto text-center mb-12 sm:mb-16">
-          <h3 class="text-3xl sm:text-4xl lg:text-5xl font-display font-bold text-balance mb-5 text-text">
+          <h3 class="text-3xl sm:text-4xl lg:text-5xl font-display text-balance mb-5 text-text">
             Three ways in.
           </h3>
-          <p class="text-base text-text-muted">
-            The gateway is a single binary. Agent traffic reaches it over WireGuard or Tailscale;
-            nothing in the agent changes.
+          <p class="text-base text-text-muted text-balance">
+            The gateway is a single binary. Agent traffic reaches it over
+            WireGuard or Tailscale; nothing in the agent changes.
           </p>
         </div>
 
@@ -63,10 +62,12 @@ export function RunSection() {
           {MODES.map((m) => (
             <div
               key={m.title}
-              class="bg-canvas border border-navy-200 squircle-md
+              class="bg-canvas border border-navy
                 p-6 flex flex-col gap-4"
             >
-              <h4 class="text-xl font-display font-bold text-text">{m.title}</h4>
+              <h4 class="text-xl sm:text-2xl font-display text-text">
+                {m.title}
+              </h4>
               <Terminal source={m.command} />
               <p class="text-sm text-text-muted">{m.body}</p>
             </div>

@@ -1,66 +1,52 @@
 @import "tailwindcss";
 
 /* ── self-hosted families ─────────────────────────────────────────────
-   Source Sans 3 is the body family; IBM Plex Mono is the code family.
-   site/ ships a larger set (Gazpacho, Basic Sans) for display
-   typography; the dashboard doesn't need those. */
+   Funnel Display + Funnel Sans (same designer, drawn as a system),
+   Iosevka Extended for code blocks (4 cuts: Regular + Italic + Bold +
+   BoldItalic). */
 
 @font-face {
-  font-family: "Source Sans 3";
+  font-family: "Funnel Display";
   font-style: normal;
-  font-weight: 400;
+  font-weight: 300 800;
   font-display: swap;
-  src: url("/fonts/source-sans-3/SourceSans3-Regular--latin_basic.woff2") format("woff2");
+  src: url("/fonts/funnel-display/FunnelDisplay-Variable--latin_basic.woff2") format("woff2");
 }
 @font-face {
-  font-family: "Source Sans 3";
-  font-style: italic;
-  font-weight: 400;
-  font-display: swap;
-  src: url("/fonts/source-sans-3/SourceSans3-It--latin_basic.woff2") format("woff2");
-}
-@font-face {
-  font-family: "Source Sans 3";
+  font-family: "Funnel Sans";
   font-style: normal;
-  font-weight: 700;
+  font-weight: 300 800;
   font-display: swap;
-  src: url("/fonts/source-sans-3/SourceSans3-Bold--latin_basic.woff2") format("woff2");
-}
-@font-face {
-  font-family: "Source Sans 3";
-  font-style: italic;
-  font-weight: 700;
-  font-display: swap;
-  src: url("/fonts/source-sans-3/SourceSans3-BoldIt--latin_basic.woff2") format("woff2");
+  src: url("/fonts/funnel-sans/FunnelSans-Variable--latin_basic.woff2") format("woff2");
 }
 
 @font-face {
-  font-family: "IBM Plex Mono";
+  font-family: "Iosevka Extended";
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url("/fonts/IBMPlexMono-Regular--latin_basic.woff2") format("woff2");
+  src: url("/fonts/iosevka-extended/IosevkaExtended-400-Normal--latin_basic.woff2") format("woff2");
 }
 @font-face {
-  font-family: "IBM Plex Mono";
+  font-family: "Iosevka Extended";
   font-style: italic;
   font-weight: 400;
   font-display: swap;
-  src: url("/fonts/IBMPlexMono-Italic--latin_basic.woff2") format("woff2");
+  src: url("/fonts/iosevka-extended/IosevkaExtended-400-Italic--latin_basic.woff2") format("woff2");
 }
 @font-face {
-  font-family: "IBM Plex Mono";
+  font-family: "Iosevka Extended";
   font-style: normal;
-  font-weight: 600;
+  font-weight: 700;
   font-display: swap;
-  src: url("/fonts/IBMPlexMono-SemiBold--latin_basic.woff2") format("woff2");
+  src: url("/fonts/iosevka-extended/IosevkaExtended-700-Normal--latin_basic.woff2") format("woff2");
 }
 @font-face {
-  font-family: "IBM Plex Mono";
+  font-family: "Iosevka Extended";
   font-style: italic;
-  font-weight: 600;
+  font-weight: 700;
   font-display: swap;
-  src: url("/fonts/IBMPlexMono-SemiBoldItalic--latin_basic.woff2") format("woff2");
+  src: url("/fonts/iosevka-extended/IosevkaExtended-700-Italic--latin_basic.woff2") format("woff2");
 }
 
 /* ── design tokens ────────────────────────────────────────────────────
@@ -76,15 +62,29 @@
 @theme static {
   --color-*: initial;
 
-  /* Canvas + surfaces — four tiers. canvas-light is pure white for
-     elevated surfaces (data tables) that need to lift off the cream
-     body; the rest of the ladder steps down for hovers and borders. */
+  /* Canvas — full warm-paper scale (50–950). Light end is the cream
+     body; deep tiers read as warm coffee/near-black. Semantic aliases
+     preserved: canvas-light (white), canvas (= canvas-100, body bg),
+     canvas-muted (= canvas-200), canvas-dark (= canvas-300). */
+  --color-canvas-50: #fdfbf6;
+  --color-canvas-100: #fbf8f1;
+  --color-canvas-200: #f2ede2;
+  --color-canvas-300: #e7e0d0;
+  --color-canvas-400: #cdc1a8;
+  --color-canvas-500: #ad9f7f;
+  --color-canvas-600: #85795a;
+  --color-canvas-700: #5d543f;
+  --color-canvas-800: #3a342a;
+  --color-canvas-900: #221f19;
+  --color-canvas-950: #11100d;
   --color-canvas-light: #ffffff;
-  --color-canvas: #fcfaf5;
-  --color-canvas-muted: #f4efe6;
-  --color-canvas-dark: #ebe5d8;
+  --color-canvas: var(--color-canvas-100);
+  --color-canvas-muted: var(--color-canvas-200);
+  --color-canvas-dark: var(--color-canvas-300);
 
-  /* Persimmon — primary brand orange. */
+  /* Persimmon — primary brand orange. Anchor at 500 (burnt rust,
+     mirrors the mascot's overalls); 400 is reserved as the
+     "juicier" shade for highlights/hovers when needed. */
   --color-rust-50: #fcf3ec;
   --color-rust-100: #fce0c9;
   --color-rust-200: #f8c294;
@@ -96,7 +96,7 @@
   --color-rust-800: #732a10;
   --color-rust-900: #5d2412;
   --color-rust-950: #2e0e05;
-  --color-rust: var(--color-rust-400);
+  --color-rust: var(--color-rust-500);
 
   /* Cornflower — secondary blue. */
   --color-navy-50: #eef1f8;
@@ -112,7 +112,9 @@
   --color-navy-950: #050810;
   --color-navy: var(--color-navy-500);
 
-  /* Butter — accent yellow. Brand-bright anchor sits at 400. */
+  /* Butter — accent yellow, demoted to amber/caution. Bare token
+     points at 500 (amber) rather than 400 (bright yellow); 400 is
+     reserved for callouts that genuinely need the brighter cut. */
   --color-butter-50: #fffdec;
   --color-butter-100: #fff8c4;
   --color-butter-200: #fff088;
@@ -124,7 +126,7 @@
   --color-butter-800: #84580f;
   --color-butter-900: #6f4811;
   --color-butter-950: #412403;
-  --color-butter: var(--color-butter-400);
+  --color-butter: var(--color-butter-500);
 
   /* Success — sage / moss green. Earthier and lower-saturation than the
      crt-* terminal greens so it reads as "allow / OK" without going
@@ -174,8 +176,9 @@
   --color-text-muted: #62656d;
   --color-text-subtle: #82838c;
 
-  --font-sans: "Source Sans 3", "Public Sans", system-ui, -apple-system, sans-serif;
-  --font-mono: "IBM Plex Mono", "MonoLisa", "SF Mono", "Menlo", ui-monospace, monospace;
+  --font-display: "Funnel Display", system-ui, sans-serif;
+  --font-sans: "Funnel Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "Iosevka Extended", "MonoLisa", "SF Mono", "Menlo", ui-monospace, monospace;
 
   --breakpoint-xs: 32rem;
   --text-2xs: 0.625rem;
@@ -186,22 +189,22 @@
    to plain `border-radius` elsewhere. */
 @utility squircle-sm {
   corner-shape: squircle;
-  border-radius: 0.75rem;
+  border-radius: 0.5rem;
 }
 
 @utility squircle-md {
   corner-shape: squircle;
-  border-radius: 1.25rem;
+  border-radius: 0.75rem;
 }
 
 @utility squircle-lg {
   corner-shape: squircle;
-  border-radius: 2rem;
+  border-radius: 1.25rem;
 }
 
 @utility squircle-xl {
   corner-shape: squircle;
-  border-radius: 4.5rem;
+  border-radius: 2rem;
 }
 
 @utility squircle-full {
@@ -211,19 +214,19 @@
 
 @supports not (corner-shape: squircle) {
   .squircle-sm {
-    border-radius: 0.375rem;
+    border-radius: 0.25rem;
   }
   .squircle-md {
-    border-radius: 0.5rem;
+    border-radius: 0.375rem;
   }
   .squircle-lg {
-    border-radius: 0.5rem;
+    border-radius: 0.625rem;
   }
   .squircle-xl {
-    border-radius: 1.5rem;
+    border-radius: 1rem;
   }
   .squircle-full {
-    border-radius: 0.75rem;
+    border-radius: 0.5rem;
   }
 }
 
@@ -257,6 +260,9 @@
     background: var(--color-canvas);
     color: var(--color-text);
     font: 14px/1.5 var(--font-sans);
+    /* No-op for the current fonts (Funnel Sans is wght-only variable);
+       kept so a future opsz-axis body face engages automatically. */
+    font-optical-sizing: auto;
     -webkit-font-smoothing: antialiased;
   }
 

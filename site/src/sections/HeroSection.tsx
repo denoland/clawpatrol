@@ -19,27 +19,22 @@ export function HeroSection() {
         md:gap-16 items-center"
       >
         <div class="min-w-0">
-          <h1
-            class="text-4xl sm:text-5xl md:text-6xl md:text-[4rem]
-              font-bold
-               mb-4 font-display text-balance
-              text-text"
-          >
+          <h1 class="text-4xl sm:text-5xl md:text-6xl md:text-[4rem] mb-4 font-display text-balance text-text">
             {HERO_H1}
           </h1>
           <p
-            class="text-xl sm:text-2xl mb-4 max-w-lg font-display
-            font-semibold text-text text-balance"
+            class="text-sm mb-6 mt-6 max-w-lg font-sans
+            font-bold uppercase text-text text-balance"
           >
-            Sleep easy while your agents have access to prod.
+            Give agents prod access and still sleep easy
           </p>
           <p
             class="mb-10 max-w-lg
             text-text-muted"
           >
-            Claw Patrol holds agent credentials, parses their traffic at the wire, and gates actions
-            they take with rules you write. Block <code>DROP TABLE</code>. Have a human approve{" "}
-            <code>kubectl delete pod</code>. Keep an audit log of every action.
+            Claw Patrol holds agent credentials, parses their traffic at the
+            wire, and gates actions they take with rules you write, all while
+            keeping an audit log of every action.
           </p>
           <InstallTerminal />
         </div>
