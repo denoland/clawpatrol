@@ -5,8 +5,8 @@
 
 import { useEffect, useState } from "react";
 import { getConfigHCL, type Integration } from "../lib/api";
+import { CredentialsTypeGrid } from "./CredentialsTypeGrid";
 import { HCLEditor } from "./HCLEditor";
-import { IntegrationsCards } from "./IntegrationsCards";
 import { Main } from "./Main";
 import { PageTitle } from "./PageTitle";
 
@@ -31,12 +31,7 @@ export function SettingsPage({
             / GitHub / Notion / Postgres / etc. here.
           </div>
         ) : (
-          <IntegrationsCards
-            list={integrations}
-            showAll
-            onConnect={onConnect}
-            onRefresh={onRefresh}
-          />
+          <CredentialsTypeGrid list={integrations} onConnect={onConnect} onRefresh={onRefresh} />
         )}
       </section>
 

@@ -63,6 +63,15 @@ export type Integration = {
   avatar_url?: string;
   has_tailscale_auth?: boolean;
   tailscale_auth?: TailscaleAuthStatusUI | null;
+  // Profiles routing requests through any endpoint that binds this
+  // credential (directly or via a tunnel). Sorted by name.
+  profiles?: string[];
+  // Endpoints that bind this credential. Sorted by name.
+  endpoints?: string[];
+  // Operator-set HCL block attributes (`user`, `region`, …). Values
+  // are the raw HCL token text (quoted strings included). Never
+  // includes secret material.
+  config?: Record<string, string>;
 };
 
 // tailscaleConnect asks the gateway for the live tsnet login URL.
