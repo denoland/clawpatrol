@@ -111,7 +111,7 @@ peers.
 [agents.go:678](../cmd/clawpatrol/agents.go#L678) walks the live WG peers
 (`EndpointsByIP()` at [wireguard.go:487](../cmd/clawpatrol/wireguard.go#L487))
 and enriches with onboard metadata. Rendered by
-`cmd/clawpatrol/www/src/components/AgentsTable.tsx`, one row per WG peer.
+`dashboard/src/components/AgentsTable.tsx`, one row per WG peer.
 
 ### unclaw — reference implementation
 

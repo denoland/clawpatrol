@@ -7,7 +7,7 @@ build time.
 ## Prerequisites
 
 - Go (see `go.mod` for the required version)
-- npm (only required if you want to rebuild the dashboard SPA in `cmd/clawpatrol/www/`)
+- npm (only required if you want to rebuild the dashboard SPA in `dashboard/`)
 - Docker with Compose (optional, for end-to-end testing against an
   in-container agent)
 
@@ -39,9 +39,9 @@ for the full system-extension build walkthrough.
 
 ```sh
 # Optional: build the dashboard SPA. The Go build embeds whatever
-# is under cmd/clawpatrol/www/dist/ — skip and the binary ships a
+# is under dashboard/dist/ — skip and the binary ships a
 # placeholder.
-cd cmd/clawpatrol/www && npm ci && npm run build && cd ../../..
+cd dashboard && npm ci && npm run build && cd ../../..
 
 # Build the binary.
 go build -o clawpatrol ./cmd/clawpatrol

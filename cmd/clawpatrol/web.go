@@ -9,7 +9,6 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
-	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -34,15 +33,10 @@ import (
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/facet"
 	"github.com/denoland/clawpatrol/config/runtime"
+	"github.com/denoland/clawpatrol/dashboard"
 )
 
-//go:embed all:www/dist
-var dashboardFS embed.FS
-
-//go:embed www/login.html
-var loginHTML string
-
-var loginTpl = template.Must(template.New("login").Parse(loginHTML))
+var loginTpl = template.Must(template.New("login").Parse(dashboard.LoginHTML))
 
 type webMux struct {
 	g         *Gateway
@@ -746,10 +740,10 @@ func writeHITLOperationNotFound(rw http.ResponseWriter) {
 }
 
 func (w *webMux) staticHandler() http.Handler {
-	sub, err := fs.Sub(dashboardFS, "www/dist")
+	sub, err := fs.Sub(dashboard.DistFS, "dist")
 	if err != nil {
 		return http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
-			http.Error(rw, "dashboard not built (cd www && npm run build)", 500)
+			http.Error(rw, "dashboard not built (cd dashboard && npm run build)", 500)
 		})
 	}
 	return http.FileServer(http.FS(sub))

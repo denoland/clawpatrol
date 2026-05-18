@@ -42,7 +42,7 @@ jobs:
 
       - name: build dashboard
         run: |
-          cd cmd/clawpatrol/www
+          cd dashboard
           npm ci --no-audit --no-fund
           npm run build
 
