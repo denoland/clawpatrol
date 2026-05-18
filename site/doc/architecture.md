@@ -134,7 +134,7 @@ The gateway pulls in three plugin families:
 mints + what the client installs depends on the gateway's
 `control` mode.
 
-### Tailscale mode (recommended)
+### Tailscale mode
 
 The gateway embeds tsnet; it joins the tailnet in-process and
 exposes only `/api/onboard/{start,poll,claim}` + `/api/cred/*` on
@@ -163,7 +163,7 @@ Reference: `setup.go:runLogin`.
 host routing — no system Tailscale touched. macOS never runs
 system tailscaled.
 
-### WireGuard mode (legacy)
+### WireGuard mode
 
 The gateway runs an in-process WireGuard server (wireguard-go +
 gVisor netstack). At onboard it mints a keypair, allocates a `/32`

@@ -108,7 +108,7 @@ profile "default" { endpoints = [github] }
 | `public_url` | Public URL handed out at join time. Auto-derived from the Funnel cert domain when `funnel = true`. |
 | `dashboard_secret` | Required only if `info_listen` binds publicly. |
 | `state_dir` | Directory holding `clawpatrol.db`. Defaults to `~/.clawpatrol`. |
-| `control` | `"tailscale"` (embedded tsnet, recommended) or `"wireguard"`. |
+| `control` | `"tailscale"` (embedded tsnet, Funnel-fronted) or `"wireguard"` (in-process WG server). Both first-class. |
 | `funnel` | Tailscale Funnel on :443 — strict allowlist for the join bootstrap + credential webhooks. |
 | `oauth_client_id` / `oauth_client_secret` | Tailscale OAuth client (auth-key scope) for tsnet identity + per-client ephemeral keys. |
 | `tailscale_tags` | Tags applied to minted auth keys, e.g. `["tag:bot"]`. |

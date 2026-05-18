@@ -34,9 +34,9 @@ info_listen = "127.0.0.1:9080"   # bind the dashboard private — see below
 admin_email = "you@example.com"
 state_dir   = "/opt/clawpatrol"
 
-# Embedded Tailscale (recommended): no system tailscaled, no
-# iptables, no WireGuard port to open. The gateway joins the tailnet
-# in-process via tsnet and exposes the bootstrap routes
+# Embedded Tailscale: no system tailscaled, no iptables, no
+# WireGuard port to open. The gateway joins the tailnet in-process
+# via tsnet and exposes the bootstrap routes
 # (/api/onboard/{start,poll,claim}, /api/cred/*) on :443 via Funnel.
 control             = "tailscale"
 funnel              = true
@@ -46,7 +46,22 @@ oauth_client_secret = "{{secret:TS_OAUTH_CLIENT_SECRET}}"
 tailscale_tags      = ["tag:bot"]
 ```
 
-(WireGuard mode — `control = "wireguard"` + `wg_subnet_cidr = "10.55.0.0/24"` — is still supported; see [`gateway.example.hcl`](https://github.com/denoland/clawpatrol/blob/main/gateway.example.hcl) for the full shape. The rest of this guide assumes Tailscale mode.)
+Pick the control mode that fits your shape:
+
+- **Tailscale** (shown above) — least host setup. tsnet runs
+  in-process, Funnel covers the public TLS, no kernel module or
+  UDP port to expose. Operators are auto-identified via tailnet
+  whois. Needs a tailnet + an OAuth client.
+- **WireGuard** — `control = "wireguard"` +
+  `wg_subnet_cidr = "10.55.0.0/24"`. Self-contained: the gateway
+  is the WG server, no Tailscale dependency. Costs one open UDP
+  port (default `51820`) and `iptables -I INPUT -p udp --dport
+  51820 -j ACCEPT` on the host. See
+  [`gateway.example.hcl`](https://github.com/denoland/clawpatrol/blob/main/gateway.example.hcl)
+  for the WG shape.
+
+The rest of this guide uses the Tailscale shape; the WG flow is
+identical apart from the per-mode host setup.
 
 **`info_listen` should bind privately.** The dashboard holds the
 credential vault — the gateway refuses to boot when `info_listen`
