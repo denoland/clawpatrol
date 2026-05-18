@@ -239,10 +239,12 @@ class TransparentProxyProvider: NETransparentProxyProvider {
         if let udp = flow as? NEAppProxyUDPFlow {
             // Claim every UDP flow. Returning false on UDP races kernel
             // detach (radar r.98382363) → ~30s Chrome QUIC stall.
-            // Tunnel-side flows go through the gateway; non-tunnel
-            // flows are bypassed by re-emitting datagrams via a real
-            // host UDP socket (Mozilla VPN's bypassudpflow pattern).
-            if !tunnel { bypassUDP(udp); return true }
+            // In tsnet mode there is no UDP tunnel path (tsnet is TCP
+            // only), so all UDP — including from tunneled processes —
+            // is bypassed via a real host socket. The child's TCP
+            // traffic is tunneled; UDP DNS goes direct (fine, since
+            // the child is not network-namespace isolated on macOS).
+            if !tunnel || tsnetMode { bypassUDP(udp); return true }
             bridgeUDP(udp); return true
         }
         return false
