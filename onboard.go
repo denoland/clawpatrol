@@ -717,9 +717,9 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 			// (Whole-machine tailscale lands here too but skips this
 			// branch — its real tailnet IP is registered via /claim.)
 			s2 := w.onboard.byDeviceCode(dc)
-			parentID := "tsnet:" + dc
+			parentID := "tsnet-" + dc
 			if s2 != nil && s2.hostname != "" {
-				parentID = "tsnet:" + s2.hostname
+				parentID = "tsnet-" + s2.hostname
 			}
 			if profile != "" {
 				w.onboard.AssignProfile(parentID, profile)
