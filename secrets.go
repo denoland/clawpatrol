@@ -127,6 +127,32 @@ func clearCredentialSecrets(db *sql.DB, credential string) error {
 	return err
 }
 
+// credentialUpdatedAt returns the most recent persistence timestamp
+// across credential_secrets and the OAuth credentials row for the
+// named credential, in Unix seconds. Zero when neither store carries
+// a row — declared-only credentials with no operator action yet.
+func credentialUpdatedAt(db *sql.DB, credential string) int64 {
+	if db == nil {
+		return 0
+	}
+	var best int64
+	var secretNS sql.NullInt64
+	if err := db.QueryRow(
+		`SELECT MAX(updated_ns) FROM credential_secrets WHERE credential = ?`,
+		credential,
+	).Scan(&secretNS); err == nil && secretNS.Valid && secretNS.Int64 > best {
+		best = secretNS.Int64
+	}
+	var oauthNS sql.NullInt64
+	if err := db.QueryRow(
+		`SELECT updated_ns FROM credentials WHERE id = ?`,
+		credential,
+	).Scan(&oauthNS); err == nil && oauthNS.Valid && oauthNS.Int64 > best {
+		best = oauthNS.Int64
+	}
+	return best / int64(time.Second)
+}
+
 // credentialSlotPresence returns the set of slots persisted for the
 // named credential. Used by the dashboard to render per-slot
 // "filled / empty" status without leaking the secret bytes.

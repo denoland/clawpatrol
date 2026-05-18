@@ -1,0 +1,118 @@
+package main
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/denoland/clawpatrol/config"
+	_ "github.com/denoland/clawpatrol/config/plugins/all" // register builtin plugins
+)
+
+// TestCredentialBindings verifies the IntegrationRow Profiles +
+// Endpoints fan-out: each declared credential gathers the endpoint
+// names it's bound to (directly or via a tunnel) and the profiles
+// whose endpoint set references any of those endpoints.
+func TestCredentialBindings(t *testing.T) {
+	src := `
+credential "bearer_token" "alpha" {}
+credential "bearer_token" "beta" {}
+credential "bearer_token" "orphan" {}
+
+endpoint "https" "alpha_api" {
+  hosts      = ["alpha.example"]
+  credential = alpha
+}
+endpoint "https" "beta_api" {
+  hosts      = ["beta.example"]
+  credential = beta
+}
+endpoint "https" "beta_api_2" {
+  hosts      = ["beta2.example"]
+  credential = beta
+}
+
+profile "prod" {
+  endpoints = [alpha_api, beta_api]
+}
+profile "staging" {
+  endpoints = [beta_api_2]
+}
+
+rule "default-allow" {
+  verdict   = "allow"
+  endpoints = [alpha_api, beta_api, beta_api_2]
+}
+`
+	gw, diags := config.LoadBytes([]byte(src), "bindings-test.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	policy, err := config.Compile(gw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	cases := []struct {
+		name      string
+		profiles  []string
+		endpoints []string
+	}{
+		{"alpha", []string{"prod"}, []string{"alpha_api"}},
+		{"beta", []string{"prod", "staging"}, []string{"beta_api", "beta_api_2"}},
+		{"orphan", nil, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			profs, eps := credentialBindings(policy, c.name)
+			if !sliceEq(profs, c.profiles) {
+				t.Errorf("profiles got %v want %v", profs, c.profiles)
+			}
+			if !sliceEq(eps, c.endpoints) {
+				t.Errorf("endpoints got %v want %v", eps, c.endpoints)
+			}
+		})
+	}
+}
+
+// TestCredentialConfigOperatorFields extracts the per-credential
+// operator-set HCL attrs back from the Emit hook. Postgres exposes
+// `user`; the dashboard's details table renders it as a column.
+func TestCredentialConfigOperatorFields(t *testing.T) {
+	src := `
+credential "postgres_credential" "db" {
+  user = "ro_app"
+}
+`
+	gw, diags := config.LoadBytes([]byte(src), "cfg-test.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	policy, err := config.Compile(gw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	ent := policy.Credentials["db"]
+	if ent == nil {
+		t.Fatal("missing db credential")
+	}
+	cfg := credentialConfig(ent, "db")
+	got, ok := cfg["user"]
+	if !ok {
+		t.Fatalf("expected user attr, got %v", cfg)
+	}
+	if !strings.Contains(got, "ro_app") {
+		t.Errorf("user value %q does not contain ro_app", got)
+	}
+}
+
+func sliceEq(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
