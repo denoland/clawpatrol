@@ -19,7 +19,6 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
-	"strings"
 	"sync"
 )
 
@@ -129,11 +128,12 @@ func (w *webMux) apiAddEphemeralPeer(rw http.ResponseWriter, r *http.Request) {
 }
 
 // apiRegisterEphemeralTsnetIP handles POST /api/peer/ephemeral/tsnet/register.
-// Called by `clawpatrol run` (tsnet mode) immediately after the tsnet node
-// joins and learns its 100.x.x.x address. With persistent tsnet state on the
-// client, the same machine gets the same tailnet IP across runs — we assign
-// the IP directly to the parent's profile and seed a real device row so the
-// dashboard shows ONE entry per machine (not per ephemeral run).
+// Called by `clawpatrol run` (tsnet mode) right after the ephemeral tsnet
+// node joins. Records the run's tailnet IP as an ephemeral peer of the
+// parent device so profile dispatch + dashboard attribution roll up to
+// the parent (same model as WG-mode ephemeralPeer). No devices row is
+// created per run — the parent's row was seeded at /api/onboard/approve
+// time using the synthetic `tsnet:<device_code>` ID.
 func (w *webMux) apiRegisterEphemeralTsnetIP(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(rw, "POST", http.StatusMethodNotAllowed)
@@ -159,29 +159,9 @@ func (w *webMux) apiRegisterEphemeralTsnetIP(rw http.ResponseWriter, r *http.Req
 		return
 	}
 	profile := w.g.onboard.ProfileForIP(parentIP)
-	if profile != "" {
-		w.g.onboard.AssignProfile(tsnetIP, profile)
-	}
-	if hn := strings.TrimSpace(r.URL.Query().Get("hostname")); hn != "" {
-		// Re-registration after the client wiped its tsnet state lands
-		// on a different tailnet IP. Drop stale rows for this hostname
-		// so the dashboard stays at one device per machine.
-		_, _ = w.g.db.Exec("DELETE FROM devices WHERE name=? AND id<>?", hn, tsnetIP)
-		w.g.onboard.SetHostname(tsnetIP, hn)
-	}
-	// Drop the synthetic `tsnet:<device_code>` row created at approve
-	// time — the real row above replaces it. Repoint the parent's
-	// api-token at the new tailnet IP so future register calls find
-	// the profile directly via ProfileForIP(parentIP).
-	if strings.HasPrefix(parentIP, "tsnet:") {
-		_, _ = w.g.db.Exec("DELETE FROM devices WHERE id=?", parentIP)
-		_, _ = w.g.db.Exec("UPDATE peer_api_tokens SET peer_ip=? WHERE peer_ip=?", tsnetIP, parentIP)
-	}
-	if w.g.agents != nil {
-		w.g.agents.Seed(tsnetIP)
-	}
-	// Same v4→v6 alias seeding as claim — per-process tsnet runs also
-	// originate on the IPv6 ULA half of the time.
+	w.g.onboard.setEphemeralProfile(tsnetIP, parentIP, profile)
+	// Map the ephemeral run's IPv6 ULA too — whole-machine + per-process
+	// tsnet traffic both arrive on fd7a:115c:a1e0::/48.
 	w.g.seedTsnetIPv6Alias(tsnetIP)
 	rw.WriteHeader(http.StatusNoContent)
 }

@@ -914,6 +914,9 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	if profile != "" {
 		q.Set("profile", profile)
 	}
+	if wholeMachine {
+		q.Set("whole_machine", "1")
+	}
 	startURL := gateway + "/api/onboard/start"
 	if encoded := q.Encode(); encoded != "" {
 		startURL += "?" + encoded

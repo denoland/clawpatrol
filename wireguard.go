@@ -819,7 +819,7 @@ func wgClientEndpoint(wgEndpoint, publicURL string) (string, error) {
 	return net.JoinHostPort(hostOverride, strconv.Itoa(port)), nil
 }
 
-func (w *wireguardOnboarder) MintKey(_ context.Context, reuseIP string) (string, string, string, error) {
+func (w *wireguardOnboarder) MintKey(_ context.Context, reuseIP string, _ bool) (string, string, string, error) {
 	if w.ts.WGSubnetCIDR == "" {
 		return "", "", "", fmt.Errorf("wireguard not configured (set wg_subnet_cidr)")
 	}
