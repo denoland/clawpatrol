@@ -756,6 +756,13 @@ func (w *webMux) apiOnboardClaim(rw http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("onboard claim: %s → %s (hostname=%q)", host, owner, hostname)
 	resp := map[string]string{"owner": owner, "ip": host}
+	// Drop the synthetic `tsnet:<device_code>` row + its api-token created
+	// at approve time. Whole-machine joins land here with the real tailnet
+	// IP and never call /api/peer/ephemeral/tsnet/register (which is what
+	// per-process tsnet runs use to clean up the synthetic).
+	syntheticID := "tsnet:" + dc
+	_, _ = w.g.db.Exec("DELETE FROM devices WHERE id=?", syntheticID)
+	_, _ = w.g.db.Exec("DELETE FROM peer_api_tokens WHERE peer_ip=?", syntheticID)
 	// Mint the per-peer bearer the client uses for gated API calls
 	// (env-pushdown, ephemeral tsnet key). In Tailscale mode the peer IP
 	// isn't known at approve time, so we mint it here instead.
