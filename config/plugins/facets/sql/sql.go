@@ -155,7 +155,16 @@ func init() {
 // matching string literals in the rule source at compile time, so
 // `sql.verb == "SELECT"` matches a select statement even though the
 // activation reports `verb = "select"`.
-var lowercasedPaths = []string{"sql.verb"}
+//
+// `tables` and `functions` are always-lower too: the postgres and
+// clickhouse parsers fold identifiers via strings.ToLower
+// (config/plugins/endpoints/postgres_sql.go,
+// clickhouse_native_sql.go), so a rule written
+// `"Users" in sql.tables` or
+// `sets.intersects(sql.tables, ["Users"])` still matches got `users`.
+// `statement` stays case-preserving — operators opt into
+// case-insensitivity via `statement.matches('(?i)...')`.
+var lowercasedPaths = []string{"sql.verb", "sql.tables", "sql.functions"}
 
 // truncatablePaths declares every SQL field, because the wire
 // frontends (postgres pgClientToServer, clickhouse_native

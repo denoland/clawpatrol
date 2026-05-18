@@ -40,6 +40,70 @@ func TestK8sMatcherVerbCaseInsensitive(t *testing.T) {
 	}
 }
 
+// TestK8sMatcherResourceCaseInsensitive locks in that a rule written
+// as `k8s.resource == "Pods"` matches got `pods`. The kubernetes API
+// server only routes lowercase resource segments, so the Meta the
+// matcher reads is always lower; CompileCondition normalizes the
+// want literals so an operator typing `Pods` still resolves.
+func TestK8sMatcherResourceCaseInsensitive(t *testing.T) {
+	cases := []struct {
+		name      string
+		condition string
+		resource  string
+		want      bool
+	}{
+		{"uppercase want", "k8s.resource == 'PODS'", "pods", true},
+		{"mixed-case want", "k8s.resource == 'Pods'", "pods", true},
+		{"uppercase list", "k8s.resource in ['PODS', 'SECRETS']", "secrets", true},
+		{"uppercase list miss", "k8s.resource in ['PODS', 'SECRETS']", "configmaps", false},
+		{"endsWith uppercase suffix", "k8s.resource.endsWith('/EXEC')", "pods/exec", true},
+		{"startsWith uppercase prefix", "k8s.resource.startsWith('Pods/')", "pods/exec", true},
+		{"reversed equality", "'Pods' == k8s.resource", "pods", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, err := facet.NewMatcher("k8s", tc.condition)
+			if err != nil {
+				t.Fatalf("NewMatcher: %v", err)
+			}
+			req := &match.Request{Family: "k8s", Meta: &k8sfacet.Meta{Verb: "get", Resource: tc.resource}}
+			if got := m.Match(req); got != tc.want {
+				t.Errorf("Match=%v want %v (condition=%q)", got, tc.want, tc.condition)
+			}
+		})
+	}
+}
+
+// TestK8sMatcherNameNamespaceCaseSensitive pins the surrounding
+// facets' case-sensitivity: kubernetes object names and namespaces
+// are case-significant identifiers, so a mixed-case want must NOT
+// silently match a lower-cased got.
+func TestK8sMatcherNameNamespaceCaseSensitive(t *testing.T) {
+	cases := []struct {
+		name      string
+		condition string
+		meta      *k8sfacet.Meta
+		want      bool
+	}{
+		{"name mismatch on case", "k8s.name == 'MyApp'", &k8sfacet.Meta{Name: "myapp"}, false},
+		{"name exact case matches", "k8s.name == 'MyApp'", &k8sfacet.Meta{Name: "MyApp"}, true},
+		{"namespace mismatch on case", "k8s.namespace == 'Prod'", &k8sfacet.Meta{Namespace: "prod"}, false},
+		{"namespace exact case matches", "k8s.namespace == 'Prod'", &k8sfacet.Meta{Namespace: "Prod"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, err := facet.NewMatcher("k8s", tc.condition)
+			if err != nil {
+				t.Fatalf("NewMatcher: %v", err)
+			}
+			req := &match.Request{Family: "k8s", Meta: tc.meta}
+			if got := m.Match(req); got != tc.want {
+				t.Errorf("Match=%v want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestK8sMatcherNegationAndGlobs(t *testing.T) {
 	m, err := facet.NewMatcher("k8s",
 		"k8s.verb in ['create', 'update', 'patch', 'delete'] && !k8s.name.startsWith('debug-') "+

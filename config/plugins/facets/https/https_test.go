@@ -139,6 +139,24 @@ func TestHTTPMatcherMethodCaseInsensitive(t *testing.T) {
 	}
 }
 
+// TestHTTPMatcherPathCaseSensitive locks in that the compile-time
+// case-normalisation applied to always-lowercase facets (method,
+// k8s.resource, sql.tables, ...) does NOT bleed into http.path.
+// HTTP paths are case-sensitive per RFC 3986 and the gateway does
+// not fold the got side, so `/Foo` must NOT match got `/foo`.
+func TestHTTPMatcherPathCaseSensitive(t *testing.T) {
+	m, err := facet.NewMatcher("http", "http.path == '/Foo'")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Match(httpReq("GET", "/foo")) {
+		t.Errorf("expected case-sensitive path mismatch")
+	}
+	if !m.Match(httpReq("GET", "/Foo")) {
+		t.Errorf("expected case-sensitive path match for identical case")
+	}
+}
+
 func TestHTTPMatcherBodyJSON(t *testing.T) {
 	m, err := facet.NewMatcher("http", "http.method == 'PATCH' && http.body_json.archived == true")
 	if err != nil {
