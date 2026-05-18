@@ -1,6 +1,8 @@
 import type { ComponentChildren } from "preact";
 import { HclCode } from "../components/HclCode";
 import { SectionLabel } from "../components/SectionLabel";
+import { snippet } from "../lib/example";
+import { approver_human, approver_llm } from "../lib/examples";
 
 /* ──────────────────────────────────────────────────────────────────────
    Approvers — deepens the `require_llm` and `require_human` verdicts
@@ -14,18 +16,8 @@ import { SectionLabel } from "../components/SectionLabel";
         for both: incoming → response → verdict pill
    ──────────────────────────────────────────────────────────────────── */
 
-const LLM_CONFIG = `approver "llm_approver" "secret-judge" {
-  model       = "claude-haiku-4-5"
-  policy      = "reject changes with bad words"
-  cache_ttl   = 300
-  fail_closed = true
-}`;
-
-const HUMAN_CONFIG = `approver "human_approver" "ops" {
-  channel    = "#agent-ops"
-  timeout    = 600
-  on_timeout = "deny"
-}`;
+const LLM_CONFIG = snippet(approver_llm);
+const HUMAN_CONFIG = snippet(approver_human);
 
 /* ── Shared diagram primitives ─────────────────────────────────────── */
 
@@ -37,15 +29,8 @@ function DiagramFrame({ children }: { children: ComponentChildren }) {
   );
 }
 
-function VerdictPill({
-  label,
-  kind = "deny",
-}: {
-  label: string;
-  kind?: "deny" | "allow";
-}) {
-  const styles =
-    kind === "allow" ? "bg-rust text-text" : "bg-navy-700 text-canvas";
+function VerdictPill({ label, kind = "deny" }: { label: string; kind?: "deny" | "allow" }) {
+  const styles = kind === "allow" ? "bg-rust text-text" : "bg-navy-700 text-canvas";
   return (
     <div class="flex justify-center">
       <span
@@ -64,9 +49,7 @@ function LlmDiagram() {
   return (
     <DiagramFrame>
       <div class="bg-canvas squircle-sm px-3 py-2 font-mono text-[12px] ">
-        <div class="text-text-subtle text-[10px] uppercase tracking-[0.18em] mb-1">
-          incoming
-        </div>
+        <div class="text-text-subtle text-[10px] uppercase tracking-[0.18em] mb-1">incoming</div>
         <code class="text-text">
           POST /tickets/reply {"{ "}body: "RTFM you moron"{" }"}
         </code>
@@ -77,8 +60,7 @@ function LlmDiagram() {
           AI
         </div>
         <div class="bg-canvas border border-rust-100 squircle-sm px-3 py-2 text-[12px]  text-text-muted">
-          Reply body contains banned term{" "}
-          <code class="text-text font-mono">moron</code>.
+          Reply body contains banned term <code class="text-text font-mono">moron</code>.
         </div>
       </div>
 
@@ -161,9 +143,7 @@ function ApproverCard({
 function OrDivider() {
   return (
     <div class="flex justify-center lg:self-center">
-      <span class="font-display font-black uppercase text-rust text-2xl">
-        - or -
-      </span>
+      <span class="font-display font-black uppercase text-rust text-2xl">- or -</span>
     </div>
   );
 }
@@ -172,15 +152,15 @@ export function ApproversSection() {
   return (
     <section class="bg-rust-50 py-24 sm:py-32">
       <div class="max-w-6xl mx-auto px-6 sm:px-8">
-        <SectionLabel>Approvers</SectionLabel>
+        <SectionLabel>Approval flows</SectionLabel>
 
         <div class="max-w-3xl mb-14">
           <h3 class="text-4xl sm:text-5xl md:text-6xl font-display font-bold text-balance mb-5 text-text">
             Humans, models, <span class="text-rust">your call</span>
           </h3>
           <p class="text-base  text-text-muted">
-            Defer the ambiguous requests. A model with your prompt, or a person
-            in Slack — you decide which one runs when.
+            Defer the ambiguous requests. A model with your prompt, or a person in Slack. You decide
+            which one runs when.
           </p>
         </div>
 

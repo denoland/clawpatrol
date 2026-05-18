@@ -13,6 +13,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/config/facet"
 	"github.com/denoland/clawpatrol/config/match"
 	_ "github.com/denoland/clawpatrol/config/plugins/credentials"
 	_ "github.com/denoland/clawpatrol/config/plugins/facets/sql"
@@ -240,7 +241,7 @@ func TestPgClientToServerForwardsQueryMessage(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "")
+	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "", "")
 
 	wire := serializePgMessage(pgMessage{typ: 'Q', payload: []byte("SELECT 1\x00")})
 	go func() { _, _ = agent.Write(wire) }()
@@ -263,7 +264,7 @@ func TestPgClientToServerDeniesQueryMessage(t *testing.T) {
 			Outcome: config.Outcome{Verdict: "deny", Reason: "blocked"},
 		}}},
 	}
-	go pgClientToServer(ctx, ch, upstream, "")
+	go pgClientToServer(ctx, ch, upstream, "", "")
 
 	wire := serializePgMessage(pgMessage{typ: 'Q', payload: []byte("DROP TABLE users\x00")})
 	go func() { _, _ = agent.Write(wire) }()
@@ -282,7 +283,7 @@ func TestPgClientToServerForwardsNonInspectedMessage(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "")
+	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "", "")
 
 	wire := serializePgMessage(pgMessage{typ: 'B', payload: []byte("portal\x00stmt\x00\x00\x00")})
 	go func() { _, _ = agent.Write(wire) }()
@@ -299,7 +300,7 @@ func TestPgClientToServerForwardsPartialFrame(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "")
+	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "", "")
 
 	wire := serializePgMessage(pgMessage{typ: 'Q', payload: []byte("SELECT 1\x00")})
 	go func() {
@@ -320,7 +321,7 @@ func TestPgClientToServerForwardsMultipleFramesFromOneRead(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "")
+	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "", "")
 
 	q := serializePgMessage(pgMessage{typ: 'Q', payload: []byte("SELECT 1\x00")})
 	syncMsg := serializePgMessage(pgMessage{typ: 'S'})
@@ -367,7 +368,7 @@ func TestPgClientToServerReturnsOnContextCancel(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "")
+		pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "", "")
 	}()
 
 	cancel()
@@ -411,8 +412,7 @@ func pgEndpointFromHCL(t *testing.T, src string) *config.CompiledEndpoint {
 func TestPgClientToServerDeniesOversizeFrameWhenRuleReadsTruncatableFacet(t *testing.T) {
 	ep := pgEndpointFromHCL(t, `
 endpoint "postgres" "db" {
-  host     = "db.example.com:5432"
-  database = "app"
+  host = "db.example.com:5432"
 }
 profile "default" { endpoints = [db] }
 
@@ -434,7 +434,7 @@ rule "default-deny" {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ch := &runtime.ConnHandle{Conn: gateway, Endpoint: ep}
-	go pgClientToServer(ctx, ch, upstream, "")
+	go pgClientToServer(ctx, ch, upstream, "", "")
 
 	// Declare a Q frame whose length exceeds maxPgMessage. We send
 	// the header followed by a small "body" that exercises the
@@ -477,7 +477,6 @@ func TestPgClientToServerForwardsOversizeFrameWhenNoRuleReadsTruncatableFacet(t 
 credential "bearer_token" "cred" {}
 endpoint "postgres" "db" {
   host       = "db.example.com:5432"
-  database   = "app"
   credential = cred
 }
 profile "default" { endpoints = [db] }
@@ -495,7 +494,7 @@ rule "by-credential" {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ch := &runtime.ConnHandle{Conn: gateway, Endpoint: ep}
-	go pgClientToServer(ctx, ch, upstream, "cred")
+	go pgClientToServer(ctx, ch, upstream, "cred", "")
 
 	oversize := uint32(maxPgMessage + 8)
 	header := []byte{'Q', 0, 0, 0, 0}
@@ -681,7 +680,7 @@ func TestPgEvaluate_Audit143(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ch := denyAll(denyRule("blocked"))
-			v, _ := pgEvaluate(ch, tc.sql, "")
+			v, _ := pgEvaluate(ch, tc.sql, "", "")
 			if v != "deny" {
 				t.Errorf("pgEvaluate(%q) verdict = %q, want deny", tc.sql, v)
 			}
@@ -791,7 +790,7 @@ func TestPgClientToServerDeniesFunctionCall(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "")
+	go pgClientToServer(ctx, &runtime.ConnHandle{Conn: gateway}, upstream, "", "")
 
 	wire := serializePgMessage(pgMessage{typ: 'F', payload: []byte{0, 0, 0, 1, 0, 0}})
 	go func() { _, _ = agent.Write(wire) }()
@@ -820,7 +819,7 @@ func TestPgEvaluateEmitsAllowOnNoMatch(t *testing.T) {
 		},
 		Emit: func(ev runtime.ConnEvent) { events = append(events, ev) },
 	}
-	if v, _ := pgEvaluate(ch, "SELECT 1", ""); v != "" {
+	if v, _ := pgEvaluate(ch, "SELECT 1", "", ""); v != "" {
 		t.Errorf("verdict %q, want empty (allow)", v)
 	}
 	if len(events) != 1 {
@@ -831,5 +830,80 @@ func TestPgEvaluateEmitsAllowOnNoMatch(t *testing.T) {
 	}
 	if events[0].Verb != "select" {
 		t.Errorf("Verb = %q, want select", events[0].Verb)
+	}
+}
+
+// TestPgStartupParamExtractsDatabase confirms pgStartupParam pulls
+// the `database` parameter out of a postgres v3 StartupMessage,
+// which is how the wire frontend learns the session-scoped database
+// name to stamp on every subsequent match.Request.Meta.
+func TestPgStartupParamExtractsDatabase(t *testing.T) {
+	body := buildPgStartupBody(map[string]string{
+		"user":             "alice",
+		"database":         "Prod",
+		"application_name": "psql",
+	})
+	if got := pgStartupParam(body, "database"); got != "Prod" {
+		t.Errorf("pgStartupParam(database) = %q, want %q", got, "Prod")
+	}
+	if got := pgStartupParam(body, "user"); got != "alice" {
+		t.Errorf("pgStartupParam(user) = %q, want %q", got, "alice")
+	}
+	if got := pgStartupParam(body, "missing"); got != "" {
+		t.Errorf("pgStartupParam(missing) = %q, want empty", got)
+	}
+}
+
+// buildPgStartupBody assembles a synthetic v3 StartupMessage body in
+// the shape pgStartupParam parses: 4-byte length + 4-byte protocol
+// version + alternating null-terminated key/value strings + trailing
+// null. The 8-byte head matches what HandleConn pulls off the wire.
+func buildPgStartupBody(params map[string]string) []byte {
+	var payload []byte
+	for k, v := range params {
+		payload = append(payload, []byte(k)...)
+		payload = append(payload, 0)
+		payload = append(payload, []byte(v)...)
+		payload = append(payload, 0)
+	}
+	payload = append(payload, 0)
+	body := make([]byte, 8+len(payload))
+	binary.BigEndian.PutUint32(body[:4], uint32(len(body)))
+	binary.BigEndian.PutUint32(body[4:8], 196608)
+	copy(body[8:], payload)
+	return body
+}
+
+// TestPgEvaluateThreadsDatabaseIntoMeta verifies that the database
+// argument to pgEvaluate lands on the *sqlfacet.Meta the matcher
+// reads, by wiring a rule whose CEL condition fires only when
+// sql.database == "Prod". Case-sensitive: "prod" must NOT fire.
+func TestPgEvaluateThreadsDatabaseIntoMeta(t *testing.T) {
+	condition := `sql.database == "Prod" && sql.verb == "delete"`
+	m, err := facet.NewMatcher("sql", condition)
+	if err != nil {
+		t.Fatalf("matcher: %v", err)
+	}
+	ep := &config.CompiledEndpoint{
+		Name: "pg-test", Family: "sql",
+		Rules: []*config.CompiledRule{{
+			Name:    "prod-no-delete",
+			Matcher: m,
+			Outcome: config.Outcome{Verdict: "deny", Reason: "prod is read-only"},
+		}},
+	}
+	ch := &runtime.ConnHandle{Endpoint: ep, Emit: func(runtime.ConnEvent) {}}
+
+	if v, _ := pgEvaluate(ch, "DELETE FROM users", "", "Prod"); v != "deny" {
+		t.Errorf("DELETE on Prod verdict = %q, want deny", v)
+	}
+	if v, _ := pgEvaluate(ch, "DELETE FROM users", "", "prod"); v != "" {
+		t.Errorf("DELETE on prod (lowercase) verdict = %q, want allow", v)
+	}
+	if v, _ := pgEvaluate(ch, "DELETE FROM users", "", ""); v != "" {
+		t.Errorf("DELETE with empty database verdict = %q, want allow", v)
+	}
+	if v, _ := pgEvaluate(ch, "SELECT 1", "", "Prod"); v != "" {
+		t.Errorf("SELECT on Prod verdict = %q, want allow (verb mismatch)", v)
 	}
 }

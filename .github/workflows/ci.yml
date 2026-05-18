@@ -38,3 +38,10 @@ jobs:
       - run: cd www && npm ci && npm run format:check && npm run lint:github && npm run build
       - run: gofmt -l . && test -z "$(gofmt -l .)"
       - run: go test ./...
+      - name: validate landing-page HCL examples
+        run: |
+          go build -o /tmp/clawpatrol .
+          for f in site/examples/*.hcl; do
+            echo "validating $f"
+            /tmp/clawpatrol validate "$f"
+          done

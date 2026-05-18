@@ -1,21 +1,25 @@
 package main
 
-// Ephemeral peer support: each `clawpatrol run` on Linux gets its own
-// WireGuard keypair and IP rather than sharing the device's permanent
-// identity. Without this, concurrent runs on the same machine fight
-// over a single WireGuard session — keepalives from one process
-// invalidate the other's session causing intermittent packet loss.
+// Peer registration handlers for `clawpatrol run`:
 //
-// The client POSTs an ephemeral pubkey; the gateway allocates a fresh
-// IP, wires it up, and inherits the parent device's profile. On clean
-// exit the client DELETEs the peer. The permanent device record
-// (from `clawpatrol join`) is untouched.
+//   WG mode: each invocation gets its own WireGuard keypair and IP
+//   (POST /api/peer/ephemeral, DELETE on exit) so concurrent runs on
+//   the same host don't fight over a single WG session.
+//
+//   Tailscale mode: tsnet keeps a stable per-machine identity across
+//   runs (POST /api/peer/ephemeral/tsnet/register binds the tailnet
+//   IP to the parent device's profile). The "ephemeral" in the path
+//   is historical — the registration is persistent.
+//
+// Both endpoints authenticate via the per-peer Bearer token minted
+// during `clawpatrol join` and stored hashed in peer_api_tokens.
 
 import (
 	"fmt"
 	"net"
 	"net/http"
 	"net/netip"
+	"strings"
 	"sync"
 )
 
@@ -122,6 +126,61 @@ func (w *webMux) apiAddEphemeralPeer(rw http.ResponseWriter, r *http.Request) {
 	w.g.onboard.setEphemeralProfile(ip, parentIP, profile)
 	ip6 := wg6FromV4(netip.MustParseAddr(ip)).String()
 	writeJSON(rw, map[string]string{"ip": ip, "ip6": ip6})
+}
+
+// apiRegisterEphemeralTsnetIP handles POST /api/peer/ephemeral/tsnet/register.
+// Called by `clawpatrol run` (tsnet mode) immediately after the tsnet node
+// joins and learns its 100.x.x.x address. With persistent tsnet state on the
+// client, the same machine gets the same tailnet IP across runs — we assign
+// the IP directly to the parent's profile and seed a real device row so the
+// dashboard shows ONE entry per machine (not per ephemeral run).
+func (w *webMux) apiRegisterEphemeralTsnetIP(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(rw, "POST", http.StatusMethodNotAllowed)
+		return
+	}
+	token := bearerFromAuthHeader(r.Header.Get("Authorization"))
+	parentIP := peerIPForAPIToken(w.g.db, token)
+	if parentIP == "" {
+		http.Error(rw, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	tsnetIP := r.URL.Query().Get("ip")
+	if tsnetIP == "" {
+		http.Error(rw, "missing ip", http.StatusBadRequest)
+		return
+	}
+	if _, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(tsnetIP, "1")); err != nil {
+		http.Error(rw, "invalid ip", http.StatusBadRequest)
+		return
+	}
+	if w.g.onboard == nil {
+		rw.WriteHeader(http.StatusNoContent)
+		return
+	}
+	profile := w.g.onboard.ProfileForIP(parentIP)
+	if profile != "" {
+		w.g.onboard.AssignProfile(tsnetIP, profile)
+	}
+	if hn := strings.TrimSpace(r.URL.Query().Get("hostname")); hn != "" {
+		// Re-registration after the client wiped its tsnet state lands
+		// on a different tailnet IP. Drop stale rows for this hostname
+		// so the dashboard stays at one device per machine.
+		_, _ = w.g.db.Exec("DELETE FROM devices WHERE name=? AND id<>?", hn, tsnetIP)
+		w.g.onboard.SetHostname(tsnetIP, hn)
+	}
+	// Drop the synthetic `tsnet:<device_code>` row created at approve
+	// time — the real row above replaces it. Repoint the parent's
+	// api-token at the new tailnet IP so future register calls find
+	// the profile directly via ProfileForIP(parentIP).
+	if strings.HasPrefix(parentIP, "tsnet:") {
+		_, _ = w.g.db.Exec("DELETE FROM devices WHERE id=?", parentIP)
+		_, _ = w.g.db.Exec("UPDATE peer_api_tokens SET peer_ip=? WHERE peer_ip=?", tsnetIP, parentIP)
+	}
+	if w.g.agents != nil {
+		w.g.agents.Seed(tsnetIP)
+	}
+	rw.WriteHeader(http.StatusNoContent)
 }
 
 // apiRemoveEphemeralPeer handles DELETE /api/peer/ephemeral?pubkey=<hex>.

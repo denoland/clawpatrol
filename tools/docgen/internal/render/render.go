@@ -172,8 +172,9 @@ func (r *renderer) writeProfile() {
 	r.out.WriteString("Names a set of endpoints. Profiles bind to dashboard owners; an owner's profile determines which endpoints their gateway requests can reach. Rules ride along automatically because they're attached to endpoints.\n\n")
 	r.out.WriteString("| Attribute | Type | Required | Description |\n")
 	r.out.WriteString("|-----------|------|----------|-------------|\n")
-	r.out.WriteString("| `endpoints` | `[]ref(endpoint)` | yes | Bare-name endpoint references included in this profile. |\n\n")
-	r.out.WriteString("```hcl\nprofile \"default\" {\n  endpoints = [github, postgres-prod]\n}\n```\n\n")
+	r.out.WriteString("| `endpoints` | `[]ref(endpoint)` | yes | Bare-name endpoint references included in this profile. |\n")
+	r.out.WriteString("| `hitl_async_grants` | `bool` | no | Explicit opt-in for agent-aware async HITL retry grants on this profile. Async behavior still also requires an approver with `async_grant.enabled = true`. |\n\n")
+	r.out.WriteString("```hcl\nprofile \"default\" {\n  endpoints          = [github, postgres-prod]\n  hitl_async_grants = true\n}\n```\n\n")
 }
 
 // ── plugin-dispatched kinds ─────────────────────────────────────────
@@ -352,7 +353,7 @@ func (r *renderer) collectFields(pkgName, typeName string, rt reflect.Type) []fi
 		row := fieldRow{
 			Name:        name,
 			Type:        typeStr,
-			Required:    !hasOpt(opts, "optional"),
+			Required:    fieldRequired(f.Type, opts),
 			Block:       hasOpt(opts, "block"),
 			GoFieldName: f.Name,
 			Doc:         stripIdentPrefix(r.docs.fieldDoc(pkgName, typeName, f.Name), f.Name),
@@ -381,6 +382,16 @@ func (r *renderer) fieldRefs(pkgName, typeName string) map[string]string {
 		}
 	}
 	return out
+}
+
+func fieldRequired(rt reflect.Type, opts []string) bool {
+	if hasOpt(opts, "optional") {
+		return false
+	}
+	if hasOpt(opts, "block") && rt.Kind() == reflect.Pointer {
+		return false
+	}
+	return true
 }
 
 // blockElemType returns the underlying struct type of a `hcl:"...,block"`

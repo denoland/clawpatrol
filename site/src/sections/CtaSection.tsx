@@ -13,9 +13,8 @@ export function CtaSection() {
         class="max-w-lg mx-auto text-base sm:text-lg
          mb-10 text-text-muted"
       >
-        The proxy handles your secrets — it must be auditable. MIT licensed.
-        Multiple agents share secrets and endpoints, each with their own
-        policies.
+        The proxy holds your secrets and watches every byte your agents send. It has to be
+        auditable, so it's MIT licensed.
       </p>
       <img
         src="/clawpatrol.png"

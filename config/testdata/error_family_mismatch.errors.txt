@@ -1,1 +1,1 @@
-error: error_family_mismatch.hcl:16:1: Rule "mixed-family" targets endpoints from mixed families — Endpoints span families [http sql]. A rule's CEL condition is evaluated against a single facet's variable set; split into one rule per family.
+error: error_family_mismatch.hcl:15:1: Rule "mixed-family" targets endpoints from mixed families — Endpoints span families [http sql]. A rule's CEL condition is evaluated against a single facet's variable set; split into one rule per family.

@@ -1,12 +1,6 @@
 import type { ComponentChildren } from "preact";
 
-export function CrtDisplay({
-  title,
-  children,
-}: {
-  title?: string;
-  children: ComponentChildren;
-}) {
+export function CrtDisplay({ title, children }: { title?: string; children: ComponentChildren }) {
   return (
     <div
       class="md:squircle-xl bg-canvas py-[clamp(20px,3.5vw,34px)] md:p-[clamp(20px,3.5vw,34px)]"

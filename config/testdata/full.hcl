@@ -563,6 +563,15 @@ credential "bearer_token" "grafana-token" {}
 credential "clickhouse_credential" "ch-o11y" {
   user = "ops"
 }
+# Per-database o11y credentials — `ch-o11y-prod` has restricted
+# RBAC at the database layer; `ch-o11y-dev` is the read/write dev
+# account.
+credential "clickhouse_credential" "ch-o11y-prod" {
+  user = "prod_app"
+}
+credential "clickhouse_credential" "ch-o11y-dev" {
+  user = "dev_app"
+}
 credential "mtls_credential" "k8s-dev-iad-mtls" {}
 credential "mtls_credential" "k8s-dev-sfo-mtls" {}
 credential "aws_credential" "k8s-eks-corp-aws" {}
@@ -677,8 +686,7 @@ endpoint "https" "orb" {
 # Postgres. Network reachability is arranged out-of-band; tunnel
 # topology declarations land when the postgres runtime hooks ship.
 endpoint "postgres" "pg-corp" {
-  host     = "corp-prod.cluster.example:5432"
-  database = "corp"
+  host = "corp-prod.cluster.example:5432"
   # ro/rw dispatch via placeholder. Ro is the default for reads;
   # rw requires explicit selection AND human approval (see rules).
   credentials = [
@@ -688,7 +696,6 @@ endpoint "postgres" "pg-corp" {
 }
 endpoint "postgres" "pg-scheduler" {
   host       = "scheduler-prod.cluster.example:5432"
-  database   = "scheduler"
   credential = pg-scheduler-cred
 }
 
@@ -710,15 +717,26 @@ endpoint "https" "grafana" {
   credential = grafana-token
 }
 # ClickHouse exposes two protocols on the same upstream cluster.
-# Two endpoint rows, distinct names, one shared credential. Rules
-# can attach to both via `endpoints = [ch-o11y-https, ch-o11y-native]`.
+# Two endpoint rows, distinct names, with per-database credential
+# dispatch — agents declaring `database=prod` get the restricted
+# prod credential, dev gets the dev account, anything else falls
+# through to the shared ops credential. Rules can attach to both
+# via `endpoints = [ch-o11y-https, ch-o11y-native]`.
 endpoint "clickhouse_https" "ch-o11y-https" {
-  hosts       = ["clickhouse-o11y.example", "ch-o11y.internal.example"]
-  credential = ch-o11y
+  hosts = ["clickhouse-o11y.example", "ch-o11y.internal.example"]
+  credentials = [
+    { database = "prod", credential = ch-o11y-prod },
+    { database = "dev",  credential = ch-o11y-dev  },
+    { credential = ch-o11y },
+  ]
 }
 endpoint "clickhouse_native" "ch-o11y-native" {
-  hosts       = ["clickhouse-o11y.example"]
-  credential = ch-o11y
+  hosts = ["clickhouse-o11y.example"]
+  credentials = [
+    { database = "prod", credential = ch-o11y-prod },
+    { database = "dev",  credential = ch-o11y-dev  },
+    { credential = ch-o11y },
+  ]
 }
 # Self-hosted k8s clusters use mTLS. The CA cert is referenced by
 # filename and inlined at load time.
@@ -982,6 +1000,15 @@ rule "grafana-dashboard-writes" {
 rule "clickhouse-reads" {
   endpoints = [ch-o11y-https, ch-o11y-native]
   condition = "sql.verb in ['select', 'show', 'describe', 'explain', 'use']"
+  verdict   = "allow"
+}
+# sql.database is the agent-declared target database; the prod
+# rule fires only on requests scoped to that database. Higher
+# priority than the default-deny so the deny doesn't shadow it.
+rule "clickhouse-prod-readonly" {
+  endpoints = [ch-o11y-https, ch-o11y-native]
+  priority  = 10
+  condition = "sql.database == 'prod' && sql.verb in ['select', 'show', 'describe', 'explain']"
   verdict   = "allow"
 }
 rule "clickhouse-default" {

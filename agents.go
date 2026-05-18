@@ -127,6 +127,15 @@ func NewAgentRegistry() *AgentRegistry {
 	return r
 }
 
+// SetLocalClient replaces the default system-tailscaled LocalClient with
+// the one from an embedded tsnet.Server. Call after tsnet is up so that
+// whois lookups resolve against the tsnet peer table, not the host daemon.
+func (r *AgentRegistry) SetLocalClient(lc *local.Client) {
+	r.mu.Lock()
+	r.lc = lc
+	r.mu.Unlock()
+}
+
 // sampleLoop runs once per second, computes bytes/sec delta per agent,
 // appends to Activity ring buffer.
 func (r *AgentRegistry) sampleLoop() {
@@ -290,28 +299,6 @@ func (r *AgentRegistry) fillIdentity(ip string) {
 	}
 	if who.UserProfile != nil {
 		a.User = who.UserProfile.LoginName
-	}
-}
-
-func printDashboardURL(listen string) {
-	port := listen
-	if i := strings.LastIndex(port, ":"); i >= 0 {
-		port = port[i:]
-	}
-	lc := &local.Client{}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	st, err := lc.Status(ctx)
-	if err != nil || st == nil || st.Self == nil {
-		log.Printf("dashboard: http://0.0.0.0%s", port)
-		return
-	}
-	hostName := st.Self.HostName
-	if st.CurrentTailnet != nil && st.CurrentTailnet.MagicDNSSuffix != "" && hostName != "" {
-		log.Printf("dashboard: http://%s.%s%s", hostName, st.CurrentTailnet.MagicDNSSuffix, port)
-	}
-	if len(st.Self.TailscaleIPs) > 0 {
-		log.Printf("dashboard: http://%s%s", st.Self.TailscaleIPs[0], port)
 	}
 }
 

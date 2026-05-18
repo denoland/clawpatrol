@@ -70,12 +70,14 @@ statement the agent sends.
 | `sql.tables` | `list<string>` | Tables referenced by the statement |
 | `sql.functions` | `list<string>` | Functions called by the statement |
 | `sql.statement` | `string` | The full lower-cased statement text |
+| `sql.database` | `string` | Agent-declared target database. Postgres reads it from the StartupMessage `database` (with `user` fallback). clickhouse_native reads `Hello.Database`. clickhouse_https reads `?database=` query first, then `X-ClickHouse-Database` header. Empty when neither set. |
 
 ```hcl
 condition = "sql.verb in ['select', 'show', 'explain']"
 condition = "'secrets' in sql.tables"
 condition = "sets.intersects(sql.tables, ['users', 'audit_log'])"
 condition = "sql.statement.matches('(?i)\\bpassword\\b')"
+condition = "sql.database == 'prod'"
 ```
 
 `verb`, `tables`, and `functions` are extracted by a best-effort
@@ -226,6 +228,7 @@ accessed with dot notation. Common idioms:
 | `sql.verb`                    | lower-case (normalized) |
 | `sql.tables`, `sql.functions` | lower-case (extracted from a lower-cased copy of the statement) |
 | `sql.statement`               | as on the wire (raw text, no case folding) |
+| `sql.database`                | as on the wire (StartupMessage / Hello / HTTP query+header) |
 | `k8s.verb`                    | lower-case (normalized) |
 | `k8s.resource`, `k8s.namespace`, `k8s.name`, `k8s.params` | as on the wire |
 
@@ -264,9 +267,152 @@ By default the message carries a link back to the dashboard; setting
 `interactive = true` on the approver embeds in-channel "approve" and
 "deny" buttons so the reviewer can decide without leaving Slack.
 
+### Async retry grants for agent clients
+
+HTTP clients that can poll and retry may opt into async HITL grants.
+This keeps normal transparent behavior when the reviewer answers
+quickly, but avoids holding a long-lived upstream mutation request open
+forever while a human is still deciding.
+
+Async mode is deliberately narrow. It is used only when all of these are
+true:
+
+- the active profile sets `hitl_async_grants = true`;
+- the matched human approver sets `sync_wait_timeout` and
+  `async_grant { enabled = true }`;
+- exactly one async-capable human approver stage is involved;
+- the gateway has `public_url` configured so clients can poll status;
+- the HTTP request body can be fingerprinted in `raw` mode without
+  truncation or exceeding `max_body_bytes`.
+
+With those conditions met, Claw Patrol first waits up to
+`sync_wait_timeout`. If the human approves during that window, the
+original request is forwarded normally. If the human denies, the request
+is rejected normally. If the window expires first, Claw Patrol returns
+`202 Accepted` and does **not** call upstream. The JSON response includes
+`upstream_called = false`, `operation_id`, `status_url`, and a
+`retry_original_request` hint that tells the client to keep polling
+instead of treating the mutation as successful:
+
+```json
+{
+  "operation_id": "hitl_op_...",
+  "state": "pending_approval",
+  "status_url": "https://gateway.example.test/api/hitl/operations/hitl_op_.../status",
+  "upstream_called": false,
+  "retry_original_request": true
+}
+```
+
+Agent clients should poll `status_url` using their peer API token. When
+the operation reaches `approved_waiting_for_retry`, the status response
+adds the retry header pair:
+
+```json
+{
+  "state": "approved_waiting_for_retry",
+  "retry_header_name": "Clawpatrol-HITL-Operation",
+  "retry_header_value": "hitl_op_..."
+}
+```
+
+At that point, retry the original mutation with the same method, URL,
+body, credential binding, and the `Clawpatrol-HITL-Operation` header
+value from the status response. Claw Patrol
+strips that internal header before forwarding upstream. Fingerprint or
+auth-binding mismatches do not reuse the grant and should not be treated
+as success. A retry grant is one-shot and expires after
+`approved_retry_ttl`; a pending approval expires after `approval_ttl`.
+
 If no rule matches, the request is **allowed** — there is no global
 default-deny. Add a `priority = -100, verdict = "deny"` catch-all
 per endpoint to invert this.
+
+
+## Inspection-buffer overflow
+
+To bound memory, the wire endpoints cap how much of each request they
+buffer for the matcher. A request that exceeds its cap is **not**
+dropped on the floor — the frame still forwards to upstream
+byte-for-byte. What's bounded is the matcher's view of it: the
+endpoint truncates the buffered slice and flags the request as
+truncated. The facet fields that draw their value from this slice
+are **truncatable facet fields** (listed per-endpoint in the table
+below). When a rule's CEL reads a truncatable facet field on a
+request that was flagged truncated, the rule is automatically
+matched without comparing the matching values, and the dispatcher
+returns a deny verdict for it.
+
+| Endpoint | Inspected slice | Cap | Truncatable facet fields |
+|----------|-----------------|-----|--------------------|
+| `https` | request body on `POST` / `PUT` / `PATCH` | 1 MiB | `http.body`, `http.body_json` |
+| `kubernetes` | request body on `POST` / `PUT` / `PATCH` | 1 MiB | *(none — every `k8s.*` facet is derived from the URL and method)* |
+| `clickhouse_https` | request body on `POST` / `PUT` / `PATCH` | 1 MiB | `sql.verb`, `sql.tables`, `sql.functions`, `sql.statement` |
+| `postgres` | `Query` (`Q`) and `Parse` (`P`) frame | 1 MiB | `sql.verb`, `sql.tables`, `sql.functions`, `sql.statement` |
+| `clickhouse_native` | `Query` packet body | 1 MiB | `sql.verb`, `sql.tables`, `sql.functions`, `sql.statement` |
+
+The caps are per-plugin constants in the gateway source — **not
+operator-tunable** today, and not surfaced in `gateway.hcl`. Header
+and URL bytes are bounded separately by `net/http`'s defaults and
+aren't covered here; the `ssh` endpoint has no rule family, so no
+inspection cap.
+
+### Rule matching semantics on truncated fields
+
+When a request overflows its cap, the dispatcher walks the endpoint's
+rules in priority order as usual. For each rule:
+
+- **Catch-all rule** (no `condition`): fires as written. A truncated
+  body can't poison a rule that reads nothing.
+- **Rule whose CEL reads no truncatable facet field** (e.g.
+  `http.method == 'GET'`, `credential = X`, any `k8s.*` predicate):
+  the matcher runs normally — the truncated bytes are irrelevant to
+  its decision.
+- **Rule whose CEL reads a truncatable facet field**: the rule is
+  automatically matched without comparing the matching values. The
+  dispatcher synthesizes a deny attributed to that rule, with this
+  exact reason:
+
+  ```
+  rule "<name>" reads a request facet whose bytes were truncated by the gateway's inspection buffer; failing closed
+  ```
+
+  The synthesized rule keeps the original rule's name and priority,
+  so logs and dashboards still attribute the deny to the rule whose
+  contract the truncation broke.
+
+The upshot: a rule matching on `http.method` and/or `credential` on
+an `https` endpoint still fires on a 2 MiB body, but a
+`http.body_json.field == "x"` rule auto-denies.
+
+A matched rule with `approve = [...]` on a truncated postgres frame
+is forced to deny without paging the approver (HITL can't reason about
+bytes that aren't there); the postgres endpoint surfaces this with the
+reason `"approval required but request was truncated by inspection
+buffer"`.
+
+### How the deny reaches the agent
+
+Each protocol synthesizes the deny in its native shape so the agent's
+driver doesn't disconnect:
+
+- **`https`, `kubernetes`, `clickhouse_https`** — `HTTP/1.1 403
+  Forbidden`, `Content-Type: text/plain`, reason in the body,
+  `Connection: close`.
+- **`postgres`** — `ErrorResponse` (severity `ERROR`, SQLSTATE
+  `42501`, message = reason), followed by `ReadyForQuery` in idle
+  state. The session stays open; the agent can run the next query.
+- **`clickhouse_native`** — server `Exception` packet with the
+  reason. The unread tail of the oversize `Query` body is drained off
+  the wire so the next packet frames correctly.
+
+### Why fail-closed
+
+A truncated body might contain content that *would* have triggered a
+deny rule the gateway can't see, so refusing is the safe default. If
+legitimate traffic is expected to exceed the cap, write the rules
+against non-truncatable facet fields only (see the table above) — those
+rules still match on a truncated request and won't auto-deny.
 
 
 ## Examples
@@ -371,6 +517,41 @@ The top-level `credential = orb-prod-key` fires when the request was
 *dispatched against* that credential — i.e. the agent embedded
 `PH_orb_prod` in the `Authorization: Bearer ...` slot. The matcher
 does not look at the request body for the placeholder.
+
+### Multi-credential endpoint dispatched by database
+
+For SQL endpoints (postgres, clickhouse_native, clickhouse_https), a
+credential entry can claim only requests against specific databases
+via `database = "X"` or `databases = ["X","Y"]`. Combine with
+`placeholder = "..."` for two-axis dispatch (e.g. read-only credential
+against prod):
+
+```hcl
+credential "clickhouse_credential" "ch-dev"  {}
+credential "clickhouse_credential" "ch-prod" {}
+
+endpoint "clickhouse_native" "ch-o11y" {
+  hosts = ["clickhouse-o11y.example"]
+  credentials = [
+    { database  = "prod",        credential = ch-prod },
+    { databases = ["dev", "qa"], credential = ch-dev  },
+  ]
+}
+
+rule "ch-prod-readonly" {
+  endpoint   = ch-o11y
+  credential = ch-prod
+  condition  = "sql.verb in ['select', 'show', 'explain']"
+  verdict    = "allow"
+}
+```
+
+An entry matches iff every constraint it declares is satisfied
+(placeholder match AND database match). Among matches the
+**most-specific** (highest constraint count) wins. Conflicting
+constraint signatures are rejected at policy load — see the
+`error_credentials_*` test fixtures for the diagnostics. An entry
+with no constraints is the catchall; only one is allowed per list.
 
 ### LLM proctor → human approver chain
 

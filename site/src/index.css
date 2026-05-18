@@ -11,48 +11,40 @@
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url("/fonts/source-sans-3/SourceSans3-Regular--latin_basic.woff2")
-    format("woff2");
+  src: url("/fonts/source-sans-3/SourceSans3-Regular--latin_basic.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Source Sans 3";
   font-style: italic;
   font-weight: 400;
   font-display: swap;
-  src: url("/fonts/source-sans-3/SourceSans3-It--latin_basic.woff2")
-    format("woff2");
+  src: url("/fonts/source-sans-3/SourceSans3-It--latin_basic.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Source Sans 3";
   font-style: normal;
   font-weight: 700;
   font-display: swap;
-  src: url("/fonts/source-sans-3/SourceSans3-Bold--latin_basic.woff2")
-    format("woff2");
+  src: url("/fonts/source-sans-3/SourceSans3-Bold--latin_basic.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Source Sans 3";
   font-style: italic;
   font-weight: 700;
   font-display: swap;
-  src: url("/fonts/source-sans-3/SourceSans3-BoldIt--latin_basic.woff2")
-    format("woff2");
+  src: url("/fonts/source-sans-3/SourceSans3-BoldIt--latin_basic.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
 /* Gazpacho — display serif. Static cuts, latin-basic subset. */
@@ -63,9 +55,8 @@
   font-display: swap;
   src: url("/fonts/gazpacho/Gazpacho-Thin.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Gazpacho";
@@ -74,9 +65,8 @@
   font-display: swap;
   src: url("/fonts/gazpacho/Gazpacho-Light.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Gazpacho";
@@ -85,9 +75,8 @@
   font-display: swap;
   src: url("/fonts/gazpacho/Gazpacho-Regular.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Gazpacho";
@@ -96,9 +85,8 @@
   font-display: swap;
   src: url("/fonts/gazpacho/Gazpacho-Medium.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Gazpacho";
@@ -107,9 +95,8 @@
   font-display: swap;
   src: url("/fonts/gazpacho/Gazpacho-Bold.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Gazpacho";
@@ -118,9 +105,8 @@
   font-display: swap;
   src: url("/fonts/gazpacho/Gazpacho-Heavy.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Gazpacho";
@@ -129,9 +115,8 @@
   font-display: swap;
   src: url("/fonts/gazpacho/Gazpacho-Black.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Gazpacho";
@@ -140,9 +125,8 @@
   font-display: swap;
   src: url("/fonts/gazpacho/GazpachoItalic-Thin.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Gazpacho";
@@ -151,9 +135,8 @@
   font-display: swap;
   src: url("/fonts/gazpacho/GazpachoItalic-Light.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Gazpacho";
@@ -162,9 +145,8 @@
   font-display: swap;
   src: url("/fonts/gazpacho/GazpachoItalic-Regular.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Gazpacho";
@@ -173,9 +155,8 @@
   font-display: swap;
   src: url("/fonts/gazpacho/GazpachoItalic-Medium.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Gazpacho";
@@ -184,9 +165,8 @@
   font-display: swap;
   src: url("/fonts/gazpacho/GazpachoItalic-Bold.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Gazpacho";
@@ -195,9 +175,8 @@
   font-display: swap;
   src: url("/fonts/gazpacho/GazpachoItalic-Heavy.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Gazpacho";
@@ -206,9 +185,8 @@
   font-display: swap;
   src: url("/fonts/gazpacho/GazpachoItalic-Black.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
 /* IBM Plex Mono — code/mono family. Two weights (Regular 400, SemiBold
@@ -220,9 +198,8 @@
   font-display: swap;
   src: url("/fonts/IBMPlexMono-Regular--latin_basic.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "IBM Plex Mono";
@@ -231,9 +208,8 @@
   font-display: swap;
   src: url("/fonts/IBMPlexMono-SemiBold--latin_basic.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "IBM Plex Mono";
@@ -242,21 +218,18 @@
   font-display: swap;
   src: url("/fonts/IBMPlexMono-Italic--latin_basic.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "IBM Plex Mono";
   font-style: italic;
   font-weight: 600;
   font-display: swap;
-  src: url("/fonts/IBMPlexMono-SemiBoldItalic--latin_basic.woff2")
-    format("woff2");
+  src: url("/fonts/IBMPlexMono-SemiBoldItalic--latin_basic.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
 /* Basic Sans (Latinotype) — body family. Static cuts, latin-basic subset. */
@@ -270,9 +243,8 @@
   font-display: swap;
   src: url("/fonts/basic-sans/BasicSans-Thin.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Basic Sans";
@@ -284,9 +256,8 @@
   font-display: swap;
   src: url("/fonts/basic-sans/BasicSans-ThinIt.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Basic Sans";
@@ -298,9 +269,8 @@
   font-display: swap;
   src: url("/fonts/basic-sans/BasicSans-ExtraLight.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Basic Sans";
@@ -312,9 +282,8 @@
   font-display: swap;
   src: url("/fonts/basic-sans/BasicSans-ExtraLightIt.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Basic Sans";
@@ -326,9 +295,8 @@
   font-display: swap;
   src: url("/fonts/basic-sans/BasicSans-Light.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Basic Sans";
@@ -340,9 +308,8 @@
   font-display: swap;
   src: url("/fonts/basic-sans/BasicSans-LightIt.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Basic Sans";
@@ -354,9 +321,8 @@
   font-display: swap;
   src: url("/fonts/basic-sans/BasicSans-Regular.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Basic Sans";
@@ -368,9 +334,8 @@
   font-display: swap;
   src: url("/fonts/basic-sans/BasicSans-RegularIt.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Basic Sans";
@@ -382,9 +347,8 @@
   font-display: swap;
   src: url("/fonts/basic-sans/BasicSans-SemiBold.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Basic Sans";
@@ -396,9 +360,8 @@
   font-display: swap;
   src: url("/fonts/basic-sans/BasicSans-SemiBoldIt.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Basic Sans";
@@ -410,9 +373,8 @@
   font-display: swap;
   src: url("/fonts/basic-sans/BasicSans-Bold.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Basic Sans";
@@ -424,9 +386,8 @@
   font-display: swap;
   src: url("/fonts/basic-sans/BasicSans-BoldIt.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Basic Sans";
@@ -438,9 +399,8 @@
   font-display: swap;
   src: url("/fonts/basic-sans/BasicSans-Black.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
   font-family: "Basic Sans";
@@ -452,9 +412,8 @@
   font-display: swap;
   src: url("/fonts/basic-sans/BasicSans-BlackIt.woff2") format("woff2");
   unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
 @utility neu-raised {
@@ -471,49 +430,15 @@
   box-shadow:
     /* Outer shadows — cast onto the background surface */
     -8px -12px 24px
-      color-mix(
-        in oklch,
-        var(--bg-highlight) var(--bg-highlight-opacity),
-        transparent
-      ),
-    -6px -8px 16px
-      color-mix(
-        in oklch,
-        var(--bg-highlight) var(--bg-highlight-opacity),
-        transparent
-      ),
-    2px 3px 2px
-      color-mix(
-        in oklch,
-        var(--bg-shadow) var(--bg-shadow-opacity),
-        transparent
-      ),
-    4px 3px 6px 4px
-      color-mix(
-        in oklch,
-        var(--bg-shadow) var(--bg-shadow-opacity),
-        transparent
-      ),
-    10px 8px 16px
-      color-mix(
-        in oklch,
-        var(--bg-shadow) var(--bg-shadow-opacity),
-        transparent
-      ),
-    8px 6px 12px 2px
-      color-mix(
-        in oklch,
-        var(--bg-shadow) var(--bg-shadow-opacity),
-        transparent
-      ),
+      color-mix(in oklch, var(--bg-highlight) var(--bg-highlight-opacity), transparent),
+    -6px -8px 16px color-mix(in oklch, var(--bg-highlight) var(--bg-highlight-opacity), transparent),
+    2px 3px 2px color-mix(in oklch, var(--bg-shadow) var(--bg-shadow-opacity), transparent),
+    4px 3px 6px 4px color-mix(in oklch, var(--bg-shadow) var(--bg-shadow-opacity), transparent),
+    10px 8px 16px color-mix(in oklch, var(--bg-shadow) var(--bg-shadow-opacity), transparent),
+    8px 6px 12px 2px color-mix(in oklch, var(--bg-shadow) var(--bg-shadow-opacity), transparent),
     2px 3px 1px 2px color-mix(in oklch, var(--neu-face) 90%, transparent),
-    /* Inner scoop — on the element's own "face," i.e., the element's bg */
-      inset 2px 2px 3px -1px
-      color-mix(
-        in oklch,
-        var(--face-highlight) var(--face-highlight-opacity),
-        transparent
-      );
+    /* Inner scoop — on the element's own "face," i.e., the element's bg */ inset 2px 2px 3px -1px
+      color-mix(in oklch, var(--face-highlight) var(--face-highlight-opacity), transparent);
 }
 
 /* Pressed-in variant — same shadow directions, reduced distances so the button
@@ -521,49 +446,15 @@
 a.neu-raised:active {
   transform: translate(0.125rem, 0.125rem);
   box-shadow:
-    -4px -6px 12px
-      color-mix(
-        in oklch,
-        var(--bg-highlight) var(--bg-highlight-opacity),
-        transparent
-      ),
-    -3px -4px 8px
-      color-mix(
-        in oklch,
-        var(--bg-highlight) var(--bg-highlight-opacity),
-        transparent
-      ),
-    1px 2px 1px
-      color-mix(
-        in oklch,
-        var(--bg-shadow) var(--bg-shadow-opacity),
-        transparent
-      ),
-    2px 2px 3px 2px
-      color-mix(
-        in oklch,
-        var(--bg-shadow) var(--bg-shadow-opacity),
-        transparent
-      ),
-    5px 4px 8px
-      color-mix(
-        in oklch,
-        var(--bg-shadow) var(--bg-shadow-opacity),
-        transparent
-      ),
-    4px 3px 6px 1px
-      color-mix(
-        in oklch,
-        var(--bg-shadow) var(--bg-shadow-opacity),
-        transparent
-      ),
+    -4px -6px 12px color-mix(in oklch, var(--bg-highlight) var(--bg-highlight-opacity), transparent),
+    -3px -4px 8px color-mix(in oklch, var(--bg-highlight) var(--bg-highlight-opacity), transparent),
+    1px 2px 1px color-mix(in oklch, var(--bg-shadow) var(--bg-shadow-opacity), transparent),
+    2px 2px 3px 2px color-mix(in oklch, var(--bg-shadow) var(--bg-shadow-opacity), transparent),
+    5px 4px 8px color-mix(in oklch, var(--bg-shadow) var(--bg-shadow-opacity), transparent),
+    4px 3px 6px 1px color-mix(in oklch, var(--bg-shadow) var(--bg-shadow-opacity), transparent),
     1px 2px 1px 1px color-mix(in oklch, var(--neu-face) 90%, transparent),
     inset 1px 1px 2px -1px
-      color-mix(
-        in oklch,
-        var(--face-highlight) var(--face-highlight-opacity),
-        transparent
-      );
+      color-mix(in oklch, var(--face-highlight) var(--face-highlight-opacity), transparent);
 }
 
 @keyframes crt-refresh {
@@ -838,11 +729,10 @@ a.neu-raised:active {
 
   --font-display: "Basic Sans", "Gazpacho", system-ui, serif;
   --font-sans:
-    "Source Sans 3", "Public Sans", "Eastman", "Courier New",
-    "American Typewriter", "Chronica Pro", "Basic Sans", system-ui, sans-serif;
+    "Source Sans 3", "Public Sans", "Eastman", "Courier New", "American Typewriter", "Chronica Pro",
+    "Basic Sans", system-ui, sans-serif;
   --font-mono:
-    "IBM Plex Mono", "MonoLisa", "DankMono Nerd Font", "SF Mono", "Menlo",
-    ui-monospace, monospace;
+    "IBM Plex Mono", "MonoLisa", "DankMono Nerd Font", "SF Mono", "Menlo", ui-monospace, monospace;
 
   --breakpoint-xs: 32rem;
 

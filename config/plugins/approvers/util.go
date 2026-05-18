@@ -21,19 +21,22 @@ func buildPending(req runtime.ApproveRequest) runtime.HITLPending {
 	if req.Endpoint != nil {
 		family = req.Endpoint.Family
 	}
-	return runtime.HITLPending{
-		AgentIP:    req.AgentIP,
-		Host:       req.Host,
-		Method:     req.Method,
-		Path:       req.Path,
-		Endpoint:   runtime.HITLEndpointLabel(req),
-		Family:     family,
-		UA:         req.UA,
-		BodySample: req.BodySample,
-		Reason:     req.Reason,
-		Approvers:  []string{req.ApproverName},
-		CreatedAt:  now,
+	pending := runtime.HITLPending{
+		OperationID: req.AsyncOperationID,
+		AgentIP:     req.AgentIP,
+		Host:        req.Host,
+		Method:      req.Method,
+		Path:        req.Path,
+		Endpoint:    runtime.HITLEndpointLabel(req),
+		Family:      family,
+		UA:          req.UA,
+		BodySample:  req.BodySample,
+		Reason:      req.Reason,
+		Approvers:   []string{req.ApproverName},
+		CreatedAt:   now,
 	}
+	runtime.NormalizeHITLPendingApproval(&pending)
+	return pending
 }
 
 func decision(allow bool) string {

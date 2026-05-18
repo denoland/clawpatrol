@@ -13,8 +13,8 @@ export function AnalyticsSection() {
           class="text-center max-w-2xl mx-auto mb-16 mt-4
           text-text-muted"
         >
-          Thousands of requests across dozens of services. Claw Patrol captures
-          it all passively, with zero instrumentation.
+          Thousands of requests across dozens of services. Nothing to instrument; the gateway
+          already sees every byte.
         </p>
       </div>
 

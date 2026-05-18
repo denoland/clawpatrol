@@ -66,6 +66,7 @@ export function HITLBar() {
               // paths don't start with `/`; insert a space so we get
               // "users-db UPDATE ..." rather than "users-dbUPDATE ...".
               const sep = p.path && !p.path.startsWith("/") ? " " : "";
+              const approval = hitlApprovalDisplay(p);
               return (
                 <tr
                   key={p.id}
@@ -84,13 +85,23 @@ export function HITLBar() {
                     {p.reason && (
                       <div className="text-2xs text-text-muted truncate">{p.reason}</div>
                     )}
+                    {approval && (
+                      <div className="mt-1 flex gap-2 text-2xs leading-snug text-text-muted">
+                        <span className="shrink-0 rounded-sm border border-navy-200 bg-navy-50 px-1.5 py-0.5 font-sans uppercase tracking-wide text-navy">
+                          {approval.label}
+                        </span>
+                        <span className="whitespace-pre-line">{approval.message}</span>
+                      </div>
+                    )}
                   </Td>
                   <Td className="text-right">
                     <div className="flex gap-1.5 justify-end">
                       <Button variant="outline" onClick={() => decide(p.id, false)}>
                         deny
                       </Button>
-                      <Button onClick={() => decide(p.id, true)}>allow</Button>
+                      <Button onClick={() => decide(p.id, true)}>
+                        {approval?.approveLabel ?? "allow"}
+                      </Button>
                     </div>
                   </Td>
                 </tr>
@@ -101,6 +112,62 @@ export function HITLBar() {
       )}
     </div>
   );
+}
+
+function hitlApprovalDisplay(
+  p: HITLPending,
+): { label: string; message: string; approveLabel: string } | null {
+  const effect = p.approval_effect;
+  const state = p.operation_state;
+  const message = (
+    p.approval_message || hitlApprovalFallbackMessage(state, effect, p.upstream_called)
+  ).trim();
+  if (!message && !state && !effect) return null;
+  if (effect === "create_retry_grant" || state === "pending_approval") {
+    return {
+      label: "retry grant",
+      message:
+        message || "Upstream has not been called. Approval allows one matching client retry.",
+      approveLabel: "approve retry",
+    };
+  }
+  if (p.upstream_called) {
+    return {
+      label: "upstream called",
+      message: message || "The approved request has been retried and forwarded upstream.",
+      approveLabel: "allow",
+    };
+  }
+  return {
+    label: state === "sync_waiting" ? "sync wait" : humanizeHITLState(state || "pending"),
+    message: message || "Approval sends this request upstream immediately while the client waits.",
+    approveLabel: "allow",
+  };
+}
+
+function hitlApprovalFallbackMessage(
+  state: HITLPending["operation_state"],
+  effect: HITLPending["approval_effect"],
+  upstreamCalled?: boolean,
+): string {
+  if (upstreamCalled) return "The approved request has been retried and forwarded upstream.";
+  if (effect === "create_retry_grant" || state === "pending_approval") {
+    return "Upstream has not been called. Approve will not send the request upstream now; it only allows one matching client retry.";
+  }
+  if (state === "approved_waiting_for_retry") {
+    return "Approved. Waiting for the client to retry the original request. Upstream has not been called yet.";
+  }
+  if (state === "denied" || state === "expired" || state === "client_disconnected") {
+    return "Upstream was not called.";
+  }
+  if (state === "sync_waiting" || effect === "execute_upstream") {
+    return "Approval sends this request upstream immediately while the client waits.";
+  }
+  return "";
+}
+
+function humanizeHITLState(state: string): string {
+  return state.replaceAll("_", " ");
 }
 
 function hitlDecisionNotice(result: HITLResolveResult): string {

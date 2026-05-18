@@ -26,6 +26,17 @@ type Request struct {
 	// agent dispatched against, "" if none
 	PeerIP string // source IP of the agent — used to scope per-device rules
 
+	// Database is the agent-declared target database. Postgres reads
+	// it from the StartupMessage `database` parameter (falling back to
+	// `user` per pg convention); clickhouse_native from
+	// Hello.Database; clickhouse_https from `?database=` query (with
+	// X-ClickHouse-Database as fallback). Empty when the protocol
+	// carries no database concept. Two consumers read it: rules via
+	// the `sql.database` CEL facet field, and runtime.ResolveCredential
+	// to filter credentials whose `database`/`databases` constraint
+	// pins them to specific databases.
+	Database string
+
 	// HTTP-shaped fields, populated whenever the gateway has them
 	// available. Even non-HTTP wire frontends (postgres, clickhouse
 	// over TLS) leave these zero rather than fake them.

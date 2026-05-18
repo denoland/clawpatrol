@@ -5,29 +5,23 @@ import { ApproversSection } from "./sections/ApproversSection";
 import { ComparisonSection } from "./sections/ComparisonSection";
 import { CtaSection } from "./sections/CtaSection";
 import { HeroSection } from "./sections/HeroSection";
-import { HowItWorksSection } from "./sections/HowItWorksSection";
-import { IntegrationsSection } from "./sections/IntegrationsSection";
 import { ProblemSection } from "./sections/ProblemSection";
-import { ProtocolDepthSection } from "./sections/ProtocolDepthSection";
 import { RulesSection } from "./sections/RulesSection";
+import { RunSection } from "./sections/RunSection";
+import { TestSection } from "./sections/TestSection";
 
 export function Landing() {
   return (
     <Layout>
       <HeroSection />
       <ProblemSection />
-
+      <RunSection />
+      <Wave topColor="var(--color-canvas-muted)" bottomColor="var(--color-navy-600)" />
       <RulesSection />
       <ApproversSection />
-      <Wave
-        topColor="var(--color-rust-50)"
-        bottomColor="var(--color-navy-600)"
-      />
-      <ProtocolDepthSection />
-      <HowItWorksSection />
+      <TestSection />
       <AnalyticsSection />
       <ComparisonSection />
-      <IntegrationsSection />
       <CtaSection />
     </Layout>
   );

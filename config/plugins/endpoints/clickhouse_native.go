@@ -15,6 +15,7 @@ package endpoints
 import (
 	"fmt"
 	"net"
+	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclwrite"
@@ -45,11 +46,14 @@ import (
 // validation. Use for self-hosted ClickHouse fronted by a private CA.
 // Default false keeps full validation against system roots.
 type ClickhouseNativeEndpoint struct {
-	Hosts                    []string `hcl:"hosts"`
-	Port                     int      `hcl:"port,optional"`
-	TLS                      bool     `hcl:"tls,optional"`
-	AcceptInvalidCertificate bool     `hcl:"accept_invalid_certificate,optional"`
-	Credential               string   `hcl:"credential,optional"`
+	Hosts                    []string  `hcl:"hosts"`
+	Port                     int       `hcl:"port,optional"`
+	TLS                      bool      `hcl:"tls,optional"`
+	AcceptInvalidCertificate bool      `hcl:"accept_invalid_certificate,optional"`
+	Credential               string    `hcl:"credential,optional"`
+	CredentialsRaw           cty.Value `hcl:"credentials,optional" json:"-"`
+
+	Credentials []CredentialEntry `json:"Credentials,omitempty"`
 }
 
 // EndpointHosts returns the endpoint's host:port list, normalized so
@@ -73,8 +77,13 @@ func (e *ClickhouseNativeEndpoint) EndpointHosts() []string {
 
 // EndpointCredentials is part of the clawpatrol plugin API.
 func (e *ClickhouseNativeEndpoint) EndpointCredentials() []config.CredBinding {
-	return singleBinding(e.Credential)
+	return bindings(e.Credential, e.Credentials)
 }
+
+func (e *ClickhouseNativeEndpoint) credentialAndRaw() (string, cty.Value) {
+	return e.Credential, e.CredentialsRaw
+}
+func (e *ClickhouseNativeEndpoint) setCredentialEntries(es []CredentialEntry) { e.Credentials = es }
 
 // RequiresVIP opts the endpoint into DNS-VIP interception. The wire
 // protocol carries no SNI / Host header, so the gateway can't
@@ -122,9 +131,32 @@ func (ClickhouseNativeEndpointRuntime) ParseStatement(sql string) (any, bool) {
 	}, unparseable
 }
 
+// DetectPlaceholder scans the agent's Hello (username + password) for
+// any candidate placeholder substring and returns the first match.
+// The clickhouse_native runtime constructs a partial match.Request
+// whose Meta.Statement carries `username + "\x00" + password` for
+// detector consumption — same shape postgres uses.
+func (ClickhouseNativeEndpointRuntime) DetectPlaceholder(req *runtime.Request, candidates []string) string {
+	if req == nil {
+		return ""
+	}
+	meta, _ := req.Meta.(*sqlfacet.Meta)
+	if meta == nil {
+		return ""
+	}
+	hay := meta.Statement
+	for _, c := range candidates {
+		if c != "" && strings.Contains(hay, c) {
+			return c
+		}
+	}
+	return ""
+}
+
 func init() {
 	var _ runtime.ConnEndpointRuntime = ClickhouseNativeEndpointRuntime{}
 	var _ runtime.SQLParser = ClickhouseNativeEndpointRuntime{}
+	var _ runtime.PlaceholderDetector = ClickhouseNativeEndpointRuntime{}
 	config.Register(&config.Plugin{
 		Kind:     config.KindEndpoint,
 		Type:     "clickhouse_native",
@@ -146,28 +178,30 @@ func init() {
 			if e.AcceptInvalidCertificate {
 				b.SetAttributeValue("accept_invalid_certificate", cty.BoolVal(true))
 			}
-			if e.Credential != "" {
-				config.SetIdent(b, "credential", e.Credential)
-			}
+			emitCredentialBinding(b, e.Credential, e.Credentials, "placeholder")
 		},
 	})
 }
 
 // validateClickhouseNativeEndpoint rejects accept_invalid_certificate
 // when tls is off — the flag only affects the upstream TLS handshake,
-// so without tls there's nothing for it to do.
+// so without tls there's nothing for it to do — and additionally
+// runs the shared multi-credential validator (the credentials list
+// shape is the same as postgres / https).
 func validateClickhouseNativeEndpoint(d any, name string, ctx *config.BuildCtx) hcl.Diagnostics {
+	var diags hcl.Diagnostics
 	e, ok := d.(*ClickhouseNativeEndpoint)
 	if !ok {
 		return nil
 	}
 	if e.AcceptInvalidCertificate && !e.TLS {
-		return hcl.Diagnostics{{
+		diags = append(diags, &hcl.Diagnostic{
 			Severity: hcl.DiagError,
 			Summary:  fmt.Sprintf("accept_invalid_certificate set without tls on clickhouse_native endpoint %q", name),
 			Detail:   "accept_invalid_certificate only affects the upstream TLS handshake; set `tls = true` to enable TLS, or remove accept_invalid_certificate.",
 			Subject:  &ctx.Block.DefRange,
-		}}
+		})
 	}
-	return nil
+	diags = append(diags, multiCredValidate(d, name, ctx)...)
+	return diags
 }

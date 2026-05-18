@@ -23,6 +23,9 @@ import (
 type Gateway struct {
 	Listen     string `hcl:"listen,optional"`
 	InfoListen string `hcl:"info_listen,optional"`
+	// PublicURL is the canonical externally reachable gateway URL used
+	// for generated control-plane links such as WireGuard join targets and
+	// async HITL status URLs. Runtime code normalizes away trailing slashes.
 	PublicURL  string `hcl:"public_url,optional"`
 	AdminEmail string `hcl:"admin_email,optional"`
 	// StateDir is the directory holding clawpatrol.db (and anything
@@ -53,10 +56,17 @@ type Gateway struct {
 	// Format accepts time.ParseDuration strings ("30m", "168h", etc.).
 	SessionKeep string `hcl:"session_keep,optional"`
 
-	AuthKey           string `hcl:"authkey,optional"`
-	ControlURL        string `hcl:"control_url,optional"`
-	Hostname          string `hcl:"hostname,optional"`
-	Control           string `hcl:"control,optional"`
+	AuthKey    string `hcl:"authkey,optional"`
+	ControlURL string `hcl:"control_url,optional"`
+	Hostname   string `hcl:"hostname,optional"`
+	Control    string `hcl:"control,optional"`
+	// Funnel enables Tailscale Funnel on the embedded tsnet node so that
+	// join, webhook, and CA endpoints are reachable from the internet via
+	// the node's HTTPS cert domain (e.g. clawpatrol-gateway.ts.net:443).
+	// Only meaningful in tsnet control mode (authkey set). Tailscale's
+	// HTTPS must be enabled for the tailnet; if public_url is unset the
+	// gateway will derive it from the tsnet cert domain at startup.
+	Funnel            bool   `hcl:"funnel,optional"`
 	OAuthClientID     string `hcl:"oauth_client_id,optional"`
 	OAuthClientSecret string `hcl:"oauth_client_secret,optional"`
 	// TailscaleTags is the Tailscale device-tag list applied to keys
@@ -249,14 +259,16 @@ func (noopPluginLoader) LoadPlugins([]PluginSource) hcl.Diagnostics { return nil
 // only body attribute; rules ride along automatically because they're
 // attached to endpoints.
 type Profile struct {
-	Name      string   `json:"name"`
-	Endpoints []string `json:"endpoints"`
+	Name            string   `json:"name"`
+	Endpoints       []string `json:"endpoints"`
+	HITLAsyncGrants bool     `json:"hitl_async_grants,omitempty"`
 }
 
 // profileBody is the gohcl decode target for the profile body — the
 // label is read separately from the block.
 type profileBody struct {
-	Endpoints []string `hcl:"endpoints"`
+	Endpoints       []string `hcl:"endpoints"`
+	HITLAsyncGrants bool     `hcl:"hitl_async_grants,optional"`
 }
 
 // Load parses, validates, and resolves the gateway config at path.
@@ -298,6 +310,7 @@ func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
 		// blocks. For now, append and continue.
 		diags = append(diags, d...)
 	}
+	gw.PublicURL = normalizePublicURL(gw.PublicURL)
 
 	gw.Policy = &Policy{
 		Approvers:   make(map[string]*Entity),
@@ -335,6 +348,7 @@ func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
 	configDir := filepath.Dir(filename)
 	resolveDiags := decodePolicyBlocks(gw.Policy, table, evalCtx, configDir)
 	diags = append(diags, resolveDiags...)
+	diags = append(diags, validateHITLAsyncConfig(gw)...)
 
 	// Post-decode pass: substitute `<<file:NAME>>` markers in plugin
 	// body fields that opted in via FileIncludable. Runs after Build
@@ -522,7 +536,7 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 		if d := gohcl.DecodeBody(sym.Block.Body, evalCtx, &body); d.HasErrors() {
 			diags = append(diags, d...)
 		}
-		pr := &Profile{Name: sym.Name, Endpoints: body.Endpoints}
+		pr := &Profile{Name: sym.Name, Endpoints: body.Endpoints, HITLAsyncGrants: body.HITLAsyncGrants}
 		// Cross-check: each endpoint name resolves to an endpoint.
 		for _, ep := range pr.Endpoints {
 			if table.Get(KindEndpoint, ep) != nil {

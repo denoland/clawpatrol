@@ -3,7 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "node scripts/gen-examples.mjs",
     "dev": "vite",
+    "prebuild": "node scripts/gen-examples.mjs",
     "build": "vite build && tsx build-docs.ts",
     "deploy": "npm run build && wrangler deploy",
     "test": "tsx --test worker/**/*.test.ts",

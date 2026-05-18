@@ -164,7 +164,11 @@ func dumpProfiles(m map[string]*Profile) map[string]any {
 	}
 	out := map[string]any{}
 	for name, p := range m {
-		out[name] = map[string]any{"endpoints": p.Endpoints}
+		row := map[string]any{"endpoints": p.Endpoints}
+		if p.HITLAsyncGrants {
+			row["hitl_async_grants"] = true
+		}
+		out[name] = row
 	}
 	return out
 }

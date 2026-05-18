@@ -3,6 +3,7 @@ package approvers
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,7 +19,9 @@ type captureHITLPool struct {
 
 	mu           sync.Mutex
 	pending      runtime.HITLPending
+	updated      runtime.HITLPending
 	cancelResult runtime.HITLResolveResult
+	discarded    bool
 }
 
 func newCaptureHITLPool() *captureHITLPool {
@@ -37,7 +40,22 @@ func (p *captureHITLPool) Add(pending runtime.HITLPending) (string, <-chan runti
 	return p.id, p.decision
 }
 
-func (p *captureHITLPool) Discard(string) {}
+func (p *captureHITLPool) Discard(string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.discarded = true
+}
+
+func (p *captureHITLPool) Update(id string, mutate func(*runtime.HITLPending)) bool {
+	if id != p.id {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	mutate(&p.pending)
+	p.updated = p.pending
+	return true
+}
 
 func (p *captureHITLPool) Decide(string, runtime.HITLDecision) bool { return false }
 
@@ -60,6 +78,56 @@ func (p *captureHITLPool) capturedCancel() runtime.HITLResolveResult {
 	return p.cancelResult
 }
 
+func (p *captureHITLPool) capturedUpdate() runtime.HITLPending {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.updated
+}
+
+func (p *captureHITLPool) wasDiscarded() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.discarded
+}
+
+func TestHumanApproverAsyncSyncWaitTimeoutLeavesPromptPendingForRetryGrant(t *testing.T) {
+	pool := newCaptureHITLPool()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	verdict, err := (&HumanApprover{Timeout: 60}).Approve(ctx, runtime.ApproveRequest{
+		Pool:                      pool,
+		ApproverName:              "ops",
+		Method:                    "POST",
+		Host:                      "api.example.test",
+		Path:                      "/v1/write",
+		AsyncOperationID:          "op_123",
+		AsyncPendingOnSyncTimeout: true,
+	})
+	if err != nil {
+		t.Fatalf("Approve error = %v, want nil async pending verdict", err)
+	}
+	if verdict.Decision != runtime.ApproveDecisionAsyncPending {
+		t.Fatalf("Decision = %q, want %q", verdict.Decision, runtime.ApproveDecisionAsyncPending)
+	}
+	if pool.wasDiscarded() {
+		t.Fatal("pending prompt was discarded on sync wait timeout; want it left for human approval")
+	}
+	updated := pool.capturedUpdate()
+	if updated.OperationID != "op_123" {
+		t.Fatalf("updated OperationID = %q, want op_123", updated.OperationID)
+	}
+	if updated.OperationState != runtime.HITLOperationStatePendingApproval {
+		t.Fatalf("updated OperationState = %q, want pending_approval", updated.OperationState)
+	}
+	if updated.ApprovalEffect != runtime.HITLApprovalEffectCreateRetryGrant {
+		t.Fatalf("updated ApprovalEffect = %q, want create_retry_grant", updated.ApprovalEffect)
+	}
+	if !strings.Contains(updated.ApprovalMessage, "allow the client to retry") {
+		t.Fatalf("updated ApprovalMessage = %q, want retry-grant guidance", updated.ApprovalMessage)
+	}
+}
+
 func TestHumanApproverPendingExpirationUsesApproverTimeout(t *testing.T) {
 	pending := captureHumanPending(t, &HumanApprover{Timeout: 17}, &config.CompiledPolicy{HumanTimeout: 600})
 	assertPendingLifetime(t, pending, 17*time.Second)
@@ -73,6 +141,22 @@ func TestHumanApproverPendingExpirationUsesPolicyTimeoutFallback(t *testing.T) {
 func TestHumanApproverPendingExpirationUsesDefaultTimeoutFallback(t *testing.T) {
 	pending := captureHumanPending(t, &HumanApprover{}, nil)
 	assertPendingLifetime(t, pending, 10*time.Minute)
+}
+
+func TestHumanApproverPendingIncludesSyncApprovalGuidance(t *testing.T) {
+	pending := captureHumanPending(t, &HumanApprover{Timeout: 17}, &config.CompiledPolicy{HumanTimeout: 600})
+	if pending.OperationState != runtime.HITLOperationStateSyncWaiting {
+		t.Fatalf("OperationState = %q, want %q", pending.OperationState, runtime.HITLOperationStateSyncWaiting)
+	}
+	if pending.ApprovalEffect != runtime.HITLApprovalEffectExecuteUpstream {
+		t.Fatalf("ApprovalEffect = %q, want %q", pending.ApprovalEffect, runtime.HITLApprovalEffectExecuteUpstream)
+	}
+	if pending.UpstreamCalled {
+		t.Fatal("UpstreamCalled = true, want false before approval")
+	}
+	if !strings.Contains(pending.ApprovalMessage, "send this request upstream immediately") {
+		t.Fatalf("ApprovalMessage = %q, want immediate upstream guidance", pending.ApprovalMessage)
+	}
 }
 
 func TestHumanApproverTimeoutRecordsTimedOutTerminalState(t *testing.T) {

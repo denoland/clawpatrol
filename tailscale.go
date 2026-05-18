@@ -2,7 +2,11 @@
 // top-level `authkey = "..."` (or TS_AUTHKEY is in the env), the
 // gateway joins a tailnet via an embedded tsnet.Server and accepts
 // agent traffic on its tailnet IP — this is the meaningful Listener
-// for tsnet-mode deployments.
+// for tsnet-mode deployments. The embedded tsnet.Server also acts as
+// a Tailscale exit node: RegisterFallbackTCPHandler intercepts all
+// TCP forwarded through the node so whole-machine clients get the
+// same MITM treatment as per-process clawpatrol-run clients. No
+// system tailscaled, iptables, or sudo required.
 //
 // In WireGuard mode the listener is vestigial: agent TLS flows
 // through the WG netstack's promiscuous forwarder inside the tunnel
@@ -21,12 +25,17 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
+	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"tailscale.com/ipn"
 	"tailscale.com/tsnet"
 
 	"github.com/denoland/clawpatrol/config"
@@ -49,12 +58,16 @@ func gatewayTsnetDir(stateDir string) (string, error) {
 	return dir, nil
 }
 
-func openListener(cfg *config.Gateway, stateDir string) (net.Listener, error) {
-	authKey := cfg.AuthKey
-	if authKey == "" {
-		authKey = os.Getenv("TS_AUTHKEY")
-	}
-	if authKey == "" {
+// openListener returns the gateway's primary TCP listener.
+//
+// Tailscale control mode: always uses an embedded tsnet.Server.
+// Requires authkey in HCL or TS_AUTHKEY env (no system tailscaled
+// needed). Returns the *tsnet.Server so the caller can register a
+// fallback TCP handler for whole-machine exit-node traffic.
+//
+// WireGuard mode: returns nil server and a loopback TCP listener.
+func openListener(cfg *config.Gateway, stateDir string) (*tsnet.Server, net.Listener, error) {
+	if !isTailscaleControlMode(cfg.Control) {
 		// WireGuard mode: bind loopback regardless of cfg.Listen's
 		// host portion. See the file-level comment.
 		host, port, err := net.SplitHostPort(cfg.Listen)
@@ -64,15 +77,25 @@ func openListener(cfg *config.Gateway, stateDir string) (net.Listener, error) {
 		if host != "" && host != "127.0.0.1" && host != "::1" {
 			log.Printf("WARNING: listen %q overridden to loopback in WireGuard mode; agent traffic flows through the WG tunnel, this socket is for local debugging only.", cfg.Listen)
 		}
-		return net.Listen("tcp", net.JoinHostPort("127.0.0.1", port))
+		ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", port))
+		return nil, ln, err
 	}
+
+	authKey := cfg.AuthKey
+	if authKey == "" {
+		authKey = os.Getenv("TS_AUTHKEY")
+	}
+	if authKey == "" {
+		return nil, nil, fmt.Errorf("tailscale mode requires authkey = \"...\" in gateway.hcl or TS_AUTHKEY env var (embedded tsnet — no system tailscaled needed)")
+	}
+
 	hn := cfg.Hostname
 	if hn == "" {
 		hn = "clawpatrol-gateway"
 	}
 	dir, err := gatewayTsnetDir(stateDir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	s := &tsnet.Server{
 		Hostname:   hn,
@@ -80,9 +103,96 @@ func openListener(cfg *config.Gateway, stateDir string) (net.Listener, error) {
 		ControlURL: cfg.ControlURL,
 		Dir:        dir,
 	}
-	port := cfg.Listen
-	if port == "" {
-		port = ":443"
+	_, portStr, _ := net.SplitHostPort(cfg.Listen)
+	if portStr == "" {
+		portStr = "443"
 	}
-	return s.Listen("tcp", port)
+	ln, err := s.Listen("tcp", ":"+portStr)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Advertise exit routes so whole-machine clients can use this node
+	// as a Tailscale exit node. s.Up() completed inside s.Listen(), so
+	// LocalClient is available. Async to avoid blocking runGateway.
+	go advertiseExitRoutes(s)
+	return s, ln, nil
+}
+
+// startFunnelListener opens a Tailscale Funnel listener on :443 (internet
+// → tsnet, FunnelOnly so tailnet connections still go to the normal
+// MITM listener). Strict path allowlist — only the routes a client
+// genuinely cannot reach via tailnet are exposed:
+//
+//   - /api/onboard/start, /poll, /claim: bootstrap before the client
+//     has any tailnet identity. /claim is used by WG mode after
+//     wg-quick takes the default route through the tunnel (the public
+//     URL goes unreachable, so the client has to claim before then,
+//     which means right after /poll returns — still no tailnet
+//     identity at that point).
+//   - /api/cred/*: signed/HMAC'd credential webhooks (OAuth callbacks
+//     from Notion/GitHub/etc.) which arrive from external providers.
+//
+// Everything else (dashboard, /api/onboard/approve, lookup, peer APIs,
+// env-pushdown, /ca.crt) is reachable only over the tailnet.
+func startFunnelListener(s *tsnet.Server, mux http.Handler) {
+	ln, err := s.ListenFunnel("tcp", ":443", tsnet.FunnelOnly())
+	if err != nil {
+		log.Printf("tsnet: funnel :443: %v (join/webhook endpoints not internet-reachable; enable Funnel for this node in the Tailscale admin console)", err)
+		return
+	}
+	allowed := map[string]bool{
+		"/api/onboard/start": true,
+		"/api/onboard/poll":  true,
+		"/api/onboard/claim": true,
+	}
+	log.Printf("tsnet: Funnel listening on :443 — allowlist: /api/onboard/{start,poll,claim}, /api/cred/*")
+	filtered := http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		if allowed[p] || strings.HasPrefix(p, "/api/cred/") {
+			mux.ServeHTTP(rw, r)
+			return
+		}
+		http.NotFound(rw, r)
+	})
+	go func() { _ = http.Serve(ln, filtered) }()
+}
+
+// tsnetCertDomain returns the first HTTPS cert domain for the embedded
+// tsnet node (e.g. "clawpatrol-gateway.ts.net"), or "" if not available.
+// Used to auto-populate public_url when funnel = true and public_url is
+// not set in gateway.hcl.
+func tsnetCertDomain(s *tsnet.Server) string {
+	lc, err := s.LocalClient()
+	if err != nil {
+		return ""
+	}
+	st, err := lc.StatusWithoutPeers(context.Background())
+	if err != nil || len(st.CertDomains) == 0 {
+		return ""
+	}
+	return "https://" + st.CertDomains[0]
+}
+
+// advertiseExitRoutes calls EditPrefs to make this tsnet node an exit
+// node (advertises 0.0.0.0/0 and ::/0). Whole-machine clients on the
+// same tailnet can then route all traffic through this gateway; exit
+// flows are intercepted via RegisterFallbackTCPHandler in runGateway.
+func advertiseExitRoutes(s *tsnet.Server) {
+	lc, err := s.LocalClient()
+	if err != nil {
+		log.Printf("tsnet: LocalClient for exit routes: %v", err)
+		return
+	}
+	routes := []netip.Prefix{
+		netip.MustParsePrefix("0.0.0.0/0"),
+		netip.MustParsePrefix("::/0"),
+	}
+	if _, err := lc.EditPrefs(context.Background(), &ipn.MaskedPrefs{
+		AdvertiseRoutesSet: true,
+		Prefs:              ipn.Prefs{AdvertiseRoutes: routes},
+	}); err != nil {
+		log.Printf("tsnet: advertise exit routes: %v", err)
+	} else {
+		log.Printf("tsnet: advertised exit routes (0.0.0.0/0, ::/0)")
+	}
 }

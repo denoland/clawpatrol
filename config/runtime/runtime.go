@@ -321,6 +321,14 @@ type HITLTarget struct {
 	PendingID      string // pool's pending entry id
 	DashboardURL   string // for fallback dashboard link in non-interactive mode
 	ThreadTS       string // if set, post as a reply in this Slack thread
+	// OperationState / ApprovalEffect / UpstreamCalled / ApprovalMessage
+	// mirror HITLPending's safety copy so channel notifiers can tell
+	// operators whether an approval executes upstream immediately or only
+	// authorizes a one-shot retry grant.
+	OperationState  HITLOperationState
+	ApprovalEffect  HITLApprovalEffect
+	UpstreamCalled  bool
+	ApprovalMessage string
 	// Summary is an optional pre-computed classification. When non-nil,
 	// notifiers render a richer card instead of the generic method/path display.
 	Summary *HITLSummary
@@ -375,6 +383,11 @@ type ApproveRequest struct {
 	// prompt as a reply in this Slack thread rather than top-level.
 	// Populated from the X-HITL-Thread-TS request header.
 	ThreadTS string
+	// AsyncOperationID binds the prompt to a durable async operation.
+	// If AsyncPendingOnSyncTimeout is true and ctx hits DeadlineExceeded,
+	// human_approver leaves the prompt pending and returns async_pending.
+	AsyncOperationID          string
+	AsyncPendingOnSyncTimeout bool
 
 	// Pool exposes the gateway's shared pending-approval list — the
 	// dashboard / Slack approvers use it to publish a pending entry
@@ -403,8 +416,10 @@ type ApproveRequest struct {
 // dashboard event with the deciding approver's kind (human / llm /
 // dashboard) and id (the HCL block name) — operators looking at a
 // `denied` row see *why* without having to drill into the rule.
+const ApproveDecisionAsyncPending = "async_pending"
+
 type ApproveVerdict struct {
-	Decision     string // "allow" | "deny" | ""
+	Decision     string // "allow" | "deny" | "async_pending" | ""
 	Reason       string
 	By           string // who decided ("dashboard:<user>" / "slack:#chan" / "llm:<model>")
 	ApproverName string // HCL block name, e.g. "pg-staging-secret-columns-judge"
@@ -452,6 +467,19 @@ type HITLPoolCanceler interface {
 	Cancel(id string, state HITLState, reason string) HITLResolveResult
 }
 
+// HITLPoolUpdater is implemented by pools that can update operator-facing
+// safety-copy metadata for an existing pending prompt without resolving it.
+type HITLPoolUpdater interface {
+	Update(id string, mutate func(*HITLPending)) bool
+}
+
+// HITLPoolAsyncGrantResolver lets pools bind a pending human decision to a
+// durable async operation. Implementations must not execute upstream here;
+// approval only moves the operation to a retry-grant state.
+type HITLPoolAsyncGrantResolver interface {
+	ResolveAsyncHITLGrant(operationID string, d HITLDecision) HITLResolveResult
+}
+
 // HITLState names the lifecycle state of a human approval prompt.
 type HITLState string
 
@@ -464,6 +492,34 @@ const (
 	HITLStateClientDisconnected HITLState = "client_disconnected"
 	HITLStateCanceled           HITLState = "canceled"
 	HITLStateUnknown            HITLState = "unknown"
+)
+
+// HITLOperationState is the durable async-HITL operation state copied
+// into human-facing pending prompts. It intentionally lives in runtime
+// (instead of main) so dashboard and channel notifiers can share the same
+// wire labels without importing the gateway package.
+type HITLOperationState string
+
+const (
+	HITLOperationStateSyncWaiting             HITLOperationState = "sync_waiting"
+	HITLOperationStatePendingApproval         HITLOperationState = "pending_approval"
+	HITLOperationStateApprovedWaitingForRetry HITLOperationState = "approved_waiting_for_retry"
+	HITLOperationStateDenied                  HITLOperationState = "denied"
+	HITLOperationStateExpired                 HITLOperationState = "expired"
+	HITLOperationStateExecutingUpstream       HITLOperationState = "executing_upstream"
+	HITLOperationStateUpstreamSucceeded       HITLOperationState = "upstream_succeeded"
+	HITLOperationStateUpstreamFailed          HITLOperationState = "upstream_failed"
+	HITLOperationStateClientDisconnected      HITLOperationState = "client_disconnected"
+)
+
+// HITLApprovalEffect tells an operator what clicking approve does for
+// the current state. This is separate from OperationState so the UI can
+// render a stable affordance even while async operation wiring evolves.
+type HITLApprovalEffect string
+
+const (
+	HITLApprovalEffectExecuteUpstream  HITLApprovalEffect = "execute_upstream"
+	HITLApprovalEffectCreateRetryGrant HITLApprovalEffect = "create_retry_grant"
 )
 
 // HITLResolveResult is returned by structured HITL resolution APIs.
@@ -482,11 +538,20 @@ type HITLResolveResult struct {
 // tags match the dashboard's existing field names — that endpoint is
 // public API to the in-tree React UI.
 type HITLPending struct {
-	ID      string `json:"id"`
-	AgentIP string `json:"agent_ip"`
-	Host    string `json:"host"`
-	Method  string `json:"method"`
-	Path    string `json:"path"`
+	ID          string `json:"id"`
+	OperationID string `json:"operation_id,omitempty"`
+	AgentIP     string `json:"agent_ip"`
+	Host        string `json:"host"`
+	Method      string `json:"method"`
+	Path        string `json:"path"`
+	// OperationState and ApprovalEffect are safety-boundary display
+	// metadata. They let dashboard/Slack copy distinguish the initial
+	// synchronous wait (approval forwards upstream immediately) from async
+	// fallback (approval only grants one matching client retry).
+	OperationState  HITLOperationState `json:"operation_state,omitempty"`
+	ApprovalEffect  HITLApprovalEffect `json:"approval_effect,omitempty"`
+	UpstreamCalled  bool               `json:"upstream_called"`
+	ApprovalMessage string             `json:"approval_message,omitempty"`
 	// Endpoint is the operator-readable identifier for what's being
 	// called. HITLEndpointLabel-derived: hostname for HTTPS, resource
 	// name for SQL / k8s where Host is a virtual IP.
@@ -501,6 +566,64 @@ type HITLPending struct {
 	Approvers  []string  `json:"approvers,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 	ExpiresAt  time.Time `json:"expires_at"`
+}
+
+// NormalizeHITLPendingApproval fills safety copy defaults for a pending
+// HITL prompt. Existing synchronous human-approval prompts start in
+// sync_waiting: approving while the original request is still held sends
+// the request upstream immediately. Async grant code can override the
+// state/effect/message when sync_wait_timeout has already returned 202.
+func NormalizeHITLPendingApproval(p *HITLPending) {
+	if p == nil {
+		return
+	}
+	if p.OperationState == "" {
+		p.OperationState = HITLOperationStateSyncWaiting
+	}
+	if p.ApprovalEffect == "" {
+		p.ApprovalEffect = HITLApprovalEffectForOperationState(p.OperationState)
+	}
+	if p.ApprovalMessage == "" {
+		p.ApprovalMessage = HITLApprovalMessage(p.OperationState, p.ApprovalEffect, p.UpstreamCalled)
+	}
+}
+
+func HITLApprovalEffectForOperationState(state HITLOperationState) HITLApprovalEffect {
+	switch state {
+	case HITLOperationStatePendingApproval:
+		return HITLApprovalEffectCreateRetryGrant
+	default:
+		return HITLApprovalEffectExecuteUpstream
+	}
+}
+
+func HITLApprovalMessage(state HITLOperationState, effect HITLApprovalEffect, upstreamCalled bool) string {
+	if upstreamCalled {
+		switch state {
+		case HITLOperationStateExecutingUpstream:
+			return "The client retried the approved request.\nForwarding upstream now."
+		case HITLOperationStateUpstreamSucceeded:
+			return "Done. The approved request completed upstream."
+		case HITLOperationStateUpstreamFailed:
+			return "Approved and retried, but the forwarding attempt failed or did not complete successfully.\nThe upstream side effect status may be unknown."
+		}
+	}
+	switch state {
+	case HITLOperationStatePendingApproval:
+		return "The original synchronous wait ended and Claw Patrol returned an async polling response to the client.\nUpstream has not been called.\nApprove will not send the request upstream now.\nApprove will allow the client to retry the same request once."
+	case HITLOperationStateApprovedWaitingForRetry:
+		return "Approved.\nWaiting for the client to retry the original request.\nUpstream has not been called yet."
+	case HITLOperationStateDenied:
+		return "Denied.\nUpstream was not called."
+	case HITLOperationStateExpired:
+		return "Approval expired.\nUpstream was not called."
+	case HITLOperationStateClientDisconnected:
+		return "The original client connection closed before Claw Patrol could return an async polling handle.\nUpstream was not called.\nThis prompt is stale."
+	}
+	if effect == HITLApprovalEffectCreateRetryGrant {
+		return "Upstream has not been called.\nApprove will not send the request upstream now.\nApprove will allow the client to retry the same request once."
+	}
+	return "Pending human approval.\nIf approved soon, Claw Patrol will send this request upstream immediately and return the real upstream response to the client."
 }
 
 // HITLDecision is what the pool delivers when an operator approves

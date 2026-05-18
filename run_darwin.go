@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -79,6 +80,11 @@ func sessionIPC(msg string) error {
 
 func runRun(args []string) {
 	warnIfOnGatewayHost()
+
+	if mode := strings.TrimSpace(readFileSilent(filepath.Join(defaultClawpatrolDir(), "mode"))); mode == "tailscale" {
+		runRunTsnet(args)
+		return
+	}
 
 	if _, err := os.Stat(macHelperPath); err != nil {
 		fail("Clawpatrol.app not installed. Build + install from macos/:\n" +

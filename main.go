@@ -58,6 +58,33 @@ func resolveStateDir(cfg *config.Gateway) string {
 	return filepath.Join(home, ".clawpatrol")
 }
 
+const hitlOperationTerminalRetention = 7 * 24 * time.Hour
+
+func runHITLOperationStartupMaintenance(ctx context.Context, db *sql.DB) (HITLOperationMaintenanceResult, error) {
+	store := NewHITLOperationStore(db)
+	now := time.Now().UTC()
+	retention := hitlOperationTerminalRetention
+	var out HITLOperationMaintenanceResult
+	recovered, err := store.RecoverStaleInProgressOperations(ctx, now, retention)
+	if err != nil {
+		return HITLOperationMaintenanceResult{}, err
+	}
+	out.SyncWaitingRecovered = recovered.SyncWaitingRecovered
+	out.ExecutingRecovered = recovered.ExecutingRecovered
+	expired, err := store.ExpireDueOperations(ctx, now, retention)
+	if err != nil {
+		return HITLOperationMaintenanceResult{}, err
+	}
+	out.PendingApprovalExpired = expired.PendingApprovalExpired
+	out.ApprovedRetryExpired = expired.ApprovedRetryExpired
+	purged, err := store.PurgeTerminalOperations(ctx, now)
+	if err != nil {
+		return HITLOperationMaintenanceResult{}, err
+	}
+	out.PurgedTerminal = purged
+	return out, nil
+}
+
 // warnIfStateLooselyPermissioned logs a warning when state_dir or
 // clawpatrol.db is readable by group / others. The sqlite db holds
 // the CA private key, OAuth tokens, and audit log — anything not
@@ -322,6 +349,15 @@ type Gateway struct {
 	// transports memoizes one http.Transport per endpoint. Avoids the
 	// per-request allocation + idle-conn-pool reset of the old path.
 	transports sync.Map // *config.CompiledEndpoint -> *http.Transport
+	// tailscaleIP is the gateway's own Tailscale IPv4 (100.x.x.x).
+	// Set at startup in Tailscale control mode; included in onboard join
+	// responses so clients can write tailnet-url without a peer-name lookup.
+	tailscaleIP string
+	// tailscaleHostname is the actual registered node name (e.g.
+	// "clawpatrol-gateway-1") — may differ from cfg.Hostname when tsnet
+	// resolves a conflict. Included in onboard join responses as
+	// gateway_host so clawpatrol-run peer lookups succeed.
+	tailscaleHostname string
 }
 
 // transportFor returns the cached http.Transport for ep, building it
@@ -424,7 +460,8 @@ func (g *Gateway) watchConfig(path string) {
 		}
 		g.policy.Store(policy)
 		registerOAuthCredentials(g.oauth, policy)
-		g.connIdx.Store(runtime.BuildConnIndex(policy))
+		newConnIdx := runtime.BuildConnIndex(policy)
+		g.connIdx.Store(newConnIdx)
 		if g.tunnels != nil {
 			g.tunnels.SetPolicy(context.Background(), policy)
 		}
@@ -1593,6 +1630,45 @@ func (g *Gateway) splice(c net.Conn, host string) {
 	g.emit(Event{Mode: "splice", Host: host, AgentIP: agentAddr, Action: "allow", In: in, Out: out, Ms: time.Since(start).Milliseconds()})
 }
 
+// serveTSNetDirect handles a direct (non-PROXY) TLS connection in tsnet mode.
+// These come from admins opening the dashboard, clawpatrol join, etc. We
+// terminate TLS using our CA (minting a cert for whatever SNI the client
+// sends) and then serve the dashboard HTTP mux over the decrypted connection.
+func (g *Gateway) serveTSNetDirect(c net.Conn, mux http.Handler) {
+	defer func() { _ = c.Close() }()
+	host, prefix, err := peekSNI(c)
+	conn := wrapPeek(c, prefix)
+	if err != nil {
+		// No SNI — client connected via IP literal (common during `clawpatrol join`
+		// before the CA is trusted). Fall back to the server-side IP so mint() can
+		// produce a cert with an IP SAN that Go's TLS stack will accept.
+		if local := c.LocalAddr().String(); local != "" {
+			if h, _, splitErr := net.SplitHostPort(local); splitErr == nil {
+				host = h
+			}
+		}
+		if host == "" {
+			log.Printf("tsnet-direct: sni: %v (no fallback)", err)
+			return
+		}
+	}
+	cert, err := g.certs.mint(host)
+	if err != nil {
+		log.Printf("tsnet-direct: mint %s: %v", host, err)
+		return
+	}
+	tc := tls.Server(conn, &tls.Config{
+		Certificates: []tls.Certificate{*cert},
+		NextProtos:   []string{"http/1.1"},
+	})
+	if err := tc.Handshake(); err != nil {
+		log.Printf("tsnet-direct: tls %s: %v", host, err)
+		return
+	}
+	defer func() { _ = tc.Close() }()
+	_ = http.Serve(&oneShotListener{c: tc}, mux)
+}
+
 func pipeProgress(a, b net.Conn, onTick func(rx, tx int64)) (rx, tx int64) {
 	var rxC, txC atomic.Int64
 	done := make(chan struct{}, 2)
@@ -1739,15 +1815,18 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		// Body buffering. Any rule with a `body_json` or
 		// `body_contains` match facet needs the body up-front; we
 		// don't know which yet, so for any POST/PUT/PATCH with a
-		// body we read up to 1 MiB and re-attach. Reads beyond 1 MiB
-		// stream through unbuffered (rare for agent traffic) but
-		// surface as Truncated=true so the dispatcher can fail-close
-		// any rule reading http.body / http.body_json — bytes past
-		// the cap aren't in matchBody and policy that needed them
-		// can't be honestly evaluated.
+		// body we read up to 1 MiB and re-attach. Retry-grant
+		// requests additionally buffer regardless of method: the
+		// one-shot grant fingerprint is a same-request check, so a
+		// body-bearing DELETE/GET must bind the exact bytes that will
+		// continue to upstream. Reads beyond 1 MiB stream through
+		// unbuffered (rare for agent traffic) but surface as
+		// Truncated=true so the dispatcher/retry relay can fail-close
+		// any path that needed the complete body.
 		var matchBody []byte
 		var truncated bool
-		if req.Method == "POST" || req.Method == "PUT" || req.Method == "PATCH" {
+		retryOperationID := strings.TrimSpace(req.Header.Get(hitlRetryOperationHeader))
+		if req.Method == "POST" || req.Method == "PUT" || req.Method == "PATCH" || retryOperationID != "" {
 			matchBody, truncated = bufferHTTPBodyForMatchTruncated(req)
 		}
 
@@ -1759,6 +1838,13 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			Body:      matchBody,
 			PeerIP:    pip,
 			Truncated: truncated,
+		}
+		// clickhouse_https carries the agent-declared database in
+		// `?database=` or `X-ClickHouse-Database` (query wins). Other
+		// HTTPS-family endpoints don't have a database concept; leave
+		// mreq.Database empty for them.
+		if ep.Plugin != nil && ep.Plugin.Type == "clickhouse_https" {
+			mreq.Database = endpoints.ClickhouseHTTPSDatabaseFromRequest(req)
 		}
 		fac := facet.Lookup(ep.Family)
 		if fac != nil {
@@ -1791,17 +1877,99 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			ev.Rule = cr.Name
 		}
 
+		hitlRetryBypassedApproval := false
+		var hitlRetryConsumedOperation *HITLOperation
+		if retryOperationID != "" {
+			principalID := hitlPeerPrincipalID(agentAddr)
+			consumed, err := g.consumeHITLRetryGrantForRequest(req.Context(), hitlRetryRelayInput{
+				OperationID: retryOperationID,
+				ProfileID:   profile,
+				PrincipalID: principalID,
+				Endpoint:    ep,
+				Rule:        cr,
+				MatchReq:    mreq,
+				HTTPRequest: req,
+				RawBody:     matchBody,
+				Truncated:   truncated,
+			})
+			if err != nil {
+				status, contentType, body := hitlRetryRelayFailure(err)
+				log.Printf("hitl retry rejected %s %s %s operation %q: %v", host, req.Method, req.URL.Path, retryOperationID, err)
+				_, _ = fmt.Fprintf(tc, "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", status, http.StatusText(status), contentType, len(body), body)
+				ev.Status = status
+				ev.Action = "hitl_retry_rejected"
+				ev.Reason = hitlRetryMismatchErrorValue
+				if status == http.StatusNotFound {
+					ev.Reason = hitlOperationNotFoundErrorValue
+				}
+				ev.Ms = time.Since(start).Milliseconds()
+				g.emitEnd(ev)
+				return
+			}
+			hitlRetryConsumedOperation = &consumed
+			hitlRetryBypassedApproval = true
+			ev.Action = "hitl_retry_approved"
+			log.Printf("hitl retry approved %s %s %s operation %q by %s", host, req.Method, req.URL.Path, retryOperationID, principalID)
+		}
+
 		// Approve chain — dispatch each stage to its approver
 		// runtime (config/plugins/approvers). All stages must
 		// allow; first deny short-circuits.
-		if cr != nil && len(cr.Outcome.Approve) > 0 {
+		var asyncOp HITLOperation
+		var asyncSyncWait time.Duration
+		if cr != nil && len(cr.Outcome.Approve) > 0 && !hitlRetryBypassedApproval {
+			if approverID, asyncApprover, ok := g.asyncHumanApproverFor(cr.Outcome.Approve); ok {
+				start, started, err := g.maybeStartAsyncHITLOperation(req.Context(), hitlAsyncOperationInput{
+					ProfileID:   profile,
+					PrincipalID: hitlPeerPrincipalID(agentAddr),
+					Endpoint:    ep,
+					Rule:        cr,
+					ApproverID:  approverID,
+					Approver:    asyncApprover,
+					MatchReq:    mreq,
+					HTTPRequest: req,
+					RawBody:     matchBody,
+					Truncated:   truncated,
+					Now:         time.Now().UTC(),
+				})
+				if err != nil {
+					log.Printf("hitl async operation start %s %s: %v", host, req.URL.Path, err)
+				} else if started {
+					asyncOp = start.Operation
+					asyncSyncWait = start.SyncWaitTimeout
+				}
+			}
 			v := g.runApproveChain(req.Context(), cr.Outcome.Approve, runApproveCtx{
 				AgentIP: agentAddr, Host: host, Method: req.Method, Path: req.URL.RequestURI(),
 				UA: req.Header.Get("User-Agent"), BodySample: string(matchBody), Reason: cr.Outcome.Reason,
 				ThreadTS: req.Header.Get("X-HITL-Thread-TS"),
 				Endpoint: ep, Rule: cr, Profile: profile, Request: mreq,
+				AsyncOperationID: asyncOp.ID, AsyncPendingOnSyncTimeout: asyncOp.ID != "", AsyncSyncWaitTimeout: asyncSyncWait,
 			})
 			if v.Decision != "allow" {
+				if v.Decision == runtime.ApproveDecisionAsyncPending && asyncOp.ID != "" {
+					updated, err := g.transitionAsyncHITLOperation(req.Context(), asyncOp, HITLOperationStatePendingApproval, "")
+					if err != nil {
+						log.Printf("hitl async operation pending %s: %v", asyncOp.ID, err)
+					} else {
+						asyncOp = updated
+					}
+					writeHITLOperationAcceptedToConn(tc, asyncOp, g.cfg.PublicURL)
+					ev.Status = http.StatusAccepted
+					ev.Action = "hitl_async_pending"
+					ev.Approver = v.ApproverName
+					ev.ApproverType = v.ApproverType
+					ev.ApproverBy = v.By
+					ev.Reason = v.Reason
+					ev.Ms = time.Since(start).Milliseconds()
+					g.emitEnd(ev)
+					return
+				}
+				if asyncOp.ID != "" {
+					if _, err := g.transitionAsyncHITLOperation(req.Context(), asyncOp, HITLOperationStateDenied, v.Reason); err != nil {
+						log.Printf("hitl async operation deny %s: %v", asyncOp.ID, err)
+					}
+				}
 				reason := v.Reason
 				if reason == "" {
 					reason = "denied by approver"
@@ -1819,6 +1987,13 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				g.emitEnd(ev)
 				return
 			}
+			if asyncOp.ID != "" {
+				if updated, err := g.transitionAsyncHITLOperation(req.Context(), asyncOp, HITLOperationStateExecutingUpstream, ""); err != nil {
+					log.Printf("hitl async operation executing %s: %v", asyncOp.ID, err)
+				} else {
+					asyncOp = updated
+				}
+			}
 			log.Printf("approved %s %s %s by %s/%s/%s",
 				host, req.Method, req.URL.Path, v.ApproverType, v.ApproverName, v.By)
 			ev.Action = "approved"
@@ -1834,6 +2009,11 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				reason = "denied by policy"
 			}
 			log.Printf("deny %s %s %s: %s (rule %q)", host, req.Method, req.URL.Path, reason, cr.Name)
+			if hitlRetryConsumedOperation != nil {
+				if err := g.transitionConsumedHITLRetryGrant(context.Background(), *hitlRetryConsumedOperation, HITLOperationStateUpstreamFailed, reason); err != nil {
+					log.Printf("hitl retry transition %s to %s: %v", hitlRetryConsumedOperation.ID, HITLOperationStateUpstreamFailed, err)
+				}
+			}
 			_, _ = fmt.Fprintf(tc, "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(reason), reason)
 			ev.Status = 403
 			ev.Action = "deny"
@@ -1855,6 +2035,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		req.URL.Host = host
 		req.Host = host
 		req.RequestURI = ""
+		req.Header.Del(hitlRetryOperationHeader)
 		if !isWSUpgrade(req) {
 			for _, h := range []string{
 				"Connection", "Keep-Alive", "Proxy-Authenticate",
@@ -1892,8 +2073,20 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				// an upstream lookup can't accidentally leak them.
 				stripAuthResponseHeaders(r.Header)
 				stripAuthResponseHeaders(r.Trailer)
-				if err := r.Write(tc); err != nil {
-					log.Printf("synth write %s %s: %v", host, req.URL.Path, err)
+				writeErr := r.Write(tc)
+				if hitlRetryConsumedOperation != nil {
+					toState := HITLOperationStateUpstreamSucceeded
+					lastErr := ""
+					if writeErr != nil {
+						toState = HITLOperationStateUpstreamFailed
+						lastErr = writeErr.Error()
+					}
+					if err := g.transitionConsumedHITLRetryGrant(context.Background(), *hitlRetryConsumedOperation, toState, lastErr); err != nil {
+						log.Printf("hitl retry transition %s to %s: %v", hitlRetryConsumedOperation.ID, toState, err)
+					}
+				}
+				if writeErr != nil {
+					log.Printf("synth write %s %s: %v", host, req.URL.Path, writeErr)
 				}
 				ev.Ms = time.Since(start).Milliseconds()
 				g.emitEnd(ev)
@@ -1987,6 +2180,11 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				})
 			}
 			g.handleWSUpgrade(tc, br, req, host, frameEmit, ep, profile, rewriteWSPayload)
+			if hitlRetryConsumedOperation != nil {
+				if err := g.transitionConsumedHITLRetryGrant(context.Background(), *hitlRetryConsumedOperation, HITLOperationStateUpstreamSucceeded, ""); err != nil {
+					log.Printf("hitl retry transition %s to %s: %v", hitlRetryConsumedOperation.ID, HITLOperationStateUpstreamSucceeded, err)
+				}
+			}
 			ev.Status = 101
 			ev.Ms = time.Since(start).Milliseconds()
 			g.emitEnd(ev)
@@ -2020,7 +2218,17 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		resp, err := transport.RoundTrip(req.WithContext(context.WithValue(req.Context(), profileCtxKey{}, profile)))
 		rtDur := time.Since(rtStart)
 		if err != nil {
+			if asyncOp.ID != "" {
+				if _, trErr := g.transitionAsyncHITLOperation(req.Context(), asyncOp, HITLOperationStateUpstreamFailed, hitlAsyncFailureReason(err)); trErr != nil {
+					log.Printf("hitl async operation upstream failed %s: %v", asyncOp.ID, trErr)
+				}
+			}
 			log.Printf("mitm upstream %s %s: %v", host, req.URL.Path, err)
+			if hitlRetryConsumedOperation != nil {
+				if transitionErr := g.transitionConsumedHITLRetryGrant(context.Background(), *hitlRetryConsumedOperation, HITLOperationStateUpstreamFailed, err.Error()); transitionErr != nil {
+					log.Printf("hitl retry transition %s to %s: %v", hitlRetryConsumedOperation.ID, HITLOperationStateUpstreamFailed, transitionErr)
+				}
+			}
 			_, _ = fmt.Fprintf(tc, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
 			ev.Status = 502
 			ev.Action = "error"
@@ -2080,8 +2288,31 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			g.trackLLMUsage(c, trackKind, req.URL.Path, trackedReqBody, body, sessionHint)
 		}
 
+		if hitlRetryConsumedOperation != nil {
+			toState := HITLOperationStateUpstreamSucceeded
+			lastErr := ""
+			if writeErr != nil {
+				toState = HITLOperationStateUpstreamFailed
+				lastErr = writeErr.Error()
+			}
+			if err := g.transitionConsumedHITLRetryGrant(context.Background(), *hitlRetryConsumedOperation, toState, lastErr); err != nil {
+				log.Printf("hitl retry transition %s to %s: %v", hitlRetryConsumedOperation.ID, toState, err)
+			}
+		}
+
 		if ev.Action == "" {
 			ev.Action = "allow"
+		}
+		if asyncOp.ID != "" {
+			to := HITLOperationStateUpstreamSucceeded
+			lastErr := ""
+			if writeErr != nil {
+				to = HITLOperationStateUpstreamFailed
+				lastErr = hitlAsyncFailureReason(writeErr)
+			}
+			if _, err := g.transitionAsyncHITLOperation(req.Context(), asyncOp, to, lastErr); err != nil {
+				log.Printf("hitl async operation upstream terminal %s: %v", asyncOp.ID, err)
+			}
 		}
 		ev.Status = resp.StatusCode
 		ev.ReqHeaders = flatHeaders(req.Header)
@@ -2120,18 +2351,21 @@ func secretEnvName(credName string) string {
 // runApproveCtx is the context blob the dispatcher passes per stage —
 // HITL prompt fields + the matching rule + the device's profile.
 type runApproveCtx struct {
-	AgentIP    string
-	Host       string
-	Method     string
-	Path       string
-	UA         string
-	BodySample string
-	Reason     string
-	ThreadTS   string
-	Endpoint   *config.CompiledEndpoint
-	Rule       *config.CompiledRule
-	Profile    string
-	Request    *match.Request
+	AgentIP                   string
+	Host                      string
+	Method                    string
+	Path                      string
+	UA                        string
+	BodySample                string
+	Reason                    string
+	ThreadTS                  string
+	Endpoint                  *config.CompiledEndpoint
+	Rule                      *config.CompiledRule
+	Profile                   string
+	Request                   *match.Request
+	AsyncOperationID          string
+	AsyncPendingOnSyncTimeout bool
+	AsyncSyncWaitTimeout      time.Duration
 }
 
 // runApproveChain dispatches each stage of an approve = [...] list to
@@ -2159,25 +2393,32 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 		if ar == nil {
 			return runtime.ApproveVerdict{Decision: "deny", Reason: "approver " + st.Name + " not found", By: "gateway", ApproverName: st.Name}
 		}
+		if c.AsyncPendingOnSyncTimeout && c.AsyncSyncWaitTimeout > 0 && c.AsyncOperationID != "" {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, c.AsyncSyncWaitTimeout)
+			defer cancel()
+		}
 		req := runtime.ApproveRequest{
-			Stage:        st,
-			Endpoint:     c.Endpoint,
-			Rule:         c.Rule,
-			Request:      c.Request,
-			ApproverName: st.Name,
-			AgentIP:      c.AgentIP,
-			Profile:      c.Profile,
-			Method:       c.Method,
-			Host:         c.Host,
-			Path:         c.Path,
-			UA:           c.UA,
-			BodySample:   c.BodySample,
-			Reason:       c.Reason,
-			ThreadTS:     c.ThreadTS,
-			Pool:         g.hitl,
-			Secrets:      g.secrets,
-			DashboardURL: g.cfg.PublicURL,
-			Policy:       policy,
+			Stage:                     st,
+			Endpoint:                  c.Endpoint,
+			Rule:                      c.Rule,
+			Request:                   c.Request,
+			ApproverName:              st.Name,
+			AgentIP:                   c.AgentIP,
+			Profile:                   c.Profile,
+			Method:                    c.Method,
+			Host:                      c.Host,
+			Path:                      c.Path,
+			UA:                        c.UA,
+			BodySample:                c.BodySample,
+			Reason:                    c.Reason,
+			ThreadTS:                  c.ThreadTS,
+			AsyncOperationID:          c.AsyncOperationID,
+			AsyncPendingOnSyncTimeout: c.AsyncPendingOnSyncTimeout,
+			Pool:                      g.hitl,
+			Secrets:                   g.secrets,
+			DashboardURL:              g.cfg.PublicURL,
+			Policy:                    policy,
 		}
 		v, err := ar.Approve(ctx, req)
 		// Stamp the entity name + plugin type on every verdict so the
@@ -2376,6 +2617,11 @@ func runGateway(args []string) {
 	if err != nil {
 		log.Fatalf("db: %v", err)
 	}
+	if result, err := runHITLOperationStartupMaintenance(context.Background(), db); err != nil {
+		log.Fatalf("hitl operation maintenance: %v", err)
+	} else if result.PendingApprovalExpired != 0 || result.ApprovedRetryExpired != 0 || result.SyncWaitingRecovered != 0 || result.ExecutingRecovered != 0 || result.PurgedTerminal != 0 {
+		log.Printf("hitl operation maintenance: expired pending=%d retry=%d recovered sync=%d executing=%d purged=%d", result.PendingApprovalExpired, result.ApprovedRetryExpired, result.SyncWaitingRecovered, result.ExecutingRecovered, result.PurgedTerminal)
+	}
 	warnIfStateLooselyPermissioned(stateDir)
 	setDB(db)
 	blobs := newGatewayBlobStore(db)
@@ -2412,6 +2658,7 @@ func runGateway(args []string) {
 	}
 	log.Printf("config: read-only (the dashboard cannot edit gateway.hcl)")
 	g.secrets = newGatewaySecretStore(db, oauthReg)
+	g.hitl.asyncGrantResolver = g.resolveAsyncHITLGrant
 	g.tunnels = NewTunnelManager(g.secrets, stateDir)
 	registerOAuthCredentials(oauthReg, policy)
 	g.policy.Store(policy)
@@ -2441,11 +2688,10 @@ func runGateway(args []string) {
 	// renders them on boot, before any traffic arrives. Without this,
 	// devices disappear after every gateway restart and only reappear
 	// on the next request from each peer.
-	// Clean fd77:: ghost rows left by older builds where SetExternalIPs
-	// upserted both v4 and v6 allowed_ips as separate device IDs. Drop
-	// them on every boot — the v4 row carries the same metadata and
-	// will be re-seeded below.
-	_, _ = db.Exec("DELETE FROM devices WHERE id LIKE 'fd77:%'")
+	// Clean fd77:: ghost rows (WG) and fd7a:: ghost rows (Tailscale IPv6)
+	// left by builds that upserted IPv6 peer addresses as separate device
+	// IDs. Drop them on every boot — the v4 row carries the same metadata.
+	_, _ = db.Exec("DELETE FROM devices WHERE id LIKE 'fd77:%' OR id LIKE 'fd7a:%'")
 	if rows, err := db.Query("SELECT id FROM devices"); err == nil {
 		defer func() { _ = rows.Close() }()
 		for rows.Next() {
@@ -2482,7 +2728,7 @@ func runGateway(args []string) {
 	if cfg.InfoListen != "" {
 		mux := newWebMux(g, cfg.Join(), cfg.PublicURL)
 		go serveHTTPLogged("dashboard", cfg.InfoListen, mux)
-		printDashboardURL(cfg.InfoListen)
+		log.Printf("dashboard: http://%s", cfg.InfoListen)
 	}
 	go serveHTTPLogged("pprof", "127.0.0.1:6060", nil)
 	go g.servePorts()
@@ -2547,22 +2793,191 @@ func runGateway(args []string) {
 		log.Printf("wireguard promiscuous forwarder ready (any dst → :443=mitm, :5432=pg, :53=dns-vip, VIP=ssh|ch_native, :%d=dash, plugins=conn-index, else=relay)", dashPort)
 	}
 
-	ln, err := openListener(cfg, stateDir)
+	tsnetServer, ln, err := openListener(cfg, stateDir)
 	if err != nil {
 		log.Fatalf("listen: %v", err)
 	}
 	log.Printf("gateway listening on %s, %d endpoints across %d profiles",
 		ln.Addr(), len(policy.Endpoints), len(policy.Profiles))
 
+	// In Tailscale mode, `clawpatrol run` clients prepend a HAProxy PROXY v1
+	// header carrying the original 4-tuple so we can dispatch by dst port/IP
+	// exactly like the WG promiscuous forwarder. Peek the first bytes: if the
+	// connection starts with "PROXY " use full dispatch; otherwise it is a
+	// direct admin/dashboard connection.
+	if tsnetServer != nil && cfg.Funnel && cfg.PublicURL == "" {
+		// Auto-derive public_url from the tsnet cert domain so that
+		// join responses, HITL status links, and OAuth redirect URIs use
+		// the correct internet-reachable URL when funnel = true.
+		if domain := tsnetCertDomain(tsnetServer); domain != "" {
+			cfg.PublicURL = domain
+			log.Printf("tsnet: funnel public_url auto-derived: %s", cfg.PublicURL)
+		}
+	}
+	tsnetDashMux := newWebMux(g, cfg.Join(), cfg.PublicURL)
+	tsnetDashPort := portOf(cfg.InfoListen)
+	if tsnetServer != nil {
+		// Seed gateway tailscale IP for /api/join responses so clients
+		// know the tailnet-direct URL without a DNS lookup.
+		// Retry status query — DNSName populates after netmap arrives from
+		// control, which can lag Listen() by a second or two. Without retry
+		// we'd read empty DNSName and fall back to OS hostname, which is
+		// often wrong (tsnet may have registered under a different name
+		// from saved state). Retry for up to 15s.
+		go func() {
+			lc2, err2 := tsnetServer.LocalClient()
+			if err2 != nil {
+				log.Printf("tsnet: LocalClient err: %v", err2)
+				return
+			}
+			deadline := time.Now().Add(15 * time.Second)
+			for time.Now().Before(deadline) {
+				st, err3 := lc2.StatusWithoutPeers(context.Background())
+				if err3 != nil || st.Self == nil {
+					time.Sleep(500 * time.Millisecond)
+					continue
+				}
+				if g.tailscaleIP == "" {
+					for _, ip := range st.Self.TailscaleIPs {
+						if ip.Is4() {
+							g.tailscaleIP = ip.String()
+							break
+						}
+					}
+				}
+				hn := st.Self.DNSName
+				if i := strings.IndexByte(hn, '.'); i > 0 {
+					hn = hn[:i]
+				}
+				if hn != "" {
+					g.tailscaleHostname = hn
+					log.Printf("tsnet: node name %q IP %s", hn, g.tailscaleIP)
+					return
+				}
+				time.Sleep(500 * time.Millisecond)
+			}
+			log.Printf("tsnet: never got DNSName from status — gateway_host may be wrong")
+		}()
+		// Replace the default system-tailscaled LocalClient with the tsnet
+		// one so that whois lookups (dashboard auth, identity derivation)
+		// work on machines without a system tailscaled daemon.
+		if lc, err := tsnetServer.LocalClient(); err == nil {
+			g.agents.SetLocalClient(lc)
+		} else {
+			log.Printf("tsnet: LocalClient for whois: %v", err)
+		}
+		// Serve the info/dashboard mux on tsnet's virtual network so
+		// clawpatrol-run clients connecting to this tsnet IP on the info
+		// port can mint ephemeral auth keys and reach the dashboard.
+		if infoPort := portOf(cfg.InfoListen); infoPort != 0 {
+			if tsnetInfoLn, err := tsnetServer.Listen("tcp", fmt.Sprintf(":%d", infoPort)); err != nil {
+				log.Printf("tsnet: info listen :%d: %v", infoPort, err)
+			} else {
+				go http.Serve(tsnetInfoLn, tsnetDashMux)
+				log.Printf("tsnet: info/dashboard also listening on tsnet :%d", infoPort)
+			}
+		}
+		if cfg.Funnel {
+			startFunnelListener(tsnetServer, tsnetDashMux)
+		}
+		// Intercept all TCP forwarded through this exit node (whole-machine
+		// clients). dst is the original internet destination — same dispatch
+		// as the per-process PROXY-header path and the WG promiscuous forwarder.
+		tsnetServer.RegisterFallbackTCPHandler(func(src, dst netip.AddrPort) (func(net.Conn), bool) {
+			dstIP := dst.Addr().String()
+			dstPort := dst.Port()
+			return func(c net.Conn) {
+				switch {
+				case dstPort == 443:
+					g.handle(c, dstIP)
+				case dstPort == 5432:
+					g.handlePostgresConn(c, dstIP)
+				case dstPort == 53:
+					g.handleDNSTCPConn(c, dstIP)
+				case g.dnsvip.IsVIP(dstIP):
+					g.handleVIPConn(c, dstIP, dstPort)
+				case tsnetDashPort != 0 && int(dstPort) == tsnetDashPort:
+					_ = http.Serve(&oneShotListener{c: c}, tsnetDashMux)
+				default:
+					if g.tryDirectIPConn(c, dstIP, dstPort) {
+						return
+					}
+					g.wgRelay(c, dstIP, int(dstPort))
+				}
+			}, true
+		})
+	}
 	for {
 		c, err := ln.Accept()
 		if err != nil {
 			log.Printf("accept: %v", err)
 			continue
 		}
-		go g.handle(c, "")
+		go func(c net.Conn) {
+			dstIP, dstPort, conn, err := readProxyHeader(c)
+			if err != nil {
+				_ = c.Close()
+				return
+			}
+			if dstPort == 0 {
+				// No PROXY header — direct connection (admin dashboard, curl, join).
+				g.serveTSNetDirect(conn, tsnetDashMux)
+				return
+			}
+			switch {
+			case dstPort == 443:
+				g.handle(conn, dstIP)
+			case dstPort == 5432:
+				g.handlePostgresConn(conn, dstIP)
+			case dstPort == 53:
+				g.handleDNSTCPConn(conn, dstIP)
+			case g.dnsvip.IsVIP(dstIP):
+				g.handleVIPConn(conn, dstIP, dstPort)
+			case tsnetDashPort != 0 && int(dstPort) == tsnetDashPort:
+				_ = http.Serve(&oneShotListener{c: conn}, tsnetDashMux)
+			default:
+				if g.tryDirectIPConn(conn, dstIP, dstPort) {
+					return
+				}
+				g.wgRelay(conn, dstIP, int(dstPort))
+			}
+		}(c)
 	}
 }
+
+// readProxyHeader peeks at c for a HAProxy PROXY v1 line.
+// If "PROXY TCP4 srcIP dstIP srcPort dstPort\r\n" is present it is consumed
+// and the original dst IP/port returned. If absent, dstPort==0 and the conn
+// is returned with all peeked bytes still readable.
+func readProxyHeader(c net.Conn) (dstIP string, dstPort uint16, conn net.Conn, _ error) {
+	br := bufio.NewReaderSize(c, 128)
+	hdr, err := br.Peek(5)
+	bc := &bufferedConn{Reader: br, Conn: c}
+	if err != nil || string(hdr) != "PROXY" {
+		return "", 0, bc, nil
+	}
+	line, err := br.ReadString('\n')
+	if err != nil {
+		return "", 0, nil, fmt.Errorf("proxy header read: %w", err)
+	}
+	// "PROXY TCP4 srcIP dstIP srcPort dstPort\r\n"
+	fields := strings.Fields(strings.TrimRight(line, "\r\n"))
+	if len(fields) != 6 {
+		return "", 0, nil, fmt.Errorf("malformed proxy header: %q", line)
+	}
+	port, err := strconv.ParseUint(fields[5], 10, 16)
+	if err != nil {
+		return "", 0, nil, fmt.Errorf("proxy header port: %w", err)
+	}
+	return fields[3], uint16(port), bc, nil
+}
+
+type bufferedConn struct {
+	*bufio.Reader
+	net.Conn
+}
+
+func (b *bufferedConn) Read(p []byte) (int, error) { return b.Reader.Read(p) }
 
 func serveHTTPLogged(name, addr string, handler http.Handler) {
 	if err := http.ListenAndServe(addr, handler); err != nil {

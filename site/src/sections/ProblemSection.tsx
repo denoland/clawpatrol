@@ -2,40 +2,37 @@ import { SectionLabel } from "../components/SectionLabel";
 
 const PROBLEMS = [
   {
-    title: "Agents are stuck without access",
+    title: "Granting access doesn't gate actions",
     body:
-      "An agent that can only edit files in a sandbox is a toy. The " +
-      "work that matters — running a migration, replying to a " +
-      "customer, fixing a deploy — lives behind API calls. But every " +
-      "credential you hand the agent is one you've given away.",
+      "OAuth scopes, API keys, IAM roles, k8s RBAC: every " +
+      "service has its own access model, and configuring each " +
+      "correctly is its own project.",
   },
   {
-    title: "Prompt injection turns every input into instructions",
+    title: "Your agent shouldn't see secrets",
     body:
-      "Tool outputs, RAG hits, MCP responses, file contents the agent " +
-      "reads — any of it can hide instructions the model will follow. " +
-      "You can't audit the model's intent. The only thing you can " +
-      "constrain is what leaves the machine.",
+      "If the agent is compromised by prompt injection, the credentials " +
+      "it holds leak with it. Keys should live somewhere the agent can " +
+      "never see.",
   },
   {
-    title: "Today's options are no-access or YOLO",
+    title: "Logs don't capture the action",
     body:
-      "API keys in env vars, broad OAuth scopes, no checkpoint " +
-      "between intent and damage. By the time you notice the agent " +
-      "ran DROP TABLE on prod, the table is gone — and you have no " +
-      "record of who decided what.",
+      "Reconstructing what an agent did means stitching together " +
+      "per-service logs. When you have a fleet of agents this becomes " +
+      "particularly troublesome.",
   },
 ];
 
 export function ProblemSection() {
   return (
-    <section class="max-w-5xl mx-auto px-6 sm:px-8 pt-20 pb-16 sm:pt-32 sm:pb-28 border-t border-navy-200/50">
+    <section class="max-w-5xl mx-auto px-6 sm:px-8 pt-20 pb-16 sm:pt-32 sm:pb-28">
       <SectionLabel>The problem</SectionLabel>
       <div class="max-w-2xl mx-auto space-y-12 sm:space-y-20">
         {PROBLEMS.map(({ title, body }, i) => (
           <div key={title} class="grid grid-cols-[auto_1fr] gap-3 sm:gap-6">
             <div class="flex items-center justify-center min-w-10 sm:min-w-16">
-              <span class="text-5xl sm:text-7xl font-bold font-display  select-none text-rust">
+              <span class="text-5xl sm:text-7xl font-bold font-display select-none text-rust">
                 {i + 1}
               </span>
             </div>
@@ -43,7 +40,7 @@ export function ProblemSection() {
               <h3 class="text-2xl sm:text-3xl font-display font-bold text-console-dark mb-3">
                 {title}
               </h3>
-              <p class="text-base  text-text-muted">{body}</p>
+              <p class="text-base text-text-muted">{body}</p>
             </div>
           </div>
         ))}

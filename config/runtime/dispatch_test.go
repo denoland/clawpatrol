@@ -174,8 +174,7 @@ profile "default" { endpoints = [api] }
 func TestHostEndpointDoesNotAliasNonHTTPFamilies(t *testing.T) {
 	cp := compileFixture(t, `
 endpoint "postgres" "db" {
-  host     = "db.example.com:5432"
-  database = "app"
+  host = "db.example.com:5432"
 }
 profile "default" { endpoints = [db] }
 `)
@@ -194,8 +193,7 @@ endpoint "https" "api" {
   hosts = ["api.example.com:443"]
 }
 endpoint "postgres" "db" {
-  host     = "api.example.com:443"
-  database = "app"
+  host = "api.example.com:443"
 }
 profile "default" { endpoints = [api, db] }
 `)
@@ -249,8 +247,7 @@ func TestMatchRequest(t *testing.T) {
 func TestMatchRequestTruncated(t *testing.T) {
 	cp := compileFixture(t, `
 endpoint "postgres" "db" {
-  host     = "db.example.com:5432"
-  database = "app"
+  host = "db.example.com:5432"
 }
 profile "default" { endpoints = [db] }
 
@@ -643,5 +640,89 @@ profile "default" { endpoints = [ep] }
 	got = runtime.ResolveCredential(ep, mkReq(""))
 	if got == nil || got.Credential.Symbol.Name != "fallback" {
 		t.Errorf("missing Authorization should fall back, got %+v", got)
+	}
+}
+
+// TestResolveCredentialDatabaseOnly: entries dispatch on
+// req.Database alone — no placeholder constraint involved.
+func TestResolveCredentialDatabaseOnly(t *testing.T) {
+	src := `
+credential "clickhouse_credential" "prod"     {}
+credential "clickhouse_credential" "dev"      {}
+credential "clickhouse_credential" "fallback" {}
+endpoint "clickhouse_native" "ep" {
+  hosts = ["x.example.com"]
+  credentials = [
+    { database  = "prod",          credential = prod     },
+    { databases = ["dev", "qa"],   credential = dev      },
+    { credential = fallback },
+  ]
+}
+profile "default" { endpoints = [ep] }
+`
+	cp := compileFixture(t, src)
+	ep := cp.Endpoints["ep"]
+
+	cases := []struct {
+		db   string
+		want string
+	}{
+		{"prod", "prod"},
+		{"dev", "dev"},
+		{"qa", "dev"},
+		{"unknown", "fallback"},
+		{"", "fallback"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.db, func(t *testing.T) {
+			got := runtime.ResolveCredential(ep, &match.Request{Family: "sql", Database: tc.db})
+			if got == nil || got.Credential.Symbol.Name != tc.want {
+				t.Errorf("db=%q got %+v, want %s", tc.db, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestResolveCredentialPlaceholderAndDatabase: most-specific wins
+// when an entry constrains both placeholder and database. A
+// placeholder-only entry stays available as the fallback for the
+// same placeholder against a different database.
+func TestResolveCredentialPlaceholderAndDatabase(t *testing.T) {
+	src := `
+credential "bearer_token" "ro-prod" {}
+credential "bearer_token" "ro-any"  {}
+credential "bearer_token" "any"     {}
+endpoint "https" "ep" {
+  hosts = ["x.example.com"]
+  credentials = [
+    { placeholder = "PH_ro", database = "prod", credential = ro-prod },
+    { placeholder = "PH_ro",                    credential = ro-any  },
+    { credential = any },
+  ]
+}
+profile "default" { endpoints = [ep] }
+`
+	cp := compileFixture(t, src)
+	ep := cp.Endpoints["ep"]
+
+	mkReq := func(authz, db string) *match.Request {
+		return &match.Request{
+			Family:   "http",
+			Headers:  http.Header{"Authorization": []string{authz}},
+			Database: db,
+		}
+	}
+
+	got := runtime.ResolveCredential(ep, mkReq("Bearer PH_ro", "prod"))
+	if got == nil || got.Credential.Symbol.Name != "ro-prod" {
+		t.Errorf("placeholder+db should pick ro-prod, got %+v", got)
+	}
+	got = runtime.ResolveCredential(ep, mkReq("Bearer PH_ro", "dev"))
+	if got == nil || got.Credential.Symbol.Name != "ro-any" {
+		t.Errorf("placeholder-only should pick ro-any, got %+v", got)
+	}
+	got = runtime.ResolveCredential(ep, mkReq("Bearer something-else", "prod"))
+	if got == nil || got.Credential.Symbol.Name != "any" {
+		t.Errorf("no constraints match should pick catchall, got %+v", got)
 	}
 }
