@@ -58,19 +58,19 @@ func HostEndpoint(policy *config.CompiledPolicy, profile, host string) *config.C
 // truncation broke.
 //
 // Unparseable-request fail-close: same shape as the truncated path,
-// but keyed on req.Unparseable + InspectsUnparseableFacet(). When the
-// frontend's SQL parser refused the Query bytes, the parser-derived
-// facets (verb / tables / functions) are zero on the request; a rule
-// that reads any of them on an Unparseable request would be
-// evaluating zero values that don't reflect the actual statement,
-// so it synthesizes a deny instead. Rules that read only the raw
-// statement, the credential, or the peer IP still get a normal
-// Match call — those facets are populated regardless of parse
-// success. Rule priority is walked first, so a higher-priority
-// statement-only rule that matches keeps its verdict; an unparseable
-// query only triggers the synthesized deny when no higher-priority
-// rule covers it AND a lower-priority rule references an unset
-// parser facet.
+// but keyed on req.Unparseable + InspectsUnparseableFacet(). When a
+// frontend's parser refused the inbound bytes, the parser-derived
+// facets (e.g. for SQL: verb / tables / functions) are zero on the
+// request; a rule that reads any of them on an Unparseable request
+// would be evaluating zero values that don't reflect the actual
+// payload, so it synthesizes a deny instead. Rules that read only
+// the raw payload (e.g. sql.statement), the credential, or the
+// peer IP still get a normal Match call — those facets are populated
+// regardless of parse success. Rule priority is walked first, so a
+// higher-priority payload-only rule that matches keeps its verdict;
+// an unparseable request only triggers the synthesized deny when no
+// higher-priority rule covers it AND a lower-priority rule references
+// an unset parser facet.
 func MatchRequest(ep *config.CompiledEndpoint, req *match.Request) *config.CompiledRule {
 	if ep == nil {
 		return nil
@@ -127,11 +127,13 @@ func synthesizeTruncatedDeny(r *config.CompiledRule) *config.CompiledRule {
 
 // synthesizeUnparseableDeny mirrors synthesizeTruncatedDeny for the
 // parser-failure gate. The reason names the rule whose contract the
-// unparseable-query case broke, so logs / dashboard cards attribute
+// unparseable-request case broke, so logs / dashboard cards attribute
 // the synthesized deny to the matching rule rather than to an opaque
-// "unparseable" line item.
+// "unparseable" line item. The string is intentionally generic across
+// facet families: any plugin whose parser refused its inbound bytes
+// (SQL today; an external rule plugin tomorrow) routes through here.
 func synthesizeUnparseableDeny(r *config.CompiledRule) *config.CompiledRule {
-	reason := "rule \"" + r.Name + "\" references a SQL facet (verb / tables / functions) that the gateway's parser could not derive from the unparseable query; failing closed"
+	reason := "rule \"" + r.Name + "\" references a facet that the gateway's parser could not derive from the unparseable request; failing closed"
 	synth := *r
 	synth.Outcome = config.Outcome{
 		Verdict: "deny",
