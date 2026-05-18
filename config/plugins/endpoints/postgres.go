@@ -91,6 +91,15 @@ func (e *PostgresEndpoint) EndpointCredentials() []config.CredBinding {
 // route through the VIP path, not real-IP dispatch.
 func (e *PostgresEndpoint) ConnRouteHosts() []string { return []string{e.Host} }
 
+// RequiresVIP opts the endpoint into DNS-VIP interception. Without a
+// VIP, clients in Tailscale exit-node mode can't reach postgres: the
+// real upstream IP is often RFC1918, and Tailscale exit-nodes do not
+// forward RFC1918 traffic (only public IPs and the tailnet's own
+// fd78::/64 VIP range reach the gateway's iptables REDIRECT). The VIP
+// guarantees a routable address (IPv6 fd78::N) regardless of the real
+// upstream IP family or prefix.
+func (e *PostgresEndpoint) RequiresVIP() bool { return true }
+
 func (e *PostgresEndpoint) credentialAndRaw() (string, cty.Value) {
 	return e.Credential, e.CredentialsRaw
 }

@@ -370,12 +370,13 @@ func collectRequiredHosts(policy *config.CompiledPolicy) map[string][]EndpointHi
 }
 
 // defaultPortFor returns the default port for a VIP-needing endpoint
-// when its host string omits one. SSH is the only RequiresVIP plugin
-// today; future plugins can extend the switch.
+// when its host string omits one.
 func defaultPortFor(ep *config.CompiledEndpoint) uint16 {
 	switch ep.Plugin.Type {
 	case "ssh":
 		return 22
+	case "postgres":
+		return 5432
 	}
 	return 0
 }
