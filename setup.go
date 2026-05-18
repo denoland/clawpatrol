@@ -139,16 +139,11 @@ func runJoin(args []string) {
 	if wgMode {
 		return
 	}
-	// Whole-machine Tailscale: set exit-node so all host traffic routes
-	// through the gateway. Per-process tsnet mode (the default) never sets
-	// an exit-node — clawpatrol run handles per-process routing itself.
-	// Skip entirely for tsnet-mode gateways (mode file = "tailscale") —
-	// system Tailscale is not involved and runLogin would fail looking for
-	// a peer on a system-Tailscale connection the client doesn't have.
-	clawDir := defaultClawpatrolDir()
-	modeBytes, _ := os.ReadFile(filepath.Join(clawDir, "mode"))
-	isTsnetMode := strings.TrimSpace(string(modeBytes)) == "tailscale"
-	if *wholeMachine && !isTsnetMode {
+	// Whole-machine Tailscale (Linux only): route all host traffic via
+	// the gateway by setting it as exit-node on the system tailscaled.
+	// Skipped for per-process tsnet mode and for macOS (where the NE
+	// extension owns routing — never system tailscale).
+	if *wholeMachine && runtime.GOOS == "linux" {
 		loginArgs := []string{"-name", *gwName, "-ca-dir", *caOut}
 		if *skipTrust {
 			loginArgs = append(loginArgs, "-no-trust")
@@ -1080,16 +1075,18 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 
 	// 3b. tailscale branch — ensure binary + daemon.
 	//
-	// tsnet per-process run mode (macOS + Linux non-whole-machine):
-	// the ephemeral tsnet node joins the tailnet at `clawpatrol run` time,
-	// not here. We must NOT call `tailscale up` — on macOS the App Store
-	// binary crashes when invoked externally; on Linux it would wipe the
-	// existing system Tailscale auth. The WireGuard branch already returned
-	// above, so any non-WG gateway that lands here is Tailscale-mode.
+	// Per-process tsnet mode: the in-process tsnet node joins the
+	// tailnet at `clawpatrol run` time using the auth_key persisted
+	// below. No system Tailscale touched.
 	//
-	// If gateway_host is present the gateway runs embedded tsnet — system
-	// Tailscale install is never correct here regardless of --whole-machine.
-	if !wholeMachine || tailnetGWHost != "" {
+	// macOS NEVER uses system Tailscale — the NETransparentProxyProvider
+	// (Clawpatrol.app system extension) handles all routing. --whole-
+	// machine on darwin is honored at NE-config time, not here.
+	//
+	// On Linux, --whole-machine falls through to the system-Tailscale
+	// branch below (install tailscale + `tailscale up` + exit-node) for
+	// hosts that want all traffic routed through the gateway.
+	if !wholeMachine || runtime.GOOS == "darwin" {
 		clawDir := filepath.Dir(setup.caPath)
 		// Write CA delivered in the poll response (gateway's /ca.crt is
 		// intentionally not public in tsnet mode). Then install trust.

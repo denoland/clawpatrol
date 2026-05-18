@@ -302,28 +302,6 @@ func (r *AgentRegistry) fillIdentity(ip string) {
 	}
 }
 
-func printDashboardURL(listen string) {
-	port := listen
-	if i := strings.LastIndex(port, ":"); i >= 0 {
-		port = port[i:]
-	}
-	lc := &local.Client{}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	st, err := lc.Status(ctx)
-	if err != nil || st == nil || st.Self == nil {
-		log.Printf("dashboard: http://0.0.0.0%s", port)
-		return
-	}
-	hostName := st.Self.HostName
-	if st.CurrentTailnet != nil && st.CurrentTailnet.MagicDNSSuffix != "" && hostName != "" {
-		log.Printf("dashboard: http://%s.%s%s", hostName, st.CurrentTailnet.MagicDNSSuffix, port)
-	}
-	if len(st.Self.TailscaleIPs) > 0 {
-		log.Printf("dashboard: http://%s%s", st.Self.TailscaleIPs[0], port)
-	}
-}
-
 func (r *AgentRegistry) snapshot() []*Agent {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

@@ -154,17 +154,6 @@ func (r *onboardRegistry) AssignProfile(ip, profile string) {
 	r.upsertLocked(ip)
 }
 
-// assignProfileMemOnly records the profile mapping in memory without
-// upserting a devices row. Used for synthetic parent identifiers
-// (e.g. `tsnet:<device_code>` in tsnet mode) where the real device
-// row is created at `clawpatrol run` register time using the actual
-// tailnet IP and hostname.
-func (r *onboardRegistry) assignProfileMemOnly(ip, profile string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.profileByIP[ip] = profile
-}
-
 // setEphemeralProfile pins an ephemeral peer to a profile and records
 // its parent device IP. ephemeralProfileByIP is never read by upsertLocked
 // so no devices row is created. ephemeralParentByIP is used by AgentIPFor
@@ -711,13 +700,13 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 		} else if loginServer == "" {
 			// Tailscale tsnet mode: parent device's tailnet IP isn't
 			// known at approve time. Mint api-token against a synthetic
-			// device identity derived from device_code; record the
-			// profile in memory only (no devices row — the real row
-			// is seeded at `clawpatrol run` register time using the
-			// actual tailnet IP + hostname).
+			// device identity derived from device_code and persist the
+			// profile mapping. The real device row is seeded at
+			// `clawpatrol run` register time using the actual tailnet
+			// IP + hostname, and the synthetic row is dropped there.
 			deviceID := "tsnet:" + dc
 			if profile != "" {
-				w.onboard.assignProfileMemOnly(deviceID, profile)
+				w.onboard.AssignProfile(deviceID, profile)
 			}
 			if token, perr := mintAndPersistPeerAPIToken(w.g.db, deviceID); perr == nil {
 				w.onboard.mu.Lock()

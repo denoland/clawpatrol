@@ -2728,7 +2728,7 @@ func runGateway(args []string) {
 	if cfg.InfoListen != "" {
 		mux := newWebMux(g, cfg.Join(), cfg.PublicURL)
 		go serveHTTPLogged("dashboard", cfg.InfoListen, mux)
-		printDashboardURL(cfg.InfoListen)
+		log.Printf("dashboard: http://%s", cfg.InfoListen)
 	}
 	go serveHTTPLogged("pprof", "127.0.0.1:6060", nil)
 	go g.servePorts()
