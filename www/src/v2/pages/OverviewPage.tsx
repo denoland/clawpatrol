@@ -6,7 +6,8 @@ import {
   type HITLPending,
   type Integration,
 } from "../../lib/api";
-import { fmtAge, fmtDateTime } from "../../lib/format";
+import { fmtAge, fmtDateTime, fmtTime } from "../../lib/format";
+import { IntegrationIcon } from "../../components/Logos";
 import { PageHeader } from "../cards/PageHeader";
 import type { ReactNode } from "react";
 
@@ -117,28 +118,71 @@ function RecentActivityPanel({
       {rows.length === 0 ? (
         <Empty>No actions in the last 24h.</Empty>
       ) : (
-        <ul className="divide-y divide-canvas-dark text-sm">
-          {rows.map((e) => {
-            const ip = e.agent_ip ?? "";
-            return (
-              <li key={(e.id ?? "") + e.ts} className="px-4 py-2">
-                <div className="flex items-baseline justify-between gap-2">
-                  <div className="truncate font-medium">{hostnameByIp.get(ip) || ip || "—"}</div>
-                  <span className="shrink-0 text-[10px] text-text-muted">{fmtAge(e.ts)}</span>
-                </div>
-                <div className="text-xs text-text-muted truncate">
-                  {profileByIp.get(ip) || <span className="italic">no profile</span>}
-                  {" · "}
-                  <VerdictTag action={e.action} /> <span className="font-mono">{e.method}</span>{" "}
-                  {e.endpoint || e.host}
-                </div>
-              </li>
-            );
-          })}
-        </ul>
+        // Borderless, headerless: one event per row, columns vertically
+        // aligned (timestamp · device · profile · method · status ·
+        // path · verdict · latency) — same column order as the spec in
+        // PR #398's reviewer comment.
+        <table className="w-full text-sm border-collapse">
+          <tbody>
+            {rows.map((e) => {
+              const ip = e.agent_ip ?? "";
+              return (
+                <tr key={(e.id ?? "") + e.ts} className="align-baseline">
+                  <td className="px-3 py-1 font-mono text-xs whitespace-nowrap text-text-muted">
+                    {fmtTime(e.ts)}
+                  </td>
+                  <td className="px-3 py-1 truncate max-w-[140px] font-medium">
+                    {hostnameByIp.get(ip) || ip || "—"}
+                  </td>
+                  <td className="px-3 py-1 truncate max-w-[120px] text-text-muted">
+                    {profileByIp.get(ip) || <span className="italic">—</span>}
+                  </td>
+                  <td className="px-3 py-1 font-mono text-xs whitespace-nowrap text-text-muted">
+                    {e.method || "—"}
+                  </td>
+                  <td className="px-3 py-1 font-mono text-xs whitespace-nowrap">
+                    <StatusCode status={e.status} />
+                  </td>
+                  <td className="px-3 py-1 truncate max-w-[260px] text-text-muted">
+                    {e.endpoint || e.host}
+                    {e.path && <span>{e.path}</span>}
+                  </td>
+                  <td className="px-3 py-1 whitespace-nowrap">
+                    <VerdictTag action={e.action} />
+                  </td>
+                  <td className="px-3 py-1 font-mono text-xs whitespace-nowrap text-right text-text-muted">
+                    {fmtLatency(e.ms)}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       )}
     </Panel>
   );
+}
+
+function StatusCode({ status }: { status?: number }) {
+  if (!status) return <span className="text-text-muted">—</span>;
+  const tone =
+    status >= 500
+      ? "text-danger-700"
+      : status >= 400
+        ? "text-rust-700"
+        : status >= 300
+          ? "text-text-muted"
+          : status >= 200
+            ? "text-success-700"
+            : "text-text-muted";
+  return <span className={tone}>{status}</span>;
+}
+
+function fmtLatency(ms?: number): string {
+  if (ms == null) return "—";
+  if (ms < 1) return "<1ms";
+  if (ms < 1000) return Math.round(ms) + "ms";
+  return (ms / 1000).toFixed(ms < 10_000 ? 2 : 1) + "s";
 }
 
 function ConnectedDevicesPanel({ agents }: { agents: Agent[] }) {
@@ -199,25 +243,23 @@ function UnconfiguredCredentialsPanel({
       <ul className="divide-y divide-canvas-dark text-sm">
         {unconfigured.map((i) => (
           <li key={i.id} className="px-4 py-3 flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <div className="font-medium truncate">{i.name}</div>
-              <div className="text-xs text-text-muted truncate">
-                <span className="font-mono">{i.type}</span>
-                {i.has_oauth && " · OAuth"}
-                {i.has_tailscale_auth && " · Tailscale"}
+            <div className="flex items-center gap-3 min-w-0">
+              <IntegrationIcon id={i.id} type={i.type} className="w-5 h-5 shrink-0" />
+              <div className="min-w-0">
+                <div className="font-medium truncate">{i.name}</div>
+                <div className="text-xs text-text-muted truncate">
+                  <span className="font-mono">{i.type}</span>
+                  {i.has_oauth && " · OAuth"}
+                  {i.has_tailscale_auth && " · Tailscale"}
+                </div>
               </div>
             </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <span className="text-xs px-1.5 py-0.5 rounded-full bg-canvas-dark text-text-muted">
-                needs setup
-              </span>
-              <a
-                href="#/v2/settings"
-                className="text-xs px-2 py-1 border border-rust-500 text-rust-700 hover:bg-rust-100 transition-colors"
-              >
-                Connect →
-              </a>
-            </div>
+            <a
+              href="#/v2/settings"
+              className="text-xs px-2 py-1 border border-rust-500 text-rust-700 hover:bg-rust-100 transition-colors shrink-0"
+            >
+              Connect →
+            </a>
           </li>
         ))}
       </ul>
