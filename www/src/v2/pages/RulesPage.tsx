@@ -93,6 +93,24 @@ export function V2RulesPage({ agents }: { agents: Agent[] }) {
   }
   const endpointGroups = [...byEndpoint.entries()].sort(([a], [b]) => a.localeCompare(b));
 
+  // Rules attached to multiple endpoints (via `endpoints = [...]`
+  // in HCL) emit one RuleSummary per attachment site, so the same
+  // rule name appears under each endpoint card. Count distinct
+  // endpoints per rule name within the filtered set so we can mark
+  // shared rules in the row — without the marker, an operator
+  // reading the second card has no way to know the rule also lives
+  // elsewhere.
+  const ruleEndpointCount = new Map<string, number>();
+  {
+    const seen = new Map<string, Set<string>>();
+    for (const r of filtered) {
+      const ep = r.endpoint || "(no endpoint)";
+      if (!seen.has(r.name)) seen.set(r.name, new Set());
+      seen.get(r.name)!.add(ep);
+    }
+    for (const [name, eps] of seen) ruleEndpointCount.set(name, eps.size);
+  }
+
   return (
     <div className="mx-auto max-w-7xl">
       <PageHeader
@@ -142,7 +160,12 @@ export function V2RulesPage({ agents }: { agents: Agent[] }) {
             </thead>
             <tbody className="divide-y divide-canvas-dark">
               {rs.map((r, idx) => (
-                <RuleRow key={`${r.name}-${r.endpoint}-${idx}`} rule={r} agents={agents} />
+                <RuleRow
+                  key={`${r.name}-${r.endpoint}-${idx}`}
+                  rule={r}
+                  agents={agents}
+                  sharedCount={ruleEndpointCount.get(r.name) ?? 1}
+                />
               ))}
             </tbody>
           </table>
@@ -172,7 +195,19 @@ function writeProfileToHash(profile: string) {
   if (next !== h) window.location.hash = next.replace(/^#/, "");
 }
 
-function RuleRow({ rule: r, agents }: { rule: RuleSummary; agents: Agent[] }) {
+function RuleRow({
+  rule: r,
+  agents,
+  sharedCount,
+}: {
+  rule: RuleSummary;
+  agents: Agent[];
+  // Number of endpoints in the current filter this rule attaches to.
+  // 1 = single-endpoint rule (no marker); >1 = shared rule, emit a
+  // chip on the name cell so the operator knows the same row exists
+  // under (sharedCount - 1) other endpoint cards.
+  sharedCount: number;
+}) {
   const [open, setOpen] = useState(false);
   const [events, setEvents] = useState<EventRecord[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -215,7 +250,17 @@ function RuleRow({ rule: r, agents }: { rule: RuleSummary; agents: Agent[] }) {
         onClick={toggle}
       >
         <td className="px-4 py-2 text-text-muted text-xs select-none">{open ? "▾" : "▸"}</td>
-        <td className="px-4 py-2 font-medium">{r.name}</td>
+        <td className="px-4 py-2 font-medium">
+          <span>{r.name}</span>
+          {sharedCount > 1 && (
+            <span
+              className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full bg-canvas-dark text-text-muted align-middle"
+              title={`This rule is attached to ${sharedCount} endpoints; the same row appears under each.`}
+            >
+              shared · {sharedCount} endpoints
+            </span>
+          )}
+        </td>
         <td className="px-4 py-2">
           {r.verdict ? (
             <Verdict v={r.verdict} />
