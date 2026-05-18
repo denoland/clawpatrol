@@ -281,7 +281,7 @@ byte-for-byte. What's bounded is the matcher's view of it. The
 endpoint flags the request as truncated, and the dispatcher
 fails-closed per rule.
 
-| Endpoint | Inspected slice | Cap | Truncatable facets |
+| Endpoint | Inspected slice | Cap | Truncatable facet fields |
 |----------|-----------------|-----|--------------------|
 | `https` | request body on `POST` / `PUT` / `PATCH` | 1 MiB | `http.body`, `http.body_json` |
 | `kubernetes` | request body on `POST` / `PUT` / `PATCH` | 1 MiB | *(none — every `k8s.*` facet is derived from the URL and method)* |
@@ -302,13 +302,14 @@ rules in priority order as usual. For each rule:
 
 - **Catch-all rule** (no `condition`): fires as written. A truncated
   body can't poison a rule that reads nothing.
-- **Rule whose CEL reads no truncatable facet** (e.g.
+- **Rule whose CEL reads no truncatable facet field** (e.g.
   `http.method == 'GET'`, `credential = X`, any `k8s.*` predicate):
   the matcher runs normally — the truncated bytes are irrelevant to
   its decision.
-- **Rule whose CEL reads a truncatable facet**: the matcher is **not**
-  called. The dispatcher synthesizes a deny attributed to that rule,
-  with this exact reason:
+- **Rule whose CEL reads a truncatable facet field**: the rule is
+  automatically matched without comparing the matching values. The
+  dispatcher synthesizes a deny attributed to that rule, with this
+  exact reason:
 
   ```
   rule "<name>" reads a request facet whose bytes were truncated by the gateway's inspection buffer; failing closed
@@ -318,11 +319,9 @@ rules in priority order as usual. For each rule:
   so logs and dashboards still attribute the deny to the rule whose
   contract the truncation broke.
 
-`credential` (the top-level rule attribute) is always non-truncatable
-— it's resolved off the connection's authenticated identity. The
-upshot: a method-only or credential-only rule on an `https` endpoint
-still fires on a 2 MiB body, but a `http.body_json.field == "x"` rule
-auto-denies.
+The upshot: a rule matching on `http.method` and/or `credential` on
+an `https` endpoint still fires on a 2 MiB body, but a
+`http.body_json.field == "x"` rule auto-denies.
 
 A matched rule with `approve = [...]` on a truncated postgres frame
 is forced to deny without paging the approver (HITL can't reason about
@@ -350,7 +349,7 @@ driver doesn't disconnect:
 A truncated body might contain content that *would* have triggered a
 deny rule the gateway can't see, so refusing is the safe default. If
 legitimate traffic is expected to exceed the cap, write the rules
-against non-truncatable facets only (see the table above) — those
+against non-truncatable facet fields only (see the table above) — those
 rules still match on a truncated request and won't auto-deny.
 
 
