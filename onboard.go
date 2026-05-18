@@ -755,6 +755,10 @@ func (w *webMux) apiOnboardClaim(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("onboard claim: %s → %s (hostname=%q)", host, owner, hostname)
+	// Mirror profile mapping onto the peer's IPv6 ULA — whole-machine
+	// tsnet traffic frequently arrives on fd7a:115c:a1e0::/48 not the
+	// 100.x IPv4 that claim() registered.
+	w.g.seedTsnetIPv6Alias(host)
 	resp := map[string]string{"owner": owner, "ip": host}
 	// Drop the synthetic `tsnet:<device_code>` row + its api-token created
 	// at approve time. Whole-machine joins land here with the real tailnet

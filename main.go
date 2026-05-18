@@ -35,6 +35,7 @@ import (
 	"github.com/denoland/clawpatrol/config/runtime"
 	"github.com/denoland/clawpatrol/dnsvip"
 	"github.com/google/uuid"
+	"tailscale.com/client/local"
 )
 
 // JoinConfig aliases config.JoinConfig so call sites (newWebMux /
@@ -358,6 +359,11 @@ type Gateway struct {
 	// resolves a conflict. Included in onboard join responses as
 	// gateway_host so clawpatrol-run peer lookups succeed.
 	tailscaleHostname string
+	// tsnetLC is the embedded tsnet's LocalClient. Used to resolve a
+	// peer's full address set (e.g. IPv4 → IPv6 ULA) when seeding
+	// profile mappings — tsnet whole-machine traffic arrives on the
+	// IPv6 ULA, so the IPv4 entry alone isn't enough.
+	tsnetLC *local.Client
 }
 
 // transportFor returns the cached http.Transport for ep, building it
@@ -404,8 +410,54 @@ func (g *Gateway) profileFor(peerIP string) string {
 		if p := g.onboard.ProfileForIP(peerIP); p != "" {
 			return p
 		}
+		// Lazy IPv6 → IPv4 resolution: whole-machine tsnet traffic
+		// often arrives on the peer's fd7a:115c:a1e0::/48 ULA. If the
+		// onboard table only has the IPv4 entry (peers registered
+		// before seedTsnetIPv6Alias existed), resolve via tsnet WhoIs
+		// once and stamp the alias.
+		if g.tsnetLC != nil && strings.HasPrefix(peerIP, "fd7a:") {
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+			if w, err := g.tsnetLC.WhoIs(ctx, peerIP+":0"); err == nil && w != nil && w.Node != nil {
+				for _, addr := range w.Node.Addresses {
+					ip := addr.Addr()
+					if !ip.Is4() {
+						continue
+					}
+					if p := g.onboard.ProfileForIP(ip.String()); p != "" {
+						g.onboard.RegisterIPAlias(peerIP, ip.String())
+						return p
+					}
+				}
+			}
+		}
 	}
 	return defaultProfileName(g.cfg.Policy)
+}
+
+// seedTsnetIPv6Alias resolves peerIP (IPv4) to the peer's IPv6 ULA via
+// tsnet WhoIs and mirrors the same profile mapping onto the v6 in the
+// onboard registry. Whole-machine tsnet traffic frequently arrives on
+// the fd7a:115c:a1e0::/48 ULA rather than the 100.x IPv4 — without
+// the alias profileFor falls back to "default" and dispatch misses
+// every endpoint declared on the actual profile.
+func (g *Gateway) seedTsnetIPv6Alias(peerIP string) {
+	if g.tsnetLC == nil || g.onboard == nil || peerIP == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	w, err := g.tsnetLC.WhoIs(ctx, peerIP+":0")
+	if err != nil || w == nil || w.Node == nil {
+		return
+	}
+	for _, addr := range w.Node.Addresses {
+		ip := addr.Addr()
+		if !ip.Is6() {
+			continue
+		}
+		g.onboard.RegisterIPAlias(ip.String(), peerIP)
+	}
 }
 
 // agentIPFor returns the IP to use for traffic attribution. Ephemeral
@@ -2887,6 +2939,7 @@ func runGateway(args []string) {
 		// work on machines without a system tailscaled daemon.
 		if lc, err := tsnetServer.LocalClient(); err == nil {
 			g.agents.SetLocalClient(lc)
+			g.tsnetLC = lc
 		} else {
 			log.Printf("tsnet: LocalClient for whois: %v", err)
 		}

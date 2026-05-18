@@ -180,6 +180,9 @@ func (w *webMux) apiRegisterEphemeralTsnetIP(rw http.ResponseWriter, r *http.Req
 	if w.g.agents != nil {
 		w.g.agents.Seed(tsnetIP)
 	}
+	// Same v4→v6 alias seeding as claim — per-process tsnet runs also
+	// originate on the IPv6 ULA half of the time.
+	w.g.seedTsnetIPv6Alias(tsnetIP)
 	rw.WriteHeader(http.StatusNoContent)
 }
 
