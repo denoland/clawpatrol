@@ -6,12 +6,14 @@ package main
 // model's max input window.
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -85,6 +87,12 @@ func envPushdownVars(caPath string) ([]pushdownEnvVar, error) {
 	return append(out, vars...), nil
 }
 
+// gatewayDialOverride lets callers (e.g. clawpatrol run in tsnet mode)
+// swap in a tsnet.Server-backed DialContext so HTTP calls to tailnet IPs
+// route through the in-process tsnet stack instead of the host network
+// (which has no tailnet route).
+var gatewayDialOverride func(ctx context.Context, network, addr string) (net.Conn, error)
+
 // gatewayClient returns an http.Client that trusts the gateway's CA cert
 // at caDir/ca.crt in addition to the system pool.
 func gatewayClient(caDir string) *http.Client {
@@ -95,11 +103,15 @@ func gatewayClient(caDir string) *http.Client {
 	if pem, err := os.ReadFile(filepath.Join(caDir, "ca.crt")); err == nil {
 		roots.AppendCertsFromPEM(pem)
 	}
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: roots},
+	}
+	if gatewayDialOverride != nil {
+		tr.DialContext = gatewayDialOverride
+	}
 	return &http.Client{
-		Timeout: 5 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{RootCAs: roots},
-		},
+		Timeout:   5 * time.Second,
+		Transport: tr,
 	}
 }
 
@@ -110,8 +122,10 @@ func gatewayClient(caDir string) *http.Client {
 // persisted, the network call fails, or the server returned
 // non-200.
 func fetchEnvPushdownFromGateway(caDir string) ([]pushdownEnvVar, error) {
-	// Prefer tailnet-direct URL: the public join URL may be Funnel-proxied
-	// and not expose /api/env-pushdown.
+	// env-pushdown is tailnet-only — Funnel must NOT expose peer-token
+	// endpoints to the internet. Use the tailnet-direct URL; in per-process
+	// tsnet mode this means applyEnvPushdown must be called AFTER tsnet
+	// has joined.
 	gw := readTailnetURL(caDir)
 	if gw == "" {
 		gw = readGatewayURL(caDir)

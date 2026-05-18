@@ -32,10 +32,32 @@ func gatewayHTTPClient(caPath string) (*http.Client, error) {
 		roots.AppendCertsFromPEM(pem)
 	}
 	return &http.Client{
+		Timeout: 15 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{RootCAs: roots},
 		},
 	}, nil
+}
+
+// tsnetHTTPClient builds an http.Client that dials via tsnet so tailnet
+// IPs (100.x.x.x) are reachable from the parent process (which otherwise
+// has no route — the host network isn't on the tailnet, only the
+// in-process tsnet stack is).
+func tsnetHTTPClient(ts *tsnet.Server, caPath string) *http.Client {
+	roots, err := x509.SystemCertPool()
+	if err != nil {
+		roots = x509.NewCertPool()
+	}
+	if pem, err := os.ReadFile(caPath); err == nil {
+		roots.AppendCertsFromPEM(pem)
+	}
+	return &http.Client{
+		Timeout: 15 * time.Second,
+		Transport: &http.Transport{
+			DialContext:     ts.Dial,
+			TLSClientConfig: &tls.Config{RootCAs: roots},
+		},
+	}
 }
 
 // fetchEphemeralTsnetKey calls POST /api/peer/ephemeral/tsnet on the
@@ -111,14 +133,16 @@ func waitTsnetUp(s *tsnet.Server) (netip.Addr, error) {
 }
 
 // registerEphemeralTsnetIP tells the gateway which 100.x.x.x tailnet IP this
-// ephemeral tsnet run session got, so the gateway maps it to the parent
-// device's profile for credential dispatch.
-func registerEphemeralTsnetIP(gwURL, token, caPath, tsIP string) error {
-	client, err := gatewayHTTPClient(caPath)
-	if err != nil {
-		return fmt.Errorf("http client: %w", err)
+// `clawpatrol run` invocation got, so the gateway maps it to the parent
+// device's profile for credential dispatch and seeds a real device row
+// (one per machine, not per run). Called over tsnet (tailnet-only endpoint).
+func registerEphemeralTsnetIP(client *http.Client, gwURL, token, tsIP string) error {
+	hn, _ := os.Hostname()
+	u := gwURL + "/api/peer/ephemeral/tsnet/register?ip=" + tsIP
+	if hn != "" {
+		u += "&hostname=" + hn
 	}
-	req, err := http.NewRequest(http.MethodPost, gwURL+"/api/peer/ephemeral/tsnet/register?ip="+tsIP, nil)
+	req, err := http.NewRequest(http.MethodPost, u, nil)
 	if err != nil {
 		return err
 	}

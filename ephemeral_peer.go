@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strings"
 	"sync"
 )
 
@@ -142,7 +143,7 @@ func (w *webMux) apiEphemeralTsnetPeer(rw http.ResponseWriter, r *http.Request) 
 		http.Error(rw, "not in tailscale mode", http.StatusBadRequest)
 		return
 	}
-	authKey, err := mintTailscaleAuthKey(r.Context(), w.ts, true)
+	authKey, err := mintTailscaleAuthKey(r.Context(), w.ts)
 	if err != nil {
 		http.Error(rw, "mint key: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -166,9 +167,11 @@ func (w *webMux) apiEphemeralTsnetPeer(rw http.ResponseWriter, r *http.Request) 
 }
 
 // apiRegisterEphemeralTsnetIP handles POST /api/peer/ephemeral/tsnet/register.
-// Called by `clawpatrol run` (tsnet mode) immediately after the ephemeral tsnet
-// node joins and learns its 100.x.x.x address. Binds the ephemeral tailnet IP
-// to the parent device's profile so dispatch from that IP uses the right credentials.
+// Called by `clawpatrol run` (tsnet mode) immediately after the tsnet node
+// joins and learns its 100.x.x.x address. With persistent tsnet state on the
+// client, the same machine gets the same tailnet IP across runs — we assign
+// the IP directly to the parent's profile and seed a real device row so the
+// dashboard shows ONE entry per machine (not per ephemeral run).
 func (w *webMux) apiRegisterEphemeralTsnetIP(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(rw, "POST", http.StatusMethodNotAllowed)
@@ -194,7 +197,15 @@ func (w *webMux) apiRegisterEphemeralTsnetIP(rw http.ResponseWriter, r *http.Req
 		return
 	}
 	profile := w.g.onboard.ProfileForIP(parentIP)
-	w.g.onboard.setEphemeralProfile(tsnetIP, parentIP, profile)
+	if profile != "" {
+		w.g.onboard.AssignProfile(tsnetIP, profile)
+	}
+	if hn := strings.TrimSpace(r.URL.Query().Get("hostname")); hn != "" {
+		w.g.onboard.SetHostname(tsnetIP, hn)
+	}
+	if w.g.agents != nil {
+		w.g.agents.Seed(tsnetIP)
+	}
 	rw.WriteHeader(http.StatusNoContent)
 }
 

@@ -142,7 +142,13 @@ func runJoin(args []string) {
 	// Whole-machine Tailscale: set exit-node so all host traffic routes
 	// through the gateway. Per-process tsnet mode (the default) never sets
 	// an exit-node — clawpatrol run handles per-process routing itself.
-	if *wholeMachine {
+	// Skip entirely for tsnet-mode gateways (mode file = "tailscale") —
+	// system Tailscale is not involved and runLogin would fail looking for
+	// a peer on a system-Tailscale connection the client doesn't have.
+	clawDir := defaultClawpatrolDir()
+	modeBytes, _ := os.ReadFile(filepath.Join(clawDir, "mode"))
+	isTsnetMode := strings.TrimSpace(string(modeBytes)) == "tailscale"
+	if *wholeMachine && !isTsnetMode {
 		loginArgs := []string{"-name", *gwName, "-ca-dir", *caOut}
 		if *skipTrust {
 			loginArgs = append(loginArgs, "-no-trust")
@@ -952,7 +958,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 
 	stopSpin := startSpinner("Waiting for approval")
 	authKey, loginServer, apiToken := "", "", ""
-	var tailnetGWHost, tailnetControlURL, gatewayIP string
+	var tailnetGWHost, tailnetControlURL, gatewayIP, caPEM string
 	for time.Now().Before(deadline) {
 		time.Sleep(interval)
 		pr, err := cli.Post(gateway+"/api/onboard/poll?device_code="+start.DeviceCode, "application/json", nil)
@@ -969,6 +975,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 			tailnetGWHost = pv["gateway_host"]
 			tailnetControlURL = pv["control_url"]
 			gatewayIP = pv["gateway_ip"]
+			caPEM = pv["ca_pem"]
 			break
 		}
 		if e := pv["error"]; e != "" && e != "authorization_pending" && e != "slow_down" {
@@ -1079,8 +1086,29 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	// binary crashes when invoked externally; on Linux it would wipe the
 	// existing system Tailscale auth. The WireGuard branch already returned
 	// above, so any non-WG gateway that lands here is Tailscale-mode.
-	if !wholeMachine {
+	//
+	// If gateway_host is present the gateway runs embedded tsnet — system
+	// Tailscale install is never correct here regardless of --whole-machine.
+	if !wholeMachine || tailnetGWHost != "" {
 		clawDir := filepath.Dir(setup.caPath)
+		// Write CA delivered in the poll response (gateway's /ca.crt is
+		// intentionally not public in tsnet mode). Then install trust.
+		if caPEM != "" {
+			if werr := os.WriteFile(setup.caPath, []byte(caPEM), 0o644); werr == nil {
+				if fp, ferr := caFingerprintFromPEM([]byte(caPEM)); ferr == nil {
+					setup.caFingerprint = fp
+				}
+				if !skipTrust {
+					if ierr := installCATrust(setup.caPath); ierr == nil {
+						setup.caInstalled = true
+					} else {
+						setup.caHint = manualTrustHint(setup.caPath)
+					}
+				} else {
+					setup.caHint = manualTrustHint(setup.caPath)
+				}
+			}
+		}
 		_ = os.WriteFile(filepath.Join(clawDir, "mode"), []byte("tailscale\n"), 0o600)
 		if tailnetGWHost != "" {
 			_ = os.WriteFile(filepath.Join(clawDir, "tailnet-gateway"), []byte(tailnetGWHost+"\n"), 0o600)
@@ -1090,11 +1118,15 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 			tailnetURL := fmt.Sprintf("http://%s:8080", gatewayIP)
 			_ = os.WriteFile(filepath.Join(clawDir, "tailnet-url"), []byte(tailnetURL+"\n"), 0o600)
 		}
+		// Persist reusable ephemeral auth_key so each `clawpatrol run` can
+		// start a fresh ephemeral tsnet node without a Funnel-exposed
+		// peer-API call (which we intentionally block).
+		_ = os.WriteFile(filepath.Join(clawDir, "tsnet-auth-key"), []byte(authKey+"\n"), 0o600)
 		items := []string{"Joined (tsnet mode — ephemeral node joins tailnet at run time)"}
 		items = append(items, setupSummaryItems(*setup)...)
 		printTreeItems(items)
 		fmt.Println()
-		fmt.Println("Installed! Try: clawpatrol run -- claude")
+		fmt.Println("Installed! Try: clawpatrol run claude")
 		return false, nil
 	}
 

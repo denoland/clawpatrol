@@ -62,12 +62,9 @@ import (
 	"tailscale.com/tsnet"
 )
 
-// tsnetTunMTU is the TUN MTU for the child's netns in per-process tsnet
-// mode. No WireGuard encap overhead — 1280 matches Tailscale's own MTU
-// (the IPv6 minimum, which constrains DERP paths). This is 60 bytes
-// larger than wgTunMTU/tunMTU (1220), which deducts WG+UDP+IP headers
-// that don't exist on a pure tsnet path.
-const tsnetTunMTU = 1280
+// tsnetTunMTU is the TUN MTU for the child's netns. Set to max IPv4 packet
+// size — tsnet handles fragmentation/path-MTU internally, so no need to cap.
+const tsnetTunMTU = 65535
 
 func runRunTsnet(args []string) {
 	warnIfOnGatewayHost()
@@ -90,44 +87,45 @@ func runRunTsnet(args []string) {
 	checkUserNS()
 
 	dir := defaultClawpatrolDir()
-	applyEnvPushdown(dir)
+	// applyEnvPushdown moved to after tsnet join — env-pushdown is
+	// tailnet-only, can't be fetched until we're on the tailnet.
 
 	gwURL := strings.TrimSpace(readFileSilent(filepath.Join(dir, "gateway")))
 	gwHost := strings.TrimSpace(readFileSilent(filepath.Join(dir, "tailnet-gateway")))
 	controlURL := strings.TrimSpace(readFileSilent(filepath.Join(dir, "control-url")))
 	token := strings.TrimSpace(readFileSilent(filepath.Join(dir, "api-token")))
+	authKey := strings.TrimSpace(readFileSilent(filepath.Join(dir, "tsnet-auth-key")))
 	if gwHost == "" {
 		gwHost = "clawpatrol-gateway"
 	}
 	if gwURL == "" || token == "" {
 		fail("tsnet run: missing gateway url or api-token in %s", dir)
 	}
-
-	// 1. Mint ephemeral tsnet auth key.
-	// Use tailnet-direct URL when available — the public join URL may be
-	// Funnel-proxied and not expose /api/peer/ephemeral/tsnet.
-	keyURL := strings.TrimSpace(readFileSilent(filepath.Join(dir, "tailnet-url")))
-	if keyURL == "" {
-		keyURL = gwURL
+	if authKey == "" {
+		fail("tsnet run: missing tsnet-auth-key in %s (re-run `clawpatrol join`)", dir)
 	}
-	authKey, gwPort, err := fetchEphemeralTsnetKey(keyURL, token, filepath.Join(dir, "ca.crt"))
-	if err != nil {
-		fail("mint tsnet key: %v", err)
-	}
+	// Gateway port for direct-dial fallback (rarely used; tsnet exit-node
+	// routing is the normal path). Default 443.
+	gwPort := "443"
 
-	// 2. Spin up ephemeral tsnet.Server.
-	stateDir, err := os.MkdirTemp("", "clawpatrol-tsnet-*")
-	if err != nil {
+	// 2. Spin up tsnet.Server with PERSISTENT state — same node identity
+	// (same tailnet IP, same hostname) across `clawpatrol run` invocations
+	// so the gateway sees ONE device per machine, not a new ephemeral
+	// node per run. The reusable auth key is only consumed on first
+	// startup; subsequent runs load saved state and skip the login.
+	stateDir := filepath.Join(dir, "tsnet")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		fail("tsnet state dir: %v", err)
 	}
-	defer func() { _ = os.RemoveAll(stateDir) }()
-
+	hn, _ := os.Hostname()
+	if hn == "" {
+		hn = fmt.Sprintf("clawpatrol-%d", os.Getpid())
+	}
 	tsServer := &tsnet.Server{
-		Hostname:   fmt.Sprintf("clawpatrol-run-%d", os.Getpid()),
+		Hostname:   hn,
 		AuthKey:    authKey,
 		ControlURL: controlURL,
 		Dir:        stateDir,
-		Ephemeral:  true,
 		Logf:       func(string, ...any) {},
 	}
 	defer func() { _ = tsServer.Close() }()
@@ -140,11 +138,24 @@ func runRunTsnet(args []string) {
 	}
 	_ = os.Setenv("CLAWPATROL_TS_ADDR", tsIP.String())
 
+	// Peer-API calls (register, env-pushdown) are tailnet-only — dial via
+	// tsnet so requests reach the gateway's 100.x address from the parent
+	// process (which is on host network, not tailnet).
+	tailnetAPI := strings.TrimSpace(readFileSilent(filepath.Join(dir, "tailnet-url")))
+	if tailnetAPI == "" {
+		tailnetAPI = gwURL
+	}
+	tsClient := tsnetHTTPClient(tsServer, filepath.Join(dir, "ca.crt"))
+	gatewayDialOverride = tsServer.Dial
+
 	// Register ephemeral tsnet IP with gateway so profile dispatch uses
 	// the right credentials (same as ephemeral WG peer registration).
-	if rerr := registerEphemeralTsnetIP(gwURL, token, filepath.Join(dir, "ca.crt"), tsIP.String()); rerr != nil {
+	if rerr := registerEphemeralTsnetIP(tsClient, tailnetAPI, token, tsIP.String()); rerr != nil {
 		fmt.Fprintf(os.Stderr, "warning: tsnet profile registration: %v (will use default profile)\n", rerr)
 	}
+
+	// Fetch env-pushdown now that we're on the tailnet.
+	applyEnvPushdown(dir)
 
 	// 3. IPC channels: TUN fd handoff + wg-up pipe (same plumbing as WG mode).
 	sp, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
@@ -551,17 +562,26 @@ func ipv4Checksum(b []byte) uint16 {
 }
 
 // enableTsnetTCPForwarder installs a promiscuous TCP forwarder on s.
-// Every connection is forwarded to gwHost:gwPort via tsnet. A HAProxy PROXY v1
-// header is written before the payload carrying the original 4-tuple so the
-// gateway can dispatch by original dst IP/port (PostgreSQL, ClickHouse, etc.)
-// instead of only being able to route by SNI on port 443.
+// Every connection dials the gateway via tsnet and prepends a HAProxy
+// PROXY v1 header carrying the original 4-tuple. The gateway recovers
+// the original dst from the PROXY header and dispatches via the same
+// path as WireGuard and whole-machine exit-node clients.
+//
+// Why PROXY (vs. relying on tsnet exit-node routing): using the gateway
+// as a tsnet exit node would work but requires the operator to enable
+// the gateway's advertised exit-route in the Tailscale admin console
+// for every client tag — extra config we don't want to require.
+// Peer-to-peer dial + PROXY header keeps the setup self-contained.
 func enableTsnetTCPForwarder(s *stack.Stack, ts *tsnet.Server, gwHost, gwPort string) {
 	gwAddr := net.JoinHostPort(gwHost, gwPort)
 	fwd := tcp.NewForwarder(s, 1<<20, 16384, func(req *tcp.ForwarderRequest) {
 		id := req.ID()
-		// PROXY TCP4 srcIP dstIP srcPort dstPort
+		// Format IPs via .String() — tcpip.Address used with %s prints
+		// the raw bytes (binary garbage), making the PROXY header
+		// unparseable. String() returns dotted-decimal for IPv4.
 		proxyHdr := fmt.Sprintf("PROXY TCP4 %s %s %d %d\r\n",
-			id.RemoteAddress, id.LocalAddress, id.RemotePort, id.LocalPort)
+			id.RemoteAddress.String(), id.LocalAddress.String(),
+			id.RemotePort, id.LocalPort)
 
 		var wq waiter.Queue
 		ep, err := req.CreateEndpoint(&wq)

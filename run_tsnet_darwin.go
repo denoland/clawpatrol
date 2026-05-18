@@ -85,7 +85,8 @@ func runRunTsnet(args []string) {
 	// it with the gateway for profile dispatch.
 	tsIP := pollTsnetIPFromExtension(90 * time.Second)
 	if tsIP != "" {
-		if rerr := registerEphemeralTsnetIP(gwURL, token, caPath, tsIP); rerr != nil {
+		client, _ := gatewayHTTPClient(caPath)
+		if rerr := registerEphemeralTsnetIP(client, gwURL, token, tsIP); rerr != nil {
 			fmt.Fprintf(os.Stderr, "warning: tsnet profile registration: %v (will use default profile)\n", rerr)
 		}
 	} else {

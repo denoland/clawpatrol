@@ -353,6 +353,11 @@ type Gateway struct {
 	// Set at startup in Tailscale control mode; included in onboard join
 	// responses so clients can write tailnet-url without a peer-name lookup.
 	tailscaleIP string
+	// tailscaleHostname is the actual registered node name (e.g.
+	// "clawpatrol-gateway-1") — may differ from cfg.Hostname when tsnet
+	// resolves a conflict. Included in onboard join responses as
+	// gateway_host so clawpatrol-run peer lookups succeed.
+	tailscaleHostname string
 }
 
 // transportFor returns the cached http.Transport for ep, building it
@@ -2814,8 +2819,52 @@ func runGateway(args []string) {
 	if tsnetServer != nil {
 		// Seed gateway tailscale IP for /api/join responses so clients
 		// know the tailnet-direct URL without a DNS lookup.
-		if ip4, _ := tsnetServer.TailscaleIPs(); ip4.IsValid() {
-			g.tailscaleIP = ip4.String()
+		// Retry status query — DNSName populates after netmap arrives from
+		// control, which can lag Listen() by a second or two. Without retry
+		// we'd read empty DNSName and fall back to OS hostname, which is
+		// often wrong (tsnet may have registered under a different name
+		// from saved state). Retry for up to 15s.
+		go func() {
+			lc2, err2 := tsnetServer.LocalClient()
+			if err2 != nil {
+				log.Printf("tsnet: LocalClient err: %v", err2)
+				return
+			}
+			deadline := time.Now().Add(15 * time.Second)
+			for time.Now().Before(deadline) {
+				st, err3 := lc2.StatusWithoutPeers(context.Background())
+				if err3 != nil || st.Self == nil {
+					time.Sleep(500 * time.Millisecond)
+					continue
+				}
+				if g.tailscaleIP == "" {
+					for _, ip := range st.Self.TailscaleIPs {
+						if ip.Is4() {
+							g.tailscaleIP = ip.String()
+							break
+						}
+					}
+				}
+				hn := st.Self.DNSName
+				if i := strings.IndexByte(hn, '.'); i > 0 {
+					hn = hn[:i]
+				}
+				if hn != "" {
+					g.tailscaleHostname = hn
+					log.Printf("tsnet: node name %q IP %s", hn, g.tailscaleIP)
+					return
+				}
+				time.Sleep(500 * time.Millisecond)
+			}
+			log.Printf("tsnet: never got DNSName from status — gateway_host may be wrong")
+		}()
+		// Replace the default system-tailscaled LocalClient with the tsnet
+		// one so that whois lookups (dashboard auth, identity derivation)
+		// work on machines without a system tailscaled daemon.
+		if lc, err := tsnetServer.LocalClient(); err == nil {
+			g.agents.SetLocalClient(lc)
+		} else {
+			log.Printf("tsnet: LocalClient for whois: %v", err)
 		}
 		// Serve the info/dashboard mux on tsnet's virtual network so
 		// clawpatrol-run clients connecting to this tsnet IP on the info

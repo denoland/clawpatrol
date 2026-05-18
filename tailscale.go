@@ -33,6 +33,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"tailscale.com/ipn"
 	"tailscale.com/tsnet"
@@ -119,19 +120,41 @@ func openListener(cfg *config.Gateway, stateDir string) (*tsnet.Server, net.List
 
 // startFunnelListener opens a Tailscale Funnel listener on :443 (internet
 // → tsnet, FunnelOnly so tailnet connections still go to the normal
-// MITM listener). Serves mux — the existing web mux already enforces
-// per-route auth so only authPublic / authSelfAuthenticating routes are
-// accessible without credentials. Non-fatal: if Funnel isn't enabled
-// for the tailnet the error is logged and the gateway continues without
-// internet exposure.
+// MITM listener). Strict path allowlist — only the routes a client
+// genuinely cannot reach via tailnet are exposed:
+//
+//   - /api/onboard/start, /poll, /claim: bootstrap before the client
+//     has any tailnet identity. /claim is used by WG mode after
+//     wg-quick takes the default route through the tunnel (the public
+//     URL goes unreachable, so the client has to claim before then,
+//     which means right after /poll returns — still no tailnet
+//     identity at that point).
+//   - /api/cred/*: signed/HMAC'd credential webhooks (OAuth callbacks
+//     from Notion/GitHub/etc.) which arrive from external providers.
+//
+// Everything else (dashboard, /api/onboard/approve, lookup, peer APIs,
+// env-pushdown, /ca.crt) is reachable only over the tailnet.
 func startFunnelListener(s *tsnet.Server, mux http.Handler) {
 	ln, err := s.ListenFunnel("tcp", ":443", tsnet.FunnelOnly())
 	if err != nil {
-		log.Printf("tsnet: funnel :443: %v (join/webhook/CA endpoints not internet-reachable; enable Funnel for this node in the Tailscale admin console)", err)
+		log.Printf("tsnet: funnel :443: %v (join/webhook endpoints not internet-reachable; enable Funnel for this node in the Tailscale admin console)", err)
 		return
 	}
-	log.Printf("tsnet: Funnel listening on :443 — join/webhook/CA reachable from internet")
-	go func() { _ = http.Serve(ln, mux) }()
+	allowed := map[string]bool{
+		"/api/onboard/start": true,
+		"/api/onboard/poll":  true,
+		"/api/onboard/claim": true,
+	}
+	log.Printf("tsnet: Funnel listening on :443 — allowlist: /api/onboard/{start,poll,claim}, /api/cred/*")
+	filtered := http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		if allowed[p] || strings.HasPrefix(p, "/api/cred/") {
+			mux.ServeHTTP(rw, r)
+			return
+		}
+		http.NotFound(rw, r)
+	})
+	go func() { _ = http.Serve(ln, filtered) }()
 }
 
 // tsnetCertDomain returns the first HTTPS cert domain for the embedded

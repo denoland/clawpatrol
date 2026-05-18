@@ -127,6 +127,15 @@ func NewAgentRegistry() *AgentRegistry {
 	return r
 }
 
+// SetLocalClient replaces the default system-tailscaled LocalClient with
+// the one from an embedded tsnet.Server. Call after tsnet is up so that
+// whois lookups resolve against the tsnet peer table, not the host daemon.
+func (r *AgentRegistry) SetLocalClient(lc *local.Client) {
+	r.mu.Lock()
+	r.lc = lc
+	r.mu.Unlock()
+}
+
 // sampleLoop runs once per second, computes bytes/sec delta per agent,
 // appends to Activity ring buffer.
 func (r *AgentRegistry) sampleLoop() {
