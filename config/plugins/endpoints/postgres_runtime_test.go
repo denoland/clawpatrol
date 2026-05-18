@@ -713,8 +713,7 @@ func (passThrough) InspectsUnparseableFacet() bool { return false }
 func TestPgEvaluateUnparseableSynthDeny(t *testing.T) {
 	ep := pgEndpointFromHCL(t, `
 endpoint "postgres" "db" {
-  host     = "db.example.com:5432"
-  database = "app"
+  host = "db.example.com:5432"
 }
 profile "default" { endpoints = [db] }
 
@@ -732,7 +731,7 @@ rule "ban-drops" {
 	// `DROP;` is the trailing-semicolon shell — pgplex refuses it,
 	// so analysePiece returns Unparseable=true and pgEvaluate stamps
 	// the flag onto the match.Request.
-	v, reason := pgEvaluate(ch, "DROP;", "")
+	v, reason := pgEvaluate(ch, "DROP;", "", "")
 	if v != "deny" {
 		t.Fatalf("pgEvaluate(\"DROP;\") verdict = %q reason = %q, want deny", v, reason)
 	}
@@ -752,8 +751,7 @@ rule "ban-drops" {
 func TestPgEvaluateUnparseableLetsStatementOnlyRuleRun(t *testing.T) {
 	ep := pgEndpointFromHCL(t, `
 endpoint "postgres" "db" {
-  host     = "db.example.com:5432"
-  database = "app"
+  host = "db.example.com:5432"
 }
 profile "default" { endpoints = [db] }
 
@@ -775,7 +773,7 @@ rule "ban-drops" {
 		Endpoint: ep,
 		Emit:     func(runtime.ConnEvent) {},
 	}
-	v, reason := pgEvaluate(ch, "DROP;", "")
+	v, reason := pgEvaluate(ch, "DROP;", "", "")
 	if v != "" {
 		t.Fatalf("pgEvaluate(\"DROP;\") verdict = %q reason = %q, want allow (no deny)", v, reason)
 	}

@@ -575,7 +575,7 @@ func TestChEvaluateSQLCTEInsertSynthDenies(t *testing.T) {
 	mock, _ := chNewMockHandle(t, ep)
 
 	sql := "WITH cte AS (SELECT id FROM src) INSERT INTO dst SELECT id FROM cte"
-	verdict, reason := chEvaluateSQL(context.Background(), mock.ConnHandle, sql, "ch-cred", false)
+	verdict, reason, _ := chEvaluateSQL(context.Background(), mock.ConnHandle, sql, "ch-cred", "", false)
 	if verdict != "deny" {
 		t.Errorf("CTE+INSERT verdict = %q, want deny (via synth on Unparseable)", verdict)
 	}
