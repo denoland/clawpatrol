@@ -124,22 +124,20 @@ func (PostgresEndpointRuntime) DetectPlaceholder(req *runtime.Request, candidate
 
 // ParseStatement satisfies runtime.SQLParser so the action-fixture
 // loader can populate match.Request.Meta from a raw statement using
-// the same regex extractor pgEvaluate uses on live wire traffic.
+// the same AST extractor pgEvaluate uses on live wire traffic.
 // Returns *sqlfacet.Meta as `any` to keep the runtime interface free
-// of the facets-package import.
+// of the facets-package import. The bool mirrors the Unparseable
+// contract — true when pgplex refused the bytes; the fixture loader
+// then sets match.Request.Unparseable so the dispatcher's fail-closed
+// gate evaluates the test request the same way live dispatch would.
 func (PostgresEndpointRuntime) ParseStatement(sql string) (any, bool) {
-	info := parseSQL(sql)
-	// Postgres hasn't adopted the Unparseable contract yet — the
-	// parser-failure path sniffs verb / tables from a token scanner
-	// rather than reporting "parser refused, fields zero, set the
-	// flag." Until the follow-up bead migrates that path, fixtures
-	// always see unparseable=false on the postgres runtime.
+	info, unparseable := parseSQL(sql)
 	return &sqlfacet.Meta{
 		Verb:      info.Verb,
 		Tables:    info.Tables,
 		Functions: info.Functions,
 		Statement: info.Statement,
-	}, false
+	}, unparseable
 }
 
 func init() {
@@ -592,12 +590,14 @@ func pgHandleOversizeFrame(ch *runtime.ConnHandle, upstream net.Conn, credName s
 //	("", "")         — every sub-statement allowed or had no match.
 func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 	for _, stmt := range analyseAll(sql) {
-		v, reason := pgEvaluateInfo(ch, stmt.Outer, credName, false)
+		v, reason := pgEvaluateInfo(ch, stmt.Outer, credName, false, stmt.Unparseable)
 		if v == "deny" {
 			return v, reason
 		}
+		// Inner statements (CTE-hidden DML, DO bodies) only exist on
+		// pieces the parser accepted, so they always run parseable.
 		for _, inner := range stmt.Inner {
-			v, reason := pgEvaluateInfo(ch, inner, credName, true)
+			v, reason := pgEvaluateInfo(ch, inner, credName, true, false)
 			if v == "deny" {
 				return v, reason
 			}
@@ -610,7 +610,10 @@ func pgEvaluate(ch *runtime.ConnHandle, sql, credName string) (string, string) {
 // suppresses emission on allow / hitl_allow so synthesised
 // sub-statements don't pollute the dashboard; deny emissions still
 // fire either way (operators need to see *why* a batch was denied).
-func pgEvaluateInfo(ch *runtime.ConnHandle, info pgInfo, credName string, shadow bool) (string, string) {
+// unparseable propagates onto match.Request so the dispatcher's
+// fail-closed-on-Unparseable gate auto-denies any rule reading
+// verb / tables / functions for a piece pgplex refused.
+func pgEvaluateInfo(ch *runtime.ConnHandle, info pgInfo, credName string, shadow, unparseable bool) (string, string) {
 	summary := pgSummary(info)
 	mreq := &match.Request{
 		Family:     "sql",
@@ -622,6 +625,7 @@ func pgEvaluateInfo(ch *runtime.ConnHandle, info pgInfo, credName string, shadow
 			Functions: info.Functions,
 			Statement: info.Statement,
 		},
+		Unparseable: unparseable,
 	}
 	// Per-family report payload — the same map the gateway will
 	// stash on Event.Facets so the dashboard renders sql_rule
@@ -866,9 +870,18 @@ type pgInfo struct {
 // analysedStmt is one top-level statement's matcher input. Inner
 // surfaces statements the matcher should walk in addition to Outer:
 // CTE-hidden DML (audit §1.2) and DO body inner statements (§6.5).
+//
+// Unparseable mirrors match.Request.Unparseable for this piece — set
+// when pgplex's grammar refuses the bytes outright. The wire-protocol
+// gateway propagates the flag onto each per-statement match.Request,
+// so the dispatcher's fail-closed-on-Unparseable gate auto-denies any
+// rule whose CEL reads verb / tables / functions on a piece the
+// parser couldn't analyse. Statement text is preserved either way,
+// so `sql.statement.contains(...)` rules still evaluate honestly.
 type analysedStmt struct {
-	Outer pgInfo
-	Inner []pgInfo
+	Outer       pgInfo
+	Inner       []pgInfo
+	Unparseable bool
 }
 
 // Compile-time interface check — keeps PostgresEndpointRuntime in

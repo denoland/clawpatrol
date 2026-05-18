@@ -34,16 +34,33 @@ import (
 // ── Top-level entry points ────────────────────────────────────────────
 
 // parseSQL extracts a single pgInfo for the first top-level
-// statement in sql. Used by the ParseStatement plugin contract
-// (action fixtures, dashboard previews). For multi-statement
-// payloads the wire-protocol gateway calls analyseAll directly so
-// each statement walks the matcher.
-func parseSQL(sql string) pgInfo {
+// statement in sql, plus an unparseable flag mirroring the
+// match.Request.Unparseable contract. Used by the ParseStatement
+// plugin entry point (action fixtures, dashboard previews). For
+// multi-statement payloads the wire-protocol gateway calls
+// analyseAll directly so each statement walks the matcher.
+//
+// Contract (mirrors clickhouse_native's parseChSQL):
+//
+//   - Parse succeeds → unparseable=false, every facet populated.
+//   - Parse fails    → unparseable=true,  only Statement populated
+//     (Verb / Tables / Functions left zero). The runtime stashes
+//     the flag on match.Request.Unparseable, and the dispatcher's
+//     fail-closed-on-Unparseable gate (config/runtime/dispatch.go)
+//     synth-denies any rule whose CEL reads the unset facets.
+//
+// No verb-sniffing fallback: any input pgplex refuses (exotic
+// syntax, garbled bytes, future shapes the grammar doesn't yet
+// handle) goes down the same fail-closed path. That keeps the
+// contract operators reason about consistent across query shapes
+// and avoids silently-disabled write gates when a sniff happens to
+// extract a less-restrictive verb than the real intent.
+func parseSQL(sql string) (pgInfo, bool) {
 	a := analyseAll(sql)
 	if len(a) == 0 {
-		return pgInfo{Statement: strings.TrimSpace(sql)}
+		return pgInfo{Statement: strings.TrimSpace(sql)}, false
 	}
-	return a[0].Outer
+	return a[0].Outer, a[0].Unparseable
 }
 
 // analyseAll splits sql into top-level statements and returns one
@@ -70,8 +87,9 @@ func analyseAll(sql string) []analysedStmt {
 }
 
 // analysePiece parses one statement piece and builds its pgInfo.
-// Falls back to the verb-sniff stub when the grammar rejects the
-// piece (truncated DDL like `DROP;`, malformed input).
+// Returns Unparseable=true with Statement-only when pgplex refuses
+// the piece — the matcher then fails closed on any rule whose CEL
+// reads verb / tables / functions for this request.
 func analysePiece(sql string) analysedStmt {
 	text := strings.TrimSpace(sql)
 	if root, err := parser.Parse(text); err == nil && root != nil && len(root.Items) > 0 {
@@ -79,7 +97,7 @@ func analysePiece(sql string) analysedStmt {
 			return analyseStmt(stmt, text)
 		}
 	}
-	return sniffStmt(text)
+	return analysedStmt{Outer: pgInfo{Statement: text}, Unparseable: true}
 }
 
 // ── AST walk ──────────────────────────────────────────────────────────
@@ -706,297 +724,20 @@ func sortedKeys(m map[string]struct{}) []string {
 	return out
 }
 
-// ── Fallback: verb sniff for parser failures ──────────────────────────
+// ── Statement-split helpers ───────────────────────────────────────────
 //
-// pgplex's grammar covers postgres' full surface, so this path
-// fires only on genuinely broken input: trailing-`;` shells like
-// `DROP;` / `SELECT;` (audit §1.1), syntax errors, and the like.
-// The sniff surfaces the verb so verb-keyed CEL rules still fire.
+// splitTopLevelStatements needs to be comment- / string- /
+// dollar-quote-aware so a `;` inside `'foo;bar'` or `$$DELETE;$$`
+// doesn't fracture a single statement into two pieces; readDollarQuote
+// + the ident classifiers are the lexer primitives that supports.
+// Kept after sniff went away because the splitter still needs them.
 
-// sniffStmt is the fallback for one parser-rejected statement
-// piece. Produces a degraded pgInfo carrying at minimum the verb
-// so `verb`-keyed CEL rules keep working.
-func sniffStmt(raw string) analysedStmt {
-	stmt := strings.TrimSpace(raw)
-	info := pgInfo{Statement: stmt}
-	if stmt == "" {
-		return analysedStmt{Outer: info}
-	}
-	toks := sniffTokens(stmt)
-	if len(toks) == 0 {
-		return analysedStmt{Outer: info}
-	}
-	verb, tables, inner := sniffVerbAndTables(toks)
-	info.Verb = verb
-	info.Tables = tables
-	return analysedStmt{Outer: info, Inner: inner}
-}
-
-// sniffVerbAndTables walks a token slice and surfaces:
-//   - verb (multi-word forms collapsed for the common identity /
-//     identity-adjacent SETs)
-//   - tables targeted by the postgres DDL the parser rejects
-//   - inner shadow pgInfos for DO blocks (recursively parsed)
-func sniffVerbAndTables(toks []sniffTok) (string, []string, []pgInfo) {
-	if len(toks) == 0 || toks[0].kind != sniffIdent {
-		return "", nil, nil
-	}
-	v := strings.ToLower(toks[0].val)
-
-	emitNext := func(start int) []string {
-		for i := start; i < len(toks); i++ {
-			t := toks[i]
-			if t.kind == sniffIdent {
-				if isSniffNoise(strings.ToLower(t.val)) {
-					continue
-				}
-				return tableCandidates(toks, i)
-			}
-			if t.kind == sniffQIdent {
-				return tableCandidates(toks, i)
-			}
-		}
-		return nil
-	}
-
-	switch v {
-	case "set":
-		// SET ROLE / SET SESSION AUTHORIZATION / SET LOCAL ROLE /
-		// SET LOCAL SESSION AUTHORIZATION (audit §6.4). The
-		// statement-level identity changes get distinct verbs so a
-		// policy can target them without also catching benign
-		// session-config SETs.
-		if len(toks) >= 2 && toks[1].kind == sniffIdent {
-			next := strings.ToLower(toks[1].val)
-			switch next {
-			case "role":
-				return "set role", nil, nil
-			case "session":
-				if len(toks) >= 3 && toks[2].kind == sniffIdent && strings.ToLower(toks[2].val) == "authorization" {
-					return "set session authorization", nil, nil
-				}
-			case "local":
-				if len(toks) >= 3 && toks[2].kind == sniffIdent {
-					switch strings.ToLower(toks[2].val) {
-					case "role":
-						return "set local role", nil, nil
-					case "session":
-						if len(toks) >= 4 && toks[3].kind == sniffIdent && strings.ToLower(toks[3].val) == "authorization" {
-							return "set local session authorization", nil, nil
-						}
-					}
-				}
-			}
-		}
-	case "lock", "vacuum", "analyze", "analyse", "cluster", "reindex":
-		return v, emitNext(1), nil
-	case "refresh":
-		// REFRESH MATERIALIZED VIEW [CONCURRENTLY] x
-		i := 1
-		if i < len(toks) && toks[i].kind == sniffIdent && strings.ToLower(toks[i].val) == "materialized" {
-			i++
-		}
-		if i < len(toks) && toks[i].kind == sniffIdent && strings.ToLower(toks[i].val) == "view" {
-			i++
-		}
-		return v, emitNext(i), nil
-	case "copy":
-		// COPY x [(cols)] FROM/TO ... — the table target is the
-		// first identifier after COPY.
-		return v, emitNext(1), nil
-	case "do":
-		// DO $$ ... $$ — the parser rejected the whole DO; we
-		// re-tokenise the body and recurse so the inner DROP
-		// reaches the matcher (audit §6.5).
-		var body string
-		for _, t := range toks {
-			if t.kind == sniffString {
-				body = t.val
-				break
-			}
-		}
-		var inner []pgInfo
-		if body != "" {
-			for _, a := range analyseAll(body) {
-				if a.Outer.Verb != "" {
-					inner = append(inner, a.Outer)
-				}
-				inner = append(inner, a.Inner...)
-			}
-		}
-		return v, nil, inner
-	case "call":
-		return v, nil, nil
-	}
-	return v, nil, nil
-}
-
-// tableCandidates reads a (possibly schema-qualified) name
-// starting at toks[i] and returns the qualified + unqualified
-// forms. Quoted identifiers preserve case (§2.4).
-func tableCandidates(toks []sniffTok, i int) []string {
-	if i >= len(toks) {
-		return nil
-	}
-	t := toks[i]
-	if t.kind != sniffIdent && t.kind != sniffQIdent {
-		return nil
-	}
-	parts := []string{t.val}
-	for j := i + 1; j+1 < len(toks); j += 2 {
-		if toks[j].kind != sniffPunct || toks[j].val != "." {
-			break
-		}
-		nxt := toks[j+1]
-		if nxt.kind != sniffIdent && nxt.kind != sniffQIdent {
-			break
-		}
-		parts = append(parts, nxt.val)
-	}
-	full := strings.Join(parts, ".")
-	if len(parts) == 1 {
-		return []string{full}
-	}
-	return []string{full, parts[len(parts)-1]}
-}
-
-// isSniffNoise returns true for keywords that show up between a
-// verb and the table target — TABLE in `LOCK TABLE x`, IF EXISTS
-// in `DROP TABLE IF EXISTS x`, CONCURRENTLY, ONLY.
-func isSniffNoise(v string) bool {
-	switch v {
-	case "table", "index", "view", "if", "exists", "not", "concurrently", "only":
-		return true
-	}
-	return false
-}
-
-// ── Tokenizer for the sniff fallback ──────────────────────────────────
-//
-// Minimal token model — just enough to:
-//   - read the first identifier as the verb (skip comments and
-//     leading whitespace; trailing `;` does not contaminate it),
-//   - read multi-word verb prefixes (SET ROLE, SET SESSION
-//     AUTHORIZATION),
-//   - capture the table identifier after DDL keywords,
-//   - recognise dollar-quoted strings so DO bodies are pulled out
-//     intact.
-
-type sniffTokKind int
-
-const (
-	sniffIdent  sniffTokKind = iota // unquoted ident (case preserved)
-	sniffQIdent                     // quoted ident, case-sensitive
-	sniffString                     // string literal — body content only
-	sniffPunct                      // one-byte punctuation
-	sniffNumber
-)
-
-type sniffTok struct {
-	kind sniffTokKind
-	val  string
-}
-
-// sniffTokens is a comment- and string-aware tokeniser for the
-// fallback path. Whitespace and comments are dropped; strings
-// carry their body text (so DO $$ ... $$ surfaces the inner SQL).
-func sniffTokens(s string) []sniffTok {
-	var out []sniffTok
-	i := 0
-	for i < len(s) {
-		c := s[i]
-		switch {
-		case c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v':
-			i++
-		case c == '-' && i+1 < len(s) && s[i+1] == '-':
-			j := i + 2
-			for j < len(s) && s[j] != '\n' {
-				j++
-			}
-			i = j
-		case c == '/' && i+1 < len(s) && s[i+1] == '*':
-			depth := 1
-			j := i + 2
-			for j < len(s) && depth > 0 {
-				if j+1 < len(s) && s[j] == '/' && s[j+1] == '*' {
-					depth++
-					j += 2
-				} else if j+1 < len(s) && s[j] == '*' && s[j+1] == '/' {
-					depth--
-					j += 2
-				} else {
-					j++
-				}
-			}
-			i = j
-		case c == '\'':
-			j := i + 1
-			for j < len(s) {
-				if s[j] == '\'' {
-					if j+1 < len(s) && s[j+1] == '\'' {
-						j += 2
-						continue
-					}
-					j++
-					break
-				}
-				j++
-			}
-			i = j
-		case c == '$':
-			if tag, end, ok := readDollarQuote(s, i); ok {
-				out = append(out, sniffTok{kind: sniffString, val: s[i+len(tag)+2 : end-len(tag)-2]})
-				i = end
-				continue
-			}
-			out = append(out, sniffTok{kind: sniffPunct, val: "$"})
-			i++
-		case c == '"':
-			j := i + 1
-			var sb strings.Builder
-			for j < len(s) {
-				if s[j] == '"' {
-					if j+1 < len(s) && s[j+1] == '"' {
-						sb.WriteByte('"')
-						j += 2
-						continue
-					}
-					j++
-					break
-				}
-				sb.WriteByte(s[j])
-				j++
-			}
-			out = append(out, sniffTok{kind: sniffQIdent, val: sb.String()})
-			i = j
-		case isSniffIdentStart(c):
-			j := i + 1
-			for j < len(s) && isSniffIdentCont(s[j]) {
-				j++
-			}
-			out = append(out, sniffTok{kind: sniffIdent, val: s[i:j]})
-			i = j
-		case c >= '0' && c <= '9':
-			j := i + 1
-			for j < len(s) && ((s[j] >= '0' && s[j] <= '9') || s[j] == '.') {
-				j++
-			}
-			out = append(out, sniffTok{kind: sniffNumber, val: s[i:j]})
-			i = j
-		default:
-			out = append(out, sniffTok{kind: sniffPunct, val: string(c)})
-			i++
-		}
-	}
-	return out
-}
-
-func isSniffIdentStart(c byte) bool {
+func isIdentStart(c byte) bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c >= 128
 }
 
-func isSniffIdentCont(c byte) bool {
-	return isSniffIdentStart(c) || (c >= '0' && c <= '9') || c == '$'
+func isIdentCont(c byte) bool {
+	return isIdentStart(c) || (c >= '0' && c <= '9') || c == '$'
 }
 
 // readDollarQuote spots a $tag$ at s[i] and returns
@@ -1007,7 +748,7 @@ func readDollarQuote(s string, i int) (tag string, end int, ok bool) {
 		return "", 0, false
 	}
 	j := i + 1
-	for j < len(s) && isSniffIdentCont(s[j]) && s[j] != '$' {
+	for j < len(s) && isIdentCont(s[j]) && s[j] != '$' {
 		j++
 	}
 	if j >= len(s) || s[j] != '$' {
