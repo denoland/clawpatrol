@@ -160,6 +160,16 @@ func (r *onboardRegistry) AssignProfile(ip, profile string) {
 	r.upsertLocked(ip)
 }
 
+// assignProfileMemOnly records the profile mapping in memory without
+// upserting a devices row. Used for synthetic placeholder IDs (e.g.
+// `tsnet-<hostname>` between approve and the first `clawpatrol run`
+// register call) where we don't want a ghost dashboard row.
+func (r *onboardRegistry) assignProfileMemOnly(ip, profile string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.profileByIP[ip] = profile
+}
+
 // setEphemeralProfile pins an ephemeral peer to a profile and records
 // its parent device IP. ephemeralProfileByIP is never read by upsertLocked
 // so no devices row is created. ephemeralParentByIP is used by AgentIPFor
@@ -709,26 +719,18 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 				log.Printf("api-token mint for %s: %v", peerIP, perr)
 			}
 		} else if loginServer == "" && !s.wholeMachine {
-			// Per-process tsnet mode: each `clawpatrol run` is its own
-			// ephemeral tailnet node — no persistent IP to key the
-			// parent row on. Use a stable hostname-based identifier so
-			// re-joins from the same machine reuse the same parent row,
-			// and ephemeral runs attribute through ephemeralParentByIP.
-			// (Whole-machine tailscale lands here too but skips this
-			// branch — its real tailnet IP is registered via /claim.)
+			// Per-process tsnet mode: no devices row yet — the first
+			// `clawpatrol run` register call promotes its ephemeral
+			// tailnet IP to the device's parent row. Hold the profile
+			// in memory only against a synthetic placeholder and bind
+			// the api-token to it; both get repointed at register time.
 			s2 := w.onboard.byDeviceCode(dc)
 			parentID := "tsnet-" + dc
 			if s2 != nil && s2.hostname != "" {
 				parentID = "tsnet-" + s2.hostname
 			}
 			if profile != "" {
-				w.onboard.AssignProfile(parentID, profile)
-			}
-			if s2 != nil && s2.hostname != "" {
-				w.onboard.SetHostname(parentID, s2.hostname)
-			}
-			if w.g.agents != nil {
-				w.g.agents.Seed(parentID)
+				w.onboard.assignProfileMemOnly(parentID, profile)
 			}
 			if token, perr := mintAndPersistPeerAPIToken(w.g.db, parentID); perr == nil {
 				w.onboard.mu.Lock()

@@ -162,7 +162,7 @@ func (w *webMux) apiRegisterEphemeralTsnetIP(rw http.ResponseWriter, r *http.Req
 		return
 	}
 	profile := w.g.onboard.ProfileForIP(parentIP)
-	hostname := w.g.onboard.HostnameForIP(parentIP)
+	hostname := strings.TrimSpace(r.URL.Query().Get("hostname"))
 	// First-run promotion: synthetic parent → real tailnet IP. Repoint
 	// the api-token and clean up the placeholder row so the dashboard
 	// surfaces a single device keyed on the actual 100.x address.
@@ -170,6 +170,9 @@ func (w *webMux) apiRegisterEphemeralTsnetIP(rw http.ResponseWriter, r *http.Req
 		_, _ = w.g.db.Exec("UPDATE peer_api_tokens SET peer_ip=? WHERE peer_ip=?", tsnetIP, parentIP)
 		_, _ = w.g.db.Exec("DELETE FROM devices WHERE id=?", parentIP)
 		w.g.onboard.ForgetIP(parentIP)
+		if w.g.agents != nil {
+			w.g.agents.Delete(parentIP)
+		}
 		if profile != "" {
 			w.g.onboard.AssignProfile(tsnetIP, profile)
 		}
