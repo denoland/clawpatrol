@@ -25,6 +25,16 @@ import (
 // Request.Truncated and runtime.MatchRequest auto-denies any rule
 // whose CEL condition reads the stream-typed bytes.
 //
+// The env additionally exposes a top-level `unparseable` bool that
+// mirrors EvaluateAction.unparseable / match.Request.Unparseable —
+// plugins that wrap their own parser set the flag on the action
+// frame when the parser refused the inbound bytes, and rule authors
+// can either test it explicitly (`unparseable ? false : ...`) or
+// rely on the dispatcher's fail-closed gate to synth-deny any rule
+// whose condition reads it on an Unparseable request. This is the
+// plugin-facet analogue of the per-built-in-facet unparseablePaths
+// declarations (see config/plugins/facets/sql/sql.go).
+//
 // The returned matcher additionally implements SubFieldReferencer
 // so the gateway adapter can decide, per evaluation, which
 // FACET_STREAM fields any rule on the endpoint will actually read.
@@ -40,6 +50,7 @@ func newPluginFacetMatcher(facetName, condition string, streamFields []string) (
 	}
 	env, err := cel.NewEnv(
 		cel.Variable(facetName, cel.MapType(cel.StringType, cel.DynType)),
+		cel.Variable(unparseableCELVar, cel.BoolType),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("plugin facet %q: cel env: %w", facetName, err)
@@ -47,26 +58,34 @@ func newPluginFacetMatcher(facetName, condition string, streamFields []string) (
 	buildAct := func(req *match.Request) map[string]any {
 		m, ok := req.Meta.(map[string]any)
 		if !ok {
-			return nil
+			return map[string]any{unparseableCELVar: req.Unparseable}
 		}
-		return map[string]any{facetName: m}
+		return map[string]any{facetName: m, unparseableCELVar: req.Unparseable}
 	}
 	truncatable := make([]string, 0, len(streamFields))
 	for _, f := range streamFields {
 		truncatable = append(truncatable, facetName+"."+f)
 	}
-	// Plugin facets have no parser stage on the gateway — their action
-	// payload is decoded JSON, validated by the plugin itself, not
-	// parsed by a grammar that could refuse the bytes. Pass nil for
-	// unparseablePaths so the Unparseable gate is a no-op for plugin
-	// facet matchers.
-	inner, err := match.CompileCondition(env, condition, buildAct, nil, truncatable, nil)
+	// `unparseable` is the only path that opts into the dispatcher's
+	// fail-closed-on-Unparseable gate for plugin facets — plugins
+	// haven't declared which of their JSON action fields are
+	// parser-derived (the per-field FACET_PARSER kind doesn't exist),
+	// so we expose the explicit bool and trust rule authors to gate
+	// on it when their plugin sets EvaluateAction.unparseable.
+	unparseablePaths := []string{unparseableCELVar}
+	inner, err := match.CompileCondition(env, condition, buildAct, nil, truncatable, unparseablePaths)
 	if err != nil {
 		return nil, err
 	}
 	refs := parseSubFieldRefs(env, condition, facetName)
 	return &pluginMatcher{inner: inner, subFieldRefs: refs}, nil
 }
+
+// unparseableCELVar is the top-level CEL identifier plugin facet
+// conditions use to read EvaluateAction.unparseable. Mirrored in
+// buildAct's activation and in newPluginFacetMatcher's
+// unparseablePaths so InspectsUnparseableFacet picks up references.
+const unparseableCELVar = "unparseable"
 
 // SubFieldReferencer is implemented by plugin-facet matchers to
 // surface the set of facet sub-fields the compiled condition reads.
@@ -91,10 +110,15 @@ func (m *pluginMatcher) InspectsTruncatableFacet() bool {
 	return m.inner.InspectsTruncatableFacet()
 }
 
-// InspectsUnparseableFacet always returns false: plugin facets have
-// no parser failure mode (see newPluginFacetMatcher's nil unparseable
-// path), so the Unparseable gate is structurally a no-op here.
-func (m *pluginMatcher) InspectsUnparseableFacet() bool { return false }
+// InspectsUnparseableFacet forwards the inner CEL matcher's answer.
+// The dispatcher uses it together with Request.Unparseable to
+// fail-close any plugin-facet rule whose condition reads the
+// top-level `unparseable` binding when the plugin's parser refused
+// the inbound bytes. Plugins that don't set
+// EvaluateAction.unparseable see this stay structurally a no-op.
+func (m *pluginMatcher) InspectsUnparseableFacet() bool {
+	return m.inner.InspectsUnparseableFacet()
+}
 
 // References preserves whatever the inner matcher reports so the
 // gateway's existing body-buffering check (top-level identifier

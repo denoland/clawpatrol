@@ -396,20 +396,26 @@ func handleEvaluate(ctx context.Context, ch *runtime.ConnHandle, ev *pb.Evaluate
 	// HITL prompt fields a human approver might render. Truncated
 	// is set when at least one stream field hit its cap before
 	// EOF — runtime.MatchRequest's fail-closed gate then auto-denies
-	// any rule whose matcher reads a stream-typed field.
+	// any rule whose matcher reads a stream-typed field. Unparseable
+	// flows verbatim off the EvaluateAction frame: a plugin that
+	// wraps its own parser sets it when the parser refused the
+	// inbound bytes, and the dispatcher's parallel fail-closed gate
+	// auto-denies rules whose CEL reads the `unparseable` binding.
 	var req *match.Request
 	if pf != nil {
 		req = &match.Request{
-			Family:    ch.Endpoint.Family,
-			PeerIP:    ch.PeerIP,
-			Method:    stringField(action, "verb"),
-			URL:       &url.URL{Host: ch.UpstreamHost, Path: ev.Summary},
-			Meta:      action,
-			Truncated: truncated,
+			Family:      ch.Endpoint.Family,
+			PeerIP:      ch.PeerIP,
+			Method:      stringField(action, "verb"),
+			URL:         &url.URL{Host: ch.UpstreamHost, Path: ev.Summary},
+			Meta:        action,
+			Truncated:   truncated,
+			Unparseable: ev.Unparseable,
 		}
 	} else {
 		req = builtinRequestFor(ch.Endpoint.Family, ch.PeerIP, ev.Summary, action, streamBytes)
 		req.Truncated = truncated
+		req.Unparseable = ev.Unparseable
 	}
 
 	rule := runtime.MatchRequest(ch.Endpoint, req)

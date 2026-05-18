@@ -220,9 +220,13 @@ func collectReferencedVars(e celast.Expr) map[string]bool {
 	return refs
 }
 
-// celPath is the parsed form of a "<var>.<field>" entry shared by
-// the lowercasedPaths and truncatablePaths arguments to
-// CompileCondition.
+// celPath is the parsed form of a path entry shared by the
+// lowercasedPaths, truncatablePaths and unparseablePaths arguments
+// to CompileCondition. A path is either a top-level identifier
+// ("unparseable" — `field == ""`) or a single-level selector
+// ("<var>.<field>"). Top-level idents exist because the plugin-facet
+// CEL env exposes Unparseable as a bare bool rather than as a facet
+// sub-field.
 type celPath struct {
 	ident string
 	field string
@@ -231,19 +235,28 @@ type celPath struct {
 func parsePaths(paths []string) ([]celPath, error) {
 	out := make([]celPath, 0, len(paths))
 	for _, p := range paths {
-		ident, field, ok := strings.Cut(p, ".")
-		if !ok || ident == "" || field == "" || strings.Contains(field, ".") {
-			return nil, fmt.Errorf("cel path %q must be of the form \"<var>.<field>\"", p)
+		if p == "" {
+			return nil, fmt.Errorf("cel path is empty")
+		}
+		ident, field, hasDot := strings.Cut(p, ".")
+		if !hasDot {
+			out = append(out, celPath{ident: ident})
+			continue
+		}
+		if ident == "" || field == "" || strings.Contains(field, ".") {
+			return nil, fmt.Errorf("cel path %q must be either a top-level ident or of the form \"<var>.<field>\"", p)
 		}
 		out = append(out, celPath{ident: ident, field: field})
 	}
 	return out, nil
 }
 
-// referencesPath walks the AST and returns true when any node is a
-// single-level Select expression off a top-level Ident whose
-// (ident, field) matches any entry in paths. Used by CompileCondition
-// to detect whether a condition reads a truncation-affected field.
+// referencesPath walks the AST and returns true when any node
+// matches an entry in paths. A path with empty field matches any
+// reference to that top-level identifier; a path with field set
+// matches a single-level Select off the named ident. Used by
+// CompileCondition to detect whether a condition reads a
+// truncation- or parse-affected facet.
 func referencesPath(root celast.Expr, paths []celPath) bool {
 	if root == nil || len(paths) == 0 {
 		return false
@@ -255,6 +268,14 @@ func referencesPath(root celast.Expr, paths []celPath) bool {
 			return
 		}
 		switch n.Kind() {
+		case celast.IdentKind:
+			ident := n.AsIdent()
+			for _, p := range paths {
+				if p.field == "" && p.ident == ident {
+					found = true
+					return
+				}
+			}
 		case celast.SelectKind:
 			sel := n.AsSelect()
 			op := sel.Operand()
@@ -262,7 +283,7 @@ func referencesPath(root celast.Expr, paths []celPath) bool {
 				ident := op.AsIdent()
 				field := sel.FieldName()
 				for _, p := range paths {
-					if p.ident == ident && p.field == field {
+					if p.field != "" && p.ident == ident && p.field == field {
 						found = true
 						return
 					}
