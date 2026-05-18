@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -58,45 +57,6 @@ func tsnetHTTPClient(ts *tsnet.Server, caPath string) *http.Client {
 			TLSClientConfig: &tls.Config{RootCAs: roots},
 		},
 	}
-}
-
-// fetchEphemeralTsnetKey calls POST /api/peer/ephemeral/tsnet on the
-// gateway to obtain a single-use ephemeral Tailscale auth key and the
-// tailnet port the gateway is listening on. gwPort defaults to "443" if
-// the gateway omits it (old gateway versions).
-func fetchEphemeralTsnetKey(gwURL, token, caPath string) (authKey, gwPort string, err error) {
-	client, ferr := gatewayHTTPClient(caPath)
-	if ferr != nil {
-		return "", "", fmt.Errorf("http client: %w", ferr)
-	}
-	req, ferr := http.NewRequest(http.MethodPost, gwURL+"/api/peer/ephemeral/tsnet", nil)
-	if ferr != nil {
-		return "", "", ferr
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, ferr := client.Do(req)
-	if ferr != nil {
-		return "", "", ferr
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return "", "", fmt.Errorf("gateway %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	var result struct {
-		AuthKey     string `json:"auth_key"`
-		GatewayPort string `json:"gateway_port"`
-	}
-	if ferr := json.NewDecoder(resp.Body).Decode(&result); ferr != nil {
-		return "", "", ferr
-	}
-	if result.AuthKey == "" {
-		return "", "", fmt.Errorf("empty auth_key in response")
-	}
-	if result.GatewayPort == "" {
-		result.GatewayPort = "443"
-	}
-	return result.AuthKey, result.GatewayPort, nil
 }
 
 // waitTsnetUp starts the tsnet.Server and blocks until the node is Running

@@ -40,12 +40,12 @@ func runRunTsnet(args []string) {
 	}
 
 	dir := defaultClawpatrolDir()
-	applyEnvPushdown(dir)
 
 	gwURL := strings.TrimSpace(readFileSilent(filepath.Join(dir, "gateway")))
 	gwHost := strings.TrimSpace(readFileSilent(filepath.Join(dir, "tailnet-gateway")))
 	controlURL := strings.TrimSpace(readFileSilent(filepath.Join(dir, "control-url")))
 	token := strings.TrimSpace(readFileSilent(filepath.Join(dir, "api-token")))
+	authKey := strings.TrimSpace(readFileSilent(filepath.Join(dir, "tsnet-auth-key")))
 	caPath := filepath.Join(dir, "ca.crt")
 	if gwHost == "" {
 		gwHost = "clawpatrol-gateway"
@@ -53,11 +53,11 @@ func runRunTsnet(args []string) {
 	if gwURL == "" || token == "" {
 		fail("tsnet run: missing gateway url or api-token in %s", dir)
 	}
-
-	authKey, gwPort, err := fetchEphemeralTsnetKey(gwURL, token, caPath)
-	if err != nil {
-		fail("mint tsnet key: %v", err)
+	if authKey == "" {
+		fail("tsnet run: missing tsnet-auth-key in %s (re-run `clawpatrol join`)", dir)
 	}
+	// Default gateway port — extension dials gwHost:gwPort over tsnet.
+	gwPort := "443"
 
 	// Ensure system extension is loaded.
 	{
@@ -81,17 +81,18 @@ func runRunTsnet(args []string) {
 		}
 	}
 
-	// Poll session socket for the NE's tsnet IP so we can register
-	// it with the gateway for profile dispatch.
+	// Poll session socket for the NE's tsnet IP so we can register it
+	// with the gateway for profile dispatch + env-pushdown. Both calls
+	// hit tailnet-only endpoints, so they're done from the NE side
+	// (which is on the tailnet) — TODO: wire IPC to extension.
 	tsIP := pollTsnetIPFromExtension(90 * time.Second)
 	if tsIP != "" {
 		client, _ := gatewayHTTPClient(caPath)
 		if rerr := registerEphemeralTsnetIP(client, gwURL, token, tsIP); rerr != nil {
-			fmt.Fprintf(os.Stderr, "warning: tsnet profile registration: %v (will use default profile)\n", rerr)
+			fmt.Fprintf(os.Stderr, "warning: tsnet profile registration: %v (default profile)\n", rerr)
 		}
-	} else {
-		fmt.Fprintln(os.Stderr, "warning: could not get NE tsnet IP; using default profile")
 	}
+	applyEnvPushdown(dir)
 
 	cleanup := registerSession()
 	defer cleanup()
