@@ -234,16 +234,6 @@ message EvaluateAction {
   // it has what it needs (full when a rule references the field,
   // log-prefix only otherwise) and then StreamCancel(handle).
   map<string, string> streams = 5;
-  // unparseable signals that the plugin's parser refused the
-  // inbound payload — analogous to match.Request.Unparseable on
-  // built-in facets (clickhouse_native sets it when its SQL parser
-  // can't reduce the wire bytes to a verb / tables / functions
-  // tuple). When true, the plugin facet's CEL `unparseable`
-  // binding evaluates to true and the dispatcher's fail-closed
-  // gate (config/runtime/dispatch.go) synth-denies any rule whose
-  // condition reads it. Plugins that have no parser stage (their
-  // action_json IS the schema-validated payload) leave this false.
-  bool unparseable = 6;
 }
 
 message ActionVerdict {
