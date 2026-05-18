@@ -1,16 +1,14 @@
 import { useEffect, useState } from "react";
 import { getConfigHCL, type Integration } from "../../lib/api";
+import { CredentialsTypeGrid } from "../../components/CredentialsTypeGrid";
 import { HCLEditor } from "../../components/HCLEditor";
-import { IntegrationsCards } from "../../components/IntegrationsCards";
 import { Card } from "../cards/Card";
 import { PageHeader } from "../cards/PageHeader";
 
-// Settings — credential connect/disconnect + HCL viewer.
-// cl-r3e explicitly preserves the credential modals from cl-jli /
-// cl-fq1 / cl-003 / cl-irg. We mount the existing IntegrationsCards
-// + ConnectModal flow verbatim instead of porting unclaw's
-// credential UX. The v1 Settings page does the same — this is
-// really just a re-skin of that page inside the v2 shell.
+// Settings — credentials (per-type cards with an expanding details
+// table) + read-only gateway.hcl viewer. The credentials section
+// mirrors the v1 Settings page (CredentialsTypeGrid) — connect /
+// disconnect / update flows are the existing clawpatrol ones.
 export function V2SettingsPage({
   integrations,
   onConnect,
@@ -27,6 +25,17 @@ export function V2SettingsPage({
   pendingConnect?: string;
   onConsumePendingConnect?: () => void;
 }) {
+  // Auto-open the connect modal for ?connect=<id> arrivals from the
+  // Profiles page. CredentialsTypeGrid drives connect via its own
+  // click handlers, so we fire onConnect once for the deep-linked id
+  // and immediately drop the query string.
+  useEffect(() => {
+    if (!pendingConnect) return;
+    if (!integrations.some((i) => i.id === pendingConnect)) return;
+    onConnect(pendingConnect);
+    onConsumePendingConnect?.();
+  }, [pendingConnect, integrations, onConnect, onConsumePendingConnect]);
+
   return (
     <div className="mx-auto max-w-7xl">
       <PageHeader
@@ -40,14 +49,7 @@ export function V2SettingsPage({
             No credentials declared in gateway.hcl yet.
           </div>
         ) : (
-          <IntegrationsCards
-            list={integrations}
-            showAll
-            onConnect={onConnect}
-            onRefresh={onRefresh}
-            pendingConnect={pendingConnect}
-            onConsumePendingConnect={onConsumePendingConnect}
-          />
+          <CredentialsTypeGrid list={integrations} onConnect={onConnect} onRefresh={onRefresh} />
         )}
       </Card>
 
