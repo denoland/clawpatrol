@@ -15,6 +15,8 @@ For the full overview see [clawpatrol.dev](https://clawpatrol.dev).
 curl -fsSL https://clawpatrol.dev/install.sh | sh
 ```
 
+From source: `make` (requires Go and Node.js).
+
 ## A rule
 
 A real rule from our own production config:

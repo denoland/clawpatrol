@@ -38,17 +38,17 @@ for the full system-extension build walkthrough.
 ## Build
 
 ```sh
-# Optional: build the dashboard SPA. The Go build embeds whatever
-# is under dashboard/dist/ — skip and the binary ships a
-# placeholder.
-cd dashboard && npm ci && npm run build && cd ../../..
-
-# Build the binary.
-go build -o clawpatrol ./cmd/clawpatrol
-
-# Or run directly without producing a binary on disk.
-go run ./cmd/clawpatrol
+make            # builds dashboard SPA + Go binary -> ./clawpatrol
+make test       # go test ./...
+make fmt        # gofmt + dashboard formatter
+make fmt-check  # CI's format gate
+make clean      # drop ./clawpatrol, dashboard/dist, dashboard/node_modules
+make install    # PREFIX=~/.local/bin (override with PREFIX=...)
 ```
+
+Under the hood, the dashboard build runs `npm ci && npm run build`
+in `dashboard/`. Skip it (`go build ./cmd/clawpatrol` directly) and
+the Go embed ships a placeholder.
 
 ## Quick start
 
