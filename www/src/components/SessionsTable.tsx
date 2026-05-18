@@ -10,7 +10,7 @@ import { CtxDonut } from "./CtxDonut";
 export function SessionsTable({ sessions: all }: { sessions: Session[] }) {
   const sessions = (all ?? []).filter((s) => s.title && s.title.length > 0);
   return (
-    <div className="bg-canvas-light border-2 border-navy overflow-hidden">
+    <div className="bg-canvas-light border-1.5 border-navy overflow-hidden">
       <div className="overflow-x-auto">
         <table className="w-full table-fixed border-collapse" style={{ minWidth: 800 }}>
           <colgroup>
@@ -121,7 +121,7 @@ function Th({ children, className = "" }: { children: React.ReactNode; className
   return (
     <th
       className={
-        "px-3 sm:px-[14px] py-[9px] text-left text-xs font-sans uppercase tracking-wider text-navy font-bold " +
+        "px-3 sm:px-[14px] py-[9px] text-left text-xs font-mono uppercase tracking-wider text-navy font-bold " +
         className
       }
     >

@@ -40,8 +40,8 @@ export function HITLBar() {
   if (pending.length === 0 && !notice) return null;
 
   return (
-    <div className="bg-canvas-light border-2 border-navy overflow-hidden">
-      <div className="px-4 py-2.5 text-xs font-sans uppercase tracking-wider text-navy font-bold flex items-center bg-navy-100 border-b border-navy">
+    <div className="bg-canvas-light border-1.5 border-navy overflow-hidden">
+      <div className="px-4 py-2.5 text-xs font-mono uppercase tracking-wider text-navy font-bold flex items-center bg-navy-100 border-b border-navy">
         <span>Pending approvals</span>
         <span className="ml-2 text-rust-500 tabular-nums">● {pending.length}</span>
       </div>
@@ -73,7 +73,9 @@ export function HITLBar() {
                   className="border-b border-canvas-muted last:border-b-0 hover:bg-navy-50"
                 >
                   <Td className="text-xs text-text-muted tabular-nums truncate">{p.agent_ip}</Td>
-                  <Td className="text-xs uppercase font-semibold text-rust-700">{p.method}</Td>
+                  <Td className="font-mono text-xs uppercase font-semibold text-rust-700">
+                    {p.method}
+                  </Td>
                   <Td>
                     <span className="text-xs text-text truncate block" title={ep + sep + p.path}>
                       <span className="text-text-muted">
@@ -87,7 +89,7 @@ export function HITLBar() {
                     )}
                     {approval && (
                       <div className="mt-1 flex gap-2 text-2xs leading-snug text-text-muted">
-                        <span className="shrink-0 rounded-sm border border-navy-200 bg-navy-50 px-1.5 py-0.5 font-sans uppercase tracking-wide text-navy">
+                        <span className="shrink-0 rounded-sm border border-navy-200 bg-navy-50 px-1.5 py-0.5 font-mono uppercase tracking-wide text-navy">
                           {approval.label}
                         </span>
                         <span className="whitespace-pre-line">{approval.message}</span>

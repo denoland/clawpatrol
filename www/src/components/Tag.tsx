@@ -11,7 +11,7 @@ const tones: Record<Tone, string> = {
 };
 
 const base =
-  "inline-flex items-center gap-1 text-2xs uppercase tracking-wider font-semibold " +
+  "font-mono inline-flex items-center gap-1 text-2xs uppercase tracking-wider font-semibold " +
   "px-1.5 py-0.5 squircle-md border";
 
 // Tag renders as a <span> by default; pass `onClick` to render as a

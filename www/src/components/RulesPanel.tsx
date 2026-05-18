@@ -22,7 +22,7 @@ export function RulesPanel({ profile }: { deviceIP?: string; profile?: string })
   );
 
   return (
-    <div className="bg-canvas-light border-2 border-navy">
+    <div className="bg-canvas-light border-1.5 border-navy">
       {err && <div className="px-4 py-3 text-xs text-rust-700">{err}</div>}
       <Section title="Rules" rows={visible} />
     </div>
@@ -57,7 +57,9 @@ function Section({
   return (
     <div className="last:border-b-0">
       <div className="flex items-center px-4 py-2.5 bg-navy-100 border-b border-navy">
-        <div className="text-xs uppercase tracking-wider text-navy font-bold">{title}</div>
+        <div className="font-mono text-xs uppercase tracking-wider text-navy font-bold">
+          {title}
+        </div>
         <span className="ml-2 text-2xs text-navy/70 tabular-nums">
           {rows.length} rule{rows.length === 1 ? "" : "s"}
         </span>

@@ -21,7 +21,7 @@ export function Header({ whoami }: { whoami: Whoami | null }) {
             <button
               type="button"
               onClick={() => setShowAddDevice(true)}
-              className="w-[36px] h-[36px] rounded-full border-2 border-navy text-navy flex items-center justify-center hover:bg-navy-100 transition-colors"
+              className="w-[36px] h-[36px] rounded-full border-1.5 border-navy text-navy flex items-center justify-center hover:bg-navy-100 transition-colors"
               title="add device"
               aria-label="Add device"
             >
@@ -29,7 +29,7 @@ export function Header({ whoami }: { whoami: Whoami | null }) {
             </button>
             <a
               href="#/analytics"
-              className="w-[36px] h-[36px] rounded-full border-2 border-navy text-navy flex items-center justify-center hover:bg-navy-100 transition-colors"
+              className="w-[36px] h-[36px] rounded-full border-1.5 border-navy text-navy flex items-center justify-center hover:bg-navy-100 transition-colors"
               title="analytics"
               aria-label="Analytics"
             >
@@ -37,7 +37,7 @@ export function Header({ whoami }: { whoami: Whoami | null }) {
             </a>
             <a
               href="#/settings"
-              className="w-[36px] h-[36px] rounded-full border-2 border-navy text-navy flex items-center justify-center hover:bg-navy-100 transition-colors"
+              className="w-[36px] h-[36px] rounded-full border-1.5 border-navy text-navy flex items-center justify-center hover:bg-navy-100 transition-colors"
               title="settings"
               aria-label="Settings"
             >

@@ -174,7 +174,7 @@ export function ConnectModal({
               <div className="max-h-[300px] overflow-y-auto p-2 space-y-3 border-t border-rust-100">
                 {optionalGroups.map((g) => (
                   <div key={g.title}>
-                    <div className="text-2xs uppercase tracking-wider text-text-subtle mb-1">
+                    <div className="font-mono text-2xs uppercase tracking-wider text-text-subtle mb-1">
                       {g.title}
                     </div>
                     <div className="grid grid-cols-1 gap-y-0.5">

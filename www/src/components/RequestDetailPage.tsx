@@ -103,10 +103,14 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
       requestId={ev.id}
     >
       {/* header */}
-      <div className="bg-canvas-light border-2 border-navy p-5 space-y-3">
+      <div className="bg-canvas-light border-1.5 border-navy p-5 space-y-3">
         <div className="flex items-center gap-3 flex-wrap">
           <ModeIcon mode={ev.mode} />
-          {verb && <span className="text-xs uppercase font-semibold text-text-muted">{verb}</span>}
+          {verb && (
+            <span className="font-mono text-xs uppercase font-semibold text-text-muted">
+              {verb}
+            </span>
+          )}
           {!isSQL && (
             <span className={"text-sm tabular-nums font-semibold " + statusColor}>
               {status || "\u2014"}
@@ -147,7 +151,7 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
       {isSQL ? (
         <SQLDetail ev={ev} />
       ) : hasSections ? (
-        <div className="bg-canvas-light border-2 border-navy divide-y divide-canvas-dark">
+        <div className="bg-canvas-light border-1.5 border-navy divide-y divide-canvas-dark">
           {hasFacets && (
             <Section title="Request">
               <Facets rows={facetFields} />
@@ -175,7 +179,7 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
           )}
         </div>
       ) : (
-        <div className="bg-canvas-light border-2 border-navy px-5 py-4 text-xs text-text-subtle">
+        <div className="bg-canvas-light border-1.5 border-navy px-5 py-4 text-xs text-text-subtle">
           No request/response body captured
           {ev.mode === "splice" && " (spliced connection)"}
         </div>
@@ -246,13 +250,13 @@ function SQLDetail({ ev }: { ev: EventRecord }) {
     facets.push({ label: "Functions", value: functions.map((s) => s.toUpperCase()).join(", ") });
   }
   return (
-    <div className="bg-canvas-light border-2 border-navy divide-y divide-canvas-dark">
+    <div className="bg-canvas-light border-1.5 border-navy divide-y divide-canvas-dark">
       {facets.length > 0 && (
         <Section title="Details">
           <div className="px-4 py-3 grid grid-cols-[100px_1fr] gap-y-1.5 gap-x-3 text-xs">
             {facets.map((f) => (
               <div key={f.label} className="contents">
-                <div className="text-2xs uppercase tracking-wider text-text-subtle pt-0.5">
+                <div className="font-mono text-2xs uppercase tracking-wider text-text-subtle pt-0.5">
                   {f.label}
                 </div>
                 <div className="text-text font-mono break-all">{f.value}</div>
@@ -384,7 +388,7 @@ function Facets({ rows }: { rows: Array<{ name: string; label: string; value: st
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <details open>
-      <summary className="cursor-pointer px-4 py-2.5 text-xs font-sans uppercase tracking-wider font-bold text-navy bg-navy-100 border-b border-navy hover:text-text select-none">
+      <summary className="cursor-pointer px-4 py-2.5 text-xs font-mono uppercase tracking-wider font-bold text-navy bg-navy-100 border-b border-navy hover:text-text select-none">
         {title}
       </summary>
       <div>{children}</div>
@@ -550,7 +554,7 @@ function HttpBody({ text }: { text: string }) {
           return (
             <div key={i}>
               {e.type && (
-                <div className="text-2xs uppercase tracking-wider text-text-subtle mb-1">
+                <div className="font-mono text-2xs uppercase tracking-wider text-text-subtle mb-1">
                   event:{" "}
                   <span className="normal-case tracking-normal text-text-muted">{e.type}</span>
                 </div>

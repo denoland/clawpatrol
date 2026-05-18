@@ -30,8 +30,8 @@ const sizes: Record<Size, string> = {
 };
 
 const variants: Record<Variant, string> = {
-  normal: "border-2 border-navy text-navy relative",
-  outline: "border-2 border-navy text-text-muted " + "hover:bg-canvas-muted",
+  normal: "border-1.5 border-navy text-navy relative",
+  outline: "border-1.5 border-navy text-text-muted " + "hover:bg-canvas-muted",
 };
 
 const backgroundOffsets: Record<Size, string> = {

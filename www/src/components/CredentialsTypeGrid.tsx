@@ -290,7 +290,7 @@ function TypeCard({
     <button
       onClick={onClick}
       className={
-        "group flex flex-col items-start gap-2 px-3 py-3 bg-canvas-light text-left transition-colors border-2 " +
+        "group flex flex-col items-start gap-2 px-3 py-3 bg-canvas-light text-left transition-colors border-1.5 " +
         (active ? "border-text bg-navy-50" : "border-navy hover:bg-navy-50 cursor-pointer")
       }
     >
@@ -338,9 +338,9 @@ function DetailsPanel({
   ).sort();
   const rows = sortDetailRows(group.items);
   return (
-    <div className="bg-canvas-light border-2 border-navy overflow-hidden">
+    <div className="bg-canvas-light border-1.5 border-navy overflow-hidden">
       <div className="flex items-center justify-between gap-3 px-4 py-2.5 bg-navy-100 border-b border-navy">
-        <div className="text-xs uppercase tracking-wider text-navy font-bold">
+        <div className="font-mono text-xs uppercase tracking-wider text-navy font-bold">
           {group.label} · {group.total} declared · {group.connected} connected
         </div>
         <button
@@ -353,7 +353,7 @@ function DetailsPanel({
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
-          <thead className="text-2xs uppercase tracking-wider text-text-muted">
+          <thead className="font-mono text-2xs uppercase tracking-wider text-text-muted">
             <tr className="border-b border-canvas-dark">
               <th className="text-left font-semibold px-3 py-2">Name</th>
               <th className="text-left font-semibold px-3 py-2">Status</th>

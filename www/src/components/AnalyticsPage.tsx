@@ -184,7 +184,7 @@ export function AnalyticsPage({ ip, agents }: { ip?: string; agents: Agent[] }) 
 
       <div
         className={
-          "bg-canvas-light border-2 border-navy grid grid-cols-2 divide-x divide-canvas-dark " +
+          "bg-canvas-light border-1.5 border-navy grid grid-cols-2 divide-x divide-canvas-dark " +
           (isGlobal ? "sm:grid-cols-4 lg:grid-cols-5" : "sm:grid-cols-4")
         }
       >
@@ -240,7 +240,7 @@ function fmtMs(ms: number): string {
 function Stat({ label, value, tone }: { label: string; value: string; tone?: "warn" }) {
   return (
     <div className="flex flex-col gap-1.5 px-5 py-4">
-      <span className="text-2xs uppercase tracking-wider text-text-subtle">{label}</span>
+      <span className="font-mono text-2xs uppercase tracking-wider text-text-subtle">{label}</span>
       <span
         className={
           "text-2xl font-semibold leading-none tabular-nums tracking-tight " +
@@ -492,9 +492,9 @@ function LatencyChart({
   }, [filtered, colorBy, scale, range, agents, agentNames]);
 
   return (
-    <section className="bg-canvas-light border-2 border-navy overflow-hidden">
+    <section className="bg-canvas-light border-1.5 border-navy overflow-hidden">
       <header className="flex items-center justify-between px-4 py-2.5 bg-navy-100 border-b border-navy">
-        <span className="text-xs font-sans uppercase tracking-wider font-bold text-navy">
+        <span className="text-xs font-mono uppercase tracking-wider font-bold text-navy">
           Latency
         </span>
         <div className="flex items-center gap-3">
@@ -519,7 +519,7 @@ function Toggle<T extends string>({
   onChange: (v: T) => void;
 }) {
   return (
-    <div className="flex text-2xs border-2 border-navy squircle-sm overflow-hidden">
+    <div className="flex text-2xs border-1.5 border-navy squircle-sm overflow-hidden">
       {options.map((o) => (
         <button
           key={o}
@@ -579,7 +579,7 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
 
   const hdr = (label: string, field: "count" | "p99Ms") => (
     <th
-      className="px-3 sm:px-[14px] py-[9px] text-right text-xs font-sans font-bold uppercase tracking-wider text-navy cursor-pointer hover:text-navy-700 select-none"
+      className="px-3 sm:px-[14px] py-[9px] text-right text-xs font-mono font-bold uppercase tracking-wider text-navy cursor-pointer hover:text-navy-700 select-none"
       onClick={() => setSortBy(field)}
     >
       {label}
@@ -588,7 +588,7 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
   );
 
   return (
-    <section className="bg-canvas-light border-2 border-navy overflow-hidden">
+    <section className="bg-canvas-light border-1.5 border-navy overflow-hidden">
       <table className="w-full text-xs">
         <colgroup>
           <col />
@@ -597,7 +597,7 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
         </colgroup>
         <thead className="bg-navy-100 border-b border-navy">
           <tr>
-            <th className="px-3 sm:px-[14px] py-[9px] text-left text-xs font-sans uppercase tracking-wider text-navy font-bold">
+            <th className="px-3 sm:px-[14px] py-[9px] text-left text-xs font-mono uppercase tracking-wider text-navy font-bold">
               Top routes
             </th>
             {hdr("Reqs", "count")}
@@ -674,9 +674,9 @@ function BarList({
   const max = items.length ? items[0].value : 0;
 
   return (
-    <section className="bg-canvas-light border-2 border-navy overflow-hidden">
+    <section className="bg-canvas-light border-1.5 border-navy overflow-hidden">
       <header className="px-4 py-2.5 bg-navy-100 border-b border-navy">
-        <span className="text-xs font-sans uppercase tracking-wider font-bold text-navy">
+        <span className="text-xs font-mono uppercase tracking-wider font-bold text-navy">
           {title}
         </span>
       </header>

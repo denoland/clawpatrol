@@ -73,7 +73,9 @@ export function CredentialSecretsModal({
         </dl>
         {slots.map((s) => (
           <label key={s.name} className="flex flex-col gap-1">
-            <span className="text-xs uppercase tracking-wider text-text-muted">{s.label}</span>
+            <span className="font-mono text-xs uppercase tracking-wider text-text-muted">
+              {s.label}
+            </span>
             {s.multiline ? (
               <textarea
                 rows={5}

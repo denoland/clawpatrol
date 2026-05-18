@@ -47,9 +47,9 @@ export function OnboardPage({ code }: { code: string }) {
           {err && <div className="text-xs text-danger-500">{err}</div>}
 
           {info && (
-            <div className="bg-canvas-light border-2 border-navy p-6 space-y-4">
+            <div className="bg-canvas-light border-1.5 border-navy p-6 space-y-4">
               <div>
-                <div className="text-2xs uppercase tracking-wider text-text-subtle">
+                <div className="font-mono text-2xs uppercase tracking-wider text-text-subtle">
                   code from CLI
                 </div>
                 <div className="font-mono text-3xl tracking-[.18em] text-text mt-1">

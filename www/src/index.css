@@ -181,6 +181,8 @@
   --font-mono: "Iosevka Extended", "MonoLisa", "SF Mono", "Menlo", ui-monospace, monospace;
 
   --breakpoint-xs: 32rem;
+  /* Half-pixel border step (1.5px). */
+  --border-width-1\.5: 1.5px;
   --text-2xs: 0.625rem;
 }
 

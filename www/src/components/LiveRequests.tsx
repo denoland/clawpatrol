@@ -72,10 +72,10 @@ export function LiveRequests({
 
   return (
     <div
-      className="flex flex-col bg-canvas-light border-2 border-navy overflow-hidden"
+      className="flex flex-col bg-canvas-light border-1.5 border-navy overflow-hidden"
       style={{ height: height ?? "420px" }}
     >
-      <div className="flex items-center px-4 py-2.5 text-xs font-sans uppercase tracking-wider text-navy font-bold bg-navy-100 border-b border-navy shrink-0">
+      <div className="flex items-center px-4 py-2.5 text-xs font-mono uppercase tracking-wider text-navy font-bold bg-navy-100 border-b border-navy shrink-0">
         <span>Live requests</span>
         <span className="ml-2 text-success-500 tabular-nums flex items-center gap-1">
           <span className="w-1.5 h-1.5 rounded-full bg-success-500 animate-pulse" />
@@ -215,7 +215,7 @@ function Row({ ev, schema }: { ev: RowState; schema: FacetSchema | undefined }) 
         <span className="text-2xs tabular-nums text-text-subtle shrink-0">{time}</span>
         <ModeIcon mode={ev.mode} />
         {verb && (
-          <span className="text-2xs uppercase font-semibold text-text-muted shrink-0 w-[44px]">
+          <span className="font-mono text-2xs uppercase font-semibold text-text-muted shrink-0 w-[44px]">
             {verb}
           </span>
         )}

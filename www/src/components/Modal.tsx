@@ -65,7 +65,7 @@ export function Modal({
         if (e.target === ref.current) ref.current?.close();
       }}
       className={
-        "m-auto p-0 text-text bg-canvas-light border-2 border-navy  " +
+        "m-auto p-0 text-text bg-canvas-light border-1.5 border-navy  " +
         "shadow-2xl overflow-hidden backdrop:bg-navy/40 backdrop:backdrop-blur-xs " +
         sizes[size] +
         " " +
@@ -76,7 +76,7 @@ export function Modal({
         <div>
           <h2
             id={titleId}
-            className="text-sm uppercase tracking-wider text-navy font-bold font-sans"
+            className="text-sm uppercase tracking-wider text-navy font-bold font-mono"
           >
             {title}
           </h2>

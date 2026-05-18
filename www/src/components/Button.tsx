@@ -31,12 +31,12 @@ const sizes: Record<Size, string> = {
 
 const variants: Record<Variant, string> = {
   normal:
-    "border-2 border-navy bg-rust text-navy-900 hover:bg-rust-300 " +
+    "border-1.5 border-navy bg-rust text-navy-900 hover:bg-rust-300 " +
     "disabled:bg-canvas-dark disabled:text-text-subtle " +
     "disabled:border-text-subtle disabled:outline-text-subtle " +
     "disabled:hover:bg-canvas-dark",
   outline:
-    "border-2 border-navy text-text-muted hover:bg-navy-100 " +
+    "border-1.5 border-navy text-text-muted hover:bg-navy-100 " +
     "disabled:text-text-subtle " +
     "disabled:border-text-subtle disabled:outline-text-subtle " +
     "disabled:hover:bg-transparent",

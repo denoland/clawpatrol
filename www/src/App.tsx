@@ -87,7 +87,7 @@ export default function App() {
       <Header whoami={whoami} />
       {route.name === "main" ? (
         <Main>
-          <section className="bg-canvas-light border-2 border-navy overflow-hidden">
+          <section className="bg-canvas-light border-1.5 border-navy overflow-hidden">
             <div className="overflow-x-auto">
               <AgentsTable
                 agents={agents}

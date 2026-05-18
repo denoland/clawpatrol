@@ -316,6 +316,10 @@
 
   --breakpoint-xs: 32rem;
 
+  /* Half-pixel border step. Default Tailwind border scale jumps 1→2→4;
+     1.5 sits between for understated cards and dividers. */
+  --border-width-1\.5: 1.5px;
+
   --text-2xs: 0.625rem;
 
   /* Body-text sizes inherit our looser body line-height instead of
