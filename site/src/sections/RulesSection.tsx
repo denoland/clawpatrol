@@ -38,11 +38,11 @@ export function RulesSection() {
   return (
     <section class="bg-navy-600 py-24 sm:py-32 text-canvas">
       <div class="max-w-6xl mx-auto px-6 sm:px-8">
-        <SectionLabel>Approval rules</SectionLabel>
+        <SectionLabel>Rules</SectionLabel>
 
         <div class="max-w-3xl mx-auto text-center mb-16">
           <h3 class="text-4xl sm:text-5xl md:text-6xl font-display font-bold text-balance mb-5">
-            You write access rules in HCL. <span class="text-rust">Claw Patrol enforces them.</span>
+            You write access rules. <span class="text-rust">Claw Patrol enforces them.</span>
           </h3>
           <p class="text-base text-canvas/70">
             Every outbound request runs through a rule engine before it reaches its destination.
@@ -76,7 +76,7 @@ export function RulesSection() {
         </div>
 
         <p class="mt-14 text-sm text-canvas/70 text-center max-w-xl mx-auto">
-          Extend Claw Patrol with your own protocol plugins.{" "}
+          Extend Claw Patrol with plugins{" "}
           <a
             href="/docs/plugins/"
             class="text-rust-300 hover:text-rust-200 underline underline-offset-4"

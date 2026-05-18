@@ -152,7 +152,7 @@ export function ApproversSection() {
   return (
     <section class="bg-rust-50 py-24 sm:py-32">
       <div class="max-w-6xl mx-auto px-6 sm:px-8">
-        <SectionLabel>Approvers</SectionLabel>
+        <SectionLabel>Approval flows</SectionLabel>
 
         <div class="max-w-3xl mb-14">
           <h3 class="text-4xl sm:text-5xl md:text-6xl font-display font-bold text-balance mb-5 text-text">

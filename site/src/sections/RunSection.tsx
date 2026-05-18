@@ -1,7 +1,7 @@
 import { SectionLabel } from "../components/SectionLabel";
 
 /* ──────────────────────────────────────────────────────────────────────
-   Deploy — three real CLI invocations that map to the three deployment
+   Run — three real CLI invocations that map to the three deployment
    shapes operators ask about: wrap one agent, route a whole machine,
    or run the gateway itself.
    ──────────────────────────────────────────────────────────────────── */
@@ -44,15 +44,19 @@ function Terminal({ source }: { source: string }) {
   );
 }
 
-export function DeploySection() {
+export function RunSection() {
   return (
     <section class="bg-canvas-muted py-24 sm:py-32">
       <div class="max-w-6xl mx-auto px-6 sm:px-8">
         <SectionLabel>Run it</SectionLabel>
         <div class="max-w-3xl mx-auto text-center mb-12 sm:mb-16">
           <h3 class="text-3xl sm:text-4xl lg:text-5xl font-display font-bold text-balance mb-5 text-text">
-            Wrap one agent <span class="text-rust">or a whole machine.</span>
+            Three ways in.
           </h3>
+          <p class="text-base text-text-muted">
+            The gateway is a single binary. Agent traffic reaches it over WireGuard or Tailscale;
+            nothing in the agent changes.
+          </p>
         </div>
 
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
