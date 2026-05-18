@@ -2910,13 +2910,26 @@ func runGateway(args []string) {
 		// the subsequent TCP connection has a VIP the gateway recognises
 		// and dispatches. WG mode's promiscuous forwarder caught this
 		// already; tsnet exit-node needs an explicit listener.
+		//
+		// ListenPacket requires a concrete IP (not the wildcard). Wait
+		// for the tailnet IP to be assigned, then bind there.
 		if g.dnsvip != nil {
-			if pc, err := tsnetServer.ListenPacket("udp", ":53"); err != nil {
-				log.Printf("tsnet: udp :53 (dns): %v", err)
-			} else {
-				go serveTsnetDNSUDP(pc, g.dnsvip)
-				log.Printf("tsnet: dnsvip UDP listener on tsnet :53")
-			}
+			go func() {
+				for i := 0; i < 60 && g.tailscaleIP == ""; i++ {
+					time.Sleep(500 * time.Millisecond)
+				}
+				if g.tailscaleIP == "" {
+					log.Printf("tsnet: dnsvip UDP listener skipped — no tailscale IP")
+					return
+				}
+				pc, err := tsnetServer.ListenPacket("udp", g.tailscaleIP+":53")
+				if err != nil {
+					log.Printf("tsnet: udp %s:53 (dns): %v", g.tailscaleIP, err)
+					return
+				}
+				log.Printf("tsnet: dnsvip UDP listener on %s:53", g.tailscaleIP)
+				serveTsnetDNSUDP(pc, g.dnsvip)
+			}()
 		}
 		// Intercept all TCP forwarded through this exit node (whole-machine
 		// clients). dst is the original internet destination — same dispatch
