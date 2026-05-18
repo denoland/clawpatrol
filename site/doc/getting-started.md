@@ -31,13 +31,22 @@ into it, and edit the operational fields:
 
 ```hcl
 info_listen = "127.0.0.1:9080"   # bind the dashboard private — see below
-public_url  = "https://gw.example.com"
 admin_email = "you@example.com"
 state_dir   = "/opt/clawpatrol"
 
-control        = "wireguard"
-wg_subnet_cidr = "10.55.0.0/24"
+# Embedded Tailscale (recommended): no system tailscaled, no
+# iptables, no WireGuard port to open. The gateway joins the tailnet
+# in-process via tsnet and exposes the bootstrap routes
+# (/api/onboard/{start,poll,claim}, /api/cred/*) on :443 via Funnel.
+control             = "tailscale"
+funnel              = true
+listen              = ":8443"
+oauth_client_id     = "{{secret:TS_OAUTH_CLIENT_ID}}"
+oauth_client_secret = "{{secret:TS_OAUTH_CLIENT_SECRET}}"
+tailscale_tags      = ["tag:bot"]
 ```
+
+(WireGuard mode — `control = "wireguard"` + `wg_subnet_cidr = "10.55.0.0/24"` — is still supported; see [`gateway.example.hcl`](https://github.com/denoland/clawpatrol/blob/main/gateway.example.hcl) for the full shape. The rest of this guide assumes Tailscale mode.)
 
 **`info_listen` should bind privately.** The dashboard holds the
 credential vault — the gateway refuses to boot when `info_listen`
@@ -65,10 +74,22 @@ and the rest of the credential / endpoint / rule blocks.
 
 ## Run the gateway
 
-Open the WireGuard UDP port on the host firewall —
-`iptables -I INPUT -p udp --dport 51820 -j ACCEPT`. Leave the
-dashboard port closed to the public internet; reach it via the
-private bind you chose above.
+Tailscale mode needs only the OAuth client ID + secret (mint at
+<https://login.tailscale.com/admin/settings/oauth> with the
+`auth_keys` write scope; tag the client with `tag:bot` to match
+`tailscale_tags`). Drop them in an EnvironmentFile so they're not
+checked in:
+
+```bash
+echo 'TS_OAUTH_CLIENT_ID=...'     | sudo tee -a /opt/clawpatrol/secrets.env
+echo 'TS_OAUTH_CLIENT_SECRET=...' | sudo tee -a /opt/clawpatrol/secrets.env
+sudo chmod 600 /opt/clawpatrol/secrets.env
+```
+
+No iptables, no UDP port. The gateway joins the tailnet from inside
+the process and Tailscale Funnel routes the bootstrap public TLS for
+you. Leave the dashboard port closed to the public internet; reach
+it via the private bind you chose above.
 
 ```bash
 clawpatrol gateway /opt/clawpatrol/gateway.hcl
@@ -130,17 +151,26 @@ startup when `state_dir` or `clawpatrol.db` is readable beyond owner.
 On the machine you want to route through the gateway:
 
 ```bash
-clawpatrol join http://<gateway-host>:9080
+clawpatrol join https://<gateway>.tail<tailnet-id>.ts.net
 ```
 
+The URL is the gateway's Tailscale Funnel hostname — the only
+publicly reachable surface the gateway exposes. (For WireGuard
+gateways, use `http://<gateway-host>:9080` instead.)
+
 You'll see a one-time code. Open the URL it prints, confirm the code
-matches, and approve. Once approved the device is enrolled, the gateway
-CA is installed in your system trust store, and `clawpatrol env` is wired
-into your shell rc.
+matches, and approve. Once approved the device is enrolled, the
+gateway CA is installed in your system trust store, and
+`clawpatrol env` is wired into your shell rc.
 
 By default `join` sets up per-process routing: only commands you wrap
-with `clawpatrol run` go through the gateway. Pass `--whole-machine` if
-you want every packet on the host to route through it.
+with `clawpatrol run` go through the gateway. Each invocation is its
+own ephemeral tailnet node, freed automatically on exit, so
+concurrent runs on the same host don't collide.
+
+Pass `--whole-machine` (Linux only) if you want every packet on the
+host to route through the gateway. macOS handles whole-machine
+routing through the Network Extension instead — same flag.
 
 On macOS, the first join prompts you to approve the Claw Patrol
 Network Extension in **System Settings → Privacy & Security**.
@@ -182,9 +212,9 @@ Claw Patrol gateway:
 
 - **`clawpatrol join --whole-machine` is for client devices only.**
   Running it on (or pointed at) the gateway host itself routes the
-  host's own traffic through its own WireGuard endpoint — a loop
-  that breaks DNS, outbound traffic from the gateway daemon, and
-  the dashboard's reachability. Per-process routing (the default
+  host's own traffic through its own tunnel — a loop that breaks
+  DNS, outbound traffic from the gateway daemon, and the
+  dashboard's reachability. Per-process routing (the default
   `clawpatrol join` + `clawpatrol run` shape) is also what most
   people actually want on a multi-purpose laptop, so they don't
   accidentally route every browser tab through the gateway.

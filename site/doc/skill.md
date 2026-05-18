@@ -62,11 +62,18 @@ are bare (`credential = github-pat`, never `credential.github-pat`).
 ### Minimal complete example
 
 ```hcl
-admin_email      = "you@example.com"
-dashboard_secret = "change-me-long-random"
+admin_email = "you@example.com"
+info_listen = "127.0.0.1:9080"      # loopback bind — no dashboard_secret needed
+state_dir   = "/opt/clawpatrol"
 
-control        = "wireguard"
-wg_subnet_cidr = "10.55.0.0/24"
+# Embedded Tailscale: tsnet runs in-process, Funnel exposes the
+# bootstrap on :443. No system tailscaled, no iptables.
+control             = "tailscale"
+funnel              = true
+listen              = ":8443"
+oauth_client_id     = "{{secret:TS_OAUTH_CLIENT_ID}}"
+oauth_client_secret = "{{secret:TS_OAUTH_CLIENT_SECRET}}"
+tailscale_tags      = ["tag:bot"]
 
 credential "bearer_token" "github-pat" {}
 
@@ -96,13 +103,16 @@ profile "default" { endpoints = [github] }
 | Field | Notes |
 |---|---|
 | `admin_email` | Required. |
-| `listen` | TLS gateway bind. Meaningful only in Tailscale mode (tsnet listener); in WireGuard mode the agent path uses the WG tunnel and this socket is forced to loopback. |
-| `info_listen` | Dashboard + API bind. |
-| `public_url` | Dashboard URL handed out at join time. |
-| `dashboard_secret` | Required (or `insecure_no_dashboard_secret = true` for local testing). |
+| `listen` | TLS gateway bind (typically `:8443` in Tailscale mode — Funnel owns :443). In WireGuard mode this socket is forced to loopback. |
+| `info_listen` | Dashboard + API bind. Loopback / private network = no `dashboard_secret` needed. |
+| `public_url` | Public URL handed out at join time. Auto-derived from the Funnel cert domain when `funnel = true`. |
+| `dashboard_secret` | Required only if `info_listen` binds publicly. |
 | `state_dir` | Directory holding `clawpatrol.db`. Defaults to `~/.clawpatrol`. |
-| `control` | `"wireguard"` or `"tailscale"`. |
-| `wg_endpoint` / `wg_subnet_cidr` | WG listener + device subnet. |
+| `control` | `"tailscale"` (embedded tsnet, recommended) or `"wireguard"`. |
+| `funnel` | Tailscale Funnel on :443 — strict allowlist for the join bootstrap + credential webhooks. |
+| `oauth_client_id` / `oauth_client_secret` | Tailscale OAuth client (auth-key scope) for tsnet identity + per-client ephemeral keys. |
+| `tailscale_tags` | Tags applied to minted auth keys, e.g. `["tag:bot"]`. |
+| `wg_endpoint` / `wg_subnet_cidr` | WireGuard mode only: WG listener + device subnet. |
 | `unknown_host` | `"passthrough"` (default) or `"deny"` for traffic no endpoint claims. |
 
 Full list: [Config reference](/docs/config-reference/#top-level-fields).
@@ -284,17 +294,23 @@ without paging.
 ## Onboard a device
 
 ```
-clawpatrol join http://<gateway-host>:9080
+clawpatrol join https://<gateway>.tail<id>.ts.net   # Tailscale gateway (Funnel)
+clawpatrol join http://<gateway-host>:9080          # WireGuard gateway
 ```
 
 Prints a one-time code; operator confirms it in the dashboard,
-assigns a profile, approves. Persists the WG conf to
-`~/.config/clawpatrol/wg.conf`, installs the gateway CA, adds
-`eval "$(clawpatrol env)"` to your shell rc.
+assigns a profile, approves. Persists the auth key + CA + api-token
+under `~/.clawpatrol/`, and adds `eval "$(clawpatrol env)"` to your
+shell rc.
 
 Flags: `--hostname`, `--profile`, `--whole-machine` (route every
 packet through the gateway instead of just `clawpatrol run`),
 `--no-trust` (skip system trust install).
+
+In Tailscale mode `clawpatrol run` is per-invocation ephemeral —
+each run is a fresh tailnet node, auto-removed on exit. Concurrent
+runs on the same machine don't share state. WireGuard mode mints
+an ephemeral WG peer per run with the same property.
 
 macOS first join: approve the Network Extension in **System
 Settings → Privacy & Security**.
