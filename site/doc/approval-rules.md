@@ -277,9 +277,14 @@ per endpoint to invert this.
 To bound memory, the wire endpoints cap how much of each request they
 buffer for the matcher. A request that exceeds its cap is **not**
 dropped on the floor — the frame still forwards to upstream
-byte-for-byte. What's bounded is the matcher's view of it. The
-endpoint flags the request as truncated, and the dispatcher
-fails-closed per rule.
+byte-for-byte. What's bounded is the matcher's view of it: the
+endpoint truncates the buffered slice and flags the request as
+truncated. The facet fields that draw their value from this slice
+are **truncatable facet fields** (listed per-endpoint in the table
+below). When a rule's CEL reads a truncatable facet field on a
+request that was flagged truncated, the rule is automatically
+matched without comparing the matching values, and the dispatcher
+returns a deny verdict for it.
 
 | Endpoint | Inspected slice | Cap | Truncatable facet fields |
 |----------|-----------------|-----|--------------------|
@@ -295,7 +300,7 @@ and URL bytes are bounded separately by `net/http`'s defaults and
 aren't covered here; the `ssh` endpoint has no rule family, so no
 inspection cap.
 
-### Per-rule fail-closed
+### Rule matching semantics on truncated fields
 
 When a request overflows its cap, the dispatcher walks the endpoint's
 rules in priority order as usual. For each rule:
