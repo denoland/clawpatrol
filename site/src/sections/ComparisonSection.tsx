@@ -169,10 +169,10 @@ function SynthesisCard() {
         <h4 class="font-display font-bold text-2xl sm:text-3xl text-text">Claw Patrol</h4>
       </div>
       <p class="text-text text-[15px] sm:text-base max-w-3xl leading-relaxed">
-        Watches the tool call at the protocol layer (Postgres, Kubernetes, ClickHouse, HTTPS, SSH),
-        so rules match SQL verbs and k8s resources directly. Holds the secrets. Routes risky calls
-        to a human or an LLM judge. Records every byte. Doesn't try to be an LLM gateway or a
-        process sandbox; use a specialized tool if you need those.
+        Watches the tool call at the protocol layer (Postgres, Kubernetes, HTTPS, with a plugin API
+        for the rest), so rules match SQL verbs and k8s resources directly. Holds the secrets.
+        Routes risky calls to a human or an LLM judge. Records every byte. Doesn't try to be an LLM
+        gateway or a process sandbox; use a specialized tool if you need those.
       </p>
     </div>
   );

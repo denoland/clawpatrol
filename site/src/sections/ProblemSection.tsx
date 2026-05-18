@@ -10,7 +10,10 @@ const PROBLEMS = [
   },
   {
     title: "Your agent shouldn't see secrets",
-    body: "If the agent is compromised (prompt " + "injection), the keys leak with it.",
+    body:
+      "If the agent is compromised by prompt injection, the credentials " +
+      "it holds leak with it. Keys should live somewhere the agent can " +
+      "never see.",
   },
   {
     title: "Logs don't capture the action",
