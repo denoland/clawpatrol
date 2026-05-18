@@ -15,10 +15,17 @@ export function V2SettingsPage({
   integrations,
   onConnect,
   onRefresh,
+  pendingConnect,
+  onConsumePendingConnect,
 }: {
   integrations: Integration[];
   onConnect: (id: string) => void;
   onRefresh: () => void;
+  // Set when navigated to via `#/v2/settings?connect=<id>` (the
+  // Profiles page pills do this — clicking a pill should open the
+  // same connect flow the settings cards drive).
+  pendingConnect?: string;
+  onConsumePendingConnect?: () => void;
 }) {
   return (
     <div className="mx-auto max-w-7xl">
@@ -38,6 +45,8 @@ export function V2SettingsPage({
             showAll
             onConnect={onConnect}
             onRefresh={onRefresh}
+            pendingConnect={pendingConnect}
+            onConsumePendingConnect={onConsumePendingConnect}
           />
         )}
       </Card>

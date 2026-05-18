@@ -25,7 +25,10 @@ export type V2Page =
   | "devices"
   | "settings";
 
-export type V2Route = { page: V2Page } | { page: "actions"; actionId: string };
+export type V2Route =
+  | { page: V2Page }
+  | { page: "actions"; actionId: string }
+  | { page: "settings"; connect?: string };
 
 // Polecat decisions for this v2 dashboard:
 //   1. Route prefix is `#/v2` (hash routing, matches existing app
@@ -51,6 +54,7 @@ export function parseV2Route(hash: string): V2Route | null {
   const raw = hash.startsWith("#") ? hash.slice(1) : hash;
   const qIdx = raw.indexOf("?");
   const path = qIdx < 0 ? raw : raw.slice(0, qIdx);
+  const params = qIdx >= 0 ? new URLSearchParams(raw.slice(qIdx + 1)) : null;
   if (!path.startsWith("/v2")) return null;
   const rest = path.slice("/v2".length);
   if (rest === "" || rest === "/") return { page: "overview" };
@@ -68,7 +72,12 @@ export function parseV2Route(hash: string): V2Route | null {
     "devices",
     "settings",
   ];
-  if ((pages as string[]).includes(seg)) return { page: seg as V2Page };
+  if ((pages as string[]).includes(seg)) {
+    if (seg === "settings") {
+      return { page: "settings", connect: params?.get("connect") ?? undefined };
+    }
+    return { page: seg as V2Page };
+  }
   return { page: "overview" };
 }
 
@@ -120,6 +129,12 @@ export function V2App({ route }: { route: V2Route }) {
           integrations={integrations}
           onConnect={(id) => setConnectId(id)}
           onRefresh={refresh}
+          pendingConnect={"connect" in route ? route.connect : undefined}
+          onConsumePendingConnect={() => {
+            // Drop the ?connect= once IntegrationsCards has acted on it
+            // so a reload doesn't reopen the modal.
+            window.history.replaceState(null, "", "#/v2/settings");
+          }}
         />
       )}
       {connectId && (

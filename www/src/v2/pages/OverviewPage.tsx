@@ -12,7 +12,7 @@ import type { ReactNode } from "react";
 
 // Overview — single-screen operator console. Three panels per the
 // PR #398 spec:
-//   row 1 (~75% vertical): [25%] recent activity • [75%] unconfigured credentials
+//   row 1 (~75% vertical): [25%] unconfigured credentials • [75%] recent activity
 //   row 2 (~25% vertical): pending approvals (full width)
 // Fallbacks:
 //   recent activity → list of connected devices when every declared
@@ -72,6 +72,9 @@ export function OverviewPage({
       <div className="flex-1 grid grid-rows-[3fr_1fr] gap-4 min-h-0">
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 min-h-0">
           <div className="lg:col-span-1 min-h-0">
+            <UnconfiguredCredentialsPanel unconfigured={unconfigured} total={integrations.length} />
+          </div>
+          <div className="lg:col-span-3 min-h-0">
             {allConnected ? (
               <ConnectedDevicesPanel agents={agents} />
             ) : (
@@ -81,9 +84,6 @@ export function OverviewPage({
                 profileByIp={profileByIp}
               />
             )}
-          </div>
-          <div className="lg:col-span-3 min-h-0">
-            <UnconfiguredCredentialsPanel unconfigured={unconfigured} total={integrations.length} />
           </div>
         </div>
         <div className="min-h-0">

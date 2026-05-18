@@ -1,5 +1,6 @@
 import type { Agent } from "../../lib/api";
 import { fmtAge, fmtBytes } from "../../lib/format";
+import { Sparkline } from "../../components/Sparkline";
 import { Card } from "../cards/Card";
 import { PageHeader } from "../cards/PageHeader";
 
@@ -42,6 +43,7 @@ export function V2DevicesPage({ agents }: { agents: Agent[] }) {
                 <th className="px-4 py-2 font-medium">Profile</th>
                 <th className="px-4 py-2 font-medium text-right">Reqs</th>
                 <th className="px-4 py-2 font-medium text-right">In/Out</th>
+                <th className="px-4 py-2 font-medium">Activity</th>
                 <th className="px-4 py-2 font-medium">Last seen</th>
               </tr>
             </thead>
@@ -57,6 +59,9 @@ export function V2DevicesPage({ agents }: { agents: Agent[] }) {
                   <td className="px-4 py-2 text-right">{a.reqs}</td>
                   <td className="px-4 py-2 text-right text-text-muted text-xs">
                     {fmtBytes(a.bytes_in)} / {fmtBytes(a.bytes_out)}
+                  </td>
+                  <td className="px-4 py-2">
+                    <Sparkline data={a.activity} width={120} height={18} />
                   </td>
                   <td className="px-4 py-2 text-text-muted">{fmtAge(a.last_at)}</td>
                 </tr>

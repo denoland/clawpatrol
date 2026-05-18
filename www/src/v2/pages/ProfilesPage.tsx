@@ -11,11 +11,13 @@ import { PageHeader } from "../cards/PageHeader";
 // each one to a declared profile, so device counts join in
 // client-side.
 //
-// Credentials render with their plugin-type icon (postgres logo for
-// postgres_credential, etc.) so an operator can scan the profile and
-// see at a glance what's wired in. A green border on the chip
-// signals the credential is currently connected; no border means
-// the secret hasn't been set or has been cleared.
+// Credentials render as horizontal pills below each profile's meta
+// line: plugin-type icon + credential bare name. Clicking a pill
+// jumps to `#/v2/settings?connect=<id>` so the same connect flow
+// the settings cards drive opens — IntegrationsCards picks the
+// pendingConnect up and routes by type (OAuth modal, Tailscale
+// parked URL, slots modal). A green border signals the credential
+// is currently connected.
 export function ProfilesPage({
   agents,
   integrations,
@@ -89,30 +91,30 @@ export function ProfilesPage({
                     </div>
                   )}
                   {p.credentials.length > 0 && (
-                    <div className="mt-2 flex flex-col gap-1">
+                    <div className="mt-2 flex flex-wrap gap-1.5">
                       {p.credentials.map((c) => {
                         const intg = integrationById.get(c);
                         const connected = intg?.connected ?? false;
                         return (
-                          <div
+                          <a
                             key={c}
-                            className={`w-full flex items-center gap-3 px-3 py-2 bg-canvas border-2 ${
-                              connected ? "border-success-500" : "border-transparent"
+                            href={`#/v2/settings?connect=${encodeURIComponent(c)}`}
+                            className={`inline-flex items-center gap-1.5 pl-1.5 pr-2.5 py-1 bg-canvas border-2 rounded-full text-xs hover:bg-canvas-muted transition-colors ${
+                              connected ? "border-success-500" : "border-canvas-dark"
                             }`}
-                            title={connected ? "Connected" : "Not connected"}
+                            title={
+                              connected
+                                ? `${intg?.name ?? c} — connected. Click to manage.`
+                                : `${intg?.name ?? c} — not connected. Click to connect.`
+                            }
                           >
                             <IntegrationIcon
                               id={c}
                               type={intg?.type}
-                              className="h-6 w-6 shrink-0"
+                              className="h-4 w-4 shrink-0"
                             />
-                            <span className="font-medium text-sm truncate">{intg?.name ?? c}</span>
-                            {intg?.type && (
-                              <span className="text-[11px] text-text-muted font-mono ml-auto">
-                                {intg.type}
-                              </span>
-                            )}
-                          </div>
+                            <span className="font-medium truncate">{intg?.name ?? c}</span>
+                          </a>
                         );
                       })}
                     </div>
