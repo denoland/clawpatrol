@@ -163,7 +163,19 @@ func (w *webMux) apiRegisterEphemeralTsnetIP(rw http.ResponseWriter, r *http.Req
 		w.g.onboard.AssignProfile(tsnetIP, profile)
 	}
 	if hn := strings.TrimSpace(r.URL.Query().Get("hostname")); hn != "" {
+		// Re-registration after the client wiped its tsnet state lands
+		// on a different tailnet IP. Drop stale rows for this hostname
+		// so the dashboard stays at one device per machine.
+		_, _ = w.g.db.Exec("DELETE FROM devices WHERE name=? AND id<>?", hn, tsnetIP)
 		w.g.onboard.SetHostname(tsnetIP, hn)
+	}
+	// Drop the synthetic `tsnet:<device_code>` row created at approve
+	// time — the real row above replaces it. Repoint the parent's
+	// api-token at the new tailnet IP so future register calls find
+	// the profile directly via ProfileForIP(parentIP).
+	if strings.HasPrefix(parentIP, "tsnet:") {
+		_, _ = w.g.db.Exec("DELETE FROM devices WHERE id=?", parentIP)
+		_, _ = w.g.db.Exec("UPDATE peer_api_tokens SET peer_ip=? WHERE peer_ip=?", tsnetIP, parentIP)
 	}
 	if w.g.agents != nil {
 		w.g.agents.Seed(tsnetIP)
