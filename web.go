@@ -602,13 +602,12 @@ func (w *webMux) apiHITLOperationStatus(rw http.ResponseWriter, r *http.Request)
 }
 
 func (w *webMux) hitlPublicURL() string {
-	if w.publicURL != "" {
-		return w.publicURL
-	}
-	if w.g != nil && w.g.cfg != nil {
+	// Prefer the live config — public_url may be auto-derived from the
+	// tsnet Funnel cert AFTER webMux is constructed.
+	if w.g != nil && w.g.cfg != nil && w.g.cfg.PublicURL != "" {
 		return w.g.cfg.PublicURL
 	}
-	return ""
+	return w.publicURL
 }
 
 func hitlOperationIDFromStatusPath(path string) (string, bool) {

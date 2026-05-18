@@ -2884,11 +2884,21 @@ func runGateway(args []string) {
 	if tsnetServer != nil && cfg.Funnel && cfg.PublicURL == "" {
 		// Auto-derive public_url from the tsnet cert domain so that
 		// join responses, HITL status links, and OAuth redirect URIs use
-		// the correct internet-reachable URL when funnel = true.
-		if domain := tsnetCertDomain(tsnetServer); domain != "" {
-			cfg.PublicURL = domain
-			log.Printf("tsnet: funnel public_url auto-derived: %s", cfg.PublicURL)
-		}
+		// the correct internet-reachable URL when funnel = true. Cert
+		// provisioning can lag Funnel listener start by a few seconds,
+		// so retry async.
+		go func() {
+			deadline := time.Now().Add(60 * time.Second)
+			for time.Now().Before(deadline) {
+				if domain := tsnetCertDomain(tsnetServer); domain != "" {
+					cfg.PublicURL = domain
+					log.Printf("tsnet: funnel public_url auto-derived: %s", cfg.PublicURL)
+					return
+				}
+				time.Sleep(2 * time.Second)
+			}
+			log.Printf("tsnet: funnel public_url not derived after 60s — dashboard will show the loopback URL in join hints")
+		}()
 	}
 	tsnetDashMux := newWebMux(g, cfg.Join(), cfg.PublicURL)
 	tsnetDashPort := portOf(cfg.InfoListen)

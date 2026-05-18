@@ -580,6 +580,9 @@ func (w *webMux) apiOnboardStart(rw http.ResponseWriter, r *http.Request) {
 	// don't have to go through the Funnel HTTPS relay. Use IP directly
 	// to avoid MagicDNS resolution issues with OS-hostname vs registered name.
 	verifyURL := w.publicURL
+	if w.g != nil && w.g.cfg != nil && w.g.cfg.PublicURL != "" {
+		verifyURL = w.g.cfg.PublicURL
+	}
 	if w.g != nil && w.g.tailscaleIP != "" && w.g.cfg.InfoListen != "" {
 		port := w.g.cfg.InfoListen
 		if i := strings.LastIndexByte(port, ':'); i >= 0 {
