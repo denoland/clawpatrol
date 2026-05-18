@@ -54,7 +54,7 @@ A typed upstream binding — a name, a protocol family
 the unit a [device](#device)'s [profile](#profile) lists, and the unit
 a [rule](#rule) attaches to. Built-in types: `https`, `kubernetes`,
 `postgres`, `clickhouse_https`, `clickhouse_native`. See
-[Configuration vocabulary](#configuration-vocabulary).
+[HCL config reference](/docs/config-reference/#endpoint-blocks).
 
 ### Credential
 
@@ -64,73 +64,78 @@ secret bytes live in the gateway's [secret store](#secret-store) and
 are fetched at injection time. Built-in shapes include `bearer_token`,
 `cookie_token`, `header_token`, `mtls_credential`,
 `postgres_credential`, `anthropic_manual_key`, and the OAuth variants.
-See [Configuration vocabulary](#configuration-vocabulary).
+See [HCL config reference](/docs/config-reference/#credential-blocks).
 
 ### Action
 
 One unit of agent work the gateway sees and applies policy to — one
 HTTP call, one SQL query, one `kubectl` invocation, one SSH command.
-Each action targets an [endpoint](#endpoint), is gated by the matching
-[rule](#rule)'s [outcome](#outcome), and surfaces in the dashboard's
-live request feed (record kinds: `http`, `sql`, `k8s`, `ssh`) with its
-own detail page. "Action" is the operator-visible concept of "the
-thing the agent did."
+Every action belongs to exactly one [family](#family) — the protocol
+class (`http`, `sql`, `ssh`, `k8s`) the gateway used to intercept it —
+and that family fixes the data the gateway extracts from the wire and
+exposes to policy. The action targets one [endpoint](#endpoint), the
+matching [rule](#rule)'s [outcome](#outcome) gates it, and it surfaces
+in the dashboard's live request feed with its own detail page.
+"Action" is the operator-visible concept of "the thing the agent did."
 
 ### Rule
 
 One policy decision targeting one or more [endpoints](#endpoint). A
 rule has a CEL [`condition`](#cel-condition) string that matches against
-the [facets](#facet) of the rule's protocol family (inferred from its
-endpoints), an optional `credential` predicate, and an [outcome](#outcome)
-— either a literal `verdict` or an `approve = [...]` chain. Rules are
-one HCL block kind (`rule "<name>" { ... }`); the family is inferred
-from the endpoint(s) at load time, and mixed-family endpoint sets are
-a load error.
+the [facet fields](#facet-field) those endpoints' [family](#family)
+exposes, an optional `credential` predicate, and an [outcome](#outcome)
+— either a literal `verdict` or an `approve = [...]` chain. All
+endpoints listed by one rule must share a family — mixed-family
+endpoint sets are a load error — so that the CEL condition sees a
+single, well-defined set of facet fields. Rules are one HCL block
+kind (`rule "<name>" { ... }`).
+
+### Family
+
+The protocol class an [action](#action) belongs to. An action belongs
+to exactly one family; built-in families are `http`, `sql`, `ssh`, and
+`k8s`. An [endpoint](#endpoint)'s type carries an implied family — an
+`https` endpoint accepts `http` actions, a `postgres` endpoint accepts
+`sql` actions — and that propagates to [rules](#rule): all endpoints
+listed by one rule must share a family, so the rule's CEL condition
+sees a single, well-defined set of facet fields. Each family includes
+one or more [facets](#facet) into the action's data: the `sql` family
+includes the `sql` facet; the `http` family includes the `http` facet;
+the `k8s` family includes both the `http` facet (k8s traffic is HTTPS
+on the wire) and the `k8s` facet.
 
 ### Facet
 
-A single named matchable property exposed to a [rule](#rule)'s CEL
-[`condition`](#cel-condition). Each protocol family exposes its own
-top-level struct-typed variable: `http.method` / `http.path` /
-`http.query` / `http.headers` / `http.body` / `http.body_json`;
-`sql.verb` / `sql.tables` / `sql.functions` / `sql.statement`;
-`k8s.verb` / `k8s.resource` / `k8s.namespace` / `k8s.name` /
-`k8s.params`. Per-facet types vary — `method` and `verb` are scalar
-strings, `tables` / `functions` are lists, `query` / `headers` /
-`params` are maps, and `body_json` is parsed-JSON `dyn`.
+A named collection of [fields](#facet-field) a [family](#family) folds
+into an [action](#action)'s data, addressable in a
+[rule](#rule)'s CEL [`condition`](#cel-condition) as `<facet>.<field>`.
+A facet is not the same as a family: a family is the protocol class an
+action belongs to, while a facet is a field group that contributes to
+the action's matchable surface. Built-in facets are `http`, `sql`, and
+`k8s`; most families include a single facet of the same name, but the
+`k8s` family includes both the `http` and `k8s` facets.
 
-### Facet composition
+### Facet field
 
-An action family declares which [facets](#facet) it adds to its
-actions. A rule of family X can reference any facet X composes —
-nothing more. There is no parent-child relationship between
-families; some families just happen to add the same facet.
-
-Today:
-
-| Family | Composes facets |
-|--------|------------------|
-| `http` | `http`           |
-| `sql`  | `sql`            |
-| `k8s`  | `http`, `k8s`    |
-
-The `k8s` family adds the `http` facet alongside its own because a
-kubernetes API call is an HTTPS request underneath and carries
-`http.method` / `http.path` / `http.headers` / `http.body` /
-`http.body_json` on the request snapshot. A `kubernetes`-endpoint
-rule therefore sees both the `k8s.*` and `http.*` field sets.
-
-The asymmetry — `http` rules can't read `k8s.*`, SQL rules can't
-read `http.*` — is just the inverse: those families don't compose
-the missing facet. `http` actions carry no k8s metadata; SQL wire
-(postgres, clickhouse_native) is binary, not HTTPS.
+A single named matchable property a [facet](#facet) exposes to a
+[rule](#rule)'s CEL [`condition`](#cel-condition), addressed as
+`<facet>.<field>` in CEL. Each facet defines its own group of fields
+— the `sql` facet has `sql.verb`, `sql.functions`, `sql.tables`,
+`sql.statement`, and `sql.database`; the `http` facet has
+`http.method`, `http.path`, `http.query`, `http.headers`, `http.body`,
+and `http.body_json`; the `k8s` facet has `k8s.verb`, `k8s.resource`,
+`k8s.namespace`, `k8s.name`, and `k8s.params`. Per-field types vary —
+`method` and `verb` are scalar strings, `tables` / `functions` are
+lists, `query` / `headers` / `params` are maps, and `body_json` is
+parsed-JSON `dyn`.
 
 ### CEL condition
 
 The boolean expression a [rule](#rule)'s `condition = "..."` field
 carries. CEL ([Common Expression Language](https://github.com/google/cel-spec))
-is evaluated against the [facets](#facet) of the rule's inferred
-family. Idioms: equality / membership (`http.method == 'POST'`,
+is evaluated against the [facet fields](#facet-field) exposed by the
+[family](#family) of the rule's endpoints. Idioms: equality / membership
+(`http.method == 'POST'`,
 `sql.verb in ['select', 'show']`), prefix / suffix / substring
 (`k8s.name.startsWith('debug-')`, `http.body.contains('secret')`),
 regex (`sql.statement.matches('(?i)\\bpassword\\b')`), list overlap
@@ -142,7 +147,7 @@ rule's endpoints see.
 
 An entity that arbitrates an `approve = [...]` chain stage. Built-in
 types: `llm_approver` (Claude / GPT proctor that reads a
-[`policy {}` block](#configuration-vocabulary) prompt) and
+[`policy {}` block](/docs/config-reference/#policy-name-) prompt) and
 `human_approver` (Slack / dashboard, with optional N-of-N quorum).
 
 ### Profile
@@ -224,59 +229,3 @@ agent. SCRAM is designed to defeat a passive password swap, so the
 gateway has to *be* one of the peers — hence "offload" rather than
 "forward."
 
-## Configuration vocabulary
-
-The HCL-level vocabulary an operator writes. Every named entity shares
-**one flat namespace** — names are globally unique across all kinds —
-and references are bare names (`endpoint = pg-writer`, never
-`postgres.pg-writer`). The two-label `kind "type" "name" { ... }` shape
-carries type information for schema dispatch; reference syntax doesn't
-repeat it. See [`config/README.md`](../../config/README.md) for the
-authoritative grammar.
-
-### Policy defaults (top-level)
-
-Top-level singleton attributes — not a block. Global fallbacks:
-`unknown_host` (passthrough vs. deny), `llm_fail_mode`,
-`llm_cache_ttl`, `human_timeout`, `human_on_timeout`. Every plugin can
-read these from `BuildCtx` / the compiled policy on `ApproveRequest`.
-
-### `approver "<type>" "<name>" { ... }`
-
-An [approver](#approver) entity. First label = type (`llm_approver` /
-`human_approver`); second = bare name used in `approve = [...]`.
-
-### `policy "<name>" { text = "..." }`
-
-A reusable LLM proctor prompt. Referenced from an `llm_approver`
-block's `policy = my-policy` field; the approver itself is then
-named in `approve = [my-judge]` on a rule.
-
-### `credential "<type>" "<name>" { ... }`
-
-A [credential](#credential) entity. First label = type (`bearer_token`,
-`mtls_credential`, `postgres_credential`, ...); second = bare name.
-
-### `endpoint "<type>" "<name>" { ... }`
-
-An [endpoint](#endpoint) entity. First label = endpoint type
-(`https` / `kubernetes` / `postgres` / `clickhouse_*`); second = bare
-name. Family-specific fields: `hosts` (for `https`), `host` + `database`
-(for `postgres`), `server` + `ca_cert` (for `kubernetes`).
-
-### `rule "<name>" { ... }`
-
-A [rule](#rule). One label — the bare name. The protocol family is
-inferred from `endpoint(s) =`. Body carries `endpoint(s) =`,
-`priority`, an optional `credential =` predicate, an optional CEL
-`condition = "..."`, and either `verdict` or `approve`.
-
-### `profile "<name>" { endpoints = [...] }`
-
-A [profile](#profile). Single-label block — bare name, plus an
-endpoint-membership list.
-
-<!-- Implementation-level vocabulary (Plugin, Runtime, the
-HTTP/Postgres/TLS/Conn runtime interfaces, ConnIndex, the WG
-promiscuous forwarder, etc.) lives in the repo's internal
-doc/code-vocabulary.md, not here. -->
