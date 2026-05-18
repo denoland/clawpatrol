@@ -946,6 +946,81 @@ func ts_netstack_resolve(hostC *C.char, outBuf *C.char, outLen C.int) C.int {
 	return -1
 }
 
+// framedConn wraps a net.Conn with [uint16 BE len][payload] framing so
+// that each Write/Read is one datagram. This lets wg_netstack_send/recv
+// work unchanged for UDP relay: the caller writes/reads whole datagrams
+// and the framing is handled transparently here.
+type framedConn struct {
+	net.Conn
+	rbuf []byte // reassembly buffer
+}
+
+func (f *framedConn) Write(p []byte) (int, error) {
+	n := len(p)
+	framed := make([]byte, 2+n)
+	framed[0] = byte(n >> 8)
+	framed[1] = byte(n)
+	copy(framed[2:], p)
+	_, err := f.Conn.Write(framed)
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+func (f *framedConn) Read(p []byte) (int, error) {
+	lbuf := make([]byte, 2)
+	if _, err := io.ReadFull(f.Conn, lbuf); err != nil {
+		return 0, err
+	}
+	n := int(lbuf[0])<<8 | int(lbuf[1])
+	if n == 0 {
+		return 0, nil
+	}
+	if n > len(p) {
+		// drain oversized datagram, return truncated
+		tmp := make([]byte, n)
+		if _, err := io.ReadFull(f.Conn, tmp); err != nil {
+			return 0, err
+		}
+		return copy(p, tmp), nil
+	}
+	return io.ReadFull(f.Conn, p[:n])
+}
+
+// ts_netstack_udp_connect dials dstHost:dstPort for UDP via the gateway
+// over tsnet. Uses TCP with a PROXY UDP4 header and [uint16 len][payload]
+// framing so the gateway can relay actual UDP datagrams. The returned
+// conn ID works with wg_netstack_send/recv/close_conn identically to TCP.
+//
+//export ts_netstack_udp_connect
+func ts_netstack_udp_connect(hostC *C.char, port C.int, errBuf *C.char, errLen C.int) C.int64_t {
+	tsMu.Lock()
+	s := tsServer
+	gwAddr := tsGwAddr
+	srcIP := tsNodeIP
+	tsMu.Unlock()
+	if s == nil {
+		setErr(errBuf, errLen, "ts_netstack not initialized")
+		return -1
+	}
+	host := C.GoString(hostC)
+	conn, err := s.Dial(context.Background(), "tcp", gwAddr)
+	if err != nil {
+		setErr(errBuf, errLen, "tsnet dial: "+err.Error())
+		return -1
+	}
+	proxyHdr := fmt.Sprintf("PROXY UDP4 %s %s 0 %d\r\n", srcIP, host, int(port))
+	if _, err := io.WriteString(conn, proxyHdr); err != nil {
+		_ = conn.Close()
+		setErr(errBuf, errLen, "proxy hdr: "+err.Error())
+		return -1
+	}
+	id := nextConnID.Add(1)
+	conns.Store(id, &connHandle{conn: &framedConn{Conn: conn}})
+	return C.int64_t(id)
+}
+
 // ts_netstack_close shuts down the tsnet server.
 //
 //export ts_netstack_close

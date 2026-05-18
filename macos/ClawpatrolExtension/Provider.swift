@@ -239,12 +239,7 @@ class TransparentProxyProvider: NETransparentProxyProvider {
         if let udp = flow as? NEAppProxyUDPFlow {
             // Claim every UDP flow. Returning false on UDP races kernel
             // detach (radar r.98382363) → ~30s Chrome QUIC stall.
-            // In tsnet mode there is no UDP tunnel path (tsnet is TCP
-            // only), so all UDP — including from tunneled processes —
-            // is bypassed via a real host socket. The child's TCP
-            // traffic is tunneled; UDP DNS goes direct (fine, since
-            // the child is not network-namespace isolated on macOS).
-            if !tunnel || tsnetMode { bypassUDP(udp); return true }
+            if !tunnel { bypassUDP(udp); return true }
             bridgeUDP(udp); return true
         }
         return false
@@ -397,6 +392,12 @@ class TransparentProxyProvider: NETransparentProxyProvider {
     /// DNS / sparse UDP. For high-rate UDP (QUIC) a per-endpoint cache
     /// would be better — TODO when we hit that wall.
     private func pumpUDP(flow: NEAppProxyUDPFlow) {
+        let udpConnectFn: (UnsafeMutablePointer<CChar>, Int32, UnsafeMutablePointer<CChar>?, Int32) -> Int64
+        if tsnetMode {
+            udpConnectFn = { h, p, eb, el in ts_netstack_udp_connect(h, p, eb, el) }
+        } else {
+            udpConnectFn = { h, p, eb, el in wg_netstack_udp_connect(h, p, eb, el) }
+        }
         flow.readDatagrams { datagrams, endpoints, err in
             if err != nil || datagrams == nil || datagrams!.isEmpty {
                 flow.closeReadWithError(nil); return
@@ -408,8 +409,8 @@ class TransparentProxyProvider: NETransparentProxyProvider {
                 var errBuf = [CChar](repeating: 0, count: 256)
                 let cid = ip.withCString { hostC in
                     errBuf.withUnsafeMutableBufferPointer { ebuf in
-                        wg_netstack_udp_connect(UnsafeMutablePointer(mutating: hostC),
-                                                port, ebuf.baseAddress, Int32(ebuf.count))
+                        udpConnectFn(UnsafeMutablePointer(mutating: hostC),
+                                     port, ebuf.baseAddress, Int32(ebuf.count))
                     }
                 }
                 if cid < 0 {
