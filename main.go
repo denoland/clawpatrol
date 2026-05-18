@@ -1669,6 +1669,30 @@ func (g *Gateway) serveTSNetDirect(c net.Conn, mux http.Handler) {
 	_ = http.Serve(&oneShotListener{c: tc}, mux)
 }
 
+// serveTsnetDNSUDP pumps UDP/53 datagrams from the tsnet listener
+// through dnsvip.HandlePacket. Used for whole-machine exit-node
+// clients so the gateway allocates VIPs for intercepted hostnames
+// before the client's TCP follow-up arrives.
+func serveTsnetDNSUDP(pc net.PacketConn, vip *dnsvip.Allocator) {
+	defer func() { _ = pc.Close() }()
+	buf := make([]byte, 4<<10)
+	for {
+		n, src, err := pc.ReadFrom(buf)
+		if err != nil {
+			return
+		}
+		dstIP := ""
+		if la, ok := pc.LocalAddr().(*net.UDPAddr); ok && la.IP != nil {
+			dstIP = la.IP.String()
+		}
+		resp := vip.HandlePacket(buf[:n], dstIP)
+		if resp == nil {
+			continue
+		}
+		_, _ = pc.WriteTo(resp, src)
+	}
+}
+
 func pipeProgress(a, b net.Conn, onTick func(rx, tx int64)) (rx, tx int64) {
 	var rxC, txC atomic.Int64
 	done := make(chan struct{}, 2)
@@ -2879,6 +2903,20 @@ func runGateway(args []string) {
 		}
 		if cfg.Funnel {
 			startFunnelListener(tsnetServer, tsnetDashMux)
+		}
+		// UDP/53 DNS server on the tsnet node. Whole-machine clients with
+		// the gateway as exit-node send DNS via UDP/53 to the gateway's
+		// tailnet IP; dnsvip allocates a VIP per intercepted hostname so
+		// the subsequent TCP connection has a VIP the gateway recognises
+		// and dispatches. WG mode's promiscuous forwarder caught this
+		// already; tsnet exit-node needs an explicit listener.
+		if g.dnsvip != nil {
+			if pc, err := tsnetServer.ListenPacket("udp", ":53"); err != nil {
+				log.Printf("tsnet: udp :53 (dns): %v", err)
+			} else {
+				go serveTsnetDNSUDP(pc, g.dnsvip)
+				log.Printf("tsnet: dnsvip UDP listener on tsnet :53")
+			}
 		}
 		// Intercept all TCP forwarded through this exit node (whole-machine
 		// clients). dst is the original internet destination — same dispatch
