@@ -68,28 +68,15 @@ export function ProfilesPage({
               const devices = countByProfile.get(p.name) ?? 0;
               return (
                 <li key={p.name} className="px-4 py-3">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-baseline justify-between gap-3">
                     <div className="font-medium">{p.name}</div>
-                    <span className="text-xs text-text-muted">read-only</span>
-                  </div>
-                  <div className="text-xs text-text-muted mt-0.5">
-                    {devices} device{devices === 1 ? "" : "s"} · {p.endpoints.length} endpoint
-                    {p.endpoints.length === 1 ? "" : "s"} · {p.rule_count} rule
-                    {p.rule_count === 1 ? "" : "s"} · {p.credentials.length} credential
-                    {p.credentials.length === 1 ? "" : "s"}
-                  </div>
-                  {p.endpoints.length > 0 && (
-                    <div className="mt-2 flex flex-wrap gap-1">
-                      {p.endpoints.map((ep) => (
-                        <span
-                          key={ep}
-                          className="font-mono text-xs px-1.5 py-0.5 bg-canvas-dark text-text-muted"
-                        >
-                          {ep}
-                        </span>
-                      ))}
+                    <div className="text-xs text-text-muted">
+                      {devices} device{devices === 1 ? "" : "s"} · {p.endpoints.length} endpoint
+                      {p.endpoints.length === 1 ? "" : "s"} · {p.rule_count} rule
+                      {p.rule_count === 1 ? "" : "s"} · {p.credentials.length} credential
+                      {p.credentials.length === 1 ? "" : "s"}
                     </div>
-                  )}
+                  </div>
                   {p.credentials.length > 0 && (
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       {p.credentials.map((c) => {
