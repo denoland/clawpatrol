@@ -19,6 +19,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strings"
 	"sync"
 )
 
@@ -128,12 +129,14 @@ func (w *webMux) apiAddEphemeralPeer(rw http.ResponseWriter, r *http.Request) {
 }
 
 // apiRegisterEphemeralTsnetIP handles POST /api/peer/ephemeral/tsnet/register.
-// Called by `clawpatrol run` (tsnet mode) right after the ephemeral tsnet
-// node joins. Records the run's tailnet IP as an ephemeral peer of the
-// parent device so profile dispatch + dashboard attribution roll up to
-// the parent (same model as WG-mode ephemeralPeer). No devices row is
-// created per run — the parent's row was seeded at /api/onboard/approve
-// time using the synthetic `tsnet:<device_code>` ID.
+// Called by `clawpatrol run` right after the ephemeral tsnet node joins.
+//
+// First run from a machine promotes its tailnet IP to the device's
+// stable parent: the synthetic `tsnet-<hostname>` placeholder created
+// at approve time is replaced by a real devices row keyed on the
+// 100.x IP. Subsequent concurrent runs attribute their (different)
+// ephemeral IPs to the same parent via ephemeralParentByIP — exactly
+// the WG-mode ephemeralPeer model.
 func (w *webMux) apiRegisterEphemeralTsnetIP(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(rw, "POST", http.StatusMethodNotAllowed)
@@ -159,9 +162,29 @@ func (w *webMux) apiRegisterEphemeralTsnetIP(rw http.ResponseWriter, r *http.Req
 		return
 	}
 	profile := w.g.onboard.ProfileForIP(parentIP)
-	w.g.onboard.setEphemeralProfile(tsnetIP, parentIP, profile)
-	// Map the ephemeral run's IPv6 ULA too — whole-machine + per-process
-	// tsnet traffic both arrive on fd7a:115c:a1e0::/48.
+	hostname := w.g.onboard.HostnameForIP(parentIP)
+	// First-run promotion: synthetic parent → real tailnet IP. Repoint
+	// the api-token and clean up the placeholder row so the dashboard
+	// surfaces a single device keyed on the actual 100.x address.
+	if strings.HasPrefix(parentIP, "tsnet-") {
+		_, _ = w.g.db.Exec("UPDATE peer_api_tokens SET peer_ip=? WHERE peer_ip=?", tsnetIP, parentIP)
+		_, _ = w.g.db.Exec("DELETE FROM devices WHERE id=?", parentIP)
+		w.g.onboard.ForgetIP(parentIP)
+		if profile != "" {
+			w.g.onboard.AssignProfile(tsnetIP, profile)
+		}
+		if hostname != "" {
+			w.g.onboard.SetHostname(tsnetIP, hostname)
+		}
+		if w.g.agents != nil {
+			w.g.agents.Seed(tsnetIP)
+		}
+	} else {
+		// Subsequent concurrent run — attribute to the existing parent.
+		w.g.onboard.setEphemeralProfile(tsnetIP, parentIP, profile)
+	}
+	// Map the ephemeral run's IPv6 ULA too — tsnet traffic frequently
+	// arrives on fd7a:115c:a1e0::/48 rather than the 100.x.
 	w.g.seedTsnetIPv6Alias(tsnetIP)
 	rw.WriteHeader(http.StatusNoContent)
 }
