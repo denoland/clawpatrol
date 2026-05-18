@@ -583,6 +583,14 @@ type IntegrationRow struct {
 	// Never contains secret material — secret bytes live in the
 	// secrets store, not in the HCL block.
 	Config map[string]string `json:"config,omitempty"`
+	// UpdatedAt is the Unix-seconds timestamp of the most recent
+	// persistence event for this credential — the max of
+	// credential_secrets.updated_ns and the OAuth row's updated_ns.
+	// Zero when neither store has a row (declared-only credential).
+	// The dashboard sorts the per-type details table by this so the
+	// most recently connected credential surfaces at the top of the
+	// non-pending rows.
+	UpdatedAt int64 `json:"updated_at,omitempty"`
 }
 
 // TailscaleAuthStatusUI is the dashboard-facing slice of a
@@ -692,6 +700,7 @@ func (w *webMux) statusList(r *http.Request) []IntegrationRow {
 		}
 		row.Profiles, row.Endpoints = credentialBindings(policy, name)
 		row.Config = credentialConfig(ent, name)
+		row.UpdatedAt = credentialUpdatedAt(w.g.db, name)
 		out = append(out, row)
 	}
 	return out

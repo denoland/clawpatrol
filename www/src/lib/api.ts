@@ -72,6 +72,11 @@ export type Integration = {
   // are the raw HCL token text (quoted strings included). Never
   // includes secret material.
   config?: Record<string, string>;
+  // Unix seconds of the most recent connect/update on this
+  // credential (max across the OAuth and per-slot secret stores).
+  // Zero/undefined for declared-only credentials that have never
+  // been touched.
+  updated_at?: number;
 };
 
 // tailscaleConnect asks the gateway for the live tsnet login URL.

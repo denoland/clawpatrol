@@ -11,7 +11,12 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Integration, TailscaleNodeState } from "../lib/api";
 import { clearCredential, oauthRevoke, tailscaleConnect, tailscaleDisconnect } from "../lib/api";
-import { credentialTypeLabel } from "../lib/credentialLabels";
+import {
+  CREDENTIAL_CATEGORY_RANK,
+  type CredentialCategory,
+  credentialCategory,
+  credentialTypeLabel,
+} from "../lib/credentialLabels";
 import { fmtExpiry } from "../lib/format";
 import { CredentialSecretsModal } from "./CredentialSecretsModal";
 import { IntegrationIcon } from "./Logos";
@@ -19,6 +24,7 @@ import { IntegrationIcon } from "./Logos";
 type Group = {
   type: string;
   label: string;
+  category: CredentialCategory;
   items: Integration[];
   connected: number;
   total: number;
@@ -47,6 +53,7 @@ function groupByType(list: Integration[]): Group[] {
       g = {
         type: key,
         label: credentialTypeLabel(key, key),
+        category: credentialCategory(key),
         items: [],
         connected: 0,
         total: 0,
@@ -60,16 +67,40 @@ function groupByType(list: Integration[]): Group[] {
     else if (isAuthable(i)) g.pending++;
   }
   const out = [...groups.values()];
-  // Sort by pending desc (operator attention first), then by
-  // unconnected total desc, then alphabetically for stability.
+  // Order, by priority (most operator-relevant first):
+  //   1. types with at least one pending credential beat types that
+  //      are fully connected (or have nothing left to connect);
+  //   2. within a tier, category rank — LLM > messaging > database
+  //      > 3rd-party > generic-token > other;
+  //   3. pending count descending, so the busiest type leads;
+  //   4. label, alphabetical, for stable ties.
   out.sort((a, b) => {
+    const aPending = a.pending > 0 ? 0 : 1;
+    const bPending = b.pending > 0 ? 0 : 1;
+    if (aPending !== bPending) return aPending - bPending;
+    const aRank = CREDENTIAL_CATEGORY_RANK[a.category];
+    const bRank = CREDENTIAL_CATEGORY_RANK[b.category];
+    if (aRank !== bRank) return aRank - bRank;
     if (a.pending !== b.pending) return b.pending - a.pending;
-    const aRest = a.total - a.connected;
-    const bRest = b.total - b.connected;
-    if (aRest !== bRest) return bRest - aRest;
     return a.label.localeCompare(b.label);
   });
   return out;
+}
+
+// sortDetailRows hoists pending-to-connect credentials to the top of
+// the per-type details table and sorts within each bucket by
+// updated_at descending — so the first non-pending row is the most
+// recently connected credential.
+function sortDetailRows(items: Integration[]): Integration[] {
+  return [...items].sort((a, b) => {
+    const aPending = !isConnected(a) && isAuthable(a) ? 0 : 1;
+    const bPending = !isConnected(b) && isAuthable(b) ? 0 : 1;
+    if (aPending !== bPending) return aPending - bPending;
+    const aTs = a.updated_at ?? 0;
+    const bTs = b.updated_at ?? 0;
+    if (aTs !== bTs) return bTs - aTs;
+    return a.name.localeCompare(b.name);
+  });
 }
 
 // Approximate per-card minimum width. The grid is JS-driven (not
@@ -305,6 +336,7 @@ function DetailsPanel({
   const configKeys = Array.from(
     new Set(group.items.flatMap((i) => Object.keys(i.config ?? {}))),
   ).sort();
+  const rows = sortDetailRows(group.items);
   return (
     <div className="bg-canvas-light border-2 border-navy overflow-hidden">
       <div className="flex items-center justify-between gap-3 px-4 py-2.5 bg-navy-100 border-b border-navy">
@@ -336,7 +368,7 @@ function DetailsPanel({
             </tr>
           </thead>
           <tbody>
-            {group.items.map((i) => (
+            {rows.map((i) => (
               <DetailsRow
                 key={i.id}
                 integration={i}
