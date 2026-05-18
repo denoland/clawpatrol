@@ -274,11 +274,11 @@ per endpoint to invert this.
 
 ## Inspection-buffer overflow
 
-To bound memory, the wire frontends cap how much of each request they
+To bound memory, the wire endpoints cap how much of each request they
 buffer for the matcher. A request that exceeds its cap is **not**
 dropped on the floor — the frame still forwards to upstream
 byte-for-byte. What's bounded is the matcher's view of it. The
-frontend flags the request as truncated, and the dispatcher
+endpoint flags the request as truncated, and the dispatcher
 fails-closed per rule.
 
 | Endpoint | Inspected slice | Cap | Truncatable facets |
@@ -326,7 +326,7 @@ auto-denies.
 
 A matched rule with `approve = [...]` on a truncated postgres frame
 is forced to deny without paging the approver (HITL can't reason about
-bytes that aren't there); the postgres frontend surfaces this with the
+bytes that aren't there); the postgres endpoint surfaces this with the
 reason `"approval required but request was truncated by inspection
 buffer"`.
 
