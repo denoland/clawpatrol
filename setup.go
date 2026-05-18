@@ -953,7 +953,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 
 	stopSpin := startSpinner("Waiting for approval")
 	authKey, loginServer, apiToken := "", "", ""
-	var tailnetGWHost, tailnetControlURL, gatewayIP, caPEM string
+	var tailnetGWHost, tailnetControlURL, gatewayIP, gatewayPort, caPEM string
 	for time.Now().Before(deadline) {
 		time.Sleep(interval)
 		pr, err := cli.Post(gateway+"/api/onboard/poll?device_code="+start.DeviceCode, "application/json", nil)
@@ -970,6 +970,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 			tailnetGWHost = pv["gateway_host"]
 			tailnetControlURL = pv["control_url"]
 			gatewayIP = pv["gateway_ip"]
+			gatewayPort = pv["gateway_port"]
 			caPEM = pv["ca_pem"]
 			break
 		}
@@ -1119,6 +1120,9 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		// start a fresh ephemeral tsnet node without a Funnel-exposed
 		// peer-API call (which we intentionally block).
 		_ = os.WriteFile(filepath.Join(clawDir, "tsnet-auth-key"), []byte(authKey+"\n"), 0o600)
+		if gatewayPort != "" {
+			_ = os.WriteFile(filepath.Join(clawDir, "gateway-port"), []byte(gatewayPort+"\n"), 0o600)
+		}
 		items := []string{"Joined (tsnet mode — ephemeral node joins tailnet at run time)"}
 		items = append(items, setupSummaryItems(*setup)...)
 		printTreeItems(items)

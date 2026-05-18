@@ -104,9 +104,12 @@ func runRunTsnet(args []string) {
 	if authKey == "" {
 		fail("tsnet run: missing tsnet-auth-key in %s (re-run `clawpatrol join`)", dir)
 	}
-	// Gateway port for direct-dial fallback (rarely used; tsnet exit-node
-	// routing is the normal path). Default 443.
-	gwPort := "443"
+	// Gateway agent port (where the MITM listener lives). Tsnet Funnel
+	// owns :443, so the listener is typically :8443. Persisted at join.
+	gwPort := strings.TrimSpace(readFileSilent(filepath.Join(dir, "gateway-port")))
+	if gwPort == "" {
+		gwPort = "443"
+	}
 
 	// 2. Spin up tsnet.Server with PERSISTENT state — same node identity
 	// (same tailnet IP, same hostname) across `clawpatrol run` invocations

@@ -56,8 +56,12 @@ func runRunTsnet(args []string) {
 	if authKey == "" {
 		fail("tsnet run: missing tsnet-auth-key in %s (re-run `clawpatrol join`)", dir)
 	}
-	// Default gateway port — extension dials gwHost:gwPort over tsnet.
-	gwPort := "443"
+	// Gateway agent port persisted at join (Tailscale Funnel owns :443,
+	// so this is typically :8443).
+	gwPort := strings.TrimSpace(readFileSilent(filepath.Join(dir, "gateway-port")))
+	if gwPort == "" {
+		gwPort = "443"
+	}
 
 	// Ensure system extension is loaded.
 	{
