@@ -57,6 +57,89 @@ func TestSQLMatcherVerbCaseInsensitive(t *testing.T) {
 	}
 }
 
+// TestSQLMatcherTablesAndFunctionsCaseInsensitive locks in that a
+// rule written as `"Users" in sql.tables` or
+// `sets.intersects(sql.tables, ["Users"])` matches an upper-case want
+// against the always-lower got side. Postgres and clickhouse parsers
+// fold identifiers to lower-case before populating Meta, so any rule
+// that types tables/functions in any case must still resolve.
+func TestSQLMatcherTablesAndFunctionsCaseInsensitive(t *testing.T) {
+	cases := []struct {
+		name      string
+		condition string
+		meta      *sqlfacet.Meta
+		want      bool
+	}{
+		{
+			"in-list literal upper, got lower",
+			"'Users' in sql.tables",
+			&sqlfacet.Meta{Verb: "select", Tables: []string{"users"}},
+			true,
+		},
+		{
+			"in-list literal upper, miss",
+			"'Orders' in sql.tables",
+			&sqlfacet.Meta{Verb: "select", Tables: []string{"users"}},
+			false,
+		},
+		{
+			"sets.intersects mixed-case want list",
+			"sets.intersects(sql.tables, ['Users', 'USER_SECRETS'])",
+			&sqlfacet.Meta{Verb: "select", Tables: []string{"user_secrets"}},
+			true,
+		},
+		{
+			"sets.intersects no overlap",
+			"sets.intersects(sql.tables, ['Users'])",
+			&sqlfacet.Meta{Verb: "select", Tables: []string{"orders"}},
+			false,
+		},
+		{
+			"functions upper-case literal",
+			"'Now' in sql.functions",
+			&sqlfacet.Meta{Verb: "select", Functions: []string{"now"}},
+			true,
+		},
+		{
+			"sets.intersects on functions",
+			"sets.intersects(sql.functions, ['Pg_Sleep', 'NOW'])",
+			&sqlfacet.Meta{Verb: "select", Functions: []string{"now"}},
+			true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, err := facet.NewMatcher("sql", tc.condition)
+			if err != nil {
+				t.Fatalf("NewMatcher: %v", err)
+			}
+			req := &match.Request{Family: "sql", Meta: tc.meta}
+			if got := m.Match(req); got != tc.want {
+				t.Errorf("Match=%v want %v (condition=%q)", got, tc.want, tc.condition)
+			}
+		})
+	}
+}
+
+// TestSQLMatcherStatementCaseSensitive locks in that `sql.statement`
+// stays case-preserving even though sibling fields (verb / tables /
+// functions) are case-folded. Operators opt into case-insensitive
+// statement matches via `statement.matches('(?i)...')`.
+func TestSQLMatcherStatementCaseSensitive(t *testing.T) {
+	m, err := facet.NewMatcher("sql", "sql.statement == 'SELECT 1'")
+	if err != nil {
+		t.Fatalf("NewMatcher: %v", err)
+	}
+	req := &match.Request{Family: "sql", Meta: &sqlfacet.Meta{Verb: "select", Statement: "select 1"}}
+	if m.Match(req) {
+		t.Errorf("case-sensitive statement should NOT match lower-cased SQL")
+	}
+	req.Meta = &sqlfacet.Meta{Verb: "select", Statement: "SELECT 1"}
+	if !m.Match(req) {
+		t.Errorf("case-sensitive statement should match identical SQL")
+	}
+}
+
 // TestSQLMatcherDatabaseCaseSensitive pins the database facet's
 // case-sensitivity: postgres treats database names as identifiers, so
 // `sql.database == "Prod"` MUST distinguish "Prod" from "prod". The

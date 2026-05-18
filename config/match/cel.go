@@ -280,12 +280,16 @@ func referencesPath(root celast.Expr, paths []celPath) bool {
 //
 // Recognised shapes — for each, the literal is normalized:
 //
-//	<path> == "X"           // and the symmetric "X" == <path>
-//	<path> != "X"           // and the symmetric "X" != <path>
-//	<path> in ["X", "Y"]    // every string literal in the list
-//	<path>.startsWith("X")  // member-call args
+//	<path> == "X"                            // and the symmetric "X" == <path>
+//	<path> != "X"                            // and the symmetric "X" != <path>
+//	<path> in ["X", "Y"]                     // every string literal in the list
+//	"X" in <path>                            // path is a list-typed facet
+//	<path>.startsWith("X")                   // member-call args
 //	<path>.endsWith("X")
 //	<path>.contains("X")
+//	sets.intersects(<path>, ["X", "Y"])      // and the symmetric form
+//	sets.contains(<path>, ["X", "Y"])
+//	sets.equivalent(<path>, ["X", "Y"])
 //
 // matches() is deliberately not normalized — its argument is a regex,
 // where case classes like `[A-Z]` are meaningful and the operator can
@@ -313,15 +317,39 @@ func normalizeWantLiterals(root celast.Expr, paths []celPath) {
 				}
 			case operators.In:
 				args := c.Args()
-				if len(args) == 2 && matchesPath(args[0], paths) && args[1].Kind() == celast.ListKind {
-					for _, el := range args[1].AsList().Elements() {
-						lowercaseStringLiteral(el)
+				if len(args) == 2 {
+					switch {
+					case matchesPath(args[0], paths) && args[1].Kind() == celast.ListKind:
+						for _, el := range args[1].AsList().Elements() {
+							lowercaseStringLiteral(el)
+						}
+					case matchesPath(args[1], paths):
+						// `"X" in <path>` — path is a list-typed facet.
+						lowercaseStringLiteral(args[0])
 					}
 				}
 			case "startsWith", "endsWith", "contains":
 				if c.IsMemberFunction() && matchesPath(c.Target(), paths) {
 					for _, a := range c.Args() {
 						lowercaseStringLiteral(a)
+					}
+				}
+			case "sets.intersects", "sets.contains", "sets.equivalent":
+				// Two-list set predicates from cel-go ext.Sets(). When
+				// one argument is a declared-lowercase path and the
+				// other is a list literal, lowercase the literal's
+				// string elements so an upper-case want still matches
+				// the lower-cased got.
+				args := c.Args()
+				if len(args) == 2 {
+					if matchesPath(args[0], paths) && args[1].Kind() == celast.ListKind {
+						for _, el := range args[1].AsList().Elements() {
+							lowercaseStringLiteral(el)
+						}
+					} else if matchesPath(args[1], paths) && args[0].Kind() == celast.ListKind {
+						for _, el := range args[0].AsList().Elements() {
+							lowercaseStringLiteral(el)
+						}
 					}
 				}
 			}

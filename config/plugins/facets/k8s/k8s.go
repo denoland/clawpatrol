@@ -136,7 +136,13 @@ func init() {
 // matching string literals in the rule source at compile time, so
 // `k8s.verb == "GET"` matches a get request even though the
 // activation reports `verb = "get"`.
-var lowercasedPaths = []string{"k8s.verb"}
+//
+// `resource` is always lowercase too: kubernetes API server routes
+// only resolve lowercase resource segments (`/api/v1/pods`, never
+// `/Pods`), so the Meta derived from the URL path is always lower.
+// `namespace` and `name` are case-sensitive (kubernetes allows mixed
+// case there) and intentionally stay unnormalised.
+var lowercasedPaths = []string{"k8s.verb", "k8s.resource"}
 
 // Kubernetes Meta is derived entirely from the request URL + method,
 // not from buffered request bytes, so no k8s.* field is affected by
