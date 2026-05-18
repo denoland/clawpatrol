@@ -25,6 +25,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/denoland/clawpatrol/cmd/clawpatrol/dnsvip"
 	"github.com/denoland/clawpatrol/config"
 	"github.com/denoland/clawpatrol/config/extplugin"
 	"github.com/denoland/clawpatrol/config/facet"
@@ -33,7 +34,6 @@ import (
 	"github.com/denoland/clawpatrol/config/plugins/approvers"
 	"github.com/denoland/clawpatrol/config/plugins/endpoints"
 	"github.com/denoland/clawpatrol/config/runtime"
-	"github.com/denoland/clawpatrol/dnsvip"
 	"github.com/google/uuid"
 	"tailscale.com/client/local"
 )

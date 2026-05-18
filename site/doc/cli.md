@@ -19,7 +19,7 @@ source instead (requires Go + `gh auth login`).
 ### `clawpatrol gateway`
 
 Run the gateway daemon against an HCL config. Start from
-[`gateway.example.hcl`](https://github.com/denoland/clawpatrol/blob/main/gateway.example.hcl)
+[`gateway.example.hcl`](https://github.com/denoland/clawpatrol/blob/main/cmd/clawpatrol/gateway.example.hcl)
 — see [Getting Started](/docs/getting-started/) for the operational
 fields you need to edit.
 

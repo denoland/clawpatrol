@@ -129,8 +129,8 @@ func repoRoot() (string, error) {
 	if !ok {
 		return "", fmt.Errorf("runtime.Caller failed")
 	}
-	// .../tools/docgen/internal/render/godoc.go → repo root is 4 levels up.
-	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..", "..", "..")), nil
+	// .../internal/tools/docgen/internal/render/godoc.go → repo root is 5 levels up.
+	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..", "..", "..", "..")), nil
 }
 
 func (d *goDocs) typeDoc(pkg, name string) string { return d.types[pkg+"."+name] }

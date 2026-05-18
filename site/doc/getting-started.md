@@ -26,7 +26,7 @@ on amd64/arm64 are supported. To build from source instead, set
 
 On the server, pick a data directory (anywhere — `/opt/clawpatrol`,
 `/srv/clawpatrol`, your home), drop a copy of
-[`gateway.example.hcl`](https://github.com/denoland/clawpatrol/blob/main/gateway.example.hcl)
+[`gateway.example.hcl`](https://github.com/denoland/clawpatrol/blob/main/cmd/clawpatrol/gateway.example.hcl)
 into it, and edit the operational fields:
 
 ```hcl

@@ -1,6 +1,6 @@
 // Standalone clawpatrol plugin demonstrating the v1 plugin protocol.
 //
-// Build:   go build -o plugin-example ./plugin-example
+// Build:   go build -o example ./pluginsdk/example
 // Run:     the gateway spawns the binary; not invoked directly.
 //
 // Provides one credential (magic_token), one tunnel (passthrough),

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/denoland/clawpatrol/tools/docgen/internal/render"
+	"github.com/denoland/clawpatrol/internal/tools/docgen/internal/render"
 )
 
 // TestGeneratedDocIsFresh fails when site/doc/config-reference.md
@@ -62,6 +62,6 @@ func repoRoot(t *testing.T) string {
 	if !ok {
 		t.Fatal("runtime.Caller(0) failed")
 	}
-	// .../tools/docgen/docgen_test.go → repo root is 2 levels up.
-	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	// .../internal/tools/docgen/docgen_test.go → repo root is 3 levels up.
+	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..", ".."))
 }

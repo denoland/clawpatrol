@@ -2,7 +2,7 @@
 //
 // Build the plugin first:
 //
-//   go build -o ./plugin-example/plugin-example ./plugin-example
+//   go build -o ./pluginsdk/example/example ./pluginsdk/example
 //
 // Then run the gateway against this file. The plugin declares one
 // credential type (example_magic_token), one tunnel type
@@ -16,7 +16,7 @@
 admin_email = "you@example.com"
 
 plugin "example" {
-  source = "./plugin-example/plugin-example"
+  source = "./pluginsdk/example/example"
 }
 
 credential "example_magic_token" "demo_token" {
