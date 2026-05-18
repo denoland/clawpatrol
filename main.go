@@ -2808,6 +2808,17 @@ func runGateway(args []string) {
 		if ip4, _ := tsnetServer.TailscaleIPs(); ip4.IsValid() {
 			g.tailscaleIP = ip4.String()
 		}
+		// Serve the info/dashboard mux on tsnet's virtual network so
+		// clawpatrol-run clients connecting to this tsnet IP on the info
+		// port can mint ephemeral auth keys and reach the dashboard.
+		if infoPort := portOf(cfg.InfoListen); infoPort != 0 {
+			if tsnetInfoLn, err := tsnetServer.Listen("tcp", fmt.Sprintf(":%d", infoPort)); err != nil {
+				log.Printf("tsnet: info listen :%d: %v", infoPort, err)
+			} else {
+				go http.Serve(tsnetInfoLn, tsnetDashMux)
+				log.Printf("tsnet: info/dashboard also listening on tsnet :%d", infoPort)
+			}
+		}
 		// Intercept all TCP forwarded through this exit node (whole-machine
 		// clients). dst is the original internet destination — same dispatch
 		// as the per-process PROXY-header path and the WG promiscuous forwarder.

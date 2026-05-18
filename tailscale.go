@@ -101,11 +101,11 @@ func openListener(cfg *config.Gateway, stateDir string) (*tsnet.Server, net.List
 		ControlURL: cfg.ControlURL,
 		Dir:        dir,
 	}
-	port := cfg.Listen
-	if port == "" {
-		port = ":443"
+	_, portStr, _ := net.SplitHostPort(cfg.Listen)
+	if portStr == "" {
+		portStr = "443"
 	}
-	ln, err := s.Listen("tcp", port)
+	ln, err := s.Listen("tcp", ":"+portStr)
 	if err != nil {
 		return nil, nil, err
 	}
