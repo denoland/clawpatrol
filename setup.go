@@ -89,7 +89,7 @@ func runJoin(args []string) {
 		fail("don't run join under sudo — invoke as your normal user; I'll sudo internally for the CA install step")
 	}
 	fs := flag.NewFlagSet("join", flag.ExitOnError)
-	gwName := fs.String("name", "clawpatrol", "exit-node hostname on the tailnet")
+	gwName := fs.String("name", "clawpatrol", "exit-node hostname on the tailnet (only used with --whole-machine)")
 	caOut := fs.String("ca-dir", defaultClawpatrolDir(), "where to store the fetched CA")
 	skipTrust := fs.Bool("no-trust", false, "fetch CA but skip system trust install (do it manually)")
 	wholeMachine := fs.Bool("whole-machine", false, "bring up wg-quick to route ALL host traffic through the gateway (default: persist conf only, use `clawpatrol run` for per-process routing)")
@@ -122,8 +122,8 @@ func runJoin(args []string) {
 	// expose /ca.crt on its public Funnel path — the CA is only
 	// reachable over the tailnet (security: no TOFU over plain
 	// internet). A 404 here means we're talking to a Tailscale-mode
-	// gateway; runLogin (called below after onboard + Tailscale join)
-	// fetches the CA from the peer's tailnet IP instead.
+	// gateway; onboardViaDeviceFlow fetches the CA from the peer's
+	// tailnet IP after joining.
 	//
 	// Trust install + shell-rc updates are deferred to
 	// finishJoinSetup, which runs only after the operator's
@@ -139,12 +139,16 @@ func runJoin(args []string) {
 	if wgMode {
 		return
 	}
-	// Tailscale-specific path: exit-node + whois identity.
-	loginArgs := []string{"-name", *gwName, "-ca-dir", *caOut}
-	if *skipTrust {
-		loginArgs = append(loginArgs, "-no-trust")
+	// Whole-machine Tailscale: set exit-node so all host traffic routes
+	// through the gateway. Per-process tsnet mode (the default) never sets
+	// an exit-node — clawpatrol run handles per-process routing itself.
+	if *wholeMachine {
+		loginArgs := []string{"-name", *gwName, "-ca-dir", *caOut}
+		if *skipTrust {
+			loginArgs = append(loginArgs, "-no-trust")
+		}
+		runLogin(loginArgs)
 	}
-	runLogin(loginArgs)
 }
 
 // joinSetup carries the post-join side-effect status so the caller
@@ -330,9 +334,10 @@ func runLogin(args []string) {
 		// With accept-dns=false, Tailscale stops managing /etc/resolv.conf but
 		// leaves whatever nameserver was there (often 100.100.100.100). Once the
 		// exit-node is active, that address is unreachable from the client, so
-		// DNS breaks. Write a public fallback so lookups work through the exit-node.
+		// DNS breaks. Point ALL DNS at the gateway so VIP interception works and
+		// public names forward correctly through the gateway's own resolver.
 		if runtime.GOOS == "linux" {
-			fixResolvConf(st.MagicDNSSuffix)
+			fixResolvConf(peer.TailscaleIPs[0])
 		}
 	}
 
@@ -637,20 +642,16 @@ func manualTrustHint(caPath string) string {
 	return "manually add " + caPath + " to your system trust store"
 }
 
-// fixResolvConf ensures /etc/resolv.conf has a working public nameserver after
-// Tailscale DNS management is disabled (--accept-dns=false). When exit-node is
-// active, 100.100.100.100 (the Tailscale magic DNS address) is unreachable from
-// the client, so any resolver pointing there breaks silently.
-//
-// If systemd-resolved is running, configure split DNS: public names go to 8.8.8.8
-// via the default interface, and MagicDNS names (*.ts.net, *.tailnet suffix) still
-// resolve via 100.100.100.100 on tailscale0. This preserves peer name resolution
-// while keeping public DNS working through the exit-node.
+// fixResolvConf ensures DNS works after Tailscale management is disabled
+// (--accept-dns=false). When the gateway is a Tailscale node, we route ALL
+// DNS through it (gatewayIP) so VIP names (postgres, SSH) get intercepted;
+// non-VIP names forward through the gateway's own resolver, which resolves
+// ts.net names correctly since the gateway is already on the tailnet.
 //
 // Falls back to writing 8.8.8.8 directly into resolv.conf when systemd-resolved
 // is not available. Best-effort; logs warnings on failure.
-func fixResolvConf(magicDNSSuffix string) {
-	if fixResolvConfSplitDNS(magicDNSSuffix) {
+func fixResolvConf(gatewayIP string) {
+	if fixResolvConfSplitDNS(gatewayIP) {
 		return
 	}
 	// Fallback: plain resolv.conf replace.
@@ -688,31 +689,20 @@ func fixResolvConf(magicDNSSuffix string) {
 	}
 }
 
-// fixResolvConfSplitDNS configures systemd-resolved for split DNS: public names
-// via 8.8.8.8 on the default interface, Tailscale MagicDNS names via
-// 100.100.100.100 on tailscale0. Returns true on success.
-func fixResolvConfSplitDNS(magicDNSSuffix string) bool {
+// fixResolvConfSplitDNS configures systemd-resolved to route ALL DNS through
+// gatewayIP on tailscale0 (catch-all "~." domain). The gateway intercepts VIP
+// names (postgres, SSH) and forwards everything else via its own resolver,
+// which resolves ts.net names correctly. Returns true on success.
+func fixResolvConfSplitDNS(gatewayIP string) bool {
 	if exec.Command("systemctl", "is-active", "--quiet", "systemd-resolved").Run() != nil {
 		return false
 	}
-	domains := "ts.net"
-	if magicDNSSuffix != "" && magicDNSSuffix != "ts.net" {
-		domains = magicDNSSuffix + " ts.net"
-	}
-	// Detect the primary public interface from the default route.
-	primaryIface := "enp1s0"
-	if out, err := exec.Command("ip", "-o", "route", "get", "1.1.1.1").Output(); err == nil {
-		for i, f := range strings.Fields(string(out)) {
-			if f == "dev" && i+1 < len(strings.Fields(string(out))) {
-				primaryIface = strings.Fields(string(out))[i+1]
-				break
-			}
-		}
+	if gatewayIP == "" {
+		gatewayIP = "8.8.8.8"
 	}
 	cmds := [][]string{
-		{"resolvectl", "dns", "tailscale0", "100.100.100.100"},
-		{"resolvectl", "domain", "tailscale0", domains},
-		{"resolvectl", "dns", primaryIface, "8.8.8.8", "8.8.4.4"},
+		{"resolvectl", "dns", "tailscale0", gatewayIP},
+		{"resolvectl", "domain", "tailscale0", "~."},
 		{"ln", "-sf", "/run/systemd/resolve/stub-resolv.conf", "/etc/resolv.conf"},
 	}
 	for _, args := range cmds {
@@ -723,11 +713,11 @@ func fixResolvConfSplitDNS(magicDNSSuffix string) bool {
 			return false
 		}
 	}
-	// Persist via networkd-dispatcher.
-	script := fmt.Sprintf("#!/bin/sh\n# clawpatrol: split DNS for Tailscale exit-node\n"+
-		"resolvectl dns tailscale0 100.100.100.100 2>/dev/null\n"+
-		"resolvectl domain tailscale0 %s 2>/dev/null\n"+
-		"resolvectl dns %s 8.8.8.8 8.8.4.4 2>/dev/null\n", domains, primaryIface)
+	// Persist via networkd-dispatcher so the config survives reboots and
+	// tailscale0 interface cycling.
+	script := fmt.Sprintf("#!/bin/sh\n# clawpatrol: gateway DNS for Tailscale exit-node\n"+
+		"resolvectl dns tailscale0 %s 2>/dev/null\n"+
+		"resolvectl domain tailscale0 '~.' 2>/dev/null\n", gatewayIP)
 	const dst = "/etc/networkd-dispatcher/routable.d/51-clawpatrol-dns"
 	tmp, err := os.CreateTemp("", "clawpatrol-dns-*")
 	if err == nil {
@@ -736,7 +726,7 @@ func fixResolvConfSplitDNS(magicDNSSuffix string) bool {
 		_ = exec.Command("sudo", "sh", "-c",
 			fmt.Sprintf("mv %s %s && chmod +x %s", tmp.Name(), dst, dst)).Run()
 	}
-	fmt.Printf("Configured split DNS: %s → 100.100.100.100, public → 8.8.8.8\n", domains)
+	fmt.Printf("Configured DNS: tailscale0 → %s (all names via gateway)\n", gatewayIP)
 	return true
 }
 
@@ -962,7 +952,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 
 	stopSpin := startSpinner("Waiting for approval")
 	authKey, loginServer, apiToken := "", "", ""
-	var tailnetGWHost, tailnetControlURL string
+	var tailnetGWHost, tailnetControlURL, gatewayIP string
 	for time.Now().Before(deadline) {
 		time.Sleep(interval)
 		pr, err := cli.Post(gateway+"/api/onboard/poll?device_code="+start.DeviceCode, "application/json", nil)
@@ -978,6 +968,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 			apiToken = pv["api_token"]
 			tailnetGWHost = pv["gateway_host"]
 			tailnetControlURL = pv["control_url"]
+			gatewayIP = pv["gateway_ip"]
 			break
 		}
 		if e := pv["error"]; e != "" && e != "authorization_pending" && e != "slow_down" {
@@ -1081,6 +1072,32 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	}
 
 	// 3b. tailscale branch — ensure binary + daemon.
+	//
+	// tsnet per-process run mode (macOS + Linux non-whole-machine):
+	// the ephemeral tsnet node joins the tailnet at `clawpatrol run` time,
+	// not here. We must NOT call `tailscale up` — on macOS the App Store
+	// binary crashes when invoked externally; on Linux it would wipe the
+	// existing system Tailscale auth. The WireGuard branch already returned
+	// above, so any non-WG gateway that lands here is Tailscale-mode.
+	if !wholeMachine {
+		clawDir := filepath.Dir(setup.caPath)
+		_ = os.WriteFile(filepath.Join(clawDir, "mode"), []byte("tailscale\n"), 0o600)
+		if tailnetGWHost != "" {
+			_ = os.WriteFile(filepath.Join(clawDir, "tailnet-gateway"), []byte(tailnetGWHost+"\n"), 0o600)
+		}
+		_ = os.WriteFile(filepath.Join(clawDir, "control-url"), []byte(tailnetControlURL+"\n"), 0o600)
+		if gatewayIP != "" {
+			tailnetURL := fmt.Sprintf("http://%s:8080", gatewayIP)
+			_ = os.WriteFile(filepath.Join(clawDir, "tailnet-url"), []byte(tailnetURL+"\n"), 0o600)
+		}
+		items := []string{"Joined (tsnet mode — ephemeral node joins tailnet at run time)"}
+		items = append(items, setupSummaryItems(*setup)...)
+		printTreeItems(items)
+		fmt.Println()
+		fmt.Println("Installed! Try: clawpatrol run -- claude")
+		return false, nil
+	}
+
 	if _, err := tailscaleBin(); err != nil {
 		fmt.Println("└ Installing tailscale (will require sudo)")
 		if err := installTailscale(); err != nil {
@@ -1151,11 +1168,6 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 				[]byte(tok+"\n"), 0o600)
 		}
 	}
-	items := []string{"Joined tailnet as " + tailIP}
-	items = append(items, setupSummaryItems(*setup)...)
-	printTreeItems(items)
-	fmt.Println()
-	fmt.Println("Installed! Try: claude")
 
 	// Write mode marker files so `clawpatrol run` can detect Tailscale mode.
 	clawDir := filepath.Dir(setup.caPath)
@@ -1166,6 +1178,54 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	if tailnetControlURL != "" {
 		_ = os.WriteFile(filepath.Join(clawDir, "control-url"), []byte(tailnetControlURL+"\n"), 0o600)
 	}
+
+	// Fetch CA from the gateway's tailnet IP now that we're on the tailnet.
+	// The public /ca.crt path returns 404 for Tailscale-mode gateways; the
+	// tailnet fetch is the secure path. Skip if CA was already fetched (WG
+	// gateways expose it publicly).
+	// Look up the gateway peer on the tailnet to:
+	//   a) save the tailnet-direct URL (bypasses Funnel for peer API calls)
+	//   b) fetch CA if not yet on disk (Tailscale-mode gateways 404 /ca.crt publicly)
+	if tailnetGWHost != "" {
+		if st2, serr := tailscaleStatus(tscli); serr == nil {
+			// tailnetGWHost may be an FQDN like "clawpatrol-1.tail9a48e.ts.net";
+			// HostName in `tailscale status` is the short name "clawpatrol-1".
+			shortName := tailnetGWHost
+			if i := strings.IndexByte(shortName, '.'); i > 0 {
+				shortName = shortName[:i]
+			}
+			if peer := findPeerByName(st2, shortName); peer != nil && len(peer.TailscaleIPs) > 0 {
+				// Persist tailnet-direct URL so clawpatrol run uses it for peer
+				// API calls instead of the public join URL, which may be
+				// Funnel-proxied and not expose peer-API endpoints. Port 8080
+				// is the gateway's InfoListen (plain HTTP on the tailnet).
+				tailnetURL := fmt.Sprintf("http://%s:8080", peer.TailscaleIPs[0])
+				_ = os.WriteFile(filepath.Join(clawDir, "tailnet-url"), []byte(tailnetURL+"\n"), 0o600)
+				if _, serr := os.Stat(setup.caPath); serr != nil {
+					if ferr := fetchCA(peer.TailscaleIPs[0], setup.caPath); ferr == nil {
+						if !skipTrust {
+							if ierr := installCATrust(setup.caPath); ierr != nil {
+								setup.caHint = manualTrustHint(setup.caPath)
+							} else {
+								setup.caInstalled = true
+							}
+						} else {
+							setup.caHint = manualTrustHint(setup.caPath)
+						}
+					}
+				}
+			}
+		}
+	}
+	if err := installShellRC(); err == nil {
+		setup.shellRC = true
+	}
+
+	items := []string{"Joined tailnet as " + tailIP}
+	items = append(items, setupSummaryItems(*setup)...)
+	printTreeItems(items)
+	fmt.Println()
+	fmt.Println("Installed! Try: clawpatrol run -- claude")
 
 	return false, nil
 }

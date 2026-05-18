@@ -49,7 +49,7 @@ func TestOpenListener_NoAuthKey(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("TS_AUTHKEY", "")
 	cfg := &config.Gateway{Control: "wireguard", Listen: "127.0.0.1:0"}
-	ln, err := openListener(cfg, t.TempDir())
+	_, ln, err := openListener(cfg, t.TempDir())
 	if err != nil {
 		t.Fatalf("openListener: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestOpenListener_NoAuthKey(t *testing.T) {
 func TestOpenListener_NoAuthKey_PublicListenIsOverridden(t *testing.T) {
 	t.Setenv("TS_AUTHKEY", "")
 	cfg := &config.Gateway{Control: "wireguard", Listen: "0.0.0.0:0"}
-	ln, err := openListener(cfg, t.TempDir())
+	_, ln, err := openListener(cfg, t.TempDir())
 	if err != nil {
 		t.Fatalf("openListener: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestOpenListener_EnvIndependent(t *testing.T) {
 	// blocking join; we only care that Server construction picked up an
 	// explicit Dir rather than consulting env vars.
 	cfg.ControlURL = "https://127.0.0.1:1"
-	_, err := openListener(cfg, t.TempDir())
+	_, _, err := openListener(cfg, t.TempDir())
 	if err == nil {
 		// A test environment that happens to bring tsnet up against a
 		// reachable control plane is fine — just close and return.

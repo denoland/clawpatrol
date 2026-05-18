@@ -110,7 +110,12 @@ func gatewayClient(caDir string) *http.Client {
 // persisted, the network call fails, or the server returned
 // non-200.
 func fetchEnvPushdownFromGateway(caDir string) ([]pushdownEnvVar, error) {
-	gw := readGatewayURL(caDir)
+	// Prefer tailnet-direct URL: the public join URL may be Funnel-proxied
+	// and not expose /api/env-pushdown.
+	gw := readTailnetURL(caDir)
+	if gw == "" {
+		gw = readGatewayURL(caDir)
+	}
 	if gw == "" {
 		return nil, fmt.Errorf("gateway URL not persisted (run `clawpatrol join` first)")
 	}
@@ -164,6 +169,18 @@ func fetchEnvPushdownFromGateway(caDir string) ([]pushdownEnvVar, error) {
 // or unreadable.
 func readGatewayURL(caDir string) string {
 	b, err := os.ReadFile(filepath.Join(caDir, "gateway"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// readTailnetURL returns the tailnet-direct API URL persisted at join
+// time (http://<peer-ip>:8080). Prefer this over readGatewayURL for
+// peer API calls — the public join URL may be Funnel-proxied and not
+// expose endpoints like /api/peer/ephemeral/tsnet or /api/env-pushdown.
+func readTailnetURL(caDir string) string {
+	b, err := os.ReadFile(filepath.Join(caDir, "tailnet-url"))
 	if err != nil {
 		return ""
 	}

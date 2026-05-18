@@ -2,7 +2,11 @@
 // top-level `authkey = "..."` (or TS_AUTHKEY is in the env), the
 // gateway joins a tailnet via an embedded tsnet.Server and accepts
 // agent traffic on its tailnet IP — this is the meaningful Listener
-// for tsnet-mode deployments.
+// for tsnet-mode deployments. The embedded tsnet.Server also acts as
+// a Tailscale exit node: RegisterFallbackTCPHandler intercepts all
+// TCP forwarded through the node so whole-machine clients get the
+// same MITM treatment as per-process clawpatrol-run clients. No
+// system tailscaled, iptables, or sudo required.
 //
 // In WireGuard mode the listener is vestigial: agent TLS flows
 // through the WG netstack's promiscuous forwarder inside the tunnel
@@ -21,13 +25,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
-	"strings"
 
+	"tailscale.com/ipn"
 	"tailscale.com/tsnet"
 
 	"github.com/denoland/clawpatrol/config"
@@ -50,43 +56,16 @@ func gatewayTsnetDir(stateDir string) (string, error) {
 	return dir, nil
 }
 
-func openListener(cfg *config.Gateway, stateDir string) (net.Listener, error) {
-	authKey := cfg.AuthKey
-	if authKey == "" {
-		authKey = os.Getenv("TS_AUTHKEY")
-	}
-	if authKey == "" {
-		if isTailscaleControlMode(cfg.Control) {
-			// System Tailscale is already running on this host; listen on
-			// whatever cfg.Listen says (typically the tailnet IP:port set by
-			// the operator). Ephemeral tsnet clients reach us over the mesh.
-			addr := cfg.Listen
-			if addr == "" {
-				addr = ":8443"
-			}
-			ln4, err := net.Listen("tcp", addr)
-			if err != nil {
-				return nil, err
-			}
-			// Also listen on the tailscale0 IPv6 address so that
-			// ip6tables REDIRECT (exit-node path) can reach the gateway.
-			// The REDIRECT rewrites the destination to the primary IPv6 of
-			// the incoming interface; without this second listener those
-			// connections are refused.
-			_, port, _ := net.SplitHostPort(addr)
-			if port == "" {
-				port = "8443"
-			}
-			if ip6 := tailscaleIfaceIPv6(); ip6 != "" {
-				ln6, err := net.Listen("tcp6", net.JoinHostPort(ip6, port))
-				if err != nil {
-					log.Printf("warning: IPv6 tailnet listener on [%s]:%s failed: %v (exit-node IPv6 flows won't be intercepted)", ip6, port, err)
-				} else {
-					return newMultiListener(ln4, ln6), nil
-				}
-			}
-			return ln4, nil
-		}
+// openListener returns the gateway's primary TCP listener.
+//
+// Tailscale control mode: always uses an embedded tsnet.Server.
+// Requires authkey in HCL or TS_AUTHKEY env (no system tailscaled
+// needed). Returns the *tsnet.Server so the caller can register a
+// fallback TCP handler for whole-machine exit-node traffic.
+//
+// WireGuard mode: returns nil server and a loopback TCP listener.
+func openListener(cfg *config.Gateway, stateDir string) (*tsnet.Server, net.Listener, error) {
+	if !isTailscaleControlMode(cfg.Control) {
 		// WireGuard mode: bind loopback regardless of cfg.Listen's
 		// host portion. See the file-level comment.
 		host, port, err := net.SplitHostPort(cfg.Listen)
@@ -96,15 +75,25 @@ func openListener(cfg *config.Gateway, stateDir string) (net.Listener, error) {
 		if host != "" && host != "127.0.0.1" && host != "::1" {
 			log.Printf("WARNING: listen %q overridden to loopback in WireGuard mode; agent traffic flows through the WG tunnel, this socket is for local debugging only.", cfg.Listen)
 		}
-		return net.Listen("tcp", net.JoinHostPort("127.0.0.1", port))
+		ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", port))
+		return nil, ln, err
 	}
+
+	authKey := cfg.AuthKey
+	if authKey == "" {
+		authKey = os.Getenv("TS_AUTHKEY")
+	}
+	if authKey == "" {
+		return nil, nil, fmt.Errorf("tailscale mode requires authkey = \"...\" in gateway.hcl or TS_AUTHKEY env var (embedded tsnet — no system tailscaled needed)")
+	}
+
 	hn := cfg.Hostname
 	if hn == "" {
 		hn = "clawpatrol-gateway"
 	}
 	dir, err := gatewayTsnetDir(stateDir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	s := &tsnet.Server{
 		Hostname:   hn,
@@ -116,91 +105,37 @@ func openListener(cfg *config.Gateway, stateDir string) (net.Listener, error) {
 	if port == "" {
 		port = ":443"
 	}
-	return s.Listen("tcp", port)
-}
-
-// tailscaleIfaceIPv6 returns the first global unicast IPv6 address on
-// the tailscale0 interface (fd7a::/10 range). Returns "" if not found.
-func tailscaleIfaceIPv6() string {
-	iface, err := net.InterfaceByName("tailscale0")
+	ln, err := s.Listen("tcp", port)
 	if err != nil {
-		return ""
+		return nil, nil, err
 	}
-	addrs, err := iface.Addrs()
+	// Advertise exit routes so whole-machine clients can use this node
+	// as a Tailscale exit node. s.Up() completed inside s.Listen(), so
+	// LocalClient is available. Async to avoid blocking runGateway.
+	go advertiseExitRoutes(s)
+	return s, ln, nil
+}
+
+// advertiseExitRoutes calls EditPrefs to make this tsnet node an exit
+// node (advertises 0.0.0.0/0 and ::/0). Whole-machine clients on the
+// same tailnet can then route all traffic through this gateway; exit
+// flows are intercepted via RegisterFallbackTCPHandler in runGateway.
+func advertiseExitRoutes(s *tsnet.Server) {
+	lc, err := s.LocalClient()
 	if err != nil {
-		return ""
+		log.Printf("tsnet: LocalClient for exit routes: %v", err)
+		return
 	}
-	for _, a := range addrs {
-		ipnet, ok := a.(*net.IPNet)
-		if !ok {
-			continue
-		}
-		ip := ipnet.IP
-		if ip.To4() != nil || !ip.IsGlobalUnicast() {
-			continue
-		}
-		// Tailscale IPv6 addresses start with fd7a:
-		if strings.HasPrefix(ip.String(), "fd7a:") {
-			return ip.String()
-		}
+	routes := []netip.Prefix{
+		netip.MustParsePrefix("0.0.0.0/0"),
+		netip.MustParsePrefix("::/0"),
 	}
-	return ""
-}
-
-// multiListener merges two net.Listeners into one Accept stream.
-// Used to bind both the IPv4 tailnet address and the IPv6 tailnet
-// address so that ip6tables REDIRECT (exit-node path) can reach the
-// gateway alongside normal IPv4 connections.
-type multiListener struct {
-	ch   chan net.Conn
-	addr net.Addr
-	done chan struct{}
-}
-
-func newMultiListener(listeners ...net.Listener) net.Listener {
-	ml := &multiListener{
-		ch:   make(chan net.Conn, 64),
-		addr: listeners[0].Addr(),
-		done: make(chan struct{}),
-	}
-	for _, ln := range listeners {
-		go func(l net.Listener) {
-			for {
-				c, err := l.Accept()
-				if err != nil {
-					select {
-					case <-ml.done:
-					default:
-						log.Printf("multiListener accept: %v", err)
-					}
-					return
-				}
-				ml.ch <- c
-			}
-		}(ln)
-	}
-	return ml
-}
-
-func (m *multiListener) Accept() (net.Conn, error) {
-	select {
-	case c, ok := <-m.ch:
-		if !ok {
-			return nil, net.ErrClosed
-		}
-		return c, nil
-	case <-m.done:
-		return nil, net.ErrClosed
+	if _, err := lc.EditPrefs(context.Background(), &ipn.MaskedPrefs{
+		AdvertiseRoutesSet: true,
+		Prefs:              ipn.Prefs{AdvertiseRoutes: routes},
+	}); err != nil {
+		log.Printf("tsnet: advertise exit routes: %v", err)
+	} else {
+		log.Printf("tsnet: advertised exit routes (0.0.0.0/0, ::/0)")
 	}
 }
-
-func (m *multiListener) Close() error {
-	select {
-	case <-m.done:
-	default:
-		close(m.done)
-	}
-	return nil
-}
-
-func (m *multiListener) Addr() net.Addr { return m.addr }

@@ -133,6 +133,18 @@ func (r *onboardRegistry) ProfileForIP(ip string) string {
 	return r.profileByIP[ip]
 }
 
+// RegisterIPAlias maps alias to the same profile as canonical without
+// creating a devices row. Used at startup so Tailscale IPv6 peer
+// addresses (fd7a:) resolve to the same profile as the device's
+// Tailscale IPv4 (100.x.x.x).
+func (r *onboardRegistry) RegisterIPAlias(alias, canonical string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if p := r.profileByIP[canonical]; p != "" {
+		r.profileByIP[alias] = p
+	}
+}
+
 // AssignProfile records that a peer IP belongs to a named profile.
 // Persists to the devices row.
 func (r *onboardRegistry) AssignProfile(ip, profile string) {
@@ -746,8 +758,10 @@ func (w *webMux) apiOnboardPoll(rw http.ResponseWriter, r *http.Request) {
 		"approved_by":  s.owner,
 		"login_server": s.loginServer, // empty = Tailscale Inc default
 	}
-	// In Tailscale mode include gateway_host and control_url so the
-	// client can write mode marker files for `clawpatrol run`.
+	// In Tailscale mode include gateway_host, gateway_ip, and control_url
+	// so the client can write mode marker files for `clawpatrol run`.
+	// gateway_ip (100.x.x.x) lets the client write tailnet-url directly
+	// without a fragile peer-name lookup.
 	if s.loginServer == "" {
 		gwHost := w.ts.Hostname
 		if gwHost == "" {
@@ -755,6 +769,9 @@ func (w *webMux) apiOnboardPoll(rw http.ResponseWriter, r *http.Request) {
 		}
 		resp["gateway_host"] = gwHost
 		resp["control_url"] = w.ts.ControlURL
+		if w.g != nil && w.g.tailscaleIP != "" {
+			resp["gateway_ip"] = w.g.tailscaleIP
+		}
 	}
 	writeJSON(rw, resp)
 }

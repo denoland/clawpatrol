@@ -7,24 +7,16 @@ package main
 // gVisor's TCP stack. No system-wide Tailscale required — tsnet runs
 // entirely in-process.
 //
-// Why PROXY headers instead of the exit-node iptables REDIRECT path
-// (origdst_linux.go):
-//
-// The exit-node REDIRECT path intercepts traffic from Tailscale exit-node
-// clients — machines that have configured this gateway as their exit node via
-// `tailscale set --exit-node=<gw>`. In that model, client traffic arrives on
-// the gateway's tailscale0 interface and iptables diverts it to the gateway
-// listener before kernel forwarding.
+// Why PROXY headers:
 //
 // `clawpatrol run` clients are NOT exit-node clients. The child process runs
 // in its own network namespace with a gVisor TCP/IP stack as the default
 // route. Each TCP connection the child makes is intercepted by gVisor and
 // dialed out via tsnet directly to the gateway node over the tailnet — a
-// peer-to-peer connection, not exit-node-forwarded traffic. The connection
-// arrives at the gateway's TCP listener as a direct tailnet connection from
-// the ephemeral node's 100.x.x.x; iptables REDIRECT on tailscale0 does not
-// apply because the traffic is delivered to the gateway's own address, not
-// forwarded onward.
+// peer-to-peer connection. The connection arrives at the gateway's TCP
+// listener as a direct tailnet connection from the ephemeral node's 100.x.x.x.
+// The PROXY header carries the original 4-tuple so the gateway dispatches it
+// the same way as WireGuard and whole-machine exit-node paths.
 //
 // The PROXY header carries the original 4-tuple (srcIP, dstIP, srcPort,
 // dstPort) so the gateway accept loop recovers what the child process was
@@ -70,6 +62,13 @@ import (
 	"tailscale.com/tsnet"
 )
 
+// tsnetTunMTU is the TUN MTU for the child's netns in per-process tsnet
+// mode. No WireGuard encap overhead — 1280 matches Tailscale's own MTU
+// (the IPv6 minimum, which constrains DERP paths). This is 60 bytes
+// larger than wgTunMTU/tunMTU (1220), which deducts WG+UDP+IP headers
+// that don't exist on a pure tsnet path.
+const tsnetTunMTU = 1280
+
 func runRunTsnet(args []string) {
 	warnIfOnGatewayHost()
 	if os.Geteuid() == 0 {
@@ -105,7 +104,13 @@ func runRunTsnet(args []string) {
 	}
 
 	// 1. Mint ephemeral tsnet auth key.
-	authKey, gwPort, err := fetchEphemeralTsnetKey(gwURL, token, filepath.Join(dir, "ca.crt"))
+	// Use tailnet-direct URL when available — the public join URL may be
+	// Funnel-proxied and not expose /api/peer/ephemeral/tsnet.
+	keyURL := strings.TrimSpace(readFileSilent(filepath.Join(dir, "tailnet-url")))
+	if keyURL == "" {
+		keyURL = gwURL
+	}
+	authKey, gwPort, err := fetchEphemeralTsnetKey(keyURL, token, filepath.Join(dir, "ca.crt"))
 	if err != nil {
 		fail("mint tsnet key: %v", err)
 	}
@@ -285,7 +290,7 @@ func runRunTsnetChild() {
 
 	steps := [][]string{
 		{"ip", "link", "set", "lo", "up"},
-		{"ip", "link", "set", tunIfName, "mtu", fmt.Sprintf("%d", tunMTU), "up"},
+		{"ip", "link", "set", tunIfName, "mtu", fmt.Sprintf("%d", tsnetTunMTU), "up"},
 		{"ip", "addr", "add", tsAddr + "/32", "dev", tunIfName},
 		{"ip", "route", "add", "default", "dev", tunIfName},
 	}
@@ -331,7 +336,7 @@ func runRunTsnetChild() {
 // Promiscuous + spoofing enabled so it accepts connections destined
 // to any IP from the child netns.
 func newTsnetRunStack(localIP netip.Addr) (*stack.Stack, *channel.Endpoint, error) {
-	ep := channel.New(netstackQueueSize, uint32(tunMTU), "")
+	ep := channel.New(netstackQueueSize, uint32(tsnetTunMTU), "")
 	s := stack.New(stack.Options{
 		NetworkProtocols: []stack.NetworkProtocolFactory{
 			ipv4.NewProtocol, ipv6.NewProtocol,
@@ -407,7 +412,7 @@ func startTunBridge(tunFile *os.File, ep *channel.Endpoint, ts *tsnet.Server) {
 	uf := &udpForwarder{ts: ts, tunFile: tunFile, flows: map[udpFlowKey]net.Conn{}}
 
 	go func() {
-		buf := make([]byte, tunMTU)
+		buf := make([]byte, tsnetTunMTU)
 		for {
 			n, err := tunFile.Read(buf)
 			if err != nil {

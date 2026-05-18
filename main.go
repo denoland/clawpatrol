@@ -349,8 +349,10 @@ type Gateway struct {
 	// transports memoizes one http.Transport per endpoint. Avoids the
 	// per-request allocation + idle-conn-pool reset of the old path.
 	transports sync.Map // *config.CompiledEndpoint -> *http.Transport
-	// listenPort is set once at startup; watchConfig reads it to reinstall iptables rules on reload.
-	listenPort int
+	// tailscaleIP is the gateway's own Tailscale IPv4 (100.x.x.x).
+	// Set at startup in Tailscale control mode; included in onboard join
+	// responses so clients can write tailnet-url without a peer-name lookup.
+	tailscaleIP string
 }
 
 // transportFor returns the cached http.Transport for ep, building it
@@ -455,9 +457,6 @@ func (g *Gateway) watchConfig(path string) {
 		registerOAuthCredentials(g.oauth, policy)
 		newConnIdx := runtime.BuildConnIndex(policy)
 		g.connIdx.Store(newConnIdx)
-		if isTailscaleControlMode(g.cfg.Control) && g.listenPort != 0 {
-			installExitNodeRedirect(g.listenPort, newConnIdx.ConnPorts())
-		}
 		if g.tunnels != nil {
 			g.tunnels.SetPolicy(context.Background(), policy)
 		}
@@ -2684,11 +2683,10 @@ func runGateway(args []string) {
 	// renders them on boot, before any traffic arrives. Without this,
 	// devices disappear after every gateway restart and only reappear
 	// on the next request from each peer.
-	// Clean fd77:: ghost rows left by older builds where SetExternalIPs
-	// upserted both v4 and v6 allowed_ips as separate device IDs. Drop
-	// them on every boot — the v4 row carries the same metadata and
-	// will be re-seeded below.
-	_, _ = db.Exec("DELETE FROM devices WHERE id LIKE 'fd77:%'")
+	// Clean fd77:: ghost rows (WG) and fd7a:: ghost rows (Tailscale IPv6)
+	// left by builds that upserted IPv6 peer addresses as separate device
+	// IDs. Drop them on every boot — the v4 row carries the same metadata.
+	_, _ = db.Exec("DELETE FROM devices WHERE id LIKE 'fd77:%' OR id LIKE 'fd7a:%'")
 	if rows, err := db.Query("SELECT id FROM devices"); err == nil {
 		defer func() { _ = rows.Close() }()
 		for rows.Next() {
@@ -2790,7 +2788,7 @@ func runGateway(args []string) {
 		log.Printf("wireguard promiscuous forwarder ready (any dst → :443=mitm, :5432=pg, :53=dns-vip, VIP=ssh|ch_native, :%d=dash, plugins=conn-index, else=relay)", dashPort)
 	}
 
-	ln, err := openListener(cfg, stateDir)
+	tsnetServer, ln, err := openListener(cfg, stateDir)
 	if err != nil {
 		log.Fatalf("listen: %v", err)
 	}
@@ -2800,16 +2798,42 @@ func runGateway(args []string) {
 	// In Tailscale mode, `clawpatrol run` clients prepend a HAProxy PROXY v1
 	// header carrying the original 4-tuple so we can dispatch by dst port/IP
 	// exactly like the WG promiscuous forwarder. Peek the first bytes: if the
-	// connection starts with "PROXY " use full dispatch; otherwise check
-	// SO_ORIGINAL_DST (set by iptables REDIRECT for exit-node traffic); if
-	// neither is present it is a direct admin/dashboard connection.
+	// connection starts with "PROXY " use full dispatch; otherwise it is a
+	// direct admin/dashboard connection.
 	tsnetDashMux := newWebMux(g, cfg.Join(), cfg.PublicURL)
 	tsnetDashPort := portOf(cfg.InfoListen)
-	listenPort := portOf(ln.Addr().String())
-	g.listenPort = listenPort
-	if isTailscaleControlMode(cfg.Control) {
-		installExitNodeRedirect(listenPort, g.connIdx.Load().ConnPorts())
-		startUDPDNSListener(listenPort, g.dnsvip)
+	if tsnetServer != nil {
+		// Seed gateway tailscale IP for /api/join responses so clients
+		// know the tailnet-direct URL without a DNS lookup.
+		if ip4, _ := tsnetServer.TailscaleIPs(); ip4.IsValid() {
+			g.tailscaleIP = ip4.String()
+		}
+		// Intercept all TCP forwarded through this exit node (whole-machine
+		// clients). dst is the original internet destination — same dispatch
+		// as the per-process PROXY-header path and the WG promiscuous forwarder.
+		tsnetServer.RegisterFallbackTCPHandler(func(src, dst netip.AddrPort) (func(net.Conn), bool) {
+			dstIP := dst.Addr().String()
+			dstPort := dst.Port()
+			return func(c net.Conn) {
+				switch {
+				case dstPort == 443:
+					g.handle(c, dstIP)
+				case dstPort == 5432:
+					g.handlePostgresConn(c, dstIP)
+				case dstPort == 53:
+					g.handleDNSTCPConn(c, dstIP)
+				case g.dnsvip.IsVIP(dstIP):
+					g.handleVIPConn(c, dstIP, dstPort)
+				case tsnetDashPort != 0 && int(dstPort) == tsnetDashPort:
+					_ = http.Serve(&oneShotListener{c: c}, tsnetDashMux)
+				default:
+					if g.tryDirectIPConn(c, dstIP, dstPort) {
+						return
+					}
+					g.wgRelay(c, dstIP, int(dstPort))
+				}
+			}, true
+		})
 	}
 	for {
 		c, err := ln.Accept()
@@ -2818,24 +2842,15 @@ func runGateway(args []string) {
 			continue
 		}
 		go func(c net.Conn) {
-			// Capture SO_ORIGINAL_DST before any buffering (iptables REDIRECT path).
-			origIP, origPort, hasOrigDst := originalDst(c)
-
 			dstIP, dstPort, conn, err := readProxyHeader(c)
 			if err != nil {
 				_ = c.Close()
 				return
 			}
 			if dstPort == 0 {
-				// No PROXY header. Check SO_ORIGINAL_DST: if the connection was
-				// iptables-redirected (exit-node MITM), origPort != listenPort.
-				if hasOrigDst && listenPort != 0 && int(origPort) != listenPort {
-					dstIP, dstPort = origIP, origPort
-				} else {
-					// Direct connection: admin dashboard, curl, clawpatrol join, etc.
-					g.serveTSNetDirect(conn, tsnetDashMux)
-					return
-				}
+				// No PROXY header — direct connection (admin dashboard, curl, join).
+				g.serveTSNetDirect(conn, tsnetDashMux)
+				return
 			}
 			switch {
 			case dstPort == 443:
