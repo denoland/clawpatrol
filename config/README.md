@@ -185,20 +185,11 @@ config file's directory).
 One policy decision targeting one or more endpoints. Three rule
 types, each constrained to a matching endpoint family:
 
-| Rule type | Endpoint families | Composed facets | Match fields |
-|-----------|------------------|-----------------|--------------|
-| `http_rule` | `https` | `http` | `method` / `path` / `query` / `headers` / `body_json` / `body_contains` / `credential` |
-| `sql_rule` | `sql` | `sql` | `verb` / `tables` / `functions` / `statement` / `statement_regex` / `credential` |
-| `k8s_rule` | `k8s` | `http`, `k8s` | every `http_rule` field (a k8s call is HTTPS underneath) plus `resource` / `verb` / `namespace` / `name` / `params` |
-
-Each action family declares which facets it adds to an action; a
-rule sees exactly those facets. The `k8s` family adds both the
-`http` and `k8s` facets — so a `k8s_rule` can reference `http.*`
-fields alongside its native `k8s.*` set. The `http` family adds
-only the `http` facet, so an `http_rule` cannot reference `k8s.*`
-(an HTTPS-endpoint request has no k8s metadata). The `sql` family
-doesn't add `http` either — postgres / clickhouse_native wire
-protocols are binary, not HTTPS.
+| Rule type | Endpoint families | Match facets |
+|-----------|------------------|-------------|
+| `http_rule` | `https` | `method` / `path` / `query` / `headers` / `body_json` / `body_contains` / `credential` |
+| `sql_rule` | `sql` | `verb` / `tables` / `functions` / `statement` / `statement_regex` / `credential` |
+| `k8s_rule` | `k8s` | `resource` / `verb` / `namespace` / `name` / `params` / `credential` |
 
 Rule body shape:
 
