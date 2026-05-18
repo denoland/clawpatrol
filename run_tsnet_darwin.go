@@ -46,7 +46,6 @@ func runRunTsnet(args []string) {
 	controlURL := strings.TrimSpace(readFileSilent(filepath.Join(dir, "control-url")))
 	token := strings.TrimSpace(readFileSilent(filepath.Join(dir, "api-token")))
 	authKey := strings.TrimSpace(readFileSilent(filepath.Join(dir, "tsnet-auth-key")))
-	caPath := filepath.Join(dir, "ca.crt")
 	if gwHost == "" {
 		gwHost = "clawpatrol-gateway"
 	}
@@ -71,10 +70,14 @@ func runRunTsnet(args []string) {
 	}
 
 	// Start NE in tsnet mode. ts_netstack_init inside the extension
-	// blocks until the tsnet node joins the tailnet (≤90s).
+	// blocks until the tsnet node joins the tailnet (≤90s). Pass
+	// token + hostname so the NE itself can POST to the gateway's
+	// tailnet-only register endpoint (parent process is on the host
+	// network and can't dial a 100.x address from here).
+	hn, _ := os.Hostname()
 	fmt.Fprintln(os.Stderr, "clawpatrol: joining tailnet via NE...")
 	{
-		c := exec.Command(macHelperPath, "start-tsnet", authKey, controlURL, gwHost, gwPort)
+		c := exec.Command(macHelperPath, "start-tsnet", authKey, controlURL, gwHost, gwPort, token, hn)
 		c.Stdout, c.Stderr = os.Stdout, os.Stderr
 		if err := c.Run(); err != nil {
 			var ee *exec.ExitError
@@ -85,16 +88,13 @@ func runRunTsnet(args []string) {
 		}
 	}
 
-	// Poll session socket for the NE's tsnet IP so we can register it
-	// with the gateway for profile dispatch + env-pushdown. Both calls
-	// hit tailnet-only endpoints, so they're done from the NE side
-	// (which is on the tailnet) — TODO: wire IPC to extension.
+	// Wait until the NE reports the tsnet IP so we know the
+	// extension finished initializing. The actual /register POST
+	// happens *inside* ts_netstack_init via tsServer.Dial — the
+	// parent process can't dial 100.x addresses on macOS.
 	tsIP := pollTsnetIPFromExtension(90 * time.Second)
-	if tsIP != "" {
-		client, _ := gatewayHTTPClient(caPath)
-		if rerr := registerEphemeralTsnetIP(client, gwURL, token, tsIP); rerr != nil {
-			fmt.Fprintf(os.Stderr, "warning: tsnet profile registration: %v (default profile)\n", rerr)
-		}
+	if tsIP == "" {
+		fmt.Fprintln(os.Stderr, "warning: NE never reported tsnet IP — run will land in the default profile")
 	}
 	applyEnvPushdown(dir)
 

@@ -60,6 +60,8 @@ class TransparentProxyProvider: NETransparentProxyProvider {
                     userInfo: [NSLocalizedDescriptionKey: "missing tsnet config fields"]))
                 return
             }
+            let token = (cfg["tsnet-api-token"] as? String) ?? ""
+            let hostname = (cfg["tsnet-hostname"] as? String) ?? ""
             os_log("startProxy: tsnet mode — joining tailnet", log: log, type: .info)
             DispatchQueue.global(qos: .userInitiated).async {
                 var errBuf = [CChar](repeating: 0, count: 512)
@@ -67,12 +69,18 @@ class TransparentProxyProvider: NETransparentProxyProvider {
                     controlURL.withCString { cuC in
                         gwHost.withCString { ghC in
                             gwPort.withCString { gpC in
-                                errBuf.withUnsafeMutableBufferPointer { ebuf in
-                                    ts_netstack_init(UnsafeMutablePointer(mutating: akC),
-                                                     UnsafeMutablePointer(mutating: cuC),
-                                                     UnsafeMutablePointer(mutating: ghC),
-                                                     UnsafeMutablePointer(mutating: gpC),
-                                                     ebuf.baseAddress, Int32(ebuf.count))
+                                token.withCString { tkC in
+                                    hostname.withCString { hnC in
+                                        errBuf.withUnsafeMutableBufferPointer { ebuf in
+                                            ts_netstack_init(UnsafeMutablePointer(mutating: akC),
+                                                             UnsafeMutablePointer(mutating: cuC),
+                                                             UnsafeMutablePointer(mutating: ghC),
+                                                             UnsafeMutablePointer(mutating: gpC),
+                                                             UnsafeMutablePointer(mutating: tkC),
+                                                             UnsafeMutablePointer(mutating: hnC),
+                                                             ebuf.baseAddress, Int32(ebuf.count))
+                                        }
+                                    }
                                 }
                             }
                         }
