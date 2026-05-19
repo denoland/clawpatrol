@@ -34,9 +34,9 @@ export type V2Route =
 //   1. Route prefix is `#/v2` (hash routing, matches existing app
 //      shell). The toggle in the existing dashboard's header points
 //      to `#/v2`; the toggle in this shell points to `#/`.
-//   2. File layout: `www/src/v2/` self-contained, with cards/ and
-//      pages/ subfolders mirroring unclaw's component organisation.
-//      Keeps the diff and the namespace clean — nothing in `www/
+//   2. File layout: `dashboard/src/v2/` self-contained, with cards/
+//      and pages/ subfolders mirroring unclaw's component organisation.
+//      Keeps the diff and the namespace clean — nothing in `dashboard/
 //      src/components/` knows about v2 except `ConnectModal` and
 //      `SettingsPage`, which v2 imports verbatim.
 //   3. Data: v2 talks to clawpatrol's existing API (`/api/state`,
