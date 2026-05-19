@@ -2590,6 +2590,12 @@ func main() {
 		runValidate(os.Args[2:])
 	case "test":
 		runTest(os.Args[2:])
+	case "approve":
+		runApprove(os.Args[2:])
+	case "oauth-start":
+		runOAuthStart(os.Args[2:])
+	case "oauth-exchange":
+		runOAuthExchange(os.Args[2:])
 	case "uninstall":
 		runUninstall(os.Args[2:])
 	case "status":
@@ -2678,6 +2684,10 @@ usage:
   clawpatrol env                         print shell exports for sourcing
   clawpatrol validate <config.hcl>       parse + compile a config and exit
   clawpatrol test <config> <path>        replay action fixtures against a candidate policy
+  clawpatrol approve [flags] <code>      approve a pending join device-code
+  clawpatrol oauth-start <credential>    begin an OAuth flow; prints auth_url + state
+  clawpatrol oauth-exchange <state> <code>
+                                         finalize an OAuth flow with the consent code
   clawpatrol version | -v | --version    print version and exit
 
 Documentation: https://clawpatrol.dev/docs/`)
