@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"time"
 
@@ -358,6 +359,8 @@ func writeHITLOperationAcceptedToConn(w io.Writer, op HITLOperation, publicURL s
 	writeHITLOperationAccepted(rr, op, publicURL)
 	resp := rr.Result()
 	defer func() { _ = resp.Body.Close() }()
+	resp.ContentLength = int64(rr.Body.Len())
+	resp.Header.Set("Content-Length", strconv.FormatInt(resp.ContentLength, 10))
 	_ = resp.Write(w)
 }
 

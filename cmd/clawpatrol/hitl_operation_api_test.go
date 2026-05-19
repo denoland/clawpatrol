@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -14,8 +17,8 @@ import (
 	_ "github.com/denoland/clawpatrol/internal/config/plugins/all"
 )
 
-func TestHITLOperationAcceptedResponseUsesConfiguredPublicURL(t *testing.T) {
-	now := time.Unix(1_700_001_000, 0).UTC()
+func TestHITLOperationAcceptedResponseIncludesPollingEnvelope(t *testing.T) {
+	now := time.Now().UTC()
 	op := HITLOperation{
 		ID:                "hitl_op_202",
 		State:             HITLOperationStatePendingApproval,
@@ -25,24 +28,64 @@ func TestHITLOperationAcceptedResponseUsesConfiguredPublicURL(t *testing.T) {
 	rr := httptest.NewRecorder()
 	writeHITLOperationAccepted(rr, op, "https://gateway.example.test/")
 
-	if rr.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body = %s", rr.Code, rr.Body.String())
+	assertHITLOperationAcceptedResponse(t, rr.Code, rr.Header(), rr.Body.Bytes(), op)
+}
+
+func TestHITLOperationAcceptedRawConnResponseHasDelimitedJSONBody(t *testing.T) {
+	now := time.Now().UTC()
+	op := HITLOperation{
+		ID:                "hitl_op_202",
+		State:             HITLOperationStatePendingApproval,
+		ApprovalExpiresAt: now.Add(15 * time.Minute),
+	}
+
+	var raw bytes.Buffer
+	writeHITLOperationAcceptedToConn(&raw, op, "https://gateway.example.test/")
+	resp, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(raw.Bytes())), nil)
+	if err != nil {
+		t.Fatalf("read raw response: %v\nraw response:\n%s", err, raw.String())
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read raw response body: %v", err)
+	}
+
+	if resp.ContentLength <= 0 {
+		t.Fatalf("ContentLength = %d, want explicit positive Content-Length; raw response:\n%s", resp.ContentLength, raw.String())
+	}
+	if resp.ContentLength != int64(len(body)) {
+		t.Fatalf("ContentLength = %d, body length = %d", resp.ContentLength, len(body))
+	}
+	assertHITLOperationAcceptedResponse(t, resp.StatusCode, resp.Header, body, op)
+}
+
+func assertHITLOperationAcceptedResponse(t *testing.T, status int, header http.Header, bodyBytes []byte, op HITLOperation) {
+	t.Helper()
+	if status != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body = %s", status, string(bodyBytes))
 	}
 	wantURL := "https://gateway.example.test/api/hitl/operations/hitl_op_202/status"
-	if got := rr.Header().Get("Location"); got != wantURL {
+	if got := header.Get("Location"); got != wantURL {
 		t.Fatalf("Location = %q, want %q", got, wantURL)
 	}
-	if got := rr.Header().Get("Retry-After"); got != "5" {
+	if got := header.Get("Retry-After"); got != "5" {
 		t.Fatalf("Retry-After = %q, want 5", got)
 	}
-	if got := rr.Header().Get("Clawpatrol-HITL-State"); got != string(HITLOperationStatePendingApproval) {
+	if got := header.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+	if got := header.Get("Clawpatrol-HITL-State"); got != string(HITLOperationStatePendingApproval) {
 		t.Fatalf("Clawpatrol-HITL-State = %q", got)
 	}
-	if got := rr.Header().Get("Clawpatrol-Upstream-Called"); got != "false" {
+	if got := header.Get("Clawpatrol-Upstream-Called"); got != "false" {
 		t.Fatalf("Clawpatrol-Upstream-Called = %q", got)
 	}
 
-	body := decodeJSONBody(t, rr)
+	var body map[string]any
+	if err := json.Unmarshal(bodyBytes, &body); err != nil {
+		t.Fatalf("decode json body: %v; body = %q", err, string(bodyBytes))
+	}
 	if body["operation_id"] != op.ID {
 		t.Fatalf("operation_id = %v, want %q", body["operation_id"], op.ID)
 	}
