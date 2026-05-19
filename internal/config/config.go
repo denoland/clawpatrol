@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/gohcl"
@@ -47,6 +48,16 @@ type Gateway struct {
 	// stored root password is the only way in. In WireGuard / proxy
 	// control mode this field is logged once as a no-op and ignored.
 	DashboardOperators []string `hcl:"dashboard_operators,optional"`
+
+	// DashboardSessionTTL is how long a dashboard login session
+	// stays valid after the operator types the password. Format
+	// accepts time.ParseDuration strings ("24h", "30m", "168h").
+	// Empty / unset → defaults to 24h. Bumping this trades log-in
+	// frequency against blast radius if a session cookie leaks.
+	// Rotating the root password (`--set-dashboard-password` or the
+	// web form) revokes every existing session immediately regardless
+	// of TTL.
+	DashboardSessionTTL string `hcl:"dashboard_session_ttl,optional"`
 
 	// Telemetry opts in/out of the update-checker / anonymous usage
 	// ping (doc/telemetry.md). nil = default on; explicit `telemetry
@@ -452,7 +463,42 @@ func validateOperational(gw *Gateway) hcl.Diagnostics {
 		}
 	}
 
+	if gw.DashboardSessionTTL != "" {
+		if _, err := DashboardSessionTTLFromString(gw.DashboardSessionTTL); err != nil {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Invalid dashboard_session_ttl",
+				Detail:   fmt.Sprintf("dashboard_session_ttl = %q: %v. Use a time.ParseDuration string like \"24h\" or \"30m\".", gw.DashboardSessionTTL, err),
+			})
+		}
+	}
+
 	return diags
+}
+
+// DefaultDashboardSessionTTL is the fallback when gateway.hcl omits
+// dashboard_session_ttl. 24 hours is short enough that a stolen
+// cookie self-expires within a working day while long enough that
+// operators don't re-type the password between coffee breaks.
+const DefaultDashboardSessionTTL = 24 * time.Hour
+
+// DashboardSessionTTLFromString parses a string like "24h" / "30m"
+// into a positive duration. Empty input returns
+// DefaultDashboardSessionTTL. Used by the validator (to surface bad
+// input at load) and by the gateway at runtime (to convert to a
+// concrete time.Duration before minting sessions).
+func DashboardSessionTTLFromString(s string) (time.Duration, error) {
+	if s == "" {
+		return DefaultDashboardSessionTTL, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, err
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("must be positive")
+	}
+	return d, nil
 }
 
 // hasWGDialTarget reports whether the config provides a host clients

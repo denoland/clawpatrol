@@ -562,6 +562,24 @@ func logDashboardAuthState(db *sql.DB, cfg *config.Gateway) {
 	}
 }
 
+// sweepDashboardSessions deletes expired session rows on a slow tick.
+// Lazy expiry on lookup already filters expired sessions out of auth
+// decisions; this loop is purely a vacuum so a long-running gateway
+// doesn't accumulate rows for browsers that never come back. Runs
+// for the life of the gateway.
+func (g *Gateway) sweepDashboardSessions() {
+	const interval = 15 * time.Minute
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for range t.C {
+		if n, err := sweepExpiredDashboardSessions(g.db); err != nil {
+			log.Printf("dashboard session sweep: %v", err)
+		} else if n > 0 {
+			log.Printf("dashboard session sweep: deleted %d expired row(s)", n)
+		}
+	}
+}
+
 // applyDashboardPasswordFlags handles --set-dashboard-password and
 // --reset-dashboard-password before the HTTP listener boots. The
 // flags are deliberately verbose: each one log-prints what it did so
@@ -2770,6 +2788,7 @@ func runGateway(args []string) {
 		log.Fatalf("dnsvip build: %v", err)
 	}
 	log.Printf("policy: %d endpoints across %d profiles", len(policy.Endpoints), len(policy.Profiles))
+	go g.sweepDashboardSessions()
 	go g.watchConfig(cfgPath)
 	if err := g.onboard.Load(db); err != nil {
 		log.Fatalf("onboard load: %v", err)

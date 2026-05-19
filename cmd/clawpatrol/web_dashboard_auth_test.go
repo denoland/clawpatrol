@@ -32,54 +32,52 @@ func newDashboardTestMux(t *testing.T, cfg *config.Gateway, rootPassword string)
 	return &webMux{g: &Gateway{cfg: cfg, db: db}}
 }
 
-func TestCheckDashboardPasswordRejectsQueryParam(t *testing.T) {
-	w := newDashboardTestMux(t, nil, "correct-horse-battery-staple")
-
-	r := httptest.NewRequest(http.MethodGet, "/api/state?password=correct-horse-battery-staple", nil)
-	if ok, _, _ := w.checkDashboardPasswordRequest(r); ok {
-		t.Fatal("password in query string was accepted")
-	}
-}
-
-func TestCheckDashboardPasswordAcceptsHeader(t *testing.T) {
-	w := newDashboardTestMux(t, nil, "correct-horse-battery-staple")
-
-	r := httptest.NewRequest(http.MethodGet, "/api/state", nil)
-	r.Header.Set("X-Clawpatrol-Secret", "correct-horse-battery-staple")
-	ok, _, err := w.checkDashboardPasswordRequest(r)
+// mintTestSessionCookie creates a real session row + returns the
+// matching cookie. Used by tests that need to send an authenticated
+// request through the gate without typing a password.
+func mintTestSessionCookie(t *testing.T, w *webMux) *http.Cookie {
+	t.Helper()
+	token, err := createDashboardSession(w.g.db, dashboardRootUsername, w.dashboardSessionTTL())
 	if err != nil {
-		t.Fatalf("checkDashboardPasswordRequest: %v", err)
+		t.Fatalf("createDashboardSession: %v", err)
 	}
-	if !ok {
-		t.Fatal("X-Clawpatrol-Secret header was rejected")
+	return &http.Cookie{Name: cpSessionCookieName, Value: token}
+}
+
+func TestLookupSessionFromRequestAcceptsCookie(t *testing.T) {
+	w := newDashboardTestMux(t, nil, "correct-horse-battery-staple")
+	c := mintTestSessionCookie(t, w)
+
+	r := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+	r.AddCookie(c)
+	if got := w.lookupSessionFromRequest(r); got != dashboardRootUsername {
+		t.Fatalf("lookupSessionFromRequest = %q, want %q", got, dashboardRootUsername)
 	}
 }
 
-func TestCheckDashboardPasswordAcceptsCookie(t *testing.T) {
+func TestLookupSessionFromRequestRejectsWrongCookie(t *testing.T) {
 	w := newDashboardTestMux(t, nil, "correct-horse-battery-staple")
 
 	r := httptest.NewRequest(http.MethodGet, "/api/state", nil)
-	r.AddCookie(&http.Cookie{Name: cpDashCookieName, Value: "correct-horse-battery-staple"})
-	ok, _, err := w.checkDashboardPasswordRequest(r)
-	if err != nil {
-		t.Fatalf("checkDashboardPasswordRequest: %v", err)
-	}
-	if !ok {
-		t.Fatal("cp_dash cookie was rejected")
+	r.AddCookie(&http.Cookie{Name: cpSessionCookieName, Value: "not-a-real-token"})
+	if got := w.lookupSessionFromRequest(r); got != "" {
+		t.Fatalf("lookupSessionFromRequest = %q, want empty", got)
 	}
 }
 
-func TestCheckDashboardPasswordRejectsWrongPassword(t *testing.T) {
+func TestLookupSessionFromRequestEmpty(t *testing.T) {
 	w := newDashboardTestMux(t, nil, "correct-horse-battery-staple")
-
 	r := httptest.NewRequest(http.MethodGet, "/api/state", nil)
-	r.AddCookie(&http.Cookie{Name: cpDashCookieName, Value: "wrong-password"})
-	if ok, _, _ := w.checkDashboardPasswordRequest(r); ok {
-		t.Fatal("wrong password was accepted")
+	if got := w.lookupSessionFromRequest(r); got != "" {
+		t.Fatalf("lookupSessionFromRequest = %q, want empty (no cookie)", got)
 	}
 }
 
-func TestDashboardLoginGetDoesNotAcceptPasswordQueryParam(t *testing.T) {
+// TestDashboardLoginGetDoesNotMintSession: hitting the form via GET
+// must never create a session row or set a cookie, even when query
+// params look credential-ish. (Pre-#456 regression guard against
+// query-string passwords sneaking through.)
+func TestDashboardLoginGetDoesNotMintSession(t *testing.T) {
 	w := newDashboardTestMux(t, nil, "correct-horse-battery-staple")
 
 	r := httptest.NewRequest(http.MethodGet, "/__login?password=correct-horse-battery-staple&next=/api/state", nil)
@@ -90,7 +88,7 @@ func TestDashboardLoginGetDoesNotAcceptPasswordQueryParam(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rw.Code, http.StatusOK)
 	}
 	if cookies := rw.Result().Cookies(); len(cookies) != 0 {
-		t.Fatalf("GET /__login?password=... set cookies: %+v", cookies)
+		t.Fatalf("GET /__login set cookies: %+v", cookies)
 	}
 }
 
@@ -125,10 +123,11 @@ func TestDashboardLoginRejectsProtocolRelativeNext(t *testing.T) {
 	}
 }
 
-// TestDashboardLoginFirstRunCreatesRootAndSetsCookie verifies the
-// first-run flow: with no root row, POSTing matching password+
-// confirm fields creates the row, sets the cookie, and redirects.
-func TestDashboardLoginFirstRunCreatesRootAndSetsCookie(t *testing.T) {
+// TestDashboardLoginFirstRunMintsSession verifies the first-run flow:
+// with no root row, POSTing matching password+confirm fields creates
+// the row, mints a session, sets the cookie to the token (not the
+// password!), and redirects.
+func TestDashboardLoginFirstRunMintsSession(t *testing.T) {
 	w := newDashboardTestMux(t, nil, "")
 
 	const pw = "first-run-passphrase-1234"
@@ -143,22 +142,22 @@ func TestDashboardLoginFirstRunCreatesRootAndSetsCookie(t *testing.T) {
 	}
 	var got *http.Cookie
 	for _, c := range rw.Result().Cookies() {
-		if c.Name == cpDashCookieName {
+		if c.Name == cpSessionCookieName {
 			got = c
 			break
 		}
 	}
 	if got == nil {
-		t.Fatal("no cp_dash cookie set after first-run setup")
+		t.Fatal("no cp_session cookie set after first-run setup")
 	}
-	if got.Value != pw {
-		t.Fatalf("cp_dash cookie value = %q, want %q", got.Value, pw)
+	if got.Value == "" {
+		t.Fatal("cp_session cookie has empty value")
 	}
-	// The row should now exist.
-	if _, exists, err := lookupDashboardUser(w.g.db, dashboardRootUsername); err != nil {
-		t.Fatalf("lookup root: %v", err)
-	} else if !exists {
-		t.Fatal("root row was not persisted")
+	if got.Value == pw {
+		t.Fatal("cp_session cookie holds the raw password — must be an opaque token")
+	}
+	if user, ok, _ := lookupDashboardSession(w.g.db, got.Value); !ok || user != dashboardRootUsername {
+		t.Fatalf("session row missing for cookie value: ok=%v user=%q", ok, user)
 	}
 }
 
@@ -190,5 +189,44 @@ func TestDashboardLoginFirstRunRejectsShortPassword(t *testing.T) {
 
 	if rw.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rw.Code, http.StatusBadRequest)
+	}
+}
+
+// TestDashboardLogoutRevokesSessionAndClearsCookie covers the logout
+// endpoint end-to-end: the row must be gone after POST and the
+// browser must receive a Max-Age=-1 clearer for cp_session.
+func TestDashboardLogoutRevokesSessionAndClearsCookie(t *testing.T) {
+	w := newDashboardTestMux(t, nil, "correct-horse-battery-staple")
+	c := mintTestSessionCookie(t, w)
+
+	r := httptest.NewRequest(http.MethodPost, "/__logout", nil)
+	r.AddCookie(c)
+	rw := httptest.NewRecorder()
+	w.apiDashboardLogout(rw, r)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rw.Code, http.StatusOK)
+	}
+	if user, ok, _ := lookupDashboardSession(w.g.db, c.Value); ok || user != "" {
+		t.Fatal("session row survived logout")
+	}
+	var clear *http.Cookie
+	for _, set := range rw.Result().Cookies() {
+		if set.Name == cpSessionCookieName {
+			clear = set
+		}
+	}
+	if clear == nil || clear.MaxAge >= 0 {
+		t.Fatalf("expected clearing cookie with MaxAge<0, got %+v", clear)
+	}
+}
+
+func TestDashboardLogoutRejectsGET(t *testing.T) {
+	w := newDashboardTestMux(t, nil, "correct-horse-battery-staple")
+	r := httptest.NewRequest(http.MethodGet, "/__logout", nil)
+	rw := httptest.NewRecorder()
+	w.apiDashboardLogout(rw, r)
+	if rw.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d", rw.Code, http.StatusMethodNotAllowed)
 	}
 }

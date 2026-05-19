@@ -321,12 +321,26 @@ export async function decideHITL(id: string, allow: boolean): Promise<HITLResolv
   return r.json();
 }
 
+// AuthMethod describes which gate path attributed the request:
+//   - "password": the cp_session cookie was valid; user = "root".
+//   - "tailscale": the request landed via tsnet and the whois login
+//     matched the dashboard_operators allowlist; user = that login.
+//   - "" (empty): unauthenticated — only seen briefly between login
+//     redirects, the SPA shouldn't render in this state.
+export type AuthMethod = "password" | "tailscale" | "";
+
 export type Whoami = {
   user: string;
   device: string;
   host: string;
+  auth_method: AuthMethod;
   public_url?: string;
 };
+
+export async function logout(): Promise<void> {
+  const r = await fetch("/__logout", { method: "POST", credentials: "same-origin" });
+  if (!r.ok && r.status !== 401) throw new Error(await r.text());
+}
 
 export async function getStatus(profile?: string): Promise<Integration[]> {
   const url = profile ? `/api/status?profile=${encodeURIComponent(profile)}` : "/api/status";

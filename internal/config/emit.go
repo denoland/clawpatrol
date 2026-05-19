@@ -66,6 +66,7 @@ func emitOperational(body *hclwrite.Body, gw *Gateway) {
 	if len(gw.DashboardOperators) > 0 {
 		body.SetAttributeValue("dashboard_operators", StringListVal(gw.DashboardOperators))
 	}
+	setStr("dashboard_session_ttl", gw.DashboardSessionTTL)
 	setStr("session_keep", gw.SessionKeep)
 
 	setStr("authkey", gw.AuthKey)

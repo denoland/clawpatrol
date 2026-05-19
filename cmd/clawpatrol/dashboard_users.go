@@ -63,17 +63,28 @@ func setDashboardUser(db *sql.DB, username, password string) error {
 		   updated_ns    = excluded.updated_ns`,
 		username, string(hash), now, now,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	// Rotating the password invalidates every session minted under
+	// the old one. Belt-and-suspenders alongside the natural TTL —
+	// otherwise an operator who suspects credential leak would have
+	// to wait out dashboard_session_ttl after `--set-dashboard-
+	// password` before old cookies stopped working.
+	return revokeAllDashboardSessionsFor(db, username)
 }
 
 // deleteDashboardUser removes the row for username. Used by
-// --reset-dashboard-password. No-op if the row doesn't exist.
+// --reset-dashboard-password. Also wipes the user's sessions so the
+// reset is immediate. No-op if the row doesn't exist.
 func deleteDashboardUser(db *sql.DB, username string) error {
 	if db == nil {
 		return fmt.Errorf("no db")
 	}
-	_, err := db.Exec(`DELETE FROM dashboard_users WHERE username = ?`, username)
-	return err
+	if _, err := db.Exec(`DELETE FROM dashboard_users WHERE username = ?`, username); err != nil {
+		return err
+	}
+	return revokeAllDashboardSessionsFor(db, username)
 }
 
 // checkDashboardPassword constant-time compares password against the
