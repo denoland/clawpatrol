@@ -31,9 +31,9 @@ type devSeedHook struct {
 func devSeedAttach(fs *flag.FlagSet) devSeedHook {
 	return devSeedHook{
 		bulk: fs.Int("dev-seed", 0,
-			"wipe + populate the DB with N synthetic actions (requires insecure_no_dashboard_secret)"),
+			"wipe + populate the DB with N synthetic actions (refuses if a root password is set)"),
 		live: fs.Bool("dev-seed-live", false,
-			"emit a synthetic action every 200–2000 ms (requires insecure_no_dashboard_secret)"),
+			"emit a synthetic action every 200–2000 ms (refuses if a root password is set)"),
 	}
 }
 
@@ -84,14 +84,18 @@ func devSinkReloadRecent(s *Sink) {
 // actions, and HITL pending items so the dashboard has data to style
 // against without standing up real wg / agent traffic.
 //
-// Gated on insecure_no_dashboard_secret: same signal already used to
-// opt out of dashboard auth, so it can't fire accidentally in prod.
+// Gated on "no root password set yet": dev-seed wipes the actions /
+// devices / sessions tables, so we refuse if a real operator has
+// initialized the dashboard. Together with the `-tags dev` build
+// constraint that's two layers of opt-in.
 
 const devSeedKnownEndpointGithubAPI = "github-api"
 
 func devSeed(g *Gateway, count int) error {
-	if !g.cfg.InsecureNoDashboardSecret {
-		return fmt.Errorf("dev-seed refuses to run without insecure_no_dashboard_secret = true")
+	if _, rootSet, err := lookupDashboardUser(g.db, dashboardRootUsername); err != nil {
+		return fmt.Errorf("lookup root: %w", err)
+	} else if rootSet {
+		return fmt.Errorf("dev-seed refuses to run: a dashboard root password is set; this looks like a real install")
 	}
 	r := rand.New(rand.NewSource(42))
 	log.Printf("dev-seed: wiping data tables and inserting %d actions", count)
@@ -123,8 +127,11 @@ func devSeed(g *Gateway, count int) error {
 // liveHITLCap by discarding the oldest synthetic entry. Returns when
 // ctx is cancelled.
 func devSeedLive(ctx context.Context, g *Gateway) {
-	if !g.cfg.InsecureNoDashboardSecret {
-		log.Printf("dev-seed: live mode skipped (insecure_no_dashboard_secret not set)")
+	if _, rootSet, err := lookupDashboardUser(g.db, dashboardRootUsername); err != nil {
+		log.Printf("dev-seed: live mode skipped (lookup root: %v)", err)
+		return
+	} else if rootSet {
+		log.Printf("dev-seed: live mode skipped (dashboard root password is set; looks like a real install)")
 		return
 	}
 	devices := devSeedLoadDeviceList(g.db)

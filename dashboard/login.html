@@ -130,18 +130,40 @@
         font-size: 12px;
         margin: 0 0 12px;
       }
+
+      .hint {
+        color: var(--color-text-muted);
+        font-size: 13px;
+        margin: 0 0 16px;
+      }
     </style>
   </head>
   <body>
     <img src="/claw-patrol-logo.svg" alt="Claw Patrol" class="logo" />
     <form method="POST" action="/__login?next={{.Next}}">
+      {{if .FirstRun}}
+      <h1>Set dashboard password</h1>
+      <p class="hint">
+        Claw Patrol has no operator yet. Pick a password — it will be required to reach the
+        dashboard and the management API from now on.
+      </p>
+      {{if .Error}}
+      <p class="err">{{.Error}}</p>
+      {{end}}
+      <label for="password">New password</label>
+      <input id="password" type="password" name="password" autofocus required minlength="12" />
+      <label for="confirm">Confirm password</label>
+      <input id="confirm" type="password" name="confirm" required minlength="12" />
+      <button type="submit">Set password</button>
+      {{else}}
       <h1>Log in</h1>
       {{if .Error}}
       <p class="err">{{.Error}}</p>
       {{end}}
-      <label for="secret">Secret</label>
-      <input id="secret" type="password" name="secret" autofocus required />
+      <label for="password">Password</label>
+      <input id="password" type="password" name="password" autofocus required />
       <button type="submit">Unlock</button>
+      {{end}}
     </form>
   </body>
 </html>

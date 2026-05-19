@@ -164,7 +164,7 @@ func TestAPIHITLDecideReturnsStructuredTerminalState(t *testing.T) {
 	w := &webMux{g: &Gateway{hitl: registry}}
 	rw := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/hitl/decide", strings.NewReader(fmt.Sprintf(`{"id":%q,"allow":true}`, id)))
-	req = req.WithContext(contextWithPrincipal(req.Context(), principal{Kind: principalDashboardSecret, Owner: "operator"}))
+	req = req.WithContext(contextWithPrincipal(req.Context(), principal{Kind: principalDashboardPassword, Owner: "operator"}))
 	w.apiHITLDecide(rw, req)
 
 	if rw.Code != http.StatusOK {

@@ -31,16 +31,22 @@ type Gateway struct {
 	// StateDir is the directory holding clawpatrol.db (and anything
 	// else a plugin persists to disk under it). Defaults to
 	// ${HOME}/.clawpatrol when unset.
-	StateDir        string `hcl:"state_dir,optional"`
-	Resolver        string `hcl:"resolver,optional"`
-	LogPath         string `hcl:"log_path,optional"`
-	DashboardSecret string `hcl:"dashboard_secret,optional"`
-	// InsecureNoDashboardSecret opts out of dashboard auth. Required
-	// (alongside an empty DashboardSecret) for the gateway to serve
-	// the dashboard at all — otherwise the secret gate replies with a
-	// misconfiguration page on every request. Verbose by design so
-	// you can't disable auth by accident.
-	InsecureNoDashboardSecret bool `hcl:"insecure_no_dashboard_secret,optional"`
+	StateDir string `hcl:"state_dir,optional"`
+	Resolver string `hcl:"resolver,optional"`
+	LogPath  string `hcl:"log_path,optional"`
+
+	// DashboardOperators allowlists tailnet logins permitted to use
+	// the dashboard / management API in tailscale-control mode. Each
+	// entry is either an exact login ("alice@example.com") or a
+	// domain wildcard ("*@example.com"). Tagged devices (whose whois
+	// login is the tag name, not a user email) never match a
+	// wildcard entry — agents on the tailnet can never bypass the
+	// gate through this path.
+	//
+	// Empty / unset → tailnet-allowlist auth is disabled and the
+	// stored root password is the only way in. In WireGuard / proxy
+	// control mode this field is logged once as a no-op and ignored.
+	DashboardOperators []string `hcl:"dashboard_operators,optional"`
 
 	// Telemetry opts in/out of the update-checker / anonymous usage
 	// ping (doc/telemetry.md). nil = default on; explicit `telemetry
@@ -432,15 +438,16 @@ func validateOperational(gw *Gateway) hcl.Diagnostics {
 		}
 	}
 
-	// Public dashboard bind without auth = open admin console. Private
-	// bind (loopback / tailnet / VPN) is OK without an app-layer
-	// secret — the network is the trust boundary.
-	if gw.InfoListen != "" && gw.DashboardSecret == "" && !gw.InsecureNoDashboardSecret {
-		if BindStringIsPublic(gw.InfoListen) {
+	// Validate every dashboard_operators entry — each must be either
+	// "user@domain" or "*@domain". Misshapen entries can silently
+	// fail to match the intended whois login (or worse, match too
+	// broadly), so we refuse to load instead of warning.
+	for i, entry := range gw.DashboardOperators {
+		if err := ValidateDashboardOperatorEntry(entry); err != nil {
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
-				Summary:  "Dashboard auth not configured",
-				Detail:   "info_listen is publicly bound but the dashboard has no auth: set dashboard_secret = \"<long random string>\", bind info_listen to a private interface (loopback / tailnet / VPN), or set insecure_no_dashboard_secret = true to explicitly opt out.",
+				Summary:  "Invalid dashboard_operators entry",
+				Detail:   fmt.Sprintf("dashboard_operators[%d] = %q: %v. Use \"user@domain\" or \"*@domain\".", i, entry, err),
 			})
 		}
 	}

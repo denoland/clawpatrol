@@ -45,24 +45,29 @@ true`, `listen = ":8443"`, and `oauth_client_id` /
 tailnet in-process, no UDP port or iptables rule needed. The rest
 of this guide works the same way.)
 
-**`info_listen` should bind privately.** The dashboard holds the
-credential vault — the gateway refuses to boot when `info_listen`
-is publicly bound (`0.0.0.0`, `::`, or a routable IP) without
-`dashboard_secret`. When `info_listen` is on a private interface
-(loopback / RFC1918 / RFC4193 ULA / link-local / CGNAT including
-Tailscale's 100.64.0.0/10) the network IS the trust boundary —
-no `dashboard_secret` needed. Recommended shapes, ranked:
+**Dashboard auth is required at the app layer, on every bind.** The
+dashboard holds the credential vault, so an unauthenticated request
+must never reach it — regardless of whether `info_listen` is on
+loopback, a tailnet IP, or `0.0.0.0`. The first time you open the
+dashboard you set a "root" password; it lives bcrypt-hashed in
+`clawpatrol.db` and is checked on every subsequent request. To skip
+the web first-run flow (or rotate the password later), pass
+`--set-dashboard-password '<pw>'` or `--reset-dashboard-password`
+to `clawpatrol gateway`.
 
-- **`127.0.0.1:9080`** — loopback. No `dashboard_secret` required.
-  Reach the dashboard via SSH tunnel (`ssh -L 9080:127.0.0.1:9080
-  gateway-host`) or front it with a local reverse proxy.
-- **A tailnet / VPN IP** — e.g. `100.x.x.x:9080`. No
-  `dashboard_secret` required. Tailscale whois attributes audit
-  events to each operator (see [Architecture](/docs/architecture/)).
-- **Public + `dashboard_secret`** — works if you really need it,
-  but logs a warning. Pair with an auth proxy
-  (Cloudflare Access, oauth2-proxy) before pointing real users
-  at it.
+`info_listen` still wants to be private if you can manage it —
+network-layer reachability is cheap defence-in-depth on top of the
+password. Recommended shapes:
+
+- **`127.0.0.1:9080`** — loopback. Reach the dashboard via SSH tunnel
+  (`ssh -L 9080:127.0.0.1:9080 gateway-host`) or a local reverse proxy.
+- **A tailnet / VPN IP** — e.g. `100.x.x.x:9080`. Add
+  `dashboard_operators = ["you@yourdomain.com"]` to let your tailnet
+  identity pass without typing the password. Tagged devices (agents)
+  never match the allowlist.
+- **Public** — works, but everyone on the internet sees a login page.
+  Front it with an auth proxy (Cloudflare Access, oauth2-proxy) if
+  you really need it.
 
 The CA is lazy-minted into sqlite under `state_dir` on first boot —
 nothing to pre-create besides the directory itself. See

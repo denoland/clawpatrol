@@ -63,9 +63,8 @@ func emitOperational(body *hclwrite.Body, gw *Gateway) {
 	setStr("admin_email", gw.AdminEmail)
 	setStr("resolver", gw.Resolver)
 	setStr("log_path", gw.LogPath)
-	setStr("dashboard_secret", gw.DashboardSecret)
-	if gw.InsecureNoDashboardSecret {
-		body.SetAttributeValue("insecure_no_dashboard_secret", cty.BoolVal(true))
+	if len(gw.DashboardOperators) > 0 {
+		body.SetAttributeValue("dashboard_operators", StringListVal(gw.DashboardOperators))
 	}
 	setStr("session_keep", gw.SessionKeep)
 

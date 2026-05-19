@@ -35,6 +35,9 @@ func (g *Gateway) Dump() ([]byte, error) {
 	if g.SessionKeep != "" {
 		out["session_keep"] = g.SessionKeep
 	}
+	if len(g.DashboardOperators) > 0 {
+		out["dashboard_operators"] = g.DashboardOperators
+	}
 	dumpJoinFields(g, out)
 	dumpDefaultsFields(g, out)
 	if g.Policy != nil {

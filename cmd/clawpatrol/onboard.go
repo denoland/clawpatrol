@@ -503,9 +503,26 @@ func mintTailscaleAuthKey(ctx context.Context, ts JoinConfig, ephemeral bool) (s
 	}
 
 	// 2. mint auth key.
+	//
+	// SECURITY: every minted auth key MUST carry at least one tag.
+	// An untagged auth key produces an "owner-associated" tailnet
+	// node — whois on requests from that node returns the OAuth
+	// client owner's user login, which would then match a
+	// dashboard_operators allowlist entry (e.g. "*@example.com") and
+	// silently bypass the dashboard auth gate. The fallback to
+	// `tag:client` below is load-bearing — do not let an empty
+	// tags slice reach Tailscale's create-key API under any
+	// configuration. If you add a new code path here, re-check
+	// this invariant.
 	tags := ts.TailscaleTags
 	if len(tags) == 0 {
 		tags = []string{"tag:client"}
+	}
+	if len(tags) == 0 {
+		// Belt-and-suspenders: refuse to call the API with an
+		// empty tag list even if the default above is ever
+		// changed in a way that lets the slice stay empty.
+		return "", fmt.Errorf("tailscale auth-key mint: refusing to mint untagged key")
 	}
 	keyReqBody, _ := json.Marshal(map[string]any{
 		"capabilities": map[string]any{
@@ -631,9 +648,9 @@ func (w *webMux) apiOnboardLookup(rw http.ResponseWriter, r *http.Request) {
 }
 
 // apiOnboardApprove is hit by the dashboard "approve" button.
-// Approval is an operator action: in production with dashboard_secret
-// configured, dashboardSecretGate must authenticate the request before
-// this handler can approve a pending device.
+// Approval is an operator action: dashboardAuthGate must authenticate
+// the request (root password or tailnet allowlist) before this handler
+// can approve a pending device.
 func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(rw, "POST", http.StatusMethodNotAllowed)

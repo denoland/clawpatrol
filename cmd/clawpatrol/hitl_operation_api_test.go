@@ -367,7 +367,6 @@ admin_email = "ops@example.test"
 public_url = "https://gateway.example.test"
 control = "wireguard"
 wg_subnet_cidr = "10.55.0.0/24"
-insecure_no_dashboard_secret = true
 
 credential "bearer_token" "tok" {}
 endpoint "https" "api" {

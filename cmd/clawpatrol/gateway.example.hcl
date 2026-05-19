@@ -38,16 +38,18 @@ state_dir   = "/opt/clawpatrol"
 # socket. Set it only in Tailscale mode (where it's the tsnet
 # listener on the tailnet IP).
 
-# Dashboard auth — required only when info_listen is publicly bound.
-# With info_listen on a private interface (loopback / tailnet / VPN /
-# RFC1918 / ULA — the example above uses 127.0.0.1) the network IS
-# the trust boundary; no app-layer secret needed. Uncomment one of
-# these only if you change info_listen to a public address:
+# Dashboard auth: there is no HCL field. The first time you open
+# the dashboard you set a "root" password; it lives bcrypt-hashed in
+# clawpatrol.db. To skip the web first-run or rotate later, run:
 #
-#   dashboard_secret = "<long random string>"   # production
-#   insecure_no_dashboard_secret = true         # testing only — anyone
-#                                               # who can reach the
-#                                               # dashboard URL gets in
+#   clawpatrol gateway --set-dashboard-password '<password>' gateway.hcl
+#   clawpatrol gateway --reset-dashboard-password gateway.hcl
+#
+# In tailscale mode you can additionally allowlist operator tailnet
+# logins so they get in without typing the password. Tagged devices
+# (agents) never match a wildcard entry — they have no user login.
+#
+#   dashboard_operators = ["alice@example.com", "*@example.com"]
 
 control        = "wireguard"
 wg_subnet_cidr = "10.55.0.0/24"

@@ -33,8 +33,7 @@ Every singleton gateway attribute — listen addresses, paths, control-plane joi
 | `state_dir` | `string` | no | The directory holding clawpatrol.db (and anything else a plugin persists to disk under it). Defaults to ${HOME}/.clawpatrol when unset. |
 | `resolver` | `string` | no |  |
 | `log_path` | `string` | no |  |
-| `dashboard_secret` | `string` | no |  |
-| `insecure_no_dashboard_secret` | `bool` | no | Opts out of dashboard auth. Required (alongside an empty DashboardSecret) for the gateway to serve the dashboard at all — otherwise the secret gate replies with a misconfiguration page on every request. Verbose by design so you can't disable auth by accident. |
+| `dashboard_operators` | `[]string` | no | Allowlists tailnet logins permitted to use the dashboard / management API in tailscale-control mode. Each entry is either an exact login ("alice@example.com") or a domain wildcard ("*@example.com"). Tagged devices (whose whois login is the tag name, not a user email) never match a wildcard entry — agents on the tailnet can never bypass the gate through this path. Empty / unset → tailnet-allowlist auth is disabled and the stored root password is the only way in. In WireGuard / proxy control mode this field is logged once as a no-op and ignored. |
 | `telemetry` | `bool` | no | Opts in/out of the update-checker / anonymous usage ping (doc/telemetry.md). nil = default on; explicit `telemetry = false` silences the goroutine. Env vars CLAWPATROL_TELEMETRY=0 and DO_NOT_TRACK=1 also work. |
 | `session_keep` | `string` | no | The hard retention floor for the sessions table. Sessions whose last_at is older than this get deleted by the background sweeper. Sessions can revive on new activity at any time, so there's no "closed but kept" intermediate state — only last_at matters. Default 720h (30d), "0" / "off" disables. Format accepts time.ParseDuration strings ("30m", "168h", etc.). |
 | `authkey` | `string` | no |  |

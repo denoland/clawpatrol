@@ -63,7 +63,7 @@ are bare (`credential = github-pat`, never `credential.github-pat`).
 
 ```hcl
 admin_email = "you@example.com"
-info_listen = "127.0.0.1:9080"      # loopback bind — no dashboard_secret needed
+info_listen = "127.0.0.1:9080"
 state_dir   = "/opt/clawpatrol"
 
 # Embedded Tailscale: tsnet runs in-process, Funnel exposes the
@@ -104,9 +104,9 @@ profile "default" { endpoints = [github] }
 |---|---|
 | `admin_email` | Required. |
 | `listen` | TLS gateway bind (typically `:8443` in Tailscale mode — Funnel owns :443). In WireGuard mode this socket is forced to loopback. |
-| `info_listen` | Dashboard + API bind. Loopback / private network = no `dashboard_secret` needed. |
+| `info_listen` | Dashboard + API bind. |
 | `public_url` | Public URL handed out at join time. Auto-derived from the Funnel cert domain when `funnel = true`. |
-| `dashboard_secret` | Required only if `info_listen` binds publicly. |
+| `dashboard_operators` | Optional tailnet-mode allowlist of operator logins (`"user@domain"` or `"*@domain"`). Auth via the bcrypt-hashed root password set on first dashboard use (or via `clawpatrol gateway --set-dashboard-password`). |
 | `state_dir` | Directory holding `clawpatrol.db`. Defaults to `~/.clawpatrol`. |
 | `control` | `"tailscale"` (embedded tsnet, Funnel-fronted) or `"wireguard"` (in-process WG server). Both first-class. |
 | `funnel` | Tailscale Funnel on :443 — strict allowlist for the join bootstrap + credential webhooks. |
@@ -360,7 +360,7 @@ on disk.
 | `endpoint "X" not in compiled policy` | Fixture pins a stale endpoint name. Regenerate via dashboard "Download action". |
 | `host "X" is claimed by multiple endpoints` | Set `match.endpoint` in the fixture to disambiguate. |
 | `mixed-family endpoint set` | A rule's `endpoints` list mixes families (e.g. HTTPS + Postgres). Split the rule. |
-| Dashboard "misconfiguration" page | Set `dashboard_secret` (or `insecure_no_dashboard_secret = true` for testing). |
+| Dashboard `not initialized` / first-run prompt | Set a password in the browser, or pass `--set-dashboard-password '<pw>'` to `clawpatrol gateway`. |
 | Agent gets `tls: unknown authority` | Device's `~/.clawpatrol/ca.crt` isn't trusted. Re-run `clawpatrol join` or trust manually. |
 
 ## Deeper

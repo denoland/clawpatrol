@@ -11,18 +11,17 @@ import (
 )
 
 // newFingerprintWebMux wires a webMux against an in-memory CA so
-// the fingerprint helpers have something to read. Dashboard secret
-// is cleared (InsecureNoDashboardSecret=true) so /api/onboard/lookup
-// is reachable without authentication — the dashboard's approval
-// page must surface the fingerprint to the operator in WireGuard
-// mode without any login wall.
+// the fingerprint helpers have something to read. /info and
+// /api/onboard/lookup are both authPublic / authTailnetOperator and
+// skip the dashboard auth gate, so no root password is seeded — the
+// dashboard's approval page must surface the fingerprint to the
+// operator in WireGuard mode without any login wall.
 func newFingerprintWebMux(t *testing.T) (*webMux, string) {
 	t.Helper()
 	cc, certPEM := inMemoryCertCache(t)
 	cfg := &config.Gateway{
-		Control:                   "wireguard",
-		Policy:                    &config.Policy{},
-		InsecureNoDashboardSecret: true,
+		Control: "wireguard",
+		Policy:  &config.Policy{},
 	}
 	g := &Gateway{
 		cfg:     cfg,
@@ -85,12 +84,12 @@ func TestOnboardLookupReturnsCAFingerprint(t *testing.T) {
 	}
 }
 
-// /api/onboard/lookup must stay reachable without dashboard secret
-// in WireGuard mode — otherwise the operator hitting the approval
-// link is redirected to a login wall and never sees the
-// fingerprint we want them to compare against the CLI. Regression
-// guard against a future tightening of the gate.
-func TestOnboardLookupReachableInWireGuardModeWithoutDashboardSecret(t *testing.T) {
+// /api/onboard/lookup must stay reachable without dashboard auth in
+// WireGuard mode — otherwise the operator hitting the approval link
+// is redirected to a login wall and never sees the fingerprint we
+// want them to compare against the CLI. Regression guard against a
+// future tightening of the gate.
+func TestOnboardLookupReachableInWireGuardModeWithoutDashboardAuth(t *testing.T) {
 	w, _ := newFingerprintWebMux(t)
 	s := w.onboard.start()
 	rr := httptest.NewRecorder()

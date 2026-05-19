@@ -523,64 +523,68 @@ func (g *Gateway) watchConfig(path string) {
 			}
 		}
 		// Hot-swap the operational *config.Gateway too — AdminEmail /
-		// PublicURL / DashboardSecret reads pick up immediately.
+		// PublicURL / DashboardOperators reads pick up immediately.
 		// Listen / CADir / Tailscale changes are not applied (restart).
 		g.cfg = next
 		log.Printf("config reloaded: %d endpoints across %d profile(s)",
 			len(policy.Endpoints), len(policy.Profiles))
-		logDashboardSecretState(next)
+		logDashboardAuthState(g.db, next)
 	}
 }
 
-// logDashboardSecretState emits a one-line summary of dashboard-auth
-// state every time the config (re)loads, so an accidentally-open
-// dashboard shows up in `journalctl -u clawpatrol-gateway` even when
-// nobody opens the dashboard in a browser.
-func logDashboardSecretState(cfg *config.Gateway) {
-	switch {
-	case cfg.DashboardSecret != "":
-		log.Printf("dashboard auth: enabled (dashboard_secret set)")
-	case cfg.InsecureNoDashboardSecret:
-		log.Printf("dashboard auth: DISABLED via insecure_no_dashboard_secret — anyone who reaches the dashboard URL gets in")
-	case cfg.InfoListen != "" && !config.BindStringIsPublic(cfg.InfoListen):
-		log.Printf("dashboard auth: network-only (info_listen %q is privately bound; no app-layer secret required)", cfg.InfoListen)
-	default:
-		log.Printf("dashboard auth: MISCONFIGURED — gateway.hcl is missing both dashboard_secret and insecure_no_dashboard_secret; dashboard will refuse to serve until one is set")
-	}
-}
-
-// validateDashboardBindOrFatal refuses to boot if info_listen would
-// expose the dashboard publicly with no authentication. The escape
-// hatch is the --insecure-public-dashboard CLI flag — verbose by
-// design so it can't be set by accident.
-func validateDashboardBindOrFatal(cfg *config.Gateway, insecurePublic bool) {
-	if cfg.InfoListen == "" {
-		return
-	}
-	host, _, err := net.SplitHostPort(cfg.InfoListen)
+// logDashboardAuthState emits a one-line summary of dashboard-auth
+// state every time the config (re)loads, so an uninitialized or
+// misconfigured dashboard shows up in `journalctl -u clawpatrol-
+// gateway` even when nobody opens the dashboard in a browser.
+//
+// The root password lives in clawpatrol.db, not in gateway.hcl —
+// so we resolve its presence by querying the DB.
+func logDashboardAuthState(db *sql.DB, cfg *config.Gateway) {
+	_, rootSet, err := lookupDashboardUser(db, dashboardRootUsername)
 	if err != nil {
-		log.Fatalf("info_listen %q: %v", cfg.InfoListen, err)
-	}
-	public := config.BindIsPublic(host)
-	if !public {
+		log.Printf("dashboard auth: UNKNOWN — lookup failed: %v", err)
 		return
 	}
-	if insecurePublic {
-		log.Printf("WARNING: info_listen %q is publicly bound (--insecure-public-dashboard acknowledged)", cfg.InfoListen)
+	tailnetMode := isTailscaleControlMode(cfg.Control)
+	allowlist := len(cfg.DashboardOperators) > 0
+
+	switch {
+	case rootSet && allowlist && tailnetMode:
+		log.Printf("dashboard auth: enabled (root password + %d-entry tailnet operator allowlist)", len(cfg.DashboardOperators))
+	case rootSet && allowlist && !tailnetMode:
+		log.Printf("dashboard auth: enabled (root password); dashboard_operators is set but ignored — control mode %q has no tailnet whois", cfg.Control)
+	case rootSet:
+		log.Printf("dashboard auth: enabled (root password)")
+	case !rootSet && allowlist && tailnetMode:
+		log.Printf("dashboard auth: pending — no root password yet; tailnet operator allowlist alone cannot bootstrap. Open the dashboard or run `clawpatrol gateway --set-dashboard-password <pw>`.")
+	default:
+		log.Printf("dashboard auth: pending — no root password yet. Open the dashboard at info_listen %q to set one, or run `clawpatrol gateway --set-dashboard-password <pw>`.", cfg.InfoListen)
+	}
+}
+
+// applyDashboardPasswordFlags handles --set-dashboard-password and
+// --reset-dashboard-password before the HTTP listener boots. The
+// flags are deliberately verbose: each one log-prints what it did so
+// the journalctl trail shows when an operator intervened.
+//
+// Mutual exclusion: --reset wins if both are passed. Empty
+// --set-dashboard-password is a no-op (Go's flag package treats it
+// the same as not passing the flag at all).
+func applyDashboardPasswordFlags(db *sql.DB, setPassword string, reset bool) {
+	if reset {
+		if err := deleteDashboardUser(db, dashboardRootUsername); err != nil {
+			log.Fatalf("--reset-dashboard-password: %v", err)
+		}
+		log.Printf("dashboard auth: root password cleared via --reset-dashboard-password (next dashboard hit will re-run first-run setup)")
 		return
 	}
-	if cfg.DashboardSecret != "" {
-		log.Printf("WARNING: info_listen %q is publicly bound — dashboard is reachable from the internet. Use a private bind (loopback / tailnet / VPN) or front it with an auth proxy on the host.", cfg.InfoListen)
+	if setPassword == "" {
 		return
 	}
-	log.Fatalf(
-		"refusing to start: info_listen %q binds to a public interface and dashboard_secret is unset.\n"+
-			"  The dashboard would be reachable from anywhere without authentication.\n"+
-			"  Fix one of:\n"+
-			"    - bind info_listen to a private interface (loopback, RFC1918, ULA, tailnet/CGNAT)\n"+
-			"    - set dashboard_secret in gateway.hcl\n"+
-			"    - pass --insecure-public-dashboard if you really mean it (testing only)",
-		cfg.InfoListen)
+	if err := setDashboardUser(db, dashboardRootUsername, setPassword); err != nil {
+		log.Fatalf("--set-dashboard-password: %v", err)
+	}
+	log.Printf("dashboard auth: root password set via --set-dashboard-password")
 }
 
 // trackCodexWSUsage parses a single WebSocket text-frame payload from
@@ -2654,15 +2658,26 @@ Documentation: https://clawpatrol.dev/docs/`)
 // gatewayHelp is shown for `clawpatrol gateway -h` and any wrong
 // invocation. The example HCL + config-reference URL is the
 // discoverability path for first-time users.
-const gatewayHelp = `usage: clawpatrol gateway <config.hcl>
+const gatewayHelp = `usage: clawpatrol gateway [flags] <config.hcl>
+
+flags:
+  --set-dashboard-password <pw>   upsert the dashboard root password from this
+                                  value, then start (skips the first-run web
+                                  flow). The password is stored bcrypt-hashed
+                                  in clawpatrol.db.
+  --reset-dashboard-password      delete the stored dashboard root password,
+                                  then start. The next dashboard request will
+                                  re-run first-run setup.
 
 Start from gateway.example.hcl in the repo, or see the HCL reference:
   https://clawpatrol.dev/docs/config-reference`
 
 func runGateway(args []string) {
 	fs := flag.NewFlagSet("gateway", flag.ExitOnError)
-	insecurePublicDashboard := fs.Bool("insecure-public-dashboard", false,
-		"allow info_listen to bind on a public interface without dashboard_secret (testing only)")
+	setDashboardPassword := fs.String("set-dashboard-password", "",
+		"upsert the dashboard root password from this value, then continue starting (skips the first-run web flow)")
+	resetDashboardPassword := fs.Bool("reset-dashboard-password", false,
+		"delete the stored dashboard root password before starting (the next dashboard hit goes back to first-run)")
 	seedHook := devSeedAttach(fs)
 	fs.Usage = func() { fmt.Fprintln(os.Stderr, gatewayHelp) }
 	_ = fs.Parse(args)
@@ -2683,8 +2698,6 @@ func runGateway(args []string) {
 		}
 		log.Fatalf("config: %v", err)
 	}
-	logDashboardSecretState(cfg)
-	validateDashboardBindOrFatal(cfg, *insecurePublicDashboard)
 	stateDir := resolveStateDir(cfg)
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		log.Fatalf("state dir: %v", err)
@@ -2700,6 +2713,8 @@ func runGateway(args []string) {
 	}
 	warnIfStateLooselyPermissioned(stateDir)
 	setDB(db)
+	applyDashboardPasswordFlags(db, *setDashboardPassword, *resetDashboardPassword)
+	logDashboardAuthState(db, cfg)
 	blobs := newGatewayBlobStore(db)
 	endpoints.SetBlobStore(blobs)
 	certs, err := loadOrMintCA(db)

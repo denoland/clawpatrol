@@ -217,7 +217,6 @@ func newHITLRetryRelayHarness(t *testing.T) *hitlRetryRelayHarness {
 
 	gw, diags := config.LoadBytes([]byte(`
 public_url = "https://gateway.example.test"
-insecure_no_dashboard_secret = true
 
 credential "bearer_token" "pat" {}
 endpoint "https" "api" {

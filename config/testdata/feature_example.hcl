@@ -28,13 +28,12 @@
 
 # ── operational --------------------------------------------------------
 
-listen           = "0.0.0.0:8443"
-info_listen      = "0.0.0.0:8080"
-public_url       = "http://66.42.120.196:8080"
-admin_email      = "test@example.com"
-log_path         = "/opt/clawpatrol/gateway.log"
-state_dir        = "/opt/clawpatrol/oauth"
-dashboard_secret = "test-secret"
+listen      = "0.0.0.0:8443"
+info_listen = "0.0.0.0:8080"
+public_url  = "http://66.42.120.196:8080"
+admin_email = "test@example.com"
+log_path    = "/opt/clawpatrol/gateway.log"
+state_dir   = "/opt/clawpatrol/oauth"
 
 control        = "wireguard"
 wg_endpoint    = "0.0.0.0:51820"

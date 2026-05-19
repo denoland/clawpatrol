@@ -7,7 +7,6 @@ import (
 	"compress/zlib"
 	"context"
 	"crypto/sha256"
-	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -17,6 +16,7 @@ import (
 	"html/template"
 	"io"
 	"io/fs"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -89,8 +89,8 @@ type webRoute struct {
 type principalKind string
 
 const (
-	principalDashboardSecret principalKind = "dashboard_secret"
-	principalTailnet         principalKind = "tailnet"
+	principalDashboardPassword principalKind = "dashboard_password"
+	principalTailnet           principalKind = "tailnet"
 )
 
 type principal struct {
@@ -118,12 +118,8 @@ func principalFromContext(ctx context.Context) (principal, bool) {
 	return p, true
 }
 
-func (w *webMux) dashboardSecretPrincipal() principal {
-	owner := w.g.cfg.AdminEmail
-	if owner == "" {
-		owner = "dashboard"
-	}
-	return principal{Kind: principalDashboardSecret, Owner: owner}
+func (w *webMux) dashboardPasswordPrincipal() principal {
+	return principal{Kind: principalDashboardPassword, Owner: dashboardRootUsername}
 }
 
 func routeAuthIndex(routes []webRoute) map[string]authRequirement {
@@ -146,7 +142,12 @@ func (w *webMux) authRequirementForPath(path string) authRequirement {
 	return authDashboard
 }
 
-func (w *webMux) skipsDashboardSecret(path string) bool {
+// skipsDashboardPassword returns true for routes whose handlers
+// provide their own authentication (credential webhook signatures,
+// peer API tokens) or are intentionally open (/info, /ca.crt,
+// onboarding handshakes). For these, the dashboard gate does not
+// require the cookie.
+func (w *webMux) skipsDashboardPassword(path string) bool {
 	switch w.authRequirementForPath(path) {
 	case authPublic, authTailnetOperator, authSelfAuthenticating:
 		return true
@@ -189,7 +190,7 @@ func (w *webMux) handler() http.Handler {
 	}
 	w.mountCredentialWebhooks(mux)
 	mux.Handle("/", w.staticHandler())
-	return w.dashboardSecretGate(w.tailnetGate(mux))
+	return w.dashboardAuthGate(w.tailnetGate(mux))
 }
 
 func (w *webMux) routes() []webRoute {
@@ -234,32 +235,37 @@ func (w *webMux) routes() []webRoute {
 		{Method: http.MethodGet, Path: "/api/env-pushdown", Auth: authSelfAuthenticating, Handler: w.apiEnvPushdown},
 		{Method: http.MethodPost, Path: "/api/peer/ephemeral", Auth: authSelfAuthenticating, Handler: w.apiEphemeralPeer},
 		{Method: http.MethodPost, Path: "/api/peer/ephemeral/tsnet/register", Auth: authSelfAuthenticating, Handler: w.apiRegisterEphemeralTsnetIP},
-		{Method: http.MethodGet, Path: "/__login", Auth: authTailnetOperator, Handler: w.apiDashboardLogin},
+		// /__login is the auth point itself — it MUST be reachable
+		// without a credential. The handler dispatches on r.Method
+		// (GET renders the form, POST validates + sets the cookie),
+		// and dashboardAuthGate further restricts it to first-run
+		// mode when no root row exists. SameSite=Lax on the cp_dash
+		// cookie blocks cross-site CSRF on the POST.
+		{Method: http.MethodGet, Path: "/__login", Auth: authPublic, Handler: w.apiDashboardLogin},
 	}
 }
 
-// dashboardSecretGate requires every non-public request to carry the
-// configured dashboard_secret (cookie / header). Onboarding +
-// health endpoints stay open so brand-new clients can still join.
+// dashboardAuthGate requires every non-public request to carry a
+// valid dashboard credential. Two methods are accepted:
 //
-// When dashboard_secret is empty, the gate's behavior depends on
-// the listen address and explicit opt-outs:
-//   - info_listen bound private (loopback / RFC1918 / ULA / CGNAT /
-//     link-local): pass through. The network is the trust boundary;
-//     anyone who can reach the socket is implicitly trusted. In
-//     Tailscale control mode the tailnetGate downstream still picks
-//     up per-operator identity from whois.
-//   - insecure_no_dashboard_secret = true: pass through. Testing
-//     escape hatch — anyone on the network gets in.
-//   - otherwise: refuse to serve. validateDashboardBindOrFatal at
-//     boot keeps the gateway from getting here for public binds,
-//     so this branch fires only on misconfigured stacks (e.g.
-//     hostname-bound listener that resolves dynamically).
+//   - cookie `cp_dash` (or header `X-Clawpatrol-Secret`) holding the
+//     password, bcrypt-checked against the root row in dashboard_users;
+//   - in tailscale-control mode, a tsnet whois login that matches an
+//     entry in cfg.DashboardOperators. The actual whois resolution
+//     happens downstream in tailnetGate; this gate only decides that
+//     the request is allowed to reach the tailnet check.
+//
+// When no root row exists (fresh install), every protected request is
+// redirected to /__login, which renders the first-run "set password"
+// form. The dashboard cannot serve any management endpoint until a
+// password is set, so credentials / profile state can never be
+// created before there is an operator to protect them. See
+// doc/security-model.md for the full trust statement.
 //
 // credentialWebhookPrefix is the path prefix every plugin webhook
 // route mounts under. Public — credential plugins authenticate
 // callbacks via their own signature header (Slack signing secret,
-// etc.) so the dashboard secret gate skips the prefix.
+// etc.) so this gate skips the prefix entirely.
 const credentialWebhookPrefix = "/api/cred/"
 
 const (
@@ -270,84 +276,110 @@ const (
 	hitlOperationNotFoundErrorValue = "hitl_operation_not_found"
 )
 
-// infoListenIsPrivate reports whether the dashboard is bound on a
-// private interface. When true, the network is the trust boundary
-// and the dashboard_secret app-layer check is redundant.
-func (w *webMux) infoListenIsPrivate() bool {
-	return !config.BindStringIsPublic(w.g.cfg.InfoListen)
-}
+// cpDashCookieName is the name of the cookie holding the dashboard
+// password between requests. Value is the raw password (only ever
+// transmitted to the gateway, never logged); the gate bcrypt-checks
+// it against the stored hash on every request, so rotating the
+// password invalidates every existing cookie immediately.
+const cpDashCookieName = "cp_dash"
 
-func (w *webMux) dashboardSecretGate(next http.Handler) http.Handler {
+// dashboardPasswordHeader is the API-client equivalent of the
+// cp_dash cookie — clients (curl, scripts) pass the password via
+// this header instead of negotiating cookies. Both paths go through
+// the same bcrypt compare.
+const dashboardPasswordHeader = "X-Clawpatrol-Secret"
+
+func (w *webMux) dashboardAuthGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		secret := w.g.cfg.DashboardSecret
-		if secret == "" {
-			if dashboardMisconfigAlwaysOpen(r.URL.Path) {
+		path := r.URL.Path
+
+		// /info, /ca.crt, /api/onboard/{start,poll,claim} stay open
+		// for brand-new clients that don't have any credential yet.
+		if w.skipsDashboardPassword(path) {
+			next.ServeHTTP(rw, r)
+			return
+		}
+
+		// First-run gate: until a root row exists, every protected
+		// request redirects to /__login (which renders the "set
+		// password" form). API callers see 401 with a hint.
+		_, rootExists, err := lookupDashboardUser(w.g.db, dashboardRootUsername)
+		if err != nil {
+			http.Error(rw, "dashboard auth lookup failed", http.StatusServiceUnavailable)
+			return
+		}
+		if !rootExists {
+			if path == dashboardLoginPath {
 				next.ServeHTTP(rw, r)
 				return
 			}
-			if w.g.cfg.InsecureNoDashboardSecret || w.infoListenIsPrivate() {
-				next.ServeHTTP(rw, r.WithContext(contextWithPrincipal(r.Context(), w.dashboardSecretPrincipal())))
+			if strings.HasPrefix(path, "/api/") {
+				http.Error(rw, "dashboard not initialized — open the dashboard and set a password, or run `clawpatrol gateway --set-dashboard-password <pw>`", http.StatusUnauthorized)
 				return
 			}
-			renderDashboardMisconfigured(rw, r)
+			http.Redirect(rw, r, dashboardLoginPath+"?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
 			return
 		}
-		if w.skipsDashboardSecret(r.URL.Path) {
+
+		// Cookie / header path: bcrypt-verify against the stored
+		// root hash. On success we inject the dashboard principal
+		// and short-circuit the tailnetGate downstream.
+		if ok, _, _ := w.checkDashboardPasswordRequest(r); ok {
+			next.ServeHTTP(rw, r.WithContext(contextWithPrincipal(r.Context(), w.dashboardPasswordPrincipal())))
+			return
+		}
+
+		// Tailnet allowlist path: defer to tailnetGate so it can
+		// resolve the whois identity and compare against
+		// cfg.DashboardOperators. Only relevant in tailscale-control
+		// mode; in wireguard / proxy mode there is no whois.
+		if isTailscaleControlMode(w.g.cfg.Control) && len(w.g.cfg.DashboardOperators) > 0 {
 			next.ServeHTTP(rw, r)
 			return
 		}
-		if checkDashboardSecret(r, secret) {
-			next.ServeHTTP(rw, r.WithContext(contextWithPrincipal(r.Context(), w.dashboardSecretPrincipal())))
-			return
-		}
-		if w.mayUseTailnetInsteadOfDashboard(r.URL.Path) {
+
+		// /api/onboard/approve in tailscale-control mode is a
+		// dual-path route (any tailnet operator can approve), so
+		// pass it through to tailnetGate even without a configured
+		// allowlist.
+		if w.mayUseTailnetInsteadOfDashboard(path) {
 			next.ServeHTTP(rw, r)
 			return
 		}
+
 		// API callers see 401; browsers get redirected to the login form.
-		if strings.HasPrefix(r.URL.Path, "/api/") {
-			http.Error(rw, "dashboard secret required", http.StatusUnauthorized)
+		if strings.HasPrefix(path, "/api/") {
+			http.Error(rw, "dashboard password required", http.StatusUnauthorized)
 			return
 		}
-		http.Redirect(rw, r, "/__login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
+		http.Redirect(rw, r, dashboardLoginPath+"?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
 	})
 }
 
-func dashboardMisconfigAlwaysOpen(path string) bool {
-	return path == "/info" || path == "/ca.crt"
-}
+// dashboardLoginPath is the unauthenticated login + first-run setup
+// endpoint. Single route to keep the auth surface small.
+const dashboardLoginPath = "/__login"
 
-const dashboardMisconfiguredMsg = "dashboard refuses to serve: gateway.hcl is missing both `dashboard_secret` and `insecure_no_dashboard_secret`. Set `dashboard_secret = \"<long random string>\"` to require a password, or `insecure_no_dashboard_secret = true` to explicitly run without auth (testing only)."
-
-func renderDashboardMisconfigured(rw http.ResponseWriter, r *http.Request) {
-	if strings.HasPrefix(r.URL.Path, "/api/") {
-		http.Error(rw, dashboardMisconfiguredMsg, http.StatusServiceUnavailable)
-		return
+// checkDashboardPasswordRequest reads the cp_dash cookie or
+// X-Clawpatrol-Secret header off r and bcrypt-compares it against
+// the stored root hash. Returns (ok, rootExists, err): rootExists=
+// false means the gate should trigger the first-run flow.
+func (w *webMux) checkDashboardPasswordRequest(r *http.Request) (bool, bool, error) {
+	var presented string
+	if c, err := r.Cookie(cpDashCookieName); err == nil {
+		presented = c.Value
 	}
-	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
-	rw.WriteHeader(http.StatusServiceUnavailable)
-	_, _ = fmt.Fprintf(rw, `<!doctype html>
-<html><head><meta charset="utf-8"><title>clawpatrol — dashboard disabled</title>
-<style>body{font:14px/1.5 -apple-system,system-ui,sans-serif;max-width:42em;margin:6em auto;padding:0 1em;color:#222}code{background:#f3f3f3;padding:.1em .3em;border-radius:3px}h1{font-size:1.4em}</style>
-</head><body>
-<h1>Dashboard refuses to serve</h1>
-<p>Your <code>gateway.hcl</code> sets neither <code>dashboard_secret</code> nor <code>insecure_no_dashboard_secret</code>, so the dashboard is locked to avoid being exposed without auth.</p>
-<p>Pick one and reload (the gateway hot-reloads <code>gateway.hcl</code> within a few seconds):</p>
-<ul>
-<li><code>dashboard_secret = "&lt;long random string&gt;"</code> — production, requires a password.</li>
-<li><code>insecure_no_dashboard_secret = true</code> — testing only, anyone who reaches this URL gets in.</li>
-</ul>
-</body></html>`)
-}
-
-func checkDashboardSecret(r *http.Request, want string) bool {
-	if c, err := r.Cookie("cp_dash"); err == nil && subtle.ConstantTimeCompare([]byte(c.Value), []byte(want)) == 1 {
-		return true
+	if presented == "" {
+		presented = r.Header.Get(dashboardPasswordHeader)
 	}
-	if h := r.Header.Get("X-Clawpatrol-Secret"); h != "" && subtle.ConstantTimeCompare([]byte(h), []byte(want)) == 1 {
-		return true
+	if presented == "" {
+		// Still call into checkDashboardPassword so we incur the
+		// bcrypt cost regardless — keeps the timing identical
+		// between "no credential" and "wrong credential".
+		_, exists, err := checkDashboardPassword(w.g.db, dashboardRootUsername, "")
+		return false, exists, err
 	}
-	return false
+	return checkDashboardPassword(w.g.db, dashboardRootUsername, presented)
 }
 
 func safeDashboardLoginNext(next string) string {
@@ -361,53 +393,110 @@ func safeDashboardLoginNext(next string) string {
 	return next
 }
 
-// apiDashboardLogin renders a one-field form (GET) and validates +
-// sets the cp_dash cookie (POST). Plain HTML, no JS — keeps the
-// login surface small.
+// apiDashboardLogin serves /__login. Two modes, switched on whether
+// the root row exists:
+//
+//   - first-run (GET): render the "set password" form (two fields).
+//     POST: validate password == confirm, length >= 12, upsert root,
+//     set cookie, redirect.
+//   - steady-state (GET): render the "enter password" form.
+//     POST: bcrypt-verify, set cookie, redirect.
 func (w *webMux) apiDashboardLogin(rw http.ResponseWriter, r *http.Request) {
-	want := w.g.cfg.DashboardSecret
-	if want == "" {
-		http.Redirect(rw, r, "/", http.StatusFound)
+	next := safeDashboardLoginNext(r.URL.Query().Get("next"))
+	_, rootExists, err := lookupDashboardUser(w.g.db, dashboardRootUsername)
+	if err != nil {
+		http.Error(rw, "dashboard auth lookup failed", http.StatusServiceUnavailable)
 		return
 	}
-	next := safeDashboardLoginNext(r.URL.Query().Get("next"))
+
 	if r.Method == "POST" {
 		if err := r.ParseForm(); err != nil {
-			http.Error(rw, "bad form", 400)
+			http.Error(rw, "bad form", http.StatusBadRequest)
 			return
 		}
-		got := r.PostFormValue("secret")
-		if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
-			renderLogin(rw, next, "wrong secret", 401)
+		password := r.PostFormValue("password")
+		if !rootExists {
+			confirm := r.PostFormValue("confirm")
+			if len(password) < dashboardMinPasswordLen {
+				renderLogin(rw, next, fmt.Sprintf("password must be at least %d characters", dashboardMinPasswordLen), true, http.StatusBadRequest)
+				return
+			}
+			if password != confirm {
+				renderLogin(rw, next, "passwords do not match", true, http.StatusBadRequest)
+				return
+			}
+			if err := setDashboardUser(w.g.db, dashboardRootUsername, password); err != nil {
+				log.Printf("set dashboard root password: %v", err)
+				http.Error(rw, "could not store password", http.StatusInternalServerError)
+				return
+			}
+			log.Printf("dashboard auth: root password initialized via /__login first-run flow")
+			w.setDashboardCookie(rw, password)
+			http.Redirect(rw, r, next, http.StatusFound)
 			return
 		}
-		http.SetCookie(rw, &http.Cookie{
-			Name:     "cp_dash",
-			Value:    want,
-			Path:     "/",
-			HttpOnly: true,
-			SameSite: http.SameSiteLaxMode,
-			MaxAge:   30 * 24 * 3600, // 30d
-		})
+		ok, _, err := checkDashboardPassword(w.g.db, dashboardRootUsername, password)
+		if err != nil {
+			http.Error(rw, "dashboard auth check failed", http.StatusServiceUnavailable)
+			return
+		}
+		if !ok {
+			renderLogin(rw, next, "wrong password", false, http.StatusUnauthorized)
+			return
+		}
+		w.setDashboardCookie(rw, password)
 		http.Redirect(rw, r, next, http.StatusFound)
 		return
 	}
-	renderLogin(rw, next, "", 200)
+	renderLogin(rw, next, "", !rootExists, http.StatusOK)
 }
 
-func renderLogin(rw http.ResponseWriter, next, errMsg string, status int) {
+// dashboardMinPasswordLen is the minimum length enforced at password
+// set time. 12 chars is the OWASP-recommended floor for human-chosen
+// passwords; the CLI flag enforces the same limit.
+const dashboardMinPasswordLen = 12
+
+func (w *webMux) setDashboardCookie(rw http.ResponseWriter, password string) {
+	http.SetCookie(rw, &http.Cookie{
+		Name:     cpDashCookieName,
+		Value:    password,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   30 * 24 * 3600, // 30d
+	})
+}
+
+func renderLogin(rw http.ResponseWriter, next, errMsg string, firstRun bool, status int) {
 	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
 	rw.WriteHeader(status)
-	_ = loginTpl.Execute(rw, struct{ Next, Error string }{next, errMsg})
+	_ = loginTpl.Execute(rw, struct {
+		Next     string
+		Error    string
+		FirstRun bool
+	}{next, errMsg, firstRun})
 }
 
-// tailnetGate restricts non-tailnet callers to routes whose centralized
-// auth policy is authPublic. Dashboard, status, OAuth, event streams, and
-// self-authenticating routes keep the existing tailnet behavior.
+// tailnetGate runs downstream of dashboardAuthGate. Three jobs:
+//
+//   - For routes the upstream gate already authenticated (password
+//     cookie verified), let the request pass with its injected
+//     principal.
+//   - For authTailnetOperator / authDashboardOrTailnetOperator
+//     routes, attribute a principal from the tsnet whois identity
+//     ("any tailnet member, just identify them").
+//   - For authDashboard routes that fall through here (because the
+//     password cookie was missing and DashboardOperators is
+//     configured), require that the whois login matches the
+//     operator allowlist. This is the path that lets a deployed
+//     "alice@example.com" operator hit the dashboard with no
+//     password while keeping every other tailnet peer — including
+//     tagged agent devices — locked out.
+//
+// In wireguard / proxy mode there is no tsnet whois at all; the
+// gate is skipped and dashboardAuthGate's password requirement is
+// the only auth.
 func (w *webMux) tailnetGate(next http.Handler) http.Handler {
-	// In wireguard / proxy mode there is no tailnet identity to gate
-	// against. Operators put the dashboard behind their own
-	// authentication (Cloudflare Access, basic auth proxy, etc).
 	skipGate := !isTailscaleControlMode(w.g.cfg.Control)
 
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
@@ -415,11 +504,11 @@ func (w *webMux) tailnetGate(next http.Handler) http.Handler {
 			next.ServeHTTP(rw, r)
 			return
 		}
-		if w.authRequirementForPath(r.URL.Path) == authDashboardOrTailnetOperator {
-			if _, ok := principalFromContext(r.Context()); ok {
-				next.ServeHTTP(rw, r)
-				return
-			}
+		// Upstream password gate already authenticated → keep the
+		// dashboard principal it injected.
+		if _, ok := principalFromContext(r.Context()); ok {
+			next.ServeHTTP(rw, r)
+			return
 		}
 		// Two ways to prove tailnet membership:
 		//   1. peer IP whois (direct tailnet → gateway, no proxy).
@@ -448,6 +537,17 @@ func (w *webMux) tailnetGate(next http.Handler) http.Handler {
 		if login == "" {
 			http.Error(rw, "tailnet access required — onboard via `clawpatrol join <gateway>`", http.StatusForbidden)
 			return
+		}
+		// authDashboard routes require an explicit allowlist match.
+		// Without this check, any whois-attributable tailnet peer
+		// (including a tagged agent that managed to acquire a user
+		// login somehow) would inherit operator powers — exactly
+		// the threat the password gate above is closing.
+		if w.authRequirementForPath(r.URL.Path) == authDashboard {
+			if !config.MatchDashboardOperator(login, w.g.cfg.DashboardOperators) {
+				http.Error(rw, "dashboard operator allowlist did not match — set the dashboard password or add this login to dashboard_operators", http.StatusForbidden)
+				return
+			}
 		}
 		principal := principal{Kind: principalTailnet, Owner: login, User: login, Device: device, Host: displayHost}
 		next.ServeHTTP(rw, r.WithContext(contextWithPrincipal(r.Context(), principal)))
