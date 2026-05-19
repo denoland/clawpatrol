@@ -203,9 +203,8 @@ func (g *Gateway) updateHITLOperationMessage(ctx context.Context, op HITLOperati
 	if approver == nil {
 		return
 	}
-	type humanCredentialer interface{ HumanApproverCredential() string }
 	credName := ""
-	if h, ok := approver.Body.(humanCredentialer); ok {
+	if h, ok := approver.Body.(runtime.HITLHumanCredentialer); ok {
 		credName = h.HumanApproverCredential()
 	}
 	if credName == "" {

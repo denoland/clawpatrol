@@ -27,6 +27,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -131,38 +132,7 @@ func (s *SlackTokens) NotifyHITL(ctx context.Context, req runtime.ApproveRequest
 	queryLabel := runtime.HITLQueryLabel(req.Endpoint)
 
 	title := slackTrunc(runtime.HITLTitle(req.Method, endpoint), 140)
-	var blocks []map[string]any
-	switch {
-	case target.Message != "":
-		blocks = []map[string]any{
-			{"type": "header", "text": map[string]any{"type": "plain_text", "text": title}},
-			{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": slackTrunc(target.Message, 3000)}},
-		}
-	case target.Summary != nil:
-		s := target.Summary
-		headerText := s.TicketID
-		if headerText == "" {
-			headerText = title
-		}
-		emoji := hitlClassificationEmoji(s.Classification)
-		classLine := emoji + " " + s.Classification
-		if s.Confidence > 0 {
-			classLine += fmt.Sprintf(" (%d%%)", s.Confidence)
-		}
-		sectionText := "*Classification:* " + classLine + "\n*Summary:* " + slackTrunc(s.Text, 500)
-		blocks = []map[string]any{
-			{"type": "header", "text": map[string]any{"type": "plain_text", "text": slackTrunc(headerText, 140)}},
-			{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": sectionText}},
-		}
-	default:
-		blocks = []map[string]any{
-			{"type": "header", "text": map[string]any{"type": "plain_text", "text": title}},
-			{"type": "section", "text": map[string]any{
-				"type": "mrkdwn",
-				"text": "*" + queryLabel + "*\n```" + slackTrunc(req.Path, 800) + "```",
-			}},
-		}
-	}
+	blocks := slackHITLContentBlocks(title, queryLabel, req.Path, target.Message, target.Summary)
 	contextBlocks := []map[string]any{}
 	if req.Profile != "" {
 		contextBlocks = append(contextBlocks, map[string]any{
@@ -242,7 +212,7 @@ func (s *SlackTokens) NotifyHITL(ctx context.Context, req runtime.ApproveRequest
 		return err
 	}
 	if target.MessageUpdateSink != nil && req.AsyncOperationID != "" && posted.Channel != "" && posted.TS != "" {
-		ref := encodeSlackMessageRef(slackMessageRef{Credential: target.CredentialName, Channel: posted.Channel, TS: posted.TS, PendingID: target.PendingID, Interactive: target.Interactive})
+		ref := encodeSlackMessageRef(slackMessageRef{Credential: target.CredentialName, Channel: posted.Channel, TS: posted.TS, PendingID: target.PendingID, Interactive: target.Interactive, Message: target.Message, Summary: target.Summary})
 		if err := target.MessageUpdateSink(ctx, req.AsyncOperationID, ref); err != nil {
 			log.Printf("slack notify: record HITL message ref for %s: %v", req.AsyncOperationID, err)
 		}
@@ -267,6 +237,40 @@ func slackHITLApprovalGuidance(target runtime.HITLTarget) string {
 		effect = runtime.HITLApprovalEffectForOperationState(state)
 	}
 	return runtime.HITLApprovalMessage(state, effect, target.UpstreamCalled)
+}
+
+func slackHITLContentBlocks(title, queryLabel, path, message string, summary *runtime.HITLSummary) []map[string]any {
+	switch {
+	case message != "":
+		return []map[string]any{
+			{"type": "header", "text": map[string]any{"type": "plain_text", "text": title}},
+			{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": slackTrunc(message, 3000)}},
+		}
+	case summary != nil:
+		s := summary
+		headerText := s.TicketID
+		if headerText == "" {
+			headerText = title
+		}
+		emoji := hitlClassificationEmoji(s.Classification)
+		classLine := emoji + " " + s.Classification
+		if s.Confidence > 0 {
+			classLine += fmt.Sprintf(" (%d%%)", s.Confidence)
+		}
+		sectionText := "*Classification:* " + classLine + "\n*Summary:* " + slackTrunc(s.Text, 500)
+		return []map[string]any{
+			{"type": "header", "text": map[string]any{"type": "plain_text", "text": slackTrunc(headerText, 140)}},
+			{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": sectionText}},
+		}
+	default:
+		return []map[string]any{
+			{"type": "header", "text": map[string]any{"type": "plain_text", "text": title}},
+			{"type": "section", "text": map[string]any{
+				"type": "mrkdwn",
+				"text": "*" + queryLabel + "*\n```" + slackTrunc(path, 800) + "```",
+			}},
+		}
+	}
 }
 
 type slackPostedMessage struct {
@@ -366,12 +370,14 @@ func slackWaitBeforeRetry(ctx context.Context, resp *http.Response) error {
 }
 
 type slackMessageRef struct {
-	Type        string `json:"type"`
-	Credential  string `json:"credential"`
-	Channel     string `json:"channel"`
-	TS          string `json:"ts"`
-	PendingID   string `json:"pending_id,omitempty"`
-	Interactive bool   `json:"interactive,omitempty"`
+	Type        string               `json:"type"`
+	Credential  string               `json:"credential"`
+	Channel     string               `json:"channel"`
+	TS          string               `json:"ts"`
+	PendingID   string               `json:"pending_id,omitempty"`
+	Interactive bool                 `json:"interactive,omitempty"`
+	Message     string               `json:"message,omitempty"`
+	Summary     *runtime.HITLSummary `json:"summary,omitempty"`
 }
 
 func encodeSlackMessageRef(ref slackMessageRef) string {
@@ -423,11 +429,8 @@ func slackHITLUpdateBlocks(update runtime.HITLMessageUpdate, ref slackMessageRef
 	if path == "" {
 		path = "/"
 	}
-	detail := "*" + slackTrunc(update.Method+" "+update.Host, 200) + "*\n```" + slackTrunc(path, 800) + "```"
-	blocks := []map[string]any{
-		{"type": "header", "text": map[string]any{"type": "plain_text", "text": "Claw Patrol HITL"}},
-		{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": detail}},
-	}
+	title := slackTrunc(runtime.HITLTitle(update.Method, update.Host), 140)
+	blocks := slackHITLContentBlocks(title, "Path", path, ref.Message, ref.Summary)
 	guidance := runtime.HITLApprovalMessage(update.State, runtime.HITLApprovalEffectForOperationState(update.State), update.UpstreamCalled)
 	if strings.TrimSpace(guidance) != "" {
 		blocks = append(blocks, map[string]any{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": slackTrunc(guidance, 1000)}})
@@ -458,7 +461,7 @@ func slackOperationStatus(update runtime.HITLMessageUpdate) string {
 		return ":white_check_mark: Upstream request succeeded"
 	case runtime.HITLOperationStateUpstreamFailed:
 		if update.LastError != "" {
-			return ":x: Upstream request failed: " + slackTrunc(update.LastError, 300)
+			return ":x: Upstream request failed: " + slackTrunc(slackRedactStatusText(update.LastError), 300)
 		}
 		return ":x: Upstream request failed"
 	case runtime.HITLOperationStateDenied:
@@ -476,17 +479,41 @@ func slackPostJSON(ctx context.Context, endpoint, bot string, buf []byte, method
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	hreq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(buf))
-	if err != nil {
-		return err
+	var lastErr error
+	for attempt := 1; attempt <= 2; attempt++ {
+		hreq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(buf))
+		if err != nil {
+			return err
+		}
+		hreq.Header.Set("Authorization", "Bearer "+bot)
+		hreq.Header.Set("Content-Type", "application/json; charset=utf-8")
+		resp, err := slackHTTPClient.Do(hreq)
+		if err == nil {
+			lastErr = slackDecodeJSONResponse(resp, method)
+			if closeErr := resp.Body.Close(); lastErr == nil && closeErr != nil {
+				lastErr = closeErr
+			}
+		} else {
+			lastErr = err
+		}
+		if lastErr == nil {
+			return nil
+		}
+		if attempt == 2 || !slackShouldRetryPostMessage(resp, err) {
+			return lastErr
+		}
+		log.Printf("slack notify: %s failed on attempt %d, retrying once: %v", method, attempt, lastErr)
+		if err := slackWaitBeforeRetry(ctx, resp); err != nil {
+			return err
+		}
 	}
-	hreq.Header.Set("Authorization", "Bearer "+bot)
-	hreq.Header.Set("Content-Type", "application/json; charset=utf-8")
-	resp, err := slackHTTPClient.Do(hreq)
-	if err != nil {
-		return err
+	return lastErr
+}
+
+func slackDecodeJSONResponse(resp *http.Response, method string) error {
+	if resp == nil {
+		return fmt.Errorf("slack %s error: missing response", method)
 	}
-	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	var result struct {
 		OK    bool   `json:"ok"`
@@ -501,6 +528,23 @@ func slackPostJSON(ctx context.Context, endpoint, bot string, buf []byte, method
 		return fmt.Errorf("slack %s error: HTTP %d", method, resp.StatusCode)
 	}
 	return nil
+}
+
+var (
+	slackSensitiveQueryValue  = regexp.MustCompile(`(?i)([?&][^=]*(?:auth|token|secret|key|password|cookie)[^=]*=)[^&\s]+`)
+	slackSensitiveURLPath     = regexp.MustCompile(`(?i)(https?://hooks\.slack\.com/services/)[^\s,;]+`)
+	slackSensitivePathSegment = regexp.MustCompile(`(?i)(/(?:auth|token|secret|key|password|cookie)(?:/|=))[^/\s,;]+`)
+	slackAuthorizationValue   = regexp.MustCompile(`(?i)\b(authorization\s*[:=]\s*)(?:bearer|bot|basic)\s+[^\s,;]+`)
+	slackSensitiveHeaderValue = regexp.MustCompile(`(?i)\b([A-Za-z0-9-]*(?:auth|token|secret|key|password|cookie)[A-Za-z0-9-]*\s*[:=]\s*)([^\s,;]+)`)
+)
+
+func slackRedactStatusText(s string) string {
+	s = slackSensitiveQueryValue.ReplaceAllString(s, `${1}[redacted]`)
+	s = slackSensitiveURLPath.ReplaceAllString(s, `${1}[redacted]`)
+	s = slackSensitivePathSegment.ReplaceAllString(s, `${1}[redacted]`)
+	s = slackAuthorizationValue.ReplaceAllString(s, `${1}[redacted]`)
+	s = slackSensitiveHeaderValue.ReplaceAllString(s, `${1}[redacted]`)
+	return s
 }
 
 func hitlClassificationEmoji(c string) string {

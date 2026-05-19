@@ -323,6 +323,12 @@ type HITLMessageUpdater interface {
 	UpdateHITLMessage(ctx context.Context, secrets SecretStore, update HITLMessageUpdate) error
 }
 
+// HITLHumanCredentialer is implemented by approvers that route human HITL
+// prompts through a named credential notifier.
+type HITLHumanCredentialer interface {
+	HumanApproverCredential() string
+}
+
 type HITLMessageUpdate struct {
 	MessageRef     string
 	OperationID    string
