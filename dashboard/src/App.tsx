@@ -46,6 +46,7 @@ export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [whoami, setWhoami] = useState<Whoami | null>(null);
   const [update, setUpdate] = useState<UpdateBanner | null>(null);
+  const [configFile, setConfigFile] = useState<string>("gateway.hcl");
   const [connectId, setConnectId] = useState<string | null>(null);
   const [route, setRoute] = useState(parseRoute());
 
@@ -65,6 +66,7 @@ export default function App() {
       setAgents(s.agents || []);
       setWhoami(s.whoami);
       setUpdate(s.update ?? null);
+      if (s.config_file) setConfigFile(s.config_file);
     } catch {
       /* swallow */
     }
@@ -116,6 +118,7 @@ export default function App() {
           ip={route.ip}
           agents={agents}
           integrations={integrations}
+          configFile={configFile}
           onBack={() => navigate("")}
           onConnect={(id) => setConnectId(id)}
           onRefresh={refresh}

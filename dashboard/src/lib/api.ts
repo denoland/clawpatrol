@@ -374,6 +374,10 @@ type StateResp = {
   integrations: Integration[];
   agents: Agent[];
   update?: UpdateBanner | null;
+  // Basename of the gateway config file (e.g. "gateway.hcl",
+  // "dev.hcl"). Surfaced in UI hints so operators see the actual
+  // running config name rather than a hardcoded string.
+  config_file?: string;
 };
 let lastStateTag = "";
 let lastState: StateResp | null = null;

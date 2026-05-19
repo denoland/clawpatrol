@@ -21,6 +21,7 @@ export function DevicePage({
   ip,
   agents,
   integrations,
+  configFile,
   onBack,
   onConnect,
   onRefresh,
@@ -28,6 +29,7 @@ export function DevicePage({
   ip: string;
   agents: Agent[];
   integrations: Integration[];
+  configFile: string;
   onBack: () => void;
   onConnect: (id: string) => void;
   onRefresh: () => void;
@@ -223,7 +225,7 @@ export function DevicePage({
             </span>
           )}
           <span className="ml-auto text-2xs text-navy/70">
-            declared in <span className="font-mono">gateway.hcl</span>
+            declared in <span className="font-mono">{configFile}</span>
           </span>
         </div>
         <div className="p-3">

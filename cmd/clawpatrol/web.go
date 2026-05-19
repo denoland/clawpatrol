@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -1132,6 +1133,7 @@ func (w *webMux) apiState(rw http.ResponseWriter, r *http.Request) {
 		"integrations": w.statusList(r),
 		"agents":       w.agentsList(),
 		"update":       currentUpdateBanner.Load(),
+		"config_file":  filepath.Base(w.g.cfgPath),
 	}
 	body, err := json.Marshal(state)
 	if err != nil {
