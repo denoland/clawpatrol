@@ -129,17 +129,20 @@ fabric. From there, two ways to scope what gets captured:
   <text class="sm-intro" x="515" y="134">deny</text>
   <text class="sm-intro" x="515" y="150">request approval</text>
 
-  <line class="arr-intro" x1="600" y1="120" x2="630" y2="120" marker-end="url(#ar-intro)"/>
-  <text class="sm-intro" x="615" y="112">on allow</text>
+  <line class="arr-intro" x1="600" y1="120" x2="660" y2="120" marker-end="url(#ar-intro)"/>
+  <text class="sm-intro" x="630" y="112">on allow</text>
 
-  <rect class="b-intro" x="630" y="90" width="140" height="60" rx="4"/>
-  <text class="lbl-intro" x="700" y="118">inject credential</text>
-  <text class="sm-intro" x="700" y="136">(real secret)</text>
+  <rect class="b-intro" x="660" y="90" width="140" height="60" rx="4"/>
+  <text class="lbl-intro" x="730" y="118">inject credential</text>
+  <text class="sm-intro" x="730" y="136">(real secret)</text>
 
-  <line class="arr-intro" x1="770" y1="120" x2="800" y2="120" marker-end="url(#ar-intro)"/>
+  <line class="arr-intro" x1="800" y1="120" x2="820" y2="120" marker-end="url(#ar-intro)"/>
 
-  <rect class="b-intro" x="800" y="100" width="100" height="40" rx="4"/>
-  <text class="lbl-intro" x="850" y="124">upstream</text>
+  <rect class="b-intro" x="820" y="100" width="80" height="40" rx="4"/>
+  <text class="lbl-intro" x="860" y="124">upstream</text>
+
+  <polyline class="arr-intro" points="440,75 440,30 130,30 130,60" fill="none" marker-end="url(#ar-intro)"/>
+  <text class="sm-intro" x="285" y="24">on deny</text>
 
   <line class="arr-intro" x1="475" y1="165" x2="475" y2="217" marker-end="url(#ar-intro)"/>
   <text class="sm-intro" x="470" y="195" style="text-anchor:end">request approval</text>
@@ -153,13 +156,6 @@ fabric. From there, two ways to scope what gets captured:
 
 The agent never sees the real credential. The gateway never trusts
 the agent.
-
-## Open source
-
-MIT. The gateway, the dashboard, and the plugins are all in one
-repo. All state lives in a single SQLite file on the gateway host —
-no cloud required. The binary phones home for an update check;
-disable with `CLAWPATROL_TELEMETRY=0` or `DO_NOT_TRACK=1`.
 
 ## Next
 
