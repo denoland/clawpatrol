@@ -985,10 +985,63 @@ func (w *webMux) apiAgentProfile(rw http.ResponseWriter, r *http.Request) {
 	writeJSON(rw, map[string]any{"ok": true, "ip": ip, "profile": profile})
 }
 
-// apiProfiles lists declared profile names so the dashboard can
-// render a profile picker per device.
+// ProfileInfo is the JSON shape /api/profiles returns. Beyond the
+// declared name, it carries the endpoint set bound to the profile
+// plus aggregated rule / credential counts so the dashboard's
+// profile page can render real metadata without a second round-trip
+// or a fresh walk of the compiled policy.
+type ProfileInfo struct {
+	Name        string   `json:"name"`
+	Endpoints   []string `json:"endpoints"`
+	RuleCount   int      `json:"rule_count"`
+	Credentials []string `json:"credentials"`
+}
+
+// apiProfiles lists declared profiles with the metadata the dashboard
+// needs to render both the per-device profile picker and the profiles
+// overview page. Profiles are returned in declaration order;
+// endpoints / credentials within each profile are sorted for stable
+// output.
 func (w *webMux) apiProfiles(rw http.ResponseWriter, _ *http.Request) {
-	writeJSON(rw, orderedProfileNames(w.g.cfg.Policy))
+	writeJSON(rw, profileInfos(w.g.cfg.Policy, w.g.Policy()))
+}
+
+func profileInfos(policy *config.Policy, compiled *config.CompiledPolicy) []ProfileInfo {
+	names := orderedProfileNames(policy)
+	out := make([]ProfileInfo, 0, len(names))
+	for _, name := range names {
+		info := ProfileInfo{Name: name, Endpoints: []string{}, Credentials: []string{}}
+		if compiled != nil {
+			if prof, ok := compiled.Profiles[name]; ok {
+				epNames := make([]string, 0, len(prof.Endpoints))
+				creds := map[string]bool{}
+				for epName, ep := range prof.Endpoints {
+					epNames = append(epNames, epName)
+					info.RuleCount += len(ep.Rules)
+					for _, cb := range ep.Credentials {
+						if cb.Credential != nil {
+							creds[cb.Credential.Symbol.Name] = true
+						}
+					}
+					for tun := ep.Tunnel; tun != nil; tun = tun.Via {
+						if tun.Credential != nil {
+							creds[tun.Credential.Symbol.Name] = true
+						}
+					}
+				}
+				sort.Strings(epNames)
+				info.Endpoints = epNames
+				credNames := make([]string, 0, len(creds))
+				for c := range creds {
+					credNames = append(credNames, c)
+				}
+				sort.Strings(credNames)
+				info.Credentials = credNames
+			}
+		}
+		out = append(out, info)
+	}
+	return out
 }
 
 // RuleSummary is the JSON shape the dashboard renders for each rule.

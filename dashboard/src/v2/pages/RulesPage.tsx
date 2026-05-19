@@ -1,0 +1,337 @@
+import { useEffect, useMemo, useState } from "react";
+import {
+  type Agent,
+  type EventRecord,
+  getAnalytics,
+  getRules,
+  listProfiles,
+  type ProfileInfo,
+  type RuleSummary,
+} from "../../lib/api";
+import { fmtDateTime } from "../../lib/format";
+import { Card } from "../cards/Card";
+import { PageHeader } from "../cards/PageHeader";
+
+// Rules — read-only listing per cl-r3e. unclaw's RulesPage edits
+// via /rules/new and /rules/:id/edit; those routes are intentionally
+// omitted here. clawpatrol's rule model has bare-name + endpoint +
+// CEL condition + approve chain instead of unclaw's plugin-scoped
+// JSON decisions, so columns reflect clawpatrol's shape.
+//
+// One profile at a time: the rule set for a complex policy gets
+// noisy, so a profile picker (top-right) gates the table to a
+// single profile's rules. The selected profile is reflected back
+// into the URL hash as `?profile=<name>`, so links into a specific
+// view are shareable. Expanding a rule reveals the last five
+// decisions it produced; each is a clickable link into the action
+// detail page.
+export function V2RulesPage({ agents }: { agents: Agent[] }) {
+  const [rules, setRules] = useState<RuleSummary[]>([]);
+  const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState<string>(() => readProfileFromHash());
+
+  useEffect(() => {
+    Promise.all([getRules(), listProfiles()])
+      .then(([r, p]) => {
+        setRules(r ?? []);
+        setProfiles(p ?? []);
+      })
+      .catch((e) => setErr(String(e?.message ?? e)))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    function onHash() {
+      setSelected(readProfileFromHash());
+    }
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  // All profiles a rule could belong to — `RuleSummary.profile` is
+  // empty for some rows; treat those as belonging to "(default)" so
+  // they're still reachable through the picker.
+  const profileOptions = useMemo(() => {
+    const names = new Set<string>();
+    for (const p of profiles) names.add(p.name);
+    for (const r of rules) names.add(r.profile || "(default)");
+    return [...names].sort();
+  }, [profiles, rules]);
+
+  // Pick a default selection once data is loaded — first profile in
+  // alphabetical order. URL hash wins if it names a known profile.
+  useEffect(() => {
+    if (!selected && profileOptions.length > 0) {
+      const next = profileOptions[0];
+      writeProfileToHash(next);
+      setSelected(next);
+    }
+  }, [profileOptions, selected]);
+
+  function setProfile(name: string) {
+    writeProfileToHash(name);
+    setSelected(name);
+  }
+
+  const filtered = useMemo(() => {
+    if (!selected) return rules;
+    return rules.filter((r) => (r.profile || "(default)") === selected);
+  }, [rules, selected]);
+
+  // Group by endpoint within the selected profile. An operator
+  // reading the page asks "what governs api.github.com?" not
+  // "what governs the https family?" — grouping mirrors that
+  // mental model. Rules without an endpoint (catch-alls) bucket
+  // under "(no endpoint)".
+  const byEndpoint = new Map<string, RuleSummary[]>();
+  for (const r of filtered) {
+    const k = r.endpoint || "(no endpoint)";
+    if (!byEndpoint.has(k)) byEndpoint.set(k, []);
+    byEndpoint.get(k)!.push(r);
+  }
+  const endpointGroups = [...byEndpoint.entries()].sort(([a], [b]) => a.localeCompare(b));
+
+  // Rules attached to multiple endpoints (via `endpoints = [...]`
+  // in HCL) emit one RuleSummary per attachment site, so the same
+  // rule name appears under each endpoint card. Count distinct
+  // endpoints per rule name within the filtered set so we can mark
+  // shared rules in the row — without the marker, an operator
+  // reading the second card has no way to know the rule also lives
+  // elsewhere.
+  const ruleEndpointCount = new Map<string, number>();
+  {
+    const seen = new Map<string, Set<string>>();
+    for (const r of filtered) {
+      const ep = r.endpoint || "(no endpoint)";
+      if (!seen.has(r.name)) seen.set(r.name, new Set());
+      seen.get(r.name)!.add(ep);
+    }
+    for (const [name, eps] of seen) ruleEndpointCount.set(name, eps.size);
+  }
+
+  return (
+    <div className="mx-auto max-w-7xl">
+      <PageHeader
+        title="Rules"
+        subhead="Rules declared in gateway.hcl. Pick a profile to scope the view; expand any rule to see its last five decisions."
+      >
+        <label className="flex items-center gap-2 text-xs text-text-muted">
+          <span className="uppercase tracking-wider">Profile</span>
+          <select
+            value={selected}
+            onChange={(e) => setProfile(e.target.value)}
+            className="border border-canvas-dark bg-canvas-light text-sm px-2 py-1"
+          >
+            {profileOptions.map((name) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </PageHeader>
+
+      {loading && <div className="text-sm text-text-muted py-8">Loading rules…</div>}
+      {err && (
+        <div className="text-sm text-danger-700 bg-danger-100 border border-danger-500 px-3 py-2">
+          {err}
+        </div>
+      )}
+
+      {!loading && !err && filtered.length === 0 && (
+        <Card title="Rules">
+          <div className="text-sm text-text-muted py-2">No rules declared for this profile.</div>
+        </Card>
+      )}
+
+      {endpointGroups.map(([endpoint, rs]) => (
+        <Card key={endpoint} title={endpoint} count={rs.length} tight>
+          <table className="w-full text-sm">
+            <thead className="bg-canvas-muted text-left text-text-muted text-xs uppercase tracking-wider">
+              <tr>
+                <th className="px-4 py-2 font-medium w-6"></th>
+                <th className="px-4 py-2 font-medium">Name</th>
+                <th className="px-4 py-2 font-medium">Verdict</th>
+                <th className="px-4 py-2 font-medium text-right">Priority</th>
+                <th className="px-4 py-2 font-medium">Condition</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-canvas-dark">
+              {rs.map((r, idx) => (
+                <RuleRow
+                  key={`${r.name}-${r.endpoint}-${idx}`}
+                  rule={r}
+                  agents={agents}
+                  sharedCount={ruleEndpointCount.get(r.name) ?? 1}
+                />
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+function readProfileFromHash(): string {
+  const h = window.location.hash || "";
+  const qIdx = h.indexOf("?");
+  if (qIdx < 0) return "";
+  const params = new URLSearchParams(h.slice(qIdx + 1));
+  return params.get("profile") || "";
+}
+
+function writeProfileToHash(profile: string) {
+  const h = window.location.hash || "";
+  const qIdx = h.indexOf("?");
+  const path = qIdx < 0 ? h : h.slice(0, qIdx);
+  const params = qIdx < 0 ? new URLSearchParams() : new URLSearchParams(h.slice(qIdx + 1));
+  if (profile) params.set("profile", profile);
+  else params.delete("profile");
+  const qs = params.toString();
+  const next = qs ? `${path}?${qs}` : path;
+  if (next !== h) window.location.hash = next.replace(/^#/, "");
+}
+
+function RuleRow({
+  rule: r,
+  agents,
+  sharedCount,
+}: {
+  rule: RuleSummary;
+  agents: Agent[];
+  // Number of endpoints in the current filter this rule attaches to.
+  // 1 = single-endpoint rule (no marker); >1 = shared rule, emit a
+  // chip on the name cell so the operator knows the same row exists
+  // under (sharedCount - 1) other endpoint cards.
+  sharedCount: number;
+}) {
+  const [open, setOpen] = useState(false);
+  const [events, setEvents] = useState<EventRecord[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+
+  const agentLabel = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const a of agents) m.set(a.ip, a.hostname || a.ip);
+    return m;
+  }, [agents]);
+
+  async function toggle() {
+    const next = !open;
+    setOpen(next);
+    if (next && events === null && !loading) {
+      setLoading(true);
+      setLoadErr(null);
+      try {
+        // Pull last-24h decisions filtered to this rule; limit 5
+        // covers the visible request and keeps the server-side
+        // sample cheap.
+        const resp = await getAnalytics({ range: "24h", rule: r.name, limit: 5 });
+        // Server orders by random suffix of action_id — re-sort
+        // newest-first for display.
+        const sorted = [...(resp.events ?? [])].sort((a, b) => b.ts.localeCompare(a.ts));
+        setEvents(sorted.slice(0, 5));
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setLoadErr(msg);
+      } finally {
+        setLoading(false);
+      }
+    }
+  }
+
+  return (
+    <>
+      <tr
+        className={`cursor-pointer hover:bg-canvas-muted ${r.disabled ? "opacity-50" : ""}`}
+        onClick={toggle}
+      >
+        <td className="px-4 py-2 text-text-muted text-xs select-none">{open ? "▾" : "▸"}</td>
+        <td className="px-4 py-2 font-medium">
+          <span>{r.name}</span>
+          {sharedCount > 1 && (
+            <span
+              className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full bg-canvas-dark text-text-muted align-middle"
+              title={`This rule is attached to ${sharedCount} endpoints; the same row appears under each.`}
+            >
+              shared · {sharedCount} endpoints
+            </span>
+          )}
+        </td>
+        <td className="px-4 py-2">
+          {r.verdict ? (
+            <Verdict v={r.verdict} />
+          ) : r.approve && r.approve.length > 0 ? (
+            <span className="text-xs px-1.5 py-0.5 rounded-full bg-butter-100 text-butter-900">
+              approve · {r.approve.map((s) => s.name).join(" → ")}
+            </span>
+          ) : (
+            <span className="text-xs text-text-muted">—</span>
+          )}
+        </td>
+        <td className="px-4 py-2 text-right">{r.priority ?? 0}</td>
+        <td className="px-4 py-2 font-mono text-[11px] text-text-muted break-all max-w-md">
+          {r.condition || "—"}
+        </td>
+      </tr>
+      {open && (
+        <tr className="bg-canvas-muted/50">
+          <td colSpan={5} className="px-4 py-3">
+            {loading && <div className="text-xs text-text-muted">Loading decisions…</div>}
+            {loadErr && <div className="text-xs text-danger-700">Failed to load: {loadErr}</div>}
+            {!loading && !loadErr && events && events.length === 0 && (
+              <div className="text-xs text-text-muted">No decisions in the last 24 hours.</div>
+            )}
+            {!loading && !loadErr && events && events.length > 0 && (
+              <div className="text-xs">
+                <div className="text-text-muted uppercase tracking-wider mb-1">
+                  Last {events.length} decision{events.length === 1 ? "" : "s"}
+                </div>
+                <ul className="divide-y divide-canvas-dark border border-canvas-dark bg-canvas-light">
+                  {events.map((e) => (
+                    <li
+                      key={(e.id ?? "") + e.ts}
+                      className="px-3 py-2 flex items-center gap-3 hover:bg-canvas-muted cursor-pointer"
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        if (e.id) {
+                          window.location.hash = `#/v2/actions/${encodeURIComponent(e.id)}`;
+                        }
+                      }}
+                    >
+                      <span className="font-mono text-text-muted whitespace-nowrap">
+                        {fmtDateTime(e.ts)}
+                      </span>
+                      <span className="text-text-muted truncate max-w-[140px]">
+                        {e.agent_ip ? (agentLabel.get(e.agent_ip) ?? e.agent_ip) : "—"}
+                      </span>
+                      <Verdict v={e.action ?? "—"} />
+                      <span className="truncate flex-1">
+                        <span className="font-mono text-text-muted mr-1">{e.method}</span>
+                        {e.endpoint || e.host}
+                        {e.path}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+function Verdict({ v }: { v: string }) {
+  const palette =
+    v === "allow" || v === "approved"
+      ? "bg-success-100 text-success-700"
+      : v === "deny" || v === "denied"
+        ? "bg-danger-100 text-danger-700"
+        : "bg-canvas-dark text-text-muted";
+  return <span className={`text-xs px-1.5 py-0.5 rounded-full ${palette}`}>{v}</span>;
+}

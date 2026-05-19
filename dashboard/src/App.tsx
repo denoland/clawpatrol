@@ -11,6 +11,7 @@ import { OnboardPage } from "./components/OnboardPage";
 import { RequestDetailPage } from "./components/RequestDetailPage";
 import { SettingsPage } from "./components/SettingsPage";
 import { getState, type Agent, type Integration, type UpdateBanner, type Whoami } from "./lib/api";
+import { parseV2Route, V2App, type V2Route } from "./v2/V2App";
 
 type Route =
   | { name: "main" }
@@ -18,10 +19,17 @@ type Route =
   | { name: "analytics"; ip?: string }
   | { name: "onboard"; code: string }
   | { name: "request"; id: string }
-  | { name: "settings" };
+  | { name: "settings" }
+  | { name: "v2"; v2: V2Route };
 
 function parseRoute(): Route {
-  const h = window.location.hash;
+  // Strip query string before matching routes.
+  const raw = window.location.hash;
+  const qi = raw.indexOf("?");
+  const h = qi < 0 ? raw : raw.slice(0, qi);
+  // v2 dashboard owns its own sub-routing under `#/v2/...`.
+  const v2 = parseV2Route(raw);
+  if (v2) return { name: "v2", v2 };
   if (h.startsWith("#/onboard/"))
     return {
       name: "onboard",
@@ -79,6 +87,17 @@ export default function App() {
   function navigate(hash: string) {
     window.location.hash = hash;
     setRoute(parseRoute());
+  }
+
+  // v2 dashboard owns its own chrome (header, nav, layout). Render
+  // it standalone so the v1 wrapper doesn't fight the v2 shell.
+  if (route.name === "v2") {
+    return (
+      <div className="flex flex-col min-h-screen">
+        <UpdateNotice update={update} />
+        <V2App route={route.v2} />
+      </div>
+    );
   }
 
   return (

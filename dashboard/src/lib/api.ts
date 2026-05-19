@@ -237,7 +237,14 @@ export async function getDeviceRulesHCL(ip: string): Promise<string> {
   return r.text();
 }
 
-export async function listProfiles(): Promise<string[]> {
+export type ProfileInfo = {
+  name: string;
+  endpoints: string[];
+  rule_count: number;
+  credentials: string[];
+};
+
+export async function listProfiles(): Promise<ProfileInfo[]> {
   const r = await api("/api/profiles");
   if (!r.ok) throw new Error(await r.text());
   return r.json();
@@ -509,9 +516,22 @@ export async function getFacets(): Promise<FacetSchema[]> {
   return body.facets ?? [];
 }
 
+// LatencyDot mirrors unclaw's /api/analytics `dots` shape — one
+// per-request point for the latency scatter / histogram. Times in
+// microseconds (matches unclaw) so the chart code can be shared.
+export type LatencyDot = {
+  t: string;
+  us: number;
+  status: number;
+  host: string;
+  agent: string;
+  id: string;
+};
+
 export async function getAnalytics(params: {
   range: string;
   agent?: string;
+  rule?: string;
   limit?: number;
 }): Promise<{
   events: EventRecord[];
@@ -520,9 +540,11 @@ export async function getAnalytics(params: {
   error_count: number;
   by_device: Array<{ key: string; count: number }>;
   by_host: Array<{ key: string; count: number }>;
+  dots: LatencyDot[];
 }> {
   const p = new URLSearchParams({ range: params.range });
   if (params.agent) p.set("agent", params.agent);
+  if (params.rule) p.set("rule", params.rule);
   if (params.limit) p.set("limit", String(params.limit));
   const r = await api(`/api/analytics?${p}`);
   if (!r.ok) throw new Error(await r.text());
