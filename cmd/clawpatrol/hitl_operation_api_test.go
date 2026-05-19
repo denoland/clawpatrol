@@ -40,16 +40,11 @@ func TestHITLOperationAcceptedRawConnResponseHasDelimitedJSONBody(t *testing.T) 
 	}
 
 	var raw bytes.Buffer
-	writeHITLOperationAcceptedToConn(&raw, op, "https://gateway.example.test/")
-	resp, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(raw.Bytes())), nil)
-	if err != nil {
-		t.Fatalf("read raw response: %v\nraw response:\n%s", err, raw.String())
+	if err := writeHITLOperationAcceptedToConn(&raw, op, "https://gateway.example.test/"); err != nil {
+		t.Fatalf("write raw response: %v", err)
 	}
+	resp, body := parseRawHITLOperationAcceptedResponse(t, raw.Bytes())
 	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read raw response body: %v", err)
-	}
 
 	if resp.ContentLength <= 0 {
 		t.Fatalf("ContentLength = %d, want explicit positive Content-Length; raw response:\n%s", resp.ContentLength, raw.String())
@@ -58,6 +53,50 @@ func TestHITLOperationAcceptedRawConnResponseHasDelimitedJSONBody(t *testing.T) 
 		t.Fatalf("ContentLength = %d, body length = %d", resp.ContentLength, len(body))
 	}
 	assertHITLOperationAcceptedResponse(t, resp.StatusCode, resp.Header, body, op)
+}
+
+func TestHITLOperationAcceptedRawConnResponseWritesCompleteEnvelopeInOnePayload(t *testing.T) {
+	now := time.Now().UTC()
+	op := HITLOperation{
+		ID:                "hitl_op_202",
+		State:             HITLOperationStatePendingApproval,
+		ApprovalExpiresAt: now.Add(15 * time.Minute),
+	}
+	w := &singleWriteRecorder{}
+
+	if err := writeHITLOperationAcceptedToConn(w, op, "https://gateway.example.test/"); err != nil {
+		t.Fatalf("write raw response: %v", err)
+	}
+	if w.writes != 1 {
+		t.Fatalf("writes = %d, want a single complete response write; raw response:\n%s", w.writes, w.buf.String())
+	}
+	resp, body := parseRawHITLOperationAcceptedResponse(t, w.buf.Bytes())
+	defer func() { _ = resp.Body.Close() }()
+	assertHITLOperationAcceptedResponse(t, resp.StatusCode, resp.Header, body, op)
+}
+
+func parseRawHITLOperationAcceptedResponse(t *testing.T, raw []byte) (*http.Response, []byte) {
+	t.Helper()
+	resp, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(raw)), nil)
+	if err != nil {
+		t.Fatalf("read raw response: %v\nraw response:\n%s", err, string(raw))
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		_ = resp.Body.Close()
+		t.Fatalf("read raw response body: %v", err)
+	}
+	return resp, body
+}
+
+type singleWriteRecorder struct {
+	buf    bytes.Buffer
+	writes int
+}
+
+func (w *singleWriteRecorder) Write(p []byte) (int, error) {
+	w.writes++
+	return w.buf.Write(p)
 }
 
 func assertHITLOperationAcceptedResponse(t *testing.T, status int, header http.Header, bodyBytes []byte, op HITLOperation) {
