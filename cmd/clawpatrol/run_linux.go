@@ -50,10 +50,7 @@ const (
 	runNoAutoExposeEnv = "CLAWPATROL_RUN_NO_AUTO_EXPOSE"
 	runTsnetChildEnv   = "CLAWPATROL_RUN_TSNET_CHILD"
 	tunIfName          = "wg0"
-	// Match wgTunMTU in wireguard.go (1220 — fits Tailscale's
-	// 1280-byte underlay after WG/UDP/IP encap). v6 unavailable; see
-	// the comment over there.
-	tunMTU = 1220
+	tunMTU             = 1420
 )
 
 // runRun is `clawpatrol run`. Re-execs self in new user+net+mnt namespaces
@@ -722,7 +719,7 @@ func ephemeralPeer(cfg *runConf) (cleanup func(), err error) {
 	}
 
 	cfg.PrivateKey = privB64
-	cfg.Address = result.IP + "/32"
+	cfg.Address = result.IP + "/32, " + result.IP6 + "/128"
 	_ = os.Setenv("CLAWPATROL_EPHEMERAL_ADDR", cfg.Address)
 
 	return func() {
