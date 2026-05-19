@@ -456,7 +456,13 @@ func (g *Gateway) seedTsnetIPv6Alias(peerIP string) {
 		if !ip.Is6() {
 			continue
 		}
-		g.onboard.RegisterIPAlias(ip.String(), peerIP)
+		alias := ip.String()
+		g.onboard.RegisterIPAlias(alias, peerIP)
+		// Drop any ghost agent row that was seeded under the v6 before
+		// the alias landed — traffic now folds to the v4 parent.
+		if g.agents != nil {
+			g.agents.Delete(alias)
+		}
 	}
 }
 

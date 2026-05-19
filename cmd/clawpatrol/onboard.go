@@ -76,7 +76,8 @@ type onboardRegistry struct {
 	ephemeralParentByIP  map[string]string // ephemeral IP → parent device IP
 	extV4ByIP            map[string]string
 	extV6ByIP            map[string]string
-	knownDeviceIPs       map[string]bool // all IPs present in devices table
+	canonicalByAlias     map[string]string // alias IP → canonical device IP (e.g. fd7a:115c:a1e0::… → 100.x.x.x)
+	knownDeviceIPs       map[string]bool   // all IPs present in devices table
 	db                   *sql.DB
 }
 
@@ -91,6 +92,7 @@ func newOnboardRegistry() *onboardRegistry {
 		ephemeralParentByIP:  map[string]string{},
 		extV4ByIP:            map[string]string{},
 		extV6ByIP:            map[string]string{},
+		canonicalByAlias:     map[string]string{},
 		knownDeviceIPs:       map[string]bool{},
 	}
 }
@@ -149,6 +151,7 @@ func (r *onboardRegistry) RegisterIPAlias(alias, canonical string) {
 	if p := r.profileByIP[canonical]; p != "" {
 		r.profileByIP[alias] = p
 	}
+	r.canonicalByAlias[alias] = canonical
 }
 
 // AssignProfile records that a peer IP belongs to a named profile.
@@ -189,6 +192,9 @@ func (r *onboardRegistry) AgentIPFor(ip string) string {
 	defer r.mu.Unlock()
 	if parent := r.ephemeralParentByIP[ip]; parent != "" {
 		return parent
+	}
+	if canonical := r.canonicalByAlias[ip]; canonical != "" {
+		return canonical
 	}
 	return ip
 }
