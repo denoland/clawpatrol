@@ -4,8 +4,4 @@
 
 ALTER TABLE hitl_operations ADD COLUMN status_token_hash TEXT;
 
-CREATE UNIQUE INDEX hitl_operations_status_token_idx
-  ON hitl_operations(id, status_token_hash)
-  WHERE status_token_hash IS NOT NULL;
-
 INSERT INTO _schema (version) VALUES (18);

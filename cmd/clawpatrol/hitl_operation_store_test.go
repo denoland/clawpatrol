@@ -79,6 +79,13 @@ func TestHITLOperationStoreCreatesMetadataOnlyOperation(t *testing.T) {
 	if _, err := store.GetForStatusToken(ctx, created.ID, "wrong-status-token"); !errors.Is(err, ErrHITLOperationNotFound) {
 		t.Fatalf("GetForStatusToken(wrong) err = %v, want ErrHITLOperationNotFound", err)
 	}
+	var redundantIndexes int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'hitl_operations_status_token_idx'`).Scan(&redundantIndexes); err != nil {
+		t.Fatalf("query status token indexes: %v", err)
+	}
+	if redundantIndexes != 0 {
+		t.Fatalf("hitl_operations_status_token_idx exists but id is already primary key and status token lookups verify by id in Go")
+	}
 
 	for _, tc := range []struct {
 		name      string

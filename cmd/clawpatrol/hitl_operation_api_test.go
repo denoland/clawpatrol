@@ -213,6 +213,42 @@ func TestHITLOperationStatusEndpointFallsBackToBearerWhenCapabilityTokenIsWrong(
 	}
 }
 
+func TestHITLOperationStatusFunnelRejectsPeerAPIBearerFallback(t *testing.T) {
+	h := newHITLOperationAPITestHarness(t)
+	op := h.createOperation(t, HITLOperationCreate{ID: "hitl_op_funnel_bearer_rejected", State: HITLOperationStatePendingApproval})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/hitl/operations/"+op.ID+"/status?token=wrong-token", nil)
+	req.Header.Set("Authorization", "Bearer "+h.ownerToken)
+	h.funnelHandler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body = %s", rr.Code, rr.Body.String())
+	}
+	body := decodeJSONBody(t, rr)
+	if body["error"] != "hitl_operation_not_found" {
+		t.Fatalf("error = %v, want hitl_operation_not_found; body = %#v", body["error"], body)
+	}
+}
+
+func TestHITLOperationStatusFunnelAcceptsCapabilityTokenEvenWithBearer(t *testing.T) {
+	h := newHITLOperationAPITestHarness(t)
+	op := h.createOperation(t, HITLOperationCreate{ID: "hitl_op_funnel_capability", State: HITLOperationStatePendingApproval})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/hitl/operations/"+op.ID+"/status?token="+op.StatusToken, nil)
+	req.Header.Set("Authorization", "Bearer "+h.ownerToken)
+	h.funnelHandler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+	body := decodeJSONBody(t, rr)
+	if body["operation_id"] != op.ID {
+		t.Fatalf("operation_id = %v, want %q", body["operation_id"], op.ID)
+	}
+}
+
 func TestHITLOperationStatusRequiresPeerAPIToken(t *testing.T) {
 	h := newHITLOperationAPITestHarness(t)
 	op := h.createOperation(t, HITLOperationCreate{ID: "hitl_op_requires_auth", State: HITLOperationStatePendingApproval})
@@ -479,10 +515,11 @@ func TestHITLOperationStatusEndpointDoesNotExposeReplayableMaterial(t *testing.T
 }
 
 type hitlOperationAPITestHarness struct {
-	handler    http.Handler
-	store      *HITLOperationStore
-	ownerToken string
-	otherToken string
+	handler       http.Handler
+	funnelHandler http.Handler
+	store         *HITLOperationStore
+	ownerToken    string
+	otherToken    string
 }
 
 func newHITLOperationAPITestHarness(t *testing.T) hitlOperationAPITestHarness {
@@ -506,10 +543,11 @@ func newHITLOperationAPITestHarness(t *testing.T) hitlOperationAPITestHarness {
 	g := &Gateway{cfg: gwCfg, db: db, onboard: newOnboardRegistry()}
 	w := newWebMux(g, gwCfg.Join(), gwCfg.PublicURL)
 	return hitlOperationAPITestHarness{
-		handler:    w,
-		store:      NewHITLOperationStore(db),
-		ownerToken: ownerToken,
-		otherToken: otherToken,
+		handler:       w,
+		funnelHandler: funnelPublicHandler(w),
+		store:         NewHITLOperationStore(db),
+		ownerToken:    ownerToken,
+		otherToken:    otherToken,
 	}
 }
 

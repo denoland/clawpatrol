@@ -771,6 +771,10 @@ func (w *webMux) apiHITLOperationStatus(rw http.ResponseWriter, r *http.Request)
 		}
 	}
 	if op.ID == "" {
+		if isFunnelPublicRequest(r.Context()) {
+			writeHITLOperationNotFound(rw)
+			return
+		}
 		token := bearerFromAuthHeader(r.Header.Get("Authorization"))
 		peerIP := peerIPForAPIToken(w.g.db, token)
 		if peerIP == "" {

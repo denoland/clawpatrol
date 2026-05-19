@@ -97,24 +97,28 @@ type HITLOperationMaintenanceResult struct {
 }
 
 type HITLOperation struct {
-	ID                         string
-	State                      HITLOperationState
-	Version                    int64
-	ProfileID                  string
-	PrincipalID                string
-	EndpointID                 string
-	ApprovalRuleID             string
-	ApproverID                 string
-	Method                     string
-	Scheme                     string
-	Host                       string
-	RedactedPath               string
-	RedactedQuery              string
-	RedactedHeadersJSON        string
-	AuthBindingID              string
-	FingerprintVersion         string
-	HMACKeyID                  string
-	RequestFingerprint         string
+	ID                  string
+	State               HITLOperationState
+	Version             int64
+	ProfileID           string
+	PrincipalID         string
+	EndpointID          string
+	ApprovalRuleID      string
+	ApproverID          string
+	Method              string
+	Scheme              string
+	Host                string
+	RedactedPath        string
+	RedactedQuery       string
+	RedactedHeadersJSON string
+	AuthBindingID       string
+	FingerprintVersion  string
+	HMACKeyID           string
+	RequestFingerprint  string
+	// StatusToken is the raw operation-scoped capability token. It is only
+	// populated on the operation returned from Create or when explicitly
+	// threaded through runtime transitions before the initial 202 response;
+	// fresh store reads intentionally populate only StatusTokenHash.
 	StatusToken                string
 	StatusTokenHash            string
 	CreatedAt                  time.Time

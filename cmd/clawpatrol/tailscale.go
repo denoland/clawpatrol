@@ -144,14 +144,25 @@ func startFunnelListener(s *tsnet.Server, mux http.Handler) {
 		return
 	}
 	log.Printf("tsnet: Funnel listening on :443 — allowlist: /api/onboard/{start,poll,claim}, /api/cred/*, /api/hitl/operations/*/status")
-	filtered := http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+	go func() { _ = http.Serve(ln, funnelPublicHandler(mux)) }()
+}
+
+type funnelPublicRequestContextKey struct{}
+
+func funnelPublicHandler(mux http.Handler) http.Handler {
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		if funnelAllowsPublicPath(r.URL.Path) {
-			mux.ServeHTTP(rw, r)
+			ctx := context.WithValue(r.Context(), funnelPublicRequestContextKey{}, true)
+			mux.ServeHTTP(rw, r.WithContext(ctx))
 			return
 		}
 		http.NotFound(rw, r)
 	})
-	go func() { _ = http.Serve(ln, filtered) }()
+}
+
+func isFunnelPublicRequest(ctx context.Context) bool {
+	fromFunnel, _ := ctx.Value(funnelPublicRequestContextKey{}).(bool)
+	return fromFunnel
 }
 
 func funnelAllowsPublicPath(path string) bool {
