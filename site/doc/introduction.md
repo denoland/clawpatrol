@@ -77,9 +77,10 @@ Claw Patrol has two pieces:
   agents 24/7. Claw Patrol runs on each device, captures the
   agent's outbound flows, and tunnels them to the gateway.
 
-A device joins the gateway first — `clawpatrol join` over
-WireGuard, or `clawpatrol login` if Tailscale is already your
-fabric. From there, two ways to scope what gets captured:
+A device joins the gateway first — `clawpatrol join` for the
+WireGuard control mode, or `clawpatrol login` for the Tailscale
+control mode if Tailscale is already your fabric. From there,
+two ways to scope what gets captured:
 
 - `clawpatrol run -- <cmd>` wraps a single command (and its
   subprocesses) in a network namespace that captures only its
