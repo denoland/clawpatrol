@@ -7,7 +7,7 @@ you want to tune anything, read
 
 Claw Patrol has two pieces: a **gateway** that runs on a server
 you control, and one or more **devices** — the machines where
-your agents run — that wire into the gateway and route agent
+your agents run — that join the gateway and route agent
 traffic through it.
 
 ## Install
