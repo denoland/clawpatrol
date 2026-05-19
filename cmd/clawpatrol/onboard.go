@@ -182,6 +182,14 @@ func (r *onboardRegistry) setEphemeralProfile(ip, parentIP, profile string) {
 	defer r.mu.Unlock()
 	r.ephemeralProfileByIP[ip] = profile
 	r.ephemeralParentByIP[ip] = parentIP
+	if r.db != nil {
+		_, _ = r.db.Exec(
+			`INSERT INTO ephemeral_peers (ip, parent_ip, profile, created_ns)
+			 VALUES (?, ?, ?, ?)
+			 ON CONFLICT(ip) DO UPDATE SET parent_ip = excluded.parent_ip, profile = excluded.profile`,
+			ip, parentIP, profile, time.Now().UnixNano(),
+		)
+	}
 }
 
 // AgentIPFor returns the device IP that traffic from ip should be attributed
@@ -238,7 +246,26 @@ func (r *onboardRegistry) Load(db *sql.DB) error {
 			r.extV6ByIP[ip] = v6.String
 		}
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	// Replay ephemeral peer mappings so per-process `clawpatrol run`
+	// nodes that were alive across a restart fold back to their parent
+	// instead of surfacing as their own dashboard row.
+	erows, err := db.Query("SELECT ip, parent_ip, profile FROM ephemeral_peers")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = erows.Close() }()
+	for erows.Next() {
+		var ip, parentIP, profile string
+		if err := erows.Scan(&ip, &parentIP, &profile); err != nil {
+			return err
+		}
+		r.ephemeralProfileByIP[ip] = profile
+		r.ephemeralParentByIP[ip] = parentIP
+	}
+	return erows.Err()
 }
 
 // HasDevice reports whether ip has a row in the devices table.
@@ -375,6 +402,7 @@ func (r *onboardRegistry) ForgetIP(ip string) {
 	delete(r.extV6ByIP, ip)
 	if r.db != nil {
 		_, _ = r.db.Exec("DELETE FROM devices WHERE id = ?", ip)
+		_, _ = r.db.Exec("DELETE FROM ephemeral_peers WHERE ip = ?", ip)
 	}
 }
 
