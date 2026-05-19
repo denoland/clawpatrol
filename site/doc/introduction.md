@@ -87,7 +87,7 @@ want to scope:
   subprocesses) in a network namespace that captures only its
   traffic.
 - `clawpatrol join --whole-machine` brings up a tunnel for the
-  whole host; every outbound packet routes through the gateway.
+  whole device; every outbound packet routes through the gateway.
 - `clawpatrol login` joins over Tailscale instead of WireGuard,
   if that's already your fabric.
 
