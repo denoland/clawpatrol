@@ -88,7 +88,7 @@ fabric. From there, two ways to scope what gets captured:
   and tunnels every outbound packet on the device through the
   gateway.
 
-<svg viewBox="0 0 940 380" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="clawpatrol request flow: a device tunnels agent traffic to the gateway, the gateway matches a rule, may defer the verdict to an LLM proctor or a human approver (via Slack, the dashboard, email, or a webhook), and on allow injects the real credential before forwarding to the upstream">
+<svg viewBox="0 0 940 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="clawpatrol request flow: a device tunnels agent traffic to the gateway, the gateway matches a rule and produces a verdict, optionally requesting approval from a human or LLM approver, and on allow injects the real credential before forwarding to the upstream">
   <defs>
     <marker id="ar-intro" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
       <path d="M0,0 L10,5 L0,10 z" fill="#2a342f"/>
@@ -104,56 +104,51 @@ fabric. From there, two ways to scope what gets captured:
     .arr-intro { fill: none; stroke: #2a342f; stroke-width: 1.5; }
   </style>
 
-  <rect class="f-intro" x="20" y="40" width="220" height="160" rx="6"/>
-  <text class="ttl-intro" x="30" y="34">device</text>
+  <rect class="f-intro" x="20" y="60" width="220" height="120" rx="6"/>
+  <text class="ttl-intro" x="30" y="54">device</text>
   <rect class="b-intro" x="40" y="100" width="80" height="40" rx="4"/>
-  <text class="lbl-intro" x="80" y="122">agent</text>
+  <text class="lbl-intro" x="80" y="124">agent</text>
   <rect class="b-intro" x="140" y="100" width="80" height="40" rx="4"/>
-  <text class="lbl-intro" x="180" y="122">client</text>
+  <text class="lbl-intro" x="180" y="124">client</text>
   <line class="arr-intro" x1="120" y1="120" x2="140" y2="120" marker-end="url(#ar-intro)"/>
-  <line class="arr-intro" x1="240" y1="120" x2="335" y2="120" marker-end="url(#ar-intro)"/>
-  <text class="sm-intro" x="287" y="114">tunnel</text>
 
-  <rect class="f-intro" x="335" y="20" width="585" height="340" rx="6"/>
-  <text class="ttl-intro" x="345" y="14">gateway</text>
+  <line class="arr-intro" x1="240" y1="120" x2="296" y2="120" marker-end="url(#ar-intro)"/>
+  <text class="sm-intro" x="268" y="114">tunnel</text>
 
-  <rect class="b-intro" x="355" y="100" width="120" height="40" rx="4"/>
-  <text class="lbl-intro" x="415" y="118">match rule</text>
-  <text class="sm-intro" x="415" y="132">CEL on protocol fields</text>
+  <rect class="f-intro" x="270" y="20" width="650" height="280" rx="6"/>
+  <text class="ttl-intro" x="280" y="14">gateway</text>
 
-  <line class="arr-intro" x1="475" y1="120" x2="520" y2="120" marker-end="url(#ar-intro)"/>
+  <rect class="b-intro" x="300" y="100" width="110" height="40" rx="4"/>
+  <text class="lbl-intro" x="355" y="124">match rule</text>
 
-  <rect class="b-intro" x="520" y="85" width="120" height="70" rx="4"/>
-  <text class="lbl-intro" x="580" y="103">verdict</text>
-  <text class="sm-intro" x="580" y="120">allow</text>
-  <text class="sm-intro" x="580" y="134">deny</text>
-  <text class="sm-intro" x="580" y="148">defer</text>
+  <line class="arr-intro" x1="410" y1="120" x2="430" y2="120" marker-end="url(#ar-intro)"/>
 
-  <line class="arr-intro" x1="640" y1="100" x2="700" y2="100" marker-end="url(#ar-intro)"/>
-  <text class="sm-intro" x="670" y="92">defer</text>
+  <rect class="b-intro" x="430" y="75" width="170" height="90" rx="4"/>
+  <text class="lbl-intro" x="515" y="98">verdict</text>
+  <text class="sm-intro" x="515" y="118">allow</text>
+  <text class="sm-intro" x="515" y="134">deny</text>
+  <text class="sm-intro" x="515" y="150">request approval</text>
 
-  <rect class="b-intro" x="700" y="60" width="220" height="110" rx="4"/>
-  <text class="lbl-intro" x="810" y="80">approver</text>
-  <text class="sm-intro" x="810" y="100">
-    <tspan x="810" dy="0">LLM proctor (custom prompt; cached)</tspan>
-    <tspan x="810" dy="1.5em">human via Slack / dashboard /</tspan>
-    <tspan x="810" dy="1.3em">email / webhook</tspan>
-  </text>
+  <line class="arr-intro" x1="600" y1="120" x2="630" y2="120" marker-end="url(#ar-intro)"/>
+  <text class="sm-intro" x="615" y="112">on allow</text>
 
-  <line class="arr-intro" x1="700" y1="140" x2="640" y2="140" marker-end="url(#ar-intro)"/>
-  <text class="sm-intro" x="670" y="158">verdict back</text>
+  <rect class="b-intro" x="630" y="90" width="140" height="60" rx="4"/>
+  <text class="lbl-intro" x="700" y="118">inject credential</text>
+  <text class="sm-intro" x="700" y="136">(real secret)</text>
 
-  <line class="arr-intro" x1="580" y1="155" x2="580" y2="220" marker-end="url(#ar-intro)"/>
-  <text class="sm-intro" x="630" y="190" style="text-anchor:start">on allow</text>
+  <line class="arr-intro" x1="770" y1="120" x2="800" y2="120" marker-end="url(#ar-intro)"/>
 
-  <rect class="b-intro" x="520" y="220" width="120" height="40" rx="4"/>
-  <text class="lbl-intro" x="580" y="240">inject credential</text>
-  <text class="sm-intro" x="580" y="254">(real secret)</text>
+  <rect class="b-intro" x="800" y="100" width="100" height="40" rx="4"/>
+  <text class="lbl-intro" x="850" y="124">upstream</text>
 
-  <line class="arr-intro" x1="580" y1="260" x2="580" y2="305" marker-end="url(#ar-intro)"/>
+  <line class="arr-intro" x1="475" y1="165" x2="475" y2="217" marker-end="url(#ar-intro)"/>
+  <text class="sm-intro" x="470" y="195" style="text-anchor:end">request approval</text>
 
-  <rect class="b-intro" x="520" y="305" width="120" height="40" rx="4"/>
-  <text class="lbl-intro" x="580" y="328">upstream</text>
+  <line class="arr-intro" x1="555" y1="220" x2="555" y2="168" marker-end="url(#ar-intro)"/>
+  <text class="sm-intro" x="560" y="195" style="text-anchor:start">verdict back</text>
+
+  <rect class="b-intro" x="430" y="220" width="170" height="40" rx="4"/>
+  <text class="lbl-intro" x="515" y="244">Human / LLM Approver</text>
 </svg>
 
 The agent never sees the real credential. The gateway never trusts
