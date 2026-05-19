@@ -75,10 +75,7 @@ Claw Patrol has two pieces:
 - One or more **devices** — the machines where the agents run,
   whether a developer workstation or a dedicated host running
   agents 24/7. Claw Patrol runs on each device, captures the
-  agent's outbound flows, and tunnels them to the gateway. The
-  gateway decides per request what to allow, what to deny, what
-  to gate behind a human or an LLM, and what credential to stamp
-  on.
+  agent's outbound flows, and tunnels them to the gateway.
 
 Three ways to put a device in the path, depending on how much you
 want to scope:
