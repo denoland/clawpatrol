@@ -19,7 +19,7 @@ type ButtonElProps = CommonProps &
 type ButtonProps = AnchorProps | ButtonElProps;
 
 const base =
-  "group inline-block font-sans font-semibold uppercase relative isolate z-10 " +
+  "group inline-block font-mono font-semibold uppercase relative isolate z-10 " +
   "tracking-wider border cursor-pointer transition-colors outline-2 outline-navy " +
   "-outline-offset-2 disabled:opacity-50 disabled:cursor-not-allowed";
 
@@ -30,8 +30,8 @@ const sizes: Record<Size, string> = {
 };
 
 const variants: Record<Variant, string> = {
-  normal: "border-2 border-navy text-navy relative",
-  outline: "border-2 border-navy text-text-muted " + "hover:bg-canvas-muted",
+  normal: "border-1.5 border-navy text-navy relative",
+  outline: "border-1.5 border-navy text-text-muted " + "hover:bg-canvas-muted",
 };
 
 const backgroundOffsets: Record<Size, string> = {

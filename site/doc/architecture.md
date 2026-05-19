@@ -130,83 +130,56 @@ The gateway pulls in three plugin families:
 
 ## Connection modes
 
-There are three ways to connect a device to the gateway. Onboarding
-runs through `clawpatrol join <gateway>`: the dashboard mints
-a WireGuard keypair, allocates a `/32` from the configured subnet,
-registers the peer with the running wireguard-go device, and the
-device persists the resulting `wg-quick`-style config at
-`~/.config/clawpatrol/wg.conf`. Each connection mode is what
-happens after that.
+`clawpatrol join <gateway>` enrolls the device. What the gateway
+mints + what the client installs depends on the gateway's
+`control` mode.
 
-### `clawpatrol join --whole-machine` (Linux)
+### Tailscale mode
 
-Routes every byte the host emits through the gateway. The CLI
-calls `wg-quick up` against `/etc/wireguard/clawpatrol.conf` (the
-config has `AllowedIPs = 0.0.0.0/0, ::/0`), which uses the kernel
-WireGuard module to add the route and replace the default gateway.
-Reference: `setup.go:wgQuickUp`, `wireguard.go`.
+The gateway embeds tsnet; it joins the tailnet in-process and
+exposes only `/api/onboard/{start,poll,claim}` + `/api/cred/*` on
+:443 via Funnel. Every other route is tailnet-only. At onboard the
+gateway mints a Tailscale auth key (`reusable=true, ephemeral=true`
+for per-process; `ephemeral=false` for `--whole-machine`) via OAuth
+and the CA + api-token are delivered inside the approved Funnel
+response.
 
-- **Tunnel mechanism.** Kernel WireGuard via `wg-quick`. The kernel
-  driver owns the tunnel lifetime; clawpatrol does not run a
-  userspace WG on the device.
-- **What's installed on the device.** `/etc/wireguard/clawpatrol.conf`
-  (root-owned, mode `0o600`); `wg-quick` activates the `clawpatrol`
-  network interface and adds default routes through it.
-- **Scope.** Whole host. Every process on the device, including the
-  operator's shell, browser, and unrelated daemons, dials through
-  the gateway.
+**`clawpatrol run -- <cmd>` (Linux + macOS).** Each invocation is
+its own ephemeral tailnet node. On Linux a new user + net + mnt
+namespace runs userspace wireguard-go inside `tsnet.Server` with
+`MkdirTemp` state (`Ephemeral: true`); on macOS the
+`NETransparentProxyProvider` extension hosts the tsnet stack and
+PPID-filters flows. Concurrent runs on one host don't share state.
+Reference: `run_tsnet_linux.go`, `run_tsnet_darwin.go`,
+`macos/netstack/wgnetstack.go`.
 
-### `clawpatrol run -- <cmd>` (Linux)
+**`clawpatrol join --whole-machine` (Linux).** Installs system
+Tailscale (`tailscale up --authkey=...`), sets the gateway as the
+exit node, and routes the whole host through. The auth key for
+this path is minted with `ephemeral=false` so the node persists.
+Reference: `setup.go:runLogin`.
 
-Routes one process tree through the gateway, leaves the rest of
-the device alone. The CLI re-execs itself in fresh user, network,
-and mount namespaces with `CAP_NET_ADMIN` in the ambient set,
-opens a TUN inside the new netns, runs userspace wireguard-go
-against it, configures `default dev wg0`, drops the ambient cap,
-and execs the wrapped command. Reference: `run_linux.go:runRun` /
-`runRunChild`.
+**`clawpatrol join --whole-machine` (macOS).** The NE owns whole-
+host routing — no system Tailscale touched. macOS never runs
+system tailscaled.
 
-- **Tunnel mechanism.** Userspace wireguard-go embedded in the
-  `clawpatrol` binary; the TUN lives only inside the unshared
-  netns.
-- **What's installed on the device.** Nothing persistent — no
-  kernel module, no `/etc/wireguard/`, no system service. Just the
-  `clawpatrol` binary and `~/.config/clawpatrol/wg.conf` from
-  onboarding.
-- **Scope.** The wrapped process and all its descendants. The host
-  default route is untouched. Other shells and processes on the
-  device keep their original network.
+### WireGuard mode
 
-### `clawpatrol run -- <cmd>` (macOS)
+The gateway runs an in-process WireGuard server (wireguard-go +
+gVisor netstack). At onboard it mints a keypair, allocates a `/32`
+from `wg_subnet_cidr`, and persists the wg-quick config at
+`~/.config/clawpatrol/wg.conf`.
 
-Routes the wrapped process tree through the gateway via a Network
-Extension. The CLI hands the command off to
-`/Applications/Clawpatrol.app/Contents/MacOS/Clawpatrol`, which
-forks the agent as a child of the `.app` and ensures the
-`NETransparentProxyProvider` system extension is loaded.
-Reference: `run_darwin.go`,
+**`clawpatrol run -- <cmd>` (Linux).** Per-process ephemeral WG
+peer in a fresh netns. Reference: `run_linux.go`.
+
+**`clawpatrol join --whole-machine` (Linux).** Kernel WireGuard via
+`wg-quick up`. Default route flips to the WG tunnel. Reference:
+`setup.go:wgQuickUp`, `wireguard.go`.
+
+**`clawpatrol run -- <cmd>` (macOS).** WG userspace inside the NE,
+PPID-filtered. Reference: `run_darwin.go`,
 `macos/ClawpatrolExtension/Provider.swift`.
-
-The extension intercepts every outbound TCP and UDP flow on the
-host and filters in `handleNewFlow`: it walks each flow's
-originating PPID chain and tunnels only those flows whose ancestor
-is the wrapped `.app` process. Matched flows are bridged into a
-userspace wireguard-go tunnel + gVisor netstack inside the
-extension; non-matched flows return `false` and proceed via the
-host's normal network. A `--whole-machine` mode skips the PPID
-filter and tunnels every flow.
-
-- **Tunnel mechanism.** Userspace wireguard-go + gVisor netstack
-  inside the system extension (`macos/netstack/`). Apple's per-app
-  `NEPacketTunnel` routing is gated behind MDM, so the extension
-  uses `NETransparentProxyProvider` and applies the per-process
-  scope itself.
-- **What's installed on the device.** `Clawpatrol.app` in
-  `/Applications/`, plus its system extension (one-time approval
-  prompt at first install). The first `clawpatrol run` activates
-  the extension; subsequent runs are no-ops.
-- **Scope.** The wrapped process and its descendants, identified
-  by PPID walk against the parent app's signing identifier.
 
 ## Network traffic processing
 

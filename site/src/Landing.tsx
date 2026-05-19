@@ -1,5 +1,5 @@
 import { Layout } from "./Layout";
-import { Wave } from "./components/Wave";
+import { HatchDivider } from "./components/HatchDivider";
 import { AnalyticsSection } from "./sections/AnalyticsSection";
 import { ApproversSection } from "./sections/ApproversSection";
 import { ComparisonSection } from "./sections/ComparisonSection";
@@ -16,7 +16,10 @@ export function Landing() {
       <HeroSection />
       <ProblemSection />
       <RunSection />
-      <Wave topColor="var(--color-canvas-muted)" bottomColor="var(--color-navy-600)" />
+      <HatchDivider
+        topColor="var(--color-canvas-muted)"
+        bottomColor="var(--color-navy-700)"
+      />
       <RulesSection />
       <ApproversSection />
       <TestSection />

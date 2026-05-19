@@ -1,1 +1,0 @@
-error: Dashboard auth not configured — info_listen is publicly bound but the dashboard has no auth: set dashboard_secret = "<long random string>", bind info_listen to a private interface (loopback / tailnet / VPN), or set insecure_no_dashboard_secret = true to explicitly opt out.

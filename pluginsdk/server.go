@@ -9,8 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/denoland/clawpatrol/config/extplugin"
-	pb "github.com/denoland/clawpatrol/config/extplugin/proto"
+	"github.com/denoland/clawpatrol/internal/config/extplugin"
+	pb "github.com/denoland/clawpatrol/internal/config/extplugin/proto"
 	"github.com/hashicorp/go-plugin"
 	"google.golang.org/grpc"
 )

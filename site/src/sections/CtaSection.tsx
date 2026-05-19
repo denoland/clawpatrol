@@ -13,15 +13,15 @@ export function CtaSection() {
         class="max-w-lg mx-auto text-base sm:text-lg
          mb-10 text-text-muted"
       >
-        The proxy holds your secrets and watches every byte your agents send. It has to be
-        auditable, so it's MIT licensed.
+        The proxy holds your secrets and watches every byte your agents send. It
+        has to be auditable, so it's MIT licensed.
       </p>
-      <img
+      {/* <img
         src="/clawpatrol.png"
         alt="Claw Patrol mascot"
         class="w-72 md:w-96 max-w-full mx-auto mb-10
           mix-blend-multiply"
-      />
+      /> */}
       <div class="mb-12 flex justify-center">
         <InstallTerminal variant="expanded" />
       </div>

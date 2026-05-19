@@ -12,7 +12,7 @@ registered via `config.Register`. Carries the decode struct
 constructor (`New`), reference resolution (`Refs []RefSpec`),
 `Validate`, `Build` (produces the canonical record), optional
 `CompileRule` (rule plugins), `Emit` (HCL round-trip), and `Runtime`
-(see below). See [`config/plugin.go`](../config/plugin.go).
+(see below). See [`config/plugin.go`](../internal/config/plugin.go).
 
 ## Runtime
 
@@ -21,7 +21,7 @@ struct and type-asserted by the dispatcher against one of the
 interfaces below, picked by kind. A plugin without a runtime is
 "schema-only" — the loader accepts it, but the dispatcher returns
 `runtime.ErrUnsupported` if anything tries to use it.
-`config/runtime/checker.go` validates the assertion at init time.
+`internal/config/runtime/checker.go` validates the assertion at init time.
 
 ## `HTTPCredentialRuntime`
 
@@ -87,7 +87,7 @@ calls `ConnIndex.Lookup(dstIP)` to recover which endpoint(s) own a
 given destination IP — multiple endpoints can share an IP (e.g.
 `pg-writer` / `pg-readonly` against the same RDS host); the caller
 filters by profile to pick the one the device should use. See
-[`config/runtime/conn_route.go`](../config/runtime/conn_route.go).
+[`internal/config/runtime/conn_route.go`](../internal/config/runtime/conn_route.go).
 
 ## WG promiscuous forwarder
 
@@ -101,7 +101,7 @@ and [`wireguard.go`](../wireguard.go).
 
 ## Auth offload
 
-The code path in `config/plugins/endpoints/postgres.go` that runs the
+The code path in `internal/config/plugins/endpoints/postgres.go` that runs the
 SCRAM / cleartext handshake against the upstream and synthesizes
 `AuthenticationOk` for the agent — so the agent never participates in
 the upstream auth handshake. (User-facing description in the public

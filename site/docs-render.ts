@@ -138,6 +138,7 @@ function renderMetaTags(m: PageMeta): string {
   return `
   <meta name="description" content="${desc}" />
   <link rel="canonical" href="${m.url}" />
+  <link rel="icon" type="image/svg+xml" href="/claw-patrol-icon.svg" />
   <meta property="og:title" content="${title}" />
   <meta property="og:description" content="${desc}" />
   <meta property="og:url" content="${m.url}" />

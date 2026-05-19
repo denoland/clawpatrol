@@ -1,4 +1,5 @@
 import { SectionLabel } from "../components/SectionLabel";
+import { TerminalFrame } from "../components/TerminalFrame";
 
 /* ──────────────────────────────────────────────────────────────────────
    `clawpatrol test` — regression-test CLI for policy changes. Replays
@@ -16,12 +17,9 @@ function TestOutput() {
     </>
   );
   return (
-    <pre
-      class="min-w-0 text-[12.5px] sm:text-[13px] font-mono leading-relaxed
-        bg-navy text-canvas/85 squircle-md p-6 overflow-x-auto
-        border border-navy-700"
-    >
-      <code>
+    <TerminalFrame class="block min-w-0 p-6">
+      <pre class="text-[12.5px] sm:text-[13px] font-mono leading-relaxed text-canvas overflow-x-auto">
+        <code>
         <span class="text-canvas/40">$ </span>
         clawpatrol test deno.hcl tests/
         {"\n"}
@@ -56,7 +54,8 @@ function TestOutput() {
         {ok("tests/pg-staging-reads.json")}
         36 action(s) checked, <span class="text-rust-300">1 mismatch(es)</span>
       </code>
-    </pre>
+      </pre>
+    </TerminalFrame>
   );
 }
 
@@ -68,7 +67,7 @@ export function TestSection() {
 
         <div class="grid grid-cols-1 lg:grid-cols-[2fr_3fr] gap-8 lg:gap-16 xl:gap-32 items-start">
           <div class="min-w-0">
-            <h3 class="text-4xl sm:text-5xl md:text-6xl lg:text-[3.25rem] font-display font-bold text-balance mb-6 text-text">
+            <h3 class="text-4xl sm:text-5xl md:text-6xl lg:text-[3.25rem] font-display text-balance mb-6 text-text">
               Test your rules <span class="text-rust">before you ship them.</span>
             </h3>
             <p class="text-base text-text-muted mb-5 max-w-xl">

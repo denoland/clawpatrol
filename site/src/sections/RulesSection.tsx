@@ -1,5 +1,6 @@
 import { HclCode } from "../components/HclCode";
 import { SectionLabel } from "../components/SectionLabel";
+import { TerminalFrame } from "../components/TerminalFrame";
 import { snippet } from "../lib/example";
 import { protocol_https, protocol_k8s, protocol_sql } from "../lib/examples";
 
@@ -36,18 +37,20 @@ const PROTOCOLS: {
 
 export function RulesSection() {
   return (
-    <section class="bg-navy-600 py-24 sm:py-32 text-canvas">
+    <section class="bg-linear-to-b from-navy-700 to-navy-800 py-24 sm:py-32 text-canvas">
       <div class="max-w-6xl mx-auto px-6 sm:px-8">
         <SectionLabel>Rules</SectionLabel>
 
         <div class="max-w-3xl mx-auto text-center mb-16">
-          <h3 class="text-4xl sm:text-5xl md:text-6xl font-display font-bold text-balance mb-5">
-            You write access rules. <span class="text-rust">Claw Patrol enforces them.</span>
+          <h3 class="text-4xl sm:text-5xl md:text-6xl font-display text-balance mb-5">
+            You write access rules.{" "}
+            <span class="text-rust">Claw Patrol enforces them.</span>
           </h3>
           <p class="text-base text-canvas/70">
-            Every outbound request runs through a rule engine before it reaches its destination.
-            Match on HTTP method, SQL verb, k8s resource, plugin-defined facets; not just URLs.
-            Edits are hot: save a rule in the dashboard, the next request sees it.
+            Every outbound request runs through a rule engine before it reaches
+            its destination. Match on HTTP method, SQL verb, k8s resource,
+            plugin-defined facets; not just URLs. Edits are hot: save a rule in
+            the dashboard, the next request sees it.
           </p>
         </div>
 
@@ -62,15 +65,15 @@ export function RulesSection() {
               class="grid grid-cols-1 lg:grid-cols-[1fr_2fr] gap-6 lg:gap-12 items-start"
             >
               <div class="min-w-0">
-                <h4 class="text-3xl font-display font-bold text-canvas mb-3">{p.name}</h4>
+                <h4 class="text-3xl font-display text-canvas mb-3">{p.name}</h4>
                 <p class="text-base text-canvas/70 max-w-sm">{p.body}</p>
               </div>
-              <HclCode
-                source={p.example}
-                class="min-w-0 text-[13px] sm:text-sm font-mono leading-relaxed
-                  bg-navy-950 text-canvas/85 squircle-md p-5 sm:p-6
-                  overflow-x-auto whitespace-pre border border-navy-800"
-              />
+              <TerminalFrame class="block min-w-0 p-5 sm:p-6 before:border-navy-500 after:border-navy-500">
+                <HclCode
+                  source={p.example}
+                  class="text-[13px] sm:text-sm font-mono leading-relaxed text-canvas overflow-x-auto whitespace-pre"
+                />
+              </TerminalFrame>
             </div>
           ))}
         </div>

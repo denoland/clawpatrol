@@ -19,7 +19,7 @@ source instead (requires Go + `gh auth login`).
 ### `clawpatrol gateway`
 
 Run the gateway daemon against an HCL config. Start from
-[`gateway.example.hcl`](https://github.com/denoland/clawpatrol/blob/main/gateway.example.hcl)
+[`gateway.example.hcl`](https://github.com/denoland/clawpatrol/blob/main/cmd/clawpatrol/gateway.example.hcl)
 — see [Getting Started](/docs/getting-started/) for the operational
 fields you need to edit.
 
@@ -48,10 +48,10 @@ clawpatrol join <gateway-url> [flags]
 |---|---|---|
 | `--hostname NAME` | OS hostname | Device name registered with the gateway |
 | `--profile NAME` | gateway default | Profile to assign at approval time |
-| `--whole-machine` | off | Bring up `wg-quick` and route every packet through the gateway (default: persist conf only and use `clawpatrol run`) |
+| `--whole-machine` | off | Route every packet through the gateway. Linux installs system Tailscale (or `wg-quick` for WG gateways); macOS uses the NE in whole-host config. Default: per-process via `clawpatrol run`. |
 | `--no-trust` | off | Fetch the CA but skip system trust install |
 | `--ca-dir DIR` | `~/.clawpatrol` | Where to store the fetched CA |
-| `--name NAME` | `clawpatrol` | Exit-node hostname (only used when the gateway is on Tailscale) |
+| `--name NAME` | `clawpatrol` | Exit-node hostname (Tailscale gateway, `--whole-machine` only) |
 
 ### `clawpatrol login`
 

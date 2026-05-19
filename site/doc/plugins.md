@@ -31,7 +31,7 @@ the same way you reference built-ins:
 
 ```hcl
 plugin "example" {
-  source = "./plugin-example/plugin-example"
+  source = "./pluginsdk/example/example"
 }
 
 credential "example_magic_token" "demo_token" {}
@@ -66,7 +66,7 @@ diagnostic.
 
 Plugins are ordinary Go programs. The author SDK lives at
 `github.com/denoland/clawpatrol/pluginsdk`; the canonical example
-is `plugin-example/` in the Claw Patrol repo.
+is `pluginsdk/example/` in the Claw Patrol repo.
 
 ```go
 package main
@@ -244,7 +244,7 @@ ok: gateway.hcl — 7 endpoints across 3 profile(s)
 
 ## See also
 
-- [`plugin-example/`](https://github.com/denoland/clawpatrol/tree/main/plugin-example)
+- [`pluginsdk/example/`](https://github.com/denoland/clawpatrol/tree/main/pluginsdk/example)
   — fully exercised plugin: `example_magic_token` credential,
   `example_passthrough` tunnel, `example_https` endpoint
   (binds to the built-in `http` facet), `example_smtp`

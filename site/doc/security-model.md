@@ -143,6 +143,102 @@ Patrol's control. Onboarding offers to import recognised
 credentials and delete the originals; anything not recognised or
 not migrated stays readable to the agent.
 
+## Dashboard and management API
+
+Everything the agent must not reach — credential storage, profile
+assignment, human-in-the-loop decisions, registration approval —
+sits behind the dashboard's HTTP API. Network reachability alone
+must never grant access to it.
+
+### App-layer auth, on every bind
+
+The dashboard refuses to serve any management endpoint until an
+operator credential has been established at the app layer. Network-
+layer reachability is treated as cheap defense in depth, never as
+the trust boundary. This is non-negotiable: an agent that finds
+its way onto the same network as the gateway — including the
+tailnet that the gateway joined — must still be denied.
+
+Why we cannot rely on network reachability:
+
+- `clawpatrol join` persists a Tailscale node identity (machine key
+  + node key) under `~/.config/clawpatrol/tsnet-client/`. Anyone
+  who can read that directory can stand up a tsnet server and
+  rejoin the tailnet as the same peer, indefinitely.
+- That tailnet peer can route to the gateway's tailnet IP. Without
+  app-layer auth, "I'm on the tailnet" would silently equal "I am
+  an operator." It must not.
+
+### First-run root password
+
+On a fresh install the dashboard has no operator yet. The first
+request — from anywhere — is redirected to a "set password" form;
+the chosen password becomes the bcrypt-hashed `root` row in
+`clawpatrol.db`. Subsequent requests must present that password
+(via the `cp_dash` cookie or the `X-Clawpatrol-Secret` header).
+
+The first-run window is benign by construction: the dashboard is
+the only path that creates credentials / profile assignments /
+HITL decisions, and all of those endpoints sit behind the same gate
+the first-run flow protects. So no sensitive state can predate the
+root password — losing the first-run race to an attacker means
+they hold an empty dashboard. Recover with
+`clawpatrol gateway --reset-dashboard-password`.
+
+To skip the web first-run entirely, set the password from the CLI
+before the dashboard ever serves a request:
+
+```
+clawpatrol gateway --set-dashboard-password '<pw>' gateway.hcl
+```
+
+### Tailnet operator allowlist (tailscale mode)
+
+In tailscale-control mode the gateway can additionally accept
+requests on the strength of a Tailscale whois identity, gated by an
+explicit allowlist in `gateway.hcl`:
+
+```hcl
+dashboard_operators = ["alice@example.com", "*@example.com"]
+```
+
+The gateway pulls the whois login directly off the tsnet socket
+(`LocalClient.WhoIs`), so this is a kernel-attested per-peer
+identity, not a forgeable header. Tagged devices — the shape
+operators use for agent service accounts (`tag:cp-agent`) — return
+their tag name from whois, not a user login, so a `*@example.com`
+wildcard never matches an agent.
+
+Allowlist auth composes with password auth: either gets a request
+in. The first-run password is still mandatory, so an operator can
+always fall back to it (and tests / break-glass paths don't depend
+on a working tailnet).
+
+### Untagged-key prohibition
+
+A subtle failure mode worth calling out: if the gateway ever minted
+a Tailscale auth key with an empty `tags` list, the resulting node
+would be "owner-associated" — whois on its requests would return
+the OAuth client owner's user login, not a tag. With
+`dashboard_operators = ["*@example.com"]` configured, that node
+would silently match the allowlist and inherit operator powers.
+
+The auth-key minting path
+(`onboard.go` → `mintTailscaleAuthKey`) refuses to call Tailscale's
+create-key API with an empty tag list — it both defaults to
+`tag:client` and errors out if the default is somehow stripped.
+Treat the comment block at that call site as load-bearing.
+
+### Out of band
+
+`/api/onboard/{start,poll,claim}`, `/info`, `/ca.crt`, and the
+plugin webhook prefix (`/api/cred/...`) are intentionally
+reachable without the dashboard password — they carry their own
+auth (signed onboarding handshake; webhook signature header) or
+need to be reachable before any credential exists (CA fingerprint
+fetch, fresh client onboarding). The full route table lives in
+`web.go:routes()`; every other path is gated.
+
 ## Isolation between agents
 
 One Claw Patrol instance can serve many agents, each with its own

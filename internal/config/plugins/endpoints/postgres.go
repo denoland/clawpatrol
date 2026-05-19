@@ -1,0 +1,1295 @@
+package endpoints
+
+// postgres endpoint: schema, plugin registration, wire-protocol
+// gateway, and SCRAM/cleartext auth offload. All postgres-specific
+// code lives in this single file.
+//
+// Endpoint shape — operator-edited HCL:
+//
+//   endpoint "postgres" "writer" {
+//     host       = "db.example.com:5432"
+//     sslmode    = "prefer"        // disable | prefer | require | verify-full
+//     credential = pg-writer-cred
+//   }
+//
+// Wire-protocol gateway: ConnEndpointRuntime intercepts client→server
+// messages (Query / Parse), runs them through the SQL family matcher
+// against the endpoint's compiled rules, and either forwards or
+// sends an ErrorResponse + ReadyForQuery so the agent can continue.
+//
+// Auth offload: gateway terminates SCRAM (or cleartext / trust) on
+// the upstream side using the credential's (user, password) and
+// synthesizes AuthenticationOk for the agent — agent never
+// participates in the SCRAM handshake. SCRAM-SHA-256 is designed to
+// defeat MITM swap, so the gateway has to BE one of the peers.
+//
+// Wire format (post-startup):
+//
+//	[type:1][length:4 BE incl. self][payload: length-4]
+//
+// StartupMessage / SSLRequest skip the type byte.
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/tls"
+	"encoding/base64"
+	"encoding/binary"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"strconv"
+	"strings"
+
+	"github.com/hashicorp/hcl/v2/hclwrite"
+	"github.com/zclconf/go-cty/cty"
+	"golang.org/x/crypto/pbkdf2"
+
+	"github.com/denoland/clawpatrol/internal/config"
+	"github.com/denoland/clawpatrol/internal/config/facet"
+	"github.com/denoland/clawpatrol/internal/config/match"
+	sqlfacet "github.com/denoland/clawpatrol/internal/config/plugins/facets/sql"
+	"github.com/denoland/clawpatrol/internal/config/runtime"
+)
+
+// PostgresEndpoint addresses a single RDS-or-equivalent server.
+// Tunnel topologies (kubectl-portforward-ssh and friends) aren't
+// supported in this iteration — operators run the gateway with
+// network reachability already arranged.
+//
+// SSLMode mirrors libpq's sslmode names — "disable" / "prefer" /
+// "require" / "verify-full". Default "prefer": try TLS, fall back
+// to plain when the upstream replies 'N'. "require" hard-fails on
+// 'N'. "verify-full" additionally validates the upstream cert
+// against Host. "disable" skips the SSLRequest probe entirely —
+// fine for self-hosted pg on a private network where WG already
+// encrypts the path.
+type PostgresEndpoint struct {
+	Host           string    `hcl:"host"`
+	SSLMode        string    `hcl:"sslmode,optional"`
+	Credential     string    `hcl:"credential,optional"`
+	CredentialsRaw cty.Value `hcl:"credentials,optional" json:"-"`
+
+	Credentials []CredentialEntry `json:"Credentials,omitempty"`
+}
+
+// EndpointHosts is part of the clawpatrol plugin API.
+func (e *PostgresEndpoint) EndpointHosts() []string { return []string{e.Host} }
+
+// EndpointCredentials is part of the clawpatrol plugin API.
+func (e *PostgresEndpoint) EndpointCredentials() []config.CredBinding {
+	return bindings(e.Credential, e.Credentials)
+}
+
+// ConnRouteHosts implements runtime.ConnRouter — postgres traffic
+// arrives at the WG forwarder as raw conns (no SNI), so the gateway
+// indexes the upstream host:port → endpoint at policy-load time.
+// The compile pass skips this entry for tunneled endpoints: those
+// route through the VIP path, not real-IP dispatch.
+func (e *PostgresEndpoint) ConnRouteHosts() []string { return []string{e.Host} }
+
+// RequiresVIP opts the endpoint into DNS-VIP interception. Without a
+// VIP, clients in Tailscale exit-node mode can't reach postgres: the
+// real upstream IP is often RFC1918, and Tailscale exit-nodes do not
+// forward RFC1918 traffic (only public IPs and the tailnet's own
+// fd78::/64 VIP range reach the gateway's iptables REDIRECT). The VIP
+// guarantees a routable address (IPv6 fd78::N) regardless of the real
+// upstream IP family or prefix.
+func (e *PostgresEndpoint) RequiresVIP() bool { return true }
+
+func (e *PostgresEndpoint) credentialAndRaw() (string, cty.Value) {
+	return e.Credential, e.CredentialsRaw
+}
+func (e *PostgresEndpoint) setCredentialEntries(es []CredentialEntry) { e.Credentials = es }
+
+// PostgresEndpointRuntime detects placeholders in a postgres
+// StartupMessage. The wire-protocol front-end populates Request with
+// a SQL meta whose Statement field carries the agent's submitted
+// password verbatim before injection.
+type PostgresEndpointRuntime struct{}
+
+// DetectPlaceholder is part of the clawpatrol plugin API.
+func (PostgresEndpointRuntime) DetectPlaceholder(req *runtime.Request, candidates []string) string {
+	if req == nil {
+		return ""
+	}
+	meta, _ := req.Meta.(*sqlfacet.Meta)
+	if meta == nil {
+		return ""
+	}
+	hay := meta.Statement
+	for _, c := range candidates {
+		if c != "" && strings.Contains(hay, c) {
+			return c
+		}
+	}
+	return ""
+}
+
+// ParseStatement satisfies runtime.SQLParser so the action-fixture
+// loader can populate match.Request.Meta from a raw statement using
+// the same AST extractor pgEvaluate uses on live wire traffic.
+// Returns *sqlfacet.Meta as `any` to keep the runtime interface free
+// of the facets-package import. The bool mirrors the Unparseable
+// contract — true when pgplex refused the bytes; the fixture loader
+// then sets match.Request.Unparseable so the dispatcher's fail-closed
+// gate evaluates the test request the same way live dispatch would.
+func (PostgresEndpointRuntime) ParseStatement(sql string) (any, bool) {
+	info, unparseable := parseSQL(sql)
+	return &sqlfacet.Meta{
+		Verb:      info.Verb,
+		Tables:    info.Tables,
+		Functions: info.Functions,
+		Statement: info.Statement,
+	}, unparseable
+}
+
+func init() {
+	var _ runtime.PlaceholderDetector = PostgresEndpointRuntime{}
+	var _ runtime.SQLParser = PostgresEndpointRuntime{}
+	config.Register(&config.Plugin{
+		Kind:     config.KindEndpoint,
+		Type:     "postgres",
+		Family:   "sql",
+		New:      func() any { return &PostgresEndpoint{} },
+		Refs:     singularRef,
+		Validate: multiCredValidate,
+		Runtime:  PostgresEndpointRuntime{},
+		Build:    passthroughBuild,
+		Emit: func(body any, _ string, b *hclwrite.Body) {
+			e := body.(*PostgresEndpoint)
+			b.SetAttributeValue("host", cty.StringVal(e.Host))
+			emitCredentialBinding(b, e.Credential, e.Credentials, "placeholder")
+		},
+	})
+}
+
+// ── Wire-protocol gateway ─────────────────────────────────────────────
+
+const sslRequestCode = 80877103
+
+// HandleConn is the postgres ConnEndpointRuntime entry point.
+// One call per inbound TCP connection; returns when either side
+// closes.
+//
+// Flow:
+//
+//  1. SSLRequest from agent → reply 'N' (refuse TLS, WG already
+//     encrypts).
+//  2. Read agent's StartupMessage; extract `database` for upstream.
+//  3. Resolve credential, get (user, password) via PostgresAuthCredential.
+//  4. Dial upstream, send our own StartupMessage(real_user, database).
+//  5. Drive upstream auth (SCRAM-SHA-256 or cleartext) using real
+//     password. Buffer post-auth frames (ParameterStatus*,
+//     BackendKeyData, ReadyForQuery).
+//  6. Synthesize AuthenticationOk to agent + replay buffered
+//     post-auth frames so agent proceeds as if it just authed.
+//  7. Bidirectional pump with per-query inspection.
+func (PostgresEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHandle) error {
+	defer func() { _ = ch.Conn.Close() }()
+	if ch.Endpoint == nil || ch.Endpoint.Family != "sql" {
+		return fmt.Errorf("postgres runtime invoked on non-sql endpoint %v", ch.Endpoint)
+	}
+
+	upstreamAddr := pgUpstreamAddr(ch.Endpoint)
+	if upstreamAddr == "" {
+		return fmt.Errorf("postgres endpoint %q has no host", ch.Endpoint.Name)
+	}
+
+	// Step 1: agent's first 8 bytes — SSLRequest or StartupMessage.
+	hdr := make([]byte, 8)
+	if _, err := io.ReadFull(ch.Conn, hdr); err != nil {
+		return nil
+	}
+	length := binary.BigEndian.Uint32(hdr[:4])
+	code := binary.BigEndian.Uint32(hdr[4:8])
+	var startupHead []byte
+	if length == 8 && code == sslRequestCode {
+		if _, err := ch.Conn.Write([]byte{'N'}); err != nil {
+			return nil
+		}
+		startupHead = nil
+	} else {
+		startupHead = hdr // actually the start of the StartupMessage
+	}
+
+	// Step 2: read full StartupMessage from agent.
+	startupBody, err := pgReadStartup(ch.Conn, startupHead)
+	if err != nil {
+		return fmt.Errorf("read agent startup: %w", err)
+	}
+	database := pgStartupParam(startupBody, "database")
+	if database == "" {
+		database = pgStartupParam(startupBody, "user") // pg default
+	}
+
+	// Step 3: resolve credential. Multi-credential postgres endpoints
+	// (account ro/rw) dispatch on the placeholder string the agent
+	// embedded in the StartupMessage user field — operator sets
+	// PGUSER=PH_pg_deployng_ro and the gateway picks the matching
+	// credential. Single-credential endpoints fall through to the
+	// only entry.
+	agentUser := pgStartupParam(startupBody, "user")
+	// Build a partial match.Request for credential dispatch. The
+	// PostgresEndpointRuntime's PlaceholderDetector scans
+	// Meta.Statement for a placeholder substring; Database is the
+	// agent-declared target so any `database`/`databases` constraint
+	// on a credential entry can filter against it.
+	credReq := &match.Request{
+		Family:   "sql",
+		Database: database,
+		Meta:     &sqlfacet.Meta{Statement: agentUser},
+	}
+	cc := runtime.ResolveCredential(ch.Endpoint, credReq)
+	if cc == nil {
+		pgWriteError(ch.Conn, "no credential bound to postgres endpoint")
+		return fmt.Errorf("no credential")
+	}
+	// Plugin.Runtime is a typed-nil sentinel used for interface
+	// dispatch checks; the actual decoded HCL value is on Body.
+	auth, ok := cc.Credential.Body.(runtime.PostgresAuthCredential)
+	if !ok {
+		pgWriteError(ch.Conn, "credential plugin does not implement postgres auth")
+		return fmt.Errorf("credential %q has no PostgresAuth", cc.Credential.Symbol.Name)
+	}
+	sec, err := ch.Secrets.Get(cc.Credential.Symbol.Name)
+	if err != nil {
+		pgWriteError(ch.Conn, "fetch secret: "+err.Error())
+		return err
+	}
+	realUser, realPassword := auth.PostgresAuth(sec)
+	if realUser == "" {
+		pgWriteError(ch.Conn, "postgres credential has no user — set `user = ...` in HCL")
+		return fmt.Errorf("credential %q missing user", cc.Credential.Symbol.Name)
+	}
+	if realPassword == "" {
+		pgWriteError(ch.Conn, fmt.Sprintf("postgres credential %q has no password — paste it via the dashboard", cc.Credential.Symbol.Name))
+		return fmt.Errorf("credential %q missing password", cc.Credential.Symbol.Name)
+	}
+
+	// Step 4: dial upstream, optionally negotiate TLS, then send our
+	// own StartupMessage with real (user, database).
+	upstream, err := ch.DialUpstream(ctx, "tcp", upstreamAddr)
+	if err != nil {
+		pgWriteError(ch.Conn, "dial upstream: "+err.Error())
+		return fmt.Errorf("dial %s: %w", upstreamAddr, err)
+	}
+	defer func() { _ = upstream.Close() }()
+
+	pgEp, _ := ch.Endpoint.Body.(*PostgresEndpoint)
+	sslmode := "prefer"
+	if pgEp != nil && pgEp.SSLMode != "" {
+		sslmode = pgEp.SSLMode
+	}
+	if sslmode != "disable" {
+		secured, sslErr := pgUpgradeSSL(upstream, pgEp, sslmode)
+		if sslErr != nil {
+			pgWriteError(ch.Conn, "upstream tls: "+sslErr.Error())
+			return sslErr
+		}
+		if secured != nil {
+			upstream = secured
+		}
+	}
+
+	if err := pgSendStartup(upstream, realUser, database); err != nil {
+		pgWriteError(ch.Conn, "send upstream startup: "+err.Error())
+		return err
+	}
+
+	// Step 5 + 6: drive upstream auth, replay post-auth to agent.
+	postAuth, err := pgPerformAuth(upstream, realUser, realPassword)
+	if err != nil {
+		pgWriteError(ch.Conn, "upstream auth: "+err.Error())
+		return err
+	}
+	if err := pgWriteAuthOK(ch.Conn, postAuth); err != nil {
+		return nil
+	}
+
+	// Step 7: bidirectional pump with per-query inspection. The
+	// picked credential's bare name flows into match.Request.Credential
+	// so SQL rules with `match = { credential = pg-deployng-ro }`
+	// resolve against the right account.
+	credName := cc.Credential.Symbol.Name
+	done := make(chan struct{}, 2)
+	go func() {
+		_, _ = io.Copy(ch.Conn, upstream)
+		done <- struct{}{}
+	}()
+	go func() {
+		defer func() { done <- struct{}{} }()
+		pgClientToServer(ctx, ch, upstream, credName, database)
+	}()
+	<-done
+	return nil
+}
+
+// pgReadStartup reads the rest of a StartupMessage given the first 8
+// bytes already pulled off the wire. The first 4 bytes are length;
+// payload is length-4 bytes total (the 8-byte head includes 4 bytes
+// of payload — typically the protocol version 196608).
+func pgReadStartup(r io.Reader, head []byte) ([]byte, error) {
+	if head == nil {
+		head = make([]byte, 8)
+		if _, err := io.ReadFull(r, head); err != nil {
+			return nil, err
+		}
+	}
+	length := binary.BigEndian.Uint32(head[:4])
+	if length < 8 || length > 1<<20 {
+		return nil, fmt.Errorf("bogus startup length %d", length)
+	}
+	out := make([]byte, length)
+	copy(out, head)
+	rest := length - 8
+	if rest > 0 {
+		if _, err := io.ReadFull(r, out[8:]); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// pgStartupParam pulls one named parameter out of a StartupMessage
+// body. Params start at offset 8 (after length + protocol version),
+// alternating null-terminated key/value strings, terminated by an
+// extra null byte.
+func pgStartupParam(body []byte, key string) string {
+	if len(body) < 8 {
+		return ""
+	}
+	b := body[8:]
+	for len(b) > 0 && b[0] != 0 {
+		end := 0
+		for end < len(b) && b[end] != 0 {
+			end++
+		}
+		k := string(b[:end])
+		if end+1 > len(b) {
+			break
+		}
+		b = b[end+1:]
+		end = 0
+		for end < len(b) && b[end] != 0 {
+			end++
+		}
+		v := string(b[:end])
+		if end+1 > len(b) {
+			break
+		}
+		b = b[end+1:]
+		if k == key {
+			return v
+		}
+	}
+	return ""
+}
+
+// maxPgMessage caps the per-frame inspection buffer. Postgres encodes
+// length as int32, so an attacker can declare a multi-GiB Query and
+// force the gateway to either accumulate it (OOM) or forward it
+// uninspected. The wire pump refuses to buffer past this cap: Q / P
+// frames whose declared length exceeds it take the truncated-frame
+// path (pgHandleOversizeFrame), which lets the dispatcher fail-close
+// any rule that would have read the now-discarded statement bytes,
+// and otherwise streams the frame through unbuffered.
+const maxPgMessage = 1 << 20
+
+// pgClientToServer pumps the agent's outbound message stream to the
+// upstream, inspecting Query / Parse for policy. database is the
+// session-start database (StartupMessage `database`, or the `user`
+// fallback per pg convention) — propagated into match.Request.Database
+// on every per-Query request so rules can match on `sql.database`.
+//
+// Postgres has no in-protocol way to swap the active database for an
+// open connection — there's no `USE db` analogue, and `SET database`
+// isn't a recognised setting. The psql `\connect newdb` meta-command
+// is handled entirely on the client: psql tears the current TCP
+// connection down and opens a fresh one whose StartupMessage carries
+// the new database. From this gateway's vantage that arrives as a
+// new ConnHandle, so the session-start value remains authoritative
+// for every Query / Parse frame on this connection.
+func pgClientToServer(ctx context.Context, ch *runtime.ConnHandle, upstream net.Conn, credName, database string) {
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = ch.Conn.Close()
+		case <-done:
+		}
+	}()
+
+	buf := make([]byte, 0, 64*1024)
+	tmp := make([]byte, 32*1024)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		n, err := ch.Conn.Read(tmp)
+		if n > 0 {
+			buf = append(buf, tmp[:n]...)
+			for {
+				// Pre-framing length gate: peek the header before
+				// readPgMessage's "wait until the full frame is
+				// buffered" rule lets the accumulator grow without
+				// bound. Q and P are the only inspected frame types,
+				// so they're the only ones whose oversize bytes we
+				// refuse to buffer; all other types pass through the
+				// normal readPgMessage path with their natural
+				// length (no realistic non-inspected frame is
+				// hostile-sized in practice — Sync / Bind / Execute
+				// have bounded payloads).
+				if len(buf) >= 5 {
+					typ := buf[0]
+					length := binary.BigEndian.Uint32(buf[1:5])
+					if (typ == 'Q' || typ == 'P') && length > maxPgMessage {
+						nextBuf, ok := pgHandleOversizeFrame(ch, upstream, credName, database, buf, length)
+						if !ok {
+							return
+						}
+						buf = nextBuf
+						continue
+					}
+				}
+				msg, rest, ok := readPgMessage(buf)
+				if !ok {
+					break
+				}
+				buf = rest
+				if msg.typ == 'Q' || msg.typ == 'P' {
+					sql := pgExtractSQL(msg.typ, msg.payload)
+					if sql != "" {
+						verdict, reason := pgEvaluate(ch, sql, credName, database)
+						if verdict == "deny" {
+							pgWriteDeny(ch.Conn, reason)
+							log.Printf("pg-deny %s: %s", ch.PeerIP, reason)
+							continue
+						}
+					}
+				}
+				// FunctionCall ('F') is the v2 legacy fast-path:
+				// invoke a function by OID with binary args. There
+				// is no SQL text on the wire, so the matcher cannot
+				// fire on it. Fail-closed (§4.1) — modern drivers
+				// don't issue 'F'; agents using it are bypassing the
+				// SQL inspection surface.
+				if msg.typ == 'F' {
+					reason := "FunctionCall (legacy fast-path) blocked — no SQL text to inspect"
+					pgWriteDeny(ch.Conn, reason)
+					log.Printf("pg-deny %s: %s", ch.PeerIP, reason)
+					continue
+				}
+				raw := serializePgMessage(msg)
+				if _, err := upstream.Write(raw); err != nil {
+					return
+				}
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// pgHandleOversizeFrame handles a Q or P frame whose declared length
+// exceeds maxPgMessage. buf holds the bytes we've already pulled off
+// the wire (at minimum the 5-byte header; possibly some payload too);
+// length is the value from the header. Returns (rest, true) on a
+// clean dispatch — rest is buf advanced past every byte that belongs
+// to this frame, so the caller resumes framing from the next packet
+// — or (nil, false) when the wire dies and the pump must tear down.
+//
+// Dispatch:
+//
+//   - Build a SQL match.Request with Truncated=true and empty
+//     Verb / Statement / Tables / Functions. The frontend can't
+//     parse SQL out of bytes it refused to buffer, and the
+//     dispatcher's job is to decide off the rule's truncatable-facet
+//     references, not off whatever prefix did fit.
+//   - runtime.MatchRequest walks the rule list. A rule whose CEL
+//     reads sql.* will be auto-synthesized to deny (config/runtime/
+//     dispatch.go); a rule that only reads credential or has no
+//     condition still matches normally.
+//
+// Then:
+//
+//   - Deny → drain remaining frame bytes from the wire, send
+//     ErrorResponse + ReadyForQuery to the agent (pgWriteDeny), do
+//     NOT touch upstream.
+//   - Allow / no match → forward every byte verbatim to upstream
+//     (the buffered prefix + the wire tail streamed through
+//     io.CopyN). The upstream sees a single oversize Q / P frame
+//     exactly as the agent emitted it; the gateway just declined to
+//     materialize the body in memory.
+//   - Approve chain → treated as deny. HITL can't make a decision
+//     on bytes that aren't there.
+func pgHandleOversizeFrame(ch *runtime.ConnHandle, upstream net.Conn, credName, database string, buf []byte, length uint32) ([]byte, bool) {
+	typ := buf[0]
+	totalWire := uint64(1) + uint64(length)
+	have := uint64(len(buf))
+	if have > totalWire {
+		have = totalWire
+	}
+	frameHave := buf[:have]
+	rest := buf[have:]
+	remaining := totalWire - have
+
+	mreq := &match.Request{
+		Family:     "sql",
+		PeerIP:     ch.PeerIP,
+		Credential: credName,
+		Database:   database,
+		Meta:       &sqlfacet.Meta{},
+		Truncated:  true,
+	}
+	var facets map[string]any
+	if f := facet.Lookup("sql"); f != nil {
+		facets = f.Report(mreq)
+	}
+	cr := runtime.MatchRequest(ch.Endpoint, mreq)
+
+	deny, reason := false, ""
+	if cr != nil {
+		switch {
+		case len(cr.Outcome.Approve) > 0:
+			deny = true
+			reason = "approval required but request was truncated by inspection buffer"
+		case cr.Outcome.Verdict == "deny":
+			deny = true
+			reason = cr.Outcome.Reason
+			if reason == "" {
+				reason = "denied by policy"
+			}
+		}
+	}
+
+	summary := fmt.Sprintf("truncated frame typ=%c length=%d cap=%d", typ, length, maxPgMessage)
+	if deny {
+		if remaining > 0 {
+			if _, err := io.CopyN(io.Discard, ch.Conn, int64(remaining)); err != nil {
+				return nil, false
+			}
+		}
+		pgWriteDeny(ch.Conn, reason)
+		emit(ch, runtime.ConnEvent{
+			Action: "deny", Reason: reason, Summary: summary, Facets: facets,
+		})
+		log.Printf("pg-deny-truncated %s: %s", ch.PeerIP, reason)
+		return rest, true
+	}
+
+	if _, err := upstream.Write(frameHave); err != nil {
+		return nil, false
+	}
+	if remaining > 0 {
+		if _, err := io.CopyN(upstream, ch.Conn, int64(remaining)); err != nil {
+			return nil, false
+		}
+	}
+	emit(ch, runtime.ConnEvent{
+		Action: "allow-overflow", Summary: summary, Facets: facets,
+	})
+	return rest, true
+}
+
+// pgEvaluate runs the SQL through the endpoint's compiled rules and
+// returns the disposition for this query. Multi-statement Q payloads
+// (§1.3), WITH-CTE-hidden DML (§1.2), and DO body inner statements
+// (§6.5) all flow through the matcher; a deny on any sub-statement
+// denies the whole wire query.
+//
+// Per-statement allow/HITL events are emitted on the matcher's
+// happy path so the dashboard surfaces each component of a batch
+// individually. Shadow sub-statements (CTE-inner DML, DO body) do
+// not emit allow events — they exist to close the parser-evasion
+// loop, and emitting for synthesised reads would inflate dashboard
+// counts. They DO emit deny events when the matcher denies.
+//
+// Returns:
+//
+//	("deny", reason) — first sub-statement to deny short-circuits.
+//	("", "")         — every sub-statement allowed or had no match.
+func pgEvaluate(ch *runtime.ConnHandle, sql, credName, database string) (string, string) {
+	for _, stmt := range analyseAll(sql) {
+		v, reason := pgEvaluateInfo(ch, stmt.Outer, credName, database, false, stmt.Unparseable)
+		if v == "deny" {
+			return v, reason
+		}
+		// Inner statements (CTE-hidden DML, DO bodies) only exist on
+		// pieces the parser accepted, so they always run parseable.
+		for _, inner := range stmt.Inner {
+			v, reason := pgEvaluateInfo(ch, inner, credName, database, true, false)
+			if v == "deny" {
+				return v, reason
+			}
+		}
+	}
+	return "", ""
+}
+
+// pgEvaluateInfo runs one pgInfo through the matcher. shadow=true
+// suppresses emission on allow / hitl_allow so synthesised
+// sub-statements don't pollute the dashboard; deny emissions still
+// fire either way (operators need to see *why* a batch was denied).
+// unparseable propagates onto match.Request so the dispatcher's
+// fail-closed-on-Unparseable gate auto-denies any rule reading
+// verb / tables / functions for a piece pgplex refused.
+func pgEvaluateInfo(ch *runtime.ConnHandle, info pgInfo, credName, database string, shadow, unparseable bool) (string, string) {
+	summary := pgSummary(info)
+	mreq := &match.Request{
+		Family:     "sql",
+		PeerIP:     ch.PeerIP,
+		Credential: credName,
+		Database:   database,
+		Meta: &sqlfacet.Meta{
+			Verb:      info.Verb,
+			Tables:    info.Tables,
+			Functions: info.Functions,
+			Statement: info.Statement,
+			Database:  database,
+		},
+		Unparseable: unparseable,
+	}
+	// Per-family report payload — the same map the gateway will
+	// stash on Event.Facets so the dashboard renders sql_rule
+	// columns (verb / tables / functions / statement) directly
+	// instead of squashing through the legacy Verb/Summary fields.
+	var facets map[string]any
+	if f := facet.Lookup("sql"); f != nil {
+		facets = f.Report(mreq)
+	}
+	cr := runtime.MatchRequest(ch.Endpoint, mreq)
+	if cr == nil {
+		// No rule matched — implicit allow. Emit so the query
+		// shows up in the dashboard's actions tab anyway; the
+		// HTTP path does the same (main.go:1909 — every request
+		// gets an `allow` event when no explicit verdict was
+		// recorded).
+		if !shadow {
+			emit(ch, runtime.ConnEvent{
+				Action: "allow", Verb: info.Verb, Summary: summary, Facets: facets,
+			})
+		}
+		return "", ""
+	}
+	rule := cr.Name
+
+	// Approve chain. ConnHandle.Approve dispatches through the
+	// host's HITL machinery (same one HTTPS uses) — the postgres
+	// runtime pauses on the synchronous return, just like the HTTP
+	// path's g.hitl.Wait. nil Approve means HITL isn't wired for
+	// this conn family; we default-deny so a misconfigured host
+	// can't accidentally let approve-gated queries through.
+	if len(cr.Outcome.Approve) > 0 {
+		if ch.Approve == nil {
+			emit(ch, runtime.ConnEvent{
+				Action: "deny", Reason: "HITL not configured",
+				Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
+			})
+			return "deny", "approval required but HITL is not configured"
+		}
+		v := ch.Approve(runtime.ApproveCallRequest{
+			Stages: cr.Outcome.Approve, Verb: info.Verb,
+			Summary: summary, Rule: cr,
+		})
+		if v.Decision != "allow" {
+			reason := v.Reason
+			if reason == "" {
+				reason = "denied by approver"
+			}
+			emit(ch, runtime.ConnEvent{
+				Action: "denied", Reason: reason,
+				Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
+				Approver: v.ApproverName, ApproverType: v.ApproverType, ApproverBy: v.By,
+			})
+			return "deny", reason
+		}
+		if !shadow {
+			emit(ch, runtime.ConnEvent{
+				Action: "approved", Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
+				Approver: v.ApproverName, ApproverType: v.ApproverType, ApproverBy: v.By,
+			})
+		}
+		return "", ""
+	}
+
+	if cr.Outcome.Verdict == "deny" {
+		reason := cr.Outcome.Reason
+		if reason == "" {
+			reason = "denied by policy"
+		}
+		emit(ch, runtime.ConnEvent{
+			Action: "deny", Reason: reason,
+			Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
+		})
+		return "deny", reason
+	}
+	if !shadow {
+		emit(ch, runtime.ConnEvent{
+			Action: "allow", Verb: info.Verb, Summary: summary, Facets: facets, Rule: rule,
+		})
+	}
+	return "", ""
+}
+
+func emit(ch *runtime.ConnHandle, ev runtime.ConnEvent) {
+	if ch.Emit != nil {
+		ch.Emit(ev)
+	}
+}
+
+func pgWriteDeny(conn net.Conn, reason string) {
+	// E (ErrorResponse): S (severity), C (code), M (message), terminator.
+	body := []byte("SERROR\x00C42501\x00M" + reason + "\x00\x00")
+	msg := append([]byte{'E'}, encUint32(uint32(len(body)+4))...)
+	msg = append(msg, body...)
+	// Z (ReadyForQuery) — 5 bytes total: 'Z' + length(5) + 'I'.
+	ready := []byte{'Z', 0, 0, 0, 5, 'I'}
+	_, _ = conn.Write(append(msg, ready...))
+}
+
+// pgWriteError sends an ErrorResponse during the pre-auth phase
+// (before AuthenticationOk). No ReadyForQuery follows — postgres
+// closes the connection on auth failure.
+func pgWriteError(conn net.Conn, reason string) {
+	body := []byte("SFATAL\x00C28000\x00M" + reason + "\x00\x00")
+	msg := append([]byte{'E'}, encUint32(uint32(len(body)+4))...)
+	msg = append(msg, body...)
+	_, _ = conn.Write(msg)
+}
+
+func pgSummary(info pgInfo) string {
+	parts := []string{strings.ToUpper(info.Verb)}
+	if len(info.Tables) > 0 {
+		parts = append(parts, "tables=["+strings.Join(info.Tables, ",")+"]")
+	}
+	if info.Statement != "" {
+		s := info.Statement
+		if len(s) > 80 {
+			s = s[:80] + "..."
+		}
+		parts = append(parts, s)
+	}
+	return strings.Join(parts, " ")
+}
+
+func pgUpstreamAddr(ep *config.CompiledEndpoint) string {
+	for _, h := range ep.Hosts {
+		if h != "" {
+			return h
+		}
+	}
+	return ""
+}
+
+// ── Wire-protocol framing ─────────────────────────────────────────────
+
+type pgMessage struct {
+	typ     byte
+	payload []byte
+}
+
+func readPgMessage(buf []byte) (pgMessage, []byte, bool) {
+	if len(buf) < 5 {
+		return pgMessage{}, buf, false
+	}
+	length := binary.BigEndian.Uint32(buf[1:5])
+	if length < 4 || int(length)+1 > len(buf) {
+		return pgMessage{}, buf, false
+	}
+	msg := pgMessage{typ: buf[0], payload: buf[5 : 1+length]}
+	return msg, buf[1+length:], true
+}
+
+func serializePgMessage(m pgMessage) []byte {
+	out := make([]byte, 0, 5+len(m.payload))
+	out = append(out, m.typ)
+	out = append(out, encUint32(uint32(4+len(m.payload)))...)
+	out = append(out, m.payload...)
+	return out
+}
+
+func encUint32(n uint32) []byte {
+	b := make([]byte, 4)
+	binary.BigEndian.PutUint32(b, n)
+	return b
+}
+
+func pgExtractSQL(typ byte, payload []byte) string {
+	switch typ {
+	case 'Q':
+		return cstring(payload)
+	case 'P':
+		// P: stmt-name \0  query \0  paramcount(2) ...
+		i := indexByte(payload, 0)
+		if i < 0 || i+1 >= len(payload) {
+			return ""
+		}
+		return cstring(payload[i+1:])
+	}
+	return ""
+}
+
+func cstring(b []byte) string {
+	i := indexByte(b, 0)
+	if i < 0 {
+		return string(b)
+	}
+	return string(b[:i])
+}
+
+func indexByte(b []byte, c byte) int {
+	for i, x := range b {
+		if x == c {
+			return i
+		}
+	}
+	return -1
+}
+
+// ── SQL extractor input for the matcher ───────────────────────────────
+//
+// Tokenizer / extractor / fallback all live in postgres_sql.go. This
+// file owns the wire-protocol gateway types and the matcher
+// dispatch — see parseSQL / analyseAll over there for the SQL
+// inspection surface.
+
+type pgInfo struct {
+	Verb      string
+	Tables    []string
+	Functions []string
+	Statement string
+}
+
+// analysedStmt is one top-level statement's matcher input. Inner
+// surfaces statements the matcher should walk in addition to Outer:
+// CTE-hidden DML (audit §1.2) and DO body inner statements (§6.5).
+//
+// Unparseable mirrors match.Request.Unparseable for this piece — set
+// when pgplex's grammar refuses the bytes outright. The wire-protocol
+// gateway propagates the flag onto each per-statement match.Request,
+// so the dispatcher's fail-closed-on-Unparseable gate auto-denies any
+// rule whose CEL reads verb / tables / functions on a piece the
+// parser couldn't analyse. Statement text is preserved either way,
+// so `sql.statement.contains(...)` rules still evaluate honestly.
+type analysedStmt struct {
+	Outer       pgInfo
+	Inner       []pgInfo
+	Unparseable bool
+}
+
+// Compile-time interface check — keeps PostgresEndpointRuntime in
+// sync with the contract.
+var _ runtime.ConnEndpointRuntime = PostgresEndpointRuntime{}
+
+// ── Upstream auth: SCRAM / cleartext / trust ──────────────────────────
+
+const sslRequestCodeUpstream uint32 = 80877103
+
+// pgUpgradeSSL probes the upstream for TLS support via the standard
+// SSLRequest pre-startup probe, then wraps the connection in TLS
+// when the server agrees ('S'). Returns the upgraded conn, or nil
+// when the server refused and sslmode permits plaintext.
+//
+// sslmode semantics (libpq-compatible):
+//
+//   - prefer      → try TLS, fall back to plain on 'N'
+//   - require     → try TLS, error on 'N'
+//   - verify-full → require + validate cert against pgEp.Host
+func pgUpgradeSSL(upstream net.Conn, pgEp *PostgresEndpoint, sslmode string) (net.Conn, error) {
+	// Send SSLRequest: [int32 length=8][int32 code=80877103].
+	probe := make([]byte, 8)
+	binary.BigEndian.PutUint32(probe[:4], 8)
+	binary.BigEndian.PutUint32(probe[4:8], sslRequestCodeUpstream)
+	if _, err := upstream.Write(probe); err != nil {
+		return nil, fmt.Errorf("write SSLRequest: %w", err)
+	}
+	reply := make([]byte, 1)
+	if _, err := io.ReadFull(upstream, reply); err != nil {
+		return nil, fmt.Errorf("read SSLRequest reply: %w", err)
+	}
+	switch reply[0] {
+	case 'S':
+		host := ""
+		if pgEp != nil {
+			host = pgEp.Host
+			if h, _, err := net.SplitHostPort(host); err == nil {
+				host = h
+			}
+		}
+		cfg := &tls.Config{
+			ServerName:         host,
+			InsecureSkipVerify: sslmode != "verify-full",
+		}
+		secured := tls.Client(upstream, cfg)
+		if err := secured.Handshake(); err != nil {
+			return nil, fmt.Errorf("tls handshake: %w", err)
+		}
+		return secured, nil
+	case 'N':
+		if sslmode == "require" || sslmode == "verify-full" {
+			return nil, fmt.Errorf("upstream refused TLS but sslmode=%q requires it", sslmode)
+		}
+		return upstream, nil // continue plaintext
+	default:
+		return nil, fmt.Errorf("unexpected SSLRequest reply byte %q", reply[0])
+	}
+}
+
+const (
+	pgAuthOK            uint32 = 0
+	pgAuthCleartextPass uint32 = 3
+	pgAuthMD5Pass       uint32 = 5
+	pgAuthSASL          uint32 = 10
+	pgAuthSASLContinue  uint32 = 11
+	pgAuthSASLFinal     uint32 = 12
+)
+
+// pgSendStartup writes a v3 StartupMessage(user, database) to upstream.
+// Other params (application_name, client_encoding) are intentionally
+// omitted — the agent renegotiates them via Set after auth completes.
+func pgSendStartup(w io.Writer, user, database string) error {
+	var params []byte
+	addParam := func(k, v string) {
+		params = append(params, []byte(k)...)
+		params = append(params, 0)
+		params = append(params, []byte(v)...)
+		params = append(params, 0)
+	}
+	addParam("user", user)
+	if database != "" && database != user {
+		addParam("database", database)
+	}
+	params = append(params, 0) // terminator
+
+	body := make([]byte, 4)
+	binary.BigEndian.PutUint32(body, 196608) // protocol version 3.0
+	body = append(body, params...)
+
+	out := make([]byte, 4)
+	binary.BigEndian.PutUint32(out, uint32(len(body)+4))
+	out = append(out, body...)
+	_, err := w.Write(out)
+	return err
+}
+
+// pgReadAuthFrame reads one type-prefixed frame from upstream.
+// Returns the type byte, length-prefixed payload, and any error.
+func pgReadAuthFrame(r io.Reader) (typ byte, payload []byte, err error) {
+	hdr := make([]byte, 5)
+	if _, err = io.ReadFull(r, hdr); err != nil {
+		return 0, nil, err
+	}
+	typ = hdr[0]
+	length := binary.BigEndian.Uint32(hdr[1:5])
+	if length < 4 || length > 1<<20 {
+		return 0, nil, fmt.Errorf("pg: bogus auth frame length %d", length)
+	}
+	payload = make([]byte, length-4)
+	if _, err = io.ReadFull(r, payload); err != nil {
+		return 0, nil, err
+	}
+	return typ, payload, nil
+}
+
+// pgWriteFrame serializes one tagged frame to w.
+func pgWriteFrame(w io.Writer, typ byte, payload []byte) error {
+	hdr := make([]byte, 5)
+	hdr[0] = typ
+	binary.BigEndian.PutUint32(hdr[1:5], uint32(len(payload)+4))
+	if _, err := w.Write(hdr); err != nil {
+		return err
+	}
+	if len(payload) > 0 {
+		_, err := w.Write(payload)
+		return err
+	}
+	return nil
+}
+
+// pgPerformAuth drives the upstream auth handshake using (user, password).
+// Returns the buffered post-auth bytes (AuthenticationOk through and
+// including ReadyForQuery) the relay loop must replay to the agent.
+//
+// Walks Authentication* frames; halts on the first non-Authentication
+// frame and returns it concatenated to anything else read.
+func pgPerformAuth(upstream net.Conn, user, password string) ([]byte, error) {
+	var postAuth []byte
+	scram := newScramClient(user, password)
+	for {
+		typ, payload, err := pgReadAuthFrame(upstream)
+		if err != nil {
+			return nil, fmt.Errorf("read auth frame: %w", err)
+		}
+		if typ != 'R' {
+			// ParameterStatus / BackendKeyData / NoticeResponse / etc.
+			// arrive after AuthenticationOk; collect them so the relay
+			// can replay.
+			postAuth = append(postAuth, frameBytes(typ, payload)...)
+			if typ == 'Z' /* ReadyForQuery */ {
+				return postAuth, nil
+			}
+			if typ == 'E' /* ErrorResponse */ {
+				return postAuth, fmt.Errorf("upstream error: %s", parseErrorFields(payload))
+			}
+			continue
+		}
+		if len(payload) < 4 {
+			return nil, fmt.Errorf("pg: short auth payload")
+		}
+		code := binary.BigEndian.Uint32(payload[:4])
+		switch code {
+		case pgAuthOK:
+			postAuth = append(postAuth, frameBytes(typ, payload)...)
+			// Continue reading until ReadyForQuery — server still
+			// sends ParameterStatus / BackendKeyData first.
+		case pgAuthCleartextPass:
+			out := append([]byte(password), 0)
+			if err := pgWriteFrame(upstream, 'p', out); err != nil {
+				return nil, err
+			}
+		case pgAuthMD5Pass:
+			return nil, fmt.Errorf("pg: upstream uses MD5 auth, only SCRAM-SHA-256 + cleartext + trust supported")
+		case pgAuthSASL:
+			// Mechanism list is null-terminated strings followed by
+			// a zero terminator.
+			mechs := splitCStrings(payload[4:])
+			ok := false
+			for _, m := range mechs {
+				if m == "SCRAM-SHA-256" {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				return nil, fmt.Errorf("pg: upstream offered SASL mechanisms %v, want SCRAM-SHA-256", mechs)
+			}
+			out := scram.initialResponse()
+			if err := pgWriteFrame(upstream, 'p', out); err != nil {
+				return nil, err
+			}
+		case pgAuthSASLContinue:
+			out, err := scram.continueResponse(payload[4:])
+			if err != nil {
+				return nil, fmt.Errorf("scram continue: %w", err)
+			}
+			if err := pgWriteFrame(upstream, 'p', out); err != nil {
+				return nil, err
+			}
+		case pgAuthSASLFinal:
+			if err := scram.finalize(payload[4:]); err != nil {
+				return nil, fmt.Errorf("scram final: %w", err)
+			}
+		default:
+			return nil, fmt.Errorf("pg: unsupported auth code %d", code)
+		}
+	}
+}
+
+func frameBytes(typ byte, payload []byte) []byte {
+	out := make([]byte, 5+len(payload))
+	out[0] = typ
+	binary.BigEndian.PutUint32(out[1:5], uint32(len(payload)+4))
+	copy(out[5:], payload)
+	return out
+}
+
+func splitCStrings(b []byte) []string {
+	var out []string
+	for {
+		i := 0
+		for i < len(b) && b[i] != 0 {
+			i++
+		}
+		if i == 0 {
+			break
+		}
+		out = append(out, string(b[:i]))
+		if i+1 > len(b) {
+			break
+		}
+		b = b[i+1:]
+	}
+	return out
+}
+
+func parseErrorFields(b []byte) string {
+	// Each field: type byte + null-terminated string. Stop on type 0.
+	var sb strings.Builder
+	for len(b) > 0 {
+		if b[0] == 0 {
+			break
+		}
+		t := b[0]
+		b = b[1:]
+		end := 0
+		for end < len(b) && b[end] != 0 {
+			end++
+		}
+		val := string(b[:end])
+		if end < len(b) {
+			b = b[end+1:]
+		} else {
+			b = nil
+		}
+		if t == 'M' || t == 'C' {
+			if sb.Len() > 0 {
+				sb.WriteString(" ")
+			}
+			sb.WriteString(val)
+		}
+	}
+	return sb.String()
+}
+
+// pgWriteAuthOK sends a synthetic AuthenticationOk to the agent so it
+// proceeds as if it just completed auth itself. Followed by the
+// upstream's ParameterStatus / BackendKeyData / ReadyForQuery bytes
+// (already collected during pgPerformAuth).
+func pgWriteAuthOK(w io.Writer, postAuth []byte) error {
+	payload := make([]byte, 4)
+	binary.BigEndian.PutUint32(payload, pgAuthOK)
+	if err := pgWriteFrame(w, 'R', payload); err != nil {
+		return err
+	}
+	// Skip the leading AuthenticationOk in postAuth — we just sent
+	// our own. The first frame in postAuth IS the upstream's
+	// AuthenticationOk; strip it.
+	rest := postAuth
+	if len(rest) >= 5 && rest[0] == 'R' {
+		l := binary.BigEndian.Uint32(rest[1:5])
+		if int(1+l) <= len(rest) {
+			rest = rest[1+l:]
+		}
+	}
+	if len(rest) > 0 {
+		_, err := w.Write(rest)
+		return err
+	}
+	return nil
+}
+
+// ── SCRAM-SHA-256 client — RFC 5802 + 7677 ────────────────────────────
+//
+// Trimmed implementation: gs2-header is "n,," (no channel binding,
+// no authzid). Nonce is 24 random bytes base64'd. We don't validate
+// the channel-binding round trip beyond the standard.
+
+type scramClient struct {
+	user            string
+	password        string
+	clientNonce     string
+	clientFirstBare string
+	serverFirst     string
+}
+
+func newScramClient(user, password string) *scramClient {
+	nb := make([]byte, 24)
+	_, _ = rand.Read(nb)
+	return &scramClient{
+		user:        user,
+		password:    password,
+		clientNonce: base64.StdEncoding.EncodeToString(nb),
+	}
+}
+
+func (s *scramClient) initialResponse() []byte {
+	s.clientFirstBare = "n=" + s.user + ",r=" + s.clientNonce
+	clientFirst := "n,," + s.clientFirstBare
+	// SASLInitialResponse payload: mechanism\0 + int32(len) + initial-resp
+	mech := []byte("SCRAM-SHA-256\x00")
+	resp := []byte(clientFirst)
+	out := make([]byte, 0, len(mech)+4+len(resp))
+	out = append(out, mech...)
+	lenBuf := make([]byte, 4)
+	binary.BigEndian.PutUint32(lenBuf, uint32(len(resp)))
+	out = append(out, lenBuf...)
+	out = append(out, resp...)
+	return out
+}
+
+func (s *scramClient) continueResponse(serverFirst []byte) ([]byte, error) {
+	s.serverFirst = string(serverFirst)
+	parts := parseSCRAMAttrs(s.serverFirst)
+	r := parts["r"]
+	saltB64 := parts["s"]
+	iterStr := parts["i"]
+	if r == "" || saltB64 == "" || iterStr == "" {
+		return nil, fmt.Errorf("malformed server-first: %q", s.serverFirst)
+	}
+	if !strings.HasPrefix(r, s.clientNonce) {
+		return nil, fmt.Errorf("server nonce doesn't extend client nonce")
+	}
+	salt, err := base64.StdEncoding.DecodeString(saltB64)
+	if err != nil {
+		return nil, fmt.Errorf("salt decode: %w", err)
+	}
+	iter, err := strconv.Atoi(iterStr)
+	if err != nil || iter <= 0 {
+		return nil, fmt.Errorf("bad iteration count: %q", iterStr)
+	}
+	// gs2-header base64'd as "biws" = "n,,"
+	clientFinalNoProof := "c=biws,r=" + r
+	saltedPassword := pbkdf2.Key([]byte(s.password), salt, iter, 32, sha256.New)
+	clientKey := hmacSHA256(saltedPassword, []byte("Client Key"))
+	storedKey := sha256Sum(clientKey)
+	authMessage := s.clientFirstBare + "," + s.serverFirst + "," + clientFinalNoProof
+	clientSignature := hmacSHA256(storedKey, []byte(authMessage))
+	clientProof := xorBytes(clientKey, clientSignature)
+	clientFinal := clientFinalNoProof + ",p=" + base64.StdEncoding.EncodeToString(clientProof)
+	return []byte(clientFinal), nil
+}
+
+func (s *scramClient) finalize(serverFinal []byte) error {
+	parts := parseSCRAMAttrs(string(serverFinal))
+	if e := parts["e"]; e != "" {
+		return fmt.Errorf("server reported scram error: %s", e)
+	}
+	v := parts["v"]
+	if v == "" {
+		return fmt.Errorf("server-final missing verifier")
+	}
+	// Optional: verify ServerSignature. Skip — upstream gave us
+	// AuthenticationOk after this, which we trust.
+	_ = v
+	return nil
+}
+
+func parseSCRAMAttrs(s string) map[string]string {
+	out := map[string]string{}
+	for _, kv := range strings.Split(s, ",") {
+		eq := strings.IndexByte(kv, '=')
+		if eq <= 0 {
+			continue
+		}
+		out[kv[:eq]] = kv[eq+1:]
+	}
+	return out
+}
+
+func hmacSHA256(key, msg []byte) []byte {
+	h := hmac.New(sha256.New, key)
+	h.Write(msg)
+	return h.Sum(nil)
+}
+
+func sha256Sum(b []byte) []byte {
+	h := sha256.Sum256(b)
+	return h[:]
+}
+
+func xorBytes(a, b []byte) []byte {
+	out := make([]byte, len(a))
+	for i := range a {
+		out[i] = a[i] ^ b[i]
+	}
+	return out
+}

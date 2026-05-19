@@ -55,17 +55,17 @@ if [ "${CLAWPATROL_FROM_SOURCE:-0}" = "1" ]; then
   else
     fail "private repo — install gh and run \`gh auth login\`, or unset CLAWPATROL_FROM_SOURCE to download a binary"
   fi
-  if command -v npm >/dev/null 2>&1 && [ -d "$SRC/www" ]; then
+  if command -v deno >/dev/null 2>&1 && [ -d "$SRC/dashboard" ]; then
     say "building dashboard"
-    ( cd "$SRC/www" && npm ci --no-audit --no-fund >/dev/null 2>&1 && npm run build >/dev/null 2>&1 ) \
+    ( cd "$SRC/dashboard" && deno install >/dev/null 2>&1 && deno task build >/dev/null 2>&1 ) \
       || say "dashboard build failed (skipping)"
   fi
-  mkdir -p "$SRC/www/dist"
-  if [ -z "$(ls -A "$SRC/www/dist" 2>/dev/null)" ]; then
-    printf '<!doctype html><html><body><pre>dashboard not built</pre></body></html>' > "$SRC/www/dist/index.html"
+  mkdir -p "$SRC/dashboard/dist"
+  if [ -z "$(ls -A "$SRC/dashboard/dist" 2>/dev/null)" ]; then
+    printf '<!doctype html><html><body><pre>dashboard not built</pre></body></html>' > "$SRC/dashboard/dist/index.html"
   fi
   say "building clawpatrol"
-  ( cd "$SRC" && go build -ldflags "-s -w" -o clawpatrol . ) || fail "go build failed"
+  ( cd "$SRC" && go build -ldflags "-s -w" -o clawpatrol ./cmd/clawpatrol ) || fail "go build failed"
   mv "$SRC/clawpatrol" "$PREFIX/clawpatrol"
   chmod +x "$PREFIX/clawpatrol"
   say "installed: $PREFIX/clawpatrol"

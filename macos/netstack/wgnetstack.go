@@ -30,7 +30,9 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -94,11 +96,6 @@ func (n *epNotify) WriteNotify() {
 // netstackQueueSize matches the gateway side. 1024 was tight under
 // whole-machine bursts; 16384 absorbs realistic spikes.
 const netstackQueueSize = 16384
-
-// wgTunMTU matches wireguard.go's constant. 1220 fits Tailscale's
-// 1280-byte underlay without IP fragmentation. v6 unavailable inside
-// the tunnel; see the comment over there.
-const wgTunMTU = 1220
 
 func newNetTUN(addr netip.Addr, addr6 netip.Addr, mtu int) (*netTun, error) {
 	t := &netTun{
@@ -317,7 +314,7 @@ func wg_netstack_init(confC *C.char, errBuf *C.char, errLen C.int) C.int {
 		setErr(errBuf, errLen, "parse client IP: no IPv4 in Address")
 		return -1
 	}
-	t, err := newNetTUN(clientIP, clientIP6, wgTunMTU)
+	t, err := newNetTUN(clientIP, clientIP6, 1420)
 	if err != nil {
 		setErr(errBuf, errLen, "newNetTUN: "+err.Error())
 		return -1
@@ -810,7 +807,7 @@ var (
 // success, -1 on failure.
 //
 //export ts_netstack_init
-func ts_netstack_init(authKeyC, controlURLС, gwHostC, gwPortC, errBuf *C.char, errLen C.int) C.int {
+func ts_netstack_init(authKeyC, controlURLС, gwHostC, gwPortC, tokenC, hostnameC, errBuf *C.char, errLen C.int) C.int {
 	tsMu.Lock()
 	defer tsMu.Unlock()
 	if tsStarted {
@@ -821,6 +818,8 @@ func ts_netstack_init(authKeyC, controlURLС, gwHostC, gwPortC, errBuf *C.char, 
 	controlURL := C.GoString(controlURLС)
 	gwHost := C.GoString(gwHostC)
 	gwPort := C.GoString(gwPortC)
+	token := C.GoString(tokenC)
+	hostname := C.GoString(hostnameC)
 
 	stateDir, err := os.MkdirTemp("", "clawpatrol-tsnet-ne-*")
 	if err != nil {
@@ -862,7 +861,42 @@ func ts_netstack_init(authKeyC, controlURLС, gwHostC, gwPortC, errBuf *C.char, 
 	tsGwAddr = net.JoinHostPort(gwHost, gwPort)
 	tsNodeIP = ip4
 	tsStarted = true
+
+	// Register this NE's tsnet IP with the gateway so profile dispatch
+	// + dashboard attribution roll up to the parent device. Done from
+	// inside the extension because the parent process is on the host
+	// network and can't dial gateway tailnet IPs directly; tsnet
+	// (running here) IS on the tailnet.
+	if token != "" && ip4 != "" {
+		go registerEphemeralOverTsnet(s, gwHost, token, ip4, hostname)
+	}
 	return 0
+}
+
+// registerEphemeralOverTsnet POSTs to the gateway's tailnet-only
+// /api/peer/ephemeral/tsnet/register endpoint using tsnet.Server.Dial
+// so the call reaches a 100.x tailnet IP that the parent process
+// (host network) cannot. Best-effort: on failure the run still works
+// but lands in the gateway's default profile.
+func registerEphemeralOverTsnet(s *tsnet.Server, gwHost, token, tsIP, hostname string) {
+	client := &http.Client{
+		Timeout:   15 * time.Second,
+		Transport: &http.Transport{DialContext: s.Dial},
+	}
+	u := "http://" + gwHost + ":8080/api/peer/ephemeral/tsnet/register?ip=" + tsIP
+	if hostname != "" {
+		u += "&hostname=" + url.QueryEscape(hostname)
+	}
+	req, err := http.NewRequest(http.MethodPost, u, nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	_ = resp.Body.Close()
 }
 
 // ts_netstack_get_ip writes the tsnet node's 100.x.x.x address into

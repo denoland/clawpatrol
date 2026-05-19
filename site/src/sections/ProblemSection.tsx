@@ -32,12 +32,12 @@ export function ProblemSection() {
         {PROBLEMS.map(({ title, body }, i) => (
           <div key={title} class="grid grid-cols-[auto_1fr] gap-3 sm:gap-6">
             <div class="flex items-center justify-center min-w-10 sm:min-w-16">
-              <span class="text-5xl sm:text-7xl font-bold font-display select-none text-rust">
+              <span class="text-5xl sm:text-7xl font-display select-none text-rust">
                 {i + 1}
               </span>
             </div>
             <div class="py-1">
-              <h3 class="text-2xl sm:text-3xl font-display font-bold text-console-dark mb-3">
+              <h3 class="text-2xl sm:text-3xl font-display text-console-dark mb-3">
                 {title}
               </h3>
               <p class="text-base text-text-muted">{body}</p>

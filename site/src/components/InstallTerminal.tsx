@@ -1,4 +1,5 @@
 import { useState } from "preact/hooks";
+import { TerminalFrame } from "./TerminalFrame";
 
 export const INSTALL_CMD = "curl -fsSL https://clawpatrol.dev/install.sh | sh";
 
@@ -8,7 +9,11 @@ type Variant = "compact" | "expanded";
 //   • compact — used inline (e.g. hero column).
 //   • expanded — bigger padding and type for standalone use as a
 //     section's primary install affordance.
-export function InstallTerminal({ variant = "compact" }: { variant?: Variant }) {
+export function InstallTerminal({
+  variant = "compact",
+}: {
+  variant?: Variant;
+}) {
   const [copied, setCopied] = useState(false);
 
   async function copy() {
@@ -24,17 +29,13 @@ export function InstallTerminal({ variant = "compact" }: { variant?: Variant }) 
 
   const expanded = variant === "expanded";
   const surface = expanded ? "pl-10 pr-8 py-8" : "pl-6 pr-4 py-5";
-  const codeSize = expanded ? "text-base" : "text-[12px]";
+  const codeSize = expanded ? "text-base" : "text-sm";
 
   return (
-    <div
-      class={`squircle-lg bg-navy inline-flex items-center
-        gap-4 max-w-full shadow-sm ${surface}`}
-    >
+    <TerminalFrame class={`inline-flex items-center gap-4 ${surface}`}>
       <pre
         class={`font-mono ${codeSize} text-canvas flex-1 min-w-0
-          overflow-x-auto whitespace-nowrap leading-none
-          [scrollbar-width:none] [&::-webkit-scrollbar]:hidden`}
+          overflow-x-auto whitespace-nowrap leading-none`}
       >
         {INSTALL_CMD}
       </pre>
@@ -49,6 +50,6 @@ export function InstallTerminal({ variant = "compact" }: { variant?: Variant }) 
       >
         {copied ? "copied" : "copy"}
       </button>
-    </div>
+    </TerminalFrame>
   );
 }

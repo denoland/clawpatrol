@@ -41,12 +41,16 @@ case "start":
     guard CommandLine.arguments.count >= 3 else { usage() }
     startProxy(confPath: CommandLine.arguments[2])
 case "start-tsnet":
-    // args: authKey controlURL gwHost gwPort
+    // args: authKey controlURL gwHost gwPort [token hostname]
     guard CommandLine.arguments.count >= 6 else { usage() }
+    let token = CommandLine.arguments.count >= 7 ? CommandLine.arguments[6] : ""
+    let hostname = CommandLine.arguments.count >= 8 ? CommandLine.arguments[7] : ""
     startTsnetProxy(authKey: CommandLine.arguments[2],
                     controlURL: CommandLine.arguments[3],
                     gwHost: CommandLine.arguments[4],
-                    gwPort: CommandLine.arguments[5])
+                    gwPort: CommandLine.arguments[5],
+                    token: token,
+                    hostname: hostname)
 case "stop": stopProxy()
 case "wipe": wipeAllConfigs()
 case "run": runWrapped()    // synchronous; calls exit() — never reaches runloop
@@ -286,7 +290,7 @@ func startProxy(confPath: String) {
     }
 }
 
-func startTsnetProxy(authKey: String, controlURL: String, gwHost: String, gwPort: String) {
+func startTsnetProxy(authKey: String, controlURL: String, gwHost: String, gwPort: String, token: String, hostname: String) {
     NETransparentProxyManager.loadAllFromPreferences { managers, err in
         if let err = err { fail("loadAll: \(err)") }
         let existing = managers?.first(where: { $0.localizedDescription == proxyProfileName })
@@ -300,6 +304,8 @@ func startTsnetProxy(authKey: String, controlURL: String, gwHost: String, gwPort
             "tsnet-control-url": controlURL,
             "tsnet-gateway-host": gwHost,
             "tsnet-gateway-port": gwPort,
+            "tsnet-api-token": token,
+            "tsnet-hostname": hostname,
         ]
         manager.protocolConfiguration = proto
         manager.localizedDescription = proxyProfileName

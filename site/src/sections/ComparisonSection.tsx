@@ -121,9 +121,9 @@ export function ComparisonSection() {
 function CategoryCard({ category: c, colorClass }: { category: Category; colorClass: string }) {
   return (
     <div class="bg-transparent relative squircle-sm p-6 flex flex-col">
-      <div class="absolute w-full h-full border-navy border-2 squircle-sm inset-0 z-10" />
+      <div class="absolute w-full h-full border-navy border-1.5 squircle-sm inset-0 z-10" />
       <div class="relative z-10 flex-1">
-        <h4 class="text-xl font-display font-bold text-text mb-4">{c.title}</h4>
+        <h4 class="text-xl font-display text-text mb-4">{c.title}</h4>
         <div class="space-y-3">
           {c.groups.map((g, i) => (
             <div key={g.label ?? i}>
@@ -163,10 +163,10 @@ function CategoryCard({ category: c, colorClass }: { category: Category; colorCl
 
 function SynthesisCard() {
   return (
-    <div class="p-6 sm:p-8 squircle-md bg-rust-200 border-2 border-navy">
+    <div class="p-6 sm:p-8 squircle-md bg-rust-200 border-1.5 border-navy">
       <div class="flex items-center gap-3 mb-3">
         <img src="/claw-patrol-icon.svg" alt="" class="w-8 h-8" aria-hidden="true" />
-        <h4 class="font-display font-bold text-2xl sm:text-3xl text-text">Claw Patrol</h4>
+        <h4 class="font-display text-2xl sm:text-3xl text-text">Claw Patrol</h4>
       </div>
       <p class="text-text text-[15px] sm:text-base max-w-3xl leading-relaxed">
         Watches the tool call at the protocol layer (Postgres, Kubernetes, HTTPS, with a plugin API
