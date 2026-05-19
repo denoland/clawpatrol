@@ -55,9 +55,9 @@ if [ "${CLAWPATROL_FROM_SOURCE:-0}" = "1" ]; then
   else
     fail "private repo — install gh and run \`gh auth login\`, or unset CLAWPATROL_FROM_SOURCE to download a binary"
   fi
-  if command -v npm >/dev/null 2>&1 && [ -d "$SRC/dashboard" ]; then
+  if command -v deno >/dev/null 2>&1 && [ -d "$SRC/dashboard" ]; then
     say "building dashboard"
-    ( cd "$SRC/dashboard" && npm ci --no-audit --no-fund >/dev/null 2>&1 && npm run build >/dev/null 2>&1 ) \
+    ( cd "$SRC/dashboard" && deno install >/dev/null 2>&1 && deno task build >/dev/null 2>&1 ) \
       || say "dashboard build failed (skipping)"
   fi
   mkdir -p "$SRC/dashboard/dist"

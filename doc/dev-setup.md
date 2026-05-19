@@ -7,7 +7,9 @@ build time.
 ## Prerequisites
 
 - Go (see `go.mod` for the required version)
-- npm (only required if you want to rebuild the dashboard SPA in `dashboard/`)
+- [Deno](https://deno.com) v2+ (only required if you want to rebuild
+  the dashboard SPA in `dashboard/`). Deno reads `dashboard/package.json`
+  directly; npm isn't needed.
 - Docker with Compose (optional, for end-to-end testing against an
   in-container agent)
 
@@ -46,9 +48,9 @@ make clean      # drop ./clawpatrol, dashboard/dist, dashboard/node_modules
 make install    # PREFIX=~/.local/bin (override with PREFIX=...)
 ```
 
-Under the hood, the dashboard build runs `npm ci && npm run build`
-in `dashboard/`. Skip it (`go build ./cmd/clawpatrol` directly) and
-the Go embed ships a placeholder.
+Under the hood, the dashboard build runs `deno install && deno task
+build` in `dashboard/`. Skip it (`go build ./cmd/clawpatrol` directly)
+and the Go embed ships a placeholder.
 
 ## Quick start
 

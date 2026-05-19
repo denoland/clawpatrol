@@ -4,21 +4,21 @@ build: dashboard
 	go build -o clawpatrol ./cmd/clawpatrol
 
 dashboard:
-	cd dashboard && npm ci && npm run build
+	cd dashboard && deno install && deno task build
 
 test:
 	go test ./...
 
 fmt:
 	gofmt -w .
-	cd dashboard && npm run format
+	cd dashboard && deno task format
 
 fmt-check:
 	test -z "$$(gofmt -l .)"
-	cd dashboard && npm run format:check
+	cd dashboard && deno task format:check
 
 lint:
-	cd dashboard && npm run lint
+	cd dashboard && deno task lint
 
 clean:
 	rm -f clawpatrol

@@ -37,14 +37,15 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - uses: actions/setup-node@v4
-        with: { node-version: "20" }
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
 
       - name: build dashboard
         run: |
           cd dashboard
-          npm ci --no-audit --no-fund
-          npm run build
+          deno install
+          deno task build
 
       - name: build clawpatrol
         env:

@@ -10,9 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: denoland/setup-deno@v2
         with:
-          node-version: 22
+          deno-version: v2.x
       - run: make dashboard
 
   test:
@@ -32,12 +32,12 @@ jobs:
           restore-keys: |
             go-${{ runner.os }}-${{ hashFiles('go.mod', 'go.sum') }}-
             go-${{ runner.os }}-
-      - uses: actions/setup-node@v4
+      - uses: denoland/setup-deno@v2
         with:
-          node-version: 22
+          deno-version: v2.x
       - run: make dashboard
       - run: make fmt-check
-      - run: cd dashboard && npm run lint:github
+      - run: cd dashboard && deno task lint:github
       - run: make test
       - name: validate landing-page HCL examples
         run: |

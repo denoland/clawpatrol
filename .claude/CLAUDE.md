@@ -29,9 +29,8 @@ checks the lint job runs:
 
 - Go: `gofmt -l .` from the repo root. Empty output means clean;
   any filename listed is a fail. Fix with `gofmt -w .`.
-- Dashboard (TS/JS/HTML/JSON in `cmd/clawpatrol/www/`):
-  `cd cmd/clawpatrol/www && npx oxfmt --check src index.html login.html package.json tsconfig.json vite.config.ts tailwind.config.js postcss.config.js`.
-  Fix by dropping `--check`.
+- Dashboard (TS/JS/HTML/JSON in `dashboard/`):
+  `cd dashboard && deno task format:check`. Fix with `deno task format`.
 
 Either fail will block the `test` workflow before the actual tests
 run. Cheap to check locally; expensive in CI round-trips.
