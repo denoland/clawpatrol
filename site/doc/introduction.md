@@ -77,16 +77,16 @@ Claw Patrol has two pieces:
   agents 24/7. Claw Patrol runs on each device, captures the
   agent's outbound flows, and tunnels them to the gateway.
 
-Three ways to put a device in the path, depending on how much you
-want to scope:
+A device joins the gateway first — `clawpatrol join` over
+WireGuard, or `clawpatrol login` if Tailscale is already your
+fabric. From there, two ways to scope what gets captured:
 
 - `clawpatrol run -- <cmd>` wraps a single command (and its
   subprocesses) in a network namespace that captures only its
-  traffic.
-- `clawpatrol join --whole-machine` brings up a tunnel for the
-  whole device; every outbound packet routes through the gateway.
-- `clawpatrol login` joins over Tailscale instead of WireGuard,
-  if that's already your fabric.
+  traffic; everything else on the device is untouched.
+- `clawpatrol join --whole-machine` skips the per-command wrap
+  and tunnels every outbound packet on the device through the
+  gateway.
 
 <svg viewBox="0 0 940 380" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="clawpatrol request flow: a device tunnels agent traffic to the gateway, the gateway matches a rule, may defer the verdict to an LLM proctor or a human approver (via Slack, the dashboard, email, or a webhook), and on allow injects the real credential before forwarding to the upstream">
   <defs>
