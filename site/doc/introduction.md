@@ -72,8 +72,9 @@ Claw Patrol has two pieces:
 - A **gateway** — a single Go binary running on a host you control.
   It holds the policy, the credentials, the audit log, and the
   dashboard. All state lives in one SQLite file; no cloud required.
-- One or more **devices** — your laptop, a CI runner, a teammate's
-  workstation — that capture the agent's outbound flows and tunnel
+- One or more **devices** — the machines where the agents run,
+  whether a developer workstation or a dedicated host running
+  agents 24/7 — that capture the agent's outbound flows and tunnel
   them to the gateway. The gateway decides per request what to
   allow, what to deny, what to gate behind a human or an LLM, and
   what credential to stamp on.
