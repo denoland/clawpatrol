@@ -579,6 +579,29 @@ func TestHITLOperationStoreMaintenancePurgesTerminalOperations(t *testing.T) {
 	}
 }
 
+func TestHITLOperationStoreSetsApproverMessageRef(t *testing.T) {
+	db := openHITLOperationTestDB(t)
+	store := NewHITLOperationStore(db)
+	ctx := context.Background()
+	op := createTestHITLOperation(t, store, HITLOperationCreate{ID: "hitl_op_message_ref"})
+
+	updated, err := store.SetApproverMessageRef(ctx, op.ID, `{"type":"slack","credential":"slack-approvals","channel":"C123","ts":"1778764174.925659"}`)
+	if err != nil {
+		t.Fatalf("SetApproverMessageRef: %v", err)
+	}
+	if updated.ApproverMessageRef == "" {
+		t.Fatalf("ApproverMessageRef was not persisted")
+	}
+
+	loaded, err := store.GetForPrincipal(ctx, op.ID, op.ProfileID, op.PrincipalID)
+	if err != nil {
+		t.Fatalf("GetForPrincipal: %v", err)
+	}
+	if loaded.ApproverMessageRef != updated.ApproverMessageRef {
+		t.Fatalf("loaded ApproverMessageRef = %q, want %q", loaded.ApproverMessageRef, updated.ApproverMessageRef)
+	}
+}
+
 func openHITLOperationTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := OpenDB(filepath.Join(t.TempDir(), "clawpatrol.db"))

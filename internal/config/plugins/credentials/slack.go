@@ -40,6 +40,7 @@ type SlackTokens struct{}
 
 var (
 	slackPostMessageURL     = "https://slack.com/api/chat.postMessage"
+	slackUpdateMessageURL   = "https://slack.com/api/chat.update"
 	slackHTTPClient         = &http.Client{Timeout: 5 * time.Second}
 	slackNotifyRetryBackoff = 500 * time.Millisecond
 )
@@ -236,8 +237,15 @@ func (s *SlackTokens) NotifyHITL(ctx context.Context, req runtime.ApproveRequest
 		body["thread_ts"] = target.ThreadTS
 	}
 	buf, _ := json.Marshal(body)
-	if err := slackPostHITLMessage(ctx, bot, buf); err != nil {
+	posted, err := slackPostHITLMessage(ctx, bot, buf)
+	if err != nil {
 		return err
+	}
+	if target.MessageUpdateSink != nil && req.AsyncOperationID != "" && posted.Channel != "" && posted.TS != "" {
+		ref := encodeSlackMessageRef(slackMessageRef{Credential: target.CredentialName, Channel: posted.Channel, TS: posted.TS, PendingID: target.PendingID, Interactive: target.Interactive})
+		if err := target.MessageUpdateSink(ctx, req.AsyncOperationID, ref); err != nil {
+			log.Printf("slack notify: record HITL message ref for %s: %v", req.AsyncOperationID, err)
+		}
 	}
 	return nil
 }
@@ -261,7 +269,12 @@ func slackHITLApprovalGuidance(target runtime.HITLTarget) string {
 	return runtime.HITLApprovalMessage(state, effect, target.UpstreamCalled)
 }
 
-func slackPostHITLMessage(ctx context.Context, bot string, buf []byte) error {
+type slackPostedMessage struct {
+	Channel string
+	TS      string
+}
+
+func slackPostHITLMessage(ctx context.Context, bot string, buf []byte) (slackPostedMessage, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -269,14 +282,15 @@ func slackPostHITLMessage(ctx context.Context, bot string, buf []byte) error {
 	for attempt := 1; attempt <= 2; attempt++ {
 		hreq, err := http.NewRequestWithContext(ctx, "POST", slackPostMessageURL, bytes.NewReader(buf))
 		if err != nil {
-			return err
+			return slackPostedMessage{}, err
 		}
 		hreq.Header.Set("Authorization", "Bearer "+bot)
 		hreq.Header.Set("Content-Type", "application/json; charset=utf-8")
 
+		var posted slackPostedMessage
 		resp, err := slackHTTPClient.Do(hreq)
 		if err == nil {
-			lastErr = slackDecodePostMessageResponse(resp)
+			posted, lastErr = slackDecodePostMessageResponse(resp)
 			if closeErr := resp.Body.Close(); lastErr == nil && closeErr != nil {
 				lastErr = closeErr
 			}
@@ -284,37 +298,39 @@ func slackPostHITLMessage(ctx context.Context, bot string, buf []byte) error {
 			lastErr = err
 		}
 		if lastErr == nil {
-			return nil
+			return posted, nil
 		}
 		if attempt == 2 || !slackShouldRetryPostMessage(resp, err) {
-			return lastErr
+			return slackPostedMessage{}, lastErr
 		}
 		log.Printf("slack notify: chat.postMessage failed on attempt %d, retrying once: %v", attempt, lastErr)
 		if err := slackWaitBeforeRetry(ctx, resp); err != nil {
-			return err
+			return slackPostedMessage{}, err
 		}
 	}
-	return lastErr
+	return slackPostedMessage{}, lastErr
 }
 
-func slackDecodePostMessageResponse(resp *http.Response) error {
+func slackDecodePostMessageResponse(resp *http.Response) (slackPostedMessage, error) {
 	if resp == nil {
-		return fmt.Errorf("slack chat.postMessage error: missing response")
+		return slackPostedMessage{}, fmt.Errorf("slack chat.postMessage error: missing response")
 	}
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	var result struct {
-		OK    bool   `json:"ok"`
-		Error string `json:"error"`
+		OK      bool   `json:"ok"`
+		Error   string `json:"error"`
+		Channel string `json:"channel"`
+		TS      string `json:"ts"`
 	}
 	_ = json.Unmarshal(respBody, &result)
 	if resp.StatusCode >= 400 || !result.OK {
 		log.Printf("slack notify: chat.postMessage failed: status=%d ok=%v error=%q", resp.StatusCode, result.OK, result.Error)
 		if result.Error != "" {
-			return fmt.Errorf("slack chat.postMessage error: %s", result.Error)
+			return slackPostedMessage{}, fmt.Errorf("slack chat.postMessage error: %s", result.Error)
 		}
-		return fmt.Errorf("slack chat.postMessage error: HTTP %d", resp.StatusCode)
+		return slackPostedMessage{}, fmt.Errorf("slack chat.postMessage error: HTTP %d", resp.StatusCode)
 	}
-	return nil
+	return slackPostedMessage{Channel: result.Channel, TS: result.TS}, nil
 }
 
 func slackShouldRetryPostMessage(resp *http.Response, err error) bool {
@@ -347,6 +363,144 @@ func slackWaitBeforeRetry(ctx context.Context, resp *http.Response) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+type slackMessageRef struct {
+	Type        string `json:"type"`
+	Credential  string `json:"credential"`
+	Channel     string `json:"channel"`
+	TS          string `json:"ts"`
+	PendingID   string `json:"pending_id,omitempty"`
+	Interactive bool   `json:"interactive,omitempty"`
+}
+
+func encodeSlackMessageRef(ref slackMessageRef) string {
+	ref.Type = "slack"
+	b, _ := json.Marshal(ref)
+	return string(b)
+}
+
+func decodeSlackMessageRef(raw string) (slackMessageRef, bool) {
+	var ref slackMessageRef
+	if err := json.Unmarshal([]byte(raw), &ref); err != nil || ref.Type != "slack" || ref.Credential == "" || ref.Channel == "" || ref.TS == "" {
+		return slackMessageRef{}, false
+	}
+	return ref, true
+}
+
+func (s *SlackTokens) UpdateHITLMessage(ctx context.Context, secrets runtime.SecretStore, update runtime.HITLMessageUpdate) error {
+	ref, ok := decodeSlackMessageRef(update.MessageRef)
+	if !ok {
+		return nil
+	}
+	if secrets == nil {
+		return fmt.Errorf("no secret store on request")
+	}
+	sec, err := secrets.Get(ref.Credential)
+	if err != nil {
+		return fmt.Errorf("fetch credential %s: %w", ref.Credential, err)
+	}
+	bot := sec.Extras["bot"]
+	if bot == "" && len(sec.Bytes) > 0 {
+		bot = string(sec.Bytes)
+	}
+	if bot == "" {
+		return fmt.Errorf("credential %s has no bot token", ref.Credential)
+	}
+	blocks := slackHITLUpdateBlocks(update, ref)
+	body := map[string]any{
+		"channel": ref.Channel,
+		"ts":      ref.TS,
+		"text":    "clawpatrol: HITL " + string(update.State),
+		"blocks":  blocks,
+	}
+	buf, _ := json.Marshal(body)
+	return slackPostJSON(ctx, slackUpdateMessageURL, bot, buf, "chat.update")
+}
+
+func slackHITLUpdateBlocks(update runtime.HITLMessageUpdate, ref slackMessageRef) []map[string]any {
+	path := update.Path
+	if path == "" {
+		path = "/"
+	}
+	detail := "*" + slackTrunc(update.Method+" "+update.Host, 200) + "*\n```" + slackTrunc(path, 800) + "```"
+	blocks := []map[string]any{
+		{"type": "header", "text": map[string]any{"type": "plain_text", "text": "Claw Patrol HITL"}},
+		{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": detail}},
+	}
+	guidance := runtime.HITLApprovalMessage(update.State, runtime.HITLApprovalEffectForOperationState(update.State), update.UpstreamCalled)
+	if strings.TrimSpace(guidance) != "" {
+		blocks = append(blocks, map[string]any{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": slackTrunc(guidance, 1000)}})
+	}
+	if update.State == runtime.HITLOperationStatePendingApproval && ref.Interactive && ref.PendingID != "" {
+		blocks = append(blocks, map[string]any{
+			"type": "actions",
+			"elements": []map[string]any{
+				{"type": "button", "text": map[string]any{"type": "plain_text", "text": "Approve"}, "action_id": "approve", "value": ref.PendingID, "style": "primary"},
+				{"type": "button", "text": map[string]any{"type": "plain_text", "text": "Deny"}, "action_id": "deny", "value": ref.PendingID, "style": "danger"},
+			},
+		})
+	}
+	status := slackOperationStatus(update)
+	blocks = append(blocks, map[string]any{"type": "context", "elements": []map[string]any{{"type": "mrkdwn", "text": status}}})
+	return blocks
+}
+
+func slackOperationStatus(update runtime.HITLMessageUpdate) string {
+	switch update.State {
+	case runtime.HITLOperationStatePendingApproval:
+		return ":hourglass_flowing_sand: HITL approval is pending"
+	case runtime.HITLOperationStateApprovedWaitingForRetry:
+		return ":white_check_mark: Approved — waiting for matching client retry"
+	case runtime.HITLOperationStateExecutingUpstream:
+		return ":arrow_forward: Matching retry received — executing upstream"
+	case runtime.HITLOperationStateUpstreamSucceeded:
+		return ":white_check_mark: Upstream request succeeded"
+	case runtime.HITLOperationStateUpstreamFailed:
+		if update.LastError != "" {
+			return ":x: Upstream request failed: " + slackTrunc(update.LastError, 300)
+		}
+		return ":x: Upstream request failed"
+	case runtime.HITLOperationStateDenied:
+		return ":no_entry: Denied"
+	case runtime.HITLOperationStateExpired:
+		return ":alarm_clock: HITL approval expired"
+	case runtime.HITLOperationStateClientDisconnected:
+		return ":warning: Original client disconnected before async polling handle was returned"
+	default:
+		return "HITL state: `" + string(update.State) + "`"
+	}
+}
+
+func slackPostJSON(ctx context.Context, endpoint, bot string, buf []byte, method string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	hreq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(buf))
+	if err != nil {
+		return err
+	}
+	hreq.Header.Set("Authorization", "Bearer "+bot)
+	hreq.Header.Set("Content-Type", "application/json; charset=utf-8")
+	resp, err := slackHTTPClient.Do(hreq)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	var result struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal(respBody, &result)
+	if resp.StatusCode >= 400 || !result.OK {
+		log.Printf("slack notify: %s failed: status=%d ok=%v error=%q", method, resp.StatusCode, result.OK, result.Error)
+		if result.Error != "" {
+			return fmt.Errorf("slack %s error: %s", method, result.Error)
+		}
+		return fmt.Errorf("slack %s error: HTTP %d", method, resp.StatusCode)
+	}
+	return nil
 }
 
 func hitlClassificationEmoji(c string) string {

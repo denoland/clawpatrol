@@ -82,7 +82,7 @@ func (g *Gateway) transitionConsumedHITLRetryGrant(ctx context.Context, op HITLO
 	if op.State != HITLOperationStateExecutingUpstream {
 		return nil
 	}
-	_, err := NewHITLOperationStore(g.db).Transition(ctx, HITLOperationTransition{
+	updated, err := NewHITLOperationStore(g.db).Transition(ctx, HITLOperationTransition{
 		ID:              op.ID,
 		FromState:       op.State,
 		ToState:         to,
@@ -91,7 +91,11 @@ func (g *Gateway) transitionConsumedHITLRetryGrant(ctx context.Context, op HITLO
 		UpstreamCalled:  true,
 		LastError:       lastErr,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	g.updateHITLOperationMessage(context.Background(), updated)
+	return nil
 }
 
 func hitlRetryRelayFailure(statusErr error) (status int, contentType string, body string) {
