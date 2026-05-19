@@ -2061,7 +2061,11 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 					} else {
 						asyncOp = updated
 					}
-					writeHITLOperationAcceptedToConn(tc, asyncOp, g.cfg.PublicURL)
+					_ = tc.SetWriteDeadline(time.Now().Add(10 * time.Second))
+					if err := writeHITLOperationAcceptedToConn(tc, asyncOp, g.cfg.PublicURL); err != nil {
+						log.Printf("hitl async pending response write %s: %v", asyncOp.ID, err)
+					}
+					_ = tc.SetWriteDeadline(time.Time{})
 					ev.Status = http.StatusAccepted
 					ev.Action = "hitl_async_pending"
 					ev.Approver = v.ApproverName

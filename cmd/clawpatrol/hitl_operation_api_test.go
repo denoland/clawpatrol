@@ -40,7 +40,9 @@ func TestHITLOperationAcceptedRawConnResponseHasDelimitedJSONBody(t *testing.T) 
 	}
 
 	var raw bytes.Buffer
-	writeHITLOperationAcceptedToConn(&raw, op, "https://gateway.example.test/")
+	if err := writeHITLOperationAcceptedToConn(&raw, op, "https://gateway.example.test/"); err != nil {
+		t.Fatalf("write raw response: %v", err)
+	}
 	resp, body := parseRawHITLOperationAcceptedResponse(t, raw.Bytes())
 	defer func() { _ = resp.Body.Close() }()
 
@@ -62,7 +64,9 @@ func TestHITLOperationAcceptedRawConnResponseWritesCompleteEnvelopeInOnePayload(
 	}
 	w := &singleWriteRecorder{}
 
-	writeHITLOperationAcceptedToConn(w, op, "https://gateway.example.test/")
+	if err := writeHITLOperationAcceptedToConn(w, op, "https://gateway.example.test/"); err != nil {
+		t.Fatalf("write raw response: %v", err)
+	}
 	if w.writes != 1 {
 		t.Fatalf("writes = %d, want a single complete response write; raw response:\n%s", w.writes, w.buf.String())
 	}
