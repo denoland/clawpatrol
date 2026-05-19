@@ -30,25 +30,6 @@ export type V2Route =
   | { page: "actions"; actionId: string }
   | { page: "settings"; connect?: string };
 
-// Polecat decisions for this v2 dashboard:
-//   1. Route prefix is `#/v2` (hash routing, matches existing app
-//      shell). The toggle in the existing dashboard's header points
-//      to `#/v2`; the toggle in this shell points to `#/`.
-//   2. File layout: `dashboard/src/v2/` self-contained, with cards/
-//      and pages/ subfolders mirroring unclaw's component organisation.
-//      Keeps the diff and the namespace clean — nothing in `dashboard/
-//      src/components/` knows about v2 except `ConnectModal` and
-//      `SettingsPage`, which v2 imports verbatim.
-//   3. Data: v2 talks to clawpatrol's existing API (`/api/state`,
-//      `/api/rules`, etc.) since `cl-r3e` forbids adding new
-//      endpoints. unclaw-shaped concepts that don't exist in
-//      clawpatrol (named approvers, named profiles with default
-//      LLM/Human approver pickers, per-device session split,
-//      `/api/decisions`) render as empty-state placeholders.
-//   4. The Settings tab embeds the existing clawpatrol Settings
-//      page verbatim — credential modals, HCL viewer and all —
-//      per the cl-r3e read-only constraint that explicitly
-//      preserves cl-jli / cl-fq1 / cl-003 / cl-irg's modal work.
 export function parseV2Route(hash: string): V2Route | null {
   // Strip the leading `#` and any query string.
   const raw = hash.startsWith("#") ? hash.slice(1) : hash;
