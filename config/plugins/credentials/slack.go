@@ -492,7 +492,8 @@ func applySlackInteractivePayload(ctx runtime.WebhookCtx, payload []byte) map[st
 	}
 
 	if p.ResponseURL != "" {
-		go postSlackResponseURL(p.ResponseURL, status, withStatusBlock(p.Message.Blocks, status))
+		guidance := slackResolvedApprovalGuidance(result, allow)
+		go postSlackResponseURL(p.ResponseURL, status, withStatusBlock(p.Message.Blocks, status, guidance))
 	}
 	return map[string]any{} // empty ack — real update flows via response_url
 }
@@ -556,22 +557,88 @@ func postSlackResponseURL(url, text string, blocks []map[string]any) {
 }
 
 // withStatusBlock returns the original message blocks minus any
-// `actions` block, plus a context block carrying the verdict.
+// approval guidance and `actions` block, plus optional replacement
+// guidance and a context block carrying the verdict.
 // Slack `replace_original` swaps the message in place — operator
 // sees the buttons disappear and the verdict line appear instantly.
-func withStatusBlock(blocks []map[string]any, status string) []map[string]any {
-	out := make([]map[string]any, 0, len(blocks)+1)
+func withStatusBlock(blocks []map[string]any, status, guidance string) []map[string]any {
+	out := make([]map[string]any, 0, len(blocks)+2)
 	for _, b := range blocks {
-		if b["type"] == "actions" {
+		if b["type"] == "actions" || slackIsApprovalGuidanceBlock(b) {
 			continue
 		}
 		out = append(out, b)
+	}
+	if strings.TrimSpace(guidance) != "" {
+		out = append(out, map[string]any{
+			"type": "section",
+			"text": map[string]any{"type": "mrkdwn", "text": slackTrunc(guidance, 1000)},
+		})
 	}
 	out = append(out, map[string]any{
 		"type":     "context",
 		"elements": []map[string]any{{"type": "mrkdwn", "text": status}},
 	})
 	return out
+}
+
+func slackResolvedApprovalGuidance(result runtime.HITLResolveResult, allow bool) string {
+	if !result.OK {
+		return ""
+	}
+	if allow && strings.Contains(result.Reason, "waiting for matching client retry") {
+		return runtime.HITLApprovalMessage(runtime.HITLOperationStateApprovedWaitingForRetry, runtime.HITLApprovalEffectCreateRetryGrant, false)
+	}
+	if !allow {
+		return runtime.HITLApprovalMessage(runtime.HITLOperationStateDenied, runtime.HITLApprovalEffectCreateRetryGrant, false)
+	}
+	return ""
+}
+
+func slackIsApprovalGuidanceBlock(block map[string]any) bool {
+	text := strings.TrimSpace(slackBlockText(block))
+	if text == "" {
+		return false
+	}
+	for _, guidance := range slackKnownApprovalGuidanceMessages() {
+		if text == guidance {
+			return true
+		}
+	}
+	return false
+}
+
+func slackKnownApprovalGuidanceMessages() []string {
+	messages := []string{
+		runtime.HITLApprovalMessage(runtime.HITLOperationStateSyncWaiting, runtime.HITLApprovalEffectExecuteUpstream, false),
+		runtime.HITLApprovalMessage(runtime.HITLOperationStatePendingApproval, runtime.HITLApprovalEffectCreateRetryGrant, false),
+		runtime.HITLApprovalMessage(runtime.HITLOperationStateApprovedWaitingForRetry, runtime.HITLApprovalEffectCreateRetryGrant, false),
+		runtime.HITLApprovalMessage(runtime.HITLOperationStateDenied, runtime.HITLApprovalEffectCreateRetryGrant, false),
+		runtime.HITLApprovalMessage(runtime.HITLOperationStateExpired, runtime.HITLApprovalEffectCreateRetryGrant, false),
+		runtime.HITLApprovalMessage(runtime.HITLOperationStateClientDisconnected, runtime.HITLApprovalEffectCreateRetryGrant, false),
+		runtime.HITLApprovalMessage("", runtime.HITLApprovalEffectCreateRetryGrant, false),
+	}
+	for i := range messages {
+		messages[i] = strings.TrimSpace(slackTrunc(messages[i], 1000))
+	}
+	return messages
+}
+
+func slackBlockText(block map[string]any) string {
+	var parts []string
+	if text, ok := block["text"].(map[string]any); ok {
+		if value, ok := text["text"].(string); ok {
+			parts = append(parts, value)
+		}
+	}
+	if elements, ok := block["elements"].([]map[string]any); ok {
+		for _, element := range elements {
+			if value, ok := element["text"].(string); ok {
+				parts = append(parts, value)
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 // verifySlackSig checks Slack's v0 HMAC-SHA256 signature.

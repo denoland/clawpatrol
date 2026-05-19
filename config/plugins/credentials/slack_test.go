@@ -96,6 +96,138 @@ func TestApplySlackInteractivePayloadReportsClientDisconnected(t *testing.T) {
 	}
 }
 
+func TestApplySlackInteractivePayloadRewritesAsyncApprovalGuidance(t *testing.T) {
+	posted := make(chan slackResponseURLRequest, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		defer func() { _ = r.Body.Close() }()
+		var req slackResponseURLRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode response_url body: %v", err)
+			rw.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		posted <- req
+		_, _ = rw.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	pool := &fakeInteractiveHITL{result: runtime.HITLResolveResult{
+		OK:     true,
+		State:  runtime.HITLStateApproved,
+		Reason: "approved; waiting for matching client retry",
+	}}
+	ack := applySlackInteractivePayload(runtime.WebhookCtx{HITL: pool}, slackInteractivePayload(t, srv.URL, "approve", "pending-1"))
+	if len(ack) != 0 {
+		t.Fatalf("ack = %#v, want empty map", ack)
+	}
+
+	select {
+	case req := <-posted:
+		if !req.ReplaceOriginal {
+			t.Fatal("response_url payload did not request replace_original")
+		}
+		text := slackTestBlockText(req.Blocks)
+		if strings.Contains(text, "If approved soon") {
+			t.Fatalf("response_url blocks still contain stale sync guidance: %s", text)
+		}
+		if !strings.Contains(text, "Waiting for the client to retry the original request") {
+			t.Fatalf("response_url blocks = %s, want async approved retry guidance", text)
+		}
+		if !strings.Contains(text, "Upstream has not been called yet") {
+			t.Fatalf("response_url blocks = %s, want upstream-not-called guidance", text)
+		}
+		for _, block := range req.Blocks {
+			if block["type"] == "actions" {
+				t.Fatalf("response_url blocks still contain actions block: %#v", req.Blocks)
+			}
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Slack response_url update was not posted")
+	}
+}
+
+func TestApplySlackInteractivePayloadRewritesDenyGuidance(t *testing.T) {
+	posted := make(chan slackResponseURLRequest, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		defer func() { _ = r.Body.Close() }()
+		var req slackResponseURLRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode response_url body: %v", err)
+			rw.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		posted <- req
+		_, _ = rw.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	pool := &fakeInteractiveHITL{result: runtime.HITLResolveResult{
+		OK:     true,
+		State:  runtime.HITLStateDenied,
+		Reason: "denied by approver",
+	}}
+	ack := applySlackInteractivePayload(runtime.WebhookCtx{HITL: pool}, slackInteractivePayload(t, srv.URL, "deny", "pending-1"))
+	if len(ack) != 0 {
+		t.Fatalf("ack = %#v, want empty map", ack)
+	}
+
+	select {
+	case req := <-posted:
+		text := slackTestBlockText(req.Blocks)
+		if strings.Contains(text, "If approved soon") {
+			t.Fatalf("response_url blocks still contain stale sync guidance: %s", text)
+		}
+		if !strings.Contains(text, "Denied.") || !strings.Contains(text, "Upstream was not called.") {
+			t.Fatalf("response_url blocks = %s, want deny/upstream-not-called guidance", text)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Slack response_url update was not posted")
+	}
+}
+
+func TestApplySlackInteractivePayloadPreservesRequestContentContainingGuidanceWords(t *testing.T) {
+	posted := make(chan slackResponseURLRequest, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		defer func() { _ = r.Body.Close() }()
+		var req slackResponseURLRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode response_url body: %v", err)
+			rw.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		posted <- req
+		_, _ = rw.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	pool := &fakeInteractiveHITL{result: runtime.HITLResolveResult{
+		OK:     true,
+		State:  runtime.HITLStateDenied,
+		Reason: "denied by approver",
+	}}
+	payload := slackInteractivePayloadWithExtraBlock(t, srv.URL, "deny", "pending-1", map[string]any{
+		"type": "section",
+		"text": map[string]any{"type": "mrkdwn", "text": "*Body*\n```customer note: Upstream was not called. Please investigate.```"},
+	})
+	ack := applySlackInteractivePayload(runtime.WebhookCtx{HITL: pool}, payload)
+	if len(ack) != 0 {
+		t.Fatalf("ack = %#v, want empty map", ack)
+	}
+
+	select {
+	case req := <-posted:
+		text := slackTestBlockText(req.Blocks)
+		if !strings.Contains(text, "customer note: Upstream was not called. Please investigate.") {
+			t.Fatalf("response_url blocks = %s, want request content with guidance-like words preserved", text)
+		}
+		if strings.Contains(text, "If approved soon") {
+			t.Fatalf("response_url blocks still contain stale sync guidance: %s", text)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Slack response_url update was not posted")
+	}
+}
+
 func TestSlackHITLStatusExplainsTerminalStates(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -139,8 +271,50 @@ type slackResponseURLRequest struct {
 	Blocks          []map[string]any `json:"blocks"`
 }
 
+func slackTestBlockText(blocks []map[string]any) string {
+	var parts []string
+	for _, block := range blocks {
+		if text, ok := block["text"].(map[string]any); ok {
+			if value, ok := text["text"].(string); ok {
+				parts = append(parts, value)
+			}
+		}
+		if elements, ok := block["elements"].([]any); ok {
+			for _, element := range elements {
+				m, ok := element.(map[string]any)
+				if !ok {
+					continue
+				}
+				if value, ok := m["text"].(string); ok {
+					parts = append(parts, value)
+				}
+			}
+		}
+		if elements, ok := block["elements"].([]map[string]any); ok {
+			for _, element := range elements {
+				if value, ok := element["text"].(string); ok {
+					parts = append(parts, value)
+				}
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
 func slackInteractivePayload(t *testing.T, responseURL, actionID, pendingID string) []byte {
+	return slackInteractivePayloadWithExtraBlock(t, responseURL, actionID, pendingID, nil)
+}
+
+func slackInteractivePayloadWithExtraBlock(t *testing.T, responseURL, actionID, pendingID string, extraBlock map[string]any) []byte {
 	t.Helper()
+	blocks := []map[string]any{
+		{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": "pending"}},
+		{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": runtime.HITLApprovalMessage(runtime.HITLOperationStateSyncWaiting, runtime.HITLApprovalEffectExecuteUpstream, false)}},
+	}
+	if extraBlock != nil {
+		blocks = append(blocks, extraBlock)
+	}
+	blocks = append(blocks, map[string]any{"type": "actions"})
 	payload := map[string]any{
 		"user":         map[string]any{"name": "U123"},
 		"response_url": responseURL,
@@ -148,10 +322,7 @@ func slackInteractivePayload(t *testing.T, responseURL, actionID, pendingID stri
 			{"action_id": actionID, "value": pendingID},
 		},
 		"message": map[string]any{
-			"blocks": []map[string]any{
-				{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": "pending"}},
-				{"type": "actions"},
-			},
+			"blocks": blocks,
 		},
 	}
 	buf, err := json.Marshal(payload)
