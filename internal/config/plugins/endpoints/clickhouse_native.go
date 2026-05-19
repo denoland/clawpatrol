@@ -4,10 +4,10 @@ package endpoints
 // (default port 9000 plaintext / 9440 TLS). Pairs with
 // clickhouse_https for the same upstream cluster.
 //
-// Iter 1 scope: parse the Hello packet, swap placeholder bytes in
-// the agent-supplied (username, password) for the credential's real
-// values, emit one connection event, then transparent bidirectional
-// pipe. SQL parsing lands in a follow-up iteration.
+// On each connection the runtime parses the Hello packet, swaps
+// placeholder bytes in the agent-supplied (username, password) for
+// the credential's real values, parses each Query packet's SQL for
+// rule matching, then bidirectionally pipes between agent and server.
 //
 // Schema and HCL plumbing live here. The per-connection runtime
 // (HandleConn, helpers, pipe) lives in clickhouse_native_runtime.go.

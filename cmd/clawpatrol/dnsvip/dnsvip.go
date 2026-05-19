@@ -420,23 +420,6 @@ func (a *Allocator) LookupVIP(dstIP string) (hostname string, hits []EndpointHit
 	return e.Hostname, a.endpoints[e.Hostname]
 }
 
-// HostnameFor returns the hostname behind a VIP, or "" if not a VIP.
-// Convenience for tests / logging.
-func (a *Allocator) HostnameFor(addr netip.Addr) string {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	var e *entry
-	if addr.Is4() {
-		e = a.byV4[addr]
-	} else {
-		e = a.byV6[addr]
-	}
-	if e == nil {
-		return ""
-	}
-	return e.Hostname
-}
-
 // VIPsFor returns the (v4, v6) pair for a hostname, both zero when
 // not allocated. Used by tests / dashboard surfaces.
 func (a *Allocator) VIPsFor(hostname string) (netip.Addr, netip.Addr) {

@@ -395,11 +395,6 @@ func (w *webMux) dashboardAuthGate(next http.Handler) http.Handler {
 // endpoint. Single route to keep the auth surface small.
 const dashboardLoginPath = "/__login"
 
-// dashboardLogoutPath revokes the cp_session cookie. POST-only —
-// SameSite=Lax on the cookie protects against drive-by GETs from
-// other origins.
-const dashboardLogoutPath = "/__logout"
-
 // lookupSessionFromRequest reads the cp_session cookie, looks up the
 // matching row, and returns the username on a live hit. Empty string
 // when missing/expired/error (the gate treats all three as "no

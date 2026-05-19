@@ -330,8 +330,9 @@ type Gateway struct {
 	hitl     *HITLRegistry
 	onboard  *onboardRegistry
 	// secrets hands credential plugins the secret bytes they inject
-	// at request time. Default env-var-backed; OAuth-flow credentials
-	// land via a follow-up bridge that delegates to OAuthRegistry.
+	// at request time. gatewaySecretStore stacks the credential_secrets
+	// table (dashboard slots), OAuthRegistry (refreshed access tokens),
+	// and CLAWPATROL_SECRET_<NAME> env vars in that priority.
 	secrets runtime.SecretStore
 	// connIdx maps WG-forwarder dstIPs back to the endpoint that
 	// claims them — populated by every endpoint plugin whose body
@@ -1874,10 +1875,9 @@ func bufferHTTPBodyForMatchTruncated(req *http.Request) (body []byte, truncated 
 // endpoint (https, kubernetes). It mints a leaf cert, terminates TLS,
 // then loops reading HTTP requests and dispatching each through the
 // compiled policy: runtime.MatchRequest picks the rule, the rule's
-// Outcome decides verdict / approve. Forwarding is plain TLS upstream
-// for now — credential injection (via the credential plugin's
-// HTTPCredentialRuntime) lands in a follow-up commit; until then
-// matched requests forward verbatim.
+// Outcome decides verdict / approve. Allowed requests forward upstream
+// over plain TLS with credential injection applied by the credential
+// plugin's HTTPCredentialRuntime / HTTPRequestSigner / WebSocket hooks.
 func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint) {
 	agentAddr := peerIP(c)
 	profile := g.profileFor(agentAddr)
@@ -2456,9 +2456,6 @@ func secretEnvName(credName string) string {
 	return strings.ToUpper(strings.ReplaceAll(credName, "-", "_"))
 }
 
-// defaultHITLTimeout returns the configured human approver timeout
-// (defaults.human_timeout) or the legacy 60s default when nothing
-// is configured. Per-approver timeouts overlay this in a follow-up.
 // runApproveCtx is the context blob the dispatcher passes per stage —
 // HITL prompt fields + the matching rule + the device's profile.
 type runApproveCtx struct {
@@ -2757,11 +2754,10 @@ func runGateway(args []string) {
 	if err != nil {
 		log.Fatalf("log: %v", err)
 	}
-	// OAuthRegistry seed list is empty for now — credential plugins
-	// own credential discovery in the new policy. The registry stays
-	// in place because per-owner token persistence + refresh logic
-	// is reused by the credential-plugin runtime bridge (lands when
-	// the credential injection path is wired into mitmHTTPS).
+	// OAuthRegistry seeds at boot from the policy via
+	// registerOAuthCredentials below — credential plugins own credential
+	// discovery, the registry just persists per-owner tokens + handles
+	// refresh. gatewaySecretStore consults it for OAuth-flow credentials.
 	oauthReg, err := NewOAuthRegistry(nil, db)
 	if err != nil {
 		log.Fatalf("oauth: %v", err)

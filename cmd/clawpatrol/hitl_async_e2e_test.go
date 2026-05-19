@@ -283,11 +283,6 @@ func (h *hitlAsyncE2EHarness) sendMITMRequest(t *testing.T, method, operationID,
 	return hitlRetryRelayResponse{StatusCode: resp.StatusCode, Body: string(body)}
 }
 
-func (h *hitlAsyncE2EHarness) pollStatus(t *testing.T, operationID string) *httptest.ResponseRecorder {
-	t.Helper()
-	return h.pollStatusRequest(t, "/api/hitl/operations/"+operationID+"/status", true)
-}
-
 func (h *hitlAsyncE2EHarness) pollStatusURL(t *testing.T, statusURL string) *httptest.ResponseRecorder {
 	t.Helper()
 	return h.pollStatusRequest(t, statusURL, false)

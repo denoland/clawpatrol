@@ -272,10 +272,6 @@ type whoisResult struct {
 type whoisNode struct{ StableID, HostName string }
 type whoisProfile struct{ LoginName string }
 
-func (n whoisNode) IsZero() bool         { return n.StableID == "" && n.HostName == "" }
-func (p whoisProfile) IsZero() bool      { return p.LoginName == "" }
-func (r *whoisResult) NodeNonZero() bool { return !r.Node.IsZero() }
-
 func (r *AgentRegistry) fillIdentity(ip string) {
 	addr, err := netip.ParseAddr(ip)
 	if err != nil {

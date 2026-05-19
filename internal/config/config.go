@@ -362,8 +362,7 @@ func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
 	// Pass 2: build the eval context with every name → string, then
 	// decode each policy block against its plugin's schema.
 	evalCtx := buildEvalContext(table)
-	configDir := filepath.Dir(filename)
-	resolveDiags := decodePolicyBlocks(gw.Policy, table, evalCtx, configDir)
+	resolveDiags := decodePolicyBlocks(gw.Policy, table, evalCtx)
 	diags = append(diags, resolveDiags...)
 	diags = append(diags, validateHITLAsyncConfig(gw)...)
 
@@ -372,7 +371,7 @@ func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
 	// so plugins see fully-populated Bodies; the raw markers reach
 	// dump / golden-test output as a side effect, which is fine —
 	// goldens compare structural shape, not file contents.
-	includeDiags := expandFileIncludes(gw.Policy, configDir)
+	includeDiags := expandFileIncludes(gw.Policy, filepath.Dir(filename))
 	diags = append(diags, includeDiags...)
 
 	return gw, diags
@@ -572,7 +571,7 @@ func buildEvalContext(table *SymbolTable) *hcl.EvalContext {
 // decodePolicyBlocks runs pass 2: per-block plugin dispatch + decode +
 // ref resolution + Validate + Build, plus the fixed-schema policy /
 // profile decoders.
-func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext, configDir string) hcl.Diagnostics {
+func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext) hcl.Diagnostics {
 	var diags hcl.Diagnostics
 
 	for _, sym := range table.byKind[KindPolicy] {
@@ -684,6 +683,5 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 		}
 	}
 
-	_ = configDir // file-include resolution will use this in a follow-up
 	return diags
 }

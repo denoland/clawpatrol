@@ -163,12 +163,6 @@ var frameworkAttrsByKind = map[Kind][]FrameworkAttrSpec{
 	},
 }
 
-// FrameworkAttrsFor returns the framework attr specs declared for
-// kind, or nil if none.
-func FrameworkAttrsFor(kind Kind) []FrameworkAttrSpec {
-	return frameworkAttrsByKind[kind]
-}
-
 // RefSpec declares a field on a decoded plugin struct that holds a
 // bare-name reference (or a list of them) into the symbol table.
 type RefSpec struct {
