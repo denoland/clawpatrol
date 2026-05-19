@@ -2,8 +2,10 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -342,13 +344,18 @@ func runLogin(args []string) {
 	// On Linux, `tailscale set` requires sudo unless --operator=$USER
 	// was passed to `tailscale up`. tsSet handles either case.
 	//
-	// Leave DNS to tailscaled (--accept-dns=true default). VIP-routed
-	// endpoint hostnames must be dialed by IP literal until there's a
-	// reconcile-safe DNS strategy.
 	if !*skipExitNode {
 		if err := tsSet(tscli, "--exit-node="+*gwName); err != nil {
 			fail("tailscale set --exit-node=%s: %v", *gwName, err)
 		}
+		// tsnet has no UDP fallback — outbound DNS from the client
+		// (e.g. resolv.conf nameserver 1.1.1.1) is silently dropped at
+		// the gateway's netstack. Hosts running systemd-resolved get
+		// away with it because their queries source-bind to a non-
+		// tailnet link; plain-resolv.conf hosts hang. Point DNS at the
+		// gateway's tsnet IP so queries hit serveTsnetDNSUDP instead.
+		// Skip when systemd-resolved is active.
+		pinDNSAtGatewayIfNeeded(peer.TailscaleIPs[0])
 	}
 
 	fmt.Println()
@@ -666,6 +673,46 @@ func manualTrustHint(caPath string) string {
 		return fmt.Sprintf("sudo cp %s /usr/local/share/ca-certificates/clawpatrol.crt && sudo update-ca-certificates", caPath)
 	}
 	return "manually add " + caPath + " to your system trust store"
+}
+
+// pinDNSAtGatewayIfNeeded writes /etc/resolv.conf → nameserver gwIP on
+// Linux hosts that don't run systemd-resolved. tsnet has no UDP
+// fallback, so client DNS to a public nameserver via the exit-node is
+// silently dropped at the gateway's netstack. Pointing the client at
+// the gateway routes queries through serveTsnetDNSUDP. Hosts running
+// systemd-resolved are already fine — their queries source-bind to
+// the physical link DNS and bypass the exit-node.
+func pinDNSAtGatewayIfNeeded(gwIP string) {
+	if runtime.GOOS != "linux" || gwIP == "" {
+		return
+	}
+	if exec.Command("systemctl", "is-active", "--quiet", "systemd-resolved").Run() == nil {
+		return
+	}
+	const path = "/etc/resolv.conf"
+	cur, _ := os.ReadFile(path)
+	desired := fmt.Sprintf("# clawpatrol: routed via Tailscale exit-node\nnameserver %s\n", gwIP)
+	if strings.Contains(string(cur), gwIP) && strings.Contains(string(cur), "clawpatrol:") {
+		return
+	}
+	if _, err := os.Stat(path + ".clawpatrol.bak"); errors.Is(err, os.ErrNotExist) && len(cur) > 0 {
+		_ = writeSudo(path+".clawpatrol.bak", cur)
+	}
+	if err := writeSudo(path, []byte(desired)); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ resolv.conf: %v\n", err)
+		return
+	}
+	fmt.Printf("DNS pinned to gateway (%s)\n", gwIP)
+}
+
+func writeSudo(path string, content []byte) error {
+	cmd := exec.Command("sudo", "tee", path)
+	cmd.Stdin = bytes.NewReader(content)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%v: %s", err, out)
+	}
+	return nil
 }
 
 func defaultClawpatrolDir() string {
