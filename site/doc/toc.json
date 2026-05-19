@@ -1,6 +1,7 @@
 [
   "introduction",
   "getting-started",
+  "configure-gateway",
   "glossary",
   "architecture",
   "cli",
