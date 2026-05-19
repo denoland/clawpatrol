@@ -46,8 +46,10 @@ production table gets wiped and the rows aren't coming back.
 
 - **Human-in-the-loop approvals** for risky actions. Approvers can
   be a Slack channel, the gateway's own web dashboard, email, or
-  any webhook you point it at. Defer `kubectl apply -f production`
-  to one of them before the request leaves.
+  any webhook you point it at. Gate `kubectl apply -f production`
+  behind a Slack ack, or pause a `DROP TABLE users` until a human
+  signs off in the dashboard — the request only leaves once a
+  person says yes.
 
 - **LLM-in-the-loop approvals.** Put a model in front of a rule and
   let it judge each request against a prompt you write. Verdicts
