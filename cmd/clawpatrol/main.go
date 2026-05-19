@@ -34,6 +34,7 @@ import (
 	"github.com/denoland/clawpatrol/internal/config/plugins/approvers"
 	"github.com/denoland/clawpatrol/internal/config/plugins/endpoints"
 	"github.com/denoland/clawpatrol/internal/config/runtime"
+	"github.com/denoland/clawpatrol/internal/toolgate"
 	"github.com/google/uuid"
 	"tailscale.com/client/local"
 )
@@ -365,6 +366,16 @@ type Gateway struct {
 	// profile mappings — tsnet whole-machine traffic arrives on the
 	// IPv6 ULA, so the IPv4 entry alone isn't enough.
 	tsnetLC *local.Client
+	// toolgate is the gateway-wide registry of pending LLM tool-call
+	// approvals. Populated by the HTTPS MITM hook when an Anthropic
+	// /v1/messages response carries a tool_use that matches a HITL
+	// rule; drained by the agent's polling tool against the
+	// /api/approval/* endpoints. nil disables tool-call gating.
+	toolgate *toolgate.Store
+	// toolgateRules is the active rule set. Programmatically populated
+	// in this draft — follow-up bead wires it to the unmerged cl-1yh
+	// llm_rule HCL plugin so rules ride in the gateway config.
+	toolgateRules toolgate.RuleSet
 }
 
 // transportFor returns the cached http.Transport for ep, building it
@@ -2371,6 +2382,25 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		if resp.ContentLength < 0 && len(resp.TransferEncoding) == 0 && !resp.Close {
 			resp.TransferEncoding = []string{"chunked"}
 		}
+		// Tool-call gating (draft). Anthropic /v1/messages only, JSON
+		// (non-streaming) responses only. Buffers the body, walks the
+		// content[] array, and rewrites tool_use blocks per the active
+		// rule set — deny → text-block reason; hitl → polling tool_use
+		// against /api/approval/poll. See internal/toolgate.
+		//
+		// Streaming responses (Content-Type: text/event-stream) bypass
+		// gating entirely in this draft; flagged as the obvious
+		// follow-up. trackBuf still captures them for usage tracking.
+		if g.toolgate != nil && len(g.toolgateRules) > 0 &&
+			trackKind == "claude_usage" && req.URL.Path == "/v1/messages" &&
+			resp.StatusCode == 200 &&
+			strings.Contains(resp.Header.Get("Content-Type"), "json") &&
+			!strings.Contains(resp.Header.Get("Content-Type"), "event-stream") {
+			if rewritten, ok := g.gateAnthropicResponse(resp, &ev); ok {
+				resp = rewritten
+			}
+		}
+
 		// Snapshot the upstream's response headers for the audit log
 		// before stripping credential-bearing ones — the dashboard
 		// still wants to show what the upstream actually sent.
@@ -2774,6 +2804,15 @@ func runGateway(args []string) {
 		agents:   NewAgentRegistry(),
 		hitl:     newHITLRegistry(sink),
 		onboard:  newOnboardRegistry(),
+		toolgate: toolgate.NewStore(),
+		// toolgateRules is empty by default — gating only fires when a
+		// rule has been programmatically registered. This keeps the
+		// draft a no-op for users who haven't opted in. Follow-up bead
+		// wires rules through cl-1yh's llm_rule HCL plugin once it
+		// lands; for now operators experimenting with the prototype
+		// can seed rules via CLAWPATROL_TOOLGATE_RULES (see
+		// loadToolgateRulesFromEnv below).
+		toolgateRules: loadToolgateRulesFromEnv(),
 	}
 	log.Printf("config: read-only (the dashboard cannot edit gateway.hcl)")
 	g.secrets = newGatewaySecretStore(db, oauthReg)
