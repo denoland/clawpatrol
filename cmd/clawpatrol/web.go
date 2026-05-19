@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -2553,6 +2554,13 @@ func (r *HITLRegistry) Update(id string, mutate func(*runtime.HITLPending)) bool
 	return true
 }
 
+// List returns pending entries sorted by CreatedAt ascending (oldest
+// first), tiebroken on ID. The dashboard polls this endpoint once per
+// second; Go's randomized map iteration would otherwise shuffle rows
+// on every render and make the table flicker. Sort key is invariant
+// across the sync_waiting → pending_approval Update transition (same
+// ID, same CreatedAt), so a row keeps its position when its approval
+// mode changes.
 func (r *HITLRegistry) List() []runtime.HITLPending {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -2561,6 +2569,12 @@ func (r *HITLRegistry) List() []runtime.HITLPending {
 	for _, e := range r.pending {
 		out = append(out, e.p)
 	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out
 }
 

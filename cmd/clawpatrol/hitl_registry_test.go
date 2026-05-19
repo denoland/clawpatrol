@@ -150,6 +150,84 @@ func TestHITLRegistryCancelRecordsClientDisconnected(t *testing.T) {
 	}
 }
 
+// TestHITLRegistryListIsOrderedAndStableAcrossUpdates pins the
+// dashboard contract that pending approvals stay in oldest-first
+// order across polls, even when an entry's approval mode flips from
+// sync_waiting to pending_approval mid-flight. Before this was
+// enforced, List() iterated Go's randomized map order — the dashboard
+// re-rendered rows in a different order each poll, which read as
+// rows visibly jumping/flickering between approval modes.
+func TestHITLRegistryListIsOrderedAndStableAcrossUpdates(t *testing.T) {
+	registry := newHITLRegistry(nil)
+	base := time.Unix(1_779_199_000, 0)
+	ids := make([]string, 0, 8)
+	for i := 0; i < 8; i++ {
+		id, _ := registry.Add(runtime.HITLPending{
+			Host:      "console.deno.com",
+			Method:    "POST",
+			Path:      fmt.Sprintf("/api/admin.supportTickets.replyOnBehalf/%d", i),
+			CreatedAt: base.Add(time.Duration(i) * time.Millisecond),
+		})
+		ids = append(ids, id)
+	}
+
+	// Many polls in a row — the in-tree dashboard polls every 1s.
+	// With map-iteration ordering this loop would frequently produce
+	// a different sequence than the previous iteration.
+	var prev []string
+	for poll := 0; poll < 50; poll++ {
+		list := registry.List()
+		got := make([]string, len(list))
+		for i, p := range list {
+			got[i] = p.ID
+		}
+		if poll == 0 {
+			if !equalStrings(got, ids) {
+				t.Fatalf("initial poll order = %v, want oldest-first %v", got, ids)
+			}
+		} else if !equalStrings(got, prev) {
+			t.Fatalf("poll %d order = %v, previous poll = %v (must be stable across polls)", poll, got, prev)
+		}
+		prev = got
+	}
+
+	// Flip a middle entry's approval mode from sync_waiting to
+	// pending_approval — same row, new state. Its position must not
+	// move, otherwise the operator sees a row "jump" between modes.
+	target := ids[3]
+	if !registry.Update(target, func(p *runtime.HITLPending) {
+		p.OperationID = "op_target"
+		p.OperationState = runtime.HITLOperationStatePendingApproval
+		p.ApprovalEffect = runtime.HITLApprovalEffectCreateRetryGrant
+	}) {
+		t.Fatalf("Update(%q) returned false; entry not found", target)
+	}
+	after := registry.List()
+	if len(after) != len(ids) {
+		t.Fatalf("after Update len = %d, want %d", len(after), len(ids))
+	}
+	for i, p := range after {
+		if p.ID != ids[i] {
+			t.Fatalf("after Update index %d ID = %q, want %q — row moved when its approval mode changed", i, p.ID, ids[i])
+		}
+	}
+	if after[3].OperationState != runtime.HITLOperationStatePendingApproval {
+		t.Fatalf("after Update state = %q, want %q", after[3].OperationState, runtime.HITLOperationStatePendingApproval)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestAPIHITLDecideReturnsStructuredTerminalState(t *testing.T) {
 	registry := newHITLRegistry(nil)
 	id, _ := registry.Add(runtime.HITLPending{
