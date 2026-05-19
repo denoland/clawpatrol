@@ -1,7 +1,8 @@
 // Devices table — flat per-device summary. Click row → device page.
 
-import type { Agent, Integration } from "../lib/api";
-import { fmtBytes } from "../lib/format";
+import { useEffect, useRef, useState } from "react";
+import { type Agent, type EventRecord, type Integration } from "../lib/api";
+import { fmtAge, fmtBytes } from "../lib/format";
 import { DeviceIcon } from "./Logos";
 import { Sparkline } from "./Sparkline";
 
@@ -17,19 +18,22 @@ export function AgentsTable({
   const byId = new Map<string, Integration>();
   for (const i of integrations ?? []) byId.set(i.id, i);
   const stable = [...(agents ?? [])].sort((a, b) => a.ip.localeCompare(b.ip));
+  const lastByIp = useLastActionByIp();
   return (
-    <table className="w-full table-fixed border-collapse" style={{ minWidth: 650 }}>
+    <table className="w-full table-fixed border-collapse" style={{ minWidth: 720 }}>
       <colgroup>
-        <col style={{ width: 240 }} />
-        <col style={{ width: 140 }} />
-        <col style={{ width: 200 }} />
-        <col style={{ width: 60 }} />
+        <col style={{ width: 220 }} />
+        <col style={{ width: 130 }} />
         <col />
+        <col style={{ width: 180 }} />
+        <col style={{ width: 60 }} />
+        <col style={{ width: 140 }} />
       </colgroup>
       <thead className="bg-navy-100 border-b border-navy">
         <tr>
           <Th>Device</Th>
           <Th className="hidden md:table-cell">Profile</Th>
+          <Th>Status</Th>
           <Th>Activity</Th>
           <Th className="text-right">Reqs</Th>
           <Th className="hidden lg:table-cell">IP</Th>
@@ -38,7 +42,7 @@ export function AgentsTable({
       <tbody>
         {stable.length === 0 && (
           <tr>
-            <td colSpan={5} className="px-5 py-8 text-center text-xs text-text-subtle">
+            <td colSpan={6} className="px-5 py-8 text-center text-xs text-text-subtle">
               It's empty in here
             </td>
           </tr>
@@ -46,10 +50,6 @@ export function AgentsTable({
         {stable.map((a) => {
           const total = a.bytes_in + a.bytes_out;
           const needs = (a.integrations ?? []).filter((id) => needsAction(byId.get(id)));
-          const flagged = needs.length > 0;
-          const dotTitle = flagged
-            ? `${needs.length} integration${needs.length === 1 ? "" : "s"} need setup: ${needs.join(", ")}`
-            : "";
           return (
             <tr
               key={a.ip}
@@ -58,13 +58,6 @@ export function AgentsTable({
             >
               <Td>
                 <div className="flex items-center gap-1.5 min-w-0">
-                  <span
-                    title={dotTitle}
-                    className={
-                      "w-[5px] h-[5px] rounded-full shrink-0 " +
-                      (flagged ? "bg-danger-500" : "bg-success-500")
-                    }
-                  />
                   <DeviceIcon
                     os={a.os}
                     hostname={a.hostname}
@@ -81,6 +74,9 @@ export function AgentsTable({
               </Td>
               <Td className="hidden md:table-cell text-xs text-text-muted truncate">
                 {a.profile || "—"}
+              </Td>
+              <Td>
+                <DeviceStatusCell needs={needs} lastAction={lastByIp.get(a.ip)} />
               </Td>
               <Td>
                 <div className="flex items-center gap-2">
@@ -105,6 +101,142 @@ export function AgentsTable({
       </tbody>
     </table>
   );
+}
+
+// DeviceStatusCell renders one of two states per row:
+//   A — at least one declared credential needs setup: a red link to
+//       the Settings page so the operator can connect it in one
+//       click. Click bubbles into the row's onSelect, so we stop
+//       propagation to keep the link's navigation intent intact.
+//   B — every credential is connected: green dot + the device's most
+//       recent action (method · endpoint/host · path · age). The dot
+//       briefly pulses when a fresh action lands; reuses the same
+//       /api/events SSE feed LiveRequests subscribes to.
+function DeviceStatusCell({
+  needs,
+  lastAction,
+}: {
+  needs: string[];
+  lastAction: EventRecord | undefined;
+}) {
+  if (needs.length > 0) {
+    return (
+      <a
+        href="#/settings"
+        onClick={(e) => e.stopPropagation()}
+        title={`needs setup: ${needs.join(", ")}`}
+        className="text-xs text-rust-700 hover:text-rust-800 hover:underline"
+      >
+        {needs.length} credential{needs.length === 1 ? "" : "s"} not connected. Click to configure
+      </a>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-2 text-xs min-w-0">
+      <LiveDot pulseKey={lastAction ? (lastAction.id ?? "") + lastAction.ts : "idle"} />
+      {lastAction ? (
+        <>
+          <span className="font-mono text-text-muted shrink-0">{lastAction.method || "—"}</span>
+          <span className="truncate" title={lastActionTitle(lastAction)}>
+            <span className="text-text-muted">{lastAction.endpoint || lastAction.host}</span>
+            {lastAction.path && <span>{lastAction.path}</span>}
+          </span>
+          <span className="text-text-subtle shrink-0">{fmtAge(lastAction.ts)}</span>
+        </>
+      ) : (
+        <span className="text-text-muted">connected · no actions yet</span>
+      )}
+    </span>
+  );
+}
+
+function lastActionTitle(ev: EventRecord): string {
+  return [ev.method, ev.endpoint || ev.host, ev.path].filter(Boolean).join(" ");
+}
+
+// LiveDot — green dot that briefly pulses when `pulseKey` changes,
+// signalling a fresh action on the row. Held for ~1.2s so a burst
+// of events doesn't strobe the row.
+function LiveDot({ pulseKey }: { pulseKey: string }) {
+  const [pulse, setPulse] = useState(false);
+  const t = useRef<number | null>(null);
+  useEffect(() => {
+    setPulse(true);
+    if (t.current) clearTimeout(t.current);
+    t.current = window.setTimeout(() => setPulse(false), 1200);
+    return () => {
+      if (t.current) clearTimeout(t.current);
+    };
+  }, [pulseKey]);
+  return (
+    <span
+      className={
+        "shrink-0 w-[5px] h-[5px] rounded-full bg-success-500" + (pulse ? " animate-pulse" : "")
+      }
+      aria-label="all credentials connected"
+    />
+  );
+}
+
+// useLastActionByIp subscribes to /api/events and tracks the most
+// recent completed action per agent IP. Frames and `start` phases are
+// skipped so the row only updates on `end` events. Batched via
+// requestAnimationFrame to keep busy gateways from triggering a
+// React commit per event.
+function useLastActionByIp(): Map<string, EventRecord> {
+  const [lastByIp, setLastByIp] = useState<Map<string, EventRecord>>(new Map());
+  useEffect(() => {
+    const es = new EventSource("/api/events");
+    let pending: EventRecord[] = [];
+    let raf = 0;
+    const apply = (batch: EventRecord[]) => {
+      setLastByIp((prev) => {
+        let changed = false;
+        const next = new Map(prev);
+        for (const ev of batch) {
+          if (ev.phase === "frame" || ev.phase === "start") continue;
+          const ip = ev.agent_ip;
+          if (!ip) continue;
+          const existing = next.get(ip);
+          if (!existing || (ev.ts ?? "") > (existing.ts ?? "")) {
+            next.set(ip, ev);
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    };
+    const flush = () => {
+      raf = 0;
+      if (pending.length === 0) return;
+      const batch = pending;
+      pending = [];
+      apply(batch);
+    };
+    const onBacklog = (e: Event) => {
+      try {
+        const arr = JSON.parse((e as MessageEvent).data) as EventRecord[];
+        apply(arr);
+      } catch {
+        /* ignore */
+      }
+    };
+    es.addEventListener("backlog", onBacklog);
+    es.onmessage = (e) => {
+      try {
+        pending.push(JSON.parse(e.data) as EventRecord);
+        if (raf === 0) raf = requestAnimationFrame(flush);
+      } catch {
+        /* ignore */
+      }
+    };
+    return () => {
+      es.removeEventListener("backlog", onBacklog);
+      es.close();
+      if (raf !== 0) cancelAnimationFrame(raf);
+    };
+  }, []);
+  return lastByIp;
 }
 
 // needsAction returns true when a declared credential is missing its
