@@ -10,8 +10,8 @@ import (
 
 	"tailscale.com/ipn"
 
-	"github.com/denoland/clawpatrol/config"
-	"github.com/denoland/clawpatrol/config/plugins/tailscaleproto"
+	"github.com/denoland/clawpatrol/internal/config"
+	"github.com/denoland/clawpatrol/internal/config/plugins/tailscaleproto"
 )
 
 func TestCredentialsInProfileWalksTunnelCredential(t *testing.T) {

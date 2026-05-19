@@ -34,12 +34,12 @@ func loadGoDocs() (*goDocs, error) {
 		return nil, err
 	}
 	dirs := []string{
-		filepath.Join(root, "config"),
-		filepath.Join(root, "config", "plugins", "approvers"),
-		filepath.Join(root, "config", "plugins", "credentials"),
-		filepath.Join(root, "config", "plugins", "tunnels"),
-		filepath.Join(root, "config", "plugins", "endpoints"),
-		filepath.Join(root, "config", "plugins", "rules"),
+		filepath.Join(root, "internal", "config"),
+		filepath.Join(root, "internal", "config", "plugins", "approvers"),
+		filepath.Join(root, "internal", "config", "plugins", "credentials"),
+		filepath.Join(root, "internal", "config", "plugins", "tunnels"),
+		filepath.Join(root, "internal", "config", "plugins", "endpoints"),
+		filepath.Join(root, "internal", "config", "plugins", "rules"),
 	}
 
 	docs := &goDocs{

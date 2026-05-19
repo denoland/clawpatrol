@@ -30,10 +30,10 @@ import (
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
 
-	"github.com/denoland/clawpatrol/config"
-	"github.com/denoland/clawpatrol/config/facet"
-	"github.com/denoland/clawpatrol/config/runtime"
 	"github.com/denoland/clawpatrol/dashboard"
+	"github.com/denoland/clawpatrol/internal/config"
+	"github.com/denoland/clawpatrol/internal/config/facet"
+	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
 
 var loginTpl = template.Must(template.New("login").Parse(dashboard.LoginHTML))

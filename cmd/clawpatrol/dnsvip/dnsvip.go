@@ -37,7 +37,7 @@ import (
 
 	"github.com/miekg/dns"
 
-	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/internal/config"
 )
 
 // hostResolver routes A/AAAA lookups for non-VIP names through the

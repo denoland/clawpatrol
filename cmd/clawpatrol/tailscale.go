@@ -38,7 +38,7 @@ import (
 	"tailscale.com/ipn"
 	"tailscale.com/tsnet"
 
-	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/internal/config"
 )
 
 // gatewayTsnetDir is the per-gateway tsnet state directory, carved out

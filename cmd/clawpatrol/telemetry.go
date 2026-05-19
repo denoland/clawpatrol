@@ -17,7 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/internal/config"
 )
 
 // Update-checker / telemetry. Contract: doc/telemetry.md.

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/internal/config"
 )
 
 // newFingerprintWebMux wires a webMux against an in-memory CA so

@@ -21,8 +21,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/denoland/clawpatrol/config"
-	"github.com/denoland/clawpatrol/config/plugins/tailscaleproto"
+	"github.com/denoland/clawpatrol/internal/config"
+	"github.com/denoland/clawpatrol/internal/config/plugins/tailscaleproto"
 )
 
 // tailscaleConnectURLTimeout caps the apiTailscaleConnect wait for

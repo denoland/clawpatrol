@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/denoland/clawpatrol/config/runtime"
+	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
 
 func TestHITLRegistryAsyncPendingApprovalCreatesRetryGrantInsteadOfSendingChannelDecision(t *testing.T) {

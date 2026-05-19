@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/denoland/clawpatrol/config"
-	"github.com/denoland/clawpatrol/config/runtime"
+	"github.com/denoland/clawpatrol/internal/config"
+	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
 
 // authTestRootPassword is the seeded root password used by tests

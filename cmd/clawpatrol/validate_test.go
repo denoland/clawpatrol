@@ -17,9 +17,9 @@ func TestValidateCmd(t *testing.T) {
 		prefix  string // wanted output prefix
 		mustHas string // substring that must appear in output
 	}{
-		{"ok-minimal", []string{"../../config/testdata/feature_minimal.hcl"}, 0, "ok: ", "1 profile(s)"},
-		{"err-unknown-endpoint", []string{"../../config/testdata/error_unknown_endpoint.hcl"}, 1, "", "mystery"},
-		{"err-name-collision", []string{"../../config/testdata/error_name_collision.hcl"}, 1, "", "shared"},
+		{"ok-minimal", []string{"../../internal/config/testdata/feature_minimal.hcl"}, 0, "ok: ", "1 profile(s)"},
+		{"err-unknown-endpoint", []string{"../../internal/config/testdata/error_unknown_endpoint.hcl"}, 1, "", "mystery"},
+		{"err-name-collision", []string{"../../internal/config/testdata/error_name_collision.hcl"}, 1, "", "shared"},
 		{"usage-no-args", nil, 2, "usage:", "validate"},
 		{"usage-too-many", []string{"a.hcl", "b.hcl"}, 2, "usage:", "validate"},
 		{"usage-help", []string{"--help"}, 2, "usage:", "validate"},

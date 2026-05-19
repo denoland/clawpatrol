@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/denoland/clawpatrol/config"
-	_ "github.com/denoland/clawpatrol/config/plugins/all" // register builtin plugins
+	"github.com/denoland/clawpatrol/internal/config"
+	_ "github.com/denoland/clawpatrol/internal/config/plugins/all" // register builtin plugins
 )
 
 // TestCredentialBindings verifies the IntegrationRow Profiles +

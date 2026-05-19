@@ -11,8 +11,8 @@ import (
 	"github.com/miekg/dns"
 	_ "modernc.org/sqlite"
 
-	"github.com/denoland/clawpatrol/config"
-	"github.com/denoland/clawpatrol/config/plugins/endpoints"
+	"github.com/denoland/clawpatrol/internal/config"
+	"github.com/denoland/clawpatrol/internal/config/plugins/endpoints"
 )
 
 // testDB opens a fresh sqlite db with the dnsvip_allocations schema

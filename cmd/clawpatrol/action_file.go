@@ -22,10 +22,10 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/denoland/clawpatrol/config"
-	"github.com/denoland/clawpatrol/config/match"
-	k8sfacet "github.com/denoland/clawpatrol/config/plugins/facets/k8s"
-	sqlfacet "github.com/denoland/clawpatrol/config/plugins/facets/sql"
+	"github.com/denoland/clawpatrol/internal/config"
+	"github.com/denoland/clawpatrol/internal/config/match"
+	k8sfacet "github.com/denoland/clawpatrol/internal/config/plugins/facets/k8s"
+	sqlfacet "github.com/denoland/clawpatrol/internal/config/plugins/facets/sql"
 )
 
 // Fixture is the on-disk shape. Field order matters for marshalling:

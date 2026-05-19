@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/internal/config"
 )
 
 type testSecretSlots []config.SecretSlot

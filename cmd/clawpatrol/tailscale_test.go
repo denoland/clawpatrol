@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/internal/config"
 )
 
 func TestGatewayTsnetDir_CreatesPath(t *testing.T) {

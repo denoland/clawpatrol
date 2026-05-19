@@ -3,7 +3,7 @@ package main
 import (
 	"strings"
 
-	"github.com/denoland/clawpatrol/config/runtime"
+	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
 
 const credentialSampleRedaction = "[REDACTED credential]"

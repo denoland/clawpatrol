@@ -15,11 +15,11 @@ import (
 
 	"github.com/zclconf/go-cty/cty"
 
-	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/internal/config"
 
 	// Side-effect import: every plugin's init() calls config.Register
 	// so AllPlugins(kind) returns the full set during generation.
-	_ "github.com/denoland/clawpatrol/config/plugins/all"
+	_ "github.com/denoland/clawpatrol/internal/config/plugins/all"
 )
 
 // Generate renders the full reference. Returns the document text;

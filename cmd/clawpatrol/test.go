@@ -12,9 +12,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/denoland/clawpatrol/config"
-	"github.com/denoland/clawpatrol/config/extplugin"
-	"github.com/denoland/clawpatrol/config/runtime"
+	"github.com/denoland/clawpatrol/internal/config"
+	"github.com/denoland/clawpatrol/internal/config/extplugin"
+	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
 
 const testUsage = `usage: clawpatrol test <config.hcl> <fixture.json | fixture-dir>

@@ -17,7 +17,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/internal/config"
 )
 
 const ScopeUser = "user"

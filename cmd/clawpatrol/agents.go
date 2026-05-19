@@ -18,8 +18,8 @@ import (
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"tailscale.com/client/local"
 
-	"github.com/denoland/clawpatrol/config"
-	"github.com/denoland/clawpatrol/config/plugins/tailscaleproto"
+	"github.com/denoland/clawpatrol/internal/config"
+	"github.com/denoland/clawpatrol/internal/config/plugins/tailscaleproto"
 )
 
 type Agent struct {

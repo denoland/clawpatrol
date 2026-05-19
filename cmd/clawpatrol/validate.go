@@ -5,8 +5,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/denoland/clawpatrol/config"
-	"github.com/denoland/clawpatrol/config/extplugin"
+	"github.com/denoland/clawpatrol/internal/config"
+	"github.com/denoland/clawpatrol/internal/config/extplugin"
 )
 
 // runValidate is the CLI entry: print msg, exit with code.

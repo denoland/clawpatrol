@@ -33,7 +33,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/denoland/clawpatrol/config"
+	"github.com/denoland/clawpatrol/internal/config"
 )
 
 const (

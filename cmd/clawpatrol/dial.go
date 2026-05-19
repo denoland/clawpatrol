@@ -18,8 +18,8 @@ import (
 
 	utls "github.com/refraction-networking/utls"
 
-	"github.com/denoland/clawpatrol/config"
-	"github.com/denoland/clawpatrol/config/runtime"
+	"github.com/denoland/clawpatrol/internal/config"
+	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
 
 // browserTLSHosts: hosts whose Cloudflare WAF rejects plain Go TLS

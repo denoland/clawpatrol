@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/denoland/clawpatrol/config"
-	_ "github.com/denoland/clawpatrol/config/plugins/all"
+	"github.com/denoland/clawpatrol/internal/config"
+	_ "github.com/denoland/clawpatrol/internal/config/plugins/all"
 )
 
 func TestHITLOperationAcceptedResponseUsesConfiguredPublicURL(t *testing.T) {

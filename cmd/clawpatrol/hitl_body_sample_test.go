@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/denoland/clawpatrol/config"
-	"github.com/denoland/clawpatrol/config/runtime"
+	"github.com/denoland/clawpatrol/internal/config"
+	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
 
 type captureBodySampleApprover struct {

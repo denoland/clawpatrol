@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/denoland/clawpatrol/config"
-	sqlfacet "github.com/denoland/clawpatrol/config/plugins/facets/sql"
+	"github.com/denoland/clawpatrol/internal/config"
+	sqlfacet "github.com/denoland/clawpatrol/internal/config/plugins/facets/sql"
 )
 
 func TestFixtureUnmarshalAcceptsMissingEndpoint(t *testing.T) {

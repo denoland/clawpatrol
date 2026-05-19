@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/denoland/clawpatrol/config"
-	"github.com/denoland/clawpatrol/config/match"
-	"github.com/denoland/clawpatrol/config/runtime"
+	"github.com/denoland/clawpatrol/internal/config"
+	"github.com/denoland/clawpatrol/internal/config/match"
+	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
 
 const hitlRetryMismatchErrorValue = "hitl_retry_mismatch"

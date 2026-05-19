@@ -1,6 +1,6 @@
 // Command docgen generates site/doc/config-reference.md from the
 // clawpatrol HCL config plugin registry. Schema source of truth is
-// the Go structs under config/plugins/ and the operational structs
+// the Go structs under internal/config/plugins/ and the operational structs
 // in config/. Field documentation is read from Go source comments.
 //
 // The generator is idempotent: re-running on an unchanged tree

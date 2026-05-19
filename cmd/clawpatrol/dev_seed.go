@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/denoland/clawpatrol/config/runtime"
+	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
 
 // devSeedHook bundles the -dev-seed / -dev-seed-live flags so main.go
