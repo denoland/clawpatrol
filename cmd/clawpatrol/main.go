@@ -186,11 +186,11 @@ func loadConfig(path string) (*config.Gateway, *config.CompiledPolicy, error) {
 // we re-sort by the Order slice (which buildSymbols populates in
 // declaration order) and filter to KindProfile entries.
 func orderedProfileNames(p *config.Policy) []string {
+	out := []string{}
 	if p == nil {
-		return nil
+		return out
 	}
 	seen := map[string]bool{}
-	var out []string
 	for _, name := range p.Order {
 		if seen[name] {
 			continue
