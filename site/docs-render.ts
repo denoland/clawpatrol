@@ -3,6 +3,15 @@
 
 import hljs, { type HLJSApi, type LanguageFn } from "highlight.js";
 import { Marked } from "marked";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { h } from "preact";
+import { renderToString } from "preact-render-to-string";
+import { Footer } from "./src/components/Footer";
+import { Header } from "./src/components/Header";
+import { Stripe } from "./src/components/Stripe";
+import { Landing } from "./src/Landing";
+import { SITE_TITLE } from "./src/sections/HeroSection";
 
 // highlight.js doesn't ship an HCL grammar, so docs that use `hcl`
 // fences fall back to plain text. Register a minimal one — enough
@@ -38,15 +47,6 @@ const hclLang: LanguageFn = (h: HLJSApi) => ({
   ],
 });
 hljs.registerLanguage("hcl", hclLang);
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { h } from "preact";
-import { renderToString } from "preact-render-to-string";
-import { Footer } from "./src/components/Footer";
-import { Header } from "./src/components/Header";
-import { Landing } from "./src/Landing";
-import { Stripe } from "./src/components/Stripe";
-import { SITE_TITLE } from "./src/sections/HeroSection";
 
 export const SITE_ORIGIN = "https://clawpatrol.dev";
 export const DEFAULT_OG_IMAGE = `${SITE_ORIGIN}/clawpatrol.png`;
@@ -131,9 +131,10 @@ function renderMetaTags(m: PageMeta): string {
   const img = m.ogImage ?? DEFAULT_OG_IMAGE;
   const type = m.type ?? "website";
   const jsonLd = m.jsonLd
-    ? `<script type="application/ld+json">${
-      JSON.stringify(m.jsonLd).replace(/</g, "\\u003c")
-    }</script>`
+    ? `<script type="application/ld+json">${JSON.stringify(m.jsonLd).replace(
+        /</g,
+        "\\u003c",
+      )}</script>`
     : "";
   return `
   <meta name="description" content="${desc}" />
@@ -164,7 +165,11 @@ marked.use({
   renderer: {
     heading(
       this: { parser: { parseInline: (t: unknown[]) => string } },
-      { text, tokens, depth }: {
+      {
+        text,
+        tokens,
+        depth,
+      }: {
         text: string;
         tokens: unknown[];
         depth: number;
@@ -197,41 +202,36 @@ marked.use({
     // blow out the page width on narrow viewports.
     table(
       this: { parser: { parseInline: (t: unknown[]) => string } },
-      { header, align, rows }: {
+      {
+        header,
+        align,
+        rows,
+      }: {
         header: Array<{ tokens: unknown[] }>;
         align: Array<"left" | "right" | "center" | null>;
         rows: Array<Array<{ tokens: unknown[] }>>;
       },
     ) {
-      const alignAttr = (i: number) =>
-        align[i] ? ` align="${align[i]}"` : "";
-      const thead = `<thead><tr>${
-        header
-          .map(
-            (cell, i) =>
-              `<th${alignAttr(i)}>${
-                this.parser.parseInline(cell.tokens)
-              }</th>`,
-          )
-          .join("")
-      }</tr></thead>`;
-      const tbody = `<tbody>${
-        rows
-          .map(
-            (row) =>
-              `<tr>${
-                row
-                  .map(
-                    (cell, i) =>
-                      `<td${alignAttr(i)}>${
-                        this.parser.parseInline(cell.tokens)
-                      }</td>`,
-                  )
-                  .join("")
-              }</tr>`,
-          )
-          .join("")
-      }</tbody>`;
+      const alignAttr = (i: number) => (align[i] ? ` align="${align[i]}"` : "");
+      const thead = `<thead><tr>${header
+        .map(
+          (cell, i) =>
+            `<th${alignAttr(i)}>${this.parser.parseInline(cell.tokens)}</th>`,
+        )
+        .join("")}</tr></thead>`;
+      const tbody = `<tbody>${rows
+        .map(
+          (row) =>
+            `<tr>${row
+              .map(
+                (cell, i) =>
+                  `<td${alignAttr(i)}>${this.parser.parseInline(
+                    cell.tokens,
+                  )}</td>`,
+              )
+              .join("")}</tr>`,
+        )
+        .join("")}</tbody>`;
       return `<div class="table-wrap"><table>${thead}${tbody}</table></div>\n`;
     },
   },
@@ -251,9 +251,10 @@ export interface Doc {
 // shape Anthropic's Agent Skills spec mandates, which is all we need
 // here — pulling in a real YAML parser for two fields would be
 // overkill.
-function parseFrontmatter(
-  raw: string,
-): { meta: Record<string, string>; body: string } {
+function parseFrontmatter(raw: string): {
+  meta: Record<string, string>;
+  body: string;
+} {
   if (!raw.startsWith("---\n")) return { meta: {}, body: raw };
   const end = raw.indexOf("\n---\n", 4);
   if (end < 0) return { meta: {}, body: raw };
@@ -277,10 +278,9 @@ export function loadDocs(docsDir: string): Doc[] {
     const h1 = body.match(/^#\s+(.+)$/m);
     const title = meta.title ?? (h1 ? h1[1] : slug.replace(/-/g, " "));
     const html = marked.parse(body, { async: false }) as string;
-    const description = meta.description ?? extractDescription(
-      body,
-      `${title} — Claw Patrol documentation.`,
-    );
+    const description =
+      meta.description ??
+      extractDescription(body, `${title} — Claw Patrol documentation.`);
     return { slug, title, html, raw, description };
   });
 }
@@ -308,11 +308,7 @@ function renderHtml(
   return renderToString(h(component, props));
 }
 
-export function renderDocPage(
-  doc: Doc,
-  docs: Doc[],
-  extraHead = "",
-): string {
+export function renderDocPage(doc: Doc, docs: Doc[], extraHead = ""): string {
   const headerHtml = renderHtml(Header);
   const topStripeHtml = renderHtml(Stripe, { color1: "var(--color-navy-100)" });
   const bottomStripeHtml = renderHtml(Stripe, { color1: "var(--color-navy)" });
@@ -325,8 +321,7 @@ export function renderDocPage(
     description: doc.description,
     url,
     type: "article",
-    extraLinks:
-      `<link rel="alternate" type="text/markdown" href="${mdUrl}" />`,
+    extraLinks: `<link rel="alternate" type="text/markdown" href="${mdUrl}" />`,
     jsonLd: {
       "@context": "https://schema.org",
       "@type": "TechArticle",
@@ -342,7 +337,7 @@ export function renderDocPage(
     },
   });
 
-  return `<!doctype html>
+  return /*html*/ `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />

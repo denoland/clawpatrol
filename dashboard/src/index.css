@@ -1,9 +1,7 @@
 @import "tailwindcss";
 
 /* ── self-hosted families ─────────────────────────────────────────────
-   Funnel Display + Funnel Sans (same designer, drawn as a system),
-   Iosevka Extended for code blocks (4 cuts: Regular + Italic + Bold +
-   BoldItalic). */
+   Funnel Display (display), IBM Plex Sans (body), IBM Plex Mono (code). */
 
 @font-face {
   font-family: "Funnel Display";
@@ -12,41 +10,49 @@
   font-display: swap;
   src: url("/fonts/funnel-display/FunnelDisplay-Variable--latin_basic.woff2") format("woff2");
 }
+
 @font-face {
-  font-family: "Funnel Sans";
+  font-family: "IBM Plex Sans";
   font-style: normal;
-  font-weight: 300 800;
+  font-weight: 100 700;
   font-display: swap;
-  src: url("/fonts/funnel-sans/FunnelSans-Variable--latin_basic.woff2") format("woff2");
+  src: url("/fonts/ibm-plex-sans/IBMPlexSans-Variable--latin_basic.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: italic;
+  font-weight: 100 700;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-sans/IBMPlexSans-VariableItalic--latin_basic.woff2") format("woff2");
 }
 
 @font-face {
-  font-family: "Iosevka Extended";
+  font-family: "IBM Plex Mono";
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url("/fonts/iosevka-extended/IosevkaExtended-400-Normal--latin_basic.woff2") format("woff2");
+  src: url("/fonts/ibm-plex-mono/IBMPlexMono-400-Normal--latin_basic.woff2") format("woff2");
 }
 @font-face {
-  font-family: "Iosevka Extended";
+  font-family: "IBM Plex Mono";
   font-style: italic;
   font-weight: 400;
   font-display: swap;
-  src: url("/fonts/iosevka-extended/IosevkaExtended-400-Italic--latin_basic.woff2") format("woff2");
+  src: url("/fonts/ibm-plex-mono/IBMPlexMono-400-Italic--latin_basic.woff2") format("woff2");
 }
 @font-face {
-  font-family: "Iosevka Extended";
+  font-family: "IBM Plex Mono";
   font-style: normal;
   font-weight: 700;
   font-display: swap;
-  src: url("/fonts/iosevka-extended/IosevkaExtended-700-Normal--latin_basic.woff2") format("woff2");
+  src: url("/fonts/ibm-plex-mono/IBMPlexMono-700-Normal--latin_basic.woff2") format("woff2");
 }
 @font-face {
-  font-family: "Iosevka Extended";
+  font-family: "IBM Plex Mono";
   font-style: italic;
   font-weight: 700;
   font-display: swap;
-  src: url("/fonts/iosevka-extended/IosevkaExtended-700-Italic--latin_basic.woff2") format("woff2");
+  src: url("/fonts/ibm-plex-mono/IBMPlexMono-700-Italic--latin_basic.woff2") format("woff2");
 }
 
 /* ── design tokens ────────────────────────────────────────────────────
@@ -177,8 +183,8 @@
   --color-text-subtle: #82838c;
 
   --font-display: "Funnel Display", system-ui, sans-serif;
-  --font-sans: "Funnel Sans", system-ui, -apple-system, sans-serif;
-  --font-mono: "Iosevka Extended", "MonoLisa", "SF Mono", "Menlo", ui-monospace, monospace;
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", "SF Mono", "Menlo", ui-monospace, monospace;
 
   --breakpoint-xs: 32rem;
   /* Half-pixel border step (1.5px). */
@@ -262,8 +268,8 @@
     background: var(--color-canvas);
     color: var(--color-text);
     font: 14px/1.5 var(--font-sans);
-    /* No-op for the current fonts (Funnel Sans is wght-only variable);
-       kept so a future opsz-axis body face engages automatically. */
+    /* No-op for IBM Plex Sans (wght-only variable); kept so a future
+       opsz-axis body face engages automatically. */
     font-optical-sizing: auto;
     -webkit-font-smoothing: antialiased;
   }

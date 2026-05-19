@@ -61,7 +61,9 @@ const CATEGORIES: Category[] = [
         ],
       },
     ],
-    gap: "HTTP only. Non-HTTP protocols like Postgres, k8s, and SSH bypass " + "them entirely.",
+    gap:
+      "HTTP only. Non-HTTP protocols like Postgres, k8s, and SSH bypass " +
+      "them entirely.",
   },
   {
     title: "Sandbox the process",
@@ -94,11 +96,18 @@ const CATEGORIES: Category[] = [
         ],
       },
     ],
-    gap: "Secrets stay outside the agent, but the request content itself " + "passes through.",
+    gap:
+      "Secrets stay outside the agent, but the request content itself " +
+      "passes through.",
   },
 ];
 
-const COLOR_CLASSES = ["bg-rust-100", "bg-navy-100", "bg-butter-100", "bg-canvas"];
+const COLOR_CLASSES = [
+  "bg-rust-100",
+  "bg-navy-100",
+  "bg-butter-100",
+  "bg-canvas",
+];
 
 export function ComparisonSection() {
   return (
@@ -109,7 +118,11 @@ export function ComparisonSection() {
         </div>
         <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6 sm:mb-8">
           {CATEGORIES.map((c, i) => (
-            <CategoryCard key={c.title} category={c} colorClass={COLOR_CLASSES[i]} />
+            <CategoryCard
+              key={c.title}
+              category={c}
+              colorClass={COLOR_CLASSES[i]}
+            />
           ))}
         </div>
         <SynthesisCard />
@@ -118,10 +131,16 @@ export function ComparisonSection() {
   );
 }
 
-function CategoryCard({ category: c, colorClass }: { category: Category; colorClass: string }) {
+function CategoryCard({
+  category: c,
+  colorClass,
+}: {
+  category: Category;
+  colorClass: string;
+}) {
   return (
-    <div class="bg-transparent relative squircle-sm p-6 flex flex-col">
-      <div class="absolute w-full h-full border-navy border-1.5 squircle-sm inset-0 z-10" />
+    <div class="bg-transparent relative p-6 flex flex-col">
+      <div class="absolute w-full h-full border-navy border-1.5 inset-0 z-10" />
       <div class="relative z-10 flex-1">
         <h4 class="text-xl font-display text-text mb-4">{c.title}</h4>
         <div class="space-y-3">
@@ -156,7 +175,11 @@ function CategoryCard({ category: c, colorClass }: { category: Category; colorCl
       >
         {c.gap}
       </p>
-      <div class={"isolate absolute w-full h-full squircle-sm top-1.5 left-2 z-0 " + colorClass} />
+      <div
+        class={
+          "isolate absolute w-full h-full top-1.5 left-2 z-0 " + colorClass
+        }
+      />
     </div>
   );
 }
@@ -165,14 +188,20 @@ function SynthesisCard() {
   return (
     <div class="p-6 sm:p-8 squircle-md bg-rust-200 border-1.5 border-navy">
       <div class="flex items-center gap-3 mb-3">
-        <img src="/claw-patrol-icon.svg" alt="" class="w-8 h-8" aria-hidden="true" />
+        <img
+          src="/claw-patrol-icon.svg"
+          alt=""
+          class="w-8 h-8"
+          aria-hidden="true"
+        />
         <h4 class="font-display text-2xl sm:text-3xl text-text">Claw Patrol</h4>
       </div>
       <p class="text-text text-[15px] sm:text-base max-w-3xl leading-relaxed">
-        Watches the tool call at the protocol layer (Postgres, Kubernetes, HTTPS, with a plugin API
-        for the rest), so rules match SQL verbs and k8s resources directly. Holds the secrets.
-        Routes risky calls to a human or an LLM judge. Records every byte. Doesn't try to be an LLM
-        gateway or a process sandbox; use a specialized tool if you need those.
+        Watches the tool call at the protocol layer (Postgres, Kubernetes,
+        HTTPS, with a plugin API for the rest), so rules match SQL verbs and k8s
+        resources directly. Holds the secrets. Routes risky calls to a human or
+        an LLM judge. Records every byte. Doesn't try to be an LLM gateway or a
+        process sandbox; use a specialized tool if you need those.
       </p>
     </div>
   );

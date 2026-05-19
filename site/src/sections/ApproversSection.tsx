@@ -132,7 +132,7 @@ function ApproverCard({
   return (
     <article class="isolate min-w-0 bg-transparent relative lg:p-8 xl:p-12">
       <div className="hidden w-full h-full border lg:block border-navy  z-10 absolute inset-0"></div>
-      <div className="hidden lg:block absolute w-full h-full top-1 left-1 bg-navy-100  z-0" />
+      <div className="hidden lg:block absolute w-full h-full top-1 left-1 bg-horizontal-stripes  z-0" />
       <div className="relative z-10 flex flex-col gap-4">
         <header class="flex items-baseline justify-between">
           <h4 class="text-3xl font-display text-text">{title}</h4>
