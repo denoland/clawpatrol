@@ -92,6 +92,7 @@ credential "github_oauth"                 "github"        {}
 
 # Bearer tokens — opaque "Authorization: Bearer <token>".
 credential "bearer_token" "grafana-token" {}
+credential "bearer_token" "aws-token"     {}
 
 # Notion OAuth — workspace-scoped.
 credential "notion_oauth" "notion-oauth" {}
@@ -170,6 +171,18 @@ endpoint "https" "notion" {
 endpoint "https" "grafana" {
   hosts      = ["mygrafana.grafana.net"]
   credential = grafana-token
+}
+
+# HTTPS — wildcard hosts. A `*.<suffix>` entry matches any name that
+# ends in `.<suffix>` and has at least one character before that
+# suffix; `*.amazonaws.com` covers both `s3.amazonaws.com` and
+# `s3.us-east-1.amazonaws.com` but NOT the bare `amazonaws.com`.
+# Exact hosts always beat wildcards; among wildcards the longest
+# matching suffix wins (so `*.us-east-1.amazonaws.com` takes
+# precedence over `*.amazonaws.com` for east-1 names).
+endpoint "https" "aws" {
+  hosts      = ["*.amazonaws.com"]
+  credential = aws-token
 }
 
 # SSH — the wire protocol carries no SNI / Host header, so the
@@ -440,7 +453,7 @@ rule "k8s-default" {
 # fallback the dashboard assigns at approval time.
 
 profile "default" {
-  endpoints = [anthropic, openai-api, openai-chatgpt, github-api]
+  endpoints = [anthropic, openai-api, openai-chatgpt, github-api, aws]
 }
 
 profile "support" {

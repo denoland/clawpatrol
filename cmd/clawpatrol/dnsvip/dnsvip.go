@@ -38,6 +38,7 @@ import (
 	"github.com/miekg/dns"
 
 	"github.com/denoland/clawpatrol/internal/config"
+	"github.com/denoland/clawpatrol/internal/config/hostmatch"
 )
 
 // hostResolver routes A/AAAA lookups for non-VIP names through the
@@ -105,8 +106,21 @@ type Allocator struct {
 	byV4      map[netip.Addr]*entry    // 10.78.x.y → entry
 	byV6      map[netip.Addr]*entry    // fd78::N → entry
 	endpoints map[string][]EndpointHit // hostname → hits
+	patterns  []patternBinding         // wildcard host bindings, longest suffix first
 	free      []uint32                 // recycled IDs
 	used      map[uint32]struct{}      // ID set, for fast in-use check
+}
+
+// patternBinding holds one wildcard host declaration plus the
+// EndpointHits that should fire when a DNS query (or post-allocation
+// VIP lookup) lands on a name matching Pattern. Patterns are kept in
+// declaration order at the slice level; RebuildFromPolicy sorts them
+// by descending length so the lazy-lookup walk returns the most
+// specific match first.
+type patternBinding struct {
+	Pattern string
+	Port    uint16
+	Hits    []EndpointHit
 }
 
 // New constructs an allocator and loads any existing state from the
@@ -270,18 +284,32 @@ func (a *Allocator) makeEntry(id uint32, hostname string) *entry {
 // hostnames that disappeared have their pair freed back to the
 // free-list. The endpoint→hit map is rebuilt from scratch every
 // time. Persists on success.
+//
+// Wildcard hosts (`hosts = ["*.foo.com"]`) don't pre-allocate VIPs;
+// they install a pattern binding instead, and a lazy allocation
+// happens the first time intercepts() sees a DNS query that matches.
+// Lazy-allocated entries from previous policies survive a rebuild
+// when their hostname still matches some current pattern — that's
+// what keeps an agent's cached `s3.amazonaws.com → 10.78.0.5`
+// mapping valid across reloads.
 func (a *Allocator) RebuildFromPolicy(policy *config.CompiledPolicy) error {
 	if a == nil {
 		return nil
 	}
-	required := collectRequiredHosts(policy)
+	required, patterns := collectRequiredHosts(policy)
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// Free entries no longer required.
+	// Free entries that neither appear in the exact required set
+	// nor match any current wildcard pattern. Lazy entries from a
+	// previous policy whose pattern is gone are released back to
+	// the free-list here; surviving lazy entries keep their VIPs.
 	for hostname, e := range a.byName {
 		if _, keep := required[hostname]; keep {
+			continue
+		}
+		if matchPatternBindings(patterns, hostname) != nil {
 			continue
 		}
 		delete(a.byName, hostname)
@@ -290,10 +318,11 @@ func (a *Allocator) RebuildFromPolicy(policy *config.CompiledPolicy) error {
 		delete(a.used, e.ID)
 		a.free = append(a.free, e.ID)
 	}
-	// Allocate new ones in deterministic hostname order so persisted
-	// IDs match across machines that load the same policy from
-	// scratch (cosmetic — VIP order shouldn't be operator-visible
-	// except when comparing dnsvip.json across replicas).
+	// Allocate new exact entries in deterministic hostname order
+	// so persisted IDs match across machines that load the same
+	// policy from scratch (cosmetic — VIP order shouldn't be
+	// operator-visible except when comparing dnsvip.json across
+	// replicas).
 	var newHosts []string
 	for h := range required {
 		if _, exists := a.byName[h]; !exists {
@@ -307,66 +336,109 @@ func (a *Allocator) RebuildFromPolicy(policy *config.CompiledPolicy) error {
 		}
 	}
 
-	// Rebuild the endpoint→hits map.
+	// Rebuild the endpoint→hits map. For each VIP currently held
+	// (including surviving lazy entries) re-derive the hit list
+	// from whichever side of the policy claims the hostname now.
+	a.patterns = patterns
 	a.endpoints = map[string][]EndpointHit{}
 	for hostname, hits := range required {
 		a.endpoints[hostname] = hits
+	}
+	for hostname := range a.byName {
+		if _, ok := a.endpoints[hostname]; ok {
+			continue
+		}
+		if p := matchPatternBindings(patterns, hostname); p != nil {
+			a.endpoints[hostname] = p.Hits
+		}
 	}
 
 	return a.persistLocked()
 }
 
-// collectRequiredHosts walks the policy and returns the hostname →
-// []EndpointHit map for endpoints that opted into VIPs. Endpoints
-// must also be ConnRouters — that's where we get the host:port list
-// (the same one ConnIndex uses for direct-IP routing). A host string
-// without a port falls back to that protocol's default; SSH is the
-// only RequiresVIP plugin in v1 so the default is 22.
+// matchPatternBindings returns the most specific (longest pattern)
+// binding whose pattern matches hostname, or nil when none does.
+// Caller must hold whichever lock is appropriate (the patterns slice
+// is owned by Allocator.mu). patterns must already be sorted by
+// descending pattern length.
+func matchPatternBindings(patterns []patternBinding, hostname string) *patternBinding {
+	hostname = strings.ToLower(hostname)
+	for i := range patterns {
+		p := &patterns[i]
+		if hostmatch.MatchWildcard(p.Pattern, hostname) {
+			return p
+		}
+	}
+	return nil
+}
+
+// collectRequiredHosts walks the policy and returns two complementary
+// views of the VIP-needing host set:
+//
+//   - exact map: hostname → []EndpointHit, pre-allocated at rebuild
+//     time. Same shape and semantics the allocator has always had.
+//   - patterns: wildcard `*.suffix` bindings the allocator walks
+//     on-demand at DNS query time. No VIP exists yet for a pattern
+//     entry; the allocator lazy-allocates on first hit.
+//
+// Endpoints must opt into VIPs (RequiresVIP marker on the body OR
+// declare a tunnel — see CompiledEndpoint.RequiresVIP) and the
+// hostnames must come off the compiled Hosts list (the same source
+// ConnIndex consumes). A host string without a port falls back to
+// that protocol's default; SSH is the only RequiresVIP plugin in v1
+// so the default is 22.
 //
 // IP-literal entries are skipped: VIPs exist to recover hostname
 // identity from a TCP dst IP, but agents dialing an IP literal never
 // issue a DNS query, so allocating a VIP for one is wasted state. The
-// gateway's direct-IP dispatch path (consulting ConnIndex inside the
-// WG forwarder's default case) covers those entries instead.
-func collectRequiredHosts(policy *config.CompiledPolicy) map[string][]EndpointHit {
-	out := map[string][]EndpointHit{}
+// gateway's direct-IP dispatch path covers those entries instead.
+func collectRequiredHosts(policy *config.CompiledPolicy) (map[string][]EndpointHit, []patternBinding) {
+	exact := map[string][]EndpointHit{}
 	if policy == nil {
-		return out
+		return exact, nil
 	}
+	patternIdx := map[string]int{}
+	var patterns []patternBinding
 	for _, ep := range policy.Endpoints {
-		// CompiledEndpoint.RequiresVIP() OR's the body's marker
-		// with the "tunneled endpoint always needs a VIP" rule —
-		// tunneled upstream hostnames don't resolve in the agent's
-		// namespace, so VIP-routing is the only way the gateway
-		// recovers the endpoint at conn-accept.
 		if !ep.RequiresVIP() {
 			continue
 		}
-		// Use the compiled Hosts list (already populated via
-		// EndpointHosts()) — same source ConnIndex consumes.
 		for _, hp := range ep.Hosts {
-			host, portStr, err := net.SplitHostPort(hp)
-			if err != nil {
-				host = hp
-				portStr = ""
-			}
-			if host == "" {
+			host, portStr, err := hostmatch.SplitHostPort(hp)
+			if err != nil || host == "" {
 				continue
 			}
-			if net.ParseIP(host) != nil {
-				continue
-			}
-			var port = defaultPortFor(ep)
+			port := defaultPortFor(ep)
 			if portStr != "" {
 				var p uint16
 				if _, err := fmt.Sscanf(portStr, "%d", &p); err == nil {
 					port = p
 				}
 			}
-			out[host] = append(out[host], EndpointHit{Endpoint: ep, Port: port})
+			if hostmatch.IsWildcardHost(host) {
+				key := strings.ToLower(host)
+				idx, ok := patternIdx[key]
+				if !ok {
+					patternIdx[key] = len(patterns)
+					patterns = append(patterns, patternBinding{Pattern: key, Port: port})
+					idx = patternIdx[key]
+				}
+				patterns[idx].Hits = append(patterns[idx].Hits, EndpointHit{Endpoint: ep, Port: port})
+				continue
+			}
+			if net.ParseIP(host) != nil {
+				continue
+			}
+			exact[host] = append(exact[host], EndpointHit{Endpoint: ep, Port: port})
 		}
 	}
-	return out
+	sort.SliceStable(patterns, func(i, j int) bool {
+		if len(patterns[i].Pattern) != len(patterns[j].Pattern) {
+			return len(patterns[i].Pattern) > len(patterns[j].Pattern)
+		}
+		return patterns[i].Pattern < patterns[j].Pattern
+	})
+	return exact, patterns
 }
 
 // defaultPortFor returns the default port for a VIP-needing endpoint
@@ -575,11 +647,55 @@ func (a *Allocator) handleQuery(q *dns.Msg, dstIP string) *dns.Msg {
 	return resp
 }
 
+// intercepts reports whether hostname is bound to a VIP in this
+// allocator. Falls through to the wildcard pattern table on exact
+// miss and lazy-allocates a fresh VIP when a pattern claims the name
+// — the first DNS query for a `*.amazonaws.com` host pins it to a
+// stable VIP that persists across restarts (until the pattern leaves
+// policy).
 func (a *Allocator) intercepts(hostname string) bool {
+	hostname = strings.ToLower(hostname)
 	a.mu.RLock()
-	defer a.mu.RUnlock()
-	_, ok := a.byName[hostname]
-	return ok
+	if _, ok := a.byName[hostname]; ok {
+		a.mu.RUnlock()
+		return true
+	}
+	binding := matchPatternBindings(a.patterns, hostname)
+	a.mu.RUnlock()
+	if binding == nil {
+		return false
+	}
+	return a.lazyAllocateForPattern(hostname)
+}
+
+// lazyAllocateForPattern reserves a VIP for hostname under the write
+// lock. Returns true on success, false on pool exhaustion or DB
+// failure (the gateway logs the failure and the agent's DNS query
+// falls through to the upstream resolver — better than handing back a
+// half-built entry).
+func (a *Allocator) lazyAllocateForPattern(hostname string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	// Re-check under the write lock: a concurrent query might have
+	// already allocated this name.
+	if _, ok := a.byName[hostname]; ok {
+		return true
+	}
+	binding := matchPatternBindings(a.patterns, hostname)
+	if binding == nil {
+		return false
+	}
+	if _, err := a.allocateLocked(hostname); err != nil {
+		log.Printf("dnsvip: lazy-allocate %q: %v", hostname, err)
+		return false
+	}
+	a.endpoints[hostname] = binding.Hits
+	if err := a.persistLocked(); err != nil {
+		log.Printf("dnsvip: persist lazy %q: %v", hostname, err)
+		// State is still consistent in memory; persistence will
+		// retry on the next allocation.
+	}
+	return true
 }
 
 // forwardUpstream answers a query the VIP table didn't claim. For A

@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"errors"
 
+	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
 
@@ -89,14 +90,24 @@ func (e *KubernetesEndpoint) ConfigureUpstreamTLS(cfg *tls.Config) error {
 	return nil
 }
 
+// validateKubernetesEndpoint catches malformed host / server entries
+// before the compile pass turns them into a routing table. Kubernetes
+// endpoints can declare either `hosts = [...]` (managed clusters) or
+// `server = "..."` (self-hosted); EndpointHosts() returns whichever
+// is set, so the shared validateHosts check covers both shapes.
+func validateKubernetesEndpoint(d any, name string, ctx *config.BuildCtx) hcl.Diagnostics {
+	return validateHosts(d, name, ctx.Block.DefRange)
+}
+
 func init() {
 	config.Register(&config.Plugin{
-		Kind:   config.KindEndpoint,
-		Type:   "kubernetes",
-		Family: "k8s",
-		New:    func() any { return &KubernetesEndpoint{} },
-		Refs:   singularRef,
-		Build:  passthroughBuild,
+		Kind:     config.KindEndpoint,
+		Type:     "kubernetes",
+		Family:   "k8s",
+		New:      func() any { return &KubernetesEndpoint{} },
+		Refs:     singularRef,
+		Validate: validateKubernetesEndpoint,
+		Build:    passthroughBuild,
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			e := body.(*KubernetesEndpoint)
 			if len(e.Hosts) > 0 {

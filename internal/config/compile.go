@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denoland/clawpatrol/internal/config/hostmatch"
 	"github.com/denoland/clawpatrol/internal/config/match"
 )
 
@@ -51,13 +52,26 @@ type CompiledPolicy struct {
 // dispatch against. Endpoints map by name; HostIndex maps exact
 // declared hosts plus bare-host aliases for HTTPS-family default-port
 // declarations to the endpoint that owns them for fast SNI / authority
-// lookup. CompiledEndpoint.Hosts keeps the operator-declared strings
-// unchanged.
+// lookup. HostPatterns captures wildcard `*.suffix` declarations the
+// dispatcher walks when HostIndex misses. CompiledEndpoint.Hosts keeps
+// the operator-declared strings unchanged.
 type CompiledProfile struct {
 	Name            string
 	Endpoints       map[string]*CompiledEndpoint
 	HostIndex       map[string]*CompiledEndpoint
+	HostPatterns    []HostPattern
 	HITLAsyncGrants bool
+}
+
+// HostPattern is one wildcard host binding inside a CompiledProfile.
+// Pattern is the full lowercased `*.suffix` string; Endpoint is the
+// CompiledEndpoint that declared it. The dispatcher walks
+// HostPatterns when an exact HostIndex lookup misses; the slice is
+// pre-sorted at compile time so longer (more specific) suffixes are
+// tried first.
+type HostPattern struct {
+	Pattern  string
+	Endpoint *CompiledEndpoint
 }
 
 // CompiledEndpoint flattens an endpoint plus the rules that target it.
@@ -305,6 +319,22 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 			// SNI on the wire) matches a config-declared host
 			// regardless of its casing.
 			for _, h := range ce.Hosts {
+				host, _, hpErr := hostmatch.SplitHostPort(h)
+				if hpErr != nil || host == "" {
+					continue
+				}
+				if hostmatch.IsWildcardHost(host) {
+					// Wildcard patterns route on the SNI/authority
+					// host alone (no port), so collapse port-qualified
+					// `*.foo.com:443` and bare `*.foo.com` to a single
+					// pattern keyed on the host portion. Duplicates
+					// from listing both forms are removed below.
+					profile.HostPatterns = append(profile.HostPatterns, HostPattern{
+						Pattern:  strings.ToLower(host),
+						Endpoint: ce,
+					})
+					continue
+				}
 				profile.HostIndex[strings.ToLower(h)] = ce
 			}
 		}
@@ -327,6 +357,11 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 				}
 			}
 		}
+		// Wildcard patterns: longest-suffix-wins, so sort by
+		// descending pattern length. Within equal length we sort
+		// alphabetically for determinism.
+		dedupePatterns(&profile.HostPatterns)
+		sortHostPatterns(profile.HostPatterns)
 		cp.Profiles[name] = profile
 	}
 
@@ -404,7 +439,56 @@ func bareHostAlias(ep *CompiledEndpoint, host string) (string, bool) {
 	if err != nil || bare == "" || port != "443" {
 		return "", false
 	}
+	// Wildcards go through HostPatterns, not HostIndex.
+	if strings.HasPrefix(bare, "*.") {
+		return "", false
+	}
 	return bare, true
+}
+
+// dedupePatterns removes duplicate (pattern, endpoint) entries that
+// arise when a profile binds the same wildcard via both bare and
+// port-qualified forms (e.g. `*.foo.com` and `*.foo.com:443`).
+func dedupePatterns(patterns *[]HostPattern) {
+	if len(*patterns) < 2 {
+		return
+	}
+	seen := make(map[string]struct{}, len(*patterns))
+	out := (*patterns)[:0]
+	for _, p := range *patterns {
+		key := p.Pattern + "\x00" + p.Endpoint.Name
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, p)
+	}
+	*patterns = out
+}
+
+// sortHostPatterns orders patterns so the dispatcher's linear scan
+// returns the longest (most specific) suffix first. Ties break
+// alphabetically for determinism.
+func sortHostPatterns(patterns []HostPattern) {
+	sort.SliceStable(patterns, func(i, j int) bool {
+		if len(patterns[i].Pattern) != len(patterns[j].Pattern) {
+			return len(patterns[i].Pattern) > len(patterns[j].Pattern)
+		}
+		return patterns[i].Pattern < patterns[j].Pattern
+	})
+}
+
+// MatchHostPattern is the matcher used at dispatch time. Returns the
+// first endpoint whose pattern matches hostname (patterns must already
+// be sorted by descending pattern length). Hostname must already be
+// lowercased; patterns are stored lowercased by Compile.
+func MatchHostPattern(patterns []HostPattern, hostname string) *CompiledEndpoint {
+	for _, p := range patterns {
+		if hostmatch.MatchWildcard(p.Pattern, hostname) {
+			return p.Endpoint
+		}
+	}
+	return nil
 }
 
 // hostExtractor / credentialExtractor are the small cross-cut readers

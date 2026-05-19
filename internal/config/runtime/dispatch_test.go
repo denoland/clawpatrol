@@ -203,6 +203,110 @@ profile "default" { endpoints = [api, db] }
 	}
 }
 
+func TestHostEndpointWildcardMatches(t *testing.T) {
+	cp := compileFixture(t, `
+credential "bearer_token" "aws-tok" {}
+endpoint "https" "aws-ep" {
+  hosts      = ["*.amazonaws.com"]
+  credential = aws-tok
+}
+profile "default" { endpoints = [aws-ep] }
+`)
+	cases := []struct {
+		host string
+		want string
+	}{
+		{"s3.amazonaws.com", "aws-ep"},
+		{"dynamodb.us-east-1.amazonaws.com", "aws-ep"},
+		{"AB.AMAZONAWS.COM", "aws-ep"},
+		{"amazonaws.com", ""},
+		{"notamazonaws.com", ""},
+		{"foo.bar", ""},
+	}
+	for _, c := range cases {
+		got := runtime.HostEndpoint(cp, "default", c.host)
+		gotName := ""
+		if got != nil {
+			gotName = got.Name
+		}
+		if gotName != c.want {
+			t.Errorf("HostEndpoint(%q) = %q, want %q", c.host, gotName, c.want)
+		}
+	}
+}
+
+func TestHostEndpointExactBeatsWildcard(t *testing.T) {
+	cp := compileFixture(t, `
+credential "bearer_token" "aws-tok" {}
+credential "bearer_token" "s3-tok"  {}
+endpoint "https" "aws-ep" {
+  hosts      = ["*.amazonaws.com"]
+  credential = aws-tok
+}
+endpoint "https" "s3-ep" {
+  hosts      = ["s3.amazonaws.com"]
+  credential = s3-tok
+}
+profile "default" { endpoints = [aws-ep, s3-ep] }
+`)
+	if got := runtime.HostEndpoint(cp, "default", "s3.amazonaws.com"); got == nil || got.Name != "s3-ep" {
+		t.Fatalf("exact host should beat wildcard: got %+v, want s3-ep", got)
+	}
+	if got := runtime.HostEndpoint(cp, "default", "dynamodb.amazonaws.com"); got == nil || got.Name != "aws-ep" {
+		t.Fatalf("uncovered subdomain should fall to wildcard: got %+v, want aws-ep", got)
+	}
+}
+
+func TestHostEndpointLongestWildcardWins(t *testing.T) {
+	cp := compileFixture(t, `
+credential "bearer_token" "aws-tok"  {}
+credential "bearer_token" "east-tok" {}
+endpoint "https" "east-ep" {
+  hosts      = ["*.us-east-1.amazonaws.com"]
+  credential = east-tok
+}
+endpoint "https" "aws-ep" {
+  hosts      = ["*.amazonaws.com"]
+  credential = aws-tok
+}
+profile "default" { endpoints = [aws-ep, east-ep] }
+`)
+	if got := runtime.HostEndpoint(cp, "default", "s3.us-east-1.amazonaws.com"); got == nil || got.Name != "east-ep" {
+		t.Fatalf("longest suffix should win: got %+v, want east-ep", got)
+	}
+	if got := runtime.HostEndpoint(cp, "default", "s3.us-west-2.amazonaws.com"); got == nil || got.Name != "aws-ep" {
+		t.Fatalf("shorter pattern picks up the rest: got %+v, want aws-ep", got)
+	}
+}
+
+func TestHostEndpointWildcardWithPortAlias(t *testing.T) {
+	cp := compileFixture(t, `
+credential "bearer_token" "aws-tok" {}
+endpoint "https" "aws-ep" {
+  hosts      = ["*.amazonaws.com:443"]
+  credential = aws-tok
+}
+profile "default" { endpoints = [aws-ep] }
+`)
+	if got := runtime.HostEndpoint(cp, "default", "s3.amazonaws.com"); got == nil || got.Name != "aws-ep" {
+		t.Fatalf("port-qualified wildcard should match bare SNI: got %+v, want aws-ep", got)
+	}
+}
+
+func TestHostEndpointWildcardSingleTenantFallback(t *testing.T) {
+	cp := compileFixture(t, `
+credential "bearer_token" "aws-tok" {}
+endpoint "https" "aws-ep" {
+  hosts      = ["*.amazonaws.com"]
+  credential = aws-tok
+}
+profile "tenant" { endpoints = [aws-ep] }
+`)
+	if got := runtime.HostEndpoint(cp, "missing-profile", "s3.amazonaws.com"); got == nil || got.Name != "aws-ep" {
+		t.Fatalf("fallback scan should find wildcard match across profiles: got %+v, want aws-ep", got)
+	}
+}
+
 // TestMatchRequest exercises priority-ordered first-match-wins
 // dispatch and the default catch-all (priority -100).
 func TestMatchRequest(t *testing.T) {

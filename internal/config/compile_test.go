@@ -103,6 +103,108 @@ func TestCompile(t *testing.T) {
 	}
 }
 
+// TestCompileWildcardHosts verifies that wildcard hosts are accepted,
+// land in HostPatterns (not HostIndex), and that malformed wildcards
+// or within-endpoint duplicates are rejected at load time.
+func TestCompileWildcardHosts(t *testing.T) {
+	src := `
+credential "bearer_token" "tok" {}
+endpoint "https" "aws" {
+  hosts      = ["*.amazonaws.com", "*.us-east-1.amazonaws.com:443"]
+  credential = tok
+}
+profile "p" { endpoints = [aws] }
+`
+	gw, diags := config.LoadBytes([]byte(src), "in.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	cp, err := config.Compile(gw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	prof := cp.Profiles["p"]
+	if prof == nil {
+		t.Fatalf("missing profile p")
+	}
+	if got := len(prof.HostPatterns); got != 2 {
+		t.Fatalf("HostPatterns count = %d, want 2 (entries: %+v)", got, prof.HostPatterns)
+	}
+	// Longest first: *.us-east-1.amazonaws.com before *.amazonaws.com.
+	if prof.HostPatterns[0].Pattern != "*.us-east-1.amazonaws.com" {
+		t.Errorf("HostPatterns[0]=%q, want *.us-east-1.amazonaws.com", prof.HostPatterns[0].Pattern)
+	}
+	if prof.HostPatterns[1].Pattern != "*.amazonaws.com" {
+		t.Errorf("HostPatterns[1]=%q, want *.amazonaws.com", prof.HostPatterns[1].Pattern)
+	}
+	// Wildcards must not leak into HostIndex.
+	for k := range prof.HostIndex {
+		if strings.HasPrefix(k, "*.") {
+			t.Errorf("HostIndex leaked wildcard %q", k)
+		}
+	}
+}
+
+func TestCompileRejectsBadHosts(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{
+			name: "malformed wildcard - empty suffix",
+			src: `
+credential "bearer_token" "tok" {}
+endpoint "https" "bad" {
+  hosts = ["*."]
+  credential = tok
+}
+profile "p" { endpoints = [bad] }
+`,
+		},
+		{
+			name: "wildcard with bare TLD",
+			src: `
+credential "bearer_token" "tok" {}
+endpoint "https" "bad" {
+  hosts = ["*.com"]
+  credential = tok
+}
+profile "p" { endpoints = [bad] }
+`,
+		},
+		{
+			name: "wildcard not at leftmost label",
+			src: `
+credential "bearer_token" "tok" {}
+endpoint "https" "bad" {
+  hosts = ["api.*.foo.com"]
+  credential = tok
+}
+profile "p" { endpoints = [bad] }
+`,
+		},
+		{
+			name: "duplicate hosts",
+			src: `
+credential "bearer_token" "tok" {}
+endpoint "https" "bad" {
+  hosts = ["api.foo.com", "api.foo.com"]
+  credential = tok
+}
+profile "p" { endpoints = [bad] }
+`,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, diags := config.LoadBytes([]byte(c.src), "in.hcl")
+			if !diags.HasErrors() {
+				t.Fatalf("load accepted bad hosts; want diagnostic")
+			}
+		})
+	}
+}
+
 // TestCompilePrioritySort verifies that rules with mixed priorities
 // land in descending priority order, matching the v14 first-match-
 // wins evaluation. Tied priorities preserve declaration order.

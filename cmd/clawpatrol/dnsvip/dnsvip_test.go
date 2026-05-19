@@ -422,6 +422,145 @@ func TestForwardUpstreamNXDomainOnUnresolvable(t *testing.T) {
 	}
 }
 
+// TestWildcardLazyAllocation covers the wildcard host path: a policy
+// declares `*.amazonaws.com` and an agent's first DNS query for
+// `s3.amazonaws.com` triggers a fresh VIP allocation. Subsequent
+// queries hit the cached entry; a query for an unrelated name does
+// not allocate.
+func TestWildcardLazyAllocation(t *testing.T) {
+	db := testDB(t)
+	a, err := New(db, DefaultCIDR4, DefaultCIDR6)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	pol := fakePolicy(t, []string{"*.amazonaws.com:22"})
+	if err := a.RebuildFromPolicy(pol); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+	// Nothing pre-allocated for the wildcard.
+	if v4, _ := a.VIPsFor("s3.amazonaws.com"); v4.IsValid() {
+		t.Fatalf("wildcard pre-allocated VIP for s3.amazonaws.com: %v", v4)
+	}
+	// First DNS query triggers a lazy allocation.
+	q := new(dns.Msg)
+	q.SetQuestion("s3.amazonaws.com.", dns.TypeA)
+	resp := a.handleQuery(q, "")
+	if resp == nil || len(resp.Answer) != 1 {
+		t.Fatalf("handleQuery for wildcard match: resp=%+v", resp)
+	}
+	aRR, ok := resp.Answer[0].(*dns.A)
+	if !ok {
+		t.Fatalf("expected A record, got %T", resp.Answer[0])
+	}
+	v4, _ := a.VIPsFor("s3.amazonaws.com")
+	if !v4.IsValid() {
+		t.Fatalf("lazy allocation did not populate byName")
+	}
+	if !net.IP(v4.AsSlice()).Equal(aRR.A) {
+		t.Fatalf("answer A %v != allocated VIP %v", aRR.A, v4)
+	}
+	// LookupVIP must round-trip back to the originating endpoint.
+	host, hits := a.LookupVIP(v4.String())
+	if host != "s3.amazonaws.com" || len(hits) != 1 {
+		t.Fatalf("LookupVIP: host=%q hits=%v", host, hits)
+	}
+	if hits[0].Endpoint == nil || hits[0].Endpoint.Name != "epA" {
+		t.Fatalf("LookupVIP returned wrong endpoint: %+v", hits[0])
+	}
+
+	// Different hostname under the same pattern gets its own VIP.
+	q2 := new(dns.Msg)
+	q2.SetQuestion("dynamodb.us-east-1.amazonaws.com.", dns.TypeA)
+	resp2 := a.handleQuery(q2, "")
+	if resp2 == nil || len(resp2.Answer) != 1 {
+		t.Fatalf("second wildcard match: %+v", resp2)
+	}
+	v4Other, _ := a.VIPsFor("dynamodb.us-east-1.amazonaws.com")
+	if v4Other == v4 {
+		t.Fatalf("two distinct wildcard names got the same VIP: %v", v4)
+	}
+
+	// Bare suffix is NOT covered by `*.amazonaws.com`.
+	if a.intercepts("amazonaws.com") {
+		t.Fatalf("`amazonaws.com` should not be intercepted by `*.amazonaws.com`")
+	}
+}
+
+// TestWildcardVIPSurvivesReload pins the persistence contract: a
+// lazy-allocated VIP that still matches a wildcard in the new policy
+// keeps its IP, so an agent's cached DNS answer remains valid.
+func TestWildcardVIPSurvivesReload(t *testing.T) {
+	db := testDB(t)
+	a, err := New(db, DefaultCIDR4, DefaultCIDR6)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	pol := fakePolicy(t, []string{"*.amazonaws.com:22"})
+	if err := a.RebuildFromPolicy(pol); err != nil {
+		t.Fatalf("Rebuild 1: %v", err)
+	}
+	a.intercepts("s3.amazonaws.com") // triggers lazy allocation
+	v4Before, _ := a.VIPsFor("s3.amazonaws.com")
+	if !v4Before.IsValid() {
+		t.Fatalf("lazy allocate did not happen")
+	}
+
+	// Reload with the same pattern — VIP must survive.
+	if err := a.RebuildFromPolicy(pol); err != nil {
+		t.Fatalf("Rebuild 2: %v", err)
+	}
+	v4After, _ := a.VIPsFor("s3.amazonaws.com")
+	if v4After != v4Before {
+		t.Fatalf("VIP drifted across reload: was %v now %v", v4Before, v4After)
+	}
+	// Endpoint→hits map must be re-populated from the pattern.
+	host, hits := a.LookupVIP(v4After.String())
+	if host != "s3.amazonaws.com" || len(hits) != 1 {
+		t.Fatalf("post-reload LookupVIP lost hits: host=%q hits=%v", host, hits)
+	}
+
+	// Persistence: a fresh allocator loaded from the same DB sees
+	// the lazy VIP and (after RebuildFromPolicy) reattaches hits.
+	b, err := New(db, DefaultCIDR4, DefaultCIDR6)
+	if err != nil {
+		t.Fatalf("New 2: %v", err)
+	}
+	if err := b.RebuildFromPolicy(pol); err != nil {
+		t.Fatalf("Rebuild on fresh allocator: %v", err)
+	}
+	v4Restart, _ := b.VIPsFor("s3.amazonaws.com")
+	if v4Restart != v4Before {
+		t.Fatalf("VIP lost across restart: was %v now %v", v4Before, v4Restart)
+	}
+}
+
+// TestWildcardVIPFreedWhenPatternRemoved checks that a lazy entry
+// whose wildcard left policy is released, matching the eager-entry
+// reload semantics.
+func TestWildcardVIPFreedWhenPatternRemoved(t *testing.T) {
+	db := testDB(t)
+	a, err := New(db, DefaultCIDR4, DefaultCIDR6)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := a.RebuildFromPolicy(fakePolicy(t, []string{"*.amazonaws.com:22"})); err != nil {
+		t.Fatalf("Rebuild 1: %v", err)
+	}
+	a.intercepts("s3.amazonaws.com")
+	if v4, _ := a.VIPsFor("s3.amazonaws.com"); !v4.IsValid() {
+		t.Fatalf("lazy allocate did not happen")
+	}
+
+	// Reload with a completely different pattern; the old entry
+	// must be freed.
+	if err := a.RebuildFromPolicy(fakePolicy(t, []string{"*.googleapis.com:22"})); err != nil {
+		t.Fatalf("Rebuild 2: %v", err)
+	}
+	if v4, _ := a.VIPsFor("s3.amazonaws.com"); v4.IsValid() {
+		t.Fatalf("entry should have been freed after pattern removed, still have %v", v4)
+	}
+}
+
 // TestForwardUpstreamRelaysOtherTypes confirms TXT (and by
 // extension SRV/MX/CAA/etc.) skips the synth path and goes through
 // relayUpstream. We send dstIP="" so the relay path returns

@@ -26,6 +26,7 @@ import (
 	"github.com/zclconf/go-cty/cty"
 
 	"github.com/denoland/clawpatrol/internal/config"
+	"github.com/denoland/clawpatrol/internal/config/hostmatch"
 )
 
 // CredentialEntry is one row inside an endpoint's credentials list.
@@ -278,13 +279,63 @@ func credentialEntrySignature(e CredentialEntry) string {
 	return e.Placeholder + "\x00" + strings.Join(dbs, "\x00")
 }
 
+// validateHosts checks the host strings the plugin body exposes via
+// EndpointHosts(). It rejects malformed entries (bad ports,
+// malformed wildcards) and within-endpoint duplicates. Endpoint
+// plugins whose hosts come from a single field (postgres' Host,
+// kubernetes' Server) also pass through here — EndpointHosts
+// returns a one-element slice for them, so the same validation
+// applies.
+func validateHosts(d any, name string, defRange hcl.Range) hcl.Diagnostics {
+	hosts := extractHostsAny(d)
+	if len(hosts) == 0 {
+		return nil
+	}
+	var diags hcl.Diagnostics
+	seen := make(map[string]struct{}, len(hosts))
+	for _, h := range hosts {
+		if err := hostmatch.ValidateHost(h); err != nil {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("Malformed host on endpoint %q", name),
+				Detail:   fmt.Sprintf("hosts entry %q: %v", h, err),
+				Subject:  &defRange,
+			})
+			continue
+		}
+		key := strings.ToLower(h)
+		if _, dup := seen[key]; dup {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("Duplicate host on endpoint %q", name),
+				Detail:   fmt.Sprintf("hosts entry %q appears more than once", h),
+				Subject:  &defRange,
+			})
+			continue
+		}
+		seen[key] = struct{}{}
+	}
+	return diags
+}
+
+// extractHostsAny mirrors compile.extractHosts but lives in this
+// package so the Validate hooks can call it without dragging the
+// internal compile pass in.
+func extractHostsAny(body any) []string {
+	if h, ok := body.(interface{ EndpointHosts() []string }); ok {
+		return h.EndpointHosts()
+	}
+	return nil
+}
+
 // multiCredValidate is the shared Validate hook for endpoint plugins
 // that accept both binding shapes. Validates the exclusivity invariant,
 // parses the list, cross-checks each entry's credential against the
 // symbol table, then stashes the parsed entries on the typed struct
-// via setCredentialEntries.
+// via setCredentialEntries. Also validates the endpoint's hosts list.
 func multiCredValidate(d any, name string, ctx *config.BuildCtx) hcl.Diagnostics {
 	var diags hcl.Diagnostics
+	diags = append(diags, validateHosts(d, name, ctx.Block.DefRange)...)
 	diags = append(diags, validateBinding(d, "endpoint", name, ctx.Block.DefRange)...)
 	hcr, ok := d.(hasCredentialsRaw)
 	if !ok {
