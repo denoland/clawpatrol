@@ -183,6 +183,7 @@ func TestRouteAuthRequirementsDocumentOnboardingBoundary(t *testing.T) {
 		{path: "/api/onboard/approve", want: authDashboardOrTailnetOperator, wantDashboardPublic: false, wantTailnetPublic: false},
 		{path: "/api/config", want: authDashboard, wantDashboardPublic: false, wantTailnetPublic: false},
 		{path: "/api/env-pushdown", want: authSelfAuthenticating, wantDashboardPublic: true, wantTailnetPublic: true},
+		{path: "/api/hitl/operations/hitl_op_test/status", want: authSelfAuthenticating, wantDashboardPublic: true, wantTailnetPublic: true},
 		{path: "/info", want: authPublic, wantDashboardPublic: true, wantTailnetPublic: true},
 		{path: "/ca.crt", want: authPublic, wantDashboardPublic: true, wantTailnetPublic: true},
 		// Login-page assets — the login page is authPublic and so are
