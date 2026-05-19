@@ -6,8 +6,7 @@ import (
 	"github.com/hashicorp/hcl/v2"
 )
 
-// Symbol is one entry in the flat namespace shared across all named
-// kinds (endpoint, credential, rule, approver, policy, profile).
+// Symbol is one entry in the per-kind namespace.
 type Symbol struct {
 	Name   string
 	Kind   Kind
@@ -25,21 +24,13 @@ func (s *Symbol) Range() hcl.Range {
 	return s.Block.DefRange
 }
 
-// SymbolTable is the indexed version of every named block in the
-// file, populated in pass 1.
-//
-// Names are unique WITHIN a kind, not globally — the v14 example
-// legitimately reuses names across kinds (e.g. `slack-avocet` is both
-// a credential and an endpoint; `notion-archive` is both an approver
-// and a rule). The single eval-context variable map is fine even with
-// cross-kind collisions because both occurrences evaluate to the same
-// string ("slack-avocet"); the RefSpec.Kind on the consuming field is
-// what disambiguates which sibling is meant.
+// SymbolTable indexes every named block in the file, populated in
+// pass 1. Names are unique within a kind; cross-kind collisions are
+// allowed because typed refs carry the kind (one-label kinds) or
+// type (two-label kinds) in the syntax.
 type SymbolTable struct {
-	byKey    map[symKey]*Symbol
-	byKind   map[Kind][]*Symbol
-	byName   map[string]*Symbol  // O(1) cross-kind lookup for diagnostics
-	allNames map[string]struct{} // for the eval context
+	byKey  map[symKey]*Symbol
+	byKind map[Kind][]*Symbol
 }
 
 type symKey struct {
@@ -48,23 +39,12 @@ type symKey struct {
 }
 
 // Get returns the symbol with (kind, name), or nil. Used by ref
-// resolution to validate bare-name references against the expected
-// kind.
+// resolution to validate references against the expected kind.
 func (t *SymbolTable) Get(kind Kind, name string) *Symbol {
 	if t == nil {
 		return nil
 	}
 	return t.byKey[symKey{Kind: kind, Name: name}]
-}
-
-// GetAny returns ANY symbol with the given name, regardless of kind.
-// O(1) — used by diagnostics that want to disambiguate "unknown name"
-// from "name exists, wrong kind."
-func (t *SymbolTable) GetAny(name string) *Symbol {
-	if t == nil {
-		return nil
-	}
-	return t.byName[name]
 }
 
 // All returns every symbol of the given kind, in deterministic
@@ -74,20 +54,6 @@ func (t *SymbolTable) All(kind Kind) []*Symbol {
 		return nil
 	}
 	return t.byKind[kind]
-}
-
-// AllNames returns every declared name (deduplicated across kinds).
-// Used to populate the hcl.EvalContext that turns bare identifiers
-// into string values.
-func (t *SymbolTable) AllNames() []string {
-	if t == nil {
-		return nil
-	}
-	out := make([]string, 0, len(t.allNames))
-	for n := range t.allNames {
-		out = append(out, n)
-	}
-	return out
 }
 
 // blockKinds is the set of block keywords the loader recognizes at
@@ -105,28 +71,19 @@ var blockKinds = map[string]Kind{
 
 // buildSymbols is pass 1. It walks the parsed file's policy blocks,
 // validates label counts, looks up each block's plugin to attach the
-// Family, registers every name in the flat namespace, and reports
-// collisions.
-//
-// Single-block kinds (defaults) are NOT added to the symbol table —
-// they don't have names and can't be referenced.
+// Family, and registers every (kind, name) in the symbol table.
 func buildSymbols(blocks hcl.Blocks) (*SymbolTable, hcl.Diagnostics) {
 	table := &SymbolTable{
-		byKey:    make(map[symKey]*Symbol),
-		byKind:   make(map[Kind][]*Symbol),
-		byName:   make(map[string]*Symbol),
-		allNames: make(map[string]struct{}),
+		byKey:  make(map[symKey]*Symbol),
+		byKind: make(map[Kind][]*Symbol),
 	}
-	// Pre-register built-in approvers (e.g. dashboard) so bare-name
-	// references like `approve = [dashboard]` resolve at load time
-	// without requiring an explicit `approver "..." "dashboard" {}`
-	// block.
+	// Pre-register built-in approvers (e.g. dashboard) so refs like
+	// `approve = [builtin.dashboard]` resolve at load time without an
+	// explicit `approver "..." "dashboard" {}` block.
 	for _, name := range builtinApproverNames {
 		sym := &Symbol{Name: name, Kind: KindApprover, Type: "builtin"}
 		table.byKey[symKey{Kind: KindApprover, Name: name}] = sym
 		table.byKind[KindApprover] = append(table.byKind[KindApprover], sym)
-		table.byName[name] = sym
-		table.allNames[name] = struct{}{}
 	}
 	var diags hcl.Diagnostics
 
@@ -177,23 +134,18 @@ func buildSymbols(blocks hcl.Blocks) (*SymbolTable, hcl.Diagnostics) {
 			Block:  block,
 		}
 
-		// Global uniqueness across all kinds — names share one flat
-		// namespace per the v14 design. Same-name-same-kind hits the
-		// branch below; same-name-different-kind hits the cross-kind
-		// branch. Both are load errors.
-		if dup := table.byName[name]; dup != nil {
+		key := symKey{Kind: kind, Name: name}
+		if dup := table.byKey[key]; dup != nil {
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
-				Summary:  fmt.Sprintf("Duplicate name %q", name),
-				Detail:   fmt.Sprintf("Names share a single flat namespace. %q is already declared as %s at %s.", name, dup.Kind, dup.Range()),
+				Summary:  fmt.Sprintf("Duplicate %s name %q", kind, name),
+				Detail:   fmt.Sprintf("%s %q is already declared at %s. Names must be unique within a kind.", kind, name, dup.Range()),
 				Subject:  &block.DefRange,
 			})
 			continue
 		}
-		table.byKey[symKey{Kind: kind, Name: name}] = sym
+		table.byKey[key] = sym
 		table.byKind[kind] = append(table.byKind[kind], sym)
-		table.byName[name] = sym
-		table.allNames[name] = struct{}{}
 	}
 
 	return table, diags

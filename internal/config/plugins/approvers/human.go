@@ -244,11 +244,11 @@ func init() {
 			return config.ValidateHITLAsyncGrant(name, a.SyncWaitTimeout, a.AsyncGrant)
 		},
 		Build: func(d any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics) { return d, nil },
-		Emit: func(body any, _ string, b *hclwrite.Body) {
+		Emit: func(body any, _ string, b *hclwrite.Body, refs *config.RefIndex) {
 			a := body.(*HumanApprover)
 			b.SetAttributeValue("channel", cty.StringVal(a.Channel))
 			if a.Credential != "" {
-				config.SetIdent(b, "credential", a.Credential)
+				config.SetIdent(b, "credential", refs.Ref(config.KindCredential, a.Credential))
 			}
 			if a.Timeout != 0 {
 				b.SetAttributeValue("timeout", cty.NumberIntVal(int64(a.Timeout)))
@@ -281,7 +281,7 @@ func init() {
 				b.SetAttributeValue("interactive", cty.True)
 			}
 			if a.Classifier != "" {
-				config.SetIdent(b, "classifier", a.Classifier)
+				config.SetIdent(b, "classifier", refs.Ref(config.KindApprover, a.Classifier))
 			}
 			if a.Message != "" {
 				b.SetAttributeValue("message", cty.StringVal(a.Message))

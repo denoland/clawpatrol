@@ -91,17 +91,17 @@ credential "bearer_token" "a" {}
 credential "bearer_token" "b" {}
 endpoint "https" "alpha" {
   hosts      = ["api.example.com"]
-  credential = a
+  credential = bearer_token.a
 }
 endpoint "https" "beta" {
   hosts      = ["api.example.com"]
-  credential = b
+  credential = bearer_token.b
 }
 endpoint "https" "gamma" {
   hosts      = ["solo.example.com"]
-  credential = a
+  credential = bearer_token.a
 }
-profile "default" { endpoints = [alpha, beta, gamma] }
+profile "default" { endpoints = [https.alpha, https.beta, https.gamma] }
 `
 	gw, diags := config.LoadBytes([]byte(hcl), "in.hcl")
 	if diags.HasErrors() {

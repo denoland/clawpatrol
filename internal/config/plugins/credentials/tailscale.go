@@ -10,7 +10,7 @@ package credentials
 //
 // HCL:
 //
-//   credential "tailscale" "my-tailnet" {}
+//   credential "tailscale_authkey" "my-tailnet" {}
 //
 //   tunnel "tailscale" "my-tunnel" {
 //     credential = my-tailnet
@@ -92,7 +92,7 @@ func (s *secretStateStore) WriteState(id ipn.StateKey, bs []byte) error {
 func init() {
 	config.Register(&config.Plugin{
 		Kind:    config.KindCredential,
-		Type:    "tailscale",
+		Type:    "tailscale_authkey",
 		New:     newer[TailscaleCredential](),
 		Runtime: (*TailscaleCredential)(nil),
 		Build:   passthrough,

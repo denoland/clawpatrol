@@ -56,7 +56,7 @@ credential "bearer_token" "github-pat" {}
 
 endpoint "https" "github" {
   hosts      = ["api.github.com", "github.com"]
-  credential = github-pat
+  credential = bearer_token.github-pat
 }
 
 # Approvers: who arbitrates when a rule needs human / LLM review.
@@ -71,20 +71,20 @@ approver "human_approver" "ops" {
 # The rule's predicate is a single CEL expression in `condition`.
 
 rule "github-reads" {
-  endpoint  = github
+  endpoint  = https.github
   condition = "http.method in ['GET', 'HEAD']"
   verdict   = "allow"
 }
 
 rule "github-writes" {
-  endpoint  = github
+  endpoint  = https.github
   condition = "http.method in ['POST', 'PUT', 'PATCH', 'DELETE']"
-  approve   = [ops]
+  approve   = [human_approver.ops]
 }
 
 # Profiles: bind a device identity to an endpoint set. Rules ride along
 # automatically because they're attached to endpoints.
 
 profile "default" {
-  endpoints = [github]
+  endpoints = [https.github]
 }

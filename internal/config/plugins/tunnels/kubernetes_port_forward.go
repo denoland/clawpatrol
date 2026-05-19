@@ -622,7 +622,7 @@ func init() {
 		Refs:    commonRefs,
 		Build:   passthrough,
 		Runtime: (*KubernetesPortForwardTunnel)(nil),
-		Emit: func(body any, _ string, b *hclwrite.Body) {
+		Emit: func(body any, _ string, b *hclwrite.Body, refs *config.RefIndex) {
 			t := body.(*KubernetesPortForwardTunnel)
 			if t.Context != "" {
 				b.SetAttributeValue("context", cty.StringVal(t.Context))
@@ -664,7 +664,7 @@ func init() {
 			if t.Region != "" {
 				b.SetAttributeValue("region", cty.StringVal(t.Region))
 			}
-			emitCommon(b, t.TunnelCommon())
+			emitCommon(b, t.TunnelCommon(), refs)
 		},
 	})
 }

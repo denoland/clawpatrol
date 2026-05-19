@@ -430,30 +430,30 @@ approver "human_approver" "billing" {
 
 endpoint "https" "stripe" {
   hosts      = ["api.stripe.com"]
-  credential = stripe-key
+  credential = bearer_token.stripe-key
 }
 
 rule "stripe-reads" {
-  endpoint  = stripe
+  endpoint  = https.stripe
   condition = "http.method == 'GET'"
   verdict   = "allow"
 }
 
 rule "stripe-no-deletes" {
-  endpoint  = stripe
+  endpoint  = https.stripe
   condition = "http.method == 'DELETE'"
   verdict   = "deny"
   reason    = "Stripe deletes go through the approval flow as POST"
 }
 
 rule "stripe-other-writes" {
-  endpoint  = stripe
+  endpoint  = https.stripe
   condition = "http.method == 'POST'"
-  approve   = [billing]
+  approve   = [human_approver.billing]
 }
 
 rule "stripe-default" {
-  endpoint = stripe
+  endpoint = https.stripe
   priority = -100
   verdict  = "deny"
 }
@@ -480,40 +480,40 @@ credential "bearer_token" "orb-prod-key" {}
 endpoint "https" "orb" {
   hosts = ["api.withorb.com"]
   credentials = [
-    { placeholder = "PH_orb_test", credential = orb-test-key },
-    { placeholder = "PH_orb_prod", credential = orb-prod-key },
+    { placeholder = "PH_orb_test", credential = bearer_token.orb-test-key },
+    { placeholder = "PH_orb_prod", credential = bearer_token.orb-prod-key },
   ]
 }
 
 rule "orb-test-allow-all" {
-  endpoint   = orb
-  credential = orb-test-key
+  endpoint   = https.orb
+  credential = bearer_token.orb-test-key
   verdict    = "allow"
 }
 
 rule "orb-prod-reads" {
-  endpoint   = orb
-  credential = orb-prod-key
+  endpoint   = https.orb
+  credential = bearer_token.orb-prod-key
   condition  = "http.method == 'GET'"
   verdict    = "allow"
 }
 
 rule "orb-prod-writes" {
-  endpoint   = orb
-  credential = orb-prod-key
+  endpoint   = https.orb
+  credential = bearer_token.orb-prod-key
   condition  = "http.method in ['POST', 'PUT', 'PATCH']"
-  approve    = [billing]
+  approve    = [human_approver.billing]
 }
 
 rule "orb-prod-deletes" {
-  endpoint   = orb
-  credential = orb-prod-key
+  endpoint   = https.orb
+  credential = bearer_token.orb-prod-key
   condition  = "http.method == 'DELETE'"
   verdict    = "deny"
 }
 ```
 
-The top-level `credential = orb-prod-key` fires when the request was
+The top-level `credential = bearer_token.orb-prod-key` fires when the request was
 *dispatched against* that credential — i.e. the agent embedded
 `PH_orb_prod` in the `Authorization: Bearer ...` slot. The matcher
 does not look at the request body for the placeholder.
@@ -533,14 +533,14 @@ credential "clickhouse_credential" "ch-prod" {}
 endpoint "clickhouse_native" "ch-o11y" {
   hosts = ["clickhouse-o11y.example"]
   credentials = [
-    { database  = "prod",        credential = ch-prod },
-    { databases = ["dev", "qa"], credential = ch-dev  },
+    { database  = "prod",        credential = clickhouse_credential.ch-prod },
+    { databases = ["dev", "qa"], credential = clickhouse_credential.ch-dev  },
   ]
 }
 
 rule "ch-prod-readonly" {
-  endpoint   = ch-o11y
-  credential = ch-prod
+  endpoint   = clickhouse_native.ch-o11y
+  credential = clickhouse_credential.ch-prod
   condition  = "sql.verb in ['select', 'show', 'explain']"
   verdict    = "allow"
 }
@@ -561,8 +561,8 @@ Approvers run in order, all must allow. The first approver is cheap
 ```hcl
 approver "llm_approver" "pg-secret-columns-judge" {
   model      = "claude-haiku-4-5-20251001"
-  credential = anthropic-key
-  policy     = pg-secret-columns
+  credential = anthropic_oauth_subscription.anthropic-key
+  policy     = policy.pg-secret-columns
 }
 approver "human_approver" "console-dba" {
   channel = "#agent-db"
@@ -579,7 +579,7 @@ rule "pg-secret-columns" {
   endpoint  = pg-deploy
   priority  = 100
   condition = "sql.verb == 'select' && sets.intersects(sql.tables, ['github_identities', 'tokens', 'domain_certificates', 'env_vars'])"
-  approve   = [pg-secret-columns-judge, console-dba]
+  approve   = [llm_approver.pg-secret-columns-judge, human_approver.console-dba]
 }
 ```
 

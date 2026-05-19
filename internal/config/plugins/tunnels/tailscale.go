@@ -417,7 +417,7 @@ func init() {
 		Refs:    commonRefs,
 		Build:   passthrough,
 		Runtime: (*TailscaleTunnel)(nil),
-		Emit: func(body any, _ string, b *hclwrite.Body) {
+		Emit: func(body any, _ string, b *hclwrite.Body, refs *config.RefIndex) {
 			t := body.(*TailscaleTunnel)
 			if t.AuthKey != "" {
 				b.SetAttributeValue("authkey", cty.StringVal(t.AuthKey))
@@ -434,7 +434,7 @@ func init() {
 			if len(t.Tags) > 0 {
 				b.SetAttributeValue("tags", config.StringListVal(t.Tags))
 			}
-			emitCommon(b, t.TunnelCommon())
+			emitCommon(b, t.TunnelCommon(), refs)
 		},
 	})
 }

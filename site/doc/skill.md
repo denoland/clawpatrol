@@ -56,8 +56,9 @@ clawpatrol test gateway.hcl fixtures/  # replay recorded actions
 
 `gateway.hcl` is HCL. Five labeled-block kinds (`credential`,
 `endpoint`, `rule`, `profile`, `approver`) plus operational
-top-level fields. Names share **one flat namespace** — references
-are bare (`credential = github-pat`, never `credential.github-pat`).
+top-level fields. References are typed (`<type>.<name>` for
+two-label kinds, `<kind>.<name>` for one-label kinds): write
+`credential = bearer_token.github-pat`, not `credential = github-pat`.
 
 ### Minimal complete example
 
@@ -79,23 +80,23 @@ credential "bearer_token" "github-pat" {}
 
 endpoint "https" "github" {
   hosts      = ["api.github.com"]
-  credential = github-pat
+  credential = bearer_token.github-pat
 }
 
 rule "github-reads" {
-  endpoint  = github
+  endpoint  = https.github
   condition = "http.method in ['GET', 'HEAD']"
   verdict   = "allow"
 }
 
 rule "github-writes" {
-  endpoint = github
+  endpoint = https.github
   verdict  = "deny"
   priority = -100
   reason   = "writes go through PR review"
 }
 
-profile "default" { endpoints = [github] }
+profile "default" { endpoints = [https.github] }
 ```
 
 ### Top-level fields
@@ -249,8 +250,8 @@ policy "no-pii-exfil" {
 
 approver "llm_approver" "judge" {
   model      = "claude-haiku-4-5-20251001"
-  credential = claude
-  policy     = no-pii-exfil
+  credential = anthropic_oauth_subscription.claude
+  policy     = policy.no-pii-exfil
 }
 
 approver "human_approver" "dba" { channel = "#dba" }
@@ -258,7 +259,7 @@ approver "human_approver" "dba" { channel = "#dba" }
 rule "pg-sensitive-read" {
   endpoint  = pg-reader
   condition = "sql.verb == 'select' && 'users' in sql.tables"
-  approve   = [judge, dba]
+  approve   = [llm_approver.judge, human_approver.dba]
 }
 ```
 
@@ -277,14 +278,14 @@ profile "trusted" { endpoints = [github, pg-writer, k8s-dev, k8s-prod] }
 ```hcl
 approver "human_approver" "ops" {
   channel    = "#agent-ops"   # via the credential’s notifier
-  credential = slack-ops      # omit for dashboard-only
+  credential = slack_tokens.slack-ops  # omit for dashboard-only
   timeout    = 600
 }
 
 approver "llm_approver" "judge" {
   model      = "claude-haiku-4-5-20251001"
-  credential = claude
-  policy     = no-pii-exfil   # references a `policy "<name>" {}` block
+  credential = anthropic_oauth_subscription.claude
+  policy     = policy.no-pii-exfil  # references a `policy "<name>" {}` block
 }
 ```
 

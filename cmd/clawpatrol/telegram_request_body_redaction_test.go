@@ -31,11 +31,11 @@ func TestTelegramInjectedTokenRedactedFromRequestBodyAuditSample(t *testing.T) {
 credential "telegram_bot_token" "telegram_cred" {}
 endpoint "https" "telegram_api" {
   hosts      = ["api.telegram.org"]
-  credential = telegram_cred
+  credential = telegram_bot_token.telegram_cred
 }
-profile "default" { endpoints = [telegram_api] }
+profile "default" { endpoints = [https.telegram_api] }
 rule "allow-telegram" {
-  endpoint = telegram_api
+  endpoint = https.telegram_api
   verdict  = "allow"
 }
 `), "telegram-test.hcl")

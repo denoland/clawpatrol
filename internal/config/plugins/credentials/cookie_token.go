@@ -41,7 +41,7 @@ func init() {
 		New:     newer[CookieToken](),
 		Runtime: (*CookieToken)(nil),
 		Build:   passthrough,
-		Emit: func(body any, _ string, b *hclwrite.Body) {
+		Emit: func(body any, _ string, b *hclwrite.Body, refs *config.RefIndex) {
 			v := body.(*CookieToken)
 			if v.CookieName != "" {
 				b.SetAttributeValue("cookie_name", cty.StringVal(v.CookieName))

@@ -12,17 +12,17 @@ the credential reference.
 Target shape:
 
 ```hcl
-credential "tailscale" "my-tailnet" {}
+credential "tailscale_authkey" "my-tailnet" {}
 
 tunnel "tailscale" "my-tunnel" {
-  credential = my-tailnet
+  credential = tailscale_authkey.my-tailnet
   hostname   = "clawpatrol-tunnel-prod"
   tags       = ["tag:client"]
 }
 
 endpoint "clickhouse_native" "o11y" {
   hosts  = ["clickhouse-o11y:9440"]
-  tunnel = my-tunnel
+  tunnel = tailscale.my-tunnel
 }
 ```
 

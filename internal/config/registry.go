@@ -12,6 +12,7 @@ import (
 var registry struct {
 	sync.RWMutex
 	byKey    map[regKey]*Plugin
+	byType   map[string]*Plugin // for cross-kind type-collision check
 	checkers []func(*Plugin) []string
 }
 
@@ -45,10 +46,21 @@ func Register(p *Plugin) {
 	defer registry.Unlock()
 	if registry.byKey == nil {
 		registry.byKey = make(map[regKey]*Plugin)
+		registry.byType = make(map[string]*Plugin)
 	}
 	k := regKey{Kind: p.Kind, Type: p.Type}
 	if _, dup := registry.byKey[k]; dup {
 		panic(fmt.Sprintf("config.Register: duplicate plugin %s/%s", p.Kind, p.Type))
+	}
+	// Typed refs (`<type>.<name>`) demand globally unique Type labels
+	// across kinds — otherwise `foo.bar` would be ambiguous in the
+	// HCL eval context. One-label kinds (Type=="") are exempt; their
+	// kind keyword is the namespace prefix.
+	if p.Type != "" {
+		if dup := registry.byType[p.Type]; dup != nil && dup.Kind != p.Kind {
+			panic(fmt.Sprintf("config.Register: plugin type %q reused across kinds %s and %s — types must be globally unique to keep typed refs unambiguous", p.Type, dup.Kind, p.Kind))
+		}
+		registry.byType[p.Type] = p
 	}
 	for _, check := range registry.checkers {
 		if msgs := check(p); len(msgs) > 0 {

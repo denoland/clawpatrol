@@ -159,10 +159,10 @@ func init() {
 		Validate: multiCredValidate,
 		Runtime:  PostgresEndpointRuntime{},
 		Build:    passthroughBuild,
-		Emit: func(body any, _ string, b *hclwrite.Body) {
+		Emit: func(body any, _ string, b *hclwrite.Body, refs *config.RefIndex) {
 			e := body.(*PostgresEndpoint)
 			b.SetAttributeValue("host", cty.StringVal(e.Host))
-			emitCredentialBinding(b, e.Credential, e.Credentials, "placeholder")
+			emitCredentialBinding(b, e.Credential, e.Credentials, "placeholder", refs)
 		},
 	})
 }

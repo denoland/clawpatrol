@@ -17,7 +17,7 @@ func TestPickSSHCredential(t *testing.T) {
 		return &config.CompiledCredential{
 			Placeholder: placeholder,
 			Credential: &config.Entity{
-				Symbol: &config.Symbol{Kind: config.KindCredential, Type: "ssh", Name: name},
+				Symbol: &config.Symbol{Kind: config.KindCredential, Type: "ssh_key", Name: name},
 			},
 		}
 	}

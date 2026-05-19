@@ -414,15 +414,15 @@ func TestPgClientToServerDeniesOversizeFrameWhenRuleReadsTruncatableFacet(t *tes
 endpoint "postgres" "db" {
   host = "db.example.com:5432"
 }
-profile "default" { endpoints = [db] }
+profile "default" { endpoints = [postgres.db] }
 
 rule "verb-allow" {
-  endpoint  = db
+  endpoint  = postgres.db
   condition = "sql.verb == 'select'"
   verdict   = "allow"
 }
 rule "default-deny" {
-  endpoint = db
+  endpoint = postgres.db
   priority = -100
   verdict  = "deny"
 }
@@ -477,13 +477,13 @@ func TestPgClientToServerForwardsOversizeFrameWhenNoRuleReadsTruncatableFacet(t 
 credential "bearer_token" "cred" {}
 endpoint "postgres" "db" {
   host       = "db.example.com:5432"
-  credential = cred
+  credential = bearer_token.cred
 }
-profile "default" { endpoints = [db] }
+profile "default" { endpoints = [postgres.db] }
 
 rule "by-credential" {
-  endpoint   = db
-  credential = cred
+  endpoint   = postgres.db
+  credential = bearer_token.cred
   verdict    = "allow"
 }
 `)
@@ -715,10 +715,10 @@ func TestPgEvaluateUnparseableSynthDeny(t *testing.T) {
 endpoint "postgres" "db" {
   host = "db.example.com:5432"
 }
-profile "default" { endpoints = [db] }
+profile "default" { endpoints = [postgres.db] }
 
 rule "ban-drops" {
-  endpoint  = db
+  endpoint  = postgres.db
   condition = "sql.verb == 'drop'"
   verdict   = "deny"
   reason    = "no drops"
@@ -753,16 +753,16 @@ func TestPgEvaluateUnparseableLetsStatementOnlyRuleRun(t *testing.T) {
 endpoint "postgres" "db" {
   host = "db.example.com:5432"
 }
-profile "default" { endpoints = [db] }
+profile "default" { endpoints = [postgres.db] }
 
 rule "allow-known-shell" {
-  endpoint  = db
+  endpoint  = postgres.db
   condition = "sql.statement.contains('DROP')"
   priority  = 100
   verdict   = "allow"
 }
 rule "ban-drops" {
-  endpoint  = db
+  endpoint  = postgres.db
   condition = "sql.verb == 'drop'"
   priority  = 50
   verdict   = "deny"

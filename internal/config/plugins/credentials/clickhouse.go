@@ -56,7 +56,7 @@ func init() {
 		New:     newer[ClickhouseCredential](),
 		Runtime: (*ClickhouseCredential)(nil),
 		Build:   passthrough,
-		Emit: func(body any, _ string, b *hclwrite.Body) {
+		Emit: func(body any, _ string, b *hclwrite.Body, refs *config.RefIndex) {
 			v := body.(*ClickhouseCredential)
 			if v.User != "" {
 				b.SetAttributeValue("user", cty.StringVal(v.User))

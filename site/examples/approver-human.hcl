@@ -1,6 +1,6 @@
 approver "human_approver" "ops" {
   channel    = "#agent-ops"
-  credential = slack-bot
+  credential = slack_tokens.slack-bot
   timeout    = 600
 }
 
@@ -13,7 +13,7 @@ credential "bearer_token" "noop" {}
 
 endpoint "https" "anchor" {
   hosts      = ["example.com"]
-  credential = noop
+  credential = bearer_token.noop
 }
 
-profile "default" { endpoints = [anchor] }
+profile "default" { endpoints = [https.anchor] }

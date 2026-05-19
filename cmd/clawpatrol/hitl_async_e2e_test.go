@@ -145,7 +145,7 @@ wg_subnet_cidr = "10.55.0.0/24"
 credential "bearer_token" "pat" {}
 endpoint "https" "api" {
   hosts      = ["api.example.test"]
-  credential = pat
+  credential = bearer_token.pat
 }
 approver "human_approver" "ops" {
   channel           = "#ops"
@@ -160,12 +160,12 @@ approver "human_approver" "ops" {
   }
 }
 rule "approved-post" {
-  endpoint  = api
+  endpoint  = https.api
   condition = "http.method == 'POST' && http.path == '/v1/resources/update'"
-  approve   = [ops]
+  approve   = [human_approver.ops]
 }
 profile "default" {
-  endpoints = [api]
+  endpoints = [https.api]
   hitl_async_grants = true
 }
 `), "hitl-async-e2e-test.hcl")

@@ -2,7 +2,7 @@ credential "bearer_token" "pat" {}
 
 endpoint "https" "github" {
   hosts      = ["api.github.com"]
-  credential = pat
+  credential = bearer_token.pat
 }
 
 # References an undeclared endpoint name.
@@ -13,5 +13,5 @@ rule "broken" {
 }
 
 profile "default" {
-  endpoints = [github]
+  endpoints = [https.github]
 }
