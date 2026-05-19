@@ -152,7 +152,9 @@ func runJoin(args []string) {
 		if gwHostFile != "" {
 			exitNode = gwHostFile
 		}
-		loginArgs := []string{"-name", exitNode, "-ca-dir", *caOut}
+		// -post-join: skip CA fetch/install + shell rc — already done
+		// by onboardViaDeviceFlow above.
+		loginArgs := []string{"-name", exitNode, "-ca-dir", *caOut, "-post-join"}
 		if *skipTrust {
 			loginArgs = append(loginArgs, "-no-trust")
 		}
@@ -280,6 +282,7 @@ func runLogin(args []string) {
 	caOut := fs.String("ca-dir", defaultClawpatrolDir(), "where to store the fetched CA")
 	skipTrust := fs.Bool("no-trust", false, "fetch CA but skip system trust install (do it manually)")
 	skipExitNode := fs.Bool("no-exit-node", false, "skip setting tailscale exit-node (run manually later)")
+	postJoin := fs.Bool("post-join", false, "continuation of `clawpatrol join --whole-machine`: skip CA fetch/install + shell rc (already done by the join flow)")
 	_ = fs.Parse(args)
 
 	// Setting exit-node redirects ALL outbound traffic via the gateway,
@@ -323,43 +326,30 @@ func runLogin(args []string) {
 		fail("no peer named %q on this tailnet — is the gateway running and joined?", *gwName)
 	}
 
-	// Fetch CA BEFORE setting exit-node. Once exit-node flips, every
-	// outbound route is rewritten and any in-flight tailscaled
-	// re-config can drop the request mid-flight.
-	if err := os.MkdirAll(*caOut, 0o700); err != nil {
-		fail("mkdir %s: %v", *caOut, err)
-	}
+	// Fetch CA BEFORE setting exit-node — once exit-node flips, an
+	// in-flight tailscaled reconfig can drop the request mid-flight.
+	// In -post-join the join flow already did this.
 	caPath := filepath.Join(*caOut, "ca.crt")
-	if err := fetchCA(peer.TailscaleIPs[0], caPath); err != nil {
-		fail("fetch CA: %v", err)
+	if !*postJoin {
+		if err := os.MkdirAll(*caOut, 0o700); err != nil {
+			fail("mkdir %s: %v", *caOut, err)
+		}
+		if err := fetchCA(peer.TailscaleIPs[0], caPath); err != nil {
+			fail("fetch CA: %v", err)
+		}
 	}
 
 	// On Linux, `tailscale set` requires sudo unless --operator=$USER
 	// was passed to `tailscale up`. tsSet handles either case.
+	//
+	// Leave DNS to tailscaled (--accept-dns=true default). VIP-routed
+	// endpoint hostnames must be dialed by IP literal until there's a
+	// reconcile-safe DNS strategy.
 	if !*skipExitNode {
-		if err := tsSet(tscli, "--exit-node="+*gwName, "--accept-dns=false"); err != nil {
+		if err := tsSet(tscli, "--exit-node="+*gwName); err != nil {
 			fail("tailscale set --exit-node=%s: %v", *gwName, err)
 		}
-		// With accept-dns=false, Tailscale stops managing /etc/resolv.conf but
-		// leaves whatever nameserver was there (often 100.100.100.100). Once the
-		// exit-node is active, that address is unreachable from the client, so
-		// DNS breaks. Point ALL DNS at the gateway so VIP interception works and
-		// public names forward correctly through the gateway's own resolver.
-		if runtime.GOOS == "linux" {
-			fixResolvConf(peer.TailscaleIPs[0])
-		}
 	}
-
-	caInstalled := false
-	caHint := ""
-	if *skipTrust {
-		caHint = manualTrustHint(caPath)
-	} else if err := installCATrust(caPath); err != nil {
-		caHint = manualTrustHint(caPath)
-	} else {
-		caInstalled = true
-	}
-	shellOK := installShellRC() == nil
 
 	fmt.Println()
 	fmt.Printf("Connected to %s's tailnet.\n", tailnetName)
@@ -367,15 +357,29 @@ func runLogin(args []string) {
 	if sshPinned {
 		items = append(items, "SSH (tcp/22) reply traffic pinned to direct route")
 	}
-	items = append(items, setupSummaryItems(joinSetup{
-		caInstalled: caInstalled,
-		caPath:      caPath,
-		caHint:      caHint,
-		shellRC:     shellOK,
-	})...)
+	if !*postJoin {
+		caInstalled := false
+		caHint := ""
+		if *skipTrust {
+			caHint = manualTrustHint(caPath)
+		} else if err := installCATrust(caPath); err != nil {
+			caHint = manualTrustHint(caPath)
+		} else {
+			caInstalled = true
+		}
+		shellOK := installShellRC() == nil
+		items = append(items, setupSummaryItems(joinSetup{
+			caInstalled: caInstalled,
+			caPath:      caPath,
+			caHint:      caHint,
+			shellRC:     shellOK,
+		})...)
+	}
 	printTreeItems(items)
 	fmt.Println()
-	fmt.Println("Installed! Try: claude")
+	if !*postJoin {
+		fmt.Println("Installed! Try: claude")
+	}
 }
 
 // installShellRC appends `eval "$(clawpatrol env)"` to the user's shell
@@ -662,94 +666,6 @@ func manualTrustHint(caPath string) string {
 		return fmt.Sprintf("sudo cp %s /usr/local/share/ca-certificates/clawpatrol.crt && sudo update-ca-certificates", caPath)
 	}
 	return "manually add " + caPath + " to your system trust store"
-}
-
-// fixResolvConf ensures DNS works after Tailscale management is disabled
-// (--accept-dns=false). When the gateway is a Tailscale node, we route ALL
-// DNS through it (gatewayIP) so VIP names (postgres, SSH) get intercepted;
-// non-VIP names forward through the gateway's own resolver, which resolves
-// ts.net names correctly since the gateway is already on the tailnet.
-//
-// Falls back to writing 8.8.8.8 directly into resolv.conf when systemd-resolved
-// is not available. Best-effort; logs warnings on failure.
-func fixResolvConf(gatewayIP string) {
-	if fixResolvConfSplitDNS(gatewayIP) {
-		return
-	}
-	// Fallback: plain resolv.conf replace.
-	const path = "/etc/resolv.conf"
-	cur, _ := os.ReadFile(path)
-	if !strings.Contains(string(cur), "100.100.100.100") {
-		return
-	}
-	writeResolv := func(content string) bool {
-		tmp, err := os.CreateTemp("/etc", ".resolv.conf.*")
-		if err != nil {
-			cmd := exec.Command("sudo", "tee", path)
-			cmd.Stdin = strings.NewReader(content)
-			out, err2 := cmd.CombinedOutput()
-			if err2 != nil {
-				fmt.Fprintf(os.Stderr, "⚠ resolv.conf: %v: %s\n", err2, out)
-				return false
-			}
-			return true
-		}
-		_, _ = tmp.WriteString(content)
-		_ = tmp.Close()
-		if err := os.Rename(tmp.Name(), path); err != nil {
-			cmd := exec.Command("sudo", "mv", tmp.Name(), path)
-			if out, err2 := cmd.CombinedOutput(); err2 != nil {
-				fmt.Fprintf(os.Stderr, "⚠ resolv.conf: %v: %s\n", err2, out)
-				_ = os.Remove(tmp.Name())
-				return false
-			}
-		}
-		return true
-	}
-	if writeResolv("nameserver 8.8.8.8\nnameserver 8.8.4.4\n") {
-		fmt.Println("Updated /etc/resolv.conf → 8.8.8.8 (Tailscale DNS disabled)")
-	}
-}
-
-// fixResolvConfSplitDNS configures systemd-resolved to route ALL DNS through
-// gatewayIP on tailscale0 (catch-all "~." domain). The gateway intercepts VIP
-// names (postgres, SSH) and forwards everything else via its own resolver,
-// which resolves ts.net names correctly. Returns true on success.
-func fixResolvConfSplitDNS(gatewayIP string) bool {
-	if exec.Command("systemctl", "is-active", "--quiet", "systemd-resolved").Run() != nil {
-		return false
-	}
-	if gatewayIP == "" {
-		gatewayIP = "8.8.8.8"
-	}
-	cmds := [][]string{
-		{"resolvectl", "dns", "tailscale0", gatewayIP},
-		{"resolvectl", "domain", "tailscale0", "~."},
-		{"ln", "-sf", "/run/systemd/resolve/stub-resolv.conf", "/etc/resolv.conf"},
-	}
-	for _, args := range cmds {
-		c := exec.Command("sudo", args...)
-		c.Stderr = os.Stderr
-		if err := c.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "⚠ split DNS: %v: %v\n", args[0], err)
-			return false
-		}
-	}
-	// Persist via networkd-dispatcher so the config survives reboots and
-	// tailscale0 interface cycling.
-	script := fmt.Sprintf("#!/bin/sh\n# clawpatrol: gateway DNS for Tailscale exit-node\n"+
-		"resolvectl dns tailscale0 %s 2>/dev/null\n"+
-		"resolvectl domain tailscale0 '~.' 2>/dev/null\n", gatewayIP)
-	const dst = "/etc/networkd-dispatcher/routable.d/51-clawpatrol-dns"
-	tmp, err := os.CreateTemp("", "clawpatrol-dns-*")
-	if err == nil {
-		_, _ = tmp.WriteString(script)
-		_ = tmp.Close()
-		_ = exec.Command("sudo", "sh", "-c",
-			fmt.Sprintf("mv %s %s && chmod +x %s", tmp.Name(), dst, dst)).Run()
-	}
-	fmt.Printf("Configured DNS: tailscale0 → %s (all names via gateway)\n", gatewayIP)
-	return true
 }
 
 func defaultClawpatrolDir() string {

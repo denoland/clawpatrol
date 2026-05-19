@@ -1662,6 +1662,10 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 // answers, axfr-style retries, or simply `dig +tcp`) keep working.
 func (g *Gateway) handleDNSTCPConn(c net.Conn, dstIP string) {
 	defer otelTrackConn("dns_tcp")()
+	if dstIP == g.tailscaleIP {
+		// Avoid self-relay loop: relayUpstream would dial ourselves.
+		dstIP = ""
+	}
 	g.dnsvip.ServeTCP(c, dstIP)
 }
 
@@ -1746,7 +1750,10 @@ func (g *Gateway) serveTSNetDirect(c net.Conn, mux http.Handler) {
 // serveTsnetDNSUDP pumps UDP/53 datagrams from the tsnet listener
 // through dnsvip.HandlePacket. Used for whole-machine exit-node
 // clients so the gateway allocates VIPs for intercepted hostnames
-// before the client's TCP follow-up arrives.
+// before the client's TCP follow-up arrives. dstIP is always "" —
+// the gateway IS the resolver on this path, so non-VIP A/AAAA fall
+// through to synthIPResponse and other types hit relayUpstream's
+// SERVFAIL guard (no self-relay loop).
 func serveTsnetDNSUDP(pc net.PacketConn, vip *dnsvip.Allocator) {
 	defer func() { _ = pc.Close() }()
 	buf := make([]byte, 4<<10)
@@ -1755,11 +1762,7 @@ func serveTsnetDNSUDP(pc net.PacketConn, vip *dnsvip.Allocator) {
 		if err != nil {
 			return
 		}
-		dstIP := ""
-		if la, ok := pc.LocalAddr().(*net.UDPAddr); ok && la.IP != nil {
-			dstIP = la.IP.String()
-		}
-		resp := vip.HandlePacket(buf[:n], dstIP)
+		resp := vip.HandlePacket(buf[:n], "")
 		if resp == nil {
 			continue
 		}
