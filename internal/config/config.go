@@ -59,6 +59,14 @@ type Gateway struct {
 	// of TTL.
 	DashboardSessionTTL string `hcl:"dashboard_session_ttl,optional"`
 
+	// InsecureNoDashboardAuth disables dashboard authentication
+	// entirely — every request is treated as if the root password
+	// principal were present. Dev convenience for `clawpatrol gateway
+	// dev.hcl` iteration. Loopback-bind only: the gateway refuses to
+	// start when this is true unless InfoListen resolves to a loopback
+	// host (127.0.0.1 / ::1). Never set in production.
+	InsecureNoDashboardAuth bool `hcl:"insecure_no_dashboard_auth,optional"`
+
 	// Telemetry opts in/out of the update-checker / anonymous usage
 	// ping (doc/telemetry.md). nil = default on; explicit `telemetry
 	// = false` silences the goroutine. Env vars CLAWPATROL_TELEMETRY=0

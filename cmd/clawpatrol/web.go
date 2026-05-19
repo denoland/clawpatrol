@@ -327,6 +327,14 @@ func (w *webMux) dashboardAuthGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 
+		// Dev escape hatch — start-up enforces this is only true
+		// when InfoListen is loopback. Treat every request as if
+		// the root password principal was set.
+		if w.g.cfg.InsecureNoDashboardAuth {
+			next.ServeHTTP(rw, r.WithContext(contextWithPrincipal(r.Context(), w.dashboardPasswordPrincipal())))
+			return
+		}
+
 		// /info, /ca.crt, /api/onboard/{start,poll,claim} stay open
 		// for brand-new clients that don't have any credential yet.
 		if w.skipsDashboardPassword(path) {

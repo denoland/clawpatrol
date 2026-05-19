@@ -2732,7 +2732,15 @@ func runGateway(args []string) {
 	warnIfStateLooselyPermissioned(stateDir)
 	setDB(db)
 	applyDashboardPasswordFlags(db, *setDashboardPassword, *resetDashboardPassword)
-	logDashboardAuthState(db, cfg)
+	if cfg.InsecureNoDashboardAuth {
+		host, _, _ := net.SplitHostPort(cfg.InfoListen)
+		if !isLoopback(host) {
+			log.Fatalf("refusing to start: insecure_no_dashboard_auth = true but info_listen %q is not loopback. Dev convenience only.", cfg.InfoListen)
+		}
+		log.Printf("dashboard auth: DISABLED via insecure_no_dashboard_auth — every request gets root-level access. Never use this in production.")
+	} else {
+		logDashboardAuthState(db, cfg)
+	}
 	blobs := newGatewayBlobStore(db)
 	endpoints.SetBlobStore(blobs)
 	certs, err := loadOrMintCA(db)
