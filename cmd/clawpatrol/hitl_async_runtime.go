@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -361,7 +362,12 @@ func writeHITLOperationAcceptedToConn(w io.Writer, op HITLOperation, publicURL s
 	defer func() { _ = resp.Body.Close() }()
 	resp.ContentLength = int64(rr.Body.Len())
 	resp.Header.Set("Content-Length", strconv.FormatInt(resp.ContentLength, 10))
-	_ = resp.Write(w)
+
+	var raw bytes.Buffer
+	if err := resp.Write(&raw); err != nil {
+		return
+	}
+	_, _ = w.Write(raw.Bytes())
 }
 
 func hitlAsyncFailureReason(err error) string {
