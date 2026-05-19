@@ -18,11 +18,8 @@ production table gets wiped and the rows aren't coming back.
 
 - **Allow / deny rules** on every outbound request, written in a
   small expression language (CEL). The variables you can reference
-  are typed and protocol-specific — for HTTP rules you reference
-  `http.method`, `http.path`, `http.headers`, `http.body_json`; for
-  SQL rules you reference `sql.verb`, `sql.tables`, `sql.statement`;
-  for Kubernetes rules `k8s.verb`, `k8s.resource`, `k8s.namespace`,
-  `k8s.name`.
+  are typed and protocol-specific — see the per-protocol fields
+  below.
 
 - **Protocol-aware.** Rules see what the agent is doing, not just
   where it's pointed. Claw Patrol terminates the full wire protocol
