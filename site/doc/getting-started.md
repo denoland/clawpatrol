@@ -1,8 +1,8 @@
 # Getting Started
 
 This guide takes you from zero to a working Claw Patrol gateway
-with one device wired in — about five minutes of typing. The
-example config works as-is; once you want to tune anything, read
+with one device wired in. The example config works as-is; once
+you want to tune anything, read
 [Configure the gateway](/docs/configure-gateway/) next.
 
 Claw Patrol has two pieces: a **gateway** that runs on a server
