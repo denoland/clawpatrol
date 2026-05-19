@@ -175,6 +175,7 @@ func (g *Gateway) transitionAsyncHITLOperation(ctx context.Context, op HITLOpera
 	if err != nil {
 		return HITLOperation{}, err
 	}
+	updated.StatusToken = op.StatusToken
 	g.updateHITLOperationMessage(context.Background(), updated)
 	return updated, nil
 }
