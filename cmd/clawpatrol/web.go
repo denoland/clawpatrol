@@ -139,7 +139,26 @@ func (w *webMux) authRequirementForPath(path string) authRequirement {
 			return req
 		}
 	}
+	// The login page is authPublic — its assets must be too, or the
+	// browser would chase /claw-patrol-logo.svg through dashboardAuthGate,
+	// land on an HTML redirect, and render a broken-image icon on every
+	// logged-out visit.
+	if isLoginPageAsset(path) {
+		return authPublic
+	}
 	return authDashboard
+}
+
+// isLoginPageAsset matches the exact set of static assets the login
+// page (www/login.html) loads while the user is unauthenticated:
+// favicon, logo, and the woff2 font subset. Anything else under /
+// stays gated.
+func isLoginPageAsset(path string) bool {
+	switch path {
+	case "/claw-patrol-icon.svg", "/claw-patrol-logo.svg":
+		return true
+	}
+	return strings.HasPrefix(path, "/fonts/")
 }
 
 // skipsDashboardPassword returns true for routes whose handlers
