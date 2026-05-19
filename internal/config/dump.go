@@ -38,6 +38,9 @@ func (g *Gateway) Dump() ([]byte, error) {
 	if len(g.DashboardOperators) > 0 {
 		out["dashboard_operators"] = g.DashboardOperators
 	}
+	if g.DashboardSessionTTL != "" {
+		out["dashboard_session_ttl"] = g.DashboardSessionTTL
+	}
 	dumpJoinFields(g, out)
 	dumpDefaultsFields(g, out)
 	if g.Policy != nil {

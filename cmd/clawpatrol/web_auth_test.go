@@ -17,9 +17,23 @@ import (
 
 // authTestRootPassword is the seeded root password used by tests
 // whose code paths exercise the dashboard auth gate. Bcrypt-hashed
-// at setup, presented via X-Clawpatrol-Secret in each request that
-// wants to bypass the gate.
+// at setup; tests authenticate by minting a session row directly
+// via authTestSessionCookie() and attaching the matching cookie to
+// the request.
 const authTestRootPassword = "test-dashboard-passphrase-1234"
+
+// authTestSessionCookie creates a real dashboard session for the
+// seeded root user and returns the matching cookie. Tests use this
+// to present an authenticated request through the gate without
+// driving the full /__login form flow.
+func authTestSessionCookie(t *testing.T, w *webMux) *http.Cookie {
+	t.Helper()
+	token, err := createDashboardSession(w.g.db, dashboardRootUsername, w.dashboardSessionTTL())
+	if err != nil {
+		t.Fatalf("createDashboardSession: %v", err)
+	}
+	return &http.Cookie{Name: cpSessionCookieName, Value: token}
+}
 
 // newOnboardAuthTestWebMux builds a webMux backed by a temporary
 // sqlite DB pre-seeded with the root password. Tests that hit
@@ -73,15 +87,16 @@ func TestOnboardApproveRequiresDashboardPasswordInWireGuardMode(t *testing.T) {
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d; body = %q", rr.Code, http.StatusUnauthorized, rr.Body.String())
 	}
-	if !strings.Contains(rr.Body.String(), "dashboard password required") {
+	if !strings.Contains(rr.Body.String(), "dashboard session required") {
 		t.Fatalf("body = %q, want dashboard password error", rr.Body.String())
 	}
 }
 
 func TestOnboardApproveWithDashboardPasswordReachesHandlerInWireGuardMode(t *testing.T) {
-	h := newOnboardAuthTestHandler(t)
+	w := newOnboardAuthTestWebMux(t)
+	h := w.handler()
 	req := httptest.NewRequest(http.MethodPost, "/api/onboard/approve?code=NOPE&profile=default", nil)
-	req.Header.Set("X-Clawpatrol-Secret", authTestRootPassword)
+	req.AddCookie(authTestSessionCookie(t, w))
 	rr := httptest.NewRecorder()
 
 	h.ServeHTTP(rr, req)
@@ -95,7 +110,8 @@ func TestOnboardApproveWithDashboardPasswordReachesHandlerInWireGuardMode(t *tes
 }
 
 func TestOnboardApproveWithDashboardPasswordMarksPendingSessionApprovedInWireGuardMode(t *testing.T) {
-	h := newOnboardAuthTestHandler(t)
+	w := newOnboardAuthTestWebMux(t)
+	h := w.handler()
 	startReq := httptest.NewRequest(http.MethodPost, "/api/onboard/start?hostname=test-device&profile=default", nil)
 	startRR := httptest.NewRecorder()
 	h.ServeHTTP(startRR, startReq)
@@ -113,7 +129,7 @@ func TestOnboardApproveWithDashboardPasswordMarksPendingSessionApprovedInWireGua
 	}
 
 	approveReq := httptest.NewRequest(http.MethodPost, "/api/onboard/approve?code="+url.QueryEscape(start.UserCode)+"&profile=default", nil)
-	approveReq.Header.Set("X-Clawpatrol-Secret", authTestRootPassword)
+	approveReq.AddCookie(authTestSessionCookie(t, w))
 	approveRR := httptest.NewRecorder()
 	h.ServeHTTP(approveRR, approveReq)
 	if approveRR.Code != http.StatusOK {
@@ -246,7 +262,7 @@ func TestOnboardApproveWithDashboardPasswordInTailscaleModeDoesNotRequireTailnet
 	w := newOnboardAuthTestWebMuxForControl(t, "tailscale")
 	h := w.handler()
 	req := httptest.NewRequest(http.MethodPost, "/api/onboard/approve?code=NOPE&profile=default", nil)
-	req.Header.Set("X-Clawpatrol-Secret", authTestRootPassword)
+	req.AddCookie(authTestSessionCookie(t, w))
 	rr := httptest.NewRecorder()
 
 	h.ServeHTTP(rr, req)

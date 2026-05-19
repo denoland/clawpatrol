@@ -256,11 +256,17 @@ func (w *webMux) routes() []webRoute {
 		{Method: http.MethodPost, Path: "/api/peer/ephemeral/tsnet/register", Auth: authSelfAuthenticating, Handler: w.apiRegisterEphemeralTsnetIP},
 		// /__login is the auth point itself — it MUST be reachable
 		// without a credential. The handler dispatches on r.Method
-		// (GET renders the form, POST validates + sets the cookie),
-		// and dashboardAuthGate further restricts it to first-run
-		// mode when no root row exists. SameSite=Lax on the cp_dash
-		// cookie blocks cross-site CSRF on the POST.
+		// (GET renders the form, POST validates + mints a session
+		// cookie), and dashboardAuthGate further restricts it to
+		// first-run mode when no root row exists. SameSite=Lax on
+		// the cp_session cookie blocks cross-site CSRF on the POST.
 		{Method: http.MethodGet, Path: "/__login", Auth: authPublic, Handler: w.apiDashboardLogin},
+		// /__logout revokes the session row + clears the cookie. The
+		// gate still applies — only an authenticated caller can log
+		// out (tailnet-allowlisted callers get 401 because there's no
+		// session to clear; the dashboard SPA disables the button for
+		// them rather than calling this endpoint).
+		{Method: http.MethodPost, Path: "/__logout", Auth: authDashboard, Handler: w.apiDashboardLogout},
 	}
 }
 
@@ -295,18 +301,27 @@ const (
 	hitlOperationNotFoundErrorValue = "hitl_operation_not_found"
 )
 
-// cpDashCookieName is the name of the cookie holding the dashboard
-// password between requests. Value is the raw password (only ever
-// transmitted to the gateway, never logged); the gate bcrypt-checks
-// it against the stored hash on every request, so rotating the
-// password invalidates every existing cookie immediately.
-const cpDashCookieName = "cp_dash"
+// cpSessionCookieName holds an opaque, server-issued session token —
+// random 256 bits, never derived from the password. The cookie is
+// HttpOnly + SameSite=Lax. The DB only stores its SHA-256, so a DB
+// leak doesn't grant access. Replaces the older cp_dash cookie that
+// stored the raw password.
+const cpSessionCookieName = "cp_session"
 
-// dashboardPasswordHeader is the API-client equivalent of the
-// cp_dash cookie — clients (curl, scripts) pass the password via
-// this header instead of negotiating cookies. Both paths go through
-// the same bcrypt compare.
-const dashboardPasswordHeader = "X-Clawpatrol-Secret"
+// dashboardSessionTTL resolves the configured session TTL or falls
+// back to the default. Validator catches bad strings at load time;
+// the duplicate parse here is so a hot-reloaded config can change
+// the TTL without restarting.
+func (w *webMux) dashboardSessionTTL() time.Duration {
+	d, err := config.DashboardSessionTTLFromString(w.g.cfg.DashboardSessionTTL)
+	if err != nil {
+		// Validator at config load would have caught this; defensive
+		// fallback to the default keeps a hot-reload typo from
+		// breaking the login flow.
+		return config.DefaultDashboardSessionTTL
+	}
+	return d
+}
 
 func (w *webMux) dashboardAuthGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
@@ -340,10 +355,10 @@ func (w *webMux) dashboardAuthGate(next http.Handler) http.Handler {
 			return
 		}
 
-		// Cookie / header path: bcrypt-verify against the stored
-		// root hash. On success we inject the dashboard principal
-		// and short-circuit the tailnetGate downstream.
-		if ok, _, _ := w.checkDashboardPasswordRequest(r); ok {
+		// Session-cookie path: look up the cookie's token-hash in
+		// the dashboard_sessions table. Hit → inject the password
+		// principal so tailnetGate downstream short-circuits.
+		if username := w.lookupSessionFromRequest(r); username != "" {
 			next.ServeHTTP(rw, r.WithContext(contextWithPrincipal(r.Context(), w.dashboardPasswordPrincipal())))
 			return
 		}
@@ -368,7 +383,7 @@ func (w *webMux) dashboardAuthGate(next http.Handler) http.Handler {
 
 		// API callers see 401; browsers get redirected to the login form.
 		if strings.HasPrefix(path, "/api/") {
-			http.Error(rw, "dashboard password required", http.StatusUnauthorized)
+			http.Error(rw, "dashboard session required", http.StatusUnauthorized)
 			return
 		}
 		http.Redirect(rw, r, dashboardLoginPath+"?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
@@ -379,26 +394,25 @@ func (w *webMux) dashboardAuthGate(next http.Handler) http.Handler {
 // endpoint. Single route to keep the auth surface small.
 const dashboardLoginPath = "/__login"
 
-// checkDashboardPasswordRequest reads the cp_dash cookie or
-// X-Clawpatrol-Secret header off r and bcrypt-compares it against
-// the stored root hash. Returns (ok, rootExists, err): rootExists=
-// false means the gate should trigger the first-run flow.
-func (w *webMux) checkDashboardPasswordRequest(r *http.Request) (bool, bool, error) {
-	var presented string
-	if c, err := r.Cookie(cpDashCookieName); err == nil {
-		presented = c.Value
+// dashboardLogoutPath revokes the cp_session cookie. POST-only —
+// SameSite=Lax on the cookie protects against drive-by GETs from
+// other origins.
+const dashboardLogoutPath = "/__logout"
+
+// lookupSessionFromRequest reads the cp_session cookie, looks up the
+// matching row, and returns the username on a live hit. Empty string
+// when missing/expired/error (the gate treats all three as "no
+// session, redirect to login").
+func (w *webMux) lookupSessionFromRequest(r *http.Request) string {
+	c, err := r.Cookie(cpSessionCookieName)
+	if err != nil || c.Value == "" {
+		return ""
 	}
-	if presented == "" {
-		presented = r.Header.Get(dashboardPasswordHeader)
+	username, ok, err := lookupDashboardSession(w.g.db, c.Value)
+	if err != nil || !ok {
+		return ""
 	}
-	if presented == "" {
-		// Still call into checkDashboardPassword so we incur the
-		// bcrypt cost regardless — keeps the timing identical
-		// between "no credential" and "wrong credential".
-		_, exists, err := checkDashboardPassword(w.g.db, dashboardRootUsername, "")
-		return false, exists, err
-	}
-	return checkDashboardPassword(w.g.db, dashboardRootUsername, presented)
+	return username
 }
 
 func safeDashboardLoginNext(next string) string {
@@ -417,9 +431,9 @@ func safeDashboardLoginNext(next string) string {
 //
 //   - first-run (GET): render the "set password" form (two fields).
 //     POST: validate password == confirm, length >= 12, upsert root,
-//     set cookie, redirect.
+//     mint a session, set cookie, redirect.
 //   - steady-state (GET): render the "enter password" form.
-//     POST: bcrypt-verify, set cookie, redirect.
+//     POST: bcrypt-verify, mint a session, set cookie, redirect.
 func (w *webMux) apiDashboardLogin(rw http.ResponseWriter, r *http.Request) {
 	next := safeDashboardLoginNext(r.URL.Query().Get("next"))
 	_, rootExists, err := lookupDashboardUser(w.g.db, dashboardRootUsername)
@@ -450,7 +464,10 @@ func (w *webMux) apiDashboardLogin(rw http.ResponseWriter, r *http.Request) {
 				return
 			}
 			log.Printf("dashboard auth: root password initialized via /__login first-run flow")
-			w.setDashboardCookie(rw, password)
+			if err := w.mintAndSetSessionCookie(rw, dashboardRootUsername); err != nil {
+				http.Error(rw, "could not mint session", http.StatusInternalServerError)
+				return
+			}
 			http.Redirect(rw, r, next, http.StatusFound)
 			return
 		}
@@ -463,11 +480,42 @@ func (w *webMux) apiDashboardLogin(rw http.ResponseWriter, r *http.Request) {
 			renderLogin(rw, next, "wrong password", false, http.StatusUnauthorized)
 			return
 		}
-		w.setDashboardCookie(rw, password)
+		if err := w.mintAndSetSessionCookie(rw, dashboardRootUsername); err != nil {
+			http.Error(rw, "could not mint session", http.StatusInternalServerError)
+			return
+		}
 		http.Redirect(rw, r, next, http.StatusFound)
 		return
 	}
 	renderLogin(rw, next, "", !rootExists, http.StatusOK)
+}
+
+// apiDashboardLogout revokes the cp_session cookie (server- and
+// client-side) and redirects to /__login. Idempotent — POSTing
+// without a cookie clears nothing and still 200s. GET / non-tailnet
+// callers without a session land here too via the gate; the cookie
+// clear is harmless in those cases.
+func (w *webMux) apiDashboardLogout(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(rw, "POST", http.StatusMethodNotAllowed)
+		return
+	}
+	if c, err := r.Cookie(cpSessionCookieName); err == nil && c.Value != "" {
+		if err := revokeDashboardSession(w.g.db, c.Value); err != nil {
+			log.Printf("revoke dashboard session: %v", err)
+		}
+	}
+	// Clear the cookie regardless of whether the row existed — the
+	// browser may have a stale value and we want it gone.
+	http.SetCookie(rw, &http.Cookie{
+		Name:     cpSessionCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+	rw.WriteHeader(http.StatusOK)
 }
 
 // dashboardMinPasswordLen is the minimum length enforced at password
@@ -475,15 +523,27 @@ func (w *webMux) apiDashboardLogin(rw http.ResponseWriter, r *http.Request) {
 // passwords; the CLI flag enforces the same limit.
 const dashboardMinPasswordLen = 12
 
-func (w *webMux) setDashboardCookie(rw http.ResponseWriter, password string) {
+// mintAndSetSessionCookie creates a row in dashboard_sessions for
+// username, then writes the raw token to the cp_session cookie. The
+// cookie's Max-Age matches the configured TTL — same window the
+// server-side row enforces — so the browser stops sending it the
+// moment the server stops accepting it.
+func (w *webMux) mintAndSetSessionCookie(rw http.ResponseWriter, username string) error {
+	ttl := w.dashboardSessionTTL()
+	token, err := createDashboardSession(w.g.db, username, ttl)
+	if err != nil {
+		log.Printf("create dashboard session: %v", err)
+		return err
+	}
 	http.SetCookie(rw, &http.Cookie{
-		Name:     cpDashCookieName,
-		Value:    password,
+		Name:     cpSessionCookieName,
+		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   30 * 24 * 3600, // 30d
+		MaxAge:   int(ttl.Seconds()),
 	})
+	return nil
 }
 
 func renderLogin(rw http.ResponseWriter, next, errMsg string, firstRun bool, status int) {
@@ -962,18 +1022,45 @@ func (w *webMux) selectedProfileForRequest(r *http.Request) (key, label string) 
 // whoamiData backs the whoami slice of /api/state. No HTTP handler —
 // the route was removed once App.tsx switched to the bundled
 // /api/state response.
+//
+// Source of truth is the principal injected by dashboardAuthGate /
+// tailnetGate. For password sessions the principal carries
+// {Kind: dashboard_password, Owner: "root"}; for tailnet allowlist
+// hits it carries {Kind: tailnet, Owner: <login>, Device, Host}. We
+// fall back to the bare whois lookup only when no principal is on
+// the context (e.g. on a route the gate let through without one,
+// which shouldn't happen for authDashboard but stays defensive).
 func (w *webMux) whoamiData(r *http.Request) map[string]string {
-	user, device, host := w.callerIdentity(r)
 	pu := w.g.cfg.PublicURL
 	if pu == "" {
 		pu = w.publicURL
 	}
-	return map[string]string{
-		"user":       user,
-		"device":     device,
-		"host":       host,
-		"public_url": pu,
+	out := map[string]string{
+		"user":        "",
+		"device":      "",
+		"host":        "",
+		"auth_method": "",
+		"public_url":  pu,
 	}
+	if p, ok := principalFromContext(r.Context()); ok {
+		out["user"] = p.Owner
+		out["device"] = p.Device
+		out["host"] = p.Host
+		switch p.Kind {
+		case principalDashboardPassword:
+			out["auth_method"] = "password"
+		case principalTailnet:
+			out["auth_method"] = "tailscale"
+		}
+		return out
+	}
+	// No principal on context — fall back to a bare whois so the
+	// frontend at least gets a device/host display string. user
+	// stays empty so the header renders "not authenticated".
+	_, device, host := w.callerIdentity(r)
+	out["device"] = device
+	out["host"] = host
+	return out
 }
 
 // apiState is the dashboard's combined refresh endpoint. Bundles
@@ -989,8 +1076,16 @@ func (w *webMux) whoamiData(r *http.Request) map[string]string {
 // idle dashboards within their 5s poll window without us needing a
 // real invalidation hook off every credential mutation.
 func (w *webMux) apiState(rw http.ResponseWriter, r *http.Request) {
-	user, _, _ := w.callerIdentity(r)
-	cacheKey := user + "|" + r.URL.Query().Get("profile")
+	// Cache key includes the principal kind + owner so a request
+	// authed by the root password and a request authed via tailnet
+	// whois don't share an entry — the whoami slice they each render
+	// is different.
+	var keyKind, keyOwner string
+	if p, ok := principalFromContext(r.Context()); ok {
+		keyKind = string(p.Kind)
+		keyOwner = p.Owner
+	}
+	cacheKey := keyKind + "|" + keyOwner + "|" + r.URL.Query().Get("profile")
 	now := time.Now()
 
 	w.stateCacheMu.RLock()
