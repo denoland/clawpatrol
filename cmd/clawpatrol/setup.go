@@ -1095,6 +1095,13 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 			}
 		}
 		_ = os.WriteFile(filepath.Join(clawDir, "mode"), []byte("tailscale\n"), 0o600)
+		// Persist the join-time --hostname so `clawpatrol run` can
+		// register each ephemeral peer under the operator-chosen name
+		// instead of os.Hostname() (which on most VMs is the system
+		// login, not the intended bot identity).
+		if hn != "" {
+			_ = os.WriteFile(filepath.Join(clawDir, "hostname"), []byte(hn+"\n"), 0o600)
+		}
 		if tailnetGWHost != "" {
 			_ = os.WriteFile(filepath.Join(clawDir, "tailnet-gateway"), []byte(tailnetGWHost+"\n"), 0o600)
 		}
@@ -1192,6 +1199,9 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	// Write mode marker files so `clawpatrol run` can detect Tailscale mode.
 	clawDir := filepath.Dir(setup.caPath)
 	_ = os.WriteFile(filepath.Join(clawDir, "mode"), []byte("tailscale\n"), 0o600)
+	if hn != "" {
+		_ = os.WriteFile(filepath.Join(clawDir, "hostname"), []byte(hn+"\n"), 0o600)
+	}
 	if tailnetGWHost != "" {
 		_ = os.WriteFile(filepath.Join(clawDir, "tailnet-gateway"), []byte(tailnetGWHost+"\n"), 0o600)
 	}
