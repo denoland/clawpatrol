@@ -21,7 +21,9 @@ type Route =
   | { name: "settings" };
 
 function parseRoute(): Route {
-  const h = window.location.hash;
+  const raw = window.location.hash;
+  const qi = raw.indexOf("?");
+  const h = qi < 0 ? raw : raw.slice(0, qi);
   if (h.startsWith("#/onboard/"))
     return {
       name: "onboard",
