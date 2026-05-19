@@ -1,12 +1,12 @@
 // slop.dev-style smooth area line chart. Stable width regardless of
-// data length (pads with zeros to fixed buckets). On `data` change the
-// path lerps from the previous shape to the new one over ~400ms via
-// rAF instead of snapping — keeps per-poll updates from looking like
-// a step jump.
+// data length (pads with zeros to fixed buckets). On `data` change a
+// scroll animation slides the existing line left by one bucket while
+// the new value enters from the right — the shape never reconstructs
+// in place, so per-poll updates read as motion instead of a jump.
 
 import { useEffect, useRef, useState } from "react";
 
-const TRANSITION_MS = 400;
+const SCROLL_MS = 800;
 
 export function Sparkline({
   data,
@@ -22,58 +22,61 @@ export function Sparkline({
   color?: string;
 }) {
   const target = padTo(data ?? [], buckets);
+  const step = buckets > 1 ? width / (buckets - 1) : 0;
+
+  // displayed is the array we actually plot. Idle: length === buckets.
+  // During the scroll animation: length === buckets + 1, with the new
+  // rightmost point sitting at x = buckets*step (just past the right
+  // edge of the viewBox) and tx animating from 0 to -step. When the
+  // animation completes we swap to the new target and reset tx.
   const [displayed, setDisplayed] = useState<number[]>(target);
-  const fromRef = useRef<number[]>(target);
-  const startRef = useRef<number>(0);
+  const [tx, setTx] = useState(0);
+  const prevTargetRef = useRef<number[]>(target);
   const rafRef = useRef<number | null>(null);
 
   useEffect(() => {
-    // First render or identical → no animation.
-    if (arraysEqual(fromRef.current, target)) return;
-    const from = fromRef.current.slice();
-    const to = target;
-    startRef.current = performance.now();
-    const tick = (now: number) => {
-      const t = Math.min(1, (now - startRef.current) / TRANSITION_MS);
-      const eased = easeOutCubic(t);
-      const next: number[] = Array.from({ length: to.length });
-      for (let i = 0; i < to.length; i++) {
-        const a = from[i] ?? 0;
-        const b = to[i] ?? 0;
-        next[i] = a + (b - a) * eased;
-      }
-      setDisplayed(next);
-      if (t < 1) {
-        rafRef.current = requestAnimationFrame(tick);
-      } else {
-        fromRef.current = to;
-        rafRef.current = null;
-      }
-    };
+    if (arraysEqual(prevTargetRef.current, target)) return;
+    const prev = prevTargetRef.current;
+    const newest = target.length > 0 ? target[target.length - 1] : 0;
+    // Pre-animation paint: render prev + newest at tx=0 so the new
+    // point is offscreen-right when the slide starts.
+    setDisplayed([...prev, newest]);
+    setTx(0);
     if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
-    rafRef.current = requestAnimationFrame(tick);
+    rafRef.current = requestAnimationFrame(() => {
+      const start = performance.now();
+      const tick = (now: number) => {
+        const t = Math.min(1, (now - start) / SCROLL_MS);
+        const eased = easeOutCubic(t);
+        setTx(-step * eased);
+        if (t < 1) {
+          rafRef.current = requestAnimationFrame(tick);
+          return;
+        }
+        setDisplayed(target);
+        setTx(0);
+        prevTargetRef.current = target;
+        rafRef.current = null;
+      };
+      rafRef.current = requestAnimationFrame(tick);
+    });
     return () => {
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
-      // Snap fromRef to last-rendered so a re-trigger lerps from there.
-      fromRef.current = displayed;
     };
-    // displayed intentionally excluded — including it would re-run the
-    // effect every frame and reset the animation.
+    // target.join(",") collapses the array to a stable dep key.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target.join(",")]);
 
-  const padded = displayed;
-  const max = Math.max(1, ...padded);
-  const step = padded.length === 1 ? 0 : width / (padded.length - 1);
-
-  const pts = padded.map((v, i) => {
+  const max = Math.max(1, ...displayed);
+  const pts = displayed.map((v, i) => {
     const x = i * step;
     const y = height - (v / max) * (height - 1) - 0.5;
     return [x, y] as const;
   });
-
-  const linePath = "M " + pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" L ");
-  const fillPath = linePath + ` L ${width},${height} L 0,${height} Z`;
+  const linePath =
+    pts.length > 0 ? "M " + pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" L ") : "";
+  const lastX = pts.length > 0 ? pts[pts.length - 1][0] : 0;
+  const fillPath = linePath + ` L ${lastX.toFixed(1)},${height} L 0,${height} Z`;
 
   return (
     <svg
@@ -82,16 +85,19 @@ export function Sparkline({
       viewBox={`0 0 ${width} ${height}`}
       className="block"
       preserveAspectRatio="none"
+      overflow="hidden"
     >
-      <path d={fillPath} fill={color} opacity={0.15} />
-      <path
-        d={linePath}
-        fill="none"
-        stroke={color}
-        strokeWidth={1.25}
-        strokeLinejoin="round"
-        strokeLinecap="round"
-      />
+      <g transform={`translate(${tx},0)`}>
+        <path d={fillPath} fill={color} opacity={0.15} />
+        <path
+          d={linePath}
+          fill="none"
+          stroke={color}
+          strokeWidth={1.25}
+          strokeLinejoin="round"
+          strokeLinecap="round"
+        />
+      </g>
     </svg>
   );
 }
