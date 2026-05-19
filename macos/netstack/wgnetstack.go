@@ -97,11 +97,6 @@ func (n *epNotify) WriteNotify() {
 // whole-machine bursts; 16384 absorbs realistic spikes.
 const netstackQueueSize = 16384
 
-// wgTunMTU matches wireguard.go's constant. 1220 fits Tailscale's
-// 1280-byte underlay without IP fragmentation. v6 unavailable inside
-// the tunnel; see the comment over there.
-const wgTunMTU = 1220
-
 func newNetTUN(addr netip.Addr, addr6 netip.Addr, mtu int) (*netTun, error) {
 	t := &netTun{
 		ep: channel.New(netstackQueueSize, uint32(mtu), ""),
@@ -319,7 +314,7 @@ func wg_netstack_init(confC *C.char, errBuf *C.char, errLen C.int) C.int {
 		setErr(errBuf, errLen, "parse client IP: no IPv4 in Address")
 		return -1
 	}
-	t, err := newNetTUN(clientIP, clientIP6, wgTunMTU)
+	t, err := newNetTUN(clientIP, clientIP6, 1420)
 	if err != nil {
 		setErr(errBuf, errLen, "newNetTUN: "+err.Error())
 		return -1

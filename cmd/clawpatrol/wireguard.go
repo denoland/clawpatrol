@@ -53,21 +53,6 @@ import (
 	"gvisor.dev/gvisor/pkg/waiter"
 )
 
-// wgTunMTU is the IP MTU of every clawpatrol-WG tunnel — server-side
-// netstack, issued wg.conf, Linux per-process TUN, macOS netstack
-// client. 1220 = 1280 (Tailscale's tailscale0 MTU) - 60 (IPv4 + UDP
-// + WG header). At 1420 (wireguard-go's bare-metal default) the
-// outer-encap packet is 1480 bytes which fragments on tailscale0
-// and TCP collapses to <2 KB/s. At 1220 inner-encap is exactly 1280
-// outer and fragmentation goes away (688 KB/s sustained in tests).
-//
-// 1220 is < 1280 (RFC 8200 IPv6 minimum), so Linux refuses
-// `ip addr add <v6>/128 dev wg0`. The wg.conf issued below omits
-// the v6 client address and uses AllowedIPs = 0.0.0.0/0 only;
-// inside-tunnel IPv6 is unavailable. Acceptable for the agent
-// use case (api.github.com, openai.com, claude.ai are all IPv4).
-const wgTunMTU = 1220
-
 // netTun is our own wireguard-go tun.Device backed by a gVisor stack +
 // channel.Endpoint. Can't use golang.zx2c4.com/wireguard/tun/netstack
 // because it builds the stack with HandleLocal=true; combined with
@@ -335,7 +320,7 @@ func StartWGServer(ts JoinConfig) (*WGServer, error) {
 	serverIP := prefix.Addr().Next() // x.x.x.1
 	serverIP6 := wg6FromV4(serverIP) // fd77::<last-octet>
 
-	tun, err := newNetTUN(serverIP, serverIP6, wgTunMTU)
+	tun, err := newNetTUN(serverIP, serverIP6, 1420)
 	if err != nil {
 		return nil, err
 	}
@@ -863,19 +848,19 @@ func (w *wireguardOnboarder) MintKey(_ context.Context, reuseIP string, _ bool) 
 	// Avoiding `DNS =` because wg-quick needs resolvconf/openresolv
 	// for that, which many minimal images lack. Backup-then-restore
 	// keeps system DNS sane after `wg-quick down`.
+	ip6 := wg6FromV4(netip.MustParseAddr(ip)).String()
 	conf := fmt.Sprintf(`[Interface]
 PrivateKey = %s
-Address = %s/32
-MTU = %d
+Address = %s/32, %s/128
 PostUp = cp /etc/resolv.conf /etc/resolv.conf.clawpatrol.bak 2>/dev/null; printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
 PostDown = mv /etc/resolv.conf.clawpatrol.bak /etc/resolv.conf 2>/dev/null || true
 
 [Peer]
 PublicKey = %s
 Endpoint = %s
-AllowedIPs = 0.0.0.0/0
+AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
-`, clientPrivB64, ip, wgTunMTU, serverPubB64, clientEndpoint)
+`, clientPrivB64, ip, ip6, serverPubB64, clientEndpoint)
 	return conf, "wireguard://" + w.iface(), ip, nil
 }
 
