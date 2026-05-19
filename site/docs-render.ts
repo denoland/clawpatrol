@@ -359,7 +359,7 @@ export function renderDocPage(doc: Doc, docs: Doc[], extraHead = ""): string {
       </nav>
     </aside>
     <main class="docs-content min-w-0 flex-1">
-      <p class="text-xs font-mono text-text-muted mb-6 text-right">
+      <p class="text-xs font-mono text-text-muted mb-6 text-right float-end">
         <a href="/docs/${doc.slug}.md"
           class="underline underline-offset-4 hover:text-rust"
         >View as markdown</a>

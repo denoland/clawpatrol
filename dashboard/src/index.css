@@ -222,19 +222,19 @@
 
 @supports not (corner-shape: squircle) {
   .squircle-sm {
-    border-radius: 0.25rem;
+    border-radius: 0.1875rem;
   }
   .squircle-md {
-    border-radius: 0.375rem;
+    border-radius: 0.25rem;
   }
   .squircle-lg {
-    border-radius: 0.625rem;
+    border-radius: 0.5rem;
   }
   .squircle-xl {
-    border-radius: 1rem;
+    border-radius: 0.75rem;
   }
   .squircle-full {
-    border-radius: 0.5rem;
+    border-radius: 0.375rem;
   }
 }
 
@@ -272,6 +272,17 @@
        opsz-axis body face engages automatically. */
     font-optical-sizing: auto;
     -webkit-font-smoothing: antialiased;
+  }
+
+  /* Balance heading wraps and immediately-following subhead <p>. */
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6,
+  :is(h1, h2, h3, h4, h5, h6) + p {
+    text-wrap: balance;
   }
 
   /* Brand-colored focus ring. Overrides the browser default (blue

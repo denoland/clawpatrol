@@ -2,7 +2,7 @@ import { Button } from "./Button";
 
 export function Header() {
   return (
-    <header class="sticky top-0 z-40 w-full py-5 bg-canvas border-b border-neutral-200">
+    <header class="sticky top-0 z-40 w-full py-5 bg-canvas ">
       <nav className="max-w-6xl mx-auto px-6 sm:px-8 flex flex-wrap sm:justify-between gap-y-2 items-center justify-center gap-16">
         <a
           href="/"

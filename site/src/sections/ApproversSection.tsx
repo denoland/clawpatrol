@@ -105,7 +105,7 @@ function HumanDiagram() {
           JC
         </div>
         <div class="bg-rust-100 border border-rust-200  px-3 py-2 text-[12px]  text-text">
-          ✓ approve — that's fine
+          ✓ approve — that’s fine
         </div>
       </div>
 
@@ -183,7 +183,7 @@ export function ApproversSection() {
           <ApproverCard
             title="LLM judge"
             verdict="require_llm"
-            pitch="A model with a custom prompt votes on each request. Verdicts are cached so it doesn't re-bill."
+            pitch="A model with a custom prompt votes on each request. Verdicts are cached so it doesn’t re-bill."
             config={LLM_CONFIG}
             diagram={<LlmDiagram />}
           />
@@ -191,7 +191,7 @@ export function ApproversSection() {
           <ApproverCard
             title="Human In The Loop"
             verdict="require_human"
-            pitch="A person votes in Slack, the dashboard, or your own webhook. Times out closed if no one's home."
+            pitch="A person votes in Slack, the dashboard, or your own webhook. Times out closed if no one’s home."
             config={HUMAN_CONFIG}
             diagram={<HumanDiagram />}
           />

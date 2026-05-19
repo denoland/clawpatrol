@@ -10,7 +10,7 @@ laptop, and run an agent.
 
 ## Install
 
-Gateway and device run the **same `clawpatrol` binary** — there's no
+Gateway and device run the **same `clawpatrol` binary** — there’s no
 separate server package. Install it on both the gateway host and any
 machine you want to enroll:
 
@@ -92,8 +92,8 @@ URL.
 
 ### Under systemd
 
-Create a dedicated service user so the gateway's state directory
-(CA private key, OAuth tokens, audit log) isn't readable by any
+Create a dedicated service user so the gateway’s state directory
+(CA private key, OAuth tokens, audit log) isn’t readable by any
 human or agent on the box:
 
 ```bash
@@ -144,7 +144,7 @@ On the machine you want to route through the gateway:
 clawpatrol join http://<gateway-host>:9080
 ```
 
-You'll see a one-time code. Open the URL it prints, confirm the code
+You’ll see a one-time code. Open the URL it prints, confirm the code
 matches, and approve. Once approved the device is enrolled, the gateway
 CA is installed in your system trust store, and `clawpatrol env` is wired
 into your shell rc.
@@ -166,7 +166,7 @@ clawpatrol run -- gh pr create
 clawpatrol run -- psql 'host=db user=agent'
 ```
 
-The gateway intercepts the wrapped process's HTTPS traffic, matches each
+The gateway intercepts the wrapped process’s HTTPS traffic, matches each
 request against the rules in `gateway.hcl`, injects the configured
 credential, and forwards the request upstream. The agent never sees the
 real key.
@@ -176,8 +176,8 @@ real key.
 A few footguns worth knowing about before you point an agent at a
 Claw Patrol gateway:
 
-- **Don't run agents on the gateway host.** `clawpatrol run` is for
-  client devices — the gateway's `state_dir` holds the CA private
+- **Don’t run agents on the gateway host.** `clawpatrol run` is for
+  client devices — the gateway’s `state_dir` holds the CA private
   key, OAuth tokens, and audit log. An agent running on the gateway
   host can read those directly, with or without `clawpatrol run` in
   front. The correct shape is: gateway on one box (small VPS, no
@@ -193,17 +193,17 @@ Claw Patrol gateway:
 
 - **`clawpatrol join --whole-machine` is for client devices only.**
   Running it on (or pointed at) the gateway host itself routes the
-  host's own traffic through its own WireGuard endpoint — a loop
+  host’s own traffic through its own WireGuard endpoint — a loop
   that breaks DNS, outbound traffic from the gateway daemon, and
-  the dashboard's reachability. Per-process routing (the default
+  the dashboard’s reachability. Per-process routing (the default
   `clawpatrol join` + `clawpatrol run` shape) is also what most
-  people actually want on a multi-purpose laptop, so they don't
+  people actually want on a multi-purpose laptop, so they don’t
   accidentally route every browser tab through the gateway.
 
-## What's next
+## What’s next
 
 - [Architecture](/docs/architecture/) — how interception works
 - [CLI](/docs/cli/) — full command reference
 - [Config reference](/docs/config-reference/) — HCL grammar
 - [Approval rules](/docs/approval-rules/) — gating writes behind a human or LLM
-- [Security model](/docs/security-model/) — what Claw Patrol does and doesn't protect against
+- [Security model](/docs/security-model/) — what Claw Patrol does and doesn’t protect against

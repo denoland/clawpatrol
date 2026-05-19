@@ -2,10 +2,10 @@
 
 Most of the protocols Claw Patrol gates — HTTPS, Postgres, ClickHouse,
 SSH, Kubernetes — ship as **built-in** plugins compiled into the
-gateway binary. When you need to gate something the binary doesn't
+gateway binary. When you need to gate something the binary doesn’t
 know about, you can ship an **external** plugin: a separate Go
 program the gateway spawns as a subprocess and talks to over gRPC,
-modeled on Terraform's provider design.
+modeled on Terraform’s provider design.
 
 External plugins extend exactly the same registry the built-ins use.
 They can declare:
@@ -15,7 +15,7 @@ They can declare:
 - **Credential types** (`credential "<type>" "<name>" { … }`) —
   describe a secret-bearing identity.
 - **Tunnel types** (`tunnel "<type>" "<name>" { … }`) — describe
-  how the gateway reaches the upstream when it isn't directly
+  how the gateway reaches the upstream when it isn’t directly
   routable.
 - **Facets** — protocol-family schemas with named fields. A facet
   exposes the variables a CEL rule condition can read
@@ -42,8 +42,8 @@ endpoint "example_smtp" "demo-mail" {
 }
 ```
 
-The `name` label (`"example"`) is informational — it's the local
-identifier you'd use to refer to this plugin's source in tooling.
+The `name` label (`"example"`) is informational — it’s the local
+identifier you’d use to refer to this plugin’s source in tooling.
 The names that actually matter are the **type names** and
 **facet names** the plugin declares in its manifest. Both are flat
 strings living in one global registry per kind (one for endpoint
@@ -99,7 +99,7 @@ Build with `go build` like any Go binary; deploy by setting
 
 For each accepted agent connection on a plugin endpoint, the
 gateway hands the plugin a `*pluginsdk.Conn` — a `net.Conn` plus
-the connection's profile / peer-IP / credential secret context.
+the connection’s profile / peer-IP / credential secret context.
 The plugin owns the byte stream from there on.
 
 ```go
@@ -127,7 +127,7 @@ verdict, err := conn.Evaluate(ctx, "example_smtp", map[string]any{
 
 The gateway:
 
-1. Walks the matched endpoint's compiled rule list with the
+1. Walks the matched endpoint’s compiled rule list with the
    action map bound to the named facet (so a rule like
    `example_smtp.verb == "MAIL"` evaluates).
 2. Runs any approve chain (LLM judge, human approver) for rules
@@ -169,7 +169,7 @@ The gateway pulls bytes only as deeply as needed:
 
 When the plugin sees the cancel it can drop its source reader.
 Bodies that overflow the cap mark the request `Truncated`; any
-rule reading the truncated field is auto-denied (the dispatcher's
+rule reading the truncated field is auto-denied (the dispatcher’s
 fail-closed gate, same one that protects the built-in HTTPS body
 buffer).
 
@@ -182,7 +182,7 @@ conditions can reference them without `has()` guards.
 
 ### Reusing a built-in facet
 
-A plugin endpoint that gates HTTPS doesn't need to redeclare a
+A plugin endpoint that gates HTTPS doesn’t need to redeclare a
 facet — set `Family: "http"` on the endpoint and shape the action
 map with the same keys the built-in `http` facet exposes
 (`method`, `path`, `headers`, `body`):
@@ -215,23 +215,23 @@ would be against any in-process HTTPS endpoint:
 every plugin referenced from the HCL is spawned and its manifest
 is checked. Beyond the HCL pipeline the validate command also runs
 a schema-only pass (`Manager.Verify`) that catches plugin
-authoring bugs even when the operator's HCL doesn't happen to
+authoring bugs even when the operator’s HCL doesn’t happen to
 exercise them:
 
-- Every declared facet's CEL env is built eagerly (with a probe
+- Every declared facet’s CEL env is built eagerly (with a probe
   condition), and facet / field names are checked against the
   CEL identifier regex `[A-Za-z_][A-Za-z0-9_]*` — typos like
   `bad-name` fail validate instead of silently breaking the first
   rule that tries to use them.
-- Every plugin endpoint's `Family` is resolved against the facet
-  registry. A typo'd Family that no rule references would
+- Every plugin endpoint’s `Family` is resolved against the facet
+  registry. A typo’d Family that no rule references would
   otherwise just route every request to default-deny at runtime —
   silent policy bypass — and now becomes a clean validate-time
   error.
 - Manifests with empty type / facet / field names or empty
   endpoint Family are rejected up front.
 - A plugin type or facet whose name collides with a built-in
-  (e.g. `https`, `http`) or with another plugin's registration
+  (e.g. `https`, `http`) or with another plugin’s registration
   surfaces as a diagnostic instead of a panic.
 
 The success line gains one summary row per loaded plugin so you

@@ -8,7 +8,7 @@ type Variant = "compact" | "expanded";
 // Navy install pill with a copy button. Two sizes:
 //   • compact — used inline (e.g. hero column).
 //   • expanded — bigger padding and type for standalone use as a
-//     section's primary install affordance.
+//     section’s primary install affordance.
 export function InstallTerminal({
   variant = "compact",
 }: {
@@ -46,7 +46,7 @@ export function InstallTerminal({
         class="font-mono text-[11px] uppercase tracking-wider
           shrink-0 transition-colors px-2 py-1
           text-rust-300 hover:text-rust-200
-          focus:outline-none focus-visible:text-rust-200"
+          focus:outline-none focus-visible:text-rust-200 border border-rust-300"
       >
         {copied ? "copied" : "copy"}
       </button>

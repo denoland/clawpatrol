@@ -116,7 +116,7 @@
     padding: 1rem;
     border-radius: 0.125rem;
     overflow-x: auto;
-    margin-bottom: 1rem;
+    margin-block: 1.5rem;
     font-size: 0.875rem;
 
     @media (min-width: 64rem) {
@@ -167,7 +167,7 @@
      narrow viewports. The wrap owns the block-level margin; the table
      itself fills the wrap. */
   .table-wrap {
-    margin-bottom: 1rem;
+    margin-block: 1.5rem;
     overflow-x: auto;
     scrollbar-width: thin;
   }

@@ -19,7 +19,7 @@ const CURVE = 2;
 export function HatchDivider({
   topColor,
   bottomColor,
-  height = 128,
+  height = 96,
   lineCount = 23,
 }: HatchDividerProps) {
   const positions = Array.from({ length: lineCount }, (_, i) => {

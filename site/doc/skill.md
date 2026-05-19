@@ -33,7 +33,7 @@ macOS / Linux on amd64 / arm64. Lands in `~/.local/bin/clawpatrol`.
 ## Run a gateway
 
 Copy `gateway.example.hcl` from the repo onto the host (anywhere —
-the binary doesn't care; `/opt/clawpatrol/gateway.hcl` is a
+the binary doesn’t care; `/opt/clawpatrol/gateway.hcl` is a
 reasonable choice), edit the operational fields, open the firewall
 ports you picked, then:
 
@@ -120,7 +120,7 @@ Full list: [Config reference](/docs/config-reference/#top-level-fields).
 ### Credentials
 
 Typed handle to a secret. HCL carries injection parameters only;
-secret bytes live in the gateway's secret store (dashboard or
+secret bytes live in the gateway’s secret store (dashboard or
 `CLAWPATROL_SECRET_<NAME>` env vars).
 
 | Type | Injects |
@@ -171,7 +171,7 @@ rule "<name>" {
 }
 ```
 
-Family is inferred from the rule's endpoint(s); mixing families is
+Family is inferred from the rule’s endpoint(s); mixing families is
 a load error.
 
 Outcome — exactly one of `verdict = "allow"`, `verdict = "deny"`,
@@ -265,7 +265,7 @@ rule "pg-sensitive-read" {
 ### Profiles
 
 Each device gets one profile at approval time. The profile names
-the endpoints whose rules apply to that device's traffic.
+the endpoints whose rules apply to that device’s traffic.
 
 ```hcl
 profile "default" { endpoints = [github, pg-reader, k8s-dev] }
@@ -276,7 +276,7 @@ profile "trusted" { endpoints = [github, pg-writer, k8s-dev, k8s-prod] }
 
 ```hcl
 approver "human_approver" "ops" {
-  channel    = "#agent-ops"   # via the credential's notifier
+  channel    = "#agent-ops"   # via the credential’s notifier
   credential = slack-ops      # omit for dashboard-only
   timeout    = 600
 }
@@ -309,7 +309,7 @@ packet through the gateway instead of just `clawpatrol run`),
 
 In Tailscale mode `clawpatrol run` is per-invocation ephemeral —
 each run is a fresh tailnet node, auto-removed on exit. Concurrent
-runs on the same machine don't share state. WireGuard mode mints
+runs on the same machine don’t share state. WireGuard mode mints
 an ephemeral WG peer per run with the same property.
 
 macOS first join: approve the Network Extension in **System
@@ -323,7 +323,7 @@ clawpatrol run -- gh pr create
 clawpatrol run -- psql 'host=db user=agent'
 ```
 
-The wrapped process's traffic routes through the gateway. The agent
+The wrapped process’s traffic routes through the gateway. The agent
 sees a normal network — no proxy URL, no CA bundle.
 
 - **Linux**: unprivileged user namespace + private WG tunnel per
@@ -359,9 +359,9 @@ on disk.
 | `config file "X" does not exist` | Pass a real path. Copy `gateway.example.hcl` from the repo and edit it. |
 | `endpoint "X" not in compiled policy` | Fixture pins a stale endpoint name. Regenerate via dashboard "Download action". |
 | `host "X" is claimed by multiple endpoints` | Set `match.endpoint` in the fixture to disambiguate. |
-| `mixed-family endpoint set` | A rule's `endpoints` list mixes families (e.g. HTTPS + Postgres). Split the rule. |
+| `mixed-family endpoint set` | A rule’s `endpoints` list mixes families (e.g. HTTPS + Postgres). Split the rule. |
 | Dashboard `not initialized` / first-run prompt | Set a password in the browser, or pass `--set-dashboard-password '<pw>'` to `clawpatrol gateway`. |
-| Agent gets `tls: unknown authority` | Device's `~/.clawpatrol/ca.crt` isn't trusted. Re-run `clawpatrol join` or trust manually. |
+| Agent gets `tls: unknown authority` | Device’s `~/.clawpatrol/ca.crt` isn’t trusted. Re-run `clawpatrol join` or trust manually. |
 
 ## Deeper
 

@@ -10,7 +10,7 @@ which requests it applies to (the `condition` CEL expression),
 and declares the outcome (`verdict = "allow" / "deny"`, or
 `approve = [...]`).
 
-There is one rule kind. The rule's protocol **family** — `http`,
+There is one rule kind. The rule’s protocol **family** — `http`,
 `sql`, or `k8s` — is inferred from its endpoint(s) at load time and
 pins the set of CEL variables the `condition` may reference. An
 `https` endpoint exposes `http.method` / `http.path` / …; a postgres
@@ -18,7 +18,7 @@ or clickhouse endpoint exposes `sql.verb` / `sql.tables` / …; a
 kubernetes endpoint exposes `k8s.verb` / `k8s.resource` / …. A rule
 whose `endpoints = [...]` mixes families is a load error.
 
-This page covers the operator's view: how to write a rule, what
+This page covers the operator’s view: how to write a rule, what
 each facet does, and how rules behave in different situations.
 
 For the surrounding picture see
@@ -29,7 +29,7 @@ fits, how endpoints claim requests.
 ## Rule families
 
 Each endpoint claims requests and emits **actions** of a specific
-family. Each action carries the family's facets, and rules match
+family. Each action carries the family’s facets, and rules match
 against those facets via a CEL `condition` expression. See
 [Architecture](/docs/architecture/) for how endpoints claim requests
 in the first place.
@@ -86,7 +86,7 @@ lexer over a lower-cased copy of the statement — see
 
 `tables` and `functions` are **multi-valued** facets: a single
 statement can name several tables (`SELECT ... FROM a JOIN b`) and
-call several functions. Use CEL's `in` operator for a single name
+call several functions. Use CEL’s `in` operator for a single name
 (`'secrets' in sql.tables`) or `sets.intersects(...)` for an overlap
 test against a list. To require *every* extracted name be covered,
 write the condition against `sql.statement` with a regex
@@ -115,7 +115,7 @@ condition = "!k8s.resource.endsWith('/exec') && !k8s.resource.endsWith('/attach'
 
 A rule bound to `https` endpoints sees `http.*` only; a rule bound
 to `kubernetes` endpoints sees `k8s.*` only. Mixing families across
-a rule's `endpoints = [...]` is a load error.
+a rule’s `endpoints = [...]` is a load error.
 
 `ssh` endpoints exist but have no rule family yet — the gateway
 terminates auth and splices channels as opaque byte streams, emitting
@@ -154,7 +154,7 @@ rule "<name>" {
 | `endpoint` / `endpoints` | exactly one             | Bare-name refs to declared endpoints. All endpoints must share one protocol family. |
 | `priority`   | optional (default `0`)   | Higher fires first. Negative for catch-alls (`-100` is the convention). |
 | `credential` | optional                 | Bare-name ref. The runtime treats it as an extra predicate evaluated before the CEL condition: the request must have been dispatched against this credential. |
-| `condition`  | optional                 | A CEL string evaluated against the family's variable set. Absent or empty matches every request the endpoint sees. |
+| `condition`  | optional                 | A CEL string evaluated against the family’s variable set. Absent or empty matches every request the endpoint sees. |
 | `verdict`    | one of `verdict` / `approve` | `"allow"` or `"deny"`. |
 | `approve`    | one of `verdict` / `approve` | List of approver bare names. Approvers run in order; **all must allow** for the request to proceed. |
 | `reason`     | optional                 | Surfaced to the agent on `deny` / approver-deny, and shown on the dashboard. |
@@ -178,9 +178,9 @@ offending block.
 Each endpoint plugin claims the requests it owns and emits an
 **action** in its family — `http` actions for HTTPS endpoints, `sql`
 actions for postgres / clickhouse, `k8s` actions for kubernetes.
-Each action populates the family's CEL variables (method/path/headers
+Each action populates the family’s CEL variables (method/path/headers
 for HTTP, verb/tables/functions for SQL, resource/verb/namespace for
-k8s). The rule's `condition` is evaluated against those variables.
+k8s). The rule’s `condition` is evaluated against those variables.
 
 How an endpoint claims a given connection (SNI peek, destination IP,
 profile scoping) is described in
@@ -190,7 +190,7 @@ verbatim.
 
 ### Priority and first-match-wins
 
-Each endpoint's rules are sorted by priority at compile time
+Each endpoint’s rules are sorted by priority at compile time
 (descending — higher priority first). The runtime walks them in
 order and returns the first rule whose `credential` predicate (if
 set) matches and whose CEL `condition` evaluates true.
@@ -210,7 +210,7 @@ accessed with dot notation. Common idioms:
   `sql.verb in ['select', 'show']`.
 - **Prefix / suffix / substring**: `k8s.name.startsWith('debug-')`,
   `k8s.resource.endsWith('/exec')`, `http.body.contains('secret')`.
-- **Regex** (when prefix / suffix isn't enough):
+- **Regex** (when prefix / suffix isn’t enough):
   `sql.statement.matches('(?i)\\bpassword\\b')`. Regex is unanchored
   Go RE2 — add `^` / `$` if you mean it.
 - **List intersection** (any-of against a multi-valued facet):
@@ -243,7 +243,7 @@ flag (`sql.statement.matches('(?i)\\bpassword\\b')`).
 
 `credential` is a top-level attribute on the rule, not part of the
 CEL condition. It does not look at the request body or headers — it
-matches the resolved credential name, not the credential's secret
+matches the resolved credential name, not the credential’s secret
 contents. It is checked *before* the CEL condition.
 
 ### Outcome dispatch
@@ -259,8 +259,8 @@ After a rule matches:
   approver that returns no decision (e.g. timeout) is treated as deny.
 
 LLM approvers call the configured model via its bound credential and
-judge the request against the approver's policy. Human approvers park
-the request on the dashboard's pending-approvals page. If the approver
+judge the request against the approver’s policy. Human approvers park
+the request on the dashboard’s pending-approvals page. If the approver
 block has a `credential` reference to a `slack_tokens` credential, Claw
 Patrol also posts an approval message to the configured Slack channel.
 By default the message carries a link back to the dashboard; setting
@@ -334,11 +334,11 @@ per endpoint to invert this.
 To bound memory, the wire endpoints cap how much of each request they
 buffer for the matcher. A request that exceeds its cap is **not**
 dropped on the floor — the frame still forwards to upstream
-byte-for-byte. What's bounded is the matcher's view of it: the
+byte-for-byte. What’s bounded is the matcher’s view of it: the
 endpoint truncates the buffered slice and flags the request as
 truncated. The facet fields that draw their value from this slice
 are **truncatable facet fields** (listed per-endpoint in the table
-below). When a rule's CEL reads a truncatable facet field on a
+below). When a rule’s CEL reads a truncatable facet field on a
 request that was flagged truncated, the rule is automatically
 matched without comparing the matching values, and the dispatcher
 returns a deny verdict for it.
@@ -354,16 +354,16 @@ returns a deny verdict for it.
 The caps are per-plugin constants in the gateway source — **not
 operator-tunable** today, and not surfaced in `gateway.hcl`. Header
 and URL bytes are bounded separately by `net/http`'s defaults and
-aren't covered here; the `ssh` endpoint has no rule family, so no
+aren’t covered here; the `ssh` endpoint has no rule family, so no
 inspection cap.
 
 ### Rule matching semantics on truncated fields
 
-When a request overflows its cap, the dispatcher walks the endpoint's
+When a request overflows its cap, the dispatcher walks the endpoint’s
 rules in priority order as usual. For each rule:
 
 - **Catch-all rule** (no `condition`): fires as written. A truncated
-  body can't poison a rule that reads nothing.
+  body can’t poison a rule that reads nothing.
 - **Rule whose CEL reads no truncatable facet field** (e.g.
   `http.method == 'GET'`, `credential = X`, any `k8s.*` predicate):
   the matcher runs normally — the truncated bytes are irrelevant to
@@ -374,10 +374,10 @@ rules in priority order as usual. For each rule:
   exact reason:
 
   ```
-  rule "<name>" reads a request facet whose bytes were truncated by the gateway's inspection buffer; failing closed
+  rule "<name>" reads a request facet whose bytes were truncated by the gateway’s inspection buffer; failing closed
   ```
 
-  The synthesized rule keeps the original rule's name and priority,
+  The synthesized rule keeps the original rule’s name and priority,
   so logs and dashboards still attribute the deny to the rule whose
   contract the truncation broke.
 
@@ -386,15 +386,15 @@ an `https` endpoint still fires on a 2 MiB body, but a
 `http.body_json.field == "x"` rule auto-denies.
 
 A matched rule with `approve = [...]` on a truncated postgres frame
-is forced to deny without paging the approver (HITL can't reason about
-bytes that aren't there); the postgres endpoint surfaces this with the
+is forced to deny without paging the approver (HITL can’t reason about
+bytes that aren’t there); the postgres endpoint surfaces this with the
 reason `"approval required but request was truncated by inspection
 buffer"`.
 
 ### How the deny reaches the agent
 
-Each protocol synthesizes the deny in its native shape so the agent's
-driver doesn't disconnect:
+Each protocol synthesizes the deny in its native shape so the agent’s
+driver doesn’t disconnect:
 
 - **`https`, `kubernetes`, `clickhouse_https`** — `HTTP/1.1 403
   Forbidden`, `Content-Type: text/plain`, reason in the body,
@@ -409,10 +409,10 @@ driver doesn't disconnect:
 ### Why fail-closed
 
 A truncated body might contain content that *would* have triggered a
-deny rule the gateway can't see, so refusing is the safe default. If
+deny rule the gateway can’t see, so refusing is the safe default. If
 legitimate traffic is expected to exceed the cap, write the rules
 against non-truncatable facet fields only (see the table above) — those
-rules still match on a truncated request and won't auto-deny.
+rules still match on a truncated request and won’t auto-deny.
 
 
 ## Examples
@@ -589,7 +589,7 @@ paged. If either says `deny`, the request is rejected with the
 reason returned by the rejecting approver.
 
 The bare name `dashboard` is a built-in approver: `approve =
-[dashboard]` parks the request on the dashboard's pending-approvals
+[dashboard]` parks the request on the dashboard’s pending-approvals
 view without paging any channel.
 
 ### SQL banned-verbs catch-all
@@ -617,6 +617,6 @@ rule "k8s-no-mutations" {
 }
 ```
 
-CEL's `!` operator negates any boolean subexpression — there's no
+CEL’s `!` operator negates any boolean subexpression — there’s no
 list-level negation syntax. Combine `&&` and `!` to express
 "matches the broad pattern, but not these exceptions."

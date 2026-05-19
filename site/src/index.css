@@ -174,19 +174,19 @@
 
 @supports not (corner-shape: squircle) {
   .squircle-sm {
-    border-radius: 0.25rem;
+    border-radius: 0.1875rem;
   }
   .squircle-md {
-    border-radius: 0.375rem;
+    border-radius: 0.25rem;
   }
   .squircle-lg {
-    border-radius: 0.625rem;
+    border-radius: 0.5rem;
   }
   .squircle-xl {
-    border-radius: 1rem;
+    border-radius: 0.75rem;
   }
   .squircle-full {
-    border-radius: 0.5rem;
+    border-radius: 0.375rem;
   }
 }
 
@@ -334,14 +334,14 @@
 
   --font-display: "Funnel Display", system-ui, sans-serif;
   --font-sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
-  --font-mono:
-    "IBM Plex Mono", "SF Mono", "Menlo", ui-monospace, monospace;
+  --font-mono: "IBM Plex Mono", "SF Mono", "Menlo", ui-monospace, monospace;
 
   --breakpoint-xs: 32rem;
 
   /* Half-pixel border step. Default Tailwind border scale jumps 1→2→4;
      1.5 sits between for understated cards and dividers. */
   --border-width-1\.5: 1.5px;
+  --outline-width-1\.5: 1.5px;
 
   --text-2xs: 0.625rem;
 
@@ -373,7 +373,7 @@
   }
 
   body {
-    line-height: 1.6;
+    line-height: 1.7;
     /* No-op for the current fonts (IBM Plex Sans is wght-only variable);
        kept so a future opsz-axis face engages automatically. */
     font-optical-sizing: auto;
@@ -388,6 +388,19 @@
   }
   pre::-webkit-scrollbar {
     display: none;
+  }
+
+  /* Balance heading wraps and the immediately-following subhead <p>.
+     Skipping body paragraphs intentionally — text-balance suits short
+     blocks better than long-form prose. */
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6,
+  :is(h1, h2, h3, h4, h5, h6) + p {
+    text-wrap: balance;
   }
 
   *:focus-visible {

@@ -1,4 +1,5 @@
 import { Layout } from "./Layout";
+import { DotField } from "./components/DotField.tsx";
 import { HatchDivider } from "./components/HatchDivider";
 import { AnalyticsSection } from "./sections/AnalyticsSection";
 import { ApproversSection } from "./sections/ApproversSection";
@@ -15,6 +16,7 @@ export function Landing() {
     <Layout>
       <HeroSection />
       <ProblemSection />
+      <DotField class="text-canvas-400" />
       <RunSection />
       <HatchDivider
         topColor="var(--color-canvas-muted)"

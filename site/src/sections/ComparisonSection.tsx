@@ -102,11 +102,11 @@ const CATEGORIES: Category[] = [
   },
 ];
 
-const COLOR_CLASSES = [
-  "bg-rust-100",
-  "bg-navy-100",
-  "bg-butter-100",
-  "bg-canvas",
+const COLOR_TOKENS = [
+  "--color-rust-100",
+  "--color-navy-100",
+  "--color-butter-100",
+  "--color-canvas",
 ];
 
 export function ComparisonSection() {
@@ -121,7 +121,7 @@ export function ComparisonSection() {
             <CategoryCard
               key={c.title}
               category={c}
-              colorClass={COLOR_CLASSES[i]}
+              colorToken={COLOR_TOKENS[i]}
             />
           ))}
         </div>
@@ -133,10 +133,10 @@ export function ComparisonSection() {
 
 function CategoryCard({
   category: c,
-  colorClass,
+  colorToken,
 }: {
   category: Category;
-  colorClass: string;
+  colorToken: string;
 }) {
   return (
     <div class="bg-transparent relative p-6 flex flex-col">
@@ -176,9 +176,8 @@ function CategoryCard({
         {c.gap}
       </p>
       <div
-        class={
-          "isolate absolute w-full h-full top-1.5 left-2 z-0 " + colorClass
-        }
+        class="isolate absolute w-full h-full top-1.5 left-2 z-0 bg-horizontal-stripes [--color-2:transparent] "
+        style={`--color-1: var(${colorToken});`}
       />
     </div>
   );
@@ -200,7 +199,7 @@ function SynthesisCard() {
         Watches the tool call at the protocol layer (Postgres, Kubernetes,
         HTTPS, with a plugin API for the rest), so rules match SQL verbs and k8s
         resources directly. Holds the secrets. Routes risky calls to a human or
-        an LLM judge. Records every byte. Doesn't try to be an LLM gateway or a
+        an LLM judge. Records every byte. Doesn’t try to be an LLM gateway or a
         process sandbox; use a specialized tool if you need those.
       </p>
     </div>

@@ -33,7 +33,7 @@ export function FlowDiagram() {
 
 function CardRow({ children }: { children: ComponentChildren }) {
   // pr-2 / pb-2 reserves room for the stacked-card shadows so they
-  // don't touch the column edge or the arrows below.
+  // don’t touch the column edge or the arrows below.
   return <div class="grid grid-cols-4 gap-3 w-full pr-2 pb-2">{children}</div>;
 }
 
@@ -88,7 +88,7 @@ function Riser() {
 function Card({ name, icon }: { name: string; icon?: string }) {
   // Two trailing box-shadows render as faded duplicate cards sitting
   // behind this one. Each pair: solid canvas fill + 1px navy ring.
-  // Inline style — Tailwind's arbitrary shadow syntax doesn't compose
+  // Inline style — Tailwind’s arbitrary shadow syntax doesn’t compose
   // four space-separated shadows reliably.
   const stack =
     "4px 4px 0 0 var(--color-canvas)," +
@@ -154,7 +154,7 @@ function Risers({ count }: { count: number }) {
 }
 
 function CenterNode({ label, sub }: { label: string; sub: string }) {
-  // Light surface keyed to the header's bg-navy-100 so the proxy node
+  // Light surface keyed to the header’s bg-navy-100 so the proxy node
   // reads as the same brand surface; full Claw Patrol logo (icon +
   // wordmark) is the same public asset the header uses.
   return (
