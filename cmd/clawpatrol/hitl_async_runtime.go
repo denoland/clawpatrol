@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -161,7 +162,7 @@ func (g *Gateway) transitionAsyncHITLOperation(ctx context.Context, op HITLOpera
 	if g == nil || g.db == nil || op.ID == "" {
 		return op, nil
 	}
-	return NewHITLOperationStore(g.db).Transition(ctx, HITLOperationTransition{
+	updated, err := NewHITLOperationStore(g.db).Transition(ctx, HITLOperationTransition{
 		ID:              op.ID,
 		FromState:       op.State,
 		ToState:         to,
@@ -169,6 +170,70 @@ func (g *Gateway) transitionAsyncHITLOperation(ctx context.Context, op HITLOpera
 		Now:             time.Now().UTC(),
 		LastError:       lastErr,
 	})
+	if err != nil {
+		return HITLOperation{}, err
+	}
+	g.updateHITLOperationMessage(context.Background(), updated)
+	return updated, nil
+}
+
+func (g *Gateway) recordHITLOperationMessageRef(ctx context.Context, operationID, ref string) error {
+	if g == nil || g.db == nil || operationID == "" || ref == "" {
+		return nil
+	}
+	op, err := NewHITLOperationStore(g.db).SetApproverMessageRef(ctx, operationID, ref)
+	if err != nil {
+		return err
+	}
+	if op.State != HITLOperationStateSyncWaiting {
+		g.updateHITLOperationMessage(context.Background(), op)
+	}
+	return nil
+}
+
+func (g *Gateway) updateHITLOperationMessage(ctx context.Context, op HITLOperation) {
+	if g == nil || op.ID == "" || op.ApproverMessageRef == "" {
+		return
+	}
+	policy := g.Policy()
+	if policy == nil {
+		return
+	}
+	approver := policy.Approvers[op.ApproverID]
+	if approver == nil {
+		return
+	}
+	credName := ""
+	if h, ok := approver.Body.(runtime.HITLHumanCredentialer); ok {
+		credName = h.HumanApproverCredential()
+	}
+	if credName == "" {
+		return
+	}
+	cred := policy.Credentials[credName]
+	if cred == nil {
+		return
+	}
+	updater, ok := cred.Body.(runtime.HITLMessageUpdater)
+	if !ok {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := updater.UpdateHITLMessage(ctx, g.secrets, runtime.HITLMessageUpdate{
+		MessageRef:     op.ApproverMessageRef,
+		OperationID:    op.ID,
+		State:          runtime.HITLOperationState(op.State),
+		Method:         op.Method,
+		Host:           op.Host,
+		Path:           op.RedactedPath,
+		Profile:        op.ProfileID,
+		UpstreamCalled: op.UpstreamCalled,
+		LastError:      op.LastError,
+	}); err != nil {
+		log.Printf("hitl async operation message update %s: %v", op.ID, err)
+	}
 }
 
 func (g *Gateway) resolveAsyncHITLGrant(operationID string, d runtime.HITLDecision) runtime.HITLResolveResult {
@@ -210,7 +275,7 @@ func (g *Gateway) resolveAsyncHITLGrant(operationID string, d runtime.HITLDecisi
 	if err != nil {
 		return runtime.HITLResolveResult{OK: false, State: runtime.HITLStateUnknown, Reason: err.Error()}
 	}
-	_ = updated
+	g.updateHITLOperationMessage(context.Background(), updated)
 	return runtime.HITLResolveResult{OK: true, State: state, Reason: reason}
 }
 

@@ -149,18 +149,19 @@ func (h *HumanApprover) Approve(ctx context.Context, req runtime.ApproveRequest)
 					msg = expandMessage(h.Message, req)
 				}
 				target := runtime.HITLTarget{
-					CredentialName:  h.Credential,
-					Channel:         h.Channel,
-					Interactive:     h.Interactive,
-					PendingID:       id,
-					DashboardURL:    req.DashboardURL,
-					ThreadTS:        req.ThreadTS,
-					OperationState:  pending.OperationState,
-					ApprovalEffect:  pending.ApprovalEffect,
-					UpstreamCalled:  pending.UpstreamCalled,
-					ApprovalMessage: pending.ApprovalMessage,
-					Summary:         summary,
-					Message:         msg,
+					CredentialName:    h.Credential,
+					Channel:           h.Channel,
+					Interactive:       h.Interactive,
+					PendingID:         id,
+					DashboardURL:      req.DashboardURL,
+					ThreadTS:          req.ThreadTS,
+					OperationState:    pending.OperationState,
+					ApprovalEffect:    pending.ApprovalEffect,
+					UpstreamCalled:    pending.UpstreamCalled,
+					ApprovalMessage:   pending.ApprovalMessage,
+					Summary:           summary,
+					Message:           msg,
+					MessageUpdateSink: req.MessageUpdateSink,
 				}
 				go func() {
 					if err := notifier.NotifyHITL(ctx, req, target); err != nil {

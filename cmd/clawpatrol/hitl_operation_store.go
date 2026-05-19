@@ -172,6 +172,27 @@ func (s *HITLOperationStore) GetForPrincipal(ctx context.Context, id, profileID,
 	return s.scanOne(ctx, `SELECT `+hitlOperationColumns+` FROM hitl_operations WHERE id = ? AND profile_id = ? AND principal_id = ?`, id, profileID, principalID)
 }
 
+func (s *HITLOperationStore) SetApproverMessageRef(ctx context.Context, id, ref string) (HITLOperation, error) {
+	if s == nil || s.db == nil {
+		return HITLOperation{}, fmt.Errorf("%w: nil store", ErrHITLOperationStoreInvalid)
+	}
+	if id == "" || ref == "" {
+		return HITLOperation{}, fmt.Errorf("%w: incomplete message ref", ErrHITLOperationStoreInvalid)
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE hitl_operations SET approver_message_ref = ? WHERE id = ?`, ref, id)
+	if err != nil {
+		return HITLOperation{}, err
+	}
+	changed, err := res.RowsAffected()
+	if err != nil {
+		return HITLOperation{}, err
+	}
+	if changed != 1 {
+		return HITLOperation{}, ErrHITLOperationNotFound
+	}
+	return s.get(ctx, id)
+}
+
 func (s *HITLOperationStore) Transition(ctx context.Context, tr HITLOperationTransition) (HITLOperation, error) {
 	if s == nil || s.db == nil {
 		return HITLOperation{}, fmt.Errorf("%w: nil store", ErrHITLOperationStoreInvalid)

@@ -2517,6 +2517,7 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 			Secrets:                   g.secrets,
 			DashboardURL:              g.cfg.PublicURL,
 			Policy:                    policy,
+			MessageUpdateSink:         g.recordHITLOperationMessageRef,
 		}
 		v, err := ar.Approve(ctx, req)
 		// Stamp the entity name + plugin type on every verdict so the

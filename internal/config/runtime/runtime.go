@@ -311,6 +311,36 @@ type HITLNotifier interface {
 	NotifyHITL(ctx context.Context, req ApproveRequest, target HITLTarget) error
 }
 
+// HITLMessageUpdateSink records a channel-specific message reference
+// (for example Slack channel/ts) after a notifier posts a prompt.
+// Implementations must not store tokens or other secrets in ref.
+type HITLMessageUpdateSink func(ctx context.Context, operationID, ref string) error
+
+// HITLMessageUpdater is optionally implemented by notifier credentials that
+// can update an already-posted HITL prompt as the durable operation moves
+// through async states.
+type HITLMessageUpdater interface {
+	UpdateHITLMessage(ctx context.Context, secrets SecretStore, update HITLMessageUpdate) error
+}
+
+// HITLHumanCredentialer is implemented by approvers that route human HITL
+// prompts through a named credential notifier.
+type HITLHumanCredentialer interface {
+	HumanApproverCredential() string
+}
+
+type HITLMessageUpdate struct {
+	MessageRef     string
+	OperationID    string
+	State          HITLOperationState
+	Method         string
+	Host           string
+	Path           string
+	Profile        string
+	UpstreamCalled bool
+	LastError      string
+}
+
 // HITLTarget is the per-approver config the notifier needs:
 // where to send the prompt, whether to render interactive buttons,
 // and the pending entry's id (for action_id payload encoding).
@@ -336,6 +366,9 @@ type HITLTarget struct {
 	// notifiers use it as the section text, overriding the default path
 	// display and the Summary card.
 	Message string
+	// MessageUpdateSink records a notifier-specific, non-secret message ref
+	// for async HITL operation status updates.
+	MessageUpdateSink HITLMessageUpdateSink
 }
 
 // ApproverRuntime evaluates one stage of an approve = [...] chain.
@@ -405,6 +438,9 @@ type ApproveRequest struct {
 	// HumanApprover uses it to look up its referenced credential
 	// entity and dispatch via HITLNotifier.
 	Policy *config.CompiledPolicy
+	// MessageUpdateSink records channel message references for async HITL
+	// operation updates after notifiers successfully post prompts.
+	MessageUpdateSink HITLMessageUpdateSink
 }
 
 // ApproveVerdict is what an approver returns. "" Decision means the
