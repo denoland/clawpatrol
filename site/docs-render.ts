@@ -7,9 +7,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { h } from "preact";
 import { renderToString } from "preact-render-to-string";
+import { DotField } from "./src/components/DotField";
 import { Footer } from "./src/components/Footer";
 import { Header } from "./src/components/Header";
-import { Stripe } from "./src/components/Stripe";
+import { ShadeGradient } from "./src/components/ShadeBar";
 import { Landing } from "./src/Landing";
 import { SITE_TITLE } from "./src/sections/HeroSection";
 
@@ -310,8 +311,8 @@ function renderHtml(
 
 export function renderDocPage(doc: Doc, docs: Doc[], extraHead = ""): string {
   const headerHtml = renderHtml(Header);
-  const topStripeHtml = renderHtml(Stripe, { color1: "var(--color-navy-100)" });
-  const bottomStripeHtml = renderHtml(Stripe, { color1: "var(--color-navy)" });
+  const topDotsHtml = renderHtml(DotField, { class: "text-canvas-400" });
+  const bottomShadeHtml = renderHtml(ShadeGradient, { color: "text-navy-700" });
   const footerHtml = renderHtml(Footer);
 
   const url = `${SITE_ORIGIN}/docs/${doc.slug}/`;
@@ -349,7 +350,7 @@ export function renderDocPage(doc: Doc, docs: Doc[], extraHead = ""): string {
 </head>
 <body class="min-h-screen bg-canvas text-text font-sans">
   ${headerHtml}
-  ${topStripeHtml}
+  ${topDotsHtml}
   <div class="max-w-6xl mx-auto px-8 py-20
     flex flex-col md:flex-row gap-10">
     <aside class="md:w-56 shrink-0 md:sticky md:top-[calc(var(--header-height)+1rem)]
@@ -367,7 +368,7 @@ export function renderDocPage(doc: Doc, docs: Doc[], extraHead = ""): string {
       ${doc.html}
     </main>
   </div>
-  ${bottomStripeHtml}
+  ${bottomShadeHtml}
   ${footerHtml}
 </body>
 </html>`;

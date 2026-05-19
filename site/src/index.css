@@ -172,6 +172,40 @@
   background-repeat: repeat;
 }
 
+/* Frosted-glass sticky surface. The blur lives on a ::before that
+   extends 1.5rem PAST the parent's bottom edge, then masks itself to
+   transparent over that overshoot — so the blur-to-clear transition
+   reads as a soft fade instead of a hard line at the header's edge.
+   Trick credit: https://www.joshwcomeau.com/css/backdrop-filter/ */
+.frosted-header {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  isolation: isolate;
+}
+.frosted-header::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  bottom: -0.5rem;
+  z-index: -1;
+  background-color: color-mix(in oklch, var(--color-canvas) 70%, transparent);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    black,
+    black calc(100% - 0.5rem),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    black,
+    black calc(100% - 0.5rem),
+    transparent
+  );
+}
+
 @supports not (corner-shape: squircle) {
   .squircle-sm {
     border-radius: 0.1875rem;
@@ -356,16 +390,11 @@
     font-weight: 400;
 
     /* Header geometry — tracks the sticky <Header /> dimensions.
-       Mobile: py-5 (40px total) + h-9 logo (36px) ≈ 76px, rounded to 5rem.
-       sm+:    py-5 (40px total) + h-12 logo (48px) ≈ 88px, rounded to 6rem.
-       The slight over-rounding gives sticky targets and anchored headings
-       a small buffer below the header. Used by html.scroll-padding-top
-       and the docs sidebar's sticky-top offset. */
+       Mobile: py-5 (40px total) + h-9 logo  (36px) = 76px.
+       sm+:    py-5 (40px total) + h-10 logo (40px) = 80px.
+       Rounded up to 5rem (80px); used by html.scroll-padding-top and
+       the docs sidebar's sticky-top offset. */
     --header-height: 5rem;
-
-    @media (min-width: 40rem) {
-      --header-height: 6rem;
-    }
   }
 
   html {
