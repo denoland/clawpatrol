@@ -142,8 +142,8 @@ two ways to scope what gets captured:
   <rect class="b-intro" x="820" y="100" width="80" height="40" rx="4"/>
   <text class="lbl-intro" x="860" y="124">upstream</text>
 
-  <polyline class="arr-intro" points="440,75 440,30 130,30 130,60" fill="none" marker-end="url(#ar-intro)"/>
-  <text class="sm-intro" x="285" y="24">on deny</text>
+  <line class="arr-intro" x1="296" y1="140" x2="240" y2="140" marker-end="url(#ar-intro)"/>
+  <text class="sm-intro" x="268" y="154">on deny</text>
 
   <line class="arr-intro" x1="475" y1="165" x2="475" y2="217" marker-end="url(#ar-intro)"/>
   <text class="sm-intro" x="470" y="195" style="text-anchor:end">request approval</text>
