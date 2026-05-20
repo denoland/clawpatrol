@@ -12,7 +12,6 @@ package https
 
 import (
 	"encoding/json"
-	"fmt"
 	"reflect"
 	"strings"
 
@@ -92,63 +91,62 @@ func (Facet) Report(req *match.Request) map[string]any {
 	}
 }
 
-// celEnv is the HTTPS CEL environment. Built once at init.
-var celEnv *cel.Env
-
 func init() {
-	env, err := cel.NewEnv(
-		ext.Sets(),
-		ext.NativeTypes(
-			reflect.TypeFor[Fields](),
-			ext.ParseStructTags(true),
-		),
-		cel.Variable("http", cel.ObjectType("https.Fields")),
-	)
-	if err != nil {
-		panic(fmt.Sprintf("https facet: cel env: %v", err))
-	}
-	celEnv = env
-
 	facet.Register(Facet{})
 }
 
-// lowercasedPaths declares the HTTPS fields whose activation values
-// are always lowercase. CompileCondition uses this to normalize the
-// matching string literals in the rule source at compile time, so
-// `http.method == "POST"` matches a POST request even though the
-// activation reports `method = "post"`.
-var lowercasedPaths = []string{"http.method"}
-
-// truncatablePaths declares the HTTPS fields whose activation values
-// come from the request body the gateway buffered against its
-// inspection cap (maxHTTPMatchBody in main.go). A condition that
-// reads either field on a request whose body overflowed the cap can
-// no longer be evaluated faithfully — the dispatcher synthesizes a
-// deny instead of letting the matcher see a truncated prefix.
+// CELContrib declares the HTTPS facet's CEL contribution: the `http`
+// variable backed by Fields, the activation builder that snapshots a
+// request into one, and the path lists CompileCondition needs.
 //
-// Fields whose value is independent of the body (method, path,
-// query, headers) are intentionally absent: a rule like
-// `http.method == "GET"` still fires on its own predicate even when
-// the body was capped.
-var truncatablePaths = []string{"http.body", "http.body_json"}
-
-// NewMatcher compiles a CEL condition into a Matcher. An empty
-// condition is the catch-all match-everything case.
-func (Facet) NewMatcher(condition string) (match.Matcher, error) {
-	if condition == "" {
-		return match.PassThrough{}, nil
+// lowercasedPaths: http.method's activation value is normalized to
+// lowercase, so CompileCondition pre-lowercases the literal in `http
+// .method == "POST"` at rule-load time. Other HTTPS fields stay
+// case-sensitive (paths, headers, body bytes are operator-controlled).
+//
+// truncatablePaths: http.body and http.body_json come from the buffer
+// the gateway capped at maxHTTPMatchBody (main.go); a rule that
+// reads either on a request whose body overflowed can't be evaluated
+// honestly, so the dispatcher synthesizes a deny. Fields whose value
+// is body-independent (method, path, query, headers) are
+// intentionally absent — `http.method == "GET"` still fires on its
+// own predicate even when the body was capped. Because the k8s
+// family composes the http facet alongside its own, a k8s_rule that
+// references http.body also fail-closes on truncation; the
+// truncatable-fields registry follows from the composition with no
+// per-family plumbing.
+func (Facet) CELContrib() facet.CELContrib {
+	return facet.CELContrib{
+		EnvOptions: []cel.EnvOption{
+			ext.NativeTypes(
+				reflect.TypeFor[Fields](),
+				ext.ParseStructTags(true),
+			),
+			cel.Variable("http", cel.ObjectType("https.Fields")),
+		},
+		AddActivation:    addActivation,
+		LowercasedPaths:  []string{"http.method"},
+		TruncatablePaths: []string{"http.body", "http.body_json"},
+		// HTTPS has no parser-failure mode: every field (method,
+		// headers, body, body_json) is decoded directly from the wire,
+		// not derived by a parser that could refuse the input.
+		// UnparseablePaths stays nil so the dispatcher's Unparseable
+		// gate is a no-op for HTTPS rules.
 	}
-	// HTTPS has no parser-failure mode: every facet (method, headers,
-	// body, body_json) is decoded directly from the wire, not derived
-	// by a parser that could refuse the input. Pass nil for
-	// unparseablePaths so the dispatcher's Unparseable gate is a no-op
-	// for HTTPS rules.
-	return match.CompileCondition(celEnv, condition, buildActivation, lowercasedPaths, truncatablePaths, nil)
 }
 
-func buildActivation(req *match.Request) map[string]any {
+// NewMatcher compiles a CEL condition into a Matcher. Delegates to
+// the package-level composer so every facet the http family composes
+// layers in (only the http facet itself today — the http family
+// doesn't compose any other facet).
+func (f Facet) NewMatcher(condition string) (match.Matcher, error) {
+	m, _, err := facet.Compose(f.Name(), condition)
+	return m, err
+}
+
+func addActivation(req *match.Request, act map[string]any) bool {
 	if req == nil {
-		return nil
+		return false
 	}
 	// HTTP method is lowercased here (and declared in lowercasedPaths)
 	// so rules can write either "POST" or "post" — CompileCondition
@@ -170,7 +168,8 @@ func buildActivation(req *match.Request) map[string]any {
 	// `http.body_json.<field>` evaluates to null rather than blowing
 	// up at request time.
 	f.BodyJSON = parseBodyJSON(req.Body)
-	return map[string]any{"http": f}
+	act["http"] = f
+	return true
 }
 
 // parseBodyJSON converts a raw request body into a *structpb.Value
