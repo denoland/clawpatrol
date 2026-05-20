@@ -6,3 +6,9 @@
 /install.sh
   Cache-Control: no-cache, no-store, must-revalidate
   CDN-Cache-Control: no-store
+
+# CF serves .txt as `text/plain` with no charset, so browsers fall back
+# to Latin-1 and mangle the em dashes in llms.txt / llms-full.txt
+# (— → â€"). Pin UTF-8 explicitly.
+/*.txt
+  Content-Type: text/plain; charset=utf-8

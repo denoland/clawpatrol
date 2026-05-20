@@ -2,7 +2,7 @@ import { defineConfig, type Plugin } from "vite";
 import preact from "@preact/preset-vite";
 import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "node:path";
-import { SITE_TITLE } from "./src/copy";
+import { SITE_TITLE } from "./src/sections/HeroSection";
 
 // Keep <title> in sync with HeroSection's H1. The constant lives in
 // src/copy.ts so HeroSection imports it directly; this plugin rewrites
@@ -86,7 +86,8 @@ function reloadDocsOnChange(): Plugin {
   const sharedComponents = [
     resolve(__dirname, "src/components/Header.tsx"),
     resolve(__dirname, "src/components/Footer.tsx"),
-    resolve(__dirname, "src/components/Stripe.tsx"),
+    resolve(__dirname, "src/components/DotField.tsx"),
+    resolve(__dirname, "src/components/ShadeBar.tsx"),
   ];
 
   return {

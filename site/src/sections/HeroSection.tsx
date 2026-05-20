@@ -1,6 +1,12 @@
 import { FlowDiagram } from "../components/FlowDiagram";
 import { InstallTerminal } from "../components/InstallTerminal";
-import { HERO_H1 } from "../copy";
+
+// Single source of truth for the hero H1 and the page <title>.
+// vite.config.ts uses SITE_TITLE in a transformIndexHtml hook, and
+// docs-render.ts uses SITE_TITLE for prerender meta tags. Change
+// here and all three surfaces stay in lockstep.
+export const HERO_H1 = "The security firewall for agents";
+export const SITE_TITLE = `Claw Patrol - ${HERO_H1}`;
 
 export function HeroSection() {
   return (
@@ -13,28 +19,22 @@ export function HeroSection() {
         md:gap-16 items-center"
       >
         <div class="min-w-0">
-          <h1
-            class="text-4xl sm:text-5xl md:text-6xl md:text-[4rem]
-              font-bold
-               mb-4 font-display text-balance
-              text-text"
-          >
+          <h1 class="text-4xl sm:text-5xl md:text-6xl md:text-[4rem] mb-6 font-display text-balance text-text">
             {HERO_H1}
           </h1>
           <p
-            class="text-xl sm:text-2xl mb-6 max-w-lg font-display
-            font-semibold text-text text-balance"
+            class="text-sm mb-6 max-w-lg font-sans
+            font-bold uppercase text-text text-balance"
           >
-            Give your agents read access to any service. Gate the writes.
+            Give agents prod access and still sleep easy
           </p>
           <p
             class="mb-10 max-w-lg
             text-text-muted"
           >
-            You write the rules. Plugins parse each protocol (SQL, Kubernetes, HTTPS, SSH, …) so they
-            can match on semantics, not URLs: block <code>DROP TABLE</code>, require human approval
-            for <code>kubectl delete pod</code>, or have an LLM judge whether a{" "}
-            <code>SELECT</code> leaks secrets. Secrets stay in the proxy, never the agent.
+            Claw Patrol holds agent credentials, parses their traffic at the
+            wire, and gates actions they take with rules you write, all while
+            keeping an audit log of every action.
           </p>
           <InstallTerminal />
         </div>

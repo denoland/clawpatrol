@@ -10,15 +10,15 @@ Five actors take part in a clawpatrol deployment:
 
 - **Agent.** The AI client the operator wants to gate (Claude,
   Codex, …). The agent runs as an ordinary process on the
-  operator's workstation and dials upstream hostnames directly; it
+  operator’s workstation and dials upstream hostnames directly; it
   has no awareness that clawpatrol is in the path. clawpatrol also
   covers the non-AI CLIs the agent shells out to (the GitHub CLI,
-  kubectl, psql, ssh, …): those aren't agents themselves but tools
+  kubectl, psql, ssh, …): those aren’t agents themselves but tools
   the agent uses, and the gateway applies the same policy gates to
   whichever flows the agent kicks off through them.
 - **Device.** The machine the agent runs on. The device hosts a
   small clawpatrol client (CLI binary on Linux; system extension
-  inside `Clawpatrol.app` on macOS) that captures the agent's
+  inside `Clawpatrol.app` on macOS) that captures the agent’s
   outbound flows and feeds them into the tunnel.
 - **Tunnel.** A WireGuard underlay between the device and the
   gateway. The tunnel carries L3 packets — every byte the agent
@@ -32,7 +32,7 @@ Five actors take part in a clawpatrol deployment:
   operator controls — to keep the picture clean, but the deployment
   shape is independent of the binary: the same gateway also runs on
   `localhost` next to the agent for single-machine setups, or
-  anywhere reachable by the device's WireGuard config.
+  anywhere reachable by the device’s WireGuard config.
 - **Upstream.** The API or service the agent is calling
   (api.anthropic.com, api.github.com, an internal Kubernetes API
   server, a Postgres database, a ClickHouse cluster, an SSH
@@ -124,89 +124,62 @@ The gateway pulls in three plugin families:
   LLM-in-the-loop verdicts on rules that opt in (`dashboard`,
   `human_approver` over Slack/Discord/Telegram, `llm_approver` for
   synchronous LLM proctoring against a `policy "<name>" { text =
-  "..." }` prompt — see `config/README.md`). The dashboard's
+  "..." }` prompt — see `config/README.md`). The dashboard’s
   built-in approver pushes pending entries to a queue the operator
   drains in the SPA.
 
 ## Connection modes
 
-There are three ways to connect a device to the gateway. Onboarding
-runs through `clawpatrol join <gateway>`: the dashboard mints
-a WireGuard keypair, allocates a `/32` from the configured subnet,
-registers the peer with the running wireguard-go device, and the
-device persists the resulting `wg-quick`-style config at
-`~/.config/clawpatrol/wg.conf`. Each connection mode is what
-happens after that.
+`clawpatrol join <gateway>` enrolls the device. What the gateway
+mints + what the client installs depends on the gateway’s
+`control` mode.
 
-### `clawpatrol join --whole-machine` (Linux)
+### Tailscale mode
 
-Routes every byte the host emits through the gateway. The CLI
-calls `wg-quick up` against `/etc/wireguard/clawpatrol.conf` (the
-config has `AllowedIPs = 0.0.0.0/0, ::/0`), which uses the kernel
-WireGuard module to add the route and replace the default gateway.
-Reference: `setup.go:wgQuickUp`, `wireguard.go`.
+The gateway embeds tsnet; it joins the tailnet in-process and
+exposes only `/api/onboard/{start,poll,claim}` + `/api/cred/*` on
+:443 via Funnel. Every other route is tailnet-only. At onboard the
+gateway mints a Tailscale auth key (`reusable=true, ephemeral=true`
+for per-process; `ephemeral=false` for `--whole-machine`) via OAuth
+and the CA + api-token are delivered inside the approved Funnel
+response.
 
-- **Tunnel mechanism.** Kernel WireGuard via `wg-quick`. The kernel
-  driver owns the tunnel lifetime; clawpatrol does not run a
-  userspace WG on the device.
-- **What's installed on the device.** `/etc/wireguard/clawpatrol.conf`
-  (root-owned, mode `0o600`); `wg-quick` activates the `clawpatrol`
-  network interface and adds default routes through it.
-- **Scope.** Whole host. Every process on the device, including the
-  operator's shell, browser, and unrelated daemons, dials through
-  the gateway.
+**`clawpatrol run -- <cmd>` (Linux + macOS).** Each invocation is
+its own ephemeral tailnet node. On Linux a new user + net + mnt
+namespace runs userspace wireguard-go inside `tsnet.Server` with
+`MkdirTemp` state (`Ephemeral: true`); on macOS the
+`NETransparentProxyProvider` extension hosts the tsnet stack and
+PPID-filters flows. Concurrent runs on one host don’t share state.
+Reference: `run_tsnet_linux.go`, `run_tsnet_darwin.go`,
+`macos/netstack/wgnetstack.go`.
 
-### `clawpatrol run -- <cmd>` (Linux)
+**`clawpatrol join --whole-machine` (Linux).** Installs system
+Tailscale (`tailscale up --authkey=...`), sets the gateway as the
+exit node, and routes the whole host through. The auth key for
+this path is minted with `ephemeral=false` so the node persists.
+Reference: `setup.go:runLogin`.
 
-Routes one process tree through the gateway, leaves the rest of
-the device alone. The CLI re-execs itself in fresh user, network,
-and mount namespaces with `CAP_NET_ADMIN` in the ambient set,
-opens a TUN inside the new netns, runs userspace wireguard-go
-against it, configures `default dev wg0`, drops the ambient cap,
-and execs the wrapped command. Reference: `run_linux.go:runRun` /
-`runRunChild`.
+**`clawpatrol join --whole-machine` (macOS).** The NE owns whole-
+host routing — no system Tailscale touched. macOS never runs
+system tailscaled.
 
-- **Tunnel mechanism.** Userspace wireguard-go embedded in the
-  `clawpatrol` binary; the TUN lives only inside the unshared
-  netns.
-- **What's installed on the device.** Nothing persistent — no
-  kernel module, no `/etc/wireguard/`, no system service. Just the
-  `clawpatrol` binary and `~/.config/clawpatrol/wg.conf` from
-  onboarding.
-- **Scope.** The wrapped process and all its descendants. The host
-  default route is untouched. Other shells and processes on the
-  device keep their original network.
+### WireGuard mode
 
-### `clawpatrol run -- <cmd>` (macOS)
+The gateway runs an in-process WireGuard server (wireguard-go +
+gVisor netstack). At onboard it mints a keypair, allocates a `/32`
+from `wg_subnet_cidr`, and persists the wg-quick config at
+`~/.config/clawpatrol/wg.conf`.
 
-Routes the wrapped process tree through the gateway via a Network
-Extension. The CLI hands the command off to
-`/Applications/Clawpatrol.app/Contents/MacOS/Clawpatrol`, which
-forks the agent as a child of the `.app` and ensures the
-`NETransparentProxyProvider` system extension is loaded.
-Reference: `run_darwin.go`,
+**`clawpatrol run -- <cmd>` (Linux).** Per-process ephemeral WG
+peer in a fresh netns. Reference: `run_linux.go`.
+
+**`clawpatrol join --whole-machine` (Linux).** Kernel WireGuard via
+`wg-quick up`. Default route flips to the WG tunnel. Reference:
+`setup.go:wgQuickUp`, `wireguard.go`.
+
+**`clawpatrol run -- <cmd>` (macOS).** WG userspace inside the NE,
+PPID-filtered. Reference: `run_darwin.go`,
 `macos/ClawpatrolExtension/Provider.swift`.
-
-The extension intercepts every outbound TCP and UDP flow on the
-host and filters in `handleNewFlow`: it walks each flow's
-originating PPID chain and tunnels only those flows whose ancestor
-is the wrapped `.app` process. Matched flows are bridged into a
-userspace wireguard-go tunnel + gVisor netstack inside the
-extension; non-matched flows return `false` and proceed via the
-host's normal network. A `--whole-machine` mode skips the PPID
-filter and tunnels every flow.
-
-- **Tunnel mechanism.** Userspace wireguard-go + gVisor netstack
-  inside the system extension (`macos/netstack/`). Apple's per-app
-  `NEPacketTunnel` routing is gated behind MDM, so the extension
-  uses `NETransparentProxyProvider` and applies the per-process
-  scope itself.
-- **What's installed on the device.** `Clawpatrol.app` in
-  `/Applications/`, plus its system extension (one-time approval
-  prompt at first install). The first `clawpatrol run` activates
-  the extension; subsequent runs are no-ops.
-- **Scope.** The wrapped process and its descendants, identified
-  by PPID walk against the parent app's signing identifier.
 
 ## Network traffic processing
 
@@ -217,9 +190,9 @@ protocol class an endpoint plugin advertises so the rule engine
 can target it: today the gateway ships `https` (the `https`
 endpoint), `sql` (postgres, clickhouse_native, clickhouse_https),
 and `k8s` (kubernetes). Rules are a single block kind; the family
-is inferred from the rule's endpoint(s) at load time, and each
+is inferred from the rule’s endpoint(s) at load time, and each
 family exposes its own CEL variable (`http.*`, `sql.*`, `k8s.*`)
-that the rule's `condition` may reference. New protocols (e.g.
+that the rule’s `condition` may reference. New protocols (e.g.
 `ssh`) ship with their own family identifier and CEL variable. Anything the gateway has no opinion on
 splices to the real upstream byte-for-byte. There is no
 `HTTPS_PROXY` env var, no per-tool CA configuration, and no
@@ -297,24 +270,24 @@ end of the section.
 
 For TCP flows on `:443`, the gateway peeks the TLS `ClientHello`
 to recover the SNI hostname, then looks up the endpoint claiming
-that host within the device's profile. If the endpoint is `https`
+that host within the device’s profile. If the endpoint is `https`
 or `k8s`, the gateway terminates TLS with a leaf cert minted on
 the fly (P-256, 30-day validity, in-memory cache, signed by the
-gateway's CA), parses the request, runs it through the rule
+gateway’s CA), parses the request, runs it through the rule
 matcher and approve chain, asks the credential plugin to inject
 the real secret, and round-trips upstream. Endpoints whose family
-isn't HTTPS-shaped (e.g. `clickhouse_https`, schema-only today)
+isn’t HTTPS-shaped (e.g. `clickhouse_https`, schema-only today)
 fall through to passthrough.
 
 The CA cert is provisioned on the device during onboarding so the
-agent's TLS clients trust the minted leaves; the agent never sees
-the upstream's real cert.
+agent’s TLS clients trust the minted leaves; the agent never sees
+the upstream’s real cert.
 
 ### Postgres claiming
 
-Postgres endpoints don't have an SNI to peek, so the gateway
+Postgres endpoints don’t have an SNI to peek, so the gateway
 claims them by destination IP. The mechanism is the `ConnRouter`
-interface in `config/runtime/conn_route.go`: an endpoint plugin's
+interface in `config/runtime/conn_route.go`: an endpoint plugin’s
 body satisfies `ConnRouter` when it exposes
 `ConnRouteHosts() []string`, returning the `host:port` tuples it
 claims (`db.example.com:5432`, …). At policy load the gateway
@@ -323,9 +296,9 @@ resolves each host via DNS and folds the answers into a
 
 When a TCP connection lands on `:5432`, the WG forwarder routes it
 into `handlePostgresConn`, which consults the index by the
-connection's destination IP to pick the matching endpoint. When
+connection’s destination IP to pick the matching endpoint. When
 several endpoints share an IP (writer + readonly aimed at the same
-RDS instance) the lookup filters by the device's profile so the
+RDS instance) the lookup filters by the device’s profile so the
 right one wins; single-database profiles fall back to "first
 postgres in profile" without needing DNS at all. The postgres
 endpoint runtime then performs auth offload and runs the flow
@@ -339,7 +312,7 @@ without `main.go` having to learn about new families.
 ### DNS interception → VIP
 
 Some families (`ssh`, `clickhouse_native`) have no SNI and no
-`Host` header, so the gateway can't recover the agent-dialed
+`Host` header, so the gateway can’t recover the agent-dialed
 hostname from the wire bytes alone. Their endpoint plugins flag
 `RequiresVIP`, and the dnsvip allocator assigns each hostname a
 stable virtual IP at policy build, persisted to disk so VIPs
@@ -347,7 +320,7 @@ survive restart.
 
 The gateway runs an in-process DNS responder on UDP/TCP `:53`. The
 WG netstack delivers all DNS queries here regardless of the
-agent's resolver setting (any port-53 datagram reaches the
+agent’s resolver setting (any port-53 datagram reaches the
 gateway). For VIP-bound hostnames it returns the allocated VIP;
 for everything else it forwards the query to the upstream resolver
 and returns the real A/AAAA verbatim, so unrelated traffic flows
@@ -367,7 +340,7 @@ entirely — the agent dials the IP without ever issuing a DNS
 query. The gateway maintains an index of IP-literal bindings and
 consults it in the catch-all branch of the dispatcher: if the
 destination IP claims an endpoint, the flow goes to that
-endpoint's runtime; otherwise it falls through to transparent
+endpoint’s runtime; otherwise it falls through to transparent
 relay.
 
 ### Intercept-or-passthrough summary
@@ -387,7 +360,7 @@ If no endpoint plugin claims the destination, the gateway falls
 back to a transparent relay: it dials the real destination IP and
 pipes bytes both ways. The top-level `unknown_host` setting in
 `gateway.hcl` (`passthrough` by default) decides what to do when
-an HTTPS SNI doesn't match any configured endpoint — splice it
+an HTTPS SNI doesn’t match any configured endpoint — splice it
 unchanged or close it.
 
 UDP dispatch is narrower: only `:53` is handled today (DNS-VIP);

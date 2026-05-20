@@ -8,38 +8,8 @@ export function CrtDisplay({
   children: ComponentChildren;
 }) {
   return (
-    <div
-      class="md:squircle-xl bg-canvas py-[clamp(20px,3.5vw,34px)] md:p-[clamp(20px,3.5vw,34px)]"
-      style={{
-        boxShadow:
-          "2px 3px 14px rgba(42,52,47,0.08), " +
-          "5px 6px 32px rgba(42,52,47,0.08), " +
-          "14px 16px 60px rgba(42,52,47,0.065), " +
-          "24px 28px 90px rgba(42,52,47,0.05), " +
-          "38px 42px 120px rgba(42,52,47,0.04), " +
-          "52px 56px 160px rgba(42,52,47,0.025), " +
-          "68px 72px 200px rgba(42,52,47,0.018), " +
-          "-4px -4px 12px rgba(240,235,227,0.5), " +
-          "-10px -10px 30px rgba(240,235,227,0.3), " +
-          "inset 6px 6px 10px rgba(240,235,227,1), " +
-          "inset -10px -10px 16px rgba(0,0,0,0.12)",
-      }}
-    >
-      <div
-        class="md:squircle-lg overflow-hidden relative bg-crt-bg"
-        style={{
-          boxShadow:
-            "inset 0 0 18px rgba(0,0,0,0.9), " +
-            "inset 0 0 40px rgba(0,0,0,0.5), " +
-            "inset -5px -5px 10px rgba(42,52,47,1), " +
-            "3px 3px 4px rgba(240,235,227,0.7), " +
-            "6px 6px 10px rgba(240,235,227,0.7), " +
-            "-3px -3px 4px rgba(42,52,47,0.3), " +
-            "-6px -6px 10px rgba(42,52,47,0.18), " +
-            "0 0 3px rgba(240,235,227,1), " +
-            "0 0 3px rgba(42,52,47,0.15)",
-        }}
-      >
+    <div>
+      <div class="lg:squircle-lg overflow-hidden relative bg-crt-bg">
         {/* Glass reflection */}
         <div
           class="absolute pointer-events-none z-20 w-60 h-12

@@ -1,0 +1,1 @@
+error: Invalid dashboard_operators entry — dashboard_operators[0] = "bert": operator must be "user@domain" (got "bert"). Use "user@domain" or "*@domain".

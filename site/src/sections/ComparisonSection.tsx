@@ -35,8 +35,7 @@ const CATEGORIES: Category[] = [
           { name: "Lakera Guard", url: "https://www.lakera.ai/lakera-guard" },
           {
             name: "Google Model Armor",
-            url:
-              "https://cloud.google.com/security-command-center/docs/model-armor-overview",
+            url: "https://cloud.google.com/security-command-center/docs/model-armor-overview",
           },
           {
             name: "AWS Bedrock Guardrails",
@@ -58,6 +57,7 @@ const CATEGORIES: Category[] = [
             url: "https://www.prompt.security",
           },
           { name: "httpjail", url: "https://github.com/coder/httpjail" },
+          { name: "proxyline", url: "https://proxyline.dev/" },
         ],
       },
     ],
@@ -102,11 +102,11 @@ const CATEGORIES: Category[] = [
   },
 ];
 
-const COLOR_CLASSES = [
-  "bg-rust-100",
-  "bg-navy-100",
-  "bg-butter-100",
-  "bg-canvas",
+const COLOR_TOKENS = [
+  "--color-rust-100",
+  "--color-navy-100",
+  "--color-butter-100",
+  "--color-canvas",
 ];
 
 export function ComparisonSection() {
@@ -116,16 +116,12 @@ export function ComparisonSection() {
         <div class="max-w-max">
           <SectionLabel>How it compares</SectionLabel>
         </div>
-        <p class="max-w-2xl mb-8 sm:mb-10 text-base text-text-muted">
-          Other tools watch the surface. Claw Patrol parses the protocol. Rules
-          match SQL verbs, k8s resources, and HTTP methods directly.
-        </p>
         <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6 sm:mb-8">
           {CATEGORIES.map((c, i) => (
             <CategoryCard
               key={c.title}
               category={c}
-              colorClass={COLOR_CLASSES[i]}
+              colorToken={COLOR_TOKENS[i]}
             />
           ))}
         </div>
@@ -135,16 +131,18 @@ export function ComparisonSection() {
   );
 }
 
-function CategoryCard(
-  { category: c, colorClass }: { category: Category; colorClass: string },
-) {
+function CategoryCard({
+  category: c,
+  colorToken,
+}: {
+  category: Category;
+  colorToken: string;
+}) {
   return (
-    <div class="bg-transparent relative squircle-sm p-6 flex flex-col">
-      <div class="absolute w-full h-full border-navy border-2 squircle-sm inset-0 z-10" />
+    <div class="bg-transparent relative p-6 flex flex-col">
+      <div class="absolute w-full h-full border-navy border-1.5 inset-0 z-10" />
       <div class="relative z-10 flex-1">
-        <h4 class="text-xl font-display font-bold text-text mb-4">
-          {c.title}
-        </h4>
+        <h4 class="text-xl font-display text-text mb-4">{c.title}</h4>
         <div class="space-y-3">
           {c.groups.map((g, i) => (
             <div key={g.label ?? i}>
@@ -178,8 +176,8 @@ function CategoryCard(
         {c.gap}
       </p>
       <div
-        class={"isolate absolute w-full h-full squircle-sm top-1.5 left-2 z-0 " +
-          colorClass}
+        class="isolate absolute w-full h-full top-1.5 left-2 z-0 bg-horizontal-stripes [--color-2:transparent] "
+        style={`--color-1: var(${colorToken});`}
       />
     </div>
   );
@@ -187,7 +185,7 @@ function CategoryCard(
 
 function SynthesisCard() {
   return (
-    <div class="p-6 sm:p-8 squircle-md bg-rust-200 border-2 border-navy">
+    <div class="p-6 sm:p-8 squircle-md bg-rust-200 border-1.5 border-navy">
       <div class="flex items-center gap-3 mb-3">
         <img
           src="/claw-patrol-icon.svg"
@@ -195,15 +193,13 @@ function SynthesisCard() {
           class="w-8 h-8"
           aria-hidden="true"
         />
-        <h4 class="font-display font-bold text-2xl sm:text-3xl text-text">
-          Claw Patrol
-        </h4>
+        <h4 class="font-display text-2xl sm:text-3xl text-text">Claw Patrol</h4>
       </div>
       <p class="text-text text-[15px] sm:text-base max-w-3xl leading-relaxed">
         Watches the tool call at the protocol layer (Postgres, Kubernetes,
-        ClickHouse, HTTPS, SSH), so rules match SQL verbs and k8s resources
-        directly. Holds the secrets. Routes risky calls to a human or an LLM
-        judge. Records every byte. Doesn't try to be an LLM gateway or a
+        HTTPS, with a plugin API for the rest), so rules match SQL verbs and k8s
+        resources directly. Holds the secrets. Routes risky calls to a human or
+        an LLM judge. Records every byte. Doesn’t try to be an LLM gateway or a
         process sandbox; use a specialized tool if you need those.
       </p>
     </div>

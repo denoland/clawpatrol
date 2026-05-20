@@ -16,7 +16,7 @@ export function FlowDiagram() {
 
       <CenterNode
         label="Claw Patrol"
-        sub="rules · approvals · credentials · analytics"
+        sub="rules + approvals + credentials + analytics"
       />
 
       <Risers count={4} />
@@ -33,26 +33,23 @@ export function FlowDiagram() {
 
 function CardRow({ children }: { children: ComponentChildren }) {
   // pr-2 / pb-2 reserves room for the stacked-card shadows so they
-  // don't touch the column edge or the arrows below.
-  return (
-    <div class="grid grid-cols-4 gap-3 w-full pr-2 pb-2">{children}</div>
-  );
+  // don’t touch the column edge or the arrows below.
+  return <div class="grid grid-cols-4 gap-3 w-full pr-2 pb-2">{children}</div>;
 }
 
 function ProductionNode() {
   return (
     <div
-      class="squircle-md w-full bg-canvas border border-navy-200
+      class=" w-full bg-canvas border border-navy-200
         text-text px-5 py-5 text-center"
     >
-      <div class="font-display font-bold text-xl leading-none">
-        Production
-      </div>
+      <div class="font-display font-bold text-xl leading-none">Production</div>
       <div
         class="font-mono text-[11px] uppercase tracking-wider mt-2
           text-text-muted text-balance"
       >
-        postgres · clickhouse · k8s · aws · gcp · github · slack · notion · …
+        postgres / clickhouse / kubernetes / aws / gcp / github / slack / vultr
+        / whatever
       </div>
     </div>
   );
@@ -91,7 +88,7 @@ function Riser() {
 function Card({ name, icon }: { name: string; icon?: string }) {
   // Two trailing box-shadows render as faded duplicate cards sitting
   // behind this one. Each pair: solid canvas fill + 1px navy ring.
-  // Inline style — Tailwind's arbitrary shadow syntax doesn't compose
+  // Inline style — Tailwind’s arbitrary shadow syntax doesn’t compose
   // four space-separated shadows reliably.
   const stack =
     "4px 4px 0 0 var(--color-canvas)," +
@@ -100,17 +97,12 @@ function Card({ name, icon }: { name: string; icon?: string }) {
     "8px 8px 0 1px var(--color-navy-200)";
   return (
     <div
-      class="squircle-md flex flex-col items-center justify-center gap-2
+      class=" flex flex-col items-center justify-center gap-2
         px-2 py-3 bg-canvas border border-navy-200 min-w-0"
       style={{ boxShadow: stack }}
     >
       {icon ? (
-        <img
-          src={icon}
-          alt=""
-          class="w-6 h-6"
-          aria-hidden="true"
-        />
+        <img src={icon} alt="" class="w-6 h-6" aria-hidden="true" />
       ) : (
         <RobotGlyph />
       )}
@@ -162,12 +154,12 @@ function Risers({ count }: { count: number }) {
 }
 
 function CenterNode({ label, sub }: { label: string; sub: string }) {
-  // Light surface keyed to the header's bg-navy-100 so the proxy node
+  // Light surface keyed to the header’s bg-navy-100 so the proxy node
   // reads as the same brand surface; full Claw Patrol logo (icon +
   // wordmark) is the same public asset the header uses.
   return (
     <div
-      class="squircle-md w-full bg-navy-100 text-text border border-navy
+      class=" w-full bg-navy-50 text-text border border-navy
         px-5 py-5 text-center"
     >
       <img

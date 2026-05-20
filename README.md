@@ -1,140 +1,67 @@
 # clawpatrol
 
-Clawpatrol is a MITM gateway that sits between your AI agents — `claude`, `codex`, `gh` — and the upstream APIs they talk to. It injects credentials so the agent never sees them, enforces per-endpoint rules, and pulls a human into the loop when something needs explicit approval.
+The security firewall for agents.
 
-## install
+Claw Patrol sits between your agents and prod, parses their traffic
+at the wire, and gates each action against rules you write in HCL.
+For example, you can block destructive SQL, or have a human approve `kubectl
+delete pod` calls an agent makes.
+
+For the full overview see [clawpatrol.dev](https://clawpatrol.dev).
+
+## Install
 
 ```
 curl -fsSL https://clawpatrol.dev/install.sh | sh
 ```
 
-## gateway
+From source: `make` (requires Go and Node.js).
 
-Copy [`gateway.example.hcl`](gateway.example.hcl) onto the gateway host, edit the operational fields (`listen`, `public_url`, `wg_endpoint`, `state_dir`, `dashboard_secret`, `admin_email`), open the firewall ports, and run:
+## A rule
 
-```
-clawpatrol gateway /opt/clawpatrol/gateway.hcl
-```
-
-Under systemd, drop a unit that runs the same command and `systemctl enable --now` it. The CA is lazy-minted into sqlite under `state_dir` on first boot. See [Getting Started](site/doc/getting-started.md) for the walkthrough.
-
-## device
-
-On every machine you want to route through the gateway, run `clawpatrol join`. You'll get a one-time code; verify it matches in the browser tab that opens, approve, and you're done.
-
-```
-clawpatrol join http://gw.example.com:9080
-
-Verify code in browser:
-
-    ABCD-1234
-
-http://gw.example.com:9080/onboard/ABCD-1234
-
-⠧ Waiting for approval
-Approved.
-├ Joined as 10.55.0.7
-├ CA installed in system trust
-└ Shell rc: eval "$(clawpatrol env)"
-
-Installed! Try: clawpatrol run claude
-```
-
-`clawpatrol run` opens a per-process tunnel: only the wrapped command's traffic routes through the gateway, so your other apps keep using the public network as usual.
-
-```
-clawpatrol run claude
-clawpatrol run gh pr create
-clawpatrol run -- psql 'host=db user=agent'
-```
-
-If you'd rather route every packet on the host through the gateway, pass `--whole-machine` to `join`.
-
-## policy
-
-Policy lives in `gateway.hcl`. You declare credentials, the endpoints they unlock, and the rules that decide what's allowed. References are bare names — no quotes, no kind prefix.
-
-The full per-block field reference lives at [`site/doc/config-reference.md`](site/doc/config-reference.md). It is auto-generated from the plugin registry under `config/plugins/`; regenerate after adding a plugin or changing an `hcl:"..."` tag:
-
-```
-go generate ./config/plugins/all/
-# or directly:
-go run ./tools/docgen
-```
-
-A `go test ./tools/docgen/...` drift check fails when the committed reference disagrees with the live schema.
+A real rule from our own production config:
 
 ```hcl
-credential "anthropic_oauth_subscription" "claude" {}
-credential "github_oauth"                 "github" {}
-
-endpoint "https" "anthropic" {
-  hosts      = ["api.anthropic.com"]
-  credential = claude
-}
-endpoint "https" "github-api" {
-  hosts      = ["api.github.com"]
-  credential = github
-}
-
-approver "human_approver" "ops" {
-  channel = "#agent-ops"
-}
-
-rule "github-reads" {
-  endpoint  = github-api
-  condition = "http.method in ['GET', 'HEAD']"
-  verdict   = "allow"
-}
-rule "github-writes" {
-  endpoint  = github-api
-  condition = "http.method in ['POST', 'PUT', 'PATCH', 'DELETE']"
-  approve   = [ops]
-}
-
-profile "default" {
-  endpoints = [anthropic, github-api]
+rule "k8s-no-secrets" {
+  endpoint  = k8s-prod
+  condition = "k8s.resource == 'secrets'"
+  verdict   = "deny"
+  reason    = "Secret values must not leave the cluster via the agent"
 }
 ```
 
-For cheap, automated checks you can put an LLM in front of a rule. The proctor reads a policy block, looks at the request, and votes allow or deny.
+Conditions are CEL expressions over wire-level facts the gateway
+extracts per protocol: SQL verbs and table names for Postgres /
+ClickHouse, resource / verb / namespace for Kubernetes, method /
+path / headers / body for HTTP. The full set of facts lives in the
+[config reference](https://clawpatrol.dev/docs/config-reference).
 
-```hcl
-policy "no-secret-columns" {
-  text = "Deny if the SELECT touches columns named like secret/token/password."
-}
+## Run
 
-approver "llm_approver" "secret-judge" {
-  model      = "claude-haiku-4-5-20251001"
-  credential = claude
-  policy     = no-secret-columns
-}
+Three deployment shapes; pick whichever fits.
 
-rule "pg-secret-defense" {
-  endpoint  = pg-prod
-  condition = "sql.verb == 'select' && sql.statement.matches('(?i)\\\\b(secret|token|password)\\\\b')"
-  approve   = [secret-judge]
-}
+```
+clawpatrol gateway config.hcl   # run the proxy itself
+clawpatrol join <gateway-url>   # join a gateway
+clawpatrol run claude           # wrap one agent's process tree
 ```
 
-## modes
+`clawpatrol run` opens a per-process tunnel on Linux (via netns) or
+macOS (via NetworkExtension); only the wrapped command's traffic
+goes through the gateway. `clawpatrol join` brings up a WireGuard
+tunnel that routes the whole host. `clawpatrol gateway` is the
+proxy: a single binary that loads your HCL config and accepts
+clients tunneling in via WireGuard or Tailscale.
 
-Clawpatrol ships two control planes for the gateway-to-device tunnel. Pick one in `gateway.hcl`; `gateway.example.hcl` ships with WireGuard.
+## Configure
 
-The WireGuard mode embeds a userspace WG endpoint inside the gateway. You only have to open one UDP port — there's no daemon, no `wg-quick`, and no kernel module on the gateway host. Devices run `clawpatrol join <gw>` and walk away with a per-machine WG conf.
+[clawpatrol.dev/docs/getting-started](https://clawpatrol.dev/docs/getting-started)
+walks through a first config end-to-end.
+[clawpatrol.dev/docs/config-reference](https://clawpatrol.dev/docs/config-reference)
+is the auto-generated field reference. See
+[`gateway.example.hcl`](cmd/clawpatrol/gateway.example.hcl) for an
+annotated starting template.
 
-The Tailscale mode joins the gateway to your existing tailnet as an exit-node. Devices that are already on the tailnet run `clawpatrol login` and pin `clawpatrol` as their exit-node. Use this if you already operate Tailscale and want its ACL and whois plumbing to gate onboarding.
+## License
 
-You configure the choice with top-level fields:
-
-```hcl
-control = "wireguard"   # or "tailscale"
-
-# tailscale-only:
-oauth_client_id     = "{{secret:TS_OAUTH_CLIENT_ID}}"
-oauth_client_secret = "{{secret:TS_OAUTH_CLIENT_SECRET}}"
-tailscale_tags      = ["tag:client"]
-
-# wireguard-only:
-wg_subnet_cidr = "10.55.0.0/24"
-```
+MIT. See [LICENSE.md](LICENSE.md).

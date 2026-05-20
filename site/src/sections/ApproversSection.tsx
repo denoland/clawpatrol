@@ -1,6 +1,9 @@
 import type { ComponentChildren } from "preact";
 import { HclCode } from "../components/HclCode";
 import { SectionLabel } from "../components/SectionLabel";
+import { TerminalFrame } from "../components/TerminalFrame";
+import { snippet } from "../lib/example";
+import { approver_human, approver_llm } from "../lib/examples";
 
 /* ──────────────────────────────────────────────────────────────────────
    Approvers — deepens the `require_llm` and `require_human` verdicts
@@ -14,18 +17,8 @@ import { SectionLabel } from "../components/SectionLabel";
         for both: incoming → response → verdict pill
    ──────────────────────────────────────────────────────────────────── */
 
-const LLM_CONFIG = `approver "llm_approver" "secret-judge" {
-  model       = "claude-haiku-4-5"
-  policy      = "reject changes with bad words"
-  cache_ttl   = 300
-  fail_closed = true
-}`;
-
-const HUMAN_CONFIG = `approver "human_approver" "ops" {
-  channel    = "#agent-ops"
-  timeout    = 600
-  on_timeout = "deny"
-}`;
+const LLM_CONFIG = snippet(approver_llm);
+const HUMAN_CONFIG = snippet(approver_human);
 
 /* ── Shared diagram primitives ─────────────────────────────────────── */
 
@@ -63,7 +56,7 @@ function VerdictPill({
 function LlmDiagram() {
   return (
     <DiagramFrame>
-      <div class="bg-canvas squircle-sm px-3 py-2 font-mono text-[12px] ">
+      <div class="bg-canvas  px-3 py-2 font-mono text-[12px] ">
         <div class="text-text-subtle text-[10px] uppercase tracking-[0.18em] mb-1">
           incoming
         </div>
@@ -76,7 +69,7 @@ function LlmDiagram() {
         <div class="shrink-0 w-7 h-7 rounded-full bg-rust-200 flex items-center justify-center text-[11px] font-display font-bold text-rust-800">
           AI
         </div>
-        <div class="bg-canvas border border-rust-100 squircle-sm px-3 py-2 text-[12px]  text-text-muted">
+        <div class="bg-canvas border border-rust-100  px-3 py-2 text-[12px]  text-text-muted">
           Reply body contains banned term{" "}
           <code class="text-text font-mono">moron</code>.
         </div>
@@ -96,7 +89,7 @@ function HumanDiagram() {
         <div class="shrink-0 w-7 h-7 rounded-full bg-navy-700 flex items-center justify-center text-[11px] font-display font-bold text-canvas">
           CP
         </div>
-        <div class="bg-canvas border border-rust-100 squircle-sm px-3 py-2 text-[12px] ">
+        <div class="bg-canvas border border-rust-100  px-3 py-2 text-[12px] ">
           <div class="text-text-subtle text-[10px] uppercase tracking-[0.18em] mb-1">
             #agent-ops
           </div>
@@ -111,8 +104,8 @@ function HumanDiagram() {
         <div class="shrink-0 w-7 h-7 rounded-full bg-rust-300 flex items-center justify-center text-[11px] font-display font-bold text-rust-900">
           JC
         </div>
-        <div class="bg-rust-100 border border-rust-200 squircle-sm px-3 py-2 text-[12px]  text-text">
-          ✓ approve — that's fine
+        <div class="bg-rust-100 border border-rust-200  px-3 py-2 text-[12px]  text-text">
+          ✓ approve — that’s fine
         </div>
       </div>
 
@@ -138,18 +131,20 @@ function ApproverCard({
 }) {
   return (
     <article class="isolate min-w-0 bg-transparent relative lg:p-8 xl:p-12">
-      <div className="hidden w-full h-full border-2 lg:block border-navy squircle-sm z-10 absolute inset-0"></div>
-      <div className="hidden lg:block absolute w-full h-full top-2 left-2 bg-navy-100 squircle-sm z-0" />
+      <div className="hidden w-full h-full border lg:block border-navy  z-10 absolute inset-0"></div>
+      <div className="hidden lg:block absolute w-full h-full top-1 left-1 bg-horizontal-stripes  z-0" />
       <div className="relative z-10 flex flex-col gap-4">
         <header class="flex items-baseline justify-between">
-          <h4 class="text-3xl font-display font-bold text-text">{title}</h4>
+          <h4 class="text-3xl font-display text-text">{title}</h4>
           <code class="text-[10px] font-mono text-text-subtle">{verdict}</code>
         </header>
         <p class="text-sm  text-text-muted">{pitch}</p>
-        <HclCode
-          source={config}
-          class="text-[12px]  font-mono bg-console-dark text-canvas/85 squircle-sm p-4 overflow-x-auto whitespace-pre"
-        />
+        <TerminalFrame class="block p-4">
+          <HclCode
+            source={config}
+            class="text-[12px] font-mono text-canvas overflow-x-auto whitespace-pre"
+          />
+        </TerminalFrame>
         {diagram}
       </div>
     </article>
@@ -172,15 +167,15 @@ export function ApproversSection() {
   return (
     <section class="bg-rust-50 py-24 sm:py-32">
       <div class="max-w-6xl mx-auto px-6 sm:px-8">
-        <SectionLabel>Approvers</SectionLabel>
+        <SectionLabel>Approval flows</SectionLabel>
 
         <div class="max-w-3xl mb-14">
-          <h3 class="text-4xl sm:text-5xl md:text-6xl font-display font-bold text-balance mb-5 text-text">
+          <h3 class="text-4xl sm:text-5xl md:text-6xl font-display text-balance mb-5 text-text">
             Humans, models, <span class="text-rust">your call</span>
           </h3>
           <p class="text-base  text-text-muted">
             Defer the ambiguous requests. A model with your prompt, or a person
-            in Slack — you decide which one runs when.
+            in Slack. You decide which one runs when.
           </p>
         </div>
 
@@ -188,7 +183,7 @@ export function ApproversSection() {
           <ApproverCard
             title="LLM judge"
             verdict="require_llm"
-            pitch="A model with a custom prompt votes on each request. Verdicts are cached so it doesn't re-bill."
+            pitch="A model with a custom prompt votes on each request. Verdicts are cached so it doesn’t re-bill."
             config={LLM_CONFIG}
             diagram={<LlmDiagram />}
           />
@@ -196,7 +191,7 @@ export function ApproversSection() {
           <ApproverCard
             title="Human In The Loop"
             verdict="require_human"
-            pitch="A person votes in Slack, the dashboard, or your own webhook. Times out closed if no one's home."
+            pitch="A person votes in Slack, the dashboard, or your own webhook. Times out closed if no one’s home."
             config={HUMAN_CONFIG}
             diagram={<HumanDiagram />}
           />

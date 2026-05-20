@@ -1,173 +1,92 @@
+import { HclCode } from "../components/HclCode";
 import { SectionLabel } from "../components/SectionLabel";
+import { TerminalFrame } from "../components/TerminalFrame";
+import { snippet } from "../lib/example";
+import { protocol_https, protocol_k8s, protocol_sql } from "../lib/examples";
 
-/* ──────────────────────────────────────────────────────────────────────
-   The "rules" pillar — the centerpiece of the new landing page.
-   Frames the policy engine + dual-approver model (LLM judge + human review)
-   with a real HCL snippet and a 4-up decision matrix.
-   ──────────────────────────────────────────────────────────────────── */
-
-const DECISIONS: { label: string; verdict: string; body: string }[] = [
+const PROTOCOLS: {
+  name: string;
+  body: string;
+  example: string;
+}[] = [
   {
-    label: "Allow",
-    verdict: "allow",
+    name: "HTTP",
     body:
-      "Boring requests pass through with no overhead. " +
-      "Read-only GETs, internal hosts, anything you've green-lit.",
+      "Method, path, headers, body. Any host, any service. Match an " +
+      "HTTP request shape, route it through an LLM judge before it " +
+      "goes out.",
+    example: snippet(protocol_https),
   },
   {
-    label: "Deny",
-    verdict: "deny",
+    name: "SQL",
     body:
-      "Hard stop. Returns a reason to the agent so it knows why. " +
-      "DROP TABLE on prod. Writes to repos you didn't authorize.",
+      "Postgres and ClickHouse traffic parsed verb-by-verb. Match by " +
+      "SQL verb, table, function name, and substrings of the " +
+      "statement itself.",
+    example: snippet(protocol_sql),
   },
   {
-    label: "LLM judge",
-    verdict: "require_llm",
+    name: "Kubernetes",
     body:
-      "Cheap, automated review. Hand the request to an LLM " +
-      "with your custom prompt — it reads the payload and votes.",
+      "API calls to kube-apiserver. Match by namespace, resource, " +
+      "verb, and name. Catch destructive verbs on the wrong cluster, " +
+      "or hand exec commands to an LLM.",
+    example: snippet(protocol_k8s),
   },
-  {
-    label: "Human In The Loop",
-    verdict: "require_human",
-    body:
-      "Park the request. Ping Slack, the dashboard, or your own " +
-      "webhook. Resume on approval. Time out closed if no one's home.",
-  },
-];
-
-function RuleCodeBlock() {
-  /* Hand-tinted pseudo-syntax-highlighted HCL. Avoids pulling in a
-     full highlighter for one snippet. */
-  return (
-    <pre
-      class="min-w-0 text-[13px] sm:text-sm  font-mono
-        bg-navy text-canvas/85 squircle-md p-6 overflow-x-auto
-        border border-navy-700"
-    >
-      <code>
-        <span class="text-text-subtle">
-          # Block destructive SQL on prod{"\n"}
-        </span>
-        <span class="text-rust-300">rule</span>{" "}
-        <span class="text-butter-300">"no-prod-drops"</span>
-        {" {\n"}
-        {"  "}
-        <span class="text-rust-300">endpoint</span>
-        {"  = pg-prod\n"}
-        {"  "}
-        <span class="text-rust-300">condition</span>
-        {" = "}
-        <span class="text-butter-300">"sql.verb in ['drop', 'truncate']"</span>
-        {"\n  "}
-        <span class="text-rust-300">verdict</span>
-        {"   = "}
-        <span class="text-butter-300">"deny"</span>
-        {"\n}\n\n"}
-        <span class="text-text-subtle">
-          # Slack-approve any GitHub write{"\n"}
-        </span>
-        <span class="text-rust-300">rule</span>{" "}
-        <span class="text-butter-300">"github-writes"</span>
-        {" {\n"}
-        {"  "}
-        <span class="text-rust-300">endpoint</span>
-        {"  = github-api\n"}
-        {"  "}
-        <span class="text-rust-300">condition</span>
-        {" = "}
-        <span class="text-butter-300">
-          "http.method in ['POST', 'PUT', 'DELETE']"
-        </span>
-        {"\n  "}
-        <span class="text-rust-300">approve</span>
-        {"   = [ops]\n"}
-        {"}\n\n"}
-        <span class="text-text-subtle">
-          # Hand sensitive reads to an LLM judge{"\n"}
-        </span>
-        <span class="text-rust-300">approver</span>{" "}
-        <span class="text-butter-300">"llm_approver"</span>{" "}
-        <span class="text-butter-300">"secret-judge"</span>
-        {" {\n"}
-        {"  "}
-        <span class="text-rust-300">model</span>
-        {"  = "}
-        <span class="text-butter-300">"claude-haiku-4-5"</span>
-        {"\n  "}
-        <span class="text-rust-300">policy</span>
-        {" = "}
-        <span class="text-butter-300">"reject changes with bad words"</span>
-        {"\n}"}
-      </code>
-    </pre>
-  );
-}
-
-const colorClasses = [
-  "bg-rust-100",
-  "bg-navy-100",
-  "bg-butter-100",
-  "bg-canvas",
 ];
 
 export function RulesSection() {
   return (
-    <section class="bg-canvas-muted py-24 sm:py-32">
+    <section class="bg-navy-700 py-24 sm:py-32 text-canvas">
       <div class="max-w-6xl mx-auto px-6 sm:px-8">
-        <SectionLabel>Approval rules</SectionLabel>
+        <SectionLabel>Rules</SectionLabel>
 
-        <div class="grid grid-cols-1 lg:grid-cols-[2fr_3fr] gap-8 lg:gap-16 xl:gap-32 items-start mb-20">
-          <div class="min-w-0">
-            <h3 class="text-4xl sm:text-5xl md:text-6xl lg:text-[3.25rem] font-display font-bold text-balance mb-6 text-text">
-              You write the rules.{" "}
-              <span class="text-rust">Claw Patrol enforces them.</span>
-            </h3>
-            <p class="text-base  text-text-muted mb-5 max-w-xl">
-              Every outbound request — HTTP, SQL, SSH, Kubernetes — runs through
-              a rule engine before it leaves your machine. Match on method,
-              host, SQL verbs and tables, k8s namespaces, plugin- defined
-              facets. Decide what happens next.
-            </p>
-            <p class="text-base  text-text-muted max-w-xl">
-              Edits are hot. Save a rule in the dashboard, the next request sees
-              it. No restarts, no redeploys, no waiting.
-            </p>
-          </div>
-          <RuleCodeBlock />
-        </div>
-
-        <div>
-          <p class="text-xs uppercase tracking-[0.25em]  font-bold text-text-muted mb-5">
-            Four verdicts. Mix freely.
+        <div class="max-w-3xl mx-auto text-center mb-16">
+          <h3 class="text-4xl sm:text-5xl md:text-6xl font-display text-balance mb-5">
+            You write access rules.{" "}
+            <span class="text-rust">Claw Patrol enforces them.</span>
+          </h3>
+          <p class="text-base text-canvas/70">
+            Every outbound request runs through a rule engine before it reaches
+            its destination. Match on HTTP method, SQL verb, k8s resource,
+            plugin-defined facets; not just URLs. Edits are hot: save a rule in
+            the dashboard, the next request sees it.
           </p>
-          <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {DECISIONS.map((d, i) => (
-              <div
-                key={d.verdict}
-                class="bg-transparent relative squircle-sm p-6"
-              >
-                <div className=" absolute w-full h-full border-navy border-2 squircle-sm inset-0 z-10"></div>
-                <div class="flex items-baseline justify-between mb-3 relative z-10">
-                  <h4 class="text-xl font-display font-bold text-text">
-                    {d.label}
-                  </h4>
-                  <code class="text-[10px] font-mono text-text-subtle">
-                    {d.verdict}
-                  </code>
-                </div>
-                <p class="text-sm relative z-10 text-text-muted">{d.body}</p>
-                <div
-                  className={
-                    `isolate absolute w-full h-full squircle-sm top-1.5 left-2 z-0 ` +
-                    colorClasses[i]
-                  }
-                ></div>
-              </div>
-            ))}
-          </div>
         </div>
+
+        <p class="text-xs uppercase tracking-[0.25em] font-display font-bold text-rust-300 mb-10 text-center">
+          Match anything on the wire
+        </p>
+
+        <div class="space-y-10 lg:space-y-14">
+          {PROTOCOLS.map((p) => (
+            <div
+              key={p.name}
+              class="grid grid-cols-1 lg:grid-cols-[1fr_2fr] gap-6 lg:gap-12 items-start"
+            >
+              <div class="min-w-0">
+                <h4 class="text-3xl font-display text-canvas mb-3">{p.name}</h4>
+                <p class="text-base text-canvas/70 max-w-sm">{p.body}</p>
+              </div>
+              <TerminalFrame class="block min-w-0 p-5 sm:p-6 before:border-navy-500 after:border-navy-500">
+                <HclCode
+                  source={p.example}
+                  class="text-[13px] sm:text-sm font-mono leading-relaxed text-canvas overflow-x-auto whitespace-pre"
+                />
+              </TerminalFrame>
+            </div>
+          ))}
+        </div>
+
+        <p class="mt-14 text-sm text-canvas/70 text-center max-w-xl mx-auto">
+          Extend Claw Patrol with plugins{" "}
+          <a
+            href="/docs/plugins/"
+            class="text-rust-300 hover:text-rust-200 underline underline-offset-4"
+          >
+            Read more →
+          </a>
+        </p>
       </div>
     </section>
   );

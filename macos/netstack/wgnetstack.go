@@ -30,7 +30,9 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -39,6 +41,8 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"tailscale.com/tsnet"
 
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
@@ -92,11 +96,6 @@ func (n *epNotify) WriteNotify() {
 // netstackQueueSize matches the gateway side. 1024 was tight under
 // whole-machine bursts; 16384 absorbs realistic spikes.
 const netstackQueueSize = 16384
-
-// wgTunMTU matches wireguard.go's constant. 1220 fits Tailscale's
-// 1280-byte underlay without IP fragmentation. v6 unavailable inside
-// the tunnel; see the comment over there.
-const wgTunMTU = 1220
 
 func newNetTUN(addr netip.Addr, addr6 netip.Addr, mtu int) (*netTun, error) {
 	t := &netTun{
@@ -315,7 +314,7 @@ func wg_netstack_init(confC *C.char, errBuf *C.char, errLen C.int) C.int {
 		setErr(errBuf, errLen, "parse client IP: no IPv4 in Address")
 		return -1
 	}
-	t, err := newNetTUN(clientIP, clientIP6, wgTunMTU)
+	t, err := newNetTUN(clientIP, clientIP6, 1420)
 	if err != nil {
 		setErr(errBuf, errLen, "newNetTUN: "+err.Error())
 		return -1
@@ -775,6 +774,251 @@ func raiseFDLimit() {
 	if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &rlim); err == nil {
 		_ = old
 	}
+}
+
+// --- tsnet (Tailscale mode) ----------------------------------------------
+//
+// ts_netstack_init / ts_netstack_tcp_connect / ts_netstack_resolve /
+// ts_netstack_close mirror the wg_netstack_* surface but use a
+// tsnet.Server as the transport instead of WireGuard + gVisor.
+//
+// Flow:
+//   Provider.swift (tsnet mode)
+//     bridgeTCP flow → ts_netstack_tcp_connect(ip, port)
+//       → tsServer.Dial(gwAddr)
+//       → write HAProxy PROXY v1 header with original dstIP:dstPort
+//       → gateway dispatches to target
+//
+// The PROXY header carries (tsNodeIP, dstIP, 0, dstPort); srcPort is
+// 0 because the NE intercept layer doesn't expose the original local
+// port. Gateway routing uses dstIP:dstPort only.
+
+var (
+	tsServer  *tsnet.Server
+	tsGwAddr  string
+	tsNodeIP  string
+	tsMu      sync.Mutex
+	tsStarted bool
+)
+
+// ts_netstack_init joins the tailnet with the given ephemeral auth key
+// and records the gateway address for ts_netstack_tcp_connect. Blocks
+// until the tsnet node has a 100.x.x.x address (≤90s). Returns 0 on
+// success, -1 on failure.
+//
+//export ts_netstack_init
+func ts_netstack_init(authKeyC, controlURLС, gwHostC, gwPortC, tokenC, hostnameC, errBuf *C.char, errLen C.int) C.int {
+	tsMu.Lock()
+	defer tsMu.Unlock()
+	if tsStarted {
+		return 0
+	}
+	raiseFDLimit()
+	authKey := C.GoString(authKeyC)
+	controlURL := C.GoString(controlURLС)
+	gwHost := C.GoString(gwHostC)
+	gwPort := C.GoString(gwPortC)
+	token := C.GoString(tokenC)
+	hostname := C.GoString(hostnameC)
+
+	stateDir, err := os.MkdirTemp("", "clawpatrol-tsnet-ne-*")
+	if err != nil {
+		setErr(errBuf, errLen, "mktemp: "+err.Error())
+		return -1
+	}
+
+	s := &tsnet.Server{
+		Hostname:   fmt.Sprintf("clawpatrol-ne-%d", os.Getpid()),
+		AuthKey:    authKey,
+		ControlURL: controlURL,
+		Dir:        stateDir,
+		Ephemeral:  true,
+		Logf:       func(string, ...any) {},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	upSt, err := s.Up(ctx)
+	if err != nil {
+		_ = s.Close()
+		_ = os.RemoveAll(stateDir)
+		setErr(errBuf, errLen, "tsnet up: "+err.Error())
+		return -1
+	}
+
+	var ip4 string
+	for _, ip := range upSt.Self.TailscaleIPs {
+		if ip.Is4() {
+			ip4 = ip.String()
+			break
+		}
+	}
+	if ip4 == "" && len(upSt.Self.TailscaleIPs) > 0 {
+		ip4 = upSt.Self.TailscaleIPs[0].String()
+	}
+
+	tsServer = s
+	tsGwAddr = net.JoinHostPort(gwHost, gwPort)
+	tsNodeIP = ip4
+	tsStarted = true
+
+	// Register this NE's tsnet IP with the gateway so profile dispatch
+	// + dashboard attribution roll up to the parent device. Done from
+	// inside the extension because the parent process is on the host
+	// network and can't dial gateway tailnet IPs directly; tsnet
+	// (running here) IS on the tailnet.
+	if token != "" && ip4 != "" {
+		go registerEphemeralOverTsnet(s, gwHost, token, ip4, hostname)
+	}
+	return 0
+}
+
+// registerEphemeralOverTsnet POSTs to the gateway's tailnet-only
+// /api/peer/ephemeral/tsnet/register endpoint using tsnet.Server.Dial
+// so the call reaches a 100.x tailnet IP that the parent process
+// (host network) cannot. Best-effort: on failure the run still works
+// but lands in the gateway's default profile.
+func registerEphemeralOverTsnet(s *tsnet.Server, gwHost, token, tsIP, hostname string) {
+	client := &http.Client{
+		Timeout:   15 * time.Second,
+		Transport: &http.Transport{DialContext: s.Dial},
+	}
+	u := "http://" + gwHost + ":8080/api/peer/ephemeral/tsnet/register?ip=" + tsIP
+	if hostname != "" {
+		u += "&hostname=" + url.QueryEscape(hostname)
+	}
+	req, err := http.NewRequest(http.MethodPost, u, nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	_ = resp.Body.Close()
+}
+
+// ts_netstack_get_ip writes the tsnet node's 100.x.x.x address into
+// outBuf. Returns 0 on success, -1 if not initialized.
+//
+//export ts_netstack_get_ip
+func ts_netstack_get_ip(outBuf *C.char, outLen C.int) C.int {
+	tsMu.Lock()
+	ip := tsNodeIP
+	tsMu.Unlock()
+	if ip == "" {
+		setErr(outBuf, outLen, "not initialized")
+		return -1
+	}
+	setErr(outBuf, outLen, ip)
+	return 0
+}
+
+// ts_netstack_tcp_connect dials dstHost:dstPort via the gateway over
+// tsnet (PROXY v1 header carries the original destination). Returns a
+// positive connection ID for use with wg_netstack_send/recv/close_conn.
+//
+//export ts_netstack_tcp_connect
+func ts_netstack_tcp_connect(hostC *C.char, port C.int, timeoutMs C.int, errBuf *C.char, errLen C.int) C.int64_t {
+	tsMu.Lock()
+	s := tsServer
+	gwAddr := tsGwAddr
+	srcIP := tsNodeIP
+	tsMu.Unlock()
+	if s == nil {
+		setErr(errBuf, errLen, "ts_netstack not initialized")
+		return -1
+	}
+	host := C.GoString(hostC)
+	ctx := context.Background()
+	var cancel context.CancelFunc
+	if timeoutMs > 0 {
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
+		defer cancel()
+	}
+	conn, err := s.Dial(ctx, "tcp", gwAddr)
+	if err != nil {
+		setErr(errBuf, errLen, "tsnet dial: "+err.Error())
+		return -1
+	}
+	proxyHdr := fmt.Sprintf("PROXY TCP4 %s %s 0 %d\r\n", srcIP, host, int(port))
+	if _, err := io.WriteString(conn, proxyHdr); err != nil {
+		_ = conn.Close()
+		setErr(errBuf, errLen, "proxy hdr: "+err.Error())
+		return -1
+	}
+	id := nextConnID.Add(1)
+	conns.Store(id, &connHandle{conn: conn})
+	return C.int64_t(id)
+}
+
+// ts_netstack_resolve resolves host using the system resolver (not the
+// tunnel — in tsnet mode the host has direct internet access for DNS).
+//
+//export ts_netstack_resolve
+func ts_netstack_resolve(hostC *C.char, outBuf *C.char, outLen C.int) C.int {
+	host := C.GoString(hostC)
+	if _, err := netip.ParseAddr(host); err == nil {
+		setErr(outBuf, outLen, host)
+		return 0
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	addrs, err := net.DefaultResolver.LookupHost(ctx, host)
+	if err != nil {
+		setErr(outBuf, outLen, "lookup: "+err.Error())
+		return -1
+	}
+	for _, a := range addrs {
+		if ip, perr := netip.ParseAddr(a); perr == nil && ip.Is4() {
+			setErr(outBuf, outLen, a)
+			return 0
+		}
+	}
+	setErr(outBuf, outLen, "no IPv4 for "+host)
+	return -1
+}
+
+// ts_netstack_udp_connect dials dstHost:dstPort for UDP directly via tsnet.
+// tsnet supports UDP natively (Dial "udp"), so no framing or TCP relay needed.
+// The returned conn ID works with wg_netstack_send/recv/close_conn identically
+// to WireGuard UDP: each send/recv is one datagram.
+//
+//export ts_netstack_udp_connect
+func ts_netstack_udp_connect(hostC *C.char, port C.int, errBuf *C.char, errLen C.int) C.int64_t {
+	tsMu.Lock()
+	s := tsServer
+	tsMu.Unlock()
+	if s == nil {
+		setErr(errBuf, errLen, "ts_netstack not initialized")
+		return -1
+	}
+	host := C.GoString(hostC)
+	addr := fmt.Sprintf("%s:%d", host, int(port))
+	conn, err := s.Dial(context.Background(), "udp", addr)
+	if err != nil {
+		setErr(errBuf, errLen, "tsnet udp dial: "+err.Error())
+		return -1
+	}
+	id := nextConnID.Add(1)
+	conns.Store(id, &connHandle{conn: conn})
+	return C.int64_t(id)
+}
+
+// ts_netstack_close shuts down the tsnet server.
+//
+//export ts_netstack_close
+func ts_netstack_close() {
+	tsMu.Lock()
+	defer tsMu.Unlock()
+	if tsServer != nil {
+		_ = tsServer.Close()
+		tsServer = nil
+	}
+	tsStarted = false
+	tsGwAddr = ""
+	tsNodeIP = ""
 }
 
 func main() {} // required for c-archive build mode

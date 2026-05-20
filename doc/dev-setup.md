@@ -7,7 +7,9 @@ build time.
 ## Prerequisites
 
 - Go (see `go.mod` for the required version)
-- npm (only required if you want to rebuild the dashboard SPA in `www/`)
+- [Deno](https://deno.com) v2+ (only required if you want to rebuild
+  the dashboard SPA in `dashboard/`). Deno reads `dashboard/package.json`
+  directly; npm isn't needed.
 - Docker with Compose (optional, for end-to-end testing against an
   in-container agent)
 
@@ -38,16 +40,17 @@ for the full system-extension build walkthrough.
 ## Build
 
 ```sh
-# Optional: build the dashboard SPA. The Go build embeds whatever
-# is under www/dist/ — skip and the binary ships a placeholder.
-cd www && npm ci && npm run build && cd ..
-
-# Build the binary.
-go build -o clawpatrol .
-
-# Or run directly without producing a binary on disk.
-go run .
+make            # builds dashboard SPA + Go binary -> ./clawpatrol
+make test       # go test ./...
+make fmt        # gofmt + dashboard formatter
+make fmt-check  # CI's format gate
+make clean      # drop ./clawpatrol, dashboard/dist, dashboard/node_modules
+make install    # PREFIX=~/.local/bin (override with PREFIX=...)
 ```
+
+Under the hood, the dashboard build runs `deno install && deno task
+build` in `dashboard/`. Skip it (`go build ./cmd/clawpatrol` directly)
+and the Go embed ships a placeholder.
 
 ## Quick start
 
@@ -57,7 +60,7 @@ operational fields (listen ports, `public_url`, `wg_endpoint`,
 
 ```sh
 mkdir -p ./data
-cp gateway.example.hcl ./data/gateway.hcl
+cp cmd/clawpatrol/gateway.example.hcl ./data/gateway.hcl
 $EDITOR ./data/gateway.hcl
 ./clawpatrol gateway ./data/gateway.hcl
 ```

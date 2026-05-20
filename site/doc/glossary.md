@@ -60,7 +60,7 @@ a [rule](#rule) attaches to. Built-in types: `https`, `kubernetes`,
 
 A typed handle to a secret. The HCL block carries only how-to-inject
 parameters (header name, cookie name, mTLS cert env var); the actual
-secret bytes live in the gateway's [secret store](#secret-store) and
+secret bytes live in the gateway’s [secret store](#secret-store) and
 are fetched at injection time. Built-in shapes include `bearer_token`,
 `cookie_token`, `header_token`, `mtls_credential`,
 `postgres_credential`, `anthropic_manual_key`, and the OAuth variants.
@@ -75,7 +75,7 @@ class (`http`, `sql`, `ssh`, `k8s`) the gateway used to intercept it —
 and that family fixes the data the gateway extracts from the wire and
 exposes to policy. The action targets one [endpoint](#endpoint), the
 matching [rule](#rule)'s [outcome](#outcome) gates it, and it surfaces
-in the dashboard's live request feed with its own detail page.
+in the dashboard’s live request feed with its own detail page.
 "Action" is the operator-visible concept of "the thing the agent did."
 
 ### Rule
@@ -97,9 +97,9 @@ to exactly one family; built-in families are `http`, `sql`, `ssh`, and
 `k8s`. An [endpoint](#endpoint)'s type carries an implied family — an
 `https` endpoint accepts `http` actions, a `postgres` endpoint accepts
 `sql` actions — and that propagates to [rules](#rule): all endpoints
-listed by one rule must share a family, so the rule's CEL condition
+listed by one rule must share a family, so the rule’s CEL condition
 sees a single, well-defined set of facet fields. Each family includes
-one or more [facets](#facet) into the action's data: the `sql` family
+one or more [facets](#facet) into the action’s data: the `sql` family
 includes the `sql` facet; the `http` family includes the `http` facet;
 the `k8s` family includes both the `http` facet (k8s traffic is HTTPS
 on the wire) and the `k8s` facet.
@@ -111,7 +111,7 @@ into an [action](#action)'s data, addressable in a
 [rule](#rule)'s CEL [`condition`](#cel-condition) as `<facet>.<field>`.
 A facet is not the same as a family: a family is the protocol class an
 action belongs to, while a facet is a field group that contributes to
-the action's matchable surface. Built-in facets are `http`, `sql`, and
+the action’s matchable surface. Built-in facets are `http`, `sql`, and
 `k8s`; most families include a single facet of the same name, but the
 `k8s` family includes both the `http` and `k8s` facets.
 
@@ -134,14 +134,14 @@ parsed-JSON `dyn`.
 The boolean expression a [rule](#rule)'s `condition = "..."` field
 carries. CEL ([Common Expression Language](https://github.com/google/cel-spec))
 is evaluated against the [facet fields](#facet-field) exposed by the
-[family](#family) of the rule's endpoints. Idioms: equality / membership
+[family](#family) of the rule’s endpoints. Idioms: equality / membership
 (`http.method == 'POST'`,
 `sql.verb in ['select', 'show']`), prefix / suffix / substring
 (`k8s.name.startsWith('debug-')`, `http.body.contains('secret')`),
 regex (`sql.statement.matches('(?i)\\bpassword\\b')`), list overlap
 (`sets.intersects(sql.tables, ['users', 'audit_log'])`), and `!`
 negation. An absent or empty `condition` matches every request the
-rule's endpoints see.
+rule’s endpoints see.
 
 ### Approver
 
@@ -154,7 +154,7 @@ types: `llm_approver` (Claude / GPT proctor that reads a
 
 A named list of [endpoints](#endpoint) attached to a [device](#device).
 A profile names the endpoints whose [rules](#rule) apply to that
-device's traffic — it is not an allowlist. Traffic to hosts not
+device’s traffic — it is not an allowlist. Traffic to hosts not
 covered by any profile endpoint falls through to the top-level
 `unknown_host` setting (default `passthrough`). Profiles are how
 operators say "these are the endpoints I want to govern for this
@@ -167,14 +167,14 @@ A `(kind, type)` extension — e.g. `(endpoint, https)`,
 owns the body schema for its block kind, the in-memory record it
 builds, optional rule lowering, HCL emit (for round-tripping), and an
 optional [runtime](#runtime). Built-in plugins call `config.Register`
-from their package's `init()`; `config/plugins/all` blank-imports them
+from their package’s `init()`; `config/plugins/all` blank-imports them
 all. See [Code-level vocabulary](#code-level-vocabulary).
 
 ### Outcome
 
 The decision a matched [rule](#rule) carries: `verdict = "allow"`,
 `verdict = "deny"`, or `approve = [...]` (an ordered list of
-[approver](#approver) stages). On allow, the credential plugin's
+[approver](#approver) stages). On allow, the credential plugin’s
 runtime stamps the secret onto the forwarded request.
 
 ### Placeholder
@@ -204,7 +204,7 @@ splits across `_CERT` / `_KEY` / `_CA`. Credential plugins call
 
 ### MitM
 
-"Man-in-the-middle" — the gateway's TLS interception strategy. It
+"Man-in-the-middle" — the gateway’s TLS interception strategy. It
 forges a per-host certificate signed by the Claw Patrol CA, terminates
 TLS itself, and re-establishes a fresh TLS connection upstream. The
 [per-host cert](#per-host-cert) is generated on demand and cached.
@@ -223,7 +223,7 @@ an LRU (256 entries). The forged cert is what makes the
 The gateway terminates upstream authentication on behalf of the
 [agent](#agent), so the agent never participates in the handshake.
 Today this is most visible for postgres: the gateway runs the SCRAM /
-cleartext / trust dance against the upstream using the credential's
+cleartext / trust dance against the upstream using the credential’s
 real `(user, password)` and synthesizes `AuthenticationOk` for the
 agent. SCRAM is designed to defeat a passive password swap, so the
 gateway has to *be* one of the peers — hence "offload" rather than

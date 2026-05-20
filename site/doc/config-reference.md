@@ -11,9 +11,11 @@ Each block section lists the attributes the loader accepts, with:
 
 - **Type** — the HCL value type. `string`, `bool`, `int` are scalar
   literals; `[]string` is a list of strings; `ref(<kind>)` is a
-  bare-name reference to another block of that kind (e.g.
-  `credential = github-pat`); `[]ref(<kind>)` is a list of such
-  references; nested blocks have their shape described inline.
+  typed reference to another block (`<type>.<name>` for
+  two-label kinds like `credential = bearer_token.github-pat`,
+  `<kind>.<name>` for one-label kinds like `policy = policy.no-pii`);
+  `[]ref(<kind>)` is a list of such references; nested blocks have
+  their shape described inline.
 - **Required** — `yes` if the loader rejects the block when the
   attribute is missing.
 
@@ -33,14 +35,15 @@ Every singleton gateway attribute — listen addresses, paths, control-plane joi
 | `state_dir` | `string` | no | The directory holding clawpatrol.db (and anything else a plugin persists to disk under it). Defaults to ${HOME}/.clawpatrol when unset. |
 | `resolver` | `string` | no |  |
 | `log_path` | `string` | no |  |
-| `dashboard_secret` | `string` | no |  |
-| `insecure_no_dashboard_secret` | `bool` | no | Opts out of dashboard auth. Required (alongside an empty DashboardSecret) for the gateway to serve the dashboard at all — otherwise the secret gate replies with a misconfiguration page on every request. Verbose by design so you can't disable auth by accident. |
+| `dashboard_operators` | `[]string` | no | Allowlists tailnet logins permitted to use the dashboard / management API in tailscale-control mode. Each entry is either an exact login ("alice@example.com") or a domain wildcard ("*@example.com"). Tagged devices (whose whois login is the tag name, not a user email) never match a wildcard entry — agents on the tailnet can never bypass the gate through this path. Empty / unset → tailnet-allowlist auth is disabled and the stored root password is the only way in. In WireGuard / proxy control mode this field is logged once as a no-op and ignored. |
+| `dashboard_session_ttl` | `string` | no | Is how long a dashboard login session stays valid after the operator types the password. Format accepts time.ParseDuration strings ("24h", "30m", "168h"). Empty / unset → defaults to 24h. Bumping this trades log-in frequency against blast radius if a session cookie leaks. Rotating the root password (`--set-dashboard-password` or the web form) revokes every existing session immediately regardless of TTL. |
 | `telemetry` | `bool` | no | Opts in/out of the update-checker / anonymous usage ping (doc/telemetry.md). nil = default on; explicit `telemetry = false` silences the goroutine. Env vars CLAWPATROL_TELEMETRY=0 and DO_NOT_TRACK=1 also work. |
 | `session_keep` | `string` | no | The hard retention floor for the sessions table. Sessions whose last_at is older than this get deleted by the background sweeper. Sessions can revive on new activity at any time, so there's no "closed but kept" intermediate state — only last_at matters. Default 720h (30d), "0" / "off" disables. Format accepts time.ParseDuration strings ("30m", "168h", etc.). |
 | `authkey` | `string` | no |  |
 | `control_url` | `string` | no |  |
 | `hostname` | `string` | no |  |
 | `control` | `string` | no |  |
+| `funnel` | `bool` | no | Enables Tailscale Funnel on the embedded tsnet node so that join, webhook, and CA endpoints are reachable from the internet via the node's HTTPS cert domain (e.g. clawpatrol-gateway.ts.net:443). Only meaningful in tsnet control mode (authkey set). Tailscale's HTTPS must be enabled for the tailnet; if public_url is unset the gateway will derive it from the tsnet cert domain at startup. |
 | `oauth_client_id` | `string` | no |  |
 | `oauth_client_secret` | `string` | no |  |
 | `tailscale_tags` | `[]string` | no | The Tailscale device-tag list applied to keys the gateway mints for onboarded clients (`tag:client` etc.). Tailscale-only — ignored in WireGuard mode. |
@@ -154,7 +157,7 @@ and reuses across multiple judges.
 ```hcl
 approver "llm_approver" "example" {
   model = "claude-haiku-4-5-20251001"
-  credential = example-credential
+  credential = bearer_token.example
 }
 ```
 
@@ -162,7 +165,7 @@ approver "llm_approver" "example" {
 
 Block syntax: `credential "<type>" "<name>" { ... }`
 
-Registered types: [`anthropic_manual_key`](#credential-anthropicmanualkey), [`anthropic_oauth_subscription`](#credential-anthropicoauthsubscription), [`aws_credential`](#credential-awscredential), [`bearer_token`](#credential-bearertoken), [`clickhouse_credential`](#credential-clickhousecredential), [`cookie_token`](#credential-cookietoken), [`discord_bot_token`](#credential-discordbottoken), [`gemini_api_key`](#credential-geminiapikey), [`github_oauth`](#credential-githuboauth), [`google_gke_credential`](#credential-googlegkecredential), [`header_token`](#credential-headertoken), [`mtls_credential`](#credential-mtlscredential), [`notion_mcp_oauth`](#credential-notionmcpoauth), [`notion_oauth`](#credential-notionoauth), [`openai_codex_oauth`](#credential-openaicodexoauth), [`postgres_credential`](#credential-postgrescredential), [`slack_tokens`](#credential-slacktokens), [`ssh`](#credential-ssh), [`tailscale`](#credential-tailscale), [`telegram_bot_token`](#credential-telegrambottoken).
+Registered types: [`anthropic_manual_key`](#credential-anthropicmanualkey), [`anthropic_oauth_subscription`](#credential-anthropicoauthsubscription), [`aws_credential`](#credential-awscredential), [`bearer_token`](#credential-bearertoken), [`clickhouse_credential`](#credential-clickhousecredential), [`cookie_token`](#credential-cookietoken), [`discord_bot_token`](#credential-discordbottoken), [`gemini_api_key`](#credential-geminiapikey), [`github_oauth`](#credential-githuboauth), [`google_gke_credential`](#credential-googlegkecredential), [`header_token`](#credential-headertoken), [`mtls_credential`](#credential-mtlscredential), [`notion_mcp_oauth`](#credential-notionmcpoauth), [`notion_oauth`](#credential-notionoauth), [`openai_codex_oauth`](#credential-openaicodexoauth), [`postgres_credential`](#credential-postgrescredential), [`slack_tokens`](#credential-slacktokens), [`ssh_key`](#credential-sshkey), [`tailscale_auth`](#credential-tailscaleauth), [`telegram_bot_token`](#credential-telegrambottoken).
 
 ### `credential "anthropic_manual_key" "<name>"`
 
@@ -323,15 +326,15 @@ _No configurable attributes._
 credential "slack_tokens" "example" {}
 ```
 
-### `credential "ssh" "<name>"`
+### `credential "ssh_key" "<name>"`
 
 _No configurable attributes._
 
 ```hcl
-credential "ssh" "example" {}
+credential "ssh_key" "example" {}
 ```
 
-### `credential "tailscale" "<name>"`
+### `credential "tailscale_auth" "<name>"`
 
 Has no operator-facing fields — there is
 nothing to paste. Per-tailnet selection (control_url, tags) lives
@@ -340,7 +343,7 @@ on the tunnel block instead.
 _No configurable attributes._
 
 ```hcl
-credential "tailscale" "example" {}
+credential "tailscale_auth" "example" {}
 ```
 
 ### `credential "telegram_bot_token" "<name>"`
@@ -633,7 +636,7 @@ Configures the tunnel runtime.
 tunnel "ssh_port_forward" "example" {
   bastion = "bastion.example:22"
   user = "example"
-  credential = example-credential
+  credential = bearer_token.example
 }
 ```
 

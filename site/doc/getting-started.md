@@ -10,7 +10,7 @@ laptop, and run an agent.
 
 ## Install
 
-Gateway and device run the **same `clawpatrol` binary** — there's no
+Gateway and device run the **same `clawpatrol` binary** — there’s no
 separate server package. Install it on both the gateway host and any
 machine you want to enroll:
 
@@ -26,7 +26,7 @@ on amd64/arm64 are supported. To build from source instead, set
 
 On the server, pick a data directory (anywhere — `/opt/clawpatrol`,
 `/srv/clawpatrol`, your home), drop a copy of
-[`gateway.example.hcl`](https://github.com/denoland/clawpatrol/blob/main/gateway.example.hcl)
+[`gateway.example.hcl`](https://github.com/denoland/clawpatrol/blob/main/cmd/clawpatrol/gateway.example.hcl)
 into it, and edit the operational fields:
 
 ```hcl
@@ -39,24 +39,35 @@ control        = "wireguard"
 wg_subnet_cidr = "10.55.0.0/24"
 ```
 
-**`info_listen` should bind privately.** The dashboard holds the
-credential vault — the gateway refuses to boot when `info_listen`
-is publicly bound (`0.0.0.0`, `::`, or a routable IP) without
-`dashboard_secret`. When `info_listen` is on a private interface
-(loopback / RFC1918 / RFC4193 ULA / link-local / CGNAT including
-Tailscale's 100.64.0.0/10) the network IS the trust boundary —
-no `dashboard_secret` needed. Recommended shapes, ranked:
+(Prefer Tailscale? Swap `control` to `"tailscale"`, add `funnel =
+true`, `listen = ":8443"`, and `oauth_client_id` /
+`oauth_client_secret` / `tailscale_tags`. Embedded tsnet joins the
+tailnet in-process, no UDP port or iptables rule needed. The rest
+of this guide works the same way.)
 
-- **`127.0.0.1:9080`** — loopback. No `dashboard_secret` required.
-  Reach the dashboard via SSH tunnel (`ssh -L 9080:127.0.0.1:9080
-  gateway-host`) or front it with a local reverse proxy.
-- **A tailnet / VPN IP** — e.g. `100.x.x.x:9080`. No
-  `dashboard_secret` required. Tailscale whois attributes audit
-  events to each operator (see [Architecture](/docs/architecture/)).
-- **Public + `dashboard_secret`** — works if you really need it,
-  but logs a warning. Pair with an auth proxy
-  (Cloudflare Access, oauth2-proxy) before pointing real users
-  at it.
+**Dashboard auth is required at the app layer, on every bind.** The
+dashboard holds the credential vault, so an unauthenticated request
+must never reach it — regardless of whether `info_listen` is on
+loopback, a tailnet IP, or `0.0.0.0`. The first time you open the
+dashboard you set a "root" password; it lives bcrypt-hashed in
+`clawpatrol.db` and is checked on every subsequent request. To skip
+the web first-run flow (or rotate the password later), pass
+`--set-dashboard-password '<pw>'` or `--reset-dashboard-password`
+to `clawpatrol gateway`.
+
+`info_listen` still wants to be private if you can manage it —
+network-layer reachability is cheap defence-in-depth on top of the
+password. Recommended shapes:
+
+- **`127.0.0.1:9080`** — loopback. Reach the dashboard via SSH tunnel
+  (`ssh -L 9080:127.0.0.1:9080 gateway-host`) or a local reverse proxy.
+- **A tailnet / VPN IP** — e.g. `100.x.x.x:9080`. Add
+  `dashboard_operators = ["you@yourdomain.com"]` to let your tailnet
+  identity pass without typing the password. Tagged devices (agents)
+  never match the allowlist.
+- **Public** — works, but everyone on the internet sees a login page.
+  Front it with an auth proxy (Cloudflare Access, oauth2-proxy) if
+  you really need it.
 
 The CA is lazy-minted into sqlite under `state_dir` on first boot —
 nothing to pre-create besides the directory itself. See
@@ -81,8 +92,8 @@ URL.
 
 ### Under systemd
 
-Create a dedicated service user so the gateway's state directory
-(CA private key, OAuth tokens, audit log) isn't readable by any
+Create a dedicated service user so the gateway’s state directory
+(CA private key, OAuth tokens, audit log) isn’t readable by any
 human or agent on the box:
 
 ```bash
@@ -133,7 +144,7 @@ On the machine you want to route through the gateway:
 clawpatrol join http://<gateway-host>:9080
 ```
 
-You'll see a one-time code. Open the URL it prints, confirm the code
+You’ll see a one-time code. Open the URL it prints, confirm the code
 matches, and approve. Once approved the device is enrolled, the gateway
 CA is installed in your system trust store, and `clawpatrol env` is wired
 into your shell rc.
@@ -155,7 +166,7 @@ clawpatrol run -- gh pr create
 clawpatrol run -- psql 'host=db user=agent'
 ```
 
-The gateway intercepts the wrapped process's HTTPS traffic, matches each
+The gateway intercepts the wrapped process’s HTTPS traffic, matches each
 request against the rules in `gateway.hcl`, injects the configured
 credential, and forwards the request upstream. The agent never sees the
 real key.
@@ -165,8 +176,8 @@ real key.
 A few footguns worth knowing about before you point an agent at a
 Claw Patrol gateway:
 
-- **Don't run agents on the gateway host.** `clawpatrol run` is for
-  client devices — the gateway's `state_dir` holds the CA private
+- **Don’t run agents on the gateway host.** `clawpatrol run` is for
+  client devices — the gateway’s `state_dir` holds the CA private
   key, OAuth tokens, and audit log. An agent running on the gateway
   host can read those directly, with or without `clawpatrol run` in
   front. The correct shape is: gateway on one box (small VPS, no
@@ -182,17 +193,17 @@ Claw Patrol gateway:
 
 - **`clawpatrol join --whole-machine` is for client devices only.**
   Running it on (or pointed at) the gateway host itself routes the
-  host's own traffic through its own WireGuard endpoint — a loop
+  host’s own traffic through its own WireGuard endpoint — a loop
   that breaks DNS, outbound traffic from the gateway daemon, and
-  the dashboard's reachability. Per-process routing (the default
+  the dashboard’s reachability. Per-process routing (the default
   `clawpatrol join` + `clawpatrol run` shape) is also what most
-  people actually want on a multi-purpose laptop, so they don't
+  people actually want on a multi-purpose laptop, so they don’t
   accidentally route every browser tab through the gateway.
 
-## What's next
+## What’s next
 
 - [Architecture](/docs/architecture/) — how interception works
 - [CLI](/docs/cli/) — full command reference
 - [Config reference](/docs/config-reference/) — HCL grammar
 - [Approval rules](/docs/approval-rules/) — gating writes behind a human or LLM
-- [Security model](/docs/security-model/) — what Claw Patrol does and doesn't protect against
+- [Security model](/docs/security-model/) — what Claw Patrol does and doesn’t protect against

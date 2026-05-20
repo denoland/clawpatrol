@@ -1,0 +1,1 @@
+error: error_wrong_kind.hcl:11:1: Unknown endpoint "shared-creds" — No endpoint named "shared-creds" is declared in this file.

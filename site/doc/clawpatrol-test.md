@@ -2,10 +2,10 @@
 
 A regression-test CLI for policy changes. It replays recorded
 gateway actions against a candidate HCL policy and tells you whether
-any verdict drifted — a `deny` that's now `allow`, a `pg-reads` rule
+any verdict drifted — a `deny` that’s now `allow`, a `pg-reads` rule
 that no longer fires, an endpoint default that quietly changed.
 
-It's a pure CLI: no gateway, no database, no auth. Drop the binary
+It’s a pure CLI: no gateway, no database, no auth. Drop the binary
 into CI and run it on every push.
 
 ```bash
@@ -29,23 +29,23 @@ credential "bearer_token" "github_pat" {}
 
 endpoint "https" "github" {
   hosts      = ["api.github.com"]
-  credential = github_pat
+  credential = bearer_token.github_pat
 }
 
 rule "github-reads" {
-  endpoint  = github
+  endpoint  = https.github
   condition = "http.method in ['GET', 'HEAD']"
   verdict   = "allow"
 }
 
 rule "github-writes" {
-  endpoint  = github
+  endpoint  = https.github
   condition = "http.method in ['POST', 'PATCH', 'PUT', 'DELETE']"
   verdict   = "deny"
   reason    = "writes go through PR review"
 }
 
-profile "default" { endpoints = [github] }
+profile "default" { endpoints = [https.github] }
 ```
 
 **`fixtures/get-user.json`** — assert that `GET /user` is allowed:
@@ -89,7 +89,7 @@ $ echo $?
 1
 ```
 
-That's the whole loop.
+That’s the whole loop.
 
 ## Workflow
 
@@ -114,7 +114,7 @@ but in practice you record them from real traffic:
      https://api.github.com/repos/me/sandbox/issues/1
    ```
 
-3. **Click "Download action"** on each row's detail page in the
+3. **Click "Download action"** on each row’s detail page in the
    dashboard. The browser saves a single `.json` file per action,
    already in the right format.
 
@@ -135,7 +135,7 @@ but in practice you record them from real traffic:
    runner prints the affected fixture and the `want` / `got` diff
    (like the example above).
 
-The same fixtures become CI's regression set on every push.
+The same fixtures become CI’s regression set on every push.
 
 ### CI integration
 
@@ -157,7 +157,7 @@ Each fixture has two top-level keys: `action` is the recorded
 request (what the agent did); `match` is the assertion (what the
 rule engine should produce for that action). Exactly one facet
 block (`http` / `k8s` / `sql`) lives under `action`, carrying that
-facet's vocabulary — the same fields your CEL rule conditions read.
+facet’s vocabulary — the same fields your CEL rule conditions read.
 
 ### HTTPS
 
@@ -222,7 +222,7 @@ facet's vocabulary — the same fields your CEL rule conditions read.
 For SQL, only `statement` is required — the runner derives `verb`,
 `tables`, and `functions` from the SQL the same way the live
 dispatch path does. You can override them by adding explicit fields
-if you want to test the matcher's view directly.
+if you want to test the matcher’s view directly.
 
 ### Shared hosts: pinning the endpoint
 
@@ -258,16 +258,16 @@ by multiple endpoints [anthropic-agent-A anthropic-agent-B]; set
 ### `match`
 
 - `verdict` — required. One of `allow`, `deny`, `approve`,
-  `passthrough`. `passthrough` parses but the runner won't replay
+  `passthrough`. `passthrough` parses but the runner won’t replay
   it; pin to a terminal verdict or drop the fixture.
 - `rule` — name of the rule that fired. Empty when no rule matched
   and the endpoint default was used.
 - `endpoint` — optional. When set, pins dispatch and asserts the
   matched endpoint on replay (see "Shared hosts" above).
-- `reason` — informational only; the runner doesn't compare it.
+- `reason` — informational only; the runner doesn’t compare it.
 
 `approve` is terminal: a rule routing to an approver chain records
-`match.verdict = "approve"`. The human's eventual allow/deny is out
+`match.verdict = "approve"`. The human’s eventual allow/deny is out
 of scope for replay.
 
 ### `action`
@@ -275,7 +275,7 @@ of scope for replay.
 - `host` — the host the agent dialed. Used by the loader for
   endpoint resolution when `match.endpoint` is absent. Required
   for SQL (no URL at the wire level).
-- `credential`, `peer_ip` — optional, mirror the gateway's
+- `credential`, `peer_ip` — optional, mirror the gateway’s
   request-level scalars.
 - Exactly one facet block — `http`, `k8s`, or `sql`.
 
@@ -287,7 +287,7 @@ of scope for replay.
 | `k8s`  | `verb`, `resource`, `namespace`, `name`, `params` |
 | `sql`  | `statement` (required); `verb`, `tables`, `functions` (optional, derived from `statement` if omitted) |
 
-Every field is optional except SQL's `statement`. Missing fields
+Every field is optional except SQL’s `statement`. Missing fields
 default to zero values — rules that match on them just return
 false. Fixtures that include the full struct are accepted;
 explicit values take precedence over derivation.
@@ -296,13 +296,13 @@ explicit values take precedence over derivation.
 
 - `body` is raw UTF-8; `body_b64` is base64. Mutually exclusive.
 - Headers and query maps are `map<string, list<string>>` so the
-  format matches Go's `http.Header` and `url.Values`.
+  format matches Go’s `http.Header` and `url.Values`.
 - Unknown keys anywhere in the file are load errors. Typos in
   fixtures should fail loudly.
 
 ### Redaction
 
-The exporter reads from the dashboard's SQLite store. Whatever
+The exporter reads from the dashboard’s SQLite store. Whatever
 redaction the recording sink applied is what the fixture carries.
 
 - **Headers are redacted.** Values of `Authorization`, `Cookie`,

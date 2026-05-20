@@ -19,9 +19,9 @@ type ButtonElProps = CommonProps &
 type ButtonProps = AnchorProps | ButtonElProps;
 
 const base =
-  "group inline-block font-sans font-semibold uppercase relative isolate z-10 " +
-  "tracking-wider border cursor-pointer transition-colors outline-2 outline-navy " +
-  "-outline-offset-2 disabled:opacity-50 disabled:cursor-not-allowed";
+  "group inline-block font-mono font-semibold uppercase relative isolate z-10 " +
+  "tracking-wider cursor-pointer transition-colors outline-1.5 outline-navy " +
+  "-outline-offset-1.5 disabled:opacity-50 disabled:cursor-not-allowed";
 
 const sizes: Record<Size, string> = {
   sm: "px-2 py-1 text-xs",
@@ -30,14 +30,14 @@ const sizes: Record<Size, string> = {
 };
 
 const variants: Record<Variant, string> = {
-  normal: "border-2 border-navy text-navy relative",
-  outline: "border-2 border-navy text-text-muted " + "hover:bg-canvas-muted",
+  normal: " text-navy relative",
+  outline: " text-text-muted " + "hover:bg-canvas-muted",
 };
 
 const backgroundOffsets: Record<Size, string> = {
-  sm: "w-[calc(100%+3px)] h-[calc(100%+3px)] left-[2px] top-[2px]",
-  md: "w-[calc(100%+4px)] h-[calc(100%+4px)] left-[3px] top-[3px]",
-  lg: "w-[calc(100%+4px)] h-[calc(100%+4px)] left-1 top-1",
+  sm: "w-[calc(100%+3px)] h-[calc(100%+3px)] left-[1px] top-[1px]",
+  md: "w-[calc(100%+3px)] h-[calc(100%+3px)] left-[2px] top-[2px]",
+  lg: "w-[calc(100%+2px)] h-[calc(100%+3px)] left-[3px] top-[3px]",
 };
 
 function Background({ size = "md" }: { size?: Size }) {

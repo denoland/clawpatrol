@@ -4,41 +4,21 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Claw Patrol</title>
+    <link rel="icon" type="image/svg+xml" href="/claw-patrol-icon.svg" />
     <link
       rel="preload"
       as="font"
       type="font/woff2"
-      href="/fonts/gazpacho/Gazpacho-Heavy.woff2"
+      href="/fonts/funnel-display/FunnelDisplay-Variable--latin_basic.woff2"
       crossorigin
     />
     <link
       rel="preload"
       as="font"
       type="font/woff2"
-      href="/fonts/source-sans-3/SourceSans3-Regular--latin_basic.woff2"
+      href="/fonts/ibm-plex-sans/IBMPlexSans-Variable--latin_basic.woff2"
       crossorigin
     />
-    <script>
-      // Runtime feature test for scroll-driven animations.
-      // `@supports (animation-timeline: view())` is parse-only — Firefox
-      // currently matches it without actually running the animation, which
-      // leaves `.scroll-diagram` tall-but-static.
-      //
-      // Pair the parse test with a runtime-only signal: the JS `ViewTimeline`
-      // constructor is defined by the Scroll-linked Animations spec and is
-      // only exposed by engines that actually implement the feature. This
-      // auto-lights up for any browser (Firefox included) the moment they
-      // ship real support — no UA sniffing required.
-      (function () {
-        if (
-          typeof CSS !== "undefined" &&
-          CSS.supports("animation-timeline", "view()") &&
-          "ViewTimeline" in window
-        ) {
-          document.documentElement.classList.add("has-sda");
-        }
-      })();
-    </script>
   </head>
   <body>
     <div id="root"></div>
