@@ -1079,6 +1079,60 @@ profile "default" { credentials = [bearer_token.test, bearer_token.prod, bearer_
 	})
 }
 
+// TestResolveCredentialIsolatesProfilesSharingEndpoint verifies that
+// two profiles binding distinct credentials to the same endpoint
+// dispatch to their own credential — the readonly profile must NEVER
+// receive the writer credential and vice versa. Regression for
+// cl-lgwg: the dashboard was leaking sibling-profile credentials onto
+// device cards; this test pins down that the runtime dispatch table
+// (CompiledProfile.EndpointCredentials) does NOT have the same flaw.
+func TestResolveCredentialIsolatesProfilesSharingEndpoint(t *testing.T) {
+	src := `
+endpoint "postgres" "pg" { host = "pg.example:5432" }
+credential "postgres_credential" "pg-readonly" {
+  endpoint = postgres.pg
+  user     = "agent_ro"
+}
+credential "postgres_credential" "pg-writer" {
+  endpoint = postgres.pg
+  user     = "agent_rw"
+}
+profile "data"     { credentials = [postgres_credential.pg-readonly] }
+profile "platform" { credentials = [postgres_credential.pg-writer] }
+`
+	cp := compileFixture(t, src)
+	ep := cp.Endpoints["pg"]
+
+	mkReq := func(user string) *match.Request {
+		return &match.Request{
+			Family: "sql",
+			User:   user,
+			Meta:   &sqlfacet.Meta{Statement: user + "\x00pw"},
+		}
+	}
+
+	got := runtime.ResolveCredential(cp, "data", ep, mkReq("agent_ro"))
+	if got == nil || got.Credential.Symbol.Name != "pg-readonly" {
+		t.Errorf("data profile / user=agent_ro → %+v, want pg-readonly", got)
+	}
+	// Data profile must NOT match writer credential even if the
+	// request happens to carry the writer's user — the writer
+	// credential isn't in the profile's dispatch table at all.
+	got = runtime.ResolveCredential(cp, "data", ep, mkReq("agent_rw"))
+	if got != nil && got.Credential.Symbol.Name == "pg-writer" {
+		t.Errorf("data profile / user=agent_rw resolved sibling writer credential: %+v", got)
+	}
+
+	got = runtime.ResolveCredential(cp, "platform", ep, mkReq("agent_rw"))
+	if got == nil || got.Credential.Symbol.Name != "pg-writer" {
+		t.Errorf("platform profile / user=agent_rw → %+v, want pg-writer", got)
+	}
+	got = runtime.ResolveCredential(cp, "platform", ep, mkReq("agent_ro"))
+	if got != nil && got.Credential.Symbol.Name == "pg-readonly" {
+		t.Errorf("platform profile / user=agent_ro resolved sibling readonly credential: %+v", got)
+	}
+}
+
 // containsAll returns true iff s contains every needle.
 func containsAll(s string, needles ...string) bool {
 	for _, n := range needles {
