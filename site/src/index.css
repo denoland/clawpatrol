@@ -224,6 +224,15 @@
   }
 }
 
+/* Inline `<code>` (excluding fenced `<pre><code>`) wraps as a single
+   atomic unit: a long token like `clawpatrol_native_endpoint` jumps to
+   the next line whole rather than splitting mid-identifier. `inline-block`
+   makes the element opaque to the line-breaker; if it then overflows
+   the line on its own, that's preferable to a mid-token break. */
+:not(pre) > code {
+  display: inline-block;
+}
+
 /* Docs-specific styles live in /src/docs.css and are imported at the
    top of this file. They ship with the main CSS bundle but are scoped
    to `.docs-content`, so they only paint inside the docs page wrapper. */
