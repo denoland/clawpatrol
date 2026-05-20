@@ -2479,11 +2479,13 @@ func wrapBodySampler(rc io.ReadCloser, s *sampler) io.ReadCloser {
 const hitlTerminalTTL = 30 * time.Minute
 
 type HITLRegistry struct {
-	mu                 sync.Mutex
-	pending            map[string]*pendingEntry
-	terminal           map[string]terminalHITLEntry
-	sink               *Sink // SSE fan-out for the dashboard
-	asyncGrantResolver func(operationID string, d runtime.HITLDecision) runtime.HITLResolveResult
+	mu                    sync.Mutex
+	pending               map[string]*pendingEntry
+	terminal              map[string]terminalHITLEntry
+	messageRefs           map[string][]string
+	sink                  *Sink // SSE fan-out for the dashboard
+	asyncGrantResolver    func(operationID string, d runtime.HITLDecision) runtime.HITLResolveResult
+	pendingMessageUpdater func(ctx context.Context, pending runtime.HITLPending, ref string, result runtime.HITLResolveResult)
 }
 
 type pendingEntry struct {
@@ -2493,14 +2495,16 @@ type pendingEntry struct {
 
 type terminalHITLEntry struct {
 	result    runtime.HITLResolveResult
+	pending   runtime.HITLPending
 	expiresAt time.Time
 }
 
 func newHITLRegistry(sink *Sink) *HITLRegistry {
 	return &HITLRegistry{
-		pending:  map[string]*pendingEntry{},
-		terminal: map[string]terminalHITLEntry{},
-		sink:     sink,
+		pending:     map[string]*pendingEntry{},
+		terminal:    map[string]terminalHITLEntry{},
+		messageRefs: map[string][]string{},
+		sink:        sink,
 	}
 }
 
@@ -2520,6 +2524,7 @@ func (r *HITLRegistry) Add(p runtime.HITLPending) (string, <-chan runtime.HITLDe
 	r.pruneTerminalLocked(time.Now())
 	r.pending[p.ID] = &pendingEntry{p: p, decision: ch}
 	delete(r.terminal, p.ID)
+	delete(r.messageRefs, p.ID)
 	r.mu.Unlock()
 	if r.sink != nil {
 		r.sink.Emit(Event{
@@ -2528,6 +2533,32 @@ func (r *HITLRegistry) Add(p runtime.HITLPending) (string, <-chan runtime.HITLDe
 		})
 	}
 	return p.ID, ch
+}
+
+func (r *HITLRegistry) RecordMessageRef(ctx context.Context, pendingID, ref string) error {
+	if strings.TrimSpace(pendingID) == "" || strings.TrimSpace(ref) == "" {
+		return nil
+	}
+	var latePending runtime.HITLPending
+	var lateResult runtime.HITLResolveResult
+	var lateUpdater func(context.Context, runtime.HITLPending, string, runtime.HITLResolveResult)
+	r.mu.Lock()
+	r.pruneTerminalLocked(time.Now())
+	if _, ok := r.pending[pendingID]; ok {
+		r.messageRefs[pendingID] = append(r.messageRefs[pendingID], ref)
+		r.mu.Unlock()
+		return nil
+	}
+	if terminal, ok := r.terminal[pendingID]; ok && terminal.pending.ID != "" {
+		latePending = terminal.pending
+		lateResult = terminal.result
+		lateUpdater = r.pendingMessageUpdater
+	}
+	r.mu.Unlock()
+	if lateUpdater != nil {
+		go lateUpdater(context.Background(), latePending, ref, lateResult)
+	}
+	return nil
 }
 
 func (r *HITLRegistry) Discard(id string) {
@@ -2620,14 +2651,17 @@ func (r *HITLRegistry) DecideWithResult(id string, d runtime.HITLDecision) runti
 
 		result := resolver(e.p.OperationID, d)
 		r.mu.Lock()
-		r.terminal[id] = terminalHITLEntry{result: staleHITLResolveResult(result), expiresAt: now.Add(hitlTerminalTTL)}
+		r.terminal[id] = terminalHITLEntry{result: staleHITLResolveResult(result), pending: e.p, expiresAt: now.Add(hitlTerminalTTL)}
+		delete(r.messageRefs, id)
 		r.mu.Unlock()
 		return result
 	}
 	e.decision <- d
 	delete(r.pending, id)
+	delete(r.messageRefs, id)
 	r.terminal[id] = terminalHITLEntry{
 		result:    runtime.HITLResolveResult{OK: false, State: state, Reason: reason},
+		pending:   e.p,
 		expiresAt: now.Add(hitlTerminalTTL),
 	}
 	r.mu.Unlock()
@@ -2656,18 +2690,28 @@ func (r *HITLRegistry) Cancel(id string, state runtime.HITLState, reason string)
 func (r *HITLRegistry) resolve(id string, state runtime.HITLState, reason string) (*pendingEntry, runtime.HITLResolveResult) {
 	now := time.Now()
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.pruneTerminalLocked(now)
 	e := r.pending[id]
 	if e == nil {
 		if terminal, ok := r.terminal[id]; ok {
+			r.mu.Unlock()
 			return nil, terminal.result
 		}
+		r.mu.Unlock()
 		return nil, runtime.HITLResolveResult{OK: false, State: runtime.HITLStateUnknown, Reason: "unknown or expired HITL request"}
 	}
 	delete(r.pending, id)
 	terminal := runtime.HITLResolveResult{OK: false, State: state, Reason: reason}
-	r.terminal[id] = terminalHITLEntry{result: terminal, expiresAt: now.Add(hitlTerminalTTL)}
+	refs := append([]string(nil), r.messageRefs[id]...)
+	delete(r.messageRefs, id)
+	r.terminal[id] = terminalHITLEntry{result: terminal, pending: e.p, expiresAt: now.Add(hitlTerminalTTL)}
+	updater := r.pendingMessageUpdater
+	r.mu.Unlock()
+	if updater != nil {
+		for _, ref := range refs {
+			go updater(context.Background(), e.p, ref, terminal)
+		}
+	}
 	return e, runtime.HITLResolveResult{OK: true, State: state, Reason: reason}
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -147,6 +148,79 @@ func TestHITLRegistryCancelRecordsClientDisconnected(t *testing.T) {
 	}
 	if !strings.Contains(stale.Reason, "upstream request was not sent") {
 		t.Fatalf("stale Reason = %q, want upstream-not-sent explanation", stale.Reason)
+	}
+}
+
+func TestHITLRegistryCancelUpdatesRecordedMessageRefs(t *testing.T) {
+	registry := newHITLRegistry(nil)
+	var gotPending runtime.HITLPending
+	var gotRef string
+	var gotResult runtime.HITLResolveResult
+	updated := make(chan struct{}, 1)
+	registry.pendingMessageUpdater = func(_ context.Context, pending runtime.HITLPending, ref string, result runtime.HITLResolveResult) {
+		gotPending = pending
+		gotRef = ref
+		gotResult = result
+		updated <- struct{}{}
+	}
+	id, _ := registry.Add(runtime.HITLPending{
+		Host:      "api.example.test",
+		Method:    "POST",
+		Path:      "/v1/write",
+		CreatedAt: time.Now(),
+	})
+	if err := registry.RecordMessageRef(context.Background(), id, `{"type":"slack","channel":"C123","ts":"1778764174.925659"}`); err != nil {
+		t.Fatalf("RecordMessageRef returned error: %v", err)
+	}
+
+	result := registry.Cancel(id, runtime.HITLStateTimedOut, "approver timed out; upstream request was not sent")
+	if !result.OK {
+		t.Fatalf("Cancel OK = false, want true: %#v", result)
+	}
+	select {
+	case <-updated:
+	case <-time.After(time.Second):
+		t.Fatal("Cancel did not update recorded message ref")
+	}
+	if gotPending.ID != id || gotPending.Host != "api.example.test" || gotPending.Method != "POST" || gotPending.Path != "/v1/write" {
+		t.Fatalf("updated pending = %#v", gotPending)
+	}
+	if gotRef == "" || !strings.Contains(gotRef, "1778764174.925659") {
+		t.Fatalf("updated ref = %q, want recorded Slack message ref", gotRef)
+	}
+	if gotResult.State != runtime.HITLStateTimedOut || !strings.Contains(gotResult.Reason, "upstream request was not sent") {
+		t.Fatalf("updated result = %#v", gotResult)
+	}
+}
+
+func TestHITLRegistryLateMessageRefUpdateUsesFreshContext(t *testing.T) {
+	registry := newHITLRegistry(nil)
+	updated := make(chan error, 1)
+	registry.pendingMessageUpdater = func(ctx context.Context, _ runtime.HITLPending, _ string, _ runtime.HITLResolveResult) {
+		updated <- ctx.Err()
+	}
+	id, _ := registry.Add(runtime.HITLPending{
+		Host:      "api.example.test",
+		Method:    "POST",
+		Path:      "/v1/write",
+		CreatedAt: time.Now(),
+	})
+	result := registry.Cancel(id, runtime.HITLStateTimedOut, "approver timed out; upstream request was not sent")
+	if !result.OK {
+		t.Fatalf("Cancel OK = false, want true: %#v", result)
+	}
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := registry.RecordMessageRef(canceledCtx, id, `{"type":"slack","channel":"C123","ts":"1778764174.925659"}`); err != nil {
+		t.Fatalf("RecordMessageRef returned error: %v", err)
+	}
+	select {
+	case err := <-updated:
+		if err != nil {
+			t.Fatalf("late updater ctx err = %v, want live context", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("late RecordMessageRef did not update terminal message")
 	}
 }
 

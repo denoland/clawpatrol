@@ -213,6 +213,66 @@ func (g *Gateway) updateHITLOperationMessage(ctx context.Context, op HITLOperati
 	if credName == "" {
 		return
 	}
+	g.updateHITLMessageRef(ctx, policy, credName, runtime.HITLMessageUpdate{
+		MessageRef:     op.ApproverMessageRef,
+		OperationID:    op.ID,
+		State:          runtime.HITLOperationState(op.State),
+		Method:         op.Method,
+		Host:           op.Host,
+		Path:           op.RedactedPath,
+		Profile:        op.ProfileID,
+		UpstreamCalled: op.UpstreamCalled,
+		LastError:      op.LastError,
+	})
+}
+
+func (g *Gateway) updatePendingHITLMessage(ctx context.Context, pending runtime.HITLPending, ref string, result runtime.HITLResolveResult) {
+	if g == nil || ref == "" || len(pending.Approvers) == 0 {
+		return
+	}
+	policy := g.Policy()
+	if policy == nil {
+		return
+	}
+	approver := policy.Approvers[pending.Approvers[0]]
+	if approver == nil {
+		return
+	}
+	credName := ""
+	if h, ok := approver.Body.(runtime.HITLHumanCredentialer); ok {
+		credName = h.HumanApproverCredential()
+	}
+	if credName == "" {
+		return
+	}
+	state := runtime.HITLOperationStateDenied
+	switch result.State {
+	case runtime.HITLStateTimedOut:
+		state = runtime.HITLOperationStateExpired
+	case runtime.HITLStateClientDisconnected:
+		state = runtime.HITLOperationStateClientDisconnected
+	case runtime.HITLStateApproved:
+		state = runtime.HITLOperationStateExecutingUpstream
+	case runtime.HITLStateDenied:
+		state = runtime.HITLOperationStateDenied
+	}
+	g.updateHITLMessageRef(ctx, policy, credName, runtime.HITLMessageUpdate{
+		MessageRef:     ref,
+		OperationID:    pending.OperationID,
+		State:          state,
+		Method:         pending.Method,
+		Host:           pending.Host,
+		Path:           pending.Path,
+		Profile:        "",
+		UpstreamCalled: false,
+		LastError:      result.Reason,
+	})
+}
+
+func (g *Gateway) updateHITLMessageRef(ctx context.Context, policy *config.CompiledPolicy, credName string, update runtime.HITLMessageUpdate) {
+	if policy == nil || credName == "" {
+		return
+	}
 	cred := policy.Credentials[credName]
 	if cred == nil {
 		return
@@ -224,18 +284,12 @@ func (g *Gateway) updateHITLOperationMessage(ctx context.Context, op HITLOperati
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := updater.UpdateHITLMessage(ctx, g.secrets, runtime.HITLMessageUpdate{
-		MessageRef:     op.ApproverMessageRef,
-		OperationID:    op.ID,
-		State:          runtime.HITLOperationState(op.State),
-		Method:         op.Method,
-		Host:           op.Host,
-		Path:           op.RedactedPath,
-		Profile:        op.ProfileID,
-		UpstreamCalled: op.UpstreamCalled,
-		LastError:      op.LastError,
-	}); err != nil {
-		log.Printf("hitl async operation message update %s: %v", op.ID, err)
+	if err := updater.UpdateHITLMessage(ctx, g.secrets, update); err != nil {
+		if update.OperationID != "" {
+			log.Printf("hitl operation message update %s: %v", update.OperationID, err)
+		} else {
+			log.Printf("hitl pending message update: %v", err)
+		}
 	}
 }
 

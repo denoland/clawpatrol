@@ -68,6 +68,59 @@ func TestSlackNotifyHITLRecordsMessageRefForAsyncOperation(t *testing.T) {
 	}
 }
 
+func TestSlackNotifyHITLRecordsMessageRefForSyncPendingRequest(t *testing.T) {
+	var recordedPendingID, recordedRef string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"channel":"C123","ts":"1778764174.925659"}`))
+	}))
+	defer server.Close()
+
+	oldURL := slackPostMessageURL
+	oldClient := slackHTTPClient
+	oldBackoff := slackNotifyRetryBackoff
+	slackPostMessageURL = server.URL
+	slackHTTPClient = server.Client()
+	slackNotifyRetryBackoff = 0
+	defer func() {
+		slackPostMessageURL = oldURL
+		slackHTTPClient = oldClient
+		slackNotifyRetryBackoff = oldBackoff
+	}()
+
+	err := (&SlackTokens{}).NotifyHITL(context.Background(), runtime.ApproveRequest{
+		Secrets: testSecretStore{
+			"slack-approvals": {Extras: map[string]string{"bot": "xoxb-test"}},
+		},
+		Method: "POST",
+		Host:   "api.example.test",
+		Path:   "/v1/resources/update",
+	}, runtime.HITLTarget{
+		CredentialName: "slack-approvals",
+		Channel:        "C123",
+		PendingID:      "pending-123",
+		Interactive:    true,
+		PendingMessageUpdateSink: func(_ context.Context, pendingID, ref string) error {
+			recordedPendingID = pendingID
+			recordedRef = ref
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NotifyHITL returned error: %v", err)
+	}
+	if recordedPendingID != "pending-123" {
+		t.Fatalf("recorded pending ID = %q", recordedPendingID)
+	}
+	ref, ok := decodeSlackMessageRef(recordedRef)
+	if !ok {
+		t.Fatalf("recorded ref did not decode: %q", recordedRef)
+	}
+	if ref.Credential != "slack-approvals" || ref.Channel != "C123" || ref.TS != "1778764174.925659" || ref.PendingID != "pending-123" || !ref.Interactive {
+		t.Fatalf("recorded ref = %#v", ref)
+	}
+}
+
 func TestSlackNotifyHITLRecordsMessageOverrideForUpdates(t *testing.T) {
 	var recordedRef string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
