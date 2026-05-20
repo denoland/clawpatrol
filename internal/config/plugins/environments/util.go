@@ -56,6 +56,43 @@ func resolveEndpoint(name string, ctx *config.BuildCtx) (*config.Symbol, string,
 	return sym, ref, nil
 }
 
+// readStringAttr extracts a single string-valued attribute off an
+// hcl.Body without round-tripping the block through gohcl. This lets
+// an environment plugin peek at fields on a *different* plugin's
+// body (e.g. postgres_environment reading the `host` attribute off
+// the bound postgres endpoint) without an import cycle on the
+// endpoint plugin's struct type.
+//
+// Returns "" when the attribute isn't set or doesn't evaluate to a
+// string. Diagnostics on bad expressions are silently swallowed —
+// the actual decode of the referenced block will surface them.
+func readStringAttr(body hcl.Body, name string) string {
+	if body == nil {
+		return ""
+	}
+	content, _, _ := body.PartialContent(&hcl.BodySchema{
+		Attributes: []hcl.AttributeSchema{{Name: name}},
+	})
+	if content == nil {
+		return ""
+	}
+	attr, ok := content.Attributes[name]
+	if !ok {
+		return ""
+	}
+	val, diag := attr.Expr.Value(nil)
+	if diag.HasErrors() {
+		return ""
+	}
+	if val.IsNull() {
+		return ""
+	}
+	if val.Type().FriendlyName() != "string" {
+		return ""
+	}
+	return val.AsString()
+}
+
 // resolveCredential is resolveEndpoint's counterpart for the
 // framework-peeled `credential = <ref>` attr.
 func resolveCredential(name string, ctx *config.BuildCtx) (*config.Symbol, string, hcl.Diagnostics) {

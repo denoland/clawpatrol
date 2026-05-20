@@ -1,0 +1,62 @@
+{
+  "listen": "0.0.0.0:8443",
+  "llm_fail_mode": "closed",
+  "policy": {
+    "credentials": {
+      "pg-ro": {
+        "body": {
+          "User": "agent_ro",
+          "Database": "appdb"
+        },
+        "endpoint": "pg",
+        "type": "postgres_credential"
+      },
+      "pg-rw": {
+        "body": {
+          "User": "agent_rw",
+          "Database": "appdb"
+        },
+        "endpoint": "pg",
+        "type": "postgres_credential"
+      }
+    },
+    "endpoints": {
+      "pg": {
+        "body": {
+          "Host": "pg.internal.example.com:5432",
+          "SSLMode": ""
+        },
+        "family": "sql",
+        "type": "postgres"
+      }
+    },
+    "environments": {
+      "aws-region": {
+        "body": {
+          "key": "AWS_REGION",
+          "value": "us-east-1"
+        },
+        "type": "custom_environment"
+      },
+      "pg-rw-env": {
+        "body": {},
+        "credential": "pg-rw",
+        "endpoint": "pg",
+        "type": "postgres_environment"
+      }
+    },
+    "profiles": {
+      "default": {
+        "credentials": [
+          "pg-ro",
+          "pg-rw"
+        ],
+        "environments": [
+          "pg-rw-env",
+          "aws-region"
+        ]
+      }
+    }
+  },
+  "unknown_host": "passthrough"
+}

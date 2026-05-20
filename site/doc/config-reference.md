@@ -535,7 +535,7 @@ endpoint "ssh" "example" {
 
 Block syntax: `environment "<type>" "<name>" { ... }`
 
-Registered types: [`anthropic_subscription_environment`](#environment-anthropicsubscriptionenvironment), [`codex_environment`](#environment-codexenvironment), [`custom_environment`](#environment-customenvironment), [`discord_environment`](#environment-discordenvironment), [`gemini_environment`](#environment-geminienvironment), [`github_environment`](#environment-githubenvironment).
+Registered types: [`anthropic_subscription_environment`](#environment-anthropicsubscriptionenvironment), [`codex_environment`](#environment-codexenvironment), [`custom_environment`](#environment-customenvironment), [`discord_environment`](#environment-discordenvironment), [`gemini_environment`](#environment-geminienvironment), [`github_environment`](#environment-githubenvironment), [`kubernetes_environment`](#environment-kubernetesenvironment), [`postgres_environment`](#environment-postgresenvironment).
 
 ### `environment "anthropic_subscription_environment" "<name>"`
 
@@ -594,6 +594,31 @@ _No configurable attributes._
 
 ```hcl
 environment "github_environment" "example" {}
+```
+
+### `environment "kubernetes_environment" "<name>"`
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `kubeconfig` | `string` | yes |  |
+
+```hcl
+environment "kubernetes_environment" "example" {
+  kubeconfig = "example"
+}
+```
+
+### `environment "postgres_environment" "<name>"`
+
+Is part of the clawpatrol plugin API. The
+resolved Endpoint / Credential entities are stashed here at
+build time so EnvVars() can read host / port / user / database
+without re-walking the symbol table on every call.
+
+_No configurable attributes._
+
+```hcl
+environment "postgres_environment" "example" {}
 ```
 
 ## `rule` blocks
