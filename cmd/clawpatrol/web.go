@@ -709,10 +709,29 @@ func (w *webMux) apiEnvPushdown(rw http.ResponseWriter, r *http.Request) {
 			"plugin_type": pluginType,
 		})
 	}
+	// New path: walk the profile's environment list. Each environment
+	// block is one plugin instance; its built body implements
+	// EnvironmentRuntime and returns the vars it contributes.
+	// Declaration order in the HCL is preserved so duplicate names
+	// resolve first-writer-wins per the operator's stated order.
+	for _, envEnt := range prof.Environments {
+		if envEnt == nil || envEnt.Body == nil {
+			continue
+		}
+		rt, ok := envEnt.Body.(config.EnvironmentRuntime)
+		if !ok {
+			continue
+		}
+		for _, ev := range rt.EnvVars() {
+			add(ev.Name, ev.Value, ev.Description, envEnt.Plugin.Type)
+		}
+	}
+	// Legacy fall-through: credentials and endpoints that still carry
+	// EnvVars() directly. Retained until every built-in plugin has
+	// been migrated to an environment block; profiles that already
+	// declare `environments = [...]` take precedence on duplicate
+	// names because they run first.
 	credSeen := map[string]bool{}
-	// Endpoints in this profile, plus the credentials they bind.
-	// Credentials are emitted first (so credential-shaped
-	// placeholders win on duplicate names), endpoints second.
 	for _, ep := range prof.Endpoints {
 		for _, ent := range ep.Credentials {
 			if ent == nil || ent.Symbol == nil || credSeen[ent.Symbol.Name] {
