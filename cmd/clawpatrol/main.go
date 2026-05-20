@@ -3087,9 +3087,13 @@ func runGateway(args []string) {
 			continue
 		}
 		go func(c net.Conn) {
-			// WireGuard-mode loopback listener: only used for local
-			// debugging. Treat every connection as a direct dashboard
-			// hit, no PROXY framing.
+			// WireGuard-mode loopback listener. MITM traffic in WG mode
+			// flows through the promiscuous wg forwarder above; what
+			// arrives here is direct host-local hits at the dashboard
+			// (a separate UID on the same host running an agent or an
+			// admin tool, an SSH-forwarded port, etc.). No PROXY
+			// framing in this mode — terminate TLS, serve the
+			// dashboard mux.
 			g.serveTSNetDirect(c, tsnetDashMux)
 		}(c)
 	}
