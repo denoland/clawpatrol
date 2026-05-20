@@ -15,7 +15,7 @@ syntax = "proto3";
 
 package clawpatrol.plugin.v1;
 
-option go_package = "github.com/denoland/clawpatrol/config/extplugin/proto;extpluginpb";
+option go_package = "github.com/denoland/clawpatrol/internal/config/extplugin/proto;extpluginpb";
 
 // =====================================================================
 // Manifest + Build
@@ -34,6 +34,12 @@ service Plugin {
   // back to the plugin in ConnInit / OpenTunnelRequest. Diagnostics
   // are reported back to the user with the block's source range.
   rpc Build(BuildRequest) returns (BuildResponse);
+
+  // EnvVars is called every time a profile that lists an environment
+  // block of this plugin's type fetches its push-down env vars (i.e.
+  // each `clawpatrol env` / `clawpatrol run` invocation). The plugin
+  // returns the env vars the agent process should receive.
+  rpc EnvVars(EnvVarsRequest) returns (EnvVarsResponse);
 }
 
 message ManifestRequest {}
@@ -45,6 +51,7 @@ message ManifestResponse {
   repeated TunnelDecl tunnels = 4;
   repeated EndpointDecl endpoints = 5;
   repeated FacetDecl facets = 6;
+  repeated EnvironmentDecl environments = 7;
 }
 
 // FacetDecl describes one protocol-family schema the plugin exports.
@@ -118,6 +125,41 @@ message EndpointDecl {
   bool requires_vip = 5;
 }
 
+// EnvironmentDecl describes one environment plugin type the plugin
+// exports. An `environment "<type_name>" "<instance>" { ... }` block
+// in the operator's HCL decodes against `schema`, and the plugin's
+// Build implementation is consulted to produce the env-var list the
+// gateway pushes down via `clawpatrol env`.
+//
+// Environment plugins may declare framework refs the gateway peels
+// off the block body before decoding the plugin's own schema attrs.
+// Each EnvRefDecl is one bare-name reference attribute the operator
+// can set on the block (e.g. `endpoint = postgres.pg`); the resolved
+// bare name is forwarded to the plugin in EnvVarsRequest.refs keyed
+// on EnvRefDecl.name. The framework rejects refs whose `kind` is
+// not one of the recognised symbol kinds ("endpoint", "credential",
+// "tunnel") and refs whose `name` collides with a plugin schema
+// attribute.
+message EnvironmentDecl {
+  string type_name = 1;
+  Schema schema = 2;
+  repeated EnvRefDecl refs = 3;
+}
+
+// EnvRefDecl describes one framework-level reference attribute on an
+// environment plugin's HCL block. `name` is the HCL attribute name
+// the operator writes (typically equal to `kind`, but plugins may
+// pick any unique name — e.g. `primary_credential` and
+// `secondary_credential`). `kind` selects which symbol-table bucket
+// the reference resolves against ("endpoint", "credential",
+// "tunnel"). When `optional` is false the framework errors at
+// config-load if the operator omits the attribute.
+message EnvRefDecl {
+  string name = 1;
+  string kind = 2;
+  bool optional = 3;
+}
+
 enum TLSMode {
   // No TLS handling on the inbound side. The plugin receives the raw
   // TCP bytes.
@@ -143,6 +185,32 @@ message BuildResponse {
   // ConnInit / OpenTunnelRequest.
   bytes canonical_json = 1;
   repeated Diagnostic diagnostics = 2;
+}
+
+// EnvVarsRequest is sent on every `clawpatrol env` invocation that
+// reaches an environment block whose plugin lives in this
+// subprocess. The gateway forwards the canonical JSON it stored
+// from Build plus the resolved framework refs (the bare names of
+// each EnvRefDecl the operator set on the block).
+message EnvVarsRequest {
+  string type_name = 1;
+  string instance_name = 2;
+  bytes config_json = 3;
+  // refs maps each EnvRefDecl.name the plugin declared to the
+  // resolved bare-name (no type prefix) of the symbol the operator
+  // referenced. Optional refs the operator omitted are absent from
+  // the map; required refs are guaranteed to be present.
+  map<string, string> refs = 4;
+}
+
+message EnvVarsResponse {
+  repeated EnvVar vars = 1;
+}
+
+message EnvVar {
+  string name = 1;
+  string value = 2;
+  string description = 3;
 }
 
 message Diagnostic {

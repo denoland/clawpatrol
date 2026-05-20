@@ -208,11 +208,12 @@ func (g *Gateway) Join() JoinConfig {
 // of one-label kinds). Insertion order is preserved in the parallel
 // slices for deterministic emit / dump output.
 type Policy struct {
-	Approvers   map[string]*Entity
-	Credentials map[string]*Entity
-	Endpoints   map[string]*Entity
-	Rules       map[string]*Entity
-	Tunnels     map[string]*Entity
+	Approvers    map[string]*Entity
+	Credentials  map[string]*Entity
+	Endpoints    map[string]*Entity
+	Environments map[string]*Entity
+	Rules        map[string]*Entity
+	Tunnels      map[string]*Entity
 
 	Policies map[string]*PolicyText
 	Profiles map[string]*Profile
@@ -356,6 +357,7 @@ func (noopPluginLoader) LoadPlugins([]PluginSource) hcl.Diagnostics { return nil
 type Profile struct {
 	Name            string                       `json:"name"`
 	Credentials     []string                     `json:"credentials"`
+	Environments    []string                     `json:"environments,omitempty"`
 	Disambiguators  map[string]map[string]string `json:"disambiguators,omitempty"`
 	HITLAsyncGrants bool                         `json:"hitl_async_grants,omitempty"`
 }
@@ -440,13 +442,14 @@ func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
 	gw.PublicURL = normalizePublicURL(gw.PublicURL)
 
 	gw.Policy = &Policy{
-		Approvers:   make(map[string]*Entity),
-		Credentials: make(map[string]*Entity),
-		Endpoints:   make(map[string]*Entity),
-		Rules:       make(map[string]*Entity),
-		Tunnels:     make(map[string]*Entity),
-		Policies:    make(map[string]*PolicyText),
-		Profiles:    make(map[string]*Profile),
+		Approvers:    make(map[string]*Entity),
+		Credentials:  make(map[string]*Entity),
+		Endpoints:    make(map[string]*Entity),
+		Environments: make(map[string]*Entity),
+		Rules:        make(map[string]*Entity),
+		Tunnels:      make(map[string]*Entity),
+		Policies:     make(map[string]*PolicyText),
+		Profiles:     make(map[string]*Profile),
 	}
 
 	// Spawn external plugins before we look at policy blocks so the
@@ -643,6 +646,7 @@ func extractPolicyBlocks(body hcl.Body) (hcl.Blocks, hcl.Diagnostics) {
 			{Type: "approver", LabelNames: []string{"type", "name"}},
 			{Type: "credential", LabelNames: []string{"type", "name"}},
 			{Type: "endpoint", LabelNames: []string{"type", "name"}},
+			{Type: "environment", LabelNames: []string{"type", "name"}},
 			{Type: "rule", LabelNames: []string{"name"}},
 			{Type: "policy", LabelNames: []string{"name"}},
 			{Type: "profile", LabelNames: []string{"name"}},
@@ -726,6 +730,18 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 				Subject:  &sym.Block.DefRange,
 			})
 		}
+		// Same shape, for environment refs.
+		for _, e := range pr.Environments {
+			if table.Get(KindEnvironment, e) != nil {
+				continue
+			}
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("Unknown environment %q", e),
+				Detail:   fmt.Sprintf("Profile %q references environment %q which is not declared.", sym.Name, e),
+				Subject:  &sym.Block.DefRange,
+			})
+		}
 		p.Profiles[sym.Name] = pr
 		p.Order = append(p.Order, sym.Name)
 	}
@@ -738,7 +754,7 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 	// ordering — symbols are populated in pass 1 — but matching decode
 	// order to compile order keeps Order[] stable across the file's
 	// declaration sequence and avoids surprising readers.
-	for _, kind := range []Kind{KindApprover, KindCredential, KindTunnel, KindEndpoint, KindRule} {
+	for _, kind := range []Kind{KindApprover, KindCredential, KindTunnel, KindEndpoint, KindEnvironment, KindRule} {
 		for _, sym := range table.byKind[kind] {
 			plugin := Lookup(sym.Kind, sym.Type)
 			if plugin == nil {
@@ -749,7 +765,7 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 			// endpoints) before gohcl sees the body. The plugin's
 			// schema doesn't need to know about them; the loader
 			// resolves the refs against the symbol table here.
-			fw, body, fwDiags := extractFramework(sym.Block.Body, kind, evalCtx, table)
+			fw, body, fwDiags := extractFramework(sym.Block.Body, plugin, evalCtx, table)
 			diags = append(diags, fwDiags...)
 			target := plugin.New()
 			var decodeDiags hcl.Diagnostics
@@ -770,7 +786,7 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 			}
 			refs, refDiags := resolveRefs(target, sym.Name, plugin, table, sym.Block.DefRange)
 			diags = append(diags, refDiags...)
-			ctx := &BuildCtx{Refs: refs, Symbols: table, Block: sym.Block}
+			ctx := &BuildCtx{Refs: refs, Symbols: table, Block: sym.Block, Framework: fw}
 			if plugin.Validate != nil {
 				diags = append(diags, plugin.Validate(target, sym.Name, ctx)...)
 			}
@@ -792,6 +808,8 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 				p.Tunnels[sym.Name] = ent
 			case KindEndpoint:
 				p.Endpoints[sym.Name] = ent
+			case KindEnvironment:
+				p.Environments[sym.Name] = ent
 			case KindRule:
 				p.Rules[sym.Name] = ent
 			}
@@ -801,9 +819,87 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 
 	diags = append(diags, validateCredentialBindings(p)...)
 	diags = append(diags, validateProfileDisambiguators(p, table)...)
+	diags = append(diags, validateProfileEnvironments(p, table)...)
 
 	_ = configDir // file-include resolution will use this in a follow-up
 	return diags
+}
+
+// validateProfileEnvironments catches the silent dead-end where a
+// profile lists an environment block whose `credential = X` ref names
+// a credential that the profile itself does not bind. The env-pushdown
+// would emit a placeholder env var, but with the credential absent
+// from the profile's dispatch table the MITM path can never resolve
+// it — the agent receives a placeholder forever and the misconfig
+// produces no runtime error.
+//
+// The check walks each profile's environments and each environment's
+// framework-peeled credential refs (singular and list forms). Any
+// resolved credential name that is not in the profile's
+// `credentials = [...]` list is reported with the env block as the
+// subject, so the diagnostic points at the place the operator
+// actually needs to edit.
+func validateProfileEnvironments(p *Policy, table *SymbolTable) hcl.Diagnostics {
+	var diags hcl.Diagnostics
+	for profName, pr := range p.Profiles {
+		if len(pr.Environments) == 0 {
+			continue
+		}
+		credSet := make(map[string]struct{}, len(pr.Credentials))
+		for _, c := range pr.Credentials {
+			credSet[c] = struct{}{}
+		}
+		for _, envName := range pr.Environments {
+			ent := p.Environments[envName]
+			if ent == nil {
+				continue // already reported by the kind-existence cross-check
+			}
+			for _, spec := range pluginFrameworkAttrs(ent.Plugin) {
+				if spec.Kind != KindCredential {
+					continue
+				}
+				var refs []string
+				if spec.List {
+					refs = ent.Framework.RefList(spec.Name)
+				} else if r := ent.Framework.Ref(spec.Name); r != "" {
+					refs = []string{r}
+				}
+				for _, credName := range refs {
+					if _, ok := credSet[credName]; ok {
+						continue
+					}
+					subject := profileSubject(table, profName)
+					if envSym := table.Get(KindEnvironment, envName); envSym != nil && envSym.Block != nil {
+						r := envSym.Block.DefRange
+						subject = &r
+					}
+					diags = append(diags, &hcl.Diagnostic{
+						Severity: hcl.DiagError,
+						Summary:  fmt.Sprintf("Profile %q environment %q references credential %q that the profile does not bind", profName, envName, credName),
+						Detail:   fmt.Sprintf("Environment %q sets `%s = %s` but profile %q does not list that credential in `credentials = [...]`. Add it to the profile's credentials, or remove it from the environment block — without the credential bound, the env-pushdown placeholder is never replaced on the wire.", envName, spec.Name, credName, profName),
+						Subject:  subject,
+					})
+				}
+			}
+		}
+	}
+	return diags
+}
+
+// profileSubject returns the source range of the profile's defining
+// block, suitable for use as a diagnostic Subject. Returns nil when
+// the symbol table doesn't have an entry (defensive — every profile
+// in p.Profiles came from the symbol table).
+func profileSubject(table *SymbolTable, name string) *hcl.Range {
+	if table == nil {
+		return nil
+	}
+	sym := table.Get(KindProfile, name)
+	if sym == nil || sym.Block == nil {
+		return nil
+	}
+	r := sym.Block.DefRange
+	return &r
 }
 
 // validateCredentialBindings rejects credentials that set both
@@ -1121,6 +1217,7 @@ func decodeProfileBlock(sym *Symbol, evalCtx *hcl.EvalContext) (*Profile, hcl.Di
 	schema := &hcl.BodySchema{
 		Attributes: []hcl.AttributeSchema{
 			{Name: "credentials", Required: true},
+			{Name: "environments"},
 			{Name: "hitl_async_grants"},
 		},
 	}
@@ -1131,6 +1228,11 @@ func decodeProfileBlock(sym *Symbol, evalCtx *hcl.EvalContext) (*Profile, hcl.Di
 		if !hd.HasErrors() && hv.Type() == cty.Bool {
 			pr.HITLAsyncGrants = hv.True()
 		}
+	}
+	if envsAttr, ok := content.Attributes["environments"]; ok {
+		envs, envDiags := decodeProfileEnvironments(sym.Name, envsAttr, evalCtx)
+		diags = append(diags, envDiags...)
+		pr.Environments = envs
 	}
 	attr, ok := content.Attributes["credentials"]
 	if !ok {
@@ -1183,6 +1285,46 @@ func decodeProfileBlock(sym *Symbol, evalCtx *hcl.EvalContext) (*Profile, hcl.Di
 		}
 	}
 	return pr, diags
+}
+
+// decodeProfileEnvironments evaluates the `environments = [...]`
+// attribute on a profile block. Entries must be bare-name (typed-
+// traversal) references to environment blocks. Returns the resolved
+// name list — the existence check against the symbol table runs
+// later in decodePolicyBlocks alongside the credentials check, so a
+// single pass can report both missing-reference cases.
+func decodeProfileEnvironments(profile string, attr *hcl.Attribute, evalCtx *hcl.EvalContext) ([]string, hcl.Diagnostics) {
+	val, diags := attr.Expr.Value(evalCtx)
+	if diags.HasErrors() {
+		return nil, diags
+	}
+	t := val.Type()
+	if !t.IsTupleType() && !t.IsListType() {
+		rng := attr.Expr.Range()
+		return nil, hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Invalid profile %q environments", profile),
+			Detail:   fmt.Sprintf("Expected a list; got %s.", t.FriendlyName()),
+			Subject:  &rng,
+		}}
+	}
+	rng := attr.Expr.Range()
+	var out []string
+	it := val.ElementIterator()
+	for it.Next() {
+		_, el := it.Element()
+		if el.Type() != cty.String {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("Invalid profile %q environments entry", profile),
+				Detail:   fmt.Sprintf("Each entry must be a bare-name reference to an environment block; got %s.", el.Type().FriendlyName()),
+				Subject:  &rng,
+			})
+			continue
+		}
+		out = append(out, el.AsString())
+	}
+	return out, diags
 }
 
 // profileCredEntry is the result of decoding one object-literal entry

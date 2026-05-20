@@ -31,11 +31,12 @@ import (
 // types as <name>.<type> when the gateway registers them); Version
 // is informational, surfaced in startup logs.
 type Plugin struct {
-	Name        string
-	Version     string
-	Credentials []CredentialDef
-	Tunnels     []TunnelDef
-	Endpoints   []EndpointDef
+	Name         string
+	Version      string
+	Credentials  []CredentialDef
+	Tunnels      []TunnelDef
+	Endpoints    []EndpointDef
+	Environments []EnvironmentDef
 	// Facets is the per-plugin schema list for protocol families the
 	// plugin's endpoints emit actions against. The gateway registers
 	// one facet.Runtime per FacetDef so the dashboard's /api/facets
@@ -43,6 +44,62 @@ type Plugin struct {
 	// against it (e.g. `smtp.verb == "MAIL"`). Names are auto-
 	// namespaced to "<plugin>.<facet>".
 	Facets []FacetDef
+}
+
+// EnvironmentDef declares one environment plugin type. An
+// `environment "<TypeName>" "<name>" { ... }` block in the
+// operator's HCL decodes against Schema, then Build (optional)
+// normalizes the body. EnvVars is called on every `clawpatrol env`
+// invocation that reaches a profile listing one of this type's
+// instances; it returns the env vars to push down.
+//
+// Refs declares the framework-level bare-name reference attributes
+// the block accepts (e.g. `endpoint = postgres.pg`,
+// `credential = postgres_credential.pg-rw`). Each EnvRef's resolved
+// bare name lands in EnvVarsRequest.Refs keyed on EnvRef.Name. The
+// gateway rejects refs the plugin didn't declare and (for
+// non-optional refs) operator-omitted refs, at config-load time.
+type EnvironmentDef struct {
+	TypeName string
+	Schema   Schema
+	Refs     []EnvRef
+	Build    func(req BuildRequest) (any, error)
+	EnvVars  func(req EnvVarsRequest) ([]EnvVar, error)
+}
+
+// EnvRef declares one framework-level reference attribute on an
+// environment plugin's HCL block. Name is the HCL attribute name
+// the operator writes (typically equal to Kind, but plugins may
+// pick any unique name — e.g. `primary_credential` and
+// `secondary_credential`). Kind names the symbol bucket the ref
+// resolves against; the recognised values are "endpoint",
+// "credential", and "tunnel". When Optional is false the framework
+// errors at config-load if the operator omits the attribute.
+type EnvRef struct {
+	Name     string
+	Kind     string
+	Optional bool
+}
+
+// EnvVarsRequest is the per-invocation payload the gateway sends to
+// an EnvironmentDef's EnvVars callback. Refs maps each EnvRef.Name
+// the plugin declared to the resolved bare-name (no type prefix) of
+// the symbol the operator referenced. Optional refs the operator
+// didn't set are absent from the map; required refs are guaranteed
+// to be present.
+type EnvVarsRequest struct {
+	TypeName     string
+	InstanceName string
+	ConfigJSON   []byte
+	Refs         map[string]string
+}
+
+// EnvVar is one (name, value, description) tuple the gateway will
+// expose via `clawpatrol env`.
+type EnvVar struct {
+	Name        string
+	Value       string
+	Description string
 }
 
 // FacetDef declares one protocol-family schema. Endpoints bind to a

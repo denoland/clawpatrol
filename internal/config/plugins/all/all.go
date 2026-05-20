@@ -9,6 +9,7 @@ import (
 	_ "github.com/denoland/clawpatrol/internal/config/plugins/approvers" // register built-in plugin
 	_ "github.com/denoland/clawpatrol/internal/config/plugins/credentials"
 	_ "github.com/denoland/clawpatrol/internal/config/plugins/endpoints"
+	_ "github.com/denoland/clawpatrol/internal/config/plugins/environments"
 	// Facet packages register their facet runtime only. The single
 	// `rule` block plugin is registered by config/plugins/rules and
 	// infers the family from each rule's endpoint set at validate

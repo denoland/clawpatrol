@@ -25,13 +25,6 @@ func (a *AnthropicOAuthSubscription) InjectHTTP(_ context.Context, req *http.Req
 	return nil
 }
 
-// EnvVars is part of the clawpatrol plugin API.
-func (*AnthropicOAuthSubscription) EnvVars() []config.EnvVar {
-	return []config.EnvVar{
-		{Name: "ANTHROPIC_AUTH_TOKEN", Value: phClaude, Description: "Claude Code / Anthropic SDKs"},
-	}
-}
-
 // OAuthFlow on AnthropicOAuthSubscription returns Anthropic's OAuth
 // subscription flow (claude.ai → console.anthropic.com). Bootstrap
 // refresh token is templated as `{{secret:CLAUDE_REFRESH}}` so the

@@ -167,32 +167,20 @@ func TestCodexJWTRoundTrip(t *testing.T) {
 	}
 }
 
-// TestCodexEndpointEnvVars verifies the endpoint plugin emits the
-// CODEX_ACCESS_TOKEN / CODEX_AGENT_IDENTITY env vars (both for cross-
-// version codex compat) plus the auth-API base URL override.
-func TestCodexEndpointEnvVars(t *testing.T) {
+// TestCodexMintCodexAccessTokenSucceeds exercises MintCodexAccessToken
+// — the exported entry point the codex_environment plugin calls to
+// produce a fresh JWT on each `clawpatrol env` invocation. The
+// per-env-var assertions moved with the env-pushdown logic to the
+// environments package; this test just verifies the mint path the
+// endpoint still owns (the JWKS responder reads the same keypair).
+func TestCodexMintCodexAccessTokenSucceeds(t *testing.T) {
 	resetCodexKeys(t, newFakeBlobs())
-
-	got := (&OpenAICodexHTTPSEndpoint{}).EnvVars()
-	want := map[string]bool{
-		"CODEX_ACCESS_TOKEN":                    false,
-		"CODEX_AGENT_IDENTITY":                  false,
-		"CODEX_AGENT_IDENTITY_AUTHAPI_BASE_URL": false,
+	jwt, err := MintCodexAccessToken()
+	if err != nil {
+		t.Fatalf("MintCodexAccessToken: %v", err)
 	}
-	for _, ev := range got {
-		if _, ok := want[ev.Name]; !ok {
-			t.Errorf("unexpected env var: %s", ev.Name)
-			continue
-		}
-		want[ev.Name] = true
-		if ev.Value == "" {
-			t.Errorf("%s has empty value", ev.Name)
-		}
-	}
-	for n, ok := range want {
-		if !ok {
-			t.Errorf("missing env var: %s", n)
-		}
+	if jwt == "" {
+		t.Fatal("MintCodexAccessToken returned empty JWT")
 	}
 }
 

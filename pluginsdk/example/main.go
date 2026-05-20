@@ -4,8 +4,9 @@
 // Run:     the gateway spawns the binary; not invoked directly.
 //
 // Provides one credential (magic_token), one tunnel (passthrough),
-// and three endpoints (demo_https, demo_smtp, demo_echo) covering
-// HTTPS, TLS-but-not-HTTPS, and plain TCP respectively.
+// three endpoints (demo_https, demo_smtp, demo_echo) covering
+// HTTPS, TLS-but-not-HTTPS, and plain TCP respectively, and one
+// environment plugin (demo_env) showing the env-pushdown shape.
 package main
 
 import "github.com/denoland/clawpatrol/pluginsdk"
@@ -24,6 +25,9 @@ func main() {
 			demoHTTPSDef(),
 			demoSMTPDef(),
 			demoEchoDef(),
+		},
+		Environments: []pluginsdk.EnvironmentDef{
+			demoEnvDef(),
 		},
 		Facets: []pluginsdk.FacetDef{
 			// SMTP isn't covered by any built-in facet, so the

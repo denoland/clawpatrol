@@ -60,13 +60,14 @@ func (t *SymbolTable) All(kind Kind) []*Symbol {
 // the top level of a policy file. Anything else flows through to
 // gohcl's operational decode.
 var blockKinds = map[string]Kind{
-	"endpoint":   KindEndpoint,
-	"credential": KindCredential,
-	"rule":       KindRule,
-	"approver":   KindApprover,
-	"policy":     KindPolicy,
-	"profile":    KindProfile,
-	"tunnel":     KindTunnel,
+	"endpoint":    KindEndpoint,
+	"credential":  KindCredential,
+	"environment": KindEnvironment,
+	"rule":        KindRule,
+	"approver":    KindApprover,
+	"policy":      KindPolicy,
+	"profile":     KindProfile,
+	"tunnel":      KindTunnel,
 }
 
 // buildSymbols is pass 1. It walks the parsed file's policy blocks,

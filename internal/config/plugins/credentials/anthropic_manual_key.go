@@ -30,20 +30,6 @@ func (*AnthropicManualKey) SecretSlots() []config.SecretSlot {
 	return []config.SecretSlot{{Label: "Anthropic API key", Description: "sk-ant-…"}}
 }
 
-// EnvVars intentionally returns nothing.
-//
-// Pushing ANTHROPIC_API_KEY conflicts with the AnthropicOAuthSubscription
-// plugin's ANTHROPIC_AUTH_TOKEN — Claude Code and the Anthropic SDKs
-// honor whichever is set first, and when both are set with placeholders,
-// the SDK's own validation rejects the request before it reaches the
-// gateway. Until the env-pushdown layer scopes vars to the profile's
-// active credentials (rather than the union of every registered
-// plugin), the manual-key plugin stays silent. Operators who want the
-// x-api-key header still get it via InjectHTTP — no pushdown needed.
-func (*AnthropicManualKey) EnvVars() []config.EnvVar {
-	return nil
-}
-
 func init() {
 	var _ runtime.HTTPCredentialRuntime = (*AnthropicManualKey)(nil)
 	config.Register(&config.Plugin{

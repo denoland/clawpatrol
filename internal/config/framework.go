@@ -24,8 +24,8 @@ import (
 // body that gohcl should decode (= original body minus the
 // framework attrs), and any diagnostics from value-eval / kind-
 // validation.
-func extractFramework(body hcl.Body, kind Kind, evalCtx *hcl.EvalContext, table *SymbolTable) (FrameworkAttrs, hcl.Body, hcl.Diagnostics) {
-	specs := frameworkAttrsByKind[kind]
+func extractFramework(body hcl.Body, plug *Plugin, evalCtx *hcl.EvalContext, table *SymbolTable) (FrameworkAttrs, hcl.Body, hcl.Diagnostics) {
+	specs := pluginFrameworkAttrs(plug)
 	if len(specs) == 0 {
 		return FrameworkAttrs{}, body, nil
 	}
@@ -127,6 +127,20 @@ func extractFramework(body hcl.Body, kind Kind, evalCtx *hcl.EvalContext, table 
 		}
 	}
 	return fw, remain, diags
+}
+
+// pluginFrameworkAttrs returns the framework-attr list that applies
+// to one plugin: the plugin's own FrameworkAttrs override (when set,
+// including the empty-but-non-nil "this plugin accepts no framework
+// attrs" override), otherwise the kind-wide table.
+func pluginFrameworkAttrs(plug *Plugin) []FrameworkAttrSpec {
+	if plug == nil {
+		return nil
+	}
+	if plug.FrameworkAttrs != nil {
+		return plug.FrameworkAttrs
+	}
+	return frameworkAttrsByKind[plug.Kind]
 }
 
 // resolveRefName looks up name in the symbol table under the given

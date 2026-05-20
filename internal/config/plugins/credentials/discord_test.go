@@ -24,27 +24,6 @@ func TestDiscordInjectHTTPStampsBotAuthorization(t *testing.T) {
 	}
 }
 
-func TestDiscordEnvVarsPushBotTokenPlaceholders(t *testing.T) {
-	got := (&DiscordBotToken{}).EnvVars()
-	want := map[string]bool{
-		"DISCORD_BOT_TOKEN": false,
-		"DISCORD_TOKEN":     false,
-	}
-	for _, ev := range got {
-		if _, ok := want[ev.Name]; ok {
-			want[ev.Name] = true
-			if ev.Value != phDiscord {
-				t.Fatalf("%s value = %q, want %q", ev.Name, ev.Value, phDiscord)
-			}
-		}
-	}
-	for name, seen := range want {
-		if !seen {
-			t.Fatalf("EnvVars missing %s: %#v", name, got)
-		}
-	}
-}
-
 func TestDiscordRewriteWebSocketPayloadReplacesPlaceholder(t *testing.T) {
 	plugin := &DiscordBotToken{}
 	payload := []byte(`{"op":2,"d":{"token":"` + phDiscord + `","intents":513}}`)

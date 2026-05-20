@@ -16,9 +16,9 @@ import (
 )
 
 // Kind names a class of policy block. The plugin-dispatched two-label
-// kinds — KindEndpoint, KindCredential, KindApprover, KindTunnel —
-// read their type from the block's first label (e.g. `endpoint "https"
-// "github-dev"` → Type="https").
+// kinds — KindEndpoint, KindCredential, KindApprover, KindTunnel,
+// KindEnvironment — read their type from the block's first label
+// (e.g. `endpoint "https" "github-dev"` → Type="https").
 //
 // KindRule, KindPolicy and KindProfile are one-label blocks. KindRule
 // has a single registered plugin (Type="") and infers its protocol
@@ -28,20 +28,21 @@ type Kind string
 
 // Plugin kind constants enumerate supported config block kinds.
 const (
-	KindEndpoint   Kind = "endpoint"
-	KindCredential Kind = "credential"
-	KindRule       Kind = "rule"
-	KindApprover   Kind = "approver"
-	KindPolicy     Kind = "policy"
-	KindProfile    Kind = "profile"
-	KindTunnel     Kind = "tunnel"
+	KindEndpoint    Kind = "endpoint"
+	KindCredential  Kind = "credential"
+	KindRule        Kind = "rule"
+	KindApprover    Kind = "approver"
+	KindPolicy      Kind = "policy"
+	KindProfile     Kind = "profile"
+	KindTunnel      Kind = "tunnel"
+	KindEnvironment Kind = "environment"
 )
 
 // LabelCount returns how many labels a block of this kind carries
 // (excluding the kind keyword itself).
 func (k Kind) LabelCount() int {
 	switch k {
-	case KindEndpoint, KindCredential, KindApprover, KindTunnel:
+	case KindEndpoint, KindCredential, KindApprover, KindTunnel, KindEnvironment:
 		return 2 // first = type, second = name
 	case KindRule, KindPolicy, KindProfile:
 		return 1 // name
@@ -143,6 +144,16 @@ type Plugin struct {
 	// profile-side) whose name is not in this list — that catches
 	// e.g. `placeholder = "..."` set on a postgres credential.
 	Disambiguators []string
+
+	// FrameworkAttrs, when non-nil, overrides the per-kind framework-
+	// attr list (frameworkAttrsByKind) for this plugin. Empty (but
+	// non-nil) means "this plugin accepts no framework attrs" — used
+	// by environment plugins to scope which refs the operator may set
+	// on the block per-plugin rather than per-kind. nil means "fall
+	// back to the kind-wide table" — the default for every plugin
+	// kind whose framework attrs are uniform (endpoints' `tunnel`,
+	// credentials' `endpoint(s)` / `placeholder`).
+	FrameworkAttrs []FrameworkAttrSpec
 }
 
 // BuildCtx is what the loader hands to Validate and Build. It bundles
@@ -151,9 +162,10 @@ type Plugin struct {
 // don't fit the RefSpec.Path mini-DSL — most notably bare-name fields
 // inside `match = { credential = X }` cty.Value attributes.
 type BuildCtx struct {
-	Refs    *Refs
-	Symbols *SymbolTable
-	Block   *hcl.Block // for diagnostic ranges when nothing more precise is available
+	Refs      *Refs
+	Symbols   *SymbolTable
+	Block     *hcl.Block // for diagnostic ranges when nothing more precise is available
+	Framework FrameworkAttrs
 }
 
 // FrameworkAttrSpec declares an HCL attribute that the loader peels
@@ -201,6 +213,12 @@ var frameworkAttrsByKind = map[Kind][]FrameworkAttrSpec{
 		{Name: "endpoints", Kind: KindEndpoint, Optional: true, List: true},
 		{Name: "placeholder", Optional: true},
 	},
+	// Environment plugins do NOT live in this kind-wide table: the
+	// refs an `environment "<type>" "<name>" { ... }` block accepts
+	// vary per plugin type (postgres_environment wants endpoint +
+	// credential; codex_environment wants none; an external plugin
+	// might want two credentials). Each environment plugin sets its
+	// own Plugin.FrameworkAttrs instead.
 }
 
 // RefSpec declares a field on a decoded plugin struct that holds a

@@ -66,18 +66,9 @@ func (*DiscordBotToken) SecretSlots() []config.SecretSlot {
 	return []config.SecretSlot{{Label: "Discord bot token", Description: "Bot token from the Discord developer portal"}}
 }
 
-// EnvVars is part of the clawpatrol plugin API.
-func (*DiscordBotToken) EnvVars() []config.EnvVar {
-	return []config.EnvVar{
-		{Name: "DISCORD_TOKEN", Value: phDiscord, Description: "Discord bot token placeholder (common SDK/example env var)"},
-		{Name: "DISCORD_BOT_TOKEN", Value: phDiscord, Description: "Discord bot token placeholder"},
-	}
-}
-
 func init() {
 	var _ runtime.HTTPCredentialRuntime = (*DiscordBotToken)(nil)
 	var _ runtime.WebSocketCredentialRuntime = (*DiscordBotToken)(nil)
-	var _ config.EnvPushdownProvider = (*DiscordBotToken)(nil)
 	config.Register(&config.Plugin{
 		Kind:           config.KindCredential,
 		Type:           "discord_bot_token",

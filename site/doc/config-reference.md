@@ -531,6 +531,96 @@ endpoint "ssh" "example" {
 }
 ```
 
+## `environment` blocks
+
+Block syntax: `environment "<type>" "<name>" { ... }`
+
+Registered types: [`anthropic_subscription_environment`](#environment-anthropicsubscriptionenvironment), [`codex_environment`](#environment-codexenvironment), [`custom_environment`](#environment-customenvironment), [`discord_environment`](#environment-discordenvironment), [`gemini_environment`](#environment-geminienvironment), [`github_environment`](#environment-githubenvironment), [`kubernetes_environment`](#environment-kubernetesenvironment), [`postgres_environment`](#environment-postgresenvironment).
+
+### `environment "anthropic_subscription_environment" "<name>"`
+
+_No configurable attributes._
+
+```hcl
+environment "anthropic_subscription_environment" "example" {}
+```
+
+### `environment "codex_environment" "<name>"`
+
+_No configurable attributes._
+
+```hcl
+environment "codex_environment" "example" {}
+```
+
+### `environment "custom_environment" "<name>"`
+
+Part of the clawpatrol plugin API. It carries
+one operator-declared (key, value) pair plus an optional human-
+readable description shown by `clawpatrol env --list`.
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `key` | `string` | yes |  |
+| `value` | `string` | yes |  |
+| `description` | `string` | no |  |
+
+```hcl
+environment "custom_environment" "example" {
+  key = "example"
+  value = "example"
+}
+```
+
+### `environment "discord_environment" "<name>"`
+
+_No configurable attributes._
+
+```hcl
+environment "discord_environment" "example" {}
+```
+
+### `environment "gemini_environment" "<name>"`
+
+_No configurable attributes._
+
+```hcl
+environment "gemini_environment" "example" {}
+```
+
+### `environment "github_environment" "<name>"`
+
+_No configurable attributes._
+
+```hcl
+environment "github_environment" "example" {}
+```
+
+### `environment "kubernetes_environment" "<name>"`
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `kubeconfig` | `string` | yes |  |
+
+```hcl
+environment "kubernetes_environment" "example" {
+  kubeconfig = "example"
+}
+```
+
+### `environment "postgres_environment" "<name>"`
+
+Part of the clawpatrol plugin API. The
+resolved Endpoint / Credential entities are stashed here at
+build time so EnvVars() can read host / port / user / database
+without re-walking the symbol table on every call.
+
+_No configurable attributes._
+
+```hcl
+environment "postgres_environment" "example" {}
+```
+
 ## `rule` blocks
 
 Block syntax: `rule "<name>" { ... }`

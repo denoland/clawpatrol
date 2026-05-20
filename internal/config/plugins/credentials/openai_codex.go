@@ -66,22 +66,6 @@ func chatgptAccountID(jwt string) string {
 	return claims.Auth.ChatGPTAccountID
 }
 
-// EnvVars intentionally returns nothing.
-//
-// Codex env-var push-down lives on the openai_codex_https endpoint
-// plugin (config/plugins/endpoints/openai_codex_https.go). Pushing it
-// from the credential would attach the synthetic JWT to every
-// endpoint that binds this credential — including api.openai.com,
-// where it has no business going. Operators wire codex via:
-//
-//	credential "openai_codex_oauth" "codex" {}
-//
-//	endpoint "openai_codex_https" "codex" {
-//	  hosts      = ["chatgpt.com"]
-//	  credential = codex
-//	}
-func (*OpenAICodexOAuth) EnvVars() []config.EnvVar { return nil }
-
 // OAuthFlow is part of the clawpatrol plugin API.
 func (a *OpenAICodexOAuth) OAuthFlow() *config.OAuthIntegration {
 	return &config.OAuthIntegration{

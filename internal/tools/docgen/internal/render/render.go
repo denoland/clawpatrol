@@ -48,6 +48,7 @@ func (r *renderer) run() (string, error) {
 		config.KindApprover,
 		config.KindCredential,
 		config.KindEndpoint,
+		config.KindEnvironment,
 		config.KindRule,
 		config.KindTunnel,
 	} {
@@ -384,7 +385,7 @@ func (r *renderer) collectFields(pkgName, typeName string, rt reflect.Type) []fi
 func (r *renderer) fieldRefs(pkgName, typeName string) map[string]string {
 	out := map[string]string{}
 	for _, kind := range []config.Kind{
-		config.KindApprover, config.KindCredential, config.KindTunnel, config.KindEndpoint, config.KindRule,
+		config.KindApprover, config.KindCredential, config.KindTunnel, config.KindEndpoint, config.KindEnvironment, config.KindRule,
 	} {
 		for _, p := range config.AllPlugins(kind) {
 			rt := pluginStructType(p)
