@@ -103,9 +103,16 @@ tailnet IP at the info port, so tailnet peers reach
   loopback-only. Operators reach the dashboard over the tailnet
   using the tsnet IP; SSH tunnel is the out-of-band fallback when
   the tailnet is the thing that's broken.
-- **`0.0.0.0:8080`** — possible but rarely useful. Funnel does not
-  expose the dashboard (see below), so a public host bind only
-  matters when the gateway sits behind an external auth proxy.
+- **`0.0.0.0:8080`** — also exposes the dashboard on every other
+  network interface of the host (LAN, and the public IP if the host
+  has one), on top of the always-on tailnet listener. Tailnet peers
+  don't need this — they already reach the dashboard through the
+  tsnet IP — so the only reason to bind `0.0.0.0` is to let
+  something off the tailnet reach the dashboard. Do this only when
+  the gateway sits behind an external auth proxy (Cloudflare Access,
+  oauth2-proxy) doing its own SSO first; otherwise the root password
+  is the only thing between those other interfaces and the
+  dashboard.
 
 Operators can be allowlisted by tailnet identity so they skip the
 root-password prompt:
