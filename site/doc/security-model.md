@@ -274,3 +274,34 @@ Claw Patrol does not defend against:
   separation;
 - supply-chain compromise of the binary or its build toolchain;
 - cross-user side channels (shared-CPU timing, etc.).
+
+### Partial mitigation: agent-inside-`clawpatrol run`
+
+The "compromise of host/user" exclusion is broad, but the most
+common shape — a hostile agent that the operator deliberately
+runs under `clawpatrol run` — is partially mitigated.
+
+The tsnet auth key is the load-bearing secret: anyone who copies
+it off-box can join the tailnet as `tag:client` from anywhere.
+Both platforms keep the key out of the agent's reach:
+
+- **Linux** — the child mnt namespace overlays an empty tmpfs on
+  `~/.clawpatrol/` before exec'ing the agent. Agent reads → ENOENT.
+  Only `ca.crt` is re-created inside the overlay. Parent retains
+  its real view. See `run_tsnet_linux.go` / `run_linux.go`.
+- **macOS** — `clawpatrol join` stores the key in
+  `NETransparentProxyManager` providerConfiguration (system VPN
+  prefs) instead of `~/.clawpatrol/`. The user-side CLI never
+  holds it after join completes. See `macos/Clawpatrol/main.swift`
+  `startTsnetProxy`.
+
+What's still in scope (not closed by this):
+
+- User processes _outside_ the `clawpatrol run` namespace on Linux
+  can still read the file (same UID, host mnt ns).
+- On Linux with `kernel.yama.ptrace_scope=0`, an agent inside the
+  ns can still reach `/proc/<parent_pid>/{root,mem}` to bypass
+  the overlay.
+- Root malware on the host reads either platform's storage.
+
+These match the broader "user-compromise" exclusion above.

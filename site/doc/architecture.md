@@ -153,6 +153,20 @@ PPID-filters flows. Concurrent runs on one host don't share state.
 Reference: `run_tsnet_linux.go`, `run_tsnet_darwin.go`,
 `macos/netstack/wgnetstack.go`.
 
+The persisted tsnet auth key is hidden from agent processes:
+- **Linux** — parent reads `~/.clawpatrol/tsnet-auth-key` from the
+  host mnt ns; the child ns overlays an empty tmpfs on the dir
+  before exec'ing the agent, re-creating only `ca.crt` inside the
+  overlay. Agent sees no key, no api-token.
+- **macOS** — key is not written under `$HOME` at all. `clawpatrol
+  join` hands it to the container app, which stores it in
+  `NETransparentProxyManager` providerConfiguration (system VPN
+  prefs). Subsequent `clawpatrol run` invocations pass an empty
+  authKey arg; the container app reuses the stored value.
+
+Net effect: the bearer is bound to "code running on this physical
+machine," not "anyone who can copy the file off-box."
+
 **`clawpatrol join --whole-machine` (Linux).** Installs system
 Tailscale (`tailscale up --authkey=...`), sets the gateway as the
 exit node, and routes the whole host through. The auth key for
