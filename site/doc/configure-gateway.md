@@ -94,8 +94,9 @@ password. Pick the shape that matches your access model:
 ## Run under systemd
 
 For anything beyond a quick test, run the gateway as a dedicated
-service user so its state directory (CA private key, OAuth tokens,
-audit log) isn't readable by any non-root user on the box:
+service user so its state directory (every credential the gateway
+holds — CA private key, WireGuard server key, SSH host keys — plus
+the audit log) isn't readable by any non-root user on the box:
 
 ```bash
 useradd --system --home /opt/clawpatrol --shell /usr/sbin/nologin clawpatrol
@@ -145,8 +146,9 @@ A few footguns worth knowing about before you point an agent at a
 production Claw Patrol gateway:
 
 - **Don't run agents on the gateway host.** `clawpatrol run` is
-  for client devices — the gateway's `state_dir` holds the CA
-  private key, OAuth tokens, and audit log. An agent running on
+  for client devices — the gateway's `state_dir` holds every
+  credential the gateway mints (CA private key, WireGuard server
+  key, SSH host keys) plus the audit log. An agent running on
   the gateway host can read those directly, with or without
   `clawpatrol run` in front. The correct shape is: gateway on
   one box (small VPS, no human logins, no developer tools); your
