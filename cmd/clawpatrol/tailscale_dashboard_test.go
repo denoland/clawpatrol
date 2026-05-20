@@ -44,7 +44,8 @@ func TestCredentialsInProfileWalksTransitivelyViaTunnelChain(t *testing.T) {
 	policy := &config.CompiledPolicy{
 		Profiles: map[string]*config.CompiledProfile{
 			"default": {
-				Endpoints: map[string]*config.CompiledEndpoint{"grafana": ep},
+				Credentials: []*config.Entity{endpointCred},
+				Endpoints:   map[string]*config.CompiledEndpoint{"grafana": ep},
 			},
 		},
 	}
@@ -54,6 +55,47 @@ func TestCredentialsInProfileWalksTransitivelyViaTunnelChain(t *testing.T) {
 	}
 	if !got["grafana-bearer"] {
 		t.Errorf("expected endpoint credential in %v", got)
+	}
+}
+
+// Profiles that share an endpoint must NOT see each other's credentials.
+// Regression for cl-lgwg: the dashboard previously walked ep.Credentials
+// (the global endpoint→credentials list) and leaked credentials from
+// sibling profiles. The postgres "pg" endpoint binds both pg-readonly
+// and pg-writer; profile "data" declares only pg-readonly and must
+// see exactly that, not the writer credential bound to "platform".
+func TestCredentialsInProfileDoesNotLeakSiblingProfileCredentials(t *testing.T) {
+	readonly := &config.Entity{Symbol: &config.Symbol{Name: "pg-readonly"}}
+	writer := &config.Entity{Symbol: &config.Symbol{Name: "pg-writer"}}
+	ep := &config.CompiledEndpoint{
+		Name:        "pg",
+		Credentials: []*config.Entity{readonly, writer},
+	}
+	policy := &config.CompiledPolicy{
+		Profiles: map[string]*config.CompiledProfile{
+			"data": {
+				Credentials: []*config.Entity{readonly},
+				Endpoints:   map[string]*config.CompiledEndpoint{"pg": ep},
+			},
+			"platform": {
+				Credentials: []*config.Entity{writer},
+				Endpoints:   map[string]*config.CompiledEndpoint{"pg": ep},
+			},
+		},
+	}
+	data := credentialsInProfile(policy, "data")
+	if !data["pg-readonly"] {
+		t.Errorf("profile data: missing own credential pg-readonly in %v", data)
+	}
+	if data["pg-writer"] {
+		t.Errorf("profile data: leaked sibling credential pg-writer in %v", data)
+	}
+	platform := credentialsInProfile(policy, "platform")
+	if !platform["pg-writer"] {
+		t.Errorf("profile platform: missing own credential pg-writer in %v", platform)
+	}
+	if platform["pg-readonly"] {
+		t.Errorf("profile platform: leaked sibling credential pg-readonly in %v", platform)
 	}
 }
 

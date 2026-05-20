@@ -818,6 +818,13 @@ func dashboardTailscaleState(label tailscaleproto.NodeStateLabel, hasPersistedSl
 // apiStatus and the device-page card render so per-device views only
 // show credentials the device's profile actually uses.
 //
+// Reads strictly from CompiledProfile.Credentials (the profile's own
+// HCL-declared list). Walking ep.Credentials would leak credentials
+// from *other* profiles that share the same endpoint — e.g. the
+// postgres `pg` endpoint carries both `pg-readonly` and `pg-writer`,
+// but profile "data" declares only `pg-readonly` and must not see
+// `pg-writer` on its card.
+//
 // Walking tunnel-attached credentials in addition to the profile's
 // own list lets the dashboard surface tunnel-bound auth (e.g. the
 // tailscale node-auth credential) on profiles whose endpoints reach
@@ -833,14 +840,14 @@ func credentialsInProfile(policy *config.CompiledPolicy, profile string) map[str
 		return map[string]bool{} // unknown profile → empty set, not nil
 	}
 	out := map[string]bool{}
-	for _, ep := range prof.Endpoints {
-		for _, ent := range ep.Credentials {
-			if ent != nil && ent.Symbol != nil {
-				out[ent.Symbol.Name] = true
-			}
+	for _, ent := range prof.Credentials {
+		if ent != nil && ent.Symbol != nil {
+			out[ent.Symbol.Name] = true
 		}
+	}
+	for _, ep := range prof.Endpoints {
 		for tun := ep.Tunnel; tun != nil; tun = tun.Via {
-			if tun.Credential != nil {
+			if tun.Credential != nil && tun.Credential.Symbol != nil {
 				out[tun.Credential.Symbol.Name] = true
 			}
 		}
