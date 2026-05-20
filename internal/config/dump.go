@@ -147,7 +147,7 @@ func dumpEntityMap(m map[string]*Entity) map[string]any {
 		// endpoint/endpoints) at the entity row, not inside the
 		// plugin body — matches where the loader extracted them
 		// from.
-		for _, spec := range frameworkAttrsByKind[ent.Symbol.Kind] {
+		for _, spec := range pluginFrameworkAttrs(ent.Plugin) {
 			switch {
 			case spec.Kind == "":
 				if v := ent.Framework.Str(spec.Name); v != "" {

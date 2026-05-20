@@ -25,14 +25,17 @@ func demoEnvDef() pluginsdk.EnvironmentDef {
 				{Name: "prefix", TypeString: "string", Required: false},
 			},
 		},
-		AcceptsCredential: true,
+		Refs: []pluginsdk.EnvRef{
+			{Name: "credential", Kind: "credential", Optional: true},
+		},
 		EnvVars: func(req pluginsdk.EnvVarsRequest) ([]pluginsdk.EnvVar, error) {
 			// The schema's `prefix` would normally be parsed from
 			// req.ConfigJSON; for the demo we hardcode it so the
 			// example stays focused on the env-var shape.
 			name := "EXAMPLE_DEMO_TOKEN"
-			value := fmt.Sprintf("demo-placeholder-for-%s", req.CredentialRef)
-			if req.CredentialRef == "" {
+			credRef := req.Refs["credential"]
+			value := fmt.Sprintf("demo-placeholder-for-%s", credRef)
+			if credRef == "" {
 				value = "demo-placeholder-unbound"
 			}
 			return []pluginsdk.EnvVar{

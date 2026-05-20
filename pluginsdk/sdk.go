@@ -53,31 +53,45 @@ type Plugin struct {
 // invocation that reaches a profile listing one of this type's
 // instances; it returns the env vars to push down.
 //
-// AcceptsEndpoint / AcceptsCredential enable the framework refs:
-// when AcceptsEndpoint is true the block accepts
-// `endpoint = <type>.<name>`; the resolved bare name lands in
-// EnvVarsRequest.EndpointRef so the plugin can look it up later.
-// Same for AcceptsCredential. The gateway rejects refs the plugin
-// didn't enable, at config-load time.
+// Refs declares the framework-level bare-name reference attributes
+// the block accepts (e.g. `endpoint = postgres.pg`,
+// `credential = postgres_credential.pg-rw`). Each EnvRef's resolved
+// bare name lands in EnvVarsRequest.Refs keyed on EnvRef.Name. The
+// gateway rejects refs the plugin didn't declare and (for
+// non-optional refs) operator-omitted refs, at config-load time.
 type EnvironmentDef struct {
-	TypeName          string
-	Schema            Schema
-	AcceptsEndpoint   bool
-	AcceptsCredential bool
-	Build             func(req BuildRequest) (any, error)
-	EnvVars           func(req EnvVarsRequest) ([]EnvVar, error)
+	TypeName string
+	Schema   Schema
+	Refs     []EnvRef
+	Build    func(req BuildRequest) (any, error)
+	EnvVars  func(req EnvVarsRequest) ([]EnvVar, error)
+}
+
+// EnvRef declares one framework-level reference attribute on an
+// environment plugin's HCL block. Name is the HCL attribute name
+// the operator writes (typically equal to Kind, but plugins may
+// pick any unique name — e.g. `primary_credential` and
+// `secondary_credential`). Kind names the symbol bucket the ref
+// resolves against; the recognised values are "endpoint",
+// "credential", and "tunnel". When Optional is false the framework
+// errors at config-load if the operator omits the attribute.
+type EnvRef struct {
+	Name     string
+	Kind     string
+	Optional bool
 }
 
 // EnvVarsRequest is the per-invocation payload the gateway sends to
-// an EnvironmentDef's EnvVars callback. EndpointRef / CredentialRef
-// are bare names (no type prefix) — empty when the operator didn't
-// set the corresponding ref or the plugin didn't enable it.
+// an EnvironmentDef's EnvVars callback. Refs maps each EnvRef.Name
+// the plugin declared to the resolved bare-name (no type prefix) of
+// the symbol the operator referenced. Optional refs the operator
+// didn't set are absent from the map; required refs are guaranteed
+// to be present.
 type EnvVarsRequest struct {
-	TypeName      string
-	InstanceName  string
-	ConfigJSON    []byte
-	EndpointRef   string
-	CredentialRef string
+	TypeName     string
+	InstanceName string
+	ConfigJSON   []byte
+	Refs         map[string]string
 }
 
 // EnvVar is one (name, value, description) tuple the gateway will

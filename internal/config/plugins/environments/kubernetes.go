@@ -87,5 +87,9 @@ func init() {
 		Validate: kubernetesValidate,
 		Build:    passthrough,
 		Emit:     kubernetesEmit,
+		FrameworkAttrs: []config.FrameworkAttrSpec{
+			{Name: "endpoint", Kind: config.KindEndpoint, Optional: true},
+			{Name: "credential", Kind: config.KindCredential, Optional: true},
+		},
 	})
 }

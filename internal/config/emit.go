@@ -408,7 +408,7 @@ func emitEntityBlock(body *hclwrite.Body, kind string, ent *Entity, name string)
 // these off, this puts them back, so HCL → load → emit round-trips.
 func emitFrameworkAttrs(b *hclwrite.Body, ent *Entity) {
 	ri := EmitRefIndex()
-	for _, spec := range frameworkAttrsByKind[ent.Symbol.Kind] {
+	for _, spec := range pluginFrameworkAttrs(ent.Plugin) {
 		switch {
 		case spec.Kind == "":
 			if s := ent.Framework.Str(spec.Name); s != "" {

@@ -144,6 +144,16 @@ type Plugin struct {
 	// profile-side) whose name is not in this list — that catches
 	// e.g. `placeholder = "..."` set on a postgres credential.
 	Disambiguators []string
+
+	// FrameworkAttrs, when non-nil, overrides the per-kind framework-
+	// attr list (frameworkAttrsByKind) for this plugin. Empty (but
+	// non-nil) means "this plugin accepts no framework attrs" — used
+	// by environment plugins to scope which refs the operator may set
+	// on the block per-plugin rather than per-kind. nil means "fall
+	// back to the kind-wide table" — the default for every plugin
+	// kind whose framework attrs are uniform (endpoints' `tunnel`,
+	// credentials' `endpoint(s)` / `placeholder`).
+	FrameworkAttrs []FrameworkAttrSpec
 }
 
 // BuildCtx is what the loader hands to Validate and Build. It bundles
@@ -203,19 +213,12 @@ var frameworkAttrsByKind = map[Kind][]FrameworkAttrSpec{
 		{Name: "endpoints", Kind: KindEndpoint, Optional: true, List: true},
 		{Name: "placeholder", Optional: true},
 	},
-	// Environment plugins describe one named env-pushdown
-	// contribution: a fresh-each-boot value, a credential-derived
-	// secret, or a coordinated (endpoint, credential) bundle (the
-	// codex case). Operators attach them to a profile via
-	// `environments = [...]`. The framework owns the `endpoint` /
-	// `credential` framework attrs so plugins can declare which
-	// shape they accept without re-implementing decode boilerplate;
-	// validation that a plugin actually needs/uses a given ref
-	// happens in the plugin's Validate hook.
-	KindEnvironment: {
-		{Name: "endpoint", Kind: KindEndpoint, Optional: true},
-		{Name: "credential", Kind: KindCredential, Optional: true},
-	},
+	// Environment plugins do NOT live in this kind-wide table: the
+	// refs an `environment "<type>" "<name>" { ... }` block accepts
+	// vary per plugin type (postgres_environment wants endpoint +
+	// credential; codex_environment wants none; an external plugin
+	// might want two credentials). Each environment plugin sets its
+	// own Plugin.FrameworkAttrs instead.
 }
 
 // RefSpec declares a field on a decoded plugin struct that holds a

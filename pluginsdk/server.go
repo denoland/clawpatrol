@@ -137,11 +137,18 @@ func (s *server) Manifest(_ context.Context, _ *pb.ManifestRequest) (*pb.Manifes
 		resp.Facets = append(resp.Facets, &pb.FacetDecl{Name: f.Name, Fields: fields})
 	}
 	for _, e := range s.plug.Environments {
+		refs := make([]*pb.EnvRefDecl, 0, len(e.Refs))
+		for _, r := range e.Refs {
+			refs = append(refs, &pb.EnvRefDecl{
+				Name:     r.Name,
+				Kind:     r.Kind,
+				Optional: r.Optional,
+			})
+		}
 		resp.Environments = append(resp.Environments, &pb.EnvironmentDecl{
-			TypeName:          e.TypeName,
-			Schema:            schemaToProto(e.Schema),
-			AcceptsEndpoint:   e.AcceptsEndpoint,
-			AcceptsCredential: e.AcceptsCredential,
+			TypeName: e.TypeName,
+			Schema:   schemaToProto(e.Schema),
+			Refs:     refs,
 		})
 	}
 	return resp, nil
@@ -254,11 +261,10 @@ func (s *server) EnvVars(_ context.Context, req *pb.EnvVarsRequest) (*pb.EnvVars
 		return &pb.EnvVarsResponse{}, nil
 	}
 	vars, err := def.EnvVars(EnvVarsRequest{
-		TypeName:      req.TypeName,
-		InstanceName:  req.InstanceName,
-		ConfigJSON:    req.ConfigJson,
-		EndpointRef:   req.EndpointRef,
-		CredentialRef: req.CredentialRef,
+		TypeName:     req.TypeName,
+		InstanceName: req.InstanceName,
+		ConfigJSON:   req.ConfigJson,
+		Refs:         req.Refs,
 	})
 	if err != nil {
 		return nil, err

@@ -168,5 +168,9 @@ func init() {
 		New:   newer[PostgresEnvironment](),
 		Build: postgresBuild,
 		Emit:  emptyEmit,
+		FrameworkAttrs: []config.FrameworkAttrSpec{
+			{Name: "endpoint", Kind: config.KindEndpoint},
+			{Name: "credential", Kind: config.KindCredential},
+		},
 	})
 }

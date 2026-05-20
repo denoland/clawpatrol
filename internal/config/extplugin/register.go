@@ -444,8 +444,7 @@ type dynamicEnvironmentBody struct {
 	typeName      string
 	instanceName  string
 	canonicalJSON []byte
-	endpointRef   string
-	credentialRef string
+	refs          map[string]string
 	client        *Client
 }
 
@@ -458,11 +457,10 @@ func (b *dynamicEnvironmentBody) EnvVars() []config.EnvVar {
 		return nil
 	}
 	resp, err := b.client.PluginRPC().EnvVars(context.Background(), &pb.EnvVarsRequest{
-		TypeName:      b.typeName,
-		InstanceName:  b.instanceName,
-		ConfigJson:    b.canonicalJSON,
-		EndpointRef:   b.endpointRef,
-		CredentialRef: b.credentialRef,
+		TypeName:     b.typeName,
+		InstanceName: b.instanceName,
+		ConfigJson:   b.canonicalJSON,
+		Refs:         b.refs,
 	})
 	if err != nil {
 		// Silent on the EnvVars path — operator sees no var, not a
@@ -484,15 +482,56 @@ func (b *dynamicEnvironmentBody) EnvVars() []config.EnvVar {
 	return out
 }
 
+// envRefKinds maps the proto EnvRefDecl.kind strings to their
+// internal config.Kind values. Refs whose kind is unrecognised are
+// rejected at registration time with a clear diagnostic.
+var envRefKinds = map[string]config.Kind{
+	"endpoint":   config.KindEndpoint,
+	"credential": config.KindCredential,
+	"tunnel":     config.KindTunnel,
+}
+
 func registerEnvironment(client *Client, pluginName string, decl *pb.EnvironmentDecl) hcl.Diagnostics {
 	spec, err := schemaToSpec(decl.Schema)
 	if err != nil {
 		return fail("plugin %q environment %q: %v", pluginName, decl.TypeName, err)
 	}
 
+	// Translate the plugin-declared refs into framework attrs the
+	// loader can peel. Each entry must name a known symbol kind and
+	// must not collide with another ref's HCL attr name. Set
+	// FrameworkAttrs to a non-nil slice (possibly empty) so the
+	// loader uses this list instead of the kind-wide default — which
+	// for KindEnvironment is empty anyway, but the explicit override
+	// keeps the contract clear.
+	frameworkAttrs := make([]config.FrameworkAttrSpec, 0, len(decl.Refs))
+	seenNames := map[string]struct{}{}
+	for _, r := range decl.Refs {
+		if r == nil {
+			continue
+		}
+		if r.Name == "" {
+			return fail("plugin %q environment %q: ref with empty name", pluginName, decl.TypeName)
+		}
+		kind, ok := envRefKinds[r.Kind]
+		if !ok {
+			return fail("plugin %q environment %q: ref %q has unsupported kind %q (want one of: endpoint, credential, tunnel)", pluginName, decl.TypeName, r.Name, r.Kind)
+		}
+		if _, dup := seenNames[r.Name]; dup {
+			return fail("plugin %q environment %q: duplicate ref name %q", pluginName, decl.TypeName, r.Name)
+		}
+		seenNames[r.Name] = struct{}{}
+		frameworkAttrs = append(frameworkAttrs, config.FrameworkAttrSpec{
+			Name:     r.Name,
+			Kind:     kind,
+			Optional: r.Optional,
+		})
+	}
+
 	plug := &config.Plugin{
-		Kind: config.KindEnvironment,
-		Type: decl.TypeName,
+		Kind:           config.KindEnvironment,
+		Type:           decl.TypeName,
+		FrameworkAttrs: frameworkAttrs,
 		New: func() any {
 			return &dynamicEnvironmentBody{
 				pluginName: pluginName,
@@ -518,16 +557,16 @@ func registerEnvironment(client *Client, pluginName string, decl *pb.Environment
 			b.instanceName = name
 			// Stash the resolved framework refs so EnvVars() can
 			// forward them on every RPC call. The framework already
-			// validated kind / existence; we just record the name.
-			if decl.AcceptsEndpoint {
-				b.endpointRef = ctx.Framework.Ref("endpoint")
-			} else if ctx.Framework.Ref("endpoint") != "" {
-				return nil, fail("plugin %q environment %q does not accept `endpoint = ...`", pluginName, name)
+			// validated kind / existence / required-ness; we just
+			// record the resolved bare names.
+			refs := map[string]string{}
+			for _, r := range frameworkAttrs {
+				if v := ctx.Framework.Ref(r.Name); v != "" {
+					refs[r.Name] = v
+				}
 			}
-			if decl.AcceptsCredential {
-				b.credentialRef = ctx.Framework.Ref("credential")
-			} else if ctx.Framework.Ref("credential") != "" {
-				return nil, fail("plugin %q environment %q does not accept `credential = ...`", pluginName, name)
+			if len(refs) > 0 {
+				b.refs = refs
 			}
 			resp, err := client.PluginRPC().Build(context.Background(), &pb.BuildRequest{
 				Kind: "environment", TypeName: decl.TypeName, InstanceName: name, ConfigJson: b.canonicalJSON,
