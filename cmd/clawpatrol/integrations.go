@@ -272,8 +272,19 @@ func applyEnvPushdown(caDir string) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "clawpatrol: %v — agent will run without placeholder push-down\n", err)
 	}
+	applyEnvPushdownVars(vars)
+}
+
+// applyEnvPushdownVars sets env vars from an already-fetched list,
+// honoring CLAWPATROL_NO_ENV and never clobbering values the operator
+// set deliberately. Used by `clawpatrol run` which now receives the
+// vars from the daemon over its control socket instead of dialing the
+// gateway directly.
+func applyEnvPushdownVars(vars []pushdownEnvVar) {
+	if os.Getenv("CLAWPATROL_NO_ENV") == "1" {
+		return
+	}
 	for _, ev := range vars {
-		// Don't clobber values the operator already set deliberately.
 		if os.Getenv(ev.Name) != "" {
 			continue
 		}

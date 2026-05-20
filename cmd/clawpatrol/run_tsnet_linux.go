@@ -2,34 +2,31 @@
 
 package main
 
-// `clawpatrol run` in Tailscale mode. Spins up an ephemeral tsnet.Server
-// per invocation — fresh node identity each time, auto-removed on
-// disconnect by Tailscale (ephemeral=true). Mirrors macOS NE
-// (macos/netstack/wgnetstack.go) + WG-mode ephemeralPeer flow so
-// concurrent `clawpatrol run` invocations on one machine don't fight
-// over a shared state lock.
-//
-// The auth key persisted at join is reusable + ephemeral=true, so each
-// run consumes the same key but spawns a distinct tailnet node.
+// `clawpatrol run` in Tailscale mode. The parent process is a thin
+// client to the per-host `clawpatrol daemon` (see daemon_linux.go),
+// which owns one tsnet.Server shared across every concurrent run.
 //
 // Flow:
-//  1. Read persisted reusable+ephemeral auth_key from ~/.clawpatrol/.
-//  2. tsnet.Server{Ephemeral: true, Dir: MkdirTemp(...)} joins the
-//     gateway's tailnet under a fresh hostname.
-//  3. EditPrefs(ExitNodeIP=gateway) so every outbound dial from this
-//     tsnet node is routed via the gateway. Original dst is recovered
-//     server-side by RegisterFallbackTCPHandler — no PROXY-header
-//     smuggling required.
-//  4. Register the new tailnet IP with the gateway — register handler
-//     attributes traffic back to the parent device via
-//     ephemeralParentByIP so the dashboard shows ONE row per machine.
-//  5. Child in a new user+net+mnt ns creates the TUN, sends fd via
-//     SCM_RIGHTS.
-//  6. gVisor TCP forwarder dials the original destination via tsnet
-//     (which is exit-node-routed through the gateway).
+//  1. Connect to (or spawn) the daemon via its Unix control socket.
+//  2. Ask it to START a session — the daemon replies with its tsnet
+//     IP and the env-pushdown JSON. Both are applied locally before
+//     the child execs.
+//  3. Child in a new user+net+mnt ns creates the TUN, sends fd via
+//     SCM_RIGHTS to the parent.
+//  4. Parent forwards that TUN fd to the daemon (again via
+//     SCM_RIGHTS) on the same control conn.
+//  5. Daemon attaches the TUN to a per-session gVisor stack and TCP
+//     forwarder; replies ATTACHED.
+//  6. Parent signals the child; child brings up its tun + execs the
+//     agent. The agent's outbound traffic flows TUN → daemon's
+//     gVisor → daemon's tsnet (exit-node-routed through the gateway).
+//  7. On child exit the parent closes the control conn; the daemon
+//     tears down the session.
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -83,86 +80,25 @@ func runRunTsnet(args []string) {
 
 	checkUserNS()
 
-	dir := defaultClawpatrolDir()
-	// applyEnvPushdown moved to after tsnet join — env-pushdown is
-	// tailnet-only, can't be fetched until we're on the tailnet.
-
-	gwURL := strings.TrimSpace(readFileSilent(filepath.Join(dir, "gateway")))
-	controlURL := strings.TrimSpace(readFileSilent(filepath.Join(dir, "control-url")))
-	token := strings.TrimSpace(readFileSilent(filepath.Join(dir, "api-token")))
-	authKey := strings.TrimSpace(readFileSilent(filepath.Join(dir, "tsnet-auth-key")))
-	gwIPStr := strings.TrimSpace(readFileSilent(filepath.Join(dir, "tailnet-gateway-ip")))
-	if gwURL == "" || token == "" {
-		fail("tsnet run: missing gateway url or api-token in %s", dir)
-	}
-	if authKey == "" {
-		fail("tsnet run: missing tsnet-auth-key in %s (re-run `clawpatrol join`)", dir)
-	}
-	if gwIPStr == "" {
-		fail("tsnet run: missing tailnet-gateway-ip in %s (re-run `clawpatrol join`)", dir)
-	}
-	gwIP, err := netip.ParseAddr(gwIPStr)
+	// 1. Open a control conn to the per-host daemon, spawning one if
+	// none is alive. Hello handshake happens inside daemonConnect.
+	ctrl, err := daemonConnect()
 	if err != nil {
-		fail("tsnet run: tailnet-gateway-ip %q: %v", gwIPStr, err)
+		fail("daemon connect: %v", err)
 	}
+	defer func() { _ = ctrl.Close() }()
 
-	// 2. Spin up an ephemeral tsnet.Server per invocation. tmpdir state
-	// + Ephemeral:true means each run is a fresh tailnet node, freed
-	// automatically when this process exits. Concurrent runs on the same
-	// host don't collide on tsnet's exclusive state lock.
-	stateDir, err := os.MkdirTemp("", "clawpatrol-tsnet-*")
+	// 2. Ask for a session. Daemon replies with its tsnet IP plus the
+	// cached env-pushdown JSON. Apply both locally before forking.
+	tsIP, envVars, err := daemonClientStartSession(ctrl)
 	if err != nil {
-		fail("tsnet state dir: %v", err)
-	}
-	defer func() { _ = os.RemoveAll(stateDir) }()
-	hn := fmt.Sprintf("clawpatrol-run-%d", os.Getpid())
-	tsServer := &tsnet.Server{
-		Hostname:   hn,
-		AuthKey:    authKey,
-		ControlURL: controlURL,
-		Dir:        stateDir,
-		Ephemeral:  true,
-		Logf:       func(string, ...any) {},
-	}
-	defer func() { _ = tsServer.Close() }()
-
-	// Wait for tsnet Running — get our 100.x.x.x address.
-	fmt.Fprintln(os.Stderr, "clawpatrol: joining tailnet...")
-	tsIP, err := waitTsnetUp(tsServer)
-	if err != nil {
-		fail("tsnet join: %v", err)
+		fail("daemon START: %v", err)
 	}
 	_ = os.Setenv("CLAWPATROL_TS_ADDR", tsIP.String())
+	applyEnvPushdownVars(envVars)
 
-	// Route every outbound dial on this tsnet node through the gateway
-	// as an exit node. The gateway picks the traffic up via
-	// RegisterFallbackTCPHandler (TCP) and its tsnet :53 UDP listener
-	// (DNS), recovering the original dst from tsnet's exit-node
-	// machinery rather than a smuggled PROXY-v1 header.
-	if err := setGatewayExitNode(tsServer, gwIP); err != nil {
-		fail("tsnet set exit-node %s: %v", gwIP, err)
-	}
-
-	// Peer-API calls (register, env-pushdown) are tailnet-only — dial via
-	// tsnet so requests reach the gateway's 100.x address from the parent
-	// process (which is on host network, not tailnet).
-	tailnetAPI := strings.TrimSpace(readFileSilent(filepath.Join(dir, "tailnet-url")))
-	if tailnetAPI == "" {
-		tailnetAPI = gwURL
-	}
-	tsClient := tsnetHTTPClient(tsServer, filepath.Join(dir, "ca.crt"))
-	gatewayDialOverride = tsServer.Dial
-
-	// Register ephemeral tsnet IP with gateway so profile dispatch uses
-	// the right credentials (same as ephemeral WG peer registration).
-	if rerr := registerEphemeralTsnetIP(tsClient, tailnetAPI, token, tsIP.String()); rerr != nil {
-		fmt.Fprintf(os.Stderr, "warning: tsnet profile registration: %v (will use default profile)\n", rerr)
-	}
-
-	// Fetch env-pushdown now that we're on the tailnet.
-	applyEnvPushdown(dir)
-
-	// 3. IPC channels: TUN fd handoff + wg-up pipe (same plumbing as WG mode).
+	// 3. IPC channels for the child: TUN fd handoff + wg-up pipe
+	// (same plumbing as WG mode).
 	sp, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
 		fail("socketpair: %v", err)
@@ -221,21 +157,34 @@ func runRunTsnet(args []string) {
 		_ = child.Process.Kill()
 		fail("recv tun fd: %v", err)
 	}
-	tunFile := os.NewFile(uintptr(tunFd), tunIfName)
 
-	// 6. Build gVisor stack on the TUN fd.
-	gvStack, gvEp, err := newTsnetRunStack(tsIP)
+	// 6. Hand the TUN fd off to the daemon. .File() dups the underlying
+	// fd so we keep ctrl usable for the ATTACHED reply + the
+	// session-close idle keep-alive; close the duped fd as soon as
+	// SCM_RIGHTS goes out.
+	uc, ok := ctrl.(*net.UnixConn)
+	if !ok {
+		_ = child.Process.Kill()
+		fail("control conn: unexpected type %T", ctrl)
+	}
+	ctrlFile, err := uc.File()
 	if err != nil {
 		_ = child.Process.Kill()
-		fail("gvisor stack: %v", err)
+		fail("control conn file: %v", err)
 	}
-	defer gvStack.Close()
-	startTunBridge(tunFile, gvEp, tsServer)
+	if err := sendFD(ctrlFile, tunFd); err != nil {
+		_ = ctrlFile.Close()
+		_ = child.Process.Kill()
+		fail("send tun fd to daemon: %v", err)
+	}
+	_ = ctrlFile.Close()
+	_ = unix.Close(tunFd)
 
-	// 7. TCP forwarder: every connection → tsnet (exit-node-routed
-	// through the gateway). The gateway recovers the original dst via
-	// its RegisterFallbackTCPHandler.
-	enableTsnetTCPForwarder(gvStack, tsServer)
+	// 7. Wait for ATTACHED.
+	if err := daemonClientWaitAttached(ctrl); err != nil {
+		_ = child.Process.Kill()
+		fail("daemon ATTACHED: %v", err)
+	}
 
 	// 8. Signal child: bridge is up.
 	_, _ = wgUpW.Write([]byte{1})
@@ -274,6 +223,9 @@ func runRunTsnet(args []string) {
 		_, _ = relaySup.Process.Wait()
 	}
 
+	// Closing ctrl (via the deferred Close) tears the session down on
+	// the daemon side.
+
 	if waitErr != nil {
 		var ee *exec.ExitError
 		if errors.As(waitErr, &ee) {
@@ -281,6 +233,67 @@ func runRunTsnet(args []string) {
 		}
 		fail("wait: %v", waitErr)
 	}
+}
+
+// daemonClientStartSession sends "START\n" on ctrl and parses the
+// daemon's reply (tsnet IP + env-pushdown JSON length + JSON body).
+func daemonClientStartSession(ctrl net.Conn) (netip.Addr, []pushdownEnvVar, error) {
+	if _, err := io.WriteString(ctrl, "START\n"); err != nil {
+		return netip.Addr{}, nil, err
+	}
+	br := bufio.NewReader(ctrl)
+	tsipLine, err := br.ReadString('\n')
+	if err != nil {
+		return netip.Addr{}, nil, fmt.Errorf("read TSIP: %w", err)
+	}
+	tsipLine = strings.TrimRight(tsipLine, "\r\n")
+	if !strings.HasPrefix(tsipLine, "TSIP ") {
+		return netip.Addr{}, nil, fmt.Errorf("expected TSIP, got %q", tsipLine)
+	}
+	tsIP, err := netip.ParseAddr(strings.TrimSpace(tsipLine[len("TSIP "):]))
+	if err != nil {
+		return netip.Addr{}, nil, fmt.Errorf("parse TSIP: %w", err)
+	}
+	envLine, err := br.ReadString('\n')
+	if err != nil {
+		return netip.Addr{}, nil, fmt.Errorf("read ENV: %w", err)
+	}
+	envLine = strings.TrimRight(envLine, "\r\n")
+	if !strings.HasPrefix(envLine, "ENV ") {
+		return netip.Addr{}, nil, fmt.Errorf("expected ENV, got %q", envLine)
+	}
+	var n int
+	if _, err := fmt.Sscanf(envLine[len("ENV "):], "%d", &n); err != nil {
+		return netip.Addr{}, nil, fmt.Errorf("parse ENV length: %w", err)
+	}
+	if n < 0 || n > 1<<20 {
+		return netip.Addr{}, nil, fmt.Errorf("ENV length %d out of range", n)
+	}
+	body := make([]byte, n)
+	if _, err := io.ReadFull(br, body); err != nil {
+		return netip.Addr{}, nil, fmt.Errorf("read ENV body: %w", err)
+	}
+	var vars []pushdownEnvVar
+	if n > 0 {
+		if err := json.Unmarshal(body, &vars); err != nil {
+			return netip.Addr{}, nil, fmt.Errorf("decode ENV body: %w", err)
+		}
+	}
+	return tsIP, vars, nil
+}
+
+func daemonClientWaitAttached(ctrl net.Conn) error {
+	_ = ctrl.SetReadDeadline(time.Now().Add(5 * time.Second))
+	defer func() { _ = ctrl.SetReadDeadline(time.Time{}) }()
+	br := bufio.NewReader(ctrl)
+	line, err := br.ReadString('\n')
+	if err != nil {
+		return err
+	}
+	if strings.TrimRight(line, "\r\n") != "ATTACHED" {
+		return fmt.Errorf("expected ATTACHED, got %q", line)
+	}
+	return nil
 }
 
 // runRunTsnetChild runs inside the new user+net+mnt namespace.

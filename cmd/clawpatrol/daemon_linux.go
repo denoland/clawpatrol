@@ -25,18 +25,23 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"tailscale.com/tsnet"
 )
 
 const (
@@ -217,6 +222,15 @@ type daemon struct {
 	sockPath string
 	lockFile *os.File
 
+	// tsServer is the daemon's single tailnet identity, shared by every
+	// concurrent `clawpatrol run` session on this host. Set once at
+	// startup, never replaced. envVars is the cached env-pushdown
+	// response — clients pull it from us instead of dialing the gateway
+	// themselves (they're not on the tailnet; only we are).
+	tsServer *tsnet.Server
+	tsIP     netip.Addr
+	envVars  []byte // pre-serialized JSON for the FETCH path in handle()
+
 	activeConns atomic.Int32
 
 	mu        sync.Mutex
@@ -246,8 +260,27 @@ func runDaemon(_ []string) {
 
 	log.Printf("daemon pid=%d starting", os.Getpid())
 
-	// Bind first. Parent holds the spawn lock while we do this, so we
-	// can't race another daemon for the socket.
+	// Boot tsnet first. We don't bind the control socket until the
+	// daemon is fully usable — that way a parent reading "ready\n" can
+	// proceed straight to a session START without retries.
+	tsServer, tsIP, err := daemonStartTsnet(dir)
+	if err != nil {
+		log.Fatalf("daemon: tsnet: %v", err)
+	}
+
+	// Fetch the env-pushdown JSON once and cache it. Sessions get the
+	// same vars over their lifetime — refreshing per-session would
+	// stampede the gateway under bursty agent fleets.
+	envJSON := daemonFetchEnvPushdown(tsServer)
+
+	// Register this tsnet IP with the gateway so it maps to the host's
+	// device row (and therefore its profile). Best-effort: a failure
+	// only means traffic lands in the default profile until the next
+	// daemon restart.
+	daemonRegisterWithGateway(tsServer, tsIP)
+
+	// Bind the control socket last. Parent still holds spawn.lock at
+	// this point, so we can't race another daemon for the path.
 	_ = os.Remove(sockPath)
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
@@ -266,6 +299,9 @@ func runDaemon(_ []string) {
 		sockPath: sockPath,
 		listener: ln,
 		lockFile: lf,
+		tsServer: tsServer,
+		tsIP:     tsIP,
+		envVars:  envJSON,
 		rebindCh: make(chan struct{}),
 	}
 
@@ -327,9 +363,17 @@ func (d *daemon) serve() {
 	}
 }
 
-// handle services a single client conn: hello handshake, then block
-// until the client closes. The actual session protocol (TUN-fd via
-// SCM_RIGHTS, gVisor attach) is added in a follow-up commit.
+// handle services a single `clawpatrol run` session. After the
+// hello handshake the protocol is:
+//
+//	client → daemon:  "START\n"
+//	daemon → client:  "TSIP <ip>\n" "ENV <n>\n" <n bytes JSON>
+//	client → daemon:  SCM_RIGHTS carrying one TUN fd (payload byte 0)
+//	daemon → client:  "ATTACHED\n"
+//	client → daemon:  (control conn stays open; close = session end)
+//
+// On close the per-session gVisor stack tears down, the TUN fd is
+// released, and any in-flight conns through tsnet drain.
 func (d *daemon) handle(c net.Conn) {
 	defer func() {
 		_ = c.Close()
@@ -345,13 +389,183 @@ func (d *daemon) handle(c net.Conn) {
 		return
 	}
 
-	// Keep the conn alive until peer closes.
+	br := bufio.NewReader(c)
+	_ = c.SetReadDeadline(time.Now().Add(daemonHelloTimeout))
+	line, err := br.ReadString('\n')
+	if err != nil {
+		log.Printf("daemon: read command: %v", err)
+		return
+	}
+	if line != "START\n" {
+		log.Printf("daemon: unknown command %q", line)
+		return
+	}
+	_ = c.SetReadDeadline(time.Time{})
+
+	// 1. Tell the client our tsnet IP and ship the env-pushdown JSON.
+	if _, err := fmt.Fprintf(c, "TSIP %s\nENV %d\n", d.tsIP, len(d.envVars)); err != nil {
+		return
+	}
+	if _, err := c.Write(d.envVars); err != nil {
+		return
+	}
+
+	// 2. Receive the TUN fd via SCM_RIGHTS. *net.UnixConn → *os.File
+	// duplicates the underlying fd so the daemon owns its own
+	// reference; we close cFile when handle returns.
+	uc, ok := c.(*net.UnixConn)
+	if !ok {
+		log.Printf("daemon: conn is not *net.UnixConn (got %T)", c)
+		return
+	}
+	cFile, err := uc.File()
+	if err != nil {
+		log.Printf("daemon: get conn fd: %v", err)
+		return
+	}
+	defer func() { _ = cFile.Close() }()
+
+	tunFd, err := recvFD(cFile)
+	if err != nil {
+		log.Printf("daemon: recv TUN fd: %v", err)
+		return
+	}
+	tunFile := os.NewFile(uintptr(tunFd), tunIfName)
+	defer func() { _ = tunFile.Close() }()
+
+	// 3. Build the per-session gVisor stack. Multiple sessions share
+	// the daemon's single tsnet.Server but each gets its own stack so
+	// a misbehaving session can't OOM a neighbor.
+	gvStack, gvEp, err := newTsnetRunStack(d.tsIP)
+	if err != nil {
+		log.Printf("daemon: gvisor stack: %v", err)
+		return
+	}
+	defer gvStack.Close()
+	startTunBridge(tunFile, gvEp, d.tsServer)
+	enableTsnetTCPForwarder(gvStack, d.tsServer)
+
+	// 4. Tell the client the bridge is up.
+	if _, err := io.WriteString(c, "ATTACHED\n"); err != nil {
+		return
+	}
+
+	// 5. Block until the client closes (signals session end). A read
+	// here either returns EOF on a clean close or an error on abort;
+	// either way we fall through to defers and tear down.
 	buf := make([]byte, 256)
 	for {
 		_ = c.SetReadDeadline(time.Now().Add(time.Hour))
 		if _, err := c.Read(buf); err != nil {
 			return
 		}
+	}
+}
+
+// daemonStartTsnet reads persisted join state (auth-key, control-url,
+// gateway-ip), starts a tsnet.Server, waits for it to come up, and
+// points its outbound dials at the gateway as an exit node. Returns
+// the started server and our assigned 100.x address.
+func daemonStartTsnet(runtimeDir string) (*tsnet.Server, netip.Addr, error) {
+	caDir := defaultClawpatrolDir()
+	authKey := strings.TrimSpace(readFileSilent(filepath.Join(caDir, "tsnet-auth-key")))
+	controlURL := strings.TrimSpace(readFileSilent(filepath.Join(caDir, "control-url")))
+	gwIPStr := strings.TrimSpace(readFileSilent(filepath.Join(caDir, "tailnet-gateway-ip")))
+	if authKey == "" {
+		return nil, netip.Addr{}, fmt.Errorf("missing tsnet-auth-key in %s (re-run `clawpatrol join`)", caDir)
+	}
+	if gwIPStr == "" {
+		return nil, netip.Addr{}, fmt.Errorf("missing tailnet-gateway-ip in %s (re-run `clawpatrol join`)", caDir)
+	}
+	gwIP, err := netip.ParseAddr(gwIPStr)
+	if err != nil {
+		return nil, netip.Addr{}, fmt.Errorf("parse tailnet-gateway-ip %q: %w", gwIPStr, err)
+	}
+
+	// State directory under XDG_RUNTIME_DIR is fine for now (Phase 4
+	// will move it to a persistent location alongside the auth key so
+	// the node identity survives daemon restarts; until the auth key
+	// itself is non-ephemeral, persisting state across restarts buys
+	// nothing).
+	stateDir := filepath.Join(runtimeDir, "tsnet")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return nil, netip.Addr{}, fmt.Errorf("tsnet state dir: %w", err)
+	}
+
+	hn := strings.TrimSpace(readFileSilent(filepath.Join(caDir, "hostname")))
+	if hn == "" {
+		hn, _ = os.Hostname()
+	}
+
+	s := &tsnet.Server{
+		Hostname:   hn,
+		AuthKey:    authKey,
+		ControlURL: controlURL,
+		Dir:        stateDir,
+		Ephemeral:  true,
+		Logf:       func(string, ...any) {},
+	}
+
+	log.Printf("daemon: joining tailnet as %q...", hn)
+	tsIP, err := waitTsnetUp(s)
+	if err != nil {
+		_ = s.Close()
+		return nil, netip.Addr{}, fmt.Errorf("waitTsnetUp: %w", err)
+	}
+	log.Printf("daemon: tailnet IP %s", tsIP)
+
+	if err := setGatewayExitNode(s, gwIP); err != nil {
+		_ = s.Close()
+		return nil, netip.Addr{}, fmt.Errorf("set exit-node %s: %w", gwIP, err)
+	}
+
+	// Let any code path that needs a tailnet-routed HTTP client (e.g.
+	// gatewayClient → /api/env-pushdown) reach 100.x via tsnet.
+	gatewayDialOverride = s.Dial
+
+	return s, tsIP, nil
+}
+
+// daemonFetchEnvPushdown asks the gateway for the env-pushdown vars
+// belonging to this host's profile. Returns a JSON byte slice that
+// handle() ships to each new session verbatim. Best-effort: on any
+// failure we cache an empty list and log; clients then run without
+// pushdown until the daemon restarts.
+func daemonFetchEnvPushdown(_ *tsnet.Server) []byte {
+	caDir := defaultClawpatrolDir()
+	vars, err := fetchEnvPushdownFromGateway(caDir)
+	if err != nil {
+		log.Printf("daemon: env-pushdown fetch: %v (continuing with empty set)", err)
+		vars = nil
+	}
+	if vars == nil {
+		vars = []pushdownEnvVar{}
+	}
+	out, err := json.Marshal(vars)
+	if err != nil {
+		log.Printf("daemon: env-pushdown marshal: %v", err)
+		return []byte("[]")
+	}
+	return out
+}
+
+// daemonRegisterWithGateway POSTs this daemon's tsnet IP to the
+// gateway's /api/peer/ephemeral/tsnet/register so it maps to the
+// host's device row (and therefore the host's profile). Best-effort.
+func daemonRegisterWithGateway(s *tsnet.Server, tsIP netip.Addr) {
+	caDir := defaultClawpatrolDir()
+	gwURL := strings.TrimSpace(readFileSilent(filepath.Join(caDir, "tailnet-url")))
+	if gwURL == "" {
+		gwURL = strings.TrimSpace(readFileSilent(filepath.Join(caDir, "gateway")))
+	}
+	token := strings.TrimSpace(readFileSilent(filepath.Join(caDir, "api-token")))
+	if gwURL == "" || token == "" {
+		log.Printf("daemon: register: missing gateway URL or api-token; skipping")
+		return
+	}
+	cli := tsnetHTTPClient(s, filepath.Join(caDir, "ca.crt"))
+	if err := registerEphemeralTsnetIP(cli, gwURL, token, tsIP.String()); err != nil {
+		log.Printf("daemon: register: %v (default profile until next restart)", err)
 	}
 }
 
@@ -433,6 +647,13 @@ func (d *daemon) tryExit() {
 	d.mu.Lock()
 	d.exited = true
 	d.mu.Unlock()
+
+	// Close tsnet politely so the control plane can mark this node
+	// offline immediately rather than aging it out. Best-effort: we're
+	// about to exit anyway.
+	if d.tsServer != nil {
+		_ = d.tsServer.Close()
+	}
 
 	log.Printf("daemon pid=%d clean exit", os.Getpid())
 	os.Exit(0)
