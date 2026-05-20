@@ -22,8 +22,12 @@ policy "reply-content" {
   EOT
 }
 
+endpoint "https" "deno-deploy" {
+  hosts = ["app.deno.com"]
+}
+
 credential "anthropic_manual_key" "anthropic-key" {}
-credential "bearer_token" "deno-deploy-cred" {}
+credential "bearer_token" "deno-deploy" { endpoint = https.deno-deploy }
 
 approver "llm_approver" "reply-content-judge" {
   model      = "claude-sonnet-4-6"
@@ -31,9 +35,4 @@ approver "llm_approver" "reply-content-judge" {
   policy     = policy.reply-content
 }
 
-endpoint "https" "deno-deploy" {
-  hosts      = ["app.deno.com"]
-  credential = bearer_token.deno-deploy-cred
-}
-
-profile "default" { endpoints = [https.deno-deploy] }
+profile "default" { credentials = [bearer_token.deno-deploy] }

@@ -111,11 +111,12 @@ func (a *OpenAICodexOAuth) OAuthFlow() *config.OAuthIntegration {
 func init() {
 	var _ runtime.HTTPCredentialRuntime = (*OpenAICodexOAuth)(nil)
 	config.Register(&config.Plugin{
-		Kind:    config.KindCredential,
-		Type:    "openai_codex_oauth",
-		New:     newer[OpenAICodexOAuth](),
-		Runtime: (*OpenAICodexOAuth)(nil),
-		Build:   passthrough,
-		Emit:    emptyEmit,
+		Kind:           config.KindCredential,
+		Type:           "openai_codex_oauth",
+		Disambiguators: []string{"placeholder"},
+		New:            newer[OpenAICodexOAuth](),
+		Runtime:        (*OpenAICodexOAuth)(nil),
+		Build:          passthrough,
+		Emit:           emptyEmit,
 	})
 }

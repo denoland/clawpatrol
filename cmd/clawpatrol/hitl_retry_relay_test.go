@@ -218,10 +218,11 @@ func newHITLRetryRelayHarness(t *testing.T) *hitlRetryRelayHarness {
 	gw, diags := config.LoadBytes([]byte(`
 public_url = "https://gateway.example.test"
 
-credential "bearer_token" "pat" {}
 endpoint "https" "api" {
-  hosts      = ["api.example.test"]
-  credential = bearer_token.pat
+  hosts = ["api.example.test"]
+}
+credential "bearer_token" "pat" {
+  endpoint = https.api
 }
 approver "human_approver" "ops" {
   channel = "#ops"
@@ -232,7 +233,7 @@ rule "approved-post" {
   approve   = [human_approver.ops]
 }
 profile "default" {
-  endpoints = [https.api]
+  credentials       = [bearer_token.pat]
   hitl_async_grants = true
 }
 `), "hitl-retry-relay-test.hcl")
@@ -363,6 +364,16 @@ func (h *hitlRetryRelayHarness) createApprovedRetryOperationForMethodAndPrincipa
 		t.Fatalf("Create retry operation: %v", err)
 	}
 	return op
+}
+
+func (h *hitlRetryRelayHarness) fingerprintForBody(t *testing.T, requestBody string) HITLRequestFingerprintResult {
+	t.Helper()
+	return h.fingerprintForMethodAndBody(t, http.MethodPost, requestBody)
+}
+
+func (h *hitlRetryRelayHarness) fingerprintForMethodAndBody(t *testing.T, method, requestBody string) HITLRequestFingerprintResult {
+	t.Helper()
+	return h.fingerprintForMethodBodyAndPrincipal(t, method, requestBody, hitlPeerPrincipalID(hitlRetryRelayTestPeerIP))
 }
 
 func (h *hitlRetryRelayHarness) fingerprintForMethodBodyAndPrincipal(t *testing.T, method, requestBody, principalID string) HITLRequestFingerprintResult {

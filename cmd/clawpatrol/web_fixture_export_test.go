@@ -32,12 +32,11 @@ func gatewayWithPolicy(t *testing.T, hcl string) *Gateway {
 
 const fixtureHCL = `
 admin_email = "x@example.com"
-credential "bearer_token" "tok" {}
 endpoint "https" "github" {
-  hosts      = ["api.github.com"]
-  credential = bearer_token.tok
+  hosts = ["api.github.com"]
 }
-profile "default" { endpoints = [https.github] }
+credential "bearer_token" "tok" { endpoint = https.github }
+profile "default" { credentials = [bearer_token.tok] }
 `
 
 // TestExporterHTTPSHappyPath: a recorded HTTPS Event reshapes into
@@ -113,17 +112,15 @@ func TestExporterRejectsEmptyEndpoint(t *testing.T) {
 func TestExporterAlwaysEmitsEndpoint(t *testing.T) {
 	const hcl = `
 admin_email = "x@example.com"
-credential "bearer_token" "a" {}
-credential "bearer_token" "b" {}
 endpoint "https" "alpha" {
-  hosts      = ["api.example.com"]
-  credential = bearer_token.a
+  hosts = ["api.example.com"]
 }
 endpoint "https" "beta" {
-  hosts      = ["api.example.com"]
-  credential = bearer_token.b
+  hosts = ["api.example.com"]
 }
-profile "default" { endpoints = [https.alpha, https.beta] }
+credential "bearer_token" "a" { endpoint = https.alpha }
+credential "bearer_token" "b" { endpoint = https.beta }
+profile "default" { credentials = [bearer_token.a, bearer_token.b] }
 `
 	w := &webMux{g: gatewayWithPolicy(t, hcl)}
 	ev := &Event{
@@ -168,12 +165,14 @@ func TestExporterEventActionMapping(t *testing.T) {
 func TestExporterSQLHappyPath(t *testing.T) {
 	const hcl = `
 admin_email = "x@example.com"
-credential "postgres_credential" "pg-cred" { user = "agent" }
 endpoint "postgres" "pg" {
-  host       = "pg.internal:5432"
-  credential = postgres_credential.pg-cred
+  host = "pg.internal:5432"
 }
-profile "default" { endpoints = [postgres.pg] }
+credential "postgres_credential" "pg-cred" {
+  endpoint = postgres.pg
+  user     = "agent"
+}
+profile "default" { credentials = [postgres_credential.pg-cred] }
 `
 	w := &webMux{g: gatewayWithPolicy(t, hcl)}
 	ev := &Event{
@@ -206,12 +205,14 @@ profile "default" { endpoints = [postgres.pg] }
 func TestExporterSQLEmitsAllFacets(t *testing.T) {
 	const hcl = `
 admin_email = "x@example.com"
-credential "postgres_credential" "pg-cred" { user = "agent" }
 endpoint "postgres" "pg" {
-  host       = "pg.internal:5432"
-  credential = postgres_credential.pg-cred
+  host = "pg.internal:5432"
 }
-profile "default" { endpoints = [postgres.pg] }
+credential "postgres_credential" "pg-cred" {
+  endpoint = postgres.pg
+  user     = "agent"
+}
+profile "default" { credentials = [postgres_credential.pg-cred] }
 `
 	w := &webMux{g: gatewayWithPolicy(t, hcl)}
 	// Facets shaped as if reloaded from the events table (JSON
@@ -264,12 +265,14 @@ profile "default" { endpoints = [postgres.pg] }
 func TestExporterSQLStatementOnlyBackcompat(t *testing.T) {
 	const hcl = `
 admin_email = "x@example.com"
-credential "postgres_credential" "pg-cred" { user = "agent" }
 endpoint "postgres" "pg" {
-  host       = "pg.internal:5432"
-  credential = postgres_credential.pg-cred
+  host = "pg.internal:5432"
 }
-profile "default" { endpoints = [postgres.pg] }
+credential "postgres_credential" "pg-cred" {
+  endpoint = postgres.pg
+  user     = "agent"
+}
+profile "default" { credentials = [postgres_credential.pg-cred] }
 `
 	w := &webMux{g: gatewayWithPolicy(t, hcl)}
 	ev := &Event{
@@ -299,12 +302,14 @@ profile "default" { endpoints = [postgres.pg] }
 func TestExporterSQLRejectsMissingStatement(t *testing.T) {
 	const hcl = `
 admin_email = "x@example.com"
-credential "postgres_credential" "pg-cred" { user = "agent" }
 endpoint "postgres" "pg" {
-  host       = "pg.internal:5432"
-  credential = postgres_credential.pg-cred
+  host = "pg.internal:5432"
 }
-profile "default" { endpoints = [postgres.pg] }
+credential "postgres_credential" "pg-cred" {
+  endpoint = postgres.pg
+  user     = "agent"
+}
+profile "default" { credentials = [postgres_credential.pg-cred] }
 `
 	w := &webMux{g: gatewayWithPolicy(t, hcl)}
 	ev := &Event{ID: "evt-sql-2", Action: "allow", Endpoint: "pg"}
@@ -325,13 +330,12 @@ profile "default" { endpoints = [postgres.pg] }
 func TestExporterK8sHappyPath(t *testing.T) {
 	const hcl = `
 admin_email = "x@example.com"
-credential "mtls_credential" "kube-mtls" {}
 endpoint "kubernetes" "kube" {
-  server     = "10.0.0.7"
-  hosts      = ["10.0.0.7"]
-  credential = mtls_credential.kube-mtls
+  server = "10.0.0.7"
+  hosts  = ["10.0.0.7"]
 }
-profile "default" { endpoints = [kubernetes.kube] }
+credential "mtls_credential" "kube-mtls" { endpoint = kubernetes.kube }
+profile "default" { credentials = [mtls_credential.kube-mtls] }
 `
 	w := &webMux{g: gatewayWithPolicy(t, hcl)}
 	ev := &Event{
@@ -381,17 +385,16 @@ profile "default" { endpoints = [kubernetes.kube] }
 func TestExporterRunnerRoundTrip(t *testing.T) {
 	const hcl = `
 admin_email = "x@example.com"
-credential "bearer_token" "tok" {}
 endpoint "https" "github" {
-  hosts      = ["api.github.com"]
-  credential = bearer_token.tok
+  hosts = ["api.github.com"]
 }
+credential "bearer_token" "tok" { endpoint = https.github }
 rule "reads" {
   endpoint  = https.github
   condition = "http.method == 'GET'"
   verdict   = "allow"
 }
-profile "default" { endpoints = [https.github] }
+profile "default" { credentials = [bearer_token.tok] }
 `
 	gw := gatewayWithPolicy(t, hcl)
 	w := &webMux{g: gw}

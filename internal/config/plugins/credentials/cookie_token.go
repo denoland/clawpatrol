@@ -36,12 +36,13 @@ func (*CookieToken) SecretSlots() []config.SecretSlot {
 func init() {
 	var _ runtime.HTTPCredentialRuntime = (*CookieToken)(nil)
 	config.Register(&config.Plugin{
-		Kind:    config.KindCredential,
-		Type:    "cookie_token",
-		New:     newer[CookieToken](),
-		Runtime: (*CookieToken)(nil),
-		Build:   passthrough,
-		Emit: func(body any, _ string, b *hclwrite.Body, refs *config.RefIndex) {
+		Kind:           config.KindCredential,
+		Type:           "cookie_token",
+		Disambiguators: []string{"placeholder"},
+		New:            newer[CookieToken](),
+		Runtime:        (*CookieToken)(nil),
+		Build:          passthrough,
+		Emit: func(body any, _ string, b *hclwrite.Body) {
 			v := body.(*CookieToken)
 			if v.CookieName != "" {
 				b.SetAttributeValue("cookie_name", cty.StringVal(v.CookieName))

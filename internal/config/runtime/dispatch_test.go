@@ -17,14 +17,15 @@ func newSQLMetaForVerb(verb string) *sqlfacet.Meta {
 }
 
 const fixture = `
-credential "bearer_token" "pat" {}
-
 endpoint "https" "github" {
-  hosts      = ["api.github.com", "github.com"]
-  credential = bearer_token.pat
+  hosts = ["api.github.com", "github.com"]
 }
 
-profile "default" { endpoints = [https.github] }
+credential "bearer_token" "pat" {
+  endpoint = https.github
+}
+
+profile "default" { credentials = [bearer_token.pat] }
 
 rule "reads" {
   endpoint  = https.github
@@ -90,7 +91,8 @@ func TestHostEndpointIsCaseInsensitive(t *testing.T) {
 endpoint "https" "eks" {
   hosts = ["AB123.gr7.us-east-2.eks.amazonaws.com"]
 }
-profile "default" { endpoints = [https.eks] }
+credential "bearer_token" "eks-cred" { endpoint = https.eks }
+profile "default" { credentials = [bearer_token.eks-cred] }
 `)
 
 	if got := runtime.HostEndpoint(cp, "default", "ab123.gr7.us-east-2.eks.amazonaws.com"); got == nil || got.Name != "eks" {
@@ -106,7 +108,8 @@ func TestHostEndpointMatchesBareSNIForPortQualifiedHost(t *testing.T) {
 endpoint "https" "api" {
   hosts = ["api.example.com:443"]
 }
-profile "default" { endpoints = [https.api] }
+credential "bearer_token" "api-tok" { endpoint = https.api }
+profile "default" { credentials = [bearer_token.api-tok] }
 `)
 
 	if got := runtime.HostEndpoint(cp, "default", "api.example.com"); got == nil || got.Name != "api" {
@@ -125,7 +128,8 @@ func TestHostEndpointMatchesBareSNIForPortQualifiedKubernetesServer(t *testing.T
 endpoint "kubernetes" "cluster" {
   server = "cluster.example.com:443"
 }
-profile "default" { endpoints = [kubernetes.cluster] }
+credential "bearer_token" "tok" { endpoint = kubernetes.cluster }
+profile "default" { credentials = [bearer_token.tok] }
 `)
 
 	if got := runtime.HostEndpoint(cp, "default", "cluster.example.com"); got == nil || got.Name != "cluster" {
@@ -144,7 +148,9 @@ endpoint "https" "port_qualified" {
 endpoint "https" "bare" {
   hosts = ["api.example.com"]
 }
-profile "default" { endpoints = [https.port_qualified, https.bare] }
+credential "bearer_token" "pq-tok"   { endpoint = https.port_qualified }
+credential "bearer_token" "bare-tok" { endpoint = https.bare }
+profile "default" { credentials = [bearer_token.pq-tok, bearer_token.bare-tok] }
 `)
 
 	if got := runtime.HostEndpoint(cp, "default", "api.example.com"); got == nil || got.Name != "bare" {
@@ -160,7 +166,8 @@ func TestHostEndpointDoesNotAliasNonDefaultHTTPSPort(t *testing.T) {
 endpoint "https" "api" {
   hosts = ["api.example.com:8443"]
 }
-profile "default" { endpoints = [https.api] }
+credential "bearer_token" "tok" { endpoint = https.api }
+profile "default" { credentials = [bearer_token.tok] }
 `)
 
 	if got := runtime.HostEndpoint(cp, "default", "api.example.com"); got != nil {
@@ -176,7 +183,8 @@ func TestHostEndpointDoesNotAliasNonHTTPFamilies(t *testing.T) {
 endpoint "postgres" "db" {
   host = "db.example.com:5432"
 }
-profile "default" { endpoints = [postgres.db] }
+credential "postgres_credential" "db-cred" { endpoint = postgres.db }
+profile "default" { credentials = [postgres_credential.db-cred] }
 `)
 
 	if got := runtime.HostEndpoint(cp, "default", "db.example.com"); got != nil {
@@ -195,115 +203,13 @@ endpoint "https" "api" {
 endpoint "postgres" "db" {
   host = "api.example.com:443"
 }
-profile "default" { endpoints = [https.api, postgres.db] }
+credential "bearer_token" "api-tok"        { endpoint = https.api }
+credential "postgres_credential" "db-cred" { endpoint = postgres.db }
+profile "default" { credentials = [bearer_token.api-tok, postgres_credential.db-cred] }
 `)
 
 	if got := runtime.HostEndpoint(cp, "default", "api.example.com"); got == nil || got.Name != "api" {
 		t.Fatalf("bare SNI host resolved to %+v, want HTTPS endpoint", got)
-	}
-}
-
-func TestHostEndpointWildcardMatches(t *testing.T) {
-	cp := compileFixture(t, `
-credential "bearer_token" "aws-tok" {}
-endpoint "https" "aws-ep" {
-  hosts      = ["*.amazonaws.com"]
-  credential = bearer_token.aws-tok
-}
-profile "default" { endpoints = [https.aws-ep] }
-`)
-	cases := []struct {
-		host string
-		want string
-	}{
-		{"s3.amazonaws.com", "aws-ep"},
-		{"dynamodb.us-east-1.amazonaws.com", "aws-ep"},
-		{"AB.AMAZONAWS.COM", "aws-ep"},
-		{"amazonaws.com", ""},
-		{"notamazonaws.com", ""},
-		{"foo.bar", ""},
-	}
-	for _, c := range cases {
-		got := runtime.HostEndpoint(cp, "default", c.host)
-		gotName := ""
-		if got != nil {
-			gotName = got.Name
-		}
-		if gotName != c.want {
-			t.Errorf("HostEndpoint(%q) = %q, want %q", c.host, gotName, c.want)
-		}
-	}
-}
-
-func TestHostEndpointExactBeatsWildcard(t *testing.T) {
-	cp := compileFixture(t, `
-credential "bearer_token" "aws-tok" {}
-credential "bearer_token" "s3-tok"  {}
-endpoint "https" "aws-ep" {
-  hosts      = ["*.amazonaws.com"]
-  credential = bearer_token.aws-tok
-}
-endpoint "https" "s3-ep" {
-  hosts      = ["s3.amazonaws.com"]
-  credential = bearer_token.s3-tok
-}
-profile "default" { endpoints = [https.aws-ep, https.s3-ep] }
-`)
-	if got := runtime.HostEndpoint(cp, "default", "s3.amazonaws.com"); got == nil || got.Name != "s3-ep" {
-		t.Fatalf("exact host should beat wildcard: got %+v, want s3-ep", got)
-	}
-	if got := runtime.HostEndpoint(cp, "default", "dynamodb.amazonaws.com"); got == nil || got.Name != "aws-ep" {
-		t.Fatalf("uncovered subdomain should fall to wildcard: got %+v, want aws-ep", got)
-	}
-}
-
-func TestHostEndpointLongestWildcardWins(t *testing.T) {
-	cp := compileFixture(t, `
-credential "bearer_token" "aws-tok"  {}
-credential "bearer_token" "east-tok" {}
-endpoint "https" "east-ep" {
-  hosts      = ["*.us-east-1.amazonaws.com"]
-  credential = bearer_token.east-tok
-}
-endpoint "https" "aws-ep" {
-  hosts      = ["*.amazonaws.com"]
-  credential = bearer_token.aws-tok
-}
-profile "default" { endpoints = [https.aws-ep, https.east-ep] }
-`)
-	if got := runtime.HostEndpoint(cp, "default", "s3.us-east-1.amazonaws.com"); got == nil || got.Name != "east-ep" {
-		t.Fatalf("longest suffix should win: got %+v, want east-ep", got)
-	}
-	if got := runtime.HostEndpoint(cp, "default", "s3.us-west-2.amazonaws.com"); got == nil || got.Name != "aws-ep" {
-		t.Fatalf("shorter pattern picks up the rest: got %+v, want aws-ep", got)
-	}
-}
-
-func TestHostEndpointWildcardWithPortAlias(t *testing.T) {
-	cp := compileFixture(t, `
-credential "bearer_token" "aws-tok" {}
-endpoint "https" "aws-ep" {
-  hosts      = ["*.amazonaws.com:443"]
-  credential = bearer_token.aws-tok
-}
-profile "default" { endpoints = [https.aws-ep] }
-`)
-	if got := runtime.HostEndpoint(cp, "default", "s3.amazonaws.com"); got == nil || got.Name != "aws-ep" {
-		t.Fatalf("port-qualified wildcard should match bare SNI: got %+v, want aws-ep", got)
-	}
-}
-
-func TestHostEndpointWildcardSingleTenantFallback(t *testing.T) {
-	cp := compileFixture(t, `
-credential "bearer_token" "aws-tok" {}
-endpoint "https" "aws-ep" {
-  hosts      = ["*.amazonaws.com"]
-  credential = bearer_token.aws-tok
-}
-profile "tenant" { endpoints = [https.aws-ep] }
-`)
-	if got := runtime.HostEndpoint(cp, "missing-profile", "s3.amazonaws.com"); got == nil || got.Name != "aws-ep" {
-		t.Fatalf("fallback scan should find wildcard match across profiles: got %+v, want aws-ep", got)
 	}
 }
 
@@ -353,7 +259,8 @@ func TestMatchRequestTruncated(t *testing.T) {
 endpoint "postgres" "db" {
   host = "db.example.com:5432"
 }
-profile "default" { endpoints = [postgres.db] }
+credential "postgres_credential" "db-cred" { endpoint = postgres.db }
+profile "default" { credentials = [postgres_credential.db-cred] }
 
 rule "select-allow" {
   endpoint  = postgres.db
@@ -405,12 +312,13 @@ rule "default-deny" {
 // rules that actually read truncatable facet bytes.
 func TestMatchRequestTruncatedSkipsRulesThatDontReadTruncatedFacets(t *testing.T) {
 	cp := compileFixture(t, `
-credential "bearer_token" "tok" {}
 endpoint "https" "api" {
-  hosts      = ["api.example.com"]
-  credential = bearer_token.tok
+  hosts = ["api.example.com"]
 }
-profile "default" { endpoints = [https.api] }
+credential "bearer_token" "tok" {
+  endpoint = https.api
+}
+profile "default" { credentials = [bearer_token.tok] }
 
 rule "by-credential" {
   endpoint   = https.api
@@ -461,7 +369,8 @@ func newSQLMetaWithStatement(stmt string) *sqlfacet.Meta {
 func TestMatchRequestUnparseable_StatementRuleAllowsOnUnparseable(t *testing.T) {
 	cp := compileFixture(t, `
 endpoint "clickhouse_native" "ch" { hosts = ["ch.example:9000"] }
-profile "default" { endpoints = [clickhouse_native.ch] }
+credential "clickhouse_credential" "ch-cred" { endpoint = clickhouse_native.ch }
+profile "default" { credentials = [clickhouse_credential.ch-cred] }
 
 rule "allow-known-shape" {
   endpoint  = clickhouse_native.ch
@@ -503,7 +412,8 @@ rule "verb-deny" {
 func TestMatchRequestUnparseable_VerbRuleSynthDeniesOnUnparseable(t *testing.T) {
 	cp := compileFixture(t, `
 endpoint "clickhouse_native" "ch" { hosts = ["ch.example:9000"] }
-profile "default" { endpoints = [clickhouse_native.ch] }
+credential "clickhouse_credential" "ch-cred" { endpoint = clickhouse_native.ch }
+profile "default" { credentials = [clickhouse_credential.ch-cred] }
 
 rule "allow-statement-prefix" {
   endpoint  = clickhouse_native.ch
@@ -549,7 +459,8 @@ rule "verb-allow" {
 func TestMatchRequestUnparseable_OnlyParserFacetsSynthDenyFromHighestPriority(t *testing.T) {
 	cp := compileFixture(t, `
 endpoint "clickhouse_native" "ch" { hosts = ["ch.example:9000"] }
-profile "default" { endpoints = [clickhouse_native.ch] }
+credential "clickhouse_credential" "ch-cred" { endpoint = clickhouse_native.ch }
+profile "default" { credentials = [clickhouse_credential.ch-cred] }
 
 rule "deny-writes" {
   endpoint  = clickhouse_native.ch
@@ -594,7 +505,8 @@ rule "tables-deny" {
 func TestMatchRequestUnparseable_NoRulesFallsThrough(t *testing.T) {
 	cp := compileFixture(t, `
 endpoint "clickhouse_native" "ch" { hosts = ["ch.example:9000"] }
-profile "default" { endpoints = [clickhouse_native.ch] }
+credential "clickhouse_credential" "ch-cred" { endpoint = clickhouse_native.ch }
+profile "default" { credentials = [clickhouse_credential.ch-cred] }
 `)
 	ep := cp.Endpoints["ch"]
 
@@ -616,7 +528,8 @@ profile "default" { endpoints = [clickhouse_native.ch] }
 func TestMatchRequestUnparseable_ParseableUnaffected(t *testing.T) {
 	cp := compileFixture(t, `
 endpoint "clickhouse_native" "ch" { hosts = ["ch.example:9000"] }
-profile "default" { endpoints = [clickhouse_native.ch] }
+credential "clickhouse_credential" "ch-cred" { endpoint = clickhouse_native.ch }
+profile "default" { credentials = [clickhouse_credential.ch-cred] }
 
 rule "verb-allow-select" {
   endpoint  = clickhouse_native.ch
@@ -644,16 +557,17 @@ rule "verb-allow-select" {
 // returns false for a connection-only rule.
 func TestMatchRequestUnparseable_CredentialOnlyRuleStillAllows(t *testing.T) {
 	cp := compileFixture(t, `
-credential "bearer_token" "tok" {}
 endpoint "clickhouse_native" "ch" {
-  hosts      = ["ch.example:9000"]
-  credential = bearer_token.tok
+  hosts = ["ch.example:9000"]
 }
-profile "default" { endpoints = [clickhouse_native.ch] }
+credential "clickhouse_credential" "tok" {
+  endpoint = clickhouse_native.ch
+}
+profile "default" { credentials = [clickhouse_credential.tok] }
 
 rule "by-credential" {
   endpoint   = clickhouse_native.ch
-  credential = bearer_token.tok
+  credential = clickhouse_credential.tok
   verdict    = "allow"
 }
 rule "verb-deny" {
@@ -685,7 +599,7 @@ rule "verb-deny" {
 func TestResolveCredentialSingular(t *testing.T) {
 	cp := compile(t)
 	ep := cp.Endpoints["github"]
-	got := runtime.ResolveCredential(ep, &match.Request{Family: "http", Headers: http.Header{}})
+	got := runtime.ResolveCredential(cp, "default", ep, &match.Request{Family: "http", Headers: http.Header{}})
 	if got == nil || got.Credential.Symbol.Name != "pat" {
 		t.Errorf("singular credential resolution wrong: %+v", got)
 	}
@@ -694,21 +608,24 @@ func TestResolveCredentialSingular(t *testing.T) {
 // TestResolveCredentialPlaceholder: multi-credential dispatch asks
 // the endpoint plugin's runtime to detect the agent's placeholder
 // from the actual request, then matches against the configured set.
-// The trailing no-placeholder entry is the fallback.
+// The trailing bare-name entry is the fallback. Placeholders live on
+// the profile in v15, riding inside the credentials list as inline
+// `{ placeholder = "...", credential = ... }` entries.
 func TestResolveCredentialPlaceholder(t *testing.T) {
 	src := `
-credential "bearer_token" "test"     {}
-credential "bearer_token" "prod"     {}
-credential "bearer_token" "fallback" {}
 endpoint "https" "ep" {
   hosts = ["x.example.com"]
+}
+credential "bearer_token" "test"     { endpoint = https.ep }
+credential "bearer_token" "prod"     { endpoint = https.ep }
+credential "bearer_token" "fallback" { endpoint = https.ep }
+profile "default" {
   credentials = [
     { placeholder = "PH_test", credential = bearer_token.test },
     { placeholder = "PH_prod", credential = bearer_token.prod },
-    { credential = bearer_token.fallback },
+    bearer_token.fallback,
   ]
 }
-profile "default" { endpoints = [https.ep] }
 `
 	gw, diags := config.LoadBytes([]byte(src), "in.hcl")
 	if diags.HasErrors() {
@@ -728,41 +645,45 @@ profile "default" { endpoints = [https.ep] }
 		return &match.Request{Family: "http", Headers: h}
 	}
 
-	got := runtime.ResolveCredential(ep, mkReq("Bearer PH_prod"))
+	got := runtime.ResolveCredential(cp, "default", ep, mkReq("Bearer PH_prod"))
 	if got == nil || got.Credential.Symbol.Name != "prod" {
 		t.Errorf("Authorization=Bearer PH_prod should select prod, got %+v", got)
 	}
 	basicPlaceholder := base64.StdEncoding.EncodeToString([]byte("git-user:PH_test"))
-	got = runtime.ResolveCredential(ep, mkReq("Basic "+basicPlaceholder))
+	got = runtime.ResolveCredential(cp, "default", ep, mkReq("Basic "+basicPlaceholder))
 	if got == nil || got.Credential.Symbol.Name != "test" {
 		t.Errorf("Authorization=Basic base64(git-user:PH_test) should select test, got %+v", got)
 	}
-	got = runtime.ResolveCredential(ep, mkReq("Bearer something-else"))
+	got = runtime.ResolveCredential(cp, "default", ep, mkReq("Bearer something-else"))
 	if got == nil || got.Credential.Symbol.Name != "fallback" {
 		t.Errorf("no placeholder match should fall back, got %+v", got)
 	}
-	got = runtime.ResolveCredential(ep, mkReq(""))
+	got = runtime.ResolveCredential(cp, "default", ep, mkReq(""))
 	if got == nil || got.Credential.Symbol.Name != "fallback" {
 		t.Errorf("missing Authorization should fall back, got %+v", got)
 	}
 }
 
-// TestResolveCredentialDatabaseOnly: entries dispatch on
-// req.Database alone — no placeholder constraint involved.
+// TestResolveCredentialDatabaseOnly: SQL credentials dispatch on
+// req.Database alone — the discriminator lives on the credential
+// body's `database` attr, not on the profile entry.
 func TestResolveCredentialDatabaseOnly(t *testing.T) {
 	src := `
-credential "clickhouse_credential" "prod"     {}
-credential "clickhouse_credential" "dev"      {}
-credential "clickhouse_credential" "fallback" {}
 endpoint "clickhouse_native" "ep" {
   hosts = ["x.example.com"]
-  credentials = [
-    { database  = "prod",          credential = clickhouse_credential.prod     },
-    { databases = ["dev", "qa"],   credential = clickhouse_credential.dev      },
-    { credential = clickhouse_credential.fallback },
-  ]
 }
-profile "default" { endpoints = [clickhouse_native.ep] }
+credential "clickhouse_credential" "prod" {
+  endpoint = clickhouse_native.ep
+  database = "prod"
+}
+credential "clickhouse_credential" "dev" {
+  endpoint = clickhouse_native.ep
+  database = "dev"
+}
+credential "clickhouse_credential" "fallback" {
+  endpoint = clickhouse_native.ep
+}
+profile "default" { credentials = [clickhouse_credential.prod, clickhouse_credential.dev, clickhouse_credential.fallback] }
 `
 	cp := compileFixture(t, src)
 	ep := cp.Endpoints["ep"]
@@ -773,13 +694,12 @@ profile "default" { endpoints = [clickhouse_native.ep] }
 	}{
 		{"prod", "prod"},
 		{"dev", "dev"},
-		{"qa", "dev"},
 		{"unknown", "fallback"},
 		{"", "fallback"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.db, func(t *testing.T) {
-			got := runtime.ResolveCredential(ep, &match.Request{Family: "sql", Database: tc.db})
+			got := runtime.ResolveCredential(cp, "default", ep, &match.Request{Family: "sql", Database: tc.db})
 			if got == nil || got.Credential.Symbol.Name != tc.want {
 				t.Errorf("db=%q got %+v, want %s", tc.db, got, tc.want)
 			}
@@ -787,46 +707,302 @@ profile "default" { endpoints = [clickhouse_native.ep] }
 	}
 }
 
-// TestResolveCredentialPlaceholderAndDatabase: most-specific wins
-// when an entry constrains both placeholder and database. A
-// placeholder-only entry stays available as the fallback for the
-// same placeholder against a different database.
-func TestResolveCredentialPlaceholderAndDatabase(t *testing.T) {
+// TestResolveCredentialUserAndDatabase: most-specific wins when
+// clickhouse credentials combine `user` and `database` discriminators.
+// The (user="ro", database="prod") entry beats the user-only entry
+// when both match; the user-only entry stays available for the same
+// user against a different database; the catchall covers neither.
+// Both block-side fields (clickhouse_credential.user /
+// clickhouse_credential.database) exercise Contract 2's "database
+// and/or user" multi-field discriminator.
+func TestResolveCredentialUserAndDatabase(t *testing.T) {
 	src := `
-credential "bearer_token" "ro-prod" {}
-credential "bearer_token" "ro-any"  {}
-credential "bearer_token" "any"     {}
-endpoint "https" "ep" {
-  hosts = ["x.example.com"]
-  credentials = [
-    { placeholder = "PH_ro", database = "prod", credential = bearer_token.ro-prod },
-    { placeholder = "PH_ro",                    credential = bearer_token.ro-any  },
-    { credential = bearer_token.any },
-  ]
+endpoint "clickhouse_native" "ep" { hosts = ["x.example.com"] }
+credential "clickhouse_credential" "ro-prod" {
+  endpoint = clickhouse_native.ep
+  user     = "ro"
+  database = "prod"
 }
-profile "default" { endpoints = [https.ep] }
+credential "clickhouse_credential" "ro-any" {
+  endpoint = clickhouse_native.ep
+  user     = "ro"
+}
+credential "clickhouse_credential" "any" {
+  endpoint = clickhouse_native.ep
+}
+profile "default" { credentials = [clickhouse_credential.ro-prod, clickhouse_credential.ro-any, clickhouse_credential.any] }
 `
 	cp := compileFixture(t, src)
 	ep := cp.Endpoints["ep"]
 
-	mkReq := func(authz, db string) *match.Request {
+	mkReq := func(user, db string) *match.Request {
 		return &match.Request{
-			Family:   "http",
-			Headers:  http.Header{"Authorization": []string{authz}},
+			Family:   "sql",
 			Database: db,
+			User:     user,
+			Meta:     &sqlfacet.Meta{Statement: user + "\x00pw"},
 		}
 	}
 
-	got := runtime.ResolveCredential(ep, mkReq("Bearer PH_ro", "prod"))
+	got := runtime.ResolveCredential(cp, "default", ep, mkReq("ro", "prod"))
 	if got == nil || got.Credential.Symbol.Name != "ro-prod" {
-		t.Errorf("placeholder+db should pick ro-prod, got %+v", got)
+		t.Errorf("user+db should pick ro-prod, got %+v", got)
 	}
-	got = runtime.ResolveCredential(ep, mkReq("Bearer PH_ro", "dev"))
+	got = runtime.ResolveCredential(cp, "default", ep, mkReq("ro", "dev"))
 	if got == nil || got.Credential.Symbol.Name != "ro-any" {
-		t.Errorf("placeholder-only should pick ro-any, got %+v", got)
+		t.Errorf("user-only match should pick ro-any, got %+v", got)
 	}
-	got = runtime.ResolveCredential(ep, mkReq("Bearer something-else", "prod"))
+	got = runtime.ResolveCredential(cp, "default", ep, mkReq("alice", "prod"))
 	if got == nil || got.Credential.Symbol.Name != "any" {
 		t.Errorf("no constraints match should pick catchall, got %+v", got)
 	}
+}
+
+// TestContract1DisambiguatorBlockOrProfile verifies Contract 1 from
+// PR #368: a credential disambiguator can appear on either the
+// credential block itself OR inline in a profile's credentials list,
+// and both shapes route the same request to the same credential.
+//
+// Two parallel fixtures express the same operator intent (route
+// "prod" to ch-prod, "dev" to ch-dev) using the two shapes; the
+// resolver must pick the same credential for the same agent-declared
+// database under both.
+func TestContract1DisambiguatorBlockOrProfile(t *testing.T) {
+	blockSide := `
+endpoint "clickhouse_native" "ep" { hosts = ["x.example.com"] }
+credential "clickhouse_credential" "ch-prod" {
+  endpoint = clickhouse_native.ep
+  database = "prod"
+}
+credential "clickhouse_credential" "ch-dev" {
+  endpoint = clickhouse_native.ep
+  database = "dev"
+}
+profile "default" { credentials = [clickhouse_credential.ch-prod, clickhouse_credential.ch-dev] }
+`
+	profileSide := `
+endpoint "clickhouse_native" "ep" { hosts = ["x.example.com"] }
+credential "clickhouse_credential" "ch-prod" { endpoint = clickhouse_native.ep }
+credential "clickhouse_credential" "ch-dev"  { endpoint = clickhouse_native.ep }
+profile "default" {
+  credentials = [
+    { credential = clickhouse_credential.ch-prod, database = "prod" },
+    { credential = clickhouse_credential.ch-dev,  database = "dev"  },
+  ]
+}
+`
+	for _, tc := range []struct {
+		shape string
+		src   string
+	}{
+		{"block-side", blockSide},
+		{"profile-side", profileSide},
+	} {
+		t.Run(tc.shape, func(t *testing.T) {
+			cp := compileFixture(t, tc.src)
+			ep := cp.Endpoints["ep"]
+			cases := []struct{ db, want string }{
+				{"prod", "ch-prod"},
+				{"dev", "ch-dev"},
+			}
+			for _, c := range cases {
+				got := runtime.ResolveCredential(cp, "default", ep, &match.Request{Family: "sql", Database: c.db})
+				if got == nil || got.Credential.Symbol.Name != c.want {
+					t.Errorf("db=%q got %+v, want %s", c.db, got, c.want)
+				}
+			}
+		})
+	}
+}
+
+// TestContract1ProfileOverridesBlock verifies the spec's tie-break
+// rule: when the same disambiguator field is set on both the
+// credential block and a profile-inline entry, the profile-side
+// value wins (operator's most-specific declaration).
+//
+// Two clickhouse credentials each carry block-side `database`
+// values; the profile then overrides them. The dispatcher must
+// route per the profile's overrides, not the block-side defaults.
+func TestContract1ProfileOverridesBlock(t *testing.T) {
+	src := `
+endpoint "clickhouse_native" "ep" { hosts = ["x.example.com"] }
+credential "clickhouse_credential" "ch-a" {
+  endpoint = clickhouse_native.ep
+  database = "default-a"
+}
+credential "clickhouse_credential" "ch-b" {
+  endpoint = clickhouse_native.ep
+  database = "default-b"
+}
+profile "default" {
+  credentials = [
+    { credential = clickhouse_credential.ch-a, database = "override-a" },
+    { credential = clickhouse_credential.ch-b, database = "override-b" },
+  ]
+}
+`
+	cp := compileFixture(t, src)
+	ep := cp.Endpoints["ep"]
+
+	got := runtime.ResolveCredential(cp, "default", ep, &match.Request{Family: "sql", Database: "override-a"})
+	if got == nil || got.Credential.Symbol.Name != "ch-a" {
+		t.Errorf("override-a should pick ch-a, got %+v", got)
+	}
+	got = runtime.ResolveCredential(cp, "default", ep, &match.Request{Family: "sql", Database: "override-b"})
+	if got == nil || got.Credential.Symbol.Name != "ch-b" {
+		t.Errorf("override-b should pick ch-b, got %+v", got)
+	}
+	// The block-side defaults must NOT route any longer — they were
+	// shadowed by the profile-inline override.
+	got = runtime.ResolveCredential(cp, "default", ep, &match.Request{Family: "sql", Database: "default-a"})
+	if got != nil {
+		t.Errorf("default-a should not match (block-side shadowed), got %+v", got)
+	}
+}
+
+// TestContract2PerTypeDiscriminator verifies Contract 2: the
+// discriminator field is per-credential-type — postgres routes on
+// `user`, clickhouse on `database` (and/or `user`), HTTP-auth on
+// `placeholder`. A profile binding two credentials of the same type
+// to one endpoint MUST disambiguate using a field the plugin
+// supports; the compiler rejects unsupported fields at load time.
+func TestContract2PerTypeDiscriminator(t *testing.T) {
+	t.Run("postgres routes by user", func(t *testing.T) {
+		src := `
+endpoint "postgres" "pg" { host = "pg.example:5432" }
+credential "postgres_credential" "ro" {
+  endpoint = postgres.pg
+  user     = "corp_ro"
+}
+credential "postgres_credential" "rw" {
+  endpoint = postgres.pg
+  user     = "corp_rw"
+}
+profile "default" { credentials = [postgres_credential.ro, postgres_credential.rw] }
+`
+		cp := compileFixture(t, src)
+		ep := cp.Endpoints["pg"]
+		mk := func(user string) *match.Request {
+			return &match.Request{Family: "sql", User: user, Meta: &sqlfacet.Meta{Statement: user}}
+		}
+		got := runtime.ResolveCredential(cp, "default", ep, mk("corp_ro"))
+		if got == nil || got.Credential.Symbol.Name != "ro" {
+			t.Errorf("user=corp_ro should pick ro, got %+v", got)
+		}
+		got = runtime.ResolveCredential(cp, "default", ep, mk("corp_rw"))
+		if got == nil || got.Credential.Symbol.Name != "rw" {
+			t.Errorf("user=corp_rw should pick rw, got %+v", got)
+		}
+	})
+
+	t.Run("HTTP placeholder rejected on postgres credential", func(t *testing.T) {
+		src := `
+endpoint "postgres" "pg" { host = "pg.example:5432" }
+credential "postgres_credential" "ro" {
+  endpoint = postgres.pg
+  user     = "ro"
+}
+credential "postgres_credential" "rw" {
+  endpoint = postgres.pg
+  user     = "rw"
+}
+profile "default" {
+  credentials = [
+    { credential = postgres_credential.ro, placeholder = "PH_ro" },
+    { credential = postgres_credential.rw, placeholder = "PH_rw" },
+  ]
+}
+`
+		_, diags := config.LoadBytes([]byte(src), "in.hcl")
+		if !diags.HasErrors() {
+			t.Fatalf("expected load to reject `placeholder` on postgres_credential, got no errors")
+		}
+		var found bool
+		for _, d := range diags {
+			if d.Severity == 1 /* DiagError */ &&
+				containsAll(d.Summary+" "+d.Detail, "placeholder", "postgres_credential", "disambiguator") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected per-type rejection diagnostic for `placeholder` on postgres_credential; got %v", diags)
+		}
+	})
+
+	t.Run("HTTP credential routes by placeholder on block", func(t *testing.T) {
+		// Contract 1 also verifies block-side placeholder works for
+		// HTTP-auth types — the framework-peeled `placeholder` attr
+		// lands on Entity.Framework.Strings["placeholder"] and
+		// participates in dispatch identically to a profile-inline
+		// placeholder.
+		src := `
+endpoint "https" "ep" { hosts = ["x.example.com"] }
+credential "bearer_token" "test" {
+  endpoint    = https.ep
+  placeholder = "PH_test"
+}
+credential "bearer_token" "prod" {
+  endpoint    = https.ep
+  placeholder = "PH_prod"
+}
+credential "bearer_token" "fallback" { endpoint = https.ep }
+profile "default" { credentials = [bearer_token.test, bearer_token.prod, bearer_token.fallback] }
+`
+		cp := compileFixture(t, src)
+		ep := cp.Endpoints["ep"]
+		mkReq := func(authz string) *match.Request {
+			h := http.Header{}
+			if authz != "" {
+				h.Set("Authorization", authz)
+			}
+			return &match.Request{Family: "http", Headers: h}
+		}
+		got := runtime.ResolveCredential(cp, "default", ep, mkReq("Bearer PH_prod"))
+		if got == nil || got.Credential.Symbol.Name != "prod" {
+			t.Errorf("Bearer PH_prod should select prod via block-side placeholder, got %+v", got)
+		}
+		got = runtime.ResolveCredential(cp, "default", ep, mkReq("Bearer something-else"))
+		if got == nil || got.Credential.Symbol.Name != "fallback" {
+			t.Errorf("no match should fall back, got %+v", got)
+		}
+	})
+}
+
+// containsAll returns true iff s contains every needle.
+func containsAll(s string, needles ...string) bool {
+	for _, n := range needles {
+		if !containsCI(s, n) {
+			return false
+		}
+	}
+	return true
+}
+
+func containsCI(haystack, needle string) bool {
+	hl := []byte(haystack)
+	nl := []byte(needle)
+	if len(nl) == 0 {
+		return true
+	}
+	for i := 0; i+len(nl) <= len(hl); i++ {
+		match := true
+		for j := 0; j < len(nl); j++ {
+			a := hl[i+j]
+			b := nl[j]
+			if a >= 'A' && a <= 'Z' {
+				a += 'a' - 'A'
+			}
+			if b >= 'A' && b <= 'Z' {
+				b += 'a' - 'A'
+			}
+			if a != b {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
 }

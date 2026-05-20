@@ -26,11 +26,10 @@ func (a captureBodySampleApprover) Approve(_ context.Context, req runtime.Approv
 
 func TestHTTPSApproveChainReceivesBufferedRequestBodySample(t *testing.T) {
 	gw, diags := config.LoadBytes([]byte(`
-credential "bearer_token" "pat" {}
 endpoint "https" "api" {
-  hosts      = ["api.example.test"]
-  credential = bearer_token.pat
+  hosts = ["api.example.test"]
 }
+credential "bearer_token" "pat" { endpoint = https.api }
 approver "human_approver" "capture" {
   channel = "#ops"
 }
@@ -39,7 +38,7 @@ rule "approved-post" {
   condition = "http.method == 'POST' && http.path == '/v1/resources/update'"
   approve   = [human_approver.capture]
 }
-profile "default" { endpoints = [https.api] }
+profile "default" { credentials = [bearer_token.pat] }
 `), "hitl-body-sample-test.hcl")
 	if diags.HasErrors() {
 		t.Fatalf("load config: %v", diags)

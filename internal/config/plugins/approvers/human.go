@@ -149,20 +149,19 @@ func (h *HumanApprover) Approve(ctx context.Context, req runtime.ApproveRequest)
 					msg = expandMessage(h.Message, req)
 				}
 				target := runtime.HITLTarget{
-					CredentialName:           h.Credential,
-					Channel:                  h.Channel,
-					Interactive:              h.Interactive,
-					PendingID:                id,
-					DashboardURL:             req.DashboardURL,
-					ThreadTS:                 req.ThreadTS,
-					OperationState:           pending.OperationState,
-					ApprovalEffect:           pending.ApprovalEffect,
-					UpstreamCalled:           pending.UpstreamCalled,
-					ApprovalMessage:          pending.ApprovalMessage,
-					Summary:                  summary,
-					Message:                  msg,
-					MessageUpdateSink:        req.MessageUpdateSink,
-					PendingMessageUpdateSink: req.PendingMessageUpdateSink,
+					CredentialName:    h.Credential,
+					Channel:           h.Channel,
+					Interactive:       h.Interactive,
+					PendingID:         id,
+					DashboardURL:      req.DashboardURL,
+					ThreadTS:          req.ThreadTS,
+					OperationState:    pending.OperationState,
+					ApprovalEffect:    pending.ApprovalEffect,
+					UpstreamCalled:    pending.UpstreamCalled,
+					ApprovalMessage:   pending.ApprovalMessage,
+					Summary:           summary,
+					Message:           msg,
+					MessageUpdateSink: req.MessageUpdateSink,
 				}
 				go func() {
 					if err := notifier.NotifyHITL(ctx, req, target); err != nil {
@@ -245,11 +244,12 @@ func init() {
 			return config.ValidateHITLAsyncGrant(name, a.SyncWaitTimeout, a.AsyncGrant)
 		},
 		Build: func(d any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics) { return d, nil },
-		Emit: func(body any, _ string, b *hclwrite.Body, refs *config.RefIndex) {
+		Emit: func(body any, _ string, b *hclwrite.Body) {
 			a := body.(*HumanApprover)
+			ri := config.EmitRefIndex()
 			b.SetAttributeValue("channel", cty.StringVal(a.Channel))
 			if a.Credential != "" {
-				config.SetIdent(b, "credential", refs.Ref(config.KindCredential, a.Credential))
+				config.SetIdent(b, "credential", ri.Ref(config.KindCredential, a.Credential))
 			}
 			if a.Timeout != 0 {
 				b.SetAttributeValue("timeout", cty.NumberIntVal(int64(a.Timeout)))
@@ -282,7 +282,7 @@ func init() {
 				b.SetAttributeValue("interactive", cty.True)
 			}
 			if a.Classifier != "" {
-				config.SetIdent(b, "classifier", refs.Ref(config.KindApprover, a.Classifier))
+				config.SetIdent(b, "classifier", ri.Ref(config.KindApprover, a.Classifier))
 			}
 			if a.Message != "" {
 				b.SetAttributeValue("message", cty.StringVal(a.Message))

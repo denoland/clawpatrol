@@ -12,7 +12,7 @@ Each block section lists the attributes the loader accepts, with:
 - **Type** — the HCL value type. `string`, `bool`, `int` are scalar
   literals; `[]string` is a list of strings; `ref(<kind>)` is a
   typed reference to another block (`<type>.<name>` for
-  two-label kinds like `credential = bearer_token.github-pat`,
+  two-label kinds like `credential = bearer_token.github`,
   `<kind>.<name>` for one-label kinds like `policy = policy.no-pii`);
   `[]ref(<kind>)` is a list of such references; nested blocks have
   their shape described inline.
@@ -78,16 +78,16 @@ policy "example" {
 
 ## `profile "<name>" { ... }`
 
-Names a set of endpoints. Profiles bind to dashboard owners; an owner's profile determines which endpoints their gateway requests can reach. Rules ride along automatically because they're attached to endpoints.
+Names a set of credentials. Profiles bind to dashboard owners; an owner's profile determines which credentials — and, transitively via each credential's `endpoint` / `endpoints` binding, which endpoints — their gateway requests can reach. Rules ride along automatically because they're attached to endpoints.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `endpoints` | `[]ref(endpoint)` | yes | Bare-name endpoint references included in this profile. |
+| `credentials` | `[]credential` | yes | Bare-name credential references, or `{ credential = name, <disambiguator> = "..." }` object entries for multi-credential dispatch (e.g. `placeholder` for header-token credentials). |
 | `hitl_async_grants` | `bool` | no | Explicit opt-in for agent-aware async HITL retry grants on this profile. Async behavior still also requires an approver with `async_grant.enabled = true`. |
 
 ```hcl
 profile "default" {
-  endpoints          = [github, postgres-prod]
+  credentials       = [bearer_token.github, postgres_credential.postgres-prod]
   hitl_async_grants = true
 }
 ```
@@ -211,9 +211,19 @@ credential "bearer_token" "example" {}
 
 ### `credential "clickhouse_credential" "<name>"`
 
+Is part of the clawpatrol plugin API.
+
+Database, when set, is the discriminator the dispatcher uses to
+pick this credential when several clickhouse_credential blocks
+bind the same endpoint(s). At request time the gateway reads the
+agent-declared database off the wire and picks the credential
+whose `database` matches; an unset `database` field is the
+catchall (one allowed per (profile, endpoint)).
+
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `user` | `string` | no |  |
+| `database` | `string` | no |  |
 
 ```hcl
 credential "clickhouse_credential" "example" {}
@@ -310,9 +320,19 @@ credential "openai_codex_oauth" "example" {}
 
 ### `credential "postgres_credential" "<name>"`
 
+Is part of the clawpatrol plugin API.
+
+Database, when set, is the discriminator the dispatcher uses to
+pick this credential when several postgres_credential blocks bind
+the same endpoint(s). At request time the gateway reads the
+agent-declared database off the StartupMessage and picks the
+credential whose `database` matches; an unset `database` field is
+the catchall (one allowed per (profile, endpoint)).
+
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `user` | `string` | no |  |
+| `database` | `string` | no |  |
 
 ```hcl
 credential "postgres_credential" "example" {}
@@ -367,8 +387,6 @@ Family: `sql`.
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `hosts` | `[]string` | yes |  |
-| `credential` | `ref(credential)` | no |  |
-| `credentials` | `[]credential` | no |  |
 
 ```hcl
 endpoint "clickhouse_https" "example" {
@@ -406,8 +424,6 @@ Family: `sql`.
 | `port` | `int` | no |  |
 | `tls` | `bool` | no |  |
 | `accept_invalid_certificate` | `bool` | no |  |
-| `credential` | `ref(credential)` | no |  |
-| `credentials` | `[]credential` | no |  |
 
 ```hcl
 endpoint "clickhouse_native" "example" {
@@ -422,8 +438,6 @@ Family: `http`.
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `hosts` | `[]string` | yes |  |
-| `credential` | `ref(credential)` | no |  |
-| `credentials` | `[]credential` | no |  |
 
 ```hcl
 endpoint "https" "example" {
@@ -452,7 +466,6 @@ Family: `k8s`.
 | `description` | `string` | no |  |
 | `cluster_name` | `string` | no |  |
 | `region` | `string` | no |  |
-| `credential` | `ref(credential)` | no |  |
 
 ```hcl
 endpoint "kubernetes" "example" {}
@@ -465,8 +478,6 @@ Family: `http`.
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `hosts` | `[]string` | yes |  |
-| `credential` | `ref(credential)` | no |  |
-| `credentials` | `[]credential` | no |  |
 
 ```hcl
 endpoint "openai_codex_https" "example" {
@@ -495,8 +506,6 @@ Family: `sql`.
 |-----------|------|----------|-------------|
 | `host` | `string` | yes |  |
 | `sslmode` | `string` | no |  |
-| `credential` | `ref(credential)` | no |  |
-| `credentials` | `[]credential` | no |  |
 
 ```hcl
 endpoint "postgres" "example" {
@@ -506,27 +515,23 @@ endpoint "postgres" "example" {
 
 ### `endpoint "ssh" "<name>"`
 
-Binds one or more host:port tuples to one or more SSH
-credentials. The agent's username is the discriminator for
-per-username dispatch (mirrors postgres' placeholder-based dispatch,
-just spelled `user` because that's what SSH calls it):
-
-	credential = X                                  // any user → X
-	credentials = [{ user = "root",   credential = X },
-	               { user = "deploy", credential = Y },
-	               { credential = Z }]              // fallback
-
-The agent's username is also passed through verbatim as the upstream
-SSH user — credentials carry only auth material (key / password /
-host_pubkey), never a username override.
+Binds one or more host:port tuples. The credentials
+that authenticate against it live on credential blocks via the
+framework-level `endpoint = X` / `endpoints = [...]` binding. When
+a profile wields more than one SSH credential at the endpoint,
+each ambiguous credential carries a `user = "..."` disambiguator —
+either on its profile-inline entry (`{ credential = X, user = "..." }`)
+or on the credential block itself — and the agent's wire-protocol
+username picks the matching entry. The agent's username is also
+passed through verbatim as the upstream SSH user; credentials
+carry only auth material (key / password / host_pubkey), never a
+username override.
 
 Family: `ssh`.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `hosts` | `[]string` | yes |  |
-| `credential` | `ref(credential)` | no |  |
-| `credentials` | `[]credential` | no |  |
 
 ```hcl
 endpoint "ssh" "example" {

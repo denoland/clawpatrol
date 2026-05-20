@@ -58,7 +58,7 @@ func TestHITLAsyncApprovalGrantEndToEndHTTPFlow(t *testing.T) {
 		t.Fatalf("initial 202 included retry_header_name before approval: %#v", accepted)
 	}
 
-	pendingStatus := h.pollStatusURL(t, statusURL)
+	pendingStatus := h.pollStatus(t, operationID)
 	if pendingStatus.Code != http.StatusOK {
 		t.Fatalf("pending status code = %d, body = %s", pendingStatus.Code, pendingStatus.Body.String())
 	}
@@ -88,7 +88,7 @@ func TestHITLAsyncApprovalGrantEndToEndHTTPFlow(t *testing.T) {
 	if !decision.OK || decision.State != runtime.HITLStateApproved {
 		t.Fatalf("approve result = %#v, want approved retry grant", decision)
 	}
-	approvedStatus := h.pollStatusURL(t, statusURL)
+	approvedStatus := h.pollStatus(t, operationID)
 	approvedBody := decodeJSONBody(t, approvedStatus)
 	if approvedBody["state"] != string(HITLOperationStateApprovedWaitingForRetry) {
 		t.Fatalf("status state after approval = %v, want %s", approvedBody["state"], HITLOperationStateApprovedWaitingForRetry)
@@ -112,7 +112,7 @@ func TestHITLAsyncApprovalGrantEndToEndHTTPFlow(t *testing.T) {
 		t.Fatalf("upstream received internal %s header = %q", hitlRetryOperationHeader, upstream.RetryOperationValue)
 	}
 
-	finalStatus := h.pollStatusURL(t, statusURL)
+	finalStatus := h.pollStatus(t, operationID)
 	finalBody := decodeJSONBody(t, finalStatus)
 	if finalBody["state"] != string(HITLOperationStateUpstreamSucceeded) {
 		t.Fatalf("final state = %v, want %s", finalBody["state"], HITLOperationStateUpstreamSucceeded)
@@ -142,10 +142,11 @@ public_url = "https://gateway.example.test"
 control = "wireguard"
 wg_subnet_cidr = "10.55.0.0/24"
 
-credential "bearer_token" "pat" {}
 endpoint "https" "api" {
-  hosts      = ["api.example.test"]
-  credential = bearer_token.pat
+  hosts = ["api.example.test"]
+}
+credential "bearer_token" "pat" {
+  endpoint = https.api
 }
 approver "human_approver" "ops" {
   channel           = "#ops"
@@ -165,7 +166,7 @@ rule "approved-post" {
   approve   = [human_approver.ops]
 }
 profile "default" {
-  endpoints = [https.api]
+  credentials       = [bearer_token.pat]
   hitl_async_grants = true
 }
 `), "hitl-async-e2e-test.hcl")
@@ -283,18 +284,11 @@ func (h *hitlAsyncE2EHarness) sendMITMRequest(t *testing.T, method, operationID,
 	return hitlRetryRelayResponse{StatusCode: resp.StatusCode, Body: string(body)}
 }
 
-func (h *hitlAsyncE2EHarness) pollStatusURL(t *testing.T, statusURL string) *httptest.ResponseRecorder {
-	t.Helper()
-	return h.pollStatusRequest(t, statusURL, false)
-}
-
-func (h *hitlAsyncE2EHarness) pollStatusRequest(t *testing.T, target string, withBearer bool) *httptest.ResponseRecorder {
+func (h *hitlAsyncE2EHarness) pollStatus(t *testing.T, operationID string) *httptest.ResponseRecorder {
 	t.Helper()
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, target, nil)
-	if withBearer {
-		req.Header.Set("Authorization", "Bearer "+h.token)
-	}
+	req := httptest.NewRequest(http.MethodGet, "/api/hitl/operations/"+operationID+"/status", nil)
+	req.Header.Set("Authorization", "Bearer "+h.token)
 	h.handler.ServeHTTP(rr, req)
 	return rr
 }

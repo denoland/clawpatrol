@@ -38,9 +38,12 @@ var commonRefs = []config.RefSpec{
 }
 
 // emitCommon writes the framework-level attrs (share, keepalive,
-// via, credential) onto an hclwrite block body. via / credential
-// are emitted as typed traversals so reload round-trips them.
-func emitCommon(b *hclwrite.Body, c config.TunnelCommon, ri *config.RefIndex) {
+// via, credential) onto an hclwrite block body. Plugins call it
+// from their own Emit hook before laying down their plugin-specific
+// fields. via / credential are emitted as bare identifiers so
+// reload round-trips them as references, not strings.
+func emitCommon(b *hclwrite.Body, c config.TunnelCommon) {
+	ri := config.EmitRefIndex()
 	if c.Share != "" {
 		b.SetAttributeValue("share", cty.StringVal(c.Share))
 	}

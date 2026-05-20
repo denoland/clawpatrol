@@ -21,7 +21,17 @@ policy "k8s-exec-content" {
   EOT
 }
 
-credential "mtls_credential" "k8s-cred" {}
+endpoint "kubernetes" "k8s-dev" {
+  server = "k8s-dev.example"
+}
+
+endpoint "kubernetes" "k8s-prod" {
+  server = "k8s-prod.example"
+}
+
+credential "mtls_credential" "k8s" {
+  endpoints = [kubernetes.k8s-dev, kubernetes.k8s-prod]
+}
 credential "anthropic_manual_key" "anthropic-key" {}
 
 approver "llm_approver" "k8s-exec-content-judge" {
@@ -30,14 +40,4 @@ approver "llm_approver" "k8s-exec-content-judge" {
   policy     = policy.k8s-exec-content
 }
 
-endpoint "kubernetes" "k8s-dev" {
-  server     = "k8s-dev.example"
-  credential = mtls_credential.k8s-cred
-}
-
-endpoint "kubernetes" "k8s-prod" {
-  server     = "k8s-prod.example"
-  credential = mtls_credential.k8s-cred
-}
-
-profile "default" { endpoints = [kubernetes.k8s-dev, kubernetes.k8s-prod] }
+profile "default" { credentials = [mtls_credential.k8s] }

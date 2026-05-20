@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -201,10 +202,13 @@ type Entity struct {
 }
 
 // FrameworkAttrs is the per-Entity bag of framework-level attr
-// values. Keyed by FrameworkAttrSpec.Name; values are the resolved
-// bare-name references for ref-typed attrs.
+// values. Keyed by FrameworkAttrSpec.Name. Refs holds singular
+// bare-name references, RefLists holds list-of-bare-name references,
+// Strings holds primitive (non-ref) string values.
 type FrameworkAttrs struct {
-	Refs map[string]string
+	Refs     map[string]string
+	RefLists map[string][]string
+	Strings  map[string]string
 }
 
 // Ref returns the resolved reference for the named framework attr,
@@ -214,6 +218,24 @@ func (f FrameworkAttrs) Ref(name string) string {
 		return ""
 	}
 	return f.Refs[name]
+}
+
+// RefList returns the resolved bare-name list for the named
+// framework attr, or nil if unset.
+func (f FrameworkAttrs) RefList(name string) []string {
+	if f.RefLists == nil {
+		return nil
+	}
+	return f.RefLists[name]
+}
+
+// Str returns the primitive string value for the named framework
+// attr, or "" if unset.
+func (f FrameworkAttrs) Str(name string) string {
+	if f.Strings == nil {
+		return ""
+	}
+	return f.Strings[name]
 }
 
 // PolicyText defines a named, reusable chunk of policy prose that
@@ -272,20 +294,68 @@ type noopPluginLoader struct{}
 func (noopPluginLoader) LoadPlugins([]PluginSource) hcl.Diagnostics { return nil }
 
 // Profile is the lowered shape of a profile "<name>" {} block. Name
-// is the block's single label (set by the loader). Endpoints is the
-// only body attribute; rules ride along automatically because they're
-// attached to endpoints.
+// is the block's single label (set by the loader). Credentials is
+// the membership list; endpoint membership rides along as the
+// transitive closure profile → credential → endpoint, and rules
+// attach to endpoints (so they ride along too).
+//
+// Disambiguators is the per-credential profile-side dispatch
+// discriminator. Outer key is credential name; inner map is
+// disambiguator-field → value (e.g. {"placeholder": "PH_x"},
+// {"user": "ro"}, {"database": "prod"}). Set only for credentials
+// listed with inline object syntax in the profile's credentials list
+// (`{ credential = name, <field> = "value", ... }`); credentials
+// listed as bare names have no entry. The valid set of <field>
+// names is per-credential-type — declared by the plugin's
+// Plugin.Disambiguators slice — and the loader rejects unsupported
+// fields here.
+//
+// Compile merges these onto each CompiledCredential alongside any
+// block-side values; on conflict, profile-inline wins (the operator's
+// most-specific declaration).
 type Profile struct {
-	Name            string   `json:"name"`
-	Endpoints       []string `json:"endpoints"`
-	HITLAsyncGrants bool     `json:"hitl_async_grants,omitempty"`
+	Name            string                       `json:"name"`
+	Credentials     []string                     `json:"credentials"`
+	Disambiguators  map[string]map[string]string `json:"disambiguators,omitempty"`
+	HITLAsyncGrants bool                         `json:"hitl_async_grants,omitempty"`
 }
 
-// profileBody is the gohcl decode target for the profile body — the
-// label is read separately from the block.
-type profileBody struct {
-	Endpoints       []string `hcl:"endpoints"`
-	HITLAsyncGrants bool     `hcl:"hitl_async_grants,optional"`
+// CredentialDisambiguatorBody is implemented by a credential
+// plugin's decoded body when one or more of its struct fields
+// double as dispatch discriminators (e.g. postgres_credential's
+// `user`, clickhouse_credential's `database` / `user`). The
+// returned map is field-name → value; empty values are dropped.
+// Compile merges this with the framework-peeled `placeholder`
+// attr and the profile-inline override map to produce the per-
+// (profile, endpoint) CompiledCredential dispatch entry.
+type CredentialDisambiguatorBody interface {
+	CredentialDisambiguators() map[string]string
+}
+
+// blockDisambiguators returns the merged disambiguator map for a
+// credential block: framework-peeled "placeholder" first, then
+// any fields the body's CredentialDisambiguatorBody reports.
+// Empty values are dropped so the map distinguishes "field not
+// declared" from "field declared but blank".
+func blockDisambiguators(ent *Entity) map[string]string {
+	if ent == nil {
+		return nil
+	}
+	out := map[string]string{}
+	if ph := ent.Framework.Str("placeholder"); ph != "" {
+		out["placeholder"] = ph
+	}
+	if body, ok := ent.Body.(CredentialDisambiguatorBody); ok {
+		for k, v := range body.CredentialDisambiguators() {
+			if v != "" {
+				out[k] = v
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // Load parses, validates, and resolves the gateway config at path.
@@ -362,7 +432,8 @@ func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
 	// Pass 2: build the eval context with every name → string, then
 	// decode each policy block against its plugin's schema.
 	evalCtx := buildEvalContext(table)
-	resolveDiags := decodePolicyBlocks(gw.Policy, table, evalCtx)
+	configDir := filepath.Dir(filename)
+	resolveDiags := decodePolicyBlocks(gw.Policy, table, evalCtx, configDir)
 	diags = append(diags, resolveDiags...)
 	diags = append(diags, validateHITLAsyncConfig(gw)...)
 
@@ -371,7 +442,7 @@ func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
 	// so plugins see fully-populated Bodies; the raw markers reach
 	// dump / golden-test output as a side effect, which is fine —
 	// goldens compare structural shape, not file contents.
-	includeDiags := expandFileIncludes(gw.Policy, filepath.Dir(filename))
+	includeDiags := expandFileIncludes(gw.Policy, configDir)
 	diags = append(diags, includeDiags...)
 
 	return gw, diags
@@ -588,7 +659,7 @@ func buildEvalContext(table *SymbolTable) *hcl.EvalContext {
 // decodePolicyBlocks runs pass 2: per-block plugin dispatch + decode +
 // ref resolution + Validate + Build, plus the fixed-schema policy /
 // profile decoders.
-func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext) hcl.Diagnostics {
+func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext, configDir string) hcl.Diagnostics {
 	var diags hcl.Diagnostics
 
 	for _, sym := range table.byKind[KindPolicy] {
@@ -601,20 +672,17 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext)
 	}
 
 	for _, sym := range table.byKind[KindProfile] {
-		var body profileBody
-		if d := gohcl.DecodeBody(sym.Block.Body, evalCtx, &body); d.HasErrors() {
-			diags = append(diags, d...)
-		}
-		pr := &Profile{Name: sym.Name, Endpoints: body.Endpoints, HITLAsyncGrants: body.HITLAsyncGrants}
-		// Cross-check: each endpoint name resolves to an endpoint.
-		for _, ep := range pr.Endpoints {
-			if table.Get(KindEndpoint, ep) != nil {
+		pr, d := decodeProfileBlock(sym, evalCtx)
+		diags = append(diags, d...)
+		// Cross-check: each credential name resolves to a credential.
+		for _, c := range pr.Credentials {
+			if table.Get(KindCredential, c) != nil {
 				continue
 			}
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
-				Summary:  fmt.Sprintf("Unknown endpoint %q", ep),
-				Detail:   fmt.Sprintf("Profile %q references endpoint %q which is not declared.", sym.Name, ep),
+				Summary:  fmt.Sprintf("Unknown credential %q", c),
+				Detail:   fmt.Sprintf("Profile %q references credential %q which is not declared.", sym.Name, c),
 				Subject:  &sym.Block.DefRange,
 			})
 		}
@@ -691,5 +759,464 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext)
 		}
 	}
 
+	diags = append(diags, validateCredentialBindings(p)...)
+	diags = append(diags, validateProfileDisambiguators(p, table)...)
+
+	_ = configDir // file-include resolution will use this in a follow-up
 	return diags
+}
+
+// validateCredentialBindings rejects credentials that set both
+// `endpoint = X` and `endpoints = [...]`. The cross-credential
+// placeholder uniqueness check used to live here too; it has moved
+// to validateProfilePlaceholders because placeholders are now scoped
+// to the profile that wields the credential, not to the credential
+// itself.
+func validateCredentialBindings(p *Policy) hcl.Diagnostics {
+	var diags hcl.Diagnostics
+	for _, ent := range p.Credentials {
+		single := ent.Framework.Ref("endpoint")
+		list := ent.Framework.RefList("endpoints")
+		if single != "" && len(list) > 0 {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("Both endpoint and endpoints set on credential %q", ent.Symbol.Name),
+				Detail:   "Use exactly one of `endpoint = X` (singular) or `endpoints = [X, Y, ...]` (list).",
+				Subject:  &ent.Symbol.Block.DefRange,
+			})
+		}
+	}
+	return diags
+}
+
+// validateProfileDisambiguators enforces the post-inversion rules
+// for dispatch discriminators across (profile, endpoint) tuples.
+//
+// A "merged" disambiguator map per credential combines two sources:
+//
+//  1. Block-side: framework-peeled `placeholder = "..."` and any
+//     body fields the plugin exposes via CredentialDisambiguatorBody
+//     (e.g. postgres_credential.user, clickhouse_credential.database).
+//  2. Profile-side: the inline object entry `{ credential = X,
+//     <field> = "...", ... }` in a profile's credentials list.
+//     Profile-side values override block-side on conflict.
+//
+// Three classes of error are surfaced:
+//
+//   - Per-type field validity: a disambiguator field name set on
+//     either side that isn't in the plugin's Plugin.Disambiguators
+//     list is rejected. Catches e.g. `placeholder = "PH_x"` on a
+//     postgres_credential whose only discriminator is `user`.
+//   - Per-(profile, endpoint) uniqueness: the merged signature must
+//     be distinct across credentials sharing an endpoint, and at
+//     most one no-constraint catchall is allowed.
+//   - Disambiguation necessity: a non-empty disambiguator on a
+//     credential whose endpoint binding is unique within its
+//     profile is rejected as dead config.
+func validateProfileDisambiguators(p *Policy, table *SymbolTable) hcl.Diagnostics {
+	var diags hcl.Diagnostics
+	subject := func(name string) *hcl.Range {
+		if table == nil {
+			return nil
+		}
+		sym := table.Get(KindProfile, name)
+		if sym == nil || sym.Block == nil {
+			return nil
+		}
+		r := sym.Block.DefRange
+		return &r
+	}
+	credSubject := func(name string) *hcl.Range {
+		if table == nil {
+			return nil
+		}
+		sym := table.Get(KindCredential, name)
+		if sym == nil || sym.Block == nil {
+			return nil
+		}
+		r := sym.Block.DefRange
+		return &r
+	}
+
+	// Pass 1 — block-side per-type field validity. Walk every
+	// credential block and reject any block-side disambiguator name
+	// not listed in the plugin's Disambiguators. Done outside the
+	// profile loop so the diagnostic anchors on the credential's
+	// declaration range rather than the consuming profile.
+	for credName, ent := range p.Credentials {
+		blockD := blockDisambiguators(ent)
+		if len(blockD) == 0 {
+			continue
+		}
+		allowed := disambiguatorSet(ent)
+		for field := range blockD {
+			if !allowed[field] {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  fmt.Sprintf("Credential %q: %q is not a disambiguator for type %q", credName, field, ent.Symbol.Type),
+					Detail:   fmt.Sprintf("The %q credential plugin declares disambiguators %s; %q is not one of them.", ent.Symbol.Type, formatStringSet(allowed), field),
+					Subject:  credSubject(credName),
+				})
+			}
+		}
+	}
+
+	for _, pr := range p.Profiles {
+		// Resolve profile.credentials → (credName → []endpoint, merged disambig).
+		memberEndpoints := map[string][]string{}
+		mergedDisambig := map[string]map[string]string{}
+		members := map[string]bool{}
+		for _, credName := range pr.Credentials {
+			ent, ok := p.Credentials[credName]
+			if !ok {
+				continue
+			}
+			members[credName] = true
+			memberEndpoints[credName] = credentialEndpointTargets(ent)
+			mergedDisambig[credName] = mergeDisambig(blockDisambiguators(ent), pr.Disambiguators[credName])
+
+			// Per-type field validity on the profile-inline side too.
+			if inline := pr.Disambiguators[credName]; len(inline) > 0 {
+				allowed := disambiguatorSet(ent)
+				for field := range inline {
+					if !allowed[field] {
+						diags = append(diags, &hcl.Diagnostic{
+							Severity: hcl.DiagError,
+							Summary:  fmt.Sprintf("Profile %q: %q is not a disambiguator for credential %q (type %q)", pr.Name, field, credName, ent.Symbol.Type),
+							Detail:   fmt.Sprintf("The %q credential plugin declares disambiguators %s; %q is not one of them.", ent.Symbol.Type, formatStringSet(allowed), field),
+							Subject:  subject(pr.Name),
+						})
+					}
+				}
+			}
+		}
+
+		// Per-endpoint uniqueness: signature is a stable
+		// concatenation of every non-empty (field, value) pair.
+		type seen struct {
+			bySig    map[string]string // sig → credName
+			fallback string            // credName of the no-constraint entry
+		}
+		perEndpoint := map[string]*seen{}
+		for _, credName := range pr.Credentials {
+			eps := memberEndpoints[credName]
+			d := mergedDisambig[credName]
+			for _, ep := range eps {
+				s, ok := perEndpoint[ep]
+				if !ok {
+					s = &seen{bySig: map[string]string{}}
+					perEndpoint[ep] = s
+				}
+				if len(d) == 0 {
+					if s.fallback != "" {
+						diags = append(diags, &hcl.Diagnostic{
+							Severity: hcl.DiagError,
+							Summary:  fmt.Sprintf("Profile %q: multiple no-constraint credentials bind endpoint %q", pr.Name, ep),
+							Detail:   fmt.Sprintf("Credentials %q and %q both bind endpoint %q in profile %q with no dispatch discriminator set on either the credential block or the profile entry. At most one fallback (catchall) credential per (profile, endpoint).", s.fallback, credName, ep, pr.Name),
+							Subject:  subject(pr.Name),
+						})
+						continue
+					}
+					s.fallback = credName
+					continue
+				}
+				sig := disambigSignature(d)
+				if dup, ok := s.bySig[sig]; ok {
+					diags = append(diags, &hcl.Diagnostic{
+						Severity: hcl.DiagError,
+						Summary:  fmt.Sprintf("Profile %q: duplicate dispatch constraint %s on endpoint %q", pr.Name, formatDisambig(d), ep),
+						Detail:   fmt.Sprintf("Credentials %q and %q both bind endpoint %q in profile %q with the same dispatch constraint (%s). The merged disambiguator signature must be unique per (profile, endpoint).", dup, credName, ep, pr.Name, formatDisambig(d)),
+						Subject:  subject(pr.Name),
+					})
+					continue
+				}
+				s.bySig[sig] = credName
+			}
+		}
+
+		// Reject profile-side disambiguators on credentials whose
+		// endpoint binding is unique within this profile — they can
+		// never fire. Scoped to profile-inline overrides only:
+		// block-side body fields often double as auth values (e.g.
+		// postgres_credential.user is BOTH the wire-protocol user
+		// AND the dispatch discriminator) and have to be set even
+		// when the binding doesn't need disambiguation.
+		for credName := range members {
+			inline := pr.Disambiguators[credName]
+			if len(inline) == 0 {
+				continue
+			}
+			eps := memberEndpoints[credName]
+			needed := false
+			for _, ep := range eps {
+				count := 0
+				for _, other := range pr.Credentials {
+					for _, oep := range memberEndpoints[other] {
+						if oep == ep {
+							count++
+							break
+						}
+					}
+				}
+				if count > 1 {
+					needed = true
+					break
+				}
+			}
+			if !needed {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  fmt.Sprintf("Profile %q: profile-side disambiguator set on credential %q with unique endpoint binding", pr.Name, credName),
+					Detail:   fmt.Sprintf("Credential %q is the only credential in profile %q that binds its endpoint(s). The profile-inline %s entry is only needed when more than one credential in a profile binds the same endpoint.", credName, pr.Name, formatDisambig(inline)),
+					Subject:  subject(pr.Name),
+				})
+			}
+		}
+	}
+	return diags
+}
+
+// disambiguatorSet returns the set of allowed disambiguator field
+// names declared by the credential entity's plugin. Always at least
+// the empty set so unknown plugins fail closed (every disambiguator
+// gets rejected) rather than silently allowed.
+func disambiguatorSet(ent *Entity) map[string]bool {
+	out := map[string]bool{}
+	if ent == nil || ent.Plugin == nil {
+		return out
+	}
+	for _, f := range ent.Plugin.Disambiguators {
+		out[f] = true
+	}
+	return out
+}
+
+// mergeDisambig returns the union of block + profile maps. Profile
+// values override block values for the same field name; empty
+// strings on either side are skipped.
+func mergeDisambig(block, profile map[string]string) map[string]string {
+	if len(block) == 0 && len(profile) == 0 {
+		return nil
+	}
+	out := map[string]string{}
+	for k, v := range block {
+		if v != "" {
+			out[k] = v
+		}
+	}
+	for k, v := range profile {
+		if v != "" {
+			out[k] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// disambigSignature returns a stable key for a disambiguator map —
+// fields sorted alphabetically and joined with NULs. Used for
+// per-(profile, endpoint) uniqueness checking.
+func disambigSignature(d map[string]string) string {
+	keys := make([]string, 0, len(d))
+	for k := range d {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteByte('\x00')
+		}
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(d[k])
+	}
+	return b.String()
+}
+
+// formatDisambig renders a disambiguator map for diagnostics: keys
+// sorted alphabetically, `field="value", field="value"`.
+func formatDisambig(d map[string]string) string {
+	if len(d) == 0 {
+		return "no constraints"
+	}
+	keys := make([]string, 0, len(d))
+	for k := range d {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%q", k, d[k]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// formatStringSet renders a set of allowed field names for diagnostics.
+func formatStringSet(s map[string]bool) string {
+	if len(s) == 0 {
+		return "(none — this credential type cannot disambiguate when multiple bind the same endpoint)"
+	}
+	keys := make([]string, 0, len(s))
+	for k := range s {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%q", k))
+	}
+	return "{" + strings.Join(parts, ", ") + "}"
+}
+
+// decodeProfileBlock parses a profile block body into a Profile. The
+// credentials list mixes bare-name entries (no placeholder) with
+// `{ placeholder = "PH_...", credential = name }` object literals
+// (per-credential dispatch discriminator). gohcl can't express that
+// mixed shape, so we drive the body decode manually.
+func decodeProfileBlock(sym *Symbol, evalCtx *hcl.EvalContext) (*Profile, hcl.Diagnostics) {
+	pr := &Profile{Name: sym.Name}
+	schema := &hcl.BodySchema{
+		Attributes: []hcl.AttributeSchema{
+			{Name: "credentials", Required: true},
+			{Name: "hitl_async_grants"},
+		},
+	}
+	content, diags := sym.Block.Body.Content(schema)
+	if hitl, ok := content.Attributes["hitl_async_grants"]; ok {
+		hv, hd := hitl.Expr.Value(evalCtx)
+		diags = append(diags, hd...)
+		if !hd.HasErrors() && hv.Type() == cty.Bool {
+			pr.HITLAsyncGrants = hv.True()
+		}
+	}
+	attr, ok := content.Attributes["credentials"]
+	if !ok {
+		return pr, diags
+	}
+	val, evalDiags := attr.Expr.Value(evalCtx)
+	diags = append(diags, evalDiags...)
+	if evalDiags.HasErrors() {
+		return pr, diags
+	}
+	t := val.Type()
+	if !t.IsTupleType() && !t.IsListType() {
+		rng := attr.Expr.Range()
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Invalid profile %q credentials", sym.Name),
+			Detail:   fmt.Sprintf("Expected a list; got %s.", t.FriendlyName()),
+			Subject:  &rng,
+		})
+		return pr, diags
+	}
+	rng := attr.Expr.Range()
+	it := val.ElementIterator()
+	for it.Next() {
+		_, el := it.Element()
+		et := el.Type()
+		switch {
+		case et == cty.String:
+			pr.Credentials = append(pr.Credentials, el.AsString())
+		case et.IsObjectType():
+			ed := decodeProfileCredEntry(sym.Name, el, &rng)
+			diags = append(diags, ed.diags...)
+			if ed.cred == "" {
+				continue
+			}
+			pr.Credentials = append(pr.Credentials, ed.cred)
+			if len(ed.disambig) > 0 {
+				if pr.Disambiguators == nil {
+					pr.Disambiguators = map[string]map[string]string{}
+				}
+				pr.Disambiguators[ed.cred] = ed.disambig
+			}
+		default:
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("Invalid profile %q credentials entry", sym.Name),
+				Detail:   fmt.Sprintf("Each entry must be a bare credential name or an object `{ credential = name, <disambiguator> = \"...\", ... }`; got %s.", et.FriendlyName()),
+				Subject:  &rng,
+			})
+		}
+	}
+	return pr, diags
+}
+
+// profileCredEntry is the result of decoding one object-literal entry
+// in a profile's credentials list. disambig maps disambiguator-field
+// name (e.g. "placeholder", "user", "database") → operator-set value;
+// validity per credential type is enforced after decode via the
+// owning plugin's Plugin.Disambiguators list.
+type profileCredEntry struct {
+	cred     string
+	disambig map[string]string
+	diags    hcl.Diagnostics
+}
+
+// decodeProfileCredEntry validates a single object-literal entry in
+// a profile's credentials list. The entry must declare a `credential`
+// attribute (bare-name reference) and zero or more string-valued
+// disambiguator attrs (any non-`credential` attribute). Per-type
+// validity of the disambiguator field names is checked later by
+// validateProfileDisambiguators against the plugin's
+// Plugin.Disambiguators list.
+func decodeProfileCredEntry(profile string, v cty.Value, rng *hcl.Range) profileCredEntry {
+	out := profileCredEntry{disambig: map[string]string{}}
+	t := v.Type()
+	if !t.HasAttribute("credential") {
+		out.diags = append(out.diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Invalid profile %q credentials entry", profile),
+			Detail:   "Object entry is missing the `credential` attribute.",
+			Subject:  rng,
+		})
+		return out
+	}
+	credV := v.GetAttr("credential")
+	if credV.Type() != cty.String {
+		out.diags = append(out.diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Invalid profile %q credentials entry", profile),
+			Detail:   fmt.Sprintf("`credential` must be a bare-name reference; got %s.", credV.Type().FriendlyName()),
+			Subject:  rng,
+		})
+		return out
+	}
+	out.cred = credV.AsString()
+	for name := range t.AttributeTypes() {
+		if name == "credential" {
+			continue
+		}
+		fv := v.GetAttr(name)
+		if fv.Type() != cty.String {
+			out.diags = append(out.diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("Invalid profile %q credentials entry", profile),
+				Detail:   fmt.Sprintf("Disambiguator %q must be a string; got %s.", name, fv.Type().FriendlyName()),
+				Subject:  rng,
+			})
+			continue
+		}
+		s := fv.AsString()
+		if s == "" {
+			out.diags = append(out.diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("Invalid profile %q credentials entry", profile),
+				Detail:   fmt.Sprintf("Disambiguator %q must be a non-empty string. Drop the field when no value applies.", name),
+				Subject:  rng,
+			})
+			continue
+		}
+		out.disambig[name] = s
+	}
+	if len(out.disambig) == 0 {
+		// No disambiguators is fine — the entry behaves like a bare
+		// credential name. Normalize to nil so downstream `if len(.)`
+		// stays consistent.
+		out.disambig = nil
+	}
+	return out
 }

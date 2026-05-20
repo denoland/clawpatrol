@@ -14,28 +14,25 @@ import (
 // whose endpoint set references any of those endpoints.
 func TestCredentialBindings(t *testing.T) {
 	src := `
-credential "bearer_token" "alpha" {}
-credential "bearer_token" "beta" {}
-credential "bearer_token" "orphan" {}
-
 endpoint "https" "alpha_api" {
-  hosts      = ["alpha.example"]
-  credential = bearer_token.alpha
+  hosts = ["alpha.example"]
 }
 endpoint "https" "beta_api" {
-  hosts      = ["beta.example"]
-  credential = bearer_token.beta
+  hosts = ["beta.example"]
 }
 endpoint "https" "beta_api_2" {
-  hosts      = ["beta2.example"]
-  credential = bearer_token.beta
+  hosts = ["beta2.example"]
 }
 
+credential "bearer_token" "alpha"  { endpoint = https.alpha_api }
+credential "bearer_token" "beta"   { endpoints = [https.beta_api, https.beta_api_2] }
+credential "bearer_token" "orphan" {}
+
 profile "prod" {
-  endpoints = [https.alpha_api, https.beta_api]
+  credentials = [bearer_token.alpha, bearer_token.beta]
 }
 profile "staging" {
-  endpoints = [https.beta_api_2]
+  credentials = [bearer_token.beta]
 }
 
 rule "default-allow" {

@@ -163,11 +163,12 @@ var githubOptionalScopes = []config.OptionalScopeGroup{
 func init() {
 	var _ runtime.HTTPCredentialRuntime = (*GitHubOAuth)(nil)
 	config.Register(&config.Plugin{
-		Kind:    config.KindCredential,
-		Type:    "github_oauth",
-		New:     newer[GitHubOAuth](),
-		Runtime: (*GitHubOAuth)(nil),
-		Build:   passthrough,
-		Emit:    emptyEmit,
+		Kind:           config.KindCredential,
+		Type:           "github_oauth",
+		Disambiguators: []string{"placeholder"},
+		New:            newer[GitHubOAuth](),
+		Runtime:        (*GitHubOAuth)(nil),
+		Build:          passthrough,
+		Emit:           emptyEmit,
 	})
 }

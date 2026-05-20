@@ -108,7 +108,7 @@ func init() {
 		New:     newer[GoogleGKECredential](),
 		Runtime: (*GoogleGKECredential)(nil),
 		Build:   passthrough,
-		Emit: func(_ any, _ string, _ *hclwrite.Body, _ *config.RefIndex) {
+		Emit: func(_ any, _ string, _ *hclwrite.Body) {
 			// GoogleGKECredential has no HCL attributes — the SA
 			// JSON in the secret store carries every parameter the
 			// token exchange needs.

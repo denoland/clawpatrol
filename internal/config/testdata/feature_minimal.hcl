@@ -3,11 +3,12 @@ listen     = "0.0.0.0:8443"
 unknown_host  = "passthrough"
 llm_fail_mode = "closed"
 
-credential "bearer_token" "github-pat" {}
-
 endpoint "https" "github" {
-  hosts      = ["api.github.com", "github.com"]
-  credential = bearer_token.github-pat
+  hosts = ["api.github.com", "github.com"]
+}
+
+credential "bearer_token" "github" {
+  endpoint = https.github
 }
 
 approver "human_approver" "ops" {
@@ -28,5 +29,5 @@ rule "github-writes" {
 }
 
 profile "default" {
-  endpoints = [https.github]
+  credentials = [bearer_token.github]
 }

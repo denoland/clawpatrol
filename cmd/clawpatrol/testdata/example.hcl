@@ -10,11 +10,12 @@
 // consult it.
 admin_email = "you@example.com"
 
-credential "bearer_token" "github_pat" {}
-
 endpoint "https" "github" {
-  hosts      = ["api.github.com"]
-  credential = bearer_token.github_pat
+  hosts = ["api.github.com"]
+}
+
+credential "bearer_token" "github" {
+  endpoint = https.github
 }
 
 rule "github-reads" {
@@ -30,4 +31,4 @@ rule "github-writes" {
   reason    = "writes go through PR review"
 }
 
-profile "default" { endpoints = [https.github] }
+profile "default" { credentials = [bearer_token.github] }

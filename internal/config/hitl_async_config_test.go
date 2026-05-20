@@ -16,13 +16,14 @@ func TestHITLAsyncConfigLoadsProfileApproverAndNormalizesPublicURL(t *testing.T)
 	src := `
 public_url = "https://clawpatrol.example.test/"
 
-credential "bearer_token" "pat" {}
 endpoint "https" "api" {
-  hosts      = ["api.example.test"]
-  credential = bearer_token.pat
+  hosts = ["api.example.test"]
+}
+credential "bearer_token" "pat" {
+  endpoint = https.api
 }
 profile "agent" {
-  endpoints          = [https.api]
+  credentials       = [bearer_token.pat]
   hitl_async_grants = true
 }
 approver "human_approver" "ops" {
@@ -188,13 +189,14 @@ func TestHITLAsyncConfigRejectsInvalidApproverValues(t *testing.T) {
 	src := `
 public_url = "https://clawpatrol.example.test"
 
-credential "bearer_token" "pat" {}
 endpoint "https" "api" {
-  hosts      = ["api.example.test"]
-  credential = bearer_token.pat
+  hosts = ["api.example.test"]
+}
+credential "bearer_token" "pat" {
+  endpoint = https.api
 }
 profile "agent" {
-  endpoints          = [https.api]
+  credentials       = [bearer_token.pat]
   hitl_async_grants = true
 }
 approver "human_approver" "ops" {
@@ -252,13 +254,14 @@ func hitlAsyncConfigSource(publicURL string, profileOptIn, includeAsyncGrant boo
 	if publicURL != "" {
 		fmt.Fprintf(&b, "public_url = %q\n\n", publicURL)
 	}
-	b.WriteString(`credential "bearer_token" "pat" {}
-endpoint "https" "api" {
-  hosts      = ["api.example.test"]
-  credential = bearer_token.pat
+	b.WriteString(`endpoint "https" "api" {
+  hosts = ["api.example.test"]
+}
+credential "bearer_token" "pat" {
+  endpoint = https.api
 }
 profile "agent" {
-  endpoints = [https.api]
+  credentials = [bearer_token.pat]
 `)
 	if profileOptIn {
 		b.WriteString("  hitl_async_grants = true\n")

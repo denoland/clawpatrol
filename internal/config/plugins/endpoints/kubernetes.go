@@ -9,7 +9,6 @@ import (
 	"crypto/x509"
 	"errors"
 
-	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
 
@@ -31,7 +30,6 @@ type KubernetesEndpoint struct {
 	Description string   `hcl:"description,optional"`
 	ClusterName string   `hcl:"cluster_name,optional"`
 	Region      string   `hcl:"region,optional"`
-	Credential  string   `hcl:"credential,optional"`
 }
 
 // EndpointHosts is part of the clawpatrol plugin API.
@@ -52,11 +50,6 @@ func (e *KubernetesEndpoint) FileIncludeFields() []config.FileIncludeField {
 	return []config.FileIncludeField{
 		{Get: func() string { return e.CACert }, Set: func(v string) { e.CACert = v }},
 	}
-}
-
-// EndpointCredentials is part of the clawpatrol plugin API.
-func (e *KubernetesEndpoint) EndpointCredentials() []config.CredBinding {
-	return singleBinding(e.Credential)
 }
 
 // AWSEKSAuthParams is the contract the aws_credential plugin reads at
@@ -90,25 +83,14 @@ func (e *KubernetesEndpoint) ConfigureUpstreamTLS(cfg *tls.Config) error {
 	return nil
 }
 
-// validateKubernetesEndpoint catches malformed host / server entries
-// before the compile pass turns them into a routing table. Kubernetes
-// endpoints can declare either `hosts = [...]` (managed clusters) or
-// `server = "..."` (self-hosted); EndpointHosts() returns whichever
-// is set, so the shared validateHosts check covers both shapes.
-func validateKubernetesEndpoint(d any, name string, ctx *config.BuildCtx) hcl.Diagnostics {
-	return validateHosts(d, name, ctx.Block.DefRange)
-}
-
 func init() {
 	config.Register(&config.Plugin{
-		Kind:     config.KindEndpoint,
-		Type:     "kubernetes",
-		Family:   "k8s",
-		New:      func() any { return &KubernetesEndpoint{} },
-		Refs:     singularRef,
-		Validate: validateKubernetesEndpoint,
-		Build:    passthroughBuild,
-		Emit: func(body any, _ string, b *hclwrite.Body, refs *config.RefIndex) {
+		Kind:   config.KindEndpoint,
+		Type:   "kubernetes",
+		Family: "k8s",
+		New:    func() any { return &KubernetesEndpoint{} },
+		Build:  passthroughBuild,
+		Emit: func(body any, _ string, b *hclwrite.Body) {
 			e := body.(*KubernetesEndpoint)
 			if len(e.Hosts) > 0 {
 				b.SetAttributeValue("hosts", config.StringListVal(e.Hosts))
@@ -127,9 +109,6 @@ func init() {
 			}
 			if e.Region != "" {
 				b.SetAttributeValue("region", cty.StringVal(e.Region))
-			}
-			if e.Credential != "" {
-				config.SetIdent(b, "credential", refs.Ref(config.KindCredential, e.Credential))
 			}
 		},
 	})

@@ -51,11 +51,12 @@ func (*GeminiAPIKey) EnvVars() []config.EnvVar {
 func init() {
 	var _ runtime.HTTPCredentialRuntime = (*GeminiAPIKey)(nil)
 	config.Register(&config.Plugin{
-		Kind:    config.KindCredential,
-		Type:    "gemini_api_key",
-		New:     newer[GeminiAPIKey](),
-		Runtime: (*GeminiAPIKey)(nil),
-		Build:   passthrough,
-		Emit:    emptyEmit,
+		Kind:           config.KindCredential,
+		Type:           "gemini_api_key",
+		Disambiguators: []string{"placeholder"},
+		New:            newer[GeminiAPIKey](),
+		Runtime:        (*GeminiAPIKey)(nil),
+		Build:          passthrough,
+		Emit:           emptyEmit,
 	})
 }

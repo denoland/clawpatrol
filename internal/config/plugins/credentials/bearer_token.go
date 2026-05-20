@@ -55,12 +55,13 @@ func (*BearerToken) SecretSlots() []config.SecretSlot {
 func init() {
 	var _ runtime.HTTPCredentialRuntime = (*BearerToken)(nil)
 	config.Register(&config.Plugin{
-		Kind:    config.KindCredential,
-		Type:    "bearer_token",
-		New:     newer[BearerToken](),
-		Runtime: (*BearerToken)(nil),
-		Build:   passthrough,
-		Emit: func(body any, _ string, b *hclwrite.Body, refs *config.RefIndex) {
+		Kind:           config.KindCredential,
+		Type:           "bearer_token",
+		Disambiguators: []string{"placeholder"},
+		New:            newer[BearerToken](),
+		Runtime:        (*BearerToken)(nil),
+		Build:          passthrough,
+		Emit: func(body any, _ string, b *hclwrite.Body) {
 			v := body.(*BearerToken)
 			if v.IdempotencyKey {
 				b.SetAttributeValue("idempotency_key", cty.True)

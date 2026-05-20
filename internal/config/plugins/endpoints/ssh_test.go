@@ -9,17 +9,20 @@ import (
 // pickSSHCredential covers the multi-credential dispatch contract:
 // * exact-user match wins
 // * catchall (no Placeholder) is the fallback
-// * with no credentials → nil
+// * profile with no credential binding → nil
 // * single no-Placeholder entry → that entry, regardless of agent user
 // * no match + no fallback → nil
 func TestPickSSHCredential(t *testing.T) {
-	mk := func(placeholder, name string) *config.CompiledCredential {
-		return &config.CompiledCredential{
-			Placeholder: placeholder,
+	mk := func(user, name string) *config.CompiledCredential {
+		c := &config.CompiledCredential{
 			Credential: &config.Entity{
 				Symbol: &config.Symbol{Kind: config.KindCredential, Type: "ssh_key", Name: name},
 			},
 		}
+		if user != "" {
+			c.Disambiguators = map[string]string{"user": user}
+		}
+		return c
 	}
 	cases := []struct {
 		name  string
@@ -71,8 +74,17 @@ func TestPickSSHCredential(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			ep := &config.CompiledEndpoint{Credentials: c.creds}
-			got := pickSSHCredential(ep, c.user)
+			ep := &config.CompiledEndpoint{Name: "ep"}
+			prof := &config.CompiledProfile{
+				Name: "p",
+				EndpointCredentials: map[string][]*config.CompiledCredential{
+					"ep": c.creds,
+				},
+			}
+			policy := &config.CompiledPolicy{
+				Profiles: map[string]*config.CompiledProfile{"p": prof},
+			}
+			got := pickSSHCredential(policy, "p", ep, c.user)
 			if c.want == "" {
 				if got != nil {
 					t.Fatalf("expected nil; got %q", got.Credential.Symbol.Name)

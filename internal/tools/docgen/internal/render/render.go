@@ -71,7 +71,7 @@ Each block section lists the attributes the loader accepts, with:
 - **Type** — the HCL value type. ` + "`string`" + `, ` + "`bool`" + `, ` + "`int`" + ` are scalar
   literals; ` + "`[]string`" + ` is a list of strings; ` + "`ref(<kind>)`" + ` is a
   typed reference to another block (` + "`<type>.<name>`" + ` for
-  two-label kinds like ` + "`credential = bearer_token.github-pat`" + `,
+  two-label kinds like ` + "`credential = bearer_token.github`" + `,
   ` + "`<kind>.<name>`" + ` for one-label kinds like ` + "`policy = policy.no-pii`" + `);
   ` + "`[]ref(<kind>)`" + ` is a list of such references; nested blocks have
   their shape described inline.
@@ -167,16 +167,16 @@ func reflectTypeFor(pkg, name string) reflect.Type {
 }
 
 // writeProfile documents the `profile "<name>" {}` block. The body
-// struct is unexported (config.profileBody), so we inline its single
-// field rather than going through reflection.
+// is decoded manually (mixed-shape `credentials` list), so we inline
+// its attributes rather than going through reflection.
 func (r *renderer) writeProfile() {
 	r.out.WriteString("## `profile \"<name>\" { ... }`\n\n")
-	r.out.WriteString("Names a set of endpoints. Profiles bind to dashboard owners; an owner's profile determines which endpoints their gateway requests can reach. Rules ride along automatically because they're attached to endpoints.\n\n")
+	r.out.WriteString("Names a set of credentials. Profiles bind to dashboard owners; an owner's profile determines which credentials — and, transitively via each credential's `endpoint` / `endpoints` binding, which endpoints — their gateway requests can reach. Rules ride along automatically because they're attached to endpoints.\n\n")
 	r.out.WriteString("| Attribute | Type | Required | Description |\n")
 	r.out.WriteString("|-----------|------|----------|-------------|\n")
-	r.out.WriteString("| `endpoints` | `[]ref(endpoint)` | yes | Bare-name endpoint references included in this profile. |\n")
+	r.out.WriteString("| `credentials` | `[]credential` | yes | Bare-name credential references, or `{ credential = name, <disambiguator> = \"...\" }` object entries for multi-credential dispatch (e.g. `placeholder` for header-token credentials). |\n")
 	r.out.WriteString("| `hitl_async_grants` | `bool` | no | Explicit opt-in for agent-aware async HITL retry grants on this profile. Async behavior still also requires an approver with `async_grant.enabled = true`. |\n\n")
-	r.out.WriteString("```hcl\nprofile \"default\" {\n  endpoints          = [github, postgres-prod]\n  hitl_async_grants = true\n}\n```\n\n")
+	r.out.WriteString("```hcl\nprofile \"default\" {\n  credentials       = [bearer_token.github, postgres_credential.postgres-prod]\n  hitl_async_grants = true\n}\n```\n\n")
 }
 
 // ── plugin-dispatched kinds ─────────────────────────────────────────

@@ -51,7 +51,7 @@ References are **bare names** — no kind prefix, no type prefix:
 
 ```hcl
 endpoint    = pg-deployng        # not  postgres.pg-deployng
-credentials = [github-pat]       # not  credential.bearer_token...
+endpoint    = github             # credential.endpoint reference
 approve     = [content-safety]   # not  approver.llm_approver.fast
 ```
 
@@ -133,7 +133,9 @@ off disk (`@/etc/k8s/cert.pem`).
 
 ### `endpoint "<type>" "<name>" { ... }`
 
-Typed upstream binding. Built-in types map to protocol families:
+Typed network target — hosts + protocol-family connection params
+only. No credential refs, no dispatch table; the credential block
+declares the binding. Built-in types map to protocol families:
 
 | Type | Family | Runtime status |
 |------|--------|----------------|
@@ -153,25 +155,17 @@ paste `access_key_id` / `secret_access_key` (+ optional
 requests without auth and the gateway adds the Authorization header
 before forwarding.
 
-Credential binding has two shapes:
-
 ```hcl
-# Singular — agent sends nothing special; gateway always injects.
-endpoint "https" "github" {
-  hosts      = ["api.github.com", "github.com"]
-  credential = github-pat
+endpoint "https" "github"   { hosts = ["api.github.com", "github.com"] }
+endpoint "https" "orb"      { hosts = ["api.withorb.com"] }
+endpoint "postgres" "pg" {
+  host     = "pg.internal.example:5432"
+  database = "appdb"
 }
-
-# Multi-credential dispatch via placeholder. Agent embeds the
-# placeholder string in the auth slot; gateway swaps it for the
-# matching real secret. The trailing no-placeholder entry is the
-# fallback when no agent-side placeholder matched.
-endpoint "https" "orb" {
-  hosts = ["api.withorb.com"]
-  credentials = [
-    { placeholder = "PH_orb_test", credential = orb-test-key },
-    { placeholder = "PH_orb_prod", credential = orb-prod-key },
-  ]
+endpoint "kubernetes" "k8s-eks" {
+  hosts        = ["*.eks.amazonaws.com"]
+  cluster_name = "prod"
+  region       = "us-east-2"
 }
 ```
 
@@ -179,6 +173,58 @@ Family-specific extras: postgres has `host` (with port) + `database`;
 kubernetes has `server` / `ca_cert` / `description` (file-include
 markers like `<<file:k8s-ca.pem>>` resolve at load relative to the
 config file's directory).
+
+#### Credential binding
+
+Each `credential` block declares which endpoint(s) it authenticates
+against. Two shapes:
+
+```hcl
+# Singular — common case.
+credential "bearer_token" "github" {
+  endpoint = github
+}
+
+# Singleton-or-list — same secret material at multiple protocol
+# endpoints of one upstream (ClickHouse HTTPS + native, for example).
+credential "clickhouse_credential" "ch-o11y" {
+  endpoints = [ch-o11y-https, ch-o11y-native]
+  user      = "ops"
+}
+```
+
+#### Multi-credential dispatch (placeholder, on the profile)
+
+When a profile wields more than one credential at the same endpoint,
+the credentials list mixes bare-name entries with inline `{
+placeholder = "PH_...", credential = name }` objects that name the
+dispatch discriminator. At request time the gateway scans the request
+for one of the placeholders and substitutes the matching credential's
+real secret. A bare-name entry in the same profile is the
+no-placeholder fallback for that (profile, endpoint) pair — at most
+one fallback per pair.
+
+Placeholders live on the profile, not on the credential, because the
+disambiguation is only needed when a single identity actively wields
+multiple credentials at one endpoint. Per-user-fanout endpoints
+typically have many credentials globally but each profile uses just
+one; declaring placeholders on every such credential would add noise
+that no profile consults.
+
+```hcl
+endpoint "https" "orb" { hosts = ["api.withorb.com"] }
+
+credential "bearer_token" "orb-test" { endpoint = orb }
+credential "bearer_token" "orb-prod" { endpoint = orb }
+
+profile "ops" {
+  credentials = [
+    { placeholder = "PH_orb_test", credential = orb-test },
+    { placeholder = "PH_orb_prod", credential = orb-prod },
+    # ...
+  ]
+}
+```
 
 ### `rule "<type>" "<name>" { ... }`
 
@@ -230,18 +276,20 @@ approve = [
 ]
 ```
 
-### `profile "<name>" { endpoints = [...] }`
+### `profile "<name>" { credentials = [...] }`
 
-Endpoint membership list. A device gets exactly the endpoints its
-profile names; rules ride along automatically because they're
-attached to endpoints.
+Credential membership list. Endpoint membership rides along as the
+transitive closure `profile → credentials → endpoints`; rules attach
+to endpoints (so they ride along too). A device gets exactly the
+credentials its profile names, and (transitively) every endpoint
+those credentials bind.
 
 ```hcl
 profile "kaju" {
-  endpoints = [
+  credentials = [
     github-kaju,
     slack-kaju,
-    notion,           # shared with other profiles
+    notion-corp,         # shared with other profiles
     grafana,
     k8s-dev-ams,
   ]
