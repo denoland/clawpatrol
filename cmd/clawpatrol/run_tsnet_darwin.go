@@ -35,6 +35,16 @@ import (
 	"time"
 )
 
+func init() {
+	// macOS has no tailnet route from the parent CLI — only the NE
+	// does. Route every gateway-tailnet HTTP call (env-pushdown, the
+	// one such call from the parent) through the NE for both
+	// `clawpatrol run` and the `clawpatrol env` shell-rc shim that
+	// fires on every new terminal. Silent skip when the NE isn't
+	// running keeps shell startup quiet between joins / after reboot.
+	envPushdownGatewayFetcher = fetchEnvPushdownViaNESessionSock
+}
+
 func runRunTsnet(args []string) {
 	warnIfOnGatewayHost()
 
@@ -105,10 +115,9 @@ func runRunTsnet(args []string) {
 		fmt.Fprintln(os.Stderr, "warning: NE never reported tsnet IP — run will land in the default profile")
 	}
 	// env-pushdown is on a tailnet-only endpoint that the parent CLI
-	// (host network) can't reach. Hop through the NE's session socket
-	// — the NE has tsnet up with the gateway as exit-node and is the
-	// one process on this Mac that can dial 100.x.
-	envPushdownGatewayFetcher = fetchEnvPushdownViaNESessionSock
+	// (host network) can't reach. The init() above already pointed
+	// envPushdownGatewayFetcher at the NE session-socket fetcher;
+	// applyEnvPushdown will use it.
 	applyEnvPushdown(dir)
 
 	cleanup := registerSession()

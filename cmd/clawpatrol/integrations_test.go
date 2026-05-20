@@ -113,6 +113,10 @@ func TestFetchEnvPushdownErrors(t *testing.T) {
 // vars (client-side) plus the server-supplied ones in a single
 // flat list.
 func TestEnvPushdownVarsServerDriven(t *testing.T) {
+	prev := envPushdownGatewayFetcher
+	envPushdownGatewayFetcher = fetchEnvPushdownFromGateway
+	t.Cleanup(func() { envPushdownGatewayFetcher = prev })
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"vars": []map[string]string{{"name": "CODEX_ACCESS_TOKEN", "value": "from-server"}},
@@ -152,6 +156,15 @@ func TestEnvPushdownVarsServerDriven(t *testing.T) {
 // (so TLS verification keeps working) but surface the error so the
 // caller can warn the operator.
 func TestEnvPushdownVarsErrorReturnsCAOnly(t *testing.T) {
+	// Pin the gateway fetcher to the direct-HTTP path — on darwin the
+	// init() in run_tsnet_darwin.go rewires this to the NE session
+	// socket, which would dial /tmp/clawpatrol.sock and return whatever
+	// the host's running NE happens to have to say, instead of the
+	// gateway-URL-missing error this test exercises.
+	prev := envPushdownGatewayFetcher
+	envPushdownGatewayFetcher = fetchEnvPushdownFromGateway
+	t.Cleanup(func() { envPushdownGatewayFetcher = prev })
+
 	dir := t.TempDir()
 	caPath := filepath.Join(dir, "ca.crt")
 	_ = os.WriteFile(caPath, []byte("dummy"), 0o644)
