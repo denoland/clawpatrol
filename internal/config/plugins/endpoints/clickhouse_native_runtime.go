@@ -192,7 +192,10 @@ func (ClickhouseNativeEndpointRuntime) HandleConn(ctx context.Context, ch *runti
 		Meta:     &sqlfacet.Meta{Statement: hello.Username + "\x00" + hello.Password},
 	}
 	if cc := runtime.ResolveCredential(ch.Policy, ch.Profile, ch.Endpoint, credReq); cc != nil {
-		credName = cc.Credential.Symbol.Name
+		// QName here matches Rule.Credential (also QName) for the
+		// runtime predicate; the bare Symbol.Name still flows into
+		// secret / error paths below.
+		credName = cc.Credential.Symbol.QName()
 		auth, ok := cc.Credential.Body.(runtime.ClickhouseAuthCredential)
 		if !ok {
 			chEmitError(ch, "credential-not-clickhouse-auth", cc.Credential.Symbol.Name)
