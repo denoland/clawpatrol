@@ -138,10 +138,10 @@ in SQLite (`credential_secrets`) and reused on every subsequent
 restart:
 
 ```hcl
-credential "tailscale_authkey" "corp-tailnet" {}
+credential "tailscale_auth" "corp-tailnet" {}
 
 tunnel "tailscale" "corp" {
-  credential = tailscale_authkey.corp-tailnet
+  credential = tailscale_auth.corp-tailnet
   hostname   = "clawpatrol-tunnel-corp"
   tags       = ["tag:client"]
 }

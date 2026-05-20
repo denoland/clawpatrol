@@ -12,10 +12,10 @@ the credential reference.
 Target shape:
 
 ```hcl
-credential "tailscale_authkey" "my-tailnet" {}
+credential "tailscale_auth" "my-tailnet" {}
 
 tunnel "tailscale" "my-tunnel" {
-  credential = tailscale_authkey.my-tailnet
+  credential = tailscale_auth.my-tailnet
   hostname   = "clawpatrol-tunnel-prod"
   tags       = ["tag:client"]
 }
