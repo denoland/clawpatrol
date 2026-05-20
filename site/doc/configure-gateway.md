@@ -3,11 +3,11 @@
 [Getting Started](/docs/getting-started/) gets you running with
 the example config, untouched. This page covers the operational
 tuning you reach for as soon as you take the gateway past
-"kick-the-tyres" — different join transport, dashboard auth,
+"kick-the-tyres" — different control plane, dashboard auth,
 where to bind the dashboard, systemd, state-dir hardening, and
 the rest.
 
-## Join transport: WireGuard or Tailscale
+## Control plane: WireGuard or Tailscale
 
 The example config uses WireGuard:
 
@@ -63,18 +63,18 @@ clawpatrol gateway --reset-dashboard-password gateway.hcl
 
 ### Where to bind the dashboard
 
-Network-layer reachability is cheap defence-in-depth on top of the
-password. Pick the shape that matches your access model:
+Restricting where the dashboard is reachable on the network is
+an additional defence-in-depth layer on top of the password.
+Pick the shape that matches your access model:
 
 - **Loopback (`127.0.0.1:8080`)** — the default in the example.
   Reach the dashboard via SSH tunnel
   (`ssh -L 8080:127.0.0.1:8080 gateway-host`) or a local reverse
   proxy.
-- **Tailnet / VPN IP (`100.x.x.x:8080`)** — reachable only from
-  your tailnet or WireGuard subnet. List each operator's tailnet
-  identity in
-  `dashboard_operators` — the email Tailscale uses to identify
-  that user — to let them in without typing the password:
+- **Tailnet / VPN IP (`100.x.x.x:8080`)** — only devices already
+  on your tailnet or WireGuard subnet can reach it. List each
+  operator's Tailscale account email in `dashboard_operators` to
+  let them in without typing the password:
 
   ```hcl
   dashboard_operators = [
@@ -91,9 +91,8 @@ password. Pick the shape that matches your access model:
 ## Run under systemd
 
 For anything beyond a quick test, run the gateway as a dedicated
-service user so its state directory (every credential the gateway
-holds — CA private key, WireGuard server key, SSH host keys — plus
-the audit log) isn't readable by any non-root user on the box:
+service user so its state directory isn't readable by any
+non-root user on the box:
 
 ```bash
 useradd --system --home /opt/clawpatrol --shell /usr/sbin/nologin clawpatrol
@@ -144,8 +143,7 @@ production Claw Patrol gateway:
 
 - **Don't run agents on the gateway host.** `clawpatrol run` is
   for client devices — the gateway's `state_dir` holds every
-  credential the gateway mints (CA private key, WireGuard server
-  key, SSH host keys) plus the audit log. An agent running on
+  credential the gateway mints plus the audit log. An agent running on
   the gateway host can read those directly, with or without
   `clawpatrol run` in front. The correct shape is: gateway on
   one box (small VPS, no human logins, no developer tools); your
