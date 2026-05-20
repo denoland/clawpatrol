@@ -22,12 +22,15 @@ package main
 //  6. Register session PID via session IPC, then `Clawpatrol run -- <cmd>`.
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -101,6 +104,11 @@ func runRunTsnet(args []string) {
 	if tsIP == "" {
 		fmt.Fprintln(os.Stderr, "warning: NE never reported tsnet IP — run will land in the default profile")
 	}
+	// env-pushdown is on a tailnet-only endpoint that the parent CLI
+	// (host network) can't reach. Hop through the NE's session socket
+	// — the NE has tsnet up with the gateway as exit-node and is the
+	// one process on this Mac that can dial 100.x.
+	envPushdownGatewayFetcher = fetchEnvPushdownViaNESessionSock
 	applyEnvPushdown(dir)
 
 	cleanup := registerSession()
@@ -160,4 +168,52 @@ func queryTsnetIP() string {
 		return strings.TrimSpace(after)
 	}
 	return ""
+}
+
+// fetchEnvPushdownViaNESessionSock asks the NE to fetch the
+// gateway's /api/env-pushdown over tsnet on the parent's behalf
+// and ships the raw JSON back over the session socket. Wire
+// format: client sends "getenv\n"; ext replies "env <len>\n"
+// followed by <len> raw JSON bytes (or "err\n" on failure).
+// The length-prefix is binary-safe so the JSON body is delivered
+// verbatim regardless of its content.
+//
+// caDir is unused — the auth token and gateway hostname live in
+// the extension's providerConfiguration, which the CLI cannot
+// (and should not) read on macOS. The signature matches
+// envPushdownGatewayFetcher so it slots into envPushdownVars.
+func fetchEnvPushdownViaNESessionSock(caDir string) ([]pushdownEnvVar, error) {
+	_ = caDir
+	d := net.Dialer{Timeout: 2 * time.Second}
+	c, err := d.Dial("unix", sessionSockPath)
+	if err != nil {
+		return nil, fmt.Errorf("dial NE session socket %s: %w", sessionSockPath, err)
+	}
+	defer func() { _ = c.Close() }()
+	_ = c.SetDeadline(time.Now().Add(20 * time.Second))
+	if _, err := c.Write([]byte("getenv\n")); err != nil {
+		return nil, fmt.Errorf("write getenv: %w", err)
+	}
+	rd := bufio.NewReader(c)
+	header, err := rd.ReadString('\n')
+	if err != nil {
+		return nil, fmt.Errorf("read env header: %w", err)
+	}
+	header = strings.TrimRight(header, "\n")
+	if header == "err" {
+		return nil, fmt.Errorf("NE refused getenv (no tsnet config or HTTP fetch failed)")
+	}
+	rest, ok := strings.CutPrefix(header, "env ")
+	if !ok {
+		return nil, fmt.Errorf("unexpected getenv reply: %q", header)
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(rest))
+	if err != nil || n < 0 || n > 1<<20 {
+		return nil, fmt.Errorf("invalid env length: %q", rest)
+	}
+	body := make([]byte, n)
+	if _, err := io.ReadFull(rd, body); err != nil {
+		return nil, fmt.Errorf("read env body (%d bytes): %w", n, err)
+	}
+	return parseEnvPushdownJSON(body)
 }

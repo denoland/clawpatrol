@@ -94,6 +94,7 @@ class TransparentProxyProvider: NETransparentProxyProvider {
                             userInfo: [NSLocalizedDescriptionKey: "tsnet: \(msg)"]))
                         return
                     }
+                    setTsnetIPCConfig(gwHost: gwHost, token: token)
                     startSessionListener()
                     startSessionReaper()
                     self.applyNetworkSettings(completionHandler: completionHandler)
@@ -507,6 +508,28 @@ private func pidFromAuditToken(_ data: Data) -> pid_t? {
 // a local authz concern only the host's user controls anyway.
 let sessionSockPath = "/tmp/clawpatrol.sock"
 
+// tsnet-mode gateway hostname + per-peer api token. Mirror of the
+// providerConfiguration values, captured at startProxy time so the
+// session-IPC `getenv` handler (a free function) can pass them to
+// ts_netstack_fetch_env_pushdown without reaching into the provider
+// instance. Empty in WG mode.
+private var tsnetGwHostForIPC: String = ""
+private var tsnetApiTokenForIPC: String = ""
+private let tsnetIPCConfigLock = NSLock()
+
+private func setTsnetIPCConfig(gwHost: String, token: String) {
+    tsnetIPCConfigLock.lock()
+    tsnetGwHostForIPC = gwHost
+    tsnetApiTokenForIPC = token
+    tsnetIPCConfigLock.unlock()
+}
+
+private func tsnetIPCConfig() -> (gwHost: String, token: String) {
+    tsnetIPCConfigLock.lock()
+    defer { tsnetIPCConfigLock.unlock() }
+    return (tsnetGwHostForIPC, tsnetApiTokenForIPC)
+}
+
 private var sessionPidsSet: Set<pid_t> = []
 private let sessionPidsLock = NSLock()
 
@@ -632,6 +655,46 @@ private func serviceSessionClient(_ fd: Int32) {
                     ts_netstack_get_ip(p.baseAddress, Int32(p.count))
                 }
                 reply = rc == 0 ? "tsip \(String(cString: ipBuf))\n" : "err\n"
+            } else if parts.count == 1 && parts[0] == "getenv" {
+                // env-pushdown fetch routed through the extension's tsnet
+                // stack — the parent CLI has no tailnet route to the
+                // gateway's 100.x address and the /api/env-pushdown
+                // endpoint isn't Funnel-exposed. Wire format is
+                // length-prefixed: header "env <N>\n" followed by N raw
+                // bytes of JSON (binary-safe regardless of the body).
+                let cfg = tsnetIPCConfig()
+                if cfg.gwHost.isEmpty || cfg.token.isEmpty {
+                    reply = "err\n"
+                } else {
+                    let cap = 256 * 1024
+                    var body = [CChar](repeating: 0, count: cap)
+                    let n = cfg.gwHost.withCString { ghC in
+                        cfg.token.withCString { tkC in
+                            body.withUnsafeMutableBufferPointer { p in
+                                ts_netstack_fetch_env_pushdown(
+                                    UnsafeMutablePointer(mutating: ghC),
+                                    UnsafeMutablePointer(mutating: tkC),
+                                    p.baseAddress, Int32(p.count))
+                            }
+                        }
+                    }
+                    if n < 0 {
+                        reply = "err\n"
+                    } else {
+                        let header = "env \(n)\n"
+                        _ = header.withCString { cs in
+                            Darwin.write(fd, cs, strlen(cs))
+                        }
+                        _ = body.withUnsafeBufferPointer { p in
+                            p.baseAddress!.withMemoryRebound(
+                                to: UInt8.self, capacity: Int(n)
+                            ) { q in
+                                Darwin.write(fd, q, Int(n))
+                            }
+                        }
+                        reply = "" // body already written; skip the std write below
+                    }
+                }
             } else if parts.count == 2, let pid = pid_t(parts[1]) {
                 switch parts[0] {
                 case "register":   sessionRegister(pid);   reply = "ok\n"

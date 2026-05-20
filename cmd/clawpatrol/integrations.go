@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -55,6 +56,15 @@ type pushdownEnvVar struct {
 	PluginType  string
 }
 
+// envPushdownGatewayFetcher resolves the gateway's declared
+// push-down vars. Defaults to dialing /api/env-pushdown directly
+// (works on Linux per-process tsnet, where the parent CLI hosts
+// the tsnet.Server itself via gatewayDialOverride). Platform-
+// specific run modes that have no tailnet route from the parent
+// process — macOS NE most notably — override this with a fetcher
+// that asks the network extension to make the call instead.
+var envPushdownGatewayFetcher = fetchEnvPushdownFromGateway
+
 // envPushdownVars returns every var the operator's CLI environment
 // needs: CA-bundle vars (which point at a path on the *client's*
 // disk so the client owns them) plus the gateway's declared
@@ -80,7 +90,7 @@ func envPushdownVars(caPath string) ([]pushdownEnvVar, error) {
 	} {
 		out = append(out, pushdownEnvVar{Name: k, Value: caPath})
 	}
-	vars, err := fetchEnvPushdownFromGateway(filepath.Dir(caPath))
+	vars, err := envPushdownGatewayFetcher(filepath.Dir(caPath))
 	if err != nil {
 		return out, err
 	}
@@ -152,6 +162,22 @@ func fetchEnvPushdownFromGateway(caDir string) ([]pushdownEnvVar, error) {
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("fetch %s: status %d", url, resp.StatusCode)
 	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", url, err)
+	}
+	vars, err := parseEnvPushdownJSON(raw)
+	if err != nil {
+		return nil, fmt.Errorf("decode %s: %w", url, err)
+	}
+	return vars, nil
+}
+
+// parseEnvPushdownJSON decodes the wire format returned by
+// /api/env-pushdown into the CLI's internal pushdownEnvVar shape.
+// Shared between the direct HTTP fetcher and the macOS variant
+// that hops through the NE's session socket.
+func parseEnvPushdownJSON(raw []byte) ([]pushdownEnvVar, error) {
 	var body struct {
 		Vars []struct {
 			Name        string `json:"name"`
@@ -160,8 +186,8 @@ func fetchEnvPushdownFromGateway(caDir string) ([]pushdownEnvVar, error) {
 			PluginType  string `json:"plugin_type"`
 		} `json:"vars"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return nil, fmt.Errorf("decode %s: %w", url, err)
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, err
 	}
 	out := make([]pushdownEnvVar, 0, len(body.Vars))
 	for _, v := range body.Vars {

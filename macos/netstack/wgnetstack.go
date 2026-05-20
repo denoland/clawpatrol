@@ -1027,6 +1027,56 @@ func ts_netstack_udp_connect(hostC *C.char, port C.int, errBuf *C.char, errLen C
 	return C.int64_t(id)
 }
 
+// ts_netstack_fetch_env_pushdown GETs the gateway's tailnet-only
+// /api/env-pushdown endpoint via tsnet so the parent CLI (which is on
+// the host network and has no tailnet route) can reach 100.x through
+// the extension. The raw JSON body is copied into outBuf NUL-terminated;
+// returns the body length, or -1 on any error.
+//
+//export ts_netstack_fetch_env_pushdown
+func ts_netstack_fetch_env_pushdown(gwHostC, tokenC, outBuf *C.char, outBufCap C.int) C.int {
+	tsMu.Lock()
+	s := tsServer
+	tsMu.Unlock()
+	if s == nil {
+		return -1
+	}
+	gwHost := C.GoString(gwHostC)
+	token := C.GoString(tokenC)
+	if gwHost == "" || token == "" {
+		return -1
+	}
+	client := &http.Client{
+		Timeout:   15 * time.Second,
+		Transport: &http.Transport{DialContext: s.Dial},
+	}
+	u := "http://" + gwHost + ":8080/api/env-pushdown"
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return -1
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return -1
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != 200 {
+		return -1
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return -1
+	}
+	if outBufCap <= 0 || len(body) >= int(outBufCap) {
+		return -1
+	}
+	dst := unsafe.Slice((*byte)(unsafe.Pointer(outBuf)), int(outBufCap))
+	copy(dst, body)
+	dst[len(body)] = 0
+	return C.int(len(body))
+}
+
 // ts_netstack_close shuts down the tsnet server.
 //
 //export ts_netstack_close
