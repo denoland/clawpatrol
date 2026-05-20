@@ -60,6 +60,32 @@ public UDP port, no WireGuard keypair management, no subnet allocation
 | **Client command** | `clawpatrol login` | `clawpatrol join <gw-url>` |
 | **State** | `state_dir` — tsnet machine key + ipn state in sqlite | `state_dir` — WG server key, peer map, sessions in sqlite |
 
+## Required tailnet ACL
+
+Client traffic flows through the gateway by treating it as the
+client's tsnet **exit node**. The client side sets
+`ExitNodeIP=<gateway>` automatically; for that to actually route,
+the tailnet ACL must **auto-approve the gateway as an exit node
+for the client tag**. Without it, the pref is accepted locally
+but every outbound dial silently times out.
+
+Add to your tailnet ACL JSON:
+
+```jsonc
+{
+  "autoApprovers": {
+    "exitNode": ["tag:client"]    // must match tailscale_tags below
+  },
+  "tagOwners": {
+    "tag:client": ["autogroup:admin"]
+  }
+}
+```
+
+The gateway already advertises `0.0.0.0/0` + `::/0` via
+`advertiseExitRoutes`, so no operator action is needed in the
+Tailscale admin console — the ACL above is the whole prereq.
+
 ## Operator setup
 
 ```bash

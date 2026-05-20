@@ -519,6 +519,24 @@ func daemonStartTsnet() (*tsnet.Server, netip.Addr, error) {
 		return nil, netip.Addr{}, fmt.Errorf("set exit-node %s: %w", gwIP, err)
 	}
 
+	// Smoke-test exit-node routing. EditPrefs accepts ExitNodeIP
+	// unconditionally, but actual routing requires the tailnet ACL to
+	// auto-approve the gateway as an exit node for our tag (see
+	// doc/tailscale.md → "Required tailnet ACL"). Without that, every
+	// dial silently times out instead of returning a useful error.
+	// Probe by dialing the gateway's tailnet IP on port 53 — that
+	// port is bound by the gateway's tsnet DNS listener so a working
+	// path returns "connection established" within hundreds of ms.
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), 8*time.Second)
+	if c, derr := s.Dial(probeCtx, "tcp", net.JoinHostPort(gwIP.String(), "53")); derr == nil {
+		_ = c.Close()
+	} else {
+		log.Printf("tsnet probe: gateway unreachable via exit-node routing — %v. "+
+			"Check autoApprovers.exitNode in your tailnet ACL (see doc/tailscale.md). "+
+			"Continuing; outbound traffic from clawpatrol run will fail until the ACL is fixed.", derr)
+	}
+	probeCancel()
+
 	// Let any code path that needs a tailnet-routed HTTP client (e.g.
 	// gatewayClient → /api/env-pushdown) reach 100.x via tsnet.
 	gatewayDialOverride = s.Dial

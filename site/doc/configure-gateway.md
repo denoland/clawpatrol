@@ -34,6 +34,34 @@ non-tailnet devices reach the gateway over Tailscale Funnel.
 Devices onboard with `clawpatrol login` instead of `clawpatrol
 join`; see [CLI reference](/docs/cli/) for the Tailscale variant.
 
+#### Required tailnet ACL
+
+The gateway routes client traffic by acting as their **Tailscale
+exit node**. Clients call `EditPrefs(ExitNodeIP=<gateway>)` once
+they join; routing only works if the tailnet ACL **auto-approves
+the gateway as an exit node** for the client tag. Without this,
+clients set the pref locally but every outbound dial silently
+times out — the gateway never sees the traffic.
+
+In your tailnet's ACL JSON, add (or extend) `autoApprovers`:
+
+```jsonc
+{
+  "autoApprovers": {
+    "exitNode": ["tag:clawpatrol"]   // matches tailscale_tags above
+  },
+  "tagOwners": {
+    "tag:clawpatrol": ["autogroup:admin"]
+  }
+}
+```
+
+The tag must be the one you set in `tailscale_tags` on the
+gateway config. If you skip this step, the daemon logs a
+`tsnet probe: gateway unreachable via exit-node routing — check
+autoApprovers.exitNode in your tailnet ACL` warning on first
+boot, and every `clawpatrol run` hangs at "joining tailnet".
+
 ### WireGuard endpoint
 
 The default WireGuard listener is `0.0.0.0:51820`. Clients dial
