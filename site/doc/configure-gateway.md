@@ -114,8 +114,8 @@ tailnet IP at the info port, so tailnet peers reach
   is the only thing between those other interfaces and the
   dashboard.
 
-Operators can be allowlisted by tailnet identity so they skip the
-root-password prompt:
+Operators can be allowlisted by tailnet identity email so they skip
+the root-password prompt:
 
 ```hcl
 dashboard_operators = [
