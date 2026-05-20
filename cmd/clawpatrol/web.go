@@ -709,11 +709,11 @@ func (w *webMux) apiEnvPushdown(rw http.ResponseWriter, r *http.Request) {
 			"plugin_type": pluginType,
 		})
 	}
-	// New path: walk the profile's environment list. Each environment
-	// block is one plugin instance; its built body implements
-	// EnvironmentRuntime and returns the vars it contributes.
-	// Declaration order in the HCL is preserved so duplicate names
-	// resolve first-writer-wins per the operator's stated order.
+	// Walk the profile's environment list. Each environment block is
+	// one plugin instance; its built body implements EnvironmentRuntime
+	// and returns the vars it contributes. Declaration order in the
+	// HCL is preserved so duplicate names resolve first-writer-wins
+	// per the operator's stated order.
 	for _, envEnt := range prof.Environments {
 		if envEnt == nil || envEnt.Body == nil {
 			continue
@@ -724,36 +724,6 @@ func (w *webMux) apiEnvPushdown(rw http.ResponseWriter, r *http.Request) {
 		}
 		for _, ev := range rt.EnvVars() {
 			add(ev.Name, ev.Value, ev.Description, envEnt.Plugin.Type)
-		}
-	}
-	// Legacy fall-through: credentials and endpoints that still carry
-	// EnvVars() directly. Retained until every built-in plugin has
-	// been migrated to an environment block; profiles that already
-	// declare `environments = [...]` take precedence on duplicate
-	// names because they run first.
-	credSeen := map[string]bool{}
-	for _, ep := range prof.Endpoints {
-		for _, ent := range ep.Credentials {
-			if ent == nil || ent.Symbol == nil || credSeen[ent.Symbol.Name] {
-				continue
-			}
-			credSeen[ent.Symbol.Name] = true
-			provider, ok := ent.Body.(config.EnvPushdownProvider)
-			if !ok {
-				continue
-			}
-			for _, ev := range provider.EnvVars() {
-				add(ev.Name, ev.Value, ev.Description, ent.Plugin.Type)
-			}
-		}
-	}
-	for _, ep := range prof.Endpoints {
-		provider, ok := ep.Body.(config.EnvPushdownProvider)
-		if !ok {
-			continue
-		}
-		for _, ev := range provider.EnvVars() {
-			add(ev.Name, ev.Value, ev.Description, ep.Plugin.Type)
 		}
 	}
 	writeJSON(rw, map[string]any{"vars": out})

@@ -54,38 +54,12 @@ type OpenAICodexHTTPSEndpoint struct {
 // EndpointHosts is part of the clawpatrol plugin API.
 func (e *OpenAICodexHTTPSEndpoint) EndpointHosts() []string { return e.Hosts }
 
-// EnvVars pushes down a synthetic CODEX_ACCESS_TOKEN so codex enters
-// AgentIdentity mode (which routes it to chatgpt.com). Also pushes
-// CODEX_AGENT_IDENTITY for codex <= 0.128, which read the same JWT
-// from the older env-var name. The auth-api base URL override keeps
-// the per-task registration POST on a host clawpatrol terminates,
-// instead of leaking to auth.openai.com.
-func (e *OpenAICodexHTTPSEndpoint) EnvVars() []config.EnvVar {
-	jwt, err := mintCodexAccessToken()
-	if err != nil {
-		// Fall back silently — without the JWT codex falls back to its
-		// real ~/.codex/auth.json and clawpatrol's MITM still works
-		// for users who already ran `codex login`.
-		return nil
-	}
-	return []config.EnvVar{
-		{
-			Name:        "CODEX_ACCESS_TOKEN",
-			Value:       jwt,
-			Description: "synthetic Agent Identity JWT — routes codex >= 0.129 to chatgpt.com",
-		},
-		{
-			Name:        "CODEX_AGENT_IDENTITY",
-			Value:       jwt,
-			Description: "synthetic Agent Identity JWT — routes codex <= 0.128 to chatgpt.com",
-		},
-		{
-			Name:        "CODEX_AGENT_IDENTITY_AUTHAPI_BASE_URL",
-			Value:       "https://chatgpt.com/backend-api/wham",
-			Description: "keeps agent-task registration on a host clawpatrol MITMs",
-		},
-	}
-}
+// Env-var push-down (CODEX_ACCESS_TOKEN / CODEX_AGENT_IDENTITY /
+// CODEX_AGENT_IDENTITY_AUTHAPI_BASE_URL) moved to the
+// codex_environment plugin in internal/config/plugins/environments.
+// The JWKS responder + per-task registration POST stub still live
+// here on the endpoint runtime; the JWT mint logic is shared via
+// MintCodexAccessToken.
 
 // OpenAICodexHTTPSEndpointRuntime is part of the clawpatrol plugin API.
 type OpenAICodexHTTPSEndpointRuntime struct{}
@@ -283,6 +257,13 @@ func (k *codexJWTKeys) rsaPrivate() (*rsa.PrivateKey, error) {
 	}
 	return rk, nil
 }
+
+// MintCodexAccessToken is part of the clawpatrol plugin API.
+// Exported so the codex_environment plugin (in the environments
+// package) can produce a fresh JWT per `clawpatrol env` call
+// without duplicating the keypair loading and signing logic that
+// lives next to the openai_codex_https endpoint's JWKS responder.
+func MintCodexAccessToken() (string, error) { return mintCodexAccessToken() }
 
 // mintCodexAccessToken returns a fresh RS256-signed Agent Identity JWT
 // suitable for CODEX_ACCESS_TOKEN. The exp claim is set ten years out

@@ -535,7 +535,23 @@ endpoint "ssh" "example" {
 
 Block syntax: `environment "<type>" "<name>" { ... }`
 
-Registered types: [`custom_environment`](#environment-customenvironment).
+Registered types: [`anthropic_subscription_environment`](#environment-anthropicsubscriptionenvironment), [`codex_environment`](#environment-codexenvironment), [`custom_environment`](#environment-customenvironment), [`discord_environment`](#environment-discordenvironment), [`gemini_environment`](#environment-geminienvironment), [`github_environment`](#environment-githubenvironment).
+
+### `environment "anthropic_subscription_environment" "<name>"`
+
+_No configurable attributes._
+
+```hcl
+environment "anthropic_subscription_environment" "example" {}
+```
+
+### `environment "codex_environment" "<name>"`
+
+_No configurable attributes._
+
+```hcl
+environment "codex_environment" "example" {}
+```
 
 ### `environment "custom_environment" "<name>"`
 
@@ -554,6 +570,30 @@ environment "custom_environment" "example" {
   key = "example"
   value = "example"
 }
+```
+
+### `environment "discord_environment" "<name>"`
+
+_No configurable attributes._
+
+```hcl
+environment "discord_environment" "example" {}
+```
+
+### `environment "gemini_environment" "<name>"`
+
+_No configurable attributes._
+
+```hcl
+environment "gemini_environment" "example" {}
+```
+
+### `environment "github_environment" "<name>"`
+
+_No configurable attributes._
+
+```hcl
+environment "github_environment" "example" {}
 ```
 
 ## `rule` blocks

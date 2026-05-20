@@ -40,14 +40,6 @@ func (*GeminiAPIKey) SecretSlots() []config.SecretSlot {
 	return []config.SecretSlot{{Label: "Gemini API key"}}
 }
 
-// EnvVars is part of the clawpatrol plugin API.
-func (*GeminiAPIKey) EnvVars() []config.EnvVar {
-	return []config.EnvVar{
-		{Name: "GOOGLE_API_KEY", Value: phGemini, Description: "Gemini SDKs"},
-		{Name: "GEMINI_API_KEY", Value: phGemini, Description: "Gemini CLI"},
-	}
-}
-
 func init() {
 	var _ runtime.HTTPCredentialRuntime = (*GeminiAPIKey)(nil)
 	config.Register(&config.Plugin{

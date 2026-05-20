@@ -65,14 +65,6 @@ func githubBasicUsername(authz string) string {
 	return username
 }
 
-// EnvVars is part of the clawpatrol plugin API.
-func (*GitHubOAuth) EnvVars() []config.EnvVar {
-	return []config.EnvVar{
-		{Name: "GH_TOKEN", Value: phGitHub, Description: "gh CLI"},
-		{Name: "GITHUB_TOKEN", Value: phGitHub, Description: "GitHub Actions / SDKs"},
-	}
-}
-
 // OAuthFlow on GitHubOAuth returns the gh CLI's published OAuth
 // device flow. No client secret — device flow is designed for public
 // clients.
