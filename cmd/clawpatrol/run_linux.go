@@ -68,20 +68,6 @@ func runRun(args []string) {
 
 	warnIfOnGatewayHost()
 
-	// Mark this parent process non-dumpable BEFORE we read any tsnet
-	// auth-key bytes into memory. PR_SET_DUMPABLE=0 causes
-	// /proc/<pid>/{mem,root,fd,maps} to become root-owned, so a same-
-	// uid agent (forked under us) cannot ptrace or follow
-	// /proc/<parent_pid>/root back to the host mnt namespace to
-	// bypass the child-side tmpfs overlay. Without this, a system
-	// with kernel.yama.ptrace_scope=0 leaks the key. The child
-	// inherits DUMPABLE=0 across fork but the eventual non-suid
-	// execve into the agent resets it to 1 (kernel rule), so debug
-	// tooling inside the agent still works.
-	if err := hideParentFromAgent(); err != nil {
-		fail("PR_SET_DUMPABLE: %v", err)
-	}
-
 	// Check for Tailscale mode — uses ephemeral tsnet instead of WireGuard.
 	if mode := strings.TrimSpace(readFileSilent(filepath.Join(defaultClawpatrolDir(), "mode"))); mode == "tailscale" {
 		runRunTsnet(args)
@@ -178,6 +164,17 @@ func runRun(args []string) {
 			fail("clone: %v\n  hint: run as your normal user — clawpatrol run uses unprivileged user namespaces which root cannot enter on this distro", err)
 		}
 		fail("clone: %v\n  hint: this distro may have unprivileged user namespaces disabled.\n  enable: sudo sysctl -w kernel.unprivileged_userns_clone=1", err)
+	}
+	// Now that the child has been cloned (which AppArmor's
+	// restrict-unprivileged-userns hook would deny if the parent were
+	// already non-dumpable), lock the parent down. Closes the
+	// /proc/<parent_pid>/{root,mem} bypass on ptrace_scope=0 systems.
+	// The child hasn't exec'd the agent yet — it's blocked on
+	// wgUpR waiting for our signal — so there's no window for the
+	// agent to read parent state before this prctl lands.
+	if err := hideParentFromAgent(); err != nil {
+		_ = child.Process.Kill()
+		fail("PR_SET_DUMPABLE: %v", err)
 	}
 	_ = cSock.Close()
 	_ = wgUpR.Close()
