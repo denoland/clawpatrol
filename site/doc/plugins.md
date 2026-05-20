@@ -1,4 +1,4 @@
-# External plugins
+# Plugins
 
 Most of the protocols Claw Patrol gates — HTTPS, Postgres, ClickHouse,
 SSH, Kubernetes — ship as **built-in** plugins compiled into the
@@ -255,7 +255,7 @@ ok: gateway.hcl — 7 endpoints across 3 profile(s)
   — the author SDK package.
 - [`config/extplugin/proto/plugin.proto`](https://github.com/denoland/clawpatrol/tree/main/config/extplugin/proto)
   — gRPC service definitions if you want to bypass the SDK.
-- [Approval rules](approval-rules) — how rule conditions and
+- [Rules](rules) — how rule conditions and
   approve chains are evaluated against a request.
 - [Config reference](config-reference) — the `plugin` block and
   every other top-level setting.

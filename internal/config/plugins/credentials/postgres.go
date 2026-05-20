@@ -22,7 +22,10 @@ import (
 // credential whose `database` matches; an unset `database` field is
 // the catchall (one allowed per (profile, endpoint)).
 type PostgresCredential struct {
-	User     string `hcl:"user,optional"`
+	// User is the upstream Postgres role the gateway authenticates as.
+	User string `hcl:"user,optional"`
+	// Database limits this credential to sessions whose StartupMessage
+	// declares the same database. Empty acts as the catchall.
 	Database string `hcl:"database,optional"`
 }
 

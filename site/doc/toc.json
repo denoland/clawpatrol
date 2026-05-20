@@ -1,12 +1,12 @@
 [
   "introduction",
   "getting-started",
-  "glossary",
-  "architecture",
-  "cli",
+  "rules",
   "clawpatrol-test",
-  "security-model",
-  "approval-rules",
   "plugins",
+  "architecture",
+  "security-model",
+  "glossary",
+  "cli",
   "config-reference"
 ]

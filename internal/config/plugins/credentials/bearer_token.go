@@ -17,6 +17,8 @@ import (
 
 // BearerToken is part of the clawpatrol plugin API.
 type BearerToken struct {
+	// IdempotencyKey stamps a deterministic Idempotency-Key header on
+	// non-GET/HEAD HTTP requests when the agent did not provide one.
 	IdempotencyKey bool `hcl:"idempotency_key,optional"`
 }
 

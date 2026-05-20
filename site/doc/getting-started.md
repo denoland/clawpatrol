@@ -205,5 +205,5 @@ Claw Patrol gateway:
 - [Architecture](/docs/architecture/) — how interception works
 - [CLI](/docs/cli/) — full command reference
 - [Config reference](/docs/config-reference/) — HCL grammar
-- [Approval rules](/docs/approval-rules/) — gating writes behind a human or LLM
+- [Rules](/docs/rules/) — gating writes behind a human or LLM
 - [Security model](/docs/security-model/) — what Claw Patrol does and doesn’t protect against

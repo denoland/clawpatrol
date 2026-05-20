@@ -101,7 +101,7 @@ report verdict drift.
 clawpatrol test <config.hcl> <fixture.json | fixture-dir>
 ```
 
-See [`clawpatrol-test`](clawpatrol-test) for the fixture format and
+See [Testing](clawpatrol-test) for the fixture format and
 CI integration. Exit 0 = all match, 1 = drift, 2 = usage/config
 error.
 

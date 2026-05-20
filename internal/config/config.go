@@ -23,19 +23,29 @@ import (
 // attributes. Labeled blocks (`credential "x" "y" {}`, etc.) are the
 // things you have N of and dispatch to the plugin registry.
 type Gateway struct {
-	Listen     string `hcl:"listen,optional"`
+	// Listen is the main gateway bind address for proxied agent
+	// traffic and dashboard HTTP. Defaults to the runtime's standard
+	// listen address when unset.
+	Listen string `hcl:"listen,optional"`
+	// InfoListen is the optional diagnostics / info listener bind
+	// address. Leave unset to use the runtime default.
 	InfoListen string `hcl:"info_listen,optional"`
 	// PublicURL is the canonical externally reachable gateway URL used
 	// for generated control-plane links such as WireGuard join targets and
 	// async HITL status URLs. Runtime code normalizes away trailing slashes.
-	PublicURL  string `hcl:"public_url,optional"`
+	PublicURL string `hcl:"public_url,optional"`
+	// AdminEmail is the operator contact shown in generated onboarding
+	// and status surfaces.
 	AdminEmail string `hcl:"admin_email,optional"`
 	// StateDir is the directory holding clawpatrol.db (and anything
 	// else a plugin persists to disk under it). Defaults to
 	// ${HOME}/.clawpatrol when unset.
 	StateDir string `hcl:"state_dir,optional"`
+	// Resolver is the DNS resolver address the gateway should use for
+	// upstream lookups when the runtime needs an explicit resolver.
 	Resolver string `hcl:"resolver,optional"`
-	LogPath  string `hcl:"log_path,optional"`
+	// LogPath is an optional file path for gateway log output.
+	LogPath string `hcl:"log_path,optional"`
 
 	// DashboardOperators allowlists tailnet logins permitted to use
 	// the dashboard / management API in tailscale-control mode. Each
@@ -74,32 +84,61 @@ type Gateway struct {
 	// Format accepts time.ParseDuration strings ("30m", "168h", etc.).
 	SessionKeep string `hcl:"session_keep,optional"`
 
-	AuthKey    string `hcl:"authkey,optional"`
+	// AuthKey is the Tailscale auth key used to start the embedded
+	// tsnet node. Setting it selects Tailscale control mode.
+	AuthKey string `hcl:"authkey,optional"`
+	// ControlURL is the Tailscale control-plane URL for tsnet.
+	// Defaults to Tailscale's hosted control plane when unset.
 	ControlURL string `hcl:"control_url,optional"`
-	Hostname   string `hcl:"hostname,optional"`
-	Control    string `hcl:"control,optional"`
+	// Hostname is the device name requested for the embedded tsnet
+	// node.
+	Hostname string `hcl:"hostname,optional"`
+	// Control selects the gateway control transport. Supported values
+	// depend on the build/runtime mode; leave unset for the default.
+	Control string `hcl:"control,optional"`
 	// Funnel enables Tailscale Funnel on the embedded tsnet node so that
 	// join, webhook, and CA endpoints are reachable from the internet via
 	// the node's HTTPS cert domain (e.g. clawpatrol-gateway.ts.net:443).
 	// Only meaningful in tsnet control mode (authkey set). Tailscale's
 	// HTTPS must be enabled for the tailnet; if public_url is unset the
 	// gateway will derive it from the tsnet cert domain at startup.
-	Funnel            bool   `hcl:"funnel,optional"`
-	OAuthClientID     string `hcl:"oauth_client_id,optional"`
+	Funnel bool `hcl:"funnel,optional"`
+	// OAuthClientID is the OAuth client id used by control-plane
+	// integrations that need OAuth enrollment.
+	OAuthClientID string `hcl:"oauth_client_id,optional"`
+	// OAuthClientSecret is the OAuth client secret paired with
+	// oauth_client_id.
 	OAuthClientSecret string `hcl:"oauth_client_secret,optional"`
 	// TailscaleTags is the Tailscale device-tag list applied to keys
 	// the gateway mints for onboarded clients (`tag:client` etc.).
 	// Tailscale-only — ignored in WireGuard mode.
 	TailscaleTags []string `hcl:"tailscale_tags,optional"`
-	WGInterface   string   `hcl:"wg_interface,optional"`
-	WGEndpoint    string   `hcl:"wg_endpoint,optional"`
-	WGServerPub   string   `hcl:"wg_server_pub,optional"`
-	WGSubnetCIDR  string   `hcl:"wg_subnet_cidr,optional"`
+	// WGInterface is the WireGuard interface name the gateway creates
+	// or manages in WireGuard control mode.
+	WGInterface string `hcl:"wg_interface,optional"`
+	// WGEndpoint is the WireGuard client dial target, usually
+	// "host:port". If the host is omitted or wildcard, onboarding uses
+	// public_url's host with this port.
+	WGEndpoint string `hcl:"wg_endpoint,optional"`
+	// WGServerPub is the WireGuard server public key advertised to
+	// onboarded clients. Normally derived from gateway state.
+	WGServerPub string `hcl:"wg_server_pub,optional"`
+	// WGSubnetCIDR is the private subnet assigned to WireGuard clients.
+	WGSubnetCIDR string `hcl:"wg_subnet_cidr,optional"`
 
-	UnknownHost    string `hcl:"unknown_host,optional"`
-	LLMFailMode    string `hcl:"llm_fail_mode,optional"`
-	LLMCacheTTL    int    `hcl:"llm_cache_ttl,optional"`
-	HumanTimeout   int    `hcl:"human_timeout,optional"`
+	// UnknownHost controls traffic whose destination does not match any
+	// endpoint. "passthrough" relays it; "deny" closes it.
+	UnknownHost string `hcl:"unknown_host,optional"`
+	// LLMFailMode controls requests guarded by LLM approvers when the
+	// model call errors or times out. "closed" denies; "open" allows.
+	LLMFailMode string `hcl:"llm_fail_mode,optional"`
+	// LLMCacheTTL is the LLM decision cache lifetime in seconds.
+	LLMCacheTTL int `hcl:"llm_cache_ttl,optional"`
+	// HumanTimeout is the default human-approval timeout in seconds.
+	HumanTimeout int `hcl:"human_timeout,optional"`
+	// HumanOnTimeout is the default outcome when a human approver does
+	// not answer before timeout. Supported values are "deny" and
+	// "allow".
 	HumanOnTimeout string `hcl:"human_on_timeout,optional"`
 
 	// Plugins lists every `plugin "<name>" { source = "..." }` block
@@ -243,6 +282,7 @@ func (f FrameworkAttrs) Str(name string) string {
 // is typically a heredoc.
 type PolicyText struct {
 	Name string
+	// Text is the policy prose passed to llm_approver blocks.
 	Text string `hcl:"text"`
 }
 

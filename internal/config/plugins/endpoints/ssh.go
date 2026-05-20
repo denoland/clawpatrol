@@ -65,6 +65,7 @@ import (
 // carry only auth material (key / password / host_pubkey), never a
 // username override.
 type SSHEndpoint struct {
+	// Hosts is the set of SSH host:port pairs this endpoint intercepts.
 	Hosts []string `hcl:"hosts"`
 }
 

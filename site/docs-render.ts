@@ -16,7 +16,7 @@ import { SITE_TITLE } from "./src/sections/HeroSection";
 
 // highlight.js doesn't ship an HCL grammar, so docs that use `hcl`
 // fences fall back to plain text. Register a minimal one — enough
-// to colourise the operator-facing examples in approval-rules.md
+// to colourise the operator-facing examples in rules.md
 // and friends.
 const hclLang: LanguageFn = (h: HLJSApi) => ({
   name: "HCL",

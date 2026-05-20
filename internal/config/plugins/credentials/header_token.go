@@ -16,7 +16,10 @@ import (
 
 // HeaderToken is part of the clawpatrol plugin API.
 type HeaderToken struct {
+	// Header is the HTTP header name to overwrite with the secret value.
 	Header string `hcl:"header"`
+	// Prefix is prepended to the secret before injection, for schemes
+	// such as "Bearer " or "Token ".
 	Prefix string `hcl:"prefix,optional"`
 }
 

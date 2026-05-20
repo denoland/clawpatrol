@@ -1,4 +1,4 @@
-# Security model
+# Security Model
 
 Claw Patrol is a forward proxy that intercepts outbound traffic
 (HTTPS, SSH, Postgres, …), injects credentials on behalf of the

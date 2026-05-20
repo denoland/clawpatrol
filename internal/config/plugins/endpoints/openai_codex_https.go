@@ -46,6 +46,8 @@ import (
 
 // OpenAICodexHTTPSEndpoint is part of the clawpatrol plugin API.
 type OpenAICodexHTTPSEndpoint struct {
+	// Hosts is the chatgpt.com host list intercepted for Codex
+	// subscription-auth traffic.
 	Hosts []string `hcl:"hosts"`
 }
 

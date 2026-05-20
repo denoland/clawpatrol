@@ -25,7 +25,10 @@ import (
 // whose `database` matches; an unset `database` field is the
 // catchall (one allowed per (profile, endpoint)).
 type ClickhouseCredential struct {
-	User     string `hcl:"user,optional"`
+	// User is the upstream ClickHouse user the gateway injects.
+	User string `hcl:"user,optional"`
+	// Database limits this credential to ClickHouse requests for that
+	// database. Empty acts as the catchall.
 	Database string `hcl:"database,optional"`
 }
 

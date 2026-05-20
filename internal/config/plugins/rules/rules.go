@@ -29,10 +29,18 @@ import (
 // *cel.Env decides which variables are valid once the family has
 // been inferred from the endpoint refs.
 type RuleBody struct {
-	Endpoint  string   `hcl:"endpoint,optional"`
+	// Endpoint is the single endpoint this rule attaches to. Use
+	// endpoint or endpoints, not both.
+	Endpoint string `hcl:"endpoint,optional"`
+	// Endpoints is the list of endpoints this rule attaches to. All
+	// referenced endpoints must share one protocol family.
 	Endpoints []string `hcl:"endpoints,optional"`
-	Priority  int      `hcl:"priority,optional"`
-	Disabled  bool     `hcl:"disabled,optional"`
+	// Priority orders matching rules. Higher values run first; equal
+	// priorities preserve declaration order.
+	Priority int `hcl:"priority,optional"`
+	// Disabled keeps the rule in config while excluding it from
+	// runtime evaluation.
+	Disabled bool `hcl:"disabled,optional"`
 
 	// Condition is a CEL expression evaluated against the
 	// family-specific variable set. An absent / empty condition
@@ -50,7 +58,9 @@ type RuleBody struct {
 	// Verdict is the outcome when the rule matches. Set exactly one
 	// of `verdict` (`"allow"` / `"deny"`) or `approve`.
 	Verdict string `hcl:"verdict,optional"`
-	Reason  string `hcl:"reason,optional"`
+	// Reason is the operator-facing explanation recorded when the rule
+	// matches.
+	Reason string `hcl:"reason,optional"`
 	// Approve is a list of bare-name approver references. The
 	// approvers run in order; the request is allowed only if every
 	// stage approves. Set this *or* `verdict`, not both.

@@ -2,33 +2,21 @@
 
 ## The big picture
 
-Claw Patrol is an HTTPS-and-friends [gateway](#gateway) that sits between
-an [agent](#agent) (or any [device](#device) on its tunnel) and the
-upstream services it talks to. The gateway is driven by a single HCL
-global config that names [endpoints](#endpoint),
-[credentials](#credential), [rules](#rule), and [approvers](#approver),
-and groups credentials into [profiles](#profile) bound to specific
-devices (endpoints ride along transitively via each listed
-credential's binding).
-Per-request, the gateway intercepts the connection ([MitM](#mitm) for
-TLS, wire-protocol parsing for postgres), evaluates the matching rule,
-optionally pauses for an approver, and stamps the real secret onto the
-request before forwarding upstream. Everything user-extensible — new
-upstream protocols, new auth shapes, new approval channels — is a
-[plugin](#plugin) registered against `(kind, type)` and satisfying the
-appropriate runtime interface.
+Claw Patrol sits between an [agent](#agent) and the upstream services
+it talks to. Operators describe the system with [endpoints](#endpoint),
+[credentials](#credential), [rules](#rule), [approvers](#approver), and
+[profiles](#profile). This page defines those terms; see
+[Architecture](/docs/architecture/) for traffic flow and
+[Config Reference](/docs/config-reference/) for HCL fields.
 
 ## Concepts
 
 ### Gateway
 
-The Claw Patrol daemon. Terminates TLS via [MitM](#mitm), runs the
-global config loader and the per-request dispatcher,
-hosts the dashboard and HITL pool, and forwards traffic upstream after
-secret injection. Configured by a top-level HCL file (`gateway.hcl`)
-split into operational fields (listen address, CA dir, WireGuard
-config) and the rest of the global config blocks.
-See [Architecture](/docs/architecture/).
+The Claw Patrol daemon. It loads config, hosts the operator UI, applies
+policy, injects real credentials, and forwards allowed traffic upstream.
+See [Architecture](/docs/architecture/) for the gateway's position in a
+deployment.
 
 ### Agent
 
@@ -39,38 +27,26 @@ script. The agent never holds real credentials; it sends
 "Agent" is the *who* of a request; [device](#device) is the *where it
 came from* used by the global config.
 
-A network peer the gateway recognizes, keyed by source IP —
-typically a WireGuard tunnel address inside the configured subnet
-(default `10.55.0.0/24`) or, on macOS, the IP the Network
-Extension uses. An operator assigns each device exactly one
-[profile](#profile) at approval time, which determines which
-[endpoints](#endpoint)' rules apply to its traffic. Traffic to
-hosts outside the profile falls through to the top-level
-`unknown_host` setting (default `passthrough`).
+### Device
+
+A machine whose traffic is routed through the gateway. The gateway
+recognizes a device as the source identity for a request, and operators
+assign each device one [profile](#profile).
 
 ### Endpoint
 
 A typed network target — a name, a protocol family
 (`https` / `sql` / `k8s`), and the host(s) it claims. Endpoints are
-pure network targets: hosts plus protocol-family connection
-parameters, nothing more. The unit a [rule](#rule) attaches to.
-Built-in types: `https`, `kubernetes`, `postgres`, `clickhouse_https`,
-`clickhouse_native`. See [Configuration vocabulary](#configuration-vocabulary).
+pure network targets: hosts plus protocol-family connection parameters,
+nothing more. The unit a [rule](#rule) attaches to. See
+[Config Reference](/docs/config-reference/) for endpoint schemas.
 
 ### Credential
 
-A typed handle to a secret. Each credential names the
-[endpoint(s)](#endpoint) it authenticates against (`endpoint = X` or
-`endpoints = [X, Y]`). The HCL block carries only how-to-inject
-parameters (header name, cookie name, mTLS cert env var); the actual
-secret bytes live in the gateway's [secret store](#secret-store) and
-are fetched at injection time. When a [profile](#profile) wields more
-than one credential at the same endpoint, the profile's
-[placeholders](#placeholder) map disambiguates which one the agent
-intends. Built-in shapes include `bearer_token`, `cookie_token`,
-`header_token`, `mtls_credential`, `postgres_credential`,
-`anthropic_manual_key`, and the OAuth variants. See [Configuration
-vocabulary](#configuration-vocabulary).
+A typed handle to a secret for one or more [endpoints](#endpoint). The
+config block describes where the secret should be injected; the secret
+bytes stay in the gateway's [secret store](#secret-store). See
+[Config Reference](/docs/config-reference/) for credential schemas.
 
 ### Action
 
@@ -78,8 +54,7 @@ One unit of agent work the gateway sees and applies policy to — one
 HTTP call, one SQL query, one `kubectl` invocation, one SSH command.
 Each action targets an [endpoint](#endpoint), is gated by the matching
 [rule](#rule)'s [outcome](#outcome), and surfaces in the dashboard's
-live request feed (record kinds: `http`, `sql`, `k8s`, `ssh`) with its
-own detail page. "Action" is the operator-visible concept of "the
+live request feed. "Action" is the operator-visible concept of "the
 thing the agent did."
 
 ### Rule
@@ -88,64 +63,44 @@ One policy decision targeting one or more [endpoints](#endpoint). A
 rule has a CEL [`condition`](#cel-condition) string that matches against
 the [facets](#facet) of the rule's protocol family (inferred from its
 endpoints), an optional `credential` predicate, and an [outcome](#outcome)
-— either a literal `verdict` or an `approve = [...]` chain. Rules are
-one HCL block kind (`rule "<name>" { ... }`); the family is inferred
-from the endpoint(s) at load time, and mixed-family endpoint sets are
-a load error.
+— either a literal `verdict` or an `approve = [...]` chain. See
+[Rules](/docs/rules/) for family-specific matching and examples.
 
 ### Facet
 
 A single named matchable property exposed to a [rule](#rule)'s CEL
-[`condition`](#cel-condition). Each protocol family exposes its own
-top-level struct-typed variable: `http.method` / `http.path` /
-`http.query` / `http.headers` / `http.body` / `http.body_json`;
-`sql.verb` / `sql.tables` / `sql.functions` / `sql.statement`;
-`k8s.verb` / `k8s.resource` / `k8s.namespace` / `k8s.name` /
-`k8s.params`. Per-facet types vary — `method` and `verb` are scalar
-strings, `tables` / `functions` are lists, `query` / `headers` /
-`params` are maps, and `body_json` is parsed-JSON `dyn`.
+[`condition`](#cel-condition), such as the HTTP method, SQL tables, or
+Kubernetes resource. Each protocol family exposes its own facets. See
+[Rules](/docs/rules/) for the full list.
 
 ### CEL condition
 
 The boolean expression a [rule](#rule)'s `condition = "..."` field
 carries. CEL ([Common Expression Language](https://github.com/google/cel-spec))
-is evaluated against the [facets](#facet) of the rule's inferred
-family. Idioms: equality / membership (`http.method == 'POST'`,
-`sql.verb in ['select', 'show']`), prefix / suffix / substring
-(`k8s.name.startsWith('debug-')`, `http.body.contains('secret')`),
-regex (`sql.statement.matches('(?i)\\bpassword\\b')`), list overlap
-(`sets.intersects(sql.tables, ['users', 'audit_log'])`), and `!`
-negation. An absent or empty `condition` matches every request the
-rule's endpoints see.
+is evaluated against the [facets](#facet) of the rule's inferred family.
+An absent or empty `condition` matches every request the rule's
+endpoints see.
 
 ### Approver
 
 An entity that arbitrates an `approve = [...]` chain stage. Built-in
 types: `llm_approver` (Claude / GPT proctor that reads a
-[`policy {}` block](#configuration-vocabulary) prompt) and
+`policy` prompt) and
 `human_approver` (Slack / dashboard, with optional N-of-N quorum).
 
 ### Profile
 
 A named list of [credentials](#credential) attached to a
-[device](#device). Endpoint membership rides along as the transitive
-closure `profile → credentials → endpoints`; [rules](#rule) attach to
-endpoints and ride along too. A profile names the credentials whose
-endpoints' rules apply to that device's traffic — it is not an
-allowlist. Traffic to hosts not covered by any profile endpoint falls
-through to the top-level `unknown_host` setting (default
-`passthrough`). Profiles are how operators say "these are the
-secrets I want this device to wield."
+[device](#device). Endpoint membership follows the credentials in the
+profile, so profiles are how operators say "these are the secrets I want
+this device to wield."
 
 ### Plugin
 
 A `(kind, type)` extension — e.g. `(endpoint, https)`,
-`(credential, bearer_token)`, `(approver, human_approver)`. A plugin
-owns the body schema for its block kind, the in-memory record it
-builds, optional rule lowering, HCL emit (for round-tripping), and an
-optional [runtime](#runtime). Built-in plugins call `config.Register`
-from their package's `init()`; `config/plugins/all` blank-imports them
-all. See [Code-level vocabulary](#code-level-vocabulary).
+`(credential, bearer_token)`, `(approver, human_approver)`. Plugins add
+new config block types and the behavior behind them. See
+[Plugins](/docs/plugins/).
 
 ### Outcome
 
@@ -171,98 +126,42 @@ endpoint. The agent never holds the real key — only the placeholder.
 
 The gateway-side source of secret bytes. Default backend: environment
 variables, keyed by `CLAWPATROL_SECRET_<UPPER_NAME>` (with
-`@/path/to/file` shorthand for reading PEM bundles off disk). mTLS
-splits across `_CERT` / `_KEY` / `_CA`. Credential plugins call
-`SecretStore.Get(name)` at injection time.
+`@/path/to/file` shorthand for reading PEM bundles off disk).
 
 ### MitM
 
 "Man-in-the-middle" — the gateway's TLS interception strategy. It
-forges a per-host certificate signed by the Claw Patrol CA, terminates
-TLS itself, and re-establishes a fresh TLS connection upstream. The
-[per-host cert](#per-host-cert) is generated on demand and cached.
-This is also why the agent must trust the Claw Patrol CA. See
+allows the gateway to inspect and authorize encrypted protocol traffic
+before forwarding it upstream. See
 [Architecture › MitM TLS Interception](/docs/architecture/#mitm-tls-interception).
 
 ### Per-host cert
 
-A short-lived (30-day) EC-P-256 leaf certificate generated on demand
-for the SNI / CONNECT target, signed by the gateway CA, and cached in
-an LRU (256 entries). The forged cert is what makes the
-[MitM](#mitm) bridge work without the agent noticing.
+A certificate the gateway generates for a specific upstream host during
+[MitM](#mitm) TLS interception.
 
 ### Auth offload
 
-The gateway terminates upstream authentication on behalf of the
-[agent](#agent), so the agent never participates in the handshake.
-Today this is most visible for postgres: the gateway runs the SCRAM /
-cleartext / trust dance against the upstream using the credential's
-real `(user, password)` and synthesizes `AuthenticationOk` for the
-agent. SCRAM is designed to defeat a passive password swap, so the
-gateway has to *be* one of the peers — hence "offload" rather than
-"forward."
+The gateway performs an upstream authentication handshake on behalf of
+the [agent](#agent), using the real credential while keeping that
+credential out of the agent process.
 
-## Configuration vocabulary
+## Config mapping
 
-The HCL-level vocabulary an operator writes. Every named entity shares
-**one flat namespace** — names are globally unique across all kinds —
-and references are bare names (`endpoint = pg-writer`, never
-`postgres.pg-writer`). The two-label `kind "type" "name" { ... }` shape
-carries type information for schema dispatch; reference syntax doesn't
-repeat it. See [`config/README.md`](../../config/README.md) for the
-authoritative grammar.
+The HCL file is where these concepts are declared. This section only
+maps concepts to their config homes; use [Config Reference](/docs/config-reference/)
+for exact fields, types, and examples.
 
-### Policy defaults (top-level)
-
-Top-level singleton attributes — not a block. Global fallbacks:
-`unknown_host` (passthrough vs. deny), `llm_fail_mode`,
-`llm_cache_ttl`, `human_timeout`, `human_on_timeout`. Every plugin can
-read these from `BuildCtx` / the compiled policy on `ApproveRequest`.
-
-### `approver "<type>" "<name>" { ... }`
-
-An [approver](#approver) entity. First label = type (`llm_approver` /
-`human_approver`); second = bare name used in `approve = [...]`.
-
-### `policy "<name>" { text = "..." }`
-
-A reusable LLM proctor prompt. Referenced from an `llm_approver`
-block's `policy = my-policy` field; the approver itself is then
-named in `approve = [my-judge]` on a rule.
-
-### `endpoint "<type>" "<name>" { ... }`
-
-An [endpoint](#endpoint) entity. First label = endpoint type
-(`https` / `kubernetes` / `postgres` / `clickhouse_*`); second = bare
-name. Family-specific fields: `hosts` (for `https`), `host` + `database`
-(for `postgres`), `server` + `ca_cert` (for `kubernetes`). Endpoints
-are pure network targets — no credential refs.
-
-### `credential "<type>" "<name>" { ... }`
-
-A [credential](#credential) entity. First label = type (`bearer_token`,
-`mtls_credential`, `postgres_credential`, ...); second = bare name.
-Body declares which endpoint(s) it authenticates against via
-`endpoint = X` (singular) or `endpoints = [X, Y]` (singleton-or-list).
-Multi-credential dispatch [placeholders](#placeholder) live on the
-profile that wields the credentials, not on the credential block.
-
-### `rule "<name>" { ... }`
-
-A [rule](#rule). One label — the bare name. The protocol family is
-inferred from `endpoint(s) =`. Body carries `endpoint(s) =`,
-`priority`, an optional `credential =` predicate, an optional CEL
-`condition = "..."`, and either `verdict` or `approve`.
-
-### `profile "<name>" { credentials = [...] }`
-
-A [profile](#profile). Single-label block — bare name and a
-credential-membership list. List entries are either bare credential
-names or `{ placeholder = "PH_...", credential = name }` objects for
-credentials whose endpoint binding is ambiguous within this profile
-(i.e. the profile wields more than one credential at the same
-endpoint). Endpoint membership is the transitive closure
-`profile → credentials → endpoints`.
+| Concept | Config home |
+|---------|-------------|
+| Gateway operations | Top-level fields such as `listen`, `public_url`, WireGuard settings, and policy fallbacks. |
+| Endpoint | `endpoint "<type>" "<name>" { ... }` blocks. |
+| Credential | `credential "<type>" "<name>" { ... }` blocks plus secret-store bytes. |
+| Rule | `rule "<name>" { ... }` blocks; see [Rules](/docs/rules/) for matching semantics. |
+| Approver | `approver "<type>" "<name>" { ... }` blocks. |
+| Policy text | `policy "<name>" { text = ... }` blocks referenced by LLM approvers. |
+| Profile | `profile "<name>" { credentials = [...] }` blocks assigned to devices. |
+| Plugin | `plugin "<name>" { source = ... }` blocks that register extra endpoint, credential, approver, rule, or tunnel types. |
 
 <!-- Implementation-level vocabulary (Plugin, Runtime, the
 HTTP/Postgres/TLS/Conn runtime interfaces, ConnIndex, the WG

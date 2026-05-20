@@ -87,7 +87,7 @@ disable with `CLAWPATROL_TELEMETRY=0` or `DO_NOT_TRACK=1`.
 - [Getting Started](/docs/getting-started/) — stand up a gateway
   and join a device in 5 minutes.
 - [Architecture](/docs/architecture/) — how interception works.
-- [Approval rules](/docs/approval-rules/) — gating writes behind
+- [Rules](/docs/rules/) — gating writes behind
   a human or an LLM judge.
 - [Security model](/docs/security-model/) — what Claw Patrol does
   and doesn’t protect against.

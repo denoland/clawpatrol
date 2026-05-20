@@ -46,10 +46,17 @@ import (
 // validation. Use for self-hosted ClickHouse fronted by a private CA.
 // Default false keeps full validation against system roots.
 type ClickhouseNativeEndpoint struct {
-	Hosts                    []string `hcl:"hosts"`
-	Port                     int      `hcl:"port,optional"`
-	TLS                      bool     `hcl:"tls,optional"`
-	AcceptInvalidCertificate bool     `hcl:"accept_invalid_certificate,optional"`
+	// Hosts is the set of ClickHouse native-protocol hostnames or
+	// host:port pairs this endpoint intercepts.
+	Hosts []string `hcl:"hosts"`
+	// Port is the default upstream port for hosts that omit one.
+	// Defaults to 9000 without TLS and 9440 with TLS.
+	Port int `hcl:"port,optional"`
+	// TLS enables ClickHouse native-over-TLS on the upstream hop.
+	TLS bool `hcl:"tls,optional"`
+	// AcceptInvalidCertificate skips upstream certificate validation
+	// when TLS is enabled.
+	AcceptInvalidCertificate bool `hcl:"accept_invalid_certificate,optional"`
 }
 
 // EndpointHosts returns the endpoint's host:port list, normalized so

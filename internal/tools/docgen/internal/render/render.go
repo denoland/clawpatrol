@@ -57,7 +57,7 @@ func (r *renderer) run() (string, error) {
 }
 
 func (r *renderer) writeHeader() {
-	r.out.WriteString(`# HCL config reference
+	r.out.WriteString(`# Config Reference
 
 A clawpatrol gateway config mixes **operational** fields (top-level
 plumbing) with **policy** blocks. Operational fields are top-level
@@ -108,28 +108,41 @@ func stripIdentPrefix(doc, ident string) string {
 		{"is the ", "The "},
 		{"is a ", "A "},
 		{"is an ", "An "},
+		{"is ", ""},
 		{"are the ", "The "},
 		{"are ", ""},
 	}
 	for _, l := range linkers {
 		if strings.HasPrefix(rest, l.from) {
-			return l.to + rest[len(l.from):]
+			rest = upperFirst(l.to + rest[len(l.from):])
+			break
 		}
 	}
 	if rest == "" {
 		return rest
 	}
-	first := rest[0]
-	if first >= 'a' && first <= 'z' {
-		rest = strings.ToUpper(rest[:1]) + rest[1:]
-	}
+	rest = upperFirst(rest)
 	// Drop the stub "Is part of the clawpatrol plugin API." sentence
 	// that's auto-generated as a placeholder doc-comment on plugin
 	// types. It conveys nothing to a reader of the HCL reference.
-	if rest == "Is part of the clawpatrol plugin API." {
+	if rest == "Is part of the clawpatrol plugin API." ||
+		rest == "Part of the clawpatrol plugin API." {
 		return ""
 	}
+	rest = strings.TrimPrefix(rest, "Is part of the clawpatrol plugin API.\n\n")
+	rest = strings.TrimPrefix(rest, "Part of the clawpatrol plugin API.\n\n")
 	return rest
+}
+
+func upperFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	first := s[0]
+	if first >= 'a' && first <= 'z' {
+		return strings.ToUpper(s[:1]) + s[1:]
+	}
+	return s
 }
 
 func (r *renderer) writeOperational() {
@@ -390,8 +403,11 @@ func fieldRequired(rt reflect.Type, opts []string) bool {
 	if hasOpt(opts, "optional") {
 		return false
 	}
-	if hasOpt(opts, "block") && rt.Kind() == reflect.Pointer {
-		return false
+	if hasOpt(opts, "block") {
+		switch rt.Kind() {
+		case reflect.Pointer, reflect.Slice:
+			return false
+		}
 	}
 	return true
 }

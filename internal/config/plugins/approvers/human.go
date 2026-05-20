@@ -32,10 +32,18 @@ import (
 // Leave empty for a dashboard-only approver (no channel notification;
 // operator clicks approve/deny on the dashboard).
 type HumanApprover struct {
-	Channel          string `hcl:"channel"`
-	Credential       string `hcl:"credential,optional"`
-	Timeout          int    `hcl:"timeout,optional"`
-	RequireApprovers int    `hcl:"require_approvers,optional"`
+	// Channel is the destination channel, chat id, or equivalent
+	// notifier-specific target.
+	Channel string `hcl:"channel"`
+	// Credential references the notifier credential used to post
+	// approval requests. Leave empty for dashboard-only approval.
+	Credential string `hcl:"credential,optional"`
+	// Timeout overrides the gateway's human_timeout for this approver,
+	// in seconds.
+	Timeout int `hcl:"timeout,optional"`
+	// RequireApprovers is the number of separate human approvals
+	// required before the request is allowed.
+	RequireApprovers int `hcl:"require_approvers,optional"`
 	// SyncWaitTimeout is the HTTP hold budget before an async-capable
 	// HITL request returns 202 and moves to polling/retry-grant mode.
 	SyncWaitTimeout string `hcl:"sync_wait_timeout,optional" json:"sync_wait_timeout,omitempty"`

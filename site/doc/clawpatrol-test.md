@@ -1,6 +1,6 @@
-# `clawpatrol test`
+# Testing
 
-A regression-test CLI for policy changes. It replays recorded
+`clawpatrol test` is a regression-test CLI for policy changes. It replays recorded
 gateway actions against a candidate HCL policy and tells you whether
 any verdict drifted — a `deny` that’s now `allow`, a `pg-reads` rule
 that no longer fires, an endpoint default that quietly changed.

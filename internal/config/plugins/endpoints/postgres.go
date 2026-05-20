@@ -68,7 +68,10 @@ import (
 // fine for self-hosted pg on a private network where WG already
 // encrypts the path.
 type PostgresEndpoint struct {
-	Host    string `hcl:"host"`
+	// Host is the upstream Postgres host:port pair.
+	Host string `hcl:"host"`
+	// SSLMode controls upstream TLS negotiation. Valid values mirror
+	// libpq: "disable", "prefer", "require", and "verify-full".
 	SSLMode string `hcl:"sslmode,optional"`
 }
 

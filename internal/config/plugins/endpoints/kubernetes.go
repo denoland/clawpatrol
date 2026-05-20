@@ -24,12 +24,21 @@ import (
 // self-hosted clusters with a non-EKS credential (bearer_token,
 // mtls_credential).
 type KubernetesEndpoint struct {
-	Hosts       []string `hcl:"hosts,optional"`
-	Server      string   `hcl:"server,optional"`
-	CACert      string   `hcl:"ca_cert,optional"`
-	Description string   `hcl:"description,optional"`
-	ClusterName string   `hcl:"cluster_name,optional"`
-	Region      string   `hcl:"region,optional"`
+	// Hosts is an optional list of Kubernetes API hostnames or
+	// host:port pairs to intercept.
+	Hosts []string `hcl:"hosts,optional"`
+	// Server is the Kubernetes API server URL or host:port used when
+	// hosts is not set.
+	Server string `hcl:"server,optional"`
+	// CACert is the PEM-encoded cluster CA, often loaded with
+	// `<<file:cluster-ca.pem>>`.
+	CACert string `hcl:"ca_cert,optional"`
+	// Description is operator-facing text for dashboard display.
+	Description string `hcl:"description,optional"`
+	// ClusterName is the EKS cluster name used by aws_credential.
+	ClusterName string `hcl:"cluster_name,optional"`
+	// Region is the AWS region used by aws_credential for EKS auth.
+	Region string `hcl:"region,optional"`
 }
 
 // EndpointHosts is part of the clawpatrol plugin API.

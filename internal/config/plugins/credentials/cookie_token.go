@@ -16,6 +16,7 @@ import (
 
 // CookieToken is part of the clawpatrol plugin API.
 type CookieToken struct {
+	// CookieName is the HTTP cookie name that receives the secret value.
 	CookieName string `hcl:"cookie_name,optional"`
 }
 

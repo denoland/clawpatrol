@@ -46,9 +46,15 @@ Reply with JSON only — no markdown fences, no other text:
 // "<name>" { text = ... }` block — operator declares the prompt once
 // and reuses across multiple judges.
 type LLMApprover struct {
-	Model      string `hcl:"model"`
+	// Model is the model id used for policy judgment, such as a
+	// claude-*, gpt-*, or o*-prefixed model.
+	Model string `hcl:"model"`
+	// Credential references the HTTP credential used to authenticate
+	// the model API call.
 	Credential string `hcl:"credential"`
-	Policy     string `hcl:"policy,optional"`
+	// Policy references a policy block containing the text the model
+	// judges requests against.
+	Policy string `hcl:"policy,optional"`
 }
 
 // Approve is part of the clawpatrol plugin API.

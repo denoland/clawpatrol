@@ -16,6 +16,8 @@ import (
 
 // ClickhouseHTTPSEndpoint is part of the clawpatrol plugin API.
 type ClickhouseHTTPSEndpoint struct {
+	// Hosts is the set of ClickHouse HTTPS hostnames or host:port pairs
+	// this endpoint intercepts.
 	Hosts []string `hcl:"hosts"`
 }
 

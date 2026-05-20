@@ -17,6 +17,8 @@ import (
 
 // HTTPSEndpoint is part of the clawpatrol plugin API.
 type HTTPSEndpoint struct {
+	// Hosts is the set of HTTPS hostnames or host:port pairs this
+	// endpoint intercepts.
 	Hosts []string `hcl:"hosts"`
 }
 
