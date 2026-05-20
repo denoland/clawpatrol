@@ -84,13 +84,13 @@ human_on_timeout = "deny"
 
 # HTTPS — AI providers.
 endpoint "https" "anthropic"  { hosts = ["api.anthropic.com"] }
-endpoint "https" "openai-api" { hosts = ["api.openai.com"] }
+endpoint "https" "openai" { hosts = ["api.openai.com"] }
 endpoint "openai_codex_https" "chatgpt" {
   hosts = ["chatgpt.com"]
 }
 
 # HTTPS — SaaS.
-endpoint "https" "github-api" {
+endpoint "https" "github" {
   hosts = [
     "api.github.com",
     "raw.githubusercontent.com",
@@ -119,7 +119,7 @@ endpoint "https" "grafana" { hosts = ["mygrafana.grafana.net"] }
 # hops. Each SSH endpoint also gets its own persisted host key (in
 # sqlite); the dashboard surfaces the fingerprint to paste into
 # known_hosts.
-endpoint "ssh" "build-host" {
+endpoint "ssh" "build" {
   hosts = ["build.internal.example.com:22"]
 }
 
@@ -130,10 +130,10 @@ endpoint "ssh" "build-host" {
 # One endpoint, two credentials: readonly and writer share the same
 # upstream server. The postgres user is the dispatch discriminator —
 # the gateway picks the credential whose `user` matches the agent's
-# StartupMessage user. Rules below use `credential = pg-writer`
-# to gate writes; reads run through `pg-readonly` and bypass
+# StartupMessage user. Rules below use `credential = writer`
+# to gate writes; reads run through `readonly` and bypass
 # the write-only rules.
-endpoint "postgres" "pg" {
+endpoint "postgres" "main" {
   host = "pg.internal.example.com:5432"
 }
 
@@ -142,7 +142,7 @@ endpoint "postgres" "pg" {
 # clickhouse-client's flag) skips upstream cert validation — use
 # this for self-hosted ClickHouse fronted by a private CA. Default
 # keeps full cert validation against system roots.
-endpoint "clickhouse_native" "ch-analytics" {
+endpoint "clickhouse_native" "analytics" {
   hosts                      = ["clickhouse.internal.example.com:9440"]
   tls                        = true
   accept_invalid_certificate = true
@@ -152,8 +152,8 @@ endpoint "clickhouse_native" "ch-analytics" {
 # (the kubeconfig you mint for the agent points at this IP). The
 # gateway terminates TLS, decodes the request, and exposes verb /
 # resource / name via `k8s.*` to rules.
-endpoint "kubernetes" "k8s-dev"  { server = "198.51.100.10" }
-endpoint "kubernetes" "k8s-prod" { server = "198.51.100.11" }
+endpoint "kubernetes" "dev"  { server = "198.51.100.10" }
+endpoint "kubernetes" "prod" { server = "198.51.100.11" }
 
 # ── credentials -------------------------------------------------------
 #
@@ -185,10 +185,10 @@ credential "anthropic_manual_key" "key" {
 # codex auths against both the OpenAI API endpoint and the
 # chatgpt.com surface — list-form `endpoints` covers both.
 credential "openai_codex_oauth" "codex" {
-  endpoints = [https.openai-api, openai_codex_https.chatgpt]
+  endpoints = [https.openai, openai_codex_https.chatgpt]
 }
 credential "github_oauth" "github" {
-  endpoint = https.github-api
+  endpoint = https.github
 }
 
 # Bearer tokens — opaque "Authorization: Bearer <token>".
@@ -209,30 +209,30 @@ credential "slack_tokens" "slack" {
 
 # SSH — private key + (optional) passphrase + (optional) host_pubkey
 # live in the secret store. Paste them via the dashboard.
-credential "ssh_key" "build-host" {
-  endpoint = ssh.build-host
+credential "ssh_key" "build" {
+  endpoint = ssh.build
 }
 
 # Database credentials are user-scoped: the upstream sees the value
 # of `user`; the password lives in the secret store. The same
 # postgres endpoint carries two credentials — the agent's
 # StartupMessage user picks which one the gateway injects.
-credential "postgres_credential" "pg-readonly" {
-  endpoint = postgres.pg
+credential "postgres_credential" "readonly" {
+  endpoint = postgres.main
   user     = "agent_ro"
 }
-credential "postgres_credential" "pg-writer" {
-  endpoint = postgres.pg
+credential "postgres_credential" "writer" {
+  endpoint = postgres.main
   user     = "agent_rw"
 }
-credential "clickhouse_credential" "ch-analytics" {
-  endpoint = clickhouse_native.ch-analytics
+credential "clickhouse_credential" "analytics" {
+  endpoint = clickhouse_native.analytics
   user     = "agent"
 }
 
 # Kubernetes — client cert + key (mTLS) per cluster.
-credential "mtls_credential" "k8s-dev"  { endpoint = kubernetes.k8s-dev }
-credential "mtls_credential" "k8s-prod" { endpoint = kubernetes.k8s-prod }
+credential "mtls_credential" "dev"  { endpoint = kubernetes.dev }
+credential "mtls_credential" "prod" { endpoint = kubernetes.prod }
 
 # ── approvers ---------------------------------------------------------
 #
@@ -293,18 +293,18 @@ approver "llm_approver" "no-pii-judge" {
 
 # HTTPS — read-only allow, mutations through human approval.
 rule "github-reads" {
-  endpoint  = https.github-api
+  endpoint  = https.github
   condition = "http.method in ['GET', 'HEAD']"
   verdict   = "allow"
 }
 rule "github-writes" {
-  endpoint  = https.github-api
+  endpoint  = https.github
   condition = "http.method in ['POST', 'PUT', 'PATCH', 'DELETE']"
   approve   = [human_approver.ops]
 }
 
-# Postgres — layered defense. All rules attach to the single `pg`
-# endpoint; the `credential = pg-writer` predicate scopes
+# Postgres — layered defense. All rules attach to the single `main`
+# endpoint; the `credential = writer` predicate scopes
 # writer-only rules to traffic dispatched against that credential.
 #
 #   1. Hard deny: DDL / GRANT / REVOKE / VACUUM. (any credential)
@@ -314,7 +314,7 @@ rule "github-writes" {
 #   5. Plain reads: allow.
 #   6. Catch-all: deny.
 rule "pg-banned-verbs" {
-  endpoint = postgres.pg
+  endpoint = postgres.main
   priority = 100
   condition = <<-CEL
     sql.verb in [
@@ -326,7 +326,7 @@ rule "pg-banned-verbs" {
   reason  = "Schema changes land via migration PR, not via the agent"
 }
 rule "pg-banned-functions" {
-  endpoint = postgres.pg
+  endpoint = postgres.main
   priority = 100
   condition = <<-CEL
     sets.intersects(sql.functions, [
@@ -338,7 +338,7 @@ rule "pg-banned-functions" {
   reason  = "Filesystem-reaching functions are off-limits"
 }
 rule "pg-pii-read" {
-  endpoint  = postgres.pg
+  endpoint  = postgres.main
   priority  = 50
   condition = <<-CEL
     sql.verb == 'select'
@@ -347,18 +347,18 @@ rule "pg-pii-read" {
   approve = [llm_approver.no-pii-judge]
 }
 rule "pg-writes" {
-  endpoint   = postgres.pg
-  credential = postgres_credential.pg-writer
+  endpoint   = postgres.main
+  credential = postgres_credential.writer
   condition  = "sql.verb in ['insert', 'update', 'delete', 'merge']"
   approve    = [human_approver.support-ops]
 }
 rule "pg-reads" {
-  endpoint  = postgres.pg
+  endpoint  = postgres.main
   condition = "sql.verb in ['select', 'show', 'explain', 'describe']"
   verdict   = "allow"
 }
 rule "pg-default" {
-  endpoint = postgres.pg
+  endpoint = postgres.main
   priority = -100
   verdict  = "deny"
   reason   = "Unknown SQL verb — explicit allow rule required"
@@ -368,14 +368,14 @@ rule "pg-default" {
 # secret values never leave the cluster; no interactive shells (the
 # rule engine can't evaluate stdin streams).
 rule "k8s-no-secrets" {
-  endpoints = [kubernetes.k8s-dev, kubernetes.k8s-prod]
+  endpoints = [kubernetes.dev, kubernetes.prod]
   priority  = 1000
   condition = "k8s.resource == 'secrets'"
   verdict   = "deny"
   reason    = "Secret values must not leave the cluster via the agent"
 }
 rule "k8s-no-interactive" {
-  endpoints = [kubernetes.k8s-dev, kubernetes.k8s-prod]
+  endpoints = [kubernetes.dev, kubernetes.prod]
   priority  = 1000
   condition = <<-CEL
     k8s.resource in ['pods/exec', 'pods/attach']
@@ -385,12 +385,12 @@ rule "k8s-no-interactive" {
   reason  = "Interactive shells can't be evaluated by the rules engine"
 }
 rule "k8s-reads" {
-  endpoints = [kubernetes.k8s-dev, kubernetes.k8s-prod]
+  endpoints = [kubernetes.dev, kubernetes.prod]
   condition = "k8s.verb in ['get', 'list', 'watch']"
   verdict   = "allow"
 }
 rule "k8s-debug-pods" {
-  endpoints = [kubernetes.k8s-dev, kubernetes.k8s-prod]
+  endpoints = [kubernetes.dev, kubernetes.prod]
   condition = <<-CEL
     k8s.verb in ['create', 'delete']
     && k8s.resource == 'pods'
@@ -399,7 +399,7 @@ rule "k8s-debug-pods" {
   verdict = "allow"
 }
 rule "k8s-default" {
-  endpoints = [kubernetes.k8s-dev, kubernetes.k8s-prod]
+  endpoints = [kubernetes.dev, kubernetes.prod]
   priority  = -100
   verdict   = "deny"
 }
@@ -457,8 +457,8 @@ profile "data" {
   credentials = [
     anthropic_oauth_subscription.claude,
     github_oauth.github,
-    postgres_credential.pg-readonly,
-    clickhouse_credential.ch-analytics,
+    postgres_credential.readonly,
+    clickhouse_credential.analytics,
   ]
 }
 
@@ -467,9 +467,9 @@ profile "platform" {
     anthropic_oauth_subscription.claude,
     github_oauth.github,
     slack_tokens.slack,
-    postgres_credential.pg-writer,
-    ssh_key.build-host,
-    mtls_credential.k8s-dev,
-    mtls_credential.k8s-prod,
+    postgres_credential.writer,
+    ssh_key.build,
+    mtls_credential.dev,
+    mtls_credential.prod,
   ]
 }

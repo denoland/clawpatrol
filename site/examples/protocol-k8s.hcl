@@ -2,7 +2,7 @@
 # allows ls / ps / df, denies env dumps, sensitive file reads, and
 # anything touching pod tokens or container sockets.
 rule "k8s-exec-content-check" {
-  endpoints = [kubernetes.k8s-dev, kubernetes.k8s-prod]
+  endpoints = [kubernetes.dev, kubernetes.prod]
   priority  = 500
   condition = "k8s.resource == 'pods/exec'"
   approve   = [llm_approver.k8s-exec-content-judge]
@@ -21,16 +21,16 @@ policy "k8s-exec-content" {
   EOT
 }
 
-endpoint "kubernetes" "k8s-dev" {
+endpoint "kubernetes" "dev" {
   server = "k8s-dev.example"
 }
 
-endpoint "kubernetes" "k8s-prod" {
+endpoint "kubernetes" "prod" {
   server = "k8s-prod.example"
 }
 
 credential "mtls_credential" "k8s" {
-  endpoints = [kubernetes.k8s-dev, kubernetes.k8s-prod]
+  endpoints = [kubernetes.dev, kubernetes.prod]
 }
 credential "anthropic_manual_key" "key" {}
 
