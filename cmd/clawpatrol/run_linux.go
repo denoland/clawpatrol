@@ -68,6 +68,20 @@ func runRun(args []string) {
 
 	warnIfOnGatewayHost()
 
+	// Mark this parent process non-dumpable BEFORE we read any tsnet
+	// auth-key bytes into memory. PR_SET_DUMPABLE=0 causes
+	// /proc/<pid>/{mem,root,fd,maps} to become root-owned, so a same-
+	// uid agent (forked under us) cannot ptrace or follow
+	// /proc/<parent_pid>/root back to the host mnt namespace to
+	// bypass the child-side tmpfs overlay. Without this, a system
+	// with kernel.yama.ptrace_scope=0 leaks the key. The child
+	// inherits DUMPABLE=0 across fork but the eventual non-suid
+	// execve into the agent resets it to 1 (kernel rule), so debug
+	// tooling inside the agent still works.
+	if err := hideParentFromAgent(); err != nil {
+		fail("PR_SET_DUMPABLE: %v", err)
+	}
+
 	// Check for Tailscale mode — uses ephemeral tsnet instead of WireGuard.
 	if mode := strings.TrimSpace(readFileSilent(filepath.Join(defaultClawpatrolDir(), "mode"))); mode == "tailscale" {
 		runRunTsnet(args)
@@ -395,6 +409,24 @@ func clearAmbientCaps() error {
 		unix.PR_CAP_AMBIENT, unix.PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0, 0)
 	if errno != 0 {
 		return fmt.Errorf("prctl PR_CAP_AMBIENT_CLEAR_ALL: %w", errno)
+	}
+	return nil
+}
+
+// hideParentFromAgent marks the parent process non-dumpable. Effect:
+// /proc/<parent_pid>/{mem,root,fd,maps,environ} flip to root:root
+// ownership, so a same-uid agent (forked under us) is denied ptrace
+// attach and cannot dereference /proc/<parent_pid>/root to reach the
+// host mnt namespace's view of ~/.clawpatrol/. Closes the
+// kernel.yama.ptrace_scope=0 bypass of the child-side tmpfs overlay.
+// The child inherits DUMPABLE=0 across fork; execve into the agent
+// resets it to 1, so debug tooling targeting the agent itself still
+// works.
+func hideParentFromAgent() error {
+	_, _, errno := unix.RawSyscall6(unix.SYS_PRCTL,
+		unix.PR_SET_DUMPABLE, 0, 0, 0, 0, 0)
+	if errno != 0 {
+		return fmt.Errorf("prctl PR_SET_DUMPABLE 0: %w", errno)
 	}
 	return nil
 }
