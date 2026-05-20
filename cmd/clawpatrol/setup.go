@@ -216,14 +216,23 @@ func preJoinFetchCA(gateway, caDir string) (joinSetup, error) {
 // only after the operator's dashboard approval has confirmed the
 // CA fingerprint matches — so the CA we install can't be one
 // substituted by an on-path attacker at fetch time.
-func finishJoinSetup(s *joinSetup, skipTrust bool) {
+//
+// installShellRC fires only in --whole-machine mode. In
+// per-process mode every agent picks up CA + push-down vars
+// through `clawpatrol run`, so the shell-rc shim is dead weight
+// — and worse, the `clawpatrol env` it eval's on every new
+// terminal would dial the gateway's tailnet IP, which the
+// parent shell can't reach (only the NE can).
+func finishJoinSetup(s *joinSetup, skipTrust, wholeMachine bool) {
 	if s.caPath == "" {
 		return
 	}
 	if _, err := os.Stat(s.caPath); err != nil {
 		// CA not fetched yet (Tailscale mode defers to runLogin). Skip
 		// trust install; runLogin will fetch + install from the tailnet.
-		installShellRC() //nolint:errcheck
+		if wholeMachine {
+			installShellRC() //nolint:errcheck
+		}
 		return
 	}
 	if !skipTrust {
@@ -235,8 +244,10 @@ func finishJoinSetup(s *joinSetup, skipTrust bool) {
 	} else {
 		s.caHint = manualTrustHint(s.caPath)
 	}
-	if err := installShellRC(); err == nil {
-		s.shellRC = true
+	if wholeMachine {
+		if err := installShellRC(); err == nil {
+			s.shellRC = true
+		}
 	}
 }
 
@@ -991,7 +1002,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	// into the system trust store. Doing this earlier would
 	// have meant trusting a CA the operator hadn't vouched
 	// for, which is exactly the on-path attack we're closing.
-	finishJoinSetup(setup, skipTrust)
+	finishJoinSetup(setup, skipTrust, wholeMachine)
 	// Persist the per-peer bearer the gateway minted alongside the
 	// wg conf. Lives next to ca.crt — same dir the env-pushdown
 	// fetcher reads. Best-effort; missing file means env-pushdown
@@ -1285,8 +1296,10 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 			}
 		}
 	}
-	if err := installShellRC(); err == nil {
-		setup.shellRC = true
+	if wholeMachine {
+		if err := installShellRC(); err == nil {
+			setup.shellRC = true
+		}
 	}
 
 	items := []string{"Joined tailnet as " + tailIP}
