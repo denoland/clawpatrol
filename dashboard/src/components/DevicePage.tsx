@@ -3,12 +3,13 @@ import {
   deleteAgent,
   getStatus,
   listProfiles,
+  type ProfileInfo,
   setDeviceProfile,
   type Agent,
   type Integration,
 } from "../lib/api";
 import { fmtBytes } from "../lib/format";
-import { DeviceIcon } from "./Logos";
+import { DeviceIcon, IntegrationIcon } from "./Logos";
 import { IntegrationsCards } from "./IntegrationsCards";
 import { LiveRequests } from "./LiveRequests";
 import { Main } from "./Main";
@@ -35,7 +36,7 @@ export function DevicePage({
   onRefresh: () => void;
 }) {
   const a = useMemo(() => agents.find((x) => x.ip === ip) ?? null, [agents, ip]);
-  const [profiles, setProfiles] = useState<string[]>([]);
+  const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileErr, setProfileErr] = useState<string | null>(null);
   // Per-profile credential list — server-filters to only the
@@ -46,9 +47,23 @@ export function DevicePage({
   const [profileCreds, setProfileCreds] = useState<Integration[] | null>(null);
   useEffect(() => {
     listProfiles()
-      .then((p) => setProfiles(p ?? []))
+      .then((list) => setProfiles(list ?? []))
       .catch(() => setProfiles([]));
   }, []);
+  const profileNames = useMemo(() => profiles.map((p) => p.name), [profiles]);
+  // Credentials declared on this device's profile in gateway.hcl —
+  // resolved as device → profile → credentials. Renders as pills in
+  // the device header card so operators can see (and connect) the
+  // exact set this device's endpoints reference.
+  const credentialIds = useMemo(() => {
+    if (!a?.profile) return [] as string[];
+    return profiles.find((p) => p.name === a.profile)?.credentials ?? [];
+  }, [profiles, a?.profile]);
+  const integrationById = useMemo(() => {
+    const m = new Map<string, Integration>();
+    for (const i of integrations) m.set(i.id, i);
+    return m;
+  }, [integrations]);
   const devProfile = a?.profile;
   useEffect(() => {
     if (!devProfile) {
@@ -102,7 +117,7 @@ export function DevicePage({
           <>
             <ProfilePicker
               current={a.profile ?? ""}
-              profiles={profiles}
+              profiles={profileNames}
               saving={profileSaving}
               err={profileErr}
               onPick={async (next) => {
@@ -203,6 +218,32 @@ export function DevicePage({
             </div>
           </div>
         </div>
+        {credentialIds.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 px-5 pb-4">
+            {credentialIds.map((c) => {
+              const intg = integrationById.get(c);
+              const connected = intg?.connected ?? false;
+              return (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => onConnect(c)}
+                  title={
+                    connected
+                      ? `${intg?.name ?? c} — connected. Click to manage.`
+                      : `${intg?.name ?? c} — not connected. Click to connect.`
+                  }
+                  className={`inline-flex items-center gap-1.5 pl-1.5 pr-2.5 py-1 bg-canvas border-2 rounded-full text-xs hover:bg-canvas-muted transition-colors ${
+                    connected ? "border-success-500" : "border-canvas-dark"
+                  }`}
+                >
+                  <IntegrationIcon id={c} type={intg?.type} className="h-4 w-4 shrink-0" />
+                  <span className="font-medium truncate">{intg?.name ?? c}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </section>
 
       {/* agents (sessions) running on this device */}

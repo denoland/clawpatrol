@@ -981,10 +981,55 @@ func (w *webMux) apiAgentProfile(rw http.ResponseWriter, r *http.Request) {
 	writeJSON(rw, map[string]any{"ok": true, "ip": ip, "profile": profile})
 }
 
-// apiProfiles lists declared profile names so the dashboard can
-// render a profile picker per device.
+// ProfileInfo is the JSON shape /api/profiles returns. Beyond the
+// declared name, it carries the credential ids the profile resolves
+// through its endpoints + tunnels. The dashboard's device page uses
+// Credentials to render the per-profile credential pill row without
+// a second round-trip.
+type ProfileInfo struct {
+	Name        string   `json:"name"`
+	Credentials []string `json:"credentials"`
+}
+
+// apiProfiles lists declared profiles with the metadata the dashboard
+// needs to render both the per-device profile picker and the per-
+// profile credential pill row. Profiles are returned in declaration
+// order; credentials within each profile are sorted for stable output.
 func (w *webMux) apiProfiles(rw http.ResponseWriter, _ *http.Request) {
-	writeJSON(rw, orderedProfileNames(w.g.cfg.Policy))
+	writeJSON(rw, profileInfos(w.g.cfg.Policy, w.g.Policy()))
+}
+
+func profileInfos(policy *config.Policy, compiled *config.CompiledPolicy) []ProfileInfo {
+	names := orderedProfileNames(policy)
+	out := make([]ProfileInfo, 0, len(names))
+	for _, name := range names {
+		info := ProfileInfo{Name: name, Credentials: []string{}}
+		if compiled != nil {
+			if prof, ok := compiled.Profiles[name]; ok {
+				creds := map[string]bool{}
+				for _, ep := range prof.Endpoints {
+					for _, ent := range ep.Credentials {
+						if ent != nil && ent.Symbol != nil {
+							creds[ent.Symbol.Name] = true
+						}
+					}
+					for tun := ep.Tunnel; tun != nil; tun = tun.Via {
+						if tun.Credential != nil && tun.Credential.Symbol != nil {
+							creds[tun.Credential.Symbol.Name] = true
+						}
+					}
+				}
+				credNames := make([]string, 0, len(creds))
+				for c := range creds {
+					credNames = append(credNames, c)
+				}
+				sort.Strings(credNames)
+				info.Credentials = credNames
+			}
+		}
+		out = append(out, info)
+	}
+	return out
 }
 
 // RuleSummary is the JSON shape the dashboard renders for each rule.
