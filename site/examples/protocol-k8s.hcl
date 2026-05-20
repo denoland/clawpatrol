@@ -2,10 +2,10 @@
 # allows ls / ps / df, denies env dumps, sensitive file reads, and
 # anything touching pod tokens or container sockets.
 rule "k8s-exec-content-check" {
-  endpoints = [k8s-dev, k8s-prod]
+  endpoints = [kubernetes.k8s-dev, kubernetes.k8s-prod]
   priority  = 500
   condition = "k8s.resource == 'pods/exec'"
-  approve   = [k8s-exec-content-judge]
+  approve   = [llm_approver.k8s-exec-content-judge]
 }
 
 # ===== harness =====
@@ -21,23 +21,23 @@ policy "k8s-exec-content" {
   EOT
 }
 
-credential "mtls_credential" "k8s-cred" {}
+endpoint "kubernetes" "k8s-dev" {
+  server = "k8s-dev.example"
+}
+
+endpoint "kubernetes" "k8s-prod" {
+  server = "k8s-prod.example"
+}
+
+credential "mtls_credential" "k8s" {
+  endpoints = [kubernetes.k8s-dev, kubernetes.k8s-prod]
+}
 credential "anthropic_manual_key" "anthropic-key" {}
 
 approver "llm_approver" "k8s-exec-content-judge" {
   model      = "claude-haiku-4-5-20251001"
-  credential = anthropic-key
-  policy     = k8s-exec-content
+  credential = anthropic_manual_key.anthropic-key
+  policy     = policy.k8s-exec-content
 }
 
-endpoint "kubernetes" "k8s-dev" {
-  server     = "k8s-dev.example"
-  credential = k8s-cred
-}
-
-endpoint "kubernetes" "k8s-prod" {
-  server     = "k8s-prod.example"
-  credential = k8s-cred
-}
-
-profile "default" { endpoints = [k8s-dev, k8s-prod] }
+profile "default" { credentials = [mtls_credential.k8s] }

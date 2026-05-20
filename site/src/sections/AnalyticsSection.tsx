@@ -5,7 +5,7 @@ export function AnalyticsSection() {
   return (
     <section class="pt-20 pb-16 sm:pt-32 sm:pb-28">
       <div class="max-w-5xl mx-auto px-6 sm:px-8">
-        <SectionLabel>What you've been missing</SectionLabel>
+        <SectionLabel>What you’ve been missing</SectionLabel>
         <h3 class="text-3xl sm:text-4xl lg:text-5xl font-display text-center text-balance">
           See everything your agents do in the Claw Patrol dashboard
         </h3>

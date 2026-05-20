@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -97,7 +98,13 @@ func waitTsnetUp(s *tsnet.Server) (netip.Addr, error) {
 // device's profile for credential dispatch and seeds a real device row
 // (one per machine, not per run). Called over tsnet (tailnet-only endpoint).
 func registerEphemeralTsnetIP(client *http.Client, gwURL, token, tsIP string) error {
-	hn, _ := os.Hostname()
+	// Prefer the operator-supplied --hostname from `clawpatrol join`
+	// (persisted to <ca-dir>/hostname). Fall back to os.Hostname() for
+	// older joins that didn't write the file.
+	hn := strings.TrimSpace(readFileSilent(filepath.Join(defaultClawpatrolDir(), "hostname")))
+	if hn == "" {
+		hn, _ = os.Hostname()
+	}
 	u := gwURL + "/api/peer/ephemeral/tsnet/register?ip=" + tsIP
 	if hn != "" {
 		u += "&hostname=" + hn

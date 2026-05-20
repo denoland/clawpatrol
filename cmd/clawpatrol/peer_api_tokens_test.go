@@ -43,33 +43,6 @@ func TestPeerAPITokenRoundTrip(t *testing.T) {
 	}
 }
 
-// TestForgetPeerAPITokens covers the cleanup path the dashboard's
-// revoke-device flow will eventually use.
-func TestForgetPeerAPITokens(t *testing.T) {
-	db, err := OpenDB(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	t1, _ := mintAndPersistPeerAPIToken(db, "10.55.0.1")
-	t2, _ := mintAndPersistPeerAPIToken(db, "10.55.0.1")
-	t3, _ := mintAndPersistPeerAPIToken(db, "10.55.0.2")
-	if peerIPForAPIToken(db, t1) == "" || peerIPForAPIToken(db, t2) == "" || peerIPForAPIToken(db, t3) == "" {
-		t.Fatal("setup")
-	}
-	forgetPeerAPITokens(db, "10.55.0.1")
-	if peerIPForAPIToken(db, t1) != "" {
-		t.Errorf("t1 still resolves after forget")
-	}
-	if peerIPForAPIToken(db, t2) != "" {
-		t.Errorf("t2 still resolves after forget")
-	}
-	if peerIPForAPIToken(db, t3) != "10.55.0.2" {
-		t.Errorf("t3 lost: forget cascaded too far")
-	}
-}
-
 // TestBearerFromAuthHeader covers the trivial parser.
 func TestBearerFromAuthHeader(t *testing.T) {
 	cases := []struct {

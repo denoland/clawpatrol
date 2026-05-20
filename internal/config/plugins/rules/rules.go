@@ -29,10 +29,18 @@ import (
 // *cel.Env decides which variables are valid once the family has
 // been inferred from the endpoint refs.
 type RuleBody struct {
-	Endpoint  string   `hcl:"endpoint,optional"`
+	// Endpoint is the single endpoint this rule attaches to. Use
+	// endpoint or endpoints, not both.
+	Endpoint string `hcl:"endpoint,optional"`
+	// Endpoints is the list of endpoints this rule attaches to. All
+	// referenced endpoints must share one protocol family.
 	Endpoints []string `hcl:"endpoints,optional"`
-	Priority  int      `hcl:"priority,optional"`
-	Disabled  bool     `hcl:"disabled,optional"`
+	// Priority orders matching rules. Higher values run first; equal
+	// priorities preserve declaration order.
+	Priority int `hcl:"priority,optional"`
+	// Disabled keeps the rule in config while excluding it from
+	// runtime evaluation.
+	Disabled bool `hcl:"disabled,optional"`
 
 	// Condition is a CEL expression evaluated against the
 	// family-specific variable set. An absent / empty condition
@@ -50,7 +58,9 @@ type RuleBody struct {
 	// Verdict is the outcome when the rule matches. Set exactly one
 	// of `verdict` (`"allow"` / `"deny"`) or `approve`.
 	Verdict string `hcl:"verdict,optional"`
-	Reason  string `hcl:"reason,optional"`
+	// Reason is the operator-facing explanation recorded when the rule
+	// matches.
+	Reason string `hcl:"reason,optional"`
 	// Approve is a list of bare-name approver references. The
 	// approvers run in order; the request is allowed only if every
 	// stage approves. Set this *or* `verdict`, not both.
@@ -299,14 +309,6 @@ func requireKind(ctx *config.BuildCtx, name string, kind config.Kind, ruleName, 
 	if ctx.Symbols.Get(kind, name) != nil {
 		return nil
 	}
-	if alt := ctx.Symbols.GetAny(name); alt != nil {
-		return &hcl.Diagnostic{
-			Severity: hcl.DiagError,
-			Summary:  fmt.Sprintf("Wrong reference kind for %q", name),
-			Detail:   fmt.Sprintf("Rule %q %s expects a %s but %q is a %s.", ruleName, what, kind, name, alt.Kind),
-			Subject:  &ctx.Block.DefRange,
-		}
-	}
 	return &hcl.Diagnostic{
 		Severity: hcl.DiagError,
 		Summary:  fmt.Sprintf("Unknown %s %q", kind, name),
@@ -322,10 +324,11 @@ func requireKind(ctx *config.BuildCtx, name string, kind config.Kind, ruleName, 
 // idents.
 func emitRule(body any, _ string, b *hclwrite.Body) {
 	r := body.(*Rule)
+	ri := config.EmitRefIndex()
 	if len(r.Endpoints) == 1 {
-		config.SetIdent(b, "endpoint", r.Endpoints[0])
+		config.SetIdent(b, "endpoint", ri.Ref(config.KindEndpoint, r.Endpoints[0]))
 	} else if len(r.Endpoints) > 1 {
-		config.SetIdentList(b, "endpoints", r.Endpoints)
+		config.SetIdentList(b, "endpoints", ri.Refs(config.KindEndpoint, r.Endpoints))
 	}
 	if r.Priority != 0 {
 		b.SetAttributeValue("priority", cty.NumberIntVal(int64(r.Priority)))
@@ -334,7 +337,7 @@ func emitRule(body any, _ string, b *hclwrite.Body) {
 		b.SetAttributeValue("disabled", cty.True)
 	}
 	if r.Credential != "" {
-		config.SetIdent(b, "credential", r.Credential)
+		config.SetIdent(b, "credential", ri.Ref(config.KindCredential, r.Credential))
 	}
 	if r.Condition != "" {
 		b.SetAttributeValue("condition", cty.StringVal(r.Condition))
@@ -346,12 +349,12 @@ func emitRule(body any, _ string, b *hclwrite.Body) {
 		b.SetAttributeValue("reason", cty.StringVal(r.Reason))
 	}
 	if len(r.Approve) > 0 {
-		b.SetAttributeRaw("approve", approveToTokens(r.Approve))
+		b.SetAttributeRaw("approve", approveToTokens(r.Approve, ri))
 	}
 }
 
-// approveToTokens emits the approve list as bare-name idents.
-func approveToTokens(stages []config.ApproveStage) hclwrite.Tokens {
+// approveToTokens emits the approve list as dotted approver refs.
+func approveToTokens(stages []config.ApproveStage, ri *config.RefIndex) hclwrite.Tokens {
 	tokens := hclwrite.Tokens{
 		{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")},
 	}
@@ -359,7 +362,7 @@ func approveToTokens(stages []config.ApproveStage) hclwrite.Tokens {
 		if i > 0 {
 			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(", ")})
 		}
-		tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(s.Name)})
+		tokens = append(tokens, config.TraversalTokens(ri.Ref(config.KindApprover, s.Name))...)
 	}
 	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")})
 	return tokens

@@ -72,11 +72,12 @@ func (*TelegramBotToken) SecretSlots() []config.SecretSlot {
 func init() {
 	var _ runtime.HTTPCredentialRuntime = (*TelegramBotToken)(nil)
 	config.Register(&config.Plugin{
-		Kind:    config.KindCredential,
-		Type:    "telegram_bot_token",
-		New:     newer[TelegramBotToken](),
-		Runtime: (*TelegramBotToken)(nil),
-		Build:   passthrough,
-		Emit:    emptyEmit,
+		Kind:           config.KindCredential,
+		Type:           "telegram_bot_token",
+		Disambiguators: []string{"placeholder"},
+		New:            newer[TelegramBotToken](),
+		Runtime:        (*TelegramBotToken)(nil),
+		Build:          passthrough,
+		Emit:           emptyEmit,
 	})
 }

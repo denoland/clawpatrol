@@ -28,11 +28,30 @@ export function AddDeviceModal({
 
 function Step({ n, label, cmd }: { n: number; label: string; cmd: string }) {
   const [copied, setCopied] = useState(false);
-  function copy() {
-    navigator.clipboard.writeText(cmd).then(() => {
+  async function copy() {
+    const flash = () => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    });
+    };
+    try {
+      await navigator.clipboard.writeText(cmd);
+      flash();
+      return;
+    } catch {
+      // Fall through to the legacy path below. Reasons writeText can
+      // throw: non-secure context, page not focused, browser policy.
+    }
+    const ta = document.createElement("textarea");
+    ta.value = cmd;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      if (document.execCommand("copy")) flash();
+    } finally {
+      document.body.removeChild(ta);
+    }
   }
   return (
     <div className="space-y-1">

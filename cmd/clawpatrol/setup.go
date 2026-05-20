@@ -1095,6 +1095,13 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 			}
 		}
 		_ = os.WriteFile(filepath.Join(clawDir, "mode"), []byte("tailscale\n"), 0o600)
+		// Persist the join-time --hostname so `clawpatrol run` can
+		// register each ephemeral peer under the operator-chosen name
+		// instead of os.Hostname() (which on most VMs is the system
+		// login, not the intended bot identity).
+		if hn != "" {
+			_ = os.WriteFile(filepath.Join(clawDir, "hostname"), []byte(hn+"\n"), 0o600)
+		}
 		if tailnetGWHost != "" {
 			_ = os.WriteFile(filepath.Join(clawDir, "tailnet-gateway"), []byte(tailnetGWHost+"\n"), 0o600)
 		}
@@ -1103,10 +1110,32 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 			tailnetURL := fmt.Sprintf("http://%s:8080", gatewayIP)
 			_ = os.WriteFile(filepath.Join(clawDir, "tailnet-url"), []byte(tailnetURL+"\n"), 0o600)
 		}
-		// Persist reusable ephemeral auth_key so each `clawpatrol run` can
-		// start a fresh ephemeral tsnet node without a Funnel-exposed
-		// peer-API call (which we intentionally block).
-		_ = os.WriteFile(filepath.Join(clawDir, "tsnet-auth-key"), []byte(authKey+"\n"), 0o600)
+		// tsnet auth-key persistence — platform split.
+		//
+		// macOS: hand the key directly to the NE extension via
+		// NETransparentProxyManager's providerConfiguration (system-
+		// owned VPN preferences storage). The user-side CLI does not
+		// keep a copy on disk, so an agent inside `clawpatrol run`
+		// cannot read it back from $HOME. Subsequent runs invoke
+		// `start-tsnet` with an empty authKey arg; the container app
+		// reads the stored value from existing preferences.
+		//
+		// Linux: parent process reads the file at each `clawpatrol run`
+		// and spins up its own tsnet.Server. The child mnt namespace
+		// overlays an empty tmpfs on ~/.clawpatrol/ before exec'ing
+		// the agent (see run_tsnet_linux.go), so the agent still can't
+		// read the key — same machine-binding property as macOS, just
+		// enforced by mount-ns isolation instead of NE storage.
+		if runtime.GOOS == "darwin" {
+			c := exec.Command(macHelperPath, "start-tsnet",
+				authKey, tailnetControlURL, tailnetGWHost, gatewayPort, apiToken, hn)
+			c.Stdout, c.Stderr = os.Stdout, os.Stderr
+			if err := c.Run(); err != nil {
+				return false, fmt.Errorf("macHelper start-tsnet: %w", err)
+			}
+		} else {
+			_ = os.WriteFile(filepath.Join(clawDir, "tsnet-auth-key"), []byte(authKey+"\n"), 0o600)
+		}
 		if gatewayPort != "" {
 			_ = os.WriteFile(filepath.Join(clawDir, "gateway-port"), []byte(gatewayPort+"\n"), 0o600)
 		}
@@ -1192,6 +1221,9 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	// Write mode marker files so `clawpatrol run` can detect Tailscale mode.
 	clawDir := filepath.Dir(setup.caPath)
 	_ = os.WriteFile(filepath.Join(clawDir, "mode"), []byte("tailscale\n"), 0o600)
+	if hn != "" {
+		_ = os.WriteFile(filepath.Join(clawDir, "hostname"), []byte(hn+"\n"), 0o600)
+	}
 	if tailnetGWHost != "" {
 		_ = os.WriteFile(filepath.Join(clawDir, "tailnet-gateway"), []byte(tailnetGWHost+"\n"), 0o600)
 	}

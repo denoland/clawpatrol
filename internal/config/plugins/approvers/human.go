@@ -32,10 +32,18 @@ import (
 // Leave empty for a dashboard-only approver (no channel notification;
 // operator clicks approve/deny on the dashboard).
 type HumanApprover struct {
-	Channel          string `hcl:"channel"`
-	Credential       string `hcl:"credential,optional"`
-	Timeout          int    `hcl:"timeout,optional"`
-	RequireApprovers int    `hcl:"require_approvers,optional"`
+	// Channel is the destination channel, chat id, or equivalent
+	// notifier-specific target.
+	Channel string `hcl:"channel"`
+	// Credential references the notifier credential used to post
+	// approval requests. Leave empty for dashboard-only approval.
+	Credential string `hcl:"credential,optional"`
+	// Timeout overrides the gateway's human_timeout for this approver,
+	// in seconds.
+	Timeout int `hcl:"timeout,optional"`
+	// RequireApprovers is the number of separate human approvals
+	// required before the request is allowed.
+	RequireApprovers int `hcl:"require_approvers,optional"`
 	// SyncWaitTimeout is the HTTP hold budget before an async-capable
 	// HITL request returns 202 and moves to polling/retry-grant mode.
 	SyncWaitTimeout string `hcl:"sync_wait_timeout,optional" json:"sync_wait_timeout,omitempty"`
@@ -149,19 +157,20 @@ func (h *HumanApprover) Approve(ctx context.Context, req runtime.ApproveRequest)
 					msg = expandMessage(h.Message, req)
 				}
 				target := runtime.HITLTarget{
-					CredentialName:    h.Credential,
-					Channel:           h.Channel,
-					Interactive:       h.Interactive,
-					PendingID:         id,
-					DashboardURL:      req.DashboardURL,
-					ThreadTS:          req.ThreadTS,
-					OperationState:    pending.OperationState,
-					ApprovalEffect:    pending.ApprovalEffect,
-					UpstreamCalled:    pending.UpstreamCalled,
-					ApprovalMessage:   pending.ApprovalMessage,
-					Summary:           summary,
-					Message:           msg,
-					MessageUpdateSink: req.MessageUpdateSink,
+					CredentialName:           h.Credential,
+					Channel:                  h.Channel,
+					Interactive:              h.Interactive,
+					PendingID:                id,
+					DashboardURL:             req.DashboardURL,
+					ThreadTS:                 req.ThreadTS,
+					OperationState:           pending.OperationState,
+					ApprovalEffect:           pending.ApprovalEffect,
+					UpstreamCalled:           pending.UpstreamCalled,
+					ApprovalMessage:          pending.ApprovalMessage,
+					Summary:                  summary,
+					Message:                  msg,
+					MessageUpdateSink:        req.MessageUpdateSink,
+					PendingMessageUpdateSink: req.PendingMessageUpdateSink,
 				}
 				go func() {
 					if err := notifier.NotifyHITL(ctx, req, target); err != nil {
@@ -246,9 +255,10 @@ func init() {
 		Build: func(d any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics) { return d, nil },
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			a := body.(*HumanApprover)
+			ri := config.EmitRefIndex()
 			b.SetAttributeValue("channel", cty.StringVal(a.Channel))
 			if a.Credential != "" {
-				config.SetIdent(b, "credential", a.Credential)
+				config.SetIdent(b, "credential", ri.Ref(config.KindCredential, a.Credential))
 			}
 			if a.Timeout != 0 {
 				b.SetAttributeValue("timeout", cty.NumberIntVal(int64(a.Timeout)))
@@ -281,7 +291,7 @@ func init() {
 				b.SetAttributeValue("interactive", cty.True)
 			}
 			if a.Classifier != "" {
-				config.SetIdent(b, "classifier", a.Classifier)
+				config.SetIdent(b, "classifier", ri.Ref(config.KindApprover, a.Classifier))
 			}
 			if a.Message != "" {
 				b.SetAttributeValue("message", cty.StringVal(a.Message))

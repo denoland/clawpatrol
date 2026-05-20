@@ -213,8 +213,7 @@ func registerTunnel(client *Client, pluginName string, decl *pb.TunnelDecl) hcl.
 // Reserved attribute names the framework injects on every external
 // endpoint's body, regardless of what the plugin declared.
 const (
-	endpointAttrHosts      = "hosts"
-	endpointAttrCredential = "credential"
+	endpointAttrHosts = "hosts"
 )
 
 func registerEndpoint(client *Client, pluginName string, decl *pb.EndpointDecl) hcl.Diagnostics {
@@ -255,9 +254,6 @@ func registerEndpoint(client *Client, pluginName string, decl *pb.EndpointDecl) 
 					b.hosts = append(b.hosts, h.AsString())
 				}
 			}
-			if credV, ok := obj[endpointAttrCredential]; ok && !credV.IsNull() {
-				b.credentialName = credV.AsString()
-			}
 			// Plugin-only payload — drop the framework attrs.
 			pluginObj := make(map[string]cty.Value, len(pluginAttrNames))
 			for _, name := range pluginAttrNames {
@@ -276,22 +272,7 @@ func registerEndpoint(client *Client, pluginName string, decl *pb.EndpointDecl) 
 		Build: func(decoded any, name string, ctx *config.BuildCtx) (any, hcl.Diagnostics) {
 			b := decoded.(*dynamicEndpointBody)
 			b.instanceName = name
-			// Validate the credential ref (if any) against the symbol
-			// table now that we have it.
-			var diags hcl.Diagnostics
-			if b.credentialName != "" {
-				if sym := ctx.Symbols.Get(config.KindCredential, b.credentialName); sym == nil {
-					diags = append(diags, &hcl.Diagnostic{
-						Severity: hcl.DiagError,
-						Summary:  fmt.Sprintf("Unknown credential %q", b.credentialName),
-						Detail:   fmt.Sprintf("Endpoint %q references undeclared credential %q.", name, b.credentialName),
-						Subject:  &ctx.Block.DefRange,
-					})
-				}
-			}
-			if diags.HasErrors() {
-				return nil, diags
-			}
+			_ = ctx
 			resp, err := client.PluginRPC().Build(context.Background(), &pb.BuildRequest{
 				Kind: "endpoint", TypeName: decl.TypeName, InstanceName: name, ConfigJson: b.canonicalJSON,
 			})
@@ -335,22 +316,11 @@ func registerOrCollide(plug *config.Plugin, pluginName, kindLabel string) hcl.Di
 	return nil
 }
 
-// EndpointCredentials lets the compile pass pick up the resolved
-// credential binding without baking knowledge of dynamic plugin
-// bodies into config/compile.go.
-func (b *dynamicEndpointBody) EndpointCredentials() []config.CredBinding {
-	if b.credentialName == "" {
-		return nil
-	}
-	return []config.CredBinding{{Credential: b.credentialName}}
-}
-
 func init() {
 	// Compile-time sanity: dynamicEndpointBody satisfies the
 	// reflective interface compile.go expects.
 	var _ interface {
 		EndpointHosts() []string
-		EndpointCredentials() []config.CredBinding
 	} = (*dynamicEndpointBody)(nil)
 }
 
@@ -379,19 +349,18 @@ func schemaToSpec(s *pb.Schema) (hcldec.Spec, error) {
 }
 
 // endpointSpec returns the body spec for an external endpoint type:
-// the plugin-declared fields plus the always-injected `hosts` and
-// `credential` attributes. The second return is the list of
-// plugin-declared attribute names so the synthesized DecodeBody can
-// strip the framework-injected ones before forwarding to Build.
+// the plugin-declared fields plus the always-injected `hosts`
+// attribute. The second return is the list of plugin-declared
+// attribute names so the synthesized DecodeBody can strip the
+// framework-injected ones before forwarding to Build.
 func endpointSpec(s *pb.Schema) (hcldec.Spec, []string, error) {
 	out := hcldec.ObjectSpec{
-		endpointAttrHosts:      &hcldec.AttrSpec{Name: endpointAttrHosts, Type: cty.List(cty.String), Required: true},
-		endpointAttrCredential: &hcldec.AttrSpec{Name: endpointAttrCredential, Type: cty.String, Required: false},
+		endpointAttrHosts: &hcldec.AttrSpec{Name: endpointAttrHosts, Type: cty.List(cty.String), Required: true},
 	}
 	var names []string
 	if s != nil {
 		for _, f := range s.Fields {
-			if f.Name == endpointAttrHosts || f.Name == endpointAttrCredential {
+			if f.Name == endpointAttrHosts {
 				return nil, nil, fmt.Errorf("plugin declared reserved attribute %q", f.Name)
 			}
 			ty, err := ctyTypeFromString(f.TypeString)

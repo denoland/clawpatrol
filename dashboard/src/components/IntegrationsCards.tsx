@@ -8,12 +8,11 @@ import { CredentialSecretsModal } from "./CredentialSecretsModal";
 import { IntegrationIcon } from "./Logos";
 import { Modal } from "./Modal";
 
-// Card header format: `<plugin display name> · <credential bare name>`.
-// The bare name (the operator's HCL block name) is always present so
-// two same-type cards can be told apart at a glance, and so the
-// subtitle slot below the header is free for per-type contextual
-// information (OAuth identity, "Not connected", etc.) instead of
-// repeating the block name.
+// Card layout: heading = bare HCL credential name (the unique
+// identifier two same-type cards differ by), subtitle = plugin label
+// plus optional context (OAuth identity, "not connected", etc.). The
+// icon already conveys the plugin type, so prefixing the heading
+// truncated the name itself — the part the operator actually needs.
 
 // Cap on visible cards before the overflow button appears. The N-th
 // slot is replaced by "+ K more" so the row width stays predictable
@@ -260,15 +259,16 @@ function Card({
           ? "paste secret"
           : "api key only";
   // Plugin display name (e.g. "GitHub", "Postgres"). Falls back to the
-  // raw HCL type key for unrecognised plugins rather than the bare
-  // credential name, which would produce `<name> · <name>` titles.
+  // raw HCL type key for unrecognised plugins.
   const label = credentialTypeLabel(i.type, i.type);
-  // Title is always `<displayName> · <name>` regardless of how many
-  // creds of this type are declared. The OAuth identity that used to
-  // suffix the title moves to the subtitle below.
-  const heading = `${label} · ${i.name}`;
-  const subtitle = contextualSubtitle(i, connected, hasSlots);
-  const title = [heading, `credential: ${i.id}`, `type: ${i.type}`, status].join("\n");
+  // Heading shows the bare HCL block name — that's the unique
+  // identifier two same-type cards differ by, and the icon already
+  // conveys the plugin type. The type label moves into the subtitle.
+  const heading = i.name;
+  const subtitle = contextualSubtitle(i, connected, hasSlots, label);
+  const title = [`${label} · ${i.name}`, `credential: ${i.id}`, `type: ${i.type}`, status].join(
+    "\n",
+  );
   return (
     <button
       disabled={!clickable && !connected}
@@ -302,17 +302,15 @@ function Card({
           )}
           <span
             className={
-              "w-[6px] h-[6px] rounded-full " + (connected ? "bg-success-500" : "bg-text-subtle")
+              "w-[9px] h-[9px] rounded-full " + (connected ? "bg-success-500" : "bg-danger-500")
             }
           />
         </span>
       </div>
       <div className="w-full min-w-0 space-y-0.5">
-        {subtitle && (
-          <div className="text-2xs text-text-muted truncate" title={subtitle}>
-            {subtitle}
-          </div>
-        )}
+        <div className="text-2xs text-text-muted truncate" title={subtitle}>
+          {subtitle}
+        </div>
         <div className="text-2xs text-text-subtle tabular-nums truncate" title={status}>
           {status}
         </div>
@@ -321,37 +319,38 @@ function Card({
   );
 }
 
-// contextualSubtitle returns the per-credential-type hint shown below
-// the card title. Sources are all non-secret fields already on the
-// IntegrationRow payload — no secret material (token prefixes, raw
-// password hashes, etc.) is rendered. Returns "" to mean "omit the
-// subtitle slot entirely" (compact card).
-function contextualSubtitle(i: Integration, connected: boolean, hasSlots: boolean): string {
+// contextualSubtitle returns the subtitle shown below the card
+// heading: always leads with the plugin label (since the heading no
+// longer carries it), followed by the OAuth identity or per-state
+// hint. Sources are all non-secret fields on the IntegrationRow
+// payload — no secret material is rendered.
+function contextualSubtitle(
+  i: Integration,
+  connected: boolean,
+  hasSlots: boolean,
+  label: string,
+): string {
+  // Plugin label always leads the subtitle now that the heading shows
+  // just the bare HCL name. OAuth identity (when present) follows.
+  const hint = subtitleHint(i, connected, hasSlots);
+  return hint ? `${label} · ${hint}` : label;
+}
+
+function subtitleHint(i: Integration, connected: boolean, hasSlots: boolean): string {
   if (connected) {
-    // OAuth flows persist the connected account identity (email /
-    // username / workspace name) on the credential at connect time —
-    // that's what `display_name` is. Surface it directly when present.
     if (i.display_name) return i.display_name;
-    // Manual / Tailscale / OAuth-without-identity: nothing useful to
-    // distinguish two same-type creds, fall back to a stable
-    // placeholder so the row still reads "configured".
-    if (hasSlots || i.has_tailscale_auth) return "Saved";
     return "";
   }
-  // Not connected: OAuth awaits an explicit user action. Tailscale's
-  // hint depends on whether tsnet is mid-auth — "Awaiting
-  // authentication" makes the click-to-open-URL flow legible to the
-  // operator, whereas "Not connected" reads as a dead-end.
   if (i.has_tailscale_auth) {
     const s = i.tailscale_auth?.state;
-    if (s === "needs_login" || s === "needs_machine_auth") return "Awaiting authentication";
-    if (s === "starting") return "Starting";
-    if (s === "stopped") return "Stopped";
-    if (s === "in_use_other_user") return "In use by another user";
-    return "Not connected";
+    if (s === "needs_login" || s === "needs_machine_auth") return "awaiting auth";
+    if (s === "starting") return "starting";
+    if (s === "stopped") return "stopped";
+    if (s === "in_use_other_user") return "in use by another user";
+    return "not connected";
   }
-  if (i.has_oauth) return "Not connected";
-  if (hasSlots) return "Not configured";
+  if (i.has_oauth) return "not connected";
+  if (hasSlots) return "not configured";
   return "";
 }
 

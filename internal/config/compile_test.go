@@ -49,8 +49,8 @@ func TestCompile(t *testing.T) {
 	if len(ep.Credentials) != 1 {
 		t.Fatalf("expected 1 credential, got %d", len(ep.Credentials))
 	}
-	if ep.Credentials[0].Credential == nil ||
-		ep.Credentials[0].Credential.Symbol.Name != "github-pat" {
+	if ep.Credentials[0] == nil ||
+		ep.Credentials[0].Symbol.Name != "github" {
 		t.Errorf("credential resolution wrong: %+v", ep.Credentials[0])
 	}
 
@@ -108,27 +108,28 @@ func TestCompile(t *testing.T) {
 // wins evaluation. Tied priorities preserve declaration order.
 func TestCompilePrioritySort(t *testing.T) {
 	src := `
-credential "bearer_token" "pat" {}
 endpoint "https" "ep" {
-  hosts      = ["x.example.com"]
-  credential = pat
+  hosts = ["x.example.com"]
 }
-profile "p" { endpoints = [ep] }
+credential "bearer_token" "pat" {
+  endpoint = https.ep
+}
+profile "p" { credentials = [bearer_token.pat] }
 
 rule "fallback" {
-  endpoint  = ep
+  endpoint  = https.ep
   priority  = -100
   condition = "http.method == 'POST'"
   verdict   = "deny"
 }
 rule "specific" {
-  endpoint  = ep
+  endpoint  = https.ep
   priority  = 100
   condition = "http.method == 'POST' && http.path == '/v1/refunds'"
   verdict   = "deny"
 }
 rule "general" {
-  endpoint  = ep
+  endpoint  = https.ep
   condition = "http.method == 'POST'"
   verdict   = "allow"
 }
@@ -209,7 +210,7 @@ tunnel "local_command" "t" {
   command    = ["ssh", "old-bastion"]
   listen     = "127.0.0.1:1001"
   keepalive  = "always"
-  credential = tok
+  credential = bearer_token.tok
 }
 `
 	same := `
@@ -218,7 +219,7 @@ tunnel "local_command" "t" {
   command    = ["ssh", "old-bastion"]
   listen     = "127.0.0.1:1001"
   keepalive  = "always"
-  credential = tok
+  credential = bearer_token.tok
 }
 `
 	commandChanged := `
@@ -227,7 +228,7 @@ tunnel "local_command" "t" {
   command    = ["ssh", "new-bastion"]
   listen     = "127.0.0.1:1001"
   keepalive  = "always"
-  credential = tok
+  credential = bearer_token.tok
 }
 `
 	credentialChanged := `
@@ -236,7 +237,7 @@ tunnel "local_command" "t" {
   command    = ["ssh", "old-bastion"]
   listen     = "127.0.0.1:1001"
   keepalive  = "always"
-  credential = tok
+  credential = bearer_token.tok
 }
 `
 
@@ -264,7 +265,7 @@ tunnel "local_command" "base" {
 tunnel "local_command" "child" {
   command = ["ssh", "child"]
   listen  = "127.0.0.1:1002"
-  via     = base
+  via     = local_command.base
 }
 `
 	viaChanged := `
@@ -275,7 +276,7 @@ tunnel "local_command" "base" {
 tunnel "local_command" "child" {
   command = ["ssh", "child"]
   listen  = "127.0.0.1:1002"
-  via     = base
+  via     = local_command.base
 }
 `
 
@@ -312,12 +313,12 @@ func TestCompileTunnelViaCycle(t *testing.T) {
 tunnel "local_command" "a" {
   command = ["true"]
   listen  = "127.0.0.1:1"
-  via     = b
+  via     = local_command.b
 }
 tunnel "local_command" "b" {
   command = ["true"]
   listen  = "127.0.0.1:2"
-  via     = a
+  via     = local_command.a
 }
 `)
 	gw, diags := config.LoadBytes(src, "cycle.hcl")
@@ -343,7 +344,7 @@ tunnel "local_command" "t" {
 }
 endpoint "postgres" "ipliteral" {
   host   = "10.0.0.5:5432"
-  tunnel = t
+  tunnel = local_command.t
 }
 `)
 	gw, diags := config.LoadBytes(src, "ipliteral.hcl")

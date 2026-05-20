@@ -2,13 +2,12 @@
   "introduction",
   "getting-started",
   "configure-gateway",
-  "glossary",
-  "architecture",
-  "cli",
+  "rules",
   "clawpatrol-test",
-  "security-model",
-  "approval-rules",
   "plugins",
-  "config-reference",
-  "skill"
+  "architecture",
+  "security-model",
+  "glossary",
+  "cli",
+  "config-reference"
 ]

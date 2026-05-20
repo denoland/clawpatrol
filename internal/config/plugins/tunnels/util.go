@@ -43,6 +43,7 @@ var commonRefs = []config.RefSpec{
 // fields. via / credential are emitted as bare identifiers so
 // reload round-trips them as references, not strings.
 func emitCommon(b *hclwrite.Body, c config.TunnelCommon) {
+	ri := config.EmitRefIndex()
 	if c.Share != "" {
 		b.SetAttributeValue("share", cty.StringVal(c.Share))
 	}
@@ -50,10 +51,10 @@ func emitCommon(b *hclwrite.Body, c config.TunnelCommon) {
 		b.SetAttributeValue("keepalive", cty.StringVal(c.Keepalive))
 	}
 	if c.Via != "" {
-		config.SetIdent(b, "via", c.Via)
+		config.SetIdent(b, "via", ri.Ref(config.KindTunnel, c.Via))
 	}
 	if c.Credential != "" {
-		config.SetIdent(b, "credential", c.Credential)
+		config.SetIdent(b, "credential", ri.Ref(config.KindCredential, c.Credential))
 	}
 }
 

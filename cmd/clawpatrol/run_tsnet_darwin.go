@@ -45,15 +45,18 @@ func runRunTsnet(args []string) {
 	gwHost := strings.TrimSpace(readFileSilent(filepath.Join(dir, "tailnet-gateway")))
 	controlURL := strings.TrimSpace(readFileSilent(filepath.Join(dir, "control-url")))
 	token := strings.TrimSpace(readFileSilent(filepath.Join(dir, "api-token")))
-	authKey := strings.TrimSpace(readFileSilent(filepath.Join(dir, "tsnet-auth-key")))
+	// tsnet auth key is intentionally NOT read from disk. On macOS the
+	// NE extension persists it inside NETransparentProxyManager's
+	// providerConfiguration (system VPN preferences). We pass an empty
+	// authKey to `start-tsnet` — the container app reuses the stored
+	// value, so the user-side CLI never holds the bearer in memory or
+	// on disk. An agent inside `clawpatrol run` therefore cannot
+	// exfiltrate it.
 	if gwHost == "" {
 		gwHost = "clawpatrol-gateway"
 	}
 	if gwURL == "" || token == "" {
 		fail("tsnet run: missing gateway url or api-token in %s", dir)
-	}
-	if authKey == "" {
-		fail("tsnet run: missing tsnet-auth-key in %s (re-run `clawpatrol join`)", dir)
 	}
 	// Gateway agent port persisted at join (Tailscale Funnel owns :443,
 	// so this is typically :8443).
@@ -73,11 +76,13 @@ func runRunTsnet(args []string) {
 	// blocks until the tsnet node joins the tailnet (≤90s). Pass
 	// token + hostname so the NE itself can POST to the gateway's
 	// tailnet-only register endpoint (parent process is on the host
-	// network and can't dial a 100.x address from here).
+	// network and can't dial a 100.x address from here). Empty
+	// authKey arg → container app reuses the value stored in NE
+	// preferences at join time.
 	hn, _ := os.Hostname()
 	fmt.Fprintln(os.Stderr, "clawpatrol: joining tailnet via NE...")
 	{
-		c := exec.Command(macHelperPath, "start-tsnet", authKey, controlURL, gwHost, gwPort, token, hn)
+		c := exec.Command(macHelperPath, "start-tsnet", "", controlURL, gwHost, gwPort, token, hn)
 		c.Stdout, c.Stderr = os.Stdout, os.Stderr
 		if err := c.Run(); err != nil {
 			var ee *exec.ExitError

@@ -39,7 +39,6 @@ import (
 	"time"
 
 	"github.com/hashicorp/hcl/v2/hclwrite"
-	"github.com/zclconf/go-cty/cty"
 
 	"github.com/denoland/clawpatrol/internal/config"
 	"github.com/denoland/clawpatrol/internal/config/runtime"
@@ -47,26 +46,13 @@ import (
 
 // OpenAICodexHTTPSEndpoint is part of the clawpatrol plugin API.
 type OpenAICodexHTTPSEndpoint struct {
-	Hosts          []string  `hcl:"hosts"`
-	Credential     string    `hcl:"credential,optional"`
-	CredentialsRaw cty.Value `hcl:"credentials,optional" json:"-"`
-
-	Credentials []CredentialEntry `json:"Credentials,omitempty"`
+	// Hosts is the chatgpt.com host list intercepted for Codex
+	// subscription-auth traffic.
+	Hosts []string `hcl:"hosts"`
 }
 
 // EndpointHosts is part of the clawpatrol plugin API.
 func (e *OpenAICodexHTTPSEndpoint) EndpointHosts() []string { return e.Hosts }
-
-// EndpointCredentials is part of the clawpatrol plugin API.
-func (e *OpenAICodexHTTPSEndpoint) EndpointCredentials() []config.CredBinding {
-	return bindings(e.Credential, e.Credentials)
-}
-func (e *OpenAICodexHTTPSEndpoint) credentialAndRaw() (string, cty.Value) {
-	return e.Credential, e.CredentialsRaw
-}
-func (e *OpenAICodexHTTPSEndpoint) setCredentialEntries(es []CredentialEntry) {
-	e.Credentials = es
-}
 
 // EnvVars pushes down a synthetic CODEX_ACCESS_TOKEN so codex enters
 // AgentIdentity mode (which routes it to chatgpt.com). Also pushes
@@ -161,18 +147,15 @@ func init() {
 	var _ runtime.PlaceholderDetector = OpenAICodexHTTPSEndpointRuntime{}
 	var _ runtime.HTTPSyntheticResponder = OpenAICodexHTTPSEndpointRuntime{}
 	config.Register(&config.Plugin{
-		Kind:     config.KindEndpoint,
-		Type:     "openai_codex_https",
-		Family:   "http",
-		New:      func() any { return &OpenAICodexHTTPSEndpoint{} },
-		Refs:     singularRef,
-		Validate: multiCredValidate,
-		Runtime:  OpenAICodexHTTPSEndpointRuntime{},
-		Build:    passthroughBuild,
+		Kind:    config.KindEndpoint,
+		Type:    "openai_codex_https",
+		Family:  "http",
+		New:     func() any { return &OpenAICodexHTTPSEndpoint{} },
+		Runtime: OpenAICodexHTTPSEndpointRuntime{},
+		Build:   passthroughBuild,
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			e := body.(*OpenAICodexHTTPSEndpoint)
 			b.SetAttributeValue("hosts", config.StringListVal(e.Hosts))
-			emitCredentialBinding(b, e.Credential, e.Credentials, "placeholder")
 		},
 	})
 }

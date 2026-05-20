@@ -87,21 +87,18 @@ func TestExampleFixtureDetectsDrift(t *testing.T) {
 func TestResolveEndpointByHost(t *testing.T) {
 	hcl := `
 admin_email = "x@example.com"
-credential "bearer_token" "a" {}
-credential "bearer_token" "b" {}
 endpoint "https" "alpha" {
-  hosts      = ["api.example.com"]
-  credential = a
+  hosts = ["api.example.com"]
 }
 endpoint "https" "beta" {
-  hosts      = ["api.example.com"]
-  credential = b
+  hosts = ["api.example.com"]
 }
 endpoint "https" "gamma" {
-  hosts      = ["solo.example.com"]
-  credential = a
+  hosts = ["solo.example.com"]
 }
-profile "default" { endpoints = [alpha, beta, gamma] }
+credential "bearer_token" "a" { endpoints = [https.alpha, https.gamma] }
+credential "bearer_token" "b" { endpoint = https.beta }
+profile "default" { credentials = [bearer_token.a, bearer_token.b] }
 `
 	gw, diags := config.LoadBytes([]byte(hcl), "in.hcl")
 	if diags.HasErrors() {
@@ -141,7 +138,7 @@ profile "default" { endpoints = [alpha, beta, gamma] }
 	})
 
 	t.Run("ambiguous host disambiguated by match.endpoint", func(t *testing.T) {
-		f := mk(t, `{"action":{"host":"api.example.com","http":{"path":"/x"}},"match":{"verdict":"allow","endpoint":"beta"}}`)
+		f := mk(t, `{"action":{"host":"api.example.com","http":{"path":"/x"}},"match":{"verdict":"allow","endpoint":"https.beta"}}`)
 		ep, err := f.ResolveEndpoint(policy)
 		if err != nil {
 			t.Fatal(err)
@@ -156,6 +153,22 @@ profile "default" { endpoints = [alpha, beta, gamma] }
 		_, err := f.ResolveEndpoint(policy)
 		if err == nil || !strings.Contains(err.Error(), "no endpoint claims") {
 			t.Fatalf("want unknown-host error, got %v", err)
+		}
+	})
+
+	t.Run("bare-name match.endpoint is rejected", func(t *testing.T) {
+		f := mk(t, `{"action":{"host":"solo.example.com","http":{"path":"/x"}},"match":{"verdict":"allow","endpoint":"beta"}}`)
+		_, err := f.ResolveEndpoint(policy)
+		if err == nil || !strings.Contains(err.Error(), "typed form") {
+			t.Fatalf("want typed-form error, got %v", err)
+		}
+	})
+
+	t.Run("wrong type prefix is rejected", func(t *testing.T) {
+		f := mk(t, `{"action":{"host":"solo.example.com","http":{"path":"/x"}},"match":{"verdict":"allow","endpoint":"postgres.beta"}}`)
+		_, err := f.ResolveEndpoint(policy)
+		if err == nil || !strings.Contains(err.Error(), "type") {
+			t.Fatalf("want type-mismatch error, got %v", err)
 		}
 	})
 }

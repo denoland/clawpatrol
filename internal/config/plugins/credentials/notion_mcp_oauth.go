@@ -54,11 +54,12 @@ func (n *NotionMCPOAuth) OAuthFlow() *config.OAuthIntegration {
 func init() {
 	var _ runtime.HTTPCredentialRuntime = (*NotionMCPOAuth)(nil)
 	config.Register(&config.Plugin{
-		Kind:    config.KindCredential,
-		Type:    "notion_mcp_oauth",
-		New:     newer[NotionMCPOAuth](),
-		Runtime: (*NotionMCPOAuth)(nil),
-		Build:   passthrough,
-		Emit:    emptyEmit,
+		Kind:           config.KindCredential,
+		Type:           "notion_mcp_oauth",
+		Disambiguators: []string{"placeholder"},
+		New:            newer[NotionMCPOAuth](),
+		Runtime:        (*NotionMCPOAuth)(nil),
+		Build:          passthrough,
+		Emit:           emptyEmit,
 	})
 }

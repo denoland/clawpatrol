@@ -450,13 +450,14 @@ public_url = "https://gateway.example.test"
 control = "wireguard"
 wg_subnet_cidr = "10.55.0.0/24"
 
-credential "bearer_token" "tok" {}
 endpoint "https" "api" {
-  hosts      = ["api.example.test"]
-  credential = tok
+  hosts = ["api.example.test"]
+}
+credential "bearer_token" "tok" {
+  endpoint = https.api
 }
 profile "agent" {
-  endpoints = [api]
+  credentials       = [bearer_token.tok]
   hitl_async_grants = true
 }
 `), "hitl-api-test.hcl")

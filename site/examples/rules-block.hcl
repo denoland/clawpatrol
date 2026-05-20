@@ -1,38 +1,39 @@
 # Block destructive SQL on prod
 rule "no-prod-drops" {
-  endpoint  = pg-prod
+  endpoint  = postgres.pg-prod
   condition = "sql.verb in ['drop', 'truncate', 'alter']"
   verdict   = "deny"
 }
 
 # Slack-approve any GitHub write
 rule "github-writes" {
-  endpoint  = github-api
+  endpoint  = https.github-api
   condition = "http.method in ['POST', 'PUT', 'DELETE']"
-  approve   = [ops]
+  approve   = [human_approver.ops]
 }
 
 # ===== harness =====
 
 admin_email = "ops@example.com"
 
-credential "postgres_credential" "pg-cred"    { user = "agent" }
-credential "bearer_token"        "github-pat" {}
-credential "slack_tokens"        "slack-bot"  {}
-
 endpoint "postgres" "pg-prod" {
-  host       = "pg-prod.example:5432"
-  credential = pg-cred
+  host = "pg-prod.example:5432"
 }
 
 endpoint "https" "github-api" {
-  hosts      = ["api.github.com"]
-  credential = github-pat
+  hosts = ["api.github.com"]
 }
+
+credential "postgres_credential" "pg" {
+  endpoint = postgres.pg-prod
+  user     = "agent"
+}
+credential "bearer_token" "github-pat" { endpoint = https.github-api }
+credential "slack_tokens" "slack-bot" {}
 
 approver "human_approver" "ops" {
   channel    = "#agent-ops"
-  credential = slack-bot
+  credential = slack_tokens.slack-bot
 }
 
-profile "default" { endpoints = [pg-prod, github-api] }
+profile "default" { credentials = [postgres_credential.pg, bearer_token.github-pat] }

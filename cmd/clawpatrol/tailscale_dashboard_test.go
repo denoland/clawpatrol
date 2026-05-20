@@ -39,7 +39,7 @@ func TestCredentialsInProfileWalksTransitivelyViaTunnelChain(t *testing.T) {
 	ep := &config.CompiledEndpoint{
 		Name:        "grafana",
 		Tunnel:      outerTun,
-		Credentials: []*config.CompiledCredential{{Credential: endpointCred}},
+		Credentials: []*config.Entity{endpointCred},
 	}
 	policy := &config.CompiledPolicy{
 		Profiles: map[string]*config.CompiledProfile{

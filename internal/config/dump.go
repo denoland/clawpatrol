@@ -140,12 +140,24 @@ func dumpEntityMap(m map[string]*Entity) map[string]any {
 			row["family"] = ent.Plugin.Family
 		}
 		row["body"] = ent.Body
-		// Surface framework-level attrs (e.g. tunnel) at the entity
-		// row, not inside the plugin body — matches where the
-		// loader extracted them from.
+		// Surface framework-level attrs (e.g. tunnel, credential
+		// endpoint/endpoints) at the entity row, not inside the
+		// plugin body — matches where the loader extracted them
+		// from.
 		for _, spec := range frameworkAttrsByKind[ent.Symbol.Kind] {
-			if v := ent.Framework.Ref(spec.Name); v != "" {
-				row[spec.Name] = v
+			switch {
+			case spec.Kind == "":
+				if v := ent.Framework.Str(spec.Name); v != "" {
+					row[spec.Name] = v
+				}
+			case spec.List:
+				if v := ent.Framework.RefList(spec.Name); len(v) > 0 {
+					row[spec.Name] = v
+				}
+			default:
+				if v := ent.Framework.Ref(spec.Name); v != "" {
+					row[spec.Name] = v
+				}
 			}
 		}
 		out[name] = row
@@ -170,7 +182,10 @@ func dumpProfiles(m map[string]*Profile) map[string]any {
 	}
 	out := map[string]any{}
 	for name, p := range m {
-		row := map[string]any{"endpoints": p.Endpoints}
+		row := map[string]any{"credentials": p.Credentials}
+		if len(p.Disambiguators) > 0 {
+			row["disambiguators"] = p.Disambiguators
+		}
 		if p.HITLAsyncGrants {
 			row["hitl_async_grants"] = true
 		}

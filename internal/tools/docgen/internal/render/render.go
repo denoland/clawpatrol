@@ -57,7 +57,7 @@ func (r *renderer) run() (string, error) {
 }
 
 func (r *renderer) writeHeader() {
-	r.out.WriteString(`# HCL config reference
+	r.out.WriteString(`# Config Reference
 
 A clawpatrol gateway config mixes **operational** fields (top-level
 plumbing) with **policy** blocks. Operational fields are top-level
@@ -70,9 +70,11 @@ Each block section lists the attributes the loader accepts, with:
 
 - **Type** — the HCL value type. ` + "`string`" + `, ` + "`bool`" + `, ` + "`int`" + ` are scalar
   literals; ` + "`[]string`" + ` is a list of strings; ` + "`ref(<kind>)`" + ` is a
-  bare-name reference to another block of that kind (e.g.
-  ` + "`credential = github-pat`" + `); ` + "`[]ref(<kind>)`" + ` is a list of such
-  references; nested blocks have their shape described inline.
+  typed reference to another block (` + "`<type>.<name>`" + ` for
+  two-label kinds like ` + "`credential = bearer_token.github`" + `,
+  ` + "`<kind>.<name>`" + ` for one-label kinds like ` + "`policy = policy.no-pii`" + `);
+  ` + "`[]ref(<kind>)`" + ` is a list of such references; nested blocks have
+  their shape described inline.
 - **Required** — ` + "`yes`" + ` if the loader rejects the block when the
   attribute is missing.
 
@@ -106,28 +108,41 @@ func stripIdentPrefix(doc, ident string) string {
 		{"is the ", "The "},
 		{"is a ", "A "},
 		{"is an ", "An "},
+		{"is ", ""},
 		{"are the ", "The "},
 		{"are ", ""},
 	}
 	for _, l := range linkers {
 		if strings.HasPrefix(rest, l.from) {
-			return l.to + rest[len(l.from):]
+			rest = upperFirst(l.to + rest[len(l.from):])
+			break
 		}
 	}
 	if rest == "" {
 		return rest
 	}
-	first := rest[0]
-	if first >= 'a' && first <= 'z' {
-		rest = strings.ToUpper(rest[:1]) + rest[1:]
-	}
+	rest = upperFirst(rest)
 	// Drop the stub "Is part of the clawpatrol plugin API." sentence
 	// that's auto-generated as a placeholder doc-comment on plugin
 	// types. It conveys nothing to a reader of the HCL reference.
-	if rest == "Is part of the clawpatrol plugin API." {
+	if rest == "Is part of the clawpatrol plugin API." ||
+		rest == "Part of the clawpatrol plugin API." {
 		return ""
 	}
+	rest = strings.TrimPrefix(rest, "Is part of the clawpatrol plugin API.\n\n")
+	rest = strings.TrimPrefix(rest, "Part of the clawpatrol plugin API.\n\n")
 	return rest
+}
+
+func upperFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	first := s[0]
+	if first >= 'a' && first <= 'z' {
+		return strings.ToUpper(s[:1]) + s[1:]
+	}
+	return s
 }
 
 func (r *renderer) writeOperational() {
@@ -165,16 +180,16 @@ func reflectTypeFor(pkg, name string) reflect.Type {
 }
 
 // writeProfile documents the `profile "<name>" {}` block. The body
-// struct is unexported (config.profileBody), so we inline its single
-// field rather than going through reflection.
+// is decoded manually (mixed-shape `credentials` list), so we inline
+// its attributes rather than going through reflection.
 func (r *renderer) writeProfile() {
 	r.out.WriteString("## `profile \"<name>\" { ... }`\n\n")
-	r.out.WriteString("Names a set of endpoints. Profiles bind to dashboard owners; an owner's profile determines which endpoints their gateway requests can reach. Rules ride along automatically because they're attached to endpoints.\n\n")
+	r.out.WriteString("Names a set of credentials. Profiles bind to dashboard owners; an owner's profile determines which credentials — and, transitively via each credential's `endpoint` / `endpoints` binding, which endpoints — their gateway requests can reach. Rules ride along automatically because they're attached to endpoints.\n\n")
 	r.out.WriteString("| Attribute | Type | Required | Description |\n")
 	r.out.WriteString("|-----------|------|----------|-------------|\n")
-	r.out.WriteString("| `endpoints` | `[]ref(endpoint)` | yes | Bare-name endpoint references included in this profile. |\n")
+	r.out.WriteString("| `credentials` | `[]credential` | yes | Bare-name credential references, or `{ credential = name, <disambiguator> = \"...\" }` object entries for multi-credential dispatch (e.g. `placeholder` for header-token credentials). |\n")
 	r.out.WriteString("| `hitl_async_grants` | `bool` | no | Explicit opt-in for agent-aware async HITL retry grants on this profile. Async behavior still also requires an approver with `async_grant.enabled = true`. |\n\n")
-	r.out.WriteString("```hcl\nprofile \"default\" {\n  endpoints          = [github, postgres-prod]\n  hitl_async_grants = true\n}\n```\n\n")
+	r.out.WriteString("```hcl\nprofile \"default\" {\n  credentials       = [bearer_token.github, postgres_credential.postgres-prod]\n  hitl_async_grants = true\n}\n```\n\n")
 }
 
 // ── plugin-dispatched kinds ─────────────────────────────────────────
@@ -388,8 +403,11 @@ func fieldRequired(rt reflect.Type, opts []string) bool {
 	if hasOpt(opts, "optional") {
 		return false
 	}
-	if hasOpt(opts, "block") && rt.Kind() == reflect.Pointer {
-		return false
+	if hasOpt(opts, "block") {
+		switch rt.Kind() {
+		case reflect.Pointer, reflect.Slice:
+			return false
+		}
 	}
 	return true
 }
@@ -497,11 +515,11 @@ func exampleValue(t reflect.Type, fieldName string) string {
 		case "cookie_name":
 			return `"session"`
 		case "credential":
-			return "example-credential"
+			return "bearer_token.example"
 		case "endpoint":
-			return "example-endpoint"
+			return "https.example"
 		case "policy":
-			return "example-policy"
+			return "policy.example"
 		case "verdict":
 			return `"deny"`
 		case "reason":

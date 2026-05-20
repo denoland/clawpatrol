@@ -1,4 +1,4 @@
-# Approval rules
+# Rules
 
 Rules are how an operator decides what happens to a request:
 forward it, reject it, or route it through one or more
@@ -40,6 +40,16 @@ Bound to `https` endpoints. The condition is evaluated against the
 parsed HTTP request *before* it is forwarded upstream, after MITM
 has terminated TLS.
 
+Example: require approval for a specific support-ticket mutation.
+
+```hcl
+rule "support-ticket-status" {
+  endpoint  = https.console
+  condition = "http.method == 'POST' && http.path == '/api/admin.supportTickets.updateStatus'"
+  approve   = [human_approver.support]
+}
+```
+
 CEL variables (all optional in any given condition):
 
 | Variable | Type | Description |
@@ -63,6 +73,16 @@ condition = "http.body_json.archived == true"
 Bound to `sql` endpoints (`postgres`, `clickhouse_https`,
 `clickhouse_native`). The condition runs against every parsed SQL
 statement the agent sends.
+
+Example: block filesystem-reaching Postgres functions.
+
+```hcl
+rule "pg-banned-functions" {
+  endpoint  = postgres.pg-staging
+  condition = "sets.intersects(sql.functions, ['pg_read_file', 'pg_read_binary_file', 'lo_get'])"
+  verdict   = "deny"
+}
+```
 
 | Variable | Type | Description |
 |----------|------|-------------|
@@ -97,6 +117,16 @@ write the condition against `sql.statement` with a regex
 Bound to `kubernetes` endpoints. The condition sees the
 `(verb, resource, namespace, name, params)` tuple Claw Patrol parses
 out of the kubernetes API path.
+
+Example: deny Kubernetes Secret reads.
+
+```hcl
+rule "k8s-no-secrets" {
+  endpoint  = kubernetes.k8s-prod
+  condition = "k8s.resource == 'secrets'"
+  verdict   = "deny"
+}
+```
 
 | Variable | Type | Description |
 |----------|------|-------------|
@@ -417,206 +447,312 @@ rules still match on a truncated request and won't auto-deny.
 
 ## Examples
 
-### Allow / deny pair (HTTP)
+These are trimmed, public-safe versions of real policies. They show the
+same layering pattern across families: hard denies first, explicit
+allows next, then a low-priority default deny.
 
-A simple shape: read-only is free, deletes are blocked, everything
-else needs a human.
+### HTTP: support ticket mutations
+
+This policy allows console reads, routes specific support-ticket
+mutations to humans, runs outbound support replies through an LLM
+proctor before human review, and denies everything else.
 
 ```hcl
-approver "human_approver" "billing" {
-  channel = "#agent-billing"
-  timeout = 600
+credential "cookie_token" "console-session" {
+  cookie_name = "token"
+}
+credential "anthropic_manual_key" "anthropic-key" {}
+credential "slack_tokens" "support-slack" {}
+
+endpoint "https" "console" {
+  hosts      = ["console.example.com"]
+  credential = cookie_token.console-session
 }
 
-endpoint "https" "stripe" {
-  hosts      = ["api.stripe.com"]
-  credential = stripe-key
+policy "reply-content" {
+  text = <<-EOT
+    The JSON body has a body field containing a customer support reply.
+    Deny markdown formatting, missing required context, offensive
+    content, impersonation, and account-harming instructions.
+  EOT
 }
 
-rule "stripe-reads" {
-  endpoint  = stripe
+approver "llm_approver" "reply-content-judge" {
+  model      = "claude-haiku-4-5-20251001"
+  credential = anthropic_manual_key.anthropic-key
+  policy     = policy.reply-content
+}
+
+approver "human_approver" "support-triage" {
+  channel     = "#support"
+  credential  = slack_tokens.support-slack
+  interactive = true
+  timeout     = 86400
+}
+
+rule "console-reads" {
+  endpoint  = https.console
   condition = "http.method == 'GET'"
   verdict   = "allow"
 }
 
-rule "stripe-no-deletes" {
-  endpoint  = stripe
-  condition = "http.method == 'DELETE'"
+rule "console-ticket-mutations" {
+  endpoint = https.console
+  condition = <<-CEL
+    http.method == 'POST'
+    && http.path in [
+      '/api/admin.supportTickets.markAsSpam',
+      '/api/admin.supportTickets.updateStatus',
+    ]
+  CEL
+  approve = [human_approver.support-triage]
+}
+
+rule "console-reply-on-behalf" {
+  endpoint = https.console
+  condition = <<-CEL
+    http.method == 'POST'
+    && http.path == '/api/admin.supportTickets.replyOnBehalf'
+  CEL
+  approve = [
+    llm_approver.reply-content-judge,
+    human_approver.support-triage,
+  ]
+}
+
+rule "console-default" {
+  endpoint = https.console
+  priority = -100
+  verdict  = "deny"
+  reason   = "console mutations require an explicit approval rule"
+}
+```
+
+The LLM approver runs first on the reply path. If it denies, no human is
+paged. If it allows, the same request still needs human approval.
+
+### Kubernetes: deny unsafe cluster operations
+
+This example gates several clusters with one shared rule set. It blocks
+secret reads and interactive shells at high priority, allows ordinary
+reads, permits debug pod workflows, and denies anything not explicitly
+covered.
+
+```hcl
+credential "mtls_credential" "k8s-client" {}
+
+endpoint "kubernetes" "k8s-dev" {
+  server     = "https://k8s-dev.example.com"
+  ca_cert    = "<<file:k8s-dev-ca.pem>>"
+  credential = mtls_credential.k8s-client
+}
+
+endpoint "kubernetes" "k8s-staging" {
+  server     = "https://k8s-staging.example.com"
+  ca_cert    = "<<file:k8s-staging-ca.pem>>"
+  credential = mtls_credential.k8s-client
+}
+
+rule "k8s-no-secrets" {
+  endpoints = [kubernetes.k8s-dev, kubernetes.k8s-staging]
+  priority  = 1000
+  condition = "k8s.resource == 'secrets'"
   verdict   = "deny"
-  reason    = "Stripe deletes go through the approval flow as POST"
+  reason    = "Secret values must not leave the cluster via the agent"
 }
 
-rule "stripe-other-writes" {
-  endpoint  = stripe
-  condition = "http.method == 'POST'"
-  approve   = [billing]
+rule "k8s-no-interactive" {
+  endpoints = [kubernetes.k8s-dev, kubernetes.k8s-staging]
+  priority  = 1000
+  condition = <<-CEL
+    k8s.resource in ['pods/exec', 'pods/attach']
+    && k8s.params.stdin == 'true'
+  CEL
+  verdict = "deny"
+  reason  = "Interactive shells cannot be evaluated by the rules engine"
 }
 
-rule "stripe-default" {
-  endpoint = stripe
+rule "k8s-no-mutations" {
+  endpoints = [kubernetes.k8s-dev, kubernetes.k8s-staging]
+  condition = <<-CEL
+    k8s.verb in ['create', 'update', 'patch', 'delete']
+    && !k8s.name.startsWith('debug-')
+    && !k8s.resource.endsWith('/exec')
+    && !k8s.resource.endsWith('/attach')
+    && !k8s.resource.endsWith('/portforward')
+  CEL
+  verdict = "deny"
+  reason  = "Only debug-* pods may be created / modified / deleted"
+}
+
+rule "k8s-reads" {
+  endpoints = [kubernetes.k8s-dev, kubernetes.k8s-staging]
+  condition = "k8s.verb in ['get', 'list', 'watch']"
+  verdict   = "allow"
+}
+
+rule "k8s-debug-pods" {
+  endpoints = [kubernetes.k8s-dev, kubernetes.k8s-staging]
+  condition = <<-CEL
+    k8s.verb in ['create', 'delete']
+    && k8s.resource == 'pods'
+    && k8s.name.startsWith('debug-')
+  CEL
+  verdict = "allow"
+}
+
+rule "k8s-dev-default" {
+  endpoint = kubernetes.k8s-dev
+  priority = -100
+  verdict  = "deny"
+}
+
+rule "k8s-staging-default" {
+  endpoint = kubernetes.k8s-staging
   priority = -100
   verdict  = "deny"
 }
 ```
 
-The trailing `priority = -100` rule is the default-deny floor —
-matched only when no higher-priority rule does. Without it, an
-unmatched request would fall through and pass.
+The `k8s-no-mutations` rule demonstrates the usual negation pattern:
+match the broad mutating class, then carve out narrowly scoped debug
+exceptions.
 
-### Multi-credential endpoint with `credential = X` selector
+### SQL: Postgres reads, mutations, and secret tables
 
-One endpoint, two credentials, dispatched by an agent-side
-placeholder:
-
-```hcl
-approver "human_approver" "billing" {
-  channel = "#agent-billing"
-  timeout = 600
-}
-
-credential "bearer_token" "orb-test-key" {}
-credential "bearer_token" "orb-prod-key" {}
-
-endpoint "https" "orb" {
-  hosts = ["api.withorb.com"]
-  credentials = [
-    { placeholder = "PH_orb_test", credential = orb-test-key },
-    { placeholder = "PH_orb_prod", credential = orb-prod-key },
-  ]
-}
-
-rule "orb-test-allow-all" {
-  endpoint   = orb
-  credential = orb-test-key
-  verdict    = "allow"
-}
-
-rule "orb-prod-reads" {
-  endpoint   = orb
-  credential = orb-prod-key
-  condition  = "http.method == 'GET'"
-  verdict    = "allow"
-}
-
-rule "orb-prod-writes" {
-  endpoint   = orb
-  credential = orb-prod-key
-  condition  = "http.method in ['POST', 'PUT', 'PATCH']"
-  approve    = [billing]
-}
-
-rule "orb-prod-deletes" {
-  endpoint   = orb
-  credential = orb-prod-key
-  condition  = "http.method == 'DELETE'"
-  verdict    = "deny"
-}
-```
-
-The top-level `credential = orb-prod-key` fires when the request was
-*dispatched against* that credential — i.e. the agent embedded
-`PH_orb_prod` in the `Authorization: Bearer ...` slot. The matcher
-does not look at the request body for the placeholder.
-
-### Multi-credential endpoint dispatched by database
-
-For SQL endpoints (postgres, clickhouse_native, clickhouse_https), a
-credential entry can claim only requests against specific databases
-via `database = "X"` or `databases = ["X","Y"]`. Combine with
-`placeholder = "..."` for two-axis dispatch (e.g. read-only credential
-against prod):
+SQL policies commonly hard-deny schema or filesystem-reaching shapes,
+route small DML through a human, proctor sensitive reads with an LLM,
+allow ordinary reads, and default-deny unknown verbs.
 
 ```hcl
-credential "clickhouse_credential" "ch-dev"  {}
-credential "clickhouse_credential" "ch-prod" {}
+credential "postgres_credential" "pg-console" {
+  user = "console"
+}
+credential "anthropic_manual_key" "anthropic-key" {}
+credential "slack_tokens" "db-slack" {}
 
-endpoint "clickhouse_native" "ch-o11y" {
-  hosts = ["clickhouse-o11y.example"]
-  credentials = [
-    { database  = "prod",        credential = ch-prod },
-    { databases = ["dev", "qa"], credential = ch-dev  },
-  ]
+endpoint "postgres" "pg-staging" {
+  host       = "pg-staging.example.com:5432"
+  sslmode    = "verify-full"
+  credential = postgres_credential.pg-console
 }
 
-rule "ch-prod-readonly" {
-  endpoint   = ch-o11y
-  credential = ch-prod
-  condition  = "sql.verb in ['select', 'show', 'explain']"
-  verdict    = "allow"
+approver "human_approver" "db-review" {
+  channel     = "#agent-db"
+  credential  = slack_tokens.db-slack
+  interactive = true
+  timeout     = 86400
 }
-```
 
-An entry matches iff every constraint it declares is satisfied
-(placeholder match AND database match). Among matches the
-**most-specific** (highest constraint count) wins. Conflicting
-constraint signatures are rejected at policy load — see the
-`error_credentials_*` test fixtures for the diagnostics. An entry
-with no constraints is the catchall; only one is allowed per list.
-
-### LLM proctor → human approver chain
-
-Approvers run in order, all must allow. The first approver is cheap
-(an LLM judge), the second is expensive (a human gets paged):
-
-```hcl
-approver "llm_approver" "pg-secret-columns-judge" {
-  model      = "claude-haiku-4-5-20251001"
-  credential = anthropic-key
-  policy     = pg-secret-columns
-}
-approver "human_approver" "console-dba" {
-  channel = "#agent-db"
-  timeout = 600
-}
 policy "pg-secret-columns" {
   text = <<-EOT
-    Deny SELECTs that read raw secret material (tokens, password hashes,
-    cert private keys). Allow metadata-only reads (id, name, created_at).
+    Deny SELECTs that project raw secret material: access tokens,
+    refresh tokens, password hashes, cert private keys, or secret env
+    var values. Allow metadata-only reads such as ids, names, counts,
+    and timestamps.
   EOT
 }
 
-rule "pg-secret-columns" {
-  endpoint  = pg-deploy
-  priority  = 100
-  condition = "sql.verb == 'select' && sets.intersects(sql.tables, ['github_identities', 'tokens', 'domain_certificates', 'env_vars'])"
-  approve   = [pg-secret-columns-judge, console-dba]
+approver "llm_approver" "pg-secret-columns-judge" {
+  model      = "claude-haiku-4-5-20251001"
+  credential = anthropic_manual_key.anthropic-key
+  policy     = policy.pg-secret-columns
+}
+
+rule "pg-no-ddl" {
+  endpoint = postgres.pg-staging
+  priority = 100
+  condition = <<-CEL
+    sql.verb in [
+      'drop', 'truncate', 'alter', 'grant', 'revoke',
+      'create', 'comment', 'do', 'vacuum',
+    ]
+  CEL
+  verdict = "deny"
+  reason  = "Schema / privilege changes must land via migration PR"
+}
+
+rule "pg-banned-functions" {
+  endpoint = postgres.pg-staging
+  priority = 100
+  condition = <<-CEL
+    sets.intersects(sql.functions, [
+      'pg_read_file', 'pg_read_binary_file', 'lo_get',
+    ])
+    || sql.functions.exists(f, f.startsWith('dblink_'))
+  CEL
+  verdict = "deny"
+  reason  = "Filesystem-reaching functions are not allowed"
+}
+
+rule "pg-small-mutations" {
+  endpoint  = postgres.pg-staging
+  condition = "sql.verb in ['insert', 'update', 'delete', 'merge', 'notify']"
+  approve   = [human_approver.db-review]
+  reason    = "Postgres mutations require human approval"
+}
+
+rule "pg-secret-columns-check" {
+  endpoint = postgres.pg-staging
+  priority = 100
+  condition = <<-CEL
+    sql.verb == 'select'
+    && sets.intersects(sql.tables, [
+      'github_identities',
+      'tokens',
+      'domain_certificates',
+      'env_vars',
+      'users',
+    ])
+  CEL
+  approve = [llm_approver.pg-secret-columns-judge]
+}
+
+rule "pg-reads" {
+  endpoint  = postgres.pg-staging
+  condition = "sql.verb in ['select', 'show', 'explain', 'use', 'describe']"
+  verdict   = "allow"
+}
+
+rule "pg-default" {
+  endpoint = postgres.pg-staging
+  priority = -100
+  verdict  = "deny"
+  reason   = "Unknown SQL verb — explicit allow rule required"
 }
 ```
 
-If the LLM judge says `allow`, the request goes to `console-dba` for
-human approval. If the LLM judge says `deny`, the human is never
-paged. If either says `deny`, the request is rejected with the
-reason returned by the rejecting approver.
+The secret-columns rule intentionally gates by table first. The LLM
+policy decides whether the specific projection returns secret data.
+That avoids blocking useful metadata reads while still catching `SELECT
+*` and JSON/aggregate projections that would expose secret values.
 
-The bare name `dashboard` is a built-in approver: `approve =
-[dashboard]` parks the request on the dashboard's pending-approvals
-view without paging any channel.
+### SQL: ClickHouse read-only telemetry
 
-### SQL banned-verbs catch-all
+ClickHouse can use the same `sql.*` family. This rule set makes a
+telemetry endpoint read-only and denies every other query shape.
 
 ```hcl
-rule "pg-banned-verbs" {
-  endpoints = [pg-deploy, pg-scheduler]
-  condition = "sql.verb in ['drop', 'truncate', 'alter', 'grant', 'revoke', 'vacuum', 'create']"
-  verdict   = "deny"
-  reason    = "Schema changes / destructive DDL not permitted; use a migration PR"
+credential "clickhouse_credential" "ch-telemetry" {
+  user = "agent_readonly"
+}
+
+endpoint "clickhouse_native" "clickhouse-o11y" {
+  hosts      = ["clickhouse-o11y.example.com"]
+  tls        = true
+  credential = clickhouse_credential.ch-telemetry
+}
+
+rule "clickhouse-allow-read" {
+  endpoint  = clickhouse_native.clickhouse-o11y
+  condition = "sql.verb in ['select', 'show', 'describe', 'explain', 'use', 'exists']"
+  verdict   = "allow"
+}
+
+rule "clickhouse-default" {
+  endpoint = clickhouse_native.clickhouse-o11y
+  priority = -100
+  verdict  = "deny"
+  reason   = "ClickHouse queries are denied unless explicitly allowed"
 }
 ```
-
-The same rule attaches to two endpoints. Both copies share the
-compiled matcher — attaching a rule to N endpoints is cheap.
-
-### Kubernetes negation
-
-```hcl
-rule "k8s-no-mutations" {
-  endpoint  = k8s-prod
-  condition = "k8s.verb in ['create', 'update', 'patch', 'delete'] && !k8s.name.startsWith('debug-') && !k8s.resource.endsWith('/exec') && !k8s.resource.endsWith('/attach') && !k8s.resource.endsWith('/portforward')"
-  verdict   = "deny"
-  reason    = "Only debug-* pods may be created / modified / deleted"
-}
-```
-
-CEL's `!` operator negates any boolean subexpression — there's no
-list-level negation syntax. Combine `&&` and `!` to express
-"matches the broad pattern, but not these exceptions."

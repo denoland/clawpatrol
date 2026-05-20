@@ -16,6 +16,7 @@ import (
 
 // CookieToken is part of the clawpatrol plugin API.
 type CookieToken struct {
+	// CookieName is the HTTP cookie name that receives the secret value.
 	CookieName string `hcl:"cookie_name,optional"`
 }
 
@@ -36,11 +37,12 @@ func (*CookieToken) SecretSlots() []config.SecretSlot {
 func init() {
 	var _ runtime.HTTPCredentialRuntime = (*CookieToken)(nil)
 	config.Register(&config.Plugin{
-		Kind:    config.KindCredential,
-		Type:    "cookie_token",
-		New:     newer[CookieToken](),
-		Runtime: (*CookieToken)(nil),
-		Build:   passthrough,
+		Kind:           config.KindCredential,
+		Type:           "cookie_token",
+		Disambiguators: []string{"placeholder"},
+		New:            newer[CookieToken](),
+		Runtime:        (*CookieToken)(nil),
+		Build:          passthrough,
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			v := body.(*CookieToken)
 			if v.CookieName != "" {

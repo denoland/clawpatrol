@@ -10,24 +10,25 @@
 // consult it.
 admin_email = "you@example.com"
 
-credential "bearer_token" "github_pat" {}
-
 endpoint "https" "github" {
-  hosts      = ["api.github.com"]
-  credential = github_pat
+  hosts = ["api.github.com"]
+}
+
+credential "bearer_token" "github" {
+  endpoint = https.github
 }
 
 rule "github-reads" {
-  endpoint  = github
+  endpoint  = https.github
   condition = "http.method in ['GET', 'HEAD']"
   verdict   = "allow"
 }
 
 rule "github-writes" {
-  endpoint  = github
+  endpoint  = https.github
   condition = "http.method in ['POST', 'PATCH', 'PUT', 'DELETE']"
   verdict   = "deny"
   reason    = "writes go through PR review"
 }
 
-profile "default" { endpoints = [github] }
+profile "default" { credentials = [bearer_token.github] }

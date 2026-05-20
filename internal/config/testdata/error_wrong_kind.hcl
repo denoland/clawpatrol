@@ -1,19 +1,20 @@
-credential "bearer_token" "shared-creds" {}
-
 endpoint "https" "github" {
-  hosts      = ["api.github.com"]
-  credential = shared-creds
+  hosts = ["api.github.com"]
 }
 
-# `endpoint = shared-creds` references the credential, not the
+credential "bearer_token" "shared" {
+  endpoint = https.github
+}
+
+# `endpoint = shared` references the credential, not the
 # endpoint. The diagnostic should disambiguate by pointing at the
 # credential's declaration site.
 rule "broken" {
-  endpoint  = shared-creds
+  endpoint  = bearer_token.shared
   condition = "http.method == 'GET'"
   verdict   = "allow"
 }
 
 profile "default" {
-  endpoints = [github]
+  credentials = [bearer_token.shared]
 }

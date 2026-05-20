@@ -178,13 +178,24 @@ func Names() []string {
 	return out
 }
 
-// NewMatcher dispatches to the named facet's NewMatcher. Returns an
-// error when the family is unknown so the rule loader can surface a
-// clean diagnostic against the user's HCL.
+// NewMatcher compiles condition into a Matcher for family. The CEL
+// env is composed from the CELContrib of every facet the family
+// declares in the family→facets registry, so a rule of family X can
+// reference any facet field X composes (e.g. a k8s_rule can read
+// http.method in addition to k8s.verb because the k8s family adds
+// both the http and k8s facets). When any of those facets isn't a
+// CELContributor (plugin facets, whose env is declared dynamically),
+// NewMatcher falls back to the runtime's own NewMatcher so the
+// dynamic env still applies. Returns an error when family is unknown
+// so the rule loader can surface a clean diagnostic against the
+// user's HCL.
 func NewMatcher(family, condition string) (match.Matcher, error) {
 	r := Lookup(family)
 	if r == nil {
 		return nil, fmt.Errorf("unknown family %q (known: %v)", family, Names())
+	}
+	if m, composed, err := Compose(family, condition); composed {
+		return m, err
 	}
 	return r.NewMatcher(condition)
 }

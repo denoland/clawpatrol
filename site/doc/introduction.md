@@ -9,7 +9,7 @@ holds them.
 
 Your AI agent has every API key in plaintext. It talks to GitHub,
 Slack, Anthropic, Postgres, Kubernetes, and a dozen other services.
-You can't see what it's doing, what it's spending, or where your
+You can’t see what it’s doing, what it’s spending, or where your
 credentials end up. One prompt injection — or one model that
 hallucinates a `DELETE` — and your secrets exfiltrate or your
 production gets touched.
@@ -21,7 +21,7 @@ production gets touched.
 
 - **Protocol-aware, not just HTTP.** Claw Patrol terminates the
   full wire protocol for the systems agents actually touch, so
-  rules see what the agent is doing — not just where it's
+  rules see what the agent is doing — not just where it’s
   pointed:
 
   - **Postgres / ClickHouse** — the gateway parses the SQL out of
@@ -58,9 +58,9 @@ Claw Patrol has two pieces:
 - A **gateway** — a single Go binary running on a host you control.
   It holds the policy, the credentials, the audit log, and the
   dashboard.
-- One or more **devices** — your laptop, a CI runner, a teammate's
+- One or more **devices** — your laptop, a CI runner, a teammate’s
   workstation — that join the gateway over WireGuard. The device
-  captures the agent's outbound flows and tunnels them to the
+  captures the agent’s outbound flows and tunnels them to the
   gateway, which decides per request what to allow, what to deny,
   what to gate behind a human, and what credential to stamp on.
 
@@ -87,7 +87,7 @@ disable with `CLAWPATROL_TELEMETRY=0` or `DO_NOT_TRACK=1`.
 - [Getting Started](/docs/getting-started/) — stand up a gateway
   and join a device in 5 minutes.
 - [Architecture](/docs/architecture/) — how interception works.
-- [Approval rules](/docs/approval-rules/) — gating writes behind
+- [Rules](/docs/rules/) — gating writes behind
   a human or an LLM judge.
 - [Security model](/docs/security-model/) — what Claw Patrol does
-  and doesn't protect against.
+  and doesn’t protect against.

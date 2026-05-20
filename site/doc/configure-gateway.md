@@ -181,6 +181,6 @@ Set `CLAWPATROL_REF` to install a non-`main` ref.
 ## What's next
 
 - [Config reference](/docs/config-reference/) — every HCL field, in detail
-- [Approval rules](/docs/approval-rules/) — gating writes behind a human or LLM
+- [Rules](/docs/rules/) — gating writes behind a human or LLM
 - [Architecture](/docs/architecture/) — how interception works
 - [Security model](/docs/security-model/) — what Claw Patrol does and doesn't protect against

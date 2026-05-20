@@ -46,14 +46,17 @@ import (
 // validation. Use for self-hosted ClickHouse fronted by a private CA.
 // Default false keeps full validation against system roots.
 type ClickhouseNativeEndpoint struct {
-	Hosts                    []string  `hcl:"hosts"`
-	Port                     int       `hcl:"port,optional"`
-	TLS                      bool      `hcl:"tls,optional"`
-	AcceptInvalidCertificate bool      `hcl:"accept_invalid_certificate,optional"`
-	Credential               string    `hcl:"credential,optional"`
-	CredentialsRaw           cty.Value `hcl:"credentials,optional" json:"-"`
-
-	Credentials []CredentialEntry `json:"Credentials,omitempty"`
+	// Hosts is the set of ClickHouse native-protocol hostnames or
+	// host:port pairs this endpoint intercepts.
+	Hosts []string `hcl:"hosts"`
+	// Port is the default upstream port for hosts that omit one.
+	// Defaults to 9000 without TLS and 9440 with TLS.
+	Port int `hcl:"port,optional"`
+	// TLS enables ClickHouse native-over-TLS on the upstream hop.
+	TLS bool `hcl:"tls,optional"`
+	// AcceptInvalidCertificate skips upstream certificate validation
+	// when TLS is enabled.
+	AcceptInvalidCertificate bool `hcl:"accept_invalid_certificate,optional"`
 }
 
 // EndpointHosts returns the endpoint's host:port list, normalized so
@@ -74,16 +77,6 @@ func (e *ClickhouseNativeEndpoint) EndpointHosts() []string {
 	}
 	return out
 }
-
-// EndpointCredentials is part of the clawpatrol plugin API.
-func (e *ClickhouseNativeEndpoint) EndpointCredentials() []config.CredBinding {
-	return bindings(e.Credential, e.Credentials)
-}
-
-func (e *ClickhouseNativeEndpoint) credentialAndRaw() (string, cty.Value) {
-	return e.Credential, e.CredentialsRaw
-}
-func (e *ClickhouseNativeEndpoint) setCredentialEntries(es []CredentialEntry) { e.Credentials = es }
 
 // RequiresVIP opts the endpoint into DNS-VIP interception. The wire
 // protocol carries no SNI / Host header, so the gateway can't
@@ -162,7 +155,6 @@ func init() {
 		Type:     "clickhouse_native",
 		Family:   "sql",
 		New:      func() any { return &ClickhouseNativeEndpoint{} },
-		Refs:     singularRef,
 		Runtime:  ClickhouseNativeEndpointRuntime{},
 		Validate: validateClickhouseNativeEndpoint,
 		Build:    passthroughBuild,
@@ -178,16 +170,13 @@ func init() {
 			if e.AcceptInvalidCertificate {
 				b.SetAttributeValue("accept_invalid_certificate", cty.BoolVal(true))
 			}
-			emitCredentialBinding(b, e.Credential, e.Credentials, "placeholder")
 		},
 	})
 }
 
 // validateClickhouseNativeEndpoint rejects accept_invalid_certificate
 // when tls is off — the flag only affects the upstream TLS handshake,
-// so without tls there's nothing for it to do — and additionally
-// runs the shared multi-credential validator (the credentials list
-// shape is the same as postgres / https).
+// so without tls there's nothing for it to do.
 func validateClickhouseNativeEndpoint(d any, name string, ctx *config.BuildCtx) hcl.Diagnostics {
 	var diags hcl.Diagnostics
 	e, ok := d.(*ClickhouseNativeEndpoint)
@@ -202,6 +191,5 @@ func validateClickhouseNativeEndpoint(d any, name string, ctx *config.BuildCtx) 
 			Subject:  &ctx.Block.DefRange,
 		})
 	}
-	diags = append(diags, multiCredValidate(d, name, ctx)...)
 	return diags
 }

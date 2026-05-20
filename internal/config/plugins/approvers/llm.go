@@ -46,9 +46,15 @@ Reply with JSON only — no markdown fences, no other text:
 // "<name>" { text = ... }` block — operator declares the prompt once
 // and reuses across multiple judges.
 type LLMApprover struct {
-	Model      string `hcl:"model"`
+	// Model is the model id used for policy judgment, such as a
+	// claude-*, gpt-*, or o*-prefixed model.
+	Model string `hcl:"model"`
+	// Credential references the HTTP credential used to authenticate
+	// the model API call.
 	Credential string `hcl:"credential"`
-	Policy     string `hcl:"policy,optional"`
+	// Policy references a policy block containing the text the model
+	// judges requests against.
+	Policy string `hcl:"policy,optional"`
 }
 
 // Approve is part of the clawpatrol plugin API.
@@ -376,10 +382,11 @@ func init() {
 		Build: func(d any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics) { return d, nil },
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			a := body.(*LLMApprover)
+			ri := config.EmitRefIndex()
 			b.SetAttributeValue("model", cty.StringVal(a.Model))
-			config.SetIdent(b, "credential", a.Credential)
+			config.SetIdent(b, "credential", ri.Ref(config.KindCredential, a.Credential))
 			if a.Policy != "" {
-				config.SetIdent(b, "policy", a.Policy)
+				config.SetIdent(b, "policy", ri.Ref(config.KindPolicy, a.Policy))
 			}
 		},
 	})

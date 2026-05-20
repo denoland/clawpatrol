@@ -101,7 +101,7 @@ report verdict drift.
 clawpatrol test <config.hcl> <fixture.json | fixture-dir>
 ```
 
-See [`clawpatrol-test`](clawpatrol-test) for the fixture format and
+See [Testing](clawpatrol-test) for the fixture format and
 CI integration. Exit 0 = all match, 1 = drift, 2 = usage/config
 error.
 
@@ -117,10 +117,10 @@ clawpatrol validate <config.hcl>
 `validate` runs the same load path the daemon does, so any
 [external plugin](plugins) referenced from the file is spawned and
 its manifest is checked. Beyond the HCL pipeline it also runs a
-schema-only pass that exercises every plugin-declared facet's CEL
-env and resolves every plugin endpoint's `Family` against the
-facet registry — catches authoring bugs (typo'd Family, invalid
-identifier in a facet name, …) the operator's HCL didn't happen to
+schema-only pass that exercises every plugin-declared facet’s CEL
+env and resolves every plugin endpoint’s `Family` against the
+facet registry — catches authoring bugs (typo’d Family, invalid
+identifier in a facet name, …) the operator’s HCL didn’t happen to
 exercise. The success line names what loaded:
 
 ```

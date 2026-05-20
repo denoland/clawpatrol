@@ -20,7 +20,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -394,11 +396,6 @@ func (w *webMux) dashboardAuthGate(next http.Handler) http.Handler {
 // endpoint. Single route to keep the auth surface small.
 const dashboardLoginPath = "/__login"
 
-// dashboardLogoutPath revokes the cp_session cookie. POST-only —
-// SameSite=Lax on the cookie protects against drive-by GETs from
-// other origins.
-const dashboardLogoutPath = "/__logout"
-
 // lookupSessionFromRequest reads the cp_session cookie, looks up the
 // matching row, and returns the username on a live hit. Empty string
 // when missing/expired/error (the gate treats all three as "no
@@ -717,17 +714,17 @@ func (w *webMux) apiEnvPushdown(rw http.ResponseWriter, r *http.Request) {
 	// Credentials are emitted first (so credential-shaped
 	// placeholders win on duplicate names), endpoints second.
 	for _, ep := range prof.Endpoints {
-		for _, cc := range ep.Credentials {
-			if cc == nil || cc.Credential == nil || credSeen[cc.Credential.Symbol.Name] {
+		for _, ent := range ep.Credentials {
+			if ent == nil || ent.Symbol == nil || credSeen[ent.Symbol.Name] {
 				continue
 			}
-			credSeen[cc.Credential.Symbol.Name] = true
-			provider, ok := cc.Credential.Body.(config.EnvPushdownProvider)
+			credSeen[ent.Symbol.Name] = true
+			provider, ok := ent.Body.(config.EnvPushdownProvider)
 			if !ok {
 				continue
 			}
 			for _, ev := range provider.EnvVars() {
-				add(ev.Name, ev.Value, ev.Description, cc.Credential.Plugin.Type)
+				add(ev.Name, ev.Value, ev.Description, ent.Plugin.Type)
 			}
 		}
 	}
@@ -748,21 +745,48 @@ func (w *webMux) apiHITLOperationStatus(rw http.ResponseWriter, r *http.Request)
 		http.Error(rw, http.MethodGet, http.StatusMethodNotAllowed)
 		return
 	}
-	token := bearerFromAuthHeader(r.Header.Get("Authorization"))
-	peerIP := peerIPForAPIToken(w.g.db, token)
-	if peerIP == "" {
-		http.Error(rw, "unknown or missing peer api token", http.StatusUnauthorized)
-		return
+	store := NewHITLOperationStore(w.g.db)
+	var op HITLOperation
+	var err error
+	statusToken := r.URL.Query().Get("token")
+	if statusToken != "" {
+		operationID, ok := hitlOperationIDFromStatusPath(r.URL.Path)
+		if !ok {
+			writeHITLOperationNotFound(rw)
+			return
+		}
+		op, err = store.GetForStatusToken(r.Context(), operationID, statusToken)
+		if err == nil {
+			op.StatusToken = statusToken
+		} else if !errors.Is(err, ErrHITLOperationNotFound) {
+			log.Printf("hitl operation status %s: %v", operationID, err)
+			http.Error(rw, "failed to load HITL operation", http.StatusInternalServerError)
+			return
+		} else if bearerFromAuthHeader(r.Header.Get("Authorization")) == "" {
+			writeHITLOperationNotFound(rw)
+			return
+		}
 	}
-
-	operationID, ok := hitlOperationIDFromStatusPath(r.URL.Path)
-	if !ok {
-		writeHITLOperationNotFound(rw)
-		return
+	if op.ID == "" {
+		if isFunnelPublicRequest(r.Context()) {
+			writeHITLOperationNotFound(rw)
+			return
+		}
+		token := bearerFromAuthHeader(r.Header.Get("Authorization"))
+		peerIP := peerIPForAPIToken(w.g.db, token)
+		if peerIP == "" {
+			http.Error(rw, "unknown or missing peer api token", http.StatusUnauthorized)
+			return
+		}
+		operationID, ok := hitlOperationIDFromStatusPath(r.URL.Path)
+		if !ok {
+			writeHITLOperationNotFound(rw)
+			return
+		}
+		profileID := w.g.profileFor(peerIP)
+		principalID := hitlPeerPrincipalID(peerIP)
+		op, err = store.GetForPrincipal(r.Context(), operationID, profileID, principalID)
 	}
-	profileID := w.g.profileFor(peerIP)
-	principalID := hitlPeerPrincipalID(peerIP)
-	op, err := NewHITLOperationStore(w.g.db).GetForPrincipal(r.Context(), operationID, profileID, principalID)
 	if errors.Is(err, ErrHITLOperationNotFound) {
 		writeHITLOperationNotFound(rw)
 		return
@@ -807,20 +831,22 @@ func hitlPeerPrincipalID(peerIP string) string {
 }
 
 func writeHITLOperationAccepted(rw http.ResponseWriter, op HITLOperation, publicURL string) {
-	statusURL := hitlOperationStatusURL(publicURL, op.ID)
+	statusURL := hitlOperationStatusURL(publicURL, op.ID, op.StatusToken)
 	rw.Header().Set("Location", statusURL)
 	rw.Header().Set("Retry-After", strconv.Itoa(hitlDefaultRetryAfterSeconds))
 	writeHITLOperationResponse(rw, http.StatusAccepted, op, statusURL)
 }
 
 func writeHITLOperationStatus(rw http.ResponseWriter, op HITLOperation, publicURL string) {
-	statusURL := hitlOperationStatusURL(publicURL, op.ID)
+	statusURL := hitlOperationStatusURL(publicURL, op.ID, op.StatusToken)
 	writeHITLOperationResponse(rw, http.StatusOK, op, statusURL)
 }
 
 func writeHITLOperationResponse(rw http.ResponseWriter, status int, op HITLOperation, statusURL string) {
 	upstreamCalled := hitlOperationUpstreamCalled(op)
 	rw.Header().Set("Content-Type", "application/json")
+	rw.Header().Set("Cache-Control", "no-store")
+	rw.Header().Set("Referrer-Policy", "no-referrer")
 	rw.Header().Set("Clawpatrol-HITL-State", string(op.State))
 	rw.Header().Set("Clawpatrol-Upstream-Called", strconv.FormatBool(upstreamCalled))
 	if op.State == HITLOperationStatePendingApproval || op.State == HITLOperationStateSyncWaiting {
@@ -903,9 +929,12 @@ func hitlOperationUpstreamCalled(op HITLOperation) bool {
 	}
 }
 
-func hitlOperationStatusURL(publicURL, operationID string) string {
+func hitlOperationStatusURL(publicURL, operationID, statusToken string) string {
 	base := strings.TrimRight(publicURL, "/")
 	path := hitlOperationStatusPrefix + url.PathEscape(operationID) + hitlOperationStatusSuffix
+	if statusToken != "" {
+		path += "?token=" + url.QueryEscape(statusToken)
+	}
 	if base == "" {
 		return path
 	}
@@ -914,6 +943,8 @@ func hitlOperationStatusURL(publicURL, operationID string) string {
 
 func writeHITLOperationNotFound(rw http.ResponseWriter) {
 	rw.Header().Set("Content-Type", "application/json")
+	rw.Header().Set("Cache-Control", "no-store")
+	rw.Header().Set("Referrer-Policy", "no-referrer")
 	rw.WriteHeader(http.StatusNotFound)
 	_ = json.NewEncoder(rw).Encode(map[string]any{"error": hitlOperationNotFoundErrorValue})
 }
@@ -1102,6 +1133,7 @@ func (w *webMux) apiState(rw http.ResponseWriter, r *http.Request) {
 		"integrations": w.statusList(r),
 		"agents":       w.agentsList(),
 		"update":       currentUpdateBanner.Load(),
+		"config_file":  filepath.Base(w.g.cfgPath),
 	}
 	body, err := json.Marshal(state)
 	if err != nil {
@@ -1508,6 +1540,10 @@ func (w *webMux) writeActionFixture(rw http.ResponseWriter, ev *Event) {
 		http.Error(rw, fmt.Sprintf("event action %q is not exportable as a fixture", ev.Action), 400)
 		return
 	}
+	// Stamp the typed reference (endpoint-type.endpoint-name) so the
+	// runner can route the fixture without ambiguity. ev.Endpoint is
+	// the bare DB-recorded name; the policy supplies the type.
+	m.Endpoint = endpointRef(ep)
 
 	fx := &Fixture{Match: m, Action: Action{PeerIP: ev.AgentIP}}
 	switch ep.Family {
@@ -2447,20 +2483,24 @@ func wrapBodySampler(rc io.ReadCloser, s *sampler) io.ReadCloser {
 const hitlTerminalTTL = 30 * time.Minute
 
 type HITLRegistry struct {
-	mu                 sync.Mutex
-	pending            map[string]*pendingEntry
-	terminal           map[string]terminalHITLEntry
-	sink               *Sink // SSE fan-out for the dashboard
-	asyncGrantResolver func(operationID string, d runtime.HITLDecision) runtime.HITLResolveResult
+	mu                    sync.Mutex
+	pending               map[string]*pendingEntry
+	terminal              map[string]terminalHITLEntry
+	sink                  *Sink // SSE fan-out for the dashboard
+	asyncGrantResolver    func(operationID string, d runtime.HITLDecision) runtime.HITLResolveResult
+	pendingMessageUpdater func(ctx context.Context, pending runtime.HITLPending, ref string, result runtime.HITLResolveResult)
 }
 
 type pendingEntry struct {
-	p        runtime.HITLPending
-	decision chan runtime.HITLDecision
+	p           runtime.HITLPending
+	decision    chan runtime.HITLDecision
+	messageRefs []string
 }
 
 type terminalHITLEntry struct {
 	result    runtime.HITLResolveResult
+	pending   runtime.HITLPending
+	refs      []string
 	expiresAt time.Time
 }
 
@@ -2519,6 +2559,13 @@ func (r *HITLRegistry) Update(id string, mutate func(*runtime.HITLPending)) bool
 	return true
 }
 
+// List returns pending entries sorted by CreatedAt ascending (oldest
+// first), tiebroken on ID. The dashboard polls this endpoint once per
+// second; Go's randomized map iteration would otherwise shuffle rows
+// on every render and make the table flicker. Sort key is invariant
+// across the sync_waiting → pending_approval Update transition (same
+// ID, same CreatedAt), so a row keeps its position when its approval
+// mode changes.
 func (r *HITLRegistry) List() []runtime.HITLPending {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -2527,6 +2574,12 @@ func (r *HITLRegistry) List() []runtime.HITLPending {
 	for _, e := range r.pending {
 		out = append(out, e.p)
 	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out
 }
 
@@ -2604,7 +2657,10 @@ func (r *HITLRegistry) Cancel(id string, state runtime.HITLState, reason string)
 	if strings.TrimSpace(reason) == "" {
 		reason = string(state)
 	}
-	_, result := r.resolve(id, state, reason)
+	e, result := r.resolve(id, state, reason)
+	if e != nil && result.OK {
+		r.updateRecordedMessageRefs(context.Background(), e.p, e.messageRefs, result)
+	}
 	return result
 }
 
@@ -2622,8 +2678,54 @@ func (r *HITLRegistry) resolve(id string, state runtime.HITLState, reason string
 	}
 	delete(r.pending, id)
 	terminal := runtime.HITLResolveResult{OK: false, State: state, Reason: reason}
-	r.terminal[id] = terminalHITLEntry{result: terminal, expiresAt: now.Add(hitlTerminalTTL)}
+	r.terminal[id] = terminalHITLEntry{result: terminal, pending: e.p, refs: append([]string(nil), e.messageRefs...), expiresAt: now.Add(hitlTerminalTTL)}
 	return e, runtime.HITLResolveResult{OK: true, State: state, Reason: reason}
+}
+
+// RecordMessageRef records the channel-specific message id for a pending sync
+// HITL prompt so terminal states (timeout/client disconnect) can proactively
+// update the original Slack message. If the request already reached a terminal
+// state before the notifier returned, use a fresh context to update immediately:
+// the caller's request context is often canceled by then.
+func (r *HITLRegistry) RecordMessageRef(_ context.Context, pendingID, ref string) error {
+	if strings.TrimSpace(pendingID) == "" || strings.TrimSpace(ref) == "" {
+		return nil
+	}
+	var pending runtime.HITLPending
+	var result runtime.HITLResolveResult
+	var shouldUpdate bool
+	now := time.Now()
+	r.mu.Lock()
+	r.pruneTerminalLocked(now)
+	if e := r.pending[pendingID]; e != nil {
+		e.messageRefs = append(e.messageRefs, ref)
+		r.mu.Unlock()
+		return nil
+	}
+	if terminal, ok := r.terminal[pendingID]; ok {
+		terminal.refs = append(terminal.refs, ref)
+		r.terminal[pendingID] = terminal
+		pending = terminal.pending
+		result = terminal.result
+		shouldUpdate = true
+	}
+	r.mu.Unlock()
+	if shouldUpdate {
+		r.updateRecordedMessageRefs(context.Background(), pending, []string{ref}, result)
+	}
+	return nil
+}
+
+func (r *HITLRegistry) updateRecordedMessageRefs(ctx context.Context, pending runtime.HITLPending, refs []string, result runtime.HITLResolveResult) {
+	if r == nil || r.pendingMessageUpdater == nil {
+		return
+	}
+	for _, ref := range refs {
+		if strings.TrimSpace(ref) == "" {
+			continue
+		}
+		r.pendingMessageUpdater(ctx, pending, ref, result)
+	}
 }
 
 func (r *HITLRegistry) pruneTerminalLocked(now time.Time) {

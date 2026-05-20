@@ -218,21 +218,22 @@ func newHITLRetryRelayHarness(t *testing.T) *hitlRetryRelayHarness {
 	gw, diags := config.LoadBytes([]byte(`
 public_url = "https://gateway.example.test"
 
-credential "bearer_token" "pat" {}
 endpoint "https" "api" {
-  hosts      = ["api.example.test"]
-  credential = pat
+  hosts = ["api.example.test"]
+}
+credential "bearer_token" "pat" {
+  endpoint = https.api
 }
 approver "human_approver" "ops" {
   channel = "#ops"
 }
 rule "approved-post" {
-  endpoint  = api
+  endpoint  = https.api
   condition = "(http.method == 'POST' || http.method == 'DELETE') && http.path == '/v1/resources/update'"
-  approve   = [ops]
+  approve   = [human_approver.ops]
 }
 profile "default" {
-  endpoints = [api]
+  credentials       = [bearer_token.pat]
   hitl_async_grants = true
 }
 `), "hitl-retry-relay-test.hcl")

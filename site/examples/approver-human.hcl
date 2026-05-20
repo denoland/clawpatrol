@@ -1,6 +1,6 @@
 approver "human_approver" "ops" {
   channel    = "#agent-ops"
-  credential = slack-bot
+  credential = slack_tokens.slack-bot
   timeout    = 600
 }
 
@@ -8,12 +8,11 @@ approver "human_approver" "ops" {
 
 admin_email = "ops@example.com"
 
-credential "slack_tokens" "slack-bot" {}
-credential "bearer_token" "noop" {}
-
 endpoint "https" "anchor" {
-  hosts      = ["example.com"]
-  credential = noop
+  hosts = ["example.com"]
 }
 
-profile "default" { endpoints = [anchor] }
+credential "slack_tokens" "slack-bot" {}
+credential "bearer_token" "noop" { endpoint = https.anchor }
+
+profile "default" { credentials = [bearer_token.noop] }

@@ -1,7 +1,5 @@
 listen = "0.0.0.0:8443"
 
-credential "bearer_token" "github-pat" {}
-
 # Singleton local_command tunnel — one process serves every endpoint
 # that references it.
 tunnel "local_command" "csql-prod" {
@@ -15,19 +13,21 @@ tunnel "local_command" "csql-prod" {
 }
 
 endpoint "https" "github" {
-  hosts      = ["api.github.com", "github.com"]
-  credential = github-pat
+  hosts = ["api.github.com", "github.com"]
 }
 
 # Tunneled endpoint: dispatcher dials through csql-prod. RequiresVIP
 # is forced on at compile time because the upstream isn't reachable
 # from the agent's namespace.
 endpoint "postgres" "deploy-classic" {
-  host       = "main-pg14.classic.example:5432"
-  tunnel     = csql-prod
-  credential = github-pat
+  host   = "main-pg14.classic.example:5432"
+  tunnel = local_command.csql-prod
+}
+
+credential "bearer_token" "github" {
+  endpoints = [https.github, postgres.deploy-classic]
 }
 
 profile "default" {
-  endpoints = [github, deploy-classic]
+  credentials = [bearer_token.github]
 }

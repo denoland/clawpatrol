@@ -121,6 +121,28 @@ type Plugin struct {
 	// placeholders), or per-family match maps. Plugins that decode
 	// nothing (zero-attribute credentials) provide a no-op Emit.
 	Emit func(body any, name string, hb *hclwrite.Body)
+
+	// Disambiguators names the HCL attrs this credential plugin
+	// recognizes as dispatch discriminators when two credentials of
+	// the same type bind the same endpoint within a profile. Only
+	// meaningful for KindCredential plugins; left empty elsewhere.
+	//
+	// Each name corresponds to a string-valued attr the operator may
+	// set on either the credential block itself or inline in a
+	// profile's credentials list (`{ credential = X, <name> = "..." }`);
+	// profile-inline values override block-side values for the same
+	// `(credential, endpoint)` tuple.
+	//
+	// Conventional names per protocol family:
+	//   - HTTP-auth (bearer_token, header_token, anthropic_*, …): "placeholder"
+	//   - postgres_credential:   "user" (postgres routes by user)
+	//   - clickhouse_credential: "database", "user" (either or both)
+	//   - ssh_credential:        "user"
+	//
+	// The loader rejects any disambiguator attr (block-side or
+	// profile-side) whose name is not in this list — that catches
+	// e.g. `placeholder = "..."` set on a postgres credential.
+	Disambiguators []string
 }
 
 // BuildCtx is what the loader hands to Validate and Build. It bundles
@@ -141,15 +163,15 @@ type BuildCtx struct {
 // resource accepts `lifecycle` without each provider having to
 // implement it.
 //
-// For Kind != "", the attr is a bare-name reference into the symbol
-// table; the loader resolves and kind-checks against the table and
-// stashes the resolved name on Entity.Framework. Primitive
-// (non-ref) framework attrs are reserved for future use; today
-// every framework attr is a ref.
+// Three shapes:
+//   - Kind != "" && !List : singular bare-name ref → FrameworkAttrs.Refs
+//   - Kind != "" && List  : list of bare-name refs → FrameworkAttrs.RefLists
+//   - Kind == ""          : primitive string       → FrameworkAttrs.Strings
 type FrameworkAttrSpec struct {
 	Name     string
-	Kind     Kind // ref kind; "" reserved for primitives (unused today)
+	Kind     Kind // ref kind; "" for primitive string attrs
 	Optional bool
+	List     bool // when true (and Kind != ""), value is a list of bare names
 }
 
 // frameworkAttrsByKind is the per-kind table of framework-level
@@ -160,6 +182,24 @@ type FrameworkAttrSpec struct {
 var frameworkAttrsByKind = map[Kind][]FrameworkAttrSpec{
 	KindEndpoint: {
 		{Name: "tunnel", Kind: KindTunnel, Optional: true},
+	},
+	// credential→endpoint binding lives on the credential block. A
+	// credential names either a single endpoint or a list of them
+	// (the singleton-or-list shape preserves the case where one
+	// credential authenticates against multiple protocol endpoints
+	// of the same upstream — clickhouse_https + clickhouse_native).
+	//
+	// `placeholder` is the HTTP-auth-family dispatch discriminator
+	// peeled off as a framework attr because no HTTP credential
+	// plugin's struct stores it (vs. SQL-family `user`/`database`
+	// which double as auth fields on their plugin's struct).
+	// Loader stashes the value in Entity.Framework.Strings;
+	// per-plugin validation (Plugin.Disambiguators) rejects it on
+	// types that don't list "placeholder".
+	KindCredential: {
+		{Name: "endpoint", Kind: KindEndpoint, Optional: true},
+		{Name: "endpoints", Kind: KindEndpoint, Optional: true, List: true},
+		{Name: "placeholder", Optional: true},
 	},
 }
 

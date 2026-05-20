@@ -28,14 +28,13 @@ func (telegramRequestBodySecretStore) Get(string) (runtime.Secret, error) {
 
 func TestTelegramInjectedTokenRedactedFromRequestBodyAuditSample(t *testing.T) {
 	gw, diags := config.LoadBytes([]byte(`
-credential "telegram_bot_token" "telegram_cred" {}
 endpoint "https" "telegram_api" {
-  hosts      = ["api.telegram.org"]
-  credential = telegram_cred
+  hosts = ["api.telegram.org"]
 }
-profile "default" { endpoints = [telegram_api] }
+credential "telegram_bot_token" "telegram_cred" { endpoint = https.telegram_api }
+profile "default" { credentials = [telegram_bot_token.telegram_cred] }
 rule "allow-telegram" {
-  endpoint = telegram_api
+  endpoint = https.telegram_api
   verdict  = "allow"
 }
 `), "telegram-test.hcl")

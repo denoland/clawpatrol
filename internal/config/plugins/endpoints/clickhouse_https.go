@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/hashicorp/hcl/v2/hclwrite"
-	"github.com/zclconf/go-cty/cty"
 
 	"github.com/denoland/clawpatrol/internal/config"
 	"github.com/denoland/clawpatrol/internal/config/runtime"
@@ -17,38 +16,25 @@ import (
 
 // ClickhouseHTTPSEndpoint is part of the clawpatrol plugin API.
 type ClickhouseHTTPSEndpoint struct {
-	Hosts          []string  `hcl:"hosts"`
-	Credential     string    `hcl:"credential,optional"`
-	CredentialsRaw cty.Value `hcl:"credentials,optional" json:"-"`
-
-	Credentials []CredentialEntry `json:"Credentials,omitempty"`
+	// Hosts is the set of ClickHouse HTTPS hostnames or host:port pairs
+	// this endpoint intercepts.
+	Hosts []string `hcl:"hosts"`
 }
 
 // EndpointHosts is part of the clawpatrol plugin API.
 func (e *ClickhouseHTTPSEndpoint) EndpointHosts() []string { return e.Hosts }
 
-// EndpointCredentials is part of the clawpatrol plugin API.
-func (e *ClickhouseHTTPSEndpoint) EndpointCredentials() []config.CredBinding {
-	return bindings(e.Credential, e.Credentials)
-}
-
-func (e *ClickhouseHTTPSEndpoint) credentialAndRaw() (string, cty.Value) {
-	return e.Credential, e.CredentialsRaw
-}
-func (e *ClickhouseHTTPSEndpoint) setCredentialEntries(es []CredentialEntry) { e.Credentials = es }
-
 // ClickhouseHTTPSEndpointRuntime is the per-request handler. The
-// HTTPS MITM loop in main.go runs the request through this runtime's
+// HTTPS MITM loop runs the request through this runtime's
 // PlaceholderDetector when an endpoint has a multi-credential
-// dispatch list.
+// dispatch binding.
 type ClickhouseHTTPSEndpointRuntime struct{}
 
 // DetectPlaceholder scans the agent's request for a placeholder
 // substring. ClickHouse HTTPS clients put credentials in the
-// Authorization header (Basic for clickhouse-client), in the
-// `?user=` / `?password=` query params (clickhouse-server accepts
-// both), or in `X-ClickHouse-User` / `X-ClickHouse-Key` headers.
-// We scan all of them and return the first candidate found.
+// Authorization header (Basic), in the `?user=` / `?password=`
+// query params, or in `X-ClickHouse-User` / `X-ClickHouse-Key`
+// headers. We scan all of them and return the first candidate found.
 func (ClickhouseHTTPSEndpointRuntime) DetectPlaceholder(req *runtime.Request, candidates []string) string {
 	if req == nil {
 		return ""
@@ -105,18 +91,15 @@ func ClickhouseHTTPSDatabaseFromRequest(req *http.Request) string {
 func init() {
 	var _ runtime.PlaceholderDetector = ClickhouseHTTPSEndpointRuntime{}
 	config.Register(&config.Plugin{
-		Kind:     config.KindEndpoint,
-		Type:     "clickhouse_https",
-		Family:   "sql",
-		New:      func() any { return &ClickhouseHTTPSEndpoint{} },
-		Refs:     singularRef,
-		Runtime:  ClickhouseHTTPSEndpointRuntime{},
-		Validate: multiCredValidate,
-		Build:    passthroughBuild,
+		Kind:    config.KindEndpoint,
+		Type:    "clickhouse_https",
+		Family:  "sql",
+		New:     func() any { return &ClickhouseHTTPSEndpoint{} },
+		Runtime: ClickhouseHTTPSEndpointRuntime{},
+		Build:   passthroughBuild,
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			e := body.(*ClickhouseHTTPSEndpoint)
 			b.SetAttributeValue("hosts", config.StringListVal(e.Hosts))
-			emitCredentialBinding(b, e.Credential, e.Credentials, "placeholder")
 		},
 	})
 }

@@ -19,12 +19,6 @@ plugin "example" {
   source = "./pluginsdk/example/example"
 }
 
-credential "example_magic_token" "demo_token" {
-  // header_name is the HTTP header the demo_https endpoint adds to
-  // upstream requests. Defaults to "X-Magic" when omitted.
-  header_name = "X-Magic"
-}
-
 tunnel "example_passthrough" "passthru" {}
 
 // HTTPS endpoint: gateway terminates TLS, plugin parses HTTP and
@@ -42,20 +36,19 @@ tunnel "example_passthrough" "passthru" {}
 // (e.g. `python3 -m http.server 8000`) — the upstream sees the
 // X-Magic header and curl prints the body with "bye!" appended.
 endpoint "example_https" "demo-site" {
-  hosts      = ["demo.invalid"]
-  credential = demo_token
-  tunnel     = passthru
-  upstream   = "http://127.0.0.1:8000"
+  hosts    = ["demo.invalid"]
+  tunnel   = example_passthrough.passthru
+  upstream = "http://127.0.0.1:8000"
 }
 
 rule "https-reads" {
-  endpoint  = demo-site
+  endpoint  = example_https.demo-site
   condition = "http.method in ['GET', 'HEAD']"
   verdict   = "allow"
 }
 
 rule "https-writes-deny" {
-  endpoint  = demo-site
+  endpoint  = example_https.demo-site
   condition = "http.method in ['POST', 'PUT', 'PATCH', 'DELETE']"
   verdict   = "deny"
   reason    = "writes to demo upstream are not allowed"
@@ -71,24 +64,23 @@ rule "https-writes-deny" {
 // the request's facet payload, so the request log shows
 // Verb / From / Rcpt / User columns.
 endpoint "example_smtp" "demo-mail" {
-  hosts      = ["mail.invalid:25"]
-  credential = demo_token
+  hosts = ["mail.invalid:25"]
 }
 
 rule "smtp-handshake" {
-  endpoint  = demo-mail
+  endpoint  = example_smtp.demo-mail
   condition = "example_smtp.verb in ['EHLO', 'HELO', 'AUTH', 'QUIT']"
   verdict   = "allow"
 }
 
 rule "smtp-internal-only" {
-  endpoint  = demo-mail
+  endpoint  = example_smtp.demo-mail
   condition = "example_smtp.verb in ['MAIL', 'RCPT', 'DATA'] && example_smtp.mail_from.endsWith('@internal')"
   verdict   = "allow"
 }
 
 rule "smtp-deny-external" {
-  endpoint  = demo-mail
+  endpoint  = example_smtp.demo-mail
   condition = "example_smtp.verb in ['MAIL', 'RCPT', 'DATA']"
   verdict   = "deny"
   reason    = "external sender"
@@ -102,13 +94,13 @@ rule "smtp-deny-external" {
 // internal-allowed messages are pulled in full only because of this
 // rule.
 rule "smtp-body-no-secrets" {
-  endpoint  = demo-mail
+  endpoint  = example_smtp.demo-mail
   condition = "example_smtp.verb == 'BODY' && !example_smtp.body.contains('SECRET')"
   verdict   = "allow"
 }
 
 rule "smtp-body-deny" {
-  endpoint  = demo-mail
+  endpoint  = example_smtp.demo-mail
   condition = "example_smtp.verb == 'BODY'"
   verdict   = "deny"
   reason    = "body contains restricted token"
@@ -119,23 +111,33 @@ rule "smtp-body-deny" {
 // On allow the plugin echoes prefixed with the credential secret;
 // on deny it replies "DENY: <reason>".
 endpoint "example_echo" "demo-echo" {
-  hosts      = ["echo.invalid:7"]
-  credential = demo_token
+  hosts = ["echo.invalid:7"]
 }
 
 rule "echo-no-bad-words" {
-  endpoint  = demo-echo
+  endpoint  = example_echo.demo-echo
   condition = "!example_echo.line.contains('forbidden')"
   verdict   = "allow"
 }
 
 rule "echo-deny-fallback" {
-  endpoint  = demo-echo
+  endpoint  = example_echo.demo-echo
   condition = "true"
   verdict   = "deny"
   reason    = "line contains a forbidden token"
 }
 
+// The shared example_magic_token credential auths against all three
+// demo endpoints (HTTPS, SMTP, and echo).
+//
+// header_name is the HTTP header the example_https endpoint adds to
+// upstream requests. Defaults to "X-Magic" when omitted; the SMTP
+// and echo endpoints ignore it.
+credential "example_magic_token" "demo" {
+  endpoints   = [example_https.demo-site, example_smtp.demo-mail, example_echo.demo-echo]
+  header_name = "X-Magic"
+}
+
 profile "default" {
-  endpoints = [demo-site, demo-mail, demo-echo]
+  credentials = [example_magic_token.demo]
 }

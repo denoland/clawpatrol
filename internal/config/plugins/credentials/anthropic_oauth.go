@@ -56,11 +56,12 @@ func (a *AnthropicOAuthSubscription) OAuthFlow() *config.OAuthIntegration {
 func init() {
 	var _ runtime.HTTPCredentialRuntime = (*AnthropicOAuthSubscription)(nil)
 	config.Register(&config.Plugin{
-		Kind:    config.KindCredential,
-		Type:    "anthropic_oauth_subscription",
-		New:     newer[AnthropicOAuthSubscription](),
-		Runtime: (*AnthropicOAuthSubscription)(nil),
-		Build:   passthrough,
-		Emit:    emptyEmit,
+		Kind:           config.KindCredential,
+		Type:           "anthropic_oauth_subscription",
+		Disambiguators: []string{"placeholder"},
+		New:            newer[AnthropicOAuthSubscription](),
+		Runtime:        (*AnthropicOAuthSubscription)(nil),
+		Build:          passthrough,
+		Emit:           emptyEmit,
 	})
 }

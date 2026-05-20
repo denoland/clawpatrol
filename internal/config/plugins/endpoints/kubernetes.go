@@ -24,13 +24,21 @@ import (
 // self-hosted clusters with a non-EKS credential (bearer_token,
 // mtls_credential).
 type KubernetesEndpoint struct {
-	Hosts       []string `hcl:"hosts,optional"`
-	Server      string   `hcl:"server,optional"`
-	CACert      string   `hcl:"ca_cert,optional"`
-	Description string   `hcl:"description,optional"`
-	ClusterName string   `hcl:"cluster_name,optional"`
-	Region      string   `hcl:"region,optional"`
-	Credential  string   `hcl:"credential,optional"`
+	// Hosts is an optional list of Kubernetes API hostnames or
+	// host:port pairs to intercept.
+	Hosts []string `hcl:"hosts,optional"`
+	// Server is the Kubernetes API server URL or host:port used when
+	// hosts is not set.
+	Server string `hcl:"server,optional"`
+	// CACert is the PEM-encoded cluster CA, often loaded with
+	// `<<file:cluster-ca.pem>>`.
+	CACert string `hcl:"ca_cert,optional"`
+	// Description is operator-facing text for dashboard display.
+	Description string `hcl:"description,optional"`
+	// ClusterName is the EKS cluster name used by aws_credential.
+	ClusterName string `hcl:"cluster_name,optional"`
+	// Region is the AWS region used by aws_credential for EKS auth.
+	Region string `hcl:"region,optional"`
 }
 
 // EndpointHosts is part of the clawpatrol plugin API.
@@ -51,11 +59,6 @@ func (e *KubernetesEndpoint) FileIncludeFields() []config.FileIncludeField {
 	return []config.FileIncludeField{
 		{Get: func() string { return e.CACert }, Set: func(v string) { e.CACert = v }},
 	}
-}
-
-// EndpointCredentials is part of the clawpatrol plugin API.
-func (e *KubernetesEndpoint) EndpointCredentials() []config.CredBinding {
-	return singleBinding(e.Credential)
 }
 
 // AWSEKSAuthParams is the contract the aws_credential plugin reads at
@@ -95,7 +98,6 @@ func init() {
 		Type:   "kubernetes",
 		Family: "k8s",
 		New:    func() any { return &KubernetesEndpoint{} },
-		Refs:   singularRef,
 		Build:  passthroughBuild,
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			e := body.(*KubernetesEndpoint)
@@ -116,9 +118,6 @@ func init() {
 			}
 			if e.Region != "" {
 				b.SetAttributeValue("region", cty.StringVal(e.Region))
-			}
-			if e.Credential != "" {
-				config.SetIdent(b, "credential", e.Credential)
 			}
 		},
 	})

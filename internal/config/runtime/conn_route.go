@@ -126,25 +126,3 @@ func (idx *ConnIndex) Lookup(dstIP string) []*config.CompiledEndpoint {
 	}
 	return out
 }
-
-// ConnPorts returns the set of distinct port numbers declared by all
-// ConnRouter endpoints in the index. Used by the exit-node REDIRECT
-// installer to know which ports to intercept beyond 443 and 5432.
-func (idx *ConnIndex) ConnPorts() []string {
-	if idx == nil {
-		return nil
-	}
-	seen := map[string]bool{}
-	for hp := range idx.byHost {
-		_, port, err := net.SplitHostPort(hp)
-		if err != nil || port == "" {
-			continue
-		}
-		seen[port] = true
-	}
-	ports := make([]string, 0, len(seen))
-	for p := range seen {
-		ports = append(ports, p)
-	}
-	return ports
-}

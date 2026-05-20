@@ -79,11 +79,12 @@ func init() {
 	var _ runtime.WebSocketCredentialRuntime = (*DiscordBotToken)(nil)
 	var _ config.EnvPushdownProvider = (*DiscordBotToken)(nil)
 	config.Register(&config.Plugin{
-		Kind:    config.KindCredential,
-		Type:    "discord_bot_token",
-		New:     newer[DiscordBotToken](),
-		Runtime: (*DiscordBotToken)(nil),
-		Build:   passthrough,
-		Emit:    emptyEmit,
+		Kind:           config.KindCredential,
+		Type:           "discord_bot_token",
+		Disambiguators: []string{"placeholder"},
+		New:            newer[DiscordBotToken](),
+		Runtime:        (*DiscordBotToken)(nil),
+		Build:          passthrough,
+		Emit:           emptyEmit,
 	})
 }

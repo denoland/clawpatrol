@@ -596,11 +596,11 @@ func TestChEvaluateSQLCTEInsertSynthDenies(t *testing.T) {
 	}
 }
 
-// TestChEvaluateSQLAllowsSelectDeniesInsert is the iter 2 acceptance
-// criterion in test form: a sql_rule with `verb = ["insert"]` /
-// `verdict = "deny"` denies an INSERT and lets a SELECT through. The
-// matcher input is the same shape the runtime constructs (Verb /
-// Tables / Functions / Statement).
+// TestChEvaluateSQLAllowsSelectDeniesInsert exercises the per-statement
+// matcher: a sql_rule with `verb = ["insert"]` / `verdict = "deny"`
+// denies an INSERT and lets a SELECT through. The matcher input is
+// the same shape the runtime constructs (Verb / Tables / Functions /
+// Statement).
 func TestChEvaluateSQLAllowsSelectDeniesInsert(t *testing.T) {
 	denyInsert := chRuleSQL(t, "deny-insert",
 		"sql.verb == 'insert'", "deny", "writes blocked", 100)

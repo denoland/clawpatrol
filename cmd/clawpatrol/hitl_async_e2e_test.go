@@ -49,8 +49,10 @@ func TestHITLAsyncApprovalGrantEndToEndHTTPFlow(t *testing.T) {
 	if accepted["upstream_called"] != false {
 		t.Fatalf("202 upstream_called = %v, want false", accepted["upstream_called"])
 	}
-	if accepted["status_url"] != "https://gateway.example.test/api/hitl/operations/"+operationID+"/status" {
-		t.Fatalf("status_url = %v, want public status URL for operation", accepted["status_url"])
+	statusURL, _ := accepted["status_url"].(string)
+	wantStatusURLPrefix := "https://gateway.example.test/api/hitl/operations/" + operationID + "/status?token="
+	if !strings.HasPrefix(statusURL, wantStatusURLPrefix) || strings.TrimPrefix(statusURL, wantStatusURLPrefix) == "" {
+		t.Fatalf("status_url = %v, want public operation-scoped capability URL with token", accepted["status_url"])
 	}
 	if _, ok := accepted["retry_header_name"]; ok {
 		t.Fatalf("initial 202 included retry_header_name before approval: %#v", accepted)
@@ -140,10 +142,11 @@ public_url = "https://gateway.example.test"
 control = "wireguard"
 wg_subnet_cidr = "10.55.0.0/24"
 
-credential "bearer_token" "pat" {}
 endpoint "https" "api" {
-  hosts      = ["api.example.test"]
-  credential = pat
+  hosts = ["api.example.test"]
+}
+credential "bearer_token" "pat" {
+  endpoint = https.api
 }
 approver "human_approver" "ops" {
   channel           = "#ops"
@@ -158,12 +161,12 @@ approver "human_approver" "ops" {
   }
 }
 rule "approved-post" {
-  endpoint  = api
+  endpoint  = https.api
   condition = "http.method == 'POST' && http.path == '/v1/resources/update'"
-  approve   = [ops]
+  approve   = [human_approver.ops]
 }
 profile "default" {
-  endpoints = [api]
+  credentials       = [bearer_token.pat]
   hitl_async_grants = true
 }
 `), "hitl-async-e2e-test.hcl")

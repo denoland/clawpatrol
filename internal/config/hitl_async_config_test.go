@@ -16,13 +16,14 @@ func TestHITLAsyncConfigLoadsProfileApproverAndNormalizesPublicURL(t *testing.T)
 	src := `
 public_url = "https://clawpatrol.example.test/"
 
-credential "bearer_token" "pat" {}
 endpoint "https" "api" {
-  hosts      = ["api.example.test"]
-  credential = pat
+  hosts = ["api.example.test"]
+}
+credential "bearer_token" "pat" {
+  endpoint = https.api
 }
 profile "agent" {
-  endpoints          = [api]
+  credentials       = [bearer_token.pat]
   hitl_async_grants = true
 }
 approver "human_approver" "ops" {
@@ -37,8 +38,8 @@ approver "human_approver" "ops" {
   }
 }
 rule "writes" {
-  endpoint = api
-  approve  = [ops]
+  endpoint = https.api
+  approve  = [human_approver.ops]
 }
 `
 	gw, diags := config.LoadBytes([]byte(src), "hitl_async.hcl")
@@ -188,13 +189,14 @@ func TestHITLAsyncConfigRejectsInvalidApproverValues(t *testing.T) {
 	src := `
 public_url = "https://clawpatrol.example.test"
 
-credential "bearer_token" "pat" {}
 endpoint "https" "api" {
-  hosts      = ["api.example.test"]
-  credential = pat
+  hosts = ["api.example.test"]
+}
+credential "bearer_token" "pat" {
+  endpoint = https.api
 }
 profile "agent" {
-  endpoints          = [api]
+  credentials       = [bearer_token.pat]
   hitl_async_grants = true
 }
 approver "human_approver" "ops" {
@@ -209,8 +211,8 @@ approver "human_approver" "ops" {
   }
 }
 rule "writes" {
-  endpoint = api
-  approve  = [ops]
+  endpoint = https.api
+  approve  = [human_approver.ops]
 }
 `
 	_, diags := config.LoadBytes([]byte(src), "invalid_async.hcl")
@@ -252,13 +254,14 @@ func hitlAsyncConfigSource(publicURL string, profileOptIn, includeAsyncGrant boo
 	if publicURL != "" {
 		fmt.Fprintf(&b, "public_url = %q\n\n", publicURL)
 	}
-	b.WriteString(`credential "bearer_token" "pat" {}
-endpoint "https" "api" {
-  hosts      = ["api.example.test"]
-  credential = pat
+	b.WriteString(`endpoint "https" "api" {
+  hosts = ["api.example.test"]
+}
+credential "bearer_token" "pat" {
+  endpoint = https.api
 }
 profile "agent" {
-  endpoints = [api]
+  credentials = [bearer_token.pat]
 `)
 	if profileOptIn {
 		b.WriteString("  hitl_async_grants = true\n")
@@ -287,8 +290,8 @@ approver "human_approver" "ops" {
 	}
 	b.WriteString(`}
 rule "writes" {
-  endpoint = api
-  approve  = [ops]
+  endpoint = https.api
+  approve  = [human_approver.ops]
 }
 `)
 	return b.String()
