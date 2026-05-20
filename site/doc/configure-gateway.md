@@ -64,7 +64,7 @@ clawpatrol gateway --set-dashboard-password '<password>' gateway.hcl
 clawpatrol gateway --reset-dashboard-password gateway.hcl
 ```
 
-### Where to bind `info_listen`
+### Where to bind the dashboard
 
 Network-layer reachability is cheap defence-in-depth on top of the
 password. Pick the shape that matches your access model:
