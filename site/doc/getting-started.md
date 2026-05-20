@@ -44,8 +44,9 @@ ssh -L 8080:127.0.0.1:8080 gateway-host
 ```
 
 Open `http://127.0.0.1:8080` and set the root password — that's
-the operator login. The CA is lazy-minted into sqlite under
-`state_dir` on first boot; there's nothing else to pre-create.
+the operator login. The CA certificate and private key are
+lazy-minted into sqlite under `state_dir` on first boot; there's
+nothing else to pre-create.
 
 That's the gateway side, but the credentials in the example
 config are only *declared* — they're empty handles until you
