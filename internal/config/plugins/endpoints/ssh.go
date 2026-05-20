@@ -97,12 +97,13 @@ type SSHEndpointRuntime struct {
 func init() {
 	rt := &SSHEndpointRuntime{}
 	config.Register(&config.Plugin{
-		Kind:    config.KindEndpoint,
-		Type:    "ssh",
-		Family:  "ssh",
-		New:     func() any { return &SSHEndpoint{} },
-		Runtime: rt,
-		Build:   passthroughBuild,
+		Kind:     config.KindEndpoint,
+		Type:     "ssh",
+		Family:   "ssh",
+		New:      func() any { return &SSHEndpoint{} },
+		Runtime:  rt,
+		Validate: hostsValidate,
+		Build:    passthroughBuild,
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			e := body.(*SSHEndpoint)
 			if len(e.Hosts) > 0 {

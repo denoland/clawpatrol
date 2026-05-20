@@ -179,9 +179,10 @@ func init() {
 // so without tls there's nothing for it to do.
 func validateClickhouseNativeEndpoint(d any, name string, ctx *config.BuildCtx) hcl.Diagnostics {
 	var diags hcl.Diagnostics
+	diags = append(diags, validateHosts(d, name, ctx.Block.DefRange)...)
 	e, ok := d.(*ClickhouseNativeEndpoint)
 	if !ok {
-		return nil
+		return diags
 	}
 	if e.AcceptInvalidCertificate && !e.TLS {
 		diags = append(diags, &hcl.Diagnostic{

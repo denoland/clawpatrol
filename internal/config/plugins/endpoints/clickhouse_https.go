@@ -91,12 +91,13 @@ func ClickhouseHTTPSDatabaseFromRequest(req *http.Request) string {
 func init() {
 	var _ runtime.PlaceholderDetector = ClickhouseHTTPSEndpointRuntime{}
 	config.Register(&config.Plugin{
-		Kind:    config.KindEndpoint,
-		Type:    "clickhouse_https",
-		Family:  "sql",
-		New:     func() any { return &ClickhouseHTTPSEndpoint{} },
-		Runtime: ClickhouseHTTPSEndpointRuntime{},
-		Build:   passthroughBuild,
+		Kind:     config.KindEndpoint,
+		Type:     "clickhouse_https",
+		Family:   "sql",
+		New:      func() any { return &ClickhouseHTTPSEndpoint{} },
+		Runtime:  ClickhouseHTTPSEndpointRuntime{},
+		Validate: hostsValidate,
+		Build:    passthroughBuild,
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			e := body.(*ClickhouseHTTPSEndpoint)
 			b.SetAttributeValue("hosts", config.StringListVal(e.Hosts))

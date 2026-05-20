@@ -15,7 +15,7 @@ it talks to. Operators describe the system with [endpoints](#endpoint),
 
 The Claw Patrol daemon. It loads config, hosts the operator UI, applies
 policy, injects real credentials, and forwards allowed traffic upstream.
-See [Architecture](/docs/architecture/) for the gateway's position in a
+See [Architecture](/docs/architecture/) for the gateway’s position in a
 deployment.
 
 ### Agent
@@ -45,7 +45,7 @@ nothing more. The unit a [rule](#rule) attaches to. See
 
 A typed handle to a secret for one or more [endpoints](#endpoint). The
 config block describes where the secret should be injected; the secret
-bytes stay in the gateway's [secret store](#secret-store). See
+bytes stay in the gateway’s [secret store](#secret-store). See
 [Config Reference](/docs/config-reference/) for credential schemas.
 
 ### Action
@@ -53,7 +53,7 @@ bytes stay in the gateway's [secret store](#secret-store). See
 One unit of agent work the gateway sees and applies policy to — one
 HTTP call, one SQL query, one `kubectl` invocation, one SSH command.
 Each action targets an [endpoint](#endpoint), is gated by the matching
-[rule](#rule)'s [outcome](#outcome), and surfaces in the dashboard's
+[rule](#rule)'s [outcome](#outcome), and surfaces in the dashboard’s
 live request feed. "Action" is the operator-visible concept of "the
 thing the agent did."
 
@@ -61,7 +61,7 @@ thing the agent did."
 
 One policy decision targeting one or more [endpoints](#endpoint). A
 rule has a CEL [`condition`](#cel-condition) string that matches against
-the [facets](#facet) of the rule's protocol family (inferred from its
+the [facets](#facet) of the rule’s protocol family (inferred from its
 endpoints), an optional `credential` predicate, and an [outcome](#outcome)
 — either a literal `verdict` or an `approve = [...]` chain. See
 [Rules](/docs/rules/) for family-specific matching and examples.
@@ -77,8 +77,8 @@ Kubernetes resource. Each protocol family exposes its own facets. See
 
 The boolean expression a [rule](#rule)'s `condition = "..."` field
 carries. CEL ([Common Expression Language](https://github.com/google/cel-spec))
-is evaluated against the [facets](#facet) of the rule's inferred family.
-An absent or empty `condition` matches every request the rule's
+is evaluated against the [facets](#facet) of the rule’s inferred family.
+An absent or empty `condition` matches every request the rule’s
 endpoints see.
 
 ### Approver
@@ -106,14 +106,14 @@ new config block types and the behavior behind them. See
 
 The decision a matched [rule](#rule) carries: `verdict = "allow"`,
 `verdict = "deny"`, or `approve = [...]` (an ordered list of
-[approver](#approver) stages). On allow, the credential plugin's
+[approver](#approver) stages). On allow, the credential plugin’s
 runtime stamps the secret onto the forwarded request.
 
 ### Placeholder
 
 A magic string an [agent](#agent) embeds in the auth slot when its
 [profile](#profile) wields more than one [credential](#credential) at
-the same [endpoint](#endpoint). The profile's credentials list mixes
+the same [endpoint](#endpoint). The profile’s credentials list mixes
 bare-name entries with inline `{ placeholder = "PH_...", credential =
 name }` objects that name the discriminator for each ambiguous
 credential; the gateway looks at the incoming request, picks the
@@ -130,7 +130,7 @@ variables, keyed by `CLAWPATROL_SECRET_<UPPER_NAME>` (with
 
 ### MitM
 
-"Man-in-the-middle" — the gateway's TLS interception strategy. It
+"Man-in-the-middle" — the gateway’s TLS interception strategy. It
 allows the gateway to inspect and authorize encrypted protocol traffic
 before forwarding it upstream. See
 [Architecture › MitM TLS Interception](/docs/architecture/#mitm-tls-interception).
@@ -165,5 +165,5 @@ for exact fields, types, and examples.
 
 <!-- Implementation-level vocabulary (Plugin, Runtime, the
 HTTP/Postgres/TLS/Conn runtime interfaces, ConnIndex, the WG
-promiscuous forwarder, etc.) lives in the repo's internal
+promiscuous forwarder, etc.) lives in the repo’s internal
 doc/code-vocabulary.md, not here. -->

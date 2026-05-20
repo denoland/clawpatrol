@@ -13,9 +13,13 @@ import (
 // so a TLS SNI value like "api.example.com" can match an endpoint
 // declared as "api.example.com:443" without a runtime scan. DNS
 // hostnames are case-insensitive; the lookup key is lowercased to
-// match the lowercase keys Compile inserts. Returns nil when the
-// profile doesn't bind any matching endpoint — the caller then
-// applies the defaults.unknown_host policy.
+// match the lowercase keys Compile inserts.
+//
+// When the exact lookup misses we walk HostPatterns — the profile's
+// wildcard declarations (`hosts = ["*.foo.com"]`) — in
+// longest-suffix-first order. Exact matches always win over wildcards
+// for the same name. Returns nil when nothing matches; the caller
+// then applies the defaults.unknown_host policy.
 func HostEndpoint(policy *config.CompiledPolicy, profile, host string) *config.CompiledEndpoint {
 	if policy == nil {
 		return nil
@@ -26,9 +30,17 @@ func HostEndpoint(policy *config.CompiledPolicy, profile, host string) *config.C
 		// Single-tenant fallback: if no peer-to-profile mapping is
 		// established, walk every profile and return the first match.
 		// Matches main.go's existing profileFor behavior when only
-		// one profile exists.
+		// one profile exists. Exact matches are tried across all
+		// profiles before falling back to wildcards so a profile that
+		// declared the exact host wins over a different profile's
+		// wildcard.
 		for _, p := range policy.Profiles {
 			if ep := p.HostIndex[host]; ep != nil {
+				return ep
+			}
+		}
+		for _, p := range policy.Profiles {
+			if ep := config.MatchHostPattern(p.HostPatterns, host); ep != nil {
 				return ep
 			}
 		}
@@ -37,7 +49,7 @@ func HostEndpoint(policy *config.CompiledPolicy, profile, host string) *config.C
 	if ep := prof.HostIndex[host]; ep != nil {
 		return ep
 	}
-	return nil
+	return config.MatchHostPattern(prof.HostPatterns, host)
 }
 
 // MatchRequest walks an endpoint's priority-sorted rule list and

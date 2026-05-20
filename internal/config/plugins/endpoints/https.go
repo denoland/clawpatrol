@@ -64,12 +64,13 @@ func basicAuthPayload(authz string) string {
 func init() {
 	var _ runtime.PlaceholderDetector = HTTPSEndpointRuntime{}
 	config.Register(&config.Plugin{
-		Kind:    config.KindEndpoint,
-		Type:    "https",
-		Family:  "http",
-		New:     func() any { return &HTTPSEndpoint{} },
-		Runtime: HTTPSEndpointRuntime{},
-		Build:   passthroughBuild,
+		Kind:     config.KindEndpoint,
+		Type:     "https",
+		Family:   "http",
+		New:      func() any { return &HTTPSEndpoint{} },
+		Runtime:  HTTPSEndpointRuntime{},
+		Validate: hostsValidate,
+		Build:    passthroughBuild,
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			e := body.(*HTTPSEndpoint)
 			b.SetAttributeValue("hosts", config.StringListVal(e.Hosts))

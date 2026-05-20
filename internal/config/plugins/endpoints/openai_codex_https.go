@@ -147,12 +147,13 @@ func init() {
 	var _ runtime.PlaceholderDetector = OpenAICodexHTTPSEndpointRuntime{}
 	var _ runtime.HTTPSyntheticResponder = OpenAICodexHTTPSEndpointRuntime{}
 	config.Register(&config.Plugin{
-		Kind:    config.KindEndpoint,
-		Type:    "openai_codex_https",
-		Family:  "http",
-		New:     func() any { return &OpenAICodexHTTPSEndpoint{} },
-		Runtime: OpenAICodexHTTPSEndpointRuntime{},
-		Build:   passthroughBuild,
+		Kind:     config.KindEndpoint,
+		Type:     "openai_codex_https",
+		Family:   "http",
+		New:      func() any { return &OpenAICodexHTTPSEndpoint{} },
+		Runtime:  OpenAICodexHTTPSEndpointRuntime{},
+		Validate: hostsValidate,
+		Build:    passthroughBuild,
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			e := body.(*OpenAICodexHTTPSEndpoint)
 			b.SetAttributeValue("hosts", config.StringListVal(e.Hosts))

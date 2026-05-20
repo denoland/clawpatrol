@@ -140,12 +140,13 @@ func init() {
 	var _ runtime.PlaceholderDetector = PostgresEndpointRuntime{}
 	var _ runtime.SQLParser = PostgresEndpointRuntime{}
 	config.Register(&config.Plugin{
-		Kind:    config.KindEndpoint,
-		Type:    "postgres",
-		Family:  "sql",
-		New:     func() any { return &PostgresEndpoint{} },
-		Runtime: PostgresEndpointRuntime{},
-		Build:   passthroughBuild,
+		Kind:     config.KindEndpoint,
+		Type:     "postgres",
+		Family:   "sql",
+		New:      func() any { return &PostgresEndpoint{} },
+		Runtime:  PostgresEndpointRuntime{},
+		Validate: hostsValidate,
+		Build:    passthroughBuild,
 		Emit: func(body any, _ string, b *hclwrite.Body) {
 			e := body.(*PostgresEndpoint)
 			b.SetAttributeValue("host", cty.StringVal(e.Host))
