@@ -163,26 +163,21 @@ func runRunTsnet(args []string) {
 		fail("recv tun fd: %v", err)
 	}
 
-	// 6. Hand the TUN fd off to the daemon. .File() dups the underlying
-	// fd so we keep ctrl usable for the ATTACHED reply + the
-	// session-close idle keep-alive; close the duped fd as soon as
-	// SCM_RIGHTS goes out.
+	// 6. Hand the TUN fd off to the daemon over the control conn via
+	// WriteMsgUnix. Going through .File() + unix.Sendmsg would dup
+	// the fd, and on Linux that clears O_NONBLOCK on the underlying
+	// file description (shared across dups) — leaving the conn in
+	// blocking mode and stranding the runtime poller on the next
+	// read. WriteMsgUnix handles SCM_RIGHTS natively, no dup.
 	uc, ok := ctrl.(*net.UnixConn)
 	if !ok {
 		_ = child.Process.Kill()
 		fail("control conn: unexpected type %T", ctrl)
 	}
-	ctrlFile, err := uc.File()
-	if err != nil {
-		_ = child.Process.Kill()
-		fail("control conn file: %v", err)
-	}
-	if err := sendFD(ctrlFile, tunFd); err != nil {
-		_ = ctrlFile.Close()
+	if err := sendFDUnixConn(uc, tunFd); err != nil {
 		_ = child.Process.Kill()
 		fail("send tun fd to daemon: %v", err)
 	}
-	_ = ctrlFile.Close()
 	_ = unix.Close(tunFd)
 
 	// 7. Wait for ATTACHED.

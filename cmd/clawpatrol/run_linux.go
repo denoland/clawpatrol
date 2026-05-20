@@ -601,6 +601,49 @@ func sendFD(s *os.File, fd int) error {
 	return unix.Sendmsg(int(s.Fd()), []byte{0}, rights, nil, 0)
 }
 
+// sendFDUnixConn ships one fd via SCM_RIGHTS over a *net.UnixConn,
+// using the WriteMsgUnix path instead of .File() + Sendmsg. The
+// dup-based path silently switches the underlying file description
+// to blocking mode (Linux shares O_NONBLOCK across dups), which
+// strands the runtime poller on subsequent reads of the same conn.
+// Use this when the SCM_RIGHTS exchange happens on a long-lived
+// control conn that the caller keeps reading from afterwards.
+func sendFDUnixConn(c *net.UnixConn, fd int) error {
+	rights := unix.UnixRights(fd)
+	_, _, err := c.WriteMsgUnix([]byte{0}, rights, nil)
+	return err
+}
+
+// recvFDUnixConn is the counterpart to sendFDUnixConn — reads one fd
+// out of one SCM_RIGHTS message off c. Same rationale: avoids the
+// .File() dup and keeps the conn usable for follow-up reads.
+func recvFDUnixConn(c *net.UnixConn) (int, error) {
+	buf := make([]byte, 1)
+	oob := make([]byte, unix.CmsgSpace(4))
+	n, oobn, flags, _, err := c.ReadMsgUnix(buf, oob)
+	if err != nil {
+		return -1, err
+	}
+	if flags&unix.MSG_CTRUNC != 0 {
+		return -1, fmt.Errorf("recvFDUnixConn: ancillary truncated (oobn=%d, n=%d)", oobn, n)
+	}
+	cmsgs, err := unix.ParseSocketControlMessage(oob[:oobn])
+	if err != nil {
+		return -1, err
+	}
+	for _, cmsg := range cmsgs {
+		fds, err := unix.ParseUnixRights(&cmsg)
+		if err != nil || len(fds) == 0 {
+			continue
+		}
+		for _, x := range fds[1:] {
+			_ = unix.Close(x)
+		}
+		return fds[0], nil
+	}
+	return -1, fmt.Errorf("no SCM_RIGHTS fd (oobn=%d, n=%d, flags=%#x)", oobn, n, flags)
+}
+
 func recvFD(s *os.File) (int, error) {
 	fds, err := recvFDs(s, 1)
 	if err != nil {

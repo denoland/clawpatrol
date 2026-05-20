@@ -412,40 +412,23 @@ func (d *daemon) handle(c net.Conn) {
 
 	// 1. Tell the client our tsnet IP, ship the env-pushdown JSON, and
 	// pass along any one-line warning the smoke-probe generated at
-	// daemon boot. The WARN frame is always emitted (n=0 when clean)
-	// so the protocol stays unambiguous — no peek-ahead on the client
-	// side.
-	if _, err := fmt.Fprintf(c, "TSIP %s\nENV %d\n", d.tsIP, len(d.envVars)); err != nil {
+	// daemon boot.
+	if err := daemonWriteStartReply(c, d.tsIP, d.envVars, d.bootWarning); err != nil {
 		return
-	}
-	if _, err := c.Write(d.envVars); err != nil {
-		return
-	}
-	if _, err := fmt.Fprintf(c, "WARN %d\n", len(d.bootWarning)); err != nil {
-		return
-	}
-	if len(d.bootWarning) > 0 {
-		if _, err := io.WriteString(c, d.bootWarning); err != nil {
-			return
-		}
 	}
 
-	// 2. Receive the TUN fd via SCM_RIGHTS. *net.UnixConn → *os.File
-	// duplicates the underlying fd so the daemon owns its own
-	// reference; we close cFile when handle returns.
+	// 2. Receive the TUN fd via SCM_RIGHTS using the *net.UnixConn's
+	// native ReadMsgUnix path. Going through .File() + unix.Recvmsg
+	// would dup the underlying fd, which on Linux clears O_NONBLOCK
+	// on the shared file description and leaves the conn deadlocked
+	// for subsequent reads — see sendFDUnixConn for the same
+	// reasoning on the client side.
 	uc, ok := c.(*net.UnixConn)
 	if !ok {
 		log.Printf("daemon: conn is not *net.UnixConn (got %T)", c)
 		return
 	}
-	cFile, err := uc.File()
-	if err != nil {
-		log.Printf("daemon: get conn fd: %v", err)
-		return
-	}
-	defer func() { _ = cFile.Close() }()
-
-	tunFd, err := recvFD(cFile)
+	tunFd, err := recvFDUnixConn(uc)
 	if err != nil {
 		log.Printf("daemon: recv TUN fd: %v", err)
 		return
@@ -612,6 +595,29 @@ func daemonRegisterWithGateway(s *tsnet.Server, tsIP netip.Addr) {
 	if err := registerEphemeralTsnetIP(cli, gwURL, token, tsIP.String()); err != nil {
 		log.Printf("daemon: register: %v (default profile until next restart)", err)
 	}
+}
+
+// daemonWriteStartReply writes the TSIP / ENV / WARN frames that the
+// daemon emits in response to a session START. Pure framing — does
+// not touch tsServer or the gVisor stack, so it's testable in
+// isolation. The WARN frame is always emitted (n=0 when clean) so
+// the client's parser never has to peek ahead.
+func daemonWriteStartReply(w io.Writer, tsIP netip.Addr, envVars []byte, warning string) error {
+	if _, err := fmt.Fprintf(w, "TSIP %s\nENV %d\n", tsIP, len(envVars)); err != nil {
+		return err
+	}
+	if _, err := w.Write(envVars); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "WARN %d\n", len(warning)); err != nil {
+		return err
+	}
+	if len(warning) > 0 {
+		if _, err := io.WriteString(w, warning); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // daemonHandshake reads the client's "CLAWPATROL/1\n<nonce>\n" hello
