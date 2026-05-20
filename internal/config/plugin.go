@@ -4,7 +4,7 @@
 // state_dir / tailscale {} / ...) live at the top of the file and
 // decode via
 // gohcl into the Gateway struct. Policy blocks (defaults / approver /
-// policy / credential / endpoint / rule / profile) are dispatched to
+// credential / endpoint / rule / profile) are dispatched to
 // plugins by their first label; each plugin owns its body schema, the
 // in-memory record it builds, and (later) the runtime that handles
 // requests for it.
@@ -20,10 +20,10 @@ import (
 // read their type from the block's first label (e.g. `endpoint "https"
 // "github-dev"` → Type="https").
 //
-// KindRule, KindPolicy and KindProfile are one-label blocks. KindRule
-// has a single registered plugin (Type="") and infers its protocol
-// family from the endpoints it targets at validate/build time. The
-// other two have fixed schemas.
+// KindRule and KindProfile are one-label blocks. KindRule has a single
+// registered plugin (Type="") and infers its protocol family from the
+// endpoints it targets at validate/build time. KindProfile has a
+// fixed schema.
 type Kind string
 
 // Plugin kind constants enumerate supported config block kinds.
@@ -32,7 +32,6 @@ const (
 	KindCredential Kind = "credential"
 	KindRule       Kind = "rule"
 	KindApprover   Kind = "approver"
-	KindPolicy     Kind = "policy"
 	KindProfile    Kind = "profile"
 	KindTunnel     Kind = "tunnel"
 )
@@ -43,7 +42,7 @@ func (k Kind) LabelCount() int {
 	switch k {
 	case KindEndpoint, KindCredential, KindApprover, KindTunnel:
 		return 2 // first = type, second = name
-	case KindRule, KindPolicy, KindProfile:
+	case KindRule, KindProfile:
 		return 1 // name
 	}
 	return 0

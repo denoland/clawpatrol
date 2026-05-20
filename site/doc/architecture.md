@@ -123,10 +123,10 @@ The gateway pulls in three plugin families:
 - **Approver plugins** arbitrate human-in-the-loop and
   LLM-in-the-loop verdicts on rules that opt in (`dashboard`,
   `human_approver` over Slack/Discord/Telegram, `llm_approver` for
-  synchronous LLM proctoring against a `policy "<name>" { text =
-  "..." }` prompt — see `config/README.md`). The dashboard’s
-  built-in approver pushes pending entries to a queue the operator
-  drains in the SPA.
+  synchronous LLM proctoring against the approver's inline
+  `policy = <<-EOT ... EOT` prompt — see `config/README.md`). The
+  dashboard's built-in approver pushes pending entries to a queue
+  the operator drains in the SPA.
 
 ## Connection modes
 

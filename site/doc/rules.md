@@ -469,18 +469,14 @@ endpoint "https" "console" {
   credential = cookie_token.console-session
 }
 
-policy "reply-content" {
-  text = <<-EOT
+approver "llm_approver" "reply-content-judge" {
+  model      = "claude-haiku-4-5-20251001"
+  credential = anthropic_manual_key.anthropic-key
+  policy     = <<-EOT
     The JSON body has a body field containing a customer support reply.
     Deny markdown formatting, missing required context, offensive
     content, impersonation, and account-harming instructions.
   EOT
-}
-
-approver "llm_approver" "reply-content-judge" {
-  model      = "claude-haiku-4-5-20251001"
-  credential = anthropic_manual_key.anthropic-key
-  policy     = policy.reply-content
 }
 
 approver "human_approver" "support-triage" {
@@ -644,19 +640,15 @@ approver "human_approver" "db-review" {
   timeout     = 86400
 }
 
-policy "pg-secret-columns" {
-  text = <<-EOT
+approver "llm_approver" "pg-secret-columns-judge" {
+  model      = "claude-haiku-4-5-20251001"
+  credential = anthropic_manual_key.anthropic-key
+  policy     = <<-EOT
     Deny SELECTs that project raw secret material: access tokens,
     refresh tokens, password hashes, cert private keys, or secret env
     var values. Allow metadata-only reads such as ids, names, counts,
     and timestamps.
   EOT
-}
-
-approver "llm_approver" "pg-secret-columns-judge" {
-  model      = "claude-haiku-4-5-20251001"
-  credential = anthropic_manual_key.anthropic-key
-  policy     = policy.pg-secret-columns
 }
 
 rule "pg-no-ddl" {

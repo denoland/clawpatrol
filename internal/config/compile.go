@@ -40,12 +40,11 @@ type CompiledPolicy struct {
 	// in their Tunnel field — same instance as the entry here.
 	Tunnels map[string]*CompiledTunnel
 
-	// Approvers / Policies / Credentials surface the same entities
-	// from the Policy struct under a runtime-friendly typed alias —
-	// they're pointers into the same Entity records, no copies.
+	// Approvers / Credentials surface the same entities from the
+	// Policy struct under a runtime-friendly typed alias — they're
+	// pointers into the same Entity records, no copies.
 	Approvers   map[string]*Entity
 	Credentials map[string]*Entity
-	Policies    map[string]*PolicyText
 }
 
 // CompiledProfile binds an identity to the endpoint set its requests
@@ -262,7 +261,6 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 		Tunnels:        map[string]*CompiledTunnel{},
 		Approvers:      p.Approvers,
 		Credentials:    p.Credentials,
-		Policies:       p.Policies,
 	}
 
 	// Compile tunnels first so endpoint compilation can resolve

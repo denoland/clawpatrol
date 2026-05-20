@@ -13,15 +13,6 @@ rule "k8s-exec-content-check" {
 
 admin_email = "ops@example.com"
 
-policy "k8s-exec-content" {
-  text = <<-EOT
-    Inspect the kubectl exec command (each ?command= argv element).
-    Deny if it dumps env vars (env, printenv, set, export, cat
-    /proc/*/environ). Deny if it reads sensitive host-mount files.
-    Allow ls, ps, df, ip, ss, mount, dmesg, top.
-  EOT
-}
-
 endpoint "kubernetes" "k8s-dev" {
   server = "k8s-dev.example"
 }
@@ -38,7 +29,12 @@ credential "anthropic_manual_key" "anthropic-key" {}
 approver "llm_approver" "k8s-exec-content-judge" {
   model      = "claude-haiku-4-5-20251001"
   credential = anthropic_manual_key.anthropic-key
-  policy     = policy.k8s-exec-content
+  policy     = <<-EOT
+    Inspect the kubectl exec command (each ?command= argv element).
+    Deny if it dumps env vars (env, printenv, set, export, cat
+    /proc/*/environ). Deny if it reads sensitive host-mount files.
+    Allow ls, ps, df, ip, ss, mount, dmesg, top.
+  EOT
 }
 
 profile "default" { credentials = [mtls_credential.k8s] }

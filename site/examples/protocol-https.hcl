@@ -15,14 +15,6 @@ rule "support-reply-on-behalf" {
 
 admin_email = "ops@example.com"
 
-policy "reply-content" {
-  text = <<-EOT
-    The JSON body has a body field containing a customer support
-    reply. Deny if it contains markdown formatting, missing
-    salutations, or offensive content.
-  EOT
-}
-
 endpoint "https" "deno-deploy" {
   hosts = ["app.example.com"]
 }
@@ -33,7 +25,11 @@ credential "bearer_token" "deno-deploy" { endpoint = https.deno-deploy }
 approver "llm_approver" "reply-content-judge" {
   model      = "claude-sonnet-4-6"
   credential = anthropic_manual_key.anthropic-key
-  policy     = policy.reply-content
+  policy     = <<-EOT
+    The JSON body has a body field containing a customer support
+    reply. Deny if it contains markdown formatting, missing
+    salutations, or offensive content.
+  EOT
 }
 
 profile "default" { credentials = [bearer_token.deno-deploy] }

@@ -1,11 +1,7 @@
 approver "llm_approver" "secret-judge" {
   model      = "claude-haiku-4-5-20251001"
   credential = anthropic_manual_key.anthropic-key
-  policy     = policy.secret-policy
-}
-
-policy "secret-policy" {
-  text = "Reject any SELECT that projects secret-bearing columns."
+  policy     = "Reject any SELECT that projects secret-bearing columns."
 }
 
 # ===== harness =====

@@ -214,7 +214,6 @@ type Policy struct {
 	Rules       map[string]*Entity
 	Tunnels     map[string]*Entity
 
-	Policies map[string]*PolicyText
 	Profiles map[string]*Profile
 
 	// Order preserves declaration order across all kinds combined.
@@ -275,15 +274,6 @@ func (f FrameworkAttrs) Str(name string) string {
 		return ""
 	}
 	return f.Strings[name]
-}
-
-// PolicyText defines a named, reusable chunk of policy prose that
-// `llm_approver` blocks reference by name. The single `text` attribute
-// is typically a heredoc.
-type PolicyText struct {
-	Name string
-	// Text is the policy prose passed to llm_approver blocks.
-	Text string `hcl:"text"`
 }
 
 // PluginSource is a top-level `plugin "<name>" { source = "..." }`
@@ -445,7 +435,6 @@ func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
 		Endpoints:   make(map[string]*Entity),
 		Rules:       make(map[string]*Entity),
 		Tunnels:     make(map[string]*Entity),
-		Policies:    make(map[string]*PolicyText),
 		Profiles:    make(map[string]*Profile),
 	}
 
@@ -644,7 +633,6 @@ func extractPolicyBlocks(body hcl.Body) (hcl.Blocks, hcl.Diagnostics) {
 			{Type: "credential", LabelNames: []string{"type", "name"}},
 			{Type: "endpoint", LabelNames: []string{"type", "name"}},
 			{Type: "rule", LabelNames: []string{"name"}},
-			{Type: "policy", LabelNames: []string{"name"}},
 			{Type: "profile", LabelNames: []string{"name"}},
 			{Type: "tunnel", LabelNames: []string{"type", "name"}},
 		},
@@ -664,7 +652,7 @@ var builtinApproverNames = []string{"dashboard"}
 // buildEvalContext installs each declared block as a typed-ref
 // variable in the eval context. Two-label kinds bucket by Type:
 // `credential.foo` resolves to the string "foo". One-label kinds
-// bucket by Kind keyword: `rule.foo`, `policy.foo`, `profile.foo`.
+// bucket by Kind keyword: `rule.foo`, `profile.foo`.
 // Built-in approvers live under a synthetic "builtin" type so
 // `approve = [builtin.dashboard]` works without a declaration.
 //
@@ -697,19 +685,10 @@ func buildEvalContext(table *SymbolTable) *hcl.EvalContext {
 }
 
 // decodePolicyBlocks runs pass 2: per-block plugin dispatch + decode +
-// ref resolution + Validate + Build, plus the fixed-schema policy /
-// profile decoders.
+// ref resolution + Validate + Build, plus the fixed-schema profile
+// decoder.
 func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext, configDir string) hcl.Diagnostics {
 	var diags hcl.Diagnostics
-
-	for _, sym := range table.byKind[KindPolicy] {
-		pt := &PolicyText{Name: sym.Name}
-		if d := gohcl.DecodeBody(sym.Block.Body, evalCtx, pt); d.HasErrors() {
-			diags = append(diags, d...)
-		}
-		p.Policies[sym.Name] = pt
-		p.Order = append(p.Order, sym.Name)
-	}
 
 	for _, sym := range table.byKind[KindProfile] {
 		pr, d := decodeProfileBlock(sym, evalCtx)

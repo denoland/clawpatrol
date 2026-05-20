@@ -64,7 +64,6 @@ var blockKinds = map[string]Kind{
 	"credential": KindCredential,
 	"rule":       KindRule,
 	"approver":   KindApprover,
-	"policy":     KindPolicy,
 	"profile":    KindProfile,
 	"tunnel":     KindTunnel,
 }

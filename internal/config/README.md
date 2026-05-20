@@ -33,7 +33,6 @@ llm_fail_mode = "closed"
 
 # Labeled policy blocks — dispatched to plugins.
 approver "<type>" "<name>" { ... }
-policy   "<name>" { ... }
 credential "<type>" "<name>" { ... }
 endpoint "<type>" "<name>" { ... }
 rule "<type>" "<name>" { ... }
@@ -43,8 +42,8 @@ device "<ip>" { rule ... ... { ... } }
 
 ## Names + references
 
-Every named entity (approver, policy, credential, endpoint, rule,
-profile) shares **one flat namespace**. Names are globally unique;
+Every named entity (approver, credential, endpoint, rule, profile)
+shares **one flat namespace**. Names are globally unique;
 collisions are a load error.
 
 References are **bare names** — no kind prefix, no type prefix:
@@ -79,30 +78,25 @@ human_on_timeout = "deny"          # "deny" | "allow"
 
 Who arbitrates `approve = [...]` chains. Built-in types:
 
-- `llm_approver` — Claude / GPT proctor. `model = "..."`.
+- `llm_approver` — Claude / GPT proctor. Carries `model = "..."`,
+  the `credential` used to call the model API, and the inline
+  `policy` prose the model judges requests against (heredoc-friendly).
 - `human_approver` — Slack channel + optional N-of-N quorum.
   `channel = "#..."`, `timeout = <seconds>`,
   `require_approvers = <int>`.
 
 ```hcl
-approver "llm_approver" "fast" { model = "claude-haiku-4-5-20251001" }
-approver "human_approver" "billing-strict" {
-  channel           = "#billing-approvals"
-  require_approvers = 2
-}
-```
-
-### `policy "<name>" { text = "..." }`
-
-Reusable LLM proctor prompt. Referenced from approve-chain stages.
-Heredoc-friendly:
-
-```hcl
-policy "k8s-exec-content" {
-  text = <<-EOT
+approver "llm_approver" "k8s-exec-content-judge" {
+  model      = "claude-haiku-4-5-20251001"
+  credential = anthropic_manual_key.anthropic-key
+  policy     = <<-EOT
     Inspect the kubectl exec command (each ?command= argv element).
     Deny if it dumps env vars, reads sensitive host-mount files...
   EOT
+}
+approver "human_approver" "billing-strict" {
+  channel           = "#billing-approvals"
+  require_approvers = 2
 }
 ```
 

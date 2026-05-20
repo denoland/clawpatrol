@@ -13,8 +13,9 @@
 #   defaults   {}                     global fallbacks for fail-mode,
 #                                     cache TTL, unknown-host policy
 #   approver   "<type>" "<name>"      who arbitrates (llm_approver |
-#                                     human_approver)
-#   policy     "<name>"               reusable LLM proctor prompt
+#                                     human_approver). llm_approver
+#                                     carries its prompt inline as
+#                                     `policy = <<-EOT ... EOT`.
 #   endpoint   "<type>" "<name>"      typed upstream binding (hosts +
 #                                     connection params only)
 #   credential "<type>" "<name>"      typed handle to a secret, bound

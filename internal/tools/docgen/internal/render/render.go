@@ -41,7 +41,6 @@ type renderer struct {
 func (r *renderer) run() (string, error) {
 	r.writeHeader()
 	r.writeOperational()
-	r.writeFixedKind("policy", "config", "PolicyText", `policy "<name>"`)
 	r.writeProfile()
 
 	for _, kind := range []config.Kind{
@@ -72,7 +71,7 @@ Each block section lists the attributes the loader accepts, with:
   literals; ` + "`[]string`" + ` is a list of strings; ` + "`ref(<kind>)`" + ` is a
   typed reference to another block (` + "`<type>.<name>`" + ` for
   two-label kinds like ` + "`credential = bearer_token.github`" + `,
-  ` + "`<kind>.<name>`" + ` for one-label kinds like ` + "`policy = policy.no-pii`" + `);
+  ` + "`<kind>.<name>`" + ` for one-label kinds like ` + "`rule = rule.no-pii`" + `);
   ` + "`[]ref(<kind>)`" + ` is a list of such references; nested blocks have
   their shape described inline.
 - **Required** — ` + "`yes`" + ` if the loader rejects the block when the
@@ -147,7 +146,7 @@ func upperFirst(s string) string {
 
 func (r *renderer) writeOperational() {
 	r.out.WriteString("## Top-level fields\n\n")
-	r.out.WriteString("Every singleton gateway attribute — listen addresses, paths, control-plane joining, WireGuard endpoint, and policy fallbacks — is set directly at the top of `gateway.hcl`. Labeled blocks (`policy`, `profile`, `approver`, `credential`, `endpoint`, `rule`, `tunnel`) are documented in their own sections.\n\n")
+	r.out.WriteString("Every singleton gateway attribute — listen addresses, paths, control-plane joining, WireGuard endpoint, and policy fallbacks — is set directly at the top of `gateway.hcl`. Labeled blocks (`profile`, `approver`, `credential`, `endpoint`, `rule`, `tunnel`) are documented in their own sections.\n\n")
 	r.writeStructTable("config", "Gateway", reflect.TypeOf(config.Gateway{}))
 }
 
@@ -173,8 +172,6 @@ func reflectTypeFor(pkg, name string) reflect.Type {
 	switch pkg + "." + name {
 	case "config.Gateway":
 		return reflect.TypeOf(config.Gateway{})
-	case "config.PolicyText":
-		return reflect.TypeOf(config.PolicyText{})
 	}
 	return nil
 }
@@ -446,8 +443,6 @@ func (r *renderer) writeExample(kind, typ string, rt reflect.Type, typed bool) {
 	switch {
 	case typ != "" && typed:
 		head = fmt.Sprintf(`%s "%s" "example"`, kind, typ)
-	case kind == "policy":
-		head = `policy "example"`
 	default:
 		head = kind
 	}
@@ -519,13 +514,11 @@ func exampleValue(t reflect.Type, fieldName string) string {
 		case "endpoint":
 			return "https.example"
 		case "policy":
-			return "policy.example"
+			return "<<-EOT\n    Example policy text.\n  EOT"
 		case "verdict":
 			return `"deny"`
 		case "reason":
 			return `"example reason"`
-		case "text":
-			return "<<-EOT\n    Example policy text.\n  EOT"
 		}
 		return `"example"`
 	case reflect.Bool:

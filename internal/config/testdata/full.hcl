@@ -42,11 +42,9 @@
 #                                         cache TTL, unknown-host policy
 #
 #   approver     "<type>" "<name>" {}     who arbitrates: llm_approver
-#                                         (Claude proctor) or
+#                                         (Claude proctor, carries its
+#                                         own inline `policy` text) or
 #                                         human_approver (Slack channel)
-#
-#   policy       "<name>" {}              reusable LLM prompt text;
-#                                         referenced from approve chains
 #
 #   endpoint     "<type>" "<name>" {}     a typed upstream binding —
 #                                         hosts + connection params only.
@@ -288,10 +286,10 @@
 #     approve = [llm_approver.pg-secret-columns-judge]            # one LLM proctor
 #     approve = [llm_approver.reply-content-judge, human_approver.support-ops]   # LLM, then human
 #
-# LLM proctor blocks (llm_approver) bind a `policy = policy.<name>`
-# directly, so the use site stays a single approver traversal. A human
-# stage takes only the approver traversal; the approver block carries
-# channel, timeout, and require_approvers.
+# LLM proctor blocks (llm_approver) carry their `policy` text inline
+# as a heredoc string, so the use site stays a single approver
+# traversal. A human stage takes only the approver traversal; the
+# approver block carries channel, timeout, and require_approvers.
 #
 # Defaults block sets `llm_fail_mode` (deny on LLM error / timeout)
 # and `human_on_timeout` (deny if Slack approver doesn't reply within
@@ -395,47 +393,7 @@ human_on_timeout = "deny"
 approver "llm_approver" "slack-block-kit-shape-judge" {
   model      = "claude-sonnet-4-20250514"
   credential = anthropic_oauth_subscription.anthropic-ops
-  policy     = policy.slack-block-kit-shape
-}
-approver "llm_approver" "reply-content-judge" {
-  model      = "claude-sonnet-4-20250514"
-  credential = anthropic_oauth_subscription.anthropic-ops
-  policy     = policy.reply-content
-}
-approver "llm_approver" "pg-secret-columns-judge" {
-  model      = "claude-haiku-4-5-20251001"
-  credential = anthropic_oauth_subscription.anthropic-ops
-  policy     = policy.pg-secret-columns
-}
-approver "llm_approver" "pg-secret-named-defense-judge" {
-  model      = "claude-haiku-4-5-20251001"
-  credential = anthropic_oauth_subscription.anthropic-ops
-  policy     = policy.pg-secret-named-defense
-}
-approver "llm_approver" "k8s-exec-content-judge" {
-  model      = "claude-haiku-4-5-20251001"
-  credential = anthropic_oauth_subscription.anthropic-ops
-  policy     = policy.k8s-exec-content
-}
-
-approver "human_approver" "support-ops" {
-  channel = "#support"
-  timeout = 86400
-}
-approver "human_approver" "console-dba"    { channel = "#db-approvals" }
-approver "human_approver" "scheduler-ops"  { channel = "#db-approvals" }
-approver "human_approver" "billing"        { channel = "#billing-approvals" }
-approver "human_approver" "billing-strict" {
-  channel           = "#billing-approvals"
-  require_approvers = 2
-}
-approver "human_approver" "observability"  { channel = "#observability" }
-approver "human_approver" "notion-archive" { channel = "#notion-approvals" }
-
-# ── Reusable LLM policy texts ───────────────────────
-
-policy "slack-block-kit-shape" {
-  text = <<-EOT
+  policy     = <<-EOT
     The chat.postMessage body has a Block Kit message containing one
     or more buttons whose action_id starts with "approve_reply_". The
     reviewer in Slack must see what they're approving, and that text
@@ -451,9 +409,10 @@ policy "slack-block-kit-shape" {
     Otherwise DENY with a precise reason.
   EOT
 }
-
-policy "reply-content" {
-  text = <<-EOT
+approver "llm_approver" "reply-content-judge" {
+  model      = "claude-sonnet-4-20250514"
+  credential = anthropic_oauth_subscription.anthropic-ops
+  policy     = <<-EOT
     The JSON body has a `body` field containing a customer support
     reply. Apply these checks in order; deny on the first failure.
 
@@ -468,20 +427,10 @@ policy "reply-content" {
           account-harming / empty / nonsensical content.
   EOT
 }
-
-policy "k8s-exec-content" {
-  text = <<-EOT
-    Inspect the kubectl exec command (each ?command= argv element).
-    Deny if it dumps env vars (env, printenv, set, export, cat
-    /proc/*/environ). Deny if it reads sensitive host-mount files
-    (kubelet pod tokens, certs, private keys, kubeconfig,
-    /etc/shadow, containerd/CRI sockets). Allow ls, ps, df, ip, ss,
-    mount, dmesg, top, and apt-get install for debugging.
-  EOT
-}
-
-policy "pg-secret-columns" {
-  text = <<-EOT
+approver "llm_approver" "pg-secret-columns-judge" {
+  model      = "claude-haiku-4-5-20251001"
+  credential = anthropic_oauth_subscription.anthropic-ops
+  policy     = <<-EOT
     Deny if the SELECT projects (directly, via *, or via aggregates
     like json_agg / encode) any of:
       - github_identities.access_token or .refresh_token
@@ -496,15 +445,42 @@ policy "pg-secret-columns" {
     Allow reads of every other column.
   EOT
 }
-
-policy "pg-secret-named-defense" {
-  text = <<-EOT
+approver "llm_approver" "pg-secret-named-defense-judge" {
+  model      = "claude-haiku-4-5-20251001"
+  credential = anthropic_oauth_subscription.anthropic-ops
+  policy     = <<-EOT
     Decide whether this SELECT actually returns secret data — i.e.
     it projects or aggregates a column whose name suggests a secret.
     Approve if the secret-named identifier appears only as a string
     literal or in a non-projected predicate.
   EOT
 }
+approver "llm_approver" "k8s-exec-content-judge" {
+  model      = "claude-haiku-4-5-20251001"
+  credential = anthropic_oauth_subscription.anthropic-ops
+  policy     = <<-EOT
+    Inspect the kubectl exec command (each ?command= argv element).
+    Deny if it dumps env vars (env, printenv, set, export, cat
+    /proc/*/environ). Deny if it reads sensitive host-mount files
+    (kubelet pod tokens, certs, private keys, kubeconfig,
+    /etc/shadow, containerd/CRI sockets). Allow ls, ps, df, ip, ss,
+    mount, dmesg, top, and apt-get install for debugging.
+  EOT
+}
+
+approver "human_approver" "support-ops" {
+  channel = "#support"
+  timeout = 86400
+}
+approver "human_approver" "console-dba"    { channel = "#db-approvals" }
+approver "human_approver" "scheduler-ops"  { channel = "#db-approvals" }
+approver "human_approver" "billing"        { channel = "#billing-approvals" }
+approver "human_approver" "billing-strict" {
+  channel           = "#billing-approvals"
+  require_approvers = 2
+}
+approver "human_approver" "observability"  { channel = "#observability" }
+approver "human_approver" "notion-archive" { channel = "#notion-approvals" }
 
 # ── Endpoints (bare network targets) ────────────────
 #

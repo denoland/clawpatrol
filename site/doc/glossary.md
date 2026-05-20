@@ -159,7 +159,7 @@ for exact fields, types, and examples.
 | Credential | `credential "<type>" "<name>" { ... }` blocks plus secret-store bytes. |
 | Rule | `rule "<name>" { ... }` blocks; see [Rules](/docs/rules/) for matching semantics. |
 | Approver | `approver "<type>" "<name>" { ... }` blocks. |
-| Policy text | `policy "<name>" { text = ... }` blocks referenced by LLM approvers. |
+| Policy text | The `policy` attribute on each `llm_approver` block — inline prose the model judges requests against. |
 | Profile | `profile "<name>" { credentials = [...] }` blocks assigned to devices. |
 | Plugin | `plugin "<name>" { source = ... }` blocks that register extra endpoint, credential, approver, rule, or tunnel types. |
 

@@ -275,9 +275,12 @@ approver "human_approver" "support-ops" {
 
 # LLM judges — a single-purpose proctor prompt wrapped as an
 # approver. The model is invoked through `anthropic-key` (the
-# manual key credential above).
-policy "no-pii-columns" {
-  text = <<-EOT
+# manual key credential above). The judge's prose lives inline in
+# `policy = <<-EOT ... EOT`.
+approver "llm_approver" "no-pii-judge" {
+  model      = "claude-haiku-4-5-20251001"
+  credential = anthropic_manual_key.anthropic-key
+  policy     = <<-EOT
     Deny if the SELECT projects (directly, via *, via aggregates,
     or via a JSONB extract that returns the underlying value) any
     of:
@@ -289,12 +292,6 @@ policy "no-pii-columns" {
     A column name appearing only in a WHERE predicate (and not in
     the projection) is fine. SELECT count(*) is fine.
   EOT
-}
-
-approver "llm_approver" "no-pii-judge" {
-  model      = "claude-haiku-4-5-20251001"
-  credential = anthropic_manual_key.anthropic-key
-  policy     = policy.no-pii-columns
 }
 
 # ── rules -------------------------------------------------------------

@@ -13,7 +13,7 @@ Each block section lists the attributes the loader accepts, with:
   literals; `[]string` is a list of strings; `ref(<kind>)` is a
   typed reference to another block (`<type>.<name>` for
   two-label kinds like `credential = bearer_token.github`,
-  `<kind>.<name>` for one-label kinds like `policy = policy.no-pii`);
+  `<kind>.<name>` for one-label kinds like `rule = rule.no-pii`);
   `[]ref(<kind>)` is a list of such references; nested blocks have
   their shape described inline.
 - **Required** — `yes` if the loader rejects the block when the
@@ -24,7 +24,7 @@ list one subsection per registered type.
 
 ## Top-level fields
 
-Every singleton gateway attribute — listen addresses, paths, control-plane joining, WireGuard endpoint, and policy fallbacks — is set directly at the top of `gateway.hcl`. Labeled blocks (`policy`, `profile`, `approver`, `credential`, `endpoint`, `rule`, `tunnel`) are documented in their own sections.
+Every singleton gateway attribute — listen addresses, paths, control-plane joining, WireGuard endpoint, and policy fallbacks — is set directly at the top of `gateway.hcl`. Labeled blocks (`profile`, `approver`, `credential`, `endpoint`, `rule`, `tunnel`) are documented in their own sections.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -57,24 +57,6 @@ Every singleton gateway attribute — listen addresses, paths, control-plane joi
 | `human_timeout` | `int` | no | The default human-approval timeout in seconds. |
 | `human_on_timeout` | `string` | no | The default outcome when a human approver does not answer before timeout. Supported values are "deny" and "allow". |
 | `plugin` | `block` | no | Lists every `plugin "<name>" { source = "..." }` block at the top of the file. The loader spawns each subprocess (and registers its declared types) before running pass-1 symbol building, so plugin-supplied (kind, type) pairs are available by the time policy blocks are dispatched. |
-
-## `policy "<name>" { ... }`
-
-Defines a named, reusable chunk of policy prose that
-`llm_approver` blocks reference by name. The single `text` attribute
-is typically a heredoc.
-
-| Attribute | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `text` | `string` | yes | The policy prose passed to llm_approver blocks. |
-
-```hcl
-policy "example" {
-  text = <<-EOT
-    Example policy text.
-  EOT
-}
-```
 
 ## `profile "<name>" { ... }`
 
@@ -143,16 +125,15 @@ approver "human_approver" "example" {
 ### `approver "llm_approver" "<name>"`
 
 Carries the model + the credential used to authenticate
-the call to the model API + the policy text the model judges
-against. Inline `policy` is a bare-name reference to a `policy
-"<name>" { text = ... }` block — operator declares the prompt once
-and reuses across multiple judges.
+the call to the model API + the inline policy text the model judges
+against. `policy` is a heredoc-friendly string attribute on the
+approver block itself — no separate `policy "<name>" {}` block.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `model` | `string` | yes | The model id used for policy judgment, such as a claude-*, gpt-*, or o*-prefixed model. |
 | `credential` | `ref(credential)` | yes | References the HTTP credential used to authenticate the model API call. |
-| `policy` | `ref(policy)` | no | References a policy block containing the text the model judges requests against. |
+| `policy` | `string` | no | The prose the model judges requests against. Typically a heredoc on the approver block. |
 
 ```hcl
 approver "llm_approver" "example" {

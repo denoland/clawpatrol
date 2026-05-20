@@ -101,9 +101,6 @@ func dumpPolicy(p *Policy) map[string]any {
 	if v := dumpEntityMap(p.Approvers); v != nil {
 		out["approvers"] = v
 	}
-	if v := dumpPolicies(p.Policies); v != nil {
-		out["policies"] = v
-	}
 	if v := dumpEntityMap(p.Credentials); v != nil {
 		out["credentials"] = v
 	}
@@ -161,17 +158,6 @@ func dumpEntityMap(m map[string]*Entity) map[string]any {
 			}
 		}
 		out[name] = row
-	}
-	return out
-}
-
-func dumpPolicies(m map[string]*PolicyText) map[string]any {
-	if len(m) == 0 {
-		return nil
-	}
-	out := map[string]any{}
-	for name, p := range m {
-		out[name] = map[string]any{"text": p.Text}
 	}
 	return out
 }

@@ -85,7 +85,7 @@ func (r *RefIndex) Ref(kind Kind, name string) string {
 		if t := r.endpointTyp[name]; t != "" {
 			return t + "." + name
 		}
-	case KindRule, KindPolicy, KindProfile:
+	case KindRule, KindProfile:
 		return string(kind) + "." + name
 	}
 	return name
@@ -158,13 +158,12 @@ func Emit(gw *Gateway) ([]byte, error) {
 	emitRI = newRefIndex(p)
 	defer func() { emitRI = nil }()
 
-	// Per-kind groups in a deterministic order: approvers → policies →
-	// credentials → endpoints → rules → profiles. Within a group, walk
+	// Per-kind groups in a deterministic order: approvers → credentials
+	// → tunnels → endpoints → rules → profiles. Within a group, walk
 	// p.Order (source order) and filter to that kind, falling back to
 	// alphabetical for entries Order doesn't cover (defensive — every
 	// loaded entry is in Order in practice).
 	emitGroup(body, p, KindApprover)
-	emitGroup(body, p, KindPolicy)
 	emitGroup(body, p, KindCredential)
 	emitGroup(body, p, KindTunnel)
 	emitGroup(body, p, KindEndpoint)
@@ -254,12 +253,6 @@ func leftoverNames(p *Policy, kind Kind, emitted map[string]bool) []string {
 				out = append(out, n)
 			}
 		}
-	case KindPolicy:
-		for n := range p.Policies {
-			if !emitted[n] {
-				out = append(out, n)
-			}
-		}
 	case KindCredential:
 		for n := range p.Credentials {
 			if !emitted[n] {
@@ -303,19 +296,6 @@ func emitOne(body *hclwrite.Body, p *Policy, kind Kind, name string) bool {
 			return false
 		}
 		emitEntityBlock(body, "approver", ent, name)
-	case KindPolicy:
-		pt, ok := p.Policies[name]
-		if !ok {
-			return false
-		}
-		body.AppendNewline()
-		b := body.AppendNewBlock("policy", []string{name}).Body()
-		// Heredoc preservation isn't hclwrite's strong suit; emit as
-		// a normal string. Operators editing through the dashboard
-		// see the heredoc collapse to a single quoted string — fine
-		// for now; preserving the heredoc shape on round-trip is a
-		// follow-up.
-		b.SetAttributeValue("text", cty.StringVal(pt.Text))
 	case KindCredential:
 		ent, ok := p.Credentials[name]
 		if !ok {
