@@ -113,16 +113,16 @@ two ways to scope what gets captured:
   <text class="lbl-intro" x="180" y="124">client</text>
   <line class="arr-intro" x1="120" y1="120" x2="140" y2="120" marker-end="url(#ar-intro)"/>
 
-  <line class="arr-intro" x1="240" y1="120" x2="296" y2="120" marker-end="url(#ar-intro)"/>
-  <text class="sm-intro" x="268" y="114">tunnel</text>
+  <line class="arr-intro" x1="240" y1="105" x2="296" y2="105" marker-end="url(#ar-intro)"/>
+  <text class="sm-intro" x="268" y="99">tunnel</text>
 
   <rect class="f-intro" x="270" y="20" width="650" height="280" rx="6"/>
   <text class="ttl-intro" x="280" y="14">gateway</text>
 
-  <rect class="b-intro" x="300" y="100" width="110" height="40" rx="4"/>
-  <text class="lbl-intro" x="355" y="124">match rule</text>
+  <rect class="b-intro" x="300" y="85" width="110" height="40" rx="4"/>
+  <text class="lbl-intro" x="355" y="109">match rule</text>
 
-  <line class="arr-intro" x1="410" y1="120" x2="430" y2="120" marker-end="url(#ar-intro)"/>
+  <line class="arr-intro" x1="410" y1="105" x2="430" y2="105" marker-end="url(#ar-intro)"/>
 
   <rect class="b-intro" x="430" y="75" width="170" height="90" rx="4"/>
   <text class="lbl-intro" x="515" y="98">verdict</text>
@@ -142,8 +142,8 @@ two ways to scope what gets captured:
   <rect class="b-intro" x="820" y="100" width="80" height="40" rx="4"/>
   <text class="lbl-intro" x="860" y="124">upstream</text>
 
-  <line class="arr-intro" x1="296" y1="140" x2="240" y2="140" marker-end="url(#ar-intro)"/>
-  <text class="sm-intro" x="268" y="154">on deny</text>
+  <line class="arr-intro" x1="430" y1="135" x2="240" y2="135" marker-end="url(#ar-intro)"/>
+  <text class="sm-intro" x="335" y="149">on deny</text>
 
   <line class="arr-intro" x1="475" y1="165" x2="475" y2="217" marker-end="url(#ar-intro)"/>
   <text class="sm-intro" x="470" y="195" style="text-anchor:end">request approval</text>
