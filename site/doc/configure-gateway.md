@@ -54,8 +54,7 @@ listen — an unauthenticated request must never reach it.
 
 The first time you open the dashboard you set a `root` password.
 It lives bcrypt-hashed in `clawpatrol.db` and is checked on every
-subsequent request. To skip the web first-run flow, or to rotate
-the password later, pass one of these to `clawpatrol gateway`:
+subsequent request. You can also manage the password from the CLI:
 
 ```bash
 clawpatrol gateway --set-dashboard-password '<password>' gateway.hcl
