@@ -44,10 +44,11 @@ func resolveTemplate(s string) string {
 	return out
 }
 
-// pushdownEnvVar carries one env var contributed by the credential
-// plugins' EnvPushdownProvider impls plus the CA-bundle vars. Used
-// by both `clawpatrol env` (prints export lines) and `clawpatrol run`
-// (sets them on the wrapped child process via os.Setenv).
+// pushdownEnvVar carries one env var contributed by the profile's
+// `environments = [...]` list (see KindEnvironment plugins) plus
+// the CA-bundle vars. Used by both `clawpatrol env` (prints export
+// lines) and `clawpatrol run` (sets them on the wrapped child
+// process via os.Setenv).
 type pushdownEnvVar struct {
 	Name        string
 	Value       string

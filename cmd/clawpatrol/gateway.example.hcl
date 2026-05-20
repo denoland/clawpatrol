@@ -451,6 +451,33 @@ rule "k8s-default" {
 #   database = "main"
 # }
 
+# ── environments ------------------------------------------------------
+#
+# An environment block declares one named push-down contribution to
+# the agent process the operator runs through `clawpatrol env`. The
+# plugin owns the env-var list (operators don't type `PGHOST` or
+# `ANTHROPIC_AUTH_TOKEN` themselves); the operator chooses which
+# environments apply by listing them on a profile's
+# `environments = [...]`. Profiles with multiple credentials of the
+# same kind (e.g. pg-readonly + pg-writer) pick which one's vars
+# show up by declaring one postgres_environment for the chosen
+# credential.
+
+environment "anthropic_subscription_environment" "claude-env" {}
+environment "codex_environment"                  "codex-env"  {}
+environment "github_environment"                 "github-env" {}
+
+environment "postgres_environment" "pg-rw-env" {
+  endpoint   = postgres.pg
+  credential = postgres_credential.pg-writer
+}
+
+environment "kubernetes_environment" "k8s-dev-env" {
+  endpoint   = kubernetes.k8s-dev
+  credential = mtls_credential.k8s-dev
+  kubeconfig = "/home/agent/.kube/clawpatrol-k8s-dev"
+}
+
 # ── profiles ----------------------------------------------------------
 #
 # Bind a device identity to a credential set. Endpoint membership
@@ -460,11 +487,20 @@ rule "k8s-default" {
 # fallback the dashboard assigns at approval time.
 
 profile "default" {
-  credentials = [anthropic_oauth_subscription.claude, openai_codex_oauth.codex, github_oauth.github, bearer_token.aws]
+  credentials  = [anthropic_oauth_subscription.claude, openai_codex_oauth.codex, github_oauth.github, bearer_token.aws]
+  environments = [
+    anthropic_subscription_environment.claude-env,
+    codex_environment.codex-env,
+    github_environment.github-env,
+  ]
 }
 
 profile "support" {
-  credentials = [anthropic_oauth_subscription.claude, github_oauth.github, slack_tokens.slack, notion_oauth.notion]
+  credentials  = [anthropic_oauth_subscription.claude, github_oauth.github, slack_tokens.slack, notion_oauth.notion]
+  environments = [
+    anthropic_subscription_environment.claude-env,
+    github_environment.github-env,
+  ]
 }
 
 profile "data" {
@@ -473,6 +509,10 @@ profile "data" {
     github_oauth.github,
     postgres_credential.pg-readonly,
     clickhouse_credential.ch-analytics,
+  ]
+  environments = [
+    anthropic_subscription_environment.claude-env,
+    github_environment.github-env,
   ]
 }
 
@@ -485,5 +525,11 @@ profile "platform" {
     ssh_key.build-host,
     mtls_credential.k8s-dev,
     mtls_credential.k8s-prod,
+  ]
+  environments = [
+    anthropic_subscription_environment.claude-env,
+    github_environment.github-env,
+    postgres_environment.pg-rw-env,
+    kubernetes_environment.k8s-dev-env,
   ]
 }
