@@ -3,11 +3,11 @@
 [Getting Started](/docs/getting-started/) gets you running with
 the example config, untouched. This page covers the operational
 tuning you reach for as soon as you take the gateway past
-"kick-the-tyres" — different control plane, dashboard auth,
+"kick-the-tyres" — different join transport, dashboard auth,
 where to bind the dashboard, systemd, state-dir hardening, and
 the rest.
 
-## Control plane: WireGuard or Tailscale
+## Join transport: WireGuard or Tailscale
 
 The example config uses WireGuard:
 
@@ -74,7 +74,8 @@ password. Pick the shape that matches your access model:
   (`ssh -L 8080:127.0.0.1:8080 gateway-host`) or a local reverse
   proxy.
 - **Tailnet / VPN IP (`100.x.x.x:8080`)** — reachable only from
-  your control plane. List each operator's tailnet identity in
+  your tailnet or WireGuard subnet. List each operator's tailnet
+  identity in
   `dashboard_operators` — the email Tailscale uses to identify
   that user — to let them in without typing the password:
 
