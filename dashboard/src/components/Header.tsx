@@ -30,11 +30,7 @@ export function Header({
     <header className="bg-transparent">
       <div className="mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-4 flex items-center gap-4">
         <a href="#/" aria-label="Home" className="shrink-0">
-          <img
-            src="/claw-patrol-logo.svg"
-            alt="Claw Patrol"
-            className="h-6 sm:h-8 w-auto"
-          />
+          <img src="/claw-patrol-logo.svg" alt="Claw Patrol" className="h-6 sm:h-8 w-auto" />
         </a>
         <nav className="ml-auto flex items-center gap-2">
           <a

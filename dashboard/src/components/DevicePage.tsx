@@ -34,10 +34,7 @@ export function DevicePage({
   onConnect: (id: string) => void;
   onRefresh: () => void;
 }) {
-  const a = useMemo(
-    () => agents.find((x) => x.ip === ip) ?? null,
-    [agents, ip],
-  );
+  const a = useMemo(() => agents.find((x) => x.ip === ip) ?? null, [agents, ip]);
   const [profiles, setProfiles] = useState<string[]>([]);
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileErr, setProfileErr] = useState<string | null>(null);
@@ -188,20 +185,14 @@ export function DevicePage({
             className="w-[18px] h-[18px] text-text-muted"
           />
           <div className="min-w-0">
-            <div className="text-base font-semibold text-text truncate">
-              {a.hostname || a.ip}
-            </div>
+            <div className="text-base font-semibold text-text truncate">{a.hostname || a.ip}</div>
             <div className="text-xs text-text-muted truncate">
               {a.profile || "—"} ·{" "}
-              {[a.external_ipv4, a.external_ipv6].filter(Boolean).join(" / ") ||
-                a.ip}
+              {[a.external_ipv4, a.external_ipv6].filter(Boolean).join(" / ") || a.ip}
               {a.os && (
                 <>
                   {" "}
-                  ·{" "}
-                  <span className="font-mono uppercase tracking-wider">
-                    {a.os}
-                  </span>
+                  · <span className="font-mono uppercase tracking-wider">{a.os}</span>
                 </>
               )}
             </div>
@@ -248,11 +239,7 @@ export function DevicePage({
           </span>
         </div>
         <div className="p-3">
-          <IntegrationsCards
-            list={allForUser}
-            onConnect={onConnect}
-            onRefresh={onRefresh}
-          />
+          <IntegrationsCards list={allForUser} onConnect={onConnect} onRefresh={onRefresh} />
         </div>
       </section>
 
@@ -280,8 +267,7 @@ function ProfilePicker({
   useEffect(() => {
     if (!open) return;
     function onDoc(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node))
-        setOpen(false);
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     }
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
@@ -316,9 +302,7 @@ function ProfilePicker({
           strokeLinecap="round"
           strokeLinejoin="round"
           aria-hidden="true"
-          className={
-            "shrink-0 transition-transform " + (open ? "rotate-180" : "")
-          }
+          className={"shrink-0 transition-transform " + (open ? "rotate-180" : "")}
         >
           <path d="m6 9 6 6 6-6" />
         </svg>
@@ -329,9 +313,7 @@ function ProfilePicker({
             choose profile
           </div>
           {profiles.length === 0 ? (
-            <div className="px-3 py-2 text-xs text-text-subtle">
-              no profiles
-            </div>
+            <div className="px-3 py-2 text-xs text-text-subtle">no profiles</div>
           ) : (
             profiles.map((p) => {
               const active = p === current;
