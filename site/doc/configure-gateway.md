@@ -175,8 +175,7 @@ production Claw Patrol gateway:
 
 Released binaries are the supported path. To build from source
 instead — for example to track an unreleased branch — set
-`CLAWPATROL_FROM_SOURCE=1` on the installer (requires Go and
-`gh auth login` for the private clone):
+`CLAWPATROL_FROM_SOURCE=1` on the installer (requires Go):
 
 ```bash
 curl -fsSL https://clawpatrol.dev/install.sh | CLAWPATROL_FROM_SOURCE=1 sh
