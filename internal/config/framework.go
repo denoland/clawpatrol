@@ -66,26 +66,14 @@ func extractFramework(body hcl.Body, kind Kind, evalCtx *hcl.EvalContext, table 
 			continue
 		}
 		if s.Kind != "" {
-			sym := table.Get(s.Kind, name)
-			if sym == nil {
+			if sym := table.Get(s.Kind, name); sym == nil {
 				rng := attr.Expr.Range()
-				if alt := table.GetAny(name); alt != nil {
-					altRange := alt.Range()
-					diags = append(diags, &hcl.Diagnostic{
-						Severity: hcl.DiagError,
-						Summary:  fmt.Sprintf("Wrong reference kind for %q", name),
-						Detail:   fmt.Sprintf("Framework attribute %q expects %s but %q is %s at %s.", s.Name, article(string(s.Kind)), name, article(string(alt.Kind)), alt.Range()),
-						Subject:  &rng,
-						Context:  &altRange,
-					})
-				} else {
-					diags = append(diags, &hcl.Diagnostic{
-						Severity: hcl.DiagError,
-						Summary:  fmt.Sprintf("Unknown %s %q", s.Kind, name),
-						Detail:   fmt.Sprintf("Framework attribute %q references undeclared %s %q.", s.Name, s.Kind, name),
-						Subject:  &rng,
-					})
-				}
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  fmt.Sprintf("Unknown %s %q", s.Kind, name),
+					Detail:   fmt.Sprintf("Framework attribute %q references undeclared %s %q.", s.Name, s.Kind, name),
+					Subject:  &rng,
+				})
 				continue
 			}
 		}

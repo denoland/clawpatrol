@@ -38,7 +38,7 @@ credential "example_magic_token" "demo_token" {}
 
 endpoint "example_smtp" "demo-mail" {
   hosts      = ["mail.invalid:25"]
-  credential = demo_token
+  credential = example_magic_token.demo_token
 }
 ```
 

@@ -780,7 +780,7 @@ func credentialConfig(ent *config.Entity, name string) map[string]string {
 		return nil
 	}
 	file := hclwrite.NewEmptyFile()
-	ent.Plugin.Emit(ent.Body, name, file.Body())
+	ent.Plugin.Emit(ent.Body, name, file.Body(), nil)
 	attrs := file.Body().Attributes()
 	if len(attrs) == 0 {
 		return nil

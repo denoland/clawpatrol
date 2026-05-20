@@ -348,21 +348,12 @@ func multiCredValidate(d any, name string, ctx *config.BuildCtx) hcl.Diagnostics
 		if ctx.Symbols.Get(config.KindCredential, e.Credential) != nil {
 			continue
 		}
-		if alt := ctx.Symbols.GetAny(e.Credential); alt != nil {
-			diags = append(diags, &hcl.Diagnostic{
-				Severity: hcl.DiagError,
-				Summary:  fmt.Sprintf("Wrong reference kind for %q", e.Credential),
-				Detail:   fmt.Sprintf("endpoint %q credentials list expects a credential but %q is a %s.", name, e.Credential, alt.Kind),
-				Subject:  &ctx.Block.DefRange,
-			})
-		} else {
-			diags = append(diags, &hcl.Diagnostic{
-				Severity: hcl.DiagError,
-				Summary:  fmt.Sprintf("Unknown credential %q", e.Credential),
-				Detail:   fmt.Sprintf("endpoint %q credentials list references undeclared credential %q.", name, e.Credential),
-				Subject:  &ctx.Block.DefRange,
-			})
-		}
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Unknown credential %q", e.Credential),
+			Detail:   fmt.Sprintf("endpoint %q credentials list references undeclared credential %q.", name, e.Credential),
+			Subject:  &ctx.Block.DefRange,
+		})
 	}
 	hcr.setCredentialEntries(entries)
 	return diags
@@ -396,10 +387,10 @@ var singularRef = []config.RefSpec{
 // the agent embeds an arbitrary discriminator string in the wire
 // protocol), or "user" for ssh (where the agent's username is the
 // natural label). Both compile to the same CredentialEntry.Placeholder.
-func emitCredentialBinding(b *hclwrite.Body, single string, list []CredentialEntry, dispatchKey string) {
+func emitCredentialBinding(b *hclwrite.Body, single string, list []CredentialEntry, dispatchKey string, ri *config.RefIndex) {
 	if len(list) == 0 {
 		if single != "" {
-			config.SetIdent(b, "credential", single)
+			config.SetIdent(b, "credential", ri.Ref(config.KindCredential, single))
 		}
 		return
 	}
@@ -450,7 +441,15 @@ func emitCredentialBinding(b *hclwrite.Body, single string, list []CredentialEnt
 		}
 		tokens = append(tokens,
 			&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(" credential = ")},
-			&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(e.Credential)},
+		)
+		credRef := ri.Ref(config.KindCredential, e.Credential)
+		for i, part := range strings.Split(credRef, ".") {
+			if i > 0 {
+				tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenDot, Bytes: []byte(".")})
+			}
+			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(part)})
+		}
+		tokens = append(tokens,
 			&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(" }")},
 			&hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(",")},
 			&hclwrite.Token{Type: hclsyntax.TokenNewline, Bytes: []byte("\n")},

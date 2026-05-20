@@ -141,7 +141,7 @@ func registerCredential(client *Client, pluginName string, decl *pb.CredentialDe
 			}
 			return b, nil
 		},
-		Emit: func(_ any, _ string, _ *hclwrite.Body) {},
+		Emit: func(_ any, _ string, _ *hclwrite.Body, _ *config.RefIndex) {},
 	}
 	if d := registerOrCollide(plug, pluginName, "credential"); d != nil {
 		return d
@@ -198,7 +198,7 @@ func registerTunnel(client *Client, pluginName string, decl *pb.TunnelDecl) hcl.
 			return b, nil
 		},
 		Runtime: adapter,
-		Emit:    func(_ any, _ string, _ *hclwrite.Body) {},
+		Emit:    func(_ any, _ string, _ *hclwrite.Body, _ *config.RefIndex) {},
 	}
 	if d := registerOrCollide(plug, pluginName, "tunnel"); d != nil {
 		return d
@@ -307,7 +307,7 @@ func registerEndpoint(client *Client, pluginName string, decl *pb.EndpointDecl) 
 			return b, nil
 		},
 		Runtime: adapter,
-		Emit:    func(_ any, _ string, _ *hclwrite.Body) {},
+		Emit:    func(_ any, _ string, _ *hclwrite.Body, _ *config.RefIndex) {},
 	}
 	if d := registerOrCollide(plug, pluginName, "endpoint"); d != nil {
 		return d

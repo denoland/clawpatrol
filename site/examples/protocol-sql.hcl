@@ -2,7 +2,7 @@
 # outbound connections from inside the database — pg_read_file,
 # lo_get, and the whole dblink family.
 rule "pg-banned-functions" {
-  endpoint = pg-staging
+  endpoint = postgres.pg-staging
   priority = 100
   condition = <<-CEL
     sets.intersects(sql.functions, [
@@ -22,7 +22,7 @@ credential "postgres_credential" "pg-cred" { user = "agent" }
 
 endpoint "postgres" "pg-staging" {
   host       = "pg-staging.example:5432"
-  credential = pg-cred
+  credential = postgres_credential.pg-cred
 }
 
-profile "default" { endpoints = [pg-staging] }
+profile "default" { endpoints = [postgres.pg-staging] }

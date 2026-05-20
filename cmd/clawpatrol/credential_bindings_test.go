@@ -20,27 +20,27 @@ credential "bearer_token" "orphan" {}
 
 endpoint "https" "alpha_api" {
   hosts      = ["alpha.example"]
-  credential = alpha
+  credential = bearer_token.alpha
 }
 endpoint "https" "beta_api" {
   hosts      = ["beta.example"]
-  credential = beta
+  credential = bearer_token.beta
 }
 endpoint "https" "beta_api_2" {
   hosts      = ["beta2.example"]
-  credential = beta
+  credential = bearer_token.beta
 }
 
 profile "prod" {
-  endpoints = [alpha_api, beta_api]
+  endpoints = [https.alpha_api, https.beta_api]
 }
 profile "staging" {
-  endpoints = [beta_api_2]
+  endpoints = [https.beta_api_2]
 }
 
 rule "default-allow" {
   verdict   = "allow"
-  endpoints = [alpha_api, beta_api, beta_api_2]
+  endpoints = [https.alpha_api, https.beta_api, https.beta_api_2]
 }
 `
 	gw, diags := config.LoadBytes([]byte(src), "bindings-test.hcl")

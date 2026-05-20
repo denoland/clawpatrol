@@ -42,7 +42,7 @@ func init() {
 		New:     newer[HeaderToken](),
 		Runtime: (*HeaderToken)(nil),
 		Build:   passthrough,
-		Emit: func(body any, _ string, b *hclwrite.Body) {
+		Emit: func(body any, _ string, b *hclwrite.Body, refs *config.RefIndex) {
 			v := body.(*HeaderToken)
 			b.SetAttributeValue("header", cty.StringVal(v.Header))
 			if v.Prefix != "" {

@@ -83,10 +83,10 @@ func init() {
 	var _ sshproto.AuthCredential = (*SSHCredential)(nil)
 	config.Register(&config.Plugin{
 		Kind:    config.KindCredential,
-		Type:    "ssh",
+		Type:    "ssh_key",
 		New:     newer[SSHCredential](),
 		Runtime: (*SSHCredential)(nil),
 		Build:   passthrough,
-		Emit:    func(any, string, *hclwrite.Body) {},
+		Emit:    func(any, string, *hclwrite.Body, *config.RefIndex) {},
 	})
 }

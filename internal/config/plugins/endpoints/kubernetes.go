@@ -108,7 +108,7 @@ func init() {
 		Refs:     singularRef,
 		Validate: validateKubernetesEndpoint,
 		Build:    passthroughBuild,
-		Emit: func(body any, _ string, b *hclwrite.Body) {
+		Emit: func(body any, _ string, b *hclwrite.Body, refs *config.RefIndex) {
 			e := body.(*KubernetesEndpoint)
 			if len(e.Hosts) > 0 {
 				b.SetAttributeValue("hosts", config.StringListVal(e.Hosts))
@@ -129,7 +129,7 @@ func init() {
 				b.SetAttributeValue("region", cty.StringVal(e.Region))
 			}
 			if e.Credential != "" {
-				config.SetIdent(b, "credential", e.Credential)
+				config.SetIdent(b, "credential", refs.Ref(config.KindCredential, e.Credential))
 			}
 		},
 	})

@@ -11,9 +11,11 @@ Each block section lists the attributes the loader accepts, with:
 
 - **Type** — the HCL value type. `string`, `bool`, `int` are scalar
   literals; `[]string` is a list of strings; `ref(<kind>)` is a
-  bare-name reference to another block of that kind (e.g.
-  `credential = github-pat`); `[]ref(<kind>)` is a list of such
-  references; nested blocks have their shape described inline.
+  typed reference to another block (`<type>.<name>` for
+  two-label kinds like `credential = bearer_token.github-pat`,
+  `<kind>.<name>` for one-label kinds like `policy = policy.no-pii`);
+  `[]ref(<kind>)` is a list of such references; nested blocks have
+  their shape described inline.
 - **Required** — `yes` if the loader rejects the block when the
   attribute is missing.
 
@@ -155,7 +157,7 @@ and reuses across multiple judges.
 ```hcl
 approver "llm_approver" "example" {
   model = "claude-haiku-4-5-20251001"
-  credential = example-credential
+  credential = bearer_token.example
 }
 ```
 
@@ -163,7 +165,7 @@ approver "llm_approver" "example" {
 
 Block syntax: `credential "<type>" "<name>" { ... }`
 
-Registered types: [`anthropic_manual_key`](#credential-anthropicmanualkey), [`anthropic_oauth_subscription`](#credential-anthropicoauthsubscription), [`aws_credential`](#credential-awscredential), [`bearer_token`](#credential-bearertoken), [`clickhouse_credential`](#credential-clickhousecredential), [`cookie_token`](#credential-cookietoken), [`discord_bot_token`](#credential-discordbottoken), [`gemini_api_key`](#credential-geminiapikey), [`github_oauth`](#credential-githuboauth), [`google_gke_credential`](#credential-googlegkecredential), [`header_token`](#credential-headertoken), [`mtls_credential`](#credential-mtlscredential), [`notion_mcp_oauth`](#credential-notionmcpoauth), [`notion_oauth`](#credential-notionoauth), [`openai_codex_oauth`](#credential-openaicodexoauth), [`postgres_credential`](#credential-postgrescredential), [`slack_tokens`](#credential-slacktokens), [`ssh`](#credential-ssh), [`tailscale`](#credential-tailscale), [`telegram_bot_token`](#credential-telegrambottoken).
+Registered types: [`anthropic_manual_key`](#credential-anthropicmanualkey), [`anthropic_oauth_subscription`](#credential-anthropicoauthsubscription), [`aws_credential`](#credential-awscredential), [`bearer_token`](#credential-bearertoken), [`clickhouse_credential`](#credential-clickhousecredential), [`cookie_token`](#credential-cookietoken), [`discord_bot_token`](#credential-discordbottoken), [`gemini_api_key`](#credential-geminiapikey), [`github_oauth`](#credential-githuboauth), [`google_gke_credential`](#credential-googlegkecredential), [`header_token`](#credential-headertoken), [`mtls_credential`](#credential-mtlscredential), [`notion_mcp_oauth`](#credential-notionmcpoauth), [`notion_oauth`](#credential-notionoauth), [`openai_codex_oauth`](#credential-openaicodexoauth), [`postgres_credential`](#credential-postgrescredential), [`slack_tokens`](#credential-slacktokens), [`ssh_key`](#credential-sshkey), [`tailscale_auth`](#credential-tailscaleauth), [`telegram_bot_token`](#credential-telegrambottoken).
 
 ### `credential "anthropic_manual_key" "<name>"`
 
@@ -324,15 +326,15 @@ _No configurable attributes._
 credential "slack_tokens" "example" {}
 ```
 
-### `credential "ssh" "<name>"`
+### `credential "ssh_key" "<name>"`
 
 _No configurable attributes._
 
 ```hcl
-credential "ssh" "example" {}
+credential "ssh_key" "example" {}
 ```
 
-### `credential "tailscale" "<name>"`
+### `credential "tailscale_auth" "<name>"`
 
 Has no operator-facing fields — there is
 nothing to paste. Per-tailnet selection (control_url, tags) lives
@@ -341,7 +343,7 @@ on the tunnel block instead.
 _No configurable attributes._
 
 ```hcl
-credential "tailscale" "example" {}
+credential "tailscale_auth" "example" {}
 ```
 
 ### `credential "telegram_bot_token" "<name>"`
@@ -634,7 +636,7 @@ Configures the tunnel runtime.
 tunnel "ssh_port_forward" "example" {
   bastion = "bastion.example:22"
   user = "example"
-  credential = example-credential
+  credential = bearer_token.example
 }
 ```
 

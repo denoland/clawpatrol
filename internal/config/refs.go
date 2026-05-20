@@ -92,23 +92,12 @@ func resolveRefs(decoded any, name string, plugin *Plugin, table *SymbolTable, b
 			}
 			sym := table.Get(spec.Kind, v.value)
 			if sym == nil {
-				if alt := table.GetAny(v.value); alt != nil {
-					altRange := alt.Range()
-					diags = append(diags, &hcl.Diagnostic{
-						Severity: hcl.DiagError,
-						Summary:  fmt.Sprintf("Wrong reference kind for %q", v.value),
-						Detail:   fmt.Sprintf("Expected %s but %q is declared as %s at %s. Either reference a different name or redeclare the entity as %s.", article(string(spec.Kind)), v.value, article(string(alt.Kind)), alt.Range(), article(string(spec.Kind))),
-						Subject:  v.rangePtr,
-						Context:  &altRange,
-					})
-				} else {
-					diags = append(diags, &hcl.Diagnostic{
-						Severity: hcl.DiagError,
-						Summary:  fmt.Sprintf("Unknown %s %q", spec.Kind, v.value),
-						Detail:   fmt.Sprintf("No %s named %q is declared in this file.", spec.Kind, v.value),
-						Subject:  v.rangePtr,
-					})
-				}
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  fmt.Sprintf("Unknown %s %q", spec.Kind, v.value),
+					Detail:   fmt.Sprintf("No %s named %q is declared in this file.", spec.Kind, v.value),
+					Subject:  v.rangePtr,
+				})
 				continue
 			}
 			if len(spec.FamilyConstraint) > 0 {

@@ -166,7 +166,7 @@ func init() {
 		Runtime:  ClickhouseNativeEndpointRuntime{},
 		Validate: validateClickhouseNativeEndpoint,
 		Build:    passthroughBuild,
-		Emit: func(body any, _ string, b *hclwrite.Body) {
+		Emit: func(body any, _ string, b *hclwrite.Body, refs *config.RefIndex) {
 			e := body.(*ClickhouseNativeEndpoint)
 			b.SetAttributeValue("hosts", config.StringListVal(e.Hosts))
 			if e.Port > 0 {
@@ -178,7 +178,7 @@ func init() {
 			if e.AcceptInvalidCertificate {
 				b.SetAttributeValue("accept_invalid_certificate", cty.BoolVal(true))
 			}
-			emitCredentialBinding(b, e.Credential, e.Credentials, "placeholder")
+			emitCredentialBinding(b, e.Credential, e.Credentials, "placeholder", refs)
 		},
 	})
 }

@@ -562,10 +562,10 @@ wg_subnet_cidr = "10.55.0.0/24"
 credential "bearer_token" "tok" {}
 endpoint "https" "api" {
   hosts      = ["api.example.test"]
-  credential = tok
+  credential = bearer_token.tok
 }
 profile "agent" {
-  endpoints = [api]
+  endpoints = [https.api]
   hitl_async_grants = true
 }
 `), "hitl-api-test.hcl")

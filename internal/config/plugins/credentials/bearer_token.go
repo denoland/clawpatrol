@@ -60,7 +60,7 @@ func init() {
 		New:     newer[BearerToken](),
 		Runtime: (*BearerToken)(nil),
 		Build:   passthrough,
-		Emit: func(body any, _ string, b *hclwrite.Body) {
+		Emit: func(body any, _ string, b *hclwrite.Body, refs *config.RefIndex) {
 			v := body.(*BearerToken)
 			if v.IdempotencyKey {
 				b.SetAttributeValue("idempotency_key", cty.True)

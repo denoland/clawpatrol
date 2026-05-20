@@ -29,23 +29,23 @@ credential "bearer_token" "github_pat" {}
 
 endpoint "https" "github" {
   hosts      = ["api.github.com"]
-  credential = github_pat
+  credential = bearer_token.github_pat
 }
 
 rule "github-reads" {
-  endpoint  = github
+  endpoint  = https.github
   condition = "http.method in ['GET', 'HEAD']"
   verdict   = "allow"
 }
 
 rule "github-writes" {
-  endpoint  = github
+  endpoint  = https.github
   condition = "http.method in ['POST', 'PATCH', 'PUT', 'DELETE']"
   verdict   = "deny"
   reason    = "writes go through PR review"
 }
 
-profile "default" { endpoints = [github] }
+profile "default" { endpoints = [https.github] }
 ```
 
 **`fixtures/get-user.json`** — assert that `GET /user` is allowed:

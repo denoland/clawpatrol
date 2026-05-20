@@ -221,18 +221,18 @@ public_url = "https://gateway.example.test"
 credential "bearer_token" "pat" {}
 endpoint "https" "api" {
   hosts      = ["api.example.test"]
-  credential = pat
+  credential = bearer_token.pat
 }
 approver "human_approver" "ops" {
   channel = "#ops"
 }
 rule "approved-post" {
-  endpoint  = api
+  endpoint  = https.api
   condition = "(http.method == 'POST' || http.method == 'DELETE') && http.path == '/v1/resources/update'"
-  approve   = [ops]
+  approve   = [human_approver.ops]
 }
 profile "default" {
-  endpoints = [api]
+  endpoints = [https.api]
   hitl_async_grants = true
 }
 `), "hitl-retry-relay-test.hcl")

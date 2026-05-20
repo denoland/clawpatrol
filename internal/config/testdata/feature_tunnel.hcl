@@ -16,7 +16,7 @@ tunnel "local_command" "csql-prod" {
 
 endpoint "https" "github" {
   hosts      = ["api.github.com", "github.com"]
-  credential = github-pat
+  credential = bearer_token.github-pat
 }
 
 # Tunneled endpoint: dispatcher dials through csql-prod. RequiresVIP
@@ -24,10 +24,10 @@ endpoint "https" "github" {
 # from the agent's namespace.
 endpoint "postgres" "deploy-classic" {
   host       = "main-pg14.classic.example:5432"
-  tunnel     = csql-prod
-  credential = github-pat
+  tunnel     = local_command.csql-prod
+  credential = bearer_token.github-pat
 }
 
 profile "default" {
-  endpoints = [github, deploy-classic]
+  endpoints = [https.github, postgres.deploy-classic]
 }

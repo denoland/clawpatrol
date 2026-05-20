@@ -29,17 +29,17 @@ func TestHTTPSApproveChainReceivesBufferedRequestBodySample(t *testing.T) {
 credential "bearer_token" "pat" {}
 endpoint "https" "api" {
   hosts      = ["api.example.test"]
-  credential = pat
+  credential = bearer_token.pat
 }
 approver "human_approver" "capture" {
   channel = "#ops"
 }
 rule "approved-post" {
-  endpoint  = api
+  endpoint  = https.api
   condition = "http.method == 'POST' && http.path == '/v1/resources/update'"
-  approve   = [capture]
+  approve   = [human_approver.capture]
 }
-profile "default" { endpoints = [api] }
+profile "default" { endpoints = [https.api] }
 `), "hitl-body-sample-test.hcl")
 	if diags.HasErrors() {
 		t.Fatalf("load config: %v", diags)

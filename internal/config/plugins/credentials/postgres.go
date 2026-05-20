@@ -38,7 +38,7 @@ func init() {
 		New:     newer[PostgresCredential](),
 		Runtime: (*PostgresCredential)(nil),
 		Build:   passthrough,
-		Emit: func(body any, _ string, b *hclwrite.Body) {
+		Emit: func(body any, _ string, b *hclwrite.Body, refs *config.RefIndex) {
 			v := body.(*PostgresCredential)
 			if v.User != "" {
 				b.SetAttributeValue("user", cty.StringVal(v.User))
