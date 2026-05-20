@@ -538,7 +538,7 @@ against prod):
 credential "clickhouse_credential" "ch-dev"  {}
 credential "clickhouse_credential" "ch-prod" {}
 
-endpoint "clickhouse_native" "ch-o11y" {
+endpoint "clickhouse_native" "o11y" {
   hosts = ["clickhouse-o11y.example"]
   credentials = [
     { database  = "prod",        credential = ch-prod },
@@ -547,7 +547,7 @@ endpoint "clickhouse_native" "ch-o11y" {
 }
 
 rule "ch-prod-readonly" {
-  endpoint   = ch-o11y
+  endpoint   = o11y
   credential = ch-prod
   condition  = "sql.verb in ['select', 'show', 'explain']"
   verdict    = "allow"
@@ -569,7 +569,7 @@ Approvers run in order, all must allow. The first approver is cheap
 ```hcl
 approver "llm_approver" "pg-secret-columns-judge" {
   model      = "claude-haiku-4-5-20251001"
-  credential = anthropic-key
+  credential = anthropic_manual_key.key
   policy     = pg-secret-columns
 }
 approver "human_approver" "console-dba" {
@@ -604,7 +604,7 @@ view without paging any channel.
 
 ```hcl
 rule "pg-banned-verbs" {
-  endpoints = [pg-deploy, pg-scheduler]
+  endpoints = [deploy, scheduler]
   condition = "sql.verb in ['drop', 'truncate', 'alter', 'grant', 'revoke', 'vacuum', 'create']"
   verdict   = "deny"
   reason    = "Schema changes / destructive DDL not permitted; use a migration PR"
@@ -618,7 +618,7 @@ compiled matcher — attaching a rule to N endpoints is cheap.
 
 ```hcl
 rule "k8s-no-mutations" {
-  endpoint  = k8s-prod
+  endpoint  = prod
   condition = "k8s.verb in ['create', 'update', 'patch', 'delete'] && !k8s.name.startsWith('debug-') && !k8s.resource.endsWith('/exec') && !k8s.resource.endsWith('/attach') && !k8s.resource.endsWith('/portforward')"
   verdict   = "deny"
   reason    = "Only debug-* pods may be created / modified / deleted"

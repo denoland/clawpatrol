@@ -158,7 +158,7 @@ before forwarding.
 ```hcl
 endpoint "https" "github"   { hosts = ["api.github.com", "github.com"] }
 endpoint "https" "orb"      { hosts = ["api.withorb.com"] }
-endpoint "postgres" "pg" {
+endpoint "postgres" "main" {
   host     = "pg.internal.example:5432"
   database = "appdb"
 }
@@ -187,8 +187,8 @@ credential "bearer_token" "github" {
 
 # Singleton-or-list — same secret material at multiple protocol
 # endpoints of one upstream (ClickHouse HTTPS + native, for example).
-credential "clickhouse_credential" "ch-o11y" {
-  endpoints = [ch-o11y-https, ch-o11y-native]
+credential "clickhouse_credential" "o11y" {
+  endpoints = [o11y-https, o11y-native]
   user      = "ops"
 }
 ```

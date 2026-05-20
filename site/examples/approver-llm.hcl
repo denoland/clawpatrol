@@ -1,6 +1,6 @@
 approver "llm_approver" "secret-judge" {
   model      = "claude-haiku-4-5-20251001"
-  credential = anthropic_manual_key.anthropic-key
+  credential = anthropic_manual_key.key
   policy     = policy.secret-policy
 }
 
@@ -16,7 +16,7 @@ endpoint "https" "anchor" {
   hosts = ["example.com"]
 }
 
-credential "anthropic_manual_key" "anthropic-key" {}
+credential "anthropic_manual_key" "key" {}
 credential "bearer_token" "noop" { endpoint = https.anchor }
 
 profile "default" { credentials = [bearer_token.noop] }

@@ -44,7 +44,7 @@
       "k8s-exec-content-judge": {
         "body": {
           "Model": "claude-haiku-4-5-20251001",
-          "Credential": "anthropic-ops",
+          "Credential": "ops",
           "Policy": "k8s-exec-content"
         },
         "type": "llm_approver"
@@ -76,7 +76,7 @@
       "pg-secret-columns-judge": {
         "body": {
           "Model": "claude-haiku-4-5-20251001",
-          "Credential": "anthropic-ops",
+          "Credential": "ops",
           "Policy": "pg-secret-columns"
         },
         "type": "llm_approver"
@@ -84,7 +84,7 @@
       "pg-secret-named-defense-judge": {
         "body": {
           "Model": "claude-haiku-4-5-20251001",
-          "Credential": "anthropic-ops",
+          "Credential": "ops",
           "Policy": "pg-secret-named-defense"
         },
         "type": "llm_approver"
@@ -92,7 +92,7 @@
       "reply-content-judge": {
         "body": {
           "Model": "claude-sonnet-4-20250514",
-          "Credential": "anthropic-ops",
+          "Credential": "ops",
           "Policy": "reply-content"
         },
         "type": "llm_approver"
@@ -112,7 +112,7 @@
       "slack-block-kit-shape-judge": {
         "body": {
           "Model": "claude-sonnet-4-20250514",
-          "Credential": "anthropic-ops",
+          "Credential": "ops",
           "Policy": "slack-block-kit-shape"
         },
         "type": "llm_approver"
@@ -131,6 +131,11 @@
       }
     },
     "credentials": {
+      "alice": {
+        "body": {},
+        "endpoint": "slack",
+        "type": "slack_tokens"
+      },
       "amem-alice": {
         "body": {
           "IdempotencyKey": false
@@ -138,26 +143,10 @@
         "endpoint": "amem",
         "type": "bearer_token"
       },
-      "anthropic-ops": {
+      "carol": {
         "body": {},
-        "endpoint": "anthropic-ops",
-        "type": "anthropic_oauth_subscription"
-      },
-      "anthropic-ops-key": {
-        "body": {},
-        "endpoint": "anthropic-ops",
-        "type": "anthropic_manual_key"
-      },
-      "ch-o11y": {
-        "body": {
-          "User": "ops",
-          "Database": ""
-        },
-        "endpoints": [
-          "ch-o11y-https",
-          "ch-o11y-native"
-        ],
-        "type": "clickhouse_credential"
+        "endpoint": "telegram",
+        "type": "telegram_bot_token"
       },
       "checkly-alice": {
         "body": {
@@ -165,6 +154,52 @@
         },
         "endpoint": "checkly",
         "type": "bearer_token"
+      },
+      "codex-bob": {
+        "body": {},
+        "endpoint": "openai-codex",
+        "type": "openai_codex_oauth"
+      },
+      "codex-carol": {
+        "body": {},
+        "endpoint": "openai-codex",
+        "type": "openai_codex_oauth"
+      },
+      "corp": {
+        "body": {},
+        "endpoint": "notion",
+        "type": "notion_oauth"
+      },
+      "corp-ro": {
+        "body": {
+          "User": "corp_ro",
+          "Database": ""
+        },
+        "endpoint": "corp",
+        "type": "postgres_credential"
+      },
+      "corp-rw": {
+        "body": {
+          "User": "corp_rw",
+          "Database": ""
+        },
+        "endpoint": "corp",
+        "type": "postgres_credential"
+      },
+      "dev-iad": {
+        "body": {},
+        "endpoint": "dev-iad",
+        "type": "mtls_credential"
+      },
+      "dev-sfo": {
+        "body": {},
+        "endpoint": "dev-sfo",
+        "type": "mtls_credential"
+      },
+      "eks-corp": {
+        "body": {},
+        "endpoint": "eks-corp",
+        "type": "aws_credential"
       },
       "gemini-bob": {
         "body": {},
@@ -214,35 +249,21 @@
         "endpoint": "honeycomb",
         "type": "header_token"
       },
-      "k8s-dev-iad": {
-        "body": {},
-        "endpoint": "k8s-dev-iad",
-        "type": "mtls_credential"
+      "o11y": {
+        "body": {
+          "User": "ops",
+          "Database": ""
+        },
+        "endpoints": [
+          "o11y-https",
+          "o11y-native"
+        ],
+        "type": "clickhouse_credential"
       },
-      "k8s-dev-sfo": {
+      "ops": {
         "body": {},
-        "endpoint": "k8s-dev-sfo",
-        "type": "mtls_credential"
-      },
-      "k8s-eks-corp": {
-        "body": {},
-        "endpoint": "k8s-eks-corp-prod",
-        "type": "aws_credential"
-      },
-      "notion-corp": {
-        "body": {},
-        "endpoint": "notion",
-        "type": "notion_oauth"
-      },
-      "openai-codex-bob": {
-        "body": {},
-        "endpoint": "openai-codex",
-        "type": "openai_codex_oauth"
-      },
-      "openai-codex-carol": {
-        "body": {},
-        "endpoint": "openai-codex",
-        "type": "openai_codex_oauth"
+        "endpoint": "anthropic",
+        "type": "anthropic_oauth_subscription"
       },
       "orb-prod": {
         "body": {
@@ -266,30 +287,6 @@
         "endpoint": "pagerduty",
         "type": "header_token"
       },
-      "pg-corp-ro": {
-        "body": {
-          "User": "corp_ro",
-          "Database": ""
-        },
-        "endpoint": "pg-corp",
-        "type": "postgres_credential"
-      },
-      "pg-corp-rw": {
-        "body": {
-          "User": "corp_rw",
-          "Database": ""
-        },
-        "endpoint": "pg-corp",
-        "type": "postgres_credential"
-      },
-      "pg-scheduler": {
-        "body": {
-          "User": "scheduler",
-          "Database": ""
-        },
-        "endpoint": "pg-scheduler",
-        "type": "postgres_credential"
-      },
       "posthog-alice": {
         "body": {
           "IdempotencyKey": false
@@ -297,10 +294,18 @@
         "endpoint": "posthog",
         "type": "bearer_token"
       },
-      "slack-alice": {
+      "proctor": {
         "body": {},
-        "endpoint": "slack",
-        "type": "slack_tokens"
+        "endpoint": "anthropic",
+        "type": "anthropic_manual_key"
+      },
+      "scheduler": {
+        "body": {
+          "User": "scheduler",
+          "Database": ""
+        },
+        "endpoint": "scheduler",
+        "type": "postgres_credential"
       },
       "slack-bob": {
         "body": {},
@@ -337,11 +342,6 @@
         "body": {},
         "endpoint": "telegram",
         "type": "telegram_bot_token"
-      },
-      "telegram-carol": {
-        "body": {},
-        "endpoint": "telegram",
-        "type": "telegram_bot_token"
       }
     },
     "endpoints": {
@@ -354,7 +354,7 @@
         "family": "http",
         "type": "https"
       },
-      "anthropic-ops": {
+      "anthropic": {
         "body": {
           "Hosts": [
             "api.anthropic.com"
@@ -362,28 +362,6 @@
         },
         "family": "http",
         "type": "https"
-      },
-      "ch-o11y-https": {
-        "body": {
-          "Hosts": [
-            "clickhouse-o11y.example",
-            "ch-o11y.internal.example"
-          ]
-        },
-        "family": "sql",
-        "type": "clickhouse_https"
-      },
-      "ch-o11y-native": {
-        "body": {
-          "Hosts": [
-            "clickhouse-o11y.example"
-          ],
-          "Port": 0,
-          "TLS": false,
-          "AcceptInvalidCertificate": false
-        },
-        "family": "sql",
-        "type": "clickhouse_native"
       },
       "checkly": {
         "body": {
@@ -393,6 +371,52 @@
         },
         "family": "http",
         "type": "https"
+      },
+      "corp": {
+        "body": {
+          "Host": "corp-prod.cluster.example:5432",
+          "SSLMode": ""
+        },
+        "family": "sql",
+        "type": "postgres"
+      },
+      "dev-iad": {
+        "body": {
+          "Hosts": null,
+          "Server": "198.51.100.10",
+          "CACert": "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJAOcLE9eQ/Y7xMA0GCSqGSIb3DQEBCwUAMA8xDTALBgNVBAMMBHRl\nc3QwHhcNMjUwMTAxMDAwMDAwWhcNMzUwMTAxMDAwMDAwWjAPMQ0wCwYDVQQDDAR0\nZXN0MIGdMA0GCSqGSIb3DQEBAQUAA4GLADCBhwKBgQDZ5j4t2UE5nZ3Y1+Q4xY5e\nTESTING_PLACEHOLDER_CA_CERTIFICATE_DO_NOT_TRUST_THIS_BUNDLE_AAAA\nEVERYTHING_BELOW_THIS_LINE_IS_PADDING_FOR_TEST_FIXTURES_BBBBBBBB\nZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\nQIDAQABMA0GCSqGSIb3DQEBCwUAA4GBAFXfTESTPLACEHOLDERSIGNATUREAAAA\n-----END CERTIFICATE-----\n",
+          "Description": "admin@dev-iad.example",
+          "ClusterName": "",
+          "Region": ""
+        },
+        "family": "k8s",
+        "type": "kubernetes"
+      },
+      "dev-sfo": {
+        "body": {
+          "Hosts": null,
+          "Server": "198.51.100.20",
+          "CACert": "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJAOcLE9eQ/Y7xMA0GCSqGSIb3DQEBCwUAMA8xDTALBgNVBAMMBHRl\nc3QwHhcNMjUwMTAxMDAwMDAwWhcNMzUwMTAxMDAwMDAwWjAPMQ0wCwYDVQQDDAR0\nORD_TESTING_PLACEHOLDER_CA_CERTIFICATE_DO_NOT_TRUST_BUNDLE_AAAA\nEVERYTHING_BELOW_THIS_LINE_IS_PADDING_FOR_TEST_FIXTURES_BBBBBBBB\nZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\nQIDAQABMA0GCSqGSIb3DQEBCwUAA4GBAFXfTESTPLACEHOLDERSIGNATUREAAAA\n-----END CERTIFICATE-----\n",
+          "Description": "admin@dev-sfo.example",
+          "ClusterName": "",
+          "Region": ""
+        },
+        "family": "k8s",
+        "type": "kubernetes"
+      },
+      "eks-corp": {
+        "body": {
+          "Hosts": [
+            "*.gr7.us-east-2.eks.amazonaws.com"
+          ],
+          "Server": "",
+          "CACert": "",
+          "Description": "arn:aws:eks:us-east-2:123456789012:cluster/corp-prod",
+          "ClusterName": "corp-prod",
+          "Region": "us-east-2"
+        },
+        "family": "k8s",
+        "type": "kubernetes"
       },
       "gemini": {
         "body": {
@@ -440,44 +464,6 @@
         "family": "http",
         "type": "https"
       },
-      "k8s-dev-iad": {
-        "body": {
-          "Hosts": null,
-          "Server": "198.51.100.10",
-          "CACert": "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJAOcLE9eQ/Y7xMA0GCSqGSIb3DQEBCwUAMA8xDTALBgNVBAMMBHRl\nc3QwHhcNMjUwMTAxMDAwMDAwWhcNMzUwMTAxMDAwMDAwWjAPMQ0wCwYDVQQDDAR0\nZXN0MIGdMA0GCSqGSIb3DQEBAQUAA4GLADCBhwKBgQDZ5j4t2UE5nZ3Y1+Q4xY5e\nTESTING_PLACEHOLDER_CA_CERTIFICATE_DO_NOT_TRUST_THIS_BUNDLE_AAAA\nEVERYTHING_BELOW_THIS_LINE_IS_PADDING_FOR_TEST_FIXTURES_BBBBBBBB\nZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\nQIDAQABMA0GCSqGSIb3DQEBCwUAA4GBAFXfTESTPLACEHOLDERSIGNATUREAAAA\n-----END CERTIFICATE-----\n",
-          "Description": "admin@dev-iad.example",
-          "ClusterName": "",
-          "Region": ""
-        },
-        "family": "k8s",
-        "type": "kubernetes"
-      },
-      "k8s-dev-sfo": {
-        "body": {
-          "Hosts": null,
-          "Server": "198.51.100.20",
-          "CACert": "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJAOcLE9eQ/Y7xMA0GCSqGSIb3DQEBCwUAMA8xDTALBgNVBAMMBHRl\nc3QwHhcNMjUwMTAxMDAwMDAwWhcNMzUwMTAxMDAwMDAwWjAPMQ0wCwYDVQQDDAR0\nORD_TESTING_PLACEHOLDER_CA_CERTIFICATE_DO_NOT_TRUST_BUNDLE_AAAA\nEVERYTHING_BELOW_THIS_LINE_IS_PADDING_FOR_TEST_FIXTURES_BBBBBBBB\nZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\nQIDAQABMA0GCSqGSIb3DQEBCwUAA4GBAFXfTESTPLACEHOLDERSIGNATUREAAAA\n-----END CERTIFICATE-----\n",
-          "Description": "admin@dev-sfo.example",
-          "ClusterName": "",
-          "Region": ""
-        },
-        "family": "k8s",
-        "type": "kubernetes"
-      },
-      "k8s-eks-corp-prod": {
-        "body": {
-          "Hosts": [
-            "*.gr7.us-east-2.eks.amazonaws.com"
-          ],
-          "Server": "",
-          "CACert": "",
-          "Description": "arn:aws:eks:us-east-2:123456789012:cluster/corp-prod",
-          "ClusterName": "corp-prod",
-          "Region": "us-east-2"
-        },
-        "family": "k8s",
-        "type": "kubernetes"
-      },
       "notion": {
         "body": {
           "Hosts": [
@@ -487,6 +473,28 @@
         },
         "family": "http",
         "type": "https"
+      },
+      "o11y-https": {
+        "body": {
+          "Hosts": [
+            "clickhouse-o11y.example",
+            "ch-o11y.internal.example"
+          ]
+        },
+        "family": "sql",
+        "type": "clickhouse_https"
+      },
+      "o11y-native": {
+        "body": {
+          "Hosts": [
+            "clickhouse-o11y.example"
+          ],
+          "Port": 0,
+          "TLS": false,
+          "AcceptInvalidCertificate": false
+        },
+        "family": "sql",
+        "type": "clickhouse_native"
       },
       "openai-codex": {
         "body": {
@@ -516,22 +524,6 @@
         "family": "http",
         "type": "https"
       },
-      "pg-corp": {
-        "body": {
-          "Host": "corp-prod.cluster.example:5432",
-          "SSLMode": ""
-        },
-        "family": "sql",
-        "type": "postgres"
-      },
-      "pg-scheduler": {
-        "body": {
-          "Host": "scheduler-prod.cluster.example:5432",
-          "SSLMode": ""
-        },
-        "family": "sql",
-        "type": "postgres"
-      },
       "posthog": {
         "body": {
           "Hosts": [
@@ -541,6 +533,14 @@
         },
         "family": "http",
         "type": "https"
+      },
+      "scheduler": {
+        "body": {
+          "Host": "scheduler-prod.cluster.example:5432",
+          "SSLMode": ""
+        },
+        "family": "sql",
+        "type": "postgres"
       },
       "slack": {
         "body": {
@@ -611,14 +611,14 @@
       "alice": {
         "credentials": [
           "github-alice",
-          "slack-alice",
-          "telegram-carol",
-          "openai-codex-carol",
-          "notion-corp",
+          "alice",
+          "carol",
+          "codex-carol",
+          "corp",
           "grafana",
-          "ch-o11y",
-          "k8s-dev-iad",
-          "k8s-dev-sfo",
+          "o11y",
+          "dev-iad",
+          "dev-sfo",
           "smithery-alice",
           "amem-alice",
           "checkly-alice",
@@ -634,50 +634,50 @@
           "slack-bob",
           "telegram-bob",
           "gemini-bob",
-          "openai-codex-bob",
-          "openai-codex-carol"
+          "codex-bob",
+          "codex-carol"
         ],
         "disambiguators": {
-          "openai-codex-bob": {
+          "codex-bob": {
             "placeholder": "PH_openai_codex_bob"
           },
-          "openai-codex-carol": {
+          "codex-carol": {
             "placeholder": "PH_openai_codex_carol"
           }
         }
       },
       "ops": {
         "credentials": [
-          "anthropic-ops-key",
-          "anthropic-ops",
+          "proctor",
+          "ops",
           "github-ops",
           "slack-ops",
           "support-console",
           "stripe-live",
           "orb-test",
           "orb-prod",
-          "notion-corp",
+          "corp",
           "grafana",
-          "pg-corp-ro",
-          "pg-corp-rw",
-          "pg-scheduler",
-          "k8s-dev-iad",
-          "k8s-dev-sfo",
-          "k8s-eks-corp",
-          "ch-o11y"
+          "corp-ro",
+          "corp-rw",
+          "scheduler",
+          "dev-iad",
+          "dev-sfo",
+          "eks-corp",
+          "o11y"
         ],
         "disambiguators": {
-          "anthropic-ops": {
+          "ops": {
             "placeholder": "PH_anthropic_ops_subscription"
-          },
-          "anthropic-ops-key": {
-            "placeholder": "PH_anthropic_ops_apikey"
           },
           "orb-prod": {
             "placeholder": "PH_orb_prod"
           },
           "orb-test": {
             "placeholder": "PH_orb_test"
+          },
+          "proctor": {
+            "placeholder": "PH_anthropic_ops_apikey"
           }
         }
       }
@@ -688,8 +688,8 @@
           "name": "clickhouse-default",
           "family": "sql",
           "endpoints": [
-            "ch-o11y-https",
-            "ch-o11y-native"
+            "o11y-https",
+            "o11y-native"
           ],
           "priority": -100,
           "verdict": "deny",
@@ -701,11 +701,100 @@
           "name": "clickhouse-reads",
           "family": "sql",
           "endpoints": [
-            "ch-o11y-https",
-            "ch-o11y-native"
+            "o11y-https",
+            "o11y-native"
           ],
           "condition": "sql.verb in ['select', 'show', 'describe', 'explain', 'use']",
           "verdict": "allow"
+        }
+      },
+      "corp-default": {
+        "body": {
+          "name": "corp-default",
+          "family": "sql",
+          "endpoints": [
+            "corp"
+          ],
+          "priority": -100,
+          "verdict": "deny"
+        }
+      },
+      "corp-reads": {
+        "body": {
+          "name": "corp-reads",
+          "family": "sql",
+          "endpoints": [
+            "corp"
+          ],
+          "condition": "sql.verb in ['select', 'show', 'explain']",
+          "verdict": "allow"
+        }
+      },
+      "corp-ro-no-writes": {
+        "body": {
+          "name": "corp-ro-no-writes",
+          "family": "sql",
+          "endpoints": [
+            "corp"
+          ],
+          "condition": "sql.verb in ['insert', 'update', 'delete', 'merge', 'notify']",
+          "credential": "corp-ro",
+          "verdict": "deny",
+          "reason": "ro account is read-only — use the rw placeholder if you need to write"
+        }
+      },
+      "corp-rw-writes": {
+        "body": {
+          "name": "corp-rw-writes",
+          "family": "sql",
+          "endpoints": [
+            "corp"
+          ],
+          "condition": "sql.verb in ['insert', 'update', 'delete', 'merge', 'notify']",
+          "credential": "corp-rw",
+          "approve": [
+            {
+              "name": "console-dba"
+            }
+          ]
+        }
+      },
+      "corp-secret-columns": {
+        "body": {
+          "name": "corp-secret-columns",
+          "family": "sql",
+          "endpoints": [
+            "corp"
+          ],
+          "priority": 100,
+          "condition": "sql.verb == 'select' && sets.intersects(sql.tables, ['github_identities', 'tokens', 'email_confirmations', 'authorizations', 'domain_certificates', 'database_instances', 'env_vars'])",
+          "approve": [
+            {
+              "name": "pg-secret-columns-judge"
+            }
+          ]
+        }
+      },
+      "dev-iad-default": {
+        "body": {
+          "name": "dev-iad-default",
+          "family": "k8s",
+          "endpoints": [
+            "dev-iad"
+          ],
+          "priority": -100,
+          "verdict": "deny"
+        }
+      },
+      "dev-sfo-default": {
+        "body": {
+          "name": "dev-sfo-default",
+          "family": "k8s",
+          "endpoints": [
+            "dev-sfo"
+          ],
+          "priority": -100,
+          "verdict": "deny"
         }
       },
       "grafana-annotations-snapshots": {
@@ -762,9 +851,9 @@
           "name": "k8s-allow-meta",
           "family": "k8s",
           "endpoints": [
-            "k8s-dev-iad",
-            "k8s-dev-sfo",
-            "k8s-eks-corp-prod"
+            "dev-iad",
+            "dev-sfo",
+            "eks-corp"
           ],
           "condition": "k8s.verb == 'meta'",
           "verdict": "allow"
@@ -775,34 +864,12 @@
           "name": "k8s-debug-pods",
           "family": "k8s",
           "endpoints": [
-            "k8s-dev-iad",
-            "k8s-dev-sfo",
-            "k8s-eks-corp-prod"
+            "dev-iad",
+            "dev-sfo",
+            "eks-corp"
           ],
           "condition": "k8s.verb in ['create', 'delete'] && k8s.resource == 'pods' && k8s.name.startsWith('debug-')",
           "verdict": "allow"
-        }
-      },
-      "k8s-dev-iad-default": {
-        "body": {
-          "name": "k8s-dev-iad-default",
-          "family": "k8s",
-          "endpoints": [
-            "k8s-dev-iad"
-          ],
-          "priority": -100,
-          "verdict": "deny"
-        }
-      },
-      "k8s-dev-sfo-default": {
-        "body": {
-          "name": "k8s-dev-sfo-default",
-          "family": "k8s",
-          "endpoints": [
-            "k8s-dev-sfo"
-          ],
-          "priority": -100,
-          "verdict": "deny"
         }
       },
       "k8s-eks-default": {
@@ -810,7 +877,7 @@
           "name": "k8s-eks-default",
           "family": "k8s",
           "endpoints": [
-            "k8s-eks-corp-prod"
+            "eks-corp"
           ],
           "priority": -100,
           "verdict": "deny"
@@ -821,7 +888,7 @@
           "name": "k8s-eks-no-legacy-secret-configmaps",
           "family": "k8s",
           "endpoints": [
-            "k8s-eks-corp-prod"
+            "eks-corp"
           ],
           "priority": 1000,
           "condition": "k8s.verb in ['get', 'list'] && k8s.resource == 'configmaps' && k8s.namespace == 'app' && (k8s.name.endsWith('-secrets') || k8s.name.startsWith('env-'))",
@@ -834,7 +901,7 @@
           "name": "k8s-eks-no-runtime-writes",
           "family": "k8s",
           "endpoints": [
-            "k8s-eks-corp-prod"
+            "eks-corp"
           ],
           "priority": 1000,
           "condition": "k8s.verb in ['create', 'update', 'patch', 'delete'] && (k8s.namespace in ['app', 'kube-system', 'cert-manager', 'external-secrets', 'argocd'] || k8s.namespace.startsWith('flux'))",
@@ -847,9 +914,9 @@
           "name": "k8s-exec-attach",
           "family": "k8s",
           "endpoints": [
-            "k8s-dev-iad",
-            "k8s-dev-sfo",
-            "k8s-eks-corp-prod"
+            "dev-iad",
+            "dev-sfo",
+            "eks-corp"
           ],
           "condition": "k8s.verb in ['create', 'get'] && k8s.resource in ['pods/exec', 'pods/attach', 'pods/portforward']",
           "verdict": "allow"
@@ -860,9 +927,9 @@
           "name": "k8s-exec-content-check",
           "family": "k8s",
           "endpoints": [
-            "k8s-dev-iad",
-            "k8s-dev-sfo",
-            "k8s-eks-corp-prod"
+            "dev-iad",
+            "dev-sfo",
+            "eks-corp"
           ],
           "priority": 500,
           "condition": "k8s.resource == 'pods/exec'",
@@ -878,9 +945,9 @@
           "name": "k8s-no-disruptive",
           "family": "k8s",
           "endpoints": [
-            "k8s-dev-iad",
-            "k8s-dev-sfo",
-            "k8s-eks-corp-prod"
+            "dev-iad",
+            "dev-sfo",
+            "eks-corp"
           ],
           "condition": "k8s.verb in ['drain', 'cordon', 'evict']",
           "verdict": "deny",
@@ -892,9 +959,9 @@
           "name": "k8s-no-interactive",
           "family": "k8s",
           "endpoints": [
-            "k8s-dev-iad",
-            "k8s-dev-sfo",
-            "k8s-eks-corp-prod"
+            "dev-iad",
+            "dev-sfo",
+            "eks-corp"
           ],
           "priority": 1000,
           "condition": "k8s.resource in ['pods/exec', 'pods/attach'] && k8s.params.stdin == 'true'",
@@ -907,9 +974,9 @@
           "name": "k8s-no-mutations",
           "family": "k8s",
           "endpoints": [
-            "k8s-dev-iad",
-            "k8s-dev-sfo",
-            "k8s-eks-corp-prod"
+            "dev-iad",
+            "dev-sfo",
+            "eks-corp"
           ],
           "condition": "k8s.verb in ['create', 'update', 'patch', 'delete'] && !k8s.name.startsWith('debug-') && !k8s.resource.endsWith('/exec') && !k8s.resource.endsWith('/attach') && !k8s.resource.endsWith('/portforward')",
           "verdict": "deny",
@@ -921,9 +988,9 @@
           "name": "k8s-no-portforward-non-debug",
           "family": "k8s",
           "endpoints": [
-            "k8s-dev-iad",
-            "k8s-dev-sfo",
-            "k8s-eks-corp-prod"
+            "dev-iad",
+            "dev-sfo",
+            "eks-corp"
           ],
           "priority": 1000,
           "condition": "k8s.resource == 'pods/portforward' && !k8s.name.startsWith('debug-')",
@@ -936,9 +1003,9 @@
           "name": "k8s-no-secrets",
           "family": "k8s",
           "endpoints": [
-            "k8s-dev-iad",
-            "k8s-dev-sfo",
-            "k8s-eks-corp-prod"
+            "dev-iad",
+            "dev-sfo",
+            "eks-corp"
           ],
           "priority": 1000,
           "condition": "k8s.resource == 'secrets'",
@@ -951,9 +1018,9 @@
           "name": "k8s-reads",
           "family": "k8s",
           "endpoints": [
-            "k8s-dev-iad",
-            "k8s-dev-sfo",
-            "k8s-eks-corp-prod"
+            "dev-iad",
+            "dev-sfo",
+            "eks-corp"
           ],
           "condition": "k8s.verb in ['get', 'list', 'watch']",
           "verdict": "allow"
@@ -1080,8 +1147,8 @@
           "name": "pg-banned-copy-from",
           "family": "sql",
           "endpoints": [
-            "pg-corp",
-            "pg-scheduler"
+            "corp",
+            "scheduler"
           ],
           "condition": "sql.statement.matches('(?is)copy.*from program')",
           "verdict": "deny",
@@ -1093,8 +1160,8 @@
           "name": "pg-banned-copy-to",
           "family": "sql",
           "endpoints": [
-            "pg-corp",
-            "pg-scheduler"
+            "corp",
+            "scheduler"
           ],
           "condition": "sql.statement.matches('(?is)copy.*to program')",
           "verdict": "deny",
@@ -1106,8 +1173,8 @@
           "name": "pg-banned-functions",
           "family": "sql",
           "endpoints": [
-            "pg-corp",
-            "pg-scheduler"
+            "corp",
+            "scheduler"
           ],
           "condition": "sets.intersects(sql.functions, ['pg_terminate_backend', 'pg_cancel_backend', 'pg_read_file', 'pg_read_binary_file', 'lo_get']) || sql.functions.exists(f, f.startsWith('dblink_'))",
           "verdict": "deny",
@@ -1119,79 +1186,12 @@
           "name": "pg-banned-verbs",
           "family": "sql",
           "endpoints": [
-            "pg-corp",
-            "pg-scheduler"
+            "corp",
+            "scheduler"
           ],
           "condition": "sql.verb in ['drop', 'truncate', 'alter', 'grant', 'revoke', 'vacuum', 'create', 'comment', 'do']",
           "verdict": "deny",
           "reason": "Schema changes / destructive DDL not permitted; use a migration PR"
-        }
-      },
-      "pg-corp-default": {
-        "body": {
-          "name": "pg-corp-default",
-          "family": "sql",
-          "endpoints": [
-            "pg-corp"
-          ],
-          "priority": -100,
-          "verdict": "deny"
-        }
-      },
-      "pg-corp-reads": {
-        "body": {
-          "name": "pg-corp-reads",
-          "family": "sql",
-          "endpoints": [
-            "pg-corp"
-          ],
-          "condition": "sql.verb in ['select', 'show', 'explain']",
-          "verdict": "allow"
-        }
-      },
-      "pg-corp-ro-no-writes": {
-        "body": {
-          "name": "pg-corp-ro-no-writes",
-          "family": "sql",
-          "endpoints": [
-            "pg-corp"
-          ],
-          "condition": "sql.verb in ['insert', 'update', 'delete', 'merge', 'notify']",
-          "credential": "pg-corp-ro",
-          "verdict": "deny",
-          "reason": "ro account is read-only — use the rw placeholder if you need to write"
-        }
-      },
-      "pg-corp-rw-writes": {
-        "body": {
-          "name": "pg-corp-rw-writes",
-          "family": "sql",
-          "endpoints": [
-            "pg-corp"
-          ],
-          "condition": "sql.verb in ['insert', 'update', 'delete', 'merge', 'notify']",
-          "credential": "pg-corp-rw",
-          "approve": [
-            {
-              "name": "console-dba"
-            }
-          ]
-        }
-      },
-      "pg-corp-secret-columns": {
-        "body": {
-          "name": "pg-corp-secret-columns",
-          "family": "sql",
-          "endpoints": [
-            "pg-corp"
-          ],
-          "priority": 100,
-          "condition": "sql.verb == 'select' && sets.intersects(sql.tables, ['github_identities', 'tokens', 'email_confirmations', 'authorizations', 'domain_certificates', 'database_instances', 'env_vars'])",
-          "approve": [
-            {
-              "name": "pg-secret-columns-judge"
-            }
-          ]
         }
       },
       "pg-no-migrations": {
@@ -1199,42 +1199,42 @@
           "name": "pg-no-migrations",
           "family": "sql",
           "endpoints": [
-            "pg-corp",
-            "pg-scheduler"
+            "corp",
+            "scheduler"
           ],
           "condition": "'kysely_migration' in sql.tables",
           "verdict": "deny",
           "reason": "Migrations table is owned by the deploy pipeline"
         }
       },
-      "pg-scheduler-default": {
+      "scheduler-default": {
         "body": {
-          "name": "pg-scheduler-default",
+          "name": "scheduler-default",
           "family": "sql",
           "endpoints": [
-            "pg-scheduler"
+            "scheduler"
           ],
           "priority": -100,
           "verdict": "deny"
         }
       },
-      "pg-scheduler-reads": {
+      "scheduler-reads": {
         "body": {
-          "name": "pg-scheduler-reads",
+          "name": "scheduler-reads",
           "family": "sql",
           "endpoints": [
-            "pg-scheduler"
+            "scheduler"
           ],
           "condition": "sql.verb in ['select', 'show', 'explain']",
           "verdict": "allow"
         }
       },
-      "pg-scheduler-secret-named-defense": {
+      "scheduler-secret-named-defense": {
         "body": {
-          "name": "pg-scheduler-secret-named-defense",
+          "name": "scheduler-secret-named-defense",
           "family": "sql",
           "endpoints": [
-            "pg-scheduler"
+            "scheduler"
           ],
           "priority": 100,
           "condition": "sql.verb == 'select' && sql.statement.matches('(?i)\\\\b(secret|password|token|api_key|private_key|access_key|signing_secret)\\\\b')",
@@ -1245,12 +1245,12 @@
           ]
         }
       },
-      "pg-scheduler-writes": {
+      "scheduler-writes": {
         "body": {
-          "name": "pg-scheduler-writes",
+          "name": "scheduler-writes",
           "family": "sql",
           "endpoints": [
-            "pg-scheduler"
+            "scheduler"
           ],
           "condition": "sql.verb in ['insert', 'update', 'delete', 'merge', 'notify']",
           "approve": [

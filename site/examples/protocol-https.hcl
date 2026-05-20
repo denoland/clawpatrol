@@ -26,12 +26,12 @@ endpoint "https" "deno-deploy" {
   hosts = ["app.deno.com"]
 }
 
-credential "anthropic_manual_key" "anthropic-key" {}
+credential "anthropic_manual_key" "key" {}
 credential "bearer_token" "deno-deploy" { endpoint = https.deno-deploy }
 
 approver "llm_approver" "reply-content-judge" {
   model      = "claude-sonnet-4-6"
-  credential = anthropic_manual_key.anthropic-key
+  credential = anthropic_manual_key.key
   policy     = policy.reply-content
 }
 

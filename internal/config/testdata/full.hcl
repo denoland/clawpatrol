@@ -89,7 +89,7 @@
 # References are typed traversals — `<type>.<name>` for two-label
 # kinds, `<kind>.<name>` for one-label kinds:
 #
-#     endpoint    = https.anthropic-ops
+#     endpoint    = https.anthropic
 #     credentials = [bearer_token.github-ops]
 #     approve     = [llm_approver.fast]
 #
@@ -99,9 +99,9 @@
 #
 # Note: ClickHouse exposes two protocols (HTTPS API + native binary)
 # from the same upstream cluster, so two endpoints share the upstream:
-# `ch-o11y-https` and `ch-o11y-native`. One credential (`ch-o11y`)
+# `o11y-https` and `o11y-native`. One credential (`o11y`)
 # binds both via
-# `endpoints = [clickhouse_https.ch-o11y-https, clickhouse_native.ch-o11y-native]`.
+# `endpoints = [clickhouse_https.o11y-https, clickhouse_native.o11y-native]`.
 #
 #
 # ╔══════════════════════════════════════════════════════════════════╗
@@ -123,8 +123,8 @@
 #   (b) Singleton-or-list, for one credential reused at multiple
 #       protocol endpoints of the same upstream:
 #
-#         credential "clickhouse_credential" "ch-o11y" {
-#           endpoints = [clickhouse_https.ch-o11y-https, clickhouse_native.ch-o11y-native]
+#         credential "clickhouse_credential" "o11y" {
+#           endpoints = [clickhouse_https.o11y-https, clickhouse_native.o11y-native]
 #           user      = "ops"
 #         }
 #
@@ -304,7 +304,7 @@
 #
 # A profile is a credential membership list:
 #
-#     profile "alice" { credentials = [bearer_token.github-alice, slack_tokens.slack-alice, ...] }
+#     profile "alice" { credentials = [bearer_token.github-alice, slack_tokens.alice, ...] }
 #
 # Three observations:
 #
@@ -314,11 +314,11 @@
 #     profile transitively includes every endpoint that credential
 #     binds and every rule attached to it.
 #
-#   - Sharing is by reference. notion-corp / grafana / ch-o11y /
+#   - Sharing is by reference. notion_oauth.corp / grafana / o11y /
 #     k8s-dev-{iad,sfo}-mtls all appear in multiple profiles; they map
 #     to one credential row each, with M:N joins to the listed profiles.
 #
-#   - Multi-credential endpoints (anthropic-ops, orb, pg-corp) list
+#   - Multi-credential endpoints (anthropic, orb, corp) list
 #     BOTH credentials in the profile that wields them, wrapped in
 #     `{ placeholder = "PH_...", credential = name }` entries that
 #     disambiguate the wire-time dispatch. Per-user-fanout endpoints
@@ -332,7 +332,7 @@
 # v15 has three profiles:
 #
 #   ops    — full ops coverage (anthropic dual-cred, stripe, orb dual,
-#            support console, both postgres servers (pg-corp dual),
+#            support console, both postgres servers (corp dual),
 #            all k8s clusters, ClickHouse, Notion, Grafana, Slack).
 #   alice  — operational tools (per-user GitHub/Slack, plus
 #            tool-specific APIs: Smithery, AMem, Checkly, PostHog,
@@ -357,12 +357,12 @@
 #   Lives on the endpoint because it's per-server, not per-credential.
 #
 # - Kubernetes mTLS PEMs are referenced by filename:
-#     ca_cert = "<<file:k8s-dev-iad-ca.pem>>"
+#     ca_cert = "<<file:dev-iad-ca.pem>>"
 #   The loader inlines the PEM content from a sibling directory at
 #   load time. Keeps cert material out of this file.
 #
-# - EKS auth (k8s-eks-corp-prod) uses an `aws_credential` whose
-#   `endpoint = k8s-eks-corp-prod` binds it to that cluster. The
+# - EKS auth (eks-corp) uses an `aws_credential` whose
+#   `endpoint = eks-corp` binds it to that cluster. The
 #   gateway presigns an STS GetCallerIdentity URL at request time and
 #   stamps the `k8s-aws-v1.<…>` bearer; cluster name and region live
 #   on the endpoint.
@@ -387,34 +387,34 @@ human_on_timeout = "deny"
 # `billing-strict` requires two approvers (`require_approvers = 2`)
 # for the highest-blast-radius Stripe operations.
 #
-# Approvers reference `credential = anthropic_oauth_subscription.anthropic-ops`
+# Approvers reference `credential = anthropic_oauth_subscription.ops`
 # — that traversal resolves to the credential below; the credential
-# itself binds the anthropic-ops endpoint, so the approver's outbound
+# itself binds the anthropic endpoint, so the approver's outbound
 # calls use the same injection path the agent uses.
 
 approver "llm_approver" "slack-block-kit-shape-judge" {
   model      = "claude-sonnet-4-20250514"
-  credential = anthropic_oauth_subscription.anthropic-ops
+  credential = anthropic_oauth_subscription.ops
   policy     = policy.slack-block-kit-shape
 }
 approver "llm_approver" "reply-content-judge" {
   model      = "claude-sonnet-4-20250514"
-  credential = anthropic_oauth_subscription.anthropic-ops
+  credential = anthropic_oauth_subscription.ops
   policy     = policy.reply-content
 }
 approver "llm_approver" "pg-secret-columns-judge" {
   model      = "claude-haiku-4-5-20251001"
-  credential = anthropic_oauth_subscription.anthropic-ops
+  credential = anthropic_oauth_subscription.ops
   policy     = policy.pg-secret-columns
 }
 approver "llm_approver" "pg-secret-named-defense-judge" {
   model      = "claude-haiku-4-5-20251001"
-  credential = anthropic_oauth_subscription.anthropic-ops
+  credential = anthropic_oauth_subscription.ops
   policy     = policy.pg-secret-named-defense
 }
 approver "llm_approver" "k8s-exec-content-judge" {
   model      = "claude-haiku-4-5-20251001"
-  credential = anthropic_oauth_subscription.anthropic-ops
+  credential = anthropic_oauth_subscription.ops
   policy     = policy.k8s-exec-content
 }
 
@@ -512,7 +512,7 @@ policy "pg-secret-named-defense" {
 # connection parameters — credential binding lives on the credential
 # blocks below.
 
-endpoint "https" "anthropic-ops" { hosts = ["api.anthropic.com"] }
+endpoint "https" "anthropic" { hosts = ["api.anthropic.com"] }
 
 endpoint "https" "github"   { hosts = ["api.github.com", "github.com"] }
 endpoint "https" "slack"    { hosts = ["slack.com", "www.slack.com", "api.slack.com"] }
@@ -525,14 +525,14 @@ endpoint "https" "support-console" { hosts = ["admin.example.com"] }
 endpoint "https" "stripe"          { hosts = ["api.stripe.com"] }
 endpoint "https" "orb"             { hosts = ["api.withorb.com"] }
 
-endpoint "postgres" "pg-corp" {
+endpoint "postgres" "corp" {
   host = "corp-prod.cluster.example:5432"
 }
-endpoint "postgres" "pg-scheduler" {
+endpoint "postgres" "scheduler" {
   host = "scheduler-prod.cluster.example:5432"
 }
 
-endpoint "kubernetes" "k8s-eks-corp-prod" {
+endpoint "kubernetes" "eks-corp" {
   hosts        = ["*.gr7.us-east-2.eks.amazonaws.com"]
   description  = "arn:aws:eks:us-east-2:123456789012:cluster/corp-prod"
   cluster_name = "corp-prod"
@@ -544,19 +544,19 @@ endpoint "https" "grafana" { hosts = ["grafana.example.com"] }
 
 # Both ClickHouse endpoints are bare here; the shared credential
 # below references both via the singleton-or-list `endpoints` form.
-endpoint "clickhouse_https"  "ch-o11y-https"  { hosts = ["clickhouse-o11y.example", "ch-o11y.internal.example"] }
-endpoint "clickhouse_native" "ch-o11y-native" { hosts = ["clickhouse-o11y.example"] }
+endpoint "clickhouse_https"  "o11y-https"  { hosts = ["clickhouse-o11y.example", "ch-o11y.internal.example"] }
+endpoint "clickhouse_native" "o11y-native" { hosts = ["clickhouse-o11y.example"] }
 
 # Self-hosted k8s clusters use mTLS. The CA cert is referenced by
 # filename and inlined at load time.
-endpoint "kubernetes" "k8s-dev-iad" {
+endpoint "kubernetes" "dev-iad" {
   server      = "198.51.100.10"
-  ca_cert     = "<<file:k8s-dev-iad-ca.pem>>"
+  ca_cert     = "<<file:dev-iad-ca.pem>>"
   description = "admin@dev-iad.example"
 }
-endpoint "kubernetes" "k8s-dev-sfo" {
+endpoint "kubernetes" "dev-sfo" {
   server      = "198.51.100.20"
-  ca_cert     = "<<file:k8s-dev-sfo-ca.pem>>"
+  ca_cert     = "<<file:dev-sfo-ca.pem>>"
   description = "admin@dev-sfo.example"
 }
 
@@ -578,19 +578,19 @@ endpoint "https" "helpdesk"  { hosts = ["helpdesk.example.com"] }
 # stripe idempotency-key behaviour, header name overrides, ...). They
 # never hold the secret value itself.
 #
-# Multi-credential endpoints (anthropic-ops, orb, pg-corp) appear as
+# Multi-credential endpoints (anthropic, orb, corp) appear as
 # N credentials each pointing at the shared endpoint. The dispatch
 # discriminator lives on the profile that wields them — see the
 # inline `{ placeholder = "PH_...", credential = ... }` entries in
-# profile "ops" below. The shared ch-o11y credential uses the
+# profile "ops" below. The shared o11y credential uses the
 # singleton-or-list `endpoints` form (one credential, two endpoints).
 
 # ops' anthropic — both an API key AND an OAuth subscription. The
 # dispatch placeholder lives on the profile (inline `{ placeholder =
 # ..., credential = ... }` entries in profile "ops"), because only
 # profiles that wield BOTH credentials need to disambiguate.
-credential "anthropic_manual_key"         "anthropic-ops-key" { endpoint = https.anthropic-ops }
-credential "anthropic_oauth_subscription" "anthropic-ops" { endpoint = https.anthropic-ops }
+credential "anthropic_manual_key"         "proctor" { endpoint = https.anthropic }
+credential "anthropic_oauth_subscription" "ops"     { endpoint = https.anthropic }
 
 # Per-user GitHub PATs. The github endpoint is a bare network target
 # shared across users; each user's profile wields exactly one of these,
@@ -602,18 +602,18 @@ credential "bearer_token" "github-bob"   { endpoint = https.github }
 # Per-user Slack workspaces — shared slack endpoint, each user's
 # profile uses one workspace credential.
 credential "slack_tokens" "slack-ops"   { endpoint = https.slack }
-credential "slack_tokens" "slack-alice" { endpoint = https.slack }
+credential "slack_tokens" "alice"       { endpoint = https.slack }
 credential "slack_tokens" "slack-bob"   { endpoint = https.slack }
 
 # Per-user Telegram / Codex / Gemini. The openai-codex endpoint is
 # the only one any profile binds with more than one credential
 # (profile "bob" uses both his and carol's codex), so the
 # disambiguation placeholders live in that profile.
-credential "telegram_bot_token"  "telegram-carol"     { endpoint = https.telegram }
+credential "telegram_bot_token"  "carol"              { endpoint = https.telegram }
 credential "telegram_bot_token"  "telegram-bob"       { endpoint = https.telegram }
 credential "gemini_api_key"      "gemini-bob"         { endpoint = https.gemini }
-credential "openai_codex_oauth"  "openai-codex-carol" { endpoint = https.openai-codex }
-credential "openai_codex_oauth"  "openai-codex-bob"   { endpoint = https.openai-codex }
+credential "openai_codex_oauth"  "codex-carol"        { endpoint = https.openai-codex }
+credential "openai_codex_oauth"  "codex-bob"          { endpoint = https.openai-codex }
 
 # ops-only.
 # `idempotency_key = true` tells the bearer_token plugin to also stamp
@@ -634,35 +634,35 @@ credential "cookie_token" "support-console" {
   cookie_name = "session"
 }
 
-# pg-corp: ro + rw. Both wielded by profile "ops" → placeholders
+# corp: ro + rw. Both wielded by profile "ops" → placeholders
 # declared there.
-credential "postgres_credential" "pg-corp-ro" {
-  endpoint = postgres.pg-corp
+credential "postgres_credential" "corp-ro" {
+  endpoint = postgres.corp
   user     = "corp_ro"
 }
-credential "postgres_credential" "pg-corp-rw" {
-  endpoint = postgres.pg-corp
+credential "postgres_credential" "corp-rw" {
+  endpoint = postgres.corp
   user     = "corp_rw"
 }
-credential "postgres_credential" "pg-scheduler" {
-  endpoint = postgres.pg-scheduler
+credential "postgres_credential" "scheduler" {
+  endpoint = postgres.scheduler
   user     = "scheduler"
 }
 
-credential "notion_oauth" "notion-corp"   { endpoint = https.notion }
+credential "notion_oauth" "corp"          { endpoint = https.notion }
 credential "bearer_token" "grafana" { endpoint = https.grafana }
 
-# ch-o11y: ONE credential, TWO endpoints. The singleton-or-list
+# o11y: ONE credential, TWO endpoints. The singleton-or-list
 # `endpoints` form preserves the single-credential identity while
 # binding both ClickHouse protocol surfaces of the same upstream.
-credential "clickhouse_credential" "ch-o11y" {
-  endpoints = [clickhouse_https.ch-o11y-https, clickhouse_native.ch-o11y-native]
+credential "clickhouse_credential" "o11y" {
+  endpoints = [clickhouse_https.o11y-https, clickhouse_native.o11y-native]
   user      = "ops"
 }
 
-credential "mtls_credential"   "k8s-dev-iad"  { endpoint = kubernetes.k8s-dev-iad }
-credential "mtls_credential"   "k8s-dev-sfo"  { endpoint = kubernetes.k8s-dev-sfo }
-credential "aws_credential"    "k8s-eks-corp"  { endpoint = kubernetes.k8s-eks-corp-prod }
+credential "mtls_credential"   "dev-iad"  { endpoint = kubernetes.dev-iad }
+credential "mtls_credential"   "dev-sfo"  { endpoint = kubernetes.dev-sfo }
+credential "aws_credential"    "eks-corp"  { endpoint = kubernetes.eks-corp }
 
 # alice's per-tool API tokens. These illustrate the variety of HTTP
 # auth shapes the bearer/header_token credentials cover:
@@ -854,12 +854,12 @@ rule "grafana-dashboard-writes" {
 # ── ClickHouse (https + native, same rules apply) ───
 
 rule "clickhouse-reads" {
-  endpoints = [clickhouse_https.ch-o11y-https, clickhouse_native.ch-o11y-native]
+  endpoints = [clickhouse_https.o11y-https, clickhouse_native.o11y-native]
   condition = "sql.verb in ['select', 'show', 'describe', 'explain', 'use']"
   verdict   = "allow"
 }
 rule "clickhouse-default" {
-  endpoints = [clickhouse_https.ch-o11y-https, clickhouse_native.ch-o11y-native]
+  endpoints = [clickhouse_https.o11y-https, clickhouse_native.o11y-native]
   priority  = -100
   verdict   = "deny"
   reason    = "ClickHouse access is read-only"
@@ -868,88 +868,88 @@ rule "clickhouse-default" {
 # ── Postgres — banned across all postgres endpoints ─
 
 rule "pg-banned-verbs" {
-  endpoints = [postgres.pg-corp, postgres.pg-scheduler]
+  endpoints = [postgres.corp, postgres.scheduler]
   condition = "sql.verb in ['drop', 'truncate', 'alter', 'grant', 'revoke', 'vacuum', 'create', 'comment', 'do']"
   verdict   = "deny"
   reason    = "Schema changes / destructive DDL not permitted; use a migration PR"
 }
 rule "pg-banned-functions" {
-  endpoints = [postgres.pg-corp, postgres.pg-scheduler]
+  endpoints = [postgres.corp, postgres.scheduler]
   condition = "sets.intersects(sql.functions, ['pg_terminate_backend', 'pg_cancel_backend', 'pg_read_file', 'pg_read_binary_file', 'lo_get']) || sql.functions.exists(f, f.startsWith('dblink_'))"
   verdict   = "deny"
   reason    = "Disallowed function for agent access"
 }
 rule "pg-banned-copy-from" {
-  endpoints = [postgres.pg-corp, postgres.pg-scheduler]
+  endpoints = [postgres.corp, postgres.scheduler]
   condition = "sql.statement.matches('(?is)copy.*from program')"
   verdict   = "deny"
   reason    = "COPY ... FROM PROGRAM is disallowed"
 }
 rule "pg-banned-copy-to" {
-  endpoints = [postgres.pg-corp, postgres.pg-scheduler]
+  endpoints = [postgres.corp, postgres.scheduler]
   condition = "sql.statement.matches('(?is)copy.*to program')"
   verdict   = "deny"
   reason    = "COPY ... TO PROGRAM is disallowed"
 }
 rule "pg-no-migrations" {
-  endpoints = [postgres.pg-corp, postgres.pg-scheduler]
+  endpoints = [postgres.corp, postgres.scheduler]
   condition = "'kysely_migration' in sql.tables"
   verdict   = "deny"
   reason    = "Migrations table is owned by the deploy pipeline"
 }
 
-# ── Postgres — pg-corp-specific account rules ───────
+# ── Postgres — corp-specific account rules ───────
 
-rule "pg-corp-ro-no-writes" {
-  endpoint   = postgres.pg-corp
-  credential = postgres_credential.pg-corp-ro
+rule "corp-ro-no-writes" {
+  endpoint   = postgres.corp
+  credential = postgres_credential.corp-ro
   condition  = "sql.verb in ['insert', 'update', 'delete', 'merge', 'notify']"
   verdict    = "deny"
   reason     = "ro account is read-only — use the rw placeholder if you need to write"
 }
-rule "pg-corp-secret-columns" {
-  endpoint  = postgres.pg-corp
+rule "corp-secret-columns" {
+  endpoint  = postgres.corp
   priority  = 100
   condition = "sql.verb == 'select' && sets.intersects(sql.tables, ['github_identities', 'tokens', 'email_confirmations', 'authorizations', 'domain_certificates', 'database_instances', 'env_vars'])"
   approve   = [llm_approver.pg-secret-columns-judge]
 }
-rule "pg-corp-rw-writes" {
-  endpoint   = postgres.pg-corp
-  credential = postgres_credential.pg-corp-rw
+rule "corp-rw-writes" {
+  endpoint   = postgres.corp
+  credential = postgres_credential.corp-rw
   condition  = "sql.verb in ['insert', 'update', 'delete', 'merge', 'notify']"
   approve    = [human_approver.console-dba]
 }
-rule "pg-corp-reads" {
-  endpoint  = postgres.pg-corp
+rule "corp-reads" {
+  endpoint  = postgres.corp
   condition = "sql.verb in ['select', 'show', 'explain']"
   verdict   = "allow"
 }
-rule "pg-corp-default" {
-  endpoint = postgres.pg-corp
+rule "corp-default" {
+  endpoint = postgres.corp
   priority = -100
   verdict  = "deny"
 }
 
-# ── Postgres — pg-scheduler-specific rules ──────────
+# ── Postgres — scheduler-specific rules ──────────
 
-rule "pg-scheduler-secret-named-defense" {
-  endpoint  = postgres.pg-scheduler
+rule "scheduler-secret-named-defense" {
+  endpoint  = postgres.scheduler
   priority  = 100
   condition = "sql.verb == 'select' && sql.statement.matches('(?i)\\\\b(secret|password|token|api_key|private_key|access_key|signing_secret)\\\\b')"
   approve   = [llm_approver.pg-secret-named-defense-judge]
 }
-rule "pg-scheduler-writes" {
-  endpoint  = postgres.pg-scheduler
+rule "scheduler-writes" {
+  endpoint  = postgres.scheduler
   condition = "sql.verb in ['insert', 'update', 'delete', 'merge', 'notify']"
   approve   = [human_approver.scheduler-ops]
 }
-rule "pg-scheduler-reads" {
-  endpoint  = postgres.pg-scheduler
+rule "scheduler-reads" {
+  endpoint  = postgres.scheduler
   condition = "sql.verb in ['select', 'show', 'explain']"
   verdict   = "allow"
 }
-rule "pg-scheduler-default" {
-  endpoint = postgres.pg-scheduler
+rule "scheduler-default" {
+  endpoint = postgres.scheduler
   priority = -100
   verdict  = "deny"
 }
@@ -957,61 +957,61 @@ rule "pg-scheduler-default" {
 # ── Kubernetes — base rules across all clusters ─────
 
 rule "k8s-no-secrets" {
-  endpoints = [kubernetes.k8s-dev-iad, kubernetes.k8s-dev-sfo, kubernetes.k8s-eks-corp-prod]
+  endpoints = [kubernetes.dev-iad, kubernetes.dev-sfo, kubernetes.eks-corp]
   priority  = 1000
   condition = "k8s.resource == 'secrets'"
   verdict   = "deny"
   reason    = "Secret values must not leave the cluster via the agent"
 }
 rule "k8s-no-interactive" {
-  endpoints = [kubernetes.k8s-dev-iad, kubernetes.k8s-dev-sfo, kubernetes.k8s-eks-corp-prod]
+  endpoints = [kubernetes.dev-iad, kubernetes.dev-sfo, kubernetes.eks-corp]
   priority  = 1000
   condition = "k8s.resource in ['pods/exec', 'pods/attach'] && k8s.params.stdin == 'true'"
   verdict   = "deny"
   reason    = "Interactive shells can't be evaluated by the rules engine"
 }
 rule "k8s-no-disruptive" {
-  endpoints = [kubernetes.k8s-dev-iad, kubernetes.k8s-dev-sfo, kubernetes.k8s-eks-corp-prod]
+  endpoints = [kubernetes.dev-iad, kubernetes.dev-sfo, kubernetes.eks-corp]
   condition = "k8s.verb in ['drain', 'cordon', 'evict']"
   verdict   = "deny"
   reason    = "Cluster-disruptive operations are not allowed"
 }
 rule "k8s-no-portforward-non-debug" {
-  endpoints = [kubernetes.k8s-dev-iad, kubernetes.k8s-dev-sfo, kubernetes.k8s-eks-corp-prod]
+  endpoints = [kubernetes.dev-iad, kubernetes.dev-sfo, kubernetes.eks-corp]
   priority  = 1000
   condition = "k8s.resource == 'pods/portforward' && !k8s.name.startsWith('debug-')"
   verdict   = "deny"
   reason    = "Port-forward only allowed to debug-* pods"
 }
 rule "k8s-no-mutations" {
-  endpoints = [kubernetes.k8s-dev-iad, kubernetes.k8s-dev-sfo, kubernetes.k8s-eks-corp-prod]
+  endpoints = [kubernetes.dev-iad, kubernetes.dev-sfo, kubernetes.eks-corp]
   condition = "k8s.verb in ['create', 'update', 'patch', 'delete'] && !k8s.name.startsWith('debug-') && !k8s.resource.endsWith('/exec') && !k8s.resource.endsWith('/attach') && !k8s.resource.endsWith('/portforward')"
   verdict   = "deny"
   reason    = "Only debug-* pods may be created / modified / deleted"
 }
 rule "k8s-exec-content-check" {
-  endpoints = [kubernetes.k8s-dev-iad, kubernetes.k8s-dev-sfo, kubernetes.k8s-eks-corp-prod]
+  endpoints = [kubernetes.dev-iad, kubernetes.dev-sfo, kubernetes.eks-corp]
   priority  = 500
   condition = "k8s.resource == 'pods/exec'"
   approve   = [llm_approver.k8s-exec-content-judge]
 }
 rule "k8s-allow-meta" {
-  endpoints = [kubernetes.k8s-dev-iad, kubernetes.k8s-dev-sfo, kubernetes.k8s-eks-corp-prod]
+  endpoints = [kubernetes.dev-iad, kubernetes.dev-sfo, kubernetes.eks-corp]
   condition = "k8s.verb == 'meta'"
   verdict   = "allow"
 }
 rule "k8s-reads" {
-  endpoints = [kubernetes.k8s-dev-iad, kubernetes.k8s-dev-sfo, kubernetes.k8s-eks-corp-prod]
+  endpoints = [kubernetes.dev-iad, kubernetes.dev-sfo, kubernetes.eks-corp]
   condition = "k8s.verb in ['get', 'list', 'watch']"
   verdict   = "allow"
 }
 rule "k8s-debug-pods" {
-  endpoints = [kubernetes.k8s-dev-iad, kubernetes.k8s-dev-sfo, kubernetes.k8s-eks-corp-prod]
+  endpoints = [kubernetes.dev-iad, kubernetes.dev-sfo, kubernetes.eks-corp]
   condition = "k8s.verb in ['create', 'delete'] && k8s.resource == 'pods' && k8s.name.startsWith('debug-')"
   verdict   = "allow"
 }
 rule "k8s-exec-attach" {
-  endpoints = [kubernetes.k8s-dev-iad, kubernetes.k8s-dev-sfo, kubernetes.k8s-eks-corp-prod]
+  endpoints = [kubernetes.dev-iad, kubernetes.dev-sfo, kubernetes.eks-corp]
   condition = "k8s.verb in ['create', 'get'] && k8s.resource in ['pods/exec', 'pods/attach', 'pods/portforward']"
   verdict   = "allow"
 }
@@ -1019,14 +1019,14 @@ rule "k8s-exec-attach" {
 # ── Kubernetes — EKS-specific extras ────────────────
 
 rule "k8s-eks-no-runtime-writes" {
-  endpoint  = kubernetes.k8s-eks-corp-prod
+  endpoint  = kubernetes.eks-corp
   priority  = 1000
   condition = "k8s.verb in ['create', 'update', 'patch', 'delete'] && (k8s.namespace in ['app', 'kube-system', 'cert-manager', 'external-secrets', 'argocd'] || k8s.namespace.startsWith('flux'))"
   verdict   = "deny"
   reason    = "Writes to runtime namespaces would impact production"
 }
 rule "k8s-eks-no-legacy-secret-configmaps" {
-  endpoint  = kubernetes.k8s-eks-corp-prod
+  endpoint  = kubernetes.eks-corp
   priority  = 1000
   condition = "k8s.verb in ['get', 'list'] && k8s.resource == 'configmaps' && k8s.namespace == 'app' && (k8s.name.endsWith('-secrets') || k8s.name.startsWith('env-'))"
   verdict   = "deny"
@@ -1035,18 +1035,18 @@ rule "k8s-eks-no-legacy-secret-configmaps" {
 
 # ── Kubernetes catch-alls (per cluster) ─────────────
 
-rule "k8s-dev-iad-default" {
-  endpoint = kubernetes.k8s-dev-iad
+rule "dev-iad-default" {
+  endpoint = kubernetes.dev-iad
   priority = -100
   verdict  = "deny"
 }
-rule "k8s-dev-sfo-default" {
-  endpoint = kubernetes.k8s-dev-sfo
+rule "dev-sfo-default" {
+  endpoint = kubernetes.dev-sfo
   priority = -100
   verdict  = "deny"
 }
 rule "k8s-eks-default" {
-  endpoint = kubernetes.k8s-eks-corp-prod
+  endpoint = kubernetes.eks-corp
   priority = -100
   verdict  = "deny"
 }
@@ -1069,10 +1069,10 @@ profile "ops" {
   # for clickhouse, …) and may equivalently be set on the credential
   # block itself — profile-inline values override block-side ones.
   credentials = [
-    # anthropic-ops: BOTH credentials at one endpoint → disambiguated
+    # anthropic: BOTH credentials at one endpoint → disambiguated
     # via inline placeholders.
-    { placeholder = "PH_anthropic_ops_apikey", credential = anthropic_manual_key.anthropic-ops-key },
-    { placeholder = "PH_anthropic_ops_subscription", credential = anthropic_oauth_subscription.anthropic-ops },
+    { placeholder = "PH_anthropic_ops_apikey", credential = anthropic_manual_key.proctor },
+    { placeholder = "PH_anthropic_ops_subscription", credential = anthropic_oauth_subscription.ops },
 
     bearer_token.github-ops,
     slack_tokens.slack-ops,
@@ -1083,39 +1083,39 @@ profile "ops" {
     { placeholder = "PH_orb_test", credential = bearer_token.orb-test },
     { placeholder = "PH_orb_prod", credential = bearer_token.orb-prod },
 
-    notion_oauth.notion-corp,
+    notion_oauth.corp,
     bearer_token.grafana,
 
-    # pg-corp: ro + rw at one endpoint. Disambiguation lives on each
+    # corp: ro + rw at one endpoint. Disambiguation lives on each
     # credential's `user` block-side field — postgres routes on the
     # StartupMessage user, so the operator never needs a profile-side
     # discriminator here.
-    postgres_credential.pg-corp-ro,
-    postgres_credential.pg-corp-rw,
-    postgres_credential.pg-scheduler,
+    postgres_credential.corp-ro,
+    postgres_credential.corp-rw,
+    postgres_credential.scheduler,
 
-    mtls_credential.k8s-dev-iad,
-    mtls_credential.k8s-dev-sfo,
-    aws_credential.k8s-eks-corp,
+    mtls_credential.dev-iad,
+    mtls_credential.dev-sfo,
+    aws_credential.eks-corp,
 
-    # ch-o11y: one credential, two endpoints.
-    clickhouse_credential.ch-o11y,
+    # o11y: one credential, two endpoints.
+    clickhouse_credential.o11y,
   ]
 }
 
 profile "alice" {
   credentials = [
     bearer_token.github-alice,
-    slack_tokens.slack-alice,
-    telegram_bot_token.telegram-carol,
-    openai_codex_oauth.openai-codex-carol,
+    slack_tokens.alice,
+    telegram_bot_token.carol,
+    openai_codex_oauth.codex-carol,
 
     # shared with profile.ops:
-    notion_oauth.notion-corp,
+    notion_oauth.corp,
     bearer_token.grafana,
-    clickhouse_credential.ch-o11y,
-    mtls_credential.k8s-dev-iad,
-    mtls_credential.k8s-dev-sfo,
+    clickhouse_credential.o11y,
+    mtls_credential.dev-iad,
+    mtls_credential.dev-sfo,
 
     # profile.alice's per-tool API access:
     bearer_token.smithery-alice,
@@ -1138,9 +1138,9 @@ profile "bob" {
     gemini_api_key.gemini-bob,
 
     # bob wields two openai-codex credentials → placeholder dispatch.
-    { placeholder = "PH_openai_codex_bob", credential = openai_codex_oauth.openai-codex-bob },
+    { placeholder = "PH_openai_codex_bob", credential = openai_codex_oauth.codex-bob },
 
     # shared with alice:
-    { placeholder = "PH_openai_codex_carol", credential = openai_codex_oauth.openai-codex-carol },
+    { placeholder = "PH_openai_codex_carol", credential = openai_codex_oauth.codex-carol },
   ]
 }
