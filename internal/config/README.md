@@ -318,7 +318,7 @@ device "10.55.0.2" {
     endpoint = deno
     match    = { method = "POST" }
     approve  = [dashboard]
-    reason   = "POSTs to deno.com require approval"
+    reason   = "POSTs to example.com require approval"
   }
 }
 ```

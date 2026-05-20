@@ -7,7 +7,7 @@ import (
 
 func TestReorderJoinArgsForFlagParseAcceptsFlagsAfterURL(t *testing.T) {
 	got := reorderJoinArgsForFlagParse([]string{
-		"https://deno.clawpatrol.dev",
+		"https://gateway.example.com",
 		"--hostname", "magurobot",
 		"--profile", "magurobot",
 		"--whole-machine",
@@ -16,7 +16,7 @@ func TestReorderJoinArgsForFlagParseAcceptsFlagsAfterURL(t *testing.T) {
 		"--hostname", "magurobot",
 		"--profile", "magurobot",
 		"--whole-machine",
-		"https://deno.clawpatrol.dev",
+		"https://gateway.example.com",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("reordered args mismatch\n got: %#v\nwant: %#v", got, want)
@@ -27,12 +27,12 @@ func TestReorderJoinArgsForFlagParsePreservesLeadingFlags(t *testing.T) {
 	got := reorderJoinArgsForFlagParse([]string{
 		"--hostname=magurobot",
 		"--profile", "magurobot",
-		"https://deno.clawpatrol.dev",
+		"https://gateway.example.com",
 	})
 	want := []string{
 		"--hostname=magurobot",
 		"--profile", "magurobot",
-		"https://deno.clawpatrol.dev",
+		"https://gateway.example.com",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("reordered args mismatch\n got: %#v\nwant: %#v", got, want)

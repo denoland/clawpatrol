@@ -2,8 +2,8 @@ package tunnels
 
 // tailscale tunnel: dials upstream via an embedded tsnet.Server.
 // Useful for endpoints that live in a tailnet and aren't reachable
-// from the host's namespace — Avocet's ClickHouse o11y target is the
-// canonical case.
+// from the host's namespace — an internal ClickHouse o11y target is
+// the canonical case.
 //
 // HCL:
 //

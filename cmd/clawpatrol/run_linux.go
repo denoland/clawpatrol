@@ -188,7 +188,7 @@ func runRun(args []string) {
 	tunDev := newRawFDTun(tunFd)
 	baseLogger := device.NewLogger(device.LogLevelError, "[clawpatrol run] ")
 	// Wrap the wireguard-go logger so the keypair-derivation failure
-	// short-circuits the watchdog poll loop — see denoland/orchid#45.
+	// short-circuits the watchdog poll loop.
 	forceReset := make(chan struct{}, 1)
 	logger := wrapWGLogger(baseLogger, forceReset)
 	dev := device.NewDevice(tunDev, conn.NewDefaultBind(), logger)

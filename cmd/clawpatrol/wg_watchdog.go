@@ -1,7 +1,6 @@
 package main
 
-// Recovery path for a stuck wireguard-go handshake state machine — the
-// failure mode tracked in denoland/orchid#45.
+// Recovery path for a stuck wireguard-go handshake state machine.
 //
 // What goes wrong: when a rekey races on the wire (initiation+response
 // collide, or the response is dropped on the way back), the peer can

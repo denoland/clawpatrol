@@ -7,7 +7,7 @@ muddled, and session-scoped features (e.g. the dry-run work in
 `cl-d9d`) inherit the same ambiguity.
 
 This document is the investigation + design proposal that precedes
-implementation. It mirrors the pattern denoland/unclaw already uses.
+implementation.
 
 ## TL;DR
 

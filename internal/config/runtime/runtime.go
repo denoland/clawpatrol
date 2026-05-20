@@ -407,7 +407,7 @@ type ApproveRequest struct {
 	// Used as the HITLPending.AgentIP key and as a log identifier.
 	AgentIP string
 	// Profile is the tenant profile the originating peer is bound to
-	// (e.g. "avocet2"). Informational — approvers use it as a
+	// (e.g. "dev2"). Informational — approvers use it as a
 	// human-readable label in slack cards / log lines / message
 	// templates; it carries no credential-lookup meaning.
 	Profile string

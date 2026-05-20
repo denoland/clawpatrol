@@ -23,7 +23,7 @@ policy "reply-content" {
 }
 
 endpoint "https" "deno-deploy" {
-  hosts = ["app.deno.com"]
+  hosts = ["app.example.com"]
 }
 
 credential "anthropic_manual_key" "anthropic-key" {}

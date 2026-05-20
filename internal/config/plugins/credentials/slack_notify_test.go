@@ -64,13 +64,13 @@ func TestSlackNotifyHITLRetriesTransientPostMessageFailure(t *testing.T) {
 
 	err := (&SlackTokens{}).NotifyHITL(context.Background(), runtime.ApproveRequest{
 		Secrets: testSecretStore{
-			"slack-avocet": {Extras: map[string]string{"bot": "xoxb-test"}},
+			"slack-dev": {Extras: map[string]string{"bot": "xoxb-test"}},
 		},
 		Method: "POST",
-		Host:   "console.deno.com",
+		Host:   "console.example.com",
 		Path:   "/api/admin.supportTickets.updateStatus",
 	}, runtime.HITLTarget{
-		CredentialName: "slack-avocet",
+		CredentialName: "slack-dev",
 		Channel:        "C123",
 		ThreadTS:       "1778764174.925659",
 		PendingID:      "pending-123",
@@ -110,13 +110,13 @@ func TestSlackNotifyHITLRetriesOnceAfterTransportTimeout(t *testing.T) {
 
 	err := (&SlackTokens{}).NotifyHITL(context.Background(), runtime.ApproveRequest{
 		Secrets: testSecretStore{
-			"slack-avocet": {Extras: map[string]string{"bot": "xoxb-test"}},
+			"slack-dev": {Extras: map[string]string{"bot": "xoxb-test"}},
 		},
 		Method: "POST",
-		Host:   "console.deno.com",
+		Host:   "console.example.com",
 		Path:   "/api/admin.supportTickets.updateStatus",
 	}, runtime.HITLTarget{
-		CredentialName: "slack-avocet",
+		CredentialName: "slack-dev",
 		Channel:        "C123",
 		PendingID:      "pending-123",
 		Interactive:    true,
@@ -156,13 +156,13 @@ func TestSlackNotifyHITLExplainsAsyncRetryGrantApproval(t *testing.T) {
 
 	err := (&SlackTokens{}).NotifyHITL(context.Background(), runtime.ApproveRequest{
 		Secrets: testSecretStore{
-			"slack-avocet": {Extras: map[string]string{"bot": "xoxb-test"}},
+			"slack-dev": {Extras: map[string]string{"bot": "xoxb-test"}},
 		},
 		Method: "POST",
-		Host:   "console.deno.com",
+		Host:   "console.example.com",
 		Path:   "/api/admin.supportTickets.updateStatus",
 	}, runtime.HITLTarget{
-		CredentialName: "slack-avocet",
+		CredentialName: "slack-dev",
 		Channel:        "C123",
 		PendingID:      "pending-123",
 		Interactive:    true,
@@ -216,13 +216,13 @@ func TestSlackNotifyHITLDoesNotRetryNonTransientSlackError(t *testing.T) {
 
 	err := (&SlackTokens{}).NotifyHITL(context.Background(), runtime.ApproveRequest{
 		Secrets: testSecretStore{
-			"slack-avocet": {Extras: map[string]string{"bot": "xoxb-test"}},
+			"slack-dev": {Extras: map[string]string{"bot": "xoxb-test"}},
 		},
 		Method: "POST",
-		Host:   "console.deno.com",
+		Host:   "console.example.com",
 		Path:   "/api/admin.supportTickets.updateStatus",
 	}, runtime.HITLTarget{
-		CredentialName: "slack-avocet",
+		CredentialName: "slack-dev",
 		Channel:        "missing-channel",
 		PendingID:      "pending-123",
 		Interactive:    true,
