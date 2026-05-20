@@ -48,12 +48,12 @@ the operator login. The CA certificate and private key are
 lazy-minted into sqlite under `state_dir` on first boot; there's
 nothing else to pre-create.
 
-That's the gateway side, but the credentials in the example
-config are only *declared* — they're empty handles until you
-connect each one. Open the dashboard's settings page (the gear
-icon); you'll see a card for every credential the HCL wires up
-(Anthropic, OpenAI, GitHub, Slack, Notion, Grafana, …). Click
-each card to connect it. The OAuth-backed credentials (Anthropic
+The credentials in the example config (Anthropic, OpenAI,
+GitHub, Slack, Notion, Grafana) are declared in HCL, but each
+one still has to be connected before it can be used. Open the
+dashboard's settings page (the gear icon); you'll see a card
+for every credential the HCL wires up. Click each card to
+connect it. The OAuth-backed credentials (Anthropic
 subscription, OpenAI Codex, GitHub, Notion) bounce you through
 the provider's OAuth flow. The rest (the manual Anthropic key,
 the Grafana bearer token, the Slack tokens) open a modal where
