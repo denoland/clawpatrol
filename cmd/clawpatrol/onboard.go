@@ -489,7 +489,7 @@ type tailscaleOnboarder struct{ ts JoinConfig }
 
 func (t *tailscaleOnboarder) MintKey(ctx context.Context, _ string, _ bool) (string, string, string, error) {
 	// One persistent (non-ephemeral) auth key per device. The Linux
-	// daemon (cmd/clawpatrol daemon) holds one stable tsnet identity
+	// daemon (cmd/clawpatrol daemon_linux.go) holds one stable tsnet identity
 	// shared across every `clawpatrol run` on the host, so the
 	// per-process ephemeral model is gone. Whole-machine joins on
 	// Linux also want a persistent node so the host survives reboots.

@@ -4,21 +4,21 @@ package main
 
 // Per-host self-forking daemon. `clawpatrol run` connects to a Unix
 // socket; if no daemon is alive, it re-execs itself as `clawpatrol
-// daemon` (a hidden subcommand) and the new process binds the socket,
-// then idle-exits 5 minutes after the last client disconnects.
+// daemon-internal` (a hidden subcommand) and the new process binds
+// the socket, then idle-exits 5 minutes after the last client
+// disconnects.
 //
-// The race-control protocol is the same one validated by the
-// ~/self-fork prototype: an exclusive flock around spawn, an
-// idle-timer that drops back to the lock before unlinking, a
-// mandatory hello() handshake on every client connect, and a
-// single-`os.Exit`-site invariant in the daemon. See the prototype's
-// README for the lost-race re-bind path and the two earlier
-// implementation bugs the test suite is designed to catch.
-//
-// For now the daemon's `handle()` only does the hello + holds the conn
-// open until the client closes. The session protocol (TUN-fd passing,
-// gVisor multiplexing over a shared tsnet.Server) is added in a
-// follow-up.
+// Race-control protocol:
+//   - exclusive flock on spawn.lock serializes the connect-or-spawn
+//     path across concurrent clients.
+//   - mandatory hello() handshake on every client connect rejects
+//     conns landing on a daemon that's mid-teardown.
+//   - the idle-exit goroutine drops back to the lock before unlinking
+//     the socket; a "lost race" recovery path re-binds a fresh
+//     listener when an accept slips in between recheck and close.
+//   - single os.Exit site invariant: the main goroutine never returns
+//     from runDaemon on its own, so cleanup placed on the exit path
+//     cannot be skipped.
 
 import (
 	"bufio"
@@ -106,7 +106,7 @@ func daemonConnect() (net.Conn, error) {
 	// bind() in the new daemon would otherwise EADDRINUSE.
 	_ = os.Remove(sockPath)
 
-	// 5. Re-exec self as `clawpatrol daemon`.
+	// 5. Re-exec self as `clawpatrol daemon-internal`.
 	if err := daemonSpawn(dir); err != nil {
 		return nil, fmt.Errorf("spawn daemon: %w", err)
 	}
@@ -162,9 +162,10 @@ func daemonHello(c net.Conn) error {
 	return nil
 }
 
-// daemonSpawn re-execs the current binary as `clawpatrol daemon`,
-// waits for it to write "ready\n" on the inherited pipe (fd 3), then
-// returns. The child detaches via Setsid and ignores SIGHUP.
+// daemonSpawn re-execs the current binary as `clawpatrol
+// daemon-internal`, waits for it to write "ready\n" on the inherited
+// pipe (fd 3), then returns. The child detaches via Setsid and
+// ignores SIGHUP.
 func daemonSpawn(dir string) error {
 	self, err := os.Executable()
 	if err != nil {
@@ -184,7 +185,7 @@ func daemonSpawn(dir string) error {
 	}
 	defer func() { _ = logf.Close() }()
 
-	cmd := exec.Command(self, "daemon")
+	cmd := exec.Command(self, "daemon-internal")
 	cmd.Stdin = nil
 	cmd.Stdout = logf
 	cmd.Stderr = logf
@@ -244,10 +245,10 @@ type daemon struct {
 	rebindCh chan struct{}
 }
 
-// runDaemon is the entry point for the `clawpatrol daemon` subcommand.
-// Invoked exclusively by daemonSpawn — clients should never run this
-// directly. Returns only via os.Exit from tryExit (or log.Fatal on
-// fatal startup error).
+// runDaemon is the entry point for the `clawpatrol daemon-internal`
+// subcommand. Invoked exclusively by daemonSpawn — clients should
+// never run this directly. Returns only via os.Exit from tryExit (or
+// log.Fatal on fatal startup error).
 func runDaemon(_ []string) {
 	log.SetFlags(log.Lmicroseconds)
 
@@ -612,11 +613,13 @@ func daemonHandshake(c net.Conn) error {
 	return nil
 }
 
-// tryExit is the race-sensitive bit. Step-by-step rationale lives in
-// the ~/self-fork README; the ordering here matches the prototype's
-// tested version. The single os.Exit site below is load-bearing:
-// allowing main goroutine to fall out of runDaemon after serve()
-// returns would skip whatever cleanup we add to this path.
+// tryExit is the race-sensitive bit. The ordering — lock, recheck,
+// unlink, close, recheck, exit-or-rebind — is what makes concurrent
+// connect-or-spawn safe; see the file-header comment for the protocol
+// and the inline comments below for each step's rationale. The
+// single os.Exit site here is load-bearing: allowing the main
+// goroutine to fall out of runDaemon after serve() returns would skip
+// whatever cleanup we add to this path.
 func (d *daemon) tryExit() {
 	if err := syscall.Flock(int(d.lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		// A client is mid-spawn-check. Back off and rearm.

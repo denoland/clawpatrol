@@ -8,5 +8,5 @@ package main
 // compile cross-platform — it just refuses to run.
 
 func runDaemon(_ []string) {
-	fail("clawpatrol daemon: linux only")
+	fail("clawpatrol daemon-internal: linux only")
 }
