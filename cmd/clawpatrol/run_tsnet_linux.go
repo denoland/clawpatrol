@@ -36,7 +36,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -346,30 +345,12 @@ func runRunTsnetChild() {
 		_ = bindResolv("nameserver 1.1.1.1\nnameserver 8.8.8.8\n")
 	}
 
-	// Mask ~/.clawpatrol/ from the agent's view. The dir holds two
-	// parent-only bearer secrets — tsnet-auth-key (lets any process
-	// join the tailnet under tag:client) and api-token (gates the
-	// gateway peer API). The agent never needs either: parent already
-	// fetched env-pushdown and registered the ephemeral peer before
-	// fork. Only ca.crt is required downstream (NODE_EXTRA_CA_CERTS /
-	// REQUESTS_CA_BUNDLE / SSL_CERT_FILE all point at it), so we
-	// re-create it inside an empty tmpfs that overlays the real dir
-	// for this mnt ns only — the parent's view is untouched.
-	//
-	// Effect: an agent inside `clawpatrol run` can read its own env
-	// vars and ca.crt but cannot exfiltrate the tsnet auth key to
-	// another machine. The host-side bearer is bound to "code running
-	// on this physical machine," not "anyone who copies the file."
-	clawDir := defaultClawpatrolDir()
-	caBytes, _ := os.ReadFile(filepath.Join(clawDir, "ca.crt"))
-	if err := unix.Mount("tmpfs", clawDir, "tmpfs", 0, "mode=0755"); err != nil {
-		fail("mask clawpatrol dir: %v", err)
-	}
-	if len(caBytes) > 0 {
-		if err := os.WriteFile(filepath.Join(clawDir, "ca.crt"), caBytes, 0o644); err != nil {
-			fail("rewrite ca.crt in masked dir: %v", err)
-		}
-	}
+	// The agent runs as the same uid as the parent and can therefore
+	// read anything the parent can; the daemon owns the tsnet auth
+	// key (stored under $XDG_STATE_HOME/clawpatrol/) and never hands
+	// it back. PR_SET_DUMPABLE in the parent still closes the
+	// ptrace_scope=0 /proc memory bypass; nothing else is hidden from
+	// the agent at this layer.
 
 	autoExpose := os.Getenv(runNoAutoExposeEnv) != "1"
 	if autoExpose {
