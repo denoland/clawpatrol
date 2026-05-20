@@ -295,12 +295,29 @@ func startTsnetProxy(authKey: String, controlURL: String, gwHost: String, gwPort
         if let err = err { fail("loadAll: \(err)") }
         let existing = managers?.first(where: { $0.localizedDescription == proxyProfileName })
         let manager = existing ?? NETransparentProxyManager()
+        // Auth-key handling: if the caller passed an explicit authKey
+        // (join-time bootstrap from /api/onboard/poll), use it. If the
+        // arg is empty (subsequent `clawpatrol run` invocations), reuse
+        // whatever's already in the persisted providerConfiguration —
+        // NETransparentProxyManager preferences store it system-side
+        // outside the user's home dir, so the user-side CLI never has
+        // to keep a copy. Failing here means the user never ran
+        // `clawpatrol join` (no stored config) or the system wiped the
+        // VPN profile.
+        let existingCfg = (existing?.protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration
+        let resolvedAuthKey: String = {
+            if !authKey.isEmpty { return authKey }
+            return (existingCfg?["tsnet-auth-key"] as? String) ?? ""
+        }()
+        if resolvedAuthKey.isEmpty {
+            fail("start-tsnet: no auth key supplied and none stored — re-run `clawpatrol join`")
+        }
         let proto = NETunnelProviderProtocol()
         proto.providerBundleIdentifier = extBundleID
         proto.serverAddress = "clawpatrol-gateway"
         proto.providerConfiguration = [
             "mode": "tailscale",
-            "tsnet-auth-key": authKey,
+            "tsnet-auth-key": resolvedAuthKey,
             "tsnet-control-url": controlURL,
             "tsnet-gateway-host": gwHost,
             "tsnet-gateway-port": gwPort,
