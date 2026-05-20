@@ -192,6 +192,17 @@ func runRunTsnet(args []string) {
 		}
 		fail("clone: %v\n  hint: this distro may have unprivileged user namespaces disabled.\n  enable: sudo sysctl -w kernel.unprivileged_userns_clone=1", err)
 	}
+	// Now that the child has been cloned (which AppArmor's
+	// restrict-unprivileged-userns hook would deny if the parent were
+	// already non-dumpable), lock the parent down. Closes the
+	// /proc/<parent_pid>/{root,mem} bypass on ptrace_scope=0 systems.
+	// The child hasn't exec'd the agent yet — it's blocked on wgUpR
+	// waiting for our signal — so there's no window for the agent to
+	// read parent state before this prctl lands.
+	if err := hideParentFromAgent(); err != nil {
+		_ = child.Process.Kill()
+		fail("PR_SET_DUMPABLE: %v", err)
+	}
 	_ = cSock.Close()
 	_ = wgUpR.Close()
 
