@@ -78,8 +78,26 @@ var envPushdownGatewayFetcher = fetchEnvPushdownFromGateway
 // callers surface the error so the operator knows their agents
 // won't get the placeholder tokens.
 func envPushdownVars(caPath string) ([]pushdownEnvVar, error) {
-	var out []pushdownEnvVar
-	for _, k := range []string{
+	out := caPathPushdownVars(caPath)
+	vars, err := envPushdownGatewayFetcher(filepath.Dir(caPath))
+	if err != nil {
+		return out, err
+	}
+	return append(out, vars...), nil
+}
+
+// caPathPushdownVars returns the CA-bundle env vars every wrapped
+// agent needs (SSL_CERT_FILE, NODE_EXTRA_CA_CERTS, etc.), each
+// pointing at caPath. These are client-side — the gateway doesn't
+// know the client's filesystem layout, so they are never returned
+// by /api/env-pushdown.
+//
+// Exposed within the package so the Linux daemon-routed path
+// (`clawpatrol run` → daemon control socket) can combine these
+// with the gateway-fetched vars the daemon ships back, instead
+// of re-implementing the list.
+func caPathPushdownVars(caPath string) []pushdownEnvVar {
+	keys := []string{
 		"SSL_CERT_FILE",
 		"NODE_EXTRA_CA_CERTS",
 		"REQUESTS_CA_BUNDLE",
@@ -87,14 +105,12 @@ func envPushdownVars(caPath string) ([]pushdownEnvVar, error) {
 		"GIT_SSL_CAINFO",
 		"DENO_CERT",
 		"PIP_CERT",
-	} {
+	}
+	out := make([]pushdownEnvVar, 0, len(keys))
+	for _, k := range keys {
 		out = append(out, pushdownEnvVar{Name: k, Value: caPath})
 	}
-	vars, err := envPushdownGatewayFetcher(filepath.Dir(caPath))
-	if err != nil {
-		return out, err
-	}
-	return append(out, vars...), nil
+	return out
 }
 
 // gatewayDialOverride lets callers (e.g. clawpatrol run in tsnet mode)

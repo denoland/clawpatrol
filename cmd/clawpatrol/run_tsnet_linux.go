@@ -36,6 +36,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -100,7 +101,19 @@ func runRunTsnet(args []string) {
 		fmt.Fprintf(os.Stderr, "clawpatrol: daemon: %s\n", daemonWarn)
 	}
 	_ = os.Setenv("CLAWPATROL_TS_ADDR", tsIP.String())
-	applyEnvPushdownVars(envVars)
+
+	// envVars from the daemon are only the gateway-fetched
+	// push-down vars — the daemon doesn't know the client's
+	// filesystem layout, so the CA-bundle vars (SSL_CERT_FILE,
+	// NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE,
+	// GIT_SSL_CAINFO, DENO_CERT, PIP_CERT) have to be added here.
+	// Without these, the wrapped agent's HTTPS client (python
+	// requests, node fetch, etc.) skips our MITM CA, sees the
+	// gateway's mint as untrusted, and either fails the handshake
+	// or falls back to its own bundle (which doesn't have our CA).
+	caPath := filepath.Join(defaultClawpatrolDir(), "ca.crt")
+	allVars := append(caPathPushdownVars(caPath), envVars...)
+	applyEnvPushdownVars(allVars)
 
 	// 3. IPC channels for the child: TUN fd handoff + wg-up pipe
 	// (same plumbing as WG mode).
