@@ -15,7 +15,7 @@
   },
   "policy": {
     "approvers": {
-      "billing": {
+      "human_approver.billing": {
         "body": {
           "Channel": "#billing-approvals",
           "Credential": "",
@@ -27,7 +27,7 @@
         },
         "type": "human_approver"
       },
-      "billing-strict": {
+      "human_approver.billing-strict": {
         "body": {
           "Channel": "#billing-approvals",
           "Credential": "",
@@ -39,7 +39,7 @@
         },
         "type": "human_approver"
       },
-      "console-dba": {
+      "human_approver.console-dba": {
         "body": {
           "Channel": "#db-approvals",
           "Credential": "",
@@ -51,15 +51,7 @@
         },
         "type": "human_approver"
       },
-      "k8s-exec-content-judge": {
-        "body": {
-          "Model": "claude-haiku-4-5-20251001",
-          "Credential": "anthropic-ops",
-          "Policy": "Inspect the kubectl exec command (each ?command= argv element).\nDeny if it dumps env vars (env, printenv, set, export, cat\n/proc/*/environ). Deny if it reads sensitive host-mount files\n(kubelet pod tokens, certs, private keys, kubeconfig,\n/etc/shadow, containerd/CRI sockets). Allow ls, ps, df, ip, ss,\nmount, dmesg, top, and apt-get install for debugging.\n"
-        },
-        "type": "llm_approver"
-      },
-      "notion-archive": {
+      "human_approver.notion-archive": {
         "body": {
           "Channel": "#notion-approvals",
           "Credential": "",
@@ -71,7 +63,7 @@
         },
         "type": "human_approver"
       },
-      "observability": {
+      "human_approver.observability": {
         "body": {
           "Channel": "#observability",
           "Credential": "",
@@ -83,31 +75,7 @@
         },
         "type": "human_approver"
       },
-      "pg-secret-columns-judge": {
-        "body": {
-          "Model": "claude-haiku-4-5-20251001",
-          "Credential": "anthropic-ops",
-          "Policy": "Deny if the SELECT projects (directly, via *, or via aggregates\nlike json_agg / encode) any of:\n  - github_identities.access_token or .refresh_token\n  - tokens.hash\n  - email_confirmations.token\n  - authorizations.exchange_token, .code, .challenge\n  - domain_certificates.private_key\n  - database_instances.certificate\n  - database_instances.connection_config password / secret keys\n  - env_vars.value when is_secret = true (allow when restricted\n    to is_secret = false explicitly)\nAllow reads of every other column.\n"
-        },
-        "type": "llm_approver"
-      },
-      "pg-secret-named-defense-judge": {
-        "body": {
-          "Model": "claude-haiku-4-5-20251001",
-          "Credential": "anthropic-ops",
-          "Policy": "Decide whether this SELECT actually returns secret data — i.e.\nit projects or aggregates a column whose name suggests a secret.\nApprove if the secret-named identifier appears only as a string\nliteral or in a non-projected predicate.\n"
-        },
-        "type": "llm_approver"
-      },
-      "reply-content-judge": {
-        "body": {
-          "Model": "claude-sonnet-4-20250514",
-          "Credential": "anthropic-ops",
-          "Policy": "The JSON body has a `body` field containing a customer support\nreply. Apply these checks in order; deny on the first failure.\n\n  (1) Salutation: deny if first line is a salutation. System\n      auto-prepends \"Hi <name>,\". Apology / acknowledgment /\n      substantive openers are fine.\n  (2) Sign-off: deny if the very last line is a standalone\n      sign-off. System auto-appends sign-off automatically.\n  (3) Markdown: deny **bold**, __bold__, *italic*, _italic_,\n      [text](url), # headings, --- / *** rules.\n  (4) Content: deny offensive / abusive / impersonating /\n      account-harming / empty / nonsensical content.\n"
-        },
-        "type": "llm_approver"
-      },
-      "scheduler-ops": {
+      "human_approver.scheduler-ops": {
         "body": {
           "Channel": "#db-approvals",
           "Credential": "",
@@ -119,15 +87,7 @@
         },
         "type": "human_approver"
       },
-      "slack-block-kit-shape-judge": {
-        "body": {
-          "Model": "claude-sonnet-4-20250514",
-          "Credential": "anthropic-ops",
-          "Policy": "The chat.postMessage body has a Block Kit message containing one\nor more buttons whose action_id starts with \"approve_reply_\". The\nreviewer in Slack must see what they're approving, and that text\nwill be sent as plain-text email. Approve only if all of:\n\n  1. A \"Draft Reply\" header block precedes the actions block.\n  2. The next section block has non-empty text.\n  3. After stripping leading/trailing ``` fences, that section\n     text equals the button's `value` exactly.\n  4. The button `value` contains no markdown — no [text](url),\n     **bold**, __bold__, # heading, --- or *** rules.\n\nOtherwise DENY with a precise reason.\n"
-        },
-        "type": "llm_approver"
-      },
-      "support-ops": {
+      "human_approver.support-ops": {
         "body": {
           "Channel": "#support",
           "Credential": "",
@@ -138,242 +98,264 @@
           "Message": ""
         },
         "type": "human_approver"
+      },
+      "llm_approver.k8s-exec-content-judge": {
+        "body": {
+          "Model": "claude-haiku-4-5-20251001",
+          "Credential": "anthropic_oauth_subscription.anthropic-ops",
+          "Policy": "k8s-exec-content"
+        },
+        "type": "llm_approver"
+      },
+      "llm_approver.pg-secret-columns-judge": {
+        "body": {
+          "Model": "claude-haiku-4-5-20251001",
+          "Credential": "anthropic_oauth_subscription.anthropic-ops",
+          "Policy": "pg-secret-columns"
+        },
+        "type": "llm_approver"
+      },
+      "llm_approver.pg-secret-named-defense-judge": {
+        "body": {
+          "Model": "claude-haiku-4-5-20251001",
+          "Credential": "anthropic_oauth_subscription.anthropic-ops",
+          "Policy": "pg-secret-named-defense"
+        },
+        "type": "llm_approver"
+      },
+      "llm_approver.reply-content-judge": {
+        "body": {
+          "Model": "claude-sonnet-4-20250514",
+          "Credential": "anthropic_oauth_subscription.anthropic-ops",
+          "Policy": "reply-content"
+        },
+        "type": "llm_approver"
+      },
+      "llm_approver.slack-block-kit-shape-judge": {
+        "body": {
+          "Model": "claude-sonnet-4-20250514",
+          "Credential": "anthropic_oauth_subscription.anthropic-ops",
+          "Policy": "slack-block-kit-shape"
+        },
+        "type": "llm_approver"
       }
     },
     "credentials": {
-      "amem-alice": {
+      "anthropic_manual_key.anthropic-ops-key": {
+        "body": {},
+        "endpoint": "https.anthropic-ops",
+        "type": "anthropic_manual_key"
+      },
+      "anthropic_oauth_subscription.anthropic-ops": {
+        "body": {},
+        "endpoint": "https.anthropic-ops",
+        "type": "anthropic_oauth_subscription"
+      },
+      "aws_credential.k8s-eks-corp": {
+        "body": {},
+        "endpoint": "kubernetes.k8s-eks-corp-prod",
+        "type": "aws_credential"
+      },
+      "bearer_token.amem-alice": {
         "body": {
           "IdempotencyKey": false
         },
-        "endpoint": "amem",
+        "endpoint": "https.amem",
         "type": "bearer_token"
       },
-      "anthropic-ops": {
-        "body": {},
-        "endpoint": "anthropic-ops",
-        "type": "anthropic_oauth_subscription"
+      "bearer_token.checkly-alice": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "endpoint": "https.checkly",
+        "type": "bearer_token"
       },
-      "anthropic-ops-key": {
-        "body": {},
-        "endpoint": "anthropic-ops",
-        "type": "anthropic_manual_key"
+      "bearer_token.github-alice": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "endpoint": "https.github",
+        "type": "bearer_token"
       },
-      "ch-o11y": {
+      "bearer_token.github-bob": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "endpoint": "https.github",
+        "type": "bearer_token"
+      },
+      "bearer_token.github-ops": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "endpoint": "https.github",
+        "type": "bearer_token"
+      },
+      "bearer_token.grafana": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "endpoint": "https.grafana",
+        "type": "bearer_token"
+      },
+      "bearer_token.helpdesk-alice": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "endpoint": "https.helpdesk",
+        "type": "bearer_token"
+      },
+      "bearer_token.orb-prod": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "endpoint": "https.orb",
+        "type": "bearer_token"
+      },
+      "bearer_token.orb-test": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "endpoint": "https.orb",
+        "type": "bearer_token"
+      },
+      "bearer_token.posthog-alice": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "endpoint": "https.posthog",
+        "type": "bearer_token"
+      },
+      "bearer_token.smithery-alice": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "endpoint": "https.smithery",
+        "type": "bearer_token"
+      },
+      "bearer_token.stripe-live": {
+        "body": {
+          "IdempotencyKey": true
+        },
+        "endpoint": "https.stripe",
+        "type": "bearer_token"
+      },
+      "clickhouse_credential.ch-o11y": {
         "body": {
           "User": "ops",
           "Database": ""
         },
         "endpoints": [
-          "ch-o11y-https",
-          "ch-o11y-native"
+          "clickhouse_https.ch-o11y-https",
+          "clickhouse_native.ch-o11y-native"
         ],
         "type": "clickhouse_credential"
       },
-      "checkly-alice": {
+      "cookie_token.support-console": {
         "body": {
-          "IdempotencyKey": false
+          "CookieName": "session"
         },
-        "endpoint": "checkly",
-        "type": "bearer_token"
+        "endpoint": "https.support-console",
+        "type": "cookie_token"
       },
-      "gemini-bob": {
+      "gemini_api_key.gemini-bob": {
         "body": {},
-        "endpoint": "gemini",
+        "endpoint": "https.gemini",
         "type": "gemini_api_key"
       },
-      "github-alice": {
-        "body": {
-          "IdempotencyKey": false
-        },
-        "endpoint": "github",
-        "type": "bearer_token"
-      },
-      "github-bob": {
-        "body": {
-          "IdempotencyKey": false
-        },
-        "endpoint": "github",
-        "type": "bearer_token"
-      },
-      "github-ops": {
-        "body": {
-          "IdempotencyKey": false
-        },
-        "endpoint": "github",
-        "type": "bearer_token"
-      },
-      "grafana": {
-        "body": {
-          "IdempotencyKey": false
-        },
-        "endpoint": "grafana",
-        "type": "bearer_token"
-      },
-      "helpdesk-alice": {
-        "body": {
-          "IdempotencyKey": false
-        },
-        "endpoint": "helpdesk",
-        "type": "bearer_token"
-      },
-      "honeycomb-alice": {
+      "header_token.honeycomb-alice": {
         "body": {
           "Header": "x-honeycomb-team",
           "Prefix": ""
         },
-        "endpoint": "honeycomb",
+        "endpoint": "https.honeycomb",
         "type": "header_token"
       },
-      "k8s-dev-iad": {
-        "body": {},
-        "endpoint": "k8s-dev-iad",
-        "type": "mtls_credential"
-      },
-      "k8s-dev-sfo": {
-        "body": {},
-        "endpoint": "k8s-dev-sfo",
-        "type": "mtls_credential"
-      },
-      "k8s-eks-corp": {
-        "body": {},
-        "endpoint": "k8s-eks-corp-prod",
-        "type": "aws_credential"
-      },
-      "notion-corp": {
-        "body": {},
-        "endpoint": "notion",
-        "type": "notion_oauth"
-      },
-      "openai-codex-bob": {
-        "body": {},
-        "endpoint": "openai-codex",
-        "type": "openai_codex_oauth"
-      },
-      "openai-codex-carol": {
-        "body": {},
-        "endpoint": "openai-codex",
-        "type": "openai_codex_oauth"
-      },
-      "orb-prod": {
-        "body": {
-          "IdempotencyKey": false
-        },
-        "endpoint": "orb",
-        "type": "bearer_token"
-      },
-      "orb-test": {
-        "body": {
-          "IdempotencyKey": false
-        },
-        "endpoint": "orb",
-        "type": "bearer_token"
-      },
-      "pagerduty-alice": {
+      "header_token.pagerduty-alice": {
         "body": {
           "Header": "authorization",
           "Prefix": "Token token="
         },
-        "endpoint": "pagerduty",
+        "endpoint": "https.pagerduty",
         "type": "header_token"
       },
-      "pg-corp-ro": {
+      "mtls_credential.k8s-dev-iad": {
+        "body": {},
+        "endpoint": "kubernetes.k8s-dev-iad",
+        "type": "mtls_credential"
+      },
+      "mtls_credential.k8s-dev-sfo": {
+        "body": {},
+        "endpoint": "kubernetes.k8s-dev-sfo",
+        "type": "mtls_credential"
+      },
+      "notion_oauth.notion-corp": {
+        "body": {},
+        "endpoint": "https.notion",
+        "type": "notion_oauth"
+      },
+      "openai_codex_oauth.openai-codex-bob": {
+        "body": {},
+        "endpoint": "https.openai-codex",
+        "type": "openai_codex_oauth"
+      },
+      "openai_codex_oauth.openai-codex-carol": {
+        "body": {},
+        "endpoint": "https.openai-codex",
+        "type": "openai_codex_oauth"
+      },
+      "postgres_credential.pg-corp-ro": {
         "body": {
           "User": "corp_ro",
           "Database": ""
         },
-        "endpoint": "pg-corp",
+        "endpoint": "postgres.pg-corp",
         "type": "postgres_credential"
       },
-      "pg-corp-rw": {
+      "postgres_credential.pg-corp-rw": {
         "body": {
           "User": "corp_rw",
           "Database": ""
         },
-        "endpoint": "pg-corp",
+        "endpoint": "postgres.pg-corp",
         "type": "postgres_credential"
       },
-      "pg-scheduler": {
+      "postgres_credential.pg-scheduler": {
         "body": {
           "User": "scheduler",
           "Database": ""
         },
-        "endpoint": "pg-scheduler",
+        "endpoint": "postgres.pg-scheduler",
         "type": "postgres_credential"
       },
-      "posthog-alice": {
-        "body": {
-          "IdempotencyKey": false
-        },
-        "endpoint": "posthog",
-        "type": "bearer_token"
-      },
-      "slack-alice": {
+      "slack_tokens.slack-alice": {
         "body": {},
-        "endpoint": "slack",
+        "endpoint": "https.slack",
         "type": "slack_tokens"
       },
-      "slack-bob": {
+      "slack_tokens.slack-bob": {
         "body": {},
-        "endpoint": "slack",
+        "endpoint": "https.slack",
         "type": "slack_tokens"
       },
-      "slack-ops": {
+      "slack_tokens.slack-ops": {
         "body": {},
-        "endpoint": "slack",
+        "endpoint": "https.slack",
         "type": "slack_tokens"
       },
-      "smithery-alice": {
-        "body": {
-          "IdempotencyKey": false
-        },
-        "endpoint": "smithery",
-        "type": "bearer_token"
-      },
-      "stripe-live": {
-        "body": {
-          "IdempotencyKey": true
-        },
-        "endpoint": "stripe",
-        "type": "bearer_token"
-      },
-      "support-console": {
-        "body": {
-          "CookieName": "session"
-        },
-        "endpoint": "support-console",
-        "type": "cookie_token"
-      },
-      "telegram-bob": {
+      "telegram_bot_token.telegram-bob": {
         "body": {},
-        "endpoint": "telegram",
+        "endpoint": "https.telegram",
         "type": "telegram_bot_token"
       },
-      "telegram-carol": {
+      "telegram_bot_token.telegram-carol": {
         "body": {},
-        "endpoint": "telegram",
+        "endpoint": "https.telegram",
         "type": "telegram_bot_token"
       }
     },
     "endpoints": {
-      "amem": {
-        "body": {
-          "Hosts": [
-            "api.amem.ai"
-          ]
-        },
-        "family": "http",
-        "type": "https"
-      },
-      "anthropic-ops": {
-        "body": {
-          "Hosts": [
-            "api.anthropic.com"
-          ]
-        },
-        "family": "http",
-        "type": "https"
-      },
-      "ch-o11y-https": {
+      "clickhouse_https.ch-o11y-https": {
         "body": {
           "Hosts": [
             "clickhouse-o11y.example",
@@ -383,7 +365,7 @@
         "family": "sql",
         "type": "clickhouse_https"
       },
-      "ch-o11y-native": {
+      "clickhouse_native.ch-o11y-native": {
         "body": {
           "Hosts": [
             "clickhouse-o11y.example"
@@ -395,7 +377,25 @@
         "family": "sql",
         "type": "clickhouse_native"
       },
-      "checkly": {
+      "https.amem": {
+        "body": {
+          "Hosts": [
+            "api.amem.ai"
+          ]
+        },
+        "family": "http",
+        "type": "https"
+      },
+      "https.anthropic-ops": {
+        "body": {
+          "Hosts": [
+            "api.anthropic.com"
+          ]
+        },
+        "family": "http",
+        "type": "https"
+      },
+      "https.checkly": {
         "body": {
           "Hosts": [
             "api.checklyhq.com"
@@ -404,7 +404,7 @@
         "family": "http",
         "type": "https"
       },
-      "gemini": {
+      "https.gemini": {
         "body": {
           "Hosts": [
             "generativelanguage.googleapis.com"
@@ -413,7 +413,7 @@
         "family": "http",
         "type": "https"
       },
-      "github": {
+      "https.github": {
         "body": {
           "Hosts": [
             "api.github.com",
@@ -423,7 +423,7 @@
         "family": "http",
         "type": "https"
       },
-      "grafana": {
+      "https.grafana": {
         "body": {
           "Hosts": [
             "grafana.example.com"
@@ -432,7 +432,7 @@
         "family": "http",
         "type": "https"
       },
-      "helpdesk": {
+      "https.helpdesk": {
         "body": {
           "Hosts": [
             "helpdesk.example.com"
@@ -441,7 +441,7 @@
         "family": "http",
         "type": "https"
       },
-      "honeycomb": {
+      "https.honeycomb": {
         "body": {
           "Hosts": [
             "api.honeycomb.io"
@@ -450,7 +450,102 @@
         "family": "http",
         "type": "https"
       },
-      "k8s-dev-iad": {
+      "https.notion": {
+        "body": {
+          "Hosts": [
+            "api.notion.com",
+            "mcp.notion.com"
+          ]
+        },
+        "family": "http",
+        "type": "https"
+      },
+      "https.openai-codex": {
+        "body": {
+          "Hosts": [
+            "chatgpt.com",
+            "auth.openai.com"
+          ]
+        },
+        "family": "http",
+        "type": "https"
+      },
+      "https.orb": {
+        "body": {
+          "Hosts": [
+            "api.withorb.com"
+          ]
+        },
+        "family": "http",
+        "type": "https"
+      },
+      "https.pagerduty": {
+        "body": {
+          "Hosts": [
+            "api.pagerduty.com"
+          ]
+        },
+        "family": "http",
+        "type": "https"
+      },
+      "https.posthog": {
+        "body": {
+          "Hosts": [
+            "us.i.posthog.com",
+            "us.posthog.com"
+          ]
+        },
+        "family": "http",
+        "type": "https"
+      },
+      "https.slack": {
+        "body": {
+          "Hosts": [
+            "slack.com",
+            "www.slack.com",
+            "api.slack.com"
+          ]
+        },
+        "family": "http",
+        "type": "https"
+      },
+      "https.smithery": {
+        "body": {
+          "Hosts": [
+            "smithery.ai"
+          ]
+        },
+        "family": "http",
+        "type": "https"
+      },
+      "https.stripe": {
+        "body": {
+          "Hosts": [
+            "api.stripe.com"
+          ]
+        },
+        "family": "http",
+        "type": "https"
+      },
+      "https.support-console": {
+        "body": {
+          "Hosts": [
+            "admin.example.com"
+          ]
+        },
+        "family": "http",
+        "type": "https"
+      },
+      "https.telegram": {
+        "body": {
+          "Hosts": [
+            "api.telegram.org"
+          ]
+        },
+        "family": "http",
+        "type": "https"
+      },
+      "kubernetes.k8s-dev-iad": {
         "body": {
           "Hosts": null,
           "Server": "198.51.100.10",
@@ -462,7 +557,7 @@
         "family": "k8s",
         "type": "kubernetes"
       },
-      "k8s-dev-sfo": {
+      "kubernetes.k8s-dev-sfo": {
         "body": {
           "Hosts": null,
           "Server": "198.51.100.20",
@@ -474,7 +569,7 @@
         "family": "k8s",
         "type": "kubernetes"
       },
-      "k8s-eks-corp-prod": {
+      "kubernetes.k8s-eks-corp-prod": {
         "body": {
           "Hosts": [
             "*.gr7.us-east-2.eks.amazonaws.com"
@@ -488,45 +583,7 @@
         "family": "k8s",
         "type": "kubernetes"
       },
-      "notion": {
-        "body": {
-          "Hosts": [
-            "api.notion.com",
-            "mcp.notion.com"
-          ]
-        },
-        "family": "http",
-        "type": "https"
-      },
-      "openai-codex": {
-        "body": {
-          "Hosts": [
-            "chatgpt.com",
-            "auth.openai.com"
-          ]
-        },
-        "family": "http",
-        "type": "https"
-      },
-      "orb": {
-        "body": {
-          "Hosts": [
-            "api.withorb.com"
-          ]
-        },
-        "family": "http",
-        "type": "https"
-      },
-      "pagerduty": {
-        "body": {
-          "Hosts": [
-            "api.pagerduty.com"
-          ]
-        },
-        "family": "http",
-        "type": "https"
-      },
-      "pg-corp": {
+      "postgres.pg-corp": {
         "body": {
           "Host": "corp-prod.cluster.example:5432",
           "SSLMode": ""
@@ -534,142 +591,85 @@
         "family": "sql",
         "type": "postgres"
       },
-      "pg-scheduler": {
+      "postgres.pg-scheduler": {
         "body": {
           "Host": "scheduler-prod.cluster.example:5432",
           "SSLMode": ""
         },
         "family": "sql",
         "type": "postgres"
-      },
-      "posthog": {
-        "body": {
-          "Hosts": [
-            "us.i.posthog.com",
-            "us.posthog.com"
-          ]
-        },
-        "family": "http",
-        "type": "https"
-      },
-      "slack": {
-        "body": {
-          "Hosts": [
-            "slack.com",
-            "www.slack.com",
-            "api.slack.com"
-          ]
-        },
-        "family": "http",
-        "type": "https"
-      },
-      "smithery": {
-        "body": {
-          "Hosts": [
-            "smithery.ai"
-          ]
-        },
-        "family": "http",
-        "type": "https"
-      },
-      "stripe": {
-        "body": {
-          "Hosts": [
-            "api.stripe.com"
-          ]
-        },
-        "family": "http",
-        "type": "https"
-      },
-      "support-console": {
-        "body": {
-          "Hosts": [
-            "admin.example.com"
-          ]
-        },
-        "family": "http",
-        "type": "https"
-      },
-      "telegram": {
-        "body": {
-          "Hosts": [
-            "api.telegram.org"
-          ]
-        },
-        "family": "http",
-        "type": "https"
       }
     },
     "profiles": {
       "alice": {
         "credentials": [
-          "github-alice",
-          "slack-alice",
-          "telegram-carol",
-          "openai-codex-carol",
-          "notion-corp",
-          "grafana",
-          "ch-o11y",
-          "k8s-dev-iad",
-          "k8s-dev-sfo",
-          "smithery-alice",
-          "amem-alice",
-          "checkly-alice",
-          "posthog-alice",
-          "honeycomb-alice",
-          "pagerduty-alice",
-          "helpdesk-alice"
+          "bearer_token.github-alice",
+          "slack_tokens.slack-alice",
+          "telegram_bot_token.telegram-carol",
+          "openai_codex_oauth.openai-codex-carol",
+          "notion_oauth.notion-corp",
+          "bearer_token.grafana",
+          "clickhouse_credential.ch-o11y",
+          "mtls_credential.k8s-dev-iad",
+          "mtls_credential.k8s-dev-sfo",
+          "bearer_token.smithery-alice",
+          "bearer_token.amem-alice",
+          "bearer_token.checkly-alice",
+          "bearer_token.posthog-alice",
+          "header_token.honeycomb-alice",
+          "header_token.pagerduty-alice",
+          "bearer_token.helpdesk-alice"
         ]
       },
       "bob": {
         "credentials": [
-          "github-bob",
-          "slack-bob",
-          "telegram-bob",
-          "gemini-bob",
-          "openai-codex-bob",
-          "openai-codex-carol"
+          "bearer_token.github-bob",
+          "slack_tokens.slack-bob",
+          "telegram_bot_token.telegram-bob",
+          "gemini_api_key.gemini-bob",
+          "openai_codex_oauth.openai-codex-bob",
+          "openai_codex_oauth.openai-codex-carol"
         ],
         "disambiguators": {
-          "openai-codex-bob": {
+          "openai_codex_oauth.openai-codex-bob": {
             "placeholder": "PH_openai_codex_bob"
           },
-          "openai-codex-carol": {
+          "openai_codex_oauth.openai-codex-carol": {
             "placeholder": "PH_openai_codex_carol"
           }
         }
       },
       "ops": {
         "credentials": [
-          "anthropic-ops-key",
-          "anthropic-ops",
-          "github-ops",
-          "slack-ops",
-          "support-console",
-          "stripe-live",
-          "orb-test",
-          "orb-prod",
-          "notion-corp",
-          "grafana",
-          "pg-corp-ro",
-          "pg-corp-rw",
-          "pg-scheduler",
-          "k8s-dev-iad",
-          "k8s-dev-sfo",
-          "k8s-eks-corp",
-          "ch-o11y"
+          "anthropic_manual_key.anthropic-ops-key",
+          "anthropic_oauth_subscription.anthropic-ops",
+          "bearer_token.github-ops",
+          "slack_tokens.slack-ops",
+          "cookie_token.support-console",
+          "bearer_token.stripe-live",
+          "bearer_token.orb-test",
+          "bearer_token.orb-prod",
+          "notion_oauth.notion-corp",
+          "bearer_token.grafana",
+          "postgres_credential.pg-corp-ro",
+          "postgres_credential.pg-corp-rw",
+          "postgres_credential.pg-scheduler",
+          "mtls_credential.k8s-dev-iad",
+          "mtls_credential.k8s-dev-sfo",
+          "aws_credential.k8s-eks-corp",
+          "clickhouse_credential.ch-o11y"
         ],
         "disambiguators": {
-          "anthropic-ops": {
-            "placeholder": "PH_anthropic_ops_subscription"
-          },
-          "anthropic-ops-key": {
+          "anthropic_manual_key.anthropic-ops-key": {
             "placeholder": "PH_anthropic_ops_apikey"
           },
-          "orb-prod": {
+          "anthropic_oauth_subscription.anthropic-ops": {
+            "placeholder": "PH_anthropic_ops_subscription"
+          },
+          "bearer_token.orb-prod": {
             "placeholder": "PH_orb_prod"
           },
-          "orb-test": {
+          "bearer_token.orb-test": {
             "placeholder": "PH_orb_test"
           }
         }
@@ -681,8 +681,8 @@
           "name": "clickhouse-default",
           "family": "sql",
           "endpoints": [
-            "ch-o11y-https",
-            "ch-o11y-native"
+            "clickhouse_https.ch-o11y-https",
+            "clickhouse_native.ch-o11y-native"
           ],
           "priority": -100,
           "verdict": "deny",
@@ -694,8 +694,8 @@
           "name": "clickhouse-reads",
           "family": "sql",
           "endpoints": [
-            "ch-o11y-https",
-            "ch-o11y-native"
+            "clickhouse_https.ch-o11y-https",
+            "clickhouse_native.ch-o11y-native"
           ],
           "condition": "sql.verb in ['select', 'show', 'describe', 'explain', 'use']",
           "verdict": "allow"
@@ -706,7 +706,7 @@
           "name": "grafana-annotations-snapshots",
           "family": "http",
           "endpoints": [
-            "grafana"
+            "https.grafana"
           ],
           "condition": "http.method == 'POST' && http.path in ['/api/annotations', '/api/snapshots']",
           "verdict": "allow"
@@ -717,12 +717,12 @@
           "name": "grafana-dashboard-writes",
           "family": "http",
           "endpoints": [
-            "grafana"
+            "https.grafana"
           ],
           "condition": "http.method in ['POST', 'PUT', 'PATCH'] && (http.path.startsWith('/api/dashboards/') || http.path.startsWith('/api/datasources/') || http.path.startsWith('/api/folders/') || http.path.startsWith('/api/alert-rules/'))",
           "approve": [
             {
-              "name": "observability"
+              "name": "human_approver.observability"
             }
           ]
         }
@@ -732,7 +732,7 @@
           "name": "grafana-no-destructive-deletes",
           "family": "http",
           "endpoints": [
-            "grafana"
+            "https.grafana"
           ],
           "condition": "http.method == 'DELETE' && (http.path.startsWith('/api/dashboards/') || http.path.startsWith('/api/datasources/') || http.path.startsWith('/api/folders/') || http.path.startsWith('/api/alert-rules/'))",
           "verdict": "deny",
@@ -744,7 +744,7 @@
           "name": "grafana-reads",
           "family": "http",
           "endpoints": [
-            "grafana"
+            "https.grafana"
           ],
           "condition": "http.method in ['GET', 'HEAD']",
           "verdict": "allow"
@@ -755,9 +755,9 @@
           "name": "k8s-allow-meta",
           "family": "k8s",
           "endpoints": [
-            "k8s-dev-iad",
-            "k8s-dev-sfo",
-            "k8s-eks-corp-prod"
+            "kubernetes.k8s-dev-iad",
+            "kubernetes.k8s-dev-sfo",
+            "kubernetes.k8s-eks-corp-prod"
           ],
           "condition": "k8s.verb == 'meta'",
           "verdict": "allow"
@@ -768,9 +768,9 @@
           "name": "k8s-debug-pods",
           "family": "k8s",
           "endpoints": [
-            "k8s-dev-iad",
-            "k8s-dev-sfo",
-            "k8s-eks-corp-prod"
+            "kubernetes.k8s-dev-iad",
+            "kubernetes.k8s-dev-sfo",
+            "kubernetes.k8s-eks-corp-prod"
           ],
           "condition": "k8s.verb in ['create', 'delete'] && k8s.resource == 'pods' && k8s.name.startsWith('debug-')",
           "verdict": "allow"
@@ -781,7 +781,7 @@
           "name": "k8s-dev-iad-default",
           "family": "k8s",
           "endpoints": [
-            "k8s-dev-iad"
+            "kubernetes.k8s-dev-iad"
           ],
           "priority": -100,
           "verdict": "deny"
@@ -792,7 +792,7 @@
           "name": "k8s-dev-sfo-default",
           "family": "k8s",
           "endpoints": [
-            "k8s-dev-sfo"
+            "kubernetes.k8s-dev-sfo"
           ],
           "priority": -100,
           "verdict": "deny"
@@ -803,7 +803,7 @@
           "name": "k8s-eks-default",
           "family": "k8s",
           "endpoints": [
-            "k8s-eks-corp-prod"
+            "kubernetes.k8s-eks-corp-prod"
           ],
           "priority": -100,
           "verdict": "deny"
@@ -814,7 +814,7 @@
           "name": "k8s-eks-no-legacy-secret-configmaps",
           "family": "k8s",
           "endpoints": [
-            "k8s-eks-corp-prod"
+            "kubernetes.k8s-eks-corp-prod"
           ],
           "priority": 1000,
           "condition": "k8s.verb in ['get', 'list'] && k8s.resource == 'configmaps' && k8s.namespace == 'app' && (k8s.name.endsWith('-secrets') || k8s.name.startsWith('env-'))",
@@ -827,7 +827,7 @@
           "name": "k8s-eks-no-runtime-writes",
           "family": "k8s",
           "endpoints": [
-            "k8s-eks-corp-prod"
+            "kubernetes.k8s-eks-corp-prod"
           ],
           "priority": 1000,
           "condition": "k8s.verb in ['create', 'update', 'patch', 'delete'] && (k8s.namespace in ['app', 'kube-system', 'cert-manager', 'external-secrets', 'argocd'] || k8s.namespace.startsWith('flux'))",
@@ -840,9 +840,9 @@
           "name": "k8s-exec-attach",
           "family": "k8s",
           "endpoints": [
-            "k8s-dev-iad",
-            "k8s-dev-sfo",
-            "k8s-eks-corp-prod"
+            "kubernetes.k8s-dev-iad",
+            "kubernetes.k8s-dev-sfo",
+            "kubernetes.k8s-eks-corp-prod"
           ],
           "condition": "k8s.verb in ['create', 'get'] && k8s.resource in ['pods/exec', 'pods/attach', 'pods/portforward']",
           "verdict": "allow"
@@ -853,15 +853,15 @@
           "name": "k8s-exec-content-check",
           "family": "k8s",
           "endpoints": [
-            "k8s-dev-iad",
-            "k8s-dev-sfo",
-            "k8s-eks-corp-prod"
+            "kubernetes.k8s-dev-iad",
+            "kubernetes.k8s-dev-sfo",
+            "kubernetes.k8s-eks-corp-prod"
           ],
           "priority": 500,
           "condition": "k8s.resource == 'pods/exec'",
           "approve": [
             {
-              "name": "k8s-exec-content-judge"
+              "name": "llm_approver.k8s-exec-content-judge"
             }
           ]
         }
@@ -871,9 +871,9 @@
           "name": "k8s-no-disruptive",
           "family": "k8s",
           "endpoints": [
-            "k8s-dev-iad",
-            "k8s-dev-sfo",
-            "k8s-eks-corp-prod"
+            "kubernetes.k8s-dev-iad",
+            "kubernetes.k8s-dev-sfo",
+            "kubernetes.k8s-eks-corp-prod"
           ],
           "condition": "k8s.verb in ['drain', 'cordon', 'evict']",
           "verdict": "deny",
@@ -885,9 +885,9 @@
           "name": "k8s-no-interactive",
           "family": "k8s",
           "endpoints": [
-            "k8s-dev-iad",
-            "k8s-dev-sfo",
-            "k8s-eks-corp-prod"
+            "kubernetes.k8s-dev-iad",
+            "kubernetes.k8s-dev-sfo",
+            "kubernetes.k8s-eks-corp-prod"
           ],
           "priority": 1000,
           "condition": "k8s.resource in ['pods/exec', 'pods/attach'] && k8s.params.stdin == 'true'",
@@ -900,9 +900,9 @@
           "name": "k8s-no-mutations",
           "family": "k8s",
           "endpoints": [
-            "k8s-dev-iad",
-            "k8s-dev-sfo",
-            "k8s-eks-corp-prod"
+            "kubernetes.k8s-dev-iad",
+            "kubernetes.k8s-dev-sfo",
+            "kubernetes.k8s-eks-corp-prod"
           ],
           "condition": "k8s.verb in ['create', 'update', 'patch', 'delete'] && !k8s.name.startsWith('debug-') && !k8s.resource.endsWith('/exec') && !k8s.resource.endsWith('/attach') && !k8s.resource.endsWith('/portforward')",
           "verdict": "deny",
@@ -914,9 +914,9 @@
           "name": "k8s-no-portforward-non-debug",
           "family": "k8s",
           "endpoints": [
-            "k8s-dev-iad",
-            "k8s-dev-sfo",
-            "k8s-eks-corp-prod"
+            "kubernetes.k8s-dev-iad",
+            "kubernetes.k8s-dev-sfo",
+            "kubernetes.k8s-eks-corp-prod"
           ],
           "priority": 1000,
           "condition": "k8s.resource == 'pods/portforward' && !k8s.name.startsWith('debug-')",
@@ -929,9 +929,9 @@
           "name": "k8s-no-secrets",
           "family": "k8s",
           "endpoints": [
-            "k8s-dev-iad",
-            "k8s-dev-sfo",
-            "k8s-eks-corp-prod"
+            "kubernetes.k8s-dev-iad",
+            "kubernetes.k8s-dev-sfo",
+            "kubernetes.k8s-eks-corp-prod"
           ],
           "priority": 1000,
           "condition": "k8s.resource == 'secrets'",
@@ -944,9 +944,9 @@
           "name": "k8s-reads",
           "family": "k8s",
           "endpoints": [
-            "k8s-dev-iad",
-            "k8s-dev-sfo",
-            "k8s-eks-corp-prod"
+            "kubernetes.k8s-dev-iad",
+            "kubernetes.k8s-dev-sfo",
+            "kubernetes.k8s-eks-corp-prod"
           ],
           "condition": "k8s.verb in ['get', 'list', 'watch']",
           "verdict": "allow"
@@ -957,13 +957,13 @@
           "name": "notion-archive-route",
           "family": "http",
           "endpoints": [
-            "notion"
+            "https.notion"
           ],
           "priority": 100,
           "condition": "http.method == 'PATCH' && (http.path.startsWith('/v1/pages/') || http.path.startsWith('/v1/blocks/') || http.path.startsWith('/v1/databases/')) && http.body_json.archived == true",
           "approve": [
             {
-              "name": "notion-archive"
+              "name": "human_approver.notion-archive"
             }
           ]
         }
@@ -973,7 +973,7 @@
           "name": "notion-create-update",
           "family": "http",
           "endpoints": [
-            "notion"
+            "https.notion"
           ],
           "condition": "http.method in ['POST', 'PATCH']",
           "verdict": "allow"
@@ -984,12 +984,12 @@
           "name": "notion-deletes",
           "family": "http",
           "endpoints": [
-            "notion"
+            "https.notion"
           ],
           "condition": "http.method == 'DELETE'",
           "approve": [
             {
-              "name": "notion-archive"
+              "name": "human_approver.notion-archive"
             }
           ]
         }
@@ -999,7 +999,7 @@
           "name": "notion-reads",
           "family": "http",
           "endpoints": [
-            "notion"
+            "https.notion"
           ],
           "condition": "http.method in ['GET', 'HEAD']",
           "verdict": "allow"
@@ -1010,7 +1010,7 @@
           "name": "notion-search",
           "family": "http",
           "endpoints": [
-            "notion"
+            "https.notion"
           ],
           "condition": "http.method == 'POST' && http.path == '/v1/search'",
           "verdict": "allow"
@@ -1021,10 +1021,10 @@
           "name": "orb-prod-no-deletes",
           "family": "http",
           "endpoints": [
-            "orb"
+            "https.orb"
           ],
           "condition": "http.method == 'DELETE'",
-          "credential": "orb-prod",
+          "credential": "bearer_token.orb-prod",
           "verdict": "deny",
           "reason": "Orb deletes go through approval flow as POST"
         }
@@ -1034,10 +1034,10 @@
           "name": "orb-prod-reads",
           "family": "http",
           "endpoints": [
-            "orb"
+            "https.orb"
           ],
           "condition": "http.method == 'GET'",
-          "credential": "orb-prod",
+          "credential": "bearer_token.orb-prod",
           "verdict": "allow"
         }
       },
@@ -1046,13 +1046,13 @@
           "name": "orb-prod-writes",
           "family": "http",
           "endpoints": [
-            "orb"
+            "https.orb"
           ],
           "condition": "http.method in ['POST', 'PUT', 'PATCH']",
-          "credential": "orb-prod",
+          "credential": "bearer_token.orb-prod",
           "approve": [
             {
-              "name": "billing"
+              "name": "human_approver.billing"
             }
           ]
         }
@@ -1062,9 +1062,9 @@
           "name": "orb-test-allow-all",
           "family": "http",
           "endpoints": [
-            "orb"
+            "https.orb"
           ],
-          "credential": "orb-test",
+          "credential": "bearer_token.orb-test",
           "verdict": "allow"
         }
       },
@@ -1073,8 +1073,8 @@
           "name": "pg-banned-copy-from",
           "family": "sql",
           "endpoints": [
-            "pg-corp",
-            "pg-scheduler"
+            "postgres.pg-corp",
+            "postgres.pg-scheduler"
           ],
           "condition": "sql.statement.matches('(?is)copy.*from program')",
           "verdict": "deny",
@@ -1086,8 +1086,8 @@
           "name": "pg-banned-copy-to",
           "family": "sql",
           "endpoints": [
-            "pg-corp",
-            "pg-scheduler"
+            "postgres.pg-corp",
+            "postgres.pg-scheduler"
           ],
           "condition": "sql.statement.matches('(?is)copy.*to program')",
           "verdict": "deny",
@@ -1099,8 +1099,8 @@
           "name": "pg-banned-functions",
           "family": "sql",
           "endpoints": [
-            "pg-corp",
-            "pg-scheduler"
+            "postgres.pg-corp",
+            "postgres.pg-scheduler"
           ],
           "condition": "sets.intersects(sql.functions, ['pg_terminate_backend', 'pg_cancel_backend', 'pg_read_file', 'pg_read_binary_file', 'lo_get']) || sql.functions.exists(f, f.startsWith('dblink_'))",
           "verdict": "deny",
@@ -1112,8 +1112,8 @@
           "name": "pg-banned-verbs",
           "family": "sql",
           "endpoints": [
-            "pg-corp",
-            "pg-scheduler"
+            "postgres.pg-corp",
+            "postgres.pg-scheduler"
           ],
           "condition": "sql.verb in ['drop', 'truncate', 'alter', 'grant', 'revoke', 'vacuum', 'create', 'comment', 'do']",
           "verdict": "deny",
@@ -1125,7 +1125,7 @@
           "name": "pg-corp-default",
           "family": "sql",
           "endpoints": [
-            "pg-corp"
+            "postgres.pg-corp"
           ],
           "priority": -100,
           "verdict": "deny"
@@ -1136,7 +1136,7 @@
           "name": "pg-corp-reads",
           "family": "sql",
           "endpoints": [
-            "pg-corp"
+            "postgres.pg-corp"
           ],
           "condition": "sql.verb in ['select', 'show', 'explain']",
           "verdict": "allow"
@@ -1147,10 +1147,10 @@
           "name": "pg-corp-ro-no-writes",
           "family": "sql",
           "endpoints": [
-            "pg-corp"
+            "postgres.pg-corp"
           ],
           "condition": "sql.verb in ['insert', 'update', 'delete', 'merge', 'notify']",
-          "credential": "pg-corp-ro",
+          "credential": "postgres_credential.pg-corp-ro",
           "verdict": "deny",
           "reason": "ro account is read-only — use the rw placeholder if you need to write"
         }
@@ -1160,13 +1160,13 @@
           "name": "pg-corp-rw-writes",
           "family": "sql",
           "endpoints": [
-            "pg-corp"
+            "postgres.pg-corp"
           ],
           "condition": "sql.verb in ['insert', 'update', 'delete', 'merge', 'notify']",
-          "credential": "pg-corp-rw",
+          "credential": "postgres_credential.pg-corp-rw",
           "approve": [
             {
-              "name": "console-dba"
+              "name": "human_approver.console-dba"
             }
           ]
         }
@@ -1176,13 +1176,13 @@
           "name": "pg-corp-secret-columns",
           "family": "sql",
           "endpoints": [
-            "pg-corp"
+            "postgres.pg-corp"
           ],
           "priority": 100,
           "condition": "sql.verb == 'select' && sets.intersects(sql.tables, ['github_identities', 'tokens', 'email_confirmations', 'authorizations', 'domain_certificates', 'database_instances', 'env_vars'])",
           "approve": [
             {
-              "name": "pg-secret-columns-judge"
+              "name": "llm_approver.pg-secret-columns-judge"
             }
           ]
         }
@@ -1192,8 +1192,8 @@
           "name": "pg-no-migrations",
           "family": "sql",
           "endpoints": [
-            "pg-corp",
-            "pg-scheduler"
+            "postgres.pg-corp",
+            "postgres.pg-scheduler"
           ],
           "condition": "'kysely_migration' in sql.tables",
           "verdict": "deny",
@@ -1205,7 +1205,7 @@
           "name": "pg-scheduler-default",
           "family": "sql",
           "endpoints": [
-            "pg-scheduler"
+            "postgres.pg-scheduler"
           ],
           "priority": -100,
           "verdict": "deny"
@@ -1216,7 +1216,7 @@
           "name": "pg-scheduler-reads",
           "family": "sql",
           "endpoints": [
-            "pg-scheduler"
+            "postgres.pg-scheduler"
           ],
           "condition": "sql.verb in ['select', 'show', 'explain']",
           "verdict": "allow"
@@ -1227,13 +1227,13 @@
           "name": "pg-scheduler-secret-named-defense",
           "family": "sql",
           "endpoints": [
-            "pg-scheduler"
+            "postgres.pg-scheduler"
           ],
           "priority": 100,
           "condition": "sql.verb == 'select' && sql.statement.matches('(?i)\\\\b(secret|password|token|api_key|private_key|access_key|signing_secret)\\\\b')",
           "approve": [
             {
-              "name": "pg-secret-named-defense-judge"
+              "name": "llm_approver.pg-secret-named-defense-judge"
             }
           ]
         }
@@ -1243,12 +1243,12 @@
           "name": "pg-scheduler-writes",
           "family": "sql",
           "endpoints": [
-            "pg-scheduler"
+            "postgres.pg-scheduler"
           ],
           "condition": "sql.verb in ['insert', 'update', 'delete', 'merge', 'notify']",
           "approve": [
             {
-              "name": "scheduler-ops"
+              "name": "human_approver.scheduler-ops"
             }
           ]
         }
@@ -1258,13 +1258,13 @@
           "name": "slack-ops-approve-reply-shape",
           "family": "http",
           "endpoints": [
-            "slack"
+            "https.slack"
           ],
           "condition": "http.method == 'POST' && http.path == '/api/chat.postMessage' && http.body.contains('approve_reply_')",
-          "credential": "slack-ops",
+          "credential": "slack_tokens.slack-ops",
           "approve": [
             {
-              "name": "slack-block-kit-shape-judge"
+              "name": "llm_approver.slack-block-kit-shape-judge"
             }
           ]
         }
@@ -1274,7 +1274,7 @@
           "name": "stripe-default",
           "family": "http",
           "endpoints": [
-            "stripe"
+            "https.stripe"
           ],
           "priority": -100,
           "verdict": "deny"
@@ -1285,7 +1285,7 @@
           "name": "stripe-ephemeral-keys",
           "family": "http",
           "endpoints": [
-            "stripe"
+            "https.stripe"
           ],
           "priority": 100,
           "condition": "http.method == 'POST' && http.path == '/v1/ephemeral_keys'",
@@ -1297,13 +1297,13 @@
           "name": "stripe-extra-scrutiny",
           "family": "http",
           "endpoints": [
-            "stripe"
+            "https.stripe"
           ],
           "priority": 100,
           "condition": "http.method == 'POST' && (http.path in ['/v1/refunds', '/v1/subscriptions', '/v1/subscription_items', '/v1/payouts', '/v1/transfers', '/v1/coupons', '/v1/promotion_codes'] || http.path.startsWith('/v1/charges/') && http.path.endsWith('/refund') || http.path.startsWith('/v1/subscriptions/') || http.path.startsWith('/v1/customers/') && http.path.endsWith('/subscriptions') || http.path.startsWith('/v1/invoices/') && (http.path.endsWith('/void') || http.path.endsWith('/finalize')))",
           "approve": [
             {
-              "name": "billing-strict"
+              "name": "human_approver.billing-strict"
             }
           ]
         }
@@ -1313,7 +1313,7 @@
           "name": "stripe-no-deletes",
           "family": "http",
           "endpoints": [
-            "stripe"
+            "https.stripe"
           ],
           "condition": "http.method == 'DELETE'",
           "verdict": "deny",
@@ -1325,12 +1325,12 @@
           "name": "stripe-other-writes",
           "family": "http",
           "endpoints": [
-            "stripe"
+            "https.stripe"
           ],
           "condition": "http.method == 'POST'",
           "approve": [
             {
-              "name": "billing"
+              "name": "human_approver.billing"
             }
           ]
         }
@@ -1340,7 +1340,7 @@
           "name": "stripe-reads",
           "family": "http",
           "endpoints": [
-            "stripe"
+            "https.stripe"
           ],
           "condition": "http.method == 'GET'",
           "verdict": "allow"
@@ -1351,7 +1351,7 @@
           "name": "support-console-default",
           "family": "http",
           "endpoints": [
-            "support-console"
+            "https.support-console"
           ],
           "priority": -100,
           "verdict": "deny",
@@ -1363,7 +1363,7 @@
           "name": "support-console-reads",
           "family": "http",
           "endpoints": [
-            "support-console"
+            "https.support-console"
           ],
           "condition": "http.method == 'GET'",
           "verdict": "allow"
@@ -1374,15 +1374,15 @@
           "name": "support-console-reply-on-behalf",
           "family": "http",
           "endpoints": [
-            "support-console"
+            "https.support-console"
           ],
           "condition": "http.method == 'POST' && http.path == '/api/trpc/admin.supportTickets.replyOnBehalf'",
           "approve": [
             {
-              "name": "reply-content-judge"
+              "name": "llm_approver.reply-content-judge"
             },
             {
-              "name": "support-ops"
+              "name": "human_approver.support-ops"
             }
           ]
         }
@@ -1392,12 +1392,12 @@
           "name": "support-console-ticket-mutations",
           "family": "http",
           "endpoints": [
-            "support-console"
+            "https.support-console"
           ],
           "condition": "http.method == 'POST' && http.path in ['/api/trpc/admin.supportTickets.markAsSpam', '/api/trpc/admin.supportTickets.updateStatus']",
           "approve": [
             {
-              "name": "support-ops"
+              "name": "human_approver.support-ops"
             }
           ]
         }

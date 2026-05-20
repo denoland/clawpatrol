@@ -10,80 +10,80 @@ import (
 	"github.com/zclconf/go-cty/cty"
 )
 
-// RefIndex resolves a (kind, name) pair to the typed traversal string
-// the emitter should write. Two-label kinds become `type.name`; one-
-// label kinds become `kind.name` (e.g. `rule.foo`). Built into Emit
-// from the loaded *Policy so plugin Emit hooks don't each re-derive
-// the type lookup.
+// RefIndex resolves a (kind, qname) pair to the typed traversal string
+// the emitter should write. For two-label kinds the qname is already
+// "type.name" — RefIndex confirms membership and returns it verbatim.
+// One-label kinds become `kind.name` (e.g. `rule.foo`). Built from
+// the loaded *Policy so plugin Emit hooks don't each re-derive lookup.
 type RefIndex struct {
-	credType    map[string]string
-	approverTyp map[string]string
-	tunnelType  map[string]string
-	endpointTyp map[string]string
+	cred     map[string]bool
+	approver map[string]bool
+	tunnel   map[string]bool
+	endpoint map[string]bool
 }
 
 func newRefIndex(p *Policy) *RefIndex {
 	r := &RefIndex{
-		credType:    map[string]string{},
-		approverTyp: map[string]string{},
-		tunnelType:  map[string]string{},
-		endpointTyp: map[string]string{},
+		cred:     map[string]bool{},
+		approver: map[string]bool{},
+		tunnel:   map[string]bool{},
+		endpoint: map[string]bool{},
 	}
 	if p == nil {
 		return r
 	}
 	for n, e := range p.Credentials {
 		if e != nil && e.Plugin != nil {
-			r.credType[n] = e.Plugin.Type
+			r.cred[n] = true
 		}
 	}
 	for n, e := range p.Approvers {
 		if e != nil && e.Plugin != nil {
-			r.approverTyp[n] = e.Plugin.Type
+			r.approver[n] = true
 		}
 	}
 	for n, e := range p.Tunnels {
 		if e != nil && e.Plugin != nil {
-			r.tunnelType[n] = e.Plugin.Type
+			r.tunnel[n] = true
 		}
 	}
 	for n, e := range p.Endpoints {
 		if e != nil && e.Plugin != nil {
-			r.endpointTyp[n] = e.Plugin.Type
+			r.endpoint[n] = true
 		}
 	}
 	// Built-in approvers (e.g. dashboard) carry the synthetic "builtin"
 	// type so `approve = [builtin.dashboard]` resolves the same way.
 	for _, name := range builtinApproverNames {
-		if _, ok := r.approverTyp[name]; !ok {
-			r.approverTyp[name] = "builtin"
-		}
+		r.approver["builtin."+name] = true
 	}
 	return r
 }
 
-// Ref returns the dotted traversal string for a (kind, name). Falls
-// back to the bare name if the kind isn't known.
+// Ref returns the dotted traversal string for a (kind, name). For
+// two-label kinds the input is the QName ("type.name"), returned
+// verbatim if known. One-label kinds get a `kind.` prefix. Unknown
+// names fall back to the input.
 func (r *RefIndex) Ref(kind Kind, name string) string {
 	if r == nil || name == "" {
 		return name
 	}
 	switch kind {
 	case KindCredential:
-		if t := r.credType[name]; t != "" {
-			return t + "." + name
+		if r.cred[name] {
+			return name
 		}
 	case KindApprover:
-		if t := r.approverTyp[name]; t != "" {
-			return t + "." + name
+		if r.approver[name] {
+			return name
 		}
 	case KindTunnel:
-		if t := r.tunnelType[name]; t != "" {
-			return t + "." + name
+		if r.tunnel[name] {
+			return name
 		}
 	case KindEndpoint:
-		if t := r.endpointTyp[name]; t != "" {
-			return t + "." + name
+		if r.endpoint[name] {
+			return name
 		}
 	case KindRule, KindProfile:
 		return string(kind) + "." + name
@@ -351,31 +351,31 @@ func emitOne(body *hclwrite.Body, p *Policy, kind Kind, name string) bool {
 		if !ok {
 			return false
 		}
-		emitEntityBlock(body, "approver", ent, name)
+		emitEntityBlock(body, "approver", ent)
 	case KindCredential:
 		ent, ok := p.Credentials[name]
 		if !ok {
 			return false
 		}
-		emitEntityBlock(body, "credential", ent, name)
+		emitEntityBlock(body, "credential", ent)
 	case KindEndpoint:
 		ent, ok := p.Endpoints[name]
 		if !ok {
 			return false
 		}
-		emitEntityBlock(body, "endpoint", ent, name)
+		emitEntityBlock(body, "endpoint", ent)
 	case KindRule:
 		ent, ok := p.Rules[name]
 		if !ok {
 			return false
 		}
-		emitEntityBlock(body, "rule", ent, name)
+		emitEntityBlock(body, "rule", ent)
 	case KindTunnel:
 		ent, ok := p.Tunnels[name]
 		if !ok {
 			return false
 		}
-		emitEntityBlock(body, "tunnel", ent, name)
+		emitEntityBlock(body, "tunnel", ent)
 	case KindProfile:
 		pr, ok := p.Profiles[name]
 		if !ok {
@@ -395,18 +395,19 @@ func emitOne(body *hclwrite.Body, p *Policy, kind Kind, name string) bool {
 	return true
 }
 
-func emitEntityBlock(body *hclwrite.Body, kind string, ent *Entity, name string) {
+func emitEntityBlock(body *hclwrite.Body, kind string, ent *Entity) {
 	body.AppendNewline()
-	labels := []string{ent.Plugin.Type, name}
+	bareName := ent.Symbol.Name
+	labels := []string{ent.Plugin.Type, bareName}
 	if ent.Symbol.Kind.LabelCount() == 1 {
 		// Single-label kinds (rule) omit the type label — the block
 		// header is `rule "<name>" { ... }` and the plugin is the
 		// kind's single registered entry.
-		labels = []string{name}
+		labels = []string{bareName}
 	}
 	block := body.AppendNewBlock(kind, labels).Body()
 	if ent.Plugin.Emit != nil {
-		ent.Plugin.Emit(ent.Body, name, block)
+		ent.Plugin.Emit(ent.Body, bareName, block)
 	}
 	emitFrameworkAttrs(block, ent)
 }
