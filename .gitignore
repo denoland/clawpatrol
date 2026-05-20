@@ -4,6 +4,9 @@
 ca/
 ts-state/
 dist/
+# Gateway runtime state — sqlite DB + WAL sidecars. Local to each
+# install; never commit.
+data/state/
 /gateway
 /clawpatrol
 /clawpatrol
