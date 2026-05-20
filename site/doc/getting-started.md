@@ -87,8 +87,8 @@ Network Extension in **System Settings → Privacy & Security**.
 
 > **Don't run `clawpatrol join --whole-machine` on the gateway
 > host itself** — the gateway shouldn't route its own traffic
-> through itself; the loop breaks DNS and the dashboard's own
-> reachability.
+> through itself; this would create a network loop that would
+> break the gateway.
 
 ## Run an agent
 
