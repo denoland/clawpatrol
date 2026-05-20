@@ -1,13 +1,15 @@
-credential "bearer_token" "pat" {}
-credential "postgres_credential" "pg" {}
-
 endpoint "https" "github" {
-  hosts      = ["api.github.com"]
-  credential = bearer_token.pat
+  hosts = ["api.github.com"]
 }
 endpoint "postgres" "db" {
-  host       = "db.example.com:5432"
-  credential = postgres_credential.pg
+  host = "db.example.com:5432"
+}
+
+credential "bearer_token" "pat" {
+  endpoint = https.github
+}
+credential "postgres_credential" "pg" {
+  endpoint = postgres.db
 }
 
 # A rule's endpoint list must be from a single protocol family —
@@ -19,5 +21,5 @@ rule "mixed-family" {
 }
 
 profile "default" {
-  endpoints = [https.github, postgres.db]
+  credentials = [bearer_token.pat, postgres_credential.pg]
 }

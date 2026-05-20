@@ -53,34 +53,23 @@ import (
 	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
 
-// SSHEndpoint binds one or more host:port tuples to one or more SSH
-// credentials. The agent's username is the discriminator for
-// per-username dispatch (mirrors postgres' placeholder-based dispatch,
-// just spelled `user` because that's what SSH calls it):
-//
-//	credential = X                                  // any user → X
-//	credentials = [{ user = "root",   credential = X },
-//	               { user = "deploy", credential = Y },
-//	               { credential = Z }]              // fallback
-//
-// The agent's username is also passed through verbatim as the upstream
-// SSH user — credentials carry only auth material (key / password /
-// host_pubkey), never a username override.
+// SSHEndpoint binds one or more host:port tuples. The credentials
+// that authenticate against it live on credential blocks via the
+// framework-level `endpoint = X` / `endpoints = [...]` binding. When
+// a profile wields more than one SSH credential at the endpoint,
+// each ambiguous credential carries a `user = "..."` disambiguator —
+// either on its profile-inline entry (`{ credential = X, user = "..." }`)
+// or on the credential block itself — and the agent's wire-protocol
+// username picks the matching entry. The agent's username is also
+// passed through verbatim as the upstream SSH user; credentials
+// carry only auth material (key / password / host_pubkey), never a
+// username override.
 type SSHEndpoint struct {
-	Hosts          []string  `hcl:"hosts"`
-	Credential     string    `hcl:"credential,optional"`
-	CredentialsRaw cty.Value `hcl:"credentials,optional" json:"-"`
-
-	Credentials []CredentialEntry `json:"Credentials,omitempty"`
+	Hosts []string `hcl:"hosts"`
 }
 
 // EndpointHosts is part of the clawpatrol plugin API.
 func (e *SSHEndpoint) EndpointHosts() []string { return e.Hosts }
-
-// EndpointCredentials is part of the clawpatrol plugin API.
-func (e *SSHEndpoint) EndpointCredentials() []config.CredBinding {
-	return bindings(e.Credential, e.Credentials)
-}
 
 // ConnRouteHosts implements runtime.ConnRouter — gives the gateway's
 // IP-keyed dispatch index a chance to route direct-IP dialers (an
@@ -95,11 +84,6 @@ func (e *SSHEndpoint) ConnRouteHosts() []string { return e.Hosts }
 // second one behind the same upstream IP).
 func (e *SSHEndpoint) RequiresVIP() bool { return true }
 
-// hasCredentialsRaw plumbing — lets the shared multiCredValidate hook
-// read CredentialsRaw and stash the parsed entries back.
-func (e *SSHEndpoint) credentialAndRaw() (string, cty.Value)     { return e.Credential, e.CredentialsRaw }
-func (e *SSHEndpoint) setCredentialEntries(es []CredentialEntry) { e.Credentials = es }
-
 // SSHEndpointRuntime is stateful only in the host-key cache: each
 // endpoint's persisted ed25519 key is parsed once and reused for the
 // lifetime of the process. The runtime struct itself is shared
@@ -112,15 +96,13 @@ type SSHEndpointRuntime struct {
 func init() {
 	rt := &SSHEndpointRuntime{}
 	config.Register(&config.Plugin{
-		Kind:     config.KindEndpoint,
-		Type:     "ssh",
-		Family:   "ssh",
-		New:      func() any { return &SSHEndpoint{} },
-		Refs:     singularRef,
-		Validate: multiCredValidate,
-		Runtime:  rt,
-		Build:    passthroughBuild,
-		Emit: func(body any, _ string, b *hclwrite.Body, refs *config.RefIndex) {
+		Kind:    config.KindEndpoint,
+		Type:    "ssh",
+		Family:  "ssh",
+		New:     func() any { return &SSHEndpoint{} },
+		Runtime: rt,
+		Build:   passthroughBuild,
+		Emit: func(body any, _ string, b *hclwrite.Body) {
 			e := body.(*SSHEndpoint)
 			if len(e.Hosts) > 0 {
 				vals := make([]cty.Value, len(e.Hosts))
@@ -129,7 +111,6 @@ func init() {
 				}
 				b.SetAttributeValue("hosts", cty.ListVal(vals))
 			}
-			emitCredentialBinding(b, e.Credential, e.Credentials, "user", refs)
 		},
 	})
 }
@@ -211,7 +192,7 @@ func (rt *SSHEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHa
 	// endpoint via `credentials = [{user=..., credential=...}, ...]`;
 	// the singular `credential = X` form collapses to a one-entry list
 	// with empty Placeholder (catchall).
-	cc := pickSSHCredential(ch.Endpoint, agentUser)
+	cc := pickSSHCredential(ch.Policy, ch.Profile, ch.Endpoint, agentUser)
 	if cc == nil {
 		return fmt.Errorf("ssh endpoint %q has no credential matching agent user %q", ch.Endpoint.Name, agentUser)
 	}
@@ -280,27 +261,40 @@ func (rt *SSHEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHa
 
 // ── Credential dispatch + upstream auth ──────────────────────────────
 
-// pickSSHCredential resolves the agent username to a CompiledCredential.
-// Single-binding endpoints (one entry, no placeholder) return that
-// entry. Multi-credential endpoints pick the entry whose Placeholder
-// (= HCL `user`) matches; if no entry matches and there's a
-// no-placeholder fallback, that wins. Returns nil when nothing fits —
-// the caller refuses the connection rather than silently routing
-// through a credential not meant for the user.
-func pickSSHCredential(ep *config.CompiledEndpoint, agentUser string) *config.CompiledCredential {
-	if ep == nil || len(ep.Credentials) == 0 {
+// pickSSHCredential resolves the agent username to a
+// CompiledCredential within the dispatching profile. The per-profile
+// EndpointCredentials list carries (credential, disambiguator-map)
+// entries; for ssh the disambiguator field is "user". Profiles that
+// bind a single credential to ep return that entry; profiles that
+// bind multiple credentials match the entry whose Disambiguators["user"]
+// equals agentUser, with the no-user entry (if any) as the catchall.
+//
+// Returns nil when the profile binds no credential to ep — the
+// caller refuses the connection rather than silently routing through
+// a credential not meant for the user.
+func pickSSHCredential(policy *config.CompiledPolicy, profile string, ep *config.CompiledEndpoint, agentUser string) *config.CompiledCredential {
+	if ep == nil || policy == nil {
 		return nil
 	}
-	if len(ep.Credentials) == 1 && ep.Credentials[0].Placeholder == "" {
-		return ep.Credentials[0]
+	prof, ok := policy.Profiles[profile]
+	if !ok {
+		return nil
+	}
+	entries := prof.EndpointCredentials[ep.Name]
+	if len(entries) == 0 {
+		return nil
+	}
+	if len(entries) == 1 && len(entries[0].Disambiguators) == 0 {
+		return entries[0]
 	}
 	var fallback *config.CompiledCredential
-	for _, c := range ep.Credentials {
-		if c.Placeholder == "" {
+	for _, c := range entries {
+		want := c.Disambiguators["user"]
+		if want == "" {
 			fallback = c
 			continue
 		}
-		if agentUser == c.Placeholder {
+		if agentUser == want {
 			return c
 		}
 	}

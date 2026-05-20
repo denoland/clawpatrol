@@ -18,11 +18,13 @@ rule "pg-banned-functions" {
 
 admin_email = "ops@example.com"
 
-credential "postgres_credential" "pg-cred" { user = "agent" }
-
 endpoint "postgres" "pg-staging" {
-  host       = "pg-staging.example:5432"
-  credential = postgres_credential.pg-cred
+  host = "pg-staging.example:5432"
 }
 
-profile "default" { endpoints = [postgres.pg-staging] }
+credential "postgres_credential" "pg" {
+  endpoint = postgres.pg-staging
+  user     = "agent"
+}
+
+profile "default" { credentials = [postgres_credential.pg] }

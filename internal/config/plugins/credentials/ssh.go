@@ -82,11 +82,12 @@ func (*SSHCredential) SecretSlots() []config.SecretSlot {
 func init() {
 	var _ sshproto.AuthCredential = (*SSHCredential)(nil)
 	config.Register(&config.Plugin{
-		Kind:    config.KindCredential,
-		Type:    "ssh_key",
-		New:     newer[SSHCredential](),
-		Runtime: (*SSHCredential)(nil),
-		Build:   passthrough,
-		Emit:    func(any, string, *hclwrite.Body, *config.RefIndex) {},
+		Kind:           config.KindCredential,
+		Type:           "ssh_key",
+		New:            newer[SSHCredential](),
+		Runtime:        (*SSHCredential)(nil),
+		Build:          passthrough,
+		Disambiguators: []string{"user"},
+		Emit:           func(any, string, *hclwrite.Body) {},
 	})
 }

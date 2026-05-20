@@ -3,6 +3,7 @@ package config
 import (
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
@@ -62,8 +63,7 @@ func newRefIndex(p *Policy) *RefIndex {
 }
 
 // Ref returns the dotted traversal string for a (kind, name). Falls
-// back to the bare name if the kind isn't known — emit must never
-// panic on a stale ref.
+// back to the bare name if the kind isn't known.
 func (r *RefIndex) Ref(kind Kind, name string) string {
 	if r == nil || name == "" {
 		return name
@@ -100,6 +100,35 @@ func (r *RefIndex) Refs(kind Kind, names []string) []string {
 	return out
 }
 
+// emitRI is the RefIndex active for the current Emit call. Plugin
+// Emit hooks read it via the package-level SetIdent / SetIdentList
+// helpers so they don't need to thread a RefIndex through their own
+// signatures. Guarded by emitRIMu because Emit is documented to be
+// safe to call from any goroutine, but never concurrently with itself.
+var (
+	emitRIMu sync.Mutex
+	emitRI   *RefIndex
+)
+
+// EmitRefIndex returns the current emit's RefIndex. Plugin Emit hooks
+// call this to resolve a bare entity name to its typed-traversal form
+// (e.g. "anthropic" → "https.anthropic") before calling SetIdent /
+// SetIdentList. Returns a non-nil pointer even when no Emit is in
+// progress so callers don't have to nil-check before Ref / Refs.
+func EmitRefIndex() *RefIndex {
+	if emitRI != nil {
+		return emitRI
+	}
+	return &RefIndex{}
+}
+
+// TraversalTokens is the exported form of traversalTokens, for plugin
+// Emit hooks that build attribute token lists by hand (e.g. the rule
+// plugin's `approve = [a, b, c]` list).
+func TraversalTokens(s string) hclwrite.Tokens {
+	return traversalTokens(s)
+}
+
 // Emit serializes a loaded *Gateway back to HCL. The output is
 // deterministic (operational fields first, then kind-grouped policy
 // blocks in source order) and re-parsable by Load — round-tripping
@@ -121,20 +150,26 @@ func Emit(gw *Gateway) ([]byte, error) {
 		return f.Bytes(), nil
 	}
 	p := gw.Policy
-	ri := newRefIndex(p)
+
+	// Install the per-Emit RefIndex so plugin Emit hooks can resolve
+	// typed traversals via SetIdent / SetIdentList.
+	emitRIMu.Lock()
+	defer emitRIMu.Unlock()
+	emitRI = newRefIndex(p)
+	defer func() { emitRI = nil }()
 
 	// Per-kind groups in a deterministic order: approvers → policies →
 	// credentials → endpoints → rules → profiles. Within a group, walk
 	// p.Order (source order) and filter to that kind, falling back to
 	// alphabetical for entries Order doesn't cover (defensive — every
 	// loaded entry is in Order in practice).
-	emitGroup(body, p, ri, KindApprover)
-	emitGroup(body, p, ri, KindPolicy)
-	emitGroup(body, p, ri, KindCredential)
-	emitGroup(body, p, ri, KindTunnel)
-	emitGroup(body, p, ri, KindEndpoint)
-	emitGroup(body, p, ri, KindRule)
-	emitGroup(body, p, ri, KindProfile)
+	emitGroup(body, p, KindApprover)
+	emitGroup(body, p, KindPolicy)
+	emitGroup(body, p, KindCredential)
+	emitGroup(body, p, KindTunnel)
+	emitGroup(body, p, KindEndpoint)
+	emitGroup(body, p, KindRule)
+	emitGroup(body, p, KindProfile)
 
 	return f.Bytes(), nil
 }
@@ -188,10 +223,17 @@ func emitOperational(body *hclwrite.Body, gw *Gateway) {
 // block. Entries not in Order (shouldn't happen for properly loaded
 // configs) are appended afterward in alphabetical name order so emit
 // is deterministic.
-func emitGroup(body *hclwrite.Body, p *Policy, ri *RefIndex, kind Kind) {
+func emitGroup(body *hclwrite.Body, p *Policy, kind Kind) {
 	emitted := map[string]bool{}
 	for _, name := range p.Order {
-		if !emitOne(body, p, ri, kind, name) {
+		if emitted[name] {
+			// p.Order is a flat list across kinds; cross-kind name
+			// reuse (allowed under typed traversals) can put the same
+			// name in twice. Skip the second visit so we don't emit a
+			// duplicate block.
+			continue
+		}
+		if !emitOne(body, p, kind, name) {
 			continue
 		}
 		emitted[name] = true
@@ -199,7 +241,7 @@ func emitGroup(body *hclwrite.Body, p *Policy, ri *RefIndex, kind Kind) {
 	// Defensive sweep for entries Order missed.
 	leftover := leftoverNames(p, kind, emitted)
 	for _, name := range leftover {
-		emitOne(body, p, ri, kind, name)
+		emitOne(body, p, kind, name)
 	}
 }
 
@@ -253,14 +295,14 @@ func leftoverNames(p *Policy, kind Kind, emitted map[string]bool) []string {
 	return out
 }
 
-func emitOne(body *hclwrite.Body, p *Policy, ri *RefIndex, kind Kind, name string) bool {
+func emitOne(body *hclwrite.Body, p *Policy, kind Kind, name string) bool {
 	switch kind {
 	case KindApprover:
 		ent, ok := p.Approvers[name]
 		if !ok {
 			return false
 		}
-		emitEntityBlock(body, "approver", ent, name, ri)
+		emitEntityBlock(body, "approver", ent, name)
 	case KindPolicy:
 		pt, ok := p.Policies[name]
 		if !ok {
@@ -279,25 +321,25 @@ func emitOne(body *hclwrite.Body, p *Policy, ri *RefIndex, kind Kind, name strin
 		if !ok {
 			return false
 		}
-		emitEntityBlock(body, "credential", ent, name, ri)
+		emitEntityBlock(body, "credential", ent, name)
 	case KindEndpoint:
 		ent, ok := p.Endpoints[name]
 		if !ok {
 			return false
 		}
-		emitEntityBlock(body, "endpoint", ent, name, ri)
+		emitEntityBlock(body, "endpoint", ent, name)
 	case KindRule:
 		ent, ok := p.Rules[name]
 		if !ok {
 			return false
 		}
-		emitEntityBlock(body, "rule", ent, name, ri)
+		emitEntityBlock(body, "rule", ent, name)
 	case KindTunnel:
 		ent, ok := p.Tunnels[name]
 		if !ok {
 			return false
 		}
-		emitEntityBlock(body, "tunnel", ent, name, ri)
+		emitEntityBlock(body, "tunnel", ent, name)
 	case KindProfile:
 		pr, ok := p.Profiles[name]
 		if !ok {
@@ -305,8 +347,8 @@ func emitOne(body *hclwrite.Body, p *Policy, ri *RefIndex, kind Kind, name strin
 		}
 		body.AppendNewline()
 		b := body.AppendNewBlock("profile", []string{name}).Body()
-		if len(pr.Endpoints) > 0 {
-			SetIdentList(b, "endpoints", ri.Refs(KindEndpoint, pr.Endpoints))
+		if len(pr.Credentials) > 0 {
+			setProfileCredentials(b, pr.Credentials, pr.Disambiguators)
 		}
 		if pr.HITLAsyncGrants {
 			b.SetAttributeValue("hitl_async_grants", cty.True)
@@ -317,7 +359,7 @@ func emitOne(body *hclwrite.Body, p *Policy, ri *RefIndex, kind Kind, name strin
 	return true
 }
 
-func emitEntityBlock(body *hclwrite.Body, kind string, ent *Entity, name string, ri *RefIndex) {
+func emitEntityBlock(body *hclwrite.Body, kind string, ent *Entity, name string) {
 	body.AppendNewline()
 	labels := []string{ent.Plugin.Type, name}
 	if ent.Symbol.Kind.LabelCount() == 1 {
@@ -328,22 +370,32 @@ func emitEntityBlock(body *hclwrite.Body, kind string, ent *Entity, name string,
 	}
 	block := body.AppendNewBlock(kind, labels).Body()
 	if ent.Plugin.Emit != nil {
-		ent.Plugin.Emit(ent.Body, name, block, ri)
+		ent.Plugin.Emit(ent.Body, name, block)
 	}
-	emitFrameworkAttrs(block, ent, ri)
+	emitFrameworkAttrs(block, ent)
 }
 
-// emitFrameworkAttrs writes the framework-level attrs (tunnel, etc.)
-// onto the block body after the plugin's own Emit. Mirrors the
-// loader's extractFramework — the loader peels these off, this puts
-// them back, so HCL → load → emit round-trips.
-func emitFrameworkAttrs(b *hclwrite.Body, ent *Entity, ri *RefIndex) {
+// emitFrameworkAttrs writes the framework-level attrs (tunnel,
+// credential.endpoint(s), …) onto the block body after the plugin's
+// own Emit. Mirrors the loader's extractFramework — the loader peels
+// these off, this puts them back, so HCL → load → emit round-trips.
+func emitFrameworkAttrs(b *hclwrite.Body, ent *Entity) {
+	ri := EmitRefIndex()
 	for _, spec := range frameworkAttrsByKind[ent.Symbol.Kind] {
-		ref := ent.Framework.Ref(spec.Name)
-		if ref == "" {
-			continue
+		switch {
+		case spec.Kind == "":
+			if s := ent.Framework.Str(spec.Name); s != "" {
+				b.SetAttributeValue(spec.Name, cty.StringVal(s))
+			}
+		case spec.List:
+			if list := ent.Framework.RefList(spec.Name); len(list) > 0 {
+				SetIdentList(b, spec.Name, ri.Refs(spec.Kind, list))
+			}
+		default:
+			if ref := ent.Framework.Ref(spec.Name); ref != "" {
+				SetIdent(b, spec.Name, ri.Ref(spec.Kind, ref))
+			}
 		}
-		SetIdent(b, spec.Name, ri.Ref(spec.Kind, ref))
 	}
 }
 
@@ -367,6 +419,9 @@ func StringListVal(xs []string) cty.Value {
 // a dotted traversal expression. Used for typed ref lists like
 // `endpoints = [https.github, slack_tokens.avocet]`. Pass each entry
 // as its fully-qualified traversal string (use RefIndex.Ref to build).
+//
+// Exported so plugin Emit hooks can use it for fields like a rule's
+// `endpoints = [...]` ref list.
 func SetIdentList(b *hclwrite.Body, name string, idents []string) {
 	tokens := hclwrite.Tokens{
 		{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")},
@@ -379,14 +434,6 @@ func SetIdentList(b *hclwrite.Body, name string, idents []string) {
 	}
 	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")})
 	b.SetAttributeRaw(name, tokens)
-}
-
-// SetIdent writes `name = a.b` where the value is a dotted traversal
-// (e.g. `credential = header_token.github-pat`). The ident string
-// may be a single identifier (legacy bare-name fallback) or a dotted
-// traversal — splitting on '.' yields the token sequence.
-func SetIdent(b *hclwrite.Body, name, ident string) {
-	b.SetAttributeRaw(name, traversalTokens(ident))
 }
 
 // traversalTokens splits a dotted string into HCL ident / dot tokens.
@@ -402,4 +449,58 @@ func traversalTokens(s string) hclwrite.Tokens {
 		out = append(out, &hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(p)})
 	}
 	return out
+}
+
+// setProfileCredentials emits the mixed-shape `credentials = [...]`
+// attribute on a profile block. Entries with associated profile-side
+// disambiguators render as `{ credential = name, <field> = "...", ... }`
+// object literals (fields sorted alphabetically for stable output);
+// entries without any render as bare-name idents.
+func setProfileCredentials(b *hclwrite.Body, creds []string, disambig map[string]map[string]string) {
+	ri := EmitRefIndex()
+	tokens := hclwrite.Tokens{
+		{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")},
+	}
+	for i, c := range creds {
+		if i > 0 {
+			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(", ")})
+		}
+		credRef := ri.Ref(KindCredential, c)
+		if d := disambig[c]; len(d) > 0 {
+			keys := make([]string, 0, len(d))
+			for k := range d {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenOBrace, Bytes: []byte("{ ")})
+			tokens = append(tokens,
+				&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte("credential")},
+				&hclwrite.Token{Type: hclsyntax.TokenEqual, Bytes: []byte(" = ")},
+			)
+			tokens = append(tokens, traversalTokens(credRef)...)
+			for _, k := range keys {
+				tokens = append(tokens,
+					&hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(", ")},
+					&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(k)},
+					&hclwrite.Token{Type: hclsyntax.TokenEqual, Bytes: []byte(" = ")},
+					&hclwrite.Token{Type: hclsyntax.TokenOQuote, Bytes: []byte(`"`)},
+					&hclwrite.Token{Type: hclsyntax.TokenQuotedLit, Bytes: []byte(d[k])},
+					&hclwrite.Token{Type: hclsyntax.TokenCQuote, Bytes: []byte(`"`)},
+				)
+			}
+			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCBrace, Bytes: []byte(" }")})
+			continue
+		}
+		tokens = append(tokens, traversalTokens(credRef)...)
+	}
+	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")})
+	b.SetAttributeRaw("credentials", tokens)
+}
+
+// SetIdent writes `name = a.b` where the value is a dotted traversal
+// (e.g. `credential = header_token.github-pat`). The ident string
+// may be a single identifier or a dotted traversal — splitting on
+// '.' yields the token sequence.
+func SetIdent(b *hclwrite.Body, name, ident string) {
+	b.SetAttributeRaw(name, traversalTokens(ident))
 }

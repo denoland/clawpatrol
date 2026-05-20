@@ -34,11 +34,12 @@ func (*NotionOAuth) SecretSlots() []config.SecretSlot {
 func init() {
 	var _ runtime.HTTPCredentialRuntime = (*NotionOAuth)(nil)
 	config.Register(&config.Plugin{
-		Kind:    config.KindCredential,
-		Type:    "notion_oauth",
-		New:     newer[NotionOAuth](),
-		Runtime: (*NotionOAuth)(nil),
-		Build:   passthrough,
-		Emit:    emptyEmit,
+		Kind:           config.KindCredential,
+		Type:           "notion_oauth",
+		Disambiguators: []string{"placeholder"},
+		New:            newer[NotionOAuth](),
+		Runtime:        (*NotionOAuth)(nil),
+		Build:          passthrough,
+		Emit:           emptyEmit,
 	})
 }

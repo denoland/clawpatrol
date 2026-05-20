@@ -87,21 +87,18 @@ func TestExampleFixtureDetectsDrift(t *testing.T) {
 func TestResolveEndpointByHost(t *testing.T) {
 	hcl := `
 admin_email = "x@example.com"
-credential "bearer_token" "a" {}
-credential "bearer_token" "b" {}
 endpoint "https" "alpha" {
-  hosts      = ["api.example.com"]
-  credential = bearer_token.a
+  hosts = ["api.example.com"]
 }
 endpoint "https" "beta" {
-  hosts      = ["api.example.com"]
-  credential = bearer_token.b
+  hosts = ["api.example.com"]
 }
 endpoint "https" "gamma" {
-  hosts      = ["solo.example.com"]
-  credential = bearer_token.a
+  hosts = ["solo.example.com"]
 }
-profile "default" { endpoints = [https.alpha, https.beta, https.gamma] }
+credential "bearer_token" "a" { endpoints = [https.alpha, https.gamma] }
+credential "bearer_token" "b" { endpoint = https.beta }
+profile "default" { credentials = [bearer_token.a, bearer_token.b] }
 `
 	gw, diags := config.LoadBytes([]byte(hcl), "in.hcl")
 	if diags.HasErrors() {

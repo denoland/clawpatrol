@@ -19,12 +19,6 @@ plugin "example" {
   source = "./pluginsdk/example/example"
 }
 
-credential "example_magic_token" "demo_token" {
-  // header_name is the HTTP header the demo_https endpoint adds to
-  // upstream requests. Defaults to "X-Magic" when omitted.
-  header_name = "X-Magic"
-}
-
 tunnel "example_passthrough" "passthru" {}
 
 // HTTPS endpoint: gateway terminates TLS, plugin parses HTTP and
@@ -42,10 +36,9 @@ tunnel "example_passthrough" "passthru" {}
 // (e.g. `python3 -m http.server 8000`) — the upstream sees the
 // X-Magic header and curl prints the body with "bye!" appended.
 endpoint "example_https" "demo-site" {
-  hosts      = ["demo.invalid"]
-  credential = example_magic_token.demo_token
-  tunnel     = example_passthrough.passthru
-  upstream   = "http://127.0.0.1:8000"
+  hosts    = ["demo.invalid"]
+  tunnel   = example_passthrough.passthru
+  upstream = "http://127.0.0.1:8000"
 }
 
 rule "https-reads" {
@@ -71,8 +64,7 @@ rule "https-writes-deny" {
 // the request's facet payload, so the request log shows
 // Verb / From / Rcpt / User columns.
 endpoint "example_smtp" "demo-mail" {
-  hosts      = ["mail.invalid:25"]
-  credential = example_magic_token.demo_token
+  hosts = ["mail.invalid:25"]
 }
 
 rule "smtp-handshake" {
@@ -119,8 +111,7 @@ rule "smtp-body-deny" {
 // On allow the plugin echoes prefixed with the credential secret;
 // on deny it replies "DENY: <reason>".
 endpoint "example_echo" "demo-echo" {
-  hosts      = ["echo.invalid:7"]
-  credential = example_magic_token.demo_token
+  hosts = ["echo.invalid:7"]
 }
 
 rule "echo-no-bad-words" {
@@ -136,6 +127,17 @@ rule "echo-deny-fallback" {
   reason    = "line contains a forbidden token"
 }
 
+// The shared example_magic_token credential auths against all three
+// demo endpoints (HTTPS, SMTP, and echo).
+//
+// header_name is the HTTP header the example_https endpoint adds to
+// upstream requests. Defaults to "X-Magic" when omitted; the SMTP
+// and echo endpoints ignore it.
+credential "example_magic_token" "demo_token" {
+  endpoints   = [example_https.demo-site, example_smtp.demo-mail, example_echo.demo-echo]
+  header_name = "X-Magic"
+}
+
 profile "default" {
-  endpoints = [example_https.demo-site, example_smtp.demo-mail, example_echo.demo-echo]
+  credentials = [example_magic_token.demo_token]
 }

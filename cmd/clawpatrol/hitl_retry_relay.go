@@ -40,7 +40,7 @@ func (g *Gateway) consumeHITLRetryGrantForRequest(ctx context.Context, in hitlRe
 	if err != nil {
 		return HITLOperation{}, err
 	}
-	cc := runtime.ResolveCredential(in.Endpoint, in.MatchReq)
+	cc := runtime.ResolveCredential(g.Policy(), in.ProfileID, in.Endpoint, in.MatchReq)
 	authBindingID, err := buildHITLAuthBindingID(ctx, g.db, in.ProfileID, cc)
 	if err != nil {
 		return HITLOperation{}, err

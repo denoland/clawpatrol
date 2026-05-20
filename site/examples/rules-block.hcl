@@ -16,23 +16,24 @@ rule "github-writes" {
 
 admin_email = "ops@example.com"
 
-credential "postgres_credential" "pg-cred"    { user = "agent" }
-credential "bearer_token"        "github-pat" {}
-credential "slack_tokens"        "slack-bot"  {}
-
 endpoint "postgres" "pg-prod" {
-  host       = "pg-prod.example:5432"
-  credential = postgres_credential.pg-cred
+  host = "pg-prod.example:5432"
 }
 
 endpoint "https" "github-api" {
-  hosts      = ["api.github.com"]
-  credential = bearer_token.github-pat
+  hosts = ["api.github.com"]
 }
+
+credential "postgres_credential" "pg" {
+  endpoint = postgres.pg-prod
+  user     = "agent"
+}
+credential "bearer_token" "github-pat" { endpoint = https.github-api }
+credential "slack_tokens" "slack-bot" {}
 
 approver "human_approver" "ops" {
   channel    = "#agent-ops"
   credential = slack_tokens.slack-bot
 }
 
-profile "default" { endpoints = [postgres.pg-prod, https.github-api] }
+profile "default" { credentials = [postgres_credential.pg, bearer_token.github-pat] }

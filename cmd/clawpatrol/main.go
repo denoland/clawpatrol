@@ -2216,7 +2216,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		// verbatim and rely on policy alone.
 		var rewriteWSPayload wsPayloadRewriter
 		var reqBodySecretRedactions []string
-		if cc := runtime.ResolveCredential(ep, mreq); cc != nil {
+		if cc := runtime.ResolveCredential(g.Policy(), profile, ep, mreq); cc != nil {
 			// Plugin.Runtime is a typed-nil sentinel used only for
 			// interface-compliance assertions; the actual decoded HCL
 			// values (BearerToken.IdempotencyKey, PostgresCredential.User,
@@ -2528,7 +2528,6 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 			DashboardURL:              g.cfg.PublicURL,
 			Policy:                    policy,
 			MessageUpdateSink:         g.recordHITLOperationMessageRef,
-			PendingMessageUpdateSink:  g.hitl.RecordMessageRef,
 		}
 		v, err := ar.Approve(ctx, req)
 		// Stamp the entity name + plugin type on every verdict so the
@@ -2779,7 +2778,6 @@ func runGateway(args []string) {
 	log.Printf("config: read-only (the dashboard cannot edit gateway.hcl)")
 	g.secrets = newGatewaySecretStore(db, oauthReg)
 	g.hitl.asyncGrantResolver = g.resolveAsyncHITLGrant
-	g.hitl.pendingMessageUpdater = g.updatePendingHITLMessage
 	g.tunnels = NewTunnelManager(g.secrets, stateDir)
 	registerOAuthCredentials(oauthReg, policy)
 	g.policy.Store(policy)

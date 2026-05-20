@@ -12,12 +12,11 @@ policy "secret-policy" {
 
 admin_email = "ops@example.com"
 
-credential "anthropic_manual_key" "anthropic-key" {}
-credential "bearer_token" "noop" {}
-
 endpoint "https" "anchor" {
-  hosts      = ["example.com"]
-  credential = bearer_token.noop
+  hosts = ["example.com"]
 }
 
-profile "default" { endpoints = [https.anchor] }
+credential "anthropic_manual_key" "anthropic-key" {}
+credential "bearer_token" "noop" { endpoint = https.anchor }
+
+profile "default" { credentials = [bearer_token.noop] }

@@ -578,9 +578,10 @@ type IntegrationRow struct {
 	// endpoint or tunnel binding this credential. Empty when the
 	// credential is declared but no profile references it.
 	Profiles []string `json:"profiles,omitempty"`
-	// Endpoints is the sorted list of endpoint names whose `credential`
-	// / `credentials` binding (directly or transitively via the
-	// endpoint's tunnel) resolves to this credential.
+	// Endpoints is the sorted list of endpoint names this credential
+	// binds — directly via its `endpoint` / `endpoints` field, or
+	// transitively via the credential attached to an endpoint's
+	// `tunnel = ...`.
 	Endpoints []string `json:"endpoints,omitempty"`
 	// Config exposes the operator-set HCL block attributes for the
 	// credential (e.g. `user = "postgres"`) keyed by attribute name.
@@ -757,7 +758,7 @@ func endpointBindsCredential(ep *config.CompiledEndpoint, credName string) bool 
 		return false
 	}
 	for _, cb := range ep.Credentials {
-		if cb.Credential != nil && cb.Credential.Symbol.Name == credName {
+		if cb != nil && cb.Symbol != nil && cb.Symbol.Name == credName {
 			return true
 		}
 	}
@@ -780,7 +781,7 @@ func credentialConfig(ent *config.Entity, name string) map[string]string {
 		return nil
 	}
 	file := hclwrite.NewEmptyFile()
-	ent.Plugin.Emit(ent.Body, name, file.Body(), nil)
+	ent.Plugin.Emit(ent.Body, name, file.Body())
 	attrs := file.Body().Attributes()
 	if len(attrs) == 0 {
 		return nil
@@ -810,20 +811,19 @@ func dashboardTailscaleState(label tailscaleproto.NodeStateLabel, hasPersistedSl
 	return tailscaleproto.NodeStateUnknown
 }
 
-// credentialsInProfile returns the set of credential bare names that
-// any endpoint in the given profile references — directly via the
-// endpoint's `credential = ...` / `credentials = [...]` bindings, or
-// transitively via the credential attached to the endpoint's
+// credentialsInProfile returns the set of credential bare names the
+// given profile uses — directly via its `credentials = [...]` list,
+// and transitively via the credential attached to an endpoint's
 // `tunnel = ...`. nil means "no filter — return everything." Used by
 // apiStatus and the device-page card render so per-device views only
 // show credentials the device's profile actually uses.
 //
-// Walking tunnel-attached credentials in addition to endpoint-attached
-// ones lets the dashboard surface tunnel-bound auth (e.g. the tailscale
-// node-auth credential) on profiles whose endpoints reach upstream
-// through that tunnel — the operator clicks Connect on the same
-// integration card whether the credential is wired to the endpoint or
-// to the tunnel underneath it.
+// Walking tunnel-attached credentials in addition to the profile's
+// own list lets the dashboard surface tunnel-bound auth (e.g. the
+// tailscale node-auth credential) on profiles whose endpoints reach
+// upstream through that tunnel — the operator clicks Connect on the
+// same integration card whether the credential is bound directly to
+// the profile or to the tunnel underneath one of its endpoints.
 func credentialsInProfile(policy *config.CompiledPolicy, profile string) map[string]bool {
 	if profile == "" || policy == nil {
 		return nil
@@ -834,9 +834,9 @@ func credentialsInProfile(policy *config.CompiledPolicy, profile string) map[str
 	}
 	out := map[string]bool{}
 	for _, ep := range prof.Endpoints {
-		for _, cb := range ep.Credentials {
-			if cb.Credential != nil {
-				out[cb.Credential.Symbol.Name] = true
+		for _, ent := range ep.Credentials {
+			if ent != nil && ent.Symbol != nil {
+				out[ent.Symbol.Name] = true
 			}
 		}
 		for tun := ep.Tunnel; tun != nil; tun = tun.Via {

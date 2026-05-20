@@ -37,6 +37,17 @@ type Request struct {
 	// pins them to specific databases.
 	Database string
 
+	// User is the agent-declared upstream user. Postgres reads it
+	// from the StartupMessage `user` parameter; clickhouse_native
+	// from Hello.Username; ssh from the connection's username field.
+	// Empty when the protocol carries no user concept or the wire
+	// frontend hasn't extracted it yet. Consumed by
+	// runtime.ResolveCredential to pick a credential whose
+	// disambiguator `user` constraint matches — the analogue of
+	// Database for protocols that route credentials by user identity
+	// rather than database name.
+	User string
+
 	// HTTP-shaped fields, populated whenever the gateway has them
 	// available. Even non-HTTP wire frontends (postgres, clickhouse
 	// over TLS) leave these zero rather than fake them.

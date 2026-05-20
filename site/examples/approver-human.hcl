@@ -8,12 +8,11 @@ approver "human_approver" "ops" {
 
 admin_email = "ops@example.com"
 
-credential "slack_tokens" "slack-bot" {}
-credential "bearer_token" "noop" {}
-
 endpoint "https" "anchor" {
-  hosts      = ["example.com"]
-  credential = bearer_token.noop
+  hosts = ["example.com"]
 }
 
-profile "default" { endpoints = [https.anchor] }
+credential "slack_tokens" "slack-bot" {}
+credential "bearer_token" "noop" { endpoint = https.anchor }
+
+profile "default" { credentials = [bearer_token.noop] }

@@ -1,8 +1,9 @@
-credential "bearer_token" "shared-creds" {}
-
 endpoint "https" "github" {
-  hosts      = ["api.github.com"]
-  credential = bearer_token.shared-creds
+  hosts = ["api.github.com"]
+}
+
+credential "bearer_token" "shared-creds" {
+  endpoint = https.github
 }
 
 # `endpoint = shared-creds` references the credential, not the
@@ -15,5 +16,5 @@ rule "broken" {
 }
 
 profile "default" {
-  endpoints = [https.github]
+  credentials = [bearer_token.shared-creds]
 }

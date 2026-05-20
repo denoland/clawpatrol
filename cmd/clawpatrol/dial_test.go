@@ -32,11 +32,9 @@ func endpointWithTunnelAndTLSCredential(name string, tunnel *config.CompiledTunn
 	return &config.CompiledEndpoint{
 		Name:   name,
 		Tunnel: tunnel,
-		Credentials: []*config.CompiledCredential{{
-			Credential: &config.Entity{
-				Symbol: &config.Symbol{Name: "mtls"},
-				Body:   credential,
-			},
+		Credentials: []*config.Entity{{
+			Symbol: &config.Symbol{Name: "mtls"},
+			Body:   credential,
 		}},
 	}
 }

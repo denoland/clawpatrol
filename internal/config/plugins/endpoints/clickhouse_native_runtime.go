@@ -181,15 +181,17 @@ func (ClickhouseNativeEndpointRuntime) HandleConn(ctx context.Context, ch *runti
 	// Build a partial match.Request for credential dispatch. The
 	// ClickhouseNativeEndpointRuntime's PlaceholderDetector scans
 	// Meta.Statement for a placeholder substring; the agent's
-	// Hello.Username + NUL + Hello.Password gives it both fields to
-	// search. Database is the agent-declared target so any
-	// `database`/`databases` constraint can filter on it.
+	// Hello.Username + NUL + Hello.Password gives it both fields
+	// to search. Database + User are the agent-declared knobs so
+	// any `database` / `user` discriminator on a credential body
+	// (or in the profile's inline entry) can filter against them.
 	credReq := &match.Request{
 		Family:   "sql",
 		Database: hello.Database,
+		User:     hello.Username,
 		Meta:     &sqlfacet.Meta{Statement: hello.Username + "\x00" + hello.Password},
 	}
-	if cc := runtime.ResolveCredential(ch.Endpoint, credReq); cc != nil {
+	if cc := runtime.ResolveCredential(ch.Policy, ch.Profile, ch.Endpoint, credReq); cc != nil {
 		credName = cc.Credential.Symbol.Name
 		auth, ok := cc.Credential.Body.(runtime.ClickhouseAuthCredential)
 		if !ok {

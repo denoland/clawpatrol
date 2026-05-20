@@ -17,7 +17,7 @@ import (
 
 // emptyEmit is the no-op Emit used by credentials whose body has no
 // HCL attributes (most empty-struct credentials).
-func emptyEmit(_ any, _ string, _ *hclwrite.Body, _ *config.RefIndex) {}
+func emptyEmit(_ any, _ string, _ *hclwrite.Body) {}
 
 // newer returns a New() func that allocates a fresh *T. Cheaper than
 // repeating `func() any { return &Foo{} }` in each plugin's init.

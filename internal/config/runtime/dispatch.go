@@ -13,13 +13,9 @@ import (
 // so a TLS SNI value like "api.example.com" can match an endpoint
 // declared as "api.example.com:443" without a runtime scan. DNS
 // hostnames are case-insensitive; the lookup key is lowercased to
-// match the lowercase keys Compile inserts.
-//
-// When the exact lookup misses we walk HostPatterns — the profile's
-// wildcard declarations (`hosts = ["*.foo.com"]`) — in
-// longest-suffix-first order. Exact matches always win over wildcards
-// for the same name. Returns nil when nothing matches; the caller
-// then applies the defaults.unknown_host policy.
+// match the lowercase keys Compile inserts. Returns nil when the
+// profile doesn't bind any matching endpoint — the caller then
+// applies the defaults.unknown_host policy.
 func HostEndpoint(policy *config.CompiledPolicy, profile, host string) *config.CompiledEndpoint {
 	if policy == nil {
 		return nil
@@ -30,17 +26,9 @@ func HostEndpoint(policy *config.CompiledPolicy, profile, host string) *config.C
 		// Single-tenant fallback: if no peer-to-profile mapping is
 		// established, walk every profile and return the first match.
 		// Matches main.go's existing profileFor behavior when only
-		// one profile exists. Exact matches are tried across all
-		// profiles before falling back to wildcards so a profile that
-		// declared the exact host wins over a different profile's
-		// wildcard.
+		// one profile exists.
 		for _, p := range policy.Profiles {
 			if ep := p.HostIndex[host]; ep != nil {
-				return ep
-			}
-		}
-		for _, p := range policy.Profiles {
-			if ep := config.MatchHostPattern(p.HostPatterns, host); ep != nil {
 				return ep
 			}
 		}
@@ -49,7 +37,7 @@ func HostEndpoint(policy *config.CompiledPolicy, profile, host string) *config.C
 	if ep := prof.HostIndex[host]; ep != nil {
 		return ep
 	}
-	return config.MatchHostPattern(prof.HostPatterns, host)
+	return nil
 }
 
 // MatchRequest walks an endpoint's priority-sorted rule list and
@@ -154,62 +142,76 @@ func synthesizeUnparseableDeny(r *config.CompiledRule) *config.CompiledRule {
 	return &synth
 }
 
-// ResolveCredential picks the credential entry that applies to req.
+// ResolveCredential picks the credential entry that applies to req
+// for the given profile and endpoint.
 //
-// Multi-credential endpoints (`credentials = [...]`) carry up to
-// two dispatch constraints per entry: a placeholder string (matched
-// against whatever the endpoint plugin's PlaceholderDetector pulled
-// off the request) and a database list (matched against
-// req.Database). An entry matches iff every constraint it declares
-// is satisfied. Among matching entries the most-specific (highest
-// number of declared constraints) wins; compile-time validation
-// guarantees uniqueness of constraint signatures so equal-specificity
+// The profile's per-endpoint credential list (CompiledProfile.
+// EndpointCredentials) carries the dispatch entries — each pairs a
+// credential with a merged disambiguator map (block-side body fields
+// + framework-peeled `placeholder`, overlaid with the profile's
+// inline `{ credential = X, <field> = "..." }` entries). Field
+// names are conventionally:
+//
+//   - "placeholder" — the dispatcher asks the endpoint plugin's
+//     PlaceholderDetector to extract the agent-sent placeholder
+//     string from the request body / headers.
+//   - "user"        — matched against req.User (postgres /
+//     clickhouse_native populate this from the wire-protocol
+//     StartupMessage / Hello).
+//   - "database"    — matched against req.Database.
+//
+// An entry matches iff every constraint it declares is satisfied.
+// Among matching entries the most-specific (highest number of
+// declared constraints) wins; compile-time validation guarantees
+// signature uniqueness per (profile, endpoint) so equal-specificity
 // ties are impossible at runtime — but if one ever shows up we
 // return nil rather than silently mis-routing.
 //
-// Single-binding endpoints (`credential = X`) short-circuit: the
-// only entry has no constraints and matches anything.
+// Single-binding entries with an empty disambiguator map short-
+// circuit when they're the only entry: matches anything.
 //
-// Returns nil when no entry matches, or when the endpoint declares
-// no credentials at all. The endpoint plugin then decides what to
-// do (default-deny vs forward-unauthenticated).
-func ResolveCredential(ep *config.CompiledEndpoint, req *match.Request) *config.CompiledCredential {
-	if ep == nil || len(ep.Credentials) == 0 {
+// Returns nil when the profile is unknown OR the profile binds no
+// credential to ep — the caller (endpoint plugin) decides whether to
+// default-deny vs. forward-unauthenticated.
+func ResolveCredential(policy *config.CompiledPolicy, profile string, ep *config.CompiledEndpoint, req *match.Request) *config.CompiledCredential {
+	if ep == nil {
 		return nil
 	}
-	if len(ep.Credentials) == 1 && ep.Credentials[0].Placeholder == "" && len(ep.Credentials[0].Databases) == 0 {
-		return ep.Credentials[0]
+	entries := profileCredentialsAt(policy, profile, ep.Name)
+	if len(entries) == 0 {
+		return nil
 	}
-	candidates := make([]string, 0, len(ep.Credentials))
-	for _, c := range ep.Credentials {
-		if c.Placeholder != "" {
-			candidates = append(candidates, c.Placeholder)
+	if len(entries) == 1 && len(entries[0].Disambiguators) == 0 {
+		return entries[0]
+	}
+	// Placeholder detection: if any entry constrains "placeholder",
+	// ask the endpoint plugin's detector once for the value the
+	// agent embedded in this request. Cheaper than re-detecting per
+	// entry; consistent across same-placeholder candidates that
+	// differ on other fields.
+	var sentPlaceholder string
+	if det, ok := ep.Plugin.Runtime.(PlaceholderDetector); ok && req != nil {
+		candidates := make([]string, 0, len(entries))
+		seen := map[string]bool{}
+		for _, c := range entries {
+			ph := c.Disambiguators["placeholder"]
+			if ph != "" && !seen[ph] {
+				candidates = append(candidates, ph)
+				seen[ph] = true
+			}
 		}
-	}
-	var sent string
-	if det, ok := ep.Plugin.Runtime.(PlaceholderDetector); ok && req != nil && len(candidates) > 0 {
-		sent = det.DetectPlaceholder(req, candidates)
-	}
-	var database string
-	if req != nil {
-		database = req.Database
+		if len(candidates) > 0 {
+			sentPlaceholder = det.DetectPlaceholder(req, candidates)
+		}
 	}
 	var best *config.CompiledCredential
 	bestSpecificity := -1
 	tiedAtBest := false
-	for _, c := range ep.Credentials {
-		phMatch := c.Placeholder == "" || c.Placeholder == sent
-		dbMatch := len(c.Databases) == 0 || containsString(c.Databases, database)
-		if !phMatch || !dbMatch {
+	for _, c := range entries {
+		if !disambiguatorMatches(c.Disambiguators, req, sentPlaceholder) {
 			continue
 		}
-		spec := 0
-		if c.Placeholder != "" {
-			spec++
-		}
-		if len(c.Databases) > 0 {
-			spec++
-		}
+		spec := len(c.Disambiguators)
 		switch {
 		case spec > bestSpecificity:
 			best = c
@@ -227,11 +229,52 @@ func ResolveCredential(ep *config.CompiledEndpoint, req *match.Request) *config.
 	return best
 }
 
-func containsString(xs []string, want string) bool {
-	for _, x := range xs {
-		if x == want {
-			return true
+// disambiguatorMatches reports whether every constraint in the
+// entry's disambiguator map is satisfied by the request. Unknown
+// field names always fail-closed — the dispatcher won't guess at
+// future fields it doesn't know how to read off req.
+func disambiguatorMatches(d map[string]string, req *match.Request, sentPlaceholder string) bool {
+	for field, want := range d {
+		var got string
+		switch field {
+		case "placeholder":
+			got = sentPlaceholder
+		case "user":
+			if req != nil {
+				got = req.User
+			}
+		case "database":
+			if req != nil {
+				got = req.Database
+			}
+		default:
+			return false
+		}
+		if want != got {
+			return false
 		}
 	}
-	return false
+	return true
+}
+
+// profileCredentialsAt returns the per-endpoint dispatch entries for
+// the named profile. When the profile is unknown but the endpoint has
+// a single globally-bound credential, the singleton entry is
+// synthesized so a fallback HostEndpoint match still injects auth —
+// matches the pre-v15 "missing profile but only one credential" path.
+func profileCredentialsAt(policy *config.CompiledPolicy, profile, epName string) []*config.CompiledCredential {
+	if policy == nil {
+		return nil
+	}
+	if prof, ok := policy.Profiles[profile]; ok {
+		return prof.EndpointCredentials[epName]
+	}
+	ep, ok := policy.Endpoints[epName]
+	if !ok {
+		return nil
+	}
+	if len(ep.Credentials) == 1 {
+		return []*config.CompiledCredential{{Credential: ep.Credentials[0]}}
+	}
+	return nil
 }

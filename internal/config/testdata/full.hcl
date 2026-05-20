@@ -1,8 +1,19 @@
-# Example policy (v14).
+# Example policy (v15).
 #
-# Same semantics as v13. The version-history comments at the top of v13
-# have been replaced with this documentation of what the format means
-# and why it's shaped this way.
+# v15 inverts the v14 dependency direction. Today's shape:
+#
+#     endpoint → (nothing)
+#     credential → endpoint
+#     rule → endpoint  (+ optional credential predicate)
+#     approver → credential
+#     profile → credential
+#
+# An endpoint is a pure network target — hosts + protocol-family
+# connection params, no credential refs, no dispatch table. The
+# credential, not the endpoint, owns the binding between "secret
+# material" and "where it gets injected." Profiles enumerate the
+# secrets a user is allowed to wield; endpoint membership rides along
+# transitively (profile → credentials → endpoints).
 #
 #
 # ╔══════════════════════════════════════════════════════════════════╗
@@ -37,20 +48,20 @@
 #   policy       "<name>" {}              reusable LLM prompt text;
 #                                         referenced from approve chains
 #
-#   credential   "<type>" "<name>" {}     a typed handle to a secret
-#                                         (bearer_token, mtls_credential,
-#                                         postgres_credential, ...).
-#                                         The actual secret value lives
-#                                         in the gateway's credential
-#                                         store, keyed by name.
-#
-#   endpoint     "<type>" "<name>" {}     a typed upstream binding:
-#                                         hosts + connection config +
-#                                         which credentials this
-#                                         endpoint accepts.
+#   endpoint     "<type>" "<name>" {}     a typed upstream binding —
+#                                         hosts + connection params only.
 #                                         Types: https, postgres,
 #                                         kubernetes, clickhouse_https,
 #                                         clickhouse_native.
+#
+#   credential   "<type>" "<name>" {}     a typed handle to a secret
+#                                         (bearer_token, mtls_credential,
+#                                         postgres_credential, ...).
+#                                         Names the endpoint(s) it
+#                                         authenticates against. The
+#                                         actual secret value lives
+#                                         in the gateway's credential
+#                                         store, keyed by name.
 #
 #   rule         "<name>" {}              one policy decision targeting
 #                                         one or more endpoints. The
@@ -59,10 +70,11 @@
 #                                         CEL variable bound in the
 #                                         `condition` expression.
 #
-#   profile      "<name>" {}              endpoint membership list — a
-#                                         user / agent identity
-#                                         dispatches against exactly
-#                                         the endpoints in its profile.
+#   profile      "<name>" {}              credential membership list — a
+#                                         user / agent identity dispatches
+#                                         against the credentials in its
+#                                         profile, and (transitively) the
+#                                         endpoints those credentials bind.
 #
 #
 # ╔══════════════════════════════════════════════════════════════════╗
@@ -75,84 +87,86 @@
 #
 # References are bare names — no kind prefix, no type prefix:
 #
-#     endpoint    = pg-corp                  # not  postgres.pg-corp
-#     credentials = [github-ops-pat]         # not  credential.bearer_token...
-#     approve     = [fast]                   # not  approver.llm_approver.fast
+#     endpoint    = https.anthropic-ops           # not  https.anthropic-ops
+#     credentials = [bearer_token.github-ops-pat]        # not  credential.bearer_token...
+#     approve     = [fast]                  # not  approver.llm_approver.fast
 #
-# The two-label declaration (`endpoint "https" "github-ops"`) carries
+# The two-label declaration (`endpoint "https" "github"`) carries
 # type information for the loader's schema validation, but reference
 # syntax doesn't repeat it. The loader resolves a bare name by looking
 # across all kinds; collisions are a load error.
 #
 # Note: ClickHouse exposes two protocols (HTTPS API + native binary)
 # from the same upstream cluster, so two endpoints share the upstream:
-# `ch-o11y-https` and `ch-o11y-native`. Same upstream, two rows,
-# distinct names.
+# `ch-o11y-https` and `ch-o11y-native`. One credential (`ch-o11y`)
+# binds both via `endpoints = [ch-o11y-https, ch-o11y-native]`.
 #
 #
 # ╔══════════════════════════════════════════════════════════════════╗
-# ║ 4. ENDPOINT → CREDENTIAL BINDING                                 ║
+# ║ 4. CREDENTIAL → ENDPOINT BINDING                                 ║
 # ╚══════════════════════════════════════════════════════════════════╝
 #
-# Endpoints declare which credentials they accept. Two binding shapes:
+# Each credential declares which endpoint(s) it authenticates against.
+# Two binding shapes:
 #
-#   (a) Singular, no-placeholder:
+#   (a) Singular:
 #
-#         endpoint "https" "github-ops" {
-#           hosts      = ["api.github.com", "github.com"]
-#           credential = github-ops-pat
+#         credential "bearer_token" "grafana" {
+#           endpoint = https.grafana
 #         }
 #
-#       The agent sends the request as-is (whatever Authorization
-#       header it has, or none); the gateway replaces it with the real
-#       secret before forwarding upstream. This is the common case.
+#       The credential authenticates exactly one endpoint. This is the
+#       common case.
 #
-#   (b) Multi-credential dispatch via placeholder:
+#   (b) Singleton-or-list, for one credential reused at multiple
+#       protocol endpoints of the same upstream:
 #
-#         endpoint "https" "orb" {
-#           hosts = ["api.withorb.com"]
-#           credentials = [
-#             { placeholder = "PH_orb_test", credential = orb-test-key },
-#             { placeholder = "PH_orb_prod", credential = orb-prod-key },
-#           ]
+#         credential "clickhouse_credential" "ch-o11y" {
+#           endpoints = [clickhouse_https.ch-o11y-https, clickhouse_native.ch-o11y-native]
+#           user      = "ops"
 #         }
 #
-#       The agent picks which credential it wants by sending the
-#       matching placeholder string in the Authorization header (or
-#       password field, for postgres). At inject time, the gateway
-#       swaps the placeholder for the matching credential's real
-#       secret. Used when the same upstream service has multiple
-#       credentials with materially different blast radius — orb test
-#       vs prod, or postgres ro vs rw — and the agent needs to declare
-#       which one.
+#       The same secret authenticates at all listed endpoints. Used
+#       when one upstream exposes the same auth material over multiple
+#       protocol surfaces (clickhouse_https + clickhouse_native).
 #
-# Equivalences:
+# Multi-credential dispatch (placeholder, on the profile). When a
+# profile actively wields more than one credential at the same
+# endpoint, the credentials list mixes bare-name entries with inline
+# `{ placeholder = "PH_...", credential = name }` objects that name
+# the dispatch discriminator the agent sends for each:
 #
-#     credential = orb-test-key
-#       ≡  credentials = [{ credential = orb-test-key }]
-#       ≡  credentials = [{ credential = orb-test-key, placeholder = null }]
+#     profile "ops" {
+#       credentials = [
+#         { placeholder = "PH_orb_test", credential = bearer_token.orb-test-key },
+#         { placeholder = "PH_orb_prod", credential = bearer_token.orb-prod-key },
+#         ...
+#       ]
+#     }
 #
-# Mixing (a) and (b): a `credentials = [...]` list MAY contain a
-# trailing entry without a `placeholder`. That entry is the
-# "no-placeholder" fallback — the runtime tries each placeholder-keyed
-# entry first; if no agent placeholder matches, the no-placeholder
-# entry is used. The exact "no-placeholder" semantic is
-# plugin-defined: HTTPS overwrites Authorization regardless of what the
-# agent sent; postgres swaps the agent's password for the real one.
+# At inject time the gateway scans the request for one of the
+# placeholders and substitutes the matching credential's real secret.
+# A bare-name credential in the same profile is the no-placeholder
+# fallback — at most one per (profile, endpoint), used when no agent
+# placeholder matches. The exact "no-placeholder" semantic is
+# plugin-defined: HTTPS overwrites Authorization regardless of what
+# the agent sent; postgres swaps the agent's password for the real
+# one.
 #
-# v14 has 3 multi-credential endpoints: anthropic-ops (api-key +
-# oauth), orb (test + prod), pg-corp (ro + rw). The other 28
-# endpoints use the singular form.
+# Why placeholders live on the profile, not on the credential:
 #
-# Why placeholders live on the binding, not the credential:
-#
-#   - The same credential could in principle be reused at multiple
-#     endpoints with different placeholder strings.
-#   - The placeholder is a property of "how this endpoint advertises
-#     a choice to the agent," which is a per-endpoint concern, not a
-#     property of the secret itself.
-#   - Credentials become pure secret references — dropping them or
-#     renaming them doesn't ripple through to the rule grammar.
+#   - A placeholder is only needed when a profile uses more than one
+#     credential at the same endpoint. Per-user-fanout endpoints
+#     (github, slack, telegram, openai-codex) globally have multiple
+#     credentials, but each profile typically wields just one — so
+#     declaring placeholders on the credential side adds noise that no
+#     profile actually consults. Profile-scoped placeholders only
+#     appear where ambiguity actually exists.
+#   - Credentials become pure secret handles + endpoint binding,
+#     symmetrical with the way endpoints are pure network targets.
+#   - Adding the same credential to a second profile that needs a
+#     different discriminator (rare, but legal) is one map entry, not
+#     a schema fight.
 #
 #
 # ╔══════════════════════════════════════════════════════════════════╗
@@ -223,11 +237,9 @@
 #
 #   - Use a negative priority for catch-all / default-deny rules.
 #     Example: `support-console-default` (priority -100) denies
-#     everything not matched by an earlier explicit rule. Negative
-#     priorities replace the older `catch_all = true` flag — same
-#     semantic, one dimension.
+#     everything not matched by an earlier explicit rule.
 #
-# v14 distribution: 11 rules with positive priority (overrides),
+# v15 distribution: 11 rules with positive priority (overrides),
 # 8 with negative priority (catch-alls), 35 at default 0.
 #
 # Disabled rules. `disabled = true` keeps a rule in source for audit
@@ -271,8 +283,8 @@
 # names an approver block; the request runs each in turn; any stage
 # denying ends the chain.
 #
-#     approve = [pg-secret-columns-judge]            # one LLM proctor
-#     approve = [reply-content-judge, support-ops]   # LLM, then human
+#     approve = [llm_approver.pg-secret-columns-judge]            # one LLM proctor
+#     approve = [llm_approver.reply-content-judge, human_approver.support-ops]   # LLM, then human
 #
 # LLM proctor blocks (llm_approver) bind a `policy = <name>` directly,
 # so the use site stays a bare-name reference. A human stage takes only
@@ -283,44 +295,43 @@
 # and `human_on_timeout` (deny if Slack approver doesn't reply within
 # `human_timeout`).
 #
-# Use cases this shape covers:
-#
-#   - LLM-then-human (support-console reply-on-behalf): the content-
-#     safety LLM judge runs first, then a human in #support.
-#   - LLM-only proctoring (pg-corp-secret-columns): a column-level
-#     read of sensitive tables goes through Claude with a
-#     domain-specific prompt.
-#   - Human-only (stripe-extra-scrutiny): a curated set of destructive
-#     paths gets routed to billing-strict (require_approvers = 2).
-#
 #
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║ 7. PROFILES                                                      ║
 # ╚══════════════════════════════════════════════════════════════════╝
 #
-# A profile is just an endpoint membership list:
+# A profile is a credential membership list:
 #
-#     profile "alice" { endpoints = [github-alice, slack-alice, ...] }
+#     profile "alice" { credentials = [bearer_token.github-alice-pat, slack_tokens.slack-alice, ...] }
 #
 # Three observations:
 #
-#   - Profiles do NOT reference rules. Rules are tied to endpoints, so
-#     including an endpoint in a profile transitively includes every
-#     rule attached to that endpoint.
+#   - Profiles do NOT reference endpoints directly. Endpoint membership
+#     is the transitive closure profile → credentials → endpoints.
+#     Rules are tied to endpoints, so including a credential in a
+#     profile transitively includes every endpoint that credential
+#     binds and every rule attached to it.
 #
-#   - Sharing is by reference. notion / grafana / ch-o11y-* / k8s-dev-*
-#     all appear in multiple profiles; they map to one row each in
-#     the gateway store, with M:N joins to the listed profiles.
+#   - Sharing is by reference. notion-corp / grafana / ch-o11y /
+#     k8s-dev-{iad,sfo}-mtls all appear in multiple profiles; they map
+#     to one credential row each, with M:N joins to the listed profiles.
 #
-#   - Per-user variants are separate endpoints. `github-ops`,
-#     `github-alice`, `github-bob` all hit api.github.com but each
-#     binds a different PAT. The profile names the right one.
+#   - Multi-credential endpoints (anthropic-ops, orb, pg-corp) list
+#     BOTH credentials in the profile that wields them, wrapped in
+#     `{ placeholder = "PH_...", credential = name }` entries that
+#     disambiguate the wire-time dispatch. Per-user-fanout endpoints
+#     (github, slack, telegram, openai-codex) are also globally
+#     multi-credential, but each profile typically wields just one
+#     credential per endpoint and needs no placeholders. The one
+#     exception is bob's openai-codex — bob wields both his and
+#     carol's credentials, so his profile carries inline placeholders
+#     on both entries.
 #
-# v14 has three profiles:
+# v15 has three profiles:
 #
-#   ops    — full ops coverage (Anthropic dual-cred, Stripe, Orb,
-#            internal admin console, both postgres servers, all k8s
-#            clusters, ClickHouse, Notion, Grafana, Slack).
+#   ops    — full ops coverage (anthropic dual-cred, stripe, orb dual,
+#            support console, both postgres servers (pg-corp dual),
+#            all k8s clusters, ClickHouse, Notion, Grafana, Slack).
 #   alice  — operational tools (per-user GitHub/Slack, plus
 #            tool-specific APIs: Smithery, AMem, Checkly, PostHog,
 #            Honeycomb, PagerDuty, customer support helpdesk).
@@ -348,10 +359,11 @@
 #   The loader inlines the PEM content from a sibling directory at
 #   load time. Keeps cert material out of this file.
 #
-# - EKS auth (k8s-eks-corp-prod) uses an `aws_credential` bound to the
-#   kubernetes endpoint. The gateway presigns an STS GetCallerIdentity
-#   URL at request time and stamps the `k8s-aws-v1.<…>` bearer; cluster
-#   name and region live on the endpoint.
+# - EKS auth (k8s-eks-corp-prod) uses an `aws_credential` whose
+#   `endpoint = k8s-eks-corp-prod` binds it to that cluster. The
+#   gateway presigns an STS GetCallerIdentity URL at request time and
+#   stamps the `k8s-aws-v1.<…>` bearer; cluster name and region live
+#   on the endpoint.
 
 unknown_host = "passthrough"
 llm_fail_mode = "closed"
@@ -372,6 +384,11 @@ human_on_timeout = "deny"
 # scheduler-ops, billing, billing-strict, observability, notion-archive.
 # `billing-strict` requires two approvers (`require_approvers = 2`)
 # for the highest-blast-radius Stripe operations.
+#
+# Approvers reference `credential = anthropic-ops-sub` — that bare name
+# resolves to the credential below; the credential itself binds the
+# anthropic-ops endpoint, so the approver's outbound calls use the
+# same injection path the agent uses.
 
 approver "llm_approver" "slack-block-kit-shape-judge" {
   model      = "claude-sonnet-4-20250514"
@@ -414,12 +431,6 @@ approver "human_approver" "observability"  { channel = "#observability" }
 approver "human_approver" "notion-archive" { channel = "#notion-approvals" }
 
 # ── Reusable LLM policy texts ───────────────────────
-#
-# A `policy` block holds prompt text used by an LLM proctor stage.
-# Pulled out as named blocks so the same prompt can be reused across
-# rules, and so the prompt is auditable as a first-class artifact
-# (rather than hidden inside a rule body). An llm_approver block binds
-# a `policy = <name>` reference to one of these.
 
 policy "slack-block-kit-shape" {
   text = <<-EOT
@@ -493,210 +504,30 @@ policy "pg-secret-named-defense" {
   EOT
 }
 
-# ── Credentials ─────────────────────────────────────
+# ── Endpoints (bare network targets) ────────────────
 #
-# Every credential is a typed handle. The actual secret material is
-# stored separately in the gateway and looked up at inject time by
-# name. Credential blocks here only carry parameters that the plugin
-# needs in order to know HOW to inject (cookie name, postgres user,
-# stripe idempotency-key behaviour, EKS cluster info, header name
-# overrides, ...). They never hold the secret value itself.
+# No `credential` / `credentials` fields. Endpoints only carry
+# connection parameters — credential binding lives on the credential
+# blocks below.
 
-# ops' anthropic — both an API key AND an OAuth subscription. The
-# agent picks via placeholder; api-key is preferred for raw-API
-# usage, subscription is preferred for higher rate limits / cheaper
-# tokens during normal operation.
-credential "anthropic_manual_key" "anthropic-ops-key" {
-}
-credential "anthropic_oauth_subscription" "anthropic-ops-sub" {
-}
+endpoint "https" "anthropic-ops" { hosts = ["api.anthropic.com"] }
 
-# Per-user GitHub PATs. Same hosts (api.github.com, github.com) but
-# different secret per user — three endpoints, three credentials.
-credential "bearer_token" "github-ops-pat"   {}
-credential "bearer_token" "github-alice-pat" {}
-credential "bearer_token" "github-bob-pat"   {}
+endpoint "https" "github"   { hosts = ["api.github.com", "github.com"] }
+endpoint "https" "slack"    { hosts = ["slack.com", "www.slack.com", "api.slack.com"] }
+endpoint "https" "telegram" { hosts = ["api.telegram.org"] }
+endpoint "https" "gemini"   { hosts = ["generativelanguage.googleapis.com"] }
 
-# Slack tokens. The slack_tokens credential type bundles bot+app
-# tokens for a single workspace; Slack's plugin injects whichever is
-# appropriate for the destination API. One credential per workspace.
-credential "slack_tokens" "slack-ops-cred"   {}
-credential "slack_tokens" "slack-alice-cred" {}
-credential "slack_tokens" "slack-bob-cred"   {}
+endpoint "https" "openai-codex" { hosts = ["chatgpt.com", "auth.openai.com"] }
 
-# Telegram bot tokens.
-credential "telegram_bot_token" "telegram-carol-cred" {}
-credential "telegram_bot_token" "telegram-bob-cred"   {}
+endpoint "https" "support-console" { hosts = ["admin.example.com"] }
+endpoint "https" "stripe"          { hosts = ["api.stripe.com"] }
+endpoint "https" "orb"             { hosts = ["api.withorb.com"] }
 
-# Gemini (bob only).
-credential "gemini_api_key" "gemini-bob-cred" {}
-
-# OpenAI Codex OAuth — carol's is shared between alice and bob.
-credential "openai_codex_oauth" "openai-codex-carol-cred" {}
-credential "openai_codex_oauth" "openai-codex-bob-cred"   {}
-
-# ops-only.
-# `idempotency_key = true` on stripe-live-key tells the apikey plugin
-# to also stamp an Idempotency-Key header on writes, so the same
-# request retried by the agent doesn't cause double-charge.
-credential "bearer_token" "stripe-live-key" {
-  idempotency_key = true
-}
-credential "bearer_token" "orb-test-key" {}
-credential "bearer_token" "orb-prod-key" {}
-credential "cookie_token" "support-console-pat" {
-  cookie_name = "session"
-}
-credential "postgres_credential" "pg-corp-ro" {
-  user        = "corp_ro"
-}
-credential "postgres_credential" "pg-corp-rw" {
-  user        = "corp_rw"
-}
-credential "postgres_credential" "pg-scheduler-cred" {
-  user        = "scheduler"
-}
-
-# Shared (referenced by multiple profiles).
-credential "notion_oauth" "notion-corp" {}
-credential "bearer_token" "grafana-token" {}
-credential "clickhouse_credential" "ch-o11y" {
-  user = "ops"
-}
-# Per-database o11y credentials — `ch-o11y-prod` has restricted
-# RBAC at the database layer; `ch-o11y-dev` is the read/write dev
-# account.
-credential "clickhouse_credential" "ch-o11y-prod" {
-  user = "prod_app"
-}
-credential "clickhouse_credential" "ch-o11y-dev" {
-  user = "dev_app"
-}
-credential "mtls_credential" "k8s-dev-iad-mtls" {}
-credential "mtls_credential" "k8s-dev-sfo-mtls" {}
-credential "aws_credential" "k8s-eks-corp-aws" {}
-
-# alice's per-tool API tokens. These illustrate the variety of HTTP
-# auth shapes the bearer/header_token credentials cover:
-#   - bearer_token        → Authorization: Bearer <secret>
-#   - header_token        → custom header name + optional prefix
-#                           (honeycomb uses x-honeycomb-team raw;
-#                            pagerduty uses authorization: Token token=<secret>)
-credential "bearer_token" "smithery-alice"  {}
-credential "bearer_token" "amem-alice"      {}
-credential "bearer_token" "checkly-alice"   {}
-credential "bearer_token" "posthog-alice"   {}
-credential "bearer_token" "helpdesk-alice"  {}
-credential "header_token" "honeycomb-alice" {
-  header = "x-honeycomb-team"
-}
-credential "header_token" "pagerduty-alice" {
-  header = "authorization"
-  prefix = "Token token="
-}
-
-# ── Endpoints ────────────────────────────────────────
-#
-# Endpoint blocks hold ONLY connection / credential info — no rules,
-# no defaults. Rules attach upward via top-level `rule {}` blocks.
-
-# Multi-account anthropic (ops only). Two credential types coexist
-# behind a placeholder dispatch; the agent picks api-key vs
-# oauth-subscription per call.
-endpoint "https" "anthropic-ops" {
-  hosts = ["api.anthropic.com"]
-  credentials = [
-    { placeholder = "PH_anthropic_ops_apikey", credential = anthropic_manual_key.anthropic-ops-key },
-    { placeholder = "PH_anthropic_ops_subscription", credential = anthropic_oauth_subscription.anthropic-ops-sub },
-  ]
-}
-
-# Per-user GitHub. Same hosts, different credentials → three
-# endpoints. Each profile names exactly one of these.
-endpoint "https" "github-ops" {
-  hosts       = ["api.github.com", "github.com"]
-  credential = bearer_token.github-ops-pat
-}
-endpoint "https" "github-alice" {
-  hosts       = ["api.github.com", "github.com"]
-  credential = bearer_token.github-alice-pat
-}
-endpoint "https" "github-bob" {
-  hosts       = ["api.github.com", "github.com"]
-  credential = bearer_token.github-bob-pat
-}
-
-# Per-user Slack.
-endpoint "https" "slack-ops" {
-  hosts       = ["slack.com", "www.slack.com", "api.slack.com"]
-  credential = slack_tokens.slack-ops-cred
-}
-endpoint "https" "slack-alice" {
-  hosts       = ["slack.com", "www.slack.com", "api.slack.com"]
-  credential = slack_tokens.slack-alice-cred
-}
-endpoint "https" "slack-bob" {
-  hosts       = ["slack.com", "www.slack.com", "api.slack.com"]
-  credential = slack_tokens.slack-bob-cred
-}
-
-# Per-user Telegram / Codex / Gemini.
-endpoint "https" "telegram-carol" {
-  hosts       = ["api.telegram.org"]
-  credential = telegram_bot_token.telegram-carol-cred
-}
-endpoint "https" "telegram-bob" {
-  hosts       = ["api.telegram.org"]
-  credential = telegram_bot_token.telegram-bob-cred
-}
-endpoint "https" "gemini-bob" {
-  hosts       = ["generativelanguage.googleapis.com"]
-  credential = gemini_api_key.gemini-bob-cred
-}
-endpoint "https" "openai-codex-carol" {
-  hosts       = ["chatgpt.com", "auth.openai.com"]
-  credential = openai_codex_oauth.openai-codex-carol-cred
-}
-endpoint "https" "openai-codex-bob" {
-  hosts       = ["chatgpt.com", "auth.openai.com"]
-  credential = openai_codex_oauth.openai-codex-bob-cred
-}
-
-# ops-only services.
-endpoint "https" "support-console" {
-  hosts       = ["admin.example.com"]
-  credential = cookie_token.support-console-pat
-}
-endpoint "https" "stripe" {
-  hosts       = ["api.stripe.com"]
-  credential = bearer_token.stripe-live-key
-}
-# orb test vs prod: same hosts, two credentials. Placeholder dispatch
-# lets the agent pick at request time without changing endpoints.
-# Rules below match on `credential = orb-prod-key` to lock prod
-# behind approval while letting test go through unchecked.
-endpoint "https" "orb" {
-  hosts = ["api.withorb.com"]
-  credentials = [
-    { placeholder = "PH_orb_test", credential = bearer_token.orb-test-key },
-    { placeholder = "PH_orb_prod", credential = bearer_token.orb-prod-key },
-  ]
-}
-
-# Postgres. Network reachability is arranged out-of-band; tunnel
-# topology declarations land when the postgres runtime hooks ship.
 endpoint "postgres" "pg-corp" {
   host = "corp-prod.cluster.example:5432"
-  # ro/rw dispatch via placeholder. Ro is the default for reads;
-  # rw requires explicit selection AND human approval (see rules).
-  credentials = [
-    { placeholder = "PH_pg_corp_ro", credential = postgres_credential.pg-corp-ro },
-    { placeholder = "PH_pg_corp_rw", credential = postgres_credential.pg-corp-rw },
-  ]
 }
 endpoint "postgres" "pg-scheduler" {
-  host       = "scheduler-prod.cluster.example:5432"
-  credential = postgres_credential.pg-scheduler-cred
+  host = "scheduler-prod.cluster.example:5432"
 }
 
 endpoint "kubernetes" "k8s-eks-corp-prod" {
@@ -704,84 +535,152 @@ endpoint "kubernetes" "k8s-eks-corp-prod" {
   description  = "arn:aws:eks:us-east-2:123456789012:cluster/corp-prod"
   cluster_name = "corp-prod"
   region       = "us-east-2"
-  credential   = aws_credential.k8s-eks-corp-aws
 }
 
-# Shared (multiple profiles).
-endpoint "https" "notion" {
-  hosts       = ["api.notion.com", "mcp.notion.com"]
-  credential = notion_oauth.notion-corp
-}
-endpoint "https" "grafana" {
-  hosts       = ["grafana.example.com"]
-  credential = bearer_token.grafana-token
-}
-# ClickHouse exposes two protocols on the same upstream cluster.
-# Two endpoint rows, distinct names, with per-database credential
-# dispatch — agents declaring `database=prod` get the restricted
-# prod credential, dev gets the dev account, anything else falls
-# through to the shared ops credential. Rules can attach to both
-# via `endpoints = [ch-o11y-https, ch-o11y-native]`.
-endpoint "clickhouse_https" "ch-o11y-https" {
-  hosts = ["clickhouse-o11y.example", "ch-o11y.internal.example"]
-  credentials = [
-    { database = "prod", credential = clickhouse_credential.ch-o11y-prod },
-    { database = "dev",  credential = clickhouse_credential.ch-o11y-dev  },
-    { credential = clickhouse_credential.ch-o11y },
-  ]
-}
-endpoint "clickhouse_native" "ch-o11y-native" {
-  hosts = ["clickhouse-o11y.example"]
-  credentials = [
-    { database = "prod", credential = clickhouse_credential.ch-o11y-prod },
-    { database = "dev",  credential = clickhouse_credential.ch-o11y-dev  },
-    { credential = clickhouse_credential.ch-o11y },
-  ]
-}
+endpoint "https" "notion"  { hosts = ["api.notion.com", "mcp.notion.com"] }
+endpoint "https" "grafana" { hosts = ["grafana.example.com"] }
+
+# Both ClickHouse endpoints are bare here; the shared credential
+# below references both via the singleton-or-list `endpoints` form.
+endpoint "clickhouse_https"  "ch-o11y-https"  { hosts = ["clickhouse-o11y.example", "ch-o11y.internal.example"] }
+endpoint "clickhouse_native" "ch-o11y-native" { hosts = ["clickhouse-o11y.example"] }
+
 # Self-hosted k8s clusters use mTLS. The CA cert is referenced by
 # filename and inlined at load time.
 endpoint "kubernetes" "k8s-dev-iad" {
   server      = "198.51.100.10"
   ca_cert     = "<<file:k8s-dev-iad-ca.pem>>"
   description = "admin@dev-iad.example"
-  credential = mtls_credential.k8s-dev-iad-mtls
 }
 endpoint "kubernetes" "k8s-dev-sfo" {
   server      = "198.51.100.20"
   ca_cert     = "<<file:k8s-dev-sfo-ca.pem>>"
   description = "admin@dev-sfo.example"
-  credential = mtls_credential.k8s-dev-sfo-mtls
 }
 
-# alice's per-tool endpoints. One endpoint per upstream API; minimal
-# rule coverage (most are passthrough with credential injection only).
-endpoint "https" "smithery" {
-  hosts       = ["smithery.ai"]
-  credential = bearer_token.smithery-alice
+# alice's per-tool endpoints.
+endpoint "https" "smithery"  { hosts = ["smithery.ai"] }
+endpoint "https" "amem"      { hosts = ["api.amem.ai"] }
+endpoint "https" "checkly"   { hosts = ["api.checklyhq.com"] }
+endpoint "https" "posthog"   { hosts = ["us.i.posthog.com", "us.posthog.com"] }
+endpoint "https" "honeycomb" { hosts = ["api.honeycomb.io"] }
+endpoint "https" "pagerduty" { hosts = ["api.pagerduty.com"] }
+endpoint "https" "helpdesk"  { hosts = ["helpdesk.example.com"] }
+
+# ── Credentials (each names its endpoint) ───────────
+#
+# Every credential is a typed handle. The actual secret material is
+# stored separately in the gateway and looked up at inject time by
+# name. Credential blocks here only carry parameters that the plugin
+# needs in order to know HOW to inject (cookie name, postgres user,
+# stripe idempotency-key behaviour, header name overrides, ...). They
+# never hold the secret value itself.
+#
+# Multi-credential endpoints (anthropic-ops, orb, pg-corp) appear as
+# N credentials each pointing at the shared endpoint. The dispatch
+# discriminator lives on the profile that wields them — see the
+# inline `{ placeholder = "PH_...", credential = ... }` entries in
+# profile "ops" below. The shared ch-o11y credential uses the
+# singleton-or-list `endpoints` form (one credential, two endpoints).
+
+# ops' anthropic — both an API key AND an OAuth subscription. The
+# dispatch placeholder lives on the profile (inline `{ placeholder =
+# ..., credential = ... }` entries in profile "ops"), because only
+# profiles that wield BOTH credentials need to disambiguate.
+credential "anthropic_manual_key"         "anthropic-ops-key" { endpoint = https.anthropic-ops }
+credential "anthropic_oauth_subscription" "anthropic-ops-sub" { endpoint = https.anthropic-ops }
+
+# Per-user GitHub PATs. The github endpoint is a bare network target
+# shared across users; each user's profile wields exactly one of these,
+# so no placeholder is needed in any profile.
+credential "bearer_token" "github-ops-pat"   { endpoint = https.github }
+credential "bearer_token" "github-alice-pat" { endpoint = https.github }
+credential "bearer_token" "github-bob-pat"   { endpoint = https.github }
+
+# Per-user Slack workspaces — shared slack endpoint, each user's
+# profile uses one workspace credential.
+credential "slack_tokens" "slack-ops"   { endpoint = https.slack }
+credential "slack_tokens" "slack-alice" { endpoint = https.slack }
+credential "slack_tokens" "slack-bob"   { endpoint = https.slack }
+
+# Per-user Telegram / Codex / Gemini. The openai-codex endpoint is
+# the only one any profile binds with more than one credential
+# (profile "bob" uses both his and carol's codex), so the
+# disambiguation placeholders live in that profile.
+credential "telegram_bot_token"  "telegram-carol"     { endpoint = https.telegram }
+credential "telegram_bot_token"  "telegram-bob"       { endpoint = https.telegram }
+credential "gemini_api_key"      "gemini-bob"         { endpoint = https.gemini }
+credential "openai_codex_oauth"  "openai-codex-carol" { endpoint = https.openai-codex }
+credential "openai_codex_oauth"  "openai-codex-bob"   { endpoint = https.openai-codex }
+
+# ops-only.
+# `idempotency_key = true` tells the bearer_token plugin to also stamp
+# an Idempotency-Key header on writes, so the same request retried by
+# the agent doesn't cause double-charge.
+credential "bearer_token" "stripe-live-key" {
+  endpoint        = https.stripe
+  idempotency_key = true
 }
-endpoint "https" "amem" {
-  hosts       = ["api.amem.ai"]
-  credential = bearer_token.amem-alice
+
+# Orb: test + prod. Both wielded by profile "ops" → placeholders
+# declared there.
+credential "bearer_token" "orb-test-key" { endpoint = https.orb }
+credential "bearer_token" "orb-prod-key" { endpoint = https.orb }
+
+credential "cookie_token" "support-console-pat" {
+  endpoint    = https.support-console
+  cookie_name = "session"
 }
-endpoint "https" "checkly" {
-  hosts       = ["api.checklyhq.com"]
-  credential = bearer_token.checkly-alice
+
+# pg-corp: ro + rw. Both wielded by profile "ops" → placeholders
+# declared there.
+credential "postgres_credential" "pg-corp-ro" {
+  endpoint = postgres.pg-corp
+  user     = "corp_ro"
 }
-endpoint "https" "posthog" {
-  hosts       = ["us.i.posthog.com", "us.posthog.com"]
-  credential = bearer_token.posthog-alice
+credential "postgres_credential" "pg-corp-rw" {
+  endpoint = postgres.pg-corp
+  user     = "corp_rw"
 }
-endpoint "https" "honeycomb" {
-  hosts       = ["api.honeycomb.io"]
-  credential = header_token.honeycomb-alice
+credential "postgres_credential" "pg-scheduler" {
+  endpoint = postgres.pg-scheduler
+  user     = "scheduler"
 }
-endpoint "https" "pagerduty" {
-  hosts       = ["api.pagerduty.com"]
-  credential = header_token.pagerduty-alice
+
+credential "notion_oauth" "notion-corp"   { endpoint = https.notion }
+credential "bearer_token" "grafana" { endpoint = https.grafana }
+
+# ch-o11y: ONE credential, TWO endpoints. The singleton-or-list
+# `endpoints` form preserves the single-credential identity while
+# binding both ClickHouse protocol surfaces of the same upstream.
+credential "clickhouse_credential" "ch-o11y" {
+  endpoints = [clickhouse_https.ch-o11y-https, clickhouse_native.ch-o11y-native]
+  user      = "ops"
 }
-endpoint "https" "alice-helpdesk" {
-  hosts       = ["helpdesk.example.com"]
-  credential = bearer_token.helpdesk-alice
+
+credential "mtls_credential"   "k8s-dev-iad"  { endpoint = kubernetes.k8s-dev-iad }
+credential "mtls_credential"   "k8s-dev-sfo"  { endpoint = kubernetes.k8s-dev-sfo }
+credential "aws_credential"    "k8s-eks-corp-aws"  { endpoint = kubernetes.k8s-eks-corp-prod }
+
+# alice's per-tool API tokens. These illustrate the variety of HTTP
+# auth shapes the bearer/header_token credentials cover:
+#   - bearer_token        → Authorization: Bearer <secret>
+#   - header_token        → custom header name + optional prefix
+#                           (honeycomb uses x-honeycomb-team raw;
+#                            pagerduty uses authorization: Token token=<secret>)
+credential "bearer_token" "smithery-alice"  { endpoint = https.smithery }
+credential "bearer_token" "amem-alice"      { endpoint = https.amem }
+credential "bearer_token" "checkly-alice"   { endpoint = https.checkly }
+credential "bearer_token" "posthog-alice"   { endpoint = https.posthog }
+credential "bearer_token" "helpdesk-alice"  { endpoint = https.helpdesk }
+credential "header_token" "honeycomb-alice" {
+  endpoint = https.honeycomb
+  header   = "x-honeycomb-team"
+}
+credential "header_token" "pagerduty-alice" {
+  endpoint = https.pagerduty
+  header   = "authorization"
+  prefix   = "Token token="
 }
 
 # ── Rules ────────────────────────────────────────────
@@ -797,34 +696,17 @@ endpoint "https" "alice-helpdesk" {
 #      port-forward outside debug-* pods).
 #   4. Default-priority rules for normal writes → human approval.
 #   5. Negative-priority catch-all denies anything that fell through.
-#
-# Only support-console, stripe, and most postgres / k8s endpoints
-# have an explicit catch-all. Endpoints with simple shapes (notion,
-# grafana, slack-ops, github-*) leave fall-through semantics to the
-# gateway's default behaviour.
 
 # ── Slack ───────────────────────────────────────────
-#
-# Slack rules only target slack-ops (the only profile with custom
-# Slack rules). The single rule guards the support-team's outbound
-# email-by-Slack-button flow: messages containing approve_reply_*
-# action IDs go through an LLM proctor that verifies the Block Kit
-# shape matches what the human reviewer will see.
 
 rule "slack-ops-approve-reply-shape" {
-  endpoint  = https.slack-ops
-  condition = "http.method == 'POST' && http.path == '/api/chat.postMessage' && http.body.contains('approve_reply_')"
-  approve   = [llm_approver.slack-block-kit-shape-judge]
+  endpoint   = https.slack
+  credential = slack_tokens.slack-ops
+  condition  = "http.method == 'POST' && http.path == '/api/chat.postMessage' && http.body.contains('approve_reply_')"
+  approve    = [llm_approver.slack-block-kit-shape-judge]
 }
 
 # ── Support console ─────────────────────────────────
-#
-# admin.example.com support flow. Reads are free. Two specific
-# support-ticket mutations route to the support-ops human approver.
-# The reply-on-behalf endpoint sends customer-visible email content,
-# so it goes through the content-safety LLM first (catches markdown,
-# missing salutation, abusive content) and then support-ops human
-# approval. Everything else denies via the catch-all.
 
 rule "support-console-reads" {
   endpoint  = https.support-console
@@ -849,16 +731,6 @@ rule "support-console-default" {
 }
 
 # ── Stripe ──────────────────────────────────────────
-#
-# Reads free. Ephemeral keys are a read-only-by-design POST (creates
-# a short-lived API key with no real side effect; allowed via a
-# priority=100 override since it would otherwise hit the
-# stripe-other-writes default). DELETEs are blocked outright (Stripe
-# uses POST-with-action for deletes; explicit DELETE shouldn't reach
-# here). The extra-scrutiny path lists every operation that can move
-# real money or invalidate an invoice, and routes those to
-# billing-strict (require_approvers = 2). Everything else POST →
-# billing single-approver. Catch-all denies the long tail.
 
 rule "stripe-reads" {
   endpoint  = https.stripe
@@ -897,10 +769,7 @@ rule "stripe-default" {
 # ── Orb ─────────────────────────────────────────────
 #
 # Two credentials behind one endpoint, dispatched via placeholder.
-# Test key: anything goes. Prod key: reads free, deletes denied,
-# writes go to billing approver. Note the use of `credential = ...`
-# in match blocks — the same endpoint, different rules per credential.
-# This is the case the v11→v12 placeholder relocation was driven by.
+# Rule.credential predicates match on the dispatching credential.
 
 rule "orb-test-allow-all" {
   endpoint   = https.orb
@@ -928,12 +797,6 @@ rule "orb-prod-writes" {
 }
 
 # ── Notion ──────────────────────────────────────────
-#
-# Read-heavy by design. The archive override (priority 100) catches
-# PATCH /v1/pages/*/blocks/*/databases/* with `{archived: true}` body
-# — Notion's "delete" semantic — and routes it to notion-archive
-# alongside actual DELETE. Everything else (creates, edits) is allowed
-# outright since Notion content is low-blast-radius.
 
 rule "notion-reads" {
   endpoint  = https.notion
@@ -963,11 +826,6 @@ rule "notion-create-update" {
 }
 
 # ── Grafana ─────────────────────────────────────────
-#
-# Reads + low-impact writes (annotations, snapshots) are allowed.
-# Destructive deletes of dashboards, datasources, folders, and alert
-# rules are denied — those go through a PR. Updates to those same
-# resources go through the observability approver.
 
 rule "grafana-reads" {
   endpoint  = https.grafana
@@ -992,23 +850,10 @@ rule "grafana-dashboard-writes" {
 }
 
 # ── ClickHouse (https + native, same rules apply) ───
-#
-# ClickHouse access is strictly read-only. Both rules attach to BOTH
-# protocol endpoints via `endpoints = [ch-o11y-https, ch-o11y-native]`
-# — one rule, two targets, no duplication.
 
 rule "clickhouse-reads" {
   endpoints = [clickhouse_https.ch-o11y-https, clickhouse_native.ch-o11y-native]
   condition = "sql.verb in ['select', 'show', 'describe', 'explain', 'use']"
-  verdict   = "allow"
-}
-# sql.database is the agent-declared target database; the prod
-# rule fires only on requests scoped to that database. Higher
-# priority than the default-deny so the deny doesn't shadow it.
-rule "clickhouse-prod-readonly" {
-  endpoints = [clickhouse_https.ch-o11y-https, clickhouse_native.ch-o11y-native]
-  priority  = 10
-  condition = "sql.database == 'prod' && sql.verb in ['select', 'show', 'describe', 'explain']"
   verdict   = "allow"
 }
 rule "clickhouse-default" {
@@ -1019,11 +864,6 @@ rule "clickhouse-default" {
 }
 
 # ── Postgres — banned across all postgres endpoints ─
-#
-# These rules apply to BOTH pg-corp and pg-scheduler — anything
-# the agent should never be able to do regardless of which database.
-# DDL, dangerous functions, COPY ... PROGRAM, and the migrations
-# table are all blocked uniformly. Per-database rules follow.
 
 rule "pg-banned-verbs" {
   endpoints = [postgres.pg-corp, postgres.pg-scheduler]
@@ -1057,13 +897,6 @@ rule "pg-no-migrations" {
 }
 
 # ── Postgres — pg-corp-specific account rules ───────
-#
-# pg-corp has ro/rw credentials. The ro account is read-only by
-# database grants too, but we deny writes here for fast feedback (no
-# need to round-trip to pg). Reads of sensitive tables (env vars,
-# tokens, certs) go through an LLM proctor that checks whether secret
-# columns are actually being projected — priority=100 so it overrides
-# pg-corp-reads. Rw writes go to console-dba.
 
 rule "pg-corp-ro-no-writes" {
   endpoint   = postgres.pg-corp
@@ -1096,10 +929,6 @@ rule "pg-corp-default" {
 }
 
 # ── Postgres — pg-scheduler-specific rules ──────────
-#
-# pg-scheduler is single-credential. Reads with secret-suggestive
-# column names go through an LLM proctor (overrides pg-scheduler-
-# reads via priority=100). Writes go to scheduler-ops.
 
 rule "pg-scheduler-secret-named-defense" {
   endpoint  = postgres.pg-scheduler
@@ -1124,18 +953,6 @@ rule "pg-scheduler-default" {
 }
 
 # ── Kubernetes — base rules across all clusters ─────
-#
-# Applied uniformly to all three clusters (k8s-dev-iad, k8s-dev-sfo,
-# k8s-eks-corp-prod). The three high-priority rules at 1000
-# (no-secrets, no-interactive, no-portforward-non-debug) are
-# non-negotiable safety blocks: secret values can't leave via the
-# agent, interactive shells can't be policy-evaluated, and port-
-# forward is restricted to debug-* pods. The exec-content-check at
-# 500 LLM-evaluates pods/exec command contents.
-#
-# Mutations are blocked except on debug-* pods (the standard pattern
-# for one-off debugging). exec/attach/portforward verbs are allowed
-# (the safety blocks above already restrict them appropriately).
 
 rule "k8s-no-secrets" {
   endpoints = [kubernetes.k8s-dev-iad, kubernetes.k8s-dev-sfo, kubernetes.k8s-eks-corp-prod]
@@ -1198,13 +1015,6 @@ rule "k8s-exec-attach" {
 }
 
 # ── Kubernetes — EKS-specific extras ────────────────
-#
-# Production-only blocks. Writes to runtime namespaces (app,
-# kube-system, cert-manager, external-secrets, argocd, flux*) are
-# denied even for debug-* pods — those namespaces are managed by
-# GitOps. Some legacy configmaps in the app namespace still hold
-# cleartext secrets (named *-secrets or env-*); reads of those are
-# blocked even though configmaps reads are otherwise allowed.
 
 rule "k8s-eks-no-runtime-writes" {
   endpoint  = kubernetes.k8s-eks-corp-prod
@@ -1241,66 +1051,94 @@ rule "k8s-eks-default" {
 
 # ── Profiles ────────────────────────────────────────
 #
-# Endpoint membership lists. A profile gets exactly the endpoints it
-# names; rules ride along automatically because they're attached to
-# endpoints. Sharing happens by listing the same endpoint name from
-# multiple profiles.
+# Credential membership lists. A profile gets exactly the credentials
+# it names; endpoint membership is the transitive closure
+# profile → credentials → endpoints; rules ride along automatically
+# because they're attached to endpoints. Sharing happens by listing
+# the same credential name from multiple profiles.
 
 profile "ops" {
-  endpoints = [
-    https.anthropic-ops,
-    https.github-ops,
-    https.slack-ops,
-    https.support-console,
-    https.stripe,
-    https.orb,
-    https.notion,
-    https.grafana,
-    postgres.pg-corp,
-    postgres.pg-scheduler,
-    kubernetes.k8s-dev-iad,
-    kubernetes.k8s-dev-sfo,
-    kubernetes.k8s-eks-corp-prod,
-    clickhouse_https.ch-o11y-https,
-    clickhouse_native.ch-o11y-native,
+  # Bare-name entries are credentials whose endpoint binding is
+  # unambiguous in this profile. `{ credential = name, <field> = "..." }`
+  # entries name the dispatch discriminator the agent embeds when the
+  # profile actively wields more than one credential at the same
+  # endpoint. The discriminator field is per-credential-type
+  # (placeholder for HTTP-auth, user for postgres, database/user
+  # for clickhouse, …) and may equivalently be set on the credential
+  # block itself — profile-inline values override block-side ones.
+  credentials = [
+    # anthropic-ops: BOTH credentials at one endpoint → disambiguated
+    # via inline placeholders.
+    { placeholder = "PH_anthropic_ops_apikey", credential = anthropic_manual_key.anthropic-ops-key },
+    { placeholder = "PH_anthropic_ops_subscription", credential = anthropic_oauth_subscription.anthropic-ops-sub },
+
+    bearer_token.github-ops-pat,
+    slack_tokens.slack-ops,
+    cookie_token.support-console-pat,
+    bearer_token.stripe-live-key,
+
+    # orb: test + prod at one endpoint.
+    { placeholder = "PH_orb_test", credential = bearer_token.orb-test-key },
+    { placeholder = "PH_orb_prod", credential = bearer_token.orb-prod-key },
+
+    notion_oauth.notion-corp,
+    bearer_token.grafana,
+
+    # pg-corp: ro + rw at one endpoint. Disambiguation lives on each
+    # credential's `user` block-side field — postgres routes on the
+    # StartupMessage user, so the operator never needs a profile-side
+    # discriminator here.
+    postgres_credential.pg-corp-ro,
+    postgres_credential.pg-corp-rw,
+    postgres_credential.pg-scheduler,
+
+    mtls_credential.k8s-dev-iad,
+    mtls_credential.k8s-dev-sfo,
+    aws_credential.k8s-eks-corp-aws,
+
+    # ch-o11y: one credential, two endpoints.
+    clickhouse_credential.ch-o11y,
   ]
 }
 
 profile "alice" {
-  endpoints = [
-    https.github-alice,
-    https.slack-alice,
-    https.telegram-carol,
-    https.openai-codex-carol,
+  credentials = [
+    bearer_token.github-alice-pat,
+    slack_tokens.slack-alice,
+    telegram_bot_token.telegram-carol,
+    openai_codex_oauth.openai-codex-carol,
 
-    # shared with ops:
-    https.notion,
-    https.grafana,
-    clickhouse_https.ch-o11y-https,
-    clickhouse_native.ch-o11y-native,
-    kubernetes.k8s-dev-iad,
-    kubernetes.k8s-dev-sfo,
+    # shared with profile.ops:
+    notion_oauth.notion-corp,
+    bearer_token.grafana,
+    clickhouse_credential.ch-o11y,
+    mtls_credential.k8s-dev-iad,
+    mtls_credential.k8s-dev-sfo,
 
-    # alice's per-tool API access:
-    https.smithery,
-    https.amem,
-    https.checkly,
-    https.posthog,
-    https.honeycomb,
-    https.pagerduty,
-    https.alice-helpdesk,
+    # profile.alice's per-tool API access:
+    bearer_token.smithery-alice,
+    bearer_token.amem-alice,
+    bearer_token.checkly-alice,
+    bearer_token.posthog-alice,
+    header_token.honeycomb-alice,
+    header_token.pagerduty-alice,
+    bearer_token.helpdesk-alice,
   ]
+  # No placeholders: alice's profile binds at most one credential per
+  # endpoint, so dispatch is unambiguous without a discriminator.
 }
 
 profile "bob" {
-  endpoints = [
-    https.github-bob,
-    https.slack-bob,
-    https.telegram-bob,
-    https.gemini-bob,
-    https.openai-codex-bob,
+  credentials = [
+    bearer_token.github-bob-pat,
+    slack_tokens.slack-bob,
+    telegram_bot_token.telegram-bob,
+    gemini_api_key.gemini-bob,
+
+    # bob wields two openai-codex credentials → placeholder dispatch.
+    { placeholder = "PH_openai_codex_bob", credential = openai_codex_oauth.openai-codex-bob },
 
     # shared with alice:
-    https.openai-codex-carol,
+    { placeholder = "PH_openai_codex_carol", credential = openai_codex_oauth.openai-codex-carol },
   ]
 }

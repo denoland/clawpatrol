@@ -1,8 +1,9 @@
-credential "bearer_token" "pat" {}
-
 endpoint "https" "github" {
-  hosts      = ["api.github.com"]
-  credential = bearer_token.pat
+  hosts = ["api.github.com"]
+}
+
+credential "bearer_token" "pat" {
+  endpoint = https.github
 }
 
 # Syntactically invalid CEL — unbalanced quote.
@@ -14,5 +15,5 @@ rule "broken" {
 }
 
 profile "default" {
-  endpoints = [https.github]
+  credentials = [bearer_token.pat]
 }

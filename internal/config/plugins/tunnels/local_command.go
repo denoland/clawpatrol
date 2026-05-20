@@ -218,7 +218,7 @@ func init() {
 		Refs:    commonRefs,
 		Build:   passthrough,
 		Runtime: (*LocalCommandTunnel)(nil),
-		Emit: func(body any, _ string, b *hclwrite.Body, refs *config.RefIndex) {
+		Emit: func(body any, _ string, b *hclwrite.Body) {
 			t := body.(*LocalCommandTunnel)
 			if len(t.Command) > 0 {
 				b.SetAttributeValue("command", config.StringListVal(t.Command))
@@ -244,7 +244,7 @@ func init() {
 				}
 				b.SetAttributeValue("env", cty.ObjectVal(vals))
 			}
-			emitCommon(b, t.TunnelCommon(), refs)
+			emitCommon(b, t.TunnelCommon())
 		},
 	})
 }

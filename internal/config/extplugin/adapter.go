@@ -44,13 +44,12 @@ type endpointAdapter struct {
 // interfaces directly so the gateway's compile / DNS-VIP passes
 // route plugin endpoints with zero new code.
 type dynamicEndpointBody struct {
-	adapter        *endpointAdapter
-	instanceName   string
-	canonicalJSON  []byte
-	hosts          []string
-	credentialName string
-	tlsTerminate   bool
-	wantsVIP       bool
+	adapter       *endpointAdapter
+	instanceName  string
+	canonicalJSON []byte
+	hosts         []string
+	tlsTerminate  bool
+	wantsVIP      bool
 }
 
 // EndpointHosts is consulted by the loader at compile time
@@ -108,7 +107,7 @@ func (a *endpointAdapter) HandleConn(ctx context.Context, ch *runtime.ConnHandle
 		credExtra map[string]string
 	)
 	if len(ch.Endpoint.Credentials) > 0 {
-		c := ch.Endpoint.Credentials[0].Credential
+		c := ch.Endpoint.Credentials[0]
 		credName = c.Symbol.Name
 		credType = c.Symbol.Type
 		secret, err := ch.Secrets.Get(credName)

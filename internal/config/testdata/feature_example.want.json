@@ -28,6 +28,7 @@
         "body": {
           "IdempotencyKey": false
         },
+        "endpoint": "github",
         "type": "bearer_token"
       }
     },
@@ -37,8 +38,7 @@
           "Hosts": [
             "api.github.com",
             "github.com"
-          ],
-          "Credential": "github-pat"
+          ]
         },
         "family": "http",
         "type": "https"
@@ -46,8 +46,8 @@
     },
     "profiles": {
       "default": {
-        "endpoints": [
-          "github"
+        "credentials": [
+          "github-pat"
         ]
       }
     },

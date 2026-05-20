@@ -211,17 +211,10 @@ func (s *SlackTokens) NotifyHITL(ctx context.Context, req runtime.ApproveRequest
 	if err != nil {
 		return err
 	}
-	if posted.Channel != "" && posted.TS != "" {
+	if target.MessageUpdateSink != nil && req.AsyncOperationID != "" && posted.Channel != "" && posted.TS != "" {
 		ref := encodeSlackMessageRef(slackMessageRef{Credential: target.CredentialName, Channel: posted.Channel, TS: posted.TS, PendingID: target.PendingID, Interactive: target.Interactive, Message: target.Message, Summary: target.Summary})
-		if target.MessageUpdateSink != nil && req.AsyncOperationID != "" {
-			if err := target.MessageUpdateSink(ctx, req.AsyncOperationID, ref); err != nil {
-				log.Printf("slack notify: record HITL message ref for %s: %v", req.AsyncOperationID, err)
-			}
-		}
-		if target.PendingMessageUpdateSink != nil && target.PendingID != "" {
-			if err := target.PendingMessageUpdateSink(ctx, target.PendingID, ref); err != nil {
-				log.Printf("slack notify: record pending HITL message ref for %s: %v", target.PendingID, err)
-			}
+		if err := target.MessageUpdateSink(ctx, req.AsyncOperationID, ref); err != nil {
+			log.Printf("slack notify: record HITL message ref for %s: %v", req.AsyncOperationID, err)
 		}
 	}
 	return nil
@@ -476,7 +469,7 @@ func slackOperationStatus(update runtime.HITLMessageUpdate) string {
 	case runtime.HITLOperationStateExpired:
 		return ":alarm_clock: HITL approval expired"
 	case runtime.HITLOperationStateClientDisconnected:
-		return ":warning: Original client disconnected before approval"
+		return ":warning: Original client disconnected before async polling handle was returned"
 	default:
 		return "HITL state: `" + string(update.State) + "`"
 	}
@@ -913,11 +906,12 @@ func init() {
 		_ runtime.WebhookProvider       = (*SlackTokens)(nil)
 	)
 	config.Register(&config.Plugin{
-		Kind:    config.KindCredential,
-		Type:    "slack_tokens",
-		New:     newer[SlackTokens](),
-		Runtime: (*SlackTokens)(nil),
-		Build:   passthrough,
-		Emit:    emptyEmit,
+		Kind:           config.KindCredential,
+		Type:           "slack_tokens",
+		Disambiguators: []string{"placeholder"},
+		New:            newer[SlackTokens](),
+		Runtime:        (*SlackTokens)(nil),
+		Build:          passthrough,
+		Emit:           emptyEmit,
 	})
 }

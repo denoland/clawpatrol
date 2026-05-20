@@ -13,21 +13,21 @@
 #   approver   "<type>" "<name>"      who arbitrates (llm_approver |
 #                                     human_approver)
 #   policy     "<name>"               reusable LLM proctor prompt
-#   credential "<type>" "<name>"      typed handle to a secret
-#   endpoint   "<type>" "<name>"      typed upstream binding
+#   endpoint   "<type>" "<name>"      typed network target (hosts +
+#                                     connection params only)
+#   credential "<type>" "<name>"      typed handle to a secret, bound
+#                                     to the endpoint(s) it auths
 #   rule       "<name>"               one policy decision targeting
 #                                     one or more endpoints
-#   profile    "<name>"               endpoint membership list — a
+#   profile    "<name>"               credential membership list — a
 #                                     device's profile gets exactly
-#                                     these endpoints
+#                                     these credentials and (transitively)
+#                                     the endpoints they bind
 #   tunnel     "<type>" "<name>"      side-process the gateway dials
 #                                     through (e.g. cloud-sql-proxy)
 #
-# References are typed traversals: `<type>.<name>` for two-label
-# kinds (endpoint / credential / approver / tunnel) and
-# `<kind>.<name>` for one-label kinds (rule / policy / profile).
-# Names must be unique within a kind; cross-kind collisions are
-# allowed because the prefix disambiguates.
+# References are bare names — no kind prefix. The flat namespace is
+# globally unique; collisions are a load error.
 
 # ── operational --------------------------------------------------------
 
@@ -73,81 +73,20 @@ llm_cache_ttl    = 300
 human_timeout    = 600
 human_on_timeout = "deny"
 
-# ── credentials -------------------------------------------------------
-#
-# One per upstream secret. The body lists only injection parameters;
-# the actual secret is stored separately keyed by name (paste it via
-# the dashboard).
-
-# AI providers — three common shapes.
-#
-#   anthropic_oauth_subscription — Claude Pro/Max subscription. The
-#     binary handles the OAuth flow at first dashboard visit.
-#   anthropic_manual_key         — raw API key from console.anthropic.com.
-#     Use this when you also need to call the API from your own
-#     rules (the llm_approver below).
-#   openai_codex_oauth           — ChatGPT subscription OAuth, mirrors
-#     what `codex` and `chatgpt.com` use.
-credential "anthropic_oauth_subscription" "claude"        {}
-credential "anthropic_manual_key"         "anthropic-key" {}
-credential "openai_codex_oauth"           "codex"         {}
-credential "github_oauth"                 "github"        {}
-
-# Bearer tokens — opaque "Authorization: Bearer <token>".
-credential "bearer_token" "grafana-token" {}
-credential "bearer_token" "aws-token"     {}
-
-# Notion OAuth — workspace-scoped.
-credential "notion_oauth" "notion-oauth" {}
-
-# Cookie-based auth — for upstreams (typically internal web apps)
-# that authenticate by session cookie.
-credential "cookie_token" "internal-dashboard" {
-  cookie_name = "session"
-}
-
-# Slack — used both as a regular endpoint (chat.postMessage etc) and
-# as the channel for human_approver interactive approvals below.
-credential "slack_tokens" "slack-token" {}
-
-# SSH — private key + (optional) passphrase + (optional) host_pubkey
-# live in the secret store. Paste them via the dashboard.
-credential "ssh_key" "build-host-cred" {}
-
-# Database credentials are user-scoped: the upstream sees the value
-# of `user`; the password lives in the secret store.
-credential "postgres_credential"   "pg-readonly-cred"  { user = "agent" }
-credential "postgres_credential"   "pg-writer-cred"    { user = "agent" }
-credential "clickhouse_credential" "ch-analytics-cred" { user = "agent" }
-
-# Kubernetes — client cert + key (mTLS) per cluster.
-credential "mtls_credential" "k8s-dev-mtls"  {}
-credential "mtls_credential" "k8s-prod-mtls" {}
-
 # ── endpoints ---------------------------------------------------------
 #
-# Hosts the agent is allowed to dial, plus which credential gets
-# injected on each upstream call. The endpoint family (https / ssh
-# / postgres / clickhouse_native / kubernetes) determines what
-# protocol the gateway speaks and which CEL variable rules see
-# (`http`, `sql`, `k8s`).
+# Pure network targets: hosts + protocol-family connection params.
+# No credential refs — credential binding lives on the credential
+# blocks below. The endpoint family (https / ssh / postgres /
+# clickhouse_native / kubernetes) determines what protocol the
+# gateway speaks and which CEL variable rules see (`http`, `sql`,
+# `k8s`).
 
 # HTTPS — AI providers.
-endpoint "https" "anthropic" {
-  hosts      = ["api.anthropic.com"]
-  credential = anthropic_oauth_subscription.claude
-}
-endpoint "https" "anthropic-api" {
-  hosts      = ["api.anthropic.com"]
-  credential = anthropic_manual_key.anthropic-key
-}
-endpoint "https" "openai-api" {
-  hosts      = ["api.openai.com"]
-  credential = openai_codex_oauth.codex
-}
+endpoint "https" "anthropic"  { hosts = ["api.anthropic.com"] }
+endpoint "https" "openai-api" { hosts = ["api.openai.com"] }
 endpoint "openai_codex_https" "openai-chatgpt" {
-  hosts      = ["chatgpt.com"]
-  credential = openai_codex_oauth.codex
+  hosts = ["chatgpt.com"]
 }
 
 # HTTPS — SaaS.
@@ -157,7 +96,6 @@ endpoint "https" "github-api" {
     "raw.githubusercontent.com",
     "github.com",
   ]
-  credential = github_oauth.github
 }
 endpoint "https" "slack" {
   hosts = [
@@ -165,28 +103,9 @@ endpoint "https" "slack" {
     "api.slack.com",
     "wss-primary.slack.com",
   ]
-  credential = slack_tokens.slack-token
 }
-endpoint "https" "notion" {
-  hosts      = ["api.notion.com", "mcp.notion.com"]
-  credential = notion_oauth.notion-oauth
-}
-endpoint "https" "grafana" {
-  hosts      = ["mygrafana.grafana.net"]
-  credential = bearer_token.grafana-token
-}
-
-# HTTPS — wildcard hosts. A `*.<suffix>` entry matches any name that
-# ends in `.<suffix>` and has at least one character before that
-# suffix; `*.amazonaws.com` covers both `s3.amazonaws.com` and
-# `s3.us-east-1.amazonaws.com` but NOT the bare `amazonaws.com`.
-# Exact hosts always beat wildcards; among wildcards the longest
-# matching suffix wins (so `*.us-east-1.amazonaws.com` takes
-# precedence over `*.amazonaws.com` for east-1 names).
-endpoint "https" "aws" {
-  hosts      = ["*.amazonaws.com"]
-  credential = bearer_token.aws-token
-}
+endpoint "https" "notion"  { hosts = ["api.notion.com", "mcp.notion.com"] }
+endpoint "https" "grafana" { hosts = ["mygrafana.grafana.net"] }
 
 # SSH — the wire protocol carries no SNI / Host header, so the
 # gateway runs a DNS server inside the WG tunnel and answers A/AAAA
@@ -201,26 +120,21 @@ endpoint "https" "aws" {
 # sqlite); the dashboard surfaces the fingerprint to paste into
 # known_hosts.
 endpoint "ssh" "build-host" {
-  hosts      = ["build.internal.example.com:22"]
-  credential = ssh_key.build-host-cred
-  # The agent's username (`ssh user@build.internal.example.com`) is
-  # passed through verbatim. For per-username dispatch, use
-  # `credentials = [{user="root", credential=...}, {credential=...}]`
-  # — the last entry without `user` is the catchall.
+  hosts = ["build.internal.example.com:22"]
 }
 
 # Postgres — wire-protocol native. Agent dials `host:port`; the
 # gateway terminates Postgres on both halves and parses each SQL
 # statement so `rule` blocks can pattern-match via `sql.*`.
-endpoint "postgres" "pg-readonly" {
-  host       = "pg.internal.example.com:5432"
-  database   = "appdb"
-  credential = postgres_credential.pg-readonly-cred
-}
-endpoint "postgres" "pg-writer" {
-  host       = "pg.internal.example.com:5432"
-  database   = "appdb"
-  credential = postgres_credential.pg-writer-cred
+#
+# One endpoint, two credentials: readonly and writer share the same
+# upstream server. The postgres user is the dispatch discriminator —
+# the gateway picks the credential whose `user` matches the agent's
+# StartupMessage user. Rules below use `credential = pg-writer`
+# to gate writes; reads run through `pg-readonly` and bypass
+# the write-only rules.
+endpoint "postgres" "pg" {
+  host = "pg.internal.example.com:5432"
 }
 
 # ClickHouse — over the native protocol. `tls = true` enables TLS
@@ -232,21 +146,93 @@ endpoint "clickhouse_native" "ch-analytics" {
   hosts                      = ["clickhouse.internal.example.com:9440"]
   tls                        = true
   accept_invalid_certificate = true
-  credential                 = clickhouse_credential.ch-analytics-cred
 }
 
 # Kubernetes — `server` is the apiserver IP the gateway intercepts
 # (the kubeconfig you mint for the agent points at this IP). The
 # gateway terminates TLS, decodes the request, and exposes verb /
 # resource / name via `k8s.*` to rules.
-endpoint "kubernetes" "k8s-dev" {
-  server     = "198.51.100.10"
-  credential = mtls_credential.k8s-dev-mtls
+endpoint "kubernetes" "k8s-dev"  { server = "198.51.100.10" }
+endpoint "kubernetes" "k8s-prod" { server = "198.51.100.11" }
+
+# ── credentials -------------------------------------------------------
+#
+# One per upstream secret. Each names the endpoint(s) it
+# authenticates against; the body lists only injection parameters.
+# The actual secret value is stored separately keyed by name (paste
+# it via the dashboard).
+
+# AI providers — three common shapes.
+#
+#   anthropic_oauth_subscription — Claude Pro/Max subscription. The
+#     binary handles the OAuth flow at first dashboard visit.
+#   anthropic_manual_key         — raw API key from console.anthropic.com.
+#     Use this when you also need to call the API from your own
+#     rules (the llm_approver below).
+#   openai_codex_oauth           — ChatGPT subscription OAuth, mirrors
+#     what `codex` and `chatgpt.com` use.
+credential "anthropic_oauth_subscription" "claude" {
+  endpoint = https.anthropic
 }
-endpoint "kubernetes" "k8s-prod" {
-  server     = "198.51.100.11"
-  credential = mtls_credential.k8s-prod-mtls
+# Same `anthropic` endpoint, different credential type. Both bind to
+# the one network target; `anthropic-key` is wielded only by the
+# llm_approver below (the gateway's outbound), `claude` rides on user
+# profiles — they're never wielded in the same profile, so no
+# dispatch placeholder is needed.
+credential "anthropic_manual_key" "anthropic-key" {
+  endpoint = https.anthropic
 }
+# codex auths against both the OpenAI API endpoint and the
+# chatgpt.com surface — list-form `endpoints` covers both.
+credential "openai_codex_oauth" "codex" {
+  endpoints = [https.openai-api, openai_codex_https.openai-chatgpt]
+}
+credential "github_oauth" "github" {
+  endpoint = https.github-api
+}
+
+# Bearer tokens — opaque "Authorization: Bearer <token>".
+credential "bearer_token" "grafana" {
+  endpoint = https.grafana
+}
+
+# Notion OAuth — workspace-scoped.
+credential "notion_oauth" "notion" {
+  endpoint = https.notion
+}
+
+# Slack — used both as a regular endpoint (chat.postMessage etc) and
+# as the channel for human_approver interactive approvals below.
+credential "slack_tokens" "slack" {
+  endpoint = https.slack
+}
+
+# SSH — private key + (optional) passphrase + (optional) host_pubkey
+# live in the secret store. Paste them via the dashboard.
+credential "ssh_key" "build-host" {
+  endpoint = ssh.build-host
+}
+
+# Database credentials are user-scoped: the upstream sees the value
+# of `user`; the password lives in the secret store. The same
+# postgres endpoint carries two credentials — the agent's
+# StartupMessage user picks which one the gateway injects.
+credential "postgres_credential" "pg-readonly" {
+  endpoint = postgres.pg
+  user     = "agent_ro"
+}
+credential "postgres_credential" "pg-writer" {
+  endpoint = postgres.pg
+  user     = "agent_rw"
+}
+credential "clickhouse_credential" "ch-analytics" {
+  endpoint = clickhouse_native.ch-analytics
+  user     = "agent"
+}
+
+# Kubernetes — client cert + key (mTLS) per cluster.
+credential "mtls_credential" "k8s-dev"  { endpoint = kubernetes.k8s-dev }
+credential "mtls_credential" "k8s-prod" { endpoint = kubernetes.k8s-prod }
 
 # ── approvers ---------------------------------------------------------
 #
@@ -259,7 +245,7 @@ endpoint "kubernetes" "k8s-prod" {
 # message in `channel`. interactive=true wires up the buttons.
 approver "human_approver" "ops" {
   channel     = "#agent-ops"
-  credential  = slack_tokens.slack-token
+  credential  = slack_tokens.slack
   interactive = true
   timeout     = 600
 }
@@ -268,7 +254,7 @@ approver "human_approver" "ops" {
 # may be off-hours and you'd rather wait than auto-deny.
 approver "human_approver" "support-ops" {
   channel     = "#agent-support"
-  credential  = slack_tokens.slack-token
+  credential  = slack_tokens.slack
   interactive = true
   timeout     = 86400 # 24h
 }
@@ -317,16 +303,18 @@ rule "github-writes" {
   approve   = [human_approver.ops]
 }
 
-# Postgres — layered defense.
+# Postgres — layered defense. All rules attach to the single `pg`
+# endpoint; the `credential = pg-writer` predicate scopes
+# writer-only rules to traffic dispatched against that credential.
 #
-#   1. Hard deny: DDL / GRANT / REVOKE / VACUUM.
-#   2. Hard deny: filesystem-reaching helpers.
+#   1. Hard deny: DDL / GRANT / REVOKE / VACUUM. (any credential)
+#   2. Hard deny: filesystem-reaching helpers.   (any credential)
 #   3. PII judge: reads of users / api_tokens routed through the LLM.
-#   4. Other writes: human approval.
+#   4. Writer-only writes: human approval.
 #   5. Plain reads: allow.
 #   6. Catch-all: deny.
 rule "pg-banned-verbs" {
-  endpoint = postgres.pg-writer
+  endpoint = postgres.pg
   priority = 100
   condition = <<-CEL
     sql.verb in [
@@ -338,7 +326,7 @@ rule "pg-banned-verbs" {
   reason  = "Schema changes land via migration PR, not via the agent"
 }
 rule "pg-banned-functions" {
-  endpoint = postgres.pg-writer
+  endpoint = postgres.pg
   priority = 100
   condition = <<-CEL
     sets.intersects(sql.functions, [
@@ -350,7 +338,7 @@ rule "pg-banned-functions" {
   reason  = "Filesystem-reaching functions are off-limits"
 }
 rule "pg-pii-read" {
-  endpoint  = postgres.pg-writer
+  endpoint  = postgres.pg
   priority  = 50
   condition = <<-CEL
     sql.verb == 'select'
@@ -359,17 +347,18 @@ rule "pg-pii-read" {
   approve = [llm_approver.no-pii-judge]
 }
 rule "pg-writes" {
-  endpoint  = postgres.pg-writer
-  condition = "sql.verb in ['insert', 'update', 'delete', 'merge']"
-  approve   = [human_approver.support-ops]
+  endpoint   = postgres.pg
+  credential = postgres_credential.pg-writer
+  condition  = "sql.verb in ['insert', 'update', 'delete', 'merge']"
+  approve    = [human_approver.support-ops]
 }
 rule "pg-reads" {
-  endpoint  = postgres.pg-writer
+  endpoint  = postgres.pg
   condition = "sql.verb in ['select', 'show', 'explain', 'describe']"
   verdict   = "allow"
 }
 rule "pg-default" {
-  endpoint = postgres.pg-writer
+  endpoint = postgres.pg
   priority = -100
   verdict  = "deny"
   reason   = "Unknown SQL verb — explicit allow rule required"
@@ -423,10 +412,6 @@ rule "k8s-default" {
 # v2 (IAM auth). The agent dials a synthetic hostname; DNS-VIP
 # intercepts; the gateway routes through the local proxy listener.
 #
-# credential "postgres_credential" "csql-cred" {
-#   user = "service-account@project.iam"
-# }
-#
 # tunnel "local_command" "csql" {
 #   command = [
 #     "/usr/local/bin/cloud-sql-proxy",
@@ -442,44 +427,49 @@ rule "k8s-default" {
 # }
 #
 # endpoint "postgres" "pg-cloud" {
-#   host       = "instance.synthetic.example:5432"
-#   database   = "main"
-#   tunnel     = csql
-#   credential = csql-cred
+#   host   = "instance.synthetic.example:5432"
+#   tunnel = csql
+# }
+#
+# credential "postgres_credential" "csql-cred" {
+#   endpoint = pg-cloud
+#   user     = "service-account@project.iam"
+#   database = "main"
 # }
 
 # ── profiles ----------------------------------------------------------
 #
-# Bind a device identity to an endpoint set. Rules ride along
-# automatically because they're attached to endpoints. Every
-# enrolled device gets exactly one profile; "default" is the
+# Bind a device identity to a credential set. Endpoint membership
+# rides along as the transitive closure profile → credentials →
+# endpoints; rules attach to endpoints (so they ride along too).
+# Every enrolled device gets exactly one profile; "default" is the
 # fallback the dashboard assigns at approval time.
 
 profile "default" {
-  endpoints = [https.anthropic, https.openai-api, openai_codex_https.openai-chatgpt, https.github-api, https.aws]
+  credentials = [anthropic_oauth_subscription.claude, openai_codex_oauth.codex, github_oauth.github]
 }
 
 profile "support" {
-  endpoints = [https.anthropic, https.github-api, https.slack, https.notion]
+  credentials = [anthropic_oauth_subscription.claude, github_oauth.github, slack_tokens.slack, notion_oauth.notion]
 }
 
 profile "data" {
-  endpoints = [
-    https.anthropic,
-    https.github-api,
-    postgres.pg-readonly,
-    clickhouse_native.ch-analytics,
+  credentials = [
+    anthropic_oauth_subscription.claude,
+    github_oauth.github,
+    postgres_credential.pg-readonly,
+    clickhouse_credential.ch-analytics,
   ]
 }
 
 profile "platform" {
-  endpoints = [
-    https.anthropic,
-    https.github-api,
-    https.slack,
-    postgres.pg-writer,
-    ssh.build-host,
-    kubernetes.k8s-dev,
-    kubernetes.k8s-prod,
+  credentials = [
+    anthropic_oauth_subscription.claude,
+    github_oauth.github,
+    slack_tokens.slack,
+    postgres_credential.pg-writer,
+    ssh_key.build-host,
+    mtls_credential.k8s-dev,
+    mtls_credential.k8s-prod,
   ]
 }

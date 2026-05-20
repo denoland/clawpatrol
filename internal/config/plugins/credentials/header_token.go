@@ -37,12 +37,13 @@ func (*HeaderToken) SecretSlots() []config.SecretSlot {
 func init() {
 	var _ runtime.HTTPCredentialRuntime = (*HeaderToken)(nil)
 	config.Register(&config.Plugin{
-		Kind:    config.KindCredential,
-		Type:    "header_token",
-		New:     newer[HeaderToken](),
-		Runtime: (*HeaderToken)(nil),
-		Build:   passthrough,
-		Emit: func(body any, _ string, b *hclwrite.Body, refs *config.RefIndex) {
+		Kind:           config.KindCredential,
+		Type:           "header_token",
+		Disambiguators: []string{"placeholder"},
+		New:            newer[HeaderToken](),
+		Runtime:        (*HeaderToken)(nil),
+		Build:          passthrough,
+		Emit: func(body any, _ string, b *hclwrite.Body) {
 			v := body.(*HeaderToken)
 			b.SetAttributeValue("header", cty.StringVal(v.Header))
 			if v.Prefix != "" {

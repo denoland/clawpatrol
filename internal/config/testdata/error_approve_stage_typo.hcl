@@ -1,8 +1,9 @@
-credential "bearer_token" "pat" {}
-
 endpoint "https" "github" {
-  hosts      = ["api.github.com"]
-  credential = bearer_token.pat
+  hosts = ["api.github.com"]
+}
+
+credential "bearer_token" "pat" {
+  endpoint = https.github
 }
 
 approver "human_approver" "ops" {
@@ -21,5 +22,5 @@ rule "broken-approve" {
 }
 
 profile "default" {
-  endpoints = [https.github]
+  credentials = [bearer_token.pat]
 }

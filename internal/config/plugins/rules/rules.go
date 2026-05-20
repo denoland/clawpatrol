@@ -14,7 +14,6 @@ package rules
 import (
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
@@ -308,10 +307,14 @@ func requireKind(ctx *config.BuildCtx, name string, kind config.Kind, ruleName, 
 	}
 }
 
-// emitRule serializes a built *Rule back to HCL. Refs are formatted
-// as typed traversals via the RefIndex.
-func emitRule(body any, _ string, b *hclwrite.Body, ri *config.RefIndex) {
+// emitRule serializes a built *Rule back to HCL block body. Endpoints
+// are emitted as bare-name idents (singular vs list forms preserved
+// to round-trip the operator's choice). Condition emits as a quoted
+// string; credential as a bare-name ident; approve mixes bare-name
+// idents.
+func emitRule(body any, _ string, b *hclwrite.Body) {
 	r := body.(*Rule)
+	ri := config.EmitRefIndex()
 	if len(r.Endpoints) == 1 {
 		config.SetIdent(b, "endpoint", ri.Ref(config.KindEndpoint, r.Endpoints[0]))
 	} else if len(r.Endpoints) > 1 {
@@ -340,7 +343,7 @@ func emitRule(body any, _ string, b *hclwrite.Body, ri *config.RefIndex) {
 	}
 }
 
-// approveToTokens emits the approve list as typed-traversal idents.
+// approveToTokens emits the approve list as dotted approver refs.
 func approveToTokens(stages []config.ApproveStage, ri *config.RefIndex) hclwrite.Tokens {
 	tokens := hclwrite.Tokens{
 		{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")},
@@ -349,24 +352,10 @@ func approveToTokens(stages []config.ApproveStage, ri *config.RefIndex) hclwrite
 		if i > 0 {
 			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(", ")})
 		}
-		tokens = append(tokens, traversalTokens(ri.Ref(config.KindApprover, s.Name))...)
+		tokens = append(tokens, config.TraversalTokens(ri.Ref(config.KindApprover, s.Name))...)
 	}
 	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")})
 	return tokens
-}
-
-// traversalTokens mirrors config.SetIdent's internal split — bare or
-// dotted string → ident / dot / ident token sequence.
-func traversalTokens(s string) hclwrite.Tokens {
-	parts := strings.Split(s, ".")
-	out := make(hclwrite.Tokens, 0, len(parts)*2-1)
-	for i, p := range parts {
-		if i > 0 {
-			out = append(out, &hclwrite.Token{Type: hclsyntax.TokenDot, Bytes: []byte(".")})
-		}
-		out = append(out, &hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(p)})
-	}
-	return out
 }
 
 // Plugin returns the single config.Plugin that registers `rule` as

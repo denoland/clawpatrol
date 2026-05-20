@@ -7,7 +7,9 @@ an [agent](#agent) (or any [device](#device) on its tunnel) and the
 upstream services it talks to. The gateway is driven by a single HCL
 global config that names [endpoints](#endpoint),
 [credentials](#credential), [rules](#rule), and [approvers](#approver),
-and groups them into [profiles](#profile) bound to specific devices.
+and groups credentials into [profiles](#profile) bound to specific
+devices (endpoints ride along transitively via each listed
+credential's binding).
 Per-request, the gateway intercepts the connection ([MitM](#mitm) for
 TLS, wire-protocol parsing for postgres), evaluates the matching rule,
 optionally pauses for an approver, and stamps the real secret onto the
@@ -48,117 +50,92 @@ hosts outside the profile falls through to the top-level
 
 ### Endpoint
 
-A typed upstream binding — a name, a protocol family
-(`https` / `sql` / `k8s`), the host(s) it claims, and the
-[credential](#credential)(s) the gateway should inject. Endpoints are
-the unit a [device](#device)'s [profile](#profile) lists, and the unit
-a [rule](#rule) attaches to. Built-in types: `https`, `kubernetes`,
-`postgres`, `clickhouse_https`, `clickhouse_native`. See
-[HCL config reference](/docs/config-reference/#endpoint-blocks).
+A typed network target — a name, a protocol family
+(`https` / `sql` / `k8s`), and the host(s) it claims. Endpoints are
+pure network targets: hosts plus protocol-family connection
+parameters, nothing more. The unit a [rule](#rule) attaches to.
+Built-in types: `https`, `kubernetes`, `postgres`, `clickhouse_https`,
+`clickhouse_native`. See [Configuration vocabulary](#configuration-vocabulary).
 
 ### Credential
 
-A typed handle to a secret. The HCL block carries only how-to-inject
+A typed handle to a secret. Each credential names the
+[endpoint(s)](#endpoint) it authenticates against (`endpoint = X` or
+`endpoints = [X, Y]`). The HCL block carries only how-to-inject
 parameters (header name, cookie name, mTLS cert env var); the actual
-secret bytes live in the gateway’s [secret store](#secret-store) and
-are fetched at injection time. Built-in shapes include `bearer_token`,
-`cookie_token`, `header_token`, `mtls_credential`,
-`postgres_credential`, `anthropic_manual_key`, and the OAuth variants.
-See [HCL config reference](/docs/config-reference/#credential-blocks).
+secret bytes live in the gateway's [secret store](#secret-store) and
+are fetched at injection time. When a [profile](#profile) wields more
+than one credential at the same endpoint, the profile's
+[placeholders](#placeholder) map disambiguates which one the agent
+intends. Built-in shapes include `bearer_token`, `cookie_token`,
+`header_token`, `mtls_credential`, `postgres_credential`,
+`anthropic_manual_key`, and the OAuth variants. See [Configuration
+vocabulary](#configuration-vocabulary).
 
 ### Action
 
 One unit of agent work the gateway sees and applies policy to — one
 HTTP call, one SQL query, one `kubectl` invocation, one SSH command.
-Every action belongs to exactly one [family](#family) — the protocol
-class (`http`, `sql`, `ssh`, `k8s`) the gateway used to intercept it —
-and that family fixes the data the gateway extracts from the wire and
-exposes to policy. The action targets one [endpoint](#endpoint), the
-matching [rule](#rule)'s [outcome](#outcome) gates it, and it surfaces
-in the dashboard’s live request feed with its own detail page.
-"Action" is the operator-visible concept of "the thing the agent did."
+Each action targets an [endpoint](#endpoint), is gated by the matching
+[rule](#rule)'s [outcome](#outcome), and surfaces in the dashboard's
+live request feed (record kinds: `http`, `sql`, `k8s`, `ssh`) with its
+own detail page. "Action" is the operator-visible concept of "the
+thing the agent did."
 
 ### Rule
 
 One policy decision targeting one or more [endpoints](#endpoint). A
 rule has a CEL [`condition`](#cel-condition) string that matches against
-the [facet fields](#facet-field) those endpoints' [family](#family)
-exposes, an optional `credential` predicate, and an [outcome](#outcome)
-— either a literal `verdict` or an `approve = [...]` chain. All
-endpoints listed by one rule must share a family — mixed-family
-endpoint sets are a load error — so that the CEL condition sees a
-single, well-defined set of facet fields. Rules are one HCL block
-kind (`rule "<name>" { ... }`).
-
-### Family
-
-The protocol class an [action](#action) belongs to. An action belongs
-to exactly one family; built-in families are `http`, `sql`, `ssh`, and
-`k8s`. An [endpoint](#endpoint)'s type carries an implied family — an
-`https` endpoint accepts `http` actions, a `postgres` endpoint accepts
-`sql` actions — and that propagates to [rules](#rule): all endpoints
-listed by one rule must share a family, so the rule’s CEL condition
-sees a single, well-defined set of facet fields. Each family includes
-one or more [facets](#facet) into the action’s data: the `sql` family
-includes the `sql` facet; the `http` family includes the `http` facet;
-the `k8s` family includes both the `http` facet (k8s traffic is HTTPS
-on the wire) and the `k8s` facet.
+the [facets](#facet) of the rule's protocol family (inferred from its
+endpoints), an optional `credential` predicate, and an [outcome](#outcome)
+— either a literal `verdict` or an `approve = [...]` chain. Rules are
+one HCL block kind (`rule "<name>" { ... }`); the family is inferred
+from the endpoint(s) at load time, and mixed-family endpoint sets are
+a load error.
 
 ### Facet
 
-A named collection of [fields](#facet-field) a [family](#family) folds
-into an [action](#action)'s data, addressable in a
-[rule](#rule)'s CEL [`condition`](#cel-condition) as `<facet>.<field>`.
-A facet is not the same as a family: a family is the protocol class an
-action belongs to, while a facet is a field group that contributes to
-the action’s matchable surface. Built-in facets are `http`, `sql`, and
-`k8s`; most families include a single facet of the same name, but the
-`k8s` family includes both the `http` and `k8s` facets.
-
-### Facet field
-
-A single named matchable property a [facet](#facet) exposes to a
-[rule](#rule)'s CEL [`condition`](#cel-condition), addressed as
-`<facet>.<field>` in CEL. Each facet defines its own group of fields
-— the `sql` facet has `sql.verb`, `sql.functions`, `sql.tables`,
-`sql.statement`, and `sql.database`; the `http` facet has
-`http.method`, `http.path`, `http.query`, `http.headers`, `http.body`,
-and `http.body_json`; the `k8s` facet has `k8s.verb`, `k8s.resource`,
-`k8s.namespace`, `k8s.name`, and `k8s.params`. Per-field types vary —
-`method` and `verb` are scalar strings, `tables` / `functions` are
-lists, `query` / `headers` / `params` are maps, and `body_json` is
-parsed-JSON `dyn`.
+A single named matchable property exposed to a [rule](#rule)'s CEL
+[`condition`](#cel-condition). Each protocol family exposes its own
+top-level struct-typed variable: `http.method` / `http.path` /
+`http.query` / `http.headers` / `http.body` / `http.body_json`;
+`sql.verb` / `sql.tables` / `sql.functions` / `sql.statement`;
+`k8s.verb` / `k8s.resource` / `k8s.namespace` / `k8s.name` /
+`k8s.params`. Per-facet types vary — `method` and `verb` are scalar
+strings, `tables` / `functions` are lists, `query` / `headers` /
+`params` are maps, and `body_json` is parsed-JSON `dyn`.
 
 ### CEL condition
 
 The boolean expression a [rule](#rule)'s `condition = "..."` field
 carries. CEL ([Common Expression Language](https://github.com/google/cel-spec))
-is evaluated against the [facet fields](#facet-field) exposed by the
-[family](#family) of the rule’s endpoints. Idioms: equality / membership
-(`http.method == 'POST'`,
+is evaluated against the [facets](#facet) of the rule's inferred
+family. Idioms: equality / membership (`http.method == 'POST'`,
 `sql.verb in ['select', 'show']`), prefix / suffix / substring
 (`k8s.name.startsWith('debug-')`, `http.body.contains('secret')`),
 regex (`sql.statement.matches('(?i)\\bpassword\\b')`), list overlap
 (`sets.intersects(sql.tables, ['users', 'audit_log'])`), and `!`
 negation. An absent or empty `condition` matches every request the
-rule’s endpoints see.
+rule's endpoints see.
 
 ### Approver
 
 An entity that arbitrates an `approve = [...]` chain stage. Built-in
 types: `llm_approver` (Claude / GPT proctor that reads a
-[`policy {}` block](/docs/config-reference/#policy-name-) prompt) and
+[`policy {}` block](#configuration-vocabulary) prompt) and
 `human_approver` (Slack / dashboard, with optional N-of-N quorum).
 
 ### Profile
 
-A named list of [endpoints](#endpoint) attached to a [device](#device).
-A profile names the endpoints whose [rules](#rule) apply to that
-device’s traffic — it is not an allowlist. Traffic to hosts not
-covered by any profile endpoint falls through to the top-level
-`unknown_host` setting (default `passthrough`). Profiles are how
-operators say "these are the endpoints I want to govern for this
-device."
+A named list of [credentials](#credential) attached to a
+[device](#device). Endpoint membership rides along as the transitive
+closure `profile → credentials → endpoints`; [rules](#rule) attach to
+endpoints and ride along too. A profile names the credentials whose
+endpoints' rules apply to that device's traffic — it is not an
+allowlist. Traffic to hosts not covered by any profile endpoint falls
+through to the top-level `unknown_host` setting (default
+`passthrough`). Profiles are how operators say "these are the
+secrets I want this device to wield."
 
 ### Plugin
 
@@ -167,32 +144,28 @@ A `(kind, type)` extension — e.g. `(endpoint, https)`,
 owns the body schema for its block kind, the in-memory record it
 builds, optional rule lowering, HCL emit (for round-tripping), and an
 optional [runtime](#runtime). Built-in plugins call `config.Register`
-from their package’s `init()`; `config/plugins/all` blank-imports them
+from their package's `init()`; `config/plugins/all` blank-imports them
 all. See [Code-level vocabulary](#code-level-vocabulary).
 
 ### Outcome
 
 The decision a matched [rule](#rule) carries: `verdict = "allow"`,
 `verdict = "deny"`, or `approve = [...]` (an ordered list of
-[approver](#approver) stages). On allow, the credential plugin’s
+[approver](#approver) stages). On allow, the credential plugin's
 runtime stamps the secret onto the forwarded request.
 
 ### Placeholder
 
-A magic string an [agent](#agent) embeds in the auth slot when an
-[endpoint](#endpoint) has multiple credentials wired through the
-`credentials = [{ placeholder, credential }, ...]` shape. The gateway
-looks at the incoming request, picks the matching credential, and
-substitutes the real secret. The agent never holds the real key —
-only the placeholder.
-
-A credential entry can also (or instead) carry `database = "X"` /
-`databases = ["X","Y"]` to claim only requests against specific
-databases. The two constraints compose: an entry matches iff every
-constraint it declares is satisfied, and the most-specific match
-wins. Rules can read the agent-declared database via the
-`sql.database` CEL field for SQL endpoints (postgres,
-clickhouse_native, clickhouse_https).
+A magic string an [agent](#agent) embeds in the auth slot when its
+[profile](#profile) wields more than one [credential](#credential) at
+the same [endpoint](#endpoint). The profile's credentials list mixes
+bare-name entries with inline `{ placeholder = "PH_...", credential =
+name }` objects that name the discriminator for each ambiguous
+credential; the gateway looks at the incoming request, picks the
+matching credential, and substitutes the real secret. Placeholders
+live on the profile (not the credential) because the ambiguity exists
+only when one identity actively uses multiple credentials at one
+endpoint. The agent never holds the real key — only the placeholder.
 
 ### Secret store
 
@@ -204,7 +177,7 @@ splits across `_CERT` / `_KEY` / `_CA`. Credential plugins call
 
 ### MitM
 
-"Man-in-the-middle" — the gateway’s TLS interception strategy. It
+"Man-in-the-middle" — the gateway's TLS interception strategy. It
 forges a per-host certificate signed by the Claw Patrol CA, terminates
 TLS itself, and re-establishes a fresh TLS connection upstream. The
 [per-host cert](#per-host-cert) is generated on demand and cached.
@@ -223,9 +196,75 @@ an LRU (256 entries). The forged cert is what makes the
 The gateway terminates upstream authentication on behalf of the
 [agent](#agent), so the agent never participates in the handshake.
 Today this is most visible for postgres: the gateway runs the SCRAM /
-cleartext / trust dance against the upstream using the credential’s
+cleartext / trust dance against the upstream using the credential's
 real `(user, password)` and synthesizes `AuthenticationOk` for the
 agent. SCRAM is designed to defeat a passive password swap, so the
 gateway has to *be* one of the peers — hence "offload" rather than
 "forward."
 
+## Configuration vocabulary
+
+The HCL-level vocabulary an operator writes. Every named entity shares
+**one flat namespace** — names are globally unique across all kinds —
+and references are bare names (`endpoint = pg-writer`, never
+`postgres.pg-writer`). The two-label `kind "type" "name" { ... }` shape
+carries type information for schema dispatch; reference syntax doesn't
+repeat it. See [`config/README.md`](../../config/README.md) for the
+authoritative grammar.
+
+### Policy defaults (top-level)
+
+Top-level singleton attributes — not a block. Global fallbacks:
+`unknown_host` (passthrough vs. deny), `llm_fail_mode`,
+`llm_cache_ttl`, `human_timeout`, `human_on_timeout`. Every plugin can
+read these from `BuildCtx` / the compiled policy on `ApproveRequest`.
+
+### `approver "<type>" "<name>" { ... }`
+
+An [approver](#approver) entity. First label = type (`llm_approver` /
+`human_approver`); second = bare name used in `approve = [...]`.
+
+### `policy "<name>" { text = "..." }`
+
+A reusable LLM proctor prompt. Referenced from an `llm_approver`
+block's `policy = my-policy` field; the approver itself is then
+named in `approve = [my-judge]` on a rule.
+
+### `endpoint "<type>" "<name>" { ... }`
+
+An [endpoint](#endpoint) entity. First label = endpoint type
+(`https` / `kubernetes` / `postgres` / `clickhouse_*`); second = bare
+name. Family-specific fields: `hosts` (for `https`), `host` + `database`
+(for `postgres`), `server` + `ca_cert` (for `kubernetes`). Endpoints
+are pure network targets — no credential refs.
+
+### `credential "<type>" "<name>" { ... }`
+
+A [credential](#credential) entity. First label = type (`bearer_token`,
+`mtls_credential`, `postgres_credential`, ...); second = bare name.
+Body declares which endpoint(s) it authenticates against via
+`endpoint = X` (singular) or `endpoints = [X, Y]` (singleton-or-list).
+Multi-credential dispatch [placeholders](#placeholder) live on the
+profile that wields the credentials, not on the credential block.
+
+### `rule "<name>" { ... }`
+
+A [rule](#rule). One label — the bare name. The protocol family is
+inferred from `endpoint(s) =`. Body carries `endpoint(s) =`,
+`priority`, an optional `credential =` predicate, an optional CEL
+`condition = "..."`, and either `verdict` or `approve`.
+
+### `profile "<name>" { credentials = [...] }`
+
+A [profile](#profile). Single-label block — bare name and a
+credential-membership list. List entries are either bare credential
+names or `{ placeholder = "PH_...", credential = name }` objects for
+credentials whose endpoint binding is ambiguous within this profile
+(i.e. the profile wields more than one credential at the same
+endpoint). Endpoint membership is the transitive closure
+`profile → credentials → endpoints`.
+
+<!-- Implementation-level vocabulary (Plugin, Runtime, the
+HTTP/Postgres/TLS/Conn runtime interfaces, ConnIndex, the WG
+promiscuous forwarder, etc.) lives in the repo's internal
+doc/code-vocabulary.md, not here. -->
