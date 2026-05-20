@@ -31,11 +31,12 @@ import (
 // types as <name>.<type> when the gateway registers them); Version
 // is informational, surfaced in startup logs.
 type Plugin struct {
-	Name        string
-	Version     string
-	Credentials []CredentialDef
-	Tunnels     []TunnelDef
-	Endpoints   []EndpointDef
+	Name         string
+	Version      string
+	Credentials  []CredentialDef
+	Tunnels      []TunnelDef
+	Endpoints    []EndpointDef
+	Environments []EnvironmentDef
 	// Facets is the per-plugin schema list for protocol families the
 	// plugin's endpoints emit actions against. The gateway registers
 	// one facet.Runtime per FacetDef so the dashboard's /api/facets
@@ -43,6 +44,48 @@ type Plugin struct {
 	// against it (e.g. `smtp.verb == "MAIL"`). Names are auto-
 	// namespaced to "<plugin>.<facet>".
 	Facets []FacetDef
+}
+
+// EnvironmentDef declares one environment plugin type. An
+// `environment "<TypeName>" "<name>" { ... }` block in the
+// operator's HCL decodes against Schema, then Build (optional)
+// normalizes the body. EnvVars is called on every `clawpatrol env`
+// invocation that reaches a profile listing one of this type's
+// instances; it returns the env vars to push down.
+//
+// AcceptsEndpoint / AcceptsCredential enable the framework refs:
+// when AcceptsEndpoint is true the block accepts
+// `endpoint = <type>.<name>`; the resolved bare name lands in
+// EnvVarsRequest.EndpointRef so the plugin can look it up later.
+// Same for AcceptsCredential. The gateway rejects refs the plugin
+// didn't enable, at config-load time.
+type EnvironmentDef struct {
+	TypeName          string
+	Schema            Schema
+	AcceptsEndpoint   bool
+	AcceptsCredential bool
+	Build             func(req BuildRequest) (any, error)
+	EnvVars           func(req EnvVarsRequest) ([]EnvVar, error)
+}
+
+// EnvVarsRequest is the per-invocation payload the gateway sends to
+// an EnvironmentDef's EnvVars callback. EndpointRef / CredentialRef
+// are bare names (no type prefix) — empty when the operator didn't
+// set the corresponding ref or the plugin didn't enable it.
+type EnvVarsRequest struct {
+	TypeName      string
+	InstanceName  string
+	ConfigJSON    []byte
+	EndpointRef   string
+	CredentialRef string
+}
+
+// EnvVar is one (name, value, description) tuple the gateway will
+// expose via `clawpatrol env`.
+type EnvVar struct {
+	Name        string
+	Value       string
+	Description string
 }
 
 // FacetDef declares one protocol-family schema. Endpoints bind to a

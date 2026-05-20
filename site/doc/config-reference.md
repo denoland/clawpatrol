@@ -555,7 +555,7 @@ environment "codex_environment" "example" {}
 
 ### `environment "custom_environment" "<name>"`
 
-Is part of the clawpatrol plugin API. It carries
+Part of the clawpatrol plugin API. It carries
 one operator-declared (key, value) pair plus an optional human-
 readable description shown by `clawpatrol env --list`.
 
@@ -610,7 +610,7 @@ environment "kubernetes_environment" "example" {
 
 ### `environment "postgres_environment" "<name>"`
 
-Is part of the clawpatrol plugin API. The
+Part of the clawpatrol plugin API. The
 resolved Endpoint / Credential entities are stashed here at
 build time so EnvVars() can read host / port / user / database
 without re-walking the symbol table on every call.

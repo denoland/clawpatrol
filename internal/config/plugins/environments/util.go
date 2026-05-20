@@ -21,7 +21,7 @@ func newer[T any]() func() any { return func() any { return new(T) } }
 // emptyEmit is the no-op Emit used by environment plugins whose body
 // has no HCL attributes beyond the framework-peeled `endpoint` /
 // `credential` refs.
-func emptyEmit(_ any, _ string, _ *hclwrite.Body, _ *config.RefIndex) {}
+func emptyEmit(_ any, _ string, _ *hclwrite.Body) {}
 
 // passthrough is the trivial Build hook for environment plugins that
 // don't need to look at the framework refs at build time — typically

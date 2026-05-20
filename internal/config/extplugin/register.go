@@ -48,6 +48,9 @@ func RegisterManifest(client *Client, resp *pb.ManifestResponse) hcl.Diagnostics
 	for _, e := range resp.Endpoints {
 		diags = append(diags, registerEndpoint(client, resp.Name, e)...)
 	}
+	for _, e := range resp.Environments {
+		diags = append(diags, registerEnvironment(client, resp.Name, e)...)
+	}
 	return diags
 }
 
@@ -93,6 +96,12 @@ func validateManifestShape(resp *pb.ManifestResponse) hcl.Diagnostics {
 			diags = append(diags, &hcl.Diagnostic{Severity: hcl.DiagError,
 				Summary: fmt.Sprintf("Plugin %q endpoint %q has empty family", pluginName, e.TypeName),
 				Detail:  "Set Family to either a built-in facet (\"http\", \"sql\", \"k8s\") or to one of the plugin's own declared facet names so rules know which CEL env to use."})
+		}
+	}
+	for i, e := range resp.Environments {
+		if e.TypeName == "" {
+			diags = append(diags, &hcl.Diagnostic{Severity: hcl.DiagError,
+				Summary: fmt.Sprintf("Plugin %q manifest: environment #%d has empty type_name", pluginName, i)})
 		}
 	}
 	return diags
@@ -419,4 +428,125 @@ func protoDiagsToHCL(in []*pb.Diagnostic) hcl.Diagnostics {
 
 func fail(format string, args ...any) hcl.Diagnostics {
 	return hcl.Diagnostics{{Severity: hcl.DiagError, Summary: fmt.Sprintf(format, args...)}}
+}
+
+// =====================================================================
+// Environment registration
+// =====================================================================
+
+// dynamicEnvironmentBody is the runtime representation of one
+// environment block declared by an external plugin. It implements
+// config.EnvironmentRuntime by calling the subprocess's EnvVars RPC
+// — meaning the plugin's Go (or other-language) implementation
+// decides what env vars to emit on each `clawpatrol env` call.
+type dynamicEnvironmentBody struct {
+	pluginName    string
+	typeName      string
+	instanceName  string
+	canonicalJSON []byte
+	endpointRef   string
+	credentialRef string
+	client        *Client
+}
+
+// EnvVars implements config.EnvironmentRuntime via the EnvVars RPC.
+// Failure to reach the subprocess (or a plugin error) is logged but
+// not fatal — push-down is best-effort by design; the gateway never
+// crashes a `clawpatrol env` call over one misbehaving plugin.
+func (b *dynamicEnvironmentBody) EnvVars() []config.EnvVar {
+	if b == nil || b.client == nil {
+		return nil
+	}
+	resp, err := b.client.PluginRPC().EnvVars(context.Background(), &pb.EnvVarsRequest{
+		TypeName:      b.typeName,
+		InstanceName:  b.instanceName,
+		ConfigJson:    b.canonicalJSON,
+		EndpointRef:   b.endpointRef,
+		CredentialRef: b.credentialRef,
+	})
+	if err != nil {
+		// Silent on the EnvVars path — operator sees no var, not a
+		// crashed CLI. The plugin's stderr (captured by the manager)
+		// surfaces the cause separately.
+		return nil
+	}
+	out := make([]config.EnvVar, 0, len(resp.Vars))
+	for _, v := range resp.Vars {
+		if v == nil || v.Name == "" {
+			continue
+		}
+		out = append(out, config.EnvVar{
+			Name:        v.Name,
+			Value:       v.Value,
+			Description: v.Description,
+		})
+	}
+	return out
+}
+
+func registerEnvironment(client *Client, pluginName string, decl *pb.EnvironmentDecl) hcl.Diagnostics {
+	spec, err := schemaToSpec(decl.Schema)
+	if err != nil {
+		return fail("plugin %q environment %q: %v", pluginName, decl.TypeName, err)
+	}
+
+	plug := &config.Plugin{
+		Kind: config.KindEnvironment,
+		Type: decl.TypeName,
+		New: func() any {
+			return &dynamicEnvironmentBody{
+				pluginName: pluginName,
+				typeName:   decl.TypeName,
+				client:     client,
+			}
+		},
+		DecodeBody: func(body hcl.Body, ctx *hcl.EvalContext, target any) hcl.Diagnostics {
+			b := target.(*dynamicEnvironmentBody)
+			val, d := hcldec.Decode(body, spec, ctx)
+			if d.HasErrors() {
+				return d
+			}
+			j, err := ctyjson.Marshal(val, val.Type())
+			if err != nil {
+				return hcl.Diagnostics{{Severity: hcl.DiagError, Summary: "marshal environment body", Detail: err.Error()}}
+			}
+			b.canonicalJSON = j
+			return d
+		},
+		Build: func(decoded any, name string, ctx *config.BuildCtx) (any, hcl.Diagnostics) {
+			b := decoded.(*dynamicEnvironmentBody)
+			b.instanceName = name
+			// Stash the resolved framework refs so EnvVars() can
+			// forward them on every RPC call. The framework already
+			// validated kind / existence; we just record the name.
+			if decl.AcceptsEndpoint {
+				b.endpointRef = ctx.Framework.Ref("endpoint")
+			} else if ctx.Framework.Ref("endpoint") != "" {
+				return nil, fail("plugin %q environment %q does not accept `endpoint = ...`", pluginName, name)
+			}
+			if decl.AcceptsCredential {
+				b.credentialRef = ctx.Framework.Ref("credential")
+			} else if ctx.Framework.Ref("credential") != "" {
+				return nil, fail("plugin %q environment %q does not accept `credential = ...`", pluginName, name)
+			}
+			resp, err := client.PluginRPC().Build(context.Background(), &pb.BuildRequest{
+				Kind: "environment", TypeName: decl.TypeName, InstanceName: name, ConfigJson: b.canonicalJSON,
+			})
+			if err != nil {
+				return nil, fail("plugin %q environment %q: build: %v", pluginName, name, err)
+			}
+			if d := protoDiagsToHCL(resp.Diagnostics); d.HasErrors() {
+				return nil, d
+			}
+			if len(resp.CanonicalJson) > 0 {
+				b.canonicalJSON = resp.CanonicalJson
+			}
+			return b, nil
+		},
+		Emit: func(_ any, _ string, _ *hclwrite.Body) {},
+	}
+	if d := registerOrCollide(plug, pluginName, "environment"); d != nil {
+		return d
+	}
+	return nil
 }

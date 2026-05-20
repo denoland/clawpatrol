@@ -34,6 +34,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	Plugin_Manifest_FullMethodName = "/clawpatrol.plugin.v1.Plugin/Manifest"
 	Plugin_Build_FullMethodName    = "/clawpatrol.plugin.v1.Plugin/Build"
+	Plugin_EnvVars_FullMethodName  = "/clawpatrol.plugin.v1.Plugin/EnvVars"
 )
 
 // PluginClient is the client API for Plugin service.
@@ -51,6 +52,11 @@ type PluginClient interface {
 	// back to the plugin in ConnInit / OpenTunnelRequest. Diagnostics
 	// are reported back to the user with the block's source range.
 	Build(ctx context.Context, in *BuildRequest, opts ...grpc.CallOption) (*BuildResponse, error)
+	// EnvVars is called every time a profile that lists an environment
+	// block of this plugin's type fetches its push-down env vars (i.e.
+	// each `clawpatrol env` / `clawpatrol run` invocation). The plugin
+	// returns the env vars the agent process should receive.
+	EnvVars(ctx context.Context, in *EnvVarsRequest, opts ...grpc.CallOption) (*EnvVarsResponse, error)
 }
 
 type pluginClient struct {
@@ -81,6 +87,16 @@ func (c *pluginClient) Build(ctx context.Context, in *BuildRequest, opts ...grpc
 	return out, nil
 }
 
+func (c *pluginClient) EnvVars(ctx context.Context, in *EnvVarsRequest, opts ...grpc.CallOption) (*EnvVarsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EnvVarsResponse)
+	err := c.cc.Invoke(ctx, Plugin_EnvVars_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PluginServer is the server API for Plugin service.
 // All implementations must embed UnimplementedPluginServer
 // for forward compatibility.
@@ -96,6 +112,11 @@ type PluginServer interface {
 	// back to the plugin in ConnInit / OpenTunnelRequest. Diagnostics
 	// are reported back to the user with the block's source range.
 	Build(context.Context, *BuildRequest) (*BuildResponse, error)
+	// EnvVars is called every time a profile that lists an environment
+	// block of this plugin's type fetches its push-down env vars (i.e.
+	// each `clawpatrol env` / `clawpatrol run` invocation). The plugin
+	// returns the env vars the agent process should receive.
+	EnvVars(context.Context, *EnvVarsRequest) (*EnvVarsResponse, error)
 	mustEmbedUnimplementedPluginServer()
 }
 
@@ -111,6 +132,9 @@ func (UnimplementedPluginServer) Manifest(context.Context, *ManifestRequest) (*M
 }
 func (UnimplementedPluginServer) Build(context.Context, *BuildRequest) (*BuildResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Build not implemented")
+}
+func (UnimplementedPluginServer) EnvVars(context.Context, *EnvVarsRequest) (*EnvVarsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method EnvVars not implemented")
 }
 func (UnimplementedPluginServer) mustEmbedUnimplementedPluginServer() {}
 func (UnimplementedPluginServer) testEmbeddedByValue()                {}
@@ -169,6 +193,24 @@ func _Plugin_Build_Handler(srv interface{}, ctx context.Context, dec func(interf
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Plugin_EnvVars_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EnvVarsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginServer).EnvVars(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Plugin_EnvVars_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginServer).EnvVars(ctx, req.(*EnvVarsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Plugin_ServiceDesc is the grpc.ServiceDesc for Plugin service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -183,6 +225,10 @@ var Plugin_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Build",
 			Handler:    _Plugin_Build_Handler,
+		},
+		{
+			MethodName: "EnvVars",
+			Handler:    _Plugin_EnvVars_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

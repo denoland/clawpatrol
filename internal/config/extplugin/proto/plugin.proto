@@ -15,7 +15,7 @@ syntax = "proto3";
 
 package clawpatrol.plugin.v1;
 
-option go_package = "github.com/denoland/clawpatrol/config/extplugin/proto;extpluginpb";
+option go_package = "github.com/denoland/clawpatrol/internal/config/extplugin/proto;extpluginpb";
 
 // =====================================================================
 // Manifest + Build
@@ -34,6 +34,12 @@ service Plugin {
   // back to the plugin in ConnInit / OpenTunnelRequest. Diagnostics
   // are reported back to the user with the block's source range.
   rpc Build(BuildRequest) returns (BuildResponse);
+
+  // EnvVars is called every time a profile that lists an environment
+  // block of this plugin's type fetches its push-down env vars (i.e.
+  // each `clawpatrol env` / `clawpatrol run` invocation). The plugin
+  // returns the env vars the agent process should receive.
+  rpc EnvVars(EnvVarsRequest) returns (EnvVarsResponse);
 }
 
 message ManifestRequest {}
@@ -45,6 +51,7 @@ message ManifestResponse {
   repeated TunnelDecl tunnels = 4;
   repeated EndpointDecl endpoints = 5;
   repeated FacetDecl facets = 6;
+  repeated EnvironmentDecl environments = 7;
 }
 
 // FacetDecl describes one protocol-family schema the plugin exports.
@@ -118,6 +125,27 @@ message EndpointDecl {
   bool requires_vip = 5;
 }
 
+// EnvironmentDecl describes one environment plugin type the plugin
+// exports. An `environment "<type_name>" "<instance>" { ... }` block
+// in the operator's HCL decodes against `schema`, and the plugin's
+// Build implementation is consulted to produce the env-var list the
+// gateway pushes down via `clawpatrol env`.
+//
+// Environment plugins may declare framework refs the gateway peels
+// off the block body before decoding the plugin's own attrs:
+// `accepts_endpoint` enables `endpoint = <ref>` on the block (the
+// resolved endpoint's name is forwarded to the plugin in
+// EnvBuildRequest.endpoint_ref); `accepts_credential` enables
+// `credential = <ref>` similarly. The plugin can use either, both,
+// or neither — the framework rejects refs the plugin didn't ask
+// for at config-load time.
+message EnvironmentDecl {
+  string type_name = 1;
+  Schema schema = 2;
+  bool accepts_endpoint = 3;
+  bool accepts_credential = 4;
+}
+
 enum TLSMode {
   // No TLS handling on the inbound side. The plugin receives the raw
   // TCP bytes.
@@ -143,6 +171,33 @@ message BuildResponse {
   // ConnInit / OpenTunnelRequest.
   bytes canonical_json = 1;
   repeated Diagnostic diagnostics = 2;
+}
+
+// EnvVarsRequest is sent on every `clawpatrol env` invocation that
+// reaches an environment block whose plugin lives in this
+// subprocess. The gateway forwards the canonical JSON it stored
+// from Build plus the resolved framework refs (the bare names of
+// the endpoint / credential the block names, "" when not set).
+message EnvVarsRequest {
+  string type_name = 1;
+  string instance_name = 2;
+  bytes config_json = 3;
+  // The bare-name references (no type prefix) of the framework
+  // attrs the operator set on the block. Empty when the plugin
+  // didn't declare accepts_endpoint / accepts_credential or the
+  // operator omitted the attr.
+  string endpoint_ref = 4;
+  string credential_ref = 5;
+}
+
+message EnvVarsResponse {
+  repeated EnvVar vars = 1;
+}
+
+message EnvVar {
+  string name = 1;
+  string value = 2;
+  string description = 3;
 }
 
 message Diagnostic {

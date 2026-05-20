@@ -68,7 +68,7 @@ func kubernetesValidate(decoded any, name string, _ *config.BuildCtx) hcl.Diagno
 	return nil
 }
 
-func kubernetesEmit(body any, _ string, b *hclwrite.Body, _ *config.RefIndex) {
+func kubernetesEmit(body any, _ string, b *hclwrite.Body) {
 	k, ok := body.(*KubernetesEnvironment)
 	if !ok {
 		return

@@ -65,9 +65,10 @@ type server struct {
 
 	plug *Plugin
 
-	credentials map[string]CredentialDef
-	tunnels     map[string]TunnelDef
-	endpoints   map[string]EndpointDef
+	credentials  map[string]CredentialDef
+	tunnels      map[string]TunnelDef
+	endpoints    map[string]EndpointDef
+	environments map[string]EnvironmentDef
 
 	tunHandles  sync.Map // string -> *tunnelHandle
 	tunHandleID atomic.Uint64
@@ -75,10 +76,11 @@ type server struct {
 
 func newServer(p *Plugin) *server {
 	s := &server{
-		plug:        p,
-		credentials: make(map[string]CredentialDef, len(p.Credentials)),
-		tunnels:     make(map[string]TunnelDef, len(p.Tunnels)),
-		endpoints:   make(map[string]EndpointDef, len(p.Endpoints)),
+		plug:         p,
+		credentials:  make(map[string]CredentialDef, len(p.Credentials)),
+		tunnels:      make(map[string]TunnelDef, len(p.Tunnels)),
+		endpoints:    make(map[string]EndpointDef, len(p.Endpoints)),
+		environments: make(map[string]EnvironmentDef, len(p.Environments)),
 	}
 	for _, c := range p.Credentials {
 		s.credentials[c.TypeName] = c
@@ -88,6 +90,9 @@ func newServer(p *Plugin) *server {
 	}
 	for _, e := range p.Endpoints {
 		s.endpoints[e.TypeName] = e
+	}
+	for _, e := range p.Environments {
+		s.environments[e.TypeName] = e
 	}
 	return s
 }
@@ -130,6 +135,14 @@ func (s *server) Manifest(_ context.Context, _ *pb.ManifestRequest) (*pb.Manifes
 			})
 		}
 		resp.Facets = append(resp.Facets, &pb.FacetDecl{Name: f.Name, Fields: fields})
+	}
+	for _, e := range s.plug.Environments {
+		resp.Environments = append(resp.Environments, &pb.EnvironmentDecl{
+			TypeName:          e.TypeName,
+			Schema:            schemaToProto(e.Schema),
+			AcceptsEndpoint:   e.AcceptsEndpoint,
+			AcceptsCredential: e.AcceptsCredential,
+		})
 	}
 	return resp, nil
 }
@@ -187,6 +200,14 @@ func (s *server) Build(_ context.Context, req *pb.BuildRequest) (*pb.BuildRespon
 		if def.Build != nil {
 			built, err = def.Build(br)
 		}
+	case "environment":
+		def, ok := s.environments[req.TypeName]
+		if !ok {
+			return nil, fmt.Errorf("%w: environment %q", ErrNoSuchType, req.TypeName)
+		}
+		if def.Build != nil {
+			built, err = def.Build(br)
+		}
 	default:
 		return nil, fmt.Errorf("pluginsdk: unknown build kind %q", req.Kind)
 	}
@@ -216,6 +237,42 @@ func (s *server) Build(_ context.Context, req *pb.BuildRequest) (*pb.BuildRespon
 		// Default: echo the request body so ConnInit always carries a
 		// non-empty canonical_json the plugin can re-decode.
 		resp.CanonicalJson = req.ConfigJson
+	}
+	return resp, nil
+}
+
+// EnvVars dispatches to the EnvironmentDef.EnvVars callback,
+// forwarding the resolved framework refs (endpoint / credential
+// bare names) so the plugin can derive env-var values from them.
+// Plugins that don't supply EnvVars return an empty list.
+func (s *server) EnvVars(_ context.Context, req *pb.EnvVarsRequest) (*pb.EnvVarsResponse, error) {
+	def, ok := s.environments[req.TypeName]
+	if !ok {
+		return nil, fmt.Errorf("%w: environment %q", ErrNoSuchType, req.TypeName)
+	}
+	if def.EnvVars == nil {
+		return &pb.EnvVarsResponse{}, nil
+	}
+	vars, err := def.EnvVars(EnvVarsRequest{
+		TypeName:      req.TypeName,
+		InstanceName:  req.InstanceName,
+		ConfigJSON:    req.ConfigJson,
+		EndpointRef:   req.EndpointRef,
+		CredentialRef: req.CredentialRef,
+	})
+	if err != nil {
+		return nil, err
+	}
+	resp := &pb.EnvVarsResponse{}
+	for _, v := range vars {
+		if v.Name == "" {
+			continue
+		}
+		resp.Vars = append(resp.Vars, &pb.EnvVar{
+			Name:        v.Name,
+			Value:       v.Value,
+			Description: v.Description,
+		})
 	}
 	return resp, nil
 }

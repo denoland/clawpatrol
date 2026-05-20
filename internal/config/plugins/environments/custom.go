@@ -64,7 +64,7 @@ func customValidate(decoded any, name string, _ *config.BuildCtx) hcl.Diagnostic
 	return diags
 }
 
-func customEmit(body any, _ string, b *hclwrite.Body, _ *config.RefIndex) {
+func customEmit(body any, _ string, b *hclwrite.Body) {
 	c, ok := body.(*CustomEnvironment)
 	if !ok {
 		return

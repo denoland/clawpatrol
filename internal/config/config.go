@@ -735,21 +735,12 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 			if table.Get(KindEnvironment, e) != nil {
 				continue
 			}
-			if alt := table.GetAny(e); alt != nil {
-				diags = append(diags, &hcl.Diagnostic{
-					Severity: hcl.DiagError,
-					Summary:  fmt.Sprintf("Wrong reference kind in profile %q", sym.Name),
-					Detail:   fmt.Sprintf("%q is a %s, but profile.environments expects an environment.", e, alt.Kind),
-					Subject:  &sym.Block.DefRange,
-				})
-			} else {
-				diags = append(diags, &hcl.Diagnostic{
-					Severity: hcl.DiagError,
-					Summary:  fmt.Sprintf("Unknown environment %q", e),
-					Detail:   fmt.Sprintf("Profile %q references environment %q which is not declared.", sym.Name, e),
-					Subject:  &sym.Block.DefRange,
-				})
-			}
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("Unknown environment %q", e),
+				Detail:   fmt.Sprintf("Profile %q references environment %q which is not declared.", sym.Name, e),
+				Subject:  &sym.Block.DefRange,
+			})
 		}
 		p.Profiles[sym.Name] = pr
 		p.Order = append(p.Order, sym.Name)

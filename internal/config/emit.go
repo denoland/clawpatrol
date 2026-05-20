@@ -471,7 +471,6 @@ func setProfileEnvironments(b *hclwrite.Body, envs []string) {
 	SetIdentList(b, "environments", ri.Refs(KindEnvironment, envs))
 }
 
-
 // traversalTokens splits a dotted string into HCL ident / dot tokens.
 // "type.name" → [Ident("type"), Dot, Ident("name")]; a bare "name"
 // stays a single Ident token.
