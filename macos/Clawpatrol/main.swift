@@ -182,16 +182,21 @@ func saveProxyProfileAndExit(wholeMachine: Bool, explicit: Bool) {
         let proto = NETunnelProviderProtocol()
         proto.providerBundleIdentifier = extBundleID
         proto.serverAddress = "clawpatrol-gateway"
-        // Preserve any wg-conf already saved on the existing profile.
-        var wgConf = ""
+        // Carry forward every key from the existing providerConfiguration —
+        // wg-conf for WG mode, plus tsnet-auth-key / tsnet-control-url /
+        // tsnet-gateway-host / tsnet-gateway-ip / tsnet-api-token /
+        // tsnet-hostname for tailscale mode. `install` only owns `mode`;
+        // every other key flows in from `start` / `start-tsnet` and must
+        // survive a re-run of `install` (which `clawpatrol run` issues on
+        // every invocation to make sure the sysext is loaded).
+        var cfg: [String: Any] = [:]
         if let existingProto = existing?.protocolConfiguration as? NETunnelProviderProtocol,
-           let prevConf = existingProto.providerConfiguration?["wg-conf"] as? String {
-            wgConf = prevConf
+           let existingCfg = existingProto.providerConfiguration {
+            for (k, v) in existingCfg { cfg[k] = v }
         }
-        proto.providerConfiguration = [
-            "wg-conf": wgConf,
-            "mode": resolvedMode,
-        ]
+        if cfg["wg-conf"] == nil { cfg["wg-conf"] = "" }
+        cfg["mode"] = resolvedMode
+        proto.providerConfiguration = cfg
         manager.protocolConfiguration = proto
         manager.localizedDescription = proxyProfileName
         manager.isEnabled = true
@@ -207,7 +212,8 @@ func saveProxyProfileAndExit(wholeMachine: Bool, explicit: Bool) {
             let modeChanged = (prevMode ?? "") != resolvedMode
             let running = manager.connection.status == .connected
                 || manager.connection.status == .connecting
-            if modeChanged && running && !wgConf.isEmpty {
+            let hasWGConf = !((cfg["wg-conf"] as? String) ?? "").isEmpty
+            if modeChanged && running && hasWGConf {
                 reloadTunnelAndExit(manager: manager, label: resolvedMode)
             } else {
                 exit(0)
