@@ -862,7 +862,7 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 		diags = append(diags, d...)
 		// Cross-check: each credential name resolves to a credential.
 		for _, c := range pr.Credentials {
-			if table.Get(KindCredential, c) != nil {
+			if table.GetByQName(KindCredential, c) != nil {
 				continue
 			}
 			diags = append(diags, &hcl.Diagnostic{
@@ -1005,7 +1005,7 @@ func validateProfileDisambiguators(p *Policy, table *SymbolTable) hcl.Diagnostic
 		if table == nil {
 			return nil
 		}
-		sym := table.Get(KindProfile, name)
+		sym := table.GetByQName(KindProfile, name)
 		if sym == nil || sym.Block == nil {
 			return nil
 		}
@@ -1016,7 +1016,7 @@ func validateProfileDisambiguators(p *Policy, table *SymbolTable) hcl.Diagnostic
 		if table == nil {
 			return nil
 		}
-		sym := table.Get(KindCredential, name)
+		sym := table.GetByQName(KindCredential, name)
 		if sym == nil || sym.Block == nil {
 			return nil
 		}
