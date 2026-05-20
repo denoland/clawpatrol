@@ -8,22 +8,25 @@
   font-style: normal;
   font-weight: 300 800;
   font-display: swap;
-  src: url("/fonts/funnel-display/FunnelDisplay-Variable--latin_basic.woff2") format("woff2");
+  src: url("/fonts/funnel-display/FunnelDisplay-Variable--latin_basic.woff2")
+    format("woff2");
 }
 
 @font-face {
   font-family: "IBM Plex Sans";
   font-style: normal;
-  font-weight: 100 700;
+  font-weight: 100 600;
   font-display: swap;
-  src: url("/fonts/ibm-plex-sans/IBMPlexSans-Variable--latin_basic.woff2") format("woff2");
+  src: url("/fonts/ibm-plex-sans/IBMPlexSans-Variable--latin_basic.woff2")
+    format("woff2");
 }
 @font-face {
   font-family: "IBM Plex Sans";
   font-style: italic;
-  font-weight: 100 700;
+  font-weight: 100 600;
   font-display: swap;
-  src: url("/fonts/ibm-plex-sans/IBMPlexSans-VariableItalic--latin_basic.woff2") format("woff2");
+  src: url("/fonts/ibm-plex-sans/IBMPlexSans-VariableItalic--latin_basic.woff2")
+    format("woff2");
 }
 
 @font-face {
@@ -31,28 +34,32 @@
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url("/fonts/ibm-plex-mono/IBMPlexMono-400-Normal--latin_basic.woff2") format("woff2");
+  src: url("/fonts/ibm-plex-mono/IBMPlexMono-400-Normal--latin_basic.woff2")
+    format("woff2");
 }
 @font-face {
   font-family: "IBM Plex Mono";
   font-style: italic;
   font-weight: 400;
   font-display: swap;
-  src: url("/fonts/ibm-plex-mono/IBMPlexMono-400-Italic--latin_basic.woff2") format("woff2");
+  src: url("/fonts/ibm-plex-mono/IBMPlexMono-400-Italic--latin_basic.woff2")
+    format("woff2");
 }
 @font-face {
   font-family: "IBM Plex Mono";
   font-style: normal;
-  font-weight: 700;
+  font-weight: 600;
   font-display: swap;
-  src: url("/fonts/ibm-plex-mono/IBMPlexMono-700-Normal--latin_basic.woff2") format("woff2");
+  src: url("/fonts/ibm-plex-mono/IBMPlexMono-600-Normal--latin_basic.woff2")
+    format("woff2");
 }
 @font-face {
   font-family: "IBM Plex Mono";
   font-style: italic;
-  font-weight: 700;
+  font-weight: 600;
   font-display: swap;
-  src: url("/fonts/ibm-plex-mono/IBMPlexMono-700-Italic--latin_basic.woff2") format("woff2");
+  src: url("/fonts/ibm-plex-mono/IBMPlexMono-600-Italic--latin_basic.woff2")
+    format("woff2");
 }
 
 /* ── design tokens ────────────────────────────────────────────────────
@@ -86,7 +93,7 @@
   --color-canvas-light: #ffffff;
   --color-canvas: var(--color-canvas-100);
   --color-canvas-muted: var(--color-canvas-200);
-  --color-canvas-dark: var(--color-canvas-300);
+  --color-canvas-dark: var(--color-canvas-400);
 
   /* Persimmon — primary brand orange. Anchor at 500 (burnt rust,
      mirrors the mascot's overalls); 400 is reserved as the

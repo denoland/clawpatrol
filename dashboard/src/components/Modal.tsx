@@ -5,7 +5,7 @@ import { useEffect, useId, useRef, type ReactNode } from "react";
 // trapped focus, ESC-to-close, body scroll lock, and a real
 // backdrop — for free, no library.
 //
-// Visual chrome (bg-canvas-light, navy border, rounded corners,
+// Visual chrome (bg-canvas, navy border, rounded corners,
 // shadow, overflow-clip for the rounded edges), the navy-100 header
 // strip with title + close ✕, and the size scale all live on this
 // component so every modal looks the same. Callers only supply:
@@ -65,7 +65,7 @@ export function Modal({
         if (e.target === ref.current) ref.current?.close();
       }}
       className={
-        "m-auto p-0 text-text bg-canvas-light border-1.5 border-navy  " +
+        "m-auto p-0 text-text bg-canvas border-1.5 border-navy  " +
         "shadow-2xl overflow-hidden backdrop:bg-navy/40 backdrop:backdrop-blur-xs " +
         sizes[size] +
         " " +

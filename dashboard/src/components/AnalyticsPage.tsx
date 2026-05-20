@@ -152,9 +152,13 @@ export function AnalyticsPage({ ip, agents }: { ip?: string; agents: Agent[] }) 
     return { n: totalCount, avg, p99, errPct, devices };
   })();
 
-  const trail: Crumb[] = [{ label: "clawpatrol", href: "#/" }];
+  const trail: Crumb[] = [{ label: "Claw Patrol", href: "#/" }];
   if (deviceName) {
-    trail.push({ label: deviceName, href: `#/device/${encodeURIComponent(ip!)}` });
+    trail.push({ label: "devices", href: "#/devices" });
+    trail.push({
+      label: deviceName,
+      href: `#/device/${encodeURIComponent(ip!)}`,
+    });
   }
   trail.push({ label: "analytics" });
 
@@ -184,7 +188,7 @@ export function AnalyticsPage({ ip, agents }: { ip?: string; agents: Agent[] }) 
 
       <div
         className={
-          "bg-canvas-light border-1.5 border-navy grid grid-cols-2 divide-x divide-canvas-dark " +
+          "bg-canvas border-1.5 border-navy grid grid-cols-2 divide-x divide-canvas-dark " +
           (isGlobal ? "sm:grid-cols-4 lg:grid-cols-5" : "sm:grid-cols-4")
         }
       >
@@ -492,7 +496,7 @@ function LatencyChart({
   }, [filtered, colorBy, scale, range, agents, agentNames]);
 
   return (
-    <section className="bg-canvas-light border-1.5 border-navy overflow-hidden">
+    <section className="bg-canvas border-1.5 border-navy overflow-hidden">
       <header className="flex items-center justify-between px-4 py-2.5 bg-navy-100 border-b border-navy">
         <span className="text-xs font-mono uppercase tracking-wider font-bold text-navy">
           Latency
@@ -588,7 +592,7 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
   );
 
   return (
-    <section className="bg-canvas-light border-1.5 border-navy overflow-hidden">
+    <section className="bg-canvas border-1.5 border-navy overflow-hidden">
       <table className="w-full text-xs">
         <colgroup>
           <col />
@@ -610,7 +614,7 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
             return (
               <tr
                 key={d.key}
-                className="border-b border-canvas-muted hover:bg-navy-50 transition-colors"
+                className="border-b border-canvas-muted hover:bg-canvas-muted transition-colors"
               >
                 <td
                   className="px-3 sm:px-[14px] py-[9px] font-mono align-middle break-all"
@@ -674,7 +678,7 @@ function BarList({
   const max = items.length ? items[0].value : 0;
 
   return (
-    <section className="bg-canvas-light border-1.5 border-navy overflow-hidden">
+    <section className="bg-canvas border-1.5 border-navy overflow-hidden">
       <header className="px-4 py-2.5 bg-navy-100 border-b border-navy">
         <span className="text-xs font-mono uppercase tracking-wider font-bold text-navy">
           {title}
@@ -696,7 +700,7 @@ function BarList({
               key={item.key}
               className={
                 "flex items-center gap-2 px-1 py-0.5 rounded cursor-pointer " +
-                (isActive ? "bg-navy-50" : "hover:bg-navy-50")
+                (isActive ? "bg-navy-50" : "hover:bg-canvas-muted")
               }
               onClick={onClickFn ? () => onClickFn(item.key) : undefined}
             >
@@ -709,9 +713,9 @@ function BarList({
               >
                 {item.label}
               </span>
-              <div className="flex-1 h-2 bg-canvas-muted rounded-full">
+              <div className="flex-1 h-2 bg-canvas-muted">
                 <div
-                  className="h-full rounded-full"
+                  className="h-full"
                   style={{
                     width: `${pct}%`,
                     backgroundColor: barColor,

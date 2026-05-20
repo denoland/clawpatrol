@@ -25,13 +25,16 @@ export function PageTitle({ trail, actions }: { trail: Crumb[]; actions?: ReactN
           return (
             <span key={i} className="flex items-baseline gap-1.5">
               {c.href && !isLast ? (
-                <a href={c.href} className="text-text-subtle hover:text-text">
+                <a
+                  href={c.href}
+                  className="text-text-muted underline underline-offset-2 hover:text-text"
+                >
                   {c.label}
                 </a>
               ) : (
-                <span className={isLast ? "text-text-muted" : "text-text-subtle"}>{c.label}</span>
+                <span className="text-text-muted">{c.label}</span>
               )}
-              {!isLast && <span className="text-text-subtle">/</span>}
+              {!isLast && <span className="text-text-muted">/</span>}
             </span>
           );
         })}

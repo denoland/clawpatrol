@@ -103,7 +103,7 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
       requestId={ev.id}
     >
       {/* header */}
-      <div className="bg-canvas-light border-1.5 border-navy p-5 space-y-3">
+      <div className="bg-canvas border-1.5 border-navy p-5 space-y-3">
         <div className="flex items-center gap-3 flex-wrap">
           <ModeIcon mode={ev.mode} />
           {verb && (
@@ -151,7 +151,7 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
       {isSQL ? (
         <SQLDetail ev={ev} />
       ) : hasSections ? (
-        <div className="bg-canvas-light border-1.5 border-navy divide-y divide-canvas-dark">
+        <div className="bg-canvas border-1.5 border-navy divide-y divide-canvas-dark">
           {hasFacets && (
             <Section title="Request">
               <Facets rows={facetFields} />
@@ -179,7 +179,7 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
           )}
         </div>
       ) : (
-        <div className="bg-canvas-light border-1.5 border-navy px-5 py-4 text-xs text-text-subtle">
+        <div className="bg-canvas border-1.5 border-navy px-5 py-4 text-xs text-text-subtle">
           No request/response body captured
           {ev.mode === "splice" && " (spliced connection)"}
         </div>
@@ -222,7 +222,7 @@ function DownloadActionButton({ ev }: { ev: EventRecord }) {
           setBusy(false);
         }
       }}
-      title={err ?? "Download as a clawpatrol test fixture"}
+      title={err ?? "Download as a Claw Patrol test fixture"}
     >
       {busy ? "Downloading…" : "Download action"}
     </Button>
@@ -250,7 +250,7 @@ function SQLDetail({ ev }: { ev: EventRecord }) {
     facets.push({ label: "Functions", value: functions.map((s) => s.toUpperCase()).join(", ") });
   }
   return (
-    <div className="bg-canvas-light border-1.5 border-navy divide-y divide-canvas-dark">
+    <div className="bg-canvas border-1.5 border-navy divide-y divide-canvas-dark">
       {facets.length > 0 && (
         <Section title="Details">
           <div className="px-4 py-3 grid grid-cols-[100px_1fr] gap-y-1.5 gap-x-3 text-xs">
@@ -291,8 +291,9 @@ function Shell({
   agentName?: string;
   requestId?: string;
 }) {
-  const trail: Crumb[] = [{ label: "clawpatrol", href: "#/" }];
+  const trail: Crumb[] = [{ label: "Claw Patrol", href: "#/" }];
   if (agentIP) {
+    trail.push({ label: "devices", href: "#/devices" });
     trail.push({ label: agentName || agentIP, href: `#/device/${encodeURIComponent(agentIP)}` });
   }
   if (requestId) {

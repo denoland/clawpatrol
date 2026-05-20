@@ -10,7 +10,7 @@ import { CtxDonut } from "./CtxDonut";
 export function SessionsTable({ sessions: all }: { sessions: Session[] }) {
   const sessions = (all ?? []).filter((s) => s.title && s.title.length > 0);
   return (
-    <div className="bg-canvas-light border-1.5 border-navy overflow-hidden">
+    <div className="bg-canvas border-1.5 border-navy overflow-hidden">
       <div className="overflow-x-auto">
         <table className="w-full table-fixed border-collapse" style={{ minWidth: 800 }}>
           <colgroup>
@@ -38,7 +38,7 @@ export function SessionsTable({ sessions: all }: { sessions: Session[] }) {
               </tr>
             )}
             {sessions.map((s, i) => (
-              <tr key={i} className="border-b border-canvas-muted hover:bg-navy-50">
+              <tr key={i} className="border-b border-canvas-muted hover:bg-canvas-muted">
                 <Td>
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="w-[5px] h-[5px] rounded-full bg-success-500 shrink-0" />

@@ -72,7 +72,7 @@ export function LiveRequests({
 
   return (
     <div
-      className="flex flex-col bg-canvas-light border-1.5 border-navy overflow-hidden"
+      className="flex flex-col bg-canvas border-1.5 border-navy overflow-hidden"
       style={{ height: height ?? "420px" }}
     >
       <div className="flex items-center px-4 py-2.5 text-xs font-mono uppercase tracking-wider text-navy font-bold bg-navy-100 border-b border-navy shrink-0">
@@ -209,7 +209,7 @@ function Row({ ev, schema }: { ev: RowState; schema: FacetSchema | undefined }) 
           "px-4 py-2 flex items-center gap-3 min-w-0 transition-colors" +
           (onClick ? " cursor-pointer" : "") +
           (inFlight ? " opacity-70" : "") +
-          " hover:bg-navy-50"
+          " hover:bg-canvas-muted"
         }
       >
         <span className="text-2xs tabular-nums text-text-subtle shrink-0">{time}</span>

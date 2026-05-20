@@ -30,6 +30,19 @@ export default defineConfig({
           "Tailscale-User-Login": "dev@local",
         },
       },
+      // The gateway redirects unauthenticated browsers to /__login
+      // and serves the first-run / login form there. Without this
+      // proxy entry, Vite would intercept the path and serve the SPA
+      // shell instead — leaving you on a blank dashboard with no way
+      // to log in. /__logout follows the same pattern.
+      "/__login": {
+        target: "http://localhost:8080",
+        headers: { "Tailscale-User-Login": "dev@local" },
+      },
+      "/__logout": {
+        target: "http://localhost:8080",
+        headers: { "Tailscale-User-Login": "dev@local" },
+      },
     },
   },
 });

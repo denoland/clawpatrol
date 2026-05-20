@@ -210,7 +210,7 @@ function WindowsIcon({ className = "" }: IconProps) {
   );
 }
 
-function DesktopIcon({ className = "" }: IconProps) {
+export function DesktopIcon({ className = "" }: IconProps) {
   return (
     <svg
       className={className}

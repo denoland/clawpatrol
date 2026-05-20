@@ -1,7 +1,7 @@
 import type { AnchorHTMLAttributes, ButtonHTMLAttributes, ReactNode } from "react";
 
 type Variant = "normal" | "outline";
-type Size = "sm" | "md" | "lg";
+type Size = "xs" | "sm" | "md" | "lg";
 
 type CommonProps = {
   variant?: Variant;
@@ -20,10 +20,11 @@ type ButtonProps = AnchorProps | ButtonElProps;
 
 const base =
   "inline-block font-mono font-semibold uppercase tracking-wider cursor-pointer " +
-  "transition-colors outline-2 outline-navy -outline-offset-2 " +
+  "transition-colors " +
   "disabled:cursor-not-allowed";
 
 const sizes: Record<Size, string> = {
+  xs: "px-2 py-0.5 text-xs",
   sm: "px-2 py-1 text-xs",
   md: "px-4 py-2 text-sm",
   lg: "px-7 py-3.5 text-base",
@@ -31,12 +32,12 @@ const sizes: Record<Size, string> = {
 
 const variants: Record<Variant, string> = {
   normal:
-    "border-1.5 border-navy bg-rust text-navy-900 hover:bg-rust-300 " +
+    "border-1.5 border-navy bg-rust-400 text-navy hover:bg-rust-300 " +
     "disabled:bg-canvas-dark disabled:text-text-subtle " +
     "disabled:border-text-subtle disabled:outline-text-subtle " +
     "disabled:hover:bg-canvas-dark",
   outline:
-    "border-1.5 border-navy text-text-muted hover:bg-navy-100 " +
+    "border-1.5 border-navy text-current hover:bg-navy-200 " +
     "disabled:text-text-subtle " +
     "disabled:border-text-subtle disabled:outline-text-subtle " +
     "disabled:hover:bg-transparent",

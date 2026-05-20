@@ -30,7 +30,7 @@ export function Header() {
           <Button
             href="/docs/getting-started/"
             size="sm"
-            class="inline-flex items-center gap-2"
+            class="inline-flex items-center gap-2 !outline-navy-900"
           >
             <svg
               width="14"

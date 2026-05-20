@@ -7,7 +7,7 @@ const tones: Record<Tone, string> = {
   danger: "bg-danger-50 border-danger-200 text-danger-800",
   warning: "bg-butter-100 border-butter-200 text-butter-800",
   info: "bg-navy-50 border-navy-200 text-navy-800",
-  neutral: "bg-canvas border-canvas-dark text-text-muted",
+  neutral: "bg-canvas-muted border-canvas-dark text-text-muted",
 };
 
 const base =

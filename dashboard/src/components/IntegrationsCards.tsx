@@ -138,7 +138,7 @@ export function IntegrationsCards({
         {overflow && (
           <button
             onClick={() => setAllOpen(true)}
-            className="flex items-center justify-center px-3 py-2.5 bg-canvas-light border-1.5 border-dashed border-navy text-xs text-text-muted hover:bg-navy-50 hover:text-text transition-colors"
+            className="flex items-center justify-center px-3 py-2.5 bg-canvas border-1.5 border-dashed border-navy text-xs text-text-muted hover:bg-canvas-muted hover:text-text transition-colors"
           >
             + {hiddenCount} more
           </button>
@@ -274,8 +274,8 @@ function Card({
       disabled={!clickable && !connected}
       onClick={() => clickable && onConnect()}
       className={
-        "group relative flex flex-col items-start gap-2 px-3 py-2.5 bg-canvas-light border-1.5 border-navy text-left transition-colors " +
-        (clickable ? "cursor-pointer hover:bg-navy-50" : "cursor-default")
+        "group relative flex flex-col items-start gap-2 px-3 py-2.5 bg-canvas border-1.5 border-navy text-left transition-colors " +
+        (clickable ? "cursor-pointer hover:bg-canvas-muted" : "cursor-default")
       }
     >
       <div className="flex items-center gap-2 w-full">

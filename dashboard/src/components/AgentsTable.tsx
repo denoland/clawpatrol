@@ -29,10 +29,10 @@ export function AgentsTable({
       <thead className="bg-navy-100 border-b border-navy">
         <tr>
           <Th>Device</Th>
-          <Th className="hidden md:table-cell">Profile</Th>
+          <Th>Profile</Th>
           <Th>Activity</Th>
           <Th className="text-right">Reqs</Th>
-          <Th className="hidden lg:table-cell">IP</Th>
+          <Th>IP</Th>
         </tr>
       </thead>
       <tbody>
@@ -54,7 +54,7 @@ export function AgentsTable({
             <tr
               key={a.ip}
               onClick={() => onSelect?.(a.ip)}
-              className="border-b border-canvas-muted cursor-pointer hover:bg-navy-50 transition-colors"
+              className="border-b border-canvas-muted cursor-pointer hover:bg-canvas-muted transition-colors"
             >
               <Td>
                 <div className="flex items-center gap-1.5 min-w-0">
@@ -75,13 +75,8 @@ export function AgentsTable({
                     {a.hostname || a.ip}
                   </span>
                 </div>
-                <div className="md:hidden text-2xs text-text-subtle truncate mt-0.5">
-                  {a.profile || "—"}
-                </div>
               </Td>
-              <Td className="hidden md:table-cell text-xs text-text-muted truncate">
-                {a.profile || "—"}
-              </Td>
+              <Td className="text-xs text-text-muted truncate">{a.profile || "—"}</Td>
               <Td>
                 <div className="flex items-center gap-2">
                   <Sparkline data={a.activity} width={120} height={16} />
@@ -92,7 +87,7 @@ export function AgentsTable({
               </Td>
               <Td className="text-xs text-text-muted tabular-nums text-right">{a.reqs}</Td>
               <Td
-                className="hidden lg:table-cell text-xs text-text-muted tabular-nums truncate"
+                className="text-xs text-text-muted tabular-nums truncate"
                 title={
                   [a.external_ipv4, a.external_ipv6].filter(Boolean).join(" / ") || `wg ${a.ip}`
                 }

@@ -38,10 +38,12 @@
       *::after {
         box-sizing: border-box;
       }
+
       html,
       body {
         height: 100%;
       }
+
       body {
         margin: 0;
         background: var(--color-canvas);
@@ -57,7 +59,7 @@
       }
 
       .logo {
-        height: 56px;
+        height: 48px;
         width: auto;
       }
 
@@ -74,8 +76,8 @@
         font-size: 24px;
         font-weight: 700;
         margin: 0 0 16px;
-        letter-spacing: -0.01em;
         color: var(--color-text);
+        line-height: 1.1;
       }
 
       label {
@@ -98,6 +100,7 @@
         font: 14px/1.5 var(--font-sans);
         outline: none;
       }
+
       input:focus {
         outline: 2px solid var(--color-rust);
         outline-offset: 2px;
@@ -117,9 +120,11 @@
         cursor: pointer;
         transition: background-color 0.15s ease;
       }
+
       button:hover {
         background: var(--color-rust-300);
       }
+
       button:focus-visible {
         outline: 2px solid var(--color-rust);
         outline-offset: 2px;
@@ -138,6 +143,7 @@
       }
     </style>
   </head>
+
   <body>
     <img src="/claw-patrol-logo.svg" alt="Claw Patrol" class="logo" />
     <form method="POST" action="/__login?next={{.Next}}">
