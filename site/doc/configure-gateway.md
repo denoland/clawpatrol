@@ -48,9 +48,12 @@ wg_endpoint = "wg.example.com:51820"  # split-host deployment
 
 ## Dashboard auth
 
-**The dashboard holds the credential vault.** Auth is required at
-the application layer on every bind, regardless of where you
-listen — an unauthenticated request must never reach it.
+**The dashboard is how operators connect endpoint credentials
+and inspect live traffic, so it requires a password on every
+request.** That check runs in the gateway itself — not in the
+network — so an unauthenticated request must never reach it,
+whether `info_listen` is on loopback, a tailnet IP, or
+`0.0.0.0`.
 
 The first time you open the dashboard you set a `root` password.
 It lives bcrypt-hashed in `clawpatrol.db` and is checked on every
