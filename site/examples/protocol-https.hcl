@@ -1,6 +1,7 @@
 # Customer-support replies sent from the agent are scanned by an LLM
 # judge before they go out: catches offensive content, missing
 # salutations, and markdown that shouldn't ship.
+
 rule "support-reply-on-behalf" {
   endpoint = https.deno-deploy
   condition = <<-CEL

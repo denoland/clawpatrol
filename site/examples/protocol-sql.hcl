@@ -1,6 +1,7 @@
 # Block Postgres functions that could read the filesystem or open
 # outbound connections from inside the database — pg_read_file,
 # lo_get, and the whole dblink family.
+
 rule "pg-banned-functions" {
   endpoint = postgres.pg-staging
   priority = 100

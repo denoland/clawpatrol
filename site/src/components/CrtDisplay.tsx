@@ -9,7 +9,7 @@ export function CrtDisplay({
 }) {
   return (
     <div>
-      <div class="lg:squircle-lg overflow-hidden relative bg-crt-bg">
+      <div class="lg:squircle-lg overflow-hidden relative bg-navy-700">
         {/* Glass reflection */}
         <div
           class="absolute pointer-events-none z-20 w-60 h-12

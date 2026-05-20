@@ -178,11 +178,9 @@
   background-repeat: repeat;
 }
 
-/* Frosted-glass sticky surface. The blur lives on a ::before that
-   extends 1.5rem PAST the parent's bottom edge, then masks itself to
-   transparent over that overshoot — so the blur-to-clear transition
-   reads as a soft fade instead of a hard line at the header's edge.
-   Trick credit: https://www.joshwcomeau.com/css/backdrop-filter/ */
+/* Frosted-glass sticky surface. The blur lives on a ::before pinned
+   exactly to the parent's box so the effect ends cleanly at the
+   header's bottom edge with no overshoot. */
 .frosted-header {
   position: sticky;
   top: 0;
@@ -193,23 +191,10 @@
   content: "";
   position: absolute;
   inset: 0;
-  bottom: -0.5rem;
   z-index: -1;
-  background-color: color-mix(in oklch, var(--color-canvas) 70%, transparent);
+  background-color: color-mix(in oklch, var(--color-canvas) 80%, transparent);
   -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    black,
-    black calc(100% - 0.5rem),
-    transparent
-  );
-  mask-image: linear-gradient(
-    to bottom,
-    black,
-    black calc(100% - 0.5rem),
-    transparent
-  );
 }
 
 @supports not (corner-shape: squircle) {

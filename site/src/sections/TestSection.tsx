@@ -17,8 +17,8 @@ function TestOutput() {
     </>
   );
   return (
-    <TerminalFrame class="block min-w-0 p-6 sm:p-8 lg:p-10">
-      <pre class="text-[12.5px] sm:text-[13px] font-mono leading-relaxed text-canvas overflow-x-auto">
+    <TerminalFrame class="block min-w-0 p-6 sm:p-8 lg:p-10 squircle-xl bg-[repeating-linear-gradient(to_bottom,var(--color-navy),var(--color-navy)_1px,var(--color-navy-700)_1px,var(--color-navy-700)_2px)]">
+      <pre class="text-[12.5px] sm:text-[13px] font-mono leading-relaxed text-canvas overflow-x-auto text-shadow-navy-100/20 text-shadow-lg">
         <code>
           <span class="text-canvas/40">$ </span>
           clawpatrol test deno.hcl tests/
@@ -64,10 +64,9 @@ export function TestSection() {
   return (
     <section class="bg-canvas-muted py-24 sm:py-32">
       <div class="max-w-6xl mx-auto px-6 sm:px-8">
-        <SectionLabel>Regression tests</SectionLabel>
-
         <div class="grid grid-cols-1 lg:grid-cols-[2fr_3fr] gap-8 lg:gap-16 xl:gap-32 items-start">
           <div class="min-w-0">
+            <SectionLabel class="ml-0 mb-4!">Regression tests</SectionLabel>
             <h3 class="text-4xl sm:text-5xl md:text-6xl lg:text-[3.25rem] font-display text-balance mb-6 text-text">
               Test your rules{" "}
               <span class="text-rust">before you ship them.</span>

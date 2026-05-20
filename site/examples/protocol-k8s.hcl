@@ -1,6 +1,7 @@
 # kubectl exec is gated by an LLM judge that reads the command argv:
 # allows ls / ps / df, denies env dumps, sensitive file reads, and
 # anything touching pod tokens or container sockets.
+
 rule "k8s-exec-content-check" {
   endpoints = [kubernetes.k8s-dev, kubernetes.k8s-prod]
   priority  = 500
