@@ -66,18 +66,6 @@ func daemonControlSockPath() string { return filepath.Join(daemonRuntimeDir(), "
 func daemonSpawnLockPath() string   { return filepath.Join(daemonRuntimeDir(), "spawn.lock") }
 func daemonLogPath() string         { return filepath.Join(daemonRuntimeDir(), "daemon.log") }
 
-// daemonStateDir resolves the per-user **persistent** state directory.
-// Unlike daemonRuntimeDir, the contents survive logout — the tsnet
-// node identity lives here so the daemon registers as the same device
-// every time it boots. Prefer XDG_STATE_HOME; fall back to
-// ~/.local/state/clawpatrol when unset.
-func daemonStateDir() string {
-	if d := os.Getenv("XDG_STATE_HOME"); d != "" {
-		return filepath.Join(d, "clawpatrol")
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "state", "clawpatrol")
-}
 
 // daemonConnect returns a control connection to the per-host daemon,
 // spawning one if none is running. Safe to call from concurrent
@@ -480,11 +468,12 @@ func (d *daemon) handle(c net.Conn) {
 // the started server and our assigned 100.x address.
 func daemonStartTsnet() (*tsnet.Server, netip.Addr, error) {
 	caDir := defaultClawpatrolDir()
-	authKey := strings.TrimSpace(readFileSilent(filepath.Join(caDir, "tsnet-auth-key")))
+	stateDir := daemonStateDir()
+	authKey := strings.TrimSpace(readFileSilent(filepath.Join(stateDir, "auth-key")))
 	controlURL := strings.TrimSpace(readFileSilent(filepath.Join(caDir, "control-url")))
 	gwIPStr := strings.TrimSpace(readFileSilent(filepath.Join(caDir, "tailnet-gateway-ip")))
 	if authKey == "" {
-		return nil, netip.Addr{}, fmt.Errorf("missing tsnet-auth-key in %s (re-run `clawpatrol join`)", caDir)
+		return nil, netip.Addr{}, fmt.Errorf("missing auth-key in %s (re-run `clawpatrol join`)", stateDir)
 	}
 	if gwIPStr == "" {
 		return nil, netip.Addr{}, fmt.Errorf("missing tailnet-gateway-ip in %s (re-run `clawpatrol join`)", caDir)
@@ -499,8 +488,8 @@ func daemonStartTsnet() (*tsnet.Server, netip.Addr, error) {
 	// idle-exit + respawn cycles. Auth keys are minted non-ephemeral,
 	// so a single device row shows up on the dashboard per host
 	// instead of churning one per daemon lifetime.
-	stateDir := filepath.Join(daemonStateDir(), "tsnet")
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+	tsnetDir := filepath.Join(stateDir, "tsnet")
+	if err := os.MkdirAll(tsnetDir, 0o700); err != nil {
 		return nil, netip.Addr{}, fmt.Errorf("tsnet state dir: %w", err)
 	}
 
@@ -513,7 +502,7 @@ func daemonStartTsnet() (*tsnet.Server, netip.Addr, error) {
 		Hostname:   hn,
 		AuthKey:    authKey,
 		ControlURL: controlURL,
-		Dir:        stateDir,
+		Dir:        tsnetDir,
 		Ephemeral:  false,
 		Logf:       func(string, ...any) {},
 	}

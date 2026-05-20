@@ -720,6 +720,21 @@ func defaultClawpatrolDir() string {
 	return filepath.Join(home, ".clawpatrol")
 }
 
+// daemonStateDir returns the per-user **persistent** directory for
+// daemon-only state (auth-key, future daemon-private files). XDG
+// spec: $XDG_STATE_HOME/clawpatrol, fall back to
+// ~/.local/state/clawpatrol when unset. Separate from
+// defaultClawpatrolDir so that the agent-visible ~/.clawpatrol/
+// directory only holds files the agent legitimately needs (ca.crt,
+// mode marker, etc.).
+func daemonStateDir() string {
+	if d := os.Getenv("XDG_STATE_HOME"); d != "" {
+		return filepath.Join(d, "clawpatrol")
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "state", "clawpatrol")
+}
+
 // readFileSilent reads a file and returns its contents as a string,
 // or empty on any error.
 func readFileSilent(path string) string {
@@ -1117,18 +1132,13 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		//
 		// macOS: hand the key directly to the NE extension via
 		// NETransparentProxyManager's providerConfiguration (system-
-		// owned VPN preferences storage). The user-side CLI does not
-		// keep a copy on disk, so an agent inside `clawpatrol run`
-		// cannot read it back from $HOME. Subsequent runs invoke
-		// `start-tsnet` with an empty authKey arg; the container app
-		// reads the stored value from existing preferences.
+		// owned VPN preferences storage). The user-side CLI never
+		// holds the bearer on disk.
 		//
-		// Linux: parent process reads the file at each `clawpatrol run`
-		// and spins up its own tsnet.Server. The child mnt namespace
-		// overlays an empty tmpfs on ~/.clawpatrol/ before exec'ing
-		// the agent (see run_tsnet_linux.go), so the agent still can't
-		// read the key — same machine-binding property as macOS, just
-		// enforced by mount-ns isolation instead of NE storage.
+		// Linux: write to the daemon's persistent state directory
+		// (separate from ~/.clawpatrol, which holds agent-visible
+		// files like ca.crt). The clawpatrol daemon is the sole
+		// reader.
 		if runtime.GOOS == "darwin" {
 			c := exec.Command(macHelperPath, "start-tsnet",
 				authKey, tailnetControlURL, tailnetGWHost, gatewayIP, apiToken, hn)
@@ -1137,7 +1147,11 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 				return false, fmt.Errorf("macHelper start-tsnet: %w", err)
 			}
 		} else {
-			_ = os.WriteFile(filepath.Join(clawDir, "tsnet-auth-key"), []byte(authKey+"\n"), 0o600)
+			stateDir := daemonStateDir()
+			if err := os.MkdirAll(stateDir, 0o700); err != nil {
+				return false, fmt.Errorf("daemon state dir: %w", err)
+			}
+			_ = os.WriteFile(filepath.Join(stateDir, "auth-key"), []byte(authKey+"\n"), 0o600)
 		}
 		items := []string{"Joined (tsnet mode — ephemeral node joins tailnet at run time)"}
 		items = append(items, setupSummaryItems(*setup)...)
