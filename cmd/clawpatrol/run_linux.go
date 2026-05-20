@@ -315,6 +315,22 @@ func runRunChild() {
 		_ = bindResolv("nameserver 1.1.1.1\nnameserver 8.8.8.8\n")
 	}
 
+	// Mask ~/.clawpatrol/ from the agent. Holds parent-only bearer
+	// secrets (api-token, persisted WG conf with private key). Agent
+	// only needs ca.crt downstream, so we re-create it inside an
+	// empty tmpfs overlay. See run_tsnet_linux.go for the equivalent
+	// rationale on the tsnet path.
+	clawDir := defaultClawpatrolDir()
+	caBytes, _ := os.ReadFile(filepath.Join(clawDir, "ca.crt"))
+	if err := unix.Mount("tmpfs", clawDir, "tmpfs", 0, "mode=0755"); err != nil {
+		fail("mask clawpatrol dir: %v", err)
+	}
+	if len(caBytes) > 0 {
+		if err := os.WriteFile(filepath.Join(clawDir, "ca.crt"), caBytes, 0o644); err != nil {
+			fail("rewrite ca.crt in masked dir: %v", err)
+		}
+	}
+
 	// Auto-expose relay: install seccomp filter trapping listen(2), open
 	// the socketpair the supervisor and worker share, ship the supervisor
 	// end up to the top parent via SCM_RIGHTS, fork the worker as a child
