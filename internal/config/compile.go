@@ -93,7 +93,7 @@ type HostPattern struct {
 
 // CompiledEndpoint flattens an endpoint plus the rules that target it.
 // Body is whatever the endpoint plugin's Build returned (e.g.
-// *endpoints.HTTPSEndpoint) — runtime callers type-assert based on
+// *endpoints.HTTPEndpoint) — runtime callers type-assert based on
 // Family.
 //
 // Credentials is the global set of credential Entities whose

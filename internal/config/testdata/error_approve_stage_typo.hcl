@@ -7,12 +7,12 @@ gateway {
   }
 }
 
-endpoint "https" "github" {
+endpoint "http" "github" {
   hosts = ["api.github.com"]
 }
 
 credential "bearer_token" "pat" {
-  endpoint = https.github
+  endpoint = http.github
 }
 
 approver "human_approver" "ops" {
@@ -23,7 +23,7 @@ approver "human_approver" "ops" {
 # be a bare-name reference. The previous closed-set check on stage
 # attributes is now subsumed by the shape check.
 rule "broken-approve" {
-  endpoint  = https.github
+  endpoint  = http.github
   condition = "http.method == 'POST'"
   approve   = [{ naem = human_approver.ops }]
 }

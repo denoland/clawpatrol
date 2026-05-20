@@ -12,7 +12,7 @@
   "match": {
     "verdict":  "deny",
     "rule":     "github-writes",
-    "endpoint": "https.github",
+    "endpoint": "http.github",
     "reason":   "writes go through PR review"
   }
 }

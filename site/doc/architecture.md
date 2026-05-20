@@ -79,7 +79,7 @@ credentials, and does not know upstream secrets.
   <line class="arr-proc" x1="445" y1="90" x2="490" y2="90" marker-end="url(#ar-proc)"/>
   <rect class="b-proc" x="490" y="70" width="115" height="40" rx="4"/>
   <text class="lbl-proc" x="547" y="90">endpoint plugin</text>
-  <text class="sm-proc" x="547" y="104">https/k8s/sql/ssh</text>
+  <text class="sm-proc" x="547" y="104">http/k8s/sql/ssh</text>
   <line class="arr-proc" x1="605" y1="90" x2="630" y2="90" marker-end="url(#ar-proc)"/>
   <rect class="b-proc" x="630" y="70" width="100" height="40" rx="4"/>
   <text class="lbl-proc" x="680" y="90">rule plugin</text>
@@ -107,9 +107,9 @@ credentials, and does not know upstream secrets.
 The gateway pulls in three plugin families:
 
 - **Endpoint plugins** define an upstream binding and the wire
-  protocol to terminate (`https`, `kubernetes`, `postgres`,
+  protocol to terminate (`http`, `kubernetes`, `postgres`,
   `clickhouse_native`, `clickhouse_https`, `ssh`). Each plugin owns
-  the per-protocol decode: an `https` endpoint sees parsed
+  the per-protocol decode: an `http` endpoint sees parsed
   `http.Request` objects; a `postgres` endpoint sees `Query` /
   `Parse` messages; a `clickhouse_native` endpoint sees Hello
   packets; an `ssh` endpoint sees channels and global requests.
@@ -201,7 +201,7 @@ Once a flow reaches the gateway over the tunnel, the gateway
 inspects the destination port (and, for some families, the SNI or
 the resolved hostname) to pick a handler. A **family** is the
 protocol class an endpoint plugin advertises so the rule engine
-can target it: today the gateway ships `https` (the `https`
+can target it: today the gateway ships `http` (the `http`
 endpoint), `sql` (postgres, clickhouse_native, clickhouse_https),
 and `k8s` (kubernetes). Rules are a single block kind; the family
 is inferred from the rule’s endpoint(s) at load time, and each
@@ -243,7 +243,7 @@ based on the destination port and IP:
   <text class="cond-disp" x="125" y="163">TCP :443</text>
   <rect class="b-disp" x="240" y="142" width="720" height="52" rx="4"/>
   <text class="row-disp" x="250" y="162">
-    <tspan x="250" dy="0">SNI peek; matched endpoint ⇒ MitM TLS (https / k8s family);</tspan>
+    <tspan x="250" dy="0">SNI peek; matched endpoint ⇒ MitM TLS (http / k8s family);</tspan>
     <tspan x="250" dy="1.3em">no match ⇒ unknown_host policy (passthrough or close)</tspan>
   </text>
   <line class="arr-disp" x1="120" y1="234" x2="240" y2="234" marker-end="url(#ar-disp)"/>
@@ -284,7 +284,7 @@ end of the section.
 
 For TCP flows on `:443`, the gateway peeks the TLS `ClientHello`
 to recover the SNI hostname, then looks up the endpoint claiming
-that host within the device’s profile. If the endpoint is `https`
+that host within the device’s profile. If the endpoint is `http`
 or `k8s`, the gateway terminates TLS with a leaf cert minted on
 the fly (P-256, 30-day validity, in-memory cache, signed by the
 gateway’s CA), parses the request, runs it through the rule
@@ -364,7 +364,7 @@ summary:
 
 | dst port             | handler                                                                                  |
 |----------------------|------------------------------------------------------------------------------------------|
-| `:443`               | SNI peek, then HTTPS family dispatch (`https` / `k8s`) or passthrough                    |
+| `:443`               | SNI peek, then HTTPS family dispatch (`http` / `k8s`) or passthrough                    |
 | `:5432`              | postgres wire-protocol gateway (auth offload + `sql`-family rule matching)               |
 | `:53`                | DNS-VIP responder (UDP and TCP fallback)                                                 |
 | any port, dst is VIP | VIP-bound endpoint runtime (today: `ssh`, `clickhouse_native` reached by hostname)       |

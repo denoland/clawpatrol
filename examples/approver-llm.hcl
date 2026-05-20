@@ -12,11 +12,11 @@ gateway {
   wireguard { subnet_cidr = "10.55.0.0/24" }
 }
 
-endpoint "https" "anchor" {
+endpoint "http" "anchor" {
   hosts = ["example.com"]
 }
 
 credential "anthropic_manual_key" "anthropic-key" {}
-credential "bearer_token" "noop" { endpoint = https.anchor }
+credential "bearer_token" "noop" { endpoint = http.anchor }
 
 profile "default" { credentials = [bearer_token.noop] }

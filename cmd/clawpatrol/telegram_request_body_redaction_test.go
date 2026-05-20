@@ -33,13 +33,13 @@ gateway {
   public_url = "https://gw.example.test"
   wireguard { subnet_cidr = "10.55.0.0/24" }
 }
-endpoint "https" "telegram_api" {
+endpoint "http" "telegram_api" {
   hosts = ["api.telegram.org"]
 }
-credential "telegram_bot_token" "telegram_cred" { endpoint = https.telegram_api }
+credential "telegram_bot_token" "telegram_cred" { endpoint = http.telegram_api }
 profile "default" { credentials = [telegram_bot_token.telegram_cred] }
 rule "allow-telegram" {
-  endpoint = https.telegram_api
+  endpoint = http.telegram_api
   verdict  = "allow"
 }
 `), "telegram-test.hcl")

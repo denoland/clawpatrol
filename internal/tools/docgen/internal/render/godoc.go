@@ -13,8 +13,8 @@ import (
 
 // goDocs holds Go source comments extracted from the packages whose
 // types are exposed in the HCL config. We index by qualified type
-// name (`config.Gateway`, `endpoints.HTTPSEndpoint`) and by field
-// (`endpoints.HTTPSEndpoint.Hosts`).
+// name (`config.Gateway`, `endpoints.HTTPEndpoint`) and by field
+// (`endpoints.HTTPEndpoint.Hosts`).
 type goDocs struct {
 	types  map[string]string // pkgName.TypeName → leading doc
 	fields map[string]string // pkgName.TypeName.FieldName → leading doc

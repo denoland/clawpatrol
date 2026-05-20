@@ -81,22 +81,22 @@ func TestFixtureUnmarshalRejections(t *testing.T) {
 }
 
 func TestMatchFromCompiledRule(t *testing.T) {
-	ep := &config.CompiledEndpoint{Name: "ep", Plugin: &config.Plugin{Type: "https"}}
+	ep := &config.CompiledEndpoint{Name: "ep", Plugin: &config.Plugin{Type: "http"}}
 	cases := []struct {
 		name string
 		cr   *config.CompiledRule
 		want Match
 	}{
-		{"nil-rule", nil, Match{Verdict: "allow", Endpoint: "https.ep"}},
+		{"nil-rule", nil, Match{Verdict: "allow", Endpoint: "http.ep"}},
 		{"explicit-allow",
 			&config.CompiledRule{Name: "r1", Outcome: config.Outcome{Verdict: "allow"}},
-			Match{Verdict: "allow", Rule: "r1", Endpoint: "https.ep"}},
+			Match{Verdict: "allow", Rule: "r1", Endpoint: "http.ep"}},
 		{"deny",
 			&config.CompiledRule{Name: "r2", Outcome: config.Outcome{Verdict: "deny", Reason: "no"}},
-			Match{Verdict: "deny", Rule: "r2", Endpoint: "https.ep", Reason: "no"}},
+			Match{Verdict: "deny", Rule: "r2", Endpoint: "http.ep", Reason: "no"}},
 		{"approve-chain",
 			&config.CompiledRule{Name: "r3", Outcome: config.Outcome{Approve: []config.ApproveStage{{}}}},
-			Match{Verdict: "approve", Rule: "r3", Endpoint: "https.ep"}},
+			Match{Verdict: "approve", Rule: "r3", Endpoint: "http.ep"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -41,10 +41,10 @@ func gatewayWithPolicy(t *testing.T, hcl string) *Gateway {
 }
 
 const fixtureHCL = `
-endpoint "https" "github" {
+endpoint "http" "github" {
   hosts = ["api.github.com"]
 }
-credential "bearer_token" "tok" { endpoint = https.github }
+credential "bearer_token" "tok" { endpoint = http.github }
 profile "default" { credentials = [bearer_token.tok] }
 `
 
@@ -94,7 +94,7 @@ func TestExporterHTTPSHappyPath(t *testing.T) {
 	if f.Action.HTTP.Path != "/user" {
 		t.Errorf("path=%q want /user", f.Action.HTTP.Path)
 	}
-	want := Match{Verdict: "allow", Rule: "github-reads", Endpoint: "https.github"}
+	want := Match{Verdict: "allow", Rule: "github-reads", Endpoint: "http.github"}
 	if f.Match != want {
 		t.Errorf("match=%+v want %+v", f.Match, want)
 	}
@@ -121,14 +121,14 @@ func TestExporterRejectsEmptyEndpoint(t *testing.T) {
 func TestExporterAlwaysEmitsEndpoint(t *testing.T) {
 	const hcl = `
 
-endpoint "https" "alpha" {
+endpoint "http" "alpha" {
   hosts = ["api.example.com"]
 }
-endpoint "https" "beta" {
+endpoint "http" "beta" {
   hosts = ["api.example.com"]
 }
-credential "bearer_token" "a" { endpoint = https.alpha }
-credential "bearer_token" "b" { endpoint = https.beta }
+credential "bearer_token" "a" { endpoint = http.alpha }
+credential "bearer_token" "b" { endpoint = http.beta }
 profile "default" { credentials = [bearer_token.a, bearer_token.b] }
 `
 	w := &webMux{g: gatewayWithPolicy(t, hcl)}
@@ -147,8 +147,8 @@ profile "default" { credentials = [bearer_token.a, bearer_token.b] }
 	if err := json.Unmarshal(rw.Body.Bytes(), &f); err != nil {
 		t.Fatal(err)
 	}
-	if f.Match.Endpoint != "https.beta" {
-		t.Errorf("expected match.endpoint=https.beta, got %q", f.Match.Endpoint)
+	if f.Match.Endpoint != "http.beta" {
+		t.Errorf("expected match.endpoint=http.beta, got %q", f.Match.Endpoint)
 	}
 }
 
@@ -394,12 +394,12 @@ profile "default" { credentials = [mtls_credential.kube-mtls] }
 func TestExporterRunnerRoundTrip(t *testing.T) {
 	const hcl = `
 
-endpoint "https" "github" {
+endpoint "http" "github" {
   hosts = ["api.github.com"]
 }
-credential "bearer_token" "tok" { endpoint = https.github }
+credential "bearer_token" "tok" { endpoint = http.github }
 rule "reads" {
-  endpoint  = https.github
+  endpoint  = http.github
   condition = "http.method == 'GET'"
   verdict   = "allow"
 }
@@ -437,7 +437,7 @@ profile "default" { credentials = [bearer_token.tok] }
 func TestRunnerRejectsPassthrough(t *testing.T) {
 	gw := gatewayWithPolicy(t, fixtureHCL)
 	body := `{"action":{"host":"api.github.com","http":{"method":"GET","path":"/x"}},` +
-		`"match":{"verdict":"passthrough","endpoint":"https.github"}}`
+		`"match":{"verdict":"passthrough","endpoint":"http.github"}}`
 	tmp := filepath.Join(t.TempDir(), "pt.json")
 	if err := os.WriteFile(tmp, []byte(body), 0o644); err != nil {
 		t.Fatal(err)

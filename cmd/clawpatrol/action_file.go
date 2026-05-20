@@ -242,7 +242,7 @@ func MatchFromCompiledRule(cr *config.CompiledRule, ep *config.CompiledEndpoint)
 // error with the candidate list.
 //
 // match.endpoint uses the typed form `endpoint-type.endpoint-name`
-// (e.g. `https.github`) — the same addressing model HCL rules use.
+// (e.g. `http.github`) — the same addressing model HCL rules use.
 // Bare names are rejected so the reference is unambiguous across
 // endpoint types.
 func (f *Fixture) ResolveEndpoint(policy *config.CompiledPolicy) (*config.CompiledEndpoint, error) {
@@ -250,7 +250,7 @@ func (f *Fixture) ResolveEndpoint(policy *config.CompiledPolicy) (*config.Compil
 		typ, name, ok := splitEndpointRef(f.Match.Endpoint)
 		if !ok {
 			return nil, fmt.Errorf(
-				"match.endpoint %q must use typed form `endpoint-type.endpoint-name` (e.g. `https.github`)",
+				"match.endpoint %q must use typed form `endpoint-type.endpoint-name` (e.g. `http.github`)",
 				f.Match.Endpoint)
 		}
 		ep := policy.Endpoints[name]

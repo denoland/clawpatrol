@@ -40,7 +40,7 @@ type Runtime interface {
 
 	// Transport names the gateway-side handler that owns the wire
 	// for endpoints of this family. "https-mitm" → SNI peek + TLS
-	// terminate + HTTP request loop (used by https and kubernetes
+	// terminate + HTTP request loop (used by http and kubernetes
 	// endpoints alike). "" → no MITM-port-443 dispatch; the
 	// endpoint plugin's own runtime drives the wire (postgres /
 	// clickhouse / future native protocols). Lets the gateway

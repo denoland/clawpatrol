@@ -309,7 +309,7 @@ credential "telegram_bot_token" "example" {}
 
 Block syntax: `endpoint "<type>" "<name>" { ... }`
 
-Registered types: [`clickhouse_https`](#endpoint-clickhousehttps), [`clickhouse_native`](#endpoint-clickhousenative), [`https`](#endpoint-https), [`kubernetes`](#endpoint-kubernetes), [`openai_codex_https`](#endpoint-openaicodexhttps), [`postgres`](#endpoint-postgres), [`ssh`](#endpoint-ssh).
+Registered types: [`clickhouse_https`](#endpoint-clickhousehttps), [`clickhouse_native`](#endpoint-clickhousenative), [`http`](#endpoint-http), [`kubernetes`](#endpoint-kubernetes), [`openai_codex_https`](#endpoint-openaicodexhttps), [`postgres`](#endpoint-postgres), [`ssh`](#endpoint-ssh).
 
 ### `endpoint "clickhouse_https" "<name>"`
 
@@ -362,7 +362,7 @@ endpoint "clickhouse_native" "example" {
 }
 ```
 
-### `endpoint "https" "<name>"`
+### `endpoint "http" "<name>"`
 
 Family: `http`.
 
@@ -371,7 +371,7 @@ Family: `http`.
 | `hosts` | `[]string` | yes | The set of HTTPS hostnames or host:port pairs this endpoint intercepts. |
 
 ```hcl
-endpoint "https" "example" {
+endpoint "http" "example" {
   hosts = ["api.example.com"]
 }
 ```

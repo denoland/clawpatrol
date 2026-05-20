@@ -58,7 +58,7 @@ its credential is `example_magic_token`, its custom facet is
 also `example_smtp` (endpoint types and facets live in different
 registries, so reusing one name for the matched pair is fine and
 often clearer). A plugin that ships a name colliding *within* a
-registry — with a built-in (e.g. `https` endpoint type, `http`
+registry — with a built-in (e.g. `http` endpoint type, `http`
 facet) or another plugin — fails at validate time with a clear
 diagnostic.
 
@@ -233,7 +233,7 @@ exercise them:
 - Manifests with empty type / facet / field names or empty
   endpoint Family are rejected up front.
 - A plugin type or facet whose name collides with a built-in
-  (e.g. `https`, `http`) or with another plugin’s registration
+  (e.g. `http`, `http`) or with another plugin’s registration
   surfaces as a diagnostic instead of a panic.
 
 The success line gains one summary row per loaded plugin so you

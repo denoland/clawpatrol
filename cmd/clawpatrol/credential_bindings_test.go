@@ -14,18 +14,18 @@ import (
 // whose endpoint set references any of those endpoints.
 func TestCredentialBindings(t *testing.T) {
 	src := `
-endpoint "https" "alpha_api" {
+endpoint "http" "alpha_api" {
   hosts = ["alpha.example"]
 }
-endpoint "https" "beta_api" {
+endpoint "http" "beta_api" {
   hosts = ["beta.example"]
 }
-endpoint "https" "beta_api_2" {
+endpoint "http" "beta_api_2" {
   hosts = ["beta2.example"]
 }
 
-credential "bearer_token" "alpha"  { endpoint = https.alpha_api }
-credential "bearer_token" "beta"   { endpoints = [https.beta_api, https.beta_api_2] }
+credential "bearer_token" "alpha"  { endpoint = http.alpha_api }
+credential "bearer_token" "beta"   { endpoints = [http.beta_api, http.beta_api_2] }
 credential "bearer_token" "orphan" {}
 
 profile "prod" {
@@ -37,7 +37,7 @@ profile "staging" {
 
 rule "default-allow" {
   verdict   = "allow"
-  endpoints = [https.alpha_api, https.beta_api, https.beta_api_2]
+  endpoints = [http.alpha_api, http.beta_api, http.beta_api_2]
 }
 `
 	gw, diags := config.LoadBytes([]byte(testGatewayPrefix+src), "bindings-test.hcl")

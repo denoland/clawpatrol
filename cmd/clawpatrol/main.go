@@ -1320,7 +1320,7 @@ func (g *Gateway) handle(raw net.Conn, dstIP string) {
 	defer otelTrackConn("https_mitm")()
 	host, prefix, err := peekSNI(raw)
 	if err != nil {
-		// No SNI — fall back to direct-IP endpoint lookup for kubernetes/https
+		// No SNI — fall back to direct-IP endpoint lookup for kubernetes/http
 		// endpoints whose `server` field is an IP literal (kubectl connects
 		// by IP and never sends SNI).
 		if dstIP != "" {
@@ -1350,7 +1350,7 @@ func (g *Gateway) handle(raw net.Conn, dstIP string) {
 		return
 	}
 	if isHTTPSMITMFamily(ep.Family) {
-		// Every facet whose Transport() is "https-mitm" — https and
+		// Every facet whose Transport() is "https-mitm" — http and
 		// k8s today, future plugins tomorrow — terminates TLS here
 		// and runs the request loop through mitmHTTPS. The facet's
 		// PrepareRequest hook derives any per-family metadata
@@ -1868,7 +1868,7 @@ func bufferHTTPBodyForMatchTruncated(req *http.Request) (body []byte, truncated 
 }
 
 // mitmHTTPS handles an SNI-matched TLS connection for an HTTPS-family
-// endpoint (https, kubernetes). It mints a leaf cert, terminates TLS,
+// endpoint (http, kubernetes). It mints a leaf cert, terminates TLS,
 // then loops reading HTTP requests and dispatching each through the
 // compiled policy: runtime.MatchRequest picks the rule, the rule's
 // Outcome decides verdict / approve. Allowed requests forward upstream
@@ -2161,7 +2161,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		// upstream — used by openai_codex_https to serve the JWKS +
 		// agent-task-register stubs that anchor codex's Agent
 		// Identity flow on hosts we MITM. Endpoints without a
-		// responder (the default https plugin) fall through.
+		// responder (the default http plugin) fall through.
 		if responder, ok := ep.Plugin.Runtime.(runtime.HTTPSyntheticResponder); ok {
 			if r, handled, err := responder.RespondHTTP(req.Context(), req); err != nil {
 				log.Printf("respond %s: %v", ep.Name, err)

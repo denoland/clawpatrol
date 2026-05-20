@@ -48,7 +48,7 @@
 #
 #   endpoint     "<type>" "<name>" {}     a typed upstream binding —
 #                                         hosts + connection params only.
-#                                         Types: https, postgres,
+#                                         Types: http, postgres,
 #                                         kubernetes, clickhouse_https,
 #                                         clickhouse_native.
 #
@@ -87,12 +87,12 @@
 # References are typed traversals — `<type>.<name>` for two-label
 # kinds, `<kind>.<name>` for one-label kinds:
 #
-#     endpoint    = https.anthropic-ops
+#     endpoint    = http.anthropic-ops
 #     credentials = [bearer_token.github-ops]
 #     approve     = [llm_approver.fast]
 #
-# The leading label is required: the loader resolves `https.foo` as
-# the endpoint of type `https` named `foo`. There is no bare-name
+# The leading label is required: the loader resolves `http.foo` as
+# the endpoint of type `http` named `foo`. There is no bare-name
 # resolution and no `credential.bearer_token...` triple-segment form.
 #
 # Note: ClickHouse exposes two protocols (HTTPS API + native binary)
@@ -112,7 +112,7 @@
 #   (a) Singular:
 #
 #         credential "bearer_token" "grafana" {
-#           endpoint = https.grafana
+#           endpoint = http.grafana
 #         }
 #
 #       The credential authenticates exactly one endpoint. This is the
@@ -203,7 +203,7 @@
 # `http`). A rule's referenced endpoints must all be of the same
 # protocol family, or it's a load error.
 #
-#   https endpoints  → `http` variable
+#   http endpoints   → `http` variable
 #   postgres,
 #   clickhouse_https,
 #   clickhouse_native → `sql` variable
@@ -248,7 +248,7 @@
 # Per-family CEL variables. Each family exposes one struct-typed
 # top-level variable; fields are accessed with dot notation.
 #
-#   https → http.method, http.path, http.query, http.headers,
+#   http  → http.method, http.path, http.query, http.headers,
 #           http.body, http.body_json
 #   sql   → sql.verb, sql.tables, sql.functions, sql.statement
 #   k8s   → k8s.verb, k8s.resource, k8s.namespace, k8s.name,
@@ -345,7 +345,7 @@
 #
 # - Hosts include port when non-default:
 #     hosts = ["grafana.example.com", "localhost:8443"]
-#   No separate `port` field. Default ports are plugin-defined (https
+#   No separate `port` field. Default ports are plugin-defined (http
 #   → 443, postgres → 5432, clickhouse_https → 443, clickhouse_native
 #   → 9440, ...).
 #
@@ -499,18 +499,18 @@ approver "human_approver" "notion-archive" { channel = "#notion-approvals" }
 # connection parameters — credential binding lives on the credential
 # blocks below.
 
-endpoint "https" "anthropic-ops" { hosts = ["api.anthropic.com"] }
+endpoint "http" "anthropic-ops" { hosts = ["api.anthropic.com"] }
 
-endpoint "https" "github"   { hosts = ["api.github.com", "github.com"] }
-endpoint "https" "slack"    { hosts = ["slack.com", "www.slack.com", "api.slack.com"] }
-endpoint "https" "telegram" { hosts = ["api.telegram.org"] }
-endpoint "https" "gemini"   { hosts = ["generativelanguage.googleapis.com"] }
+endpoint "http" "github"   { hosts = ["api.github.com", "github.com"] }
+endpoint "http" "slack"    { hosts = ["slack.com", "www.slack.com", "api.slack.com"] }
+endpoint "http" "telegram" { hosts = ["api.telegram.org"] }
+endpoint "http" "gemini"   { hosts = ["generativelanguage.googleapis.com"] }
 
-endpoint "https" "openai-codex" { hosts = ["chatgpt.com", "auth.openai.com"] }
+endpoint "http" "openai-codex" { hosts = ["chatgpt.com", "auth.openai.com"] }
 
-endpoint "https" "support-console" { hosts = ["admin.example.com"] }
-endpoint "https" "stripe"          { hosts = ["api.stripe.com"] }
-endpoint "https" "orb"             { hosts = ["api.withorb.com"] }
+endpoint "http" "support-console" { hosts = ["admin.example.com"] }
+endpoint "http" "stripe"          { hosts = ["api.stripe.com"] }
+endpoint "http" "orb"             { hosts = ["api.withorb.com"] }
 
 endpoint "postgres" "pg-corp" {
   host = "corp-prod.cluster.example:5432"
@@ -526,8 +526,8 @@ endpoint "kubernetes" "k8s-eks-corp-prod" {
   region       = "us-east-2"
 }
 
-endpoint "https" "notion"  { hosts = ["api.notion.com", "mcp.notion.com"] }
-endpoint "https" "grafana" { hosts = ["grafana.example.com"] }
+endpoint "http" "notion"  { hosts = ["api.notion.com", "mcp.notion.com"] }
+endpoint "http" "grafana" { hosts = ["grafana.example.com"] }
 
 # Both ClickHouse endpoints are bare here; the shared credential
 # below references both via the singleton-or-list `endpoints` form.
@@ -548,13 +548,13 @@ endpoint "kubernetes" "k8s-dev-sfo" {
 }
 
 # alice's per-tool endpoints.
-endpoint "https" "smithery"  { hosts = ["smithery.ai"] }
-endpoint "https" "amem"      { hosts = ["api.amem.ai"] }
-endpoint "https" "checkly"   { hosts = ["api.checklyhq.com"] }
-endpoint "https" "posthog"   { hosts = ["us.i.posthog.com", "us.posthog.com"] }
-endpoint "https" "honeycomb" { hosts = ["api.honeycomb.io"] }
-endpoint "https" "pagerduty" { hosts = ["api.pagerduty.com"] }
-endpoint "https" "helpdesk"  { hosts = ["helpdesk.example.com"] }
+endpoint "http" "smithery"  { hosts = ["smithery.ai"] }
+endpoint "http" "amem"      { hosts = ["api.amem.ai"] }
+endpoint "http" "checkly"   { hosts = ["api.checklyhq.com"] }
+endpoint "http" "posthog"   { hosts = ["us.i.posthog.com", "us.posthog.com"] }
+endpoint "http" "honeycomb" { hosts = ["api.honeycomb.io"] }
+endpoint "http" "pagerduty" { hosts = ["api.pagerduty.com"] }
+endpoint "http" "helpdesk"  { hosts = ["helpdesk.example.com"] }
 
 # ── Credentials (each names its endpoint) ───────────
 #
@@ -576,48 +576,48 @@ endpoint "https" "helpdesk"  { hosts = ["helpdesk.example.com"] }
 # dispatch placeholder lives on the profile (inline `{ placeholder =
 # ..., credential = ... }` entries in profile "ops"), because only
 # profiles that wield BOTH credentials need to disambiguate.
-credential "anthropic_manual_key"         "anthropic-ops-key" { endpoint = https.anthropic-ops }
-credential "anthropic_oauth_subscription" "anthropic-ops" { endpoint = https.anthropic-ops }
+credential "anthropic_manual_key"         "anthropic-ops-key" { endpoint = http.anthropic-ops }
+credential "anthropic_oauth_subscription" "anthropic-ops" { endpoint = http.anthropic-ops }
 
 # Per-user GitHub PATs. The github endpoint is a bare network target
 # shared across users; each user's profile wields exactly one of these,
 # so no placeholder is needed in any profile.
-credential "bearer_token" "github-ops"   { endpoint = https.github }
-credential "bearer_token" "github-alice" { endpoint = https.github }
-credential "bearer_token" "github-bob"   { endpoint = https.github }
+credential "bearer_token" "github-ops"   { endpoint = http.github }
+credential "bearer_token" "github-alice" { endpoint = http.github }
+credential "bearer_token" "github-bob"   { endpoint = http.github }
 
 # Per-user Slack workspaces — shared slack endpoint, each user's
 # profile uses one workspace credential.
-credential "slack_tokens" "slack-ops"   { endpoint = https.slack }
-credential "slack_tokens" "slack-alice" { endpoint = https.slack }
-credential "slack_tokens" "slack-bob"   { endpoint = https.slack }
+credential "slack_tokens" "slack-ops"   { endpoint = http.slack }
+credential "slack_tokens" "slack-alice" { endpoint = http.slack }
+credential "slack_tokens" "slack-bob"   { endpoint = http.slack }
 
 # Per-user Telegram / Codex / Gemini. The openai-codex endpoint is
 # the only one any profile binds with more than one credential
 # (profile "bob" uses both his and carol's codex), so the
 # disambiguation placeholders live in that profile.
-credential "telegram_bot_token"  "telegram-carol"     { endpoint = https.telegram }
-credential "telegram_bot_token"  "telegram-bob"       { endpoint = https.telegram }
-credential "gemini_api_key"      "gemini-bob"         { endpoint = https.gemini }
-credential "openai_codex_oauth"  "openai-codex-carol" { endpoint = https.openai-codex }
-credential "openai_codex_oauth"  "openai-codex-bob"   { endpoint = https.openai-codex }
+credential "telegram_bot_token"  "telegram-carol"     { endpoint = http.telegram }
+credential "telegram_bot_token"  "telegram-bob"       { endpoint = http.telegram }
+credential "gemini_api_key"      "gemini-bob"         { endpoint = http.gemini }
+credential "openai_codex_oauth"  "openai-codex-carol" { endpoint = http.openai-codex }
+credential "openai_codex_oauth"  "openai-codex-bob"   { endpoint = http.openai-codex }
 
 # ops-only.
 # `idempotency_key = true` tells the bearer_token plugin to also stamp
 # an Idempotency-Key header on writes, so the same request retried by
 # the agent doesn't cause double-charge.
 credential "bearer_token" "stripe-live" {
-  endpoint        = https.stripe
+  endpoint        = http.stripe
   idempotency_key = true
 }
 
 # Orb: test + prod. Both wielded by profile "ops" → placeholders
 # declared there.
-credential "bearer_token" "orb-test" { endpoint = https.orb }
-credential "bearer_token" "orb-prod" { endpoint = https.orb }
+credential "bearer_token" "orb-test" { endpoint = http.orb }
+credential "bearer_token" "orb-prod" { endpoint = http.orb }
 
 credential "cookie_token" "support-console" {
-  endpoint    = https.support-console
+  endpoint    = http.support-console
   cookie_name = "session"
 }
 
@@ -636,8 +636,8 @@ credential "postgres_credential" "pg-scheduler" {
   user     = "scheduler"
 }
 
-credential "notion_oauth" "notion-corp"   { endpoint = https.notion }
-credential "bearer_token" "grafana" { endpoint = https.grafana }
+credential "notion_oauth" "notion-corp"   { endpoint = http.notion }
+credential "bearer_token" "grafana" { endpoint = http.grafana }
 
 # ch-o11y: ONE credential, TWO endpoints. The singleton-or-list
 # `endpoints` form preserves the single-credential identity while
@@ -657,17 +657,17 @@ credential "aws_credential"    "k8s-eks-corp"  { endpoint = kubernetes.k8s-eks-c
 #   - header_token        → custom header name + optional prefix
 #                           (honeycomb uses x-honeycomb-team raw;
 #                            pagerduty uses authorization: Token token=<secret>)
-credential "bearer_token" "smithery-alice"  { endpoint = https.smithery }
-credential "bearer_token" "amem-alice"      { endpoint = https.amem }
-credential "bearer_token" "checkly-alice"   { endpoint = https.checkly }
-credential "bearer_token" "posthog-alice"   { endpoint = https.posthog }
-credential "bearer_token" "helpdesk-alice"  { endpoint = https.helpdesk }
+credential "bearer_token" "smithery-alice"  { endpoint = http.smithery }
+credential "bearer_token" "amem-alice"      { endpoint = http.amem }
+credential "bearer_token" "checkly-alice"   { endpoint = http.checkly }
+credential "bearer_token" "posthog-alice"   { endpoint = http.posthog }
+credential "bearer_token" "helpdesk-alice"  { endpoint = http.helpdesk }
 credential "header_token" "honeycomb-alice" {
-  endpoint = https.honeycomb
+  endpoint = http.honeycomb
   header   = "x-honeycomb-team"
 }
 credential "header_token" "pagerduty-alice" {
-  endpoint = https.pagerduty
+  endpoint = http.pagerduty
   header   = "authorization"
   prefix   = "Token token="
 }
@@ -689,7 +689,7 @@ credential "header_token" "pagerduty-alice" {
 # ── Slack ───────────────────────────────────────────
 
 rule "slack-ops-approve-reply-shape" {
-  endpoint   = https.slack
+  endpoint   = http.slack
   credential = slack_tokens.slack-ops
   condition  = "http.method == 'POST' && http.path == '/api/chat.postMessage' && http.body.contains('approve_reply_')"
   approve    = [llm_approver.slack-block-kit-shape-judge]
@@ -698,22 +698,22 @@ rule "slack-ops-approve-reply-shape" {
 # ── Support console ─────────────────────────────────
 
 rule "support-console-reads" {
-  endpoint  = https.support-console
+  endpoint  = http.support-console
   condition = "http.method == 'GET'"
   verdict   = "allow"
 }
 rule "support-console-ticket-mutations" {
-  endpoint  = https.support-console
+  endpoint  = http.support-console
   condition = "http.method == 'POST' && http.path in ['/api/trpc/admin.supportTickets.markAsSpam', '/api/trpc/admin.supportTickets.updateStatus']"
   approve   = [human_approver.support-ops]
 }
 rule "support-console-reply-on-behalf" {
-  endpoint  = https.support-console
+  endpoint  = http.support-console
   condition = "http.method == 'POST' && http.path == '/api/trpc/admin.supportTickets.replyOnBehalf'"
   approve   = [llm_approver.reply-content-judge, human_approver.support-ops]
 }
 rule "support-console-default" {
-  endpoint = https.support-console
+  endpoint = http.support-console
   priority = -100
   verdict  = "deny"
   reason   = "admin.example.com mutations require an explicit approval rule"
@@ -722,35 +722,35 @@ rule "support-console-default" {
 # ── Stripe ──────────────────────────────────────────
 
 rule "stripe-reads" {
-  endpoint  = https.stripe
+  endpoint  = http.stripe
   condition = "http.method == 'GET'"
   verdict   = "allow"
 }
 rule "stripe-ephemeral-keys" {
-  endpoint  = https.stripe
+  endpoint  = http.stripe
   priority  = 100
   condition = "http.method == 'POST' && http.path == '/v1/ephemeral_keys'"
   verdict   = "allow"
 }
 rule "stripe-no-deletes" {
-  endpoint  = https.stripe
+  endpoint  = http.stripe
   condition = "http.method == 'DELETE'"
   verdict   = "deny"
   reason    = "Stripe deletes go through the approval flow as POST"
 }
 rule "stripe-extra-scrutiny" {
-  endpoint  = https.stripe
+  endpoint  = http.stripe
   priority  = 100
   condition = "http.method == 'POST' && (http.path in ['/v1/refunds', '/v1/subscriptions', '/v1/subscription_items', '/v1/payouts', '/v1/transfers', '/v1/coupons', '/v1/promotion_codes'] || http.path.startsWith('/v1/charges/') && http.path.endsWith('/refund') || http.path.startsWith('/v1/subscriptions/') || http.path.startsWith('/v1/customers/') && http.path.endsWith('/subscriptions') || http.path.startsWith('/v1/invoices/') && (http.path.endsWith('/void') || http.path.endsWith('/finalize')))"
   approve   = [human_approver.billing-strict]
 }
 rule "stripe-other-writes" {
-  endpoint  = https.stripe
+  endpoint  = http.stripe
   condition = "http.method == 'POST'"
   approve   = [human_approver.billing]
 }
 rule "stripe-default" {
-  endpoint = https.stripe
+  endpoint = http.stripe
   priority = -100
   verdict  = "deny"
 }
@@ -761,25 +761,25 @@ rule "stripe-default" {
 # Rule.credential predicates match on the dispatching credential.
 
 rule "orb-test-allow-all" {
-  endpoint   = https.orb
+  endpoint   = http.orb
   credential = bearer_token.orb-test
   verdict    = "allow"
 }
 rule "orb-prod-reads" {
-  endpoint   = https.orb
+  endpoint   = http.orb
   credential = bearer_token.orb-prod
   condition  = "http.method == 'GET'"
   verdict    = "allow"
 }
 rule "orb-prod-no-deletes" {
-  endpoint   = https.orb
+  endpoint   = http.orb
   credential = bearer_token.orb-prod
   condition  = "http.method == 'DELETE'"
   verdict    = "deny"
   reason     = "Orb deletes go through approval flow as POST"
 }
 rule "orb-prod-writes" {
-  endpoint   = https.orb
+  endpoint   = http.orb
   credential = bearer_token.orb-prod
   condition  = "http.method in ['POST', 'PUT', 'PATCH']"
   approve    = [human_approver.billing]
@@ -788,28 +788,28 @@ rule "orb-prod-writes" {
 # ── Notion ──────────────────────────────────────────
 
 rule "notion-reads" {
-  endpoint  = https.notion
+  endpoint  = http.notion
   condition = "http.method in ['GET', 'HEAD']"
   verdict   = "allow"
 }
 rule "notion-search" {
-  endpoint  = https.notion
+  endpoint  = http.notion
   condition = "http.method == 'POST' && http.path == '/v1/search'"
   verdict   = "allow"
 }
 rule "notion-archive-route" {
-  endpoint  = https.notion
+  endpoint  = http.notion
   priority  = 100
   condition = "http.method == 'PATCH' && (http.path.startsWith('/v1/pages/') || http.path.startsWith('/v1/blocks/') || http.path.startsWith('/v1/databases/')) && http.body_json.archived == true"
   approve   = [human_approver.notion-archive]
 }
 rule "notion-deletes" {
-  endpoint  = https.notion
+  endpoint  = http.notion
   condition = "http.method == 'DELETE'"
   approve   = [human_approver.notion-archive]
 }
 rule "notion-create-update" {
-  endpoint  = https.notion
+  endpoint  = http.notion
   condition = "http.method in ['POST', 'PATCH']"
   verdict   = "allow"
 }
@@ -817,23 +817,23 @@ rule "notion-create-update" {
 # ── Grafana ─────────────────────────────────────────
 
 rule "grafana-reads" {
-  endpoint  = https.grafana
+  endpoint  = http.grafana
   condition = "http.method in ['GET', 'HEAD']"
   verdict   = "allow"
 }
 rule "grafana-annotations-snapshots" {
-  endpoint  = https.grafana
+  endpoint  = http.grafana
   condition = "http.method == 'POST' && http.path in ['/api/annotations', '/api/snapshots']"
   verdict   = "allow"
 }
 rule "grafana-no-destructive-deletes" {
-  endpoint  = https.grafana
+  endpoint  = http.grafana
   condition = "http.method == 'DELETE' && (http.path.startsWith('/api/dashboards/') || http.path.startsWith('/api/datasources/') || http.path.startsWith('/api/folders/') || http.path.startsWith('/api/alert-rules/'))"
   verdict   = "deny"
   reason    = "Destructive deletes go through a PR, not the agent"
 }
 rule "grafana-dashboard-writes" {
-  endpoint  = https.grafana
+  endpoint  = http.grafana
   condition = "http.method in ['POST', 'PUT', 'PATCH'] && (http.path.startsWith('/api/dashboards/') || http.path.startsWith('/api/datasources/') || http.path.startsWith('/api/folders/') || http.path.startsWith('/api/alert-rules/'))"
   approve   = [human_approver.observability]
 }

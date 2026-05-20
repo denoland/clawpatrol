@@ -17,29 +17,29 @@ func newSQLMetaForVerb(verb string) *sqlfacet.Meta {
 }
 
 const fixture = `
-endpoint "https" "github" {
+endpoint "http" "github" {
   hosts = ["api.github.com", "github.com"]
 }
 
 credential "bearer_token" "pat" {
-  endpoint = https.github
+  endpoint = http.github
 }
 
 profile "default" { credentials = [bearer_token.pat] }
 
 rule "reads" {
-  endpoint  = https.github
+  endpoint  = http.github
   condition = "http.method in ['GET', 'HEAD']"
   verdict   = "allow"
 }
 rule "writes" {
-  endpoint  = https.github
+  endpoint  = http.github
   condition = "http.method in ['POST', 'PATCH', 'DELETE']"
   verdict   = "deny"
   reason    = "writes go through PR review"
 }
 rule "github-default" {
-  endpoint = https.github
+  endpoint = http.github
   priority = -100
   verdict  = "deny"
   reason   = "no policy matched"
@@ -100,10 +100,10 @@ func TestHostEndpoint(t *testing.T) {
 // case-insensitive; the lookup must be too.
 func TestHostEndpointIsCaseInsensitive(t *testing.T) {
 	cp := compileFixture(t, `
-endpoint "https" "eks" {
+endpoint "http" "eks" {
   hosts = ["AB123.gr7.us-east-2.eks.amazonaws.com"]
 }
-credential "bearer_token" "eks-cred" { endpoint = https.eks }
+credential "bearer_token" "eks-cred" { endpoint = http.eks }
 profile "default" { credentials = [bearer_token.eks-cred] }
 `)
 
@@ -117,10 +117,10 @@ profile "default" { credentials = [bearer_token.eks-cred] }
 
 func TestHostEndpointMatchesBareSNIForPortQualifiedHost(t *testing.T) {
 	cp := compileFixture(t, `
-endpoint "https" "api" {
+endpoint "http" "api" {
   hosts = ["api.example.com:443"]
 }
-credential "bearer_token" "api-tok" { endpoint = https.api }
+credential "bearer_token" "api-tok" { endpoint = http.api }
 profile "default" { credentials = [bearer_token.api-tok] }
 `)
 
@@ -154,14 +154,14 @@ profile "default" { credentials = [bearer_token.tok] }
 
 func TestHostEndpointBareHostExactBindingBeatsPortAlias(t *testing.T) {
 	cp := compileFixture(t, `
-endpoint "https" "port_qualified" {
+endpoint "http" "port_qualified" {
   hosts = ["api.example.com:443"]
 }
-endpoint "https" "bare" {
+endpoint "http" "bare" {
   hosts = ["api.example.com"]
 }
-credential "bearer_token" "pq-tok"   { endpoint = https.port_qualified }
-credential "bearer_token" "bare-tok" { endpoint = https.bare }
+credential "bearer_token" "pq-tok"   { endpoint = http.port_qualified }
+credential "bearer_token" "bare-tok" { endpoint = http.bare }
 profile "default" { credentials = [bearer_token.pq-tok, bearer_token.bare-tok] }
 `)
 
@@ -175,10 +175,10 @@ profile "default" { credentials = [bearer_token.pq-tok, bearer_token.bare-tok] }
 
 func TestHostEndpointDoesNotAliasNonDefaultHTTPSPort(t *testing.T) {
 	cp := compileFixture(t, `
-endpoint "https" "api" {
+endpoint "http" "api" {
   hosts = ["api.example.com:8443"]
 }
-credential "bearer_token" "tok" { endpoint = https.api }
+credential "bearer_token" "tok" { endpoint = http.api }
 profile "default" { credentials = [bearer_token.tok] }
 `)
 
@@ -209,13 +209,13 @@ profile "default" { credentials = [postgres_credential.db-cred] }
 
 func TestHostEndpointPortAliasCannotBeCapturedByNonHTTPExactCollision(t *testing.T) {
 	cp := compileFixture(t, `
-endpoint "https" "api" {
+endpoint "http" "api" {
   hosts = ["api.example.com:443"]
 }
 endpoint "postgres" "db" {
   host = "api.example.com:443"
 }
-credential "bearer_token" "api-tok"        { endpoint = https.api }
+credential "bearer_token" "api-tok"        { endpoint = http.api }
 credential "postgres_credential" "db-cred" { endpoint = postgres.db }
 profile "default" { credentials = [bearer_token.api-tok, postgres_credential.db-cred] }
 `)
@@ -227,11 +227,11 @@ profile "default" { credentials = [bearer_token.api-tok, postgres_credential.db-
 
 func TestHostEndpointWildcardMatches(t *testing.T) {
 	cp := compileFixture(t, `
-endpoint "https" "aws-ep" {
+endpoint "http" "aws-ep" {
   hosts = ["*.amazonaws.com"]
 }
 credential "bearer_token" "aws-tok" {
-  endpoint = https.aws-ep
+  endpoint = http.aws-ep
 }
 profile "default" { credentials = [bearer_token.aws-tok] }
 `)
@@ -260,17 +260,17 @@ profile "default" { credentials = [bearer_token.aws-tok] }
 
 func TestHostEndpointExactBeatsWildcard(t *testing.T) {
 	cp := compileFixture(t, `
-endpoint "https" "aws-ep" {
+endpoint "http" "aws-ep" {
   hosts = ["*.amazonaws.com"]
 }
-endpoint "https" "s3-ep" {
+endpoint "http" "s3-ep" {
   hosts = ["s3.amazonaws.com"]
 }
 credential "bearer_token" "aws-tok" {
-  endpoint = https.aws-ep
+  endpoint = http.aws-ep
 }
 credential "bearer_token" "s3-tok" {
-  endpoint = https.s3-ep
+  endpoint = http.s3-ep
 }
 profile "default" { credentials = [bearer_token.aws-tok, bearer_token.s3-tok] }
 `)
@@ -284,17 +284,17 @@ profile "default" { credentials = [bearer_token.aws-tok, bearer_token.s3-tok] }
 
 func TestHostEndpointLongestWildcardWins(t *testing.T) {
 	cp := compileFixture(t, `
-endpoint "https" "east-ep" {
+endpoint "http" "east-ep" {
   hosts = ["*.us-east-1.amazonaws.com"]
 }
-endpoint "https" "aws-ep" {
+endpoint "http" "aws-ep" {
   hosts = ["*.amazonaws.com"]
 }
 credential "bearer_token" "east-tok" {
-  endpoint = https.east-ep
+  endpoint = http.east-ep
 }
 credential "bearer_token" "aws-tok" {
-  endpoint = https.aws-ep
+  endpoint = http.aws-ep
 }
 profile "default" { credentials = [bearer_token.aws-tok, bearer_token.east-tok] }
 `)
@@ -308,11 +308,11 @@ profile "default" { credentials = [bearer_token.aws-tok, bearer_token.east-tok] 
 
 func TestHostEndpointWildcardWithPortAlias(t *testing.T) {
 	cp := compileFixture(t, `
-endpoint "https" "aws-ep" {
+endpoint "http" "aws-ep" {
   hosts = ["*.amazonaws.com:443"]
 }
 credential "bearer_token" "aws-tok" {
-  endpoint = https.aws-ep
+  endpoint = http.aws-ep
 }
 profile "default" { credentials = [bearer_token.aws-tok] }
 `)
@@ -323,11 +323,11 @@ profile "default" { credentials = [bearer_token.aws-tok] }
 
 func TestHostEndpointWildcardSingleTenantFallback(t *testing.T) {
 	cp := compileFixture(t, `
-endpoint "https" "aws-ep" {
+endpoint "http" "aws-ep" {
   hosts = ["*.amazonaws.com"]
 }
 credential "bearer_token" "aws-tok" {
-  endpoint = https.aws-ep
+  endpoint = http.aws-ep
 }
 profile "tenant" { credentials = [bearer_token.aws-tok] }
 `)
@@ -435,21 +435,21 @@ rule "default-deny" {
 // rules that actually read truncatable facet bytes.
 func TestMatchRequestTruncatedSkipsRulesThatDontReadTruncatedFacets(t *testing.T) {
 	cp := compileFixture(t, `
-endpoint "https" "api" {
+endpoint "http" "api" {
   hosts = ["api.example.com"]
 }
 credential "bearer_token" "tok" {
-  endpoint = https.api
+  endpoint = http.api
 }
 profile "default" { credentials = [bearer_token.tok] }
 
 rule "by-credential" {
-  endpoint   = https.api
+  endpoint   = http.api
   credential = bearer_token.tok
   verdict    = "allow"
 }
 rule "body-deny" {
-  endpoint  = https.api
+  endpoint  = http.api
   condition = "http.body.contains('drop')"
   priority  = -50
   verdict   = "deny"
@@ -736,12 +736,12 @@ func TestResolveCredentialSingular(t *testing.T) {
 // `{ placeholder = "...", credential = ... }` entries.
 func TestResolveCredentialPlaceholder(t *testing.T) {
 	src := `
-endpoint "https" "ep" {
+endpoint "http" "ep" {
   hosts = ["x.example.com"]
 }
-credential "bearer_token" "test"     { endpoint = https.ep }
-credential "bearer_token" "prod"     { endpoint = https.ep }
-credential "bearer_token" "fallback" { endpoint = https.ep }
+credential "bearer_token" "test"     { endpoint = http.ep }
+credential "bearer_token" "prod"     { endpoint = http.ep }
+credential "bearer_token" "fallback" { endpoint = http.ep }
 profile "default" {
   credentials = [
     { placeholder = "PH_test", credential = bearer_token.test },
@@ -1059,16 +1059,16 @@ profile "default" {
 		// participates in dispatch identically to a profile-inline
 		// placeholder.
 		src := `
-endpoint "https" "ep" { hosts = ["x.example.com"] }
+endpoint "http" "ep" { hosts = ["x.example.com"] }
 credential "bearer_token" "test" {
-  endpoint    = https.ep
+  endpoint    = http.ep
   placeholder = "PH_test"
 }
 credential "bearer_token" "prod" {
-  endpoint    = https.ep
+  endpoint    = http.ep
   placeholder = "PH_prod"
 }
-credential "bearer_token" "fallback" { endpoint = https.ep }
+credential "bearer_token" "fallback" { endpoint = http.ep }
 profile "default" { credentials = [bearer_token.test, bearer_token.prod, bearer_token.fallback] }
 `
 		cp := compileFixture(t, src)

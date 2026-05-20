@@ -91,35 +91,35 @@ defaults {
 #
 # Pure network targets: hosts + protocol-family connection params.
 # No credential refs — credential binding lives on the credential
-# blocks below. The endpoint family (https / ssh / postgres /
+# blocks below. The endpoint family (http / ssh / postgres /
 # clickhouse_native / kubernetes) determines what protocol the
 # gateway speaks and which CEL variable rules see (`http`, `sql`,
 # `k8s`).
 
 # HTTPS — AI providers.
-endpoint "https" "anthropic"  { hosts = ["api.anthropic.com"] }
-endpoint "https" "openai-api" { hosts = ["api.openai.com"] }
+endpoint "http" "anthropic"  { hosts = ["api.anthropic.com"] }
+endpoint "http" "openai-api" { hosts = ["api.openai.com"] }
 endpoint "openai_codex_https" "openai-chatgpt" {
   hosts = ["chatgpt.com"]
 }
 
 # HTTPS — SaaS.
-endpoint "https" "github-api" {
+endpoint "http" "github-api" {
   hosts = [
     "api.github.com",
     "raw.githubusercontent.com",
     "github.com",
   ]
 }
-endpoint "https" "slack" {
+endpoint "http" "slack" {
   hosts = [
     "slack.com",
     "api.slack.com",
     "wss-primary.slack.com",
   ]
 }
-endpoint "https" "notion"  { hosts = ["api.notion.com", "mcp.notion.com"] }
-endpoint "https" "grafana" { hosts = ["mygrafana.grafana.net"] }
+endpoint "http" "notion"  { hosts = ["api.notion.com", "mcp.notion.com"] }
+endpoint "http" "grafana" { hosts = ["mygrafana.grafana.net"] }
 
 # HTTPS — wildcard hosts. A `*.<suffix>` entry matches any name that
 # ends in `.<suffix>` and has at least one character before that
@@ -128,7 +128,7 @@ endpoint "https" "grafana" { hosts = ["mygrafana.grafana.net"] }
 # Exact hosts always beat wildcards; among wildcards the longest
 # matching suffix wins (so `*.us-east-1.amazonaws.com` takes
 # precedence over `*.amazonaws.com` for east-1 names).
-endpoint "https" "aws" {
+endpoint "http" "aws" {
   hosts = ["*.amazonaws.com"]
 }
 
@@ -197,7 +197,7 @@ endpoint "kubernetes" "k8s-prod" { server = "198.51.100.11" }
 #   openai_codex_oauth           — ChatGPT subscription OAuth, mirrors
 #     what `codex` and `chatgpt.com` use.
 credential "anthropic_oauth_subscription" "claude" {
-  endpoint = https.anthropic
+  endpoint = http.anthropic
 }
 # Same `anthropic` endpoint, different credential type. Both bind to
 # the one network target; `anthropic-key` is wielded only by the
@@ -205,34 +205,34 @@ credential "anthropic_oauth_subscription" "claude" {
 # profiles — they're never wielded in the same profile, so no
 # dispatch placeholder is needed.
 credential "anthropic_manual_key" "anthropic-key" {
-  endpoint = https.anthropic
+  endpoint = http.anthropic
 }
 # codex auths against both the OpenAI API endpoint and the
 # chatgpt.com surface — list-form `endpoints` covers both.
 credential "openai_codex_oauth" "codex" {
-  endpoints = [https.openai-api, openai_codex_https.openai-chatgpt]
+  endpoints = [http.openai-api, openai_codex_https.openai-chatgpt]
 }
 credential "github_oauth" "github" {
-  endpoint = https.github-api
+  endpoint = http.github-api
 }
 
 # Bearer tokens — opaque "Authorization: Bearer <token>".
 credential "bearer_token" "grafana" {
-  endpoint = https.grafana
+  endpoint = http.grafana
 }
 credential "bearer_token" "aws" {
-  endpoint = https.aws
+  endpoint = http.aws
 }
 
 # Notion OAuth — workspace-scoped.
 credential "notion_oauth" "notion" {
-  endpoint = https.notion
+  endpoint = http.notion
 }
 
 # Slack — used both as a regular endpoint (chat.postMessage etc) and
 # as the channel for human_approver interactive approvals below.
 credential "slack_tokens" "slack" {
-  endpoint = https.slack
+  endpoint = http.slack
 }
 
 # SSH — private key + (optional) passphrase + (optional) host_pubkey
@@ -318,12 +318,12 @@ approver "llm_approver" "no-pii-judge" {
 
 # HTTPS — read-only allow, mutations through human approval.
 rule "github-reads" {
-  endpoint  = https.github-api
+  endpoint  = http.github-api
   condition = "http.method in ['GET', 'HEAD']"
   verdict   = "allow"
 }
 rule "github-writes" {
-  endpoint  = https.github-api
+  endpoint  = http.github-api
   condition = "http.method in ['POST', 'PUT', 'PATCH', 'DELETE']"
   approve   = [human_approver.ops]
 }

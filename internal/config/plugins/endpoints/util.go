@@ -9,7 +9,7 @@
 // `placeholder` for dispatch among multiple credentials at one
 // endpoint.
 //
-// Per-endpoint plugins live in their own file (https.go, postgres.go,
+// Per-endpoint plugins live in their own file (http.go, postgres.go,
 // kubernetes.go, clickhouse_https.go, clickhouse_native.go); this
 // file is the cross-cutting helpers they share.
 package endpoints

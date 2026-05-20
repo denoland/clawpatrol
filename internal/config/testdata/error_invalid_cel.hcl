@@ -7,18 +7,18 @@ gateway {
   }
 }
 
-endpoint "https" "github" {
+endpoint "http" "github" {
   hosts = ["api.github.com"]
 }
 
 credential "bearer_token" "pat" {
-  endpoint = https.github
+  endpoint = http.github
 }
 
 # Syntactically invalid CEL — unbalanced quote.
 # The compile step must surface the parse error.
 rule "broken" {
-  endpoint  = https.github
+  endpoint  = http.github
   condition = "http.method == 'GET"
   verdict   = "allow"
 }
