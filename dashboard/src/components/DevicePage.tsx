@@ -41,9 +41,12 @@ export function DevicePage({
   // Per-profile credential list — server-filters to only the
   // credentials referenced by endpoints in this device's profile,
   // so a "writer" device doesn't see the readonly's pg-cred and vice
-  // versa. Falls back to the parent's full list for the no-profile
-  // case (legacy single-tenant configs).
-  const [profileCreds, setProfileCreds] = useState<Integration[] | null>(null);
+  // versa. No fallback to the parent's full list: a device with no
+  // profile (or whose profile uses zero credentials) can't actually
+  // use any credential, so the card row should be empty rather than
+  // mirror the system-wide view from the settings page.
+  const [profileCreds, setProfileCreds] = useState<Integration[]>([]);
+  const [credsLoading, setCredsLoading] = useState(false);
   useEffect(() => {
     listProfiles()
       .then((p) => setProfiles(p ?? []))
@@ -52,12 +55,15 @@ export function DevicePage({
   const devProfile = a?.profile;
   useEffect(() => {
     if (!devProfile) {
-      setProfileCreds(null);
+      setProfileCreds([]);
+      setCredsLoading(false);
       return;
     }
+    setCredsLoading(true);
     getStatus(devProfile)
       .then((c) => setProfileCreds(c ?? []))
-      .catch(() => setProfileCreds(null));
+      .catch(() => setProfileCreds([]))
+      .finally(() => setCredsLoading(false));
     // Re-fetch whenever the parent's integrations list changes too —
     // OAuth modal calls onRefresh on success, which updates parent state
     // but otherwise this effect would stay stale and the card wouldn't
@@ -82,7 +88,6 @@ export function DevicePage({
 
   const dev = a;
   const total = dev.bytes_in + dev.bytes_out;
-  const allForUser = profileCreds ?? integrations;
 
   async function remove() {
     if (
@@ -239,7 +244,17 @@ export function DevicePage({
           </span>
         </div>
         <div className="p-3">
-          <IntegrationsCards list={allForUser} onConnect={onConnect} onRefresh={onRefresh} />
+          {credsLoading ? (
+            <div className="px-2 py-6 text-center text-xs text-text-subtle">loading…</div>
+          ) : profileCreds.length === 0 ? (
+            <div className="px-2 py-6 text-center text-xs text-text-subtle">
+              {devProfile
+                ? `no credentials bound to profile ${devProfile}`
+                : "no profile assigned — this device cannot use any credential"}
+            </div>
+          ) : (
+            <IntegrationsCards list={profileCreds} onConnect={onConnect} onRefresh={onRefresh} />
+          )}
         </div>
       </section>
 
