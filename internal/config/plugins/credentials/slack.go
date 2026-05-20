@@ -211,10 +211,17 @@ func (s *SlackTokens) NotifyHITL(ctx context.Context, req runtime.ApproveRequest
 	if err != nil {
 		return err
 	}
-	if target.MessageUpdateSink != nil && req.AsyncOperationID != "" && posted.Channel != "" && posted.TS != "" {
+	if posted.Channel != "" && posted.TS != "" {
 		ref := encodeSlackMessageRef(slackMessageRef{Credential: target.CredentialName, Channel: posted.Channel, TS: posted.TS, PendingID: target.PendingID, Interactive: target.Interactive, Message: target.Message, Summary: target.Summary})
-		if err := target.MessageUpdateSink(ctx, req.AsyncOperationID, ref); err != nil {
-			log.Printf("slack notify: record HITL message ref for %s: %v", req.AsyncOperationID, err)
+		if target.MessageUpdateSink != nil && req.AsyncOperationID != "" {
+			if err := target.MessageUpdateSink(ctx, req.AsyncOperationID, ref); err != nil {
+				log.Printf("slack notify: record HITL message ref for %s: %v", req.AsyncOperationID, err)
+			}
+		}
+		if target.PendingMessageUpdateSink != nil && target.PendingID != "" {
+			if err := target.PendingMessageUpdateSink(ctx, target.PendingID, ref); err != nil {
+				log.Printf("slack notify: record pending HITL message ref for %s: %v", target.PendingID, err)
+			}
 		}
 	}
 	return nil

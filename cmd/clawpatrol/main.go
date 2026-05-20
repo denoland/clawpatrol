@@ -2528,6 +2528,7 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 			DashboardURL:              g.cfg.PublicURL,
 			Policy:                    policy,
 			MessageUpdateSink:         g.recordHITLOperationMessageRef,
+			PendingMessageUpdateSink:  g.hitl.RecordMessageRef,
 		}
 		v, err := ar.Approve(ctx, req)
 		// Stamp the entity name + plugin type on every verdict so the
@@ -2778,6 +2779,7 @@ func runGateway(args []string) {
 	log.Printf("config: read-only (the dashboard cannot edit gateway.hcl)")
 	g.secrets = newGatewaySecretStore(db, oauthReg)
 	g.hitl.asyncGrantResolver = g.resolveAsyncHITLGrant
+	g.hitl.pendingMessageUpdater = g.updatePendingHITLMessage
 	g.tunnels = NewTunnelManager(g.secrets, stateDir)
 	registerOAuthCredentials(oauthReg, policy)
 	g.policy.Store(policy)

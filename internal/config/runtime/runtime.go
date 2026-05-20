@@ -316,6 +316,11 @@ type HITLNotifier interface {
 // Implementations must not store tokens or other secrets in ref.
 type HITLMessageUpdateSink func(ctx context.Context, operationID, ref string) error
 
+// HITLPendingMessageUpdateSink records a channel-specific message reference
+// against a live synchronous pending HITL request. Implementations must not
+// store tokens or other secrets in ref.
+type HITLPendingMessageUpdateSink func(ctx context.Context, pendingID, ref string) error
+
 // HITLMessageUpdater is optionally implemented by notifier credentials that
 // can update an already-posted HITL prompt as the durable operation moves
 // through async states.
@@ -369,6 +374,9 @@ type HITLTarget struct {
 	// MessageUpdateSink records a notifier-specific, non-secret message ref
 	// for async HITL operation status updates.
 	MessageUpdateSink HITLMessageUpdateSink
+	// PendingMessageUpdateSink records a notifier-specific, non-secret
+	// message ref for synchronous pending HITL terminal updates.
+	PendingMessageUpdateSink HITLPendingMessageUpdateSink
 }
 
 // ApproverRuntime evaluates one stage of an approve = [...] chain.
@@ -441,6 +449,10 @@ type ApproveRequest struct {
 	// MessageUpdateSink records channel message references for async HITL
 	// operation updates after notifiers successfully post prompts.
 	MessageUpdateSink HITLMessageUpdateSink
+	// PendingMessageUpdateSink records channel message references for live
+	// synchronous HITL prompts so terminal timeout/disconnect states can be
+	// reflected back to the original operator-facing message.
+	PendingMessageUpdateSink HITLPendingMessageUpdateSink
 }
 
 // ApproveVerdict is what an approver returns. "" Decision means the
