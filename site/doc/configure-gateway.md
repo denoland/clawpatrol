@@ -63,30 +63,72 @@ clawpatrol gateway --reset-dashboard-password gateway.hcl
 
 ### Where to bind the dashboard
 
-Restricting where the dashboard is reachable on the network is
-an additional defence-in-depth layer on top of the password.
-Pick the shape that matches your access model:
+`info_listen` is the dashboard's host-side HTTP bind. The shapes
+that make sense for it — and the auth shortcuts available on top
+of the root password — depend on the control plane mode, because
+each mode automatically exposes the dashboard on its own overlay
+network as well.
 
-- **Loopback (`127.0.0.1:8080`)** — the default in the example.
-  Reach the dashboard via SSH tunnel
+#### In WireGuard mode
+
+The in-tunnel forwarder routes any connection to the info port on
+the gateway's WG IP to the dashboard, so joined devices reach
+`http://<gateway-wg-ip>:8080` with nothing extra configured.
+`info_listen` only controls who can reach the dashboard from
+**outside** the tunnel:
+
+- **`127.0.0.1:8080`** (the example default) — only loopback.
+  Operators who haven't joined as a device themselves reach the
+  dashboard via SSH tunnel
   (`ssh -L 8080:127.0.0.1:8080 gateway-host`) or a local reverse
   proxy.
-- **Tailnet / VPN IP (`100.x.x.x:8080`)** — only devices already
-  on your tailnet or WireGuard subnet can reach it. List each
-  operator's Tailscale account email in `dashboard_operators` to
-  let them in without typing the password:
+- **`0.0.0.0:8080`** — anyone with network reach to the host sees a
+  login page. The root password is the only thing between the
+  internet and the dashboard, so only do this when the gateway is
+  fronted by an auth proxy (Cloudflare Access, oauth2-proxy) that
+  does its own SSO first.
 
-  ```hcl
-  dashboard_operators = [
-    "alice@example.com",
-    "bob@example.com",
-  ]
-  ```
+`dashboard_operators` is ignored in WireGuard mode — there is no
+tailnet whois identity to match against, so the root password is the
+only auth.
 
-  Tagged devices (agents) never match the allowlist.
-- **Public (`0.0.0.0:8080`)** — works, but everyone on the
-  internet sees a login page. Front it with an auth proxy
-  (Cloudflare Access, oauth2-proxy) if you really need it.
+#### In Tailscale mode
+
+The embedded tsnet node always serves the dashboard on the gateway's
+tailnet IP at the info port, so tailnet peers reach
+`http://<gateway-tailnet-ip>:8080` with no extra configuration.
+`info_listen` controls the host-side bind:
+
+- **`127.0.0.1:8080`** (recommended) — keeps the host socket
+  loopback-only. Operators reach the dashboard over the tailnet
+  using the tsnet IP; SSH tunnel is the out-of-band fallback when
+  the tailnet is the thing that's broken.
+- **`0.0.0.0:8080`** — possible but rarely useful. Funnel does not
+  expose the dashboard (see below), so a public host bind only
+  matters when the gateway sits behind an external auth proxy.
+
+Operators can be allowlisted by tailnet identity so they skip the
+root-password prompt:
+
+```hcl
+dashboard_operators = [
+  "alice@example.com",
+  "*@example.com",
+]
+```
+
+Each entry is matched against the requesting peer's tsnet whois
+login on every dashboard request. Tagged devices (your agents) have
+a tag-name login, not a user email, so they never match a wildcard
+entry — agent peers can never inherit operator powers through this
+path.
+
+`funnel = true` exposes a small allowlist of public-bootstrap routes
+(`/api/onboard/{start,poll,claim}`, `/api/cred/*`,
+`/api/hitl/operations/*/status`) on `<node>.ts.net:443` so off-tailnet
+devices can join and OAuth callbacks can land. **The dashboard itself
+is not Funnel-reachable** — Funnel does not replace the tailnet (or
+SSH) path for operator access.
 
 ## Run under systemd
 
