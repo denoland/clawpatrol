@@ -24,14 +24,14 @@ export function AgentsTable({
   const stable = [...(agents ?? [])].sort((a, b) => a.ip.localeCompare(b.ip));
   const lastByIp = useLastActionByIp();
   return (
-    <table className="w-full table-fixed border-collapse" style={{ minWidth: 940 }}>
+    <table className="w-full table-fixed border-collapse" style={{ minWidth: 1000 }}>
       <colgroup>
         <col style={{ width: 220 }} />
         <col style={{ width: 130 }} />
         <col style={{ width: 380 }} />
         <col style={{ width: 180 }} />
         <col style={{ width: 60 }} />
-        <col style={{ width: 140 }} />
+        <col style={{ width: 200 }} />
       </colgroup>
       <thead className="bg-navy-100 border-b border-navy">
         <tr>
@@ -262,8 +262,13 @@ function ParsingGlyph({ className = "", title }: GlyphProps) {
       aria-label={title ?? "parsing"}
     >
       <title>parsing</title>
-      <circle cx="11" cy="11" r="6" />
-      <path d="M20 20l-4-4" />
+      {/* code brackets `</>` underneath, suggesting the request body
+          being inspected. */}
+      <path d="M8 16l-4-4 4-4" />
+      <path d="M16 16l4-4-4-4" />
+      {/* magnifier laid on top of the brackets. */}
+      <circle cx="12" cy="11" r="4" />
+      <path d="M15 14l3 3" />
     </svg>
   );
 }
