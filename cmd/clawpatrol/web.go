@@ -2483,20 +2483,24 @@ func wrapBodySampler(rc io.ReadCloser, s *sampler) io.ReadCloser {
 const hitlTerminalTTL = 30 * time.Minute
 
 type HITLRegistry struct {
-	mu                 sync.Mutex
-	pending            map[string]*pendingEntry
-	terminal           map[string]terminalHITLEntry
-	sink               *Sink // SSE fan-out for the dashboard
-	asyncGrantResolver func(operationID string, d runtime.HITLDecision) runtime.HITLResolveResult
+	mu                    sync.Mutex
+	pending               map[string]*pendingEntry
+	terminal              map[string]terminalHITLEntry
+	sink                  *Sink // SSE fan-out for the dashboard
+	asyncGrantResolver    func(operationID string, d runtime.HITLDecision) runtime.HITLResolveResult
+	pendingMessageUpdater func(ctx context.Context, pending runtime.HITLPending, ref string, result runtime.HITLResolveResult)
 }
 
 type pendingEntry struct {
-	p        runtime.HITLPending
-	decision chan runtime.HITLDecision
+	p           runtime.HITLPending
+	decision    chan runtime.HITLDecision
+	messageRefs []string
 }
 
 type terminalHITLEntry struct {
 	result    runtime.HITLResolveResult
+	pending   runtime.HITLPending
+	refs      []string
 	expiresAt time.Time
 }
 
@@ -2653,7 +2657,10 @@ func (r *HITLRegistry) Cancel(id string, state runtime.HITLState, reason string)
 	if strings.TrimSpace(reason) == "" {
 		reason = string(state)
 	}
-	_, result := r.resolve(id, state, reason)
+	e, result := r.resolve(id, state, reason)
+	if e != nil && result.OK {
+		r.updateRecordedMessageRefs(context.Background(), e.p, e.messageRefs, result)
+	}
 	return result
 }
 
@@ -2671,8 +2678,54 @@ func (r *HITLRegistry) resolve(id string, state runtime.HITLState, reason string
 	}
 	delete(r.pending, id)
 	terminal := runtime.HITLResolveResult{OK: false, State: state, Reason: reason}
-	r.terminal[id] = terminalHITLEntry{result: terminal, expiresAt: now.Add(hitlTerminalTTL)}
+	r.terminal[id] = terminalHITLEntry{result: terminal, pending: e.p, refs: append([]string(nil), e.messageRefs...), expiresAt: now.Add(hitlTerminalTTL)}
 	return e, runtime.HITLResolveResult{OK: true, State: state, Reason: reason}
+}
+
+// RecordMessageRef records the channel-specific message id for a pending sync
+// HITL prompt so terminal states (timeout/client disconnect) can proactively
+// update the original Slack message. If the request already reached a terminal
+// state before the notifier returned, use a fresh context to update immediately:
+// the caller's request context is often canceled by then.
+func (r *HITLRegistry) RecordMessageRef(_ context.Context, pendingID, ref string) error {
+	if strings.TrimSpace(pendingID) == "" || strings.TrimSpace(ref) == "" {
+		return nil
+	}
+	var pending runtime.HITLPending
+	var result runtime.HITLResolveResult
+	var shouldUpdate bool
+	now := time.Now()
+	r.mu.Lock()
+	r.pruneTerminalLocked(now)
+	if e := r.pending[pendingID]; e != nil {
+		e.messageRefs = append(e.messageRefs, ref)
+		r.mu.Unlock()
+		return nil
+	}
+	if terminal, ok := r.terminal[pendingID]; ok {
+		terminal.refs = append(terminal.refs, ref)
+		r.terminal[pendingID] = terminal
+		pending = terminal.pending
+		result = terminal.result
+		shouldUpdate = true
+	}
+	r.mu.Unlock()
+	if shouldUpdate {
+		r.updateRecordedMessageRefs(context.Background(), pending, []string{ref}, result)
+	}
+	return nil
+}
+
+func (r *HITLRegistry) updateRecordedMessageRefs(ctx context.Context, pending runtime.HITLPending, refs []string, result runtime.HITLResolveResult) {
+	if r == nil || r.pendingMessageUpdater == nil {
+		return
+	}
+	for _, ref := range refs {
+		if strings.TrimSpace(ref) == "" {
+			continue
+		}
+		r.pendingMessageUpdater(ctx, pending, ref, result)
+	}
 }
 
 func (r *HITLRegistry) pruneTerminalLocked(now time.Time) {

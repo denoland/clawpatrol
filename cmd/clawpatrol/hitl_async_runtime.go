@@ -239,6 +239,70 @@ func (g *Gateway) updateHITLOperationMessage(ctx context.Context, op HITLOperati
 	}
 }
 
+func (g *Gateway) updatePendingHITLMessage(ctx context.Context, pending runtime.HITLPending, ref string, result runtime.HITLResolveResult) {
+	if g == nil || ref == "" {
+		return
+	}
+	policy := g.Policy()
+	if policy == nil {
+		return
+	}
+	credName := ""
+	for _, approverName := range pending.Approvers {
+		approver := policy.Approvers[approverName]
+		if approver == nil {
+			continue
+		}
+		if h, ok := approver.Body.(runtime.HITLHumanCredentialer); ok {
+			credName = h.HumanApproverCredential()
+			if credName != "" {
+				break
+			}
+		}
+	}
+	if credName == "" {
+		return
+	}
+	cred := policy.Credentials[credName]
+	if cred == nil {
+		return
+	}
+	updater, ok := cred.Body.(runtime.HITLMessageUpdater)
+	if !ok {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	state := runtime.HITLOperationStateExpired
+	switch result.State {
+	case runtime.HITLStateClientDisconnected:
+		state = runtime.HITLOperationStateClientDisconnected
+	case runtime.HITLStateApproved:
+		state = runtime.HITLOperationStateApprovedWaitingForRetry
+	case runtime.HITLStateDenied:
+		state = runtime.HITLOperationStateDenied
+	case runtime.HITLStateTimedOut:
+		state = runtime.HITLOperationStateExpired
+	}
+	path := pending.Path
+	if path == "" {
+		path = pending.Endpoint
+	}
+	if err := updater.UpdateHITLMessage(ctx, g.secrets, runtime.HITLMessageUpdate{
+		MessageRef:     ref,
+		OperationID:    pending.OperationID,
+		State:          state,
+		Method:         pending.Method,
+		Host:           pending.Host,
+		Path:           path,
+		UpstreamCalled: pending.UpstreamCalled,
+		LastError:      result.Reason,
+	}); err != nil {
+		log.Printf("hitl pending message update %s: %v", pending.ID, err)
+	}
+}
+
 func (g *Gateway) resolveAsyncHITLGrant(operationID string, d runtime.HITLDecision) runtime.HITLResolveResult {
 	if g == nil || g.db == nil {
 		return runtime.HITLResolveResult{OK: false, State: runtime.HITLStateUnknown, Reason: "async HITL operation store is unavailable"}
