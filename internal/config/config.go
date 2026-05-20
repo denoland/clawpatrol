@@ -765,7 +765,7 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 			// endpoints) before gohcl sees the body. The plugin's
 			// schema doesn't need to know about them; the loader
 			// resolves the refs against the symbol table here.
-			fw, body, fwDiags := extractFramework(sym.Block.Body, kind, evalCtx, table)
+			fw, body, fwDiags := extractFramework(sym.Block.Body, plugin, evalCtx, table)
 			diags = append(diags, fwDiags...)
 			target := plugin.New()
 			var decodeDiags hcl.Diagnostics
@@ -819,9 +819,87 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 
 	diags = append(diags, validateCredentialBindings(p)...)
 	diags = append(diags, validateProfileDisambiguators(p, table)...)
+	diags = append(diags, validateProfileEnvironments(p, table)...)
 
 	_ = configDir // file-include resolution will use this in a follow-up
 	return diags
+}
+
+// validateProfileEnvironments catches the silent dead-end where a
+// profile lists an environment block whose `credential = X` ref names
+// a credential that the profile itself does not bind. The env-pushdown
+// would emit a placeholder env var, but with the credential absent
+// from the profile's dispatch table the MITM path can never resolve
+// it — the agent receives a placeholder forever and the misconfig
+// produces no runtime error.
+//
+// The check walks each profile's environments and each environment's
+// framework-peeled credential refs (singular and list forms). Any
+// resolved credential name that is not in the profile's
+// `credentials = [...]` list is reported with the env block as the
+// subject, so the diagnostic points at the place the operator
+// actually needs to edit.
+func validateProfileEnvironments(p *Policy, table *SymbolTable) hcl.Diagnostics {
+	var diags hcl.Diagnostics
+	for profName, pr := range p.Profiles {
+		if len(pr.Environments) == 0 {
+			continue
+		}
+		credSet := make(map[string]struct{}, len(pr.Credentials))
+		for _, c := range pr.Credentials {
+			credSet[c] = struct{}{}
+		}
+		for _, envName := range pr.Environments {
+			ent := p.Environments[envName]
+			if ent == nil {
+				continue // already reported by the kind-existence cross-check
+			}
+			for _, spec := range pluginFrameworkAttrs(ent.Plugin) {
+				if spec.Kind != KindCredential {
+					continue
+				}
+				var refs []string
+				if spec.List {
+					refs = ent.Framework.RefList(spec.Name)
+				} else if r := ent.Framework.Ref(spec.Name); r != "" {
+					refs = []string{r}
+				}
+				for _, credName := range refs {
+					if _, ok := credSet[credName]; ok {
+						continue
+					}
+					subject := profileSubject(table, profName)
+					if envSym := table.Get(KindEnvironment, envName); envSym != nil && envSym.Block != nil {
+						r := envSym.Block.DefRange
+						subject = &r
+					}
+					diags = append(diags, &hcl.Diagnostic{
+						Severity: hcl.DiagError,
+						Summary:  fmt.Sprintf("Profile %q environment %q references credential %q that the profile does not bind", profName, envName, credName),
+						Detail:   fmt.Sprintf("Environment %q sets `%s = %s` but profile %q does not list that credential in `credentials = [...]`. Add it to the profile's credentials, or remove it from the environment block — without the credential bound, the env-pushdown placeholder is never replaced on the wire.", envName, spec.Name, credName, profName),
+						Subject:  subject,
+					})
+				}
+			}
+		}
+	}
+	return diags
+}
+
+// profileSubject returns the source range of the profile's defining
+// block, suitable for use as a diagnostic Subject. Returns nil when
+// the symbol table doesn't have an entry (defensive — every profile
+// in p.Profiles came from the symbol table).
+func profileSubject(table *SymbolTable, name string) *hcl.Range {
+	if table == nil {
+		return nil
+	}
+	sym := table.Get(KindProfile, name)
+	if sym == nil || sym.Block == nil {
+		return nil
+	}
+	r := sym.Block.DefRange
+	return &r
 }
 
 // validateCredentialBindings rejects credentials that set both
