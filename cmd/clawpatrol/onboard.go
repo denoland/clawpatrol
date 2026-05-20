@@ -487,12 +487,13 @@ func newOnboarder(ts JoinConfig) Onboarder {
 
 type tailscaleOnboarder struct{ ts JoinConfig }
 
-func (t *tailscaleOnboarder) MintKey(ctx context.Context, _ string, wholeMachine bool) (string, string, string, error) {
-	// Per-process tsnet (default): ephemeral=true so each `clawpatrol run`
-	// gets a fresh node that auto-cleans on exit (matches macOS NE +
-	// WG-mode ephemeralPeer). Whole-machine: ephemeral=false so the
-	// system tailscale node persists across reboots.
-	k, err := mintTailscaleAuthKey(ctx, t.ts, !wholeMachine)
+func (t *tailscaleOnboarder) MintKey(ctx context.Context, _ string, _ bool) (string, string, string, error) {
+	// One persistent (non-ephemeral) auth key per device. The Linux
+	// daemon (cmd/clawpatrol daemon) holds one stable tsnet identity
+	// shared across every `clawpatrol run` on the host, so the
+	// per-process ephemeral model is gone. Whole-machine joins on
+	// Linux also want a persistent node so the host survives reboots.
+	k, err := mintTailscaleAuthKey(ctx, t.ts, false)
 	return k, "", "", err
 }
 

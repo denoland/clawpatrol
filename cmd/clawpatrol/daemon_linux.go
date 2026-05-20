@@ -66,6 +66,19 @@ func daemonControlSockPath() string { return filepath.Join(daemonRuntimeDir(), "
 func daemonSpawnLockPath() string   { return filepath.Join(daemonRuntimeDir(), "spawn.lock") }
 func daemonLogPath() string         { return filepath.Join(daemonRuntimeDir(), "daemon.log") }
 
+// daemonStateDir resolves the per-user **persistent** state directory.
+// Unlike daemonRuntimeDir, the contents survive logout — the tsnet
+// node identity lives here so the daemon registers as the same device
+// every time it boots. Prefer XDG_STATE_HOME; fall back to
+// ~/.local/state/clawpatrol when unset.
+func daemonStateDir() string {
+	if d := os.Getenv("XDG_STATE_HOME"); d != "" {
+		return filepath.Join(d, "clawpatrol")
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "state", "clawpatrol")
+}
+
 // daemonConnect returns a control connection to the per-host daemon,
 // spawning one if none is running. Safe to call from concurrent
 // `clawpatrol run` invocations.
@@ -251,8 +264,7 @@ type daemon struct {
 func runDaemon(_ []string) {
 	log.SetFlags(log.Lmicroseconds)
 
-	dir := daemonRuntimeDir()
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(daemonRuntimeDir(), 0o700); err != nil {
 		log.Fatalf("daemon: mkdir runtime: %v", err)
 	}
 	sockPath := daemonControlSockPath()
@@ -263,7 +275,7 @@ func runDaemon(_ []string) {
 	// Boot tsnet first. We don't bind the control socket until the
 	// daemon is fully usable — that way a parent reading "ready\n" can
 	// proceed straight to a session START without retries.
-	tsServer, tsIP, err := daemonStartTsnet(dir)
+	tsServer, tsIP, err := daemonStartTsnet()
 	if err != nil {
 		log.Fatalf("daemon: tsnet: %v", err)
 	}
@@ -466,7 +478,7 @@ func (d *daemon) handle(c net.Conn) {
 // gateway-ip), starts a tsnet.Server, waits for it to come up, and
 // points its outbound dials at the gateway as an exit node. Returns
 // the started server and our assigned 100.x address.
-func daemonStartTsnet(runtimeDir string) (*tsnet.Server, netip.Addr, error) {
+func daemonStartTsnet() (*tsnet.Server, netip.Addr, error) {
 	caDir := defaultClawpatrolDir()
 	authKey := strings.TrimSpace(readFileSilent(filepath.Join(caDir, "tsnet-auth-key")))
 	controlURL := strings.TrimSpace(readFileSilent(filepath.Join(caDir, "control-url")))
@@ -482,12 +494,12 @@ func daemonStartTsnet(runtimeDir string) (*tsnet.Server, netip.Addr, error) {
 		return nil, netip.Addr{}, fmt.Errorf("parse tailnet-gateway-ip %q: %w", gwIPStr, err)
 	}
 
-	// State directory under XDG_RUNTIME_DIR is fine for now (Phase 4
-	// will move it to a persistent location alongside the auth key so
-	// the node identity survives daemon restarts; until the auth key
-	// itself is non-ephemeral, persisting state across restarts buys
-	// nothing).
-	stateDir := filepath.Join(runtimeDir, "tsnet")
+	// Persistent state dir so the tsnet node keeps the same identity
+	// (and tailnet IP, when the control plane is cooperative) across
+	// idle-exit + respawn cycles. Auth keys are minted non-ephemeral,
+	// so a single device row shows up on the dashboard per host
+	// instead of churning one per daemon lifetime.
+	stateDir := filepath.Join(daemonStateDir(), "tsnet")
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return nil, netip.Addr{}, fmt.Errorf("tsnet state dir: %w", err)
 	}
@@ -502,7 +514,7 @@ func daemonStartTsnet(runtimeDir string) (*tsnet.Server, netip.Addr, error) {
 		AuthKey:    authKey,
 		ControlURL: controlURL,
 		Dir:        stateDir,
-		Ephemeral:  true,
+		Ephemeral:  false,
 		Logf:       func(string, ...any) {},
 	}
 
