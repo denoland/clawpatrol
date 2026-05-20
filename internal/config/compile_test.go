@@ -50,7 +50,7 @@ func TestCompile(t *testing.T) {
 		t.Fatalf("expected 1 credential, got %d", len(ep.Credentials))
 	}
 	if ep.Credentials[0] == nil ||
-		ep.Credentials[0].Symbol.Name != "github-pat" {
+		ep.Credentials[0].Symbol.Name != "github" {
 		t.Errorf("credential resolution wrong: %+v", ep.Credentials[0])
 	}
 

@@ -181,7 +181,7 @@ against. Two shapes:
 
 ```hcl
 # Singular — common case.
-credential "bearer_token" "github-pat" {
+credential "bearer_token" "github" {
   endpoint = github
 }
 
@@ -214,13 +214,13 @@ that no profile consults.
 ```hcl
 endpoint "https" "orb" { hosts = ["api.withorb.com"] }
 
-credential "bearer_token" "orb-test-key" { endpoint = orb }
-credential "bearer_token" "orb-prod-key" { endpoint = orb }
+credential "bearer_token" "orb-test" { endpoint = orb }
+credential "bearer_token" "orb-prod" { endpoint = orb }
 
 profile "ops" {
   credentials = [
-    { placeholder = "PH_orb_test", credential = orb-test-key },
-    { placeholder = "PH_orb_prod", credential = orb-prod-key },
+    { placeholder = "PH_orb_test", credential = orb-test },
+    { placeholder = "PH_orb_prod", credential = orb-prod },
     # ...
   ]
 }
@@ -287,11 +287,11 @@ those credentials bind.
 ```hcl
 profile "kaju" {
   credentials = [
-    github-kaju-pat,
-    slack-kaju-cred,
+    github-kaju,
+    slack-kaju,
     notion-corp,         # shared with other profiles
-    grafana-token,
-    k8s-dev-ams-mtls,
+    grafana,
+    k8s-dev-ams,
   ]
 }
 ```

@@ -44,7 +44,7 @@
       "k8s-exec-content-judge": {
         "body": {
           "Model": "claude-haiku-4-5-20251001",
-          "Credential": "anthropic-ops-sub",
+          "Credential": "anthropic-ops",
           "Policy": "k8s-exec-content"
         },
         "type": "llm_approver"
@@ -76,7 +76,7 @@
       "pg-secret-columns-judge": {
         "body": {
           "Model": "claude-haiku-4-5-20251001",
-          "Credential": "anthropic-ops-sub",
+          "Credential": "anthropic-ops",
           "Policy": "pg-secret-columns"
         },
         "type": "llm_approver"
@@ -84,7 +84,7 @@
       "pg-secret-named-defense-judge": {
         "body": {
           "Model": "claude-haiku-4-5-20251001",
-          "Credential": "anthropic-ops-sub",
+          "Credential": "anthropic-ops",
           "Policy": "pg-secret-named-defense"
         },
         "type": "llm_approver"
@@ -92,7 +92,7 @@
       "reply-content-judge": {
         "body": {
           "Model": "claude-sonnet-4-20250514",
-          "Credential": "anthropic-ops-sub",
+          "Credential": "anthropic-ops",
           "Policy": "reply-content"
         },
         "type": "llm_approver"
@@ -112,7 +112,7 @@
       "slack-block-kit-shape-judge": {
         "body": {
           "Model": "claude-sonnet-4-20250514",
-          "Credential": "anthropic-ops-sub",
+          "Credential": "anthropic-ops",
           "Policy": "slack-block-kit-shape"
         },
         "type": "llm_approver"
@@ -138,15 +138,15 @@
         "endpoint": "amem",
         "type": "bearer_token"
       },
+      "anthropic-ops": {
+        "body": {},
+        "endpoint": "anthropic-ops",
+        "type": "anthropic_oauth_subscription"
+      },
       "anthropic-ops-key": {
         "body": {},
         "endpoint": "anthropic-ops",
         "type": "anthropic_manual_key"
-      },
-      "anthropic-ops-sub": {
-        "body": {},
-        "endpoint": "anthropic-ops",
-        "type": "anthropic_oauth_subscription"
       },
       "ch-o11y": {
         "body": {
@@ -171,21 +171,21 @@
         "endpoint": "gemini",
         "type": "gemini_api_key"
       },
-      "github-alice-pat": {
+      "github-alice": {
         "body": {
           "IdempotencyKey": false
         },
         "endpoint": "github",
         "type": "bearer_token"
       },
-      "github-bob-pat": {
+      "github-bob": {
         "body": {
           "IdempotencyKey": false
         },
         "endpoint": "github",
         "type": "bearer_token"
       },
-      "github-ops-pat": {
+      "github-ops": {
         "body": {
           "IdempotencyKey": false
         },
@@ -224,7 +224,7 @@
         "endpoint": "k8s-dev-sfo",
         "type": "mtls_credential"
       },
-      "k8s-eks-corp-aws": {
+      "k8s-eks-corp": {
         "body": {},
         "endpoint": "k8s-eks-corp-prod",
         "type": "aws_credential"
@@ -244,14 +244,14 @@
         "endpoint": "openai-codex",
         "type": "openai_codex_oauth"
       },
-      "orb-prod-key": {
+      "orb-prod": {
         "body": {
           "IdempotencyKey": false
         },
         "endpoint": "orb",
         "type": "bearer_token"
       },
-      "orb-test-key": {
+      "orb-test": {
         "body": {
           "IdempotencyKey": false
         },
@@ -319,14 +319,14 @@
         "endpoint": "smithery",
         "type": "bearer_token"
       },
-      "stripe-live-key": {
+      "stripe-live": {
         "body": {
           "IdempotencyKey": true
         },
         "endpoint": "stripe",
         "type": "bearer_token"
       },
-      "support-console-pat": {
+      "support-console": {
         "body": {
           "CookieName": "session"
         },
@@ -610,7 +610,7 @@
     "profiles": {
       "alice": {
         "credentials": [
-          "github-alice-pat",
+          "github-alice",
           "slack-alice",
           "telegram-carol",
           "openai-codex-carol",
@@ -630,7 +630,7 @@
       },
       "bob": {
         "credentials": [
-          "github-bob-pat",
+          "github-bob",
           "slack-bob",
           "telegram-bob",
           "gemini-bob",
@@ -649,13 +649,13 @@
       "ops": {
         "credentials": [
           "anthropic-ops-key",
-          "anthropic-ops-sub",
-          "github-ops-pat",
+          "anthropic-ops",
+          "github-ops",
           "slack-ops",
-          "support-console-pat",
-          "stripe-live-key",
-          "orb-test-key",
-          "orb-prod-key",
+          "support-console",
+          "stripe-live",
+          "orb-test",
+          "orb-prod",
           "notion-corp",
           "grafana",
           "pg-corp-ro",
@@ -663,20 +663,20 @@
           "pg-scheduler",
           "k8s-dev-iad",
           "k8s-dev-sfo",
-          "k8s-eks-corp-aws",
+          "k8s-eks-corp",
           "ch-o11y"
         ],
         "disambiguators": {
+          "anthropic-ops": {
+            "placeholder": "PH_anthropic_ops_subscription"
+          },
           "anthropic-ops-key": {
             "placeholder": "PH_anthropic_ops_apikey"
           },
-          "anthropic-ops-sub": {
-            "placeholder": "PH_anthropic_ops_subscription"
-          },
-          "orb-prod-key": {
+          "orb-prod": {
             "placeholder": "PH_orb_prod"
           },
-          "orb-test-key": {
+          "orb-test": {
             "placeholder": "PH_orb_test"
           }
         }
@@ -1031,7 +1031,7 @@
             "orb"
           ],
           "condition": "http.method == 'DELETE'",
-          "credential": "orb-prod-key",
+          "credential": "orb-prod",
           "verdict": "deny",
           "reason": "Orb deletes go through approval flow as POST"
         }
@@ -1044,7 +1044,7 @@
             "orb"
           ],
           "condition": "http.method == 'GET'",
-          "credential": "orb-prod-key",
+          "credential": "orb-prod",
           "verdict": "allow"
         }
       },
@@ -1056,7 +1056,7 @@
             "orb"
           ],
           "condition": "http.method in ['POST', 'PUT', 'PATCH']",
-          "credential": "orb-prod-key",
+          "credential": "orb-prod",
           "approve": [
             {
               "name": "billing"
@@ -1071,7 +1071,7 @@
           "endpoints": [
             "orb"
           ],
-          "credential": "orb-test-key",
+          "credential": "orb-test",
           "verdict": "allow"
         }
       },

@@ -133,11 +133,11 @@ rule "echo-deny-fallback" {
 // header_name is the HTTP header the example_https endpoint adds to
 // upstream requests. Defaults to "X-Magic" when omitted; the SMTP
 // and echo endpoints ignore it.
-credential "example_magic_token" "demo_token" {
+credential "example_magic_token" "demo" {
   endpoints   = [example_https.demo-site, example_smtp.demo-mail, example_echo.demo-echo]
   header_name = "X-Magic"
 }
 
 profile "default" {
-  credentials = [example_magic_token.demo_token]
+  credentials = [example_magic_token.demo]
 }

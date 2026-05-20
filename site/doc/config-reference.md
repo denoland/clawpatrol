@@ -12,7 +12,7 @@ Each block section lists the attributes the loader accepts, with:
 - **Type** — the HCL value type. `string`, `bool`, `int` are scalar
   literals; `[]string` is a list of strings; `ref(<kind>)` is a
   typed reference to another block (`<type>.<name>` for
-  two-label kinds like `credential = bearer_token.github-pat`,
+  two-label kinds like `credential = bearer_token.github`,
   `<kind>.<name>` for one-label kinds like `policy = policy.no-pii`);
   `[]ref(<kind>)` is a list of such references; nested blocks have
   their shape described inline.
@@ -87,7 +87,7 @@ Names a set of credentials. Profiles bind to dashboard owners; an owner's profil
 
 ```hcl
 profile "default" {
-  credentials       = [github-pat, postgres-prod-creds]
+  credentials       = [bearer_token.github, postgres_credential.postgres-prod]
   hitl_async_grants = true
 }
 ```

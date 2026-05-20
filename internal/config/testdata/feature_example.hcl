@@ -61,7 +61,7 @@ endpoint "https" "github" {
 # authenticates against; the actual secret value is stored separately
 # in the gateway, keyed by name.
 
-credential "bearer_token" "github-pat" {
+credential "bearer_token" "github" {
   endpoint = https.github
 }
 
@@ -94,5 +94,5 @@ rule "github-writes" {
 # they ride along too).
 
 profile "default" {
-  credentials = [bearer_token.github-pat]
+  credentials = [bearer_token.github]
 }

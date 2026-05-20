@@ -14,7 +14,7 @@ endpoint "https" "github" {
   hosts = ["api.github.com"]
 }
 
-credential "bearer_token" "github_pat" {
+credential "bearer_token" "github" {
   endpoint = https.github
 }
 
@@ -31,4 +31,4 @@ rule "github-writes" {
   reason    = "writes go through PR review"
 }
 
-profile "default" { credentials = [bearer_token.github_pat] }
+profile "default" { credentials = [bearer_token.github] }

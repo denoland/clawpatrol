@@ -14,7 +14,7 @@ var envParts = []string{"CA", "CERT", "KEY"}
 
 // SecretStore returns the secret material a credential plugin's
 // InjectHTTP / InjectPostgres needs at request time. Lookup key is
-// the credential's bare name (e.g. "github-pat"). A credential
+// the credential's bare name (e.g. "github"). A credential
 // declared in HCL maps to exactly one secret — operators wanting
 // distinct material for two callers should declare two credentials
 // and bind each to its own endpoint.

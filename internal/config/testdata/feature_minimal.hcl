@@ -7,7 +7,7 @@ endpoint "https" "github" {
   hosts = ["api.github.com", "github.com"]
 }
 
-credential "bearer_token" "github-pat" {
+credential "bearer_token" "github" {
   endpoint = https.github
 }
 
@@ -29,5 +29,5 @@ rule "github-writes" {
 }
 
 profile "default" {
-  credentials = [bearer_token.github-pat]
+  credentials = [bearer_token.github]
 }

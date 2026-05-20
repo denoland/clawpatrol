@@ -24,10 +24,10 @@ endpoint "postgres" "deploy-classic" {
   tunnel = local_command.csql-prod
 }
 
-credential "bearer_token" "github-pat" {
+credential "bearer_token" "github" {
   endpoints = [https.github, postgres.deploy-classic]
 }
 
 profile "default" {
-  credentials = [bearer_token.github-pat]
+  credentials = [bearer_token.github]
 }

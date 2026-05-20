@@ -2,7 +2,7 @@
   "listen": "0.0.0.0:8443",
   "policy": {
     "credentials": {
-      "github-pat": {
+      "github": {
         "body": {
           "IdempotencyKey": false
         },
@@ -37,7 +37,7 @@
     "profiles": {
       "default": {
         "credentials": [
-          "github-pat"
+          "github"
         ]
       }
     },

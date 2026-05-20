@@ -498,7 +498,7 @@ func setProfileCredentials(b *hclwrite.Body, creds []string, disambig map[string
 }
 
 // SetIdent writes `name = a.b` where the value is a dotted traversal
-// (e.g. `credential = header_token.github-pat`). The ident string
+// (e.g. `credential = header_token.github`). The ident string
 // may be a single identifier or a dotted traversal — splitting on
 // '.' yields the token sequence.
 func SetIdent(b *hclwrite.Body, name, ident string) {

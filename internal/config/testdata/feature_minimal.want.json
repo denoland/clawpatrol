@@ -17,7 +17,7 @@
       }
     },
     "credentials": {
-      "github-pat": {
+      "github": {
         "body": {
           "IdempotencyKey": false
         },
@@ -40,7 +40,7 @@
     "profiles": {
       "default": {
         "credentials": [
-          "github-pat"
+          "github"
         ]
       }
     },

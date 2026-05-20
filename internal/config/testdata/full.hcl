@@ -81,25 +81,27 @@
 # ║ 3. NAMES AND REFERENCES                                          ║
 # ╚══════════════════════════════════════════════════════════════════╝
 #
-# Single flat namespace. Every named entity (endpoint, credential,
-# rule, approver, policy, profile) shares one namespace; names must be
-# globally unique.
+# Per-kind namespace. Names must be unique within a kind; the same
+# string may name one endpoint and one credential (different kinds)
+# without collision, because every reference syntactically carries the
+# kind via its type label.
 #
-# References are bare names — no kind prefix, no type prefix:
+# References are typed traversals — `<type>.<name>` for two-label
+# kinds, `<kind>.<name>` for one-label kinds:
 #
-#     endpoint    = https.anthropic-ops           # not  https.anthropic-ops
-#     credentials = [bearer_token.github-ops-pat]        # not  credential.bearer_token...
-#     approve     = [fast]                  # not  approver.llm_approver.fast
+#     endpoint    = https.anthropic-ops
+#     credentials = [bearer_token.github-ops]
+#     approve     = [llm_approver.fast]
 #
-# The two-label declaration (`endpoint "https" "github"`) carries
-# type information for the loader's schema validation, but reference
-# syntax doesn't repeat it. The loader resolves a bare name by looking
-# across all kinds; collisions are a load error.
+# The leading label is required: the loader resolves `https.foo` as
+# the endpoint of type `https` named `foo`. There is no bare-name
+# resolution and no `credential.bearer_token...` triple-segment form.
 #
 # Note: ClickHouse exposes two protocols (HTTPS API + native binary)
 # from the same upstream cluster, so two endpoints share the upstream:
 # `ch-o11y-https` and `ch-o11y-native`. One credential (`ch-o11y`)
-# binds both via `endpoints = [ch-o11y-https, ch-o11y-native]`.
+# binds both via
+# `endpoints = [clickhouse_https.ch-o11y-https, clickhouse_native.ch-o11y-native]`.
 #
 #
 # ╔══════════════════════════════════════════════════════════════════╗
@@ -132,23 +134,23 @@
 #
 # Multi-credential dispatch (placeholder, on the profile). When a
 # profile actively wields more than one credential at the same
-# endpoint, the credentials list mixes bare-name entries with inline
-# `{ placeholder = "PH_...", credential = name }` objects that name
-# the dispatch discriminator the agent sends for each:
+# endpoint, the credentials list mixes direct traversal entries with
+# inline `{ placeholder = "PH_...", credential = <type>.<name> }`
+# objects that name the dispatch discriminator the agent sends for each:
 #
 #     profile "ops" {
 #       credentials = [
-#         { placeholder = "PH_orb_test", credential = bearer_token.orb-test-key },
-#         { placeholder = "PH_orb_prod", credential = bearer_token.orb-prod-key },
+#         { placeholder = "PH_orb_test", credential = bearer_token.orb-test },
+#         { placeholder = "PH_orb_prod", credential = bearer_token.orb-prod },
 #         ...
 #       ]
 #     }
 #
 # At inject time the gateway scans the request for one of the
 # placeholders and substitutes the matching credential's real secret.
-# A bare-name credential in the same profile is the no-placeholder
-# fallback — at most one per (profile, endpoint), used when no agent
-# placeholder matches. The exact "no-placeholder" semantic is
+# A direct credential traversal in the same profile is the
+# no-placeholder fallback — at most one per (profile, endpoint), used
+# when no agent placeholder matches. The exact "no-placeholder" semantic is
 # plugin-defined: HTTPS overwrites Authorization regardless of what
 # the agent sent; postgres swaps the agent's password for the real
 # one.
@@ -178,7 +180,7 @@
 #
 #   - which endpoint(s) it applies to (`endpoint = X` or
 #     `endpoints = [X, Y, ...]`),
-#   - an optional `credential = X` bare-name reference (request
+#   - an optional `credential = <type>.<name>` reference (request
 #     must have been dispatched against that credential),
 #   - an optional CEL `condition = "..."` predicate,
 #   - one outcome: `verdict = "allow"`, `verdict = "deny"` (with
@@ -279,17 +281,17 @@
 # ║ 6. APPROVE CHAINS                                                ║
 # ╚══════════════════════════════════════════════════════════════════╝
 #
-# `approve = [...]` is an ordered list of bare-name stages. Each stage
-# names an approver block; the request runs each in turn; any stage
-# denying ends the chain.
+# `approve = [...]` is an ordered list of approver traversals. Each
+# stage names an approver block; the request runs each in turn; any
+# stage denying ends the chain.
 #
 #     approve = [llm_approver.pg-secret-columns-judge]            # one LLM proctor
 #     approve = [llm_approver.reply-content-judge, human_approver.support-ops]   # LLM, then human
 #
-# LLM proctor blocks (llm_approver) bind a `policy = <name>` directly,
-# so the use site stays a bare-name reference. A human stage takes only
-# the approver name; the approver block carries channel, timeout, and
-# require_approvers.
+# LLM proctor blocks (llm_approver) bind a `policy = policy.<name>`
+# directly, so the use site stays a single approver traversal. A human
+# stage takes only the approver traversal; the approver block carries
+# channel, timeout, and require_approvers.
 #
 # Defaults block sets `llm_fail_mode` (deny on LLM error / timeout)
 # and `human_on_timeout` (deny if Slack approver doesn't reply within
@@ -302,7 +304,7 @@
 #
 # A profile is a credential membership list:
 #
-#     profile "alice" { credentials = [bearer_token.github-alice-pat, slack_tokens.slack-alice, ...] }
+#     profile "alice" { credentials = [bearer_token.github-alice, slack_tokens.slack-alice, ...] }
 #
 # Three observations:
 #
@@ -385,34 +387,34 @@ human_on_timeout = "deny"
 # `billing-strict` requires two approvers (`require_approvers = 2`)
 # for the highest-blast-radius Stripe operations.
 #
-# Approvers reference `credential = anthropic-ops-sub` — that bare name
-# resolves to the credential below; the credential itself binds the
-# anthropic-ops endpoint, so the approver's outbound calls use the
-# same injection path the agent uses.
+# Approvers reference `credential = anthropic_oauth_subscription.anthropic-ops`
+# — that traversal resolves to the credential below; the credential
+# itself binds the anthropic-ops endpoint, so the approver's outbound
+# calls use the same injection path the agent uses.
 
 approver "llm_approver" "slack-block-kit-shape-judge" {
   model      = "claude-sonnet-4-20250514"
-  credential = anthropic_oauth_subscription.anthropic-ops-sub
+  credential = anthropic_oauth_subscription.anthropic-ops
   policy     = policy.slack-block-kit-shape
 }
 approver "llm_approver" "reply-content-judge" {
   model      = "claude-sonnet-4-20250514"
-  credential = anthropic_oauth_subscription.anthropic-ops-sub
+  credential = anthropic_oauth_subscription.anthropic-ops
   policy     = policy.reply-content
 }
 approver "llm_approver" "pg-secret-columns-judge" {
   model      = "claude-haiku-4-5-20251001"
-  credential = anthropic_oauth_subscription.anthropic-ops-sub
+  credential = anthropic_oauth_subscription.anthropic-ops
   policy     = policy.pg-secret-columns
 }
 approver "llm_approver" "pg-secret-named-defense-judge" {
   model      = "claude-haiku-4-5-20251001"
-  credential = anthropic_oauth_subscription.anthropic-ops-sub
+  credential = anthropic_oauth_subscription.anthropic-ops
   policy     = policy.pg-secret-named-defense
 }
 approver "llm_approver" "k8s-exec-content-judge" {
   model      = "claude-haiku-4-5-20251001"
-  credential = anthropic_oauth_subscription.anthropic-ops-sub
+  credential = anthropic_oauth_subscription.anthropic-ops
   policy     = policy.k8s-exec-content
 }
 
@@ -588,14 +590,14 @@ endpoint "https" "helpdesk"  { hosts = ["helpdesk.example.com"] }
 # ..., credential = ... }` entries in profile "ops"), because only
 # profiles that wield BOTH credentials need to disambiguate.
 credential "anthropic_manual_key"         "anthropic-ops-key" { endpoint = https.anthropic-ops }
-credential "anthropic_oauth_subscription" "anthropic-ops-sub" { endpoint = https.anthropic-ops }
+credential "anthropic_oauth_subscription" "anthropic-ops" { endpoint = https.anthropic-ops }
 
 # Per-user GitHub PATs. The github endpoint is a bare network target
 # shared across users; each user's profile wields exactly one of these,
 # so no placeholder is needed in any profile.
-credential "bearer_token" "github-ops-pat"   { endpoint = https.github }
-credential "bearer_token" "github-alice-pat" { endpoint = https.github }
-credential "bearer_token" "github-bob-pat"   { endpoint = https.github }
+credential "bearer_token" "github-ops"   { endpoint = https.github }
+credential "bearer_token" "github-alice" { endpoint = https.github }
+credential "bearer_token" "github-bob"   { endpoint = https.github }
 
 # Per-user Slack workspaces — shared slack endpoint, each user's
 # profile uses one workspace credential.
@@ -617,17 +619,17 @@ credential "openai_codex_oauth"  "openai-codex-bob"   { endpoint = https.openai-
 # `idempotency_key = true` tells the bearer_token plugin to also stamp
 # an Idempotency-Key header on writes, so the same request retried by
 # the agent doesn't cause double-charge.
-credential "bearer_token" "stripe-live-key" {
+credential "bearer_token" "stripe-live" {
   endpoint        = https.stripe
   idempotency_key = true
 }
 
 # Orb: test + prod. Both wielded by profile "ops" → placeholders
 # declared there.
-credential "bearer_token" "orb-test-key" { endpoint = https.orb }
-credential "bearer_token" "orb-prod-key" { endpoint = https.orb }
+credential "bearer_token" "orb-test" { endpoint = https.orb }
+credential "bearer_token" "orb-prod" { endpoint = https.orb }
 
-credential "cookie_token" "support-console-pat" {
+credential "cookie_token" "support-console" {
   endpoint    = https.support-console
   cookie_name = "session"
 }
@@ -660,7 +662,7 @@ credential "clickhouse_credential" "ch-o11y" {
 
 credential "mtls_credential"   "k8s-dev-iad"  { endpoint = kubernetes.k8s-dev-iad }
 credential "mtls_credential"   "k8s-dev-sfo"  { endpoint = kubernetes.k8s-dev-sfo }
-credential "aws_credential"    "k8s-eks-corp-aws"  { endpoint = kubernetes.k8s-eks-corp-prod }
+credential "aws_credential"    "k8s-eks-corp"  { endpoint = kubernetes.k8s-eks-corp-prod }
 
 # alice's per-tool API tokens. These illustrate the variety of HTTP
 # auth shapes the bearer/header_token credentials cover:
@@ -773,25 +775,25 @@ rule "stripe-default" {
 
 rule "orb-test-allow-all" {
   endpoint   = https.orb
-  credential = bearer_token.orb-test-key
+  credential = bearer_token.orb-test
   verdict    = "allow"
 }
 rule "orb-prod-reads" {
   endpoint   = https.orb
-  credential = bearer_token.orb-prod-key
+  credential = bearer_token.orb-prod
   condition  = "http.method == 'GET'"
   verdict    = "allow"
 }
 rule "orb-prod-no-deletes" {
   endpoint   = https.orb
-  credential = bearer_token.orb-prod-key
+  credential = bearer_token.orb-prod
   condition  = "http.method == 'DELETE'"
   verdict    = "deny"
   reason     = "Orb deletes go through approval flow as POST"
 }
 rule "orb-prod-writes" {
   endpoint   = https.orb
-  credential = bearer_token.orb-prod-key
+  credential = bearer_token.orb-prod
   condition  = "http.method in ['POST', 'PUT', 'PATCH']"
   approve    = [human_approver.billing]
 }
@@ -1070,16 +1072,16 @@ profile "ops" {
     # anthropic-ops: BOTH credentials at one endpoint → disambiguated
     # via inline placeholders.
     { placeholder = "PH_anthropic_ops_apikey", credential = anthropic_manual_key.anthropic-ops-key },
-    { placeholder = "PH_anthropic_ops_subscription", credential = anthropic_oauth_subscription.anthropic-ops-sub },
+    { placeholder = "PH_anthropic_ops_subscription", credential = anthropic_oauth_subscription.anthropic-ops },
 
-    bearer_token.github-ops-pat,
+    bearer_token.github-ops,
     slack_tokens.slack-ops,
-    cookie_token.support-console-pat,
-    bearer_token.stripe-live-key,
+    cookie_token.support-console,
+    bearer_token.stripe-live,
 
     # orb: test + prod at one endpoint.
-    { placeholder = "PH_orb_test", credential = bearer_token.orb-test-key },
-    { placeholder = "PH_orb_prod", credential = bearer_token.orb-prod-key },
+    { placeholder = "PH_orb_test", credential = bearer_token.orb-test },
+    { placeholder = "PH_orb_prod", credential = bearer_token.orb-prod },
 
     notion_oauth.notion-corp,
     bearer_token.grafana,
@@ -1094,7 +1096,7 @@ profile "ops" {
 
     mtls_credential.k8s-dev-iad,
     mtls_credential.k8s-dev-sfo,
-    aws_credential.k8s-eks-corp-aws,
+    aws_credential.k8s-eks-corp,
 
     # ch-o11y: one credential, two endpoints.
     clickhouse_credential.ch-o11y,
@@ -1103,7 +1105,7 @@ profile "ops" {
 
 profile "alice" {
   credentials = [
-    bearer_token.github-alice-pat,
+    bearer_token.github-alice,
     slack_tokens.slack-alice,
     telegram_bot_token.telegram-carol,
     openai_codex_oauth.openai-codex-carol,
@@ -1130,7 +1132,7 @@ profile "alice" {
 
 profile "bob" {
   credentials = [
-    bearer_token.github-bob-pat,
+    bearer_token.github-bob,
     slack_tokens.slack-bob,
     telegram_bot_token.telegram-bob,
     gemini_api_key.gemini-bob,
