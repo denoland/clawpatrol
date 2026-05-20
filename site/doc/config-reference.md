@@ -531,6 +531,31 @@ endpoint "ssh" "example" {
 }
 ```
 
+## `environment` blocks
+
+Block syntax: `environment "<type>" "<name>" { ... }`
+
+Registered types: [`custom_environment`](#environment-customenvironment).
+
+### `environment "custom_environment" "<name>"`
+
+Is part of the clawpatrol plugin API. It carries
+one operator-declared (key, value) pair plus an optional human-
+readable description shown by `clawpatrol env --list`.
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `key` | `string` | yes |  |
+| `value` | `string` | yes |  |
+| `description` | `string` | no |  |
+
+```hcl
+environment "custom_environment" "example" {
+  key = "example"
+  value = "example"
+}
+```
+
 ## `rule` blocks
 
 Block syntax: `rule "<name>" { ... }`

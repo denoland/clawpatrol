@@ -152,9 +152,10 @@ type Plugin struct {
 // don't fit the RefSpec.Path mini-DSL — most notably bare-name fields
 // inside `match = { credential = X }` cty.Value attributes.
 type BuildCtx struct {
-	Refs    *Refs
-	Symbols *SymbolTable
-	Block   *hcl.Block // for diagnostic ranges when nothing more precise is available
+	Refs      *Refs
+	Symbols   *SymbolTable
+	Block     *hcl.Block // for diagnostic ranges when nothing more precise is available
+	Framework FrameworkAttrs
 }
 
 // FrameworkAttrSpec declares an HCL attribute that the loader peels

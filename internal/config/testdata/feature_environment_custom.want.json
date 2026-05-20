@@ -1,0 +1,69 @@
+{
+  "listen": "0.0.0.0:8443",
+  "llm_fail_mode": "closed",
+  "policy": {
+    "credentials": {
+      "github-pat": {
+        "body": {
+          "IdempotencyKey": false
+        },
+        "endpoint": "github",
+        "type": "bearer_token"
+      }
+    },
+    "endpoints": {
+      "github": {
+        "body": {
+          "Hosts": [
+            "api.github.com",
+            "github.com"
+          ]
+        },
+        "family": "http",
+        "type": "https"
+      }
+    },
+    "environments": {
+      "aws-region": {
+        "body": {
+          "key": "AWS_REGION",
+          "value": "us-east-1"
+        },
+        "type": "custom_environment"
+      },
+      "openai-base-url": {
+        "body": {
+          "key": "OPENAI_BASE_URL",
+          "value": "https://gateway.example.test/openai/v1",
+          "description": "route the OpenAI SDK through the gateway"
+        },
+        "type": "custom_environment"
+      }
+    },
+    "profiles": {
+      "default": {
+        "credentials": [
+          "github-pat"
+        ],
+        "environments": [
+          "aws-region",
+          "openai-base-url"
+        ]
+      }
+    },
+    "rules": {
+      "github-reads": {
+        "body": {
+          "name": "github-reads",
+          "family": "http",
+          "endpoints": [
+            "github"
+          ],
+          "condition": "http.method in ['GET', 'HEAD']",
+          "verdict": "allow"
+        }
+      }
+    }
+  },
+  "unknown_host": "passthrough"
+}

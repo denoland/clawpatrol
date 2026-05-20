@@ -795,7 +795,7 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 			}
 			refs, refDiags := resolveRefs(target, sym.Name, plugin, table, sym.Block.DefRange)
 			diags = append(diags, refDiags...)
-			ctx := &BuildCtx{Refs: refs, Symbols: table, Block: sym.Block}
+			ctx := &BuildCtx{Refs: refs, Symbols: table, Block: sym.Block, Framework: fw}
 			if plugin.Validate != nil {
 				diags = append(diags, plugin.Validate(target, sym.Name, ctx)...)
 			}
