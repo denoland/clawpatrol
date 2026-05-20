@@ -158,6 +158,13 @@ two ways to scope what gets captured:
 The agent never sees the real credential. The gateway never trusts
 the agent.
 
+## Open source
+
+MIT. The gateway, the dashboard, and the plugins are all in one
+repo. All state lives in a single SQLite file on the gateway host —
+no cloud required. The binary phones home for an update check;
+disable with `CLAWPATROL_TELEMETRY=0` or `DO_NOT_TRACK=1`.
+
 ## Next
 
 - [Getting Started](/docs/getting-started/) — stand up a gateway
