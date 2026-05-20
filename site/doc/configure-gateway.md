@@ -74,10 +74,18 @@ password. Pick the shape that matches your access model:
   (`ssh -L 8080:127.0.0.1:8080 gateway-host`) or a local reverse
   proxy.
 - **Tailnet / VPN IP (`100.x.x.x:8080`)** — reachable only from
-  your control plane. Add
-  `dashboard_operators = ["you@yourdomain.com"]` to let your
-  tailnet identity pass without typing the password. Tagged
-  devices (agents) never match the allowlist.
+  your control plane. List each operator's tailnet identity in
+  `dashboard_operators` — the email Tailscale uses to identify
+  that user — to let them in without typing the password:
+
+  ```hcl
+  dashboard_operators = [
+    "alice@example.com",
+    "bob@example.com",
+  ]
+  ```
+
+  Tagged devices (agents) never match the allowlist.
 - **Public (`0.0.0.0:8080`)** — works, but everyone on the
   internet sees a login page. Front it with an auth proxy
   (Cloudflare Access, oauth2-proxy) if you really need it.
