@@ -16,15 +16,17 @@ package main
 //  1. Read persisted reusable+ephemeral auth_key from ~/.clawpatrol/.
 //  2. tsnet.Server{Ephemeral: true, Dir: MkdirTemp(...)} joins the
 //     gateway's tailnet under a fresh hostname.
-//  3. Register the new tailnet IP with the gateway — register handler
+//  3. EditPrefs(ExitNodeIP=gateway) so every outbound dial from this
+//     tsnet node is routed via the gateway. Original dst is recovered
+//     server-side by RegisterFallbackTCPHandler — no PROXY-header
+//     smuggling required.
+//  4. Register the new tailnet IP with the gateway — register handler
 //     attributes traffic back to the parent device via
 //     ephemeralParentByIP so the dashboard shows ONE row per machine.
-//  4. Child in a new user+net+mnt ns creates the TUN, sends fd via
+//  5. Child in a new user+net+mnt ns creates the TUN, sends fd via
 //     SCM_RIGHTS.
-//  5. gVisor TCP forwarder dials gateway via tsnet + HAProxy PROXY v1
-//     header carrying original src/dst/ports.
-//  6. Gateway recovers original dst from the PROXY header and
-//     dispatches like WireGuard / exit-node paths.
+//  6. gVisor TCP forwarder dials the original destination via tsnet
+//     (which is exit-node-routed through the gateway).
 
 import (
 	"context"
@@ -86,24 +88,22 @@ func runRunTsnet(args []string) {
 	// tailnet-only, can't be fetched until we're on the tailnet.
 
 	gwURL := strings.TrimSpace(readFileSilent(filepath.Join(dir, "gateway")))
-	gwHost := strings.TrimSpace(readFileSilent(filepath.Join(dir, "tailnet-gateway")))
 	controlURL := strings.TrimSpace(readFileSilent(filepath.Join(dir, "control-url")))
 	token := strings.TrimSpace(readFileSilent(filepath.Join(dir, "api-token")))
 	authKey := strings.TrimSpace(readFileSilent(filepath.Join(dir, "tsnet-auth-key")))
-	if gwHost == "" {
-		gwHost = "clawpatrol-gateway"
-	}
+	gwIPStr := strings.TrimSpace(readFileSilent(filepath.Join(dir, "tailnet-gateway-ip")))
 	if gwURL == "" || token == "" {
 		fail("tsnet run: missing gateway url or api-token in %s", dir)
 	}
 	if authKey == "" {
 		fail("tsnet run: missing tsnet-auth-key in %s (re-run `clawpatrol join`)", dir)
 	}
-	// Gateway agent port (where the MITM listener lives). Tsnet Funnel
-	// owns :443, so the listener is typically :8443. Persisted at join.
-	gwPort := strings.TrimSpace(readFileSilent(filepath.Join(dir, "gateway-port")))
-	if gwPort == "" {
-		gwPort = "443"
+	if gwIPStr == "" {
+		fail("tsnet run: missing tailnet-gateway-ip in %s (re-run `clawpatrol join`)", dir)
+	}
+	gwIP, err := netip.ParseAddr(gwIPStr)
+	if err != nil {
+		fail("tsnet run: tailnet-gateway-ip %q: %v", gwIPStr, err)
 	}
 
 	// 2. Spin up an ephemeral tsnet.Server per invocation. tmpdir state
@@ -133,6 +133,15 @@ func runRunTsnet(args []string) {
 		fail("tsnet join: %v", err)
 	}
 	_ = os.Setenv("CLAWPATROL_TS_ADDR", tsIP.String())
+
+	// Route every outbound dial on this tsnet node through the gateway
+	// as an exit node. The gateway picks the traffic up via
+	// RegisterFallbackTCPHandler (TCP) and its tsnet :53 UDP listener
+	// (DNS), recovering the original dst from tsnet's exit-node
+	// machinery rather than a smuggled PROXY-v1 header.
+	if err := setGatewayExitNode(tsServer, gwIP); err != nil {
+		fail("tsnet set exit-node %s: %v", gwIP, err)
+	}
 
 	// Peer-API calls (register, env-pushdown) are tailnet-only — dial via
 	// tsnet so requests reach the gateway's 100.x address from the parent
@@ -223,10 +232,10 @@ func runRunTsnet(args []string) {
 	defer gvStack.Close()
 	startTunBridge(tunFile, gvEp, tsServer)
 
-	// 7. TCP forwarder: every connection → tsnet → gateway.
-	// We forward to gwHost:originalPort so the gateway can route by port
-	// (port 443 → HTTPS MITM; other ports forwarded if gateway listens).
-	enableTsnetTCPForwarder(gvStack, tsServer, gwHost, gwPort)
+	// 7. TCP forwarder: every connection → tsnet (exit-node-routed
+	// through the gateway). The gateway recovers the original dst via
+	// its RegisterFallbackTCPHandler.
+	enableTsnetTCPForwarder(gvStack, tsServer)
 
 	// 8. Signal child: bridge is up.
 	_, _ = wgUpW.Write([]byte{1})
@@ -594,26 +603,15 @@ func ipv4Checksum(b []byte) uint16 {
 }
 
 // enableTsnetTCPForwarder installs a promiscuous TCP forwarder on s.
-// Every connection dials the gateway via tsnet and prepends a HAProxy
-// PROXY v1 header carrying the original 4-tuple. The gateway recovers
-// the original dst from the PROXY header and dispatches via the same
-// path as WireGuard and whole-machine exit-node clients.
-//
-// Why PROXY (vs. relying on tsnet exit-node routing): using the gateway
-// as a tsnet exit node would work but requires the operator to enable
-// the gateway's advertised exit-route in the Tailscale admin console
-// for every client tag — extra config we don't want to require.
-// Peer-to-peer dial + PROXY header keeps the setup self-contained.
-func enableTsnetTCPForwarder(s *stack.Stack, ts *tsnet.Server, gwHost, gwPort string) {
-	gwAddr := net.JoinHostPort(gwHost, gwPort)
+// Every connection dials the original destination via tsnet. The
+// tsnet node has been configured with ExitNodeIP=<gateway> upstream,
+// so this dial transparently routes through the gateway, where it
+// lands in RegisterFallbackTCPHandler with the original dst intact.
+func enableTsnetTCPForwarder(s *stack.Stack, ts *tsnet.Server) {
 	fwd := tcp.NewForwarder(s, 1<<20, 16384, func(req *tcp.ForwarderRequest) {
 		id := req.ID()
-		// Format IPs via .String() — tcpip.Address used with %s prints
-		// the raw bytes (binary garbage), making the PROXY header
-		// unparseable. String() returns dotted-decimal for IPv4.
-		proxyHdr := fmt.Sprintf("PROXY TCP4 %s %s %d %d\r\n",
-			id.RemoteAddress.String(), id.LocalAddress.String(),
-			id.RemotePort, id.LocalPort)
+		dstAddr := net.JoinHostPort(id.LocalAddress.String(),
+			fmt.Sprintf("%d", id.LocalPort))
 
 		var wq waiter.Queue
 		ep, err := req.CreateEndpoint(&wq)
@@ -626,14 +624,11 @@ func enableTsnetTCPForwarder(s *stack.Stack, ts *tsnet.Server, gwHost, gwPort st
 		go func() {
 			defer func() { _ = local.Close() }()
 			ctx := context.Background()
-			remote, err := ts.Dial(ctx, "tcp", gwAddr)
+			remote, err := ts.Dial(ctx, "tcp", dstAddr)
 			if err != nil {
 				return
 			}
 			defer func() { _ = remote.Close() }()
-			if _, err := io.WriteString(remote, proxyHdr); err != nil {
-				return
-			}
 			tsnetBiRelay(local, remote)
 		}()
 	})

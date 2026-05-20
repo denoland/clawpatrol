@@ -62,8 +62,9 @@ func gatewayTsnetDir(stateDir string) (string, error) {
 //
 // Tailscale control mode: always uses an embedded tsnet.Server.
 // Requires authkey in HCL or TS_AUTHKEY env (no system tailscaled
-// needed). Returns the *tsnet.Server so the caller can register a
-// fallback TCP handler for whole-machine exit-node traffic.
+// needed). Returns the *tsnet.Server. All MITM traffic from tsnet
+// clients is intercepted via RegisterFallbackTCPHandler (set up by
+// runGateway), so we don't open a tailnet :443 listener here.
 //
 // WireGuard mode: returns nil server and a loopback TCP listener.
 func openListener(cfg *config.Gateway, stateDir string) (*tsnet.Server, net.Listener, error) {
@@ -103,19 +104,19 @@ func openListener(cfg *config.Gateway, stateDir string) (*tsnet.Server, net.List
 		ControlURL: cfg.ControlURL,
 		Dir:        dir,
 	}
-	_, portStr, _ := net.SplitHostPort(cfg.Listen)
-	if portStr == "" {
-		portStr = "443"
-	}
-	ln, err := s.Listen("tcp", ":"+portStr)
+	// Bring tsnet up. We don't need a tailnet TCP listener — exit-node
+	// routing delivers client conns straight to RegisterFallbackTCPHandler.
+	// Listen on a throwaway port to drive s.Up() since tsnet has no other
+	// public bring-up API and never exposes this listener to callers.
+	bringUp, err := s.Listen("tcp", ":0")
 	if err != nil {
 		return nil, nil, err
 	}
-	// Advertise exit routes so whole-machine clients can use this node
-	// as a Tailscale exit node. s.Up() completed inside s.Listen(), so
-	// LocalClient is available. Async to avoid blocking runGateway.
+	_ = bringUp.Close()
+	// Advertise exit routes so whole-machine and per-process tsnet
+	// clients can use this node as a Tailscale exit node.
 	go advertiseExitRoutes(s)
-	return s, ln, nil
+	return s, nil, nil
 }
 
 // startFunnelListener opens a Tailscale Funnel listener on :443 (internet

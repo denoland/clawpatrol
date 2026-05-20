@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"tailscale.com/ipn"
 	"tailscale.com/tsnet"
 )
 
@@ -58,6 +59,28 @@ func tsnetHTTPClient(ts *tsnet.Server, caPath string) *http.Client {
 			TLSClientConfig: &tls.Config{RootCAs: roots},
 		},
 	}
+}
+
+// setGatewayExitNode points this tsnet node at the gateway as its exit
+// node. Once set, every outbound dial on s (tcp + udp) is routed via
+// the gateway, where it lands in the gateway's RegisterFallbackTCPHandler
+// / DNS UDP listener — same dispatch as whole-machine clients. The
+// gateway-side already auto-advertises 0.0.0.0/0 + ::/0 (see
+// advertiseExitRoutes), so this only needs the operator's tailnet
+// ACL to auto-approve exit-node usage for the client's tag.
+func setGatewayExitNode(s *tsnet.Server, gatewayIP netip.Addr) error {
+	if !gatewayIP.IsValid() {
+		return fmt.Errorf("setGatewayExitNode: invalid gateway IP")
+	}
+	lc, err := s.LocalClient()
+	if err != nil {
+		return err
+	}
+	_, err = lc.EditPrefs(context.Background(), &ipn.MaskedPrefs{
+		ExitNodeIPSet: true,
+		Prefs:         ipn.Prefs{ExitNodeIP: gatewayIP},
+	})
+	return err
 }
 
 // waitTsnetUp starts the tsnet.Server and blocks until the node is Running

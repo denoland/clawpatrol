@@ -24,7 +24,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -898,16 +897,6 @@ func (w *webMux) apiOnboardPoll(rw http.ResponseWriter, r *http.Request) {
 		resp["control_url"] = w.ts.ControlURL
 		if w.g != nil && w.g.tailscaleIP != "" {
 			resp["gateway_ip"] = w.g.tailscaleIP
-		}
-		// Tailscale Funnel owns :443 on the tsnet node, so cfg.Listen
-		// for the agent listener is usually :8443. Communicate it so
-		// `clawpatrol run` dials the right port.
-		if w.g != nil {
-			_, port, _ := net.SplitHostPort(w.g.cfg.Listen)
-			if port == "" {
-				port = "443"
-			}
-			resp["gateway_port"] = port
 		}
 		// CA cert delivered over the approved Funnel/onboard channel —
 		// the gateway's /ca.crt is intentionally not exposed publicly

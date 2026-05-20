@@ -55,7 +55,7 @@ class TransparentProxyProvider: NETransparentProxyProvider {
             guard let authKey = cfg["tsnet-auth-key"] as? String, !authKey.isEmpty,
                   let controlURL = cfg["tsnet-control-url"] as? String,
                   let gwHost = cfg["tsnet-gateway-host"] as? String, !gwHost.isEmpty,
-                  let gwPort = cfg["tsnet-gateway-port"] as? String, !gwPort.isEmpty else {
+                  let gwIP = cfg["tsnet-gateway-ip"] as? String, !gwIP.isEmpty else {
                 completionHandler(NSError(domain: "clawpatrol", code: 1,
                     userInfo: [NSLocalizedDescriptionKey: "missing tsnet config fields"]))
                 return
@@ -68,14 +68,14 @@ class TransparentProxyProvider: NETransparentProxyProvider {
                 let rc = authKey.withCString { akC in
                     controlURL.withCString { cuC in
                         gwHost.withCString { ghC in
-                            gwPort.withCString { gpC in
+                            gwIP.withCString { gipC in
                                 token.withCString { tkC in
                                     hostname.withCString { hnC in
                                         errBuf.withUnsafeMutableBufferPointer { ebuf in
                                             ts_netstack_init(UnsafeMutablePointer(mutating: akC),
                                                              UnsafeMutablePointer(mutating: cuC),
                                                              UnsafeMutablePointer(mutating: ghC),
-                                                             UnsafeMutablePointer(mutating: gpC),
+                                                             UnsafeMutablePointer(mutating: gipC),
                                                              UnsafeMutablePointer(mutating: tkC),
                                                              UnsafeMutablePointer(mutating: hnC),
                                                              ebuf.baseAddress, Int32(ebuf.count))

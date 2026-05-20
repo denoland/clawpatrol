@@ -7,14 +7,16 @@ package main
 // Uses the same NETransparentProxy system extension as WireGuard mode, but
 // with a tsnet.Server as the transport instead of WireGuard + gVisor.
 // The extension intercepts all TCP/UDP flows from the child process tree
-// via PPID-walk, and routes them through the gateway over the tailnet using
-// ts_netstack_tcp_connect (tsnet.Dial + HAProxy PROXY v1 header).
+// via PPID-walk, and routes them through the gateway over the tailnet by
+// setting the gateway as the tsnet exit node (ts_netstack_init configures
+// ExitNodeIP); ts_netstack_tcp_connect then dials the original dst, which
+// tsnet routes via the gateway, where it lands in RegisterFallbackTCPHandler.
 //
 // Flow:
 //  1. Mint ephemeral tsnet auth key from gateway.
 //  2. `Clawpatrol install` — ensure NE system extension is loaded.
-//  3. `Clawpatrol start-tsnet <authKey> <controlURL> <gwHost> <gwPort>`
-//     — NE calls ts_netstack_init: joins tailnet, blocks until Running.
+//  3. `Clawpatrol start-tsnet <authKey> <controlURL> <gwHost> <gwIP>`
+//     — NE calls ts_netstack_init: joins tailnet + sets ExitNodeIP=gwIP.
 //  4. Poll session socket for `gettsip` → receive 100.x.x.x of NE node.
 //  5. Register that IP with gateway (profile dispatch mapping).
 //  6. Register session PID via session IPC, then `Clawpatrol run -- <cmd>`.
@@ -43,6 +45,7 @@ func runRunTsnet(args []string) {
 
 	gwURL := strings.TrimSpace(readFileSilent(filepath.Join(dir, "gateway")))
 	gwHost := strings.TrimSpace(readFileSilent(filepath.Join(dir, "tailnet-gateway")))
+	gwIP := strings.TrimSpace(readFileSilent(filepath.Join(dir, "tailnet-gateway-ip")))
 	controlURL := strings.TrimSpace(readFileSilent(filepath.Join(dir, "control-url")))
 	token := strings.TrimSpace(readFileSilent(filepath.Join(dir, "api-token")))
 	// tsnet auth key is intentionally NOT read from disk. On macOS the
@@ -58,11 +61,8 @@ func runRunTsnet(args []string) {
 	if gwURL == "" || token == "" {
 		fail("tsnet run: missing gateway url or api-token in %s", dir)
 	}
-	// Gateway agent port persisted at join (Tailscale Funnel owns :443,
-	// so this is typically :8443).
-	gwPort := strings.TrimSpace(readFileSilent(filepath.Join(dir, "gateway-port")))
-	if gwPort == "" {
-		gwPort = "443"
+	if gwIP == "" {
+		fail("tsnet run: missing tailnet-gateway-ip in %s (re-run `clawpatrol join`)", dir)
 	}
 
 	// Ensure system extension is loaded.
@@ -82,7 +82,7 @@ func runRunTsnet(args []string) {
 	hn, _ := os.Hostname()
 	fmt.Fprintln(os.Stderr, "clawpatrol: joining tailnet via NE...")
 	{
-		c := exec.Command(macHelperPath, "start-tsnet", "", controlURL, gwHost, gwPort, token, hn)
+		c := exec.Command(macHelperPath, "start-tsnet", "", controlURL, gwHost, gwIP, token, hn)
 		c.Stdout, c.Stderr = os.Stdout, os.Stderr
 		if err := c.Run(); err != nil {
 			var ee *exec.ExitError

@@ -940,7 +940,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 
 	stopSpin := startSpinner("Waiting for approval")
 	authKey, loginServer, apiToken := "", "", ""
-	var tailnetGWHost, tailnetControlURL, gatewayIP, gatewayPort, caPEM string
+	var tailnetGWHost, tailnetControlURL, gatewayIP, caPEM string
 	for time.Now().Before(deadline) {
 		time.Sleep(interval)
 		pr, err := cli.Post(gateway+"/api/onboard/poll?device_code="+start.DeviceCode, "application/json", nil)
@@ -957,7 +957,6 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 			tailnetGWHost = pv["gateway_host"]
 			tailnetControlURL = pv["control_url"]
 			gatewayIP = pv["gateway_ip"]
-			gatewayPort = pv["gateway_port"]
 			caPEM = pv["ca_pem"]
 			break
 		}
@@ -1109,6 +1108,10 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		if gatewayIP != "" {
 			tailnetURL := fmt.Sprintf("http://%s:8080", gatewayIP)
 			_ = os.WriteFile(filepath.Join(clawDir, "tailnet-url"), []byte(tailnetURL+"\n"), 0o600)
+			// Used by `clawpatrol run` to set the gateway as its tsnet
+			// exit node so the gateway sees the original dst via
+			// RegisterFallbackTCPHandler (no PROXY-header smuggling).
+			_ = os.WriteFile(filepath.Join(clawDir, "tailnet-gateway-ip"), []byte(gatewayIP+"\n"), 0o600)
 		}
 		// tsnet auth-key persistence — platform split.
 		//
@@ -1128,16 +1131,13 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		// enforced by mount-ns isolation instead of NE storage.
 		if runtime.GOOS == "darwin" {
 			c := exec.Command(macHelperPath, "start-tsnet",
-				authKey, tailnetControlURL, tailnetGWHost, gatewayPort, apiToken, hn)
+				authKey, tailnetControlURL, tailnetGWHost, gatewayIP, apiToken, hn)
 			c.Stdout, c.Stderr = os.Stdout, os.Stderr
 			if err := c.Run(); err != nil {
 				return false, fmt.Errorf("macHelper start-tsnet: %w", err)
 			}
 		} else {
 			_ = os.WriteFile(filepath.Join(clawDir, "tsnet-auth-key"), []byte(authKey+"\n"), 0o600)
-		}
-		if gatewayPort != "" {
-			_ = os.WriteFile(filepath.Join(clawDir, "gateway-port"), []byte(gatewayPort+"\n"), 0o600)
 		}
 		items := []string{"Joined (tsnet mode — ephemeral node joins tailnet at run time)"}
 		items = append(items, setupSummaryItems(*setup)...)
@@ -1253,6 +1253,8 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 				// is the gateway's InfoListen (plain HTTP on the tailnet).
 				tailnetURL := fmt.Sprintf("http://%s:8080", peer.TailscaleIPs[0])
 				_ = os.WriteFile(filepath.Join(clawDir, "tailnet-url"), []byte(tailnetURL+"\n"), 0o600)
+				_ = os.WriteFile(filepath.Join(clawDir, "tailnet-gateway-ip"),
+					[]byte(peer.TailscaleIPs[0]+"\n"), 0o600)
 				if _, serr := os.Stat(setup.caPath); serr != nil {
 					if ferr := fetchCA(peer.TailscaleIPs[0], setup.caPath); ferr == nil {
 						if !skipTrust {
