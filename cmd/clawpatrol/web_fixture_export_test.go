@@ -85,7 +85,7 @@ func TestExporterHTTPSHappyPath(t *testing.T) {
 	if f.Action.HTTP.Path != "/user" {
 		t.Errorf("path=%q want /user", f.Action.HTTP.Path)
 	}
-	want := Match{Verdict: "allow", Rule: "github-reads", Endpoint: "github"}
+	want := Match{Verdict: "allow", Rule: "github-reads", Endpoint: "https.github"}
 	if f.Match != want {
 		t.Errorf("match=%+v want %+v", f.Match, want)
 	}
@@ -138,8 +138,8 @@ profile "default" { credentials = [bearer_token.a, bearer_token.b] }
 	if err := json.Unmarshal(rw.Body.Bytes(), &f); err != nil {
 		t.Fatal(err)
 	}
-	if f.Match.Endpoint != "beta" {
-		t.Errorf("expected match.endpoint=beta, got %q", f.Match.Endpoint)
+	if f.Match.Endpoint != "https.beta" {
+		t.Errorf("expected match.endpoint=https.beta, got %q", f.Match.Endpoint)
 	}
 }
 
@@ -428,7 +428,7 @@ profile "default" { credentials = [bearer_token.tok] }
 func TestRunnerRejectsPassthrough(t *testing.T) {
 	gw := gatewayWithPolicy(t, fixtureHCL)
 	body := `{"action":{"host":"api.github.com","http":{"method":"GET","path":"/x"}},` +
-		`"match":{"verdict":"passthrough","endpoint":"github"}}`
+		`"match":{"verdict":"passthrough","endpoint":"https.github"}}`
 	tmp := filepath.Join(t.TempDir(), "pt.json")
 	if err := os.WriteFile(tmp, []byte(body), 0o644); err != nil {
 		t.Fatal(err)

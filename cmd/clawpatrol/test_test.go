@@ -138,7 +138,7 @@ profile "default" { credentials = [bearer_token.a, bearer_token.b] }
 	})
 
 	t.Run("ambiguous host disambiguated by match.endpoint", func(t *testing.T) {
-		f := mk(t, `{"action":{"host":"api.example.com","http":{"path":"/x"}},"match":{"verdict":"allow","endpoint":"beta"}}`)
+		f := mk(t, `{"action":{"host":"api.example.com","http":{"path":"/x"}},"match":{"verdict":"allow","endpoint":"https.beta"}}`)
 		ep, err := f.ResolveEndpoint(policy)
 		if err != nil {
 			t.Fatal(err)
@@ -153,6 +153,22 @@ profile "default" { credentials = [bearer_token.a, bearer_token.b] }
 		_, err := f.ResolveEndpoint(policy)
 		if err == nil || !strings.Contains(err.Error(), "no endpoint claims") {
 			t.Fatalf("want unknown-host error, got %v", err)
+		}
+	})
+
+	t.Run("bare-name match.endpoint is rejected", func(t *testing.T) {
+		f := mk(t, `{"action":{"host":"solo.example.com","http":{"path":"/x"}},"match":{"verdict":"allow","endpoint":"beta"}}`)
+		_, err := f.ResolveEndpoint(policy)
+		if err == nil || !strings.Contains(err.Error(), "typed form") {
+			t.Fatalf("want typed-form error, got %v", err)
+		}
+	})
+
+	t.Run("wrong type prefix is rejected", func(t *testing.T) {
+		f := mk(t, `{"action":{"host":"solo.example.com","http":{"path":"/x"}},"match":{"verdict":"allow","endpoint":"postgres.beta"}}`)
+		_, err := f.ResolveEndpoint(policy)
+		if err == nil || !strings.Contains(err.Error(), "type") {
+			t.Fatalf("want type-mismatch error, got %v", err)
 		}
 	})
 }

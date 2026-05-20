@@ -1540,6 +1540,10 @@ func (w *webMux) writeActionFixture(rw http.ResponseWriter, ev *Event) {
 		http.Error(rw, fmt.Sprintf("event action %q is not exportable as a fixture", ev.Action), 400)
 		return
 	}
+	// Stamp the typed reference (endpoint-type.endpoint-name) so the
+	// runner can route the fixture without ambiguity. ev.Endpoint is
+	// the bare DB-recorded name; the policy supplies the type.
+	m.Endpoint = endpointRef(ep)
 
 	fx := &Fixture{Match: m, Action: Action{PeerIP: ev.AgentIP}}
 	switch ep.Family {

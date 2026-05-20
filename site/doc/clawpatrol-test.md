@@ -63,7 +63,7 @@ profile "default" { endpoints = [https.github] }
   "match": {
     "verdict":  "allow",
     "rule":     "github-reads",
-    "endpoint": "github"
+    "endpoint": "https.github"
   }
 }
 ```
@@ -82,8 +82,8 @@ from `"allow"` to `"deny"`. Re-run:
 ```
 $ clawpatrol test github.hcl fixtures/
 FAIL fixtures/get-user.json
-  want verdict="allow"      rule="github-reads"                 endpoint="github"
-  got  verdict="deny"       rule="github-reads"                 endpoint="github"
+  want verdict="allow"      rule="github-reads"                 endpoint="https.github"
+  got  verdict="deny"       rule="github-reads"                 endpoint="https.github"
 1 action(s) checked, 1 mismatch(es)
 $ echo $?
 1
@@ -176,7 +176,7 @@ facet’s vocabulary — the same fields your CEL rule conditions read.
   "match": {
     "verdict":  "deny",
     "rule":     "github-writes",
-    "endpoint": "github",
+    "endpoint": "https.github",
     "reason":   "writes go through PR review"
   }
 }
@@ -198,7 +198,7 @@ facet’s vocabulary — the same fields your CEL rule conditions read.
   "match": {
     "verdict":  "deny",
     "rule":     "no-secrets",
-    "endpoint": "k8s-dev"
+    "endpoint": "kubernetes.k8s-dev"
   }
 }
 ```
@@ -214,7 +214,7 @@ facet’s vocabulary — the same fields your CEL rule conditions read.
   "match": {
     "verdict":  "allow",
     "rule":     "pg-reads",
-    "endpoint": "pg-staging"
+    "endpoint": "postgres.pg-staging"
   }
 }
 ```
@@ -239,7 +239,7 @@ agent through different rule sets — set `match.endpoint` explicitly:
   "match": {
     "verdict":  "approve",
     "rule":     "anthropic-default",
-    "endpoint": "anthropic-agent-A"
+    "endpoint": "https.anthropic-agent-A"
   }
 }
 ```
@@ -262,8 +262,12 @@ by multiple endpoints [anthropic-agent-A anthropic-agent-B]; set
   it; pin to a terminal verdict or drop the fixture.
 - `rule` — name of the rule that fired. Empty when no rule matched
   and the endpoint default was used.
-- `endpoint` — optional. When set, pins dispatch and asserts the
-  matched endpoint on replay (see "Shared hosts" above).
+- `endpoint` — optional. Typed reference of the form
+  `endpoint-type.endpoint-name` (e.g. `https.github`,
+  `postgres.pg-staging`) — the same addressing model HCL rules use.
+  When set, pins dispatch and asserts the matched endpoint on replay
+  (see "Shared hosts" above). Bare names are rejected because they
+  collide across endpoint types.
 - `reason` — informational only; the runner doesn’t compare it.
 
 `approve` is terminal: a rule routing to an approver chain records
