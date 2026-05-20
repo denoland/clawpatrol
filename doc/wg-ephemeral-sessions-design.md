@@ -115,8 +115,7 @@ and enriches with onboard metadata. Rendered by
 
 ### unclaw — reference implementation
 
-unclaw (`/home/gastown/gt/unclaw/refinery/rig/`) already does ephemeral
-per-session keypairs. End-to-end trail:
+unclaw already does ephemeral per-session keypairs. End-to-end trail:
 
 - **CLI entry:** `runWrap()` at
   `src/cli.ts:453`. Session name defaults to the command basename
