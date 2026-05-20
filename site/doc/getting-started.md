@@ -47,12 +47,12 @@ Open `http://127.0.0.1:8080` and set the root password — that's
 the operator login. The CA is lazy-minted into sqlite under
 `state_dir` on first boot; there's nothing else to pre-create.
 
-That's the gateway side. Paste your real API keys into the
-dashboard's credential entries (the example wires up Anthropic,
-GitHub, Slack, and the rest with empty slots) and you're ready
-to enroll a device.
+That's the gateway side. Open the dashboard's settings page (the
+gear icon) and paste your real API keys into the credential
+entries the example config wires up — Anthropic, OpenAI, GitHub,
+Slack, Notion, and Grafana. Then you're ready to enroll a device.
 
-## Wire a device into the gateway
+## Join a device to the gateway
 
 On any machine where you want to run an agent — your laptop, a
 CI runner, an EC2 instance, anywhere you'd otherwise run the
@@ -79,8 +79,7 @@ Network Extension in **System Settings → Privacy & Security**.
 > **Don't run `clawpatrol join --whole-machine` on the gateway
 > host itself** — the gateway shouldn't route its own traffic
 > through itself; the loop breaks DNS and the dashboard's own
-> reachability. For every *other* machine, pointing at the
-> gateway is exactly what you want.
+> reachability.
 
 ## Run an agent
 
@@ -92,7 +91,7 @@ clawpatrol run -- gh pr create
 clawpatrol run -- psql 'host=db user=agent'
 ```
 
-The gateway intercepts the wrapped process's HTTPS traffic,
+The gateway intercepts the wrapped process's network traffic,
 matches each request against the rules in `gateway.hcl`, injects
 the configured credential, and forwards the request upstream.
 The agent never sees the real key.
