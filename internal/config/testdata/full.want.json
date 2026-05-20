@@ -131,6 +131,11 @@
       }
     },
     "credentials": {
+      "alice": {
+        "body": {},
+        "endpoint": "slack",
+        "type": "slack_tokens"
+      },
       "amem-alice": {
         "body": {
           "IdempotencyKey": false
@@ -143,10 +148,10 @@
         "endpoint": "anthropic-ops",
         "type": "anthropic_oauth_subscription"
       },
-      "anthropic-ops-key": {
+      "carol": {
         "body": {},
-        "endpoint": "anthropic-ops",
-        "type": "anthropic_manual_key"
+        "endpoint": "telegram",
+        "type": "telegram_bot_token"
       },
       "ch-o11y": {
         "body": {
@@ -165,6 +170,21 @@
         },
         "endpoint": "checkly",
         "type": "bearer_token"
+      },
+      "codex-bob": {
+        "body": {},
+        "endpoint": "openai-codex",
+        "type": "openai_codex_oauth"
+      },
+      "codex-carol": {
+        "body": {},
+        "endpoint": "openai-codex",
+        "type": "openai_codex_oauth"
+      },
+      "corp": {
+        "body": {},
+        "endpoint": "notion",
+        "type": "notion_oauth"
       },
       "gemini-bob": {
         "body": {},
@@ -229,20 +249,10 @@
         "endpoint": "k8s-eks-corp-prod",
         "type": "aws_credential"
       },
-      "notion-corp": {
+      "ops-key": {
         "body": {},
-        "endpoint": "notion",
-        "type": "notion_oauth"
-      },
-      "openai-codex-bob": {
-        "body": {},
-        "endpoint": "openai-codex",
-        "type": "openai_codex_oauth"
-      },
-      "openai-codex-carol": {
-        "body": {},
-        "endpoint": "openai-codex",
-        "type": "openai_codex_oauth"
+        "endpoint": "anthropic-ops",
+        "type": "anthropic_manual_key"
       },
       "orb-prod": {
         "body": {
@@ -297,11 +307,6 @@
         "endpoint": "posthog",
         "type": "bearer_token"
       },
-      "slack-alice": {
-        "body": {},
-        "endpoint": "slack",
-        "type": "slack_tokens"
-      },
       "slack-bob": {
         "body": {},
         "endpoint": "slack",
@@ -334,11 +339,6 @@
         "type": "cookie_token"
       },
       "telegram-bob": {
-        "body": {},
-        "endpoint": "telegram",
-        "type": "telegram_bot_token"
-      },
-      "telegram-carol": {
         "body": {},
         "endpoint": "telegram",
         "type": "telegram_bot_token"
@@ -611,10 +611,10 @@
       "alice": {
         "credentials": [
           "github-alice",
-          "slack-alice",
-          "telegram-carol",
-          "openai-codex-carol",
-          "notion-corp",
+          "alice",
+          "carol",
+          "codex-carol",
+          "corp",
           "grafana",
           "ch-o11y",
           "k8s-dev-iad",
@@ -634,21 +634,21 @@
           "slack-bob",
           "telegram-bob",
           "gemini-bob",
-          "openai-codex-bob",
-          "openai-codex-carol"
+          "codex-bob",
+          "codex-carol"
         ],
         "disambiguators": {
-          "openai-codex-bob": {
+          "codex-bob": {
             "placeholder": "PH_openai_codex_bob"
           },
-          "openai-codex-carol": {
+          "codex-carol": {
             "placeholder": "PH_openai_codex_carol"
           }
         }
       },
       "ops": {
         "credentials": [
-          "anthropic-ops-key",
+          "ops-key",
           "anthropic-ops",
           "github-ops",
           "slack-ops",
@@ -656,7 +656,7 @@
           "stripe-live",
           "orb-test",
           "orb-prod",
-          "notion-corp",
+          "corp",
           "grafana",
           "pg-corp-ro",
           "pg-corp-rw",
@@ -670,7 +670,7 @@
           "anthropic-ops": {
             "placeholder": "PH_anthropic_ops_subscription"
           },
-          "anthropic-ops-key": {
+          "ops-key": {
             "placeholder": "PH_anthropic_ops_apikey"
           },
           "orb-prod": {

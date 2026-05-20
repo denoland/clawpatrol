@@ -569,7 +569,7 @@ Approvers run in order, all must allow. The first approver is cheap
 ```hcl
 approver "llm_approver" "pg-secret-columns-judge" {
   model      = "claude-haiku-4-5-20251001"
-  credential = anthropic-key
+  credential = anthropic_manual_key.key
   policy     = pg-secret-columns
 }
 approver "human_approver" "console-dba" {

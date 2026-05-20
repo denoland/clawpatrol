@@ -29,11 +29,11 @@ credential "postgres_credential" "pg" {
   user     = "agent"
 }
 credential "bearer_token" "github-pat" { endpoint = https.github-api }
-credential "slack_tokens" "slack-bot" {}
+credential "slack_tokens" "bot" {}
 
 approver "human_approver" "ops" {
   channel    = "#agent-ops"
-  credential = slack_tokens.slack-bot
+  credential = slack_tokens.bot
 }
 
 profile "default" { credentials = [postgres_credential.pg, bearer_token.github-pat] }

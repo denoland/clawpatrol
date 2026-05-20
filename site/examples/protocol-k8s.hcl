@@ -32,11 +32,11 @@ endpoint "kubernetes" "k8s-prod" {
 credential "mtls_credential" "k8s" {
   endpoints = [kubernetes.k8s-dev, kubernetes.k8s-prod]
 }
-credential "anthropic_manual_key" "anthropic-key" {}
+credential "anthropic_manual_key" "key" {}
 
 approver "llm_approver" "k8s-exec-content-judge" {
   model      = "claude-haiku-4-5-20251001"
-  credential = anthropic_manual_key.anthropic-key
+  credential = anthropic_manual_key.key
   policy     = policy.k8s-exec-content
 }
 

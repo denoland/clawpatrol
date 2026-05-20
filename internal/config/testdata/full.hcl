@@ -304,7 +304,7 @@
 #
 # A profile is a credential membership list:
 #
-#     profile "alice" { credentials = [bearer_token.github-alice, slack_tokens.slack-alice, ...] }
+#     profile "alice" { credentials = [bearer_token.github-alice, slack_tokens.alice, ...] }
 #
 # Three observations:
 #
@@ -314,7 +314,7 @@
 #     profile transitively includes every endpoint that credential
 #     binds and every rule attached to it.
 #
-#   - Sharing is by reference. notion-corp / grafana / ch-o11y /
+#   - Sharing is by reference. notion_oauth.corp / grafana / ch-o11y /
 #     k8s-dev-{iad,sfo}-mtls all appear in multiple profiles; they map
 #     to one credential row each, with M:N joins to the listed profiles.
 #
@@ -589,7 +589,7 @@ endpoint "https" "helpdesk"  { hosts = ["helpdesk.example.com"] }
 # dispatch placeholder lives on the profile (inline `{ placeholder =
 # ..., credential = ... }` entries in profile "ops"), because only
 # profiles that wield BOTH credentials need to disambiguate.
-credential "anthropic_manual_key"         "anthropic-ops-key" { endpoint = https.anthropic-ops }
+credential "anthropic_manual_key"         "ops-key"       { endpoint = https.anthropic-ops }
 credential "anthropic_oauth_subscription" "anthropic-ops" { endpoint = https.anthropic-ops }
 
 # Per-user GitHub PATs. The github endpoint is a bare network target
@@ -602,18 +602,18 @@ credential "bearer_token" "github-bob"   { endpoint = https.github }
 # Per-user Slack workspaces — shared slack endpoint, each user's
 # profile uses one workspace credential.
 credential "slack_tokens" "slack-ops"   { endpoint = https.slack }
-credential "slack_tokens" "slack-alice" { endpoint = https.slack }
+credential "slack_tokens" "alice"       { endpoint = https.slack }
 credential "slack_tokens" "slack-bob"   { endpoint = https.slack }
 
 # Per-user Telegram / Codex / Gemini. The openai-codex endpoint is
 # the only one any profile binds with more than one credential
 # (profile "bob" uses both his and carol's codex), so the
 # disambiguation placeholders live in that profile.
-credential "telegram_bot_token"  "telegram-carol"     { endpoint = https.telegram }
+credential "telegram_bot_token"  "carol"              { endpoint = https.telegram }
 credential "telegram_bot_token"  "telegram-bob"       { endpoint = https.telegram }
 credential "gemini_api_key"      "gemini-bob"         { endpoint = https.gemini }
-credential "openai_codex_oauth"  "openai-codex-carol" { endpoint = https.openai-codex }
-credential "openai_codex_oauth"  "openai-codex-bob"   { endpoint = https.openai-codex }
+credential "openai_codex_oauth"  "codex-carol"        { endpoint = https.openai-codex }
+credential "openai_codex_oauth"  "codex-bob"          { endpoint = https.openai-codex }
 
 # ops-only.
 # `idempotency_key = true` tells the bearer_token plugin to also stamp
@@ -649,7 +649,7 @@ credential "postgres_credential" "pg-scheduler" {
   user     = "scheduler"
 }
 
-credential "notion_oauth" "notion-corp"   { endpoint = https.notion }
+credential "notion_oauth" "corp"          { endpoint = https.notion }
 credential "bearer_token" "grafana" { endpoint = https.grafana }
 
 # ch-o11y: ONE credential, TWO endpoints. The singleton-or-list
@@ -1071,7 +1071,7 @@ profile "ops" {
   credentials = [
     # anthropic-ops: BOTH credentials at one endpoint → disambiguated
     # via inline placeholders.
-    { placeholder = "PH_anthropic_ops_apikey", credential = anthropic_manual_key.anthropic-ops-key },
+    { placeholder = "PH_anthropic_ops_apikey", credential = anthropic_manual_key.ops-key },
     { placeholder = "PH_anthropic_ops_subscription", credential = anthropic_oauth_subscription.anthropic-ops },
 
     bearer_token.github-ops,
@@ -1083,7 +1083,7 @@ profile "ops" {
     { placeholder = "PH_orb_test", credential = bearer_token.orb-test },
     { placeholder = "PH_orb_prod", credential = bearer_token.orb-prod },
 
-    notion_oauth.notion-corp,
+    notion_oauth.corp,
     bearer_token.grafana,
 
     # pg-corp: ro + rw at one endpoint. Disambiguation lives on each
@@ -1106,12 +1106,12 @@ profile "ops" {
 profile "alice" {
   credentials = [
     bearer_token.github-alice,
-    slack_tokens.slack-alice,
-    telegram_bot_token.telegram-carol,
-    openai_codex_oauth.openai-codex-carol,
+    slack_tokens.alice,
+    telegram_bot_token.carol,
+    openai_codex_oauth.codex-carol,
 
     # shared with profile.ops:
-    notion_oauth.notion-corp,
+    notion_oauth.corp,
     bearer_token.grafana,
     clickhouse_credential.ch-o11y,
     mtls_credential.k8s-dev-iad,
@@ -1138,9 +1138,9 @@ profile "bob" {
     gemini_api_key.gemini-bob,
 
     # bob wields two openai-codex credentials → placeholder dispatch.
-    { placeholder = "PH_openai_codex_bob", credential = openai_codex_oauth.openai-codex-bob },
+    { placeholder = "PH_openai_codex_bob", credential = openai_codex_oauth.codex-bob },
 
     # shared with alice:
-    { placeholder = "PH_openai_codex_carol", credential = openai_codex_oauth.openai-codex-carol },
+    { placeholder = "PH_openai_codex_carol", credential = openai_codex_oauth.codex-carol },
   ]
 }

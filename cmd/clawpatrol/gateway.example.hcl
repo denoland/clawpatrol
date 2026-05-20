@@ -85,7 +85,7 @@ human_on_timeout = "deny"
 # HTTPS — AI providers.
 endpoint "https" "anthropic"  { hosts = ["api.anthropic.com"] }
 endpoint "https" "openai-api" { hosts = ["api.openai.com"] }
-endpoint "openai_codex_https" "openai-chatgpt" {
+endpoint "openai_codex_https" "chatgpt" {
   hosts = ["chatgpt.com"]
 }
 
@@ -175,17 +175,17 @@ credential "anthropic_oauth_subscription" "claude" {
   endpoint = https.anthropic
 }
 # Same `anthropic` endpoint, different credential type. Both bind to
-# the one network target; `anthropic-key` is wielded only by the
-# llm_approver below (the gateway's outbound), `claude` rides on user
+# the one network target; `anthropic_manual_key.key` is wielded only
+# by the llm_approver below (the gateway's outbound), `claude` rides on user
 # profiles — they're never wielded in the same profile, so no
 # dispatch placeholder is needed.
-credential "anthropic_manual_key" "anthropic-key" {
+credential "anthropic_manual_key" "key" {
   endpoint = https.anthropic
 }
 # codex auths against both the OpenAI API endpoint and the
 # chatgpt.com surface — list-form `endpoints` covers both.
 credential "openai_codex_oauth" "codex" {
-  endpoints = [https.openai-api, openai_codex_https.openai-chatgpt]
+  endpoints = [https.openai-api, openai_codex_https.chatgpt]
 }
 credential "github_oauth" "github" {
   endpoint = https.github-api
@@ -260,8 +260,8 @@ approver "human_approver" "support-ops" {
 }
 
 # LLM judges — a single-purpose proctor prompt wrapped as an
-# approver. The model is invoked through `anthropic-key` (the
-# manual key credential above).
+# approver. The model is invoked through `anthropic_manual_key.key`
+# (the manual key credential above).
 policy "no-pii-columns" {
   text = <<-EOT
     Deny if the SELECT projects (directly, via *, via aggregates,
@@ -279,7 +279,7 @@ policy "no-pii-columns" {
 
 approver "llm_approver" "no-pii-judge" {
   model      = "claude-haiku-4-5-20251001"
-  credential = anthropic_manual_key.anthropic-key
+  credential = anthropic_manual_key.key
   policy     = policy.no-pii-columns
 }
 
