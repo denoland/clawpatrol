@@ -16,9 +16,9 @@ import (
 )
 
 // Kind names a class of policy block. The plugin-dispatched two-label
-// kinds — KindEndpoint, KindCredential, KindApprover, KindTunnel —
-// read their type from the block's first label (e.g. `endpoint "https"
-// "github-dev"` → Type="https").
+// kinds — KindEndpoint, KindCredential, KindApprover, KindTunnel,
+// KindEnvironment — read their type from the block's first label
+// (e.g. `endpoint "https" "github-dev"` → Type="https").
 //
 // KindRule, KindPolicy and KindProfile are one-label blocks. KindRule
 // has a single registered plugin (Type="") and infers its protocol
@@ -28,20 +28,21 @@ type Kind string
 
 // Plugin kind constants enumerate supported config block kinds.
 const (
-	KindEndpoint   Kind = "endpoint"
-	KindCredential Kind = "credential"
-	KindRule       Kind = "rule"
-	KindApprover   Kind = "approver"
-	KindPolicy     Kind = "policy"
-	KindProfile    Kind = "profile"
-	KindTunnel     Kind = "tunnel"
+	KindEndpoint    Kind = "endpoint"
+	KindCredential  Kind = "credential"
+	KindRule        Kind = "rule"
+	KindApprover    Kind = "approver"
+	KindPolicy      Kind = "policy"
+	KindProfile     Kind = "profile"
+	KindTunnel      Kind = "tunnel"
+	KindEnvironment Kind = "environment"
 )
 
 // LabelCount returns how many labels a block of this kind carries
 // (excluding the kind keyword itself).
 func (k Kind) LabelCount() int {
 	switch k {
-	case KindEndpoint, KindCredential, KindApprover, KindTunnel:
+	case KindEndpoint, KindCredential, KindApprover, KindTunnel, KindEnvironment:
 		return 2 // first = type, second = name
 	case KindRule, KindPolicy, KindProfile:
 		return 1 // name
@@ -200,6 +201,19 @@ var frameworkAttrsByKind = map[Kind][]FrameworkAttrSpec{
 		{Name: "endpoint", Kind: KindEndpoint, Optional: true},
 		{Name: "endpoints", Kind: KindEndpoint, Optional: true, List: true},
 		{Name: "placeholder", Optional: true},
+	},
+	// Environment plugins describe one named env-pushdown
+	// contribution: a fresh-each-boot value, a credential-derived
+	// secret, or a coordinated (endpoint, credential) bundle (the
+	// codex case). Operators attach them to a profile via
+	// `environments = [...]`. The framework owns the `endpoint` /
+	// `credential` framework attrs so plugins can declare which
+	// shape they accept without re-implementing decode boilerplate;
+	// validation that a plugin actually needs/uses a given ref
+	// happens in the plugin's Validate hook.
+	KindEnvironment: {
+		{Name: "endpoint", Kind: KindEndpoint, Optional: true},
+		{Name: "credential", Kind: KindCredential, Optional: true},
 	},
 }
 

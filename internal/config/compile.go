@@ -40,12 +40,14 @@ type CompiledPolicy struct {
 	// in their Tunnel field — same instance as the entry here.
 	Tunnels map[string]*CompiledTunnel
 
-	// Approvers / Policies / Credentials surface the same entities
-	// from the Policy struct under a runtime-friendly typed alias —
-	// they're pointers into the same Entity records, no copies.
-	Approvers   map[string]*Entity
-	Credentials map[string]*Entity
-	Policies    map[string]*PolicyText
+	// Approvers / Policies / Credentials / Environments surface the
+	// same entities from the Policy struct under a runtime-friendly
+	// typed alias — they're pointers into the same Entity records,
+	// no copies.
+	Approvers    map[string]*Entity
+	Credentials  map[string]*Entity
+	Environments map[string]*Entity
+	Policies     map[string]*PolicyText
 }
 
 // CompiledProfile binds an identity to the endpoint set its requests
@@ -74,6 +76,7 @@ type CompiledPolicy struct {
 type CompiledProfile struct {
 	Name                string
 	Credentials         []*Entity
+	Environments        []*Entity
 	Endpoints           map[string]*CompiledEndpoint
 	HostIndex           map[string]*CompiledEndpoint
 	HostPatterns        []HostPattern
@@ -262,6 +265,7 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 		Tunnels:        map[string]*CompiledTunnel{},
 		Approvers:      p.Approvers,
 		Credentials:    p.Credentials,
+		Environments:   p.Environments,
 		Policies:       p.Policies,
 	}
 
@@ -405,6 +409,15 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 		// alphabetically for determinism.
 		dedupePatterns(&profile.HostPatterns)
 		sortHostPatterns(profile.HostPatterns)
+		// Resolve profile.Environments → Entity pointers. Unknown names
+		// were caught at decode time (decodePolicyBlocks cross-checks).
+		// We preserve declaration order so `clawpatrol env` output
+		// follows the order the operator typed.
+		for _, envName := range pr.Environments {
+			if envEnt, ok := p.Environments[envName]; ok {
+				profile.Environments = append(profile.Environments, envEnt)
+			}
+		}
 		cp.Profiles[name] = profile
 	}
 

@@ -20,6 +20,7 @@ type RefIndex struct {
 	approverTyp map[string]string
 	tunnelType  map[string]string
 	endpointTyp map[string]string
+	envType     map[string]string
 }
 
 func newRefIndex(p *Policy) *RefIndex {
@@ -28,6 +29,7 @@ func newRefIndex(p *Policy) *RefIndex {
 		approverTyp: map[string]string{},
 		tunnelType:  map[string]string{},
 		endpointTyp: map[string]string{},
+		envType:     map[string]string{},
 	}
 	if p == nil {
 		return r
@@ -50,6 +52,11 @@ func newRefIndex(p *Policy) *RefIndex {
 	for n, e := range p.Endpoints {
 		if e != nil && e.Plugin != nil {
 			r.endpointTyp[n] = e.Plugin.Type
+		}
+	}
+	for n, e := range p.Environments {
+		if e != nil && e.Plugin != nil {
+			r.envType[n] = e.Plugin.Type
 		}
 	}
 	// Built-in approvers (e.g. dashboard) carry the synthetic "builtin"
@@ -83,6 +90,10 @@ func (r *RefIndex) Ref(kind Kind, name string) string {
 		}
 	case KindEndpoint:
 		if t := r.endpointTyp[name]; t != "" {
+			return t + "." + name
+		}
+	case KindEnvironment:
+		if t := r.envType[name]; t != "" {
 			return t + "." + name
 		}
 	case KindRule, KindPolicy, KindProfile:
@@ -168,6 +179,7 @@ func Emit(gw *Gateway) ([]byte, error) {
 	emitGroup(body, p, KindCredential)
 	emitGroup(body, p, KindTunnel)
 	emitGroup(body, p, KindEndpoint)
+	emitGroup(body, p, KindEnvironment)
 	emitGroup(body, p, KindRule)
 	emitGroup(body, p, KindProfile)
 
@@ -272,6 +284,12 @@ func leftoverNames(p *Policy, kind Kind, emitted map[string]bool) []string {
 				out = append(out, n)
 			}
 		}
+	case KindEnvironment:
+		for n := range p.Environments {
+			if !emitted[n] {
+				out = append(out, n)
+			}
+		}
 	case KindRule:
 		for n := range p.Rules {
 			if !emitted[n] {
@@ -328,6 +346,12 @@ func emitOne(body *hclwrite.Body, p *Policy, kind Kind, name string) bool {
 			return false
 		}
 		emitEntityBlock(body, "endpoint", ent, name)
+	case KindEnvironment:
+		ent, ok := p.Environments[name]
+		if !ok {
+			return false
+		}
+		emitEntityBlock(body, "environment", ent, name)
 	case KindRule:
 		ent, ok := p.Rules[name]
 		if !ok {
@@ -349,6 +373,9 @@ func emitOne(body *hclwrite.Body, p *Policy, kind Kind, name string) bool {
 		b := body.AppendNewBlock("profile", []string{name}).Body()
 		if len(pr.Credentials) > 0 {
 			setProfileCredentials(b, pr.Credentials, pr.Disambiguators)
+		}
+		if len(pr.Environments) > 0 {
+			setProfileEnvironments(b, pr.Environments)
 		}
 		if pr.HITLAsyncGrants {
 			b.SetAttributeValue("hitl_async_grants", cty.True)
@@ -435,6 +462,15 @@ func SetIdentList(b *hclwrite.Body, name string, idents []string) {
 	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")})
 	b.SetAttributeRaw(name, tokens)
 }
+
+// setProfileEnvironments emits the `environments = [a, b, c]` list on
+// a profile block. Names are bare-name idents; the package-level
+// emitRI rewrites them to typed traversals at serialize time.
+func setProfileEnvironments(b *hclwrite.Body, envs []string) {
+	ri := EmitRefIndex()
+	SetIdentList(b, "environments", ri.Refs(KindEnvironment, envs))
+}
+
 
 // traversalTokens splits a dotted string into HCL ident / dot tokens.
 // "type.name" → [Ident("type"), Dot, Ident("name")]; a bare "name"

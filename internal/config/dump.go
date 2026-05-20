@@ -110,6 +110,9 @@ func dumpPolicy(p *Policy) map[string]any {
 	if v := dumpEntityMap(p.Endpoints); v != nil {
 		out["endpoints"] = v
 	}
+	if v := dumpEntityMap(p.Environments); v != nil {
+		out["environments"] = v
+	}
 	if v := dumpEntityMap(p.Rules); v != nil {
 		out["rules"] = v
 	}
@@ -183,6 +186,9 @@ func dumpProfiles(m map[string]*Profile) map[string]any {
 	out := map[string]any{}
 	for name, p := range m {
 		row := map[string]any{"credentials": p.Credentials}
+		if len(p.Environments) > 0 {
+			row["environments"] = p.Environments
+		}
 		if len(p.Disambiguators) > 0 {
 			row["disambiguators"] = p.Disambiguators
 		}
