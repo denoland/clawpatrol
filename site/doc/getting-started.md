@@ -96,6 +96,7 @@ Wrap any command with `clawpatrol run`:
 
 ```bash
 clawpatrol run -- claude
+clawpatrol run -- openclaw gateway
 clawpatrol run -- gh pr create
 clawpatrol run -- psql 'host=db user=agent'
 ```
