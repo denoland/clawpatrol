@@ -47,10 +47,18 @@ Open `http://127.0.0.1:8080` and set the root password — that's
 the operator login. The CA is lazy-minted into sqlite under
 `state_dir` on first boot; there's nothing else to pre-create.
 
-That's the gateway side. Open the dashboard's settings page (the
-gear icon) and paste your real API keys into the credential
-entries the example config wires up — Anthropic, OpenAI, GitHub,
-Slack, Notion, and Grafana. Then you're ready to enroll a device.
+That's the gateway side, but the credentials in the example
+config are only *declared* — they're empty handles until you
+connect each one. Open the dashboard's settings page (the gear
+icon); you'll see a card for every credential the HCL wires up
+(Anthropic, OpenAI, GitHub, Slack, Notion, Grafana, …). Click
+each card to connect it. The OAuth-backed credentials (Anthropic
+subscription, OpenAI Codex, GitHub, Notion) bounce you through
+the provider's OAuth flow. The rest (the manual Anthropic key,
+the Grafana bearer token, the Slack tokens) open a modal where
+you paste the secret. A card stays marked "Not connected" until
+you finish that step. Once every credential you actually plan to
+use is connected, you're ready to enroll a device.
 
 ## Join a device to the gateway
 
