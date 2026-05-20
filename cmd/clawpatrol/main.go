@@ -2577,6 +2577,10 @@ func main() {
 		runJoin(os.Args[2:])
 	case "run":
 		runRun(os.Args[2:])
+	case "daemon":
+		// internal: re-exec'd by `clawpatrol run` (Linux only) to host
+		// the per-user tsnet daemon. Hidden from usage().
+		runDaemon(os.Args[2:])
 	case "relay-supervisor":
 		// internal: re-exec'd by `clawpatrol run` to host the auto-expose
 		// supervisor in the host netns. Hidden from usage.
