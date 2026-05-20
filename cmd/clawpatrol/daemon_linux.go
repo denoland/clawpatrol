@@ -232,6 +232,13 @@ type daemon struct {
 	tsIP     netip.Addr
 	envVars  []byte // pre-serialized JSON for the FETCH path in handle()
 
+	// bootWarning is a one-line message that the smoke-probe at startup
+	// generates when exit-node routing looks broken. Empty means clean
+	// boot. Sent on every session START so `clawpatrol run` can repeat
+	// it on stderr — operators shouldn't have to tail daemon.log to
+	// discover ACL misconfiguration.
+	bootWarning string
+
 	activeConns atomic.Int32
 
 	mu        sync.Mutex
@@ -263,7 +270,7 @@ func runDaemon(_ []string) {
 	// Boot tsnet first. We don't bind the control socket until the
 	// daemon is fully usable — that way a parent reading "ready\n" can
 	// proceed straight to a session START without retries.
-	tsServer, tsIP, err := daemonStartTsnet()
+	tsServer, tsIP, bootWarning, err := daemonStartTsnet()
 	if err != nil {
 		log.Fatalf("daemon: tsnet: %v", err)
 	}
@@ -296,13 +303,14 @@ func runDaemon(_ []string) {
 	}
 
 	d := &daemon{
-		sockPath: sockPath,
-		listener: ln,
-		lockFile: lf,
-		tsServer: tsServer,
-		tsIP:     tsIP,
-		envVars:  envJSON,
-		rebindCh: make(chan struct{}),
+		sockPath:    sockPath,
+		listener:    ln,
+		lockFile:    lf,
+		tsServer:    tsServer,
+		tsIP:        tsIP,
+		envVars:     envJSON,
+		bootWarning: bootWarning,
+		rebindCh:    make(chan struct{}),
 	}
 
 	// Signal ready on the inherited pipe (fd 3). Once this lands, the
@@ -402,12 +410,24 @@ func (d *daemon) handle(c net.Conn) {
 	}
 	_ = c.SetReadDeadline(time.Time{})
 
-	// 1. Tell the client our tsnet IP and ship the env-pushdown JSON.
+	// 1. Tell the client our tsnet IP, ship the env-pushdown JSON, and
+	// pass along any one-line warning the smoke-probe generated at
+	// daemon boot. The WARN frame is always emitted (n=0 when clean)
+	// so the protocol stays unambiguous — no peek-ahead on the client
+	// side.
 	if _, err := fmt.Fprintf(c, "TSIP %s\nENV %d\n", d.tsIP, len(d.envVars)); err != nil {
 		return
 	}
 	if _, err := c.Write(d.envVars); err != nil {
 		return
+	}
+	if _, err := fmt.Fprintf(c, "WARN %d\n", len(d.bootWarning)); err != nil {
+		return
+	}
+	if len(d.bootWarning) > 0 {
+		if _, err := io.WriteString(c, d.bootWarning); err != nil {
+			return
+		}
 	}
 
 	// 2. Receive the TUN fd via SCM_RIGHTS. *net.UnixConn → *os.File
@@ -466,21 +486,25 @@ func (d *daemon) handle(c net.Conn) {
 // gateway-ip), starts a tsnet.Server, waits for it to come up, and
 // points its outbound dials at the gateway as an exit node. Returns
 // the started server and our assigned 100.x address.
-func daemonStartTsnet() (*tsnet.Server, netip.Addr, error) {
+// Returns the started server, its tailnet IP, and a non-empty warning
+// string when exit-node routing looks broken (so each `clawpatrol run`
+// can repeat it on stderr instead of leaving the operator to discover
+// it in daemon.log).
+func daemonStartTsnet() (*tsnet.Server, netip.Addr, string, error) {
 	caDir := defaultClawpatrolDir()
 	stateDir := daemonStateDir()
 	authKey := strings.TrimSpace(readFileSilent(filepath.Join(stateDir, "auth-key")))
 	controlURL := strings.TrimSpace(readFileSilent(filepath.Join(caDir, "control-url")))
 	gwIPStr := strings.TrimSpace(readFileSilent(filepath.Join(caDir, "tailnet-gateway-ip")))
 	if authKey == "" {
-		return nil, netip.Addr{}, fmt.Errorf("missing auth-key in %s (re-run `clawpatrol join`)", stateDir)
+		return nil, netip.Addr{}, "", fmt.Errorf("missing auth-key in %s (re-run `clawpatrol join`)", stateDir)
 	}
 	if gwIPStr == "" {
-		return nil, netip.Addr{}, fmt.Errorf("missing tailnet-gateway-ip in %s (re-run `clawpatrol join`)", caDir)
+		return nil, netip.Addr{}, "", fmt.Errorf("missing tailnet-gateway-ip in %s (re-run `clawpatrol join`)", caDir)
 	}
 	gwIP, err := netip.ParseAddr(gwIPStr)
 	if err != nil {
-		return nil, netip.Addr{}, fmt.Errorf("parse tailnet-gateway-ip %q: %w", gwIPStr, err)
+		return nil, netip.Addr{}, "", fmt.Errorf("parse tailnet-gateway-ip %q: %w", gwIPStr, err)
 	}
 
 	// Persistent state dir so the tsnet node keeps the same identity
@@ -490,7 +514,7 @@ func daemonStartTsnet() (*tsnet.Server, netip.Addr, error) {
 	// instead of churning one per daemon lifetime.
 	tsnetDir := filepath.Join(stateDir, "tsnet")
 	if err := os.MkdirAll(tsnetDir, 0o700); err != nil {
-		return nil, netip.Addr{}, fmt.Errorf("tsnet state dir: %w", err)
+		return nil, netip.Addr{}, "", fmt.Errorf("tsnet state dir: %w", err)
 	}
 
 	hn := strings.TrimSpace(readFileSilent(filepath.Join(caDir, "hostname")))
@@ -511,13 +535,13 @@ func daemonStartTsnet() (*tsnet.Server, netip.Addr, error) {
 	tsIP, err := waitTsnetUp(s)
 	if err != nil {
 		_ = s.Close()
-		return nil, netip.Addr{}, fmt.Errorf("waitTsnetUp: %w", err)
+		return nil, netip.Addr{}, "", fmt.Errorf("waitTsnetUp: %w", err)
 	}
 	log.Printf("daemon: tailnet IP %s", tsIP)
 
 	if err := setGatewayExitNode(s, gwIP); err != nil {
 		_ = s.Close()
-		return nil, netip.Addr{}, fmt.Errorf("set exit-node %s: %w", gwIP, err)
+		return nil, netip.Addr{}, "", fmt.Errorf("set exit-node %s: %w", gwIP, err)
 	}
 
 	// Smoke-test exit-node routing. EditPrefs accepts ExitNodeIP
@@ -528,13 +552,15 @@ func daemonStartTsnet() (*tsnet.Server, netip.Addr, error) {
 	// Probe by dialing the gateway's tailnet IP on port 53 — that
 	// port is bound by the gateway's tsnet DNS listener so a working
 	// path returns "connection established" within hundreds of ms.
+	var bootWarning string
 	probeCtx, probeCancel := context.WithTimeout(context.Background(), 8*time.Second)
 	if c, derr := s.Dial(probeCtx, "tcp", net.JoinHostPort(gwIP.String(), "53")); derr == nil {
 		_ = c.Close()
 	} else {
-		log.Printf("tsnet probe: gateway unreachable via exit-node routing — %v. "+
-			"Check autoApprovers.exitNode in your tailnet ACL (see doc/tailscale.md). "+
-			"Continuing; outbound traffic from clawpatrol run will fail until the ACL is fixed.", derr)
+		bootWarning = fmt.Sprintf("tsnet probe: gateway unreachable via exit-node routing (%v). "+
+			"Check autoApprovers.exitNode in your tailnet ACL — see doc/tailscale.md. "+
+			"Outbound traffic from `clawpatrol run` will fail until the ACL is fixed.", derr)
+		log.Printf("%s", bootWarning)
 	}
 	probeCancel()
 
@@ -542,7 +568,7 @@ func daemonStartTsnet() (*tsnet.Server, netip.Addr, error) {
 	// gatewayClient → /api/env-pushdown) reach 100.x via tsnet.
 	gatewayDialOverride = s.Dial
 
-	return s, tsIP, nil
+	return s, tsIP, bootWarning, nil
 }
 
 // daemonFetchEnvPushdown asks the gateway for the env-pushdown vars

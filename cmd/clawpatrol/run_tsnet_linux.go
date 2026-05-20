@@ -87,11 +87,17 @@ func runRunTsnet(args []string) {
 	}
 	defer func() { _ = ctrl.Close() }()
 
-	// 2. Ask for a session. Daemon replies with its tsnet IP plus the
-	// cached env-pushdown JSON. Apply both locally before forking.
-	tsIP, envVars, err := daemonClientStartSession(ctrl)
+	// 2. Ask for a session. Daemon replies with its tsnet IP, the
+	// cached env-pushdown JSON, and (when applicable) a one-line
+	// boot warning the smoke-probe generated — surface that on
+	// stderr so operators see the message without tailing the
+	// daemon log.
+	br, tsIP, envVars, daemonWarn, err := daemonClientStartSession(ctrl)
 	if err != nil {
 		fail("daemon START: %v", err)
+	}
+	if daemonWarn != "" {
+		fmt.Fprintf(os.Stderr, "clawpatrol: daemon: %s\n", daemonWarn)
 	}
 	_ = os.Setenv("CLAWPATROL_TS_ADDR", tsIP.String())
 	applyEnvPushdownVars(envVars)
@@ -180,7 +186,7 @@ func runRunTsnet(args []string) {
 	_ = unix.Close(tunFd)
 
 	// 7. Wait for ATTACHED.
-	if err := daemonClientWaitAttached(ctrl); err != nil {
+	if err := daemonClientWaitAttached(ctrl, br); err != nil {
 		_ = child.Process.Kill()
 		fail("daemon ATTACHED: %v", err)
 	}
@@ -235,56 +241,82 @@ func runRunTsnet(args []string) {
 }
 
 // daemonClientStartSession sends "START\n" on ctrl and parses the
-// daemon's reply (tsnet IP + env-pushdown JSON length + JSON body).
-func daemonClientStartSession(ctrl net.Conn) (netip.Addr, []pushdownEnvVar, error) {
+// daemon's reply: TSIP line, ENV length + JSON body, WARN length +
+// optional text. The single bufio.Reader is returned to the caller
+// so subsequent reads (e.g. ATTACHED) share the same buffer — using
+// a fresh bufio.Reader for later reads would lose any bytes that
+// got pulled into this one's buffer during the WARN read.
+func daemonClientStartSession(ctrl net.Conn) (*bufio.Reader, netip.Addr, []pushdownEnvVar, string, error) {
 	if _, err := io.WriteString(ctrl, "START\n"); err != nil {
-		return netip.Addr{}, nil, err
+		return nil, netip.Addr{}, nil, "", err
 	}
 	br := bufio.NewReader(ctrl)
 	tsipLine, err := br.ReadString('\n')
 	if err != nil {
-		return netip.Addr{}, nil, fmt.Errorf("read TSIP: %w", err)
+		return nil, netip.Addr{}, nil, "", fmt.Errorf("read TSIP: %w", err)
 	}
 	tsipLine = strings.TrimRight(tsipLine, "\r\n")
 	if !strings.HasPrefix(tsipLine, "TSIP ") {
-		return netip.Addr{}, nil, fmt.Errorf("expected TSIP, got %q", tsipLine)
+		return nil, netip.Addr{}, nil, "", fmt.Errorf("expected TSIP, got %q", tsipLine)
 	}
 	tsIP, err := netip.ParseAddr(strings.TrimSpace(tsipLine[len("TSIP "):]))
 	if err != nil {
-		return netip.Addr{}, nil, fmt.Errorf("parse TSIP: %w", err)
+		return nil, netip.Addr{}, nil, "", fmt.Errorf("parse TSIP: %w", err)
 	}
-	envLine, err := br.ReadString('\n')
+	envLen, err := readLenPrefixed(br, "ENV", 1<<20)
 	if err != nil {
-		return netip.Addr{}, nil, fmt.Errorf("read ENV: %w", err)
+		return nil, netip.Addr{}, nil, "", err
 	}
-	envLine = strings.TrimRight(envLine, "\r\n")
-	if !strings.HasPrefix(envLine, "ENV ") {
-		return netip.Addr{}, nil, fmt.Errorf("expected ENV, got %q", envLine)
-	}
-	var n int
-	if _, err := fmt.Sscanf(envLine[len("ENV "):], "%d", &n); err != nil {
-		return netip.Addr{}, nil, fmt.Errorf("parse ENV length: %w", err)
-	}
-	if n < 0 || n > 1<<20 {
-		return netip.Addr{}, nil, fmt.Errorf("ENV length %d out of range", n)
-	}
-	body := make([]byte, n)
-	if _, err := io.ReadFull(br, body); err != nil {
-		return netip.Addr{}, nil, fmt.Errorf("read ENV body: %w", err)
+	envBody := make([]byte, envLen)
+	if _, err := io.ReadFull(br, envBody); err != nil {
+		return nil, netip.Addr{}, nil, "", fmt.Errorf("read ENV body: %w", err)
 	}
 	var vars []pushdownEnvVar
-	if n > 0 {
-		if err := json.Unmarshal(body, &vars); err != nil {
-			return netip.Addr{}, nil, fmt.Errorf("decode ENV body: %w", err)
+	if envLen > 0 {
+		if err := json.Unmarshal(envBody, &vars); err != nil {
+			return nil, netip.Addr{}, nil, "", fmt.Errorf("decode ENV body: %w", err)
 		}
 	}
-	return tsIP, vars, nil
+	warnLen, err := readLenPrefixed(br, "WARN", 4096)
+	if err != nil {
+		return nil, netip.Addr{}, nil, "", err
+	}
+	var warning string
+	if warnLen > 0 {
+		buf := make([]byte, warnLen)
+		if _, err := io.ReadFull(br, buf); err != nil {
+			return nil, netip.Addr{}, nil, "", fmt.Errorf("read WARN body: %w", err)
+		}
+		warning = string(buf)
+	}
+	return br, tsIP, vars, warning, nil
 }
 
-func daemonClientWaitAttached(ctrl net.Conn) error {
+// readLenPrefixed reads a "<tag> <n>\n" line and returns n. Errors
+// when the tag doesn't match or n is outside [0, maxLen].
+func readLenPrefixed(br *bufio.Reader, tag string, maxLen int) (int, error) {
+	line, err := br.ReadString('\n')
+	if err != nil {
+		return 0, fmt.Errorf("read %s: %w", tag, err)
+	}
+	line = strings.TrimRight(line, "\r\n")
+	prefix := tag + " "
+	if !strings.HasPrefix(line, prefix) {
+		return 0, fmt.Errorf("expected %s, got %q", tag, line)
+	}
+	var n int
+	if _, err := fmt.Sscanf(line[len(prefix):], "%d", &n); err != nil {
+		return 0, fmt.Errorf("parse %s length: %w", tag, err)
+	}
+	if n < 0 || n > maxLen {
+		return 0, fmt.Errorf("%s length %d out of range", tag, n)
+	}
+	return n, nil
+}
+
+func daemonClientWaitAttached(ctrl net.Conn, br *bufio.Reader) error {
 	_ = ctrl.SetReadDeadline(time.Now().Add(5 * time.Second))
 	defer func() { _ = ctrl.SetReadDeadline(time.Time{}) }()
-	br := bufio.NewReader(ctrl)
 	line, err := br.ReadString('\n')
 	if err != nil {
 		return err
