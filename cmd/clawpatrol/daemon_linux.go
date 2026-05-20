@@ -66,7 +66,6 @@ func daemonControlSockPath() string { return filepath.Join(daemonRuntimeDir(), "
 func daemonSpawnLockPath() string   { return filepath.Join(daemonRuntimeDir(), "spawn.lock") }
 func daemonLogPath() string         { return filepath.Join(daemonRuntimeDir(), "daemon.log") }
 
-
 // daemonConnect returns a control connection to the per-host daemon,
 // spawning one if none is running. Safe to call from concurrent
 // `clawpatrol run` invocations.
