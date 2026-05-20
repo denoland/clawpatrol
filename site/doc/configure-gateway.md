@@ -94,7 +94,7 @@ password. Pick the shape that matches your access model:
 
 For anything beyond a quick test, run the gateway as a dedicated
 service user so its state directory (CA private key, OAuth tokens,
-audit log) isn't readable by any human or agent on the box:
+audit log) isn't readable by any non-root user on the box:
 
 ```bash
 useradd --system --home /opt/clawpatrol --shell /usr/sbin/nologin clawpatrol
