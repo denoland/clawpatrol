@@ -221,18 +221,18 @@ public_url = "https://gateway.example.test"
 credential "bearer_token" "pat" {}
 endpoint "https" "api" {
   hosts      = ["api.example.test"]
-  credential = pat
+  credential = bearer_token.pat
 }
 approver "human_approver" "ops" {
   channel = "#ops"
 }
 rule "approved-post" {
-  endpoint  = api
+  endpoint  = https.api
   condition = "(http.method == 'POST' || http.method == 'DELETE') && http.path == '/v1/resources/update'"
-  approve   = [ops]
+  approve   = [human_approver.ops]
 }
 profile "default" {
-  endpoints = [api]
+  endpoints = [https.api]
   hitl_async_grants = true
 }
 `), "hitl-retry-relay-test.hcl")
@@ -363,16 +363,6 @@ func (h *hitlRetryRelayHarness) createApprovedRetryOperationForMethodAndPrincipa
 		t.Fatalf("Create retry operation: %v", err)
 	}
 	return op
-}
-
-func (h *hitlRetryRelayHarness) fingerprintForBody(t *testing.T, requestBody string) HITLRequestFingerprintResult {
-	t.Helper()
-	return h.fingerprintForMethodAndBody(t, http.MethodPost, requestBody)
-}
-
-func (h *hitlRetryRelayHarness) fingerprintForMethodAndBody(t *testing.T, method, requestBody string) HITLRequestFingerprintResult {
-	t.Helper()
-	return h.fingerprintForMethodBodyAndPrincipal(t, method, requestBody, hitlPeerPrincipalID(hitlRetryRelayTestPeerIP))
 }
 
 func (h *hitlRetryRelayHarness) fingerprintForMethodBodyAndPrincipal(t *testing.T, method, requestBody, principalID string) HITLRequestFingerprintResult {

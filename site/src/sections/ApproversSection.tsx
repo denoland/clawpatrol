@@ -105,7 +105,7 @@ function HumanDiagram() {
           JC
         </div>
         <div class="bg-rust-100 border border-rust-200  px-3 py-2 text-[12px]  text-text">
-          ✓ approve — that's fine
+          ✓ approve — that’s fine
         </div>
       </div>
 
@@ -132,7 +132,7 @@ function ApproverCard({
   return (
     <article class="isolate min-w-0 bg-transparent relative lg:p-8 xl:p-12">
       <div className="hidden w-full h-full border lg:block border-navy  z-10 absolute inset-0"></div>
-      <div className="hidden lg:block absolute w-full h-full top-1 left-1 bg-navy-100  z-0" />
+      <div className="hidden lg:block absolute w-full h-full top-1 left-1 bg-horizontal-stripes  z-0" />
       <div className="relative z-10 flex flex-col gap-4">
         <header class="flex items-baseline justify-between">
           <h4 class="text-3xl font-display text-text">{title}</h4>
@@ -183,7 +183,7 @@ export function ApproversSection() {
           <ApproverCard
             title="LLM judge"
             verdict="require_llm"
-            pitch="A model with a custom prompt votes on each request. Verdicts are cached so it doesn't re-bill."
+            pitch="A model with a custom prompt votes on each request. Verdicts are cached so it doesn’t re-bill."
             config={LLM_CONFIG}
             diagram={<LlmDiagram />}
           />
@@ -191,7 +191,7 @@ export function ApproversSection() {
           <ApproverCard
             title="Human In The Loop"
             verdict="require_human"
-            pitch="A person votes in Slack, the dashboard, or your own webhook. Times out closed if no one's home."
+            pitch="A person votes in Slack, the dashboard, or your own webhook. Times out closed if no one’s home."
             config={HUMAN_CONFIG}
             diagram={<HumanDiagram />}
           />

@@ -2,21 +2,21 @@ import { SectionLabel } from "../components/SectionLabel";
 
 const PROBLEMS = [
   {
-    title: "Granting access doesn't gate actions",
+    title: "Granting access doesn’t gate actions",
     body:
       "OAuth scopes, API keys, IAM roles, k8s RBAC: every " +
       "service has its own access model, and configuring each " +
       "correctly is its own project.",
   },
   {
-    title: "Your agent shouldn't see secrets",
+    title: "Your agent shouldn’t see secrets",
     body:
       "If the agent is compromised by prompt injection, the credentials " +
       "it holds leak with it. Keys should live somewhere the agent can " +
       "never see.",
   },
   {
-    title: "Logs don't capture the action",
+    title: "Logs don’t capture the action",
     body:
       "Reconstructing what an agent did means stitching together " +
       "per-service logs. When you have a fleet of agents this becomes " +

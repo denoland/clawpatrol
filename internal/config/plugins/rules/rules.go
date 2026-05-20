@@ -14,6 +14,7 @@ package rules
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
@@ -299,14 +300,6 @@ func requireKind(ctx *config.BuildCtx, name string, kind config.Kind, ruleName, 
 	if ctx.Symbols.Get(kind, name) != nil {
 		return nil
 	}
-	if alt := ctx.Symbols.GetAny(name); alt != nil {
-		return &hcl.Diagnostic{
-			Severity: hcl.DiagError,
-			Summary:  fmt.Sprintf("Wrong reference kind for %q", name),
-			Detail:   fmt.Sprintf("Rule %q %s expects a %s but %q is a %s.", ruleName, what, kind, name, alt.Kind),
-			Subject:  &ctx.Block.DefRange,
-		}
-	}
 	return &hcl.Diagnostic{
 		Severity: hcl.DiagError,
 		Summary:  fmt.Sprintf("Unknown %s %q", kind, name),
@@ -315,17 +308,14 @@ func requireKind(ctx *config.BuildCtx, name string, kind config.Kind, ruleName, 
 	}
 }
 
-// emitRule serializes a built *Rule back to HCL block body. Endpoints
-// are emitted as bare-name idents (singular vs list forms preserved
-// to round-trip the operator's choice). Condition emits as a quoted
-// string; credential as a bare-name ident; approve mixes bare-name
-// idents.
-func emitRule(body any, _ string, b *hclwrite.Body) {
+// emitRule serializes a built *Rule back to HCL. Refs are formatted
+// as typed traversals via the RefIndex.
+func emitRule(body any, _ string, b *hclwrite.Body, ri *config.RefIndex) {
 	r := body.(*Rule)
 	if len(r.Endpoints) == 1 {
-		config.SetIdent(b, "endpoint", r.Endpoints[0])
+		config.SetIdent(b, "endpoint", ri.Ref(config.KindEndpoint, r.Endpoints[0]))
 	} else if len(r.Endpoints) > 1 {
-		config.SetIdentList(b, "endpoints", r.Endpoints)
+		config.SetIdentList(b, "endpoints", ri.Refs(config.KindEndpoint, r.Endpoints))
 	}
 	if r.Priority != 0 {
 		b.SetAttributeValue("priority", cty.NumberIntVal(int64(r.Priority)))
@@ -334,7 +324,7 @@ func emitRule(body any, _ string, b *hclwrite.Body) {
 		b.SetAttributeValue("disabled", cty.True)
 	}
 	if r.Credential != "" {
-		config.SetIdent(b, "credential", r.Credential)
+		config.SetIdent(b, "credential", ri.Ref(config.KindCredential, r.Credential))
 	}
 	if r.Condition != "" {
 		b.SetAttributeValue("condition", cty.StringVal(r.Condition))
@@ -346,12 +336,12 @@ func emitRule(body any, _ string, b *hclwrite.Body) {
 		b.SetAttributeValue("reason", cty.StringVal(r.Reason))
 	}
 	if len(r.Approve) > 0 {
-		b.SetAttributeRaw("approve", approveToTokens(r.Approve))
+		b.SetAttributeRaw("approve", approveToTokens(r.Approve, ri))
 	}
 }
 
-// approveToTokens emits the approve list as bare-name idents.
-func approveToTokens(stages []config.ApproveStage) hclwrite.Tokens {
+// approveToTokens emits the approve list as typed-traversal idents.
+func approveToTokens(stages []config.ApproveStage, ri *config.RefIndex) hclwrite.Tokens {
 	tokens := hclwrite.Tokens{
 		{Type: hclsyntax.TokenOBrack, Bytes: []byte("[")},
 	}
@@ -359,10 +349,24 @@ func approveToTokens(stages []config.ApproveStage) hclwrite.Tokens {
 		if i > 0 {
 			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(", ")})
 		}
-		tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(s.Name)})
+		tokens = append(tokens, traversalTokens(ri.Ref(config.KindApprover, s.Name))...)
 	}
 	tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenCBrack, Bytes: []byte("]")})
 	return tokens
+}
+
+// traversalTokens mirrors config.SetIdent's internal split — bare or
+// dotted string → ident / dot / ident token sequence.
+func traversalTokens(s string) hclwrite.Tokens {
+	parts := strings.Split(s, ".")
+	out := make(hclwrite.Tokens, 0, len(parts)*2-1)
+	for i, p := range parts {
+		if i > 0 {
+			out = append(out, &hclwrite.Token{Type: hclsyntax.TokenDot, Bytes: []byte(".")})
+		}
+		out = append(out, &hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(p)})
+	}
+	return out
 }
 
 // Plugin returns the single config.Plugin that registers `rule` as

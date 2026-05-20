@@ -22,6 +22,7 @@ func TestHITLOperationAcceptedResponseIncludesPollingEnvelope(t *testing.T) {
 	op := HITLOperation{
 		ID:                "hitl_op_202",
 		State:             HITLOperationStatePendingApproval,
+		StatusToken:       "status-token-202",
 		ApprovalExpiresAt: now.Add(15 * time.Minute),
 	}
 
@@ -36,20 +37,16 @@ func TestHITLOperationAcceptedRawConnResponseHasDelimitedJSONBody(t *testing.T) 
 	op := HITLOperation{
 		ID:                "hitl_op_202",
 		State:             HITLOperationStatePendingApproval,
+		StatusToken:       "status-token-202",
 		ApprovalExpiresAt: now.Add(15 * time.Minute),
 	}
 
 	var raw bytes.Buffer
-	writeHITLOperationAcceptedToConn(&raw, op, "https://gateway.example.test/")
-	resp, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(raw.Bytes())), nil)
-	if err != nil {
-		t.Fatalf("read raw response: %v\nraw response:\n%s", err, raw.String())
+	if err := writeHITLOperationAcceptedToConn(&raw, op, "https://gateway.example.test/"); err != nil {
+		t.Fatalf("write raw response: %v", err)
 	}
+	resp, body := parseRawHITLOperationAcceptedResponse(t, raw.Bytes())
 	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read raw response body: %v", err)
-	}
 
 	if resp.ContentLength <= 0 {
 		t.Fatalf("ContentLength = %d, want explicit positive Content-Length; raw response:\n%s", resp.ContentLength, raw.String())
@@ -60,12 +57,57 @@ func TestHITLOperationAcceptedRawConnResponseHasDelimitedJSONBody(t *testing.T) 
 	assertHITLOperationAcceptedResponse(t, resp.StatusCode, resp.Header, body, op)
 }
 
+func TestHITLOperationAcceptedRawConnResponseWritesCompleteEnvelopeInOnePayload(t *testing.T) {
+	now := time.Now().UTC()
+	op := HITLOperation{
+		ID:                "hitl_op_202",
+		State:             HITLOperationStatePendingApproval,
+		StatusToken:       "status-token-202",
+		ApprovalExpiresAt: now.Add(15 * time.Minute),
+	}
+	w := &singleWriteRecorder{}
+
+	if err := writeHITLOperationAcceptedToConn(w, op, "https://gateway.example.test/"); err != nil {
+		t.Fatalf("write raw response: %v", err)
+	}
+	if w.writes != 1 {
+		t.Fatalf("writes = %d, want a single complete response write; raw response:\n%s", w.writes, w.buf.String())
+	}
+	resp, body := parseRawHITLOperationAcceptedResponse(t, w.buf.Bytes())
+	defer func() { _ = resp.Body.Close() }()
+	assertHITLOperationAcceptedResponse(t, resp.StatusCode, resp.Header, body, op)
+}
+
+func parseRawHITLOperationAcceptedResponse(t *testing.T, raw []byte) (*http.Response, []byte) {
+	t.Helper()
+	resp, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(raw)), nil)
+	if err != nil {
+		t.Fatalf("read raw response: %v\nraw response:\n%s", err, string(raw))
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		_ = resp.Body.Close()
+		t.Fatalf("read raw response body: %v", err)
+	}
+	return resp, body
+}
+
+type singleWriteRecorder struct {
+	buf    bytes.Buffer
+	writes int
+}
+
+func (w *singleWriteRecorder) Write(p []byte) (int, error) {
+	w.writes++
+	return w.buf.Write(p)
+}
+
 func assertHITLOperationAcceptedResponse(t *testing.T, status int, header http.Header, bodyBytes []byte, op HITLOperation) {
 	t.Helper()
 	if status != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202; body = %s", status, string(bodyBytes))
 	}
-	wantURL := "https://gateway.example.test/api/hitl/operations/hitl_op_202/status"
+	wantURL := "https://gateway.example.test/api/hitl/operations/hitl_op_202/status?token=status-token-202"
 	if got := header.Get("Location"); got != wantURL {
 		t.Fatalf("Location = %q, want %q", got, wantURL)
 	}
@@ -100,6 +142,110 @@ func assertHITLOperationAcceptedResponse(t *testing.T, status int, header http.H
 	}
 	if msg, _ := body["message"].(string); !strings.Contains(msg, "upstream service") || !strings.Contains(msg, "status_url") {
 		t.Fatalf("message is not useful agent guidance: %q", msg)
+	}
+}
+
+func TestHITLOperationStatusEndpointAcceptsOperationScopedCapabilityToken(t *testing.T) {
+	h := newHITLOperationAPITestHarness(t)
+	op := h.createOperation(t, HITLOperationCreate{ID: "hitl_op_capability", State: HITLOperationStatePendingApproval})
+	if op.StatusToken == "" {
+		t.Fatalf("created operation did not expose a status token for the initial 202 response")
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/hitl/operations/"+op.ID+"/status?token="+op.StatusToken, nil)
+	h.handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	if got := rr.Header().Get("Referrer-Policy"); got != "no-referrer" {
+		t.Fatalf("Referrer-Policy = %q, want no-referrer", got)
+	}
+	body := decodeJSONBody(t, rr)
+	if body["operation_id"] != op.ID {
+		t.Fatalf("operation_id = %v, want %q", body["operation_id"], op.ID)
+	}
+	wantStatusURL := "https://gateway.example.test/api/hitl/operations/" + op.ID + "/status?token=" + op.StatusToken
+	if body["status_url"] != wantStatusURL {
+		t.Fatalf("status_url = %v, want %q", body["status_url"], wantStatusURL)
+	}
+}
+
+func TestHITLOperationStatusEndpointRejectsWrongCapabilityToken(t *testing.T) {
+	h := newHITLOperationAPITestHarness(t)
+	op := h.createOperation(t, HITLOperationCreate{ID: "hitl_op_wrong_capability", State: HITLOperationStatePendingApproval})
+
+	for _, path := range []string{
+		"/api/hitl/operations/" + op.ID + "/status?token=wrong-token",
+		"/api/hitl/operations/hitl_op_missing/status?token=" + op.StatusToken,
+	} {
+		t.Run(path, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			h.handler.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404; body = %s", rr.Code, rr.Body.String())
+			}
+			body := decodeJSONBody(t, rr)
+			if body["error"] != "hitl_operation_not_found" {
+				t.Fatalf("error = %v, want hitl_operation_not_found; body = %#v", body["error"], body)
+			}
+		})
+	}
+}
+
+func TestHITLOperationStatusEndpointFallsBackToBearerWhenCapabilityTokenIsWrong(t *testing.T) {
+	h := newHITLOperationAPITestHarness(t)
+	op := h.createOperation(t, HITLOperationCreate{ID: "hitl_op_bearer_fallback", State: HITLOperationStatePendingApproval})
+
+	rr := h.pollPath(t, "/api/hitl/operations/"+op.ID+"/status?token=wrong-token", h.ownerToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 via bearer fallback; body = %s", rr.Code, rr.Body.String())
+	}
+	body := decodeJSONBody(t, rr)
+	if body["operation_id"] != op.ID {
+		t.Fatalf("operation_id = %v, want %q", body["operation_id"], op.ID)
+	}
+}
+
+func TestHITLOperationStatusFunnelRejectsPeerAPIBearerFallback(t *testing.T) {
+	h := newHITLOperationAPITestHarness(t)
+	op := h.createOperation(t, HITLOperationCreate{ID: "hitl_op_funnel_bearer_rejected", State: HITLOperationStatePendingApproval})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/hitl/operations/"+op.ID+"/status?token=wrong-token", nil)
+	req.Header.Set("Authorization", "Bearer "+h.ownerToken)
+	h.funnelHandler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body = %s", rr.Code, rr.Body.String())
+	}
+	body := decodeJSONBody(t, rr)
+	if body["error"] != "hitl_operation_not_found" {
+		t.Fatalf("error = %v, want hitl_operation_not_found; body = %#v", body["error"], body)
+	}
+}
+
+func TestHITLOperationStatusFunnelAcceptsCapabilityTokenEvenWithBearer(t *testing.T) {
+	h := newHITLOperationAPITestHarness(t)
+	op := h.createOperation(t, HITLOperationCreate{ID: "hitl_op_funnel_capability", State: HITLOperationStatePendingApproval})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/hitl/operations/"+op.ID+"/status?token="+op.StatusToken, nil)
+	req.Header.Set("Authorization", "Bearer "+h.ownerToken)
+	h.funnelHandler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+	body := decodeJSONBody(t, rr)
+	if body["operation_id"] != op.ID {
+		t.Fatalf("operation_id = %v, want %q", body["operation_id"], op.ID)
 	}
 }
 
@@ -369,10 +515,11 @@ func TestHITLOperationStatusEndpointDoesNotExposeReplayableMaterial(t *testing.T
 }
 
 type hitlOperationAPITestHarness struct {
-	handler    http.Handler
-	store      *HITLOperationStore
-	ownerToken string
-	otherToken string
+	handler       http.Handler
+	funnelHandler http.Handler
+	store         *HITLOperationStore
+	ownerToken    string
+	otherToken    string
 }
 
 func newHITLOperationAPITestHarness(t *testing.T) hitlOperationAPITestHarness {
@@ -396,10 +543,11 @@ func newHITLOperationAPITestHarness(t *testing.T) hitlOperationAPITestHarness {
 	g := &Gateway{cfg: gwCfg, db: db, onboard: newOnboardRegistry()}
 	w := newWebMux(g, gwCfg.Join(), gwCfg.PublicURL)
 	return hitlOperationAPITestHarness{
-		handler:    w,
-		store:      NewHITLOperationStore(db),
-		ownerToken: ownerToken,
-		otherToken: otherToken,
+		handler:       w,
+		funnelHandler: funnelPublicHandler(w),
+		store:         NewHITLOperationStore(db),
+		ownerToken:    ownerToken,
+		otherToken:    otherToken,
 	}
 }
 
@@ -414,10 +562,10 @@ wg_subnet_cidr = "10.55.0.0/24"
 credential "bearer_token" "tok" {}
 endpoint "https" "api" {
   hosts      = ["api.example.test"]
-  credential = tok
+  credential = bearer_token.tok
 }
 profile "agent" {
-  endpoints = [api]
+  endpoints = [https.api]
   hitl_async_grants = true
 }
 `), "hitl-api-test.hcl")
@@ -520,8 +668,13 @@ func applyHITLOperationCreateOverrides(base *HITLOperationCreate, overrides HITL
 
 func (h hitlOperationAPITestHarness) poll(t *testing.T, operationID, token string) *httptest.ResponseRecorder {
 	t.Helper()
+	return h.pollPath(t, "/api/hitl/operations/"+operationID+"/status", token)
+}
+
+func (h hitlOperationAPITestHarness) pollPath(t *testing.T, path, token string) *httptest.ResponseRecorder {
+	t.Helper()
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/hitl/operations/"+operationID+"/status", nil)
+	req := httptest.NewRequest(http.MethodGet, path, nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	h.handler.ServeHTTP(rr, req)
 	return rr

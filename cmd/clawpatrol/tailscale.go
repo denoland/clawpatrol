@@ -131,6 +131,9 @@ func openListener(cfg *config.Gateway, stateDir string) (*tsnet.Server, net.List
 //     identity at that point).
 //   - /api/cred/*: signed/HMAC'd credential webhooks (OAuth callbacks
 //     from Notion/GitHub/etc.) which arrive from external providers.
+//   - /api/hitl/operations/*/status: operation-scoped capability URLs
+//     returned in async HITL 202 responses so off-tailnet agents can poll
+//     without exposing their peer API bearer token.
 //
 // Everything else (dashboard, /api/onboard/approve, lookup, peer APIs,
 // env-pushdown, /ca.crt) is reachable only over the tailnet.
@@ -140,21 +143,38 @@ func startFunnelListener(s *tsnet.Server, mux http.Handler) {
 		log.Printf("tsnet: funnel :443: %v (join/webhook endpoints not internet-reachable; enable Funnel for this node in the Tailscale admin console)", err)
 		return
 	}
-	allowed := map[string]bool{
-		"/api/onboard/start": true,
-		"/api/onboard/poll":  true,
-		"/api/onboard/claim": true,
-	}
-	log.Printf("tsnet: Funnel listening on :443 — allowlist: /api/onboard/{start,poll,claim}, /api/cred/*")
-	filtered := http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		p := r.URL.Path
-		if allowed[p] || strings.HasPrefix(p, "/api/cred/") {
-			mux.ServeHTTP(rw, r)
+	log.Printf("tsnet: Funnel listening on :443 — allowlist: /api/onboard/{start,poll,claim}, /api/cred/*, /api/hitl/operations/*/status")
+	go func() { _ = http.Serve(ln, funnelPublicHandler(mux)) }()
+}
+
+type funnelPublicRequestContextKey struct{}
+
+func funnelPublicHandler(mux http.Handler) http.Handler {
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if funnelAllowsPublicPath(r.URL.Path) {
+			ctx := context.WithValue(r.Context(), funnelPublicRequestContextKey{}, true)
+			mux.ServeHTTP(rw, r.WithContext(ctx))
 			return
 		}
 		http.NotFound(rw, r)
 	})
-	go func() { _ = http.Serve(ln, filtered) }()
+}
+
+func isFunnelPublicRequest(ctx context.Context) bool {
+	fromFunnel, _ := ctx.Value(funnelPublicRequestContextKey{}).(bool)
+	return fromFunnel
+}
+
+func funnelAllowsPublicPath(path string) bool {
+	switch path {
+	case "/api/onboard/start", "/api/onboard/poll", "/api/onboard/claim":
+		return true
+	}
+	if strings.HasPrefix(path, "/api/cred/") {
+		return true
+	}
+	_, ok := hitlOperationIDFromStatusPath(path)
+	return ok
 }
 
 // tsnetCertDomain returns the first HTTPS cert domain for the embedded

@@ -120,7 +120,7 @@ func init() {
 		Validate: multiCredValidate,
 		Runtime:  rt,
 		Build:    passthroughBuild,
-		Emit: func(body any, _ string, b *hclwrite.Body) {
+		Emit: func(body any, _ string, b *hclwrite.Body, refs *config.RefIndex) {
 			e := body.(*SSHEndpoint)
 			if len(e.Hosts) > 0 {
 				vals := make([]cty.Value, len(e.Hosts))
@@ -129,7 +129,7 @@ func init() {
 				}
 				b.SetAttributeValue("hosts", cty.ListVal(vals))
 			}
-			emitCredentialBinding(b, e.Credential, e.Credentials, "user")
+			emitCredentialBinding(b, e.Credential, e.Credentials, "user", refs)
 		},
 	})
 }

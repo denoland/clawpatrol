@@ -43,19 +43,19 @@ tunnel "example_passthrough" "passthru" {}
 // X-Magic header and curl prints the body with "bye!" appended.
 endpoint "example_https" "demo-site" {
   hosts      = ["demo.invalid"]
-  credential = demo_token
-  tunnel     = passthru
+  credential = example_magic_token.demo_token
+  tunnel     = example_passthrough.passthru
   upstream   = "http://127.0.0.1:8000"
 }
 
 rule "https-reads" {
-  endpoint  = demo-site
+  endpoint  = example_https.demo-site
   condition = "http.method in ['GET', 'HEAD']"
   verdict   = "allow"
 }
 
 rule "https-writes-deny" {
-  endpoint  = demo-site
+  endpoint  = example_https.demo-site
   condition = "http.method in ['POST', 'PUT', 'PATCH', 'DELETE']"
   verdict   = "deny"
   reason    = "writes to demo upstream are not allowed"
@@ -72,23 +72,23 @@ rule "https-writes-deny" {
 // Verb / From / Rcpt / User columns.
 endpoint "example_smtp" "demo-mail" {
   hosts      = ["mail.invalid:25"]
-  credential = demo_token
+  credential = example_magic_token.demo_token
 }
 
 rule "smtp-handshake" {
-  endpoint  = demo-mail
+  endpoint  = example_smtp.demo-mail
   condition = "example_smtp.verb in ['EHLO', 'HELO', 'AUTH', 'QUIT']"
   verdict   = "allow"
 }
 
 rule "smtp-internal-only" {
-  endpoint  = demo-mail
+  endpoint  = example_smtp.demo-mail
   condition = "example_smtp.verb in ['MAIL', 'RCPT', 'DATA'] && example_smtp.mail_from.endsWith('@internal')"
   verdict   = "allow"
 }
 
 rule "smtp-deny-external" {
-  endpoint  = demo-mail
+  endpoint  = example_smtp.demo-mail
   condition = "example_smtp.verb in ['MAIL', 'RCPT', 'DATA']"
   verdict   = "deny"
   reason    = "external sender"
@@ -102,13 +102,13 @@ rule "smtp-deny-external" {
 // internal-allowed messages are pulled in full only because of this
 // rule.
 rule "smtp-body-no-secrets" {
-  endpoint  = demo-mail
+  endpoint  = example_smtp.demo-mail
   condition = "example_smtp.verb == 'BODY' && !example_smtp.body.contains('SECRET')"
   verdict   = "allow"
 }
 
 rule "smtp-body-deny" {
-  endpoint  = demo-mail
+  endpoint  = example_smtp.demo-mail
   condition = "example_smtp.verb == 'BODY'"
   verdict   = "deny"
   reason    = "body contains restricted token"
@@ -120,22 +120,22 @@ rule "smtp-body-deny" {
 // on deny it replies "DENY: <reason>".
 endpoint "example_echo" "demo-echo" {
   hosts      = ["echo.invalid:7"]
-  credential = demo_token
+  credential = example_magic_token.demo_token
 }
 
 rule "echo-no-bad-words" {
-  endpoint  = demo-echo
+  endpoint  = example_echo.demo-echo
   condition = "!example_echo.line.contains('forbidden')"
   verdict   = "allow"
 }
 
 rule "echo-deny-fallback" {
-  endpoint  = demo-echo
+  endpoint  = example_echo.demo-echo
   condition = "true"
   verdict   = "deny"
   reason    = "line contains a forbidden token"
 }
 
 profile "default" {
-  endpoints = [demo-site, demo-mail, demo-echo]
+  endpoints = [example_https.demo-site, example_smtp.demo-mail, example_echo.demo-echo]
 }

@@ -64,6 +64,28 @@ func TestHITLOperationStoreCreatesMetadataOnlyOperation(t *testing.T) {
 	if loaded.RedactedQuery != "?account=[redacted]" {
 		t.Fatalf("RedactedQuery = %q", loaded.RedactedQuery)
 	}
+	if created.StatusToken == "" {
+		t.Fatalf("created operation did not return raw status token")
+	}
+	if loaded.StatusToken != "" {
+		t.Fatalf("loaded StatusToken = %q, want empty because raw token must not be persisted", loaded.StatusToken)
+	}
+	if loaded.StatusTokenHash == "" || loaded.StatusTokenHash == created.StatusToken {
+		t.Fatalf("loaded StatusTokenHash = %q, want non-empty hash distinct from raw token", loaded.StatusTokenHash)
+	}
+	if got, err := store.GetForStatusToken(ctx, created.ID, created.StatusToken); err != nil || got.ID != created.ID {
+		t.Fatalf("GetForStatusToken(valid) = (%#v, %v), want operation %q", got, err, created.ID)
+	}
+	if _, err := store.GetForStatusToken(ctx, created.ID, "wrong-status-token"); !errors.Is(err, ErrHITLOperationNotFound) {
+		t.Fatalf("GetForStatusToken(wrong) err = %v, want ErrHITLOperationNotFound", err)
+	}
+	var redundantIndexes int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'hitl_operations_status_token_idx'`).Scan(&redundantIndexes); err != nil {
+		t.Fatalf("query status token indexes: %v", err)
+	}
+	if redundantIndexes != 0 {
+		t.Fatalf("hitl_operations_status_token_idx exists but id is already primary key and status token lookups verify by id in Go")
+	}
 
 	for _, tc := range []struct {
 		name      string

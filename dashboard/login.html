@@ -7,15 +7,15 @@
     <link rel="icon" type="image/svg+xml" href="/claw-patrol-icon.svg" />
     <style>
       /* ── Minimal subset of the dashboard's design tokens ─────────
-         Only the values used on this page; mirrors www/src/index.css.
-         Funnel Sans (variable) is the only family loaded here — no
-         mono — keeping the login bundle small. */
+         Only the values used on this page; mirrors dashboard/src/index.css.
+         IBM Plex Sans (variable) is the only family loaded here —
+         keeps the login bundle small. */
       @font-face {
-        font-family: "Funnel Sans";
+        font-family: "IBM Plex Sans";
         font-style: normal;
-        font-weight: 300 800;
+        font-weight: 100 700;
         font-display: swap;
-        src: url("/fonts/funnel-sans/FunnelSans-Variable--latin_basic.woff2") format("woff2");
+        src: url("/fonts/ibm-plex-sans/IBMPlexSans-Variable--latin_basic.woff2") format("woff2");
       }
 
       :root {
@@ -30,7 +30,7 @@
         --color-text-muted: #62656d;
         --color-text-subtle: #82838c;
         --color-danger: #a83232;
-        --font-sans: "Funnel Sans", system-ui, -apple-system, sans-serif;
+        --font-sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
       }
 
       *,

@@ -362,8 +362,7 @@ func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
 	// Pass 2: build the eval context with every name → string, then
 	// decode each policy block against its plugin's schema.
 	evalCtx := buildEvalContext(table)
-	configDir := filepath.Dir(filename)
-	resolveDiags := decodePolicyBlocks(gw.Policy, table, evalCtx, configDir)
+	resolveDiags := decodePolicyBlocks(gw.Policy, table, evalCtx)
 	diags = append(diags, resolveDiags...)
 	diags = append(diags, validateHITLAsyncConfig(gw)...)
 
@@ -372,7 +371,7 @@ func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
 	// so plugins see fully-populated Bodies; the raw markers reach
 	// dump / golden-test output as a side effect, which is fine —
 	// goldens compare structural shape, not file contents.
-	includeDiags := expandFileIncludes(gw.Policy, configDir)
+	includeDiags := expandFileIncludes(gw.Policy, filepath.Dir(filename))
 	diags = append(diags, includeDiags...)
 
 	return gw, diags
@@ -551,20 +550,37 @@ func extractPolicyBlocks(body hcl.Body) (hcl.Blocks, hcl.Diagnostics) {
 // an approver reference is allowed.
 var builtinApproverNames = []string{"dashboard"}
 
-// buildEvalContext installs every declared name as a string variable
-// in an hcl.EvalContext. Bare-name references in HCL expressions
-// (`endpoint = github-avocet`) then evaluate to the string "github-
-// avocet"; the kind / family check happens after decode.
+// buildEvalContext installs each declared block as a typed-ref
+// variable in the eval context. Two-label kinds bucket by Type:
+// `credential.foo` resolves to the string "foo". One-label kinds
+// bucket by Kind keyword: `rule.foo`, `policy.foo`, `profile.foo`.
+// Built-in approvers live under a synthetic "builtin" type so
+// `approve = [builtin.dashboard]` works without a declaration.
 //
-// Built-in approver names (currently just `dashboard`) are added so
-// `approve = [dashboard]` resolves without a matching approver block.
+// The leaf string stays the bare name so existing plugin decode
+// paths (`Credential string`) keep working unchanged — the symbol
+// table lookup at compile time uses (kind, name).
 func buildEvalContext(table *SymbolTable) *hcl.EvalContext {
-	vars := make(map[string]cty.Value, len(table.allNames)+len(builtinApproverNames))
-	for name := range table.allNames {
-		vars[name] = cty.StringVal(name)
+	buckets := map[string]map[string]cty.Value{}
+	put := func(bucket, name string) {
+		m := buckets[bucket]
+		if m == nil {
+			m = map[string]cty.Value{}
+			buckets[bucket] = m
+		}
+		m[name] = cty.StringVal(name)
 	}
-	for _, name := range builtinApproverNames {
-		vars[name] = cty.StringVal(name)
+	for _, sym := range table.byKey {
+		switch sym.Kind.LabelCount() {
+		case 2:
+			put(sym.Type, sym.Name)
+		case 1:
+			put(string(sym.Kind), sym.Name)
+		}
+	}
+	vars := make(map[string]cty.Value, len(buckets))
+	for bucket, entries := range buckets {
+		vars[bucket] = cty.ObjectVal(entries)
 	}
 	return &hcl.EvalContext{Variables: vars}
 }
@@ -572,7 +588,7 @@ func buildEvalContext(table *SymbolTable) *hcl.EvalContext {
 // decodePolicyBlocks runs pass 2: per-block plugin dispatch + decode +
 // ref resolution + Validate + Build, plus the fixed-schema policy /
 // profile decoders.
-func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext, configDir string) hcl.Diagnostics {
+func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext) hcl.Diagnostics {
 	var diags hcl.Diagnostics
 
 	for _, sym := range table.byKind[KindPolicy] {
@@ -595,21 +611,12 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 			if table.Get(KindEndpoint, ep) != nil {
 				continue
 			}
-			if alt := table.GetAny(ep); alt != nil {
-				diags = append(diags, &hcl.Diagnostic{
-					Severity: hcl.DiagError,
-					Summary:  fmt.Sprintf("Wrong reference kind in profile %q", sym.Name),
-					Detail:   fmt.Sprintf("%q is a %s, but profile.endpoints expects an endpoint.", ep, alt.Kind),
-					Subject:  &sym.Block.DefRange,
-				})
-			} else {
-				diags = append(diags, &hcl.Diagnostic{
-					Severity: hcl.DiagError,
-					Summary:  fmt.Sprintf("Unknown endpoint %q", ep),
-					Detail:   fmt.Sprintf("Profile %q references endpoint %q which is not declared.", sym.Name, ep),
-					Subject:  &sym.Block.DefRange,
-				})
-			}
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("Unknown endpoint %q", ep),
+				Detail:   fmt.Sprintf("Profile %q references endpoint %q which is not declared.", sym.Name, ep),
+				Subject:  &sym.Block.DefRange,
+			})
 		}
 		p.Profiles[sym.Name] = pr
 		p.Order = append(p.Order, sym.Name)
@@ -684,6 +691,5 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 		}
 	}
 
-	_ = configDir // file-include resolution will use this in a follow-up
 	return diags
 }

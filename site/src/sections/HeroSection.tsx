@@ -19,11 +19,11 @@ export function HeroSection() {
         md:gap-16 items-center"
       >
         <div class="min-w-0">
-          <h1 class="text-4xl sm:text-5xl md:text-6xl md:text-[4rem] mb-4 font-display text-balance text-text">
+          <h1 class="text-4xl sm:text-5xl md:text-6xl md:text-[4rem] mb-6 font-display text-balance text-text">
             {HERO_H1}
           </h1>
           <p
-            class="text-sm mb-6 mt-6 max-w-lg font-sans
+            class="text-sm mb-6 max-w-lg font-sans
             font-bold uppercase text-text text-balance"
           >
             Give agents prod access and still sleep easy

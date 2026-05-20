@@ -21,6 +21,7 @@ export function DevicePage({
   ip,
   agents,
   integrations,
+  configFile,
   onBack,
   onConnect,
   onRefresh,
@@ -28,6 +29,7 @@ export function DevicePage({
   ip: string;
   agents: Agent[];
   integrations: Integration[];
+  configFile: string;
   onBack: () => void;
   onConnect: (id: string) => void;
   onRefresh: () => void;
@@ -44,7 +46,7 @@ export function DevicePage({
   const [profileCreds, setProfileCreds] = useState<Integration[] | null>(null);
   useEffect(() => {
     listProfiles()
-      .then(setProfiles)
+      .then((p) => setProfiles(p ?? []))
       .catch(() => setProfiles([]));
   }, []);
   const devProfile = a?.profile;
@@ -54,7 +56,7 @@ export function DevicePage({
       return;
     }
     getStatus(devProfile)
-      .then(setProfileCreds)
+      .then((c) => setProfileCreds(c ?? []))
       .catch(() => setProfileCreds(null));
     // Re-fetch whenever the parent's integrations list changes too —
     // OAuth modal calls onRefresh on success, which updates parent state
@@ -209,8 +211,27 @@ export function DevicePage({
       {/* live request stream filtered by this device */}
       <LiveRequests agentIP={a.ip} height="360px" />
 
-      {/* integrations management for this user */}
-      <IntegrationsCards list={allForUser} onConnect={onConnect} onRefresh={onRefresh} />
+      {/* credentials for this device's profile — header makes the
+          profile→credentials linkage explicit and points operators at
+          gateway.hcl since the dashboard is read-only for declarations. */}
+      <section className="bg-canvas-light border-1.5 border-navy">
+        <div className="flex items-center px-4 py-2.5 bg-navy-100 border-b border-navy gap-2">
+          <div className="font-mono text-xs uppercase tracking-wider text-navy font-bold">
+            Credentials
+          </div>
+          {a.profile && (
+            <span className="text-2xs text-navy/70">
+              for profile <span className="font-mono">{a.profile}</span>
+            </span>
+          )}
+          <span className="ml-auto text-2xs text-navy/70">
+            declared in <span className="font-mono">{configFile}</span>
+          </span>
+        </div>
+        <div className="p-3">
+          <IntegrationsCards list={allForUser} onConnect={onConnect} onRefresh={onRefresh} />
+        </div>
+      </section>
 
       {/* rules — per-device scope (with global rules layered in) */}
       <RulesPanel deviceIP={a.ip} profile={a.profile} />

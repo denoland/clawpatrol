@@ -375,28 +375,28 @@ human_on_timeout = "deny"
 
 approver "llm_approver" "slack-block-kit-shape-judge" {
   model      = "claude-sonnet-4-20250514"
-  credential = anthropic-ops-sub
-  policy     = slack-block-kit-shape
+  credential = anthropic_oauth_subscription.anthropic-ops-sub
+  policy     = policy.slack-block-kit-shape
 }
 approver "llm_approver" "reply-content-judge" {
   model      = "claude-sonnet-4-20250514"
-  credential = anthropic-ops-sub
-  policy     = reply-content
+  credential = anthropic_oauth_subscription.anthropic-ops-sub
+  policy     = policy.reply-content
 }
 approver "llm_approver" "pg-secret-columns-judge" {
   model      = "claude-haiku-4-5-20251001"
-  credential = anthropic-ops-sub
-  policy     = pg-secret-columns
+  credential = anthropic_oauth_subscription.anthropic-ops-sub
+  policy     = policy.pg-secret-columns
 }
 approver "llm_approver" "pg-secret-named-defense-judge" {
   model      = "claude-haiku-4-5-20251001"
-  credential = anthropic-ops-sub
-  policy     = pg-secret-named-defense
+  credential = anthropic_oauth_subscription.anthropic-ops-sub
+  policy     = policy.pg-secret-named-defense
 }
 approver "llm_approver" "k8s-exec-content-judge" {
   model      = "claude-haiku-4-5-20251001"
-  credential = anthropic-ops-sub
-  policy     = k8s-exec-content
+  credential = anthropic_oauth_subscription.anthropic-ops-sub
+  policy     = policy.k8s-exec-content
 }
 
 approver "human_approver" "support-ops" {
@@ -606,8 +606,8 @@ credential "header_token" "pagerduty-alice" {
 endpoint "https" "anthropic-ops" {
   hosts = ["api.anthropic.com"]
   credentials = [
-    { placeholder = "PH_anthropic_ops_apikey", credential = anthropic-ops-key },
-    { placeholder = "PH_anthropic_ops_subscription", credential = anthropic-ops-sub },
+    { placeholder = "PH_anthropic_ops_apikey", credential = anthropic_manual_key.anthropic-ops-key },
+    { placeholder = "PH_anthropic_ops_subscription", credential = anthropic_oauth_subscription.anthropic-ops-sub },
   ]
 }
 
@@ -615,61 +615,61 @@ endpoint "https" "anthropic-ops" {
 # endpoints. Each profile names exactly one of these.
 endpoint "https" "github-ops" {
   hosts       = ["api.github.com", "github.com"]
-  credential = github-ops-pat
+  credential = bearer_token.github-ops-pat
 }
 endpoint "https" "github-alice" {
   hosts       = ["api.github.com", "github.com"]
-  credential = github-alice-pat
+  credential = bearer_token.github-alice-pat
 }
 endpoint "https" "github-bob" {
   hosts       = ["api.github.com", "github.com"]
-  credential = github-bob-pat
+  credential = bearer_token.github-bob-pat
 }
 
 # Per-user Slack.
 endpoint "https" "slack-ops" {
   hosts       = ["slack.com", "www.slack.com", "api.slack.com"]
-  credential = slack-ops-cred
+  credential = slack_tokens.slack-ops-cred
 }
 endpoint "https" "slack-alice" {
   hosts       = ["slack.com", "www.slack.com", "api.slack.com"]
-  credential = slack-alice-cred
+  credential = slack_tokens.slack-alice-cred
 }
 endpoint "https" "slack-bob" {
   hosts       = ["slack.com", "www.slack.com", "api.slack.com"]
-  credential = slack-bob-cred
+  credential = slack_tokens.slack-bob-cred
 }
 
 # Per-user Telegram / Codex / Gemini.
 endpoint "https" "telegram-carol" {
   hosts       = ["api.telegram.org"]
-  credential = telegram-carol-cred
+  credential = telegram_bot_token.telegram-carol-cred
 }
 endpoint "https" "telegram-bob" {
   hosts       = ["api.telegram.org"]
-  credential = telegram-bob-cred
+  credential = telegram_bot_token.telegram-bob-cred
 }
 endpoint "https" "gemini-bob" {
   hosts       = ["generativelanguage.googleapis.com"]
-  credential = gemini-bob-cred
+  credential = gemini_api_key.gemini-bob-cred
 }
 endpoint "https" "openai-codex-carol" {
   hosts       = ["chatgpt.com", "auth.openai.com"]
-  credential = openai-codex-carol-cred
+  credential = openai_codex_oauth.openai-codex-carol-cred
 }
 endpoint "https" "openai-codex-bob" {
   hosts       = ["chatgpt.com", "auth.openai.com"]
-  credential = openai-codex-bob-cred
+  credential = openai_codex_oauth.openai-codex-bob-cred
 }
 
 # ops-only services.
 endpoint "https" "support-console" {
   hosts       = ["admin.example.com"]
-  credential = support-console-pat
+  credential = cookie_token.support-console-pat
 }
 endpoint "https" "stripe" {
   hosts       = ["api.stripe.com"]
-  credential = stripe-live-key
+  credential = bearer_token.stripe-live-key
 }
 # orb test vs prod: same hosts, two credentials. Placeholder dispatch
 # lets the agent pick at request time without changing endpoints.
@@ -678,8 +678,8 @@ endpoint "https" "stripe" {
 endpoint "https" "orb" {
   hosts = ["api.withorb.com"]
   credentials = [
-    { placeholder = "PH_orb_test", credential = orb-test-key },
-    { placeholder = "PH_orb_prod", credential = orb-prod-key },
+    { placeholder = "PH_orb_test", credential = bearer_token.orb-test-key },
+    { placeholder = "PH_orb_prod", credential = bearer_token.orb-prod-key },
   ]
 }
 
@@ -690,13 +690,13 @@ endpoint "postgres" "pg-corp" {
   # ro/rw dispatch via placeholder. Ro is the default for reads;
   # rw requires explicit selection AND human approval (see rules).
   credentials = [
-    { placeholder = "PH_pg_corp_ro", credential = pg-corp-ro },
-    { placeholder = "PH_pg_corp_rw", credential = pg-corp-rw },
+    { placeholder = "PH_pg_corp_ro", credential = postgres_credential.pg-corp-ro },
+    { placeholder = "PH_pg_corp_rw", credential = postgres_credential.pg-corp-rw },
   ]
 }
 endpoint "postgres" "pg-scheduler" {
   host       = "scheduler-prod.cluster.example:5432"
-  credential = pg-scheduler-cred
+  credential = postgres_credential.pg-scheduler-cred
 }
 
 endpoint "kubernetes" "k8s-eks-corp-prod" {
@@ -704,17 +704,17 @@ endpoint "kubernetes" "k8s-eks-corp-prod" {
   description  = "arn:aws:eks:us-east-2:123456789012:cluster/corp-prod"
   cluster_name = "corp-prod"
   region       = "us-east-2"
-  credential   = k8s-eks-corp-aws
+  credential   = aws_credential.k8s-eks-corp-aws
 }
 
 # Shared (multiple profiles).
 endpoint "https" "notion" {
   hosts       = ["api.notion.com", "mcp.notion.com"]
-  credential = notion-corp
+  credential = notion_oauth.notion-corp
 }
 endpoint "https" "grafana" {
   hosts       = ["grafana.example.com"]
-  credential = grafana-token
+  credential = bearer_token.grafana-token
 }
 # ClickHouse exposes two protocols on the same upstream cluster.
 # Two endpoint rows, distinct names, with per-database credential
@@ -725,17 +725,17 @@ endpoint "https" "grafana" {
 endpoint "clickhouse_https" "ch-o11y-https" {
   hosts = ["clickhouse-o11y.example", "ch-o11y.internal.example"]
   credentials = [
-    { database = "prod", credential = ch-o11y-prod },
-    { database = "dev",  credential = ch-o11y-dev  },
-    { credential = ch-o11y },
+    { database = "prod", credential = clickhouse_credential.ch-o11y-prod },
+    { database = "dev",  credential = clickhouse_credential.ch-o11y-dev  },
+    { credential = clickhouse_credential.ch-o11y },
   ]
 }
 endpoint "clickhouse_native" "ch-o11y-native" {
   hosts = ["clickhouse-o11y.example"]
   credentials = [
-    { database = "prod", credential = ch-o11y-prod },
-    { database = "dev",  credential = ch-o11y-dev  },
-    { credential = ch-o11y },
+    { database = "prod", credential = clickhouse_credential.ch-o11y-prod },
+    { database = "dev",  credential = clickhouse_credential.ch-o11y-dev  },
+    { credential = clickhouse_credential.ch-o11y },
   ]
 }
 # Self-hosted k8s clusters use mTLS. The CA cert is referenced by
@@ -744,44 +744,44 @@ endpoint "kubernetes" "k8s-dev-iad" {
   server      = "198.51.100.10"
   ca_cert     = "<<file:k8s-dev-iad-ca.pem>>"
   description = "admin@dev-iad.example"
-  credential = k8s-dev-iad-mtls
+  credential = mtls_credential.k8s-dev-iad-mtls
 }
 endpoint "kubernetes" "k8s-dev-sfo" {
   server      = "198.51.100.20"
   ca_cert     = "<<file:k8s-dev-sfo-ca.pem>>"
   description = "admin@dev-sfo.example"
-  credential = k8s-dev-sfo-mtls
+  credential = mtls_credential.k8s-dev-sfo-mtls
 }
 
 # alice's per-tool endpoints. One endpoint per upstream API; minimal
 # rule coverage (most are passthrough with credential injection only).
 endpoint "https" "smithery" {
   hosts       = ["smithery.ai"]
-  credential = smithery-alice
+  credential = bearer_token.smithery-alice
 }
 endpoint "https" "amem" {
   hosts       = ["api.amem.ai"]
-  credential = amem-alice
+  credential = bearer_token.amem-alice
 }
 endpoint "https" "checkly" {
   hosts       = ["api.checklyhq.com"]
-  credential = checkly-alice
+  credential = bearer_token.checkly-alice
 }
 endpoint "https" "posthog" {
   hosts       = ["us.i.posthog.com", "us.posthog.com"]
-  credential = posthog-alice
+  credential = bearer_token.posthog-alice
 }
 endpoint "https" "honeycomb" {
   hosts       = ["api.honeycomb.io"]
-  credential = honeycomb-alice
+  credential = header_token.honeycomb-alice
 }
 endpoint "https" "pagerduty" {
   hosts       = ["api.pagerduty.com"]
-  credential = pagerduty-alice
+  credential = header_token.pagerduty-alice
 }
 endpoint "https" "alice-helpdesk" {
   hosts       = ["helpdesk.example.com"]
-  credential = helpdesk-alice
+  credential = bearer_token.helpdesk-alice
 }
 
 # ── Rules ────────────────────────────────────────────
@@ -812,9 +812,9 @@ endpoint "https" "alice-helpdesk" {
 # shape matches what the human reviewer will see.
 
 rule "slack-ops-approve-reply-shape" {
-  endpoint  = slack-ops
+  endpoint  = https.slack-ops
   condition = "http.method == 'POST' && http.path == '/api/chat.postMessage' && http.body.contains('approve_reply_')"
-  approve   = [slack-block-kit-shape-judge]
+  approve   = [llm_approver.slack-block-kit-shape-judge]
 }
 
 # ── Support console ─────────────────────────────────
@@ -827,22 +827,22 @@ rule "slack-ops-approve-reply-shape" {
 # approval. Everything else denies via the catch-all.
 
 rule "support-console-reads" {
-  endpoint  = support-console
+  endpoint  = https.support-console
   condition = "http.method == 'GET'"
   verdict   = "allow"
 }
 rule "support-console-ticket-mutations" {
-  endpoint  = support-console
+  endpoint  = https.support-console
   condition = "http.method == 'POST' && http.path in ['/api/trpc/admin.supportTickets.markAsSpam', '/api/trpc/admin.supportTickets.updateStatus']"
-  approve   = [support-ops]
+  approve   = [human_approver.support-ops]
 }
 rule "support-console-reply-on-behalf" {
-  endpoint  = support-console
+  endpoint  = https.support-console
   condition = "http.method == 'POST' && http.path == '/api/trpc/admin.supportTickets.replyOnBehalf'"
-  approve   = [reply-content-judge, support-ops]
+  approve   = [llm_approver.reply-content-judge, human_approver.support-ops]
 }
 rule "support-console-default" {
-  endpoint = support-console
+  endpoint = https.support-console
   priority = -100
   verdict  = "deny"
   reason   = "admin.example.com mutations require an explicit approval rule"
@@ -861,35 +861,35 @@ rule "support-console-default" {
 # billing single-approver. Catch-all denies the long tail.
 
 rule "stripe-reads" {
-  endpoint  = stripe
+  endpoint  = https.stripe
   condition = "http.method == 'GET'"
   verdict   = "allow"
 }
 rule "stripe-ephemeral-keys" {
-  endpoint  = stripe
+  endpoint  = https.stripe
   priority  = 100
   condition = "http.method == 'POST' && http.path == '/v1/ephemeral_keys'"
   verdict   = "allow"
 }
 rule "stripe-no-deletes" {
-  endpoint  = stripe
+  endpoint  = https.stripe
   condition = "http.method == 'DELETE'"
   verdict   = "deny"
   reason    = "Stripe deletes go through the approval flow as POST"
 }
 rule "stripe-extra-scrutiny" {
-  endpoint  = stripe
+  endpoint  = https.stripe
   priority  = 100
   condition = "http.method == 'POST' && (http.path in ['/v1/refunds', '/v1/subscriptions', '/v1/subscription_items', '/v1/payouts', '/v1/transfers', '/v1/coupons', '/v1/promotion_codes'] || http.path.startsWith('/v1/charges/') && http.path.endsWith('/refund') || http.path.startsWith('/v1/subscriptions/') || http.path.startsWith('/v1/customers/') && http.path.endsWith('/subscriptions') || http.path.startsWith('/v1/invoices/') && (http.path.endsWith('/void') || http.path.endsWith('/finalize')))"
-  approve   = [billing-strict]
+  approve   = [human_approver.billing-strict]
 }
 rule "stripe-other-writes" {
-  endpoint  = stripe
+  endpoint  = https.stripe
   condition = "http.method == 'POST'"
-  approve   = [billing]
+  approve   = [human_approver.billing]
 }
 rule "stripe-default" {
-  endpoint = stripe
+  endpoint = https.stripe
   priority = -100
   verdict  = "deny"
 }
@@ -903,28 +903,28 @@ rule "stripe-default" {
 # This is the case the v11→v12 placeholder relocation was driven by.
 
 rule "orb-test-allow-all" {
-  endpoint   = orb
-  credential = orb-test-key
+  endpoint   = https.orb
+  credential = bearer_token.orb-test-key
   verdict    = "allow"
 }
 rule "orb-prod-reads" {
-  endpoint   = orb
-  credential = orb-prod-key
+  endpoint   = https.orb
+  credential = bearer_token.orb-prod-key
   condition  = "http.method == 'GET'"
   verdict    = "allow"
 }
 rule "orb-prod-no-deletes" {
-  endpoint   = orb
-  credential = orb-prod-key
+  endpoint   = https.orb
+  credential = bearer_token.orb-prod-key
   condition  = "http.method == 'DELETE'"
   verdict    = "deny"
   reason     = "Orb deletes go through approval flow as POST"
 }
 rule "orb-prod-writes" {
-  endpoint   = orb
-  credential = orb-prod-key
+  endpoint   = https.orb
+  credential = bearer_token.orb-prod-key
   condition  = "http.method in ['POST', 'PUT', 'PATCH']"
-  approve    = [billing]
+  approve    = [human_approver.billing]
 }
 
 # ── Notion ──────────────────────────────────────────
@@ -936,28 +936,28 @@ rule "orb-prod-writes" {
 # outright since Notion content is low-blast-radius.
 
 rule "notion-reads" {
-  endpoint  = notion
+  endpoint  = https.notion
   condition = "http.method in ['GET', 'HEAD']"
   verdict   = "allow"
 }
 rule "notion-search" {
-  endpoint  = notion
+  endpoint  = https.notion
   condition = "http.method == 'POST' && http.path == '/v1/search'"
   verdict   = "allow"
 }
 rule "notion-archive-route" {
-  endpoint  = notion
+  endpoint  = https.notion
   priority  = 100
   condition = "http.method == 'PATCH' && (http.path.startsWith('/v1/pages/') || http.path.startsWith('/v1/blocks/') || http.path.startsWith('/v1/databases/')) && http.body_json.archived == true"
-  approve   = [notion-archive]
+  approve   = [human_approver.notion-archive]
 }
 rule "notion-deletes" {
-  endpoint  = notion
+  endpoint  = https.notion
   condition = "http.method == 'DELETE'"
-  approve   = [notion-archive]
+  approve   = [human_approver.notion-archive]
 }
 rule "notion-create-update" {
-  endpoint  = notion
+  endpoint  = https.notion
   condition = "http.method in ['POST', 'PATCH']"
   verdict   = "allow"
 }
@@ -970,25 +970,25 @@ rule "notion-create-update" {
 # resources go through the observability approver.
 
 rule "grafana-reads" {
-  endpoint  = grafana
+  endpoint  = https.grafana
   condition = "http.method in ['GET', 'HEAD']"
   verdict   = "allow"
 }
 rule "grafana-annotations-snapshots" {
-  endpoint  = grafana
+  endpoint  = https.grafana
   condition = "http.method == 'POST' && http.path in ['/api/annotations', '/api/snapshots']"
   verdict   = "allow"
 }
 rule "grafana-no-destructive-deletes" {
-  endpoint  = grafana
+  endpoint  = https.grafana
   condition = "http.method == 'DELETE' && (http.path.startsWith('/api/dashboards/') || http.path.startsWith('/api/datasources/') || http.path.startsWith('/api/folders/') || http.path.startsWith('/api/alert-rules/'))"
   verdict   = "deny"
   reason    = "Destructive deletes go through a PR, not the agent"
 }
 rule "grafana-dashboard-writes" {
-  endpoint  = grafana
+  endpoint  = https.grafana
   condition = "http.method in ['POST', 'PUT', 'PATCH'] && (http.path.startsWith('/api/dashboards/') || http.path.startsWith('/api/datasources/') || http.path.startsWith('/api/folders/') || http.path.startsWith('/api/alert-rules/'))"
-  approve   = [observability]
+  approve   = [human_approver.observability]
 }
 
 # ── ClickHouse (https + native, same rules apply) ───
@@ -998,7 +998,7 @@ rule "grafana-dashboard-writes" {
 # — one rule, two targets, no duplication.
 
 rule "clickhouse-reads" {
-  endpoints = [ch-o11y-https, ch-o11y-native]
+  endpoints = [clickhouse_https.ch-o11y-https, clickhouse_native.ch-o11y-native]
   condition = "sql.verb in ['select', 'show', 'describe', 'explain', 'use']"
   verdict   = "allow"
 }
@@ -1006,13 +1006,13 @@ rule "clickhouse-reads" {
 # rule fires only on requests scoped to that database. Higher
 # priority than the default-deny so the deny doesn't shadow it.
 rule "clickhouse-prod-readonly" {
-  endpoints = [ch-o11y-https, ch-o11y-native]
+  endpoints = [clickhouse_https.ch-o11y-https, clickhouse_native.ch-o11y-native]
   priority  = 10
   condition = "sql.database == 'prod' && sql.verb in ['select', 'show', 'describe', 'explain']"
   verdict   = "allow"
 }
 rule "clickhouse-default" {
-  endpoints = [ch-o11y-https, ch-o11y-native]
+  endpoints = [clickhouse_https.ch-o11y-https, clickhouse_native.ch-o11y-native]
   priority  = -100
   verdict   = "deny"
   reason    = "ClickHouse access is read-only"
@@ -1026,31 +1026,31 @@ rule "clickhouse-default" {
 # table are all blocked uniformly. Per-database rules follow.
 
 rule "pg-banned-verbs" {
-  endpoints = [pg-corp, pg-scheduler]
+  endpoints = [postgres.pg-corp, postgres.pg-scheduler]
   condition = "sql.verb in ['drop', 'truncate', 'alter', 'grant', 'revoke', 'vacuum', 'create', 'comment', 'do']"
   verdict   = "deny"
   reason    = "Schema changes / destructive DDL not permitted; use a migration PR"
 }
 rule "pg-banned-functions" {
-  endpoints = [pg-corp, pg-scheduler]
+  endpoints = [postgres.pg-corp, postgres.pg-scheduler]
   condition = "sets.intersects(sql.functions, ['pg_terminate_backend', 'pg_cancel_backend', 'pg_read_file', 'pg_read_binary_file', 'lo_get']) || sql.functions.exists(f, f.startsWith('dblink_'))"
   verdict   = "deny"
   reason    = "Disallowed function for agent access"
 }
 rule "pg-banned-copy-from" {
-  endpoints = [pg-corp, pg-scheduler]
+  endpoints = [postgres.pg-corp, postgres.pg-scheduler]
   condition = "sql.statement.matches('(?is)copy.*from program')"
   verdict   = "deny"
   reason    = "COPY ... FROM PROGRAM is disallowed"
 }
 rule "pg-banned-copy-to" {
-  endpoints = [pg-corp, pg-scheduler]
+  endpoints = [postgres.pg-corp, postgres.pg-scheduler]
   condition = "sql.statement.matches('(?is)copy.*to program')"
   verdict   = "deny"
   reason    = "COPY ... TO PROGRAM is disallowed"
 }
 rule "pg-no-migrations" {
-  endpoints = [pg-corp, pg-scheduler]
+  endpoints = [postgres.pg-corp, postgres.pg-scheduler]
   condition = "'kysely_migration' in sql.tables"
   verdict   = "deny"
   reason    = "Migrations table is owned by the deploy pipeline"
@@ -1066,31 +1066,31 @@ rule "pg-no-migrations" {
 # pg-corp-reads. Rw writes go to console-dba.
 
 rule "pg-corp-ro-no-writes" {
-  endpoint   = pg-corp
-  credential = pg-corp-ro
+  endpoint   = postgres.pg-corp
+  credential = postgres_credential.pg-corp-ro
   condition  = "sql.verb in ['insert', 'update', 'delete', 'merge', 'notify']"
   verdict    = "deny"
   reason     = "ro account is read-only — use the rw placeholder if you need to write"
 }
 rule "pg-corp-secret-columns" {
-  endpoint  = pg-corp
+  endpoint  = postgres.pg-corp
   priority  = 100
   condition = "sql.verb == 'select' && sets.intersects(sql.tables, ['github_identities', 'tokens', 'email_confirmations', 'authorizations', 'domain_certificates', 'database_instances', 'env_vars'])"
-  approve   = [pg-secret-columns-judge]
+  approve   = [llm_approver.pg-secret-columns-judge]
 }
 rule "pg-corp-rw-writes" {
-  endpoint   = pg-corp
-  credential = pg-corp-rw
+  endpoint   = postgres.pg-corp
+  credential = postgres_credential.pg-corp-rw
   condition  = "sql.verb in ['insert', 'update', 'delete', 'merge', 'notify']"
-  approve    = [console-dba]
+  approve    = [human_approver.console-dba]
 }
 rule "pg-corp-reads" {
-  endpoint  = pg-corp
+  endpoint  = postgres.pg-corp
   condition = "sql.verb in ['select', 'show', 'explain']"
   verdict   = "allow"
 }
 rule "pg-corp-default" {
-  endpoint = pg-corp
+  endpoint = postgres.pg-corp
   priority = -100
   verdict  = "deny"
 }
@@ -1102,23 +1102,23 @@ rule "pg-corp-default" {
 # reads via priority=100). Writes go to scheduler-ops.
 
 rule "pg-scheduler-secret-named-defense" {
-  endpoint  = pg-scheduler
+  endpoint  = postgres.pg-scheduler
   priority  = 100
   condition = "sql.verb == 'select' && sql.statement.matches('(?i)\\\\b(secret|password|token|api_key|private_key|access_key|signing_secret)\\\\b')"
-  approve   = [pg-secret-named-defense-judge]
+  approve   = [llm_approver.pg-secret-named-defense-judge]
 }
 rule "pg-scheduler-writes" {
-  endpoint  = pg-scheduler
+  endpoint  = postgres.pg-scheduler
   condition = "sql.verb in ['insert', 'update', 'delete', 'merge', 'notify']"
-  approve   = [scheduler-ops]
+  approve   = [human_approver.scheduler-ops]
 }
 rule "pg-scheduler-reads" {
-  endpoint  = pg-scheduler
+  endpoint  = postgres.pg-scheduler
   condition = "sql.verb in ['select', 'show', 'explain']"
   verdict   = "allow"
 }
 rule "pg-scheduler-default" {
-  endpoint = pg-scheduler
+  endpoint = postgres.pg-scheduler
   priority = -100
   verdict  = "deny"
 }
@@ -1138,61 +1138,61 @@ rule "pg-scheduler-default" {
 # (the safety blocks above already restrict them appropriately).
 
 rule "k8s-no-secrets" {
-  endpoints = [k8s-dev-iad, k8s-dev-sfo, k8s-eks-corp-prod]
+  endpoints = [kubernetes.k8s-dev-iad, kubernetes.k8s-dev-sfo, kubernetes.k8s-eks-corp-prod]
   priority  = 1000
   condition = "k8s.resource == 'secrets'"
   verdict   = "deny"
   reason    = "Secret values must not leave the cluster via the agent"
 }
 rule "k8s-no-interactive" {
-  endpoints = [k8s-dev-iad, k8s-dev-sfo, k8s-eks-corp-prod]
+  endpoints = [kubernetes.k8s-dev-iad, kubernetes.k8s-dev-sfo, kubernetes.k8s-eks-corp-prod]
   priority  = 1000
   condition = "k8s.resource in ['pods/exec', 'pods/attach'] && k8s.params.stdin == 'true'"
   verdict   = "deny"
   reason    = "Interactive shells can't be evaluated by the rules engine"
 }
 rule "k8s-no-disruptive" {
-  endpoints = [k8s-dev-iad, k8s-dev-sfo, k8s-eks-corp-prod]
+  endpoints = [kubernetes.k8s-dev-iad, kubernetes.k8s-dev-sfo, kubernetes.k8s-eks-corp-prod]
   condition = "k8s.verb in ['drain', 'cordon', 'evict']"
   verdict   = "deny"
   reason    = "Cluster-disruptive operations are not allowed"
 }
 rule "k8s-no-portforward-non-debug" {
-  endpoints = [k8s-dev-iad, k8s-dev-sfo, k8s-eks-corp-prod]
+  endpoints = [kubernetes.k8s-dev-iad, kubernetes.k8s-dev-sfo, kubernetes.k8s-eks-corp-prod]
   priority  = 1000
   condition = "k8s.resource == 'pods/portforward' && !k8s.name.startsWith('debug-')"
   verdict   = "deny"
   reason    = "Port-forward only allowed to debug-* pods"
 }
 rule "k8s-no-mutations" {
-  endpoints = [k8s-dev-iad, k8s-dev-sfo, k8s-eks-corp-prod]
+  endpoints = [kubernetes.k8s-dev-iad, kubernetes.k8s-dev-sfo, kubernetes.k8s-eks-corp-prod]
   condition = "k8s.verb in ['create', 'update', 'patch', 'delete'] && !k8s.name.startsWith('debug-') && !k8s.resource.endsWith('/exec') && !k8s.resource.endsWith('/attach') && !k8s.resource.endsWith('/portforward')"
   verdict   = "deny"
   reason    = "Only debug-* pods may be created / modified / deleted"
 }
 rule "k8s-exec-content-check" {
-  endpoints = [k8s-dev-iad, k8s-dev-sfo, k8s-eks-corp-prod]
+  endpoints = [kubernetes.k8s-dev-iad, kubernetes.k8s-dev-sfo, kubernetes.k8s-eks-corp-prod]
   priority  = 500
   condition = "k8s.resource == 'pods/exec'"
-  approve   = [k8s-exec-content-judge]
+  approve   = [llm_approver.k8s-exec-content-judge]
 }
 rule "k8s-allow-meta" {
-  endpoints = [k8s-dev-iad, k8s-dev-sfo, k8s-eks-corp-prod]
+  endpoints = [kubernetes.k8s-dev-iad, kubernetes.k8s-dev-sfo, kubernetes.k8s-eks-corp-prod]
   condition = "k8s.verb == 'meta'"
   verdict   = "allow"
 }
 rule "k8s-reads" {
-  endpoints = [k8s-dev-iad, k8s-dev-sfo, k8s-eks-corp-prod]
+  endpoints = [kubernetes.k8s-dev-iad, kubernetes.k8s-dev-sfo, kubernetes.k8s-eks-corp-prod]
   condition = "k8s.verb in ['get', 'list', 'watch']"
   verdict   = "allow"
 }
 rule "k8s-debug-pods" {
-  endpoints = [k8s-dev-iad, k8s-dev-sfo, k8s-eks-corp-prod]
+  endpoints = [kubernetes.k8s-dev-iad, kubernetes.k8s-dev-sfo, kubernetes.k8s-eks-corp-prod]
   condition = "k8s.verb in ['create', 'delete'] && k8s.resource == 'pods' && k8s.name.startsWith('debug-')"
   verdict   = "allow"
 }
 rule "k8s-exec-attach" {
-  endpoints = [k8s-dev-iad, k8s-dev-sfo, k8s-eks-corp-prod]
+  endpoints = [kubernetes.k8s-dev-iad, kubernetes.k8s-dev-sfo, kubernetes.k8s-eks-corp-prod]
   condition = "k8s.verb in ['create', 'get'] && k8s.resource in ['pods/exec', 'pods/attach', 'pods/portforward']"
   verdict   = "allow"
 }
@@ -1207,14 +1207,14 @@ rule "k8s-exec-attach" {
 # blocked even though configmaps reads are otherwise allowed.
 
 rule "k8s-eks-no-runtime-writes" {
-  endpoint  = k8s-eks-corp-prod
+  endpoint  = kubernetes.k8s-eks-corp-prod
   priority  = 1000
   condition = "k8s.verb in ['create', 'update', 'patch', 'delete'] && (k8s.namespace in ['app', 'kube-system', 'cert-manager', 'external-secrets', 'argocd'] || k8s.namespace.startsWith('flux'))"
   verdict   = "deny"
   reason    = "Writes to runtime namespaces would impact production"
 }
 rule "k8s-eks-no-legacy-secret-configmaps" {
-  endpoint  = k8s-eks-corp-prod
+  endpoint  = kubernetes.k8s-eks-corp-prod
   priority  = 1000
   condition = "k8s.verb in ['get', 'list'] && k8s.resource == 'configmaps' && k8s.namespace == 'app' && (k8s.name.endsWith('-secrets') || k8s.name.startsWith('env-'))"
   verdict   = "deny"
@@ -1224,17 +1224,17 @@ rule "k8s-eks-no-legacy-secret-configmaps" {
 # ── Kubernetes catch-alls (per cluster) ─────────────
 
 rule "k8s-dev-iad-default" {
-  endpoint = k8s-dev-iad
+  endpoint = kubernetes.k8s-dev-iad
   priority = -100
   verdict  = "deny"
 }
 rule "k8s-dev-sfo-default" {
-  endpoint = k8s-dev-sfo
+  endpoint = kubernetes.k8s-dev-sfo
   priority = -100
   verdict  = "deny"
 }
 rule "k8s-eks-default" {
-  endpoint = k8s-eks-corp-prod
+  endpoint = kubernetes.k8s-eks-corp-prod
   priority = -100
   verdict  = "deny"
 }
@@ -1248,59 +1248,59 @@ rule "k8s-eks-default" {
 
 profile "ops" {
   endpoints = [
-    anthropic-ops,
-    github-ops,
-    slack-ops,
-    support-console,
-    stripe,
-    orb,
-    notion,
-    grafana,
-    pg-corp,
-    pg-scheduler,
-    k8s-dev-iad,
-    k8s-dev-sfo,
-    k8s-eks-corp-prod,
-    ch-o11y-https,
-    ch-o11y-native,
+    https.anthropic-ops,
+    https.github-ops,
+    https.slack-ops,
+    https.support-console,
+    https.stripe,
+    https.orb,
+    https.notion,
+    https.grafana,
+    postgres.pg-corp,
+    postgres.pg-scheduler,
+    kubernetes.k8s-dev-iad,
+    kubernetes.k8s-dev-sfo,
+    kubernetes.k8s-eks-corp-prod,
+    clickhouse_https.ch-o11y-https,
+    clickhouse_native.ch-o11y-native,
   ]
 }
 
 profile "alice" {
   endpoints = [
-    github-alice,
-    slack-alice,
-    telegram-carol,
-    openai-codex-carol,
+    https.github-alice,
+    https.slack-alice,
+    https.telegram-carol,
+    https.openai-codex-carol,
 
     # shared with ops:
-    notion,
-    grafana,
-    ch-o11y-https,
-    ch-o11y-native,
-    k8s-dev-iad,
-    k8s-dev-sfo,
+    https.notion,
+    https.grafana,
+    clickhouse_https.ch-o11y-https,
+    clickhouse_native.ch-o11y-native,
+    kubernetes.k8s-dev-iad,
+    kubernetes.k8s-dev-sfo,
 
     # alice's per-tool API access:
-    smithery,
-    amem,
-    checkly,
-    posthog,
-    honeycomb,
-    pagerduty,
-    alice-helpdesk,
+    https.smithery,
+    https.amem,
+    https.checkly,
+    https.posthog,
+    https.honeycomb,
+    https.pagerduty,
+    https.alice-helpdesk,
   ]
 }
 
 profile "bob" {
   endpoints = [
-    github-bob,
-    slack-bob,
-    telegram-bob,
-    gemini-bob,
-    openai-codex-bob,
+    https.github-bob,
+    https.slack-bob,
+    https.telegram-bob,
+    https.gemini-bob,
+    https.openai-codex-bob,
 
     # shared with alice:
-    openai-codex-carol,
+    https.openai-codex-carol,
   ]
 }

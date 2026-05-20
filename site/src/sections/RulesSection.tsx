@@ -37,7 +37,7 @@ const PROTOCOLS: {
 
 export function RulesSection() {
   return (
-    <section class="bg-linear-to-b from-navy-700 to-navy-800 py-24 sm:py-32 text-canvas">
+    <section class="bg-navy-700 py-24 sm:py-32 text-canvas">
       <div class="max-w-6xl mx-auto px-6 sm:px-8">
         <SectionLabel>Rules</SectionLabel>
 

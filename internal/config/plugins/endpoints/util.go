@@ -26,6 +26,7 @@ import (
 	"github.com/zclconf/go-cty/cty"
 
 	"github.com/denoland/clawpatrol/internal/config"
+	"github.com/denoland/clawpatrol/internal/config/hostmatch"
 )
 
 // CredentialEntry is one row inside an endpoint's credentials list.
@@ -278,13 +279,63 @@ func credentialEntrySignature(e CredentialEntry) string {
 	return e.Placeholder + "\x00" + strings.Join(dbs, "\x00")
 }
 
+// validateHosts checks the host strings the plugin body exposes via
+// EndpointHosts(). It rejects malformed entries (bad ports,
+// malformed wildcards) and within-endpoint duplicates. Endpoint
+// plugins whose hosts come from a single field (postgres' Host,
+// kubernetes' Server) also pass through here — EndpointHosts
+// returns a one-element slice for them, so the same validation
+// applies.
+func validateHosts(d any, name string, defRange hcl.Range) hcl.Diagnostics {
+	hosts := extractHostsAny(d)
+	if len(hosts) == 0 {
+		return nil
+	}
+	var diags hcl.Diagnostics
+	seen := make(map[string]struct{}, len(hosts))
+	for _, h := range hosts {
+		if err := hostmatch.ValidateHost(h); err != nil {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("Malformed host on endpoint %q", name),
+				Detail:   fmt.Sprintf("hosts entry %q: %v", h, err),
+				Subject:  &defRange,
+			})
+			continue
+		}
+		key := strings.ToLower(h)
+		if _, dup := seen[key]; dup {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("Duplicate host on endpoint %q", name),
+				Detail:   fmt.Sprintf("hosts entry %q appears more than once", h),
+				Subject:  &defRange,
+			})
+			continue
+		}
+		seen[key] = struct{}{}
+	}
+	return diags
+}
+
+// extractHostsAny mirrors compile.extractHosts but lives in this
+// package so the Validate hooks can call it without dragging the
+// internal compile pass in.
+func extractHostsAny(body any) []string {
+	if h, ok := body.(interface{ EndpointHosts() []string }); ok {
+		return h.EndpointHosts()
+	}
+	return nil
+}
+
 // multiCredValidate is the shared Validate hook for endpoint plugins
 // that accept both binding shapes. Validates the exclusivity invariant,
 // parses the list, cross-checks each entry's credential against the
 // symbol table, then stashes the parsed entries on the typed struct
-// via setCredentialEntries.
+// via setCredentialEntries. Also validates the endpoint's hosts list.
 func multiCredValidate(d any, name string, ctx *config.BuildCtx) hcl.Diagnostics {
 	var diags hcl.Diagnostics
+	diags = append(diags, validateHosts(d, name, ctx.Block.DefRange)...)
 	diags = append(diags, validateBinding(d, "endpoint", name, ctx.Block.DefRange)...)
 	hcr, ok := d.(hasCredentialsRaw)
 	if !ok {
@@ -297,21 +348,12 @@ func multiCredValidate(d any, name string, ctx *config.BuildCtx) hcl.Diagnostics
 		if ctx.Symbols.Get(config.KindCredential, e.Credential) != nil {
 			continue
 		}
-		if alt := ctx.Symbols.GetAny(e.Credential); alt != nil {
-			diags = append(diags, &hcl.Diagnostic{
-				Severity: hcl.DiagError,
-				Summary:  fmt.Sprintf("Wrong reference kind for %q", e.Credential),
-				Detail:   fmt.Sprintf("endpoint %q credentials list expects a credential but %q is a %s.", name, e.Credential, alt.Kind),
-				Subject:  &ctx.Block.DefRange,
-			})
-		} else {
-			diags = append(diags, &hcl.Diagnostic{
-				Severity: hcl.DiagError,
-				Summary:  fmt.Sprintf("Unknown credential %q", e.Credential),
-				Detail:   fmt.Sprintf("endpoint %q credentials list references undeclared credential %q.", name, e.Credential),
-				Subject:  &ctx.Block.DefRange,
-			})
-		}
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Unknown credential %q", e.Credential),
+			Detail:   fmt.Sprintf("endpoint %q credentials list references undeclared credential %q.", name, e.Credential),
+			Subject:  &ctx.Block.DefRange,
+		})
 	}
 	hcr.setCredentialEntries(entries)
 	return diags
@@ -345,10 +387,10 @@ var singularRef = []config.RefSpec{
 // the agent embeds an arbitrary discriminator string in the wire
 // protocol), or "user" for ssh (where the agent's username is the
 // natural label). Both compile to the same CredentialEntry.Placeholder.
-func emitCredentialBinding(b *hclwrite.Body, single string, list []CredentialEntry, dispatchKey string) {
+func emitCredentialBinding(b *hclwrite.Body, single string, list []CredentialEntry, dispatchKey string, ri *config.RefIndex) {
 	if len(list) == 0 {
 		if single != "" {
-			config.SetIdent(b, "credential", single)
+			config.SetIdent(b, "credential", ri.Ref(config.KindCredential, single))
 		}
 		return
 	}
@@ -399,7 +441,15 @@ func emitCredentialBinding(b *hclwrite.Body, single string, list []CredentialEnt
 		}
 		tokens = append(tokens,
 			&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(" credential = ")},
-			&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(e.Credential)},
+		)
+		credRef := ri.Ref(config.KindCredential, e.Credential)
+		for i, part := range strings.Split(credRef, ".") {
+			if i > 0 {
+				tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenDot, Bytes: []byte(".")})
+			}
+			tokens = append(tokens, &hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(part)})
+		}
+		tokens = append(tokens,
 			&hclwrite.Token{Type: hclsyntax.TokenIdent, Bytes: []byte(" }")},
 			&hclwrite.Token{Type: hclsyntax.TokenComma, Bytes: []byte(",")},
 			&hclwrite.Token{Type: hclsyntax.TokenNewline, Bytes: []byte("\n")},

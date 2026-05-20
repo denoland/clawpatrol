@@ -167,7 +167,7 @@ export function renderChart(container: HTMLElement, rawData: [string, number, nu
 
     // Click legend swatches to highlight a host. Plot auto-generates classes
     // like "plot-abc123-swatch" on each <span>; use [class$="-swatch"] so we
-    // don't also match the container ("-swatches") or wrap ("-swatches-wrap"),
+    // don’t also match the container ("-swatches") or wrap ("-swatches-wrap"),
     // which would yank in the injected <style> block and every label.
     const swatches = scatter.querySelectorAll<HTMLElement>('[class$="-swatch"]');
     swatches.forEach((swatch) => {
@@ -199,7 +199,7 @@ export function renderChart(container: HTMLElement, rawData: [string, number, nu
     container.appendChild(histTitle);
 
     // When a selection is active, layer two marks: a dimmed one for
-    // non-active hosts and a bright one for active hosts. binX doesn't
+    // non-active hosts and a bright one for active hosts. binX doesn’t
     // honor per-datum fillOpacity accessors the way Plot.dot does.
     const xField = logScale ? "logMs" : "ms";
     const thresholds = logScale ? 60 : 40;

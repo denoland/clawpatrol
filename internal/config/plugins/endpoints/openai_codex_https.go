@@ -169,10 +169,10 @@ func init() {
 		Validate: multiCredValidate,
 		Runtime:  OpenAICodexHTTPSEndpointRuntime{},
 		Build:    passthroughBuild,
-		Emit: func(body any, _ string, b *hclwrite.Body) {
+		Emit: func(body any, _ string, b *hclwrite.Body, refs *config.RefIndex) {
 			e := body.(*OpenAICodexHTTPSEndpoint)
 			b.SetAttributeValue("hosts", config.StringListVal(e.Hosts))
-			emitCredentialBinding(b, e.Credential, e.Credentials, "placeholder")
+			emitCredentialBinding(b, e.Credential, e.Credentials, "placeholder", refs)
 		},
 	})
 }

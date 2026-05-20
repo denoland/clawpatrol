@@ -171,9 +171,10 @@ func (ClickhouseNativeEndpointRuntime) HandleConn(ctx context.Context, ch *runti
 		return fmt.Errorf("read hello: %w", err)
 	}
 
-	// Step 2: resolve credential and inject. Single-credential native
-	// endpoints today; multi-credential dispatch via placeholder lands
-	// when SQL parsing does in iter 2.
+	// Step 2: resolve credential and inject. The Hello-time match.Request
+	// carries `username + "\x00" + password` as Meta.Statement so the
+	// endpoint's PlaceholderDetector can pick the right credential when
+	// multiple are declared.
 	claimedUser := hello.Username
 	injected := false
 	credName := ""

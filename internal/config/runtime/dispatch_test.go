@@ -21,24 +21,24 @@ credential "bearer_token" "pat" {}
 
 endpoint "https" "github" {
   hosts      = ["api.github.com", "github.com"]
-  credential = pat
+  credential = bearer_token.pat
 }
 
-profile "default" { endpoints = [github] }
+profile "default" { endpoints = [https.github] }
 
 rule "reads" {
-  endpoint  = github
+  endpoint  = https.github
   condition = "http.method in ['GET', 'HEAD']"
   verdict   = "allow"
 }
 rule "writes" {
-  endpoint  = github
+  endpoint  = https.github
   condition = "http.method in ['POST', 'PATCH', 'DELETE']"
   verdict   = "deny"
   reason    = "writes go through PR review"
 }
 rule "github-default" {
-  endpoint = github
+  endpoint = https.github
   priority = -100
   verdict  = "deny"
   reason   = "no policy matched"
@@ -90,7 +90,7 @@ func TestHostEndpointIsCaseInsensitive(t *testing.T) {
 endpoint "https" "eks" {
   hosts = ["AB123.gr7.us-east-2.eks.amazonaws.com"]
 }
-profile "default" { endpoints = [eks] }
+profile "default" { endpoints = [https.eks] }
 `)
 
 	if got := runtime.HostEndpoint(cp, "default", "ab123.gr7.us-east-2.eks.amazonaws.com"); got == nil || got.Name != "eks" {
@@ -106,7 +106,7 @@ func TestHostEndpointMatchesBareSNIForPortQualifiedHost(t *testing.T) {
 endpoint "https" "api" {
   hosts = ["api.example.com:443"]
 }
-profile "default" { endpoints = [api] }
+profile "default" { endpoints = [https.api] }
 `)
 
 	if got := runtime.HostEndpoint(cp, "default", "api.example.com"); got == nil || got.Name != "api" {
@@ -125,7 +125,7 @@ func TestHostEndpointMatchesBareSNIForPortQualifiedKubernetesServer(t *testing.T
 endpoint "kubernetes" "cluster" {
   server = "cluster.example.com:443"
 }
-profile "default" { endpoints = [cluster] }
+profile "default" { endpoints = [kubernetes.cluster] }
 `)
 
 	if got := runtime.HostEndpoint(cp, "default", "cluster.example.com"); got == nil || got.Name != "cluster" {
@@ -144,7 +144,7 @@ endpoint "https" "port_qualified" {
 endpoint "https" "bare" {
   hosts = ["api.example.com"]
 }
-profile "default" { endpoints = [port_qualified, bare] }
+profile "default" { endpoints = [https.port_qualified, https.bare] }
 `)
 
 	if got := runtime.HostEndpoint(cp, "default", "api.example.com"); got == nil || got.Name != "bare" {
@@ -160,7 +160,7 @@ func TestHostEndpointDoesNotAliasNonDefaultHTTPSPort(t *testing.T) {
 endpoint "https" "api" {
   hosts = ["api.example.com:8443"]
 }
-profile "default" { endpoints = [api] }
+profile "default" { endpoints = [https.api] }
 `)
 
 	if got := runtime.HostEndpoint(cp, "default", "api.example.com"); got != nil {
@@ -176,7 +176,7 @@ func TestHostEndpointDoesNotAliasNonHTTPFamilies(t *testing.T) {
 endpoint "postgres" "db" {
   host = "db.example.com:5432"
 }
-profile "default" { endpoints = [db] }
+profile "default" { endpoints = [postgres.db] }
 `)
 
 	if got := runtime.HostEndpoint(cp, "default", "db.example.com"); got != nil {
@@ -195,11 +195,115 @@ endpoint "https" "api" {
 endpoint "postgres" "db" {
   host = "api.example.com:443"
 }
-profile "default" { endpoints = [api, db] }
+profile "default" { endpoints = [https.api, postgres.db] }
 `)
 
 	if got := runtime.HostEndpoint(cp, "default", "api.example.com"); got == nil || got.Name != "api" {
 		t.Fatalf("bare SNI host resolved to %+v, want HTTPS endpoint", got)
+	}
+}
+
+func TestHostEndpointWildcardMatches(t *testing.T) {
+	cp := compileFixture(t, `
+credential "bearer_token" "aws-tok" {}
+endpoint "https" "aws-ep" {
+  hosts      = ["*.amazonaws.com"]
+  credential = bearer_token.aws-tok
+}
+profile "default" { endpoints = [https.aws-ep] }
+`)
+	cases := []struct {
+		host string
+		want string
+	}{
+		{"s3.amazonaws.com", "aws-ep"},
+		{"dynamodb.us-east-1.amazonaws.com", "aws-ep"},
+		{"AB.AMAZONAWS.COM", "aws-ep"},
+		{"amazonaws.com", ""},
+		{"notamazonaws.com", ""},
+		{"foo.bar", ""},
+	}
+	for _, c := range cases {
+		got := runtime.HostEndpoint(cp, "default", c.host)
+		gotName := ""
+		if got != nil {
+			gotName = got.Name
+		}
+		if gotName != c.want {
+			t.Errorf("HostEndpoint(%q) = %q, want %q", c.host, gotName, c.want)
+		}
+	}
+}
+
+func TestHostEndpointExactBeatsWildcard(t *testing.T) {
+	cp := compileFixture(t, `
+credential "bearer_token" "aws-tok" {}
+credential "bearer_token" "s3-tok"  {}
+endpoint "https" "aws-ep" {
+  hosts      = ["*.amazonaws.com"]
+  credential = bearer_token.aws-tok
+}
+endpoint "https" "s3-ep" {
+  hosts      = ["s3.amazonaws.com"]
+  credential = bearer_token.s3-tok
+}
+profile "default" { endpoints = [https.aws-ep, https.s3-ep] }
+`)
+	if got := runtime.HostEndpoint(cp, "default", "s3.amazonaws.com"); got == nil || got.Name != "s3-ep" {
+		t.Fatalf("exact host should beat wildcard: got %+v, want s3-ep", got)
+	}
+	if got := runtime.HostEndpoint(cp, "default", "dynamodb.amazonaws.com"); got == nil || got.Name != "aws-ep" {
+		t.Fatalf("uncovered subdomain should fall to wildcard: got %+v, want aws-ep", got)
+	}
+}
+
+func TestHostEndpointLongestWildcardWins(t *testing.T) {
+	cp := compileFixture(t, `
+credential "bearer_token" "aws-tok"  {}
+credential "bearer_token" "east-tok" {}
+endpoint "https" "east-ep" {
+  hosts      = ["*.us-east-1.amazonaws.com"]
+  credential = bearer_token.east-tok
+}
+endpoint "https" "aws-ep" {
+  hosts      = ["*.amazonaws.com"]
+  credential = bearer_token.aws-tok
+}
+profile "default" { endpoints = [https.aws-ep, https.east-ep] }
+`)
+	if got := runtime.HostEndpoint(cp, "default", "s3.us-east-1.amazonaws.com"); got == nil || got.Name != "east-ep" {
+		t.Fatalf("longest suffix should win: got %+v, want east-ep", got)
+	}
+	if got := runtime.HostEndpoint(cp, "default", "s3.us-west-2.amazonaws.com"); got == nil || got.Name != "aws-ep" {
+		t.Fatalf("shorter pattern picks up the rest: got %+v, want aws-ep", got)
+	}
+}
+
+func TestHostEndpointWildcardWithPortAlias(t *testing.T) {
+	cp := compileFixture(t, `
+credential "bearer_token" "aws-tok" {}
+endpoint "https" "aws-ep" {
+  hosts      = ["*.amazonaws.com:443"]
+  credential = bearer_token.aws-tok
+}
+profile "default" { endpoints = [https.aws-ep] }
+`)
+	if got := runtime.HostEndpoint(cp, "default", "s3.amazonaws.com"); got == nil || got.Name != "aws-ep" {
+		t.Fatalf("port-qualified wildcard should match bare SNI: got %+v, want aws-ep", got)
+	}
+}
+
+func TestHostEndpointWildcardSingleTenantFallback(t *testing.T) {
+	cp := compileFixture(t, `
+credential "bearer_token" "aws-tok" {}
+endpoint "https" "aws-ep" {
+  hosts      = ["*.amazonaws.com"]
+  credential = bearer_token.aws-tok
+}
+profile "tenant" { endpoints = [https.aws-ep] }
+`)
+	if got := runtime.HostEndpoint(cp, "missing-profile", "s3.amazonaws.com"); got == nil || got.Name != "aws-ep" {
+		t.Fatalf("fallback scan should find wildcard match across profiles: got %+v, want aws-ep", got)
 	}
 }
 
@@ -249,15 +353,15 @@ func TestMatchRequestTruncated(t *testing.T) {
 endpoint "postgres" "db" {
   host = "db.example.com:5432"
 }
-profile "default" { endpoints = [db] }
+profile "default" { endpoints = [postgres.db] }
 
 rule "select-allow" {
-  endpoint  = db
+  endpoint  = postgres.db
   condition = "sql.verb == 'select'"
   verdict   = "allow"
 }
 rule "default-deny" {
-  endpoint = db
+  endpoint = postgres.db
   priority = -100
   verdict  = "deny"
   reason   = "no policy matched"
@@ -304,17 +408,17 @@ func TestMatchRequestTruncatedSkipsRulesThatDontReadTruncatedFacets(t *testing.T
 credential "bearer_token" "tok" {}
 endpoint "https" "api" {
   hosts      = ["api.example.com"]
-  credential = tok
+  credential = bearer_token.tok
 }
-profile "default" { endpoints = [api] }
+profile "default" { endpoints = [https.api] }
 
 rule "by-credential" {
-  endpoint   = api
-  credential = tok
+  endpoint   = https.api
+  credential = bearer_token.tok
   verdict    = "allow"
 }
 rule "body-deny" {
-  endpoint  = api
+  endpoint  = https.api
   condition = "http.body.contains('drop')"
   priority  = -50
   verdict   = "deny"
@@ -357,16 +461,16 @@ func newSQLMetaWithStatement(stmt string) *sqlfacet.Meta {
 func TestMatchRequestUnparseable_StatementRuleAllowsOnUnparseable(t *testing.T) {
 	cp := compileFixture(t, `
 endpoint "clickhouse_native" "ch" { hosts = ["ch.example:9000"] }
-profile "default" { endpoints = [ch] }
+profile "default" { endpoints = [clickhouse_native.ch] }
 
 rule "allow-known-shape" {
-  endpoint  = ch
+  endpoint  = clickhouse_native.ch
   condition = "sql.statement.contains('daily_user_metrics')"
   priority  = 100
   verdict   = "allow"
 }
 rule "verb-deny" {
-  endpoint  = ch
+  endpoint  = clickhouse_native.ch
   condition = "sql.verb == 'insert'"
   priority  = 50
   verdict   = "deny"
@@ -399,16 +503,16 @@ rule "verb-deny" {
 func TestMatchRequestUnparseable_VerbRuleSynthDeniesOnUnparseable(t *testing.T) {
 	cp := compileFixture(t, `
 endpoint "clickhouse_native" "ch" { hosts = ["ch.example:9000"] }
-profile "default" { endpoints = [ch] }
+profile "default" { endpoints = [clickhouse_native.ch] }
 
 rule "allow-statement-prefix" {
-  endpoint  = ch
+  endpoint  = clickhouse_native.ch
   condition = "sql.statement.startsWith('SELECT')"
   priority  = 100
   verdict   = "allow"
 }
 rule "verb-allow" {
-  endpoint  = ch
+  endpoint  = clickhouse_native.ch
   condition = "sql.verb == 'insert'"
   priority  = 50
   verdict   = "allow"
@@ -445,17 +549,17 @@ rule "verb-allow" {
 func TestMatchRequestUnparseable_OnlyParserFacetsSynthDenyFromHighestPriority(t *testing.T) {
 	cp := compileFixture(t, `
 endpoint "clickhouse_native" "ch" { hosts = ["ch.example:9000"] }
-profile "default" { endpoints = [ch] }
+profile "default" { endpoints = [clickhouse_native.ch] }
 
 rule "deny-writes" {
-  endpoint  = ch
+  endpoint  = clickhouse_native.ch
   condition = "sql.verb in ['insert', 'update', 'delete']"
   priority  = 100
   verdict   = "deny"
   reason    = "writes blocked"
 }
 rule "tables-deny" {
-  endpoint  = ch
+  endpoint  = clickhouse_native.ch
   condition = "'secrets' in sql.tables"
   priority  = 50
   verdict   = "deny"
@@ -490,7 +594,7 @@ rule "tables-deny" {
 func TestMatchRequestUnparseable_NoRulesFallsThrough(t *testing.T) {
 	cp := compileFixture(t, `
 endpoint "clickhouse_native" "ch" { hosts = ["ch.example:9000"] }
-profile "default" { endpoints = [ch] }
+profile "default" { endpoints = [clickhouse_native.ch] }
 `)
 	ep := cp.Endpoints["ch"]
 
@@ -512,10 +616,10 @@ profile "default" { endpoints = [ch] }
 func TestMatchRequestUnparseable_ParseableUnaffected(t *testing.T) {
 	cp := compileFixture(t, `
 endpoint "clickhouse_native" "ch" { hosts = ["ch.example:9000"] }
-profile "default" { endpoints = [ch] }
+profile "default" { endpoints = [clickhouse_native.ch] }
 
 rule "verb-allow-select" {
-  endpoint  = ch
+  endpoint  = clickhouse_native.ch
   condition = "sql.verb == 'select'"
   verdict   = "allow"
 }
@@ -543,17 +647,17 @@ func TestMatchRequestUnparseable_CredentialOnlyRuleStillAllows(t *testing.T) {
 credential "bearer_token" "tok" {}
 endpoint "clickhouse_native" "ch" {
   hosts      = ["ch.example:9000"]
-  credential = tok
+  credential = bearer_token.tok
 }
-profile "default" { endpoints = [ch] }
+profile "default" { endpoints = [clickhouse_native.ch] }
 
 rule "by-credential" {
-  endpoint   = ch
-  credential = tok
+  endpoint   = clickhouse_native.ch
+  credential = bearer_token.tok
   verdict    = "allow"
 }
 rule "verb-deny" {
-  endpoint  = ch
+  endpoint  = clickhouse_native.ch
   condition = "sql.verb == 'insert'"
   priority  = -50
   verdict   = "deny"
@@ -599,12 +703,12 @@ credential "bearer_token" "fallback" {}
 endpoint "https" "ep" {
   hosts = ["x.example.com"]
   credentials = [
-    { placeholder = "PH_test", credential = test },
-    { placeholder = "PH_prod", credential = prod },
-    { credential = fallback },
+    { placeholder = "PH_test", credential = bearer_token.test },
+    { placeholder = "PH_prod", credential = bearer_token.prod },
+    { credential = bearer_token.fallback },
   ]
 }
-profile "default" { endpoints = [ep] }
+profile "default" { endpoints = [https.ep] }
 `
 	gw, diags := config.LoadBytes([]byte(src), "in.hcl")
 	if diags.HasErrors() {
@@ -653,12 +757,12 @@ credential "clickhouse_credential" "fallback" {}
 endpoint "clickhouse_native" "ep" {
   hosts = ["x.example.com"]
   credentials = [
-    { database  = "prod",          credential = prod     },
-    { databases = ["dev", "qa"],   credential = dev      },
-    { credential = fallback },
+    { database  = "prod",          credential = clickhouse_credential.prod     },
+    { databases = ["dev", "qa"],   credential = clickhouse_credential.dev      },
+    { credential = clickhouse_credential.fallback },
   ]
 }
-profile "default" { endpoints = [ep] }
+profile "default" { endpoints = [clickhouse_native.ep] }
 `
 	cp := compileFixture(t, src)
 	ep := cp.Endpoints["ep"]
@@ -695,12 +799,12 @@ credential "bearer_token" "any"     {}
 endpoint "https" "ep" {
   hosts = ["x.example.com"]
   credentials = [
-    { placeholder = "PH_ro", database = "prod", credential = ro-prod },
-    { placeholder = "PH_ro",                    credential = ro-any  },
-    { credential = any },
+    { placeholder = "PH_ro", database = "prod", credential = bearer_token.ro-prod },
+    { placeholder = "PH_ro",                    credential = bearer_token.ro-any  },
+    { credential = bearer_token.any },
   ]
 }
-profile "default" { endpoints = [ep] }
+profile "default" { endpoints = [https.ep] }
 `
 	cp := compileFixture(t, src)
 	ep := cp.Endpoints["ep"]

@@ -55,6 +55,8 @@ type HITLOperationCreate struct {
 	FingerprintVersion  string
 	HMACKeyID           string
 	RequestFingerprint  string
+	StatusToken         string
+	StatusTokenHash     string
 	CreatedAt           time.Time
 	SyncWaitDeadline    time.Time
 	ApprovalExpiresAt   time.Time
@@ -95,24 +97,30 @@ type HITLOperationMaintenanceResult struct {
 }
 
 type HITLOperation struct {
-	ID                         string
-	State                      HITLOperationState
-	Version                    int64
-	ProfileID                  string
-	PrincipalID                string
-	EndpointID                 string
-	ApprovalRuleID             string
-	ApproverID                 string
-	Method                     string
-	Scheme                     string
-	Host                       string
-	RedactedPath               string
-	RedactedQuery              string
-	RedactedHeadersJSON        string
-	AuthBindingID              string
-	FingerprintVersion         string
-	HMACKeyID                  string
-	RequestFingerprint         string
+	ID                  string
+	State               HITLOperationState
+	Version             int64
+	ProfileID           string
+	PrincipalID         string
+	EndpointID          string
+	ApprovalRuleID      string
+	ApproverID          string
+	Method              string
+	Scheme              string
+	Host                string
+	RedactedPath        string
+	RedactedQuery       string
+	RedactedHeadersJSON string
+	AuthBindingID       string
+	FingerprintVersion  string
+	HMACKeyID           string
+	RequestFingerprint  string
+	// StatusToken is the raw operation-scoped capability token. It is only
+	// populated on the operation returned from Create or when explicitly
+	// threaded through runtime transitions before the initial 202 response;
+	// fresh store reads intentionally populate only StatusTokenHash.
+	StatusToken                string
+	StatusTokenHash            string
 	CreatedAt                  time.Time
 	SyncWaitDeadline           time.Time
 	ApprovalExpiresAt          time.Time
@@ -142,6 +150,15 @@ func (s *HITLOperationStore) Create(ctx context.Context, in HITLOperationCreate)
 	if in.State == "" {
 		in.State = HITLOperationStateSyncWaiting
 	}
+	if in.StatusToken == "" && in.StatusTokenHash == "" {
+		var err error
+		in.StatusToken, in.StatusTokenHash, err = mintHITLOperationStatusToken()
+		if err != nil {
+			return HITLOperation{}, err
+		}
+	} else if in.StatusTokenHash == "" {
+		in.StatusTokenHash = hashHITLOperationStatusToken(in.StatusToken)
+	}
 	if err := validateHITLOperationCreate(in); err != nil {
 		return HITLOperation{}, err
 	}
@@ -150,19 +167,24 @@ INSERT INTO hitl_operations (
   id, state, version,
   profile_id, principal_id, endpoint_id, approval_rule_id, approver_id,
   method, scheme, host, redacted_path, redacted_query, redacted_headers_json,
-  auth_binding_id, fingerprint_version, hmac_key_id, request_fingerprint,
+  auth_binding_id, fingerprint_version, hmac_key_id, request_fingerprint, status_token_hash,
   created_ns, sync_wait_deadline_ns, approval_expires_ns, retry_expires_ns
-) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		in.ID, string(in.State),
 		in.ProfileID, in.PrincipalID, in.EndpointID, in.ApprovalRuleID, in.ApproverID,
 		in.Method, in.Scheme, in.Host, in.RedactedPath, nullString(in.RedactedQuery), nullString(in.RedactedHeadersJSON),
-		in.AuthBindingID, in.FingerprintVersion, in.HMACKeyID, in.RequestFingerprint,
+		in.AuthBindingID, in.FingerprintVersion, in.HMACKeyID, in.RequestFingerprint, in.StatusTokenHash,
 		timeNS(in.CreatedAt), timeNS(in.SyncWaitDeadline), timeNS(in.ApprovalExpiresAt), nullTimeNS(in.RetryExpiresAt),
 	)
 	if err != nil {
 		return HITLOperation{}, err
 	}
-	return s.get(ctx, in.ID)
+	op, err := s.get(ctx, in.ID)
+	if err != nil {
+		return HITLOperation{}, err
+	}
+	op.StatusToken = in.StatusToken
+	return op, nil
 }
 
 func (s *HITLOperationStore) GetForPrincipal(ctx context.Context, id, profileID, principalID string) (HITLOperation, error) {
@@ -170,6 +192,23 @@ func (s *HITLOperationStore) GetForPrincipal(ctx context.Context, id, profileID,
 		return HITLOperation{}, fmt.Errorf("%w: nil store", ErrHITLOperationStoreInvalid)
 	}
 	return s.scanOne(ctx, `SELECT `+hitlOperationColumns+` FROM hitl_operations WHERE id = ? AND profile_id = ? AND principal_id = ?`, id, profileID, principalID)
+}
+
+func (s *HITLOperationStore) GetForStatusToken(ctx context.Context, id, token string) (HITLOperation, error) {
+	if s == nil || s.db == nil {
+		return HITLOperation{}, fmt.Errorf("%w: nil store", ErrHITLOperationStoreInvalid)
+	}
+	if id == "" || token == "" {
+		return HITLOperation{}, ErrHITLOperationNotFound
+	}
+	op, err := s.get(ctx, id)
+	if err != nil {
+		return HITLOperation{}, err
+	}
+	if !verifyHITLOperationStatusTokenHash(token, op.StatusTokenHash) {
+		return HITLOperation{}, ErrHITLOperationNotFound
+	}
+	return op, nil
 }
 
 func (s *HITLOperationStore) SetApproverMessageRef(ctx context.Context, id, ref string) (HITLOperation, error) {
@@ -420,7 +459,7 @@ const hitlOperationColumns = `
 id, state, version,
 profile_id, principal_id, endpoint_id, approval_rule_id, approver_id,
 method, scheme, host, redacted_path, redacted_query, redacted_headers_json,
-auth_binding_id, fingerprint_version, hmac_key_id, request_fingerprint,
+auth_binding_id, fingerprint_version, hmac_key_id, request_fingerprint, status_token_hash,
 created_ns, sync_wait_deadline_ns, approval_expires_ns, retry_expires_ns,
 expired_reason, terminal_ns, terminal_retention_expires_ns,
 upstream_called, grant_consumed_ns, grant_consumed_by, approver_message_ref, dashboard_ref, last_error`
@@ -436,13 +475,14 @@ func (s *HITLOperationStore) scanOne(ctx context.Context, query string, args ...
 	var redactedQuery, redactedHeaders sql.NullString
 	var retryExpiresNS, terminalNS, terminalRetentionNS, grantConsumedNS sql.NullInt64
 	var expiredReason, grantConsumedBy, approverMessageRef, dashboardRef, lastError sql.NullString
+	var statusTokenHash sql.NullString
 	var upstreamCalled int
 	var createdNS, syncWaitDeadlineNS, approvalExpiresNS int64
 	err := row.Scan(
 		&op.ID, &state, &op.Version,
 		&op.ProfileID, &op.PrincipalID, &op.EndpointID, &op.ApprovalRuleID, &op.ApproverID,
 		&op.Method, &op.Scheme, &op.Host, &op.RedactedPath, &redactedQuery, &redactedHeaders,
-		&op.AuthBindingID, &op.FingerprintVersion, &op.HMACKeyID, &op.RequestFingerprint,
+		&op.AuthBindingID, &op.FingerprintVersion, &op.HMACKeyID, &op.RequestFingerprint, &statusTokenHash,
 		&createdNS, &syncWaitDeadlineNS, &approvalExpiresNS, &retryExpiresNS,
 		&expiredReason, &terminalNS, &terminalRetentionNS,
 		&upstreamCalled, &grantConsumedNS, &grantConsumedBy, &approverMessageRef, &dashboardRef, &lastError,
@@ -456,6 +496,7 @@ func (s *HITLOperationStore) scanOne(ctx context.Context, query string, args ...
 	op.State = HITLOperationState(state)
 	op.RedactedQuery = redactedQuery.String
 	op.RedactedHeadersJSON = redactedHeaders.String
+	op.StatusTokenHash = statusTokenHash.String
 	op.CreatedAt = timeFromNS(createdNS)
 	op.SyncWaitDeadline = timeFromNS(syncWaitDeadlineNS)
 	op.ApprovalExpiresAt = timeFromNS(approvalExpiresNS)
@@ -488,6 +529,7 @@ func validateHITLOperationCreate(in HITLOperationCreate) error {
 		"fingerprint_version": in.FingerprintVersion,
 		"hmac_key_id":         in.HMACKeyID,
 		"request_fingerprint": in.RequestFingerprint,
+		"status_token_hash":   in.StatusTokenHash,
 	} {
 		if value == "" {
 			return fmt.Errorf("%w: missing %s", ErrHITLOperationStoreInvalid, name)

@@ -1,15 +1,15 @@
 # Block destructive SQL on prod
 rule "no-prod-drops" {
-  endpoint  = pg-prod
+  endpoint  = postgres.pg-prod
   condition = "sql.verb in ['drop', 'truncate', 'alter']"
   verdict   = "deny"
 }
 
 # Slack-approve any GitHub write
 rule "github-writes" {
-  endpoint  = github-api
+  endpoint  = https.github-api
   condition = "http.method in ['POST', 'PUT', 'DELETE']"
-  approve   = [ops]
+  approve   = [human_approver.ops]
 }
 
 # ===== harness =====
@@ -22,17 +22,17 @@ credential "slack_tokens"        "slack-bot"  {}
 
 endpoint "postgres" "pg-prod" {
   host       = "pg-prod.example:5432"
-  credential = pg-cred
+  credential = postgres_credential.pg-cred
 }
 
 endpoint "https" "github-api" {
   hosts      = ["api.github.com"]
-  credential = github-pat
+  credential = bearer_token.github-pat
 }
 
 approver "human_approver" "ops" {
   channel    = "#agent-ops"
-  credential = slack-bot
+  credential = slack_tokens.slack-bot
 }
 
-profile "default" { endpoints = [pg-prod, github-api] }
+profile "default" { endpoints = [postgres.pg-prod, https.github-api] }

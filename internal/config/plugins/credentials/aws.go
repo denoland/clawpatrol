@@ -168,7 +168,7 @@ func init() {
 		New:     newer[AWSCredential](),
 		Runtime: (*AWSCredential)(nil),
 		Build:   passthrough,
-		Emit: func(_ any, _ string, _ *hclwrite.Body) {
+		Emit: func(_ any, _ string, _ *hclwrite.Body, _ *config.RefIndex) {
 			// AWSCredential has no HCL attributes — cluster + region
 			// live on the endpoint, not the credential.
 		},

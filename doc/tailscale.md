@@ -138,17 +138,17 @@ in SQLite (`credential_secrets`) and reused on every subsequent
 restart:
 
 ```hcl
-credential "tailscale" "corp-tailnet" {}
+credential "tailscale_auth" "corp-tailnet" {}
 
 tunnel "tailscale" "corp" {
-  credential = corp-tailnet
+  credential = tailscale_auth.corp-tailnet
   hostname   = "clawpatrol-tunnel-corp"
   tags       = ["tag:client"]
 }
 
 endpoint "https" "grafana-internal" {
   hosts  = ["grafana.corp.example.com:443"]
-  tunnel = corp
+  tunnel = tailscale.corp
 }
 ```
 
@@ -205,7 +205,7 @@ tunnel "tailscale" "corp" {
 
 endpoint "https" "grafana-internal" {
   hosts  = ["grafana.corp.example.com:443"]
-  tunnel = corp
+  tunnel = tailscale.corp
 }
 ```
 

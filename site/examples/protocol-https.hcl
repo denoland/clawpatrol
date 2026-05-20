@@ -2,12 +2,12 @@
 # judge before they go out: catches offensive content, missing
 # salutations, and markdown that shouldn't ship.
 rule "support-reply-on-behalf" {
-  endpoint = deno-deploy
+  endpoint = https.deno-deploy
   condition = <<-CEL
     http.method == 'POST'
     && http.path == '/api/admin.supportTickets.replyOnBehalf'
   CEL
-  approve = [reply-content-judge]
+  approve = [llm_approver.reply-content-judge]
 }
 
 # ===== harness =====
@@ -27,13 +27,13 @@ credential "bearer_token" "deno-deploy-cred" {}
 
 approver "llm_approver" "reply-content-judge" {
   model      = "claude-sonnet-4-6"
-  credential = anthropic-key
-  policy     = reply-content
+  credential = anthropic_manual_key.anthropic-key
+  policy     = policy.reply-content
 }
 
 endpoint "https" "deno-deploy" {
   hosts      = ["app.deno.com"]
-  credential = deno-deploy-cred
+  credential = bearer_token.deno-deploy-cred
 }
 
-profile "default" { endpoints = [deno-deploy] }
+profile "default" { endpoints = [https.deno-deploy] }

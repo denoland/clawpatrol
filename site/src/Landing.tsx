@@ -1,5 +1,6 @@
 import { Layout } from "./Layout";
-import { HatchDivider } from "./components/HatchDivider";
+import { DotField } from "./components/DotField.tsx";
+import { ShadeGradient } from "./components/ShadeBar.tsx";
 import { AnalyticsSection } from "./sections/AnalyticsSection";
 import { ApproversSection } from "./sections/ApproversSection";
 import { ComparisonSection } from "./sections/ComparisonSection";
@@ -15,12 +16,11 @@ export function Landing() {
     <Layout>
       <HeroSection />
       <ProblemSection />
+      <DotField class="text-canvas-400" />
       <RunSection />
-      <HatchDivider
-        topColor="var(--color-canvas-muted)"
-        bottomColor="var(--color-navy-700)"
-      />
+      <ShadeGradient color="text-navy-700" />
       <RulesSection />
+      <ShadeGradient color="text-navy" invert />
       <ApproversSection />
       <TestSection />
       <AnalyticsSection />

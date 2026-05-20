@@ -34,33 +34,59 @@
     margin-bottom: 0.75rem;
   }
 
+  /* Mobile-first heading sizes — about ~75% of the desktop scale.
+     Bumped up at the md breakpoint (48rem / 768px). */
   h1 {
-    font-size: 3.25rem;
+    font-size: 2.25rem;
   }
 
   h2 {
-    font-size: 2.25rem;
-    margin-top: 3.5rem;
+    font-size: 1.75rem;
+    margin-top: 2.5rem;
   }
 
   h3 {
-    font-size: 1.5rem;
-    margin-top: 3rem;
+    font-size: 1.25rem;
+    margin-top: 2.25rem;
   }
 
   h4 {
-    font-size: 1.25rem;
-    margin-top: 2rem;
+    font-size: 1.125rem;
+    margin-top: 1.5rem;
   }
 
   h5 {
-    font-size: 1.125rem;
+    font-size: 1rem;
     margin-top: 1rem;
+  }
+
+  @media (min-width: 48rem) {
+    h1 {
+      font-size: 3.25rem;
+    }
+
+    h2 {
+      font-size: 2.25rem;
+      margin-top: 3.5rem;
+    }
+
+    h3 {
+      font-size: 1.5rem;
+      margin-top: 3rem;
+    }
+
+    h4 {
+      font-size: 1.25rem;
+      margin-top: 2rem;
+    }
+
+    h5 {
+      font-size: 1.125rem;
+    }
   }
 
   p {
     margin-bottom: 1rem;
-    line-height: 1.7;
   }
 
   ul,
@@ -90,7 +116,7 @@
     padding: 1rem;
     border-radius: 0.125rem;
     overflow-x: auto;
-    margin-bottom: 1rem;
+    margin-block: 1.5rem;
     font-size: 0.875rem;
 
     @media (min-width: 64rem) {
@@ -141,7 +167,7 @@
      narrow viewports. The wrap owns the block-level margin; the table
      itself fills the wrap. */
   .table-wrap {
-    margin-bottom: 1rem;
+    margin-block: 1.5rem;
     overflow-x: auto;
     scrollbar-width: thin;
   }

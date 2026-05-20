@@ -113,10 +113,10 @@ func init() {
 		Runtime:  ClickhouseHTTPSEndpointRuntime{},
 		Validate: multiCredValidate,
 		Build:    passthroughBuild,
-		Emit: func(body any, _ string, b *hclwrite.Body) {
+		Emit: func(body any, _ string, b *hclwrite.Body, refs *config.RefIndex) {
 			e := body.(*ClickhouseHTTPSEndpoint)
 			b.SetAttributeValue("hosts", config.StringListVal(e.Hosts))
-			emitCredentialBinding(b, e.Credential, e.Credentials, "placeholder")
+			emitCredentialBinding(b, e.Credential, e.Credentials, "placeholder", refs)
 		},
 	})
 }

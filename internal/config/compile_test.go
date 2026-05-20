@@ -103,6 +103,108 @@ func TestCompile(t *testing.T) {
 	}
 }
 
+// TestCompileWildcardHosts verifies that wildcard hosts are accepted,
+// land in HostPatterns (not HostIndex), and that malformed wildcards
+// or within-endpoint duplicates are rejected at load time.
+func TestCompileWildcardHosts(t *testing.T) {
+	src := `
+credential "bearer_token" "tok" {}
+endpoint "https" "aws" {
+  hosts      = ["*.amazonaws.com", "*.us-east-1.amazonaws.com:443"]
+  credential = bearer_token.tok
+}
+profile "p" { endpoints = [https.aws] }
+`
+	gw, diags := config.LoadBytes([]byte(src), "in.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	cp, err := config.Compile(gw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	prof := cp.Profiles["p"]
+	if prof == nil {
+		t.Fatalf("missing profile p")
+	}
+	if got := len(prof.HostPatterns); got != 2 {
+		t.Fatalf("HostPatterns count = %d, want 2 (entries: %+v)", got, prof.HostPatterns)
+	}
+	// Longest first: *.us-east-1.amazonaws.com before *.amazonaws.com.
+	if prof.HostPatterns[0].Pattern != "*.us-east-1.amazonaws.com" {
+		t.Errorf("HostPatterns[0]=%q, want *.us-east-1.amazonaws.com", prof.HostPatterns[0].Pattern)
+	}
+	if prof.HostPatterns[1].Pattern != "*.amazonaws.com" {
+		t.Errorf("HostPatterns[1]=%q, want *.amazonaws.com", prof.HostPatterns[1].Pattern)
+	}
+	// Wildcards must not leak into HostIndex.
+	for k := range prof.HostIndex {
+		if strings.HasPrefix(k, "*.") {
+			t.Errorf("HostIndex leaked wildcard %q", k)
+		}
+	}
+}
+
+func TestCompileRejectsBadHosts(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{
+			name: "malformed wildcard - empty suffix",
+			src: `
+credential "bearer_token" "tok" {}
+endpoint "https" "bad" {
+  hosts = ["*."]
+  credential = bearer_token.tok
+}
+profile "p" { endpoints = [https.bad] }
+`,
+		},
+		{
+			name: "wildcard with bare TLD",
+			src: `
+credential "bearer_token" "tok" {}
+endpoint "https" "bad" {
+  hosts = ["*.com"]
+  credential = bearer_token.tok
+}
+profile "p" { endpoints = [https.bad] }
+`,
+		},
+		{
+			name: "wildcard not at leftmost label",
+			src: `
+credential "bearer_token" "tok" {}
+endpoint "https" "bad" {
+  hosts = ["api.*.foo.com"]
+  credential = bearer_token.tok
+}
+profile "p" { endpoints = [https.bad] }
+`,
+		},
+		{
+			name: "duplicate hosts",
+			src: `
+credential "bearer_token" "tok" {}
+endpoint "https" "bad" {
+  hosts = ["api.foo.com", "api.foo.com"]
+  credential = bearer_token.tok
+}
+profile "p" { endpoints = [https.bad] }
+`,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, diags := config.LoadBytes([]byte(c.src), "in.hcl")
+			if !diags.HasErrors() {
+				t.Fatalf("load accepted bad hosts; want diagnostic")
+			}
+		})
+	}
+}
+
 // TestCompilePrioritySort verifies that rules with mixed priorities
 // land in descending priority order, matching the v14 first-match-
 // wins evaluation. Tied priorities preserve declaration order.
@@ -111,24 +213,24 @@ func TestCompilePrioritySort(t *testing.T) {
 credential "bearer_token" "pat" {}
 endpoint "https" "ep" {
   hosts      = ["x.example.com"]
-  credential = pat
+  credential = bearer_token.pat
 }
-profile "p" { endpoints = [ep] }
+profile "p" { endpoints = [https.ep] }
 
 rule "fallback" {
-  endpoint  = ep
+  endpoint  = https.ep
   priority  = -100
   condition = "http.method == 'POST'"
   verdict   = "deny"
 }
 rule "specific" {
-  endpoint  = ep
+  endpoint  = https.ep
   priority  = 100
   condition = "http.method == 'POST' && http.path == '/v1/refunds'"
   verdict   = "deny"
 }
 rule "general" {
-  endpoint  = ep
+  endpoint  = https.ep
   condition = "http.method == 'POST'"
   verdict   = "allow"
 }
@@ -209,7 +311,7 @@ tunnel "local_command" "t" {
   command    = ["ssh", "old-bastion"]
   listen     = "127.0.0.1:1001"
   keepalive  = "always"
-  credential = tok
+  credential = bearer_token.tok
 }
 `
 	same := `
@@ -218,7 +320,7 @@ tunnel "local_command" "t" {
   command    = ["ssh", "old-bastion"]
   listen     = "127.0.0.1:1001"
   keepalive  = "always"
-  credential = tok
+  credential = bearer_token.tok
 }
 `
 	commandChanged := `
@@ -227,7 +329,7 @@ tunnel "local_command" "t" {
   command    = ["ssh", "new-bastion"]
   listen     = "127.0.0.1:1001"
   keepalive  = "always"
-  credential = tok
+  credential = bearer_token.tok
 }
 `
 	credentialChanged := `
@@ -236,7 +338,7 @@ tunnel "local_command" "t" {
   command    = ["ssh", "old-bastion"]
   listen     = "127.0.0.1:1001"
   keepalive  = "always"
-  credential = tok
+  credential = bearer_token.tok
 }
 `
 
@@ -264,7 +366,7 @@ tunnel "local_command" "base" {
 tunnel "local_command" "child" {
   command = ["ssh", "child"]
   listen  = "127.0.0.1:1002"
-  via     = base
+  via     = local_command.base
 }
 `
 	viaChanged := `
@@ -275,7 +377,7 @@ tunnel "local_command" "base" {
 tunnel "local_command" "child" {
   command = ["ssh", "child"]
   listen  = "127.0.0.1:1002"
-  via     = base
+  via     = local_command.base
 }
 `
 
@@ -312,12 +414,12 @@ func TestCompileTunnelViaCycle(t *testing.T) {
 tunnel "local_command" "a" {
   command = ["true"]
   listen  = "127.0.0.1:1"
-  via     = b
+  via     = local_command.b
 }
 tunnel "local_command" "b" {
   command = ["true"]
   listen  = "127.0.0.1:2"
-  via     = a
+  via     = local_command.a
 }
 `)
 	gw, diags := config.LoadBytes(src, "cycle.hcl")
@@ -343,7 +445,7 @@ tunnel "local_command" "t" {
 }
 endpoint "postgres" "ipliteral" {
   host   = "10.0.0.5:5432"
-  tunnel = t
+  tunnel = local_command.t
 }
 `)
 	gw, diags := config.LoadBytes(src, "ipliteral.hcl")

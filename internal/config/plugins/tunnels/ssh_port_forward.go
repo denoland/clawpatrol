@@ -271,13 +271,13 @@ func init() {
 		},
 		Build:   passthrough,
 		Runtime: (*SSHPortForwardTunnel)(nil),
-		Emit: func(body any, _ string, b *hclwrite.Body) {
+		Emit: func(body any, _ string, b *hclwrite.Body, refs *config.RefIndex) {
 			t := body.(*SSHPortForwardTunnel)
 			if t.Bastion != "" {
 				b.SetAttributeValue("bastion", cty.StringVal(t.Bastion))
 			}
 			b.SetAttributeValue("user", cty.StringVal(t.User))
-			emitCommon(b, t.TunnelCommon())
+			emitCommon(b, t.TunnelCommon(), refs)
 		},
 	})
 }

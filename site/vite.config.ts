@@ -86,7 +86,8 @@ function reloadDocsOnChange(): Plugin {
   const sharedComponents = [
     resolve(__dirname, "src/components/Header.tsx"),
     resolve(__dirname, "src/components/Footer.tsx"),
-    resolve(__dirname, "src/components/Stripe.tsx"),
+    resolve(__dirname, "src/components/DotField.tsx"),
+    resolve(__dirname, "src/components/ShadeBar.tsx"),
   ];
 
   return {

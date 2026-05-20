@@ -2,7 +2,7 @@ credential "bearer_token" "pat" {}
 
 endpoint "https" "github" {
   hosts      = ["api.github.com"]
-  credential = pat
+  credential = bearer_token.pat
 }
 
 approver "human_approver" "ops" {
@@ -15,11 +15,11 @@ policy "draft-review" { text = "Approve only safe edits." }
 # be a bare-name reference. The previous closed-set check on stage
 # attributes is now subsumed by the shape check.
 rule "broken-approve" {
-  endpoint  = github
+  endpoint  = https.github
   condition = "http.method == 'POST'"
-  approve   = [{ naem = ops, policy = draft-review }]
+  approve   = [{ naem = human_approver.ops, policy = policy.draft-review }]
 }
 
 profile "default" {
-  endpoints = [github]
+  endpoints = [https.github]
 }

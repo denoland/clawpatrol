@@ -9,7 +9,7 @@ holds them.
 
 Your AI agent has every API key in plaintext. It talks to GitHub,
 Slack, Anthropic, Postgres, Kubernetes, and a dozen other services.
-You can't see what it's doing, what it's spending, or where your
+You can’t see what it’s doing, what it’s spending, or where your
 credentials end up. One prompt injection — or one model that
 hallucinates a `DELETE` — and your secrets exfiltrate, or a
 production table gets wiped and the rows aren't coming back.
@@ -22,7 +22,7 @@ production table gets wiped and the rows aren't coming back.
   below.
 
 - **Protocol-aware.** Rules see what the agent is doing, not just
-  where it's pointed. Claw Patrol terminates the full wire protocol
+  where it’s pointed. Claw Patrol terminates the full wire protocol
   and exposes the parsed action to your rules:
 
   - **HTTPS** — `http.method`, `http.path`, `http.headers`,
@@ -75,7 +75,7 @@ Claw Patrol has two pieces:
 - One or more **devices** — the machines where the agents run,
   whether a developer workstation or a dedicated host running
   agents 24/7. Claw Patrol runs on each device, captures the
-  agent's outbound flows, and tunnels them to the gateway.
+  agent’s outbound flows, and tunnels them to the gateway.
 
 A device joins the gateway first — `clawpatrol join` for the
 WireGuard control mode, or `clawpatrol login` for the Tailscale
@@ -166,4 +166,4 @@ the agent.
 - [Approval rules](/docs/approval-rules/) — gating writes behind
   a human or an LLM judge.
 - [Security model](/docs/security-model/) — what Claw Patrol does
-  and doesn't protect against.
+  and doesn’t protect against.

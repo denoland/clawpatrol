@@ -19,10 +19,10 @@ public_url = "https://clawpatrol.example.test/"
 credential "bearer_token" "pat" {}
 endpoint "https" "api" {
   hosts      = ["api.example.test"]
-  credential = pat
+  credential = bearer_token.pat
 }
 profile "agent" {
-  endpoints          = [api]
+  endpoints          = [https.api]
   hitl_async_grants = true
 }
 approver "human_approver" "ops" {
@@ -37,8 +37,8 @@ approver "human_approver" "ops" {
   }
 }
 rule "writes" {
-  endpoint = api
-  approve  = [ops]
+  endpoint = https.api
+  approve  = [human_approver.ops]
 }
 `
 	gw, diags := config.LoadBytes([]byte(src), "hitl_async.hcl")
@@ -191,10 +191,10 @@ public_url = "https://clawpatrol.example.test"
 credential "bearer_token" "pat" {}
 endpoint "https" "api" {
   hosts      = ["api.example.test"]
-  credential = pat
+  credential = bearer_token.pat
 }
 profile "agent" {
-  endpoints          = [api]
+  endpoints          = [https.api]
   hitl_async_grants = true
 }
 approver "human_approver" "ops" {
@@ -209,8 +209,8 @@ approver "human_approver" "ops" {
   }
 }
 rule "writes" {
-  endpoint = api
-  approve  = [ops]
+  endpoint = https.api
+  approve  = [human_approver.ops]
 }
 `
 	_, diags := config.LoadBytes([]byte(src), "invalid_async.hcl")
@@ -255,10 +255,10 @@ func hitlAsyncConfigSource(publicURL string, profileOptIn, includeAsyncGrant boo
 	b.WriteString(`credential "bearer_token" "pat" {}
 endpoint "https" "api" {
   hosts      = ["api.example.test"]
-  credential = pat
+  credential = bearer_token.pat
 }
 profile "agent" {
-  endpoints = [api]
+  endpoints = [https.api]
 `)
 	if profileOptIn {
 		b.WriteString("  hitl_async_grants = true\n")
@@ -287,8 +287,8 @@ approver "human_approver" "ops" {
 	}
 	b.WriteString(`}
 rule "writes" {
-  endpoint = api
-  approve  = [ops]
+  endpoint = https.api
+  approve  = [human_approver.ops]
 }
 `)
 	return b.String()

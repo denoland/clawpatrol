@@ -398,26 +398,6 @@ func (m *TunnelManager) DisconnectCredential(ctx context.Context, credential str
 	return firstErr
 }
 
-// Close tears down every entry. Called at gateway shutdown.
-func (m *TunnelManager) Close() {
-	m.mu.Lock()
-	entries := m.entries
-	m.entries = map[mgrKey]*tunnelEntry{}
-	m.pinned = map[mgrKey]func(){}
-	m.mu.Unlock()
-	for _, e := range entries {
-		if e.timer != nil {
-			e.timer.Stop()
-		}
-		if e.tunnel != nil {
-			_ = e.tunnel.Close()
-		}
-		if e.viaRelease != nil {
-			e.viaRelease()
-		}
-	}
-}
-
 // wrapTunnel hides Close from callers — only the manager closes.
 // Dial passes through to the underlying tunnel.
 func wrapTunnel(t runtime.Tunnel) runtime.Tunnel {

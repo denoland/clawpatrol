@@ -213,7 +213,7 @@ func TestSSHPortForward(t *testing.T) {
 		SecretStore: fakeSecretStore{},
 		Credential: &cruntime.TunnelCredential{
 			Name: "fake",
-			Type: "ssh",
+			Type: "ssh_key",
 			Body: cred,
 		},
 	}

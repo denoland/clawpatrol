@@ -374,12 +374,12 @@ func init() {
 			{Path: "Policy", Kind: config.KindPolicy, Optional: true},
 		},
 		Build: func(d any, _ string, _ *config.BuildCtx) (any, hcl.Diagnostics) { return d, nil },
-		Emit: func(body any, _ string, b *hclwrite.Body) {
+		Emit: func(body any, _ string, b *hclwrite.Body, refs *config.RefIndex) {
 			a := body.(*LLMApprover)
 			b.SetAttributeValue("model", cty.StringVal(a.Model))
-			config.SetIdent(b, "credential", a.Credential)
+			config.SetIdent(b, "credential", refs.Ref(config.KindCredential, a.Credential))
 			if a.Policy != "" {
-				config.SetIdent(b, "policy", a.Policy)
+				config.SetIdent(b, "policy", refs.Ref(config.KindPolicy, a.Policy))
 			}
 		},
 	})

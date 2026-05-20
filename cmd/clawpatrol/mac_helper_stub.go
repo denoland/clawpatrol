@@ -2,13 +2,10 @@
 
 package main
 
-// macHelperInstall is darwin-only — no-op on every other platform.
-// login.go's runJoin guards the call with `runtime.GOOS == "darwin"`
-// already, but Go still needs the symbol resolvable at compile time
-// on every build.
+// Stubs for darwin-only symbols. Callers gate with runtime.GOOS, but
+// Go still needs each symbol resolvable at compile time. On non-darwin
+// the install is a no-op and the path never exists (status / uninstall
+// branches guard with os.Stat).
 func macHelperInstall(_ bool) error { return nil }
 
-// macHelperPath alias for cross-platform builds. On non-darwin, the
-// path doesn't exist (uninstall + status guard with os.Stat); the
-// const just lets the symbol resolve on linux compiles.
 const macHelperPath = "/Applications/Clawpatrol.app/Contents/MacOS/Clawpatrol"

@@ -35,9 +35,9 @@ admin_email = "x@example.com"
 credential "bearer_token" "tok" {}
 endpoint "https" "github" {
   hosts      = ["api.github.com"]
-  credential = tok
+  credential = bearer_token.tok
 }
-profile "default" { endpoints = [github] }
+profile "default" { endpoints = [https.github] }
 `
 
 // TestExporterHTTPSHappyPath: a recorded HTTPS Event reshapes into
@@ -117,13 +117,13 @@ credential "bearer_token" "a" {}
 credential "bearer_token" "b" {}
 endpoint "https" "alpha" {
   hosts      = ["api.example.com"]
-  credential = a
+  credential = bearer_token.a
 }
 endpoint "https" "beta" {
   hosts      = ["api.example.com"]
-  credential = b
+  credential = bearer_token.b
 }
-profile "default" { endpoints = [alpha, beta] }
+profile "default" { endpoints = [https.alpha, https.beta] }
 `
 	w := &webMux{g: gatewayWithPolicy(t, hcl)}
 	ev := &Event{
@@ -171,9 +171,9 @@ admin_email = "x@example.com"
 credential "postgres_credential" "pg-cred" { user = "agent" }
 endpoint "postgres" "pg" {
   host       = "pg.internal:5432"
-  credential = pg-cred
+  credential = postgres_credential.pg-cred
 }
-profile "default" { endpoints = [pg] }
+profile "default" { endpoints = [postgres.pg] }
 `
 	w := &webMux{g: gatewayWithPolicy(t, hcl)}
 	ev := &Event{
@@ -209,9 +209,9 @@ admin_email = "x@example.com"
 credential "postgres_credential" "pg-cred" { user = "agent" }
 endpoint "postgres" "pg" {
   host       = "pg.internal:5432"
-  credential = pg-cred
+  credential = postgres_credential.pg-cred
 }
-profile "default" { endpoints = [pg] }
+profile "default" { endpoints = [postgres.pg] }
 `
 	w := &webMux{g: gatewayWithPolicy(t, hcl)}
 	// Facets shaped as if reloaded from the events table (JSON
@@ -267,9 +267,9 @@ admin_email = "x@example.com"
 credential "postgres_credential" "pg-cred" { user = "agent" }
 endpoint "postgres" "pg" {
   host       = "pg.internal:5432"
-  credential = pg-cred
+  credential = postgres_credential.pg-cred
 }
-profile "default" { endpoints = [pg] }
+profile "default" { endpoints = [postgres.pg] }
 `
 	w := &webMux{g: gatewayWithPolicy(t, hcl)}
 	ev := &Event{
@@ -302,9 +302,9 @@ admin_email = "x@example.com"
 credential "postgres_credential" "pg-cred" { user = "agent" }
 endpoint "postgres" "pg" {
   host       = "pg.internal:5432"
-  credential = pg-cred
+  credential = postgres_credential.pg-cred
 }
-profile "default" { endpoints = [pg] }
+profile "default" { endpoints = [postgres.pg] }
 `
 	w := &webMux{g: gatewayWithPolicy(t, hcl)}
 	ev := &Event{ID: "evt-sql-2", Action: "allow", Endpoint: "pg"}
@@ -329,9 +329,9 @@ credential "mtls_credential" "kube-mtls" {}
 endpoint "kubernetes" "kube" {
   server     = "10.0.0.7"
   hosts      = ["10.0.0.7"]
-  credential = kube-mtls
+  credential = mtls_credential.kube-mtls
 }
-profile "default" { endpoints = [kube] }
+profile "default" { endpoints = [kubernetes.kube] }
 `
 	w := &webMux{g: gatewayWithPolicy(t, hcl)}
 	ev := &Event{
@@ -384,14 +384,14 @@ admin_email = "x@example.com"
 credential "bearer_token" "tok" {}
 endpoint "https" "github" {
   hosts      = ["api.github.com"]
-  credential = tok
+  credential = bearer_token.tok
 }
 rule "reads" {
-  endpoint  = github
+  endpoint  = https.github
   condition = "http.method == 'GET'"
   verdict   = "allow"
 }
-profile "default" { endpoints = [github] }
+profile "default" { endpoints = [https.github] }
 `
 	gw := gatewayWithPolicy(t, hcl)
 	w := &webMux{g: gw}

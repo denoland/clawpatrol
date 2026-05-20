@@ -7,7 +7,7 @@ credential "bearer_token" "github-pat" {}
 
 endpoint "https" "github" {
   hosts      = ["api.github.com", "github.com"]
-  credential = github-pat
+  credential = bearer_token.github-pat
 }
 
 approver "human_approver" "ops" {
@@ -16,17 +16,17 @@ approver "human_approver" "ops" {
 }
 
 rule "github-reads" {
-  endpoint  = github
+  endpoint  = https.github
   condition = "http.method in ['GET', 'HEAD']"
   verdict   = "allow"
 }
 
 rule "github-writes" {
-  endpoint  = github
+  endpoint  = https.github
   condition = "http.method in ['POST', 'PATCH', 'DELETE']"
-  approve   = [ops]
+  approve   = [human_approver.ops]
 }
 
 profile "default" {
-  endpoints = [github]
+  endpoints = [https.github]
 }

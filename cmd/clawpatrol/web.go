@@ -20,7 +20,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -394,11 +396,6 @@ func (w *webMux) dashboardAuthGate(next http.Handler) http.Handler {
 // endpoint. Single route to keep the auth surface small.
 const dashboardLoginPath = "/__login"
 
-// dashboardLogoutPath revokes the cp_session cookie. POST-only —
-// SameSite=Lax on the cookie protects against drive-by GETs from
-// other origins.
-const dashboardLogoutPath = "/__logout"
-
 // lookupSessionFromRequest reads the cp_session cookie, looks up the
 // matching row, and returns the username on a live hit. Empty string
 // when missing/expired/error (the gate treats all three as "no
@@ -748,21 +745,48 @@ func (w *webMux) apiHITLOperationStatus(rw http.ResponseWriter, r *http.Request)
 		http.Error(rw, http.MethodGet, http.StatusMethodNotAllowed)
 		return
 	}
-	token := bearerFromAuthHeader(r.Header.Get("Authorization"))
-	peerIP := peerIPForAPIToken(w.g.db, token)
-	if peerIP == "" {
-		http.Error(rw, "unknown or missing peer api token", http.StatusUnauthorized)
-		return
+	store := NewHITLOperationStore(w.g.db)
+	var op HITLOperation
+	var err error
+	statusToken := r.URL.Query().Get("token")
+	if statusToken != "" {
+		operationID, ok := hitlOperationIDFromStatusPath(r.URL.Path)
+		if !ok {
+			writeHITLOperationNotFound(rw)
+			return
+		}
+		op, err = store.GetForStatusToken(r.Context(), operationID, statusToken)
+		if err == nil {
+			op.StatusToken = statusToken
+		} else if !errors.Is(err, ErrHITLOperationNotFound) {
+			log.Printf("hitl operation status %s: %v", operationID, err)
+			http.Error(rw, "failed to load HITL operation", http.StatusInternalServerError)
+			return
+		} else if bearerFromAuthHeader(r.Header.Get("Authorization")) == "" {
+			writeHITLOperationNotFound(rw)
+			return
+		}
 	}
-
-	operationID, ok := hitlOperationIDFromStatusPath(r.URL.Path)
-	if !ok {
-		writeHITLOperationNotFound(rw)
-		return
+	if op.ID == "" {
+		if isFunnelPublicRequest(r.Context()) {
+			writeHITLOperationNotFound(rw)
+			return
+		}
+		token := bearerFromAuthHeader(r.Header.Get("Authorization"))
+		peerIP := peerIPForAPIToken(w.g.db, token)
+		if peerIP == "" {
+			http.Error(rw, "unknown or missing peer api token", http.StatusUnauthorized)
+			return
+		}
+		operationID, ok := hitlOperationIDFromStatusPath(r.URL.Path)
+		if !ok {
+			writeHITLOperationNotFound(rw)
+			return
+		}
+		profileID := w.g.profileFor(peerIP)
+		principalID := hitlPeerPrincipalID(peerIP)
+		op, err = store.GetForPrincipal(r.Context(), operationID, profileID, principalID)
 	}
-	profileID := w.g.profileFor(peerIP)
-	principalID := hitlPeerPrincipalID(peerIP)
-	op, err := NewHITLOperationStore(w.g.db).GetForPrincipal(r.Context(), operationID, profileID, principalID)
 	if errors.Is(err, ErrHITLOperationNotFound) {
 		writeHITLOperationNotFound(rw)
 		return
@@ -807,20 +831,22 @@ func hitlPeerPrincipalID(peerIP string) string {
 }
 
 func writeHITLOperationAccepted(rw http.ResponseWriter, op HITLOperation, publicURL string) {
-	statusURL := hitlOperationStatusURL(publicURL, op.ID)
+	statusURL := hitlOperationStatusURL(publicURL, op.ID, op.StatusToken)
 	rw.Header().Set("Location", statusURL)
 	rw.Header().Set("Retry-After", strconv.Itoa(hitlDefaultRetryAfterSeconds))
 	writeHITLOperationResponse(rw, http.StatusAccepted, op, statusURL)
 }
 
 func writeHITLOperationStatus(rw http.ResponseWriter, op HITLOperation, publicURL string) {
-	statusURL := hitlOperationStatusURL(publicURL, op.ID)
+	statusURL := hitlOperationStatusURL(publicURL, op.ID, op.StatusToken)
 	writeHITLOperationResponse(rw, http.StatusOK, op, statusURL)
 }
 
 func writeHITLOperationResponse(rw http.ResponseWriter, status int, op HITLOperation, statusURL string) {
 	upstreamCalled := hitlOperationUpstreamCalled(op)
 	rw.Header().Set("Content-Type", "application/json")
+	rw.Header().Set("Cache-Control", "no-store")
+	rw.Header().Set("Referrer-Policy", "no-referrer")
 	rw.Header().Set("Clawpatrol-HITL-State", string(op.State))
 	rw.Header().Set("Clawpatrol-Upstream-Called", strconv.FormatBool(upstreamCalled))
 	if op.State == HITLOperationStatePendingApproval || op.State == HITLOperationStateSyncWaiting {
@@ -903,9 +929,12 @@ func hitlOperationUpstreamCalled(op HITLOperation) bool {
 	}
 }
 
-func hitlOperationStatusURL(publicURL, operationID string) string {
+func hitlOperationStatusURL(publicURL, operationID, statusToken string) string {
 	base := strings.TrimRight(publicURL, "/")
 	path := hitlOperationStatusPrefix + url.PathEscape(operationID) + hitlOperationStatusSuffix
+	if statusToken != "" {
+		path += "?token=" + url.QueryEscape(statusToken)
+	}
 	if base == "" {
 		return path
 	}
@@ -914,6 +943,8 @@ func hitlOperationStatusURL(publicURL, operationID string) string {
 
 func writeHITLOperationNotFound(rw http.ResponseWriter) {
 	rw.Header().Set("Content-Type", "application/json")
+	rw.Header().Set("Cache-Control", "no-store")
+	rw.Header().Set("Referrer-Policy", "no-referrer")
 	rw.WriteHeader(http.StatusNotFound)
 	_ = json.NewEncoder(rw).Encode(map[string]any{"error": hitlOperationNotFoundErrorValue})
 }
@@ -1102,6 +1133,7 @@ func (w *webMux) apiState(rw http.ResponseWriter, r *http.Request) {
 		"integrations": w.statusList(r),
 		"agents":       w.agentsList(),
 		"update":       currentUpdateBanner.Load(),
+		"config_file":  filepath.Base(w.g.cfgPath),
 	}
 	body, err := json.Marshal(state)
 	if err != nil {
@@ -2519,6 +2551,13 @@ func (r *HITLRegistry) Update(id string, mutate func(*runtime.HITLPending)) bool
 	return true
 }
 
+// List returns pending entries sorted by CreatedAt ascending (oldest
+// first), tiebroken on ID. The dashboard polls this endpoint once per
+// second; Go's randomized map iteration would otherwise shuffle rows
+// on every render and make the table flicker. Sort key is invariant
+// across the sync_waiting → pending_approval Update transition (same
+// ID, same CreatedAt), so a row keeps its position when its approval
+// mode changes.
 func (r *HITLRegistry) List() []runtime.HITLPending {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -2527,6 +2566,12 @@ func (r *HITLRegistry) List() []runtime.HITLPending {
 	for _, e := range r.pending {
 		out = append(out, e.p)
 	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out
 }
 

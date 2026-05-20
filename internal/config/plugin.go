@@ -116,11 +116,15 @@ type Plugin struct {
 
 	// Emit serializes a built entity back to HCL by populating an
 	// hclwrite block body. Required for every plugin — the framework
-	// has no generic reverse path that handles bare-name refs,
+	// has no generic reverse path that handles typed refs,
 	// heterogeneous list shapes (credentials with optional
 	// placeholders), or per-family match maps. Plugins that decode
 	// nothing (zero-attribute credentials) provide a no-op Emit.
-	Emit func(body any, name string, hb *hclwrite.Body)
+	//
+	// The RefIndex parameter lets the plugin format references as
+	// typed traversals (`type.name` / `kind.name`) without each
+	// plugin re-implementing the lookup.
+	Emit func(body any, name string, hb *hclwrite.Body, refs *RefIndex)
 }
 
 // BuildCtx is what the loader hands to Validate and Build. It bundles
@@ -161,12 +165,6 @@ var frameworkAttrsByKind = map[Kind][]FrameworkAttrSpec{
 	KindEndpoint: {
 		{Name: "tunnel", Kind: KindTunnel, Optional: true},
 	},
-}
-
-// FrameworkAttrsFor returns the framework attr specs declared for
-// kind, or nil if none.
-func FrameworkAttrsFor(kind Kind) []FrameworkAttrSpec {
-	return frameworkAttrsByKind[kind]
 }
 
 // RefSpec declares a field on a decoded plugin struct that holds a

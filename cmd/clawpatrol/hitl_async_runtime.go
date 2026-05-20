@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -174,6 +175,7 @@ func (g *Gateway) transitionAsyncHITLOperation(ctx context.Context, op HITLOpera
 	if err != nil {
 		return HITLOperation{}, err
 	}
+	updated.StatusToken = op.StatusToken
 	g.updateHITLOperationMessage(context.Background(), updated)
 	return updated, nil
 }
@@ -351,9 +353,9 @@ func hitlCredentialGeneration(ctx context.Context, db *sql.DB, credentialID stri
 	return "env-or-empty:" + credentialID, nil
 }
 
-func writeHITLOperationAcceptedToConn(w io.Writer, op HITLOperation, publicURL string) {
+func writeHITLOperationAcceptedToConn(w io.Writer, op HITLOperation, publicURL string) error {
 	if w == nil {
-		return
+		return nil
 	}
 	rr := httptest.NewRecorder()
 	writeHITLOperationAccepted(rr, op, publicURL)
@@ -361,7 +363,14 @@ func writeHITLOperationAcceptedToConn(w io.Writer, op HITLOperation, publicURL s
 	defer func() { _ = resp.Body.Close() }()
 	resp.ContentLength = int64(rr.Body.Len())
 	resp.Header.Set("Content-Length", strconv.FormatInt(resp.ContentLength, 10))
-	_ = resp.Write(w)
+	resp.Header.Set("Connection", "close")
+
+	var raw bytes.Buffer
+	if err := resp.Write(&raw); err != nil {
+		return err
+	}
+	_, err := w.Write(raw.Bytes())
+	return err
 }
 
 func hitlAsyncFailureReason(err error) string {

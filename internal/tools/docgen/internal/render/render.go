@@ -70,9 +70,11 @@ Each block section lists the attributes the loader accepts, with:
 
 - **Type** — the HCL value type. ` + "`string`" + `, ` + "`bool`" + `, ` + "`int`" + ` are scalar
   literals; ` + "`[]string`" + ` is a list of strings; ` + "`ref(<kind>)`" + ` is a
-  bare-name reference to another block of that kind (e.g.
-  ` + "`credential = github-pat`" + `); ` + "`[]ref(<kind>)`" + ` is a list of such
-  references; nested blocks have their shape described inline.
+  typed reference to another block (` + "`<type>.<name>`" + ` for
+  two-label kinds like ` + "`credential = bearer_token.github-pat`" + `,
+  ` + "`<kind>.<name>`" + ` for one-label kinds like ` + "`policy = policy.no-pii`" + `);
+  ` + "`[]ref(<kind>)`" + ` is a list of such references; nested blocks have
+  their shape described inline.
 - **Required** — ` + "`yes`" + ` if the loader rejects the block when the
   attribute is missing.
 
@@ -497,11 +499,11 @@ func exampleValue(t reflect.Type, fieldName string) string {
 		case "cookie_name":
 			return `"session"`
 		case "credential":
-			return "example-credential"
+			return "bearer_token.example"
 		case "endpoint":
-			return "example-endpoint"
+			return "https.example"
 		case "policy":
-			return "example-policy"
+			return "policy.example"
 		case "verdict":
 			return `"deny"`
 		case "reason":
