@@ -417,7 +417,7 @@ func StringListVal(xs []string) cty.Value {
 
 // SetIdentList writes `name = [a.x, b.y, c.z]` where each element is
 // a dotted traversal expression. Used for typed ref lists like
-// `endpoints = [https.github, slack_tokens.avocet]`. Pass each entry
+// `endpoints = [https.github, slack_tokens.dev]`. Pass each entry
 // as its fully-qualified traversal string (use RefIndex.Ref to build).
 //
 // Exported so plugin Emit hooks can use it for fields like a rule's

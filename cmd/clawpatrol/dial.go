@@ -73,7 +73,7 @@ func (g *Gateway) servePorts() {}
 // (currently mtls_credential) get the plugin a chance to add client
 // certs / replace RootCAs before the handshake.
 //
-// profile is the peer's profile name (e.g. "avocet2"); it is used to
+// profile is the peer's profile name (e.g. "dev2"); it is used to
 // fetch per-profile secrets from the dashboard DB. Callers that don't
 // have a profile may pass "" — secrets stored under "" or via env-var
 // still resolve correctly for non-profiled deployments.

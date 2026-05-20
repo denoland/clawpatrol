@@ -264,7 +264,7 @@ func TestHITLRegistryListIsOrderedAndStableAcrossUpdates(t *testing.T) {
 	ids := make([]string, 0, 8)
 	for i := 0; i < 8; i++ {
 		id, _ := registry.Add(runtime.HITLPending{
-			Host:      "console.deno.com",
+			Host:      "console.example.com",
 			Method:    "POST",
 			Path:      fmt.Sprintf("/api/admin.supportTickets.replyOnBehalf/%d", i),
 			CreatedAt: base.Add(time.Duration(i) * time.Millisecond),

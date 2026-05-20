@@ -48,7 +48,7 @@ function TestOutput() {
           <span class="text-butter-300">"k8s-no-secrets"</span>
           {"\n"}
           {ok("tests/k8s-reads.json")}
-          {ok("tests/orb-avocet2-immutable-operations-allow.json")}
+          {ok("tests/orb-dev2-immutable-operations-allow.json")}
           {ok("tests/pg-staging-banned-functions.json")}
           {ok("tests/pg-staging-default-deny.json")}
           {ok("tests/pg-staging-reads.json")}

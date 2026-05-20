@@ -18,7 +18,7 @@ import (
 // Kind names a class of policy block. The plugin-dispatched two-label
 // kinds — KindEndpoint, KindCredential, KindApprover, KindTunnel —
 // read their type from the block's first label (e.g. `endpoint "https"
-// "github-avocet"` → Type="https").
+// "github-dev"` → Type="https").
 //
 // KindRule, KindPolicy and KindProfile are one-label blocks. KindRule
 // has a single registered plugin (Type="") and infers its protocol

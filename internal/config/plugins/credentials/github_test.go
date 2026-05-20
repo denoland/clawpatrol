@@ -11,7 +11,7 @@ import (
 
 func TestGitHubOAuthInjectHTTPUsesBearerForAPIRequests(t *testing.T) {
 	plugin := &GitHubOAuth{}
-	req, err := http.NewRequest("GET", "https://api.github.com/repos/denoland/deployng", nil)
+	req, err := http.NewRequest("GET", "https://api.github.com/repos/example/myrepo", nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -31,19 +31,19 @@ func TestGitHubOAuthInjectHTTPUsesBasicForSmartHTTPGit(t *testing.T) {
 	}{
 		{
 			name: "upload-pack advertisement",
-			url:  "https://github.com/denoland/deployng.git/info/refs?service=git-upload-pack",
+			url:  "https://github.com/example/myrepo.git/info/refs?service=git-upload-pack",
 		},
 		{
 			name: "receive-pack advertisement",
-			url:  "https://github.com/denoland/deployng.git/info/refs?service=git-receive-pack",
+			url:  "https://github.com/example/myrepo.git/info/refs?service=git-receive-pack",
 		},
 		{
 			name: "upload-pack RPC",
-			url:  "https://github.com/denoland/deployng.git/git-upload-pack",
+			url:  "https://github.com/example/myrepo.git/git-upload-pack",
 		},
 		{
 			name: "receive-pack RPC",
-			url:  "https://github.com/denoland/deployng.git/git-receive-pack",
+			url:  "https://github.com/example/myrepo.git/git-receive-pack",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -52,7 +52,7 @@ func TestGitHubOAuthInjectHTTPUsesBasicForSmartHTTPGit(t *testing.T) {
 			if err != nil {
 				t.Fatalf("new request: %v", err)
 			}
-			placeholder := base64.StdEncoding.EncodeToString([]byte("avocet-bot:" + phGitHub))
+			placeholder := base64.StdEncoding.EncodeToString([]byte("dev-bot:" + phGitHub))
 			req.Header.Set("Authorization", "Basic "+placeholder)
 
 			if err := plugin.InjectHTTP(req.Context(), req, runtime.Secret{Bytes: []byte("real.github.token")}); err != nil {
@@ -66,8 +66,8 @@ func TestGitHubOAuthInjectHTTPUsesBasicForSmartHTTPGit(t *testing.T) {
 			if err != nil {
 				t.Fatalf("decode Basic auth: %v", err)
 			}
-			if string(decoded) != "avocet-bot:real.github.token" {
-				t.Fatalf("decoded Basic auth = %q, want avocet-bot:real.github.token", decoded)
+			if string(decoded) != "dev-bot:real.github.token" {
+				t.Fatalf("decoded Basic auth = %q, want dev-bot:real.github.token", decoded)
 			}
 		})
 	}
@@ -75,7 +75,7 @@ func TestGitHubOAuthInjectHTTPUsesBasicForSmartHTTPGit(t *testing.T) {
 
 func TestGitHubOAuthInjectHTTPUsesFallbackUsernameForSmartHTTPGit(t *testing.T) {
 	plugin := &GitHubOAuth{}
-	req, err := http.NewRequest("GET", "https://github.com/denoland/deployng.git/info/refs?service=git-upload-pack", nil)
+	req, err := http.NewRequest("GET", "https://github.com/example/myrepo.git/info/refs?service=git-upload-pack", nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
