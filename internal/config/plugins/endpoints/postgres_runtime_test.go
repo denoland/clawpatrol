@@ -385,9 +385,20 @@ func TestPgClientToServerReturnsOnContextCancel(t *testing.T) {
 // InspectsTruncatableFacet() answers are what drive the fail-close
 // path). Plain literal CompiledEndpoints with nil matchers can't
 // exercise that surface.
+// testGatewayPrefix is the minimal valid `gateway {}` block needed
+// to satisfy loader-level operational validation; these runtime
+// tests care only about the policy blocks they declare.
+const testGatewayPrefix = `gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
+  wireguard { subnet_cidr = "10.55.0.0/24" }
+}
+
+`
+
 func pgEndpointFromHCL(t *testing.T, src string) *config.CompiledEndpoint {
 	t.Helper()
-	gw, diags := config.LoadBytes([]byte(src), "in.hcl")
+	gw, diags := config.LoadBytes([]byte(testGatewayPrefix+src), "in.hcl")
 	if diags.HasErrors() {
 		t.Fatalf("load: %v", diags)
 	}

@@ -7,32 +7,45 @@ tuning you reach for as soon as you take the gateway past
 where to bind the dashboard, systemd, state-dir hardening, and
 the rest.
 
-## Control plane: WireGuard or Tailscale
+## Transports: WireGuard, Tailscale, or both
 
+Block presence inside the `gateway {}` block selects the transport.
 The example config uses WireGuard:
 
 ```hcl
-control        = "wireguard"
-wg_subnet_cidr = "10.55.0.0/24"
+gateway {
+  public_url = "https://gw.example.com"
+  state_dir  = "/opt/clawpatrol"
+
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+  }
+}
 ```
 
-If your fleet already lives on a tailnet, swap to embedded tsnet:
+If your fleet already lives on a tailnet, swap (or add) embedded tsnet:
 
 ```hcl
-control = "tailscale"
-funnel  = true
-listen  = ":8443"
+gateway {
+  public_url = "https://gw.example.com"
+  state_dir  = "/opt/clawpatrol"
 
-oauth_client_id     = "<tailscale oauth client id>"
-oauth_client_secret = "<tailscale oauth client secret>"
-tailscale_tags      = ["tag:clawpatrol"]
+  tailscale {
+    authkey             = "{{secret:TS_AUTHKEY}}"
+    funnel              = true
+    tags                = ["tag:clawpatrol"]
+    oauth_client_id     = "<tailscale oauth client id>"
+    oauth_client_secret = "<tailscale oauth client secret>"
+  }
+}
 ```
 
 Embedded tsnet joins the tailnet in-process — no UDP port to open,
 no `iptables` rule, no host Tailscale daemon. `funnel = true` lets
 non-tailnet devices reach the gateway over Tailscale Funnel.
-Devices onboard with `clawpatrol login` instead of `clawpatrol
-join`; see [CLI reference](/docs/cli/) for the Tailscale variant.
+
+Both blocks can coexist — peers from either transport land in the
+same MITM handler. Drop either block to disable that transport.
 
 #### Required tailnet ACL
 
@@ -48,7 +61,7 @@ In your tailnet's ACL JSON, add (or extend) `autoApprovers`:
 ```jsonc
 {
   "autoApprovers": {
-    "exitNode": ["tag:clawpatrol"]   // matches tailscale_tags above
+    "exitNode": ["tag:clawpatrol"]   // matches tailscale.tags above
   },
   "tagOwners": {
     "tag:clawpatrol": ["autogroup:admin"]
@@ -56,7 +69,7 @@ In your tailnet's ACL JSON, add (or extend) `autoApprovers`:
 }
 ```
 
-The tag must be the one you set in `tailscale_tags` on the
+The tag must be the one you set in `tailscale.tags` on the
 gateway config. If you skip this step, the daemon logs a
 `tsnet probe: gateway unreachable via exit-node routing — check
 autoApprovers.exitNode in your tailnet ACL` warning on first
@@ -64,15 +77,41 @@ boot, and every `clawpatrol run` hangs at "joining tailnet".
 
 ### WireGuard endpoint
 
-The default WireGuard listener is `0.0.0.0:51820`. Clients dial
-`host(public_url):port`, so you only set `wg_endpoint` when you
-need a non-default port or a different host for WG than for the
-dashboard:
+The default WireGuard listener is `:51820` (set
+`wireguard.listen_port` to override). Clients dial
+`host(public_url):port`, so you only set `wireguard.endpoint` when
+you need a non-default port advertised to clients or a different
+host for WG than for the dashboard:
 
 ```hcl
-wg_endpoint = ":41820"                # custom port, default host
-wg_endpoint = "wg.example.com:51820"  # split-host deployment
+wireguard {
+  subnet_cidr = "10.55.0.0/24"
+  listen_port = 41820                     # server binds this UDP port
+  endpoint    = "wg.example.com:51820"    # advertised in client wg.conf
+}
 ```
+
+### Single-host (loopback) WireGuard
+
+Running the gateway and `clawpatrol run` on the same machine — the
+gateway under one user account, agents launched from another — is a
+supported deployment, not a debug mode. Pin the advertised endpoint
+to loopback so onboarded clients dial the gateway over the loopback
+interface:
+
+```hcl
+gateway {
+  state_dir = "/opt/clawpatrol"
+
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+    endpoint    = "127.0.0.1:51820"
+  }
+}
+```
+
+No `public_url`, no public UDP port. Useful for tightly-scoped
+agent sandboxes that share a host with the gateway.
 
 ## Dashboard auth
 
@@ -91,18 +130,18 @@ clawpatrol gateway --reset-dashboard-password gateway.hcl
 
 ### Where to bind the dashboard
 
-`info_listen` is the dashboard's host-side HTTP bind. The shapes
-that make sense for it — and the auth shortcuts available on top
-of the root password — depend on the control plane mode, because
-each mode automatically exposes the dashboard on its own overlay
-network as well.
+`gateway.dashboard_listen` is the dashboard's host-side HTTP bind.
+The shapes that make sense for it — and the auth shortcuts available
+on top of the root password — depend on which transport blocks you
+declared, because each transport automatically exposes the
+dashboard on its own overlay network as well.
 
-#### In WireGuard mode
+#### With `wireguard {}` declared
 
-The in-tunnel forwarder routes any connection to the info port on
-the gateway's WG IP to the dashboard, so joined devices reach
+The in-tunnel forwarder routes any connection to the dashboard port
+on the gateway's WG IP to the dashboard, so joined devices reach
 `http://<gateway-wg-ip>:8080` with nothing extra configured.
-`info_listen` only controls who can reach the dashboard from
+`dashboard_listen` only controls who can reach the dashboard from
 **outside** the tunnel:
 
 - **`127.0.0.1:8080`** (the example default) — only loopback.
@@ -116,16 +155,15 @@ the gateway's WG IP to the dashboard, so joined devices reach
   fronted by an auth proxy (Cloudflare Access, oauth2-proxy) that
   does its own SSO first.
 
-`dashboard_operators` is ignored in WireGuard mode — there is no
-tailnet whois identity to match against, so the root password is the
-only auth.
+Without a `tailscale {}` block there's no tsnet whois identity to
+match against, so the root password is the only auth.
 
-#### In Tailscale mode
+#### With `tailscale {}` declared
 
 The embedded tsnet node always serves the dashboard on the gateway's
-tailnet IP at the info port, so tailnet peers reach
+tailnet IP at the dashboard port, so tailnet peers reach
 `http://<gateway-tailnet-ip>:8080` with no extra configuration.
-`info_listen` controls the host-side bind:
+`dashboard_listen` controls the host-side bind:
 
 - **`127.0.0.1:8080`** (recommended) — keeps the host socket
   loopback-only. Operators reach the dashboard over the tailnet
@@ -146,10 +184,13 @@ Operators can be allowlisted by tailnet identity email so they skip
 the root-password prompt:
 
 ```hcl
-dashboard_operators = [
-  "alice@example.com",
-  "*@example.com",
-]
+tailscale {
+  authkey   = "{{secret:TS_AUTHKEY}}"
+  operators = [
+    "alice@example.com",
+    "*@example.com",
+  ]
+}
 ```
 
 Each entry is matched against the requesting peer's tsnet whois

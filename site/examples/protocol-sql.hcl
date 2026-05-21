@@ -17,7 +17,11 @@ rule "pg-banned-functions" {
 
 # ===== harness =====
 
-admin_email = "ops@example.com"
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
+  wireguard { subnet_cidr = "10.55.0.0/24" }
+}
 
 endpoint "postgres" "pg-staging" {
   host = "pg-staging.example:5432"

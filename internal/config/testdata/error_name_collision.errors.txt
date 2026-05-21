@@ -1,1 +1,1 @@
-error: error_name_collision.hcl:4:1: Duplicate credential name "shared" — credential "shared" is already declared at testdata/error_name_collision.hcl:1,1-35. Names must be unique within a kind.
+error: error_name_collision.hcl:13:1: Duplicate credential name "shared" — credential "shared" is already declared at testdata/error_name_collision.hcl:10,1-35. Names must be unique within a kind.

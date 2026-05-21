@@ -40,7 +40,7 @@ rule "default-allow" {
   endpoints = [https.alpha_api, https.beta_api, https.beta_api_2]
 }
 `
-	gw, diags := config.LoadBytes([]byte(src), "bindings-test.hcl")
+	gw, diags := config.LoadBytes([]byte(testGatewayPrefix+src), "bindings-test.hcl")
 	if diags.HasErrors() {
 		t.Fatalf("load: %v", diags)
 	}
@@ -80,7 +80,7 @@ credential "postgres_credential" "db" {
   user = "ro_app"
 }
 `
-	gw, diags := config.LoadBytes([]byte(src), "cfg-test.hcl")
+	gw, diags := config.LoadBytes([]byte(testGatewayPrefix+src), "cfg-test.hcl")
 	if diags.HasErrors() {
 		t.Fatalf("load: %v", diags)
 	}

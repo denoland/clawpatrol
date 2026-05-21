@@ -1,13 +1,21 @@
 {
-  "admin_email": "test@example.com",
-  "control": "wireguard",
-  "human_on_timeout": "deny",
-  "human_timeout": 600,
-  "info_listen": "0.0.0.0:8080",
-  "listen": "0.0.0.0:8443",
-  "llm_cache_ttl": 300,
-  "llm_fail_mode": "closed",
-  "log_path": "/opt/clawpatrol/gateway.log",
+  "defaults": {
+    "human_on_timeout": "deny",
+    "human_timeout": 600,
+    "llm_cache_ttl": 300,
+    "llm_fail_mode": "closed",
+    "unknown_host": "passthrough"
+  },
+  "gateway": {
+    "dashboard_listen": "0.0.0.0:8080",
+    "log_path": "/opt/clawpatrol/gateway.log",
+    "public_url": "http://66.42.120.196:8080",
+    "state_dir": "/opt/clawpatrol/oauth",
+    "wireguard": {
+      "endpoint": "0.0.0.0:51820",
+      "subnet_cidr": "10.55.0.0/24"
+    }
+  },
   "policy": {
     "approvers": {
       "ops": {
@@ -79,10 +87,5 @@
         }
       }
     }
-  },
-  "public_url": "http://66.42.120.196:8080",
-  "state_dir": "/opt/clawpatrol/oauth",
-  "unknown_host": "passthrough",
-  "wg_endpoint": "0.0.0.0:51820",
-  "wg_subnet_cidr": "10.55.0.0/24"
+  }
 }

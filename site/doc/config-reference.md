@@ -28,34 +28,8 @@ Every singleton gateway attribute — listen addresses, paths, control-plane joi
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `listen` | `string` | no | The main gateway bind address for proxied agent traffic and dashboard HTTP. Defaults to the runtime's standard listen address when unset. |
-| `info_listen` | `string` | no | The optional diagnostics / info listener bind address. Leave unset to use the runtime default. |
-| `public_url` | `string` | no | The canonical externally reachable gateway URL used for generated control-plane links such as WireGuard join targets and async HITL status URLs. Runtime code normalizes away trailing slashes. |
-| `admin_email` | `string` | no | The operator contact shown in generated onboarding and status surfaces. |
-| `state_dir` | `string` | no | The directory holding clawpatrol.db (and anything else a plugin persists to disk under it). Defaults to ${HOME}/.clawpatrol when unset. |
-| `resolver` | `string` | no | The DNS resolver address the gateway should use for upstream lookups when the runtime needs an explicit resolver. |
-| `log_path` | `string` | no | An optional file path for gateway log output. |
-| `dashboard_operators` | `[]string` | no | Allowlists tailnet logins permitted to use the dashboard / management API in tailscale-control mode. Each entry is either an exact login ("alice@example.com") or a domain wildcard ("*@example.com"). Tagged devices (whose whois login is the tag name, not a user email) never match a wildcard entry — agents on the tailnet can never bypass the gate through this path. Empty / unset → tailnet-allowlist auth is disabled and the stored root password is the only way in. In WireGuard / proxy control mode this field is logged once as a no-op and ignored. |
-| `dashboard_session_ttl` | `string` | no | How long a dashboard login session stays valid after the operator types the password. Format accepts time.ParseDuration strings ("24h", "30m", "168h"). Empty / unset → defaults to 24h. Bumping this trades log-in frequency against blast radius if a session cookie leaks. Rotating the root password (`--set-dashboard-password` or the web form) revokes every existing session immediately regardless of TTL. |
-| `telemetry` | `bool` | no | Opts in/out of the update-checker / anonymous usage ping (doc/telemetry.md). nil = default on; explicit `telemetry = false` silences the goroutine. Env vars CLAWPATROL_TELEMETRY=0 and DO_NOT_TRACK=1 also work. |
-| `session_keep` | `string` | no | The hard retention floor for the sessions table. Sessions whose last_at is older than this get deleted by the background sweeper. Sessions can revive on new activity at any time, so there's no "closed but kept" intermediate state — only last_at matters. Default 720h (30d), "0" / "off" disables. Format accepts time.ParseDuration strings ("30m", "168h", etc.). |
-| `authkey` | `string` | no | The Tailscale auth key used to start the embedded tsnet node. Setting it selects Tailscale control mode. |
-| `control_url` | `string` | no | The Tailscale control-plane URL for tsnet. Defaults to Tailscale's hosted control plane when unset. |
-| `hostname` | `string` | no | The device name requested for the embedded tsnet node. |
-| `control` | `string` | no | Selects the gateway control transport. Supported values depend on the build/runtime mode; leave unset for the default. |
-| `funnel` | `bool` | no | Enables Tailscale Funnel on the embedded tsnet node so that join, webhook, and CA endpoints are reachable from the internet via the node's HTTPS cert domain (e.g. clawpatrol-gateway.ts.net:443). Only meaningful in tsnet control mode (authkey set). Tailscale's HTTPS must be enabled for the tailnet; if public_url is unset the gateway will derive it from the tsnet cert domain at startup. |
-| `oauth_client_id` | `string` | no | The OAuth client id used by control-plane integrations that need OAuth enrollment. |
-| `oauth_client_secret` | `string` | no | The OAuth client secret paired with oauth_client_id. |
-| `tailscale_tags` | `[]string` | no | The Tailscale device-tag list applied to keys the gateway mints for onboarded clients (`tag:client` etc.). Tailscale-only — ignored in WireGuard mode. |
-| `wg_interface` | `string` | no | The WireGuard interface name the gateway creates or manages in WireGuard control mode. |
-| `wg_endpoint` | `string` | no | The WireGuard client dial target, usually "host:port". If the host is omitted or wildcard, onboarding uses public_url's host with this port. |
-| `wg_server_pub` | `string` | no | The WireGuard server public key advertised to onboarded clients. Normally derived from gateway state. |
-| `wg_subnet_cidr` | `string` | no | The private subnet assigned to WireGuard clients. |
-| `unknown_host` | `string` | no | Controls traffic whose destination does not match any endpoint. "passthrough" relays it; "deny" closes it. |
-| `llm_fail_mode` | `string` | no | Controls requests guarded by LLM approvers when the model call errors or times out. "closed" denies; "open" allows. |
-| `llm_cache_ttl` | `int` | no | The LLM decision cache lifetime in seconds. |
-| `human_timeout` | `int` | no | The default human-approval timeout in seconds. |
-| `human_on_timeout` | `string` | no | The default outcome when a human approver does not answer before timeout. Supported values are "deny" and "allow". |
+| `gateway` | `block` | no | Carries every operational scalar and the two transport sub-blocks. Required: configs missing the block fail to load. |
+| `defaults` | `block` | no | Holds the optional `defaults { ... }` block with the policy defaults (unknown_host, llm_*, human_*). nil when the block is absent — every field has a built-in default. |
 | `plugin` | `block` | no | Lists every `plugin "<name>" { source = "..." }` block at the top of the file. The loader spawns each subprocess (and registers its declared types) before running pass-1 symbol building, so plugin-supplied (kind, type) pairs are available by the time policy blocks are dispatched. |
 
 ## `profile "<name>" { ... }`

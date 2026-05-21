@@ -1,4 +1,4 @@
-error: error_invalid_cel.hcl:11:1: Invalid CEL condition on rule "broken" — cel compile: ERROR: <input>:1:16: Syntax error: token recognition error at: ''GET'
+error: error_invalid_cel.hcl:20:1: Invalid CEL condition on rule "broken" — cel compile: ERROR: <input>:1:16: Syntax error: token recognition error at: ''GET'
  | http.method == 'GET
  | ...............^
 ERROR: <input>:1:20: Syntax error: mismatched input '<EOF>' expecting {'[', '{', '(', '.', '-', '!', 'true', 'false', 'null', NUM_FLOAT, NUM_INT, NUM_UINT, STRING, BYTES, IDENTIFIER}

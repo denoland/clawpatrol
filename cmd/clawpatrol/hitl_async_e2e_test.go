@@ -138,9 +138,11 @@ func newHITLAsyncE2EHarness(t *testing.T) *hitlAsyncE2EHarness {
 	}
 
 	gw, diags := config.LoadBytes([]byte(`
-public_url = "https://gateway.example.test"
-control = "wireguard"
-wg_subnet_cidr = "10.55.0.0/24"
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gateway.example.test"
+  wireguard { subnet_cidr = "10.55.0.0/24" }
+}
 
 endpoint "https" "api" {
   hosts = ["api.example.test"]
@@ -234,7 +236,7 @@ profile "default" {
 		store:    NewHITLOperationStore(db),
 		gateway:  g,
 		endpoint: ep,
-		handler:  newWebMux(g, gw.Join(), gw.PublicURL),
+		handler:  newWebMux(g, gw.Join(), gw.PublicURL()),
 		token:    token,
 		upstream: upstreamRequests,
 	}

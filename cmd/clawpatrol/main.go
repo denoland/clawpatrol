@@ -49,8 +49,8 @@ type JoinConfig = config.JoinConfig
 // (clawpatrol.db) coexists with the client-side ca.crt that lives
 // in the same dir on dev machines.
 func resolveStateDir(cfg *config.Gateway) string {
-	if cfg.StateDir != "" {
-		return cfg.StateDir
+	if d := cfg.StateDir(); d != "" {
+		return d
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
@@ -161,18 +161,6 @@ func loadConfig(path string) (*config.Gateway, *config.CompiledPolicy, error) {
 	gw, diags := config.Load(path)
 	if diags.HasErrors() {
 		return nil, nil, fmt.Errorf("%s", diags.Error())
-	}
-	if gw.Listen == "" {
-		if isTailscaleControlMode(gw.Control) {
-			// tsnet listener on the tailnet IP; 443 is the historical
-			// default and is unprivileged inside the tsnet stack.
-			gw.Listen = ":443"
-		} else {
-			// WireGuard mode: socket is loopback-only anyway (see
-			// tailscale.go's openListener). Use 8443 so the gateway can
-			// run rootless.
-			gw.Listen = "127.0.0.1:8443"
-		}
 	}
 	cp, err := config.Compile(gw)
 	if err != nil {
@@ -552,20 +540,21 @@ func logDashboardAuthState(db *sql.DB, cfg *config.Gateway) {
 		log.Printf("dashboard auth: UNKNOWN — lookup failed: %v", err)
 		return
 	}
-	tailnetMode := isTailscaleControlMode(cfg.Control)
-	allowlist := len(cfg.DashboardOperators) > 0
+	tailnetMode := cfg.IsTailscaleEnabled()
+	operators := cfg.Operators()
+	allowlist := len(operators) > 0
 
 	switch {
 	case rootSet && allowlist && tailnetMode:
-		log.Printf("dashboard auth: enabled (root password + %d-entry tailnet operator allowlist)", len(cfg.DashboardOperators))
+		log.Printf("dashboard auth: enabled (root password + %d-entry tailnet operator allowlist)", len(operators))
 	case rootSet && allowlist && !tailnetMode:
-		log.Printf("dashboard auth: enabled (root password); dashboard_operators is set but ignored — control mode %q has no tailnet whois", cfg.Control)
+		log.Printf("dashboard auth: enabled (root password); operators is set but ignored — no tailscale block, no tailnet whois")
 	case rootSet:
 		log.Printf("dashboard auth: enabled (root password)")
 	case !rootSet && allowlist && tailnetMode:
 		log.Printf("dashboard auth: pending — no root password yet; tailnet operator allowlist alone cannot bootstrap. Open the dashboard or run `clawpatrol gateway --set-dashboard-password <pw>`.")
 	default:
-		log.Printf("dashboard auth: pending — no root password yet. Open the dashboard at info_listen %q to set one, or run `clawpatrol gateway --set-dashboard-password <pw>`.", cfg.InfoListen)
+		log.Printf("dashboard auth: pending — no root password yet. Open the dashboard at dashboard_listen %q to set one, or run `clawpatrol gateway --set-dashboard-password <pw>`.", cfg.DashboardListen())
 	}
 }
 
@@ -2062,7 +2051,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 						asyncOp = updated
 					}
 					_ = tc.SetWriteDeadline(time.Now().Add(10 * time.Second))
-					if err := writeHITLOperationAcceptedToConn(tc, asyncOp, g.cfg.PublicURL); err != nil {
+					if err := writeHITLOperationAcceptedToConn(tc, asyncOp, g.cfg.PublicURL()); err != nil {
 						log.Printf("hitl async pending response write %s: %v", asyncOp.ID, err)
 					}
 					_ = tc.SetWriteDeadline(time.Time{})
@@ -2525,7 +2514,7 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 			AsyncPendingOnSyncTimeout: c.AsyncPendingOnSyncTimeout,
 			Pool:                      g.hitl,
 			Secrets:                   g.secrets,
-			DashboardURL:              g.cfg.PublicURL,
+			DashboardURL:              g.cfg.PublicURL(),
 			Policy:                    policy,
 			MessageUpdateSink:         g.recordHITLOperationMessageRef,
 			PendingMessageUpdateSink:  g.hitl.RecordMessageRef,
@@ -2772,7 +2761,7 @@ func runGateway(args []string) {
 		stateDir: stateDir,
 		db:       db,
 		certs:    certs,
-		dialer:   newUpstreamDialer(cfg.Resolver),
+		dialer:   newUpstreamDialer(cfg.Resolver()),
 		sink:     sink,
 		oauth:    oauthReg,
 		agents:   NewAgentRegistry(),
@@ -2836,7 +2825,7 @@ func runGateway(args []string) {
 	// Sessions can revive on new activity at any time, so there's no
 	// "closed" intermediate state — keep is the only knob.
 	g.agents.LoadSessions(db)
-	g.agents.startSessionSweeper(parseDurationOr(cfg.SessionKeep, 10*time.Minute))
+	g.agents.startSessionSweeper(parseDurationOr(cfg.SessionKeep(), 10*time.Minute))
 
 	// HITL notifications fan-out via the approver runtimes
 	// (config/plugins/approvers); the registry's Add hook emits
@@ -2850,32 +2839,33 @@ func runGateway(args []string) {
 
 	seedHook.Run(context.Background(), g)
 
-	if cfg.InfoListen != "" {
-		mux := newWebMux(g, cfg.Join(), cfg.PublicURL)
-		go serveHTTPLogged("dashboard", cfg.InfoListen, mux)
-		log.Printf("dashboard: http://%s", cfg.InfoListen)
+	dashListen := cfg.DashboardListen()
+	if dashListen != "" {
+		mux := newWebMux(g, cfg.Join(), cfg.PublicURL())
+		go serveHTTPLogged("dashboard", dashListen, mux)
+		log.Printf("dashboard: http://%s", dashListen)
 	}
 	go serveHTTPLogged("pprof", "127.0.0.1:6060", nil)
 	go g.servePorts()
 
-	// Embedded userspace WireGuard server. When operator sets
-	// tailscale.control=wireguard, the clawpatrol process becomes the
-	// WG endpoint — peers established at onboard time route ALL
-	// traffic into our netstack (AllowedIPs=0.0.0.0/0). The
-	// promiscuous forwarder accepts SYNs to any dst IP/port:
+	// Embedded userspace WireGuard server. When the `wireguard {}`
+	// block is present, the clawpatrol process becomes the WG endpoint
+	// — peers established at onboard time route ALL traffic into our
+	// netstack (AllowedIPs=0.0.0.0/0). The promiscuous forwarder
+	// accepts SYNs to any dst IP/port:
 	//   - 443    → MITM (g.handle does SNI peek + rule dispatch)
 	//   - dash   → dashboard mux
 	//   - else   → transparent relay to the real upstream
 	// No /etc/hosts hack needed on clients — agents resolve real
 	// hostnames via public DNS and the gateway intercepts at L3.
-	if strings.EqualFold(cfg.Control, "wireguard") {
+	if cfg.IsWireGuardEnabled() {
 		wg, err := StartWGServer(cfg.Join())
 		if err != nil {
 			log.Fatalf("wireguard: %v", err)
 		}
 		setWGServer(wg)
-		dashMux := newWebMux(g, cfg.Join(), cfg.PublicURL)
-		dashPort := portOf(cfg.InfoListen)
+		dashMux := newWebMux(g, cfg.Join(), cfg.PublicURL())
+		dashPort := portOf(dashListen)
 		tcpDispatch := func(c net.Conn, dstIP string, dstPort uint16) {
 			log.Printf("wg-fwd: %s:%d", dstIP, dstPort)
 			switch {
@@ -2930,7 +2920,7 @@ func runGateway(args []string) {
 			len(policy.Endpoints), len(policy.Profiles))
 	}
 
-	if tsnetServer != nil && cfg.Funnel && cfg.PublicURL == "" {
+	if tsnetServer != nil && cfg.Funnel() && cfg.PublicURL() == "" {
 		// Auto-derive public_url from the tsnet cert domain so that
 		// join responses, HITL status links, and OAuth redirect URIs use
 		// the correct internet-reachable URL when funnel = true. Cert
@@ -2940,8 +2930,8 @@ func runGateway(args []string) {
 			deadline := time.Now().Add(60 * time.Second)
 			for time.Now().Before(deadline) {
 				if domain := tsnetCertDomain(tsnetServer); domain != "" {
-					cfg.PublicURL = domain
-					log.Printf("tsnet: funnel public_url auto-derived: %s", cfg.PublicURL)
+					cfg.SetPublicURL(domain)
+					log.Printf("tsnet: funnel public_url auto-derived: %s", domain)
 					return
 				}
 				time.Sleep(2 * time.Second)
@@ -2949,8 +2939,8 @@ func runGateway(args []string) {
 			log.Printf("tsnet: funnel public_url not derived after 60s — dashboard will show the loopback URL in join hints")
 		}()
 	}
-	tsnetDashMux := newWebMux(g, cfg.Join(), cfg.PublicURL)
-	tsnetDashPort := portOf(cfg.InfoListen)
+	tsnetDashMux := newWebMux(g, cfg.Join(), cfg.PublicURL())
+	tsnetDashPort := portOf(dashListen)
 	if tsnetServer != nil {
 		// Seed gateway tailscale IP for /api/join responses so clients
 		// know the tailnet-direct URL without a DNS lookup.
@@ -3002,18 +2992,19 @@ func runGateway(args []string) {
 		} else {
 			log.Printf("tsnet: LocalClient for whois: %v", err)
 		}
-		// Serve the info/dashboard mux on tsnet's virtual network so
-		// clawpatrol-run clients connecting to this tsnet IP on the info
-		// port can mint ephemeral auth keys and reach the dashboard.
-		if infoPort := portOf(cfg.InfoListen); infoPort != 0 {
-			if tsnetInfoLn, err := tsnetServer.Listen("tcp", fmt.Sprintf(":%d", infoPort)); err != nil {
-				log.Printf("tsnet: info listen :%d: %v", infoPort, err)
+		// Serve the dashboard mux on tsnet's virtual network so
+		// clawpatrol-run clients connecting to this tsnet IP on the
+		// dashboard port can mint ephemeral auth keys and reach the
+		// dashboard.
+		if dashPort := portOf(dashListen); dashPort != 0 {
+			if tsnetDashLn, err := tsnetServer.Listen("tcp", fmt.Sprintf(":%d", dashPort)); err != nil {
+				log.Printf("tsnet: dashboard listen :%d: %v", dashPort, err)
 			} else {
-				go http.Serve(tsnetInfoLn, tsnetDashMux)
-				log.Printf("tsnet: info/dashboard also listening on tsnet :%d", infoPort)
+				go http.Serve(tsnetDashLn, tsnetDashMux)
+				log.Printf("tsnet: dashboard also listening on tsnet :%d", dashPort)
 			}
 		}
-		if cfg.Funnel {
+		if cfg.Funnel() {
 			startFunnelListener(tsnetServer, tsnetDashMux)
 		}
 		// UDP/53 DNS server on the tsnet node. Whole-machine clients with
@@ -3084,13 +3075,12 @@ func runGateway(args []string) {
 			continue
 		}
 		go func(c net.Conn) {
-			// WireGuard-mode loopback listener. MITM traffic in WG mode
-			// flows through the promiscuous wg forwarder above; what
-			// arrives here is direct host-local hits at the dashboard
-			// (a separate UID on the same host running an agent or an
-			// admin tool, an SSH-forwarded port, etc.). No PROXY
-			// framing in this mode — terminate TLS, serve the
-			// dashboard mux.
+			// Host-local TCP listener (only opened when wireguard is
+			// enabled). Used by single-host deployments where the
+			// gateway runs under one user account and clawpatrol-run
+			// is invoked from another on the same machine — both
+			// loop back through 127.0.0.1:8443. No PROXY framing in
+			// this mode — terminate TLS, serve the dashboard mux.
 			g.serveTSNetDirect(c, tsnetDashMux)
 		}(c)
 	}

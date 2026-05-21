@@ -270,7 +270,7 @@ uses today.
 - One iteration of overlap. Future bead: hard-deprecate the literal path
   once enough operators have migrated.
 
-### Q8. Relationship to `gateway { control = "tailscale" }` OAuth (out of scope)
+### Q8. Relationship to `gateway { tailscale { ... } }` OAuth (out of scope)
 
 There's a *separate* OAuth path in main.go / onboard.go (`mintTailscaleAuthKey`,
 onboard.go) used to mint per-device authkeys for client onboarding via the
@@ -320,7 +320,7 @@ keeps the change scoped and reviewable.
 
 ## Out of scope
 
-- The `gateway { control = "tailscale" } ... oauth_client_id/secret` path
+- The `gateway { tailscale { oauth_client_id/secret = ... } }` path
   used by the onboarder. Separate credential for that is a follow-up bead.
 - Multi-node-per-credential: one credential = one tsnet node identity. If an
   operator wants two distinct tailnet identities, they declare two

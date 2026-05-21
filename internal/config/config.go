@@ -15,131 +15,20 @@ import (
 	"github.com/zclconf/go-cty/cty"
 )
 
-// Gateway is the fully-loaded clawpatrol gateway config: every
-// singleton attribute at the top, plus a resolved policy.
-//
-// All scalar gateway settings — listen addresses, paths, control-plane
-// joining, WireGuard endpoint, and policy defaults — are top-level
-// attributes. Labeled blocks (`credential "x" "y" {}`, etc.) are the
-// things you have N of and dispatch to the plugin registry.
+// Gateway is the fully-loaded clawpatrol gateway config: a single
+// `gateway { ... }` block of operational settings (with nested
+// `wireguard { ... }` / `tailscale { ... }` transport sub-blocks), an
+// optional top-level `defaults { ... }` block of policy defaults, and
+// the labeled policy blocks the plugins dispatch on.
 type Gateway struct {
-	// Listen is the main gateway bind address for proxied agent
-	// traffic and dashboard HTTP. Defaults to the runtime's standard
-	// listen address when unset.
-	Listen string `hcl:"listen,optional"`
-	// InfoListen is the optional diagnostics / info listener bind
-	// address. Leave unset to use the runtime default.
-	InfoListen string `hcl:"info_listen,optional"`
-	// PublicURL is the canonical externally reachable gateway URL used
-	// for generated control-plane links such as WireGuard join targets and
-	// async HITL status URLs. Runtime code normalizes away trailing slashes.
-	PublicURL string `hcl:"public_url,optional"`
-	// AdminEmail is the operator contact shown in generated onboarding
-	// and status surfaces.
-	AdminEmail string `hcl:"admin_email,optional"`
-	// StateDir is the directory holding clawpatrol.db (and anything
-	// else a plugin persists to disk under it). Defaults to
-	// ${HOME}/.clawpatrol when unset.
-	StateDir string `hcl:"state_dir,optional"`
-	// Resolver is the DNS resolver address the gateway should use for
-	// upstream lookups when the runtime needs an explicit resolver.
-	Resolver string `hcl:"resolver,optional"`
-	// LogPath is an optional file path for gateway log output.
-	LogPath string `hcl:"log_path,optional"`
+	// Settings carries every operational scalar and the two transport
+	// sub-blocks. Required: configs missing the block fail to load.
+	Settings *GatewaySettings `hcl:"gateway,block"`
 
-	// DashboardOperators allowlists tailnet logins permitted to use
-	// the dashboard / management API in tailscale-control mode. Each
-	// entry is either an exact login ("alice@example.com") or a
-	// domain wildcard ("*@example.com"). Tagged devices (whose whois
-	// login is the tag name, not a user email) never match a
-	// wildcard entry — agents on the tailnet can never bypass the
-	// gate through this path.
-	//
-	// Empty / unset → tailnet-allowlist auth is disabled and the
-	// stored root password is the only way in. In WireGuard / proxy
-	// control mode this field is logged once as a no-op and ignored.
-	DashboardOperators []string `hcl:"dashboard_operators,optional"`
-
-	// DashboardSessionTTL is how long a dashboard login session
-	// stays valid after the operator types the password. Format
-	// accepts time.ParseDuration strings ("24h", "30m", "168h").
-	// Empty / unset → defaults to 24h. Bumping this trades log-in
-	// frequency against blast radius if a session cookie leaks.
-	// Rotating the root password (`--set-dashboard-password` or the
-	// web form) revokes every existing session immediately regardless
-	// of TTL.
-	DashboardSessionTTL string `hcl:"dashboard_session_ttl,optional"`
-
-	// Telemetry opts in/out of the update-checker / anonymous usage
-	// ping (doc/telemetry.md). nil = default on; explicit `telemetry
-	// = false` silences the goroutine. Env vars CLAWPATROL_TELEMETRY=0
-	// and DO_NOT_TRACK=1 also work.
-	Telemetry *bool `hcl:"telemetry,optional"`
-
-	// SessionKeep is the hard retention floor for the sessions table.
-	// Sessions whose last_at is older than this get deleted by the
-	// background sweeper. Sessions can revive on new activity at any
-	// time, so there's no "closed but kept" intermediate state — only
-	// last_at matters. Default 720h (30d), "0" / "off" disables.
-	// Format accepts time.ParseDuration strings ("30m", "168h", etc.).
-	SessionKeep string `hcl:"session_keep,optional"`
-
-	// AuthKey is the Tailscale auth key used to start the embedded
-	// tsnet node. Setting it selects Tailscale control mode.
-	AuthKey string `hcl:"authkey,optional"`
-	// ControlURL is the Tailscale control-plane URL for tsnet.
-	// Defaults to Tailscale's hosted control plane when unset.
-	ControlURL string `hcl:"control_url,optional"`
-	// Hostname is the device name requested for the embedded tsnet
-	// node.
-	Hostname string `hcl:"hostname,optional"`
-	// Control selects the gateway control transport. Supported values
-	// depend on the build/runtime mode; leave unset for the default.
-	Control string `hcl:"control,optional"`
-	// Funnel enables Tailscale Funnel on the embedded tsnet node so that
-	// join, webhook, and CA endpoints are reachable from the internet via
-	// the node's HTTPS cert domain (e.g. clawpatrol-gateway.ts.net:443).
-	// Only meaningful in tsnet control mode (authkey set). Tailscale's
-	// HTTPS must be enabled for the tailnet; if public_url is unset the
-	// gateway will derive it from the tsnet cert domain at startup.
-	Funnel bool `hcl:"funnel,optional"`
-	// OAuthClientID is the OAuth client id used by control-plane
-	// integrations that need OAuth enrollment.
-	OAuthClientID string `hcl:"oauth_client_id,optional"`
-	// OAuthClientSecret is the OAuth client secret paired with
-	// oauth_client_id.
-	OAuthClientSecret string `hcl:"oauth_client_secret,optional"`
-	// TailscaleTags is the Tailscale device-tag list applied to keys
-	// the gateway mints for onboarded clients (`tag:client` etc.).
-	// Tailscale-only — ignored in WireGuard mode.
-	TailscaleTags []string `hcl:"tailscale_tags,optional"`
-	// WGInterface is the WireGuard interface name the gateway creates
-	// or manages in WireGuard control mode.
-	WGInterface string `hcl:"wg_interface,optional"`
-	// WGEndpoint is the WireGuard client dial target, usually
-	// "host:port". If the host is omitted or wildcard, onboarding uses
-	// public_url's host with this port.
-	WGEndpoint string `hcl:"wg_endpoint,optional"`
-	// WGServerPub is the WireGuard server public key advertised to
-	// onboarded clients. Normally derived from gateway state.
-	WGServerPub string `hcl:"wg_server_pub,optional"`
-	// WGSubnetCIDR is the private subnet assigned to WireGuard clients.
-	WGSubnetCIDR string `hcl:"wg_subnet_cidr,optional"`
-
-	// UnknownHost controls traffic whose destination does not match any
-	// endpoint. "passthrough" relays it; "deny" closes it.
-	UnknownHost string `hcl:"unknown_host,optional"`
-	// LLMFailMode controls requests guarded by LLM approvers when the
-	// model call errors or times out. "closed" denies; "open" allows.
-	LLMFailMode string `hcl:"llm_fail_mode,optional"`
-	// LLMCacheTTL is the LLM decision cache lifetime in seconds.
-	LLMCacheTTL int `hcl:"llm_cache_ttl,optional"`
-	// HumanTimeout is the default human-approval timeout in seconds.
-	HumanTimeout int `hcl:"human_timeout,optional"`
-	// HumanOnTimeout is the default outcome when a human approver does
-	// not answer before timeout. Supported values are "deny" and
-	// "allow".
-	HumanOnTimeout string `hcl:"human_on_timeout,optional"`
+	// Defaults holds the optional `defaults { ... }` block with the
+	// policy defaults (unknown_host, llm_*, human_*). nil when the
+	// block is absent — every field has a built-in default.
+	Defaults *Defaults `hcl:"defaults,block"`
 
 	// Plugins lists every `plugin "<name>" { source = "..." }` block
 	// at the top of the file. The loader spawns each subprocess
@@ -160,23 +49,266 @@ type Gateway struct {
 	Remain hcl.Body `hcl:",remain"`
 }
 
+// GatewaySettings is the body of the top-level `gateway { ... }`
+// block. Every operational scalar lives here; the two transport
+// sub-blocks (`wireguard` / `tailscale`) are optional and select
+// which transports the gateway exposes.
+type GatewaySettings struct {
+	// DashboardListen is the bind address for the dashboard + JSON
+	// API HTTP server. Default 127.0.0.1:8080. Set to a routable
+	// address to expose the dashboard off-host (the same mux is also
+	// served on the WG netstack / tsnet stack at this port).
+	DashboardListen string `hcl:"dashboard_listen,optional"`
+
+	// PublicURL is the canonical externally-reachable gateway URL.
+	// Used in join links, async HITL status URLs, OAuth redirect URIs,
+	// and (when public_url has a host but wireguard.endpoint doesn't)
+	// the host clients dial for WireGuard.
+	PublicURL string `hcl:"public_url,optional"`
+
+	// StateDir is the directory holding clawpatrol.db (and anything
+	// a plugin persists to disk under it). Defaults to ${HOME}/.clawpatrol.
+	StateDir string `hcl:"state_dir,optional"`
+
+	// DashboardSessionTTL is how long a dashboard login session stays
+	// valid after the operator types the password. time.ParseDuration
+	// format ("24h", "30m"). Default 24h.
+	DashboardSessionTTL string `hcl:"dashboard_session_ttl,optional"`
+
+	// Resolver is the DNS resolver address the gateway uses for
+	// upstream lookups when the runtime needs an explicit resolver.
+	Resolver string `hcl:"resolver,optional"`
+
+	// LogPath is an optional file path for gateway log output.
+	LogPath string `hcl:"log_path,optional"`
+
+	// Telemetry opts in/out of the update-checker / anonymous usage
+	// ping (doc/telemetry.md). nil = default on; explicit `telemetry
+	// = false` silences the goroutine. Env vars CLAWPATROL_TELEMETRY=0
+	// and DO_NOT_TRACK=1 also work.
+	Telemetry *bool `hcl:"telemetry,optional"`
+
+	// SessionKeep is the hard retention floor for the sessions table.
+	// Sessions whose last_at is older than this get deleted by the
+	// background sweeper. Default 720h (30d), "0" / "off" disables.
+	// time.ParseDuration format.
+	SessionKeep string `hcl:"session_keep,optional"`
+
+	// WireGuard, if present, enables the embedded userspace WireGuard
+	// server. Required block when running WG-mode deployments.
+	WireGuard *WireGuardBlock `hcl:"wireguard,block"`
+
+	// Tailscale, if present, enables the embedded tsnet node and the
+	// Tailscale control plane (OAuth key minting, exit-node routing).
+	// Both transports may be enabled simultaneously.
+	Tailscale *TailscaleBlock `hcl:"tailscale,block"`
+}
+
+// WireGuardBlock is the body of the `wireguard { ... }` sub-block
+// inside `gateway { ... }`. Presence of the block enables the WG
+// transport.
+type WireGuardBlock struct {
+	// SubnetCIDR is the private subnet assigned to onboarded clients.
+	// Required (e.g. "10.55.0.0/24").
+	SubnetCIDR string `hcl:"subnet_cidr,optional"`
+
+	// ListenPort is the UDP port the gateway binds for WG peers.
+	// Default 51820.
+	ListenPort int `hcl:"listen_port,optional"`
+
+	// Endpoint is the host:port advertised in client wg.conf as
+	// `Endpoint = ...`. Host defaults to public_url's host; port
+	// defaults to listen_port. Set only for split-host deployments
+	// (gateway sits behind a different hostname/IP for WG than for
+	// the dashboard).
+	Endpoint string `hcl:"endpoint,optional"`
+
+	// Interface is the WireGuard interface name the gateway manages.
+	// Mostly irrelevant in userspace mode; leave unset.
+	Interface string `hcl:"interface,optional"`
+
+	// ServerPub is the WireGuard server public key advertised to
+	// clients. Normally derived from gateway state; only set when
+	// bootstrapping from an external key.
+	ServerPub string `hcl:"server_pub,optional"`
+}
+
+// TailscaleBlock is the body of the `tailscale { ... }` sub-block
+// inside `gateway { ... }`. Presence of the block enables tsnet.
+type TailscaleBlock struct {
+	// AuthKey is the Tailscale auth key for the embedded tsnet node.
+	// Required when the `tailscale` block is present. Falls back to
+	// $TS_AUTHKEY if empty.
+	AuthKey string `hcl:"authkey,optional"`
+
+	// Hostname is the device name requested for the tsnet node.
+	// Default "clawpatrol-gateway".
+	Hostname string `hcl:"hostname,optional"`
+
+	// ControlURL is the Tailscale control-plane URL. Empty →
+	// Tailscale's hosted control plane.
+	ControlURL string `hcl:"control_url,optional"`
+
+	// Tags is the Tailscale device-tag list applied to keys the
+	// gateway mints for onboarded clients (`tag:client` etc.). The
+	// autoApprovers exit-node ACL must reference these tags.
+	Tags []string `hcl:"tags,optional"`
+
+	// Operators allowlists tailnet logins permitted to use the
+	// dashboard without typing the root password. Each entry is
+	// either an exact login ("alice@example.com") or a domain
+	// wildcard ("*@example.com"). Tagged devices (whose whois login
+	// is the tag name, not a user email) never match a wildcard
+	// entry — agents on the tailnet can never bypass the gate
+	// through this path.
+	//
+	// Empty / unset → tailnet-allowlist auth is disabled. The stored
+	// root password is then the only way in. Lives under `tailscale
+	// {}` because matching requires the tsnet whois identity; there
+	// is no whois without an active tsnet node.
+	Operators []string `hcl:"operators,optional"`
+
+	// Funnel enables Tailscale Funnel on :443 so the join bootstrap
+	// and credential webhook paths are internet-reachable via the
+	// tsnet cert domain. Requires HTTPS enabled for the tailnet; if
+	// public_url is unset the gateway derives it from the tsnet
+	// cert domain at startup.
+	Funnel bool `hcl:"funnel,optional"`
+
+	// OAuthClientID is the OAuth client id used to mint per-device
+	// tailnet auth keys at approval time.
+	OAuthClientID string `hcl:"oauth_client_id,optional"`
+
+	// OAuthClientSecret is the OAuth client secret paired with
+	// OAuthClientID.
+	OAuthClientSecret string `hcl:"oauth_client_secret,optional"`
+}
+
+// Defaults is the body of the optional top-level `defaults { ... }`
+// block. Every field has a built-in default; the block is only
+// needed to override one.
+type Defaults struct {
+	// UnknownHost controls traffic whose destination does not match
+	// any endpoint. "passthrough" relays it; "deny" closes it.
+	UnknownHost string `hcl:"unknown_host,optional"`
+
+	// LLMFailMode controls requests guarded by LLM approvers when
+	// the model call errors or times out. "closed" denies; "open"
+	// allows.
+	LLMFailMode string `hcl:"llm_fail_mode,optional"`
+
+	// LLMCacheTTL is the LLM decision cache lifetime in seconds.
+	LLMCacheTTL int `hcl:"llm_cache_ttl,optional"`
+
+	// HumanTimeout is the default human-approval timeout in seconds.
+	HumanTimeout int `hcl:"human_timeout,optional"`
+
+	// HumanOnTimeout is the default outcome when a human approver
+	// does not answer before timeout. "deny" or "allow".
+	HumanOnTimeout string `hcl:"human_on_timeout,optional"`
+}
+
+// IsWireGuardEnabled reports whether the operator declared a
+// `wireguard { ... }` sub-block. Block presence is the single
+// switch — there is no `control` field. Both transports may be
+// enabled at once.
+func (g *Gateway) IsWireGuardEnabled() bool {
+	return g != nil && g.Settings != nil && g.Settings.WireGuard != nil
+}
+
+// IsTailscaleEnabled reports whether the operator declared a
+// `tailscale { ... }` sub-block.
+func (g *Gateway) IsTailscaleEnabled() bool {
+	return g != nil && g.Settings != nil && g.Settings.Tailscale != nil
+}
+
+// settings returns g.Settings, or a zero-value pointer when nil so
+// callers can read fields without a nil check. Internal helper —
+// validateOperational rejects configs with a nil Settings block.
+func (g *Gateway) settings() *GatewaySettings {
+	if g == nil || g.Settings == nil {
+		return &GatewaySettings{}
+	}
+	return g.Settings
+}
+
+// PublicURL returns the canonical gateway URL or the empty string.
+func (g *Gateway) PublicURL() string { return g.settings().PublicURL }
+
+// SetPublicURL overwrites the public URL. Used by the runtime when
+// it auto-derives the URL from the tsnet cert domain after Funnel
+// comes up.
+func (g *Gateway) SetPublicURL(s string) {
+	if g == nil {
+		return
+	}
+	if g.Settings == nil {
+		g.Settings = &GatewaySettings{}
+	}
+	g.Settings.PublicURL = s
+}
+
+// DashboardListen returns the configured dashboard HTTP bind
+// address, or empty string when unset.
+func (g *Gateway) DashboardListen() string { return g.settings().DashboardListen }
+
+// StateDir returns the configured state directory, or empty string.
+func (g *Gateway) StateDir() string { return g.settings().StateDir }
+
+// Operators returns the tailnet-login allowlist from the `tailscale
+// {}` block. Empty/nil disables the allowlist gate (and is the only
+// value when no tailscale block is declared — without tsnet there's
+// no whois identity to match against).
+func (g *Gateway) Operators() []string {
+	if !g.IsTailscaleEnabled() {
+		return nil
+	}
+	return g.Settings.Tailscale.Operators
+}
+
+// DashboardSessionTTL returns the raw TTL string. Empty → default.
+func (g *Gateway) DashboardSessionTTL() string { return g.settings().DashboardSessionTTL }
+
+// Resolver returns the explicit DNS resolver address, or empty.
+func (g *Gateway) Resolver() string { return g.settings().Resolver }
+
+// LogPath returns the configured log file path, or empty.
+func (g *Gateway) LogPath() string { return g.settings().LogPath }
+
+// Telemetry returns the pointer-bool telemetry opt-in. nil = default on.
+func (g *Gateway) Telemetry() *bool { return g.settings().Telemetry }
+
+// SessionKeep returns the raw session-retention string, or empty.
+func (g *Gateway) SessionKeep() string { return g.settings().SessionKeep }
+
+// Funnel reports whether the `tailscale { }` block enabled Funnel.
+func (g *Gateway) Funnel() bool {
+	if !g.IsTailscaleEnabled() {
+		return false
+	}
+	return g.Settings.Tailscale.Funnel
+}
+
 // JoinConfig is a parameter bundle of the join/transport-related
-// Gateway fields. Not an HCL block — the fields live flat on Gateway.
-// This struct exists purely so functions like StartWGServer /
-// newOnboarder can take one argument instead of twelve.
+// settings. Not an HCL block — the fields are projected from the
+// nested `gateway { wireguard {} tailscale {} }` shape. This struct
+// exists purely so functions like StartWGServer / newOnboarder can
+// take one argument instead of twelve.
 type JoinConfig struct {
 	AuthKey           string
 	ControlURL        string
 	Hostname          string
 	StateDir          string
-	Control           string
 	OAuthClientID     string
 	OAuthClientSecret string
 	TailscaleTags     []string
+	WGEnabled         bool
 	WGInterface       string
 	WGEndpoint        string
+	WGListenPort      int
 	WGServerPub       string
 	WGSubnetCIDR      string
+	TailscaleEnabled  bool
 	// PublicURL is the operator-facing gateway URL. The WG onboarder
 	// uses its host as the default client dial target when
 	// WGEndpoint's host portion is wildcard / unset.
@@ -186,21 +318,30 @@ type JoinConfig struct {
 // Join returns the join-related fields as a JoinConfig value bundle.
 // Cheap to call — it's a small struct copy.
 func (g *Gateway) Join() JoinConfig {
-	return JoinConfig{
-		AuthKey:           g.AuthKey,
-		ControlURL:        g.ControlURL,
-		Hostname:          g.Hostname,
-		StateDir:          g.StateDir,
-		Control:           g.Control,
-		OAuthClientID:     g.OAuthClientID,
-		OAuthClientSecret: g.OAuthClientSecret,
-		TailscaleTags:     g.TailscaleTags,
-		WGInterface:       g.WGInterface,
-		WGEndpoint:        g.WGEndpoint,
-		WGServerPub:       g.WGServerPub,
-		WGSubnetCIDR:      g.WGSubnetCIDR,
-		PublicURL:         g.PublicURL,
+	jc := JoinConfig{
+		PublicURL: g.PublicURL(),
+		StateDir:  g.StateDir(),
 	}
+	if g.IsTailscaleEnabled() {
+		t := g.Settings.Tailscale
+		jc.TailscaleEnabled = true
+		jc.AuthKey = t.AuthKey
+		jc.ControlURL = t.ControlURL
+		jc.Hostname = t.Hostname
+		jc.OAuthClientID = t.OAuthClientID
+		jc.OAuthClientSecret = t.OAuthClientSecret
+		jc.TailscaleTags = t.Tags
+	}
+	if g.IsWireGuardEnabled() {
+		w := g.Settings.WireGuard
+		jc.WGEnabled = true
+		jc.WGInterface = w.Interface
+		jc.WGEndpoint = w.Endpoint
+		jc.WGListenPort = w.ListenPort
+		jc.WGServerPub = w.ServerPub
+		jc.WGSubnetCIDR = w.SubnetCIDR
+	}
+	return jc
 }
 
 // Policy is the resolved set of named policy entities. Maps are keyed
@@ -427,7 +568,9 @@ func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
 		// blocks. For now, append and continue.
 		diags = append(diags, d...)
 	}
-	gw.PublicURL = normalizePublicURL(gw.PublicURL)
+	if gw.Settings != nil {
+		gw.Settings.PublicURL = normalizePublicURL(gw.Settings.PublicURL)
+	}
 
 	gw.Policy = &Policy{
 		Approvers:   make(map[string]*Entity),
@@ -514,65 +657,89 @@ func dedupGohclDiags(in hcl.Diagnostics) hcl.Diagnostics {
 func validateOperational(gw *Gateway) hcl.Diagnostics {
 	var diags hcl.Diagnostics
 
-	switch strings.ToLower(gw.Control) {
-	case "", "wireguard", "tailscale":
-		// ok
-	default:
+	if gw.Settings == nil {
 		diags = append(diags, &hcl.Diagnostic{
 			Severity: hcl.DiagError,
-			Summary:  "Invalid control value",
-			Detail: fmt.Sprintf(
-				"control = %q. Expected \"wireguard\", \"tailscale\", or omitted.",
-				gw.Control),
+			Summary:  "Missing gateway block",
+			Detail:   "The config must declare a top-level `gateway { ... }` block with operational settings (state_dir, public_url, the wireguard/tailscale transport sub-blocks, etc.).",
+		})
+		return diags
+	}
+
+	if !gw.IsWireGuardEnabled() && !gw.IsTailscaleEnabled() {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "No transport enabled",
+			Detail:   "Declare at least one of `wireguard { ... }` or `tailscale { ... }` inside the `gateway { ... }` block. Block presence selects the transport; both may be enabled simultaneously.",
 		})
 	}
 
-	if strings.EqualFold(gw.Control, "wireguard") {
-		if gw.WGSubnetCIDR == "" {
+	if gw.IsWireGuardEnabled() {
+		w := gw.Settings.WireGuard
+		if w.SubnetCIDR == "" {
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
-				Summary:  "Missing wg_subnet_cidr",
-				Detail:   "control = \"wireguard\" requires wg_subnet_cidr (e.g. \"10.55.0.0/24\").",
+				Summary:  "Missing wireguard.subnet_cidr",
+				Detail:   "The `wireguard { ... }` block requires `subnet_cidr` (e.g. \"10.55.0.0/24\").",
 			})
 		}
-		// Clients dial host(public_url):port(wg_endpoint). Need a host
-		// from somewhere. wg_endpoint with a non-wildcard host is the
-		// escape hatch when public_url isn't reachable from clients
-		// (split-host deployments).
-		if !hasWGDialTarget(gw.PublicURL, gw.WGEndpoint) {
+		// Clients dial host(public_url):port(wireguard.endpoint).
+		// wireguard.endpoint with a non-wildcard host is the escape
+		// hatch when public_url isn't reachable from clients
+		// (split-host deployments). On single-host loopback
+		// deployments (gateway and clawpatrol-run on the same box)
+		// neither needs to be set — clients dial loopback.
+		if !hasWGDialTarget(gw.Settings.PublicURL, w.Endpoint) && !isLoopbackOnlyWG(w) {
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
 				Summary:  "WireGuard client dial target not configured",
-				Detail:   "set public_url, or set wg_endpoint to a non-wildcard host:port (e.g. \"gw.example.com:51820\") — onboarded clients need one of these to know where to dial.",
+				Detail:   "set `public_url` on the gateway block, or set `wireguard.endpoint` to a non-wildcard host:port (e.g. \"gw.example.com:51820\") — onboarded clients need one of these to know where to dial. For single-host loopback deployments set `wireguard.endpoint = \"127.0.0.1:51820\"`.",
 			})
 		}
 	}
 
-	// Validate every dashboard_operators entry — each must be either
+	// Validate every operators entry — each must be either
 	// "user@domain" or "*@domain". Misshapen entries can silently
 	// fail to match the intended whois login (or worse, match too
 	// broadly), so we refuse to load instead of warning.
-	for i, entry := range gw.DashboardOperators {
-		if err := ValidateDashboardOperatorEntry(entry); err != nil {
-			diags = append(diags, &hcl.Diagnostic{
-				Severity: hcl.DiagError,
-				Summary:  "Invalid dashboard_operators entry",
-				Detail:   fmt.Sprintf("dashboard_operators[%d] = %q: %v. Use \"user@domain\" or \"*@domain\".", i, entry, err),
-			})
+	if gw.IsTailscaleEnabled() {
+		for i, entry := range gw.Settings.Tailscale.Operators {
+			if err := ValidateDashboardOperatorEntry(entry); err != nil {
+				diags = append(diags, &hcl.Diagnostic{
+					Severity: hcl.DiagError,
+					Summary:  "Invalid operators entry",
+					Detail:   fmt.Sprintf("operators[%d] = %q: %v. Use \"user@domain\" or \"*@domain\".", i, entry, err),
+				})
+			}
 		}
 	}
 
-	if gw.DashboardSessionTTL != "" {
-		if _, err := DashboardSessionTTLFromString(gw.DashboardSessionTTL); err != nil {
+	if gw.Settings.DashboardSessionTTL != "" {
+		if _, err := DashboardSessionTTLFromString(gw.Settings.DashboardSessionTTL); err != nil {
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
 				Summary:  "Invalid dashboard_session_ttl",
-				Detail:   fmt.Sprintf("dashboard_session_ttl = %q: %v. Use a time.ParseDuration string like \"24h\" or \"30m\".", gw.DashboardSessionTTL, err),
+				Detail:   fmt.Sprintf("dashboard_session_ttl = %q: %v. Use a time.ParseDuration string like \"24h\" or \"30m\".", gw.Settings.DashboardSessionTTL, err),
 			})
 		}
 	}
 
 	return diags
+}
+
+// isLoopbackOnlyWG reports whether a WireGuard block has its endpoint
+// pinned to loopback. Single-host deployments — gateway under one UID,
+// `clawpatrol run` from another, both on the same machine — are a
+// supported pattern and need no public_url.
+func isLoopbackOnlyWG(w *WireGuardBlock) bool {
+	if w == nil || w.Endpoint == "" {
+		return false
+	}
+	h, _, err := net.SplitHostPort(w.Endpoint)
+	if err != nil {
+		return false
+	}
+	return h == "127.0.0.1" || h == "::1" || h == "localhost"
 }
 
 // DefaultDashboardSessionTTL is the fallback when gateway.hcl omits

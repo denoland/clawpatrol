@@ -28,6 +28,11 @@ func (telegramRequestBodySecretStore) Get(string) (runtime.Secret, error) {
 
 func TestTelegramInjectedTokenRedactedFromRequestBodyAuditSample(t *testing.T) {
 	gw, diags := config.LoadBytes([]byte(`
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
+  wireguard { subnet_cidr = "10.55.0.0/24" }
+}
 endpoint "https" "telegram_api" {
   hosts = ["api.telegram.org"]
 }

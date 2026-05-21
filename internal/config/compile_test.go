@@ -11,6 +11,17 @@ import (
 	_ "github.com/denoland/clawpatrol/internal/config/plugins/all"
 )
 
+// testGatewayPrefix wraps inline test fixtures with a minimal valid
+// `gateway {}` block so loader-level operational validation passes;
+// these tests care only about the policy blocks they declare.
+const testGatewayPrefix = `gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
+  wireguard { subnet_cidr = "10.55.0.0/24" }
+}
+
+`
+
 // TestCompile loads testdata/feature_minimal.hcl, lowers it via
 // config.Compile, and exercises the resulting CompiledPolicy end-to-
 // end: priority sort, host indexing, credential resolution, and
@@ -116,7 +127,7 @@ credential "bearer_token" "tok" {
 }
 profile "p" { credentials = [bearer_token.tok] }
 `
-	gw, diags := config.LoadBytes([]byte(src), "in.hcl")
+	gw, diags := config.LoadBytes([]byte(testGatewayPrefix+src), "in.hcl")
 	if diags.HasErrors() {
 		t.Fatalf("load: %v", diags)
 	}
@@ -202,7 +213,7 @@ profile "p" { credentials = [bearer_token.tok] }
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, diags := config.LoadBytes([]byte(c.src), "in.hcl")
+			_, diags := config.LoadBytes([]byte(testGatewayPrefix+c.src), "in.hcl")
 			if !diags.HasErrors() {
 				t.Fatalf("load accepted bad hosts; want diagnostic")
 			}
@@ -241,7 +252,7 @@ rule "general" {
   verdict   = "allow"
 }
 `
-	gw, diags := config.LoadBytes([]byte(src), "in.hcl")
+	gw, diags := config.LoadBytes([]byte(testGatewayPrefix+src), "in.hcl")
 	if diags.HasErrors() {
 		t.Fatalf("load: %v", diags)
 	}
@@ -398,7 +409,7 @@ tunnel "local_command" "child" {
 
 func compileTunnelFingerprint(t *testing.T, src string, name string) string {
 	t.Helper()
-	gw, diags := config.LoadBytes([]byte(src), "fingerprint.hcl")
+	gw, diags := config.LoadBytes([]byte(testGatewayPrefix+src), "fingerprint.hcl")
 	if diags.HasErrors() {
 		t.Fatalf("load: %v", diags)
 	}
@@ -428,7 +439,7 @@ tunnel "local_command" "b" {
   via     = local_command.a
 }
 `)
-	gw, diags := config.LoadBytes(src, "cycle.hcl")
+	gw, diags := config.LoadBytes([]byte(testGatewayPrefix+string(src)), "cycle.hcl")
 	if diags.HasErrors() {
 		t.Fatalf("load: %v", diags)
 	}
@@ -454,7 +465,7 @@ endpoint "postgres" "ipliteral" {
   tunnel = local_command.t
 }
 `)
-	gw, diags := config.LoadBytes(src, "ipliteral.hcl")
+	gw, diags := config.LoadBytes([]byte(testGatewayPrefix+string(src)), "ipliteral.hcl")
 	if diags.HasErrors() {
 		t.Fatalf("load: %v", diags)
 	}

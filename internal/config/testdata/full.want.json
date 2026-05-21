@@ -1,8 +1,18 @@
 {
-  "human_on_timeout": "deny",
-  "human_timeout": 600,
-  "llm_cache_ttl": 300,
-  "llm_fail_mode": "closed",
+  "defaults": {
+    "human_on_timeout": "deny",
+    "human_timeout": 600,
+    "llm_cache_ttl": 300,
+    "llm_fail_mode": "closed",
+    "unknown_host": "passthrough"
+  },
+  "gateway": {
+    "public_url": "https://gw.example.test",
+    "state_dir": "/opt/clawpatrol",
+    "wireguard": {
+      "subnet_cidr": "10.55.0.0/24"
+    }
+  },
   "policy": {
     "approvers": {
       "billing": {
@@ -1393,6 +1403,5 @@
         }
       }
     }
-  },
-  "unknown_host": "passthrough"
+  }
 }

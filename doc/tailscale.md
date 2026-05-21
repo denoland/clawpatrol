@@ -61,8 +61,8 @@ no subnet allocation — Tailscale's control plane handles all of that.
 | **NAT hairpin** | Works (DERP relay) | Fails if both peers behind same NAT |
 | **Device identity** | User + hostname + OS via whois | Hostname only (set at join) |
 | **Auth key source** | OAuth client_credentials → Tailscale API | Self-generated keypair |
-| **Device IP** | Assigned by Tailscale control plane | Allocated from `wg_subnet_cidr` |
-| **Dashboard auth** | Tailscale user identity (no proxy needed) | Falls back to `admin_email`; needs auth proxy for multi-user |
+| **Device IP** | Assigned by Tailscale control plane | Allocated from `wireguard.subnet_cidr` |
+| **Dashboard auth** | Bcrypt root password + optional `tailscale.operators` allowlist | Bcrypt root password (no whois identity to allowlist against; combine with a `tailscale {}` block for that) |
 | **Client command** | `clawpatrol join <gw-url>` | `clawpatrol join <gw-url>` |
 | **State** | `state_dir` — tsnet machine key + ipn state in sqlite | `state_dir` — WG server key, peer map, sessions in sqlite |
 
@@ -80,7 +80,7 @@ Add to your tailnet ACL JSON:
 ```jsonc
 {
   "autoApprovers": {
-    "exitNode": ["tag:client"]    // must match tailscale_tags below
+    "exitNode": ["tag:client"]    // must match tailscale.tags below
   },
   "tagOwners": {
     "tag:client": ["autogroup:admin"]
@@ -99,19 +99,19 @@ Tailscale admin console — the ACL above is the whole prereq.
 curl -fsSL https://denoland.github.io/clawpatrol/install.sh | sh
 
 cat > /opt/clawpatrol/gateway.hcl <<'EOF'
-listen       = "0.0.0.0:8443"
-info_listen  = "127.0.0.1:8080"
-public_url   = "http://clawpatrol-gateway"    # tailnet hostname suffices
-admin_email  = "you@example.com"
-state_dir    = "/opt/clawpatrol"
-integrations = ["claude", "codex", "github"]
+gateway {
+  dashboard_listen = "127.0.0.1:8080"
+  public_url       = "http://clawpatrol-gateway" # tailnet hostname suffices
+  state_dir        = "/opt/clawpatrol/ts-state"
 
-control             = "tailscale"
-oauth_client_id     = "{{secret:TS_OAUTH_CLIENT_ID}}"
-oauth_client_secret = "{{secret:TS_OAUTH_CLIENT_SECRET}}"
-tailscale_tags      = ["tag:client"]       # applied to minted device keys
-hostname            = "clawpatrol-gateway" # gateway's name on the tailnet
-state_dir           = "/opt/clawpatrol/ts-state"
+  tailscale {
+    authkey             = "{{secret:TS_AUTHKEY}}"  # gateway-node auth key
+    hostname            = "clawpatrol-gateway"     # gateway's name on the tailnet
+    tags                = ["tag:client"]           # applied to minted client keys
+    oauth_client_id     = "{{secret:TS_OAUTH_CLIENT_ID}}"
+    oauth_client_secret = "{{secret:TS_OAUTH_CLIENT_SECRET}}"
+  }
+}
 EOF
 
 mkdir -p /opt/clawpatrol

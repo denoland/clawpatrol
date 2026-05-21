@@ -365,11 +365,22 @@
 #   stamps the `k8s-aws-v1.<…>` bearer; cluster name and region live
 #   on the endpoint.
 
-unknown_host = "passthrough"
-llm_fail_mode = "closed"
-llm_cache_ttl = 300
-human_timeout = 600
-human_on_timeout = "deny"
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
+
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+  }
+}
+
+defaults {
+  unknown_host     = "passthrough"
+  llm_fail_mode    = "closed"
+  llm_cache_ttl    = 300
+  human_timeout    = 600
+  human_on_timeout = "deny"
+}
 
 # ── Approvers ────────────────────────────────────────
 #

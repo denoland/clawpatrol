@@ -14,7 +14,11 @@ rule "github-writes" {
 
 # ===== harness =====
 
-admin_email = "ops@example.com"
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
+  wireguard { subnet_cidr = "10.55.0.0/24" }
+}
 
 endpoint "postgres" "pg-prod" {
   host = "pg-prod.example:5432"

@@ -1,7 +1,16 @@
-listen     = "0.0.0.0:8443"
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
 
-unknown_host  = "passthrough"
-llm_fail_mode = "closed"
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+  }
+}
+
+defaults {
+  unknown_host  = "passthrough"
+  llm_fail_mode = "closed"
+}
 
 endpoint "https" "github" {
   hosts = ["api.github.com", "github.com"]

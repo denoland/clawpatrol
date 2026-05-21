@@ -11,7 +11,11 @@ rule "k8s-exec-content-check" {
 
 # ===== harness =====
 
-admin_email = "ops@example.com"
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
+  wireguard { subnet_cidr = "10.55.0.0/24" }
+}
 
 endpoint "kubernetes" "k8s-dev" {
   server = "k8s-dev.example"

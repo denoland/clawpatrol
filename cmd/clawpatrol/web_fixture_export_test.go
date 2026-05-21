@@ -15,9 +15,19 @@ import (
 // gatewayWithPolicy builds a minimal *Gateway whose Policy() returns
 // the compiled HCL. Enough for the exporter, which is invoked
 // directly here (bypassing route + auth).
+// testGatewayPrefix wraps inline HCL fixtures with a minimal valid
+// gateway block so loader-level operational validation passes.
+const testGatewayPrefix = `gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
+  wireguard { subnet_cidr = "10.55.0.0/24" }
+}
+
+`
+
 func gatewayWithPolicy(t *testing.T, hcl string) *Gateway {
 	t.Helper()
-	gw, diags := config.LoadBytes([]byte(hcl), "in.hcl")
+	gw, diags := config.LoadBytes([]byte(testGatewayPrefix+hcl), "in.hcl")
 	if diags.HasErrors() {
 		t.Fatalf("load: %v", diags)
 	}
@@ -31,7 +41,6 @@ func gatewayWithPolicy(t *testing.T, hcl string) *Gateway {
 }
 
 const fixtureHCL = `
-admin_email = "x@example.com"
 endpoint "https" "github" {
   hosts = ["api.github.com"]
 }
@@ -111,7 +120,7 @@ func TestExporterRejectsEmptyEndpoint(t *testing.T) {
 // write time); the runner can rely on it for shared-host dispatch.
 func TestExporterAlwaysEmitsEndpoint(t *testing.T) {
 	const hcl = `
-admin_email = "x@example.com"
+
 endpoint "https" "alpha" {
   hosts = ["api.example.com"]
 }
@@ -164,7 +173,7 @@ func TestExporterEventActionMapping(t *testing.T) {
 // is the dst IP). 400 when the recorded event has no statement.
 func TestExporterSQLHappyPath(t *testing.T) {
 	const hcl = `
-admin_email = "x@example.com"
+
 endpoint "postgres" "pg" {
   host = "pg.internal:5432"
 }
@@ -204,7 +213,7 @@ profile "default" { credentials = [postgres_credential.pg-cred] }
 // are supposed to be self-contained (cl-m6wv).
 func TestExporterSQLEmitsAllFacets(t *testing.T) {
 	const hcl = `
-admin_email = "x@example.com"
+
 endpoint "postgres" "pg" {
   host = "pg.internal:5432"
 }
@@ -264,7 +273,7 @@ profile "default" { credentials = [postgres_credential.pg-cred] }
 // fixture stays additive (cl-m6wv).
 func TestExporterSQLStatementOnlyBackcompat(t *testing.T) {
 	const hcl = `
-admin_email = "x@example.com"
+
 endpoint "postgres" "pg" {
   host = "pg.internal:5432"
 }
@@ -301,7 +310,7 @@ profile "default" { credentials = [postgres_credential.pg-cred] }
 
 func TestExporterSQLRejectsMissingStatement(t *testing.T) {
 	const hcl = `
-admin_email = "x@example.com"
+
 endpoint "postgres" "pg" {
   host = "pg.internal:5432"
 }
@@ -329,7 +338,7 @@ profile "default" { credentials = [postgres_credential.pg-cred] }
 // map[string]string.
 func TestExporterK8sHappyPath(t *testing.T) {
 	const hcl = `
-admin_email = "x@example.com"
+
 endpoint "kubernetes" "kube" {
   server = "10.0.0.7"
   hosts  = ["10.0.0.7"]
@@ -384,7 +393,7 @@ profile "default" { credentials = [mtls_credential.kube-mtls] }
 // two halves of the feature.
 func TestExporterRunnerRoundTrip(t *testing.T) {
 	const hcl = `
-admin_email = "x@example.com"
+
 endpoint "https" "github" {
   hosts = ["api.github.com"]
 }

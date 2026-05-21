@@ -23,13 +23,21 @@ Drop these two files in a directory:
 denies writes:
 
 ```hcl
-admin_email = "you@example.com"
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
 
-credential "bearer_token" "github_pat" {}
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+  }
+}
+
+credential "bearer_token" "github_pat" {
+  endpoint = https.github
+}
 
 endpoint "https" "github" {
-  hosts      = ["api.github.com"]
-  credential = bearer_token.github_pat
+  hosts = ["api.github.com"]
 }
 
 rule "github-reads" {
@@ -45,7 +53,7 @@ rule "github-writes" {
   reason    = "writes go through PR review"
 }
 
-profile "default" { endpoints = [https.github] }
+profile "default" { credentials = [bearer_token.github_pat] }
 ```
 
 **`fixtures/get-user.json`** — assert that `GET /user` is allowed:

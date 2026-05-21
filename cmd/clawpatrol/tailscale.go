@@ -1,22 +1,25 @@
-// Gateway control-plane listener. When the operator's HCL sets the
-// top-level `authkey = "..."` (or TS_AUTHKEY is in the env), the
-// gateway joins a tailnet via an embedded tsnet.Server and accepts
-// agent traffic on its tailnet IP — this is the meaningful Listener
-// for tsnet-mode deployments. The embedded tsnet.Server also acts as
-// a Tailscale exit node: RegisterFallbackTCPHandler intercepts all
-// TCP forwarded through the node so whole-machine clients get the
-// same MITM treatment as per-process clawpatrol-run clients. No
-// system tailscaled, iptables, or sudo required.
+// Gateway transport listeners.
 //
-// In WireGuard mode the listener is vestigial: agent TLS flows
-// through the WG netstack's promiscuous forwarder inside the tunnel
-// (main.go's tcpDispatch handles dst port 443), not through this
-// socket. We still open a loopback listener so g.handle is reachable
-// for in-process local debugging, but force the bind to 127.0.0.1
-// regardless of cfg.Listen — historically operators set this to
-// 0.0.0.0:8443, which combined with g.handle's "unknown SNI →
-// splice" fall-through turned the socket into an open TLS proxy
-// (security-review F-19).
+// `tailscale { }` block present: the gateway joins a tailnet via an
+// embedded tsnet.Server and accepts agent traffic on its tailnet IP.
+// The embedded tsnet.Server also acts as a Tailscale exit node:
+// RegisterFallbackTCPHandler intercepts all TCP forwarded through the
+// node so whole-machine clients get the same MITM treatment as
+// per-process clawpatrol-run clients. No system tailscaled, iptables,
+// or sudo required.
+//
+// `wireguard { }` block present: the gateway runs an embedded
+// userspace WireGuard server (see wireguard.go). Agent TLS flows
+// through the WG netstack's promiscuous forwarder; main.go's
+// tcpDispatch routes dst port 443 to g.handle. Alongside the
+// netstack we also open a loopback TCP listener on 127.0.0.1:8443
+// for host-local clients — single-host deployments (the gateway
+// running under one user account, clawpatrol-run invoked from
+// another on the same machine, loopback WG between them) are a
+// first-class pattern, not a debug mode.
+//
+// Both blocks present: the gateway runs both transports concurrently.
+// Peers from either transport land in the same g.handle path.
 //
 // tsnet's dep tree is unconditionally compiled in — the tunnel
 // package's tailscale plugin already pulls it, so there's no
@@ -58,50 +61,63 @@ func gatewayTsnetDir(stateDir string) (string, error) {
 	return dir, nil
 }
 
-// openListener returns the gateway's primary TCP listener.
+// openListener brings up the gateway's transport listeners. Either
+// or both of the returned values may be non-nil depending on which
+// transport blocks the operator declared:
 //
-// Tailscale control mode: always uses an embedded tsnet.Server.
-// Requires authkey in HCL or TS_AUTHKEY env (no system tailscaled
-// needed). Returns the *tsnet.Server. All MITM traffic from tsnet
-// clients is intercepted via RegisterFallbackTCPHandler (set up by
-// runGateway), so we don't open a tailnet :443 listener here.
+//   - WireGuard enabled → returns a loopback TCP listener on
+//     127.0.0.1:8443. Host-local agents (e.g. clawpatrol-run from a
+//     different UID on the same box) connect directly. Off-host
+//     agents reach g.handle via the WG netstack's promiscuous
+//     forwarder; that path doesn't touch this socket.
+//   - Tailscale enabled → returns the *tsnet.Server. All MITM
+//     traffic from tsnet clients is intercepted via
+//     RegisterFallbackTCPHandler (set up by runGateway), so we
+//     don't open a tailnet :443 listener here.
 //
-// WireGuard mode: returns nil server and a loopback TCP listener.
+// Configs without either block fail validation at Load time, so this
+// function never returns (nil, nil, nil).
 func openListener(cfg *config.Gateway, stateDir string) (*tsnet.Server, net.Listener, error) {
-	if !isTailscaleControlMode(cfg.Control) {
-		// WireGuard mode: bind loopback regardless of cfg.Listen's
-		// host portion. See the file-level comment.
-		host, port, err := net.SplitHostPort(cfg.Listen)
-		if err != nil || port == "" {
-			port = "8443"
+	var ln net.Listener
+	if cfg.IsWireGuardEnabled() {
+		var err error
+		ln, err = net.Listen("tcp", "127.0.0.1:8443")
+		if err != nil {
+			return nil, nil, err
 		}
-		if host != "" && host != "127.0.0.1" && host != "::1" {
-			log.Printf("WARNING: listen %q overridden to loopback in WireGuard mode; agent traffic flows through the WG tunnel, this socket is for local debugging only.", cfg.Listen)
-		}
-		ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", port))
-		return nil, ln, err
 	}
 
-	authKey := cfg.AuthKey
+	if !cfg.IsTailscaleEnabled() {
+		return nil, ln, nil
+	}
+
+	ts := cfg.Settings.Tailscale
+	authKey := ts.AuthKey
 	if authKey == "" {
 		authKey = os.Getenv("TS_AUTHKEY")
 	}
 	if authKey == "" {
-		return nil, nil, fmt.Errorf("tailscale mode requires authkey = \"...\" in gateway.hcl or TS_AUTHKEY env var (embedded tsnet — no system tailscaled needed)")
+		if ln != nil {
+			_ = ln.Close()
+		}
+		return nil, nil, fmt.Errorf("tailscale block requires authkey = \"...\" in gateway.hcl or TS_AUTHKEY env var (embedded tsnet — no system tailscaled needed)")
 	}
 
-	hn := cfg.Hostname
+	hn := ts.Hostname
 	if hn == "" {
 		hn = "clawpatrol-gateway"
 	}
 	dir, err := gatewayTsnetDir(stateDir)
 	if err != nil {
+		if ln != nil {
+			_ = ln.Close()
+		}
 		return nil, nil, err
 	}
 	s := &tsnet.Server{
 		Hostname:   hn,
 		AuthKey:    authKey,
-		ControlURL: cfg.ControlURL,
+		ControlURL: ts.ControlURL,
 		Dir:        dir,
 	}
 	// Bring tsnet up. We don't need a tailnet TCP listener — exit-node
@@ -110,13 +126,16 @@ func openListener(cfg *config.Gateway, stateDir string) (*tsnet.Server, net.List
 	// public bring-up API and never exposes this listener to callers.
 	bringUp, err := s.Listen("tcp", ":0")
 	if err != nil {
+		if ln != nil {
+			_ = ln.Close()
+		}
 		return nil, nil, err
 	}
 	_ = bringUp.Close()
 	// Advertise exit routes so whole-machine and per-process tsnet
 	// clients can use this node as a Tailscale exit node.
 	go advertiseExitRoutes(s)
-	return s, nil, nil
+	return s, ln, nil
 }
 
 // startFunnelListener opens a Tailscale Funnel listener on :443 (internet

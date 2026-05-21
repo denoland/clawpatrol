@@ -250,12 +250,16 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 		return &CompiledPolicy{}, nil
 	}
 	p := gw.Policy
+	d := gw.Defaults
+	if d == nil {
+		d = &Defaults{}
+	}
 	cp := &CompiledPolicy{
-		UnknownHost:    gw.UnknownHost,
-		LLMFailMode:    gw.LLMFailMode,
-		LLMCacheTTL:    gw.LLMCacheTTL,
-		HumanTimeout:   gw.HumanTimeout,
-		HumanOnTimeout: gw.HumanOnTimeout,
+		UnknownHost:    d.UnknownHost,
+		LLMFailMode:    d.LLMFailMode,
+		LLMCacheTTL:    d.LLMCacheTTL,
+		HumanTimeout:   d.HumanTimeout,
+		HumanOnTimeout: d.HumanOnTimeout,
 		Profiles:       map[string]*CompiledProfile{},
 		Endpoints:      map[string]*CompiledEndpoint{},
 		Tunnels:        map[string]*CompiledTunnel{},

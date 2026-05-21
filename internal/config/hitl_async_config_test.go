@@ -14,7 +14,14 @@ import (
 
 func TestHITLAsyncConfigLoadsProfileApproverAndNormalizesPublicURL(t *testing.T) {
 	src := `
-public_url = "https://clawpatrol.example.test/"
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://clawpatrol.example.test/"
+
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+  }
+}
 
 endpoint "https" "api" {
   hosts = ["api.example.test"]
@@ -46,8 +53,8 @@ rule "writes" {
 	if diags.HasErrors() {
 		t.Fatalf("load: %v", diags)
 	}
-	if gw.PublicURL != "https://clawpatrol.example.test" {
-		t.Fatalf("PublicURL = %q, want trailing slash stripped", gw.PublicURL)
+	if gw.PublicURL() != "https://clawpatrol.example.test" {
+		t.Fatalf("PublicURL = %q, want trailing slash stripped", gw.PublicURL())
 	}
 	if !gw.Policy.Profiles["agent"].HITLAsyncGrants {
 		t.Fatal("profile HITLAsyncGrants = false, want true")
@@ -187,7 +194,11 @@ func TestHITLAsyncConfigRequiresSyncWaitTimeoutWhenEnabled(t *testing.T) {
 
 func TestHITLAsyncConfigRejectsInvalidApproverValues(t *testing.T) {
 	src := `
-public_url = "https://clawpatrol.example.test"
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://clawpatrol.example.test"
+  wireguard { subnet_cidr = "10.55.0.0/24" }
+}
 
 endpoint "https" "api" {
   hosts = ["api.example.test"]
@@ -251,9 +262,14 @@ func TestHITLAsyncConfigRejectsMaxBodyBytesAboveHardLimit(t *testing.T) {
 
 func hitlAsyncConfigSource(publicURL string, profileOptIn, includeAsyncGrant bool, syncWaitTimeout, asyncGrantBody string) string {
 	var b strings.Builder
+	b.WriteString("gateway {\n  state_dir = \"/opt/clawpatrol\"\n")
 	if publicURL != "" {
-		fmt.Fprintf(&b, "public_url = %q\n\n", publicURL)
+		fmt.Fprintf(&b, "  public_url = %q\n", publicURL)
 	}
+	// Use tailscale here so the WG dial-target requirement
+	// (public_url or wireguard.endpoint) doesn't add noise to
+	// publicURL-omitted test cases.
+	b.WriteString("  tailscale { authkey = \"tskey-test\" }\n}\n\n")
 	b.WriteString(`endpoint "https" "api" {
   hosts = ["api.example.test"]
 }

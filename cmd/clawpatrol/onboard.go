@@ -446,13 +446,18 @@ type Onboarder interface {
 	MintKey(ctx context.Context, reuseIP string, wholeMachine bool) (authKey, loginServer, peerIP string, err error)
 }
 
+// newOnboarder picks the transport branch the gateway should use to
+// mint a peer identity for a joining device. When both transports
+// are enabled, WireGuard wins — its onboarding flow yields a
+// wg-quick conf the device can apply without needing a Tailscale
+// account, which is the more permissive path. Operators who want
+// every device to land on Tailscale should disable the `wireguard
+// {}` block.
 func newOnboarder(ts JoinConfig) Onboarder {
-	switch strings.ToLower(ts.Control) {
-	case "wireguard":
+	if ts.WGEnabled {
 		return &wireguardOnboarder{ts: ts}
-	default:
-		return &tailscaleOnboarder{ts: ts}
 	}
+	return &tailscaleOnboarder{ts: ts}
 }
 
 type tailscaleOnboarder struct{ ts JoinConfig }
@@ -601,11 +606,11 @@ func (w *webMux) apiOnboardStart(rw http.ResponseWriter, r *http.Request) {
 	// don't have to go through the Funnel HTTPS relay. Use IP directly
 	// to avoid MagicDNS resolution issues with OS-hostname vs registered name.
 	verifyURL := w.publicURL
-	if w.g != nil && w.g.cfg != nil && w.g.cfg.PublicURL != "" {
-		verifyURL = w.g.cfg.PublicURL
+	if w.g != nil && w.g.cfg != nil && w.g.cfg.PublicURL() != "" {
+		verifyURL = w.g.cfg.PublicURL()
 	}
-	if w.g != nil && w.g.tailscaleIP != "" && w.g.cfg.InfoListen != "" {
-		port := w.g.cfg.InfoListen
+	if w.g != nil && w.g.tailscaleIP != "" && w.g.cfg.DashboardListen() != "" {
+		port := w.g.cfg.DashboardListen()
 		if i := strings.LastIndexByte(port, ':'); i >= 0 {
 			port = port[i+1:]
 		}

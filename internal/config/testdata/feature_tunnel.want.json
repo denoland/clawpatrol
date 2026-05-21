@@ -1,5 +1,11 @@
 {
-  "listen": "0.0.0.0:8443",
+  "gateway": {
+    "public_url": "https://gw.example.test",
+    "state_dir": "/opt/clawpatrol",
+    "wireguard": {
+      "subnet_cidr": "10.55.0.0/24"
+    }
+  },
   "policy": {
     "credentials": {
       "github": {

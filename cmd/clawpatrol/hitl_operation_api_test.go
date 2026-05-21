@@ -433,7 +433,7 @@ func newHITLOperationAPITestHarness(t *testing.T) hitlOperationAPITestHarness {
 
 	gwCfg := loadHITLOperationAPITestConfig(t)
 	g := &Gateway{cfg: gwCfg, db: db, onboard: newOnboardRegistry()}
-	w := newWebMux(g, gwCfg.Join(), gwCfg.PublicURL)
+	w := newWebMux(g, gwCfg.Join(), gwCfg.PublicURL())
 	return hitlOperationAPITestHarness{
 		handler:    w,
 		store:      NewHITLOperationStore(db),
@@ -445,10 +445,14 @@ func newHITLOperationAPITestHarness(t *testing.T) hitlOperationAPITestHarness {
 func loadHITLOperationAPITestConfig(t *testing.T) *config.Gateway {
 	t.Helper()
 	gw, diags := config.LoadBytes([]byte(`
-admin_email = "ops@example.test"
-public_url = "https://gateway.example.test"
-control = "wireguard"
-wg_subnet_cidr = "10.55.0.0/24"
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gateway.example.test"
+
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+  }
+}
 
 endpoint "https" "api" {
   hosts = ["api.example.test"]

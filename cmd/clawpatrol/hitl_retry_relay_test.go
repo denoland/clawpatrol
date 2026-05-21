@@ -222,7 +222,11 @@ func newHITLRetryRelayHarness(t *testing.T) *hitlRetryRelayHarness {
 	}
 
 	gw, diags := config.LoadBytes([]byte(`
-public_url = "https://gateway.example.test"
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gateway.example.test"
+  wireguard { subnet_cidr = "10.55.0.0/24" }
+}
 
 endpoint "https" "api" {
   hosts = ["api.example.test"]

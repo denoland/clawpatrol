@@ -5,12 +5,15 @@
 #
 #     clawpatrol gateway -config /opt/clawpatrol/gateway.hcl
 #
-# Hot-reloadable: every policy block + admin_email. Listen ports /
-# state_dir / tailscale block need a restart.
+# Hot-reloadable: every policy block. The gateway / wireguard /
+# tailscale block fields need a restart.
 #
-# Top-level kinds:
+# Top-level blocks:
 #
-#   defaults   {}                     global fallbacks for fail-mode,
+#   gateway {}                        operational settings, with
+#                                     nested wireguard {} / tailscale {}
+#                                     transport sub-blocks
+#   defaults {}                       global fallbacks for fail-mode,
 #                                     cache TTL, unknown-host policy
 #   approver   "<type>" "<name>"      who arbitrates (llm_approver |
 #                                     human_approver). llm_approver
@@ -30,26 +33,25 @@
 # References are bare names — no kind prefix. The flat namespace is
 # globally unique; collisions are a load error.
 
-# ── operational --------------------------------------------------------
+gateway {
+  dashboard_listen = "0.0.0.0:8080"
+  public_url       = "http://66.42.120.196:8080"
+  log_path         = "/opt/clawpatrol/gateway.log"
+  state_dir        = "/opt/clawpatrol/oauth"
 
-listen      = "0.0.0.0:8443"
-info_listen = "0.0.0.0:8080"
-public_url  = "http://66.42.120.196:8080"
-admin_email = "test@example.com"
-log_path    = "/opt/clawpatrol/gateway.log"
-state_dir   = "/opt/clawpatrol/oauth"
+  wireguard {
+    endpoint    = "0.0.0.0:51820"
+    subnet_cidr = "10.55.0.0/24"
+  }
+}
 
-control        = "wireguard"
-wg_endpoint    = "0.0.0.0:51820"
-wg_subnet_cidr = "10.55.0.0/24"
-
-# ── policy --------------------------------------------------------------
-
-unknown_host     = "passthrough"
-llm_fail_mode    = "closed"
-llm_cache_ttl    = 300
-human_timeout    = 600
-human_on_timeout = "deny"
+defaults {
+  unknown_host     = "passthrough"
+  llm_fail_mode    = "closed"
+  llm_cache_ttl    = 300
+  human_timeout    = 600
+  human_on_timeout = "deny"
+}
 
 # Endpoints: hosts + protocol-family connection params. Pure network
 # targets — credential binding lives on the credential block.

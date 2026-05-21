@@ -14,35 +14,12 @@ import (
 // schema or plugins evolve and goldens regenerate via -update.
 func (g *Gateway) Dump() ([]byte, error) {
 	out := map[string]any{}
-	if g.Listen != "" {
-		out["listen"] = g.Listen
+	if g.Settings != nil {
+		out["gateway"] = dumpSettings(g.Settings)
 	}
-	if g.InfoListen != "" {
-		out["info_listen"] = g.InfoListen
+	if g.Defaults != nil {
+		out["defaults"] = dumpDefaults(g.Defaults)
 	}
-	if g.PublicURL != "" {
-		out["public_url"] = g.PublicURL
-	}
-	if g.AdminEmail != "" {
-		out["admin_email"] = g.AdminEmail
-	}
-	if g.LogPath != "" {
-		out["log_path"] = g.LogPath
-	}
-	if g.Resolver != "" {
-		out["resolver"] = g.Resolver
-	}
-	if g.SessionKeep != "" {
-		out["session_keep"] = g.SessionKeep
-	}
-	if len(g.DashboardOperators) > 0 {
-		out["dashboard_operators"] = g.DashboardOperators
-	}
-	if g.DashboardSessionTTL != "" {
-		out["dashboard_session_ttl"] = g.DashboardSessionTTL
-	}
-	dumpJoinFields(g, out)
-	dumpDefaultsFields(g, out)
 	if g.Policy != nil {
 		out["policy"] = dumpPolicy(g.Policy)
 	}
@@ -56,44 +33,99 @@ func (g *Gateway) Dump() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func dumpJoinFields(g *Gateway, out map[string]any) {
+func dumpSettings(s *GatewaySettings) map[string]any {
+	out := map[string]any{}
 	setStr := func(name, v string) {
 		if v != "" {
 			out[name] = v
 		}
 	}
-	setStr("authkey", g.AuthKey)
-	setStr("control_url", g.ControlURL)
-	setStr("hostname", g.Hostname)
-	setStr("state_dir", g.StateDir)
-	setStr("control", g.Control)
-	setStr("oauth_client_id", g.OAuthClientID)
-	setStr("oauth_client_secret", g.OAuthClientSecret)
-	if len(g.TailscaleTags) > 0 {
-		out["tailscale_tags"] = g.TailscaleTags
+	setStr("dashboard_listen", s.DashboardListen)
+	setStr("public_url", s.PublicURL)
+	setStr("state_dir", s.StateDir)
+	setStr("dashboard_session_ttl", s.DashboardSessionTTL)
+	setStr("resolver", s.Resolver)
+	setStr("log_path", s.LogPath)
+	if s.Telemetry != nil {
+		out["telemetry"] = *s.Telemetry
 	}
-	setStr("wg_interface", g.WGInterface)
-	setStr("wg_endpoint", g.WGEndpoint)
-	setStr("wg_server_pub", g.WGServerPub)
-	setStr("wg_subnet_cidr", g.WGSubnetCIDR)
+	setStr("session_keep", s.SessionKeep)
+	if s.WireGuard != nil {
+		out["wireguard"] = dumpWireGuard(s.WireGuard)
+	}
+	if s.Tailscale != nil {
+		out["tailscale"] = dumpTailscale(s.Tailscale)
+	}
+	return out
 }
 
-func dumpDefaultsFields(g *Gateway, out map[string]any) {
-	if g.UnknownHost != "" {
-		out["unknown_host"] = g.UnknownHost
+func dumpWireGuard(w *WireGuardBlock) map[string]any {
+	out := map[string]any{}
+	if w.SubnetCIDR != "" {
+		out["subnet_cidr"] = w.SubnetCIDR
 	}
-	if g.LLMFailMode != "" {
-		out["llm_fail_mode"] = g.LLMFailMode
+	if w.ListenPort != 0 {
+		out["listen_port"] = w.ListenPort
 	}
-	if g.LLMCacheTTL != 0 {
-		out["llm_cache_ttl"] = g.LLMCacheTTL
+	if w.Endpoint != "" {
+		out["endpoint"] = w.Endpoint
 	}
-	if g.HumanTimeout != 0 {
-		out["human_timeout"] = g.HumanTimeout
+	if w.Interface != "" {
+		out["interface"] = w.Interface
 	}
-	if g.HumanOnTimeout != "" {
-		out["human_on_timeout"] = g.HumanOnTimeout
+	if w.ServerPub != "" {
+		out["server_pub"] = w.ServerPub
 	}
+	return out
+}
+
+func dumpTailscale(t *TailscaleBlock) map[string]any {
+	out := map[string]any{}
+	if t.AuthKey != "" {
+		out["authkey"] = t.AuthKey
+	}
+	if t.Hostname != "" {
+		out["hostname"] = t.Hostname
+	}
+	if t.ControlURL != "" {
+		out["control_url"] = t.ControlURL
+	}
+	if len(t.Tags) > 0 {
+		out["tags"] = t.Tags
+	}
+	if len(t.Operators) > 0 {
+		out["operators"] = t.Operators
+	}
+	if t.Funnel {
+		out["funnel"] = true
+	}
+	if t.OAuthClientID != "" {
+		out["oauth_client_id"] = t.OAuthClientID
+	}
+	if t.OAuthClientSecret != "" {
+		out["oauth_client_secret"] = t.OAuthClientSecret
+	}
+	return out
+}
+
+func dumpDefaults(d *Defaults) map[string]any {
+	out := map[string]any{}
+	if d.UnknownHost != "" {
+		out["unknown_host"] = d.UnknownHost
+	}
+	if d.LLMFailMode != "" {
+		out["llm_fail_mode"] = d.LLMFailMode
+	}
+	if d.LLMCacheTTL != 0 {
+		out["llm_cache_ttl"] = d.LLMCacheTTL
+	}
+	if d.HumanTimeout != 0 {
+		out["human_timeout"] = d.HumanTimeout
+	}
+	if d.HumanOnTimeout != "" {
+		out["human_on_timeout"] = d.HumanOnTimeout
+	}
+	return out
 }
 
 func dumpPolicy(p *Policy) map[string]any {

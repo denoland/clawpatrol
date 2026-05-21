@@ -1,4 +1,11 @@
-listen = "0.0.0.0:8443"
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
+
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+  }
+}
 
 # Singleton local_command tunnel — one process serves every endpoint
 # that references it.

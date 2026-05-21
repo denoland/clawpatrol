@@ -1,1 +1,1 @@
-error: error_approve_stage_typo.hcl:16:1: Rule "broken-approve" approve stage must be a bare-name reference — Each stage is a bare approver name (e.g. `approve = [claude-judge]`). Bind policy text on the approver block itself.
+error: error_approve_stage_typo.hcl:25:1: Rule "broken-approve" approve stage must be a bare-name reference — Each stage is a bare approver name (e.g. `approve = [claude-judge]`). Bind policy text on the approver block itself.

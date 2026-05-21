@@ -51,9 +51,21 @@ func compile(t *testing.T) *config.CompiledPolicy {
 	return compileFixture(t, fixture)
 }
 
+// testGatewayPrefix wraps inline test fixtures with a minimal valid
+// `gateway {}` block so loader-level operational validation passes;
+// runtime tests don't care about transport config, only the policy
+// blocks they declare.
+const testGatewayPrefix = `gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
+  wireguard { subnet_cidr = "10.55.0.0/24" }
+}
+
+`
+
 func compileFixture(t *testing.T, src string) *config.CompiledPolicy {
 	t.Helper()
-	gw, diags := config.LoadBytes([]byte(src), "in.hcl")
+	gw, diags := config.LoadBytes([]byte(testGatewayPrefix+src), "in.hcl")
 	if diags.HasErrors() {
 		t.Fatalf("load: %v", diags)
 	}
@@ -738,7 +750,7 @@ profile "default" {
   ]
 }
 `
-	gw, diags := config.LoadBytes([]byte(src), "in.hcl")
+	gw, diags := config.LoadBytes([]byte(testGatewayPrefix+src), "in.hcl")
 	if diags.HasErrors() {
 		t.Fatalf("load: %v", diags)
 	}
@@ -1024,7 +1036,7 @@ profile "default" {
   ]
 }
 `
-		_, diags := config.LoadBytes([]byte(src), "in.hcl")
+		_, diags := config.LoadBytes([]byte(testGatewayPrefix+src), "in.hcl")
 		if !diags.HasErrors() {
 			t.Fatalf("expected load to reject `placeholder` on postgres_credential, got no errors")
 		}

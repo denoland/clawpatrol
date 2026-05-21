@@ -1,3 +1,12 @@
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
+
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+  }
+}
+
 # Old (pre-inversion) grammar: endpoint carries `credential = X` and
 # profile carries `endpoints = [...]`. Under the inverted grammar
 # the credential→endpoint binding lives on the credential, profiles

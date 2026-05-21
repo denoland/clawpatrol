@@ -15,29 +15,32 @@ A policy file mixes **operational** fields (gateway plumbing) with
 blocks dispatch to plugins by their first label.
 
 ```hcl
-# Top-level singletons — read by the gateway daemon at boot.
-# Listen / paths / public URL:
-listen      = "0.0.0.0:8443"
-log_path    = "/opt/clawpatrol/gateway.log"
-state_dir   = "/opt/clawpatrol/state"
-public_url  = "http://gateway.internal:8080"
-admin_email = "ops@example.com"
+# Top-level blocks read by the gateway daemon at boot.
+gateway {
+  dashboard_listen = "127.0.0.1:8080"
+  log_path         = "/opt/clawpatrol/gateway.log"
+  state_dir        = "/opt/clawpatrol/state"
+  public_url       = "http://gateway.internal:8080"
 
-# Control-plane joining:
-control     = "wireguard"
-wg_endpoint = "203.0.113.10:51820"
+  # Transport block presence selects the transport. Both may be enabled.
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+    endpoint    = "203.0.113.10:51820"
+  }
+}
 
-# Policy fallbacks:
-unknown_host  = "passthrough"
-llm_fail_mode = "closed"
+# Optional policy defaults.
+defaults {
+  unknown_host  = "passthrough"
+  llm_fail_mode = "closed"
+}
 
 # Labeled policy blocks — dispatched to plugins.
 approver "<type>" "<name>" { ... }
 credential "<type>" "<name>" { ... }
 endpoint "<type>" "<name>" { ... }
-rule "<type>" "<name>" { ... }
+rule "<name>" { ... }
 profile "<name>" { ... }
-device "<ip>" { rule ... ... { ... } }
 ```
 
 ## Names + references

@@ -177,13 +177,9 @@ func (w *webMux) skipsDashboardPassword(path string) bool {
 	}
 }
 
-func isTailscaleControlMode(control string) bool {
-	return control == "" || strings.EqualFold(control, "tailscale")
-}
-
 func (w *webMux) mayUseTailnetInsteadOfDashboard(path string) bool {
 	return w.authRequirementForPath(path) == authDashboardOrTailnetOperator &&
-		isTailscaleControlMode(w.g.cfg.Control)
+		w.g.cfg.IsTailscaleEnabled()
 }
 
 func (w *webMux) skipsTailnetGate(path string) bool {
@@ -314,7 +310,7 @@ const cpSessionCookieName = "cp_session"
 // the duplicate parse here is so a hot-reloaded config can change
 // the TTL without restarting.
 func (w *webMux) dashboardSessionTTL() time.Duration {
-	d, err := config.DashboardSessionTTLFromString(w.g.cfg.DashboardSessionTTL)
+	d, err := config.DashboardSessionTTLFromString(w.g.cfg.DashboardSessionTTL())
 	if err != nil {
 		// Validator at config load would have caught this; defensive
 		// fallback to the default keeps a hot-reload typo from
@@ -365,10 +361,11 @@ func (w *webMux) dashboardAuthGate(next http.Handler) http.Handler {
 		}
 
 		// Tailnet allowlist path: defer to tailnetGate so it can
-		// resolve the whois identity and compare against
-		// cfg.DashboardOperators. Only relevant in tailscale-control
-		// mode; in wireguard / proxy mode there is no whois.
-		if isTailscaleControlMode(w.g.cfg.Control) && len(w.g.cfg.DashboardOperators) > 0 {
+		// resolve the whois identity and compare against the
+		// configured operators allowlist. Only relevant when the
+		// `tailscale {}` block is enabled — without it there's no
+		// whois identity to resolve.
+		if w.g.cfg.IsTailscaleEnabled() && len(w.g.cfg.Operators()) > 0 {
 			next.ServeHTTP(rw, r)
 			return
 		}
@@ -572,7 +569,7 @@ func renderLogin(rw http.ResponseWriter, next, errMsg string, firstRun bool, sta
 // gate is skipped and dashboardAuthGate's password requirement is
 // the only auth.
 func (w *webMux) tailnetGate(next http.Handler) http.Handler {
-	skipGate := !isTailscaleControlMode(w.g.cfg.Control)
+	skipGate := !w.g.cfg.IsTailscaleEnabled()
 
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		if w.skipsTailnetGate(r.URL.Path) || skipGate {
@@ -630,8 +627,8 @@ func (w *webMux) tailnetGate(next http.Handler) http.Handler {
 		// dashboardAuthGate upstream and short-circuit this gate at
 		// the principalFromContext check above.
 		if needsOperatorGate(w.authRequirementForPath(r.URL.Path)) {
-			if !config.MatchDashboardOperator(login, w.g.cfg.DashboardOperators) {
-				http.Error(rw, "operator routes require a dashboard password session or a tailnet login matching dashboard_operators", http.StatusForbidden)
+			if !config.MatchDashboardOperator(login, w.g.cfg.Operators()) {
+				http.Error(rw, "operator routes require a dashboard password session or a tailnet login matching the operators allowlist", http.StatusForbidden)
 				return
 			}
 		}
@@ -826,8 +823,8 @@ func (w *webMux) apiHITLOperationStatus(rw http.ResponseWriter, r *http.Request)
 func (w *webMux) hitlPublicURL() string {
 	// Prefer the live config — public_url may be auto-derived from the
 	// tsnet Funnel cert AFTER webMux is constructed.
-	if w.g != nil && w.g.cfg != nil && w.g.cfg.PublicURL != "" {
-		return w.g.cfg.PublicURL
+	if w.g != nil && w.g.cfg != nil && w.g.cfg.PublicURL() != "" {
+		return w.g.cfg.PublicURL()
 	}
 	return w.publicURL
 }
@@ -1065,9 +1062,6 @@ func (w *webMux) selectedProfileForRequest(r *http.Request) (key, label string) 
 	if def := defaultProfileName(w.g.cfg.Policy); def != "" {
 		return def, def
 	}
-	if w.g.cfg.AdminEmail != "" {
-		return w.g.cfg.AdminEmail, w.g.cfg.AdminEmail
-	}
 	user, _, host := w.callerIdentity(r)
 	if user != "" {
 		return user, user
@@ -1087,7 +1081,7 @@ func (w *webMux) selectedProfileForRequest(r *http.Request) (key, label string) 
 // the context (e.g. on a route the gate let through without one,
 // which shouldn't happen for authDashboard but stays defensive).
 func (w *webMux) whoamiData(r *http.Request) map[string]string {
-	pu := w.g.cfg.PublicURL
+	pu := w.g.cfg.PublicURL()
 	if pu == "" {
 		pu = w.publicURL
 	}

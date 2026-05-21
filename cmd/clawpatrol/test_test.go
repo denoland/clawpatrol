@@ -86,7 +86,11 @@ func TestExampleFixtureDetectsDrift(t *testing.T) {
 // shared hosts since testdata/example.hcl has only one endpoint.
 func TestResolveEndpointByHost(t *testing.T) {
 	hcl := `
-admin_email = "x@example.com"
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
+  wireguard { subnet_cidr = "10.55.0.0/24" }
+}
 endpoint "https" "alpha" {
   hosts = ["api.example.com"]
 }

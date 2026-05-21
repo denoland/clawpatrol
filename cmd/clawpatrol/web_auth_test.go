@@ -42,9 +42,18 @@ func authTestSessionCookie(t *testing.T, w *webMux) *http.Cookie {
 func newOnboardAuthTestWebMuxForControl(t *testing.T, control string) *webMux {
 	t.Helper()
 	db := openOnboardAuthTestDB(t)
+	settings := &config.GatewaySettings{}
+	switch control {
+	case "tailscale", "":
+		settings.Tailscale = &config.TailscaleBlock{AuthKey: "tskey-test"}
+	case "wireguard":
+		settings.WireGuard = &config.WireGuardBlock{SubnetCIDR: "10.55.0.0/24"}
+	default:
+		t.Fatalf("unknown control %q", control)
+	}
 	cfg := &config.Gateway{
-		Control: control,
-		Policy:  &config.Policy{},
+		Settings: settings,
+		Policy:   &config.Policy{},
 	}
 	g := &Gateway{
 		cfg:     cfg,
@@ -288,7 +297,7 @@ func TestOnboardApproveWithDashboardPasswordInTailscaleModeDoesNotRequireTailnet
 // on operator-class routes; the test config now reflects that.
 func TestOnboardApproveWithTailnetPrincipalInTailscaleModeReachesHandler(t *testing.T) {
 	w := newOnboardAuthTestWebMuxForControl(t, "tailscale")
-	w.g.cfg.DashboardOperators = []string{"*@example.com"}
+	w.g.cfg.Settings.Tailscale.Operators = []string{"*@example.com"}
 	h := w.handler()
 	req := httptest.NewRequest(http.MethodPost, "/api/onboard/approve?code=NOPE&profile=default", nil)
 	req.RemoteAddr = "127.0.0.1:12345"
@@ -307,7 +316,7 @@ func TestOnboardApproveWithTailnetPrincipalInTailscaleModeReachesHandler(t *test
 
 func TestOnboardApproveWithTailnetPrincipalInDefaultTailscaleModeReachesHandler(t *testing.T) {
 	w := newOnboardAuthTestWebMuxForControl(t, "")
-	w.g.cfg.DashboardOperators = []string{"*@example.com"}
+	w.g.cfg.Settings.Tailscale.Operators = []string{"*@example.com"}
 	h := w.handler()
 	req := httptest.NewRequest(http.MethodPost, "/api/onboard/approve?code=NOPE&profile=default", nil)
 	req.RemoteAddr = "127.0.0.1:12345"
@@ -332,7 +341,7 @@ func TestOnboardApproveWithTailnetPrincipalInDefaultTailscaleModeReachesHandler(
 // own onboards.
 func TestOnboardApproveRejectsTailnetPrincipalNotInOperators(t *testing.T) {
 	w := newOnboardAuthTestWebMuxForControl(t, "tailscale")
-	w.g.cfg.DashboardOperators = []string{"*@example.com"}
+	w.g.cfg.Settings.Tailscale.Operators = []string{"*@example.com"}
 	h := w.handler()
 	req := httptest.NewRequest(http.MethodPost, "/api/onboard/approve?code=NOPE&profile=default", nil)
 	req.RemoteAddr = "127.0.0.1:12345"
@@ -362,7 +371,12 @@ func TestDashboardAuthGateFirstRunRedirect(t *testing.T) {
 		t.Fatalf("OpenDB: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	cfg := &config.Gateway{Control: "wireguard", Policy: &config.Policy{}}
+	cfg := &config.Gateway{
+		Settings: &config.GatewaySettings{
+			WireGuard: &config.WireGuardBlock{SubnetCIDR: "10.55.0.0/24"},
+		},
+		Policy: &config.Policy{},
+	}
 	g := &Gateway{cfg: cfg, db: db, onboard: newOnboardRegistry()}
 	w := &webMux{g: g, ts: cfg.Join(), publicURL: "https://gateway.example.test", sessions: map[string]*oauthSession{}, onboard: g.onboard}
 	h := w.handler()
@@ -400,7 +414,7 @@ func TestDashboardAuthGateFirstRunRedirect(t *testing.T) {
 // effect for the gate's purposes.
 func TestDashboardAuthGateAllowsTailnetOperatorWhenAllowlisted(t *testing.T) {
 	w := newOnboardAuthTestWebMuxForControl(t, "tailscale")
-	w.g.cfg.DashboardOperators = []string{"alice@example.com", "*@example.org"}
+	w.g.cfg.Settings.Tailscale.Operators = []string{"alice@example.com", "*@example.org"}
 	h := w.handler()
 
 	cases := []struct {
@@ -426,13 +440,13 @@ func TestDashboardAuthGateAllowsTailnetOperatorWhenAllowlisted(t *testing.T) {
 	}
 }
 
-// TestDashboardAuthGateTailnetAllowlistIgnoredInWireGuardMode: in
-// non-tailscale control mode there is no whois, so a configured
-// dashboard_operators allowlist must NOT confer access. Password is
+// TestDashboardAuthGateTailnetIdentityIgnoredInWireGuardMode: when
+// only the `wireguard {}` block is enabled there is no tsnet whois
+// identity, so a Tailscale-User-Login header (even one that would
+// match an operator pattern) must NOT confer access. Password is
 // still required.
-func TestDashboardAuthGateTailnetAllowlistIgnoredInWireGuardMode(t *testing.T) {
+func TestDashboardAuthGateTailnetIdentityIgnoredInWireGuardMode(t *testing.T) {
 	w := newOnboardAuthTestWebMux(t)
-	w.g.cfg.DashboardOperators = []string{"*@example.com"}
 	h := w.handler()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)

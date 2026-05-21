@@ -1,3 +1,12 @@
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
+
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+  }
+}
+
 # A profile lists two credentials that both bind the same endpoint
 # without any placeholder dispatch entries. The compiler must reject
 # this — at most one no-placeholder (fallback) credential is allowed

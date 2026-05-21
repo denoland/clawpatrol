@@ -174,48 +174,104 @@ func Emit(gw *Gateway) ([]byte, error) {
 }
 
 func emitOperational(body *hclwrite.Body, gw *Gateway) {
+	if gw.Settings != nil {
+		emitGatewayBlock(body, gw.Settings)
+	}
+	if gw.Defaults != nil {
+		emitDefaultsBlock(body, gw.Defaults)
+	}
+}
+
+func emitGatewayBlock(body *hclwrite.Body, s *GatewaySettings) {
+	gw := body.AppendNewBlock("gateway", nil).Body()
 	setStr := func(name, v string) {
 		if v != "" {
-			body.SetAttributeValue(name, cty.StringVal(v))
+			gw.SetAttributeValue(name, cty.StringVal(v))
 		}
 	}
-	setInt := func(name string, v int) {
-		if v != 0 {
-			body.SetAttributeValue(name, cty.NumberIntVal(int64(v)))
-		}
+	setStr("dashboard_listen", s.DashboardListen)
+	setStr("public_url", s.PublicURL)
+	setStr("state_dir", s.StateDir)
+	setStr("dashboard_session_ttl", s.DashboardSessionTTL)
+	setStr("resolver", s.Resolver)
+	setStr("log_path", s.LogPath)
+	if s.Telemetry != nil {
+		gw.SetAttributeValue("telemetry", cty.BoolVal(*s.Telemetry))
 	}
-	setStr("listen", gw.Listen)
-	setStr("info_listen", gw.InfoListen)
-	setStr("public_url", gw.PublicURL)
-	setStr("admin_email", gw.AdminEmail)
-	setStr("resolver", gw.Resolver)
-	setStr("log_path", gw.LogPath)
-	if len(gw.DashboardOperators) > 0 {
-		body.SetAttributeValue("dashboard_operators", StringListVal(gw.DashboardOperators))
-	}
-	setStr("dashboard_session_ttl", gw.DashboardSessionTTL)
-	setStr("session_keep", gw.SessionKeep)
+	setStr("session_keep", s.SessionKeep)
 
-	setStr("authkey", gw.AuthKey)
-	setStr("control_url", gw.ControlURL)
-	setStr("hostname", gw.Hostname)
-	setStr("state_dir", gw.StateDir)
-	setStr("control", gw.Control)
-	setStr("oauth_client_id", gw.OAuthClientID)
-	setStr("oauth_client_secret", gw.OAuthClientSecret)
-	if len(gw.TailscaleTags) > 0 {
-		body.SetAttributeValue("tailscale_tags", StringListVal(gw.TailscaleTags))
+	if s.WireGuard != nil {
+		emitWireGuardBlock(gw, s.WireGuard)
 	}
-	setStr("wg_interface", gw.WGInterface)
-	setStr("wg_endpoint", gw.WGEndpoint)
-	setStr("wg_server_pub", gw.WGServerPub)
-	setStr("wg_subnet_cidr", gw.WGSubnetCIDR)
+	if s.Tailscale != nil {
+		emitTailscaleBlock(gw, s.Tailscale)
+	}
+}
 
-	setStr("unknown_host", gw.UnknownHost)
-	setStr("llm_fail_mode", gw.LLMFailMode)
-	setInt("llm_cache_ttl", gw.LLMCacheTTL)
-	setInt("human_timeout", gw.HumanTimeout)
-	setStr("human_on_timeout", gw.HumanOnTimeout)
+func emitWireGuardBlock(parent *hclwrite.Body, w *WireGuardBlock) {
+	b := parent.AppendNewBlock("wireguard", nil).Body()
+	if w.SubnetCIDR != "" {
+		b.SetAttributeValue("subnet_cidr", cty.StringVal(w.SubnetCIDR))
+	}
+	if w.ListenPort != 0 {
+		b.SetAttributeValue("listen_port", cty.NumberIntVal(int64(w.ListenPort)))
+	}
+	if w.Endpoint != "" {
+		b.SetAttributeValue("endpoint", cty.StringVal(w.Endpoint))
+	}
+	if w.Interface != "" {
+		b.SetAttributeValue("interface", cty.StringVal(w.Interface))
+	}
+	if w.ServerPub != "" {
+		b.SetAttributeValue("server_pub", cty.StringVal(w.ServerPub))
+	}
+}
+
+func emitTailscaleBlock(parent *hclwrite.Body, t *TailscaleBlock) {
+	b := parent.AppendNewBlock("tailscale", nil).Body()
+	if t.AuthKey != "" {
+		b.SetAttributeValue("authkey", cty.StringVal(t.AuthKey))
+	}
+	if t.Hostname != "" {
+		b.SetAttributeValue("hostname", cty.StringVal(t.Hostname))
+	}
+	if t.ControlURL != "" {
+		b.SetAttributeValue("control_url", cty.StringVal(t.ControlURL))
+	}
+	if len(t.Tags) > 0 {
+		b.SetAttributeValue("tags", StringListVal(t.Tags))
+	}
+	if len(t.Operators) > 0 {
+		b.SetAttributeValue("operators", StringListVal(t.Operators))
+	}
+	if t.Funnel {
+		b.SetAttributeValue("funnel", cty.BoolVal(true))
+	}
+	if t.OAuthClientID != "" {
+		b.SetAttributeValue("oauth_client_id", cty.StringVal(t.OAuthClientID))
+	}
+	if t.OAuthClientSecret != "" {
+		b.SetAttributeValue("oauth_client_secret", cty.StringVal(t.OAuthClientSecret))
+	}
+}
+
+func emitDefaultsBlock(body *hclwrite.Body, d *Defaults) {
+	b := body.AppendNewBlock("defaults", nil).Body()
+	if d.UnknownHost != "" {
+		b.SetAttributeValue("unknown_host", cty.StringVal(d.UnknownHost))
+	}
+	if d.LLMFailMode != "" {
+		b.SetAttributeValue("llm_fail_mode", cty.StringVal(d.LLMFailMode))
+	}
+	if d.LLMCacheTTL != 0 {
+		b.SetAttributeValue("llm_cache_ttl", cty.NumberIntVal(int64(d.LLMCacheTTL)))
+	}
+	if d.HumanTimeout != 0 {
+		b.SetAttributeValue("human_timeout", cty.NumberIntVal(int64(d.HumanTimeout)))
+	}
+	if d.HumanOnTimeout != "" {
+		b.SetAttributeValue("human_on_timeout", cty.StringVal(d.HumanOnTimeout))
+	}
 }
 
 // emitGroup walks p.Order, filters by kind, and emits each entry's

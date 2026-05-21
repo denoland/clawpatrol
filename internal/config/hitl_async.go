@@ -104,14 +104,15 @@ func validateHITLAsyncConfig(gw *Gateway) hcl.Diagnostics {
 	if !policyHasAsyncProfileOptIn(gw.Policy) || !policyHasAsyncApprover(gw.Policy) {
 		return nil
 	}
-	if gw.PublicURL == "" {
+	pu := gw.PublicURL()
+	if pu == "" {
 		return hcl.Diagnostics{&hcl.Diagnostic{
 			Severity: hcl.DiagError,
 			Summary:  "Async HITL public_url not configured",
-			Detail:   "set top-level public_url when any profile has hitl_async_grants = true and any approver has async_grant.enabled = true; async status URLs must not be derived from request Host headers.",
+			Detail:   "set gateway.public_url when any profile has hitl_async_grants = true and any approver has async_grant.enabled = true; async status URLs must not be derived from request Host headers.",
 		}}
 	}
-	if err := validateHITLAsyncPublicURL(gw.PublicURL); err != nil {
+	if err := validateHITLAsyncPublicURL(pu); err != nil {
 		return hcl.Diagnostics{&hcl.Diagnostic{
 			Severity: hcl.DiagError,
 			Summary:  "Invalid async HITL public_url",

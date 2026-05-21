@@ -5,11 +5,18 @@
 #
 #     clawpatrol gateway /opt/clawpatrol/gateway.hcl
 #
-# Hot-reloadable: every policy block + admin_email. Listen ports /
-# state_dir / control block need a restart.
+# Hot-reloadable: every policy block. The `gateway` block (listen
+# ports, state_dir, transport sub-blocks) needs a restart.
 #
-# Labeled blocks:
+# Top-level blocks:
 #
+#   gateway {}                        operational settings, with
+#                                     nested wireguard {} / tailscale {}
+#                                     transport sub-blocks (block
+#                                     presence enables the transport;
+#                                     both may be enabled at once).
+#   defaults {}                       optional policy defaults
+#                                     (unknown_host, llm_*, human_*).
 #   approver   "<type>" "<name>"      who arbitrates (llm_approver |
 #                                     human_approver)
 #   policy     "<name>"               reusable LLM proctor prompt
@@ -29,49 +36,56 @@
 # References are bare names — no kind prefix. The flat namespace is
 # globally unique; collisions are a load error.
 
-# ── operational --------------------------------------------------------
+gateway {
+  dashboard_listen = "127.0.0.1:8080"
+  public_url       = "https://gw.example.com"
+  state_dir        = "/opt/clawpatrol"
 
-info_listen = "127.0.0.1:8080"
-public_url  = "https://gw.example.com"
-admin_email = "you@example.com"
-state_dir   = "./data/state"
+  # Dashboard auth: there is no HCL field for the root password. The
+  # first time you open the dashboard you set a "root" password; it
+  # lives bcrypt-hashed in clawpatrol.db. To skip the web first-run
+  # or rotate later, run:
+  #
+  #   clawpatrol gateway --set-dashboard-password '<password>' gateway.hcl
+  #   clawpatrol gateway --reset-dashboard-password gateway.hcl
+  #
+  # With the `tailscale {}` block you can additionally allowlist
+  # operator tailnet logins so they get in without typing the
+  # password — see `operators` inside the tailscale block below.
 
-# `listen` (TLS MITM listener) is omitted: in WireGuard mode the
-# gateway routes agent TLS through the WG netstack, not through this
-# socket. Set it only in Tailscale mode (where it's the tsnet
-# listener on the tailnet IP).
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
 
-# Dashboard auth: there is no HCL field. The first time you open
-# the dashboard you set a "root" password; it lives bcrypt-hashed in
-# clawpatrol.db. To skip the web first-run or rotate later, run:
-#
-#   clawpatrol gateway --set-dashboard-password '<password>' gateway.hcl
-#   clawpatrol gateway --reset-dashboard-password gateway.hcl
-#
-# In tailscale mode you can additionally allowlist operator tailnet
-# logins so they get in without typing the password. Tagged devices
-# (agents) never match a wildcard entry — they have no user login.
-#
-#   dashboard_operators = ["alice@example.com", "*@example.com"]
+    # listen_port defaults to 51820. Clients dial host(public_url):
+    # port(endpoint||listen_port). Set `endpoint` only for split-host
+    # deployments (gateway behind a different hostname/IP for WG than
+    # for the dashboard) or to override the advertised port. Examples:
+    #   listen_port = 41820                          # custom port
+    #   endpoint    = "wg.example.com:51820"         # WG host != dashboard host
+  }
 
-control        = "wireguard"
-wg_subnet_cidr = "10.55.0.0/24"
+  # Tailscale transport — both blocks may coexist with `wireguard {}`.
+  # Block presence selects which transports are active; remove the
+  # block entirely to disable.
+  #
+  # tailscale {
+  #   authkey  = "tskey-..."
+  #   hostname = "clawpatrol-gateway"
+  #   tags     = ["tag:client"]
+  #   # operators allowlists tailnet logins for password-less
+  #   # dashboard access. Lives under tailscale {} because matching
+  #   # requires tsnet whois identity.
+  #   operators = ["alice@example.com", "*@example.com"]
+  # }
+}
 
-# wg_endpoint is optional. Server-side it's listen address + port
-# (default 0.0.0.0:51820). Clients dial `host(public_url):port`, so
-# you only set wg_endpoint when you need a different host for WG
-# than for the dashboard (split-host deployments) or a non-default
-# port. Examples:
-#   wg_endpoint = ":41820"            # default host, custom port
-#   wg_endpoint = "wg.example.com:51820"   # WG host != dashboard host
-
-# ── policy defaults ---------------------------------------------------
-
-unknown_host     = "passthrough"
-llm_fail_mode    = "closed"
-llm_cache_ttl    = 300
-human_timeout    = 600
-human_on_timeout = "deny"
+defaults {
+  unknown_host     = "passthrough"
+  llm_fail_mode    = "closed"
+  llm_cache_ttl    = 300
+  human_timeout    = 600
+  human_on_timeout = "deny"
+}
 
 # ── endpoints ---------------------------------------------------------
 #
@@ -106,6 +120,17 @@ endpoint "https" "slack" {
 }
 endpoint "https" "notion"  { hosts = ["api.notion.com", "mcp.notion.com"] }
 endpoint "https" "grafana" { hosts = ["mygrafana.grafana.net"] }
+
+# HTTPS — wildcard hosts. A `*.<suffix>` entry matches any name that
+# ends in `.<suffix>` and has at least one character before that
+# suffix; `*.amazonaws.com` covers both `s3.amazonaws.com` and
+# `s3.us-east-1.amazonaws.com` but NOT the bare `amazonaws.com`.
+# Exact hosts always beat wildcards; among wildcards the longest
+# matching suffix wins (so `*.us-east-1.amazonaws.com` takes
+# precedence over `*.amazonaws.com` for east-1 names).
+endpoint "https" "aws" {
+  hosts = ["*.amazonaws.com"]
+}
 
 # SSH — the wire protocol carries no SNI / Host header, so the
 # gateway runs a DNS server inside the WG tunnel and answers A/AAAA
@@ -195,6 +220,9 @@ credential "github_oauth" "github" {
 credential "bearer_token" "grafana" {
   endpoint = https.grafana
 }
+credential "bearer_token" "aws" {
+  endpoint = https.aws
+}
 
 # Notion OAuth — workspace-scoped.
 credential "notion_oauth" "notion" {
@@ -261,9 +289,12 @@ approver "human_approver" "support-ops" {
 
 # LLM judges — a single-purpose proctor prompt wrapped as an
 # approver. The model is invoked through `anthropic-key` (the
-# manual key credential above).
-policy "no-pii-columns" {
-  text = <<-EOT
+# manual key credential above). The judge's prose lives inline in
+# `policy = <<-EOT ... EOT`.
+approver "llm_approver" "no-pii-judge" {
+  model      = "claude-haiku-4-5-20251001"
+  credential = anthropic_manual_key.anthropic-key
+  policy     = <<-EOT
     Deny if the SELECT projects (directly, via *, via aggregates,
     or via a JSONB extract that returns the underlying value) any
     of:
@@ -275,12 +306,6 @@ policy "no-pii-columns" {
     A column name appearing only in a WHERE predicate (and not in
     the projection) is fine. SELECT count(*) is fine.
   EOT
-}
-
-approver "llm_approver" "no-pii-judge" {
-  model      = "claude-haiku-4-5-20251001"
-  credential = anthropic_manual_key.anthropic-key
-  policy     = policy.no-pii-columns
 }
 
 # ── rules -------------------------------------------------------------
@@ -446,7 +471,7 @@ rule "k8s-default" {
 # fallback the dashboard assigns at approval time.
 
 profile "default" {
-  credentials = [anthropic_oauth_subscription.claude, openai_codex_oauth.codex, github_oauth.github]
+  credentials = [anthropic_oauth_subscription.claude, openai_codex_oauth.codex, github_oauth.github, bearer_token.aws]
 }
 
 profile "support" {

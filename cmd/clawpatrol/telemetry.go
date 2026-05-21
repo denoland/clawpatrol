@@ -71,8 +71,10 @@ func telemetryEnabled(cfg *config.Gateway) bool {
 	if v := os.Getenv("CLAWPATROL_TELEMETRY"); v == "0" {
 		return false
 	}
-	if cfg != nil && cfg.Telemetry != nil && !*cfg.Telemetry {
-		return false
+	if cfg != nil {
+		if t := cfg.Telemetry(); t != nil && !*t {
+			return false
+		}
 	}
 	return true
 }
@@ -210,10 +212,17 @@ func buildTelemetryPayload(
 ) ([]byte, error) {
 	devices := connectedDevicesIn1h(g)
 	actions, bin, bout := actionsCountIn1h(g)
-	transport := "tailscale"
-	if g.cfg != nil && strings.EqualFold(g.cfg.Control, "wireguard") {
-		transport = "wireguard"
+	// Multi-transport gateways report both, dash-joined, in declaration
+	// order (wireguard|tailscale). Single-transport gateways report
+	// just the one. Empty string only when the config is misconfigured.
+	var transports []string
+	if g.cfg.IsWireGuardEnabled() {
+		transports = append(transports, "wireguard")
 	}
+	if g.cfg.IsTailscaleEnabled() {
+		transports = append(transports, "tailscale")
+	}
+	transport := strings.Join(transports, "+")
 	r := telemetryReq{
 		InstanceID:         instanceID,
 		Version:            buildVersion,

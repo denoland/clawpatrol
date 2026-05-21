@@ -6,9 +6,14 @@
 //
 // Edit any rule below and re-run to see a mismatch.
 
-// admin_email is required by config.Compile; the runner doesn't
-// consult it.
-admin_email = "you@example.com"
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
+
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+  }
+}
 
 endpoint "https" "github" {
   hosts = ["api.github.com"]
