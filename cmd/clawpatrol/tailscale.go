@@ -37,9 +37,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"tailscale.com/ipn"
 	"tailscale.com/tsnet"
+	"tailscale.com/types/nettype"
+	"tailscale.com/wgengine/netstack"
 
 	"github.com/denoland/clawpatrol/internal/config"
 )
@@ -234,5 +237,88 @@ func advertiseExitRoutes(s *tsnet.Server) {
 		log.Printf("tsnet: advertise exit routes: %v", err)
 	} else {
 		log.Printf("tsnet: advertised exit routes (0.0.0.0/0, ::/0)")
+	}
+}
+
+// installTsnetUDPDNSCatchAll layers a catch-all UDP/53 interceptor
+// onto tsnet's internal netstack so DNS queries from exit-node
+// clients reach the gateway's dnsvip regardless of which resolver IP
+// the client points at (8.8.8.8, 1.1.1.1, the tailnet's MagicDNS,
+// anything). Without this, an exit-node client whose system resolver
+// targets 8.8.8.8 has its UDP/53 packets forwarded by tsnet's
+// netstack out to the real 8.8.8.8 — which can't resolve internal
+// hostnames (e.g. clickhouse-o11y, *.denosr-staging.internal) and
+// won't allocate the VIPs that endpoint dispatch relies on.
+//
+// tsnet exposes RegisterFallbackTCPHandler for catch-all TCP but
+// has no UDP equivalent (ListenPacket requires a concrete bind IP).
+// The hook we need is GetUDPHandlerForFlow on the underlying
+// *netstack.Impl, reachable via tsnet.Server.Sys().Netstack. The
+// Sys() doc warns "not a stable API" — pinned via go.mod; revisit if
+// the field disappears on a Tailscale upgrade.
+//
+// Must be called after the tsnet.Server has been started (Start()
+// triggered by an earlier Listen/ListenPacket); only then is the
+// netstack subsystem registered.
+func (g *Gateway) installTsnetUDPDNSCatchAll(s *tsnet.Server) {
+	if g.dnsvip == nil || s == nil {
+		return
+	}
+	sys := s.Sys()
+	if sys == nil {
+		log.Printf("tsnet: UDP/53 catch-all skipped — Sys() returned nil")
+		return
+	}
+	impl, ok := sys.Netstack.GetOK()
+	if !ok {
+		log.Printf("tsnet: UDP/53 catch-all skipped — netstack subsystem not registered yet")
+		return
+	}
+	ns, ok := impl.(*netstack.Impl)
+	if !ok {
+		log.Printf("tsnet: UDP/53 catch-all skipped — Sys().Netstack is %T not *netstack.Impl", impl)
+		return
+	}
+	orig := ns.GetUDPHandlerForFlow
+	ns.GetUDPHandlerForFlow = func(src, dst netip.AddrPort) (func(nettype.ConnPacketConn), bool) {
+		if dst.Port() == 53 {
+			return g.serveTsnetUDPDNSFlow, true
+		}
+		if orig != nil {
+			return orig(src, dst)
+		}
+		return nil, false
+	}
+	log.Printf("tsnet: UDP/53 catch-all installed (any-dst → dnsvip)")
+}
+
+// serveTsnetUDPDNSFlow handles one UDP/53 flow from an exit-node
+// client. tsnet calls this per-flow with a connected packet conn
+// already bound to the (src, dst) tuple — Read/Write talk to the
+// single peer, no addr juggling required. dnsvip.HandlePacket
+// generates the response (VIP allocation for endpoint hostnames,
+// upstream lookup otherwise). The loop covers the few resolvers
+// that reuse the socket for follow-up queries; idle flows time
+// out and close so we don't leak goroutines.
+func (g *Gateway) serveTsnetUDPDNSFlow(c nettype.ConnPacketConn) {
+	defer func() { _ = c.Close() }()
+	if g.dnsvip == nil {
+		return
+	}
+	buf := make([]byte, 65535)
+	for {
+		_ = c.SetReadDeadline(time.Now().Add(10 * time.Second))
+		n, err := c.Read(buf)
+		if err != nil {
+			return
+		}
+		resp := g.dnsvip.HandlePacket(buf[:n], "")
+		if len(resp) == 0 {
+			continue
+		}
+		_ = c.SetWriteDeadline(time.Now().Add(2 * time.Second))
+		if _, err := c.Write(resp); err != nil {
+			return
+		}
 	}
 }
