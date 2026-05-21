@@ -154,14 +154,43 @@ func runJoin(args []string) {
 		if gwHostFile != "" {
 			exitNode = gwHostFile
 		}
-		// -post-join: skip CA fetch/install + shell rc — already done
-		// by onboardViaDeviceFlow above.
-		loginArgs := []string{"-name", exitNode, "-ca-dir", *caOut, "-post-join"}
-		if *skipTrust {
-			loginArgs = append(loginArgs, "-no-trust")
+		if err := applyWholeMachineExitNode(exitNode); err != nil {
+			fail("%v", err)
 		}
-		runLogin(loginArgs)
 	}
+}
+
+// applyWholeMachineExitNode finishes the whole-machine Tailscale Linux
+// join: pins SSH + public-IP reply traffic to the direct path, flips
+// the system tailscaled's exit-node to the gateway, and points DNS at
+// the gateway (tsnet has no UDP fallback). CA fetch + trust install +
+// shell rc are handled earlier in the join flow.
+func applyWholeMachineExitNode(gwName string) error {
+	if err := exemptSSHFromExitNode(""); err != nil {
+		// Couldn't protect SSH — refuse to flip exit-node so we don't
+		// kill an in-flight admin session.
+		return fmt.Errorf("protect SSH from exit-node: %w", err)
+	}
+	if err := exemptPublicIPFromExitNode(); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ couldn't protect public IP inbound traffic: %v\n", err)
+	}
+	tscli, err := tailscaleBin()
+	if err != nil {
+		return fmt.Errorf("tailscale CLI not found: %w", err)
+	}
+	st, err := tailscaleStatus(tscli)
+	if err != nil {
+		return fmt.Errorf("tailscale status: %w", err)
+	}
+	peer := findPeerByName(st, gwName)
+	if peer == nil || len(peer.TailscaleIPs) == 0 {
+		return fmt.Errorf("no peer named %q on this tailnet", gwName)
+	}
+	if err := tsSet(tscli, "--exit-node="+gwName); err != nil {
+		return fmt.Errorf("tailscale set --exit-node=%s: %w", gwName, err)
+	}
+	pinDNSAtGatewayIfNeeded(peer.TailscaleIPs[0])
+	return nil
 }
 
 // joinSetup carries the post-join side-effect status so the caller
@@ -176,8 +205,8 @@ type joinSetup struct {
 }
 
 // isCaNotExposed returns true when the gateway deliberately did not expose
-// /ca.crt on its public path (Tailscale control mode). The CA will be
-// fetched securely over the tailnet by runLogin after Tailscale join.
+// /ca.crt on its public path (Tailscale control mode). The CA is then
+// fetched securely over the tailnet by onboardViaDeviceFlow.
 func isCaNotExposed(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "status 404")
 }
@@ -228,8 +257,9 @@ func finishJoinSetup(s *joinSetup, skipTrust, wholeMachine bool) {
 		return
 	}
 	if _, err := os.Stat(s.caPath); err != nil {
-		// CA not fetched yet (Tailscale mode defers to runLogin). Skip
-		// trust install; runLogin will fetch + install from the tailnet.
+		// CA not fetched yet (Tailscale mode defers the fetch to the
+		// tailnet path inside onboardViaDeviceFlow). Skip trust install
+		// here; it lands once the CA arrives.
 		if wholeMachine {
 			installShellRC() //nolint:errcheck
 		}
@@ -287,117 +317,6 @@ func fetchCAHTTP(gateway, dst string) (string, error) {
 		return "", err
 	}
 	return fp, nil
-}
-
-func runLogin(args []string) {
-	fs := flag.NewFlagSet("login", flag.ExitOnError)
-	gwName := fs.String("name", "clawpatrol", "exit-node hostname to look for on the tailnet")
-	caOut := fs.String("ca-dir", defaultClawpatrolDir(), "where to store the fetched CA")
-	skipTrust := fs.Bool("no-trust", false, "fetch CA but skip system trust install (do it manually)")
-	skipExitNode := fs.Bool("no-exit-node", false, "skip setting tailscale exit-node (run manually later)")
-	postJoin := fs.Bool("post-join", false, "continuation of `clawpatrol join --whole-machine`: skip CA fetch/install + shell rc (already done by the join flow)")
-	_ = fs.Parse(args)
-
-	// Setting exit-node redirects ALL outbound traffic via the gateway,
-	// which kills an in-flight SSH session on Linux (reply packets to
-	// the client now route through tailnet → source IP changes mid-
-	// stream → client EOFs the handshake).
-	//
-	// Fix: install a policy-routing override BEFORE flipping exit-node
-	// so traffic destined for the SSH client keeps using the default
-	// table (= public interface). Reply packets stay direct, SSH
-	// survives, everything else routes via gateway as intended.
-	sshPinned := false
-	if !*skipExitNode && runtime.GOOS == "linux" {
-		if err := exemptSSHFromExitNode(""); err != nil {
-			fmt.Fprintf(os.Stderr, "⚠ couldn't protect SSH (will skip exit-node): %v\n", err)
-			*skipExitNode = true
-		} else {
-			sshPinned = true
-		}
-		if err := exemptPublicIPFromExitNode(); err != nil {
-			fmt.Fprintf(os.Stderr, "⚠ couldn't protect public IP inbound traffic: %v\n", err)
-		}
-	}
-
-	tscli, err := tailscaleBin()
-	if err != nil {
-		fail("tailscale CLI not found: %v\nis Tailscale installed and running?", err)
-	}
-
-	st, err := tailscaleStatus(tscli)
-	if err != nil {
-		fail("tailscale status: %v", err)
-	}
-	if st.Self == nil || len(st.Self.TailscaleIPs) == 0 {
-		fail("not logged into a tailnet (run: tailscale up)")
-	}
-	tailnetName := tailnetDisplayName(st)
-
-	peer := findPeerByName(st, *gwName)
-	if peer == nil {
-		fail("no peer named %q on this tailnet — is the gateway running and joined?", *gwName)
-	}
-
-	// Fetch CA BEFORE setting exit-node — once exit-node flips, an
-	// in-flight tailscaled reconfig can drop the request mid-flight.
-	// In -post-join the join flow already did this.
-	caPath := filepath.Join(*caOut, "ca.crt")
-	if !*postJoin {
-		if err := os.MkdirAll(*caOut, 0o700); err != nil {
-			fail("mkdir %s: %v", *caOut, err)
-		}
-		if err := fetchCA(peer.TailscaleIPs[0], caPath); err != nil {
-			fail("fetch CA: %v", err)
-		}
-	}
-
-	// On Linux, `tailscale set` requires sudo unless --operator=$USER
-	// was passed to `tailscale up`. tsSet handles either case.
-	//
-	if !*skipExitNode {
-		if err := tsSet(tscli, "--exit-node="+*gwName); err != nil {
-			fail("tailscale set --exit-node=%s: %v", *gwName, err)
-		}
-		// tsnet has no UDP fallback — outbound DNS from the client
-		// (e.g. resolv.conf nameserver 1.1.1.1) is silently dropped at
-		// the gateway's netstack. Hosts running systemd-resolved get
-		// away with it because their queries source-bind to a non-
-		// tailnet link; plain-resolv.conf hosts hang. Point DNS at the
-		// gateway's tsnet IP so queries hit serveTsnetDNSUDP instead.
-		// Skip when systemd-resolved is active.
-		pinDNSAtGatewayIfNeeded(peer.TailscaleIPs[0])
-	}
-
-	fmt.Println()
-	fmt.Printf("Connected to %s's tailnet.\n", tailnetName)
-	items := []string{fmt.Sprintf("Found exit node: %s (%s)", *gwName, peer.TailscaleIPs[0])}
-	if sshPinned {
-		items = append(items, "SSH (tcp/22) reply traffic pinned to direct route")
-	}
-	if !*postJoin {
-		caInstalled := false
-		caHint := ""
-		if *skipTrust {
-			caHint = manualTrustHint(caPath)
-		} else if err := installCATrust(caPath); err != nil {
-			caHint = manualTrustHint(caPath)
-		} else {
-			caInstalled = true
-		}
-		shellOK := installShellRC() == nil
-		items = append(items, setupSummaryItems(joinSetup{
-			caInstalled: caInstalled,
-			caPath:      caPath,
-			caHint:      caHint,
-			shellRC:     shellOK,
-		})...)
-	}
-	printTreeItems(items)
-	fmt.Println()
-	if !*postJoin {
-		fmt.Println("Installed! Try: claude")
-	}
 }
 
 // installShellRC appends `eval "$(clawpatrol env)"` to the user's shell
@@ -1471,7 +1390,7 @@ func installTailscale() error {
 		if err := c.Run(); err != nil {
 			return fmt.Errorf("brew install: %w (or download manually from tailscale.com)", err)
 		}
-		fmt.Println("  launch Tailscale.app once, then re-run clawpatrol login")
+		fmt.Println("  launch Tailscale.app once, then re-run clawpatrol join")
 		return fmt.Errorf("manual app launch required")
 	case "linux":
 		c := exec.Command("sh", "-c", "curl -fsSL https://tailscale.com/install.sh | sh")

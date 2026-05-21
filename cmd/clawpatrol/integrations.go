@@ -266,7 +266,7 @@ func runEnv(args []string) {
 
 	caPath := filepath.Join(*caDir, "ca.crt")
 	if _, err := os.Stat(caPath); err != nil {
-		fmt.Fprintf(os.Stderr, "clawpatrol: ca not found at %s — run `clawpatrol login` first\n", caPath)
+		fmt.Fprintf(os.Stderr, "clawpatrol: ca not found at %s — run `clawpatrol join <gateway-url>` first\n", caPath)
 		os.Exit(2)
 	}
 	vars, err := envPushdownVars(caPath)
