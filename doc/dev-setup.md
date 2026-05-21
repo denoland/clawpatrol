@@ -60,7 +60,7 @@ operational fields (listen ports, `public_url`, `wg_endpoint`,
 
 ```sh
 mkdir -p ./data
-cp cmd/clawpatrol/gateway.example.hcl ./data/gateway.hcl
+cp examples/gateway.example.hcl ./data/gateway.hcl
 $EDITOR ./data/gateway.hcl
 ./clawpatrol gateway ./data/gateway.hcl
 ```
