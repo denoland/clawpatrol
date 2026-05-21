@@ -306,15 +306,14 @@ per endpoint to invert this.
 ### Synchronous human approval and timeouts
 
 Human approval is synchronous in the transparent proxy path. When a
-matched rule returns `approve = [...]`, Claw Patrol pauses the original
+matched rule declares `approve = [...]`, Claw Patrol pauses the original
 request before contacting upstream and waits for the approver chain to
 allow or deny.
 
-If every approver allows while the original request is still waiting,
-Claw Patrol forwards that original request upstream. If any approver
-denies, if an approver times out, or if the client disconnects before a
-final allow decision, Claw Patrol does **not** call upstream. Deny and
-timeout responses are gateway-generated failures, not upstream
+If every approver allows, Claw Patrol forwards the request upstream. If
+any approver denies, an approver times out, or the client disconnects
+before a final allow decision, Claw Patrol does **not** call upstream.
+Deny and timeout responses are gateway-generated failures, not upstream
 responses.
 
 For `human_approver`, [set `timeout` to the maximum time Claw Patrol
@@ -327,29 +326,31 @@ Recommended starting configuration:
 - Claw Patrol human approval timeout: `90` seconds
 - Agent or tool caller timeout: `240` seconds
 
-Configure the agent or tool timeout to be at least 60 seconds longer than
-Claw Patrol's human approval timeout. This keeps the caller alive long
-enough to receive the final allow/deny result.
+The caller timeout must exceed Claw Patrol's approval timeout — otherwise
+the caller gives up locally before the gateway can return its allow/deny
+result. The absolute minimum margin is the network round-trip plus a
+small buffer (60 seconds is plenty); the example above leaves ~150
+seconds of headroom, which is the comfortable default.
 
 #### Example: OpenClaw configuration
 
-For a normal OpenClaw agent run, configure the whole agent-run timeout:
+For a normal OpenClaw agent run, configure the overall agent-run timeout:
 
 ```sh
 openclaw config set agents.defaults.timeoutSeconds 240
 ```
 
-Also, for OpenClaw `exec` calls, set the default command timeout too:
+For OpenClaw `exec` calls, also set the per-command timeout:
 
 ```sh
 openclaw config set tools.exec.timeoutSec 240
 ```
 
-It's also suggested that you add guidance to `AGENTS.md` or the agent's
-system instructions telling the agent to keep inner HTTP timeouts at or
-above the caller timeout when it writes `curl`, HTTP client, or script
-code, to make sure that the agent can be notified with clear reason when
-Claw Patrol hits approval timeout.
+We also recommend adding guidance to `AGENTS.md` or the agent's system
+instructions telling the agent to keep inner HTTP timeouts above Claw
+Patrol's approval timeout when it writes `curl`, HTTP client, or script
+code. Otherwise the inner client times out locally and the agent never
+sees the deny response Claw Patrol synthesizes on approval timeout.
 
 
 ## Inspection-buffer overflow
