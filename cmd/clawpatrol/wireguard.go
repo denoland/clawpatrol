@@ -606,11 +606,6 @@ func (s *WGServer) loadPeers() map[string]string {
 	if s.db == nil {
 		return out
 	}
-	// Reap rows left behind by older daemons that minted ephemeral
-	// per-run wg peers (PR #516 removed that path; one persistent
-	// peer per host now). The columns stay for compatibility but no
-	// new rows have ephemeral=1.
-	_, _ = s.db.Exec(`DELETE FROM wg_peers WHERE ephemeral=1`)
 	rows, err := s.db.Query("SELECT pubkey, ip FROM wg_peers")
 	if err != nil {
 		return out
