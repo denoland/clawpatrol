@@ -18,33 +18,11 @@ const MAX_BODY_BYTES = 4096;
 const RELEASES_URL =
   "https://api.github.com/repos/denoland/clawpatrol/releases/latest";
 
-// Temporary pre-launch gate. Remove once the site is public.
-const BASIC_AUTH_PASSWORD = "aruba";
-
-function authorized(req: Request): boolean {
-  const h = req.headers.get("Authorization") ?? "";
-  if (!h.startsWith("Basic ")) return false;
-  const decoded = atob(h.slice(6));
-  const i = decoded.indexOf(":");
-  return i >= 0 && decoded.slice(i + 1) === BASIC_AUTH_PASSWORD;
-}
-
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     if (url.pathname === "/api/telemetry/v1/check") {
       return handleCheck(req, env);
-    }
-    if (url.pathname === "/install.sh") {
-      return env.ASSETS.fetch(req);
-    }
-    if (!authorized(req)) {
-      return new Response("Authentication required", {
-        status: 401,
-        headers: {
-          "WWW-Authenticate": 'Basic realm="clawpatrol", charset="UTF-8"',
-        },
-      });
     }
     return env.ASSETS.fetch(req);
   },
@@ -108,9 +86,15 @@ async function handleCheck(
        bytes_out_1h         = excluded.bytes_out_1h,
        payload              = excluded.payload`,
   ).bind(
-    id, now, now,
-    version, str(body.git_sha), os, arch,
-    str(body.go_version), str(body.transport),
+    id,
+    now,
+    now,
+    version,
+    str(body.git_sha),
+    os,
+    arch,
+    str(body.go_version),
+    str(body.transport),
     intOrNull(body.uptime_s),
     intOrNull(body.connected_devices_1h),
     intOrNull(body.actions_count_1h),
@@ -120,8 +104,7 @@ async function handleCheck(
   ).run();
 
   const release = await fetchLatestRelease();
-  const updateAvailable =
-    !!release.tag && release.tag !== version;
+  const updateAvailable = !!release.tag && release.tag !== version;
   return Response.json({
     latest: release.tag,
     your_version: version,
