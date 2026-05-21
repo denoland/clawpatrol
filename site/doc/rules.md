@@ -325,7 +325,7 @@ Configure the agent or tool timeout to be at least 60 seconds longer than
 Claw Patrol's human approval timeout. This keeps the caller alive long
 enough to receive the final allow/deny result.
 
-#### OpenClaw agent-run timeout
+#### Example: OpenClaw configuration
 
 For a normal OpenClaw agent run, configure the whole agent-run timeout:
 
@@ -333,63 +333,19 @@ For a normal OpenClaw agent run, configure the whole agent-run timeout:
 openclaw config set agents.defaults.timeoutSeconds 240
 ```
 
-or set the same value in the OpenClaw configuration file:
-
-```json
-{
-  "agents": {
-    "defaults": {
-      "timeoutSeconds": 240
-    }
-  }
-}
-```
-
-This is the outer OpenClaw agent-run timeout. It does not override
-shorter timeouts inside the agent's own tools or commands.
-
-#### OpenClaw tool and command timeouts
-
-Prefer deterministic tool configuration over relying only on agent
-instructions. For OpenClaw `exec` calls, set the default command timeout
-too:
+Also, for OpenClaw `exec` calls, set the default command timeout too:
 
 ```sh
 openclaw config set tools.exec.timeoutSec 240
 ```
 
-This keeps the `exec` command process alive long enough for the HITL
-decision, but it still does not force an arbitrary command or script to
-choose matching HTTP-client options.
-
-As a practical convention, add guidance to `AGENTS.md` or the agent's
+It's also suggested that you add guidance to `AGENTS.md` or the agent's
 system instructions telling the agent to keep inner HTTP timeouts at or
 above the caller timeout when it writes `curl`, HTTP client, or script
-code. This is a suggestion to the agent rather than a hard enforcement
-boundary, but it is usually the right level of control for open-ended
-agent-authored commands. For example:
+code, to make sure that the agent can be notified with clear reason when
+Claw Patrol hits approval timeout.
 
-```sh
-curl --max-time 240 https://...
-```
-
-```ts
-await fetch(url, { signal: AbortSignal.timeout(240_000) })
-```
-
-```py
-requests.post(url, timeout=240)
-```
-
-#### Codex app-server runtime timeout
-
-If your OpenClaw setup explicitly runs agents through the Codex
-app-server runtime (`agentRuntime.id: "codex"`), also raise the Codex
-app-server request timeout:
-
-```sh
-openclaw config set plugins.entries.codex.config.appServer.requestTimeoutMs 240000
-```
+#### TODO
 
 Slack and dashboard approvals act on the live pending request. Approval
 forwards upstream only if the original client request is still waiting
