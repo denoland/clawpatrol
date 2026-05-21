@@ -614,26 +614,25 @@ func (w *webMux) tailnetGate(next http.Handler) http.Handler {
 			http.Error(rw, "tailnet access required — onboard via `clawpatrol join <gateway>`", http.StatusForbidden)
 			return
 		}
-		// Tagged-device whois (e.g. tag:client onboarded peers) returns
-		// "tagged-devices" rather than a user email. These callers are
-		// agents, not operators — they must never reach operator-class
-		// routes (/api/onboard/approve, /api/onboard/lookup) or the
-		// authDashboard routes. See issue #509: without this check, an
-		// attacker who got a copy of the persisted client auth key could
-		// join the tailnet as a fresh tag:client device, hit
-		// /api/onboard/approve with any policy profile, and mint a new
-		// auth key bound to it.
-		if isTaggedDeviceLogin(login) {
-			http.Error(rw, "operator-class routes are not available to tagged-device peers — set the dashboard password or sign in as an operator-tagged tailnet user", http.StatusForbidden)
-			return
-		}
-		// authDashboard routes require an explicit allowlist match.
-		// Without this check, any whois-attributable tailnet peer
-		// would inherit operator powers — exactly the threat the
-		// password gate above is closing.
-		if w.authRequirementForPath(r.URL.Path) == authDashboard {
+		// Operator-class routes — approving onboarding devices, looking
+		// up pending user_codes, reading the dashboard via tailnet
+		// identity — must require an explicit dashboard_operators
+		// allowlist match for the tailnet identity path. Previously
+		// authTailnetOperator and authDashboardOrTailnetOperator
+		// accepted any non-empty whois, which let tag:client peers
+		// (whois == "tagged-devices") call /api/onboard/approve and
+		// mint fresh auth keys bound to arbitrary profiles — see
+		// issue #509. MatchDashboardOperator only accepts "user@domain"
+		// or "*@domain" entries, so "tagged-devices" and "tagged-*"
+		// stubs fail closed by construction.
+		//
+		// The dashboard-password path is unaffected: requests carrying
+		// a valid cp_session cookie have their principal injected by
+		// dashboardAuthGate upstream and short-circuit this gate at
+		// the principalFromContext check above.
+		if needsOperatorGate(w.authRequirementForPath(r.URL.Path)) {
 			if !config.MatchDashboardOperator(login, w.g.cfg.DashboardOperators) {
-				http.Error(rw, "dashboard operator allowlist did not match — set the dashboard password or add this login to dashboard_operators", http.StatusForbidden)
+				http.Error(rw, "operator routes require a dashboard password session or a tailnet login matching dashboard_operators", http.StatusForbidden)
 				return
 			}
 		}
@@ -642,14 +641,19 @@ func (w *webMux) tailnetGate(next http.Handler) http.Handler {
 	})
 }
 
-// isTaggedDeviceLogin reports whether a tsnet whois login string
-// belongs to a tagged device rather than a human-identified user.
-// Tailscale returns "tagged-devices" for the canonical case; nodes
-// associated with a specific tag (older tailnets, custom ACL) come
-// back as "tagged-<tagname>". Neither form should pass an operator
-// gate: the bearer is the tag, not a person.
-func isTaggedDeviceLogin(login string) bool {
-	return login == "tagged-devices" || strings.HasPrefix(login, "tagged-")
+// needsOperatorGate reports whether req requires the caller to be an
+// operator — either a dashboard-password session or a tailnet login
+// matching dashboard_operators. Every non-public, non-self-auth
+// route is operator-class in the daemon-model gateway, because all
+// of them either expose internal state or accept profile-affecting
+// writes. The dashboard-password path is handled separately by
+// dashboardAuthGate; this only applies on the tailnet-identity path.
+func needsOperatorGate(req authRequirement) bool {
+	switch req {
+	case authDashboard, authTailnetOperator, authDashboardOrTailnetOperator:
+		return true
+	}
+	return false
 }
 
 // mountCredentialWebhooks walks every credential whose body
