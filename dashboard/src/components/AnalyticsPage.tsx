@@ -154,7 +154,7 @@ export function AnalyticsPage({ ip, agents }: { ip?: string; agents: Agent[] }) 
 
   const trail: Crumb[] = [{ label: "Claw Patrol", href: "#/" }];
   if (deviceName) {
-    trail.push({ label: "devices", href: "#/devices" });
+    trail.push({ label: "profiles", href: "#/profiles" });
     trail.push({
       label: deviceName,
       href: `#/device/${encodeURIComponent(ip!)}`,

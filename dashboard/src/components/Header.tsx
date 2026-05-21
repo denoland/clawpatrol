@@ -3,8 +3,8 @@ import type { Whoami } from "../lib/api";
 
 // Global header — rendered above every route. Logo links home; the
 // nav cluster on the right is four circular icon buttons for the
-// dashboard's top-level sections (devices, analytics, settings,
-// account). Identity + log-out moved to the account page.
+// dashboard's top-level sections (profiles, analytics, settings,
+// account). Identity + log-out live on the account page.
 //
 // `whoami` is still accepted (currently unused) so consumers don't
 // need to thread route-specific data through; future header
@@ -20,9 +20,12 @@ export function Header({
   const navBase =
     "group relative w-[36px] h-[36px] rounded-full border-1.5 border-navy text-navy flex items-center justify-center bg-canvas hover:bg-canvas-muted transition-colors";
   const navActive = "bg-navy-100";
-  // Single-device pages are part of the Devices section, so the nav
-  // button stays lit when drilling into a device.
-  const devicesActive = currentRoute === "devices" || currentRoute === "device";
+  // The Profiles section owns the per-profile drill-in and the
+  // legacy per-device page (which is reached from a profile's flow
+  // map) — keep the nav button lit on either drill-in route so the
+  // operator can see where they are.
+  const profilesActive =
+    currentRoute === "profiles" || currentRoute === "profile_detail" || currentRoute === "device";
   const analyticsActive = currentRoute === "analytics";
   const settingsActive = currentRoute === "settings";
   const accountActive = currentRoute === "account";
@@ -38,13 +41,13 @@ export function Header({
         </a>
         <nav className="ml-auto flex items-center gap-2">
           <a
-            href="#/devices"
-            className={`${navBase} ${devicesActive ? navActive : ""}`}
-            aria-current={devicesActive ? "page" : undefined}
-            aria-label="Devices"
+            href="#/profiles"
+            className={`${navBase} ${profilesActive ? navActive : ""}`}
+            aria-current={profilesActive ? "page" : undefined}
+            aria-label="Profiles"
           >
-            <DesktopNavIcon />
-            <NavTooltip>Devices</NavTooltip>
+            <ProfilesNavIcon />
+            <NavTooltip>Profiles</NavTooltip>
           </a>
           <a
             href="#/analytics"
@@ -160,10 +163,11 @@ function AccountIcon() {
   );
 }
 
-// DesktopNavIcon is the computer-monitor glyph from Logos.tsx,
-// re-stroked at the nav button's standard 18px size so it visually
-// matches the other three icons.
-function DesktopNavIcon() {
+// ProfilesNavIcon is a 3-card stack glyph — visually distinct from
+// the account ProfileIcon (head-and-shoulders) so the two nav
+// buttons aren't confused with each other. Stroked to match the
+// outline style of the other nav icons.
+function ProfilesNavIcon() {
   return (
     <svg
       width="18"
@@ -176,9 +180,10 @@ function DesktopNavIcon() {
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <rect width="20" height="14" x="2" y="3" rx="2" />
-      <line x1="8" x2="16" y1="21" y2="21" />
-      <line x1="12" x2="12" y1="17" y2="21" />
+      <rect width="16" height="6" x="4" y="4" rx="1" />
+      <rect width="16" height="6" x="4" y="14" rx="1" />
+      <line x1="8" x2="14" y1="7" y2="7" />
+      <line x1="8" x2="14" y1="17" y2="17" />
     </svg>
   );
 }

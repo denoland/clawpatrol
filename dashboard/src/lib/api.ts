@@ -243,6 +243,70 @@ export async function listProfiles(): Promise<string[]> {
   return r.json();
 }
 
+// ProfileSummary is the per-profile counts row the Profiles list
+// page renders as a card. Mirrors cmd/clawpatrol.ProfileSummary —
+// keep field names in lockstep with the Go side.
+export type ProfileSummary = {
+  name: string;
+  devices: number;
+  endpoints: number;
+  credentials: number;
+  tunnels: number;
+  rules: number;
+};
+
+export type ProfileTunnelNode = {
+  name: string;
+  sharing?: string;
+  credential?: string;
+};
+
+export type ProfileRuleSummary = {
+  name: string;
+  priority?: number;
+  disabled?: boolean;
+  condition?: string;
+  credential?: string;
+  verdict?: string;
+  reason?: string;
+  approve?: Array<{ name: string }>;
+};
+
+export type ProfileCredentialBinding = {
+  credential: string;
+  // Operator-set HCL key/value pairs the dispatcher uses to pick
+  // this credential over siblings on the same endpoint. Empty for
+  // catch-all bindings (single-credential endpoints or fallback).
+  disambiguators?: Record<string, string>;
+};
+
+export type ProfileEndpoint = {
+  name: string;
+  family: string;
+  hosts?: string[];
+  // Outermost-first chain of tunnels the endpoint dials through.
+  // Empty for direct-dial endpoints; one entry per hop.
+  tunnel_chain?: ProfileTunnelNode[];
+  rules?: ProfileRuleSummary[];
+  credentials?: ProfileCredentialBinding[];
+};
+
+export type ProfileDetail = ProfileSummary & {
+  endpoints: ProfileEndpoint[];
+};
+
+export async function listProfileSummaries(): Promise<ProfileSummary[]> {
+  const r = await api("/api/profiles_v2");
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function getProfileDetail(name: string): Promise<ProfileDetail> {
+  const r = await api(`/api/profiles_v2?name=${encodeURIComponent(name)}`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export async function setDeviceProfile(ip: string, profile: string): Promise<void> {
   const r = await api(
     `/api/agents/profile?ip=${encodeURIComponent(ip)}&profile=${encodeURIComponent(profile)}`,

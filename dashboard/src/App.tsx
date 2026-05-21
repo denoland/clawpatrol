@@ -3,20 +3,22 @@ import { AgentsTable, sortAgents } from "./components/AgentsTable";
 import { AnalyticsPage } from "./components/AnalyticsPage";
 import { ConnectModal } from "./components/ConnectModal";
 import { DevicePage } from "./components/DevicePage";
-import { DevicesPage } from "./components/DevicesPage";
 import { Header } from "./components/Header";
 import { HITLBar } from "./components/HITLBar";
 import { LiveRequests } from "./components/LiveRequests";
 import { Main } from "./components/Main";
 import { OnboardPage } from "./components/OnboardPage";
 import { AccountPage } from "./components/AccountPage";
+import { ProfileDetailPage } from "./components/ProfileDetailPage";
+import { ProfilesPage } from "./components/ProfilesPage";
 import { RequestDetailPage } from "./components/RequestDetailPage";
 import { SettingsPage } from "./components/SettingsPage";
 import { getState, type Agent, type Integration, type UpdateBanner, type Whoami } from "./lib/api";
 
 type Route =
   | { name: "main" }
-  | { name: "devices" }
+  | { name: "profiles" }
+  | { name: "profile_detail"; profile: string }
   | { name: "device"; ip: string }
   | { name: "analytics"; ip?: string }
   | { name: "onboard"; code: string }
@@ -36,9 +38,14 @@ function parseRoute(): Route {
   const r = h.match(/^#\/request\/([^/]+)$/);
   if (r) return { name: "request", id: decodeURIComponent(r[1]) };
   if (h === "#/settings") return { name: "settings" };
-  if (h === "#/devices") return { name: "devices" };
+  // Devices page was removed in cl-l6zv; the route still parses to
+  // the Profiles list so any bookmarks / inbound links land on the
+  // replacement surface instead of 404'ing into the home page.
+  if (h === "#/devices" || h === "#/profiles") return { name: "profiles" };
   if (h === "#/account") return { name: "account" };
   if (h === "#/analytics") return { name: "analytics" };
+  const pd = h.match(/^#\/profiles\/([^/]+)$/);
+  if (pd) return { name: "profile_detail", profile: decodeURIComponent(pd[1]) };
   const a = h.match(/^#\/analytics\/([^/]+)$/);
   if (a) return { name: "analytics", ip: decodeURIComponent(a[1]) };
   // Legacy device/IP/analytics URL
@@ -105,13 +112,10 @@ export default function App() {
           <HITLBar />
           <LiveRequests height="420px" />
         </Main>
-      ) : route.name === "devices" ? (
-        <DevicesPage
-          agents={agents}
-          integrations={integrations}
-          whoami={whoami}
-          onSelect={(ip) => navigate("#/device/" + encodeURIComponent(ip))}
-        />
+      ) : route.name === "profiles" ? (
+        <ProfilesPage />
+      ) : route.name === "profile_detail" ? (
+        <ProfileDetailPage name={route.profile} onConnect={(id) => setConnectId(id)} />
       ) : route.name === "analytics" ? (
         <AnalyticsPage ip={route.ip} agents={agents} />
       ) : route.name === "request" ? (
@@ -181,7 +185,7 @@ function HomeAgents({
       </div>
       {overflow > 0 && (
         <a
-          href="#/devices"
+          href="#/profiles"
           className={
             "block bg-canvas px-4 py-2.5 text-left underline text-xs " +
             "font-mono uppercase tracking-wider text-navy font-bold " +

@@ -293,7 +293,7 @@ function Shell({
 }) {
   const trail: Crumb[] = [{ label: "Claw Patrol", href: "#/" }];
   if (agentIP) {
-    trail.push({ label: "devices", href: "#/devices" });
+    trail.push({ label: "profiles", href: "#/profiles" });
     trail.push({ label: agentName || agentIP, href: `#/device/${encodeURIComponent(agentIP)}` });
   }
   if (requestId) {
