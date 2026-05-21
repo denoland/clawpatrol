@@ -11,6 +11,3 @@ if (root.firstChild) {
 } else {
   render(<Landing />, root);
 }
-
-// Load interactive chart after the tree is mounted.
-import("./chart");

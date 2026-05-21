@@ -1,7 +1,7 @@
 import { Layout } from "./Layout";
 import { DotField } from "./components/DotField.tsx";
 import { ShadeGradient } from "./components/ShadeBar.tsx";
-import { AnalyticsSection } from "./sections/AnalyticsSection";
+import { DemoSection } from "./sections/DemoSection";
 import { ApproversSection } from "./sections/ApproversSection";
 import { ComparisonSection } from "./sections/ComparisonSection";
 import { CtaSection } from "./sections/CtaSection";
@@ -23,7 +23,7 @@ export function Landing() {
       <ShadeGradient color="text-navy" invert />
       <ApproversSection />
       <TestSection />
-      <AnalyticsSection />
+      <DemoSection />
       <ComparisonSection />
       <CtaSection />
     </Layout>
