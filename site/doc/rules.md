@@ -315,14 +315,19 @@ For `human_approver`, set `timeout` to the maximum time Claw Patrol
 should wait for a human decision. Recommended starting configuration:
 
 - Claw Patrol human approval timeout: `90` seconds
-- Agent/tool HTTP timeout: `240` seconds
+- Agent or tool caller timeout: `240` seconds
 
 Configure the agent or tool timeout to be at least 60 seconds longer than
 Claw Patrol's human approval timeout. This keeps the caller alive long
 enough to receive the final allow/deny result.
 
-For OpenClaw, configure the whole agent-run timeout in the OpenClaw
-configuration file:
+For a normal OpenClaw agent run, configure the whole agent-run timeout:
+
+```sh
+openclaw config set agents.defaults.timeoutSeconds 240
+```
+
+or set the same value in the OpenClaw configuration file:
 
 ```json
 {
@@ -332,6 +337,15 @@ configuration file:
     }
   }
 }
+```
+
+This is the outer OpenClaw agent-run timeout. If your workflow also sets a
+more specific HTTP, tool, or command timeout, keep that timeout at or
+above `240` seconds as well. For the native Codex app-server harness,
+raise its app-server request timeout too:
+
+```sh
+openclaw config set plugins.entries.codex.config.appServer.requestTimeoutMs 240000
 ```
 
 Slack and dashboard approvals act on the live pending request. Approval
