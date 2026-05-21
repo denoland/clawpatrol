@@ -27,7 +27,7 @@ Linux on amd64/arm64 are supported.
 
 On the server, pick a data directory (anywhere — `/opt/clawpatrol`,
 `/srv/clawpatrol`, your home), drop a copy of
-[`gateway.example.hcl`](https://github.com/denoland/clawpatrol/blob/main/cmd/clawpatrol/gateway.example.hcl)
+[`gateway.example.hcl`](https://github.com/denoland/clawpatrol/blob/main/examples/gateway.example.hcl)
 into it, open UDP 51820 on the host firewall, and start the
 gateway:
 

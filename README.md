@@ -59,7 +59,7 @@ clients tunneling in via WireGuard or Tailscale.
 walks through a first config end-to-end.
 [clawpatrol.dev/docs/config-reference](https://clawpatrol.dev/docs/config-reference)
 is the auto-generated field reference. See
-[`gateway.example.hcl`](cmd/clawpatrol/gateway.example.hcl) for an
+[`gateway.example.hcl`](examples/gateway.example.hcl) for an
 annotated starting template.
 
 ## License
