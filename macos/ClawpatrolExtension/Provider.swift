@@ -62,7 +62,14 @@ class TransparentProxyProvider: NETransparentProxyProvider {
             }
             let token = (cfg["tsnet-api-token"] as? String) ?? ""
             let hostname = (cfg["tsnet-hostname"] as? String) ?? ""
-            os_log("startProxy: tsnet mode — joining tailnet", log: log, type: .info)
+            // Per-extension Application Support container is sandbox-
+            // writable and persists across NE restarts — exactly what
+            // tsnet needs to reuse its machine + node keys instead of
+            // re-registering on every startProxy. Without persistence
+            // each restart re-consumes the single-use auth key minted
+            // by the gateway (#519) and tsnet.Server.Up hangs 90s.
+            let stateDir = tsnetStateDir()
+            os_log("startProxy: tsnet mode — joining tailnet (state=%{public}@)", log: log, type: .info, stateDir)
             DispatchQueue.global(qos: .userInitiated).async {
                 var errBuf = [CChar](repeating: 0, count: 512)
                 let rc = authKey.withCString { akC in
@@ -71,14 +78,17 @@ class TransparentProxyProvider: NETransparentProxyProvider {
                             gwIP.withCString { gipC in
                                 token.withCString { tkC in
                                     hostname.withCString { hnC in
-                                        errBuf.withUnsafeMutableBufferPointer { ebuf in
-                                            ts_netstack_init(UnsafeMutablePointer(mutating: akC),
-                                                             UnsafeMutablePointer(mutating: cuC),
-                                                             UnsafeMutablePointer(mutating: ghC),
-                                                             UnsafeMutablePointer(mutating: gipC),
-                                                             UnsafeMutablePointer(mutating: tkC),
-                                                             UnsafeMutablePointer(mutating: hnC),
-                                                             ebuf.baseAddress, Int32(ebuf.count))
+                                        stateDir.withCString { sdC in
+                                            errBuf.withUnsafeMutableBufferPointer { ebuf in
+                                                ts_netstack_init(UnsafeMutablePointer(mutating: akC),
+                                                                 UnsafeMutablePointer(mutating: cuC),
+                                                                 UnsafeMutablePointer(mutating: ghC),
+                                                                 UnsafeMutablePointer(mutating: gipC),
+                                                                 UnsafeMutablePointer(mutating: tkC),
+                                                                 UnsafeMutablePointer(mutating: hnC),
+                                                                 UnsafeMutablePointer(mutating: sdC),
+                                                                 ebuf.baseAddress, Int32(ebuf.count))
+                                            }
                                         }
                                     }
                                 }
@@ -507,6 +517,32 @@ private func pidFromAuditToken(_ data: Data) -> pid_t? {
 // clawpatrol PID just means the ext might tunnel that PID's flows,
 // a local authz concern only the host's user controls anyway.
 let sessionSockPath = "/tmp/clawpatrol.sock"
+
+// tsnetStateDir is the persistent dir tsnet.Server uses for its
+// machine + node keys + DERP cache. NE's per-extension Application
+// Support container survives reinstalls of the .app and is
+// sandbox-writable; sticking to a stable path keeps the same
+// tsnet identity across NE restarts so the single-use gateway
+// auth key only gets consumed on the very first init. Mirrors
+// the Linux daemon's $XDG_STATE_HOME/clawpatrol/tsnet layout.
+func tsnetStateDir() -> String {
+    let fm = FileManager.default
+    if let base = try? fm.url(for: .applicationSupportDirectory,
+                              in: .userDomainMask,
+                              appropriateFor: nil,
+                              create: true) {
+        let dir = base.appendingPathComponent("clawpatrol/tsnet", isDirectory: true)
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.path
+    }
+    // Fall back to a stable /tmp path. Less ideal (cleared on
+    // reboot, so the auth key gets re-consumed across reboots)
+    // but better than a fresh mktemp every init.
+    let fallback = "/tmp/clawpatrol-tsnet-ne"
+    try? fm.createDirectory(atPath: fallback,
+                            withIntermediateDirectories: true)
+    return fallback
+}
 
 // tsnet-mode gateway hostname + per-peer api token. Mirror of the
 // providerConfiguration values, captured at startProxy time so the

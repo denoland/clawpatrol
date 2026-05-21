@@ -808,7 +808,7 @@ var (
 // (≤90s). Returns 0 on success, -1 on failure.
 //
 //export ts_netstack_init
-func ts_netstack_init(authKeyC, controlURLС, gwHostC, gwIPC, tokenC, hostnameC, errBuf *C.char, errLen C.int) C.int {
+func ts_netstack_init(authKeyC, controlURLС, gwHostC, gwIPC, tokenC, hostnameC, stateDirC, errBuf *C.char, errLen C.int) C.int {
 	tsMu.Lock()
 	defer tsMu.Unlock()
 	if tsStarted {
@@ -821,6 +821,7 @@ func ts_netstack_init(authKeyC, controlURLС, gwHostC, gwIPC, tokenC, hostnameC,
 	gwIPStr := C.GoString(gwIPC)
 	token := C.GoString(tokenC)
 	hostname := C.GoString(hostnameC)
+	stateDir := C.GoString(stateDirC)
 
 	gwIP, err := netip.ParseAddr(gwIPStr)
 	if err != nil || !gwIP.IsValid() {
@@ -828,18 +829,35 @@ func ts_netstack_init(authKeyC, controlURLС, gwHostC, gwIPC, tokenC, hostnameC,
 		return -1
 	}
 
-	stateDir, err := os.MkdirTemp("", "clawpatrol-tsnet-ne-*")
-	if err != nil {
-		setErr(errBuf, errLen, "mktemp: "+err.Error())
+	// Persistent state dir from Swift's per-extension Application
+	// Support container. Stable across NE restarts so tsnet reuses
+	// the saved machine + node keys instead of re-registering. With
+	// Ephemeral: false + a stable Hostname, the single-use auth key
+	// is consumed exactly once on first init — subsequent restarts
+	// don't need it. Mirrors the Linux daemon's
+	// $XDG_STATE_HOME/clawpatrol/tsnet layout.
+	if stateDir == "" {
+		setErr(errBuf, errLen, "empty state dir")
+		return -1
+	}
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		setErr(errBuf, errLen, "mkdir state dir: "+err.Error())
 		return -1
 	}
 
+	// Hostname falls back to a per-PID name only when the operator
+	// didn't supply one at join — needed so tsnet doesn't pick a
+	// random hostname per init and orphan nodes on the tailnet.
+	tsHostname := hostname
+	if tsHostname == "" {
+		tsHostname = fmt.Sprintf("clawpatrol-ne-%d", os.Getpid())
+	}
+
 	s := &tsnet.Server{
-		Hostname:   fmt.Sprintf("clawpatrol-ne-%d", os.Getpid()),
+		Hostname:   tsHostname,
 		AuthKey:    authKey,
 		ControlURL: controlURL,
 		Dir:        stateDir,
-		Ephemeral:  true,
 		Logf:       func(string, ...any) {},
 	}
 
@@ -848,7 +866,6 @@ func ts_netstack_init(authKeyC, controlURLС, gwHostC, gwIPC, tokenC, hostnameC,
 	upSt, err := s.Up(ctx)
 	if err != nil {
 		_ = s.Close()
-		_ = os.RemoveAll(stateDir)
 		setErr(errBuf, errLen, "tsnet up: "+err.Error())
 		return -1
 	}
@@ -859,7 +876,6 @@ func ts_netstack_init(authKeyC, controlURLС, gwHostC, gwIPC, tokenC, hostnameC,
 	lc, err := s.LocalClient()
 	if err != nil {
 		_ = s.Close()
-		_ = os.RemoveAll(stateDir)
 		setErr(errBuf, errLen, "local client: "+err.Error())
 		return -1
 	}
@@ -868,7 +884,6 @@ func ts_netstack_init(authKeyC, controlURLС, gwHostC, gwIPC, tokenC, hostnameC,
 		Prefs:         ipn.Prefs{ExitNodeIP: gwIP},
 	}); err != nil {
 		_ = s.Close()
-		_ = os.RemoveAll(stateDir)
 		setErr(errBuf, errLen, "set exit-node: "+err.Error())
 		return -1
 	}
