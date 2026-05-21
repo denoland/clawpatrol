@@ -65,10 +65,12 @@ export function RulesSection() {
               class="grid grid-cols-1 lg:grid-cols-[1fr_2fr] gap-6 lg:gap-12 items-start"
             >
               <div class="min-w-0">
-                <h4 class="text-3xl font-display text-canvas mb-3">{p.name}</h4>
-                <p class="text-base text-canvas/70 max-w-sm">{p.body}</p>
+                <h4 class="text-3xl lg:text-4xl font-display text-canvas mb-3 mt-8 lg:mt-0">
+                  {p.name}
+                </h4>
+                <p class="text-base text-canvas/70 text-balance">{p.body}</p>
               </div>
-              <TerminalFrame class="block min-w-0 p-5 sm:p-6 before:border-navy-500 after:border-navy-500">
+              <TerminalFrame class="block min-w-0 p-5 sm:p-6 before:border-navy-500 after:border-navy-500 squircle-lg">
                 <HclCode
                   source={p.example}
                   class="text-[13px] sm:text-sm font-mono leading-relaxed text-canvas overflow-x-auto whitespace-pre"

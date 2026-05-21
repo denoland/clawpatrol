@@ -8,7 +8,7 @@ export function CtaSection() {
       class="max-w-5xl mx-auto px-6 sm:px-8
       py-32 md:py-64 text-center"
     >
-      <SectionLabel>MIT License</SectionLabel>
+      <SectionLabel class="mb-4!">MIT License</SectionLabel>
       <h3 class="text-3xl sm:text-5xl mb-4 font-display">Open Source</h3>
       <p
         class="max-w-lg mx-auto text-base sm:text-lg

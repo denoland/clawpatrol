@@ -9,7 +9,7 @@ export function Layout({ children }: { children: ComponentChildren }) {
     <div class="min-h-screen bg-canvas text-text font-sans">
       <a
         href="#main"
-        class="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:px-4 focus:py-2 focus:bg-console-dark focus:text-canvas focus:rounded focus:outline-2 focus:outline-rust focus:font-display"
+        class="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:px-4 focus:py-2 focus:bg-navy focus:text-canvas focus:rounded focus:outline-2 focus:outline-rust focus:font-display"
       >
         Skip to main content
       </a>
