@@ -2,7 +2,7 @@
 //   1. Prerender the landing page into dist/index.html with full SEO meta.
 //   2. Render each doc/*.md into dist/docs/<slug>/index.html, plus a raw
 //      .md copy at dist/docs/<slug>.md for LLM / MCP consumption.
-//   3. Emit sitemap.xml, robots.txt, llms.txt, llms-full.txt.
+//   3. Emit sitemap.xml, robots.txt, llms.txt.
 
 import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
@@ -67,29 +67,9 @@ Sitemap: ${SITE_ORIGIN}/sitemap.xml
 `;
 writeFileSync(join(distDir, "robots.txt"), robots);
 
-// llmstxt.org format: index of pages an LLM can fetch. We point at the
-// raw .md variants so models get clean prose without the page chrome.
-const llmsTxt = `# Claw Patrol
-
-> Open-source security proxy for AI agents. Sits between your agent
-> and the network, injects credentials the agent never sees, and
-> enforces HCL approval rules — with humans or LLM judges in the loop
-> for risky actions.
-
-## Docs
-
-${
-  docs
-    .map(
-      (d) =>
-        `- [${d.title}](${SITE_ORIGIN}/docs/${d.slug}.md): ${d.description}`,
-    )
-    .join("\n")
-}
-`;
-writeFileSync(join(distDir, "llms.txt"), llmsTxt);
-
-const llmsFull = `# Claw Patrol — Full Documentation
+// Concatenated source of every doc page, served at /llms.txt for LLM
+// / MCP consumption. The canonical HTML versions live under /docs/.
+const llmsTxt = `# Claw Patrol — Full Documentation
 
 > Concatenated source of every doc page. The canonical HTML versions
 > live under ${SITE_ORIGIN}/docs/.
@@ -103,7 +83,7 @@ ${
     .join("\n---\n")
 }
 `;
-writeFileSync(join(distDir, "llms-full.txt"), llmsFull);
+writeFileSync(join(distDir, "llms.txt"), llmsTxt);
 
 console.log(
   `Built landing + ${docs.length} doc pages, sitemap, robots, llms.txt`,
