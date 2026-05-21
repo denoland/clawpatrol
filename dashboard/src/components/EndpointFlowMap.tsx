@@ -2,30 +2,40 @@ import type { ProfileEndpoint } from "../lib/api";
 
 // EndpointFlowMap renders a single endpoint's request-path flow as a
 // hand-rolled SVG block: endpoint → optional tunnel chain → per-rule
-// fan-out → credential convergence. Hand-rolled because the layout
-// is column-grid (fixed left-to-right ordering, no force-direction
-// to solve) — pulling in a graph library would weigh more than the
-// 250 lines below and would force us to re-skin every node anyway.
+// fan-out → credential convergence. The flow runs top-to-bottom so
+// rule and credential fan-outs spread horizontally — endpoints with
+// many rules don't blow up the page height anymore. Hand-rolled
+// because the layout is row-grid (fixed top-to-bottom ordering, no
+// force-direction to solve) — a graph library would weigh more than
+// the file below and force us to re-skin every node anyway.
 //
 // Layout:
 //
-//   [endpoint] → [tunnel]* → [rule]* → [credential]*
+//   [endpoint]
+//       ↓
+//   [tunnel]*
+//       ↓
+//   [rule] [rule] [rule] …
+//       ↓     ↓     ↓
+//   [credential]*
 //
-// Columns are fixed-width; rows = max(rules, credentials, 1) so the
-// rule and credential stacks stay aligned. The endpoint + tunnels
-// are vertically centered against that height. Edges are drawn as
-// orthogonal SVG paths so the operator can trace which rules route
-// to which credential, including the multi-credential-with-
-// disambiguator case where each credential node carries its
-// dispatch discriminator (key=value pairs the dispatcher matches on
-// to pick that credential over its siblings).
+// Rows are fixed-height; columns = max(rules, credentials, 1) so the
+// rule and credential rows stay aligned. Endpoint + tunnels are
+// horizontally centered against that width. Edges are drawn as
+// orthogonal SVG paths from bottom-of-source to top-of-target so the
+// operator can trace which rules route to which credential,
+// including the multi-credential-with-disambiguator case where each
+// credential node carries its dispatch discriminator (key=value
+// pairs the dispatcher matches on to pick that credential over its
+// siblings).
 
-const COL_WIDTH = 180;
+const COL_WIDTH = 160;
 const NODE_WIDTH = 140;
-const ROW_HEIGHT = 78;
-const NODE_PAD_Y = 8;
-const SVG_PAD_X = 8;
-const SVG_PAD_Y = 12;
+const ROW_HEIGHT = 92;
+const NODE_H_SHORT = 56;
+const NODE_H_TALL = 64;
+const SVG_PAD_X = 12;
+const SVG_PAD_Y = 8;
 
 type NodePos = { x: number; y: number; w: number; h: number };
 
@@ -36,52 +46,62 @@ export function EndpointFlowMap({ endpoint }: { endpoint: ProfileEndpoint }) {
 
   // Render a placeholder credential when the endpoint has no
   // declared bindings (rare — usually a misconfig) so the rules
-  // column still has somewhere to terminate visually.
+  // row still has somewhere to terminate visually.
   const credColumn =
     creds.length > 0 ? creds : [{ credential: "(no credential)", disambiguators: undefined }];
   const ruleColumn = rules.length > 0 ? rules : null;
 
-  const rowCount = Math.max(ruleColumn?.length ?? 0, credColumn.length, 1);
-  const innerWidth = COL_WIDTH * (2 + tunnels.length + 1) + 40;
-  const innerHeight = Math.max(ROW_HEIGHT * rowCount + NODE_PAD_Y * 2, ROW_HEIGHT + NODE_PAD_Y * 2);
+  const colCount = Math.max(ruleColumn?.length ?? 0, credColumn.length, 1);
+  const hasRuleRow = ruleColumn !== null;
+  const rowCount = 1 + tunnels.length + (hasRuleRow ? 1 : 0) + 1;
+
+  const innerWidth = COL_WIDTH * colCount + 20;
+  const innerHeight = ROW_HEIGHT * rowCount;
 
   const totalWidth = innerWidth + SVG_PAD_X * 2;
   const totalHeight = innerHeight + SVG_PAD_Y * 2;
 
-  // Column origins (left edge of each column's node block).
-  const colX = (i: number) => SVG_PAD_X + 20 + i * COL_WIDTH;
-
-  // Rows centered in their slot.
-  const rowY = (i: number, count: number) => {
-    if (count <= 1) return SVG_PAD_Y + innerHeight / 2 - 30 / 2;
-    const blockHeight = ROW_HEIGHT * count;
-    const startY = SVG_PAD_Y + (innerHeight - blockHeight) / 2;
-    return startY + i * ROW_HEIGHT + (ROW_HEIGHT - 56) / 2;
+  // Center a row of `count` nodes horizontally across the inner width.
+  const nodeX = (i: number, count: number) => {
+    const rowSpan = NODE_WIDTH + (count - 1) * COL_WIDTH;
+    const startX = SVG_PAD_X + (innerWidth - rowSpan) / 2;
+    return startX + i * COL_WIDTH;
   };
+
+  // Top-of-cell Y for a given row index, with the node vertically
+  // centered against its row by passing the node's own height in.
+  const rowY = (rowIdx: number, nodeH: number) =>
+    SVG_PAD_Y + rowIdx * ROW_HEIGHT + (ROW_HEIGHT - nodeH) / 2;
+
+  let row = 0;
+  const endpointRow = row++;
+  const tunnelRows = tunnels.map(() => row++);
+  const ruleRow = hasRuleRow ? row++ : -1;
+  const credRow = row++;
 
   const endpointNode: NodePos = {
-    x: colX(0),
-    y: rowY(0, 1),
+    x: nodeX(0, 1),
+    y: rowY(endpointRow, NODE_H_SHORT),
     w: NODE_WIDTH,
-    h: 56,
+    h: NODE_H_SHORT,
   };
   const tunnelNodes: NodePos[] = tunnels.map((_, i) => ({
-    x: colX(1 + i),
-    y: rowY(0, 1),
+    x: nodeX(0, 1),
+    y: rowY(tunnelRows[i], NODE_H_SHORT),
     w: NODE_WIDTH,
-    h: 56,
+    h: NODE_H_SHORT,
   }));
   const ruleNodes: NodePos[] = (ruleColumn ?? []).map((_, i) => ({
-    x: colX(1 + tunnels.length),
-    y: rowY(i, ruleColumn?.length ?? 1),
+    x: nodeX(i, ruleColumn?.length ?? 1),
+    y: rowY(ruleRow, NODE_H_TALL),
     w: NODE_WIDTH,
-    h: 64,
+    h: NODE_H_TALL,
   }));
   const credNodes: NodePos[] = credColumn.map((_, i) => ({
-    x: colX(2 + tunnels.length),
-    y: rowY(i, credColumn.length),
+    x: nodeX(i, credColumn.length),
+    y: rowY(credRow, NODE_H_TALL),
     w: NODE_WIDTH,
-    h: 64,
+    h: NODE_H_TALL,
   }));
 
   // Edges:
@@ -92,7 +112,6 @@ export function EndpointFlowMap({ endpoint }: { endpoint: ProfileEndpoint }) {
   const edges: Array<{ from: NodePos; to: NodePos; emphasis?: boolean }> = [];
   const fanOutSource = tunnelNodes.length > 0 ? tunnelNodes[tunnelNodes.length - 1] : endpointNode;
 
-  // endpoint -> first tunnel (if any)
   if (tunnelNodes.length > 0) {
     edges.push({ from: endpointNode, to: tunnelNodes[0] });
     for (let i = 0; i < tunnelNodes.length - 1; i++) {
@@ -100,7 +119,6 @@ export function EndpointFlowMap({ endpoint }: { endpoint: ProfileEndpoint }) {
     }
   }
 
-  // fan-out -> rules (or directly to creds if no rules)
   if (ruleColumn && ruleColumn.length > 0) {
     ruleColumn.forEach((_, i) => {
       edges.push({ from: fanOutSource, to: ruleNodes[i] });
@@ -292,12 +310,12 @@ function Node({
 }
 
 function Edge({ from, to, emphasis }: { from: NodePos; to: NodePos; emphasis?: boolean }) {
-  const x1 = from.x + from.w;
-  const y1 = from.y + from.h / 2;
-  const x2 = to.x;
-  const y2 = to.y + to.h / 2;
-  const midX = (x1 + x2) / 2;
-  const d = `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`;
+  const x1 = from.x + from.w / 2;
+  const y1 = from.y + from.h;
+  const x2 = to.x + to.w / 2;
+  const y2 = to.y;
+  const midY = (y1 + y2) / 2;
+  const d = `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`;
   return (
     <path
       d={d}
