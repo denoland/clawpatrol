@@ -82,7 +82,12 @@ type onboardRegistry struct {
 	extV6ByIP        map[string]string
 	canonicalByAlias map[string]string // alias IP → canonical device IP (e.g. fd7a:115c:a1e0::… → 100.x.x.x)
 	knownDeviceIPs   map[string]bool   // all IPs present in devices table
-	db               *sql.DB
+	// resolveTriedAt caches the last time we asked tsnet WhoIs whether an
+	// unknown peer IP corresponds to a known device. Without it, traffic
+	// from any IP that genuinely has no devices-table mapping would
+	// trigger a WhoIs lookup per packet.
+	resolveTriedAt map[string]time.Time
+	db             *sql.DB
 }
 
 func newOnboardRegistry() *onboardRegistry {
@@ -96,6 +101,7 @@ func newOnboardRegistry() *onboardRegistry {
 		extV6ByIP:        map[string]string{},
 		canonicalByAlias: map[string]string{},
 		knownDeviceIPs:   map[string]bool{},
+		resolveTriedAt:   map[string]time.Time{},
 	}
 }
 
@@ -360,6 +366,60 @@ func (r *onboardRegistry) IPForHostname(owner, hostname string) string {
 		return ip
 	}
 	return ""
+}
+
+// UniqueIPForHostname returns a device IP iff exactly one devices row has
+// this hostname. Used to coalesce a tailnet peer that has rejoined under
+// a fresh tailnet IP back onto its existing device row. Returns "" on
+// collisions so we never silently merge two distinct hosts that happen
+// to share a hostname (e.g. ephemeral clawpatrol-run nodes that all
+// register as "clawpatrol-run").
+func (r *onboardRegistry) UniqueIPForHostname(hostname string) string {
+	if hostname == "" {
+		return ""
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	found := ""
+	for ip, hn := range r.hostnameByIP {
+		if hn != hostname {
+			continue
+		}
+		if !r.knownDeviceIPs[ip] {
+			continue
+		}
+		if found != "" && found != ip {
+			return ""
+		}
+		found = ip
+	}
+	return found
+}
+
+// ClaimAliasResolve returns true if we should run a WhoIs lookup for ip
+// to try to map it onto a known device, and false if a recent attempt
+// already settled the question (positive or negative). The first caller
+// in a `within` window wins; subsequent callers skip the lookup so a
+// peer with no matching device doesn't trigger one WhoIs round-trip per
+// packet. Stamping the time inside the same critical section makes the
+// check-and-claim atomic across concurrent callers.
+func (r *onboardRegistry) ClaimAliasResolve(ip string, within time.Duration) bool {
+	if ip == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.knownDeviceIPs[ip] {
+		return false
+	}
+	if _, ok := r.canonicalByAlias[ip]; ok {
+		return false
+	}
+	if t, ok := r.resolveTriedAt[ip]; ok && time.Since(t) < within {
+		return false
+	}
+	r.resolveTriedAt[ip] = time.Now()
+	return true
 }
 
 func (r *onboardRegistry) ForgetIP(ip string) {

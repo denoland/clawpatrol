@@ -404,29 +404,69 @@ func (g *Gateway) profileFor(peerIP string) string {
 		if p := g.onboard.ProfileForIP(peerIP); p != "" {
 			return p
 		}
-		// Lazy IPv6 → IPv4 resolution: whole-machine tsnet traffic
-		// often arrives on the peer's fd7a:115c:a1e0::/48 ULA. If the
-		// onboard table only has the IPv4 entry (peers registered
-		// before seedTsnetIPv6Alias existed), resolve via tsnet WhoIs
-		// once and stamp the alias.
-		if g.tsnetLC != nil && strings.HasPrefix(peerIP, "fd7a:") {
-			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-			defer cancel()
-			if w, err := g.tsnetLC.WhoIs(ctx, net.JoinHostPort(peerIP, "0")); err == nil && w != nil && w.Node != nil {
-				for _, addr := range w.Node.Addresses {
-					ip := addr.Addr()
-					if !ip.Is4() {
-						continue
-					}
-					if p := g.onboard.ProfileForIP(ip.String()); p != "" {
-						g.onboard.RegisterIPAlias(peerIP, ip.String())
-						return p
-					}
+		// Lazy alias resolution via tsnet WhoIs. Two cases this catches:
+		//
+		//   1. Same Tailscale node, different address family — whole-
+		//      machine tsnet traffic arrives on the peer's IPv6 ULA
+		//      (fd7a:115c:a1e0::/48) but only the IPv4 is registered.
+		//   2. Same logical host, new Tailscale node — the host rejoined
+		//      the tailnet and got a fresh 100.x; without coalescing the
+		//      dashboard sprouts a phantom row per rejoin.
+		//
+		// ClaimAliasResolve guards against re-running WhoIs per packet
+		// for peers that have no matching device.
+		if g.tsnetLC != nil && g.onboard.ClaimAliasResolve(peerIP, 5*time.Minute) {
+			if canonical := g.resolveTsnetAlias(peerIP); canonical != "" {
+				if p := g.onboard.ProfileForIP(canonical); p != "" {
+					return p
 				}
 			}
 		}
 	}
 	return defaultProfileName(g.cfg.Policy)
+}
+
+// resolveTsnetAlias does a one-shot tsnet WhoIs for peerIP and, on a
+// match, registers an alias from peerIP onto the existing device IP.
+// Returns the canonical device IP on success, or "" when no match is
+// found. Both passes (address-match and hostname-match) only consider
+// IPs that already have a devices row, so an unknown tailnet peer with
+// no devices entry can never accidentally absorb traffic from another
+// peer.
+//
+// Hostname matches require exactly one devices row with that name (see
+// UniqueIPForHostname) so ephemeral pools that share a hostname — e.g.
+// the clawpatrol-run-* nodes Tailscale auto-suffixes on collision — are
+// never collapsed into one another.
+func (g *Gateway) resolveTsnetAlias(peerIP string) string {
+	if g.tsnetLC == nil || g.onboard == nil || peerIP == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	w, err := g.tsnetLC.WhoIs(ctx, net.JoinHostPort(peerIP, "0"))
+	if err != nil || w == nil || w.Node == nil {
+		return ""
+	}
+	for _, addr := range w.Node.Addresses {
+		ip := addr.Addr().String()
+		if ip == peerIP {
+			continue
+		}
+		if g.onboard.HasDevice(ip) {
+			g.onboard.RegisterIPAlias(peerIP, ip)
+			return ip
+		}
+	}
+	hostname := w.Node.ComputedName
+	if hostname == "" && w.Node.Hostinfo.Valid() {
+		hostname = w.Node.Hostinfo.Hostname()
+	}
+	if canonical := g.onboard.UniqueIPForHostname(hostname); canonical != "" && canonical != peerIP {
+		g.onboard.RegisterIPAlias(peerIP, canonical)
+		return canonical
+	}
+	return ""
 }
 
 // seedTsnetIPv6Alias resolves peerIP (IPv4) to the peer's IPv6 ULA via
@@ -465,10 +505,19 @@ func (g *Gateway) seedTsnetIPv6Alias(peerIP string) {
 // under a single device in the dashboard.
 func (g *Gateway) agentIPFor(c net.Conn) string {
 	ip := peerIP(c)
-	if g.onboard != nil {
-		return g.onboard.AgentIPFor(ip)
+	if g.onboard == nil {
+		return ip
 	}
-	return ip
+	// Mirror the lazy WhoIs lookup in profileFor here so callers that
+	// reach agentIPFor without first going through profileFor (e.g. the
+	// LLM-session bookkeeping paths) still benefit from alias resolution.
+	// Both functions use the same ClaimAliasResolve guard, so the WhoIs
+	// runs at most once per peer per 5-minute window regardless of which
+	// one is called first.
+	if g.tsnetLC != nil && g.onboard.ClaimAliasResolve(ip, 5*time.Minute) {
+		g.resolveTsnetAlias(ip)
+	}
+	return g.onboard.AgentIPFor(ip)
 }
 
 // defaultProfileName returns the profile a freshly-onboarded peer
