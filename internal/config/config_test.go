@@ -164,6 +164,14 @@ func itoa(n int) string {
 // Name for one-label kinds.
 func TestLoadKeysPolicyMapsByQName(t *testing.T) {
 	src := `
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+  }
+}
+
 endpoint "https" "api" {
   hosts = ["api.example.test"]
 }

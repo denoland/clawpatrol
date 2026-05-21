@@ -239,9 +239,9 @@ profile "default" { credentials = [bearer_token.aws-tok] }
 		host string
 		want string
 	}{
-		{"s3.amazonaws.com", "aws-ep"},
-		{"dynamodb.us-east-1.amazonaws.com", "aws-ep"},
-		{"AB.AMAZONAWS.COM", "aws-ep"},
+		{"s3.amazonaws.com", "https.aws-ep"},
+		{"dynamodb.us-east-1.amazonaws.com", "https.aws-ep"},
+		{"AB.AMAZONAWS.COM", "https.aws-ep"},
 		{"amazonaws.com", ""},
 		{"notamazonaws.com", ""},
 		{"foo.bar", ""},
@@ -274,11 +274,11 @@ credential "bearer_token" "s3-tok" {
 }
 profile "default" { credentials = [bearer_token.aws-tok, bearer_token.s3-tok] }
 `)
-	if got := runtime.HostEndpoint(cp, "default", "s3.amazonaws.com"); got == nil || got.Name != "s3-ep" {
-		t.Fatalf("exact host should beat wildcard: got %+v, want s3-ep", got)
+	if got := runtime.HostEndpoint(cp, "default", "s3.amazonaws.com"); got == nil || got.Name != "https.s3-ep" {
+		t.Fatalf("exact host should beat wildcard: got %+v, want https.s3-ep", got)
 	}
-	if got := runtime.HostEndpoint(cp, "default", "dynamodb.amazonaws.com"); got == nil || got.Name != "aws-ep" {
-		t.Fatalf("uncovered subdomain should fall to wildcard: got %+v, want aws-ep", got)
+	if got := runtime.HostEndpoint(cp, "default", "dynamodb.amazonaws.com"); got == nil || got.Name != "https.aws-ep" {
+		t.Fatalf("uncovered subdomain should fall to wildcard: got %+v, want https.aws-ep", got)
 	}
 }
 
@@ -298,11 +298,11 @@ credential "bearer_token" "aws-tok" {
 }
 profile "default" { credentials = [bearer_token.aws-tok, bearer_token.east-tok] }
 `)
-	if got := runtime.HostEndpoint(cp, "default", "s3.us-east-1.amazonaws.com"); got == nil || got.Name != "east-ep" {
-		t.Fatalf("longest suffix should win: got %+v, want east-ep", got)
+	if got := runtime.HostEndpoint(cp, "default", "s3.us-east-1.amazonaws.com"); got == nil || got.Name != "https.east-ep" {
+		t.Fatalf("longest suffix should win: got %+v, want https.east-ep", got)
 	}
-	if got := runtime.HostEndpoint(cp, "default", "s3.us-west-2.amazonaws.com"); got == nil || got.Name != "aws-ep" {
-		t.Fatalf("shorter pattern picks up the rest: got %+v, want aws-ep", got)
+	if got := runtime.HostEndpoint(cp, "default", "s3.us-west-2.amazonaws.com"); got == nil || got.Name != "https.aws-ep" {
+		t.Fatalf("shorter pattern picks up the rest: got %+v, want https.aws-ep", got)
 	}
 }
 
@@ -316,8 +316,8 @@ credential "bearer_token" "aws-tok" {
 }
 profile "default" { credentials = [bearer_token.aws-tok] }
 `)
-	if got := runtime.HostEndpoint(cp, "default", "s3.amazonaws.com"); got == nil || got.Name != "aws-ep" {
-		t.Fatalf("port-qualified wildcard should match bare SNI: got %+v, want aws-ep", got)
+	if got := runtime.HostEndpoint(cp, "default", "s3.amazonaws.com"); got == nil || got.Name != "https.aws-ep" {
+		t.Fatalf("port-qualified wildcard should match bare SNI: got %+v, want https.aws-ep", got)
 	}
 }
 
@@ -331,8 +331,8 @@ credential "bearer_token" "aws-tok" {
 }
 profile "tenant" { credentials = [bearer_token.aws-tok] }
 `)
-	if got := runtime.HostEndpoint(cp, "missing-profile", "s3.amazonaws.com"); got == nil || got.Name != "aws-ep" {
-		t.Fatalf("fallback scan should find wildcard match across profiles: got %+v, want aws-ep", got)
+	if got := runtime.HostEndpoint(cp, "missing-profile", "s3.amazonaws.com"); got == nil || got.Name != "https.aws-ep" {
+		t.Fatalf("fallback scan should find wildcard match across profiles: got %+v, want https.aws-ep", got)
 	}
 }
 

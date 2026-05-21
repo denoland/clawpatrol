@@ -81,7 +81,7 @@ func TestFixtureUnmarshalRejections(t *testing.T) {
 }
 
 func TestMatchFromCompiledRule(t *testing.T) {
-	ep := &config.CompiledEndpoint{Name: "ep", Plugin: &config.Plugin{Type: "https"}}
+	ep := &config.CompiledEndpoint{Name: "https.ep", Plugin: &config.Plugin{Type: "https"}}
 	cases := []struct {
 		name string
 		cr   *config.CompiledRule

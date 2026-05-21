@@ -253,18 +253,19 @@ func (f *Fixture) ResolveEndpoint(policy *config.CompiledPolicy) (*config.Compil
 				"match.endpoint %q must use typed form `endpoint-type.endpoint-name` (e.g. `https.github`)",
 				f.Match.Endpoint)
 		}
-		ep := policy.Endpoints[name]
+		ep := policy.Endpoints[f.Match.Endpoint]
 		if ep == nil {
-			return nil, fmt.Errorf("endpoint %q not in compiled policy", f.Match.Endpoint)
-		}
-		if ep.Plugin == nil || ep.Plugin.Type != typ {
-			got := ""
-			if ep.Plugin != nil {
-				got = ep.Plugin.Type
+			for _, other := range policy.Endpoints {
+				if other.Plugin == nil || other.Name == "" {
+					continue
+				}
+				if other.Plugin.Type+"."+name == other.Name {
+					return nil, fmt.Errorf(
+						"match.endpoint %q: endpoint %q is type %q, not %q",
+						f.Match.Endpoint, name, other.Plugin.Type, typ)
+				}
 			}
-			return nil, fmt.Errorf(
-				"match.endpoint %q: endpoint %q is type %q, not %q",
-				f.Match.Endpoint, name, got, typ)
+			return nil, fmt.Errorf("endpoint %q not in compiled policy", f.Match.Endpoint)
 		}
 		return ep, nil
 	}
@@ -293,16 +294,13 @@ func (f *Fixture) ResolveEndpoint(policy *config.CompiledPolicy) (*config.Compil
 
 // endpointRef formats a CompiledEndpoint as `endpoint-type.endpoint-name`
 // — the typed reference form fixtures and the runner use to address
-// endpoints unambiguously across endpoint types.
+// endpoints unambiguously across endpoint types. CompiledEndpoint.Name
+// is already QName-keyed, so this just returns Name directly.
 func endpointRef(ep *config.CompiledEndpoint) string {
 	if ep == nil {
 		return ""
 	}
-	typ := ""
-	if ep.Plugin != nil {
-		typ = ep.Plugin.Type
-	}
-	return typ + "." + ep.Name
+	return ep.Name
 }
 
 // splitEndpointRef parses a typed reference `type.name` into its
