@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"net"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -67,6 +68,48 @@ func TestIsNetworkUnreachableErr(t *testing.T) {
 	for _, e := range unreachable {
 		if !isNetworkUnreachableErr(e) {
 			t.Errorf("isNetworkUnreachableErr(%v) = false, want true", e)
+		}
+	}
+}
+
+// TestValidateGatewayURL pins the upfront URL check that prevents
+// runJoin from writing a bogus value to ~/.clawpatrol/gateway when
+// the operator types a scheme-less hostname like "clawpatrol-gw-1".
+func TestValidateGatewayURL(t *testing.T) {
+	valid := []string{
+		"http://clawpatrol-gateway-1:8080",
+		"https://clawpatrol-gateway.tail9a48e.ts.net",
+		"http://100.79.206.14:8080",
+		"https://gw.example.com",
+		"http://gw.example.com:80/",
+	}
+	for _, u := range valid {
+		got, err := validateGatewayURL(u)
+		if err != nil {
+			t.Errorf("validateGatewayURL(%q) returned %v, want nil", u, err)
+		}
+		if got != u {
+			t.Errorf("validateGatewayURL(%q) returned %q, want unchanged", u, got)
+		}
+	}
+
+	invalid := []struct {
+		in      string
+		wantSub string
+	}{
+		{"", "empty"},
+		{"   ", "empty"},
+		{"clawpatrol-gateway-1", "missing an http:// or https:// scheme"},
+		{"clawpatrol-gateway-1:8080", "missing an http:// or https:// scheme"},
+		{"ftp://example.com", "missing an http:// or https:// scheme"},
+		// scheme-only with no host: rejected on the host check.
+		{"http://", "no host"},
+	}
+	for _, tc := range invalid {
+		if _, err := validateGatewayURL(tc.in); err == nil {
+			t.Errorf("validateGatewayURL(%q) returned no error, want one containing %q", tc.in, tc.wantSub)
+		} else if !strings.Contains(err.Error(), tc.wantSub) {
+			t.Errorf("validateGatewayURL(%q) error = %q, want substring %q", tc.in, err.Error(), tc.wantSub)
 		}
 	}
 }

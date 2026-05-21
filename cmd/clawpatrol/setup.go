@@ -107,7 +107,10 @@ func runJoin(args []string) {
 	if len(rest) != 1 || rest[0] == "" {
 		fail("usage: clawpatrol join [--hostname NAME] [--profile NAME] [--whole-machine] <gateway-url>")
 	}
-	gatewayURL := rest[0]
+	gatewayURL, err := validateGatewayURL(rest[0])
+	if err != nil {
+		fail("%v", err)
+	}
 	if *wholeMachine {
 		if local, reason := isLocalGateway(gatewayURL); local {
 			fail("refusing --whole-machine join: gateway URL points at this host (%s).\n"+
@@ -206,6 +209,42 @@ func runJoin(args []string) {
 			fail("%v", err)
 		}
 	}
+}
+
+// validateGatewayURL rejects gateway URLs that wouldn't survive a
+// round-trip through http.Client — historically the join flow only
+// noticed at the dial layer, after preJoinFetchCA had already written
+// the bogus string to ~/.clawpatrol/gateway. The most common shape
+// that bit operators was a bare hostname like "clawpatrol-gateway-1":
+// neturl.Parse accepts it (everything parses as opaque), but
+// http.Client.Get("clawpatrol-gateway-1/ca.crt") errors with
+// "unsupported protocol scheme \"\"" — and by the time you see the
+// error the state file is already corrupt.
+//
+// Rules: explicit http:// or https://, non-empty host. We don't try
+// to be clever and auto-promote bare hostnames — the right port
+// depends on whether the gateway is fronted by Funnel (:443) or
+// reached over the tailnet (:8080), and we don't have enough
+// context here to pick correctly. The error message tells the
+// operator the most likely form for the tailnet-mounted case.
+func validateGatewayURL(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", fmt.Errorf("gateway URL is empty")
+	}
+	u, err := neturl.Parse(s)
+	if err != nil {
+		return "", fmt.Errorf("invalid gateway URL %q: %w", s, err)
+	}
+	switch u.Scheme {
+	case "http", "https":
+	default:
+		return "", fmt.Errorf("gateway URL %q is missing an http:// or https:// scheme — for a tailnet-mounted gateway, try http://%s:8080", s, s)
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("gateway URL %q has no host", s)
+	}
+	return s, nil
 }
 
 // applyWholeMachineExitNode finishes the whole-machine Tailscale Linux
