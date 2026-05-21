@@ -312,24 +312,34 @@ timeout responses are gateway-generated failures, not upstream
 responses.
 
 For `human_approver`, set `timeout` to the maximum time Claw Patrol
-should wait for a human decision. The calling tool or agent should use a
-request timeout longer than the human approver timeout if it expects to
-receive the final allow/deny result. For example, if a human approver
-waits up to 90 seconds, configure the caller to wait longer than 90
-seconds. A normal starting range is 60-120 seconds for Claw Patrol's
-human approval timeout and 180-300 seconds for agent or tool HTTP
-timeouts.
+should wait for a human decision. Recommended starting configuration:
 
-Slack and dashboard approvals act on the live pending request. Approve
-forwards upstream only if that request is still waiting. If the request
-has already timed out or disconnected, the pending entry is terminal or
-stale and upstream remains uncalled. Slack prompts are sent to the
+- Claw Patrol human approval timeout: `90` seconds
+- Agent/tool HTTP timeout: `240` seconds
+
+Configure the agent or tool timeout to be at least 60 seconds longer than
+Claw Patrol's human approval timeout. This keeps the caller alive long
+enough to receive the final allow/deny result.
+
+For OpenClaw, configure the whole agent-run timeout in the OpenClaw
+configuration file:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "timeoutSeconds": 240
+    }
+  }
+}
+```
+
+Slack and dashboard approvals act on the live pending request. Approval
+forwards upstream only if the original client request is still waiting
+for a response. If that request has already timed out or disconnected,
+the pending entry is terminal or stale. Slack prompts are sent to the
 configured approval channel; origin-aware routing to the same agent
 conversation/thread is a separate follow-up.
-
-Do not treat notification delivery as approval. If no reviewer decision
-arrives before the timeout, Claw Patrol fails closed for that matched
-request and does not call upstream.
 
 If no rule matches, the request is **allowed** — there is no global
 default-deny. Add a `priority = -100, verdict = "deny"` catch-all
