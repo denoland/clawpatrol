@@ -97,7 +97,7 @@ two sides talk over the loopback interface.
 
 ```bash
 # on the gateway VM (real public IP needed)
-curl -fsSL https://denoland.github.io/clawpatrol/install.sh | sh
+curl -fsSL https://clawpatrol.dev/install.sh | sh
 
 cat > /opt/clawpatrol/gateway.hcl <<'EOF'
 gateway {
@@ -127,7 +127,7 @@ in `/opt/clawpatrol/oauth/`.
 ## Client setup
 
 ```bash
-curl -fsSL https://denoland.github.io/clawpatrol/install.sh | sh
+curl -fsSL https://clawpatrol.dev/install.sh | sh
 clawpatrol join http://your-gw.example.com:8080
 # approve at the displayed URL, done — claude/gh/codex just work
 ```

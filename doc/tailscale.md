@@ -96,7 +96,7 @@ Tailscale admin console — the ACL above is the whole prereq.
 
 ```bash
 # gateway VM — no public IP required, just outbound HTTPS
-curl -fsSL https://denoland.github.io/clawpatrol/install.sh | sh
+curl -fsSL https://clawpatrol.dev/install.sh | sh
 
 cat > /opt/clawpatrol/gateway.hcl <<'EOF'
 gateway {
@@ -136,7 +136,7 @@ device on the tailnet once the gateway is up.
 ## Client setup
 
 ```bash
-curl -fsSL https://denoland.github.io/clawpatrol/install.sh | sh
+curl -fsSL https://clawpatrol.dev/install.sh | sh
 clawpatrol join <gateway-url>   # prints a user_code; approve on the
                                 # dashboard from any trusted device
 # done — clawpatrol run claude (or gh/codex) just works
