@@ -3170,30 +3170,49 @@ func (l *oneShotListener) Addr() net.Addr {
 // Emits a sink Event so transparently-relayed flows show up in the
 // dashboard request history alongside MITM traffic — without this,
 // ssh / git-over-ssh / arbitrary-port connections went silent.
+//
+// Analytics are gated on the peer being a known device. The tsnet
+// fallback handler catches every TCP forwarded through the gateway's
+// exit-node advertisement, which includes stray probes from every
+// other tailnet peer on the network. Without the gate, each new
+// probing tailnet IP mints a synthetic "agent" row in the dashboard
+// and the actions table fills up with thousands of phantom devices
+// that never appear in the device list. The dial still runs for
+// unknown peers (relay behavior unchanged); only the sink event is
+// suppressed.
 func (g *Gateway) wgRelay(c net.Conn, dstIP string, dstPort int) {
 	defer func() { _ = c.Close() }()
 	pip := peerIP(c)
 	profile := g.profileFor(pip)
 	agentPip := g.agentIPFor(c)
+	known := g.onboard == nil || g.onboard.HasDevice(pip) || g.onboard.HasDevice(agentPip)
 	host := fmt.Sprintf("%s:%d", dstIP, dstPort)
 	start := time.Now()
 	up, err := net.DialTimeout("tcp", net.JoinHostPort(dstIP, strconv.Itoa(dstPort)), 10*time.Second)
 	if err != nil {
-		g.sink.Emit(Event{
-			Mode: "relay", AgentIP: agentPip, Agent: profile,
-			Host: host, Action: "deny", Reason: err.Error(),
-			Ms: time.Since(start).Milliseconds(),
-		})
+		if known {
+			g.sink.Emit(Event{
+				Mode: "relay", AgentIP: agentPip, Agent: profile,
+				Host: host, Action: "deny", Reason: err.Error(),
+				Ms: time.Since(start).Milliseconds(),
+			})
+		}
 		return
 	}
 	defer func() { _ = up.Close() }()
-	rx, tx := pipeProgress(c, up, g.streamTracker(agentPip, host))
-	g.sink.Emit(Event{
-		Mode: "relay", AgentIP: agentPip, Agent: profile,
-		Host: host, Action: "allow",
-		In: rx, Out: tx,
-		Ms: time.Since(start).Milliseconds(),
-	})
+	var tracker func(rx, tx int64)
+	if known {
+		tracker = g.streamTracker(agentPip, host)
+	}
+	rx, tx := pipeProgress(c, up, tracker)
+	if known {
+		g.sink.Emit(Event{
+			Mode: "relay", AgentIP: agentPip, Agent: profile,
+			Host: host, Action: "allow",
+			In: rx, Out: tx,
+			Ms: time.Since(start).Milliseconds(),
+		})
+	}
 }
 
 // streamTracker returns a pipeProgress onTick callback that feeds the
