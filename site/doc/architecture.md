@@ -125,8 +125,8 @@ The gateway pulls in three plugin families:
   `human_approver` over Slack/Discord/Telegram, `llm_approver` for
   synchronous LLM proctoring against the approver's inline
   `policy = <<-EOT ... EOT` prompt — see `config/README.md`). The
-  dashboard's built-in approver pushes pending entries to a queue
-  the operator drains in the SPA.
+  dashboard's built-in approver pushes live pending entries to the SPA
+  for the operator to decide while the original request is waiting.
 
 ## Connection modes
 
@@ -181,7 +181,7 @@ system tailscaled.
 
 The gateway runs an in-process WireGuard server (wireguard-go +
 gVisor netstack). At onboard it mints a keypair, allocates a `/32`
-from `wg_subnet_cidr`, and persists the wg-quick config at
+from `gateway.wireguard.subnet_cidr`, and persists the wg-quick config at
 `~/.config/clawpatrol/wg.conf`.
 
 **`clawpatrol run -- <cmd>` (Linux).** Per-process ephemeral WG

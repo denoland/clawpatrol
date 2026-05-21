@@ -4,8 +4,8 @@ The security firewall for agents.
 
 Claw Patrol sits between your agents and prod, parses their traffic
 at the wire, and gates each action against rules you write in HCL.
-For example, you can block destructive SQL, or have a human approve `kubectl
-delete pod` calls an agent makes.
+For example, you can block destructive SQL, or pause `kubectl delete pod`
+until a human approves it before the request reaches Kubernetes.
 
 For the full overview see [clawpatrol.dev](https://clawpatrol.dev).
 
