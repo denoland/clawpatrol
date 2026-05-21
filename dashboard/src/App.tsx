@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AgentsTable } from "./components/AgentsTable";
+import { AgentsTable, sortAgents } from "./components/AgentsTable";
 import { AnalyticsPage } from "./components/AnalyticsPage";
 import { ConnectModal } from "./components/ConnectModal";
 import { DevicePage } from "./components/DevicePage";
@@ -153,8 +153,9 @@ export default function App() {
 }
 
 // HomeAgents shows the first N agents on the home page with a link
-// to the full devices list when there's more. Sorted by IP (matching
-// AgentsTable's own sort) so truncation is stable across renders.
+// to the full devices list when there's more. Sorted by activity
+// (last_at, bucketed to the hour) so the most-recently-active devices
+// surface but the order doesn't churn on every ping.
 const HOME_AGENTS_LIMIT = 10;
 function HomeAgents({
   agents,
@@ -165,13 +166,18 @@ function HomeAgents({
   integrations: Integration[];
   onSelect: (ip: string) => void;
 }) {
-  const sorted = [...agents].sort((a, b) => a.ip.localeCompare(b.ip));
+  const sorted = sortAgents(agents, "activity");
   const shown = sorted.slice(0, HOME_AGENTS_LIMIT);
   const overflow = sorted.length - shown.length;
   return (
     <section className="bg-canvas border-1.5 border-navy overflow-hidden">
       <div className="overflow-x-auto">
-        <AgentsTable agents={shown} integrations={integrations} onSelect={onSelect} />
+        <AgentsTable
+          agents={shown}
+          integrations={integrations}
+          onSelect={onSelect}
+          sortBy="activity"
+        />
       </div>
       {overflow > 0 && (
         <a

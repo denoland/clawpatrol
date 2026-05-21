@@ -9,14 +9,19 @@ export function AgentsTable({
   agents,
   integrations,
   onSelect,
+  sortBy = "ip",
 }: {
   agents: Agent[];
   integrations?: Integration[];
   onSelect?: (ip: string) => void;
+  // "ip": ascending IP — stable, default.
+  // "activity": most-recently-active first, bucketed to the hour so
+  // ordering doesn't reshuffle on every ping. IP tiebreak.
+  sortBy?: "ip" | "activity";
 }) {
   const byId = new Map<string, Integration>();
   for (const i of integrations ?? []) byId.set(i.id, i);
-  const stable = [...(agents ?? [])].sort((a, b) => a.ip.localeCompare(b.ip));
+  const stable = sortAgents(agents ?? [], sortBy);
   return (
     <table className="w-full table-fixed border-collapse" style={{ minWidth: 650 }}>
       <colgroup>
@@ -100,6 +105,23 @@ export function AgentsTable({
       </tbody>
     </table>
   );
+}
+
+const HOUR_MS = 60 * 60 * 1000;
+
+export function sortAgents(agents: Agent[], by: "ip" | "activity"): Agent[] {
+  const out = [...agents];
+  if (by === "ip") {
+    out.sort((a, b) => a.ip.localeCompare(b.ip));
+    return out;
+  }
+  out.sort((a, b) => {
+    const ba = Math.floor((Date.parse(a.last_at) || 0) / HOUR_MS);
+    const bb = Math.floor((Date.parse(b.last_at) || 0) / HOUR_MS);
+    if (ba !== bb) return bb - ba;
+    return a.ip.localeCompare(b.ip);
+  });
+  return out;
 }
 
 // needsAction returns true when a declared credential is missing its
