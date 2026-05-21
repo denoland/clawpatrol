@@ -12,6 +12,7 @@ jobs:
   preview:
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       pull-requests: write
     env:
       PR: ${{ github.event.number }}
