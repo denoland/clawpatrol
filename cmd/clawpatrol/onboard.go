@@ -468,10 +468,13 @@ func (t *tailscaleOnboarder) MintKey(ctx context.Context, _ string, _ bool) (str
 }
 
 // mintTailscaleAuthKey calls Tailscale's OAuth + auth-key API to mint
-// a reusable auth key. ephemeral=true makes each registered node
-// auto-disappear on disconnect (used by per-process tsnet runs);
-// ephemeral=false keeps the node registered across reconnects (used
-// by whole-machine joins).
+// a single-use auth key. The Linux daemon (daemon_transport_tsnet_linux.go)
+// persists the tsnet node identity in $XDG_STATE_HOME/clawpatrol/tsnet/
+// after first boot — subsequent daemon respawns load the stored identity
+// and reconnect with no auth-key, so one key per machine is enough.
+// ephemeral=true makes each registered node auto-disappear on disconnect;
+// ephemeral=false keeps the node registered across reconnects (used by
+// daemon-mode and whole-machine joins).
 func mintTailscaleAuthKey(ctx context.Context, ts JoinConfig, ephemeral bool) (string, error) {
 	clientID := resolveTemplate(ts.OAuthClientID)
 	clientSecret := resolveTemplate(ts.OAuthClientSecret)
@@ -532,7 +535,13 @@ func mintTailscaleAuthKey(ctx context.Context, ts JoinConfig, ephemeral bool) (s
 		"capabilities": map[string]any{
 			"devices": map[string]any{
 				"create": map[string]any{
-					"reusable":      true,
+					// Single-use: the daemon consumes it once at first
+					// boot, then leans on the persisted tsnet state for
+					// every subsequent reconnect. A stolen auth-key
+					// file is dead the moment the daemon registers, so
+					// off-box exfiltration shrinks to a race against
+					// the first daemon boot.
+					"reusable":      false,
 					"ephemeral":     ephemeral,
 					"preauthorized": true,
 					"tags":          tags,
