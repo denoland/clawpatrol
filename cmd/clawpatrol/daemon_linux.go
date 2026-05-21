@@ -53,6 +53,14 @@ import (
 const (
 	daemonIdleTimeout  = 5 * time.Minute
 	daemonHelloTimeout = 2 * time.Second
+
+	// envCacheTTL bounds how stale a cached env-pushdown response can
+	// be before the next START / ENV call re-fetches it from the
+	// gateway. Trades off "profile changes propagate instantly" against
+	// "every bursty agent session hits the gateway". 30s keeps a fleet
+	// of short-lived `clawpatrol run` invocations to ≤2 fetches/min
+	// while making a manual profile change visible inside one prompt.
+	envCacheTTL        = 30 * time.Second
 	daemonSpawnTimeout = 30 * time.Second
 	daemonMagicLine    = "CLAWPATROL/1\n"
 )
@@ -261,11 +269,18 @@ type daemon struct {
 	lockFile *os.File
 
 	// transport is the per-host network identity. Set once at startup,
-	// never replaced. envVars is the cached env-pushdown response —
-	// clients pull it from us instead of dialing the gateway themselves
-	// (they're not on the underlay; only the transport is).
+	// never replaced.
 	transport daemonTransport
-	envVars   []byte // pre-serialized JSON for the START reply
+
+	// envVars + envFetchedAt cache the gateway's env-pushdown response.
+	// freshEnvVars refreshes when the cache is older than envCacheTTL,
+	// so a profile change on the gateway shows up to existing daemons
+	// within one TTL instead of requiring a daemon restart. Held under
+	// envMu (the JSON byte slice is shared with concurrent handle()
+	// goroutines that ship it to clients).
+	envMu        sync.Mutex
+	envVars      []byte
+	envFetchedAt time.Time
 
 	activeConns atomic.Int32
 
@@ -304,9 +319,9 @@ func runDaemon(_ []string) {
 		log.Fatalf("daemon: transport: %v", err)
 	}
 
-	// Fetch the env-pushdown JSON once and cache it. Sessions get the
-	// same vars over their lifetime — refreshing per-session would
-	// stampede the gateway under bursty agent fleets.
+	// Pre-warm the env-pushdown cache so the first START reply doesn't
+	// pay the round-trip. Subsequent calls go through freshEnvVars,
+	// which re-fetches whenever the cache is older than envCacheTTL.
 	envJSON := daemonFetchEnvPushdown()
 
 	// Bind the control socket last. Parent still holds spawn.lock at
@@ -326,12 +341,13 @@ func runDaemon(_ []string) {
 	}
 
 	d := &daemon{
-		sockPath:  sockPath,
-		listener:  ln,
-		lockFile:  lf,
-		transport: transport,
-		envVars:   envJSON,
-		rebindCh:  make(chan struct{}),
+		sockPath:     sockPath,
+		listener:     ln,
+		lockFile:     lf,
+		transport:    transport,
+		envVars:      envJSON,
+		envFetchedAt: time.Now(),
+		rebindCh:     make(chan struct{}),
 	}
 
 	// Signal ready on the inherited pipe (fd 3). Once this lands, the
@@ -452,14 +468,14 @@ func (d *daemon) handle(c net.Conn) {
 	case "START\n":
 		// fall through below
 	case "ENV\n":
-		// Lightweight query: ship the cached env-pushdown JSON and
-		// return. No TUN handoff, no per-session gVisor stack —
-		// `clawpatrol env` is a one-shot read, not a wrapped child.
-		// Without this branch the env subcommand has no tailnet
-		// route to the gateway from its own process (the daemon's
-		// tsnet.Server is process-local), and the direct fetch
-		// silently times out in tsnet-only deployments.
-		if err := daemonWriteEnvReply(c, d.envVars); err != nil {
+		// Lightweight query: ship the env-pushdown JSON and return.
+		// No TUN handoff, no per-session gVisor stack — `clawpatrol
+		// env` is a one-shot read, not a wrapped child. Without this
+		// branch the env subcommand has no tailnet route to the
+		// gateway from its own process (the daemon's tsnet.Server is
+		// process-local), and the direct fetch silently times out in
+		// tsnet-only deployments.
+		if err := daemonWriteEnvReply(c, d.freshEnvVars()); err != nil {
 			log.Printf("daemon: ENV reply: %v", err)
 		}
 		return
@@ -471,7 +487,7 @@ func (d *daemon) handle(c net.Conn) {
 	// 1. Tell the client our underlay IP, ship the env-pushdown JSON,
 	// and pass along any one-line warning the transport's boot probe
 	// generated.
-	if err := daemonWriteStartReply(c, d.transport.LocalAddr(), d.envVars, d.transport.BootWarning()); err != nil {
+	if err := daemonWriteStartReply(c, d.transport.LocalAddr(), d.freshEnvVars(), d.transport.BootWarning()); err != nil {
 		return
 	}
 
@@ -521,6 +537,49 @@ func (d *daemon) handle(c net.Conn) {
 			return
 		}
 	}
+}
+
+// freshEnvVars returns the cached env-pushdown JSON if it was fetched
+// within the last envCacheTTL, otherwise re-fetches from the gateway
+// and updates the cache.
+//
+// Why this exists: profile changes on the gateway (operator moves a
+// device from "default" → "divy" via the dashboard) need to be
+// reflected in the placeholders the daemon ships to clients. Without
+// the refresh the daemon serves whatever it cached at boot until
+// someone manually restarts it. envCacheTTL bounds the staleness.
+//
+// On gateway fetch error daemonFetchEnvPushdown already returns "[]"
+// (it can't distinguish "no vars declared" from "gateway down") — to
+// avoid silently dropping the previously-known-good list on a
+// transient gateway blip, fall back to the prior cache when the
+// fetch comes back empty AND the prior cache was non-empty.
+func (d *daemon) freshEnvVars() []byte {
+	d.envMu.Lock()
+	defer d.envMu.Unlock()
+	if time.Since(d.envFetchedAt) < envCacheTTL && len(d.envVars) > 0 {
+		return d.envVars
+	}
+	fresh := daemonFetchEnvPushdown()
+	if isEmptyEnvList(fresh) && !isEmptyEnvList(d.envVars) {
+		// Probable transient gateway error — keep the last good list
+		// but don't bump envFetchedAt, so the next call retries.
+		return d.envVars
+	}
+	d.envVars = fresh
+	d.envFetchedAt = time.Now()
+	return d.envVars
+}
+
+// isEmptyEnvList recognises the two encodings of "no push-down vars"
+// the daemon writes: empty bytes (uninitialised) and "[]" (the
+// daemonFetchEnvPushdown error-case sentinel).
+func isEmptyEnvList(b []byte) bool {
+	switch string(b) {
+	case "", "[]":
+		return true
+	}
+	return false
 }
 
 // daemonFetchEnvPushdown asks the gateway for the env-pushdown vars
