@@ -363,6 +363,51 @@ func runRunChild() {
 
 // --- daemon client protocol ------------------------------------------
 
+// daemonClientFetchEnv sends "ENV\n" on ctrl and parses the daemon's
+// single "ENV <n>\n<n bytes>" reply. Used by `clawpatrol env` so the
+// env subcommand can fetch the gateway-declared push-down vars even
+// in tsnet-only deployments, where the env process has no host-side
+// tailnet route and the in-process gatewayDialOverride is unset
+// (that's set by the daemon's own tsnet boot, not by the CLI's).
+func daemonClientFetchEnv(ctrl net.Conn) ([]pushdownEnvVar, error) {
+	if _, err := io.WriteString(ctrl, "ENV\n"); err != nil {
+		return nil, err
+	}
+	br := bufio.NewReader(ctrl)
+	envLen, err := readLenPrefixed(br, "ENV", 1<<20)
+	if err != nil {
+		return nil, err
+	}
+	if envLen == 0 {
+		return nil, nil
+	}
+	body := make([]byte, envLen)
+	if _, err := io.ReadFull(br, body); err != nil {
+		return nil, fmt.Errorf("read ENV body: %w", err)
+	}
+	var vars []pushdownEnvVar
+	if err := json.Unmarshal(body, &vars); err != nil {
+		return nil, fmt.Errorf("decode ENV body: %w", err)
+	}
+	return vars, nil
+}
+
+// envPushdownDaemonFetcher hooks runEnv (in integrations.go) into the
+// Linux-only daemon path. It dials the per-host daemon, asks for the
+// cached env-pushdown JSON via the lightweight ENV command, and
+// returns it. nil on platforms with no daemon; runEnv then falls back
+// to the direct HTTP fetch.
+func init() {
+	envPushdownDaemonFetcher = func() ([]pushdownEnvVar, error) {
+		ctrl, err := daemonConnect()
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = ctrl.Close() }()
+		return daemonClientFetchEnv(ctrl)
+	}
+}
+
 // daemonClientStartSession sends "START\n" on ctrl and parses the
 // daemon's reply: ADDR line, ENV length + JSON body, WARN length +
 // optional text. The single bufio.Reader is returned to the caller

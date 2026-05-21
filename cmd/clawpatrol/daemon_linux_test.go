@@ -262,6 +262,66 @@ func TestDaemonClientParse_Malformed(t *testing.T) {
 	}
 }
 
+// TestDaemonEnvCommand_RoundTrip drives daemonWriteEnvReply through
+// daemonClientFetchEnv over a socketpair: the daemon's lightweight
+// ENV command (no session / TUN / gvisor) reads back as the same
+// pushdownEnvVar slice the daemon cached.
+func TestDaemonEnvCommand_RoundTrip(t *testing.T) {
+	cases := []struct {
+		name string
+		vars []pushdownEnvVar
+	}{
+		{"empty list", nil},
+		{
+			"two vars",
+			[]pushdownEnvVar{
+				{Name: "OPENAI_API_KEY", Value: "<placeholder>", Description: "OpenAI", PluginType: "openai"},
+				{Name: "ANTHROPIC_API_KEY", Value: "<placeholder>", Description: "Anthropic"},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := json.Marshal(tc.vars)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if tc.vars == nil {
+				body = nil // exercise the n=0 branch
+			}
+			daemonSide, clientSide := socketpairConns(t)
+			defer func() { _ = daemonSide.Close() }()
+			defer func() { _ = clientSide.Close() }()
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				br := bufio.NewReader(daemonSide)
+				cmd, err := br.ReadString('\n')
+				if err != nil {
+					t.Errorf("daemon read cmd: %v", err)
+					return
+				}
+				if cmd != "ENV\n" {
+					t.Errorf("daemon got cmd %q, want %q", cmd, "ENV\n")
+					return
+				}
+				if err := daemonWriteEnvReply(daemonSide, body); err != nil {
+					t.Errorf("daemonWriteEnvReply: %v", err)
+				}
+				_ = daemonSide.Close()
+			}()
+			got, err := daemonClientFetchEnv(clientSide)
+			<-done
+			if err != nil {
+				t.Fatalf("daemonClientFetchEnv: %v", err)
+			}
+			if !envVarsEqual(got, tc.vars) {
+				t.Errorf("env vars: got %+v, want %+v", got, tc.vars)
+			}
+		})
+	}
+}
+
 func envVarsEqual(a, b []pushdownEnvVar) bool {
 	if len(a) != len(b) {
 		return false
