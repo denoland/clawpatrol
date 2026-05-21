@@ -53,14 +53,6 @@ import (
 const (
 	daemonIdleTimeout  = 5 * time.Minute
 	daemonHelloTimeout = 2 * time.Second
-
-	// envCacheTTL bounds how stale a cached env-pushdown response can
-	// be before the next START / ENV call re-fetches it from the
-	// gateway. Trades off "profile changes propagate instantly" against
-	// "every bursty agent session hits the gateway". 30s keeps a fleet
-	// of short-lived `clawpatrol run` invocations to ≤2 fetches/min
-	// while making a manual profile change visible inside one prompt.
-	envCacheTTL        = 30 * time.Second
 	daemonSpawnTimeout = 30 * time.Second
 	daemonMagicLine    = "CLAWPATROL/1\n"
 )
@@ -272,15 +264,15 @@ type daemon struct {
 	// never replaced.
 	transport daemonTransport
 
-	// envVars + envFetchedAt cache the gateway's env-pushdown response.
-	// freshEnvVars refreshes when the cache is older than envCacheTTL,
-	// so a profile change on the gateway shows up to existing daemons
-	// within one TTL instead of requiring a daemon restart. Held under
-	// envMu (the JSON byte slice is shared with concurrent handle()
-	// goroutines that ship it to clients).
-	envMu        sync.Mutex
-	envVars      []byte
-	envFetchedAt time.Time
+	// lastGoodEnv holds the most recent non-empty env-pushdown response.
+	// freshEnvVars hits the gateway on every call (so a credential
+	// added on the dashboard is visible to the next `clawpatrol run`);
+	// lastGoodEnv only kicks in when a fetch comes back empty AND we
+	// previously had a non-empty list, to ride out transient gateway
+	// errors (daemonFetchEnvPushdown can't distinguish "no vars
+	// declared" from "gateway down" — both return "[]").
+	envMu       sync.Mutex
+	lastGoodEnv []byte
 
 	activeConns atomic.Int32
 
@@ -319,11 +311,6 @@ func runDaemon(_ []string) {
 		log.Fatalf("daemon: transport: %v", err)
 	}
 
-	// Pre-warm the env-pushdown cache so the first START reply doesn't
-	// pay the round-trip. Subsequent calls go through freshEnvVars,
-	// which re-fetches whenever the cache is older than envCacheTTL.
-	envJSON := daemonFetchEnvPushdown()
-
 	// Bind the control socket last. Parent still holds spawn.lock at
 	// this point, so we can't race another daemon for the path.
 	_ = os.Remove(sockPath)
@@ -341,13 +328,11 @@ func runDaemon(_ []string) {
 	}
 
 	d := &daemon{
-		sockPath:     sockPath,
-		listener:     ln,
-		lockFile:     lf,
-		transport:    transport,
-		envVars:      envJSON,
-		envFetchedAt: time.Now(),
-		rebindCh:     make(chan struct{}),
+		sockPath:  sockPath,
+		listener:  ln,
+		lockFile:  lf,
+		transport: transport,
+		rebindCh:  make(chan struct{}),
 	}
 
 	// Signal ready on the inherited pipe (fd 3). Once this lands, the
@@ -539,36 +524,28 @@ func (d *daemon) handle(c net.Conn) {
 	}
 }
 
-// freshEnvVars returns the cached env-pushdown JSON if it was fetched
-// within the last envCacheTTL, otherwise re-fetches from the gateway
-// and updates the cache.
+// freshEnvVars re-fetches the env-pushdown JSON from the gateway on
+// every call so a credential or profile change made on the dashboard
+// is visible to the very next `clawpatrol run` (issue #546). The
+// gateway lives on-tailnet so the round-trip is sub-50ms — no
+// noticeable latency added to session START.
 //
-// Why this exists: profile changes on the gateway (operator moves a
-// device from "default" → "divy" via the dashboard) need to be
-// reflected in the placeholders the daemon ships to clients. Without
-// the refresh the daemon serves whatever it cached at boot until
-// someone manually restarts it. envCacheTTL bounds the staleness.
-//
-// On gateway fetch error daemonFetchEnvPushdown already returns "[]"
-// (it can't distinguish "no vars declared" from "gateway down") — to
-// avoid silently dropping the previously-known-good list on a
-// transient gateway blip, fall back to the prior cache when the
-// fetch comes back empty AND the prior cache was non-empty.
+// daemonFetchEnvPushdown can't distinguish "no vars declared" from
+// "gateway down" (both encode as "[]"). When a fetch comes back empty
+// and we previously observed a non-empty list, fall back to that last
+// known-good list rather than silently dropping pushdown vars on a
+// transient blip.
 func (d *daemon) freshEnvVars() []byte {
+	fresh := daemonFetchEnvPushdown()
 	d.envMu.Lock()
 	defer d.envMu.Unlock()
-	if time.Since(d.envFetchedAt) < envCacheTTL && len(d.envVars) > 0 {
-		return d.envVars
+	if isEmptyEnvList(fresh) && !isEmptyEnvList(d.lastGoodEnv) {
+		return d.lastGoodEnv
 	}
-	fresh := daemonFetchEnvPushdown()
-	if isEmptyEnvList(fresh) && !isEmptyEnvList(d.envVars) {
-		// Probable transient gateway error — keep the last good list
-		// but don't bump envFetchedAt, so the next call retries.
-		return d.envVars
+	if !isEmptyEnvList(fresh) {
+		d.lastGoodEnv = fresh
 	}
-	d.envVars = fresh
-	d.envFetchedAt = time.Now()
-	return d.envVars
+	return fresh
 }
 
 // isEmptyEnvList recognises the two encodings of "no push-down vars"
