@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/denoland/clawpatrol/internal/config"
@@ -179,8 +181,15 @@ func synthesizeUnparseableDeny(r *config.CompiledRule) *config.CompiledRule {
 // ties are impossible at runtime — but if one ever shows up we
 // return nil rather than silently mis-routing.
 //
-// Single-binding entries with an empty disambiguator map short-
-// circuit when they're the only entry: matches anything.
+// Single-entry bindings short-circuit unconditionally: with only one
+// credential on a (profile, endpoint), there's nothing to
+// disambiguate. The credential's body fields (postgres_credential's
+// `user`, clickhouse's `database`, etc.) still drive upstream auth,
+// but the agent doesn't need to mirror those values in its
+// StartupMessage / Hello to make the dispatch pick the credential.
+// Multi-entry endpoints still go through the disambiguator filter
+// below so placeholder-driven `pg_ro` / `pg_rw` patterns keep
+// working.
 //
 // Returns nil when the profile is unknown OR the profile binds no
 // credential to ep — the caller (endpoint plugin) decides whether to
@@ -193,7 +202,7 @@ func ResolveCredential(policy *config.CompiledPolicy, profile string, ep *config
 	if len(entries) == 0 {
 		return nil
 	}
-	if len(entries) == 1 && len(entries[0].Disambiguators) == 0 {
+	if len(entries) == 1 {
 		return entries[0]
 	}
 	// Placeholder detection: if any entry constrains "placeholder",
@@ -239,6 +248,73 @@ func ResolveCredential(policy *config.CompiledPolicy, profile string, ep *config
 		return nil
 	}
 	return best
+}
+
+// CredentialMismatchReason builds a one-line explanation of why
+// ResolveCredential just returned nil for (profile, ep, req) despite
+// the binding existing in policy. Useful for surfacing actionable
+// connection errors to agents (e.g. postgres' SCRAM error path) so
+// the operator sees "user 'none' doesn't match" instead of a flat
+// "no credential bound". Returns "" when the profile-endpoint pair
+// has no bound credentials at all — the caller falls back to its
+// generic "no credential" message in that case.
+func CredentialMismatchReason(policy *config.CompiledPolicy, profile string, ep *config.CompiledEndpoint, req *match.Request) string {
+	if ep == nil {
+		return ""
+	}
+	entries := profileCredentialsAt(policy, profile, ep.Name)
+	if len(entries) == 0 {
+		return ""
+	}
+	// Collect the distinct disambiguator values declared per field
+	// across all entries — that's the set of values the agent could
+	// have sent to make any one entry match.
+	expected := map[string]map[string]struct{}{}
+	for _, c := range entries {
+		for field, want := range c.Disambiguators {
+			if want == "" {
+				continue
+			}
+			set, ok := expected[field]
+			if !ok {
+				set = map[string]struct{}{}
+				expected[field] = set
+			}
+			set[want] = struct{}{}
+		}
+	}
+	if len(expected) == 0 {
+		return ""
+	}
+	fields := make([]string, 0, len(expected))
+	for f := range expected {
+		fields = append(fields, f)
+	}
+	sort.Strings(fields)
+	var parts []string
+	for _, field := range fields {
+		got := ""
+		if req != nil {
+			switch field {
+			case "user":
+				got = req.User
+			case "database":
+				got = req.Database
+			}
+		}
+		values := make([]string, 0, len(expected[field]))
+		for v := range expected[field] {
+			values = append(values, v)
+		}
+		sort.Strings(values)
+		valueList := strings.Join(values, ", ")
+		if got == "" {
+			parts = append(parts, fmt.Sprintf("%s missing (valid: %s)", field, valueList))
+		} else {
+			parts = append(parts, fmt.Sprintf("%s=%q not in [%s]", field, got, valueList))
+		}
+	}
+	return strings.Join(parts, "; ")
 }
 
 // disambiguatorMatches reports whether every constraint in the

@@ -237,8 +237,12 @@ func (PostgresEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnH
 	}
 	cc := runtime.ResolveCredential(ch.Policy, ch.Profile, ch.Endpoint, credReq)
 	if cc == nil {
-		pgWriteError(ch.Conn, "no credential bound to postgres endpoint")
-		return fmt.Errorf("no credential")
+		msg := "no credential bound to postgres endpoint"
+		if hint := runtime.CredentialMismatchReason(ch.Policy, ch.Profile, ch.Endpoint, credReq); hint != "" {
+			msg = "no matching credential: " + hint
+		}
+		pgWriteError(ch.Conn, msg)
+		return fmt.Errorf("%s", msg)
 	}
 	// Plugin.Runtime is a typed-nil sentinel used for interface
 	// dispatch checks; the actual decoded HCL value is on Body.
