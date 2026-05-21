@@ -37,6 +37,16 @@ private let parentBundleID = "dev.clawpatrol.app"
 class TransparentProxyProvider: NETransparentProxyProvider {
     private var wholeMachine = false
     private var tsnetMode = false
+    // Cached tsnet gateway IP. UDP/53 datagrams the child app would
+    // otherwise send straight to 1.1.1.1 / 8.8.8.8 / any public
+    // resolver get rewritten to <gateway>:53, which IS handled by the
+    // gateway's serveTsnetDNSUDP listener. Without the rewrite the
+    // packet rides the tsnet exit-node path → gateway has no UDP
+    // fallback handler → silent black hole → c-ares / Node DNS hang
+    // until their client-side timeout. Apps using mDNSResponder
+    // (curl 8 system, getaddrinfo) bypass NE entirely and aren't
+    // affected; apps with their own UDP/53 resolver are.
+    private var tsnetGatewayIP = ""
 
     override func startProxy(options: [String: Any]?,
                              completionHandler: @escaping (Error?) -> Void) {
@@ -105,6 +115,7 @@ class TransparentProxyProvider: NETransparentProxyProvider {
                         return
                     }
                     setTsnetIPCConfig(gwHost: gwHost, token: token)
+                    self.tsnetGatewayIP = gwIP
                     startSessionListener()
                     startSessionReaper()
                     self.applyNetworkSettings(completionHandler: completionHandler)
@@ -424,7 +435,17 @@ class TransparentProxyProvider: NETransparentProxyProvider {
             for (data, ep) in zip(datagrams!, endpoints ?? []) {
                 guard let host = ep as? NWHostEndpoint,
                       let port = Int32(host.port),
-                      let ip = self.resolveIPv4(host.hostname) else { continue }
+                      let resolved = self.resolveIPv4(host.hostname) else { continue }
+                // DNS rewrite: tsnet mode has no UDP exit-node handler
+                // on the gateway side, so a UDP/53 packet aimed at a
+                // public resolver (1.1.1.1, 8.8.8.8, …) gets swallowed.
+                // Redirect to the gateway's tsnet IP, where
+                // serveTsnetDNSUDP both allocates VIPs for intercepted
+                // hostnames and relays everything else upstream.
+                var ip = resolved
+                if self.tsnetMode && port == 53 && !self.tsnetGatewayIP.isEmpty {
+                    ip = self.tsnetGatewayIP
+                }
                 var errBuf = [CChar](repeating: 0, count: 256)
                 let cid = ip.withCString { hostC in
                     errBuf.withUnsafeMutableBufferPointer { ebuf in
