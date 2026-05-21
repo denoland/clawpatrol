@@ -2571,8 +2571,6 @@ func main() {
 	switch os.Args[1] {
 	case "gateway":
 		runGateway(os.Args[2:])
-	case "login":
-		runLogin(os.Args[2:])
 	case "join":
 		runJoin(os.Args[2:])
 	case "run":
@@ -2678,7 +2676,6 @@ usage:
                   --hostname NAME        device name to register (default: os.Hostname)
                   --profile NAME         suggest a profile for the approver
                   --whole-machine        bring up wg-quick (route all traffic)
-  clawpatrol login                       onboard this machine (tailscale path)
   clawpatrol run -- <cmd> [args...]      route one process tree through gateway
   clawpatrol status                      report install + tunnel state
   clawpatrol uninstall                   remove local join state and tunnel config
