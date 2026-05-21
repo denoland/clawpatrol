@@ -3,6 +3,7 @@ package runtime_test
 import (
 	"encoding/base64"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/denoland/clawpatrol/internal/config"
@@ -725,6 +726,76 @@ func TestResolveCredentialSingular(t *testing.T) {
 	got := runtime.ResolveCredential(cp, "default", ep, &match.Request{Family: "http", Headers: http.Header{}})
 	if got == nil || got.Credential.Symbol.Name != "pat" {
 		t.Errorf("singular credential resolution wrong: %+v", got)
+	}
+}
+
+// TestResolveCredentialSingularIgnoresDisambiguators pins the behavior
+// that a single credential bound to (profile, endpoint) is returned
+// regardless of its disambiguator fields. The body's `user` /
+// `database` attrs still drive upstream auth (PostgresAuth() reads
+// them), but the agent's StartupMessage doesn't have to mirror them
+// to make the dispatcher pick the only credential present. Previously
+// the agent had to set PGUSER to the credential's upstream user or
+// the dispatcher returned nil and the connection failed with "no
+// credential bound" — a usability footgun on every single-credential
+// postgres endpoint.
+func TestResolveCredentialSingularIgnoresDisambiguators(t *testing.T) {
+	src := `
+endpoint "postgres" "ep" { host = "db.example.com:5432" }
+credential "postgres_credential" "only" {
+  endpoint = postgres.ep
+  user     = "iam-bot@project.iam"
+  database = "prod"
+}
+profile "default" { credentials = [postgres_credential.only] }
+`
+	cp := compileFixture(t, src)
+	ep := cp.Endpoints["ep"]
+	cases := []*match.Request{
+		{Family: "sql"},
+		{Family: "sql", User: "none", Database: "postgres"},
+		{Family: "sql", User: "iam-bot@project.iam", Database: "prod"},
+	}
+	for _, req := range cases {
+		got := runtime.ResolveCredential(cp, "default", ep, req)
+		if got == nil || got.Credential.Symbol.Name != "only" {
+			t.Errorf("req=%+v got %+v, want credential %q", req, got, "only")
+		}
+	}
+}
+
+// TestCredentialMismatchReason: when a multi-credential endpoint has
+// no matching entry for the agent's user/database, the helper builds
+// an actionable message that lists the disambiguator values the
+// operator could have supplied. Used by the postgres plugin's "no
+// credential bound" error path so the agent sees which user values
+// the endpoint actually accepts.
+func TestCredentialMismatchReason(t *testing.T) {
+	src := `
+endpoint "postgres" "ep" { host = "db.example.com:5432" }
+credential "postgres_credential" "ro" {
+  endpoint = postgres.ep
+  user     = "pg_ro"
+}
+credential "postgres_credential" "rw" {
+  endpoint = postgres.ep
+  user     = "pg_rw"
+}
+profile "default" { credentials = [postgres_credential.ro, postgres_credential.rw] }
+`
+	cp := compileFixture(t, src)
+	ep := cp.Endpoints["ep"]
+
+	if got := runtime.CredentialMismatchReason(cp, "default", ep, &match.Request{Family: "sql", User: "none"}); got == "" || !strings.Contains(got, `user="none"`) || !strings.Contains(got, "pg_ro") || !strings.Contains(got, "pg_rw") {
+		t.Errorf("missing-user reason should name agent value + alternatives, got %q", got)
+	}
+	if got := runtime.CredentialMismatchReason(cp, "default", ep, &match.Request{Family: "sql"}); got == "" || !strings.Contains(got, "missing") {
+		t.Errorf("empty-user reason should say missing, got %q", got)
+	}
+	// Profile with no bindings → empty (caller falls back to its own
+	// "no credential bound" wording).
+	if got := runtime.CredentialMismatchReason(cp, "no-such-profile", ep, &match.Request{Family: "sql"}); got != "" {
+		t.Errorf("no-binding case should return empty, got %q", got)
 	}
 }
 
