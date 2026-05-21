@@ -3,13 +3,13 @@ import { Button } from "./Button";
 import { Main } from "./Main";
 import { PageTitle } from "./PageTitle";
 
-// ProfilePage shows the currently authenticated principal (moved
+// AccountPage shows the currently authenticated principal (moved
 // here from the global Header) and the only account-level action
 // the dashboard supports: logging out.
-export function ProfilePage({ whoami }: { whoami: Whoami | null }) {
+export function AccountPage({ whoami }: { whoami: Whoami | null }) {
   return (
     <Main>
-      <PageTitle trail={[{ label: "Claw Patrol", href: "#/" }, { label: "profile" }]} />
+      <PageTitle trail={[{ label: "Claw Patrol", href: "#/" }, { label: "account" }]} />
       <section className="bg-canvas border-1.5 border-navy p-4 space-y-4">
         {whoami?.user ? <Identity whoami={whoami} /> : <NotLoggedIn />}
       </section>

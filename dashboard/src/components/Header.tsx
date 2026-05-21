@@ -4,11 +4,11 @@ import type { Whoami } from "../lib/api";
 // Global header — rendered above every route. Logo links home; the
 // nav cluster on the right is four circular icon buttons for the
 // dashboard's top-level sections (devices, analytics, settings,
-// profile). Identity + log-out moved to the profile page.
+// account). Identity + log-out moved to the account page.
 //
 // `whoami` is still accepted (currently unused) so consumers don't
 // need to thread route-specific data through; future header
-// affordances (e.g. an unread indicator on the profile button) can
+// affordances (e.g. an unread indicator on the account button) can
 // read it without a signature change.
 export function Header({
   whoami: _whoami,
@@ -25,7 +25,7 @@ export function Header({
   const devicesActive = currentRoute === "devices" || currentRoute === "device";
   const analyticsActive = currentRoute === "analytics";
   const settingsActive = currentRoute === "settings";
-  const profileActive = currentRoute === "profile";
+  const accountActive = currentRoute === "account";
   return (
     <header className="bg-transparent">
       <div className="mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-4 flex items-center gap-4">
@@ -65,13 +65,13 @@ export function Header({
             <NavTooltip>Settings</NavTooltip>
           </a>
           <a
-            href="#/profile"
-            className={`${navBase} ${profileActive ? navActive : ""}`}
-            aria-current={profileActive ? "page" : undefined}
-            aria-label="Profile"
+            href="#/account"
+            className={`${navBase} ${accountActive ? navActive : ""}`}
+            aria-current={accountActive ? "page" : undefined}
+            aria-label="Account"
           >
-            <ProfileIcon />
-            <NavTooltip>Profile</NavTooltip>
+            <AccountIcon />
+            <NavTooltip>Account</NavTooltip>
           </a>
         </nav>
       </div>
@@ -139,9 +139,9 @@ function SettingsIcon() {
   );
 }
 
-// ProfileIcon is a stroked head-and-shoulders glyph matching the
+// AccountIcon is a stroked head-and-shoulders glyph matching the
 // outline style of the Analytics chart and Settings cog icons.
-function ProfileIcon() {
+function AccountIcon() {
   return (
     <svg
       width="18"

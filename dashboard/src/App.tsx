@@ -9,7 +9,7 @@ import { HITLBar } from "./components/HITLBar";
 import { LiveRequests } from "./components/LiveRequests";
 import { Main } from "./components/Main";
 import { OnboardPage } from "./components/OnboardPage";
-import { ProfilePage } from "./components/ProfilePage";
+import { AccountPage } from "./components/AccountPage";
 import { RequestDetailPage } from "./components/RequestDetailPage";
 import { SettingsPage } from "./components/SettingsPage";
 import { getState, type Agent, type Integration, type UpdateBanner, type Whoami } from "./lib/api";
@@ -22,7 +22,7 @@ type Route =
   | { name: "onboard"; code: string }
   | { name: "request"; id: string }
   | { name: "settings" }
-  | { name: "profile" };
+  | { name: "account" };
 
 function parseRoute(): Route {
   const raw = window.location.hash;
@@ -37,7 +37,7 @@ function parseRoute(): Route {
   if (r) return { name: "request", id: decodeURIComponent(r[1]) };
   if (h === "#/settings") return { name: "settings" };
   if (h === "#/devices") return { name: "devices" };
-  if (h === "#/profile") return { name: "profile" };
+  if (h === "#/account") return { name: "account" };
   if (h === "#/analytics") return { name: "analytics" };
   const a = h.match(/^#\/analytics\/([^/]+)$/);
   if (a) return { name: "analytics", ip: decodeURIComponent(a[1]) };
@@ -124,8 +124,8 @@ export default function App() {
           onConnect={(id) => setConnectId(id)}
           onRefresh={refresh}
         />
-      ) : route.name === "profile" ? (
-        <ProfilePage whoami={whoami} />
+      ) : route.name === "account" ? (
+        <AccountPage whoami={whoami} />
       ) : (
         <DevicePage
           ip={route.ip}
