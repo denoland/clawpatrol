@@ -297,6 +297,12 @@ By default the message carries a link back to the dashboard; setting
 `interactive = true` on the approver embeds in-channel "approve" and
 "deny" buttons so the reviewer can decide without leaving Slack.
 
+### Default allow
+
+If no rule matches, the request is **allowed** — there is no global
+default-deny. Add a `priority = -100, verdict = "deny"` catch-all
+per endpoint to invert this.
+
 ### Synchronous human approval and timeouts
 
 Human approval is synchronous in the transparent proxy path. When a
@@ -311,8 +317,8 @@ final allow decision, Claw Patrol does **not** call upstream. Deny and
 timeout responses are gateway-generated failures, not upstream
 responses.
 
-For `human_approver`, set `timeout` to the maximum time Claw Patrol
-should wait for a human decision.
+For `human_approver`, [set `timeout` to the maximum time Claw Patrol
+should wait for a human decision](/docs/config-reference/#approver-human_approver-name).
 
 #### Recommended timeout values
 
@@ -344,19 +350,6 @@ system instructions telling the agent to keep inner HTTP timeouts at or
 above the caller timeout when it writes `curl`, HTTP client, or script
 code, to make sure that the agent can be notified with clear reason when
 Claw Patrol hits approval timeout.
-
-#### TODO
-
-Slack and dashboard approvals act on the live pending request. Approval
-forwards upstream only if the original client request is still waiting
-for a response. If that request has already timed out or disconnected,
-the pending entry is terminal or stale. Slack prompts are sent to the
-configured approval channel; origin-aware routing to the same agent
-conversation/thread is a separate follow-up.
-
-If no rule matches, the request is **allowed** — there is no global
-default-deny. Add a `priority = -100, verdict = "deny"` catch-all
-per endpoint to invert this.
 
 
 ## Inspection-buffer overflow
