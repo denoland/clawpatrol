@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	neturl "net/url"
 	"os"
 	"os/exec"
@@ -18,6 +19,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/mdp/qrterminal/v3"
 )
 
 type tsStatus struct {
@@ -865,7 +868,18 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		fmt.Printf("CA fingerprint: %s\n", setup.caFingerprint)
 	}
 	fmt.Println()
-	tryOpen(start.VerifyURL)
+	// Tailnet-only verify URLs (100.64.0.0/10 IP or *.ts.net host) are
+	// unreachable from the machine running `clawpatrol join` until
+	// approval lands — that's the whole point of needing approval. Print
+	// a QR code so the operator can scan from a phone or another
+	// already-tailnet-connected device. Skip tryOpen on that path: a
+	// local browser can't reach the URL anyway, and the spawned
+	// xdg-open / open process just produces a meaningless tab.
+	if isTailnetOnlyURL(start.VerifyURL) {
+		printVerifyQR(start.VerifyURL)
+	} else {
+		tryOpen(start.VerifyURL)
+	}
 
 	// 2. poll
 	interval := time.Duration(start.Interval) * time.Second
@@ -1234,6 +1248,51 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	fmt.Println("Installed! Try: clawpatrol run -- claude")
 
 	return false, nil
+}
+
+// isTailnetOnlyURL reports whether u's host is reachable only from
+// inside a Tailscale tailnet: a 100.64.0.0/10 CGNAT address (the
+// range Tailscale carves nodes out of) or a name ending in `.ts.net`
+// (the MagicDNS suffix). Invalid URLs return false so the caller
+// falls back to the regular `tryOpen` path.
+func isTailnetOnlyURL(u string) bool {
+	p, err := neturl.Parse(u)
+	if err != nil || p == nil {
+		return false
+	}
+	host := p.Hostname()
+	if host == "" {
+		return false
+	}
+	if strings.HasSuffix(strings.ToLower(host), ".ts.net") {
+		return true
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return ip.Is4() && tailscaleCGNAT.Contains(ip)
+	}
+	return false
+}
+
+// tailscaleCGNAT is 100.64.0.0/10 — Tailscale's CGNAT range. Anything
+// inside it is unreachable except from a tailnet member.
+var tailscaleCGNAT = netip.MustParsePrefix("100.64.0.0/10")
+
+// printVerifyQR writes a terminal QR code encoding url to stdout.
+// Used when the verify URL is tailnet-only — the operator scans with a
+// phone or another already-onboarded device that can actually reach
+// the gateway.
+func printVerifyQR(url string) {
+	fmt.Println("Tailnet-only URL — scan from a device with tailnet access:")
+	fmt.Println()
+	cfg := qrterminal.Config{
+		Level:     qrterminal.M,
+		Writer:    os.Stdout,
+		BlackChar: qrterminal.BLACK,
+		WhiteChar: qrterminal.WHITE,
+		QuietZone: 1,
+	}
+	qrterminal.GenerateWithConfig(url, cfg)
+	fmt.Println()
 }
 
 func tryOpen(u string) {
