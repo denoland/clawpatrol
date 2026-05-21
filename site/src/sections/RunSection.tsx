@@ -1,47 +1,16 @@
 import { SectionLabel } from "../components/SectionLabel";
 import { TerminalFrame } from "../components/TerminalFrame";
 
-/* ──────────────────────────────────────────────────────────────────────
-   Run — three real CLI invocations that map to the three deployment
-   shapes operators ask about: wrap one agent, route a whole machine,
-   or run the gateway itself.
-   ──────────────────────────────────────────────────────────────────── */
+// Run — the happy path, top to bottom. Deployment variants
+// (--whole-machine, per-process via netns, Tailscale join, the
+// gateway side) live in the docs; this section just shows what a
+// first-time visitor types.
 
-const MODES: { title: string; command: string; body: string }[] = [
-  {
-    title: "Single process",
-    command: "$ clawpatrol run claude",
-    body:
-      "Wrap a single command along with all its subprocesses. On " +
-      "Linux a network namespace is created that intercepts and " +
-      "forwards all of its traffic over WireGuard.",
-  },
-  {
-    title: "Whole machine",
-    command: "$ clawpatrol join https://gw.example.com \\\n    --whole-machine",
-    body:
-      "Bring up a WireGuard tunnel; every outbound packet from the " +
-      "host routes through the gateway. Or run `clawpatrol login` " +
-      "to join over Tailscale instead.",
-  },
-  {
-    title: "Run the gateway",
-    command: "$ clawpatrol gateway config.hcl",
-    body:
-      "The proxy itself. A single binary that loads your HCL config " +
-      "and accepts clients tunneling in via WireGuard or Tailscale.",
-  },
-];
+const SESSION = `# Join your device to a gateway
+$ clawpatrol join https://gw.example.com
 
-function Terminal({ source }: { source: string }) {
-  return (
-    <TerminalFrame class="block px-4 py-3">
-      <pre class="text-xs font-mono leading-relaxed text-canvas overflow-x-auto whitespace-pre">
-        <code>{source}</code>
-      </pre>
-    </TerminalFrame>
-  );
-}
+# Run your agent through it
+$ clawpatrol run codex`;
 
 export function RunSection() {
   return (
@@ -50,28 +19,20 @@ export function RunSection() {
         <SectionLabel>Run it</SectionLabel>
         <div class="max-w-3xl mx-auto text-center mb-12 sm:mb-16">
           <h3 class="text-3xl sm:text-4xl lg:text-5xl font-display text-balance mb-5 text-text">
-            Three ways in.
+            Connect over <span class="text-rust">WireGuard</span> or{" "}
+            <span class="text-rust">Tailscale</span>.
           </h3>
           <p class="text-base text-text-muted text-balance">
-            The gateway is a single binary. Agent traffic reaches it over
-            WireGuard or Tailscale; nothing in the agent changes.
+            Nothing in the agent changes to use Claw Patrol.
           </p>
         </div>
 
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {MODES.map((m) => (
-            <div
-              key={m.title}
-              class="bg-canvas border border-navy
-                p-6 flex flex-col gap-4"
-            >
-              <h4 class="text-xl sm:text-2xl font-display text-text">
-                {m.title}
-              </h4>
-              <Terminal source={m.command} />
-              <p class="text-sm text-text-muted">{m.body}</p>
-            </div>
-          ))}
+        <div class="max-w-2xl mx-auto">
+          <TerminalFrame class="block px-5 py-4">
+            <pre class="text-sm font-mono leading-relaxed text-canvas overflow-x-auto whitespace-pre">
+              <code>{SESSION}</code>
+            </pre>
+          </TerminalFrame>
         </div>
       </div>
     </section>
