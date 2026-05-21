@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -319,6 +320,122 @@ func TestDaemonEnvCommand_RoundTrip(t *testing.T) {
 				t.Errorf("env vars: got %+v, want %+v", got, tc.vars)
 			}
 		})
+	}
+}
+
+// TestDaemonEnvRefreshLoopPicksUpChanges verifies the background
+// env-pushdown refresh path: a credential change on the gateway side
+// (modelled here as the injected fetcher returning a new payload) is
+// reflected in the daemon's freshEnvVars output without restarting
+// the daemon — the regression check for cl-yi1e.
+//
+// Uses an injected fetcher so the test doesn't require a real
+// /api/env-pushdown HTTP round-trip; the unit under test is the
+// daemon's cache + refresh-loop wiring, not the HTTP plumbing
+// (which TestFetchEnvPushdownFromGateway already covers).
+func TestDaemonEnvRefreshLoopPicksUpChanges(t *testing.T) {
+	initial, err := json.Marshal([]pushdownEnvVar{
+		{Name: "GH_TOKEN", Value: "ghp_initial", PluginType: "github_oauth"},
+	})
+	if err != nil {
+		t.Fatalf("marshal initial: %v", err)
+	}
+	updated, err := json.Marshal([]pushdownEnvVar{
+		{Name: "GH_TOKEN", Value: "ghp_initial", PluginType: "github_oauth"},
+		{Name: "ANTHROPIC_AUTH_TOKEN", Value: "sk-ant-new", PluginType: "anthropic_oauth_subscription"},
+	})
+	if err != nil {
+		t.Fatalf("marshal updated: %v", err)
+	}
+
+	var (
+		mu      sync.Mutex
+		current = initial
+		calls   int
+	)
+	fetch := func() []byte {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		out := make([]byte, len(current))
+		copy(out, current)
+		return out
+	}
+
+	d := &daemon{
+		envVars:        initial,
+		envFetchedAt:   time.Now(),
+		envFetch:       fetch,
+		envRefreshTick: 10 * time.Millisecond,
+	}
+	go d.runEnvRefreshLoop()
+
+	// Sanity check: cache starts on the initial payload.
+	if got := string(d.freshEnvVars()); got != string(initial) {
+		t.Fatalf("initial freshEnvVars = %q, want %q", got, string(initial))
+	}
+
+	// Simulate the operator connecting a new credential on the
+	// gateway: subsequent fetches now return the updated payload.
+	mu.Lock()
+	current = updated
+	mu.Unlock()
+
+	// Wait for the background loop to pick up the change. The loop
+	// runs at 10ms cadence, so a generous deadline avoids a flake on
+	// loaded CI hosts without sleeping needlessly on a fast one.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if string(d.freshEnvVars()) == string(updated) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("background refresh never picked up updated payload (calls=%d, last freshEnvVars=%q)",
+		calls, string(d.freshEnvVars()))
+}
+
+// TestDaemonEnvRefreshLoopKeepsLastGoodOnTransientEmpty verifies the
+// fallback in runEnvRefreshLoop: a fetch that returns an empty list
+// (the sentinel daemonFetchEnvPushdown emits on every kind of fetch
+// failure) must NOT clobber a previously-known-good cache. Without
+// this guard a single 1s gateway blip would silently drop every
+// declared env var from the daemon's pushdown.
+func TestDaemonEnvRefreshLoopKeepsLastGoodOnTransientEmpty(t *testing.T) {
+	good, err := json.Marshal([]pushdownEnvVar{
+		{Name: "GH_TOKEN", Value: "ghp_good"},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var (
+		mu    sync.Mutex
+		empty = true
+	)
+	fetch := func() []byte {
+		mu.Lock()
+		defer mu.Unlock()
+		if empty {
+			return []byte("[]")
+		}
+		return good
+	}
+
+	d := &daemon{
+		envVars:        good,
+		envFetchedAt:   time.Now(),
+		envFetch:       fetch,
+		envRefreshTick: 10 * time.Millisecond,
+	}
+	go d.runEnvRefreshLoop()
+
+	// Let the loop tick several times under the empty-returning
+	// fetcher. The cache must hold the prior good value.
+	time.Sleep(80 * time.Millisecond)
+	if got := string(d.freshEnvVars()); got != string(good) {
+		t.Fatalf("after transient empty: freshEnvVars = %q, want %q (last good preserved)", got, string(good))
 	}
 }
 
