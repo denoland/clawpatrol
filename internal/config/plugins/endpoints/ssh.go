@@ -221,13 +221,16 @@ func (rt *SSHEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHa
 	}
 	defer func() { _ = clientConn.Close() }()
 
-	if ch.Emit != nil {
-		ch.Emit(runtime.ConnEvent{
-			Action:  "allow",
-			Verb:    "ssh",
-			Summary: fmt.Sprintf("%s@%s", agentUser, upstreamAddr),
-		})
+	emit := func(ev runtime.ConnEvent) {
+		if ch.Emit != nil {
+			ch.Emit(ev)
+		}
 	}
+	emit(runtime.ConnEvent{
+		Action:  "allow",
+		Verb:    "connect",
+		Summary: fmt.Sprintf("%s@%s", agentUser, upstreamAddr),
+	})
 
 	// Step 6: bidirectional pump. Two waitgroups — `dispatch` covers
 	// the four conn-level demuxers (channel + global-request feeds);
@@ -238,10 +241,15 @@ func (rt *SSHEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnHa
 	// have drained, so a fast `ssh host echo hi` doesn't lose its
 	// final bytes when the upstream half tears down (visible as ~10%
 	// blank-output flake when running tests in tight succession).
+	//
+	// Only the agent→upstream channel pump gets the emit hook: we
+	// want to log user intent (exec / shell / subsystem / direct-tcpip
+	// target) and upstream replies (exit-status), not the rare
+	// upstream-originated X11 / forwarded-tcpip openings.
 	var dispatch, chans sync.WaitGroup
 	dispatch.Add(4)
-	go func() { defer dispatch.Done(); pumpChannels(clientConn, srvChans, &chans) }()
-	go func() { defer dispatch.Done(); pumpChannels(srvConn, clientChans, &chans) }()
+	go func() { defer dispatch.Done(); pumpChannels(clientConn, srvChans, &chans, emit) }()
+	go func() { defer dispatch.Done(); pumpChannels(srvConn, clientChans, &chans, nil) }()
 	go func() { defer dispatch.Done(); pumpGlobalReqs(clientConn, srvReqs) }()
 	go func() { defer dispatch.Done(); pumpGlobalReqs(srvConn, clientReqs) }()
 
@@ -390,8 +398,18 @@ func warnHostKeyOnce(endpointName string) {
 // and opens the same type on the other. Each successful pair runs
 // proxyChannel (tracked via wg so HandleConn can drain in-flight
 // channels before closing the SSH conns).
-func pumpChannels(target ssh.Conn, source <-chan ssh.NewChannel, wg *sync.WaitGroup) {
+//
+// emit is non-nil only for the agent→upstream direction; pumpChannels
+// uses it to log direct-tcpip targets at channel-open time and passes
+// it to proxyChannel for per-channel request logging (exec / shell /
+// subsystem / exit-status).
+func pumpChannels(target ssh.Conn, source <-chan ssh.NewChannel, wg *sync.WaitGroup, emit func(runtime.ConnEvent)) {
 	for newCh := range source {
+		if emit != nil {
+			if ev, ok := classifyChannelOpen(newCh); ok {
+				emit(ev)
+			}
+		}
 		targetCh, targetReqs, err := target.OpenChannel(newCh.ChannelType(), newCh.ExtraData())
 		if err != nil {
 			var ocErr *ssh.OpenChannelError
@@ -410,7 +428,7 @@ func pumpChannels(target ssh.Conn, source <-chan ssh.NewChannel, wg *sync.WaitGr
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			proxyChannel(sourceCh, sourceReqs, targetCh, targetReqs)
+			proxyChannel(sourceCh, sourceReqs, targetCh, targetReqs, emit)
 		}()
 	}
 }
@@ -434,7 +452,7 @@ func pumpChannels(target ssh.Conn, source <-chan ssh.NewChannel, wg *sync.WaitGr
 // intact — closing too eagerly would cut off in-flight reads on the
 // fast side and lose the last few bytes of output (~10% flake rate
 // in `ssh host echo X` stress tests).
-func proxyChannel(a ssh.Channel, aReqs <-chan *ssh.Request, b ssh.Channel, bReqs <-chan *ssh.Request) {
+func proxyChannel(a ssh.Channel, aReqs <-chan *ssh.Request, b ssh.Channel, bReqs <-chan *ssh.Request, emit func(runtime.ConnEvent)) {
 	// pumpDir copies both stdout and stderr from src to dst, then
 	// emits channel-eof. Combining the two before CloseWrite is
 	// required: stderr is just extended-data on the same channel,
@@ -451,9 +469,14 @@ func proxyChannel(a ssh.Channel, aReqs <-chan *ssh.Request, b ssh.Channel, bReqs
 		inner.Wait()
 		_ = dst.CloseWrite()
 	}
-	forwardReqs := func(target ssh.Channel, source <-chan *ssh.Request, done chan<- struct{}) {
+	forwardReqs := func(target ssh.Channel, source <-chan *ssh.Request, classify func(*ssh.Request) (runtime.ConnEvent, bool), done chan<- struct{}) {
 		defer close(done)
 		for r := range source {
+			if classify != nil {
+				if ev, ok := classify(r); ok {
+					emit(ev)
+				}
+			}
 			ok, err := target.SendRequest(r.Type, r.WantReply, r.Payload)
 			if err != nil {
 				ok = false
@@ -464,14 +487,23 @@ func proxyChannel(a ssh.Channel, aReqs <-chan *ssh.Request, b ssh.Channel, bReqs
 		}
 	}
 
+	// aReqs flow agent→upstream (exec / shell / subsystem); bReqs flow
+	// upstream→agent (exit-status / signal). Only classify when this
+	// proxyChannel was spawned by the agent-direction pump (emit set).
+	var classifyAgent, classifyUpstream func(*ssh.Request) (runtime.ConnEvent, bool)
+	if emit != nil {
+		classifyAgent = classifyAgentChannelReq
+		classifyUpstream = classifyUpstreamChannelReq
+	}
+
 	pumpA := make(chan struct{}) // upstream→agent data finished
 	pumpB := make(chan struct{}) // agent→upstream data finished
 	reqA := make(chan struct{})  // upstream→agent reqs finished
 	reqB := make(chan struct{})  // agent→upstream reqs finished
 	go pumpDir(a, b, pumpA)
 	go pumpDir(b, a, pumpB)
-	go forwardReqs(a, bReqs, reqA)
-	go forwardReqs(b, aReqs, reqB)
+	go forwardReqs(a, bReqs, classifyUpstream, reqA)
+	go forwardReqs(b, aReqs, classifyAgent, reqB)
 
 	// fromUpstream / fromAgent fire when a full direction
 	// (data + reqs) has drained — at that point its source channel
@@ -532,6 +564,92 @@ func isProxyDroppedGlobalReq(name string) bool {
 		return true
 	}
 	return false
+}
+
+// ── Per-channel request / channel-open classification (logging) ──────
+
+// SSH wire payload shapes we decode for logging only — never modify.
+// Field names match the RFC declaration order so ssh.Unmarshal walks
+// them correctly (it ignores struct tags and reads in order).
+type (
+	// RFC4254 §6.5.
+	execPayload struct{ Command string }
+	// RFC4254 §6.5.
+	subsystemPayload struct{ Name string }
+	// RFC4254 §6.10.
+	exitStatusPayload struct{ Status uint32 }
+	// RFC4254 §7.2 — payload of a `direct-tcpip` channel's ExtraData.
+	directTCPIPPayload struct {
+		DestHost   string
+		DestPort   uint32
+		OriginHost string
+		OriginPort uint32
+	}
+)
+
+// classifyChannelOpen turns an agent-originated channel-open into a
+// log event. Only `direct-tcpip` (port forwarding) carries a target
+// we can usefully surface; `session` opens are noise (the interesting
+// per-session intent rides on the following exec / shell / subsystem
+// channel-request, classified separately).
+func classifyChannelOpen(newCh ssh.NewChannel) (runtime.ConnEvent, bool) {
+	if newCh.ChannelType() != "direct-tcpip" {
+		return runtime.ConnEvent{}, false
+	}
+	var d directTCPIPPayload
+	if err := ssh.Unmarshal(newCh.ExtraData(), &d); err != nil {
+		return runtime.ConnEvent{}, false
+	}
+	return runtime.ConnEvent{
+		Action:  "allow",
+		Verb:    "forward",
+		Summary: fmt.Sprintf("→ %s:%d", d.DestHost, d.DestPort),
+	}, true
+}
+
+// classifyAgentChannelReq turns an agent→upstream channel request
+// into a log event. exec carries the full argv as a single string;
+// subsystem carries the subsystem name (e.g. "sftp"); shell carries
+// no payload (interactive session start). Other request types
+// (pty-req, env, window-change, signal, eow@openssh.com, ...) are
+// session-keepalive noise — drop them silently.
+func classifyAgentChannelReq(r *ssh.Request) (runtime.ConnEvent, bool) {
+	switch r.Type {
+	case "exec":
+		var p execPayload
+		if err := ssh.Unmarshal(r.Payload, &p); err != nil {
+			return runtime.ConnEvent{}, false
+		}
+		return runtime.ConnEvent{Action: "allow", Verb: "exec", Summary: p.Command}, true
+	case "shell":
+		return runtime.ConnEvent{Action: "allow", Verb: "shell", Summary: "interactive shell"}, true
+	case "subsystem":
+		var p subsystemPayload
+		if err := ssh.Unmarshal(r.Payload, &p); err != nil {
+			return runtime.ConnEvent{}, false
+		}
+		return runtime.ConnEvent{Action: "allow", Verb: "subsystem", Summary: p.Name}, true
+	}
+	return runtime.ConnEvent{}, false
+}
+
+// classifyUpstreamChannelReq turns an upstream→agent channel request
+// into a log event. The interesting one is exit-status — pairs an
+// earlier exec/shell event with its return code in the audit log.
+// signal / exit-signal are rare and not surfaced for now.
+func classifyUpstreamChannelReq(r *ssh.Request) (runtime.ConnEvent, bool) {
+	if r.Type != "exit-status" {
+		return runtime.ConnEvent{}, false
+	}
+	var p exitStatusPayload
+	if err := ssh.Unmarshal(r.Payload, &p); err != nil {
+		return runtime.ConnEvent{}, false
+	}
+	return runtime.ConnEvent{
+		Action:  "allow",
+		Verb:    "exit",
+		Summary: fmt.Sprintf("exit %d", p.Status),
+	}, true
 }
 
 // ── Host key persistence ──────────────────────────────────────────────
