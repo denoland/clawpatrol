@@ -1,25 +1,23 @@
 package main
 
-// Peer registration handlers for `clawpatrol run`:
+// WG-mode ephemeral peer add/remove handlers for `clawpatrol run`.
+// Each invocation gets its own WireGuard keypair and IP (POST
+// /api/peer/ephemeral, DELETE on exit) so concurrent runs on the
+// same host don't fight over a single WG session.
 //
-//   WG mode: each invocation gets its own WireGuard keypair and IP
-//   (POST /api/peer/ephemeral, DELETE on exit) so concurrent runs on
-//   the same host don't fight over a single WG session.
+// The Tailscale-mode "peer registration" path used to live here too
+// but tsnet now has one persistent daemon per host (cmd/clawpatrol
+// daemon-internal) — the daemon does promotion-only registration
+// against /api/peer/tsnet/register handled in onboard.go.
 //
-//   Tailscale mode: tsnet keeps a stable per-machine identity across
-//   runs (POST /api/peer/ephemeral/tsnet/register binds the tailnet
-//   IP to the parent device's profile). The "ephemeral" in the path
-//   is historical — the registration is persistent.
-//
-// Both endpoints authenticate via the per-peer Bearer token minted
-// during `clawpatrol join` and stored hashed in peer_api_tokens.
+// Endpoints authenticate via the per-peer Bearer token minted during
+// `clawpatrol join` and stored hashed in peer_api_tokens.
 
 import (
 	"fmt"
 	"net"
 	"net/http"
 	"net/netip"
-	"strings"
 	"sync"
 )
 
@@ -126,70 +124,6 @@ func (w *webMux) apiAddEphemeralPeer(rw http.ResponseWriter, r *http.Request) {
 	w.g.onboard.setEphemeralProfile(ip, parentIP, profile)
 	ip6 := wg6FromV4(netip.MustParseAddr(ip)).String()
 	writeJSON(rw, map[string]string{"ip": ip, "ip6": ip6})
-}
-
-// apiRegisterEphemeralTsnetIP handles POST /api/peer/ephemeral/tsnet/register.
-// Called by `clawpatrol run` right after the ephemeral tsnet node joins.
-//
-// First run from a machine promotes its tailnet IP to the device's
-// stable parent: the synthetic `tsnet-<hostname>` placeholder created
-// at approve time is replaced by a real devices row keyed on the
-// 100.x IP. Subsequent concurrent runs attribute their (different)
-// ephemeral IPs to the same parent via ephemeralParentByIP — exactly
-// the WG-mode ephemeralPeer model.
-func (w *webMux) apiRegisterEphemeralTsnetIP(rw http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(rw, "POST", http.StatusMethodNotAllowed)
-		return
-	}
-	token := bearerFromAuthHeader(r.Header.Get("Authorization"))
-	parentIP := peerIPForAPIToken(w.g.db, token)
-	if parentIP == "" {
-		http.Error(rw, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	tsnetIP := r.URL.Query().Get("ip")
-	if tsnetIP == "" {
-		http.Error(rw, "missing ip", http.StatusBadRequest)
-		return
-	}
-	if _, err := net.ResolveTCPAddr("tcp", net.JoinHostPort(tsnetIP, "1")); err != nil {
-		http.Error(rw, "invalid ip", http.StatusBadRequest)
-		return
-	}
-	if w.g.onboard == nil {
-		rw.WriteHeader(http.StatusNoContent)
-		return
-	}
-	profile := w.g.onboard.ProfileForIP(parentIP)
-	hostname := strings.TrimSpace(r.URL.Query().Get("hostname"))
-	// First-run promotion: synthetic parent → real tailnet IP. Repoint
-	// the api-token and clean up the placeholder row so the dashboard
-	// surfaces a single device keyed on the actual 100.x address.
-	if strings.HasPrefix(parentIP, "tsnet-") {
-		_, _ = w.g.db.Exec("UPDATE peer_api_tokens SET peer_ip=? WHERE peer_ip=?", tsnetIP, parentIP)
-		_, _ = w.g.db.Exec("DELETE FROM devices WHERE id=?", parentIP)
-		w.g.onboard.ForgetIP(parentIP)
-		if w.g.agents != nil {
-			w.g.agents.Delete(parentIP)
-		}
-		if profile != "" {
-			w.g.onboard.AssignProfile(tsnetIP, profile)
-		}
-		if hostname != "" {
-			w.g.onboard.SetHostname(tsnetIP, hostname)
-		}
-		if w.g.agents != nil {
-			w.g.agents.Seed(tsnetIP)
-		}
-	} else {
-		// Subsequent concurrent run — attribute to the existing parent.
-		w.g.onboard.setEphemeralProfile(tsnetIP, parentIP, profile)
-	}
-	// Map the ephemeral run's IPv6 ULA too — tsnet traffic frequently
-	// arrives on fd7a:115c:a1e0::/48 rather than the 100.x.
-	w.g.seedTsnetIPv6Alias(tsnetIP)
-	rw.WriteHeader(http.StatusNoContent)
 }
 
 // apiRemoveEphemeralPeer handles DELETE /api/peer/ephemeral?pubkey=<hex>.

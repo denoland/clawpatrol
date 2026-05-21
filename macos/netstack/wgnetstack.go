@@ -894,22 +894,22 @@ func ts_netstack_init(authKeyC, controlURLС, gwHostC, gwIPC, tokenC, hostnameC,
 	// network and can't dial gateway tailnet IPs directly; tsnet
 	// (running here) IS on the tailnet.
 	if token != "" && ip4 != "" {
-		go registerEphemeralOverTsnet(s, gwHost, token, ip4, hostname)
+		go registerTsnetPeerFromNE(s, gwHost, token, ip4, hostname)
 	}
 	return 0
 }
 
-// registerEphemeralOverTsnet POSTs to the gateway's tailnet-only
-// /api/peer/ephemeral/tsnet/register endpoint using tsnet.Server.Dial
-// so the call reaches a 100.x tailnet IP that the parent process
-// (host network) cannot. Best-effort: on failure the run still works
-// but lands in the gateway's default profile.
-func registerEphemeralOverTsnet(s *tsnet.Server, gwHost, token, tsIP, hostname string) {
+// registerTsnetPeerFromNE POSTs to the gateway's /api/peer/tsnet/register
+// endpoint using tsnet.Server.Dial so the call reaches a 100.x tailnet IP
+// that the parent process (host network) cannot. First call after
+// approval promotes the synthetic placeholder; subsequent calls (NE
+// reboots, gateway restarts) are server-side no-ops. Best-effort.
+func registerTsnetPeerFromNE(s *tsnet.Server, gwHost, token, tsIP, hostname string) {
 	client := &http.Client{
 		Timeout:   15 * time.Second,
 		Transport: &http.Transport{DialContext: s.Dial},
 	}
-	u := "http://" + gwHost + ":8080/api/peer/ephemeral/tsnet/register?ip=" + tsIP
+	u := "http://" + gwHost + ":8080/api/peer/tsnet/register?ip=" + tsIP
 	if hostname != "" {
 		u += "&hostname=" + url.QueryEscape(hostname)
 	}

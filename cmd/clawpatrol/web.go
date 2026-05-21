@@ -255,7 +255,7 @@ func (w *webMux) routes() []webRoute {
 		{Method: http.MethodPost, Path: "/api/onboard/claim", Auth: authPublic, Handler: w.apiOnboardClaim},
 		{Method: http.MethodGet, Path: "/api/env-pushdown", Auth: authSelfAuthenticating, Handler: w.apiEnvPushdown},
 		{Method: http.MethodPost, Path: "/api/peer/ephemeral", Auth: authSelfAuthenticating, Handler: w.apiEphemeralPeer},
-		{Method: http.MethodPost, Path: "/api/peer/ephemeral/tsnet/register", Auth: authSelfAuthenticating, Handler: w.apiRegisterEphemeralTsnetIP},
+		{Method: http.MethodPost, Path: "/api/peer/tsnet/register", Auth: authSelfAuthenticating, Handler: w.apiPeerTsnetRegister},
 		// /__login is the auth point itself — it MUST be reachable
 		// without a credential. The handler dispatches on r.Method
 		// (GET renders the form, POST validates + mints a session
@@ -614,11 +614,23 @@ func (w *webMux) tailnetGate(next http.Handler) http.Handler {
 			http.Error(rw, "tailnet access required — onboard via `clawpatrol join <gateway>`", http.StatusForbidden)
 			return
 		}
+		// Tagged-device whois (e.g. tag:client onboarded peers) returns
+		// "tagged-devices" rather than a user email. These callers are
+		// agents, not operators — they must never reach operator-class
+		// routes (/api/onboard/approve, /api/onboard/lookup) or the
+		// authDashboard routes. See issue #509: without this check, an
+		// attacker who got a copy of the persisted client auth key could
+		// join the tailnet as a fresh tag:client device, hit
+		// /api/onboard/approve with any policy profile, and mint a new
+		// auth key bound to it.
+		if isTaggedDeviceLogin(login) {
+			http.Error(rw, "operator-class routes are not available to tagged-device peers — set the dashboard password or sign in as an operator-tagged tailnet user", http.StatusForbidden)
+			return
+		}
 		// authDashboard routes require an explicit allowlist match.
 		// Without this check, any whois-attributable tailnet peer
-		// (including a tagged agent that managed to acquire a user
-		// login somehow) would inherit operator powers — exactly
-		// the threat the password gate above is closing.
+		// would inherit operator powers — exactly the threat the
+		// password gate above is closing.
 		if w.authRequirementForPath(r.URL.Path) == authDashboard {
 			if !config.MatchDashboardOperator(login, w.g.cfg.DashboardOperators) {
 				http.Error(rw, "dashboard operator allowlist did not match — set the dashboard password or add this login to dashboard_operators", http.StatusForbidden)
@@ -628,6 +640,16 @@ func (w *webMux) tailnetGate(next http.Handler) http.Handler {
 		principal := principal{Kind: principalTailnet, Owner: login, User: login, Device: device, Host: displayHost}
 		next.ServeHTTP(rw, r.WithContext(contextWithPrincipal(r.Context(), principal)))
 	})
+}
+
+// isTaggedDeviceLogin reports whether a tsnet whois login string
+// belongs to a tagged device rather than a human-identified user.
+// Tailscale returns "tagged-devices" for the canonical case; nodes
+// associated with a specific tag (older tailnets, custom ACL) come
+// back as "tagged-<tagname>". Neither form should pass an operator
+// gate: the bearer is the tag, not a person.
+func isTaggedDeviceLogin(login string) bool {
+	return login == "tagged-devices" || strings.HasPrefix(login, "tagged-")
 }
 
 // mountCredentialWebhooks walks every credential whose body

@@ -578,8 +578,10 @@ func daemonFetchEnvPushdown(_ *tsnet.Server) []byte {
 }
 
 // daemonRegisterWithGateway POSTs this daemon's tsnet IP to the
-// gateway's /api/peer/ephemeral/tsnet/register so it maps to the
-// host's device row (and therefore the host's profile). Best-effort.
+// gateway's /api/peer/tsnet/register so it maps to the host's
+// device row (and therefore the host's profile). First call after
+// approval promotes the synthetic placeholder; subsequent calls are
+// no-ops on the server side. Best-effort.
 func daemonRegisterWithGateway(s *tsnet.Server, tsIP netip.Addr) {
 	caDir := defaultClawpatrolDir()
 	gwURL := strings.TrimSpace(readFileSilent(filepath.Join(caDir, "tailnet-url")))
@@ -592,7 +594,7 @@ func daemonRegisterWithGateway(s *tsnet.Server, tsIP netip.Addr) {
 		return
 	}
 	cli := tsnetHTTPClient(s, filepath.Join(caDir, "ca.crt"))
-	if err := registerEphemeralTsnetIP(cli, gwURL, token, tsIP.String()); err != nil {
+	if err := registerTsnetPeer(cli, gwURL, token, tsIP.String()); err != nil {
 		log.Printf("daemon: register: %v (default profile until next restart)", err)
 	}
 }

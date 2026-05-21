@@ -116,11 +116,13 @@ func waitTsnetUp(s *tsnet.Server) (netip.Addr, error) {
 	return netip.Addr{}, fmt.Errorf("no tailnet IPs assigned")
 }
 
-// registerEphemeralTsnetIP tells the gateway which 100.x.x.x tailnet IP this
-// `clawpatrol run` invocation got, so the gateway maps it to the parent
-// device's profile for credential dispatch and seeds a real device row
-// (one per machine, not per run). Called over tsnet (tailnet-only endpoint).
-func registerEphemeralTsnetIP(client *http.Client, gwURL, token, tsIP string) error {
+// registerTsnetPeer tells the gateway which 100.x.x.x tailnet IP this
+// daemon is using, so it can promote the synthetic "tsnet-<host>"
+// placeholder bound to the api-token at approve time into a real
+// devices row keyed on the tailnet IP. Idempotent: subsequent calls
+// (later daemon boots) see the token already pointing at a real IP
+// and hit the gateway's no-op branch.
+func registerTsnetPeer(client *http.Client, gwURL, token, tsIP string) error {
 	// Prefer the operator-supplied --hostname from `clawpatrol join`
 	// (persisted to <ca-dir>/hostname). Fall back to os.Hostname() for
 	// older joins that didn't write the file.
@@ -128,7 +130,7 @@ func registerEphemeralTsnetIP(client *http.Client, gwURL, token, tsIP string) er
 	if hn == "" {
 		hn, _ = os.Hostname()
 	}
-	u := gwURL + "/api/peer/ephemeral/tsnet/register?ip=" + tsIP
+	u := gwURL + "/api/peer/tsnet/register?ip=" + tsIP
 	if hn != "" {
 		u += "&hostname=" + hn
 	}
