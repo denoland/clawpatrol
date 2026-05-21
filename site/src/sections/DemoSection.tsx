@@ -18,12 +18,10 @@ export function DemoSection() {
         </h3>
         <p class="text-center max-w-2xl mx-auto mb-12 mt-4 text-text-muted">
           A walkthrough of the operator UI at{" "}
-          <a
-            href={DEMO_URL}
-            class="text-rust font-semibold hover:underline"
-          >
+          <a href={DEMO_URL} class="text-rust font-semibold hover:underline">
             demo.clawpatrol.dev
-          </a>. Drill into any request to see what the gateway captured.
+          </a>
+          . Drill into any request to see what the gateway captured.
         </p>
       </div>
 
@@ -39,7 +37,7 @@ export function DemoSection() {
       </div>
 
       <div class="text-center">
-        <Button href={DEMO_URL} size="lg">
+        <Button href={DEMO_URL} size="md">
           Open the demo
         </Button>
       </div>
