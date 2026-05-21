@@ -476,7 +476,7 @@ func slackOperationStatus(update runtime.HITLMessageUpdate) string {
 	case runtime.HITLOperationStateExpired:
 		return ":alarm_clock: HITL approval expired"
 	case runtime.HITLOperationStateClientDisconnected:
-		return ":warning: Original client disconnected before async polling handle was returned"
+		return ":warning: Original client disconnected before approval. The upstream request was not sent."
 	default:
 		return "HITL state: `" + string(update.State) + "`"
 	}

@@ -281,6 +281,24 @@ func TestSlackUpdateHITLMessageRetriesTransientChatUpdateFailure(t *testing.T) {
 	}
 }
 
+func TestSlackUpdateHITLMessageClientDisconnectedCopyMatchesSyncHITL(t *testing.T) {
+	blocks := slackHITLUpdateBlocks(runtime.HITLMessageUpdate{
+		State:          runtime.HITLOperationStateClientDisconnected,
+		Method:         "POST",
+		Host:           "api.example.test",
+		Path:           "/v1/resources/update",
+		UpstreamCalled: false,
+	}, slackMessageRef{Credential: "slack-approvals", Channel: "C123", TS: "1778764174.925659"})
+	buf, _ := json.Marshal(blocks)
+	text := string(buf)
+	if !strings.Contains(text, "Original client disconnected before approval") || !strings.Contains(text, "upstream request was not sent") {
+		t.Fatalf("client-disconnected update blocks = %s, want sync HITL upstream-not-sent copy", text)
+	}
+	if strings.Contains(text, "async polling handle") {
+		t.Fatalf("client-disconnected update kept async-only wording: %s", text)
+	}
+}
+
 func TestSlackUpdateHITLMessageRedactsSensitiveLastError(t *testing.T) {
 	blocks := slackHITLUpdateBlocks(runtime.HITLMessageUpdate{
 		State:     runtime.HITLOperationStateUpstreamFailed,

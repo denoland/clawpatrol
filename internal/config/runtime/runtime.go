@@ -666,7 +666,7 @@ func HITLApprovalMessage(state HITLOperationState, effect HITLApprovalEffect, up
 	case HITLOperationStateExpired:
 		return "Approval expired.\nUpstream was not called."
 	case HITLOperationStateClientDisconnected:
-		return "The original client connection closed before Claw Patrol could return an async polling handle.\nUpstream was not called.\nThis prompt is stale."
+		return "The original client disconnected before approval completed.\nUpstream was not called.\nThis prompt is stale."
 	}
 	if effect == HITLApprovalEffectCreateRetryGrant {
 		return "Upstream has not been called.\nApprove will not send the request upstream now.\nApprove will allow the client to retry the same request once."
