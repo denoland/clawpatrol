@@ -296,6 +296,30 @@ func startProxy(confPath: String) {
     }
 }
 
+// tsnetCfgEqual reports whether two tsnet providerConfiguration dicts
+// carry the same fields. Only the keys startTsnetProxy writes are
+// compared (mode, tsnet-*) — anything else is irrelevant for the
+// "does this run want a different config than the running tunnel?"
+// decision.
+private func tsnetCfgEqual(_ a: [String: Any]?, _ b: [String: Any]) -> Bool {
+    guard let a = a else { return false }
+    let keys = [
+        "mode",
+        "tsnet-auth-key",
+        "tsnet-control-url",
+        "tsnet-gateway-host",
+        "tsnet-gateway-ip",
+        "tsnet-api-token",
+        "tsnet-hostname",
+    ]
+    for k in keys {
+        if (a[k] as? String ?? "") != (b[k] as? String ?? "") {
+            return false
+        }
+    }
+    return true
+}
+
 func startTsnetProxy(authKey: String, controlURL: String, gwHost: String, gwIP: String, token: String, hostname: String) {
     NETransparentProxyManager.loadAllFromPreferences { managers, err in
         if let err = err { fail("loadAll: \(err)") }
@@ -318,10 +342,7 @@ func startTsnetProxy(authKey: String, controlURL: String, gwHost: String, gwIP: 
         if resolvedAuthKey.isEmpty {
             fail("start-tsnet: no auth key supplied and none stored — re-run `clawpatrol join`")
         }
-        let proto = NETunnelProviderProtocol()
-        proto.providerBundleIdentifier = extBundleID
-        proto.serverAddress = "clawpatrol-gateway"
-        proto.providerConfiguration = [
+        let newCfg: [String: Any] = [
             "mode": "tailscale",
             "tsnet-auth-key": resolvedAuthKey,
             "tsnet-control-url": controlURL,
@@ -330,6 +351,24 @@ func startTsnetProxy(authKey: String, controlURL: String, gwHost: String, gwIP: 
             "tsnet-api-token": token,
             "tsnet-hostname": hostname,
         ]
+        // Reloading the NE tunnel restarts the extension process,
+        // which calls ts_netstack_init with the stored auth key all
+        // over again. Tailnet auth keys are single-use (#519), so the
+        // second init hits a consumed key and tsnet.Server.Up hangs
+        // for the full 90s timeout — `clawpatrol run` then reports
+        // "NE never reported tsnet IP" and lands in the default
+        // profile. Skip the reload entirely when neither the config
+        // nor the running state need to change.
+        let running = manager.connection.status == .connected
+            || manager.connection.status == .connecting
+        if running && tsnetCfgEqual(existingCfg, newCfg) {
+            print("✓ tsnet tunnel already running with this config")
+            exit(0)
+        }
+        let proto = NETunnelProviderProtocol()
+        proto.providerBundleIdentifier = extBundleID
+        proto.serverAddress = "clawpatrol-gateway"
+        proto.providerConfiguration = newCfg
         manager.protocolConfiguration = proto
         manager.localizedDescription = proxyProfileName
         manager.isEnabled = true
@@ -337,8 +376,6 @@ func startTsnetProxy(authKey: String, controlURL: String, gwHost: String, gwIP: 
             if let err = err { fail("save: \(err)") }
             manager.loadFromPreferences { err in
                 if let err = err { fail("reload: \(err)") }
-                let running = manager.connection.status == .connected
-                    || manager.connection.status == .connecting
                 if running {
                     reloadTunnelAndExit(manager: manager, label: "tsnet")
                     return
