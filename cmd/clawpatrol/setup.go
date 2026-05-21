@@ -1281,17 +1281,15 @@ var tailscaleCGNAT = netip.MustParsePrefix("100.64.0.0/10")
 // Used when the verify URL is tailnet-only — the operator scans with a
 // phone or another already-onboarded device that can actually reach
 // the gateway.
+//
+// GenerateHalfBlock packs two QR rows per terminal line via the
+// ▀ / ▄ / █ / space unicode chars. Half the vertical space of the
+// ANSI-colored block-per-cell variant, and renders cleanly when the
+// operator pipes the join output to a file or pastes it into chat.
 func printVerifyQR(url string) {
 	fmt.Println("Tailnet-only URL — scan from a device with tailnet access:")
 	fmt.Println()
-	cfg := qrterminal.Config{
-		Level:     qrterminal.M,
-		Writer:    os.Stdout,
-		BlackChar: qrterminal.BLACK,
-		WhiteChar: qrterminal.WHITE,
-		QuietZone: 1,
-	}
-	qrterminal.GenerateWithConfig(url, cfg)
+	qrterminal.GenerateHalfBlock(url, qrterminal.M, os.Stdout)
 	fmt.Println()
 }
 
