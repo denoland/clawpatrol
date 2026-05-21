@@ -340,9 +340,18 @@ or set the same value in the OpenClaw configuration file:
 ```
 
 This is the outer OpenClaw agent-run timeout. It does not override
-shorter timeouts inside the agent's own tools or commands. If the agent
-runs `curl`, an HTTP client, or another tool with its own timeout, keep
-that inner timeout at or above `240` seconds as well.
+shorter timeouts inside the agent's own tools or commands. Prefer
+deterministic tool configuration over relying only on agent instructions.
+For OpenClaw `exec` calls, set the default command timeout too:
+
+```sh
+openclaw config set tools.exec.timeoutSec 240
+```
+
+If the agent runs `curl`, an HTTP client, or another script that sets its
+own timeout, keep that inner timeout at or above `240` seconds as well.
+Agent instructions such as `AGENTS.md` can remind the model to do this,
+but they are not a substitute for explicit tool or script configuration.
 
 If your OpenClaw setup explicitly runs agents through the Codex
 app-server runtime (`agentRuntime.id: "codex"`), also raise the Codex
