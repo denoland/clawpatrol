@@ -22,7 +22,7 @@ func TestFetchCAHTTPReturnsFingerprintAndPersistsCert(t *testing.T) {
 	}
 
 	dst := filepath.Join(t.TempDir(), "ca.crt")
-	got, err := fetchCAHTTP(srv.URL, dst)
+	got, err := fetchCAHTTP(srv.URL, dst, nil)
 	if err != nil {
 		t.Fatalf("fetchCAHTTP: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestFetchCAHTTPRejectsNonPEMBody(t *testing.T) {
 	}))
 	defer srv.Close()
 	dst := filepath.Join(t.TempDir(), "ca.crt")
-	if _, err := fetchCAHTTP(srv.URL, dst); err == nil {
+	if _, err := fetchCAHTTP(srv.URL, dst, nil); err == nil {
 		t.Fatal("expected error for non-pem body")
 	}
 	// installCATrust must never see a malformed file. If a future

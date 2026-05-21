@@ -2721,6 +2721,9 @@ usage:
                   --hostname NAME        device name to register (default: os.Hostname)
                   --profile NAME         suggest a profile for the approver
                   --whole-machine        bring up wg-quick (route all traffic)
+                  --login                interactive tailnet login for gateways
+                                         with no public URL (creds discarded
+                                         once join completes)
   clawpatrol run -- <cmd> [args...]      route one process tree through gateway
   clawpatrol status                      report install + tunnel state
   clawpatrol uninstall                   remove local join state and tunnel config
