@@ -1,11 +1,14 @@
 /// <reference types="@cloudflare/workers-types" />
-// Cloudflare Worker for clawpatrol.dev. Two responsibilities:
+// Cloudflare Worker for clawpatrol.dev. Three responsibilities:
 //
 //   1. Serve the static landing site (env.ASSETS, built into ./dist
 //      by `npm run build`).
 //   2. Accept telemetry pings from clawpatrol gateways at
 //      POST /api/telemetry/v1/check, upsert into D1, and return the
 //      latest GitHub release as the update-checker response.
+//   3. Daily cron (see wrangler.jsonc) that rolls up the `gateways`
+//      table into `telemetry_snapshots` so we can track counts over
+//      time. The live table only holds the latest ping per instance.
 //
 // Contract for what's stored: doc/telemetry.md.
 
@@ -25,6 +28,9 @@ export default {
       return handleCheck(req, env);
     }
     return env.ASSETS.fetch(req);
+  },
+  async scheduled(_event: ScheduledEvent, env: Env): Promise<void> {
+    await snapshotDaily(env);
   },
 };
 
@@ -147,6 +153,69 @@ function parseAdvisory(
   const firstPara = m[2].split(/\n\s*\n/)[0].trim();
   if (!firstPara) return null;
   return { level: m[1].toLowerCase(), message: firstPara };
+}
+
+// Roll up the last 7 days of `gateways` into one row per
+// (day, metric, bucket). Idempotent: rerunning the same day
+// overwrites that day's rows via INSERT OR REPLACE.
+async function snapshotDaily(env: Env): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  const cutoff = now - 7 * 86400;
+  const day = yyyymmdd(new Date(now * 1000));
+  const db = env.TELEMETRY_DB;
+
+  const active = await db.prepare(
+    `SELECT COUNT(*) AS count FROM gateways WHERE last_seen > ?`,
+  ).bind(cutoff).first<{ count: number }>();
+
+  const transports = await db.prepare(
+    `SELECT COALESCE(transport, '(unknown)') AS bucket,
+            COUNT(*) AS count
+       FROM gateways
+      WHERE last_seen > ?
+      GROUP BY bucket`,
+  ).bind(cutoff).all<{ bucket: string; count: number }>();
+
+  const platforms = await db.prepare(
+    `SELECT COALESCE(os, '?') || '/' || COALESCE(arch, '?') AS bucket,
+            COUNT(*) AS count
+       FROM gateways
+      WHERE last_seen > ?
+      GROUP BY bucket`,
+  ).bind(cutoff).all<{ bucket: string; count: number }>();
+
+  const versions = await db.prepare(
+    `SELECT version AS bucket, COUNT(*) AS count
+       FROM gateways
+      WHERE last_seen > ?
+      GROUP BY bucket`,
+  ).bind(cutoff).all<{ bucket: string; count: number }>();
+
+  const rows: Array<[number, string, string, number]> = [
+    [day, "active", "", active?.count ?? 0],
+  ];
+  for (const r of transports.results) {
+    rows.push([day, "transport", r.bucket, r.count]);
+  }
+  for (const r of platforms.results) {
+    rows.push([day, "platform", r.bucket, r.count]);
+  }
+  for (const r of versions.results) {
+    rows.push([day, "version", r.bucket, r.count]);
+  }
+
+  const insert = db.prepare(
+    `INSERT OR REPLACE INTO telemetry_snapshots
+       (day, metric, bucket, count) VALUES (?, ?, ?, ?)`,
+  );
+  await db.batch(rows.map((r) => insert.bind(...r)));
+}
+
+function yyyymmdd(d: Date): number {
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth() + 1;
+  const dd = d.getUTCDate();
+  return y * 10000 + m * 100 + dd;
 }
 
 function str(v: unknown): string {
