@@ -41,7 +41,8 @@ production gets touched.
 
 - **Human-in-the-loop approvals** for risky actions — defer
   `kubectl apply -f production` to a Slack approval before the
-  request leaves.
+  request leaves. If the reviewer denies or the approval times out,
+  Claw Patrol does not call the upstream service.
 
 - **Secret injection** at the wire. Agents send placeholders
   (`{{github_pat}}`); the gateway swaps them for the real token

@@ -297,66 +297,60 @@ By default the message carries a link back to the dashboard; setting
 `interactive = true` on the approver embeds in-channel "approve" and
 "deny" buttons so the reviewer can decide without leaving Slack.
 
-### Async retry grants for agent clients
-
-HTTP clients that can poll and retry may opt into async HITL grants.
-This keeps normal transparent behavior when the reviewer answers
-quickly, but avoids holding a long-lived upstream mutation request open
-forever while a human is still deciding.
-
-Async mode is deliberately narrow. It is used only when all of these are
-true:
-
-- the active profile sets `hitl_async_grants = true`;
-- the matched human approver sets `sync_wait_timeout` and
-  `async_grant { enabled = true }`;
-- exactly one async-capable human approver stage is involved;
-- the gateway has `public_url` configured so clients can poll status;
-- the HTTP request body can be fingerprinted in `raw` mode without
-  truncation or exceeding `max_body_bytes`.
-
-With those conditions met, Claw Patrol first waits up to
-`sync_wait_timeout`. If the human approves during that window, the
-original request is forwarded normally. If the human denies, the request
-is rejected normally. If the window expires first, Claw Patrol returns
-`202 Accepted` and does **not** call upstream. The JSON response includes
-`upstream_called = false`, `operation_id`, `status_url`, and a
-`retry_original_request` hint that tells the client to keep polling
-instead of treating the mutation as successful:
-
-```json
-{
-  "operation_id": "hitl_op_...",
-  "state": "pending_approval",
-  "status_url": "https://gateway.example.test/api/hitl/operations/hitl_op_.../status",
-  "upstream_called": false,
-  "retry_original_request": true
-}
-```
-
-Agent clients should poll `status_url` using their peer API token. When
-the operation reaches `approved_waiting_for_retry`, the status response
-adds the retry header pair:
-
-```json
-{
-  "state": "approved_waiting_for_retry",
-  "retry_header_name": "Clawpatrol-HITL-Operation",
-  "retry_header_value": "hitl_op_..."
-}
-```
-
-At that point, retry the original mutation with the same method, URL,
-body, credential binding, and the `Clawpatrol-HITL-Operation` header
-value from the status response. Claw Patrol
-strips that internal header before forwarding upstream. Fingerprint or
-auth-binding mismatches do not reuse the grant and should not be treated
-as success. A retry grant is one-shot and expires after
-`approved_retry_ttl`; a pending approval expires after `approval_ttl`.
+### Default allow
 
 If no rule matches, the request is **allowed** — there is no global
 default-deny. Add a `priority = -100, verdict = "deny"` catch-all
 per endpoint to invert this.
+
+### Synchronous human approval and timeouts
+
+Human approval is synchronous in the transparent proxy path. When a
+matched rule declares `approve = [...]`, Claw Patrol pauses the original
+request before contacting upstream and waits for the approver chain to
+allow or deny.
+
+If every approver allows, Claw Patrol forwards the request upstream. If
+any approver denies, an approver times out, or the client disconnects
+before a final allow decision, Claw Patrol does **not** call upstream.
+Deny and timeout responses are gateway-generated failures, not upstream
+responses.
+
+For `human_approver`, [set `timeout` to the maximum time Claw Patrol
+should wait for a human decision](/docs/config-reference/#approver-human_approver-name).
+
+#### Recommended timeout values
+
+Recommended starting configuration:
+
+- Claw Patrol human approval timeout: `90` seconds
+- Agent or tool caller timeout: `240` seconds
+
+The caller timeout must exceed Claw Patrol's approval timeout — otherwise
+the caller gives up locally before the gateway can return its allow/deny
+result. The absolute minimum margin is the network round-trip plus a
+small buffer (60 seconds is plenty); the example above leaves ~150
+seconds of headroom, which is the comfortable default.
+
+#### Example: OpenClaw configuration
+
+For a normal OpenClaw agent run, configure the overall agent-run timeout:
+
+```sh
+openclaw config set agents.defaults.timeoutSeconds 240
+```
+
+For OpenClaw `exec` calls, also set the per-command timeout:
+
+```sh
+openclaw config set tools.exec.timeoutSec 240
+```
+
+We also recommend adding guidance to `AGENTS.md` or the agent's system
+instructions telling the agent to keep inner HTTP timeouts above Claw
+Patrol's approval timeout when it writes `curl`, HTTP client, or script
+code. Otherwise the inner client times out locally and the agent never
+sees the deny response Claw Patrol synthesizes on approval timeout.
 
 
 ## Inspection-buffer overflow
@@ -483,7 +477,7 @@ approver "human_approver" "support-triage" {
   channel     = "#support"
   credential  = slack_tokens.support-slack
   interactive = true
-  timeout     = 86400
+  timeout     = 90
 }
 
 rule "console-reads" {
@@ -637,7 +631,7 @@ approver "human_approver" "db-review" {
   channel     = "#agent-db"
   credential  = slack_tokens.db-slack
   interactive = true
-  timeout     = 86400
+  timeout     = 90
 }
 
 approver "llm_approver" "pg-secret-columns-judge" {

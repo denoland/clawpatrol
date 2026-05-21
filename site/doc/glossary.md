@@ -106,8 +106,10 @@ new config block types and the behavior behind them. See
 
 The decision a matched [rule](#rule) carries: `verdict = "allow"`,
 `verdict = "deny"`, or `approve = [...]` (an ordered list of
-[approver](#approver) stages). On allow, the credential plugin’s
-runtime stamps the secret onto the forwarded request.
+[approver](#approver) stages). Human approval pauses the request before
+upstream forwarding while the approver decides. On allow, the
+credential plugin’s runtime stamps the secret onto the forwarded
+request.
 
 ### Placeholder
 
@@ -154,7 +156,7 @@ for exact fields, types, and examples.
 
 | Concept | Config home |
 |---------|-------------|
-| Gateway operations | Top-level fields such as `listen`, `public_url`, WireGuard settings, and policy fallbacks. |
+| Gateway operations | Required `gateway { ... }` block for operational settings such as `dashboard_listen`, `public_url`, and transport sub-blocks; optional `defaults { ... }` block for policy fallbacks. |
 | Endpoint | `endpoint "<type>" "<name>" { ... }` blocks. |
 | Credential | `credential "<type>" "<name>" { ... }` blocks plus secret-store bytes. |
 | Rule | `rule "<name>" { ... }` blocks; see [Rules](/docs/rules/) for matching semantics. |

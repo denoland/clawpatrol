@@ -58,9 +58,9 @@ func (r *renderer) run() (string, error) {
 func (r *renderer) writeHeader() {
 	r.out.WriteString(`# Config Reference
 
-A clawpatrol gateway config mixes **operational** fields (top-level
-plumbing) with **policy** blocks. Operational fields are top-level
-attributes; policy blocks (` + "`approver`, `credential`, `tunnel`, `endpoint`, `rule`" + `)
+A clawpatrol gateway config mixes **operational** settings in the
+required top-level ` + "`gateway { ... }`" + ` block with **policy** blocks.
+Policy blocks (` + "`approver`, `credential`, `tunnel`, `endpoint`, `rule`" + `)
 dispatch to a plugin chosen by the block's first label.
 
 ## How to read this page
@@ -145,8 +145,8 @@ func upperFirst(s string) string {
 }
 
 func (r *renderer) writeOperational() {
-	r.out.WriteString("## Top-level fields\n\n")
-	r.out.WriteString("Every singleton gateway attribute — listen addresses, paths, control-plane joining, WireGuard endpoint, and policy fallbacks — is set directly at the top of `gateway.hcl`. Labeled blocks (`profile`, `approver`, `credential`, `endpoint`, `rule`, `tunnel`) are documented in their own sections.\n\n")
+	r.out.WriteString("## Top-level blocks\n\n")
+	r.out.WriteString("Operational settings live under the required top-level `gateway { ... }` block. The optional `defaults { ... }` block carries policy fallbacks. Labeled policy blocks (`profile`, `approver`, `credential`, `endpoint`, `rule`, `tunnel`) are documented in their own sections.\n\n")
 	r.writeStructTable("config", "Gateway", reflect.TypeOf(config.Gateway{}))
 }
 
@@ -184,9 +184,8 @@ func (r *renderer) writeProfile() {
 	r.out.WriteString("Names a set of credentials. Profiles bind to dashboard owners; an owner's profile determines which credentials — and, transitively via each credential's `endpoint` / `endpoints` binding, which endpoints — their gateway requests can reach. Rules ride along automatically because they're attached to endpoints.\n\n")
 	r.out.WriteString("| Attribute | Type | Required | Description |\n")
 	r.out.WriteString("|-----------|------|----------|-------------|\n")
-	r.out.WriteString("| `credentials` | `[]credential` | yes | Bare-name credential references, or `{ credential = name, <disambiguator> = \"...\" }` object entries for multi-credential dispatch (e.g. `placeholder` for header-token credentials). |\n")
-	r.out.WriteString("| `hitl_async_grants` | `bool` | no | Explicit opt-in for agent-aware async HITL retry grants on this profile. Async behavior still also requires an approver with `async_grant.enabled = true`. |\n\n")
-	r.out.WriteString("```hcl\nprofile \"default\" {\n  credentials       = [bearer_token.github, postgres_credential.postgres-prod]\n  hitl_async_grants = true\n}\n```\n\n")
+	r.out.WriteString("| `credentials` | `[]credential` | yes | Bare-name credential references, or `{ credential = name, <disambiguator> = \"...\" }` object entries for multi-credential dispatch (e.g. `placeholder` for header-token credentials). |\n\n")
+	r.out.WriteString("```hcl\nprofile \"default\" {\n  credentials = [bearer_token.github, postgres_credential.postgres-prod]\n}\n```\n\n")
 }
 
 // ── plugin-dispatched kinds ─────────────────────────────────────────
@@ -346,6 +345,9 @@ func (r *renderer) collectFields(pkgName, typeName string, rt reflect.Type) []fi
 		if hasOpt(opts, "remain") || hasOpt(opts, "label") {
 			continue
 		}
+		if skipPublicConfigReferenceField(pkgName, typeName, f.Name) {
+			continue
+		}
 
 		typeStr := formatGoType(f.Type)
 		if hasOpt(opts, "block") {
@@ -362,10 +364,14 @@ func (r *renderer) collectFields(pkgName, typeName string, rt reflect.Type) []fi
 		} else if override := ctyTypeOverride(name); override != "" && typeStr == "object" {
 			typeStr = override
 		}
+		required := fieldRequired(f.Type, opts)
+		if pkgName == "config" && typeName == "Gateway" && f.Name == "Settings" {
+			required = true
+		}
 		row := fieldRow{
 			Name:        name,
 			Type:        typeStr,
-			Required:    fieldRequired(f.Type, opts),
+			Required:    required,
 			Block:       hasOpt(opts, "block"),
 			GoFieldName: f.Name,
 			Doc:         stripIdentPrefix(r.docs.fieldDoc(pkgName, typeName, f.Name), f.Name),
@@ -373,6 +379,15 @@ func (r *renderer) collectFields(pkgName, typeName string, rt reflect.Type) []fi
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+func skipPublicConfigReferenceField(pkgName, typeName, fieldName string) bool {
+	switch pkgName + "." + typeName + "." + fieldName {
+	case "approvers.HumanApprover.SyncWaitTimeout",
+		"approvers.HumanApprover.AsyncGrant":
+		return true
+	}
+	return false
 }
 
 // fieldRefs returns Go-field-path → "kind" annotations sourced from

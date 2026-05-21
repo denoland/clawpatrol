@@ -131,7 +131,9 @@ The gateway:
    action map bound to the named facet (so a rule like
    `example_smtp.verb == "MAIL"` evaluates).
 2. Runs any approve chain (LLM judge, human approver) for rules
-   whose outcome is `approve = […]`.
+   whose outcome is `approve = […]`. Protocol plugins must translate
+   denies and timeouts into native failure responses without calling
+   upstream.
 3. Logs the action onto the dashboard event stream with the
    action map as the facet payload.
 4. Returns `verdict.Action` ("allow" / "deny" / "hitl_allow" /

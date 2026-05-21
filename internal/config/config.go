@@ -61,9 +61,9 @@ type GatewaySettings struct {
 	DashboardListen string `hcl:"dashboard_listen,optional"`
 
 	// PublicURL is the canonical externally-reachable gateway URL.
-	// Used in join links, async HITL status URLs, OAuth redirect URIs,
-	// and (when public_url has a host but wireguard.endpoint doesn't)
-	// the host clients dial for WireGuard.
+	// Used in generated control-plane links such as join targets, OAuth
+	// redirect URIs, and (when public_url has a host but wireguard.endpoint
+	// doesn't) the host clients dial for WireGuard.
 	PublicURL string `hcl:"public_url,optional"`
 
 	// StateDir is the directory holding clawpatrol.db (and anything

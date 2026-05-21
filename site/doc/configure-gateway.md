@@ -200,11 +200,10 @@ entry — agent peers can never inherit operator powers through this
 path.
 
 `funnel = true` exposes a small allowlist of public-bootstrap routes
-(`/api/onboard/{start,poll,claim}`, `/api/cred/*`,
-`/api/hitl/operations/*/status`) on `<node>.ts.net:443` so off-tailnet
-devices can join and OAuth callbacks can land. **The dashboard itself
-is not Funnel-reachable** — Funnel does not replace the tailnet (or
-SSH) path for operator access.
+(`/api/onboard/{start,poll,claim}`, `/api/cred/*`) on `<node>.ts.net:443`
+so off-tailnet devices can join and OAuth callbacks can land. **The
+dashboard itself is not Funnel-reachable** — Funnel does not replace
+the tailnet (or SSH) path for operator access.
 
 ## Run under systemd
 

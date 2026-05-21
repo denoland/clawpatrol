@@ -1,8 +1,8 @@
 # Config Reference
 
-A clawpatrol gateway config mixes **operational** fields (top-level
-plumbing) with **policy** blocks. Operational fields are top-level
-attributes; policy blocks (`approver`, `credential`, `tunnel`, `endpoint`, `rule`)
+A clawpatrol gateway config mixes **operational** settings in the
+required top-level `gateway { ... }` block with **policy** blocks.
+Policy blocks (`approver`, `credential`, `tunnel`, `endpoint`, `rule`)
 dispatch to a plugin chosen by the block's first label.
 
 ## How to read this page
@@ -22,13 +22,13 @@ Each block section lists the attributes the loader accepts, with:
 Plugin-dispatched kinds (`approver`, `credential`, `tunnel`, `endpoint`, `rule`)
 list one subsection per registered type.
 
-## Top-level fields
+## Top-level blocks
 
-Every singleton gateway attribute — listen addresses, paths, control-plane joining, WireGuard endpoint, and policy fallbacks — is set directly at the top of `gateway.hcl`. Labeled blocks (`profile`, `approver`, `credential`, `endpoint`, `rule`, `tunnel`) are documented in their own sections.
+Operational settings live under the required top-level `gateway { ... }` block. The optional `defaults { ... }` block carries policy fallbacks. Labeled policy blocks (`profile`, `approver`, `credential`, `endpoint`, `rule`, `tunnel`) are documented in their own sections.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `gateway` | `block` | no | Carries every operational scalar and the two transport sub-blocks. Required: configs missing the block fail to load. |
+| `gateway` | `block` | yes | Carries every operational scalar and the two transport sub-blocks. Required: configs missing the block fail to load. |
 | `defaults` | `block` | no | Holds the optional `defaults { ... }` block with the policy defaults (unknown_host, llm_*, human_*). nil when the block is absent — every field has a built-in default. |
 | `plugin` | `block` | no | Lists every `plugin "<name>" { source = "..." }` block at the top of the file. The loader spawns each subprocess (and registers its declared types) before running pass-1 symbol building, so plugin-supplied (kind, type) pairs are available by the time policy blocks are dispatched. |
 
@@ -39,12 +39,10 @@ Names a set of credentials. Profiles bind to dashboard owners; an owner's profil
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `credentials` | `[]credential` | yes | Bare-name credential references, or `{ credential = name, <disambiguator> = "..." }` object entries for multi-credential dispatch (e.g. `placeholder` for header-token credentials). |
-| `hitl_async_grants` | `bool` | no | Explicit opt-in for agent-aware async HITL retry grants on this profile. Async behavior still also requires an approver with `async_grant.enabled = true`. |
 
 ```hcl
 profile "default" {
-  credentials       = [bearer_token.github, postgres_credential.postgres-prod]
-  hitl_async_grants = true
+  credentials = [bearer_token.github, postgres_credential.postgres-prod]
 }
 ```
 
@@ -70,25 +68,9 @@ operator clicks approve/deny on the dashboard).
 | `credential` | `ref(credential)` | no | References the notifier credential used to post approval requests. Leave empty for dashboard-only approval. |
 | `timeout` | `int` | no | Overrides the gateway's human_timeout for this approver, in seconds. |
 | `require_approvers` | `int` | no | The number of separate human approvals required before the request is allowed. |
-| `sync_wait_timeout` | `string` | no | The HTTP hold budget before an async-capable HITL request returns 202 and moves to polling/retry-grant mode. |
-| `async_grant` | `block` | no | Configures v1 HITL async retry grants for this approver. The nested block must set enabled = true, and the active profile must also set hitl_async_grants = true, before async behavior is effective. |
 | `interactive` | `bool` | no | Toggles in-channel approve/deny buttons. Requires the referenced credential's signing_secret slot pasted via the dashboard AND Slack's Interactivity URL pointed at the gateway. Default false: message includes only an "Open dashboard" link. |
 | `classifier` | `ref(approver)` | no | Optionally references an llm_approver by name. When set, the approver calls the classifier's Summarize method before posting the HITL notification, enriching the Slack card with classification metadata. Classifier failures are non-fatal — the generic card is used as fallback. |
 | `message` | `string` | no | An optional Go-template-style string with {{var}} placeholders. When set, the expanded text replaces the default section body in the Slack (or other notifier) card. Supported vars mirror the CEL facet namespace: {{http.method}}, {{http.path}}, {{k8s.verb}}, {{sql.tables}}, {{body_json.ticket}}, {{profile}}, {{endpoint}}, {{reason}}, etc. Classifier (if also set) still runs; Message takes display precedence. |
-
-**Nested block `async_grant {}`:**
-
-The optional nested `async_grant { ... }`
-block shared by async-capable HITL approvers. It is schema-only here;
-runtime execution lives in the gateway and endpoint layers.
-
-| Attribute | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `enabled` | `bool` | no | Explicitly opts this approver into async retry-grant mode. The active profile must also set hitl_async_grants = true. |
-| `approval_ttl` | `string` | no | Human approval lifetime after the original sync wait falls back to a 202 response. |
-| `approved_retry_ttl` | `string` | no | Post-approval retry grant lifetime for the client to retry. |
-| `fingerprint_body` | `string` | no | Request-body fingerprinting mode. V1 supports only "raw". |
-| `max_body_bytes` | `int` | no | Maximum request body size eligible for async raw-body fingerprinting. |
 
 ```hcl
 approver "human_approver" "example" {
