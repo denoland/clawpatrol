@@ -6,7 +6,7 @@ import type { ComponentChildren } from "preact";
 export function FlowDiagram() {
   return (
     <div
-      class="flex flex-col items-stretch w-full max-w-[380px] select-none"
+      class="flex flex-col items-stretch w-full md:max-w-[24rem] select-none"
       role="img"
       aria-label="Many agents on the bottom send requests through Claw Patrol to many destinations on top"
     >

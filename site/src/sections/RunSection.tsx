@@ -6,12 +6,6 @@ import { TerminalFrame } from "../components/TerminalFrame";
 // gateway side) live in the docs; this section just shows what a
 // first-time visitor types.
 
-const SESSION = `# Join your device to a gateway
-$ clawpatrol join https://gw.example.com
-
-# Run your agent through it
-$ clawpatrol run codex`;
-
 export function RunSection() {
   return (
     <section class="bg-canvas-muted py-24 sm:py-32">
@@ -28,9 +22,19 @@ export function RunSection() {
         </div>
 
         <div class="max-w-2xl mx-auto">
-          <TerminalFrame class="block px-5 py-4">
+          <TerminalFrame class="block px-5 py-4 squircle-lg">
             <pre class="text-sm font-mono leading-relaxed text-canvas overflow-x-auto whitespace-pre">
-              <code>{SESSION}</code>
+              <code>
+                <div class="text-text-subtle">
+                  # Join your device to a gateway
+                </div>
+                <div>clawpatrol join https://gw.example.com</div>
+                <div>&ensp;</div>
+                <div className="text-text-subtle">
+                  # Run your agent through it
+                </div>
+                clawpatrol run codex
+              </code>
             </pre>
           </TerminalFrame>
         </div>

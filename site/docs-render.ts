@@ -350,6 +350,7 @@ export function renderDocPage(doc: Doc, docs: Doc[], extraHead = ""): string {
   ${extraHead}
 </head>
 <body class="min-h-screen bg-canvas text-text font-sans">
+  <a href="#main" class="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:px-4 focus:py-2 focus:bg-navy focus:text-canvas focus:rounded focus:outline-2 focus:outline-rust focus:font-display">Skip to main content</a>
   ${headerHtml}
   ${topDotsHtml}
   <div class="max-w-6xl mx-auto px-8 py-20
@@ -360,8 +361,8 @@ export function renderDocPage(doc: Doc, docs: Doc[], extraHead = ""): string {
         ${sidebar(docs, doc.slug)}
       </nav>
     </aside>
-    <main class="docs-content min-w-0 flex-1">
-      <p class="text-xs font-mono text-text-muted mb-6 text-right float-end">
+    <main id="main" tabindex="-1" class="docs-content min-w-0 flex-1 focus:outline-none focus-visible:outline-none">
+      <p class="text-xs font-mono text-text-muted mb-6 text-right float-end relative z-10">
         <a href="/docs/${doc.slug}.md"
           class="underline underline-offset-4 hover:text-rust"
         >View as markdown</a>

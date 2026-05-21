@@ -25,6 +25,10 @@
     font-weight: 400;
     color: var(--color-text-muted);
     transition: opacity 0.15s;
+
+    &:focus {
+      opacity: 1;
+    }
   }
 
   :where(h1, h2, h3, h4, h5, h6) {
@@ -138,10 +142,11 @@
 
   :not(pre) > code {
     background: var(--color-navy-50);
-    padding: 0.15em 0.4em;
+    padding: 0.25em 0.4em;
     border-radius: 0.25rem;
     border: 1px solid var(--color-navy-100);
     font-size: 0.9em;
+    line-height: 1;
   }
 
   a {
@@ -153,6 +158,10 @@
     &:hover {
       text-decoration-color: var(--color-rust);
     }
+  }
+
+  a code {
+    text-decoration: underline;
   }
 
   blockquote {

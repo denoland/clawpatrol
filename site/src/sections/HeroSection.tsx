@@ -39,7 +39,7 @@ export function HeroSection() {
           <InstallTerminal />
         </div>
 
-        <div class="flex justify-center min-w-0">
+        <div class="flex md:justify-center w-full mt-16 md:mt-0 min-w-0">
           <FlowDiagram />
         </div>
       </div>
