@@ -327,7 +327,7 @@ func runRunChild() {
 	}
 
 	if os.Getenv("CLAWPATROL_RUN_KEEP_RESOLV") != "1" {
-		_ = bindResolv("nameserver 1.1.1.1\nnameserver 8.8.8.8\n")
+		_ = bindResolv(childResolvConf())
 	}
 
 	// The agent runs as the same uid as the parent and can therefore
@@ -775,6 +775,29 @@ func recvFDs(s *os.File, n int) ([]int, error) {
 		return fds[:n], nil
 	}
 	return nil, fmt.Errorf("no SCM_RIGHTS fd")
+}
+
+// childResolvConf builds the body of /etc/resolv.conf the child sees
+// inside its mnt namespace.
+//
+// In tsnet mode we point at the gateway's tailnet IP: the gateway
+// runs serveTsnetDNSUDP on <tailnet-gateway-ip>:53, which both
+// allocates VIPs for intercepted hostnames AND relays anything else
+// upstream. Public resolvers don't work because the gateway has no
+// UDP fallback handler for exit-routed traffic — DNS packets aimed
+// at 1.1.1.1 / 8.8.8.8 get dropped at the gateway, so every name
+// lookup inside `clawpatrol run` would time out.
+//
+// In WG mode the gateway's WG netstack intercepts DNS in-flight, so
+// any public-looking nameserver works; fall back to 1.1.1.1 / 8.8.8.8
+// for that and for joins old enough that they predate the gateway-IP
+// file.
+func childResolvConf() string {
+	caDir := defaultClawpatrolDir()
+	if gwIP := strings.TrimSpace(readFileSilent(filepath.Join(caDir, "tailnet-gateway-ip"))); gwIP != "" {
+		return "nameserver " + gwIP + "\n"
+	}
+	return "nameserver 1.1.1.1\nnameserver 8.8.8.8\n"
 }
 
 func bindResolv(body string) error {
