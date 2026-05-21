@@ -4,9 +4,10 @@
 ca/
 ts-state/
 dist/
-# Gateway runtime state — sqlite DB + WAL sidecars. Local to each
-# install; never commit.
-data/state/
+# Gateway runtime dir — local sqlite DB + WAL sidecars + the operator's
+# private gateway.hcl. Each install copies examples/gateway.example.hcl
+# in and edits it; nothing under data/ is meant to be checked in.
+data/
 /gateway
 /clawpatrol
 /clawpatrol
