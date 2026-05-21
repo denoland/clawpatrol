@@ -62,40 +62,50 @@ type onboardSession struct {
 }
 
 // onboardRegistry persists onboarded peers in the `devices` table,
-// keyed by WG tunnel IP. The in-memory maps cache hot lookups
-// (OwnerForIP / HostnameForIP / ProfileForIP fire on every request);
-// mutations write through to SQLite.
+// keyed by tunnel IP (WG /32 or tsnet 100.x.x.x). The in-memory maps
+// cache hot lookups (OwnerForIP / HostnameForIP / ProfileForIP fire
+// on every request); mutations write through to SQLite.
+//
+// One transient case has no devices row: the tsnet "tsnet-<host>"
+// placeholder used between approve time and the first
+// /api/peer/tsnet/register call from the daemon. Such IDs are
+// detected by prefix and skipped in upsertLocked so they don't
+// surface as ghost dashboard rows.
 type onboardRegistry struct {
-	mu                   sync.Mutex
-	byDevice             map[string]*onboardSession
-	byUser               map[string]*onboardSession
-	ownerByIP            map[string]string
-	hostnameByIP         map[string]string
-	profileByIP          map[string]string
-	ephemeralProfileByIP map[string]string // never written to devices table
-	ephemeralParentByIP  map[string]string // ephemeral IP → parent device IP
-	extV4ByIP            map[string]string
-	extV6ByIP            map[string]string
-	canonicalByAlias     map[string]string // alias IP → canonical device IP (e.g. fd7a:115c:a1e0::… → 100.x.x.x)
-	knownDeviceIPs       map[string]bool   // all IPs present in devices table
-	db                   *sql.DB
+	mu               sync.Mutex
+	byDevice         map[string]*onboardSession
+	byUser           map[string]*onboardSession
+	ownerByIP        map[string]string
+	hostnameByIP     map[string]string
+	profileByIP      map[string]string
+	extV4ByIP        map[string]string
+	extV6ByIP        map[string]string
+	canonicalByAlias map[string]string // alias IP → canonical device IP (e.g. fd7a:115c:a1e0::… → 100.x.x.x)
+	knownDeviceIPs   map[string]bool   // all IPs present in devices table
+	db               *sql.DB
 }
 
 func newOnboardRegistry() *onboardRegistry {
 	return &onboardRegistry{
-		byDevice:             map[string]*onboardSession{},
-		byUser:               map[string]*onboardSession{},
-		ownerByIP:            map[string]string{},
-		hostnameByIP:         map[string]string{},
-		profileByIP:          map[string]string{},
-		ephemeralProfileByIP: map[string]string{},
-		ephemeralParentByIP:  map[string]string{},
-		extV4ByIP:            map[string]string{},
-		extV6ByIP:            map[string]string{},
-		canonicalByAlias:     map[string]string{},
-		knownDeviceIPs:       map[string]bool{},
+		byDevice:         map[string]*onboardSession{},
+		byUser:           map[string]*onboardSession{},
+		ownerByIP:        map[string]string{},
+		hostnameByIP:     map[string]string{},
+		profileByIP:      map[string]string{},
+		extV4ByIP:        map[string]string{},
+		extV6ByIP:        map[string]string{},
+		canonicalByAlias: map[string]string{},
+		knownDeviceIPs:   map[string]bool{},
 	}
 }
+
+// tsnetPlaceholderPrefix marks an onboard session that's still
+// awaiting the daemon's /api/peer/tsnet/register first call. The
+// post-approve flow binds the api-token + chosen profile to
+// "tsnet-<hostname>" until the daemon comes up and tells us the
+// real tailnet IP. IDs starting with this prefix are scrubbed by
+// upsertLocked so they don't surface as ghost devices rows.
+const tsnetPlaceholderPrefix = "tsnet-"
 
 // SetExternalIPs records the underlay endpoint addresses (v4 and/or v6)
 // observed for the wg peer at ip. Mirrors unclaw's approvedIpv4 /
@@ -135,9 +145,6 @@ func (r *onboardRegistry) ExternalIPs(ip string) (v4, v6 string) {
 func (r *onboardRegistry) ProfileForIP(ip string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if p := r.ephemeralProfileByIP[ip]; p != "" {
-		return p
-	}
 	return r.profileByIP[ip]
 }
 
@@ -164,43 +171,23 @@ func (r *onboardRegistry) AssignProfile(ip, profile string) {
 }
 
 // assignProfileMemOnly records the profile mapping in memory without
-// upserting a devices row. Used for synthetic placeholder IDs (e.g.
-// `tsnet-<hostname>` between approve and the first `clawpatrol run`
-// register call) where we don't want a ghost dashboard row.
+// upserting a devices row. Used for the tsnet "tsnet-<hostname>"
+// placeholder between approve time and the first daemon register
+// call. upsertLocked refuses to persist IDs with the placeholder
+// prefix so this is safe.
 func (r *onboardRegistry) assignProfileMemOnly(ip, profile string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.profileByIP[ip] = profile
 }
 
-// setEphemeralProfile pins an ephemeral peer to a profile and records
-// its parent device IP. ephemeralProfileByIP is never read by upsertLocked
-// so no devices row is created. ephemeralParentByIP is used by AgentIPFor
-// to route traffic attribution back to the parent device.
-func (r *onboardRegistry) setEphemeralProfile(ip, parentIP, profile string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.ephemeralProfileByIP[ip] = profile
-	r.ephemeralParentByIP[ip] = parentIP
-	if r.db != nil {
-		_, _ = r.db.Exec(
-			`INSERT INTO ephemeral_peers (ip, parent_ip, profile, created_ns)
-			 VALUES (?, ?, ?, ?)
-			 ON CONFLICT(ip) DO UPDATE SET parent_ip = excluded.parent_ip, profile = excluded.profile`,
-			ip, parentIP, profile, time.Now().UnixNano(),
-		)
-	}
-}
-
-// AgentIPFor returns the device IP that traffic from ip should be attributed
-// to. For ephemeral peers this is the parent device; for regular peers it
-// returns ip unchanged.
+// AgentIPFor returns the device IP that traffic from ip should be
+// attributed to. Today the only remapping is the IPv6 ULA alias
+// (fd7a:115c:a1e0::… → 100.x.x.x) used by Tailscale-mode peers; for
+// every other peer ip is returned unchanged.
 func (r *onboardRegistry) AgentIPFor(ip string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if parent := r.ephemeralParentByIP[ip]; parent != "" {
-		return parent
-	}
 	if canonical := r.canonicalByAlias[ip]; canonical != "" {
 		return canonical
 	}
@@ -246,26 +233,7 @@ func (r *onboardRegistry) Load(db *sql.DB) error {
 			r.extV6ByIP[ip] = v6.String
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	// Replay ephemeral peer mappings so per-process `clawpatrol run`
-	// nodes that were alive across a restart fold back to their parent
-	// instead of surfacing as their own dashboard row.
-	erows, err := db.Query("SELECT ip, parent_ip, profile FROM ephemeral_peers")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = erows.Close() }()
-	for erows.Next() {
-		var ip, parentIP, profile string
-		if err := erows.Scan(&ip, &parentIP, &profile); err != nil {
-			return err
-		}
-		r.ephemeralProfileByIP[ip] = profile
-		r.ephemeralParentByIP[ip] = parentIP
-	}
-	return erows.Err()
+	return rows.Err()
 }
 
 // HasDevice reports whether ip has a row in the devices table.
@@ -284,7 +252,11 @@ func (r *onboardRegistry) upsertLocked(ip string) {
 	if r.db == nil {
 		return
 	}
-	if _, isEphemeral := r.ephemeralProfileByIP[ip]; isEphemeral {
+	// Placeholder IDs (e.g. "tsnet-<hostname>" between approve and the
+	// daemon's first register call) never get a devices row — they
+	// only exist in profileByIP to remember the operator-picked
+	// profile across the gap.
+	if strings.HasPrefix(ip, tsnetPlaceholderPrefix) {
 		return
 	}
 	if _, seen := r.profileByIP[ip]; !seen {
@@ -396,13 +368,10 @@ func (r *onboardRegistry) ForgetIP(ip string) {
 	delete(r.ownerByIP, ip)
 	delete(r.hostnameByIP, ip)
 	delete(r.profileByIP, ip)
-	delete(r.ephemeralProfileByIP, ip)
-	delete(r.ephemeralParentByIP, ip)
 	delete(r.extV4ByIP, ip)
 	delete(r.extV6ByIP, ip)
 	if r.db != nil {
 		_, _ = r.db.Exec("DELETE FROM devices WHERE id = ?", ip)
-		_, _ = r.db.Exec("DELETE FROM ephemeral_peers WHERE ip = ?", ip)
 	}
 }
 
@@ -774,15 +743,16 @@ func (w *webMux) apiOnboardApprove(rw http.ResponseWriter, r *http.Request) {
 				log.Printf("api-token mint for %s: %v", peerIP, perr)
 			}
 		} else if loginServer == "" && !s.wholeMachine {
-			// Per-process tsnet mode: no devices row yet — the first
-			// `clawpatrol run` register call promotes its ephemeral
-			// tailnet IP to the device's parent row. Hold the profile
-			// in memory only against a synthetic placeholder and bind
-			// the api-token to it; both get repointed at register time.
+			// Tsnet daemon mode: no devices row yet — the tailnet IP
+			// only exists once the per-host daemon joins, which happens
+			// later when the operator runs `clawpatrol run`. Hold the
+			// profile in memory only against a synthetic placeholder
+			// and bind the api-token to it; both get repointed by
+			// /api/peer/tsnet/register on the daemon's first boot.
 			s2 := w.onboard.byDeviceCode(dc)
-			parentID := "tsnet-" + dc
+			parentID := tsnetPlaceholderPrefix + dc
 			if s2 != nil && s2.hostname != "" {
-				parentID = "tsnet-" + s2.hostname
+				parentID = tsnetPlaceholderPrefix + s2.hostname
 			}
 			if profile != "" {
 				w.onboard.assignProfileMemOnly(parentID, profile)
@@ -884,7 +854,7 @@ func (w *webMux) apiPeerTsnetRegister(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hostname := strings.TrimSpace(r.URL.Query().Get("hostname"))
-	if strings.HasPrefix(parentIP, "tsnet-") {
+	if strings.HasPrefix(parentIP, tsnetPlaceholderPrefix) {
 		// First call — promote the synthetic placeholder to a real
 		// devices row keyed on the tailnet IP. Rebind the api-token,
 		// drop the placeholder from in-memory state, copy across the

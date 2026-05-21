@@ -57,7 +57,7 @@ func socketpairConns(t *testing.T) (a, b *net.UnixConn) {
 
 // TestDaemonProtocolRoundTrip drives the full session-start protocol
 // end-to-end over a real Unix socketpair: hello handshake, START
-// command, TSIP/ENV/WARN reply, SCM_RIGHTS TUN-fd hand-off, ATTACHED
+// command, ADDR/ENV/WARN reply, SCM_RIGHTS TUN-fd hand-off, ATTACHED
 // reply. Verifies the client-side parser reconstructs every value
 // the daemon-side encoder ships, and that a real fd flows through
 // SCM_RIGHTS in both directions.
@@ -73,7 +73,7 @@ func TestDaemonProtocolRoundTrip(t *testing.T) {
 	defer func() { _ = daemonSide.Close() }()
 	defer func() { _ = clientSide.Close() }()
 
-	wantTsIP := netip.MustParseAddr("100.64.0.7")
+	wantTunAddr := netip.MustParseAddr("100.64.0.7")
 	envVarsIn := []pushdownEnvVar{
 		{Name: "SSL_CERT_FILE", Value: "/home/u/.clawpatrol/ca.crt"},
 		{Name: "GH_TOKEN", Value: "ghp_placeholder", Description: "github"},
@@ -124,7 +124,7 @@ func TestDaemonProtocolRoundTrip(t *testing.T) {
 			res.err = io.ErrUnexpectedEOF
 			return
 		}
-		if err := daemonWriteStartReply(daemonSide, wantTsIP, envJSON, wantWarning); err != nil {
+		if err := daemonWriteStartReply(daemonSide, wantTunAddr, envJSON, wantWarning); err != nil {
 			res.err = err
 			return
 		}
@@ -150,12 +150,12 @@ func TestDaemonProtocolRoundTrip(t *testing.T) {
 	// some later read; if that read happens to be the recvmsg waiting
 	// for SCM_RIGHTS, Linux truncates at the byte-before-ancillary and
 	// the FD never gets delivered.
-	br, gotTsIP, gotEnv, gotWarning, err := daemonClientStartSession(clientSide)
+	br, gotTunAddr, gotEnv, gotWarning, err := daemonClientStartSession(clientSide)
 	if err != nil {
 		t.Fatalf("daemonClientStartSession: %v", err)
 	}
-	if gotTsIP != wantTsIP {
-		t.Errorf("tsIP: got %v, want %v", gotTsIP, wantTsIP)
+	if gotTunAddr != wantTunAddr {
+		t.Errorf("tunAddr: got %v, want %v", gotTunAddr, wantTunAddr)
 	}
 	if gotWarning != wantWarning {
 		t.Errorf("warning: got %q\nwant %q", gotWarning, wantWarning)
@@ -234,13 +234,13 @@ func TestDaemonClientParse_Malformed(t *testing.T) {
 		name string
 		body string
 	}{
-		{"missing TSIP prefix", "WAT 100.64.0.1\nENV 0\nWARN 0\n"},
-		{"bad TSIP value", "TSIP not-an-ip\nENV 0\nWARN 0\n"},
-		{"missing ENV prefix", "TSIP 100.64.0.1\nVNE 0\nWARN 0\n"},
-		{"non-numeric ENV length", "TSIP 100.64.0.1\nENV xyz\nWARN 0\n"},
-		{"oversized ENV length", "TSIP 100.64.0.1\nENV 9999999999\nWARN 0\n"},
-		{"missing WARN frame", "TSIP 100.64.0.1\nENV 0\n"},
-		{"oversized WARN length", "TSIP 100.64.0.1\nENV 0\nWARN 99999\n"},
+		{"missing ADDR prefix", "WAT 100.64.0.1\nENV 0\nWARN 0\n"},
+		{"bad ADDR value", "ADDR not-an-ip\nENV 0\nWARN 0\n"},
+		{"missing ENV prefix", "ADDR 100.64.0.1\nVNE 0\nWARN 0\n"},
+		{"non-numeric ENV length", "ADDR 100.64.0.1\nENV xyz\nWARN 0\n"},
+		{"oversized ENV length", "ADDR 100.64.0.1\nENV 9999999999\nWARN 0\n"},
+		{"missing WARN frame", "ADDR 100.64.0.1\nENV 0\n"},
+		{"oversized WARN length", "ADDR 100.64.0.1\nENV 0\nWARN 99999\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

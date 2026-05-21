@@ -8,6 +8,14 @@ package main
 // the socket, then idle-exits 5 minutes after the last client
 // disconnects.
 //
+// The daemon owns a single network identity (tsnet peer or WireGuard
+// peer) shared across every concurrent `clawpatrol run` session on
+// the host. Transport selection is decided at startup from the
+// `mode` marker file written by `clawpatrol join`; per-mode
+// specifics live behind the daemonTransport interface so the
+// session loop, control protocol, and gVisor stack code stay
+// transport-agnostic.
+//
 // Race-control protocol:
 //   - exclusive flock on spawn.lock serializes the connect-or-spawn
 //     path across concurrent clients.
@@ -40,8 +48,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-
-	"tailscale.com/tsnet"
 )
 
 const (
@@ -50,6 +56,37 @@ const (
 	daemonSpawnTimeout = 30 * time.Second
 	daemonMagicLine    = "CLAWPATROL/1\n"
 )
+
+// daemonTransport is the per-host network identity shared by every
+// concurrent `clawpatrol run` session. Implementations:
+//   - tsnetTransport (daemon_transport_tsnet_linux.go) — embeds
+//     tsnet.Server, sets the gateway as its exit node; outbound
+//     dials route through the gateway's tsnet RegisterFallbackTCPHandler.
+//   - wgTransport (daemon_transport_wg_linux.go) — embeds a
+//     wireguard-go device + gVisor stack; outbound dials hit the
+//     gateway's WG L3 forwarder.
+//
+// Lifetime: created once at runDaemon startup, closed once on
+// clean exit. Multiple sessions share the same transport — no
+// per-session re-init.
+type daemonTransport interface {
+	// Dial opens a connection to addr (an "ip:port" string) through
+	// the transport. Used by the per-session gVisor TCP forwarder
+	// (TCP, "tcp") and the per-session UDP forwarder (UDP, "udp").
+	Dial(ctx context.Context, network, addr string) (net.Conn, error)
+	// LocalAddr is the IP the child's TUN inside its netns should
+	// bind to. For tsnet it's the 100.x.x.x tailnet IP; for wg it's
+	// the /32 the gateway assigned at join time.
+	LocalAddr() netip.Addr
+	// BootWarning is a one-line operator-facing message emitted to
+	// every client that connects this lifetime, or "" when clean.
+	// Each `clawpatrol run` repeats it on stderr so configuration
+	// issues surface without tailing daemon.log.
+	BootWarning() string
+	// Close tears down the transport. Best-effort — the daemon is
+	// about to exit.
+	Close() error
+}
 
 // daemonRuntimeDir resolves the per-user runtime directory holding the
 // daemon's coordination state (control socket, spawn lock, log). Prefer
@@ -223,21 +260,12 @@ type daemon struct {
 	sockPath string
 	lockFile *os.File
 
-	// tsServer is the daemon's single tailnet identity, shared by every
-	// concurrent `clawpatrol run` session on this host. Set once at
-	// startup, never replaced. envVars is the cached env-pushdown
-	// response — clients pull it from us instead of dialing the gateway
-	// themselves (they're not on the tailnet; only we are).
-	tsServer *tsnet.Server
-	tsIP     netip.Addr
-	envVars  []byte // pre-serialized JSON for the FETCH path in handle()
-
-	// bootWarning is a one-line message that the smoke-probe at startup
-	// generates when exit-node routing looks broken. Empty means clean
-	// boot. Sent on every session START so `clawpatrol run` can repeat
-	// it on stderr — operators shouldn't have to tail daemon.log to
-	// discover ACL misconfiguration.
-	bootWarning string
+	// transport is the per-host network identity. Set once at startup,
+	// never replaced. envVars is the cached env-pushdown response —
+	// clients pull it from us instead of dialing the gateway themselves
+	// (they're not on the underlay; only the transport is).
+	transport daemonTransport
+	envVars   []byte // pre-serialized JSON for the START reply
 
 	activeConns atomic.Int32
 
@@ -267,24 +295,19 @@ func runDaemon(_ []string) {
 
 	log.Printf("daemon pid=%d starting", os.Getpid())
 
-	// Boot tsnet first. We don't bind the control socket until the
-	// daemon is fully usable — that way a parent reading "ready\n" can
-	// proceed straight to a session START without retries.
-	tsServer, tsIP, bootWarning, err := daemonStartTsnet()
+	// Boot the transport first. We don't bind the control socket
+	// until the daemon is fully usable — that way a parent reading
+	// "ready\n" can proceed straight to a session START without
+	// retries.
+	transport, err := daemonStartTransport()
 	if err != nil {
-		log.Fatalf("daemon: tsnet: %v", err)
+		log.Fatalf("daemon: transport: %v", err)
 	}
 
 	// Fetch the env-pushdown JSON once and cache it. Sessions get the
 	// same vars over their lifetime — refreshing per-session would
 	// stampede the gateway under bursty agent fleets.
-	envJSON := daemonFetchEnvPushdown(tsServer)
-
-	// Register this tsnet IP with the gateway so it maps to the host's
-	// device row (and therefore its profile). Best-effort: a failure
-	// only means traffic lands in the default profile until the next
-	// daemon restart.
-	daemonRegisterWithGateway(tsServer, tsIP)
+	envJSON := daemonFetchEnvPushdown()
 
 	// Bind the control socket last. Parent still holds spawn.lock at
 	// this point, so we can't race another daemon for the path.
@@ -303,14 +326,12 @@ func runDaemon(_ []string) {
 	}
 
 	d := &daemon{
-		sockPath:    sockPath,
-		listener:    ln,
-		lockFile:    lf,
-		tsServer:    tsServer,
-		tsIP:        tsIP,
-		envVars:     envJSON,
-		bootWarning: bootWarning,
-		rebindCh:    make(chan struct{}),
+		sockPath:  sockPath,
+		listener:  ln,
+		lockFile:  lf,
+		transport: transport,
+		envVars:   envJSON,
+		rebindCh:  make(chan struct{}),
 	}
 
 	// Signal ready on the inherited pipe (fd 3). Once this lands, the
@@ -332,6 +353,26 @@ func runDaemon(_ []string) {
 		d.serve()
 		<-d.rebindCh
 		log.Printf("daemon pid=%d serve loop: re-entering accept on new listener", os.Getpid())
+	}
+}
+
+// daemonStartTransport picks the transport implementation based on the
+// `mode` marker written by `clawpatrol join`. Tailscale mode boots a
+// tsnet.Server with the gateway pinned as its exit node; WireGuard
+// mode boots a wireguard-go device + gVisor stack from the persisted
+// wg.conf. Either way, the returned transport carries one network
+// identity shared by every `clawpatrol run` on this host.
+func daemonStartTransport() (daemonTransport, error) {
+	mode := strings.TrimSpace(readFileSilent(filepath.Join(defaultClawpatrolDir(), "mode")))
+	switch mode {
+	case "tailscale":
+		return startTsnetTransport()
+	case "wireguard", "":
+		// Empty mode = legacy WG join (older builds didn't write a
+		// marker file). Presence of wg.conf is the WG signal.
+		return startWGTransport()
+	default:
+		return nil, fmt.Errorf("unknown mode %q in %s/mode", mode, defaultClawpatrolDir())
 	}
 }
 
@@ -375,13 +416,14 @@ func (d *daemon) serve() {
 // hello handshake the protocol is:
 //
 //	client → daemon:  "START\n"
-//	daemon → client:  "TSIP <ip>\n" "ENV <n>\n" <n bytes JSON>
+//	daemon → client:  "ADDR <ip>\n" "ENV <n>\n" <n bytes JSON>
+//	                  "WARN <m>\n" <m bytes text>
 //	client → daemon:  SCM_RIGHTS carrying one TUN fd (payload byte 0)
 //	daemon → client:  "ATTACHED\n"
 //	client → daemon:  (control conn stays open; close = session end)
 //
 // On close the per-session gVisor stack tears down, the TUN fd is
-// released, and any in-flight conns through tsnet drain.
+// released, and any in-flight conns through the transport drain.
 func (d *daemon) handle(c net.Conn) {
 	defer func() {
 		_ = c.Close()
@@ -410,10 +452,10 @@ func (d *daemon) handle(c net.Conn) {
 	}
 	_ = c.SetReadDeadline(time.Time{})
 
-	// 1. Tell the client our tsnet IP, ship the env-pushdown JSON, and
-	// pass along any one-line warning the smoke-probe generated at
-	// daemon boot.
-	if err := daemonWriteStartReply(c, d.tsIP, d.envVars, d.bootWarning); err != nil {
+	// 1. Tell the client our underlay IP, ship the env-pushdown JSON,
+	// and pass along any one-line warning the transport's boot probe
+	// generated.
+	if err := daemonWriteStartReply(c, d.transport.LocalAddr(), d.envVars, d.transport.BootWarning()); err != nil {
 		return
 	}
 
@@ -437,16 +479,16 @@ func (d *daemon) handle(c net.Conn) {
 	defer func() { _ = tunFile.Close() }()
 
 	// 3. Build the per-session gVisor stack. Multiple sessions share
-	// the daemon's single tsnet.Server but each gets its own stack so
-	// a misbehaving session can't OOM a neighbor.
-	gvStack, gvEp, err := newTsnetRunStack(d.tsIP)
+	// the daemon's single transport but each gets its own stack so a
+	// misbehaving session can't OOM a neighbor.
+	gvStack, gvEp, err := newRunStack(d.transport.LocalAddr())
 	if err != nil {
 		log.Printf("daemon: gvisor stack: %v", err)
 		return
 	}
 	defer gvStack.Close()
-	startTunBridge(tunFile, gvEp, d.tsServer)
-	enableTsnetTCPForwarder(gvStack, d.tsServer)
+	startTunBridge(tunFile, gvEp, d.transport)
+	enableTransportTCPForwarder(gvStack, d.transport)
 
 	// 4. Tell the client the bridge is up.
 	if _, err := io.WriteString(c, "ATTACHED\n"); err != nil {
@@ -465,101 +507,12 @@ func (d *daemon) handle(c net.Conn) {
 	}
 }
 
-// daemonStartTsnet reads persisted join state (auth-key, control-url,
-// gateway-ip), starts a tsnet.Server, waits for it to come up, and
-// points its outbound dials at the gateway as an exit node. Returns
-// the started server and our assigned 100.x address.
-// Returns the started server, its tailnet IP, and a non-empty warning
-// string when exit-node routing looks broken (so each `clawpatrol run`
-// can repeat it on stderr instead of leaving the operator to discover
-// it in daemon.log).
-func daemonStartTsnet() (*tsnet.Server, netip.Addr, string, error) {
-	caDir := defaultClawpatrolDir()
-	stateDir := daemonStateDir()
-	authKey := strings.TrimSpace(readFileSilent(filepath.Join(stateDir, "auth-key")))
-	controlURL := strings.TrimSpace(readFileSilent(filepath.Join(caDir, "control-url")))
-	gwIPStr := strings.TrimSpace(readFileSilent(filepath.Join(caDir, "tailnet-gateway-ip")))
-	if authKey == "" {
-		return nil, netip.Addr{}, "", fmt.Errorf("missing auth-key in %s (re-run `clawpatrol join`)", stateDir)
-	}
-	if gwIPStr == "" {
-		return nil, netip.Addr{}, "", fmt.Errorf("missing tailnet-gateway-ip in %s (re-run `clawpatrol join`)", caDir)
-	}
-	gwIP, err := netip.ParseAddr(gwIPStr)
-	if err != nil {
-		return nil, netip.Addr{}, "", fmt.Errorf("parse tailnet-gateway-ip %q: %w", gwIPStr, err)
-	}
-
-	// Persistent state dir so the tsnet node keeps the same identity
-	// (and tailnet IP, when the control plane is cooperative) across
-	// idle-exit + respawn cycles. Auth keys are minted non-ephemeral,
-	// so a single device row shows up on the dashboard per host
-	// instead of churning one per daemon lifetime.
-	tsnetDir := filepath.Join(stateDir, "tsnet")
-	if err := os.MkdirAll(tsnetDir, 0o700); err != nil {
-		return nil, netip.Addr{}, "", fmt.Errorf("tsnet state dir: %w", err)
-	}
-
-	hn := strings.TrimSpace(readFileSilent(filepath.Join(caDir, "hostname")))
-	if hn == "" {
-		hn, _ = os.Hostname()
-	}
-
-	s := &tsnet.Server{
-		Hostname:   hn,
-		AuthKey:    authKey,
-		ControlURL: controlURL,
-		Dir:        tsnetDir,
-		Ephemeral:  false,
-		Logf:       func(string, ...any) {},
-	}
-
-	log.Printf("daemon: joining tailnet as %q...", hn)
-	tsIP, err := waitTsnetUp(s)
-	if err != nil {
-		_ = s.Close()
-		return nil, netip.Addr{}, "", fmt.Errorf("waitTsnetUp: %w", err)
-	}
-	log.Printf("daemon: tailnet IP %s", tsIP)
-
-	if err := setGatewayExitNode(s, gwIP); err != nil {
-		_ = s.Close()
-		return nil, netip.Addr{}, "", fmt.Errorf("set exit-node %s: %w", gwIP, err)
-	}
-
-	// Smoke-test exit-node routing. EditPrefs accepts ExitNodeIP
-	// unconditionally, but actual routing requires the tailnet ACL to
-	// auto-approve the gateway as an exit node for our tag (see
-	// doc/tailscale.md → "Required tailnet ACL"). Without that, every
-	// dial silently times out instead of returning a useful error.
-	// Probe by dialing the gateway's tailnet IP on port 53 — that
-	// port is bound by the gateway's tsnet DNS listener so a working
-	// path returns "connection established" within hundreds of ms.
-	var bootWarning string
-	probeCtx, probeCancel := context.WithTimeout(context.Background(), 8*time.Second)
-	if c, derr := s.Dial(probeCtx, "tcp", net.JoinHostPort(gwIP.String(), "53")); derr == nil {
-		_ = c.Close()
-	} else {
-		bootWarning = fmt.Sprintf("tsnet probe: gateway unreachable via exit-node routing (%v). "+
-			"Check autoApprovers.exitNode in your tailnet ACL — see doc/tailscale.md. "+
-			"Outbound traffic from `clawpatrol run` will fail until the ACL is fixed.", derr)
-		log.Printf("%s", bootWarning)
-	}
-	probeCancel()
-
-	// Let any code path that needs a tailnet-routed HTTP client (e.g.
-	// gatewayClient → /api/env-pushdown) reach 100.x via tsnet.
-	gatewayDialOverride = s.Dial
-
-	return s, tsIP, bootWarning, nil
-}
-
 // daemonFetchEnvPushdown asks the gateway for the env-pushdown vars
 // belonging to this host's profile. Returns a JSON byte slice that
 // handle() ships to each new session verbatim. Best-effort: on any
 // failure we cache an empty list and log; clients then run without
 // pushdown until the daemon restarts.
-func daemonFetchEnvPushdown(_ *tsnet.Server) []byte {
+func daemonFetchEnvPushdown() []byte {
 	caDir := defaultClawpatrolDir()
 	vars, err := fetchEnvPushdownFromGateway(caDir)
 	if err != nil {
@@ -577,35 +530,13 @@ func daemonFetchEnvPushdown(_ *tsnet.Server) []byte {
 	return out
 }
 
-// daemonRegisterWithGateway POSTs this daemon's tsnet IP to the
-// gateway's /api/peer/tsnet/register so it maps to the host's
-// device row (and therefore the host's profile). First call after
-// approval promotes the synthetic placeholder; subsequent calls are
-// no-ops on the server side. Best-effort.
-func daemonRegisterWithGateway(s *tsnet.Server, tsIP netip.Addr) {
-	caDir := defaultClawpatrolDir()
-	gwURL := strings.TrimSpace(readFileSilent(filepath.Join(caDir, "tailnet-url")))
-	if gwURL == "" {
-		gwURL = strings.TrimSpace(readFileSilent(filepath.Join(caDir, "gateway")))
-	}
-	token := strings.TrimSpace(readFileSilent(filepath.Join(caDir, "api-token")))
-	if gwURL == "" || token == "" {
-		log.Printf("daemon: register: missing gateway URL or api-token; skipping")
-		return
-	}
-	cli := tsnetHTTPClient(s, filepath.Join(caDir, "ca.crt"))
-	if err := registerTsnetPeer(cli, gwURL, token, tsIP.String()); err != nil {
-		log.Printf("daemon: register: %v (default profile until next restart)", err)
-	}
-}
-
-// daemonWriteStartReply writes the TSIP / ENV / WARN frames that the
+// daemonWriteStartReply writes the ADDR / ENV / WARN frames that the
 // daemon emits in response to a session START. Pure framing — does
-// not touch tsServer or the gVisor stack, so it's testable in
+// not touch the transport or the gVisor stack, so it's testable in
 // isolation. The WARN frame is always emitted (n=0 when clean) so
 // the client's parser never has to peek ahead.
-func daemonWriteStartReply(w io.Writer, tsIP netip.Addr, envVars []byte, warning string) error {
-	if _, err := fmt.Fprintf(w, "TSIP %s\nENV %d\n", tsIP, len(envVars)); err != nil {
+func daemonWriteStartReply(w io.Writer, addr netip.Addr, envVars []byte, warning string) error {
+	if _, err := fmt.Fprintf(w, "ADDR %s\nENV %d\n", addr, len(envVars)); err != nil {
 		return err
 	}
 	if _, err := w.Write(envVars); err != nil {
@@ -703,11 +634,11 @@ func (d *daemon) tryExit() {
 	d.exited = true
 	d.mu.Unlock()
 
-	// Close tsnet politely so the control plane can mark this node
-	// offline immediately rather than aging it out. Best-effort: we're
-	// about to exit anyway.
-	if d.tsServer != nil {
-		_ = d.tsServer.Close()
+	// Close the transport politely so any upstream state (tsnet
+	// control plane registration, wireguard-go device, etc.) can
+	// settle before we exit.
+	if d.transport != nil {
+		_ = d.transport.Close()
 	}
 
 	log.Printf("daemon pid=%d clean exit", os.Getpid())
@@ -715,8 +646,8 @@ func (d *daemon) tryExit() {
 }
 
 // daemonConnectContext is a thin context-aware wrapper used by callers
-// that want to bound the total connect-or-spawn time. tsnet boot is
-// the slow part; daemonSpawnTimeout already covers it.
+// that want to bound the total connect-or-spawn time. Transport boot
+// is the slow part; daemonSpawnTimeout already covers it.
 func daemonConnectContext(ctx context.Context) (net.Conn, error) {
 	type res struct {
 		c   net.Conn

@@ -234,7 +234,7 @@ func readGatewayURL(caDir string) string {
 // readTailnetURL returns the tailnet-direct API URL persisted at join
 // time (http://<peer-ip>:8080). Prefer this over readGatewayURL for
 // peer API calls — the public join URL may be Funnel-proxied and not
-// expose endpoints like /api/peer/ephemeral/tsnet or /api/env-pushdown.
+// expose endpoints like /api/peer/tsnet/register or /api/env-pushdown.
 func readTailnetURL(caDir string) string {
 	b, err := os.ReadFile(filepath.Join(caDir, "tailnet-url"))
 	if err != nil {

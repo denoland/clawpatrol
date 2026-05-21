@@ -292,12 +292,10 @@ func (r *AgentRegistry) fillIdentity(ip string) {
 	}
 	if who.Node != nil {
 		// Onboard-supplied hostname (via /api/onboard/claim or
-		// /api/peer/ephemeral/tsnet/register) takes priority. The whois
-		// response reflects whatever the tsnet node registered with
-		// (e.g. "clawpatrol-run-<pid>" for per-process ephemeral runs
-		// or the *first* run's node for a promoted parent IP) — letting
-		// it overwrite would clobber the real machine name with the
-		// transient one.
+		// /api/peer/tsnet/register) takes priority. The whois response
+		// reflects whatever the tsnet node registered with (the daemon's
+		// configured hostname) — letting it overwrite would clobber the
+		// operator-chosen name with whatever Hostinfo.Hostname() returns.
 		if a.Hostname == "" {
 			a.Hostname = who.Node.Hostinfo.Hostname()
 		}
@@ -472,7 +470,7 @@ func (r *AgentRegistry) LoadSessions(db *sql.DB) {
 			continue
 		}
 		if r.onboard != nil && !r.onboard.HasDevice(ip) {
-			continue // ephemeral peer purged on startup — skip orphaned sessions
+			continue // device row gone (e.g. reaped at startup) — skip orphaned sessions
 		}
 		a := r.agents[ip]
 		if a == nil {

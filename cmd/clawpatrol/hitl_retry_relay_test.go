@@ -161,27 +161,33 @@ func TestHITLRetryRelayFingerprintsRetryBodyForDeleteRequests(t *testing.T) {
 	}
 }
 
-func TestHITLRetryRelayUsesRemappedAgentPrincipal(t *testing.T) {
+// TestHITLRetryRelayUsesAliasedAgentPrincipal exercises AgentIPFor's
+// IPv6-ULA → canonical-IPv4 remapping (the only remapping AgentIPFor
+// does post-PR-516): a request landing on the peer's fd7a:115c:a1e0::
+// alias should consume a grant minted against the canonical 100.x
+// device principal.
+func TestHITLRetryRelayUsesAliasedAgentPrincipal(t *testing.T) {
 	h := newHITLRetryRelayHarness(t)
 	requestBody := `{"resource":"example","approved":true}`
-	parentIP := "100.64.0.10"
+	canonicalIP := "100.64.0.10"
 	h.gateway.onboard = newOnboardRegistry()
-	h.gateway.onboard.setEphemeralProfile(hitlRetryRelayTestPeerIP, parentIP, hitlRetryRelayTestProfile)
-	op := h.createApprovedRetryOperationForMethodAndPrincipal(t, "hitl_op_retry_ephemeral", http.MethodPost, requestBody, hitlPeerPrincipalID(parentIP))
+	h.gateway.onboard.AssignProfile(canonicalIP, hitlRetryRelayTestProfile)
+	h.gateway.onboard.RegisterIPAlias(hitlRetryRelayTestPeerIP, canonicalIP)
+	op := h.createApprovedRetryOperationForMethodAndPrincipal(t, "hitl_op_retry_aliased", http.MethodPost, requestBody, hitlPeerPrincipalID(canonicalIP))
 
 	resp := h.sendRetryRequest(t, op.ID, requestBody)
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("ephemeral retry status = %d, body = %q; want upstream 200", resp.StatusCode, resp.Body)
+		t.Fatalf("aliased retry status = %d, body = %q; want upstream 200", resp.StatusCode, resp.Body)
 	}
 	if calls := h.approver.calls.Load(); calls != 0 {
 		t.Fatalf("approve chain calls after remapped retry = %d, want 0", calls)
 	}
-	consumed, err := h.store.GetForPrincipal(context.Background(), op.ID, hitlRetryRelayTestProfile, hitlPeerPrincipalID(parentIP))
+	consumed, err := h.store.GetForPrincipal(context.Background(), op.ID, hitlRetryRelayTestProfile, hitlPeerPrincipalID(canonicalIP))
 	if err != nil {
-		t.Fatalf("GetForPrincipal parent: %v", err)
+		t.Fatalf("GetForPrincipal canonical: %v", err)
 	}
-	if consumed.GrantConsumedBy != hitlPeerPrincipalID(parentIP) {
-		t.Fatalf("GrantConsumedBy = %q, want %q", consumed.GrantConsumedBy, hitlPeerPrincipalID(parentIP))
+	if consumed.GrantConsumedBy != hitlPeerPrincipalID(canonicalIP) {
+		t.Fatalf("GrantConsumedBy = %q, want %q", consumed.GrantConsumedBy, hitlPeerPrincipalID(canonicalIP))
 	}
 }
 

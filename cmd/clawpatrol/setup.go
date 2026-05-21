@@ -1044,13 +1044,19 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 			}
 		}
 		// Always persist a user-readable copy at ~/.config/clawpatrol/
-		// wg.conf so `clawpatrol run` can spin up a per-process tunnel
-		// without sudo (root-owned /etc/wireguard/<iface>.conf is
-		// unreadable to the caller's uid).
+		// wg.conf so the per-host `clawpatrol` daemon (Linux) and the
+		// macOS NE extension can spin up a userspace WG tunnel without
+		// reading root-owned /etc/wireguard/<iface>.conf.
 		var persistErr error
 		if err := writeUserWGConf(authKey); err != nil {
 			persistErr = err
 		}
+		// Mode marker — read by the daemon at startup to pick the
+		// transport. Default (no marker) also defaults to wireguard,
+		// but writing it explicitly avoids surprises if a host has
+		// stale state from a previous tailscale-mode join.
+		_ = os.WriteFile(filepath.Join(filepath.Dir(setup.caPath), "mode"),
+			[]byte("wireguard\n"), 0o600)
 		// macOS: kick off the NE bootstrap right after the wg.conf is
 		// in place. Surfaces the one-time sysext approval prompt now
 		// (better than waiting until first `clawpatrol run`).
@@ -1120,10 +1126,10 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 			}
 		}
 		_ = os.WriteFile(filepath.Join(clawDir, "mode"), []byte("tailscale\n"), 0o600)
-		// Persist the join-time --hostname so `clawpatrol run` can
-		// register each ephemeral peer under the operator-chosen name
-		// instead of os.Hostname() (which on most VMs is the system
-		// login, not the intended bot identity).
+		// Persist the join-time --hostname so the per-host daemon
+		// registers under the operator-chosen name instead of
+		// os.Hostname() (which on most VMs is the system login, not
+		// the intended bot identity).
 		if hn != "" {
 			_ = os.WriteFile(filepath.Join(clawDir, "hostname"), []byte(hn+"\n"), 0o600)
 		}
@@ -1164,7 +1170,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 			}
 			_ = os.WriteFile(filepath.Join(stateDir, "auth-key"), []byte(authKey+"\n"), 0o600)
 		}
-		items := []string{"Joined (tsnet mode — ephemeral node joins tailnet at run time)"}
+		items := []string{"Joined (tsnet mode — persistent daemon node joins tailnet on first `clawpatrol run`)"}
 		items = append(items, setupSummaryItems(*setup)...)
 		printTreeItems(items)
 		fmt.Println()
