@@ -548,20 +548,37 @@ let sessionSockPath = "/tmp/clawpatrol.sock"
 // the Linux daemon's $XDG_STATE_HOME/clawpatrol/tsnet layout.
 func tsnetStateDir() -> String {
     let fm = FileManager.default
+    // 0o700: tsnet writes machine + node keys here in plaintext.
+    // Default createDirectory permissions on macOS leave the path
+    // world-readable, which would let any local user copy the
+    // identity and impersonate this Mac on the tailnet.
+    let restrictedAttrs: [FileAttributeKey: Any] = [.posixPermissions: 0o700]
     if let base = try? fm.url(for: .applicationSupportDirectory,
                               in: .userDomainMask,
                               appropriateFor: nil,
                               create: true) {
         let dir = base.appendingPathComponent("clawpatrol/tsnet", isDirectory: true)
-        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: dir,
+                                withIntermediateDirectories: true,
+                                attributes: restrictedAttrs)
+        // Tighten in case the directory pre-existed (created
+        // earlier with default perms) — setAttributes always
+        // applies regardless of whether createDirectory was a no-op.
+        try? fm.setAttributes(restrictedAttrs, ofItemAtPath: dir.path)
+        // Also tighten the intermediate <appsupport>/clawpatrol so
+        // a future sibling tsnet/ peer can't be created world-readable.
+        let parent = dir.deletingLastPathComponent().path
+        try? fm.setAttributes(restrictedAttrs, ofItemAtPath: parent)
         return dir.path
     }
-    // Fall back to a stable /tmp path. Less ideal (cleared on
-    // reboot, so the auth key gets re-consumed across reboots)
-    // but better than a fresh mktemp every init.
-    let fallback = "/tmp/clawpatrol-tsnet-ne"
+    // Fall back to /var/root/clawpatrol-tsnet-ne. NE runs as root
+    // so /var/root is writable; /tmp would be world-writable (symlink
+    // attack window). Lost across reboots but safer.
+    let fallback = "/var/root/clawpatrol-tsnet-ne"
     try? fm.createDirectory(atPath: fallback,
-                            withIntermediateDirectories: true)
+                            withIntermediateDirectories: true,
+                            attributes: restrictedAttrs)
+    try? fm.setAttributes(restrictedAttrs, ofItemAtPath: fallback)
     return fallback
 }
 
