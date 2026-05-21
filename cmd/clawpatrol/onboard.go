@@ -468,10 +468,17 @@ func (t *tailscaleOnboarder) MintKey(ctx context.Context, _ string, _ bool) (str
 }
 
 // mintTailscaleAuthKey calls Tailscale's OAuth + auth-key API to mint
-// a reusable auth key. ephemeral=true makes each registered node
+// a single-use auth key. ephemeral=true makes the registered node
 // auto-disappear on disconnect (used by per-process tsnet runs);
 // ephemeral=false keeps the node registered across reconnects (used
-// by whole-machine joins).
+// by whole-machine joins and the per-host daemon).
+//
+// The key is non-reusable: it authenticates exactly one node
+// registration, then becomes inert. Daemon respawns and reboots reuse
+// the persisted tsnet state dir (no key needed — tsnet ignores the
+// AuthKey field once the local state is past NeedsLogin). Limits the
+// blast radius if the on-disk auth-key file leaks: an attacker can
+// register at most one extra tailnet node before the key is burned.
 func mintTailscaleAuthKey(ctx context.Context, ts JoinConfig, ephemeral bool) (string, error) {
 	clientID := resolveTemplate(ts.OAuthClientID)
 	clientSecret := resolveTemplate(ts.OAuthClientSecret)
@@ -532,7 +539,7 @@ func mintTailscaleAuthKey(ctx context.Context, ts JoinConfig, ephemeral bool) (s
 		"capabilities": map[string]any{
 			"devices": map[string]any{
 				"create": map[string]any{
-					"reusable":      true,
+					"reusable":      false,
 					"ephemeral":     ephemeral,
 					"preauthorized": true,
 					"tags":          tags,
