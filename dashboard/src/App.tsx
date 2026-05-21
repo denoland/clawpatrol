@@ -155,7 +155,7 @@ export default function App() {
 // HomeAgents shows the first N agents on the home page with a link
 // to the full devices list when there's more. Sorted by IP (matching
 // AgentsTable's own sort) so truncation is stable across renders.
-const HOME_AGENTS_LIMIT = 5;
+const HOME_AGENTS_LIMIT = 10;
 function HomeAgents({
   agents,
   integrations,
