@@ -276,8 +276,19 @@ func TestOnboardApproveWithDashboardPasswordInTailscaleModeDoesNotRequireTailnet
 	}
 }
 
-func TestOnboardApproveWithTailnetPrincipalInTailscaleModeDoesNotRequireDashboardPassword(t *testing.T) {
+// A tailnet operator whose login matches dashboard_operators can
+// reach /api/onboard/approve without a dashboard password — that's
+// the entire point of the operator allowlist. Reaching the handler
+// shows up as a 404 because the code "NOPE" doesn't exist.
+//
+// Pre-#509 these tests didn't configure DashboardOperators at all
+// and still expected the request to pass; that loose behavior let
+// any tailnet member (including tag:client whois "tagged-devices")
+// approve onboards. The fix requires an explicit allowlist match
+// on operator-class routes; the test config now reflects that.
+func TestOnboardApproveWithTailnetPrincipalInTailscaleModeReachesHandler(t *testing.T) {
 	w := newOnboardAuthTestWebMuxForControl(t, "tailscale")
+	w.g.cfg.DashboardOperators = []string{"*@example.com"}
 	h := w.handler()
 	req := httptest.NewRequest(http.MethodPost, "/api/onboard/approve?code=NOPE&profile=default", nil)
 	req.RemoteAddr = "127.0.0.1:12345"
@@ -294,8 +305,9 @@ func TestOnboardApproveWithTailnetPrincipalInTailscaleModeDoesNotRequireDashboar
 	}
 }
 
-func TestOnboardApproveWithTailnetPrincipalInDefaultTailscaleModeDoesNotRequireDashboardPassword(t *testing.T) {
+func TestOnboardApproveWithTailnetPrincipalInDefaultTailscaleModeReachesHandler(t *testing.T) {
 	w := newOnboardAuthTestWebMuxForControl(t, "")
+	w.g.cfg.DashboardOperators = []string{"*@example.com"}
 	h := w.handler()
 	req := httptest.NewRequest(http.MethodPost, "/api/onboard/approve?code=NOPE&profile=default", nil)
 	req.RemoteAddr = "127.0.0.1:12345"
@@ -309,6 +321,33 @@ func TestOnboardApproveWithTailnetPrincipalInDefaultTailscaleModeDoesNotRequireD
 	}
 	if !strings.Contains(rr.Body.String(), "unknown or expired code") {
 		t.Fatalf("body = %q, want onboard handler error", rr.Body.String())
+	}
+}
+
+// Counterpart to the previous two tests: a tailnet identity that
+// *doesn't* match dashboard_operators must be rejected on
+// /api/onboard/approve even though Tailscale control mode is
+// active. This is the #509 case — without this check, tag:client
+// peers (whois resolves to "tagged-devices") could approve their
+// own onboards.
+func TestOnboardApproveRejectsTailnetPrincipalNotInOperators(t *testing.T) {
+	w := newOnboardAuthTestWebMuxForControl(t, "tailscale")
+	w.g.cfg.DashboardOperators = []string{"*@example.com"}
+	h := w.handler()
+	req := httptest.NewRequest(http.MethodPost, "/api/onboard/approve?code=NOPE&profile=default", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	// "tagged-devices" is the tsnet whois reply for a tag:client
+	// peer with no human identity attached.
+	req.Header.Set("Tailscale-User-Login", "tagged-devices")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body = %q", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "operator routes require") {
+		t.Fatalf("body = %q, want operator-gate error", rr.Body.String())
 	}
 }
 
