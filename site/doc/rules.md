@@ -339,10 +339,14 @@ or set the same value in the OpenClaw configuration file:
 }
 ```
 
-This is the outer OpenClaw agent-run timeout. If your workflow also sets a
-more specific HTTP, tool, or command timeout, keep that timeout at or
-above `240` seconds as well. For the native Codex app-server harness,
-raise its app-server request timeout too:
+This is the outer OpenClaw agent-run timeout. It does not override
+shorter timeouts inside the agent's own tools or commands. If the agent
+runs `curl`, an HTTP client, or another tool with its own timeout, keep
+that inner timeout at or above `240` seconds as well.
+
+If your OpenClaw setup explicitly runs agents through the Codex
+app-server runtime (`agentRuntime.id: "codex"`), also raise the Codex
+app-server request timeout:
 
 ```sh
 openclaw config set plugins.entries.codex.config.appServer.requestTimeoutMs 240000
