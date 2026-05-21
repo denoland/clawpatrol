@@ -360,14 +360,14 @@ openclaw config set tools.exec.timeoutSec 240
 
 This keeps the `exec` command process alive long enough for the HITL
 decision, but it still does not force an arbitrary command or script to
-choose matching HTTP-client options. If the agent can write or choose
-arbitrary commands, `AGENTS.md` can remind it to use longer timeouts, but
-that reminder is not an enforcement boundary.
+choose matching HTTP-client options.
 
-To make the timeout deterministic, expose preconfigured scripts, helper
-functions, or tools that set the inner HTTP timeout themselves, and have
-the agent call those instead of open-ended `curl` or ad hoc HTTP code. For
-example:
+As a practical convention, add guidance to `AGENTS.md` or the agent's
+system instructions telling the agent to keep inner HTTP timeouts at or
+above the caller timeout when it writes `curl`, HTTP client, or script
+code. This is a suggestion to the agent rather than a hard enforcement
+boundary, but it is usually the right level of control for open-ended
+agent-authored commands. For example:
 
 ```sh
 curl --max-time 240 https://...
