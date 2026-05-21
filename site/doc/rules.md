@@ -312,7 +312,11 @@ timeout responses are gateway-generated failures, not upstream
 responses.
 
 For `human_approver`, set `timeout` to the maximum time Claw Patrol
-should wait for a human decision. Recommended starting configuration:
+should wait for a human decision.
+
+#### Recommended timeout values
+
+Recommended starting configuration:
 
 - Claw Patrol human approval timeout: `90` seconds
 - Agent or tool caller timeout: `240` seconds
@@ -320,6 +324,8 @@ should wait for a human decision. Recommended starting configuration:
 Configure the agent or tool timeout to be at least 60 seconds longer than
 Claw Patrol's human approval timeout. This keeps the caller alive long
 enough to receive the final allow/deny result.
+
+#### OpenClaw agent-run timeout
 
 For a normal OpenClaw agent run, configure the whole agent-run timeout:
 
@@ -340,17 +346,28 @@ or set the same value in the OpenClaw configuration file:
 ```
 
 This is the outer OpenClaw agent-run timeout. It does not override
-shorter timeouts inside the agent's own tools or commands. Prefer
-deterministic tool configuration over relying only on agent instructions.
-For OpenClaw `exec` calls, set the default command timeout too:
+shorter timeouts inside the agent's own tools or commands.
+
+#### OpenClaw tool and command timeouts
+
+Prefer deterministic tool configuration over relying only on agent
+instructions. For OpenClaw `exec` calls, set the default command timeout
+too:
 
 ```sh
 openclaw config set tools.exec.timeoutSec 240
 ```
 
-If the agent runs `curl`, an HTTP client, or another script that sets its
-own timeout, keep that inner timeout at or above `240` seconds as well.
-For example:
+This keeps the `exec` command process alive long enough for the HITL
+decision, but it still does not force an arbitrary command or script to
+choose matching HTTP-client options. If the agent can write or choose
+arbitrary commands, `AGENTS.md` can remind it to use longer timeouts, but
+that reminder is not an enforcement boundary.
+
+To make the timeout deterministic, expose preconfigured scripts, helper
+functions, or tools that set the inner HTTP timeout themselves, and have
+the agent call those instead of open-ended `curl` or ad hoc HTTP code. For
+example:
 
 ```sh
 curl --max-time 240 https://...
@@ -364,8 +381,7 @@ await fetch(url, { signal: AbortSignal.timeout(240_000) })
 requests.post(url, timeout=240)
 ```
 
-Agent instructions such as `AGENTS.md` can remind the model to do this,
-but they are not a substitute for explicit tool or script configuration.
+#### Codex app-server runtime timeout
 
 If your OpenClaw setup explicitly runs agents through the Codex
 app-server runtime (`agentRuntime.id: "codex"`), also raise the Codex
