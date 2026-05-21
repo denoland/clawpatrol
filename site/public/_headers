@@ -12,3 +12,9 @@
 # (— → â€"). Pin UTF-8 explicitly.
 /*.txt
   Content-Type: text/plain; charset=utf-8
+
+# Browsers do not consistently render text/markdown inline. The docs
+# "View as markdown" links are meant to show raw source in the current tab,
+# so serve .md variants as plain UTF-8 text.
+/*.md
+  Content-Type: text/plain; charset=utf-8

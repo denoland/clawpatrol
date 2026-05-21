@@ -51,7 +51,10 @@ function serveDocsInDev(): Plugin {
           if (!doc) return next();
 
           if (isMarkdown) {
-            res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+            // Serve the raw source as plain text so browsers reliably display
+            // it when users click "View as markdown" instead of treating
+            // text/markdown as an unknown/downloadable type.
+            res.setHeader("Content-Type", "text/plain; charset=utf-8");
             res.end(doc.raw);
             return;
           }
