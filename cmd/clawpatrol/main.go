@@ -2698,7 +2698,10 @@ flags:
                                   then start. The next dashboard request will
                                   re-run first-run setup.
 
-Start from examples/gateway.example.hcl in the repo, or see the HCL reference:
+Start from the example config:
+  https://github.com/denoland/clawpatrol/blob/main/examples/gateway.example.hcl
+
+HCL reference:
   https://clawpatrol.dev/docs/config-reference`
 
 func runGateway(args []string) {
