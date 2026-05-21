@@ -350,6 +350,20 @@ openclaw config set tools.exec.timeoutSec 240
 
 If the agent runs `curl`, an HTTP client, or another script that sets its
 own timeout, keep that inner timeout at or above `240` seconds as well.
+For example:
+
+```sh
+curl --max-time 240 https://...
+```
+
+```ts
+await fetch(url, { signal: AbortSignal.timeout(240_000) })
+```
+
+```py
+requests.post(url, timeout=240)
+```
+
 Agent instructions such as `AGENTS.md` can remind the model to do this,
 but they are not a substitute for explicit tool or script configuration.
 
