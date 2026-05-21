@@ -446,11 +446,27 @@ func (d *daemon) handle(c net.Conn) {
 		log.Printf("daemon: read command: %v", err)
 		return
 	}
-	if line != "START\n" {
+	_ = c.SetReadDeadline(time.Time{})
+
+	switch line {
+	case "START\n":
+		// fall through below
+	case "ENV\n":
+		// Lightweight query: ship the cached env-pushdown JSON and
+		// return. No TUN handoff, no per-session gVisor stack —
+		// `clawpatrol env` is a one-shot read, not a wrapped child.
+		// Without this branch the env subcommand has no tailnet
+		// route to the gateway from its own process (the daemon's
+		// tsnet.Server is process-local), and the direct fetch
+		// silently times out in tsnet-only deployments.
+		if err := daemonWriteEnvReply(c, d.envVars); err != nil {
+			log.Printf("daemon: ENV reply: %v", err)
+		}
+		return
+	default:
 		log.Printf("daemon: unknown command %q", line)
 		return
 	}
-	_ = c.SetReadDeadline(time.Time{})
 
 	// 1. Tell the client our underlay IP, ship the env-pushdown JSON,
 	// and pass along any one-line warning the transport's boot probe
@@ -528,6 +544,21 @@ func daemonFetchEnvPushdown() []byte {
 		return []byte("[]")
 	}
 	return out
+}
+
+// daemonWriteEnvReply writes a single "ENV <n>\n<n bytes>" frame —
+// the cached env-pushdown JSON. Used by the lightweight ENV control
+// command (no session, no TUN handoff).
+func daemonWriteEnvReply(w io.Writer, envVars []byte) error {
+	if _, err := fmt.Fprintf(w, "ENV %d\n", len(envVars)); err != nil {
+		return err
+	}
+	if len(envVars) > 0 {
+		if _, err := w.Write(envVars); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // daemonWriteStartReply writes the ADDR / ENV / WARN frames that the

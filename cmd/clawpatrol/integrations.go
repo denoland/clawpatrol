@@ -65,6 +65,18 @@ type pushdownEnvVar struct {
 // that asks the network extension to make the call instead.
 var envPushdownGatewayFetcher = fetchEnvPushdownFromGateway
 
+// envPushdownDaemonFetcher is the Linux-only "ask the local
+// daemon for its cached env-pushdown JSON" path. Wired up from
+// run_linux.go's init() so this file can stay platform-agnostic.
+// Nil on platforms with no per-host daemon (macOS, the gateway
+// itself); runEnv then skips straight to the direct HTTP fetcher.
+//
+// Reason this exists: in tsnet-only deployments the CLI process
+// invoking `clawpatrol env` has no tailnet route to the gateway's
+// 100.x address — that route lives inside the daemon's tsnet.Server.
+// Without a daemon hop the direct fetch silently times out.
+var envPushdownDaemonFetcher func() ([]pushdownEnvVar, error)
+
 // envPushdownVars returns every var the operator's CLI environment
 // needs: CA-bundle vars (which point at a path on the *client's*
 // disk so the client owns them) plus the gateway's declared
@@ -79,6 +91,16 @@ var envPushdownGatewayFetcher = fetchEnvPushdownFromGateway
 // won't get the placeholder tokens.
 func envPushdownVars(caPath string) ([]pushdownEnvVar, error) {
 	out := caPathPushdownVars(caPath)
+	// Prefer the daemon-cached set when available — it's the only
+	// path that works in tsnet-only mode (the CLI process has no
+	// tailnet route of its own). Falls back to a direct fetch on any
+	// daemon error: daemon unreachable, hello mismatch, or an old
+	// daemon that doesn't understand the ENV command (replies EOF).
+	if envPushdownDaemonFetcher != nil {
+		if vars, err := envPushdownDaemonFetcher(); err == nil {
+			return append(out, vars...), nil
+		}
+	}
 	vars, err := envPushdownGatewayFetcher(filepath.Dir(caPath))
 	if err != nil {
 		return out, err
