@@ -313,10 +313,15 @@ type Gateway struct {
 	certs    *CertCache
 	dialer   *net.Dialer
 	sink     *Sink
-	oauth    *OAuthRegistry
-	agents   *AgentRegistry
-	hitl     *HITLRegistry
-	onboard  *onboardRegistry
+	// blobs is the gateway-side plugin blob store (sqlite-backed).
+	// Used by endpoint plugins that need per-endpoint persistent
+	// bytes — SSH host keys today, future JWT signing keys.
+	// Exposed to plugins via ConnHandle.Blobs.
+	blobs   runtime.BlobStore
+	oauth   *OAuthRegistry
+	agents  *AgentRegistry
+	hitl    *HITLRegistry
+	onboard *onboardRegistry
 	// secrets hands credential plugins the secret bytes they inject
 	// at request time. gatewaySecretStore stacks the credential_secrets
 	// table (dashboard slots), OAuthRegistry (refreshed access tokens),
@@ -1447,6 +1452,7 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 		Profile:  profile,
 		PeerIP:   pip,
 		Secrets:  g.secrets,
+		Blobs:    g.blobs,
 		DialUpstream: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			// Plugin asks for ep.Hosts[0]:port; we bypass DNS by
 			// dialing the original upstream IP the WG forwarder
@@ -1601,6 +1607,7 @@ func (g *Gateway) dispatchConnEndpoint(c net.Conn, dstIP string, dstPort uint16,
 		Profile:      profile,
 		PeerIP:       pip,
 		Secrets:      g.secrets,
+		Blobs:        g.blobs,
 		StateDir:     g.stateDir,
 		DstPort:      dstPort,
 		UpstreamHost: hostname,
@@ -2763,6 +2770,7 @@ func runGateway(args []string) {
 		certs:    certs,
 		dialer:   newUpstreamDialer(cfg.Resolver()),
 		sink:     sink,
+		blobs:    blobs,
 		oauth:    oauthReg,
 		agents:   NewAgentRegistry(),
 		hitl:     newHITLRegistry(sink),
