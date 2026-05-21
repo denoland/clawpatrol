@@ -53,25 +53,6 @@ import (
 const (
 	daemonIdleTimeout  = 5 * time.Minute
 	daemonHelloTimeout = 2 * time.Second
-
-	// envRefreshInterval bounds the latency between a gateway-side
-	// credential change (HCL reload, credential connect/disconnect)
-	// and that change becoming visible in the daemon's env-pushdown
-	// replies. A background goroutine refetches /api/env-pushdown at
-	// this cadence so `clawpatrol run -- env` invoked after a profile
-	// change picks up the new placeholders without a daemon restart.
-	// 2s keeps the steady-state load at ≤30 fetches/min while making
-	// a manual profile change visible inside one prompt.
-	envRefreshInterval = 2 * time.Second
-
-	// envCacheTTL bounds how stale a cached env-pushdown response can
-	// be when the background refresh loop is delayed or failing
-	// (gateway briefly unreachable, dial in flight, etc.). On-demand
-	// START / ENV callers refetch past this age. Sized as a generous
-	// upper bound — the background loop normally keeps the cache
-	// fresh well below this — so a momentary fetch failure can't
-	// silently pin stale env state for the daemon's whole lifetime.
-	envCacheTTL        = 30 * time.Second
 	daemonSpawnTimeout = 30 * time.Second
 	daemonMagicLine    = "CLAWPATROL/1\n"
 )
@@ -283,27 +264,25 @@ type daemon struct {
 	// never replaced.
 	transport daemonTransport
 
-	// envVars + envFetchedAt cache the gateway's env-pushdown response.
-	// A background goroutine (runEnvRefreshLoop) refreshes the cache
-	// every envRefreshInterval so credential changes on the gateway
-	// (operator connects a new credential, HCL reload pulls in a new
-	// credential block) propagate to existing daemons within one
-	// interval instead of requiring a daemon restart. freshEnvVars
-	// also refetches on-demand past envCacheTTL when the loop is
-	// delayed. Held under envMu (the JSON byte slice is shared with
-	// concurrent handle() goroutines that ship it to clients).
-	envMu        sync.Mutex
-	envVars      []byte
-	envFetchedAt time.Time
+	// lastGoodEnv holds the most recent non-empty env-pushdown response
+	// observed during this daemon's lifetime. freshEnvVars hits the
+	// gateway on every call so a credential change made on the
+	// dashboard (operator connects a credential, HCL reload pulls in a
+	// new credential block) is visible to the very next `clawpatrol
+	// run` — issue #546. lastGoodEnv only kicks in when a fetch comes
+	// back empty AND a previous fetch was non-empty, to ride out
+	// transient gateway errors (daemonFetchEnvPushdown returns the "[]"
+	// sentinel on any failure and can't distinguish that from "no vars
+	// declared"). Held under envMu — concurrent handle() goroutines
+	// share the JSON byte slice.
+	envMu       sync.Mutex
+	lastGoodEnv []byte
 
-	// envFetch is the fetcher the cache loop and freshEnvVars call to
-	// pull the latest env-pushdown JSON from the gateway. Injected so
-	// tests can stub the gateway round-trip; defaults to
-	// daemonFetchEnvPushdown when nil. envRefreshTick overrides the
-	// background loop's cadence — also for tests; zero means
-	// envRefreshInterval.
-	envFetch       func() []byte
-	envRefreshTick time.Duration
+	// envFetch is the fetcher freshEnvVars calls to pull the latest
+	// env-pushdown JSON from the gateway. Injected so tests can stub
+	// the gateway round-trip; defaults to daemonFetchEnvPushdown when
+	// nil.
+	envFetch func() []byte
 
 	activeConns atomic.Int32
 
@@ -342,11 +321,6 @@ func runDaemon(_ []string) {
 		log.Fatalf("daemon: transport: %v", err)
 	}
 
-	// Pre-warm the env-pushdown cache so the first START reply doesn't
-	// pay the round-trip. Subsequent calls go through freshEnvVars,
-	// which re-fetches whenever the cache is older than envCacheTTL.
-	envJSON := daemonFetchEnvPushdown()
-
 	// Bind the control socket last. Parent still holds spawn.lock at
 	// this point, so we can't race another daemon for the path.
 	_ = os.Remove(sockPath)
@@ -364,13 +338,11 @@ func runDaemon(_ []string) {
 	}
 
 	d := &daemon{
-		sockPath:     sockPath,
-		listener:     ln,
-		lockFile:     lf,
-		transport:    transport,
-		envVars:      envJSON,
-		envFetchedAt: time.Now(),
-		rebindCh:     make(chan struct{}),
+		sockPath:  sockPath,
+		listener:  ln,
+		lockFile:  lf,
+		transport: transport,
+		rebindCh:  make(chan struct{}),
 	}
 
 	// Signal ready on the inherited pipe (fd 3). Once this lands, the
@@ -381,12 +353,6 @@ func runDaemon(_ []string) {
 	}
 
 	d.startIdleTimer()
-
-	// Start the background env-pushdown refresh loop. It owns the
-	// "credential changes propagate without restart" guarantee — see
-	// runEnvRefreshLoop. Runs for the life of the process; the daemon
-	// always exits via os.Exit (tryExit), which kills the goroutine.
-	go d.runEnvRefreshLoop()
 
 	// Main loop. After serve() returns the only valid events are:
 	//   - tryExit re-bound (sends on rebindCh) → loop, serve new listener.
@@ -568,85 +534,41 @@ func (d *daemon) handle(c net.Conn) {
 	}
 }
 
-// freshEnvVars returns the cached env-pushdown JSON, refetching from
-// the gateway only when the cache is older than envCacheTTL. The
-// background refresh loop (runEnvRefreshLoop) normally keeps the cache
-// fresh on a much shorter cadence; this on-demand path exists so the
-// first request after a stretched-out loop tick (or a stalled fetch)
-// still pulls a current snapshot.
+// freshEnvVars fetches the env-pushdown JSON from the gateway on
+// every call so a credential change made on the dashboard (operator
+// connects a credential, HCL reload pulls in a new credential block)
+// is visible to the next `clawpatrol run` without a daemon restart
+// (#546). The gateway lives on-tailnet so the round-trip is sub-50ms;
+// agent sessions are not noticeably slower, and an idle daemon
+// generates no traffic.
 //
-// Why this exists: profile changes on the gateway (operator connects
-// a new credential, HCL reload pulls in a new credential block) need
-// to be reflected in the placeholders the daemon ships to clients.
-// Without proactive refresh the daemon serves whatever it cached at
-// boot until someone manually restarts it.
-//
-// On gateway fetch error daemonFetchEnvPushdown already returns "[]"
-// (it can't distinguish "no vars declared" from "gateway down") — to
-// avoid silently dropping the previously-known-good list on a
-// transient gateway blip, fall back to the prior cache when the
-// fetch comes back empty AND the prior cache was non-empty.
+// daemonFetchEnvPushdown returns the "[]" sentinel on any fetch
+// failure and can't distinguish that from "no vars declared". If a
+// fetch comes back empty and we previously observed a non-empty list
+// in this daemon's lifetime, serve that last-known-good list rather
+// than silently dropping pushdown vars on a transient blip.
 func (d *daemon) freshEnvVars() []byte {
+	fresh := d.fetchEnv()
 	d.envMu.Lock()
 	defer d.envMu.Unlock()
-	if time.Since(d.envFetchedAt) < envCacheTTL && len(d.envVars) > 0 {
-		return d.envVars
+	if isEmptyEnvList(fresh) && !isEmptyEnvList(d.lastGoodEnv) {
+		return d.lastGoodEnv
 	}
-	fresh := d.fetchEnv()
-	if isEmptyEnvList(fresh) && !isEmptyEnvList(d.envVars) {
-		// Probable transient gateway error — keep the last good list
-		// but don't bump envFetchedAt, so the next call retries.
-		return d.envVars
+	if !isEmptyEnvList(fresh) {
+		d.lastGoodEnv = fresh
 	}
-	d.envVars = fresh
-	d.envFetchedAt = time.Now()
-	return d.envVars
+	return fresh
 }
 
 // fetchEnv resolves the env-pushdown fetcher to use. Defaults to the
 // gateway-dialing daemonFetchEnvPushdown; tests inject a stub via the
-// envFetch field. Caller does NOT need to hold envMu — the function
-// value itself is immutable after daemon construction.
+// envFetch field. The function value itself is immutable after daemon
+// construction, so no envMu required.
 func (d *daemon) fetchEnv() []byte {
 	if d.envFetch != nil {
 		return d.envFetch()
 	}
 	return daemonFetchEnvPushdown()
-}
-
-// runEnvRefreshLoop polls the gateway's /api/env-pushdown on a fixed
-// cadence and updates the cached JSON in place, so credential changes
-// (operator connects/disconnects, HCL reload) become visible to clients
-// without a daemon restart. Bounded to ≤30 fetches/min at the default
-// envRefreshInterval — bursty `clawpatrol run` invocations still serve
-// straight from the cache.
-//
-// Lifetime: runs for the life of the daemon process. The daemon exits
-// via os.Exit (tryExit), which terminates this goroutine implicitly;
-// there's no explicit stop channel.
-//
-// Mirrors freshEnvVars' transient-failure guard: if the gateway is
-// briefly unreachable (daemonFetchEnvPushdown returns "[]" on every
-// kind of failure), preserve the prior cache instead of clobbering it
-// with an empty list.
-func (d *daemon) runEnvRefreshLoop() {
-	interval := d.envRefreshTick
-	if interval == 0 {
-		interval = envRefreshInterval
-	}
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	for range t.C {
-		fresh := d.fetchEnv()
-		d.envMu.Lock()
-		if isEmptyEnvList(fresh) && !isEmptyEnvList(d.envVars) {
-			d.envMu.Unlock()
-			continue
-		}
-		d.envVars = fresh
-		d.envFetchedAt = time.Now()
-		d.envMu.Unlock()
-	}
 }
 
 // isEmptyEnvList recognises the two encodings of "no push-down vars"
