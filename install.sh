@@ -64,7 +64,7 @@ if [ "${CLAWPATROL_FROM_SOURCE:-0}" = "1" ]; then
     printf '<!doctype html><html><body><pre>dashboard not built</pre></body></html>' > "$SRC/dashboard/dist/index.html"
   fi
   say "building clawpatrol"
-  ( cd "$SRC" && go build -ldflags "-s -w" -o clawpatrol ./cmd/clawpatrol ) || fail "go build failed"
+  ( cd "$SRC" && go build -ldflags "-s -w" -trimpath -o clawpatrol ./cmd/clawpatrol ) || fail "go build failed"
   mv "$SRC/clawpatrol" "$PREFIX/clawpatrol"
   chmod +x "$PREFIX/clawpatrol"
   say "installed: $PREFIX/clawpatrol"

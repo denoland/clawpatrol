@@ -1,7 +1,15 @@
-.PHONY: build dashboard test fmt fmt-check lint clean install
+.PHONY: build release dashboard test fmt fmt-check lint clean install
 
 build: dashboard
 	go build -o clawpatrol ./cmd/clawpatrol
+
+# release mirrors .github/workflows/release.yml: strip the symbol
+# table and DWARF (-s -w) and rewrite source paths (-trimpath). On
+# this tree that drops the binary from ~88 MB to ~62 MB without
+# changing runtime behaviour. Use this when packaging for users —
+# `make build` stays unstripped so panics keep file:line info.
+release: dashboard
+	go build -ldflags "-s -w" -trimpath -o clawpatrol ./cmd/clawpatrol
 
 dashboard:
 	cd dashboard && deno install && deno task build
