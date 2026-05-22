@@ -22,6 +22,14 @@ import (
 
 const ScopeUser = "user"
 
+// oauthResponseLimit caps every io.ReadAll on an OAuth provider's
+// response body. Token / device-code / userinfo replies are tiny JSON
+// blobs (a few hundred bytes); 64 KiB is generous enough to absorb
+// unexpectedly large error payloads from misbehaving providers
+// without letting a hostile or malfunctioning endpoint balloon
+// process memory on every flow attempt.
+const oauthResponseLimit = 64 << 10
+
 // OAuthConfig + OAuthIntegration moved to config/oauth.go so credential
 // plugins can ship their own OAuth flow data without import cycles.
 // Aliased here so existing call sites in this package don't churn.
@@ -109,7 +117,7 @@ func (r *OAuthRegistry) Inject(id string, req *http.Request) (bool, error) {
 	}
 	t, err := s.source.Token()
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("oauth %q: token: %w", id, err)
 	}
 	req.Header.Set(s.header, s.prefix+t.AccessToken)
 	return true, nil
@@ -135,7 +143,7 @@ func (r *OAuthRegistry) Token(id string) (string, error) {
 	}
 	t, err := s.source.Token()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("oauth %q: token: %w", id, err)
 	}
 	return t.AccessToken, nil
 }
@@ -355,7 +363,7 @@ func (a *anthropicRefreshSource) Token() (*oauth2.Token, error) {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBytes, _ := io.ReadAll(resp.Body)
+	respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, oauthResponseLimit))
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("anthropic refresh %d: %s", resp.StatusCode, string(respBytes))
 	}
@@ -468,7 +476,7 @@ func (r *OAuthRegistry) loadFromDB() error {
 	}
 	rows, err := r.db.Query("SELECT id, access_token, token_type, refresh_token, expiry_ns, display_name, avatar_url, client_id FROM credentials")
 	if err != nil {
-		return err
+		return fmt.Errorf("oauth registry: query credentials: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
@@ -480,7 +488,7 @@ func (r *OAuthRegistry) loadFromDB() error {
 			clientID            sql.NullString
 		)
 		if err := rows.Scan(&id, &access, &typ, &refr, &expiryNs, &displayName, &avatar, &clientID); err != nil {
-			return err
+			return fmt.Errorf("oauth registry: scan credential row: %w", err)
 		}
 		it, ok := r.integrations[id]
 		if !ok {
@@ -506,7 +514,10 @@ func (r *OAuthRegistry) loadFromDB() error {
 		s.avatarURL = avatar.String
 		r.states[id] = s
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("oauth registry: iterate credentials: %w", err)
+	}
+	return nil
 }
 
 type oauthSession struct {
@@ -709,7 +720,7 @@ func registerOAuthClient(ctx context.Context, registerURL, redirectURI string) (
 		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBytes, _ := io.ReadAll(resp.Body)
+	respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, oauthResponseLimit))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("register %d: %s", resp.StatusCode, string(respBytes))
 	}
@@ -790,7 +801,7 @@ func (w *webMux) startDeviceFlow(rw http.ResponseWriter, id string, it *OAuthInt
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, oauthResponseLimit))
 	if resp.StatusCode != 200 {
 		http.Error(rw, fmt.Sprintf("device-code %d: %s", resp.StatusCode, string(body)), http.StatusBadGateway)
 		return
@@ -849,7 +860,7 @@ func (w *webMux) startOpenAIDeviceFlow(rw http.ResponseWriter, id string, it *OA
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, oauthResponseLimit))
 	if resp.StatusCode != 200 {
 		http.Error(rw, fmt.Sprintf("openai deviceauth %d: %s", resp.StatusCode, string(respBody)), http.StatusBadGateway)
 		return
@@ -931,7 +942,7 @@ func (w *webMux) pollOpenAIDeviceFlow(rw http.ResponseWriter, sess *oauthSession
 		writeJSON(rw, map[string]string{"error": "authorization_pending"})
 		return
 	}
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, oauthResponseLimit))
 	var pr struct {
 		AuthorizationCode string `json:"authorization_code"`
 		CodeVerifier      string `json:"code_verifier"`
@@ -957,7 +968,7 @@ func (w *webMux) pollOpenAIDeviceFlow(rw http.ResponseWriter, sess *oauthSession
 		return
 	}
 	defer func() { _ = exResp.Body.Close() }()
-	exBody, _ := io.ReadAll(exResp.Body)
+	exBody, _ := io.ReadAll(io.LimitReader(exResp.Body, oauthResponseLimit))
 	if exResp.StatusCode != 200 {
 		http.Error(rw, fmt.Sprintf("openai exchange %d: %s", exResp.StatusCode, string(exBody)), http.StatusBadGateway)
 		return
@@ -1007,7 +1018,7 @@ func (w *webMux) pollDeviceFlow(rw http.ResponseWriter, sess *oauthSession) {
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, oauthResponseLimit))
 	// Don't log the body verbatim — on success it carries access_token.
 	var tr struct {
 		AccessToken      string `json:"access_token"`
@@ -1117,7 +1128,7 @@ func (n *notionMCPRefreshSource) Token() (*oauth2.Token, error) {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBytes, _ := io.ReadAll(resp.Body)
+	respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, oauthResponseLimit))
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("notion_mcp refresh %d: %s", resp.StatusCode, string(respBytes))
 	}
@@ -1164,7 +1175,7 @@ func exchangeAnthropicCode(ctx context.Context, sess *oauthSession, code, state 
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBytes, _ := io.ReadAll(resp.Body)
+	respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, oauthResponseLimit))
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("anthropic %d: %s", resp.StatusCode, string(respBytes))
 	}

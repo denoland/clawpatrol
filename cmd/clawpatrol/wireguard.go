@@ -25,6 +25,7 @@ import (
 	"errors"
 	"expvar"
 	"fmt"
+	"log"
 	"net"
 	"net/netip"
 	"net/url"
@@ -608,16 +609,20 @@ func (s *WGServer) loadPeers() map[string]string {
 	}
 	rows, err := s.db.Query("SELECT pubkey, ip FROM wg_peers")
 	if err != nil {
+		log.Printf("wireguard: load peers: query: %v", err)
 		return out
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var k, ip string
-		if rows.Scan(&k, &ip) == nil {
-			out[k] = ip
+		if err := rows.Scan(&k, &ip); err != nil {
+			log.Printf("wireguard: load peers: scan: %v", err)
+			continue
 		}
+		out[k] = ip
 	}
 	if err := rows.Err(); err != nil {
+		log.Printf("wireguard: load peers: iterate: %v", err)
 		return map[string]string{}
 	}
 	return out

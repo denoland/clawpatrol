@@ -302,22 +302,25 @@ func fetchCAHTTP(gateway, dst string) (string, error) {
 	}
 	resp, err := c.Get(url)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("fetch ca: get %s: %w", url, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("status %d", resp.StatusCode)
+		return "", fmt.Errorf("fetch ca: %s status %d", url, resp.StatusCode)
 	}
-	b, err := io.ReadAll(resp.Body)
+	// 256 KiB cap. A PEM-encoded CA cert is <4 KiB; the cap stops a
+	// hostile gateway from streaming gigabytes into a TOFU client
+	// before the fingerprint check rejects it.
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("fetch ca: read %s: %w", url, err)
 	}
 	fp, err := caFingerprintFromPEM(b)
 	if err != nil {
-		return "", fmt.Errorf("parse CA: %w", err)
+		return "", fmt.Errorf("fetch ca: parse PEM from %s: %w", url, err)
 	}
 	if err := os.WriteFile(dst, b, 0o644); err != nil {
-		return "", err
+		return "", fmt.Errorf("fetch ca: write %s: %w", dst, err)
 	}
 	return fp, nil
 }
@@ -566,17 +569,20 @@ func fetchCA(ip, dst string) error {
 	c := &http.Client{Timeout: 10 * time.Second}
 	resp, err := c.Get(url)
 	if err != nil {
-		return err
+		return fmt.Errorf("fetch ca: get %s: %w", url, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("status %d from %s", resp.StatusCode, url)
+		return fmt.Errorf("fetch ca: %s status %d", url, resp.StatusCode)
 	}
-	b, err := io.ReadAll(resp.Body)
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
 	if err != nil {
-		return err
+		return fmt.Errorf("fetch ca: read %s: %w", url, err)
 	}
-	return os.WriteFile(dst, b, 0o644)
+	if err := os.WriteFile(dst, b, 0o644); err != nil {
+		return fmt.Errorf("fetch ca: write %s: %w", dst, err)
+	}
+	return nil
 }
 
 func installCATrust(caPath string) error {
@@ -838,7 +844,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
-		b, _ := io.ReadAll(resp.Body)
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 		return false, fmt.Errorf("start: %d %s", resp.StatusCode, string(b))
 	}
 	var start struct {
@@ -848,7 +854,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		Interval   int    `json:"interval"`
 		ExpiresIn  int    `json:"expires_in"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&start); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&start); err != nil {
 		return false, fmt.Errorf("start decode: %w", err)
 	}
 
@@ -907,7 +913,11 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 			continue
 		}
 		var pv map[string]string
-		_ = json.NewDecoder(pr.Body).Decode(&pv)
+		// Cap at 256 KiB — the success payload carries the CA PEM
+		// (~4 KiB) plus a handful of auth tokens. 256 KiB leaves room
+		// for chained intermediates without letting a runaway server
+		// stream into a CLI poller.
+		_ = json.NewDecoder(io.LimitReader(pr.Body, 256<<10)).Decode(&pv)
 		_ = pr.Body.Close()
 		if k, ok := pv["auth_key"]; ok && k != "" {
 			authKey = k
@@ -1175,7 +1185,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		return false, nil
 	}
 	var claimResp map[string]string
-	if err := json.NewDecoder(cr.Body).Decode(&claimResp); err == nil {
+	if err := json.NewDecoder(io.LimitReader(cr.Body, 16<<10)).Decode(&claimResp); err == nil {
 		if tok := claimResp["api_token"]; tok != "" {
 			_ = os.WriteFile(filepath.Join(filepath.Dir(setup.caPath), "api-token"),
 				[]byte(tok+"\n"), 0o600)

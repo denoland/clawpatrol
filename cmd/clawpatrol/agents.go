@@ -467,6 +467,7 @@ func (r *AgentRegistry) LoadSessions(db *sql.DB) {
 			ti, to, cu, cm, reqs, fa, la int64
 		)
 		if err := rows.Scan(&ip, &t, &id, &title, &model, &ti, &to, &cu, &cm, &reqs, &fa, &la); err != nil {
+			log.Printf("sessions: scan row: %v", err)
 			continue
 		}
 		if r.onboard != nil && !r.onboard.HasDevice(ip) {
