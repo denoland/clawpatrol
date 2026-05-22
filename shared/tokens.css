@@ -1,0 +1,160 @@
+/* ── design tokens, shared across site/ and dashboard/ ────────────────
+   Imported from each project's src/index.css after `@import "tailwindcss"`.
+   Each project may layer additional project-only tokens in its own
+   `@theme` block after this import.
+
+   `@theme static` emits every declared variable to :root regardless of
+   whether a utility references it. Without `static`, unused shades
+   (e.g. --color-rust-50 if nothing reads `bg-rust-50`) never get
+   serialized, which breaks the dev palette inspector.
+
+   `--color-*: initial` wipes Tailwind v4's default palette (slate,
+   gray, red, blue, …) so consumers can only reach the brand colors
+   declared below. Stock-color classes like `bg-white` / `text-red-600`
+   no longer emit CSS; use `canvas-light` for white and the brand
+   `success` / `danger` scales for state colors. */
+@theme static {
+  --color-*: initial;
+
+  /* Canvas — full warm-paper scale (50–950). Light end is the cream
+     body; medium tiers are usable as tan/khaki accents; deep tiers
+     read as warm coffee/near-black, useful for borders, secondary
+     surfaces, and inverted regions. Hue ~38°, low saturation so it
+     sits next to rust without competing.
+
+     Semantic aliases:
+       --color-canvas-light = pure white (elevated surfaces)
+       --color-canvas       = canvas-100 (body bg)
+       --color-canvas-muted = canvas-200
+       --color-canvas-dark  = canvas-400 */
+  --color-canvas-50: #fdfbf6;
+  --color-canvas-100: #fbf8f1;
+  --color-canvas-200: #f2ede2;
+  --color-canvas-300: #e7e0d0;
+  --color-canvas-400: #cdc1a8;
+  --color-canvas-500: #ad9f7f;
+  --color-canvas-600: #85795a;
+  --color-canvas-700: #5d543f;
+  --color-canvas-800: #3a342a;
+  --color-canvas-900: #221f19;
+  --color-canvas-950: #11100d;
+  --color-canvas-light: #ffffff;
+  --color-canvas: var(--color-canvas-100);
+  --color-canvas-muted: var(--color-canvas-200);
+  --color-canvas-dark: var(--color-canvas-400);
+
+  /* Persimmon — primary brand orange. Anchored at the mascot's
+     burnt-rust (#d8531c) at 500; 400 is reserved as the "juicier"
+     shade for highlights/hovers. */
+  --color-rust-50: #fcf3ec;
+  --color-rust-100: #fce0c9;
+  --color-rust-200: #f8c294;
+  --color-rust-300: #f29e5a;
+  --color-rust-400: #e87632;
+  --color-rust-500: #d8531c;
+  --color-rust-600: #b6420f;
+  --color-rust-700: #92350f;
+  --color-rust-800: #732a10;
+  --color-rust-900: #5d2412;
+  --color-rust-950: #2e0e05;
+  --color-rust: var(--color-rust-500);
+
+  /* Cornflower — secondary blue. Anchored at the mascot's deep hoodie
+     navy (#1f2a44). Lighter shades stay usable as soft backgrounds;
+     darker shades compress into near-black-blue. */
+  --color-navy-50: #eef1f8;
+  --color-navy-100: #d6dde9;
+  --color-navy-200: #b1becf;
+  --color-navy-300: #8194af;
+  --color-navy-400: #4f6489;
+  --color-navy-500: #1f2a44;
+  --color-navy-600: #18213a;
+  --color-navy-700: #131a30;
+  --color-navy-800: #0e1426;
+  --color-navy-900: #0a0f1c;
+  --color-navy-950: #050810;
+  --color-navy: var(--color-navy-500);
+
+  /* Butter — accent yellow, demoted toward amber/caution. Bare token
+     points at 500 (amber #f5b80c) rather than 400 (bright yellow); 400
+     is reserved for callouts that genuinely need the brighter cut. Use
+     butter for warning/pending states; the brand accent role belongs
+     to rust. */
+  --color-butter-50: #fffdec;
+  --color-butter-100: #fff8c4;
+  --color-butter-200: #fff088;
+  --color-butter-300: #ffe454;
+  --color-butter-400: #ffd93d;
+  --color-butter-500: #f5b80c;
+  --color-butter-600: #d4a800;
+  --color-butter-700: #a47208;
+  --color-butter-800: #84580f;
+  --color-butter-900: #6f4811;
+  --color-butter-950: #412403;
+  --color-butter: var(--color-butter-500);
+
+  /* Success — sage / moss green. Earthier and lower-saturation than
+     the crt-* terminal greens so it reads as "allow / OK" inside the
+     cream-canvas UI without going neon. Anchor at 500. */
+  --color-success-50: #f1f5e9;
+  --color-success-100: #dde9c5;
+  --color-success-200: #c0d595;
+  --color-success-300: #9cbb63;
+  --color-success-400: #7aa241;
+  --color-success-500: #5e8a3f;
+  --color-success-600: #4a6f30;
+  --color-success-700: #3c5827;
+  --color-success-800: #324522;
+  --color-success-900: #2a391f;
+  --color-success-950: #161e0c;
+  --color-success: var(--color-success-500);
+
+  /* Danger — brick red. Pulled toward earthy / wine rather than
+     fire-engine red so it sits next to rust without fighting it. Used
+     for deny verdicts, destructive actions, and errors. */
+  --color-danger-50: #fbeded;
+  --color-danger-100: #f6d2d2;
+  --color-danger-200: #eaa8a8;
+  --color-danger-300: #d97777;
+  --color-danger-400: #c44e4e;
+  --color-danger-500: #a83232;
+  --color-danger-600: #8d2424;
+  --color-danger-700: #721d1d;
+  --color-danger-800: #5d1818;
+  --color-danger-900: #4a1515;
+  --color-danger-950: #260a0a;
+  --color-danger: var(--color-danger-500);
+
+  /* Console / CRT — dark surfaces and terminal greens for code blocks
+     and the retro-CRT mascot panel. */
+  --color-console: #1a2820;
+  --color-console-dark: #0c1410;
+  --color-crt-bg-dark: #060a08;
+  --color-crt-bg: #0c1410;
+  --color-crt-bg-light: #141e18;
+  --color-crt-border: #1a2820;
+  --color-crt-faint: #2a8d50;
+  --color-crt-dim: #3fc170;
+  --color-crt: #5be38a;
+
+  /* Ink — three tiers, slightly cooled toward slate so they sit
+     between the rust (warm) and navy (cool) brand colors instead of
+     pulling the page exclusively warm. Low saturation keeps the cool
+     reading subtle, not tinted. text-subtle is tuned to clear WCAG
+     AA Large (3:1) on light surfaces. */
+  --color-text: #2c2e35;
+  --color-text-muted: #62656d;
+  --color-text-subtle: #82838c;
+
+  --font-display: "Funnel Display", system-ui, sans-serif;
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", "SF Mono", "Menlo", ui-monospace, monospace;
+
+  --breakpoint-xs: 32rem;
+
+  /* Half-pixel border step. Default Tailwind border scale jumps 1→2→4;
+     1.5 sits between for understated cards and dividers. */
+  --border-width-1\.5: 1.5px;
+
+  --text-2xs: 0.625rem;
+}

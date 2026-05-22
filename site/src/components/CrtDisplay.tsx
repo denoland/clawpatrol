@@ -13,11 +13,11 @@ export function CrtDisplay({
         {/* Glass reflection */}
         <div
           class="absolute pointer-events-none z-20 w-60 h-12
-            rounded-full bg-white blur-xl top-4 left-2 opacity-20"
+            rounded-full bg-canvas-light blur-xl top-4 left-2 opacity-20"
         />
         <div
           class="absolute pointer-events-none z-20 w-8 h-18
-            rounded-full bg-white blur-lg bottom-4 right-4 opacity-15"
+            rounded-full bg-canvas-light blur-lg bottom-4 right-4 opacity-15"
         />
         {/* CRT refresh line */}
         <div
