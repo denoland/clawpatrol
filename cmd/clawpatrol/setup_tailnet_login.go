@@ -78,6 +78,20 @@ func (b *tailnetBootstrap) Close(ctx context.Context) {
 // is printed to stdout and best-effort opened in the local browser;
 // if the operator is on a headless box, the URL is still copy-
 // pasteable. Blocks until the node reaches Running or ctx fires.
+//
+// Why disk-backed state and not mem.Store/Ephemeral: tsnet allows
+// `Store: &mem.Store{}` only when `Ephemeral: true` (see
+// tsnet/tsnet.go's isMemStore guard). Setting Ephemeral=true sends
+// LoginEphemeral to the control server at registration — but for
+// Tailscale SaaS that flag is only honored on the auth-key flow,
+// not on browser-driven interactive auth. Empirically: the browser
+// completes auth fine, but the resulting node never transitions to
+// BackendState=Running and the join times out. Until tsnet gains a
+// way to mark a browser-auth registration as ephemeral, we keep the
+// credentials in a temp dir and rely on Close→Logout+RemoveAll for
+// cleanup. SIGKILL during the bootstrap window can leak the temp
+// dir; the credentials inside it are still constrained by the
+// human's tailnet ACL, not a tagged-bot identity.
 func bootstrapTailnetForJoin(ctx context.Context) (*tailnetBootstrap, error) {
 	dir, err := os.MkdirTemp("", "clawpatrol-bootstrap-")
 	if err != nil {
