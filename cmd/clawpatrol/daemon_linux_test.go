@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -194,6 +195,33 @@ func TestDaemonProtocolRoundTrip(t *testing.T) {
 	}
 	if buf[0] != 0xAB {
 		t.Fatalf("sentinel mismatch: got %#x, want 0xAB", buf[0])
+	}
+}
+
+func TestDaemonWaitForClientCloseAllowsQuietSession(t *testing.T) {
+	daemonSide, clientSide := net.Pipe()
+	defer func() { _ = daemonSide.Close() }()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		daemonWaitForClientClose(daemonSide)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("quiet open client connection ended the daemon session")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	if err := clientSide.Close(); err != nil {
+		t.Fatalf("close client: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("daemon session did not end after client close")
 	}
 }
 

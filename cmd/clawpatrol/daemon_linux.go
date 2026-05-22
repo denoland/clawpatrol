@@ -522,12 +522,13 @@ func (d *daemon) handle(c net.Conn) {
 		return
 	}
 
-	// 5. Block until the client closes (signals session end). A read
-	// here either returns EOF on a clean close or an error on abort;
-	// either way we fall through to defers and tear down.
+	// 5. Block until the client closes (signals session end).
+	daemonWaitForClientClose(c)
+}
+
+func daemonWaitForClientClose(c net.Conn) {
 	buf := make([]byte, 256)
 	for {
-		_ = c.SetReadDeadline(time.Now().Add(time.Hour))
 		if _, err := c.Read(buf); err != nil {
 			return
 		}
