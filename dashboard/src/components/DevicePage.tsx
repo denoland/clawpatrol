@@ -69,7 +69,7 @@ export function DevicePage({
         <PageTitle
           trail={[
             { label: "Claw Patrol", href: "#/" },
-            { label: "devices", href: "#/devices" },
+            { label: "profiles", href: "#/profiles" },
             { label: ip },
           ]}
         />
@@ -105,7 +105,10 @@ export function DevicePage({
       <PageTitle
         trail={[
           { label: "Claw Patrol", href: "#/" },
-          { label: "devices", href: "#/devices" },
+          { label: "profiles", href: "#/profiles" },
+          ...(a.profile
+            ? [{ label: a.profile, href: `#/profiles/${encodeURIComponent(a.profile)}` }]
+            : []),
           { label: dev.hostname || dev.ip },
         ]}
         actions={
