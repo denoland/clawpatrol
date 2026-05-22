@@ -91,6 +91,58 @@ type Request struct {
 	// rejection, not byte-cap truncation, so wire frontends with
 	// no parser leave it false.
 	Unparseable bool
+
+	// actCache memoizes facet activation values for the lifetime of
+	// this request. Each facet's AddActivation hook stamps its
+	// (possibly expensive — body_json parsing, header map copy) Fields
+	// value here the first time it runs; subsequent rules in the same
+	// endpoint reuse the cached value instead of rebuilding it. Keyed
+	// by facet name ("http", "k8s", "sql") so composed environments
+	// (the k8s family layers http+k8s) cache each facet independently.
+	//
+	// Set/cleared via CachedActivation / SetCachedActivation; the
+	// gateway never has to touch this directly. Lazy-initialized so a
+	// Request that never matches still costs zero map allocations.
+	actCache map[string]any
+}
+
+// CachedActivation returns the facet activation value previously
+// stashed for facet under SetCachedActivation, or nil if none. Facet
+// AddActivation hooks call it before doing any per-rule work so the
+// expensive snapshot (body_json parsing, header map copy) happens at
+// most once per request.
+func (r *Request) CachedActivation(facet string) any {
+	if r == nil || r.actCache == nil {
+		return nil
+	}
+	return r.actCache[facet]
+}
+
+// SetCachedActivation memoizes v as the activation value for facet.
+// Subsequent calls to CachedActivation(facet) return v until the
+// Request is discarded or ResetActivationCache is invoked.
+func (r *Request) SetCachedActivation(facet string, v any) {
+	if r == nil {
+		return
+	}
+	if r.actCache == nil {
+		r.actCache = make(map[string]any, 2)
+	}
+	r.actCache[facet] = v
+}
+
+// ResetActivationCache drops every cached facet activation on the
+// Request. The dispatcher does not need to call it — a fresh Request
+// has an empty cache, and the cache is short-lived for the lifetime
+// of a single wire request. Tests that reuse a Request and mutate its
+// body / meta between match invocations must call it after each
+// mutation so the next match rebuilds activation values from the
+// current state instead of returning the snapshot from a prior call.
+func (r *Request) ResetActivationCache() {
+	if r == nil {
+		return
+	}
+	r.actCache = nil
 }
 
 // Matcher walks a Request and returns true when the rule's match

@@ -1896,9 +1896,28 @@ func bufferHTTPBodyForMatchTruncated(req *http.Request) (body []byte, truncated 
 	if req.Body == nil {
 		return nil, false
 	}
-	b, err := io.ReadAll(io.LimitReader(req.Body, maxHTTPMatchBody+1))
-	if err != nil {
-		return nil, false
+	// Pre-size the buffer when Content-Length is known and within the
+	// cap, plus the probe byte. Saves the io.ReadAll growth chain (512
+	// → 1024 → 2048 → ... → ContentLength) on a typical 8 KiB POST.
+	const probe = 1
+	initial := 512
+	if req.ContentLength > 0 && req.ContentLength <= maxHTTPMatchBody {
+		initial = int(req.ContentLength) + probe
+	}
+	b := make([]byte, 0, initial)
+	lr := io.LimitReader(req.Body, maxHTTPMatchBody+probe)
+	buf := make([]byte, 4096)
+	for {
+		n, err := lr.Read(buf)
+		if n > 0 {
+			b = append(b, buf[:n]...)
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, false
+		}
 	}
 	if len(b) > maxHTTPMatchBody {
 		// Pulled one byte past the cap — body is over-sized. Keep

@@ -169,6 +169,10 @@ func addActivation(req *match.Request, act map[string]any) bool {
 	if req == nil {
 		return false
 	}
+	if cached, ok := req.CachedActivation("k8s").(*Fields); ok && cached != nil {
+		act["k8s"] = cached
+		return true
+	}
 	meta, _ := req.Meta.(*Meta)
 	if meta == nil {
 		return false
@@ -177,13 +181,15 @@ func addActivation(req *match.Request, act map[string]any) bool {
 	if params == nil {
 		params = map[string]string{}
 	}
-	act["k8s"] = &Fields{
+	f := &Fields{
 		Verb:      strings.ToLower(meta.Verb),
 		Resource:  meta.Resource,
 		Namespace: meta.Namespace,
 		Name:      meta.Name,
 		Params:    params,
 	}
+	req.SetCachedActivation("k8s", f)
+	act["k8s"] = f
 	return true
 }
 

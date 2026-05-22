@@ -81,6 +81,7 @@ func TestK8sMatcherParams(t *testing.T) {
 		t.Errorf("expected interactive exec to match")
 	}
 	meta.Params = map[string]string{"stdin": "false"}
+	req.ResetActivationCache()
 	if m.Match(req) {
 		t.Errorf("expected non-interactive exec to NOT match")
 	}
@@ -100,6 +101,7 @@ func TestK8sMatcherWatchVerbAndParams(t *testing.T) {
 		t.Errorf("expected watch pod list to match")
 	}
 	meta.Verb = "list"
+	req.ResetActivationCache()
 	if m.Match(req) {
 		t.Errorf("expected plain list to miss watch rule")
 	}

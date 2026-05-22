@@ -150,6 +150,7 @@ func TestHTTPMatcherBodyJSON(t *testing.T) {
 		t.Errorf("expected body_json subset match")
 	}
 	req.Body = []byte(`{"archived":false,"title":"x"}`)
+	req.ResetActivationCache()
 	if m.Match(req) {
 		t.Errorf("expected body_json mismatch")
 	}

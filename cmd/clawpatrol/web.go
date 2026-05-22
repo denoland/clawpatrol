@@ -21,7 +21,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -2345,15 +2344,74 @@ func unmarshalHeaders(s string, dst *map[string]string) {
 	}
 }
 
-var sensitiveHeader = regexp.MustCompile(
-	`(?i)auth|token|secret|key|password|cookie`,
-)
+// sensitiveHeaderMarkers names case-insensitive substrings that mark
+// a response/request header line as carrying credential bytes the
+// audit log must not echo. Same set as the regex this replaces; the
+// hand-rolled scan avoids one regex compile per header per request
+// (flatHeaders runs twice per MITM call, once before forward and
+// once before emitEnd).
+var sensitiveHeaderMarkers = [...]string{"auth", "token", "secret", "key", "password", "cookie"}
+
+// isSensitiveHeader reports whether name contains any of the
+// credential-marker substrings. Case-insensitive — we scan byte-by-byte
+// against ASCII-lowered name fragments instead of round-tripping
+// through regexp / strings.ToLower / strings.Contains, both of which
+// would allocate on every request.
+func isSensitiveHeader(name string) bool {
+	for _, marker := range sensitiveHeaderMarkers {
+		if containsFoldASCII(name, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsFoldASCII reports whether s contains sub, case-insensitive,
+// assuming both are ASCII. HTTP header names are guaranteed ASCII
+// per RFC 7230 §3.2, so we can fold case with a single bit op
+// instead of unicode-aware comparisons. Both arguments are folded on
+// the fly so callers don't need to pre-lowercase the needle.
+func containsFoldASCII(s, sub string) bool {
+	if len(sub) == 0 {
+		return true
+	}
+	if len(sub) > len(s) {
+		return false
+	}
+	end := len(s) - len(sub)
+	for i := 0; i <= end; i++ {
+		match := true
+		for j := 0; j < len(sub); j++ {
+			ca := s[i+j]
+			cb := sub[j]
+			if ca >= 'A' && ca <= 'Z' {
+				ca += 'a' - 'A'
+			}
+			if cb >= 'A' && cb <= 'Z' {
+				cb += 'a' - 'A'
+			}
+			if ca != cb {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
 
 func flatHeaders(h http.Header) map[string]string {
 	out := make(map[string]string, len(h))
 	for k, v := range h {
-		if sensitiveHeader.MatchString(k) {
+		if isSensitiveHeader(k) {
 			out[k] = "***"
+		} else if len(v) == 1 {
+			// strings.Join allocates a fresh result string even for a
+			// single value — the common case for response headers
+			// (Content-Type, Server, Date, …). Avoid the copy here.
+			out[k] = v[0]
 		} else {
 			out[k] = strings.Join(v, ", ")
 		}
@@ -2407,6 +2465,12 @@ const (
 	decodedSampleTruncatedMarker = "\n[decoded response sample truncated]"
 )
 
+// gzipReaderPool reuses gzip.Reader instances across response-body
+// samples. NewReader allocates ~46 KiB of inflate-state per call;
+// pooling lets the sampler decode follow-up responses with a single
+// Reset() and zero new state allocation.
+var gzipReaderPool sync.Pool
+
 // maybeDecode returns the decompressed prefix of buf when encoding
 // is a compression scheme we recognise, or buf unchanged otherwise.
 // The sampler captures at most cap bytes, so the stream is almost
@@ -2415,46 +2479,92 @@ const (
 // output is capped separately because tiny compressed inputs can expand
 // far beyond the sampled wire bytes.
 func maybeDecode(buf []byte, encoding string) []byte {
-	var r io.Reader
-	switch strings.ToLower(strings.TrimSpace(encoding)) {
+	enc := trimAndLowerASCII(encoding)
+	switch enc {
 	case "gzip", "x-gzip":
-		zr, err := gzip.NewReader(bytes.NewReader(buf))
+		zr, _ := gzipReaderPool.Get().(*gzip.Reader)
+		var err error
+		if zr == nil {
+			zr, err = gzip.NewReader(bytes.NewReader(buf))
+		} else {
+			err = zr.Reset(bytes.NewReader(buf))
+		}
 		if err != nil {
+			if zr != nil {
+				gzipReaderPool.Put(zr)
+			}
 			return buf
 		}
-		defer func() { _ = zr.Close() }()
-		r = zr
+		defer func() {
+			_ = zr.Close()
+			gzipReaderPool.Put(zr)
+		}()
+		return readDecoded(zr, buf)
 	case "br":
-		r = brotli.NewReader(bytes.NewReader(buf))
+		return readDecoded(brotli.NewReader(bytes.NewReader(buf)), buf)
 	case "deflate":
 		// RFC 7230 says "deflate" is zlib-wrapped deflate, but some
 		// servers send raw deflate. Try zlib first, fall back to raw.
 		if zr, err := zlib.NewReader(bytes.NewReader(buf)); err == nil {
 			defer func() { _ = zr.Close() }()
-			r = zr
-		} else {
-			fr := flate.NewReader(bytes.NewReader(buf))
-			defer func() { _ = fr.Close() }()
-			r = fr
+			return readDecoded(zr, buf)
 		}
+		fr := flate.NewReader(bytes.NewReader(buf))
+		defer func() { _ = fr.Close() }()
+		return readDecoded(fr, buf)
 	case "zstd":
 		zd, err := zstd.NewReader(bytes.NewReader(buf))
 		if err != nil {
 			return buf
 		}
 		defer zd.Close()
-		r = zd
+		return readDecoded(zd, buf)
 	default:
 		return buf
 	}
+}
+
+// readDecoded drains r up to one byte past the decoded-sample cap so
+// the caller can detect when the decompressed prefix overflowed. The
+// shape is shared by every encoding branch — split out so the
+// per-branch code stays focused on reader lifecycle.
+func readDecoded(r io.Reader, fallback []byte) []byte {
 	out, _ := io.ReadAll(io.LimitReader(r, decodedSampleCap+1))
 	if len(out) == 0 {
-		return buf
+		return fallback
 	}
 	if len(out) > decodedSampleCap {
 		out = append(out[:decodedSampleCap:decodedSampleCap], decodedSampleTruncatedMarker...)
 	}
 	return out
+}
+
+// trimAndLowerASCII is the maybeDecode-specific equivalent of
+// strings.ToLower(strings.TrimSpace(s)) but avoids the double
+// allocation when the input is already canonical (the common case —
+// Content-Encoding emitted by Go upstreams). HTTP tokens are ASCII.
+func trimAndLowerASCII(s string) string {
+	start := 0
+	end := len(s)
+	for start < end && (s[start] == ' ' || s[start] == '\t') {
+		start++
+	}
+	for end > start && (s[end-1] == ' ' || s[end-1] == '\t') {
+		end--
+	}
+	trimmed := s[start:end]
+	if !needsCaseFold(trimmed, true) {
+		return trimmed
+	}
+	buf := make([]byte, len(trimmed))
+	for i := 0; i < len(trimmed); i++ {
+		c := trimmed[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		buf[i] = c
+	}
+	return string(buf)
 }
 
 func isPrintable(b []byte) bool {

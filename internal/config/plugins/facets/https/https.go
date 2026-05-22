@@ -148,18 +148,27 @@ func addActivation(req *match.Request, act map[string]any) bool {
 	if req == nil {
 		return false
 	}
+	// Reuse the cached Fields when an earlier rule on this Request
+	// already built one. The per-request activation cache keeps body
+	// JSON parsing, header copy, and query parse to once per wire
+	// request even when an endpoint has many rules to walk.
+	if cached, ok := req.CachedActivation("http").(*Fields); ok && cached != nil {
+		act["http"] = cached
+		return true
+	}
 	// HTTP method is lowercased here (and declared in lowercasedPaths)
 	// so rules can write either "POST" or "post" — CompileCondition
 	// normalizes the want-side literals to lowercase at rule-load time.
 	f := &Fields{
 		Method:  strings.ToLower(req.Method),
 		Path:    match.PathOf(req.URL),
-		Headers: mapToCEL(req.Headers),
+		Headers: passthroughHeaders(req.Headers),
 		Body:    string(req.Body),
 	}
 	if req.URL != nil {
-		f.Query = mapToCEL(req.URL.Query())
-	} else {
+		f.Query = req.URL.Query()
+	}
+	if f.Query == nil {
 		f.Query = map[string][]string{}
 	}
 	// body_json is parsed eagerly when the body looks like JSON. The
@@ -168,6 +177,7 @@ func addActivation(req *match.Request, act map[string]any) bool {
 	// `http.body_json.<field>` evaluates to null rather than blowing
 	// up at request time.
 	f.BodyJSON = parseBodyJSON(req.Body)
+	req.SetCachedActivation("http", f)
 	act["http"] = f
 	return true
 }
@@ -193,16 +203,14 @@ func parseBodyJSON(body []byte) *structpb.Value {
 	return v
 }
 
-// mapToCEL converts a net/http map-of-string-list to a plain
-// map[string][]string with empty defaults so CEL key access never
-// panics.
-func mapToCEL(m map[string][]string) map[string][]string {
+// passthroughHeaders returns the request headers as the activation's
+// map[string][]string view, falling back to an empty map when the
+// request carries no headers so CEL key access never panics. CEL
+// only reads from the map, so we can share the caller's storage
+// without copying — saves an O(headers) allocation per match.
+func passthroughHeaders(m map[string][]string) map[string][]string {
 	if m == nil {
 		return map[string][]string{}
 	}
-	out := make(map[string][]string, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
+	return m
 }

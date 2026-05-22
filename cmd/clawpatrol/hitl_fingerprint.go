@@ -190,20 +190,26 @@ func normalizeHITLFingerprintHeaders(headers []HITLFingerprintHeader) ([]HITLFin
 
 func canonicalHITLRequestV1(in HITLRequestFingerprintInput, bodyHMAC string) []byte {
 	var b bytes.Buffer
+	// Sized once for the typical request shape (a dozen canonical
+	// fields, no selected headers): saves the buffer-growth realloc
+	// chain bytes.Buffer would otherwise run on the first writes.
+	const baseGrow = 384
+	const perHeader = 96
+	b.Grow(baseGrow + perHeader*len(in.SelectedHeaders))
 	writeHITLCanonicalField(&b, "fingerprint_version", HITLFingerprintVersionV1)
 	writeHITLCanonicalField(&b, "profile_id", in.ProfileID)
 	writeHITLCanonicalField(&b, "principal_id", in.PrincipalID)
 	writeHITLCanonicalField(&b, "endpoint_id", in.EndpointID)
 	writeHITLCanonicalField(&b, "approval_rule_id", in.ApprovalRuleID)
-	writeHITLCanonicalField(&b, "method", strings.ToUpper(in.Method))
-	writeHITLCanonicalField(&b, "scheme", strings.ToLower(in.Scheme))
-	writeHITLCanonicalField(&b, "host", strings.ToLower(in.Host))
+	writeHITLCanonicalField(&b, "method", upperASCII(in.Method))
+	writeHITLCanonicalField(&b, "scheme", lowerASCII(in.Scheme))
+	writeHITLCanonicalField(&b, "host", lowerASCII(in.Host))
 	writeHITLCanonicalField(&b, "path", in.Path)
 	writeHITLCanonicalField(&b, "raw_query", in.RawQuery)
-	writeHITLCanonicalField(&b, "selected_header_count", strconv.Itoa(len(in.SelectedHeaders)))
+	writeHITLCanonicalIntField(&b, "selected_header_count", len(in.SelectedHeaders))
 	for _, h := range in.SelectedHeaders {
-		writeHITLCanonicalField(&b, "selected_header_name", strings.ToLower(h.Name))
-		writeHITLCanonicalField(&b, "selected_header_value_count", strconv.Itoa(len(h.Values)))
+		writeHITLCanonicalField(&b, "selected_header_name", lowerASCII(h.Name))
+		writeHITLCanonicalIntField(&b, "selected_header_value_count", len(h.Values))
 		for _, value := range h.Values {
 			writeHITLCanonicalField(&b, "selected_header_value", strings.TrimSpace(value))
 		}
@@ -213,12 +219,96 @@ func canonicalHITLRequestV1(in HITLRequestFingerprintInput, bodyHMAC string) []b
 	return b.Bytes()
 }
 
-func writeHITLCanonicalField(b *bytes.Buffer, name, value string) {
-	b.WriteString(strconv.Itoa(len([]byte(name))))
+// writeHITLCanonicalIntField emits a length-prefixed (name=value) row
+// whose value is an integer. Streams the digits directly into b via
+// strconv.AppendInt instead of materializing a temporary string. Two
+// disjoint scratch buffers because both AppendInt calls write into
+// stack storage; sharing one buffer would corrupt the first result
+// before the value is flushed.
+func writeHITLCanonicalIntField(b *bytes.Buffer, name string, value int) {
+	var valTmp [20]byte
+	var lenTmp [20]byte
+	digits := strconv.AppendInt(valTmp[:0], int64(value), 10)
+	b.Write(strconv.AppendInt(lenTmp[:0], int64(len(name)), 10))
 	b.WriteByte(':')
 	b.WriteString(name)
 	b.WriteByte('=')
-	b.WriteString(strconv.Itoa(len([]byte(value))))
+	b.Write(strconv.AppendInt(lenTmp[:0], int64(len(digits)), 10))
+	b.WriteByte(':')
+	b.Write(digits)
+	b.WriteByte('\n')
+}
+
+// upperASCII / lowerASCII return s with ASCII letters folded to the
+// target case, returning the original string verbatim when no change
+// is needed. Saves the strings.ToUpper / strings.ToLower copy on the
+// common already-canonical input.
+func upperASCII(s string) string {
+	if !needsCaseFold(s, false) {
+		return s
+	}
+	buf := make([]byte, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'a' && c <= 'z' {
+			c -= 'a' - 'A'
+		}
+		buf[i] = c
+	}
+	return string(buf)
+}
+
+func lowerASCII(s string) string {
+	if !needsCaseFold(s, true) {
+		return s
+	}
+	buf := make([]byte, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		buf[i] = c
+	}
+	return string(buf)
+}
+
+// needsCaseFold reports whether s contains an ASCII letter that
+// would change under the requested fold direction. toLower=true asks
+// whether any uppercase letter is present; toLower=false asks the
+// converse. Strings already in canonical case (the common path for
+// HTTP methods and scheme strings emitted by Go's net/http) skip the
+// allocation entirely.
+func needsCaseFold(s string, toLower bool) bool {
+	if toLower {
+		for i := 0; i < len(s); i++ {
+			c := s[i]
+			if c >= 'A' && c <= 'Z' {
+				return true
+			}
+		}
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'a' && c <= 'z' {
+			return true
+		}
+	}
+	return false
+}
+
+func writeHITLCanonicalField(b *bytes.Buffer, name, value string) {
+	// len(string) returns the byte count on Go's UTF-8 strings, so the
+	// previous len([]byte(name)) was making a fresh allocation just to
+	// re-derive the same number. strconv.AppendInt writes into a stack
+	// buffer to avoid strconv.Itoa's per-call string allocation.
+	var tmp [20]byte
+	b.Write(strconv.AppendInt(tmp[:0], int64(len(name)), 10))
+	b.WriteByte(':')
+	b.WriteString(name)
+	b.WriteByte('=')
+	b.Write(strconv.AppendInt(tmp[:0], int64(len(value)), 10))
 	b.WriteByte(':')
 	b.WriteString(value)
 	b.WriteByte('\n')
@@ -234,24 +324,46 @@ func computeHITLHMAC(key, msg []byte) []byte {
 	return mac.Sum(nil)
 }
 
+// hitlForbiddenHeaderMarkers names case-insensitive substrings that
+// disqualify a header name from HITL fingerprint allowlists — same
+// set we redact in flatHeaders. Encoded as a fixed-size array of
+// constants so isForbiddenHITLFingerprintHeader doesn't have to
+// allocate a slice literal on every call.
+var hitlForbiddenHeaderMarkers = [...]string{"auth", "token", "secret", "key", "password", "cookie"}
+
 func isForbiddenHITLFingerprintHeader(name string) bool {
-	name = strings.ToLower(name)
-	for _, marker := range []string{"auth", "token", "secret", "key", "password", "cookie"} {
-		if strings.Contains(name, marker) {
+	// HTTP header names are ASCII (RFC 7230 §3.2). Fold case via the
+	// ASCII-only containsFoldASCII helper to avoid strings.ToLower's
+	// per-call allocation when the caller passes a mixed-case name.
+	for _, marker := range hitlForbiddenHeaderMarkers {
+		if containsFoldASCII(name, marker) {
 			return true
 		}
 	}
-	switch name {
-	case "user-agent",
-		"date",
-		"x-request-id",
-		"traceparent",
-		"via",
-		"connection",
-		"transfer-encoding",
-		"accept-encoding":
+	switch {
+	case equalFoldASCII(name, "user-agent"),
+		equalFoldASCII(name, "date"),
+		equalFoldASCII(name, "x-request-id"),
+		equalFoldASCII(name, "traceparent"),
+		equalFoldASCII(name, "via"),
+		equalFoldASCII(name, "connection"),
+		equalFoldASCII(name, "transfer-encoding"),
+		equalFoldASCII(name, "accept-encoding"):
 		return true
-	default:
-		return strings.HasPrefix(name, "x-b3-")
 	}
+	if len(name) >= 5 {
+		// Inline lowercase prefix check — strings.HasPrefix(strings.ToLower(name), "x-b3-")
+		// would allocate to lowercase the entire name just to look at
+		// five characters.
+		head := [5]byte{name[0], name[1], name[2], name[3], name[4]}
+		for i, c := range head {
+			if c >= 'A' && c <= 'Z' {
+				head[i] = c + ('a' - 'A')
+			}
+		}
+		if head == [5]byte{'x', '-', 'b', '3', '-'} {
+			return true
+		}
+	}
+	return false
 }

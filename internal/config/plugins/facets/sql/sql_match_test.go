@@ -22,6 +22,7 @@ func TestSQLMatcherVerbAndTables(t *testing.T) {
 		t.Errorf("expected select on github_identities to match")
 	}
 	meta.Verb = "insert"
+	req.ResetActivationCache()
 	if m.Match(req) {
 		t.Errorf("expected verb mismatch to fail")
 	}
@@ -152,6 +153,7 @@ func TestSQLMatcherStatementRegex(t *testing.T) {
 	// "api_token" — confirms the regex isn't accidentally
 	// substring-matching.
 	meta.Statement = "SELECT api_token FROM keys"
+	req.ResetActivationCache()
 	if m.Match(req) {
 		t.Errorf("expected no regex hit on api_token (word boundary)")
 	}

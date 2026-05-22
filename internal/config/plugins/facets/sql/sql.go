@@ -194,17 +194,23 @@ func addActivation(req *match.Request, act map[string]any) bool {
 	if req == nil {
 		return false
 	}
+	if cached, ok := req.CachedActivation("sql").(*Fields); ok && cached != nil {
+		act["sql"] = cached
+		return true
+	}
 	meta, _ := req.Meta.(*Meta)
 	if meta == nil {
 		return false
 	}
-	act["sql"] = &Fields{
+	f := &Fields{
 		Verb:      strings.ToLower(meta.Verb),
 		Tables:    coalesceList(meta.Tables),
 		Functions: coalesceList(meta.Functions),
 		Statement: meta.Statement,
 		Database:  databaseOf(req, meta),
 	}
+	req.SetCachedActivation("sql", f)
+	act["sql"] = f
 	return true
 }
 
