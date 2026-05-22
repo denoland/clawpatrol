@@ -15,6 +15,7 @@ package main
 // human user.
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -25,17 +26,55 @@ import (
 	neturl "net/url"
 	"os"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"tailscale.com/client/local"
+	"tailscale.com/ipn"
 	"tailscale.com/tsnet"
 )
+
+// ramStateStore is a private in-memory ipn.StateStore. tsnet has its
+// own ipn/store/mem.Store, but tsnet.Server gates that one behind
+// `Ephemeral: true` (tsnet/tsnet.go isMemStore type-assert), and
+// Ephemeral isn't honored on browser-driven interactive auth — only
+// on auth-key registration. By presenting our own
+// non-`*mem.Store` implementation we satisfy the same interface,
+// dodge the gate, and never touch disk for credentials. The bootstrap
+// node's machine key, login profile, and netmap snapshot all live in
+// this map for the lifetime of the join. On process exit (clean or
+// SIGKILL) the RAM is reclaimed; nothing to clean up, nothing to
+// leak.
+type ramStateStore struct {
+	mu sync.Mutex
+	m  map[ipn.StateKey][]byte
+}
+
+func (s *ramStateStore) ReadState(k ipn.StateKey) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.m[k]
+	if !ok {
+		return nil, ipn.ErrStateNotExist
+	}
+	return bytes.Clone(v), nil
+}
+
+func (s *ramStateStore) WriteState(k ipn.StateKey, v []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.m == nil {
+		s.m = map[ipn.StateKey][]byte{}
+	}
+	s.m[k] = bytes.Clone(v)
+	return nil
+}
 
 // tailnetBootstrap is a transient tsnet.Server that exists only for
 // the duration of `clawpatrol join`. Use Client() to talk to the
 // gateway over the tailnet, then call Close to log the node out and
-// remove its on-disk state.
+// reclaim the log dir.
 type tailnetBootstrap struct {
 	server *tsnet.Server
 	lc     *local.Client
@@ -48,13 +87,19 @@ type tailnetBootstrap struct {
 // onboardViaDeviceFlow in place of the default cli.
 func (b *tailnetBootstrap) Client() *http.Client { return b.client }
 
-// Close logs the bootstrap node out of the tailnet, stops tsnet, and
-// deletes the temp state dir. Best-effort: a failed Logout still
-// removes the local state, so the node lingers in the tailnet admin
-// as offline but has no path back online. ctx caps how long we wait
-// for the Logout RPC to complete — Close is called from a defer in
-// runJoin and the operator shouldn't have to wait forever on a stuck
-// control plane.
+// Close tears the bootstrap down on the happy path. Logout makes
+// the node disappear from the tailnet admin promptly; Server.Close
+// drops the local tsnet engine; the temp dir holding tsnet's log
+// files gets removed.
+//
+// There is no SIGINT/SIGTERM/SIGKILL handler and intentionally so:
+// credentials live in RAM (ramStateStore), so process exit by any
+// means leaves nothing sensitive on disk. The only consequences of
+// an uncaught signal are a few KB of tsnet log files in /tmp
+// (which the OS reaps), and the bootstrap node lingering in the
+// tailnet admin as offline for a minute or two until the control
+// server times the connection out. Neither is worth a signal
+// handler.
 func (b *tailnetBootstrap) Close(ctx context.Context) {
 	if b == nil {
 		return
@@ -79,19 +124,17 @@ func (b *tailnetBootstrap) Close(ctx context.Context) {
 // if the operator is on a headless box, the URL is still copy-
 // pasteable. Blocks until the node reaches Running or ctx fires.
 //
-// Why disk-backed state and not mem.Store/Ephemeral: tsnet allows
-// `Store: &mem.Store{}` only when `Ephemeral: true` (see
-// tsnet/tsnet.go's isMemStore guard). Setting Ephemeral=true sends
-// LoginEphemeral to the control server at registration — but for
-// Tailscale SaaS that flag is only honored on the auth-key flow,
-// not on browser-driven interactive auth. Empirically: the browser
-// completes auth fine, but the resulting node never transitions to
-// BackendState=Running and the join times out. Until tsnet gains a
-// way to mark a browser-auth registration as ephemeral, we keep the
-// credentials in a temp dir and rely on Close→Logout+RemoveAll for
-// cleanup. SIGKILL during the bootstrap window can leak the temp
-// dir; the credentials inside it are still constrained by the
-// human's tailnet ACL, not a tagged-bot identity.
+// Credentials live in RAM (ramStateStore), so the machine key and
+// login profile never touch disk and the only thing in the temp Dir
+// is tsnet's log buffer. We can't use tsnet's own ipn/store/mem
+// implementation because tsnet gates it behind Ephemeral=true
+// (tsnet/tsnet.go isMemStore type-assert), and Tailscale SaaS only
+// honors LoginEphemeral on the auth-key registration flow, not on
+// browser-driven interactive auth — empirically the resulting node
+// never transitions to BackendState=Running. ramStateStore is a
+// drop-in implementation of the same ipn.StateStore interface but
+// isn't *mem.Store, so it dodges the gate while keeping browser
+// auth working.
 func bootstrapTailnetForJoin(ctx context.Context) (*tailnetBootstrap, error) {
 	dir, err := os.MkdirTemp("", "clawpatrol-bootstrap-")
 	if err != nil {
@@ -102,9 +145,7 @@ func bootstrapTailnetForJoin(ctx context.Context) (*tailnetBootstrap, error) {
 	// A distinct hostname per invocation so two concurrent joins on
 	// the same machine don't collide on the tailnet, and so the
 	// operator can find this node in the tailnet admin if cleanup
-	// fails. We aim for ephemeral by tearing the node down at the
-	// end, not by relying on tailnet-side ACL rules (most users
-	// don't control the policy file of the tailnet they're joining).
+	// fails. Logout on Close removes it promptly on the happy path.
 	suffix := make([]byte, 4)
 	if _, err := rand.Read(suffix); err != nil {
 		cleanup()
@@ -113,8 +154,16 @@ func bootstrapTailnetForJoin(ctx context.Context) (*tailnetBootstrap, error) {
 	hostname := "clawpatrol-bootstrap-" + hex.EncodeToString(suffix)
 
 	s := &tsnet.Server{
+		// Dir still hosts tsnet's log buffer (tailscaled.log.conf
+		// and the tailscaled/ subdir) regardless of Store — no
+		// credentials here, just operational logs the temp dir
+		// disposes of on Close.
 		Dir:      dir,
 		Hostname: hostname,
+		// In-memory state store. The bootstrap's machine key, login
+		// profile, and netmap snapshot all live in this map and are
+		// gone the instant the process exits — clean or otherwise.
+		Store: &ramStateStore{},
 		// Silence tsnet's internal chatter — we drive the auth-URL
 		// display ourselves below so the operator sees one clean
 		// message, not interleaved control-plane debug lines.
