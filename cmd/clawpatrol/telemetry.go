@@ -43,6 +43,14 @@ const (
 	telemetryTimeout  = 5 * time.Second
 )
 
+// telemetryHTTPClient is the explicit client used for the
+// telemetry POST. The per-request ctx already carries a 5s
+// timeout; the client-level Timeout is a belt-and-suspenders
+// against a missing ctx-cancel path inside net/http (and a
+// statement that we never want this to fall through to
+// http.DefaultClient).
+var telemetryHTTPClient = &http.Client{Timeout: telemetryTimeout}
+
 // Build-time identity. Set via -ldflags at release; "dev" for local
 // builds so the server can tell development pings apart from real
 // installs.
@@ -163,7 +171,7 @@ func postTelemetry(payload []byte) (*telemetryResp, error) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "clawpatrol/"+buildVersion)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := telemetryHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

@@ -32,6 +32,20 @@ import (
 	"time"
 )
 
+// tailscaleAPIClient is the explicit http.Client used for the
+// api.tailscale.com auth-key mint flow. Bounded timeout so a stuck
+// Tailscale control-plane response can't hold the onboarding
+// approval goroutine indefinitely — the dashboard approve handler
+// would otherwise hang on the goroutine that called
+// mintTailscaleAuthKey, and the operator's click would silently
+// time out at the browser layer instead of producing a clean
+// 502/error toast.
+//
+// Caller already passes a ctx with its own deadline; the
+// client-level timeout is belt-and-suspenders for any code path
+// that bypasses the ctx-cancel signal.
+var tailscaleAPIClient = &http.Client{Timeout: 30 * time.Second}
+
 // randomString returns a URL-safe base64 string of n random bytes.
 // Used for onboard device codes, OAuth state/verifier, HITL IDs.
 func randomString(nBytes int) string {
@@ -559,7 +573,7 @@ func mintTailscaleAuthKey(ctx context.Context, ts JoinConfig, ephemeral bool) (s
 		"https://api.tailscale.com/api/v2/oauth/token",
 		strings.NewReader(form.Encode()))
 	tokReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	tokResp, err := http.DefaultClient.Do(tokReq)
+	tokResp, err := tailscaleAPIClient.Do(tokReq)
 	if err != nil {
 		return "", fmt.Errorf("tailscale oauth: %w", err)
 	}
@@ -618,7 +632,7 @@ func mintTailscaleAuthKey(ctx context.Context, ts JoinConfig, ephemeral bool) (s
 		strings.NewReader(string(keyReqBody)))
 	keyReq.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 	keyReq.Header.Set("Content-Type", "application/json")
-	keyResp, err := http.DefaultClient.Do(keyReq)
+	keyResp, err := tailscaleAPIClient.Do(keyReq)
 	if err != nil {
 		return "", err
 	}

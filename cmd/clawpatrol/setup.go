@@ -308,7 +308,10 @@ func fetchCAHTTP(gateway, dst string) (string, error) {
 	if resp.StatusCode != 200 {
 		return "", fmt.Errorf("status %d", resp.StatusCode)
 	}
-	b, err := io.ReadAll(resp.Body)
+	// Bound the unverified CA download — pre-TOFU we have no reason
+	// to trust the peer, so cap the bytes we'll buffer to a sane
+	// PEM size before fingerprint comparison runs.
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxCAPEMBody))
 	if err != nil {
 		return "", err
 	}
@@ -321,6 +324,13 @@ func fetchCAHTTP(gateway, dst string) (string, error) {
 	}
 	return fp, nil
 }
+
+// maxCAPEMBody caps how much of an unverified TOFU /ca.crt response
+// we'll buffer before the fingerprint comparison runs. Real CA
+// PEM bundles are a few KiB; 256 KiB is comfortable headroom while
+// still preventing an on-path attacker from streaming a giant body
+// into our heap during the unauthenticated bootstrap.
+const maxCAPEMBody = 256 << 10
 
 // installShellRC appends `eval "$(clawpatrol env)"` to the user's shell
 // rc file (idempotent — looks for the existing marker line). This way
@@ -572,7 +582,7 @@ func fetchCA(ip, dst string) error {
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("status %d from %s", resp.StatusCode, url)
 	}
-	b, err := io.ReadAll(resp.Body)
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxCAPEMBody))
 	if err != nil {
 		return err
 	}
@@ -838,7 +848,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
-		b, _ := io.ReadAll(resp.Body)
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return false, fmt.Errorf("start: %d %s", resp.StatusCode, string(b))
 	}
 	var start struct {
@@ -848,7 +858,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		Interval   int    `json:"interval"`
 		ExpiresIn  int    `json:"expires_in"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&start); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&start); err != nil {
 		return false, fmt.Errorf("start decode: %w", err)
 	}
 
@@ -900,14 +910,22 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	stopSpin := startSpinner("Waiting for approval")
 	authKey, loginServer, apiToken := "", "", ""
 	var tailnetGWHost, tailnetControlURL, gatewayIP, caPEM string
-	for time.Now().Before(deadline) {
-		time.Sleep(interval)
+	// Ticker over bare time.Sleep so a future signal-driven cancel
+	// path can wrap this in a select without restructuring the loop
+	// body. Each tick polls once; the deadline derived from
+	// server-supplied ExpiresIn caps total wait time.
+	ticker := time.NewTicker(interval)
+poll:
+	for range ticker.C {
+		if !time.Now().Before(deadline) {
+			break poll
+		}
 		pr, err := cli.Post(gateway+"/api/onboard/poll?device_code="+start.DeviceCode, "application/json", nil)
 		if err != nil {
 			continue
 		}
 		var pv map[string]string
-		_ = json.NewDecoder(pr.Body).Decode(&pv)
+		_ = json.NewDecoder(io.LimitReader(pr.Body, 64<<10)).Decode(&pv)
 		_ = pr.Body.Close()
 		if k, ok := pv["auth_key"]; ok && k != "" {
 			authKey = k
@@ -917,13 +935,15 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 			tailnetControlURL = pv["control_url"]
 			gatewayIP = pv["gateway_ip"]
 			caPEM = pv["ca_pem"]
-			break
+			break poll
 		}
 		if e := pv["error"]; e != "" && e != "authorization_pending" && e != "slow_down" {
+			ticker.Stop()
 			stopSpin()
 			return false, fmt.Errorf("poll: %s (%s)", e, pv["detail"])
 		}
 	}
+	ticker.Stop()
 	stopSpin()
 	if authKey == "" {
 		return false, fmt.Errorf("timed out waiting for approval")

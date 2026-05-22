@@ -22,6 +22,28 @@ import (
 
 const ScopeUser = "user"
 
+// oauthHTTPTimeout is the wall-clock cap for any OAuth-side request
+// (token exchange, refresh, dynamic client registration, userinfo,
+// device-flow poll). 30s is the same cap stdlib oauth2 uses
+// internally; we surface it here so every request path uses an
+// explicit client instead of http.DefaultClient (which has no
+// timeout and would hang the goroutine if the IdP went unresponsive).
+const oauthHTTPTimeout = 30 * time.Second
+
+// oauthHTTPClient is the shared, bounded http.Client used by every
+// OAuth-side request in this file. Centralized so a single audit
+// covers every IdP round-trip — http.DefaultClient is never used
+// (see issue #162: an unresponsive IdP would otherwise hang refresh
+// goroutines indefinitely).
+var oauthHTTPClient = &http.Client{Timeout: oauthHTTPTimeout}
+
+// maxOAuthRespBody caps how much of an OAuth response body we'll read
+// into memory. Real token / userinfo / dynamic-registration responses
+// are a few hundred bytes; 64 KiB is comfortable headroom while still
+// preventing a hostile or buggy IdP from streaming gigabytes into our
+// heap before we notice.
+const maxOAuthRespBody = 64 << 10
+
 // OAuthConfig + OAuthIntegration moved to config/oauth.go so credential
 // plugins can ship their own OAuth flow data without import cycles.
 // Aliased here so existing call sites in this package don't churn.
@@ -245,10 +267,19 @@ type OAuthProfile struct {
 func fetchOAuthProfile(id, accessToken string) (string, string) {
 	switch id {
 	case "github":
-		req, _ := http.NewRequest("GET", "https://api.github.com/user", nil)
+		// Bounded ctx so a stuck api.github.com response can't block
+		// the goroutine that holds the registry mutex — without this,
+		// every token write would back up behind a hung userinfo call.
+		ctx, cancel := context.WithTimeout(
+			context.Background(), oauthHTTPTimeout,
+		)
+		defer cancel()
+		req, _ := http.NewRequestWithContext(
+			ctx, "GET", "https://api.github.com/user", nil,
+		)
 		req.Header.Set("Authorization", "Bearer "+accessToken)
 		req.Header.Set("Accept", "application/vnd.github+json")
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := oauthHTTPClient.Do(req)
 		if err != nil {
 			return "", ""
 		}
@@ -261,7 +292,9 @@ func fetchOAuthProfile(id, accessToken string) (string, string) {
 			Name      string `json:"name"`
 			AvatarURL string `json:"avatar_url"`
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&u); err != nil {
+		if err := json.NewDecoder(
+			io.LimitReader(resp.Body, maxOAuthRespBody),
+		).Decode(&u); err != nil {
 			return "", ""
 		}
 		display := u.Login
@@ -312,7 +345,18 @@ func (s *oauthState) setToken(tok *oauth2.Token) {
 		// ClientSecret — PKCE-only public client).
 		base = &notionMCPRefreshSource{cfg: s.cfg, current: tok}
 	default:
-		base = s.cfg.TokenSource(context.Background(), tok)
+		// Bind the bounded oauthHTTPClient into the token source's
+		// context so stdlib oauth2's refresh round-trips inherit our
+		// timeout instead of falling back to http.DefaultClient (no
+		// timeout — a stuck IdP would deadlock every subsequent
+		// Token() call on this credential).
+		base = s.cfg.TokenSource(
+			context.WithValue(
+				context.Background(),
+				oauth2.HTTPClient, oauthHTTPClient,
+			),
+			tok,
+		)
 	}
 	s.source = oauth2.ReuseTokenSourceWithExpiry(
 		tok,
@@ -345,17 +389,26 @@ func (a *anthropicRefreshSource) Token() (*oauth2.Token, error) {
 		"refresh_token": a.current.RefreshToken,
 		"client_id":     a.cfg.ClientID,
 	})
-	req, err := http.NewRequest("POST", a.cfg.Endpoint.TokenURL, bytes.NewReader(body))
+	// Bounded ctx — without it a stuck Anthropic refresh would hold
+	// the per-state mutex forever and block every subsequent Inject
+	// for this credential.
+	ctx, cancel := context.WithTimeout(
+		context.Background(), oauthHTTPTimeout,
+	)
+	defer cancel()
+	req, err := http.NewRequestWithContext(
+		ctx, "POST", a.cfg.Endpoint.TokenURL, bytes.NewReader(body),
+	)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := oauthHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBytes, _ := io.ReadAll(resp.Body)
+	respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, maxOAuthRespBody))
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("anthropic refresh %d: %s", resp.StatusCode, string(respBytes))
 	}
@@ -589,11 +642,11 @@ func (w *webMux) apiOAuthStart(rw http.ResponseWriter, r *http.Request) {
 	flow = &mergedFlow
 	// Branch: device flow vs auth-code+PKCE.
 	if flow.Flow == "device" {
-		w.startDeviceFlow(rw, id, flow)
+		w.startDeviceFlow(rw, r, id, flow)
 		return
 	}
 	if flow.Flow == "openai_device" {
-		w.startOpenAIDeviceFlow(rw, id, flow)
+		w.startOpenAIDeviceFlow(rw, r, id, flow)
 		return
 	}
 	if flow.Flow == "notion_mcp" {
@@ -704,12 +757,12 @@ func registerOAuthClient(ctx context.Context, registerURL, redirectURI string) (
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := oauthHTTPClient.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBytes, _ := io.ReadAll(resp.Body)
+	respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, maxOAuthRespBody))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("register %d: %s", resp.StatusCode, string(respBytes))
 	}
@@ -775,22 +828,22 @@ func (w *webMux) apiOAuthExchange(rw http.ResponseWriter, r *http.Request) {
 // startDeviceFlow kicks off OAuth device flow (RFC 8628). Returns
 // {user_code, verification_uri, device_code, interval} so the dashboard
 // can prompt the user to enter the code at the verification URI.
-func (w *webMux) startDeviceFlow(rw http.ResponseWriter, id string, it *OAuthIntegration) {
+func (w *webMux) startDeviceFlow(rw http.ResponseWriter, r *http.Request, id string, it *OAuthIntegration) {
 	form := url.Values{}
 	form.Set("client_id", resolveTemplate(it.OAuth.ClientID))
 	if len(it.OAuth.Scopes) > 0 {
 		form.Set("scope", strings.Join(it.OAuth.Scopes, " "))
 	}
-	req, _ := http.NewRequest("POST", it.OAuth.DeviceURL, strings.NewReader(form.Encode()))
+	req, _ := http.NewRequestWithContext(r.Context(), "POST", it.OAuth.DeviceURL, strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := oauthHTTPClient.Do(req)
 	if err != nil {
 		http.Error(rw, "device-code: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxOAuthRespBody))
 	if resp.StatusCode != 200 {
 		http.Error(rw, fmt.Sprintf("device-code %d: %s", resp.StatusCode, string(body)), http.StatusBadGateway)
 		return
@@ -836,20 +889,20 @@ func (w *webMux) startDeviceFlow(rw http.ResponseWriter, id string, it *OAuthInt
 // session and fed to the poll handler. Verification URL is hardcoded
 // to https://auth.openai.com/codex/device since OpenAI's response
 // doesn't include one.
-func (w *webMux) startOpenAIDeviceFlow(rw http.ResponseWriter, id string, it *OAuthIntegration) {
+func (w *webMux) startOpenAIDeviceFlow(rw http.ResponseWriter, r *http.Request, id string, it *OAuthIntegration) {
 	clientID := resolveTemplate(it.OAuth.ClientID)
 	body, _ := json.Marshal(map[string]string{"client_id": clientID})
-	req, _ := http.NewRequest("POST", it.OAuth.DeviceURL, bytes.NewReader(body))
+	req, _ := http.NewRequestWithContext(r.Context(), "POST", it.OAuth.DeviceURL, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "clawpatrol/1.0")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := oauthHTTPClient.Do(req)
 	if err != nil {
 		http.Error(rw, "openai deviceauth: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxOAuthRespBody))
 	if resp.StatusCode != 200 {
 		http.Error(rw, fmt.Sprintf("openai deviceauth %d: %s", resp.StatusCode, string(respBody)), http.StatusBadGateway)
 		return
@@ -906,7 +959,7 @@ func (w *webMux) startOpenAIDeviceFlow(rw http.ResponseWriter, id string, it *OA
 // poll. 202/204 = still pending; 200 with authorization_code +
 // code_verifier triggers the /oauth/token exchange that returns the
 // real access token bundle.
-func (w *webMux) pollOpenAIDeviceFlow(rw http.ResponseWriter, sess *oauthSession) {
+func (w *webMux) pollOpenAIDeviceFlow(rw http.ResponseWriter, r *http.Request, sess *oauthSession) {
 	parts := strings.SplitN(sess.verifier, "|", 2)
 	if len(parts) != 2 {
 		http.Error(rw, "session corrupt", 500)
@@ -917,11 +970,11 @@ func (w *webMux) pollOpenAIDeviceFlow(rw http.ResponseWriter, sess *oauthSession
 		"device_auth_id": deviceAuthID,
 		"user_code":      userCode,
 	})
-	req, _ := http.NewRequest("POST", sess.cfg.Endpoint.AuthURL, bytes.NewReader(pollBody))
+	req, _ := http.NewRequestWithContext(r.Context(), "POST", sess.cfg.Endpoint.AuthURL, bytes.NewReader(pollBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "clawpatrol/1.0")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := oauthHTTPClient.Do(req)
 	if err != nil {
 		http.Error(rw, "openai poll: "+err.Error(), http.StatusBadGateway)
 		return
@@ -931,7 +984,7 @@ func (w *webMux) pollOpenAIDeviceFlow(rw http.ResponseWriter, sess *oauthSession
 		writeJSON(rw, map[string]string{"error": "authorization_pending"})
 		return
 	}
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxOAuthRespBody))
 	var pr struct {
 		AuthorizationCode string `json:"authorization_code"`
 		CodeVerifier      string `json:"code_verifier"`
@@ -948,16 +1001,16 @@ func (w *webMux) pollOpenAIDeviceFlow(rw http.ResponseWriter, sess *oauthSession
 	form.Set("code_verifier", pr.CodeVerifier)
 	form.Set("client_id", sess.cfg.ClientID)
 	form.Set("redirect_uri", sess.cfg.RedirectURL)
-	exReq, _ := http.NewRequest("POST", sess.cfg.Endpoint.TokenURL, strings.NewReader(form.Encode()))
+	exReq, _ := http.NewRequestWithContext(r.Context(), "POST", sess.cfg.Endpoint.TokenURL, strings.NewReader(form.Encode()))
 	exReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	exReq.Header.Set("Accept", "application/json")
-	exResp, err := http.DefaultClient.Do(exReq)
+	exResp, err := oauthHTTPClient.Do(exReq)
 	if err != nil {
 		http.Error(rw, "openai exchange: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer func() { _ = exResp.Body.Close() }()
-	exBody, _ := io.ReadAll(exResp.Body)
+	exBody, _ := io.ReadAll(io.LimitReader(exResp.Body, maxOAuthRespBody))
 	if exResp.StatusCode != 200 {
 		http.Error(rw, fmt.Sprintf("openai exchange %d: %s", exResp.StatusCode, string(exBody)), http.StatusBadGateway)
 		return
@@ -993,21 +1046,21 @@ func (w *webMux) pollOpenAIDeviceFlow(rw http.ResponseWriter, sess *oauthSession
 
 // pollDeviceFlow exchanges device_code for a token. Called by the
 // frontend on a timer until success / denial / expiration.
-func (w *webMux) pollDeviceFlow(rw http.ResponseWriter, sess *oauthSession) {
+func (w *webMux) pollDeviceFlow(rw http.ResponseWriter, r *http.Request, sess *oauthSession) {
 	form := url.Values{}
 	form.Set("client_id", sess.cfg.ClientID)
 	form.Set("device_code", sess.verifier)
 	form.Set("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
-	req, _ := http.NewRequest("POST", sess.cfg.Endpoint.TokenURL, strings.NewReader(form.Encode()))
+	req, _ := http.NewRequestWithContext(r.Context(), "POST", sess.cfg.Endpoint.TokenURL, strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := oauthHTTPClient.Do(req)
 	if err != nil {
 		http.Error(rw, "device poll: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxOAuthRespBody))
 	// Don't log the body verbatim — on success it carries access_token.
 	var tr struct {
 		AccessToken      string `json:"access_token"`
@@ -1065,6 +1118,10 @@ func exchangeOAuthCode(ctx context.Context, sess *oauthSession, code, state stri
 	if isAnthropicTokenURL(sess.cfg.Endpoint.TokenURL) {
 		return exchangeAnthropicCode(ctx, sess, code, state)
 	}
+	// Bind the bounded client into ctx so stdlib oauth2 uses it for
+	// the token exchange round-trip; otherwise it falls through to
+	// http.DefaultClient (no timeout).
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, oauthHTTPClient)
 	return sess.cfg.Exchange(ctx, code,
 		oauth2.SetAuthURLParam("code_verifier", sess.verifier),
 		oauth2.SetAuthURLParam("redirect_uri", sess.cfg.RedirectURL),
@@ -1106,18 +1163,28 @@ func (n *notionMCPRefreshSource) Token() (*oauth2.Token, error) {
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", n.current.RefreshToken)
 	form.Set("client_id", n.cfg.ClientID)
-	req, err := http.NewRequest("POST", n.cfg.Endpoint.TokenURL, strings.NewReader(form.Encode()))
+	// Bounded ctx — without it a stuck refresh would hold n.mu
+	// indefinitely and stall every subsequent Inject() that needs
+	// this credential.
+	ctx, cancel := context.WithTimeout(
+		context.Background(), oauthHTTPTimeout,
+	)
+	defer cancel()
+	req, err := http.NewRequestWithContext(
+		ctx, "POST", n.cfg.Endpoint.TokenURL,
+		strings.NewReader(form.Encode()),
+	)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := oauthHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBytes, _ := io.ReadAll(resp.Body)
+	respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, maxOAuthRespBody))
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("notion_mcp refresh %d: %s", resp.StatusCode, string(respBytes))
 	}
@@ -1159,12 +1226,12 @@ func exchangeAnthropicCode(ctx context.Context, sess *oauthSession, code, state 
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := oauthHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBytes, _ := io.ReadAll(resp.Body)
+	respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, maxOAuthRespBody))
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("anthropic %d: %s", resp.StatusCode, string(respBytes))
 	}
@@ -1206,10 +1273,10 @@ func (w *webMux) apiOAuthDevicePoll(rw http.ResponseWriter, r *http.Request) {
 	// authorization_code + code_verifier instead of a token); the
 	// stdlib RFC-8628 path covers github.
 	if it := w.g.oauth.Integration(sess.id); it != nil && it.Flow == "openai_device" {
-		w.pollOpenAIDeviceFlow(rw, sess)
+		w.pollOpenAIDeviceFlow(rw, r, sess)
 		return
 	}
-	w.pollDeviceFlow(rw, sess)
+	w.pollDeviceFlow(rw, r, sess)
 }
 
 func (w *webMux) apiOAuthRevoke(rw http.ResponseWriter, r *http.Request) {

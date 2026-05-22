@@ -547,8 +547,11 @@ func (g *Gateway) watchConfig(path string) {
 		return
 	}
 	last := st.ModTime()
-	for {
-		time.Sleep(3 * time.Second)
+	// Ticker + select instead of bare Sleep so a future shutdown
+	// signal can plug a cancel channel in here cleanly.
+	t := time.NewTicker(3 * time.Second)
+	defer t.Stop()
+	for range t.C {
 		st, err := os.Stat(path)
 		if err != nil || !st.ModTime().After(last) {
 			continue
@@ -1879,6 +1882,47 @@ func (w *countWriter) Write(p []byte) (int, error) {
 
 const maxHTTPMatchBody = 1 << 20
 
+// maxTrackedLLMBody caps the size of an LLM response body the
+// gateway will hold in memory for usage tracking (token counts,
+// dashboard session preview). The tee-buffer that captures
+// /v1/messages / /v1/responses payloads is otherwise unbounded;
+// a 4 MiB cap accommodates a long codex turn while bounding the
+// damage from a gzip-encoded response that expands by orders
+// of magnitude.
+const maxTrackedLLMBody = 4 << 20
+
+// boundedWriter wraps an io.Writer so Write silently drops bytes
+// once the cap is reached. Returns the full input length so a
+// surrounding TeeReader doesn't surface a short-write error to
+// the wider request path — the observability sink loses the
+// tail, but the downstream peer still receives every byte.
+type boundedWriter struct {
+	w   io.Writer
+	max int
+	n   int
+}
+
+func (b *boundedWriter) Write(p []byte) (int, error) {
+	if b.n >= b.max {
+		return len(p), nil
+	}
+	remain := b.max - b.n
+	if len(p) <= remain {
+		nw, err := b.w.Write(p)
+		b.n += nw
+		if err != nil {
+			return nw, err
+		}
+		return len(p), nil
+	}
+	nw, err := b.w.Write(p[:remain])
+	b.n += nw
+	if err != nil {
+		return nw, err
+	}
+	return len(p), nil
+}
+
 func bufferHTTPBodyForMatch(req *http.Request) []byte {
 	b, _ := bufferHTTPBodyForMatchTruncated(req)
 	return b
@@ -2401,7 +2445,15 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			ct := resp.Header.Get("Content-Type")
 			if strings.Contains(ct, "json") || strings.Contains(ct, "event-stream") {
 				trackBuf = &bytes.Buffer{}
-				resp.Body = io.NopCloser(io.TeeReader(resp.Body, trackBuf))
+				// Tee into a bounded writer so a very large LLM
+				// response (or a hostile upstream streaming forever
+				// over SSE) can't grow the in-memory buffer past the
+				// LLM-tracking cap. Bytes beyond the cap still flow
+				// to the downstream peer untouched — only the
+				// observability copy is truncated.
+				resp.Body = io.NopCloser(io.TeeReader(
+					resp.Body, &boundedWriter{w: trackBuf, max: maxTrackedLLMBody},
+				))
 			}
 		}
 		respS := newSampler(4096)
@@ -2435,7 +2487,12 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			body := trackBuf.Bytes()
 			if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
 				if zr, err := gzip.NewReader(bytes.NewReader(body)); err == nil {
-					if d, err := io.ReadAll(zr); err == nil {
+					// Cap the decompressed read so a hostile / buggy
+					// upstream can't expand a small gzip stream into a
+					// huge buffer purely for the LLM-tracking path
+					// (trackLLMUsage only consumes the first few KiB
+					// for token-count heuristics).
+					if d, err := io.ReadAll(io.LimitReader(zr, maxTrackedLLMBody)); err == nil {
 						body = d
 					}
 					_ = zr.Close()

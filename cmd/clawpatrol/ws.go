@@ -402,7 +402,12 @@ func (w *wsInflater) decompress(payload []byte, noTakeover bool) []byte {
 	src.Write(deflateTrailer)
 	fr := flate.NewReaderDict(&src, dict)
 	defer func() { _ = fr.Close() }()
-	out, err := io.ReadAll(fr)
+	// Cap the decompressed output to guard against a hostile peer
+	// sending a tiny payload that expands to gigabytes (deflate
+	// bomb). 4 MiB is well above any legitimate WS frame on the
+	// providers we proxy (Slack/Discord/etc. cap frames at ~1 MiB)
+	// and the downstream sampler only keeps the first 4 KiB anyway.
+	out, err := io.ReadAll(io.LimitReader(fr, 4<<20))
 	// io.ErrUnexpectedEOF is expected — permessage-deflate's trailer
 	// (00 00 ff ff) is a non-final SYNC block, so flate never sees a
 	// real EOF marker. We accept the bytes decoded up to that point.

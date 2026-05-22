@@ -187,7 +187,12 @@ func fetchEnvPushdownFromGateway(caDir string) ([]pushdownEnvVar, error) {
 	}
 	url := strings.TrimRight(gw, "/") + "/api/env-pushdown"
 	cli := gatewayClient(caDir)
-	req, err := http.NewRequest("GET", url, nil)
+	// Per-call ctx with timeout so a stuck gateway can't tie up the
+	// fetcher beyond the client-level cap (covers ctx-only cancel
+	// paths inside net/http that don't observe client.Timeout).
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build %s: %w", url, err)
 	}
@@ -411,23 +416,49 @@ func startModelRefresh() {
 }
 
 func (m *modelDB) refreshLoop() {
-	for {
+	// Ticker + select so a future shutdown ctx can plug in here
+	// without restructuring the loop body. We pace the first run
+	// inline so subscribers see a populated cache promptly after
+	// boot, then the ticker drives the hourly refresh.
+	if err := m.fetch(); err != nil {
+		log.Printf("models: refresh failed: %v", err)
+	}
+	t := time.NewTicker(time.Hour)
+	defer t.Stop()
+	for range t.C {
 		if err := m.fetch(); err != nil {
 			log.Printf("models: refresh failed: %v", err)
 		}
-		time.Sleep(time.Hour)
 	}
 }
 
+// modelRefreshClient is the dedicated client for the litellm
+// context-window cache refresh. Bounded timeout so a stuck
+// raw.githubusercontent.com response can't pile up refresh
+// goroutines hour over hour.
+var modelRefreshClient = &http.Client{Timeout: 10 * time.Second}
+
+// maxModelDBBody caps the JSON we'll read from the litellm
+// model_prices_and_context_window.json. The file is ~1.5 MB
+// today; 8 MiB is generous future-proofing while still preventing
+// a hostile upstream from streaming gigabytes of JSON into our
+// heap before we notice.
+const maxModelDBBody = 8 << 20
+
 func (m *modelDB) fetch() error {
-	cli := &http.Client{Timeout: 10 * time.Second}
-	resp, err := cli.Get(litellmModelsURL)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, litellmModelsURL, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := modelRefreshClient.Do(req)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	var raw map[string]modelInfo
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxModelDBBody)).Decode(&raw); err != nil {
 		return err
 	}
 	out := map[string]int64{}
