@@ -25,15 +25,12 @@ export function DemoSection() {
         </p>
       </div>
 
-      <div class="max-w-4xl mx-auto px-6 sm:px-8 mb-12">
-        <a href={DEMO_URL} class="block group">
-          <img
-            src="/screenshots/demo-dashboard.png"
-            alt="Claw Patrol admin dashboard showing a device fleet and live request feed"
-            class="w-full block border border-navy
-              transition-opacity group-hover:opacity-90"
-          />
-        </a>
+      <div class="max-w-4xl mx-auto px-6 sm:px-8 mb-8">
+        <iframe
+          src="https://demo.clawpatrol.dev/"
+          className="h-128 w-full border-3 border-t-24 border-navy squircle-lg shadow-[4px_6px_0_0_var(--color-canvas-300)] border-navy"
+          width="100%"
+        ></iframe>
       </div>
 
       <div class="text-center">
