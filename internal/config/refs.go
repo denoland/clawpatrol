@@ -2,24 +2,9 @@ package config
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 )
-
-// article picks "a" or "an" for noun, falling back to "a" for short
-// noise. Diagnostics read better with proper agreement
-// ("Expected an endpoint" vs. "Expected a endpoint").
-func article(noun string) string {
-	if noun == "" {
-		return "a"
-	}
-	switch strings.ToLower(noun)[0] {
-	case 'a', 'e', 'i', 'o', 'u':
-		return "an " + noun
-	}
-	return "a " + noun
-}
 
 // Refs is the result of resolving one block's RefSpec entries. Each
 // entry is keyed by the plugin's RefSpec.Path and points back to the

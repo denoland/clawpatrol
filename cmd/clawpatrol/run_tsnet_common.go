@@ -1,7 +1,11 @@
+//go:build linux
+
 package main
 
-// Shared helpers for tsnet-backed `clawpatrol run` — used by both the
-// Linux (gVisor/TUN) and macOS (SOCKS5) implementations.
+// Shared helpers for tsnet-backed `clawpatrol run` — currently consumed
+// by the Linux daemon transport. The historical macOS SOCKS5 client
+// used the same helpers and may again; keep them isolated behind a
+// build tag rather than splitting per-call sites.
 
 import (
 	"context"
@@ -20,25 +24,6 @@ import (
 	"tailscale.com/ipn"
 	"tailscale.com/tsnet"
 )
-
-// gatewayHTTPClient builds an http.Client that trusts caPath in addition
-// to system roots. If caPath doesn't exist the client falls back to system
-// roots only (Tailscale mode exposes the gateway over a trusted tailnet).
-func gatewayHTTPClient(caPath string) (*http.Client, error) {
-	roots, err := x509.SystemCertPool()
-	if err != nil {
-		roots = x509.NewCertPool()
-	}
-	if pem, err := os.ReadFile(caPath); err == nil {
-		roots.AppendCertsFromPEM(pem)
-	}
-	return &http.Client{
-		Timeout: 15 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{RootCAs: roots},
-		},
-	}, nil
-}
 
 // tsnetHTTPClient builds an http.Client that dials via tsnet so tailnet
 // IPs (100.x.x.x) are reachable from the parent process (which otherwise

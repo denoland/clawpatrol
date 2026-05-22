@@ -430,21 +430,6 @@ func credentialEndpointTargets(ent *Entity) []string {
 	return nil
 }
 
-// credentialDatabase returns the credential body's `database` field
-// when the plugin exposes one (clickhouse_credential, postgres_credential).
-// Empty for credential types that don't carry a database discriminator.
-// Retained for HCL emit / dump consumers that surface the database
-// attr verbatim; dispatch reads it through blockDisambiguators.
-func credentialDatabase(ent *Entity) string {
-	if ent == nil {
-		return ""
-	}
-	if d, ok := ent.Body.(interface{ CredentialDatabase() string }); ok {
-		return d.CredentialDatabase()
-	}
-	return ""
-}
-
 // attachCredentials walks every loaded credential and appends its
 // *Entity to each endpoint it binds. Order of appended entries is
 // deterministic by following p.Order (the source declaration

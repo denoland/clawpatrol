@@ -401,6 +401,11 @@ func decodeSlackMessageRef(raw string) (slackMessageRef, bool) {
 	return ref, true
 }
 
+// UpdateHITLMessage edits the originating Slack interactive message
+// after a HITL decision lands. update.MessageRef is the JSON-encoded
+// slackMessageRef the credential plugin emitted when posting; this
+// call resolves the credential, then issues chat.update with the
+// rendered decision text.
 func (s *SlackTokens) UpdateHITLMessage(ctx context.Context, secrets runtime.SecretStore, update runtime.HITLMessageUpdate) error {
 	ref, ok := decodeSlackMessageRef(update.MessageRef)
 	if !ok {

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -100,12 +101,16 @@ func runJoin(args []string) {
 	wholeMachine := fs.Bool("whole-machine", false, "bring up wg-quick to route ALL host traffic through the gateway (default: persist conf only, use `clawpatrol run` for per-process routing)")
 	profile := fs.String("profile", "", "profile to assign at approval time (defaults to the gateway's default profile if the approver doesn't pick one)")
 	hostname := fs.String("hostname", "", "device name to register with the gateway (defaults to os.Hostname)")
+	loginFlag := fs.Bool("login", false, "interactively log in to the gateway's tailnet first (use when the gateway has no public URL). The temporary tailnet credentials are discarded once the gateway-minted device identity lands.")
 	_ = fs.Parse(reorderJoinArgsForFlagParse(args))
 	rest := fs.Args()
 	if len(rest) != 1 || rest[0] == "" {
 		fail("usage: clawpatrol join [--hostname NAME] [--profile NAME] [--whole-machine] <gateway-url>")
 	}
-	gatewayURL := rest[0]
+	gatewayURL, err := validateGatewayURL(rest[0])
+	if err != nil {
+		fail("%v", err)
+	}
 	if *wholeMachine {
 		if local, reason := isLocalGateway(gatewayURL); local {
 			fail("refusing --whole-machine join: gateway URL points at this host (%s).\n"+
@@ -130,14 +135,63 @@ func runJoin(args []string) {
 	// gateway; onboardViaDeviceFlow fetches the CA from the peer's
 	// tailnet IP after joining.
 	//
+	// Tailnet-bootstrap (--login or auto-fallback): when the gateway
+	// has no public Funnel at all, or this machine simply can't reach
+	// it from its current network, stand up a temporary tsnet node,
+	// drive interactive Tailscale auth, and dial the gateway over the
+	// tailnet for the rest of the flow. The bootstrap node is torn
+	// down (LocalClient.Logout + state-dir removed) before runJoin
+	// returns, so the human credentials never persist on disk — the
+	// agent's permanent identity is the gateway-minted tagged key.
+	//
 	// Trust install + shell-rc updates are deferred to
 	// finishJoinSetup, which runs only after the operator's
 	// dashboard approval click.
-	setup, err := preJoinFetchCA(gatewayURL, *caOut)
-	if err != nil && !isCaNotExposed(err) {
-		fail("ca fetch: %v", err)
+	ctx := context.Background()
+	var bootstrap *tailnetBootstrap
+	defer func() {
+		if bootstrap != nil {
+			bootstrap.Close(ctx)
+		}
+	}()
+	var joinHTTPCli *http.Client
+	if *loginFlag {
+		bs, berr := bootstrapTailnetForJoin(ctx)
+		if berr != nil {
+			fail("tailnet login: %v", berr)
+		}
+		bootstrap = bs
+		joinHTTPCli = bs.Client()
 	}
-	wgMode, err := onboardViaDeviceFlow(gatewayURL, *wholeMachine, *profile, *hostname, &setup, *skipTrust)
+	setup, err := preJoinFetchCA(gatewayURL, *caOut, joinHTTPCli)
+	if err != nil && !isCaNotExposed(err) {
+		// Auto-fallback: a tailnet-shaped URL that's unreachable from
+		// this machine is exactly the case --login was added for. Try
+		// the bootstrap once before giving up so the operator doesn't
+		// have to re-run with the flag.
+		if bootstrap == nil && isTailnetShapedURL(gatewayURL) && isNetworkUnreachableErr(err) {
+			fmt.Fprintf(os.Stderr, "gateway %s unreachable from this network; falling back to tailnet login.\n", gatewayURL)
+			bs, berr := bootstrapTailnetForJoin(ctx)
+			if berr != nil {
+				fail("tailnet login: %v", berr)
+			}
+			bootstrap = bs
+			joinHTTPCli = bs.Client()
+			setup, err = preJoinFetchCA(gatewayURL, *caOut, joinHTTPCli)
+			if err != nil && !isCaNotExposed(err) {
+				fail("ca fetch: %v", err)
+			}
+		} else {
+			fail("ca fetch: %v", err)
+		}
+	}
+	// Auto-approve is opt-in to the --login bootstrap: only then do
+	// we have an http client whose requests carry a tsnet whois the
+	// gateway recognises as a dashboard operator. The standard path
+	// (no bootstrap, just preJoinFetchCA over public Funnel) has no
+	// authenticated identity and must wait for the dashboard click.
+	autoApprove := bootstrap != nil
+	wgMode, err := onboardViaDeviceFlow(gatewayURL, *wholeMachine, *profile, *hostname, &setup, *skipTrust, joinHTTPCli, autoApprove)
 	if err != nil {
 		fail("join: %v", err)
 	}
@@ -161,6 +215,42 @@ func runJoin(args []string) {
 			fail("%v", err)
 		}
 	}
+}
+
+// validateGatewayURL rejects gateway URLs that wouldn't survive a
+// round-trip through http.Client — historically the join flow only
+// noticed at the dial layer, after preJoinFetchCA had already written
+// the bogus string to ~/.clawpatrol/gateway. The most common shape
+// that bit operators was a bare hostname like "clawpatrol-gateway-1":
+// neturl.Parse accepts it (everything parses as opaque), but
+// http.Client.Get("clawpatrol-gateway-1/ca.crt") errors with
+// "unsupported protocol scheme \"\"" — and by the time you see the
+// error the state file is already corrupt.
+//
+// Rules: explicit http:// or https://, non-empty host. We don't try
+// to be clever and auto-promote bare hostnames — the right port
+// depends on whether the gateway is fronted by Funnel (:443) or
+// reached over the tailnet (:8080), and we don't have enough
+// context here to pick correctly. The error message tells the
+// operator the most likely form for the tailnet-mounted case.
+func validateGatewayURL(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", fmt.Errorf("gateway URL is empty")
+	}
+	u, err := neturl.Parse(s)
+	if err != nil {
+		return "", fmt.Errorf("invalid gateway URL %q: %w", s, err)
+	}
+	switch u.Scheme {
+	case "http", "https":
+	default:
+		return "", fmt.Errorf("gateway URL %q is missing an http:// or https:// scheme — for a tailnet-mounted gateway, try http://%s:8080", s, s)
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("gateway URL %q has no host", s)
+	}
+	return s, nil
 }
 
 // applyWholeMachineExitNode finishes the whole-machine Tailscale Linux
@@ -224,7 +314,12 @@ func isCaNotExposed(err error) bool {
 // in the loop: an on-path attacker who served a substitute CA over
 // plain HTTP loses because the dashboard surfaces the gateway's
 // real fingerprint and the operator can refuse to approve.
-func preJoinFetchCA(gateway, caDir string) (joinSetup, error) {
+//
+// cli is the HTTP client to use; pass nil for the default
+// TOFU-permissive client. The tailnet-bootstrap path in runJoin
+// passes a tsnet-dialing client so the same code reaches a
+// tailnet-only gateway.
+func preJoinFetchCA(gateway, caDir string, cli *http.Client) (joinSetup, error) {
 	var s joinSetup
 	if err := os.MkdirAll(caDir, 0o700); err != nil {
 		return s, fmt.Errorf("mkdir %s: %w", caDir, err)
@@ -235,7 +330,7 @@ func preJoinFetchCA(gateway, caDir string) (joinSetup, error) {
 	_ = os.WriteFile(filepath.Join(caDir, "gateway"),
 		[]byte(strings.TrimRight(gateway, "/")+"\n"), 0o644)
 	s.caPath = filepath.Join(caDir, "ca.crt")
-	fp, err := fetchCAHTTP(gateway, s.caPath)
+	fp, err := fetchCAHTTP(gateway, s.caPath, cli)
 	if err != nil {
 		return s, fmt.Errorf("fetch CA: %w", err)
 	}
@@ -289,16 +384,20 @@ func finishJoinSetup(s *joinSetup, skipTrust, wholeMachine bool) {
 // The fingerprint flows back to the CLI's stdout so the operator
 // can compare it against what the dashboard shows during the
 // approval step.
-func fetchCAHTTP(gateway, dst string) (string, error) {
+func fetchCAHTTP(gateway, dst string, cli *http.Client) (string, error) {
 	url := strings.TrimRight(gateway, "/") + "/ca.crt"
-	// InsecureSkipVerify is intentional here: we haven't yet fetched the CA
-	// that signed the gateway's cert, so we can't verify it. The admin confirms
-	// the fingerprint out-of-band (shown in the UI at join time) — TOFU.
-	c := &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
-		},
+	c := cli
+	if c == nil {
+		// InsecureSkipVerify is intentional on this default client: we
+		// haven't yet fetched the CA that signed the gateway's cert,
+		// so we can't verify it. The admin confirms the fingerprint
+		// out-of-band (shown in the UI at join time) — TOFU.
+		c = &http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+			},
+		}
 	}
 	resp, err := c.Get(url)
 	if err != nil {
@@ -483,37 +582,6 @@ func tsSet(tscli string, args ...string) error {
 	return c.Run()
 }
 
-// tailnetDisplayName returns a short name for the current tailnet,
-// matching the README format ("divy's tailnet"). Prefers the
-// CurrentTailnet.Name; falls back to the local user's display name or
-// login local-part; final fallback is "your".
-func tailnetDisplayName(st *tsStatus) string {
-	if st.CurrentTailnet != nil && st.CurrentTailnet.Name != "" {
-		// e.g. "divy@github" → "divy"
-		n := st.CurrentTailnet.Name
-		if i := strings.IndexAny(n, "@."); i > 0 {
-			n = n[:i]
-		}
-		return n
-	}
-	if st.Self != nil {
-		if u, ok := st.User[fmt.Sprint(st.Self.UserID)]; ok {
-			if u.DisplayName != "" {
-				if first := strings.SplitN(u.DisplayName, " ", 2)[0]; first != "" {
-					return strings.ToLower(first)
-				}
-			}
-			if u.LoginName != "" {
-				if i := strings.IndexAny(u.LoginName, "@"); i > 0 {
-					return u.LoginName[:i]
-				}
-				return u.LoginName
-			}
-		}
-	}
-	return "your"
-}
-
 func tailscaleBin() (string, error) {
 	if p, err := exec.LookPath("tailscale"); err == nil {
 		return p, nil
@@ -643,7 +711,7 @@ func writeSudo(path string, content []byte) error {
 	cmd.Stdin = bytes.NewReader(content)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("%v: %s", err, out)
+		return fmt.Errorf("%w: %s", err, out)
 	}
 	return nil
 }
@@ -800,15 +868,36 @@ func wgAddressFromConf(conf string) string {
 // the fingerprint the dashboard showed matched what the CLI
 // printed, so the CA we install can't be one a MITM substituted
 // during the unauthenticated /ca.crt fetch.
-func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname string, setup *joinSetup, skipTrust bool) (bool, error) {
+//
+// httpCli is the HTTP client to use for /api/onboard/{start,poll,claim};
+// pass nil for the default TOFU-permissive client. The tailnet
+// bootstrap path passes a tsnet-dialing client so the same code path
+// reaches a gateway whose Funnel is disabled or unreachable from this
+// machine's network position.
+//
+// autoApprove signals that the http client's requests authenticate as
+// a tailnet identity the gateway recognises as a dashboard operator
+// (today: bootstrap tsnet via --login). When true we POST
+// /api/onboard/approve immediately after /start; the operator gate
+// accepts the request via tailnetGate's whois path and the device-flow
+// poll then resolves with no human-in-the-loop step. The post is
+// best-effort — a 403 (e.g. the login isn't actually in the operators
+// allowlist) falls through to the existing browser-approval prompt.
+func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname string, setup *joinSetup, skipTrust bool, httpCli *http.Client, autoApprove bool) (bool, error) {
 	gateway = strings.TrimRight(gateway, "/")
-	// CA is unverified until the admin confirms the fingerprint at approval time
-	// (TOFU). Use InsecureSkipVerify throughout the join handshake.
-	cli := &http.Client{
-		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
-		},
+	cli := httpCli
+	if cli == nil {
+		// CA is unverified until the admin confirms the fingerprint at
+		// approval time (TOFU). Use InsecureSkipVerify on the default
+		// client for the same reason as fetchCAHTTP — the bootstrap
+		// client dials over tsnet and inherits its TLS behaviour, so
+		// we don't second-guess its config here.
+		cli = &http.Client{
+			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+			},
+		}
 	}
 
 	hn := hostname
@@ -852,33 +941,73 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		return false, fmt.Errorf("start decode: %w", err)
 	}
 
-	fmt.Println()
-	fmt.Println("Verify code in browser:")
-	fmt.Println()
-	fmt.Printf("    %s\n", start.UserCode)
-	fmt.Println()
-	fmt.Println(start.VerifyURL)
-	// One-line CA fingerprint after the verify URL. The
-	// dashboard's approval page shows the same value next to
-	// the user_code — operator visually confirms they match
-	// before clicking approve, blocking an on-path swap of the
-	// CA the CLI just fetched over plain HTTP.
-	if setup != nil && setup.caFingerprint != "" {
-		fmt.Println()
-		fmt.Printf("CA fingerprint: %s\n", setup.caFingerprint)
+	autoApproved := false
+	if autoApprove {
+		// Best-effort: use the bootstrap tsnet's whois identity to
+		// self-approve. Same handler the dashboard "Approve" button
+		// hits — the operator gate accepts our request when the
+		// tsnet peer login is in the operators allowlist. A 403 here
+		// is the expected outcome for any user who isn't in that
+		// allowlist; we silently fall through to browser approval
+		// and the operator drives the dashboard click as today.
+		aq := neturl.Values{}
+		aq.Set("code", start.UserCode)
+		if profile != "" {
+			aq.Set("profile", profile)
+		}
+		approveURL := gateway + "/api/onboard/approve?" + aq.Encode()
+		if ar, aerr := cli.Post(approveURL, "application/json", nil); aerr == nil {
+			body, _ := io.ReadAll(io.LimitReader(ar.Body, 1024))
+			_ = ar.Body.Close()
+			switch ar.StatusCode {
+			case 200:
+				autoApproved = true
+				fmt.Println()
+				fmt.Println("Auto-approved via tailnet operator identity.")
+			case 403:
+				// Not an operator — quietly fall through to the
+				// browser-approval path. No warning: this is the
+				// normal case for any user not on the allowlist.
+			default:
+				fmt.Fprintf(os.Stderr,
+					"⚠ auto-approve unexpected status %d: %s\n  Falling back to dashboard approval.\n",
+					ar.StatusCode, strings.TrimSpace(string(body)))
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "⚠ auto-approve POST failed: %v; falling back to dashboard approval.\n", aerr)
+		}
 	}
-	fmt.Println()
-	// Tailnet-only verify URLs (100.64.0.0/10 IP or *.ts.net host) are
-	// unreachable from the machine running `clawpatrol join` until
-	// approval lands — that's the whole point of needing approval. Print
-	// a QR code so the operator can scan from a phone or another
-	// already-tailnet-connected device. Skip tryOpen on that path: a
-	// local browser can't reach the URL anyway, and the spawned
-	// xdg-open / open process just produces a meaningless tab.
-	if isTailnetOnlyURL(start.VerifyURL) {
-		printVerifyQR(start.VerifyURL)
-	} else {
-		tryOpen(start.VerifyURL)
+
+	if !autoApproved {
+		fmt.Println()
+		fmt.Println("Verify code in browser:")
+		fmt.Println()
+		fmt.Printf("    %s\n", start.UserCode)
+		fmt.Println()
+		fmt.Println(start.VerifyURL)
+		// One-line CA fingerprint after the verify URL. The
+		// dashboard's approval page shows the same value next to
+		// the user_code — operator visually confirms they match
+		// before clicking approve, blocking an on-path swap of the
+		// CA the CLI just fetched over plain HTTP.
+		if setup != nil && setup.caFingerprint != "" {
+			fmt.Println()
+			fmt.Printf("CA fingerprint: %s\n", setup.caFingerprint)
+		}
+		fmt.Println()
+		// Tailnet-only verify URLs (100.64.0.0/10 IP or *.ts.net
+		// host) are unreachable from the machine running
+		// `clawpatrol join` until approval lands — that's the whole
+		// point of needing approval. Print a QR code so the operator
+		// can scan from a phone or another already-tailnet-connected
+		// device. Skip tryOpen on that path: a local browser can't
+		// reach the URL anyway, and the spawned xdg-open / open
+		// process just produces a meaningless tab.
+		if isTailnetOnlyURL(start.VerifyURL) {
+			printVerifyQR(start.VerifyURL)
+		} else {
+			tryOpen(start.VerifyURL)
+		}
 	}
 
 	// 2. poll

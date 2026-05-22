@@ -442,12 +442,12 @@ func sameStringSet(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	a_ := append([]string(nil), a...)
-	b_ := append([]string(nil), b...)
-	sort.Strings(a_)
-	sort.Strings(b_)
-	for i := range a_ {
-		if a_[i] != b_[i] {
+	aSorted := append([]string(nil), a...)
+	bSorted := append([]string(nil), b...)
+	sort.Strings(aSorted)
+	sort.Strings(bSorted)
+	for i := range aSorted {
+		if aSorted[i] != bSorted[i] {
 			return false
 		}
 	}

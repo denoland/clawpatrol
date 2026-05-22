@@ -94,7 +94,7 @@ func TestDaemonProtocolRoundTrip(t *testing.T) {
 	}
 	clientKeeps := os.NewFile(uintptr(fdPair[0]), "payload-a")
 	defer func() { _ = clientKeeps.Close() }()
-	defer unix.Close(fdPair[1])
+	defer func() { _ = unix.Close(fdPair[1]) }()
 
 	// --- daemon side --------------------------------------------------
 	type daemonResult struct {
@@ -184,7 +184,7 @@ func TestDaemonProtocolRoundTrip(t *testing.T) {
 	// Smoke-verify the SCM_RIGHTS fd actually points at the same
 	// socketpair: write a sentinel through the daemon's recv'd fd,
 	// read it on the client's retained end.
-	defer unix.Close(res.recvFd)
+	defer func() { _ = unix.Close(res.recvFd) }()
 	if _, err := unix.Write(res.recvFd, []byte{0xAB}); err != nil {
 		t.Fatalf("write to recv'd fd: %v", err)
 	}

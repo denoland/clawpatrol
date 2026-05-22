@@ -174,6 +174,8 @@ var Default = &PendingNodeAuth{}
 // so JSON consumers don't break if tailscale.com renumbers the enum.
 type NodeStateLabel string
 
+// NodeStateLabel values: stable wire labels projected from ipn.State.
+// See LabelFromIPNState for the mapping.
 const (
 	NodeStateUnknown        NodeStateLabel = "unknown"
 	NodeStateNeedsLogin     NodeStateLabel = "needs_login"

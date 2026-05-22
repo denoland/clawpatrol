@@ -376,16 +376,6 @@ func (h *hitlRetryRelayHarness) createApprovedRetryOperationForMethodAndPrincipa
 	return op
 }
 
-func (h *hitlRetryRelayHarness) fingerprintForBody(t *testing.T, requestBody string) HITLRequestFingerprintResult {
-	t.Helper()
-	return h.fingerprintForMethodAndBody(t, http.MethodPost, requestBody)
-}
-
-func (h *hitlRetryRelayHarness) fingerprintForMethodAndBody(t *testing.T, method, requestBody string) HITLRequestFingerprintResult {
-	t.Helper()
-	return h.fingerprintForMethodBodyAndPrincipal(t, method, requestBody, hitlPeerPrincipalID(hitlRetryRelayTestPeerIP))
-}
-
 func (h *hitlRetryRelayHarness) fingerprintForMethodBodyAndPrincipal(t *testing.T, method, requestBody, principalID string) HITLRequestFingerprintResult {
 	t.Helper()
 	result, err := ComputeHITLRequestFingerprint(HITLRequestFingerprintInput{

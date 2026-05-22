@@ -334,6 +334,9 @@ type HITLHumanCredentialer interface {
 	HumanApproverCredential() string
 }
 
+// HITLMessageUpdate is the payload an approver receives when a HITL
+// decision lands. Credential plugins (e.g. Slack) use it to edit the
+// originating interactive message with the final state.
 type HITLMessageUpdate struct {
 	MessageRef     string
 	OperationID    string
@@ -455,6 +458,11 @@ type ApproveRequest struct {
 	PendingMessageUpdateSink HITLPendingMessageUpdateSink
 }
 
+// ApproveDecisionAsyncPending is the ApproveVerdict.Decision value an
+// approver returns when no synchronous verdict was reached and the
+// operation is being recorded for async resolution.
+const ApproveDecisionAsyncPending = "async_pending"
+
 // ApproveVerdict is what an approver returns. "" Decision means the
 // approver couldn't decide (timeout / error) — the caller falls back
 // to the configured fail mode.
@@ -464,8 +472,6 @@ type ApproveRequest struct {
 // dashboard event with the deciding approver's kind (human / llm /
 // dashboard) and id (the HCL block name) — operators looking at a
 // `denied` row see *why* without having to drill into the rule.
-const ApproveDecisionAsyncPending = "async_pending"
-
 type ApproveVerdict struct {
 	Decision     string // "allow" | "deny" | "async_pending" | ""
 	Reason       string
@@ -548,6 +554,8 @@ const (
 // wire labels without importing the gateway package.
 type HITLOperationState string
 
+// HITLOperationState values: durable lifecycle states for async-HITL
+// operations.
 const (
 	HITLOperationStateSyncWaiting             HITLOperationState = "sync_waiting"
 	HITLOperationStatePendingApproval         HITLOperationState = "pending_approval"
@@ -565,6 +573,8 @@ const (
 // render a stable affordance even while async operation wiring evolves.
 type HITLApprovalEffect string
 
+// HITLApprovalEffect values: what clicking approve will do given the
+// current HITLOperationState.
 const (
 	HITLApprovalEffectExecuteUpstream  HITLApprovalEffect = "execute_upstream"
 	HITLApprovalEffectCreateRetryGrant HITLApprovalEffect = "create_retry_grant"
@@ -636,6 +646,8 @@ func NormalizeHITLPendingApproval(p *HITLPending) {
 	}
 }
 
+// HITLApprovalEffectForOperationState returns the effect that clicking
+// approve will have given the supplied operation state.
 func HITLApprovalEffectForOperationState(state HITLOperationState) HITLApprovalEffect {
 	switch state {
 	case HITLOperationStatePendingApproval:
@@ -645,6 +657,10 @@ func HITLApprovalEffectForOperationState(state HITLOperationState) HITLApprovalE
 	}
 }
 
+// HITLApprovalMessage returns the operator-facing description of what
+// approving the pending request will do, given the operation's current
+// state, the precomputed approval effect, and whether the upstream
+// call already started.
 func HITLApprovalMessage(state HITLOperationState, effect HITLApprovalEffect, upstreamCalled bool) string {
 	if upstreamCalled {
 		switch state {

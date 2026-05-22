@@ -126,7 +126,7 @@ func TestSlackNotifyHITLRecordsMessageRefForAsyncOperation(t *testing.T) {
 
 func TestSlackNotifyHITLRecordsMessageOverrideForUpdates(t *testing.T) {
 	var recordedRef string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true,"channel":"C123","ts":"1778764174.925659"}`))
 	}))
@@ -239,7 +239,7 @@ func TestSlackUpdateHITLMessageUsesChatUpdate(t *testing.T) {
 
 func TestSlackUpdateHITLMessageRetriesTransientChatUpdateFailure(t *testing.T) {
 	attempts := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		attempts++
 		w.Header().Set("Content-Type", "application/json")
 		if attempts == 1 {

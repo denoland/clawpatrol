@@ -295,7 +295,7 @@ func peekAgentListener(pid, sockfd int) (uint16, net.IP, int, error) {
 	if procErr == nil {
 		return port, ip, family, nil
 	}
-	return 0, nil, 0, fmt.Errorf("pidfd_getfd: %v; /proc fallback: %v", pidfdErr, procErr)
+	return 0, nil, 0, fmt.Errorf("pidfd_getfd: %w; /proc fallback: %w", pidfdErr, procErr)
 }
 
 // pidfdPeekListener: open the agent as a pidfd, dup the socket fd over,
@@ -305,13 +305,13 @@ func pidfdPeekListener(pid, sockfd int) (uint16, net.IP, int, error) {
 	if e != 0 {
 		return 0, nil, 0, fmt.Errorf("pidfd_open(%d): %w", pid, e)
 	}
-	defer unix.Close(int(pidfd))
+	defer func() { _ = unix.Close(int(pidfd)) }()
 
 	dupfd, _, e := unix.Syscall(unix.SYS_PIDFD_GETFD, pidfd, uintptr(sockfd), 0)
 	if e != 0 {
 		return 0, nil, 0, fmt.Errorf("pidfd_getfd(pid=%d, fd=%d): %w", pid, sockfd, e)
 	}
-	defer unix.Close(int(dupfd))
+	defer func() { _ = unix.Close(int(dupfd)) }()
 
 	sa, err := unix.Getsockname(int(dupfd))
 	if err != nil {
@@ -359,7 +359,7 @@ func procPeekListener(pid, sockfd int) (uint16, net.IP, int, error) {
 		{fmt.Sprintf("/proc/%d/net/tcp6", pid), unix.AF_INET6, 32},
 		{fmt.Sprintf("/proc/%d/net/tcp", pid), unix.AF_INET, 8},
 	} {
-		port, ip, ok, err := scanProcNetTcp(t.path, inode, t.ipHex)
+		port, ip, ok, err := scanProcNetTCP(t.path, inode, t.ipHex)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			// Surface IO errors but keep trying the other family.
 			fmt.Fprintf(os.Stderr, "[clawpatrol relay] read %s: %v\n", t.path, err)
@@ -372,10 +372,10 @@ func procPeekListener(pid, sockfd int) (uint16, net.IP, int, error) {
 	return 0, nil, 0, fmt.Errorf("no TCP_LISTEN row with inode %d in /proc/%d/net/tcp{,6}", inode, pid)
 }
 
-// scanProcNetTcp scans one /proc/<pid>/net/tcp{,6} file for a row whose
+// scanProcNetTCP scans one /proc/<pid>/net/tcp{,6} file for a row whose
 // inode matches `wantInode` and whose state is TCP_LISTEN (0x0A). On
 // match, returns the parsed (port, ip). On miss, returns ok=false.
-func scanProcNetTcp(path string, wantInode uint64, ipHexLen int) (uint16, net.IP, bool, error) {
+func scanProcNetTCP(path string, wantInode uint64, ipHexLen int) (uint16, net.IP, bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return 0, nil, false, err
