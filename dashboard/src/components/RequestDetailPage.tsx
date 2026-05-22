@@ -1,7 +1,7 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
-  getAction,
   downloadActionFixture,
+  getAction,
   type Agent,
   type EventRecord,
   type FacetSchema,
@@ -84,7 +84,10 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
   // full breakdown lives in SQLDetail below.
   const isSQL = ev.family === "sql" || ev.mode === "pg" || ev.mode === "clickhouse_native";
   const header = isSQL
-    ? { verb: ((ev.facets?.verb as string | undefined) ?? ev.method ?? "").toUpperCase(), body: "" }
+    ? {
+        verb: ((ev.facets?.verb as string | undefined) ?? ev.method ?? "").toUpperCase(),
+        body: "",
+      }
     : headerFromFacets(ev, schema);
   const { verb, body } = header;
   const fullUrl = ev.host + (body && !body.startsWith("/") ? " " : "") + body;
@@ -247,7 +250,10 @@ function SQLDetail({ ev }: { ev: EventRecord }) {
   if (verb) facets.push({ label: "Verb", value: verb });
   if (tables.length > 0) facets.push({ label: "Tables", value: tables.join(", ") });
   if (functions.length > 0) {
-    facets.push({ label: "Functions", value: functions.map((s) => s.toUpperCase()).join(", ") });
+    facets.push({
+      label: "Functions",
+      value: functions.map((s) => s.toUpperCase()).join(", "),
+    });
   }
   return (
     <div className="bg-canvas border-1.5 border-navy divide-y divide-canvas-dark">
@@ -291,10 +297,13 @@ function Shell({
   agentName?: string;
   requestId?: string;
 }) {
-  const trail: Crumb[] = [{ label: "Claw Patrol", href: "#/" }];
+  const trail: Crumb[] = [];
   if (agentIP) {
-    trail.push({ label: "devices", href: "#/devices" });
-    trail.push({ label: agentName || agentIP, href: `#/device/${encodeURIComponent(agentIP)}` });
+    trail.push({ label: "Devices", href: "#/devices" });
+    trail.push({
+      label: agentName || agentIP,
+      href: `#/device/${encodeURIComponent(agentIP)}`,
+    });
   }
   if (requestId) {
     trail.push({
@@ -692,7 +701,7 @@ function Collapsible({
   }
   if (!open) {
     return (
-      <button onClick={() => setOpen(true)} className="text-text-subtle hover:text-text-muted">
+      <button onClick={() => setOpen(true)} className="text-text cursor-pointer">
         {bracket[0]} <span className="text-navy-500">{count} items</span> {bracket[1]}
       </button>
     );

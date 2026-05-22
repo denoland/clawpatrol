@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { AccountPage } from "./components/AccountPage";
 import { AgentsTable, sortAgents } from "./components/AgentsTable";
 import { AnalyticsPage } from "./components/AnalyticsPage";
 import { ConnectModal } from "./components/ConnectModal";
@@ -9,7 +10,7 @@ import { HITLBar } from "./components/HITLBar";
 import { LiveRequests } from "./components/LiveRequests";
 import { Main } from "./components/Main";
 import { OnboardPage } from "./components/OnboardPage";
-import { AccountPage } from "./components/AccountPage";
+import { PageTitle } from "./components/PageTitle";
 import { RequestDetailPage } from "./components/RequestDetailPage";
 import { SettingsPage } from "./components/SettingsPage";
 import { getState, type Agent, type Integration, type UpdateBanner, type Whoami } from "./lib/api";
@@ -92,11 +93,12 @@ export default function App() {
   }
 
   return (
-    <div className="flex flex-col min-h-screen bg-canvas-muted">
+    <div className="flex flex-col min-h-screen bg-canvas">
       <UpdateNotice update={update} />
       <Header whoami={whoami} currentRoute={route.name} />
       {route.name === "main" ? (
         <Main>
+          <PageTitle trail={[{ label: "Live overview" }]} />
           <HomeAgents
             agents={agents}
             integrations={integrations}
@@ -203,7 +205,7 @@ function UpdateNotice({ update }: { update: UpdateBanner | null }) {
   );
   if (dismissed) return null;
   return (
-    <div className="bg-butter-200 border-b border-butter-300 px-4 sm:px-4 py-2 md:py-3 text-xs text-text flex items-center justify-between gap-3">
+    <div className="bg-butter-100 border-b border-butter-300 px-4 sm:px-4 py-2 text-xs text-text flex items-center justify-between gap-3">
       <div className="flex-1">
         <span className="font-semibold">Claw Patrol {update.latest}</span>
         {" available — "}
@@ -222,10 +224,11 @@ function UpdateNotice({ update }: { update: UpdateBanner | null }) {
           localStorage.setItem(dismissKey, "1");
           setDismissed(true);
         }}
-        className="text-butter-900 hover:text-text text-lg leading-none px-1"
+        className="text-butter-900 hover:text-text text-lg leading-none px-1 cursor-pointer hover:bg-butter-300 squircle-md p-1 pb-1.5 pt-0.5 aspect-square h-6 transition-colors"
         title="dismiss"
       >
-        &times;
+        <span aria-hidden="true">&times;</span>
+        <span className="sr-only">Dismiss</span>
       </button>
     </div>
   );

@@ -21,7 +21,7 @@ export function SettingsPage({
 }) {
   return (
     <Main>
-      <PageTitle trail={[{ label: "Claw Patrol", href: "#/" }, { label: "settings" }]} />
+      <PageTitle trail={[{ label: "Settings" }]} />
 
       <section className="space-y-3">
         <h2 className="font-mono text-xs uppercase tracking-wider text-navy font-bold">

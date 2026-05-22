@@ -8,6 +8,6 @@ import type { ReactNode } from "react";
 // that lets a single child sit centered in the remaining viewport
 // (see OnboardPage).
 export function Main({ children, centered }: { children: ReactNode; centered?: boolean }) {
-  const base = "flex-1 mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-4 sm:py-6";
+  const base = "flex-1 mx-auto w-full max-w-7xl px-4 sm:px-6 py-6 pb-16";
   return <main className={`${base} ${centered ? "flex flex-col" : "space-y-4"}`}>{children}</main>;
 }

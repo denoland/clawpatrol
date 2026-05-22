@@ -171,7 +171,7 @@ export function ConnectModal({
                   {extras.size > 0 ? `${extras.size} selected` : "optional"}
                 </span>
               </summary>
-              <div className="max-h-[300px] overflow-y-auto p-2 space-y-3 border-t border-canvas-300">
+              <div className="max-h-75 overflow-y-auto p-2 space-y-3 border-t border-canvas-300">
                 {optionalGroups.map((g) => (
                   <div key={g.title}>
                     <div className="font-mono text-2xs uppercase tracking-wider text-text-subtle mb-1">
@@ -263,7 +263,7 @@ export function ConnectModal({
                 autoFocus
               />
               {err && <div className="text-xs text-rust-700 mt-2 break-all">{err}</div>}
-              <div className="flex gap-2 mt-3 justify-end">
+              <div className="flex gap-2 mt-8 justify-end">
                 <Button variant="outline" onClick={onClose}>
                   cancel
                 </Button>

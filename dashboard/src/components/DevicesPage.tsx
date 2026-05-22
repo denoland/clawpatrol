@@ -21,7 +21,7 @@ export function DevicesPage({
   return (
     <Main>
       <PageTitle
-        trail={[{ label: "Claw Patrol", href: "#/" }, { label: "devices" }]}
+        trail={[{ label: "Devices" }]}
         actions={
           <Button variant="normal" size="sm" onClick={() => setShowAdd(true)}>
             Add device

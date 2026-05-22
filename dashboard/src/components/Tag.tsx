@@ -3,9 +3,9 @@ import type { ReactNode } from "react";
 export type Tone = "success" | "danger" | "warning" | "info" | "neutral";
 
 const tones: Record<Tone, string> = {
-  success: "bg-success-50 border-success-200 text-success-800",
+  success: "bg-success-100 border-success-200 text-success-800",
   danger: "bg-danger-50 border-danger-200 text-danger-800",
-  warning: "bg-butter-100 border-butter-200 text-butter-800",
+  warning: "bg-butter-200 border-butter-400 text-butter-800",
   info: "bg-navy-50 border-navy-200 text-navy-800",
   neutral: "bg-canvas-muted border-canvas-dark text-text-muted",
 };

@@ -17,65 +17,72 @@ export function Header({
   whoami: Whoami | null;
   currentRoute?: string;
 }) {
-  const navBase =
-    "group relative w-[36px] h-[36px] rounded-full border-1.5 border-navy text-navy flex items-center justify-center bg-canvas hover:bg-canvas-muted transition-colors";
-  const navActive = "bg-navy-100";
   // Single-device pages are part of the Devices section, so the nav
   // button stays lit when drilling into a device.
   const devicesActive = currentRoute === "devices" || currentRoute === "device";
-  const analyticsActive = currentRoute === "analytics";
-  const settingsActive = currentRoute === "settings";
-  const accountActive = currentRoute === "account";
   return (
-    <header className="bg-transparent">
-      <div className="mx-auto w-full max-w-[1100px] px-4 sm:px-6 py-4 flex items-center gap-4">
+    <header className="border-b-1.5 border-b-canvas-muted">
+      <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 py-3 flex items-center gap-4">
         <a href="#/" aria-label="Home" className="shrink-0">
           <img
             src={import.meta.env.BASE_URL + "claw-patrol-logo.svg"}
             alt="Claw Patrol"
-            className="h-6 sm:h-8 w-auto"
+            className="h-8 w-auto hidden xs:block"
+          />
+          <img
+            src={import.meta.env.BASE_URL + "claw-patrol-icon.svg"}
+            alt="Claw Patrol"
+            className="h-8 w-auto xs:hidden"
           />
         </a>
-        <nav className="ml-auto flex items-center gap-2">
-          <a
-            href="#/devices"
-            className={`${navBase} ${devicesActive ? navActive : ""}`}
-            aria-current={devicesActive ? "page" : undefined}
-            aria-label="Devices"
-          >
+        <nav className="ml-auto flex items-center gap-1">
+          <NavLink href="#/devices" label="Devices" active={devicesActive}>
             <DesktopNavIcon />
-            <NavTooltip>Devices</NavTooltip>
-          </a>
-          <a
-            href="#/analytics"
-            className={`${navBase} ${analyticsActive ? navActive : ""}`}
-            aria-current={analyticsActive ? "page" : undefined}
-            aria-label="Analytics"
-          >
+          </NavLink>
+          <NavLink href="#/analytics" label="Analytics" active={currentRoute === "analytics"}>
             <Icon paths={["M3 3v18h18", "m7 16 4-8 4 4 4-6"]} />
-            <NavTooltip>Analytics</NavTooltip>
-          </a>
-          <a
-            href="#/settings"
-            className={`${navBase} ${settingsActive ? navActive : ""}`}
-            aria-current={settingsActive ? "page" : undefined}
-            aria-label="Settings"
-          >
+          </NavLink>
+          <NavLink href="#/settings" label="Settings" active={currentRoute === "settings"}>
             <SettingsIcon />
-            <NavTooltip>Settings</NavTooltip>
-          </a>
-          <a
-            href="#/account"
-            className={`${navBase} ${accountActive ? navActive : ""}`}
-            aria-current={accountActive ? "page" : undefined}
-            aria-label="Account"
-          >
+          </NavLink>
+          <NavLink href="#/account" label="Account" active={currentRoute === "account"}>
             <AccountIcon />
-            <NavTooltip>Account</NavTooltip>
-          </a>
+          </NavLink>
         </nav>
       </div>
     </header>
+  );
+}
+
+// NavLink couples the aria-label and the tooltip text so they can't
+// drift apart. If a future link needs them to differ, split it back
+// into two props (label + tooltip) rather than reaching into the
+// className soup at the call site.
+function NavLink({
+  href,
+  label,
+  active,
+  children,
+}: {
+  href: string;
+  label: string;
+  active: boolean;
+  children: ReactNode;
+}) {
+  const NAV_BASE =
+    "group relative w-9 h-9 squircle-md border-navy-100 text-navy flex items-center justify-center hover:bg-navy-100 transition-colors";
+  const NAV_ACTIVE = "bg-navy-100";
+
+  return (
+    <a
+      href={href}
+      className={`${NAV_BASE} ${active ? NAV_ACTIVE : ""}`}
+      aria-current={active ? "page" : undefined}
+      aria-label={label}
+    >
+      {children}
+      <NavTooltip>{label}</NavTooltip>
+    </a>
   );
 }
 
@@ -90,7 +97,7 @@ function NavTooltip({ children }: { children: ReactNode }) {
       className={
         "pointer-events-none absolute top-full left-1/2 -translate-x-1/2 mt-1.5 " +
         "px-2 py-1 bg-navy text-canvas text-2xs font-mono uppercase tracking-wider " +
-        "max-w-[220px] text-center leading-snug font-bold z-10 " +
+        "max-w-[14rem] text-center leading-snug font-bold z-10 " +
         "opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 " +
         "transition-opacity duration-100"
       }

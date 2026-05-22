@@ -346,7 +346,7 @@ function DetailsPanel({
         </div>
         <button
           onClick={onClose}
-          className="text-text-subtle hover:text-text text-sm leading-none px-1"
+          className="text-text text-sm leading-none px-1 cursor-pointer"
           title="fold"
         >
           ✕

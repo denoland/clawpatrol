@@ -294,7 +294,7 @@ function Card({
                 e.stopPropagation();
                 onDisconnect();
               }}
-              className="opacity-0 group-hover:opacity-100 text-xs leading-none text-text-subtle hover:text-danger-500 transition-opacity cursor-pointer"
+              className="opacity-0 group-hover:opacity-100 text-xs leading-none text-text hover:text-danger-500 transition-opacity cursor-pointer"
               title={connected ? "disconnect" : "reset stored identity"}
             >
               ✕

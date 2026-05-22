@@ -56,7 +56,7 @@ function Step({ n, label, cmd }: { n: number; label: string; cmd: string }) {
   return (
     <div className="space-y-1">
       <div className="flex items-center gap-2">
-        <span className="w-[16px] h-[16px] rounded-full border-navy border bg-navy-100 text-2xs font-semibold font-mono flex items-center justify-center shrink-0">
+        <span className="w-6 h-6 squircle-md bg-navy-100 text-xs font-semibold font-mono flex items-center justify-center shrink-0">
           {n}
         </span>
         <span className="text-sm text-text-muted font-sans">{label}</span>

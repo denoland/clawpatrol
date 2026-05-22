@@ -9,7 +9,7 @@ import { PageTitle } from "./PageTitle";
 export function AccountPage({ whoami }: { whoami: Whoami | null }) {
   return (
     <Main>
-      <PageTitle trail={[{ label: "Claw Patrol", href: "#/" }, { label: "account" }]} />
+      <PageTitle trail={[{ label: "Account" }]} />
       <section className="bg-canvas border-1.5 border-navy p-4 space-y-4">
         {whoami?.user ? <Identity whoami={whoami} /> : <NotLoggedIn />}
       </section>

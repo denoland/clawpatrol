@@ -123,7 +123,7 @@ function RuleRow({ rule: r }: { rule: RuleSummary }) {
         </div>
       </div>
       <div className="flex flex-col items-end gap-0.5 shrink-0">
-        <span className="text-xs text-text-subtle truncate max-w-[160px]" title={r.name}>
+        <span className="text-xs text-text-subtle truncate max-w-[10rem]" title={r.name}>
           {r.name}
         </span>
         {(r.priority ?? 0) !== 0 && (

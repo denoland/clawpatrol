@@ -100,7 +100,7 @@ export function CredentialSecretsModal({
         ))}
         {err && <div className="text-xs text-danger-500">{err}</div>}
       </div>
-      <div className="flex justify-end gap-2 px-4 py-3 border-t border-navy">
+      <div className="flex justify-end gap-2 px-4 py-3">
         <Button variant="outline" onClick={onClose}>
           Cancel
         </Button>

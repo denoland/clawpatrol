@@ -26,7 +26,8 @@ export function HITLBar() {
     };
   }, []);
 
-  async function decide(id: string, allow: boolean) {
+  async function decide(id: string, allow: boolean, confirmMsg: string) {
+    if (!confirm(confirmMsg)) return;
     setNotice("");
     setPending((p) => p.filter((x) => x.id !== id));
     try {
@@ -98,10 +99,29 @@ export function HITLBar() {
                   </Td>
                   <Td className="text-right">
                     <div className="flex gap-1.5 justify-end">
-                      <Button variant="outline" onClick={() => decide(p.id, false)}>
+                      <Button
+                        variant="outline"
+                        onClick={() =>
+                          decide(
+                            p.id,
+                            false,
+                            `Deny this request?\n\n${p.method} ${ep}${sep}${p.path}`,
+                          )
+                        }
+                      >
                         deny
                       </Button>
-                      <Button onClick={() => decide(p.id, true)}>
+                      <Button
+                        onClick={() => {
+                          const verb = approval?.approveLabel ?? "allow";
+                          const cap = verb.charAt(0).toUpperCase() + verb.slice(1);
+                          decide(
+                            p.id,
+                            true,
+                            `${cap} this request?\n\n${p.method} ${ep}${sep}${p.path}`,
+                          );
+                        }}
+                      >
                         {approval?.approveLabel ?? "allow"}
                       </Button>
                     </div>
@@ -179,7 +199,7 @@ function hitlDecisionNotice(result: HITLResolveResult): string {
 
 function Td({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return (
-    <td className={"px-3 sm:px-[14px] py-[9px] align-middle overflow-hidden " + className}>
+    <td className={"px-3 sm:px-3.5 py-2.5 align-middle overflow-hidden " + className}>
       {children}
     </td>
   );

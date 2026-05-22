@@ -3,7 +3,9 @@ import { type EventRecord, type FacetSchema } from "../lib/api";
 import { formatFacetValue, useFacets } from "../lib/facets";
 import { fmtTime } from "../lib/format";
 
-type RowState = EventRecord & { frames?: { direction: string; frame: string; ts: string }[] };
+type RowState = EventRecord & {
+  frames?: { direction: string; frame: string; ts: string }[];
+};
 
 export function LiveRequests({
   agentIP,
@@ -115,7 +117,11 @@ function mergeEvent(prev: RowState[], ev: EventRecord, max: number): RowState[] 
             ...r,
             frames: [
               ...(r.frames ?? []),
-              { direction: ev.direction ?? "", frame: ev.frame ?? "", ts: ev.ts },
+              {
+                direction: ev.direction ?? "",
+                frame: ev.frame ?? "",
+                ts: ev.ts,
+              },
             ],
           }
         : r,
@@ -215,11 +221,11 @@ function Row({ ev, schema }: { ev: RowState; schema: FacetSchema | undefined }) 
         <span className="text-2xs tabular-nums text-text-subtle shrink-0">{time}</span>
         <ModeIcon mode={ev.mode} />
         {verb && (
-          <span className="font-mono text-2xs uppercase font-semibold text-text-muted shrink-0 w-[44px]">
+          <span className="font-mono text-2xs uppercase font-semibold text-text-muted shrink-0 w-11">
             {verb}
           </span>
         )}
-        <span className={"text-xs tabular-nums shrink-0 w-[36px] " + statusColor}>
+        <span className={"text-xs tabular-nums shrink-0 w-9 " + statusColor}>
           {inFlight ? <InFlightSpinner /> : status || "—"}
         </span>
         <span className="text-xs text-text truncate flex-1 min-w-0" title={ev.host + sep + body}>
@@ -232,10 +238,10 @@ function Row({ ev, schema }: { ev: RowState; schema: FacetSchema | undefined }) 
         </span>
       </div>
       {hasFrames && (
-        <div className="bg-canvas-muted border-t border-canvas-muted max-h-[180px] overflow-y-auto">
+        <div className="bg-canvas-muted border-t border-canvas-muted max-h-45 overflow-y-auto">
           {ev.frames!.map((f, i) => (
             <div key={i} className="px-4 py-1 flex items-start gap-2 text-2xs font-mono">
-              <span className="text-text-subtle shrink-0 w-[24px]">{f.direction}</span>
+              <span className="text-text-subtle shrink-0 w-6">{f.direction}</span>
               <span className="text-text-muted truncate" title={f.frame}>
                 {f.frame}
               </span>

@@ -72,7 +72,7 @@ export function Modal({
         (className ?? "")
       }
     >
-      <div className="flex items-center px-4 py-3 bg-navy-100 border-b border-navy">
+      <div className="flex items-center px-4 py-2 bg-navy-100 border-b border-navy">
         <div>
           <h2
             id={titleId}
@@ -90,7 +90,7 @@ export function Modal({
           type="button"
           onClick={onClose}
           aria-label="Close"
-          className="ml-auto text-2xl leading-none px-2 aspect-square py-1 pt-0.5 text-navy hover:text-text cursor-pointer"
+          className="ml-auto text-2xl squircle-md leading-none px-2 aspect-square py-1 pt-0.5 text-navy hover:bg-navy-200 transition-colors cursor-pointer"
         >
           <span aria-hidden="true">✕</span>
           <span className="sr-only">Close modal</span>

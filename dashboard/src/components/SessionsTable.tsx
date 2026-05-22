@@ -121,7 +121,7 @@ function Th({ children, className = "" }: { children: React.ReactNode; className
   return (
     <th
       className={
-        "px-3 sm:px-[14px] py-[9px] text-left text-xs font-mono uppercase tracking-wider text-navy font-bold " +
+        "px-3 sm:px-3.5 py-2.5 text-left text-xs font-mono uppercase tracking-wider text-navy font-bold " +
         className
       }
     >
@@ -140,10 +140,7 @@ function Td({
   title?: string;
 }) {
   return (
-    <td
-      className={"px-3 sm:px-[14px] py-[9px] align-middle overflow-hidden " + className}
-      {...rest}
-    >
+    <td className={"px-3 sm:px-3.5 py-2.5 align-middle overflow-hidden " + className} {...rest}>
       {children}
     </td>
   );

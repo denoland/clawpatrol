@@ -66,13 +66,7 @@ export function DevicePage({
   if (!a) {
     return (
       <Main>
-        <PageTitle
-          trail={[
-            { label: "Claw Patrol", href: "#/" },
-            { label: "devices", href: "#/devices" },
-            { label: ip },
-          ]}
-        />
+        <PageTitle trail={[{ label: "Devices", href: "#/devices" }, { label: ip }]} />
         <div className="bg-canvas border-1.5 border-navy px-5 py-8 text-center text-xs text-text-subtle">
           no agent with ip {ip}
         </div>
@@ -103,11 +97,7 @@ export function DevicePage({
   return (
     <Main>
       <PageTitle
-        trail={[
-          { label: "Claw Patrol", href: "#/" },
-          { label: "devices", href: "#/devices" },
-          { label: dev.hostname || dev.ip },
-        ]}
+        trail={[{ label: "Devices", href: "#/devices" }, { label: dev.hostname || dev.ip }]}
         actions={
           <>
             <ProfilePicker
@@ -132,7 +122,7 @@ export function DevicePage({
             <a
               href={`#/analytics/${encodeURIComponent(ip)}`}
               title="analytics"
-              className="w-[36px] h-[36px] rounded-full border-1.5 border-navy text-text-muted flex items-center justify-center hover:text-text transition-colors"
+              className="w-8 h-8 squircle-md flex items-center justify-center hover:bg-navy-100 transition-colors"
             >
               <svg
                 width="16"
@@ -152,7 +142,7 @@ export function DevicePage({
               type="button"
               onClick={remove}
               title="forget this device"
-              className="w-[36px] h-[36px] rounded-full border-1.5 border-navy text-text-muted flex items-center justify-center hover:border-danger-500 hover:text-danger-500 transition-colors"
+              className="w-8 h-8 squircle-md flex items-center justify-center hover:bg-danger-400 transition-colors cursor-pointer"
             >
               <svg
                 width="16"
@@ -283,7 +273,7 @@ function ProfilePicker({
         aria-expanded={open}
         title={`profile: ${current || "—"}`}
         className={
-          "inline-flex items-center justify-between gap-2 min-w-[160px] " +
+          "inline-flex items-center justify-between gap-2 min-w-40 " +
           "pl-2.5 pr-1.5 py-1 border-1.5 border-navy bg-canvas text-sm text-text " +
           "hover:bg-canvas-muted transition-colors disabled:opacity-50 " +
           "disabled:cursor-not-allowed"
@@ -308,7 +298,7 @@ function ProfilePicker({
         </svg>
       </button>
       {open && (
-        <div className="absolute right-0 top-[calc(100%+6px)] z-20 min-w-[200px] bg-canvas border-1.5 border-navy shadow-lg py-1">
+        <div className="absolute right-0 top-[calc(100%+0.375rem)] z-20 min-w-50 bg-canvas border-1.5 border-navy shadow-lg py-1">
           <div className="font-mono px-3 py-1.5 text-2xs uppercase tracking-wider text-text border-b border-canvas-muted">
             choose profile
           </div>

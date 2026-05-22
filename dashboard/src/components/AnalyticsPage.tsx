@@ -152,15 +152,15 @@ export function AnalyticsPage({ ip, agents }: { ip?: string; agents: Agent[] }) 
     return { n: totalCount, avg, p99, errPct, devices };
   })();
 
-  const trail: Crumb[] = [{ label: "Claw Patrol", href: "#/" }];
+  const trail: Crumb[] = [];
   if (deviceName) {
-    trail.push({ label: "devices", href: "#/devices" });
+    trail.push({ label: "Devices", href: "#/devices" });
     trail.push({
       label: deviceName,
       href: `#/device/${encodeURIComponent(ip!)}`,
     });
   }
-  trail.push({ label: "analytics" });
+  trail.push({ label: "Analytics" });
 
   return (
     <Main>
@@ -506,7 +506,7 @@ function LatencyChart({
           <Toggle options={["log", "linear"] as Scale[]} value={scale} onChange={setScale} />
         </div>
       </header>
-      <div ref={ref} className="p-4 min-h-[320px]" />
+      <div ref={ref} className="p-4 min-h-80" />
     </section>
   );
 }
@@ -583,7 +583,7 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
 
   const hdr = (label: string, field: "count" | "p99Ms") => (
     <th
-      className="px-3 sm:px-[14px] py-[9px] text-right text-xs font-mono font-bold uppercase tracking-wider text-navy cursor-pointer hover:text-navy-700 select-none"
+      className="px-3 sm:px-3.5 py-2.5 text-right text-xs font-mono font-bold uppercase tracking-wider text-navy cursor-pointer hover:text-navy-700 select-none"
       onClick={() => setSortBy(field)}
     >
       {label}
@@ -596,12 +596,12 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
       <table className="w-full text-xs">
         <colgroup>
           <col />
-          <col className="w-[120px]" />
-          <col className="w-[80px]" />
+          <col className="w-30" />
+          <col className="w-20" />
         </colgroup>
         <thead className="bg-navy-100 border-b border-navy">
           <tr>
-            <th className="px-3 sm:px-[14px] py-[9px] text-left text-xs font-mono uppercase tracking-wider text-navy font-bold">
+            <th className="px-3 sm:px-3.5 py-2.5 text-left text-xs font-mono uppercase tracking-wider text-navy font-bold">
               Top routes
             </th>
             {hdr("Reqs", "count")}
@@ -617,13 +617,13 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
                 className="border-b border-canvas-muted hover:bg-canvas-muted transition-colors"
               >
                 <td
-                  className="px-3 sm:px-[14px] py-[9px] font-mono align-middle break-all"
+                  className="px-3 sm:px-3.5 py-2.5 font-mono align-middle break-all"
                   title={`${d.method} ${d.host}${d.path}`}
                 >
                   <span className="text-text-subtle">{d.method}</span> {d.host}
                   <span className="text-text-muted">{d.path}</span>
                 </td>
-                <td className="px-3 sm:px-[14px] py-[9px] text-right whitespace-nowrap align-middle">
+                <td className="px-3 sm:px-3.5 py-2.5 text-right whitespace-nowrap align-middle">
                   <div className="flex items-center justify-end gap-1.5">
                     <div className="w-12 h-1.5 bg-canvas-muted rounded-full">
                       <div
@@ -634,7 +634,7 @@ function TopRoutes({ events }: { events: EventRecord[] }) {
                     <span className="w-8 text-right tabular-nums">{d.count}</span>
                   </div>
                 </td>
-                <td className="px-3 sm:px-[14px] py-[9px] text-right text-text-muted tabular-nums align-middle">
+                <td className="px-3 sm:px-3.5 py-2.5 text-right text-text-muted tabular-nums align-middle">
                   {fmtMs(d.p99Ms)}
                 </td>
               </tr>

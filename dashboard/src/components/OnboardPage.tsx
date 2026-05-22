@@ -39,10 +39,10 @@ export function OnboardPage({ code }: { code: string }) {
 
   return (
     <Main centered>
-      <PageTitle trail={[{ label: "Claw Patrol", href: "#/" }, { label: "add device" }]} />
+      <PageTitle trail={[{ label: "Add device" }]} />
 
       <div className="flex-1 flex items-center justify-center py-8">
-        <div className="w-full max-w-[480px] space-y-5">
+        <div className="w-full max-w-[30rem] space-y-5">
           {!info && !err && <div className="text-xs text-text-muted">loading…</div>}
           {err && <div className="text-xs text-danger-500">{err}</div>}
 
@@ -62,11 +62,11 @@ export function OnboardPage({ code }: { code: string }) {
               </div>
 
               {info.ca_fingerprint && (
-                <details className="text-[11px] text-[#737373]">
+                <details className="text-[0.6875rem] text-[#737373]">
                   <summary className="cursor-pointer hover:text-[#171717]">
                     CA fingerprint — should match `CA fingerprint:` line on the CLI
                   </summary>
-                  <div className="font-mono text-[10px] mt-1 break-all text-[#525252] select-all">
+                  <div className="font-mono text-2xs mt-1 break-all text-[#525252] select-all">
                     {info.ca_fingerprint}
                   </div>
                 </details>
