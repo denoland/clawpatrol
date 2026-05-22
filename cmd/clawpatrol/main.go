@@ -3060,7 +3060,11 @@ func runGateway(args []string) {
 			if tsnetDashLn, err := tsnetServer.Listen("tcp", fmt.Sprintf(":%d", dashPort)); err != nil {
 				log.Printf("tsnet: dashboard listen :%d: %v", dashPort, err)
 			} else {
-				go http.Serve(tsnetDashLn, tsnetDashMux)
+				go func() {
+					if err := http.Serve(tsnetDashLn, tsnetDashMux); err != nil && !errors.Is(err, http.ErrServerClosed) {
+						log.Printf("tsnet: dashboard serve: %v", err)
+					}
+				}()
 				log.Printf("tsnet: dashboard also listening on tsnet :%d", dashPort)
 			}
 		}
@@ -3104,7 +3108,7 @@ func runGateway(args []string) {
 		// Intercept all TCP forwarded through this exit node (whole-machine
 		// clients). dst is the original internet destination — same dispatch
 		// as the per-process PROXY-header path and the WG promiscuous forwarder.
-		tsnetServer.RegisterFallbackTCPHandler(func(src, dst netip.AddrPort) (func(net.Conn), bool) {
+		tsnetServer.RegisterFallbackTCPHandler(func(_, dst netip.AddrPort) (func(net.Conn), bool) {
 			dstIP := dst.Addr().String()
 			dstPort := dst.Port()
 			return func(c net.Conn) {

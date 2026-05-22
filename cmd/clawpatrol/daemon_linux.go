@@ -203,7 +203,7 @@ func daemonHello(c net.Conn) error {
 // daemon-internal`, waits for it to write "ready\n" on the inherited
 // pipe (fd 3), then returns. The child detaches via Setsid and
 // ignores SIGHUP.
-func daemonSpawn(dir string) error {
+func daemonSpawn(_ string) error {
 	self, err := os.Executable()
 	if err != nil {
 		return err
@@ -733,25 +733,4 @@ func (d *daemon) tryExit() {
 
 	log.Printf("daemon pid=%d clean exit", os.Getpid())
 	os.Exit(0)
-}
-
-// daemonConnectContext is a thin context-aware wrapper used by callers
-// that want to bound the total connect-or-spawn time. Transport boot
-// is the slow part; daemonSpawnTimeout already covers it.
-func daemonConnectContext(ctx context.Context) (net.Conn, error) {
-	type res struct {
-		c   net.Conn
-		err error
-	}
-	ch := make(chan res, 1)
-	go func() {
-		c, err := daemonConnect()
-		ch <- res{c, err}
-	}()
-	select {
-	case r := <-ch:
-		return r.c, r.err
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
 }

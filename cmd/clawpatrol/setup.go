@@ -483,37 +483,6 @@ func tsSet(tscli string, args ...string) error {
 	return c.Run()
 }
 
-// tailnetDisplayName returns a short name for the current tailnet,
-// matching the README format ("divy's tailnet"). Prefers the
-// CurrentTailnet.Name; falls back to the local user's display name or
-// login local-part; final fallback is "your".
-func tailnetDisplayName(st *tsStatus) string {
-	if st.CurrentTailnet != nil && st.CurrentTailnet.Name != "" {
-		// e.g. "divy@github" → "divy"
-		n := st.CurrentTailnet.Name
-		if i := strings.IndexAny(n, "@."); i > 0 {
-			n = n[:i]
-		}
-		return n
-	}
-	if st.Self != nil {
-		if u, ok := st.User[fmt.Sprint(st.Self.UserID)]; ok {
-			if u.DisplayName != "" {
-				if first := strings.SplitN(u.DisplayName, " ", 2)[0]; first != "" {
-					return strings.ToLower(first)
-				}
-			}
-			if u.LoginName != "" {
-				if i := strings.IndexAny(u.LoginName, "@"); i > 0 {
-					return u.LoginName[:i]
-				}
-				return u.LoginName
-			}
-		}
-	}
-	return "your"
-}
-
 func tailscaleBin() (string, error) {
 	if p, err := exec.LookPath("tailscale"); err == nil {
 		return p, nil
@@ -643,7 +612,7 @@ func writeSudo(path string, content []byte) error {
 	cmd.Stdin = bytes.NewReader(content)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("%v: %s", err, out)
+		return fmt.Errorf("%w: %s", err, out)
 	}
 	return nil
 }

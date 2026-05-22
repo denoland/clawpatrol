@@ -96,7 +96,10 @@ func checkDashboardPassword(db *sql.DB, username, password string) (bool, bool, 
 		return false, ok, err
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)); err != nil {
-		return false, true, nil
+		if errors.Is(err, bcrypt.ErrMismatchedHashAndPassword) {
+			return false, true, nil
+		}
+		return false, true, err
 	}
 	return true, true, nil
 }

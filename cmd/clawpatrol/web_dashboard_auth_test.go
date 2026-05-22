@@ -210,14 +210,14 @@ func TestDashboardLogoutRevokesSessionAndClearsCookie(t *testing.T) {
 	if user, ok, _ := lookupDashboardSession(w.g.db, c.Value); ok || user != "" {
 		t.Fatal("session row survived logout")
 	}
-	var clear *http.Cookie
+	var clearCookie *http.Cookie
 	for _, set := range rw.Result().Cookies() {
 		if set.Name == cpSessionCookieName {
-			clear = set
+			clearCookie = set
 		}
 	}
-	if clear == nil || clear.MaxAge >= 0 {
-		t.Fatalf("expected clearing cookie with MaxAge<0, got %+v", clear)
+	if clearCookie == nil || clearCookie.MaxAge >= 0 {
+		t.Fatalf("expected clearing cookie with MaxAge<0, got %+v", clearCookie)
 	}
 }
 

@@ -1,4 +1,4 @@
-.PHONY: build dashboard test fmt fmt-check lint clean install
+.PHONY: build dashboard test fmt fmt-check lint go-lint dashboard-lint clean install
 
 build: dashboard
 	go build -o clawpatrol ./cmd/clawpatrol
@@ -17,7 +17,15 @@ fmt-check:
 	test -z "$$(gofmt -l .)"
 	cd dashboard && deno task format:check
 
-lint:
+lint: go-lint dashboard-lint
+
+# `go-lint` requires the dashboard bundle so the //go:embed in
+# dashboard/embed.go resolves at compile time. Depending on
+# `dashboard` here makes a clean checkout work without manual ordering.
+go-lint: dashboard
+	golangci-lint run --timeout 5m ./...
+
+dashboard-lint:
 	cd dashboard && deno task lint
 
 clean:

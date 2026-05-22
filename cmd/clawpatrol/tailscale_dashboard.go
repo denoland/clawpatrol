@@ -95,8 +95,8 @@ func (w *webMux) apiTailscaleConnect(rw http.ResponseWriter, r *http.Request) {
 	resp := tailscaleAuthResponse{ID: id}
 	label := tailscaleproto.DefaultStates.Get(id)
 	resp.State = label
-	switch {
-	case label == tailscaleproto.NodeStateRunning:
+	switch label {
+	case tailscaleproto.NodeStateRunning:
 		// Live tsnet has joined the tailnet — no operator click
 		// needed. Persisted slots alone (the previous "connected"
 		// gate) are not enough: they can exist while tsnet is still

@@ -30,62 +30,11 @@ import (
 	"golang.zx2c4.com/wireguard/device"
 )
 
-const (
-	// wgHandshakeStuckTimeout is the lastHandshake age past which the
-	// watchdog considers the session dead. wireguard-go's
-	// RejectAfterTime is 180s — once a keypair is older than that the
-	// existing session is unusable for sending and either side should
-	// already have rekeyed. 30s of grace absorbs benign jitter between
-	// the rekey timers and our poll interval.
-	wgHandshakeStuckTimeout = 3*time.Minute + 30*time.Second
-
-	// wgWatchdogInterval is the poll cadence. Tighter polls add no
-	// recovery speed beyond the logger hook; the slow path exists to
-	// catch failures the log line misses (e.g. session age tipping
-	// over without a logged error).
-	wgWatchdogInterval = 30 * time.Second
-
-	// wgResetCooldown rate-limits forced peer resets. After tearing
-	// the peer down we give the new handshake at least this long to
-	// complete before considering another reset — otherwise a real
-	// network outage (genuinely unreachable gateway) would trigger a
-	// tight reset loop instead of letting wireguard-go's own retry
-	// timers do their job.
-	wgResetCooldown = 90 * time.Second
-)
-
 // wgPeerStats is the per-peer subset of IpcGet output we care about.
 type wgPeerStats struct {
 	lastHandshake time.Time
 	txBytes       uint64
 	rxBytes       uint64
-}
-
-// runWGWatchdog drives the recovery loop. Blocks until ctx is canceled.
-// dev is the wireguard-go device being supervised. log receives status
-// lines about resets. forceReset is signaled by wrapWGLogger when
-// wireguard-go logs the "Failed to derive keypair" error so a reset
-// can fire on the next tick instead of waiting up to wgWatchdogInterval.
-// reset reconfigures the peer (typically `dev.IpcSet(buildWGIpc(cfg))`).
-func runWGWatchdog(
-	ctx context.Context,
-	dev *device.Device,
-	log *device.Logger,
-	forceReset <-chan struct{},
-	reset func() error,
-) {
-	ticker := time.NewTicker(wgWatchdogInterval)
-	defer ticker.Stop()
-	runWGWatchdogLoop(ctx, wgWatchdogConfig{
-		stats:         func() *wgPeerStats { return readPeerStats(dev) },
-		reset:         reset,
-		log:           log,
-		forceReset:    forceReset,
-		tick:          ticker.C,
-		stuckTimeout:  wgHandshakeStuckTimeout,
-		resetCooldown: wgResetCooldown,
-		now:           time.Now,
-	})
 }
 
 // wgWatchdogConfig captures the runWGWatchdogLoop dependencies so the
@@ -194,16 +143,6 @@ func wrapWGLogger(base *device.Logger, forceReset chan<- struct{}) *device.Logge
 			}
 		},
 	}
-}
-
-// readPeerStats reads `last_handshake_time_sec`, `tx_bytes` and
-// `rx_bytes` for the (single) client-side peer.
-func readPeerStats(dev *device.Device) *wgPeerStats {
-	uapi, err := dev.IpcGet()
-	if err != nil {
-		return nil
-	}
-	return parsePeerStats(uapi)
 }
 
 func parsePeerStats(uapi string) *wgPeerStats {

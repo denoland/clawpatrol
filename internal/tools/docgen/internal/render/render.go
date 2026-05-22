@@ -150,32 +150,6 @@ func (r *renderer) writeOperational() {
 	r.writeStructTable("config", "Gateway", reflect.TypeOf(config.Gateway{}))
 }
 
-// writeFixedKind documents a one-label kind with a fixed, non-plugin
-// schema (defaults, policy). The body struct lives in package
-// `config`.
-func (r *renderer) writeFixedKind(kind, pkg, typeName, headerSuffix string) {
-	header := fmt.Sprintf("`%s {}`", kind)
-	if headerSuffix != "" {
-		header = fmt.Sprintf("`%s { ... }`", headerSuffix)
-	}
-	fmt.Fprintf(&r.out, "## %s\n\n", header)
-	if doc := stripIdentPrefix(r.docs.typeDoc(pkg, typeName), typeName); doc != "" {
-		r.out.WriteString(doc)
-		r.out.WriteString("\n\n")
-	}
-	rt := reflectTypeFor(pkg, typeName)
-	r.writeStructTable(pkg, typeName, rt)
-	r.writeExample(kind, "", rt, false)
-}
-
-func reflectTypeFor(pkg, name string) reflect.Type {
-	switch pkg + "." + name {
-	case "config.Gateway":
-		return reflect.TypeOf(config.Gateway{})
-	}
-	return nil
-}
-
 // writeProfile documents the `profile "<name>" {}` block. The body
 // is decoded manually (mixed-shape `credentials` list), so we inline
 // its attributes rather than going through reflection.

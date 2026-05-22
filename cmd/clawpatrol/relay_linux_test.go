@@ -64,7 +64,7 @@ func TestParseProcNetIPHexBadInput(t *testing.T) {
 }
 
 // TestScanProcNetTcp synthesises a /proc/net/tcp file and verifies
-// scanProcNetTcp finds the row by inode + state.
+// scanProcNetTCP finds the row by inode + state.
 func TestScanProcNetTcp(t *testing.T) {
 	dir := t.TempDir()
 	v4 := filepath.Join(dir, "tcp")
@@ -105,9 +105,9 @@ func TestScanProcNetTcp(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			port, ip, ok, err := scanProcNetTcp(tc.path, tc.inode, tc.ipHexLen)
+			port, ip, ok, err := scanProcNetTCP(tc.path, tc.inode, tc.ipHexLen)
 			if err != nil {
-				t.Fatalf("scanProcNetTcp: %v", err)
+				t.Fatalf("scanProcNetTCP: %v", err)
 			}
 			if ok != tc.wantFound {
 				t.Fatalf("found=%v, want %v", ok, tc.wantFound)

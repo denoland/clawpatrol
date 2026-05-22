@@ -50,14 +50,20 @@ type HITLAsyncGrantEnabler interface {
 	HITLAsyncGrantEnabled() bool
 }
 
+// ApprovalTTLDuration parses the configured approval TTL, falling back
+// to HITLAsyncDefaultApprovalTTL when unset.
 func (g *HITLAsyncGrantConfig) ApprovalTTLDuration() (time.Duration, error) {
 	return parseOptionalPositiveDuration(g, g.approvalTTLRaw(), HITLAsyncDefaultApprovalTTL)
 }
 
+// ApprovedRetryTTLDuration parses the approved-retry TTL, falling back
+// to HITLAsyncDefaultApprovedRetryTTL when unset.
 func (g *HITLAsyncGrantConfig) ApprovedRetryTTLDuration() (time.Duration, error) {
 	return parseOptionalPositiveDuration(g, g.approvedRetryTTLRaw(), HITLAsyncDefaultApprovedRetryTTL)
 }
 
+// FingerprintBodyValue returns the configured fingerprint body mode,
+// defaulting to HITLAsyncFingerprintRawBody when unset.
 func (g *HITLAsyncGrantConfig) FingerprintBodyValue() string {
 	if g == nil || g.FingerprintBody == "" {
 		return HITLAsyncFingerprintRawBody
@@ -65,6 +71,8 @@ func (g *HITLAsyncGrantConfig) FingerprintBodyValue() string {
 	return g.FingerprintBody
 }
 
+// MaxBodyBytesValue returns the configured max body cap (in bytes),
+// defaulting to HITLAsyncDefaultMaxBodyBytes when unset.
 func (g *HITLAsyncGrantConfig) MaxBodyBytesValue() int64 {
 	if g == nil || g.MaxBodyBytes == nil {
 		return HITLAsyncDefaultMaxBodyBytes
@@ -160,6 +168,9 @@ func policyHasAsyncApprover(p *Policy) bool {
 	return false
 }
 
+// ValidateHITLAsyncGrant returns HCL diagnostics for an async-grant
+// config block. It checks that, when the grant is enabled, the
+// surrounding sync_wait_timeout and the grant's TTLs are well-formed.
 func ValidateHITLAsyncGrant(name string, syncWaitTimeout string, grant *HITLAsyncGrantConfig) hcl.Diagnostics {
 	if grant == nil || !grant.Enabled {
 		return nil
