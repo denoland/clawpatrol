@@ -185,7 +185,13 @@ func runJoin(args []string) {
 			fail("ca fetch: %v", err)
 		}
 	}
-	wgMode, err := onboardViaDeviceFlow(gatewayURL, *wholeMachine, *profile, *hostname, &setup, *skipTrust, joinHTTPCli)
+	// Auto-approve is opt-in to the --login bootstrap: only then do
+	// we have an http client whose requests carry a tsnet whois the
+	// gateway recognises as a dashboard operator. The standard path
+	// (no bootstrap, just preJoinFetchCA over public Funnel) has no
+	// authenticated identity and must wait for the dashboard click.
+	autoApprove := bootstrap != nil
+	wgMode, err := onboardViaDeviceFlow(gatewayURL, *wholeMachine, *profile, *hostname, &setup, *skipTrust, joinHTTPCli, autoApprove)
 	if err != nil {
 		fail("join: %v", err)
 	}
@@ -899,7 +905,16 @@ func wgAddressFromConf(conf string) string {
 // bootstrap path passes a tsnet-dialing client so the same code path
 // reaches a gateway whose Funnel is disabled or unreachable from this
 // machine's network position.
-func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname string, setup *joinSetup, skipTrust bool, httpCli *http.Client) (bool, error) {
+//
+// autoApprove signals that the http client's requests authenticate as
+// a tailnet identity the gateway recognises as a dashboard operator
+// (today: bootstrap tsnet via --login). When true we POST
+// /api/onboard/approve immediately after /start; the operator gate
+// accepts the request via tailnetGate's whois path and the device-flow
+// poll then resolves with no human-in-the-loop step. The post is
+// best-effort — a 403 (e.g. the login isn't actually in the operators
+// allowlist) falls through to the existing browser-approval prompt.
+func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname string, setup *joinSetup, skipTrust bool, httpCli *http.Client, autoApprove bool) (bool, error) {
 	gateway = strings.TrimRight(gateway, "/")
 	cli := httpCli
 	if cli == nil {
@@ -957,33 +972,73 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		return false, fmt.Errorf("start decode: %w", err)
 	}
 
-	fmt.Println()
-	fmt.Println("Verify code in browser:")
-	fmt.Println()
-	fmt.Printf("    %s\n", start.UserCode)
-	fmt.Println()
-	fmt.Println(start.VerifyURL)
-	// One-line CA fingerprint after the verify URL. The
-	// dashboard's approval page shows the same value next to
-	// the user_code — operator visually confirms they match
-	// before clicking approve, blocking an on-path swap of the
-	// CA the CLI just fetched over plain HTTP.
-	if setup != nil && setup.caFingerprint != "" {
-		fmt.Println()
-		fmt.Printf("CA fingerprint: %s\n", setup.caFingerprint)
+	autoApproved := false
+	if autoApprove {
+		// Best-effort: use the bootstrap tsnet's whois identity to
+		// self-approve. Same handler the dashboard "Approve" button
+		// hits — the operator gate accepts our request when the
+		// tsnet peer login is in the operators allowlist. A 403 here
+		// is the expected outcome for any user who isn't in that
+		// allowlist; we silently fall through to browser approval
+		// and the operator drives the dashboard click as today.
+		aq := neturl.Values{}
+		aq.Set("code", start.UserCode)
+		if profile != "" {
+			aq.Set("profile", profile)
+		}
+		approveURL := gateway + "/api/onboard/approve?" + aq.Encode()
+		if ar, aerr := cli.Post(approveURL, "application/json", nil); aerr == nil {
+			body, _ := io.ReadAll(io.LimitReader(ar.Body, 1024))
+			_ = ar.Body.Close()
+			switch ar.StatusCode {
+			case 200:
+				autoApproved = true
+				fmt.Println()
+				fmt.Println("Auto-approved via tailnet operator identity.")
+			case 403:
+				// Not an operator — quietly fall through to the
+				// browser-approval path. No warning: this is the
+				// normal case for any user not on the allowlist.
+			default:
+				fmt.Fprintf(os.Stderr,
+					"⚠ auto-approve unexpected status %d: %s\n  Falling back to dashboard approval.\n",
+					ar.StatusCode, strings.TrimSpace(string(body)))
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "⚠ auto-approve POST failed: %v; falling back to dashboard approval.\n", aerr)
+		}
 	}
-	fmt.Println()
-	// Tailnet-only verify URLs (100.64.0.0/10 IP or *.ts.net host) are
-	// unreachable from the machine running `clawpatrol join` until
-	// approval lands — that's the whole point of needing approval. Print
-	// a QR code so the operator can scan from a phone or another
-	// already-tailnet-connected device. Skip tryOpen on that path: a
-	// local browser can't reach the URL anyway, and the spawned
-	// xdg-open / open process just produces a meaningless tab.
-	if isTailnetOnlyURL(start.VerifyURL) {
-		printVerifyQR(start.VerifyURL)
-	} else {
-		tryOpen(start.VerifyURL)
+
+	if !autoApproved {
+		fmt.Println()
+		fmt.Println("Verify code in browser:")
+		fmt.Println()
+		fmt.Printf("    %s\n", start.UserCode)
+		fmt.Println()
+		fmt.Println(start.VerifyURL)
+		// One-line CA fingerprint after the verify URL. The
+		// dashboard's approval page shows the same value next to
+		// the user_code — operator visually confirms they match
+		// before clicking approve, blocking an on-path swap of the
+		// CA the CLI just fetched over plain HTTP.
+		if setup != nil && setup.caFingerprint != "" {
+			fmt.Println()
+			fmt.Printf("CA fingerprint: %s\n", setup.caFingerprint)
+		}
+		fmt.Println()
+		// Tailnet-only verify URLs (100.64.0.0/10 IP or *.ts.net
+		// host) are unreachable from the machine running
+		// `clawpatrol join` until approval lands — that's the whole
+		// point of needing approval. Print a QR code so the operator
+		// can scan from a phone or another already-tailnet-connected
+		// device. Skip tryOpen on that path: a local browser can't
+		// reach the URL anyway, and the spawned xdg-open / open
+		// process just produces a meaningless tab.
+		if isTailnetOnlyURL(start.VerifyURL) {
+			printVerifyQR(start.VerifyURL)
+		} else {
+			tryOpen(start.VerifyURL)
+		}
 	}
 
 	// 2. poll
