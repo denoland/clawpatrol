@@ -148,7 +148,15 @@ func (h *HumanApprover) Approve(ctx context.Context, req runtime.ApproveRequest)
 		}
 	}
 
-	if h.Channel != "" && h.Credential != "" && req.Policy != nil {
+	// Per-request channel override: req.Channel (populated from the
+	// X-HITL-Channel header at the gateway and validated there) wins
+	// over the block's static h.Channel. Empty req.Channel falls back
+	// to h.Channel — keeps existing configs working unchanged.
+	channel := h.Channel
+	if req.Channel != "" {
+		channel = req.Channel
+	}
+	if channel != "" && h.Credential != "" && req.Policy != nil {
 		ent, ok := req.Policy.Credentials[h.Credential]
 		if ok {
 			if notifier, ok := ent.Body.(runtime.HITLNotifier); ok {
@@ -158,7 +166,7 @@ func (h *HumanApprover) Approve(ctx context.Context, req runtime.ApproveRequest)
 				}
 				target := runtime.HITLTarget{
 					CredentialName:           h.Credential,
-					Channel:                  h.Channel,
+					Channel:                  channel,
 					Interactive:              h.Interactive,
 					PendingID:                id,
 					DashboardURL:             req.DashboardURL,

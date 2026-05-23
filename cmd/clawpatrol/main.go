@@ -2095,6 +2095,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				AgentIP: agentAddr, Host: host, Method: req.Method, Path: req.URL.RequestURI(),
 				UA: req.Header.Get("User-Agent"), BodySample: string(matchBody), Reason: cr.Outcome.Reason,
 				ThreadTS: req.Header.Get("X-HITL-Thread-TS"),
+				Channel:  sanitizeSlackChannelHeader(req.Header.Get("X-HITL-Channel")),
 				Endpoint: ep, Rule: cr, Profile: profile, Request: mreq,
 				AsyncOperationID: asyncOp.ID, AsyncPendingOnSyncTimeout: asyncOp.ID != "", AsyncSyncWaitTimeout: asyncSyncWait,
 			})
@@ -2199,6 +2200,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				"Cf-Worker", "Cf-Ray", "Cf-Ew-Via", "Cf-Connecting-Ip", "Cdn-Loop",
 				"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Via",
 				"X-HITL-Thread-TS",
+				"X-HITL-Channel",
 			} {
 				req.Header.Del(h)
 			}
@@ -2512,6 +2514,7 @@ type runApproveCtx struct {
 	BodySample                string
 	Reason                    string
 	ThreadTS                  string
+	Channel                   string
 	Endpoint                  *config.CompiledEndpoint
 	Rule                      *config.CompiledRule
 	Profile                   string
@@ -2566,6 +2569,7 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 			BodySample:                c.BodySample,
 			Reason:                    c.Reason,
 			ThreadTS:                  c.ThreadTS,
+			Channel:                   c.Channel,
 			AsyncOperationID:          c.AsyncOperationID,
 			AsyncPendingOnSyncTimeout: c.AsyncPendingOnSyncTimeout,
 			Pool:                      g.hitl,
@@ -2602,6 +2606,37 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 }
 
 // ifNotEmpty returns f(v) when v != nil, else "".
+// sanitizeSlackChannelHeader validates the X-HITL-Channel header
+// before it's threaded into the approver request. A misformed value
+// would either be silently ignored downstream or, worse, posted
+// verbatim to chat.postMessage with attacker-controlled bytes — so
+// reject anything that doesn't shape like a Slack channel ID. Public
+// channels (C…), private channels (G…), and multi-party DMs (G…) all
+// share the same syntactic class. DMs (D…) and user IDs (U…) are
+// not valid HITL destinations and are rejected too.
+//
+// Empty input returns empty (caller falls back to the approver's
+// static `channel` block field).
+func sanitizeSlackChannelHeader(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if len(s) < 9 || len(s) > 24 {
+		return ""
+	}
+	if s[0] != 'C' && s[0] != 'G' {
+		return ""
+	}
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		if !((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+			return ""
+		}
+	}
+	return s
+}
+
 func ifNotEmpty(r *config.CompiledRule, f func(*config.CompiledRule) string) string {
 	if r == nil {
 		return ""

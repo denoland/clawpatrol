@@ -209,6 +209,75 @@ func TestHumanApproverForwardsPendingMessageUpdateSinkToNotifier(t *testing.T) {
 	}
 }
 
+// Per-request Channel (populated from X-HITL-Channel) wins over the
+// static h.Channel so a single approver block can route to whichever
+// channel the originating session came from. Empty req.Channel must
+// fall back to the static value (covered by the existing
+// ForwardsPendingMessageUpdateSink test, which leaves Channel zero
+// and asserts notification still happens against h.Channel).
+func TestHumanApproverRequestChannelOverridesBlockChannel(t *testing.T) {
+	pool := newCaptureHITLPool()
+	notifier := &captureNotifier{notified: make(chan runtime.HITLTarget, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := (&HumanApprover{Credential: "slack", Channel: "C-STATIC", Timeout: 60}).Approve(ctx, runtime.ApproveRequest{
+			Pool:         pool,
+			Policy:       &config.CompiledPolicy{Credentials: map[string]*config.Entity{"slack": {Body: notifier}}},
+			ApproverName: "ops",
+			Method:       "POST",
+			Host:         "api.example.test",
+			Path:         "/v1/write",
+			Channel:      "C0AH1SJGHAP",
+		})
+		done <- err
+	}()
+	select {
+	case target := <-notifier.notified:
+		if target.Channel != "C0AH1SJGHAP" {
+			t.Fatalf("target.Channel = %q, want override %q", target.Channel, "C0AH1SJGHAP")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("human approver did not notify credential")
+	}
+	cancel()
+	<-done
+}
+
+// A static-channel approver with an empty req.Channel must still
+// notify against its block-declared channel — req.Channel="" is the
+// signal to fall back, not a deny-by-omission.
+func TestHumanApproverEmptyRequestChannelFallsBackToBlockChannel(t *testing.T) {
+	pool := newCaptureHITLPool()
+	notifier := &captureNotifier{notified: make(chan runtime.HITLTarget, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := (&HumanApprover{Credential: "slack", Channel: "C-STATIC", Timeout: 60}).Approve(ctx, runtime.ApproveRequest{
+			Pool:         pool,
+			Policy:       &config.CompiledPolicy{Credentials: map[string]*config.Entity{"slack": {Body: notifier}}},
+			ApproverName: "ops",
+			Method:       "POST",
+			Host:         "api.example.test",
+			Path:         "/v1/write",
+			// Channel intentionally left zero
+		})
+		done <- err
+	}()
+	select {
+	case target := <-notifier.notified:
+		if target.Channel != "C-STATIC" {
+			t.Fatalf("target.Channel = %q, want fallback %q", target.Channel, "C-STATIC")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("human approver did not notify credential")
+	}
+	cancel()
+	<-done
+}
+
 func TestHumanApproverTimeoutRecordsTimedOutTerminalState(t *testing.T) {
 	pool := newCaptureHITLPool()
 	done := make(chan struct {
