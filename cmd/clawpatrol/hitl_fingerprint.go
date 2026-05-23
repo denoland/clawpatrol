@@ -378,16 +378,6 @@ func writeHITLCanonicalField(b *bytes.Buffer, name, value string) {
 	b.WriteByte('\n')
 }
 
-func deriveHITLHMACKey(root []byte, domain string) []byte {
-	return computeHITLHMAC(root, []byte(domain))
-}
-
-func computeHITLHMAC(key, msg []byte) []byte {
-	mac := hmac.New(sha256.New, key)
-	_, _ = mac.Write(msg)
-	return mac.Sum(nil)
-}
-
 // deriveHITLHMACKeyString returns the per-domain derived key as a 32-
 // byte string. Strings avoid the per-call []byte alloc that the older
 // deriveHITLHMACKey ([]byte) form imposed when the result was used as

@@ -2344,19 +2344,12 @@ func unmarshalHeaders(s string, dst *map[string]string) {
 	}
 }
 
-// sensitiveHeaderMarkers names case-insensitive substrings that mark
-// a response/request header line as carrying credential bytes the
-// audit log must not echo. Same set as the regex this replaces; the
-// hand-rolled scan avoids one regex compile per header per request
-// (flatHeaders runs twice per MITM call, once before forward and
-// once before emitEnd).
-var sensitiveHeaderMarkers = [...]string{"auth", "token", "secret", "key", "password", "cookie"}
-
 // isSensitiveHeader reports whether name contains any of the
-// credential-marker substrings. Case-insensitive — we scan byte-by-byte
+// credential-marker substrings ("auth", "token", "secret", "key",
+// "password", "cookie"). Case-insensitive — we scan byte-by-byte
 // against ASCII-lowered name fragments instead of round-tripping
-// through regexp / strings.ToLower / strings.Contains, both of which
-// would allocate on every request.
+// through regexp / strings.ToLower / strings.Contains, both of
+// which would allocate on every request.
 //
 // Single-pass implementation: walk the name once, and at every
 // position whose first ASCII-lowered letter matches a marker's first
@@ -2502,8 +2495,8 @@ func newSampler(capBytes int) *sampler {
 	// doesn't trigger bytes.Buffer's 64→128→256→… growth chain.
 	// The first time through the pool this allocates capBytes; on
 	// every subsequent reuse it's a no-op.
-	if cap := s.buf.Cap(); cap < capBytes {
-		s.buf.Grow(capBytes - cap)
+	if bufCap := s.buf.Cap(); bufCap < capBytes {
+		s.buf.Grow(capBytes - bufCap)
 	}
 	return s
 }

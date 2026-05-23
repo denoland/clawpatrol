@@ -25,18 +25,10 @@ var authResponseHeaders = []string{
 	"Proxy-Authentication-Info",
 }
 
-func isAuthResponseHeader(name string) bool {
-	for _, n := range authResponseHeaders {
-		if equalFoldASCII(name, n) {
-			return true
-		}
-	}
-	return false
-}
-
-// isAuthResponseHeaderBytes mirrors isAuthResponseHeader but matches
-// directly against a header-name byte slice. The raw header-strip
-// path on WS upgrades reads field names out of a wire buffer; we
+// isAuthResponseHeaderBytes reports whether name (a header-name
+// byte slice read directly off the wire) matches one of the
+// credential-bearing response headers we strip. The raw header-strip
+// path on WS upgrades reads field names out of a wire buffer, so we
 // fold case in place rather than allocating a string per header.
 func isAuthResponseHeaderBytes(name []byte) bool {
 	// Trim leading / trailing OWS (HTAB / SP) per RFC 7230 §3.2.4.
