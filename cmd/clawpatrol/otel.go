@@ -137,7 +137,7 @@ func registerClawpatrolGauges(meter metric.Meter, g *Gateway) error {
 			return nil
 		}),
 	); err != nil {
-		return err
+		return fmt.Errorf("otel gauge clawpatrol.hitl.pending: %w", err)
 	}
 
 	if _, err := meter.Int64ObservableGauge("clawpatrol.sse.subscribers",
@@ -152,7 +152,7 @@ func registerClawpatrolGauges(meter metric.Meter, g *Gateway) error {
 			return nil
 		}),
 	); err != nil {
-		return err
+		return fmt.Errorf("otel gauge clawpatrol.sse.subscribers: %w", err)
 	}
 
 	if _, err := meter.Int64ObservableCounter("clawpatrol.sse.drops",
@@ -164,7 +164,7 @@ func registerClawpatrolGauges(meter metric.Meter, g *Gateway) error {
 			return nil
 		}),
 	); err != nil {
-		return err
+		return fmt.Errorf("otel counter clawpatrol.sse.drops: %w", err)
 	}
 
 	if _, err := meter.Int64ObservableGauge("clawpatrol.agents.count",
@@ -179,7 +179,7 @@ func registerClawpatrolGauges(meter metric.Meter, g *Gateway) error {
 			return nil
 		}),
 	); err != nil {
-		return err
+		return fmt.Errorf("otel gauge clawpatrol.agents.count: %w", err)
 	}
 
 	if _, err := meter.Int64ObservableGauge("clawpatrol.agents.sessions",
@@ -197,7 +197,7 @@ func registerClawpatrolGauges(meter metric.Meter, g *Gateway) error {
 			return nil
 		}),
 	); err != nil {
-		return err
+		return fmt.Errorf("otel gauge clawpatrol.agents.sessions: %w", err)
 	}
 
 	if _, err := meter.Int64ObservableCounter("clawpatrol.agents.requests",
@@ -215,7 +215,7 @@ func registerClawpatrolGauges(meter metric.Meter, g *Gateway) error {
 			return nil
 		}),
 	); err != nil {
-		return err
+		return fmt.Errorf("otel counter clawpatrol.agents.requests: %w", err)
 	}
 
 	if _, err := meter.Int64ObservableGauge("clawpatrol.agents.bytes_total",
@@ -235,21 +235,21 @@ func registerClawpatrolGauges(meter metric.Meter, g *Gateway) error {
 			return nil
 		}),
 	); err != nil {
-		return err
+		return fmt.Errorf("otel gauge clawpatrol.agents.bytes_total: %w", err)
 	}
 
 	{
 		var err error
 		if mConns, err = meter.Int64UpDownCounter("clawpatrol.connections.open"); err != nil {
-			return err
+			return fmt.Errorf("otel up-down clawpatrol.connections.open: %w", err)
 		}
 		if mVerdicts, err = meter.Int64Counter("clawpatrol.verdicts"); err != nil {
-			return err
+			return fmt.Errorf("otel counter clawpatrol.verdicts: %w", err)
 		}
 		if mReqDuration, err = meter.Float64Histogram("clawpatrol.request.duration",
 			metric.WithUnit("s"),
 		); err != nil {
-			return err
+			return fmt.Errorf("otel histogram clawpatrol.request.duration: %w", err)
 		}
 	}
 
@@ -264,7 +264,7 @@ func registerClawpatrolGauges(meter metric.Meter, g *Gateway) error {
 			return nil
 		}),
 	); err != nil {
-		return err
+		return fmt.Errorf("otel gauge clawpatrol.process.memory.heap_inuse: %w", err)
 	}
 
 	return nil

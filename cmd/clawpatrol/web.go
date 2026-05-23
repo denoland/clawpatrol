@@ -2069,10 +2069,21 @@ type Sink struct {
 	recentNext int
 	recentLen  int
 	recentCap  int
+
+	// closed flips once Close has run. Emit checks it as the cheap
+	// pre-flight; the deferred recover handles the residual race where
+	// Close intervenes between the closed-load and the channel send.
+	closed    atomic.Bool
+	closeOnce sync.Once
+	// done closes when drain returns, signalling Close that every
+	// buffered event has been persisted to actions / fanned out to
+	// subscribers. Gateway shutdown waits on this before db.Close so
+	// in-flight events aren't dropped at WAL teardown.
+	done chan struct{}
 }
 
 func NewSink(db *sql.DB, buf int) (*Sink, error) {
-	s := &Sink{ch: make(chan Event, buf), db: db, recentCap: 500}
+	s := &Sink{ch: make(chan Event, buf), db: db, recentCap: 500, done: make(chan struct{})}
 	s.recent = make([]Event, s.recentCap)
 	if db != nil {
 		if seed, err := readTailEvents(db, s.recentCap); err == nil && len(seed) > 0 {
@@ -2175,12 +2186,22 @@ func readTailEvents(db *sql.DB, n int) ([]Event, error) {
 }
 
 func (s *Sink) Emit(e Event) {
-	if s == nil {
+	if s == nil || s.closed.Load() {
 		return
 	}
 	if e.Ts.IsZero() {
 		e.Ts = time.Now().UTC()
 	}
+	defer func() {
+		// Tiny race: closed.Load returned false but Close raced past
+		// us before the select ran. Send-on-closed-channel panics —
+		// swallow and count it as a drop instead of crashing the
+		// goroutine that called Emit (e.g. a request handler) during
+		// shutdown.
+		if r := recover(); r != nil {
+			s.drops.Add(1)
+		}
+	}()
 	select {
 	case s.ch <- e:
 	default:
@@ -2190,7 +2211,34 @@ func (s *Sink) Emit(e Event) {
 
 func (s *Sink) Drops() uint64 { return s.drops.Load() }
 
+// Close stops the sink from accepting new events and waits for the
+// drain goroutine to persist anything already buffered, capped by
+// ctx so a wedged DB write cannot block gateway shutdown. Idempotent
+// — duplicate Close calls return the result of the first wait.
+//
+// Order matters at shutdown: call Close before db.Close so the
+// final actions rows land in WAL before the file descriptor goes
+// away. Without this step a SIGTERM in the middle of a busy batch
+// silently loses every event still sitting in s.ch (4096-deep by
+// default).
+func (s *Sink) Close(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	s.closeOnce.Do(func() {
+		s.closed.Store(true)
+		close(s.ch)
+	})
+	select {
+	case <-s.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func (s *Sink) drain() {
+	defer close(s.done)
 	for e := range s.ch {
 		// Persist only terminal events. start/frame are transient
 		// signals for live SSE — duplicating them in `actions` would

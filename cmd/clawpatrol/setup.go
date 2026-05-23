@@ -452,18 +452,23 @@ func exemptPublicIPFromExitNode() error {
 	script := fmt.Sprintf("#!/bin/sh\n# clawpatrol: keep public IP replies on direct path (not exit-node)\nip rule show | grep -q '%s' || ip rule add from %s lookup main priority 100\n", pubIP, pubIP)
 	tmp, err := os.CreateTemp("", "clawpatrol-routing-*")
 	if err != nil {
-		return err
+		return fmt.Errorf("create routing temp file: %w", err)
 	}
+	// `mv` consumes tmp.Name() on success, but the WriteString /
+	// chmod / fork paths can all leave it on disk. Remove
+	// unconditionally; missing is fine.
+	defer func() { _ = os.Remove(tmp.Name()) }()
 	if _, err := tmp.WriteString(script); err != nil {
 		_ = tmp.Close()
-		return err
+		return fmt.Errorf("write routing temp file: %w", err)
 	}
-	_ = tmp.Close()
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close routing temp file: %w", err)
+	}
 	dst := dir + "/50-clawpatrol-public-ip"
 	c := exec.Command("sudo", "sh", "-c", fmt.Sprintf("mv %s %s && chmod +x %s", tmp.Name(), dst, dst))
 	c.Stderr = os.Stderr
 	if err := c.Run(); err != nil {
-		_ = os.Remove(tmp.Name())
 		return fmt.Errorf("install routing script: %w", err)
 	}
 	return nil
@@ -1368,13 +1373,18 @@ func wgQuickUp(iface, conf string) error {
 	}
 	tmp, err := os.CreateTemp("", "clawpatrol-wg-*.conf")
 	if err != nil {
-		return err
+		return fmt.Errorf("create wg temp conf: %w", err)
 	}
-	if _, err := tmp.WriteString(conf); err != nil {
-		return err
-	}
-	_ = tmp.Close()
+	// Deferred so we don't leak the temp file when WriteString,
+	// Close, or install fails on the way down.
 	defer func() { _ = os.Remove(tmp.Name()) }()
+	if _, err := tmp.WriteString(conf); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write wg temp conf: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close wg temp conf: %w", err)
+	}
 	if err := runAsRoot("install", "-m", "0600", tmp.Name(), dst).Run(); err != nil {
 		return fmt.Errorf("install conf: %w", err)
 	}

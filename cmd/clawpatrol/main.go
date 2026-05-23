@@ -3216,8 +3216,9 @@ func serveHTTPLogged(name, addr string, handler http.Handler) {
 }
 
 // installGatewayShutdown spawns a goroutine that waits for SIGINT or
-// SIGTERM, flushes telemetry, closes the DB handle, then exits the
-// process. otelShutdown may be nil when otel was not configured.
+// SIGTERM, flushes telemetry, drains the action sink, closes tunnels
+// and the DB handle, then exits the process. otelShutdown may be nil
+// when otel was not configured.
 //
 // Why a goroutine + os.Exit rather than threading shutdown back into
 // runGateway: the gateway's main accept loop (ln.Accept inside
@@ -3226,11 +3227,16 @@ func serveHTTPLogged(name, addr string, handler http.Handler) {
 // the floor without their own cleanup. The signal handler is the
 // single exit site; everything that needs to flush hooks into it.
 //
-// Best-effort: a 5s budget on the otel flush stops a wedged OTLP
-// collector from blocking gateway shutdown indefinitely. The DB
-// Close runs unconditionally so WAL checkpointing always finishes
-// before the file descriptor goes away.
-const gatewayOtelShutdownTimeout = 5 * time.Second
+// Best-effort: each step has its own budget so one wedged collaborator
+// can't block the rest. Order is load-bearing — Sink.Close has to
+// drain into the DB before db.Close, and TunnelManager.CloseAll has
+// to run while goroutines still have a chance to react (Tailscale
+// logout in particular wants a live tsnet.Server).
+const (
+	gatewayOtelShutdownTimeout   = 5 * time.Second
+	gatewaySinkShutdownTimeout   = 5 * time.Second
+	gatewayTunnelShutdownTimeout = 5 * time.Second
+)
 
 func installGatewayShutdown(g *Gateway, otelShutdown func(context.Context) error) {
 	sigCh := make(chan os.Signal, 1)
@@ -3238,15 +3244,38 @@ func installGatewayShutdown(g *Gateway, otelShutdown func(context.Context) error
 	go func() {
 		sig := <-sigCh
 		log.Printf("gateway: received %s, shutting down", sig)
-		runShutdownFlush(otelShutdown, gatewayOtelShutdownTimeout)
-		if g != nil && g.db != nil {
-			if err := g.db.Close(); err != nil {
-				log.Printf("gateway: db close: %v", err)
-			}
-		}
+		runGatewayShutdown(g, otelShutdown)
 		log.Printf("gateway: shutdown complete")
 		os.Exit(0)
 	}()
+}
+
+// runGatewayShutdown executes the shutdown sequence in dependency
+// order. Extracted from the signal-handler goroutine so the order is
+// testable without the surrounding os.Exit wrapper. Each step is
+// best-effort: any single failure logs and moves on so a wedged
+// collaborator can't strand WAL checkpointing.
+func runGatewayShutdown(g *Gateway, otelShutdown func(context.Context) error) {
+	runShutdownFlush(otelShutdown, gatewayOtelShutdownTimeout)
+	if g != nil && g.sink != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), gatewaySinkShutdownTimeout)
+		if err := g.sink.Close(ctx); err != nil {
+			log.Printf("gateway: sink drain: %v", err)
+		}
+		cancel()
+	}
+	if g != nil && g.tunnels != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), gatewayTunnelShutdownTimeout)
+		if err := g.tunnels.CloseAll(ctx); err != nil {
+			log.Printf("gateway: tunnel close: %v", err)
+		}
+		cancel()
+	}
+	if g != nil && g.db != nil {
+		if err := g.db.Close(); err != nil {
+			log.Printf("gateway: db close: %v", err)
+		}
+	}
 }
 
 // runShutdownFlush invokes the otel shutdown closure (when non-nil)
