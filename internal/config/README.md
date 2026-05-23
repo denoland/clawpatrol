@@ -8,6 +8,12 @@ is the canonical syntax reference; the runtime semantics live in
 
 A complete example fixture lives at [`testdata/full.hcl`](testdata/full.hcl).
 
+`Load` accepts either a single `.hcl` file or a directory of `.hcl`
+files. Directory-mode discovery (Terraform-style: include every
+direct child whose name ends in `.hcl`, sorted lexicographically,
+merged into one body) and the merge contract are documented in
+[`doc/multi-file-config.md`](../../doc/multi-file-config.md).
+
 ## Top-level structure
 
 A policy file mixes **operational** fields (gateway plumbing) with
