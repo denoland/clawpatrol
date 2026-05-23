@@ -5,17 +5,63 @@ package main
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
+
+// skipIfSandboxBlocks short-circuits a test when the underlying syscall
+// is blocked by the test environment (e.g. CI sandboxes that disable
+// listen/bind for non-loopback or return ENOSYS). The real supervisor
+// runs outside the test process and isn't affected; we just don't want
+// false negatives locally.
+func skipIfSandboxBlocks(t *testing.T, op string, err error) {
+	t.Helper()
+	if err == syscall.ENOSYS || err == syscall.EPERM || err == syscall.EACCES || err == syscall.EAFNOSUPPORT {
+		t.Skipf("sandbox blocks %s: %v", op, err)
+	}
+}
+
+// writeProcTCP4 writes a one-row /proc/net/tcp file with the given inode
+// at local_address (col 1) in state (col 3). An empty local/state writes
+// a header-only stub (the scanner skips it but still considers the file
+// readable, which simulates a netns with no v4 listeners).
+func writeProcTCP4(t *testing.T, path string, inode uint64, local, state string) {
+	t.Helper()
+	header := "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+	body := ""
+	if local != "" && state != "" {
+		body = fmt.Sprintf("   0: %s 00000000:0000 %s 00000000:00000000 00:00000000 00000000  1000        0 %d 1 0000000000000000 100 0 0 10 0\n", local, state, inode)
+	}
+	if err := os.WriteFile(path, []byte(header+body), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// writeProcTCP6 is the v6 counterpart to writeProcTCP4.
+func writeProcTCP6(t *testing.T, path string, inode uint64, local, state string) {
+	t.Helper()
+	header := "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+	body := ""
+	if local != "" && state != "" {
+		body = fmt.Sprintf("   0: %s 00000000000000000000000000000000:0000 %s 00000000:00000000 00:00000000 00000000  1000        0 %d 1 0000000000000000 100 0 0 10 0\n", local, state, inode)
+	}
+	if err := os.WriteFile(path, []byte(header+body), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
 
 // TestParseProcNetIPHex covers the endian-juggling for the local_address
 // column in /proc/net/tcp{,6}. The expected outputs are the canonical
@@ -433,6 +479,387 @@ func TestLoopbackFrameRoundTrip(t *testing.T) {
 			t.Errorf("round-trip %v:%d → %v:%d", tc.ip, tc.port, gotIP, gotPort)
 		}
 	}
+}
+
+// TestProcReadSocketInode covers the pre-continue inode capture: open a
+// real TCP socket (without listen()) and confirm procReadSocketInode
+// parses out the kernel inode of the corresponding /proc/self/fd link.
+//
+// This is the lookup that has to succeed BEFORE we send CONTINUE in the
+// supervisor, because the fd may close shortly after the agent's listen
+// returns — see denoland/orchid#175.
+func TestProcReadSocketInode(t *testing.T) {
+	// Bind a TCP socket but don't listen — the inode exists in the
+	// fd table either way, so the pre-continue path works.
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		skipIfSandboxBlocks(t, "socket", err)
+		t.Fatalf("socket: %v", err)
+	}
+	defer func() { _ = unix.Close(fd) }()
+	if err := unix.Bind(fd, &unix.SockaddrInet4{Port: 0, Addr: [4]byte{127, 0, 0, 1}}); err != nil {
+		skipIfSandboxBlocks(t, "bind", err)
+		t.Fatalf("bind: %v", err)
+	}
+
+	pid := os.Getpid()
+	inode, err := procReadSocketInode("/proc", pid, fd)
+	if err != nil {
+		t.Fatalf("procReadSocketInode: %v", err)
+	}
+
+	// Cross-check by stat'ing the fd link directly; the inode of the
+	// socket is the same number the kernel embeds in the readlink target.
+	var st unix.Stat_t
+	if err := unix.Stat(fmt.Sprintf("/proc/%d/fd/%d", pid, fd), &st); err != nil {
+		t.Fatalf("stat /proc/self/fd: %v", err)
+	}
+	if st.Ino != inode {
+		t.Fatalf("inode mismatch: parsed %d vs stat %d", inode, st.Ino)
+	}
+}
+
+// TestProcReadSocketInodeBadLink validates the parse rejects non-socket
+// fds and malformed readlink output. Defensive: a fd table lookup
+// returning anything other than "socket:[N]" means we should not be
+// using the /proc fallback at all.
+func TestProcReadSocketInodeBadLink(t *testing.T) {
+	dir := t.TempDir()
+	pidDir := filepath.Join(dir, "1", "fd")
+	if err := os.MkdirAll(pidDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, target string
+	}{
+		{"file fd", "/etc/hosts"},
+		{"pipe fd", "pipe:[123]"},
+		{"truncated", "socket:[12"},
+		{"missing prefix", "[12]"},
+		{"non-numeric inode", "socket:[abc]"},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			link := filepath.Join(pidDir, fmt.Sprintf("%d", i))
+			if err := os.Symlink(tc.target, link); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := procReadSocketInode(dir, 1, i); err == nil {
+				t.Fatalf("accepted bad readlink target %q", tc.target)
+			}
+		})
+	}
+}
+
+// TestProcPollForListenSuccess covers the post-continue happy path: the
+// inode already shows up in TCP_LISTEN state on the first read.
+func TestProcPollForListenSuccess(t *testing.T) {
+	dir := t.TempDir()
+	procDir := filepath.Join(dir, "1234", "net")
+	if err := os.MkdirAll(procDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeProcTCP6(t, filepath.Join(procDir, "tcp6"), 99001, "00000000000000000000000000000000:1F90", "0A")
+	writeProcTCP4(t, filepath.Join(procDir, "tcp"), 0, "", "")
+
+	port, ip, family, err := procPollForListen(dir, 1234, 99001, 100*time.Millisecond, time.Millisecond, 10*time.Millisecond)
+	if err != nil {
+		t.Fatalf("procPollForListen: %v", err)
+	}
+	if port != 8080 || family != unix.AF_INET6 || !ip.Equal(net.ParseIP("::")) {
+		t.Fatalf("got port=%d family=%d ip=%s, want :::8080", port, family, ip)
+	}
+}
+
+// TestProcPollForListenRace mirrors the production race: the supervisor
+// has just sent CONTINUE but the kernel has not yet flipped the socket
+// to TCP_LISTEN. The poll has to retry until the row appears.
+//
+// This is the regression test for denoland/orchid#175 — pre-fix, the
+// fallback ran inside the trapped listen() window and saw no TCP_LISTEN
+// row, then gave up forever.
+func TestProcPollForListenRace(t *testing.T) {
+	dir := t.TempDir()
+	procDir := filepath.Join(dir, "1234", "net")
+	if err := os.MkdirAll(procDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tcp4 := filepath.Join(procDir, "tcp")
+	tcp6 := filepath.Join(procDir, "tcp6")
+	// Initially neither file contains our inode. Use a non-matching
+	// row so the scanner still has structurally valid content.
+	writeProcTCP4(t, tcp4, 12345, "0100007F:1F90", "0A")
+	writeProcTCP6(t, tcp6, 12345, "00000000000000000000000000000000:1F90", "0A")
+
+	// After 25ms (well inside the 200ms poll budget), flip the v4
+	// file to include the inode in TCP_LISTEN state.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		time.Sleep(25 * time.Millisecond)
+		writeProcTCP4(t, tcp4, 99001, "0100007F:1F90", "0A")
+	}()
+	defer wg.Wait()
+
+	start := time.Now()
+	port, ip, family, err := procPollForListen(dir, 1234, 99001, 200*time.Millisecond, time.Millisecond, 10*time.Millisecond)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("procPollForListen: %v (after %v)", err, elapsed)
+	}
+	if port != 8080 || family != unix.AF_INET || !ip.Equal(net.IPv4(127, 0, 0, 1).To4()) {
+		t.Fatalf("got port=%d family=%d ip=%s, want 127.0.0.1:8080", port, family, ip)
+	}
+	if elapsed < 20*time.Millisecond {
+		t.Fatalf("poll returned too fast (%v) — likely didn't observe the race", elapsed)
+	}
+	if elapsed > 150*time.Millisecond {
+		t.Fatalf("poll took %v, expected to converge soon after 25ms transition", elapsed)
+	}
+}
+
+// TestProcPollForListenTimeout confirms the bounded-retry contract: if
+// the inode never appears, we give up cleanly with a descriptive error
+// instead of spinning forever.
+func TestProcPollForListenTimeout(t *testing.T) {
+	dir := t.TempDir()
+	procDir := filepath.Join(dir, "1234", "net")
+	if err := os.MkdirAll(procDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeProcTCP4(t, filepath.Join(procDir, "tcp"), 0, "", "")
+	writeProcTCP6(t, filepath.Join(procDir, "tcp6"), 0, "", "")
+
+	start := time.Now()
+	_, _, _, err := procPollForListen(dir, 1234, 99001, 25*time.Millisecond, time.Millisecond, 10*time.Millisecond)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatalf("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "no TCP_LISTEN row with inode 99001") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if elapsed < 25*time.Millisecond {
+		t.Fatalf("returned before timeout: %v", elapsed)
+	}
+	if elapsed > 200*time.Millisecond {
+		t.Fatalf("ran way past timeout: %v", elapsed)
+	}
+}
+
+// TestProcPollForListenMissingFiles confirms that an entirely absent
+// /proc tree returns the timeout error, not an IO panic — the scanner
+// treats ENOENT as "keep trying" since /proc/<pid>/net/tcp6 may be
+// missing on systems with IPv6 disabled.
+func TestProcPollForListenMissingFiles(t *testing.T) {
+	dir := t.TempDir() // no pid subdir at all
+	_, _, _, err := procPollForListen(dir, 1234, 99001, 15*time.Millisecond, time.Millisecond, 5*time.Millisecond)
+	if err == nil {
+		t.Fatalf("expected timeout error on missing /proc tree")
+	}
+}
+
+// TestCaptureBeforeContinueProducesAnswer exercises the full
+// pre-continue + resolve pipeline against a real bound+listening socket
+// in our own process. Whichever path succeeds (pidfd or /proc), we must
+// recover the bound port and address — never end up with both branches
+// in their error state.
+func TestCaptureBeforeContinueProducesAnswer(t *testing.T) {
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		skipIfSandboxBlocks(t, "socket", err)
+		t.Fatalf("socket: %v", err)
+	}
+	defer func() { _ = unix.Close(fd) }()
+	if err := unix.Bind(fd, &unix.SockaddrInet4{Port: 0, Addr: [4]byte{127, 0, 0, 1}}); err != nil {
+		skipIfSandboxBlocks(t, "bind", err)
+		t.Fatalf("bind: %v", err)
+	}
+	if err := unix.Listen(fd, 1); err != nil {
+		skipIfSandboxBlocks(t, "listen", err)
+		t.Fatalf("listen: %v", err)
+	}
+	sa, err := unix.Getsockname(fd)
+	if err != nil {
+		t.Fatalf("getsockname: %v", err)
+	}
+	wantPort := uint16(sa.(*unix.SockaddrInet4).Port)
+
+	c := captureBeforeContinue(os.Getpid(), fd)
+	if c.pidfd == nil && !c.inodeOK {
+		t.Fatalf("capture produced neither pidfd nor inode: pidfdErr=%v inodeErr=%v",
+			c.pidfdErr, c.inodeErr)
+	}
+	port, ip, family, err := c.resolveAfterContinue()
+	if err != nil {
+		t.Fatalf("resolveAfterContinue: %v", err)
+	}
+	if port != wantPort || (family != unix.AF_INET && family != unix.AF_INET6) {
+		t.Fatalf("bad capture: port=%d (want %d) family=%d ip=%s", port, wantPort, family, ip)
+	}
+}
+
+// TestCaptureBeforeContinueFallbackInode forces the /proc fallback by
+// supplying an unreadable pid to pidfdPeekListener and verifies the
+// inode-capture path runs. This is the structural regression that
+// makes denoland/orchid#175 survivable: when pidfd_getfd can't dup
+// the fd (multi-threaded agents, fork-then-listen patterns), we still
+// must grab the inode before sending CONTINUE.
+func TestCaptureBeforeContinueFallbackInode(t *testing.T) {
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		skipIfSandboxBlocks(t, "socket", err)
+		t.Fatalf("socket: %v", err)
+	}
+	defer func() { _ = unix.Close(fd) }()
+	if err := unix.Bind(fd, &unix.SockaddrInet4{Port: 0, Addr: [4]byte{127, 0, 0, 1}}); err != nil {
+		skipIfSandboxBlocks(t, "bind", err)
+		t.Fatalf("bind: %v", err)
+	}
+	if err := unix.Listen(fd, 1); err != nil {
+		skipIfSandboxBlocks(t, "listen", err)
+		t.Fatalf("listen: %v", err)
+	}
+
+	// Test the inode-capture half directly. pidfdPeekListener may
+	// succeed in-process, so we bypass it and call the fallback
+	// component the supervisor would use after pidfd failed.
+	inode, err := procReadSocketInode("/proc", os.Getpid(), fd)
+	if err != nil {
+		t.Fatalf("procReadSocketInode: %v", err)
+	}
+	if inode == 0 {
+		t.Fatalf("got inode 0")
+	}
+
+	// And the post-continue side resolves the same inode against the
+	// real /proc/net/tcp{,6}, since we listen()'d above.
+	port, ip, family, err := procPollForListen("/proc", os.Getpid(), inode, 500*time.Millisecond, time.Millisecond, 25*time.Millisecond)
+	if err != nil {
+		t.Fatalf("procPollForListen: %v", err)
+	}
+	if port == 0 || ip == nil || (family != unix.AF_INET && family != unix.AF_INET6) {
+		t.Fatalf("bad fallback result: port=%d ip=%s family=%d", port, ip, family)
+	}
+}
+
+// TestResolveAfterContinuePidfdShortcut verifies the pidfd fast path
+// skips polling entirely (resolveAfterContinue must be ~free when the
+// pre-continue capture already has an answer).
+func TestResolveAfterContinuePidfdShortcut(t *testing.T) {
+	c := &listenerCapture{
+		pidfd: &listenerInfo{port: 4242, ip: net.ParseIP("10.1.2.3"), family: unix.AF_INET},
+		// Intentionally absurd timeout — should never be consulted.
+		pollTimeout: 10 * time.Second,
+	}
+	start := time.Now()
+	port, ip, family, err := c.resolveAfterContinue()
+	if err != nil {
+		t.Fatalf("resolveAfterContinue: %v", err)
+	}
+	if port != 4242 || family != unix.AF_INET || !ip.Equal(net.ParseIP("10.1.2.3")) {
+		t.Fatalf("bad pidfd passthrough: %d %s %d", port, ip, family)
+	}
+	if time.Since(start) > 50*time.Millisecond {
+		t.Fatalf("pidfd shortcut took the polling path")
+	}
+}
+
+// TestRelayFDsSurviveGC is the regression test for the "notif_recv: bad
+// file descriptor" half of denoland/orchid#175. runRelaySupervisor
+// extracts raw fds from *os.File wrappers and then never references
+// the wrappers again, so the GC was free to run the wrappers'
+// finalizers (which close the fd). Once the seccomp notify fd was
+// closed, the next ioctl(NOTIF_RECV) returned EBADF and the supervisor
+// died.
+//
+// We can't drive the real supervisor in a unit test, but the failure
+// mode is independent of seccomp — any os.NewFile(fd, ...) whose fd is
+// only kept as an int has the same hazard. The fix is the package-level
+// `relaySupervisorFiles` map that keeps the wrappers reachable; this
+// test models that pattern and verifies it survives GC pressure.
+//
+// Modeling note: this test prove the *strategy* works (a long-lived
+// reference stops the finalizer from running) — the supervisor's
+// actual use of relaySupervisorFiles is exercised by inspection of the
+// runRelaySupervisor code path.
+func TestRelayFDsSurviveGC(t *testing.T) {
+	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatalf("socketpair: %v", err)
+	}
+	defer func() { _ = unix.Close(pair[1]) }()
+
+	f := os.NewFile(uintptr(pair[0]), "test-relay-fd")
+	if f == nil {
+		t.Fatal("os.NewFile returned nil")
+	}
+	rawFD := int(f.Fd())
+
+	// Mirror the supervisor's strategy: pin the *os.File in a
+	// long-lived container so its finalizer can't run.
+	keepAlive := map[*os.File]struct{}{f: {}}
+	defer func() { delete(keepAlive, f) }()
+
+	// Drop the only local reference and aggressively GC. With the
+	// pinning in place, the fd must stay open.
+	f = nil
+	for i := 0; i < 3; i++ {
+		runtime.GC()
+	}
+
+	// fcntl(F_GETFD) on a live fd returns 0 or FD_CLOEXEC; on a
+	// closed fd it returns EBADF.
+	if _, err := unix.FcntlInt(uintptr(rawFD), unix.F_GETFD, 0); err != nil {
+		if err == syscall.EBADF {
+			t.Fatalf("fd was closed by finalizer (denoland/orchid#175 regression)")
+		}
+		t.Fatalf("unexpected fcntl error: %v", err)
+	}
+}
+
+// TestRelayFDsClosedWithoutPin is the inverse: without the
+// package-level pin, the wrapper's finalizer DOES close the fd. This
+// proves the failure mode that motivates the fix exists, and that the
+// pin in TestRelayFDsSurviveGC is what's preventing it.
+//
+// Skipped if the runtime doesn't actually close the fd in the test's
+// short window — older Go runtimes occasionally defer finalizers; the
+// fix only needs to make finalizer execution irrelevant, not
+// deterministic.
+func TestRelayFDsClosedWithoutPin(t *testing.T) {
+	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatalf("socketpair: %v", err)
+	}
+	defer func() { _ = unix.Close(pair[1]) }()
+
+	rawFD := setupOrphanFile(pair[0])
+
+	for i := 0; i < 5; i++ {
+		runtime.GC()
+	}
+
+	if _, err := unix.FcntlInt(uintptr(rawFD), unix.F_GETFD, 0); err == nil {
+		t.Skip("runtime did not finalize the wrapper in the test window; cannot prove the failure mode here, but the positive test (TestRelayFDsSurviveGC) still covers the fix")
+	} else if err != syscall.EBADF {
+		t.Fatalf("unexpected fcntl error: %v (want EBADF)", err)
+	}
+}
+
+// setupOrphanFile wraps fd in *os.File and immediately drops the only
+// reference, so the GC's next pass is free to run the finalizer.
+// Isolating this in its own function keeps liveness analysis from
+// "rescuing" the wrapper across the caller's stack frame.
+//
+//go:noinline
+func setupOrphanFile(fd int) int {
+	f := os.NewFile(uintptr(fd), "orphan")
+	if f == nil {
+		return -1
+	}
+	return int(f.Fd())
 }
 
 // TestMirrorBindScope verifies the host bind-address policy mirrors the

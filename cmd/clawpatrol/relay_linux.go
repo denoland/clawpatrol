@@ -41,6 +41,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -133,6 +134,24 @@ func installListenTrapFilter() (int, error) {
 
 var errSeccompUnsupportedArch = errors.New("seccomp: unsupported architecture for listen trap")
 
+// relaySupervisorFiles keeps *os.File wrappers reachable for the
+// lifetime of the relay-supervisor subprocess.
+//
+// The wrappers' finalizers close the underlying fd; without a
+// long-lived reference the wrapper goes unreachable as soon as we
+// extract the raw fd via .Fd(), and a later GC run closes the fd from
+// under us. That manifested in production as "notif_recv: bad file
+// descriptor" (denoland/orchid#175).
+//
+// Only the seccomp notify fd needs this: the worker socket is driven
+// through a SyscallConn (workerRC), which carries its own internal
+// reference to the *os.File. The relay-worker's supervisor socket is
+// likewise pinned by its SyscallConn.
+//
+// Accessed only from runRelaySupervisor, so concurrent access is not a
+// concern.
+var relaySupervisorFiles = map[*os.File]struct{}{}
+
 // --- struct seccomp_notif / seccomp_notif_resp -----------------------
 
 // seccompData mirrors `struct seccomp_data` (linux/seccomp.h).
@@ -210,6 +229,24 @@ func runRelaySupervisor(_ []string) {
 	}
 	notifyFD := int(notifyFile.Fd())
 
+	// os.NewFile attaches a finalizer to the *os.File that closes the
+	// underlying fd when it gets GC'd. Once we extract the raw fd via
+	// .Fd() we never touch notifyFile again, so liveness analysis can
+	// mark it dead — and a later finalizer run then closes fd 3 from
+	// under the next ioctl(NOTIF_RECV), which surfaces as
+	// "notif_recv: bad file descriptor". (Observed in
+	// denoland/orchid#175.)
+	//
+	// We can't clear the finalizer directly: os.File sets it on its
+	// unexported inner struct, not on *File. Instead, hold a
+	// package-level reference so the wrapper stays reachable for the
+	// lifetime of the process — the supervisor never returns from its
+	// receive loop until the process is about to exit anyway.
+	//
+	// workerSock needs no such pin: workerRC (its SyscallConn, below)
+	// already carries an internal reference to the *os.File.
+	relaySupervisorFiles[notifyFile] = struct{}{}
+
 	// SIGPIPE on the worker socket shouldn't kill the supervisor — log
 	// from the accept goroutines instead.
 	ignoreSIGPIPE()
@@ -263,44 +300,49 @@ func runRelaySupervisor(_ []string) {
 
 		isListen := uint32(n.Data.NR) == listenNR
 
-		if isListen {
-			if int(n.Pid) == workerPID {
-				// Our own host-loopback forwarder calls listen(); don't
-				// mirror it to the host.
-				_ = notifSendContinue(notifyFD, n.ID)
-				continue
-			}
-			port, ip, family, perr := peekAgentListener(int(n.Pid), int(n.Data.Args[0]))
-			// Always reply CONTINUE first so the agent's listen() proceeds.
+		if !isListen {
 			_ = notifSendContinue(notifyFD, n.ID)
-
-			if perr != nil {
-				fmt.Fprintf(os.Stderr, "[clawpatrol relay] inspect listen sockfd: %v\n", perr)
-				continue
-			}
-			seenMu.Lock()
-			already := seen[port]
-			if !already {
-				seen[port] = true
-			}
-			seenMu.Unlock()
-			if already {
-				continue
-			}
-			host := mirrorBindScope(family, ip)
-			ln, lerr := net.Listen("tcp", net.JoinHostPort(host, fmt.Sprintf("%d", port)))
-			if lerr != nil {
-				fmt.Fprintf(os.Stderr, "[clawpatrol relay] could not tunnel %s:%d: %v\n", host, port, lerr)
-				seenMu.Lock()
-				delete(seen, port)
-				seenMu.Unlock()
-				continue
-			}
-			fmt.Fprintf(os.Stderr, "[clawpatrol relay] auto-expose %s:%d → agent netns\n", host, port)
-			go acceptLoop(ln, port, workerRC)
-		} else {
-			_ = notifSendContinue(notifyFD, n.ID)
+			continue
 		}
+
+		if int(n.Pid) == workerPID {
+			// Our own host-loopback forwarder calls listen(); don't
+			// mirror it to the host.
+			_ = notifSendContinue(notifyFD, n.ID)
+			continue
+		}
+
+		// Two-phase inspection so the trapped listen() doesn't stall
+		// behind our work — and, more importantly, so the /proc
+		// fallback can find a TCP_LISTEN row (which only exists
+		// after listen() actually runs).
+		cap := captureBeforeContinue(int(n.Pid), int(n.Data.Args[0]))
+		_ = notifSendContinue(notifyFD, n.ID)
+		port, ip, family, perr := cap.resolveAfterContinue()
+		if perr != nil {
+			fmt.Fprintf(os.Stderr, "[clawpatrol relay] inspect listen sockfd: %v\n", perr)
+			continue
+		}
+		seenMu.Lock()
+		already := seen[port]
+		if !already {
+			seen[port] = true
+		}
+		seenMu.Unlock()
+		if already {
+			continue
+		}
+		host := mirrorBindScope(family, ip)
+		ln, lerr := net.Listen("tcp", net.JoinHostPort(host, fmt.Sprintf("%d", port)))
+		if lerr != nil {
+			fmt.Fprintf(os.Stderr, "[clawpatrol relay] could not tunnel %s:%d: %v\n", host, port, lerr)
+			seenMu.Lock()
+			delete(seen, port)
+			seenMu.Unlock()
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "[clawpatrol relay] auto-expose %s:%d → agent netns\n", host, port)
+		go acceptLoop(ln, port, workerRC)
 	}
 }
 
@@ -408,33 +450,126 @@ func bidiCopyTCP(fileSide *os.File, connSide net.Conn) {
 	<-done
 }
 
-// peekAgentListener returns (port, bind_ip, family) for the socket fd
-// inside the agent. Tries two paths in order:
+// listenerCapture inspects an in-flight, seccomp-trapped listen(2) call
+// in two phases:
 //
-//  1. pidfd_open + pidfd_getfd + getsockname — preferred (race-free, the
-//     socket fd is pinned via the dup'd reference for the lifetime of the
-//     call). Needs PTRACE_MODE_ATTACH_REALCREDS, which under yama
-//     ptrace_scope=1 means the tracee must have called
-//     prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY). The agent child does
-//     this before exec; PR_SET_PTRACER survives execve but is reset on
-//     fork(), so direct children of the user's command that exec a
-//     listener will skip this path.
+//	c := captureBeforeContinue(pid, sockfd)
+//	_ = notifSendContinue(notifyFD, n.ID)
+//	port, ip, family, err := c.resolveAfterContinue()
 //
-//  2. /proc/<pid>/fd/<sockfd> readlink → inode, then scan
-//     /proc/<pid>/net/tcp{,6} for a listening socket with that inode.
-//     Only requires same-uid (we are), not ptrace. This covers
-//     fork-then-listen patterns (shell wrappers, supervisord-style
-//     launchers) that pidfd_getfd can't reach under yama.
-func peekAgentListener(pid, sockfd int) (uint16, net.IP, int, error) {
-	port, ip, family, pidfdErr := pidfdPeekListener(pid, sockfd)
-	if pidfdErr == nil {
+// The pidfd path (preferred, race-free) yields a final answer in the
+// pre-continue phase: getsockname(2) works on a bound but not-yet-
+// listening socket, and the dup'd fd pins the kernel socket for the
+// lifetime of the call.
+//
+// The /proc fallback can only capture the socket *inode* pre-continue —
+// the matching TCP_LISTEN row in /proc/<pid>/net/tcp{,6} won't exist
+// until listen(2) actually runs, which is gated on the supervisor
+// sending SECCOMP_USER_NOTIF_FLAG_CONTINUE. The post-continue phase
+// polls for that row with a short bounded timeout.
+//
+// Why the fallback matters:
+//
+//   - pidfd_open(tid) returns EINVAL when the trapped listen() came from
+//     a non-leader thread (the seccomp notify pid field carries the TID,
+//     not the TGID). Older kernels (<6.10) have no PIDFD_THREAD escape
+//     hatch, so multi-threaded agents always need /proc.
+//   - pidfd_getfd is gated by PTRACE_MODE_ATTACH_REALCREDS. Under yama
+//     ptrace_scope=1 the tracee must call PR_SET_PTRACER; we do this in
+//     the agent child, but it survives execve and not fork(), so any
+//     fork-then-listen pattern (shell wrappers, supervisord-style
+//     launchers) skips the pidfd path.
+//
+// In both cases /proc/<pid>/fd/<fd> + /proc/<pid>/net/tcp{,6} works:
+// the kernel resolves /proc/<pid>/net symlinks against the target's
+// net namespace, and same-uid is enough.
+type listenerCapture struct {
+	pid      int
+	sockfd   int
+	procRoot string
+
+	// pidfd path: if non-nil, captureBeforeContinue produced a final
+	// answer and resolveAfterContinue just returns it.
+	pidfd *listenerInfo
+
+	// /proc path: inode captured pre-continue via readlink. ok=false
+	// means the readlink itself failed, so the fallback has nothing
+	// to poll for.
+	inode    uint64
+	inodeOK  bool
+	inodeErr error
+
+	pidfdErr error
+
+	// Tunable from tests. Defaults set by captureBeforeContinue.
+	pollTimeout time.Duration
+	pollFloor   time.Duration
+	pollCeil    time.Duration
+}
+
+type listenerInfo struct {
+	port   uint16
+	ip     net.IP
+	family int
+}
+
+// procFallbackTimeout is the post-continue budget for the kernel to
+// transition the trapped socket into TCP_LISTEN once we send CONTINUE.
+// In practice this lands well under 1ms on idle machines; the ceiling
+// is generous to cover scheduler hiccups on busy hosts without making
+// the trap latency user-visible.
+const procFallbackTimeout = 500 * time.Millisecond
+
+// captureBeforeContinue runs the pre-continue half of the two-phase
+// inspection. It is safe to call before notifSendContinue: it never
+// touches the trapped syscall, only the agent's fd table and /proc.
+func captureBeforeContinue(pid, sockfd int) *listenerCapture {
+	c := &listenerCapture{
+		pid:         pid,
+		sockfd:      sockfd,
+		procRoot:    "/proc",
+		pollTimeout: procFallbackTimeout,
+		pollFloor:   1 * time.Millisecond,
+		pollCeil:    25 * time.Millisecond,
+	}
+	c.capture()
+	return c
+}
+
+func (c *listenerCapture) capture() {
+	if port, ip, family, err := pidfdPeekListener(c.pid, c.sockfd); err == nil {
+		c.pidfd = &listenerInfo{port: port, ip: ip, family: family}
+		return
+	} else {
+		c.pidfdErr = err
+	}
+	// pidfd path lost — capture the inode now while the agent's fd
+	// is guaranteed still open (seccomp is still holding listen()).
+	inode, err := procReadSocketInode(c.procRoot, c.pid, c.sockfd)
+	if err != nil {
+		c.inodeErr = err
+		return
+	}
+	c.inode = inode
+	c.inodeOK = true
+}
+
+// resolveAfterContinue produces the final answer for a listener. Must be
+// called after notifSendContinue has released the trapped listen(); for
+// the /proc path the kernel only inserts the TCP_LISTEN row at that
+// point.
+func (c *listenerCapture) resolveAfterContinue() (uint16, net.IP, int, error) {
+	if c.pidfd != nil {
+		return c.pidfd.port, c.pidfd.ip, c.pidfd.family, nil
+	}
+	if !c.inodeOK {
+		return 0, nil, 0, fmt.Errorf("pidfd_getfd: %w; /proc fallback: %w", c.pidfdErr, c.inodeErr)
+	}
+	port, ip, family, err := procPollForListen(c.procRoot, c.pid, c.inode, c.pollTimeout, c.pollFloor, c.pollCeil)
+	if err == nil {
 		return port, ip, family, nil
 	}
-	port, ip, family, procErr := procPeekListener(pid, sockfd)
-	if procErr == nil {
-		return port, ip, family, nil
-	}
-	return 0, nil, 0, fmt.Errorf("pidfd_getfd: %w; /proc fallback: %w", pidfdErr, procErr)
+	return 0, nil, 0, fmt.Errorf("pidfd_getfd: %w; /proc fallback: %w", c.pidfdErr, err)
 }
 
 // pidfdPeekListener: open the agent as a pidfd, dup the socket fd over,
@@ -465,50 +600,75 @@ func pidfdPeekListener(pid, sockfd int) (uint16, net.IP, int, error) {
 	return 0, nil, 0, fmt.Errorf("unsupported sockaddr family")
 }
 
-// procPeekListener: read /proc/<pid>/fd/<sockfd> to get the socket inode,
-// then scan /proc/<pid>/net/tcp{,6} for the matching TCP_LISTEN row.
-//
-// /proc/<pid>/net/tcp is per-netns (the kernel resolves the symlink
-// against the target's net ns), so we see the agent's view — exactly
-// what we want. Same-uid is enough to read both paths; yama doesn't
-// apply.
-func procPeekListener(pid, sockfd int) (uint16, net.IP, int, error) {
-	link, err := os.Readlink(fmt.Sprintf("/proc/%d/fd/%d", pid, sockfd))
+// procReadSocketInode reads /proc/<pid>/fd/<sockfd> and parses out the
+// socket inode encoded in the readlink target ("socket:[NNN]"). Cheap
+// and safe to call pre-continue: it only inspects the kernel-side fd
+// table, not the socket's connection state.
+func procReadSocketInode(procRoot string, pid, sockfd int) (uint64, error) {
+	path := fmt.Sprintf("%s/%d/fd/%d", procRoot, pid, sockfd)
+	link, err := os.Readlink(path)
 	if err != nil {
-		return 0, nil, 0, fmt.Errorf("readlink /proc/%d/fd/%d: %w", pid, sockfd, err)
+		return 0, fmt.Errorf("readlink %s: %w", path, err)
 	}
 	const prefix = "socket:["
 	if !strings.HasPrefix(link, prefix) || !strings.HasSuffix(link, "]") {
-		return 0, nil, 0, fmt.Errorf("not a socket fd: %q", link)
+		return 0, fmt.Errorf("not a socket fd: %q", link)
 	}
 	inode, err := strconv.ParseUint(link[len(prefix):len(link)-1], 10, 64)
 	if err != nil {
-		return 0, nil, 0, fmt.Errorf("parse inode %q: %w", link, err)
+		return 0, fmt.Errorf("parse inode %q: %w", link, err)
 	}
+	return inode, nil
+}
 
-	// IPv4 entries appear in /proc/<pid>/net/tcp, IPv6 in tcp6. Try v6
-	// first because dual-stack listeners (the common case for Go's
+// procPollForListen polls /proc/<pid>/net/tcp{,6} for `inode` in
+// TCP_LISTEN state, with exponential backoff up to `timeout`. Returns
+// the first successful (port, ip, family) or a descriptive timeout
+// error.
+//
+// Why polling: the supervisor sends CONTINUE and immediately races the
+// kernel's TCP_LISTEN transition. On amd64 with a warm scheduler this
+// typically lands in <1 ms; we cap the polling to keep relay overhead
+// bounded even on contended hosts.
+func procPollForListen(procRoot string, pid int, inode uint64, timeout, pollFloor, pollCeil time.Duration) (uint16, net.IP, int, error) {
+	// IPv4 entries appear in /proc/<pid>/net/tcp, IPv6 in tcp6. Try
+	// v6 first because dual-stack listeners (the common case for Go's
 	// net.Listen("tcp", ":port")) bind via AF_INET6 with a v4-mapped
 	// any address.
-	for _, t := range [...]struct {
+	targets := [...]struct {
 		path   string
 		family int
 		ipHex  int
 	}{
-		{fmt.Sprintf("/proc/%d/net/tcp6", pid), unix.AF_INET6, 32},
-		{fmt.Sprintf("/proc/%d/net/tcp", pid), unix.AF_INET, 8},
-	} {
-		port, ip, ok, err := scanProcNetTCP(t.path, inode, t.ipHex)
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			// Surface IO errors but keep trying the other family.
-			fmt.Fprintf(os.Stderr, "[clawpatrol relay] read %s: %v\n", t.path, err)
-			continue
+		{fmt.Sprintf("%s/%d/net/tcp6", procRoot, pid), unix.AF_INET6, 32},
+		{fmt.Sprintf("%s/%d/net/tcp", procRoot, pid), unix.AF_INET, 8},
+	}
+	deadline := time.Now().Add(timeout)
+	backoff := pollFloor
+	attempts := 0
+	for {
+		attempts++
+		for _, t := range targets {
+			port, ip, ok, err := scanProcNetTCP(t.path, inode, t.ipHex)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				// Surface IO errors but keep trying the other
+				// family / a later poll iteration.
+				fmt.Fprintf(os.Stderr, "[clawpatrol relay] read %s: %v\n", t.path, err)
+				continue
+			}
+			if ok {
+				return port, ip, t.family, nil
+			}
 		}
-		if ok {
-			return port, ip, t.family, nil
+		if time.Now().After(deadline) {
+			return 0, nil, 0, fmt.Errorf("no TCP_LISTEN row with inode %d in %s/%d/net/tcp{,6} after %v (%d polls)", inode, procRoot, pid, timeout, attempts)
+		}
+		time.Sleep(backoff)
+		backoff *= 2
+		if backoff > pollCeil {
+			backoff = pollCeil
 		}
 	}
-	return 0, nil, 0, fmt.Errorf("no TCP_LISTEN row with inode %d in /proc/%d/net/tcp{,6}", inode, pid)
 }
 
 // scanProcNetTCP scans one /proc/<pid>/net/tcp{,6} file for a row whose
