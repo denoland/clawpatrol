@@ -27,8 +27,10 @@ import (
 // false negatives locally.
 func skipIfSandboxBlocks(t *testing.T, op string, err error) {
 	t.Helper()
-	if err == syscall.ENOSYS || err == syscall.EPERM || err == syscall.EACCES || err == syscall.EAFNOSUPPORT {
-		t.Skipf("sandbox blocks %s: %v", op, err)
+	for _, e := range []error{syscall.ENOSYS, syscall.EPERM, syscall.EACCES, syscall.EAFNOSUPPORT} {
+		if errors.Is(err, e) {
+			t.Skipf("sandbox blocks %s: %v", op, err)
+		}
 	}
 }
 
@@ -712,7 +714,7 @@ func TestRelayFDsSurviveGC(t *testing.T) {
 	// fcntl(F_GETFD) on a live fd returns 0 or FD_CLOEXEC; on a
 	// closed fd it returns EBADF.
 	if _, err := unix.FcntlInt(uintptr(rawFD), unix.F_GETFD, 0); err != nil {
-		if err == syscall.EBADF {
+		if errors.Is(err, syscall.EBADF) {
 			t.Fatalf("fd was closed by finalizer (denoland/orchid#175 regression)")
 		}
 		t.Fatalf("unexpected fcntl error: %v", err)
@@ -743,7 +745,7 @@ func TestRelayFDsClosedWithoutPin(t *testing.T) {
 
 	if _, err := unix.FcntlInt(uintptr(rawFD), unix.F_GETFD, 0); err == nil {
 		t.Skip("runtime did not finalize the wrapper in the test window; cannot prove the failure mode here, but the positive test (TestRelayFDsSurviveGC) still covers the fix")
-	} else if err != syscall.EBADF {
+	} else if !errors.Is(err, syscall.EBADF) {
 		t.Fatalf("unexpected fcntl error: %v (want EBADF)", err)
 	}
 }

@@ -284,9 +284,9 @@ func runRelaySupervisor(_ []string) {
 		// behind our work — and, more importantly, so the /proc
 		// fallback can find a TCP_LISTEN row (which only exists
 		// after listen() actually runs).
-		cap := captureBeforeContinue(int(n.Pid), int(n.Data.Args[0]))
+		capture := captureBeforeContinue(int(n.Pid), int(n.Data.Args[0]))
 		_ = notifSendContinue(notifyFD, n.ID)
-		port, ip, family, perr := cap.resolveAfterContinue()
+		port, ip, family, perr := capture.resolveAfterContinue()
 		if perr != nil {
 			fmt.Fprintf(os.Stderr, "[clawpatrol relay] inspect listen sockfd: %v\n", perr)
 			continue
@@ -401,12 +401,12 @@ func captureBeforeContinue(pid, sockfd int) *listenerCapture {
 }
 
 func (c *listenerCapture) capture() {
-	if port, ip, family, err := pidfdPeekListener(c.pid, c.sockfd); err == nil {
+	port, ip, family, pidfdErr := pidfdPeekListener(c.pid, c.sockfd)
+	if pidfdErr == nil {
 		c.pidfd = &listenerInfo{port: port, ip: ip, family: family}
 		return
-	} else {
-		c.pidfdErr = err
 	}
+	c.pidfdErr = pidfdErr
 	// pidfd path lost — capture the inode now while the agent's fd
 	// is guaranteed still open (seccomp is still holding listen()).
 	inode, err := procReadSocketInode(c.procRoot, c.pid, c.sockfd)
