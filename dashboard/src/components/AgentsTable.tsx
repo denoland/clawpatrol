@@ -23,13 +23,13 @@ export function AgentsTable({
   for (const i of integrations ?? []) byId.set(i.id, i);
   const stable = sortAgents(agents ?? [], sortBy);
   return (
-    <table className="w-full table-fixed border-collapse" style={{ minWidth: 650 }}>
+    <table className="w-full table-fixed border-collapse" style={{ minWidth: 720 }}>
       <colgroup>
-        <col style={{ width: 240 }} />
+        <col />
         <col style={{ width: 140 }} />
         <col style={{ width: 200 }} />
-        <col style={{ width: 60 }} />
-        <col />
+        <col style={{ width: 70 }} />
+        <col style={{ width: 200 }} />
       </colgroup>
       <thead className="bg-navy-100 border-b border-navy">
         <tr>
