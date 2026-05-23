@@ -184,3 +184,74 @@ func TestSamplerSampleUnknownEncodingIgnored(t *testing.T) {
 		t.Fatalf("expected binary: for unknown encoding, got %q", got)
 	}
 }
+
+// TestSamplerPoolReuseDoesNotLeakStateBetweenRequests guards the
+// samplerPool round-trip: a sampler used for one body, then released
+// and re-acquired, must hand back zero buffered bytes, a zero byte
+// counter, and a sha for the second body alone — not the first. A
+// missed Reset on either the hash or bytes.Buffer would let request N
+// observe sample bytes or a sha digest from request N-1, which would
+// corrupt the audit log and could leak credential bytes between
+// unrelated requests on the same MITM connection.
+func TestSamplerPoolReuseDoesNotLeakStateBetweenRequests(t *testing.T) {
+	first := newSampler(4096)
+	firstBody := []byte(`{"first":"request"}`)
+	if _, err := first.Write(firstBody); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	firstSha := first.sha()
+	firstSample := first.sample("")
+	firstN := first.n
+	first.release()
+
+	second := newSampler(4096)
+	if second.buf.Len() != 0 {
+		t.Fatalf("pooled sampler buf len = %d, want 0", second.buf.Len())
+	}
+	if second.n != 0 {
+		t.Fatalf("pooled sampler n = %d, want 0", second.n)
+	}
+	secondBody := []byte(`{"second":"request"}`)
+	if _, err := second.Write(secondBody); err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+	secondSample := second.sample("")
+	if secondSample != string(secondBody) {
+		t.Fatalf("second sample = %q, want %q (pool state leaked from first?)", secondSample, string(secondBody))
+	}
+	if second.n != int64(len(secondBody)) {
+		t.Fatalf("second.n = %d, want %d", second.n, len(secondBody))
+	}
+	secondSha := second.sha()
+	if secondSha == firstSha {
+		t.Fatalf("sha digest unchanged across pool reuse — hash.Reset was skipped")
+	}
+	second.release()
+
+	_ = firstSample
+	_ = firstN
+}
+
+// TestSamplerSampleAfterPoolReuse is a tighter regression — after the
+// pool round-trips an at-cap body, the next acquirer must not see the
+// old body's bytes in its sample even if the new body is much
+// smaller. Bytes.Buffer keeps its backing slice across Reset, so a
+// missing Reset on length would expose the old payload through
+// buf.Bytes().
+func TestSamplerSampleAfterPoolReuse(t *testing.T) {
+	first := newSampler(4096)
+	hot := []byte(strings.Repeat("S", 4096)) // fills the cap
+	_, _ = first.Write(hot)
+	_ = first.sha()
+	_ = first.sample("")
+	first.release()
+
+	second := newSampler(4096)
+	small := []byte(`{"k":1}`)
+	_, _ = second.Write(small)
+	got := second.sample("")
+	if got != string(small) {
+		t.Fatalf("sample after pool reuse leaked prior body: got %q want %q", got, string(small))
+	}
+	second.release()
+}

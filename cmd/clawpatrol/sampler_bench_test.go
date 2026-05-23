@@ -39,8 +39,11 @@ func BenchmarkMaybeDecodeUnknown(b *testing.B) {
 }
 
 // BenchmarkSamplerWriteSample mirrors the per-request gateway path:
-// stream a body through the sampler, then call sample() to render the
-// audit-log preview.
+// stream a body through the sampler, render the sha + preview, then
+// release back to samplerPool. The release at the bottom matches what
+// the MITM relay loop does between keep-alive requests — without it
+// the bench would never recycle the pool slot and pay a fresh
+// sampler/sha256/buffer allocation per iteration.
 func BenchmarkSamplerWriteSample(b *testing.B) {
 	body := []byte(strings.Repeat(`{"hello":"world"}`, 200))
 	b.ResetTimer()
@@ -48,6 +51,25 @@ func BenchmarkSamplerWriteSample(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		s := newSampler(4096)
 		_, _ = s.Write(body)
+		_ = s.sha()
+		_ = s.sample("")
+		s.release()
+	}
+}
+
+// BenchmarkSamplerWriteSampleNoRelease shows the worst case for the
+// sampler — no release, so samplerPool stays empty and every
+// iteration allocates the sampler struct, the sha256 hasher (~200 B),
+// and the body buffer. Kept alongside the pooled variant so a
+// regression in the relay loop's release path is obvious.
+func BenchmarkSamplerWriteSampleNoRelease(b *testing.B) {
+	body := []byte(strings.Repeat(`{"hello":"world"}`, 200))
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		s := newSampler(4096)
+		_, _ = s.Write(body)
+		_ = s.sha()
 		_ = s.sample("")
 	}
 }

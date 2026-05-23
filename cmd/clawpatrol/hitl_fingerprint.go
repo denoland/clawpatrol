@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
+	"unsafe"
 )
 
 const (
@@ -73,12 +73,18 @@ func ComputeHITLRequestFingerprint(in HITLRequestFingerprintInput) (HITLRequestF
 	}
 	in.SelectedHeaders = normalizedHeaders
 
-	bodyKey := deriveHITLHMACKey(in.Key.Root, hitlBodyFingerprintDomainV1)
-	bodyHMAC := "hmac-sha256:" + hex.EncodeToString(computeHITLHMAC(bodyKey, in.RawBody))
+	// Derive the two per-domain HMAC keys, then compute and encode
+	// each fingerprint with the helpers below — each helper folds
+	// the hex-encode + "hmac-sha256:" prefix into a single string
+	// build, so the only per-call allocation is the final result
+	// string. The previous shape went hex.EncodeToString → "..." +
+	// → fmt.concat, allocating three intermediate strings per HMAC.
+	bodyKey := deriveHITLHMACKeyString(in.Key.Root, hitlBodyFingerprintDomainV1)
+	bodyHMAC := encodeHITLHMACSHA256(bodyKey, in.RawBody)
 
 	canonical := canonicalHITLRequestV1(in, bodyHMAC)
-	requestKey := deriveHITLHMACKey(in.Key.Root, hitlRequestFingerprintDomainV1)
-	requestFingerprint := "hmac-sha256:" + hex.EncodeToString(computeHITLHMAC(requestKey, canonical))
+	requestKey := deriveHITLHMACKeyString(in.Key.Root, hitlRequestFingerprintDomainV1)
+	requestFingerprint := encodeHITLHMACSHA256(requestKey, canonical)
 
 	return HITLRequestFingerprintResult{
 		Version:            HITLFingerprintVersionV1,
@@ -92,28 +98,33 @@ func SelectHITLFingerprintHeaders(headers http.Header, allowlist []string) ([]HI
 	if len(allowlist) == 0 {
 		return nil, nil
 	}
-	seen := make(map[string]struct{}, len(allowlist))
 	selected := make([]HITLFingerprintHeader, 0, len(allowlist))
 	for _, name := range allowlist {
-		canonicalName := strings.ToLower(strings.TrimSpace(name))
+		canonicalName := trimAndLowerASCII(name)
 		if canonicalName == "" {
 			return nil, fmt.Errorf("%w: empty fingerprint header allowlist entry", ErrHITLFingerprintInvalid)
 		}
 		if isForbiddenHITLFingerprintHeader(canonicalName) {
 			return nil, fmt.Errorf("%w: header %q must not be used for HITL request fingerprinting", ErrHITLFingerprintInvalid, canonicalName)
 		}
-		if _, ok := seen[canonicalName]; ok {
-			return nil, fmt.Errorf("%w: duplicate fingerprint header %q", ErrHITLFingerprintInvalid, canonicalName)
+		// Allowlists are short (handful of entries), so a linear
+		// dedup scan beats a map[string]struct{} for the hot path.
+		// The previous map cost one allocation per call plus an
+		// internal hmap entry per name; the slice scan touches
+		// already-cached memory and stays O(n²) on n ≤ ~10.
+		for _, prior := range selected {
+			if prior.Name == canonicalName {
+				return nil, fmt.Errorf("%w: duplicate fingerprint header %q", ErrHITLFingerprintInvalid, canonicalName)
+			}
 		}
-		seen[canonicalName] = struct{}{}
 
 		values := headers.Values(canonicalName)
 		if len(values) == 0 {
 			continue
 		}
-		trimmed := make([]string, 0, len(values))
-		for _, value := range values {
-			trimmed = append(trimmed, strings.TrimSpace(value))
+		trimmed := make([]string, len(values))
+		for i, value := range values {
+			trimmed[i] = trimSpaceASCII(value)
 		}
 		selected = append(selected, HITLFingerprintHeader{Name: canonicalName, Values: trimmed})
 	}
@@ -142,23 +153,34 @@ func BuildHITLCredentialAuthBindingID(in HITLCredentialAuthBindingInput) (string
 	return "credential:v1:" + base64.RawURLEncoding.EncodeToString(sum[:]), nil
 }
 
+// validateHITLFingerprintInput checks the ten required string fields
+// and the HMAC root. The old shape built a map[string]string per call
+// just to drive a name/value iteration — 11+ allocs per fingerprint
+// on the hot HITL relay path. Direct field checks here pay zero
+// allocs on the happy path, and the error path still names which
+// field failed so callers can debug a missing input.
 func validateHITLFingerprintInput(in HITLRequestFingerprintInput) error {
-	required := map[string]string{
-		"hmac_key_id":      in.Key.ID,
-		"profile_id":       in.ProfileID,
-		"principal_id":     in.PrincipalID,
-		"endpoint_id":      in.EndpointID,
-		"approval_rule_id": in.ApprovalRuleID,
-		"method":           in.Method,
-		"scheme":           in.Scheme,
-		"host":             in.Host,
-		"path":             in.Path,
-		"auth_binding_id":  in.AuthBindingID,
-	}
-	for name, value := range required {
-		if strings.TrimSpace(value) == "" {
-			return fmt.Errorf("%w: %s is required", ErrHITLFingerprintInvalid, name)
-		}
+	switch {
+	case isBlankASCII(in.Key.ID):
+		return errHITLFingerprintFieldRequired("hmac_key_id")
+	case isBlankASCII(in.ProfileID):
+		return errHITLFingerprintFieldRequired("profile_id")
+	case isBlankASCII(in.PrincipalID):
+		return errHITLFingerprintFieldRequired("principal_id")
+	case isBlankASCII(in.EndpointID):
+		return errHITLFingerprintFieldRequired("endpoint_id")
+	case isBlankASCII(in.ApprovalRuleID):
+		return errHITLFingerprintFieldRequired("approval_rule_id")
+	case isBlankASCII(in.Method):
+		return errHITLFingerprintFieldRequired("method")
+	case isBlankASCII(in.Scheme):
+		return errHITLFingerprintFieldRequired("scheme")
+	case isBlankASCII(in.Host):
+		return errHITLFingerprintFieldRequired("host")
+	case isBlankASCII(in.Path):
+		return errHITLFingerprintFieldRequired("path")
+	case isBlankASCII(in.AuthBindingID):
+		return errHITLFingerprintFieldRequired("auth_binding_id")
 	}
 	if len(in.Key.Root) == 0 {
 		return fmt.Errorf("%w: hmac root key is required", ErrHITLFingerprintInvalid)
@@ -166,24 +188,48 @@ func validateHITLFingerprintInput(in HITLRequestFingerprintInput) error {
 	return nil
 }
 
+func errHITLFingerprintFieldRequired(name string) error {
+	return fmt.Errorf("%w: %s is required", ErrHITLFingerprintInvalid, name)
+}
+
+// isBlankASCII reports whether s is empty or contains only ASCII
+// whitespace (space, HTAB, CR, LF, VT, FF — the byte set
+// unicode.IsSpace returns true for under the ASCII range, which is
+// what strings.TrimSpace would peel off here). HTTP tokens are
+// ASCII per RFC 7230 §3.2, so we don't need TrimSpace's full
+// unicode iteration — and we skip TrimSpace's copy of any
+// non-blank value, which is what makes this an alloc-free check
+// on the hot HITL relay path.
+func isBlankASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case ' ', '\t', '\n', '\v', '\f', '\r':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func normalizeHITLFingerprintHeaders(headers []HITLFingerprintHeader) ([]HITLFingerprintHeader, error) {
 	if len(headers) == 0 {
 		return nil, nil
 	}
-	out := make([]HITLFingerprintHeader, 0, len(headers))
-	for _, h := range headers {
-		name := strings.ToLower(strings.TrimSpace(h.Name))
+	out := make([]HITLFingerprintHeader, len(headers))
+	for i, h := range headers {
+		name := trimAndLowerASCII(h.Name)
 		if name == "" {
 			return nil, fmt.Errorf("%w: empty selected fingerprint header name", ErrHITLFingerprintInvalid)
 		}
 		if isForbiddenHITLFingerprintHeader(name) {
 			return nil, fmt.Errorf("%w: header %q must not be used for HITL request fingerprinting", ErrHITLFingerprintInvalid, name)
 		}
-		values := make([]string, 0, len(h.Values))
-		for _, value := range h.Values {
-			values = append(values, strings.TrimSpace(value))
+		values := make([]string, len(h.Values))
+		for j, value := range h.Values {
+			values[j] = trimSpaceASCII(value)
 		}
-		out = append(out, HITLFingerprintHeader{Name: name, Values: values})
+		out[i] = HITLFingerprintHeader{Name: name, Values: values}
 	}
 	return out, nil
 }
@@ -211,7 +257,7 @@ func canonicalHITLRequestV1(in HITLRequestFingerprintInput, bodyHMAC string) []b
 		writeHITLCanonicalField(&b, "selected_header_name", lowerASCII(h.Name))
 		writeHITLCanonicalIntField(&b, "selected_header_value_count", len(h.Values))
 		for _, value := range h.Values {
-			writeHITLCanonicalField(&b, "selected_header_value", strings.TrimSpace(value))
+			writeHITLCanonicalField(&b, "selected_header_value", trimSpaceASCII(value))
 		}
 	}
 	writeHITLCanonicalField(&b, "body_hmac", bodyHMAC)
@@ -273,6 +319,24 @@ func lowerASCII(s string) string {
 	return string(buf)
 }
 
+// trimSpaceASCII returns s with leading and trailing SP/HTAB trimmed.
+// HTTP header values per RFC 7230 §3.2 may carry OWS (SP/HTAB only),
+// so trimming the unicode space set strings.TrimSpace looks for is
+// unnecessary — and TrimSpace allocates a fresh string whenever it
+// actually trims, where slicing into the original string here is
+// alloc-free.
+func trimSpaceASCII(s string) string {
+	start := 0
+	end := len(s)
+	for start < end && (s[start] == ' ' || s[start] == '\t') {
+		start++
+	}
+	for end > start && (s[end-1] == ' ' || s[end-1] == '\t') {
+		end--
+	}
+	return s[start:end]
+}
+
 // needsCaseFold reports whether s contains an ASCII letter that
 // would change under the requested fold direction. toLower=true asks
 // whether any uppercase letter is present; toLower=false asks the
@@ -322,6 +386,55 @@ func computeHITLHMAC(key, msg []byte) []byte {
 	mac := hmac.New(sha256.New, key)
 	_, _ = mac.Write(msg)
 	return mac.Sum(nil)
+}
+
+// deriveHITLHMACKeyString returns the per-domain derived key as a 32-
+// byte string. Strings avoid the per-call []byte alloc that the older
+// deriveHITLHMACKey ([]byte) form imposed when the result was used as
+// an HMAC key — hmac.New(.., key) accepts a byte slice but copies it
+// internally, so handing in a string-backed slice (via the
+// stringsharedmem cast below) skips one heap copy.
+func deriveHITLHMACKeyString(root []byte, domain string) string {
+	mac := hmac.New(sha256.New, root)
+	_, _ = mac.Write(stringToBytesNoCopy(domain))
+	var sum [sha256.Size]byte
+	mac.Sum(sum[:0])
+	return string(sum[:])
+}
+
+// hitlHMACPrefix is the literal string the HITL fingerprint v1
+// envelope prefixes every HMAC with. The constant is here so the
+// alloc-saving encoder doesn't have to materialize the literal at
+// each call site.
+const hitlHMACPrefix = "hmac-sha256:"
+
+// encodeHITLHMACSHA256 computes HMAC-SHA256(key, msg) and returns
+// "hmac-sha256:" + hex(sum) as a single allocated string. The naive
+// shape — hex.EncodeToString(mac.Sum(nil)) wrapped in "hmac-sha256:"
+// + … — allocates the 32-byte sum, then the 64-byte hex string, then
+// the 76-byte concat result; this version writes the prefix and
+// hex-encoded sum directly into one buffer and string-converts once.
+func encodeHITLHMACSHA256(key string, msg []byte) string {
+	mac := hmac.New(sha256.New, stringToBytesNoCopy(key))
+	_, _ = mac.Write(msg)
+	var sum [sha256.Size]byte
+	mac.Sum(sum[:0])
+	var out [len(hitlHMACPrefix) + 2*sha256.Size]byte
+	copy(out[:], hitlHMACPrefix)
+	hex.Encode(out[len(hitlHMACPrefix):], sum[:])
+	return string(out[:])
+}
+
+// stringToBytesNoCopy reuses a string's backing bytes as a []byte
+// without copying. The result MUST be treated as immutable — hmac
+// copies the key into its inner/outer pads, so the alias only has to
+// outlive that copy, which it does (the call is synchronous and the
+// returned slice is not retained).
+func stringToBytesNoCopy(s string) []byte {
+	if s == "" {
+		return nil
+	}
+	return unsafe.Slice(unsafe.StringData(s), len(s))
 }
 
 // hitlForbiddenHeaderMarkers names case-insensitive substrings that

@@ -200,6 +200,62 @@ func TestHITLCredentialAuthBindingIDUsesNonSecretIdentityAndGeneration(t *testin
 	}
 }
 
+// TestHITLRequestFingerprintRequiredFieldsRejectedExhaustively
+// covers every required-field check in validateHITLFingerprintInput.
+// The old shape iterated a map[string]string of required fields,
+// which exposed a single failure branch per missing field; the
+// hand-unrolled switch that replaced it has one branch per field,
+// and a wrong field name in the error message would otherwise slip
+// past unit tests. Each subtest blanks one required field and
+// asserts the error names that exact field — both as a regression
+// against future drift and to keep the operator-facing diagnostic
+// useful.
+func TestHITLRequestFingerprintRequiredFieldsRejectedExhaustively(t *testing.T) {
+	cases := []struct {
+		name      string
+		fieldName string
+		mutate    func(*HITLRequestFingerprintInput)
+	}{
+		{"hmac_key_id_missing", "hmac_key_id", func(in *HITLRequestFingerprintInput) { in.Key.ID = "" }},
+		{"hmac_key_id_blank", "hmac_key_id", func(in *HITLRequestFingerprintInput) { in.Key.ID = "  \t " }},
+		{"profile_id_missing", "profile_id", func(in *HITLRequestFingerprintInput) { in.ProfileID = "" }},
+		{"principal_id_missing", "principal_id", func(in *HITLRequestFingerprintInput) { in.PrincipalID = "" }},
+		{"endpoint_id_missing", "endpoint_id", func(in *HITLRequestFingerprintInput) { in.EndpointID = "" }},
+		{"approval_rule_id_missing", "approval_rule_id", func(in *HITLRequestFingerprintInput) { in.ApprovalRuleID = "" }},
+		{"method_missing", "method", func(in *HITLRequestFingerprintInput) { in.Method = "" }},
+		{"scheme_missing", "scheme", func(in *HITLRequestFingerprintInput) { in.Scheme = "" }},
+		{"host_missing", "host", func(in *HITLRequestFingerprintInput) { in.Host = "" }},
+		{"path_missing", "path", func(in *HITLRequestFingerprintInput) { in.Path = "" }},
+		{"auth_binding_id_missing", "auth_binding_id", func(in *HITLRequestFingerprintInput) { in.AuthBindingID = "" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := testHITLFingerprintInput()
+			tc.mutate(&in)
+			_, err := ComputeHITLRequestFingerprint(in)
+			if err == nil {
+				t.Fatalf("expected error for missing %s, got nil", tc.fieldName)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, tc.fieldName+" is required") {
+				t.Fatalf("error %q does not name field %q", msg, tc.fieldName)
+			}
+		})
+	}
+
+	t.Run("hmac_root_missing", func(t *testing.T) {
+		in := testHITLFingerprintInput()
+		in.Key.Root = nil
+		_, err := ComputeHITLRequestFingerprint(in)
+		if err == nil {
+			t.Fatalf("expected error for missing hmac root, got nil")
+		}
+		if !strings.Contains(err.Error(), "hmac root key is required") {
+			t.Fatalf("error %q does not mention hmac root", err.Error())
+		}
+	})
+}
+
 func testHITLFingerprintInput() HITLRequestFingerprintInput {
 	return HITLRequestFingerprintInput{
 		Key: HITLFingerprintKey{

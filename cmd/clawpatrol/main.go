@@ -2413,6 +2413,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			ev.ReqBody = redactCredentialSample(reqS.sample(req.Header.Get("Content-Encoding")), reqBodySecretRedactions)
 			ev.In = reqS.n
 			g.emitEnd(ev)
+			reqS.release()
 			return
 		}
 		var trackBuf *bytes.Buffer
@@ -2502,6 +2503,14 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		if g.agents != nil && agentAddr != "" {
 			g.agents.trackUA(agentAddr, host, req.UserAgent(), reqS.n, respS.n)
 		}
+		// Return the per-request sampler scratch (sha256 state +
+		// body buffer) to samplerPool before looping for the next
+		// keep-alive request. defer is wrong here — the loop body
+		// runs many times per function call, and a defer would let
+		// every sampler accumulate until the whole MITM session
+		// closes.
+		reqS.release()
+		respS.release()
 
 		if writeErr != nil {
 			log.Printf("mitm resp write %s: %v", host, writeErr)

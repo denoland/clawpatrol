@@ -2357,13 +2357,76 @@ var sensitiveHeaderMarkers = [...]string{"auth", "token", "secret", "key", "pass
 // against ASCII-lowered name fragments instead of round-tripping
 // through regexp / strings.ToLower / strings.Contains, both of which
 // would allocate on every request.
+//
+// Single-pass implementation: walk the name once, and at every
+// position whose first ASCII-lowered letter matches a marker's first
+// letter, run the tail compare. The old shape called
+// containsFoldASCII once per marker, scanning the same name length
+// six times even when the first character already ruled the marker
+// out. flatHeaders runs twice per MITM HTTP request, so trimming the
+// outer-loop cost compounds under load.
 func isSensitiveHeader(name string) bool {
-	for _, marker := range sensitiveHeaderMarkers {
-		if containsFoldASCII(name, marker) {
-			return true
+	n := len(name)
+	if n == 0 {
+		return false
+	}
+	for i := 0; i < n; i++ {
+		c := name[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		switch c {
+		case 'a':
+			if matchFoldASCII(name, i, "auth") {
+				return true
+			}
+		case 't':
+			if matchFoldASCII(name, i, "token") {
+				return true
+			}
+		case 's':
+			if matchFoldASCII(name, i, "secret") {
+				return true
+			}
+		case 'k':
+			if matchFoldASCII(name, i, "key") {
+				return true
+			}
+		case 'p':
+			if matchFoldASCII(name, i, "password") {
+				return true
+			}
+		case 'c':
+			if matchFoldASCII(name, i, "cookie") {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// matchFoldASCII reports whether sub matches s starting at offset i,
+// ASCII case-insensitively. Used by isSensitiveHeader to avoid the
+// O(n*k) outer-loop cost of containsFoldASCII when the caller already
+// dispatched on the first character.
+func matchFoldASCII(s string, i int, sub string) bool {
+	if i+len(sub) > len(s) {
+		return false
+	}
+	for j := 0; j < len(sub); j++ {
+		ca := s[i+j]
+		cb := sub[j]
+		if ca >= 'A' && ca <= 'Z' {
+			ca += 'a' - 'A'
+		}
+		if cb >= 'A' && cb <= 'Z' {
+			cb += 'a' - 'A'
+		}
+		if ca != cb {
+			return false
+		}
+	}
+	return true
 }
 
 // containsFoldASCII reports whether s contains sub, case-insensitive,
@@ -2419,8 +2482,44 @@ func flatHeaders(h http.Header) map[string]string {
 	return out
 }
 
+// samplerPool reuses sampler structs across HTTP relays. Each MITM
+// HTTP request constructs two samplers (request body + response body),
+// so the per-request allocation of sha256 state (~200 B) and a fresh
+// bytes.Buffer adds up under load. Callers must call release() after
+// the terminal sha()/sample() pair; the pool resets the buffer and
+// hash without freeing their backing memory, so subsequent requests
+// reuse the same scratch space.
+var samplerPool = sync.Pool{
+	New: func() any {
+		return &sampler{hash: sha256.New()}
+	},
+}
+
 func newSampler(capBytes int) *sampler {
-	return &sampler{hash: sha256.New(), cap: capBytes}
+	s := samplerPool.Get().(*sampler)
+	s.cap = capBytes
+	// Pre-grow the body buffer once so the typical sub-cap body
+	// doesn't trigger bytes.Buffer's 64→128→256→… growth chain.
+	// The first time through the pool this allocates capBytes; on
+	// every subsequent reuse it's a no-op.
+	if cap := s.buf.Cap(); cap < capBytes {
+		s.buf.Grow(capBytes - cap)
+	}
+	return s
+}
+
+// release returns the sampler to samplerPool after the last sha()/
+// sample() call. Calling release() on a sampler returned to the pool
+// twice would let a future caller observe stale buf bytes — only
+// call once per newSampler.
+func (s *sampler) release() {
+	if s == nil {
+		return
+	}
+	s.hash.Reset()
+	s.buf.Reset()
+	s.n = 0
+	samplerPool.Put(s)
 }
 
 func (s *sampler) Write(p []byte) (int, error) {
@@ -2440,7 +2539,15 @@ func (s *sampler) sha() string {
 	if s.n == 0 {
 		return ""
 	}
-	return hex.EncodeToString(s.hash.Sum(nil))
+	// Sum into a stack-allocated array to avoid the per-call alloc
+	// hash.Sum(nil) would do, then hex-encode directly into a second
+	// stack buffer so the only heap result is the final 64-char
+	// audit-log digest string.
+	var sum [sha256.Size]byte
+	var hexBuf [2 * sha256.Size]byte
+	s.hash.Sum(sum[:0])
+	hex.Encode(hexBuf[:], sum[:])
+	return string(hexBuf[:])
 }
 
 // sample returns the audit-log preview of the captured body. When
