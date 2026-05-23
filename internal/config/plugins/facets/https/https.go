@@ -149,11 +149,11 @@ func addActivation(req *match.Request, act map[string]any) bool {
 		return false
 	}
 	// Reuse the cached Fields when an earlier rule on this Request
-	// already built one. The per-request activation cache keeps body
-	// JSON parsing, header copy, and query parse to once per wire
-	// request even when an endpoint has many rules to walk.
-	if cached, ok := req.CachedActivation("http").(*Fields); ok && cached != nil {
-		act["http"] = cached
+	// already built one. act doubles as the per-Request activation
+	// cache (see match.Request.ActivationMap), so the membership check
+	// also lets the second-and-later rules of an endpoint skip the
+	// whole body_json parse, header copy, and query parse path.
+	if cached, ok := act["http"].(*Fields); ok && cached != nil {
 		return true
 	}
 	// HTTP method is lowercased here (and declared in lowercasedPaths)
@@ -165,11 +165,16 @@ func addActivation(req *match.Request, act map[string]any) bool {
 		Headers: passthroughHeaders(req.Headers),
 		Body:    string(req.Body),
 	}
-	if req.URL != nil {
+	// url.URL.Query() always allocates a fresh Values map, even when
+	// the URL has no query string. Skip it on the empty case so the
+	// common path (GET /resource, POST /resource with body-only) lands
+	// the shared emptyValues map instead of paying for an idle
+	// ParseQuery round-trip.
+	if req.URL != nil && req.URL.RawQuery != "" {
 		f.Query = req.URL.Query()
 	}
 	if f.Query == nil {
-		f.Query = map[string][]string{}
+		f.Query = emptyValues
 	}
 	// body_json is parsed eagerly when the body looks like JSON. The
 	// cost is bounded by request body size, which the gateway already
@@ -177,40 +182,63 @@ func addActivation(req *match.Request, act map[string]any) bool {
 	// `http.body_json.<field>` evaluates to null rather than blowing
 	// up at request time.
 	f.BodyJSON = parseBodyJSON(req.Body)
-	req.SetCachedActivation("http", f)
 	act["http"] = f
 	return true
 }
 
+// emptyBodyJSON is the shared fallback for empty / non-JSON / invalid
+// bodies. Pre-built once so every GET (and every POST that fails to
+// parse, and every request whose rules never reference body_json)
+// reuses the same value instead of allocating a fresh empty Struct +
+// Value wrapper per call. CEL treats the activation snapshot as
+// read-only, so the singleton is safe to share across requests.
+var emptyBodyJSON = structpb.NewStructValue(&structpb.Struct{Fields: map[string]*structpb.Value{}})
+
 // parseBodyJSON converts a raw request body into a *structpb.Value
 // for the body_json field. JSON-shaped input lands as the matching
 // structpb tree (objects → Struct, arrays → List, scalars → their
-// natural type); non-JSON / empty input falls back to an empty
+// natural type); non-JSON / empty input falls back to the cached empty
 // struct so field accesses yield null.
+//
+// Implementation history: we tried a direct
+// encoding/json.Decoder.Token() → *structpb.Value walker (skipping
+// the intermediate map[string]any / []any tree). It was strictly
+// worse — Decoder boxes every token into a fresh interface{} value
+// (one alloc per scalar, plus a heap-resident Decoder state struct
+// per call), while json.Unmarshal amortises those costs across the
+// whole input. The bulk decode + NewValue conversion is the cheapest
+// shape stdlib + structpb give us today.
 func parseBodyJSON(body []byte) *structpb.Value {
-	empty := structpb.NewStructValue(&structpb.Struct{Fields: map[string]*structpb.Value{}})
 	if len(body) == 0 {
-		return empty
+		return emptyBodyJSON
 	}
 	var raw any
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return empty
+		return emptyBodyJSON
 	}
 	v, err := structpb.NewValue(raw)
 	if err != nil {
-		return empty
+		return emptyBodyJSON
 	}
 	return v
 }
 
+// emptyValues is the shared empty map returned for the no-headers /
+// no-query branches. CEL only reads from these maps, so a single
+// pre-built read-only empty map is safe to share across requests —
+// avoids one alloc per matcher build when the caller has no headers
+// or no query string. Two activation fields (Headers, Query) both
+// fall back to this same value.
+var emptyValues = map[string][]string{}
+
 // passthroughHeaders returns the request headers as the activation's
-// map[string][]string view, falling back to an empty map when the
-// request carries no headers so CEL key access never panics. CEL
-// only reads from the map, so we can share the caller's storage
-// without copying — saves an O(headers) allocation per match.
+// map[string][]string view, falling back to the shared empty map
+// when the request carries no headers so CEL key access never
+// panics. CEL only reads from the map, so we can share the caller's
+// storage without copying — saves an O(headers) allocation per match.
 func passthroughHeaders(m map[string][]string) map[string][]string {
 	if m == nil {
-		return map[string][]string{}
+		return emptyValues
 	}
 	return m
 }

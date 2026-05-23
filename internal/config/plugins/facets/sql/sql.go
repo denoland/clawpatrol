@@ -194,8 +194,9 @@ func addActivation(req *match.Request, act map[string]any) bool {
 	if req == nil {
 		return false
 	}
-	if cached, ok := req.CachedActivation("sql").(*Fields); ok && cached != nil {
-		act["sql"] = cached
+	// act doubles as the per-Request facet cache; bail out once our
+	// key is populated. See match.Request.ActivationMap.
+	if cached, ok := act["sql"].(*Fields); ok && cached != nil {
 		return true
 	}
 	meta, _ := req.Meta.(*Meta)
@@ -209,7 +210,6 @@ func addActivation(req *match.Request, act map[string]any) bool {
 		Statement: meta.Statement,
 		Database:  databaseOf(req, meta),
 	}
-	req.SetCachedActivation("sql", f)
 	act["sql"] = f
 	return true
 }

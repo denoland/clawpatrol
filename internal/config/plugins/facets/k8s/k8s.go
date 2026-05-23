@@ -169,8 +169,9 @@ func addActivation(req *match.Request, act map[string]any) bool {
 	if req == nil {
 		return false
 	}
-	if cached, ok := req.CachedActivation("k8s").(*Fields); ok && cached != nil {
-		act["k8s"] = cached
+	// act doubles as the per-Request facet cache; bail out once our
+	// key is populated. See match.Request.ActivationMap.
+	if cached, ok := act["k8s"].(*Fields); ok && cached != nil {
 		return true
 	}
 	meta, _ := req.Meta.(*Meta)
@@ -188,7 +189,6 @@ func addActivation(req *match.Request, act map[string]any) bool {
 		Name:      meta.Name,
 		Params:    params,
 	}
-	req.SetCachedActivation("k8s", f)
 	act["k8s"] = f
 	return true
 }

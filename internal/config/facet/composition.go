@@ -135,8 +135,17 @@ func Compose(family, condition string) (m match.Matcher, ok bool, err error) {
 	if envErr != nil {
 		return nil, true, fmt.Errorf("cel env: %w", envErr)
 	}
+	// Builders write into the request's per-Request activation map
+	// (lazy-initialised on first ActivationMap call). The map IS the
+	// cache: each builder is idempotent — it checks for its key and
+	// skips the populate path on a hit — so the expensive snapshot
+	// happens at most once across all rules an endpoint walks, and we
+	// never freshly allocate a map[string]any per Match call.
 	build := func(req *match.Request) map[string]any {
-		act := make(map[string]any, len(builders))
+		act := req.ActivationMap()
+		if act == nil {
+			return nil
+		}
 		for _, b := range builders {
 			if !b(req, act) {
 				return nil

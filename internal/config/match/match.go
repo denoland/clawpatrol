@@ -92,43 +92,75 @@ type Request struct {
 	// no parser leave it false.
 	Unparseable bool
 
-	// actCache memoizes facet activation values for the lifetime of
-	// this request. Each facet's AddActivation hook stamps its
-	// (possibly expensive — body_json parsing, header map copy) Fields
-	// value here the first time it runs; subsequent rules in the same
-	// endpoint reuse the cached value instead of rebuilding it. Keyed
-	// by facet name ("http", "k8s", "sql") so composed environments
+	// actMap is both the per-Request facet activation cache AND the
+	// activation map facet.Compose hands to cel.Program.Eval. Each
+	// facet's AddActivation hook stamps its (possibly expensive —
+	// body_json parsing, header map copy) Fields value here the first
+	// time it runs; subsequent rules in the same endpoint reuse the
+	// cached value and skip the build path entirely. Keyed by CEL
+	// variable name ("http", "k8s", "sql") so composed environments
 	// (the k8s family layers http+k8s) cache each facet independently.
 	//
-	// Set/cleared via CachedActivation / SetCachedActivation; the
-	// gateway never has to touch this directly. Lazy-initialized so a
-	// Request that never matches still costs zero map allocations.
-	actCache map[string]any
+	// Unifying the cache with the activation map (previously two
+	// separate map[string]any per request — the cache plus a freshly
+	// built act map per Match call) cuts one map allocation per rule
+	// evaluated. For endpoints with many rules the savings dominate
+	// the per-Match allocation profile; see
+	// BenchmarkMatchRequestHTTPSSmallBody in
+	// internal/config/runtime/dispatch_bench_test.go.
+	//
+	// Lazy-initialized via ActivationMap so a Request that never
+	// matches still costs zero map allocations. Cleared by
+	// ResetActivationCache for tests that reuse a Request snapshot
+	// across mutations.
+	actMap map[string]any
 }
 
-// CachedActivation returns the facet activation value previously
-// stashed for facet under SetCachedActivation, or nil if none. Facet
-// AddActivation hooks call it before doing any per-rule work so the
-// expensive snapshot (body_json parsing, header map copy) happens at
-// most once per request.
-func (r *Request) CachedActivation(facet string) any {
-	if r == nil || r.actCache == nil {
+// ActivationMap returns the per-Request activation map, lazily
+// initialised on first access. facet.Compose passes the returned map
+// into cel.Program.Eval as the CEL activation, and each facet's
+// AddActivation hook reads/writes it directly to memoise its
+// activation value across the rules of one endpoint.
+//
+// Returns nil when r is nil so the gateway's early-validation paths
+// (which sometimes hold a nil request) stay panic-free; the facet
+// build closure interprets a nil result as "refuse to match".
+func (r *Request) ActivationMap() map[string]any {
+	if r == nil {
 		return nil
 	}
-	return r.actCache[facet]
+	if r.actMap == nil {
+		r.actMap = make(map[string]any, 2)
+	}
+	return r.actMap
 }
 
-// SetCachedActivation memoizes v as the activation value for facet.
+// CachedActivation returns the facet activation value the matching
+// facet's AddActivation hook stamped on the activation map, or nil if
+// none has been built yet. Facet hooks call it before doing any
+// per-rule work so the expensive snapshot happens at most once per
+// request. Kept as a method on Request for the same nil-receiver
+// tolerance the gateway's early-validation paths rely on.
+func (r *Request) CachedActivation(facet string) any {
+	if r == nil || r.actMap == nil {
+		return nil
+	}
+	return r.actMap[facet]
+}
+
+// SetCachedActivation memoises v as the activation value for facet.
 // Subsequent calls to CachedActivation(facet) return v until the
-// Request is discarded or ResetActivationCache is invoked.
+// Request is discarded or ResetActivationCache is invoked. Writes go
+// through ActivationMap so the lazy-init shape is consistent across
+// callers; a nil receiver is a silent no-op.
 func (r *Request) SetCachedActivation(facet string, v any) {
 	if r == nil {
 		return
 	}
-	if r.actCache == nil {
-		r.actCache = make(map[string]any, 2)
+	if r.actMap == nil {
+		r.actMap = make(map[string]any, 2)
 	}
-	r.actCache[facet] = v
+	r.actMap[facet] = v
 }
 
 // ResetActivationCache drops every cached facet activation on the
@@ -142,7 +174,7 @@ func (r *Request) ResetActivationCache() {
 	if r == nil {
 		return
 	}
-	r.actCache = nil
+	r.actMap = nil
 }
 
 // Matcher walks a Request and returns true when the rule's match
