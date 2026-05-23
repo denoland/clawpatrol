@@ -23,7 +23,7 @@ import (
 // flushed before the process exits" promise listed in the boot banner.
 func TestGatewayShutdownFlush(t *testing.T) {
 	called := make(chan struct{})
-	flush := func(ctx context.Context) error {
+	flush := func(_ context.Context) error {
 		close(called)
 		return nil
 	}
@@ -68,7 +68,7 @@ func TestGatewayShutdownFlushNoOpWhenNil(t *testing.T) {
 // glue; this checks the contract.
 func TestGatewayShutdownFlushLogsFlushError(t *testing.T) {
 	wantErr := errors.New("collector unreachable")
-	flush := func(ctx context.Context) error { return wantErr }
+	flush := func(_ context.Context) error { return wantErr }
 	if err := runShutdownFlushErr(flush, time.Second); !errors.Is(err, wantErr) {
 		t.Fatalf("got %v, want %v", err, wantErr)
 	}
@@ -195,7 +195,7 @@ type fakeTunnelHandle struct {
 	onClose func()
 }
 
-func (f *fakeTunnelHandle) Dial(ctx context.Context, network, addr string) (net.Conn, error) {
+func (f *fakeTunnelHandle) Dial(_ context.Context, _, _ string) (net.Conn, error) {
 	return nil, errors.New("fakeTunnelHandle.Dial: not implemented")
 }
 
