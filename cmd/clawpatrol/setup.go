@@ -324,6 +324,15 @@ func preJoinFetchCA(gateway, caDir string, cli *http.Client) (joinSetup, error) 
 	if err := os.MkdirAll(caDir, 0o700); err != nil {
 		return s, fmt.Errorf("mkdir %s: %w", caDir, err)
 	}
+	// Preflight: fail fast if the directory isn't writable by the current
+	// user. A root-owned dir from a previous `docker run -v` will pass
+	// MkdirAll (dir already exists) but fail every subsequent WriteFile,
+	// causing join to report success while writing nothing.
+	probe := filepath.Join(caDir, ".write-probe")
+	if err := os.WriteFile(probe, nil, 0o600); err != nil {
+		return s, fmt.Errorf("config dir %s is not writable (owner mismatch?): %w", caDir, err)
+	}
+	_ = os.Remove(probe)
 	// Persist the dashboard URL before the CA fetch so subsequent
 	// `clawpatrol env` / `clawpatrol run` invocations work even when
 	// the CA fetch is deferred (Tailscale mode, 404 on /ca.crt).
@@ -1187,7 +1196,9 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 				}
 			}
 		}
-		_ = os.WriteFile(filepath.Join(clawDir, "mode"), []byte("tailscale\n"), 0o600)
+		if err := os.WriteFile(filepath.Join(clawDir, "mode"), []byte("tailscale\n"), 0o600); err != nil {
+			return false, fmt.Errorf("write mode: %w", err)
+		}
 		// Persist the join-time --hostname so the per-host daemon
 		// registers under the operator-chosen name instead of
 		// os.Hostname() (which on most VMs is the system login, not
@@ -1198,7 +1209,9 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		if tailnetGWHost != "" {
 			_ = os.WriteFile(filepath.Join(clawDir, "tailnet-gateway"), []byte(tailnetGWHost+"\n"), 0o600)
 		}
-		_ = os.WriteFile(filepath.Join(clawDir, "control-url"), []byte(tailnetControlURL+"\n"), 0o600)
+		if err := os.WriteFile(filepath.Join(clawDir, "control-url"), []byte(tailnetControlURL+"\n"), 0o600); err != nil {
+			return false, fmt.Errorf("write control-url: %w", err)
+		}
 		if gatewayIP != "" {
 			tailnetURL := fmt.Sprintf("http://%s:8080", gatewayIP)
 			_ = os.WriteFile(filepath.Join(clawDir, "tailnet-url"), []byte(tailnetURL+"\n"), 0o600)
@@ -1230,7 +1243,9 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 			if err := os.MkdirAll(stateDir, 0o700); err != nil {
 				return false, fmt.Errorf("daemon state dir: %w", err)
 			}
-			_ = os.WriteFile(filepath.Join(stateDir, "auth-key"), []byte(authKey+"\n"), 0o600)
+			if err := os.WriteFile(filepath.Join(stateDir, "auth-key"), []byte(authKey+"\n"), 0o600); err != nil {
+				return false, fmt.Errorf("write auth-key: %w", err)
+			}
 		}
 		items := []string{"Joined (tsnet mode — persistent daemon node joins tailnet on first `clawpatrol run`)"}
 		items = append(items, setupSummaryItems(*setup)...)
@@ -1313,7 +1328,9 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 
 	// Write mode marker files so `clawpatrol run` can detect Tailscale mode.
 	clawDir := filepath.Dir(setup.caPath)
-	_ = os.WriteFile(filepath.Join(clawDir, "mode"), []byte("tailscale\n"), 0o600)
+	if err := os.WriteFile(filepath.Join(clawDir, "mode"), []byte("tailscale\n"), 0o600); err != nil {
+		return false, fmt.Errorf("write mode: %w", err)
+	}
 	if hn != "" {
 		_ = os.WriteFile(filepath.Join(clawDir, "hostname"), []byte(hn+"\n"), 0o600)
 	}
@@ -1321,7 +1338,9 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		_ = os.WriteFile(filepath.Join(clawDir, "tailnet-gateway"), []byte(tailnetGWHost+"\n"), 0o600)
 	}
 	if tailnetControlURL != "" {
-		_ = os.WriteFile(filepath.Join(clawDir, "control-url"), []byte(tailnetControlURL+"\n"), 0o600)
+		if err := os.WriteFile(filepath.Join(clawDir, "control-url"), []byte(tailnetControlURL+"\n"), 0o600); err != nil {
+			return false, fmt.Errorf("write control-url: %w", err)
+		}
 	}
 
 	// Fetch CA from the gateway's tailnet IP now that we're on the tailnet.
