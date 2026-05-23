@@ -2630,7 +2630,7 @@ func sanitizeSlackChannelHeader(s string) string {
 	}
 	for i := 1; i < len(s); i++ {
 		c := s[i]
-		if !((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+		if (c < 'A' || c > 'Z') && (c < '0' || c > '9') {
 			return ""
 		}
 	}
