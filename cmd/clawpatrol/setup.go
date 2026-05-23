@@ -911,18 +911,28 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	stopSpin := startSpinner("Waiting for approval")
 	authKey, loginServer, apiToken := "", "", ""
 	var tailnetGWHost, tailnetControlURL, gatewayIP, caPEM string
+	// Track the most recent transport error so a poll loop that never
+	// produced a valid response can surface it on timeout. Without this
+	// the operator just sees "timed out waiting for approval" with no
+	// hint that the gateway was unreachable the entire time (DNS hung,
+	// TLS handshake refused, etc.).
+	var lastPollErr error
 	for time.Now().Before(deadline) {
 		time.Sleep(interval)
 		pr, err := cli.Post(gateway+"/api/onboard/poll?device_code="+start.DeviceCode, "application/json", nil)
 		if err != nil {
+			lastPollErr = err
 			continue
 		}
+		lastPollErr = nil
 		var pv map[string]string
 		// Cap at 256 KiB — the success payload carries the CA PEM
 		// (~4 KiB) plus a handful of auth tokens. 256 KiB leaves room
 		// for chained intermediates without letting a runaway server
 		// stream into a CLI poller.
-		_ = json.NewDecoder(io.LimitReader(pr.Body, 256<<10)).Decode(&pv)
+		if err := json.NewDecoder(io.LimitReader(pr.Body, 256<<10)).Decode(&pv); err != nil {
+			lastPollErr = fmt.Errorf("decode poll response: %w", err)
+		}
 		_ = pr.Body.Close()
 		if k, ok := pv["auth_key"]; ok && k != "" {
 			authKey = k
@@ -941,6 +951,9 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	}
 	stopSpin()
 	if authKey == "" {
+		if lastPollErr != nil {
+			return false, fmt.Errorf("timed out waiting for approval (last poll error: %w)", lastPollErr)
+		}
 		return false, fmt.Errorf("timed out waiting for approval")
 	}
 	fmt.Println("Approved.")
