@@ -676,7 +676,7 @@ func setupRelayInChild(parentSock *os.File) {
 func spawnRelaySupervisor(notifyFile, workerSock *os.File) (*exec.Cmd, error) {
 	self, err := os.Executable()
 	if err != nil {
-		return nil, fmt.Errorf("self path: %w", err)
+		return nil, fmt.Errorf("relay-supervisor: self path: %w", err)
 	}
 	c := exec.Command(self, "relay-supervisor")
 	c.ExtraFiles = []*os.File{notifyFile, workerSock}
@@ -687,7 +687,7 @@ func spawnRelaySupervisor(notifyFile, workerSock *os.File) (*exec.Cmd, error) {
 		Pdeathsig: syscall.SIGTERM,
 	}
 	if err := c.Start(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("relay-supervisor: start %s: %w", self, err)
 	}
 	return c, nil
 }
@@ -702,7 +702,7 @@ func spawnRelaySupervisor(notifyFile, workerSock *os.File) (*exec.Cmd, error) {
 func spawnRelayWorker(workerSock *os.File) (*exec.Cmd, error) {
 	self, err := os.Executable()
 	if err != nil {
-		return nil, fmt.Errorf("self path: %w", err)
+		return nil, fmt.Errorf("relay-worker: self path: %w", err)
 	}
 	c := exec.Command(self, "relay-worker")
 	c.ExtraFiles = []*os.File{workerSock}
@@ -713,7 +713,7 @@ func spawnRelayWorker(workerSock *os.File) (*exec.Cmd, error) {
 		Pdeathsig: syscall.SIGTERM,
 	}
 	if err := c.Start(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("relay-worker: start %s: %w", self, err)
 	}
 	return c, nil
 }
