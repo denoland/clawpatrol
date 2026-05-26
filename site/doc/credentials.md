@@ -1,12 +1,14 @@
 # Credentials
 
 Agents call upstream APIs that want secrets — a GitHub PAT, an
-Anthropic key, a Postgres password. The whole point of Claw Patrol
-is to keep those secrets out of the agent's process. This page
-covers how that actually works: how the agent ends up sending a
-request that looks authentic without ever holding the real token,
-and how to configure the case where one identity wields more than
-one credential at the same endpoint.
+Anthropic key, a Postgres password. One of the things Claw Patrol
+does, alongside the [rule engine](/docs/rules/) and the
+[approver flow](/docs/glossary/#approver), is hold those secrets
+on the gateway side and inject them at the wire so the agent
+process never touches them. This page covers that piece: how the
+agent ends up sending a request that looks authentic without ever
+holding the real token, and how to configure the case where one
+identity wields more than one credential at the same endpoint.
 
 For the definitional one-liners see
 [Glossary](/docs/glossary/#credential). For the field-by-field HCL
