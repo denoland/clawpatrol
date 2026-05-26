@@ -44,9 +44,11 @@ production gets touched.
   request leaves. If the reviewer denies or the approval times out,
   Claw Patrol does not call the upstream service.
 
-- **Secret injection** at the wire. Agents send placeholders
-  (`{{github_pat}}`); the gateway swaps them for the real token
-  in transit.
+- **[Secret injection](/docs/credentials/)** at the wire. The agent
+  process holds a token-shaped placeholder
+  (`GITHUB_TOKEN=ghp_clawpatrol_placeholder_do_not_use`); the gateway
+  swaps it for the real PAT in transit. SDKs read the env var
+  normally and never see the real credential.
 
 - **Full audit log** — every request, verdict, and latency,
   searchable in the dashboard, exportable as fixtures for
