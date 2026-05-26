@@ -142,7 +142,7 @@ endpoint "https" "github" { hosts = ["api.github.com"] }
 credential "bearer_token" "github-prod"    { endpoint = https.github }
 credential "bearer_token" "github-staging" { endpoint = https.github }
 
-profile "platform" {
+profile "ci" {
   credentials = [
     { placeholder = "PH_gh_prod",    credential = bearer_token.github-prod },
     { placeholder = "PH_gh_staging", credential = bearer_token.github-staging },
@@ -220,7 +220,13 @@ export CLAWPATROL_SECRET_K8S_PROD_KEY=@/etc/clawpatrol/k8s-prod.key
 Dashboard-pasted values win over env vars when both exist — once
 an operator commits a value through the UI, the gateway treats it
 as the source of truth and stops consulting env fallbacks for that
-credential.
+credential. Precedence is per-credential, not per-slot: once any
+slot is set via the dashboard, the gateway treats the dashboard as
+the source of truth for **all** slots of that credential and
+ignores env fallbacks even for slots you didn't paste. So for
+multi-slot credentials like mTLS, paste every required slot through
+the same channel — mixing dashboard for `cert` and env for `key`
+will silently fall through to an empty key.
 
 ## Matching on credential in rules
 
@@ -259,6 +265,7 @@ only apply when the writer is the one talking."
 - For the broader request flow (where credential injection sits
   relative to TLS termination, rule matching, and the audit log)
   see [Architecture](/docs/architecture/).
-- For the threat model — why a hostile agent can't read the
-  placeholder, swap it, or coerce the gateway into leaking the real
-  secret — see [Security Model](/docs/security-model/).
+- For the threat model — why a hostile agent can't extract the
+  real credential, swap its placeholder for another credential's,
+  or coerce the gateway into leaking the real secret — see
+  [Security Model](/docs/security-model/).
