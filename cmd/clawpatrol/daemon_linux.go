@@ -83,10 +83,27 @@ type daemonTransport interface {
 	// Each `clawpatrol run` repeats it on stderr so configuration
 	// issues surface without tailing daemon.log.
 	BootWarning() string
+	// WaitReady blocks until the transport can actually carry user
+	// traffic — wg: a handshake has completed; tsnet: exit-node
+	// routing is up (the gateway is reachable on the tailnet). The
+	// daemon calls this once per session, after the TUN handoff and
+	// before signalling ATTACHED, so the wrapped child never execs
+	// into a tunnel that silently drops its first packets. Returns
+	// nil immediately on the warm path once readiness has been
+	// observed at least once this daemon lifetime. Returns ctx.Err()
+	// (wrapped) on timeout.
+	WaitReady(ctx context.Context) error
 	// Close tears down the transport. Best-effort — the daemon is
 	// about to exit.
 	Close() error
 }
+
+// daemonReadyTimeout caps how long a session START waits for the
+// transport to become usable before failing with READYERR. The wg
+// boot wait is itself 10s and tsnet's is 8s; this is the worst-case
+// for a daemon that survived boot in a "warned" state and is now
+// catching up on a delayed handshake/probe.
+const daemonReadyTimeout = 30 * time.Second
 
 // daemonRuntimeDir resolves the per-user runtime directory holding the
 // daemon's coordination state (control socket, spawn lock, log). Prefer
@@ -512,6 +529,20 @@ func (d *daemon) handle(c net.Conn) {
 	tunFile := os.NewFile(uintptr(tunFd), tunIfName)
 	defer func() { _ = tunFile.Close() }()
 
+	// 2.5. Block until the transport can actually carry traffic. Warm
+	// path is a single atomic load; cold path waits for the handshake
+	// / exit-node probe. On timeout we ship a READYERR frame so the
+	// wrapper fails with a clear message instead of exec'ing the
+	// child into a tunnel that silently drops its first packets.
+	rctx, rcancel := context.WithTimeout(context.Background(), daemonReadyTimeout)
+	rerr := d.transport.WaitReady(rctx)
+	rcancel()
+	if rerr != nil {
+		log.Printf("daemon: WaitReady: %v", rerr)
+		_ = daemonWriteReadyErr(c, rerr.Error())
+		return
+	}
+
 	// 3. Build the per-session gVisor stack. Multiple sessions share
 	// the daemon's single transport but each gets its own stack so a
 	// misbehaving session can't OOM a neighbor.
@@ -645,6 +676,24 @@ func daemonWriteStartReply(w io.Writer, addr netip.Addr, envVars []byte, warning
 	}
 	if len(warning) > 0 {
 		if _, err := io.WriteString(w, warning); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// daemonWriteReadyErr writes the "READYERR <n>\n<n bytes>" frame the
+// daemon sends in place of "ATTACHED\n" when WaitReady fails. The
+// frame is length-prefixed so the client parser never has to peek
+// ahead, and the body carries the underlying error text so the user
+// sees why their tunnel isn't ready (handshake timeout, exit-node
+// ACL missing, etc).
+func daemonWriteReadyErr(w io.Writer, msg string) error {
+	if _, err := fmt.Fprintf(w, "READYERR %d\n", len(msg)); err != nil {
+		return err
+	}
+	if len(msg) > 0 {
+		if _, err := io.WriteString(w, msg); err != nil {
 			return err
 		}
 	}

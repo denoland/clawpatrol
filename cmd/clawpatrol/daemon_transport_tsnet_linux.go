@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"tailscale.com/tsnet"
@@ -26,7 +27,15 @@ import (
 type tsnetTransport struct {
 	s           *tsnet.Server
 	localAddr   netip.Addr
+	gwIP        netip.Addr
 	bootWarning string
+	// ready caches the first observed successful exit-node probe so
+	// warm-path WaitReady is a single atomic load. Set on boot if the
+	// startup probe succeeded; set by WaitReady on the first cold-path
+	// success. Never flips back — once routing has worked, the
+	// "we've never been usable" distinction the wrapper cares about
+	// is permanently resolved for this daemon lifetime.
+	ready atomic.Bool
 }
 
 func (t *tsnetTransport) Dial(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -36,6 +45,55 @@ func (t *tsnetTransport) Dial(ctx context.Context, network, addr string) (net.Co
 func (t *tsnetTransport) LocalAddr() netip.Addr { return t.localAddr }
 func (t *tsnetTransport) BootWarning() string   { return t.bootWarning }
 func (t *tsnetTransport) Close() error          { return t.s.Close() }
+
+// WaitReady blocks until a probe dial to the gateway's tailnet IP on
+// port 53 succeeds (proving exit-node routing is up), or ctx expires.
+// Warm-path returns nil on the first atomic load. Cold-path is the
+// fallback for boots where the startup probe failed: we keep retrying
+// until the operator's tailnet ACL catches up or the timeout fires.
+func (t *tsnetTransport) WaitReady(ctx context.Context) error {
+	if t.ready.Load() {
+		return nil
+	}
+	dial := func(ctx context.Context) error {
+		c, err := t.s.Dial(ctx, "tcp", net.JoinHostPort(t.gwIP.String(), "53"))
+		if err != nil {
+			return err
+		}
+		_ = c.Close()
+		return nil
+	}
+	if err := pollTsnetReady(ctx, dial, tsnetReadyDialTimeout, tsnetReadyPollInterval); err != nil {
+		return fmt.Errorf("tsnet exit-node probe failed: %w", err)
+	}
+	t.ready.Store(true)
+	return nil
+}
+
+const (
+	tsnetReadyDialTimeout  = 2 * time.Second
+	tsnetReadyPollInterval = 200 * time.Millisecond
+)
+
+// pollTsnetReady runs dial in a loop until it returns nil or ctx is
+// done. Each call gets its own dialTimeout-bounded child ctx so a
+// hung exit-node hop can't consume the entire wait budget on one try.
+// Split out so the polling loop is testable without booting tsnet.
+func pollTsnetReady(ctx context.Context, dial func(context.Context) error, dialTimeout, interval time.Duration) error {
+	for {
+		probeCtx, cancel := context.WithTimeout(ctx, dialTimeout)
+		err := dial(probeCtx)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+}
 
 // startTsnetTransport reads persisted join state (auth-key, control-url,
 // gateway-ip), starts a tsnet.Server, waits for it to come up, points
@@ -104,14 +162,18 @@ func startTsnetTransport() (daemonTransport, error) {
 	// Probe by dialing the gateway's tailnet IP on port 53 — that
 	// port is bound by the gateway's tsnet DNS listener so a working
 	// path returns "connection established" within hundreds of ms.
-	var bootWarning string
+	var (
+		bootWarning string
+		bootReady   bool
+	)
 	probeCtx, probeCancel := context.WithTimeout(context.Background(), 8*time.Second)
 	if c, derr := s.Dial(probeCtx, "tcp", net.JoinHostPort(gwIP.String(), "53")); derr == nil {
 		_ = c.Close()
+		bootReady = true
 	} else {
 		bootWarning = fmt.Sprintf("tsnet probe: gateway unreachable via exit-node routing (%v). "+
 			"Check autoApprovers.exitNode in your tailnet ACL — see doc/tailscale.md. "+
-			"Outbound traffic from `clawpatrol run` will fail until the ACL is fixed.", derr)
+			"`clawpatrol run` will block on the next session until the ACL is fixed.", derr)
 		log.Printf("%s", bootWarning)
 	}
 	probeCancel()
@@ -126,7 +188,11 @@ func startTsnetTransport() (daemonTransport, error) {
 	// daemon restart.
 	daemonRegisterTsnetPeer(s, tsIP)
 
-	return &tsnetTransport{s: s, localAddr: tsIP, bootWarning: bootWarning}, nil
+	t := &tsnetTransport{s: s, localAddr: tsIP, gwIP: gwIP, bootWarning: bootWarning}
+	if bootReady {
+		t.ready.Store(true)
+	}
+	return t, nil
 }
 
 // daemonRegisterTsnetPeer POSTs this daemon's tsnet IP to the

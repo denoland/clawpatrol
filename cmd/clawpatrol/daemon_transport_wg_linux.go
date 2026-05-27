@@ -23,6 +23,7 @@ import (
 	"net/netip"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"golang.zx2c4.com/wireguard/conn"
@@ -56,10 +57,70 @@ type wgTransport struct {
 	tun         *wgClientTun
 	localAddr   netip.Addr
 	bootWarning string
+	// ready caches the first observed "handshake done" so warm-path
+	// WaitReady is a single atomic load. Once true, never flips back —
+	// a later rekey or peer roam doesn't invalidate the daemon-wide
+	// "we've talked to the peer at least once" signal that distinguishes
+	// "cold" from "warm" for the wrapped child.
+	ready atomic.Bool
 }
 
 func (t *wgTransport) LocalAddr() netip.Addr { return t.localAddr }
 func (t *wgTransport) BootWarning() string   { return t.bootWarning }
+
+// WaitReady blocks until wireguard-go reports a completed handshake,
+// or ctx expires. Warm-path: returns nil immediately once a handshake
+// has been observed at least once this daemon lifetime. Cold-path:
+// polls IpcGet every wgReadyPollInterval until last_handshake_time_sec
+// becomes non-zero.
+func (t *wgTransport) WaitReady(ctx context.Context) error {
+	if t.ready.Load() {
+		return nil
+	}
+	if err := pollWGReady(ctx, t.dev.IpcGet, wgReadyPollInterval); err != nil {
+		return fmt.Errorf("wg handshake not established: %w", err)
+	}
+	t.ready.Store(true)
+	return nil
+}
+
+const wgReadyPollInterval = 50 * time.Millisecond
+
+// pollWGReady polls getCfg (wireguard-go's IpcGet output) every
+// interval until the peer's last_handshake_time_sec line is non-zero,
+// or ctx is done. Split out so the polling loop is testable without
+// instantiating a real wireguard-go device.
+func pollWGReady(ctx context.Context, getCfg func() (string, error), interval time.Duration) error {
+	for {
+		if cfg, err := getCfg(); err == nil && wgConfigHasHandshake(cfg) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+}
+
+// wgConfigHasHandshake reports whether the IpcGet config blob carries
+// a "last_handshake_time_sec=N" line with N > 0. wireguard-go writes
+// the line as soon as the first handshake completes; absence (or 0)
+// means we haven't talked to the peer yet.
+func wgConfigHasHandshake(cfg string) bool {
+	for _, line := range strings.Split(cfg, "\n") {
+		rest, ok := strings.CutPrefix(line, "last_handshake_time_sec=")
+		if !ok {
+			continue
+		}
+		var sec int64
+		_, _ = fmt.Sscanf(rest, "%d", &sec)
+		if sec > 0 {
+			return true
+		}
+	}
+	return false
+}
 
 func (t *wgTransport) Dial(ctx context.Context, network, addr string) (net.Conn, error) {
 	host, portStr, err := net.SplitHostPort(addr)
@@ -159,13 +220,15 @@ func startWGTransport() (daemonTransport, error) {
 	// Wait for the first handshake so the first user flow doesn't race.
 	// 10s is generous — under normal conditions the keepalive-driven
 	// initiation completes well under one second. Treat a timeout as a
-	// boot warning rather than a hard failure: traffic will still flow
-	// once the peer eventually responds (could be a packet-loss spike
-	// or DNS hiccup at startup).
+	// boot warning rather than a hard failure: per-session WaitReady
+	// picks up where this left off, so a delayed peer response still
+	// blocks the wrapper rather than letting the child exec into a
+	// dropping tunnel.
 	bootWarning := ""
-	if !waitWGHandshake(dev, 10*time.Second) {
+	bootReady := waitWGHandshake(dev, 10*time.Second)
+	if !bootReady {
 		bootWarning = "wg probe: no handshake from gateway within 10s. " +
-			"Outbound traffic from `clawpatrol run` may stall until the " +
+			"`clawpatrol run` will block on the next session until the " +
 			"peer responds. Check the gateway endpoint and the host's " +
 			"egress UDP/51820 path."
 		log.Printf("%s", bootWarning)
@@ -173,12 +236,16 @@ func startWGTransport() (daemonTransport, error) {
 		log.Printf("daemon: wg handshake established")
 	}
 
-	return &wgTransport{
+	t := &wgTransport{
 		dev:         dev,
 		tun:         tun,
 		localAddr:   clientIP,
 		bootWarning: bootWarning,
-	}, nil
+	}
+	if bootReady {
+		t.ready.Store(true)
+	}
+	return t, nil
 }
 
 // buildDaemonWGIpc renders the wireguard-go IpcSet payload from a
@@ -213,24 +280,9 @@ func base64DecodeToHex(b64 string) (string, error) {
 // waitWGHandshake polls IpcGet for last_handshake_time_sec until it
 // becomes non-zero or timeout. Returns true on success.
 func waitWGHandshake(d *device.Device, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for {
-		if cfg, err := d.IpcGet(); err == nil {
-			for _, line := range strings.Split(cfg, "\n") {
-				if strings.HasPrefix(line, "last_handshake_time_sec=") {
-					var sec int64
-					_, _ = fmt.Sscanf(line, "last_handshake_time_sec=%d", &sec)
-					if sec > 0 {
-						return true
-					}
-				}
-			}
-		}
-		if time.Now().After(deadline) {
-			return false
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return pollWGReady(ctx, d.IpcGet, wgReadyPollInterval) == nil
 }
 
 // --- client-side wg-go tun adapter ----------------------------------
