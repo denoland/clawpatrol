@@ -6,9 +6,11 @@ import {
   type EventRecord,
   type FacetSchema,
 } from "../lib/api";
+import { headersToJSON } from "../lib/clipboard";
 import { formatFacetValue, useFacets } from "../lib/facets";
 import { fmtDateTime } from "../lib/format";
 import { Button } from "./Button";
+import { CopyButton } from "./CopyButton";
 import { Main } from "./Main";
 import { PageTitle, type Crumb } from "./PageTitle";
 import { Tag } from "./Tag";
@@ -161,22 +163,38 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
             </Section>
           )}
           {hasReqH && (
-            <Section title="Request headers">
+            <Section
+              title="Request headers"
+              action={
+                <CopyButton label="request headers" text={() => headersToJSON(ev.req_headers!)} />
+              }
+            >
               <Headers obj={ev.req_headers!} />
             </Section>
           )}
           {hasReq && (
-            <Section title="Request body">
+            <Section
+              title="Request body"
+              action={<CopyButton label="request body" text={() => ev.req_body!} />}
+            >
               <HttpBody text={ev.req_body!} />
             </Section>
           )}
           {hasRespH && (
-            <Section title="Response headers">
+            <Section
+              title="Response headers"
+              action={
+                <CopyButton label="response headers" text={() => headersToJSON(ev.resp_headers!)} />
+              }
+            >
               <Headers obj={ev.resp_headers!} />
             </Section>
           )}
           {hasResp && (
-            <Section title={`Response body${status ? ` (${status})` : ""}`}>
+            <Section
+              title={`Response body${status ? ` (${status})` : ""}`}
+              action={<CopyButton label="response body" text={() => ev.resp_body!} />}
+            >
               <HttpBody text={ev.resp_body!} />
             </Section>
           )}
@@ -395,11 +413,20 @@ function Facets({ rows }: { rows: Array<{ name: string; label: string; value: st
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({
+  title,
+  children,
+  action,
+}: {
+  title: string;
+  children: React.ReactNode;
+  action?: React.ReactNode;
+}) {
   return (
     <details open>
-      <summary className="cursor-pointer px-4 py-2.5 text-xs font-mono uppercase tracking-wider font-bold text-navy bg-navy-100 border-b border-navy hover:text-text select-none">
-        {title}
+      <summary className="cursor-pointer flex items-center gap-2 px-4 py-1.5 text-xs font-mono uppercase tracking-wider font-bold text-navy bg-navy-100 border-b border-navy hover:text-text select-none">
+        <span>{title}</span>
+        {action && <span className="ml-auto">{action}</span>}
       </summary>
       <div>{children}</div>
     </details>
