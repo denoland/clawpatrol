@@ -711,10 +711,22 @@ func (w *webMux) statusList(r *http.Request) []IntegrationRow {
 }
 
 // credentialBindings reports every profile + endpoint that references
-// the named credential, walking endpoint.Credentials AND the chain of
-// tunnels the endpoint dials through. The dashboard's details table
-// renders one column for profiles and one for endpoints so an
-// operator can see at a glance where a credential is in play.
+// the named credential. The dashboard's details table renders one
+// column for profiles and one for endpoints so an operator can see
+// at a glance where a credential is in play.
+//
+// Profiles are matched strictly against each CompiledProfile's own
+// HCL-declared `credentials = [...]` list (plus the tunnel chain on
+// the profile's endpoints for tunnel-attached auth). Walking the
+// global endpoint→credentials list would leak sibling profiles
+// onto the row whenever two profiles share an endpoint — e.g. the
+// postgres `pg` endpoint carries both `pg-readonly` and `pg-writer`,
+// and profile "data" (declares only `pg-readonly`) must not appear
+// in `pg-writer`'s Profiles cell. Mirror of the device-page fix in
+// cl-lgwg / commit b0a3813.
+//
+// Endpoints stay on the global binding — that column is genuinely
+// "which endpoints declare this credential", profile-agnostic.
 func credentialBindings(policy *config.CompiledPolicy, credName string) (profiles, endpoints []string) {
 	if policy == nil {
 		return nil, nil
@@ -734,11 +746,8 @@ func credentialBindings(policy *config.CompiledPolicy, credName string) (profile
 	}
 	profSet := map[string]bool{}
 	for pname, prof := range policy.Profiles {
-		for epName, ep := range prof.Endpoints {
-			if epSet[epName] || endpointBindsCredential(ep, credName) {
-				profSet[pname] = true
-				break
-			}
+		if profileBindsCredential(prof, credName) {
+			profSet[pname] = true
 		}
 	}
 	if len(profSet) > 0 {
@@ -749,6 +758,29 @@ func credentialBindings(policy *config.CompiledPolicy, credName string) (profile
 		sort.Strings(profiles)
 	}
 	return profiles, endpoints
+}
+
+// profileBindsCredential reports whether the profile's own HCL list
+// declares the credential, or reaches it via a tunnel attached to one
+// of its endpoints. Mirrors credentialsInProfile's data sources so
+// the inverse rendering stays consistent with the per-device view.
+func profileBindsCredential(prof *config.CompiledProfile, credName string) bool {
+	if prof == nil {
+		return false
+	}
+	for _, ent := range prof.Credentials {
+		if ent != nil && ent.Symbol != nil && ent.Symbol.Name == credName {
+			return true
+		}
+	}
+	for _, ep := range prof.Endpoints {
+		for tun := ep.Tunnel; tun != nil; tun = tun.Via {
+			if tun.Credential != nil && tun.Credential.Symbol != nil && tun.Credential.Symbol.Name == credName {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func endpointBindsCredential(ep *config.CompiledEndpoint, credName string) bool {
