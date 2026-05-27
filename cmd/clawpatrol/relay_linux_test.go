@@ -220,7 +220,7 @@ func TestRelayWorkerLoopDispatches(t *testing.T) {
 		}
 		return 0, -1, io.EOF
 	}
-	relayWorkerLoop(recv, func(port uint16, fd int) {
+	relayWorkerLoop(recv, func(port uint16, _ int) {
 		handled <- port
 	})
 	select {
