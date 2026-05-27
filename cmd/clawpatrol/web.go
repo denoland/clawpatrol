@@ -1204,6 +1204,17 @@ func serveState(rw http.ResponseWriter, r *http.Request, body []byte, tag string
 //
 // Multi-slot credentials (mtls, slack tokens) pass multiple keys.
 // Empty values clear the slot.
+//
+// After persisting, if the credential plugin implements
+// runtime.CredentialVerifier the handler synchronously calls the
+// verification primitive (Slack auth.test, Discord users/@me, …) and
+// records the outcome in credential_verifications. The response body
+// surfaces the verification result so the connect form can show
+// "credential verified" or the inline failure inside one round-trip:
+//
+//	{ "ok": true, "verified": true }
+//	{ "ok": true, "verified": false, "error": "invalid_auth" }
+//	{ "ok": true }                       // plugin has no Verifier
 func (w *webMux) apiCredentialsSet(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(rw, "POST", http.StatusMethodNotAllowed)
@@ -1257,7 +1268,40 @@ func (w *webMux) apiCredentialsSet(rw http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(rw, map[string]any{"ok": true})
+	w.bustStateCache()
+	resp := map[string]any{"ok": true}
+	if verifier, ok := ent.Body.(runtime.CredentialVerifier); ok {
+		sec, _, _ := readCredentialSecrets(w.g.db, body.ID)
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		verifyErr := verifier.VerifyCredential(ctx, sec)
+		status := "ok"
+		errMsg := ""
+		if verifyErr != nil {
+			status = "failed"
+			errMsg = verifyErr.Error()
+		}
+		if err := setCredentialVerification(w.g.db, body.ID, status, errMsg); err != nil {
+			log.Printf("credentials: persist verification for %s: %v", body.ID, err)
+		}
+		resp["verified"] = verifyErr == nil
+		if verifyErr != nil {
+			resp["error"] = errMsg
+		}
+		w.bustStateCache()
+	}
+	writeJSON(rw, resp)
+}
+
+// bustStateCache forces the next /api/state request to recompute from
+// fresh data instead of returning the 1s TTL'd memo. Called from
+// handlers that mutate the data the state slice reads — credentials,
+// disconnect, etc. — so an operator action shows up on the dashboard
+// without waiting for the cache window to elapse.
+func (w *webMux) bustStateCache() {
+	w.stateCacheMu.Lock()
+	w.stateCache = nil
+	w.stateCacheMu.Unlock()
 }
 
 // apiCredentialsClear drops every slot for the credential. Disconnect
@@ -1282,6 +1326,10 @@ func (w *webMux) apiCredentialsClear(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, err.Error(), 500)
 		return
 	}
+	if err := clearCredentialVerification(w.g.db, body.ID); err != nil {
+		log.Printf("credentials: clear verification for %s: %v", body.ID, err)
+	}
+	w.bustStateCache()
 	writeJSON(rw, map[string]any{"ok": true})
 }
 
