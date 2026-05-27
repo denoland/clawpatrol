@@ -52,6 +52,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -236,12 +237,15 @@ func runRun(args []string) {
 	// the supervisor in the host netns. Absence (--no-auto-expose,
 	// unsupported arch) is non-fatal.
 	var relaySup *exec.Cmd
+	var relayStderr *lastLineWriter
 	if autoExpose {
 		if relayFDs, err := recvFDs(pSock, 2); err == nil {
 			notifyFile := os.NewFile(uintptr(relayFDs[0]), "seccomp-notify")
 			supSock := os.NewFile(uintptr(relayFDs[1]), "relay-sup-sock")
-			if c, serr := spawnRelaySupervisor(notifyFile, supSock); serr != nil {
+			relayStderr = newLastLineWriter(os.Stderr)
+			if c, serr := spawnRelaySupervisor(notifyFile, supSock, relayStderr); serr != nil {
 				fmt.Fprintf(os.Stderr, "warning: auto-expose relay: %v (webhooks won't be reachable from host)\n", serr)
+				relayStderr = nil
 			} else {
 				relaySup = c
 			}
@@ -260,15 +264,77 @@ func runRun(args []string) {
 		}
 	}()
 
-	waitErr := child.Wait()
+	// Wait on the wrapped child and the relay supervisor concurrently.
+	// Either can finish first. Sequencing:
+	//
+	//   - Child exits first: SIGTERM the supervisor, drain its Wait.
+	//     If the supervisor reports an unexpected death anyway, we
+	//     surface it but the child's exit code wins.
+	//   - Supervisor exits first: the relay is gone, so subsequent
+	//     traffic from the wrapped child would silently fail. SIGTERM
+	//     the child (grace-period SIGKILL fallback), then exit non-zero
+	//     with the supervisor's last stderr line as the cause.
+	childDoneCh := make(chan error, 1)
+	go func() { childDoneCh <- child.Wait() }()
 
-	if relaySup != nil && relaySup.Process != nil {
-		_ = relaySup.Process.Signal(syscall.SIGTERM)
-		_, _ = relaySup.Process.Wait()
+	supExitCh := make(chan error, 1)
+	if relaySup != nil {
+		go func() { supExitCh <- relaySup.Wait() }()
+	}
+
+	var (
+		waitErr error
+		supDied bool
+		supErr  error
+	)
+
+	select {
+	case e := <-childDoneCh:
+		waitErr = e
+		if relaySup != nil && relaySup.Process != nil {
+			_ = relaySup.Process.Signal(syscall.SIGTERM)
+			select {
+			case <-supExitCh:
+			case <-time.After(2 * time.Second):
+				_ = relaySup.Process.Kill()
+				<-supExitCh
+			}
+		}
+	case se := <-supExitCh:
+		supDied = true
+		supErr = se
+		if child.Process != nil {
+			_ = child.Process.Signal(syscall.SIGTERM)
+		}
+		select {
+		case waitErr = <-childDoneCh:
+		case <-time.After(2 * time.Second):
+			_ = child.Process.Kill()
+			waitErr = <-childDoneCh
+		}
 	}
 
 	// Closing ctrl (via the deferred Close) tears the session down on
 	// the daemon side.
+
+	if supDied {
+		msg := "auto-expose relay died — exiting"
+		if supErr != nil {
+			msg = fmt.Sprintf("%s (%v)", msg, supErr)
+		}
+		if relayStderr != nil {
+			if last := relayStderr.LastLine(); last != "" {
+				msg = msg + ": " + last
+			}
+		}
+		fmt.Fprintf(os.Stderr, "clawpatrol: %s\n", msg)
+		code := 1
+		var ee *exec.ExitError
+		if errors.As(supErr, &ee) && ee.ExitCode() > 0 {
+			code = ee.ExitCode()
+		}
+		os.Exit(code)
+	}
 
 	if waitErr != nil {
 		var ee *exec.ExitError
@@ -277,6 +343,53 @@ func runRun(args []string) {
 		}
 		fail("wait: %v", waitErr)
 	}
+}
+
+// lastLineWriter wraps an io.Writer with a small ring buffer so the
+// "last log line" of a child process can be retrieved after it exits.
+// Used in front of os.Stderr when wiring up the relay supervisor: the
+// supervisor's normal stderr still streams to the user in real time,
+// and on death the parent can pluck the final line to surface as the
+// cause.
+//
+// The buffer is bounded; a runaway child can't OOM us. The "last line"
+// is the trailing non-empty run of bytes between newlines.
+type lastLineWriter struct {
+	mu  sync.Mutex
+	buf []byte
+	w   io.Writer
+}
+
+const lastLineMaxBytes = 4096
+
+func newLastLineWriter(w io.Writer) *lastLineWriter {
+	return &lastLineWriter{w: w}
+}
+
+func (l *lastLineWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	l.buf = append(l.buf, p...)
+	if len(l.buf) > lastLineMaxBytes {
+		l.buf = l.buf[len(l.buf)-lastLineMaxBytes:]
+	}
+	l.mu.Unlock()
+	if l.w == nil {
+		return len(p), nil
+	}
+	return l.w.Write(p)
+}
+
+// LastLine returns the last non-empty line in the captured buffer with
+// surrounding whitespace stripped. Returns "" if nothing readable was
+// captured.
+func (l *lastLineWriter) LastLine() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	s := strings.TrimRight(string(l.buf), "\r\n \t")
+	if i := strings.LastIndexAny(s, "\r\n"); i >= 0 {
+		s = s[i+1:]
+	}
+	return strings.TrimSpace(s)
 }
 
 // runRunChild executes inside the unshared user+net+mnt namespaces.
