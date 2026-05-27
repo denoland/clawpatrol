@@ -3,10 +3,14 @@
 package main
 
 import (
+	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -122,6 +126,136 @@ func TestScanProcNetTcp(t *testing.T) {
 				t.Errorf("ip=%s, want %s", ip, tc.wantIP)
 			}
 		})
+	}
+}
+
+// TestIsTransientRecvErr pins which errno classes the worker treats as
+// retryable interruptions vs fatal. Regression guard for the symptom
+// "[clawpatrol relay-worker] recv: resource temporarily unavailable"
+// (EAGAIN's canonical strerror text) where the worker previously exited
+// on the first EAGAIN instead of looping.
+func TestIsTransientRecvErr(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"EAGAIN", syscall.EAGAIN, true},
+		{"EWOULDBLOCK", syscall.EWOULDBLOCK, true},
+		{"EINTR", syscall.EINTR, true},
+		{"wrapped EAGAIN", errors.Join(errors.New("recv"), syscall.EAGAIN), true},
+		{"EOF", io.EOF, false},
+		{"ECONNRESET", syscall.ECONNRESET, false},
+		{"EBADF", syscall.EBADF, false},
+		{"nil", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isTransientRecvErr(tc.err); got != tc.want {
+				t.Errorf("isTransientRecvErr(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRelayWorkerLoopRetriesTransient drives the loop with a fake recv
+// that returns EAGAIN/EWOULDBLOCK/EINTR on the first call and io.EOF on
+// the second. The loop must consume the transient and then exit cleanly
+// on EOF — i.e. exactly two recv calls.
+func TestRelayWorkerLoopRetriesTransient(t *testing.T) {
+	transients := []struct {
+		name string
+		err  error
+	}{
+		{"EAGAIN", syscall.EAGAIN},
+		{"EWOULDBLOCK", syscall.EWOULDBLOCK},
+		{"EINTR", syscall.EINTR},
+	}
+	for _, tc := range transients {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls int
+			recv := func() (uint16, int, error) {
+				calls++
+				if calls == 1 {
+					return 0, -1, tc.err
+				}
+				return 0, -1, io.EOF
+			}
+			relayWorkerLoop(recv, func(uint16, int) {
+				t.Errorf("handle should not be called on errored recvs")
+			})
+			if calls != 2 {
+				t.Errorf("recv calls = %d, want 2 (one transient + one EOF)", calls)
+			}
+		})
+	}
+}
+
+// TestRelayWorkerLoopExitsOnFatal pins that non-transient, non-EOF errors
+// terminate the loop immediately.
+func TestRelayWorkerLoopExitsOnFatal(t *testing.T) {
+	var calls int
+	recv := func() (uint16, int, error) {
+		calls++
+		return 0, -1, syscall.ECONNRESET
+	}
+	relayWorkerLoop(recv, func(uint16, int) {
+		t.Errorf("handle should not be called on errored recvs")
+	})
+	if calls != 1 {
+		t.Errorf("recv calls = %d, want 1 (fatal exits immediately)", calls)
+	}
+}
+
+// TestRelayWorkerLoopDispatches verifies a successful recv goes to handle
+// before the loop continues. Uses a buffered channel so the goroutine can
+// publish independent of test timing.
+func TestRelayWorkerLoopDispatches(t *testing.T) {
+	var calls int
+	handled := make(chan uint16, 1)
+	recv := func() (uint16, int, error) {
+		calls++
+		if calls == 1 {
+			return 8080, 42, nil
+		}
+		return 0, -1, io.EOF
+	}
+	relayWorkerLoop(recv, func(port uint16, fd int) {
+		handled <- port
+	})
+	select {
+	case p := <-handled:
+		if p != 8080 {
+			t.Errorf("handled port = %d, want 8080", p)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handle goroutine never ran")
+	}
+}
+
+// TestRecvJobReturnsEAGAINOnEmptyNonblockingSocket exercises recvJob
+// against a real SOCK_SEQPACKET socketpair flipped to nonblocking. With
+// no pending frame the kernel returns EAGAIN; recvJob must surface that
+// errno (not strip it or wrap it past recognition) so isTransientRecvErr
+// can classify it correctly.
+func TestRecvJobReturnsEAGAINOnEmptyNonblockingSocket(t *testing.T) {
+	sp, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatalf("socketpair: %v", err)
+	}
+	defer func() { _ = unix.Close(sp[0]) }()
+	defer func() { _ = unix.Close(sp[1]) }()
+
+	if err := unix.SetNonblock(sp[1], true); err != nil {
+		t.Fatalf("set nonblock: %v", err)
+	}
+
+	_, _, err = recvJob(sp[1])
+	if err == nil {
+		t.Fatal("recvJob on empty nonblocking socket returned nil error")
+	}
+	if !isTransientRecvErr(err) {
+		t.Fatalf("recvJob err = %v, want classified transient (EAGAIN)", err)
 	}
 }
 

@@ -533,17 +533,46 @@ func runRelayWorker(_ []string) {
 	sockFD := int(sock.Fd())
 	ignoreSIGPIPE()
 
+	relayWorkerLoop(
+		func() (uint16, int, error) { return recvJob(sockFD) },
+		handleJob,
+	)
+}
+
+// relayWorkerLoop is the recv→dispatch loop, extracted so tests can drive
+// it with a faked recv. Transient errors (EAGAIN/EWOULDBLOCK/EINTR) are
+// retried; io.EOF / supervisor shutdown returns cleanly; other errors log
+// and return.
+//
+// Previously this loop exited on any non-EOF error, which surfaced as the
+// log line "[clawpatrol relay-worker] recv: resource temporarily unavailable"
+// (EAGAIN's canonical strerror text) followed by a silent worker death and
+// the wrapped command losing its auto-expose tunnel.
+func relayWorkerLoop(recv func() (uint16, int, error), handle func(uint16, int)) {
 	for {
-		port, fd, err := recvJob(sockFD)
+		port, fd, err := recv()
 		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return
+			if isTransientRecvErr(err) {
+				continue
 			}
-			fmt.Fprintf(os.Stderr, "[clawpatrol relay-worker] recv: %v\n", err)
+			if !errors.Is(err, io.EOF) {
+				fmt.Fprintf(os.Stderr, "[clawpatrol relay-worker] recv: %v\n", err)
+			}
 			return
 		}
-		go handleJob(port, fd)
+		go handle(port, fd)
 	}
+}
+
+// isTransientRecvErr reports whether err from the SCM_RIGHTS recv loop
+// represents a transient interruption that should be retried rather than
+// treated as fatal. EAGAIN/EWOULDBLOCK can occur if the worker socket is
+// (inadvertently) nonblocking; EINTR occurs when a signal arrives during
+// the syscall. None of these indicate the supervisor has gone away.
+func isTransientRecvErr(err error) bool {
+	return errors.Is(err, syscall.EAGAIN) ||
+		errors.Is(err, syscall.EWOULDBLOCK) ||
+		errors.Is(err, syscall.EINTR)
 }
 
 func recvJob(fd int) (uint16, int, error) {
