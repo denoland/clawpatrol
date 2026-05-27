@@ -599,15 +599,18 @@ type IntegrationRow struct {
 
 // TailscaleAuthStatusUI is the dashboard-facing slice of a
 // tailscale-node-auth credential's live state. Connected reflects
-// whether tsnet's BackendState is Running — not merely whether
-// identity bytes have been persisted, which can happen mid-auth
-// before the tailnet join completes. State carries the underlying
-// label so the card can distinguish "awaiting authentication" from
-// "starting" from "stopped". PendingURL is the live Tailscale login
-// URL emitted by tsnet during NeedsLogin — the dashboard's "Connect"
-// button redirects to it. Endpoint paths are surfaced so the
-// dashboard renders the connect flow without hard-coding the route
-// layout.
+// tailnet-auth validity, not tunnel liveness: a credential whose
+// OAuth-issued node identity is persisted and has not been observed
+// to fail (NeedsLogin / NeedsMachAuth / InUseOtherUser) reads as
+// connected even when the tunnel is idle and tsnet is torn down.
+// State carries the underlying live BackendState label (or a
+// hasPersistedSlots-aware fallback) so the card can distinguish
+// "awaiting authentication" from "starting" from "stopped" from
+// "running" — that's the tunnel signal, separate from the credential
+// signal. PendingURL is the live Tailscale login URL emitted by
+// tsnet during NeedsLogin — the dashboard's "Connect" button
+// redirects to it. Endpoint paths are surfaced so the dashboard
+// renders the connect flow without hard-coding the route layout.
 type TailscaleAuthStatusUI struct {
 	Connected bool                          `json:"connected"`
 	State     tailscaleproto.NodeStateLabel `json:"state"`
@@ -686,16 +689,11 @@ func (w *webMux) statusList(r *http.Request) []IntegrationRow {
 			row.HasTailscaleAuth = true
 			present, _ := credentialSlotPresence(w.g.db, name)
 			label := tailscaleproto.DefaultStates.Get(name)
-			// Connected reads strictly from the live BackendState:
-			// persisted slots prove auth completed *at some point*, not
-			// that the node is currently joined. A gateway restart sees
-			// slots but Starting/NeedsLogin until tsnet finishes its
-			// boot — surfacing "connected" in that window misled the
-			// operator into thinking traffic could flow.
+			hasSlots := len(present) > 0
 			row.TailscaleAuth = &TailscaleAuthStatusUI{
-				Connected:     label == tailscaleproto.NodeStateRunning,
-				State:         dashboardTailscaleState(label, len(present) > 0),
-				HasState:      len(present) > 0,
+				Connected:     tailscaleCredentialAuthValid(label, hasSlots),
+				State:         dashboardTailscaleState(label, hasSlots),
+				HasState:      hasSlots,
 				PendingURL:    tailscaleproto.Default.Get(name),
 				ConnectURL:    "/api/tailscale/connect?id=" + name,
 				StatusURL:     "/api/tailscale/status?id=" + name,
@@ -790,6 +788,42 @@ func credentialConfig(ent *config.Entity, name string) map[string]string {
 		out[n] = strings.TrimSpace(raw)
 	}
 	return out
+}
+
+// tailscaleCredentialAuthValid reports whether a tailscale-node-auth
+// credential should be rendered as "connected" in the dashboard. It
+// is a function of credential auth state alone, not tunnel liveness:
+// tunnels open lazily and close on idle, and the credential's OAuth
+// grant remains valid across those cycles. A fresh auth attempt
+// against the tailnet only fails if the operator (or a tailnet admin)
+// has revoked the grant or invalidated the node — which surfaces as
+// tsnet entering NeedsLogin / NeedsMachineAuth / InUseOtherUser. As
+// long as the watcher hasn't observed one of those auth-trouble
+// states, persisted credential_secrets stand as proof that the OAuth
+// flow succeeded and the node identity is accepted.
+//
+// Two paths read as connected:
+//   - tsnet is currently Running for this credential (live join, the
+//     strongest possible signal);
+//   - persisted node-identity slots exist and the live state is not
+//     one of the explicit auth-trouble labels (cached last-known-good,
+//     the spec for an idle tunnel).
+//
+// Everything else reads as not-connected, including no-persisted-
+// slots-and-not-Running (operator has never completed the auth) and
+// any of the auth-trouble labels (the tailnet itself reported the
+// credential is no longer good, so cached slots are stale).
+func tailscaleCredentialAuthValid(label tailscaleproto.NodeStateLabel, hasPersistedSlots bool) bool {
+	if label == tailscaleproto.NodeStateRunning {
+		return true
+	}
+	switch label {
+	case tailscaleproto.NodeStateNeedsLogin,
+		tailscaleproto.NodeStateNeedsMachAuth,
+		tailscaleproto.NodeStateInUseOtherUser:
+		return false
+	}
+	return hasPersistedSlots
 }
 
 // dashboardTailscaleState narrows the live BackendState for the
