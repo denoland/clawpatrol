@@ -80,14 +80,21 @@ rule "default-allow" {
 // "data" declares only pg-readonly and must appear under pg-readonly
 // only, not pg-writer.
 func TestCredentialBindingsDoesNotLeakSiblingProfiles(t *testing.T) {
-	readonly := &config.Entity{Symbol: &config.Symbol{Name: "pg-readonly"}}
-	writer := &config.Entity{Symbol: &config.Symbol{Name: "pg-writer"}}
+	pgTargets := config.FrameworkAttrs{
+		RefLists: map[string][]string{"endpoints": {"pg"}},
+	}
+	readonly := &config.Entity{Symbol: &config.Symbol{Name: "pg-readonly"}, Framework: pgTargets}
+	writer := &config.Entity{Symbol: &config.Symbol{Name: "pg-writer"}, Framework: pgTargets}
 	ep := &config.CompiledEndpoint{
 		Name:        "pg",
 		Credentials: []*config.Entity{readonly, writer},
 	}
 	policy := &config.CompiledPolicy{
 		Endpoints: map[string]*config.CompiledEndpoint{"pg": ep},
+		Credentials: map[string]*config.Entity{
+			"pg-readonly": readonly,
+			"pg-writer":   writer,
+		},
 		Profiles: map[string]*config.CompiledProfile{
 			"data": {
 				Credentials: []*config.Entity{readonly},

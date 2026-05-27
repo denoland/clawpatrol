@@ -1058,7 +1058,7 @@ func validateProfileDisambiguators(p *Policy, table *SymbolTable) hcl.Diagnostic
 				continue
 			}
 			members[credName] = true
-			memberEndpoints[credName] = credentialEndpointTargets(ent)
+			memberEndpoints[credName] = CredentialEndpointTargets(ent)
 			mergedDisambig[credName] = mergeDisambig(blockDisambiguators(ent), pr.Disambiguators[credName])
 
 			// Per-type field validity on the profile-inline side too.
