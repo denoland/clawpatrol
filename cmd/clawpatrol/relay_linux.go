@@ -566,9 +566,21 @@ func relayWorkerLoop(recv func() (uint16, int, error), handle func(uint16, int))
 
 // isTransientRecvErr reports whether err from the SCM_RIGHTS recv loop
 // represents a transient interruption that should be retried rather than
-// treated as fatal. EAGAIN/EWOULDBLOCK can occur if the worker socket is
-// (inadvertently) nonblocking; EINTR occurs when a signal arrives during
-// the syscall. None of these indicate the supervisor has gone away.
+// treated as fatal. None of these indicate the supervisor has gone away.
+//
+// EAGAIN/EWOULDBLOCK: we create the socketpair blocking (SOCK_SEQPACKET
+// only, no SOCK_NONBLOCK), but O_NONBLOCK lives on the open file
+// description, not the fd, so anything that flips it on either end is
+// visible here after inheritance. In particular, wrapping a socket fd
+// with os.NewFile on the supervisor side hands it to Go's runtime
+// netpoller, which sets O_NONBLOCK on the underlying description; the
+// relay-worker child then inherits an fd that already has O_NONBLOCK
+// set and reads it via unix.Recvmsg (bypassing the runtime poller), so
+// the EAGAIN surfaces directly. This was observed in the wild as
+// "[clawpatrol relay-worker] recv: resource temporarily unavailable"
+// (EAGAIN's strerror text) followed by silent worker death.
+//
+// EINTR: a signal handler ran during recvmsg.
 func isTransientRecvErr(err error) bool {
 	return errors.Is(err, syscall.EAGAIN) ||
 		errors.Is(err, syscall.EWOULDBLOCK) ||
