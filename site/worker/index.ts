@@ -27,6 +27,9 @@ export default {
     if (url.pathname === "/api/telemetry/v1/check") {
       return handleCheck(req, env);
     }
+    if (url.pathname === "/api/telemetry/v1/install") {
+      return handleInstall(req, env);
+    }
     return env.ASSETS.fetch(req);
   },
   async scheduled(_event: ScheduledEvent, env: Env): Promise<void> {
@@ -118,6 +121,68 @@ async function handleCheck(
     url: release.url,
     advisory: release.advisory,
   });
+}
+
+async function handleInstall(
+  req: Request,
+  env: Env,
+): Promise<Response> {
+  if (req.method !== "POST") {
+    return new Response(null, { status: 405 });
+  }
+  const contentLength = req.headers.get("Content-Length");
+  if (contentLength !== null) {
+    const n = Number(contentLength);
+    if (Number.isFinite(n) && n > MAX_BODY_BYTES) {
+      return new Response(null, { status: 413 });
+    }
+  }
+
+  const text = await req.text();
+  if (new TextEncoder().encode(text).byteLength > MAX_BODY_BYTES) {
+    return new Response(null, { status: 413 });
+  }
+
+  let body: Record<string, unknown>;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return new Response(null, { status: 400 });
+  }
+
+  const id = str(body.install_id);
+  const event = str(body.event);
+  if (!id || (event !== "completed" && event !== "failed")) {
+    return new Response(null, { status: 400 });
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const fromSource = body.from_source === "1" || body.from_source === 1 ? 1 : 0;
+  await env.TELEMETRY_DB.prepare(
+    `INSERT INTO installs (
+       install_id, received_at, event,
+       os, arch, version, from_source, reason
+     ) VALUES (?,?,?,?,?,?,?,?)
+     ON CONFLICT(install_id) DO UPDATE SET
+       received_at = excluded.received_at,
+       event       = excluded.event,
+       os          = excluded.os,
+       arch        = excluded.arch,
+       version     = excluded.version,
+       from_source = excluded.from_source,
+       reason      = excluded.reason`,
+  ).bind(
+    id,
+    now,
+    event,
+    str(body.os) || null,
+    str(body.arch) || null,
+    str(body.version) || null,
+    fromSource,
+    str(body.reason) || null,
+  ).run();
+
+  return new Response(null, { status: 204 });
 }
 
 type Release = {
