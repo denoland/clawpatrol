@@ -57,6 +57,49 @@ test("rejects oversized telemetry payloads from Content-Length before reading th
   assert.equal(calls.prepare, 0);
 });
 
+test("install ping inserts a row and 204s", async () => {
+  const { env: testEnv, calls } = env();
+  const body = JSON.stringify({
+    install_id: "abcd1234",
+    event: "completed",
+    os: "darwin",
+    arch: "arm64",
+    version: "latest",
+    from_source: "0",
+    reason: "",
+  });
+  const res = await worker.fetch(
+    new Request("https://clawpatrol.dev/api/telemetry/v1/install", {
+      method: "POST",
+      body,
+    }),
+    testEnv,
+  );
+
+  assert.equal(res.status, 204);
+  assert.equal(calls.prepare, 1);
+  const bound = calls.bind[0];
+  assert.equal(bound[0], "abcd1234");
+  assert.equal(bound[2], "completed");
+  assert.equal(bound[3], "darwin");
+  assert.equal(bound[4], "arm64");
+  assert.equal(bound[6], 0);
+});
+
+test("install ping rejects unknown event names", async () => {
+  const { env: testEnv, calls } = env();
+  const res = await worker.fetch(
+    new Request("https://clawpatrol.dev/api/telemetry/v1/install", {
+      method: "POST",
+      body: JSON.stringify({ install_id: "x", event: "bogus" }),
+    }),
+    testEnv,
+  );
+
+  assert.equal(res.status, 400);
+  assert.equal(calls.prepare, 0);
+});
+
 test("rejects payloads over the byte limit, not just the JavaScript string length", async () => {
   const { env: testEnv, calls } = env();
   globalThis.fetch = async () => {
