@@ -15,22 +15,22 @@ gateway {
   }
 }
 
-endpoint "https" "github" {
+endpoint "http" "github" {
   hosts = ["api.github.com"]
 }
 
 credential "bearer_token" "github" {
-  endpoint = https.github
+  endpoint = http.github
 }
 
 rule "github-reads" {
-  endpoint  = https.github
+  endpoint  = http.github
   condition = "http.method in ['GET', 'HEAD']"
   verdict   = "allow"
 }
 
 rule "github-writes" {
-  endpoint  = https.github
+  endpoint  = http.github
   condition = "http.method in ['POST', 'PATCH', 'PUT', 'DELETE']"
   verdict   = "deny"
   reason    = "writes go through PR review"

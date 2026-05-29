@@ -7,7 +7,7 @@ rule "no-prod-drops" {
 
 # Slack-approve any GitHub write
 rule "github-writes" {
-  endpoint  = https.github-api
+  endpoint  = http.github-api
   condition = "http.method in ['POST', 'PUT', 'DELETE']"
   approve   = [human_approver.ops]
 }
@@ -24,7 +24,7 @@ endpoint "postgres" "pg-prod" {
   host = "pg-prod.example:5432"
 }
 
-endpoint "https" "github-api" {
+endpoint "http" "github-api" {
   hosts = ["api.github.com"]
 }
 
@@ -32,7 +32,7 @@ credential "postgres_credential" "pg" {
   endpoint = postgres.pg-prod
   user     = "agent"
 }
-credential "bearer_token" "github-pat" { endpoint = https.github-api }
+credential "bearer_token" "github-pat" { endpoint = http.github-api }
 credential "slack_tokens" "slack-bot" {}
 
 approver "human_approver" "ops" {

@@ -36,7 +36,7 @@ assign each device one [profile](#profile).
 ### Endpoint
 
 A typed network target — a name, a protocol family
-(`https` / `sql` / `k8s`), and the host(s) it claims. Endpoints are
+(`http` / `sql` / `k8s`), and the host(s) it claims. Endpoints are
 pure network targets: hosts plus protocol-family connection parameters,
 nothing more. The unit a [rule](#rule) attaches to. See
 [Config Reference](/docs/config-reference/) for endpoint schemas.
@@ -97,7 +97,7 @@ this device to wield."
 
 ### Plugin
 
-A `(kind, type)` extension — e.g. `(endpoint, https)`,
+A `(kind, type)` extension — e.g. `(endpoint, http)`,
 `(credential, bearer_token)`, `(approver, human_approver)`. Plugins add
 new config block types and the behavior behind them. See
 [Plugins](/docs/plugins/).

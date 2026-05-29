@@ -309,7 +309,7 @@ func (r *renderer) collectFields(pkgName, typeName string, rt reflect.Type) []fi
 			continue
 		}
 		// Fields populated post-decode (CredentialEntry slice on
-		// HTTPSEndpoint) carry json:"-" or no hcl tag — skip.
+		// HTTPEndpoint) carry json:"-" or no hcl tag — skip.
 		if hclTag == "" || hclTag == "-" {
 			continue
 		}
@@ -501,7 +501,7 @@ func exampleValue(t reflect.Type, fieldName string) string {
 		case "credential":
 			return "bearer_token.example"
 		case "endpoint":
-			return "https.example"
+			return "http.example"
 		case "policy":
 			return "<<-EOT\n    Example policy text.\n  EOT"
 		case "verdict":

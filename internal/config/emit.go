@@ -112,7 +112,7 @@ var (
 
 // EmitRefIndex returns the current emit's RefIndex. Plugin Emit hooks
 // call this to resolve a bare entity name to its typed-traversal form
-// (e.g. "anthropic" → "https.anthropic") before calling SetIdent /
+// (e.g. "anthropic" → "http.anthropic") before calling SetIdent /
 // SetIdentList. Returns a non-nil pointer even when no Emit is in
 // progress so callers don't have to nil-check before Ref / Refs.
 func EmitRefIndex() *RefIndex {
@@ -453,7 +453,7 @@ func StringListVal(xs []string) cty.Value {
 
 // SetIdentList writes `name = [a.x, b.y, c.z]` where each element is
 // a dotted traversal expression. Used for typed ref lists like
-// `endpoints = [https.github, slack_tokens.dev]`. Pass each entry
+// `endpoints = [http.github, slack_tokens.dev]`. Pass each entry
 // as its fully-qualified traversal string (use RefIndex.Ref to build).
 //
 // Exported so plugin Emit hooks can use it for fields like a rule's

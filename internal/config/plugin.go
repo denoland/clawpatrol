@@ -17,8 +17,8 @@ import (
 
 // Kind names a class of policy block. The plugin-dispatched two-label
 // kinds — KindEndpoint, KindCredential, KindApprover, KindTunnel —
-// read their type from the block's first label (e.g. `endpoint "https"
-// "github-dev"` → Type="https").
+// read their type from the block's first label (e.g. `endpoint "http"
+// "github-dev"` → Type="http").
 //
 // KindRule and KindProfile are one-label blocks. KindRule has a single
 // registered plugin (Type="") and infers its protocol family from the
@@ -48,7 +48,7 @@ func (k Kind) LabelCount() int {
 	return 0
 }
 
-// Plugin describes one (Kind, Type) pair — e.g. (endpoint, https) or
+// Plugin describes one (Kind, Type) pair — e.g. (endpoint, http) or
 // (credential, bearer_token). Built-in plugins call Register at init
 // time; the loader looks them up by (Kind, Type) when decoding blocks.
 type Plugin struct {

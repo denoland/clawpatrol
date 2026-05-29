@@ -31,15 +31,15 @@ gateway {
   public_url = "https://gw.example.test"
   wireguard { subnet_cidr = "10.55.0.0/24" }
 }
-endpoint "https" "api" {
+endpoint "http" "api" {
   hosts = ["api.example.test"]
 }
-credential "bearer_token" "pat" { endpoint = https.api }
+credential "bearer_token" "pat" { endpoint = http.api }
 approver "human_approver" "capture" {
   channel = "#ops"
 }
 rule "approved-post" {
-  endpoint  = https.api
+  endpoint  = http.api
   condition = "http.method == 'POST' && http.path == '/v1/resources/update'"
   approve   = [human_approver.capture]
 }

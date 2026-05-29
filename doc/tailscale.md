@@ -170,7 +170,7 @@ tunnel "tailscale" "corp" {
   tags       = ["tag:client"]
 }
 
-endpoint "https" "grafana-internal" {
+endpoint "http" "grafana-internal" {
   hosts  = ["grafana.corp.example.com:443"]
   tunnel = tailscale.corp
 }
@@ -227,7 +227,7 @@ tunnel "tailscale" "corp" {
   state_dir = "/opt/clawpatrol/ts-tunnel-corp"
 }
 
-endpoint "https" "grafana-internal" {
+endpoint "http" "grafana-internal" {
   hosts  = ["grafana.corp.example.com:443"]
   tunnel = tailscale.corp
 }

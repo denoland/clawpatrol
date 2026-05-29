@@ -13,16 +13,16 @@ gateway {
 # per (profile, endpoint), and ambiguous bindings must disambiguate
 # with `{ placeholder = "PH_...", credential = name }` entries.
 
-endpoint "https" "anthropic" {
+endpoint "http" "anthropic" {
   hosts = ["api.anthropic.com"]
 }
 
 credential "bearer_token" "anthropic-prod" {
-  endpoint = https.anthropic
+  endpoint = http.anthropic
 }
 
 credential "bearer_token" "anthropic-test" {
-  endpoint = https.anthropic
+  endpoint = http.anthropic
 }
 
 profile "ops" {

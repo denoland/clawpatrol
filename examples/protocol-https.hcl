@@ -3,7 +3,7 @@
 # salutations, and markdown that shouldn't ship.
 
 rule "support-reply-on-behalf" {
-  endpoint = https.deno-deploy
+  endpoint = http.deno-deploy
   condition = <<-CEL
     http.method == 'POST'
     && http.path == '/api/admin.supportTickets.replyOnBehalf'
@@ -19,12 +19,12 @@ gateway {
   wireguard { subnet_cidr = "10.55.0.0/24" }
 }
 
-endpoint "https" "deno-deploy" {
+endpoint "http" "deno-deploy" {
   hosts = ["app.example.com"]
 }
 
 credential "anthropic_manual_key" "anthropic-key" {}
-credential "bearer_token" "deno-deploy" { endpoint = https.deno-deploy }
+credential "bearer_token" "deno-deploy" { endpoint = http.deno-deploy }
 
 approver "llm_approver" "reply-content-judge" {
   model      = "claude-sonnet-4-6"

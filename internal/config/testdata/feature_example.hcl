@@ -56,7 +56,7 @@ defaults {
 # Endpoints: hosts + protocol-family connection params. Pure network
 # targets — credential binding lives on the credential block.
 
-endpoint "https" "github" {
+endpoint "http" "github" {
   hosts = ["api.github.com", "github.com"]
 }
 
@@ -65,7 +65,7 @@ endpoint "https" "github" {
 # in the gateway, keyed by name.
 
 credential "bearer_token" "github" {
-  endpoint = https.github
+  endpoint = http.github
 }
 
 # Approvers: who arbitrates when a rule needs human / LLM review.
@@ -80,13 +80,13 @@ approver "human_approver" "ops" {
 # The rule's predicate is a single CEL expression in `condition`.
 
 rule "github-reads" {
-  endpoint  = https.github
+  endpoint  = http.github
   condition = "http.method in ['GET', 'HEAD']"
   verdict   = "allow"
 }
 
 rule "github-writes" {
-  endpoint  = https.github
+  endpoint  = http.github
   condition = "http.method in ['POST', 'PUT', 'PATCH', 'DELETE']"
   approve   = [human_approver.ops]
 }

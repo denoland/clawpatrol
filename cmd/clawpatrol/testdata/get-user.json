@@ -13,6 +13,6 @@
   "match": {
     "verdict":  "allow",
     "rule":     "github-reads",
-    "endpoint": "https.github"
+    "endpoint": "http.github"
   }
 }

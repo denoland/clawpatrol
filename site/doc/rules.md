@@ -13,7 +13,7 @@ and declares the outcome (`verdict = "allow" / "deny"`, or
 There is one rule kind. The rule's protocol **family** — `http`,
 `sql`, or `k8s` — is inferred from its endpoint(s) at load time and
 pins the set of CEL variables the `condition` may reference. An
-`https` endpoint exposes `http.method` / `http.path` / …; a postgres
+`http` endpoint exposes `http.method` / `http.path` / …; a postgres
 or clickhouse endpoint exposes `sql.verb` / `sql.tables` / …; a
 kubernetes endpoint exposes `k8s.verb` / `k8s.resource` / …. A rule
 whose `endpoints = [...]` mixes families is a load error.
@@ -36,7 +36,7 @@ in the first place.
 
 ### `http` family
 
-Bound to `https` endpoints. The condition is evaluated against the
+Bound to `http` endpoints. The condition is evaluated against the
 parsed HTTP request *before* it is forwarded upstream, after MITM
 has terminated TLS.
 
@@ -44,7 +44,7 @@ Example: require approval for a specific support-ticket mutation.
 
 ```hcl
 rule "support-ticket-status" {
-  endpoint  = https.console
+  endpoint  = http.console
   condition = "http.method == 'POST' && http.path == '/api/admin.supportTickets.updateStatus'"
   approve   = [human_approver.support]
 }
@@ -143,7 +143,7 @@ condition = "!k8s.name.startsWith('debug-')"
 condition = "!k8s.resource.endsWith('/exec') && !k8s.resource.endsWith('/attach')"
 ```
 
-A rule bound to `https` endpoints sees `http.*` only; a rule bound
+A rule bound to `http` endpoints sees `http.*` only; a rule bound
 to `kubernetes` endpoints sees `k8s.*` only. Mixing families across
 a rule's `endpoints = [...]` is a load error.
 
@@ -369,7 +369,7 @@ returns a deny verdict for it.
 
 | Endpoint | Inspected slice | Cap | Truncatable facet fields |
 |----------|-----------------|-----|--------------------|
-| `https` | request body on `POST` / `PUT` / `PATCH` | 1 MiB | `http.body`, `http.body_json` |
+| `http` | request body on `POST` / `PUT` / `PATCH` | 1 MiB | `http.body`, `http.body_json` |
 | `kubernetes` | request body on `POST` / `PUT` / `PATCH` | 1 MiB | *(none — every `k8s.*` facet is derived from the URL and method)* |
 | `clickhouse_https` | request body on `POST` / `PUT` / `PATCH` | 1 MiB | `sql.verb`, `sql.tables`, `sql.functions`, `sql.statement` |
 | `postgres` | `Query` (`Q`) and `Parse` (`P`) frame | 1 MiB | `sql.verb`, `sql.tables`, `sql.functions`, `sql.statement` |
@@ -406,7 +406,7 @@ rules in priority order as usual. For each rule:
   contract the truncation broke.
 
 The upshot: a rule matching on `http.method` and/or `credential` on
-an `https` endpoint still fires on a 2 MiB body, but a
+an `http` endpoint still fires on a 2 MiB body, but a
 `http.body_json.field == "x"` rule auto-denies.
 
 A matched rule with `approve = [...]` on a truncated postgres frame
@@ -420,7 +420,7 @@ buffer"`.
 Each protocol synthesizes the deny in its native shape so the agent's
 driver doesn't disconnect:
 
-- **`https`, `kubernetes`, `clickhouse_https`** — `HTTP/1.1 403
+- **`http`, `kubernetes`, `clickhouse_https`** — `HTTP/1.1 403
   Forbidden`, `Content-Type: text/plain`, reason in the body,
   `Connection: close`.
 - **`postgres`** — `ErrorResponse` (severity `ERROR`, SQLSTATE
@@ -458,7 +458,7 @@ credential "cookie_token" "console-session" {
 credential "anthropic_manual_key" "anthropic-key" {}
 credential "slack_tokens" "support-slack" {}
 
-endpoint "https" "console" {
+endpoint "http" "console" {
   hosts      = ["console.example.com"]
   credential = cookie_token.console-session
 }
@@ -481,13 +481,13 @@ approver "human_approver" "support-triage" {
 }
 
 rule "console-reads" {
-  endpoint  = https.console
+  endpoint  = http.console
   condition = "http.method == 'GET'"
   verdict   = "allow"
 }
 
 rule "console-ticket-mutations" {
-  endpoint = https.console
+  endpoint = http.console
   condition = <<-CEL
     http.method == 'POST'
     && http.path in [
@@ -499,7 +499,7 @@ rule "console-ticket-mutations" {
 }
 
 rule "console-reply-on-behalf" {
-  endpoint = https.console
+  endpoint = http.console
   condition = <<-CEL
     http.method == 'POST'
     && http.path == '/api/admin.supportTickets.replyOnBehalf'
@@ -511,7 +511,7 @@ rule "console-reply-on-behalf" {
 }
 
 rule "console-default" {
-  endpoint = https.console
+  endpoint = http.console
   priority = -100
   verdict  = "deny"
   reason   = "console mutations require an explicit approval rule"

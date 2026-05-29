@@ -49,7 +49,7 @@
           ]
         },
         "family": "http",
-        "type": "https"
+        "type": "http"
       }
     },
     "profiles": {

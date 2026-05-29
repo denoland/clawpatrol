@@ -32,21 +32,21 @@ gateway {
 }
 
 credential "bearer_token" "github_pat" {
-  endpoint = https.github
+  endpoint = http.github
 }
 
-endpoint "https" "github" {
+endpoint "http" "github" {
   hosts = ["api.github.com"]
 }
 
 rule "github-reads" {
-  endpoint  = https.github
+  endpoint  = http.github
   condition = "http.method in ['GET', 'HEAD']"
   verdict   = "allow"
 }
 
 rule "github-writes" {
-  endpoint  = https.github
+  endpoint  = http.github
   condition = "http.method in ['POST', 'PATCH', 'PUT', 'DELETE']"
   verdict   = "deny"
   reason    = "writes go through PR review"
@@ -70,7 +70,7 @@ profile "default" { credentials = [bearer_token.github_pat] }
   "match": {
     "verdict": "allow",
     "rule": "github-reads",
-    "endpoint": "https.github"
+    "endpoint": "http.github"
   }
 }
 ```
@@ -89,8 +89,8 @@ to `"deny"`. Re-run:
 ```
 $ clawpatrol test github.hcl fixtures/
 FAIL fixtures/get-user.json
-  want verdict="allow"      rule="github-reads"                 endpoint="https.github"
-  got  verdict="deny"       rule="github-reads"                 endpoint="https.github"
+  want verdict="allow"      rule="github-reads"                 endpoint="http.github"
+  got  verdict="deny"       rule="github-reads"                 endpoint="http.github"
 1 action(s) checked, 1 mismatch(es)
 $ echo $?
 1
@@ -180,7 +180,7 @@ conditions read.
   "match": {
     "verdict": "deny",
     "rule": "github-writes",
-    "endpoint": "https.github",
+    "endpoint": "http.github",
     "reason": "writes go through PR review"
   }
 }
@@ -243,7 +243,7 @@ where you might route Claude Code and a custom agent through different rule sets
   "match": {
     "verdict": "approve",
     "rule": "anthropic-default",
-    "endpoint": "https.anthropic-agent-A"
+    "endpoint": "http.anthropic-agent-A"
   }
 }
 ```
@@ -266,7 +266,7 @@ by multiple endpoints [anthropic-agent-A anthropic-agent-B]; set
 - `rule` — name of the rule that fired. Empty when no rule matched and the
   endpoint default was used.
 - `endpoint` — optional. Typed reference of the form
-  `endpoint-type.endpoint-name` (e.g. `https.github`, `postgres.pg-staging`) —
+  `endpoint-type.endpoint-name` (e.g. `http.github`, `postgres.pg-staging`) —
   the same addressing model HCL rules use. When set, pins dispatch and asserts
   the matched endpoint on replay (see "Shared hosts" above). Bare names are
   rejected because they collide across endpoint types.

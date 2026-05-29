@@ -91,17 +91,17 @@ gateway {
   public_url = "https://gw.example.test"
   wireguard { subnet_cidr = "10.55.0.0/24" }
 }
-endpoint "https" "alpha" {
+endpoint "http" "alpha" {
   hosts = ["api.example.com"]
 }
-endpoint "https" "beta" {
+endpoint "http" "beta" {
   hosts = ["api.example.com"]
 }
-endpoint "https" "gamma" {
+endpoint "http" "gamma" {
   hosts = ["solo.example.com"]
 }
-credential "bearer_token" "a" { endpoints = [https.alpha, https.gamma] }
-credential "bearer_token" "b" { endpoint = https.beta }
+credential "bearer_token" "a" { endpoints = [http.alpha, http.gamma] }
+credential "bearer_token" "b" { endpoint = http.beta }
 profile "default" { credentials = [bearer_token.a, bearer_token.b] }
 `
 	gw, diags := config.LoadBytes([]byte(hcl), "in.hcl")
@@ -142,7 +142,7 @@ profile "default" { credentials = [bearer_token.a, bearer_token.b] }
 	})
 
 	t.Run("ambiguous host disambiguated by match.endpoint", func(t *testing.T) {
-		f := mk(t, `{"action":{"host":"api.example.com","http":{"path":"/x"}},"match":{"verdict":"allow","endpoint":"https.beta"}}`)
+		f := mk(t, `{"action":{"host":"api.example.com","http":{"path":"/x"}},"match":{"verdict":"allow","endpoint":"http.beta"}}`)
 		ep, err := f.ResolveEndpoint(policy)
 		if err != nil {
 			t.Fatal(err)

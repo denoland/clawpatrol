@@ -47,7 +47,7 @@ func TestValidateCmd(t *testing.T) {
 func TestValidateCmdBadHCL(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.hcl")
-	if err := os.WriteFile(path, []byte("endpoint \"https\" \"x\" { hosts = [\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("endpoint \"http\" \"x\" { hosts = [\n"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	msg, code := validateCmd([]string{path})

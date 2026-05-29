@@ -454,11 +454,11 @@ gateway {
   }
 }
 
-endpoint "https" "api" {
+endpoint "http" "api" {
   hosts = ["api.example.test"]
 }
 credential "bearer_token" "tok" {
-  endpoint = https.api
+  endpoint = http.api
 }
 profile "agent" {
   credentials       = [bearer_token.tok]

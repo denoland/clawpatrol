@@ -15,11 +15,11 @@ gateway {
 
 credential "bearer_token" "pat" {}
 
-endpoint "https" "github" {
+endpoint "http" "github" {
   hosts      = ["api.github.com"]
   credential = bearer_token.pat
 }
 
 profile "default" {
-  endpoints = [https.github]
+  endpoints = [http.github]
 }

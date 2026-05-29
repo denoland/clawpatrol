@@ -7,12 +7,12 @@ gateway {
   }
 }
 
-endpoint "https" "github" {
+endpoint "http" "github" {
   hosts = ["api.github.com"]
 }
 
 credential "bearer_token" "pat" {
-  endpoint = https.github
+  endpoint = http.github
 }
 
 # References an undeclared endpoint name.

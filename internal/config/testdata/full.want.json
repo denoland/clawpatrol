@@ -362,7 +362,7 @@
           ]
         },
         "family": "http",
-        "type": "https"
+        "type": "http"
       },
       "anthropic-ops": {
         "body": {
@@ -371,7 +371,7 @@
           ]
         },
         "family": "http",
-        "type": "https"
+        "type": "http"
       },
       "ch-o11y-https": {
         "body": {
@@ -402,7 +402,7 @@
           ]
         },
         "family": "http",
-        "type": "https"
+        "type": "http"
       },
       "gemini": {
         "body": {
@@ -411,7 +411,7 @@
           ]
         },
         "family": "http",
-        "type": "https"
+        "type": "http"
       },
       "github": {
         "body": {
@@ -421,7 +421,7 @@
           ]
         },
         "family": "http",
-        "type": "https"
+        "type": "http"
       },
       "grafana": {
         "body": {
@@ -430,7 +430,7 @@
           ]
         },
         "family": "http",
-        "type": "https"
+        "type": "http"
       },
       "helpdesk": {
         "body": {
@@ -439,7 +439,7 @@
           ]
         },
         "family": "http",
-        "type": "https"
+        "type": "http"
       },
       "honeycomb": {
         "body": {
@@ -448,7 +448,7 @@
           ]
         },
         "family": "http",
-        "type": "https"
+        "type": "http"
       },
       "k8s-dev-iad": {
         "body": {
@@ -496,7 +496,7 @@
           ]
         },
         "family": "http",
-        "type": "https"
+        "type": "http"
       },
       "openai-codex": {
         "body": {
@@ -506,7 +506,7 @@
           ]
         },
         "family": "http",
-        "type": "https"
+        "type": "http"
       },
       "orb": {
         "body": {
@@ -515,7 +515,7 @@
           ]
         },
         "family": "http",
-        "type": "https"
+        "type": "http"
       },
       "pagerduty": {
         "body": {
@@ -524,7 +524,7 @@
           ]
         },
         "family": "http",
-        "type": "https"
+        "type": "http"
       },
       "pg-corp": {
         "body": {
@@ -550,7 +550,7 @@
           ]
         },
         "family": "http",
-        "type": "https"
+        "type": "http"
       },
       "slack": {
         "body": {
@@ -561,7 +561,7 @@
           ]
         },
         "family": "http",
-        "type": "https"
+        "type": "http"
       },
       "smithery": {
         "body": {
@@ -570,7 +570,7 @@
           ]
         },
         "family": "http",
-        "type": "https"
+        "type": "http"
       },
       "stripe": {
         "body": {
@@ -579,7 +579,7 @@
           ]
         },
         "family": "http",
-        "type": "https"
+        "type": "http"
       },
       "support-console": {
         "body": {
@@ -588,7 +588,7 @@
           ]
         },
         "family": "http",
-        "type": "https"
+        "type": "http"
       },
       "telegram": {
         "body": {
@@ -597,7 +597,7 @@
           ]
         },
         "family": "http",
-        "type": "https"
+        "type": "http"
       }
     },
     "profiles": {

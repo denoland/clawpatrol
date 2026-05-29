@@ -19,7 +19,7 @@ tunnel "local_command" "csql-prod" {
   keepalive     = "5m"
 }
 
-endpoint "https" "github" {
+endpoint "http" "github" {
   hosts = ["api.github.com", "github.com"]
 }
 
@@ -32,7 +32,7 @@ endpoint "postgres" "deploy-classic" {
 }
 
 credential "bearer_token" "github" {
-  endpoints = [https.github, postgres.deploy-classic]
+  endpoints = [http.github, postgres.deploy-classic]
 }
 
 profile "default" {

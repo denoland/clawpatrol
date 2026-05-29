@@ -7,7 +7,7 @@ gateway {
   }
 }
 
-endpoint "https" "github" {
+endpoint "http" "github" {
   hosts = ["api.github.com"]
 }
 endpoint "postgres" "db" {
@@ -15,7 +15,7 @@ endpoint "postgres" "db" {
 }
 
 credential "bearer_token" "pat" {
-  endpoint = https.github
+  endpoint = http.github
 }
 credential "postgres_credential" "pg" {
   endpoint = postgres.db
@@ -24,7 +24,7 @@ credential "postgres_credential" "pg" {
 # A rule's endpoint list must be from a single protocol family —
 # family inference can only pick one CEL env for the condition.
 rule "mixed-family" {
-  endpoints = [https.github, postgres.db]
+  endpoints = [http.github, postgres.db]
   condition = "http.method == 'GET'"
   verdict   = "allow"
 }

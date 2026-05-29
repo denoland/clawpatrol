@@ -1,6 +1,6 @@
 // Package rules registers the single `rule` block kind. Each rule is
 // one policy decision targeting one or more endpoints; the rule's
-// protocol family (https / sql / k8s) is inferred from the resolved
+// protocol family (http / sql / k8s) is inferred from the resolved
 // endpoints at validate/build time. Mixed-family endpoint sets are
 // rejected with a clean diagnostic.
 //

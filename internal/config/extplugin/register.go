@@ -16,7 +16,7 @@ import (
 // RegisterManifest converts every type in resp into a virtual
 // *config.Plugin and installs it in the global registry. The
 // (Kind, Type) names are namespaced as "<plugin>.<type>" so two
-// plugins can't collide on, say, "https".
+// plugins can't collide on, say, "http".
 //
 // Returns hcl.Diagnostics for any per-type registration failure;
 // the caller should attach the source range of the `plugin` block.
@@ -302,7 +302,7 @@ func registerEndpoint(client *Client, pluginName string, decl *pb.EndpointDecl) 
 // by convention, the way Terraform providers do (`aws_instance`,
 // `kubernetes_deployment`) — so a collision either means two plugins
 // picked the same type name or the plugin tried to shadow a
-// built-in (e.g. `https`). Both are operator-actionable; neither is
+// built-in (e.g. `http`). Both are operator-actionable; neither is
 // recoverable by the gateway.
 func registerOrCollide(plug *config.Plugin, pluginName, kindLabel string) hcl.Diagnostics {
 	if existing := config.Lookup(plug.Kind, plug.Type); existing != nil {

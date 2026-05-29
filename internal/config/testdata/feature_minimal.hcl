@@ -12,12 +12,12 @@ defaults {
   llm_fail_mode = "closed"
 }
 
-endpoint "https" "github" {
+endpoint "http" "github" {
   hosts = ["api.github.com", "github.com"]
 }
 
 credential "bearer_token" "github" {
-  endpoint = https.github
+  endpoint = http.github
 }
 
 approver "human_approver" "ops" {
@@ -26,13 +26,13 @@ approver "human_approver" "ops" {
 }
 
 rule "github-reads" {
-  endpoint  = https.github
+  endpoint  = http.github
   condition = "http.method in ['GET', 'HEAD']"
   verdict   = "allow"
 }
 
 rule "github-writes" {
-  endpoint  = https.github
+  endpoint  = http.github
   condition = "http.method in ['POST', 'PATCH', 'DELETE']"
   approve   = [human_approver.ops]
 }

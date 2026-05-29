@@ -119,11 +119,11 @@ func TestCompile(t *testing.T) {
 // or within-endpoint duplicates are rejected at load time.
 func TestCompileWildcardHosts(t *testing.T) {
 	src := `
-endpoint "https" "aws" {
+endpoint "http" "aws" {
   hosts = ["*.amazonaws.com", "*.us-east-1.amazonaws.com:443"]
 }
 credential "bearer_token" "tok" {
-  endpoint = https.aws
+  endpoint = http.aws
 }
 profile "p" { credentials = [bearer_token.tok] }
 `
@@ -165,11 +165,11 @@ func TestCompileRejectsBadHosts(t *testing.T) {
 		{
 			name: "malformed wildcard - empty suffix",
 			src: `
-endpoint "https" "bad" {
+endpoint "http" "bad" {
   hosts = ["*."]
 }
 credential "bearer_token" "tok" {
-  endpoint = https.bad
+  endpoint = http.bad
 }
 profile "p" { credentials = [bearer_token.tok] }
 `,
@@ -177,11 +177,11 @@ profile "p" { credentials = [bearer_token.tok] }
 		{
 			name: "wildcard with bare TLD",
 			src: `
-endpoint "https" "bad" {
+endpoint "http" "bad" {
   hosts = ["*.com"]
 }
 credential "bearer_token" "tok" {
-  endpoint = https.bad
+  endpoint = http.bad
 }
 profile "p" { credentials = [bearer_token.tok] }
 `,
@@ -189,11 +189,11 @@ profile "p" { credentials = [bearer_token.tok] }
 		{
 			name: "wildcard not at leftmost label",
 			src: `
-endpoint "https" "bad" {
+endpoint "http" "bad" {
   hosts = ["api.*.foo.com"]
 }
 credential "bearer_token" "tok" {
-  endpoint = https.bad
+  endpoint = http.bad
 }
 profile "p" { credentials = [bearer_token.tok] }
 `,
@@ -201,11 +201,11 @@ profile "p" { credentials = [bearer_token.tok] }
 		{
 			name: "duplicate hosts",
 			src: `
-endpoint "https" "bad" {
+endpoint "http" "bad" {
   hosts = ["api.foo.com", "api.foo.com"]
 }
 credential "bearer_token" "tok" {
-  endpoint = https.bad
+  endpoint = http.bad
 }
 profile "p" { credentials = [bearer_token.tok] }
 `,
@@ -226,28 +226,28 @@ profile "p" { credentials = [bearer_token.tok] }
 // wins evaluation. Tied priorities preserve declaration order.
 func TestCompilePrioritySort(t *testing.T) {
 	src := `
-endpoint "https" "ep" {
+endpoint "http" "ep" {
   hosts = ["x.example.com"]
 }
 credential "bearer_token" "pat" {
-  endpoint = https.ep
+  endpoint = http.ep
 }
 profile "p" { credentials = [bearer_token.pat] }
 
 rule "fallback" {
-  endpoint  = https.ep
+  endpoint  = http.ep
   priority  = -100
   condition = "http.method == 'POST'"
   verdict   = "deny"
 }
 rule "specific" {
-  endpoint  = https.ep
+  endpoint  = http.ep
   priority  = 100
   condition = "http.method == 'POST' && http.path == '/v1/refunds'"
   verdict   = "deny"
 }
 rule "general" {
-  endpoint  = https.ep
+  endpoint  = http.ep
   condition = "http.method == 'POST'"
   verdict   = "allow"
 }

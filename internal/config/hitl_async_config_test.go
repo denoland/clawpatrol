@@ -23,11 +23,11 @@ gateway {
   }
 }
 
-endpoint "https" "api" {
+endpoint "http" "api" {
   hosts = ["api.example.test"]
 }
 credential "bearer_token" "pat" {
-  endpoint = https.api
+  endpoint = http.api
 }
 profile "agent" {
   credentials       = [bearer_token.pat]
@@ -45,7 +45,7 @@ approver "human_approver" "ops" {
   }
 }
 rule "writes" {
-  endpoint = https.api
+  endpoint = http.api
   approve  = [human_approver.ops]
 }
 `
@@ -200,11 +200,11 @@ gateway {
   wireguard { subnet_cidr = "10.55.0.0/24" }
 }
 
-endpoint "https" "api" {
+endpoint "http" "api" {
   hosts = ["api.example.test"]
 }
 credential "bearer_token" "pat" {
-  endpoint = https.api
+  endpoint = http.api
 }
 profile "agent" {
   credentials       = [bearer_token.pat]
@@ -222,7 +222,7 @@ approver "human_approver" "ops" {
   }
 }
 rule "writes" {
-  endpoint = https.api
+  endpoint = http.api
   approve  = [human_approver.ops]
 }
 `
@@ -270,11 +270,11 @@ func hitlAsyncConfigSource(publicURL string, profileOptIn, includeAsyncGrant boo
 	// (public_url or wireguard.endpoint) doesn't add noise to
 	// publicURL-omitted test cases.
 	b.WriteString("  tailscale { authkey = \"tskey-test\" }\n}\n\n")
-	b.WriteString(`endpoint "https" "api" {
+	b.WriteString(`endpoint "http" "api" {
   hosts = ["api.example.test"]
 }
 credential "bearer_token" "pat" {
-  endpoint = https.api
+  endpoint = http.api
 }
 profile "agent" {
   credentials = [bearer_token.pat]
@@ -306,7 +306,7 @@ approver "human_approver" "ops" {
 	}
 	b.WriteString(`}
 rule "writes" {
-  endpoint = https.api
+  endpoint = http.api
   approve  = [human_approver.ops]
 }
 `)

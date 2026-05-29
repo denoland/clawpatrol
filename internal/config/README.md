@@ -142,7 +142,7 @@ declares the binding. Built-in types map to protocol families:
 
 | Type | Family | Runtime status |
 |------|--------|----------------|
-| `https` | `https` | wired |
+| `http` | `http` | wired |
 | `kubernetes` | `k8s` | wired (HTTPS underneath; mTLS or EKS bearer via `aws_credential`) |
 | `postgres` | `sql` | wired (SSL refused; SQL matchers + approve chains) |
 | `clickhouse_https` | `sql` | schema-only |
@@ -159,8 +159,8 @@ requests without auth and the gateway adds the Authorization header
 before forwarding.
 
 ```hcl
-endpoint "https" "github"   { hosts = ["api.github.com", "github.com"] }
-endpoint "https" "orb"      { hosts = ["api.withorb.com"] }
+endpoint "http" "github"   { hosts = ["api.github.com", "github.com"] }
+endpoint "http" "orb"      { hosts = ["api.withorb.com"] }
 endpoint "postgres" "pg" {
   host     = "pg.internal.example:5432"
   database = "appdb"
@@ -215,7 +215,7 @@ one; declaring placeholders on every such credential would add noise
 that no profile consults.
 
 ```hcl
-endpoint "https" "orb" { hosts = ["api.withorb.com"] }
+endpoint "http" "orb" { hosts = ["api.withorb.com"] }
 
 credential "bearer_token" "orb-test" { endpoint = orb }
 credential "bearer_token" "orb-prod" { endpoint = orb }
@@ -236,7 +236,7 @@ types, each constrained to a matching endpoint family:
 
 | Rule type | Endpoint families | Match facets |
 |-----------|------------------|-------------|
-| `http_rule` | `https` | `method` / `path` / `query` / `headers` / `body_json` / `body_contains` / `credential` |
+| `http_rule` | `http` | `method` / `path` / `query` / `headers` / `body_json` / `body_contains` / `credential` |
 | `sql_rule` | `sql` | `verb` / `tables` / `functions` / `statement` / `statement_regex` / `credential` |
 | `k8s_rule` | `k8s` | `resource` / `verb` / `namespace` / `name` / `params` / `credential` |
 

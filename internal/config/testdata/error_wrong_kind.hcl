@@ -7,12 +7,12 @@ gateway {
   }
 }
 
-endpoint "https" "github" {
+endpoint "http" "github" {
   hosts = ["api.github.com"]
 }
 
 credential "bearer_token" "shared" {
-  endpoint = https.github
+  endpoint = http.github
 }
 
 # `endpoint = shared` references the credential, not the
