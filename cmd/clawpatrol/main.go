@@ -1696,13 +1696,25 @@ func (g *Gateway) handleVIPConn(c net.Conn, dstIP string, dstPort uint16) {
 	defer otelTrackConn("vip_conn")()
 
 	hostname, hits := g.dnsvip.LookupVIP(dstIP)
-	if hostname == "" || len(hits) == 0 {
-		log.Printf("vip %s:%d: VIP allocated but no endpoint binding (stale?); dropping", dstIP, dstPort)
+	pip := peerIP(c)
+	profile := g.profileFor(pip)
+	if hostname == "" {
+		// VIP allocated but the table forgot the hostname — should be
+		// impossible (allocateLocked always sets it) but guard anyway.
+		// Without a hostname we have no real upstream to fall back to.
+		log.Printf("vip %s:%d: VIP has no hostname binding (stale?); dropping", dstIP, dstPort)
 		_ = c.Close()
 		return
 	}
-	pip := peerIP(c)
-	profile := g.profileFor(pip)
+	if len(hits) == 0 {
+		// Hostname is known but no endpoint currently claims it — a
+		// surviving lazy entry from a policy that removed the binding.
+		// Pre-fix this returned a silent RST; passthrough lets the
+		// agent's cached VIP keep working until DNS refreshes.
+		log.Printf("vip %s:%d (host %q): no endpoint binding (stale?); passthrough", dstIP, dstPort, hostname)
+		g.vipPassthrough(c, hostname, dstPort)
+		return
+	}
 	policy := g.Policy()
 	// Profile-filter the hits, then port-match. Port match handles
 	// the case where one hostname is bound to multiple endpoints on
@@ -1728,11 +1740,75 @@ func (g *Gateway) handleVIPConn(c net.Conn, dstIP string, dstPort uint16) {
 		break
 	}
 	if ep == nil {
-		log.Printf("vip %s:%d (host %q): no endpoint matches profile %q + port", dstIP, dstPort, hostname, profile)
-		_ = c.Close()
+		// VIP is bound to one or more endpoints at the policy root, but
+		// the current profile doesn't grant any of them — e.g. an SSH
+		// endpoint declared globally that crowlbot's profile excludes
+		// because it only wires anthropic+github_oauth credentials.
+		// Pre-fix this returned a silent RST that looked exactly like a
+		// network failure to the agent (issue #184: `Connection reset
+		// by 10.78.0.1 port 22` from git-over-ssh inside Docker). Mirror
+		// the HTTPS `handle()` path: when no endpoint owns the flow for
+		// this profile, transparently passthrough to the real upstream.
+		// The hostname comes from the VIP table — we can't dial the VIP
+		// itself (it only exists inside the WG netstack), so the
+		// passthrough resolves the real hostname via the gateway's
+		// dialer.
+		log.Printf("vip %s:%d (host %q): no endpoint in profile %q; passthrough to real host", dstIP, dstPort, hostname, profile)
+		g.vipPassthrough(c, hostname, dstPort)
 		return
 	}
 	g.dispatchConnEndpoint(c, dstIP, matchedPort, ep, hostname)
+}
+
+// vipPassthrough dials the real hostname:port from the gateway's host
+// network and bridges bytes to c. Used by handleVIPConn when the VIP
+// table maps the conn to a hostname but no endpoint in the dispatching
+// profile claims it — mirrors the `splice()` fallback the HTTPS path
+// uses for the same shape of policy state.
+//
+// The VIP is a synthetic IP allocated by dnsvip; it isn't routable from
+// the host network, so we can't `wgRelay(dstIP, ...)`. The hostname IS
+// routable via the gateway's resolver, which dialThrough already uses
+// for endpoint upstreams.
+//
+// Emits a `relay` sink event so the dashboard shows the flow alongside
+// MITM traffic. The gate on `known` matches wgRelay: tsnet exit-node
+// mode otherwise mints synthetic agent rows for every probing tailnet
+// peer.
+func (g *Gateway) vipPassthrough(c net.Conn, host string, port uint16) {
+	defer func() { _ = c.Close() }()
+	pip := peerIP(c)
+	profile := g.profileFor(pip)
+	agentPip := g.agentIPFor(c)
+	known := g.onboard == nil || g.onboard.HasDevice(pip) || g.onboard.HasDevice(agentPip)
+	hostPort := net.JoinHostPort(host, strconv.Itoa(int(port)))
+	start := time.Now()
+	up, err := g.dialer.Dial("tcp", hostPort)
+	if err != nil {
+		log.Printf("vip-passthrough %s: %v", hostPort, err)
+		if known {
+			g.emit(Event{
+				Mode: "relay", AgentIP: agentPip, Agent: profile,
+				Host: hostPort, Action: "deny", Reason: err.Error(),
+				Ms: time.Since(start).Milliseconds(),
+			})
+		}
+		return
+	}
+	defer func() { _ = up.Close() }()
+	var tracker func(rx, tx int64)
+	if known {
+		tracker = g.streamTracker(agentPip, hostPort)
+	}
+	rx, tx := pipeProgress(c, up, tracker)
+	if known {
+		g.emit(Event{
+			Mode: "relay", AgentIP: agentPip, Agent: profile,
+			Host: hostPort, Action: "allow",
+			In: rx, Out: tx,
+			Ms: time.Since(start).Milliseconds(),
+		})
+	}
 }
 
 // tryDirectIPConn is the post-VIP fallback that dispatches inbound
