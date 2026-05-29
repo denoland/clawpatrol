@@ -75,7 +75,7 @@ func resolveRefs(decoded any, name string, plugin *Plugin, table *SymbolTable, b
 				}
 				continue
 			}
-			sym := table.Get(spec.Kind, v.value)
+			sym := table.GetByQName(spec.Kind, v.value)
 			if sym == nil {
 				diags = append(diags, &hcl.Diagnostic{
 					Severity: hcl.DiagError,

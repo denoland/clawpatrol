@@ -8,28 +8,19 @@
   },
   "policy": {
     "credentials": {
-      "github": {
+      "bearer_token.github": {
         "body": {
           "IdempotencyKey": false
         },
         "endpoints": [
-          "github",
-          "deploy-classic"
+          "https.github",
+          "postgres.deploy-classic"
         ],
         "type": "bearer_token"
       }
     },
     "endpoints": {
-      "deploy-classic": {
-        "body": {
-          "Host": "main-pg14.classic.example:5432",
-          "SSLMode": ""
-        },
-        "family": "sql",
-        "tunnel": "csql-prod",
-        "type": "postgres"
-      },
-      "github": {
+      "https.github": {
         "body": {
           "Hosts": [
             "api.github.com",
@@ -38,17 +29,26 @@
         },
         "family": "http",
         "type": "https"
+      },
+      "postgres.deploy-classic": {
+        "body": {
+          "Host": "main-pg14.classic.example:5432",
+          "SSLMode": ""
+        },
+        "family": "sql",
+        "tunnel": "local_command.csql-prod",
+        "type": "postgres"
       }
     },
     "profiles": {
       "default": {
         "credentials": [
-          "github"
+          "bearer_token.github"
         ]
       }
     },
     "tunnels": {
-      "csql-prod": {
+      "local_command.csql-prod": {
         "body": {
           "Command": [
             "cloud_sql_proxy",

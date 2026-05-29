@@ -135,7 +135,7 @@ func extractFramework(body hcl.Body, kind Kind, evalCtx *hcl.EvalContext, table 
 // constrained which kind the name came from, so a missing entry
 // here is an undeclared-name error rather than a wrong-kind one.
 func resolveRefName(kind Kind, name, attrName string, table *SymbolTable, rng hcl.Range) *hcl.Diagnostic {
-	if table.Get(kind, name) != nil {
+	if table.GetByQName(kind, name) != nil {
 		return nil
 	}
 	return &hcl.Diagnostic{

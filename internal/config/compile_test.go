@@ -44,7 +44,7 @@ func TestCompile(t *testing.T) {
 	if len(prof.Endpoints) != 1 {
 		t.Fatalf("expected 1 endpoint, got %d", len(prof.Endpoints))
 	}
-	ep := prof.Endpoints["github"]
+	ep := prof.Endpoints["https.github"]
 	if ep == nil {
 		t.Fatal("expected github endpoint")
 	}
@@ -109,7 +109,7 @@ func TestCompile(t *testing.T) {
 	if reads.Outcome.Verdict != "allow" {
 		t.Errorf("github-reads verdict=%q want allow", reads.Outcome.Verdict)
 	}
-	if len(writes.Outcome.Approve) != 1 || writes.Outcome.Approve[0].Name != "ops" {
+	if len(writes.Outcome.Approve) != 1 || writes.Outcome.Approve[0].Name != "human_approver.ops" {
 		t.Errorf("github-writes approve=%+v", writes.Outcome.Approve)
 	}
 }
@@ -260,7 +260,7 @@ rule "general" {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	rules := cp.Endpoints["ep"].Rules
+	rules := cp.Endpoints["https.ep"].Rules
 	if len(rules) != 3 {
 		t.Fatalf("expected 3 rules, got %d", len(rules))
 	}
@@ -295,7 +295,7 @@ func TestCompileTunnel(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 
-	ct, ok := cp.Tunnels["csql-prod"]
+	ct, ok := cp.Tunnels["local_command.csql-prod"]
 	if !ok {
 		t.Fatal("missing csql-prod tunnel in CompiledPolicy")
 	}
@@ -309,7 +309,7 @@ func TestCompileTunnel(t *testing.T) {
 		t.Error("KeepaliveAlways = true, want false")
 	}
 
-	ep, ok := cp.Endpoints["deploy-classic"]
+	ep, ok := cp.Endpoints["postgres.deploy-classic"]
 	if !ok {
 		t.Fatal("missing deploy-classic endpoint")
 	}
@@ -417,7 +417,7 @@ func compileTunnelFingerprint(t *testing.T, src string, name string) string {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	ct := cp.Tunnels[name]
+	ct := cp.Tunnels["local_command."+name]
 	if ct == nil {
 		t.Fatalf("missing tunnel %q", name)
 	}

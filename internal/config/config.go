@@ -940,30 +940,32 @@ var builtinApproverNames = []string{"dashboard"}
 
 // buildEvalContext installs each declared block as a typed-ref
 // variable in the eval context. Two-label kinds bucket by Type:
-// `credential.foo` resolves to the string "foo". One-label kinds
-// bucket by Kind keyword: `rule.foo`, `profile.foo`.
+// `credential.foo` resolves to the QName string "credential_type.foo".
+// One-label kinds bucket by Kind keyword: `rule.foo`, `profile.foo` —
+// the leaf is the bare name since QName == Name there.
 // Built-in approvers live under a synthetic "builtin" type so
 // `approve = [builtin.dashboard]` works without a declaration.
 //
-// The leaf string stays the bare name so existing plugin decode
-// paths (`Credential string`) keep working unchanged — the symbol
-// table lookup at compile time uses (kind, name).
+// The leaf string is the symbol's QName so downstream consumers
+// (plugin Endpoint/Credential body fields, framework Refs, p.Order,
+// Policy maps) share one key space: "type.name" for two-label kinds,
+// the bare name for one-label kinds.
 func buildEvalContext(table *SymbolTable) *hcl.EvalContext {
 	buckets := map[string]map[string]cty.Value{}
-	put := func(bucket, name string) {
+	put := func(bucket, key, leaf string) {
 		m := buckets[bucket]
 		if m == nil {
 			m = map[string]cty.Value{}
 			buckets[bucket] = m
 		}
-		m[name] = cty.StringVal(name)
+		m[key] = cty.StringVal(leaf)
 	}
 	for _, sym := range table.byKey {
 		switch sym.Kind.LabelCount() {
 		case 2:
-			put(sym.Type, sym.Name)
+			put(sym.Type, sym.Name, sym.QName())
 		case 1:
-			put(string(sym.Kind), sym.Name)
+			put(string(sym.Kind), sym.Name, sym.Name)
 		}
 	}
 	vars := make(map[string]cty.Value, len(buckets))
@@ -984,7 +986,7 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 		diags = append(diags, d...)
 		// Cross-check: each credential name resolves to a credential.
 		for _, c := range pr.Credentials {
-			if table.Get(KindCredential, c) != nil {
+			if table.GetByQName(KindCredential, c) != nil {
 				continue
 			}
 			diags = append(diags, &hcl.Diagnostic{
@@ -994,8 +996,8 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 				Subject:  &sym.Block.DefRange,
 			})
 		}
-		p.Profiles[sym.Name] = pr
-		p.Order = append(p.Order, sym.Name)
+		p.Profiles[sym.QName()] = pr
+		p.Order = append(p.Order, sym.QName())
 	}
 
 	// Decode order: credentials and tunnels first (no cross-deps on
@@ -1051,19 +1053,20 @@ func decodePolicyBlocks(p *Policy, table *SymbolTable, evalCtx *hcl.EvalContext,
 				Refs:      refs,
 				Framework: fw,
 			}
+			qname := sym.QName()
 			switch kind {
 			case KindApprover:
-				p.Approvers[sym.Name] = ent
+				p.Approvers[qname] = ent
 			case KindCredential:
-				p.Credentials[sym.Name] = ent
+				p.Credentials[qname] = ent
 			case KindTunnel:
-				p.Tunnels[sym.Name] = ent
+				p.Tunnels[qname] = ent
 			case KindEndpoint:
-				p.Endpoints[sym.Name] = ent
+				p.Endpoints[qname] = ent
 			case KindRule:
-				p.Rules[sym.Name] = ent
+				p.Rules[qname] = ent
 			}
-			p.Order = append(p.Order, sym.Name)
+			p.Order = append(p.Order, qname)
 		}
 	}
 
@@ -1088,7 +1091,7 @@ func validateCredentialBindings(p *Policy) hcl.Diagnostics {
 		if single != "" && len(list) > 0 {
 			diags = append(diags, &hcl.Diagnostic{
 				Severity: hcl.DiagError,
-				Summary:  fmt.Sprintf("Both endpoint and endpoints set on credential %q", ent.Symbol.Name),
+				Summary:  fmt.Sprintf("Both endpoint and endpoints set on credential %q", ent.Symbol.QName()),
 				Detail:   "Use exactly one of `endpoint = X` (singular) or `endpoints = [X, Y, ...]` (list).",
 				Subject:  &ent.Symbol.Block.DefRange,
 			})
@@ -1127,7 +1130,7 @@ func validateProfileDisambiguators(p *Policy, table *SymbolTable) hcl.Diagnostic
 		if table == nil {
 			return nil
 		}
-		sym := table.Get(KindProfile, name)
+		sym := table.GetByQName(KindProfile, name)
 		if sym == nil || sym.Block == nil {
 			return nil
 		}
@@ -1138,7 +1141,7 @@ func validateProfileDisambiguators(p *Policy, table *SymbolTable) hcl.Diagnostic
 		if table == nil {
 			return nil
 		}
-		sym := table.Get(KindCredential, name)
+		sym := table.GetByQName(KindCredential, name)
 		if sym == nil || sym.Block == nil {
 			return nil
 		}

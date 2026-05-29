@@ -67,7 +67,7 @@ rule "writes" {
 		t.Fatal("compiled profile HITLAsyncGrants = false, want true")
 	}
 
-	reader, ok := gw.Policy.Approvers["ops"].Body.(interface {
+	reader, ok := gw.Policy.Approvers["human_approver.ops"].Body.(interface {
 		HITLAsyncGrantEnabled() bool
 		HITLSyncWaitTimeout() time.Duration
 		HITLAsyncApprovalTTL() time.Duration
@@ -76,7 +76,7 @@ rule "writes" {
 		HITLAsyncFingerprintBody() string
 	})
 	if !ok {
-		t.Fatalf("human approver body does not expose async HITL reader: %T", gw.Policy.Approvers["ops"].Body)
+		t.Fatalf("human approver body does not expose async HITL reader: %T", gw.Policy.Approvers["human_approver.ops"].Body)
 	}
 	if !reader.HITLAsyncGrantEnabled() {
 		t.Fatal("async grant disabled, want enabled")
@@ -150,7 +150,7 @@ func TestHITLAsyncConfigReaderDefaultsWithoutAsyncGrant(t *testing.T) {
 	if diags.HasErrors() {
 		t.Fatalf("load: %v", diags)
 	}
-	reader, ok := gw.Policy.Approvers["ops"].Body.(interface {
+	reader, ok := gw.Policy.Approvers["human_approver.ops"].Body.(interface {
 		HITLAsyncGrantEnabled() bool
 		HITLSyncWaitTimeout() time.Duration
 		HITLAsyncApprovalTTL() time.Duration
@@ -159,7 +159,7 @@ func TestHITLAsyncConfigReaderDefaultsWithoutAsyncGrant(t *testing.T) {
 		HITLAsyncFingerprintBody() string
 	})
 	if !ok {
-		t.Fatalf("human approver body does not expose async HITL reader: %T", gw.Policy.Approvers["ops"].Body)
+		t.Fatalf("human approver body does not expose async HITL reader: %T", gw.Policy.Approvers["human_approver.ops"].Body)
 	}
 	if reader.HITLAsyncGrantEnabled() {
 		t.Fatal("async grant enabled, want disabled")

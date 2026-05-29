@@ -307,10 +307,11 @@ func (PostgresEndpointRuntime) HandleConn(ctx context.Context, ch *runtime.ConnH
 	}
 
 	// Step 7: bidirectional pump with per-query inspection. The
-	// picked credential's bare name flows into match.Request.Credential
-	// so SQL rules with `match = { credential = pg-deployng-ro }`
-	// resolve against the right account.
-	credName := cc.Credential.Symbol.Name
+	// picked credential's QName flows into match.Request.Credential
+	// so SQL rules with `credential = postgres_credential.pg-deployng-ro`
+	// resolve against the right account — the rule's Credential field
+	// is QName after the parse, so the runtime predicate must match.
+	credName := cc.Credential.Symbol.QName()
 	done := make(chan struct{}, 2)
 	go func() {
 		_, _ = io.Copy(ch.Conn, upstream)

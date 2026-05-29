@@ -50,7 +50,7 @@ rule "allow-telegram" {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	ep := policy.Endpoints["telegram_api"]
+	ep := policy.Endpoints["https.telegram_api"]
 
 	upstreamBodies := make(chan string, 1)
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

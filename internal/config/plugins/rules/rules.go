@@ -120,7 +120,7 @@ func (r *Rule) Compile() (*config.CompiledRule, []string, error) {
 func inferFamily(endpoints []string, name string, ctx *config.BuildCtx) (string, *hcl.Diagnostic) {
 	seen := map[string]struct{}{}
 	for _, ep := range endpoints {
-		sym := ctx.Symbols.Get(config.KindEndpoint, ep)
+		sym := ctx.Symbols.GetByQName(config.KindEndpoint, ep)
 		if sym == nil || sym.Family == "" {
 			continue
 		}
@@ -306,7 +306,7 @@ func requireKind(ctx *config.BuildCtx, name string, kind config.Kind, ruleName, 
 	if name == "" {
 		return nil
 	}
-	if ctx.Symbols.Get(kind, name) != nil {
+	if ctx.Symbols.GetByQName(kind, name) != nil {
 		return nil
 	}
 	return &hcl.Diagnostic{

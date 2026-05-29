@@ -23,7 +23,7 @@ import (
 const (
 	hitlRetryRelayTestProfile      = "default"
 	hitlRetryRelayTestPeerIP       = "pipe"
-	hitlRetryRelayTestEndpoint     = "api"
+	hitlRetryRelayTestEndpoint     = "https.api"
 	hitlRetryRelayTestRule         = "approved-post"
 	hitlRetryRelayTestApprover     = "human_approver.ops"
 	hitlRetryRelayTestHost         = "api.example.test"
@@ -260,7 +260,7 @@ profile "default" {
 	}
 
 	approver := &hitlRetryRelayDenyApprover{}
-	policy.Approvers["ops"] = &config.Entity{Symbol: &config.Symbol{Name: "ops"}, Body: approver}
+	policy.Approvers["human_approver.ops"] = &config.Entity{Symbol: &config.Symbol{Name: "ops"}, Body: approver}
 
 	upstreamRequests := make(chan hitlRetryRelayUpstreamRequest, 2)
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

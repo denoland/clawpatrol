@@ -52,13 +52,13 @@ profile "default" { credentials = [bearer_token.pat] }
 	if err != nil {
 		t.Fatalf("compile config: %v", err)
 	}
-	ep := policy.Endpoints["api"]
+	ep := policy.Endpoints["https.api"]
 	if ep == nil {
 		t.Fatal("missing compiled api endpoint")
 	}
 
 	seenBodySamples := make(chan string, 1)
-	policy.Approvers["capture"] = &config.Entity{
+	policy.Approvers["human_approver.capture"] = &config.Entity{
 		Symbol: &config.Symbol{Name: "capture"},
 		Body:   captureBodySampleApprover{seen: seenBodySamples},
 	}

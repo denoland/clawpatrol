@@ -1,1 +1,1 @@
-error: error_wrong_kind.hcl:21:1: Unknown endpoint "shared" — No endpoint named "shared" is declared in this file.
+error: error_wrong_kind.hcl:21:1: Unknown endpoint "bearer_token.shared" — No endpoint named "bearer_token.shared" is declared in this file.

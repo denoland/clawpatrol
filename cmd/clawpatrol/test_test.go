@@ -30,7 +30,7 @@ func loadExamplePolicy(t *testing.T) *config.CompiledPolicy {
 // compile of the shipped sample.
 func TestExampleConfigCompiles(t *testing.T) {
 	policy := loadExamplePolicy(t)
-	if policy.Endpoints["github"] == nil {
+	if policy.Endpoints["https.github"] == nil {
 		t.Fatal("expected endpoint 'github' in compiled policy")
 	}
 }
@@ -128,8 +128,8 @@ profile "default" { credentials = [bearer_token.a, bearer_token.b] }
 		if err != nil {
 			t.Fatal(err)
 		}
-		if ep.Name != "gamma" {
-			t.Fatalf("got %q want gamma", ep.Name)
+		if ep.Name != "https.gamma" {
+			t.Fatalf("got %q want https.gamma", ep.Name)
 		}
 	})
 
@@ -147,8 +147,8 @@ profile "default" { credentials = [bearer_token.a, bearer_token.b] }
 		if err != nil {
 			t.Fatal(err)
 		}
-		if ep.Name != "beta" {
-			t.Fatalf("got %q want beta", ep.Name)
+		if ep.Name != "https.beta" {
+			t.Fatalf("got %q want https.beta", ep.Name)
 		}
 	})
 

@@ -61,7 +61,7 @@ func TestExporterHTTPSHappyPath(t *testing.T) {
 		Path:     "/user",
 		AgentIP:  "100.64.0.7",
 		Action:   "allow",
-		Endpoint: "github",
+		Endpoint: "https.github",
 		Rule:     "github-reads",
 		ReqHeaders: map[string]string{
 			"Authorization": "***",
@@ -135,7 +135,7 @@ profile "default" { credentials = [bearer_token.a, bearer_token.b] }
 	ev := &Event{
 		ID: "evt-3", Mode: "mitm", Family: "https",
 		Host: "api.example.com", Method: "GET", Path: "/x",
-		Action: "allow", Endpoint: "beta", Rule: "",
+		Action: "allow", Endpoint: "https.beta", Rule: "",
 	}
 	rw := httptest.NewRecorder()
 	w.writeActionFixture(rw, ev)
@@ -186,7 +186,7 @@ profile "default" { credentials = [postgres_credential.pg-cred] }
 	w := &webMux{g: gatewayWithPolicy(t, hcl)}
 	ev := &Event{
 		ID: "evt-sql-1", Mode: "pg", Family: "sql",
-		Host: "10.0.0.5", Action: "allow", Endpoint: "pg",
+		Host: "10.0.0.5", Action: "allow", Endpoint: "postgres.pg",
 		Rule:   "pg-reads",
 		Facets: map[string]any{"statement": "SELECT 1"},
 	}
@@ -228,7 +228,7 @@ profile "default" { credentials = [postgres_credential.pg-cred] }
 	// round-trip turns []string into []any).
 	ev := &Event{
 		ID: "evt-sql-facets", Mode: "pg", Family: "sql",
-		Host: "10.0.0.5", Action: "allow", Endpoint: "pg",
+		Host: "10.0.0.5", Action: "allow", Endpoint: "postgres.pg",
 		Rule: "pg-reads",
 		Facets: map[string]any{
 			"statement": "SELECT count(*) FROM users",
@@ -286,7 +286,7 @@ profile "default" { credentials = [postgres_credential.pg-cred] }
 	w := &webMux{g: gatewayWithPolicy(t, hcl)}
 	ev := &Event{
 		ID: "evt-sql-bare", Mode: "pg", Family: "sql",
-		Host: "10.0.0.5", Action: "allow", Endpoint: "pg",
+		Host: "10.0.0.5", Action: "allow", Endpoint: "postgres.pg",
 		Rule:   "pg-reads",
 		Facets: map[string]any{"statement": "SELECT 1"},
 	}
@@ -321,7 +321,7 @@ credential "postgres_credential" "pg-cred" {
 profile "default" { credentials = [postgres_credential.pg-cred] }
 `
 	w := &webMux{g: gatewayWithPolicy(t, hcl)}
-	ev := &Event{ID: "evt-sql-2", Action: "allow", Endpoint: "pg"}
+	ev := &Event{ID: "evt-sql-2", Action: "allow", Endpoint: "postgres.pg"}
 	rw := httptest.NewRecorder()
 	w.writeActionFixture(rw, ev)
 	if rw.Code != 400 {
@@ -349,7 +349,7 @@ profile "default" { credentials = [mtls_credential.kube-mtls] }
 	w := &webMux{g: gatewayWithPolicy(t, hcl)}
 	ev := &Event{
 		ID: "evt-k8s-1", Mode: "mitm", Family: "k8s",
-		Host: "10.0.0.7", Action: "deny", Endpoint: "kube",
+		Host: "10.0.0.7", Action: "deny", Endpoint: "kubernetes.kube",
 		Rule: "k8s-no-secrets",
 		Facets: map[string]any{
 			"verb": "get", "resource": "secrets",
@@ -411,7 +411,7 @@ profile "default" { credentials = [bearer_token.tok] }
 		ID: "evt-rt", Mode: "mitm", Family: "https",
 		Host: "api.github.com", Method: "GET", Path: "/user",
 		AgentIP: "100.64.0.7", Action: "allow",
-		Endpoint: "github", Rule: "reads",
+		Endpoint: "https.github", Rule: "reads",
 	}
 	rw := httptest.NewRecorder()
 	w.writeActionFixture(rw, ev)

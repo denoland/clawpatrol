@@ -18,7 +18,7 @@
   },
   "policy": {
     "approvers": {
-      "ops": {
+      "human_approver.ops": {
         "body": {
           "Channel": "#agent-ops",
           "Credential": "",
@@ -32,16 +32,16 @@
       }
     },
     "credentials": {
-      "github": {
+      "bearer_token.github": {
         "body": {
           "IdempotencyKey": false
         },
-        "endpoint": "github",
+        "endpoint": "https.github",
         "type": "bearer_token"
       }
     },
     "endpoints": {
-      "github": {
+      "https.github": {
         "body": {
           "Hosts": [
             "api.github.com",
@@ -55,7 +55,7 @@
     "profiles": {
       "default": {
         "credentials": [
-          "github"
+          "bearer_token.github"
         ]
       }
     },
@@ -65,7 +65,7 @@
           "name": "github-reads",
           "family": "http",
           "endpoints": [
-            "github"
+            "https.github"
           ],
           "condition": "http.method in ['GET', 'HEAD']",
           "verdict": "allow"
@@ -76,12 +76,12 @@
           "name": "github-writes",
           "family": "http",
           "endpoints": [
-            "github"
+            "https.github"
           ],
           "condition": "http.method in ['POST', 'PUT', 'PATCH', 'DELETE']",
           "approve": [
             {
-              "name": "ops"
+              "name": "human_approver.ops"
             }
           ]
         }

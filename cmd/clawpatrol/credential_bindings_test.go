@@ -54,8 +54,8 @@ rule "default-allow" {
 		profiles  []string
 		endpoints []string
 	}{
-		{"alpha", []string{"prod"}, []string{"alpha_api"}},
-		{"beta", []string{"prod", "staging"}, []string{"beta_api", "beta_api_2"}},
+		{"alpha", []string{"prod"}, []string{"https.alpha_api"}},
+		{"beta", []string{"prod", "staging"}, []string{"https.beta_api", "https.beta_api_2"}},
 		{"orphan", nil, nil},
 	}
 	for _, c := range cases {
@@ -162,7 +162,7 @@ credential "postgres_credential" "db" {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	ent := policy.Credentials["db"]
+	ent := policy.Credentials["postgres_credential.db"]
 	if ent == nil {
 		t.Fatal("missing db credential")
 	}

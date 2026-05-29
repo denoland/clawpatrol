@@ -82,7 +82,7 @@ func compileFixture(t *testing.T, src string) *config.CompiledPolicy {
 func TestHostEndpoint(t *testing.T) {
 	cp := compile(t)
 
-	if got := runtime.HostEndpoint(cp, "default", "api.github.com"); got == nil || got.Name != "github" {
+	if got := runtime.HostEndpoint(cp, "default", "api.github.com"); got == nil || got.Name != "https.github" {
 		t.Errorf("default profile / api.github.com → %+v", got)
 	}
 	if got := runtime.HostEndpoint(cp, "default", "unknown.example"); got != nil {
@@ -108,10 +108,10 @@ credential "bearer_token" "eks-cred" { endpoint = https.eks }
 profile "default" { credentials = [bearer_token.eks-cred] }
 `)
 
-	if got := runtime.HostEndpoint(cp, "default", "ab123.gr7.us-east-2.eks.amazonaws.com"); got == nil || got.Name != "eks" {
+	if got := runtime.HostEndpoint(cp, "default", "ab123.gr7.us-east-2.eks.amazonaws.com"); got == nil || got.Name != "https.eks" {
 		t.Fatalf("lowercase SNI against uppercase config: got %+v, want eks", got)
 	}
-	if got := runtime.HostEndpoint(cp, "default", "AB123.GR7.US-EAST-2.EKS.AMAZONAWS.COM"); got == nil || got.Name != "eks" {
+	if got := runtime.HostEndpoint(cp, "default", "AB123.GR7.US-EAST-2.EKS.AMAZONAWS.COM"); got == nil || got.Name != "https.eks" {
 		t.Fatalf("uppercase lookup: got %+v, want eks", got)
 	}
 }
@@ -125,13 +125,13 @@ credential "bearer_token" "api-tok" { endpoint = https.api }
 profile "default" { credentials = [bearer_token.api-tok] }
 `)
 
-	if got := runtime.HostEndpoint(cp, "default", "api.example.com"); got == nil || got.Name != "api" {
+	if got := runtime.HostEndpoint(cp, "default", "api.example.com"); got == nil || got.Name != "https.api" {
 		t.Fatalf("bare SNI host resolved to %+v, want api", got)
 	}
-	if got := runtime.HostEndpoint(cp, "default", "api.example.com:443"); got == nil || got.Name != "api" {
+	if got := runtime.HostEndpoint(cp, "default", "api.example.com:443"); got == nil || got.Name != "https.api" {
 		t.Fatalf("exact port-qualified host resolved to %+v, want api", got)
 	}
-	if got := runtime.HostEndpoint(cp, "missing-profile", "api.example.com"); got == nil || got.Name != "api" {
+	if got := runtime.HostEndpoint(cp, "missing-profile", "api.example.com"); got == nil || got.Name != "https.api" {
 		t.Fatalf("fallback scan resolved to %+v, want api", got)
 	}
 }
@@ -145,10 +145,10 @@ credential "bearer_token" "tok" { endpoint = kubernetes.cluster }
 profile "default" { credentials = [bearer_token.tok] }
 `)
 
-	if got := runtime.HostEndpoint(cp, "default", "cluster.example.com"); got == nil || got.Name != "cluster" {
+	if got := runtime.HostEndpoint(cp, "default", "cluster.example.com"); got == nil || got.Name != "kubernetes.cluster" {
 		t.Fatalf("bare Kubernetes SNI host resolved to %+v, want cluster", got)
 	}
-	if got := runtime.HostEndpoint(cp, "default", "cluster.example.com:443"); got == nil || got.Name != "cluster" {
+	if got := runtime.HostEndpoint(cp, "default", "cluster.example.com:443"); got == nil || got.Name != "kubernetes.cluster" {
 		t.Fatalf("exact Kubernetes server host resolved to %+v, want cluster", got)
 	}
 }
@@ -166,10 +166,10 @@ credential "bearer_token" "bare-tok" { endpoint = https.bare }
 profile "default" { credentials = [bearer_token.pq-tok, bearer_token.bare-tok] }
 `)
 
-	if got := runtime.HostEndpoint(cp, "default", "api.example.com"); got == nil || got.Name != "bare" {
+	if got := runtime.HostEndpoint(cp, "default", "api.example.com"); got == nil || got.Name != "https.bare" {
 		t.Fatalf("bare host resolved to %+v, want explicit bare endpoint", got)
 	}
-	if got := runtime.HostEndpoint(cp, "default", "api.example.com:443"); got == nil || got.Name != "port_qualified" {
+	if got := runtime.HostEndpoint(cp, "default", "api.example.com:443"); got == nil || got.Name != "https.port_qualified" {
 		t.Fatalf("port-qualified host resolved to %+v, want port-qualified endpoint", got)
 	}
 }
@@ -186,7 +186,7 @@ profile "default" { credentials = [bearer_token.tok] }
 	if got := runtime.HostEndpoint(cp, "default", "api.example.com"); got != nil {
 		t.Fatalf("bare host resolved to %+v, want nil for non-default port alias", got)
 	}
-	if got := runtime.HostEndpoint(cp, "default", "api.example.com:8443"); got == nil || got.Name != "api" {
+	if got := runtime.HostEndpoint(cp, "default", "api.example.com:8443"); got == nil || got.Name != "https.api" {
 		t.Fatalf("exact non-default port host resolved to %+v, want api", got)
 	}
 }
@@ -203,7 +203,7 @@ profile "default" { credentials = [postgres_credential.db-cred] }
 	if got := runtime.HostEndpoint(cp, "default", "db.example.com"); got != nil {
 		t.Fatalf("bare SQL host resolved to %+v, want nil", got)
 	}
-	if got := runtime.HostEndpoint(cp, "default", "db.example.com:5432"); got == nil || got.Name != "db" {
+	if got := runtime.HostEndpoint(cp, "default", "db.example.com:5432"); got == nil || got.Name != "postgres.db" {
 		t.Fatalf("exact SQL host resolved to %+v, want db", got)
 	}
 }
@@ -221,7 +221,7 @@ credential "postgres_credential" "db-cred" { endpoint = postgres.db }
 profile "default" { credentials = [bearer_token.api-tok, postgres_credential.db-cred] }
 `)
 
-	if got := runtime.HostEndpoint(cp, "default", "api.example.com"); got == nil || got.Name != "api" {
+	if got := runtime.HostEndpoint(cp, "default", "api.example.com"); got == nil || got.Name != "https.api" {
 		t.Fatalf("bare SNI host resolved to %+v, want HTTPS endpoint", got)
 	}
 }
@@ -240,9 +240,9 @@ profile "default" { credentials = [bearer_token.aws-tok] }
 		host string
 		want string
 	}{
-		{"s3.amazonaws.com", "aws-ep"},
-		{"dynamodb.us-east-1.amazonaws.com", "aws-ep"},
-		{"AB.AMAZONAWS.COM", "aws-ep"},
+		{"s3.amazonaws.com", "https.aws-ep"},
+		{"dynamodb.us-east-1.amazonaws.com", "https.aws-ep"},
+		{"AB.AMAZONAWS.COM", "https.aws-ep"},
 		{"amazonaws.com", ""},
 		{"notamazonaws.com", ""},
 		{"foo.bar", ""},
@@ -275,11 +275,11 @@ credential "bearer_token" "s3-tok" {
 }
 profile "default" { credentials = [bearer_token.aws-tok, bearer_token.s3-tok] }
 `)
-	if got := runtime.HostEndpoint(cp, "default", "s3.amazonaws.com"); got == nil || got.Name != "s3-ep" {
-		t.Fatalf("exact host should beat wildcard: got %+v, want s3-ep", got)
+	if got := runtime.HostEndpoint(cp, "default", "s3.amazonaws.com"); got == nil || got.Name != "https.s3-ep" {
+		t.Fatalf("exact host should beat wildcard: got %+v, want https.s3-ep", got)
 	}
-	if got := runtime.HostEndpoint(cp, "default", "dynamodb.amazonaws.com"); got == nil || got.Name != "aws-ep" {
-		t.Fatalf("uncovered subdomain should fall to wildcard: got %+v, want aws-ep", got)
+	if got := runtime.HostEndpoint(cp, "default", "dynamodb.amazonaws.com"); got == nil || got.Name != "https.aws-ep" {
+		t.Fatalf("uncovered subdomain should fall to wildcard: got %+v, want https.aws-ep", got)
 	}
 }
 
@@ -299,11 +299,11 @@ credential "bearer_token" "aws-tok" {
 }
 profile "default" { credentials = [bearer_token.aws-tok, bearer_token.east-tok] }
 `)
-	if got := runtime.HostEndpoint(cp, "default", "s3.us-east-1.amazonaws.com"); got == nil || got.Name != "east-ep" {
-		t.Fatalf("longest suffix should win: got %+v, want east-ep", got)
+	if got := runtime.HostEndpoint(cp, "default", "s3.us-east-1.amazonaws.com"); got == nil || got.Name != "https.east-ep" {
+		t.Fatalf("longest suffix should win: got %+v, want https.east-ep", got)
 	}
-	if got := runtime.HostEndpoint(cp, "default", "s3.us-west-2.amazonaws.com"); got == nil || got.Name != "aws-ep" {
-		t.Fatalf("shorter pattern picks up the rest: got %+v, want aws-ep", got)
+	if got := runtime.HostEndpoint(cp, "default", "s3.us-west-2.amazonaws.com"); got == nil || got.Name != "https.aws-ep" {
+		t.Fatalf("shorter pattern picks up the rest: got %+v, want https.aws-ep", got)
 	}
 }
 
@@ -317,8 +317,8 @@ credential "bearer_token" "aws-tok" {
 }
 profile "default" { credentials = [bearer_token.aws-tok] }
 `)
-	if got := runtime.HostEndpoint(cp, "default", "s3.amazonaws.com"); got == nil || got.Name != "aws-ep" {
-		t.Fatalf("port-qualified wildcard should match bare SNI: got %+v, want aws-ep", got)
+	if got := runtime.HostEndpoint(cp, "default", "s3.amazonaws.com"); got == nil || got.Name != "https.aws-ep" {
+		t.Fatalf("port-qualified wildcard should match bare SNI: got %+v, want https.aws-ep", got)
 	}
 }
 
@@ -332,8 +332,8 @@ credential "bearer_token" "aws-tok" {
 }
 profile "tenant" { credentials = [bearer_token.aws-tok] }
 `)
-	if got := runtime.HostEndpoint(cp, "missing-profile", "s3.amazonaws.com"); got == nil || got.Name != "aws-ep" {
-		t.Fatalf("fallback scan should find wildcard match across profiles: got %+v, want aws-ep", got)
+	if got := runtime.HostEndpoint(cp, "missing-profile", "s3.amazonaws.com"); got == nil || got.Name != "https.aws-ep" {
+		t.Fatalf("fallback scan should find wildcard match across profiles: got %+v, want https.aws-ep", got)
 	}
 }
 
@@ -341,7 +341,7 @@ profile "tenant" { credentials = [bearer_token.aws-tok] }
 // dispatch and the default catch-all (priority -100).
 func TestMatchRequest(t *testing.T) {
 	cp := compile(t)
-	ep := cp.Endpoints["github"]
+	ep := cp.Endpoints["https.github"]
 
 	cases := []struct {
 		name   string
@@ -398,7 +398,7 @@ rule "default-deny" {
   reason   = "no policy matched"
 }
 `)
-	ep := cp.Endpoints["db"]
+	ep := cp.Endpoints["postgres.db"]
 
 	// Untruncated SELECT → allow fires normally.
 	req := &match.Request{
@@ -456,12 +456,12 @@ rule "body-deny" {
   verdict   = "deny"
 }
 `)
-	ep := cp.Endpoints["api"]
+	ep := cp.Endpoints["https.api"]
 
 	req := &match.Request{
 		Family:     "https",
 		Method:     "POST",
-		Credential: "tok",
+		Credential: "bearer_token.tok",
 		Body:       []byte("anything"),
 		Truncated:  true,
 	}
@@ -510,7 +510,7 @@ rule "verb-deny" {
   reason    = "writes blocked"
 }
 `)
-	ep := cp.Endpoints["ch"]
+	ep := cp.Endpoints["clickhouse_native.ch"]
 
 	req := &match.Request{
 		Family:      "sql",
@@ -552,7 +552,7 @@ rule "verb-allow" {
   verdict   = "allow"
 }
 `)
-	ep := cp.Endpoints["ch"]
+	ep := cp.Endpoints["clickhouse_native.ch"]
 
 	req := &match.Request{
 		Family:      "sql",
@@ -601,7 +601,7 @@ rule "tables-deny" {
   reason    = "secrets denied"
 }
 `)
-	ep := cp.Endpoints["ch"]
+	ep := cp.Endpoints["clickhouse_native.ch"]
 
 	req := &match.Request{
 		Family:      "sql",
@@ -632,7 +632,7 @@ endpoint "clickhouse_native" "ch" { hosts = ["ch.example:9000"] }
 credential "clickhouse_credential" "ch-cred" { endpoint = clickhouse_native.ch }
 profile "default" { credentials = [clickhouse_credential.ch-cred] }
 `)
-	ep := cp.Endpoints["ch"]
+	ep := cp.Endpoints["clickhouse_native.ch"]
 
 	req := &match.Request{
 		Family:      "sql",
@@ -661,7 +661,7 @@ rule "verb-allow-select" {
   verdict   = "allow"
 }
 `)
-	ep := cp.Endpoints["ch"]
+	ep := cp.Endpoints["clickhouse_native.ch"]
 
 	req := &match.Request{
 		Family: "sql",
@@ -701,11 +701,11 @@ rule "verb-deny" {
   verdict   = "deny"
 }
 `)
-	ep := cp.Endpoints["ch"]
+	ep := cp.Endpoints["clickhouse_native.ch"]
 
 	req := &match.Request{
 		Family:      "sql",
-		Credential:  "tok",
+		Credential:  "clickhouse_credential.tok",
 		Meta:        newSQLMetaWithStatement("WITH cte AS (...) INSERT INTO dst SELECT id FROM cte"),
 		Unparseable: true,
 	}
@@ -722,7 +722,7 @@ rule "verb-deny" {
 // returned without consulting the endpoint plugin's detector.
 func TestResolveCredentialSingular(t *testing.T) {
 	cp := compile(t)
-	ep := cp.Endpoints["github"]
+	ep := cp.Endpoints["https.github"]
 	got := runtime.ResolveCredential(cp, "default", ep, &match.Request{Family: "http", Headers: http.Header{}})
 	if got == nil || got.Credential.Symbol.Name != "pat" {
 		t.Errorf("singular credential resolution wrong: %+v", got)
@@ -829,7 +829,7 @@ profile "default" {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	ep := cp.Endpoints["ep"]
+	ep := cp.Endpoints["https.ep"]
 
 	mkReq := func(authz string) *match.Request {
 		h := http.Header{}
@@ -880,7 +880,7 @@ credential "clickhouse_credential" "fallback" {
 profile "default" { credentials = [clickhouse_credential.prod, clickhouse_credential.dev, clickhouse_credential.fallback] }
 `
 	cp := compileFixture(t, src)
-	ep := cp.Endpoints["ep"]
+	ep := cp.Endpoints["clickhouse_native.ep"]
 
 	cases := []struct {
 		db   string
@@ -927,7 +927,7 @@ credential "clickhouse_credential" "any" {
 profile "default" { credentials = [clickhouse_credential.ro-prod, clickhouse_credential.ro-any, clickhouse_credential.any] }
 `
 	cp := compileFixture(t, src)
-	ep := cp.Endpoints["ep"]
+	ep := cp.Endpoints["clickhouse_native.ep"]
 
 	mkReq := func(user, db string) *match.Request {
 		return &match.Request{
@@ -994,7 +994,7 @@ profile "default" {
 	} {
 		t.Run(tc.shape, func(t *testing.T) {
 			cp := compileFixture(t, tc.src)
-			ep := cp.Endpoints["ep"]
+			ep := cp.Endpoints["clickhouse_native.ep"]
 			cases := []struct{ db, want string }{
 				{"prod", "ch-prod"},
 				{"dev", "ch-dev"},
@@ -1036,7 +1036,7 @@ profile "default" {
 }
 `
 	cp := compileFixture(t, src)
-	ep := cp.Endpoints["ep"]
+	ep := cp.Endpoints["clickhouse_native.ep"]
 
 	got := runtime.ResolveCredential(cp, "default", ep, &match.Request{Family: "sql", Database: "override-a"})
 	if got == nil || got.Credential.Symbol.Name != "ch-a" {
@@ -1075,7 +1075,7 @@ credential "postgres_credential" "rw" {
 profile "default" { credentials = [postgres_credential.ro, postgres_credential.rw] }
 `
 		cp := compileFixture(t, src)
-		ep := cp.Endpoints["pg"]
+		ep := cp.Endpoints["postgres.pg"]
 		mk := func(user string) *match.Request {
 			return &match.Request{Family: "sql", User: user, Meta: &sqlfacet.Meta{Statement: user}}
 		}
@@ -1143,7 +1143,7 @@ credential "bearer_token" "fallback" { endpoint = https.ep }
 profile "default" { credentials = [bearer_token.test, bearer_token.prod, bearer_token.fallback] }
 `
 		cp := compileFixture(t, src)
-		ep := cp.Endpoints["ep"]
+		ep := cp.Endpoints["https.ep"]
 		mkReq := func(authz string) *match.Request {
 			h := http.Header{}
 			if authz != "" {
@@ -1184,7 +1184,7 @@ profile "data"     { credentials = [postgres_credential.pg-readonly] }
 profile "platform" { credentials = [postgres_credential.pg-writer] }
 `
 	cp := compileFixture(t, src)
-	ep := cp.Endpoints["pg"]
+	ep := cp.Endpoints["postgres.pg"]
 
 	mkReq := func(user string) *match.Request {
 		return &match.Request{
@@ -1213,6 +1213,52 @@ profile "platform" { credentials = [postgres_credential.pg-writer] }
 	got = runtime.ResolveCredential(cp, "platform", ep, mkReq("agent_ro"))
 	if got != nil && got.Credential.Symbol.Name == "pg-readonly" {
 		t.Errorf("platform profile / user=agent_ro resolved sibling readonly credential: %+v", got)
+	}
+}
+
+// TestEndpointsByQNameDispatch covers the cross-type same-name case
+// the (kind,type,name) refactor enables: two endpoints sharing the
+// bare name "api" but of different types (https vs postgres) coexist
+// in CompiledPolicy under distinct QName keys and dispatch picks the
+// right one when a rule names it.
+func TestEndpointsByQNameDispatch(t *testing.T) {
+	cp := compileFixture(t, `
+endpoint "https" "api" {
+  hosts = ["api.example.com"]
+}
+endpoint "postgres" "api" {
+  host = "pg.example:5432"
+}
+credential "bearer_token" "http-tok"   { endpoint = https.api }
+credential "postgres_credential" "pgc" { endpoint = postgres.api }
+profile "default" { credentials = [bearer_token.http-tok, postgres_credential.pgc] }
+
+rule "http-allow" {
+  endpoint = https.api
+  verdict  = "allow"
+}
+rule "pg-deny" {
+  endpoint = postgres.api
+  verdict  = "deny"
+  reason   = "no writes from this profile"
+}
+`)
+	httpEP := cp.Endpoints["https.api"]
+	if httpEP == nil {
+		t.Fatal(`cp.Endpoints["https.api"] missing`)
+	}
+	pgEP := cp.Endpoints["postgres.api"]
+	if pgEP == nil {
+		t.Fatal(`cp.Endpoints["postgres.api"] missing`)
+	}
+	if httpEP == pgEP {
+		t.Fatal("same-name endpoints of different types collapsed to one entry")
+	}
+	if r := runtime.MatchRequest(httpEP, &match.Request{Family: "http", Method: "GET"}); r == nil || r.Name != "http-allow" {
+		t.Errorf("https.api dispatch picked %+v, want http-allow", r)
+	}
+	if r := runtime.MatchRequest(pgEP, &match.Request{Family: "sql", Meta: newSQLMetaForVerb("insert")}); r == nil || r.Name != "pg-deny" {
+		t.Errorf("postgres.api dispatch picked %+v, want pg-deny", r)
 	}
 }
 

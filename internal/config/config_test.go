@@ -157,6 +157,53 @@ func itoa(n int) string {
 	return string(buf[i:])
 }
 
+// TestLoadKeysPolicyMapsByQName confirms that Policy.Credentials,
+// .Endpoints, .Approvers (the two-label kinds) key by QName so that
+// blocks of different types sharing a name coexist as distinct
+// entries. Profile / rule / policy stay bare-name since QName ==
+// Name for one-label kinds.
+func TestLoadKeysPolicyMapsByQName(t *testing.T) {
+	src := `
+gateway {
+  state_dir  = "/opt/clawpatrol"
+  public_url = "https://gw.example.test"
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+  }
+}
+
+endpoint "https" "api" {
+  hosts = ["api.example.test"]
+}
+credential "bearer_token" "ops" {
+  endpoint = https.api
+}
+credential "header_token" "ops" {
+  endpoint  = https.api
+  header    = "X-Token"
+}
+profile "default" {
+  credentials = [bearer_token.ops, { credential = header_token.ops, placeholder = "PH_alt" }]
+}
+`
+	gw, diags := config.LoadBytes([]byte(src), "qname.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %s", renderDiags(diags, "qname.hcl"))
+	}
+	if _, ok := gw.Policy.Credentials["bearer_token.ops"]; !ok {
+		t.Errorf(`Policy.Credentials missing "bearer_token.ops"`)
+	}
+	if _, ok := gw.Policy.Credentials["header_token.ops"]; !ok {
+		t.Errorf(`Policy.Credentials missing "header_token.ops"`)
+	}
+	if _, ok := gw.Policy.Endpoints["https.api"]; !ok {
+		t.Errorf(`Policy.Endpoints missing "https.api"`)
+	}
+	if _, ok := gw.Policy.Profiles["default"]; !ok {
+		t.Errorf(`Policy.Profiles missing "default" (one-label, QName == Name)`)
+	}
+}
+
 func writeGolden(t *testing.T, path string, content []byte) {
 	t.Helper()
 	if err := os.WriteFile(path, content, 0644); err != nil {
