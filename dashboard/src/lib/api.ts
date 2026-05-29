@@ -77,6 +77,12 @@ export type Integration = {
   // Zero/undefined for declared-only credentials that have never
   // been touched.
   updated_at?: number;
+  // Operator-readable failure reason from the credential plugin's
+  // last synchronous verification probe (e.g. Slack's
+  // "invalid_auth"). Present when the plugin has a verifier and the
+  // most recent probe failed; absent for verified-ok credentials and
+  // for plugins without a verifier.
+  verify_error?: string;
 };
 
 // tailscaleConnect asks the gateway for the live tsnet login URL.
@@ -103,13 +109,28 @@ export async function tailscaleDisconnect(disconnectURL: string): Promise<void> 
   if (!r.ok) throw new Error(await r.text());
 }
 
-export async function setCredentialSlots(id: string, slots: Record<string, string>): Promise<void> {
+// setCredentialSlots persists touched slots for a non-OAuth credential
+// and returns the backend's synchronous verification outcome. `verified`
+// is undefined when the plugin has no Verifier; true on a successful
+// probe; false (with `error`) when the probe rejected the saved
+// material so the connect form can surface the failure inline.
+export type SetCredentialResult = {
+  ok: boolean;
+  verified?: boolean;
+  error?: string;
+};
+
+export async function setCredentialSlots(
+  id: string,
+  slots: Record<string, string>,
+): Promise<SetCredentialResult> {
   const r = await fetch("/api/credentials/set", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ id, slots }),
   });
   if (!r.ok) throw new Error(await r.text());
+  return r.json();
 }
 
 export async function clearCredential(id: string): Promise<void> {

@@ -20,6 +20,7 @@ import (
 
 	"github.com/denoland/clawpatrol/internal/config"
 	"github.com/denoland/clawpatrol/internal/config/plugins/tailscaleproto"
+	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
 
 type Agent struct {
@@ -604,6 +605,13 @@ type IntegrationRow struct {
 	// most recently connected credential surfaces at the top of the
 	// non-pending rows.
 	UpdatedAt int64 `json:"updated_at,omitempty"`
+	// VerifyError carries the operator-readable reason the credential
+	// plugin's last synchronous verification probe rejected the saved
+	// material (e.g. "slack auth.test: invalid_auth"). Populated when
+	// the plugin implements runtime.CredentialVerifier and the most
+	// recent probe failed; empty for verified-ok and for plugins
+	// without a verifier.
+	VerifyError string `json:"verify_error,omitempty"`
 }
 
 // TailscaleAuthStatusUI is the dashboard-facing slice of a
@@ -692,6 +700,21 @@ func (w *webMux) statusList(r *http.Request) []IntegrationRow {
 			present, _ := credentialSlotPresence(w.g.db, name)
 			if len(present) > 0 {
 				row.Connected = true
+			}
+			// Plugins that ship a synchronous verification probe
+			// (Slack auth.test, Discord users/@me) downgrade Connected
+			// to the verification outcome: a paste that Slack rejects
+			// must surface as disconnected with the failure reason,
+			// not as connected just because tokens are in the DB.
+			// Credentials without a verifier fall through with the
+			// slot-presence answer above.
+			if _, hasVerifier := ent.Body.(runtime.CredentialVerifier); hasVerifier {
+				if v, ok := getCredentialVerification(w.g.db, name); ok {
+					row.Connected = v.Status == "ok"
+					if v.Status == "failed" {
+						row.VerifyError = v.Error
+					}
+				}
 			}
 		}
 		if _, ok := ent.Body.(tailscaleproto.TailscaleAuthProvider); ok {
