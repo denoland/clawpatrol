@@ -136,6 +136,7 @@ func runRun(args []string) {
 	caPath := filepath.Join(defaultClawpatrolDir(), "ca.crt")
 	allVars := append(caPathPushdownVars(caPath), envVars...)
 	applyEnvPushdownVars(allVars)
+	installClaudeCodeOAuthShim(cmd)
 
 	// 3. IPC channels for the child: TUN fd handoff + tun-up pipe.
 	sp, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)

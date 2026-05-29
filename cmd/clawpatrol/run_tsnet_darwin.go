@@ -119,6 +119,7 @@ func runRunTsnet(args []string) {
 	// envPushdownGatewayFetcher at the NE session-socket fetcher;
 	// applyEnvPushdown will use it.
 	applyEnvPushdown(dir)
+	installClaudeCodeOAuthShim(args)
 
 	cleanup := registerSession()
 	defer cleanup()

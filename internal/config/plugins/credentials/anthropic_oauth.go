@@ -26,6 +26,23 @@ func (a *AnthropicOAuthSubscription) InjectHTTP(_ context.Context, req *http.Req
 }
 
 // EnvVars is part of the clawpatrol plugin API.
+//
+// ANTHROPIC_AUTH_TOKEN is the standard env-var shape for the raw
+// Anthropic SDKs (Python, Node.js, …) and Claude Code. The value is a
+// placeholder; the gateway rewrites the Authorization header at MITM
+// time via InjectHTTP, so the bytes here never reach Anthropic — the
+// operator's gateway-stored OAuth bearer (with the scopes requested by
+// OAuthFlow below, including user:sessions:claude_code) authenticates
+// upstream calls, including the session-register step `/remote-control`
+// depends on.
+//
+// Caveat for the `claude` CLI: it refuses OAuth-only features like
+// `/remote-control` whenever ANTHROPIC_AUTH_TOKEN is present (it reads
+// the env var as bearer/API-key auth via a LOCAL gate, before any
+// network call). `clawpatrol run` works around that for the `claude`
+// binary specifically via installClaudeCodeOAuthShim — it strips this
+// env var and supplies a synthesized OAuth credential instead. See
+// cmd/clawpatrol/integrations.go and doc/claude-code-oauth.md.
 func (*AnthropicOAuthSubscription) EnvVars() []config.EnvVar {
 	return []config.EnvVar{
 		{Name: "ANTHROPIC_AUTH_TOKEN", Value: phClaude, Description: "Claude Code / Anthropic SDKs"},
@@ -43,11 +60,19 @@ func (a *AnthropicOAuthSubscription) OAuthFlow() *config.OAuthIntegration {
 		Header: "Authorization",
 		Prefix: "Bearer ",
 		OAuth: config.OAuthConfig{
-			ClientID:     "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
-			AuthURL:      "https://claude.ai/oauth/authorize",
-			TokenURL:     "https://console.anthropic.com/v1/oauth/token",
-			RedirectURI:  "https://console.anthropic.com/oauth/code/callback",
-			Scopes:       []string{"org:create_api_key", "user:profile", "user:inference"},
+			ClientID:    "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+			AuthURL:     "https://claude.ai/oauth/authorize",
+			TokenURL:    "https://console.anthropic.com/v1/oauth/token",
+			RedirectURI: "https://console.anthropic.com/oauth/code/callback",
+			// user:sessions:claude_code is what gates `/remote-control` and
+			// the rest of the OAuth-only Claude Code features on the
+			// Anthropic side; without it the upstream session-register call
+			// fails with `OAuth token does not meet scope requirement
+			// user:sessions:claude_code` (see anthropics/claude-code#33105).
+			// Operators who connected the credential before this scope was
+			// added will need to re-run the dashboard OAuth flow once so
+			// the stored refresh token picks up the new grant.
+			Scopes:       []string{"org:create_api_key", "user:profile", "user:inference", "user:sessions:claude_code"},
 			RefreshToken: "{{secret:CLAUDE_REFRESH}}",
 		},
 	}
