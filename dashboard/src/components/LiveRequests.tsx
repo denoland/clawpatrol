@@ -303,7 +303,7 @@ function AnimatedDots() {
 // = in-flight/unknown. This slot previously showed MITM vs splice
 // mode; the connection-visibility signal moved to the verb slot, which
 // now shows a lock when the bytes weren't inspected.
-function ApprovalStatusIcon({ ev, inFlight }: { ev: RowState; inFlight: boolean }) {
+export function ApprovalStatusIcon({ ev, inFlight }: { ev: EventRecord; inFlight: boolean }) {
   const a = ev.action ?? "";
   if (a === "hitl_pending")
     return <StatusDot cls="bg-butter-400 animate-pulse" title="awaiting approval" />;
@@ -329,9 +329,12 @@ function StatusDot({ cls, title }: { cls: string; title: string }) {
 // LockGlyph marks a connection the gateway passed through without
 // inspecting (splice / relay), shown in the verb slot in place of a
 // parsed method/verb — which only exists for inspected connections.
-function LockGlyph() {
+export function LockGlyph() {
   return (
-    <span title="passed through — gateway did not inspect this connection" className="text-text-subtle">
+    <span
+      title="passed through — gateway did not inspect this connection"
+      className="text-text-subtle"
+    >
       <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
         <path d="M7 10V7a5 5 0 0 1 10 0v3h1a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h1Zm2 0h6V7a3 3 0 1 0-6 0v3Z" />
       </svg>
