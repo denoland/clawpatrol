@@ -10,10 +10,13 @@ gateway {
   state_dir        = "/var/lib/clawpatrol"
 
   wireguard {
-    listen      = ":51820"
+    listen_port = 51820
     subnet_cidr = "10.55.0.0/24"
-    # endpoint blank: agent's clawpatrol join supplies it via the
-    # GATEWAY_URL env var that entrypoint-agent.sh exports.
+    # Agent dials the gateway by its compose service name. Validator
+    # rejects a config without either public_url or wireguard.endpoint
+    # because clients need somewhere to dial; pin it explicitly here
+    # since the harness's gateway runs without a public_url.
+    endpoint = "gateway:51820"
   }
 }
 
