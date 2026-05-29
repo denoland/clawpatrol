@@ -12,13 +12,25 @@ GATEWAY="${GATEWAY_URL:-http://gateway:8080}"
 TESTS_DIR="${1:-/workspace/tests}"
 
 echo "[e2e-agent] joining ${GATEWAY}"
-# `clawpatrol join` writes its profile to ~/.config/clawpatrol by
-# default; --profile=e2e picks the policy.hcl block of the same name.
-/usr/local/bin/clawpatrol join \
-    --gateway "${GATEWAY}" \
+# Gateway URL is positional; --profile picks the gateway-side profile
+# block (matches policy.hcl `profile "e2e" {}`). --no-trust skips the
+# host-trust step because that needs sudo + a system trust store, both
+# beyond what the harness container needs to assert on. --hostname pins
+# the container's device-row identity so the assertions later can
+# look the agent up by name.
+#
+# Join is best-effort while the harness is being filled in — the
+# device-flow approval step still needs operator interaction, which the
+# probe scripts mock for now. A failure here logs but doesn't abort so
+# the placeholder tests still get their chance to assert.
+if ! /usr/local/bin/clawpatrol join \
     --profile e2e \
-    --no-auto-trust-ca \
-    --insecure-fingerprint-skip
+    --no-trust \
+    --hostname "e2e-agent" \
+    "${GATEWAY}" 2>&1 | sed 's/^/[join] /'
+then
+    echo "[e2e-agent] WARNING: clawpatrol join failed; tests that depend on the tunnel will skip" >&2
+fi
 
 if [ ! -d "${TESTS_DIR}" ]; then
     echo "[e2e-agent] no tests dir at ${TESTS_DIR}; nothing to do" >&2
