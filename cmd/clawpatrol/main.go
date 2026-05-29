@@ -1492,8 +1492,10 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 	// the connection to an unrelated database (e.g. an RDS hostname
 	// silently terminating on a Cloud SQL tunnel).
 	var ep *config.CompiledEndpoint
+	var hostname string
 	if g.dnsvip != nil {
-		if _, hits := g.dnsvip.LookupVIP(dstIP); len(hits) > 0 {
+		if hn, hits := g.dnsvip.LookupVIP(dstIP); len(hits) > 0 {
+			hostname = hn
 			cand := make([]*config.CompiledEndpoint, 0, len(hits))
 			for _, h := range hits {
 				if h.Endpoint != nil {
@@ -1524,6 +1526,14 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 	}
 
 	upstreamAddr := dstIP + ":5432"
+	// Event Host carries the agent-dialed hostname when the dst is a
+	// dnsvip VIP (tunneled endpoint), else the raw dst IP. Without
+	// this the dashboard shows the synthetic VIP (e.g. fdXX::N) and
+	// the operator can't tell which database the connection hits.
+	eventHost := hostname
+	if eventHost == "" {
+		eventHost = dstIP
+	}
 	ch := &runtime.ConnHandle{
 		Conn:     c,
 		Endpoint: ep,
@@ -1548,7 +1558,7 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 				return
 			}
 			g.sink.Emit(Event{
-				Mode: "pg", Family: ep.Family, Host: dstIP, AgentIP: agentPip,
+				Mode: "pg", Family: ep.Family, Host: eventHost, AgentIP: agentPip,
 				Method: ev.Verb, Path: ev.Summary,
 				Action: ev.Action, Reason: ev.Reason,
 				Facets:   ev.Facets,
@@ -1560,7 +1570,7 @@ func (g *Gateway) handlePostgresConn(c net.Conn, dstIP string) {
 		},
 		Approve: func(req runtime.ApproveCallRequest) runtime.ApproveVerdict {
 			return g.runApproveChain(context.Background(), req.Stages, runApproveCtx{
-				AgentIP: agentPip, Host: dstIP, Method: req.Verb, Path: req.Summary,
+				AgentIP: agentPip, Host: eventHost, Method: req.Verb, Path: req.Summary,
 				Reason:   ifNotEmpty(req.Rule, func(r *config.CompiledRule) string { return r.Outcome.Reason }),
 				Endpoint: ep, Rule: req.Rule, Profile: profile,
 			})
