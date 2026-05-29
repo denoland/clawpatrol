@@ -8,6 +8,7 @@ import {
   type Integration,
 } from "../lib/api";
 import { fmtBytes } from "../lib/format";
+import { HITLBar } from "./HITLBar";
 import { IntegrationsCards } from "./IntegrationsCards";
 import { LiveRequests } from "./LiveRequests";
 import { DeviceIcon } from "./Logos";
@@ -204,6 +205,11 @@ export function DevicePage({
           </div>
         </div>
       </section>
+
+      {/* pending approvals awaiting a decision for this device — same
+          cards as the home page, scoped to this device's agent IP.
+          Renders nothing when there are none. */}
+      <HITLBar agentIP={a.ip} />
 
       {/* agents (sessions) running on this device */}
       <SessionsTable sessions={a.sessions ?? []} />
