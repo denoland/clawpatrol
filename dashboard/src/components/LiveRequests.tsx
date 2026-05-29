@@ -207,6 +207,9 @@ function Row({ ev, schema }: { ev: RowState; schema: FacetSchema | undefined }) 
   const { verb, body } = rowDescriptors(ev, schema);
   const sep = body && !body.startsWith("/") ? " " : "";
   const hasFrames = (ev.frames?.length ?? 0) > 0;
+  const isDenied =
+    ev.action === "deny" || ev.action === "denied" || ev.action === "hitl_deny";
+  const isApproved = ev.action === "approved" || ev.action === "hitl_allow";
   return (
     <div className="border-b border-canvas-muted">
       <div
@@ -237,6 +240,26 @@ function Row({ ev, schema }: { ev: RowState; schema: FacetSchema | undefined }) 
           {inFlight ? "…" : ev.ms + "ms"}
         </span>
       </div>
+      {inFlight && ev.action === "hitl_pending" && (
+        <div className="px-4 pb-1.5 flex items-center gap-1.5 text-2xs font-mono text-butter-600">
+          <span className="w-1.5 h-1.5 rounded-full bg-butter-400 animate-pulse shrink-0" />
+          awaiting approval
+        </div>
+      )}
+      {isDenied && (
+        <div className="px-4 pb-1.5 flex items-center gap-1.5 text-2xs font-mono text-danger-600 min-w-0">
+          <span className="w-1.5 h-1.5 rounded-full bg-danger-500 shrink-0" />
+          <span className="font-semibold">denied</span>
+          {ev.rule && <span className="text-danger-400 shrink-0">· {ev.rule}</span>}
+          {ev.reason && <span className="text-text-subtle truncate">· {ev.reason}</span>}
+        </div>
+      )}
+      {isApproved && ev.approver_by && (
+        <div className="px-4 pb-1.5 flex items-center gap-1.5 text-2xs font-mono text-success-600">
+          <span className="w-1.5 h-1.5 rounded-full bg-success-500 shrink-0" />
+          approved by {ev.approver_by}
+        </div>
+      )}
       {hasFrames && (
         <div className="bg-canvas-muted border-t border-canvas-muted max-h-45 overflow-y-auto">
           {ev.frames!.map((f, i) => (
