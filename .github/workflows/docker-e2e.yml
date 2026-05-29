@@ -1,0 +1,49 @@
+name: Docker E2E
+
+# Manual-trigger only while the harness scripts are being filled in.
+# Flip to the standard `pull_request` trigger once every script under
+# test/docker/tests/ exits 0 on the gateway image. Until then, runs are
+# kicked off from the Actions UI so a half-finished probe doesn't block
+# every unrelated PR.
+on:
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ runner.os }}-${{ hashFiles('go.mod', 'go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-${{ runner.os }}-${{ hashFiles('go.mod', 'go.sum') }}-
+            go-${{ runner.os }}-
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      # The Dockerfile in test/docker/ copies ./clawpatrol straight in.
+      # Build the binary out-of-band so the Go toolchain isn't pulled
+      # into the image, and so a failure here is attributed to the build
+      # step instead of looking like a Docker layer error.
+      - name: build clawpatrol
+        run: make build
+
+      # Some CI runners ship without /dev/net/tun; load the module so
+      # the gateway service's `devices:` entry resolves.
+      - name: ensure /dev/net/tun
+        run: |
+          sudo modprobe tun || true
+          ls -l /dev/net/tun || true
+
+      - name: run docker e2e
+        working-directory: test/docker
+        run: ./run-e2e.sh
