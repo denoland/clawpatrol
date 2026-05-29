@@ -1,0 +1,55 @@
+# Two-service harness for the Docker e2e tests. See test/docker/README.md
+# for the full layout and why we deliberately drop the default seccomp
+# profile on the agent.
+#
+# Both services share the same image, parameterised by $ROLE.
+
+services:
+  gateway:
+    build:
+      context: ../..
+      dockerfile: test/docker/Dockerfile
+    image: clawpatrol-e2e:latest
+    environment:
+      ROLE: gateway
+      CLAWPATROL_CONFIG: /opt/clawpatrol/gateway.hcl
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    ports:
+      - "51820:51820/udp"   # wireguard
+      - "8080:8080/tcp"     # dashboard / join endpoint
+    volumes:
+      - gateway-state:/var/lib/clawpatrol
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://127.0.0.1:8080/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  agent:
+    image: clawpatrol-e2e:latest
+    depends_on:
+      gateway:
+        condition: service_healthy
+    environment:
+      ROLE: agent
+      GATEWAY_URL: http://gateway:8080
+      # `clawpatrol run` installs a seccomp listen-trap filter; Docker's
+      # default seccomp profile sometimes rejects the seccomp(2) call
+      # that's the whole point of the test. unconfined here removes the
+      # gateway-side restriction, matching the orchid runner profile.
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    # The harness drops probe scripts into /workspace at run time.
+    volumes:
+      - ./tests:/workspace/tests:ro
+    command: ["/workspace/tests"]
+
+volumes:
+  gateway-state:
