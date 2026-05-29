@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -26,7 +27,8 @@ func TestVIPPassthroughBridgesBytes(t *testing.T) {
 	// sees on accept — the bidi echo path is exercised separately
 	// further down via the full handleVIPConn test.
 	ln := testTCPBanner(t, "SSH-2.0-clawpatrol-test\r\n")
-	host, port := splitHostPort(t, ln.Addr().String())
+	_, port := splitHostPort(t, ln.Addr().String())
+	const host = "localhost"
 
 	g := newPassthroughTestGateway(t)
 	agent, c := net.Pipe()
@@ -62,7 +64,8 @@ func TestVIPPassthroughBridgesBytes(t *testing.T) {
 // silently dropped from analytics.
 func TestVIPPassthroughEmitsRelayEvent(t *testing.T) {
 	ln := testTCPEcho(t, "ok")
-	host, port := splitHostPort(t, ln.Addr().String())
+	_, port := splitHostPort(t, ln.Addr().String())
+	const host = "localhost"
 
 	g := newPassthroughTestGateway(t)
 	_, sub, cancel := g.sink.RecentAndSubscribe()
@@ -104,12 +107,15 @@ func TestVIPPassthroughEmitsRelayEvent(t *testing.T) {
 // surfaces the failure to the operator instead of silently dropping.
 func TestVIPPassthroughDialError(t *testing.T) {
 	// Bind a listener, capture its port, then close it. The port is
-	// known-unreachable for the rest of the test.
+	// known-unreachable for the rest of the test. We dial via "127.0.0.1"
+	// explicitly so the dial reliably hits the closed port rather than
+	// being smudged by happy-eyeballs across stacks.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Skipf("cannot create TCP listener (sandboxed?): %v", err)
 	}
-	host, port := splitHostPort(t, ln.Addr().String())
+	_, port := splitHostPort(t, ln.Addr().String())
+	const host = "127.0.0.1"
 	_ = ln.Close()
 
 	g := newPassthroughTestGateway(t)
@@ -150,7 +156,11 @@ func TestVIPPassthroughDialError(t *testing.T) {
 // upstream.
 func TestHandleVIPConnPassthroughOnProfileMiss(t *testing.T) {
 	ln := testTCPEcho(t, "ssh-banner")
-	host, port := splitHostPort(t, ln.Addr().String())
+	_, port := splitHostPort(t, ln.Addr().String())
+	// Use "localhost" so dnsvip allocates a VIP (it skips IP-literal
+	// hosts) and so the passthrough's net.Dial("tcp", "localhost:N")
+	// resolves to the loopback test listener.
+	const hostname = "localhost"
 
 	g := newPassthroughTestGateway(t)
 	// Seed the onboard registry so profileFor("pipe") resolves to a
@@ -163,14 +173,15 @@ func TestHandleVIPConnPassthroughOnProfileMiss(t *testing.T) {
 	// Policy: one SSH endpoint declared at the root, "crowlbot"
 	// profile doesn't grant it. Mirrors orchid#184 — global SSH
 	// endpoint, profile with only OAuth credentials.
+	hostSpec := fmt.Sprintf("%s:%d", hostname, port)
 	policy := &config.CompiledPolicy{
 		Endpoints: map[string]*config.CompiledEndpoint{
 			"github_ssh": {
 				Name:   "github_ssh",
 				Family: "ssh",
 				Plugin: &config.Plugin{Type: "ssh"},
-				Hosts:  []string{fmt.Sprintf("%s:%d", host, port)},
-				Body:   sshBodyForVIP{hosts: []string{fmt.Sprintf("%s:%d", host, port)}},
+				Hosts:  []string{hostSpec},
+				Body:   sshBodyForVIP{hosts: []string{hostSpec}},
 			},
 		},
 		Profiles: map[string]*config.CompiledProfile{
@@ -192,9 +203,9 @@ func TestHandleVIPConnPassthroughOnProfileMiss(t *testing.T) {
 	if err := a.RebuildFromPolicy(policy); err != nil {
 		t.Fatalf("RebuildFromPolicy: %v", err)
 	}
-	v4, _ := a.VIPsFor(host)
+	v4, _ := a.VIPsFor(hostname)
 	if !v4.IsValid() {
-		t.Fatalf("VIP not allocated for %q", host)
+		t.Fatalf("VIP not allocated for %q", hostname)
 	}
 	g.dnsvip = a
 
@@ -212,7 +223,7 @@ func TestHandleVIPConnPassthroughOnProfileMiss(t *testing.T) {
 	buf := make([]byte, 32)
 	_ = agent.SetReadDeadline(time.Now().Add(3 * time.Second))
 	n, err := agent.Read(buf)
-	if err != nil && err != io.EOF {
+	if err != nil && !errors.Is(err, io.EOF) {
 		t.Fatalf("agent read: %v", err)
 	}
 	if got := string(buf[:n]); got != "ssh-banner" {
@@ -239,14 +250,15 @@ type sshBodyForVIP struct {
 func (sshBodyForVIP) RequiresVIP() bool { return true }
 
 // testTCPBanner starts a TCP server that writes a fixed banner on
-// accept and then drains+closes the conn. Used when we only need to
-// assert that the bytes the upstream produced traversed the passthrough.
+// accept and then drains+closes the conn. Binds on the dual-stack
+// wildcard so a passthrough dial through `localhost` works whether the
+// system resolver hands back 127.0.0.1 or ::1 first.
 //
 // Skips the calling test if the sandbox blocks listen(2) — same skip
 // shape relay_linux_test.go uses for its AF_INET/AF_UNIX helpers.
 func testTCPBanner(t *testing.T, banner string) net.Listener {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", ":0")
 	if err != nil {
 		t.Skipf("cannot create TCP listener (sandboxed?): %v", err)
 	}
@@ -271,9 +283,10 @@ func testTCPBanner(t *testing.T, banner string) net.Listener {
 // testTCPEcho starts a TCP server that writes a fixed banner on accept
 // and echoes whatever the client sends until EOF. Returns the listener;
 // closes it on Cleanup. Skips the test if listen(2) is sandboxed.
+// Dual-stack bind — see testTCPBanner.
 func testTCPEcho(t *testing.T, banner string) net.Listener {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", ":0")
 	if err != nil {
 		t.Skipf("cannot create TCP listener (sandboxed?): %v", err)
 	}
