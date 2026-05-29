@@ -76,10 +76,13 @@ function PendingCard({
   const ep = item.endpoint || item.host;
   const sep = item.path && !item.path.startsWith("/") ? " " : "";
   const target = `${item.method} ${ep}${sep}${item.path}`;
+  // Verb matches the Slack "Approve" button and the "approved" status
+  // badge — the dashboard previously said "allow" here, which read as
+  // a different action from the same decision shown elsewhere.
   const approveLabel =
     item.approval_effect === "create_retry_grant" || item.operation_state === "pending_approval"
       ? "approve retry"
-      : "allow";
+      : "approve";
 
   return (
     <div className="border-l-4 border-butter-400 bg-canvas border-y border-r border-navy overflow-hidden">
