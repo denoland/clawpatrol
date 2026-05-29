@@ -155,7 +155,7 @@ func (s *SlackTokens) NotifyHITL(ctx context.Context, req runtime.ApproveRequest
 	if bs := strings.TrimSpace(req.BodySample); bs != "" {
 		blocks = append(blocks, map[string]any{
 			"type": "section",
-			"text": map[string]any{"type": "mrkdwn", "text": "*Body*\n```" + slackTrunc(bs, 1000) + "```"},
+			"text": map[string]any{"type": "mrkdwn", "text": "*Body*\n```" + slackTrunc(bs, slackSectionTextMax) + "```"},
 		})
 	}
 	if guidance := slackHITLApprovalGuidance(target); guidance != "" {
@@ -274,7 +274,7 @@ func slackHITLContentBlocks(title, queryLabel, path, message string, summary *ru
 			{"type": "header", "text": map[string]any{"type": "plain_text", "text": title}},
 			{"type": "section", "text": map[string]any{
 				"type": "mrkdwn",
-				"text": "*" + queryLabel + "*\n```" + slackTrunc(path, 800) + "```",
+				"text": "*" + queryLabel + "*\n```" + slackTrunc(path, slackSectionTextMax) + "```",
 			}},
 		}
 	}
@@ -569,6 +569,14 @@ func hitlClassificationEmoji(c string) string {
 		return ":question:"
 	}
 }
+
+// slackSectionTextMax bounds the SQL query / request body shown inside
+// a Slack "section" mrkdwn block. Slack hard-caps section text at 3000
+// chars; staying a little under leaves room for the surrounding label
+// and code-fence wrapping. The old 800/1000 limits cut most real SQL
+// statements off mid-query, so approvers couldn't see what they were
+// approving.
+const slackSectionTextMax = 2800
 
 func slackTrunc(s string, n int) string {
 	s = strings.TrimSpace(s)
