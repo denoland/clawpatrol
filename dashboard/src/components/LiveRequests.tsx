@@ -206,6 +206,11 @@ function Row({ ev, schema }: { ev: RowState; schema: FacetSchema | undefined }) 
             : "text-text-muted";
   const { verb, body } = rowDescriptors(ev, schema);
   const sep = body && !body.startsWith("/") ? " " : "";
+  // "splice"/"relay" forward the bytes without inspecting them, so
+  // there's no verb to show — surface a lock instead. Every other mode
+  // (mitm HTTP, parsed SQL like "pg"/"clickhouse_native", k8s) is
+  // inspected and shows its verb (empty if none was parsed).
+  const inspected = ev.mode !== "splice" && ev.mode !== "relay";
   const hasFrames = (ev.frames?.length ?? 0) > 0;
   const isDenied = ev.action === "deny" || ev.action === "denied" || ev.action === "hitl_deny";
   const isApproved = ev.action === "approved" || ev.action === "hitl_allow";
@@ -223,7 +228,7 @@ function Row({ ev, schema }: { ev: RowState; schema: FacetSchema | undefined }) 
         <span className="text-2xs tabular-nums text-text-subtle shrink-0">{time}</span>
         <ApprovalStatusIcon ev={ev} inFlight={inFlight} />
         <span className="font-mono text-2xs uppercase font-semibold text-text-muted shrink-0 w-11 flex items-center">
-          {verb ? verb : !inFlight && <LockGlyph />}
+          {inspected ? verb : <LockGlyph />}
         </span>
         <span className={"text-xs tabular-nums shrink-0 w-9 " + statusColor}>
           {inFlight ? <InFlightSpinner /> : status || "—"}
@@ -321,12 +326,12 @@ function StatusDot({ cls, title }: { cls: string; title: string }) {
   );
 }
 
-// LockGlyph marks a connection the gateway forwarded without inspecting
-// (splice / relay), shown in the verb slot in place of a parsed
-// method/verb — which only exists for MITM'd HTTP and parsed SQL.
+// LockGlyph marks a connection the gateway passed through without
+// inspecting (splice / relay), shown in the verb slot in place of a
+// parsed method/verb — which only exists for inspected connections.
 function LockGlyph() {
   return (
-    <span title="encrypted — gateway forwarded without inspecting" className="text-text-subtle">
+    <span title="passed through — gateway did not inspect this connection" className="text-text-subtle">
       <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
         <path d="M7 10V7a5 5 0 0 1 10 0v3h1a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h1Zm2 0h6V7a3 3 0 1 0-6 0v3Z" />
       </svg>
