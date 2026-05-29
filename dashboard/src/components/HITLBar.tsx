@@ -56,7 +56,9 @@ export function HITLBar() {
           {notice}
         </div>
       )}
-      {justResolved.map((r) => <ResolvedCard key={r.id} item={r} />)}
+      {justResolved.map((r) => (
+        <ResolvedCard key={r.id} item={r} />
+      ))}
       {pending.map((p) => (
         <PendingCard key={p.id} item={p} onDecide={decide} />
       ))}
@@ -75,8 +77,7 @@ function PendingCard({
   const sep = item.path && !item.path.startsWith("/") ? " " : "";
   const target = `${item.method} ${ep}${sep}${item.path}`;
   const approveLabel =
-    item.approval_effect === "create_retry_grant" ||
-    item.operation_state === "pending_approval"
+    item.approval_effect === "create_retry_grant" || item.operation_state === "pending_approval"
       ? "approve retry"
       : "allow";
 
@@ -124,7 +125,9 @@ function PendingCard({
           )}
           <div className="text-2xs text-text-muted truncate">
             {item.ua && (
-              <span>requested by <span className="font-mono text-text">{item.ua}</span></span>
+              <span>
+                requested by <span className="font-mono text-text">{item.ua}</span>
+              </span>
             )}
             {item.ua && item.reason && <span className="mx-1.5">·</span>}
             {item.reason && <span>{item.reason}</span>}
@@ -146,7 +149,9 @@ function ResolvedCard({ item }: { item: HITLPending }) {
           approved
         </span>
       </div>
-      <span className="font-mono text-xs font-semibold text-text-muted shrink-0">{item.method}</span>
+      <span className="font-mono text-xs font-semibold text-text-muted shrink-0">
+        {item.method}
+      </span>
       <span className="font-mono text-xs text-text truncate flex-1 min-w-0">
         {ep}
         {sep}

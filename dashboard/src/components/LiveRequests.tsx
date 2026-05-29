@@ -207,8 +207,7 @@ function Row({ ev, schema }: { ev: RowState; schema: FacetSchema | undefined }) 
   const { verb, body } = rowDescriptors(ev, schema);
   const sep = body && !body.startsWith("/") ? " " : "";
   const hasFrames = (ev.frames?.length ?? 0) > 0;
-  const isDenied =
-    ev.action === "deny" || ev.action === "denied" || ev.action === "hitl_deny";
+  const isDenied = ev.action === "deny" || ev.action === "denied" || ev.action === "hitl_deny";
   const isApproved = ev.action === "approved" || ev.action === "hitl_allow";
   return (
     <div className="border-b border-canvas-muted">
