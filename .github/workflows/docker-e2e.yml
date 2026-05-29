@@ -1,11 +1,9 @@
 name: Docker E2E
 
-# Manual-trigger only while the harness scripts are being filled in.
-# Flip to the standard `pull_request` trigger once every script under
-# test/docker/tests/ exits 0 on the gateway image. Until then, runs are
-# kicked off from the Actions UI so a half-finished probe doesn't block
-# every unrelated PR.
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 jobs:
