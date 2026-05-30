@@ -1394,7 +1394,7 @@ func truncate(s string, n int) string {
 	return s
 }
 
-func (g *Gateway) handle(raw net.Conn, dstIP string) {
+func (g *Gateway) handle(raw net.Conn, dstIP string, dstPort uint16) {
 	defer func() { _ = raw.Close() }()
 	defer otelTrackConn("https_mitm")()
 	host, prefix, err := peekSNI(raw)
@@ -1406,10 +1406,10 @@ func (g *Gateway) handle(raw net.Conn, dstIP string) {
 			c := wrapPeek(raw, prefix)
 			pip := peerIP(c)
 			profile := g.profileFor(pip)
-			ep := runtime.HostEndpoint(g.Policy(), profile, dstIP)
+			ep, authority, certHost := g.httpsMITMEndpoint(profile, dstIP, dstPort)
 			if ep != nil && isHTTPSMITMFamily(ep.Family) {
-				log.Printf("sni-fallback: %s → %s", dstIP, ep.Name)
-				g.mitmHTTPS(c, dstIP, ep)
+				log.Printf("sni-fallback: %s → %s", authority, ep.Name)
+				g.mitmHTTPSWithCertHost(c, authority, certHost, ep)
 				return
 			}
 		}
@@ -1420,7 +1420,7 @@ func (g *Gateway) handle(raw net.Conn, dstIP string) {
 	log.Printf("sni-peek: %s", host)
 	pip := peerIP(c)
 	profile := g.profileFor(pip)
-	ep := runtime.HostEndpoint(g.Policy(), profile, host)
+	ep, authority, certHost := g.httpsMITMEndpoint(profile, host, dstPort)
 	if ep == nil {
 		// Host isn't bound to this profile's endpoint set. Apply the
 		// `defaults.unknown_host` policy: passthrough today (matches
@@ -1434,7 +1434,7 @@ func (g *Gateway) handle(raw net.Conn, dstIP string) {
 		// and runs the request loop through mitmHTTPS. The facet's
 		// PrepareRequest hook derives any per-family metadata
 		// (URL → Meta for k8s) before the matcher walks.
-		g.mitmHTTPS(c, host, ep)
+		g.mitmHTTPSWithCertHost(c, authority, certHost, ep)
 		return
 	}
 	// Wire-protocol families (postgres / clickhouse_* / future
@@ -1444,6 +1444,36 @@ func (g *Gateway) handle(raw net.Conn, dstIP string) {
 	// transport — splice through.
 	log.Printf("endpoint %s family %q: no https-mitm transport; passthrough", ep.Name, ep.Family)
 	g.splice(c, host)
+}
+
+func (g *Gateway) shouldHandleHTTPSMITM(c net.Conn, dstIP string, dstPort uint16) bool {
+	if dstPort == 443 {
+		return true
+	}
+	if dstIP == "" || dstPort == 0 {
+		return false
+	}
+	profile := g.profileFor(peerIP(c))
+	ep, _, _ := g.httpsMITMEndpoint(profile, dstIP, dstPort)
+	return ep != nil && isHTTPSMITMFamily(ep.Family)
+}
+
+func (g *Gateway) httpsMITMEndpoint(profile, host string, dstPort uint16) (*config.CompiledEndpoint, string, string) {
+	policy := g.Policy()
+	exact := runtime.HostEndpoint(policy, profile, host)
+	if exact != nil && isHTTPSMITMFamily(exact.Family) {
+		return exact, host, host
+	}
+	if host != "" && dstPort != 0 {
+		authority := net.JoinHostPort(host, strconv.Itoa(int(dstPort)))
+		if ep := runtime.HostEndpoint(policy, profile, authority); ep != nil {
+			return ep, authority, host
+		}
+	}
+	if exact != nil {
+		return exact, host, host
+	}
+	return nil, host, host
 }
 
 // isHTTPSMITMFamily reports whether the facet registered for family
@@ -1964,12 +1994,19 @@ func bufferHTTPBodyForMatchTruncated(req *http.Request) (body []byte, truncated 
 // over plain TLS with credential injection applied by the credential
 // plugin's HTTPCredentialRuntime / HTTPRequestSigner / WebSocket hooks.
 func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint) {
+	g.mitmHTTPSWithCertHost(c, host, host, ep)
+}
+
+func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *config.CompiledEndpoint) {
 	agentAddr := peerIP(c)
 	profile := g.profileFor(agentAddr)
 	agentAddr = g.agentIPFor(c)
-	cert, err := g.certs.mint(host)
+	if certHost == "" {
+		certHost = host
+	}
+	cert, err := g.certs.mint(certHost)
 	if err != nil {
-		log.Printf("mint %s: %v", host, err)
+		log.Printf("mint %s: %v", certHost, err)
 		return
 	}
 	tc := tls.Server(c, &tls.Config{
@@ -2998,8 +3035,8 @@ func runGateway(args []string) {
 		tcpDispatch := func(c net.Conn, dstIP string, dstPort uint16) {
 			log.Printf("wg-fwd: %s:%d", dstIP, dstPort)
 			switch {
-			case dstPort == 443:
-				g.handle(c, dstIP)
+			case g.shouldHandleHTTPSMITM(c, dstIP, dstPort):
+				g.handle(c, dstIP, dstPort)
 			case dstPort == 5432:
 				g.handlePostgresConn(c, dstIP)
 			case dstPort == 53:
@@ -3182,8 +3219,8 @@ func runGateway(args []string) {
 			dstPort := dst.Port()
 			return func(c net.Conn) {
 				switch {
-				case dstPort == 443:
-					g.handle(c, dstIP)
+				case g.shouldHandleHTTPSMITM(c, dstIP, dstPort):
+					g.handle(c, dstIP, dstPort)
 				case dstPort == 5432:
 					g.handlePostgresConn(c, dstIP)
 				case dstPort == 53:
