@@ -41,6 +41,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -195,6 +196,22 @@ func notifSendContinue(fd int, id uint64) error {
 //
 // On each listen() trap it inspects the agent's socket, opens a host-side
 // listener on the same port, and hands accepted connections to the worker.
+//
+// Two background loops run concurrently:
+//
+//   - The seccomp notify loop (the supervisor's primary job).
+//   - A worker-socket monitor: when the worker process dies, its end of
+//     the socketpair closes and recvmsg here returns EOF. That's the only
+//     way the supervisor (host netns, host pid space) can notice the
+//     worker (agent netns) has died — there's no Wait relationship.
+//
+// On clean shutdown the agent child exits, which sends Pdeathsig=SIGTERM
+// to the worker AND empties the seccomp filter's task list. Both loops
+// fire near-simultaneously: the seccomp loop returns via ENOENT, the
+// monitor returns via EOF. We give the seccomp loop a short grace window
+// — if it closes within that window the worker death is the expected
+// shutdown cascade and we exit 0; otherwise the worker died for some
+// other reason and we exit non-zero so the top parent can surface it.
 func runRelaySupervisor(_ []string) {
 	notifyFile := os.NewFile(3, "seccomp-notify")
 	workerSock := os.NewFile(4, "worker-sock")
@@ -208,6 +225,82 @@ func runRelaySupervisor(_ []string) {
 	// from the accept goroutines instead.
 	ignoreSIGPIPE()
 
+	type evtKind int
+	const (
+		evtSeccompClosed evtKind = iota
+		evtSeccompError
+		evtWorkerGone
+	)
+	type evt struct {
+		kind evtKind
+		err  error
+	}
+	ch := make(chan evt, 2)
+
+	go func() {
+		err := runRelaySupervisorNotifyLoop(notifyFD, workerFD)
+		if err == nil || errors.Is(err, unix.ENOENT) {
+			ch <- evt{kind: evtSeccompClosed}
+			return
+		}
+		ch <- evt{kind: evtSeccompError, err: err}
+	}()
+
+	go func() {
+		err := monitorWorkerSocket(workerFD)
+		ch <- evt{kind: evtWorkerGone, err: err}
+	}()
+
+	first := <-ch
+	switch first.kind {
+	case evtSeccompClosed:
+		// Clean shutdown — the seccomp filter has no remaining tasks
+		// because the agent child died. The worker is either already
+		// dead (Pdeathsig) or imminent; let the kernel reap it.
+		return
+	case evtSeccompError:
+		fmt.Fprintf(os.Stderr, "[clawpatrol relay] notif_recv: %v\n", first.err)
+		os.Exit(1)
+	}
+
+	// Worker died first. Wait briefly to see if the seccomp filter also
+	// closes (the expected cascade). The grace window is small because
+	// the cascade runs at kernel speed once the agent child exits.
+	select {
+	case second := <-ch:
+		if second.kind == evtSeccompClosed {
+			return
+		}
+		// Seccomp error or another worker event — unusual; fall through
+		// to the worker-died message.
+	case <-time.After(supervisorShutdownGrace):
+	}
+
+	// Real unexpected death. The last-stderr-line tee in the parent
+	// surfaces this message in `clawpatrol run`'s exit error.
+	if first.err != nil && !errors.Is(first.err, io.EOF) {
+		fmt.Fprintf(os.Stderr,
+			"[clawpatrol relay] relay-worker exited unexpectedly: %v\n",
+			first.err)
+	} else {
+		fmt.Fprintln(os.Stderr,
+			"[clawpatrol relay] relay-worker exited unexpectedly")
+	}
+	os.Exit(1)
+}
+
+// supervisorShutdownGrace is how long the worker-monitor goroutine waits
+// for the seccomp notify loop to also close before declaring the worker
+// death unexpected. Sized for the kernel's task-cleanup latency, not for
+// user-visible delays — the parent's `clawpatrol run` is blocked on its
+// own child.Wait while this runs.
+const supervisorShutdownGrace = 500 * time.Millisecond
+
+// runRelaySupervisorNotifyLoop is the supervisor's primary seccomp loop:
+// recv listen() traps, peek the agent socket, mirror on the host, hand
+// off accepts to the worker. Returns unix.ENOENT for the normal-shutdown
+// case (filter has no remaining tasks); other errors are propagated.
+func runRelaySupervisorNotifyLoop(notifyFD, workerFD int) error {
 	// SOCK_SEQPACKET is message-atomic so concurrent sendmsg don't need
 	// serialization for correctness, but a mutex lets us reason about
 	// retries on transient errors without races on the fd.
@@ -224,12 +317,7 @@ func runRelaySupervisor(_ []string) {
 	for {
 		n, err := notifRecv(notifyFD)
 		if err != nil {
-			// ENOENT = the filter has no remaining tasks. Normal shutdown.
-			if errors.Is(err, unix.ENOENT) {
-				return
-			}
-			fmt.Fprintf(os.Stderr, "[clawpatrol relay] notif_recv: %v\n", err)
-			return
+			return err
 		}
 
 		isListen := uint32(n.Data.NR) == listenNR
@@ -266,6 +354,36 @@ func runRelaySupervisor(_ []string) {
 		} else {
 			_ = notifSendContinue(notifyFD, n.ID)
 		}
+	}
+}
+
+// monitorWorkerSocket blocks reading from the worker end of the
+// supervisor↔worker socketpair. Supervisor → worker is the only
+// direction we send on that pair (port + SCM_RIGHTS fd); the worker
+// never writes back. So recvmsg returns:
+//
+//   - n=0 / io.EOF when the worker closes its end (process death).
+//   - a non-EINTR error otherwise.
+//
+// A read that actually returns bytes is a protocol violation — log it
+// and keep looping. We don't trust an arbitrary peer to behave but we
+// also don't want to declare the worker dead just because it sent
+// something.
+func monitorWorkerSocket(fd int) error {
+	buf := make([]byte, 64)
+	for {
+		n, _, _, _, err := unix.Recvmsg(fd, buf, nil, 0)
+		if err != nil {
+			if errors.Is(err, unix.EINTR) {
+				continue
+			}
+			return err
+		}
+		if n == 0 {
+			return io.EOF
+		}
+		fmt.Fprintf(os.Stderr,
+			"[clawpatrol relay] unexpected %d bytes from worker\n", n)
 	}
 }
 
@@ -671,9 +789,12 @@ func setupRelayInChild(parentSock *os.File) {
 
 // spawnRelaySupervisor re-execs self as `relay-supervisor`, passing the
 // seccomp notify fd and worker socket via ExtraFiles (fd 3 and fd 4).
-// Returns the started *exec.Cmd; the caller does not Wait — Pdeathsig
-// reaps the supervisor when the top parent exits.
-func spawnRelaySupervisor(notifyFile, workerSock *os.File) (*exec.Cmd, error) {
+// stderr is wired to the caller-provided writer (typically a
+// last-line-capturing tee in front of os.Stderr) so the parent can
+// surface the supervisor's final log line if it dies unexpectedly.
+// Returns the started *exec.Cmd; the caller is responsible for Wait —
+// see the run-side handling in run_linux.go for the death semantics.
+func spawnRelaySupervisor(notifyFile, workerSock *os.File, stderr io.Writer) (*exec.Cmd, error) {
 	self, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("relay-supervisor: self path: %w", err)
@@ -682,7 +803,7 @@ func spawnRelaySupervisor(notifyFile, workerSock *os.File) (*exec.Cmd, error) {
 	c.ExtraFiles = []*os.File{notifyFile, workerSock}
 	c.Stdin = nil
 	c.Stdout = nil
-	c.Stderr = os.Stderr
+	c.Stderr = stderr
 	c.SysProcAttr = &syscall.SysProcAttr{
 		Pdeathsig: syscall.SIGTERM,
 	}

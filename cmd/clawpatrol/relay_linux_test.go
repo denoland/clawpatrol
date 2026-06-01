@@ -3,10 +3,13 @@
 package main
 
 import (
+	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -122,6 +125,42 @@ func TestScanProcNetTcp(t *testing.T) {
 				t.Errorf("ip=%s, want %s", ip, tc.wantIP)
 			}
 		})
+	}
+}
+
+// TestMonitorWorkerSocketEOFOnPeerClose pins the death-detection contract:
+// when the worker process exits, its end of the supervisor↔worker
+// SOCK_SEQPACKET pair closes and monitorWorkerSocket must return io.EOF.
+// This is the only signal the supervisor (in the host pid space) gets
+// for a worker that lives across a netns boundary.
+func TestMonitorWorkerSocketEOFOnPeerClose(t *testing.T) {
+	fds, err := unix.Socketpair(unix.AF_UNIX,
+		unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatalf("socketpair: %v", err)
+	}
+	supFD := fds[0]
+	workerFD := fds[1]
+	defer func() { _ = unix.Close(supFD) }()
+
+	done := make(chan error, 1)
+	go func() { done <- monitorWorkerSocket(supFD) }()
+
+	// Let the recvmsg take the call out of the goroutine scheduler.
+	time.Sleep(20 * time.Millisecond)
+
+	// Simulate worker death by closing its end of the pair.
+	if err := unix.Close(workerFD); err != nil {
+		t.Fatalf("close worker fd: %v", err)
+	}
+
+	select {
+	case got := <-done:
+		if !errors.Is(got, io.EOF) {
+			t.Fatalf("monitorWorkerSocket: got %v, want io.EOF", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("monitorWorkerSocket did not return after peer close")
 	}
 }
 
