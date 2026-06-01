@@ -229,6 +229,19 @@ func (w *webMux) routes() []webRoute {
 		{Method: http.MethodGet, Path: "/api/config", Auth: authDashboard, Handler: w.apiConfig},
 		{Method: http.MethodGet, Path: "/api/hitl/pending", Auth: authDashboard, Handler: w.apiHITLPending},
 		{Method: http.MethodPost, Path: "/api/hitl/decide", Auth: authDashboard, Handler: w.apiHITLDecide},
+		// Tool-call gating (draft, exploratory). The poll endpoint is
+		// auth-public because agents (not dashboards) hit it with the
+		// opaque token clawpatrol injected into the rewritten LLM
+		// response — the token itself is the bearer auth. SSE / WS
+		// follow the same authn shape. /api/approval/decide is
+		// dashboard-gated since it's the operator's approve/deny
+		// surface; /api/approval/pending is dashboard-gated since it
+		// lists in-flight calls (information disclosure).
+		{Method: http.MethodPost, Path: "/api/approval/poll", Auth: authPublic, Handler: w.apiApprovalPoll},
+		{Method: http.MethodGet, Path: "/api/approval/sse", Auth: authPublic, Handler: w.apiApprovalSSE},
+		{Method: http.MethodGet, Path: "/api/approval/ws", Auth: authPublic, Handler: w.apiApprovalWS},
+		{Method: http.MethodPost, Path: "/api/approval/decide", Auth: authDashboard, Handler: w.apiApprovalDecide},
+		{Method: http.MethodGet, Path: "/api/approval/pending", Auth: authDashboard, Handler: w.apiApprovalPending},
 		{Method: http.MethodGet, Path: hitlOperationStatusPrefix, Auth: authSelfAuthenticating, Handler: w.apiHITLOperationStatus},
 		{Method: http.MethodPost, Path: "/api/oauth/start", Auth: authDashboard, Handler: w.apiOAuthStart},
 		{Method: http.MethodPost, Path: "/api/oauth/exchange", Auth: authDashboard, Handler: w.apiOAuthExchange},
@@ -1370,6 +1383,45 @@ func (w *webMux) apiHITLDecide(rw http.ResponseWriter, r *http.Request) {
 
 func isLoopback(host string) bool {
 	return host == "127.0.0.1" || host == "::1" || strings.HasPrefix(host, "127.")
+}
+
+// Tool-call gating dashboard handlers (draft). Thin wrappers that
+// dispatch to internal/toolgate so the package stays standalone and
+// independently testable. The handlers fail-closed when the gateway
+// has no toolgate store (CLAWPATROL_TOOLGATE_RULES empty) — the spec
+// treats gating as an opt-in feature and operators who haven't
+// configured rules should see a clear 404 rather than silent OK.
+
+func (w *webMux) apiApprovalPoll(rw http.ResponseWriter, r *http.Request) {
+	w.serveToolgateAPI(rw, r)
+}
+
+func (w *webMux) apiApprovalSSE(rw http.ResponseWriter, r *http.Request) {
+	w.serveToolgateAPI(rw, r)
+}
+
+func (w *webMux) apiApprovalWS(rw http.ResponseWriter, r *http.Request) {
+	w.serveToolgateAPI(rw, r)
+}
+
+func (w *webMux) apiApprovalDecide(rw http.ResponseWriter, r *http.Request) {
+	w.serveToolgateAPI(rw, r)
+}
+
+func (w *webMux) apiApprovalPending(rw http.ResponseWriter, r *http.Request) {
+	w.serveToolgateAPI(rw, r)
+}
+
+// serveToolgateAPI dispatches to the gateway's cached approval-endpoint
+// handler (built once in newGateway). Fails closed with 404 when gating
+// isn't configured — operators who haven't set CLAWPATROL_TOOLGATE_RULES
+// should see a clear not-found rather than a silent OK.
+func (w *webMux) serveToolgateAPI(rw http.ResponseWriter, r *http.Request) {
+	if w.g.toolgateAPI == nil {
+		http.Error(rw, "tool-call gating not configured", http.StatusNotFound)
+		return
+	}
+	w.g.toolgateAPI.ServeHTTP(rw, r)
 }
 
 func (w *webMux) apiEventsSSE(rw http.ResponseWriter, r *http.Request) {
