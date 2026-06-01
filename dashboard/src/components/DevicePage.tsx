@@ -10,6 +10,7 @@ import {
 import { fmtBytes } from "../lib/format";
 import { IntegrationsCards } from "./IntegrationsCards";
 import { LiveRequests } from "./LiveRequests";
+import { HITLBar } from "./HITLBar";
 import { DeviceIcon } from "./Logos";
 import { Main } from "./Main";
 import { PageTitle } from "./PageTitle";
@@ -204,6 +205,8 @@ export function DevicePage({
           </div>
         </div>
       </section>
+
+      <HITLBar agentIP={a.ip} />
 
       {/* agents (sessions) running on this device */}
       <SessionsTable sessions={a.sessions ?? []} />

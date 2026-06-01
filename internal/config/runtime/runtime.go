@@ -427,6 +427,10 @@ type ApproveRequest struct {
 	// prompt as a reply in this Slack thread rather than top-level.
 	// Populated from the X-HITL-Thread-TS request header.
 	ThreadTS string
+	// NotifyChannel, when set, overrides the static channel declared in
+	// the human_approver HCL block. Populated from X-HITL-Channel header.
+	// Lets agents route approvals into their own Slack session thread.
+	NotifyChannel string
 	// AsyncOperationID binds the prompt to a durable async operation.
 	// If AsyncPendingOnSyncTimeout is true and ctx hits DeadlineExceeded,
 	// human_approver leaves the prompt pending and returns async_pending.

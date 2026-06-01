@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { decideHITL, getHITLPending, type HITLPending, type HITLResolveResult } from "../lib/api";
 import { Button } from "./Button";
 
-export function HITLBar() {
+export function HITLBar({ agentIP }: { agentIP?: string } = {}) {
   const [pending, setPending] = useState<HITLPending[]>([]);
   const [justResolved, setJustResolved] = useState<HITLPending[]>([]);
   const [notice, setNotice] = useState("");
@@ -13,7 +13,8 @@ export function HITLBar() {
       try {
         const r = await getHITLPending();
         if (!cancelled) {
-          const incoming = r ?? [];
+          const all = r ?? [];
+          const incoming = agentIP ? all.filter((x) => x.agent_ip === agentIP) : all;
           // Detect >0 → 0 transition: briefly flash green "Approved" cards.
           setPending((prev) => {
             if (prev.length > 0 && incoming.length === 0) {
@@ -33,7 +34,7 @@ export function HITLBar() {
       cancelled = true;
       clearInterval(t);
     };
-  }, []);
+  }, [agentIP]);
 
   async function decide(id: string, allow: boolean, confirmMsg: string) {
     if (!confirm(confirmMsg)) return;

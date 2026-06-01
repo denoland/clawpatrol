@@ -2094,8 +2094,9 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 			v := g.runApproveChain(req.Context(), cr.Outcome.Approve, runApproveCtx{
 				AgentIP: agentAddr, Host: host, Method: req.Method, Path: req.URL.RequestURI(),
 				UA: req.Header.Get("User-Agent"), BodySample: string(matchBody), Reason: cr.Outcome.Reason,
-				ThreadTS: req.Header.Get("X-HITL-Thread-TS"),
-				Endpoint: ep, Rule: cr, Profile: profile, Request: mreq,
+				ThreadTS:      req.Header.Get("X-HITL-Thread-TS"),
+				NotifyChannel: req.Header.Get("X-HITL-Channel"),
+				Endpoint:      ep, Rule: cr, Profile: profile, Request: mreq,
 				AsyncOperationID: asyncOp.ID, AsyncPendingOnSyncTimeout: asyncOp.ID != "", AsyncSyncWaitTimeout: asyncSyncWait,
 			})
 			if v.Decision != "allow" {
@@ -2199,6 +2200,7 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				"Cf-Worker", "Cf-Ray", "Cf-Ew-Via", "Cf-Connecting-Ip", "Cdn-Loop",
 				"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Via",
 				"X-HITL-Thread-TS",
+				"X-HITL-Channel",
 			} {
 				req.Header.Del(h)
 			}
@@ -2512,6 +2514,7 @@ type runApproveCtx struct {
 	BodySample                string
 	Reason                    string
 	ThreadTS                  string
+	NotifyChannel             string
 	Endpoint                  *config.CompiledEndpoint
 	Rule                      *config.CompiledRule
 	Profile                   string
@@ -2566,6 +2569,7 @@ func (g *Gateway) runApproveChain(ctx context.Context, stages []config.ApproveSt
 			BodySample:                c.BodySample,
 			Reason:                    c.Reason,
 			ThreadTS:                  c.ThreadTS,
+			NotifyChannel:             c.NotifyChannel,
 			AsyncOperationID:          c.AsyncOperationID,
 			AsyncPendingOnSyncTimeout: c.AsyncPendingOnSyncTimeout,
 			Pool:                      g.hitl,
