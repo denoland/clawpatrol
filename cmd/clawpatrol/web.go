@@ -1567,7 +1567,7 @@ func (w *webMux) apiActionRulePreview(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ev, err := w.loadAction(body.ActionID)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		http.Error(rw, "not found", http.StatusNotFound)
 		return
 	}
@@ -1683,7 +1683,7 @@ func (w *webMux) apiActionByID(
 		return
 	}
 	e, err := w.loadAction(actionID)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		http.Error(rw, "not found", 404)
 		return
 	}
