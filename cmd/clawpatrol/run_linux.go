@@ -90,7 +90,7 @@ func runRun(args []string) {
 	}
 
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
-	noAutoExpose := fs.Bool("no-auto-expose", false, "disable the seccomp relay that mirrors TCP listeners inside the netns back to the host")
+	noAutoExpose := fs.Bool("no-auto-expose", false, "disable the seccomp relay (mirrors TCP listeners inside the netns back to the host AND forwards wrapped-cmd connections to 127.0.0.1 out to host loopback services)")
 	_ = fs.Parse(args)
 	cmd := fs.Args()
 	if len(cmd) == 0 {
@@ -232,21 +232,23 @@ func runRun(args []string) {
 	_ = tunUpW.Close()
 
 	// 9. Auto-expose relay: pick up the second SCM_RIGHTS message
-	// from the child (seccomp notify fd + supervisor sock fd), fork
-	// the supervisor in the host netns. Absence (--no-auto-expose,
-	// unsupported arch) is non-fatal.
+	// from the child (seccomp notify fd + supervisor sock fd + loopback
+	// sup sock fd), fork the supervisor in the host netns. Absence
+	// (--no-auto-expose, unsupported arch) is non-fatal.
 	var relaySup *exec.Cmd
 	if autoExpose {
-		if relayFDs, err := recvFDs(pSock, 2); err == nil {
+		if relayFDs, err := recvFDs(pSock, 3); err == nil {
 			notifyFile := os.NewFile(uintptr(relayFDs[0]), "seccomp-notify")
 			supSock := os.NewFile(uintptr(relayFDs[1]), "relay-sup-sock")
-			if c, serr := spawnRelaySupervisor(notifyFile, supSock); serr != nil {
-				fmt.Fprintf(os.Stderr, "warning: auto-expose relay: %v (webhooks won't be reachable from host)\n", serr)
+			lbSock := os.NewFile(uintptr(relayFDs[2]), "relay-lb-sock")
+			if c, serr := spawnRelaySupervisor(notifyFile, supSock, lbSock); serr != nil {
+				fmt.Fprintf(os.Stderr, "warning: auto-expose relay: %v (webhooks won't be reachable from host, host loopback unreachable from wrapped cmd)\n", serr)
 			} else {
 				relaySup = c
 			}
 			_ = notifyFile.Close()
 			_ = supSock.Close()
+			_ = lbSock.Close()
 		} else {
 			fmt.Fprintf(os.Stderr, "warning: auto-expose relay: no fds from child: %v\n", err)
 		}

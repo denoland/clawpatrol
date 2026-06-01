@@ -191,30 +191,56 @@ func notifSendContinue(fd int, id uint64) error {
 // runRelaySupervisor is invoked by re-exec from the top parent. It reads:
 //
 //	fd 3: seccomp notify fd
-//	fd 4: SOCK_SEQPACKET socket to the worker
+//	fd 4: SOCK_SEQPACKET socket to the worker (auto-expose direction:
+//	      supervisor → worker, accepted host-side fds)
+//	fd 5: SOCK_SEQPACKET socket from the worker (host-loopback direction:
+//	      worker → supervisor, accepted agent-side fds redirected by the
+//	      agent-netns iptables REDIRECT rule)
 //
 // On each listen() trap it inspects the agent's socket, opens a host-side
 // listener on the same port, and hands accepted connections to the worker.
+// In parallel, a goroutine on fd 5 receives loopback jobs and dials the
+// host's 127.0.0.1:port for each.
 func runRelaySupervisor(_ []string) {
 	notifyFile := os.NewFile(3, "seccomp-notify")
 	workerSock := os.NewFile(4, "worker-sock")
-	if notifyFile == nil || workerSock == nil {
-		fail("relay-supervisor: expected fds 3,4 to be open")
+	lbSock := os.NewFile(5, "lb-sock")
+	if notifyFile == nil || workerSock == nil || lbSock == nil {
+		fail("relay-supervisor: expected fds 3,4,5 to be open")
 	}
 	notifyFD := int(notifyFile.Fd())
+
 	// SIGPIPE on the worker socket shouldn't kill the supervisor — log
 	// from the accept goroutines instead.
 	ignoreSIGPIPE()
 
-	// Hand each acceptLoop a RawConn over workerSock rather than the raw
-	// int fd. The RawConn carries an internal reference to the *os.File,
-	// so the runtime can't GC workerSock out from under the goroutines
-	// and Write integrates with the poller (transient EAGAIN absorbed
-	// without us writing retry logic).
+	// Hand the per-direction loops RawConns rather than raw int fds.
+	// RawConn carries an internal reference to the underlying *os.File
+	// (so GC can't pull the fd out from under the goroutines) and its
+	// Read/Write methods integrate with the runtime poller (transient
+	// EAGAIN/EWOULDBLOCK/EINTR absorbed without us writing retry logic).
 	workerRC, err := workerSock.SyscallConn()
 	if err != nil {
 		fail("relay-supervisor: SyscallConn(worker-sock): %v", err)
 	}
+	lbRC, err := lbSock.SyscallConn()
+	if err != nil {
+		fail("relay-supervisor: SyscallConn(lb-sock): %v", err)
+	}
+
+	// The worker's first message on the lb sock is its PID. We use it to
+	// suppress mirroring listen() traps from the worker itself — the
+	// host-loopback forwarder is a TCP listener inside the agent netns
+	// and we don't want it auto-exposed back to the host.
+	workerPID, err := recvWorkerPID(lbRC)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[clawpatrol relay] read worker pid: %v\n", err)
+		return
+	}
+
+	// Loopback direction: worker forwards each agent → 127.0.0.0/8:port
+	// connection up to us; we dial host ip:port and bidi-copy.
+	go runLoopbackSupervisorLoop(lbRC)
 
 	seen := make(map[uint16]bool)
 	var seenMu sync.Mutex
@@ -238,6 +264,12 @@ func runRelaySupervisor(_ []string) {
 		isListen := uint32(n.Data.NR) == listenNR
 
 		if isListen {
+			if int(n.Pid) == workerPID {
+				// Our own host-loopback forwarder calls listen(); don't
+				// mirror it to the host.
+				_ = notifSendContinue(notifyFD, n.ID)
+				continue
+			}
 			port, ip, family, perr := peekAgentListener(int(n.Pid), int(n.Data.Args[0]))
 			// Always reply CONTINUE first so the agent's listen() proceeds.
 			_ = notifSendContinue(notifyFD, n.ID)
@@ -270,6 +302,110 @@ func runRelaySupervisor(_ []string) {
 			_ = notifSendContinue(notifyFD, n.ID)
 		}
 	}
+}
+
+// recvWorkerPID reads the 4-byte LE PID that the worker sends as its
+// first message on the loopback sock. Uses RawConn.Read so the runtime
+// poller handles transient EAGAIN/EWOULDBLOCK/EINTR and the *os.File
+// stays alive for the syscall's duration.
+func recvWorkerPID(lbRC syscall.RawConn) (int, error) {
+	var (
+		pid  int
+		rerr error
+	)
+	err := lbRC.Read(func(rawFD uintptr) (done bool) {
+		buf := make([]byte, 4)
+		n, _, _, _, recvErr := unix.Recvmsg(int(rawFD), buf, nil, 0)
+		if recvErr != nil {
+			if errors.Is(recvErr, syscall.EAGAIN) ||
+				errors.Is(recvErr, syscall.EWOULDBLOCK) ||
+				errors.Is(recvErr, syscall.EINTR) {
+				return false
+			}
+			rerr = recvErr
+			return true
+		}
+		if n != 4 {
+			rerr = fmt.Errorf("short pid frame: %d bytes", n)
+			return true
+		}
+		pid = int(binary.LittleEndian.Uint32(buf))
+		return true
+	})
+	if err != nil {
+		return 0, err
+	}
+	return pid, rerr
+}
+
+// runLoopbackSupervisorLoop reads (ip, port, fd) frames from the worker
+// and proxies each to the host's ip:port (some address in 127.0.0.0/8).
+// EOF on the sock is normal (agent netns torn down); other errors abort
+// the loop.
+func runLoopbackSupervisorLoop(lbRC syscall.RawConn) {
+	for {
+		ip, port, fd, err := recvLoopbackJob(lbRC)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "[clawpatrol relay] loopback recv: %v\n", err)
+			return
+		}
+		go handleLoopbackJob(ip, port, fd)
+	}
+}
+
+// handleLoopbackJob dials the host's ip:port (the wrapped command's
+// original loopback destination, recovered by the worker via
+// SO_ORIGINAL_DST) and bidi-copies with the agent-side fd.
+//
+// ip always falls in 127.0.0.0/8 because the agent-netns REDIRECT only
+// matches that block; we re-assert it defensively so a malformed frame
+// can never steer the host-side dial off loopback.
+func handleLoopbackJob(ip [4]byte, port uint16, fd int) {
+	agentSide := os.NewFile(uintptr(fd), "agent-redirected")
+	defer func() { _ = agentSide.Close() }()
+
+	dst := net.IPv4(ip[0], ip[1], ip[2], ip[3])
+	if !dst.IsLoopback() {
+		fmt.Fprintf(os.Stderr, "[clawpatrol relay] refusing non-loopback dst %s\n", dst)
+		return
+	}
+	host, err := net.Dial("tcp", net.JoinHostPort(dst.String(), fmt.Sprintf("%d", port)))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[clawpatrol relay] dial host %s:%d: %v\n", dst, port, err)
+		return
+	}
+	defer func() { _ = host.Close() }()
+
+	bidiCopyTCP(agentSide, host)
+}
+
+// bidiCopyTCP runs an io.Copy in each direction between a *os.File (an fd
+// adopted via SCM_RIGHTS) and a net.Conn, half-closing the writes on each
+// side as the corresponding direction drains. Used by both the existing
+// agent-side auto-expose worker and the new host-loopback supervisor.
+func bidiCopyTCP(fileSide *os.File, connSide net.Conn) {
+	done := make(chan struct{}, 2)
+	go func() {
+		_, _ = io.Copy(connSide, fileSide)
+		if tc, ok := connSide.(*net.TCPConn); ok {
+			_ = tc.CloseWrite()
+		}
+		done <- struct{}{}
+	}()
+	go func() {
+		_, _ = io.Copy(fileSide, connSide)
+		if sc, err := fileSide.SyscallConn(); err == nil {
+			_ = sc.Control(func(rawFd uintptr) {
+				_ = unix.Shutdown(int(rawFd), unix.SHUT_WR)
+			})
+		}
+		done <- struct{}{}
+	}()
+	<-done
+	<-done
 }
 
 // peekAgentListener returns (port, bind_ip, family) for the socket fd
@@ -556,14 +692,22 @@ func tcpRawFD(c net.Conn) (int, error) {
 // runRelayWorker is invoked by re-exec inside the agent's userns+netns
 // (inherited from its parent, the agent child process). Reads:
 //
-//	fd 3: SOCK_SEQPACKET socket from the supervisor
-//
-// Each frame is (u16 port, SCM_RIGHTS accepted fd). Connect 127.0.0.1:port
-// on the agent loopback and bidi-copy.
+//	fd 3: SOCK_SEQPACKET socket from the supervisor (auto-expose direction:
+//	      supervisor → worker, each frame is u16 port + SCM_RIGHTS accepted fd;
+//	      worker dials 127.0.0.1:port on the agent loopback and bidi-copies)
+//	fd 4: SOCK_SEQPACKET socket to the supervisor (host-loopback direction:
+//	      worker → supervisor; worker forwards each agent → 127.0.0.1:port
+//	      connection that the netns iptables rule redirected to our forwarder)
+//	fd 5: write end of a pipe used to signal "host-loopback forwarder + iptables
+//	      rules are in place"; the agent child holds the read end and blocks
+//	      its user-cmd exec until that byte arrives, eliminating the race
+//	      where the wrapped command dials 127.0.0.1 before REDIRECT lands.
 func runRelayWorker(_ []string) {
 	sock := os.NewFile(3, "supervisor-sock")
-	if sock == nil {
-		fail("relay-worker: expected fd 3 to be open")
+	lbSock := os.NewFile(4, "lb-sock")
+	readyPipe := os.NewFile(5, "ready-pipe")
+	if sock == nil || lbSock == nil || readyPipe == nil {
+		fail("relay-worker: expected fds 3,4,5 to be open")
 	}
 	ignoreSIGPIPE()
 
@@ -571,6 +715,34 @@ func runRelayWorker(_ []string) {
 	if err != nil {
 		fail("relay-worker: SyscallConn(supervisor-sock): %v", err)
 	}
+	lbRC, err := lbSock.SyscallConn()
+	if err != nil {
+		fail("relay-worker: SyscallConn(lb-sock): %v", err)
+	}
+
+	// Tell the supervisor our PID so it can ignore the listen() trap
+	// triggered by our own host-loopback forwarder below.
+	if err := sendWorkerPID(lbRC); err != nil {
+		fmt.Fprintf(os.Stderr, "[clawpatrol relay-worker] send pid: %v\n", err)
+		// Continue — supervisor's loopback loop will block on recv
+		// and the auto-expose direction will still work.
+	}
+
+	// Host-loopback forwarder: TCP listener inside the agent netns plus
+	// iptables NAT REDIRECT that captures every 127.0.0.0/8:* connect()
+	// from the wrapped command and routes it here. Failure is logged but
+	// non-fatal — the auto-expose reverse direction is independent.
+	if err := setupHostLoopbackForwarder(lbRC); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ host-loopback forwarder: %v (services on host 127.0.0.1 won't be reachable from wrapped cmd)\n", err)
+	}
+
+	// Signal the agent child that REDIRECT is in place so it can exec the
+	// user command. Write before entering the main loop, regardless of
+	// whether the forwarder setup succeeded, so the agent child never
+	// hangs waiting on us.
+	_, _ = readyPipe.Write([]byte{1})
+	_ = readyPipe.Close()
+
 	relayWorkerLoop(rc, handleJob)
 }
 
@@ -604,6 +776,17 @@ func relayWorkerLoop(rc syscall.RawConn, handle func(uint16, int)) {
 	}
 }
 
+// sendWorkerPID writes the worker's PID as a 4-byte LE frame on the lb
+// sock. The supervisor reads it first and uses it to suppress mirroring
+// of our own host-loopback forwarder listener back to the host. Uses
+// sendJob (RawConn.Write under the hood) so the poller absorbs transient
+// EAGAIN/EWOULDBLOCK/EINTR.
+func sendWorkerPID(lbRC syscall.RawConn) error {
+	var buf [4]byte
+	binary.LittleEndian.PutUint32(buf[:], uint32(os.Getpid()))
+	return sendJob(lbRC, buf[:], nil)
+}
+
 // recvJob reads one (port, SCM_RIGHTS fd) frame off the supervisor sock,
 // using the RawConn's poller integration to handle transient EAGAIN /
 // EWOULDBLOCK / EINTR inside the kernel without ever surfacing them to
@@ -619,9 +802,6 @@ func recvJob(rc syscall.RawConn) (uint16, int, error) {
 		oob := make([]byte, unix.CmsgSpace(4))
 		n, oobn, _, _, recvErr := unix.Recvmsg(int(rawFD), buf, oob, 0)
 		if recvErr != nil {
-			// EAGAIN/EWOULDBLOCK: no message queued yet — ask the poller
-			// to wait for readability and re-run us. EINTR: a signal ran
-			// during recvmsg; same shape, retry.
 			if errors.Is(recvErr, syscall.EAGAIN) ||
 				errors.Is(recvErr, syscall.EWOULDBLOCK) ||
 				errors.Is(recvErr, syscall.EINTR) {
@@ -638,24 +818,10 @@ func recvJob(rc syscall.RawConn) (uint16, int, error) {
 			rerr = fmt.Errorf("short frame: %d bytes", n)
 			return true
 		}
-		cmsgs, perr := unix.ParseSocketControlMessage(oob[:oobn])
-		if perr != nil {
-			rerr = fmt.Errorf("parse cmsg: %w", perr)
-			return true
+		jobFD, rerr = scmRightsFD(oob[:oobn])
+		if rerr == nil {
+			port = binary.LittleEndian.Uint16(buf)
 		}
-		for _, cm := range cmsgs {
-			fds, perr := unix.ParseUnixRights(&cm)
-			if perr == nil && len(fds) > 0 {
-				// Close any extras (shouldn't happen — supervisor sends one).
-				for _, extra := range fds[1:] {
-					_ = unix.Close(extra)
-				}
-				port = binary.LittleEndian.Uint16(buf)
-				jobFD = fds[0]
-				return true
-			}
-		}
-		rerr = fmt.Errorf("no SCM_RIGHTS in frame")
 		return true
 	})
 	if err != nil {
@@ -664,36 +830,295 @@ func recvJob(rc syscall.RawConn) (uint16, int, error) {
 	return port, jobFD, rerr
 }
 
+// recvLoopbackJob reads a host-loopback job frame (4-byte original dst
+// IP + 2-byte LE port) plus its SCM_RIGHTS fd off the lb sock. Distinct
+// from recvJob, which carries only a port: the auto-expose reverse
+// direction always targets the agent's own 127.0.0.1, but the host-
+// loopback direction spans 127.0.0.0/8 and must ferry the address too.
+func recvLoopbackJob(rc syscall.RawConn) ([4]byte, uint16, int, error) {
+	var (
+		ip    [4]byte
+		port  uint16
+		jobFD = -1
+		rerr  error
+	)
+	err := rc.Read(func(rawFD uintptr) (done bool) {
+		buf := make([]byte, loopbackFrameLen)
+		oob := make([]byte, unix.CmsgSpace(4))
+		n, oobn, _, _, recvErr := unix.Recvmsg(int(rawFD), buf, oob, 0)
+		if recvErr != nil {
+			if errors.Is(recvErr, syscall.EAGAIN) ||
+				errors.Is(recvErr, syscall.EWOULDBLOCK) ||
+				errors.Is(recvErr, syscall.EINTR) {
+				return false
+			}
+			rerr = recvErr
+			return true
+		}
+		if n == 0 {
+			rerr = io.EOF
+			return true
+		}
+		if n != loopbackFrameLen {
+			rerr = fmt.Errorf("short frame: %d bytes", n)
+			return true
+		}
+		jobFD, rerr = scmRightsFD(oob[:oobn])
+		if rerr == nil {
+			ip, port = decodeLoopbackFrame(buf)
+		}
+		return true
+	})
+	if err != nil {
+		return [4]byte{}, 0, -1, err
+	}
+	return ip, port, jobFD, rerr
+}
+
+// scmRightsFD extracts the single passed fd from a control-message blob,
+// closing any unexpected extras. Shared by recvJob and recvLoopbackJob.
+func scmRightsFD(oob []byte) (int, error) {
+	cmsgs, err := unix.ParseSocketControlMessage(oob)
+	if err != nil {
+		return -1, fmt.Errorf("parse cmsg: %w", err)
+	}
+	for _, cm := range cmsgs {
+		fds, err := unix.ParseUnixRights(&cm)
+		if err == nil && len(fds) > 0 {
+			// Close any extras (shouldn't happen — sender sends one).
+			for _, extra := range fds[1:] {
+				_ = unix.Close(extra)
+			}
+			return fds[0], nil
+		}
+	}
+	return -1, fmt.Errorf("no SCM_RIGHTS in frame")
+}
+
 func handleJob(port uint16, fd int) {
 	incoming := os.NewFile(uintptr(fd), "host-conn")
 	defer func() { _ = incoming.Close() }()
 
-	inner, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", port)))
+	inner, err := dialAgentLoopback(port)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[clawpatrol relay-worker] dial 127.0.0.1:%d: %v\n", port, err)
 		return
 	}
 	defer func() { _ = inner.Close() }()
 
-	done := make(chan struct{}, 2)
-	go func() {
-		_, _ = io.Copy(inner, incoming)
-		if tc, ok := inner.(*net.TCPConn); ok {
-			_ = tc.CloseWrite()
-		}
-		done <- struct{}{}
-	}()
-	go func() {
-		_, _ = io.Copy(incoming, inner)
-		if sc, err := incoming.SyscallConn(); err == nil {
-			_ = sc.Control(func(rawFd uintptr) {
-				_ = unix.Shutdown(int(rawFd), unix.SHUT_WR)
+	bidiCopyTCP(incoming, inner)
+}
+
+// dialAgentLoopback dials 127.0.0.1:port inside the agent netns with
+// SO_MARK = loopbackBypassMark set on the socket. The matching iptables
+// rule in the agent netns RETURNs early for marked traffic, so this dial
+// reaches the agent's own listener instead of bouncing back to the host
+// via the host-loopback REDIRECT.
+func dialAgentLoopback(port uint16) (net.Conn, error) {
+	d := net.Dialer{
+		Control: func(_, _ string, c syscall.RawConn) error {
+			var sErr error
+			err := c.Control(func(fd uintptr) {
+				sErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, int(loopbackBypassMark))
 			})
+			if err != nil {
+				return err
+			}
+			return sErr
+		},
+	}
+	return d.Dial("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", port)))
+}
+
+// --- host-loopback forwarder (agent-netns side) -----------------------
+
+// loopbackBypassMark is the SO_MARK value the relay-worker stamps on its
+// own dials to 127.0.0.1:port so the agent-netns iptables REDIRECT rule
+// lets that traffic pass through to the agent's local listener instead of
+// looping back through the host. The exact value is arbitrary; we just
+// need it to be unlikely to collide with marks the wrapped command might
+// set itself — but the wrapped command runs without CAP_NET_ADMIN, so it
+// can't set SO_MARK at all and collisions are theoretical.
+const loopbackBypassMark uint32 = 0xc1aa
+
+// soOriginalDst is SO_ORIGINAL_DST from <linux/netfilter_ipv4.h>. Not
+// exported by x/sys/unix because it lives in a netfilter header.
+const soOriginalDst = 80
+
+// setupHostLoopbackForwarder binds a TCP listener on 127.0.0.1:0 inside
+// the agent netns, then installs iptables NAT rules in the agent netns
+// that REDIRECT every 127.0.0.0/8:* connect() from the wrapped command to
+// our listener. Each accepted connection is forwarded over lbSockFD to
+// the supervisor (host netns) along with the original destination IP and
+// port, recovered via getsockopt(SO_ORIGINAL_DST).
+//
+// Threat-model notes:
+//   - The listener is bound to 127.0.0.1 inside the AGENT netns. The
+//     agent netns has no external connectivity except via the TUN that
+//     goes to the gateway; the gateway never tunnels traffic to the
+//     agent's loopback. So only the wrapped command (and its children,
+//     both inside the same netns) can reach this listener.
+//   - The supervisor only dials a host 127.0.0.0/8 address in response
+//     to an SCM_RIGHTS frame from the worker, and the SCM_RIGHTS sock is
+//     a SOCK_SEQPACKET socketpair whose worker end is held only by the
+//     worker process — the wrapped command does not have it in its fd
+//     table (it's a child of the agent child, not of the worker, and
+//     the worker's fds aren't inherited). The dialed address comes from
+//     SO_ORIGINAL_DST under a 127.0.0.0/8 REDIRECT, so it is always
+//     loopback; the supervisor re-checks IsLoopback before dialing.
+//   - Host-loopback services are therefore reachable only by the wrapped
+//     command, never by anything routed via the gateway/tailnet.
+func setupHostLoopbackForwarder(lbRC syscall.RawConn) error {
+	if _, err := exec.LookPath("iptables"); err != nil {
+		return fmt.Errorf("iptables not available: %w", err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return fmt.Errorf("listen 127.0.0.1:0: %w", err)
+	}
+	fwdPort := uint16(ln.Addr().(*net.TCPAddr).Port)
+	if err := installLoopbackRedirectRules(fwdPort); err != nil {
+		_ = ln.Close()
+		return fmt.Errorf("install REDIRECT rules: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "[clawpatrol relay-worker] host-loopback forwarder on 127.0.0.1:%d (REDIRECT installed)\n", fwdPort)
+	go loopbackAcceptLoop(ln, lbRC)
+	return nil
+}
+
+// installLoopbackRedirectRules shells out to iptables to install the two
+// nat-OUTPUT rules that capture wrapped-command loopback connect()s:
+//
+//  1. Mark-RETURN exemption: traffic with SO_MARK = loopbackBypassMark
+//     bypasses the REDIRECT so the worker's own dials to 127.0.0.1:port
+//     (auto-expose reverse direction) reach the agent's local listener.
+//  2. REDIRECT every other 127.0.0.0/8:port (except the forwarder's own
+//     port, to avoid an obvious loop) to fwdPort.
+//
+// The match covers the whole 127.0.0.0/8 loopback block, not just
+// 127.0.0.1: services on the host bind across the range (127.0.0.2,
+// per-service aliases, etc.) and a wrapped command dialing any of them
+// must reach the right host listener. The original destination address
+// is recovered per-connection via SO_ORIGINAL_DST and preserved when the
+// supervisor dials the host, so 127.0.0.2:p forwards to host 127.0.0.2:p,
+// not 127.0.0.1:p.
+//
+// IPv6 (::1) is intentionally not configured here — it'd need an
+// ip6tables rule with the same shape. Tracked as follow-up; the issue
+// scopes IPv6 as a separate item.
+func installLoopbackRedirectRules(fwdPort uint16) error {
+	for _, r := range loopbackRedirectRuleArgs(fwdPort) {
+		c := exec.Command("iptables", r...)
+		c.Stderr = os.Stderr
+		if err := c.Run(); err != nil {
+			return fmt.Errorf("iptables %s: %w", strings.Join(r, " "), err)
 		}
-		done <- struct{}{}
-	}()
-	<-done
-	<-done
+	}
+	return nil
+}
+
+// loopbackRedirectRuleArgs returns the iptables argv slices that install
+// the agent-netns NAT REDIRECT for host-loopback forwarding. Split out
+// from installLoopbackRedirectRules so it can be unit-tested without
+// shelling out to iptables.
+func loopbackRedirectRuleArgs(fwdPort uint16) [][]string {
+	mark := fmt.Sprintf("0x%x/0x%x", loopbackBypassMark, loopbackBypassMark)
+	fwd := fmt.Sprintf("%d", fwdPort)
+	return [][]string{
+		{"-t", "nat", "-A", "OUTPUT", "-m", "mark", "--mark", mark, "-j", "RETURN"},
+		{"-t", "nat", "-A", "OUTPUT", "-p", "tcp", "-d", "127.0.0.0/8",
+			"-m", "tcp", "!", "--dport", fwd, "-j", "REDIRECT", "--to-ports", fwd},
+	}
+}
+
+// loopbackFrameLen is the size of a host-loopback job frame: 4-byte
+// original destination IPv4 (network order) + 2-byte LE port. The IP is
+// carried explicitly because the REDIRECT matches all of 127.0.0.0/8, so
+// the supervisor can't assume 127.0.0.1.
+const loopbackFrameLen = 6
+
+// encodeLoopbackFrame packs the original destination (IPv4 in network
+// order + port) into the wire frame ferried over the lb sock alongside
+// the SCM_RIGHTS fd.
+func encodeLoopbackFrame(ip [4]byte, port uint16) [loopbackFrameLen]byte {
+	var f [loopbackFrameLen]byte
+	copy(f[0:4], ip[:])
+	binary.LittleEndian.PutUint16(f[4:6], port)
+	return f
+}
+
+// decodeLoopbackFrame is the inverse of encodeLoopbackFrame.
+func decodeLoopbackFrame(b []byte) (ip [4]byte, port uint16) {
+	copy(ip[:], b[0:4])
+	port = binary.LittleEndian.Uint16(b[4:6])
+	return ip, port
+}
+
+// loopbackAcceptLoop accepts connections on the agent-side forwarder,
+// extracts the original destination IP+port via SO_ORIGINAL_DST, and
+// ships (ip, port, accepted_fd) to the supervisor over lbRC via
+// SCM_RIGHTS. sendJob's RawConn.Write integrates with the runtime
+// poller and takes a per-RawConn lock internally, so concurrent senders
+// (none today, but cheap insurance) are serialised and transient EAGAIN
+// is absorbed without us writing retry logic.
+func loopbackAcceptLoop(ln net.Listener, lbRC syscall.RawConn) {
+	for {
+		c, err := ln.Accept()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[clawpatrol relay-worker] loopback accept ended: %v\n", err)
+			return
+		}
+		fd, perr := tcpRawFD(c)
+		if perr != nil {
+			fmt.Fprintf(os.Stderr, "[clawpatrol relay-worker] loopback raw fd: %v\n", perr)
+			_ = c.Close()
+			continue
+		}
+		origIP, origPort, perr := getOriginalDst(fd)
+		if perr != nil {
+			fmt.Fprintf(os.Stderr, "[clawpatrol relay-worker] SO_ORIGINAL_DST: %v\n", perr)
+			_ = c.Close()
+			continue
+		}
+		frame := encodeLoopbackFrame(origIP, origPort)
+		rights := unix.UnixRights(fd)
+		err = sendJob(lbRC, frame[:], rights)
+		_ = c.Close()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[clawpatrol relay-worker] loopback sendmsg: %v\n", err)
+			return
+		}
+	}
+}
+
+// getOriginalDst returns the IP and port the wrapped command was trying
+// to reach before iptables REDIRECT rewrote the destination, by reading
+// SO_ORIGINAL_DST on the accepted socket. Conntrack remembers the original
+// tuple for the lifetime of the connection; this is the same trick that
+// transparent proxies use.
+//
+// The kernel populates a struct sockaddr_in with the original ip+port.
+// sa.Addr holds the IPv4 address in network byte order (i.e. natural
+// dotted-quad order: 127.0.0.2 → {127,0,0,2}), so we return it verbatim.
+// sin_port is also in network byte order, so we read its in-memory bytes
+// via binary.BigEndian to get the host-order value regardless of host
+// endianness. With the REDIRECT now matching all of 127.0.0.0/8 the IP is
+// no longer always 127.0.0.1, so the supervisor must preserve it.
+func getOriginalDst(fd int) ([4]byte, uint16, error) {
+	var sa unix.RawSockaddrInet4
+	sz := uint32(unsafe.Sizeof(sa))
+	_, _, errno := unix.Syscall6(
+		unix.SYS_GETSOCKOPT,
+		uintptr(fd), uintptr(unix.SOL_IP), uintptr(soOriginalDst),
+		uintptr(unsafe.Pointer(&sa)),
+		uintptr(unsafe.Pointer(&sz)),
+		0,
+	)
+	if errno != 0 {
+		return [4]byte{}, 0, errno
+	}
+	portBytes := (*[2]byte)(unsafe.Pointer(&sa.Port))
+	return sa.Addr, binary.BigEndian.Uint16(portBytes[:]), nil
 }
 
 // --- arch dispatch ----------------------------------------------------
@@ -712,15 +1137,30 @@ func seccompArch() (uint32, uint32, bool) {
 }
 
 // setupRelayInChild is called by the netns child after interface plumbing
-// and before exec. It installs the seccomp listen-trap, opens the worker
-// socketpair, ships [notify_fd, sup_sock] up to the top parent over the
-// existing parent socket, and forks the worker (which inherits this
-// process's userns+netns).
+// and before exec. It:
+//  1. Installs the seccomp listen-trap (auto-expose direction).
+//  2. Opens two SOCK_SEQPACKET socketpairs:
+//     - supSock / workerSock for the existing auto-expose direction
+//     (supervisor → worker: accepted host-side fds).
+//     - lbSupSock / lbWorkerSock for the new host-loopback direction
+//     (worker → supervisor: accepted agent-side fds that the netns
+//     iptables REDIRECT captured).
+//  3. Opens a one-shot ready pipe so we can block the user-cmd exec
+//     until the worker has installed the REDIRECT rules — otherwise the
+//     wrapped command can race and dial 127.0.0.1:port before REDIRECT
+//     lands, giving the issue's "host services invisible" symptom on
+//     fast-starting children.
+//  4. Ships [notify_fd, sup_sock, lb_sup_sock] up to the top parent
+//     over the existing parent socket via SCM_RIGHTS.
+//  5. Spawns the relay-worker with [worker_sock, lb_worker_sock,
+//     ready_write] on fds 3,4,5.
+//  6. Blocks on ready_read for one byte, then returns so the caller can
+//     exec the user cmd.
 //
-// Best-effort: any error logs a warning and skips sending the second
-// SCM_RIGHTS message. The parent's recvFDs then fails and the parent
-// continues without spawning a supervisor — `clawpatrol run` still works
-// for outbound-only workloads.
+// Best-effort: any error logs a warning and skips the rest. The parent's
+// recvFDs then fails and the parent continues without spawning a
+// supervisor — `clawpatrol run` still works for outbound-only workloads
+// (just with no auto-expose and no host-loopback access).
 func setupRelayInChild(parentSock *os.File) {
 	notifyFD, err := installListenTrapFilter()
 	if err != nil {
@@ -738,36 +1178,83 @@ func setupRelayInChild(parentSock *os.File) {
 	supSock := os.NewFile(uintptr(sp[0]), "relay-sup-sock")
 	workerSock := os.NewFile(uintptr(sp[1]), "relay-worker-sock")
 
-	if err := sendFDs(parentSock, []int{notifyFD, int(supSock.Fd())}); err != nil {
-		fmt.Fprintf(os.Stderr, "⚠ auto-expose relay: send fds: %v\n", err)
+	lbsp, err := unix.Socketpair(unix.AF_UNIX,
+		unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ auto-expose relay: loopback socketpair: %v\n", err)
 		_ = supSock.Close()
 		_ = workerSock.Close()
 		_ = unix.Close(notifyFD)
 		return
 	}
-	// Top parent now owns its own copies of notifyFD and supSock; drop ours.
+	lbSupSock := os.NewFile(uintptr(lbsp[0]), "relay-lb-sup-sock")
+	lbWorkerSock := os.NewFile(uintptr(lbsp[1]), "relay-lb-worker-sock")
+
+	readyR, readyW, err := os.Pipe()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ auto-expose relay: ready pipe: %v\n", err)
+		_ = supSock.Close()
+		_ = workerSock.Close()
+		_ = lbSupSock.Close()
+		_ = lbWorkerSock.Close()
+		_ = unix.Close(notifyFD)
+		return
+	}
+
+	if err := sendFDs(parentSock, []int{notifyFD, int(supSock.Fd()), int(lbSupSock.Fd())}); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ auto-expose relay: send fds: %v\n", err)
+		_ = supSock.Close()
+		_ = workerSock.Close()
+		_ = lbSupSock.Close()
+		_ = lbWorkerSock.Close()
+		_ = readyR.Close()
+		_ = readyW.Close()
+		_ = unix.Close(notifyFD)
+		return
+	}
+	// Top parent now owns its own copies of the three fds; drop ours.
 	_ = unix.Close(notifyFD)
 	_ = supSock.Close()
+	_ = lbSupSock.Close()
 
-	if _, err := spawnRelayWorker(workerSock); err != nil {
+	if _, err := spawnRelayWorker(workerSock, lbWorkerSock, readyW); err != nil {
 		fmt.Fprintf(os.Stderr, "⚠ auto-expose relay: spawn worker: %v\n", err)
+		_ = workerSock.Close()
+		_ = lbWorkerSock.Close()
+		_ = readyR.Close()
+		_ = readyW.Close()
+		return
 	}
 	_ = workerSock.Close()
+	_ = lbWorkerSock.Close()
+	_ = readyW.Close()
+
+	// Block until the worker has installed the iptables REDIRECT rule
+	// (or has decided to give up on it). Either way it writes one byte
+	// before its main recv loop, so this read returns promptly. If the
+	// worker dies before writing, we get EOF and continue anyway — the
+	// alternative is a hang on `clawpatrol run`.
+	one := make([]byte, 1)
+	if _, err := readyR.Read(one); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ auto-expose relay: ready signal: %v\n", err)
+	}
+	_ = readyR.Close()
 }
 
 // --- relay spawn helpers ----------------------------------------------
 
 // spawnRelaySupervisor re-execs self as `relay-supervisor`, passing the
-// seccomp notify fd and worker socket via ExtraFiles (fd 3 and fd 4).
-// Returns the started *exec.Cmd; the caller does not Wait — Pdeathsig
-// reaps the supervisor when the top parent exits.
-func spawnRelaySupervisor(notifyFile, workerSock *os.File) (*exec.Cmd, error) {
+// seccomp notify fd, worker socket, and loopback supervisor socket via
+// ExtraFiles (fds 3, 4, 5). Returns the started *exec.Cmd; the caller
+// does not Wait — Pdeathsig reaps the supervisor when the top parent
+// exits.
+func spawnRelaySupervisor(notifyFile, workerSock, lbSock *os.File) (*exec.Cmd, error) {
 	self, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("relay-supervisor: self path: %w", err)
 	}
 	c := exec.Command(self, "relay-supervisor")
-	c.ExtraFiles = []*os.File{notifyFile, workerSock}
+	c.ExtraFiles = []*os.File{notifyFile, workerSock, lbSock}
 	c.Stdin = nil
 	c.Stdout = nil
 	c.Stderr = os.Stderr
@@ -780,20 +1267,22 @@ func spawnRelaySupervisor(notifyFile, workerSock *os.File) (*exec.Cmd, error) {
 	return c, nil
 }
 
-// spawnRelayWorker re-execs self as `relay-worker`, passing the worker
-// end of the socketpair on fd 3. Called from inside the agent child so
-// the worker inherits agent userns+netns.
+// spawnRelayWorker re-execs self as `relay-worker`, passing on fd 3 the
+// supervisor socket (auto-expose direction), on fd 4 the loopback worker
+// socket (host-loopback direction), and on fd 5 the write end of the
+// ready pipe. Called from inside the agent child so the worker inherits
+// the agent userns+netns.
 //
 // Pdeathsig=SIGTERM ties the worker's lifetime to its parent: when the
 // agent child execs into the user cmd and that user cmd later exits,
 // our PID exits, the kernel sends SIGTERM to the worker.
-func spawnRelayWorker(workerSock *os.File) (*exec.Cmd, error) {
+func spawnRelayWorker(workerSock, lbSock, readyW *os.File) (*exec.Cmd, error) {
 	self, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("relay-worker: self path: %w", err)
 	}
 	c := exec.Command(self, "relay-worker")
-	c.ExtraFiles = []*os.File{workerSock}
+	c.ExtraFiles = []*os.File{workerSock, lbSock, readyW}
 	c.Stdin = nil
 	c.Stdout = nil
 	c.Stderr = os.Stderr

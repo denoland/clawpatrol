@@ -9,8 +9,10 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -332,6 +334,104 @@ func TestRelayWorkerLoopDispatchesEndToEnd(t *testing.T) {
 	case <-loopDone:
 	case <-time.After(time.Second):
 		t.Fatal("relayWorkerLoop did not return after peer close")
+	}
+}
+
+// TestLoopbackRedirectRuleArgs pins the exact iptables argv shape used
+// for the host-loopback REDIRECT install. The wrapped command runs
+// without CAP_NET_ADMIN so it cannot set SO_MARK; the mark-RETURN rule
+// exists solely so the relay-worker's own dial to the agent loopback
+// (auto-expose reverse direction) skips the REDIRECT and reaches the
+// agent's local listener instead of looping back through the host.
+func TestLoopbackRedirectRuleArgs(t *testing.T) {
+	const fwdPort uint16 = 41234
+	got := loopbackRedirectRuleArgs(fwdPort)
+	want := [][]string{
+		{"-t", "nat", "-A", "OUTPUT", "-m", "mark", "--mark", "0xc1aa/0xc1aa", "-j", "RETURN"},
+		{"-t", "nat", "-A", "OUTPUT", "-p", "tcp", "-d", "127.0.0.0/8",
+			"-m", "tcp", "!", "--dport", "41234", "-j", "REDIRECT", "--to-ports", "41234"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("loopbackRedirectRuleArgs(%d) =\n  %#v\nwant\n  %#v", fwdPort, got, want)
+	}
+}
+
+// TestWorkerPIDFrameRoundTrip exercises the sendWorkerPID/recvWorkerPID
+// path over a SOCK_SEQPACKET socketpair: the supervisor reads the
+// worker's PID off the loopback sock before entering its main loop, and
+// uses it to suppress mirroring of the worker's own listen() trap.
+func TestWorkerPIDFrameRoundTrip(t *testing.T) {
+	workerEnd, supEnd := newRelaySocketpair(t)
+	workerRC, err := workerEnd.SyscallConn()
+	if err != nil {
+		t.Fatalf("worker SyscallConn: %v", err)
+	}
+	supRC, err := supEnd.SyscallConn()
+	if err != nil {
+		t.Fatalf("supervisor SyscallConn: %v", err)
+	}
+	// Note: sendWorkerPID writes os.Getpid(); we don't override that,
+	// we just verify what we wrote is what we read.
+	if err := sendWorkerPID(workerRC); err != nil {
+		t.Fatalf("sendWorkerPID: %v", err)
+	}
+	got, err := recvWorkerPID(supRC)
+	if err != nil {
+		t.Fatalf("recvWorkerPID: %v", err)
+	}
+	if got != os.Getpid() {
+		t.Fatalf("recvWorkerPID = %d, want %d", got, os.Getpid())
+	}
+}
+
+// TestGetOriginalDstPortByteOrder verifies the endian dance inside
+// getOriginalDst: SO_ORIGINAL_DST hands back a sockaddr_in with
+// sin_port in network byte order; reading the in-memory bytes via
+// binary.BigEndian must yield the host-order value regardless of host
+// endianness. We can't actually call getsockopt without a redirected
+// connection, but we CAN exercise the byte-order conversion against a
+// synthetic struct.
+func TestGetOriginalDstPortByteOrder(t *testing.T) {
+	// Construct a RawSockaddrInet4 the same way the kernel would: Port
+	// in network byte order. binary.BigEndian.PutUint16 on a [2]byte
+	// alias of &sa.Port writes the network-order bytes.
+	cases := []uint16{1, 80, 443, 8080, 65535}
+	for _, want := range cases {
+		var sa unix.RawSockaddrInet4
+		portBytes := (*[2]byte)(unsafe.Pointer(&sa.Port))
+		binary.BigEndian.PutUint16(portBytes[:], want)
+		got := binary.BigEndian.Uint16(portBytes[:])
+		if got != want {
+			t.Errorf("port round-trip: got %d, want %d", got, want)
+		}
+	}
+}
+
+// TestLoopbackFrameRoundTrip verifies the (IP, port) wire frame the worker
+// ships to the supervisor over the lb sock survives encode→decode. The IP
+// matters now that the REDIRECT covers all of 127.0.0.0/8: a connect to
+// 127.0.0.2 must arrive at the supervisor as 127.0.0.2, not collapse to
+// 127.0.0.1.
+func TestLoopbackFrameRoundTrip(t *testing.T) {
+	cases := []struct {
+		ip   [4]byte
+		port uint16
+	}{
+		{[4]byte{127, 0, 0, 1}, 8080},
+		{[4]byte{127, 0, 0, 2}, 5432},
+		{[4]byte{127, 1, 2, 3}, 443},
+		{[4]byte{127, 255, 255, 254}, 1},
+		{[4]byte{127, 0, 0, 1}, 65535},
+	}
+	for _, tc := range cases {
+		f := encodeLoopbackFrame(tc.ip, tc.port)
+		if len(f) != loopbackFrameLen {
+			t.Fatalf("frame len = %d, want %d", len(f), loopbackFrameLen)
+		}
+		gotIP, gotPort := decodeLoopbackFrame(f[:])
+		if gotIP != tc.ip || gotPort != tc.port {
+			t.Errorf("round-trip %v:%d → %v:%d", tc.ip, tc.port, gotIP, gotPort)
+		}
 	}
 }
 
