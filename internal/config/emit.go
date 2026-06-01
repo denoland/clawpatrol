@@ -396,6 +396,10 @@ func emitOne(body *hclwrite.Body, p *Policy, kind Kind, name string) bool {
 		if len(pr.Credentials) > 0 {
 			setProfileCredentials(b, pr.Credentials, pr.Disambiguators)
 		}
+		if len(pr.Endpoints) > 0 {
+			ri := EmitRefIndex()
+			SetIdentList(b, "endpoints", ri.Refs(KindEndpoint, pr.Endpoints))
+		}
 		if pr.HITLAsyncGrants {
 			b.SetAttributeValue("hitl_async_grants", cty.True)
 		}
