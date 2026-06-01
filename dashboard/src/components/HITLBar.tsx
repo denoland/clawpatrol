@@ -2,6 +2,9 @@ import { useEffect, useState } from "react";
 import { decideHITL, getHITLPending, type HITLPending, type HITLResolveResult } from "../lib/api";
 import { Button } from "./Button";
 
+// agentIP, when set, scopes the bar to a single device's pending
+// approvals (used on the device page); unset shows every device's
+// (the home page).
 export function HITLBar({ agentIP }: { agentIP?: string } = {}) {
   const [pending, setPending] = useState<HITLPending[]>([]);
   const [justResolved, setJustResolved] = useState<HITLPending[]>([]);
@@ -13,8 +16,7 @@ export function HITLBar({ agentIP }: { agentIP?: string } = {}) {
       try {
         const r = await getHITLPending();
         if (!cancelled) {
-          const all = r ?? [];
-          const incoming = agentIP ? all.filter((x) => x.agent_ip === agentIP) : all;
+          const incoming = (r ?? []).filter((p) => !agentIP || p.agent_ip === agentIP);
           // Detect >0 → 0 transition: briefly flash green "Approved" cards.
           setPending((prev) => {
             if (prev.length > 0 && incoming.length === 0) {
@@ -77,10 +79,13 @@ function PendingCard({
   const ep = item.endpoint || item.host;
   const sep = item.path && !item.path.startsWith("/") ? " " : "";
   const target = `${item.method} ${ep}${sep}${item.path}`;
+  // Verb matches the Slack "Approve" button and the "approved" status
+  // badge — the dashboard previously said "allow" here, which read as
+  // a different action from the same decision shown elsewhere.
   const approveLabel =
     item.approval_effect === "create_retry_grant" || item.operation_state === "pending_approval"
       ? "approve retry"
-      : "allow";
+      : "approve";
 
   return (
     <div className="border-l-4 border-butter-400 bg-canvas border-y border-r border-navy overflow-hidden">

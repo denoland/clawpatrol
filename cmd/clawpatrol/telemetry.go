@@ -273,6 +273,7 @@ func actionsCountIn1h(g *Gateway) (int64, int64, int64) {
 		 FROM actions WHERE ts_ns > ?`, cutoff,
 	).Scan(&count, &bytesIn, &bytesOut)
 	if err != nil {
+		log.Printf("telemetry: actions count 1h: %v", err)
 		return 0, 0, 0
 	}
 	return count.Int64, bytesIn.Int64, bytesOut.Int64

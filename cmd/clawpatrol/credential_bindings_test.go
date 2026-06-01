@@ -71,6 +71,80 @@ rule "default-allow" {
 	}
 }
 
+// Settings-page Profiles column must NOT leak sibling profiles onto
+// a credential's row. Regression for cl-c38g (inverse of cl-lgwg):
+// credentialBindings previously walked the global endpoint→credentials
+// list to populate profiles, so any profile routing through a shared
+// endpoint claimed every credential bound to that endpoint. The
+// postgres "pg" endpoint binds both pg-readonly and pg-writer; profile
+// "data" declares only pg-readonly and must appear under pg-readonly
+// only, not pg-writer.
+func TestCredentialBindingsDoesNotLeakSiblingProfiles(t *testing.T) {
+	pgTargets := config.FrameworkAttrs{
+		RefLists: map[string][]string{"endpoints": {"pg"}},
+	}
+	readonly := &config.Entity{Symbol: &config.Symbol{Name: "pg-readonly"}, Framework: pgTargets}
+	writer := &config.Entity{Symbol: &config.Symbol{Name: "pg-writer"}, Framework: pgTargets}
+	ep := &config.CompiledEndpoint{
+		Name:        "pg",
+		Credentials: []*config.Entity{readonly, writer},
+	}
+	policy := &config.CompiledPolicy{
+		Endpoints: map[string]*config.CompiledEndpoint{"pg": ep},
+		Credentials: map[string]*config.Entity{
+			"pg-readonly": readonly,
+			"pg-writer":   writer,
+		},
+		Profiles: map[string]*config.CompiledProfile{
+			"data": {
+				Credentials: []*config.Entity{readonly},
+				Endpoints:   map[string]*config.CompiledEndpoint{"pg": ep},
+			},
+			"platform": {
+				Credentials: []*config.Entity{writer},
+				Endpoints:   map[string]*config.CompiledEndpoint{"pg": ep},
+			},
+		},
+	}
+	roProfs, roEps := credentialBindings(policy, "pg-readonly")
+	if !sliceEq(roProfs, []string{"data"}) {
+		t.Errorf("pg-readonly profiles got %v want [data] (must not include platform)", roProfs)
+	}
+	if !sliceEq(roEps, []string{"pg"}) {
+		t.Errorf("pg-readonly endpoints got %v want [pg]", roEps)
+	}
+	wrProfs, wrEps := credentialBindings(policy, "pg-writer")
+	if !sliceEq(wrProfs, []string{"platform"}) {
+		t.Errorf("pg-writer profiles got %v want [platform] (must not include data)", wrProfs)
+	}
+	if !sliceEq(wrEps, []string{"pg"}) {
+		t.Errorf("pg-writer endpoints got %v want [pg]", wrEps)
+	}
+}
+
+// Tunnel-attached credentials must still surface on every profile
+// whose endpoint set reaches the tunnel — mirrors the tunnel walk
+// kept in credentialsInProfile after the cl-lgwg fix.
+func TestCredentialBindingsSurfacesTunnelAttachedCredentials(t *testing.T) {
+	tailnet := &config.Entity{Symbol: &config.Symbol{Name: "tailnet-auth"}}
+	ep := &config.CompiledEndpoint{
+		Name:   "internal_api",
+		Tunnel: &config.CompiledTunnel{Name: "corp", Credential: tailnet},
+	}
+	policy := &config.CompiledPolicy{
+		Endpoints: map[string]*config.CompiledEndpoint{"internal_api": ep},
+		Profiles: map[string]*config.CompiledProfile{
+			"eng": {
+				Endpoints: map[string]*config.CompiledEndpoint{"internal_api": ep},
+			},
+		},
+	}
+	profs, _ := credentialBindings(policy, "tailnet-auth")
+	if !sliceEq(profs, []string{"eng"}) {
+		t.Errorf("tailnet-auth profiles got %v want [eng] via tunnel walk", profs)
+	}
+}
+
 // TestCredentialConfigOperatorFields extracts the per-credential
 // operator-set HCL attrs back from the Emit hook. Postgres exposes
 // `user`; the dashboard's details table renders it as a column.

@@ -81,15 +81,15 @@ func tightenDBPerms(dbPath string) {
 // applied in ascending order.
 func migrate(db *sql.DB) error {
 	if _, err := db.Exec("CREATE TABLE IF NOT EXISTS _schema (version INTEGER NOT NULL)"); err != nil {
-		return err
+		return fmt.Errorf("migrate: create _schema: %w", err)
 	}
 	current := 0
 	if err := db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM _schema").Scan(&current); err != nil {
-		return err
+		return fmt.Errorf("migrate: read current version: %w", err)
 	}
 	files, err := fs.ReadDir(migrationsFS, "migrations/sqlite")
 	if err != nil {
-		return err
+		return fmt.Errorf("migrate: list migration files: %w", err)
 	}
 	type m struct {
 		num  int
@@ -117,21 +117,21 @@ func migrate(db *sql.DB) error {
 	for _, p := range pending {
 		body, err := fs.ReadFile(migrationsFS, "migrations/sqlite/"+p.name)
 		if err != nil {
-			return err
+			return fmt.Errorf("migrate %s: read file: %w", p.name, err)
 		}
 		if _, err := db.Exec(string(body)); err != nil {
-			return fmt.Errorf("%s: %w", p.name, err)
+			return fmt.Errorf("migrate %s: apply: %w", p.name, err)
 		}
 		// Migration files MAY insert their own _schema row (0001
 		// does, since it's the first to run). Catch-all here for
 		// later migrations that don't.
 		var have int
 		if err := db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM _schema").Scan(&have); err != nil {
-			return err
+			return fmt.Errorf("migrate %s: recheck version: %w", p.name, err)
 		}
 		if have < p.num {
 			if _, err := db.Exec("INSERT INTO _schema (version) VALUES (?)", p.num); err != nil {
-				return err
+				return fmt.Errorf("migrate %s: record version: %w", p.name, err)
 			}
 		}
 		log.Printf("[migrate] applied %s", p.name)

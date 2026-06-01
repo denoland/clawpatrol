@@ -3,10 +3,14 @@
 package main
 
 import (
+	"encoding/binary"
+	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -122,6 +126,212 @@ func TestScanProcNetTcp(t *testing.T) {
 				t.Errorf("ip=%s, want %s", ip, tc.wantIP)
 			}
 		})
+	}
+}
+
+// newRelaySocketpair returns a non-blocking SOCK_SEQPACKET socketpair
+// wrapped in *os.File on both ends. Non-blocking is required for the
+// SyscallConn.Read / Write paths to engage the runtime poller. Test
+// helper, not used by production.
+func newRelaySocketpair(t *testing.T) (*os.File, *os.File) {
+	t.Helper()
+	sp, err := unix.Socketpair(unix.AF_UNIX,
+		unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK, 0)
+	if err != nil {
+		t.Fatalf("socketpair: %v", err)
+	}
+	a := os.NewFile(uintptr(sp[0]), "relay-test-a")
+	b := os.NewFile(uintptr(sp[1]), "relay-test-b")
+	t.Cleanup(func() {
+		_ = a.Close()
+		_ = b.Close()
+	})
+	return a, b
+}
+
+// sendOneFrame is a tiny helper that ships one (u16 port, SCM_RIGHTS fd)
+// frame to the worker over a *os.File-wrapped sock, bypassing the
+// production sendJob helper so tests can drive recv-side behaviour
+// directly.
+func sendOneFrame(t *testing.T, sender *os.File, port uint16, fd int) {
+	t.Helper()
+	var portBuf [2]byte
+	binary.LittleEndian.PutUint16(portBuf[:], port)
+	rights := unix.UnixRights(fd)
+	rc, err := sender.SyscallConn()
+	if err != nil {
+		t.Fatalf("SyscallConn: %v", err)
+	}
+	if err := sendJob(rc, portBuf[:], rights); err != nil {
+		t.Fatalf("sendJob: %v", err)
+	}
+}
+
+// TestRecvJobReceivesFrame exercises the happy-path end-to-end: drop a
+// frame onto one end of a real socketpair and confirm recvJob extracts
+// the port and the SCM_RIGHTS fd from the other end.
+func TestRecvJobReceivesFrame(t *testing.T) {
+	sup, worker := newRelaySocketpair(t)
+
+	// Use a pipe's read end as the "fd to ship" — any fd that the
+	// receiver can fstat will do; we just want a recognisable kernel
+	// object on the other end so this test catches accidental fd loss.
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	defer func() { _ = pr.Close() }()
+	defer func() { _ = pw.Close() }()
+
+	sendOneFrame(t, sup, 8080, int(pr.Fd()))
+
+	rc, err := worker.SyscallConn()
+	if err != nil {
+		t.Fatalf("worker SyscallConn: %v", err)
+	}
+	port, gotFD, err := recvJob(rc)
+	if err != nil {
+		t.Fatalf("recvJob: %v", err)
+	}
+	if port != 8080 {
+		t.Errorf("port = %d, want 8080", port)
+	}
+	if gotFD < 0 {
+		t.Errorf("gotFD = %d, want >= 0", gotFD)
+	}
+	_ = unix.Close(gotFD)
+}
+
+// TestRecvJobAbsorbsEAGAINViaPoller verifies the SyscallConn.Read poller
+// integration: a recvJob on an empty non-blocking socket must NOT return
+// EAGAIN. It should park on the poller until a frame arrives, then
+// complete. This is the property that replaces the previous explicit
+// isTransientRecvErr retry — under load, transient EAGAINs are absorbed
+// by the kernel poller, not surfaced to the loop.
+func TestRecvJobAbsorbsEAGAINViaPoller(t *testing.T) {
+	sup, worker := newRelaySocketpair(t)
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	defer func() { _ = pr.Close() }()
+	defer func() { _ = pw.Close() }()
+
+	rc, err := worker.SyscallConn()
+	if err != nil {
+		t.Fatalf("worker SyscallConn: %v", err)
+	}
+
+	type result struct {
+		port uint16
+		fd   int
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		port, fd, err := recvJob(rc)
+		done <- result{port, fd, err}
+	}()
+
+	// Recv should be blocked in the poller. Confirm by ensuring no
+	// result arrives within a short window.
+	select {
+	case r := <-done:
+		t.Fatalf("recvJob returned prematurely: port=%d fd=%d err=%v", r.port, r.fd, r.err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Now publish a frame; recv should complete.
+	sendOneFrame(t, sup, 9090, int(pr.Fd()))
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("recvJob err = %v, want nil", r.err)
+		}
+		if r.port != 9090 {
+			t.Errorf("port = %d, want 9090", r.port)
+		}
+		_ = unix.Close(r.fd)
+	case <-time.After(time.Second):
+		t.Fatal("recvJob did not unblock after frame was sent")
+	}
+}
+
+// TestRecvJobReturnsEOFOnPeerClose pins shutdown semantics: when the
+// supervisor goes away, recvJob must return io.EOF (not EBADF, not a
+// stray errno) so the loop can exit cleanly.
+func TestRecvJobReturnsEOFOnPeerClose(t *testing.T) {
+	sup, worker := newRelaySocketpair(t)
+	_ = sup.Close()
+
+	rc, err := worker.SyscallConn()
+	if err != nil {
+		t.Fatalf("worker SyscallConn: %v", err)
+	}
+	_, _, err = recvJob(rc)
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("recvJob err = %v, want io.EOF", err)
+	}
+}
+
+// TestRelayWorkerLoopDispatchesEndToEnd ships two frames through a real
+// socketpair and confirms both reach the dispatch callback in order,
+// then verifies a clean shutdown when the sender closes.
+func TestRelayWorkerLoopDispatchesEndToEnd(t *testing.T) {
+	sup, worker := newRelaySocketpair(t)
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	defer func() { _ = pr.Close() }()
+	defer func() { _ = pw.Close() }()
+
+	rc, err := worker.SyscallConn()
+	if err != nil {
+		t.Fatalf("worker SyscallConn: %v", err)
+	}
+
+	type job struct {
+		port uint16
+		fd   int
+	}
+	jobs := make(chan job, 4)
+	loopDone := make(chan struct{})
+	go func() {
+		relayWorkerLoop(rc, func(port uint16, fd int) {
+			jobs <- job{port, fd}
+		})
+		close(loopDone)
+	}()
+
+	sendOneFrame(t, sup, 5000, int(pr.Fd()))
+	sendOneFrame(t, sup, 5001, int(pr.Fd()))
+
+	// Order between the two dispatch goroutines is non-deterministic;
+	// collect both and check as a set.
+	want := map[uint16]bool{5000: true, 5001: true}
+	got := map[uint16]bool{}
+	for i := 0; i < 2; i++ {
+		select {
+		case j := <-jobs:
+			got[j.port] = true
+			_ = unix.Close(j.fd)
+		case <-time.After(time.Second):
+			t.Fatalf("dispatch[%d] never ran (got so far: %v)", i, got)
+		}
+	}
+	for p := range want {
+		if !got[p] {
+			t.Errorf("missing dispatch for port %d", p)
+		}
+	}
+
+	// Sender closes → loop sees EOF → returns.
+	_ = sup.Close()
+	select {
+	case <-loopDone:
+	case <-time.After(time.Second):
+		t.Fatal("relayWorkerLoop did not return after peer close")
 	}
 }
 

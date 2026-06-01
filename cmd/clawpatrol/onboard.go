@@ -571,8 +571,8 @@ func mintTailscaleAuthKey(ctx context.Context, ts JoinConfig, ephemeral bool) (s
 	var tok struct {
 		AccessToken string `json:"access_token"`
 	}
-	if err := json.NewDecoder(tokResp.Body).Decode(&tok); err != nil {
-		return "", err
+	if err := json.NewDecoder(io.LimitReader(tokResp.Body, 64<<10)).Decode(&tok); err != nil {
+		return "", fmt.Errorf("tailscale oauth: decode: %w", err)
 	}
 	if tok.AccessToken == "" {
 		return "", fmt.Errorf("tailscale oauth: empty access_token")
@@ -620,7 +620,7 @@ func mintTailscaleAuthKey(ctx context.Context, ts JoinConfig, ephemeral bool) (s
 	keyReq.Header.Set("Content-Type", "application/json")
 	keyResp, err := http.DefaultClient.Do(keyReq)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("tailscale key: post: %w", err)
 	}
 	defer func() { _ = keyResp.Body.Close() }()
 	if keyResp.StatusCode != 200 {
@@ -630,8 +630,8 @@ func mintTailscaleAuthKey(ctx context.Context, ts JoinConfig, ephemeral bool) (s
 	var key struct {
 		Key string `json:"key"`
 	}
-	if err := json.NewDecoder(keyResp.Body).Decode(&key); err != nil {
-		return "", err
+	if err := json.NewDecoder(io.LimitReader(keyResp.Body, 64<<10)).Decode(&key); err != nil {
+		return "", fmt.Errorf("tailscale key: decode: %w", err)
 	}
 	if key.Key == "" {
 		return "", fmt.Errorf("tailscale key: empty key in response")

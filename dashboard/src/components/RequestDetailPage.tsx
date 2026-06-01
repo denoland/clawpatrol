@@ -6,9 +6,12 @@ import {
   type EventRecord,
   type FacetSchema,
 } from "../lib/api";
+import { headersToJSON } from "../lib/clipboard";
 import { formatFacetValue, useFacets } from "../lib/facets";
 import { fmtDateTime } from "../lib/format";
 import { Button } from "./Button";
+import { CopyButton } from "./CopyButton";
+import { ApprovalStatusIcon, LockGlyph } from "./LiveRequests";
 import { Main } from "./Main";
 import { PageTitle, type Crumb } from "./PageTitle";
 import { Tag } from "./Tag";
@@ -108,11 +111,15 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
       {/* header */}
       <div className="bg-canvas border-1.5 border-navy p-5 space-y-3">
         <div className="flex items-center gap-3 flex-wrap">
-          <ModeIcon mode={ev.mode} />
-          {verb && (
-            <span className="font-mono text-xs uppercase font-semibold text-text-muted">
-              {verb}
-            </span>
+          <ApprovalStatusIcon ev={ev} inFlight={ev.phase === "start"} />
+          {ev.mode === "splice" || ev.mode === "relay" ? (
+            <LockGlyph />
+          ) : (
+            verb && (
+              <span className="font-mono text-xs uppercase font-semibold text-text-muted">
+                {verb}
+              </span>
+            )
           )}
           {!isSQL && (
             <span className={"text-sm tabular-nums font-semibold " + statusColor}>
@@ -161,22 +168,38 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
             </Section>
           )}
           {hasReqH && (
-            <Section title="Request headers">
+            <Section
+              title="Request headers"
+              action={
+                <CopyButton label="request headers" text={() => headersToJSON(ev.req_headers!)} />
+              }
+            >
               <Headers obj={ev.req_headers!} />
             </Section>
           )}
           {hasReq && (
-            <Section title="Request body">
+            <Section
+              title="Request body"
+              action={<CopyButton label="request body" text={() => ev.req_body!} />}
+            >
               <HttpBody text={ev.req_body!} />
             </Section>
           )}
           {hasRespH && (
-            <Section title="Response headers">
+            <Section
+              title="Response headers"
+              action={
+                <CopyButton label="response headers" text={() => headersToJSON(ev.resp_headers!)} />
+              }
+            >
               <Headers obj={ev.resp_headers!} />
             </Section>
           )}
           {hasResp && (
-            <Section title={`Response body${status ? ` (${status})` : ""}`}>
+            <Section
+              title={`Response body${status ? ` (${status})` : ""}`}
+              action={<CopyButton label="response body" text={() => ev.resp_body!} />}
+            >
               <HttpBody text={ev.resp_body!} />
             </Section>
           )}
@@ -395,11 +418,20 @@ function Facets({ rows }: { rows: Array<{ name: string; label: string; value: st
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({
+  title,
+  children,
+  action,
+}: {
+  title: string;
+  children: React.ReactNode;
+  action?: React.ReactNode;
+}) {
   return (
     <details open>
-      <summary className="cursor-pointer px-4 py-2.5 text-xs font-mono uppercase tracking-wider font-bold text-navy bg-navy-100 border-b border-navy hover:text-text select-none">
-        {title}
+      <summary className="cursor-pointer flex items-center gap-2 px-4 py-1.5 text-xs font-mono uppercase tracking-wider font-bold text-navy bg-navy-100 border-b border-navy hover:text-text select-none">
+        <span>{title}</span>
+        {action && <span className="ml-auto">{action}</span>}
       </summary>
       <div>{children}</div>
     </details>
@@ -723,33 +755,4 @@ function fmtBytes(n: number): string {
   if (n < 1024) return n + " B";
   if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
   return (n / 1024 / 1024).toFixed(1) + " MB";
-}
-
-function ModeIcon({ mode }: { mode: string }) {
-  if (mode === "mitm") {
-    return (
-      <span title="MITM" className="shrink-0 text-rust-400">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M7 10V7a5 5 0 0 1 10 0v3h1a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h1Zm2 0h6V7a3 3 0 1 0-6 0v3Z" />
-        </svg>
-      </span>
-    );
-  }
-  return (
-    <span title="Splice" className="shrink-0 text-text-subtle">
-      <svg
-        width="14"
-        height="14"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      >
-        <path d="M5 12h14" />
-        <path d="m13 6 6 6-6 6" />
-      </svg>
-    </span>
-  );
 }

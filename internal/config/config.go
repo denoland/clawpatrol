@@ -534,11 +534,28 @@ func blockDisambiguators(ent *Entity) map[string]string {
 // check diagnostics first — a non-nil Gateway can still carry errors
 // (some recovery is best-effort).
 //
+// If path is a regular file, it's parsed as a single HCL document.
+// If path is a directory, every `*.hcl` file in it (non-recursive)
+// is parsed and merged in lexicographic filename order — the
+// Terraform-style "module is a directory of files" model. See
+// `doc/multi-file-config.md` for the contract.
+//
 // Plugin loading goes through the package-global PluginLoader
 // installed via SetPluginLoader. main.go installs the real
 // *extplugin.Manager once at startup; the default is a no-op so
 // non-plugin configs and tests need no setup.
 func Load(path string) (*Gateway, hcl.Diagnostics) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "Cannot read config path",
+			Detail:   err.Error(),
+		}}
+	}
+	if info.IsDir() {
+		return LoadDir(path)
+	}
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return nil, hcl.Diagnostics{{
@@ -558,10 +575,112 @@ func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
 	if diags.HasErrors() {
 		return nil, diags
 	}
+	return loadFiles([]*hcl.File{file}, filepath.Dir(filename), diags)
+}
+
+// LoadDir parses every `*.hcl` file in dir (non-recursive), merges
+// them in lexicographic filename order, and resolves the result as
+// a single gateway config — the Terraform-style mental model where a
+// "module" is a directory whose files are joined.
+//
+// Discovery rules:
+//
+//   - Only direct children of dir are read (no recursion); subdirectories
+//     are ignored.
+//   - Files whose name ends in `.hcl` are included. Files starting with
+//     `.` (dotfiles like `.swp`) are skipped so editor temporaries don't
+//     poison the load.
+//   - Order is lexicographic by filename (`filepath.Base`). It must not
+//     affect semantics — reference resolution runs against the merged
+//     symbol table — but it does decide the deterministic order
+//     diagnostics, dumps, and emit traverse.
+//   - Top-level singleton blocks (`gateway`, `defaults`) must appear in
+//     exactly one file; duplicates are rejected with the standard gohcl
+//     "Duplicate X block" diagnostic.
+//   - Top-level repeatable blocks (`plugin "...", every policy entity)
+//     can appear in any file, but each named entity is still unique
+//     across the whole module — duplicate names across files surface as
+//     `Duplicate <kind> name` from pass-1.
+//   - References (`endpoint = X`, `approve = [Y]`) resolve against the
+//     merged symbol table, so the order files were read in doesn't
+//     determine whether a reference is reachable.
+//
+// `<<file:NAME>>` markers resolve relative to dir (the directory passed
+// here), not relative to the individual file the marker appears in. In
+// practice that's the same path since all merged files share a parent,
+// but it's worth flagging if we ever extend multi-file to subdirectories.
+func LoadDir(dir string) (*Gateway, hcl.Diagnostics) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "Cannot read config directory",
+			Detail:   err.Error(),
+		}}
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		n := e.Name()
+		if strings.HasPrefix(n, ".") {
+			continue
+		}
+		if !strings.HasSuffix(n, ".hcl") {
+			continue
+		}
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return nil, hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "No HCL config files found",
+			Detail:   fmt.Sprintf("Directory %q contains no `*.hcl` files. Pass a single .hcl file or populate the directory with one or more HCL files.", dir),
+		}}
+	}
+
+	parser := hclparse.NewParser()
+	var diags hcl.Diagnostics
+	files := make([]*hcl.File, 0, len(names))
+	for _, name := range names {
+		path := filepath.Join(dir, name)
+		src, err := os.ReadFile(path)
+		if err != nil {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Cannot read config file",
+				Detail:   fmt.Sprintf("%s: %v", path, err),
+			})
+			continue
+		}
+		file, parseDiags := parser.ParseHCL(src, path)
+		diags = append(diags, parseDiags...)
+		if file != nil {
+			files = append(files, file)
+		}
+	}
+	if diags.HasErrors() {
+		return nil, diags
+	}
+
+	return loadFiles(files, dir, diags)
+}
+
+// loadFiles is the shared decode pipeline. It accepts an ordered list
+// of already-parsed *hcl.File, merges them via hcl.MergeFiles, runs
+// the operational gohcl decode + pass-1 + pass-2, and returns the
+// resolved *Gateway. configDir is the directory used to resolve
+// relative file-include markers (`<<file:NAME>>`).
+func loadFiles(files []*hcl.File, configDir string, diags hcl.Diagnostics) (*Gateway, hcl.Diagnostics) {
+	// hcl.MergeFiles handles the single-file case as a no-op pass-
+	// through, so the multi-file code path is exercised uniformly.
+	body := hcl.MergeFiles(files)
 
 	// Decode operational fields. Policy blocks land in gw.Remain.
 	gw := &Gateway{}
-	if d := gohcl.DecodeBody(file.Body, nil, gw); d.HasErrors() {
+	if d := gohcl.DecodeBody(body, nil, gw); d.HasErrors() {
 		// Don't bail — gohcl is strict about unknown fields; we
 		// downgrade unknown-attribute errors at the file root only
 		// after pass-1 has had a chance to catch them as policy
@@ -594,7 +713,11 @@ func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
 
 	diags = append(diags, validateOperational(gw)...)
 
-	// Pass 1: extract the policy blocks from the remainder body.
+	// Pass 1: extract the policy blocks from the remainder body. With
+	// a merged body, gw.Remain is itself a merged body whose Content
+	// fans out to each file's leftover — so cross-file policy blocks
+	// surface here as a single flat block list with original-file
+	// ranges intact.
 	policyBlocks, polDiags := extractPolicyBlocks(gw.Remain)
 	diags = append(diags, polDiags...)
 
@@ -604,7 +727,6 @@ func LoadBytes(src []byte, filename string) (*Gateway, hcl.Diagnostics) {
 	// Pass 2: build the eval context with every name → string, then
 	// decode each policy block against its plugin's schema.
 	evalCtx := buildEvalContext(table)
-	configDir := filepath.Dir(filename)
 	resolveDiags := decodePolicyBlocks(gw.Policy, table, evalCtx, configDir)
 	diags = append(diags, resolveDiags...)
 	diags = append(diags, validateHITLAsyncConfig(gw)...)
@@ -1058,7 +1180,7 @@ func validateProfileDisambiguators(p *Policy, table *SymbolTable) hcl.Diagnostic
 				continue
 			}
 			members[credName] = true
-			memberEndpoints[credName] = credentialEndpointTargets(ent)
+			memberEndpoints[credName] = CredentialEndpointTargets(ent)
 			mergedDisambig[credName] = mergeDisambig(blockDisambiguators(ent), pr.Disambiguators[credName])
 
 			// Per-type field validity on the profile-inline side too.

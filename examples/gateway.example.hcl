@@ -121,6 +121,11 @@ endpoint "https" "slack" {
 endpoint "https" "notion"  { hosts = ["api.notion.com", "mcp.notion.com"] }
 endpoint "https" "grafana" { hosts = ["mygrafana.grafana.net"] }
 
+# Billing — same SaaS, two tenants (test + prod). One endpoint, two
+# credentials wielded by the same profile. See the placeholder-
+# dispatch comment on profile "billing" below.
+endpoint "https" "orb" { hosts = ["api.withorb.com"] }
+
 # HTTPS — wildcard hosts. A `*.<suffix>` entry matches any name that
 # ends in `.<suffix>` and has at least one character before that
 # suffix; `*.amazonaws.com` covers both `s3.amazonaws.com` and
@@ -223,6 +228,13 @@ credential "bearer_token" "grafana" {
 credential "bearer_token" "aws" {
   endpoint = https.aws
 }
+# Two Orb tokens at the one endpoint. Single-credential profiles
+# (only one of these in their `credentials` list) need nothing more
+# than a bare-name reference — the built-in bearer-token placeholder
+# is unambiguous. The dispatch comes in below on profile "billing",
+# which wields both at once.
+credential "bearer_token" "orb-test" { endpoint = https.orb }
+credential "bearer_token" "orb-prod" { endpoint = https.orb }
 
 # Notion OAuth — workspace-scoped.
 credential "notion_oauth" "notion" {
@@ -496,5 +508,25 @@ profile "platform" {
     ssh_key.build-host,
     mtls_credential.k8s-dev,
     mtls_credential.k8s-prod,
+  ]
+}
+
+# Two bearer credentials at one endpoint → placeholder dispatch.
+# The agent's process env decides which token gets sent:
+#
+#   ORB_API_KEY=PH_orb_test  clawpatrol run ./test-job
+#   ORB_API_KEY=PH_orb_prod  clawpatrol run ./prod-job
+#
+# The agent's SDK reads ORB_API_KEY normally and puts the value in
+# the Authorization header. The gateway scans the auth slot, sees
+# `PH_orb_test` or `PH_orb_prod`, and substitutes the matching
+# credential's real secret on the wire. A bare-name `credentials`
+# entry (no inline object) would be the fallback for that
+# (profile, endpoint) pair — at most one fallback per pair.
+profile "billing" {
+  credentials = [
+    anthropic_oauth_subscription.claude,
+    { placeholder = "PH_orb_test", credential = bearer_token.orb-test },
+    { placeholder = "PH_orb_prod", credential = bearer_token.orb-prod },
   ]
 }

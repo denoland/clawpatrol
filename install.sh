@@ -10,6 +10,7 @@
 #   CLAWPATROL_PREFIX        — install dir (default: $HOME/.local/bin)
 #   CLAWPATROL_FROM_SOURCE   — 1 to build from source (Go required)
 #   CLAWPATROL_REF           — git ref when building from source (default: main)
+#   CLAWPATROL_NO_TELEMETRY  — 1 to skip the anonymous install-event ping
 #
 # POSIX sh.
 
@@ -19,6 +20,33 @@ REPO="denoland/clawpatrol"
 VERSION="${CLAWPATROL_VERSION:-latest}"
 PREFIX="${CLAWPATROL_PREFIX:-$HOME/.local/bin}"
 
+# Anonymous install telemetry. Pings clawpatrol.dev with os/arch/
+# version and a generated per-run id so we can count installs and
+# debug failures. Opt out with CLAWPATROL_NO_TELEMETRY=1.
+TELEMETRY_URL="https://clawpatrol.dev/api/telemetry/v1/install"
+INSTALL_ID=""
+
+telemetry() {
+  [ "${CLAWPATROL_NO_TELEMETRY:-0}" = "1" ] && return 0
+  command -v curl >/dev/null 2>&1 || return 0
+  if [ -z "$INSTALL_ID" ]; then
+    INSTALL_ID=$(
+      od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n' \
+        || date +%s%N 2>/dev/null \
+        || date +%s
+    )
+  fi
+  event="$1"
+  reason="${2:-}"
+  body=$(printf '{"install_id":"%s","event":"%s","os":"%s","arch":"%s","version":"%s","from_source":"%s","reason":"%s"}' \
+    "$INSTALL_ID" "$event" \
+    "${OS:-}" "${ARCH:-}" "$VERSION" \
+    "${CLAWPATROL_FROM_SOURCE:-0}" "$reason")
+  (curl -fsS --max-time 3 -X POST \
+     -H 'Content-Type: application/json' \
+     -d "$body" "$TELEMETRY_URL" >/dev/null 2>&1 || true) &
+}
+
 if [ "$VERSION" = "latest" ]; then
   BASE="https://github.com/${REPO}/releases/latest/download"
 else
@@ -26,7 +54,7 @@ else
 fi
 
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
-fail() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+fail() { telemetry failed "$*"; printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
@@ -68,6 +96,7 @@ if [ "${CLAWPATROL_FROM_SOURCE:-0}" = "1" ]; then
   mv "$SRC/clawpatrol" "$PREFIX/clawpatrol"
   chmod +x "$PREFIX/clawpatrol"
   say "installed: $PREFIX/clawpatrol"
+  telemetry completed
   exit 0
 fi
 
@@ -132,4 +161,5 @@ if [ "$OS" = "darwin" ]; then
   rm -rf "$APP_TMP"
 fi
 
+telemetry completed
 echo "next: clawpatrol join <gateway-url>"

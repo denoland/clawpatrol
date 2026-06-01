@@ -398,6 +398,63 @@ func (m *TunnelManager) DisconnectCredential(ctx context.Context, credential str
 	return firstErr
 }
 
+// CloseAll tears down every live tunnel entry, cancels pending idle
+// timers, and clears the manager's pinned-release table. Best-effort
+// — the manager keeps going past per-tunnel Close failures and
+// returns the first error it saw so the caller can log it. Idempotent;
+// safe to call after CloseAll.
+//
+// Wired into the gateway's signal-driven shutdown path: tsnet,
+// SSH, and local-command tunnel plugins keep subprocess / kernel
+// state that a hard exit would orphan (lingering ssh PIDs, kubectl
+// port-forward subprocesses, tsnet logout-on-close). Running this
+// before db.Close gives every plugin a chance to clean up while the
+// rest of the process is still healthy.
+func (m *TunnelManager) CloseAll(ctx context.Context) error {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	entries := m.entries
+	pinned := m.pinned
+	m.entries = map[mgrKey]*tunnelEntry{}
+	m.pinned = map[mgrKey]func(){}
+	m.mu.Unlock()
+
+	// Pinned-release closures call back into releaseEntry; with the
+	// map already drained those calls are harmless no-ops, so we can
+	// drop pin refs without taking the lock again.
+	_ = pinned
+
+	var firstErr error
+	for _, e := range entries {
+		if e == nil {
+			continue
+		}
+		if e.timer != nil {
+			e.timer.Stop()
+			e.timer = nil
+		}
+		if e.tunnel != nil {
+			if err := e.tunnel.Close(); err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("tunnel %q close: %w", e.name, err)
+			}
+		}
+		if e.viaRelease != nil {
+			e.viaRelease()
+		}
+		select {
+		case <-ctx.Done():
+			if firstErr == nil {
+				firstErr = ctx.Err()
+			}
+			return firstErr
+		default:
+		}
+	}
+	return firstErr
+}
+
 // wrapTunnel hides Close from callers — only the manager closes.
 // Dial passes through to the underlying tunnel.
 func wrapTunnel(t runtime.Tunnel) runtime.Tunnel {

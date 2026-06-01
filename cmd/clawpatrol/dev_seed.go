@@ -702,6 +702,7 @@ func devSeedRefreshRegistries(g *Gateway, devices []devSeedDevice) {
 func devSeedLoadDeviceList(db *sql.DB) []devSeedDevice {
 	rows, err := db.Query(`SELECT id, COALESCE(name,''), COALESCE(profile,'') FROM devices`)
 	if err != nil {
+		log.Printf("dev-seed: list devices: %v", err)
 		return nil
 	}
 	defer func() { _ = rows.Close() }()
@@ -709,9 +710,13 @@ func devSeedLoadDeviceList(db *sql.DB) []devSeedDevice {
 	for rows.Next() {
 		var d devSeedDevice
 		if err := rows.Scan(&d.ip, &d.name, &d.profile); err != nil {
+			log.Printf("dev-seed: scan device row: %v", err)
 			continue
 		}
 		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("dev-seed: iterate devices: %v", err)
 	}
 	return out
 }

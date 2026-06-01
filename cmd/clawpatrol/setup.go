@@ -324,6 +324,15 @@ func preJoinFetchCA(gateway, caDir string, cli *http.Client) (joinSetup, error) 
 	if err := os.MkdirAll(caDir, 0o700); err != nil {
 		return s, fmt.Errorf("mkdir %s: %w", caDir, err)
 	}
+	// Preflight: fail fast if the directory isn't writable by the current
+	// user. A root-owned dir from a previous `docker run -v` will pass
+	// MkdirAll (dir already exists) but fail every subsequent WriteFile,
+	// causing join to report success while writing nothing.
+	probe := filepath.Join(caDir, ".write-probe")
+	if err := os.WriteFile(probe, nil, 0o600); err != nil {
+		return s, fmt.Errorf("config dir %s is not writable (owner mismatch?): %w", caDir, err)
+	}
+	_ = os.Remove(probe)
 	// Persist the dashboard URL before the CA fetch so subsequent
 	// `clawpatrol env` / `clawpatrol run` invocations work even when
 	// the CA fetch is deferred (Tailscale mode, 404 on /ca.crt).
@@ -401,22 +410,25 @@ func fetchCAHTTP(gateway, dst string, cli *http.Client) (string, error) {
 	}
 	resp, err := c.Get(url)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("fetch ca: get %s: %w", url, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("status %d", resp.StatusCode)
+		return "", fmt.Errorf("fetch ca: %s status %d", url, resp.StatusCode)
 	}
-	b, err := io.ReadAll(resp.Body)
+	// 256 KiB cap. A PEM-encoded CA cert is <4 KiB; the cap stops a
+	// hostile gateway from streaming gigabytes into a TOFU client
+	// before the fingerprint check rejects it.
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("fetch ca: read %s: %w", url, err)
 	}
 	fp, err := caFingerprintFromPEM(b)
 	if err != nil {
-		return "", fmt.Errorf("parse CA: %w", err)
+		return "", fmt.Errorf("fetch ca: parse PEM from %s: %w", url, err)
 	}
 	if err := os.WriteFile(dst, b, 0o644); err != nil {
-		return "", err
+		return "", fmt.Errorf("fetch ca: write %s: %w", dst, err)
 	}
 	return fp, nil
 }
@@ -548,18 +560,23 @@ func exemptPublicIPFromExitNode() error {
 	script := fmt.Sprintf("#!/bin/sh\n# clawpatrol: keep public IP replies on direct path (not exit-node)\nip rule show | grep -q '%s' || ip rule add from %s lookup main priority 100\n", pubIP, pubIP)
 	tmp, err := os.CreateTemp("", "clawpatrol-routing-*")
 	if err != nil {
-		return err
+		return fmt.Errorf("create routing temp file: %w", err)
 	}
+	// `mv` consumes tmp.Name() on success, but the WriteString /
+	// chmod / fork paths can all leave it on disk. Remove
+	// unconditionally; missing is fine.
+	defer func() { _ = os.Remove(tmp.Name()) }()
 	if _, err := tmp.WriteString(script); err != nil {
 		_ = tmp.Close()
-		return err
+		return fmt.Errorf("write routing temp file: %w", err)
 	}
-	_ = tmp.Close()
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close routing temp file: %w", err)
+	}
 	dst := dir + "/50-clawpatrol-public-ip"
 	c := exec.Command("sudo", "sh", "-c", fmt.Sprintf("mv %s %s && chmod +x %s", tmp.Name(), dst, dst))
 	c.Stderr = os.Stderr
 	if err := c.Run(); err != nil {
-		_ = os.Remove(tmp.Name())
 		return fmt.Errorf("install routing script: %w", err)
 	}
 	return nil
@@ -634,17 +651,20 @@ func fetchCA(ip, dst string) error {
 	c := &http.Client{Timeout: 10 * time.Second}
 	resp, err := c.Get(url)
 	if err != nil {
-		return err
+		return fmt.Errorf("fetch ca: get %s: %w", url, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("status %d from %s", resp.StatusCode, url)
+		return fmt.Errorf("fetch ca: %s status %d", url, resp.StatusCode)
 	}
-	b, err := io.ReadAll(resp.Body)
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
 	if err != nil {
-		return err
+		return fmt.Errorf("fetch ca: read %s: %w", url, err)
 	}
-	return os.WriteFile(dst, b, 0o644)
+	if err := os.WriteFile(dst, b, 0o644); err != nil {
+		return fmt.Errorf("fetch ca: write %s: %w", dst, err)
+	}
+	return nil
 }
 
 func installCATrust(caPath string) error {
@@ -927,7 +947,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
-		b, _ := io.ReadAll(resp.Body)
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 		return false, fmt.Errorf("start: %d %s", resp.StatusCode, string(b))
 	}
 	var start struct {
@@ -937,7 +957,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		Interval   int    `json:"interval"`
 		ExpiresIn  int    `json:"expires_in"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&start); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&start); err != nil {
 		return false, fmt.Errorf("start decode: %w", err)
 	}
 
@@ -1029,14 +1049,28 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	stopSpin := startSpinner("Waiting for approval")
 	authKey, loginServer, apiToken := "", "", ""
 	var tailnetGWHost, tailnetControlURL, gatewayIP, caPEM string
+	// Track the most recent transport error so a poll loop that never
+	// produced a valid response can surface it on timeout. Without this
+	// the operator just sees "timed out waiting for approval" with no
+	// hint that the gateway was unreachable the entire time (DNS hung,
+	// TLS handshake refused, etc.).
+	var lastPollErr error
 	for time.Now().Before(deadline) {
 		time.Sleep(interval)
 		pr, err := cli.Post(gateway+"/api/onboard/poll?device_code="+start.DeviceCode, "application/json", nil)
 		if err != nil {
+			lastPollErr = err
 			continue
 		}
+		lastPollErr = nil
 		var pv map[string]string
-		_ = json.NewDecoder(pr.Body).Decode(&pv)
+		// Cap at 256 KiB — the success payload carries the CA PEM
+		// (~4 KiB) plus a handful of auth tokens. 256 KiB leaves room
+		// for chained intermediates without letting a runaway server
+		// stream into a CLI poller.
+		if err := json.NewDecoder(io.LimitReader(pr.Body, 256<<10)).Decode(&pv); err != nil {
+			lastPollErr = fmt.Errorf("decode poll response: %w", err)
+		}
 		_ = pr.Body.Close()
 		if k, ok := pv["auth_key"]; ok && k != "" {
 			authKey = k
@@ -1055,6 +1089,9 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 	}
 	stopSpin()
 	if authKey == "" {
+		if lastPollErr != nil {
+			return false, fmt.Errorf("timed out waiting for approval (last poll error: %w)", lastPollErr)
+		}
 		return false, fmt.Errorf("timed out waiting for approval")
 	}
 	fmt.Println("Approved.")
@@ -1187,7 +1224,9 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 				}
 			}
 		}
-		_ = os.WriteFile(filepath.Join(clawDir, "mode"), []byte("tailscale\n"), 0o600)
+		if err := os.WriteFile(filepath.Join(clawDir, "mode"), []byte("tailscale\n"), 0o600); err != nil {
+			return false, fmt.Errorf("write mode: %w", err)
+		}
 		// Persist the join-time --hostname so the per-host daemon
 		// registers under the operator-chosen name instead of
 		// os.Hostname() (which on most VMs is the system login, not
@@ -1198,7 +1237,9 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		if tailnetGWHost != "" {
 			_ = os.WriteFile(filepath.Join(clawDir, "tailnet-gateway"), []byte(tailnetGWHost+"\n"), 0o600)
 		}
-		_ = os.WriteFile(filepath.Join(clawDir, "control-url"), []byte(tailnetControlURL+"\n"), 0o600)
+		if err := os.WriteFile(filepath.Join(clawDir, "control-url"), []byte(tailnetControlURL+"\n"), 0o600); err != nil {
+			return false, fmt.Errorf("write control-url: %w", err)
+		}
 		if gatewayIP != "" {
 			tailnetURL := fmt.Sprintf("http://%s:8080", gatewayIP)
 			_ = os.WriteFile(filepath.Join(clawDir, "tailnet-url"), []byte(tailnetURL+"\n"), 0o600)
@@ -1230,7 +1271,9 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 			if err := os.MkdirAll(stateDir, 0o700); err != nil {
 				return false, fmt.Errorf("daemon state dir: %w", err)
 			}
-			_ = os.WriteFile(filepath.Join(stateDir, "auth-key"), []byte(authKey+"\n"), 0o600)
+			if err := os.WriteFile(filepath.Join(stateDir, "auth-key"), []byte(authKey+"\n"), 0o600); err != nil {
+				return false, fmt.Errorf("write auth-key: %w", err)
+			}
 		}
 		items := []string{"Joined (tsnet mode — persistent daemon node joins tailnet on first `clawpatrol run`)"}
 		items = append(items, setupSummaryItems(*setup)...)
@@ -1304,7 +1347,7 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		return false, nil
 	}
 	var claimResp map[string]string
-	if err := json.NewDecoder(cr.Body).Decode(&claimResp); err == nil {
+	if err := json.NewDecoder(io.LimitReader(cr.Body, 16<<10)).Decode(&claimResp); err == nil {
 		if tok := claimResp["api_token"]; tok != "" {
 			_ = os.WriteFile(filepath.Join(filepath.Dir(setup.caPath), "api-token"),
 				[]byte(tok+"\n"), 0o600)
@@ -1313,7 +1356,9 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 
 	// Write mode marker files so `clawpatrol run` can detect Tailscale mode.
 	clawDir := filepath.Dir(setup.caPath)
-	_ = os.WriteFile(filepath.Join(clawDir, "mode"), []byte("tailscale\n"), 0o600)
+	if err := os.WriteFile(filepath.Join(clawDir, "mode"), []byte("tailscale\n"), 0o600); err != nil {
+		return false, fmt.Errorf("write mode: %w", err)
+	}
 	if hn != "" {
 		_ = os.WriteFile(filepath.Join(clawDir, "hostname"), []byte(hn+"\n"), 0o600)
 	}
@@ -1321,7 +1366,9 @@ func onboardViaDeviceFlow(gateway string, wholeMachine bool, profile, hostname s
 		_ = os.WriteFile(filepath.Join(clawDir, "tailnet-gateway"), []byte(tailnetGWHost+"\n"), 0o600)
 	}
 	if tailnetControlURL != "" {
-		_ = os.WriteFile(filepath.Join(clawDir, "control-url"), []byte(tailnetControlURL+"\n"), 0o600)
+		if err := os.WriteFile(filepath.Join(clawDir, "control-url"), []byte(tailnetControlURL+"\n"), 0o600); err != nil {
+			return false, fmt.Errorf("write control-url: %w", err)
+		}
 	}
 
 	// Fetch CA from the gateway's tailnet IP now that we're on the tailnet.
@@ -1487,13 +1534,18 @@ func wgQuickUp(iface, conf string) error {
 	}
 	tmp, err := os.CreateTemp("", "clawpatrol-wg-*.conf")
 	if err != nil {
-		return err
+		return fmt.Errorf("create wg temp conf: %w", err)
 	}
-	if _, err := tmp.WriteString(conf); err != nil {
-		return err
-	}
-	_ = tmp.Close()
+	// Deferred so we don't leak the temp file when WriteString,
+	// Close, or install fails on the way down.
 	defer func() { _ = os.Remove(tmp.Name()) }()
+	if _, err := tmp.WriteString(conf); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write wg temp conf: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close wg temp conf: %w", err)
+	}
 	if err := runAsRoot("install", "-m", "0600", tmp.Name(), dst).Run(); err != nil {
 		return fmt.Errorf("install conf: %w", err)
 	}

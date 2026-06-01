@@ -374,16 +374,23 @@ func runDaemon(_ []string) {
 // wg.conf. Either way, the returned transport carries one network
 // identity shared by every `clawpatrol run` on this host.
 func daemonStartTransport() (daemonTransport, error) {
-	mode := strings.TrimSpace(readFileSilent(filepath.Join(defaultClawpatrolDir(), "mode")))
+	modeFile := filepath.Join(defaultClawpatrolDir(), "mode")
+	mode := strings.TrimSpace(readFileSilent(modeFile))
 	switch mode {
 	case "tailscale":
 		return startTsnetTransport()
-	case "wireguard", "":
-		// Empty mode = legacy WG join (older builds didn't write a
-		// marker file). Presence of wg.conf is the WG signal.
+	case "wireguard":
 		return startWGTransport()
+	case "":
+		// No mode file: either a legacy WG join (older builds didn't write
+		// the marker) or join never completed / wrote nothing (permission
+		// error on clawDir). Distinguish by checking for wg.conf.
+		if _, err := os.Stat(defaultRunConf()); err == nil {
+			return startWGTransport()
+		}
+		return nil, fmt.Errorf("no mode file at %s and no wg.conf — re-run `clawpatrol join`", modeFile)
 	default:
-		return nil, fmt.Errorf("unknown mode %q in %s/mode", mode, defaultClawpatrolDir())
+		return nil, fmt.Errorf("unknown mode %q in %s — re-run `clawpatrol join`", mode, modeFile)
 	}
 }
 

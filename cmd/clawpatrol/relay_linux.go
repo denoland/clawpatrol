@@ -202,16 +202,19 @@ func runRelaySupervisor(_ []string) {
 		fail("relay-supervisor: expected fds 3,4 to be open")
 	}
 	notifyFD := int(notifyFile.Fd())
-	workerFD := int(workerSock.Fd())
-
 	// SIGPIPE on the worker socket shouldn't kill the supervisor — log
 	// from the accept goroutines instead.
 	ignoreSIGPIPE()
 
-	// SOCK_SEQPACKET is message-atomic so concurrent sendmsg don't need
-	// serialization for correctness, but a mutex lets us reason about
-	// retries on transient errors without races on the fd.
-	var sendMu sync.Mutex
+	// Hand each acceptLoop a RawConn over workerSock rather than the raw
+	// int fd. The RawConn carries an internal reference to the *os.File,
+	// so the runtime can't GC workerSock out from under the goroutines
+	// and Write integrates with the poller (transient EAGAIN absorbed
+	// without us writing retry logic).
+	workerRC, err := workerSock.SyscallConn()
+	if err != nil {
+		fail("relay-supervisor: SyscallConn(worker-sock): %v", err)
+	}
 
 	seen := make(map[uint16]bool)
 	var seenMu sync.Mutex
@@ -262,7 +265,7 @@ func runRelaySupervisor(_ []string) {
 				continue
 			}
 			fmt.Fprintf(os.Stderr, "[clawpatrol relay] auto-expose %s:%d → agent netns\n", host, port)
-			go acceptLoop(ln, port, workerFD, &sendMu)
+			go acceptLoop(ln, port, workerRC)
 		} else {
 			_ = notifSendContinue(notifyFD, n.ID)
 		}
@@ -471,7 +474,16 @@ func mirrorBindScope(family int, inner net.IP) string {
 	return "127.0.0.1"
 }
 
-func acceptLoop(ln net.Listener, port uint16, workerFD int, sendMu *sync.Mutex) {
+// acceptLoop owns one host-side listener for a port the agent opened.
+// Each accepted host-side connection is shipped to the worker via
+// SCM_RIGHTS over workerRC.
+//
+// workerRC.Write integrates with the runtime poller and takes a per-
+// RawConn lock internally, so multiple acceptLoop goroutines writing
+// to the same workerRC are serialized correctly without an external
+// mutex, and EAGAIN/EWOULDBLOCK/EINTR on the kernel sendmsg are
+// absorbed by the poll-and-retry path inside Write.
+func acceptLoop(ln net.Listener, port uint16, workerRC syscall.RawConn) {
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -487,15 +499,38 @@ func acceptLoop(ln net.Listener, port uint16, workerFD int, sendMu *sync.Mutex) 
 		var portBuf [2]byte
 		binary.LittleEndian.PutUint16(portBuf[:], port)
 		rights := unix.UnixRights(fd)
-		sendMu.Lock()
-		err = unix.Sendmsg(workerFD, portBuf[:], rights, nil, 0)
-		sendMu.Unlock()
+		err = sendJob(workerRC, portBuf[:], rights)
 		_ = c.Close()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[clawpatrol relay] sendmsg to worker on :%d: %v\n", port, err)
 			return
 		}
 	}
+}
+
+// sendJob ships one (port-frame, SCM_RIGHTS-fd) message to the worker.
+// Mirrors recvJob's structure: the poller absorbs transient EAGAIN and
+// the RawConn keeps the underlying *os.File alive for the syscall's
+// duration.
+func sendJob(rc syscall.RawConn, frame []byte, oob []byte) error {
+	var serr error
+	err := rc.Write(func(rawFD uintptr) (done bool) {
+		e := unix.Sendmsg(int(rawFD), frame, oob, nil, 0)
+		if e != nil {
+			if errors.Is(e, syscall.EAGAIN) ||
+				errors.Is(e, syscall.EWOULDBLOCK) ||
+				errors.Is(e, syscall.EINTR) {
+				return false
+			}
+			serr = e
+			return true
+		}
+		return true
+	})
+	if err != nil {
+		return err
+	}
+	return serr
 }
 
 // tcpRawFD extracts the raw fd from a *net.TCPConn for SCM_RIGHTS handoff.
@@ -530,11 +565,34 @@ func runRelayWorker(_ []string) {
 	if sock == nil {
 		fail("relay-worker: expected fd 3 to be open")
 	}
-	sockFD := int(sock.Fd())
 	ignoreSIGPIPE()
 
+	rc, err := sock.SyscallConn()
+	if err != nil {
+		fail("relay-worker: SyscallConn(supervisor-sock): %v", err)
+	}
+	relayWorkerLoop(rc, handleJob)
+}
+
+// relayWorkerLoop reads SCM_RIGHTS frames off the supervisor sock and
+// dispatches each to handle in a fresh goroutine. The loop owns the
+// recv side of the sock; nothing else reads from rc, so we never have
+// concurrent Read calls fighting over the per-RawConn lock.
+//
+// Lifetime: rc carries an internal reference to the underlying *os.File,
+// so as long as the loop is running the runtime can't GC the file out
+// from under us. (Holding the raw int fd directly would not have that
+// property — see relay_linux.go history for the failure mode that caused.)
+//
+// Transient errors: rc.Read integrates with the runtime poller. When the
+// kernel returns EAGAIN/EWOULDBLOCK/EINTR inside the callback, we return
+// false; Read parks the goroutine on the poll wait and re-runs the
+// callback when the fd becomes readable. The loop never observes these
+// errno classes itself — they're absorbed by the poller before the
+// outer loop sees anything.
+func relayWorkerLoop(rc syscall.RawConn, handle func(uint16, int)) {
 	for {
-		port, fd, err := recvJob(sockFD)
+		port, fd, err := recvJob(rc)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				return
@@ -542,38 +600,68 @@ func runRelayWorker(_ []string) {
 			fmt.Fprintf(os.Stderr, "[clawpatrol relay-worker] recv: %v\n", err)
 			return
 		}
-		go handleJob(port, fd)
+		go handle(port, fd)
 	}
 }
 
-func recvJob(fd int) (uint16, int, error) {
-	buf := make([]byte, 2)
-	oob := make([]byte, unix.CmsgSpace(4))
-	n, oobn, _, _, err := unix.Recvmsg(fd, buf, oob, 0)
+// recvJob reads one (port, SCM_RIGHTS fd) frame off the supervisor sock,
+// using the RawConn's poller integration to handle transient EAGAIN /
+// EWOULDBLOCK / EINTR inside the kernel without ever surfacing them to
+// the caller.
+func recvJob(rc syscall.RawConn) (uint16, int, error) {
+	var (
+		port  uint16
+		jobFD = -1
+		rerr  error
+	)
+	err := rc.Read(func(rawFD uintptr) (done bool) {
+		buf := make([]byte, 2)
+		oob := make([]byte, unix.CmsgSpace(4))
+		n, oobn, _, _, recvErr := unix.Recvmsg(int(rawFD), buf, oob, 0)
+		if recvErr != nil {
+			// EAGAIN/EWOULDBLOCK: no message queued yet — ask the poller
+			// to wait for readability and re-run us. EINTR: a signal ran
+			// during recvmsg; same shape, retry.
+			if errors.Is(recvErr, syscall.EAGAIN) ||
+				errors.Is(recvErr, syscall.EWOULDBLOCK) ||
+				errors.Is(recvErr, syscall.EINTR) {
+				return false
+			}
+			rerr = recvErr
+			return true
+		}
+		if n == 0 {
+			rerr = io.EOF
+			return true
+		}
+		if n != 2 {
+			rerr = fmt.Errorf("short frame: %d bytes", n)
+			return true
+		}
+		cmsgs, perr := unix.ParseSocketControlMessage(oob[:oobn])
+		if perr != nil {
+			rerr = fmt.Errorf("parse cmsg: %w", perr)
+			return true
+		}
+		for _, cm := range cmsgs {
+			fds, perr := unix.ParseUnixRights(&cm)
+			if perr == nil && len(fds) > 0 {
+				// Close any extras (shouldn't happen — supervisor sends one).
+				for _, extra := range fds[1:] {
+					_ = unix.Close(extra)
+				}
+				port = binary.LittleEndian.Uint16(buf)
+				jobFD = fds[0]
+				return true
+			}
+		}
+		rerr = fmt.Errorf("no SCM_RIGHTS in frame")
+		return true
+	})
 	if err != nil {
 		return 0, -1, err
 	}
-	if n == 0 {
-		return 0, -1, io.EOF
-	}
-	if n != 2 {
-		return 0, -1, fmt.Errorf("short frame: %d bytes", n)
-	}
-	cmsgs, err := unix.ParseSocketControlMessage(oob[:oobn])
-	if err != nil {
-		return 0, -1, fmt.Errorf("parse cmsg: %w", err)
-	}
-	for _, cm := range cmsgs {
-		fds, err := unix.ParseUnixRights(&cm)
-		if err == nil && len(fds) > 0 {
-			// Close any extras (shouldn't happen — supervisor sends one).
-			for _, extra := range fds[1:] {
-				_ = unix.Close(extra)
-			}
-			return binary.LittleEndian.Uint16(buf), fds[0], nil
-		}
-	}
-	return 0, -1, fmt.Errorf("no SCM_RIGHTS in frame")
+	return port, jobFD, rerr
 }
 
 func handleJob(port uint16, fd int) {
@@ -676,7 +764,7 @@ func setupRelayInChild(parentSock *os.File) {
 func spawnRelaySupervisor(notifyFile, workerSock *os.File) (*exec.Cmd, error) {
 	self, err := os.Executable()
 	if err != nil {
-		return nil, fmt.Errorf("self path: %w", err)
+		return nil, fmt.Errorf("relay-supervisor: self path: %w", err)
 	}
 	c := exec.Command(self, "relay-supervisor")
 	c.ExtraFiles = []*os.File{notifyFile, workerSock}
@@ -687,7 +775,7 @@ func spawnRelaySupervisor(notifyFile, workerSock *os.File) (*exec.Cmd, error) {
 		Pdeathsig: syscall.SIGTERM,
 	}
 	if err := c.Start(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("relay-supervisor: start %s: %w", self, err)
 	}
 	return c, nil
 }
@@ -702,7 +790,7 @@ func spawnRelaySupervisor(notifyFile, workerSock *os.File) (*exec.Cmd, error) {
 func spawnRelayWorker(workerSock *os.File) (*exec.Cmd, error) {
 	self, err := os.Executable()
 	if err != nil {
-		return nil, fmt.Errorf("self path: %w", err)
+		return nil, fmt.Errorf("relay-worker: self path: %w", err)
 	}
 	c := exec.Command(self, "relay-worker")
 	c.ExtraFiles = []*os.File{workerSock}
@@ -713,7 +801,7 @@ func spawnRelayWorker(workerSock *os.File) (*exec.Cmd, error) {
 		Pdeathsig: syscall.SIGTERM,
 	}
 	if err := c.Start(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("relay-worker: start %s: %w", self, err)
 	}
 	return c, nil
 }

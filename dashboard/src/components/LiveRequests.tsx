@@ -206,6 +206,11 @@ function Row({ ev, schema }: { ev: RowState; schema: FacetSchema | undefined }) 
             : "text-text-muted";
   const { verb, body } = rowDescriptors(ev, schema);
   const sep = body && !body.startsWith("/") ? " " : "";
+  // "splice"/"relay" forward the bytes without inspecting them, so
+  // there's no verb to show — surface a lock instead. Every other mode
+  // (mitm HTTP, parsed SQL like "pg"/"clickhouse_native", k8s) is
+  // inspected and shows its verb (empty if none was parsed).
+  const inspected = ev.mode !== "splice" && ev.mode !== "relay";
   const hasFrames = (ev.frames?.length ?? 0) > 0;
   const isDenied = ev.action === "deny" || ev.action === "denied" || ev.action === "hitl_deny";
   const isApproved = ev.action === "approved" || ev.action === "hitl_allow";
@@ -221,12 +226,10 @@ function Row({ ev, schema }: { ev: RowState; schema: FacetSchema | undefined }) 
         }
       >
         <span className="text-2xs tabular-nums text-text-subtle shrink-0">{time}</span>
-        <ModeIcon mode={ev.mode} />
-        {verb && (
-          <span className="font-mono text-2xs uppercase font-semibold text-text-muted shrink-0 w-11">
-            {verb}
-          </span>
-        )}
+        <ApprovalStatusIcon ev={ev} inFlight={inFlight} />
+        <span className="font-mono text-2xs uppercase font-semibold text-text-muted shrink-0 w-11 flex items-center">
+          {inspected ? verb : <LockGlyph />}
+        </span>
         <span className={"text-xs tabular-nums shrink-0 w-9 " + statusColor}>
           {inFlight ? <InFlightSpinner /> : status || "—"}
         </span>
@@ -294,36 +297,46 @@ function AnimatedDots() {
   return <span className="inline-block w-3 text-left">{".".repeat(n)}</span>;
 }
 
-function ModeIcon({ mode }: { mode: string }) {
-  if (mode === "mitm") {
-    return (
-      <span
-        title="MITM — gateway decrypted, inspected, forwarded"
-        className="shrink-0 text-rust-400"
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M7 10V7a5 5 0 0 1 10 0v3h1a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h1Zm2 0h6V7a3 3 0 1 0-6 0v3Z" />
-        </svg>
-      </span>
-    );
-  }
+// ApprovalStatusIcon renders the request's approval/policy outcome as
+// a stoplight dot in the row's leading slot: green = allowed/approved,
+// red = denied/error, amber (pulsing) = awaiting human approval, muted
+// = in-flight/unknown. This slot previously showed MITM vs splice
+// mode; the connection-visibility signal moved to the verb slot, which
+// now shows a lock when the bytes weren't inspected.
+export function ApprovalStatusIcon({ ev, inFlight }: { ev: EventRecord; inFlight: boolean }) {
+  const a = ev.action ?? "";
+  if (a === "hitl_pending")
+    return <StatusDot cls="bg-butter-400 animate-pulse" title="awaiting approval" />;
+  if (a === "deny" || a === "denied" || a === "hitl_deny")
+    return <StatusDot cls="bg-danger-500" title="denied" />;
+  if (a === "error") return <StatusDot cls="bg-danger-500" title="error" />;
+  if (a === "approved" || a === "hitl_allow")
+    return <StatusDot cls="bg-success-500" title="approved" />;
+  if (a === "allow" || a === "passthrough")
+    return <StatusDot cls="bg-success-500" title="allowed" />;
+  if (inFlight) return <StatusDot cls="bg-text-subtle animate-pulse" title="in flight" />;
+  return <StatusDot cls="bg-text-subtle" title={a || "—"} />;
+}
+
+function StatusDot({ cls, title }: { cls: string; title: string }) {
+  return (
+    <span title={title} className="shrink-0 flex items-center justify-center w-3.5">
+      <span className={"w-2 h-2 rounded-full " + cls} />
+    </span>
+  );
+}
+
+// LockGlyph marks a connection the gateway passed through without
+// inspecting (splice / relay), shown in the verb slot in place of a
+// parsed method/verb — which only exists for inspected connections.
+export function LockGlyph() {
   return (
     <span
-      title="Splice — gateway forwarded encrypted bytes untouched"
-      className="shrink-0 text-text-subtle"
+      title="passed through — gateway did not inspect this connection"
+      className="text-text-subtle"
     >
-      <svg
-        width="14"
-        height="14"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      >
-        <path d="M5 12h14" />
-        <path d="m13 6 6 6-6 6" />
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M7 10V7a5 5 0 0 1 10 0v3h1a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h1Zm2 0h6V7a3 3 0 1 0-6 0v3Z" />
       </svg>
     </span>
   );

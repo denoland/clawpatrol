@@ -349,7 +349,7 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 			}
 			profile.Credentials = append(profile.Credentials, credEnt)
 			merged := mergeDisambig(blockDisambiguators(credEnt), pr.Disambiguators[credName])
-			for _, epName := range credentialEndpointTargets(credEnt) {
+			for _, epName := range CredentialEndpointTargets(credEnt) {
 				ce, ok := cp.Endpoints[epName]
 				if !ok {
 					continue
@@ -413,11 +413,16 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 	return cp, nil
 }
 
-// credentialEndpointTargets returns the endpoint names a credential
+// CredentialEndpointTargets returns the endpoint names a credential
 // binds. Reads either the singular `endpoint` framework attr or the
 // list-form `endpoints`; cross-credential validation has already
 // rejected the both-set case.
-func credentialEndpointTargets(ent *Entity) []string {
+//
+// This is the canonical "credentials bind endpoints" direction.
+// CompiledEndpoint.Credentials is the inverted index built from these
+// targets — callers asking "which endpoints does credential C declare?"
+// should use this function, not walk every endpoint's Credentials list.
+func CredentialEndpointTargets(ent *Entity) []string {
 	if ent == nil {
 		return nil
 	}
@@ -444,7 +449,7 @@ func attachCredentials(cp *CompiledPolicy, p *Policy) error {
 		if !ok {
 			return nil
 		}
-		targets := credentialEndpointTargets(ent)
+		targets := CredentialEndpointTargets(ent)
 		if len(targets) == 0 {
 			return nil
 		}

@@ -60,8 +60,12 @@ type tailscaleAuthResponse struct {
 //
 // Three response states:
 //
-//   - "connected": node state already lives in credential_secrets;
-//     the operator doesn't need to click Connect.
+//   - "connected": credential auth is valid — either tsnet is live-
+//     Running for this credential, or persisted node identity is
+//     present and the watcher has not observed an auth-trouble state
+//     (NeedsLogin / NeedsMachAuth / InUseOtherUser). Tunnel may still
+//     be torn down (idle) — that's a tunnel signal, not a credential
+//     signal. Operator has nothing to click.
 //   - "pending": tsnet has a live login URL ready — the dashboard
 //     redirects the browser to it.
 //   - "awaiting_url": the credential exists but tsnet hasn't emitted a
@@ -95,15 +99,16 @@ func (w *webMux) apiTailscaleConnect(rw http.ResponseWriter, r *http.Request) {
 	resp := tailscaleAuthResponse{ID: id}
 	label := tailscaleproto.DefaultStates.Get(id)
 	resp.State = label
-	switch label {
-	case tailscaleproto.NodeStateRunning:
-		// Live tsnet has joined the tailnet — no operator click
-		// needed. Persisted slots alone (the previous "connected"
-		// gate) are not enough: they can exist while tsnet is still
-		// Starting or even in NeedsLogin after a state reset.
+	present, _ := credentialSlotPresence(w.g.db, id)
+	hasSlots := len(present) > 0
+	if tailscaleCredentialAuthValid(label, hasSlots) {
+		// Either tsnet is live-Running, or persisted node identity is
+		// still good (idle tunnel — auth doesn't get invalidated by
+		// the tunnel cycling). Either way the operator has nothing to
+		// click; reporting "connected" matches the /api/state row.
 		resp.Connected = true
 		resp.Status = "connected"
-	default:
+	} else {
 		if u := tailscaleproto.Default.Get(id); u != "" {
 			resp.AuthURL = u
 			resp.PendingURL = u

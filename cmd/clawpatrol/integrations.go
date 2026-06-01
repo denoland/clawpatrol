@@ -390,16 +390,24 @@ func (m *modelDB) refreshLoop() {
 	}
 }
 
+// litellmModelsResponseLimit caps the litellm JSON fetch. The dataset
+// is ~1 MiB today; 8 MiB leaves headroom for growth without letting a
+// surprise content swap (or a hostile mirror) drain process memory.
+const litellmModelsResponseLimit = 8 << 20
+
 func (m *modelDB) fetch() error {
 	cli := &http.Client{Timeout: 10 * time.Second}
 	resp, err := cli.Get(litellmModelsURL)
 	if err != nil {
-		return err
+		return fmt.Errorf("models: get %s: %w", litellmModelsURL, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("models: %s: status %d", litellmModelsURL, resp.StatusCode)
+	}
 	var raw map[string]modelInfo
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return err
+	if err := json.NewDecoder(io.LimitReader(resp.Body, litellmModelsResponseLimit)).Decode(&raw); err != nil {
+		return fmt.Errorf("models: decode %s: %w", litellmModelsURL, err)
 	}
 	out := map[string]int64{}
 	for k, v := range raw {
