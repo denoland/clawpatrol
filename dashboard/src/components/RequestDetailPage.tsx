@@ -220,9 +220,10 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
 
 function ActionButtons({ ev }: { ev: EventRecord }) {
   const [ruleOpen, setRuleOpen] = useState(false);
+  const canBlock = !!ev.id && ev.action !== "in_flight" && (!!ev.endpoint || ev.mode === "splice");
   return (
     <div className="flex items-center gap-2 flex-wrap justify-end">
-      {ev.id && ev.endpoint && ev.action !== "in_flight" && (
+      {canBlock && (
         <Button variant="outline" onClick={() => setRuleOpen(true)}>
           Block requests like this
         </Button>
@@ -325,7 +326,7 @@ function RulePreviewModal({ ev, onClose }: { ev: EventRecord; onClose: () => voi
   }
 
   async function downloadFixture() {
-    if (!ev.id) return;
+    if (!ev.id || !ev.endpoint) return;
     const blob = await downloadActionFixture(ev.id);
     downloadBlob(blob, `${ev.id}.json`);
   }
@@ -336,13 +337,14 @@ function RulePreviewModal({ ev, onClose }: { ev: EventRecord; onClose: () => voi
   }
 
   const writesEnabled = !!preview?.dashboard_config_writes;
+  const createsEndpoint = !!preview?.endpoint_name && preview.endpoint_name !== ev.endpoint;
 
   return (
     <Modal title="Block requests like this" size="lg" onClose={onClose}>
       <div className="p-4 space-y-3 overflow-auto">
         <p className="text-sm text-text-muted">
-          Claw Patrol generated a deny rule from this observed action. The rule starts narrow. Edit
-          the condition if you want to broaden it.
+          Claw Patrol generated HCL from this observed action. For matched endpoints this adds a
+          narrow deny rule; for passthrough hosts it creates an endpoint and blocks that host.
         </p>
         {busy ? (
           <div className="text-xs text-text-subtle">Generating rule...</div>
@@ -361,6 +363,12 @@ function RulePreviewModal({ ev, onClose }: { ev: EventRecord; onClose: () => voi
                 {w}
               </div>
             ))}
+            {createsEndpoint && (
+              <div className="border border-butter-600 bg-butter-100 px-3 py-2 text-xs">
+                This will create endpoint <code>{preview.endpoint_name}</code>. Credential creation
+                is not part of this flow yet.
+              </div>
+            )}
             <textarea
               value={hcl}
               onChange={(e) => setHCL(e.target.value)}
@@ -392,7 +400,7 @@ function RulePreviewModal({ ev, onClose }: { ev: EventRecord; onClose: () => voi
             Download patch
           </Button>
         )}
-        <Button variant="outline" disabled={!ev.id} onClick={downloadFixture}>
+        <Button variant="outline" disabled={!ev.id || !ev.endpoint} onClick={downloadFixture}>
           Download fixture
         </Button>
       </div>
