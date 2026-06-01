@@ -432,6 +432,18 @@ func TestHostLoopbackForwarder_EndToEnd(t *testing.T) {
 	if _, err := os.Stat("/proc/self/ns/user"); err != nil {
 		t.Skipf("user namespace not available: %v", err)
 	}
+	// Ubuntu 24.04+ ships with this sysctl set to 1, which strips
+	// effective capabilities from processes in unprivileged user
+	// namespaces even after the UID-0 mapping. `clawpatrol run`
+	// itself emits a warning on such hosts (see run_linux.go's
+	// checkUserNS); the test can't proceed because the child can't
+	// SIOCSIFFLAGS lo up or install iptables rules. Skip rather
+	// than fail — this is a platform constraint, not a regression.
+	if b, err := os.ReadFile("/proc/sys/kernel/apparmor_restrict_unprivileged_userns"); err == nil {
+		if strings.TrimSpace(string(b)) == "1" {
+			t.Skipf("apparmor_restrict_unprivileged_userns=1; needs `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`")
+		}
+	}
 
 	// Host-side listener — stays bound in the parent (host) netns.
 	hostLn, err := net.Listen("tcp", "127.0.0.1:0")
