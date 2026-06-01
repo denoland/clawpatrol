@@ -133,6 +133,12 @@ func installListenTrapFilter() (int, error) {
 
 var errSeccompUnsupportedArch = errors.New("seccomp: unsupported architecture for listen trap")
 
+// errNotIPListener is returned when the trapped listen(2) was on a socket
+// that isn't AF_INET or AF_INET6 — most commonly AF_UNIX from helpers like
+// gpg-agent, dbus, or container init systems. There's nothing to tunnel,
+// so the supervisor skips silently rather than spamming stderr.
+var errNotIPListener = errors.New("not an IP listener")
+
 // --- struct seccomp_notif / seccomp_notif_resp -----------------------
 
 // seccompData mirrors `struct seccomp_data` (linux/seccomp.h).
@@ -159,31 +165,44 @@ type seccompNotifResp struct {
 	Flags uint32
 }
 
+// notifRecv blocks until a seccomp notification arrives. Loops on EINTR
+// because the Go runtime delivers SIGURG for goroutine preemption, which
+// would otherwise tear down the supervisor on the first GC pause.
 func notifRecv(fd int) (*seccompNotif, error) {
-	var n seccompNotif
-	_, _, e := unix.Syscall(unix.SYS_IOCTL,
-		uintptr(fd),
-		uintptr(unix.SECCOMP_IOCTL_NOTIF_RECV),
-		uintptr(unsafe.Pointer(&n)))
-	if e != 0 {
+	for {
+		var n seccompNotif
+		_, _, e := unix.Syscall(unix.SYS_IOCTL,
+			uintptr(fd),
+			uintptr(unix.SECCOMP_IOCTL_NOTIF_RECV),
+			uintptr(unsafe.Pointer(&n)))
+		if e == 0 {
+			return &n, nil
+		}
+		if e == unix.EINTR {
+			continue
+		}
 		return nil, e
 	}
-	return &n, nil
 }
 
 func notifSendContinue(fd int, id uint64) error {
-	r := seccompNotifResp{
-		ID:    id,
-		Flags: unix.SECCOMP_USER_NOTIF_FLAG_CONTINUE,
-	}
-	_, _, e := unix.Syscall(unix.SYS_IOCTL,
-		uintptr(fd),
-		uintptr(unix.SECCOMP_IOCTL_NOTIF_SEND),
-		uintptr(unsafe.Pointer(&r)))
-	if e != 0 {
+	for {
+		r := seccompNotifResp{
+			ID:    id,
+			Flags: unix.SECCOMP_USER_NOTIF_FLAG_CONTINUE,
+		}
+		_, _, e := unix.Syscall(unix.SYS_IOCTL,
+			uintptr(fd),
+			uintptr(unix.SECCOMP_IOCTL_NOTIF_SEND),
+			uintptr(unsafe.Pointer(&r)))
+		if e == 0 {
+			return nil
+		}
+		if e == unix.EINTR {
+			continue
+		}
 		return e
 	}
-	return nil
 }
 
 // --- relay-supervisor subcommand --------------------------------------
@@ -219,6 +238,14 @@ func runRelaySupervisor(_ []string) {
 	seen := make(map[uint16]bool)
 	var seenMu sync.Mutex
 
+	// Dedup repeating peek failures. Inside Docker the /proc fallback
+	// hits EACCES on every trapped listen(); without dedup, a single
+	// long-running agent fills the host's terminal with identical lines.
+	// One warning per distinct error string is enough to surface the
+	// problem to the operator.
+	loggedPeekErr := make(map[string]bool)
+	var loggedPeekErrMu sync.Mutex
+
 	listenNR := uint32(0)
 	if _, nr, ok := seccompArch(); ok {
 		listenNR = nr
@@ -243,7 +270,22 @@ func runRelaySupervisor(_ []string) {
 			_ = notifSendContinue(notifyFD, n.ID)
 
 			if perr != nil {
-				fmt.Fprintf(os.Stderr, "[clawpatrol relay] inspect listen sockfd: %v\n", perr)
+				// AF_UNIX listeners (gpg-agent, dbus, etc.) trigger the
+				// seccomp filter just like AF_INET, but there's nothing
+				// to tunnel — skip silently to avoid log spam.
+				if errors.Is(perr, errNotIPListener) {
+					continue
+				}
+				key := perr.Error()
+				loggedPeekErrMu.Lock()
+				logged := loggedPeekErr[key]
+				if !logged {
+					loggedPeekErr[key] = true
+				}
+				loggedPeekErrMu.Unlock()
+				if !logged {
+					fmt.Fprintf(os.Stderr, "[clawpatrol relay] inspect listen sockfd: %v (further identical errors suppressed)\n", perr)
+				}
 				continue
 			}
 			seenMu.Lock()
@@ -289,16 +331,23 @@ func runRelaySupervisor(_ []string) {
 //     Only requires same-uid (we are), not ptrace. This covers
 //     fork-then-listen patterns (shell wrappers, supervisord-style
 //     launchers) that pidfd_getfd can't reach under yama.
+//
+// If the pidfd path succeeds but reports the socket isn't AF_INET/AF_INET6
+// (e.g. gpg-agent's AF_UNIX listener), returns errNotIPListener and
+// skips the /proc fallback — there is nothing to tunnel.
 func peekAgentListener(pid, sockfd int) (uint16, net.IP, int, error) {
 	port, ip, family, pidfdErr := pidfdPeekListener(pid, sockfd)
 	if pidfdErr == nil {
 		return port, ip, family, nil
 	}
+	if errors.Is(pidfdErr, errNotIPListener) {
+		return 0, nil, 0, errNotIPListener
+	}
 	port, ip, family, procErr := procPeekListener(pid, sockfd)
 	if procErr == nil {
 		return port, ip, family, nil
 	}
-	return 0, nil, 0, fmt.Errorf("pidfd_getfd: %w; /proc fallback: %w", pidfdErr, procErr)
+	return 0, nil, 0, fmt.Errorf("pidfd: %w; /proc fallback: %w", pidfdErr, procErr)
 }
 
 // pidfdPeekListener: open the agent as a pidfd, dup the socket fd over,
@@ -326,7 +375,9 @@ func pidfdPeekListener(pid, sockfd int) (uint16, net.IP, int, error) {
 	case *unix.SockaddrInet6:
 		return uint16(a.Port), net.IP(a.Addr[:]), unix.AF_INET6, nil
 	}
-	return 0, nil, 0, fmt.Errorf("unsupported sockaddr family")
+	// AF_UNIX, AF_NETLINK, AF_VSOCK, etc. listen() is common (gpg-agent,
+	// dbus) — surface as a sentinel so the supervisor skips silently.
+	return 0, nil, 0, errNotIPListener
 }
 
 // procPeekListener: read /proc/<pid>/fd/<sockfd> to get the socket inode,
@@ -337,9 +388,14 @@ func pidfdPeekListener(pid, sockfd int) (uint16, net.IP, int, error) {
 // what we want. Same-uid is enough to read both paths; yama doesn't
 // apply.
 func procPeekListener(pid, sockfd int) (uint16, net.IP, int, error) {
+	// os.Readlink's error already includes the path, so we only add the
+	// operation name. Docker default seccomp/AppArmor (and any
+	// configuration with PR_SET_DUMPABLE=0 on the trapped process)
+	// makes /proc/<pid>/fd/<N> root-owned and unreadable to us — that
+	// shows up here as EACCES.
 	link, err := os.Readlink(fmt.Sprintf("/proc/%d/fd/%d", pid, sockfd))
 	if err != nil {
-		return 0, nil, 0, fmt.Errorf("readlink /proc/%d/fd/%d: %w", pid, sockfd, err)
+		return 0, nil, 0, fmt.Errorf("readlink: %w", err)
 	}
 	const prefix = "socket:["
 	if !strings.HasPrefix(link, prefix) || !strings.HasSuffix(link, "]") {

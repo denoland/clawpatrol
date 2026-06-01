@@ -335,6 +335,123 @@ func TestRelayWorkerLoopDispatchesEndToEnd(t *testing.T) {
 	}
 }
 
+// newAFUnixListenerFd creates an AF_UNIX listening socket via raw syscalls,
+// returning its fd. Uses unix.Socket+Bind+Listen directly so the test
+// stays runnable in environments where the Go net package wraps things
+// that may be sandboxed (kernel test runners, CI seccomp wrappers).
+//
+// Returns (fd, skipReason). When skipReason is non-empty the caller
+// should t.Skip — usually because listen(2) is filtered out by an
+// outer seccomp policy that has nothing to do with what we test.
+func newAFUnixListenerFd(t *testing.T, path string) (int, string) {
+	t.Helper()
+	fd, err := unix.Socket(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return -1, "socket(AF_UNIX): " + err.Error()
+	}
+	sa := &unix.SockaddrUnix{Name: path}
+	if err := unix.Bind(fd, sa); err != nil {
+		_ = unix.Close(fd)
+		return -1, "bind(AF_UNIX): " + err.Error()
+	}
+	if err := unix.Listen(fd, 1); err != nil {
+		_ = unix.Close(fd)
+		return -1, "listen(AF_UNIX): " + err.Error()
+	}
+	return fd, ""
+}
+
+// newAFInetListenerFd is the AF_INET counterpart of newAFUnixListenerFd.
+func newAFInetListenerFd(t *testing.T) (int, uint16, string) {
+	t.Helper()
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return -1, 0, "socket(AF_INET): " + err.Error()
+	}
+	sa := &unix.SockaddrInet4{Port: 0, Addr: [4]byte{127, 0, 0, 1}}
+	if err := unix.Bind(fd, sa); err != nil {
+		_ = unix.Close(fd)
+		return -1, 0, "bind(AF_INET): " + err.Error()
+	}
+	if err := unix.Listen(fd, 1); err != nil {
+		_ = unix.Close(fd)
+		return -1, 0, "listen(AF_INET): " + err.Error()
+	}
+	got, err := unix.Getsockname(fd)
+	if err != nil {
+		_ = unix.Close(fd)
+		return -1, 0, "getsockname: " + err.Error()
+	}
+	in4, ok := got.(*unix.SockaddrInet4)
+	if !ok {
+		_ = unix.Close(fd)
+		return -1, 0, "getsockname returned non-AF_INET sockaddr"
+	}
+	return fd, uint16(in4.Port), ""
+}
+
+// TestPidfdPeekListenerAFUnix exercises the gpg-agent / dbus path: the
+// seccomp filter traps every listen(2), including AF_UNIX sockets that
+// the relay has no business tunneling. pidfdPeekListener must report
+// errNotIPListener so the supervisor can skip silently instead of
+// logging a misleading "unsupported sockaddr family" line per call.
+func TestPidfdPeekListenerAFUnix(t *testing.T) {
+	dir := t.TempDir()
+	fd, skip := newAFUnixListenerFd(t, filepath.Join(dir, "test.sock"))
+	if skip != "" {
+		t.Skipf("cannot create AF_UNIX listener (sandboxed?): %s", skip)
+	}
+	defer func() { _ = unix.Close(fd) }()
+
+	_, _, _, err := pidfdPeekListener(os.Getpid(), fd)
+	if !errors.Is(err, errNotIPListener) {
+		t.Fatalf("pidfdPeekListener on AF_UNIX = %v, want errNotIPListener", err)
+	}
+}
+
+// TestPidfdPeekListenerAFInet covers the happy path so we don't regress
+// the AF_INET/AF_INET6 branches while changing the AF_UNIX one.
+func TestPidfdPeekListenerAFInet(t *testing.T) {
+	fd, wantPort, skip := newAFInetListenerFd(t)
+	if skip != "" {
+		t.Skipf("cannot create AF_INET listener (sandboxed?): %s", skip)
+	}
+	defer func() { _ = unix.Close(fd) }()
+
+	port, ip, family, err := pidfdPeekListener(os.Getpid(), fd)
+	if err != nil {
+		t.Fatalf("pidfdPeekListener on AF_INET: %v", err)
+	}
+	if port != wantPort {
+		t.Errorf("port=%d, want %d", port, wantPort)
+	}
+	if family != unix.AF_INET {
+		t.Errorf("family=%d, want AF_INET (%d)", family, unix.AF_INET)
+	}
+	if !ip.Equal(net.IPv4(127, 0, 0, 1)) {
+		t.Errorf("ip=%s, want 127.0.0.1", ip)
+	}
+}
+
+// TestPeekAgentListenerSkipsProcFallbackForUnix verifies that when the
+// pidfd path identifies an AF_UNIX socket, the /proc fallback is not
+// attempted. The error returned must be the bare errNotIPListener
+// sentinel; if peekAgentListener fell through, it would be a wrapped
+// "pidfd: ...; /proc fallback: ..." string instead.
+func TestPeekAgentListenerSkipsProcFallbackForUnix(t *testing.T) {
+	dir := t.TempDir()
+	fd, skip := newAFUnixListenerFd(t, filepath.Join(dir, "test.sock"))
+	if skip != "" {
+		t.Skipf("cannot create AF_UNIX listener (sandboxed?): %s", skip)
+	}
+	defer func() { _ = unix.Close(fd) }()
+
+	_, _, _, err := peekAgentListener(os.Getpid(), fd)
+	if !errors.Is(err, errNotIPListener) {
+		t.Fatalf("peekAgentListener AF_UNIX = %v, want errNotIPListener", err)
+	}
+}
+
 // TestMirrorBindScope verifies the host bind-address policy mirrors the
 // agent's bind scope: loopback → loopback, otherwise unspecified, with
 // a family-mismatch fallback to 127.0.0.1.
