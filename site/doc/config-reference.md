@@ -34,15 +34,17 @@ Operational settings live under the required top-level `gateway { ... }` block. 
 
 ## `profile "<name>" { ... }`
 
-Names a set of credentials. Profiles bind to dashboard owners; an owner's profile determines which credentials — and, transitively via each credential's `endpoint` / `endpoints` binding, which endpoints — their gateway requests can reach. Rules ride along automatically because they're attached to endpoints.
+Names a set of credentials and endpoints. Profiles bind to dashboard owners; an owner's profile determines which credentials they can use and which endpoint rules apply. Endpoint membership comes from the transitive closure of `credentials` → credential `endpoint` / `endpoints`, plus any direct `endpoints` listed on the profile. Direct endpoints carry rules without granting credentials.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `credentials` | `[]credential` | yes | Bare-name credential references, or `{ credential = name, <disambiguator> = "..." }` object entries for multi-credential dispatch (e.g. `placeholder` for header-token credentials). |
+| `credentials` | `[]credential` | no | Bare-name credential references, or `{ credential = name, <disambiguator> = "..." }` object entries for multi-credential dispatch (e.g. `placeholder` for header-token credentials). Required when `endpoints` is empty. |
+| `endpoints` | `[]endpoint` | no | Direct endpoint references. Use for rule-only membership, such as deny rules for hosts that should be blocked without granting a credential. Required when `credentials` is empty. |
 
 ```hcl
 profile "default" {
   credentials = [bearer_token.github, postgres_credential.postgres-prod]
+  endpoints   = [https.blocked_host]
 }
 ```
 
