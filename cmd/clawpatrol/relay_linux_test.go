@@ -3,12 +3,12 @@
 package main
 
 import (
+	"encoding/binary"
 	"errors"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
-	"syscall"
 	"testing"
 	"time"
 
@@ -129,133 +129,209 @@ func TestScanProcNetTcp(t *testing.T) {
 	}
 }
 
-// TestIsTransientRecvErr pins which errno classes the worker treats as
-// retryable interruptions vs fatal. Regression guard for the symptom
-// "[clawpatrol relay-worker] recv: resource temporarily unavailable"
-// (EAGAIN's canonical strerror text) where the worker previously exited
-// on the first EAGAIN instead of looping.
-func TestIsTransientRecvErr(t *testing.T) {
-	cases := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{"EAGAIN", syscall.EAGAIN, true},
-		{"EWOULDBLOCK", syscall.EWOULDBLOCK, true},
-		{"EINTR", syscall.EINTR, true},
-		{"wrapped EAGAIN", errors.Join(errors.New("recv"), syscall.EAGAIN), true},
-		{"EOF", io.EOF, false},
-		{"ECONNRESET", syscall.ECONNRESET, false},
-		{"EBADF", syscall.EBADF, false},
-		{"nil", nil, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := isTransientRecvErr(tc.err); got != tc.want {
-				t.Errorf("isTransientRecvErr(%v) = %v, want %v", tc.err, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestRelayWorkerLoopRetriesTransient drives the loop with a fake recv
-// that returns EAGAIN/EWOULDBLOCK/EINTR on the first call and io.EOF on
-// the second. The loop must consume the transient and then exit cleanly
-// on EOF — i.e. exactly two recv calls.
-func TestRelayWorkerLoopRetriesTransient(t *testing.T) {
-	transients := []struct {
-		name string
-		err  error
-	}{
-		{"EAGAIN", syscall.EAGAIN},
-		{"EWOULDBLOCK", syscall.EWOULDBLOCK},
-		{"EINTR", syscall.EINTR},
-	}
-	for _, tc := range transients {
-		t.Run(tc.name, func(t *testing.T) {
-			var calls int
-			recv := func() (uint16, int, error) {
-				calls++
-				if calls == 1 {
-					return 0, -1, tc.err
-				}
-				return 0, -1, io.EOF
-			}
-			relayWorkerLoop(recv, func(uint16, int) {
-				t.Errorf("handle should not be called on errored recvs")
-			})
-			if calls != 2 {
-				t.Errorf("recv calls = %d, want 2 (one transient + one EOF)", calls)
-			}
-		})
-	}
-}
-
-// TestRelayWorkerLoopExitsOnFatal pins that non-transient, non-EOF errors
-// terminate the loop immediately.
-func TestRelayWorkerLoopExitsOnFatal(t *testing.T) {
-	var calls int
-	recv := func() (uint16, int, error) {
-		calls++
-		return 0, -1, syscall.ECONNRESET
-	}
-	relayWorkerLoop(recv, func(uint16, int) {
-		t.Errorf("handle should not be called on errored recvs")
-	})
-	if calls != 1 {
-		t.Errorf("recv calls = %d, want 1 (fatal exits immediately)", calls)
-	}
-}
-
-// TestRelayWorkerLoopDispatches verifies a successful recv goes to handle
-// before the loop continues. Uses a buffered channel so the goroutine can
-// publish independent of test timing.
-func TestRelayWorkerLoopDispatches(t *testing.T) {
-	var calls int
-	handled := make(chan uint16, 1)
-	recv := func() (uint16, int, error) {
-		calls++
-		if calls == 1 {
-			return 8080, 42, nil
-		}
-		return 0, -1, io.EOF
-	}
-	relayWorkerLoop(recv, func(port uint16, _ int) {
-		handled <- port
-	})
-	select {
-	case p := <-handled:
-		if p != 8080 {
-			t.Errorf("handled port = %d, want 8080", p)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("handle goroutine never ran")
-	}
-}
-
-// TestRecvJobReturnsEAGAINOnEmptyNonblockingSocket exercises recvJob
-// against a real SOCK_SEQPACKET socketpair flipped to nonblocking. With
-// no pending frame the kernel returns EAGAIN; recvJob must surface that
-// errno (not strip it or wrap it past recognition) so isTransientRecvErr
-// can classify it correctly.
-func TestRecvJobReturnsEAGAINOnEmptyNonblockingSocket(t *testing.T) {
-	sp, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
+// newRelaySocketpair returns a non-blocking SOCK_SEQPACKET socketpair
+// wrapped in *os.File on both ends. Non-blocking is required for the
+// SyscallConn.Read / Write paths to engage the runtime poller. Test
+// helper, not used by production.
+func newRelaySocketpair(t *testing.T) (*os.File, *os.File) {
+	t.Helper()
+	sp, err := unix.Socketpair(unix.AF_UNIX,
+		unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK, 0)
 	if err != nil {
 		t.Fatalf("socketpair: %v", err)
 	}
-	defer func() { _ = unix.Close(sp[0]) }()
-	defer func() { _ = unix.Close(sp[1]) }()
+	a := os.NewFile(uintptr(sp[0]), "relay-test-a")
+	b := os.NewFile(uintptr(sp[1]), "relay-test-b")
+	t.Cleanup(func() {
+		_ = a.Close()
+		_ = b.Close()
+	})
+	return a, b
+}
 
-	if err := unix.SetNonblock(sp[1], true); err != nil {
-		t.Fatalf("set nonblock: %v", err)
+// sendOneFrame is a tiny helper that ships one (u16 port, SCM_RIGHTS fd)
+// frame to the worker over a *os.File-wrapped sock, bypassing the
+// production sendJob helper so tests can drive recv-side behaviour
+// directly.
+func sendOneFrame(t *testing.T, sender *os.File, port uint16, fd int) {
+	t.Helper()
+	var portBuf [2]byte
+	binary.LittleEndian.PutUint16(portBuf[:], port)
+	rights := unix.UnixRights(fd)
+	rc, err := sender.SyscallConn()
+	if err != nil {
+		t.Fatalf("SyscallConn: %v", err)
+	}
+	if err := sendJob(rc, portBuf[:], rights); err != nil {
+		t.Fatalf("sendJob: %v", err)
+	}
+}
+
+// TestRecvJobReceivesFrame exercises the happy-path end-to-end: drop a
+// frame onto one end of a real socketpair and confirm recvJob extracts
+// the port and the SCM_RIGHTS fd from the other end.
+func TestRecvJobReceivesFrame(t *testing.T) {
+	sup, worker := newRelaySocketpair(t)
+
+	// Use a pipe's read end as the "fd to ship" — any fd that the
+	// receiver can fstat will do; we just want a recognisable kernel
+	// object on the other end so this test catches accidental fd loss.
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	defer func() { _ = pr.Close() }()
+	defer func() { _ = pw.Close() }()
+
+	sendOneFrame(t, sup, 8080, int(pr.Fd()))
+
+	rc, err := worker.SyscallConn()
+	if err != nil {
+		t.Fatalf("worker SyscallConn: %v", err)
+	}
+	port, gotFD, err := recvJob(rc)
+	if err != nil {
+		t.Fatalf("recvJob: %v", err)
+	}
+	if port != 8080 {
+		t.Errorf("port = %d, want 8080", port)
+	}
+	if gotFD < 0 {
+		t.Errorf("gotFD = %d, want >= 0", gotFD)
+	}
+	_ = unix.Close(gotFD)
+}
+
+// TestRecvJobAbsorbsEAGAINViaPoller verifies the SyscallConn.Read poller
+// integration: a recvJob on an empty non-blocking socket must NOT return
+// EAGAIN. It should park on the poller until a frame arrives, then
+// complete. This is the property that replaces the previous explicit
+// isTransientRecvErr retry — under load, transient EAGAINs are absorbed
+// by the kernel poller, not surfaced to the loop.
+func TestRecvJobAbsorbsEAGAINViaPoller(t *testing.T) {
+	sup, worker := newRelaySocketpair(t)
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	defer func() { _ = pr.Close() }()
+	defer func() { _ = pw.Close() }()
+
+	rc, err := worker.SyscallConn()
+	if err != nil {
+		t.Fatalf("worker SyscallConn: %v", err)
 	}
 
-	_, _, err = recvJob(sp[1])
-	if err == nil {
-		t.Fatal("recvJob on empty nonblocking socket returned nil error")
+	type result struct {
+		port uint16
+		fd   int
+		err  error
 	}
-	if !isTransientRecvErr(err) {
-		t.Fatalf("recvJob err = %v, want classified transient (EAGAIN)", err)
+	done := make(chan result, 1)
+	go func() {
+		port, fd, err := recvJob(rc)
+		done <- result{port, fd, err}
+	}()
+
+	// Recv should be blocked in the poller. Confirm by ensuring no
+	// result arrives within a short window.
+	select {
+	case r := <-done:
+		t.Fatalf("recvJob returned prematurely: port=%d fd=%d err=%v", r.port, r.fd, r.err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Now publish a frame; recv should complete.
+	sendOneFrame(t, sup, 9090, int(pr.Fd()))
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("recvJob err = %v, want nil", r.err)
+		}
+		if r.port != 9090 {
+			t.Errorf("port = %d, want 9090", r.port)
+		}
+		_ = unix.Close(r.fd)
+	case <-time.After(time.Second):
+		t.Fatal("recvJob did not unblock after frame was sent")
+	}
+}
+
+// TestRecvJobReturnsEOFOnPeerClose pins shutdown semantics: when the
+// supervisor goes away, recvJob must return io.EOF (not EBADF, not a
+// stray errno) so the loop can exit cleanly.
+func TestRecvJobReturnsEOFOnPeerClose(t *testing.T) {
+	sup, worker := newRelaySocketpair(t)
+	_ = sup.Close()
+
+	rc, err := worker.SyscallConn()
+	if err != nil {
+		t.Fatalf("worker SyscallConn: %v", err)
+	}
+	_, _, err = recvJob(rc)
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("recvJob err = %v, want io.EOF", err)
+	}
+}
+
+// TestRelayWorkerLoopDispatchesEndToEnd ships two frames through a real
+// socketpair and confirms both reach the dispatch callback in order,
+// then verifies a clean shutdown when the sender closes.
+func TestRelayWorkerLoopDispatchesEndToEnd(t *testing.T) {
+	sup, worker := newRelaySocketpair(t)
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	defer func() { _ = pr.Close() }()
+	defer func() { _ = pw.Close() }()
+
+	rc, err := worker.SyscallConn()
+	if err != nil {
+		t.Fatalf("worker SyscallConn: %v", err)
+	}
+
+	type job struct {
+		port uint16
+		fd   int
+	}
+	jobs := make(chan job, 4)
+	loopDone := make(chan struct{})
+	go func() {
+		relayWorkerLoop(rc, func(port uint16, fd int) {
+			jobs <- job{port, fd}
+		})
+		close(loopDone)
+	}()
+
+	sendOneFrame(t, sup, 5000, int(pr.Fd()))
+	sendOneFrame(t, sup, 5001, int(pr.Fd()))
+
+	// Order between the two dispatch goroutines is non-deterministic;
+	// collect both and check as a set.
+	want := map[uint16]bool{5000: true, 5001: true}
+	got := map[uint16]bool{}
+	for i := 0; i < 2; i++ {
+		select {
+		case j := <-jobs:
+			got[j.port] = true
+			_ = unix.Close(j.fd)
+		case <-time.After(time.Second):
+			t.Fatalf("dispatch[%d] never ran (got so far: %v)", i, got)
+		}
+	}
+	for p := range want {
+		if !got[p] {
+			t.Errorf("missing dispatch for port %d", p)
+		}
+	}
+
+	// Sender closes → loop sees EOF → returns.
+	_ = sup.Close()
+	select {
+	case <-loopDone:
+	case <-time.After(time.Second):
+		t.Fatal("relayWorkerLoop did not return after peer close")
 	}
 }
 
