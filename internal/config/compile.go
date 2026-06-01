@@ -387,6 +387,13 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 				)
 			}
 		}
+		for _, ce := range cp.Endpoints {
+			if profile.Endpoints[ce.Name] != nil || !credentiallessCatchallDenyEndpoint(ce) {
+				continue
+			}
+			profile.Endpoints[ce.Name] = ce
+			indexProfileEndpointHosts(profile, ce)
+		}
 		// Add default-port TLS aliases only after every exact host is
 		// indexed. That lets an explicit bare host beat any alias, while
 		// keeping the alias attached to the HTTPS-family endpoint that
@@ -411,6 +418,38 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 	}
 
 	return cp, nil
+}
+
+func indexProfileEndpointHosts(profile *CompiledProfile, ce *CompiledEndpoint) {
+	for _, h := range ce.Hosts {
+		host, _, hpErr := hostmatch.SplitHostPort(h)
+		if hpErr != nil || host == "" {
+			continue
+		}
+		if hostmatch.IsWildcardHost(host) {
+			profile.HostPatterns = append(profile.HostPatterns, HostPattern{
+				Pattern:  strings.ToLower(host),
+				Endpoint: ce,
+			})
+			continue
+		}
+		profile.HostIndex[strings.ToLower(h)] = ce
+	}
+}
+
+func credentiallessCatchallDenyEndpoint(ce *CompiledEndpoint) bool {
+	if ce == nil || len(ce.Credentials) > 0 {
+		return false
+	}
+	for _, r := range ce.Rules {
+		if r == nil || r.Disabled || r.Credential != "" || r.Condition != "" {
+			continue
+		}
+		if r.Outcome.Verdict == "deny" {
+			return true
+		}
+	}
+	return false
 }
 
 // CredentialEndpointTargets returns the endpoint names a credential

@@ -20,6 +20,7 @@ type RuleGenOptions struct {
 
 type GeneratedRule struct {
 	RuleName              string   `json:"rule_name"`
+	EndpointName          string   `json:"endpoint_name,omitempty"`
 	HCL                   string   `json:"hcl"`
 	Patch                 string   `json:"patch,omitempty"`
 	ConfigRevision        string   `json:"config_revision,omitempty"`
@@ -39,7 +40,7 @@ func GenerateRuleFromEvent(
 		return nil, fmt.Errorf("event is required")
 	}
 	if ev.Endpoint == "" {
-		return nil, fmt.Errorf("action has no endpoint")
+		return generateBlockHostRule(policy, ev, opts)
 	}
 	ep := policy.Endpoints[ev.Endpoint]
 	if ep == nil {
@@ -68,10 +69,45 @@ func GenerateRuleFromEvent(
 		return nil, err
 	}
 	return &GeneratedRule{
-		RuleName: name,
-		HCL:      hcl,
-		Patch:    generatedAppendPatch("gateway.hcl", hcl),
-		Warnings: warnings,
+		RuleName:     name,
+		EndpointName: ep.Name,
+		HCL:          hcl,
+		Patch:        generatedAppendPatch("gateway.hcl", hcl),
+		Warnings:     warnings,
+	}, nil
+}
+
+func generateBlockHostRule(policy *config.CompiledPolicy, ev *Event, opts RuleGenOptions) (*GeneratedRule, error) {
+	if opts.Verdict == "" {
+		opts.Verdict = "deny"
+	}
+	if opts.Scope == "" {
+		opts.Scope = "exact"
+	}
+	if opts.Verdict != "deny" {
+		return nil, fmt.Errorf("unsupported verdict %q", opts.Verdict)
+	}
+	if opts.Scope != "exact" {
+		return nil, fmt.Errorf("unsupported scope %q", opts.Scope)
+	}
+	host := canonicalObservedHost(ev.Host)
+	if host == "" {
+		return nil, fmt.Errorf("action has no endpoint or host")
+	}
+	endpointName := generatedEndpointName(policy, host)
+	ruleName := generatedHostBlockRuleName(ev, endpointName, host)
+	hcl, err := generatedEndpointBlockRuleHCL(endpointName, host, ruleName)
+	if err != nil {
+		return nil, err
+	}
+	return &GeneratedRule{
+		RuleName:     ruleName,
+		EndpointName: endpointName,
+		HCL:          hcl,
+		Patch:        generatedAppendPatch("gateway.hcl", hcl),
+		Warnings: []string{
+			"This action did not match a configured endpoint. Generated HCL creates a new HTTPS endpoint for the observed host and a catch-all deny rule for it.",
+		},
 	}, nil
 }
 
@@ -167,9 +203,24 @@ func generatedRuleHCL(name, endpoint, condition string) (string, error) {
 	b := f.Body().AppendNewBlock("rule", []string{name}).Body()
 	b.SetAttributeRaw("endpoint", config.TraversalTokens(endpoint))
 	b.SetAttributeValue("priority", cty.NumberIntVal(100))
-	b.SetAttributeValue("condition", cty.StringVal(condition))
+	if condition != "" {
+		b.SetAttributeValue("condition", cty.StringVal(condition))
+	}
 	b.SetAttributeValue("verdict", cty.StringVal("deny"))
 	b.SetAttributeValue("reason", cty.StringVal("Blocked from dashboard: generated from observed action"))
+	return string(f.Bytes()), nil
+}
+
+func generatedEndpointBlockRuleHCL(endpointName, host, ruleName string) (string, error) {
+	f := hclwrite.NewEmptyFile()
+	eb := f.Body().AppendNewBlock("endpoint", []string{"https", endpointName}).Body()
+	eb.SetAttributeValue("hosts", cty.ListVal([]cty.Value{cty.StringVal(host)}))
+	f.Body().AppendNewline()
+	rb := f.Body().AppendNewBlock("rule", []string{ruleName}).Body()
+	rb.SetAttributeRaw("endpoint", config.TraversalTokens("https."+endpointName))
+	rb.SetAttributeValue("priority", cty.NumberIntVal(100))
+	rb.SetAttributeValue("verdict", cty.StringVal("deny"))
+	rb.SetAttributeValue("reason", cty.StringVal("Blocked from dashboard: generated from observed passthrough host"))
 	return string(f.Bytes()), nil
 }
 
@@ -183,6 +234,57 @@ func generatedRuleName(ev *Event, ep *config.CompiledEndpoint) string {
 	}
 	sum := sha256.Sum256([]byte(sumInput))
 	return fmt.Sprintf("%s_%x", base, sum[:3])
+}
+
+func generatedHostBlockRuleName(ev *Event, endpointName, host string) string {
+	base := "block_" + safeRuleNamePart(endpointName)
+	sumInput := ev.ID
+	if sumInput == "" {
+		sumInput = host
+	}
+	sum := sha256.Sum256([]byte(sumInput))
+	return fmt.Sprintf("%s_%x", base, sum[:3])
+}
+
+func generatedEndpointName(policy *config.CompiledPolicy, host string) string {
+	base := safeRuleNamePart(strings.ToLower(host))
+	if base == "action" {
+		base = "host"
+	}
+	name := base
+	if policy == nil || policy.Endpoints[name] == nil {
+		return name
+	}
+	sum := sha256.Sum256([]byte(host))
+	name = fmt.Sprintf("%s_%x", base, sum[:3])
+	if policy.Endpoints[name] == nil {
+		return name
+	}
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s_%x_%d", base, sum[:3], i)
+		if policy.Endpoints[candidate] == nil {
+			return candidate
+		}
+	}
+}
+
+func canonicalObservedHost(host string) string {
+	host = strings.TrimSpace(strings.ToLower(host))
+	host = strings.TrimSuffix(host, ".")
+	if host == "" {
+		return ""
+	}
+	if strings.HasPrefix(host, "[") {
+		if end := strings.IndexByte(host, ']'); end >= 0 {
+			return strings.Trim(host[:end+1], "[]")
+		}
+	}
+	if strings.Count(host, ":") == 1 {
+		if i := strings.LastIndexByte(host, ':'); i > 0 {
+			return host[:i]
+		}
+	}
+	return host
 }
 
 func safeRuleNamePart(s string) string {

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	_ "github.com/denoland/clawpatrol/internal/config/plugins/all"
+	"github.com/denoland/clawpatrol/internal/config/runtime"
 )
 
 func TestGenerateRuleHTTPExact(t *testing.T) {
@@ -79,7 +80,52 @@ profile "default" { credentials = [bearer_token.k8s-token] }
 func TestGenerateRuleRejectsMissingEndpoint(t *testing.T) {
 	g := gatewayWithPolicy(t, fixtureHCL)
 	_, err := GenerateRuleFromEvent(g.Policy(), &Event{}, RuleGenOptions{Verdict: "deny", Scope: "exact"})
-	if err == nil || !strings.Contains(err.Error(), "no endpoint") {
-		t.Fatalf("err=%v, want no endpoint", err)
+	if err == nil || !strings.Contains(err.Error(), "no endpoint or host") {
+		t.Fatalf("err=%v, want no endpoint or host", err)
+	}
+}
+
+func TestGenerateRuleSpliceHostCreatesEndpointAndDenyRule(t *testing.T) {
+	g := gatewayWithPolicy(t, fixtureHCL)
+	rule, err := GenerateRuleFromEvent(g.Policy(), &Event{
+		ID:     "018f0000-0000-7000-8000-000000000004",
+		Mode:   "splice",
+		Host:   "TinyClouds.org",
+		Action: "allow",
+	}, RuleGenOptions{Verdict: "deny", Scope: "exact"})
+	if err != nil {
+		t.Fatalf("GenerateRuleFromEvent: %v", err)
+	}
+	if !strings.Contains(rule.HCL, `endpoint "https" "tinyclouds_org"`) {
+		t.Fatalf("hcl missing generated endpoint:\n%s", rule.HCL)
+	}
+	if !strings.Contains(rule.HCL, `hosts = ["tinyclouds.org"]`) {
+		t.Fatalf("hcl missing observed host:\n%s", rule.HCL)
+	}
+	if !strings.Contains(rule.HCL, `endpoint = https.tinyclouds_org`) {
+		t.Fatalf("hcl missing generated endpoint reference:\n%s", rule.HCL)
+	}
+	if strings.Contains(rule.HCL, `condition`) {
+		t.Fatalf("host block rule should be catch-all:\n%s", rule.HCL)
+	}
+	if len(rule.Warnings) == 0 {
+		t.Fatalf("expected warning for generated endpoint")
+	}
+}
+
+func TestGeneratedSpliceHostBlockRoutesInDefaultProfile(t *testing.T) {
+	g := gatewayWithPolicy(t, fixtureHCL+`
+endpoint "https" "tinyclouds_org" {
+  hosts = ["tinyclouds.org"]
+}
+
+rule "block_tinyclouds_org" {
+  endpoint = https.tinyclouds_org
+  verdict  = "deny"
+}
+`)
+	ep := runtime.HostEndpoint(g.Policy(), "default", "tinyclouds.org")
+	if ep == nil || ep.Name != "tinyclouds_org" {
+		t.Fatalf("HostEndpoint = %#v, want generated endpoint", ep)
 	}
 }

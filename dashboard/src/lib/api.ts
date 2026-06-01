@@ -496,6 +496,7 @@ export async function downloadActionFixture(id: string): Promise<Blob> {
 
 export type RulePreview = {
   rule_name: string;
+  endpoint_name?: string;
   hcl: string;
   patch?: string;
   config_revision?: string;
