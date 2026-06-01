@@ -1,0 +1,17 @@
+{
+  "action": {
+    "host": "build.example.com:2222",
+    "ssh": {
+      "verb": "forward",
+      "forward_host": "db.internal",
+      "forward_port": 5432,
+      "user": "ubuntu"
+    }
+  },
+  "match": {
+    "verdict":  "deny",
+    "rule":     "ssh-no-db-forward",
+    "endpoint": "ssh.build-host",
+    "reason":   "no direct database tunnels"
+  }
+}

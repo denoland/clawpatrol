@@ -1,0 +1,16 @@
+{
+  "action": {
+    "host": "build.example.com:2222",
+    "ssh": {
+      "verb": "exec",
+      "command": "git-receive-pack '/srv/git/app.git'",
+      "user": "git"
+    }
+  },
+  "match": {
+    "verdict":  "deny",
+    "rule":     "ssh-no-push",
+    "endpoint": "ssh.build-host",
+    "reason":   "pushes go through CI, not direct git"
+  }
+}

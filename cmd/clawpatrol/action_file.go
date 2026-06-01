@@ -6,7 +6,8 @@ package main
 //
 // `match` is the runner's assertion (verdict + rule + endpoint).
 // `action` is the recorded request: a host, optional credential /
-// peer_ip, and exactly one facet-keyed block (`http`, `k8s`, `sql`).
+// peer_ip, and exactly one facet-keyed block (`http`, `k8s`, `sql`,
+// `ssh`).
 // Each facet block carries ONLY that facet's CEL-visible fields —
 // the same vocabulary rules read in `condition = "<facet>.<field>"`.
 // Connection-level fields (host, credential, peer_ip) sit outside
@@ -26,6 +27,7 @@ import (
 	"github.com/denoland/clawpatrol/internal/config/match"
 	k8sfacet "github.com/denoland/clawpatrol/internal/config/plugins/facets/k8s"
 	sqlfacet "github.com/denoland/clawpatrol/internal/config/plugins/facets/sql"
+	sshfacet "github.com/denoland/clawpatrol/internal/config/plugins/facets/ssh"
 )
 
 // Fixture is the on-disk shape. Field order matters for marshalling:
@@ -45,8 +47,8 @@ type Match struct {
 	Reason   string `json:"reason,omitempty"`
 }
 
-// Action is the recorded request. Exactly one of HTTP / K8s / SQL
-// is set (validated by UnmarshalJSON).
+// Action is the recorded request. Exactly one of HTTP / K8s / SQL /
+// SSH is set (validated by UnmarshalJSON).
 type Action struct {
 	Host       string      `json:"host,omitempty"`
 	Credential string      `json:"credential,omitempty"`
@@ -54,6 +56,7 @@ type Action struct {
 	HTTP       *HTTPAction `json:"http,omitempty"`
 	K8s        *K8sAction  `json:"k8s,omitempty"`
 	SQL        *SQLAction  `json:"sql,omitempty"`
+	SSH        *SSHAction  `json:"ssh,omitempty"`
 }
 
 // HTTPAction carries the `http.*` CEL view: method / path / query /
@@ -89,6 +92,19 @@ type SQLAction struct {
 	Tables    []string `json:"tables,omitempty"`
 	Functions []string `json:"functions,omitempty"`
 	Database  string   `json:"database,omitempty"`
+}
+
+// SSHAction carries the `ssh.*` CEL view of one channel action: the
+// verb (exec / shell / subsystem / forward) plus whichever field that
+// verb populates (command, subsystem, or forward target), and the
+// upstream user. Mirrors sshfacet.Fields one-to-one.
+type SSHAction struct {
+	Verb        string `json:"verb,omitempty"`
+	Command     string `json:"command,omitempty"`
+	Subsystem   string `json:"subsystem,omitempty"`
+	ForwardHost string `json:"forward_host,omitempty"`
+	ForwardPort int    `json:"forward_port,omitempty"`
+	User        string `json:"user,omitempty"`
 }
 
 var validVerdicts = map[string]bool{
@@ -129,6 +145,7 @@ func (a *Action) unmarshal(data []byte) error {
 		HTTP       json.RawMessage `json:"http,omitempty"`
 		K8s        json.RawMessage `json:"k8s,omitempty"`
 		SQL        json.RawMessage `json:"sql,omitempty"`
+		SSH        json.RawMessage `json:"ssh,omitempty"`
 	}
 	var raw rawAction
 	if err := strictDecode(data, "action", &raw); err != nil {
@@ -162,8 +179,17 @@ func (a *Action) unmarshal(data []byte) error {
 			return fmt.Errorf("sql: statement is required")
 		}
 	}
+	if len(raw.SSH) > 0 {
+		count++
+		if err := strictDecode(raw.SSH, "ssh", &a.SSH); err != nil {
+			return err
+		}
+		if a.SSH.Verb == "" {
+			return fmt.Errorf("ssh: verb is required")
+		}
+	}
 	if count != 1 {
-		return fmt.Errorf("action: exactly one of http/k8s/sql is required, found %d", count)
+		return fmt.Errorf("action: exactly one of http/k8s/sql/ssh is required, found %d", count)
 	}
 	return nil
 }
@@ -371,6 +397,19 @@ func (f *Fixture) ToMatchRequest(family string, parseSQL func(string) (any, bool
 			Verb: a.K8s.Verb, Resource: a.K8s.Resource,
 			Namespace: a.K8s.Namespace, Name: a.K8s.Name,
 			Params: a.K8s.Params,
+		}
+	case a.SSH != nil:
+		// User flows onto both req.User (the canonical cross-protocol
+		// field the ssh facet prefers) and Meta.User (its fallback),
+		// mirroring how the live endpoint populates the request.
+		req.User = a.SSH.User
+		req.Meta = &sshfacet.Meta{
+			Verb:        a.SSH.Verb,
+			Command:     a.SSH.Command,
+			Subsystem:   a.SSH.Subsystem,
+			ForwardHost: a.SSH.ForwardHost,
+			ForwardPort: uint32(a.SSH.ForwardPort),
+			User:        a.SSH.User,
 		}
 	case a.SQL != nil:
 		stmt := a.SQL.Statement

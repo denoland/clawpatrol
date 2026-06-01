@@ -159,8 +159,8 @@ the log.
 
 Each fixture has two top-level keys: `action` is the recorded request (what the
 agent did); `match` is the assertion (what the rule engine should produce for
-that action). Exactly one facet block (`http` / `k8s` / `sql`) lives under
-`action`, carrying that facet’s vocabulary — the same fields your CEL rule
+that action). Exactly one facet block (`http` / `k8s` / `sql` / `ssh`) lives
+under `action`, carrying that facet’s vocabulary — the same fields your CEL rule
 conditions read.
 
 ### HTTPS
@@ -228,6 +228,34 @@ For SQL, only `statement` is required — the runner derives `verb`, `tables`, a
 override them by adding explicit fields if you want to test the matcher’s view
 directly.
 
+### SSH
+
+```json
+{
+  "action": {
+    "host": "build.example.com:2222",
+    "ssh": {
+      "verb": "exec",
+      "command": "git-receive-pack '/srv/git/app.git'",
+      "user": "git"
+    }
+  },
+  "match": {
+    "verdict": "deny",
+    "rule": "ssh-no-push",
+    "endpoint": "ssh.build-host",
+    "reason": "pushes go through CI, not direct git"
+  }
+}
+```
+
+For SSH, `verb` is required (`exec` / `shell` / `subsystem` / `forward`); set
+whichever field that verb populates — `command` for `exec`, `subsystem` for
+`subsystem`, `forward_host` + `forward_port` for `forward`. `shell` carries no
+extra field. The facet gates the channel envelope only, so it can match the
+`git-receive-pack` command but not tell a force push from a normal one (see
+[rules.md](rules.md), ssh family scope).
+
 ### Shared hosts: pinning the endpoint
 
 If two endpoints both claim the same host — common with `api.anthropic.com`,
@@ -282,7 +310,7 @@ replay.
   when `match.endpoint` is absent. Required for SQL (no URL at the wire level).
 - `credential`, `peer_ip` — optional, mirror the gateway’s request-level
   scalars.
-- Exactly one facet block — `http`, `k8s`, or `sql`.
+- Exactly one facet block — `http`, `k8s`, `sql`, or `ssh`.
 
 ### Facet vocabulary
 
@@ -291,8 +319,9 @@ replay.
 | `http` | `method`, `path`, `query`, `headers`, `body`, `body_b64`                                              |
 | `k8s`  | `verb`, `resource`, `namespace`, `name`, `params`                                                     |
 | `sql`  | `statement` (required); `verb`, `tables`, `functions` (optional, derived from `statement` if omitted) |
+| `ssh`  | `verb` (required); `command`, `subsystem`, `forward_host`, `forward_port`, `user`                     |
 
-Every field is optional except SQL’s `statement`. Missing fields default to zero
+Every field is optional except SQL’s `statement` and SSH’s `verb`. Missing fields default to zero
 values — rules that match on them just return false. Fixtures that include the
 full struct are accepted; explicit values take precedence over derivation.
 

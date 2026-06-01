@@ -16,6 +16,7 @@ import (
 	_ "github.com/denoland/clawpatrol/internal/config/plugins/facets/https"
 	_ "github.com/denoland/clawpatrol/internal/config/plugins/facets/k8s"
 	_ "github.com/denoland/clawpatrol/internal/config/plugins/facets/sql"
+	_ "github.com/denoland/clawpatrol/internal/config/plugins/facets/ssh"
 	_ "github.com/denoland/clawpatrol/internal/config/plugins/rules"
 	_ "github.com/denoland/clawpatrol/internal/config/plugins/tunnels"
 )

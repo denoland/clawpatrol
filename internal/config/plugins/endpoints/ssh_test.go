@@ -6,6 +6,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/denoland/clawpatrol/internal/config"
+	sshfacet "github.com/denoland/clawpatrol/internal/config/plugins/facets/ssh"
 )
 
 // pickSSHCredential covers the multi-credential dispatch contract:
@@ -103,17 +104,20 @@ func TestPickSSHCredential(t *testing.T) {
 	}
 }
 
-// classifyAgentChannelReq covers the per-channel requests an agent
-// can send: exec carries argv as one string, shell is empty,
-// subsystem carries the subsystem name, anything else (pty-req,
-// env, window-change, signal, ...) is dropped silently.
-func TestClassifyAgentChannelReq(t *testing.T) {
+// metaForChannelReq covers the per-channel requests an agent can
+// send: exec carries argv as one string, shell is empty, subsystem
+// carries the subsystem name, anything else (pty-req, env,
+// window-change, signal, ...) is dropped silently. The derived Meta's
+// verb-relevant field and the sshSummary one-liner are both checked.
+func TestMetaForChannelReq(t *testing.T) {
 	cases := []struct {
 		name        string
 		reqType     string
 		payload     []byte
 		wantOK      bool
 		wantVerb    string
+		wantCommand string
+		wantSubsys  string
 		wantSummary string
 	}{
 		{
@@ -121,7 +125,8 @@ func TestClassifyAgentChannelReq(t *testing.T) {
 			reqType:     "exec",
 			payload:     ssh.Marshal(execPayload{Command: "ls -la /etc"}),
 			wantOK:      true,
-			wantVerb:    "exec",
+			wantVerb:    sshfacet.VerbExec,
+			wantCommand: "ls -la /etc",
 			wantSummary: "ls -la /etc",
 		},
 		{
@@ -129,7 +134,7 @@ func TestClassifyAgentChannelReq(t *testing.T) {
 			reqType:     "shell",
 			payload:     nil,
 			wantOK:      true,
-			wantVerb:    "shell",
+			wantVerb:    sshfacet.VerbShell,
 			wantSummary: "interactive shell",
 		},
 		{
@@ -137,7 +142,8 @@ func TestClassifyAgentChannelReq(t *testing.T) {
 			reqType:     "subsystem",
 			payload:     ssh.Marshal(subsystemPayload{Name: "sftp"}),
 			wantOK:      true,
-			wantVerb:    "subsystem",
+			wantVerb:    sshfacet.VerbSubsystem,
+			wantSubsys:  "sftp",
 			wantSummary: "sftp",
 		},
 		{name: "pty-req dropped", reqType: "pty-req", payload: nil, wantOK: false},
@@ -147,18 +153,24 @@ func TestClassifyAgentChannelReq(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			ev, ok := classifyAgentChannelReq(&ssh.Request{Type: c.reqType, Payload: c.payload})
+			m, ok := metaForChannelReq(&ssh.Request{Type: c.reqType, Payload: c.payload})
 			if ok != c.wantOK {
 				t.Fatalf("ok = %v; want %v", ok, c.wantOK)
 			}
 			if !ok {
 				return
 			}
-			if ev.Verb != c.wantVerb {
-				t.Errorf("verb = %q; want %q", ev.Verb, c.wantVerb)
+			if m.Verb != c.wantVerb {
+				t.Errorf("verb = %q; want %q", m.Verb, c.wantVerb)
 			}
-			if ev.Summary != c.wantSummary {
-				t.Errorf("summary = %q; want %q", ev.Summary, c.wantSummary)
+			if m.Command != c.wantCommand {
+				t.Errorf("command = %q; want %q", m.Command, c.wantCommand)
+			}
+			if m.Subsystem != c.wantSubsys {
+				t.Errorf("subsystem = %q; want %q", m.Subsystem, c.wantSubsys)
+			}
+			if got := sshSummary(m); got != c.wantSummary {
+				t.Errorf("summary = %q; want %q", got, c.wantSummary)
 			}
 		})
 	}
@@ -185,10 +197,10 @@ func TestClassifyUpstreamChannelReq(t *testing.T) {
 	})
 }
 
-// classifyChannelOpen surfaces direct-tcpip targets; session opens
+// metaForChannelOpen surfaces direct-tcpip targets; session opens
 // (the common case for interactive logins / exec) are dropped — the
 // interesting intent rides on the following channel-request.
-func TestClassifyChannelOpen(t *testing.T) {
+func TestMetaForChannelOpen(t *testing.T) {
 	t.Run("direct-tcpip", func(t *testing.T) {
 		nc := fakeNewChannel{
 			ty: "direct-tcpip",
@@ -197,23 +209,26 @@ func TestClassifyChannelOpen(t *testing.T) {
 				OriginHost: "127.0.0.1", OriginPort: 54321,
 			}),
 		}
-		ev, ok := classifyChannelOpen(nc)
+		m, ok := metaForChannelOpen(nc)
 		if !ok {
-			t.Fatal("expected event for direct-tcpip")
+			t.Fatal("expected meta for direct-tcpip")
 		}
-		if ev.Verb != "forward" || ev.Summary != "→ db.internal:5432" {
-			t.Errorf("got verb=%q summary=%q; want verb=forward summary=\"→ db.internal:5432\"", ev.Verb, ev.Summary)
+		if m.Verb != sshfacet.VerbForward || m.ForwardHost != "db.internal" || m.ForwardPort != 5432 {
+			t.Errorf("got verb=%q host=%q port=%d; want forward db.internal 5432", m.Verb, m.ForwardHost, m.ForwardPort)
+		}
+		if got := sshSummary(m); got != "→ db.internal:5432" {
+			t.Errorf("summary = %q; want \"→ db.internal:5432\"", got)
 		}
 	})
 	t.Run("session dropped", func(t *testing.T) {
-		if _, ok := classifyChannelOpen(fakeNewChannel{ty: "session"}); ok {
+		if _, ok := metaForChannelOpen(fakeNewChannel{ty: "session"}); ok {
 			t.Fatal("expected session open to be dropped")
 		}
 	})
 }
 
 // fakeNewChannel is the minimum ssh.NewChannel surface
-// classifyChannelOpen reads — type and ExtraData. Accept / Reject
+// metaForChannelOpen reads — type and ExtraData. Accept / Reject
 // aren't exercised by the classifier.
 type fakeNewChannel struct {
 	ty    string

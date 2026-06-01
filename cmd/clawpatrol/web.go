@@ -1587,6 +1587,20 @@ func (w *webMux) writeActionFixture(rw http.ResponseWriter, ev *Event) {
 			fx.Action.Host = ep.Hosts[0]
 		}
 		fx.Action.SQL = sql
+	case "ssh":
+		ssh := exportSSH(ev)
+		if ssh == nil {
+			http.Error(rw, "ssh action has no gateable verb recorded; cannot export", 400)
+			return
+		}
+		// Host for SSH, like SQL, comes from the endpoint's HCL
+		// declaration — the recorded Event.Host is the dst IP / VIP,
+		// not the hostname the resolver scans. The runner
+		// short-circuits on match.endpoint anyway.
+		if len(ep.Hosts) > 0 {
+			fx.Action.Host = ep.Hosts[0]
+		}
+		fx.Action.SSH = ssh
 	default:
 		http.Error(rw, fmt.Sprintf("endpoint family %q is not yet exportable", ep.Family), http.StatusNotImplemented)
 		return
@@ -1702,6 +1716,51 @@ func exportSQL(ev *Event) *SQLAction {
 		a.Database = v
 	}
 	return a
+}
+
+// exportSSH recovers the ssh.* CEL view from Event.Facets (set by
+// sshfacet.Report at live-dispatch time). Only the field the action's
+// verb populates is non-empty. Returns nil for a non-gateable log
+// line (connect / exit-status carry no verb facet), so the handler
+// can refuse to export it as a fixture.
+func exportSSH(ev *Event) *SSHAction {
+	verb, _ := ev.Facets["verb"].(string)
+	if verb == "" {
+		return nil
+	}
+	a := &SSHAction{Verb: verb}
+	if v, ok := ev.Facets["command"].(string); ok {
+		a.Command = v
+	}
+	if v, ok := ev.Facets["subsystem"].(string); ok {
+		a.Subsystem = v
+	}
+	if v, ok := ev.Facets["forward_host"].(string); ok {
+		a.ForwardHost = v
+	}
+	a.ForwardPort = intFromFacet(ev.Facets["forward_port"])
+	if v, ok := ev.Facets["user"].(string); ok {
+		a.User = v
+	}
+	return a
+}
+
+// intFromFacet narrows a JSON-unmarshalled numeric facet into int.
+// Event.Facets is decoded as map[string]any, so integer facets land
+// as float64 (json.Number when the decoder uses UseNumber).
+func intFromFacet(v any) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case json.Number:
+		i, _ := n.Int64()
+		return int(i)
+	}
+	return 0
 }
 
 // stringSliceFromFacet narrows a JSON-unmarshalled facet list into

@@ -1,0 +1,16 @@
+{
+  "action": {
+    "host": "build.example.com:2222",
+    "ssh": {
+      "verb": "subsystem",
+      "subsystem": "sftp",
+      "user": "ubuntu"
+    }
+  },
+  "match": {
+    "verdict":  "deny",
+    "rule":     "ssh-no-sftp",
+    "endpoint": "ssh.build-host",
+    "reason":   "file transfer is not permitted on the build host"
+  }
+}

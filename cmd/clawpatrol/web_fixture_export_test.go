@@ -431,6 +431,144 @@ profile "default" { credentials = [bearer_token.tok] }
 	}
 }
 
+const sshExportHCL = `
+
+endpoint "ssh" "build-host" {
+  hosts = ["build.example.com:2222"]
+}
+credential "ssh_key" "key" { endpoint = ssh.build-host }
+profile "default" { credentials = [ssh_key.key] }
+`
+
+// ssh exporter reads verb/command/subsystem/forward_*/user from
+// Event.Facets (the shape sshfacet.Report emits) and pins host to the
+// endpoint's HCL address, not Event.Host (the dst IP / VIP).
+func TestExporterSSHHappyPath(t *testing.T) {
+	w := &webMux{g: gatewayWithPolicy(t, sshExportHCL)}
+	ev := &Event{
+		ID: "evt-ssh-1", Mode: "ssh", Family: "ssh",
+		Host: "10.0.0.9", Action: "deny", Endpoint: "build-host",
+		Rule: "ssh-no-push",
+		Facets: map[string]any{
+			"verb": "exec", "command": "git-receive-pack '/srv/git/app.git'",
+			"user": "git",
+		},
+	}
+	rw := httptest.NewRecorder()
+	w.writeActionFixture(rw, ev)
+	if rw.Code != 200 {
+		t.Fatalf("status=%d body=%s", rw.Code, rw.Body.String())
+	}
+	var f Fixture
+	if err := json.Unmarshal(rw.Body.Bytes(), &f); err != nil {
+		t.Fatalf("reparse: %v\nbody=%s", err, rw.Body.String())
+	}
+	if f.Action.SSH == nil {
+		t.Fatal("expected ssh block")
+	}
+	ssh := f.Action.SSH
+	if ssh.Verb != "exec" || ssh.Command != "git-receive-pack '/srv/git/app.git'" || ssh.User != "git" {
+		t.Errorf("ssh=%+v", ssh)
+	}
+	if f.Action.Host != "build.example.com:2222" {
+		t.Errorf("host=%q want build.example.com:2222 (HCL host, not Event.Host)", f.Action.Host)
+	}
+	if f.Match.Verdict != "deny" {
+		t.Errorf("verdict=%q want deny", f.Match.Verdict)
+	}
+}
+
+// forward_port is a CEL int, but reloaded from the events table it
+// arrives as a JSON float64; the exporter must narrow it back to a
+// clean integer.
+func TestExporterSSHForwardPortFromFloat(t *testing.T) {
+	w := &webMux{g: gatewayWithPolicy(t, sshExportHCL)}
+	ev := &Event{
+		ID: "evt-ssh-fwd", Mode: "ssh", Family: "ssh",
+		Host: "10.0.0.9", Action: "deny", Endpoint: "build-host",
+		Rule: "ssh-no-db-forward",
+		Facets: map[string]any{
+			"verb": "forward", "forward_host": "db.internal",
+			"forward_port": float64(5432), // events-table reload shape
+			"user":         "ubuntu",
+		},
+	}
+	rw := httptest.NewRecorder()
+	w.writeActionFixture(rw, ev)
+	if rw.Code != 200 {
+		t.Fatalf("status=%d body=%s", rw.Code, rw.Body.String())
+	}
+	var f Fixture
+	if err := json.Unmarshal(rw.Body.Bytes(), &f); err != nil {
+		t.Fatalf("reparse: %v\nbody=%s", err, rw.Body.String())
+	}
+	if f.Action.SSH == nil {
+		t.Fatal("expected ssh block")
+	}
+	ssh := f.Action.SSH
+	if ssh.Verb != "forward" || ssh.ForwardHost != "db.internal" || ssh.ForwardPort != 5432 {
+		t.Errorf("ssh=%+v want forward db.internal:5432", ssh)
+	}
+}
+
+// A non-gateable log line (session connect / exit-status carry no
+// verb facet) can't become a fixture; the exporter must 400.
+func TestExporterSSHRejectsNonGateable(t *testing.T) {
+	w := &webMux{g: gatewayWithPolicy(t, sshExportHCL)}
+	ev := &Event{ID: "evt-ssh-connect", Family: "ssh", Action: "allow", Endpoint: "build-host"}
+	rw := httptest.NewRecorder()
+	w.writeActionFixture(rw, ev)
+	if rw.Code != 400 {
+		t.Fatalf("status=%d want 400; body=%s", rw.Code, rw.Body.String())
+	}
+	if !strings.Contains(rw.Body.String(), "no gateable verb") {
+		t.Errorf("body=%q want explanatory error", rw.Body.String())
+	}
+}
+
+// End-to-end contract for the ssh family: a recorded Event → exporter
+// JSON → runOneFixture → the same deny the exporter recorded.
+func TestExporterSSHRunnerRoundTrip(t *testing.T) {
+	const hcl = `
+
+endpoint "ssh" "build-host" {
+  hosts = ["build.example.com:2222"]
+}
+credential "ssh_key" "key" { endpoint = ssh.build-host }
+rule "no-interactive" {
+  endpoint  = ssh.build-host
+  condition = "ssh.verb == 'shell'"
+  verdict   = "deny"
+  reason    = "no shells"
+}
+profile "default" { credentials = [ssh_key.key] }
+`
+	gw := gatewayWithPolicy(t, hcl)
+	w := &webMux{g: gw}
+	ev := &Event{
+		ID: "evt-ssh-rt", Mode: "ssh", Family: "ssh",
+		Host: "10.0.0.9", Action: "deny",
+		Endpoint: "build-host", Rule: "no-interactive", Reason: "no shells",
+		Facets: map[string]any{"verb": "shell", "user": "ubuntu"},
+	}
+	rw := httptest.NewRecorder()
+	w.writeActionFixture(rw, ev)
+	if rw.Code != 200 {
+		t.Fatalf("export status=%d body=%s", rw.Code, rw.Body.String())
+	}
+	tmp := filepath.Join(t.TempDir(), "ssh-rt.json")
+	if err := os.WriteFile(tmp, rw.Body.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ok, msg, err := runOneFixture(gw.Policy(), tmp)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !ok {
+		t.Fatalf("round-trip mismatch:\n%s", msg)
+	}
+}
+
 // passthrough fixtures parse fine but the runner rejects them at
 // replay (site/doc/clawpatrol-test.md). Lock in both halves so a future change has
 // to pick one side intentionally.
