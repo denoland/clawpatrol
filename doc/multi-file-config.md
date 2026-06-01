@@ -35,6 +35,12 @@ gohcl decodes and what pass-1 walks for symbol building.
   must appear in **exactly one** file. Duplicates surface as
   gohcl's standard `Duplicate gateway block` / `Duplicate defaults
   block` diagnostic with both source ranges.
+- **`schema_version`** is a top-level singleton attribute and, like
+  the singleton blocks, must appear in at most one file. It is read
+  in a lenient pre-pass over the merged body before the strict
+  decode, so a version newer than the binary supports fails with one
+  upgrade error rather than a wall of unknown-field noise. Absent ⇒
+  legacy grammar (version 0) with a warning.
 - **Repeatable blocks** (`plugin "..." { ... }`, every named
   policy entity) can appear in any file. Each named entity is
   still unique within its kind across the whole module — declaring

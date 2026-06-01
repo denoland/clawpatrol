@@ -1,0 +1,1 @@
+error: Config schema_version too new — schema_version = 999, but this clawpatrol understands up to 1. Upgrade clawpatrol to load this config.

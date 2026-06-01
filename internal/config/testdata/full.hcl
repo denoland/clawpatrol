@@ -365,6 +365,10 @@
 #   stamps the `k8s-aws-v1.<…>` bearer; cluster name and region live
 #   on the endpoint.
 
+# The config grammar this file targets. The gateway accepts a window of
+# versions; omitting it loads as legacy grammar with a warning.
+schema_version = 1
+
 gateway {
   state_dir  = "/opt/clawpatrol"
   public_url = "https://gw.example.test"

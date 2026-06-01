@@ -6,6 +6,8 @@
 //
 // Edit any rule below and re-run to see a mismatch.
 
+schema_version = 1
+
 gateway {
   state_dir  = "/opt/clawpatrol"
   public_url = "https://gw.example.test"

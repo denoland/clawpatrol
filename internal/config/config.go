@@ -13,7 +13,84 @@ import (
 	"github.com/hashicorp/hcl/v2/gohcl"
 	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/zclconf/go-cty/cty"
+	"github.com/zclconf/go-cty/cty/gocty"
 )
+
+const (
+	// MinSchemaVersion is the oldest config grammar this binary still
+	// decodes. 0 covers unversioned legacy configs (no top-level
+	// `schema_version` attribute); they load with a deprecation
+	// warning. Bump this only at a major when ancient syntax is
+	// finally dropped.
+	MinSchemaVersion = 0
+
+	// MaxSchemaVersion is the newest grammar this binary understands.
+	// Bump it whenever a breaking grammar change ships. Configs
+	// declaring a higher version are rejected with an "upgrade
+	// clawpatrol" error rather than a wall of decode noise.
+	MaxSchemaVersion = 1
+)
+
+// schemaVersionSchema matches just the top-level `schema_version`
+// attribute, so the version pre-pass can read it via PartialContent
+// without consuming (or tripping over) anything else in the body.
+var schemaVersionSchema = &hcl.BodySchema{
+	Attributes: []hcl.AttributeSchema{{Name: "schema_version"}},
+}
+
+// readSchemaVersion pulls the top-level `schema_version` off the merged
+// body in a lenient pass. PartialContent ignores every other attribute
+// and block, so a config written for a newer grammar (unknown
+// blocks/attrs) still yields a clean version number here instead of the
+// pile of "Unsupported argument" diagnostics a strict gohcl decode would
+// produce. Absent ⇒ 0 (unversioned legacy).
+func readSchemaVersion(body hcl.Body) (int, hcl.Diagnostics) {
+	content, _, diags := body.PartialContent(schemaVersionSchema)
+	if diags.HasErrors() {
+		return 0, diags
+	}
+	attr, ok := content.Attributes["schema_version"]
+	if !ok {
+		return 0, diags
+	}
+	val, valDiags := attr.Expr.Value(nil)
+	diags = append(diags, valDiags...)
+	if valDiags.HasErrors() {
+		return 0, diags
+	}
+	var v int
+	if err := gocty.FromCtyValue(val, &v); err != nil {
+		return 0, append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Invalid schema_version",
+			Detail:   fmt.Sprintf("`schema_version` must be a whole integer: %v", err),
+			Subject:  attr.Expr.Range().Ptr(),
+		})
+	}
+	return v, diags
+}
+
+// checkSchemaVersion gates a resolved schema version against the window
+// this binary supports, returning the single clean error the caller
+// should surface (and nothing else — the caller skips the strict decode
+// when this errors, so the upgrade/migrate message isn't buried).
+func checkSchemaVersion(v int) hcl.Diagnostics {
+	if v > MaxSchemaVersion {
+		return hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "Config schema_version too new",
+			Detail:   fmt.Sprintf("schema_version = %d, but this clawpatrol understands up to %d. Upgrade clawpatrol to load this config.", v, MaxSchemaVersion),
+		}}
+	}
+	if v < MinSchemaVersion {
+		return hcl.Diagnostics{{
+			Severity: hcl.DiagError,
+			Summary:  "Config schema_version too old",
+			Detail:   fmt.Sprintf("schema_version = %d is below the minimum supported version (%d). Update the config to the current grammar.", v, MinSchemaVersion),
+		}}
+	}
+	return nil
+}
 
 // Gateway is the fully-loaded clawpatrol gateway config: a single
 // `gateway { ... }` block of operational settings (with nested
@@ -21,6 +98,14 @@ import (
 // optional top-level `defaults { ... }` block of policy defaults, and
 // the labeled policy blocks the plugins dispatch on.
 type Gateway struct {
+	// SchemaVersion is the top-level `schema_version` attribute: the
+	// config grammar this file targets. Absent ⇒ 0 ("unversioned
+	// legacy"), which loads with a deprecation warning. The binary
+	// accepts the window [MinSchemaVersion, MaxSchemaVersion]; configs
+	// outside it are rejected early with a clean upgrade/migrate error.
+	// See readSchemaVersion / checkSchemaVersion.
+	SchemaVersion int `hcl:"schema_version,optional"`
+
 	// Settings carries every operational scalar and the two transport
 	// sub-blocks. Required: configs missing the block fail to load.
 	Settings *GatewaySettings `hcl:"gateway,block"`
@@ -678,6 +763,22 @@ func loadFiles(files []*hcl.File, configDir string, diags hcl.Diagnostics) (*Gat
 	// through, so the multi-file code path is exercised uniformly.
 	body := hcl.MergeFiles(files)
 
+	// Read and gate the schema version before the strict decode. This
+	// pre-pass is lenient (PartialContent), so a config authored for a
+	// newer grammar fails with one "upgrade clawpatrol" line here
+	// rather than a wall of unknown-field noise from gohcl below. A
+	// version outside the supported window short-circuits the decode
+	// entirely. The absent-version warning is deferred to the end of
+	// the load so it only fires on otherwise-clean configs.
+	ver, verDiags := readSchemaVersion(body)
+	diags = append(diags, verDiags...)
+	if verDiags.HasErrors() {
+		return nil, diags
+	}
+	if d := checkSchemaVersion(ver); d.HasErrors() {
+		return nil, append(diags, d...)
+	}
+
 	// Decode operational fields. Policy blocks land in gw.Remain.
 	gw := &Gateway{}
 	if d := gohcl.DecodeBody(body, nil, gw); d.HasErrors() {
@@ -738,6 +839,20 @@ func loadFiles(files []*hcl.File, configDir string, diags hcl.Diagnostics) (*Gat
 	// goldens compare structural shape, not file contents.
 	includeDiags := expandFileIncludes(gw.Policy, configDir)
 	diags = append(diags, includeDiags...)
+
+	// Record the resolved version (gohcl already set it from the
+	// attribute; this keeps the field authoritative even via paths that
+	// bypass the decode) and nag on legacy configs — but only when the
+	// load is otherwise clean, so the reminder never crowds out the real
+	// errors on a config that fails anyway.
+	gw.SchemaVersion = ver
+	if ver == 0 && !diags.HasErrors() {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagWarning,
+			Summary:  "No schema_version declared",
+			Detail:   fmt.Sprintf("This config has no top-level `schema_version`; it loads as legacy grammar. Add `schema_version = %d` to pin the grammar and silence this warning.", MaxSchemaVersion),
+		})
+	}
 
 	return gw, diags
 }

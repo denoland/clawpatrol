@@ -36,6 +36,11 @@
 # References are bare names — no kind prefix. The flat namespace is
 # globally unique; collisions are a load error.
 
+# Config grammar this file targets. The gateway accepts a window of
+# versions and rejects anything newer than it understands; omitting it
+# loads as legacy grammar with a warning.
+schema_version = 1
+
 gateway {
   dashboard_listen = "127.0.0.1:8080"
   public_url       = "https://gw.example.com"
