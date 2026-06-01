@@ -338,13 +338,15 @@ function RulePreviewModal({ ev, onClose }: { ev: EventRecord; onClose: () => voi
 
   const writesEnabled = !!preview?.dashboard_config_writes;
   const createsEndpoint = !!preview?.endpoint_name && preview.endpoint_name !== ev.endpoint;
+  const passthrough = createsEndpoint || ev.mode === "splice";
 
   return (
     <Modal title="Block requests like this" size="lg" onClose={onClose}>
       <div className="p-4 space-y-3 overflow-auto">
         <p className="text-sm text-text-muted">
-          Claw Patrol generated HCL from this observed action. For matched endpoints this adds a
-          narrow deny rule; for passthrough hosts it creates an endpoint and blocks that host.
+          {passthrough
+            ? "This request was passed through without MITM inspection because no endpoint matched it. Claw Patrol generated HCL that creates an endpoint for the observed host and denies future matching requests before they pass through."
+            : "Claw Patrol generated a narrow deny rule from this inspected action. Edit the condition if you want to broaden it."}
         </p>
         {busy ? (
           <div className="text-xs text-text-subtle">Generating rule...</div>
@@ -365,8 +367,9 @@ function RulePreviewModal({ ev, onClose }: { ev: EventRecord; onClose: () => voi
             ))}
             {createsEndpoint && (
               <div className="border border-butter-600 bg-butter-100 px-3 py-2 text-xs">
-                This will create endpoint <code>{preview.endpoint_name}</code>. Credential creation
-                is not part of this flow yet.
+                This will create endpoint <code>{preview.endpoint_name}</code> for future traffic.
+                It does not retroactively inspect this request. Credential creation is not part of
+                this flow yet.
               </div>
             )}
             <textarea
