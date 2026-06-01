@@ -6,13 +6,19 @@ at time of writing lives on a side branch and is **not merged to main**.
 
 ## Problem
 
-An endpoint may legitimately declare a loopback upstream:
+A user who wants to reach a service on their *own* host naively writes a
+loopback upstream:
 
 ```hcl
 endpoint "local_pg" "postgres" {
   host = "localhost:5432"   # or "127.0.0.1:5432"
 }
 ```
+
+This looks reasonable but silently dials the *gateway's* loopback, not
+the author's (traced below). The Proposal makes this bare form a compile
+error and offers `tunnel = tunnel.clawpatrol.self` as the explicit,
+correct spelling.
 
 `localhost` is a hostname, not an IP literal, so it is treated as a
 resolvable host and claims a DNS-VIP at policy build
@@ -44,16 +50,27 @@ same "reach the agent host's loopback" problem for the
 
 ## Proposal
 
-When a device's profile uses an endpoint whose chosen upstream host is
-loopback, rewrite the gateway's dial target from `localhost:port` to
-**the source device's tunnel IP**, and dial it **back through the
-netstack** (not the host dialer). On the device side, the existing
-PR #589 reverse-relay redirects that inbound `tunnelIP:port` connection
-to the device's host loopback.
+Reaching the source device's own loopback is **opt-in and explicit**:
+the endpoint declares the built-in `tunnel = tunnel.clawpatrol.self`
+reference. A bare `host = "localhost:5432"` with **no** tunnel is a
+compile error — the bare form silently dialed the *gateway's* loopback,
+which is never what the author meant (see Open question 1). When an
+endpoint bound to `tunnel.clawpatrol.self` is dispatched, the gateway
+rewrites its dial target to **the source device's tunnel IP** and dials
+it **back through the netstack** (not the host dialer). On the device
+side, the existing PR #589 reverse-relay redirects that inbound
+`tunnelIP:port` connection to the device's host loopback.
+
+```hcl
+endpoint "local_pg" "postgres" {
+  host   = "localhost:5432"
+  tunnel = tunnel.clawpatrol.self
+}
+```
 
 ```
 agent app ──dial localhost:5432──▶ DNS-VIP ──▶ gateway VIP conn
-gateway: upstream host is loopback
+gateway: endpoint tunnel is tunnel.clawpatrol.self
       └─ rewrite target → <sourceDeviceTunnelIP>:5432
       └─ dial back THROUGH the netstack (ts.Dial / wg netstack), not host net
 device netns: inbound on tunnelIP:5432
@@ -63,33 +80,60 @@ device netns: inbound on tunnelIP:5432
 The source device tunnel IP is already in hand at dispatch:
 `pip := peerIP(c)` in `dispatchConnEndpoint`
 (`cmd/clawpatrol/main.go:1710`), captured by the `DialUpstream` closure.
+`tunnel.clawpatrol.self` resolves to that `pip` at dial time — it is
+deliberately **not** a named device, so a device can only ever reach
+its *own* loopback, never another device's (see Threat model). Sharing
+one device's loopback service to other devices is out of scope; use
+Tailscale for that.
 
 ## Open questions — resolved
 
 ### 1. How are localhost upstreams declared / validated in HCL?
 
-**Decision: keep the existing `host`/`hosts` syntax; detect loopback at
-compile time; no new HCL surface.** `localhost:8443` is already a
-documented, valid host entry (`internal/config/testdata/full.hcl:347`)
-and passes `hostmatch.ValidateHost`
-(`internal/config/plugins/endpoints/util.go:40`). A loopback upstream
-is just a host whose hostname is `localhost`/`127.0.0.1`/`::1`
-(reuse `isLoopback`, `internal/config/config.go:1537`).
+**Decision: make the source-device loopback an explicit, built-in
+tunnel reference — `tunnel = tunnel.clawpatrol.self`.** A loopback
+`host` is meaningful in three distinct ways, and the HCL must
+disambiguate them rather than guessing from the hostname:
+
+| HCL                                            | Meaning                                              | Verdict |
+| ---------------------------------------------- | ---------------------------------------------------- | ------- |
+| `host = "localhost:5432"` (no tunnel)          | the *gateway's* own loopback — never the author's intent | **compile error** |
+| `host = "localhost:5432"`, `tunnel = local_command.x` | loopback on the **far side** of a real tunnel (cloud_sql_proxy, kubectl-portforward-ssh, …) | **allowed, no rewrite** |
+| `host = "localhost:5432"`, `tunnel = tunnel.clawpatrol.self` | the **source device's own** loopback (this feature) | **allowed, rewrite to `pip`** |
+
+Reaching a loopback *through a real tunnel* is a common, legitimate
+pattern (a service bound to `127.0.0.1` on the tunnel's far end, not
+exposed to the internet). The earlier draft rejected "loopback +
+explicit tunnel" outright; that was wrong — it would break exactly that
+pattern. Such endpoints need **no special handling**: the tunnel
+command already listens on its own loopback and the dispatcher dials it
+as today (`feature_tunnel.hcl`). Only `tunnel.clawpatrol.self` triggers
+the source-device rewrite.
+
+`tunnel.clawpatrol.self` is a **built-in / reserved** tunnel reference,
+not a user `tunnel "<type>" "<name>"` block. `self` is deliberately
+device-agnostic: it binds to whichever device's VIP connection is live
+at dispatch (`peerIP(c)`), so it can never name or reach a *different*
+device's loopback. (Cross-device loopback sharing is explicitly a
+non-goal — Tailscale already covers it.)
 
 Add at compile time (`compileEndpoint`, `internal/config/compile.go`):
 
-- A per-host `Loopback bool` flag on the compiled host (or a
-  `CompiledEndpoint.LoopbackHosts map[string]bool` keyed by `host:port`)
-  so the dispatch path does not re-parse strings per connection.
-- Validation: a loopback upstream requires the **reverse-relay
-  capability** on the device side. Reject (or warn) a loopback upstream
-  on an endpoint reached over an explicit `tunnel = ...` block, since
-  the tunnel transport (kubectl-portforward-ssh, etc.) is a different
-  device than the source agent — "the agent's own localhost" is only
-  meaningful for the direct VIP path. Loopback + explicit tunnel is a
-  config error.
-- A loopback upstream still claims a VIP (it must, to be intercepted),
-  so no change to `RequiresVIP`.
+- Parse `tunnel.clawpatrol.self` as a reserved reference and set a
+  `CompiledEndpoint.SelfTunnel bool` flag (no per-host string re-parse
+  on the dispatch path).
+- Validation:
+  - A bare loopback `host` with no `tunnel` is a config error
+    (`localhost`/`127.0.0.1`/`::1`, reuse `isLoopback`,
+    `internal/config/config.go:1537`). Error text should point at
+    `tunnel.clawpatrol.self`.
+  - `tunnel.clawpatrol.self` requires the **reverse-relay capability**
+    on the device side (PR #589). It is only meaningful for the direct
+    VIP path, so it cannot be combined with another `tunnel = ...`
+    block on the same endpoint.
+  - A real-tunnel endpoint with a loopback `host` is accepted unchanged.
+- A `tunnel.clawpatrol.self` endpoint still claims a VIP (it must, to be
+  intercepted), as tunneled endpoints already force `RequiresVIP` on.
 
 ### 2. Per-device VIP→tunnel-IP mapping lifecycle + netns-side redirect
 
@@ -135,13 +179,14 @@ DialUpstream: func(ctx context.Context, network, addr string) (net.Conn, error) 
     if addr == "" {
         return nil, fmt.Errorf("conn dispatch: plugin gave empty upstream addr")
     }
-    // Loopback upstream: the agent meant ITS OWN localhost, not the
+    // tunnel.clawpatrol.self: the agent meant ITS OWN localhost, not the
     // gateway's. Redirect to the source device's tunnel IP and dial
     // back through the netstack so the device-side reverse-relay
-    // (PR #589) lands it on the device's host loopback.
-    if ep.IsLoopbackUpstream(addr) { // compile-time flag, not string re-parse
-        host, port, err := net.SplitHostPort(addr)
-        _ = host
+    // (PR #589) lands it on the device's host loopback. A real tunnel
+    // (local_command.*, kubectl-portforward-ssh, …) falls through to
+    // g.dialThrough unchanged — its loopback is the far end, not pip.
+    if ep.SelfTunnel { // compile-time flag, not string re-parse
+        _, port, err := net.SplitHostPort(addr)
         if err != nil {
             return nil, err
         }
@@ -190,21 +235,24 @@ This is its own bead — it cannot land until #589 is merged to main.
 
 1. **Blocked on #589 merge to main.** Verify the reverse-relay is in
    `main`; this feature's device side extends it.
-2. **cl-ukn8a — compile-time loopback detection + validation.** Add the
-   loopback flag/helper on `CompiledEndpoint`, reject loopback +
-   explicit-tunnel. Pure config change, fully unit-testable
+2. **cl-ukn8a — `tunnel.clawpatrol.self` parsing + validation.** Parse
+   the reserved reference, set `CompiledEndpoint.SelfTunnel`; reject a
+   bare loopback `host` with no tunnel; reject `tunnel.clawpatrol.self`
+   combined with another tunnel. Leave real-tunnel loopback endpoints
+   untouched. Pure config change, fully unit-testable
    (`internal/config/compile_test.go`), independent of #589.
 3. **cl-ukn8b — gateway netstack dial-back.** Plumb the netstack dialer
    onto `Gateway`; add `dialBackToDevice`; rewrite the `DialUpstream`
-   closure. Unit-test the rewrite decision; integration-test needs the
-   device side.
+   closure to fire on `ep.SelfTunnel`. Unit-test the rewrite decision;
+   integration-test needs the device side.
 4. **cl-ukn8c — device-side reverse-relay tunnel-IP capture** (option A
    above). Depends on #589 + cl-ukn8b.
 5. **cl-ukn8d — dashboard rendering** of `localhost (→ device)`.
 
-Step 2 is shippable and useful on its own (it makes a loopback +
-explicit-tunnel mistake a load-time error instead of a silent
-wrong-host dial). Steps 3–4 are the end-to-end feature and gate on #589.
+Step 2 is shippable and useful on its own (it makes a bare-loopback
+mistake a load-time error pointing at `tunnel.clawpatrol.self`, instead
+of a silent wrong-host dial). Steps 3–4 are the end-to-end feature and
+gate on #589.
 
 ## Threat model notes
 
@@ -215,8 +263,12 @@ wrong-host dial). Steps 3–4 are the end-to-end feature and gate on #589.
 - Dialing must go through the netstack, so the target is constrained to
   the tailnet/WG address space; it cannot be steered at the gateway
   host's services or arbitrary IPs.
-- Loopback + explicit tunnel is rejected at compile time, closing the
-  "redirect to a third party" ambiguity.
+- The rewrite is opt-in via `tunnel.clawpatrol.self`, which is
+  device-agnostic by construction (`self` = the live `peerIP(c)`), so it
+  cannot name a third device. A bare loopback `host` is rejected at
+  compile time, and a loopback reached over a *real* tunnel lands on
+  that tunnel's far end — never on `pip` — so neither path can be
+  steered at a third party.
 - The device-side REDIRECT widening inherits #589's SO_MARK exemption
   and CAP_NET_ADMIN-less wrapped command — the agent app still cannot
   bypass the relay.
