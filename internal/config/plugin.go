@@ -181,6 +181,7 @@ type FrameworkAttrSpec struct {
 var frameworkAttrsByKind = map[Kind][]FrameworkAttrSpec{
 	KindEndpoint: {
 		{Name: "tunnel", Kind: KindTunnel, Optional: true},
+		{Name: "deny_profiles", Kind: KindProfile, Optional: true, List: true},
 	},
 	// credential→endpoint binding lives on the credential block. A
 	// credential names either a single endpoint or a list of them

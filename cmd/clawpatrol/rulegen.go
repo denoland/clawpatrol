@@ -96,7 +96,8 @@ func generateBlockHostRule(policy *config.CompiledPolicy, ev *Event, opts RuleGe
 	}
 	endpointName := generatedEndpointName(policy, host)
 	ruleName := generatedHostBlockRuleName(ev, endpointName, host)
-	hcl, err := generatedEndpointBlockRuleHCL(endpointName, host, ruleName)
+	profiles := generatedDenyProfiles(policy)
+	hcl, err := generatedEndpointBlockRuleHCL(endpointName, host, profiles, ruleName)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +107,7 @@ func generateBlockHostRule(policy *config.CompiledPolicy, ev *Event, opts RuleGe
 		HCL:          hcl,
 		Patch:        generatedAppendPatch("gateway.hcl", hcl),
 		Warnings: []string{
-			"This action did not match a configured endpoint. Generated HCL creates a new HTTPS endpoint for the observed host and a catch-all deny rule for it.",
+			"This action did not match a configured endpoint. Generated HCL creates a new HTTPS endpoint for the observed host, attaches it to profile deny lists, and adds a catch-all deny rule.",
 		},
 	}, nil
 }
@@ -211,10 +212,17 @@ func generatedRuleHCL(name, endpoint, condition string) (string, error) {
 	return string(f.Bytes()), nil
 }
 
-func generatedEndpointBlockRuleHCL(endpointName, host, ruleName string) (string, error) {
+func generatedEndpointBlockRuleHCL(endpointName, host string, profiles []string, ruleName string) (string, error) {
 	f := hclwrite.NewEmptyFile()
 	eb := f.Body().AppendNewBlock("endpoint", []string{"https", endpointName}).Body()
 	eb.SetAttributeValue("hosts", cty.ListVal([]cty.Value{cty.StringVal(host)}))
+	if len(profiles) > 0 {
+		profileRefs := make([]string, 0, len(profiles))
+		for _, profile := range profiles {
+			profileRefs = append(profileRefs, "profile."+profile)
+		}
+		config.SetIdentList(eb, "deny_profiles", profileRefs)
+	}
 	f.Body().AppendNewline()
 	rb := f.Body().AppendNewBlock("rule", []string{ruleName}).Body()
 	rb.SetAttributeRaw("endpoint", config.TraversalTokens("https."+endpointName))
@@ -244,6 +252,18 @@ func generatedHostBlockRuleName(ev *Event, endpointName, host string) string {
 	}
 	sum := sha256.Sum256([]byte(sumInput))
 	return fmt.Sprintf("%s_%x", base, sum[:3])
+}
+
+func generatedDenyProfiles(policy *config.CompiledPolicy) []string {
+	if policy == nil || len(policy.Profiles) == 0 {
+		return nil
+	}
+	profiles := make([]string, 0, len(policy.Profiles))
+	for name := range policy.Profiles {
+		profiles = append(profiles, name)
+	}
+	sort.Strings(profiles)
+	return profiles
 }
 
 func generatedEndpointName(policy *config.CompiledPolicy, host string) string {
