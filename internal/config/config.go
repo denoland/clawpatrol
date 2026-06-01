@@ -98,12 +98,10 @@ func checkSchemaVersion(v int) hcl.Diagnostics {
 // optional top-level `defaults { ... }` block of policy defaults, and
 // the labeled policy blocks the plugins dispatch on.
 type Gateway struct {
-	// SchemaVersion is the top-level `schema_version` attribute: the
-	// config grammar this file targets. Absent ⇒ 0 ("unversioned
-	// legacy"), which loads with a deprecation warning. The binary
-	// accepts the window [MinSchemaVersion, MaxSchemaVersion]; configs
-	// outside it are rejected early with a clean upgrade/migrate error.
-	// See readSchemaVersion / checkSchemaVersion.
+	// SchemaVersion is the config grammar this file targets. The
+	// gateway accepts a range of versions and rejects anything newer
+	// than it understands with an upgrade error. Omitting it loads as
+	// legacy grammar (version 0) with a deprecation warning.
 	SchemaVersion int `hcl:"schema_version,optional"`
 
 	// Settings carries every operational scalar and the two transport

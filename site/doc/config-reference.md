@@ -28,6 +28,7 @@ Operational settings live under the required top-level `gateway { ... }` block. 
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
+| `schema_version` | `int` | no | The config grammar this file targets. The gateway accepts a range of versions and rejects anything newer than it understands with an upgrade error. Omitting it loads as legacy grammar (version 0) with a deprecation warning. |
 | `gateway` | `block` | yes | Carries every operational scalar and the two transport sub-blocks. Required: configs missing the block fail to load. |
 | `defaults` | `block` | no | Holds the optional `defaults { ... }` block with the policy defaults (unknown_host, llm_*, human_*). nil when the block is absent — every field has a built-in default. |
 | `plugin` | `block` | no | Lists every `plugin "<name>" { source = "..." }` block at the top of the file. The loader spawns each subprocess (and registers its declared types) before running pass-1 symbol building, so plugin-supplied (kind, type) pairs are available by the time policy blocks are dispatched. |
