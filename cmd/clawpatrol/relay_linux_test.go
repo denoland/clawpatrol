@@ -410,22 +410,30 @@ func TestWorkerPIDFrameRoundTrip(t *testing.T) {
 // `iptables` on PATH. Skipped otherwise so CI environments without these
 // don't see false failures.
 func TestHostLoopbackForwarder_EndToEnd(t *testing.T) {
+	// Child branch first: when we re-exec ourselves into CLONE_NEWUSER +
+	// CLONE_NEWNET, the child runs this same Test function. Inside a
+	// fresh user namespace, /proc/self/ns/user is not readable on some
+	// kernels/CI sandboxes (EACCES from yama/AppArmor or restricted
+	// procfs mount); without this early return, the child would hit the
+	// "user namespace not available" skip below, exit cleanly with no
+	// "OK: got" payload, and make the PARENT fail its stdout assertion.
+	// The parent does the gating; the child should just run the work.
+	if os.Getenv("CLAWPATROL_TEST_LBFWD_CHILD") == "1" {
+		runLoopbackForwarderTestChild()
+		return
+	}
+
 	if testing.Short() {
-		t.Skip("requires user+net namespace + iptables; skipped with -short")
+		t.Skip("requires user+net namespace + iptables + iproute2; skipped with -short")
 	}
 	if _, err := exec.LookPath("iptables"); err != nil {
 		t.Skipf("iptables not available: %v", err)
 	}
+	if _, err := exec.LookPath("ip"); err != nil {
+		t.Skipf("iproute2 (`ip`) not available: %v", err)
+	}
 	if _, err := os.Stat("/proc/self/ns/user"); err != nil {
 		t.Skipf("user namespace not available: %v", err)
-	}
-
-	// Re-exec the test binary as a helper that runs entirely inside a
-	// fresh user+net namespace. The helper does the work and writes its
-	// result to stdout for the parent to assert on.
-	if os.Getenv("CLAWPATROL_TEST_LBFWD_CHILD") == "1" {
-		runLoopbackForwarderTestChild()
-		return
 	}
 
 	// Host-side listener — stays bound in the parent (host) netns.
