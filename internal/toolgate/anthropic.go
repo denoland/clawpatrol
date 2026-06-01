@@ -7,10 +7,14 @@ package toolgate
 // the tool_use for a polling-tool tool_use the agent will execute
 // against clawpatrol's own /api/approval/poll endpoint.
 //
-// Only non-streaming JSON responses are handled here. Streaming SSE
-// is the obvious follow-up — the same parser shape applies block by
-// block, but the rewrite needs to coordinate with the SSE event
-// frame so the agent's incremental decoder stays consistent.
+// Only non-streaming JSON responses are handled here; the streaming
+// SSE variant lives in anthropic_sse.go (GateAnthropicSSE), which
+// applies the same verdicts block by block as the events arrive.
+//
+// Note the two paths differ on error handling. This JSON path fails
+// OPEN — a parse error forwards the original body so a gating bug can't
+// brick a legitimate non-tool turn. The streaming path fails CLOSED — a
+// tool_use it can't evaluate is blocked, never forwarded raw.
 
 import (
 	"encoding/json"

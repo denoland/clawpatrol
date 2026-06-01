@@ -2386,23 +2386,34 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 		if resp.ContentLength < 0 && len(resp.TransferEncoding) == 0 && !resp.Close {
 			resp.TransferEncoding = []string{"chunked"}
 		}
-		// Tool-call gating (draft). Anthropic /v1/messages only, JSON
-		// (non-streaming) responses only. Buffers the body, walks the
-		// content[] array, and rewrites tool_use blocks per the active
-		// rule set — deny → text-block reason; hitl → polling tool_use
-		// against /api/approval/poll. See internal/toolgate.
+		// Tool-call gating. Anthropic /v1/messages only. Rewrites
+		// tool_use blocks per the active rule set — deny → text-block
+		// reason; hitl → polling tool_use against /api/approval/poll.
+		// See internal/toolgate.
 		//
-		// Streaming responses (Content-Type: text/event-stream) bypass
-		// gating entirely in this draft; flagged as the obvious
-		// follow-up. trackBuf still captures them for usage tracking.
-		if g.toolgate != nil && len(g.toolgateRules) > 0 &&
+		//   - JSON (non-streaming) responses: buffer the body, walk
+		//     content[], rewrite in place. Fails open on parse errors.
+		//   - Streaming (text/event-stream) responses: wrap the body in
+		//     a per-block buffering transform so frames gate and forward
+		//     incrementally (TTFT preserved for non-tool content). Fails
+		//     CLOSED — a tool_use that can't be evaluated is blocked,
+		//     never forwarded raw. The streamed outcome's notes are
+		//     attached to the dashboard event after resp.Write drains.
+		var sseOutcome *toolgate.SSEOutcome
+		toolgateEligible := g.toolgate != nil && len(g.toolgateRules) > 0 &&
 			trackKind == "claude_usage" && req.URL.Path == "/v1/messages" &&
-			resp.StatusCode == 200 &&
-			strings.Contains(resp.Header.Get("Content-Type"), "json") &&
-			!strings.Contains(resp.Header.Get("Content-Type"), "event-stream") {
+			resp.StatusCode == 200
+		respCT := resp.Header.Get("Content-Type")
+		switch {
+		case toolgateEligible &&
+			strings.Contains(respCT, "json") &&
+			!strings.Contains(respCT, "event-stream"):
 			if rewritten, ok := g.gateAnthropicResponse(resp, &ev); ok {
 				resp = rewritten
 			}
+		case toolgateEligible &&
+			strings.Contains(respCT, "event-stream"):
+			sseOutcome = g.gateAnthropicSSEStream(resp, &ev)
 		}
 
 		// Snapshot the upstream's response headers for the audit log
@@ -2431,6 +2442,18 @@ func (g *Gateway) mitmHTTPS(c net.Conn, host string, ep *config.CompiledEndpoint
 				}
 			}
 			g.trackLLMUsage(c, trackKind, req.URL.Path, trackedReqBody, body, sessionHint)
+		}
+
+		// Streaming toolgate notes are known only after the transform has
+		// drained (resp.Write above), so attach the dashboard marker here
+		// rather than inline like the JSON path. The pipe close in
+		// gateAnthropicSSEStream establishes happens-before for sseOutcome.
+		if sseOutcome != nil && len(sseOutcome.Notes) > 0 {
+			if ev.Reason == "" {
+				ev.Reason = "toolgate: " + strings.Join(sseOutcome.Notes, "; ")
+			} else {
+				ev.Reason = ev.Reason + " | toolgate: " + strings.Join(sseOutcome.Notes, "; ")
+			}
 		}
 
 		if hitlRetryConsumedOperation != nil {

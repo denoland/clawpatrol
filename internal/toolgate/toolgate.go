@@ -20,10 +20,13 @@
 //     either released to the agent (approve) or substituted with a
 //     deny tool_result (deny) via the model's next turn.
 //
-// This is a draft: Anthropic /v1/messages only, non-streaming
-// responses only, one tool_use per turn. Streaming, multi-tool-call,
-// and per-provider parsing for OpenAI/Codex/OpenRouter are flagged
-// inline as TODO.
+// This is a draft: Anthropic /v1/messages only. Both response shapes
+// are handled — buffered JSON (GateAnthropicResponse) and streaming SSE
+// (GateAnthropicSSE, per-block buffering so non-tool content keeps its
+// time-to-first-token). The streaming path fails CLOSED: a tool_use it
+// can't evaluate is blocked, never forwarded raw. Multi-tool-call
+// turns work but the mixed-verdict failure modes are lightly tested;
+// per-provider parsing for OpenAI/Codex/OpenRouter is flagged as TODO.
 //
 // Rules are evaluated by a tiny in-process matcher (Rule.Matches);
 // the production design intent is to fold this into the unmerged

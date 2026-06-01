@@ -12,9 +12,10 @@ package main
 //   - attaches the rewrite note to the request log so the dashboard's
 //     event row carries a "gated" marker.
 //
-// Streaming SSE responses (text/event-stream) are filtered out by the
-// caller's Content-Type check; this function assumes a buffered JSON
-// body.
+// Streaming SSE responses (text/event-stream) take a separate path —
+// gateAnthropicSSEStream below wraps the body in an incremental,
+// per-block-buffering transform (internal/toolgate.GateAnthropicSSE).
+// gateAnthropicResponse here assumes a buffered JSON body.
 
 import (
 	"bytes"
@@ -162,4 +163,68 @@ func (g *Gateway) gateAnthropicResponse(resp *http.Response, ev *Event) (*http.R
 	resp.Header.Del("Transfer-Encoding")
 	resp.TransferEncoding = nil
 	return resp, true
+}
+
+// gateAnthropicSSEStream wires the streaming (text/event-stream) gate
+// into the response. Unlike the JSON path it cannot buffer the whole
+// body — it wraps resp.Body in a transforming pipe so frames are gated
+// and forwarded incrementally, preserving the agent's time-to-first-
+// token for non-tool_use content. The returned *SSEOutcome is filled in
+// by the streaming goroutine and is safe to read once resp.Write has
+// drained the body (the pipe close establishes the happens-before).
+//
+// FAIL CLOSED. The transform never forwards a tool_use it could not
+// evaluate: an undecodable body or a stream error terminates the
+// response rather than leaking the raw tool call. This is the explicit
+// contract for the streaming path (the JSON path above still fails open
+// on parse errors — see GateAnthropicResponse).
+func (g *Gateway) gateAnthropicSSEStream(resp *http.Response, ev *Event) *toolgate.SSEOutcome {
+	if resp == nil || resp.Body == nil {
+		return nil
+	}
+	src := resp.Body
+	var rdr io.Reader = src
+	// Anthropic does not gzip SSE in practice, but a gzipped body we
+	// can't decode might carry an ungated tool_use — so on a gunzip
+	// failure we fail closed (terminate) rather than forward it raw.
+	// Note: stripping Content-Encoding here means the usage tracker's
+	// trackBuf (captured upstream, still gzipped) won't be re-inflated
+	// for this rare case; non-gzip SSE — the norm — is unaffected.
+	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+		zr, err := gzip.NewReader(src)
+		if err != nil {
+			log.Printf("toolgate sse gunzip: %v (failing closed)", err)
+			_ = src.Close()
+			resp.Body = io.NopCloser(bytes.NewReader(nil))
+			resp.Header.Del("Content-Encoding")
+			resp.Header.Del("Content-Length")
+			resp.ContentLength = 0
+			return nil
+		}
+		rdr = zr
+	}
+
+	out := &toolgate.SSEOutcome{}
+	pr, pw := io.Pipe()
+	go func() {
+		err := toolgate.GateAnthropicSSE(g.toolgateRules, g.toolgate, rdr, pw, out)
+		_ = src.Close()
+		if err != nil {
+			log.Printf("toolgate sse: %v", err)
+		}
+		// CloseWithError(nil) is a clean EOF; a non-nil err surfaces to
+		// resp.Write so the client connection breaks (fail closed).
+		_ = pw.CloseWithError(err)
+	}()
+
+	resp.Body = pr
+	// We emit decoded, chunked SSE; drop framing headers that no longer
+	// describe the body.
+	resp.Header.Del("Content-Encoding")
+	resp.Header.Del("Content-Length")
+	resp.ContentLength = -1
+	if len(resp.TransferEncoding) == 0 {
+		resp.TransferEncoding = []string{"chunked"}
+	}
+	return out
 }

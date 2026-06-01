@@ -7,7 +7,44 @@ implementation lives in `internal/toolgate`; the MITM hook glue is in
 `cmd/clawpatrol/toolgate.go`.
 
 This is the exploratory draft (bead cl-umxf, PR #489). It handles
-Anthropic `/v1/messages`, non-streaming JSON responses only.
+Anthropic `/v1/messages` in both response shapes: buffered JSON
+(`GateAnthropicResponse`) and streaming SSE (`stream: true`,
+`GateAnthropicSSE`). Most real agents stream, so the streaming path is
+what makes the gate fire against typical traffic.
+
+## Streaming (SSE)
+
+Anthropic streams a `tool_use` incrementally — `content_block_start`
+(id + name, `input: {}` placeholder) → N× `content_block_delta`
+(`input_json_delta` fragments) → `content_block_stop`, with
+`stop_reason` arriving later in `message_delta`. The verdict needs the
+*complete* input, which isn't known until `content_block_stop`.
+
+The implementation (`anthropic_sse.go`) uses **per-block buffering**:
+
+- Non-`tool_use` frames (`message_start`, text blocks, `ping`, usage)
+  stream straight through, preserving time-to-first-token.
+- A `tool_use` block's frames are **held** from `content_block_start`
+  until `content_block_stop`, accumulating the `input_json_delta`
+  fragments. At stop the full input is known and the rule set runs:
+  - **allow / unmatched** — held frames replayed verbatim (the stream
+    is byte-identical to upstream, interleaved pings included).
+  - **deny** — held frames dropped; a synthesised `text` block carries
+    the reason at the same content index.
+  - **hitl** — held frames dropped; the call is parked and a
+    `clawpatrol_poll` `tool_use` block is synthesised at the same index.
+- `stop_reason` in the trailing `message_delta` is rewritten
+  `tool_use` → `end_turn` iff no `tool_use` survives (every one was
+  denied/blocked), matching the JSON path.
+
+**Fail closed.** Unlike the JSON path — which forwards the original
+body on a parse error so a gating bug can't brick a legitimate non-tool
+turn — the streaming gate never forwards a `tool_use` it could not
+evaluate. An unparseable `content_block_start`, a malformed delta on a
+held block, an input past the 8 MB cap, or a stream truncated mid-block
+all resolve to the call being **blocked** (replaced with a refusal text
+block) or the stream **terminated** — never the raw tool call reaching
+the agent. A held `tool_use` is emitted only after a clean *allow*.
 
 ## Verdicts and rewrites
 
@@ -71,10 +108,6 @@ cl-1yh's `llm_rule` plugin once that lands on `main`.
 
 ## v2 follow-ups
 
-- Streaming-response gating (Anthropic SSE, byte-by-byte rewrite). In
-  a realistic deployment most `/v1/messages` traffic streams, so the
-  non-streaming-only draft does not fire against typical agents — the
-  streaming rewrite is the gap between this and a usable feature.
 - Introspect the request's `tools[]` to pick SSE/WS when the agent
   supports them, instead of long-poll unconditionally.
 - Synth-`tool_result` deny path for round-trip preservation.
