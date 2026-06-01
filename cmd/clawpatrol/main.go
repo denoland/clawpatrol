@@ -337,6 +337,7 @@ func newUpstreamDialer(resolver string) *net.Dialer {
 type Gateway struct {
 	cfg      *config.Gateway
 	cfgPath  string // path the HCL config was loaded from
+	configMu sync.Mutex
 	stateDir string // resolved gateway state dir (sqlite + plugin blobs)
 	db       *sql.DB
 	policy   atomic.Pointer[config.CompiledPolicy]
@@ -584,31 +585,41 @@ func (g *Gateway) watchConfig(path string) {
 			continue
 		}
 		last = st.ModTime()
-		next, policy, err := loadConfig(path)
+		g.configMu.Lock()
+		err = g.reloadConfigFromFileLocked(path)
+		g.configMu.Unlock()
 		if err != nil {
 			log.Printf("config reload: %v", err)
-			continue
 		}
-		g.policy.Store(policy)
-		registerOAuthCredentials(g.oauth, policy)
-		newConnIdx := runtime.BuildConnIndex(policy)
-		g.connIdx.Store(newConnIdx)
-		if g.tunnels != nil {
-			g.tunnels.SetPolicy(context.Background(), policy)
-		}
-		if g.dnsvip != nil {
-			if err := g.dnsvip.RebuildFromPolicy(policy); err != nil {
-				log.Printf("dnsvip rebuild on reload: %v", err)
-			}
-		}
-		// Hot-swap the operational *config.Gateway too — AdminEmail /
-		// PublicURL / DashboardOperators reads pick up immediately.
-		// Listen / CADir / Tailscale changes are not applied (restart).
-		g.cfg = next
-		log.Printf("config reloaded: %d endpoints across %d profile(s)",
-			len(policy.Endpoints), len(policy.Profiles))
-		logDashboardAuthState(g.db, next)
 	}
+}
+
+// reloadConfigFromFileLocked reloads the HCL config and hot-swaps the
+// runtime policy. g.configMu must be held by the caller so file-watch
+// reloads and dashboard writes cannot race each other.
+func (g *Gateway) reloadConfigFromFileLocked(path string) error {
+	next, policy, err := loadConfig(path)
+	if err != nil {
+		return err
+	}
+	g.policy.Store(policy)
+	registerOAuthCredentials(g.oauth, policy)
+	g.connIdx.Store(runtime.BuildConnIndex(policy))
+	if g.tunnels != nil {
+		g.tunnels.SetPolicy(context.Background(), policy)
+	}
+	if g.dnsvip != nil {
+		if err := g.dnsvip.RebuildFromPolicy(policy); err != nil {
+			return fmt.Errorf("dnsvip rebuild on reload: %w", err)
+		}
+	}
+	// Hot-swap the operational *config.Gateway too. Listen / CA dir /
+	// Tailscale process changes are still restart-only.
+	g.cfg = next
+	log.Printf("config reloaded: %d endpoints across %d profile(s)",
+		len(policy.Endpoints), len(policy.Profiles))
+	logDashboardAuthState(g.db, next)
+	return nil
 }
 
 // logDashboardAuthState emits a one-line summary of dashboard-auth
@@ -2935,7 +2946,11 @@ func runGateway(args []string) {
 		hitl:     newHITLRegistry(sink),
 		onboard:  newOnboardRegistry(),
 	}
-	log.Printf("config: read-only (the dashboard cannot edit gateway.hcl)")
+	if cfg.DashboardConfigWrites() {
+		log.Printf("config: dashboard writes enabled (generated rules can be appended to gateway.hcl)")
+	} else {
+		log.Printf("config: read-only (the dashboard cannot edit gateway.hcl)")
+	}
 	g.secrets = newGatewaySecretStore(db, oauthReg)
 	g.hitl.asyncGrantResolver = g.resolveAsyncHITLGrant
 	g.hitl.pendingMessageUpdater = g.updatePendingHITLMessage

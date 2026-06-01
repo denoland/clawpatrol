@@ -27,9 +27,12 @@ fields you need to edit.
 clawpatrol gateway <config.hcl>
 ```
 
-The gateway is read-only-config — the dashboard surfaces the running
-HCL for reading but never writes it. Push edits via your own deploy
-script (typically SSH from a config repo). See
+By default the gateway is read-only-config: the dashboard can
+generate HCL from observed actions, but it will not edit the running
+file. Set `dashboard_config_writes = true` in `gateway {}` to let the
+dashboard append generated rules after validating the full candidate
+config and hot-reloading it. Git-managed deployments should leave it
+false and push edits through their normal review/deploy flow. See
 [config-reference](config-reference) for the HCL grammar.
 
 ### `clawpatrol join`

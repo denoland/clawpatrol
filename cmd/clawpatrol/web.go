@@ -227,6 +227,7 @@ func (w *webMux) routes() []webRoute {
 		{Method: http.MethodGet, Path: "/api/profiles", Auth: authDashboard, Handler: w.apiProfiles},
 		{Method: http.MethodGet, Path: "/api/rules", Auth: authDashboard, Handler: w.apiRules},
 		{Method: http.MethodGet, Path: "/api/config", Auth: authDashboard, Handler: w.apiConfig},
+		{Method: http.MethodPost, Path: "/api/config/apply", Auth: authDashboard, Handler: w.apiConfigApply},
 		{Method: http.MethodGet, Path: "/api/hitl/pending", Auth: authDashboard, Handler: w.apiHITLPending},
 		{Method: http.MethodPost, Path: "/api/hitl/decide", Auth: authDashboard, Handler: w.apiHITLDecide},
 		{Method: http.MethodGet, Path: hitlOperationStatusPrefix, Auth: authSelfAuthenticating, Handler: w.apiHITLOperationStatus},
@@ -241,6 +242,7 @@ func (w *webMux) routes() []webRoute {
 		{Method: http.MethodPost, Path: "/api/credentials/set", Auth: authDashboard, Handler: w.apiCredentialsSet},
 		{Method: http.MethodPost, Path: "/api/credentials/clear", Auth: authDashboard, Handler: w.apiCredentialsClear},
 		{Method: http.MethodGet, Path: "/api/events", Auth: authDashboard, Handler: w.apiEventsSSE},
+		{Method: http.MethodPost, Path: "/api/actions/rule-preview", Auth: authDashboard, Handler: w.apiActionRulePreview},
 		{Method: http.MethodPost, Path: "/api/actions/", Auth: authDashboard, Handler: w.apiActionByID},
 		{Method: http.MethodGet, Path: "/api/analytics", Auth: authDashboard, Handler: w.apiAnalytics},
 		{Method: http.MethodGet, Path: "/api/facets", Auth: authDashboard, Handler: w.apiFacets},
@@ -1148,11 +1150,12 @@ func (w *webMux) apiState(rw http.ResponseWriter, r *http.Request) {
 	w.stateCacheMu.RUnlock()
 
 	state := map[string]any{
-		"whoami":       w.whoamiData(r),
-		"integrations": w.statusList(r),
-		"agents":       w.agentsList(),
-		"update":       currentUpdateBanner.Load(),
-		"config_file":  filepath.Base(w.g.cfgPath),
+		"whoami":                  w.whoamiData(r),
+		"integrations":            w.statusList(r),
+		"agents":                  w.agentsList(),
+		"update":                  currentUpdateBanner.Load(),
+		"config_file":             filepath.Base(w.g.cfgPath),
+		"dashboard_config_writes": w.g.cfg.DashboardConfigWrites(),
 	}
 	body, err := json.Marshal(state)
 	if err != nil {
@@ -1324,9 +1327,108 @@ func (w *webMux) apiConfig(rw http.ResponseWriter, r *http.Request) {
 	_, _ = rw.Write(b)
 }
 
+func (w *webMux) apiConfigApply(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(rw, "POST", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		BaseRevision string `json:"base_revision"`
+		AppendHCL    string `json:"append_hcl"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(body.AppendHCL) == "" {
+		writeJSONError(rw, http.StatusBadRequest, map[string]any{
+			"error": "append_hcl is required",
+		})
+		return
+	}
+	if !w.g.cfg.DashboardConfigWrites() {
+		writeJSONError(rw, http.StatusForbidden, map[string]any{
+			"error":                   "dashboard config writes are disabled",
+			"dashboard_config_writes": false,
+		})
+		return
+	}
+
+	w.g.configMu.Lock()
+	defer w.g.configMu.Unlock()
+
+	current, err := os.ReadFile(w.g.cfgPath)
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	currentRevision := revisionForBytes(current)
+	if body.BaseRevision != "" && body.BaseRevision != currentRevision {
+		writeJSONError(rw, http.StatusConflict, map[string]any{
+			"error":            "config changed",
+			"current_revision": currentRevision,
+		})
+		return
+	}
+	candidate := appendConfigSnippet(current, body.AppendHCL)
+	dir := filepath.Dir(w.g.cfgPath)
+	tmp, err := os.CreateTemp(dir, ".clawpatrol-config-*.hcl")
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if _, err := tmp.Write(candidate); err != nil {
+		_ = tmp.Close()
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if _, _, err := loadConfig(tmpPath); err != nil {
+		writeJSONError(rw, http.StatusBadRequest, map[string]any{
+			"error": err.Error(),
+		})
+		return
+	}
+	if err := os.Rename(tmpPath, w.g.cfgPath); err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := w.g.reloadConfigFromFileLocked(w.g.cfgPath); err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(rw, map[string]any{
+		"ok":       true,
+		"revision": revisionForBytes(candidate),
+	})
+}
+
 func revisionForBytes(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+func appendConfigSnippet(current []byte, snippet string) []byte {
+	out := make([]byte, 0, len(current)+len(snippet)+4)
+	out = append(out, current...)
+	if len(out) > 0 && out[len(out)-1] != '\n' {
+		out = append(out, '\n')
+	}
+	out = append(out, '\n')
+	out = append(out, strings.TrimRight(snippet, "\n")...)
+	out = append(out, '\n')
+	return out
+}
+
+func writeJSONError(rw http.ResponseWriter, status int, v any) {
+	rw.Header().Set("Content-Type", "application/json")
+	rw.WriteHeader(status)
+	_ = json.NewEncoder(rw).Encode(v)
 }
 
 func (w *webMux) apiHITLPending(rw http.ResponseWriter, _ *http.Request) {
@@ -1441,14 +1543,58 @@ func (w *webMux) apiEventsSSE(rw http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (w *webMux) apiActionByID(
-	rw http.ResponseWriter, r *http.Request,
-) {
-	// Path: /api/actions/<uuid>
-	actionID := strings.TrimPrefix(r.URL.Path, "/api/actions/")
-	if actionID == "" {
-		http.Error(rw, "missing id", 400)
+func (w *webMux) apiActionRulePreview(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(rw, "POST", http.StatusMethodNotAllowed)
 		return
+	}
+	var body struct {
+		ActionID string `json:"action_id"`
+		Verdict  string `json:"verdict"`
+		Scope    string `json:"scope"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if body.ActionID == "" {
+		http.Error(rw, "missing action_id", http.StatusBadRequest)
+		return
+	}
+	policy := w.g.Policy()
+	if policy == nil {
+		http.Error(rw, "policy not loaded", http.StatusServiceUnavailable)
+		return
+	}
+	ev, err := w.loadAction(body.ActionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		http.Error(rw, "not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	rule, err := GenerateRuleFromEvent(policy, ev, RuleGenOptions{
+		Verdict: body.Verdict,
+		Scope:   body.Scope,
+	})
+	if err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	b, err := os.ReadFile(w.g.cfgPath)
+	if err == nil {
+		rule.ConfigRevision = revisionForBytes(b)
+		rule.Patch = generatedAppendPatchFromBytes(filepath.Base(w.g.cfgPath), b, rule.HCL)
+	}
+	rule.DashboardConfigWrites = w.g.cfg.DashboardConfigWrites()
+	writeJSON(rw, rule)
+}
+
+func (w *webMux) loadAction(actionID string) (*Event, error) {
+	if actionID == "" {
+		return nil, fmt.Errorf("missing id")
 	}
 	var (
 		e            Event
@@ -1494,13 +1640,8 @@ func (w *webMux) apiActionByID(
 		&endpoint, &rule,
 		&approver, &approverType, &approverBy,
 	)
-	if err == sql.ErrNoRows {
-		http.Error(rw, "not found", 404)
-		return
-	}
 	if err != nil {
-		http.Error(rw, err.Error(), 500)
-		return
+		return nil, err
 	}
 	e.ID = actionID
 	e.Ts = time.Unix(0, tsNs).UTC()
@@ -1529,8 +1670,29 @@ func (w *webMux) apiActionByID(
 	e.Approver = approver.String
 	e.ApproverType = approverType.String
 	e.ApproverBy = approverBy.String
+	return &e, nil
+}
+
+func (w *webMux) apiActionByID(
+	rw http.ResponseWriter, r *http.Request,
+) {
+	// Path: /api/actions/<uuid>
+	actionID := strings.TrimPrefix(r.URL.Path, "/api/actions/")
+	if actionID == "" {
+		http.Error(rw, "missing id", 400)
+		return
+	}
+	e, err := w.loadAction(actionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		http.Error(rw, "not found", 404)
+		return
+	}
+	if err != nil {
+		http.Error(rw, err.Error(), 500)
+		return
+	}
 	if r.URL.Query().Get("fmt") == "fixture" {
-		w.writeActionFixture(rw, &e)
+		w.writeActionFixture(rw, e)
 		return
 	}
 	writeJSON(rw, e)

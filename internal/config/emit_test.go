@@ -79,3 +79,24 @@ func TestEmitFullSpec(t *testing.T) {
 		t.Errorf("full-spec round-trip mismatch:\n%s", diff)
 	}
 }
+
+func TestEmitDashboardConfigWrites(t *testing.T) {
+	gw, diags := config.LoadBytes([]byte(`gateway {
+  dashboard_config_writes = true
+  wireguard {
+    subnet_cidr = "10.55.0.0/24"
+    endpoint = "127.0.0.1:51820"
+  }
+}
+`), "writes.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	emitted, err := config.Emit(gw)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	if !strings.Contains(string(emitted), "dashboard_config_writes = true") {
+		t.Fatalf("emitted config missing dashboard_config_writes:\n%s", emitted)
+	}
+}

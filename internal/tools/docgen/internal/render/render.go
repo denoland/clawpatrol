@@ -148,6 +148,9 @@ func (r *renderer) writeOperational() {
 	r.out.WriteString("## Top-level blocks\n\n")
 	r.out.WriteString("Operational settings live under the required top-level `gateway { ... }` block. The optional `defaults { ... }` block carries policy fallbacks. Labeled policy blocks (`profile`, `approver`, `credential`, `endpoint`, `rule`, `tunnel`) are documented in their own sections.\n\n")
 	r.writeStructTable("config", "Gateway", reflect.TypeOf(config.Gateway{}))
+	r.out.WriteString("## `gateway { ... }`\n\n")
+	r.out.WriteString("The gateway block carries operational settings. Most deployments keep policy in this same HCL file and push edits out-of-band. Set `dashboard_config_writes = true` only when authenticated dashboard users should be allowed to append generated rules from observed actions.\n\n")
+	r.writeStructTable("config", "GatewaySettings", reflect.TypeOf(config.GatewaySettings{}))
 }
 
 // writeProfile documents the `profile "<name>" {}` block. The body
