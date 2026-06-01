@@ -382,6 +382,7 @@ type StateResp = {
   // "dev.hcl"). Surfaced in UI hints so operators see the actual
   // running config name rather than a hardcoded string.
   config_file?: string;
+  dashboard_config_writes?: boolean;
 };
 let lastStateTag = "";
 let lastState: StateResp | null = null;
@@ -495,6 +496,45 @@ export async function downloadActionFixture(id: string): Promise<Blob> {
   const r = await api(`/api/actions/${id}?fmt=fixture`);
   if (!r.ok) throw new Error(await r.text());
   return r.blob();
+}
+
+export type RulePreview = {
+  rule_name: string;
+  hcl: string;
+  patch?: string;
+  config_revision?: string;
+  dashboard_config_writes: boolean;
+  warnings?: string[];
+};
+
+export async function previewRuleFromAction(id: string): Promise<RulePreview> {
+  const r = await api("/api/actions/rule-preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      action_id: id,
+      verdict: "deny",
+      scope: "exact",
+    }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function applyGeneratedRule(
+  baseRevision: string,
+  appendHCL: string,
+): Promise<{ ok: boolean; revision: string }> {
+  const r = await api("/api/config/apply", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      base_revision: baseRevision,
+      append_hcl: appendHCL,
+    }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
 }
 
 // FacetSchema mirrors the JSON returned by GET /api/facets — the

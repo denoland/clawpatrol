@@ -46,6 +46,13 @@ gateway {
   public_url       = "https://gw.example.com"
   state_dir        = "/opt/clawpatrol"
 
+  # Demo mode: allow the dashboard's "Block requests like this"
+  # flow to append generated deny rules to this file after previewing
+  # and validating the full candidate config. For Git-managed
+  # production policy, omit this or set it false; the dashboard will
+  # still generate HCL to copy into a PR.
+  dashboard_config_writes = true
+
   # Dashboard auth: there is no HCL field for the root password. The
   # first time you open the dashboard you set a "root" password; it
   # lives bcrypt-hashed in clawpatrol.db. To skip the web first-run

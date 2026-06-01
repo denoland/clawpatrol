@@ -48,6 +48,13 @@ the operator login. The CA certificate and private key are
 lazy-minted into sqlite under `state_dir` on first boot; there's
 nothing else to pre-create.
 
+The example config enables `dashboard_config_writes = true` so the
+dashboard can turn an observed action into a generated deny rule,
+append it to `gateway.hcl`, validate the full candidate config, and
+hot-reload it. For Git-managed production policy, omit that field or
+set it to `false`; the dashboard will still generate HCL you can copy
+into your normal review flow.
+
 The credentials in the example config (Anthropic, OpenAI,
 GitHub, Slack, Notion, Grafana) are declared in HCL, but each
 one still has to be connected before it can be used. Open the

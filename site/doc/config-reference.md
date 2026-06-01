@@ -43,6 +43,7 @@ The gateway block carries operational settings — listen addresses, the WireGua
 | `public_url` | `string` | no | The canonical externally-reachable gateway URL. Used in generated control-plane links such as join targets, OAuth redirect URIs, and (when public_url has a host but wireguard.endpoint doesn't) the host clients dial for WireGuard. |
 | `state_dir` | `string` | no | The directory holding clawpatrol.db (and anything a plugin persists to disk under it). Defaults to ${HOME}/.clawpatrol. |
 | `dashboard_session_ttl` | `string` | no | How long a dashboard login session stays valid after the operator types the password. time.ParseDuration format ("24h", "30m"). Default 24h. |
+| `dashboard_config_writes` | `bool` | no | Allows authenticated dashboard users to append generated config snippets to the gateway HCL. Default false: config remains read-only and changes happen out-of-band. |
 | `resolver` | `string` | no | The DNS resolver address the gateway uses for upstream lookups when the runtime needs an explicit resolver. |
 | `log_path` | `string` | no | An optional file path for gateway log output. |
 | `telemetry` | `bool` | no | Opts in/out of the update-checker / anonymous usage ping (doc/telemetry.md). nil = default on; explicit `telemetry = false` silences the goroutine. Env vars CLAWPATROL_TELEMETRY=0 and DO_NOT_TRACK=1 also work. |

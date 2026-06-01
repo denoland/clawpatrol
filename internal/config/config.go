@@ -158,6 +158,11 @@ type GatewaySettings struct {
 	// format ("24h", "30m"). Default 24h.
 	DashboardSessionTTL string `hcl:"dashboard_session_ttl,optional"`
 
+	// DashboardConfigWrites allows authenticated dashboard users to
+	// append generated config snippets to the gateway HCL. Default
+	// false: config remains read-only and changes happen out-of-band.
+	DashboardConfigWrites bool `hcl:"dashboard_config_writes,optional"`
+
 	// Resolver is the DNS resolver address the gateway uses for
 	// upstream lookups when the runtime needs an explicit resolver.
 	Resolver string `hcl:"resolver,optional"`
@@ -340,6 +345,12 @@ func (g *Gateway) SetPublicURL(s string) {
 // DashboardListen returns the configured dashboard HTTP bind
 // address, or empty string when unset.
 func (g *Gateway) DashboardListen() string { return g.settings().DashboardListen }
+
+// DashboardConfigWrites reports whether dashboard-originated config
+// mutations are enabled for this gateway.
+func (g *Gateway) DashboardConfigWrites() bool {
+	return g != nil && g.Settings != nil && g.Settings.DashboardConfigWrites
+}
 
 // StateDir returns the configured state directory, or empty string.
 func (g *Gateway) StateDir() string { return g.settings().StateDir }
