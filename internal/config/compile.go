@@ -103,13 +103,14 @@ type HostPattern struct {
 // dispatch reads CompiledProfile.EndpointCredentials instead, because
 // the placeholder discriminator lives on the profile in v15.
 type CompiledEndpoint struct {
-	Name        string
-	Family      string // "http" | "sql" | "k8s"
-	Plugin      *Plugin
-	Body        any
-	Hosts       []string
-	Credentials []*Entity       // credentials globally bound to this endpoint
-	Rules       []*CompiledRule // sorted by priority desc
+	Name         string
+	Family       string // "http" | "sql" | "k8s"
+	Plugin       *Plugin
+	Body         any
+	Hosts        []string
+	DenyProfiles []string
+	Credentials  []*Entity       // credentials globally bound to this endpoint
+	Rules        []*CompiledRule // sorted by priority desc
 
 	// Tunnel is the resolved tunnel this endpoint dials through, or
 	// nil for endpoints reached over the gateway's plain dialer.
@@ -388,8 +389,11 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 			}
 		}
 		for _, ce := range cp.Endpoints {
-			if profile.Endpoints[ce.Name] != nil || !credentiallessCatchallDenyEndpoint(ce) {
+			if profile.Endpoints[ce.Name] != nil || !stringSliceContains(ce.DenyProfiles, name) {
 				continue
+			}
+			if !credentiallessCatchallDenyEndpoint(ce) {
+				return nil, fmt.Errorf("endpoint %q sets deny_profiles but is not a credentialless endpoint with a catch-all deny rule", ce.Name)
 			}
 			profile.Endpoints[ce.Name] = ce
 			indexProfileEndpointHosts(profile, ce)
@@ -446,6 +450,15 @@ func credentiallessCatchallDenyEndpoint(ce *CompiledEndpoint) bool {
 			continue
 		}
 		if r.Outcome.Verdict == "deny" {
+			return true
+		}
+	}
+	return false
+}
+
+func stringSliceContains(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
 			return true
 		}
 	}
@@ -528,10 +541,11 @@ func attachCredentials(cp *CompiledPolicy, p *Policy) error {
 
 func compileEndpoint(name string, ent *Entity, cp *CompiledPolicy) (*CompiledEndpoint, error) {
 	ce := &CompiledEndpoint{
-		Name:   name,
-		Family: ent.Plugin.Family,
-		Plugin: ent.Plugin,
-		Body:   ent.Body,
+		Name:         name,
+		Family:       ent.Plugin.Family,
+		Plugin:       ent.Plugin,
+		Body:         ent.Body,
+		DenyProfiles: ent.Framework.RefList("deny_profiles"),
 	}
 	// Hosts live on the plugin's typed body. We cross-cut via a small
 	// interface so the compile pass doesn't have to know every

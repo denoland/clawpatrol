@@ -359,6 +359,13 @@ Block syntax: `endpoint "<type>" "<name>" { ... }`
 
 Registered types: [`clickhouse_https`](#endpoint-clickhousehttps), [`clickhouse_native`](#endpoint-clickhousenative), [`https`](#endpoint-https), [`kubernetes`](#endpoint-kubernetes), [`openai_codex_https`](#endpoint-openaicodexhttps), [`postgres`](#endpoint-postgres), [`ssh`](#endpoint-ssh).
 
+Endpoint blocks also accept these framework attributes:
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `tunnel` | `ref(tunnel)` | no | Routes this endpoint through the named tunnel runtime. |
+| `deny_profiles` | `[]profile` | no | Makes a credentialless endpoint routeable for the listed profiles when the endpoint has a catch-all deny rule. Used for explicit host blocks generated from passthrough requests. |
+
 ### `endpoint "clickhouse_https" "<name>"`
 
 Family: `sql`.

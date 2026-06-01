@@ -186,10 +186,21 @@ func (r *renderer) writeKind(kind config.Kind) {
 		}
 		r.out.WriteString(".\n\n")
 	}
+	if kind == config.KindEndpoint {
+		r.writeEndpointFrameworkAttrs()
+	}
 
 	for _, p := range plugins {
 		r.writePlugin(kind, p)
 	}
+}
+
+func (r *renderer) writeEndpointFrameworkAttrs() {
+	r.out.WriteString("Endpoint blocks also accept these framework attributes:\n\n")
+	r.out.WriteString("| Attribute | Type | Required | Description |\n")
+	r.out.WriteString("|-----------|------|----------|-------------|\n")
+	r.out.WriteString("| `tunnel` | `ref(tunnel)` | no | Routes this endpoint through the named tunnel runtime. |\n")
+	r.out.WriteString("| `deny_profiles` | `[]profile` | no | Makes a credentialless endpoint routeable for the listed profiles when the endpoint has a catch-all deny rule. Used for explicit host blocks generated from passthrough requests. |\n\n")
 }
 
 func (r *renderer) writePlugin(kind config.Kind, p *config.Plugin) {

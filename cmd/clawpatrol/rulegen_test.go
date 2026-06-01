@@ -99,8 +99,11 @@ func TestGenerateRuleSpliceHostCreatesEndpointAndDenyRule(t *testing.T) {
 	if !strings.Contains(rule.HCL, `endpoint "https" "tinyclouds_org"`) {
 		t.Fatalf("hcl missing generated endpoint:\n%s", rule.HCL)
 	}
-	if !strings.Contains(rule.HCL, `hosts = ["tinyclouds.org"]`) {
+	if !strings.Contains(rule.HCL, `hosts`) || !strings.Contains(rule.HCL, `["tinyclouds.org"]`) {
 		t.Fatalf("hcl missing observed host:\n%s", rule.HCL)
+	}
+	if !strings.Contains(rule.HCL, `deny_profiles = [profile.default]`) {
+		t.Fatalf("hcl missing explicit deny profile:\n%s", rule.HCL)
 	}
 	if !strings.Contains(rule.HCL, `endpoint = https.tinyclouds_org`) {
 		t.Fatalf("hcl missing generated endpoint reference:\n%s", rule.HCL)
@@ -116,7 +119,8 @@ func TestGenerateRuleSpliceHostCreatesEndpointAndDenyRule(t *testing.T) {
 func TestGeneratedSpliceHostBlockRoutesInDefaultProfile(t *testing.T) {
 	g := gatewayWithPolicy(t, fixtureHCL+`
 endpoint "https" "tinyclouds_org" {
-  hosts = ["tinyclouds.org"]
+  hosts         = ["tinyclouds.org"]
+  deny_profiles = [profile.default]
 }
 
 rule "block_tinyclouds_org" {
@@ -127,5 +131,22 @@ rule "block_tinyclouds_org" {
 	ep := runtime.HostEndpoint(g.Policy(), "default", "tinyclouds.org")
 	if ep == nil || ep.Name != "tinyclouds_org" {
 		t.Fatalf("HostEndpoint = %#v, want generated endpoint", ep)
+	}
+}
+
+func TestGeneratedSpliceHostBlockWithoutDenyProfileDoesNotRoute(t *testing.T) {
+	g := gatewayWithPolicy(t, fixtureHCL+`
+endpoint "https" "tinyclouds_org" {
+  hosts = ["tinyclouds.org"]
+}
+
+rule "block_tinyclouds_org" {
+  endpoint = https.tinyclouds_org
+  verdict  = "deny"
+}
+`)
+	ep := runtime.HostEndpoint(g.Policy(), "default", "tinyclouds.org")
+	if ep != nil {
+		t.Fatalf("HostEndpoint = %#v, want no route without deny_profiles", ep)
 	}
 }

@@ -273,6 +273,7 @@ function RulePreviewModal({ ev, onClose }: { ev: EventRecord; onClose: () => voi
   const [hcl, setHCL] = useState("");
   const [busy, setBusy] = useState(true);
   const [applying, setApplying] = useState(false);
+  const [appliedRevision, setAppliedRevision] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -309,8 +310,8 @@ function RulePreviewModal({ ev, onClose }: { ev: EventRecord; onClose: () => voi
     setErr(null);
     setMsg(null);
     try {
-      await applyGeneratedRule(preview.config_revision, hcl);
-      setMsg("Rule applied. New matching requests will be denied.");
+      const applied = await applyGeneratedRule(preview.config_revision, hcl);
+      setAppliedRevision(applied.revision);
     } catch (e) {
       const text = (e as Error).message || "apply failed";
       if (text.includes("config changed")) {
@@ -343,16 +344,36 @@ function RulePreviewModal({ ev, onClose }: { ev: EventRecord; onClose: () => voi
   return (
     <Modal title="Block requests like this" size="lg" onClose={onClose}>
       <div className="p-4 space-y-3 overflow-auto">
-        <p className="text-sm text-text-muted">
-          {passthrough
-            ? "This request was passed through without MITM inspection because no endpoint matched it. Claw Patrol generated HCL that creates an endpoint for the observed host and denies future matching requests before they pass through."
-            : "Claw Patrol generated a narrow deny rule from this inspected action. Edit the condition if you want to broaden it."}
-        </p>
-        {busy ? (
-          <div className="text-xs text-text-subtle">Generating rule...</div>
-        ) : err && !preview ? (
-          <div className="text-sm text-danger-500 whitespace-pre-wrap">{err}</div>
+        {appliedRevision ? (
+          <div className="min-h-[300px] flex flex-col items-center justify-center text-center gap-4">
+            <div className="flex items-center justify-center w-14 h-14 rounded-full border-2 border-success-600 text-success-600">
+              <CheckLargeIcon />
+            </div>
+            <div className="space-y-2 max-w-[34rem]">
+              <h3 className="text-lg font-semibold text-text">Rule applied</h3>
+              <p className="text-sm text-text-muted">
+                The generated HCL was validated, written to disk, and reloaded by the gateway. New
+                matching requests will be denied.
+              </p>
+              <p className="text-xs text-text-subtle">
+                Dashboard writes are enabled by <code>gateway.dashboard_config_writes</code>. When
+                this setting is disabled, this flow offers copy and patch downloads instead of
+                writing the config.
+              </p>
+            </div>
+          </div>
         ) : (
+          <p className="text-sm text-text-muted">
+            {passthrough
+              ? "This request was passed through without MITM inspection because no endpoint matched it. Claw Patrol generated HCL that creates an endpoint for the observed host, attaches it with deny_profiles, and denies future matching requests before they pass through."
+              : "Claw Patrol generated a narrow deny rule from this inspected action. Edit the condition if you want to broaden it."}
+          </p>
+        )}
+        {!appliedRevision && busy ? (
+          <div className="text-xs text-text-subtle">Generating rule...</div>
+        ) : !appliedRevision && err && !preview ? (
+          <div className="text-sm text-danger-500 whitespace-pre-wrap">{err}</div>
+        ) : !appliedRevision ? (
           <>
             {!writesEnabled && (
               <div className="border border-butter-600 bg-butter-100 px-3 py-2 text-xs text-text">
@@ -368,8 +389,8 @@ function RulePreviewModal({ ev, onClose }: { ev: EventRecord; onClose: () => voi
             {createsEndpoint && (
               <div className="border border-butter-600 bg-butter-100 px-3 py-2 text-xs">
                 This will create endpoint <code>{preview.endpoint_name}</code> for future traffic.
-                It does not retroactively inspect this request. Credential creation is not part of
-                this flow yet.
+                It does not retroactively inspect this request. The <code>deny_profiles</code> list
+                makes the block explicit; credential creation is not part of this flow yet.
               </div>
             )}
             <textarea
@@ -381,10 +402,22 @@ function RulePreviewModal({ ev, onClose }: { ev: EventRecord; onClose: () => voi
             {err && <div className="text-sm text-danger-500 whitespace-pre-wrap">{err}</div>}
             {msg && <div className="text-sm text-success-600">{msg}</div>}
           </>
-        )}
+        ) : null}
       </div>
       <div className="flex items-center gap-2 justify-end px-4 py-3 border-t border-navy bg-navy-100">
-        {writesEnabled ? (
+        {appliedRevision ? (
+          <>
+            <Button href="#/settings" onClick={onClose}>
+              View configuration
+            </Button>
+            <Button variant="outline" disabled={!preview} onClick={copyHCL}>
+              Copy HCL
+            </Button>
+            <Button variant="outline" onClick={onClose}>
+              Close
+            </Button>
+          </>
+        ) : writesEnabled ? (
           <Button disabled={!preview || applying} onClick={applyRule}>
             {applying ? "Applying..." : "Apply rule"}
           </Button>
@@ -393,21 +426,41 @@ function RulePreviewModal({ ev, onClose }: { ev: EventRecord; onClose: () => voi
             Copy HCL
           </Button>
         )}
-        {writesEnabled && (
+        {!appliedRevision && writesEnabled && (
           <Button variant="outline" disabled={!preview} onClick={copyHCL}>
             Copy HCL
           </Button>
         )}
-        {!writesEnabled && (
+        {!appliedRevision && !writesEnabled && (
           <Button variant="outline" disabled={!preview?.patch} onClick={downloadPatch}>
             Download patch
           </Button>
         )}
-        <Button variant="outline" disabled={!ev.id || !ev.endpoint} onClick={downloadFixture}>
-          Download fixture
-        </Button>
+        {!appliedRevision && (
+          <Button variant="outline" disabled={!ev.id || !ev.endpoint} onClick={downloadFixture}>
+            Download fixture
+          </Button>
+        )}
       </div>
     </Modal>
+  );
+}
+
+function CheckLargeIcon() {
+  return (
+    <svg
+      width="28"
+      height="28"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m5 12 5 5L20 7" />
+    </svg>
   );
 }
 
