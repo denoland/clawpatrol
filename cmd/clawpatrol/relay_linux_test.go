@@ -424,13 +424,10 @@ func TestHostLoopbackForwarder_EndToEnd(t *testing.T) {
 	}
 
 	if testing.Short() {
-		t.Skip("requires user+net namespace + iptables + iproute2; skipped with -short")
+		t.Skip("requires user+net namespace + iptables; skipped with -short")
 	}
 	if _, err := exec.LookPath("iptables"); err != nil {
 		t.Skipf("iptables not available: %v", err)
-	}
-	if _, err := exec.LookPath("ip"); err != nil {
-		t.Skipf("iproute2 (`ip`) not available: %v", err)
 	}
 	if _, err := os.Stat("/proc/self/ns/user"); err != nil {
 		t.Skipf("user namespace not available: %v", err)
@@ -560,8 +557,14 @@ func runLoopbackForwarderTestChild() {
 	}
 
 	// New netns starts with lo DOWN; bring it up so 127.0.0.1 works.
-	if err := exec.Command("ip", "link", "set", "lo", "up").Run(); err != nil {
-		fmt.Printf("FAIL: ip link set lo up: %v\n", err)
+	// Use SIOCSIFFLAGS ioctl directly rather than shelling out to `ip`:
+	// some CI sandboxes (notably ubuntu-latest under the default
+	// AppArmor profile) block iproute2 binaries inside unprivileged
+	// user namespaces — `ip` exits 2 with no diagnostic — even when the
+	// equivalent syscall succeeds. The ioctl path needs only the
+	// CAP_NET_ADMIN we already hold inside our new userns+netns.
+	if err := bringLoopbackUp(); err != nil {
+		fmt.Printf("FAIL: bring lo up: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -670,6 +673,28 @@ func runLoopbackForwarderTestChild() {
 		os.Exit(1)
 	}
 	fmt.Printf("OK: got %s", got)
+}
+
+// bringLoopbackUp marks the lo interface UP via SIOCSIFFLAGS, avoiding
+// the iproute2 `ip` binary which some CI sandboxes (e.g. ubuntu-latest
+// under the default AppArmor profile) block inside unprivileged user
+// namespaces. SIOCSIFFLAGS only needs CAP_NET_ADMIN on the owning
+// userns, which we hold in our newly-cloned namespace.
+func bringLoopbackUp() error {
+	sock, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0)
+	if err != nil {
+		return fmt.Errorf("socket: %w", err)
+	}
+	defer func() { _ = unix.Close(sock) }()
+	ifr, err := unix.NewIfreq("lo")
+	if err != nil {
+		return fmt.Errorf("ifreq: %w", err)
+	}
+	ifr.SetUint16(unix.IFF_UP)
+	if err := unix.IoctlIfreq(sock, unix.SIOCSIFFLAGS, ifr); err != nil {
+		return fmt.Errorf("ioctl(SIOCSIFFLAGS, lo, IFF_UP): %w", err)
+	}
+	return nil
 }
 
 // TestGetOriginalDstPortByteOrder verifies the endian dance inside
