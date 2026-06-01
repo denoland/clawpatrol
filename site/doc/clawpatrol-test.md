@@ -235,26 +235,25 @@ directly.
   "action": {
     "host": "build.example.com:2222",
     "ssh": {
-      "verb": "exec",
-      "command": "git-receive-pack '/srv/git/app.git'",
-      "user": "git"
+      "verb": "pty",
+      "user": "ubuntu"
     }
   },
   "match": {
     "verdict": "deny",
-    "rule": "ssh-no-push",
+    "rule": "ssh-no-interactive",
     "endpoint": "ssh.build-host",
-    "reason": "pushes go through CI, not direct git"
+    "reason": "interactive terminals are not permitted; run a command instead"
   }
 }
 ```
 
-For SSH, `verb` is required (`exec` / `shell` / `subsystem` / `forward`); set
-whichever field that verb populates — `command` for `exec`, `subsystem` for
-`subsystem`, `forward_host` + `forward_port` for `forward`. `shell` carries no
-extra field. The facet gates the channel envelope only, so it can match the
-`git-receive-pack` command but not tell a force push from a normal one (see
-[rules.md](rules.md), ssh family scope).
+For SSH, `verb` is required (`pty` / `exec` / `shell` / `subsystem` / `forward`);
+set whichever field that verb populates — `command` for `exec`, `subsystem` for
+`subsystem`, `forward_host` + `forward_port` for `forward`. `pty` and `shell`
+carry no extra field. The facet gates the channel envelope only — see
+[rules.md](rules.md), ssh family scope, for what that does and doesn't cover
+(notably: deny `pty`, not `shell`, to block interactive sessions).
 
 ### Shared hosts: pinning the endpoint
 

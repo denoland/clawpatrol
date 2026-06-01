@@ -105,10 +105,11 @@ func TestPickSSHCredential(t *testing.T) {
 }
 
 // metaForChannelReq covers the per-channel requests an agent can
-// send: exec carries argv as one string, shell is empty, subsystem
-// carries the subsystem name, anything else (pty-req, env,
-// window-change, signal, ...) is dropped silently. The derived Meta's
-// verb-relevant field and the sshSummary one-liner are both checked.
+// send: pty-req asks for a terminal, exec carries argv as one string,
+// shell is empty, subsystem carries the subsystem name; anything else
+// (env, window-change, signal, ...) is dropped silently. The derived
+// Meta's verb-relevant field and the sshSummary one-liner are both
+// checked.
 func TestMetaForChannelReq(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -120,6 +121,14 @@ func TestMetaForChannelReq(t *testing.T) {
 		wantSubsys  string
 		wantSummary string
 	}{
+		{
+			name:        "pty-req",
+			reqType:     "pty-req",
+			payload:     nil,
+			wantOK:      true,
+			wantVerb:    sshfacet.VerbPTY,
+			wantSummary: "request pty (terminal)",
+		},
 		{
 			name:        "exec",
 			reqType:     "exec",
@@ -135,7 +144,7 @@ func TestMetaForChannelReq(t *testing.T) {
 			payload:     nil,
 			wantOK:      true,
 			wantVerb:    sshfacet.VerbShell,
-			wantSummary: "interactive shell",
+			wantSummary: "login shell",
 		},
 		{
 			name:        "subsystem sftp",
@@ -146,7 +155,6 @@ func TestMetaForChannelReq(t *testing.T) {
 			wantSubsys:  "sftp",
 			wantSummary: "sftp",
 		},
-		{name: "pty-req dropped", reqType: "pty-req", payload: nil, wantOK: false},
 		{name: "env dropped", reqType: "env", payload: nil, wantOK: false},
 		{name: "window-change dropped", reqType: "window-change", payload: nil, wantOK: false},
 		{name: "exec with malformed payload", reqType: "exec", payload: []byte{0xff}, wantOK: false},

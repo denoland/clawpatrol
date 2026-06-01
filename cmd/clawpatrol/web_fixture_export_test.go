@@ -447,11 +447,10 @@ func TestExporterSSHHappyPath(t *testing.T) {
 	w := &webMux{g: gatewayWithPolicy(t, sshExportHCL)}
 	ev := &Event{
 		ID: "evt-ssh-1", Mode: "ssh", Family: "ssh",
-		Host: "10.0.0.9", Action: "deny", Endpoint: "build-host",
-		Rule: "ssh-no-push",
+		Host: "10.0.0.9", Action: "allow", Endpoint: "build-host",
+		Rule: "ssh-exec-allowed",
 		Facets: map[string]any{
-			"verb": "exec", "command": "git-receive-pack '/srv/git/app.git'",
-			"user": "git",
+			"verb": "exec", "command": "uname -a", "user": "ubuntu",
 		},
 	}
 	rw := httptest.NewRecorder()
@@ -467,14 +466,14 @@ func TestExporterSSHHappyPath(t *testing.T) {
 		t.Fatal("expected ssh block")
 	}
 	ssh := f.Action.SSH
-	if ssh.Verb != "exec" || ssh.Command != "git-receive-pack '/srv/git/app.git'" || ssh.User != "git" {
+	if ssh.Verb != "exec" || ssh.Command != "uname -a" || ssh.User != "ubuntu" {
 		t.Errorf("ssh=%+v", ssh)
 	}
 	if f.Action.Host != "build.example.com:2222" {
 		t.Errorf("host=%q want build.example.com:2222 (HCL host, not Event.Host)", f.Action.Host)
 	}
-	if f.Match.Verdict != "deny" {
-		t.Errorf("verdict=%q want deny", f.Match.Verdict)
+	if f.Match.Verdict != "allow" {
+		t.Errorf("verdict=%q want allow", f.Match.Verdict)
 	}
 }
 
@@ -537,9 +536,9 @@ endpoint "ssh" "build-host" {
 credential "ssh_key" "key" { endpoint = ssh.build-host }
 rule "no-interactive" {
   endpoint  = ssh.build-host
-  condition = "ssh.verb == 'shell'"
+  condition = "ssh.verb == 'pty'"
   verdict   = "deny"
-  reason    = "no shells"
+  reason    = "no terminals"
 }
 profile "default" { credentials = [ssh_key.key] }
 `
@@ -548,8 +547,8 @@ profile "default" { credentials = [ssh_key.key] }
 	ev := &Event{
 		ID: "evt-ssh-rt", Mode: "ssh", Family: "ssh",
 		Host: "10.0.0.9", Action: "deny",
-		Endpoint: "build-host", Rule: "no-interactive", Reason: "no shells",
-		Facets: map[string]any{"verb": "shell", "user": "ubuntu"},
+		Endpoint: "build-host", Rule: "no-interactive", Reason: "no terminals",
+		Facets: map[string]any{"verb": "pty", "user": "ubuntu"},
 	}
 	rw := httptest.NewRecorder()
 	w.writeActionFixture(rw, ev)

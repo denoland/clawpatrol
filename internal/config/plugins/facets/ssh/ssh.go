@@ -6,23 +6,30 @@
 // per-family report fields the dashboard shows for an SSH action.
 //
 // Unlike https, an SSH connection has no single "request" — the agent
-// opens channels and issues channel-requests (exec / shell /
+// opens channels and issues channel-requests (pty-req / exec / shell /
 // subsystem) and direct-tcpip port forwards. The ssh endpoint runtime
 // evaluates one match.Request per such action at the point the action
 // crosses the gateway, deriving Meta from the wire envelope (RFC4254
 // channel-open ExtraData and channel-request payloads), so
 // PrepareRequest is a no-op.
 //
-// Scope: the facet gates the channel envelope — what kind of action
-// (verb), which command string was exec'd, which subsystem, which
-// forward target. It does NOT inspect the bytes flowing inside a
-// channel once it is open. In particular a rule cannot tell a normal
-// `git push` from a force push: the `--force` flag is client-side and
-// never crosses the wire; the non-fast-forward is buried in the
-// git-receive-pack pack protocol that streams as opaque channel data.
-// `ssh.command` can gate `git-receive-pack` wholesale (block all
-// pushes / push to a given repo), but force-vs-normal needs a
-// stream-aware git interceptor that does not exist yet.
+// Scope: the facet gates the channel *envelope* — the action verb
+// (pty / exec / shell / subsystem / forward), the exec command string,
+// the subsystem name, the forward target. It does NOT inspect the
+// bytes flowing inside a channel once it is open. Two consequences
+// worth stating plainly:
+//
+//   - `ssh.command` is the literal command line the agent's client
+//     sent. Matching on it is best-effort: the agent picks the string
+//     (full paths, wrappers, shell builtins), so command rules are an
+//     advisory / audit control, not a hard boundary.
+//   - `ssh.verb == 'shell'` denies only the default-login-shell
+//     request; it is NOT a robust "no interactive session" control,
+//     because an exec'd shell (`ssh host bash`) is equally
+//     interactive. The robust signal for an interactive *terminal* is
+//     the pty allocation request: deny `ssh.verb == 'pty'` to refuse
+//     any session that asks for a terminal — the endpoint tears the
+//     channel down at the pty-req, before shell/exec runs.
 package ssh
 
 import (
@@ -44,7 +51,7 @@ import (
 // `ssh.command` on a `shell` action sees an empty string rather than
 // failing to evaluate.
 type Fields struct {
-	Verb        string `cel:"verb"`         // exec | shell | subsystem | forward
+	Verb        string `cel:"verb"`         // pty | exec | shell | subsystem | forward
 	Command     string `cel:"command"`      // exec argv as a single string
 	Subsystem   string `cel:"subsystem"`    // subsystem name, e.g. "sftp"
 	ForwardHost string `cel:"forward_host"` // direct-tcpip destination host
@@ -55,8 +62,9 @@ type Fields struct {
 // Verb constants name the per-channel actions the ssh facet gates.
 // The endpoint runtime stamps one onto each Meta it builds.
 const (
+	VerbPTY       = "pty"       // session channel-request `pty-req` (terminal)
 	VerbExec      = "exec"      // session channel-request `exec` (a command)
-	VerbShell     = "shell"     // session channel-request `shell` (interactive)
+	VerbShell     = "shell"     // session channel-request `shell` (default login shell)
 	VerbSubsystem = "subsystem" // session channel-request `subsystem` (sftp, ...)
 	VerbForward   = "forward"   // direct-tcpip channel open (port forward)
 )
@@ -156,8 +164,7 @@ func init() {
 // lowercasedPaths: ssh.verb's activation value is lowercased so a
 // rule written as `ssh.verb == "Shell"` still matches. command,
 // subsystem, and forward_host are intentionally case-sensitive —
-// program names (`git-receive-pack`) and hostnames are matched as
-// sent.
+// program names and hostnames are matched as sent.
 //
 // truncatablePaths / unparseablePaths: empty. Every ssh field comes
 // from a small, fully-read channel envelope (the channel-open

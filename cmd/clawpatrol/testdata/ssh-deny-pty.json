@@ -2,7 +2,7 @@
   "action": {
     "host": "build.example.com:2222",
     "ssh": {
-      "verb": "shell",
+      "verb": "pty",
       "user": "ubuntu"
     }
   },
@@ -10,6 +10,6 @@
     "verdict":  "deny",
     "rule":     "ssh-no-interactive",
     "endpoint": "ssh.build-host",
-    "reason":   "interactive sessions are not permitted; run a command instead"
+    "reason":   "interactive terminals are not permitted; run a command instead"
   }
 }

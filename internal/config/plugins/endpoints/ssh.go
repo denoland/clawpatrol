@@ -9,13 +9,15 @@ package endpoints
 // sessions, exec, port forwarding, and SFTP all "just work".
 //
 // ssh-family rules gate the channel envelope: each agent action
-// (exec / shell / subsystem channel-request, direct-tcpip open) is
-// run through runtime.MatchRequest against the ssh facet
+// (pty-req / exec / shell / subsystem channel-request, direct-tcpip
+// open) is run through runtime.MatchRequest against the ssh facet
 // (config/plugins/facets/ssh) before it is forwarded upstream, and a
-// deny refuses that channel without tearing down the whole session.
-// The facet sees the action verb / command / subsystem / forward
-// target — not the bytes inside an open channel, so it can block all
-// of `git-receive-pack` but cannot single out a force push.
+// deny refuses that channel without dropping the rest of the SSH
+// connection. The facet sees the action verb / command / subsystem /
+// forward target — not the bytes inside an open channel. Denying
+// `ssh.verb == 'pty'` is how an operator blocks interactive terminal
+// sessions: the pty-req is refused and the session channel torn down
+// before any shell/exec runs.
 //
 // Endpoint shape:
 //
@@ -739,10 +741,12 @@ func (rt *SSHEndpointRuntime) makeGate(ch *runtime.ConnHandle, emit func(runtime
 // for an action, keyed off its verb.
 func sshSummary(m *sshfacet.Meta) string {
 	switch m.Verb {
+	case sshfacet.VerbPTY:
+		return "request pty (terminal)"
 	case sshfacet.VerbExec:
 		return m.Command
 	case sshfacet.VerbShell:
-		return "interactive shell"
+		return "login shell"
 	case sshfacet.VerbSubsystem:
 		return m.Subsystem
 	case sshfacet.VerbForward:
@@ -772,14 +776,22 @@ func metaForChannelOpen(newCh ssh.NewChannel) (*sshfacet.Meta, bool) {
 }
 
 // metaForChannelReq derives the rule facets for an agent→upstream
-// channel request. exec carries the full argv as a single string;
-// subsystem carries the subsystem name (e.g. "sftp"); shell carries
-// no payload (interactive session start). Other request types
-// (pty-req, env, window-change, signal, eow@openssh.com, ...) are
-// session-keepalive noise — they produce no action and splice through
-// ungated.
+// channel request. pty-req asks for a pseudo-terminal (the wire signal
+// for an interactive session — it precedes the shell/exec on the same
+// channel); exec carries the full argv as a single string; subsystem
+// carries the subsystem name (e.g. "sftp"); shell starts the default
+// login shell and carries no payload. Other request types (env,
+// window-change, signal, eow@openssh.com, ...) are session-keepalive
+// noise — they produce no action and splice through ungated.
+//
+// Gating pty-req (rather than only shell) is what makes "block
+// interactive" robust: denying it tears the session channel down
+// before any shell OR exec'd program gets a terminal, so neither
+// `ssh host` nor `ssh -t host bash` can open an interactive prompt.
 func metaForChannelReq(r *ssh.Request) (*sshfacet.Meta, bool) {
 	switch r.Type {
+	case "pty-req":
+		return &sshfacet.Meta{Verb: sshfacet.VerbPTY}, true
 	case "exec":
 		var p execPayload
 		if err := ssh.Unmarshal(r.Payload, &p); err != nil {

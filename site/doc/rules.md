@@ -150,28 +150,29 @@ a rule's `endpoints = [...]` is a load error.
 ### `ssh` family
 
 Bound to `ssh` endpoints. The condition runs against each **channel
-action** the agent issues over an established SSH session — a command
-(`exec`), an interactive shell (`shell`), a subsystem open (`sftp`,
-…), or a direct-tcpip port forward — evaluated at the moment the
-action crosses the gateway, before it is forwarded upstream. A denied
-action refuses that one channel (the agent sees a request failure or
-a rejected forward); the session itself stays up, so other allowed
-actions still work.
+action** the agent issues over an established SSH session — a terminal
+request (`pty`), a command (`exec`), the default login shell
+(`shell`), a subsystem open (`sftp`, …), or a direct-tcpip port
+forward — evaluated at the moment the action crosses the gateway,
+before it is forwarded upstream. A denied action refuses that one
+channel (the agent sees a request failure or a rejected forward); the
+rest of the SSH connection stays up, so other allowed actions still
+work.
 
-Example: block interactive shells but allow one-shot commands.
+Example: block interactive terminal sessions but allow commands.
 
 ```hcl
 rule "ssh-no-interactive" {
   endpoint  = ssh.build-host
-  condition = "ssh.verb == 'shell'"
+  condition = "ssh.verb == 'pty'"
   verdict   = "deny"
-  reason    = "interactive sessions are not permitted on this host"
+  reason    = "interactive terminals are not permitted on this host"
 }
 ```
 
 | Variable | Type | Description |
 |----------|------|-------------|
-| `ssh.verb` | `string` | Action kind (lower-case): `"exec"`, `"shell"`, `"subsystem"`, `"forward"` |
+| `ssh.verb` | `string` | Action kind (lower-case): `"pty"`, `"exec"`, `"shell"`, `"subsystem"`, `"forward"` |
 | `ssh.command` | `string` | The `exec` command line (full argv as one string); `""` for non-exec actions |
 | `ssh.subsystem` | `string` | Subsystem name for a `subsystem` action (e.g. `"sftp"`); `""` otherwise |
 | `ssh.forward_host` | `string` | direct-tcpip destination host for a `forward` action; `""` otherwise |
@@ -179,27 +180,35 @@ rule "ssh-no-interactive" {
 | `ssh.user` | `string` | Upstream SSH username the agent connected as |
 
 ```hcl
-condition = "ssh.verb == 'shell'"                                  # block interactive logins
+condition = "ssh.verb == 'pty'"                                    # block interactive terminals
 condition = "ssh.verb == 'subsystem' && ssh.subsystem == 'sftp'"   # block SFTP
-condition = "ssh.verb == 'exec' && ssh.command.startsWith('git-receive-pack')"  # block all pushes
 condition = "ssh.verb == 'forward' && ssh.forward_port == 5432"    # block forwarding to Postgres
+condition = "ssh.verb == 'exec' && ssh.command.startsWith('rsync ')" # gate an exec by command
 ```
 
-`ssh.verb` is lower-cased at rule-load time (so `ssh.verb == 'Shell'`
+`ssh.verb` is lower-cased at rule-load time (so `ssh.verb == 'Pty'`
 still matches). `ssh.command`, `ssh.subsystem`, and `ssh.forward_host`
-are matched **as sent** (case-sensitive) — program names like
-`git-receive-pack` and hostnames are compared verbatim.
+are matched **as sent** (case-sensitive).
+
+**Blocking interactive sessions.** Deny `ssh.verb == 'pty'`, not
+`ssh.verb == 'shell'`. The `shell` verb is only the *default login
+shell* request — an agent gets an equally interactive session via an
+exec'd shell (`ssh host bash`, `ssh -t host sh`), which a `shell`-only
+rule sails straight past. The pty (pseudo-terminal) request is the
+wire signal that a session wants a terminal; denying it tears the
+session channel down before any shell *or* exec runs, so both
+`ssh host` and `ssh -t host bash` are refused. (A no-terminal exec
+like `ssh host bash` *without* `-t` reads stdin as a dumb shell and
+isn't a pty — gate that with an `ssh.command` rule or an exec
+allowlist if your threat model needs it.)
 
 **Scope — the facet gates the channel envelope, not channel
 contents.** A rule sees *what kind* of action and *which* command /
 subsystem / forward target, but not the bytes that flow once a
-channel is open. In particular it **cannot distinguish a force push
-from a normal push**: `git push --force` is a client-side flag that
-never crosses the wire; the non-fast-forward is encoded inside the
-`git-receive-pack` pack-protocol stream. `ssh.command` can block
-`git-receive-pack` wholesale (all pushes, or pushes to a given repo
-by matching the path argument), but force-vs-normal would need a
-git-protocol-aware stream interceptor, which does not exist yet.
+channel is open. Note also that `ssh.command` is the literal command
+the agent's client sends, so command-string rules are best-effort
+(the agent chooses the invocation — full paths, wrappers) — useful for
+audit and coarse policy, not a hard boundary.
 
 
 ## How to create a rule

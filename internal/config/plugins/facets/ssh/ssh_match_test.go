@@ -57,23 +57,38 @@ func TestSSHMatcherVerbCaseInsensitive(t *testing.T) {
 	}
 }
 
-// TestSSHMatcherCommand covers tier-2 command gating: block all git
-// pushes by matching the receive-pack program, regardless of the repo
-// path argument. The command is case-sensitive (program names are
-// matched as sent).
-func TestSSHMatcherCommand(t *testing.T) {
-	m := mustMatcher(t, "ssh.verb == 'exec' && ssh.command.startsWith('git-receive-pack')")
-	push := &match.Request{Family: "ssh", Meta: &sshfacet.Meta{
-		Verb: sshfacet.VerbExec, Command: "git-receive-pack '/srv/git/app.git'",
-	}}
-	fetch := &match.Request{Family: "ssh", Meta: &sshfacet.Meta{
-		Verb: sshfacet.VerbExec, Command: "git-upload-pack '/srv/git/app.git'",
-	}}
-	if !m.Match(push) {
-		t.Errorf("expected receive-pack to match")
+// TestSSHMatcherPTY covers the robust "block interactive" condition:
+// a `ssh.verb == 'pty'` rule fires on a pty-req (the terminal-request
+// the endpoint gates before any shell/exec runs) and not on a plain
+// command.
+func TestSSHMatcherPTY(t *testing.T) {
+	m := mustMatcher(t, "ssh.verb == 'pty'")
+	pty := &match.Request{Family: "ssh", Meta: &sshfacet.Meta{Verb: sshfacet.VerbPTY}}
+	exec := &match.Request{Family: "ssh", Meta: &sshfacet.Meta{Verb: sshfacet.VerbExec, Command: "uname -a"}}
+	if !m.Match(pty) {
+		t.Errorf("expected pty-req to match ssh.verb == 'pty'")
 	}
-	if m.Match(fetch) {
-		t.Errorf("expected upload-pack to NOT match (reads are allowed)")
+	if m.Match(exec) {
+		t.Errorf("expected a command to NOT match ssh.verb == 'pty'")
+	}
+}
+
+// TestSSHMatcherCommand covers command-string matching (an advisory /
+// audit control — the agent picks the string, so it is best-effort,
+// not a hard boundary). Matching is case-sensitive.
+func TestSSHMatcherCommand(t *testing.T) {
+	m := mustMatcher(t, "ssh.verb == 'exec' && ssh.command.startsWith('backup ')")
+	backup := &match.Request{Family: "ssh", Meta: &sshfacet.Meta{
+		Verb: sshfacet.VerbExec, Command: "backup --full /data",
+	}}
+	restore := &match.Request{Family: "ssh", Meta: &sshfacet.Meta{
+		Verb: sshfacet.VerbExec, Command: "restore --all /data",
+	}}
+	if !m.Match(backup) {
+		t.Errorf("expected `backup ...` to match")
+	}
+	if m.Match(restore) {
+		t.Errorf("expected `restore ...` to NOT match")
 	}
 }
 

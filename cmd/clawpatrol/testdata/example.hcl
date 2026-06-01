@@ -44,13 +44,16 @@ credential "ssh_key" "build-host-key" {
   endpoint = ssh.build-host
 }
 
-// Block interactive shells but allow one-shot commands — the headline
-// ssh use case. shell == interactive; exec == a command.
+// Block interactive terminal sessions while allowing commands — the
+// headline ssh use case. The robust signal is the pty (terminal)
+// request, not the `shell` verb: denying pty refuses both `ssh host`
+// and `ssh -t host bash` before any shell/exec runs, whereas a
+// `shell`-only rule is bypassed by `ssh host bash` (an exec'd shell).
 rule "ssh-no-interactive" {
   endpoint  = ssh.build-host
-  condition = "ssh.verb == 'shell'"
+  condition = "ssh.verb == 'pty'"
   verdict   = "deny"
-  reason    = "interactive sessions are not permitted; run a command instead"
+  reason    = "interactive terminals are not permitted; run a command instead"
 }
 
 rule "ssh-no-sftp" {
@@ -58,17 +61,6 @@ rule "ssh-no-sftp" {
   condition = "ssh.verb == 'subsystem' && ssh.subsystem == 'sftp'"
   verdict   = "deny"
   reason    = "file transfer is not permitted on the build host"
-}
-
-// Block git pushes (receive-pack) while leaving fetches (upload-pack)
-// to the catch-all exec allow below. This blocks ALL pushes, not just
-// force pushes — force-vs-normal isn't visible at the command level
-// (see site/doc/rules.md, ssh family scope).
-rule "ssh-no-push" {
-  endpoint  = ssh.build-host
-  condition = "ssh.verb == 'exec' && ssh.command.startsWith('git-receive-pack')"
-  verdict   = "deny"
-  reason    = "pushes go through CI, not direct git"
 }
 
 rule "ssh-no-db-forward" {

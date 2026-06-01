@@ -2,14 +2,12 @@
   "action": {
     "host": "build.example.com:2222",
     "ssh": {
-      "verb": "exec",
-      "command": "git-upload-pack '/srv/git/app.git'",
-      "user": "git"
+      "verb": "shell",
+      "user": "ubuntu"
     }
   },
   "match": {
     "verdict":  "allow",
-    "rule":     "ssh-exec-allowed",
     "endpoint": "ssh.build-host"
   }
 }
