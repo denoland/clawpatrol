@@ -611,7 +611,7 @@ func relayWorkerLoop(rc syscall.RawConn, handle func(uint16, int)) {
 func recvJob(rc syscall.RawConn) (uint16, int, error) {
 	var (
 		port  uint16
-		jobFD int = -1
+		jobFD = -1
 		rerr  error
 	)
 	err := rc.Read(func(rawFD uintptr) (done bool) {
