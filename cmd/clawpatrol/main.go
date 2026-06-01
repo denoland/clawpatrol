@@ -376,6 +376,10 @@ type Gateway struct {
 	// in this draft — follow-up bead wires it to the unmerged cl-1yh
 	// llm_rule HCL plugin so rules ride in the gateway config.
 	toolgateRules toolgate.RuleSet
+	// toolgateAPI is the approval-endpoint handler, built once from the
+	// store. The webMux wrappers dispatch to it rather than rebuilding
+	// a fresh ServeMux per request. nil when toolgate is nil.
+	toolgateAPI http.Handler
 }
 
 // transportFor returns the cached http.Transport for ep, building it
@@ -2814,6 +2818,11 @@ func runGateway(args []string) {
 		// loadToolgateRulesFromEnv below).
 		toolgateRules: loadToolgateRulesFromEnv(),
 	}
+	// Build the approval-endpoint handler once; the webMux wrappers
+	// reuse it instead of constructing a fresh ServeMux per request.
+	if g.toolgate != nil {
+		g.toolgateAPI = toolgate.Mux(g.toolgate)
+	}
 	log.Printf("config: read-only (the dashboard cannot edit gateway.hcl)")
 	g.secrets = newGatewaySecretStore(db, oauthReg)
 	g.hitl.asyncGrantResolver = g.resolveAsyncHITLGrant
@@ -2871,6 +2880,11 @@ func runGateway(args []string) {
 	// "closed" intermediate state — keep is the only knob.
 	g.agents.LoadSessions(db)
 	g.agents.startSessionSweeper(parseDurationOr(cfg.SessionKeep, 10*time.Minute))
+
+	// Toolgate: GC decided tool-call approvals so the store map doesn't
+	// grow without bound in a long-lived gateway. Ticks every minute,
+	// matching the session sweeper cadence.
+	g.toolgate.StartSweeper(time.Minute)
 
 	// HITL notifications fan-out via the approver runtimes
 	// (config/plugins/approvers); the registry's Add hook emits

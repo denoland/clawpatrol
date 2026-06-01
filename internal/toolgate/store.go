@@ -77,6 +77,27 @@ func (s *Store) Pending() []*PendingCall {
 	return out
 }
 
+// StartSweeper runs Sweep on a background ticker for the lifetime of
+// the process. Mirrors agents.startSessionSweeper: the first sweep
+// runs 30s after boot (avoids log/CPU noise on restart), then every
+// interval. interval <= 0 disables the sweeper. Without this the
+// decided PendingCalls accumulate in the store map forever — a slow
+// leak in a long-lived gateway.
+func (s *Store) StartSweeper(interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	go func() {
+		time.Sleep(30 * time.Second)
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			s.Sweep()
+			<-t.C
+		}
+	}()
+}
+
 // Sweep removes decided calls older than retainAfterDecide. Intended
 // to be called from a background tick; safe to call concurrently with
 // Park / Lookup.

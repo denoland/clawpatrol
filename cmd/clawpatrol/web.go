@@ -36,7 +36,6 @@ import (
 	"github.com/denoland/clawpatrol/internal/config"
 	"github.com/denoland/clawpatrol/internal/config/facet"
 	"github.com/denoland/clawpatrol/internal/config/runtime"
-	"github.com/denoland/clawpatrol/internal/toolgate"
 )
 
 var loginTpl = template.Must(template.New("login").Parse(dashboard.LoginHTML))
@@ -1375,43 +1374,35 @@ func isLoopback(host string) bool {
 // configured rules should see a clear 404 rather than silent OK.
 
 func (w *webMux) apiApprovalPoll(rw http.ResponseWriter, r *http.Request) {
-	if w.g.toolgate == nil {
-		http.Error(rw, "tool-call gating not configured", http.StatusNotFound)
-		return
-	}
-	toolgate.Mux(w.g.toolgate).ServeHTTP(rw, r)
+	w.serveToolgateAPI(rw, r)
 }
 
 func (w *webMux) apiApprovalSSE(rw http.ResponseWriter, r *http.Request) {
-	if w.g.toolgate == nil {
-		http.Error(rw, "tool-call gating not configured", http.StatusNotFound)
-		return
-	}
-	toolgate.Mux(w.g.toolgate).ServeHTTP(rw, r)
+	w.serveToolgateAPI(rw, r)
 }
 
 func (w *webMux) apiApprovalWS(rw http.ResponseWriter, r *http.Request) {
-	if w.g.toolgate == nil {
-		http.Error(rw, "tool-call gating not configured", http.StatusNotFound)
-		return
-	}
-	toolgate.Mux(w.g.toolgate).ServeHTTP(rw, r)
+	w.serveToolgateAPI(rw, r)
 }
 
 func (w *webMux) apiApprovalDecide(rw http.ResponseWriter, r *http.Request) {
-	if w.g.toolgate == nil {
-		http.Error(rw, "tool-call gating not configured", http.StatusNotFound)
-		return
-	}
-	toolgate.Mux(w.g.toolgate).ServeHTTP(rw, r)
+	w.serveToolgateAPI(rw, r)
 }
 
 func (w *webMux) apiApprovalPending(rw http.ResponseWriter, r *http.Request) {
-	if w.g.toolgate == nil {
+	w.serveToolgateAPI(rw, r)
+}
+
+// serveToolgateAPI dispatches to the gateway's cached approval-endpoint
+// handler (built once in newGateway). Fails closed with 404 when gating
+// isn't configured — operators who haven't set CLAWPATROL_TOOLGATE_RULES
+// should see a clear not-found rather than a silent OK.
+func (w *webMux) serveToolgateAPI(rw http.ResponseWriter, r *http.Request) {
+	if w.g.toolgateAPI == nil {
 		http.Error(rw, "tool-call gating not configured", http.StatusNotFound)
 		return
 	}
-	toolgate.Mux(w.g.toolgate).ServeHTTP(rw, r)
+	w.g.toolgateAPI.ServeHTTP(rw, r)
 }
 
 func (w *webMux) apiEventsSSE(rw http.ResponseWriter, r *http.Request) {

@@ -20,7 +20,7 @@ import (
 // PollingToolName is the tool clawpatrol injects into the rewritten
 // response so the agent will call back on the approval endpoint. The
 // draft picks the long-poll variant unconditionally — see
-// docs/tool-call-gating.md for why and the v2 plan to introspect the
+// doc/tool-call-gating.md for why and the v2 plan to introspect the
 // agent's available tools instead.
 const PollingToolName = "clawpatrol_poll"
 

@@ -5,10 +5,12 @@
 // to drive the appropriate downstream behaviour:
 //
 //   - allow / unmatched: response forwarded untouched.
-//   - deny: the tool_use is replaced (in-place, same block id) with
-//     a synthesised tool_result the model will see in its next turn,
-//     so the conversation continues with the model knowing the call
-//     was refused.
+//   - deny: the tool_use is replaced with a text block carrying the
+//     refusal reason, and stop_reason is flipped to "end_turn", so the
+//     model sees why it can't proceed and finishes the turn cleanly.
+//     (Synthesising a tool_result the model reads next turn is the
+//     alternative design — see design note #5 in the PR and
+//     doc/tool-call-gating.md — deferred to v2.)
 //   - hitl (human-in-the-loop): the tool_use is replaced with a
 //     polling tool_use that asks the agent to long-poll clawpatrol
 //     for the verdict. A pending entry, keyed by an opaque token,
@@ -38,9 +40,10 @@ import (
 )
 
 // Verdict is the outcome of evaluating a tool call against the rule
-// set. Allow short-circuits to "forward untouched"; Deny synthesises
-// a tool_result the model sees next turn; HITL pauses the call on a
-// polling token until a human decides.
+// set. Allow short-circuits to "forward untouched"; Deny replaces the
+// tool_use with a text block carrying the refusal reason (and flips
+// stop_reason to "end_turn"); HITL pauses the call on a polling token
+// until a human decides.
 type Verdict string
 
 const (
