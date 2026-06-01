@@ -79,3 +79,26 @@ func TestEmitFullSpec(t *testing.T) {
 		t.Errorf("full-spec round-trip mismatch:\n%s", diff)
 	}
 }
+
+func TestEmitProfileEndpoints(t *testing.T) {
+	src := testGatewayPrefix + `
+endpoint "https" "blocked" {
+  hosts = ["blocked.example.com"]
+}
+
+profile "p" {
+  endpoints = [https.blocked]
+}
+`
+	gw, diags := config.LoadBytes([]byte(src), "in.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	emitted, err := config.Emit(gw)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	if !strings.Contains(string(emitted), "endpoints = [https.blocked]") {
+		t.Fatalf("emitted HCL missing profile endpoints:\n%s", emitted)
+	}
+}

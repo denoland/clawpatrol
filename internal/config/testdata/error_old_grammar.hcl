@@ -7,11 +7,11 @@ gateway {
   }
 }
 
-# Old (pre-inversion) grammar: endpoint carries `credential = X` and
-# profile carries `endpoints = [...]`. Under the inverted grammar
-# the credential→endpoint binding lives on the credential, profiles
-# list credentials, and endpoints are bare network targets. Loading
-# the old shape must fail rather than silently succeed.
+# Old (pre-inversion) grammar: endpoint carries `credential = X`.
+# The credential→endpoint binding lives on the credential, so loading
+# the old endpoint-side credential shape must fail rather than
+# silently succeed. `profile.endpoints` is valid for direct rule-only
+# endpoint membership, but it does not grant credentials.
 
 credential "bearer_token" "pat" {}
 

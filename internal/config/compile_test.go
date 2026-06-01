@@ -157,6 +157,118 @@ profile "p" { credentials = [bearer_token.tok] }
 	}
 }
 
+func TestCompileProfileDirectEndpoints(t *testing.T) {
+	src := `
+endpoint "https" "github" {
+  hosts = ["api.github.com"]
+}
+credential "bearer_token" "tok" {
+  endpoint = https.github
+}
+
+endpoint "https" "blocked" {
+  hosts = ["blocked.example.com"]
+}
+rule "block-host" {
+  endpoint = https.blocked
+  verdict  = "deny"
+}
+
+profile "p" {
+  credentials = [bearer_token.tok]
+  endpoints   = [https.blocked]
+}
+`
+	gw, diags := config.LoadBytes([]byte(testGatewayPrefix+src), "in.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	cp, err := config.Compile(gw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	prof := cp.Profiles["p"]
+	if prof == nil {
+		t.Fatal("missing profile p")
+	}
+	if prof.Endpoints["github"] == nil {
+		t.Fatal("credential-bound endpoint missing")
+	}
+	if prof.Endpoints["blocked"] == nil {
+		t.Fatal("direct endpoint missing")
+	}
+	if prof.HostIndex["blocked.example.com"] == nil {
+		t.Fatal("direct endpoint host not indexed")
+	}
+	if got := len(prof.EndpointCredentials["blocked"]); got != 0 {
+		t.Fatalf("direct endpoint has %d credentials, want 0", got)
+	}
+	if got := len(prof.EndpointCredentials["github"]); got != 1 {
+		t.Fatalf("credential-bound endpoint has %d credentials, want 1", got)
+	}
+}
+
+func TestCompileProfileEndpointOnly(t *testing.T) {
+	src := `
+endpoint "https" "blocked" {
+  hosts = ["blocked.example.com"]
+}
+rule "block-host" {
+  endpoint = https.blocked
+  verdict  = "deny"
+}
+profile "p" {
+  endpoints = [https.blocked]
+}
+`
+	gw, diags := config.LoadBytes([]byte(testGatewayPrefix+src), "in.hcl")
+	if diags.HasErrors() {
+		t.Fatalf("load: %v", diags)
+	}
+	cp, err := config.Compile(gw)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	prof := cp.Profiles["p"]
+	if prof == nil || prof.Endpoints["blocked"] == nil {
+		t.Fatalf("endpoint-only profile did not compile: %#v", prof)
+	}
+}
+
+func TestLoadRejectsUnknownProfileEndpoint(t *testing.T) {
+	src := `
+endpoint "https" "known" {
+  hosts = ["known.example.com"]
+}
+profile "p" {
+  endpoints = [https.missing]
+}
+`
+	_, diags := config.LoadBytes([]byte(testGatewayPrefix+src), "in.hcl")
+	if !diags.HasErrors() {
+		t.Fatal("LoadBytes succeeded, want unknown endpoint diagnostic")
+	}
+	if !strings.Contains(diags.Error(), "Unknown variable") &&
+		!strings.Contains(diags.Error(), "missing") {
+		t.Fatalf("diagnostics do not mention missing endpoint: %v", diags)
+	}
+}
+
+func TestLoadRejectsEmptyProfile(t *testing.T) {
+	src := `
+profile "p" {
+  hitl_async_grants = true
+}
+`
+	_, diags := config.LoadBytes([]byte(testGatewayPrefix+src), "in.hcl")
+	if !diags.HasErrors() {
+		t.Fatal("LoadBytes succeeded, want empty profile diagnostic")
+	}
+	if !strings.Contains(diags.Error(), "Set at least one of") {
+		t.Fatalf("diagnostics do not mention required credentials or endpoints: %v", diags)
+	}
+}
+
 func TestCompileRejectsBadHosts(t *testing.T) {
 	cases := []struct {
 		name string

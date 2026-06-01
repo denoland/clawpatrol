@@ -549,9 +549,10 @@ func (noopPluginLoader) LoadPlugins([]PluginSource) hcl.Diagnostics { return nil
 
 // Profile is the lowered shape of a profile "<name>" {} block. Name
 // is the block's single label (set by the loader). Credentials is
-// the membership list; endpoint membership rides along as the
-// transitive closure profile → credential → endpoint, and rules
-// attach to endpoints (so they ride along too).
+// the credential membership list; endpoint membership rides along as
+// the transitive closure profile → credential → endpoint. Endpoints
+// is the direct endpoint membership list; it carries endpoint rules
+// into the profile without granting any credentials.
 //
 // Disambiguators is the per-credential profile-side dispatch
 // discriminator. Outer key is credential name; inner map is
@@ -570,6 +571,7 @@ func (noopPluginLoader) LoadPlugins([]PluginSource) hcl.Diagnostics { return nil
 type Profile struct {
 	Name            string                       `json:"name"`
 	Credentials     []string                     `json:"credentials"`
+	Endpoints       []string                     `json:"endpoints,omitempty"`
 	Disambiguators  map[string]map[string]string `json:"disambiguators,omitempty"`
 	HITLAsyncGrants bool                         `json:"hitl_async_grants,omitempty"`
 }
@@ -1501,7 +1503,8 @@ func decodeProfileBlock(sym *Symbol, evalCtx *hcl.EvalContext) (*Profile, hcl.Di
 	pr := &Profile{Name: sym.Name}
 	schema := &hcl.BodySchema{
 		Attributes: []hcl.AttributeSchema{
-			{Name: "credentials", Required: true},
+			{Name: "credentials"},
+			{Name: "endpoints"},
 			{Name: "hitl_async_grants"},
 		},
 	}
@@ -1513,14 +1516,31 @@ func decodeProfileBlock(sym *Symbol, evalCtx *hcl.EvalContext) (*Profile, hcl.Di
 			pr.HITLAsyncGrants = hv.True()
 		}
 	}
-	attr, ok := content.Attributes["credentials"]
-	if !ok {
-		return pr, diags
+	if attr, ok := content.Attributes["credentials"]; ok {
+		diags = append(diags, decodeProfileCredentials(pr, sym, attr, evalCtx)...)
 	}
+	if attr, ok := content.Attributes["endpoints"]; ok {
+		endpoints, ed := decodeProfileEndpoints(sym, attr, evalCtx)
+		diags = append(diags, ed...)
+		pr.Endpoints = endpoints
+	}
+	if len(pr.Credentials) == 0 && len(pr.Endpoints) == 0 {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Invalid profile %q", sym.Name),
+			Detail:   "Set at least one of `credentials = [...]` or `endpoints = [...]`.",
+			Subject:  &sym.Block.DefRange,
+		})
+	}
+	return pr, diags
+}
+
+func decodeProfileCredentials(pr *Profile, sym *Symbol, attr *hcl.Attribute, evalCtx *hcl.EvalContext) hcl.Diagnostics {
+	var diags hcl.Diagnostics
 	val, evalDiags := attr.Expr.Value(evalCtx)
 	diags = append(diags, evalDiags...)
 	if evalDiags.HasErrors() {
-		return pr, diags
+		return diags
 	}
 	t := val.Type()
 	if !t.IsTupleType() && !t.IsListType() {
@@ -1531,7 +1551,7 @@ func decodeProfileBlock(sym *Symbol, evalCtx *hcl.EvalContext) (*Profile, hcl.Di
 			Detail:   fmt.Sprintf("Expected a list; got %s.", t.FriendlyName()),
 			Subject:  &rng,
 		})
-		return pr, diags
+		return diags
 	}
 	rng := attr.Expr.Range()
 	it := val.ElementIterator()
@@ -1563,7 +1583,45 @@ func decodeProfileBlock(sym *Symbol, evalCtx *hcl.EvalContext) (*Profile, hcl.Di
 			})
 		}
 	}
-	return pr, diags
+	return diags
+}
+
+func decodeProfileEndpoints(sym *Symbol, attr *hcl.Attribute, evalCtx *hcl.EvalContext) ([]string, hcl.Diagnostics) {
+	var diags hcl.Diagnostics
+	val, evalDiags := attr.Expr.Value(evalCtx)
+	diags = append(diags, evalDiags...)
+	if evalDiags.HasErrors() {
+		return nil, diags
+	}
+	t := val.Type()
+	rng := attr.Expr.Range()
+	if !t.IsTupleType() && !t.IsListType() {
+		diags = append(diags, &hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  fmt.Sprintf("Invalid profile %q endpoints", sym.Name),
+			Detail:   fmt.Sprintf("Expected a list; got %s.", t.FriendlyName()),
+			Subject:  &rng,
+		})
+		return nil, diags
+	}
+	var out []string
+	it := val.ElementIterator()
+	for it.Next() {
+		_, el := it.Element()
+		if el.Type() != cty.String {
+			diags = append(diags, &hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  fmt.Sprintf("Invalid profile %q endpoints entry", sym.Name),
+				Detail:   fmt.Sprintf("Each entry must be a bare endpoint reference; got %s.", el.Type().FriendlyName()),
+				Subject:  &rng,
+			})
+			continue
+		}
+		if endpoint := el.AsString(); endpoint != "" {
+			out = append(out, endpoint)
+		}
+	}
+	return out, diags
 }
 
 // profileCredEntry is the result of decoding one object-literal entry

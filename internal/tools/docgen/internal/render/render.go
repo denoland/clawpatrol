@@ -151,15 +151,17 @@ func (r *renderer) writeOperational() {
 }
 
 // writeProfile documents the `profile "<name>" {}` block. The body
-// is decoded manually (mixed-shape `credentials` list), so we inline
-// its attributes rather than going through reflection.
+// is decoded manually (mixed-shape `credentials` list and typed
+// endpoint refs), so we inline its attributes rather than going
+// through reflection.
 func (r *renderer) writeProfile() {
 	r.out.WriteString("## `profile \"<name>\" { ... }`\n\n")
-	r.out.WriteString("Names a set of credentials. Profiles bind to dashboard owners; an owner's profile determines which credentials — and, transitively via each credential's `endpoint` / `endpoints` binding, which endpoints — their gateway requests can reach. Rules ride along automatically because they're attached to endpoints.\n\n")
+	r.out.WriteString("Names a set of credentials and endpoints. Profiles bind to dashboard owners; an owner's profile determines which credentials they can use and which endpoint rules apply. Endpoint membership comes from the transitive closure of `credentials` → credential `endpoint` / `endpoints`, plus any direct `endpoints` listed on the profile. Direct endpoints carry rules without granting credentials.\n\n")
 	r.out.WriteString("| Attribute | Type | Required | Description |\n")
 	r.out.WriteString("|-----------|------|----------|-------------|\n")
-	r.out.WriteString("| `credentials` | `[]credential` | yes | Bare-name credential references, or `{ credential = name, <disambiguator> = \"...\" }` object entries for multi-credential dispatch (e.g. `placeholder` for header-token credentials). |\n\n")
-	r.out.WriteString("```hcl\nprofile \"default\" {\n  credentials = [bearer_token.github, postgres_credential.postgres-prod]\n}\n```\n\n")
+	r.out.WriteString("| `credentials` | `[]credential` | no | Bare-name credential references, or `{ credential = name, <disambiguator> = \"...\" }` object entries for multi-credential dispatch (e.g. `placeholder` for header-token credentials). Required when `endpoints` is empty. |\n")
+	r.out.WriteString("| `endpoints` | `[]endpoint` | no | Direct endpoint references. Use for rule-only membership, such as deny rules for hosts that should be blocked without granting a credential. Required when `credentials` is empty. |\n\n")
+	r.out.WriteString("```hcl\nprofile \"default\" {\n  credentials = [bearer_token.github, postgres_credential.postgres-prod]\n  endpoints   = [https.blocked_host]\n}\n```\n\n")
 }
 
 // ── plugin-dispatched kinds ─────────────────────────────────────────

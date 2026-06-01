@@ -342,6 +342,14 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 			EndpointCredentials: map[string][]*CompiledCredential{},
 			HITLAsyncGrants:     pr.HITLAsyncGrants,
 		}
+		for _, epName := range pr.Endpoints {
+			ce, ok := cp.Endpoints[epName]
+			if !ok {
+				continue
+			}
+			profile.Endpoints[epName] = ce
+			indexProfileEndpointHosts(profile, ce)
+		}
 		for _, credName := range pr.Credentials {
 			credEnt, ok := p.Credentials[credName]
 			if !ok {
@@ -355,29 +363,7 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 					continue
 				}
 				profile.Endpoints[epName] = ce
-				// DNS hostnames are case-insensitive; index lowercase
-				// so a SNI-peek lookup (TLS clients usually lowercase
-				// SNI on the wire) matches a config-declared host
-				// regardless of its casing.
-				for _, h := range ce.Hosts {
-					host, _, hpErr := hostmatch.SplitHostPort(h)
-					if hpErr != nil || host == "" {
-						continue
-					}
-					if hostmatch.IsWildcardHost(host) {
-						// Wildcard patterns route on the SNI/authority
-						// host alone (no port), so collapse port-qualified
-						// `*.foo.com:443` and bare `*.foo.com` to a single
-						// pattern keyed on the host portion. Duplicates
-						// from listing both forms are removed below.
-						profile.HostPatterns = append(profile.HostPatterns, HostPattern{
-							Pattern:  strings.ToLower(host),
-							Endpoint: ce,
-						})
-						continue
-					}
-					profile.HostIndex[strings.ToLower(h)] = ce
-				}
+				indexProfileEndpointHosts(profile, ce)
 				profile.EndpointCredentials[epName] = append(
 					profile.EndpointCredentials[epName],
 					&CompiledCredential{
@@ -411,6 +397,29 @@ func Compile(gw *Gateway) (*CompiledPolicy, error) {
 	}
 
 	return cp, nil
+}
+
+func indexProfileEndpointHosts(profile *CompiledProfile, ce *CompiledEndpoint) {
+	// DNS hostnames are case-insensitive; index lowercase so a SNI-peek
+	// lookup matches a config-declared host regardless of its casing.
+	for _, h := range ce.Hosts {
+		host, _, hpErr := hostmatch.SplitHostPort(h)
+		if hpErr != nil || host == "" {
+			continue
+		}
+		if hostmatch.IsWildcardHost(host) {
+			// Wildcard patterns route on the SNI/authority host alone
+			// (no port), so collapse port-qualified `*.foo.com:443`
+			// and bare `*.foo.com` to a single pattern keyed on the
+			// host portion. Duplicates are removed below.
+			profile.HostPatterns = append(profile.HostPatterns, HostPattern{
+				Pattern:  strings.ToLower(host),
+				Endpoint: ce,
+			})
+			continue
+		}
+		profile.HostIndex[strings.ToLower(h)] = ce
+	}
 }
 
 // CredentialEndpointTargets returns the endpoint names a credential
