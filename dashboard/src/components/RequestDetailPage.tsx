@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
 import {
+  applyGeneratedRule,
   downloadActionFixture,
   getAction,
+  previewRuleFromAction,
   type Agent,
   type EventRecord,
   type FacetSchema,
+  type RulePreview,
 } from "../lib/api";
 import { headersToJSON } from "../lib/clipboard";
 import { formatFacetValue, useFacets } from "../lib/facets";
@@ -13,6 +16,7 @@ import { Button } from "./Button";
 import { CopyButton } from "./CopyButton";
 import { ApprovalStatusIcon, LockGlyph } from "./LiveRequests";
 import { Main } from "./Main";
+import { Modal } from "./Modal";
 import { PageTitle, type Crumb } from "./PageTitle";
 import { Tag } from "./Tag";
 
@@ -130,7 +134,7 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
             {fullUrl}
           </span>
           <span className="ml-auto">
-            <DownloadActionButton ev={ev} />
+            <ActionButtons ev={ev} />
           </span>
         </div>
         <div className="flex items-center gap-4 text-xs text-text-muted flex-wrap">
@@ -214,6 +218,21 @@ export function RequestDetailPage({ id, agents }: { id: string; agents: Agent[] 
   );
 }
 
+function ActionButtons({ ev }: { ev: EventRecord }) {
+  const [ruleOpen, setRuleOpen] = useState(false);
+  return (
+    <div className="flex items-center gap-2 flex-wrap justify-end">
+      {ev.id && ev.endpoint && ev.action !== "in_flight" && (
+        <Button variant="outline" onClick={() => setRuleOpen(true)}>
+          Block requests like this
+        </Button>
+      )}
+      <DownloadActionButton ev={ev} />
+      {ruleOpen && <RulePreviewModal ev={ev} onClose={() => setRuleOpen(false)} />}
+    </div>
+  );
+}
+
 // DownloadActionButton triggers a server-side reshape of this event
 // into a `clawpatrol test` fixture and saves it as a .json file. The
 // runner reads files in this exact format — drop the download into a
@@ -234,14 +253,7 @@ function DownloadActionButton({ ev }: { ev: EventRecord }) {
         setErr(null);
         try {
           const blob = await downloadActionFixture(ev.id!);
-          const href = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = href;
-          a.download = `${ev.id}.json`;
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-          URL.revokeObjectURL(href);
+          downloadBlob(blob, `${ev.id}.json`);
         } catch (e) {
           setErr((e as Error).message || "download failed");
         } finally {
@@ -253,6 +265,150 @@ function DownloadActionButton({ ev }: { ev: EventRecord }) {
       {busy ? "Downloading…" : "Download action"}
     </Button>
   );
+}
+
+function RulePreviewModal({ ev, onClose }: { ev: EventRecord; onClose: () => void }) {
+  const [preview, setPreview] = useState<RulePreview | null>(null);
+  const [hcl, setHCL] = useState("");
+  const [busy, setBusy] = useState(true);
+  const [applying, setApplying] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!ev.id) return;
+    setBusy(true);
+    setErr(null);
+    previewRuleFromAction(ev.id)
+      .then((p) => {
+        if (cancelled) return;
+        setPreview(p);
+        setHCL(p.hcl);
+      })
+      .catch((e) => {
+        if (!cancelled) setErr((e as Error).message || "rule preview failed");
+      })
+      .finally(() => {
+        if (!cancelled) setBusy(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [ev.id]);
+
+  async function copyHCL() {
+    await navigator.clipboard.writeText(hcl);
+    setMsg("HCL copied.");
+  }
+
+  async function applyRule() {
+    if (!preview?.config_revision) return;
+    setApplying(true);
+    setErr(null);
+    setMsg(null);
+    try {
+      await applyGeneratedRule(preview.config_revision, hcl);
+      setMsg("Rule applied. New matching requests will be denied.");
+    } catch (e) {
+      const text = (e as Error).message || "apply failed";
+      if (text.includes("config changed")) {
+        setErr(
+          "The config changed since this rule was generated. Regenerate the rule and try again.",
+        );
+      } else {
+        setErr(text);
+      }
+    } finally {
+      setApplying(false);
+    }
+  }
+
+  async function downloadFixture() {
+    if (!ev.id) return;
+    const blob = await downloadActionFixture(ev.id);
+    downloadBlob(blob, `${ev.id}.json`);
+  }
+
+  function downloadPatch() {
+    if (!preview?.patch) return;
+    downloadBlob(new Blob([preview.patch], { type: "text/plain;charset=utf-8" }), "rule.patch");
+  }
+
+  const writesEnabled = !!preview?.dashboard_config_writes;
+
+  return (
+    <Modal title="Block requests like this" size="lg" onClose={onClose}>
+      <div className="p-4 space-y-3 overflow-auto">
+        <p className="text-sm text-text-muted">
+          Claw Patrol generated a deny rule from this observed action. The rule starts narrow. Edit
+          the condition if you want to broaden it.
+        </p>
+        {busy ? (
+          <div className="text-xs text-text-subtle">Generating rule...</div>
+        ) : err && !preview ? (
+          <div className="text-sm text-danger-500 whitespace-pre-wrap">{err}</div>
+        ) : (
+          <>
+            {!writesEnabled && (
+              <div className="border border-butter-600 bg-butter-100 px-3 py-2 text-xs text-text">
+                Dashboard config writes are disabled for this gateway. Copy this rule into your HCL
+                config and deploy it through your normal workflow.
+              </div>
+            )}
+            {preview?.warnings?.map((w) => (
+              <div key={w} className="border border-butter-600 bg-butter-100 px-3 py-2 text-xs">
+                {w}
+              </div>
+            ))}
+            <textarea
+              value={hcl}
+              onChange={(e) => setHCL(e.target.value)}
+              spellCheck={false}
+              className="w-full min-h-[300px] resize-y border-1.5 border-navy bg-canvas p-3 font-mono text-xs text-text outline-none focus:bg-white"
+            />
+            {err && <div className="text-sm text-danger-500 whitespace-pre-wrap">{err}</div>}
+            {msg && <div className="text-sm text-success-600">{msg}</div>}
+          </>
+        )}
+      </div>
+      <div className="flex items-center gap-2 justify-end px-4 py-3 border-t border-navy bg-navy-100">
+        {writesEnabled ? (
+          <Button disabled={!preview || applying} onClick={applyRule}>
+            {applying ? "Applying..." : "Apply rule"}
+          </Button>
+        ) : (
+          <Button disabled={!preview} onClick={copyHCL}>
+            Copy HCL
+          </Button>
+        )}
+        {writesEnabled && (
+          <Button variant="outline" disabled={!preview} onClick={copyHCL}>
+            Copy HCL
+          </Button>
+        )}
+        {!writesEnabled && (
+          <Button variant="outline" disabled={!preview?.patch} onClick={downloadPatch}>
+            Download patch
+          </Button>
+        )}
+        <Button variant="outline" disabled={!ev.id} onClick={downloadFixture}>
+          Download fixture
+        </Button>
+      </div>
+    </Modal>
+  );
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(href);
 }
 
 // --- SQL detail ---

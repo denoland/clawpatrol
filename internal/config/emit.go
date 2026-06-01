@@ -193,6 +193,9 @@ func emitGatewayBlock(body *hclwrite.Body, s *GatewaySettings) {
 	setStr("public_url", s.PublicURL)
 	setStr("state_dir", s.StateDir)
 	setStr("dashboard_session_ttl", s.DashboardSessionTTL)
+	if s.DashboardConfigWrites {
+		gw.SetAttributeValue("dashboard_config_writes", cty.BoolVal(true))
+	}
 	setStr("resolver", s.Resolver)
 	setStr("log_path", s.LogPath)
 	if s.Telemetry != nil {

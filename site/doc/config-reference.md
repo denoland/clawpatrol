@@ -32,6 +32,54 @@ Operational settings live under the required top-level `gateway { ... }` block. 
 | `defaults` | `block` | no | Holds the optional `defaults { ... }` block with the policy defaults (unknown_host, llm_*, human_*). nil when the block is absent — every field has a built-in default. |
 | `plugin` | `block` | no | Lists every `plugin "<name>" { source = "..." }` block at the top of the file. The loader spawns each subprocess (and registers its declared types) before running pass-1 symbol building, so plugin-supplied (kind, type) pairs are available by the time policy blocks are dispatched. |
 
+## `gateway { ... }`
+
+The gateway block carries operational settings. Most deployments keep policy in this same HCL file and push edits out-of-band. Set `dashboard_config_writes = true` only when authenticated dashboard users should be allowed to append generated rules from observed actions.
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `dashboard_listen` | `string` | no | The bind address for the dashboard + JSON API HTTP server. Default 127.0.0.1:8080. Set to a routable address to expose the dashboard off-host (the same mux is also served on the WG netstack / tsnet stack at this port). |
+| `public_url` | `string` | no | The canonical externally-reachable gateway URL. Used in generated control-plane links such as join targets, OAuth redirect URIs, and (when public_url has a host but wireguard.endpoint doesn't) the host clients dial for WireGuard. |
+| `state_dir` | `string` | no | The directory holding clawpatrol.db (and anything a plugin persists to disk under it). Defaults to ${HOME}/.clawpatrol. |
+| `dashboard_session_ttl` | `string` | no | How long a dashboard login session stays valid after the operator types the password. time.ParseDuration format ("24h", "30m"). Default 24h. |
+| `dashboard_config_writes` | `bool` | no | Allows authenticated dashboard users to append generated config snippets to the gateway HCL. Default false: config remains read-only and changes happen out-of-band. |
+| `resolver` | `string` | no | The DNS resolver address the gateway uses for upstream lookups when the runtime needs an explicit resolver. |
+| `log_path` | `string` | no | An optional file path for gateway log output. |
+| `telemetry` | `bool` | no | Opts in/out of the update-checker / anonymous usage ping (doc/telemetry.md). nil = default on; explicit `telemetry = false` silences the goroutine. Env vars CLAWPATROL_TELEMETRY=0 and DO_NOT_TRACK=1 also work. |
+| `session_keep` | `string` | no | The hard retention floor for the sessions table. Sessions whose last_at is older than this get deleted by the background sweeper. Default 720h (30d), "0" / "off" disables. time.ParseDuration format. |
+| `wireguard` | `block` | no | WireGuard, if present, enables the embedded userspace WireGuard server. Required block when running WG-mode deployments. |
+| `tailscale` | `block` | no | Tailscale, if present, enables the embedded tsnet node and the Tailscale control plane (OAuth key minting, exit-node routing). Both transports may be enabled simultaneously. |
+
+**Nested block `wireguard {}`:**
+
+The body of the `wireguard { ... }` sub-block
+inside `gateway { ... }`. Presence of the block enables the WG
+transport.
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `subnet_cidr` | `string` | no | The private subnet assigned to onboarded clients. Required (e.g. "10.55.0.0/24"). |
+| `listen_port` | `int` | no | The UDP port the gateway binds for WG peers. Default 51820. |
+| `endpoint` | `string` | no | The host:port advertised in client wg.conf as `Endpoint = ...`. Host defaults to public_url's host; port defaults to listen_port. Set only for split-host deployments (gateway sits behind a different hostname/IP for WG than for the dashboard). |
+| `interface` | `string` | no | The WireGuard interface name the gateway manages. Mostly irrelevant in userspace mode; leave unset. |
+| `server_pub` | `string` | no | The WireGuard server public key advertised to clients. Normally derived from gateway state; only set when bootstrapping from an external key. |
+
+**Nested block `tailscale {}`:**
+
+The body of the `tailscale { ... }` sub-block
+inside `gateway { ... }`. Presence of the block enables tsnet.
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `authkey` | `string` | no | The Tailscale auth key for the embedded tsnet node. Required when the `tailscale` block is present. Falls back to $TS_AUTHKEY if empty. |
+| `hostname` | `string` | no | The device name requested for the tsnet node. Default "clawpatrol-gateway". |
+| `control_url` | `string` | no | The Tailscale control-plane URL. Empty → Tailscale's hosted control plane. |
+| `tags` | `[]string` | no | The Tailscale device-tag list applied to keys the gateway mints for onboarded clients (`tag:client` etc.). The autoApprovers exit-node ACL must reference these tags. |
+| `operators` | `[]string` | no | Allowlists tailnet logins permitted to use the dashboard without typing the root password. Each entry is either an exact login ("alice@example.com") or a domain wildcard ("*@example.com"). Tagged devices (whose whois login is the tag name, not a user email) never match a wildcard entry — agents on the tailnet can never bypass the gate through this path. Empty / unset → tailnet-allowlist auth is disabled. The stored root password is then the only way in. Lives under `tailscale {}` because matching requires the tsnet whois identity; there is no whois without an active tsnet node. |
+| `funnel` | `bool` | no | Enables Tailscale Funnel on :443 so the join bootstrap and credential webhook paths are internet-reachable via the tsnet cert domain. Requires HTTPS enabled for the tailnet; if public_url is unset the gateway derives it from the tsnet cert domain at startup. |
+| `oauth_client_id` | `string` | no | The OAuth client id used to mint per-device tailnet auth keys at approval time. |
+| `oauth_client_secret` | `string` | no | The OAuth client secret paired with OAuthClientID. |
+
 ## `profile "<name>" { ... }`
 
 Names a set of credentials. Profiles bind to dashboard owners; an owner's profile determines which credentials — and, transitively via each credential's `endpoint` / `endpoints` binding, which endpoints — their gateway requests can reach. Rules ride along automatically because they're attached to endpoints.
