@@ -17,7 +17,7 @@ func newRBACTestDB(t *testing.T) *sql.DB {
 }
 
 func TestRoleRankOrdering(t *testing.T) {
-	if !(roleRank(roleAdmin) > roleRank(roleEditor) && roleRank(roleEditor) > roleRank(roleViewer)) {
+	if roleRank(roleAdmin) <= roleRank(roleEditor) || roleRank(roleEditor) <= roleRank(roleViewer) {
 		t.Fatal("role ranks must be admin > editor > viewer")
 	}
 	if roleRank("nonsense") != 0 {

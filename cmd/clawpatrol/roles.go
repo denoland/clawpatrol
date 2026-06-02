@@ -144,7 +144,7 @@ func bindingsForUser(db *sql.DB, userID string) ([]roleBinding, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []roleBinding
 	for rows.Next() {
 		var b roleBinding
@@ -346,7 +346,7 @@ func listRBACUsers(db *sql.DB) ([]rbacUserView, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []rbacUserView
 	for rows.Next() {
 		var v rbacUserView
