@@ -28,7 +28,7 @@ func TestBufferHTTPBodyForMatchPreservesUpstreamForwardingBody(t *testing.T) {
 		t.Fatalf("new request: %v", err)
 	}
 
-	matchBody := bufferHTTPBodyForMatch(req)
+	matchBody := bufferHTTPBodyForMatch(req, maxHTTPMatchBody)
 	if string(matchBody) != body {
 		t.Fatalf("match body = %q, want %q", matchBody, body)
 	}
@@ -72,7 +72,7 @@ func TestBufferHTTPBodyForMatchKeepsFullLargeForwardingBody(t *testing.T) {
 		t.Fatalf("new request: %v", err)
 	}
 
-	matchBody := bufferHTTPBodyForMatch(req)
+	matchBody := bufferHTTPBodyForMatch(req, maxHTTPMatchBody)
 	if len(matchBody) != maxHTTPMatchBody {
 		t.Fatalf("match body len = %d, want %d", len(matchBody), maxHTTPMatchBody)
 	}
@@ -125,7 +125,7 @@ func TestBufferHTTPBodyForMatchTruncatedFlagsOverflow(t *testing.T) {
 				t.Fatalf("new request: %v", err)
 			}
 
-			match, truncated := bufferHTTPBodyForMatchTruncated(req)
+			match, truncated := bufferHTTPBodyForMatchTruncated(req, maxHTTPMatchBody)
 			if truncated != tc.wantTruncated {
 				t.Errorf("truncated = %v, want %v", truncated, tc.wantTruncated)
 			}
@@ -170,7 +170,7 @@ func TestBufferHTTPBodyForMatchStreamsUnknownLengthRemainder(t *testing.T) {
 	}
 	req.ContentLength = -1
 
-	matchBody := bufferHTTPBodyForMatch(req)
+	matchBody := bufferHTTPBodyForMatch(req, maxHTTPMatchBody)
 	if len(matchBody) != maxHTTPMatchBody {
 		t.Fatalf("match body len = %d, want %d", len(matchBody), maxHTTPMatchBody)
 	}
@@ -188,5 +188,44 @@ func TestBufferHTTPBodyForMatchStreamsUnknownLengthRemainder(t *testing.T) {
 	}
 	if upstreamContentLength != -1 {
 		t.Fatalf("upstream ContentLength = %d, want -1", upstreamContentLength)
+	}
+}
+
+// TestBufferHTTPBodyForMatchHonorsCustomCap verifies the rules-engine
+// cap is honored when a non-default value is passed (the value the
+// gateway threads through from gateway.body_caps.rules_engine): the
+// match view is truncated to the custom cap while the upstream forward
+// still receives every byte.
+func TestBufferHTTPBodyForMatchHonorsCustomCap(t *testing.T) {
+	const capBytes = 16
+	body := strings.Repeat("z", capBytes) + "overflow"
+	var upstreamLen int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		upstreamLen = len(b)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	req, err := http.NewRequest("POST", upstream.URL+"/cap", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+
+	match, truncated := bufferHTTPBodyForMatchTruncated(req, capBytes)
+	if !truncated {
+		t.Fatalf("truncated = false, want true (body exceeds custom cap)")
+	}
+	if len(match) != capBytes {
+		t.Fatalf("match len = %d, want %d", len(match), capBytes)
+	}
+
+	resp, err := http.DefaultTransport.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	_ = resp.Body.Close()
+	if upstreamLen != len(body) {
+		t.Fatalf("upstream got %d bytes, want %d (custom cap must not drop forwarded bytes)", upstreamLen, len(body))
 	}
 }

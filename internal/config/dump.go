@@ -50,6 +50,18 @@ func dumpSettings(s *GatewaySettings) map[string]any {
 		out["telemetry"] = *s.Telemetry
 	}
 	setStr("session_keep", s.SessionKeep)
+	if s.BodyCaps != nil {
+		bc := map[string]any{}
+		if s.BodyCaps.RulesEngine != "" {
+			bc["rules_engine"] = s.BodyCaps.RulesEngine
+		}
+		if s.BodyCaps.ActionsTable != "" {
+			bc["actions_table"] = s.BodyCaps.ActionsTable
+		}
+		if len(bc) > 0 {
+			out["body_caps"] = bc
+		}
+	}
 	if s.WireGuard != nil {
 		out["wireguard"] = dumpWireGuard(s.WireGuard)
 	}

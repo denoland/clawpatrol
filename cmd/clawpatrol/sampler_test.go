@@ -184,3 +184,33 @@ func TestSamplerSampleUnknownEncodingIgnored(t *testing.T) {
 		t.Fatalf("expected binary: for unknown encoding, got %q", got)
 	}
 }
+
+func TestSamplerTruncationMarker(t *testing.T) {
+	// Body fits within the cap: no marker, sample is the full body.
+	s := newSampler(32)
+	body := `{"k":"v"}`
+	_, _ = s.Write([]byte(body))
+	if got := s.sample(""); got != body {
+		t.Fatalf("under-cap sample = %q, want %q (no marker)", got, body)
+	}
+	if s.truncated() {
+		t.Fatalf("under-cap sampler reports truncated")
+	}
+
+	// Body exceeds the cap: sample keeps only the prefix and ends with
+	// the truncation marker so the dashboard can flag it.
+	s = newSampler(8)
+	big := strings.Repeat("a", 100)
+	_, _ = s.Write([]byte(big))
+	if !s.truncated() {
+		t.Fatalf("over-cap sampler does not report truncated")
+	}
+	got := s.sample("")
+	if !strings.HasSuffix(got, bodyTruncatedMarker) {
+		t.Fatalf("over-cap sample = %q, want suffix %q", got, bodyTruncatedMarker)
+	}
+	prefix := strings.TrimSuffix(got, bodyTruncatedMarker)
+	if prefix != strings.Repeat("a", 8) {
+		t.Fatalf("over-cap prefix = %q, want %q", prefix, strings.Repeat("a", 8))
+	}
+}

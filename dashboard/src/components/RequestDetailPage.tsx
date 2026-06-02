@@ -576,12 +576,36 @@ function parseSSE(text: string): SseEvent[] | null {
   return events.length > 0 ? events : null;
 }
 
-function HttpBody({ text }: { text: string }) {
-  if (!text) return <div className="px-4 py-3 text-xs text-text-subtle">(empty)</div>;
+// BODY_TRUNCATED_MARKER mirrors bodyTruncatedMarker in cmd/clawpatrol/web.go.
+// The gateway appends it to a persisted body sample when the body exceeded
+// the actions-table cap. We strip it before parsing/rendering and surface a
+// badge so an operator knows they are looking at a prefix, not the whole body.
+const BODY_TRUNCATED_MARKER = "\n[clawpatrol:body-truncated]";
+
+function CapBadge() {
+  return (
+    <div className="mb-2 inline-block rounded bg-amber-500/15 px-1.5 py-0.5 text-2xs font-medium uppercase tracking-wider text-amber-600">
+      truncated — body exceeded actions cap
+    </div>
+  );
+}
+
+function HttpBody({ text: rawText }: { text: string }) {
+  if (!rawText) return <div className="px-4 py-3 text-xs text-text-subtle">(empty)</div>;
+  const capped = rawText.endsWith(BODY_TRUNCATED_MARKER);
+  const text = capped ? rawText.slice(0, -BODY_TRUNCATED_MARKER.length) : rawText;
+  if (!text) {
+    return (
+      <div className="px-4 py-3 text-xs text-text-subtle">
+        <CapBadge />
+      </div>
+    );
+  }
   const result = tryParseJSON(text);
   if (result) {
     return (
       <div className="overflow-auto px-4 py-3 font-mono text-xs leading-relaxed">
+        {capped && <CapBadge />}
         <JsonNode value={result.parsed} />
         {result.truncated && <div className="mt-2 text-2xs text-text-subtle">(truncated)</div>}
       </div>
@@ -591,6 +615,7 @@ function HttpBody({ text }: { text: string }) {
   if (sse) {
     return (
       <div className="overflow-auto px-4 py-3 font-mono text-xs leading-relaxed space-y-3">
+        {capped && <CapBadge />}
         {sse.map((e, i) => {
           const dataJson = tryParseJSON(e.data);
           return (
@@ -618,9 +643,10 @@ function HttpBody({ text }: { text: string }) {
     );
   }
   return (
-    <pre className="overflow-auto whitespace-pre-wrap break-all px-4 py-3 font-mono text-xs text-text-muted">
-      {text}
-    </pre>
+    <div className="overflow-auto px-4 py-3">
+      {capped && <CapBadge />}
+      <pre className="whitespace-pre-wrap break-all font-mono text-xs text-text-muted">{text}</pre>
+    </div>
   );
 }
 
