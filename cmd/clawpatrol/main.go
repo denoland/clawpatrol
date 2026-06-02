@@ -2080,6 +2080,21 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 			fac.PrepareRequest(mreq)
 		}
 
+		// Resolve the dispatching credential *before* matching so rules
+		// carrying a `credential = bearer_token.X` pin can fire:
+		// runtime.MatchRequest compares mreq.Credential (the bare
+		// credential name) against each rule's pin. The wire-protocol
+		// frontends (postgres/clickhouse) already resolve-then-match; the
+		// HTTPS path historically matched first and resolved only at
+		// injection time, leaving mreq.Credential empty — so every
+		// credential-pinned rule silently fell through to the endpoint's
+		// default rule. Resolve once here and reuse the entry for
+		// credential injection further down.
+		resolvedCred := runtime.ResolveCredential(g.Policy(), profile, ep, mreq)
+		if resolvedCred != nil {
+			mreq.Credential = resolvedCred.Credential.Symbol.Name
+		}
+
 		ev := Event{
 			ID:     newReqID(),
 			Mode:   "mitm",
@@ -2340,7 +2355,7 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 		// verbatim and rely on policy alone.
 		var rewriteWSPayload wsPayloadRewriter
 		var reqBodySecretRedactions []string
-		if cc := runtime.ResolveCredential(g.Policy(), profile, ep, mreq); cc != nil {
+		if cc := resolvedCred; cc != nil {
 			// Plugin.Runtime is a typed-nil sentinel used only for
 			// interface-compliance assertions; the actual decoded HCL
 			// values (BearerToken.IdempotencyKey, PostgresCredential.User,
