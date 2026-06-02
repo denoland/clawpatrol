@@ -36,6 +36,7 @@ import (
 	"github.com/denoland/clawpatrol/internal/config/plugins/approvers"
 	"github.com/denoland/clawpatrol/internal/config/plugins/endpoints"
 	"github.com/denoland/clawpatrol/internal/config/runtime"
+	"github.com/denoland/clawpatrol/internal/toolgate"
 	"github.com/google/uuid"
 	"tailscale.com/client/local"
 )
@@ -388,6 +389,25 @@ type Gateway struct {
 	// profile mappings — tsnet whole-machine traffic arrives on the
 	// IPv6 ULA, so the IPv4 entry alone isn't enough.
 	tsnetLC *local.Client
+	// toolgate is the gateway-wide registry of pending LLM tool-call
+	// approvals. Populated by the HTTPS MITM hook when an Anthropic
+	// /v1/messages response carries a tool_use that matches a HITL
+	// rule; drained by the agent's polling tool against the
+	// /api/approval/* endpoints. nil disables tool-call gating.
+	toolgate *toolgate.Store
+	// toolgateRules is the active rule set. Programmatically populated
+	// in this draft — follow-up bead wires it to the unmerged cl-1yh
+	// llm_rule HCL plugin so rules ride in the gateway config.
+	toolgateRules toolgate.RuleSet
+	// toolgateAPI is the approval-endpoint handler, built once from the
+	// store. The webMux wrappers dispatch to it rather than rebuilding
+	// a fresh ServeMux per request. nil when toolgate is nil.
+	toolgateAPI http.Handler
+	// toolgateApprovalURL is the base URL the gateway-initiated HITL
+	// follow-up tells the model to poll (<base>/api/approval/poll). Loaded
+	// from CLAWPATROL_TOOLGATE_APPROVAL_URL; empty uses the package
+	// placeholder default.
+	toolgateApprovalURL string
 }
 
 // transportFor returns the cached http.Transport for ep, building it
@@ -2428,7 +2448,24 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 
 		trackKind := trackKindFor(host)
 		var trackedReqBody []byte
-		if trackKind != "" {
+		// toolgateReqBody holds the COMPLETE original /v1/messages body for
+		// the gateway-initiated HITL follow-up (the conversation has to be
+		// re-serialised as valid JSON, which the 1MB match cap can't
+		// guarantee). Only buffered when toolgate could actually fire on
+		// this host+path+ruleset; nil otherwise (and on over-cap bodies),
+		// which makes the follow-up no-op into the text-block fallback.
+		var toolgateReqBody []byte
+		toolgatePossible := g.toolgate != nil && len(g.toolgateRules) > 0 &&
+			trackKind == "claude_usage" && req.URL.Path == "/v1/messages"
+		switch {
+		case toolgatePossible:
+			toolgateReqBody = bufferFullHTTPBody(req, maxToolgateReqBody)
+			if len(toolgateReqBody) > maxHTTPMatchBody {
+				trackedReqBody = toolgateReqBody[:maxHTTPMatchBody]
+			} else {
+				trackedReqBody = toolgateReqBody
+			}
+		case trackKind != "":
 			trackedReqBody = bufferHTTPBodyForMatch(req)
 		}
 		// Pre-create session from the request body so streaming SSE
@@ -2495,6 +2532,38 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 		if resp.ContentLength < 0 && len(resp.TransferEncoding) == 0 && !resp.Close {
 			resp.TransferEncoding = []string{"chunked"}
 		}
+		// Tool-call gating. Anthropic /v1/messages only. Rewrites
+		// tool_use blocks per the active rule set — deny → text-block
+		// reason; hitl → polling tool_use against /api/approval/poll.
+		// See internal/toolgate.
+		//
+		//   - JSON (non-streaming) responses: buffer the body, walk
+		//     content[], rewrite in place. Fails open on parse errors.
+		//   - Streaming (text/event-stream) responses: wrap the body in
+		//     a per-block buffering transform so frames gate and forward
+		//     incrementally (TTFT preserved for non-tool content). Fails
+		//     CLOSED — a tool_use that can't be evaluated is blocked,
+		//     never forwarded raw. The streamed outcome's notes are
+		//     attached to the dashboard event after resp.Write drains.
+		var sseOutcome *toolgate.SSEOutcome
+		toolgateEligible := g.toolgate != nil && len(g.toolgateRules) > 0 &&
+			trackKind == "claude_usage" && req.URL.Path == "/v1/messages" &&
+			resp.StatusCode == 200
+		respCT := resp.Header.Get("Content-Type")
+		switch {
+		case toolgateEligible &&
+			strings.Contains(respCT, "json") &&
+			!strings.Contains(respCT, "event-stream"):
+			fc := g.newToolgateFollowup(req, transport, profile, toolgateReqBody)
+			if rewritten, ok := g.gateAnthropicResponse(req.Context(), resp, &ev, fc); ok {
+				resp = rewritten
+			}
+		case toolgateEligible &&
+			strings.Contains(respCT, "event-stream"):
+			fc := g.newToolgateFollowup(req, transport, profile, toolgateReqBody)
+			sseOutcome = g.gateAnthropicSSEStream(req.Context(), resp, fc)
+		}
+
 		// Snapshot the upstream's response headers for the audit log
 		// before stripping credential-bearing ones — the dashboard
 		// still wants to show what the upstream actually sent.
@@ -2521,6 +2590,18 @@ func (g *Gateway) mitmHTTPSWithCertHost(c net.Conn, host, certHost string, ep *c
 				}
 			}
 			g.trackLLMUsage(c, trackKind, req.URL.Path, trackedReqBody, body, sessionHint)
+		}
+
+		// Streaming toolgate notes are known only after the transform has
+		// drained (resp.Write above), so attach the dashboard marker here
+		// rather than inline like the JSON path. The pipe close in
+		// gateAnthropicSSEStream establishes happens-before for sseOutcome.
+		if sseOutcome != nil && len(sseOutcome.Notes) > 0 {
+			if ev.Reason == "" {
+				ev.Reason = "toolgate: " + strings.Join(sseOutcome.Notes, "; ")
+			} else {
+				ev.Reason = ev.Reason + " | toolgate: " + strings.Join(sseOutcome.Notes, "; ")
+			}
 		}
 
 		if hitlRetryConsumedOperation != nil {
@@ -2934,6 +3015,21 @@ func runGateway(args []string) {
 		agents:   NewAgentRegistry(),
 		hitl:     newHITLRegistry(sink),
 		onboard:  newOnboardRegistry(),
+		toolgate: toolgate.NewStore(),
+		// toolgateRules is empty by default — gating only fires when a
+		// rule has been programmatically registered. This keeps the
+		// draft a no-op for users who haven't opted in. Follow-up bead
+		// wires rules through cl-1yh's llm_rule HCL plugin once it
+		// lands; for now operators experimenting with the prototype
+		// can seed rules via CLAWPATROL_TOOLGATE_RULES (see
+		// loadToolgateRulesFromEnv below).
+		toolgateRules:       loadToolgateRulesFromEnv(),
+		toolgateApprovalURL: loadToolgateApprovalURL(),
+	}
+	// Build the approval-endpoint handler once; the webMux wrappers
+	// reuse it instead of constructing a fresh ServeMux per request.
+	if g.toolgate != nil {
+		g.toolgateAPI = toolgate.Mux(g.toolgate)
 	}
 	log.Printf("config: read-only (the dashboard cannot edit gateway.hcl)")
 	g.secrets = newGatewaySecretStore(db, oauthReg)
@@ -2986,6 +3082,11 @@ func runGateway(args []string) {
 	// "closed" intermediate state — keep is the only knob.
 	g.agents.LoadSessions(db)
 	g.agents.startSessionSweeper(parseDurationOr(cfg.SessionKeep(), 10*time.Minute))
+
+	// Toolgate: GC decided tool-call approvals so the store map doesn't
+	// grow without bound in a long-lived gateway. Ticks every minute,
+	// matching the session sweeper cadence.
+	g.toolgate.StartSweeper(time.Minute)
 
 	// HITL notifications fan-out via the approver runtimes
 	// (config/plugins/approvers); the registry's Add hook emits
