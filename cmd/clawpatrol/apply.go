@@ -373,10 +373,14 @@ func runApply(args []string) {
 }
 
 // digestDiff is the categorized result of comparing two PolicyDigests.
+// changed is block-level (by name); details carries the within-block
+// line delta for each changed block so an edit to one field — e.g. a
+// rule's CEL condition — is shown, not just "this rule changed".
 type digestDiff struct {
 	added   []string
 	removed []string
 	changed []string
+	details map[string][2]string // changed key -> {old canonical, new canonical}
 }
 
 func (d digestDiff) empty() bool {
@@ -397,14 +401,58 @@ func (d digestDiff) render() {
 	}
 	for _, k := range d.changed {
 		fmt.Printf("  ~ %s\n", k)
+		// Show the within-block line delta (which field actually
+		// changed) when we have the before/after canonical HCL.
+		if pair, ok := d.details[k]; ok {
+			rem, add := lineDelta(pair[0], pair[1])
+			for _, l := range rem {
+				fmt.Printf("      - %s\n", strings.TrimSpace(l))
+			}
+			for _, l := range add {
+				fmt.Printf("      + %s\n", strings.TrimSpace(l))
+			}
+		}
 	}
+}
+
+// lineDelta returns the lines present in old but not new (rem) and in
+// new but not old (add). A multiset difference — enough to surface the
+// one attribute line that changed inside an otherwise-identical block
+// (e.g. a CEL `condition` edit), without pulling in a full diff lib.
+func lineDelta(oldText, newText string) (rem, add []string) {
+	count := func(lines []string) map[string]int {
+		m := map[string]int{}
+		for _, l := range lines {
+			if strings.TrimSpace(l) != "" {
+				m[l]++
+			}
+		}
+		return m
+	}
+	oldLines := strings.Split(oldText, "\n")
+	newLines := strings.Split(newText, "\n")
+	inNew := count(newLines)
+	inOld := count(oldLines)
+	for _, l := range oldLines {
+		if strings.TrimSpace(l) != "" && inNew[l] == 0 {
+			rem = append(rem, l)
+		}
+	}
+	for _, l := range newLines {
+		if strings.TrimSpace(l) != "" && inOld[l] == 0 {
+			add = append(add, l)
+		}
+	}
+	return rem, add
 }
 
 // diffDigests compares two block digests by key. Keys present only in
 // new are added, only in old are removed, in both with differing
-// canonical HCL are changed. Each category is sorted for stable output.
+// canonical HCL are changed. For changed blocks the before/after text is
+// kept in details for a within-block line delta. Each category is sorted
+// for stable output.
 func diffDigests(oldD, newD map[string]string) digestDiff {
-	var d digestDiff
+	d := digestDiff{details: map[string][2]string{}}
 	for k, nv := range newD {
 		ov, ok := oldD[k]
 		if !ok {
@@ -413,6 +461,7 @@ func diffDigests(oldD, newD map[string]string) digestDiff {
 		}
 		if ov != nv {
 			d.changed = append(d.changed, k)
+			d.details[k] = [2]string{ov, nv}
 		}
 	}
 	for k := range oldD {
